@@ -1,0 +1,44 @@
+{
+  "name": "pigeonholes",
+  "version": "0.1.0",
+  "description": "Unofficial, read-only local board for your Claude Code sessions in the Claude desktop app: what needs you, what's stuck, what to clean up.",
+  "type": "module",
+  "bin": {
+    "pigeonholes": "src/entry/server.mjs"
+  },
+  "files": [
+    "src",
+    "public",
+    "README.md",
+    "README.ja.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BERORINPO/pigeonholes.git"
+  },
+  "homepage": "https://github.com/BERORINPO/pigeonholes#readme",
+  "bugs": {
+    "url": "https://github.com/BERORINPO/pigeonholes/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "sessions",
+    "dashboard",
+    "local",
+    "read-only",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/entry/server.mjs",
+    "demo": "node src/entry/server.mjs --demo",
+    "test": "node --test",
+    "arch": "node scripts/arch-check.mjs",
+    "smoke": "node scripts/smoke.mjs"
+  }
+}

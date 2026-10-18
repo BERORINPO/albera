@@ -1,0 +1,386 @@
+// @ts-check
+// 画面: 起動と操作。言語と好みを読み、静的な文言を入れ、クリックとキーを 1 か所で受け、5 秒ごとの取得 (poll.mjs) を始める。
+// 読み取り専用 (サーバーへは GET しかしない)。片付けは Claude への指示文をコピーするだけ。
+
+import { COPIED_LABEL_MS, COPY_CHUNK, FILTER_ANNOUNCE_MS, MIN, SKIP_EXPLAIN_MS } from '../src/shared/constants.mjs';
+import { applyPick, cleanupBodyParts, pickAllSuggested, togglePickRow } from './cleanup.mjs';
+import { copyText } from './copy.mjs';
+import { archiveInstruction, deepLink, titleOf } from './format.mjs';
+import { detectLang, otherLang } from './i18n.mjs';
+import { bindKeys, escapeStep, openHelp } from './keys.mjs';
+import { overviewKeydown } from './overview.mjs';
+import { poll, schedule } from './poll.mjs';
+import { backToRow, clearFilters, jumpPile, jumpTo, moveCursor, openSession, render, renderTimes, rowEl, setCursorRow, toggleOverview, view } from './render.mjs';
+import { closeBatch, loadPrefs, reselectLeft, savePrefs, setLang, startBatch, state } from './state.mjs';
+import { planCopy } from './ui-state.mjs';
+import { announce, fill } from './view.mjs';
+
+const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
+const filterInput = /** @type {HTMLInputElement} */ ($('filter'));
+
+/** index.html の data-i18n / data-i18n-attr を今の言語で埋める。 */
+function applyStaticText() {
+  const t = state.t;
+  for (const el of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('[data-i18n]')])) el.textContent = t(el.dataset.i18n ?? '');
+  for (const el of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('[data-i18n-attr]')])) {
+    for (const pair of (el.dataset.i18nAttr ?? '').split(';')) {
+      const [attr, key] = pair.split(':');
+      if (attr && key) el.setAttribute(attr.trim(), t(key.trim()));
+    }
+  }
+}
+
+/** @param {'en'|'ja'} lang */
+function setLanguage(lang) {
+  setLang(lang);
+  document.documentElement.lang = lang;
+  applyStaticText();
+  render();
+}
+
+/** 見出しの言語ボタン: 保存して、URL の ?lang= を外して切り替える (盤面は取り直さない)。 */
+function switchLanguage() {
+  const next = otherLang(state.t.lang);
+  state.prefs.lang = next;
+  savePrefs();
+  try {
+    const url = new URL(location.href);
+    if (url.searchParams.has('lang')) {
+      url.searchParams.delete('lang');
+      history.replaceState(null, '', url);
+    }
+  } catch {
+    // URL を書き換えられなくても切り替えはできる
+  }
+  setLanguage(next);
+}
+
+// ---------- コピー ----------
+
+/** 次の 50 件の指示文をコピーする。確かにコピーできたときだけ batch に足す。 @param {HTMLElement|null} opener */
+async function copyChunk(opener) {
+  const t = state.t;
+  const sel = [...state.selected];
+  if (!sel.length) return announce(t('live.nothingPicked'));
+  const plan = planCopy(sel, state.copied, COPY_CHUNK);
+  const text = archiveInstruction(t, plan.chunk);
+  const ok = await copyText(t, text, opener);
+  // 手でコピーする dialog の間に、戻し先の部品が作り直されていたらカーソルの行へ戻す
+  if (document.activeElement === document.body && opener && !opener.isConnected) backToRow();
+  if (!ok) return;
+  // 「コピーした ✓」と 2 分の説明は手元の時計で数える (サーバー時計は取得のたびに合わせ直すので)
+  startBatch(plan, text, Date.now());
+  state.copiedUntil = Date.now() + COPIED_LABEL_MS;
+  announce(t('live.copied', { n: plan.chunk.length }));
+  render();
+  setTimeout(render, COPIED_LABEL_MS + 50);
+  setTimeout(render, SKIP_EXPLAIN_MS + 50);
+}
+
+/** @type {WeakMap<HTMLElement, ReturnType<typeof setTimeout>>} */
+const smallTimers = new WeakMap();
+
+/**
+ * ID / リンクのコピー。ボタンの文字を 2.5 秒だけ「コピーした ✓」にして (toast は出さない)、読み上げにも一言出す。
+ * 戻す文字はいつも辞書から作る (続けて押しても「コピーした ✓」のまま固まらない)。前のタイマーは取り消す。
+ * @param {HTMLElement} btn @param {string} text
+ */
+async function copySmall(btn, text) {
+  if (!(await copyText(state.t, text, btn))) return;
+  const link = btn.dataset.action === 'copy-link';
+  clearTimeout(smallTimers.get(btn));
+  btn.textContent = state.t('detail.copied');
+  btn.dataset.state = 'copied';
+  announce(state.t(link ? 'live.copiedLink' : 'live.copiedId'));
+  smallTimers.set(
+    btn,
+    setTimeout(() => {
+      btn.textContent = state.t(link ? 'detail.copyLink' : 'detail.copyId');
+      delete btn.dataset.state;
+    }, COPIED_LABEL_MS),
+  );
+}
+
+// ---------- クリック・変更 ----------
+
+/** @param {string} id */
+function toggleDetail(id) {
+  if (state.open.has(id)) state.open.delete(id);
+  else state.open.add(id);
+  render();
+}
+
+/**
+ * 開閉を切り替えて覚える。既定と同じに戻ったら記録を消す (開閉の表にプロジェクト名を残し続けない)。
+ * @param {Record<string, boolean>} rec @param {string} key @param {boolean} dflt
+ */
+function flip(rec, key, dflt) {
+  const next = !(rec[key] ?? dflt);
+  if (next === dflt && rec !== /** @type {any} */ (state.prefs)) delete rec[key];
+  else rec[key] = next;
+  savePrefs();
+  render();
+}
+
+/** @param {HTMLElement|null} opener */
+function showHelp(opener) {
+  openHelp(state.t, {
+    keysOn: state.prefs.keys !== false,
+    opener: opener ?? $('help-btn'),
+    onToggleKeys: (on) => {
+      state.prefs.keys = on;
+      savePrefs();
+      render();
+    },
+  });
+}
+
+function toggleNotify() {
+  if (state.prefs.notify) {
+    state.prefs.notify = false;
+    savePrefs();
+    return render();
+  }
+  if (typeof Notification === 'undefined') return;
+  void Notification.requestPermission().then((p) => {
+    state.prefs.notify = p === 'granted';
+    savePrefs();
+    render();
+  });
+}
+
+/** @type {Record<string, (el: HTMLElement, ev: MouseEvent) => void>} */
+const CLICK = {
+  toggle: (el) => {
+    const row = /** @type {HTMLElement|null} */ (el.closest('[data-pile]'));
+    if (row) setCursorRow(row);
+    toggleDetail(el.dataset.id ?? '');
+  },
+  jump: (el, ev) => {
+    ev.preventDefault();
+    jumpPile(el.dataset.pile ?? '');
+  },
+  'jump-to': (el) => jumpTo(el.dataset.id ?? ''),
+  family: (el) => {
+    state.family = el.dataset.root ?? null;
+    render();
+  },
+  'clear-family': () => {
+    state.family = null;
+    render();
+  },
+  'clear-filter': () => {
+    state.filter = '';
+    filterInput.value = '';
+    render();
+  },
+  'clear-filters': () => {
+    clearFilters();
+    render();
+  },
+  more: (el) => flip(state.prefs.more, el.dataset.list ?? '', false),
+  page: (el) => {
+    const key = el.dataset.list ?? '';
+    state.pages[key] = (state.pages[key] ?? 1) + 1;
+    render();
+  },
+  pile: (el) => flip(state.prefs.open, el.dataset.pile ?? '', el.dataset.pile === 'cleanup'),
+  sub: (el) => flip(state.prefs.open, el.dataset.list ?? '', false),
+  copy: (el) => void copyChunk(el),
+  'clear-selection': () => {
+    state.selected = new Set();
+    render();
+  },
+  'close-batch': () => {
+    closeBatch();
+    render();
+  },
+  reselect: () => {
+    reselectLeft();
+    render();
+  },
+  'copy-id': (el) => void copySmall(el, el.dataset.id ?? ''),
+  'copy-link': (el) => void copySmall(el, deepLink(el.dataset.id ?? '') ?? ''),
+  overview: () => toggleOverview(false),
+  'overview-quiet': () => flip(/** @type {any} */ (state.prefs), 'overviewQuiet', false),
+  lang: () => switchLanguage(),
+  help: (el) => showHelp(el),
+  reload: () => location.reload(),
+  'intro-ok': () => {
+    state.prefs.seenIntro = true;
+    savePrefs();
+    render();
+  },
+  notify: () => toggleNotify(),
+};
+
+/** @param {MouseEvent} ev */
+function onClick(ev) {
+  const el = /** @type {HTMLElement|null} */ (ev.target instanceof Element ? ev.target.closest('[data-action]') : null);
+  if (!el || el instanceof HTMLInputElement) return;
+  CLICK[el.dataset.action ?? '']?.(el, ev);
+}
+
+// ---------- キー ----------
+
+/** @returns {boolean} preventDefault するか */
+function escapeChain() {
+  const active = document.activeElement;
+  const step = escapeStep({
+    inFilter: active === filterInput,
+    filterValue: filterInput.value,
+    inOverview: !!(active instanceof Element && active.closest('#overview')),
+    detailOpen: !!state.cursor && state.open.has(state.cursor.id),
+    family: state.family,
+    q: state.filter,
+  });
+  if (!step) return false;
+  if (step === 'overview-close') {
+    toggleOverview(true);
+    return true;
+  }
+  if (step === 'filter-clear' || step === 'query-clear') {
+    state.filter = '';
+    filterInput.value = '';
+  } else if (step === 'filter-blur') filterInput.blur();
+  else if (step === 'detail-close' && state.cursor) state.open.delete(state.cursor.id);
+  else if (step === 'family-clear') state.family = null;
+  render();
+  return true;
+}
+
+/** キーの動作。true を返すと preventDefault。 @param {string} action */
+function runKey(action) {
+  const cur = state.cursor;
+  const b = state.board;
+  switch (action) {
+    case 'next':
+      return moveCursor(1);
+    case 'prev':
+      return moveCursor(-1);
+    case 'open': {
+      const id = cur?.id ?? b?.buckets?.needs_you?.[0]?.id ?? b?.buckets?.trouble?.[0]?.id ?? b?.buckets?.unread?.[0]?.id;
+      return id ? openSession(id) : false;
+    }
+    case 'peek':
+      if (!cur) return false;
+      toggleDetail(cur.id);
+      return true;
+    case 'pick': {
+      const done = togglePickRow(cur ? rowEl(cur.id) : null);
+      if (!done || !cur) return false;
+      render();
+      const title = titleOf(state.t, view.index.get(cur.id)?.card.title);
+      announce(state.t(done === 'picked' ? 'live.picked' : 'live.unpicked', { title }));
+      return true;
+    }
+    case 'all': {
+      const n = pickAllSuggested();
+      if (!n) return false;
+      render();
+      announce(state.t('live.selectAll', { n: Number(b?.counts?.recommended) || n }));
+      return true;
+    }
+    case 'copy': {
+      // 予備のコピー (textarea・手で写す dialog) のあとにフォーカスを戻す先: 今の部品、無ければカーソルの行の題名
+      const active = document.activeElement;
+      const title = cur ? /** @type {HTMLElement|null} */ (rowEl(cur.id)?.querySelector('[data-action="toggle"]') ?? null) : null;
+      void copyChunk(active instanceof HTMLElement && active !== document.body ? active : title);
+      return true;
+    }
+    case 'filter':
+      filterInput.focus();
+      filterInput.select();
+      return true;
+    case 'help':
+      showHelp($('help-btn'));
+      return true;
+    case 'overview':
+      toggleOverview(true);
+      return true;
+    case 'escape':
+      return escapeChain();
+    default:
+      if (!action.startsWith('jump:')) return false;
+      jumpPile(action.slice(5));
+      return true;
+  }
+}
+
+// ---------- 起動 ----------
+
+function observeSizes() {
+  if (typeof ResizeObserver === 'undefined') return;
+  const root = document.documentElement;
+  const bar = $('selbar');
+  new ResizeObserver(() => root.style.setProperty('--bar-h', `${bar.hidden ? 0 : Math.ceil(bar.getBoundingClientRect().height)}px`)).observe(bar);
+  // 貼り付く見出しの高さ = 見えている見出しのうち一番高いもの。どれも見えていなければ CSS の既定 (3.25rem) に任せ、0 は書かない
+  const heads = /** @type {HTMLElement[]} */ ([...document.querySelectorAll('.pile__head')]);
+  const measure = () => {
+    const tallest = Math.max(0, ...heads.map((el) => (el.getClientRects().length ? Math.ceil(el.getBoundingClientRect().height) : 0)));
+    if (tallest > 0) root.style.setProperty('--head-h', `${tallest}px`);
+    else root.style.removeProperty('--head-h');
+  };
+  const ro = new ResizeObserver(measure);
+  for (const el of heads) ro.observe(el);
+}
+
+/** @type {ReturnType<typeof setTimeout>|null} */
+let filterTimer = null;
+
+/** 打ち終えたら一致数を読み上げる (打つたびには読まない)。 */
+function announceFilter() {
+  const v = view.visible;
+  const q = state.filter.trim();
+  if (!v?.filtering || !q) return;
+  announce(v.total === 0 ? state.t('nomatch.query.lead', { q }) : state.t('banner.filter', { q, n: v.total }));
+}
+
+/** 毎分ちょうど (分が変わったところ) に時刻の文言を書き直す。 */
+function tick() {
+  renderTimes();
+  setTimeout(tick, MIN - (Date.now() % MIN) + 50);
+}
+
+function init() {
+  const theme = new URLSearchParams(location.search).get('theme');
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  loadPrefs();
+  fill(/** @type {HTMLElement} */ ($('r-cleanup').firstElementChild), ...cleanupBodyParts());
+  setLang(detectLang({ search: location.search, saved: state.prefs.lang, languages: navigator.languages ?? [navigator.language] }));
+  document.documentElement.lang = state.t.lang;
+  applyStaticText();
+  document.addEventListener('click', onClick);
+  document.addEventListener('change', (ev) => {
+    if (ev.target instanceof HTMLInputElement && applyPick(ev.target, view.visible)) render();
+  });
+  filterInput.addEventListener('input', () => {
+    state.filter = filterInput.value;
+    render();
+    if (filterTimer) clearTimeout(filterTimer);
+    filterTimer = setTimeout(announceFilter, FILTER_ANNOUNCE_MS);
+  });
+  const ov = $('overview');
+  ov.addEventListener('keydown', (ev) => {
+    if (!overviewKeydown(ov, ev, { onActivate: jumpTo, onClose: () => toggleOverview(true), keysOn: state.prefs.keys !== false })) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  bindKeys(() => state.prefs.keys !== false, runKey);
+  // Tab で行の題名 (片付けの行ならチェックボックスも) に来たら、そこをカーソルにする (Enter / Space / x がその行に効くように)
+  document.addEventListener('focusin', (ev) => {
+    const el = ev.target instanceof Element ? ev.target.closest('.row__title, .trow__title, .trow .check input') : null;
+    const row = /** @type {HTMLElement|null} */ (el?.closest('[data-id]') ?? null);
+    if (row && state.cursor?.id !== row.dataset.id) setCursorRow(row);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) schedule();
+    else void poll();
+  });
+  observeSizes();
+  render();
+  void poll();
+  setTimeout(tick, MIN - (Date.now() % MIN) + 50);
+}
+
+init();

@@ -1,0 +1,114 @@
+name: Bug report
+description: Something on the board is wrong, missing or does not start.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Do not paste session titles, session IDs, folder paths or transcript text.** Describe sessions in general terms instead ("a session waiting for a plan approval shows under Working").
+        If you can, check whether the problem also happens with `--demo` (synthetic data).
+        For a security problem, use private vulnerability reporting instead (see SECURITY.md).
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows (standard installer)
+        - Windows (Microsoft Store)
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: "Windows 11 24H2 / macOS 15.5 / Ubuntu 24.04"
+    validations:
+      required: false
+
+  - type: input
+    id: app-version
+    attributes:
+      label: Claude desktop app version
+      description: Usually shown in the app's About dialog or settings.
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: Output of `node --version`.
+      placeholder: v22.11.0
+    validations:
+      required: true
+
+  - type: input
+    id: pigeonholes-version
+    attributes:
+      label: Pigeonholes version
+      description: Output of `npx pigeonholes --version`, or the commit if you run from a clone.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: start
+    attributes:
+      label: How you start it
+      options:
+        - npx pigeonholes
+        - npm start (from a clone)
+        - node src/entry/server.mjs (from a clone)
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: demo
+    attributes:
+      label: Does it also happen with --demo?
+      options:
+        - "Yes"
+        - "No"
+        - Not tried
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you saw, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: footer
+    attributes:
+      label: Footer and notices
+      description: |
+        Copy the warnings in the page footer, including the lines under "Reading status" (they hold counts only), and any notice at the top of the page.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: terminal
+    attributes:
+      label: Terminal output
+      description: The lines the terminal printed. Remove any folder paths that contain your user name.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: This report contains no session titles, session IDs, folder paths or transcript text.
+          required: true
