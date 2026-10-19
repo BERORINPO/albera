@@ -61,10 +61,46 @@ export const PREVIEW = Object.freeze({ unread: 8, working: 8, recentGroup: 5 });
 export const PAGE_SIZE = 20;
 export const MAX_PRS = 10;
 export const MAX_PR_BADGES = 2;
-export const OVERVIEW_SHELF_MAX = 60;
 export const UI_STORAGE_KEY = 'pigeonholes:v1:ui';
 export const DEEP_LINK_PREFIX = 'claude://claude.ai/epitaxy/';
 export const GITHUB_URL_RE = /^https:\/\/github\.com\//;
+export const COMPACT_SHOW_MS = 1 * HOUR; // 「要約済み」を行に出す時間
+// 引き継ぎ (spec/ui.md §9): ボタンを出すのは動きが 24 時間以内、コピーの記録は 24 時間、+5 ポイントで出し直す
+export const HANDOFF = Object.freeze({ ROW_MS: 24 * HOUR, COPIED_MS: 24 * HOUR, REARM_PCT: 5 });
+// キャンバス (spec/ui.md §10)。大きさは world の単位 (100% の CSS px)。PAD・HEAD_ROOM・PAN_STEP・DRAG_SLOP・REVEAL_MARGIN・NARROW_PX は画面の px
+// SLIP_W: 62% で 16px の題名が 2 行に収まる幅。BACK_HEAD: 用紙の帯 (「最近 N」「片付け N」の 1 行だけ)。FOLD_ROW: 片付けだけのプロジェクトの 1 行。
+// GAP_Y: 用紙の上の柱が入る間 (遠くの 1 行の柱は 20% まで収まる)
+export const CANVAS = Object.freeze({
+  SLIP_W: 432,
+  SLIP_H: 176,
+  SLIP_H_MIN: 96,
+  SLIP_H_MAX: 320,
+  BACK_HEAD: 44,
+  FOLD_ROW: 40,
+  FOOT_H: 8,
+  GAP_X: 96,
+  GAP_Y: 120,
+  COLS_MIN: 1,
+  COLS_MAX: 6,
+  Z_MIN: 0.15,
+  Z_MAX: 1.5,
+  Z_STEPS: Object.freeze([0.15, 0.2, 0.3, 0.45, 0.62, 0.8, 1, 1.25, 1.5]),
+  Z_OPEN: 0.62,
+  LEVEL_MID: 0.6,
+  LEVEL_NEAR: 1,
+  PAD_WIDE: 40,
+  PAD_NARROW: 12,
+  HEAD_ROOM: 56,
+  PAN_STEP: 80,
+  PAN_STEP_BIG: 400,
+  NUDGE: 32,
+  SNAP: 8,
+  DRAG_SLOP: 4,
+  REVEAL_MARGIN: 24,
+  NARROW_PX: 640,
+  SEAT_KEEP_MS: 7 * DAY,
+});
+export const CANVAS_STORAGE_KEY = 'pigeonholes:v1:canvas'; // キャンバスの席 (画面の localStorage だけ)
 
 // --- 文字数の上限 (code point 単位。切ったら末尾に「…」) ---
 export const CAP = Object.freeze({
@@ -75,6 +111,9 @@ export const CAP = Object.freeze({
   ERROR_SNIPPET: 80,
   RESET_SNIPPET: 40,
   RAW: 4000, // adapter が保持する生テキストの上限 (メモリ保護)
+  MODEL: 80, // SessionRecord.model (窓を決めるためだけ。JSON には出さない)
+  ACT_TARGET: 32, // Card.activity.target (basename・commandHead・ホスト・コネクタ名)
+  ACT_TEXT: 40, // Card.activity.note / step (Claude 自身の短い言葉、cleanText 済み)
 });
 export const FAMILY_MAX_DEPTH = 10;
 export const PROJECT_PARENT_MAX_DEPTH = 5;
@@ -129,3 +168,47 @@ export const FORBIDDEN_OUTPUT_KEYS = Object.freeze([
   'permissionMode',
   'folders',
 ]);
+// /api/board の JSON にだけ無いこと (model と contextExceededCount は SessionRecord にはある)。
+// 'state' はここに入れない: prs[] の要素の中 (Card.prs[i].state・reasonParams.prs[i].state) だけ許す (テストが木を歩いて調べる)
+export const FORBIDDEN_WIRE_KEYS = Object.freeze([
+  'model',
+  'command',
+  'input',
+  'file_path',
+  'notebook_path',
+  'description',
+  'usage',
+  'compactMetadata',
+  'todos',
+  'contextExceededCount',
+]);
+
+// --- v0.2: していること・コンテキスト (spec/board.md §5.1・§5.2)。言葉は持たない (doing.* / ctx.* は画面の辞書) ---
+export const ACTIVITY_KINDS = Object.freeze([
+  'edit', 'write', 'read', 'search', 'run', 'test', 'git', 'web', 'browser', 'connector', 'agents', 'plan', 'wrap_up', 'think', 'tool',
+]);
+// commandHead が 2・3 つ目の単語を残すプログラム (それ以外はプログラム名だけ)
+export const COMMAND_RUNNERS = Object.freeze([
+  'npm', 'pnpm', 'yarn', 'bun', 'npx', 'node', 'deno', 'python', 'py', 'uv', 'pip', 'pytest', 'cargo', 'go', 'git', 'gh', 'make', 'dotnet', 'docker', 'mvn', 'gradle',
+]);
+export const CONTEXT = Object.freeze({
+  WINDOW_BASE: 200_000,
+  WINDOW_LARGE: 1_000_000,
+  PROOF_USED: 200_000, // maxUsed がこれを超えたら 1M (200K の窓では起きない)
+  PROOF_PRE: 210_000, // 自動要約の preTokens がこれを超えたら 1M、以下なら 200K
+  COMPACT_AT_BASE: 167_000, // 200K の自動要約点。推定 (spec/board.md §15)
+  COMPACT_AT_LARGE: 967_000,
+  LEARN_MIN: 100_000, // autoPre を要約点として使う下限
+  // 段階は自動要約点に対する割合 f で決める。上がるときは enter、下がるときは enter − BAND まで同じ段階にとどまる
+  LEVELS: Object.freeze([
+    Object.freeze({ key: 'notice', enter: 0.6 }),
+    Object.freeze({ key: 'due', enter: 0.83 }),
+    Object.freeze({ key: 'soon', enter: 0.93 }),
+  ]),
+  BAND: 0.05,
+  RESET_DROP: 0.3, // used が前回からこれより大きく減ったら前回の段階を持ち越さない
+});
+// 1M が標準の系列。2026-10-18 に docs の model-config で確認: Fable、Sonnet 5 以降、Haiku 5.5 以降、Opus 4.7 以降。
+// [1m] を除いて小文字にした model (modelBase) に使う。系列が増えたら日付つきのコメントと一緒に直す
+export const ONE_M_MODEL_RE = /(?:^|[./:])claude-(?:fable|sonnet-(?:[5-9]|[1-9]\d)|haiku-(?:5-(?:[5-9]|[1-9]\d)|[6-9]|[1-9]\d)|opus-(?:4-(?:[7-9]|[1-9]\d)|[5-9]|[1-9]\d))(?![0-9])/;
+export const FACTS_CACHE_MAX = 2000; // entry が持つ tail 解析結果 (TailFacts) の memo の件数上限 (古いものから捨てる)

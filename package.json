@@ -1,6 +1,6 @@
 {
   "name": "pigeonholes",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Unofficial, read-only local board for your Claude Code sessions in the Claude desktop app: what needs you, what's stuck, what to clean up.",
   "type": "module",
   "bin": {

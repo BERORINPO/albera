@@ -52,12 +52,13 @@ function hasToolResult(content) {
 }
 
 /**
- * user 行を 1 つ判定する。決まらない (読み飛ばす) ときは null。
+ * user 行を 1 つ判定する。決まらない (読み飛ばす) ときは null。後ろから順に呼ぶこと (st がローカルコマンド行を覚える)。
+ * activity.mjs も同じ読み飛ばし規則で今のターンを決めるために使う。
  * @param {any} entry
  * @param {{skipCmd: boolean}} st
  * @returns {Omit<TurnResult, 'relevant'>|null}
  */
-function judgeUser(entry, st) {
+export function judgeUser(entry, st) {
   if (entry.isMeta === true) return null;
   const content = entry.message?.content;
   if (hasToolResult(content)) return { turn: 'inprogress', lastKind: 'tool' };
@@ -156,7 +157,15 @@ export function turnStartedAt(entries) {
  * @returns {TurnResult}
  */
 export function parseTurn(tailText, truncatedHead) {
-  const entries = turnEntries(tailText, truncatedHead);
+  return parseTurnEntries(turnEntries(tailText, truncatedHead));
+}
+
+/**
+ * parseTurn の本体。turnEntries の結果を受ける (tail を 1 回だけ parse して activity・context と共有するため。§5.3)。
+ * @param {any[]} entries
+ * @returns {TurnResult}
+ */
+export function parseTurnEntries(entries) {
   const relevant = entries.length;
   const st = { skipCmd: false };
   for (let i = entries.length - 1; i >= 0; i--) {

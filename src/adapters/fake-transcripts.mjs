@@ -1,10 +1,12 @@
 // @ts-check
 // adapter (Fake): transcripts-fs.mjs と同じ形を、メモリ上の合成データから返す。
+// subLive (いま書かれている subagent の数) が無い合成データは 0 にそろえる (fs 版は必ず数を返すため)。
 
 /** @typedef {import('../shared/types.mjs').TranscriptInput} TranscriptInput */
+/** @typedef {Omit<TranscriptInput, 'subLive'> & {subLive?: number}} FakeTranscript */
 
 /**
- * @param {Map<string, TranscriptInput>|Record<string, TranscriptInput>} entries cliSessionId がキー
+ * @param {Map<string, FakeTranscript>|Record<string, FakeTranscript>} entries cliSessionId がキー
  * @param {{dirMissing?: boolean}=} opts
  */
 export function createFakeTranscriptsSource(entries, { dirMissing = false } = {}) {
@@ -16,7 +18,7 @@ export function createFakeTranscriptsSource(entries, { dirMissing = false } = {}
       const out = new Map();
       for (const id of cliSessionIds) {
         const e = map.get(id);
-        if (e) out.set(id, { ...e });
+        if (e) out.set(id, { ...e, subLive: e.subLive ?? 0 });
       }
       return out;
     },

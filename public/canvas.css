@@ -1,0 +1,391 @@
+/* Hallmark · genre: editorial · theme: custom "Columnar pad" (tuned) · app screen, no macrostructure
+ * vibe: accounting pad, blue pencil in the margin, quiet when done
+ * paper oklch(97.3% 0.009 190) · accent oklch(47% 0.150 264) blue pencil · display: book serif + mincho · body: DIN + UD gothic
+ * axes: light paper / roman-serif display / cool accent · one accent family, no state hues
+ * pre-emit critique: P4 H4 E4 S4 R4 V4
+ */
+
+/* canvas.css: the canvas view (page grid, front strip, viewport, sheets, running heads, slips, the band line, the "only to archive" list, tick, levels, the bar) and the pile marks */
+
+/* The camera's translate is not inherited, so panning restyles the world element only (the sheets keep their computed style) */
+@property --tx { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --ty { syntax: "<length>"; inherits: false; initial-value: 0px; }
+
+/* ---------- Pile marks: a 10px glyph, read in greyscale by shape. Only Needs you is coloured ---------- */
+.mark { display: inline-block; flex: none; width: 10px; height: 10px; }
+.mark--needs_you { background: var(--color-accent); }
+.mark--trouble { background: var(--color-ink); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.mark--unread { background: var(--color-ink); border-radius: 50%; }
+.mark--working { border: 1.5px solid var(--color-ink-2); border-radius: 50%; }
+.mark--recent { height: 2px; background: var(--color-muted); }
+.mark--faded { border: 1.5px solid var(--color-muted); }
+.marks-key { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-md); color: var(--color-ink-2); font-size: var(--text-sm); }
+.marks-key > span { display: inline-flex; align-items: center; gap: 0.4em; white-space: nowrap; }
+
+/* ---------- Page grid: masthead, banners, front strip, viewport, bar. The page never scrolls ---------- */
+.canvas { --z: 1; --k: 1; display: grid; grid-template-rows: minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); min-height: 0; }
+.board[data-view="canvas"] {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  max-width: none;
+  height: 100vh;
+  height: 100dvh;
+  padding: 0;
+  overflow: hidden;
+}
+html:has(.board[data-view="canvas"]), html:has(.board[data-view="canvas"]) > body { overflow: hidden; }
+.board[data-view="canvas"] > .masthead, .board[data-view="canvas"] > #banners { padding-inline: var(--gutter); }
+/* below 40rem the front strip has no room under the masthead's rule: the demo label is the bar's first item instead */
+@media (max-width: 39.99rem) { .board[data-view="canvas"] .masthead__demo { display: none; } }
+.cbar__demo { display: none; color: var(--color-ink); font-weight: 700; white-space: nowrap; }
+@media (max-width: 39.99rem) { .cbar[data-state="default"] .cbar__demo { display: block; } }
+
+/* ---------- Front strip: the list's front in one row (wraps below) ---------- */
+.board[data-view="canvas"] .front {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2xs) var(--space-lg);
+  padding: var(--space-xs) var(--gutter);
+  border-bottom: var(--rule-ink);
+}
+.board[data-view="canvas"] .lede { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-md); flex: 1 1 18rem; min-width: 0; padding: 0; }
+/* the strip's sentence: 2 lines at most, and it never loses its frame words (design.md §4): front.mjs shortens the quoted title until it fits */
+.board[data-view="canvas"] .lede__title { display: block; flex: 1 1 100%; min-width: 0; font-size: var(--text-md); -webkit-line-clamp: 2; }
+.board[data-view="canvas"] .lede__since { margin: 0; font-size: var(--text-sm); white-space: nowrap; }
+.board[data-view="canvas"] .lede__q { display: none; }
+.board[data-view="canvas"] .lede__act { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-md); margin: 0; }
+.board[data-view="canvas"] .lede__more { flex: 0 1 auto; }
+.board[data-view="canvas"] .front__index { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-md); padding: 0; }
+.board[data-view="canvas"] .index ol { display: flex; flex-wrap: wrap; gap: 0 var(--space-md); border: 0; }
+.board[data-view="canvas"] .index li + li a { border-top: 0; }
+.board[data-view="canvas"] .index a { gap: 0.3em; min-height: 2.75rem; padding: 0; font-size: var(--text-sm); }
+.board[data-view="canvas"] .index .dots, .board[data-view="canvas"] .index__total { display: none; }
+.board[data-view="canvas"] .front__acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-lg); margin: 0; }
+/* the due count comes before List, and shows once: in the bar from 40rem, in the front strip below it (the bar is the zoom group there) */
+.board[data-view="canvas"] #due-next { order: -1; }
+@media (min-width: 40rem) { .board[data-view="canvas"] #due-next { display: none; } }
+@media (max-width: 59.99rem) { .board[data-view="canvas"] .index { display: none; } }
+/* narrow: the title takes the whole first row; the time, Open and the switches share the row under it when they fit (the lede box steps aside) */
+@media (max-width: 39.99rem) {
+  .board[data-view="canvas"] .lede__more { display: none; }
+  .board[data-view="canvas"] .lede { display: contents; }
+  .board[data-view="canvas"] .front { column-gap: var(--space-md); }
+  .board[data-view="canvas"] .front__index { margin-inline-start: auto; }
+}
+
+/* ---------- The viewport (the desk) and the world (one transform) ---------- */
+.canvas__viewport {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--cv-desk);
+  touch-action: none;
+  cursor: grab;
+  outline-offset: -3px;
+}
+.canvas__viewport.is-panning { cursor: grabbing; }
+/* the focus ring is drawn on an overlay: the world's positioned content would paint over the viewport's own outline */
+.canvas__viewport:focus-visible { outline: none; }
+.canvas__viewport:focus-visible::after { content: ""; position: absolute; inset: 0; z-index: 1; outline: 2px solid var(--color-focus); outline-offset: -3px; pointer-events: none; }
+.canvas__world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  transform: translate(var(--tx), var(--ty)) scale(var(--z));
+}
+
+/* ---------- A project sheet: a flat page of the pad. Its edge is told by rules, not by the fill ---------- */
+.sheet {
+  position: absolute;
+  left: calc(var(--x) * 1px);
+  top: calc(var(--y) * 1px);
+  width: calc(var(--w) * 1px);
+  height: calc(var(--h) * 1px);
+  background: var(--cv-sheet);
+  border-top: calc(1px * var(--k)) solid var(--color-ink);
+  border-bottom: calc(3px * var(--k)) double var(--color-ink);
+}
+.sheet.is-quiet { border-top-color: var(--color-ink-2); }
+/* the pinned head has reached the sheet's foot: the sheet leaves at once (no half head, no sliver of the double rule at the viewport top) */
+.sheet.is-leaving { clip-path: inset(50%); }
+.sheet.is-dragging { outline: calc(2px * var(--k)) solid var(--color-ink); }
+.sheet.is-nomatch .sheet__slips, .sheet.is-nomatch .sheet__cols { visibility: hidden; }
+
+/* The running head sits above its sheet and keeps its screen size; pinned to the viewport top while the sheet's top rule is above it */
+/* (the box sits above the sheet's top rule, so its desk fill at far never covers it; its --y pins it down to the viewport top; the head's --x keeps the name inside the viewport when the sheet's left is off it) */
+.sheet__headbox { position: absolute; left: 0; bottom: calc(100% + 2px * var(--k)); min-width: 0; max-width: max(100%, calc(18rem * var(--k))); transform: translateY(calc(var(--y) * 1px)); }
+.sheet__headbox > .sheet__h { transform: translateX(calc(var(--x) * 1px)); }
+/* a pinned head is the sheet's top edge held at the viewport top: desk behind the name, and the sheet's own top rule under it, the sheet's width */
+/* (1 rule width wider on each side: the scaled sheet edge under it would show as a 1px light line) */
+.sheet__headbox.is-pinned { z-index: var(--z-sticky); left: calc(-1px * var(--k)); width: calc(100% + 2px * var(--k)); max-width: none; padding-top: calc(4px * var(--k)); border-bottom: calc(1px * var(--k)) solid var(--color-ink); background: var(--cv-desk); }
+.sheet.is-quiet > .sheet__headbox.is-pinned { border-bottom-color: var(--color-ink-2); }
+.sheet__h { font: inherit; }
+.sheet__head {
+  display: grid;
+  justify-items: start;
+  gap: calc(2px * var(--k));
+  width: max-content;
+  max-width: 100%;
+  margin: 0;
+  padding: 0 0 calc(6px * var(--k));
+  border: 0;
+  background: none;
+  color: var(--color-ink);
+  font: inherit;
+  text-align: start;
+  cursor: grab;
+}
+.sheet__head:focus-visible { outline-width: calc(2px * var(--k)); outline-offset: calc(2px * var(--k)); }
+.sheet__name { font-family: var(--font-display); font-weight: 600; font-size: calc(var(--text-md) * var(--k)); line-height: 1.25; overflow-wrap: anywhere; }
+.sheet__name.is-other { color: var(--color-muted); }
+.sheet__counts { display: flex; flex-wrap: wrap; column-gap: calc(var(--space-sm) * var(--k)); color: var(--color-ink-2); font-size: calc(var(--text-sm) * var(--k)); line-height: 1.4; font-variant-numeric: tabular-nums; }
+.sheet__counts .is-act { color: var(--color-ink); font-weight: 700; }
+.sheet__far { display: none; align-items: center; gap: calc(6px * var(--k)); color: var(--color-ink); font-weight: 700; font-size: calc(var(--text-sm) * var(--k)); line-height: 1.4; font-variant-numeric: tabular-nums; }
+
+/* Column rules: the vertical hairlines of a columnar pad, the full height of the live area */
+.sheet__cols { position: absolute; inset: 0; pointer-events: none; }
+.sheet__col { position: absolute; top: 0; left: calc(var(--x) * 1px); height: calc(var(--h) * 1px); border-left: calc(1px * var(--k)) solid var(--color-rule); }
+
+/* ---------- A slip: a ruled entry in a column, never a box ---------- */
+.sheet__slips { position: absolute; left: 0; top: 0; width: 100%; height: calc(var(--h) * 1px); margin: 0; padding: 0; content-visibility: auto; }
+.slip {
+  position: absolute;
+  left: calc(var(--x) * 1px);
+  top: calc(var(--y) * 1px);
+  width: calc(var(--w) * 1px);
+  height: calc(var(--h) * 1px);
+  display: grid;
+  grid-template-columns: calc(16px * var(--k)) minmax(0, 1fr);
+  grid-auto-rows: min-content;
+  align-content: start;
+  column-gap: calc(4px * var(--k));
+  padding: 12px 12px 0 10px;
+  border-top: calc(1px * var(--k)) solid var(--color-rule);
+  overflow: hidden;
+}
+.slip.is-top { border-top-color: transparent; }
+/* the cursor: the band and an ink bar on the inline-start edge (the band alone is 1.08:1 on the sheet; the bar is the state's mark, WCAG 1.4.11) */
+.slip.is-cursor { background: var(--cv-cursor); }
+.slip.is-cursor::before { content: ""; position: absolute; inset-block: 0; inset-inline-start: 0; width: calc(3px * var(--k)); background: var(--color-ink); pointer-events: none; }
+.slip__mark { grid-column: 1; grid-row: 1; display: grid; place-items: center; height: calc(var(--text-base) * 1.3 * var(--k)); }
+.slip .mark { width: calc(10px * var(--k)); height: calc(10px * var(--k)); }
+.slip .mark--working, .slip .mark--faded { border-width: calc(1.5px * var(--k)); }
+.slip .mark--recent { height: calc(2px * var(--k)); }
+.slip__title {
+  grid-column: 2;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: calc(var(--text-base) * var(--k));
+  line-height: 1.3;
+  font-weight: 400;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.slip__title:focus-visible { outline-width: calc(2px * var(--k)); outline-offset: calc(2px * var(--k)); }
+.slip--needs_you .slip__title, .slip--trouble .slip__title, .slip--unread .slip__title { font-weight: 700; }
+@media (hover: hover) { .slip__title:hover { text-decoration: underline; text-decoration-color: var(--color-rule-strong); text-underline-offset: 0.2em; } }
+.slip__line { grid-column: 2; margin-top: calc(3px * var(--k)); min-width: 0; color: var(--color-ink-2); font-size: calc(var(--text-sm) * var(--k)); line-height: 1.45; }
+.slip__where { display: flex; flex-wrap: wrap; column-gap: calc(var(--space-xs) * var(--k)); color: var(--color-muted); overflow-wrap: anywhere; }
+.slip__parent { min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.slip__where code, .slip__doing code { font-size: 1em; unicode-bidi: isolate; }
+.slip__doing { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.slip__doing.is-one, .slip__doing--short, .slip--working .slip__doing { -webkit-line-clamp: 1; }
+.slip__doing q { color: var(--color-ink); }
+.slip__doing.is-quiet { color: var(--color-muted); }
+.slip__doing .doing__step { margin-inline-end: calc(var(--space-xs) * var(--k)); }
+/* the foot and the actions are one line each (the row heights are measured once, canvas-fit.mjs: a minute tick never adds a line); the context word is cut first */
+.slip__foot, .slip__acts { display: flex; flex-wrap: nowrap; align-items: center; column-gap: calc(var(--space-xs) * var(--k)); white-space: nowrap; }
+.slip__time { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.slip__foot .ctx, .slip__acts .ctx { display: inline-flex; align-items: baseline; column-gap: 0.3em; min-width: 0; overflow: hidden; }
+.slip__foot .ctx__w { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.slip__foot .ctx__m, .slip__foot .ctx__lv { flex: none; }
+.slip.is-next .slip__time { color: var(--color-accent); font-weight: 700; }
+.slip__foot .ctx { font-variant-numeric: tabular-nums; }
+/* the context words show from the notice level up (the tick and number are in the title's name anyway); a quiet "~38%" on every slip is noise */
+.slip .ctx.is-low { display: none; }
+.ctx__w, .ctx__m, .ctx__lv { white-space: nowrap; }
+.slip__acts { column-gap: calc(var(--space-md) * var(--k)); }
+.slip__acts .textbtn { padding: 0; font-size: 1em; }
+.slip__acts .textbtn::before { inset: calc(-0.7rem * var(--k)) calc(-0.3rem * var(--k)); }
+.slip__acts .ctx { color: var(--color-muted); }
+.slip__open { position: relative; color: var(--color-ink-2); text-decoration: none; white-space: nowrap; }
+.slip__open::before { content: ""; position: absolute; inset: calc(-0.7rem * var(--k)) calc(-0.3rem * var(--k)); }
+.slip__open:active { transform: translateY(1px); }
+.slip__open[aria-disabled="true"] { color: var(--color-muted); cursor: not-allowed; }
+.slip.is-next .slip__open { color: var(--color-accent); font-weight: 700; }
+@media (hover: hover) { .slip__open:not([aria-disabled="true"]):hover { color: var(--color-ink); text-decoration: underline; text-underline-offset: 0.2em; } }
+/* faded: a To-archive member kept in the live area for a live family. Filtered out: muted text, and the mark keeps its pile's shape in muted
+   (dimming changes colour only, never shape: a hollow square or ring would read as another pile) */
+.slip.is-faded .slip__title, .slip.is-faded .slip__line, .slip.is-dim .slip__title, .slip.is-dim .slip__line, .slip.is-dim q, .slip.is-dim .ctx { color: var(--color-muted); font-weight: 400; }
+.slip.is-dim .mark--needs_you, .slip.is-dim .mark--unread, .slip.is-dim .mark--trouble, .slip.is-dim .mark--recent { background: var(--color-muted); }
+.slip.is-dim .mark--working, .slip.is-dim .mark--faded { border-color: var(--color-muted); }
+.slip.is-dim .slip__open, .slip.is-dim .slip__time { color: var(--color-muted); font-weight: 400; }
+/* Arrival: the one-shot paper-3 wash (the arrive primitive, rows.css @keyframes arrive) */
+.slip.is-new::after { content: ""; position: absolute; inset: 0; background: var(--color-paper-3); pointer-events: none; animation: arrive var(--dur-arrive) var(--ease-out) forwards; }
+
+/* The context tick (canvas only): one 2px mark on a short ruler, then the number. Never a fill, never the accent */
+.cvtick {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: calc(28px * var(--k));
+  height: calc(7px * var(--k));
+  margin-inline-end: calc(5px * var(--k));
+  vertical-align: -0.05em;
+  border: calc(1px * var(--k)) solid var(--color-rule-strong);
+  border-top: 0;
+}
+.cvtick::after { content: ""; position: absolute; bottom: 0; left: calc(var(--p) * 1%); width: calc(2px * var(--k)); height: calc(11px * var(--k)); margin-left: calc(-1px * var(--k)); background: var(--color-ink-2); }
+.ctx.is-strong .cvtick::after { height: calc(14px * var(--k)); background: var(--color-ink); }
+
+/* ---------- The band line: "Recent N  To archive N", one line at every count (those sessions are not slips; the list has them) ---------- */
+.sheet__back { position: absolute; left: 0; right: 0; top: calc(var(--y) * 1px); height: calc(var(--h) * 1px); display: flex; align-items: center; column-gap: calc(var(--space-md) * var(--k)); padding-inline: 6px; border-top: calc(1px * var(--k)) solid var(--color-rule-strong); }
+/* a sheet with no slips: the band sits right under the sheet's top rule, so it draws no second rule */
+.sheet__back.is-alone { border-top-color: transparent; }
+.textbtn.sheet__backhead { position: relative; height: 100%; padding: 0 calc(4px * var(--k)); color: var(--color-ink-2); font-size: calc(var(--text-sm) * var(--k)); white-space: nowrap; }
+.textbtn.sheet__backhead::before { inset: calc(-0.4rem * var(--k)) calc(-0.25rem * var(--k)); }
+
+/* ---------- Only to archive: projects with nothing live, one line each, after the last sheet (a quiet sheet with no slips) ---------- */
+.fold {
+  position: absolute;
+  left: calc(var(--x) * 1px);
+  top: calc(var(--y) * 1px);
+  width: calc(var(--w) * 1px);
+  height: calc(var(--h) * 1px);
+  background: var(--cv-sheet);
+  border-top: calc(1px * var(--k)) solid var(--color-ink-2);
+  border-bottom: calc(3px * var(--k)) double var(--color-ink);
+}
+.fold__h { position: absolute; left: 0; bottom: calc(100% + 2px * var(--k)); max-width: max(100%, calc(18rem * var(--k))); margin: 0; font: inherit; transform: translateY(calc(var(--y) * 1px)); }
+.fold__h > .fold__head { transform: translateX(calc(var(--x) * 1px)); }
+/* pinned and leaving as a sheet's head (canvas.mjs applyCamera): no cut line of the list at the viewport top */
+.fold__h.is-pinned { z-index: var(--z-sticky); left: calc(-1px * var(--k)); width: calc(100% + 2px * var(--k)); max-width: none; padding-top: calc(4px * var(--k)); border-bottom: calc(1px * var(--k)) solid var(--color-ink-2); background: var(--cv-desk); }
+.fold.is-leaving { clip-path: inset(50%); }
+.fold__head { display: grid; justify-items: start; gap: calc(2px * var(--k)); width: max-content; max-width: 100%; margin: 0; padding: 0 0 calc(6px * var(--k)); border: 0; background: none; color: var(--color-ink); font: inherit; text-align: start; cursor: pointer; }
+.fold__head:focus-visible { outline-width: calc(2px * var(--k)); outline-offset: calc(2px * var(--k)); }
+.fold__title { color: var(--color-muted); font-family: var(--font-display); font-weight: 600; font-size: calc(var(--text-md) * var(--k)); line-height: 1.25; }
+.fold__sum { display: flex; flex-wrap: wrap; column-gap: calc(var(--space-sm) * var(--k)); color: var(--color-ink-2); font-size: calc(var(--text-sm) * var(--k)); line-height: 1.4; font-variant-numeric: tabular-nums; }
+@media (hover: hover) { .fold__head:hover .fold__title { text-decoration: underline; text-decoration-color: var(--color-rule-strong); text-underline-offset: 0.2em; } }
+.fold__list { margin: 0; padding: 0; list-style: none; }
+.fold__row { display: flex; align-items: center; justify-content: space-between; gap: calc(var(--space-sm) * var(--k)); height: calc(var(--rh) * 1px); padding: 0 12px 0 10px; border-top: calc(1px * var(--k)) solid var(--color-rule); color: var(--color-ink-2); font-size: calc(var(--text-sm) * var(--k)); line-height: 1.3; }
+.fold__row:first-child { border-top-color: transparent; }
+.fold__pname { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.fold__n { flex: none; font-variant-numeric: tabular-nums; }
+
+/* The measuring box (canvas-fit.mjs): slips laid out at the near and mid text sizes to size their rows. Never seen, never in the tree.
+   Stuck? keeps 2 lines for its long line (its "as of" words grow with time; a row never jumps for that); Working's line is one line (canvas.css above) */
+.canvas__measure { position: absolute; top: 0; left: 0; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; contain: strict; }
+.canvas__measure .slip--trouble .slip__doing--long { min-height: 2.9em; }
+
+/* ---------- Zoom levels: far = marks, mid = compact, near = everything. CSS only, nothing is rebuilt ---------- */
+[data-level="far"] .slip { grid-template-columns: minmax(0, 1fr); place-content: center; padding: 0; border-top-color: transparent; }
+[data-level="far"] .slip > .slip__line { display: none; }
+[data-level="far"] .slip__mark { grid-column: 1; height: auto; }
+[data-level="far"] .slip__title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+[data-level="far"] .slip:focus-within { outline: calc(2px * var(--k)) solid var(--color-focus); outline-offset: calc(-2px * var(--k)); }
+[data-level="far"] .sheet__counts, [data-level="far"] .sheet__col, [data-level="far"] .sheet__backhead { display: none; }
+/* far: the band line and the "only to archive" lines show nothing, their rules neither (no ladder of empty hairlines); the running heads carry the counts */
+[data-level="far"] .fold__row > * { visibility: hidden; }
+[data-level="far"] .fold__row, [data-level="far"] .sheet__back { border-top-color: transparent; }
+/* far: a sheet with no slips and the Only to archive block are their heads and top rule only (no empty paper, no empty double rule) */
+[data-level="far"] .sheet.is-empty, [data-level="far"] .fold { background: none; border-bottom-color: transparent; }
+[data-level="far"] .fold { border-top-color: transparent; }
+[data-level="far"] .fold__h { background: var(--cv-desk); }
+[data-level="far"] .fold__title { font-size: calc(var(--text-base) * var(--k)); }
+[data-level="far"] .sheet__far { display: inline-flex; }
+/* far: one line, the name cut first (the count stays): the head is about 23px tall, so it fits the gap above its sheet (GAP_Y 120) down to 20 %
+   and never covers the sheet above. It may run into the gap on its right (56 of the 96 units), never into the next head. The box is clipped to the gap
+   as a backstop. (The Only to archive block is below every sheet, so its head may run wider, on one line) */
+[data-level="far"] .sheet__headbox { max-width: calc(100% + 56px); max-height: 116px; overflow: hidden; background: var(--cv-desk); }
+/* the narrow canvas is one column (no sheet to the right): a far head may use twice the sheet's width, so the project name is not cut to a few letters */
+.is-narrow[data-level="far"] .sheet__headbox { max-width: 200%; }
+[data-level="far"] .sheet__head, [data-level="far"] .fold__head { display: flex; flex-wrap: nowrap; align-items: baseline; column-gap: calc(var(--space-sm) * var(--k)); padding-bottom: calc(2px * var(--k)); }
+/* the name first: the count stays on the line only when it fits next to the name, else it wraps to a second line that is clipped (never a cut name for a count) */
+[data-level="far"] .sheet__head { flex-wrap: wrap; height: calc(var(--text-base) * 1.2 * var(--k) + 2px * var(--k)); overflow: hidden; }
+[data-level="far"] .sheet__name, [data-level="far"] .fold__title { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 1.2; }
+[data-level="far"] .sheet__far, [data-level="far"] .fold__sum { flex: none; white-space: nowrap; }
+[data-level="far"] .sheet__name { font-size: calc(var(--text-base) * var(--k)); }
+[data-level="mid"] .slip__where, [data-level="mid"] .slip__acts, [data-level="mid"] .slip__doing--long, [data-level="mid"] .ctx.is-low, [data-level="mid"] .ctx__lv, [data-level="mid"] .slip .ctx__w { display: none; }
+[data-level="near"] .slip__doing--short { display: none; }
+
+/* ---------- The bar: the view's foot, full width, opaque, never floating ---------- */
+.cbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2xs) var(--space-lg);
+  min-height: 3rem;
+  padding: var(--space-2xs) var(--gutter);
+  border-top: var(--rule-total);
+  background: var(--color-paper);
+  color: var(--color-ink-2);
+  font-size: var(--text-sm);
+  outline-offset: -3px;
+  container-type: inline-size;
+}
+.cbar__legend { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-md); }
+.cbar__legend > span { display: inline-flex; align-items: center; gap: 0.4em; white-space: nowrap; }
+.cbar__hint { display: none; color: var(--color-muted); }
+.cbar__tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-md); margin-inline-start: auto; }
+.cbar__zoom { display: inline-flex; align-items: center; gap: var(--space-2xs); }
+.cbar .textbtn.is-sym { min-width: 1.75rem; justify-content: center; font-size: var(--text-base); text-decoration: none; }
+.cbar__pct { min-width: 3.2em; color: var(--color-ink); text-align: center; font-variant-numeric: tabular-nums; }
+.cbar__due { color: var(--color-ink); font-weight: 700; }
+/* narrower: the legend on its own line at every level (at far only, the bar grew and shrank with the zoom and the viewport with it) */
+@media (max-width: 59.99rem) { .cbar[data-state="default"] .cbar__legend { flex-basis: 100%; order: -1; } }
+@media (min-width: 80rem) { .cbar__hint { display: inline; } }
+/* below 40rem the due count is in the front strip; Fit all and Rearrange stay (the tools wrap), so no control is lost on reflow (WCAG 1.4.10) */
+@media (max-width: 39.99rem) { .cbar[data-state="default"] .cbar__due { display: none; } }
+.cbar[data-state="detail"], .cbar[data-state="handoff"], .cbar[data-state="sheet"] { display: block; max-height: 50vh; max-height: 50dvh; overflow: auto; padding-block: var(--space-sm); }
+.sheetbar__lead { color: var(--color-ink); font-family: var(--font-body); font-weight: 700; font-size: var(--text-base); line-height: 1.45; overflow-wrap: anywhere; }
+.sheetbar__hint { margin-top: var(--space-3xs); color: var(--color-ink-2); }
+.sheetbar__acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-md); margin-top: var(--space-xs); }
+.cbar .detail__in { margin-top: 0; padding-top: 0; border-top: 0; }
+.cbar .handoff { margin-top: 0; padding-top: 0; border-top: 0; max-width: none; }
+.cbar .handoff__text pre { max-width: var(--measure); }
+/* wide bar: the steps as one strip (the cleanup steps' style) and the buttons to the right of the lead, so the guide stays a short bar */
+@media (min-width: 60rem) {
+  .cbar .handoff { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--space-lg); align-items: start; }
+  .cbar .handoff > * { grid-column: 1; }
+  .cbar .handoff > .handoff__acts { grid-column: 2; grid-row: 1 / span 3; margin-top: 0; justify-content: flex-end; }
+  .cbar .handoff .handoff__steps { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-md); }
+  .cbar .handoff .handoff__steps li { white-space: nowrap; }
+}
+@container (max-width: 39.99rem) {
+  .cbar .detail__in dl { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------- Forced colours: marks drawn with backgrounds would vanish, so paint them in system colours ---------- */
+@media (forced-colors: active) {
+  .mark, .cvtick, .cvtick::after { forced-color-adjust: none; }
+  .mark--needs_you { background: Highlight; }
+  .mark--trouble, .mark--unread { background: CanvasText; }
+  .mark--working { border-color: CanvasText; }
+  .mark--recent { background: GrayText; }
+  .mark--faded { border-color: GrayText; }
+  .slip.is-dim .mark--needs_you, .slip.is-dim .mark--unread, .slip.is-dim .mark--trouble { background: GrayText; }
+  .slip.is-dim .mark--working { border-color: GrayText; }
+  .cvtick { border-color: CanvasText; }
+  .cvtick::after { background: CanvasText; }
+  /* the cell rules are forced to 1px CanvasText too: the cursor is a thicker Highlight outline and bar, so it differs from every rule */
+  .slip.is-cursor { outline: calc(2px * var(--k)) solid Highlight; outline-offset: calc(-2px * var(--k)); }
+  .slip.is-cursor::before { forced-color-adjust: none; background: Highlight; }
+}
+
+/* ---------- Reduced motion: no arrival wash (the camera never animates anyway) ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .slip.is-new::after { display: none; }
+}

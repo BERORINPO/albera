@@ -11,11 +11,11 @@
 <link rel="stylesheet" href="/style.css">
 <link rel="stylesheet" href="/rows.css">
 <link rel="stylesheet" href="/tidy.css">
-<link rel="stylesheet" href="/overview.css">
+<link rel="stylesheet" href="/canvas.css">
 <script type="module" src="/app.mjs"></script>
 </head>
 <body>
-<div class="board" id="top">
+<div class="board" id="top" data-view="list">
   <header class="masthead">
     <a class="wordmark" href="#top" aria-label="Pigeonholes, back to top" data-i18n-attr="aria-label:mast.home">
       <svg class="glyph" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="1.5" width="6" height="3.5"/><rect x="8.5" y="1.5" width="6" height="3.5"/><rect x="1.5" y="6.25" width="6" height="3.5"/><rect x="8.5" y="6.25" width="6" height="3.5"/><rect x="1.5" y="11" width="6" height="3.5"/><rect x="8.5" y="11" width="6" height="3.5"/></svg>
@@ -24,7 +24,7 @@
     <span class="masthead__trust" data-i18n="mast.trust">Read-only. Nothing leaves this computer.</span>
     <span class="masthead__date" id="dateline"></span>
     <span class="masthead__demo" id="demo" data-i18n="mast.demo" hidden>Demo data</span>
-    <label class="filter"><span class="vh" data-i18n="filter.label">Filter by title, project or summary</span><input type="search" id="filter" autocomplete="off" spellcheck="false" placeholder="Filter" data-i18n-attr="placeholder:filter.placeholder"><kbd class="hk" aria-hidden="true">/</kbd></label>
+    <label class="filter"><span class="vh" data-i18n="filter.label">Filter by title, project, summary or what it is doing</span><input type="search" id="filter" autocomplete="off" spellcheck="false" placeholder="Filter" data-i18n-attr="placeholder:filter.placeholder"><kbd class="hk" aria-hidden="true">/</kbd></label>
     <button class="textbtn" type="button" id="lang" data-action="lang"></button>
     <button class="textbtn" type="button" id="help-btn" data-action="help" aria-label="Keyboard keys" data-i18n-attr="aria-label:mast.help">?</button>
   </header>
@@ -35,11 +35,12 @@
     <div class="lede" id="lede"></div>
     <div class="front__index">
       <nav class="index" id="ledger" aria-label="Sections"></nav>
-      <button class="textbtn ov-toggle" type="button" id="ov-toggle" data-action="overview" aria-controls="overview" aria-expanded="false" hidden></button>
+      <p class="front__acts">
+        <button class="textbtn" type="button" id="view-toggle" data-action="view-toggle" hidden></button>
+        <button class="textbtn" type="button" id="due-next" data-action="due-next" hidden></button>
+      </p>
     </div>
   </section>
-
-  <section class="overview disclose" id="overview" aria-labelledby="ov-h" inert><div class="disclose__in"></div></section>
 
   <main class="pages" id="pages">
     <div class="page page--now">
@@ -83,14 +84,24 @@
         <p class="pile__verb"></p>
         <div class="pile__body disclose is-open" id="r-cleanup"><div class="disclose__in"></div></div>
       </section>
-      <div class="selbar" id="selbar" role="region" aria-label="Selected sessions" hidden></div>
+      <div class="selbar" id="selbar" role="region" aria-label="Selected sessions" data-i18n-attr="aria-label:sel.aria" hidden></div>
     </div>
   </main>
+
+  <section class="canvas" id="canvas" aria-labelledby="cv-h" hidden>
+    <h2 class="vh" id="cv-h" data-i18n="view.canvas">Canvas</h2>
+    <div class="canvas__viewport" id="cv-view" role="group" tabindex="0" data-level="mid" aria-label="Canvas: sessions by project" data-i18n-attr="aria-label:canvas.aria" aria-describedby="cv-keys"><div class="canvas__world" id="cv-world"></div></div>
+    <div class="cbar" id="cv-bar" role="region"></div>
+    <div class="canvas__measure" id="cv-measure" aria-hidden="true" inert></div>
+  </section>
 
   <footer class="foot" id="foot"></footer>
 </div>
 <p class="vh" id="live" aria-live="polite"></p>
 <p class="vh" id="title-keys" data-i18n="row.keysHint">Enter opens it in the Claude app. Space shows details.</p>
+<p class="vh" id="slip-keys" data-i18n="canvas.slipKeys">Enter opens it in the Claude app. Space shows details. The arrow keys move to the session next to it.</p>
+<p class="vh" id="head-keys" data-i18n="canvas.headKeys">Enter shows buttons that move this sheet. Shift and the arrow keys move it too.</p>
+<p class="vh" id="cv-keys">Arrows pan, + and − zoom, f fits everything.</p>
 <dialog id="help" class="dialog"></dialog>
 <dialog id="fallback" class="dialog"></dialog>
 <noscript><p class="banner">Pigeonholes needs JavaScript.</p></noscript>

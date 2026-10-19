@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseTurn, pendingAsk, turnEntries, turnStartedAt } from '../src/core/turn.mjs';
+import { parseTurn, parseTurnEntries, pendingAsk, turnEntries, turnStartedAt } from '../src/core/turn.mjs';
 import { MIN, NOW, synth } from './helpers/fixtures.mjs';
 
 const join = (/** @type {string[]} */ ...lines) => lines.join('\n') + '\n';
@@ -177,4 +177,19 @@ test('startedAt: 指示の行に timestamp が無い・読めない、または 
 test('startedAt: 返事待ち (asking) には付けない', () => {
   const r = parseTurn(join(synth.prompt('go', NOW - 10 * MIN), synth.ask('q1', 'どれ?')), false);
   assert.deepEqual([r.turn, r.startedAt], ['asking', undefined]);
+});
+
+test('parseTurnEntries: turnEntries の結果を受けて parseTurn と同じ結果 (tail を 1 回だけ parse するため)', () => {
+  const samples = [
+    join(synth.prompt('go'), synth.toolUse(), synth.toolResult(), synth.text('done'), synth.stopHook()),
+    join(synth.prompt('go', NOW - 5 * MIN), synth.toolUse()),
+    join(synth.prompt('go'), synth.ask('q1', 'どれ?')),
+    join(synth.prompt('go'), synth.toolUse(), synth.interrupted()),
+    join(synth.noise()),
+    '',
+  ];
+  for (const tail of samples) {
+    assert.deepEqual(parseTurnEntries(turnEntries(tail, false)), parseTurn(tail, false));
+    assert.deepEqual(parseTurnEntries(turnEntries(tail, true)), parseTurn(tail, true));
+  }
 });

@@ -26,8 +26,6 @@ body {
   text-rendering: optimizeLegibility;
   font-variant-numeric: lining-nums;
 }
-:root[data-theme="dark"] body { font-weight: 350; }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) body { font-weight: 350; } }
 [lang="en"] { --leading-body: 1.5; --leading-display: 1.22; }
 :lang(ja) { word-break: auto-phrase; line-break: strict; }
 h1, h2, h3, p, ol, ul, dl, dd, figure { margin: 0; }
@@ -58,7 +56,6 @@ kbd {
   color: var(--color-ink-2);
   background: transparent;
 }
-
 /* ---------- Controls ---------- */
 .btn {
   display: inline-flex;
@@ -122,7 +119,6 @@ a.textbtn[aria-disabled="true"] { color: var(--color-muted); cursor: not-allowed
 .link { padding: 0; border: 0; background: none; color: inherit; font-size: inherit; text-align: start; cursor: pointer;
   text-decoration: underline; text-decoration-color: var(--color-rule-strong); text-underline-offset: 0.2em; }
 @media (hover: hover) { .link:hover { color: var(--color-ink); text-decoration-color: currentColor; } }
-
 .check { position: relative; display: inline-flex; align-items: flex-start; gap: var(--space-xs); cursor: pointer; }
 .check input, .sub__check {
   flex: none;
@@ -215,11 +211,11 @@ input[type="checkbox"]:disabled { opacity: 0.55; cursor: not-allowed; }
   .wordmark { margin-inline-end: auto; }
   .filter { order: 9; flex: 1 1 100%; max-width: none; margin-inline-start: 0; }
 }
-/* Below 40rem the demo label sits on the masthead's rule like a stamp: it takes no room from the filter and moves no row,
-   so the demo is never mistaken for your own sessions in Claude's side pane either */
+/* Below 40rem the demo label sits just under the masthead's rule, at its end (in the front's top padding, never on the rule): it takes no room
+   from the filter and moves no row, so the demo is never mistaken for your own sessions in Claude's side pane either. The canvas puts it in its bar */
 @media (max-width: 39.99rem) {
   .masthead { position: relative; }
-  .masthead__demo { display: inline; position: absolute; inset-inline-end: 0; bottom: 0; transform: translateY(50%); padding-inline: var(--space-2xs); background: var(--color-paper); line-height: 1.3; }
+  .masthead__demo { display: inline; position: absolute; inset-inline-end: 0; top: calc(100% + var(--space-2xs)); line-height: 1.3; }
 }
 @media (min-width: 40rem) {
   .masthead__date { display: inline; }
@@ -262,7 +258,7 @@ input[type="checkbox"]:disabled { opacity: 0.55; cursor: not-allowed; }
 .lede__q.is-note { font-family: var(--font-body); color: var(--color-ink-2); }
 .lede__act { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-top: var(--space-md); }
 .lede__more { flex: 1 1 12rem; color: var(--color-ink-2); font-size: var(--text-sm); }
-@media (min-width: 40rem) { .lede__q:not(.is-note) { font-size: var(--text-md); } }
+.lede__q:not(.is-note) { display: none; } /* the question, reason or body is said once, by its row right below (the lede names the title and the wait) */
 
 .front__index { min-width: 0; align-self: start; }
 .index { min-width: 0; }
@@ -287,7 +283,7 @@ input[type="checkbox"]:disabled { opacity: 0.55; cursor: not-allowed; }
 .index .is-zero a, .index .is-zero .n { color: var(--color-muted); font-weight: 400; }
 @media (hover: hover) { .index a:hover .label { text-decoration: underline; text-underline-offset: 0.2em; } }
 .index__total { display: none; }
-.ov-toggle { margin-top: var(--space-2xs); margin-inline-start: calc(-1 * var(--space-2xs)); }
+.front__acts { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--space-md); margin-top: var(--space-2xs); margin-inline-start: calc(-1 * var(--space-2xs)); }
 @media (max-width: 39.99rem) { .front { padding-bottom: var(--space-lg); } }
 
 @media (min-width: 60rem) {
@@ -295,8 +291,8 @@ input[type="checkbox"]:disabled { opacity: 0.55; cursor: not-allowed; }
   .front { column-gap: 0; }
   .lede { padding-inline-end: var(--space-lg); }
   .front__index { padding-inline-start: var(--space-lg); }
-  .index ol { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-flow: row; border-top: var(--rule-ink); }
-  .index li + li a { border-top: var(--rule-hair); }
+  .index ol { border-top: var(--rule-ink); } /* 2 columns of 3 under one ink rule, then the total line across both: about as tall as the lede */
+  .index li:not(:nth-child(3n + 1)) a { border-top: var(--rule-hair); }
   .index__total {
     display: flex;
     justify-content: space-between;
@@ -346,14 +342,17 @@ input[type="checkbox"]:disabled { opacity: 0.55; cursor: not-allowed; }
 .banner--filter { color: var(--color-ink); }
 .banner--filter .textbtn { margin-inline-start: var(--space-2xs); }
 
-/* ---------- First run: off the row path (top of the archive page; after Working below 60rem) ---------- */
-#intro { max-width: var(--measure); }
+/* ---------- First run: one line above Recent, off the row path; the legend opens in place (details), so closed it repeats no pile name ---------- */
+#intro { position: relative; max-width: var(--measure); }
 @media (max-width: 59.99rem) { #intro { margin-top: var(--space-xl); } }
-@media (min-width: 60rem) { #intro { margin-bottom: var(--space-xl); } }
+@media (min-width: 60rem) { #intro { margin-bottom: var(--space-lg); } }
+.intro__ok { position: absolute; top: 0; inset-inline-end: calc(-1 * var(--space-2xs)); } /* beside the line, so the open legend gets the full width */
+.intro__sum { list-style: none; margin-inline-start: calc(-1 * var(--space-2xs)); }
+.intro__sum::-webkit-details-marker { display: none; }
+.intro[open] > .intro__sum > .chev { transform: translateY(-0.2em) rotate(45deg); }
+.intro > .legend { margin-top: var(--space-xs); border-top: var(--rule-ink); }
 .legend li { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: var(--space-sm); padding: var(--space-xs) 0; border-bottom: var(--rule-hair); font-size: var(--text-sm); }
 .legend b { font-family: var(--font-display); font-size: var(--text-base); font-weight: 600; }
-.legend__head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-sm); padding-bottom: var(--space-xs); border-bottom: var(--rule-ink); font-family: var(--font-display); font-weight: 600; font-size: var(--text-md); }
-.legend__head .textbtn { font-family: var(--font-body); font-weight: 400; }
 .tidy__why { margin-top: var(--space-xs); color: var(--color-ink-2); font-size: var(--text-sm); max-width: var(--measure); }
 
 /* ---------- Footer ---------- */

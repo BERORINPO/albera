@@ -4,6 +4,7 @@
 
 import { NEW_BADGE_MS, UI_STORAGE_KEY } from '../src/shared/constants.mjs';
 import { dayKey, hm } from './format.mjs';
+import { latchHandoffs, pruneHandoffs } from './handoff.mjs';
 import { makeT } from './i18n.mjs';
 import { ACTION_PILES, commitCopy, cursorAfter, PILES, presentIds, pruneSelection, cleanupIds, reselectIds, stalePrefKeys } from './ui-state.mjs';
 
@@ -14,17 +15,20 @@ import { ACTION_PILES, commitCopy, cursorAfter, PILES, presentIds, pruneSelectio
  * @property {'en'|'ja'=} lang
  * @property {Record<string, boolean>} open      recent / cleanup / sub:<reason>:<key>
  * @property {Record<string, boolean>} more      欄ごとの「残りを表示」
- * @property {boolean} overview
- * @property {boolean} overviewQuiet
  * @property {boolean} notify
  * @property {boolean} keys                      1 文字キーを使うか (既定 true)
  * @property {boolean} seenIntro
  * @property {{day: string, hm: string}|null} zeroSince
  * @property {{day: string, n: number}|null} archivedToday
+ * @property {'list'|'canvas'} view                   開く表示 (既定 list)
+ * @property {Record<string, {at: number, pct: number}>} handoff  引き継ぎの指示文をコピーした記録 (24 時間で消す)
  */
 
 /** @returns {Prefs} */
-const defaults = () => ({ open: {}, more: {}, overview: false, overviewQuiet: false, notify: false, keys: true, seenIntro: false, zeroSince: null, archivedToday: null });
+const defaults = () => ({
+  open: {}, more: {}, notify: false, keys: true, seenIntro: false, zeroSince: null, archivedToday: null,
+  view: /** @type {'list'|'canvas'} */ ('list'), handoff: {},
+});
 
 export const state = {
   t: makeT('en'),
@@ -34,6 +38,7 @@ export const state = {
   lastOk: 0, // 最後に取得できた時刻 (サーバー時計)
   offset: 0, // サーバー時計 - 手元の時計
   /** @type {null|'offline'|'server'|'version'|'render'} */ fail: null,
+  /** @type {'list'|'canvas'} */ view: 'list', // 今の表示 (?view= で開いたときは保存しない。prefs.view が覚えた表示)
   loading: true,
   filter: '',
   /** @type {string|null} */ family: null,
@@ -61,6 +66,9 @@ export function loadPrefs() {
     const raw = localStorage.getItem(UI_STORAGE_KEY);
     const v = raw ? JSON.parse(raw) : null;
     state.prefs = v && typeof v === 'object' ? { ...defaults(), ...v, open: { ...(v.open ?? {}) }, more: { ...(v.more ?? {}) } } : defaults();
+    state.prefs.view = state.prefs.view === 'canvas' ? 'canvas' : 'list';
+    for (const k of stalePrefKeys(state.prefs, null).prefs) delete /** @type {any} */ (state.prefs)[k];
+    state.prefs.handoff = pruneHandoffs(state.prefs.handoff, now());
     state.storageOk = true;
   } catch {
     state.prefs = defaults();
@@ -70,12 +78,25 @@ export function loadPrefs() {
 }
 
 export function savePrefs() {
+  state.prefs.handoff = pruneHandoffs(state.prefs.handoff, now());
   try {
     localStorage.setItem(UI_STORAGE_KEY, JSON.stringify(state.prefs));
     state.storageOk = true;
   } catch {
     state.storageOk = false;
   }
+}
+
+/** 開く表示を覚える (一覧 / キャンバス)。 @param {'list'|'canvas'} view */
+export function setView(view) {
+  state.prefs.view = view === 'canvas' ? 'canvas' : 'list';
+  savePrefs();
+}
+
+/** 引き継ぎの指示文をコピーしたことを覚える (確かにコピーできたときだけ呼ぶ)。 @param {string} id @param {{at: number, pct: number}} rec */
+export function storeHandoff(id, rec) {
+  state.prefs.handoff = { ...state.prefs.handoff, [id]: { at: rec.at, pct: rec.pct } };
+  savePrefs();
 }
 
 /** 言語を変える (辞書を引き直すだけ。盤面は取り直さない)。 @param {'en'|'ja'} lang */
@@ -144,6 +165,12 @@ export function setBoard(board, at) {
   state.cursor = cursor;
   trackZero(board, at, first);
   dropStalePrefKeys(board);
+  // 引き継ぎのコピーのあとに要約されたセッションは、記録を消して次の due でボタンを出し直す (要約の印はすぐ末尾の外へ流れる)
+  const latched = latchHandoffs(state.prefs.handoff, board);
+  if (latched !== state.prefs.handoff) {
+    state.prefs.handoff = latched;
+    savePrefs();
+  }
   return { moved, verified };
 }
 

@@ -1,6 +1,6 @@
 // arch check: dependency direction (spec/architecture.md §1) and forbidden APIs, checked with grep.
 // Every rule also checks "files checked > 0" (no green while checking nothing), and rule 0 checks that
-// every path in the role table (spec/architecture.md §1) exists.
+// every path in the role table (spec/architecture.md §1) exists. Rule 7 keeps every screen file under 400 lines (spec/ui.md §1).
 // The only suppression is a trailing `// arch-allow: <reason>` on the same line. The count is printed every run.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -48,16 +48,19 @@ function check(rule, files, test) {
 // 0. The role table (spec/architecture.md §1) and the UI file list (spec/ui.md §1) exist as files.
 const EXPECTED = {
   shared: ['constants.mjs', 'types.mjs', 'i18n.mjs'],
-  core: ['turn.mjs', 'classify.mjs', 'project.mjs', 'board.mjs', 'session.mjs', 'text.mjs'],
+  core: ['turn.mjs', 'classify.mjs', 'project.mjs', 'board.mjs', 'session.mjs', 'text.mjs', 'activity.mjs', 'context.mjs'],
   adapters: [
     'app-sessions-fs.mjs', 'fake-app-sessions.mjs', 'transcripts-fs.mjs', 'fake-transcripts.mjs', 'folder-hints-fs.mjs', 'fake-folder-hints.mjs',
     'session-record.mjs', 'demo-data.mjs', 'map-limit.mjs',
   ],
   entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],
   public: [
-    'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'overview.css',
-    'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'cleanup.mjs', 'overview.mjs', 'keys.mjs', 'notify.mjs',
-    'favicon.mjs', 'copy.mjs', 'view.mjs', 'format.mjs', 'i18n.mjs', 'dict-en.mjs', 'dict-ja.mjs',
+    'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css',
+    'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
+    'actions.mjs', 'canvas.mjs', 'canvas-slip.mjs', 'canvas-sheet.mjs', 'canvas-fit.mjs', 'canvas-bar.mjs', 'canvas-ctl.mjs', 'canvas-view.mjs', 'canvas-act.mjs',
+    'canvas-layout.mjs', 'canvas-desk.mjs', 'canvas-fold.mjs', 'canvas-camera.mjs', 'canvas-input.mjs',
+    'keys.mjs', 'notify.mjs', 'favicon.mjs', 'copy.mjs', 'view.mjs', 'format.mjs', 'doing.mjs', 'times.mjs', 'i18n.mjs',
+    'dict-en.mjs', 'dict-ja.mjs', 'dict-en-handoff.mjs', 'dict-ja-handoff.mjs', 'dict-en-canvas.mjs', 'dict-ja-canvas.mjs',
   ],
 };
 const DIR_OF = { shared: 'src/shared', core: 'src/core', adapters: 'src/adapters', entry: 'src/entry', public: 'public' };
@@ -142,14 +145,32 @@ const CJK_RE = new RegExp(CJK);
 const CJK_IN_STRING = new RegExp(`(['"\`])(?:(?!\\1).)*${CJK}(?:(?!\\1).)*\\1`);
 /** The code part of a line: whole-line comments are dropped, and so is a trailing ` // comment`. @param {string} line */
 const codePart = (line) => (/^\s*(\/\/|\*|\/\*)/.test(line) ? '' : line.replace(/\s\/\/\s.*$/, ''));
-const DICT_FILES = new Set(['public/i18n.mjs', 'public/dict-en.mjs', 'public/dict-ja.mjs', 'src/entry/messages.mjs', 'src/adapters/demo-data.mjs']);
-const scripts6 = [...core, ...shared, ...adapters, ...entry, ...pub.filter((f) => f.endsWith('.mjs'))].filter((f) => !DICT_FILES.has(posix(f)));
+const DICT_FILES = new Set(['public/i18n.mjs', 'src/entry/messages.mjs', 'src/adapters/demo-data.mjs']);
+// public/dict-<lang>.mjs and its parts public/dict-<lang>-<part>.mjs (a dictionary is split to stay under 400 lines)
+const DICT_RE = /^public\/dict-(en|ja)(-[a-z]+)?\.mjs$/;
+const isDict = (/** @type {string} */ f) => DICT_FILES.has(posix(f)) || DICT_RE.test(posix(f));
+const scripts6 = [...core, ...shared, ...adapters, ...entry, ...pub.filter((f) => f.endsWith('.mjs'))].filter((f) => !isDict(f));
+if (!pub.some((f) => DICT_RE.test(posix(f)))) violations.push('[6 words only in dictionaries] no public/dict-*.mjs (false-safe)');
 check('6 words only in dictionaries', scripts6, (line) => (CJK_IN_STRING.test(codePart(line)) ? 'put this text in public/dict-*.mjs or src/entry/messages.mjs' : null));
 const html6 = pub.filter((f) => f.endsWith('.html'));
 check('6b index.html words only in data-i18n', html6, (line) => {
   const outside = line.replace(/<!--.*?-->/g, '').replace(/\sdata-i18n[\w-]*\s*=\s*("[^"]*"|'[^']*')/g, '');
   return CJK_RE.test(outside) ? 'the first paint is English; Japanese comes from the dictionary' : null;
 });
+
+// 7. every screen file stays under 400 lines (spec/ui.md §1): split a helper module out rather than grow one past it
+const UI_MAX_LINES = 400;
+const ui7 = listFiles('public', ['.mjs', '.js', '.html', '.css']);
+if (ui7.length === 0) violations.push('[7 UI files under 400 lines] no files to check (false-safe)');
+let long7 = 0;
+for (const f of ui7) {
+  const n = fs.readFileSync(path.join(ROOT, f), 'utf8').replace(/\n$/, '').split('\n').length;
+  if (n > UI_MAX_LINES) {
+    long7++;
+    violations.push(`[7 UI files under 400 lines] ${posix(f)} has ${n} lines`);
+  }
+}
+results.push(`7 UI files under ${UI_MAX_LINES} lines: ${ui7.length} files, ${long7} violations`);
 
 for (const r of results) console.log(r);
 console.log(`suppressed (arch-allow): ${suppressed}`);

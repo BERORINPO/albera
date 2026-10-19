@@ -19,7 +19,9 @@ test('keyAction: 表のキーを動作にする', () => {
   assert.equal(keyAction(k('c'), on), 'copy');
   assert.equal(keyAction(k('/'), on), 'filter');
   assert.equal(keyAction(k('?', { shiftKey: true }), on), 'help');
-  assert.equal(keyAction(k('z'), on), 'overview');
+  assert.equal(keyAction(k('v'), on), 'view');
+  assert.equal(keyAction(k('z'), on), 'canvas-fit');
+  assert.equal(keyAction(k('h'), on), 'handoff');
   assert.equal(keyAction(k('1'), on), 'jump:needs_you');
   assert.equal(keyAction(k('6'), on), 'jump:cleanup');
   assert.equal(keyAction(k('7'), on), null);
@@ -55,31 +57,36 @@ test('keyAction: 行の題名の Enter は開く、Space は題名の普段の�
   assert.equal(keyAction(k('j'), control), 'next');
 });
 
-test('keyAction: 全体の中では全体が受け持つキーを返さない', () => {
-  const ov = { keysOn: true, target: /** @type {const} */ ('overview') };
-  for (const key of ['j', 'k', 'ArrowLeft', 'ArrowDown', 'Home', 'End', 'Enter', ' ', 'z', 'Escape']) assert.equal(keyAction(k(key), ov), null, key);
-  assert.equal(keyAction(k('/'), ov), 'filter');
+test('keyAction: キャンバスの表示の間は canvasKeyAction に渡し、名前に cv: を付ける', () => {
+  const cv = { keysOn: true, target: /** @type {const} */ ('none'), view: /** @type {const} */ ('canvas') };
+  assert.equal(keyAction(k('v'), cv), 'cv:view');
+  assert.equal(keyAction(k('j'), cv), 'cv:next');
+  assert.equal(keyAction(k('x'), cv), null, '片付けのキーは一覧だけ');
+  assert.equal(keyAction(k('ArrowLeft'), { ...cv, canvasTarget: 'slip' }), 'cv:move-left');
+  assert.equal(keyAction(k('ArrowLeft'), { ...cv, canvasTarget: 'viewport' }), 'cv:pan-left');
+  assert.equal(keyAction(k('Escape'), { ...cv, canvasTarget: 'filter' }), 'cv:escape');
 });
 
-test('keyAction: 1 文字キーを止めても Enter・Space・Esc は使える', () => {
+test('keyAction: 1 文字キーを止めても Enter・Space・Esc・矢印は使える (キャンバスと同じ)', () => {
   const off = { keysOn: false, target: /** @type {const} */ ('none') };
-  for (const key of ['j', 'k', 'o', 'x', 'a', 'c', '/', 'z', '1', '6', 'ArrowDown']) assert.equal(keyAction(k(key), off), null, key);
+  for (const key of ['j', 'k', 'o', 'x', 'a', 'c', 'h', 'v', '/', 'z', '1', '6']) assert.equal(keyAction(k(key), off), null, key);
+  assert.equal(keyAction(k('ArrowDown'), off), 'next');
+  assert.equal(keyAction(k('ArrowUp'), { keysOn: false, target: 'title' }), 'prev');
   assert.equal(keyAction(k('?', { shiftKey: true }), off), null);
   assert.equal(keyAction(k('Enter'), off), 'open');
   assert.equal(keyAction(k(' '), off), 'peek');
   assert.equal(keyAction(k('Escape'), off), 'escape');
 });
 
-test('keyAction: x / a / c / z の押しっぱなしは 1 回だけ', () => {
-  for (const key of ['x', 'a', 'c', 'z']) assert.equal(keyAction(k(key, { repeat: true }), on), null, key);
+test('keyAction: x / a / c / h / v / z の押しっぱなしは 1 回だけ', () => {
+  for (const key of ['x', 'a', 'c', 'h', 'v', 'z']) assert.equal(keyAction(k(key, { repeat: true }), on), null, key);
   assert.equal(keyAction(k('j', { repeat: true }), on), 'next');
 });
 
-test('escapeStep: 絞り込み欄 → 全体 → 詳しく → 親子 → 文字。選択は消さない', () => {
-  const base = { inFilter: false, filterValue: '', inOverview: false, detailOpen: false, family: null, q: '' };
+test('escapeStep: 絞り込み欄 → 詳しく → 親子 → 文字。選択は消さない', () => {
+  const base = { inFilter: false, filterValue: '', detailOpen: false, family: null, q: '' };
   assert.equal(escapeStep({ ...base, inFilter: true, filterValue: 'x', q: 'x' }), 'filter-clear');
   assert.equal(escapeStep({ ...base, inFilter: true }), 'filter-blur');
-  assert.equal(escapeStep({ ...base, inOverview: true, detailOpen: true }), 'overview-close');
   assert.equal(escapeStep({ ...base, detailOpen: true, family: 'r', q: 'x' }), 'detail-close');
   assert.equal(escapeStep({ ...base, family: 'r', q: 'x' }), 'family-clear');
   assert.equal(escapeStep({ ...base, q: 'x' }), 'query-clear');

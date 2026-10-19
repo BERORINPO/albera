@@ -1,18 +1,18 @@
 // @ts-check
 // 画面: 起動と操作。言語と好みを読み、静的な文言を入れ、クリックとキーを 1 か所で受け、5 秒ごとの取得 (poll.mjs) を始める。
-// 読み取り専用 (サーバーへは GET しかしない)。片付けは Claude への指示文をコピーするだけ。
+// 読み取り専用 (サーバーへは GET しかしない)。片付けと引き継ぎは Claude への指示文をコピーするだけ (actions.mjs)。
 
-import { COPIED_LABEL_MS, COPY_CHUNK, FILTER_ANNOUNCE_MS, MIN, SKIP_EXPLAIN_MS } from '../src/shared/constants.mjs';
+import { FILTER_ANNOUNCE_MS, MIN } from '../src/shared/constants.mjs';
+import { copyChunk, copySmall, dueNext, handoffKey, openHandoff, runGuide } from './actions.mjs';
+import { CANVAS_CLICK, initCanvas, runCanvasKey } from './canvas-act.mjs';
+import { isCanvas, openBar, switchView } from './canvas-ctl.mjs';
 import { applyPick, cleanupBodyParts, pickAllSuggested, togglePickRow } from './cleanup.mjs';
-import { copyText } from './copy.mjs';
-import { archiveInstruction, deepLink, titleOf } from './format.mjs';
+import { titleOf } from './format.mjs';
 import { detectLang, otherLang } from './i18n.mjs';
 import { bindKeys, escapeStep, openHelp } from './keys.mjs';
-import { overviewKeydown } from './overview.mjs';
 import { poll, schedule } from './poll.mjs';
-import { backToRow, clearFilters, jumpPile, jumpTo, moveCursor, openSession, render, renderTimes, rowEl, setCursorRow, toggleOverview, view } from './render.mjs';
-import { closeBatch, loadPrefs, reselectLeft, savePrefs, setLang, startBatch, state } from './state.mjs';
-import { planCopy } from './ui-state.mjs';
+import { clearFilters, jumpPile, jumpTo, moveCursor, openSession, render, renderTimes, rowEl, setCursorRow, view } from './render.mjs';
+import { closeBatch, loadPrefs, reselectLeft, savePrefs, setLang, state } from './state.mjs';
 import { announce, fill } from './view.mjs';
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
@@ -53,52 +53,6 @@ function switchLanguage() {
     // URL を書き換えられなくても切り替えはできる
   }
   setLanguage(next);
-}
-
-// ---------- コピー ----------
-
-/** 次の 50 件の指示文をコピーする。確かにコピーできたときだけ batch に足す。 @param {HTMLElement|null} opener */
-async function copyChunk(opener) {
-  const t = state.t;
-  const sel = [...state.selected];
-  if (!sel.length) return announce(t('live.nothingPicked'));
-  const plan = planCopy(sel, state.copied, COPY_CHUNK);
-  const text = archiveInstruction(t, plan.chunk);
-  const ok = await copyText(t, text, opener);
-  // 手でコピーする dialog の間に、戻し先の部品が作り直されていたらカーソルの行へ戻す
-  if (document.activeElement === document.body && opener && !opener.isConnected) backToRow();
-  if (!ok) return;
-  // 「コピーした ✓」と 2 分の説明は手元の時計で数える (サーバー時計は取得のたびに合わせ直すので)
-  startBatch(plan, text, Date.now());
-  state.copiedUntil = Date.now() + COPIED_LABEL_MS;
-  announce(t('live.copied', { n: plan.chunk.length }));
-  render();
-  setTimeout(render, COPIED_LABEL_MS + 50);
-  setTimeout(render, SKIP_EXPLAIN_MS + 50);
-}
-
-/** @type {WeakMap<HTMLElement, ReturnType<typeof setTimeout>>} */
-const smallTimers = new WeakMap();
-
-/**
- * ID / リンクのコピー。ボタンの文字を 2.5 秒だけ「コピーした ✓」にして (toast は出さない)、読み上げにも一言出す。
- * 戻す文字はいつも辞書から作る (続けて押しても「コピーした ✓」のまま固まらない)。前のタイマーは取り消す。
- * @param {HTMLElement} btn @param {string} text
- */
-async function copySmall(btn, text) {
-  if (!(await copyText(state.t, text, btn))) return;
-  const link = btn.dataset.action === 'copy-link';
-  clearTimeout(smallTimers.get(btn));
-  btn.textContent = state.t('detail.copied');
-  btn.dataset.state = 'copied';
-  announce(state.t(link ? 'live.copiedLink' : 'live.copiedId'));
-  smallTimers.set(
-    btn,
-    setTimeout(() => {
-      btn.textContent = state.t(link ? 'detail.copyLink' : 'detail.copyId');
-      delete btn.dataset.state;
-    }, COPIED_LABEL_MS),
-  );
 }
 
 // ---------- クリック・変更 ----------
@@ -199,10 +153,13 @@ const CLICK = {
     reselectLeft();
     render();
   },
-  'copy-id': (el) => void copySmall(el, el.dataset.id ?? ''),
-  'copy-link': (el) => void copySmall(el, deepLink(el.dataset.id ?? '') ?? ''),
-  overview: () => toggleOverview(false),
-  'overview-quiet': () => flip(/** @type {any} */ (state.prefs), 'overviewQuiet', false),
+  'copy-id': (el) => void copySmall(el),
+  'copy-link': (el) => void copySmall(el),
+  'handoff-open': (el) => (isCanvas() ? openBar('handoff', el.dataset.id ?? '') : openHandoff(el.dataset.id ?? '')),
+  'handoff-copy-open': (el) => void runGuide(el),
+  'handoff-copy': (el) => void runGuide(el),
+  'handoff-rescue': (el) => void runGuide(el),
+  'due-next': () => dueNext(),
   lang: () => switchLanguage(),
   help: (el) => showHelp(el),
   reload: () => location.reload(),
@@ -218,7 +175,8 @@ const CLICK = {
 function onClick(ev) {
   const el = /** @type {HTMLElement|null} */ (ev.target instanceof Element ? ev.target.closest('[data-action]') : null);
   if (!el || el instanceof HTMLInputElement) return;
-  CLICK[el.dataset.action ?? '']?.(el, ev);
+  const action = el.dataset.action ?? '';
+  (CLICK[action] ?? CANVAS_CLICK[action])?.(el, ev);
 }
 
 // ---------- キー ----------
@@ -229,16 +187,11 @@ function escapeChain() {
   const step = escapeStep({
     inFilter: active === filterInput,
     filterValue: filterInput.value,
-    inOverview: !!(active instanceof Element && active.closest('#overview')),
     detailOpen: !!state.cursor && state.open.has(state.cursor.id),
     family: state.family,
     q: state.filter,
   });
   if (!step) return false;
-  if (step === 'overview-close') {
-    toggleOverview(true);
-    return true;
-  }
   if (step === 'filter-clear' || step === 'query-clear') {
     state.filter = '';
     filterInput.value = '';
@@ -251,6 +204,9 @@ function escapeChain() {
 
 /** キーの動作。true を返すと preventDefault。 @param {string} action */
 function runKey(action) {
+  // キャンバスのキー (cv:)。絞り込みと help は一覧と同じ動き
+  if (action === 'cv:filter' || action === 'cv:help') return runKey(action.slice(3));
+  if (action.startsWith('cv:')) return runCanvasKey(action.slice(3));
   const cur = state.cursor;
   const b = state.board;
   switch (action) {
@@ -295,9 +251,14 @@ function runKey(action) {
     case 'help':
       showHelp($('help-btn'));
       return true;
-    case 'overview':
-      toggleOverview(true);
+    case 'view':
+      switchView('canvas');
       return true;
+    case 'canvas-fit':
+      switchView('canvas', { fit: true });
+      return true;
+    case 'handoff':
+      return handoffKey();
     case 'escape':
       return escapeChain();
     default:
@@ -346,6 +307,9 @@ function init() {
   const theme = new URLSearchParams(location.search).get('theme');
   if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
   loadPrefs();
+  // 開く表示: ?view= (保存しない) > 覚えた表示 > 一覧
+  const asked = new URLSearchParams(location.search).get('view');
+  state.view = asked === 'canvas' || asked === 'list' ? asked : state.prefs.view;
   fill(/** @type {HTMLElement} */ ($('r-cleanup').firstElementChild), ...cleanupBodyParts());
   setLang(detectLang({ search: location.search, saved: state.prefs.lang, languages: navigator.languages ?? [navigator.language] }));
   document.documentElement.lang = state.t.lang;
@@ -360,13 +324,8 @@ function init() {
     if (filterTimer) clearTimeout(filterTimer);
     filterTimer = setTimeout(announceFilter, FILTER_ANNOUNCE_MS);
   });
-  const ov = $('overview');
-  ov.addEventListener('keydown', (ev) => {
-    if (!overviewKeydown(ov, ev, { onActivate: jumpTo, onClose: () => toggleOverview(true), keysOn: state.prefs.keys !== false })) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-  });
-  bindKeys(() => state.prefs.keys !== false, runKey);
+  initCanvas();
+  bindKeys(() => state.prefs.keys !== false, runKey, () => state.view);
   // Tab で行の題名 (片付けの行ならチェックボックスも) に来たら、そこをカーソルにする (Enter / Space / x がその行に効くように)
   document.addEventListener('focusin', (ev) => {
     const el = ev.target instanceof Element ? ev.target.closest('.row__title, .trow__title, .trow .check input') : null;

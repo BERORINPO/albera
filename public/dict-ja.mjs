@@ -1,6 +1,9 @@
 // @ts-check
-// 画面の言葉 (日本語)。spec/ui.md §19 の copy deck。1 行 1 キー。日本語は複数形を持たないので全部ただの文字列。
+// 画面の言葉 (日本語)。spec/ui.md §19 の copy deck。1 行 1 キー (§19.9 は dict-ja-canvas.mjs、§19.13–§19.15 は dict-ja-handoff.mjs)。日本語は複数形を持たないので全部ただの文字列。
 // キーと placeholder は dict-en.mjs と同じにする (test/i18n.test.mjs が確かめる)。
+
+import { JA_CANVAS } from './dict-ja-canvas.mjs';
+import { JA_HANDOFF } from './dict-ja-handoff.mjs';
 
 /** @type {Readonly<Record<string, string>>} */
 export const JA = Object.freeze({
@@ -34,7 +37,7 @@ export const JA = Object.freeze({
   'date.mon.9': '10 月',
   'date.mon.10': '11 月',
   'date.mon.11': '12 月',
-  'filter.label': 'タイトル・プロジェクト・要約で絞り込み',
+  'filter.label': 'タイトル・プロジェクト・要約・していることで絞り込み',
   'filter.placeholder': '絞り込み',
   'lang.switchTo': 'English',
   'lang.toggleAria': '言語を切り替える',
@@ -77,8 +80,8 @@ export const JA = Object.freeze({
   'ledger.total': '計 (アーカイブ済み {a} 件は除く)',
   'ledger.totalNoArchived': '計',
   'ledger.match': '一致 {m} / {n} 件',
-  'ledger.overviewOpen': '全体を見る',
-  'ledger.overviewClose': '全体を閉じる',
+  'view.canvas': 'キャンバスで見る',
+  'view.list': '一覧で見る',
   'bucket.needs_you.title': '返事待ち',
   'bucket.needs_you.verb': '開いて答える。長く待っている順',
   'bucket.trouble.title': '止まったかも',
@@ -186,6 +189,11 @@ export const JA = Object.freeze({
   // 19.7 detail panel
   'detail.state': 'いまの状態',
   'detail.stateValue': '{pile} ({time})',
+  'detail.activity': 'していること',
+  'detail.step': '手順',
+  'detail.context': 'コンテキスト',
+  'detail.contextValue': '{pct}% ({window} トークン中 {used})。約 {at} で自動で要約されます。',
+  'detail.contextEst': '上限の大きさは推定です。',
   'detail.summary': 'Claude の要約',
   'detail.error': 'エラー全文',
   'detail.branch': 'ブランチ',
@@ -222,24 +230,11 @@ export const JA = Object.freeze({
   'banner.family': '『{title}』の親子だけ表示中',
   'banner.clear': '解除',
   'nomatch.query.lead': '『{q}』に一致するセッションはありません。',
-  'nomatch.query.text': 'タイトル・プロジェクト・要約を探しました。',
+  'nomatch.query.text': 'タイトル・プロジェクト・要約・していることを探しました。',
   'nomatch.family': 'この親子には該当するものがありません。',
   'nomatch.clear': '絞り込みを消す',
 
-  // 19.9 overview
-  'overview.title': '全体',
-  'overview.key.cleanup': '数字 = 片付けの件数',
-  'overview.hint': '印を押すと、その行へ移ります。',
-  'overview.mark': '{pile}: {title}、{time}',
-  'overview.shelfAria': '{project}: {list}',
-  'overview.part': '{pile} {n} 件',
-  'overview.cleanup': '片付け {n}',
-  'overview.more': 'ほか {n} 件',
-  'overview.quiet': 'やることのないプロジェクト {n} 件',
-  'overview.quietCounts': '最近 {recent} 件、片付け {cleanup} 件',
-  'overview.quietShow': '広げる',
-  'overview.quietHide': 'たたむ',
-  'overview.empty': '表示するものはありません。',
+  // 19.9: dict-ja-canvas.mjs
 
   // 19.10 to archive
   'cleanup.ba': 'いま {all} 件。おすすめを全部片付けると {left} 件になります。',
@@ -249,10 +244,10 @@ export const JA = Object.freeze({
   'cleanup.step3': 'Claude に貼って送る',
   'cleanup.stepNow': ' (いまここ)',
   'cleanup.stepDone': ' (済み)',
-  'cleanup.why': 'アーカイブしても消えません。Claude アプリからいつでも戻せます。このボードは何も書き換えず、Claude への指示文を用意するだけです。',
+  'cleanup.why': 'アーカイブは消去ではありません。Claude アプリで戻せます。',
   'cleanup.selectAll': 'おすすめ {n} 件をまとめて選ぶ',
   'cleanup.tally': '{sel} / {n}',
-  'cleanup.def': 'おすすめ = 片付けても困らないと判断できたもの。PR が開いている・ピン留め・残す印・未読の報告・使用中の子があるものは外しています。',
+  'cleanup.def': '外したもの: 開いた PR・ピン留め・残す印・未読の報告・使用中の子',
   'cleanup.retried': 'もう一度起動し直したもの',
   'cleanup.routine_old': '同じ定期実行の古い回',
   'cleanup.pr_done': 'PR が閉じたもの',
@@ -329,19 +324,23 @@ export const JA = Object.freeze({
   'help.k.copy': '指示文をコピー (次の 50 件)',
   'help.k.filter': '絞り込み',
   'help.k.jump': '欄へ移動 (返事待ち … 片付け)',
-  'help.k.overview': '全体を開く / 閉じる',
+  'help.k.handoff': '引き継ぐ (指示文をコピー)',
+  'help.k.view': '一覧とキャンバスを切り替える',
+  'help.k.canvas': 'キャンバス: + − で拡大縮小、0 で 100%、f で全体、z で全体と元の表示を往復、矢印で移動',
   'help.k.help': 'このキー一覧',
-  'help.k.esc': '閉じる (キー一覧 → 絞り込み → 全体 → 詳しく の順)',
-  'help.marks': '全体の印',
+  'help.k.slipMove': 'キャンバスの付箋の上で: その向きの隣のセッションへ',
+  'help.k.nudge': 'キャンバスのプロジェクト名の上で: 用紙を動かす (Enter で動かすボタン)',
+  'help.k.esc': '閉じる (キー一覧 → 絞り込み → 詳しく の順)。キャンバスでは次に付箋・プロジェクト名から離れる',
+  'help.marks': 'キャンバスの印',
   'help.off': '一文字キーを使わない',
-  'help.offNote': 'Enter・Space・Esc・Tab はそのまま使えます。',
+  'help.offNote': 'Enter・Space・Esc・矢印・Tab はそのまま使えます。',
   'foot.trust': '読み取り専用。このパソコンの外へは何も送りません。',
   'foot.keys.move': '移動',
   'foot.keys.open': '開く',
   'foot.keys.peek': '詳しく',
   'foot.keys.pick': '選ぶ',
   'foot.keys.filter': '絞り込み',
-  'foot.keys.overview': '全体',
+  'foot.keys.view': 'キャンバス',
   'foot.keys.more': 'ほかのキー',
   'foot.notifyOn': '通知をオンにする',
   'foot.notifyOff': '通知をオフにする',
@@ -351,6 +350,8 @@ export const JA = Object.freeze({
   'foot.demo': 'デモデータを表示しています。あなたのセッションではありません。',
   'foot.noDir': '会話ログのフォルダが見つかりません。「作業中」「止まったかも」は判定できません。',
   'foot.badFormat': '会話ログの形式を読めていません。「作業中」「止まったかも」が出ていない可能性があります。',
+  'foot.ctxFormat': '会話ログからコンテキスト量を読めないため、表示を止めています。',
+  'foot.actFormat': '会話ログから操作を読めないため、「していること」が出ていません。',
   'foot.diag': '読み込みの状態',
   'foot.bad': '読めなかったファイル {n} 件。',
   'foot.missing': '会話ログが見つからない {n} 件 (最近 {days} 日)。',
@@ -368,4 +369,8 @@ export const JA = Object.freeze({
   'live.unpicked': '外しました: {title}',
   'live.copiedId': 'ID をコピーしました',
   'live.copiedLink': 'リンクをコピーしました',
+  'live.handoffNo': 'いまは引き継げません: {why}',
+  // 19.13–19.15: dict-ja-handoff.mjs
+  ...JA_CANVAS,
+  ...JA_HANDOFF,
 });

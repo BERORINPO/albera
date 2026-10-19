@@ -1,4 +1,4 @@
-// entry の結合テスト: サーバーを 18950〜18999 の空きポートで起動して確かめる (デモ = 合成データ、または一時フォルダの合成ファイル)。
+// entry の結合テスト: サーバーを 18950〜18989 の空きポートで起動して確かめる (デモ = 合成データ、または一時フォルダの合成ファイル)。
 // このPCの実データは読まない (実データの確認は npm run smoke)。
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -14,13 +14,13 @@ import { createFakeTranscriptsSource } from '../src/adapters/fake-transcripts.mj
 import { buildStaticFiles, createHandler, STATIC_TYPES } from '../src/entry/http.mjs';
 import { parseHello } from '../src/entry/probe.mjs';
 import { createBoardService } from '../src/entry/service.mjs';
-import { FORBIDDEN_OUTPUT_KEYS } from '../src/shared/constants.mjs';
+import { FORBIDDEN_OUTPUT_KEYS, FORBIDDEN_WIRE_KEYS } from '../src/shared/constants.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER = path.join(ROOT, 'src', 'entry', 'server.mjs');
 const READY_RE = /http:\/\/127\.0\.0\.1:\d+/;
 // 使うポートの範囲。ほかの作業とポートを分けたいときは PIGEONHOLES_TEST_PORTS=18950-18969 のように狭められる
-const [PORT_MIN, PORT_MAX] = (/^(\d+)-(\d+)$/.exec(process.env.PIGEONHOLES_TEST_PORTS ?? '') ?? [null, '18950', '18999']).slice(1).map(Number);
+const [PORT_MIN, PORT_MAX] = (/^(\d+)-(\d+)$/.exec(process.env.PIGEONHOLES_TEST_PORTS ?? '') ?? [null, '18950', '18989']).slice(1).map(Number);
 // 起動のしかた (clone から動かしているので node <このファイルの絶対パス>。空白を含むパスなら引用符つき)
 const LAUNCH = String.raw`node ['"]?.+/src/entry/server\.mjs['"]?`;
 const VERSION = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8')).version;
@@ -37,7 +37,7 @@ function canBind(port) {
   });
 }
 
-/** 18950〜18999 の空きポート (始める位置はばらす)。 @returns {Promise<number>} */
+/** 18950〜18989 の空きポート (始める位置はばらす)。 @returns {Promise<number>} */
 async function freePort() {
   const span = PORT_MAX - PORT_MIN + 1;
   const start = Math.floor(Math.random() * span);
@@ -201,7 +201,14 @@ test('/api/board は 200 の v2 JSON (デモの印つき) で、2 回目は If-N
   assert.equal(c.needs_you + c.trouble + c.unread + c.working + c.recent + c.cleanup, c.active);
   for (const k of ['needs_you', 'trouble', 'unread', 'working']) assert.ok(c[k] > 0, `デモには ${k} が 1 件以上ある`);
   for (const k of FORBIDDEN_OUTPUT_KEYS) assert.ok(!r.body.includes(`"${k}"`), k);
+  // v0.2: model・command・入力・usage などは JSON に出ない (デモの値は合成なので文字列で調べられる)
+  for (const k of FORBIDDEN_WIRE_KEYS) assert.ok(!r.body.includes(`"${k}"`), k);
   assert.ok(!r.body.includes('"reasonText"'), 'v2 は理由の文を送らない');
+  // していることとコンテキストは省略可能な追加 (v は 2 のまま)
+  const cards = [...Object.values(data.buckets).flat(), ...data.recentGroups.flatMap((/** @type {any} */ g) => g.items)];
+  assert.ok(cards.some((/** @type {any} */ c) => c.activity) && cards.some((/** @type {any} */ c) => c.context));
+  for (const k of ['contextSeen', 'activitySeen']) assert.ok(Number.isInteger(data.stats[k]) && data.stats[k] > 0, k);
+  assert.equal(data.stats.contextSuspect, false);
   const etag = String(r.headers.etag);
   const again = await request(port, { path: '/api/board', headers: { 'If-None-Match': etag } });
   assert.equal(again.status, 304);

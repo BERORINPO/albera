@@ -4,6 +4,7 @@
 
 import { DAY, MIN, QUIET_MS, RECENT_MS } from '../src/shared/constants.mjs';
 import { agoText, askText, bucketTitle, contentLang, deepLink, ledeTimeLine, reasonLine, sentences, titleOf } from './format.mjs';
+import { dueIds } from './handoff.mjs';
 import { nextUp, PILES } from './ui-state.mjs';
 import { fill, h, partsToNodes } from './view.mjs';
 
@@ -102,9 +103,9 @@ export function renderLede(el, o) {
 }
 
 /**
- * 件数の台帳と、全体を開くボタン。
- * @param {HTMLElement} nav #ledger @param {HTMLElement} toggle #ov-toggle
- * @param {{t: T, board: any, visible: any, overviewOpen: boolean, keysOn?: boolean}} o
+ * 件数の台帳と、表示の切り替え (一覧 ⇄ キャンバス)。
+ * @param {HTMLElement} nav #ledger @param {HTMLElement} toggle #view-toggle
+ * @param {{t: T, board: any, visible: any, view?: 'list'|'canvas', keysOn?: boolean}} o
  */
 export function renderLedger(nav, toggle, o) {
   const t = o.t;
@@ -132,17 +133,17 @@ export function renderLedger(nav, toggle, o) {
         : h('p', { class: 'index__total' }, h('span', { text: archived > 0 ? t('ledger.total', { a: archived }) : t('ledger.totalNoArchived') }), h('span', { class: 'n', text: String(Number(c.active) || 0) }));
     fill(nav, h('ol', {}, ...items), total);
   }
-  toggle.setAttribute('aria-expanded', o.overviewOpen ? 'true' : 'false');
-  const label = t(o.overviewOpen ? 'ledger.overviewClose' : 'ledger.overviewOpen');
+  const label = t(o.view === 'canvas' ? 'view.list' : 'view.canvas');
   const keysOn = o.keysOn !== false;
   if (toggle.dataset.label !== `${t.lang}|${label}|${keysOn}`) {
     toggle.dataset.label = `${t.lang}|${label}|${keysOn}`;
-    // z の印は見た目の手掛かりだけ。名前は label だけにして、キーは aria-keyshortcuts で伝える (1 文字キーを止めたら外す)
-    fill(toggle, label, ' ', h('kbd', { class: 'hk', 'aria-hidden': 'true', text: 'z' }));
-    if (keysOn) toggle.setAttribute('aria-keyshortcuts', 'z');
+    // v の印は見た目の手掛かりだけ。名前は label だけにして、キーは aria-keyshortcuts で伝える (1 文字キーを止めたら外す)
+    fill(toggle, label, ' ', h('kbd', { class: 'hk', 'aria-hidden': 'true', text: 'v' }));
+    if (keysOn) toggle.setAttribute('aria-keyshortcuts', 'v');
     else toggle.removeAttribute('aria-keyshortcuts');
   }
-  toggle.hidden = !o.board || (Number(c?.active) || 0) === 0;
+  // キャンバスからはいつでも一覧へ戻れる。一覧では、セッションがあるときだけ
+  toggle.hidden = o.view !== 'canvas' && (!o.board || (Number(c?.active) || 0) === 0);
 }
 
 /**
@@ -183,6 +184,8 @@ export function renderBanners(el, o) {
 
 /**
  * 最初の 1 回だけの読み方。保存できない環境では出さない (help にいつもある)。
+ * 最近の上に 1 行だけ: 押すとその場で 6 つの欄の意味が開く (details なので処理も動きも要らない)。「わかった」で以後は出さない。
+ * 開いていない間は台帳と同じ欄の名前を繰り返さず、最近と片付けを下へ押し出さない。
  * @param {HTMLElement} el #intro
  * @param {{t: T, show: boolean}} o
  */
@@ -197,21 +200,84 @@ export function renderIntro(el, o) {
   fill(
     el,
     h(
-      'div',
-      { class: 'legend' },
-      h('p', { class: 'legend__head' }, h('span', { text: t('intro.title') }), h('button', { class: 'textbtn', type: 'button', 'data-action': 'intro-ok', text: t('intro.ok') })),
-      h('ol', {}, ...PILES.map((p) => h('li', {}, h('b', { text: bucketTitle(t, p) }), h('span', { text: t(`intro.${p}`, { min: QUIET_MS / MIN, days }) })))),
-      h('p', { class: 'tidy__why', text: t('intro.trust') }),
+      'details',
+      { class: 'intro' },
+      h('summary', { class: 'textbtn intro__sum' }, h('span', { class: 'chev', 'aria-hidden': 'true' }), h('span', { text: t('intro.title') })),
+      h(
+        'div',
+        { class: 'legend' },
+        h('ol', {}, ...PILES.map((p) => h('li', {}, h('b', { text: bucketTitle(t, p) }), h('span', { text: t(`intro.${p}`, { min: QUIET_MS / MIN, days }) })))),
+        h('p', { class: 'tidy__why', text: t('intro.trust') }),
+      ),
     ),
+    h('button', { class: 'textbtn intro__ok', type: 'button', 'data-action': 'intro-ok', text: t('intro.ok') }),
   );
 }
 
 /**
+ * 台帳の下の「引き継ぎどき N 件」(片付け以外で due / soon のセッションがあるときだけ)。押すたびにカーソルが次の 1 件へ移る。
+ * 色も台帳の数も帯も付けない (埋まったセッションは返事待ちのような急ぎではない)。
+ * @param {HTMLElement} btn #due-next @param {T} t @param {any} board
+ */
+export function renderDue(btn, t, board) {
+  const n = board ? dueIds(board).length : 0;
+  btn.hidden = n === 0;
+  const text = n > 0 ? t('ctx.dueCount', { n }) : '';
+  if (btn.textContent !== text) btn.textContent = text;
+}
+
+/** 一覧の lede は 3 行、キャンバスの帯の lede は 2 行まで (design.md §4、§12) */
+const LEDE_LINES = Object.freeze({ list: 3, canvas: 2 });
+/** @type {ResizeObserver|null} */
+let ledeObserver = null;
+
+/**
+ * lede の文を決めた行数に収める: 長い題名だけを (code point で) 縮めて「…」を付け、前後の決まった言葉 (まず … に答える) はいつも見せる。
+ * 行の CSS の打ち切りでは末尾の言葉から消えるため。縮めたときは見出しの名前 (aria-label) に元の文を入れる。幅と題名が同じなら何もしない。
+ * @param {HTMLElement} el #lede @param {number} lines
+ */
+export function fitLede(el, lines) {
+  const h1 = /** @type {HTMLElement|null} */ (el.querySelector('h1.lede__title'));
+  const name = /** @type {HTMLElement|null} */ (h1?.querySelector('.lede__name') ?? null);
+  if (!h1 || !name || !h1.clientWidth) return;
+  const full = name.dataset.full ?? name.textContent ?? '';
+  const key = `${lines}|${h1.clientWidth}|${full}`;
+  if (h1.dataset.fit === key) return;
+  h1.dataset.fit = key;
+  name.dataset.full = full;
+  name.textContent = full;
+  h1.removeAttribute('aria-label');
+  const lh = parseFloat(getComputedStyle(h1).lineHeight);
+  const fits = () => !(lh > 0) || h1.scrollHeight <= lh * (lines + 0.5);
+  if (fits()) return;
+  const sentence = h1.textContent ?? '';
+  const cps = [...full];
+  let [lo, hi] = [0, cps.length - 1];
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    name.textContent = `${cps.slice(0, mid).join('').trimEnd()}…`;
+    if (fits()) lo = mid;
+    else hi = mid - 1;
+  }
+  name.textContent = `${cps.slice(0, lo).join('').trimEnd()}…`;
+  h1.setAttribute('aria-label', sentence);
+}
+
+/**
  * lede と台帳をまとめて描く (render から呼ぶ入口)。
- * @param {{lede: HTMLElement, ledger: HTMLElement, toggle: HTMLElement}} els
- * @param {{t: T, now: number, board: any, loading: boolean, fail: any, calmSince: string|null, visible: any, overviewOpen: boolean, keysOn?: boolean}} o
+ * @param {{lede: HTMLElement, ledger: HTMLElement, toggle: HTMLElement, due: HTMLElement}} els
+ * @param {{t: T, now: number, board: any, loading: boolean, fail: any, calmSince: string|null, visible: any, view?: 'list'|'canvas', keysOn?: boolean}} o
  */
 export function renderFront(els, o) {
   renderLede(els.lede, o);
   renderLedger(els.ledger, els.toggle, o);
+  renderDue(els.due, o.t, o.board && (Number(o.board.counts?.active) || 0) > 0 ? o.board : null);
+  const lede = els.lede;
+  lede.dataset.lines = String(LEDE_LINES[o.view === 'canvas' ? 'canvas' : 'list']);
+  fitLede(lede, Number(lede.dataset.lines));
+  // 幅が変わったら (表示枠・横の欄の大きさ) 収め直す
+  if (!ledeObserver && typeof ResizeObserver !== 'undefined') {
+    ledeObserver = new ResizeObserver(() => fitLede(lede, Number(lede.dataset.lines) || LEDE_LINES.list));
+    ledeObserver.observe(lede);
+  }
 }

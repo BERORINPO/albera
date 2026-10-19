@@ -44,9 +44,10 @@ export function rec(n, fields = {}) {
  * @param {string} tail
  * @param {number} mainAgo
  * @param {number} [subAgo] 無ければ subagents なし
+ * @param {number} [subLive] QUIET_MS 以内に書かれた subagent の transcript の数 (v0.2)
  */
-export function ti(tail, mainAgo, subAgo) {
-  return { tail, truncatedHead: false, mainMtime: NOW - mainAgo, subMtime: subAgo == null ? 0 : NOW - subAgo, size: tail.length };
+export function ti(tail, mainAgo, subAgo, subLive = 0) {
+  return { tail, truncatedHead: false, mainMtime: NOW - mainAgo, subMtime: subAgo == null ? 0 : NOW - subAgo, size: tail.length, subLive };
 }
 
 /**
@@ -83,6 +84,50 @@ export const synth = {
   commandName: (/** @type {number=} */ at) => user('<command-name>/model</command-name>', at),
   commandStdout: (/** @type {number=} */ at) => user('<local-command-stdout>ok</local-command-stdout>', at),
   noise: () => line({ type: 'file-history-snapshot', snapshot: {} }),
+};
+
+/**
+ * v0.2: 実物と同じ形の assistant 行 (合成)。model・usage・message.id・sidechain を指定できる。
+ * @param {unknown[]} content
+ * @param {{stop?: string, at?: number, id?: string, model?: string, usage?: Record<string, unknown>, sidechain?: boolean}} [o]
+ */
+export function assistantLine(content, o = {}) {
+  const message = {
+    id: o.id ?? 'msg_synthetic',
+    role: 'assistant',
+    model: o.model ?? 'claude-test-1',
+    content,
+    stop_reason: o.stop ?? 'tool_use',
+    ...(o.usage ? { usage: o.usage } : {}),
+  };
+  return line({ type: 'assistant', isSidechain: o.sidechain === true, message }, o.at);
+}
+
+/**
+ * usage の 3 つの入力 (input・cache_creation・cache_read) に n を分けたもの。output は別に足す (数えないことを確かめるため)。
+ * @param {number} n
+ * @param {number} [output]
+ */
+export const usageOf = (n, output = 999) => {
+  const third = Math.floor(n / 3);
+  return { input_tokens: n - 2 * third, cache_creation_input_tokens: third, cache_read_input_tokens: third, output_tokens: output };
+};
+
+/** v0.2 の合成行: tool_use・usage・要約の区切り・計画。 */
+export const synth2 = {
+  /** tool_use 1 つの assistant 行。 */
+  tool: (/** @type {string} */ name, /** @type {Record<string, unknown>} */ input = {}, /** @type {Parameters<typeof assistantLine>[1]} */ o = {}) =>
+    assistantLine([{ type: 'tool_use', id: `toolu_${name}`, name, input }], o),
+  /** 量 n の usage を持つ assistant 行 (中身は文字だけ)。 */
+  usage: (/** @type {number} */ n, /** @type {Parameters<typeof assistantLine>[1]} */ o = {}) =>
+    assistantLine([{ type: 'text', text: 'working' }], { usage: usageOf(n), ...o }),
+  /** compact_boundary の system 行。 */
+  compact: (/** @type {{trigger?: string, pre?: unknown, post?: unknown, at?: number}} */ o = {}) =>
+    line({ type: 'system', subtype: 'compact_boundary', compactMetadata: { trigger: o.trigger ?? 'auto', preTokens: o.pre, postTokens: o.post } }, o.at),
+  /** アプリの計画ツール (update_plan) の呼び出し。 */
+  plan: (/** @type {Record<string, unknown>} */ input) => assistantLine([{ type: 'tool_use', id: 'toolu_plan', name: 'mcp__ccd_turn__update_plan', input }]),
+  /** sidechain の user 行 (subagent の指示)。 */
+  sidePrompt: (/** @type {string} */ text) => line({ type: 'user', isSidechain: true, message: { role: 'user', content: text } }),
 };
 
 /** よく使う会話ログの末尾。 */

@@ -13,7 +13,9 @@ import {
   MAX_PRS,
   OTHER_PROJECT,
 } from '../shared/constants.mjs';
-import { classifyAll, latestRunByRoutine, needsTranscript } from './classify.mjs';
+import { finishActivity } from './activity.mjs';
+import { classifyAll, latestRunByRoutine, needsTranscript, tailFacts } from './classify.mjs';
+import { contextUsable, finishContext, learnWindows } from './context.mjs';
 import { createProjectResolver } from './project.mjs';
 import { activityOf, parentOf, prListOf, rootOf } from './session.mjs';
 import { cap, isNonEmpty, reportSummary } from './text.mjs';
@@ -25,6 +27,8 @@ import { cap, isNonEmpty, reportSummary } from './text.mjs';
 /** @typedef {import('../shared/types.mjs').NoteCode} NoteCode */
 /** @typedef {import('../shared/types.mjs').ReasonParams} ReasonParams */
 /** @typedef {import('../shared/types.mjs').FormatSuspect} FormatSuspect */
+/** @typedef {import('../shared/types.mjs').TailFacts} TailFacts */
+/** @typedef {import('../shared/types.mjs').PrevContext} PrevContext */
 /** @typedef {import('./classify.mjs').Classified} Classified */
 
 const MAX_URL = 500;
@@ -110,6 +114,8 @@ function detailFor(s, c, body) {
   if (isNonEmpty(s.error)) d.error = cap(/** @type {string} */ (s.error).trim(), CAP.BODY);
   const morePrs = prListOf(s).length - MAX_PRS;
   if (morePrs > 0) d.prsMore = morePrs;
+  const exceeded = s.contextExceededCount;
+  if (c.bucket !== 'cleanup' && typeof exceeded === 'number' && Number.isInteger(exceeded) && exceeded >= 1) d.contextExceeded = exceeded;
   return d;
 }
 
@@ -173,6 +179,11 @@ function buildFamilies(active, byId) {
  * @property {Map<string, SessionRecord>} latestRun
  * @property {Map<string, SessionRecord[]>} runsByRoutine
  * @property {FormatSuspect} formatSuspect  null でなければおすすめを全部切る
+ * @property {Map<string, TranscriptInput>} turns
+ * @property {Map<string, TailFacts>} tfs    最近で transcript があるセッションの tail の解析結果 (v0.2)
+ * @property {Map<string, number>} learned   model ごとの観測した最大の量 (窓の推定)
+ * @property {Map<string, PrevContext>} prev 前回の盤面の段階 (entry が渡す)
+ * @property {boolean} contextSuspect        true なら context を付けない
  */
 
 /** @param {SessionRecord} s @param {Ctx} ctx */
@@ -250,6 +261,13 @@ function makeCard(s, ctx) {
   if (routine) card.routine = routine;
   const family = familyFor(s, ctx);
   if (family) card.family = family;
+  const tf = c.bucket === 'cleanup' ? undefined : ctx.tfs.get(s.sessionId);
+  if (tf) {
+    const activity = finishActivity(tf.activity, c.bucket, ctx.turns.get(s.sessionId)?.subLive ?? 0);
+    if (activity) card.activity = activity;
+    const context = ctx.contextSuspect ? undefined : finishContext(tf.context, s, ctx.learned, ctx.prev.get(s.sessionId));
+    if (context) card.context = context;
+  }
   return card;
 }
 
@@ -441,6 +459,39 @@ export function detectFormatSuspect(active, src) {
 }
 
 /**
+ * v0.2: 最近で transcript があるセッションの tail の解析結果 (渡されていないものはここで作る) と、それを使う盤面全体の値。
+ * contextSuspect (spec/board.md §9): 本筋の assistant 行がある最近の transcript を A 件、そのうち使える量が出たものを
+ * contextSeen 件として、A ≥ FORMAT_SUSPECT_MIN かつ (A − contextSeen) / A > FORMAT_SUSPECT_RATIO なら true。
+ * @param {SessionRecord[]} active
+ * @param {Map<string, TranscriptInput>} turns
+ * @param {number} now
+ * @param {Map<string, TailFacts>|undefined} given
+ */
+function liveInputs(active, turns, now, given) {
+  /** @type {Map<string, TailFacts>} */
+  const tfs = new Map();
+  /** @type {Array<{model?: string, facts: TailFacts['context']}>} */
+  const items = [];
+  let withAssistant = 0;
+  let contextSeen = 0;
+  let activitySeen = 0;
+  for (const s of active) {
+    const ti = turns.get(s.sessionId);
+    if (!ti || !needsTranscript(s, now)) continue;
+    const tf = given?.get(s.sessionId) ?? tailFacts(ti.tail, ti.truncatedHead);
+    tfs.set(s.sessionId, tf);
+    items.push({ model: s.model, facts: tf.context });
+    if (tf.context.hasAssistant) {
+      withAssistant++;
+      if (contextUsable(tf.context)) contextSeen++;
+    }
+    if (tf.activity && tf.activity.kind !== 'think') activitySeen++;
+  }
+  const contextSuspect = withAssistant >= FORMAT_SUSPECT_MIN && (withAssistant - contextSeen) / withAssistant > FORMAT_SUSPECT_RATIO;
+  return { tfs, learned: learnWindows(items), stats: { contextSeen, activitySeen, contextSuspect } };
+}
+
+/**
  * @param {Object} input
  * @param {SessionRecord[]} input.sessions アーカイブ済みも含む全件
  * @param {Set<string>} input.archivedIds
@@ -451,14 +502,19 @@ export function detectFormatSuspect(active, src) {
  * @param {{dirMissing?: boolean}=} input.transcriptStats
  * @param {number=} input.scanMs
  * @param {boolean=} input.demo デモデータで動いているとき true (stats.demo)
+ * @param {Map<string, TailFacts>=} input.tailFacts (v0.2) entry が memo した tail の解析結果。無いセッションはここで作る
+ * @param {Map<string, PrevContext>=} input.prevContext (v0.2) 前回の盤面の段階 (contextMemo の結果)
  * @returns {Board}
  */
-export function buildBoard({ sessions, archivedIds, turns, now, roots, sourceStats = {}, transcriptStats = {}, scanMs = 0, demo = false }) {
+export function buildBoard({
+  sessions, archivedIds, turns, now, roots, sourceStats = {}, transcriptStats = {}, scanMs = 0, demo = false, tailFacts: givenFacts, prevContext,
+}) {
   const byId = new Map(sessions.map((s) => [s.sessionId, s]));
   const active = sessions.filter((s) => !isArchived(s, archivedIds));
   const files = sourceStats.files ?? sessions.length;
   const formatSuspect = detectFormatSuspect(active, { files, dirs: sourceStats.dirs ?? 0 });
-  const cls = classifyAll({ active, turns, now });
+  const live = liveInputs(active, turns, now, givenFacts);
+  const cls = classifyAll({ active, turns, now, tailFacts: live.tfs });
   const resolveProject = createProjectResolver({ roots, byId });
   const projRefs = new Map(active.map((s) => [s.sessionId, resolveProject(s)]));
   /** @type {Map<string, SessionRecord[]>} */
@@ -475,6 +531,7 @@ export function buildBoard({ sessions, archivedIds, turns, now, roots, sourceSta
   const ctx = {
     byId, cls, projRefs, labelOf: labelTable(projRefs.values()), kids, rootOfId,
     latestRun: latestRunByRoutine(active), runsByRoutine, formatSuspect,
+    turns, tfs: live.tfs, learned: live.learned, prev: prevContext ?? new Map(), contextSuspect: live.stats.contextSuspect,
   };
 
   /** @type {Record<'needs_you'|'trouble'|'unread'|'working'|'recent', Card[]>} */
@@ -519,6 +576,7 @@ export function buildBoard({ sessions, archivedIds, turns, now, roots, sourceSta
       scanMs,
       formatSuspect,
       demo: !!demo,
+      ...live.stats,
     },
   };
 }

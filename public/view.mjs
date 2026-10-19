@@ -70,8 +70,26 @@ export function setCheck(input, state) {
 }
 
 /**
+ * 子要素を ref の前へ動かす。動かせるブラウザでは moveBefore (フォーカスを保つ)、ほかは insertBefore。
+ * @param {Element} parent @param {Element} el @param {Element|null} ref
+ */
+function moveTo(parent, el, ref) {
+  const p = /** @type {any} */ (parent);
+  if (el.parentNode === parent && typeof p.moveBefore === 'function') {
+    try {
+      p.moveBefore(el, ref);
+      return;
+    } catch {
+      // 動かせない場合 (別の文書・つながっていない) は insertBefore
+    }
+  }
+  parent.insertBefore(el, ref);
+}
+
+/**
  * 親の子要素を items の順にそろえる。data-key が同じ要素は使い回し、署名 (data-sig) が変わったものだけ作り直す。
- * 消える要素は leave(el) が true を返せば呼び出し側に任せ (片付けのフェードアウト)、それ以外はすぐ外す。
+ * 消える要素は先に、leave(el) が true を返せば呼び出し側に任せ (片付けのフェードアウト)、それ以外はすぐ外す
+ * (並べる間に ref が消える要素に止まって、後ろの要素を全部動かさないように。動かすとフォーカスが外れる)。
  * 片付け中 (data-leaving) の要素は並べ替えの対象にしない。
  * @template T
  * @param {Element} parent
@@ -92,6 +110,12 @@ export function reconcile(parent, items, keyOf, sigOf, build, leave) {
     if (k == null || existing.has(k)) he.remove();
     else existing.set(k, he);
   }
+  const wanted = new Set(items.map(keyOf));
+  for (const [k, el] of [...existing]) {
+    if (wanted.has(k)) continue;
+    existing.delete(k);
+    if (!(leave && leave(el))) el.remove();
+  }
   let ref = parent.firstElementChild;
   for (const item of items) {
     while (ref && /** @type {HTMLElement} */ (ref).dataset.leaving != null) ref = ref.nextElementSibling;
@@ -110,11 +134,7 @@ export function reconcile(parent, items, keyOf, sigOf, build, leave) {
       }
     }
     if (el === ref) ref = ref.nextElementSibling;
-    else parent.insertBefore(el, ref);
-  }
-  for (const el of existing.values()) {
-    if (leave && leave(el)) continue;
-    el.remove();
+    else moveTo(parent, el, ref);
   }
 }
 
