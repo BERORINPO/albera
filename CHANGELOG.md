@@ -2,9 +2,7 @@
 
 All notable changes are listed here. Versions follow [Semantic Versioning](https://semver.org/); while the version starts with 0, a minor release may change behaviour.
 
-## 0.2.0 - Unreleased
-
-The date is set when it is published.
+## 0.2.0 - 2026-10-19
 
 ### Added
 
