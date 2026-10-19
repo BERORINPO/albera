@@ -5,7 +5,6 @@ import { test } from 'node:test';
 import { applyPick, hiddenPicks } from '../public/cleanup.mjs';
 import { makeT } from '../public/i18n.mjs';
 import { keyAction } from '../public/keys.mjs';
-import { overviewKey, overviewModel, overviewSig } from '../public/overview.mjs';
 import { detailStamp } from '../public/rows.mjs';
 import { pruneNew, reselectLeft, state } from '../public/state.mjs';
 import { cardIndex, cursorAfter, listsFromRows, reselectIds, stalePrefKeys, visibleModel } from '../public/ui-state.mjs';
@@ -104,28 +103,10 @@ test('pruneNew: 期限の切れた新着の印だけを消し、消したかど�
 
 test('stalePrefKeys: 盤面に無いプロジェクトのサブグループと最近の開閉だけ (ほかの記録は残す)', () => {
   const prefs = { open: { recent: true, cleanup: false, 'sub:retried:demo-app': true, 'sub:retried:gone': true, 'sub:idle_30d:demo-app': false }, more: { unread: true, 'recent:notes': true, 'recent:gone': true } };
-  assert.deepEqual(stalePrefKeys(prefs, board()), { open: ['sub:retried:gone', 'sub:idle_30d:demo-app'], more: ['recent:gone'] });
-  assert.deepEqual(stalePrefKeys(prefs, null), { open: [], more: [] }, '盤面が無ければ何も消さない');
-});
-
-test('overviewSig: 時刻とカーソルが変わっても同じ (5 秒ごとに作り直さない)。印の顔ぶれや欄が変われば変わる', () => {
-  const mk = (/** @type {number} */ since, /** @type {string} */ pile = 'needs_you') => ({
-    v: 2, counts: {}, buckets: { needs_you: [], trouble: [], unread: [], working: [], [pile]: [{ id: 'n1', title: 'Pick a colour', since, project: { key: 'p', label: 'p' } }] }, recentGroups: [], cleanupGroups: [],
-  });
-  const sig = (/** @type {any} */ b) => overviewSig('en', overviewModel(b, null, {}));
-  assert.equal(sig(mk(1)), sig(mk(99999)));
-  assert.notEqual(sig(mk(1)), sig(mk(1, 'trouble')));
-  assert.notEqual(overviewSig('en', overviewModel(mk(1), null, {})), overviewSig('ja', overviewModel(mk(1), null, {})));
-});
-
-test('overviewKey: 1 文字キーを止めると全体の中の j / k / z も効かない。矢印・Enter・Esc は効く。z の押しっぱなしと日本語入力は無視', () => {
-  for (const key of ['j', 'k', 'z']) assert.equal(overviewKey({ key }, false), null, key);
-  for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Enter', ' ', 'Escape']) assert.equal(overviewKey({ key }, false), key, key);
-  assert.equal(overviewKey({ key: 'j' }, true), 'j');
-  assert.equal(overviewKey({ key: 'z', repeat: true }, true), null);
-  assert.equal(overviewKey({ key: 'j', keyCode: 229 }, true), null);
-  assert.equal(overviewKey({ key: 'j', isComposing: true }, true), null);
-  assert.equal(overviewKey({ key: 'j', ctrlKey: true }, true), null);
+  assert.deepEqual(stalePrefKeys(prefs, board()), { open: ['sub:retried:gone', 'sub:idle_30d:demo-app'], more: ['recent:gone'], prefs: [] });
+  assert.deepEqual(stalePrefKeys(prefs, null), { open: [], more: [], prefs: [] }, '盤面が無ければ何も消さない');
+  // v0.1 の全体 (Overview) の好みは、盤面が無くても落とす (キャンバスの遠くの縮尺に置き換わった)
+  assert.deepEqual(stalePrefKeys({ ...prefs, overview: true, overviewQuiet: false }, null).prefs, ['overview', 'overviewQuiet']);
 });
 
 test('keyAction: 1 文字のキーは Shift つきでも文字のまま効く (/ や数字に Shift が要る配列)。Shift+Enter・Shift+Space・Shift+矢印は無視', () => {

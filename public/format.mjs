@@ -2,64 +2,16 @@
 // 画面: 文言と時間の整形 (純粋関数。DOM・storage・時計は触らない。node:test からも読める)。
 // 言葉を返す関数は全部 t を最初に受け取る (public/i18n.mjs の makeT)。Intl の出力は使わない。
 
-import { DAY, DEEP_LINK_PREFIX, HOUR, IDLE_SAFE_MS, MIN, QUIET_HINT_MS, QUIET_MS, RECENT_MS, SEC, SESSION_ID_RE } from '../src/shared/constants.mjs';
+import { COMPACT_SHOW_MS, DAY, DEEP_LINK_PREFIX, IDLE_SAFE_MS, QUIET_HINT_MS, QUIET_MS, RECENT_MS, SESSION_ID_RE } from '../src/shared/constants.mjs';
+import { agoWords, doingText } from './doing.mjs';
+import { durationText } from './times.mjs';
+
+// 時間と日付の言葉は times.mjs、していることの言葉は doing.mjs にある (ここから今までどおり使える)
+export { absoluteTime, agoText, cardTime, createdText, dateline, dayKey, durationText, hm, timeText } from './times.mjs';
+export { agoWords, asOfText, doingMainSpec, doingOnePart, doingOneText, doingSpec, doingText, shortDoing } from './doing.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 /** @typedef {Record<string, any>} Card */
-
-const pad = (/** @type {number} */ n) => String(n).padStart(2, '0');
-
-/**
- * 経過時間を分・時間・日に切り捨てて言葉にする。1 分未満は '' (呼び出し側が _now の形を使う)。
- * @param {T} t
- * @param {number} ms
- * @param {'short'|'long'} [style] 行のセルは short、文は long
- */
-export function durationText(t, ms, style = 'short') {
-  const d = Math.max(0, Number(ms) || 0);
-  if (d < MIN) return '';
-  const set = style === 'long' ? 'unit' : 'short';
-  if (d < HOUR) return t(`time.${set}.minute`, { n: Math.floor(d / MIN) });
-  if (d < DAY) return t(`time.${set}.hour`, { n: Math.floor(d / HOUR) });
-  return t(`time.${set}.day`, { n: Math.floor(d / DAY) });
-}
-
-/**
- * 「N 前」。1 分未満は秒で数える (古い内容の知らせだけが秒を見せる)。
- * @param {T} t
- * @param {number} ms
- */
-export function agoText(t, ms) {
-  const d = Math.max(0, Number(ms) || 0);
-  const dur = d < MIN ? t('time.short.second', { n: Math.floor(d / SEC) }) : durationText(t, d, 'short');
-  return t('time.agoPhrase', { dur });
-}
-
-/**
- * 時刻のセルの文言 (状態の言葉つき)。知らない kind は time.ago。
- * @param {T} t
- * @param {string} kind waiting | stopped | stalled | ended | updated | running | latest | moved | ago
- * @param {number} since
- * @param {number} now
- * @param {'short'|'long'} [style]
- */
-export function timeText(t, kind, since, now, style = 'short') {
-  const k = t.has(`time.${kind}`) ? kind : 'ago';
-  const d = now - since;
-  if (!(d >= MIN)) return t(`time.${k}_now`);
-  const dur = durationText(t, d, style);
-  return t(`time.${k}`, { dur, ago: t('time.agoPhrase', { dur }) });
-}
-
-/**
- * 行の時刻セルに使う種類と起点。作業中で startedAt があれば「N 分経過」。
- * @param {Card} card
- * @returns {{kind: string, since: number}}
- */
-export function cardTime(card) {
-  if (card.bucket === 'working' && Number.isFinite(card.startedAt)) return { kind: 'running', since: card.startedAt };
-  return { kind: String(card.timeKind ?? 'ago'), since: Number(card.since) || 0 };
-}
 
 /**
  * 先頭の案内 (lede) の 2 行目。文なので長い単位。
@@ -88,6 +40,8 @@ export function cleanupGroupName(t, reason) {
   const days = reason === 'idle_30d' ? IDLE_SAFE_MS / DAY : RECENT_MS / DAY;
   return t(`cleanup.${reason}`, { days, from: RECENT_MS / DAY, to: IDLE_SAFE_MS / DAY });
 }
+
+const pad = (/** @type {number} */ n) => String(n).padStart(2, '0');
 
 /**
  * 使用上限の「resets 1:50pm」から 24 時間制の HH:mm を取り出す。分か am/pm が無いものは読まない。
@@ -200,14 +154,18 @@ export function contentLang(text) {
 }
 
 /**
- * 絞り込みの一致判定 (大文字小文字を区別しない部分一致)。今の言語の言葉で探す。
+ * 絞り込みの一致判定 (大文字小文字を区別しない部分一致)。今の言語の言葉で探す: 題名・プロジェクト・本文・理由の文・
+ * していること (手順と Claude の説明を含む)・コンテキストの言葉 (「引き継ぎどき」と、引き継げない欄の言葉)。
  * @param {Card} card
  * @param {string} q 小文字にした検索語 (空なら常に一致)
  * @param {T} t
+ * @param {number} [now] 渡せば「要約済み」の言葉でも探す
  */
-export function matches(card, q, t) {
+export function matches(card, q, t, now = Number.NaN) {
   if (!q) return true;
-  const hay = [card.title, projectLabel(t, card.project), card.body, reasonLine(t, card)];
+  const wait = waitWordsKey(card);
+  const words = contextMeta(t, card.context, now).map((m) => m.text);
+  const hay = [card.title, projectLabel(t, card.project), card.body, reasonLine(t, card), doingText(t, card.activity), ...words, wait ? t(wait) : ''];
   return hay.some((s) => String(s ?? '').toLowerCase().includes(q));
 }
 
@@ -280,36 +238,6 @@ export function tabTitle(t, counts, offline = false) {
   return offline ? t('app.tabOffline', { title }) : title;
 }
 
-/** ローカル時刻の HH:mm。 @param {number} ms */
-export function hm(ms) {
-  const d = new Date(ms);
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-/** ローカルの日付のキー YYYY-MM-DD (今日の件数などに使う)。 @param {number} ms */
-export function dayKey(ms) {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-/** 見出しの日付「Sun 18 Oct, as of 14:52」。 @param {T} t @param {number} ms */
-export function dateline(t, ms) {
-  const d = new Date(ms);
-  return t('date.asOf', { wd: t(`date.wd.${d.getDay()}`), d: d.getDate(), mon: t(`date.mon.${d.getMonth()}`), hm: hm(ms) });
-}
-
-/** 絶対時刻 (ローカル) YYYY-MM-DD HH:mm。 @param {number|null|undefined} ms */
-export function absoluteTime(ms) {
-  if (typeof ms !== 'number' || !Number.isFinite(ms)) return '';
-  return `${dayKey(ms)} ${hm(ms)}`;
-}
-
-/** 作成日時: 今日なら「今日 HH:mm」、それ以外は絶対時刻。 @param {T} t @param {number|null|undefined} ms @param {number} now */
-export function createdText(t, ms, now) {
-  if (typeof ms !== 'number' || !Number.isFinite(ms)) return '';
-  return dayKey(ms) === dayKey(now) ? t('date.today', { hm: hm(ms) }) : absoluteTime(ms);
-}
-
 /** Claude アプリで開くリンク。ID の形が違えば null。 @param {string} id */
 export function deepLink(id) {
   return SESSION_ID_RE.test(String(id)) ? DEEP_LINK_PREFIX + id : null;
@@ -320,3 +248,64 @@ export const titleOf = (t, title) => (String(title ?? '').trim() === '' ? t('unt
 
 /** 文をつなぐ (英語は空白、日本語は「。」の後に空白を入れない)。空の文は省く。 @param {T} t @param {...string} parts */
 export const sentences = (t, ...parts) => parts.filter(Boolean).join(t.lang === 'ja' ? '' : ' ');
+
+// ---------- v0.2: していること・コンテキストの言葉 (spec/ui.md §8.4・§8.5・§10.3) ----------
+
+/**
+ * トークン数の短い表記 (自前のテンプレート、Intl なし): 999 → 999、150000 → 150K、999600 → 1M、1200000 → 1.2M。
+ * @param {number} n
+ */
+export function tokensText(n) {
+  const v = Math.max(0, Math.round(Number(n) || 0));
+  if (v < 1000) return String(v);
+  const k = Math.round(v / 1000);
+  return k < 1000 ? `${k}K` : `${Math.round(v / 1e5) / 10}M`;
+}
+
+/** 要約が COMPACT_SHOW_MS 以内か (行に「要約済み」を出す間)。 @param {any} ctx @param {number} now */
+export const compactedRecent = (ctx, now) => Number.isFinite(Number(ctx?.compacted?.at)) && now - Number(ctx.compacted.at) < COMPACT_SHOW_MS;
+
+/**
+ * 行のコンテキストの言葉 (純粋)。0〜2 項目 {text, strong}: notice は控えめ、due / soon は太字の 1 項目、
+ * 段階なしは無し (always なら控えめ)、1 時間以内の要約は「要約済み」(ago: 毎分書き直す印)。
+ * @param {T} t @param {any} ctx @param {number} now @param {{always?: boolean}} [o]
+ * @returns {Array<{text: string, strong: boolean, ago?: {key: string, at: number, until: number}}>}
+ */
+export function contextMeta(t, ctx, now, { always = false } = {}) {
+  if (!ctx || !Number.isFinite(Number(ctx.pct))) return [];
+  const out = [];
+  const meta = t(ctx.inferred ? 'ctx.metaEst' : 'ctx.meta', { pct: ctx.pct });
+  if (ctx.level === 'due' || ctx.level === 'soon') out.push({ text: `${meta} ${t(`ctx.${ctx.level}`)}`, strong: true });
+  else if (ctx.level === 'notice' || always) out.push({ text: meta, strong: false });
+  if (compactedRecent(ctx, now)) {
+    const at = Number(ctx.compacted.at);
+    out.push({ text: agoWords(t, 'ctx.compacted', at, now), strong: false, ago: { key: 'ctx.compacted', at, until: at + COMPACT_SHOW_MS } });
+  }
+  return out;
+}
+
+/**
+ * 詳しくのコンテキストの値: 割合・使用量・窓・自動要約の点、推定ならその一言、要約されていれば「要約済み」(いつでも)。
+ * @param {T} t @param {any} ctx @param {number} now
+ * @param {{compacted?: boolean}} [o] compacted: false なら要約の言葉を付けない (DOM が別の項目にして毎分書き直す)
+ */
+export function contextValueText(t, ctx, now, o = {}) {
+  if (!ctx) return '';
+  const value = t('detail.contextValue', { pct: ctx.pct, used: tokensText(ctx.used), window: tokensText(ctx.window), at: tokensText(ctx.compactAt) });
+  const at = Number(ctx.compacted?.at);
+  const done = o.compacted !== false && Number.isFinite(at) ? agoWords(t, 'ctx.compacted', at, now) : '';
+  return sentences(t, value, ctx.inferred ? t('detail.contextEst') : '', done);
+}
+
+/**
+ * 引き継ぎのボタンを出さない欄の言葉のキー (段階が due / soon のときだけ): 作業中 → 終わってから、返事待ち → 先に答える、
+ * 使用上限で止まった → 上限が戻ってから。それ以外は null。
+ * @param {Card|null|undefined} card
+ */
+export function waitWordsKey(card) {
+  const lv = card?.context?.level;
+  if (!card || (lv !== 'due' && lv !== 'soon')) return null;
+  if (card.bucket === 'working') return 'ctx.afterWork';
+  if (card.bucket === 'needs_you') return 'ctx.answerFirst';
+  return card.bucket === 'trouble' && card.reason === 'limit' ? 'ctx.afterLimit' : null;
+}

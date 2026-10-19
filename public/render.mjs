@@ -2,14 +2,14 @@
 // 画面: 描画のまとめ役。見出し・帯・lede・台帳・全体・各欄・帯・足元・タブ題名・favicon を順に合わせ、フォーカスを保つ。
 // 5 秒ごとの描画はフォーカスを動かさない。フォーカスしていた部品が消えたときだけ、カーソルの行へ移す。
 
-import { DAY, PAGE_SIZE, PREVIEW, RECENT_MS, STALE_AFTER_MS } from '../src/shared/constants.mjs';
+import { DAY, FORMAT_SUSPECT_MIN, PAGE_SIZE, PREVIEW, RECENT_MS, STALE_AFTER_MS } from '../src/shared/constants.mjs';
+import { canvasFocusFallback, canvasJumpPile, canvasJumpTo, drawCanvas, quietFocus } from './canvas-ctl.mjs';
 import { renderCleanup, renderSelbar } from './cleanup.mjs';
 import { faviconKind, setFavicon } from './favicon.mjs';
-import { agoText, bucketTitle, dateline, deepLink, quietHint, sentences, tabTitle, timeText } from './format.mjs';
+import { agoText, agoWords, bucketTitle, dateline, deepLink, quietHint, sentences, tabTitle, timeText } from './format.mjs';
 import { renderBanners, renderFront, renderIntro, renderLede } from './front.mjs';
 import { otherLang } from './i18n.mjs';
 import { notifyState } from './notify.mjs';
-import { focusMark, overviewModel, renderOverview } from './overview.mjs';
 import { renderLoadingPile, renderPile, renderRecent } from './rows.mjs';
 import { archivedToday, isNew, now, pruneNew, savePrefs, state, takeArrival, zeroSinceToday } from './state.mjs';
 import { batchProgress, cardIndex, cursorAfter, focusSignature, listsFromRows, nextUp, presentIds, visibleModel } from './ui-state.mjs';
@@ -31,7 +31,7 @@ function leave(el) {
 }
 
 /** 部品の居場所: 欄 + 一番近い data-key (欄を移った行は「同じ部品」とみなさない)。 @param {Element} el */
-const scopeOf = (el) => `${el.closest('section.pile, #overview, #selbar, #front')?.id ?? ''}/${el.parentElement?.closest('[data-key]')?.getAttribute('data-key') ?? ''}`;
+const scopeOf = (el) => `${el.closest('section.pile, #cv-bar, #canvas, #selbar, #front')?.id ?? ''}/${el.parentElement?.closest('[data-key]')?.getAttribute('data-key') ?? ''}`;
 
 function captureFocus() {
   const el = document.activeElement;
@@ -54,18 +54,27 @@ function focusPileHead(section) {
   head.focus({ preventScroll: true });
 }
 
+/** プログラムがフォーカスを戻す。キャンバスでは、戻したフォーカスでカメラもカーソルも動かさない (quietFocus)。 @param {HTMLElement} el */
+const refocus = (el) => (state.view === 'canvas' ? quietFocus(el) : el.focus({ preventScroll: true }));
+
 /** @param {ReturnType<typeof captureFocus>} f */
 function restoreFocus(f) {
-  if (!f || !gone(f.el)) return;
-  // 隠れただけの部品には、ブラウザが body へ移すまでフォーカスが残っている。それ以外の場所にあれば触らない
+  if (!f) return;
   const active = document.activeElement;
+  if (!gone(f.el)) {
+    // 並べ替えで動かした部品はまだ在るが、動かしたときにフォーカスが外れている (ブラウザが body へ移す): 同じ部品へ戻す
+    if (active !== f.el && (!active || active === document.body)) refocus(f.el);
+    return;
+  }
+  // 隠れただけの部品には、ブラウザが body へ移すまでフォーカスが残っている。それ以外の場所にあれば触らない
   if (active && active !== document.body && active !== f.el) return;
   for (const el of /** @type {HTMLElement[]} */ ([...document.querySelectorAll(f.tag)])) {
     if (focusSignature(el.tagName, (n) => el.getAttribute(n), scopeOf(el)) === f.sig && !gone(el)) {
-      el.focus({ preventScroll: true });
+      refocus(el);
       return;
     }
   }
+  if (state.view === 'canvas') return canvasFocusFallback();
   const row = state.cursor ? rowEl(state.cursor.id) : null;
   const title = /** @type {HTMLElement|null} */ (row?.querySelector('[data-action="toggle"]') ?? null);
   if (title && !gone(title)) return title.focus({ preventScroll: true });
@@ -85,7 +94,6 @@ function settleCursor() {
   if (!cursor) return;
   state.cursor = cursor;
   for (const r of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('#pages .row[data-id], #pages .trow[data-id]')])) r.classList.toggle('is-cursor', r.dataset.id === cursor.id);
-  for (const b of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('#overview .mark-btn')])) b.classList.toggle('is-cursor', b.dataset.id === cursor.id);
 }
 
 /** @param {string} id */
@@ -116,8 +124,11 @@ function renderFoot() {
   const notify = notifyState();
   const archived = Number(state.board?.counts?.archived ?? s.archived) || 0;
   const badFormat = Number(s.recentWithTranscript) > 0 && Number(s.unknownTurnRecent) / Number(s.recentWithTranscript) > 0.5;
-  // 署名は足元に出す値だけ (scanMs などで毎回作り直して、開いた「読み込みの状態」を閉じないように)
-  const sig = [t.lang, keysOn, notify, state.prefs.notify, !!state.board, s.bad, s.transcriptsMissingRecent, s.transcriptsDirMissing, badFormat, s.demo, archived].join('|');
+  // コンテキスト量が読めない (盤面が全部外した) / 最近の会話ログがあるのに操作が 1 つも読めない: ログの形式が変わった目安
+  const ctxFormat = !!s.contextSuspect;
+  const actFormat = s.activitySeen === 0 && Number(s.recentWithTranscript) >= FORMAT_SUSPECT_MIN;
+  // 署名は足元に出す値だけ (scanMs や contextSeen などで毎回作り直して、開いた「読み込みの状態」を閉じないように)
+  const sig = [t.lang, keysOn, notify, state.prefs.notify, !!state.board, s.bad, s.transcriptsMissingRecent, s.transcriptsDirMissing, badFormat, ctxFormat, actFormat, s.demo, archived].join('|');
   const foot = $('foot');
   if (foot.dataset.sig === sig) return;
   foot.dataset.sig = sig;
@@ -134,7 +145,7 @@ function renderFoot() {
       { class: 'foot__l' },
       h('p', { class: 'foot__trust', text: t('foot.trust') }),
       keysOn
-        ? h('p', { class: 'foot__keys', 'aria-label': t('help.title') }, key(['j', 'k'], t('foot.keys.move')), key(['Enter'], t('foot.keys.open')), key(['Space'], t('foot.keys.peek')), key(['x'], t('foot.keys.pick')), key(['/'], t('foot.keys.filter')), key(['z'], t('foot.keys.overview')), key(['?'], t('foot.keys.more')))
+        ? h('p', { class: 'foot__keys', 'aria-label': t('help.title') }, key(['j', 'k'], t('foot.keys.move')), key(['Enter'], t('foot.keys.open')), key(['Space'], t('foot.keys.peek')), key(['x'], t('foot.keys.pick')), key(['/'], t('foot.keys.filter')), key(['v'], t('foot.keys.view')), key(['?'], t('foot.keys.more')))
         : null,
       notify === 'ok' && state.board
         ? h('p', { class: 'foot__notify' }, h('button', { class: 'textbtn', type: 'button', 'data-action': 'notify', text: t(state.prefs.notify ? 'foot.notifyOff' : 'foot.notifyOn') }), ' ', h('span', { class: 'foot__note', text: t('foot.notifyNote') }))
@@ -148,6 +159,8 @@ function renderFoot() {
       s.demo ? h('p', { class: 'foot__ink', text: t('foot.demo') }) : null,
       s.transcriptsDirMissing ? h('p', { class: 'foot__ink', text: t('foot.noDir') }) : null,
       badFormat ? h('p', { class: 'foot__ink', text: t('foot.badFormat') }) : null,
+      ctxFormat ? h('p', { class: 'foot__ink', text: t('foot.ctxFormat') }) : null,
+      actFormat ? h('p', { class: 'foot__ink', text: t('foot.actFormat') }) : null,
       state.board ? h('details', { class: 'foot__diag', open: diagOpen }, h('summary', { text: t('foot.diag') }), ...diag) : null,
       h('p', { class: 'foot__disc', text: t('foot.disclaimer') }),
     ),
@@ -160,22 +173,25 @@ export function render() {
   const at = now();
   const board = state.board;
   const focus = captureFocus();
-  view.visible = board ? visibleModel(board, { q: state.filter, family: state.family, t }) : null;
+  view.visible = board ? visibleModel(board, { q: state.filter, family: state.family, t, now: at }) : null;
   view.index = cardIndex(board);
   view.present = presentIds(board);
   renderMast();
   renderBanners($('banners'), { t, now: at, board, fail: state.fail, lastOk: state.lastOk, visible: view.visible, q: state.filter.trim(), family: state.family });
   renderFront(
-    { lede: $('lede'), ledger: $('ledger'), toggle: $('ov-toggle') },
-    { t, now: at, board, loading: state.loading, fail: state.fail, calmSince: zeroSinceToday(at), visible: view.visible, overviewOpen: !!state.prefs.overview && !!board, keysOn: state.prefs.keys !== false },
+    { lede: $('lede'), ledger: $('ledger'), toggle: $('view-toggle'), due: $('due-next') },
+    { t, now: at, board, loading: state.loading, fail: state.fail, calmSince: zeroSinceToday(at), visible: view.visible, view: state.view, keysOn: state.prefs.keys !== false },
   );
   renderIntro($('intro'), { t, show: !!board && !state.prefs.seenIntro && state.storageOk });
-  const ov = $('overview');
-  renderOverview(ov, t, board && state.prefs.overview ? overviewModel(board, view.visible, state.prefs) : null, { now: at, cursorId: state.cursor?.id ?? null });
   const empty = !board || (Number(board.counts?.active) || 0) === 0;
-  $('pages').hidden = !!board && empty;
+  const canvasOn = state.view === 'canvas';
+  $('top').dataset.view = canvasOn ? 'canvas' : 'list';
+  $('canvas').hidden = !canvasOn;
+  $('foot').hidden = canvasOn;
+  $('pages').hidden = canvasOn || (!!board && empty);
   document.documentElement.classList.toggle('keys-off', state.prefs.keys === false);
-  if (!board) {
+  if (canvasOn) drawCanvas(at);
+  else if (!board) {
     for (const p of LIVE_PILES) $(`p-${p}`).hidden = true;
     $('p-recent').hidden = true;
     $('p-cleanup').hidden = true;
@@ -188,6 +204,7 @@ export function render() {
       t, now: at, board, index: view.index, nextId: next?.card.id ?? null, cursorId: state.cursor?.id ?? null,
       open: state.open, selected: state.selected, copied: state.copied, filtering: view.visible.filtering, prefs: state.prefs,
       isNew: (/** @type {string} */ p, /** @type {string} */ id) => isNew(p, id, at), takeArrival, leave, pages: state.pages, batchOpen: !!state.batch,
+      handoff: state.prefs.handoff,
     };
     for (const p of LIVE_PILES) renderPile($(`p-${p}`), p, view.visible.buckets[p], ctx);
     renderRecent($('p-recent'), view.visible.recentGroups, view.visible.counts.recent, ctx);
@@ -198,12 +215,12 @@ export function render() {
       copiedUntil: state.copiedUntil, local: Date.now(), prefs: state.prefs, today: archivedToday(at), wide: matchMedia('(min-width: 40rem)').matches,
     });
   }
-  settleCursor();
+  if (!canvasOn) settleCursor();
   // 止まったかもと未読が両方空なら、真ん中の列を詰める (広い画面の 3 列で空の帯を残さない)
   const solo = $('p-trouble').hidden && $('p-unread').hidden;
   /** @type {HTMLElement} */ (document.querySelector('.page--now > .side')).hidden = solo;
   document.querySelector('.page--now')?.classList.toggle('is-solo', solo);
-  renderFoot();
+  if (!canvasOn) renderFoot();
   document.title = tabTitle(t, board?.counts, !!board && state.fail === 'offline');
   setFavicon(board ? faviconKind(board.counts) : 'none');
   restoreFocus(focus);
@@ -220,10 +237,16 @@ export function renderPulse() {
  */
 export function renderTimes() {
   const at = now();
-  if (pruneNew(at)) render();
+  // 「要約済み」と「引き継ぎ文をコピー」は期限つき: 切れたものがあれば、その行を作り直す (署名がもう違う)
+  const expired = [...document.querySelectorAll('[data-ago-until]')].some((el) => Number(/** @type {HTMLElement} */ (el).dataset.agoUntil) <= at);
+  if (pruneNew(at) || expired) render();
   const t = state.t;
   for (const el of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('time[data-kind][data-since]')])) {
     const text = timeText(t, el.dataset.kind ?? 'ago', Number(el.dataset.since), at);
+    if (el.textContent !== text) el.textContent = text;
+  }
+  for (const el of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('[data-ago-key][data-ago-at]')])) {
+    const text = agoWords(t, el.dataset.agoKey ?? '', Number(el.dataset.agoAt), at, el.dataset.agoDoing ?? '');
     if (el.textContent !== text) el.textContent = text;
   }
   for (const el of /** @type {HTMLElement[]} */ ([...document.querySelectorAll('[data-hint-since]')])) {
@@ -294,6 +317,7 @@ export function clearFilters() {
 
 /** その行が見えるように欄・グループ・「残りを表示」を開いて、カーソルとフォーカスを置く。 @param {string} id */
 export function jumpTo(id) {
+  if (state.view === 'canvas') return canvasJumpTo(id);
   const e = view.index.get(id);
   if (!e) return;
   const { card, pile } = e;
@@ -330,6 +354,7 @@ export function jumpTo(id) {
 
 /** 台帳とキー 1〜6: 欄を開いて、その先頭の行へ。空なら読み上げるだけ。 @param {string} pile */
 export function jumpPile(pile) {
+  if (state.view === 'canvas') return canvasJumpPile(pile);
   if ((pile === 'recent' || pile === 'cleanup') && !(state.prefs.open[pile] ?? pile === 'cleanup')) {
     state.prefs.open[pile] = true;
     savePrefs();
@@ -340,19 +365,9 @@ export function jumpPile(pile) {
   focusRow(first, 'start');
 }
 
-/** カーソルの行の題名へ (無ければ全体を開くボタンへ) フォーカスを戻す。 */
+/** カーソルの行の題名へ (無ければ表示の切り替えのボタンへ) フォーカスを戻す。 */
 export function backToRow() {
   const row = state.cursor ? rowEl(state.cursor.id) : null;
   const title = /** @type {HTMLElement|null} */ (row?.querySelector('[data-action="toggle"]') ?? null);
-  (title ?? $('ov-toggle')).focus();
-}
-
-/** 全体を開く / 閉じる。キー z からなら中の印 (閉じたら行) へフォーカスを移す。 @param {boolean} [moveFocus] */
-export function toggleOverview(moveFocus = false) {
-  state.prefs.overview = !state.prefs.overview;
-  savePrefs();
-  render();
-  if (!moveFocus) return;
-  if (state.prefs.overview) focusMark($('overview'), state.cursor?.id ?? null);
-  else backToRow();
+  (title ?? $('view-toggle')).focus();
 }

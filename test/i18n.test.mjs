@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { test } from 'node:test';
 import { EN } from '../public/dict-en.mjs';
 import { JA } from '../public/dict-ja.mjs';
@@ -88,4 +89,20 @@ test('detectLang: ?lang= > 保存した切替 > navigator.languages の最初の
   assert.equal(detectLang({}), 'en');
   assert.equal(otherLang('en'), 'ja');
   assert.equal(otherLang('ja'), 'en');
+});
+
+test('辞書: 分けたファイル (dict-<lang>-*.mjs) どうしでキーが重ならない (後の方が黙って上書きしない)', async () => {
+  const { EN_HANDOFF } = await import('../public/dict-en-handoff.mjs');
+  const { JA_HANDOFF } = await import('../public/dict-ja-handoff.mjs');
+  const { EN_CANVAS } = await import('../public/dict-en-canvas.mjs');
+  const { JA_CANVAS } = await import('../public/dict-ja-canvas.mjs');
+  const dir = new URL('../public/', import.meta.url);
+  for (const [lang, dict, part] of [['en', EN, { ...EN_HANDOFF, ...EN_CANVAS }], ['ja', JA, { ...JA_HANDOFF, ...JA_CANVAS }]]) {
+    // 1 行 1 キー: ファイルの中のキーの行を数えると、合わせた辞書のキーの数と同じになる
+    const files = fs.readdirSync(dir).filter((f) => new RegExp(`^dict-${lang}(-[a-z]+)?\.mjs$`).test(f));
+    assert.ok(files.length >= 2, `${lang}: ${files.join(', ')}`);
+    const lines = files.flatMap((f) => fs.readFileSync(new URL(f, dir), 'utf8').split('\n')).filter((l) => /^ {2}(?:'[^']+'|[a-z]+):/.test(l));
+    assert.equal(lines.length, Object.keys(dict).length, `${lang}: 重なったキーがある`);
+    for (const key of Object.keys(part)) assert.equal(dict[key], part[key], `${lang} ${key}`);
+  }
 });

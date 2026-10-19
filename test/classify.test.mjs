@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { classifyAll } from '../src/core/classify.mjs';
-import { DAY, HOUR, MIN, NOW, SEC, rec, sid, tails, ti } from './helpers/fixtures.mjs';
+import { classifyAll, tailFacts } from '../src/core/classify.mjs';
+import { activityFacts } from '../src/core/activity.mjs';
+import { contextFacts } from '../src/core/context.mjs';
+import { parseTurn, turnEntries } from '../src/core/turn.mjs';
+import { DAY, HOUR, MIN, NOW, SEC, rec, sid, synth, synth2, tails, ti, usageOf } from './helpers/fixtures.mjs';
 
 /**
  * @param {ReturnType<typeof rec>[]} active
@@ -252,4 +255,47 @@ test('7 日より前のセッションは会話ログがあっても読まない
   const s = rec(1, { lastActivityAt: NOW - 10 * DAY });
   const c = one(s, ti(tails.tool(), 10 * DAY));
   assert.deepEqual([c.facts.T.turn, c.bucket], ['unknown', 'cleanup']);
+});
+
+test('tailFacts: tail を 1 回だけ parse して、ターン・していること・コンテキストを同じ entries から出す', () => {
+  const tail = [
+    synth.prompt('go', NOW - 10 * MIN),
+    synth2.tool('Read', { file_path: '/home/tester/alpha/spec.md' }, { usage: usageOf(70_000) }),
+    synth.toolResult(),
+    synth2.tool('Edit', { file_path: '/home/tester/alpha/board.mjs' }, { usage: usageOf(80_000), id: 'msg_2' }),
+    synth.noise(),
+    '',
+  ].join('\n');
+  const realParse = JSON.parse;
+  let calls = 0;
+  JSON.parse = (/** @type {any[]} */ ...args) => {
+    calls++;
+    return realParse.apply(JSON, /** @type {any} */ (args));
+  };
+  let tf;
+  try {
+    tf = tailFacts(tail, false);
+  } finally {
+    JSON.parse = realParse;
+  }
+  assert.equal(calls, 5); // JSON の行ごとに 1 回 (3 つの解析で共有する)
+  const entries = turnEntries(tail, false);
+  assert.deepEqual(tf.turn, parseTurn(tail, false));
+  assert.deepEqual(tf.activity, activityFacts(entries));
+  assert.deepEqual(tf.context, contextFacts(entries));
+  assert.equal(tf.turn.turn, 'inprogress');
+  assert.deepEqual(tf.activity, { kind: 'edit', target: 'board.mjs' });
+  assert.equal(tf.context.lastUsage?.n, 80_000);
+  // 先頭の欠けた行は 3 つとも見ない
+  const cut = tailFacts('{"type":"assistant","message":{"usage":{"input_tokens":900000}}}\n' + tail, true);
+  assert.equal(cut.context.maxUsed, 80_000);
+});
+
+test('classifyAll: 渡された tailFacts のターン状態を使い、無いセッションは tail を parse する', () => {
+  const s1 = rec(1);
+  const s2 = rec(2);
+  const parsed = new Map([[sid(1), { turn: { turn: /** @type {const} */ ('inprogress'), lastKind: /** @type {const} */ ('tool'), relevant: 1 }, activity: null, context: { maxUsed: 0, hasAssistant: false } }]]);
+  const out = classifyAll({ active: [s1, s2], turns: new Map([[sid(1), ti('', MIN)], [sid(2), ti(tails.tool(), MIN)]]), now: NOW, tailFacts: parsed });
+  assert.equal(out.get(sid(1))?.bucket, 'working'); // tail は空だが、memo のターン状態で作業中
+  assert.equal(out.get(sid(2))?.bucket, 'working');
 });

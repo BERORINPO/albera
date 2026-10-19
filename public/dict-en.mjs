@@ -1,6 +1,9 @@
 // @ts-check
-// 画面の言葉 (英語)。spec/ui.md §19 の copy deck。1 行 1 キー。複数形は {one, other}。
+// 画面の言葉 (英語)。spec/ui.md §19 の copy deck。1 行 1 キー (§19.9 は dict-en-canvas.mjs、§19.13–§19.15 は dict-en-handoff.mjs)。複数形は {one, other}。
 // キーと placeholder は dict-ja.mjs と同じにする (test/i18n.test.mjs が確かめる)。
+
+import { EN_CANVAS } from './dict-en-canvas.mjs';
+import { EN_HANDOFF } from './dict-en-handoff.mjs';
 
 /** @type {Readonly<Record<string, string | {one: string, other: string}>>} */
 export const EN = Object.freeze({
@@ -34,7 +37,7 @@ export const EN = Object.freeze({
   'date.mon.9': 'Oct',
   'date.mon.10': 'Nov',
   'date.mon.11': 'Dec',
-  'filter.label': 'Filter by title, project or summary',
+  'filter.label': 'Filter by title, project, summary or what it is doing',
   'filter.placeholder': 'Filter',
   'lang.switchTo': '日本語',
   'lang.toggleAria': 'Switch language',
@@ -77,8 +80,8 @@ export const EN = Object.freeze({
   'ledger.total': 'Total ({a} archived not shown)',
   'ledger.totalNoArchived': 'Total',
   'ledger.match': '{m} of {n} match',
-  'ledger.overviewOpen': 'Overview',
-  'ledger.overviewClose': 'Close overview',
+  'view.canvas': 'Canvas',
+  'view.list': 'List',
   'bucket.needs_you.title': 'Needs you',
   'bucket.needs_you.verb': 'Open and answer. Longest wait first.',
   'bucket.trouble.title': 'Stuck?',
@@ -186,6 +189,11 @@ export const EN = Object.freeze({
   // 19.7 detail panel
   'detail.state': 'Now',
   'detail.stateValue': '{pile} ({time})',
+  'detail.activity': 'Doing',
+  'detail.step': 'Step',
+  'detail.context': 'Context',
+  'detail.contextValue': '{pct}% ({used} of {window} tokens). It summarizes itself at about {at}.',
+  'detail.contextEst': 'The size limit is a guess.',
   'detail.summary': "Claude's summary",
   'detail.error': 'Full error',
   'detail.branch': 'Branch',
@@ -222,24 +230,11 @@ export const EN = Object.freeze({
   'banner.family': 'Showing only “{title}” and its related sessions',
   'banner.clear': 'Clear',
   'nomatch.query.lead': 'Nothing matches “{q}”.',
-  'nomatch.query.text': 'Searched titles, projects and summaries.',
+  'nomatch.query.text': 'Searched titles, projects, summaries and what sessions are doing.',
   'nomatch.family': 'Nothing in this family matches.',
   'nomatch.clear': 'Clear filter',
 
-  // 19.9 overview
-  'overview.title': 'Overview',
-  'overview.key.cleanup': 'number = sessions to archive',
-  'overview.hint': 'Select a mark to jump to its row.',
-  'overview.mark': '{pile}: {title}, {time}',
-  'overview.shelfAria': '{project}: {list}',
-  'overview.part': '{pile} {n}',
-  'overview.cleanup': 'To archive {n}',
-  'overview.more': '+{n} more',
-  'overview.quiet': { one: '{n} project with nothing to do', other: '{n} projects with nothing to do' },
-  'overview.quietCounts': '{recent} recent, {cleanup} to archive',
-  'overview.quietShow': 'Show them',
-  'overview.quietHide': 'Fold them',
-  'overview.empty': 'Nothing to show.',
+  // 19.9: dict-en-canvas.mjs
 
   // 19.10 to archive
   'cleanup.ba': '{all} sessions now. Archiving every suggestion leaves {left}.',
@@ -249,10 +244,10 @@ export const EN = Object.freeze({
   'cleanup.step3': 'Paste it into Claude',
   'cleanup.stepNow': ' (now)',
   'cleanup.stepDone': ' (done)',
-  'cleanup.why': 'Archiving deletes nothing: you can restore any session in the Claude app. This board changes nothing itself; it only writes the instruction for Claude.',
+  'cleanup.why': 'Archiving deletes nothing; the Claude app can restore it.',
   'cleanup.selectAll': 'Select all {n} suggested',
   'cleanup.tally': '{sel} / {n}',
-  'cleanup.def': 'Suggested means safe to archive. Left out: open PRs, pinned, marked to keep, an unread last report, or a child session still in use.',
+  'cleanup.def': 'Left out: open PRs, pinned, marked to keep, unread reports, children in use.',
   'cleanup.retried': 'Failed starts you already retried',
   'cleanup.routine_old': 'Older runs of the same scheduled task',
   'cleanup.pr_done': 'PRs merged or closed',
@@ -329,19 +324,23 @@ export const EN = Object.freeze({
   'help.k.copy': 'Copy the instruction (next 50)',
   'help.k.filter': 'Filter',
   'help.k.jump': 'Jump to a section (Needs you … To archive)',
-  'help.k.overview': 'Open or close the overview',
+  'help.k.handoff': 'Hand off the session (copy the instruction)',
+  'help.k.view': 'Switch between the list and the canvas',
+  'help.k.canvas': 'Canvas: + − zoom, 0 = 100%, f = fit all, z = fit all and back, arrows pan',
   'help.k.help': 'This list',
-  'help.k.esc': 'Close, in order: dialog, filter, overview, details',
-  'help.marks': 'Overview marks',
+  'help.k.slipMove': 'Canvas, on a session: the next session that way',
+  'help.k.nudge': 'Canvas, on a project name: move the sheet (Enter shows buttons for it)',
+  'help.k.esc': 'Close, in order: dialog, filter, details. On the canvas, then step out of a session or project name',
+  'help.marks': 'Canvas marks',
   'help.off': 'Turn off single-key shortcuts',
-  'help.offNote': 'Enter, Space, Esc and Tab keep working.',
+  'help.offNote': 'Enter, Space, Esc, the arrow keys and Tab keep working.',
   'foot.trust': 'Read-only. Nothing leaves this computer.',
   'foot.keys.move': 'move',
   'foot.keys.open': 'open',
   'foot.keys.peek': 'details',
   'foot.keys.pick': 'pick',
   'foot.keys.filter': 'filter',
-  'foot.keys.overview': 'overview',
+  'foot.keys.view': 'canvas',
   'foot.keys.more': 'more keys',
   'foot.notifyOn': 'Turn on notifications',
   'foot.notifyOff': 'Turn off notifications',
@@ -351,6 +350,8 @@ export const EN = Object.freeze({
   'foot.demo': 'Showing demo data, not your sessions.',
   'foot.noDir': "Transcript folder not found, so “Working” and “Stuck?” can't be detected.",
   'foot.badFormat': "Can't read the transcript format. “Working” and “Stuck?” may be missing.",
+  'foot.ctxFormat': 'Can\'t read context sizes from the transcripts, so they are hidden.',
+  'foot.actFormat': 'Can\'t read tool use from the transcripts, so “doing” labels are missing.',
   'foot.diag': 'Reading status',
   'foot.bad': { one: "{n} file couldn't be read.", other: "{n} files couldn't be read." },
   'foot.missing': { one: '{n} transcript not found (last {days} days).', other: '{n} transcripts not found (last {days} days).' },
@@ -368,4 +369,8 @@ export const EN = Object.freeze({
   'live.unpicked': 'Unpicked: {title}',
   'live.copiedId': 'Copied the ID',
   'live.copiedLink': 'Copied the link',
+  'live.handoffNo': 'Can\'t hand off now: {why}',
+  // 19.13–19.15: dict-en-handoff.mjs
+  ...EN_CANVAS,
+  ...EN_HANDOFF,
 });

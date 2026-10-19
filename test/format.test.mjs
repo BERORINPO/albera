@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DAY, HOUR, MIN, QUIET_HINT_MS, SEC } from '../src/shared/constants.mjs';
 import {
-  absoluteTime, agoText, archiveInstruction, askText, cardTime, childrenText, cleanupGroupName, contentLang, createdText, dateline, deepLink,
-  durationText, ledeTimeLine, matches, parseResetTime, prLabel, projectLabel, quietHint, reasonLine, routineFlaky, routineHistory, tabTitle, timeText,
+  absoluteTime, agoText, agoWords, archiveInstruction, askText, asOfText, cardTime, childrenText, cleanupGroupName, contentLang, contextMeta, contextValueText,
+  createdText, dateline, deepLink, doingMainSpec, doingSpec, doingText, durationText, ledeTimeLine, matches, parseResetTime, prLabel, projectLabel, quietHint,
+  reasonLine, routineFlaky, routineHistory, shortDoing, tabTitle, timeText, tokensText, waitWordsKey,
 } from '../public/format.mjs';
 import { makeT } from '../public/i18n.mjs';
 
@@ -241,4 +242,126 @@ test('deepLink: ID の形が正しいときだけ', () => {
   assert.equal(deepLink('local_00000000-0000-4000-8000-000000000001'), 'claude://claude.ai/epitaxy/local_00000000-0000-4000-8000-000000000001');
   assert.equal(deepLink('local_x'), null);
   assert.equal(deepLink('javascript:alert(1)'), null);
+});
+
+// ---------- v0.2: していること・コンテキストの言葉 (spec/ui.md §8.4・§8.5・§10.3) ----------
+
+test('tokensText: 1000 未満はそのまま、K は四捨五入、M は小数 1 桁 (末尾の .0 は付けない)', () => {
+  const cases = [[0, '0'], [999, '999'], [1000, '1K'], [150000, '150K'], [167000, '167K'], [967000, '967K'], [999600, '1M'], [1000000, '1M'], [1200000, '1.2M']];
+  for (const [n, s] of cases) assert.equal(tokensText(Number(n)), s, String(n));
+});
+
+test('doingSpec: 全部の種類を target あり / なしで。agents は n、知らない種類は doing.tool', () => {
+  const k = (/** @type {any} */ a) => doingSpec(a).key;
+  const withTarget = { edit: 'doing.edit', write: 'doing.write', read: 'doing.read', run: 'doing.run', test: 'doing.test', git: 'doing.git', web: 'doing.webHost', connector: 'doing.connector' };
+  const bare = { edit: 'doing.edit_bare', write: 'doing.edit_bare', read: 'doing.read_bare', run: 'doing.run_bare', test: 'doing.test_bare', git: 'doing.git_bare', web: 'doing.web', connector: 'doing.connector_bare' };
+  for (const [kind, key] of Object.entries(withTarget)) assert.deepEqual(doingSpec({ kind, target: 'board.mjs' }), { key, params: { target: 'board.mjs' } }, kind);
+  for (const [kind, key] of Object.entries(bare)) assert.equal(k({ kind }), key, kind);
+  for (const kind of ['search', 'browser', 'plan', 'wrap_up', 'think']) assert.equal(k({ kind, target: 'x' }), `doing.${kind}`, kind);
+  assert.deepEqual(doingSpec({ kind: 'agents', n: 1 }), { key: 'doing.agents', params: { n: 1 } });
+  assert.equal(en(doingSpec({ kind: 'agents', n: 2 }).key, { n: 2 }), '2 helpers at work');
+  assert.equal(en(doingSpec({ kind: 'agents', n: 1 }).key, { n: 1 }), '1 helper at work');
+  assert.equal(k({ kind: 'agents' }), 'doing.agents_bare');
+  assert.equal(k({ kind: 'tool' }), 'doing.tool');
+  assert.equal(k({ kind: 'teleport' }), 'doing.tool');
+  assert.equal(k({ kind: 'constructor' }), 'doing.tool', 'Object の名前を種類と取り違えない');
+  assert.equal(k(null), 'doing.tool');
+  for (const key of [...Object.values(withTarget), ...Object.values(bare), 'doing.agents', 'doing.agents_bare', 'doing.tool']) assert.ok(en.has(key) && ja.has(key), key);
+});
+
+test('doingMainSpec と doingText: Claude の説明は実行・テスト・Git だけ。手順は先頭に', () => {
+  assert.deepEqual(doingMainSpec({ kind: 'test', target: 'npm test', note: 'Run the unit tests' }), { key: 'doing.note', params: { note: 'Run the unit tests' } });
+  assert.equal(doingMainSpec({ kind: 'edit', target: 'a.mjs', note: 'x' }).key, 'doing.edit', 'edit の note は使わない');
+  assert.equal(doingText(en, { kind: 'edit', target: 'board.mjs' }), 'Editing board.mjs');
+  assert.equal(doingText(ja, { kind: 'edit', target: 'board.mjs' }), 'board.mjs を編集中');
+  assert.equal(doingText(en, { kind: 'run', note: 'Build the site', step: 'Write the spec' }), 'Step: Write the spec “Build the site”');
+  assert.equal(doingText(ja, { kind: 'test', note: 'テストを実行', step: '仕様を書く' }), '手順: 仕様を書く 「テストを実行」');
+  assert.equal(doingText(en, undefined), '');
+});
+
+test('asOfText: 「N 前の時点: …」は長い単位、時刻が無ければ空、1 分未満は 1 分', () => {
+  const a = { kind: 'run', target: 'npm', at: NOW - 3 * HOUR };
+  assert.equal(asOfText(en, a, NOW), 'As of 3 hours ago: Running npm');
+  assert.equal(asOfText(ja, a, NOW), '3 時間前の時点: npm を実行中');
+  assert.equal(asOfText(en, { kind: 'run', target: 'npm' }, NOW), '');
+  assert.equal(asOfText(en, null, NOW), '');
+  assert.equal(asOfText(en, { kind: 'think', at: NOW - 10 * SEC }, NOW), 'As of 1 minute ago: Thinking');
+  assert.equal(agoWords(en, 'ctx.copied', NOW - 2 * HOUR, NOW), 'hand-off copied 2 h ago', '行の言葉は短い単位');
+});
+
+test('shortDoing: 欄と理由ごと (キャンバスの中くらいの縮尺)', () => {
+  const s = (/** @type {Record<string, any>} */ o) => shortDoing(en, card(o));
+  // 返事待ちと未読は '' (印と時刻の言葉が同じことを言う)
+  assert.equal(s({ bucket: 'needs_you', reason: 'asking', reasonParams: { ask: 'plan' } }), '');
+  assert.equal(s({ bucket: 'needs_you', reason: 'asks' }), '');
+  assert.equal(s({ bucket: 'trouble', reason: 'stalled', reasonParams: { via: 'tool' } }), 'Stopped mid-tool');
+  assert.equal(s({ bucket: 'trouble', reason: 'stalled', reasonParams: { via: 'prompt' } }), 'No reply yet');
+  assert.equal(s({ bucket: 'trouble', reason: 'limit' }), 'Hit the usage limit');
+  assert.equal(s({ bucket: 'trouble', reason: 'git_startup' }), 'Failed to start');
+  assert.equal(s({ bucket: 'trouble', reason: 'not_started' }), 'Never started');
+  assert.equal(s({ bucket: 'trouble', reason: 'error' }), 'Stopped on an error');
+  assert.equal(s({ bucket: 'unread', reason: 'unread' }), '');
+  assert.equal(s({ bucket: 'working', reason: 'turn', activity: { kind: 'git', target: 'git push' } }), 'Using Git (git push)');
+  // 1 行の形: 手順と主の部分の片方だけ (主の部分が具体的なら主の部分、そうでなければ手順)
+  assert.equal(s({ bucket: 'working', reason: 'turn', activity: { kind: 'test', target: 'npm test', note: 'Run the unit tests', step: 'Write tests' } }), '“Run the unit tests”');
+  assert.equal(s({ bucket: 'working', reason: 'turn', activity: { kind: 'edit', target: 'a.mjs', step: 'Write tests' } }), 'Editing a.mjs');
+  assert.equal(s({ bucket: 'working', reason: 'turn', activity: { kind: 'think', step: 'Write tests' } }), 'Step: Write tests');
+  assert.equal(s({ bucket: 'working', reason: 'turn', activity: { kind: 'agents', n: 2, step: 'Write tests' } }), '2 helpers at work');
+  assert.equal(s({ bucket: 'working', reason: 'background' }), 'Working in the background');
+  assert.equal(s({ bucket: 'working', reason: 'starting' }), 'Starting');
+  assert.equal(s({ bucket: 'working', reason: 'turn' }), '');
+  assert.equal(s({ bucket: 'recent', reason: 'recent' }), '');
+  assert.equal(s({ bucket: 'cleanup', reason: 'idle_7d' }), '');
+  assert.equal(shortDoing(ja, card({ bucket: 'trouble', reason: 'limit' })), '使用上限で停止');
+});
+
+test('contextMeta: 段階なし・notice・推定・due・soon・always、要約は 1 時間以内だけ', () => {
+  const ctx = (/** @type {Record<string, any>} */ o) => ({ used: 120000, window: 200000, inferred: false, pct: 60, compactAt: 167000, ...o });
+  assert.deepEqual(contextMeta(en, ctx({}), NOW), []);
+  assert.deepEqual(contextMeta(en, ctx({}), NOW, { always: true }), [{ text: 'context 60%', strong: false }]);
+  assert.deepEqual(contextMeta(en, ctx({ level: 'notice' }), NOW), [{ text: 'context 60%', strong: false }]);
+  assert.deepEqual(contextMeta(ja, ctx({ level: 'notice', inferred: true }), NOW), [{ text: 'コンテキスト 約 60%', strong: false }]);
+  assert.deepEqual(contextMeta(en, ctx({ level: 'due', pct: 80 }), NOW), [{ text: 'context 80% time to hand off', strong: true }]);
+  assert.deepEqual(contextMeta(ja, ctx({ level: 'soon', pct: 90 }), NOW), [{ text: 'コンテキスト 90% まもなく自動で要約', strong: true }]);
+  const inside = contextMeta(en, ctx({ compacted: { at: NOW - 20 * MIN, trigger: 'auto' } }), NOW);
+  assert.equal(inside.length, 1);
+  assert.equal(inside[0].text, 'summarized 20 min ago');
+  assert.deepEqual(inside[0].ago, { key: 'ctx.compacted', at: NOW - 20 * MIN, until: NOW - 20 * MIN + HOUR });
+  assert.deepEqual(contextMeta(en, ctx({ compacted: { at: NOW - 61 * MIN, trigger: 'auto' } }), NOW), [], '1 時間を過ぎた要約は行に出さない');
+  assert.deepEqual(contextMeta(en, undefined, NOW), []);
+});
+
+test('contextValueText: 割合・使用量・窓・要約の点、推定の一言、要約はいつでも (en / ja)', () => {
+  const c = { used: 164000, window: 200000, inferred: true, pct: 82, compactAt: 167000, level: 'due', compacted: { at: NOW - 3 * HOUR, trigger: 'manual' } };
+  assert.equal(contextValueText(en, c, NOW), '82% (164K of 200K tokens). It summarizes itself at about 167K. The size limit is a guess. summarized 3 h ago');
+  assert.equal(contextValueText(ja, c, NOW), '82% (200K トークン中 164K)。約 167K で自動で要約されます。上限の大きさは推定です。3 時間前に要約済み');
+  const big = { ...c, inferred: false, window: 1000000, used: 812000, compactAt: 967000, pct: 81 };
+  assert.equal(contextValueText(en, big, NOW, { compacted: false }), '81% (812K of 1M tokens). It summarizes itself at about 967K.');
+  assert.equal(contextValueText(en, null, NOW), '');
+});
+
+test('waitWordsKey: 引き継げない欄の言葉は due / soon のときだけ', () => {
+  const due = { level: 'due', pct: 80 };
+  assert.equal(waitWordsKey(card({ bucket: 'working', context: due })), 'ctx.afterWork');
+  assert.equal(waitWordsKey(card({ bucket: 'needs_you', context: { ...due, level: 'soon' } })), 'ctx.answerFirst');
+  assert.equal(waitWordsKey(card({ bucket: 'trouble', reason: 'limit', context: due })), 'ctx.afterLimit');
+  assert.equal(waitWordsKey(card({ bucket: 'trouble', reason: 'stalled', context: due })), null);
+  assert.equal(waitWordsKey(card({ bucket: 'working', context: { level: 'notice', pct: 60 } })), null);
+  assert.equal(waitWordsKey(card({ bucket: 'unread', context: due })), null);
+});
+
+test('matches (v0.2): していること・target・手順・「引き継ぎ」/ "hand off" (due) でも見つける', () => {
+  const w = card({ bucket: 'working', activity: { kind: 'edit', target: 'board.mjs', step: 'Write the canvas spec', live: true } });
+  assert.equal(matches(w, 'editing', en), true);
+  assert.equal(matches(w, 'board.mjs', en), true);
+  assert.equal(matches(w, 'canvas spec', en), true);
+  assert.equal(matches(w, '編集中', ja), true);
+  const due = card({ bucket: 'unread', context: { used: 166000, window: 200000, inferred: false, pct: 83, compactAt: 167000, level: 'due' } });
+  assert.equal(matches(due, 'hand off', en), true);
+  assert.equal(matches(due, '引き継ぎ', ja), true);
+  assert.equal(matches(card({ bucket: 'unread', context: { pct: 60, level: 'notice' } }), 'hand off', en), false);
+  assert.equal(matches(card({ bucket: 'working', context: { pct: 80, level: 'due' } }), '終わってから', ja), true, '作業中は「終わってから引き継げます」');
+  const comp = card({ bucket: 'recent', context: { pct: 10, compacted: { at: NOW - 5 * MIN, trigger: 'auto' } } });
+  assert.equal(matches(comp, 'summarized', en, NOW), true);
+  assert.equal(matches(comp, 'summarized', en), false, '今を渡さなければ要約の言葉は探さない');
 });

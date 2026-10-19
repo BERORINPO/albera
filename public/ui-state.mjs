@@ -116,19 +116,25 @@ export function pruneSelection(selected, copied, present, cleanup) {
  */
 export const reselectIds = (batchIds, cleanup) => batchIds.filter((id) => cleanup.has(id));
 
+/** v0.2 で使わなくなった好みのキー (全体 Overview はキャンバスの遠くの縮尺に置き換わった)。読み込むときに落とす。 */
+export const RETIRED_PREFS = Object.freeze(['overview', 'overviewQuiet']);
+
 /**
- * 盤面に無くなったプロジェクトの開閉の記録 (prefs.open の sub:<reason>:<key> と prefs.more の recent:<key>)。
+ * 消す好みの記録: 盤面に無くなったプロジェクトの開閉 (prefs.open の sub:<reason>:<key> と prefs.more の recent:<key>) と、
+ * 使わなくなったキー (prefs: 盤面が無くても返す)。
  * @param {{open?: Record<string, boolean>, more?: Record<string, boolean>}} prefs
  * @param {any} board
- * @returns {{open: string[], more: string[]}}
+ * @returns {{open: string[], more: string[], prefs: string[]}}
  */
 export function stalePrefKeys(prefs, board) {
-  if (!board) return { open: [], more: [] };
+  const retired = RETIRED_PREFS.filter((k) => Object.prototype.hasOwnProperty.call(prefs ?? {}, k));
+  if (!board) return { open: [], more: [], prefs: retired };
   const subs = new Set((board.cleanupGroups ?? []).flatMap((/** @type {any} */ g) => (g.projects ?? []).map((/** @type {any} */ p) => `sub:${g.reason}:${p.key}`)));
   const recent = new Set((board.recentGroups ?? []).map((/** @type {any} */ g) => `recent:${g.key}`));
   return {
     open: Object.keys(prefs.open ?? {}).filter((k) => k.startsWith('sub:') && !subs.has(k)),
     more: Object.keys(prefs.more ?? {}).filter((k) => k.startsWith('recent:') && !recent.has(k)),
+    prefs: retired,
   };
 }
 
@@ -259,14 +265,14 @@ const rowSize = (c) => rowIds(c).length;
 /**
  * 絞り込み (文字と親子) を当てた見え方。piles の並びと一致数。
  * @param {any} board
- * @param {{q?: string, family?: string|null, t: T}} opts
+ * @param {{q?: string, family?: string|null, t: T, now?: number}} opts now: 「要約済み」の言葉でも探すときの今
  */
-export function visibleModel(board, { q = '', family = null, t }) {
+export function visibleModel(board, { q = '', family = null, t, now }) {
   const qq = String(q ?? '').trim().toLowerCase();
   const fam = family ? new Set(board?.families?.[family]?.memberIds ?? [family]) : null;
   const filtering = qq !== '' || fam != null;
   /** @param {Card} c */
-  const ok = (c) => (!fam || fam.has(c.id) || rowIds(c).some((id) => fam.has(id))) && matches(c, qq, t);
+  const ok = (c) => (!fam || fam.has(c.id) || rowIds(c).some((id) => fam.has(id))) && matches(c, qq, t, now);
   /** @type {Record<string, Card[]>} */
   const buckets = {};
   for (const pile of LIST_PILES) buckets[pile] = (board?.buckets?.[pile] ?? []).filter(ok);

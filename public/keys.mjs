@@ -3,41 +3,45 @@
 // 日本語入力中・修飾キー・入力欄・dialog の中では何もしない。1 文字キーは help の切替で止められる (WCAG 2.1.4)。
 
 import { QUIET_MS, MIN, RECENT_MS, DAY } from '../src/shared/constants.mjs';
+import { canvasKeyAction, canvasTarget } from './canvas-input.mjs';
 import { bucketTitle } from './format.mjs';
 import { PILES } from './ui-state.mjs';
 import { fill, h } from './view.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
-/** @typedef {'dialog'|'field'|'filter'|'overview'|'title'|'control'|'none'} KeyTarget */
+/** @typedef {'dialog'|'field'|'filter'|'title'|'control'|'none'} KeyTarget */
 /** @typedef {{key: string, keyCode?: number, isComposing?: boolean, ctrlKey?: boolean, metaKey?: boolean, altKey?: boolean, shiftKey?: boolean, repeat?: boolean}} KeyLike */
 
-const NO_REPEAT = new Set(['x', 'a', 'c', 'z']);
-/** 全体 (Overview) の中では、全体の側が受け持つキー。 */
-const OVERVIEW_KEYS = new Set(['j', 'k', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Enter', ' ', 'z', 'Escape']);
+const NO_REPEAT = new Set(['x', 'a', 'c', 'h', 'v', 'z']);
 
 /**
  * キーから動作の名前を決める (純粋)。null なら何もしない (ブラウザの普段の動きのまま)。
+ * キャンバスの表示の間は、全部のキーを canvasKeyAction に渡す (名前の頭に 'cv:' を付けて返す)。
  * @param {KeyLike} ev
- * @param {{keysOn: boolean, target: KeyTarget}} ctx
+ * @param {{keysOn: boolean, target: KeyTarget, view?: 'list'|'canvas', canvasTarget?: import('./canvas-input.mjs').CanvasTarget}} ctx
  * @returns {string|null}
  */
 export function keyAction(ev, ctx) {
+  if (ctx.view === 'canvas') {
+    const a = canvasKeyAction(ev, { keysOn: ctx.keysOn, target: ctx.canvasTarget ?? 'none' });
+    return a ? `cv:${a}` : null;
+  }
   if (ev.isComposing || ev.keyCode === 229) return null;
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return null;
   const key = ev.key;
   const { target, keysOn } = ctx;
   if (target === 'dialog' || target === 'field') return null;
   if (target === 'filter') return key === 'Escape' ? 'escape' : null;
-  if (target === 'overview' && OVERVIEW_KEYS.has(key)) return null;
   if (key === 'Escape') return 'escape';
   // Shift で意味の変わる名前つきのキー (Enter・Space・矢印) だけ Shift を無視する。1 文字のキーは ev.key がもう配列どおりの文字なので、
   // '/' や数字に Shift が要る配列 (ドイツ語・フランス語など) でもそのまま効く。Shift+J は 'J' でどれにも当たらない
   if (ev.shiftKey && (key.length !== 1 || key === ' ')) return null;
   if (key === 'Enter') return target === 'title' || target === 'none' ? 'open' : null;
   if (key === ' ') return target === 'none' ? 'peek' : null;
-  if (!keysOn) return null;
+  // 矢印は 1 文字キーではないので、切替で止めても効く (キャンバスと同じ)
   if (key === 'ArrowDown') return target === 'none' || target === 'title' ? 'next' : null;
   if (key === 'ArrowUp') return target === 'none' || target === 'title' ? 'prev' : null;
+  if (!keysOn) return null;
   if (ev.repeat && NO_REPEAT.has(key)) return null;
   switch (key) {
     case 'j':
@@ -56,8 +60,12 @@ export function keyAction(ev, ctx) {
       return 'filter';
     case '?':
       return 'help';
+    case 'h':
+      return 'handoff';
+    case 'v':
+      return 'view';
     case 'z':
-      return 'overview';
+      return 'canvas-fit';
     default:
       if (/^[1-6]$/.test(key)) return `jump:${PILES[Number(key) - 1]}`;
       return null;
@@ -66,12 +74,11 @@ export function keyAction(ev, ctx) {
 
 /**
  * Esc で閉じるものを、上から最初に当てはまる 1 つだけ選ぶ (純粋)。選択と batch は決して消さない。
- * @param {{inFilter: boolean, filterValue: string, inOverview: boolean, detailOpen: boolean, family: string|null, q: string}} ctx
- * @returns {'filter-clear'|'filter-blur'|'overview-close'|'detail-close'|'family-clear'|'query-clear'|null}
+ * @param {{inFilter: boolean, filterValue: string, detailOpen: boolean, family: string|null, q: string}} ctx
+ * @returns {'filter-clear'|'filter-blur'|'detail-close'|'family-clear'|'query-clear'|null}
  */
 export function escapeStep(ctx) {
   if (ctx.inFilter) return ctx.filterValue ? 'filter-clear' : 'filter-blur';
-  if (ctx.inOverview) return 'overview-close';
   if (ctx.detailOpen) return 'detail-close';
   if (ctx.family) return 'family-clear';
   if (ctx.q) return 'query-clear';
@@ -87,7 +94,6 @@ export function classifyTarget(el) {
   if (!(el instanceof Element)) return 'none';
   if (el.closest('dialog[open]')) return 'dialog';
   if (el.id === 'filter') return 'filter';
-  if (el.closest('#overview')) return 'overview';
   // チェックボックスは文字を受けないので、ほかのボタンと同じに扱う (Space・Enter はブラウザのまま、j/k・x・c などは効く)
   if (el.matches('input[type="checkbox"], input[type="radio"]')) return 'control';
   if (el.matches('input, textarea, select, [contenteditable], [contenteditable] *')) return 'field';
@@ -100,10 +106,12 @@ export function classifyTarget(el) {
  * document に keydown を 1 つだけ付ける。
  * @param {() => boolean} keysOn
  * @param {(action: string, ev: KeyboardEvent) => boolean} run true を返したら preventDefault
+ * @param {() => 'list'|'canvas'} [viewOf] 今の表示 (キャンバスならキャンバスのキーの表)
  */
-export function bindKeys(keysOn, run) {
+export function bindKeys(keysOn, run, viewOf = () => 'list') {
   document.addEventListener('keydown', (ev) => {
-    const action = keyAction(ev, { keysOn: keysOn(), target: classifyTarget(ev.target) });
+    const view = viewOf();
+    const action = keyAction(ev, { keysOn: keysOn(), target: classifyTarget(ev.target), view, canvasTarget: view === 'canvas' ? canvasTarget(ev.target) : undefined });
     if (action && run(action, ev)) ev.preventDefault();
   });
 }
@@ -142,7 +150,11 @@ export function openHelp(t, o) {
       row(['c'], t('help.k.copy')),
       row(['/'], t('help.k.filter')),
       row(['1', '–', '6'], t('help.k.jump')),
-      row(['z'], t('help.k.overview')),
+      row(['h'], t('help.k.handoff')),
+      row(['v'], t('help.k.view')),
+      row(['+', '−', '0', 'f', 'z'], t('help.k.canvas')),
+      row(['←', '↑', '→', '↓'], t('help.k.slipMove')),
+      row(['Shift', '←↑→↓'], t('help.k.nudge')),
       row(['?'], t('help.k.help')),
       row(['Esc'], t('help.k.esc')),
     ),
@@ -155,9 +167,8 @@ export function openHelp(t, o) {
     h('h3', { class: 'help__sub', text: t('help.marks') }),
     h(
       'p',
-      { class: 'ov-legend' },
-      ...['needs_you', 'trouble', 'unread', 'working', 'recent'].map((p) => h('span', {}, h('i', { class: `mark mark--${p}`, 'aria-hidden': 'true' }), bucketTitle(t, p))),
-      h('span', { text: t('overview.key.cleanup') }),
+      { class: 'marks-key' },
+      ...['needs_you', 'trouble', 'unread', 'working'].map((p) => h('span', {}, h('i', { class: `mark mark--${p}`, 'aria-hidden': 'true' }), bucketTitle(t, p))),
     ),
     h('p', { class: 'help__off' }, h('label', { class: 'check', for: 'keys-off' }, off, h('span', { text: t('help.off') })), h('span', { class: 'help__note', text: t('help.offNote') })),
     h('p', { class: 'help__acts' }, close),

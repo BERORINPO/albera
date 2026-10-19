@@ -15,9 +15,11 @@ import {
   START_GRACE_MS,
   UNREAD_SKEW_MS,
 } from '../shared/constants.mjs';
+import { activityFacts } from './activity.mjs';
+import { contextFacts } from './context.mjs';
 import { activityOf, parentOf, prListOf } from './session.mjs';
 import { cap, isNonEmpty, resetPart } from './text.mjs';
-import { parseTurn } from './turn.mjs';
+import { parseTurnEntries, turnEntries } from './turn.mjs';
 
 /** @typedef {import('../shared/types.mjs').SessionRecord} SessionRecord */
 /** @typedef {import('../shared/types.mjs').TranscriptInput} TranscriptInput */
@@ -26,6 +28,7 @@ import { parseTurn } from './turn.mjs';
 /** @typedef {import('../shared/types.mjs').TimeKind} TimeKind */
 /** @typedef {import('../shared/types.mjs').ReasonCode} ReasonCode */
 /** @typedef {import('../shared/types.mjs').ReasonParams} ReasonParams */
+/** @typedef {import('../shared/types.mjs').TailFacts} TailFacts */
 
 /**
  * @typedef {Object} Facts
@@ -65,16 +68,29 @@ export function needsTranscript(s, now) {
 }
 
 /**
+ * tail の解析を 1 回だけ (spec/board.md §5.3)。turnEntries を 1 回だけ呼び、parseTurn・activityFacts・contextFacts に
+ * 同じ entries を渡す。now を使わないので、entry が {cliSessionId, size, mainMtime} をキーに memo できる。
+ * @param {string} tail
+ * @param {boolean} truncatedHead
+ * @returns {TailFacts}
+ */
+export function tailFacts(tail, truncatedHead) {
+  const entries = turnEntries(tail, truncatedHead);
+  return { turn: parseTurnEntries(entries), activity: activityFacts(entries), context: contextFacts(entries) };
+}
+
+/**
  * @param {SessionRecord} s
  * @param {TranscriptInput|undefined} ti
  * @param {number} now
+ * @param {TailFacts=} tf 解析済みの tail (無ければここで parse する)
  * @returns {Facts}
  */
-export function deriveFacts(s, ti, now) {
+export function deriveFacts(s, ti, now, tf) {
   const act = activityOf(s);
   const age = Math.max(0, now - act);
   const recent = age < RECENT_MS;
-  const T = recent && ti ? parseTurn(ti.tail, ti.truncatedHead) : { turn: /** @type {const} */ ('unknown'), relevant: 0 };
+  const T = recent && ti ? tf?.turn ?? parseTurnEntries(turnEntries(ti.tail, ti.truncatedHead)) : { turn: /** @type {const} */ ('unknown'), relevant: 0 };
   const mainMtime = ti?.mainMtime ?? 0;
   const subMtime = ti?.subMtime ?? 0;
   const quietSince = Math.max(mainMtime, subMtime);
@@ -216,16 +232,17 @@ function decide(s, f, ctx, now) {
 
 /**
  * 非アーカイブのセッション全部を分類する。
- * @param {{active: SessionRecord[], turns: Map<string, TranscriptInput>, now: number}} input turns は sessionId がキー
+ * @param {{active: SessionRecord[], turns: Map<string, TranscriptInput>, now: number, tailFacts?: Map<string, TailFacts>}} input
+ *   turns と tailFacts は sessionId がキー。tailFacts に無いセッションは tail をここで parse する
  * @returns {Map<string, Classified>}
  */
-export function classifyAll({ active, turns, now }) {
+export function classifyAll({ active, turns, now, tailFacts: parsed }) {
   /** @type {Map<string, Facts>} */
   const facts = new Map();
   /** @type {Map<string, SessionRecord[]>} */
   const byTitle = new Map();
   for (const s of active) {
-    facts.set(s.sessionId, deriveFacts(s, turns.get(s.sessionId), now));
+    facts.set(s.sessionId, deriveFacts(s, turns.get(s.sessionId), now, parsed?.get(s.sessionId)));
     if (isNonEmpty(s.title)) {
       const list = byTitle.get(/** @type {string} */ (s.title)) ?? [];
       list.push(s);

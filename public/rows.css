@@ -5,7 +5,7 @@
  * pre-emit critique: P4 H4 E4 S4 R4 V4
  */
 
-/* rows.css: pile heads, rows, row detail, family tree, the Working two-column rule */
+/* rows.css: pile heads, rows, row detail, family tree, the Working two-column rule, the doing line, the context words, the hand-off guide */
 
 /* ---------- Piles ---------- */
 .pile { min-width: 0; container-type: inline-size; overflow-anchor: auto; }
@@ -196,6 +196,10 @@
   overflow-wrap: anywhere;
 }
 .row__meta:empty { display: none; }
+/* the family link wraps like the words around it (the parent's title is at most 40 characters, so it reads whole in two lines at most); the underline is on the parts */
+.row__meta .fam { display: inline-block; max-width: 100%; white-space: normal; text-align: start; text-decoration: none; }
+.link.fam > span { text-decoration: underline; text-decoration-color: var(--color-rule-strong); text-underline-offset: 0.2em; }
+@media (hover: hover) { .link.fam:hover > span { text-decoration-color: currentColor; } }
 .row__hint { color: var(--color-ink-2); }
 .row__open {
   grid-area: open;
@@ -273,3 +277,29 @@
 .tree .is-self > .tree__row .tree__t { font-weight: 700; }
 .tree__self { color: var(--color-ink-2); font-weight: 400; white-space: nowrap; }
 .tree__more { margin-top: var(--space-2xs); color: var(--color-muted); }
+
+/* ---------- v0.2: the doing line, the context words, the hand-off guide. Words and weight only: no bar, no ring, no colour ---------- */
+.row__body.doing { display: flex; column-gap: var(--space-sm); min-width: 0; overflow: hidden; white-space: nowrap; }
+.row__body.doing > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row__body.doing > .doing__step { flex: 0 1 auto; max-width: 60%; }
+.row.is-open .row__body.doing { flex-wrap: wrap; white-space: normal; }
+.row.is-open .row__body.doing > span { overflow: visible; max-width: none; }
+.doing code, .words code { font-size: 0.9em; unicode-bidi: isolate; }
+.words { display: inline-flex; flex-wrap: wrap; column-gap: var(--space-sm); min-width: 0; }
+.words .ctx { color: var(--color-muted); }
+.ctx.is-strong { color: var(--color-ink); font-weight: 700; }
+.textbtn.is-strong { color: var(--color-ink); font-weight: 700; }
+.row__meta .textbtn, .trow__meta .textbtn { margin-inline: calc(-1 * var(--space-2xs)); padding-block: 0; }
+
+/* the hand-off and rescue guides (inside the row detail; the canvas bar uses the same section) */
+.handoff { margin-top: var(--space-md); padding-top: var(--space-sm); border-top: var(--rule-ink); max-width: var(--measure); }
+.handoff__lead { color: var(--color-ink); font-family: var(--font-body); font-weight: 700; font-size: var(--text-base); line-height: 1.45; overflow-wrap: anywhere; }
+.handoff__why { margin-top: var(--space-2xs); color: var(--color-ink-2); font-size: var(--text-sm); }
+/* one step per line, in ink: tidy.css's .steps is the cleanup strip (one line, muted), so this needs the extra class */
+.handoff .handoff__steps { display: grid; row-gap: var(--space-3xs); color: var(--color-ink); }
+.handoff .handoff__steps li { white-space: normal; }
+.handoff__acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); margin-top: var(--space-sm); }
+.handoff__demo { margin-top: var(--space-2xs); color: var(--color-muted); font-size: var(--text-sm); }
+.handoff__text { margin-top: var(--space-sm); font-size: var(--text-sm); }
+.handoff__text summary { cursor: pointer; color: var(--color-ink-2); }
+.handoff__text pre { margin: var(--space-xs) 0 0; padding-top: var(--space-xs); border-top: 1px dotted var(--color-rule-strong); color: var(--color-ink); font-family: var(--font-mono); font-size: var(--text-sm); white-space: pre-wrap; overflow-wrap: anywhere; }

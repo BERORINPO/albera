@@ -2,7 +2,9 @@
 // adapter: CLI の会話ログ (<projectsDir>/<dir>/<cliSessionId>.jsonl) の末尾を読む (読み取り専用)。
 // projectsDir は entry が決める (config.mjs: --projects-dir > 環境変数 > CLAUDE_CONFIG_DIR > ~/.claude/projects)。
 // 場所はファイル名から引く表で探す (cwd からパスを組み立て直さない)。表は TTL ごとに作り直す。
-// 返すのは生の末尾テキストと mtime だけ。ターン状態の解釈は core。
+// 返すのは生の末尾テキストと mtime と subagents の数だけ。ターン状態の解釈は core。
+// (v0.2) subLive: いま書かれている subagent の会話ログ (*.jsonl) の数 (本体の最後の書き込みより後で QUIET_MS 以内)。stat だけで数え、
+// 中身も meta の .json も開かない。
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -18,6 +20,7 @@ import {
   TAIL_RETRY_BYTES,
   TRANSCRIPT_MAP_TTL_MS,
 } from '../shared/constants.mjs';
+import { hasUsage } from '../core/context.mjs';
 import { turnEntries } from '../core/turn.mjs';
 import { mapLimit } from './map-limit.mjs';
 
@@ -94,6 +97,58 @@ export async function newestMtimeUnder(dir, stopAbove = Infinity) {
 }
 
 /**
+ * dir 配下の `*.jsonl` のうち mtime が since より新しいものの数 (stat だけ。ファイルも meta の .json も開かない)。
+ * 深さと件数の上限は newestMtimeUnder と同じ (SUBAGENT_SCAN_DEPTH / SUBAGENT_SCAN_MAX)。各階層で新しいフォルダから降りるので、
+ * 上限で切られるのは古いワークフローの方になる。フォルダの mtime は中のファイルへの追記では変わらないので、古いフォルダも飛ばさない。
+ * @param {string} dir
+ * @param {number} since ms。これより新しい mtime だけ数える
+ */
+export async function countFreshJsonl(dir, since) {
+  let n = 0;
+  let seen = 0;
+  /** @param {string} d @param {number} depth */
+  async function walk(d, depth) {
+    let ents;
+    try {
+      ents = await fs.readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    /** @type {string[]} */
+    const dirs = [];
+    /** @type {string[]} */
+    const files = [];
+    for (const e of ents) {
+      if (++seen > SUBAGENT_SCAN_MAX) break;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) {
+        if (depth < SUBAGENT_SCAN_DEPTH) dirs.push(p);
+      } else if (e.isFile() && e.name.endsWith('.jsonl')) files.push(p);
+    }
+    for (const m of await Promise.all(files.map(mtimeOf))) if (m > since) n++;
+    if (seen > SUBAGENT_SCAN_MAX) return;
+    const ordered = await Promise.all(dirs.map(async (p) => ({ p, m: await mtimeOf(p) })));
+    ordered.sort((a, b) => b.m - a.m);
+    for (const { p } of ordered) {
+      if (seen >= SUBAGENT_SCAN_MAX) return;
+      await walk(p, depth + 1);
+    }
+  }
+  await walk(dir, 0);
+  return n;
+}
+
+/**
+ * 末尾を 2 MB で読み直すか: 該当行が 0 件 (1 行が 200 KB を超えるなど)、または該当行はあるが実際の usage 行が無い
+ * (大きなツール結果が続いて最後の API 呼び出しが末尾 200 KB の外にある) とき。判定は core の関数。
+ * @param {string} tail 先頭が途中から始まっている末尾
+ */
+function needsLongerTail(tail) {
+  const entries = turnEntries(tail, true);
+  return entries.length === 0 || !hasUsage(entries);
+}
+
+/**
  * @param {{projectsDir: string, ttlMs?: number, clock?: () => number}} opts
  */
 export function createTranscriptsSource({ projectsDir, ttlMs = TRANSCRIPT_MAP_TTL_MS, clock = () => Date.now() }) {
@@ -146,8 +201,8 @@ export function createTranscriptsSource({ projectsDir, ttlMs = TRANSCRIPT_MAP_TT
     const hit = tailCache.get(file);
     if (hit && hit.size === size && hit.mtimeMs === mtimeMs) return hit;
     let r = await readTail(file, size, TAIL_BYTES);
-    // 1 行が 200KB を超えるなどで該当行が 0 件なら、大きく 1 回だけ読み直す
-    if (r.truncatedHead && turnEntries(r.tail, true).length === 0) r = await readTail(file, size, TAIL_RETRY_BYTES);
+    // 大きく 1 回だけ読み直す。結果は {path, size, mtimeMs} でキャッシュするので、同じファイルを毎回 2 MB 読まない
+    if (r.truncatedHead && needsLongerTail(r.tail)) r = await readTail(file, size, TAIL_RETRY_BYTES);
     const entry = { size, mtimeMs, ...r };
     tailCache.set(file, entry);
     return entry;
@@ -166,10 +221,16 @@ export function createTranscriptsSource({ projectsDir, ttlMs = TRANSCRIPT_MAP_TT
     }
     try {
       const t = await tailOf(hit.path, st.size, st.mtimeMs);
+      const now = clock();
+      const subDir = path.join(path.dirname(hit.path), cli, 'subagents');
       // これより新しい subagent のファイルが 1 つ見つかれば「バックグラウンドで作業中」は決まる (core の bg 判定と同じ式)
-      const stopAbove = Math.max(clock() - QUIET_MS, st.mtimeMs + BG_LEAD_MS);
-      const subMtime = await newestMtimeUnder(path.join(path.dirname(hit.path), cli, 'subagents'), stopAbove);
-      return { tail: t.tail, truncatedHead: t.truncatedHead, mainMtime: st.mtimeMs, subMtime, size: st.size };
+      const stopAbove = Math.max(now - QUIET_MS, st.mtimeMs + BG_LEAD_MS);
+      const subMtime = await newestMtimeUnder(subDir, stopAbove);
+      // 数えるのは、本体の最後の書き込みより後で、QUIET_MS 以内に書かれた subagent だけ。終わった subagent は、本体がその結果を
+      // 書いた時点で外れる (結果を受け取って本体が次の作業をしている間に「作業中」と数えない)。ほとんどのセッションは stat を増やさない
+      const since = Math.max(now - QUIET_MS, st.mtimeMs);
+      const subLive = subMtime > since ? await countFreshJsonl(subDir, since) : 0;
+      return { tail: t.tail, truncatedHead: t.truncatedHead, mainMtime: st.mtimeMs, subMtime, subLive, size: st.size };
     } catch {
       return null;
     }

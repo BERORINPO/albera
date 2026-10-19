@@ -1,0 +1,139 @@
+// @ts-check
+// 画面: キャンバスの帯 (#cv-bar、spec/ui.md §10.9)。4 つの状態: いつもの (凡例・ヒント・引き継ぎどき・拡大縮小・全体・並べ直す)、
+// 詳しく (一覧と同じ dl と操作の行 + 閉じる)、引き継ぎ (一覧と同じ案内 + 閉じる)、用紙を動かす (矢印のボタン・この用紙を表示・閉じる)。
+// 閉じるまで出したまま (選択の帯と同じ)。
+
+import { handoffGuideEl, handoffPlan } from './handoff.mjs';
+import { bucketTitle, titleOf } from './format.mjs';
+import { detailEl, detailStamp } from './rows.mjs';
+import { fill, h } from './view.mjs';
+
+/** @typedef {import('./i18n.mjs').T} T */
+/** @typedef {{kind: 'detail'|'handoff'|'sheet', id: string}} BarState  sheet の id は用紙の key */
+
+/** 凡例の印: 付箋になる 4 つの欄だけ (最近と片付けは用紙の帯の言葉で、印にはならない) */
+const LEGEND = Object.freeze(['needs_you', 'trouble', 'unread', 'working']);
+/** 凡例の目盛りの見本の割合 */
+const SAMPLE_PCT = 72;
+/** 用紙を動かすボタン (向きと矢印) */
+const MOVES = Object.freeze([['left', '←'], ['up', '↑'], ['down', '↓'], ['right', '→']]);
+
+/** 拡大縮小の割合の文字。 @param {T} t @param {number} z */
+export const zoomText = (t, z) => t('canvas.zoom', { n: Math.round(z * 100) });
+
+/** いつもの帯 (40rem より狭いと、デモのしるしもここ: 帯の左は空いている)。 @param {T} t @param {{z: number, due: number, keysOn: boolean, demo?: boolean}} o */
+function defaultBar(t, o) {
+  const tick = h('span', { class: 'cvtick', 'aria-hidden': 'true' });
+  tick.style.setProperty('--p', String(SAMPLE_PCT));
+  const fit = h('button', { class: 'textbtn', type: 'button', 'data-action': 'canvas-fit' }, t('canvas.fit'), ' ', h('kbd', { class: 'hk', 'aria-hidden': 'true', text: 'f' }));
+  if (o.keysOn) fit.setAttribute('aria-keyshortcuts', 'f');
+  return [
+    o.demo ? h('p', { class: 'cbar__demo', text: t('mast.demo') }) : null,
+    h(
+      'p',
+      { class: 'cbar__legend', 'aria-hidden': 'true' },
+      ...LEGEND.map((p) => h('span', {}, h('i', { class: `mark mark--${p}` }), bucketTitle(t, p))),
+      h('span', {}, h('span', { class: 'ctx' }, tick), t('detail.context')),
+    ),
+    h('p', { class: 'cbar__hint', text: t('canvas.hint') }),
+    h(
+      'p',
+      { class: 'cbar__tools' },
+      o.due > 0 ? h('button', { class: 'textbtn cbar__due', type: 'button', 'data-action': 'due-next', text: t('ctx.dueCount', { n: o.due }) }) : null,
+      h(
+        'span',
+        { class: 'cbar__zoom' },
+        h('button', { class: 'textbtn is-sym', type: 'button', 'data-action': 'canvas-zoom-out', 'aria-label': t('canvas.zoomOut'), text: '−' }),
+        h('span', { class: 'cbar__pct', id: 'cv-zoom', text: zoomText(t, o.z) }),
+        h('button', { class: 'textbtn is-sym', type: 'button', 'data-action': 'canvas-zoom-in', 'aria-label': t('canvas.zoomIn'), text: '+' }),
+      ),
+      fit,
+      h('button', { class: 'textbtn cbar__arrange', type: 'button', 'data-action': 'canvas-arrange', text: t('canvas.arrange') }),
+    ),
+  ];
+}
+
+/**
+ * 詳しく: 一覧の詳しくと同じ中身 (引き継ぎの案内は除く。キャンバスでは帯の引き継ぎの状態が受け持つ) と、操作の行の最後に「閉じる」。
+ * 案内のあるカードには「引き継ぐ」も置く (帯の引き継ぎの状態を開く。Tab で届き、1 文字キーを止めても使える道)。
+ * @param {T} t @param {any} card @param {string} pile @param {any} rowCtx
+ */
+function detailBar(t, card, pile, rowCtx) {
+  const el = detailEl(card, pile, rowCtx);
+  el.querySelector('section.handoff')?.remove();
+  const acts = el.querySelector('.detail__acts') ?? el.appendChild(h('p', { class: 'detail__acts' }));
+  if (handoffPlan(card, rowCtx.handoff?.[card.id], rowCtx.now).guide) {
+    acts.prepend(h('button', { class: 'textbtn is-strong', type: 'button', 'data-action': 'handoff-open', 'data-id': card.id, 'aria-label': t('handoff.openAria', { title: titleOf(t, card.title) }), text: t('handoff.open') }));
+  }
+  acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'canvas-close', 'data-id': card.id, text: t('canvas.close') }));
+  return el;
+}
+
+/**
+ * 用紙を動かす: ドラッグの代わりの、ポインタ 1 回で押せるボタン (WCAG 2.5.7)。押すたびに NUDGE ずつ。
+ * @param {T} t @param {{key: string, name: string}} sheet
+ */
+function sheetBar(t, sheet) {
+  return h(
+    'section',
+    { class: 'sheetbar', 'aria-labelledby': 'sb-lead' },
+    h('h3', { class: 'sheetbar__lead', id: 'sb-lead', text: t('canvas.sheetLead', { project: sheet.name }) }),
+    h('p', { class: 'sheetbar__hint', text: t('canvas.sheetHint') }),
+    h(
+      'p',
+      { class: 'sheetbar__acts' },
+      h('span', { class: 'cbar__zoom' }, ...MOVES.map(([dir, sym]) => h('button', { class: 'textbtn is-sym', type: 'button', 'data-action': 'canvas-move', 'data-dir': dir, 'data-key': sheet.key, 'aria-label': t(`canvas.move.${dir}`), text: sym }))),
+      h('button', { class: 'textbtn', type: 'button', 'data-action': 'canvas-sheet-fit', 'data-key': sheet.key, text: t('canvas.sheetFit') }),
+      h('button', { class: 'textbtn', type: 'button', 'data-action': 'canvas-close', text: t('canvas.close') }),
+    ),
+  );
+}
+
+/** 引き継ぎ: 案内 (無ければ理由を見出しにして「閉じる」だけ)。 @param {T} t @param {any} card @param {{now: number, stored: any, demo: boolean}} o */
+function handoffBar(t, card, o) {
+  const plan = handoffPlan(card, o.stored, o.now);
+  if (plan.guide) return handoffGuideEl(t, card, { kind: plan.guide, inBar: true, demo: o.demo });
+  return h(
+    'section',
+    { class: 'handoff' },
+    h('h3', { class: 'handoff__lead', text: t('live.handoffNo', { why: t(plan.why ?? 'handoff.whyUnknown') }) }),
+    h('p', { class: 'handoff__acts' }, h('button', { class: 'textbtn', type: 'button', 'data-action': 'handoff-close', 'data-id': card.id, text: t('handoff.close') })),
+  );
+}
+
+/**
+ * 帯を描く。署名が変わったときだけ作り直す (手で選んだ文字と「コピーした ✓」を残す)。拡大縮小の割合は作り直さずに書く。
+ * @param {HTMLElement} el #cv-bar
+ * @param {{t: T, bar: BarState|null, entry: {card: any, pile: string}|null, sheet?: {key: string, name: string}|null, z: number, due: number, keysOn: boolean, now: number, demo: boolean, rowCtx: any}} o
+ * @returns {BarState|null} 実際に出した状態 (カードや用紙が消えていれば null に戻す)
+ */
+export function renderBar(el, o) {
+  const t = o.t;
+  const bar = o.bar && (o.bar.kind === 'sheet' ? o.sheet : o.entry) ? o.bar : null;
+  let sig;
+  if (!bar) sig = `default|${t.lang}|${o.due}|${o.keysOn}|${o.demo}`;
+  else if (bar.kind === 'sheet') sig = `sheet|${bar.id}|${t.lang}|${o.sheet?.name}`;
+  else {
+    const card = /** @type {any} */ (o.entry).card;
+    const row = handoffPlan(card, o.rowCtx.handoff?.[card.id], o.now).row ?? '';
+    sig = `${bar.kind}|${bar.id}|${o.entry?.pile}|${row}|${detailStamp(o.rowCtx, bar.id)}|${JSON.stringify(card)}|${o.demo}`;
+  }
+  if (el.dataset.sig !== sig) {
+    el.dataset.sig = sig;
+    el.dataset.state = bar ? bar.kind : 'default';
+    if (!bar) fill(el, ...defaultBar(t, o));
+    else if (bar.kind === 'sheet') fill(el, sheetBar(t, /** @type {{key: string, name: string}} */ (o.sheet)));
+    else {
+      const { card, pile } = /** @type {{card: any, pile: string}} */ (o.entry);
+      fill(el, bar.kind === 'detail' ? detailBar(t, card, pile, o.rowCtx) : handoffBar(t, card, { now: o.now, stored: o.rowCtx.handoff?.[card.id], demo: o.demo }));
+    }
+    // 名前: いつもの帯は「キャンバスの操作」(凡例は aria-hidden なので凡例の名前にしない)、ほかは帯の見出し
+    const lead = bar ? el.querySelector('.handoff__lead, .sheetbar__lead')?.textContent ?? '' : '';
+    const label = !bar ? t('canvas.barAria') : bar.kind !== 'detail' ? lead : t('canvas.slip', { pile: bucketTitle(t, /** @type {any} */ (o.entry).pile), title: titleOf(t, /** @type {any} */ (o.entry).card.title), time: el.querySelector('time')?.textContent ?? '' });
+    el.setAttribute('aria-label', label);
+  }
+  const pct = el.querySelector('#cv-zoom');
+  const z = zoomText(t, o.z);
+  if (pct && pct.textContent !== z) pct.textContent = z;
+  return bar;
+}

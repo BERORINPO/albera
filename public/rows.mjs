@@ -3,12 +3,18 @@
 // 行は ID ごとに使い回し、署名が変わったものだけ作り直す。カーソル・開閉・選択は作り直さずに syncRow で合わせる。
 
 import { MAX_PR_BADGES, MAX_PRS, PREVIEW, RECENT_MS, DAY } from '../src/shared/constants.mjs';
+import { copyButton } from './copy.mjs';
 import {
-  askText, bucketTitle, cardTime, childrenText, contentLang, createdText, dayKey, deepLink, isOtherProject, prLabel, projectLabel,
-  prStateWord, quietHint, reasonLine, routineFlaky, routineHistory, spansRepos, timeText, titleOf,
+  askText, bucketTitle, childrenText, compactedRecent, contentLang, createdText, dayKey, deepLink, doingText, isOtherProject, prLabel, projectLabel,
+  prStateWord, quietHint, reasonLine, routineFlaky, routineHistory, spansRepos, titleOf,
 } from './format.mjs';
+import { handoffGuideEl, handoffPlan, handoffRowEl } from './handoff.mjs';
+import { activityRows, asOfNode, contextNodes, doingNodes, langOf, openEl, timeEl } from './labels.mjs';
 import { familyTree } from './ui-state.mjs';
 import { fill, h, partsToNodes, reconcile, setDisclosed } from './view.mjs';
+
+// 時刻のセル・「開く ↗」・lang の決め方は labels.mjs にある (キャンバスと共有。ここから今までどおり使える)
+export { langOf, openEl, timeEl } from './labels.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 /** @typedef {Record<string, any>} Card */
@@ -28,45 +34,28 @@ import { fill, h, partsToNodes, reconcile, setDisclosed } from './view.mjs';
  * @property {(pile: string, id: string) => boolean} isNew
  * @property {(pile: string, id: string) => boolean} takeArrival
  * @property {(el: HTMLElement) => boolean} leave
+ * @property {Record<string, {at: number, pct: number}>} [handoff] 引き継ぎの指示文をコピーした記録 (prefs.handoff)
  */
 
-/** 中身の言語が画面と違うときだけ lang を付ける。 @param {T} t @param {unknown} text */
-export const langOf = (t, text) => {
-  const l = contentLang(text);
-  return l === t.lang ? null : l;
-};
+/** 親の言葉と子の言葉 ([親, 子]、無いほうは null)。 @param {T} t @param {Card['family']} f @returns {[string|null, string|null]} */
+const familyParts = (t, f) => [
+  f?.parentId ? t('family.parent', { name: f.parentTitle == null ? t('family.parentMissing') : f.parentTitle || t('untitled') }) : null,
+  f?.children?.total > 0 ? childrenText(t, f.children) : null,
+];
 
-/** 時刻のセル。renderTimes が data-kind と data-since から書き直す。 @param {T} t @param {Card} card @param {number} now */
-export function timeEl(t, card, now) {
-  const { kind, since } = cardTime(card);
-  const iso = Number.isFinite(since) && since > 0 ? new Date(since).toISOString() : null;
-  return h('time', { datetime: iso, 'data-kind': kind, 'data-since': since, text: timeText(t, kind, since, now) });
+/** 親子の項目の言葉 (純粋)。親と子は押した先 (その親子だけ表示) が同じなので 1 つにまとめ、sep.list でつなぐ。無ければ null。 @param {T} t @param {Card['family']} f */
+export function familyText(t, f) {
+  const parts = familyParts(t, f).filter((x) => x !== null);
+  return parts.length ? parts.join(t('sep.list')) : null;
 }
 
-/**
- * 「開く ↗」。ID の形が違えば開けないことを伝える (tab では止まる)。デモでは、開いてもアプリに本物が無いことを title で伝える。
- * @param {T} t @param {Card} card @param {string} [cls] @param {boolean} [demo]
- */
-export function openEl(t, card, cls = 'row__open', demo = false) {
-  const href = deepLink(card.id);
-  const title = titleOf(t, card.title);
-  if (!href) return h('a', { class: cls, role: 'link', tabindex: '0', 'aria-disabled': 'true', title: t('open.disabled'), text: t('open.row') });
-  return h('a', { class: cls, href, 'data-action': 'open', 'data-id': card.id, 'aria-label': t('open.aria', { title }), title: t(demo ? 'open.demoTitle' : 'open.title'), text: t('open.row') });
-}
-
-/** 親子のリンク (押すとその親子だけ表示)。 @param {T} t @param {Card} card */
+/** 親子のリンク (1 つ)。まわりの言葉と同じに折り返す (親の題名は 40 字まで: 2 行あれば全部読める、design.md §4)。 @param {T} t @param {Card} card */
 function familyLinks(t, card) {
-  const f = card.family;
-  if (!f) return [];
-  const out = [];
-  const link = (/** @type {string} */ text) =>
-    f.rootId ? h('button', { class: 'link', type: 'button', 'data-action': 'family', 'data-root': f.rootId, title: t('family.filterTitle'), text }) : h('span', { text });
-  if (f.parentId) {
-    const name = f.parentTitle == null ? t('family.parentMissing') : f.parentTitle || t('untitled');
-    out.push(link(t('family.parent', { name })));
-  }
-  if (f.children?.total > 0) out.push(link(childrenText(t, f.children)));
-  return out;
+  const [p, c] = familyParts(t, card.family);
+  if (!p && !c) return [];
+  const kids = [p ? h('span', { text: p }) : null, c ? h('span', { text: p ? t('sep.list') + c : c }) : null];
+  const root = card.family.rootId;
+  return [root ? h('button', { class: 'link fam', type: 'button', 'data-action': 'family', 'data-root': root, title: t('family.filterTitle') }, ...kids) : h('span', { class: 'fam' }, ...kids)];
 }
 
 /**
@@ -88,19 +77,24 @@ export function metaItems(t, card, pile, ctx, o = {}) {
     const flaky = routineFlaky(t, card.routine);
     if (flaky) out.push(h('span', { class: 'is-ink', text: flaky }));
   }
-  if (pile === 'working' && (card.reason === 'background' || card.reason === 'starting')) out.push(h('span', { text: t(`reason.${card.reason}`) }));
+  // していることがサブエージェントなら、行の本文がもう「バックグラウンド」を言っている
+  const bg = card.reason === 'background' && card.activity?.kind !== 'agents';
+  if (pile === 'working' && (bg || card.reason === 'starting')) out.push(h('span', { text: t(`reason.${card.reason}`) }));
   if (pile === 'working') {
     const hint = quietHint(t, card.since, ctx.now);
     out.push(h('span', { class: 'row__hint', 'data-hint-since': card.since, hidden: !hint, text: hint }));
   }
   if (ctx.isNew(pile, card.id)) out.push(h('span', { class: 'is-ink', text: t('badge.new') }));
   if (ctx.copied.has(card.id)) out.push(h('span', { class: 'is-ink', text: t('row.copied') }));
+  if (pile === 'trouble' && card.activity) out.push(asOfNode(t, card.activity, ctx.now));
+  if (card.context) out.push(...contextNodes(t, card.context, ctx.now));
+  out.push(handoffRowEl(t, card, ctx.handoff?.[card.id], ctx.now));
   return out;
 }
 
 /** 行の本文 (欄ごとに違う)。 @param {T} t @param {Card} card @param {string} pile */
 function bodyEl(t, card, pile) {
-  if (pile === 'working') return null;
+  if (pile === 'working') return card.activity ? h('p', { class: 'row__body doing', title: doingText(t, card.activity) }, ...doingNodes(t, card.activity, { one: true })) : null;
   if (pile === 'needs_you') {
     if (card.body) return h('p', { class: 'row__body is-question' }, h('span', { class: 't' }, h('q', { lang: contentLang(card.body), text: card.body })));
     const ask = askText(t, card);
@@ -113,7 +107,9 @@ function bodyEl(t, card, pile) {
 
 /** 行の署名 (これが変わったときだけ作り直す)。 @param {Card} card @param {string} pile @param {RowCtx} ctx @param {string} [extra] */
 export function rowSig(card, pile, ctx, extra = '') {
-  const flags = [ctx.nextId === card.id ? 'next' : '', ctx.isNew(pile, card.id) ? 'new' : '', ctx.copied.has(card.id) ? 'copied' : '', extra].join(',');
+  // 引き継ぎのコピー済みの状態と「要約済み」を出す間も署名に入れる (切れたら作り直す。時刻そのものは入れない)
+  const ho = handoffPlan(card, ctx.handoff?.[card.id], ctx.now).row ?? '';
+  const flags = [ctx.nextId === card.id ? 'next' : '', ctx.isNew(pile, card.id) ? 'new' : '', ctx.copied.has(card.id) ? 'copied' : '', ho, compactedRecent(card.context, ctx.now) ? 'cs' : '', extra].join(',');
   return `${ctx.t.lang}|${pile}|${JSON.stringify(card)}|${flags}`;
 }
 
@@ -196,7 +192,8 @@ export function detailStamp(ctx, id) {
     });
     fam = `${f?.title ?? ''}|${members.join(',')}`;
   }
-  return `${ctx.t.lang}|${dayKey(ctx.now)}|${fam}`;
+  const ho = card ? handoffPlan(card, ctx.handoff?.[card.id], ctx.now).row ?? '' : '';
+  return `${ctx.t.lang}|${dayKey(ctx.now)}|${fam}|${ho}`;
 }
 
 /** @param {string} label @param {Node|string|null} value @param {string} [cls] */
@@ -260,9 +257,10 @@ export function detailEl(card, pile, ctx) {
   const actions = [
     pile === 'cleanup' ? openEl(t, card, 'textbtn', !!ctx.board?.stats?.demo) : null,
     card.family?.rootId ? h('button', { class: 'textbtn', type: 'button', 'data-action': 'family', 'data-root': card.family.rootId, text: t('detail.familyOnly') }) : null,
-    h('button', { class: 'textbtn', type: 'button', 'data-action': 'copy-id', 'data-id': card.id, text: t('detail.copyId') }),
-    deepLink(card.id) ? h('button', { class: 'textbtn', type: 'button', 'data-action': 'copy-link', 'data-id': card.id, text: t('detail.copyLink') }) : null,
+    copyButton(t, { action: 'copy-id', id: card.id, key: 'detail.copyId' }),
+    deepLink(card.id) ? copyButton(t, { action: 'copy-link', id: card.id, key: 'detail.copyLink' }) : null,
   ];
+  const plan = handoffPlan(card, ctx.handoff?.[card.id], ctx.now);
   return h(
     'div',
     { class: 'detail__in' },
@@ -270,6 +268,7 @@ export function detailEl(card, pile, ctx) {
       'dl',
       {},
       ...dlRow(t('detail.state'), h('span', {}, ...partsToNodes(t.parts('detail.stateValue', { pile: bucketTitle(t, pile), time: timeEl(t, card, ctx.now) })))),
+      ...activityRows(t, card, pile, ctx.now),
       ...dlRow(t('detail.summary'), d.statusDetail ? h('q', { lang: contentLang(d.statusDetail), text: d.statusDetail }) : null),
       ...dlRow(t('detail.error'), d.error ? h('span', { class: 'pre', lang: langOf(t, d.error), text: d.error }) : null),
       ...dlRow(t('detail.branch'), d.branch ?? null, 'path'),
@@ -281,6 +280,7 @@ export function detailEl(card, pile, ctx) {
       ...dlRow(t('detail.pr'), prList),
       ...dlRow(t('detail.related'), fam),
     ),
+    plan.guide ? handoffGuideEl(t, card, { kind: plan.guide, inBar: false, demo: !!ctx.board?.stats?.demo }) : null,
     h('p', { class: 'detail__acts' }, ...actions),
   );
 }

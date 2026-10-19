@@ -10,9 +10,18 @@ import { createFakeFolderHints } from '../src/adapters/fake-folder-hints.mjs';
 import { createFakeTranscriptsSource } from '../src/adapters/fake-transcripts.mjs';
 import { createFolderHints } from '../src/adapters/folder-hints-fs.mjs';
 import { attachFolders, cutWorktreeTail, toSessionRecord } from '../src/adapters/session-record.mjs';
-import { createTranscriptsSource, newestMtimeUnder } from '../src/adapters/transcripts-fs.mjs';
+import { countFreshJsonl, createTranscriptsSource, newestMtimeUnder } from '../src/adapters/transcripts-fs.mjs';
 import { createBoardService, withFolders } from '../src/entry/service.mjs';
-import { FOLDER_HINT_TTL_MS, FORBIDDEN_OUTPUT_KEYS } from '../src/shared/constants.mjs';
+import {
+  ACTIVITY_KINDS,
+  CAP,
+  FOLDER_HINT_TTL_MS,
+  FORBIDDEN_OUTPUT_KEYS,
+  FORBIDDEN_WIRE_KEYS,
+  QUIET_MS,
+  SUBAGENT_SCAN_DEPTH,
+  TAIL_BYTES,
+} from '../src/shared/constants.mjs';
 import { HOUR, NOW, rec } from './helpers/fixtures.mjs';
 
 /** @type {string} */
@@ -40,7 +49,7 @@ const rawOf = (/** @type {number} */ n, /** @type {Record<string, unknown>} */ f
 test('app-sessions-fs: 2 階層下の local_*.json と idx を読み、壊れた JSON は数えて飛ばす', async () => {
   const org = path.join(tmp, 'sessions', 'acct-1', 'org-1');
   await fs.mkdir(org, { recursive: true });
-  const raws = [rawOf(1), rawOf(2, { isArchived: true }), rawOf(3)];
+  const raws = [rawOf(1, { model: 'claude-opus-4-7[1m]', contextExceededCount: 2 }), rawOf(2, { isArchived: true }), rawOf(3)];
   for (const r of raws) await fs.writeFile(path.join(org, `${r.sessionId}.json`), JSON.stringify(r));
   await fs.writeFile(path.join(org, `${sid(4)}.json`), '{"sessionId": "local_00000000-0000-4000-8000-00000000');
   await fs.writeFile(path.join(org, `${sid(5)}.json`), JSON.stringify({ ...rawOf(5), sessionId: 'local_../evil' }));
@@ -64,6 +73,19 @@ test('app-sessions-fs: 2 階層下の local_*.json と idx を読み、壊れた
   const fake = await createFakeAppSessionsSource({ raws, archivedIds: [sid(3)] }).load();
   const byId = (/** @type {any[]} */ a) => [...a].sort((x, y) => (x.sessionId < y.sessionId ? -1 : 1));
   assert.deepEqual(byId(fake.sessions), byId(r.sessions));
+});
+
+test('session-record: model は CAP.MODEL まで (… は付けない)、contextExceededCount は 0 以上の整数だけ', () => {
+  const r = (/** @type {Record<string, unknown>} */ f) => /** @type {import('../src/shared/types.mjs').SessionRecord} */ (toSessionRecord(rawOf(1, f)));
+  assert.equal(r({ model: 'claude-sonnet-4-5' }).model, 'claude-sonnet-4-5');
+  assert.equal(r({ model: 'claude-opus-4-7[1m]' }).model, 'claude-opus-4-7[1m]');
+  const long = r({ model: 'm'.repeat(CAP.MODEL + 20) }).model;
+  assert.equal(long, 'm'.repeat(CAP.MODEL), '切っても「…」は付けない (画面に出ない値)');
+  for (const bad of [42, '', null, { id: 'x' }]) assert.equal(r({ model: bad }).model, undefined, String(bad));
+  assert.equal(r({ contextExceededCount: 0 }).contextExceededCount, 0);
+  assert.equal(r({ contextExceededCount: 3 }).contextExceededCount, 3);
+  for (const bad of [-1, 1.5, '2', NaN, Infinity, null]) assert.equal(r({ contextExceededCount: bad }).contextExceededCount, undefined, String(bad));
+  assert.equal(r({}).model, undefined);
 });
 
 test('app-sessions-fs: フォルダが無くても例外を投げず 0 件。組織フォルダだけあれば dirs > 0 で files 0', async () => {
@@ -98,11 +120,75 @@ test('transcripts-fs: ファイル名から場所を引き、末尾と mtime と
   assert.equal(got.truncatedHead, false);
   assert.equal(Math.round(got.mainMtime), Math.round(mainT.getTime()));
   assert.equal(Math.round(got.subMtime), Math.round(subT.getTime()));
+  assert.equal(got.subLive, 1, 'QUIET_MS 以内に書かれた subagent の *.jsonl が 1 つ');
   assert.equal((await fs.stat(file)).mtimeMs, before, '読んでも mtime は変わらない');
   assert.deepEqual(src.stats(), { dirMissing: false, indexed: 1 });
 
   const fake = createFakeTranscriptsSource({ [cid(1)]: got });
   assert.deepEqual((await fake.read([cid(1), cid(2)])).get(cid(1)), got);
+  // subLive の無い合成データは 0 (fs 版は必ず数を返す)
+  const { subLive, ...withoutLive } = got;
+  assert.equal(subLive, 1);
+  assert.equal(/** @type {any} */ ((await createFakeTranscriptsSource({ [cid(1)]: withoutLive }).read([cid(1)])).get(cid(1))).subLive, 0);
+});
+
+/**
+ * fs.open と fs.readFile を数える (ファイルの中身を開いたかどうか)。stat と readdir は数えない。
+ * @template T @param {() => Promise<T>} fn @returns {Promise<{result: T, opened: string[]}>}
+ */
+async function countingOpens(fn) {
+  /** @type {string[]} */
+  const opened = [];
+  const { open, readFile } = fs;
+  fs.open = /** @type {any} */ ((/** @type {any} */ p, /** @type {any[]} */ ...rest) => (opened.push(String(p)), open(p, ...rest)));
+  fs.readFile = /** @type {any} */ ((/** @type {any} */ p, /** @type {any[]} */ ...rest) => (opened.push(String(p)), readFile(p, ...rest)));
+  try {
+    return { result: await fn(), opened };
+  } finally {
+    fs.open = open;
+    fs.readFile = readFile;
+  }
+}
+
+test('transcripts-fs: subLive は QUIET_MS 以内の *.jsonl だけを数え (meta の .json と古いもの・深すぎるものは数えない)、ファイルを開かない', async () => {
+  const projects = path.join(tmp, 'projects-live');
+  const dir = path.join(projects, '-home-tester-live');
+  const subs = path.join(dir, cid(3), 'subagents');
+  const now = Date.now();
+  const put = async (/** @type {string} */ rel, /** @type {number} */ ago) => {
+    const f = path.join(subs, rel);
+    await fs.mkdir(path.dirname(f), { recursive: true });
+    await fs.writeFile(f, '{"type":"assistant"}\n');
+    const at = new Date(now - ago);
+    await fs.utimes(f, at, at);
+  };
+  await put('agent-a.jsonl', 30 * 1000);
+  await put('agent-a.meta.json', 30 * 1000);
+  await put('agent-b.jsonl', QUIET_MS + 60 * 1000); // 終わった subagent
+  await put('workflows/wf_1/agent-c.jsonl', 2 * 60 * 1000);
+  await put('workflows/wf_1/agent-c.meta.json', 10 * 1000);
+  // SUBAGENT_SCAN_DEPTH (4) より深いものは見ない
+  const deep = Array.from({ length: SUBAGENT_SCAN_DEPTH }, (_, i) => `d${i}`).join('/');
+  await put(`${deep}/at-the-limit.jsonl`, 10 * 1000);
+  await put(`${deep}/d9/too-deep.jsonl`, 10 * 1000);
+  const main = path.join(dir, `${cid(3)}.jsonl`);
+  await fs.writeFile(main, tails.ended());
+  const mainAt = new Date(now - HOUR);
+  await fs.utimes(main, mainAt, mainAt);
+
+  const counted = await countingOpens(() => countFreshJsonl(subs, now - QUIET_MS));
+  assert.equal(counted.result, 3, 'agent-a・agent-c・上限ちょうどの深さの 1 つ');
+  assert.deepEqual(counted.opened, [], 'stat だけで数える (中身も meta の .json も開かない)');
+
+  const src = createTranscriptsSource({ projectsDir: projects, clock: () => now });
+  const read = await countingOpens(() => src.read([cid(3)]));
+  const got = /** @type {any} */ (read.result.get(cid(3)));
+  assert.equal(got.subLive, 3);
+  assert.deepEqual(read.opened.map((p) => path.basename(p)), [`${cid(3)}.jsonl`], '開くのは本体の末尾だけ');
+
+  // subagents の最後の書き込みが QUIET_MS より前なら数えない (stat も増やさない)
+  const later = createTranscriptsSource({ projectsDir: projects, clock: () => now + QUIET_MS + 60 * 1000 });
+  assert.equal(/** @type {any} */ ((await later.read([cid(3)])).get(cid(3))).subLive, 0);
 });
 
 test('transcripts-fs: 末尾 200KB に完全な行が無ければ 2MB で 1 回だけ読み直す', async () => {
@@ -115,6 +201,39 @@ test('transcripts-fs: 末尾 200KB に完全な行が無ければ 2MB で 1 回�
   const got = /** @type {any} */ (m.get(cid(9)));
   assert.equal(got.truncatedHead, false, 'ファイル全体 (2MB 以下) を読み直している');
   assert.ok(got.tail.length > 300 * 1024);
+});
+
+test('transcripts-fs: 末尾 200KB に行はあるが実際の usage 行が無ければ、{path,size,mtimeMs} ごとに 1 回だけ 2MB で読み直す', async () => {
+  const projects = path.join(tmp, 'projects-usage');
+  const dir = path.join(projects, '-home-tester-gamma');
+  await fs.mkdir(dir, { recursive: true });
+  const file = path.join(dir, `${cid(10)}.jsonl`);
+  const usageLine = JSON.stringify({ type: 'assistant', message: { id: 'msg_x', role: 'assistant', model: 'claude-opus-4-7', stop_reason: 'tool_use',
+    usage: { input_tokens: 5, cache_creation_input_tokens: 100, cache_read_input_tokens: 40000, output_tokens: 10 },
+    content: [{ type: 'tool_use', id: 'toolu_x', name: 'Read', input: { file_path: '/synthetic/a.txt' } }] } });
+  // usage の後に大きなツール結果が続き、最後の usage 行が末尾 200KB の外に出る (該当行は 200KB の中にもある)
+  const result = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: 'r'.repeat(10 * 1024) }] } });
+  await fs.writeFile(file, [synth.prompt('go'), usageLine, ...Array.from({ length: 30 }, () => result), ''].join('\n'));
+  assert.ok((await fs.stat(file)).size > TAIL_BYTES + 50 * 1024);
+  const src = createTranscriptsSource({ projectsDir: projects });
+  const first = await countingOpens(() => src.read([cid(10)]));
+  const got = /** @type {any} */ (first.result.get(cid(10)));
+  assert.equal(got.truncatedHead, false, 'ファイル全体 (2MB 以下) を読み直した');
+  assert.ok(got.tail.includes('"usage"'));
+  assert.equal(first.opened.length, 2, '200KB と 2MB の 2 回');
+  const again = await countingOpens(() => src.read([cid(10)]));
+  assert.deepEqual(again.opened, [], '同じ {path,size,mtimeMs} はキャッシュ (毎回 2MB を読まない)');
+  assert.equal(/** @type {any} */ (again.result.get(cid(10))).tail, got.tail);
+  await fs.appendFile(file, result + '\n');
+  const changed = await countingOpens(() => src.read([cid(10)]));
+  assert.equal(changed.opened.length, 2, 'ファイルが変われば、また 1 回だけ読み直す');
+
+  // usage 行が末尾 200KB の中にあれば読み直さない
+  const fileOk = path.join(dir, `${cid(11)}.jsonl`);
+  await fs.writeFile(fileOk, [synth.prompt('go'), ...Array.from({ length: 30 }, () => result), usageLine, ''].join('\n'));
+  const ok = await countingOpens(() => createTranscriptsSource({ projectsDir: projects }).read([cid(11)]));
+  assert.equal(/** @type {any} */ (ok.result.get(cid(11))).truncatedHead, true);
+  assert.equal(ok.opened.length, 1);
 });
 
 test('transcripts-fs: subagents は新しいフォルダから見るので、件数の上限に達しても動いているワークフローを見落とさない', async () => {
@@ -139,6 +258,7 @@ test('transcripts-fs: subagents は新しいフォルダから見るので、件
   await fs.writeFile(path.join(wf, 'wf_a000', 'agent-live.jsonl'), '{}');
   const m = await newestMtimeUnder(sub);
   assert.ok(Date.now() - m < 60 * 1000, `いまのファイルを拾う (${Math.round((Date.now() - m) / 60000)} 分前を返した)`);
+  assert.equal(await countFreshJsonl(sub, Date.now() - QUIET_MS), 1, 'subLive も件数の上限の中で、いま書いているものを数える');
   // stopAbove より新しいファイルが見つかれば打ち切ってよい (結果はそれ以上新しい)
   const stop = Date.now() - 10 * 60 * 1000;
   assert.ok((await newestMtimeUnder(sub, stop)) > stop);
@@ -345,6 +465,8 @@ test('demo-data: en と ja は同じ形で、パスは POSIX の ~ 形式、en �
   const tailsText = [...en.transcripts.values()].map((v) => v.tail).join('\n');
   assert.match(tailsText, /"name":"ExitPlanMode"/);
   assert.match(tailsText, /"name":"AskUserQuestion"/);
+  assert.doesNotMatch(tailsText, CJK, 'en の会話ログに日本語は無い');
+  assert.match([...ja.transcripts.values()].map((v) => v.tail).join('\n'), CJK, 'ja の会話ログ (指示・説明・計画) は日本語');
   // 指示の行には timestamp がある (startedAt の材料)
   const prompts = tailsText.split('\n').filter((l) => l.startsWith('{"type":"user"') && /"content":"[^<]/.test(l));
   assert.ok(prompts.length > 10);
@@ -372,7 +494,7 @@ test('demo-data: 盤面にすると各欄の件数と、作業中の startedAt�
     });
     const { body } = await service.get();
     const b = JSON.parse(body);
-    assert.deepEqual(b.counts, { needs_you: 4, trouble: 3, unread: 3, working: 4, recent: 7, cleanup: 35, recommended: 28, active: 56, archived: 3 }, lang);
+    assert.deepEqual(b.counts, { needs_you: 4, trouble: 3, unread: 3, working: 5, recent: 7, cleanup: 35, recommended: 28, active: 57, archived: 3 }, lang);
     assert.equal(b.stats.demo, true);
     assert.equal(b.stats.formatSuspect, null);
     for (const k of FORBIDDEN_OUTPUT_KEYS) assert.ok(!body.includes(`"${k}"`), k);
@@ -380,12 +502,137 @@ test('demo-data: 盤面にすると各欄の件数と、作業中の startedAt�
     assert.deepEqual(reasons('needs_you'), ['asking', 'asking', 'asks', 'asks']);
     assert.deepEqual(b.buckets.needs_you.map((/** @type {any} */ c) => c.reasonParams?.ask).filter(Boolean).sort(), ['plan', 'question']);
     assert.deepEqual(reasons('trouble'), ['git_startup', 'limit', 'stalled']);
-    assert.deepEqual(reasons('working'), ['background', 'turn', 'turn', 'turn']);
+    assert.deepEqual(reasons('working'), ['background', 'turn', 'turn', 'turn', 'turn']);
     const running = b.buckets.working.filter((/** @type {any} */ c) => c.startedAt).map((/** @type {any} */ c) => Math.round((NOW - c.startedAt) / 60000));
-    assert.deepEqual(running.sort((/** @type {number} */ x, /** @type {number} */ y) => x - y), [2, 6, 23]);
+    assert.deepEqual(running.sort((/** @type {number} */ x, /** @type {number} */ y) => x - y), [0, 2, 6, 23]);
     assert.ok(b.buckets.unread.some((/** @type {any} */ c) => c.prs.length > 0) && b.buckets.unread.some((/** @type {any} */ c) => c.routine));
     assert.deepEqual(b.recentGroups.map((/** @type {any} */ g) => g.label).sort(), ['demo-app', 'notes', 'site', null].sort());
     assert.deepEqual(b.cleanupGroups.map((/** @type {any} */ g) => g.count), [1, 4, 1, 1, 1, 25, 2]);
     assert.ok(Object.values(b.families).some((/** @type {any} */ f) => f.memberIds.length === 4));
   }
+});
+
+/** すべてのカード (片付け候補を含む)。 @param {any} b @returns {any[]} */
+const allCards = (b) => [
+  ...Object.values(b.buckets).flat(),
+  ...b.recentGroups.flatMap((/** @type {any} */ g) => g.items),
+  ...b.cleanupGroups.flatMap((/** @type {any} */ g) => [...(g.items ?? []), ...(g.projects ?? []).flatMap((/** @type {any} */ p) => p.items)]),
+];
+
+/** JSON の木のすべてのキーと、prs[] の要素の外にある 'state' の数。 @param {unknown} root */
+function wireKeys(root) {
+  /** @type {Set<string>} */
+  const keys = new Set();
+  let stateOutside = 0;
+  /** @param {unknown} v @param {boolean} inPr */
+  const walk = (v, inPr) => {
+    if (Array.isArray(v)) return v.forEach((x) => walk(x, false));
+    if (!v || typeof v !== 'object') return;
+    for (const [k, x] of Object.entries(v)) {
+      keys.add(k);
+      if (k === 'state' && !inPr) stateOutside++;
+      if (k === 'prs' && Array.isArray(x)) x.forEach((pr) => walk(pr, true));
+      else walk(x, false);
+    }
+  };
+  walk(root, false);
+  return { keys, stateOutside };
+}
+
+test('demo-data (v0.2): していることの 15 種類・コンテキストの段階・要約の直後・200K の窓・Claude の短い言葉が全部出る', async () => {
+  for (const lang of ['en', 'ja']) {
+    const demo = buildDemo(NOW, lang);
+    const models = demo.raws.map((r) => String(r.model));
+    assert.ok(models.some((m) => m.endsWith('[1m]')) && models.some((m) => !m.endsWith('[1m]')), 'model は [1m] 付きと無し');
+    const service = createBoardService({
+      sessionsSource: createFakeAppSessionsSource({ raws: demo.raws, archivedIds: demo.archivedIds }),
+      transcriptsSource: createFakeTranscriptsSource(demo.transcripts),
+      folderHints: createFakeFolderHints(demo.folderHints),
+      roots: ['/home/tester'],
+      demo: true,
+      clock: () => NOW,
+    });
+    const { body } = await service.get();
+    const b = JSON.parse(body);
+    const wire = wireKeys(b);
+    for (const k of [...FORBIDDEN_WIRE_KEYS, ...FORBIDDEN_OUTPUT_KEYS]) assert.equal(wire.keys.has(k), false, `${lang}: ${k}`);
+    assert.equal(wire.stateOutside, 0, `${lang}: state は prs[] の中だけ`);
+    // 会話ログのパス・コマンドの全体・URL・ID は JSON に出ない (basename・commandHead・ホストだけ)
+    for (const raw of ['src/search-box.mjs', 'reports/weekly.csv', '--oneline', 'weekly-report', '~/projects/notes/inbox.md', 'toolu_', 'msg_demo']) {
+      assert.ok(!body.includes(raw), `${lang}: ${raw}`);
+    }
+    assert.equal(b.stats.contextSuspect, false);
+    assert.equal(b.stats.contextSeen, b.stats.recentWithTranscript, 'usage 行の無い最近の会話ログは無い');
+    assert.ok(b.stats.activitySeen > 15);
+
+    const cards = allCards(b);
+    const by = (/** @type {number} */ n) => cards.find((c) => c.id === sid(n));
+    const acts = cards.filter((c) => c.activity);
+    assert.deepEqual([...new Set(acts.map((c) => c.activity.kind))].sort(), [...ACTIVITY_KINDS].sort(), `${lang}: 15 種類が全部出る`);
+    const working = b.buckets.working;
+    assert.equal(new Set(working.map((/** @type {any} */ c) => c.activity?.kind)).size, working.length, '作業中はそれぞれ違う種類');
+    for (const k of ['edit', 'test', 'git', 'agents', 'think']) assert.ok(working.some((/** @type {any} */ c) => c.activity?.kind === k), `作業中に ${k}`);
+    assert.ok(working.every((/** @type {any} */ c) => c.activity.live === true));
+    assert.equal(by(9).activity.n, 2, 'バックグラウンドの subagent 2 件');
+    const tested = by(71).activity;
+    assert.equal(tested.target, 'npm test');
+    assert.equal(tested.note, lang === 'ja' ? '単体テストを実行' : 'Run the unit tests', 'Bash の説明 (Claude 自身の言葉)');
+    assert.equal(tested.step, lang === 'ja' ? 'パーサーのテストを書く' : 'Write tests for the parser', '計画の手順 (items → advance)');
+    assert.equal(by(10).activity.kind, 'plan');
+    assert.ok(by(10).activity.step, 'TodoWrite の進行中の項目');
+    assert.ok(!by(15).activity.note.includes('~/'), '説明の中の絶対パスは basename になる');
+    // 止まったかもの古い tool_use (「時点」の表示の材料)
+    const stalled = by(3);
+    assert.equal(stalled.bucket, 'trouble');
+    assert.equal(stalled.activity.live, false);
+    assert.ok(NOW - stalled.activity.at >= 3 * HOUR, '3 時間前のツール');
+    assert.equal(stalled.detail.contextExceeded, 1);
+    assert.ok(b.buckets.needs_you.every((/** @type {any} */ c) => !c.activity), '返事待ちには付かない');
+    assert.ok(cards.filter((c) => c.bucket === 'cleanup').every((c) => !c.activity && !c.context && c.detail.contextExceeded == null), '片付けには付かない');
+
+    // コンテキスト: 段階 (notice・due・soon)、窓 (1M・200K、推定と確定)、要約の直後、tail から学んだ要約点
+    const ctx = (/** @type {number} */ n) => by(n).context;
+    assert.equal(ctx(8).level, 'notice', '作業中に notice');
+    assert.deepEqual([ctx(9).level, by(9).bucket], ['due', 'working'], '作業中に due (終わってから引き継ぐ)');
+    assert.deepEqual([ctx(6).pct, ctx(6).level, by(6).bucket], [82, 'due', 'unread'], '未読に due (約 82%)');
+    assert.deepEqual([ctx(4).pct, ctx(4).level], [85, 'due']);
+    assert.deepEqual([ctx(10).pct, ctx(10).level, by(10).bucket], [92, 'soon', 'recent'], '最近に soon');
+    assert.deepEqual([ctx(15).window, ctx(15).inferred], [200_000, true], '200K の窓 (推定)');
+    assert.deepEqual([ctx(6).window, ctx(6).inferred], [1_000_000, false], '[1m] 付きは 1M (確定)');
+    assert.deepEqual([ctx(71).window, ctx(71).inferred], [1_000_000, true], '系列の表で 1M (推定)');
+    const just = ctx(72);
+    assert.deepEqual([just.used, just.level, just.compacted?.trigger], [38_000, undefined, 'manual'], '要約の直後: 量は要約の後の数、段階なし');
+    assert.ok(NOW - just.compacted.at < HOUR);
+    assert.equal(by(72).activity.kind, 'think');
+    assert.deepEqual([ctx(14).compactAt, ctx(14).compacted?.trigger], [965_000, 'auto'], '自動要約の preTokens から要約点を学ぶ');
+    const levels = new Set(cards.map((c) => c.context?.level).filter(Boolean));
+    assert.deepEqual([...levels].sort(), ['due', 'notice', 'soon']);
+    // キャンバスで密度の違いが見えるように、名前のあるプロジェクトが 4 つ以上
+    const projects = new Set(cards.map((c) => c.project.label).filter(Boolean));
+    assert.ok(projects.size >= 4, [...projects].join());
+  }
+});
+
+test('transcripts-fs: subLive は本体の最後の書き込みより後の subagent だけ (結果を返し終えた subagent は数えない)', async () => {
+  const projects = path.join(tmp, 'projects-done-helpers');
+  const dir = path.join(projects, '-home-tester-done');
+  const subs = path.join(dir, cid(4), 'subagents');
+  const now = Date.now();
+  const touch = async (/** @type {string} */ f, /** @type {number} */ ago, body = '{"type":"assistant"}\n') => {
+    await fs.mkdir(path.dirname(f), { recursive: true });
+    await fs.writeFile(f, body);
+    const at = new Date(now - ago);
+    await fs.utimes(f, at, at);
+  };
+  await touch(path.join(subs, 'agent-a.jsonl'), 10 * 60 * 1000);
+  await touch(path.join(subs, 'agent-b.jsonl'), 10 * 60 * 1000);
+  const main = path.join(dir, `${cid(4)}.jsonl`);
+  // 本体: subagent の結果を受け取ったあと、30 秒前にも書いている (次の作業へ進んだ)
+  await touch(main, 30 * 1000, tails.ended());
+  const src = createTranscriptsSource({ projectsDir: projects, clock: () => now });
+  assert.equal(/** @type {any} */ ((await src.read([cid(4)])).get(cid(4))).subLive, 0);
+  // 本体が subagent を待っている (最後の書き込みが 12 分前) なら 2 つとも数える
+  await touch(main, 12 * 60 * 1000, tails.ended());
+  const waiting = createTranscriptsSource({ projectsDir: projects, clock: () => now });
+  assert.equal(/** @type {any} */ ((await waiting.read([cid(4)])).get(cid(4))).subLive, 2);
 });

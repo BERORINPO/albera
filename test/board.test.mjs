@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildBoard, detectFormatSuspect, selectTranscriptTargets } from '../src/core/board.mjs';
-import { FORBIDDEN_OUTPUT_KEYS } from '../src/shared/constants.mjs';
+import { FORBIDDEN_OUTPUT_KEYS, FORBIDDEN_WIRE_KEYS } from '../src/shared/constants.mjs';
 import { toSessionRecord } from '../src/adapters/session-record.mjs';
-import { DAY, HOUR, MIN, NOW, ROOTS, cid, rec, sid, synth, tails, ti } from './helpers/fixtures.mjs';
+import { DAY, HOUR, MIN, NOW, ROOTS, cid, rec, sid, synth, synth2, tails, ti, usageOf } from './helpers/fixtures.mjs';
 
 /**
  * @param {any[]} sessions
- * @param {{turns?: Record<string, ReturnType<typeof ti>>, archived?: string[], sourceStats?: any, demo?: boolean}} [o]
+ * @param {{turns?: Record<string, ReturnType<typeof ti>>, archived?: string[], sourceStats?: any, demo?: boolean,
+ *   tailFacts?: Map<string, any>, prevContext?: Map<string, any>}} [o]
  * @returns {any}
  */
 function board(sessions, o = {}) {
@@ -19,6 +20,8 @@ function board(sessions, o = {}) {
     roots: ROOTS,
     sourceStats: o.sourceStats,
     demo: o.demo,
+    tailFacts: o.tailFacts,
+    prevContext: o.prevContext,
   });
 }
 const allCleanupRows = (/** @type {any} */ b) => b.cleanupGroups.flatMap((/** @type {any} */ g) => g.items ?? g.projects.flatMap((/** @type {any} */ p) => p.items));
@@ -414,4 +417,204 @@ test('統計: cliSessionId の無いセッション (CLI が始まる前の起�
   const noCli = rec(2, { cliSessionId: undefined, errorCategory: 'git_startup_failed', error: 'Git is broken', errorAt: NOW - HOUR, pendingFirstStart: { since: NOW - HOUR } });
   const b = board([rec(1), noCli], { turns: { [sid(1)]: ti(tails.ended(), HOUR) } });
   assert.deepEqual([b.stats.recentTotal, b.stats.transcriptsMissingRecent], [2, 0]);
+});
+
+// --- v0.2: していること・コンテキスト・形式の異常 (spec/board.md §5.1〜§5.3・§9・§10) ---
+
+const joinLines = (/** @type {string[]} */ ...lines) => lines.join('\n') + '\n';
+/** 作業中の tail: 指示 → usage つきの Bash (まだ結果が無い)。 @param {number} used */
+const workTail = (used, model = 'claude-test-1') =>
+  joinLines(
+    synth.prompt('go', NOW - 10 * MIN),
+    synth2.tool('Bash', { command: 'npm test -- --grep private-case', description: 'Run the unit tests' }, { usage: usageOf(used), at: NOW - 2 * MIN, model }),
+  );
+/** 終わった tail: 指示 → usage つきの Edit → 結果 → 返事 → stop_hook_summary。 @param {number} used */
+const endedTail = (used) =>
+  joinLines(
+    synth.prompt('go'),
+    synth2.tool('Edit', { file_path: 'C:\\work\\alpha\\private-dir\\board.mjs' }, { usage: usageOf(used), at: NOW - HOUR }),
+    synth.toolResult(),
+    synth.text('done'),
+    synth.stopHook(),
+  );
+/** 本筋の assistant 行はあるが usage の無い tail。 */
+const noUsageTail = () => joinLines(synth.prompt('go'), synth.text('done'), synth.stopHook());
+/** @param {any} b */
+const liveCards = (b) => [...b.buckets.needs_you, ...b.buckets.trouble, ...b.buckets.unread, ...b.buckets.working, ...b.recentGroups.flatMap((/** @type {any} */ g) => g.items)];
+/** @param {any} b @param {number} n */
+const cardOf = (b, n) => [...liveCards(b), ...allCleanupRows(b)].find((c) => c.id === sid(n) || c.routine?.runIds?.includes(sid(n)));
+
+test('v0.2: context と activity は最近 7 日で transcript があるものだけ。返事待ちに activity は付かず、片付けにはどちらも付かない', () => {
+  const runs = [0, 1].map((i) => rec(10 + i, { scheduledTaskId: 'synthetic-routine', createdAt: NOW - (i + 1) * HOUR, lastActivityAt: NOW - (i + 1) * HOUR + MIN, contextExceededCount: 3 }));
+  const sessions = [
+    rec(1), // 作業中
+    rec(2), // 返事待ち (質問ツール)
+    rec(3, { lastFocusedAt: undefined }), // 未読
+    rec(4, { lastActivityAt: NOW - 8 * DAY, lastFocusedAt: NOW - 8 * DAY + MIN, createdAt: NOW - 9 * DAY }), // 8 日前 → 片付け
+    rec(5), // 最近、transcript なし
+    ...runs,
+  ];
+  const turns = {
+    [sid(1)]: ti(workTail(150_000), MIN),
+    [sid(2)]: ti(joinLines(synth.prompt('go'), synth2.usage(40_000), synth.ask('q1', 'どちら?')), MIN),
+    [sid(3)]: ti(endedTail(90_000), HOUR),
+    [sid(4)]: ti(endedTail(90_000), 8 * DAY),
+    [sid(10)]: ti(endedTail(90_000), HOUR),
+    [sid(11)]: ti(endedTail(90_000), 2 * HOUR),
+  };
+  const b = board(sessions, { turns });
+  const working = cardOf(b, 1);
+  assert.equal(working.bucket, 'working');
+  assert.deepEqual(working.activity, { kind: 'test', target: 'npm test', note: 'Run the unit tests', live: true, at: NOW - 2 * MIN });
+  assert.deepEqual(working.context, { used: 150_000, window: 200_000, inferred: true, pct: 75, compactAt: 167_000, level: 'due' });
+  const asking = cardOf(b, 2);
+  assert.equal(asking.bucket, 'needs_you');
+  assert.equal(asking.activity, undefined);
+  assert.equal(asking.context?.used, 40_000);
+  const unread = cardOf(b, 3);
+  assert.deepEqual(unread.activity, { kind: 'edit', target: 'board.mjs', live: false, at: NOW - HOUR });
+  assert.equal(unread.context?.pct, 45);
+  for (const n of [4, 11]) {
+    const c = cardOf(b, n);
+    assert.equal(c.bucket, 'cleanup', `${n}`);
+    assert.equal(c.activity, undefined);
+    assert.equal(c.context, undefined);
+    assert.equal(c.detail.contextExceeded, undefined); // 片付けには付けない
+  }
+  assert.equal(cardOf(b, 5).activity, undefined);
+  assert.equal(cardOf(b, 5).context, undefined);
+  assert.notEqual(cardOf(b, 10).bucket, 'cleanup');
+  assert.equal(cardOf(b, 10).detail.contextExceeded, 3); // 定期実行の最新回 (片付け以外)
+});
+
+test('v0.2: detail.contextExceeded は 1 以上の整数のときだけ', () => {
+  const b = board([1, 2, 3, 4].map((n) => ({ ...rec(n), contextExceededCount: [2, 0, 1.5, undefined][n - 1] })));
+  assert.equal(cardOf(b, 1).detail.contextExceeded, 2);
+  for (const n of [2, 3, 4]) assert.equal('contextExceeded' in cardOf(b, n).detail, false);
+});
+
+test('v0.2: 作業中で subagent が動いていれば (subLive) activity は agents と n。止まったかもは live false で時点つき', () => {
+  const turns = {
+    [sid(1)]: ti(workTail(10_000), MIN, 30 * 1000, 3),
+    [sid(2)]: ti(workTail(10_000), 40 * MIN, undefined, 5), // 無音 40 分 → 止まったかも (subLive は作業中だけに効く)
+  };
+  const b = board([rec(1), rec(2)], { turns });
+  assert.deepEqual(cardOf(b, 1).activity, { kind: 'agents', n: 3, live: true, at: NOW - 2 * MIN });
+  const stuck = cardOf(b, 2);
+  assert.equal(stuck.bucket, 'trouble');
+  assert.deepEqual(stuck.activity, { kind: 'test', target: 'npm test', note: 'Run the unit tests', live: false, at: NOW - 2 * MIN });
+});
+
+test('v0.2: stats.contextSeen / activitySeen / contextSuspect。A = 5 で 2 件欠け → true で全部の context が消える、1 件 → false', () => {
+  const sessions = [1, 2, 3, 4, 5, 6].map((n) => rec(n));
+  /** @param {number} missing */
+  const turnsWith = (missing) => {
+    /** @type {Record<string, any>} */
+    const t = {};
+    for (let n = 1; n <= 5; n++) t[sid(n)] = ti(n <= missing ? noUsageTail() : endedTail(20_000 * n), HOUR);
+    t[sid(6)] = ti(joinLines(synth.prompt('go')), HOUR); // 返事のまだ無いセッションは分母に入れない
+    return t;
+  };
+  const two = board(sessions, { turns: turnsWith(2) });
+  assert.deepEqual([two.stats.contextSeen, two.stats.activitySeen, two.stats.contextSuspect], [3, 3, true]);
+  assert.equal(liveCards(two).filter((c) => c.context).length, 0);
+  assert.equal(liveCards(two).filter((c) => c.activity).length, 4); // activity は消さない (think を含む)
+  const one = board(sessions, { turns: turnsWith(1) });
+  assert.deepEqual([one.stats.contextSeen, one.stats.activitySeen, one.stats.contextSuspect], [4, 4, false]);
+  assert.equal(liveCards(one).filter((c) => c.context).length, 4);
+  // 4 件 (FORMAT_SUSPECT_MIN 未満) なら全部欠けても疑わない
+  const few = board(sessions.slice(0, 4), { turns: Object.fromEntries([1, 2, 3, 4].map((n) => [sid(n), ti(noUsageTail(), HOUR)])) });
+  assert.equal(few.stats.contextSuspect, false);
+  const empty = board([rec(1)]).stats;
+  assert.deepEqual([empty.contextSeen, empty.activitySeen, empty.contextSuspect], [0, 0, false]);
+});
+
+test('v0.2: 渡された tailFacts をそのまま使い (parse し直さない)、無いセッションは core がその場で作る', () => {
+  const memo = new Map([
+    [sid(1), { turn: { turn: 'ended', relevant: 1 }, activity: { kind: 'web', target: 'docs.example.com' }, context: { maxUsed: 0, hasAssistant: true } }],
+  ]);
+  const b = board([rec(1), rec(2)], { turns: { [sid(1)]: ti('not json at all\n', HOUR), [sid(2)]: ti(endedTail(20_000), HOUR) }, tailFacts: memo });
+  assert.deepEqual(cardOf(b, 1).activity, { kind: 'web', target: 'docs.example.com', live: false });
+  assert.equal(cardOf(b, 1).bucket, 'recent'); // memo のターン状態 (ended) で分類した
+  assert.equal(b.stats.unknownTurnRecent, 0);
+  assert.equal(cardOf(b, 2).activity?.kind, 'edit');
+});
+
+test('v0.2: 前回の段階 (prevContext) が帯に効く。別の会話ログの prev は使わない', () => {
+  const used = Math.round(0.8 * 167_000); // f = 0.80: 新しく入るなら notice、due からなら帯の中
+  const turns = { [sid(1)]: ti(endedTail(used), HOUR) };
+  assert.equal(cardOf(board([rec(1)], { turns }), 1).context.level, 'notice');
+  const prev = new Map([[sid(1), { cli: cid(1), level: 'due', used: used + 2000 }]]);
+  assert.equal(cardOf(board([rec(1)], { turns, prevContext: prev }), 1).context.level, 'due');
+  const other = new Map([[sid(1), { cli: cid(9), level: 'due', used: used + 2000 }]]);
+  assert.equal(cardOf(board([rec(1)], { turns, prevContext: other }), 1).context.level, 'notice');
+});
+
+test('v0.2: 窓は model と tail の証拠から ([1m] → 1M、同じ model の別のセッションが 200K 超 → 1M 推定)', () => {
+  const models = ['claude-test-1[1m]', 'claude-test-2', 'claude-test-2'];
+  const sessions = [1, 2, 3].map((n) => ({ ...rec(n), model: models[n - 1] }));
+  const b = board(sessions, {
+    turns: { [sid(1)]: ti(endedTail(100_000), HOUR), [sid(2)]: ti(endedTail(400_000), HOUR), [sid(3)]: ti(endedTail(100_000), HOUR) },
+  });
+  assert.deepEqual([cardOf(b, 1).context.window, cardOf(b, 1).context.inferred], [1_000_000, false]);
+  assert.deepEqual([cardOf(b, 2).context.window, cardOf(b, 2).context.inferred], [1_000_000, false]);
+  assert.deepEqual([cardOf(b, 3).context.window, cardOf(b, 3).context.inferred, cardOf(b, 3).context.pct], [1_000_000, true, 10]);
+});
+
+/**
+ * JSON を木として歩き、FORBIDDEN_WIRE_KEYS のキーと、prs[] の要素の外の 'state' を集める。
+ * @param {unknown} node
+ * @param {boolean} inPrsItem
+ * @param {string} path
+ * @param {string[]} bad
+ */
+function wireKeyViolations(node, inPrsItem = false, path = '$', bad = []) {
+  if (Array.isArray(node)) {
+    const isPrs = path.endsWith('.prs');
+    node.forEach((v, i) => wireKeyViolations(v, isPrs, `${path}[${i}]`, bad));
+  } else if (node && typeof node === 'object') {
+    for (const [k, v] of Object.entries(node)) {
+      if (FORBIDDEN_WIRE_KEYS.includes(k)) bad.push(`${path}.${k}`);
+      if (k === 'state' && !inPrsItem) bad.push(`${path}.${k}`);
+      wireKeyViolations(v, false, `${path}.${k}`, bad);
+    }
+  }
+  return bad;
+}
+
+test('v0.2: 木の検査そのものが効くこと (model と、prs[] の外の state を見つける)', () => {
+  assert.deepEqual(wireKeyViolations({ a: { model: 'x' } }), ['$.a.model']);
+  assert.deepEqual(wireKeyViolations({ prs: [{ state: 'OPEN' }], reasonParams: { prs: [{ state: 'MERGED' }] } }), []);
+  assert.deepEqual(wireKeyViolations({ state: 'x', prs: [{ deeper: { state: 'y' } }] }), ['$.state', '$.prs[0].deeper.state']);
+});
+
+test('v0.2: /api/board の JSON に model・command・input・file_path・description・usage などのキーは無く、state は prs[] の中だけ', () => {
+  const rich = joinLines(
+    synth.prompt('go', NOW - 10 * MIN),
+    synth2.tool('TodoWrite', { todos: [{ content: 'Read C:\\work\\alpha\\private-dir\\plan.md', activeForm: 'Reading C:\\work\\alpha\\private-dir\\plan.md', status: 'in_progress' }] }),
+    synth2.tool('WebFetch', { url: 'https://user:pw-secret@api.example.com/private/path?token=t0ken' }, { usage: usageOf(120_000) }),
+    synth.toolResult(),
+    synth2.compact({ trigger: 'auto', pre: 160_000, post: 30_000, at: NOW - 5 * MIN }),
+    synth2.tool('Bash', { command: 'SECRET_VALUE=abc npm run deploy -- --target "C:\\work\\alpha\\private-dir"', description: 'Deploy to /home/tester/private-dir/out' }, { usage: usageOf(60_000), at: NOW - MIN }),
+  );
+  const sessions = [
+    { ...rec(1), model: 'claude-test-1', contextExceededCount: 1 },
+    { ...rec(2, { prs: [{ prNumber: 7, repo: 'o/r', state: 'MERGED', url: 'https://github.com/o/r/pull/7' }], lastActivityAt: NOW - 3 * DAY, lastFocusedAt: NOW - 3 * DAY + MIN }), model: 'claude-test-1' },
+    { ...rec(3, { lastFocusedAt: undefined, prs: [{ prNumber: 8, repo: 'o/r', state: 'OPEN', url: 'https://github.com/o/r/pull/8' }] }), model: 'claude-test-1' },
+  ];
+  const b = board(sessions, { turns: { [sid(1)]: ti(rich, MIN), [sid(3)]: ti(rich, 30 * MIN) } });
+  assert.equal(cardOf(b, 1).activity?.kind, 'run');
+  assert.equal(cardOf(b, 1).activity?.step, 'Reading plan.md');
+  assert.equal(cardOf(b, 1).activity?.note, 'Deploy to out');
+  assert.equal(cardOf(b, 1).context?.used, 60_000);
+  assert.equal(cardOf(b, 1).detail.contextExceeded, 1);
+  assert.equal(cardOf(b, 2).reason, 'pr_done'); // reasonParams.prs[i].state がある
+  assert.deepEqual(wireKeyViolations(JSON.parse(JSON.stringify(b))), []);
+  const json = JSON.stringify(b);
+  for (const key of FORBIDDEN_WIRE_KEYS) assert.ok(!json.includes(`"${key}"`), key);
+  for (const raw of ['claude-test-1', 'SECRET_VALUE', 'private-dir', 'pw-secret', 't0ken', 'deploy --', '/private/path', 'compactMetadata']) {
+    assert.ok(!json.includes(raw), raw);
+  }
+  assert.ok(json.includes('"state":"MERGED"'));
+  assert.ok(json.includes('"state":"OPEN"'));
 });

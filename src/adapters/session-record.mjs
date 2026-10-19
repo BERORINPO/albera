@@ -3,6 +3,8 @@
 // 元のオブジェクト (remoteMcpServersConfig など巨大な項目を含む) はここで捨てる。
 // fs 版と Fake 版の両方がこの関数を通すので、両者の出力は必ず一致する。
 // 射影の後に attachFolders でフォルダの手掛かり (folders) を付ける (folder-hints-fs / fake-folder-hints の共通部分)。
+// (v0.2) model はコンテキストの窓を決めるためだけで、盤面の JSON には出ない。contextExceededCount は 0 以上の整数だけ
+// (core が detail.contextExceeded として数だけ出す)。
 
 import { CAP, CLI_SESSION_ID_RE, READ_CONCURRENCY, SESSION_ID_RE } from '../shared/constants.mjs';
 import { mapLimit } from './map-limit.mjs';
@@ -19,6 +21,19 @@ const str = (v) => (typeof v === 'string' ? (v.length > CAP.RAW ? v.slice(0, CAP
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 /** @param {unknown} v @returns {v is Record<string, any>} */
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+/** 0 以上の整数だけ。 @param {unknown} v @returns {number|undefined} */
+const count = (v) => (Number.isInteger(v) && /** @type {number} */ (v) >= 0 ? /** @type {number} */ (v) : undefined);
+
+/**
+ * model は窓 (200K / 1M) を決めるためだけに持つ (JSON には出さない)。CAP.MODEL の code point まで。
+ * 画面には出ないので、切っても「…」は付けない。
+ * @param {unknown} v @returns {string|undefined}
+ */
+function modelOf(v) {
+  if (typeof v !== 'string' || v === '') return undefined;
+  const cps = Array.from(v);
+  return cps.length > CAP.MODEL ? cps.slice(0, CAP.MODEL).join('') : v;
+}
 
 /** @param {unknown} raw */
 function prsOf(raw) {
@@ -83,6 +98,8 @@ export function toSessionRecord(raw) {
     errorAt: num(raw.errorAt),
     errorCategory: str(raw.errorCategory),
     pendingFirstStart: pfs,
+    model: modelOf(raw.model),
+    contextExceededCount: count(raw.contextExceededCount),
   };
 }
 

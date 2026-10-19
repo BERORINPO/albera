@@ -27,6 +27,11 @@
 
   --color-scrim:       oklch(21.5% 0.024 245 / 0.36); /* <dialog>::backdrop only */
 
+  /* Canvas (v0.2): each one is a palette step above (the dark desk: one step below paper), no new hue. Change it together with its source. */
+  --cv-desk:           oklch(91.6% 0.015 190);  /* = paper-3: the desk between project sheets, a pinned head */
+  --cv-sheet:          oklch(97.3% 0.009 190);  /* = paper: a project sheet (one step lighter than the desk) */
+  --cv-cursor:         oklch(94.6% 0.012 190);  /* = paper-2: the cursor slip on a sheet */
+
   /* Type: OS faces only. Latin first, then the Japanese face of the same voice.
    * Swap a vendored OFL face in by editing these three lines. */
   --font-display: "Sitka Heading", "Sitka Text", "Iowan Old Style", "Charter", "Noto Serif",
@@ -87,35 +92,41 @@
   :root:not([data-theme="light"]) {
     color-scheme: dark;
     --color-paper:       oklch(24.0% 0.017 200);  /* dark petrol slate, not GitHub blue-black */
-    --color-paper-2:     oklch(27.5% 0.019 200);
-    --color-paper-3:     oklch(31.0% 0.021 200);
-    --color-rule:        oklch(36.0% 0.019 200);
-    --color-rule-strong: oklch(62.0% 0.020 205);
-    --color-muted:       oklch(74.0% 0.018 205);
-    --color-ink-2:       oklch(85.0% 0.013 205);
+    --color-paper-2:     oklch(29.0% 0.019 200);  /* steps of 4-5 L points: 3.5 vanished in the dark */
+    --color-paper-3:     oklch(33.0% 0.021 200);
+    --color-rule:        oklch(43.0% 0.019 200);  /* 2.0:1 on paper: seen, still quieter than any edge */
+    --color-rule-strong: oklch(64.0% 0.020 205);
+    --color-muted:       oklch(75.5% 0.018 205);
+    --color-ink-2:       oklch(86.0% 0.013 205);
     --color-ink:         oklch(95.0% 0.008 200);
     --color-accent:      oklch(80.0% 0.095 262);
     --color-accent-fill: oklch(78.0% 0.100 262);
     --color-on-accent:   oklch(22.0% 0.030 262);
     --color-focus:       oklch(80.0% 0.095 262);
     --color-scrim:       oklch(12.0% 0.012 200 / 0.62);
+    --cv-desk:           oklch(19.5% 0.015 200);  /* one step below paper: the desk sits under the pages, as in light */
+    --cv-sheet:          oklch(29.0% 0.019 200);  /* = paper-2 */
+    --cv-cursor:         oklch(37.0% 0.021 200);  /* 1.36:1 on the sheet (paper-3 was 1.16, too close on a dark screen) */
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --color-paper:       oklch(24.0% 0.017 200);
-  --color-paper-2:     oklch(27.5% 0.019 200);
-  --color-paper-3:     oklch(31.0% 0.021 200);
-  --color-rule:        oklch(36.0% 0.019 200);
-  --color-rule-strong: oklch(62.0% 0.020 205);
-  --color-muted:       oklch(74.0% 0.018 205);
-  --color-ink-2:       oklch(85.0% 0.013 205);
+  --color-paper-2:     oklch(29.0% 0.019 200);
+  --color-paper-3:     oklch(33.0% 0.021 200);
+  --color-rule:        oklch(43.0% 0.019 200);
+  --color-rule-strong: oklch(64.0% 0.020 205);
+  --color-muted:       oklch(75.5% 0.018 205);
+  --color-ink-2:       oklch(86.0% 0.013 205);
   --color-ink:         oklch(95.0% 0.008 200);
   --color-accent:      oklch(80.0% 0.095 262);
   --color-accent-fill: oklch(78.0% 0.100 262);
   --color-on-accent:   oklch(22.0% 0.030 262);
   --color-focus:       oklch(80.0% 0.095 262);
   --color-scrim:       oklch(12.0% 0.012 200 / 0.62);
+  --cv-desk:           oklch(19.5% 0.015 200);
+  --cv-sheet:          oklch(29.0% 0.019 200);
+  --cv-cursor:         oklch(37.0% 0.021 200);
 }
 
 html { background: var(--color-paper); }
