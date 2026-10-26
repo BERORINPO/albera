@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { webcrypto } from 'node:crypto';
 import { test } from 'node:test';
-import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, finishGraphDelegationOperation, moveGraphNode, nextGraphNodePosition, normalizeGraph, obsidianOpenUri, releaseBlockedGraphDelegationOperation, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault, startGraphDelegationOperation, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
+import { GRAPH_STORAGE_KEY, migrateSavedProviderSessionIds } from '../public/graph-store.mjs';
+import { opaqueProviderSessionId } from '../src/adapters/opaque-session-id.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, finishGraphDelegationOperation, migrateProviderSessionEndpoints, moveGraphNode, nextGraphNodePosition, normalizeGraph, obsidianOpenUri, releaseBlockedGraphDelegationOperation, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault, startGraphDelegationOperation, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
 
 const g1 = 'g_00000000-0000-4000-8000-000000000001';
 const g2 = 'g_00000000-0000-4000-8000-000000000002';
@@ -13,6 +16,47 @@ test('graph model accepts only bounded user-authored fields and known node kinds
   const graph = normalizeGraph({ v: 999, nodes: [node(g1, { title: '  Task  ', x: 999999, body: 'x'.repeat(1500), secretPath: 'not-kept' }), { ...node('local_bad') }], edges: [] });
   assert.deepEqual([graph.v, graph.nodes.length, graph.nodes[0].title, graph.nodes[0].x, graph.nodes[0].body.length], [1, 1, 'Task', 100000, 1000]);
   assert.equal('secretPath' in graph.nodes[0], false);
+});
+
+test('v1 session relations migrate to opaque provider IDs once and preserve user-authored fields', async () => {
+  const oldCodex = 'codex_00000000-0000-4000-8000-000000000101';
+  const oldCopilot = 'copilot_00000000-0000-4000-8000-000000000102';
+  const doc = normalizeGraph({ v: 1, nodes: [node(g1)], edges: [
+    { id: e1, from: `graph:${g1}`, to: `session:${oldCodex}`, kind: 'delegates', purpose: 'user purpose', status: 'active', operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+    { id: 'e_00000000-0000-4000-8000-000000000002', from: `session:${oldCopilot}`, to: `session:${oldCodex}`, kind: 'evidence', purpose: 'user evidence' },
+  ] });
+  const calls = [];
+  const migrated = await migrateProviderSessionEndpoints(doc, async (source, id) => {
+    calls.push([source, id]);
+    return source === 'codex' ? 'codex_11111111-1111-4111-8111-111111111111' : 'copilot_22222222-2222-4222-8222-222222222222';
+  });
+  assert.equal(migrated.v, 2);
+  assert.deepEqual(migrated.edges.map((edge) => [edge.from, edge.to]), [
+    [`graph:${g1}`, 'session:codex_11111111-1111-4111-8111-111111111111'],
+    ['session:copilot_22222222-2222-4222-8222-222222222222', 'session:codex_11111111-1111-4111-8111-111111111111'],
+  ]);
+  assert.deepEqual(calls, [['codex', '00000000-0000-4000-8000-000000000101'], ['copilot', '00000000-0000-4000-8000-000000000102']]);
+  assert.equal(migrated.edges[0].purpose, 'user purpose');
+  assert.equal(migrated.edges[0].operationId, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+  assert.equal(await migrateProviderSessionEndpoints(migrated, async () => { throw new Error('already migrated'); }), migrated);
+});
+
+test('stored graph migration uses the same opaque ID as the provider adapter and is idempotent', async () => {
+  const oldId = 'codex_00000000-0000-4000-8000-000000000103';
+  const legacy = { v: 1, nodes: [node(g1)], edges: [{ id: e1, from: `graph:${g1}`, to: `session:${oldId}`, kind: 'delegates', purpose: 'keep this purpose', status: 'active', operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }] };
+  const values = new Map([[GRAPH_STORAGE_KEY, JSON.stringify(legacy)]]);
+  const storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+  assert.equal(await migrateSavedProviderSessionIds(storage, webcrypto.subtle), true);
+  const migrated = JSON.parse(values.get(GRAPH_STORAGE_KEY));
+  const expected = opaqueProviderSessionId('codex', oldId.slice('codex_'.length));
+  assert.equal(migrated.v, 2);
+  assert.equal(migrated.edges[0].to, `session:${expected}`);
+  assert.equal(migrated.edges[0].purpose, 'keep this purpose');
+  assert.equal(migrated.edges[0].operationId, legacy.edges[0].operationId);
+  const firstWrite = values.get(GRAPH_STORAGE_KEY);
+  assert.equal(await migrateSavedProviderSessionIds(storage, webcrypto.subtle), true);
+  assert.equal(values.get(GRAPH_STORAGE_KEY), firstWrite);
+  assert.equal(firstWrite.includes(oldId), false);
 });
 
 test('artifact references allow only public HTTPS URLs without credentials, query, or fragment', () => {

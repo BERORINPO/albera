@@ -4,6 +4,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { opaqueProviderSessionId } from './opaque-session-id.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_SESSIONS = 20;
@@ -124,7 +125,7 @@ export function createCopilotSessionsSource({ root, maxSessions = MAX_SESSIONS }
         const lastActivityAt = Math.max(events.at(-1)?.at ?? header.createdAt, stat.mtimeMs);
         const record = {
           source: 'copilot',
-          sessionId: `copilot_${header.id}`,
+          sessionId: opaqueProviderSessionId('copilot', header.id),
           title: 'GitHub Copilot',
           cwd: header.cwd,
           createdAt: header.createdAt,

@@ -9,6 +9,7 @@ import { arrivals, notifyArrivals } from './notify.mjs';
 import { jumpTo, render, renderPulse, view } from './render.mjs';
 import { now, restore, setBoard, snapshot, state } from './state.mjs';
 import { announce } from './view.mjs';
+import { migrateSavedProviderSessionIds } from './graph-store.mjs';
 
 /** @type {ReturnType<typeof setTimeout>|null} */
 let timer = null;
@@ -53,6 +54,7 @@ export async function poll() {
       else renderPulse();
       return;
     }
+    await migrateSavedProviderSessionIds();
     showBoard(r);
   } finally {
     const fail = /** @type {keyof typeof FAIL_LEAD|null} */ (state.fail);

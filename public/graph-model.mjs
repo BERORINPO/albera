@@ -60,7 +60,7 @@ export function obsidianOpenUri(vaultValue, fileValue) {
 
 /** @typedef {{id:string,kind:string,title:string,body:string,url:string,status:string,x:number,y:number,checkedPerson:string,missingEvidence:string,neededExplanation:string,executionLocation:string,workspaceIsolation:string,networkAccess:string,approvalMode:string}} GraphNode */
 /** @typedef {{id:string,from:string,to:string,kind:string,purpose:string,status:string,operationId?:string}} GraphEdge */
-/** @typedef {{v:1,nodes:GraphNode[],edges:GraphEdge[]}} GraphDoc */
+/** @typedef {{v:1|2,nodes:GraphNode[],edges:GraphEdge[]}} GraphDoc v2 uses opaque provider session IDs in session endpoints. */
 
 /** @param {unknown} value @returns {GraphNode|null} */
 export function normalizeGraphNode(value) {
@@ -123,7 +123,29 @@ export function normalizeGraph(raw) {
   const nodes = (Array.isArray(v.nodes) ? v.nodes : []).map(normalizeGraphNode).filter((n) => n && n.title).slice(0, GRAPH_MAX_NODES);
   const nodeIds = new Set(nodes.map((n) => n.id));
   const edges = (Array.isArray(v.edges) ? v.edges : []).map(normalizeGraphEdge).filter((e) => e && endpointPresent(e.from, nodeIds) && endpointPresent(e.to, nodeIds)).slice(0, GRAPH_MAX_EDGES);
-  return { v: 1, nodes, edges };
+  return { v: v.v === 2 ? 2 : 1, nodes, edges };
+}
+
+/** Migrate v1 provider session endpoints to opaque IDs while preserving user-authored graph data.
+ * @param {GraphDoc} doc @param {(source:'codex'|'copilot', providerId:string)=>Promise<string>} opaqueId
+ * @returns {Promise<GraphDoc>}
+ */
+export async function migrateProviderSessionEndpoints(doc, opaqueId) {
+  if (doc.v === 2) return doc;
+  /** @type {Map<string,string>} */
+  const replacements = new Map();
+  const oldId = /^(codex|copilot)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+  const endpoint = async (value) => {
+    if (!value.startsWith('session:')) return value;
+    const id = value.slice(8);
+    const match = oldId.exec(id);
+    if (!match) return value;
+    if (!replacements.has(id)) replacements.set(id, await opaqueId(/** @type {'codex'|'copilot'} */ (match[1].toLowerCase()), match[2].toLowerCase()));
+    return `session:${replacements.get(id)}`;
+  };
+  const edges = [];
+  for (const edge of doc.edges) edges.push({ ...edge, from: await endpoint(edge.from), to: await endpoint(edge.to) });
+  return normalizeGraph({ v: 2, nodes: doc.nodes, edges });
 }
 
 /** @param {string} endpoint @param {Set<string>} nodeIds */

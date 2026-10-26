@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { READ_CONCURRENCY } from '../shared/constants.mjs';
 import { mapLimit } from './map-limit.mjs';
+import { opaqueProviderSessionId } from './opaque-session-id.mjs';
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const FILE_RE = new RegExp(`^rollout-(\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2})-(${UUID})\\.jsonl$`, 'i');
@@ -149,7 +150,7 @@ export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY
         source: 'codex',
         cliSessionId: meta.id,
         ...(cwdMapper ? { executionLocation: 'wsl' } : {}),
-        sessionId: `codex_${meta.id}`,
+        sessionId: opaqueProviderSessionId('codex', meta.id),
         title: 'Codex CLI',
         cwd: meta.cwd,
         createdAt: meta.createdAt,

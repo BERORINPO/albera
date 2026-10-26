@@ -73,6 +73,8 @@ FAMILY_MAX_DEPTH 10, PROJECT_PARENT_MAX_DEPTH 5
 SESSION_ID_RE = /^local_[0-9a-f-]{36}$/   // これに合わない ID のセッションは捨てて stats.bad に数える
 CLI_SESSION_ID_RE = /^[0-9a-f-]{36}$/i, ASK_TOOLS = ['AskUserQuestion', 'ExitPlanMode']
 
+Codex/Copilot/OpenCode adapter は provider-native ID を出さず、provider-scoped の安定したopaque UUID形 sessionId を SessionRecord と public Card.id に使う。Codexの `cliSessionId` はdelegate/既存server内部処理のためだけに保持し、wireには出さない。既存のCanvas Graph v1に保存されたCodex/Copilot session endpointは、初回board取得時にブラウザー内WebCryptoでGraph v2へ移し、relation purpose/state/operationIdを保つ。
+
 BUCKETS         = [{key, tone, defaultOpen}] × 6 (needs_you, trouble, unread, working, recent, cleanup の順)
                   defaultOpen: recent だけ false (cleanup は true に変更)。tone は画面では使わない (色で状態を分けない)
 ACTION_BUCKETS  = ['needs_you', 'trouble', 'unread']

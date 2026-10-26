@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { createCopilotSessionsSource } from '../src/adapters/copilot-sessions-fs.mjs';
+import { opaqueProviderSessionId } from '../src/adapters/opaque-session-id.mjs';
 import { buildBoard } from '../src/core/board.mjs';
 import { NOW, ROOTS, rec, uuid } from './helpers/fixtures.mjs';
 
@@ -52,18 +53,29 @@ test('Copilotイベントを検出し、進行中・完了・中断を安全な�
   const { sessions, stats } = await createCopilotSessionsSource({ root: home }).load();
   assert.equal(sessions.length, 3);
   assert.equal(stats.parsed, 3);
-  const active = sessions.find((s) => s.sessionId === `copilot_${activeId}`);
-  const done = sessions.find((s) => s.sessionId === `copilot_${doneId}`);
-  const aborted = sessions.find((s) => s.sessionId === `copilot_${abortedId}`);
+  const active = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', activeId));
+  const done = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', doneId));
+  const aborted = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', abortedId));
   assert.deepEqual(active.lifecycle, { status: 'active', startedAt: activeAt + 1_000 });
   assert.deepEqual(active.events, [{ type: 'turn_started', at: activeAt }, { type: 'turn_started', at: activeAt + 1_000 }]);
   assert.deepEqual(done.lifecycle, { status: 'complete' });
   assert.deepEqual(aborted.lifecycle, { status: 'interrupted' });
   assert.deepEqual(done.events.map((e) => e.type), ['turn_started', 'turn_started', 'turn_completed']);
   assert.deepEqual(aborted.events.map((e) => e.type), ['turn_started', 'turn_started', 'turn_aborted']);
+  const board = buildBoard({ sessions, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS });
+  for (const providerId of [activeId, doneId, abortedId]) assert.equal(JSON.stringify(board).includes(providerId), false, 'provider-native session ID stays out of board wire');
   for (const secret of ['PRIVATE-PROMPT', 'PRIVATE-ENV', 'PRIVATE-TOOL-INPUT', 'PRIVATE-BROKEN', 'PRIVATE-UNKNOWN', 'PRIVATE-OUTPUT', 'PRIVATE-REASON']) {
     assert.equal(JSON.stringify(sessions).includes(secret), false, `sensitive value escaped: ${secret}`);
   }
+});
+
+test('provider session IDs are stable and opaque across sources', () => {
+  const nativeId = uuid(804);
+  const codex = opaqueProviderSessionId('codex', nativeId);
+  assert.match(codex, /^codex_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
+  assert.equal(codex, opaqueProviderSessionId('codex', nativeId));
+  assert.notEqual(codex, opaqueProviderSessionId('copilot', nativeId));
+  assert.equal(codex.includes(nativeId), false);
 });
 
 test('形式不整合と未知producerは安全に除外し、合成カードのwireにパスを出さない', async () => {

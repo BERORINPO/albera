@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { createCodexSessionsSource } from '../src/adapters/codex-sessions-fs.mjs';
+import { opaqueProviderSessionId } from '../src/adapters/opaque-session-id.mjs';
 import { buildBoard } from '../src/core/board.mjs';
 import { NOW, ROOTS, rec, uuid } from './helpers/fixtures.mjs';
 
@@ -78,15 +79,16 @@ test('Codex CLI rollout を検出し、turn status と allowlist イベントだ
   assert.equal(stats.notCli, 1, 'records without the CLI marker are counted without retaining their source value');
   assert.equal((await source.load()).stats.notCli, 1, 'the safe reason count survives the read-only stat cache');
   assert.equal(JSON.stringify(stats).includes('vscode'), false, 'the rejected producer value does not enter diagnostics');
-  const active = sessions.find((s) => s.sessionId === `codex_${activeId}`);
-  const done = sessions.find((s) => s.sessionId === `codex_${doneId}`);
-  const aborted = sessions.find((s) => s.sessionId === `codex_${abortedId}`);
+  const active = sessions.find((s) => s.sessionId === opaqueProviderSessionId('codex', activeId));
+  const done = sessions.find((s) => s.sessionId === opaqueProviderSessionId('codex', doneId));
+  const aborted = sessions.find((s) => s.sessionId === opaqueProviderSessionId('codex', abortedId));
   assert.deepEqual(active.lifecycle, { status: 'active', startedAt: activeAt });
   const mixedBoard = buildBoard({ sessions, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS });
   const boardItems = [...mixedBoard.buckets.working, ...mixedBoard.recentGroups.flatMap((group) => group.items), ...mixedBoard.cleanupGroups.flatMap((group) => group.items ?? group.projects.flatMap((project) => project.items))];
   assert.equal(boardItems.find((card) => card.id === active.sessionId)?.sourceState, 'active');
   assert.equal(boardItems.find((card) => card.id === done.sessionId)?.sourceState, 'complete');
   assert.equal(boardItems.find((card) => card.id === aborted.sessionId)?.sourceState, 'interrupted');
+  for (const providerId of [activeId, doneId, abortedId]) assert.equal(JSON.stringify(mixedBoard).includes(providerId), false, 'provider-native session ID stays out of board wire');
   assert.deepEqual(active.events, [{ type: 'turn_started', at: activeAt }]);
   assert.deepEqual(done.lifecycle, { status: 'complete' });
   assert.deepEqual(done.events, [{ type: 'turn_started', at: doneAt - 10_000 }, { type: 'turn_completed', at: doneAt }]);
@@ -120,7 +122,7 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   const completed = mixed.recentGroups.flatMap((g) => g.items).find((c) => c.source === 'codex');
   assert.ok(completed);
   assert.deepEqual(completed.events.map((e) => e.type), ['turn_started', 'turn_completed']);
-  const aborted = mixed.recentGroups.flatMap((g) => g.items).find((c) => c.id === `codex_${abortedId}`);
+  const aborted = mixed.recentGroups.flatMap((g) => g.items).find((c) => c.id === opaqueProviderSessionId('codex', abortedId));
   assert.ok(aborted, 'aborted turn is terminal and does not remain working/stuck');
   assert.deepEqual(aborted.events.map((e) => e.type), ['turn_started', 'turn_aborted']);
   assert.deepEqual(mixed.stats.sources.codex, {

@@ -586,3 +586,9 @@
 - アクセシビリティツリーで日本語画面のキャンバス説明だけ英語だった不具合を修正。`cv-keys`を既存の`canvas.keys`翻訳キーへ結び、英語/日本語辞書の文言を使うようにした。
 - port 19851の隔離demoで日本語UIのキャンバス説明が日本語になり、言語切替後は英語説明へ変わることをアクセシビリティツリーで確認した。実セッション・CLI・worktree・外部サービスは使わず、サーバー停止済み。
 - `npm test`: 545件成功、`npm run arch`: 96 paths・違反0件、`npm run smoke`: 成功、`git diff --check`: 成功。
+
+### Provider-native session IDをpublic boardから除去 (2026-10-26)
+
+- Codex CLIとCopilotのカードIDは、adapter内でprovider名を含むSHA-256から安定したUUID形opaque IDを作るようにした。保存先のnative IDはCodexのprivate `cliSessionId`としてserver内にのみ残し、boardのJSONには出さない。sourceごとにhash domainを分ける。
+- 既存ブラウザーのGraphはv1からv2へ一度だけ移行し、旧session endpointをブラウザー内WebCryptoで同じopaque IDへ置換する。関係の目的、委譲状態、operation IDを保つ。移行失敗時はv1を保持して次回取得で再試行する。session ID形自体は維持するためworktree/委譲APIの入力検証は変わらない。
+- 合成fixtureでCodex/Copilotのpublic boardにnative IDが含まれないこと、Graph v1の移行で関係内容が保たれ、正規adapter IDと一致し、再実行しても変化しないことを検証した。実セッションや実ブラウザー保存領域への移行は未確認。
