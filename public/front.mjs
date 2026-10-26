@@ -11,6 +11,8 @@ import { fill, h, partsToNodes } from './view.mjs';
 /** @typedef {import('./i18n.mjs').T} T */
 
 const LONG_TITLE = 40;
+/** セッション数や読込結果にかかわらず、一覧/キャンバス間を移動できる。@param {unknown} view */
+export const canvasSwitchVisible = (view) => view === 'list' || view === 'canvas';
 
 /**
  * lede がどの状態か (純粋)。
@@ -144,7 +146,7 @@ export function renderLedger(nav, toggle, o) {
   }
   // セッション 0 件でもキャンバスにタスク/成果物を追加できるため、切替は常に出す。
   // 読込中・エラー時にも保存済みGraphを開く入口になる。
-  toggle.hidden = false;
+  toggle.hidden = !canvasSwitchVisible(o.view);
 }
 
 /**

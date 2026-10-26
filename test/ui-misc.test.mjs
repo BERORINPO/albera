@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { faviconHref, faviconKind } from '../public/favicon.mjs';
-import { ledeState } from '../public/front.mjs';
+import { canvasSwitchVisible, ledeState } from '../public/front.mjs';
 import { makeT } from '../public/i18n.mjs';
 import { arrivals, notificationsFor } from '../public/notify.mjs';
 
@@ -60,4 +60,10 @@ test('ledeState: 読み込み中・繋がらない・サーバー・版・空・
   assert.equal(ledeState({ board: b({}, { trouble: [c('t')], unread: [c('u')] }), loading: false, fail: 'offline' }), 'stuck', 'データがあれば繋がらなくても中身のまま');
   assert.equal(ledeState({ board: b({}, { unread: [c('u')] }), loading: false, fail: null }), 'unread');
   assert.equal(ledeState({ board: b({}, { working: [c('w')] }), loading: false, fail: null }), 'quiet');
+});
+
+test('canvasSwitchVisible: active件数やboard取得の状態に依存せず、対応viewでは切替を表示する', () => {
+  assert.equal(canvasSwitchVisible('list'), true, '空一覧・読み込み中・errorでもキャンバスへ入れる');
+  assert.equal(canvasSwitchVisible('canvas'), true, 'キャンバスから一覧へ戻れる');
+  assert.equal(canvasSwitchVisible('unknown'), false, '未対応viewは出さない');
 });
