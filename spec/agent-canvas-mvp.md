@@ -933,3 +933,9 @@
 - worktree作成adapterと照合側で同一の決定的パス関数を共有する。APIにはパスを出さず、削除は従来どおりclean・非current・unlocked・non-prunable、ブランチ名入力、確認が必要。未管理だがcleanなworktreeは削除対象外。
 - 合成テストで実GitによるPigeonholes配置の作成/列挙/削除、未管理のclean worktreeの拒否とGit remove未呼び出し、UIの削除可否フラグ、WSL表示規則を確認。実ユーザーrepoのworktreeは操作していない。
 - `npm test`: 591 passed、`npm run arch`: 99 paths / 0 violations、`npm run smoke`: pass、`git diff --check`: pass。PRブランチへの新コミット後にGitHub Actionsを確認する。
+
+### 別のmanaged worktree内で作成した子worktreeの削除を維持 (2026-10-27)
+
+- managedパスの照合を、一覧中にある同一Gitリポジトリの全worktreeルートに対して行う。アプリ管理のworktreeを起点に作成した子worktreeも、元repoから管理対象として検出でき、既存の明示確認・clean制約を通じて削除できる。
+- 一時Git repo統合テストで、mainから親worktree、親worktreeから子worktreeを作成し、親repoで双方の管理フラグを確認。子、親の順にworktreeだけを削除し、ブランチが残ることを確認。実ユーザーrepoは未使用。
+- `npm test`: 591 passed、`npm run arch`: 99 paths / 0 violations、`npm run smoke`: pass、`git diff --check`: pass。デモHTTP serverはloopbackで起動して終了したが、ブラウザー操作はcomputer-useが現在URLを安全判定できず停止したため、この段階のGUI確認は未実施。

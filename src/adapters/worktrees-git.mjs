@@ -26,6 +26,12 @@ export function managedWorktreePath(root, branch) {
   return path.join(path.dirname(root), `${path.basename(root)}-pigeonholes-${repoHash}-${slug}-${branchHash}`);
 }
 
+/** A managed worktree may be created from any sibling worktree in this repository. */
+export function isManagedWorktreeEntry(target, entries) {
+  return !!target.branch && entries.some((origin) => pathKey(origin.path) !== pathKey(target.path)
+    && pathKey(target.path) === pathKey(managedWorktreePath(origin.path, target.branch)));
+}
+
 /** @typedef {{path:string,branch:string|null,detached:boolean,locked:boolean,prunable:boolean}} GitWorktree */
 /** @typedef {{branch:string|null,status:'clean'|'changed'|'untracked'|'mixed'|'conflicted'|'unknown',changed:number,untracked:number,conflicted:number,locked:boolean,prunable:boolean,removable?:boolean}} WorktreeSummary */
 
@@ -159,7 +165,7 @@ export function createWorktreeSource({ runGit: run = runGit, clock = () => Date.
         branch: entry.branch, status: status.state, changed: status.changed, untracked: status.untracked,
         conflicted: status.conflicted, detached: entry.detached, locked: entry.locked, prunable: entry.prunable,
         current: pathKey(entry.path) === pathKey(top),
-        removable: !!entry.branch && pathKey(entry.path) === pathKey(managedWorktreePath(top, entry.branch)),
+        removable: isManagedWorktreeEntry(entry, rows),
       };
     });
   }

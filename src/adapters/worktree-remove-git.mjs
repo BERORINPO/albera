@@ -4,7 +4,7 @@
 import { execFile as nodeExecFile } from 'node:child_process';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { managedWorktreePath, parseWorktreeList, summarizeGitStatus } from './worktrees-git.mjs';
+import { isManagedWorktreeEntry, parseWorktreeList, summarizeGitStatus } from './worktrees-git.mjs';
 
 const execFile = promisify(nodeExecFile);
 const NETWORK_PATH_RE = /^(?:\\\\|\/\/)/;
@@ -55,7 +55,7 @@ export function createWorktreeRemover({ runGit: run = runGit } = {}) {
       if (!target) return { ok: false, reason: 'not_found' };
       if (pathKey(target.path) === pathKey(root)) return { ok: false, reason: 'current' };
       if (NETWORK_PATH_RE.test(target.path)) return { ok: false, reason: 'invalid_target' };
-      if (pathKey(target.path) !== pathKey(managedWorktreePath(root, branch))) return { ok: false, reason: 'invalid_target' };
+      if (!isManagedWorktreeEntry(target, entries)) return { ok: false, reason: 'invalid_target' };
       if (target.locked) return { ok: false, reason: 'locked' };
       if (target.prunable) return { ok: false, reason: 'prunable' };
 
