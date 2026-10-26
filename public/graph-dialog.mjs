@@ -4,6 +4,7 @@
 import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
 import { h } from './view.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
+import { confirmBlockedOperationRelease } from './graph-dialog-actions.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 
@@ -293,9 +294,11 @@ export function openGraphRelationDialog(o) {
     const button = ev.target instanceof Element ? ev.target.closest('[data-dialog-action]') : null;
     const action = button?.getAttribute('data-dialog-action');
     if (action === 'cancel') dialog.close();
-    if (action === 'release-operation' && edge?.operationId && edge.status === 'blocked' && o.onResolveOperation && window.confirm(t('graph.resolveBlockedOperationConfirm'))) {
-      if (o.onResolveOperation(edge.id, edge.operationId)) dialog.close();
-    }
+    if (action === 'release-operation' && o.onResolveOperation && confirmBlockedOperationRelease({
+      edge,
+      confirm: () => window.confirm(t('graph.resolveBlockedOperationConfirm')),
+      resolve: o.onResolveOperation,
+    })) dialog.close();
     const confirmKey = edge?.operationId ? 'graph.removeCompletedOperationRelationConfirm' : 'graph.removeRelationConfirm';
     if (action === 'delete-edge' && edge && o.onDeleteEdge && (!edge.operationId || edge.status === 'completed') && window.confirm(t(confirmKey))) {
       o.onDeleteEdge(edge.id);
