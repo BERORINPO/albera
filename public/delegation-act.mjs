@@ -1,7 +1,7 @@
 // Explicit, user-confirmed execution of a recorded Codex delegation.
 import { delegationStatus, runDelegation, WorktreeOperationError } from './api.mjs';
 import { loadGraph } from './graph-store.mjs';
-import { updateGraphEdge } from './graph-model.mjs';
+import { finishGraphDelegationOperation, startGraphDelegationOperation } from './graph-model.mjs';
 
 /** @param {string} edgeId @param {string} sourceId @param {{view:any,state:any,graphChanged:(doc:any)=>boolean,announce:(text:string)=>void}} deps */
 export async function runDelegationForEdge(edgeId, sourceId, { view, state, graphChanged, announce }) {
@@ -12,10 +12,10 @@ export async function runDelegationForEdge(edgeId, sourceId, { view, state, grap
     try {
       const status = await delegationStatus(edge.operationId);
       if (status === 'running') { announce(state.t('graph.delegationStarted')); return true; }
-      graphChanged(updateGraphEdge(loadGraph(), edgeId, { status: status === 'completed' ? 'completed' : 'blocked' }));
+      graphChanged(finishGraphDelegationOperation(loadGraph(), edgeId, edge.operationId, status === 'completed' ? 'completed' : 'blocked'));
       announce(state.t(status === 'completed' ? 'graph.delegationCompleted' : 'graph.delegationFailed'));
     } catch {
-      graphChanged(updateGraphEdge(loadGraph(), edgeId, { status: 'blocked' }));
+      graphChanged(finishGraphDelegationOperation(loadGraph(), edgeId, edge.operationId, 'blocked'));
       announce(state.t('graph.delegationStatusLost'));
     }
     return true;
@@ -31,7 +31,7 @@ export async function runDelegationForEdge(edgeId, sourceId, { view, state, grap
   const project = target.project?.label || state.t('project.other');
   if (!window.confirm(state.t('graph.runDelegationConfirm', { project, purpose: edge.purpose }))) return false;
   const operationId = crypto.randomUUID();
-  if (!graphChanged(updateGraphEdge(graph, edgeId, { status: 'active', operationId }))) return false;
+  if (!graphChanged(startGraphDelegationOperation(graph, edgeId, operationId))) return false;
   try {
     const started = await runDelegation(targetId, edge.purpose, operationId);
     if (started.operationId !== operationId || !['running', 'completed', 'failed'].includes(started.status)) throw new Error('invalid operation response');
@@ -40,14 +40,14 @@ export async function runDelegationForEdge(edgeId, sourceId, { view, state, grap
       await new Promise((resolve) => setTimeout(resolve, 1000));
       const status = await delegationStatus(operationId);
       if (status === 'running') continue;
-      graphChanged(updateGraphEdge(loadGraph(), edgeId, { status: status === 'completed' ? 'completed' : 'blocked' }));
+      graphChanged(finishGraphDelegationOperation(loadGraph(), edgeId, operationId, status === 'completed' ? 'completed' : 'blocked'));
       announce(state.t(status === 'completed' ? 'graph.delegationCompleted' : 'graph.delegationFailed'));
       return true;
     }
     announce(state.t('graph.delegationStillRunning'));
   } catch (error) {
     if (error instanceof WorktreeOperationError && error.reason === 'cli_unavailable') {
-      graphChanged(updateGraphEdge(loadGraph(), edgeId, { status: 'blocked' }));
+      graphChanged(finishGraphDelegationOperation(loadGraph(), edgeId, operationId, 'blocked'));
       announce(state.t('graph.delegationCliUnavailable'));
       return false;
     }

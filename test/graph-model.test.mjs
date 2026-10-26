@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, moveGraphNode, nextGraphNodePosition, normalizeGraph, obsidianOpenUri, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, finishGraphDelegationOperation, moveGraphNode, nextGraphNodePosition, normalizeGraph, obsidianOpenUri, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault, startGraphDelegationOperation, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
 
 const g1 = 'g_00000000-0000-4000-8000-000000000001';
 const g2 = 'g_00000000-0000-4000-8000-000000000002';
@@ -138,6 +138,23 @@ test('delegation operation IDs persist locally only on delegate edges and fail c
   assert.equal(normalizeGraph({ v: 1, nodes: [], edges: [edge] }).edges[0].operationId, opId);
   assert.equal(normalizeGraph({ v: 1, nodes: [], edges: [{ ...edge, operationId: invalid }] }).edges[0].operationId, undefined);
   assert.equal(normalizeGraph({ v: 1, nodes: [], edges: [{ ...edge, kind: 'related' }] }).edges[0].operationId, undefined);
+});
+
+test('operation-managed delegation purpose, type and state cannot be edited or removed before completion', () => {
+  const operationId = 'abcdefab-cdef-4abc-8def-abcdefabcdef';
+  let graph = addGraphNode(empty(), { kind: 'task', title: 'Review', body: '', status: 'open', x: 0, y: 0, checkedPerson: '', missingEvidence: '', neededExplanation: '' }, g1);
+  graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'delegates', purpose: 'Confirmed scope', status: 'planned' }, e1, new Set([session]));
+  const active = startGraphDelegationOperation(graph, e1, operationId);
+  assert.deepEqual([active.edges[0].status, active.edges[0].operationId], ['active', operationId]);
+  assert.equal(startGraphDelegationOperation(active, e1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'), active, 'an operation cannot be replaced');
+  assert.equal(updateGraphEdge(active, e1, { status: 'cancelled' }), active, 'a running operation cannot be manually marked cancelled');
+  assert.equal(updateGraphEdge(active, e1, { purpose: 'different purpose', kind: 'related' }), active, 'operation metadata is immutable');
+  assert.equal(removeGraphEdge(active, e1), active, 'an in-flight operation cannot lose its relation');
+  assert.equal(removeGraphNode(active, g1), active, 'an in-flight operation cannot be orphaned by deleting a graph endpoint');
+  assert.equal(finishGraphDelegationOperation(active, e1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'completed'), active, 'only the stored operation ID may finish the edge');
+  const completed = finishGraphDelegationOperation(active, e1, operationId, 'completed');
+  assert.equal(completed.edges[0].status, 'completed');
+  assert.equal(removeGraphEdge(completed, e1).edges.length, 0, 'a terminal completed relation can be removed');
 });
 
 test('legacy delegation with missing purpose remains readable and can be repaired', () => {

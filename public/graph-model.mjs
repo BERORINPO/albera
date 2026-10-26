@@ -13,6 +13,7 @@ export const NETWORK_ACCESS = Object.freeze(['unknown', 'restricted', 'available
 export const APPROVAL_MODES = Object.freeze(['unknown', 'per_action', 'on_demand', 'automatic']);
 const GRAPH_ID = /^g_[0-9a-f-]{36}$/i;
 const EDGE_ID = /^e_[0-9a-f-]{36}$/i;
+const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SESSION_ID = /^(?:local_[0-9a-f-]{36}|codex_[0-9a-f-]{36}|copilot_[0-9a-f-]{36}|opencode_[0-9a-f-]{36})$/i;
 const COORD_LIMIT = 100_000;
 const text = (value, max) => typeof value === 'string' ? [...value.trim()].slice(0, max).join('') : '';
@@ -215,6 +216,7 @@ export function moveGraphNode(doc, id, x, y) {
 export function removeGraphNode(doc, id) {
   if (!doc.nodes.some((n) => n.id === id)) return doc;
   const endpoint = `graph:${id}`;
+  if (doc.edges.some((edge) => edge.operationId && edge.status !== 'completed' && (edge.from === endpoint || edge.to === endpoint))) return doc;
   return { ...doc, nodes: doc.nodes.filter((n) => n.id !== id), edges: doc.edges.filter((e) => e.from !== endpoint && e.to !== endpoint) };
 }
 
@@ -236,6 +238,7 @@ function endpointExists(doc, endpoint, sessionIds) {
 export function updateGraphEdge(doc, id, patch) {
   const previous = doc.edges.find((edge) => edge.id === id);
   if (!previous) return doc;
+  if (previous.operationId) return doc;
   const changed = normalizeGraphEdge({ ...previous, ...patch, id: previous.id, from: previous.from, to: previous.to });
   if (!changed || doc.edges.some((edge) => edge.id !== id && edge.from === changed.from && edge.to === changed.to && edge.kind === changed.kind)) return doc;
   if (changed.kind === 'delegates' && !changed.purpose && (changed.kind !== previous.kind || changed.status !== previous.status)) return doc;
@@ -244,8 +247,26 @@ export function updateGraphEdge(doc, id, patch) {
   return edges.some((edge, i) => edge !== doc.edges[i]) ? { ...doc, edges } : doc;
 }
 
+/** @param {GraphDoc} doc @param {string} id @param {string} operationId */
+export function startGraphDelegationOperation(doc, id, operationId) {
+  const edge = doc.edges.find((item) => item.id === id);
+  if (!edge || edge.kind !== 'delegates' || edge.status !== 'planned' || edge.operationId || !edge.purpose || !OPERATION_ID.test(operationId ?? '')) return doc;
+  const changed = { ...edge, status: 'active', operationId };
+  return { ...doc, edges: doc.edges.map((item) => item.id === id ? changed : item) };
+}
+
+/** @param {GraphDoc} doc @param {string} id @param {string} operationId @param {'completed'|'blocked'} status */
+export function finishGraphDelegationOperation(doc, id, operationId, status) {
+  const edge = doc.edges.find((item) => item.id === id);
+  if (!edge || edge.kind !== 'delegates' || edge.status !== 'active' || edge.operationId !== operationId || !['completed', 'blocked'].includes(status)) return doc;
+  const changed = { ...edge, status };
+  return { ...doc, edges: doc.edges.map((item) => item.id === id ? changed : item) };
+}
+
 /** @param {GraphDoc} doc @param {string} id */
 export function removeGraphEdge(doc, id) {
+  const target = doc.edges.find((edge) => edge.id === id);
+  if (target?.operationId && target.status !== 'completed') return doc;
   const edges = doc.edges.filter((edge) => edge.id !== id);
   return edges.length === doc.edges.length ? doc : { ...doc, edges };
 }

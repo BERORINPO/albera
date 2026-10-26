@@ -73,6 +73,8 @@ export function openGraphNodeDialog(o) {
   const form = h('form', { class: 'graph-dialog__form' });
   const title = node ? t('graph.editTitle') : t('graph.newTitle');
   form.append(h('h2', { id: 'graph-dialog-title', text: title }), h('p', { class: 'graph-dialog__privacy', text: t('graph.localOnly') }));
+  const operationLocked = !!node && graph.edges.some((edge) => edge.operationId && edge.status !== 'completed' && (edge.from === `graph:${node.id}` || edge.to === `graph:${node.id}`));
+  if (operationLocked) form.append(h('p', { class: 'graph-dialog__privacy', text: t('graph.nodeHasOperation') }));
   if (node?.kind === 'understanding_gap') {
     const review = reviewUnderstandingGaps(graph).find((item) => item.id === node.id);
     if (review?.missing.length) form.append(
@@ -159,7 +161,7 @@ export function openGraphNodeDialog(o) {
   }
   const acts = h('div', { class: 'graph-dialog__actions' });
   if (node && o.onConnect) acts.append(h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'connect', text: t('graph.connect') }));
-  if (node && o.onDelete) acts.append(h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-dialog-action': 'delete', text: t('graph.delete') }));
+  if (node && o.onDelete && !operationLocked) acts.append(h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-dialog-action': 'delete', text: t('graph.delete') }));
   acts.append(h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'cancel', text: t('canvas.close') }), h('button', { class: 'btn btn--line', type: 'submit', text: t('graph.save') }));
   form.append(acts);
   dialog.append(form);
@@ -249,20 +251,34 @@ export function openGraphRelationDialog(o) {
   if (!fromItem || (edge && !toItem)) return false;
   const dialog = h('dialog', { class: 'graph-dialog', 'aria-labelledby': 'graph-connect-title' });
   const form = h('form', { class: 'graph-dialog__form' });
-  form.append(
-    h('h2', { id: 'graph-connect-title', text: t(edge ? 'graph.editRelationTitle' : 'graph.connectTitle') }),
-    h('p', { class: 'graph-dialog__privacy', text: t('graph.recordOnly') }),
-    fixedField(t, 'graph.from', fromItem.title),
-    edge ? fixedField(t, 'graph.to', toItem.title) : endpointSelect(t, options, 'to', '', fromKey),
-    selectField(t, 'graph.edgeKind', 'kind', [...GRAPH_EDGE_KINDS], edge?.kind ?? (GRAPH_EDGE_KINDS.includes(o.initialKind ?? '') ? o.initialKind : 'related'), (v) => t(`graph.edge.${v}`)),
-    inputField(t, 'graph.purpose', 'purpose', edge?.purpose ?? '', edge?.kind === 'delegates' || o.initialKind === 'delegates'),
-    selectField(t, 'graph.delegationStatus', 'status', [...DELEGATION_STATES], edge?.status || 'planned', (v) => t(`graph.delegation.${v}`)),
-    h('div', { class: 'graph-dialog__actions' },
-      edge && o.onDeleteEdge ? h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-dialog-action': 'delete-edge', text: t('graph.deleteRelation') }) : null,
-      h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'cancel', text: t('canvas.close') }),
-      h('button', { class: 'btn btn--line', type: 'submit', text: t(edge ? 'graph.saveRelation' : 'graph.connect') }),
-    ),
-  );
+  form.append(h('h2', { id: 'graph-connect-title', text: t(edge?.operationId ? 'graph.operationRelationTitle' : edge ? 'graph.editRelationTitle' : 'graph.connectTitle') }), h('p', { class: 'graph-dialog__privacy', text: t('graph.recordOnly') }));
+  if (edge?.operationId) {
+    form.append(
+      fixedField(t, 'graph.from', fromItem.title),
+      fixedField(t, 'graph.to', toItem.title),
+      fixedField(t, 'graph.edgeKind', t(`graph.edge.${edge.kind}`)),
+      fixedField(t, 'graph.purpose', edge.purpose),
+      fixedField(t, 'graph.delegationStatus', t(`graph.delegation.${edge.status}`)),
+      h('p', { class: 'graph-dialog__privacy', text: t('graph.operationManaged') }),
+      h('div', { class: 'graph-dialog__actions' },
+        edge.status === 'completed' && o.onDeleteEdge ? h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-dialog-action': 'delete-edge', text: t('graph.deleteRelation') }) : null,
+        h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'cancel', text: t('canvas.close') }),
+      ),
+    );
+  } else {
+    form.append(
+      fixedField(t, 'graph.from', fromItem.title),
+      edge ? fixedField(t, 'graph.to', toItem.title) : endpointSelect(t, options, 'to', '', fromKey),
+      selectField(t, 'graph.edgeKind', 'kind', [...GRAPH_EDGE_KINDS], edge?.kind ?? (GRAPH_EDGE_KINDS.includes(o.initialKind ?? '') ? o.initialKind : 'related'), (v) => t(`graph.edge.${v}`)),
+      inputField(t, 'graph.purpose', 'purpose', edge?.purpose ?? '', edge?.kind === 'delegates' || o.initialKind === 'delegates'),
+      selectField(t, 'graph.delegationStatus', 'status', [...DELEGATION_STATES], edge?.status || 'planned', (v) => t(`graph.delegation.${v}`)),
+      h('div', { class: 'graph-dialog__actions' },
+        edge && o.onDeleteEdge ? h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-dialog-action': 'delete-edge', text: t('graph.deleteRelation') }) : null,
+        h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'cancel', text: t('canvas.close') }),
+        h('button', { class: 'btn btn--line', type: 'submit', text: t(edge ? 'graph.saveRelation' : 'graph.connect') }),
+      ),
+    );
+  }
   dialog.append(form);
   const kindInput = /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="kind"]'));
   const purposeInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="purpose"]'));
@@ -275,13 +291,15 @@ export function openGraphRelationDialog(o) {
     const button = ev.target instanceof Element ? ev.target.closest('[data-dialog-action]') : null;
     const action = button?.getAttribute('data-dialog-action');
     if (action === 'cancel') dialog.close();
-    if (action === 'delete-edge' && edge && o.onDeleteEdge && window.confirm(t('graph.removeRelationConfirm'))) {
+    const confirmKey = edge?.operationId ? 'graph.removeCompletedOperationRelationConfirm' : 'graph.removeRelationConfirm';
+    if (action === 'delete-edge' && edge && o.onDeleteEdge && (!edge.operationId || edge.status === 'completed') && window.confirm(t(confirmKey))) {
       o.onDeleteEdge(edge.id);
       dialog.close();
     }
   });
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();
+    if (edge?.operationId) return;
     const data = Object.fromEntries(new FormData(form).entries());
     const to = edge ? edge.to : String(data.to ?? '');
     if (!endpointKey(to) || to === fromKey) return;
