@@ -50,6 +50,13 @@ test('セッション0件の案内は特定providerに偏らず、診断欄を�
   assert.doesNotMatch(EN['lede.emptyNote'], /Claude desktop app/);
 });
 
+test('検索案内はセッションとキャンバスカードの両方を区別して説明する', () => {
+  assert.match(JA['filter.label'], /セッションやキャンバスカード/);
+  assert.match(EN['filter.label'], /session and canvas card/);
+  assert.match(JA['nomatch.query.text'], /キャンバスカード/);
+  assert.match(EN['nomatch.query.text'], /canvas card/);
+});
+
 test('masthead trust fallback matches the current boundary and does not promise that nothing leaves the computer', () => {
   const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   assert.equal(EN['mast.trust'], 'Session data is read-only. Worktrees require confirmation.');
