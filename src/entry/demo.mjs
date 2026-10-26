@@ -45,6 +45,26 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
           isArchived: false, isStarred: false, autoArchiveExempt: true, prs: [],
           pendingFirstStart: null, lifecycle: { status: 'active', startedAt: now - 30_000 },
           events: [{ type: 'turn_started', at: now - 30_000 }],
+        }, {
+          source: 'codex', sessionId: 'codex_00000000-0000-4000-8000-000000000904',
+          title: 'Codex CLI (completed demo)', cwd: demoFolders[0], createdAt: now - 7 * 60_000,
+          lastActivityAt: now - 6 * 60_000, lastFocusedAt: now - 6 * 60_000,
+          isArchived: false, isStarred: false, autoArchiveExempt: true, prs: [],
+          pendingFirstStart: null, lifecycle: { status: 'complete' },
+          events: [{ type: 'turn_started', at: now - 7 * 60_000 }, { type: 'turn_completed', at: now - 6 * 60_000 }],
+        }, {
+          source: 'codex', sessionId: 'codex_00000000-0000-4000-8000-000000000905',
+          title: 'Codex CLI (interrupted demo)', cwd: demoFolders[0], createdAt: now - 9 * 60_000,
+          lastActivityAt: now - 8 * 60_000, lastFocusedAt: now - 8 * 60_000,
+          isArchived: false, isStarred: false, autoArchiveExempt: true, prs: [],
+          pendingFirstStart: null, lifecycle: { status: 'interrupted' },
+          events: [{ type: 'turn_started', at: now - 9 * 60_000 }, { type: 'turn_aborted', at: now - 8 * 60_000 }],
+        }, {
+          source: 'codex', sessionId: 'codex_00000000-0000-4000-8000-000000000906',
+          title: 'Codex CLI (unknown state demo)', cwd: demoFolders[0], createdAt: now - 11 * 60_000,
+          lastActivityAt: now - 10 * 60_000, lastFocusedAt: now - 10 * 60_000,
+          isArchived: false, isStarred: false, autoArchiveExempt: true, prs: [],
+          pendingFirstStart: null, lifecycle: { status: 'unsupported' }, events: [],
         }] }),
         opencode: createFakeOpenCodeSessionsSource({ sessions: [{
           source: 'opencode', sessionId: 'opencode_00000000-0000-4000-8000-000000000902',

@@ -41,6 +41,8 @@ To try it without reading your sessions, add `--demo` (synthetic data):
 npx pigeonholes --demo          # from a clone: npm run demo
 ```
 
+The demo includes synthetic Codex examples for in-progress, completed, interrupted, and unknown run states. They are labeled demo records and do not come from a provider.
+
 Tip: the Claude desktop app has a built-in browser pane. Open the address there and the board sits next to your conversation. The list and the canvas both work down to about 400 px wide. In that pane, desktop notifications are not available, and **Open** may be blocked; then use **Copy link** in the details, or open the board in your usual browser.
 
 ## What it reads

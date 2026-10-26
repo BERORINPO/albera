@@ -136,9 +136,9 @@
 
 ### provider実行状態欄のGUI確認 (2026-10-26)
 
-- 別ポートの隔離`--demo`を起動し、合成Codex WSLセッションの詳細をブラウザーで開いた。従来の「作業中」pile表示とは別の「実行状態: 進行中」欄があり、安全なイベント時系列・Codex CLI/WSL harness・branch・Git要約・worktree状態と同じ詳細内に表示されることを確認した。
-- これは合成レコード1件の実GUI確認であり、完了・中断・不明の画面表示や実providerデータを確認したものではない。実セッションは未確認。デモタブとサーバーを閉じた。
-- 実行した変更の検証は`npm test` — 503 passed、`npm run arch` — 96 paths/0 violations、`npm run smoke` — passed、`git diff --check` — passed。
+- 別ポートの隔離`--demo`で、合成Codexセッション詳細の実GUI表示を確認した。4状態すべてがpile状態と分けて表示され、完了には「ターン開始/ターン完了」、中断には「ターン開始/ターン中断」、未知形式には「安全に表示できるイベント要約はありません」と表示された。未知のlifecycle値自体は表示されない。進行中はCodex CLI/WSL harness・安全なイベント・Git/worktree要約と共に表示されることを確認した。
+- デモには4状態を持つCodexの合成レコードを明示的に追加した。すべてデモと識別でき、実providerデータではない。実セッションは未確認。デモタブとサーバーを閉じた。
+- 検証: `npm test` — 504 passed、`npm run arch` — 96 paths/0 violations、`npm run smoke` — passed、`git diff --check` — passed。
 
 ### 既存Codex保存先のプライバシー優先プリフライト (2026-10-26)
 
