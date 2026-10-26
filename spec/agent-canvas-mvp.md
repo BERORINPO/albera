@@ -82,4 +82,6 @@
 - 実行条件はユーザーが固定選択肢で手動記録するexecution profileとして追加。場所、作業領域の分離、ネットワーク、承認方式の初期値はすべて「不明」。セッション・環境・アプリ設定からの自動検出ではなく、値が正しいことも検証しない。
 - 製品像の未完了: 追加CLIやWSLの実セッション適合性、実行条件の自動検出、worktreeの実Git確認、Obsidian知識層、REA関係、音声Main AI、企業権限制御は未完了または範囲未合意。委譲記録の元/先は関係線とセッション詳細から追えるようになったが、実際の委譲実行は未実装。理解負債はユーザー記述の対象者・不足根拠・必要説明をカードに記録するだけで、自動推定やスコアはない。
 - REA OSSはユーザー指定の https://github.com/morluto/rea.git と確認済み。Agent Canvasで結ぶ対象、および出力の安全な参照/取込境界は未合意で、連携実装は未着手。
+- REA連携の安全境界: 公式の [CLI and Evidence guide](https://github.com/morluto/rea/blob/main/docs/cli.md) は `--json` が完全なEvidenceを返し、実アプリでは数百MBになる場合があると説明する。公式 [MCP contracts](https://github.com/morluto/rea/blob/main/docs/mcp-contracts.md) も完全なcanonical Evidenceをツール結果に保持するとしている。REAのランタイム解析は対象の起動・操作を伴うため、Pigeonholesは結果を自動取込せず、REA実行もしない。ユーザー確認済みのどの小さなEvidence viewをどう結ぶかは引き続き設計確認事項。
 - 2026-10-26: ユーザーが明示した実行条件表示の段階として、値を推測しない手動execution profileカードを実装。4項目の選択肢をallowlist化し、空の値は不明に正規化。詳細・一覧カード・検索・localStorageに限って扱い、セッションAPI/wireには追加しない。
+- 2026-10-26: セッション詳細にも関連付け済みexecution profileの4項目を手動情報として表示し、projectionは許可済みのenum項目だけに限定。body/URL/未知フィールドは詳細projectionに含めない。実行環境の事実確認とは扱わない。

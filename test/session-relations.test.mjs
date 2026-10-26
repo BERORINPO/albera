@@ -22,6 +22,40 @@ test('session detail projection ignores dangling session endpoints', () => {
   assert.deepEqual(entries, []);
 });
 
+test('execution-profile relations expose only their fixed user-declared fields', () => {
+  const profileId = 'g_00000000-0000-4000-8000-000000000003';
+  const graph = { nodes: [{
+    id: profileId, kind: 'execution_profile', title: 'Manual profile',
+    executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action',
+    body: '/private/path', url: 'https://example.com/private', secret: 'do-not-project',
+  }] };
+  const relation = { id: 'profile-edge', from: `graph:${profileId}`, to: `session:${first}`, kind: 'related', purpose: 'Manual association', status: '' };
+  const entries = sessionRelationEntries([relation], first, graph, [{ id: first }]);
+  assert.deepEqual(entries[0].node, {
+    id: profileId, kind: 'execution_profile', title: 'Manual profile',
+    executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action',
+  });
+  assert.equal(JSON.stringify(entries).includes('/private/path'), false);
+  assert.equal(JSON.stringify(entries).includes('do-not-project'), false);
+});
+
+test('comprehension-gap relations expose only the user-authored check and evidence fields', () => {
+  const gapId = 'g_00000000-0000-4000-8000-000000000004';
+  const graph = { nodes: [{
+    id: gapId, kind: 'understanding_gap', title: 'Explain the decision', status: 'open',
+    checkedPerson: 'reviewer', missingEvidence: 'source record', neededExplanation: 'rationale',
+    body: '/private/path', url: 'https://example.com/private', secret: 'do-not-project',
+  }] };
+  const relation = { id: 'gap-edge', from: `graph:${gapId}`, to: `session:${first}`, kind: 'evidence', purpose: '', status: '' };
+  const entries = sessionRelationEntries([relation], first, graph, [{ id: first }]);
+  assert.deepEqual(entries[0].node, {
+    id: gapId, kind: 'understanding_gap', title: 'Explain the decision', status: 'open',
+    checkedPerson: 'reviewer', missingEvidence: 'source record', neededExplanation: 'rationale',
+  });
+  assert.equal(JSON.stringify(entries).includes('/private/path'), false);
+  assert.equal(JSON.stringify(entries).includes('do-not-project'), false);
+});
+
 test('following a related session opens the internal detail bar', () => {
   const calls = [];
   const opened = openRelatedSessionDetail(second, (...args) => { calls.push(args); return true; });

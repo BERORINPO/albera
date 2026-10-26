@@ -72,6 +72,21 @@ function sessionRelations(t, card, graph, sessions) {
       endpoint,
       h('span', { text: `${direction} — ${t(`graph.edge.${entry.kind}`)}${status}` }),
       entry.purpose ? h('small', { text: entry.purpose }) : null,
+      entry.endpoint === 'graph' && entry.node.kind === 'execution_profile'
+        ? h('small', { text: t('graph.executionProfileSummary', { values: [
+          t(`graph.executionLocation.${entry.node.executionLocation}`),
+          t(`graph.workspaceIsolation.${entry.node.workspaceIsolation}`),
+          t(`graph.networkAccess.${entry.node.networkAccess}`),
+          t(`graph.approvalMode.${entry.node.approvalMode}`),
+        ].join(' / ') }) })
+        : null,
+      entry.endpoint === 'graph' && entry.node.kind === 'understanding_gap'
+        ? h('small', { text: [
+          entry.node.checkedPerson ? t('graph.checkedPersonSummary', { name: entry.node.checkedPerson }) : '',
+          entry.node.missingEvidence ? t('graph.missingEvidence', { text: entry.node.missingEvidence }) : '',
+          entry.node.neededExplanation ? t('graph.neededExplanation', { text: entry.node.neededExplanation }) : '',
+        ].filter(Boolean).join(' / ') })
+        : null,
     );
   });
   return items.length
