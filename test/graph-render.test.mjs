@@ -1,10 +1,30 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
-import { graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation, graphEdgeSearchText, graphNodeHasMatchedSession, graphNodeSessionFilterMatch } from '../public/graph-render.mjs';
+import { graphCardAriaLabel, graphCardComprehensionSummary, graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation, graphEdgeSearchText, graphNodeHasMatchedSession, graphNodeSessionFilterMatch } from '../public/graph-render.mjs';
 import { cancelGraphConnection, chooseGraphConnectionTarget, startGraphConnection } from '../public/graph-connect-mode.mjs';
 
 const node = { id: 'g_00000000-0000-4000-8000-000000000001', kind: 'understanding_gap', title: 'Gap', status: 'open' };
+
+test('canvas comprehension cards name who is being checked and mark empty evidence fields as unrecorded', () => {
+  const t = (key, params = {}) => ({
+    'graph.kind.understanding_gap': '理解負債',
+    'graph.status.open': '未解消',
+    'graph.status.review': '要確認',
+    'graph.checkedPersonSummary': `確認対象: ${params.name}`,
+    'graph.missingEvidence': `不足根拠: ${params.text}`,
+    'graph.neededExplanation': `必要な説明: ${params.text}`,
+    'graph.notRecorded': '未記録',
+    'graph.cardAria': `${params.kind}: ${params.title}、${params.status}`,
+  }[key] ?? key);
+  const gap = { ...node, title: 'ADRを理解する', checkedPerson: '担当者', missingEvidence: '', neededExplanation: '選択理由' };
+  const summary = graphCardComprehensionSummary(gap, t);
+  const accessible = graphCardAriaLabel(t, gap);
+  assert.deepEqual(summary, ['確認対象: 担当者', '不足根拠: 未記録', '必要な説明: 選択理由']);
+  assert.ok(summary.every((line) => accessible.includes(line)));
+  assert.match(accessible, /ADRを理解する/);
+  assert.doesNotMatch(accessible, /理解度|score|スコア/i);
+});
 
 test('graph card reconciliation updates missing-link badges when relations change', () => {
   const missingBoth = graphCardSignature(node, ['evidence', 'explains']);

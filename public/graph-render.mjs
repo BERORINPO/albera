@@ -4,6 +4,7 @@
 import { CANVAS } from '../src/shared/constants.mjs';
 import { h, reconcile } from './view.mjs';
 import { reviewUnderstandingGaps } from './graph-model.mjs';
+import { comprehensionGapSummary } from './session-relations.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 const CARD_W = 280;
@@ -137,11 +138,17 @@ function placeLine(line, x1, y1, x2, y2) {
   line.style.setProperty('--angle', `${Math.atan2(dy, dx)}rad`);
 }
 
+/** Keep the person being checked and every unrecorded field visible on the canvas card. @param {any} node @param {T} t */
+export function graphCardComprehensionSummary(node, t) {
+  return node.kind === 'understanding_gap' ? comprehensionGapSummary(node, t) : [];
+}
+
 /** @param {T} t @param {any} node @param {string[]} missing */
-function graphCardAriaLabel(t, node, missing = []) {
+export function graphCardAriaLabel(t, node, missing = []) {
   const ariaLabel = t('graph.cardAria', { kind: t(`graph.kind.${node.kind}`), title: node.title, status: t(`graph.status.${graphCardStatus(node, missing)}`) });
   const reviewLabel = missing.length ? t('graph.missingLinks', { links: missing.map((kind) => t(`graph.link.${kind}`)).join(', ') }) : '';
-  return `${ariaLabel}${reviewLabel ? ` ${reviewLabel}` : ''}`;
+  const comprehension = graphCardComprehensionSummary(node, t);
+  return [ariaLabel, ...comprehension, reviewLabel].filter(Boolean).join(' ');
 }
 
 /** @param {T} t @param {any} node @param {string[]} missing */
@@ -158,14 +165,12 @@ function graphCard(t, node, missing = []) {
       'data-key': node.id,
       'data-action': 'graph-open',
       'data-id': node.id,
-      'aria-label': `${ariaLabel}${reviewLabel ? ` ${reviewLabel}` : ''}`,
+      'aria-label': ariaLabel,
     },
     h('span', { class: 'graph-node__meta' }, t(`graph.kind.${node.kind}`), ' ', h('span', { class: 'graph-node__status', text: statusLabel })),
     h('span', { class: 'graph-node__title', text: node.title }),
     node.body ? h('span', { class: 'graph-node__body', text: node.body }) : null,
-    node.kind === 'understanding_gap' && (node.missingEvidence || node.neededExplanation)
-      ? h('span', { class: 'graph-node__body', text: [node.missingEvidence && t('graph.missingEvidence', { text: node.missingEvidence }), node.neededExplanation && t('graph.neededExplanation', { text: node.neededExplanation })].filter(Boolean).join('; ') })
-      : null,
+    ...graphCardComprehensionSummary(node, t).map((text) => h('span', { class: 'graph-node__body', text })),
     node.kind === 'execution_profile'
       ? h('span', { class: 'graph-node__body', text: [
         t(`graph.executionLocation.${node.executionLocation}`),

@@ -684,3 +684,9 @@
 
 - DOM fixtureでCopilot/OpenCode詳細にだけ来歴注記が付き、Claude/Codexの名称とCodexのWSL場所が保持されることを確認。
 - `npm test` — 558 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。実ブラウザー受入は引き続き未確認。
+
+### キャンバス上の理解負債に確認対象者と未記録欄を表示 (2026-10-27)
+
+- 理解負債カードに、理解を確認される人・不足根拠・必要な説明を常時表示する。空欄は「未記録」とし、カード上のアクセシブル名にも同じ情報を含める。
+- 解消済み扱いのときに根拠/説明関係が無い場合の「要確認」表示、接続フォームへの導線、利用者による妥当性判断は既存動作を維持。理解の推定や数値評価は追加しない。
+- `npm test` — 559 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。ブラウザーでの視覚/スクリーンリーダー受入は未確認。
