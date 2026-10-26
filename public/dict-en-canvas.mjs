@@ -154,7 +154,7 @@ export const EN_CANVAS = Object.freeze({
   'worktree.created': 'Created branch {branch}. Working state: {status}. No CLI session was started.',
   'worktree.createdTracked': 'Created branch {branch}; its safe status was also saved on the canvas.',
   'worktree.createdUntracked': 'Created branch {branch}, but its canvas record could not be saved. Add a worktree card manually.',
-  'worktree.recordBody': 'Base {base}. At check: {state}; {changed} changed, {untracked} untracked, {conflicted} conflicts. This is a local record; editing or deleting the card does not change the worktree.',
+  'worktree.recordBody': 'Repository {project}. Base {base}. At check: {state}; {changed} changed, {untracked} untracked, {conflicted} conflicts. This is a local record; editing or deleting the card does not change the worktree.',
   'worktree.listButton': 'Refresh worktree status',
   'worktree.wslUnavailable': 'Actions stay inside the configured WSL share. Removal is limited to clean, unused worktrees created by this app. Ignored files may also be removed.',
   'detail.executionLocation': 'Execution location',

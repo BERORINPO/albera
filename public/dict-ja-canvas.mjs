@@ -154,7 +154,7 @@ export const JA_CANVAS = Object.freeze({
   'worktree.created': 'ブランチ {branch} を作成しました。作業状態: {status}。CLIセッションは起動していません。',
   'worktree.createdTracked': '{branch}を作成し、安全な状態をキャンバスにも記録しました。',
   'worktree.createdUntracked': '{branch}は作成しましたが、キャンバスへ記録を保存できませんでした。worktreeカードを手動で追加してください。',
-  'worktree.recordBody': '基点 {base}。確認時: {state}、変更 {changed} 件、未追跡 {untracked} 件、競合 {conflicted} 件。このカードはローカル記録です。編集・削除してもworktree自体は変わりません。',
+  'worktree.recordBody': '対象 {project}。基点 {base}。確認時: {state}、変更 {changed} 件、未追跡 {untracked} 件、競合 {conflicted} 件。このカードはローカル記録です。編集・削除してもworktree自体は変わりません。',
   'worktree.listButton': 'worktree状態を更新',
   'worktree.wslUnavailable': '設定済みのWSL共有内で操作します。削除できるのはこのアプリが作成した、clean・未使用のworktreeだけです。ignored filesも消える可能性があります。',
   'detail.executionLocation': '実行場所',

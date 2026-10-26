@@ -1,6 +1,5 @@
 // @ts-check
-// 画面: キャンバスのキー・ボタン・ポインタの動作 (spec/ui.md §10.7, §10.8)。キーの名前は canvas-input.mjs の canvasKeyAction が決め、
-// ここはそれを実行する。状態とカメラは canvas-ctl.mjs が持つ。
+// キャンバスのキー/ボタン/ポインタ操作 (spec/ui.md §10.7–§10.8); canvas-input.mjs がキーを決め、canvas-ctl.mjs が状態とカメラを持つ。
 
 import { CANVAS } from '../src/shared/constants.mjs';
 import { minZoom, panBy, stepZoom, zoomAt } from './canvas-camera.mjs';
@@ -22,6 +21,7 @@ import { createWorktree, listWorktrees, removeWorktree } from './api.mjs';
 import { runDelegationForEdge } from './delegation-act.mjs';
 import { openWorktreeDialog } from './worktree-dialog.mjs';
 import { openWorktreeListDialog } from './worktree-list-dialog.mjs';
+import { worktreeRecordBody } from './worktree-record.mjs';
 import { openRelatedSessionDetail, resolveRelatedSessionShortId } from './session-relations.mjs';
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
@@ -128,7 +128,7 @@ function createWorktreeForSession(sessionId) {
       const base = card.detail?.gitWorktree?.branch || card.detail?.branch || state.t('worktree.currentHead');
       const next = addWorktreeForSession(graph, {
         kind: 'worktree', title: result.branch,
-        body: state.t('worktree.recordBody', { base, state: state.t(`worktree.status.${result.status}`), changed: result.changed, untracked: result.untracked, conflicted: result.conflicted }),
+        body: worktreeRecordBody(state.t, card.project?.label, base, result),
         status: 'open', ...position, checkedPerson: '', missingEvidence: '', neededExplanation: '',
       }, `g_${crypto.randomUUID()}`, `e_${crypto.randomUUID()}`, sessionId);
       return next === graph ? false : graphChanged(next);
@@ -159,7 +159,7 @@ function listWorktreesForSession(sessionId) {
       const branch = item.branch || state.t('worktree.listDetached');
       const next = addWorktreeForSession(graph, {
         kind: 'worktree', title: branch,
-        body: state.t('worktree.recordBody', { base, state: state.t(`worktree.status.${item.status}`), changed: item.changed, untracked: item.untracked, conflicted: item.conflicted }),
+        body: worktreeRecordBody(state.t, entry.card.project?.label, base, item),
         status: 'open', ...position, checkedPerson: '', missingEvidence: '', neededExplanation: '',
       }, `g_${crypto.randomUUID()}`, `e_${crypto.randomUUID()}`, sessionId, 'Recorded from read-only worktree inventory');
       return next !== graph && graphChanged(next);
