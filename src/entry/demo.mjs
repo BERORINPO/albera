@@ -5,6 +5,7 @@ import { DEMO_REBUILD_MS } from '../shared/constants.mjs';
 import { buildDemo } from '../adapters/demo-data.mjs';
 import { createFakeAppSessionsSource } from '../adapters/fake-app-sessions.mjs';
 import { createFakeCopilotSessionsSource } from '../adapters/fake-copilot-sessions.mjs';
+import { createFakeCodexSessionsSource } from '../adapters/fake-codex-sessions.mjs';
 import { createFakeOpenCodeSessionsSource } from '../adapters/fake-opencode-sessions.mjs';
 import { createFakeFolderHints } from '../adapters/fake-folder-hints.mjs';
 import { createFakeTranscriptsSource } from '../adapters/fake-transcripts.mjs';
@@ -37,6 +38,14 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
           pendingFirstStart: null, lifecycle: { status: 'active', startedAt: now - 60_000 },
           events: [{ type: 'turn_started', at: now - 60_000 }],
         }] }),
+        codex: createFakeCodexSessionsSource({ sessions: [{
+          source: 'codex', executionLocation: 'wsl', sessionId: 'codex_00000000-0000-4000-8000-000000000903',
+          title: 'Codex CLI (WSL demo)', cwd: demoFolders[0], createdAt: now - 3 * 60_000,
+          lastActivityAt: now - 30_000, lastFocusedAt: now - 30_000,
+          isArchived: false, isStarred: false, autoArchiveExempt: true, prs: [],
+          pendingFirstStart: null, lifecycle: { status: 'active', startedAt: now - 30_000 },
+          events: [{ type: 'turn_started', at: now - 30_000 }],
+        }] }),
         opencode: createFakeOpenCodeSessionsSource({ sessions: [{
           source: 'opencode', sessionId: 'opencode_00000000-0000-4000-8000-000000000902',
           title: 'OpenCode', cwd: demoFolders[0], createdAt: now - 4 * 60_000,
@@ -62,11 +71,11 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
   };
   return {
     sessionsSource: { load: async () => {
-      const [claude, copilot, opencode] = await Promise.all([current().sessions.load(), current().copilot.load(), current().opencode.load()]);
+      const [claude, codex, copilot, opencode] = await Promise.all([current().sessions.load(), current().codex.load(), current().copilot.load(), current().opencode.load()]);
       return {
-        sessions: [...claude.sessions, ...copilot.sessions, ...opencode.sessions],
+        sessions: [...claude.sessions, ...codex.sessions, ...copilot.sessions, ...opencode.sessions],
         archivedIds: claude.archivedIds,
-        stats: { ...claude.stats, sources: { copilot: copilot.stats, opencode: opencode.stats } },
+        stats: { ...claude.stats, sources: { codex: codex.stats, copilot: copilot.stats, opencode: opencode.stats } },
       };
     } },
     transcriptsSource: { read: (/** @type {string[]} */ ids) => current().transcripts.read(ids), stats: () => current().transcripts.stats() },

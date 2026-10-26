@@ -25,15 +25,17 @@ for (const lang of /** @type {const} */ (['en', 'ja'])) {
     let now = Date.UTC(2026, 0, 15, 12, 0, 0);
     const src = liveDemoSources(lang, () => now);
     const first = await boardAt(src, now);
-    assert.equal(first.counts.working, 6);
+    assert.equal(first.counts.working, 7);
     assert.equal(first.counts.trouble, 3);
     const ids = first.buckets.working.map((c) => c.id).sort();
     const startedFirst = first.buckets.working.map((c) => (typeof c.startedAt === 'number' ? now - c.startedAt : null));
 
     now += 2 * HOUR;
     const later = await boardAt(src, now);
-    assert.equal(later.counts.working, 6, 'working rows did not drift into another pile');
+    assert.equal(later.counts.working, 7, 'working rows did not drift into another pile');
     assert.ok(later.buckets.working.some((card) => card.source === 'copilot'), 'the demo includes a synthetic Copilot session');
+    const wsl = later.buckets.working.find((card) => card.source === 'codex');
+    assert.equal(wsl?.detail.executionLocation, 'wsl', 'the demo includes a synthetic WSL Codex card');
     assert.equal(later.counts.trouble, 3);
     assert.deepEqual(later.buckets.working.map((c) => c.id).sort(), ids, 'the same IDs every rebuild');
     assert.deepEqual(later.buckets.working.map((c) => (typeof c.startedAt === 'number' ? now - c.startedAt : null)), startedFirst);
