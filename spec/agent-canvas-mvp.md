@@ -96,7 +96,7 @@
 
 | 領域 | 現在の実装 | 未完了・証拠の限界 |
 |---|---|---|
-| 操作可能なCanvas | 一覧/Canvas切替、検索とsource/state/project絞り込み、session slipsとtask/artifact/decision/worktree/理解負債/execution profile/Obsidian参照カード、ドラッグ・キーボード移動、パン・ズーム、関係線、localStorage復元 | 最新のラベル修正以降に全操作をブラウザーから通す手動受入確認は未実施。自動テストと過去の合成ブラウザー確認の範囲を超えて完成とはしない |
+| 操作可能なCanvas | 一覧/Canvas切替、検索とsource/state/project絞り込み、session slipsとtask/artifact/decision/worktree/理解負債/execution profile/Obsidian参照カード、ドラッグ・キーボード移動、パン・ズーム、関係線、localStorage復元 | 2026-10-26の合成ブラウザー確認で複数providerのCanvas表示、Codex CLI + project + state + textの複合絞り込み、ユーザー作成カード/関係の表示、カード位置・関係・表示切替の再読み込み保持を確認。詳細パネルの各種操作、Worktree確認ダイアログ、全キーボード/狭幅条件を通す受入は未完了。実セッション表示とは別に扱う |
 | セッション・イベント | Claude Code、Codex CLI、Copilot、OpenCodeにread-only adapterがあり、同じboardでallowlistイベント・状態・詳細を表示。関係pickerも表示中の全providerを対象とする | Codex CLI起点の実セッションは未確認。Copilot保存先はCLI/app共通、OpenCode DBもproducer clientをadapterが識別しない。OpenCode旧schemaは一覧以外の状態/イベントをunknown扱い |
 | ハーネス・実行条件 | 詳細に観測可能なprovider/sourceを表示。Codex CLIはCLI markerを満たす記録に限定。場所・分離・network・approvalは不明初期値の手動profileとして関連付け可能 | Copilot/OpenCodeではCLIかアプリかを断定できない。セッションや環境から実行条件を自動検出しない。profile値は利用者申告で、実際の設定・モデル・実行条件の証明ではない |
 | 委譲 | 委譲元/先、目的、状態を関係線と詳細に記録 | CLI起動・agentへの実委譲は未実装。外部作用は明示操作後のみという境界は維持するが、起動するCLI・引数・入力・権限範囲は仕様未確定 |
