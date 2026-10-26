@@ -402,3 +402,9 @@
 - PR CIでCodex adapterのfixtureテストがLinux/macOSで失敗。`cwd` fixtureをWindows絶対パスに固定していたため、adapterの各OS絶対パス検査で除外されていた。Windowsローカルでは通過していた。
 - テスト専用のcwdを実行OSのrootから組み立てるように変更。製品コード、保存データ、実セッションの読取範囲は変更なし。
 - 修正後のPR CI run `40314754367` はWindows/macOS/Linux × Node 22/24の6ジョブ全てでTestsとArchitecture checkが成功。ローカル `npm test` 527 passed、`npm run arch` 96 paths/0 violations、`npm run smoke` passed、`git diff --check` passed。
+
+### 合成デモでカード追加の保存・復元を確認 (2026-10-26)
+
+- 隔離した `--demo` のキャンバスでツールバーの「カードを追加」を開き、合成タスクと説明を保存。キャンバス上に題名・状態・説明が出ることを確認した。
+- ページを再読み込みし、同じタスクカードと説明がlocalStorageから復元されたことを画面で確認した。セッション保存先、実セッション、CLI、worktree操作、外部サービスは使っていない。
+- この確認はセッションがあるデモ上のツールバー導線を対象とする。全provider空状態での空キャンバスCTAを押す操作、全カード種別の作成/編集、スクリーンリーダー受入は別途未完了。
