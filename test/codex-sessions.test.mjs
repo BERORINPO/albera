@@ -100,11 +100,11 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   await rollout(home, activeId, [meta(activeId), envelope('event_msg', { type: 'task_started', prompt: 'PRIVATE-PROMPT' }, activeAt)]);
   await rollout(home, doneId, [meta(doneId), envelope('event_msg', { type: 'task_started' }, doneAt - 1000), envelope('event_msg', { type: 'task_complete', output: 'PRIVATE-OUTPUT' }, doneAt)]);
   await rollout(home, abortedId, [meta(abortedId), envelope('event_msg', { type: 'task_started' }, activeAt - 1000), envelope('event_msg', { type: 'turn_aborted', reason: 'PRIVATE-REASON' }, activeAt)]);
-  const { sessions } = await createCodexSessionsSource({ root: home }).load();
+  const { sessions, stats } = await createCodexSessionsSource({ root: home }).load();
   const claude = rec(11);
-  const build = (items) => buildBoard({ sessions: items, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS });
+  const build = (items, sourceStats) => buildBoard({ sessions: items, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS, sourceStats });
   const base = build([claude]);
-  const mixed = build([claude, ...sessions]);
+  const mixed = build([claude, ...sessions], { sources: { codex: stats } });
   const claudeCard = (b) => [...b.buckets.needs_you, ...b.buckets.trouble, ...b.buckets.unread, ...b.buckets.working, ...b.recentGroups.flatMap((g) => g.items)].find((c) => c.id === claude.sessionId);
   assert.deepEqual(claudeCard(mixed), claudeCard(base));
   assert.ok(mixed.buckets.working.some((c) => c.source === 'codex'));
@@ -115,6 +115,10 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   const aborted = mixed.recentGroups.flatMap((g) => g.items).find((c) => c.id === `codex_${abortedId}`);
   assert.ok(aborted, 'aborted turn is terminal and does not remain working/stuck');
   assert.deepEqual(aborted.events.map((e) => e.type), ['turn_started', 'turn_aborted']);
+  assert.deepEqual(mixed.stats.sources.codex, {
+    files: 3, detected: 3, working: 1, trouble: 0, recent: 2,
+    active: 1, completed: 1, interrupted: 1, unknown: 0, rejected: 0,
+  });
   const wire = JSON.stringify(mixed);
   for (const secret of ['PRIVATE-PROMPT', 'PRIVATE-OUTPUT', 'PRIVATE-REASON', 'C:\\work\\alpha', 'base_instructions', 'environment_secret']) assert.equal(wire.includes(secret), false);
 });

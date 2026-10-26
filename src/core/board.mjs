@@ -500,7 +500,7 @@ function liveInputs(active, turns, now, given) {
  * @param {Map<string, TranscriptInput>} input.turns sessionId がキー
  * @param {number} input.now
  * @param {string[]} input.roots
- * @param {{files?: number, parsed?: number, bad?: number, stale?: number, dirs?: number}=} input.sourceStats
+ * @param {{files?: number, parsed?: number, bad?: number, stale?: number, dirs?: number, sources?: {codex?: {files?: number, bad?: number}}}=} input.sourceStats
  * @param {{dirMissing?: boolean}=} input.transcriptStats
  * @param {number=} input.scanMs
  * @param {boolean=} input.demo デモデータで動いているとき true (stats.demo)
@@ -545,6 +545,22 @@ export function buildBoard({
   for (const k of /** @type {const} */ (['needs_you', 'trouble', 'unread', 'working'])) lists[k].sort(PILE_ORDER[k]);
   const recentGroups = groupByProject(lists.recent.sort(byNewest)).map(({ key, label, items }) => ({ key, label, items }));
   const cleanupGroups = buildCleanupGroups(active, ctx);
+  const codexInput = sourceStats.sources?.codex;
+  const codexSessions = active.filter((s) => s.source === 'codex');
+  const count = (/** @type {unknown} */ v) => Number.isSafeInteger(v) && Number(v) >= 0 ? Number(v) : 0;
+  const lastEvent = (/** @type {SessionRecord} */ s) => s.events?.at(-1)?.type;
+  const codexDiagnostics = codexInput ? {
+    files: count(codexInput.files),
+    detected: codexSessions.length,
+    working: lists.working.filter((c) => c.source === 'codex').length,
+    trouble: lists.trouble.filter((c) => c.source === 'codex').length,
+    recent: lists.recent.filter((c) => c.source === 'codex').length,
+    active: codexSessions.filter((s) => s.lifecycle?.status === 'active').length,
+    completed: codexSessions.filter((s) => lastEvent(s) === 'turn_completed').length,
+    interrupted: codexSessions.filter((s) => lastEvent(s) === 'turn_aborted').length,
+    unknown: codexSessions.filter((s) => s.lifecycle?.status !== 'active' && !['turn_completed', 'turn_aborted'].includes(lastEvent(s))).length,
+    rejected: count(codexInput.bad),
+  } : undefined;
 
   const cleanupCount = [...cls.values()].filter((c) => c.bucket === 'cleanup').length;
   return {
@@ -578,6 +594,7 @@ export function buildBoard({
       scanMs,
       formatSuspect,
       demo: !!demo,
+      ...(codexDiagnostics ? { sources: { codex: codexDiagnostics } } : {}),
       ...live.stats,
     },
   };

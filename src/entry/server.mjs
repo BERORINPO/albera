@@ -60,7 +60,9 @@ function createCombinedSessionsSource(sources) {
     async load() {
       const loaded = await Promise.all(sources.map((source) => source.load()));
       // 既存の診断統計は Claude セッション源の値をそのまま使う。
-      const stats = loaded[0]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
+      const claudeStats = loaded[0]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
+      const codexStats = loaded[1]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
+      const stats = { ...claudeStats, sources: { codex: codexStats } };
       return {
         sessions: loaded.flatMap((source) => source.sessions),
         archivedIds: new Set(loaded.flatMap((source) => [...source.archivedIds])),

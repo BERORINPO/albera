@@ -201,7 +201,8 @@
  * @property {Record<string, {title: string, memberIds: string[]}>} families
  * @property {{files: number, parsed: number, bad: number, stale: number, archived: number, active: number, recentTotal: number,
  *   transcriptsMissingRecent: number, unknownTurnRecent: number, recentWithTranscript: number, transcriptsDirMissing: boolean,
- *   scanMs: number, formatSuspect: FormatSuspect, demo: boolean, contextSeen: number, activitySeen: number, contextSuspect: boolean}} stats
+ *   scanMs: number, formatSuspect: FormatSuspect, demo: boolean, contextSeen: number, activitySeen: number, contextSuspect: boolean,
+ *   sources?: {codex: {files:number, detected:number, working:number, trouble:number, recent:number, active:number, completed:number, interrupted:number, unknown:number, rejected:number}}}} stats
  *   contextSeen / activitySeen / contextSuspect は v0.2 (spec/board.md §9)
  */
 

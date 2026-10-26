@@ -16,6 +16,7 @@ Every file is under 400 lines, `// @ts-check`, vanilla ESM, no dependencies. Onl
 | `public/tokens.css` | design tokens, byte for byte from design.md §3 (with the canvas tokens) | — |
 | `public/style.css` | base, controls, masthead, front (lede, ledger), page grid, banners, footer, dialogs, motion and reduced motion | — |
 | `public/rows.css` | pile heads, rows, row detail, family tree, Working two-column rule, the doing line, the context words, the hand-off guide | — |
+| `public/codex-status.mjs` | **pure** Codex source counts and safe zero-count explanations for the diagnostics footer | `codexStatusMessages()` |
 | `public/tidy.css` | the To archive pile: steps, select-all, groups, sub-groups, cleanup rows, selection bar | — |
 | `public/canvas.css` | the canvas view (§10): page grid, front strip, viewport, sheets, running heads, slips, the band line, the Only-to-archive block, tick, the measuring box, levels, the canvas bar | — |
 | `public/app.mjs` | boot: resolve language and view, load prefs, build static text, wire one delegated `click`/`change` listener, `keys.mjs` and `canvas-input.mjs`, start the poll loop (`poll.mjs`) and the minute tick | `init()` (runs on import) |
@@ -1091,6 +1092,10 @@ Unknown kinds fall back to `time.ago`.
 | `foot.ctxFormat` | Can't read context sizes from the transcripts, so they are hidden. | 会話ログからコンテキスト量を読めないため、表示を止めています。 |
 | `foot.actFormat` | Can't read tool use from the transcripts, so “doing” labels are missing. | 会話ログから操作を読めないため、「していること」が出ていません。 |
 | `foot.diag` | Reading status | 読み込みの状態 |
+| `foot.codexSummary` | Codex candidate, recognized, board and lifecycle counts | Codex の候補・認識件数、盤面状態・イベント状態別件数 |
+| `foot.codexNoFiles` | No rollout files matched the expected folder and filename pattern | 認識対象の形式に合う rollout ファイルが見つからない |
+| `foot.codexNoDetected` | Candidate files exist, but none passed the CLI checks | 候補はあるが CLI の形式条件に合わない |
+| `foot.codexNoWorking` | No recent unfinished turn; completed/interrupted are Recent and stale active turns are Stuck? | 新しい未完了ターンがない。完了・中断は「最近」、古い未完了は「止まったかも」 |
 | `foot.bad` | {n} file couldn't be read. \| {n} files couldn't be read. | 読めなかったファイル {n} 件。 |
 | `foot.missing` | {n} transcript not found (last {days} days). \| {n} transcripts not found (last {days} days). | 会話ログが見つからない {n} 件 (最近 {days} 日)。 |
 | `foot.missingWhy` | Sessions that ran remotely or in the cloud have no log on this computer, so their state is unknown. | リモートやクラウドで動いた会話は、このパソコンにログが無いため状態が分かりません。 |
