@@ -258,7 +258,7 @@ export function renderGraphLayer(layer, o) {
     o.graph.nodes,
     (node) => node.id,
     (node) => [node.x, node.y, node.title, o.connectFrom === node.id, o.drag?.id === node.id].join('|'),
-    (node) => h('button', { class: 'graph-connect-handle', type: 'button', 'data-action': 'graph-connect-node', 'data-id': node.id, text: '↗' }),
+    (node) => h('button', { class: 'graph-connect-handle', type: 'button', 'data-endpoint': 'graph', 'data-action': 'graph-connect-node', 'data-id': node.id, text: '↗' }),
   );
   for (const button of [...connectRoot.querySelectorAll('.graph-connect-handle')]) {
     const node = o.graph.nodes.find((item) => item.id === button.dataset.key);

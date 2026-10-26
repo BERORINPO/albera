@@ -129,6 +129,20 @@ test('canvas graph cards offer a keyboard-usable connect mode with a preselected
   }
 });
 
+test('canvas pointer connection handles both graph cards and session slips as endpoints', () => {
+  const session = fs.readFileSync(new URL('../public/canvas-slip.mjs', import.meta.url), 'utf8');
+  const input = fs.readFileSync(new URL('../public/canvas-input.mjs', import.meta.url), 'utf8');
+  const actions = fs.readFileSync(new URL('../public/canvas-act.mjs', import.meta.url), 'utf8');
+  const graphActions = fs.readFileSync(new URL('../public/graph-actions.mjs', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/canvas.css', import.meta.url), 'utf8');
+  assert.match(session, /class: 'canvas-connect-handle'.*'data-endpoint': 'session'/);
+  assert.match(input, /\.graph-node\[data-id\], \.slip:\s*not\(\.is-faded\)\[data-id\]/);
+  assert.match(input, /graphConnectionDrop\(d\.key, targetId, d\.endpointKind, targetKind\)/);
+  assert.match(actions, /'graph-connect-session-handle': \(el\) => graphActions\.connectSession/);
+  assert.match(graphActions, /connectCanvasEndpoints: \(sourceKind, sourceId, targetKind, targetId\)/);
+  assert.match(css, /\.slip\.is-connect-target\s*\{/);
+});
+
 test('graph connection mode selects a different target, keeps self-selection active, and cancels cleanly', () => {
   const cv = { graphConnectFrom: null };
   const calls = [];

@@ -49,6 +49,10 @@ export function createGraphActions(o) {
       if (!sourceId || !targetId || sourceId === targetId) return false;
       return connectEndpoint('graph:' + sourceId, undefined, 'graph:' + targetId);
     },
+    connectCanvasEndpoints: (sourceKind, sourceId, targetKind, targetId) => {
+      if (!['graph', 'session'].includes(sourceKind) || !['graph', 'session'].includes(targetKind) || !sourceId || !targetId || (sourceKind === targetKind && sourceId === targetId)) return false;
+      return connectEndpoint(`${sourceKind === 'graph' ? 'graph' : 'session'}:${sourceId}`, undefined, `${targetKind === 'graph' ? 'graph' : 'session'}:${targetId}`);
+    },
     editEdge,
     openNode: (id) => connectMode.target(id) ?? editNode(id),
     startConnect: connectMode.start,

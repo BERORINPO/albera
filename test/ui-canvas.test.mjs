@@ -19,10 +19,14 @@ const at = (target, keysOn = true) => ({ keysOn, target });
 const near = (/** @type {number} */ a, /** @type {number} */ b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
 test('graph connection drop accepts distinct cards and rejects self/invalid targets', () => {
-  assert.deepEqual(graphConnectionDrop('source', 'target'), { sourceId: 'source', targetId: 'target' });
+  assert.deepEqual(graphConnectionDrop('source', 'target'), { sourceId: 'source', targetId: 'target', sourceKind: 'graph', targetKind: 'graph' });
+  assert.deepEqual(graphConnectionDrop('node', 'session', 'graph', 'session'), { sourceId: 'node', targetId: 'session', sourceKind: 'graph', targetKind: 'session' });
+  assert.deepEqual(graphConnectionDrop('first', 'second', 'session', 'session'), { sourceId: 'first', targetId: 'second', sourceKind: 'session', targetKind: 'session' });
   assert.equal(graphConnectionDrop('source', 'source'), null);
+  assert.equal(graphConnectionDrop('same', 'same', 'session', 'session'), null);
   assert.equal(graphConnectionDrop('', 'target'), null);
   assert.equal(graphConnectionDrop('source', null), null);
+  assert.equal(graphConnectionDrop('source', 'target', 'unknown', 'session'), null);
 });
 
 /** 保存の入れ替え (ブラウザの localStorage の代わり)。 @param {any} store @param {() => void} fn */

@@ -275,6 +275,7 @@ export const CANVAS_CLICK = {
   'graph-new': () => newGraphNode(),
   'graph-open': (el) => graphActions.openNode(el.dataset.id ?? ''),
   'graph-connect-node': (el) => graphActions.startConnect(el.dataset.id ?? ''),
+  'graph-connect-session-handle': (el) => graphActions.connectSession(el.dataset.id ?? ''),
   'canvas-open-session': (el) => openRelatedSessionDetail(el.dataset.id ?? '', openBar),
   'canvas-open-short-session': (el) => {
     const id = resolveRelatedSessionShortId(el.dataset.source ?? '', el.dataset.id ?? '', [...view.index.keys()].map((id) => ({ id })));
@@ -346,12 +347,14 @@ export function initCanvas() {
       const node = graph.nodes.find((n) => n.id === id);
       if (drag?.id === id && node) graphChanged(moveGraphNode(graph, id, node.x + dx / cv.cam.z, node.y + dy / cv.cam.z));
     },
-    connectGraph: (/** @type {string} */ sourceId, /** @type {string} */ targetId) => graphActions.connectNodes(sourceId, targetId),
-    graphConnectHover: (/** @type {string} */ sourceId, /** @type {string|null} */ targetId) => {
+    connectGraph: (/** @type {'graph'|'session'} */ sourceKind, /** @type {string} */ sourceId, /** @type {'graph'|'session'} */ targetKind, /** @type {string} */ targetId) => graphActions.connectCanvasEndpoints(sourceKind, sourceId, targetKind, targetId),
+    graphConnectHover: (/** @type {'graph'|'session'} */ sourceKind, /** @type {string} */ sourceId, /** @type {'graph'|'session'|null} */ targetKind, /** @type {string|null} */ targetId) => {
       world().querySelector('.graph-connect-handle.is-connect-source')?.classList.remove('is-connect-source');
+      world().querySelector('.canvas-connect-handle.is-connect-source')?.classList.remove('is-connect-source');
       world().querySelector('.graph-node.is-connect-target')?.classList.remove('is-connect-target');
-      world().querySelector(`.graph-connect-handle[data-id="${CSS.escape(sourceId)}"]`)?.classList.add('is-connect-source');
-      if (targetId) world().querySelector(`.graph-node[data-id="${CSS.escape(targetId)}"]`)?.classList.add('is-connect-target');
+      world().querySelector('.slip.is-connect-target')?.classList.remove('is-connect-target');
+      world().querySelector(`.${sourceKind === 'session' ? 'canvas-connect-handle' : 'graph-connect-handle'}[data-id="${CSS.escape(sourceId)}"]`)?.classList.add('is-connect-source');
+      if (targetId) world().querySelector(`.${targetKind === 'session' ? 'slip' : 'graph-node'}[data-id="${CSS.escape(targetId)}"]`)?.classList.add('is-connect-target');
     },
     openGraph: (/** @type {string} */ id) => graphActions.openNode(id),
     // 動かさずに押した柱: フォーカスを置き、帯に「用紙を動かす」のボタンを出す (ドラッグのできない人の道、WCAG 2.5.7)

@@ -12,9 +12,11 @@ const ARROWS = Object.freeze({ ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 
 const NO_REPEAT = new Set(['h', 'v', 'z', 'f', '0', 'o']);
 
 /** A graph connection drop is valid only for two distinct, non-empty card IDs. */
-export function graphConnectionDrop(sourceId, targetId) {
-  return typeof sourceId === 'string' && sourceId.length > 0 && typeof targetId === 'string' && targetId.length > 0 && sourceId !== targetId
-    ? { sourceId, targetId }
+export function graphConnectionDrop(sourceId, targetId, sourceKind = 'graph', targetKind = 'graph') {
+  const validKind = (kind) => kind === 'graph' || kind === 'session';
+  return typeof sourceId === 'string' && sourceId.length > 0 && typeof targetId === 'string' && targetId.length > 0
+    && validKind(sourceKind) && validKind(targetKind) && (sourceKind !== targetKind || sourceId !== targetId)
+    ? { sourceId, targetId, sourceKind, targetKind }
     : null;
 }
 
@@ -124,8 +126,8 @@ export function canvasTarget(el) {
  * @property {(id:string,dx:number,dy:number)=>void} dragGraph
  * @property {(id:string,dx:number,dy:number)=>void} dropGraph
  * @property {(id:string)=>void} openGraph
- * @property {(sourceId:string,targetId:string)=>void} connectGraph
- * @property {(sourceId:string,targetId:string|null)=>void} graphConnectHover
+ * @property {(sourceKind:'graph'|'session',sourceId:string,targetKind:'graph'|'session',targetId:string)=>void} connectGraph
+ * @property {(sourceKind:'graph'|'session',sourceId:string,targetKind:'graph'|'session'|null,targetId:string|null)=>void} graphConnectHover
  * @property {(head: HTMLElement) => void} focusHead 動かさずに押しただけのとき
  */
 
@@ -141,7 +143,7 @@ const CONTROLS = 'button:not(.sheet__head):not(.graph-node), a, input, summary, 
 export function bindCanvas(viewport, handlers) {
   /** @type {Map<number, {x: number, y: number}>} */
   const pts = new Map();
-  /** @type {null|{kind: 'pan'|'head'|'graph'|'connect', id: number, x: number, y: number, head?: HTMLElement, key?: string, moved: boolean}} */
+  /** @type {null|{kind: 'pan'|'head'|'graph'|'connect', id: number, x: number, y: number, head?: HTMLElement, key?: string, endpointKind?: 'graph'|'session', moved: boolean}} */
   let drag = null;
   let suppressConnectClick = false;
   /** @type {null|{dist: number}} */
@@ -164,11 +166,11 @@ export function bindCanvas(viewport, handlers) {
       pinch = { dist: pair().dist };
       return;
     }
-    const connectHandle = /** @type {HTMLElement|null} */ (el?.closest('.graph-connect-handle[data-id]') ?? null);
+    const connectHandle = /** @type {HTMLElement|null} */ (el?.closest('.graph-connect-handle[data-id], .canvas-connect-handle[data-id]') ?? null);
     const head = /** @type {HTMLElement|null} */ (el?.closest('.sheet__head') ?? null);
     const graph = /** @type {HTMLElement|null} */ (el?.closest('.graph-node') ?? null);
     if (!connectHandle && !head && el?.closest(CONTROLS)) return;
-    drag = { kind: connectHandle ? 'connect' : head ? 'head' : graph ? 'graph' : 'pan', id: ev.pointerId, x: ev.clientX, y: ev.clientY, head: head ?? undefined, key: connectHandle?.dataset.id ?? head?.dataset.key ?? graph?.dataset.id, moved: false };
+    drag = { kind: connectHandle ? 'connect' : head ? 'head' : graph ? 'graph' : 'pan', id: ev.pointerId, x: ev.clientX, y: ev.clientY, head: head ?? undefined, key: connectHandle?.dataset.id ?? head?.dataset.key ?? graph?.dataset.id, endpointKind: connectHandle ? (connectHandle.dataset.endpoint === 'session' ? 'session' : 'graph') : undefined, moved: false };
     viewport.setPointerCapture?.(ev.pointerId);
     if (!head) viewport.classList.add('is-panning');
   });
@@ -194,9 +196,10 @@ export function bindCanvas(viewport, handlers) {
     else if (drag.kind === 'connect' && drag.key) {
       viewport.classList.add('is-connecting');
       const under = document.elementFromPoint(ev.clientX, ev.clientY);
-      const target = under instanceof Element ? under.closest('.graph-node[data-id], .graph-connect-handle[data-id]') : null;
+      const target = under instanceof Element ? under.closest('.graph-node[data-id], .slip:not(.is-faded)[data-id]') : null;
       const targetId = target instanceof HTMLElement ? target.dataset.id ?? null : null;
-      handlers.graphConnectHover(drag.key, targetId && targetId !== drag.key ? targetId : null);
+      const targetKind = target?.matches('.slip') ? 'session' : targetId ? 'graph' : null;
+      handlers.graphConnectHover(drag.endpointKind ?? 'graph', drag.key, targetKind, targetId);
     }
   });
   const end = (/** @type {PointerEvent} */ ev) => {
@@ -208,14 +211,16 @@ export function bindCanvas(viewport, handlers) {
     viewport.classList.remove('is-panning');
     viewport.classList.remove('is-connecting');
     if (d.kind === 'connect' && d.key) {
-      handlers.graphConnectHover(d.key, null);
+      handlers.graphConnectHover(d.endpointKind ?? 'graph', d.key, null, null);
       if (d.moved && ev.type === 'pointerup') {
         suppressConnectClick = true;
+        setTimeout(() => { suppressConnectClick = false; }, 0);
         const under = document.elementFromPoint(ev.clientX, ev.clientY);
-        const target = under instanceof Element ? under.closest('.graph-node[data-id], .graph-connect-handle[data-id]') : null;
+        const target = under instanceof Element ? under.closest('.graph-node[data-id], .slip:not(.is-faded)[data-id]') : null;
         const targetId = target instanceof HTMLElement ? target.dataset.id ?? null : null;
-        const connection = graphConnectionDrop(d.key, targetId);
-        if (connection) handlers.connectGraph(connection.sourceId, connection.targetId);
+        const targetKind = target?.matches('.slip') ? 'session' : targetId ? 'graph' : null;
+        const connection = graphConnectionDrop(d.key, targetId, d.endpointKind, targetKind);
+        if (connection) handlers.connectGraph(connection.sourceKind, connection.sourceId, connection.targetKind, connection.targetId);
       }
       return;
     }
