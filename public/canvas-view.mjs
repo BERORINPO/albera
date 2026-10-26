@@ -11,6 +11,7 @@ import { state } from './state.mjs';
 import { nextUp } from './ui-state.mjs';
 import { loadGraph } from './graph-store.mjs';
 import { loadCameraView, saveCameraView } from './canvas-camera-store.mjs';
+import { sessionRect } from './session-position.mjs';
 
 /** @typedef {import('./canvas-camera.mjs').Camera} Camera */
 /** @typedef {import('./canvas-layout.mjs').Layout} Layout */
@@ -37,6 +38,8 @@ export const cv = {
   /** @type {Set<string>|null} 絞り込みに合う ID (null = 絞り込みなし。描くたびに作り直す) */ matched: null,
   /** @type {{key: string, x: number, y: number}|null} ドラッグ中の用紙と今の位置 (描き直しても席へ戻さない) */ drag: null,
   /** @type {{id:string,x:number,y:number}|null} ドラッグ中のユーザー作成カード */ graphDrag: null,
+  /** @type {Record<string,{x:number,y:number}>|undefined} ブラウザー内のセッションカード配置 */ sessionPositions: undefined,
+  /** @type {{id:string,x:number,y:number,startX:number,startY:number}|null} ドラッグ中のセッションカード */ sessionDrag: null,
   /** relation picker source while the user chooses a graph-card target */ graphConnectFrom: null,
   /** 描き直しのあとにプログラムがフォーカスを戻している間 (focusin でカメラもカーソルも動かさない) */ quiet: false,
   size: { w: 0, h: 0 },
@@ -146,6 +149,10 @@ export function fitCam() {
   for (const node of loadGraph().nodes) {
     const text = [node.title, node.body, node.kind, node.status, node.checkedPerson, node.missingEvidence, node.neededExplanation].join(' ').toLocaleLowerCase();
     if (!filtering || text.includes(query)) list.push({ x: node.x, y: node.y, w: 280, h: 168 });
+  }
+  for (const [id, pos] of Object.entries(cv.sessionPositions ?? {})) {
+    const rect = sessionRect(cv.layout, id, { [id]: pos });
+    if (rect && (!filtering || ok(id))) list.push(rect);
   }
   if (!list.length) return { x: 0, y: 0, z: 1 };
   const x = Math.min(...list.map((s) => s.x));

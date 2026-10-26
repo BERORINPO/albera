@@ -4,12 +4,16 @@
 
 import { CANVAS } from '../src/shared/constants.mjs';
 
-/** @typedef {'viewport'|'slip'|'graph'|'head'|'bar'|'filter'|'field'|'dialog'|'control'|'none'} CanvasTarget */
+/** @typedef {'viewport'|'slip'|'graph'|'session'|'head'|'bar'|'filter'|'field'|'dialog'|'control'|'none'} CanvasTarget */
 /** @typedef {{key: string, keyCode?: number, isComposing?: boolean, ctrlKey?: boolean, metaKey?: boolean, altKey?: boolean, shiftKey?: boolean, repeat?: boolean}} KeyLike */
 
 const ARROWS = Object.freeze({ ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' });
 /** 押しっぱなしで繰り返さないキー (開く・切り替える・全体表示)。 */
 const NO_REPEAT = new Set(['h', 'v', 'z', 'f', '0', 'o']);
+
+export function canvasMoveDelta(dir) {
+  return /** @type {Record<string,number[]>} */ ({ left: [-24, 0], right: [24, 0], up: [0, -24], down: [0, 24] })[dir] ?? null;
+}
 
 /** A graph connection drop is valid only for two distinct, non-empty card IDs. */
 export function graphConnectionDrop(sourceId, targetId, sourceKind = 'graph', targetKind = 'graph') {
@@ -39,6 +43,7 @@ export function canvasKeyAction(ev, ctx) {
     // 矢印は 1 文字キーではないので、切替で止めても効く
     if (target === 'head') return ev.shiftKey ? `nudge-${dir}` : null;
     if (target === 'graph') return `graph-move-${dir}`;
+    if (target === 'session') return `session-move-${dir}`;
     if (target === 'slip') return ev.shiftKey ? null : `move-${dir}`;
     if (target === 'viewport' || target === 'none') return `pan-${dir}${ev.shiftKey ? '-big' : ''}`;
     return null;
@@ -109,6 +114,7 @@ export function canvasTarget(el) {
   if (el.matches('input[type="checkbox"], input[type="radio"]')) return 'control';
   if (el.matches('input, textarea, select, [contenteditable], [contenteditable] *')) return 'field';
   if (el.matches('.slip__title')) return 'slip';
+  if (el.closest('.canvas-session-move')) return 'session';
   if (el.closest('.graph-node')) return 'graph';
   if (el.matches('.sheet__head')) return 'head';
   if (el.id === 'cv-view') return 'viewport';
@@ -125,6 +131,9 @@ export function canvasTarget(el) {
  * @property {(key: string, dx: number, dy: number) => void} dropSheet 離したとき
  * @property {(id:string,dx:number,dy:number)=>void} dragGraph
  * @property {(id:string,dx:number,dy:number)=>void} dropGraph
+ * @property {(id:string,dx:number,dy:number)=>void} dragSession
+ * @property {(id:string,dx:number,dy:number)=>void} dropSession
+ * @property {(id:string)=>void} openSession
  * @property {(id:string)=>void} openGraph
  * @property {(sourceKind:'graph'|'session',sourceId:string,targetKind:'graph'|'session',targetId:string)=>void} connectGraph
  * @property {(sourceKind:'graph'|'session',sourceId:string,targetKind:'graph'|'session'|null,targetId:string|null)=>void} graphConnectHover
@@ -143,7 +152,7 @@ const CONTROLS = 'button:not(.sheet__head):not(.graph-node), a, input, summary, 
 export function bindCanvas(viewport, handlers) {
   /** @type {Map<number, {x: number, y: number}>} */
   const pts = new Map();
-  /** @type {null|{kind: 'pan'|'head'|'graph'|'connect', id: number, x: number, y: number, head?: HTMLElement, key?: string, endpointKind?: 'graph'|'session', moved: boolean}} */
+  /** @type {null|{kind: 'pan'|'head'|'graph'|'session'|'connect', id: number, x: number, y: number, head?: HTMLElement, key?: string, endpointKind?: 'graph'|'session', moved: boolean}} */
   let drag = null;
   let suppressConnectClick = false;
   /** @type {null|{dist: number}} */
@@ -170,10 +179,11 @@ export function bindCanvas(viewport, handlers) {
       return;
     }
     const connectHandle = /** @type {HTMLElement|null} */ (el?.closest('.graph-connect-handle[data-id], .canvas-connect-handle[data-id]') ?? null);
+    const moveHandle = /** @type {HTMLElement|null} */ (el?.closest('.canvas-session-move[data-id]') ?? null);
     const head = /** @type {HTMLElement|null} */ (el?.closest('.sheet__head') ?? null);
     const graph = /** @type {HTMLElement|null} */ (el?.closest('.graph-node') ?? null);
-    if (!connectHandle && !head && el?.closest(CONTROLS)) return;
-    drag = { kind: connectHandle ? 'connect' : head ? 'head' : graph ? 'graph' : 'pan', id: ev.pointerId, x: ev.clientX, y: ev.clientY, head: head ?? undefined, key: connectHandle?.dataset.id ?? head?.dataset.key ?? graph?.dataset.id, endpointKind: connectHandle ? (connectHandle.dataset.endpoint === 'session' ? 'session' : 'graph') : undefined, moved: false };
+    if (!connectHandle && !head && !moveHandle && el?.closest(CONTROLS)) return;
+    drag = { kind: connectHandle ? 'connect' : moveHandle ? 'session' : head ? 'head' : graph ? 'graph' : 'pan', id: ev.pointerId, x: ev.clientX, y: ev.clientY, head: head ?? undefined, key: connectHandle?.dataset.id ?? moveHandle?.dataset.id ?? head?.dataset.key ?? graph?.dataset.id, endpointKind: connectHandle ? (connectHandle.dataset.endpoint === 'session' ? 'session' : 'graph') : undefined, moved: false };
     viewport.setPointerCapture?.(ev.pointerId);
     if (!head) viewport.classList.add('is-panning');
   });
@@ -196,6 +206,7 @@ export function bindCanvas(viewport, handlers) {
     if (drag.kind === 'pan') handlers.pan(now.x - prev.x, now.y - prev.y);
     else if (drag.kind === 'head' && drag.key) handlers.dragSheet(drag.key, dx, dy);
     else if (drag.kind === 'graph' && drag.key) handlers.dragGraph(drag.key, dx, dy);
+    else if (drag.kind === 'session' && drag.key) handlers.dragSession(drag.key, dx, dy);
     else if (drag.kind === 'connect' && drag.key) {
       viewport.classList.add('is-connecting');
       const under = document.elementFromPoint(ev.clientX, ev.clientY);
@@ -225,6 +236,11 @@ export function bindCanvas(viewport, handlers) {
         const connection = graphConnectionDrop(d.key, targetId, d.endpointKind, targetKind);
         if (connection) handlers.connectGraph(connection.sourceKind, connection.sourceId, connection.targetKind, connection.targetId);
       }
+      return;
+    }
+    if (d.kind === 'session' && d.key) {
+      if (d.moved) handlers.dropSession(d.key, ev.clientX - d.x, ev.clientY - d.y);
+      else handlers.openSession(d.key);
       return;
     }
     if (d.kind === 'graph' && d.key) {

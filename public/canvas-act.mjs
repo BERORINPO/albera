@@ -7,15 +7,15 @@ import {
   apply, canvasJumpPile, closeBar, cv, moveCam, fitAll, fitSheet, fitToggle, headOf, isCanvas, moveCanvasCursor, ok, openBar, openSheetBar, placeSheet, rearrange,
   resized, reveal, revealEl, setCanvasCursor, size, slipClick, switchView, viewport, world, zoomTo,
 } from './canvas-ctl.mjs';
-import { bindCanvas, canvasEscapeStep } from './canvas-input.mjs';
+import { bindCanvas, canvasEscapeStep, canvasMoveDelta } from './canvas-input.mjs';
 import { neighbour } from './canvas-layout.mjs';
 import { openSession, render, view } from './render.mjs';
 import { state } from './state.mjs';
 import { nextUp, PILES } from './ui-state.mjs';
-import { addGraphNode, addTaskForSession, addWorktreeForSession, graphPlacementObstacles, moveGraphNode, nextGraphNodePosition, updateGraphNode } from './graph-model.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, moveGraphNode, updateGraphNode } from './graph-model.mjs';
 import { loadGraph, saveGraph } from './graph-store.mjs';
+import { graphSessionChoices, nextCanvasGraphPosition, nudgeCanvasSheet } from './canvas-graph-position-act.mjs';
 import { openGraphNodeDialog } from './graph-dialog.mjs';
-import { GRAPH_CARD_SIZE } from './graph-render.mjs';
 import { announce } from './view.mjs';
 import { createWorktree, listWorktrees, removeWorktree } from './api.mjs';
 import { runDelegationForEdge } from './delegation-act.mjs';
@@ -25,6 +25,8 @@ import { worktreeRecordBody } from './worktree-record.mjs';
 import { openRelatedSessionDetail, resolveRelatedSessionShortId } from './session-relations.mjs';
 import { createGraphActions } from './graph-actions.mjs';
 import { cancelGraphConnection } from './graph-connect-mode.mjs';
+import { createSessionPositionActions } from './canvas-session-position-act.mjs';
+import { focusSlip } from './canvas.mjs';
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
 
@@ -71,53 +73,34 @@ function escape() {
 /** 向きごとのカメラを動かす符号 (用紙を動かすときは逆向き)。 */
 const SIGN = Object.freeze({ left: [1, 0], right: [-1, 0], up: [0, 1], down: [0, -1] });
 
-/**
- * 用紙を NUDGE だけ動かし、その柱が見えるようにカメラを合わせる (Shift + 矢印と、帯の「用紙を動かす」のボタン)。
- * @param {string} key @param {string} dir
- */
-function nudgeSheet(key, dir) {
-  const s = cv.layout?.sheets.find((x) => x.key === key);
-  const sign = /** @type {Record<string, number[]>} */ (SIGN)[dir];
-  if (!s || !sign) return false;
-  placeSheet(s.key, s.x - sign[0] * CANVAS.NUDGE, s.y - sign[1] * CANVAS.NUDGE);
-  revealEl(headOf(s.key));
-  return true;
-}
-
 /** Session selectors use an opaque short ID and provider only; session titles and paths may contain sensitive text. */
-function graphSessions() {
-  return [...view.index.keys()].map((id) => ({ id, title: `${id.startsWith('codex_') ? 'Codex' : id.startsWith('copilot_') ? 'GitHub Copilot' : id.startsWith('opencode_') ? 'OpenCode' : 'Claude'} session #${id.slice(-8)}` }));
-}
-
 function graphChanged(doc) {
   if (!saveGraph(doc)) return announce(state.t('graph.saveError')), false;
   render();
   return true;
 }
 
+function graphSessions() { return graphSessionChoices(view.index); }
+
 const graphActions = createGraphActions({
   cv, loadGraph, graphChanged, graphSessions, render, announce, getT: () => state.t, world,
   sessionIds: () => new Set(view.index.keys()),
 });
-
-/** Place a new graph card outside project sheets and the archive fold. */
-function nextCanvasGraphPosition(graph) {
-  const vpSize = size();
-  const center = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
-  const obstacles = graphPlacementObstacles(cv.layout);
-  return nextGraphNodePosition(graph, center, GRAPH_CARD_SIZE, obstacles);
-}
+const sessionPositionActions = createSessionPositionActions({
+  cv, render, focusSlip, world, announce, getT: () => state.t,
+  openSession: (id) => openBar('detail', id),
+});
 
 function newGraphNode() {
   const graph = loadGraph();
-  const position = nextCanvasGraphPosition(graph);
+  const position = nextCanvasGraphPosition(cv, size, graph);
   openGraphNodeDialog({ t: state.t, announce, graph, sessions: graphSessions(), position, onSave: (input) => graphChanged(addGraphNode(graph, input, `g_${crypto.randomUUID()}`)) });
 }
 
 function newTaskForSession(sessionId) {
   if (!view.index.has(sessionId)) return false;
   const graph = loadGraph();
-  const position = nextCanvasGraphPosition(graph);
+  const position = nextCanvasGraphPosition(cv, size, graph);
   openGraphNodeDialog({
     t: state.t, announce, graph, sessions: graphSessions(), position, initialKind: 'task', initialTitle: state.t('graph.taskFromSessionTitle'),
     onSave: (input) => graphChanged(addTaskForSession(graph, input, `g_${crypto.randomUUID()}`, `e_${crypto.randomUUID()}`, sessionId)),
@@ -137,7 +120,7 @@ function createWorktreeForSession(sessionId) {
     worktree: (branch) => createWorktree(sessionId, branch),
     onCreated: (result) => {
       const graph = loadGraph();
-      const position = nextCanvasGraphPosition(graph);
+      const position = nextCanvasGraphPosition(cv, size, graph);
       const base = card.detail?.gitWorktree?.branch || card.detail?.branch || state.t('worktree.currentHead');
       const next = addWorktreeForSession(graph, {
         kind: 'worktree', title: result.branch,
@@ -165,7 +148,7 @@ function listWorktreesForSession(sessionId) {
     },
     record: (item) => {
       const graph = loadGraph();
-      const position = nextCanvasGraphPosition(graph);
+      const position = nextCanvasGraphPosition(cv, size, graph);
       const base = entry.card.detail?.gitWorktree?.branch || entry.card.detail?.branch || state.t('worktree.currentHead');
       const branch = item.branch || state.t('worktree.listDetached');
       const next = addWorktreeForSession(graph, {
@@ -207,7 +190,7 @@ export function runCanvasKey(action) {
     if (to) moveCanvasCursor(to);
     return true;
   }
-  if (action.startsWith('nudge-')) return nudgeSheet(/** @type {HTMLElement|null} */ (document.activeElement)?.dataset?.key ?? '', dir);
+  if (action.startsWith('nudge-')) return nudgeCanvasSheet({ cv, key: /** @type {HTMLElement|null} */ (document.activeElement)?.dataset?.key ?? '', dir, placeSheet, headOf, revealEl });
   if (action.startsWith('jump-')) {
     canvasJumpPile(PILES[Number(action.slice(5)) - 1]);
     return true;
@@ -250,9 +233,15 @@ export function runCanvasKey(action) {
     default:
       if (action.startsWith('graph-move-')) {
         const dir = action.slice('graph-move-'.length);
-        const delta = /** @type {Record<string,number[]>} */ ({ left: [-24, 0], right: [24, 0], up: [0, -24], down: [0, 24] })[dir];
         const id = /** @type {HTMLElement|null} */ (document.activeElement)?.dataset.id;
+        const delta = canvasMoveDelta(dir);
         return id && delta ? moveGraphBy(id, delta[0], delta[1]) : false;
+      }
+      if (action.startsWith('session-move-')) {
+        const dir = action.slice('session-move-'.length);
+        const id = /** @type {HTMLElement|null} */ (document.activeElement)?.closest('.session-positioned, .slip')?.getAttribute('data-id');
+        const delta = canvasMoveDelta(dir);
+        return id && delta ? sessionPositionActions.moveBy(id, delta[0], delta[1]) : false;
       }
       return false;
   }
@@ -276,9 +265,10 @@ export const CANVAS_CLICK = {
   'canvas-zoom-out': () => zoomTo(stepZoom(cv.cam.z, -1, size().w)),
   'canvas-close': () => closeBar(),
   'handoff-close': () => closeBar(),
-  'canvas-move': (el) => nudgeSheet(el.dataset.key ?? '', el.dataset.dir ?? ''),
+  'canvas-move': (el) => nudgeCanvasSheet({ cv, key: el.dataset.key ?? '', dir: el.dataset.dir ?? '', placeSheet, headOf, revealEl }),
   'canvas-sheet-fit': (el) => fitSheet(el.dataset.key ?? ''),
   'graph-new': () => newGraphNode(),
+    'session-reset': (el) => sessionPositionActions.reset(el.dataset.id ?? ''),
   'graph-review-gaps': () => graphActions.reviewFirstGap(),
   'graph-open': (el) => graphActions.openNode(el.dataset.id ?? ''),
   'graph-connect-node': (el) => graphActions.startConnect(el.dataset.id ?? ''),
@@ -354,6 +344,9 @@ export function initCanvas() {
       const node = graph.nodes.find((n) => n.id === id);
       if (drag?.id === id && node) graphChanged(moveGraphNode(graph, id, node.x + dx / cv.cam.z, node.y + dy / cv.cam.z));
     },
+    dragSession: sessionPositionActions.drag,
+    dropSession: sessionPositionActions.drop,
+    openSession: sessionPositionActions.open,
     connectGraph: (/** @type {'graph'|'session'} */ sourceKind, /** @type {string} */ sourceId, /** @type {'graph'|'session'} */ targetKind, /** @type {string} */ targetId) => graphActions.connectCanvasEndpoints(sourceKind, sourceId, targetKind, targetId),
     graphConnectHover: (/** @type {'graph'|'session'} */ sourceKind, /** @type {string} */ sourceId, /** @type {'graph'|'session'|null} */ targetKind, /** @type {string|null} */ targetId) => {
       world().querySelector('.graph-connect-handle.is-connect-source')?.classList.remove('is-connect-source');

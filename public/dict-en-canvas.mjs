@@ -28,6 +28,12 @@ export const EN_CANVAS = Object.freeze({
   // 19.9 canvas
   'canvas.aria': 'Canvas: sessions by project',
   'canvas.keys': 'Arrows pan, + and − zoom, f fits everything.',
+  'canvas.moveSession': 'Move session card: {title}. Arrow keys also move it',
+  'canvas.resetSessionPosition': 'Return session card to its project sheet: {title}',
+  'canvas.positionedSessions': 'Session cards moved from project sheets',
+  'canvas.sessionMoved': 'Session card moved.',
+  'canvas.sessionPositionReset': 'Session card returned to its project sheet.',
+  'canvas.positionSaveError': 'The position could not be saved in this browser. The card stayed in its original place.',
   'canvas.keysOff': 'Arrows pan. The buttons in the bar below zoom and fit everything.',
   'canvas.headAria': '{project}: {list}',
   'canvas.headKeys': 'Enter shows buttons that move this sheet. Shift and the arrow keys move it too.',

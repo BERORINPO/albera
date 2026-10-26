@@ -28,6 +28,12 @@ export const JA_CANVAS = Object.freeze({
   // 19.9 canvas
   'canvas.aria': 'キャンバス: プロジェクトごとのセッション',
   'canvas.keys': '矢印で移動、+ と − で拡大縮小、f で全体',
+  'canvas.moveSession': 'セッションカードを移動: {title}。矢印キーでも移動できます',
+  'canvas.resetSessionPosition': 'セッションカードを元の用紙へ戻す: {title}',
+  'canvas.positionedSessions': '用紙から移動したセッションカード',
+  'canvas.sessionMoved': 'セッションカードを移動しました。',
+  'canvas.sessionPositionReset': 'セッションカードを元の位置へ戻しました。',
+  'canvas.positionSaveError': '配置をこのブラウザーに保存できませんでした。カードは元の位置のままです。',
   'canvas.keysOff': '矢印で移動。拡大縮小と全体の表示は下の帯のボタンで',
   'canvas.headAria': '{project}: {list}',
   'canvas.headKeys': 'Enter で用紙を動かすボタンを表示。Shift と矢印でも動かせます',

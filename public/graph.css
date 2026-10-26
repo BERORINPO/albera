@@ -1,6 +1,11 @@
 /* User-authored task, artifact, decision, worktree, knowledge and comprehension-gap cards share the canvas world. */
 .graph-layer { position: absolute; inset: 0; pointer-events: none; }
 .graph-layer__edges, .graph-layer__cards, .graph-layer__connect { position: absolute; inset: 0; }
+.graph-layer__sessions { position: absolute; inset: 0; margin: 0; padding: 0; list-style: none; pointer-events: none; }
+.session-positioned { z-index: 2; cursor: grab; pointer-events: auto; }
+.session-positioned.is-dragging { z-index: 5; cursor: grabbing; }
+.session-positioned .slip__title { cursor: grab; }
+.session-positioned .slip__title:focus-visible, .canvas-session-move:focus-visible, .canvas-session-reset:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 .graph-layer__empty { position: absolute; top: 50%; left: 50%; width: min(calc(28rem * var(--k)), calc(90vw * var(--k))); margin: 0; padding: calc(1rem * var(--k)); transform: translate(-50%, -50%); color: var(--color-ink-2); font-size: calc(var(--text-md) * var(--k)); text-align: center; pointer-events: auto; }
 .graph-layer__empty-action { min-height: calc(var(--hit) * var(--k)); margin-top: calc(var(--space-sm) * var(--k)); padding-inline: calc(var(--space-md) * var(--k)); border-width: calc(1px * var(--k)); font-size: calc(var(--text-base) * var(--k)); }
 .graph-layer__empty-status { display: flex; width: fit-content; min-height: calc(var(--hit) * var(--k)); margin: calc(var(--space-xs) * var(--k)) auto 0; }

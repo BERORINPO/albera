@@ -1,16 +1,15 @@
 // @ts-check
 // Agent Canvas overlay: local task/artifact/decision/understanding cards and relation lines.
 
-import { CANVAS } from '../src/shared/constants.mjs';
 import { h, reconcile } from './view.mjs';
 import { GRAPH_NODE_KINDS, reviewUnderstandingGaps } from './graph-model.mjs';
 import { comprehensionGapSummary } from './session-relations.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
+import { sessionRect } from './session-position.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 const CARD_W = 280;
 const CARD_H = 168;
-const { SLIP_W, SLIP_H } = CANVAS;
 
 /** @param {any} node @param {string[]} missing */
 export function graphCardSignature(node, missing = []) {
@@ -124,18 +123,15 @@ export function graphEdgeAccessibleLabel(edge, graph, index, t) {
 }
 
 /** @param {string} endpoint @param {any} graph @param {Map<string,{card:any,pile:string}>} index @param {any} layout */
-function point(endpoint, graph, index, layout) {
+function point(endpoint, graph, index, layout, positions = {}, drag = null) {
   if (endpoint.startsWith('graph:')) {
     const n = graph.nodes.find((x) => x.id === endpoint.slice(6));
     return n ? { x: n.x + CARD_W / 2, y: n.y + CARD_H / 2, rx: CARD_W / 2, ry: CARD_H / 2 } : null;
   }
   const id = endpoint.slice(8);
   if (!index.has(id)) return null;
-  for (const sheet of layout?.sheets ?? []) {
-    const slip = sheet.slips.find((x) => x.id === id);
-    if (slip) return { x: sheet.x + slip.x + SLIP_W / 2, y: sheet.y + slip.y + (slip.h ?? SLIP_H) / 2, rx: SLIP_W / 2, ry: (slip.h ?? SLIP_H) / 2 };
-  }
-  return null;
+  const rect = sessionRect(layout, id, positions, drag);
+  return rect ? { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2, rx: rect.w / 2, ry: rect.h / 2 } : null;
 }
 
 /** @param {{x:number,y:number,rx:number,ry:number}|null} a @param {{x:number,y:number,rx:number,ry:number}|null} b */
@@ -213,7 +209,7 @@ function graphCard(t, node, missing = []) {
  */
 export function renderGraphLayer(layer, o) {
   const t = o.t;
-  const edges = o.graph.edges.map((edge) => ({ edge, line: clippedLine(point(edge.from, o.graph, o.index, o.layout), point(edge.to, o.graph, o.index, o.layout)) })).filter((x) => x.line);
+  const edges = o.graph.edges.map((edge) => ({ edge, line: clippedLine(point(edge.from, o.graph, o.index, o.layout, o.sessionPositions, o.sessionDrag), point(edge.to, o.graph, o.index, o.layout, o.sessionPositions, o.sessionDrag)) })).filter((x) => x.line);
   const lineRoot = layer.querySelector('.graph-layer__edges') ?? h('div', { class: 'graph-layer__edges' });
   lineRoot.removeAttribute('aria-hidden');
   const cardRoot = layer.querySelector('.graph-layer__cards') ?? h('div', { class: 'graph-layer__cards' });
