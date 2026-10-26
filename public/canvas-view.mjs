@@ -30,6 +30,7 @@ export const cv = {
   /** 今の席が狭い表示枠のものか (幅が NARROW_PX を越えたら、その幅の席を読み直す) */ narrow: false,
   /** @type {import('./canvas-bar.mjs').BarState|null} */ bar: null,
   /** 次に描くとき、開いたときのカメラにする */ fresh: true,
+  /** 初回カメラ復元後にだけ永続化を許可する (起動時のfocusinが保存値を消さないようにする) */ cameraReady: false,
   /** 開くときに全体を表示する (一覧の z) */ fitOnOpen: false,
   /** 次に描くとき、席を捨てて並べ直す */ repack: false,
   /** @type {string[]} */ order: [],
@@ -71,7 +72,7 @@ export function moveCam(cam) {
   cv.cam = cam;
   cv.atFit = false;
   cv.untouched = false;
-  saveCameraView(false, cam, cv.narrow);
+  if (cv.cameraReady) saveCameraView(false, cam, cv.narrow);
 }
 
 /**
@@ -87,7 +88,7 @@ export function resized(sz) {
   if (cv.atFit) cv.cam = fitCam();
   else if (cv.untouched) cv.cam = openCamera(cv.layout, nextUp(state.board)?.card.id ?? null, sz.w, sz.h, pad());
   else if (was.w !== sz.w) cv.cam = keepCentre(cv.cam, was.w, was.h, sz.w, sz.h);
-  if (!cv.untouched) saveCameraView(cv.atFit, cv.cam, cv.narrow);
+  if (cv.cameraReady && !cv.untouched) saveCameraView(cv.atFit, cv.cam, cv.narrow);
   return true;
 }
 
@@ -156,7 +157,7 @@ export function fitAll() {
   cv.cam = fitCam();
   cv.atFit = true;
   cv.untouched = false;
-  saveCameraView(true, cv.cam, cv.narrow);
+  if (cv.cameraReady) saveCameraView(true, cv.cam, cv.narrow);
   apply(true);
 }
 
@@ -167,7 +168,7 @@ export function fitToggle() {
   cv.untouched = false;
   const { w, h } = size();
   cv.cam = cv.before ?? openCamera(/** @type {Layout} */ (cv.layout), nextUp(state.board)?.card.id ?? null, w, h, pad());
-  saveCameraView(false, cv.cam, cv.narrow);
+  if (cv.cameraReady) saveCameraView(false, cv.cam, cv.narrow);
   apply(true);
 }
 

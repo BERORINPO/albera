@@ -65,7 +65,10 @@ export function drawCanvas(at) {
   // 幅がその境を越えたら、その幅の席を読み直して開いたときのカメラにする (広い画面の並びを狭い欄で上書きしない)
   const narrow = sz0.w < NARROW_PX;
   if (cv.seats === undefined || cv.narrow !== narrow) {
-    if (cv.seats !== undefined) cv.fresh = true;
+    if (cv.seats !== undefined) {
+      cv.fresh = true;
+      cv.cameraReady = false;
+    }
     cv.seats = loadSeats(narrow);
     cv.narrow = narrow;
   }
@@ -105,11 +108,14 @@ export function drawCanvas(at) {
     cv.fresh = false;
     // 開き直したら z で戻る先は無い (前に開いたときのカメラは、今の配置では別の場所を指す)
     cv.before = null;
+    const fitOpened = cv.fitOnOpen;
     const savedCamera = cv.fitOnOpen ? null : loadCameraView(cv.narrow);
     cv.cam = cv.fitOnOpen || savedCamera?.fit ? fitCam() : savedCamera?.camera ?? openCamera(layout, nextId, cv.size.w, cv.size.h, pad());
     cv.atFit = cv.fitOnOpen || !!savedCamera?.fit;
     cv.untouched = !cv.fitOnOpen && !savedCamera;
     cv.fitOnOpen = false;
+    cv.cameraReady = true;
+    if (fitOpened) saveCameraView(true, cv.cam, cv.narrow);
     if (!savedCamera && state.cursor && cv.order.includes(state.cursor.id)) reveal(state.cursor.id, false);
   }
   apply(true);
@@ -264,6 +270,7 @@ export function switchView(target, o = {}) {
   if (target === 'canvas' && state.view !== 'canvas') {
     cv.fresh = true;
     cv.fitOnOpen = !!o.fit;
+    cv.cameraReady = false;
   } else if (target === 'canvas' && o.fit) return fitAll();
   state.view = target;
   render();
