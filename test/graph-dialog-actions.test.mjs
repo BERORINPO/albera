@@ -135,3 +135,20 @@ test('the comprehension editor renders actions only from its current missing-lin
   assert.match(source, /target\?\.focus\(\{ preventScroll: true \}\)/);
   assert.match(source, /if \(cancelGraphDialog\(action, \(\) => dialog\.close\(\)\)\) return;[\s\S]*?if \(!node\) return;/);
 });
+
+test('relation removal uses an accessible in-app confirmation naming both endpoints', () => {
+  const source = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
+  assert.match(source, /'aria-labelledby': 'graph-remove-title', 'aria-describedby': 'graph-remove-description'/);
+  assert.match(source, /graph\.removeRelationDescription', \{ from: o\.from, to: o\.to, kind: o\.kind \}/);
+  assert.match(source, /graph\.removeCompletedOperationRelationDescription/);
+  assert.match(source, /'data-remove-action': 'cancel'/);
+  assert.match(source, /'data-remove-action': 'confirm'/);
+  assert.doesNotMatch(source, /window\.confirm\(t\(confirmKey\)\)/);
+  for (const file of ['dict-ja-canvas.mjs', 'dict-en-canvas.mjs']) {
+    const dict = fs.readFileSync(new URL(`../public/${file}`, import.meta.url), 'utf8');
+    assert.match(dict, /'graph\.removeRelationDescription':/);
+    assert.match(dict, /'graph\.removeCompletedOperationRelationDescription':/);
+    assert.match(dict, /'graph\.removeRelationAction':/);
+    assert.match(dict, /'graph\.removeRelationCancel':/);
+  }
+});

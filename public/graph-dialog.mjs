@@ -62,6 +62,38 @@ function endpointSelect(t, options, name, selected, excluded = '') {
   return h('label', { class: 'graph-dialog__field' }, h('span', { text: t(name === 'from' ? 'graph.from' : 'graph.to') }), h('select', { name }, ...options.filter((x) => x.id !== excluded).map((x) => h('option', { value: x.id, selected: x.id === selected, text: x.title }))));
 }
 
+/** @param {{t:T,edge:any,from:string,to:string,kind:string,parent:HTMLDialogElement,returnFocus:HTMLElement|null,remove:(id:string)=>boolean}} o */
+function openRelationRemovalConfirm(o) {
+  if (!o.edge || (o.edge.operationId && o.edge.status !== 'completed')) return false;
+  const dialog = h('dialog', { class: 'graph-dialog', 'aria-labelledby': 'graph-remove-title', 'aria-describedby': 'graph-remove-description' });
+  const form = h('form', { class: 'graph-dialog__form' });
+  form.append(
+    h('h2', { id: 'graph-remove-title', text: o.t('graph.removeRelationTitle') }),
+    h('p', { id: 'graph-remove-description', class: 'graph-dialog__privacy', text: o.t(o.edge.operationId ? 'graph.removeCompletedOperationRelationDescription' : 'graph.removeRelationDescription', { from: o.from, to: o.to, kind: o.kind }) }),
+    h('div', { class: 'graph-dialog__actions' },
+      h('button', { class: 'textbtn', type: 'button', 'data-remove-action': 'cancel', text: o.t('graph.removeRelationCancel') }),
+      h('button', { class: 'btn btn--line graph-dialog__delete', type: 'button', 'data-remove-action': 'confirm', text: o.t('graph.removeRelationAction') }),
+    ),
+  );
+  dialog.append(form);
+  document.body.append(dialog);
+  dialog.addEventListener('close', () => {
+    dialog.remove();
+    if (o.parent.open && o.returnFocus?.isConnected) o.returnFocus.focus({ preventScroll: true });
+  }, { once: true });
+  form.addEventListener('click', (ev) => {
+    const action = ev.target instanceof Element ? ev.target.closest('[data-remove-action]')?.getAttribute('data-remove-action') : null;
+    if (action === 'cancel') dialog.close();
+    if (action === 'confirm' && confirmGraphRelationRemoval({ edge: o.edge, confirm: () => true, remove: o.remove })) {
+      dialog.addEventListener('close', () => o.parent.close(), { once: true });
+      dialog.close();
+    }
+  });
+  dialog.showModal();
+  /** @type {HTMLButtonElement|null} */ (form.querySelector('[data-remove-action="confirm"]'))?.focus();
+  return true;
+}
+
 /** @param {string} key */
 const endpointKey = (key) => key.startsWith('graph:') || key.startsWith('session:') ? key : '';
 
@@ -338,12 +370,11 @@ export function openGraphRelationDialog(o) {
       confirm: () => window.confirm(t('graph.resolveBlockedOperationConfirm')),
       resolve: o.onResolveOperation,
     })) dialog.close();
-    const confirmKey = edge?.operationId ? 'graph.removeCompletedOperationRelationConfirm' : 'graph.removeRelationConfirm';
-    if (action === 'delete-edge' && confirmGraphRelationRemoval({
-      edge,
-      confirm: () => window.confirm(t(confirmKey)),
+    if (action === 'delete-edge' && edge && o.onDeleteEdge) openRelationRemovalConfirm({
+      t, edge, from: fromItem.title, to: toItem.title, kind: t(`graph.edge.${edge.kind}`), parent: dialog,
+      returnFocus: button instanceof HTMLElement ? button : null,
       remove: (id) => o.onDeleteEdge?.(id) === true,
-    })) dialog.close();
+    });
   });
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();

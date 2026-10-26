@@ -640,3 +640,10 @@
 - 関係解除のUI経路をpure helperへ集約し、IDが無い関係、確認キャンセル、保存失敗、未完了operation記録ではdialogを閉じたり解除完了扱いにしない。完了済みoperation記録だけは通常関係と同様に明示確認後の解除を許す。
 - synthetic unit testで上記の拒否条件と成功経路を確認。`npm test` — 554 passed、`npm run arch` — 99 paths・違反0、`git diff --check` — passed、隔離fixtureを使う`npm run smoke` — passed。
 - これは解除policyのpure検証であり、ネイティブ確認後のGUI保存/復元を画面で受け入れたことは意味しない。GUI解除後の状態は引き続き未確認。
+
+### 関係解除確認をアプリ内アクセシブルdialogへ移行 (2026-10-27)
+
+- `window.confirm`を関係編集dialog内の「対象関係の端点・種別」を明示するdialogへ置き換えた。完了済みoperation記録には、Codexセッション自体を変更しない説明も表示する。
+- キャンセルまたはEscapeで編集dialogへ戻る。解除確認後は既存pure gateを通し、local graph保存が成功したときだけ両dialogを閉じる。失敗時は既存の保存エラー案内で確認を継続できる。
+- static UI testでaccessible name/description、対象説明、日英辞書、confirm/cancel actionを確認。`npm test` — 555 passed、`npm run arch` — 99 paths・違反0、`git diff --check` — passed、隔離fixtureの`npm run smoke` — passed。
+- この変更を加えた後の画面表示、Escape/Tab、保存・再読み込みはブラウザーで未確認。2026-10-27の旧native confirmを使ったGUI試行のtimeout記録は過去の結果として残す。
