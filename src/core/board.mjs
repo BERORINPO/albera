@@ -264,7 +264,7 @@ function routineFor(s, ctx) {
  * @returns {Card}
  */
 const PROVIDER_SOURCES = new Set(['codex', 'copilot', 'opencode']);
-const PROVIDER_STATES = new Set(['active', 'complete', 'interrupted']);
+const PROVIDER_STATES = new Set(['active', 'complete', 'interrupted', 'failed']);
 
 function makeCard(s, ctx) {
   const c = /** @type {Classified} */ (ctx.cls.get(s.sessionId));

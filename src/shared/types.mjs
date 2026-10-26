@@ -51,7 +51,7 @@
  * @property {string=} model                 (v0.2) CAP.MODEL まで。コンテキストの窓を決めるためだけに使い、JSON には出さない
  * @property {number=} contextExceededCount  (v0.2) 0 以上の整数。1 以上なら Card.detail.contextExceeded に出す
  * @property {{status:'active'|'complete'|'interrupted'|'unknown',startedAt?:number}=} lifecycle
- * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted'|'turn_failed',at:number}>=} events
+ * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted'|'turn_failed'|'turn_unknown',at:number}>=} events
  * @property {GitWorktreeSummary=} gitWorktree  Git adapter が返す、パスを含まない作業状態の要約
  */
 
@@ -112,7 +112,7 @@
  * @property {string} id
  * @property {'codex'|'copilot'|'opencode'=} source
  * @property {'active'|'complete'|'interrupted'|'unknown'=} sourceState  安全区分だけを持つprovider側の実行状態
- * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted'|'turn_failed',at:number}>=} events
+ * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted'|'turn_failed'|'turn_unknown',at:number}>=} events
  * @property {BucketKey} bucket
  * @property {ReasonCode} reason
  * @property {ReasonParams=} reasonParams

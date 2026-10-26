@@ -158,6 +158,54 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   assert.equal(JSON.stringify(malformedStatus.stats).includes('C:\\private\\share'), false);
 });
 
+test('task_complete.error は本文を捨てて失敗状態だけを出し、不正なerror形式は完了扱いしない', async () => {
+  const home = await fixtureHome();
+  const failedId = uuid(604);
+  const malformedId = uuid(605);
+  const unknownCodeId = uuid(607);
+  const failedAt = NOW - 45_000;
+  const startedAt = failedAt - 5_000;
+  await rollout(home, failedId, [
+    meta(failedId),
+    envelope('event_msg', { type: 'task_started' }, startedAt),
+    envelope('event_msg', { type: 'task_complete', error: { message: 'NEVER-WIRE-ERROR-TEXT' } }, failedAt),
+  ]);
+  await rollout(home, malformedId, [
+    meta(malformedId),
+    envelope('event_msg', { type: 'task_started' }, startedAt),
+    envelope('event_msg', { type: 'task_complete', error: 'unexpected-shape' }, failedAt),
+  ]);
+  await rollout(home, unknownCodeId, [
+    meta(unknownCodeId),
+    envelope('event_msg', { type: 'task_started' }, startedAt),
+    envelope('event_msg', { type: 'task_complete', error: { message: 'PRIVATE-FUTURE-ERROR', codex_error_info: 'future_error_kind' } }, failedAt),
+  ]);
+
+  const { sessions, stats } = await createCodexSessionsSource({ root: home }).load();
+  const failed = sessions.find((session) => session.sessionId === opaqueProviderSessionId('codex', failedId));
+  const malformed = sessions.find((session) => session.sessionId === opaqueProviderSessionId('codex', malformedId));
+  const unknownCode = sessions.find((session) => session.sessionId === opaqueProviderSessionId('codex', unknownCodeId));
+  assert.deepEqual(failed.lifecycle, { status: 'failed' });
+  assert.deepEqual(failed.events, [{ type: 'turn_started', at: startedAt }, { type: 'turn_failed', at: failedAt }]);
+  assert.deepEqual(malformed.lifecycle, { status: 'unknown' });
+  assert.deepEqual(malformed.events, [{ type: 'turn_started', at: startedAt }, { type: 'turn_unknown', at: failedAt }]);
+  assert.deepEqual(unknownCode.lifecycle, { status: 'unknown' });
+  assert.deepEqual(stats, {
+    files: 3, parsed: 3, bad: 0, stale: 0, dirs: 1, notCli: 0, missingSource: 0, otherSource: 0,
+    unsupportedOriginator: 0, filenameMismatch: 0, wslShareStatus: 'not_applicable',
+  });
+  const board = buildBoard({ sessions, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS, sourceStats: { sources: { codex: stats } } });
+  const allItems = [...board.buckets.working, ...board.recentGroups.flatMap((group) => group.items)];
+  assert.equal(allItems.find((card) => card.id === failed.sessionId)?.sourceState, 'failed');
+  assert.equal(board.stats.sources.codex.failed, 1);
+  assert.equal(board.stats.sources.codex.unknown, 2);
+  const wire = JSON.stringify(board);
+  assert.equal(wire.includes('NEVER-WIRE-ERROR-TEXT'), false);
+  assert.equal(wire.includes('unexpected-shape'), false);
+  assert.equal(wire.includes('PRIVATE-FUTURE-ERROR'), false);
+  assert.equal(wire.includes('future_error_kind'), false);
+});
+
 test('CLI と originator の組が合わない Codex ファイルは採用しない', async () => {
   const home = await fixtureHome();
   await rollout(home, uuid(701), [meta(uuid(701), 'cli', 'Codex Desktop')]);

@@ -17,6 +17,14 @@ const ORIGINATORS = new Set(['codex', 'codex_cli_rs']);
 const START_TYPES = new Set(['task_started', 'turn_started']);
 const COMPLETE_TYPES = new Set(['task_complete', 'turn_complete']);
 const ABORT_TYPES = new Set(['turn_aborted']);
+const NON_TERMINAL_ERROR_INFO = new Set(['active_turn_not_steerable', 'thread_rollback_failed']);
+const TERMINAL_ERROR_INFO = new Set([
+  'context_window_exceeded', 'session_budget_exceeded', 'usage_limit_exceeded', 'rate_limit_exceeded',
+  'flex_unavailable', 'server_overloaded', 'model_not_found', 'cyber_policy', 'bio_policy',
+  'misalignment_policy_violation', 'too_many_denials', 'http_connection_failed',
+  'response_stream_connection_failed', 'internal_server_error', 'unauthorized', 'bad_request',
+  'invalid_prompt', 'sandbox_error', 'response_stream_disconnected', 'response_too_many_failed_attempts', 'other',
+]);
 const WSL_SHARE_STATUSES = new Set(['configured', 'not_configured', 'not_applicable']);
 
 /** @param {unknown} v @returns {v is Record<string, any>} */
@@ -81,13 +89,27 @@ async function readTail(handle, size) {
       const at = timestamp(line.timestamp);
       if (!at) continue;
       if (typeof type === 'string' && START_TYPES.has(type)) out.push({ type: 'turn_started', at });
-      else if (typeof type === 'string' && COMPLETE_TYPES.has(type)) out.push({ type: 'turn_completed', at });
+      else if (typeof type === 'string' && COMPLETE_TYPES.has(type)) {
+        out.push({ type: terminalType(line.payload), at });
+      }
       else if (typeof type === 'string' && ABORT_TYPES.has(type)) out.push({ type: 'turn_aborted', at });
     } catch {
       // JSONL の末尾は Codex が書き込み中のことがある。壊れた行だけを捨てる。
     }
   }
   return out.sort((a, b) => a.at - b.at).slice(-EVENT_LIMIT);
+}
+
+/** @param {Record<string, any>} payload */
+function terminalType(payload) {
+  const error = payload.error;
+  if (error == null) return 'turn_completed';
+  if (!obj(error) || typeof error.message !== 'string') return 'turn_unknown';
+  const info = error.codex_error_info;
+  if (info == null) return 'turn_failed';
+  if (typeof info !== 'string') return 'turn_unknown';
+  if (NON_TERMINAL_ERROR_INFO.has(info)) return 'turn_completed';
+  return TERMINAL_ERROR_INFO.has(info) ? 'turn_failed' : 'turn_unknown';
 }
 
 /** @param {string} dir */
@@ -238,7 +260,9 @@ function lifecycleOf(events) {
       state = 'active';
       startedAt = event.at;
     } else if (event.type === 'turn_completed') state = 'complete';
+    else if (event.type === 'turn_failed') state = 'failed';
     else if (event.type === 'turn_aborted') state = 'interrupted';
+    else if (event.type === 'turn_unknown') state = 'unknown';
   }
   return { status: state, ...(state === 'active' && startedAt ? { startedAt } : {}) };
 }

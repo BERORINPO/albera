@@ -7,7 +7,7 @@ import { h } from './view.mjs';
 /** @typedef {import('./i18n.mjs').T} T */
 
 /** @param {string} type */
-const eventKey = (type) => type === 'turn_started' ? 'event.turnStarted' : type === 'turn_completed' ? 'event.turnCompleted' : type === 'turn_aborted' ? 'event.turnAborted' : type === 'turn_failed' ? 'event.turnFailed' : '';
+const eventKey = (type) => type === 'turn_started' ? 'event.turnStarted' : type === 'turn_completed' ? 'event.turnCompleted' : type === 'turn_aborted' ? 'event.turnAborted' : type === 'turn_failed' ? 'event.turnFailed' : type === 'turn_unknown' ? 'event.turnUnknown' : '';
 const EVENT_SOURCES = new Set(['codex', 'copilot', 'opencode']);
 
 /** Project source events to the display allowlist again at the UI boundary. @param {{source?:string,events?:Array<{type:string,at:number}>}} card */

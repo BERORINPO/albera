@@ -980,3 +980,9 @@
 - 不明/破損の残りは従来どおり不採用・一般拒否件数にまとめる。未知形式をCLIとして読み込む緩和はしない。これは0件の理由を説明する診断であり、現データ互換や検出成功の証拠ではない。
 - 合成fixtureで各理由区分、stat cache後の集計、APIの固定数値projection、日英UIメッセージから未知producer値が漏れないことを確認。
 - 変更後、Codex adapterをread-onlyで再確認。候補40、認識0、拒否40。理由はCLI以外のsource marker 40、marker欠落/未対応originator/filename-ID不一致はいずれも0。値・ID・名前・パスは出力していない。これは現在の候補がCLI記録と識別されない証拠であり、実Codex CLIセッションの互換性証拠ではない。CLI起動、セッション作成、providerデータへの書込みはしていない。
+
+### Codex terminal error projection
+
+The Codex adapter now distinguishes successful `task_complete` from the same terminal event carrying a recognized terminal error. It retains only `turn_failed` plus the event timestamp; the error message and `codex_error_info` are discarded. Codex's `TurnCompleteEvent` defines an optional error, `ErrorEvent` includes message and optional error category, and the source classifies `active_turn_not_steerable` and `thread_rollback_failed` as not affecting turn status ([protocol source](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs)). The adapter has a fixed allowlist for known categories: the two non-terminal categories map to completed; known terminal categories map to failed; malformed or future categories map to outcome unknown. No raw code or error text enters common data, board API, logs, or UI.
+
+Synthetic fixtures cover success, recognized terminal failure, known non-terminal error, malformed error shape, future error category, explicit interruption, and privacy markers. The displayed state uses the existing failed event and source-state presentation; Claude projection is unchanged. This remains source-level and fixture-level compatibility: this environment still has zero accepted real Codex CLI sessions, so live CLI rendering and current real rollout variation remain unverified. The Codex rollout format is undocumented and can change.
