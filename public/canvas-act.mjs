@@ -78,7 +78,7 @@ function nudgeSheet(key, dir) {
 
 /** Session selectors use an opaque short ID and provider only; session titles and paths may contain sensitive text. */
 function graphSessions() {
-  return [...view.index.keys()].map((id) => ({ id, title: `${id.startsWith('codex_') ? 'Codex' : id.startsWith('copilot_') ? 'GitHub Copilot' : 'Claude'} session #${id.slice(-8)}` }));
+  return [...view.index.keys()].map((id) => ({ id, title: `${id.startsWith('codex_') ? 'Codex' : id.startsWith('copilot_') ? 'GitHub Copilot' : id.startsWith('opencode_') ? 'OpenCode' : 'Claude'} session #${id.slice(-8)}` }));
 }
 
 function graphChanged(doc) {

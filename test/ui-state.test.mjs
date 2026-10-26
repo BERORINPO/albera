@@ -178,6 +178,10 @@ test('visibleModel: 実行元フィルターは検索と重ねられ、件数も
   const copilot = visibleModel(b, { source: 'copilot', t: en });
   assert.equal(copilot.filtering, true);
   assert.deepEqual(copilot.recentGroups.flatMap((g) => g.items.map((item) => item.id)), ['copilot_00000000-0000-4000-8000-000000000002']);
+  b.recentGroups[0].items.push(c('opencode_00000000-0000-4000-8000-000000000003', { source: 'opencode', title: 'OpenCode task' }));
+  const opencode = visibleModel(b, { source: 'opencode', t: en });
+  assert.equal(opencode.filtering, true);
+  assert.deepEqual(opencode.recentGroups.flatMap((g) => g.items.map((item) => item.id)), ['opencode_00000000-0000-4000-8000-000000000003']);
   const combined = visibleModel(b, { source: 'codex', q: 'no match', t: en });
   assert.equal(combined.total, 0, 'source and text filters are ANDed');
 });

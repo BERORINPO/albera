@@ -270,7 +270,7 @@ function makeCard(s, ctx) {
   /** @type {Card} */
   const card = {
     id: s.sessionId,
-    ...(s.source === 'codex' || s.source === 'copilot' ? { source: s.source } : {}),
+    ...(s.source === 'codex' || s.source === 'copilot' || s.source === 'opencode' ? { source: s.source } : {}),
     bucket: c.bucket,
     reason: c.reason,
     ...(c.reasonParams ? { reasonParams: c.reasonParams } : {}),
@@ -527,7 +527,7 @@ function liveInputs(active, turns, now, given) {
  * @param {Map<string, TranscriptInput>} input.turns sessionId がキー
  * @param {number} input.now
  * @param {string[]} input.roots
- * @param {{files?: number, parsed?: number, bad?: number, stale?: number, dirs?: number, sources?: {codex?: {files?: number, bad?: number}}}=} input.sourceStats
+ * @param {{files?: number, parsed?: number, bad?: number, stale?: number, dirs?: number, sources?: Record<string, {files?: number, bad?: number}>}=} input.sourceStats
  * @param {{scanned:number,matched:number,unavailable:number,skipped:number}=} input.worktreeStats
  * @param {{dirMissing?: boolean}=} input.transcriptStats
  * @param {number=} input.scanMs
@@ -575,7 +575,7 @@ export function buildBoard({
   const cleanupGroups = buildCleanupGroups(active, ctx);
   const count = (/** @type {unknown} */ v) => Number.isSafeInteger(v) && Number(v) >= 0 ? Number(v) : 0;
   const lastEvent = (/** @type {SessionRecord} */ s) => s.events?.at(-1)?.type;
-  const sourceDiagnostics = (/** @type {'codex'|'copilot'} */ source) => {
+  const sourceDiagnostics = (/** @type {'codex'|'copilot'|'opencode'} */ source) => {
     const input = sourceStats.sources?.[source];
     if (!input) return undefined;
     const sourceSessions = active.filter((s) => s.source === source);
@@ -588,12 +588,15 @@ export function buildBoard({
       active: sourceSessions.filter((s) => s.lifecycle?.status === 'active').length,
       completed: sourceSessions.filter((s) => lastEvent(s) === 'turn_completed').length,
       interrupted: sourceSessions.filter((s) => lastEvent(s) === 'turn_aborted').length,
-      unknown: sourceSessions.filter((s) => s.lifecycle?.status !== 'active' && !['turn_completed', 'turn_aborted'].includes(lastEvent(s))).length,
+      failed: sourceSessions.filter((s) => lastEvent(s) === 'turn_failed').length,
+      unknown: sourceSessions.filter((s) => s.lifecycle?.status !== 'active' && !['turn_completed', 'turn_aborted', 'turn_failed'].includes(lastEvent(s))).length,
       rejected: count(input.bad),
+      ...(input.unsupportedRuntime === true ? { unsupportedRuntime: true } : {}),
     };
   };
   const codexDiagnostics = sourceDiagnostics('codex');
   const copilotDiagnostics = sourceDiagnostics('copilot');
+  const opencodeDiagnostics = sourceDiagnostics('opencode');
 
   const cleanupCount = [...cls.values()].filter((c) => c.bucket === 'cleanup').length;
   return {
@@ -633,7 +636,7 @@ export function buildBoard({
         unavailable: Number.isSafeInteger(worktreeStats.unavailable) && worktreeStats.unavailable >= 0 ? worktreeStats.unavailable : 0,
         skipped: Number.isSafeInteger(worktreeStats.skipped) && worktreeStats.skipped >= 0 ? worktreeStats.skipped : 0,
       } } : {}),
-      ...(codexDiagnostics || copilotDiagnostics ? { sources: { ...(codexDiagnostics ? { codex: codexDiagnostics } : {}), ...(copilotDiagnostics ? { copilot: copilotDiagnostics } : {}) } } : {}),
+      ...(codexDiagnostics || copilotDiagnostics || opencodeDiagnostics ? { sources: { ...(codexDiagnostics ? { codex: codexDiagnostics } : {}), ...(copilotDiagnostics ? { copilot: copilotDiagnostics } : {}), ...(opencodeDiagnostics ? { opencode: opencodeDiagnostics } : {}) } } : {}),
       ...live.stats,
     },
   };

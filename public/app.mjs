@@ -326,7 +326,7 @@ function init() {
     filterTimer = setTimeout(announceFilter, FILTER_ANNOUNCE_MS);
   });
   sourceFilter.addEventListener('change', () => {
-    state.sourceFilter = ['claude', 'codex', 'copilot'].includes(sourceFilter.value) ? sourceFilter.value : 'all';
+    state.sourceFilter = ['claude', 'codex', 'copilot', 'opencode'].includes(sourceFilter.value) ? sourceFilter.value : 'all';
     render();
     announceFilter();
   });

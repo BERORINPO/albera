@@ -13,7 +13,7 @@
  * adapter が元の JSON から許可した項目だけを射影したもの。
  * @typedef {Object} SessionRecord
  * @property {string} sessionId            "local_<uuid>"
- * @property {'codex'|'copilot'=} source   CLI adapter の安全な source code
+ * @property {'codex'|'copilot'|'opencode'=} source   CLI adapter の安全な source code
  * @property {string=} cliSessionId        会話ログ (jsonl) のファイル名
  * @property {string=} title
  * @property {string=} cwd
@@ -50,7 +50,7 @@
  * @property {string=} model                 (v0.2) CAP.MODEL まで。コンテキストの窓を決めるためだけに使い、JSON には出さない
  * @property {number=} contextExceededCount  (v0.2) 0 以上の整数。1 以上なら Card.detail.contextExceeded に出す
  * @property {{status:'active'|'complete'|'unknown',startedAt?:number}=} lifecycle
- * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted',at:number}>=} events
+ * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted'|'turn_failed',at:number}>=} events
  * @property {GitWorktreeSummary=} gitWorktree  Git adapter が返す、パスを含まない作業状態の要約
  */
 
@@ -109,8 +109,8 @@
  * 画面に送るカード (文字列は CAP で切ってある)。
  * @typedef {Object} Card
  * @property {string} id
- * @property {'codex'|'copilot'=} source
- * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted',at:number}>=} events
+ * @property {'codex'|'copilot'|'opencode'=} source
+ * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted'|'turn_failed',at:number}>=} events
  * @property {BucketKey} bucket
  * @property {ReasonCode} reason
  * @property {ReasonParams=} reasonParams
@@ -205,7 +205,7 @@
  * @property {{files: number, parsed: number, bad: number, stale: number, archived: number, active: number, recentTotal: number,
  *   transcriptsMissingRecent: number, unknownTurnRecent: number, recentWithTranscript: number, transcriptsDirMissing: boolean,
  *   scanMs: number, formatSuspect: FormatSuspect, demo: boolean, contextSeen: number, activitySeen: number, contextSuspect: boolean,
- *   sources?: {codex: {files:number, detected:number, working:number, trouble:number, recent:number, active:number, completed:number, interrupted:number, unknown:number, rejected:number}},
+ *   sources?: Record<string, {files:number, detected:number, working:number, trouble:number, recent:number, active:number, completed:number, interrupted:number, failed:number, unknown:number, rejected:number}>,
  *   worktrees?: {scanned:number,matched:number,unavailable:number,skipped:number}} stats
  *   contextSeen / activitySeen / contextSuspect は v0.2 (spec/board.md §9)
  */

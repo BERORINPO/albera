@@ -9,7 +9,7 @@ export const GRAPH_EDGE_KINDS = Object.freeze(['related', 'depends_on', 'delegat
 export const DELEGATION_STATES = Object.freeze(['planned', 'active', 'blocked', 'completed', 'cancelled']);
 const GRAPH_ID = /^g_[0-9a-f-]{36}$/i;
 const EDGE_ID = /^e_[0-9a-f-]{36}$/i;
-const SESSION_ID = /^(?:local_[0-9a-f-]{36}|codex_[0-9a-f-]{36}|copilot_[0-9a-f-]{36})$/i;
+const SESSION_ID = /^(?:local_[0-9a-f-]{36}|codex_[0-9a-f-]{36}|copilot_[0-9a-f-]{36}|opencode_[0-9a-f-]{36})$/i;
 const COORD_LIMIT = 100_000;
 const text = (value, max) => typeof value === 'string' ? [...value.trim()].slice(0, max).join('') : '';
 const coord = (value) => Number.isFinite(value) ? Math.max(-COORD_LIMIT, Math.min(COORD_LIMIT, Math.round(Number(value)))) : 0;

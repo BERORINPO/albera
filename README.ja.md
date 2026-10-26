@@ -1,6 +1,6 @@
 # Pigeonholes
 
-Claude Code・Codex CLI・GitHub Copilotのローカルセッションを同じ盤面に並べ、明示確認後にGit worktreeを操作できるローカルツールです。セッションデータは読み取り専用です。Claudeのセッションは6つの欄に分け、CodexとCopilotは安全なイベント要約を表示します。一覧のほか、プロジェクトごとに用紙を並べたキャンバスでも見られます。
+Claude Code・Codex CLI・GitHub Copilot・OpenCodeのローカルセッションを同じ盤面に並べ、明示確認後にGit worktreeを操作できるローカルツールです。セッションデータは読み取り専用です。Claudeのセッションは6つの欄に分け、ほかの実行元は安全なイベント要約を表示します。一覧のほか、プロジェクトごとに用紙を並べたキャンバスでも見られます。
 
 [English](README.md)
 
@@ -17,7 +17,7 @@ Claude Code・Codex CLI・GitHub Copilotのローカルセッションを同じ�
 
 ## 使い始める
 
-Node.js 22 以上と、Claude Code・Codex CLI・GitHub Copilot のいずれかのローカル保存先が必要です。
+Node.js 22 以上と、Claude Code・Codex CLI・GitHub Copilot・OpenCode のいずれかのローカル保存先が必要です。OpenCodeの読込にはNode.js 22系は22.18以降、または24以降が必要です。
 
 ```sh
 npx pigeonholes
@@ -53,11 +53,13 @@ npx pigeonholes --demo          # clone からなら: npm run demo
 | 会話ログ (`<id>.jsonl`) | `%USERPROFILE%\.claude\projects` | `~/.claude/projects` | `~/.claude/projects` |
 | Codex CLI の記録 (`rollout-*.jsonl`) | `%USERPROFILE%\.codex\sessions\YYYY\MM\DD` | `~/.codex/sessions/YYYY/MM/DD` | `~/.codex/sessions/YYYY/MM/DD` |
 | GitHub Copilot の記録 (`events.jsonl`) | `%USERPROFILE%\.copilot\session-state\<UUID>` | `~/.copilot/session-state/<UUID>` | `~/.copilot/session-state/<UUID>` |
+| OpenCode DB (`opencode.db`) | `%USERPROFILE%\.local\share\opencode` | `~/.local/share/opencode` | `~/.local/share/opencode` |
 
 - セッションフォルダは上の順に探し、最初に見つかったものを使います。`--sessions-dir` を付けると探しません
 - Codex は `CODEX_HOME` があればその `sessions`、なければ `~/.codex/sessions` を使います。CLI セッションと印のある記録だけを対象にします。末尾の一部を読み、ターン開始・完了・中断のイベントコードと時刻だけを残します。プロンプト、メッセージ、ツールの入力・出力、環境変数、完全なパスは盤面の応答に含めません。未知のイベントや壊れた行は読み飛ばします
 - フッターの「読み込みの状態」を開くと、Codex の候補・認識件数と状態別件数を確認できます。0件の場合は、rollout が無い、CLI形式条件に合うファイルが無い、または新しい未完了ターンが無い、のどれかを説明します。15分以上更新のない未完了ターンは「止まったかも」、完了・中断は「最近」に表示されます。
 - Copilotは `COPILOT_HOME/session-state`、未設定なら `~/.copilot/session-state` を読みます。Copilot CLIとCopilotアプリは保存先を共有するため、どちらが作ったかは判定せず「GitHub Copilot」と表示します。許可したイベント種別と時刻だけを保持し、不明な形式や壊れた行は除外します。「読み込みの状態」で対象ファイルがない場合や識別情報が一致しない場合を確認できます。
+- OpenCodeは `OPENCODE_DB`、未設定なら `~/.local/share/opencode/opencode.db` をNode組み込みSQLite APIのread-onlyモードで読みます。対応形式は `session_v2` / `session_message` のみです。セッション時刻、不透明ID、user/idleの状態コードと時刻だけを使います。プロンプト、ツールデータ、`auth.json`、DBパスは返しません。旧形式や未知形式は除外し、「読み込みの状態」でDB未検出・形式非対応・Node非対応を説明します。組み込みSQLite APIはNode.jsで実験的機能です。
 - 会話ログ: `CLAUDE_CONFIG_DIR` があれば `$CLAUDE_CONFIG_DIR/projects` を使います。読むのは 7 日以内に動いたセッションの末尾だけです: 末尾 200KB、その中に使える行やトークン数が無いとき (とても長いツールの出力など) だけ 1 回、末尾 2MB。バックグラウンドのエージェントは `<id>/subagents/` の下のファイルの更新時刻だけを見て (最近書かれたファイルの数も数えます)、中身は開きません
 - 会話ログの末尾から使うのは次のものだけです: 最後のターンの状態 (Claude が質問しているときはその質問)、時刻、最後の返答と自動要約のトークン数、ツールの名前、編集・作成・読み込み中のファイルの名前 (フォルダは除く)、コマンドのプログラム名と、npm や git などではそのサブコマンド (`npm test`、`git log`。パス・フラグ・値は出しません)、Web ページのホスト名、コネクタの名前、進行中の手順、Claude が最後のシェルコマンドに付けた短い説明。ツールの結果と、ほかの入力は残しません。ファイル名・手順・説明は先に掃除してから使います ([していること](#していること))
 - セッションのモデル名は、コンテキストの窓の大きさを推定するためだけに読みます。画面には出さず、ページにも届きません

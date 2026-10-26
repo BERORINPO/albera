@@ -14,6 +14,7 @@ import { DEFAULT_PORT, PRODUCT } from '../shared/constants.mjs';
 import { createAppSessionsSource } from '../adapters/app-sessions-fs.mjs';
 import { createCodexSessionsSource } from '../adapters/codex-sessions-fs.mjs';
 import { createCopilotSessionsSource } from '../adapters/copilot-sessions-fs.mjs';
+import { createOpenCodeSessionsSource } from '../adapters/opencode-sessions-fs.mjs';
 import { createFolderHints } from '../adapters/folder-hints-fs.mjs';
 import { createTranscriptsSource } from '../adapters/transcripts-fs.mjs';
 import { createWorktreeSource } from '../adapters/worktrees-git.mjs';
@@ -28,7 +29,7 @@ import { createBoardService } from './service.mjs';
 
 const SELF_PATH = fileURLToPath(import.meta.url);
 const PACKAGE_JSON = path.join(path.dirname(SELF_PATH), '..', '..', 'package.json');
-const SESSION_CARD_ID = /^(?:local|codex|copilot)_[0-9a-f-]{36}$/i;
+const SESSION_CARD_ID = /^(?:local|codex|copilot|opencode)_[0-9a-f-]{36}$/i;
 
 /** package.json の version (読めなければ 0.0.0)。 */
 function readVersion() {
@@ -53,6 +54,7 @@ function wire(config) {
     createAppSessionsSource({ root: config.sessionsRoot }),
     createCodexSessionsSource({ root: config.codexHome }),
     createCopilotSessionsSource({ root: config.copilotHome }),
+    createOpenCodeSessionsSource({ root: config.openCodeDb }),
   ]);
   return {
     sessionsSource,
@@ -73,7 +75,8 @@ function createCombinedSessionsSource(sources) {
       const claudeStats = loaded[0]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
       const codexStats = loaded[1]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
       const copilotStats = loaded[2]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
-      const stats = { ...claudeStats, sources: { codex: codexStats, copilot: copilotStats } };
+      const opencodeStats = loaded[3]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
+      const stats = { ...claudeStats, sources: { codex: codexStats, copilot: copilotStats, opencode: opencodeStats } };
       return {
         sessions: loaded.flatMap((source) => source.sessions),
         archivedIds: new Set(loaded.flatMap((source) => [...source.archivedIds])),

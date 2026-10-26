@@ -91,7 +91,7 @@ test('形式不整合と未知producerは安全に除外し、合成カードの
   for (const secret of ['PRIVATE-COMMAND', 'PRIVATE-PROMPT', 'C:\\private\\repo', 'PRIVATE-ENV']) assert.equal(wire.includes(secret), false);
   assert.deepEqual(board.stats.sources.copilot, {
     files: 3, detected: 1, working: 1, trouble: 0, recent: 0,
-    active: 1, completed: 0, interrupted: 0, unknown: 0, rejected: 2,
+    active: 1, completed: 0, interrupted: 0, failed: 0, unknown: 0, rejected: 2,
   });
 });
 

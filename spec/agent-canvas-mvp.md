@@ -64,8 +64,8 @@
 
 - ユーザーが依頼した次の縦断機能として、ユーザー作成のタスク・成果物・判断・理解負債カードと関係線を canvas に追加する。ブラウザー内だけに保存し、セッション・プロンプト・ツール内容を複製しない。詳細は `spec/ui.md` §10.11。
 - 「理解」は進捗を確認される側の理解を指す。根拠のないスコアは作らず、理解を確認される人、不足根拠、必要な説明をカードに記録する。
-- 関係の `delegates` は追跡用記録に限り、自動委譲や CLI 実行はしない。PM policy、実行条件の検出、Obsidian、OpenCode/Copilot CLI、WSL、音声 Main AI、企業権限統制は今段階の完了条件に含まれない。ユーザーの後続依頼でworktreeの明示作成と読み取り専用一覧を段階実装中。削除・回収は未実装で、破壊操作の条件は個別仕様が必要。
-- REA は `morluto/rea` (REA: Reverse Engineer Anything) と特定された。一次資料ではローカル CLI/MCP として、バイナリ・アプリ・実行時挙動を調べ、Evidence と制約を返す OSS と説明されている。Agent Canvasで結び付ける対象 (解析したアプリ、Evidence、レポート、セッションなど) とインポート/参照の境界は未合意。セットアップ・解析実行・直接連携は推測で追加しない。
+- 関係の `delegates` は追跡用記録に限り、自動委譲や CLI 実行はしない。PM policy、実行条件の検出、Obsidian、WSL、音声 Main AI、企業権限制御は今段階の完了条件に含まれない。ユーザーの後続依頼でworktreeの明示作成・一覧・確認付き削除を段階実装中。実Gitへの作成・削除は未検証。
+- REA はユーザー指定の `morluto/rea` (REA: Reverse Engineer Anything) と特定された。公式READMEは、ローカル実行のCLI/MCPからバイナリ・アプリ・実行時挙動を解析し、根拠と制約を含む結果を返すOSSと説明する。Agent Canvasで結び付ける対象 (解析したアプリ、Evidence、レポート、セッションなど) と、参照/取込の境界は未合意。セットアップ・解析実行・直接連携は推測で追加しない。
 - PM policy は「この依頼の安全条件だけ適用」と確認した。個別の自動化・承認規則は追加しない。
 - 実装のフォローアップはMVPのPR #3を変更せず、後続PRで扱う。
 - 2026-10-26: worktreeの読み取り専用状態調査を開始。最大20件の最近の未アーカイブセッションを対象にし、porcelain出力から安全な要約だけをセッション詳細へ渡す。個別PMポリシーは未定義のまま (依頼にある安全条件のみ)。
@@ -75,4 +75,7 @@
 - 2026-10-26: 次の独立段階として GitHub Copilot のローカル `session-state/<UUID>/events.jsonl` を追加。read-only adapter が固定されたイベント種別と時刻だけを許可し、Codexと同じ一覧・キャンバス・詳細・source filterに統合する。フォーム/イベントの不一致と不明イベントを安全側で除外し、診断には候補・認識・状態・除外件数のみを返す。合成デモにCopilotカードを1件追加。
 - CopilotのCLIとCopilotアプリは同じ `COPILOT_HOME/session-state` を使う。記録のproducer名だけでCLI由来と断定せず、画面上のsource名は「GitHub Copilot」とする。公式の保存先資料とSDKイベント型を実装根拠とした。ローカルの確認では対象ディレクトリは存在したものの `events.jsonl` は0件だったため、実セッション適合性・実データ表示は未検証のまま。fixtureとデモの結果を実データ確認と扱わない。
 - 形式根拠: [Copilot CLI config directory reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference) と [Copilot session data](https://docs.github.com/en/copilot/concepts/security-governance-and-network-settings/session-data) は `session-state/<id>/events.jsonl` の保存先とCLI/app共有を説明する。イベント名は [Copilot SDK generated session event types](https://github.com/github/copilot-sdk/blob/c57638f4a7ce2255a34192d5035932d0e109bbdd/nodejs/src/generated/session-events.ts) に基づく。CLI固有markerではないため、Copilot CLIだけの記録と区別できることは保証しない。
-- 次の後続段階候補はOpenCodeのローカル保存形式の一次根拠と適合テスト、委譲元・先の記録、REA成果物/evidenceを関連付けるデータ境界の合意。REAは `morluto/rea` と特定済みだが、Agent Canvasと結ぶ対象と参照/取込境界は未定義。Obsidian、WSL、音声Main AI、企業権限統制は依頼にある完成条件と既存specを突き合わせて段階化する必要があり、ここでは推測で追加しない。
+- 2026-10-26: OpenCode縦断段階を追加。`OPENCODE_DB` (既定 `~/.local/share/opencode/opencode.db`) をNode `node:sqlite` のread-onlyで開き、公式V2 `session_v2` / `session_message` の allowlist列だけ読む。wireにはOpenCode source・opaque session ID・時刻・許可イベントコードだけを出し、親IDはopaque化する。idle outcomeは成功・中断・失敗だけを分類し、不明 outcome/JSONはunknownに倒す。旧/未知スキーマは除外し、ファイルなし・形式不一致・runtime非対応を安全な集計値で診断する。OpenCode CLI実データはこの環境で未確認。SQLite APIはNode上でexperimentalであり、Node 22.18+ (22系) または24+のみ使用する。
+- OpenCode形式の根拠: [OpenCode troubleshooting storage docs](https://dev.opencode.ai/docs/troubleshooting/) はローカル `opencode.db` と `OPENCODE_DB` overrideを説明する。[OpenCode session schema](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/session/sql.ts) と [session message types](https://github.com/anomalyco/opencode/blob/dev/packages/schema/src/session-message.ts) のV2定義を根拠にする。read-only optionのruntime gateは [Node.js SQLite docs](https://nodejs.org/api/sqlite.html) の追加バージョン履歴に基づく。
+- REAは `https://github.com/morluto/rea.git` と特定された。公式READMEはローカル分析、根拠と制約を含む結果、CLI/MCP経路を説明する。Agent Canvas上で関連付ける対象と、ファイル参照/取込のどちらにするかは未合意のため、連携実装は保留。セットアップ/解析コマンドは実行していない。
+- 製品像の未完了: OpenCode以外の追加CLIやWSL、実行条件の安全な要約、委譲元/先を明確にする画面導線、worktreeの実Git確認、Obsidian知識層、REA関係、音声Main AI、企業権限制御は未完了または範囲未合意。理解負債はユーザー記述の対象者・不足根拠・必要説明をカードに記録するだけで、自動推定やスコアはない。

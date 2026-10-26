@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { makeT } from '../public/i18n.mjs';
-import { codexStatusMessages, copilotStatusMessages } from '../public/codex-status.mjs';
+import { codexStatusMessages, copilotStatusMessages, openCodeStatusMessages } from '../public/codex-status.mjs';
 
 const base = {
   files: 0, detected: 0, working: 0, trouble: 0, recent: 0,
@@ -29,4 +29,15 @@ test('Copilot diagnostics distinguish no candidates, rejected formats, and no wo
   assert.match(copilotStatusMessages(t, base)[1], /events.jsonlが見つかりません/);
   assert.match(copilotStatusMessages(t, { ...base, files: 2, rejected: 2 })[1], /識別情報が形式条件に合いません/);
   assert.match(copilotStatusMessages(t, { ...base, files: 2, detected: 1, completed: 1 })[1], /作業中0件/);
+});
+
+test('OpenCode diagnostics explain database, schema, runtime, and lifecycle zero states without rendering arbitrary values', () => {
+  const t = makeT('ja');
+  assert.match(openCodeStatusMessages(t, base)[1], /DBが見つかりません/);
+  assert.match(openCodeStatusMessages(t, { ...base, files: 1, detected: 0 })[1], /session_v2形式がありません/);
+  assert.match(openCodeStatusMessages(t, { ...base, files: 1, unsupportedRuntime: true })[1], /Node.js 22系は22.18以降/);
+  assert.match(openCodeStatusMessages(t, { ...base, files: 1, detected: 2, failed: 1 })[0], /失敗 1/);
+  const safe = openCodeStatusMessages(t, { ...base, unsupportedRuntime: true, path: 'C:\\private\\auth.json', prompt: 'PRIVATE_PROMPT' }).join(' ');
+  assert.ok(!safe.includes('private'));
+  assert.ok(!safe.includes('PRIVATE_PROMPT'));
 });

@@ -135,7 +135,7 @@ function whereLine(t, card) {
   const pname = f?.parentTitle == null ? t('family.parentMissing') : f.parentTitle || t('untitled');
   const parent = f?.parentId ? partsToNodes(t.parts('family.parent', { name: h('bdi', { lang: langOf(t, pname), text: pname }) })) : null;
   const kids = [
-    card.source ? h('span', { class: 'is-ink', text: t(card.source === 'copilot' ? 'source.copilot' : 'source.codex') }) : null,
+    card.source ? h('span', { class: 'is-ink', text: t(`source.${card.source}`) }) : null,
     eventSummaryEl(t, card),
     d.branch ? h('code', { text: d.branch }) : null,
     d.worktreeName ? h('span', { text: d.worktreeName }) : null,

@@ -175,7 +175,7 @@ test('loadConfig: 候補のうち最初に存在したフォルダ。フラグ�
 test('loadConfig: フラグは環境変数に勝つ。デモはセッションフォルダが無くても起動する', () => {
   const base = { home: NIX_HOME, cwd: '/cwd', platform: 'linux', intlLocale: 'en-US', isDir: dirs([]) };
   const c = loadConfig({ ...base, argv: ['--port', '9100', '--demo', '--lang', 'ja', '--projects-dir', '/flag'], env: { PIGEONHOLES_PORT: 'abc', PIGEONHOLES_LANG: 'xx', PIGEONHOLES_PROJECTS_DIR: '/env' } });
-  assert.deepEqual(c, { action: 'run', lang: 'ja', demo: true, port: 9100, roots: [NIX_HOME], sessionsRoot: '', codexHome: NIX_HOME + '/.codex', copilotHome: NIX_HOME + '/.copilot', projectsDir: '/flag', home: NIX_HOME });
+  assert.deepEqual(c, { action: 'run', lang: 'ja', demo: true, port: 9100, roots: [NIX_HOME], sessionsRoot: '', codexHome: NIX_HOME + '/.codex', copilotHome: NIX_HOME + '/.copilot', openCodeDb: NIX_HOME + '/.local/share/opencode/opencode.db', projectsDir: '/flag', home: NIX_HOME });
   const copilot = loadConfig({ ...base, argv: ['--demo'], env: { COPILOT_HOME: '/copilot-home' } });
   assert.equal(copilot.action === 'run' && copilot.copilotHome, '/copilot-home');
   const relativeCopilot = loadConfig({ ...base, argv: ['--demo'], env: { COPILOT_HOME: 'relative' } });
@@ -189,6 +189,16 @@ test('loadConfig: フラグは環境変数に勝つ。デモはセッション�
   // 旧名の環境変数は読まない
   const old = loadConfig({ ...base, argv: ['--demo'], env: { SESSION_BOARD_PORT: '9300' } });
   assert.equal(old.action === 'run' && old.port, DEFAULT_PORT);
+});
+
+test('loadConfig: OPENCODE_DB can be the only available session source', () => {
+  const base = { argv: [], home: NIX_HOME, cwd: '/cwd', platform: 'linux', intlLocale: 'en-US', isDir: dirs([]) };
+  const configured = loadConfig({ ...base, env: { OPENCODE_DB: '/data/custom.db' }, isFile: (p) => p === '/data/custom.db' });
+  assert.equal(configured.action === 'run' && configured.openCodeDb, '/data/custom.db');
+  const relative = loadConfig({ ...base, env: { OPENCODE_DB: 'custom.db' }, isFile: (p) => p === '/cwd/custom.db' });
+  assert.equal(relative.action === 'run' && relative.openCodeDb, '/cwd/custom.db');
+  const defaulted = loadConfig({ ...base, env: {}, isFile: (p) => p === NIX_HOME + '/.local/share/opencode/opencode.db' });
+  assert.equal(defaulted.action === 'run' && defaulted.openCodeDb, NIX_HOME + '/.local/share/opencode/opencode.db');
 });
 
 test('loadConfig: --help / --version は他の値を確かめずに返す。誤りは決めた言語で出す', () => {

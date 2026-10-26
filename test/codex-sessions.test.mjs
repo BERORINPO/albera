@@ -116,7 +116,7 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   assert.deepEqual(aborted.events.map((e) => e.type), ['turn_started', 'turn_aborted']);
   assert.deepEqual(mixed.stats.sources.codex, {
     files: 3, detected: 3, working: 1, trouble: 0, recent: 2,
-    active: 1, completed: 1, interrupted: 1, unknown: 0, rejected: 0,
+    active: 1, completed: 1, interrupted: 1, failed: 0, unknown: 0, rejected: 0,
   });
   const wire = JSON.stringify(mixed);
   for (const secret of ['PRIVATE-PROMPT', 'PRIVATE-OUTPUT', 'PRIVATE-REASON', 'C:\\work\\alpha', 'base_instructions', 'environment_secret']) assert.equal(wire.includes(secret), false);

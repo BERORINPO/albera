@@ -5,6 +5,14 @@
 /** @type {Readonly<Record<string, string | {one: string, other: string}>>} */
 export const EN_CANVAS = Object.freeze({
   'source.copilot': 'GitHub Copilot',
+  'source.opencode': 'OpenCode',
+  'event.turnFailed': 'failed',
+  'filter.sourceOpenCode': 'OpenCode',
+  'foot.opencodeSummary': 'OpenCode: {files} database files, {detected} recognized. On the board: {working} working, {trouble} stalled, {recent} recent. Last event: {active} in progress, {completed} complete, {interrupted} interrupted, {failed} failed, {unknown} unknown. {rejected} filtered or invalid.',
+  'foot.opencodeNoFiles': 'Why the count is 0: the OpenCode database was not found. Check OPENCODE_DB or the default data folder.',
+  'foot.opencodeNoDetected': 'Why the count is 0: the database has no supported session_v2 tables. Older or unknown schemas are excluded.',
+  'foot.opencodeNoWorking': 'Why Working is 0: no recent unfinished turn. Completed, failed, or interrupted turns go to Recent; stale turns go to Stuck?.',
+  'foot.opencodeRuntime': 'OpenCode reading needs Node.js 22.18 or newer in the 22 line, or Node.js 24 or newer, for the built-in read-only SQLite API. Upgrade Node.js to enable this source.',
   'foot.copilotSummary': 'GitHub Copilot: {files} candidate files, {detected} recognized. On the board: {working} working, {trouble} stalled, {recent} recent. Event state: {active} in progress, {completed} complete, {interrupted} interrupted, {unknown} unknown. {rejected} filtered or invalid.',
   'foot.copilotNoFiles': 'Why the count is 0: no events.jsonl was found in the checked session-state folders. Check COPILOT_HOME or the default location.',
   'foot.copilotNoDetected': 'Why the count is 0: candidate files exist, but their session.start identity did not match. Malformed records and unknown formats are excluded.',

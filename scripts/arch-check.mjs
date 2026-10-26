@@ -50,7 +50,7 @@ const EXPECTED = {
   shared: ['constants.mjs', 'types.mjs', 'i18n.mjs'],
   core: ['turn.mjs', 'classify.mjs', 'project.mjs', 'board.mjs', 'session.mjs', 'text.mjs', 'activity.mjs', 'context.mjs'],
   adapters: [
-    'app-sessions-fs.mjs', 'fake-app-sessions.mjs', 'codex-sessions-fs.mjs', 'fake-codex-sessions.mjs', 'copilot-sessions-fs.mjs', 'fake-copilot-sessions.mjs', 'transcripts-fs.mjs', 'fake-transcripts.mjs', 'folder-hints-fs.mjs', 'fake-folder-hints.mjs', 'worktrees-git.mjs', 'fake-worktrees.mjs', 'worktree-create-git.mjs', 'fake-worktree-create.mjs', 'worktree-remove-git.mjs', 'fake-worktree-remove.mjs',
+    'app-sessions-fs.mjs', 'fake-app-sessions.mjs', 'codex-sessions-fs.mjs', 'fake-codex-sessions.mjs', 'copilot-sessions-fs.mjs', 'fake-copilot-sessions.mjs', 'opencode-sessions-fs.mjs', 'fake-opencode-sessions.mjs', 'transcripts-fs.mjs', 'fake-transcripts.mjs', 'folder-hints-fs.mjs', 'fake-folder-hints.mjs', 'worktrees-git.mjs', 'fake-worktrees.mjs', 'worktree-create-git.mjs', 'fake-worktree-create.mjs', 'worktree-remove-git.mjs', 'fake-worktree-remove.mjs',
     'session-record.mjs', 'demo-data.mjs', 'map-limit.mjs',
   ],
   entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],

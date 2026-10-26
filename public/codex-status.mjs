@@ -4,7 +4,7 @@
 /** @typedef {import('./i18n.mjs').T} T */
 
 const FIELDS = /** @type {const} */ ([
-  'files', 'detected', 'working', 'trouble', 'recent', 'active', 'completed', 'interrupted', 'unknown', 'rejected',
+  'files', 'detected', 'working', 'trouble', 'recent', 'active', 'completed', 'interrupted', 'failed', 'unknown', 'rejected',
 ]);
 
 /** @param {unknown} value */
@@ -20,6 +20,19 @@ export function codexStatusMessages(t, input) {
   if (stats.files === 0) messages.push(t('foot.codexNoFiles'));
   else if (stats.detected === 0) messages.push(t('foot.codexNoDetected'));
   else if (stats.working === 0) messages.push(t('foot.codexNoWorking'));
+  return messages;
+}
+
+/** @param {T} t @param {Record<string, unknown>} input @returns {string[]} */
+export function openCodeStatusMessages(t, input) {
+  const stats = /** @type {Record<(typeof FIELDS)[number], number>} */ (
+    Object.fromEntries(FIELDS.map((key) => [key, count(input[key])]))
+  );
+  const messages = [t('foot.opencodeSummary', stats)];
+  if (input.unsupportedRuntime === true) messages.push(t('foot.opencodeRuntime'));
+  else if (stats.files === 0) messages.push(t('foot.opencodeNoFiles'));
+  else if (stats.detected === 0) messages.push(t('foot.opencodeNoDetected'));
+  else if (stats.working === 0) messages.push(t('foot.opencodeNoWorking'));
   return messages;
 }
 

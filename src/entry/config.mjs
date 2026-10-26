@@ -258,16 +258,17 @@ function scanLangArg(argv) {
  * @property {string} sessionsRoot  デモでは ''
  * @property {string} codexHome     デモでは ''
  * @property {string} copilotHome   デモでは ''
+ * @property {string} openCodeDb   デモでは ''
  * @property {string} projectsDir
  * @property {string} home
  */
 
 /**
  * @param {{env: Record<string, string|undefined>, argv: string[], home: string, cwd?: string, platform?: string,
- *   intlLocale?: string, isDir?: (p: string) => boolean}} input
+ *   intlLocale?: string, isDir?: (p: string) => boolean, isFile?: (p: string) => boolean}} input
  * @returns {RunConfig | {action: 'help'|'version', lang: Lang}}
  */
-export function loadConfig({ env, argv, home, cwd = process.cwd(), platform = process.platform, intlLocale, isDir = isDirSync }) {
+export function loadConfig({ env, argv, home, cwd = process.cwd(), platform = process.platform, intlLocale, isDir = isDirSync, isFile = (p) => { try { return fs.statSync(p).isFile(); } catch { return false; } } }) {
   /** @type {Args} */
   let args;
   try {
@@ -296,16 +297,21 @@ export function loadConfig({ env, argv, home, cwd = process.cwd(), platform = pr
     const codexHome = configuredCodexHome && P.isAbsolute(configuredCodexHome) ? configuredCodexHome : P.join(home, '.codex');
     const configuredCopilotHome = env.COPILOT_HOME?.trim();
     const copilotHome = configuredCopilotHome && P.isAbsolute(configuredCopilotHome) ? configuredCopilotHome : P.join(home, '.copilot');
+    const configuredOpenCodeDb = env.OPENCODE_DB?.trim();
+    const openCodeDb = configuredOpenCodeDb
+      ? P.resolve(cwd, configuredOpenCodeDb)
+      : P.join(home, '.local', 'share', 'opencode', 'opencode.db');
     if (!demo) {
       const explicit = args.sessionsDir ?? env.PIGEONHOLES_SESSIONS_DIR?.trim();
       const tried = explicit ? [P.resolve(cwd, explicit)] : sessionsDirCandidates(platform, env, home);
       const found = tried.find((p) => isDir(p));
       const hasCodexSessions = isDir(P.join(codexHome, 'sessions'));
       const hasCopilotSessions = isDir(P.join(copilotHome, 'session-state'));
-      if (!found && (explicit || (!hasCodexSessions && !hasCopilotSessions))) throw new ConfigError('term.noSessionsDir', { tried });
+      const hasOpenCodeDb = isFile(openCodeDb);
+      if (!found && (explicit || (!hasCodexSessions && !hasCopilotSessions && !hasOpenCodeDb))) throw new ConfigError('term.noSessionsDir', { tried });
       sessionsRoot = found ?? '';
     }
-    return { action: 'run', lang, demo, port, roots, sessionsRoot, codexHome, copilotHome, projectsDir, home };
+    return { action: 'run', lang, demo, port, roots, sessionsRoot, codexHome, copilotHome, openCodeDb, projectsDir, home };
   } catch (e) {
     throw e instanceof ConfigError ? e.withLang(lang) : e;
   }

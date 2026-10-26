@@ -5,6 +5,7 @@ import { DEMO_REBUILD_MS } from '../shared/constants.mjs';
 import { buildDemo } from '../adapters/demo-data.mjs';
 import { createFakeAppSessionsSource } from '../adapters/fake-app-sessions.mjs';
 import { createFakeCopilotSessionsSource } from '../adapters/fake-copilot-sessions.mjs';
+import { createFakeOpenCodeSessionsSource } from '../adapters/fake-opencode-sessions.mjs';
 import { createFakeFolderHints } from '../adapters/fake-folder-hints.mjs';
 import { createFakeTranscriptsSource } from '../adapters/fake-transcripts.mjs';
 import { createFakeWorktreeSource } from '../adapters/fake-worktrees.mjs';
@@ -36,6 +37,14 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
           pendingFirstStart: null, lifecycle: { status: 'active', startedAt: now - 60_000 },
           events: [{ type: 'turn_started', at: now - 60_000 }],
         }] }),
+        opencode: createFakeOpenCodeSessionsSource({ sessions: [{
+          source: 'opencode', sessionId: 'opencode_00000000-0000-4000-8000-000000000902',
+          title: 'OpenCode', cwd: demoFolders[0], createdAt: now - 4 * 60_000,
+          lastActivityAt: now - 3 * 60_000, lastFocusedAt: now - 3 * 60_000,
+          isArchived: false, isStarred: false, autoArchiveExempt: true, prs: [],
+          pendingFirstStart: null, lifecycle: { status: 'complete' },
+          events: [{ type: 'turn_started', at: now - 4 * 60_000 }, { type: 'turn_completed', at: now - 3 * 60_000 }],
+        }] }),
         transcripts: createFakeTranscriptsSource(demo.transcripts),
         hints: createFakeFolderHints(demo.folderHints),
         worktrees: createFakeWorktreeSource(Object.fromEntries(demoFolders.map((cwd, i) => {
@@ -53,11 +62,11 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
   };
   return {
     sessionsSource: { load: async () => {
-      const [claude, copilot] = await Promise.all([current().sessions.load(), current().copilot.load()]);
+      const [claude, copilot, opencode] = await Promise.all([current().sessions.load(), current().copilot.load(), current().opencode.load()]);
       return {
-        sessions: [...claude.sessions, ...copilot.sessions],
+        sessions: [...claude.sessions, ...copilot.sessions, ...opencode.sessions],
         archivedIds: claude.archivedIds,
-        stats: { ...claude.stats, sources: { copilot: copilot.stats } },
+        stats: { ...claude.stats, sources: { copilot: copilot.stats, opencode: opencode.stats } },
       };
     } },
     transcriptsSource: { read: (/** @type {string[]} */ ids) => current().transcripts.read(ids), stats: () => current().transcripts.stats() },
