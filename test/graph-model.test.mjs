@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { addGraphNode, connectGraph, moveGraphNode, normalizeGraph, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
+import { addGraphNode, connectGraph, moveGraphNode, nextGraphNodePosition, normalizeGraph, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
 
 const g1 = 'g_00000000-0000-4000-8000-000000000001';
 const g2 = 'g_00000000-0000-4000-8000-000000000002';
@@ -26,6 +26,18 @@ test('graph nodes can be added, updated, moved and removed immutably', () => {
   const kept = removeGraphNode(graph, g1);
   assert.equal(kept.nodes.length, 1);
   assert.equal(graph.nodes.length, 2, 'source remains unchanged');
+});
+
+test('new graph card slots do not overlap existing cards', () => {
+  const size = { width: 280, height: 168 };
+  const first = nextGraphNodePosition(empty(), { x: 100, y: 200 }, size);
+  const withFirst = addGraphNode(empty(), { ...node(g1), x: first.x, y: first.y }, g1);
+  const second = nextGraphNodePosition(withFirst, { x: 100, y: 200 }, size);
+  assert.deepEqual(first, { x: 100, y: 200 });
+  assert.notDeepEqual(second, first);
+  assert.ok(second.x + size.width + 24 <= first.x || first.x + size.width + 24 <= second.x || second.y + size.height + 24 <= first.y || first.y + size.height + 24 <= second.y);
+  const third = nextGraphNodePosition(addGraphNode(withFirst, { ...node(g2), x: second.x, y: second.y }, g2), { x: 100, y: 200 }, size);
+  assert.ok([first, second].every((other) => third.x + size.width + 24 <= other.x || other.x + size.width + 24 <= third.x || third.y + size.height + 24 <= other.y || other.y + size.height + 24 <= third.y));
 });
 
 test('relations connect local cards and current sessions, whitelist fields, and track delegation state without executing it', () => {

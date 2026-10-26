@@ -10,6 +10,11 @@ const CARD_W = 280;
 const CARD_H = 168;
 const { SLIP_W, SLIP_H } = CANVAS;
 
+/** @param {any} node @param {string[]} missing */
+export function graphCardSignature(node, missing = []) {
+  return JSON.stringify([node, missing]);
+}
+
 /** @param {string} endpoint @param {any} graph @param {Map<string,{card:any,pile:string}>} index @param {any} layout */
 function point(endpoint, graph, index, layout) {
   if (endpoint.startsWith('graph:')) {
@@ -105,7 +110,7 @@ export function renderGraphLayer(layer, o) {
     cardRoot,
     o.graph.nodes,
     (n) => n.id,
-    (n) => JSON.stringify(n),
+    (n) => graphCardSignature(n, reviewById.get(n.id) ?? []),
     (n) => graphCard(t, n, reviewById.get(n.id) ?? []),
   );
   for (const el of [...cardRoot.querySelectorAll('.graph-node')]) {

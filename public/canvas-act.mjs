@@ -13,7 +13,7 @@ import { neighbour } from './canvas-layout.mjs';
 import { openSession, render, view } from './render.mjs';
 import { state } from './state.mjs';
 import { nextUp, PILES } from './ui-state.mjs';
-import { addGraphNode, connectGraph, moveGraphNode, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from './graph-model.mjs';
+import { addGraphNode, connectGraph, moveGraphNode, nextGraphNodePosition, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from './graph-model.mjs';
 import { loadGraph, saveGraph } from './graph-store.mjs';
 import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs';
 import { GRAPH_CARD_SIZE } from './graph-render.mjs';
@@ -86,7 +86,8 @@ function graphChanged(doc) {
 function newGraphNode() {
   const graph = loadGraph();
   const vpSize = size();
-  const position = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
+  const center = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
+  const position = nextGraphNodePosition(graph, center, GRAPH_CARD_SIZE);
   openGraphNodeDialog({ t: state.t, graph, sessions: graphSessions(), position, onSave: (input) => graphChanged(addGraphNode(graph, input, `g_${crypto.randomUUID()}`)) });
 }
 

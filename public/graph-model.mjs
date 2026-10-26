@@ -87,6 +87,35 @@ export function addGraphNode(doc, input, id) {
   return { ...doc, nodes: [...doc.nodes, node] };
 }
 
+/**
+ * Find the first non-overlapping card slot around the current view center.
+ * New cards otherwise stack exactly under the pointer and hide one another.
+ * @param {GraphDoc} doc @param {{x:number,y:number}} center @param {{width:number,height:number}} size
+ * @returns {{x:number,y:number}}
+ */
+export function nextGraphNodePosition(doc, center, size) {
+  const gap = 24;
+  const stepX = Math.max(1, size.width + gap);
+  const stepY = Math.max(1, size.height + gap);
+  const overlaps = (x, y) => doc.nodes.some((node) =>
+    x < node.x + size.width + gap && x + size.width + gap > node.x
+    && y < node.y + size.height + gap && y + size.height + gap > node.y);
+  for (let ring = 0; ring <= GRAPH_MAX_NODES; ring++) {
+    const points = [];
+    if (ring === 0) points.push([0, 0]);
+    else {
+      for (let x = -ring; x <= ring; x++) points.push([x, -ring], [x, ring]);
+      for (let y = -ring + 1; y < ring; y++) points.push([-ring, y], [ring, y]);
+    }
+    for (const [dx, dy] of points) {
+      const x = coord(center.x + /** @type {number} */ (dx) * stepX);
+      const y = coord(center.y + /** @type {number} */ (dy) * stepY);
+      if (!overlaps(x, y)) return { x, y };
+    }
+  }
+  return { x: coord(center.x), y: coord(center.y) };
+}
+
 /** @param {GraphDoc} doc @param {string} id @param {Partial<Omit<GraphNode,'id'>>} patch @returns {GraphDoc} */
 export function updateGraphNode(doc, id, patch) {
   const nodes = doc.nodes.map((node) => node.id === id ? normalizeGraphNode({ ...node, ...patch, id }) ?? node : node);
