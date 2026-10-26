@@ -241,6 +241,7 @@ export function openGraphNodeDialog(o) {
  */
 export function openGraphRelationDialog(o) {
   const { t, from, graph, sessions, edge } = o;
+  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const options = [
     ...graph.nodes.map((n) => ({ id: `graph:${n.id}`, title: `${t(`graph.kind.${n.kind}`)}: ${n.title}` })),
     ...sessions.map((s) => ({ id: `session:${s.id}`, title: graphSessionLabel(s, t) })),
@@ -294,7 +295,13 @@ export function openGraphRelationDialog(o) {
   document.body.append(dialog);
   dialog.addEventListener('close', () => {
     dialog.remove();
-    if (fromKey.startsWith('graph:')) requestAnimationFrame(() => document.querySelector(`.graph-node[data-id="${CSS.escape(fromKey.slice(6))}"]`)?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => {
+      const graphOrigin = fromKey.startsWith('graph:')
+        ? document.querySelector(`.graph-node[data-id="${CSS.escape(fromKey.slice(6))}"]`)
+        : null;
+      const target = returnFocus?.isConnected ? returnFocus : graphOrigin ?? document.querySelector('#cv-view');
+      target?.focus({ preventScroll: true });
+    });
   }, { once: true });
   form.addEventListener('click', (ev) => {
     const button = ev.target instanceof Element ? ev.target.closest('[data-dialog-action]') : null;
