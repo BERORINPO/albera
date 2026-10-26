@@ -4,7 +4,7 @@
 import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
 import { h } from './view.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
-import { cancelGraphDialog, confirmBlockedOperationRelease, connectMissingComprehensionEdge } from './graph-dialog-actions.mjs';
+import { cancelGraphDialog, confirmBlockedOperationRelease, connectMissingComprehensionEdge, graphDialogFocusTarget } from './graph-dialog-actions.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 
@@ -297,9 +297,10 @@ export function openGraphRelationDialog(o) {
     dialog.remove();
     requestAnimationFrame(() => {
       const graphOrigin = fromKey.startsWith('graph:')
-        ? document.querySelector(`.graph-node[data-id="${CSS.escape(fromKey.slice(6))}"]`)
+        ? /** @type {HTMLElement|null} */ (document.querySelector(`.graph-node[data-id="${CSS.escape(fromKey.slice(6))}"]`))
         : null;
-      const target = returnFocus?.isConnected ? returnFocus : graphOrigin ?? document.querySelector('#cv-view');
+      const viewport = /** @type {HTMLElement|null} */ (document.querySelector('#cv-view'));
+      const target = graphDialogFocusTarget(returnFocus, graphOrigin, viewport);
       target?.focus({ preventScroll: true });
     });
   }, { once: true });

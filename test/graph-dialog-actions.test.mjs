@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { cancelGraphDialog, confirmBlockedOperationRelease, connectMissingComprehensionEdge } from '../public/graph-dialog-actions.mjs';
+import { cancelGraphDialog, confirmBlockedOperationRelease, connectMissingComprehensionEdge, graphDialogFocusTarget } from '../public/graph-dialog-actions.mjs';
 
 const blocked = { id: 'edge-1', operationId: 'op-1', kind: 'delegates', status: 'blocked' };
 
@@ -81,6 +81,19 @@ test('cancel closes a graph dialog even while a new card has no node yet', () =>
   assert.equal(closed, 1);
 });
 
+test('dialog focus returns to the invoking control, then graph node, then canvas viewport', () => {
+  const origin = { isConnected: true };
+  const graphNode = { isConnected: true };
+  const viewport = { isConnected: true };
+  assert.equal(graphDialogFocusTarget(origin, graphNode, viewport), origin);
+  origin.isConnected = false;
+  assert.equal(graphDialogFocusTarget(origin, graphNode, viewport), graphNode);
+  graphNode.isConnected = false;
+  assert.equal(graphDialogFocusTarget(origin, graphNode, viewport), viewport);
+  viewport.isConnected = false;
+  assert.equal(graphDialogFocusTarget(origin, graphNode, viewport), null);
+});
+
 test('the comprehension editor renders actions only from its current missing-link review', () => {
   const source = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
   assert.match(source, /reviewUnderstandingGaps\(graph, new Set\(sessions\.map\(\(session\) => session\.id\)\)\)/);
@@ -92,7 +105,7 @@ test('the comprehension editor renders actions only from its current missing-lin
   assert.match(source, /'data-edge-kind': kind/);
   assert.match(source, /connectMissingComprehensionEdge\(\{ nodeId: node\.id, edgeKind: kind, close: \(\) => dialog\.close\(\), connect: o\.onConnect \}\)/);
   assert.match(source, /const returnFocus = document\.activeElement instanceof HTMLElement \? document\.activeElement : null/);
-  assert.match(source, /const target = returnFocus\?\.isConnected \? returnFocus : graphOrigin \?\? document\.querySelector\('#cv-view'\)/);
+  assert.match(source, /graphDialogFocusTarget\(returnFocus, graphOrigin, viewport\)/);
   assert.match(source, /target\?\.focus\(\{ preventScroll: true \}\)/);
   assert.match(source, /if \(cancelGraphDialog\(action, \(\) => dialog\.close\(\)\)\) return;[\s\S]*?if \(!node\) return;/);
 });

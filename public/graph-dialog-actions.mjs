@@ -27,3 +27,13 @@ export function cancelGraphDialog(action, close) {
   close();
   return true;
 }
+
+/** Resolve an in-document focus target after a native dialog is removed.
+ * @param {HTMLElement|null} origin @param {HTMLElement|null} graphNode @param {HTMLElement|null} viewport
+ */
+export function graphDialogFocusTarget(origin, graphNode, viewport) {
+  if (origin?.isConnected) return origin;
+  if (graphNode?.isConnected) return graphNode;
+  if (viewport?.isConnected) return viewport;
+  return null;
+}
