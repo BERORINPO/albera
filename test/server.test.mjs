@@ -83,7 +83,9 @@ function start(args, { env = {}, waitExit = false } = {}) {
   child.stdout.on('data', (d) => (out += d));
   child.stderr.on('data', (d) => (err += d));
   const ready = new Promise((resolve) => {
-    const timer = setTimeout(() => resolve({ code: null, out, err, timeout: true }), 10000);
+    // node --test runs many files in parallel; on Windows/Node 22 the child can
+    // be scheduled late under CI load even though it starts normally.
+    const timer = setTimeout(() => resolve({ code: null, out, err, timeout: true }), 30000);
     if (!waitExit) {
       child.stdout.on('data', () => {
         if (READY_RE.test(out)) {
@@ -143,7 +145,7 @@ before(async () => {
   child = s.child;
   const r = await s.ready;
   assert.equal(r.code, null, r.err);
-  assert.equal(lines(r.out)[0], `Pigeonholes: http://127.0.0.1:${port} (demo data; worktree creation disabled)`);
+  assert.equal(lines(r.out)[0], `Pigeonholes: http://127.0.0.1:${port} (demo data; worktree creation disabled)`, `server startup timed out=${r.timeout === true}; stderr=${r.err}`);
 });
 after(async () => {
   child?.kill();
