@@ -502,3 +502,9 @@
 - この併存が分かるよう、検索欄のアクセシブル名にcanvas cardを含め、0件案内にも検索対象としてsessionとcanvas cardを明記した。追加のi18n回帰テスト後に `npm test` — 538 passed、`npm run arch` — 96 paths/0 violations、`git diff --check` — passed。port 19832の隔離デモで更新後の日本語ラベルと0 session案内を確認し、検索語「要確認」に一致する合成カードが通常表示で残ることを再確認した。サーバー停止済み。実セッションやCLIは使用していない。
 - 検索を関係線にも拡張。関係種別・利用者記録の目的・許可状態のラベルを検索し、目的語が一致すれば接続先sessionがsession filterで0件でも線を強調する。単体テストでは目的/委譲状態の投影と未知状態値の除外を確認。`npm test` — 539 passed、`npm run arch` — 96 paths/0 violations、`git diff --check` — passed。隔離デモでは「UI relation search acceptance」という合成目的だけを検索し、0 session案内とともに関係線が明るく表示され、カード側は薄くなることを画面確認した。合成目的は同じ隔離originのlocalStorageに残る。サーバー停止済み。実セッション/CLI/外部サービスは使っていない。
 - 検索アクセシブル名と0件補足を改め、関係種別・目的・委譲状態も対象だと明記。最新隔離デモで日本語ラベルと補足を読み上げ可能なDOMで確認し、合成目的検索で明るくなる関係線を再確認した。`npm test` — 539 passed、`npm run arch` — 96 paths/0 violations、`git diff --check` — passed。デモサーバー停止済み。
+
+### キャンバスGraphカードのプロジェクト絞り込み (2026-10-26)
+
+- Graphカードが直接つながるセッションの `project.key` によってプロジェクト絞り込みへ参加する。同一カードに異なるプロジェクトのセッションが複数つながる場合はいずれかの選択プロジェクトに一致すれば残す。直接つながるsessionがないカードは推測で分類せず盤面全体に残す。不一致カードは薄く表示し、読み上げラベルに「絞り込み外」を加える。
+- pure helperのテストで関係方向の両方、複数project、不一致、未接続・未絞り込みの挙動を確認。`npm test` — 540 passed、`npm run arch` — 96 paths/0 violations、`git diff --check` — passed。
+- port 19832の隔離demoで、合成理解負債カードを api-server filterで薄くし、accessible nameに「絞り込み外」が付くこと、接続先のdemo-app filterで通常表示に戻ることを画面確認した。カードは直接接続したCodex/Claude合成セッションのどれかが現在のproject選択に一致すると残る。デモサーバー停止済み。実セッションやCLIは使用していない。

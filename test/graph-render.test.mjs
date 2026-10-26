@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
-import { graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation, graphEdgeSearchText } from '../public/graph-render.mjs';
+import { graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation, graphEdgeSearchText, graphNodeProjectMatch } from '../public/graph-render.mjs';
 
 const node = { id: 'g_00000000-0000-4000-8000-000000000001', kind: 'understanding_gap', title: 'Gap', status: 'open' };
 
@@ -46,6 +46,25 @@ test('canvas relation search includes the relation purpose, label, and safe dele
   assert.match(search, /進行中/);
   const unknown = graphEdgeSearchText({ kind: 'delegates', purpose: '', status: 'private-status-value' }, t);
   assert.doesNotMatch(unknown, /private-status-value/);
+});
+
+test('canvas project filtering follows direct session relations and keeps unlinked cards visible', () => {
+  const nodeId = 'g_00000000-0000-4000-8000-000000000001';
+  const alphaId = 'claude_00000000-0000-4000-8000-000000000001';
+  const betaId = 'codex_00000000-0000-4000-8000-000000000002';
+  const index = new Map([
+    [alphaId, { card: { project: { key: 'alpha' } }, pile: 'working' }],
+    [betaId, { card: { project: { key: 'beta' } }, pile: 'recent' }],
+  ]);
+  const edges = [
+    { from: `graph:${nodeId}`, to: `session:${alphaId}` },
+    { from: `session:${betaId}`, to: `graph:${nodeId}` },
+  ];
+  assert.equal(graphNodeProjectMatch(nodeId, edges, index, 'all'), true);
+  assert.equal(graphNodeProjectMatch(nodeId, edges, index, 'alpha'), true, 'one linked session in the selected project is enough');
+  assert.equal(graphNodeProjectMatch(nodeId, edges, index, 'beta'), true, 'relation direction does not change project membership');
+  assert.equal(graphNodeProjectMatch(nodeId, edges, index, 'gamma'), false);
+  assert.equal(graphNodeProjectMatch('unlinked', edges, index, 'gamma'), true, 'unlinked cards remain board-wide when project cannot be derived');
 });
 
 test('empty canvas gives a direct accessible action to add a card', () => {

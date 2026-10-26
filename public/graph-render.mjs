@@ -35,6 +35,18 @@ export function graphCardSearchText(node, missing = [], t) {
   ].filter((value) => typeof value === 'string' && value.length).join(' ');
 }
 
+/** Cards with direct session relations inherit a project filter from those sessions. Unlinked cards stay board-wide. @param {string} nodeId @param {any[]} edges @param {Map<string,{card:any,pile:string}>} index @param {string} project */
+export function graphNodeProjectMatch(nodeId, edges, index, project) {
+  if (!project || project === 'all') return true;
+  const sessionIds = new Set();
+  for (const edge of edges ?? []) {
+    if (edge?.from === `graph:${nodeId}` && typeof edge.to === 'string' && edge.to.startsWith('session:')) sessionIds.add(edge.to.slice(8));
+    if (edge?.to === `graph:${nodeId}` && typeof edge.from === 'string' && edge.from.startsWith('session:')) sessionIds.add(edge.from.slice(8));
+  }
+  if (!sessionIds.size) return true;
+  return [...sessionIds].some((id) => index.get(id)?.card?.project?.key === project);
+}
+
 /** @param {{kind:string,purpose?:string,status?:string}} edge @param {T} t */
 export function graphEdgeSearchText(edge, t) {
   const status = graphEdgePresentation(edge, t).status;
@@ -108,10 +120,17 @@ function placeLine(line, x1, y1, x2, y2) {
 }
 
 /** @param {T} t @param {any} node @param {string[]} missing */
+function graphCardAriaLabel(t, node, missing = []) {
+  const ariaLabel = t('graph.cardAria', { kind: t(`graph.kind.${node.kind}`), title: node.title, status: t(`graph.status.${graphCardStatus(node, missing)}`) });
+  const reviewLabel = missing.length ? t('graph.missingLinks', { links: missing.map((kind) => t(`graph.link.${kind}`)).join(', ') }) : '';
+  return `${ariaLabel}${reviewLabel ? ` ${reviewLabel}` : ''}`;
+}
+
+/** @param {T} t @param {any} node @param {string[]} missing */
 function graphCard(t, node, missing = []) {
   const status = graphCardStatus(node, missing);
   const statusLabel = t(`graph.status.${status}`);
-  const ariaLabel = t('graph.cardAria', { kind: t(`graph.kind.${node.kind}`), title: node.title, status: statusLabel });
+  const ariaLabel = graphCardAriaLabel(t, node, missing);
   const reviewLabel = missing.length ? t('graph.missingLinks', { links: missing.map((kind) => t(`graph.link.${kind}`)).join(', ') }) : '';
   return h(
     'button',
@@ -143,7 +162,7 @@ function graphCard(t, node, missing = []) {
 
 /**
  * @param {HTMLElement} layer
- * @param {{t:T,graph:any,index:Map<string,{card:any,pile:string}>,layout:any,filter:string,matched?:Set<string>|null,boardReady?:boolean,drag?:{id:string,x:number,y:number}|null}} o
+ * @param {{t:T,graph:any,index:Map<string,{card:any,pile:string}>,layout:any,filter:string,projectFilter?:string,matched?:Set<string>|null,boardReady?:boolean,drag?:{id:string,x:number,y:number}|null}} o
  */
 export function renderGraphLayer(layer, o) {
   const t = o.t;
@@ -207,8 +226,11 @@ export function renderGraphLayer(layer, o) {
     const at = o.drag?.id === id ? o.drag : node;
     el.style.setProperty('--x', String(at.x));
     el.style.setProperty('--y', String(at.y));
-    const hay = graphCardSearchText(node, reviewById.get(id) ?? [], t).toLocaleLowerCase();
-    el.classList.toggle('is-dim', !!query && !hay.includes(query));
+    const missing = reviewById.get(id) ?? [];
+    const hay = graphCardSearchText(node, missing, t).toLocaleLowerCase();
+    const dim = (!!query && !hay.includes(query)) || !graphNodeProjectMatch(id, o.graph.edges, o.index, o.projectFilter ?? 'all');
+    el.classList.toggle('is-dim', dim);
+    el.setAttribute('aria-label', `${graphCardAriaLabel(t, node, missing)}${dim ? ` ${t('canvas.noMatch')}` : ''}`);
   }
   for (const el of [...lineRoot.children]) {
     const rendered = edges.find((x) => x.edge.id === el.getAttribute('data-key'));
