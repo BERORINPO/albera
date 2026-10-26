@@ -33,15 +33,22 @@ test('delegation edge presentation preserves only allowlisted status values for 
 
 test('each persisted delegation status has a canvas style and unknown status stays neutral', () => {
   const css = fs.readFileSync(new URL('../public/graph.css', import.meta.url), 'utf8');
+  const renderer = fs.readFileSync(new URL('../public/graph-render.mjs', import.meta.url), 'utf8');
   for (const status of ['planned', 'active', 'blocked', 'completed', 'cancelled']) {
     assert.match(css, new RegExp(`\\.graph-edge--delegates\\[data-status="${status}"\\]`));
   }
   assert.match(css, /\.graph-edge--delegates-unknown\s*\{/);
   assert.match(css, /\.graph-edge\s*\{[^}]*pointer-events:\s*auto;/);
   assert.match(css, /\.graph-edge::before\s*\{[^}]*inset:\s*-7px 0;/);
-  assert.match(css, /\.graph-edge\[title\]:hover \.graph-edge__tooltip\s*\{\s*display:\s*block;/);
+  assert.match(css, /\.graph-edge\[title\]:hover \.graph-edge__tooltip, \.graph-edge\[title\]:focus-visible \.graph-edge__tooltip\s*\{\s*display:\s*block;/);
+  assert.match(css, /\.graph-edge\[title\]:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--color-focus\);/);
   assert.match(css, /\.graph-edge__tooltip\s*\{[^}]*pointer-events:\s*none;/);
   assert.match(css, /\.graph-edge__tooltip\s*\{[^}]*font-size:\s*max\(12px,/);
+  assert.match(renderer, /lineRoot\.removeAttribute\('aria-hidden'\)/);
+  assert.match(renderer, /line\.setAttribute\('role', 'img'\)/);
+  assert.match(renderer, /line\.setAttribute\('tabindex', '0'\)/);
+  assert.match(renderer, /line\.setAttribute\('aria-label', attributes\.title\)/);
+  assert.match(renderer, /else line\.setAttribute\('aria-hidden', 'true'\)/);
 });
 
 test('delegation edge attributes expose only the fixed status tooltip, including unknown status', () => {

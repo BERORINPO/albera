@@ -115,7 +115,8 @@ function graphCard(t, node, missing = []) {
 export function renderGraphLayer(layer, o) {
   const t = o.t;
   const edges = o.graph.edges.map((edge) => ({ edge, line: clippedLine(point(edge.from, o.graph, o.index, o.layout), point(edge.to, o.graph, o.index, o.layout)) })).filter((x) => x.line);
-  const lineRoot = layer.querySelector('.graph-layer__edges') ?? h('div', { class: 'graph-layer__edges', 'aria-hidden': 'true' });
+  const lineRoot = layer.querySelector('.graph-layer__edges') ?? h('div', { class: 'graph-layer__edges' });
+  lineRoot.removeAttribute('aria-hidden');
   const cardRoot = layer.querySelector('.graph-layer__cards') ?? h('div', { class: 'graph-layer__cards' });
   layer.append(lineRoot, cardRoot);
   let empty = layer.querySelector('.graph-layer__empty');
@@ -133,6 +134,11 @@ export function renderGraphLayer(layer, o) {
       const line = h('span', { class: attributes.className }, attributes.title
         ? h('span', { class: 'graph-edge__tooltip', 'aria-hidden': 'true', text: attributes.title })
         : null);
+      if (attributes.title) {
+        line.setAttribute('role', 'img');
+        line.setAttribute('tabindex', '0');
+        line.setAttribute('aria-label', attributes.title);
+      } else line.setAttribute('aria-hidden', 'true');
       if (attributes.status) line.setAttribute('data-status', attributes.status);
       if (attributes.title) line.setAttribute('title', attributes.title);
       if (x.line) placeLine(line, x.line.x1, x.line.y1, x.line.x2, x.line.y2);
