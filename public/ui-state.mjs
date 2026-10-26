@@ -265,14 +265,14 @@ const rowSize = (c) => rowIds(c).length;
 /**
  * 絞り込み (文字と親子) を当てた見え方。piles の並びと一致数。
  * @param {any} board
- * @param {{q?: string, family?: string|null, source?: 'all'|'claude'|'codex', t: T, now?: number}} opts now: 「要約済み」の言葉でも探すときの今
+ * @param {{q?: string, family?: string|null, source?: 'all'|'claude'|'codex'|'copilot', t: T, now?: number}} opts now: 「要約済み」の言葉でも探すときの今
  */
 export function visibleModel(board, { q = '', family = null, source = 'all', t, now }) {
   const qq = String(q ?? '').trim().toLowerCase();
   const fam = family ? new Set(board?.families?.[family]?.memberIds ?? [family]) : null;
   const filtering = qq !== '' || fam != null || source !== 'all';
   /** @param {Card} c */
-  const ok = (c) => (!fam || fam.has(c.id) || rowIds(c).some((id) => fam.has(id))) && (source === 'all' || (c.source === 'codex' || c.id.startsWith('codex_') ? 'codex' : 'claude') === source) && matches(c, qq, t, now);
+  const ok = (c) => (!fam || fam.has(c.id) || rowIds(c).some((id) => fam.has(id))) && (source === 'all' || (c.source ?? (c.id.startsWith('codex_') ? 'codex' : c.id.startsWith('copilot_') ? 'copilot' : 'claude')) === source) && matches(c, qq, t, now);
   /** @type {Record<string, Card[]>} */
   const buckets = {};
   for (const pile of LIST_PILES) buckets[pile] = (board?.buckets?.[pile] ?? []).filter(ok);

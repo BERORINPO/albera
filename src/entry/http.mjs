@@ -13,7 +13,7 @@ const JS = 'text/javascript; charset=utf-8';
 const WORKTREE_PATH = '/api/worktrees';
 const WORKTREE_BODY_MAX = 2048;
 const MAX_WORKTREE_ITEMS = 20;
-const SESSION_CARD_ID = /^(?:local|codex)_[0-9a-f-]{36}$/i;
+const SESSION_CARD_ID = /^(?:local|codex|copilot)_[0-9a-f-]{36}$/i;
 const SAFE_BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,79}$/;
 
 /** 配信してよい拡張子と Content-Type。 */

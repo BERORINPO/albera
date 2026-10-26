@@ -22,3 +22,16 @@ export function codexStatusMessages(t, input) {
   else if (stats.working === 0) messages.push(t('foot.codexNoWorking'));
   return messages;
 }
+
+/** @param {T} t @param {Record<string, unknown>} input @returns {string[]} */
+export function copilotStatusMessages(t, input) {
+  /** @type {Record<(typeof FIELDS)[number], number>} */
+  const stats = /** @type {Record<(typeof FIELDS)[number], number>} */ (
+    Object.fromEntries(FIELDS.map((key) => [key, count(input[key])]))
+  );
+  const messages = [t('foot.copilotSummary', stats)];
+  if (stats.files === 0) messages.push(t('foot.copilotNoFiles'));
+  else if (stats.detected === 0) messages.push(t('foot.copilotNoDetected'));
+  else if (stats.working === 0) messages.push(t('foot.copilotNoWorking'));
+  return messages;
+}

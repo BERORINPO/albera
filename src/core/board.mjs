@@ -270,7 +270,7 @@ function makeCard(s, ctx) {
   /** @type {Card} */
   const card = {
     id: s.sessionId,
-    ...(s.source === 'codex' ? { source: 'codex' } : {}),
+    ...(s.source === 'codex' || s.source === 'copilot' ? { source: s.source } : {}),
     bucket: c.bucket,
     reason: c.reason,
     ...(c.reasonParams ? { reasonParams: c.reasonParams } : {}),
@@ -284,7 +284,7 @@ function makeCard(s, ctx) {
     project: { key: ref.key, label: isOther ? null : ctx.labelOf.get(ref.key) ?? ref.name, extra: ref.extra },
     prs: prsForCard(s),
     detail: detailFor(s, c, body),
-    ...(s.source === 'codex' && Array.isArray(s.events) ? { events: s.events.slice(-30).map((event) => ({ type: event.type, at: event.at })) } : {}),
+    ...(s.source && Array.isArray(s.events) ? { events: s.events.slice(-30).map((event) => ({ type: event.type, at: event.at })) } : {}),
   };
   const routine = routineFor(s, ctx);
   if (routine) card.routine = routine;
@@ -573,22 +573,27 @@ export function buildBoard({
   for (const k of /** @type {const} */ (['needs_you', 'trouble', 'unread', 'working'])) lists[k].sort(PILE_ORDER[k]);
   const recentGroups = groupByProject(lists.recent.sort(byNewest)).map(({ key, label, items }) => ({ key, label, items }));
   const cleanupGroups = buildCleanupGroups(active, ctx);
-  const codexInput = sourceStats.sources?.codex;
-  const codexSessions = active.filter((s) => s.source === 'codex');
   const count = (/** @type {unknown} */ v) => Number.isSafeInteger(v) && Number(v) >= 0 ? Number(v) : 0;
   const lastEvent = (/** @type {SessionRecord} */ s) => s.events?.at(-1)?.type;
-  const codexDiagnostics = codexInput ? {
-    files: count(codexInput.files),
-    detected: codexSessions.length,
-    working: lists.working.filter((c) => c.source === 'codex').length,
-    trouble: lists.trouble.filter((c) => c.source === 'codex').length,
-    recent: lists.recent.filter((c) => c.source === 'codex').length,
-    active: codexSessions.filter((s) => s.lifecycle?.status === 'active').length,
-    completed: codexSessions.filter((s) => lastEvent(s) === 'turn_completed').length,
-    interrupted: codexSessions.filter((s) => lastEvent(s) === 'turn_aborted').length,
-    unknown: codexSessions.filter((s) => s.lifecycle?.status !== 'active' && !['turn_completed', 'turn_aborted'].includes(lastEvent(s))).length,
-    rejected: count(codexInput.bad),
-  } : undefined;
+  const sourceDiagnostics = (/** @type {'codex'|'copilot'} */ source) => {
+    const input = sourceStats.sources?.[source];
+    if (!input) return undefined;
+    const sourceSessions = active.filter((s) => s.source === source);
+    return {
+      files: count(input.files),
+      detected: sourceSessions.length,
+      working: lists.working.filter((c) => c.source === source).length,
+      trouble: lists.trouble.filter((c) => c.source === source).length,
+      recent: lists.recent.filter((c) => c.source === source).length,
+      active: sourceSessions.filter((s) => s.lifecycle?.status === 'active').length,
+      completed: sourceSessions.filter((s) => lastEvent(s) === 'turn_completed').length,
+      interrupted: sourceSessions.filter((s) => lastEvent(s) === 'turn_aborted').length,
+      unknown: sourceSessions.filter((s) => s.lifecycle?.status !== 'active' && !['turn_completed', 'turn_aborted'].includes(lastEvent(s))).length,
+      rejected: count(input.bad),
+    };
+  };
+  const codexDiagnostics = sourceDiagnostics('codex');
+  const copilotDiagnostics = sourceDiagnostics('copilot');
 
   const cleanupCount = [...cls.values()].filter((c) => c.bucket === 'cleanup').length;
   return {
@@ -628,7 +633,7 @@ export function buildBoard({
         unavailable: Number.isSafeInteger(worktreeStats.unavailable) && worktreeStats.unavailable >= 0 ? worktreeStats.unavailable : 0,
         skipped: Number.isSafeInteger(worktreeStats.skipped) && worktreeStats.skipped >= 0 ? worktreeStats.skipped : 0,
       } } : {}),
-      ...(codexDiagnostics ? { sources: { codex: codexDiagnostics } } : {}),
+      ...(codexDiagnostics || copilotDiagnostics ? { sources: { ...(codexDiagnostics ? { codex: codexDiagnostics } : {}), ...(copilotDiagnostics ? { copilot: copilotDiagnostics } : {}) } } : {}),
       ...live.stats,
     },
   };

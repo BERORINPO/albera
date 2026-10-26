@@ -90,12 +90,12 @@ export function deriveFacts(s, ti, now, tf) {
   const act = activityOf(s);
   const age = Math.max(0, now - act);
   const recent = age < RECENT_MS;
-  const T = s.source === 'codex' && s.lifecycle
+  const T = ['codex', 'copilot'].includes(s.source) && s.lifecycle
     ? { turn: /** @type {const} */ (s.lifecycle.status === 'active' ? 'inprogress' : s.lifecycle.status === 'complete' ? 'ended' : 'unknown'), startedAt: s.lifecycle.startedAt, relevant: s.events?.length ?? 0 }
     : recent && ti ? tf?.turn ?? parseTurnEntries(turnEntries(ti.tail, ti.truncatedHead)) : { turn: /** @type {const} */ ('unknown'), relevant: 0 };
   const mainMtime = ti?.mainMtime ?? 0;
   const subMtime = ti?.subMtime ?? 0;
-  const quietSince = s.source === 'codex' ? act : Math.max(mainMtime, subMtime);
+  const quietSince = ['codex', 'copilot'].includes(s.source) ? act : Math.max(mainMtime, subMtime);
   const pts = s.postTurnSummary;
   const fresh = !!pts && (!s.lastAssistantUuid || !s.postTurnSummaryFor || s.postTurnSummaryFor === s.lastAssistantUuid);
   const asks = (fresh && (isNonEmpty(pts?.needs_action) || pts?.status_category === 'blocked')) || s.interruptedAwaitingPerson;
@@ -202,7 +202,7 @@ function decide(s, f, ctx, now) {
   });
   // Codex has no read marker or archive API in this adapter. Keep old sessions visible and never
   // route them into Claude's cleanup/archive flow.
-  if (s.source === 'codex') {
+  if (['codex', 'copilot'].includes(s.source)) {
     if (f.T.turn === 'inprogress') {
       if (f.silent < QUIET_MS) return { ...working('turn', f.quietSince), ...(f.T.startedAt ? { startedAt: f.T.startedAt } : {}) };
       return { bucket: 'trouble', reason: 'stalled', reasonParams: { via: 'tool' }, since: f.quietSince || f.act, timeKind: 'stalled' };

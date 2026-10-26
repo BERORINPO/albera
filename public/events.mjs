@@ -11,7 +11,7 @@ const eventKey = (type) => type === 'turn_started' ? 'event.turnStarted' : type 
 
 /** @param {T} t @param {{source?:string,events?:Array<{type:string,at:number}>}} card */
 export function eventSummaryEl(t, card) {
-  if (card.source !== 'codex' || !Array.isArray(card.events)) return null;
+  if (!['codex', 'copilot'].includes(card.source ?? '') || !Array.isArray(card.events)) return null;
   const event = card.events.at(-1);
   const key = event ? eventKey(event.type) : '';
   if (!event || !key || !Number.isFinite(event.at) || event.at <= 0) return null;
@@ -20,7 +20,7 @@ export function eventSummaryEl(t, card) {
 
 /** @param {T} t @param {{source?:string,events?:Array<{type:string,at:number}>}} card */
 export function eventsEl(t, card) {
-  if (card.source !== 'codex' || !Array.isArray(card.events) || card.events.length === 0) return null;
+  if (!['codex', 'copilot'].includes(card.source ?? '') || !Array.isArray(card.events) || card.events.length === 0) return null;
   const rows = card.events.flatMap((event) => {
     const key = eventKey(event.type);
     const iso = Number.isFinite(event.at) && event.at > 0 ? new Date(event.at).toISOString() : '';

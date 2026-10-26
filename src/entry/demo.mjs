@@ -4,6 +4,7 @@
 import { DEMO_REBUILD_MS } from '../shared/constants.mjs';
 import { buildDemo } from '../adapters/demo-data.mjs';
 import { createFakeAppSessionsSource } from '../adapters/fake-app-sessions.mjs';
+import { createFakeCopilotSessionsSource } from '../adapters/fake-copilot-sessions.mjs';
 import { createFakeFolderHints } from '../adapters/fake-folder-hints.mjs';
 import { createFakeTranscriptsSource } from '../adapters/fake-transcripts.mjs';
 import { createFakeWorktreeSource } from '../adapters/fake-worktrees.mjs';
@@ -27,6 +28,14 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
       built = {
         at: now,
         sessions: createFakeAppSessionsSource({ raws: demo.raws, archivedIds: demo.archivedIds }),
+        copilot: createFakeCopilotSessionsSource({ sessions: [{
+          source: 'copilot', sessionId: 'copilot_00000000-0000-4000-8000-000000000901',
+          title: 'GitHub Copilot', cwd: demoFolders[0], createdAt: now - 2 * 60_000,
+          lastActivityAt: now - 60_000, lastFocusedAt: now - 60_000,
+          isArchived: false, isStarred: false, autoArchiveExempt: true, prs: [],
+          pendingFirstStart: null, lifecycle: { status: 'active', startedAt: now - 60_000 },
+          events: [{ type: 'turn_started', at: now - 60_000 }],
+        }] }),
         transcripts: createFakeTranscriptsSource(demo.transcripts),
         hints: createFakeFolderHints(demo.folderHints),
         worktrees: createFakeWorktreeSource(Object.fromEntries(demoFolders.map((cwd, i) => {
@@ -43,7 +52,14 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
     return built;
   };
   return {
-    sessionsSource: { load: () => current().sessions.load() },
+    sessionsSource: { load: async () => {
+      const [claude, copilot] = await Promise.all([current().sessions.load(), current().copilot.load()]);
+      return {
+        sessions: [...claude.sessions, ...copilot.sessions],
+        archivedIds: claude.archivedIds,
+        stats: { ...claude.stats, sources: { copilot: copilot.stats } },
+      };
+    } },
     transcriptsSource: { read: (/** @type {string[]} */ ids) => current().transcripts.read(ids), stats: () => current().transcripts.stats() },
     folderHints: { hintFor: (/** @type {string} */ p) => current().hints.hintFor(p) },
     worktreeSource: {

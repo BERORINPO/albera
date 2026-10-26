@@ -13,7 +13,7 @@
  * adapter が元の JSON から許可した項目だけを射影したもの。
  * @typedef {Object} SessionRecord
  * @property {string} sessionId            "local_<uuid>"
- * @property {'codex'=} source             CLI adapter の安全な source code
+ * @property {'codex'|'copilot'=} source   CLI adapter の安全な source code
  * @property {string=} cliSessionId        会話ログ (jsonl) のファイル名
  * @property {string=} title
  * @property {string=} cwd
@@ -109,7 +109,7 @@
  * 画面に送るカード (文字列は CAP で切ってある)。
  * @typedef {Object} Card
  * @property {string} id
- * @property {'codex'=} source
+ * @property {'codex'|'copilot'=} source
  * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted',at:number}>=} events
  * @property {BucketKey} bucket
  * @property {ReasonCode} reason

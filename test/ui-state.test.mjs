@@ -174,6 +174,10 @@ test('visibleModel: 実行元フィルターは検索と重ねられ、件数も
   assert.equal(codex.filtering, true);
   assert.deepEqual(codex.recentGroups.flatMap((g) => g.items.map((item) => item.id)), ['codex_00000000-0000-4000-8000-000000000001']);
   assert.equal(codex.total, 1);
+  b.recentGroups[0].items.push(c('copilot_00000000-0000-4000-8000-000000000002', { source: 'copilot', title: 'Copilot task' }));
+  const copilot = visibleModel(b, { source: 'copilot', t: en });
+  assert.equal(copilot.filtering, true);
+  assert.deepEqual(copilot.recentGroups.flatMap((g) => g.items.map((item) => item.id)), ['copilot_00000000-0000-4000-8000-000000000002']);
   const combined = visibleModel(b, { source: 'codex', q: 'no match', t: en });
   assert.equal(combined.total, 0, 'source and text filters are ANDed');
 });

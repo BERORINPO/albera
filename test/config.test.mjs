@@ -75,6 +75,16 @@ test('Claude セッションフォルダが無くても Codex_HOME/sessions が�
   assert.equal(config.codexHome, 'D:\\codex');
 });
 
+test('Claude / Codex の保存先が無くても Copilot の session-state があれば実データモードで起動する', () => {
+  const config = loadConfig({
+    env: { COPILOT_HOME: 'D:\\copilot' }, argv: [], home: WIN_HOME,
+    platform: 'win32', isDir: (p) => p === 'D:\\copilot\\session-state',
+  });
+  assert.equal(config.action, 'run');
+  assert.equal(config.sessionsRoot, '');
+  assert.equal(config.copilotHome, 'D:\\copilot');
+});
+
 test('端末の言語: --lang → PIGEONHOLES_LANG → LC_ALL → LC_MESSAGES → LANG → Intl → en', () => {
   assert.equal(pickTerminalLang({}, 'ja', 'en-US'), 'ja');
   assert.equal(pickTerminalLang({ PIGEONHOLES_LANG: 'ja' }, 'en', 'ja-JP'), 'en', 'フラグが勝つ');
@@ -165,7 +175,11 @@ test('loadConfig: 候補のうち最初に存在したフォルダ。フラグ�
 test('loadConfig: フラグは環境変数に勝つ。デモはセッションフォルダが無くても起動する', () => {
   const base = { home: NIX_HOME, cwd: '/cwd', platform: 'linux', intlLocale: 'en-US', isDir: dirs([]) };
   const c = loadConfig({ ...base, argv: ['--port', '9100', '--demo', '--lang', 'ja', '--projects-dir', '/flag'], env: { PIGEONHOLES_PORT: 'abc', PIGEONHOLES_LANG: 'xx', PIGEONHOLES_PROJECTS_DIR: '/env' } });
-  assert.deepEqual(c, { action: 'run', lang: 'ja', demo: true, port: 9100, roots: [NIX_HOME], sessionsRoot: '', codexHome: NIX_HOME + '/.codex', projectsDir: '/flag', home: NIX_HOME });
+  assert.deepEqual(c, { action: 'run', lang: 'ja', demo: true, port: 9100, roots: [NIX_HOME], sessionsRoot: '', codexHome: NIX_HOME + '/.codex', copilotHome: NIX_HOME + '/.copilot', projectsDir: '/flag', home: NIX_HOME });
+  const copilot = loadConfig({ ...base, argv: ['--demo'], env: { COPILOT_HOME: '/copilot-home' } });
+  assert.equal(copilot.action === 'run' && copilot.copilotHome, '/copilot-home');
+  const relativeCopilot = loadConfig({ ...base, argv: ['--demo'], env: { COPILOT_HOME: 'relative' } });
+  assert.equal(relativeCopilot.action === 'run' && relativeCopilot.copilotHome, NIX_HOME + '/.copilot');
   const env = loadConfig({ ...base, argv: [], env: { PIGEONHOLES_PORT: '9200', PIGEONHOLES_DEMO: '1', PIGEONHOLES_ROOTS: '/a:/b' } });
   assert.equal(env.action === 'run' && env.port, 9200);
   assert.equal(env.action === 'run' && env.demo, true);

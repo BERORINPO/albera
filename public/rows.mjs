@@ -62,8 +62,8 @@ function familyLinks(t, card) {
  */
 export function metaItems(t, card, pile, ctx, o = {}) {
   const out = [];
-  if (card.source === 'codex') {
-    out.push(h('span', { class: 'is-ink', text: t('source.codex') }));
+  if (card.source === 'codex' || card.source === 'copilot') {
+    out.push(h('span', { class: 'is-ink', text: t(card.source === 'copilot' ? 'source.copilot' : 'source.codex') }));
     out.push(eventSummaryEl(t, card));
   }
   if (!o.noProject) {
@@ -273,7 +273,7 @@ export function detailEl(card, pile, ctx) {
       'dl',
       {},
       ...dlRow(t('detail.state'), h('span', {}, ...partsToNodes(t.parts('detail.stateValue', { pile: bucketTitle(t, pile), time: timeEl(t, card, ctx.now) })))),
-      ...dlRow(t('detail.source'), card.source === 'codex' ? t('source.codex') : t('source.claude')),
+      ...dlRow(t('detail.source'), card.source === 'copilot' ? t('source.copilot') : card.source === 'codex' ? t('source.codex') : t('source.claude')),
       ...activityRows(t, card, pile, ctx.now),
       ...dlRow(t('detail.summary'), d.statusDetail ? h('q', { lang: contentLang(d.statusDetail), text: d.statusDetail }) : null),
       ...dlRow(t('detail.error'), d.error ? h('span', { class: 'pre', lang: langOf(t, d.error), text: d.error }) : null),

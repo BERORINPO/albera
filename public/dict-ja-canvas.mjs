@@ -4,6 +4,11 @@
 
 /** @type {Readonly<Record<string, string>>} */
 export const JA_CANVAS = Object.freeze({
+  'source.copilot': 'GitHub Copilot',
+  'foot.copilotSummary': 'GitHub Copilot: 候補 {files} 件、認識 {detected} 件。盤面では作業中 {working}、止まったかも {trouble}、最近 {recent}。イベント状態は進行中 {active}、完了 {completed}、中断 {interrupted}、不明 {unknown}。除外・不良 {rejected} 件。',
+  'foot.copilotNoFiles': '0件表示の理由: 対象のsession-stateにevents.jsonlが見つかりません。COPILOT_HOMEまたは既定の保存先を確認してください。',
+  'foot.copilotNoDetected': '0件表示の理由: 候補ファイルはありますが、session.startの識別情報が形式条件に合いません。壊れた行や未知の形式は除外されます。',
+  'foot.copilotNoWorking': '作業中0件の理由: 15分以内に開始された未完了ターンがありません。完了・中断は「最近」へ、15分以上更新のない進行中ターンは「止まったかも」へ分類されます。',
   // 19.9 canvas
   'canvas.aria': 'キャンバス: プロジェクトごとのセッション',
   'canvas.keys': '矢印で移動、+ と − で拡大縮小、f で全体',
@@ -170,5 +175,6 @@ export const JA_CANVAS = Object.freeze({
   'filter.sourceAll': 'すべての実行元',
   'filter.sourceClaude': 'Claude Code',
   'filter.sourceCodex': 'Codex CLI',
+  'filter.sourceCopilot': 'GitHub Copilot',
   'graph.empty': 'セッションはありません。カードを追加して、タスクや根拠を整理できます。',
 });

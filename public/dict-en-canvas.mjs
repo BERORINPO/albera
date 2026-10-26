@@ -4,6 +4,11 @@
 
 /** @type {Readonly<Record<string, string | {one: string, other: string}>>} */
 export const EN_CANVAS = Object.freeze({
+  'source.copilot': 'GitHub Copilot',
+  'foot.copilotSummary': 'GitHub Copilot: {files} candidate files, {detected} recognized. On the board: {working} working, {trouble} stalled, {recent} recent. Event state: {active} in progress, {completed} complete, {interrupted} interrupted, {unknown} unknown. {rejected} filtered or invalid.',
+  'foot.copilotNoFiles': 'Why the count is 0: no events.jsonl was found in the checked session-state folders. Check COPILOT_HOME or the default location.',
+  'foot.copilotNoDetected': 'Why the count is 0: candidate files exist, but their session.start identity did not match. Malformed records and unknown formats are excluded.',
+  'foot.copilotNoWorking': 'Why Working is 0: no unfinished turn started within the last 15 minutes. Completed and interrupted turns go to Recent; unfinished turns with no update for 15 minutes go to Stuck?.',
   // 19.9 canvas
   'canvas.aria': 'Canvas: sessions by project',
   'canvas.keys': 'Arrows pan, + and − zoom, f fits everything.',
@@ -170,5 +175,6 @@ export const EN_CANVAS = Object.freeze({
   'filter.sourceAll': 'All sources',
   'filter.sourceClaude': 'Claude Code',
   'filter.sourceCodex': 'Codex CLI',
+  'filter.sourceCopilot': 'GitHub Copilot',
   'graph.empty': 'No sessions yet. Add a card to organize tasks and evidence.',
 });
