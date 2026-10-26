@@ -473,3 +473,8 @@
 - `npm run demo -- --port 19828` で隔離したloopbackデモを起動。合成Codex WSLカードから合成Claudeカードへの委譲記録を画面で作成し、詳細に「デモモードではCLIへの委譲を実行できません」と出て、実行ボタンが表示されないことを確認。
 - この操作はbrowser localStorageの合成グラフ記録だけを変更した。委譲API/CLI、実セッション、外部サービスは使用せず、確認後にサーバーを停止した。隔離originの記録は残る可能性がある。
 - これはdemo modeのGUI経路のみを確認したもの。未対応provider/WSL/operation不整合の各理由はunit testの対象であり、実providerセッションでの適合性は未確認。
+
+### ローカル実データを使った読み取り専用起動smoke (2026-10-26)
+
+- `npm run smoke` が127.0.0.1へ一時起動し、設定済みのClaudeセッション保存先をread-onlyで読み込んだ。出力はボードの欄別件数、形式/安全性チェック、時間の集計に限られ、タイトル、本文、ID、パス、イベント文字列は出力しなかった。smokeは成功し一時サーバーは終了した。
+- このsmokeのprovider sourceはClaudeセッションであり、Codex CLI検出・Codexイベント適合性の検証ではない。実Codex CLI候補数はこの実行から結論しない。
