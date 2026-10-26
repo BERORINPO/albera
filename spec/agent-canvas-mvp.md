@@ -254,3 +254,12 @@
 - 空状態を名前付きregionとして構造化し、ボタンのfocus-visible輪郭とポインター操作を有効にした。英語/日本語の説明と操作名を追加し、言語切替後も表示を更新する。
 - 単体テストはaction接続、名前付きregion、pointer-events、focus表示、両言語の辞書キーを確認。既存のdialog起動テストと`npm test`も実施。今回この空状態をブラウザーで直接表示する隔離シナリオは作れず、クリック後のGUI確認は未実施。
 - `npm test`: 507 passed; `npm run arch`: 96 paths, 0 violations; `npm run smoke`: passed; `git diff --check`: passed。`npm run smoke`は集計値のみを出力し、秘密値やパスは出ていない。
+
+### Codex候補の0件理由を実ストアで識別 (2026-10-26)
+
+- 実データを読む前にCodex readerを確認: 読取専用`fs.open(..., 'r')`、先頭32 KiBの`session_meta`と末尾128 KiBの許可イベントだけを解析し、CLI source/originator、opaque UUID、時刻、作業dir条件を満たす記録だけ返す。プロンプト、tool入出力、env、cwdは表示用wire/APIへ渡さない。追加調査では先頭メタ行だけをメモリ上で分類し、生値・パス・IDは出力しない。
+- 現在の実ストアにfilename条件を満たす候補rolloutが38件あったが、すべての`session_meta.source`が`cli`ではなく、CLIセッションとしての検出は0件。イベント末尾は読まず、ファイル名・source値・本文は出力/ログ/PRに記録していない。実際のCodex CLIセッションとの適合性は依然未確認。
+- adapterは「CLI識別マーカーなし」を他の形式不一致から分離した安全な件数だけ返す。Reading statusは候補すべてにCLIマーカーがない場合、`CODEX_HOME`がCodex CLIの保存先か確認するよう説明する。値そのものや保存パスは公開しない。
+- 合成テストで未CLIマーカーの件数、キャッシュ後も保持される安全な診断、英語/日本語UIの案内を検証する。実セッションは読取のみで変更なし。実CLI/外部リクエスト/新規セッション作成は行っていない。
+- 通常モードを`127.0.0.1`へ一時起動し、API応答からCodex用の数値フィールドだけを抽出して既存のReading status関数に渡した。実データの内訳`files=38 / detected=0 / rejected=38 / notCli=38`と、固定の「CODEX_HOME確認」案内が一致した。ボード本文、タイトル、session ID、ファイル名、パスは標準出力へ出していない。サーバーは停止済み。
+- 検証: `npm test` 507 passed、`npm run arch` 96 paths / 0 violations、`npm run smoke` passed、`git diff --check` passed。

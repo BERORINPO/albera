@@ -4,7 +4,7 @@
 /** @typedef {import('./i18n.mjs').T} T */
 
 const FIELDS = /** @type {const} */ ([
-  'files', 'detected', 'working', 'trouble', 'recent', 'active', 'completed', 'interrupted', 'failed', 'unknown', 'rejected',
+  'files', 'detected', 'working', 'trouble', 'recent', 'active', 'completed', 'interrupted', 'failed', 'unknown', 'rejected', 'notCli',
 ]);
 
 /** @param {unknown} value */
@@ -19,6 +19,7 @@ export function codexStatusMessages(t, input) {
   const messages = [t('foot.codexSummary', stats)];
   if (input.wslShareStatus === 'not_configured') messages.push(t('foot.codexWslNotConfigured'));
   if (stats.files === 0) messages.push(t('foot.codexNoFiles'));
+  else if (stats.detected === 0 && stats.notCli === stats.files) messages.push(t('foot.codexNoCliMarkers'));
   else if (stats.detected === 0) messages.push(t('foot.codexNoDetected'));
   else if (stats.working === 0) messages.push(t('foot.codexNoWorking'));
   return messages;

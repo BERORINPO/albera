@@ -74,6 +74,9 @@ test('Codex CLI rollout を検出し、turn status と allowlist イベントだ
   assert.equal(sessions.length, 3);
   assert.equal(stats.parsed, 3);
   assert.equal(stats.bad, 2);
+  assert.equal(stats.notCli, 1, 'records without the CLI marker are counted without retaining their source value');
+  assert.equal((await source.load()).stats.notCli, 1, 'the safe reason count survives the read-only stat cache');
+  assert.equal(JSON.stringify(stats).includes('vscode'), false, 'the rejected producer value does not enter diagnostics');
   const active = sessions.find((s) => s.sessionId === `codex_${activeId}`);
   const done = sessions.find((s) => s.sessionId === `codex_${doneId}`);
   const aborted = sessions.find((s) => s.sessionId === `codex_${abortedId}`);
@@ -122,6 +125,7 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   assert.deepEqual(mixed.stats.sources.codex, {
     files: 3, detected: 3, working: 1, trouble: 0, recent: 2,
     active: 1, completed: 1, interrupted: 1, failed: 0, unknown: 0, rejected: 0,
+    notCli: 0,
     wslShareStatus: 'not_configured',
   });
   const wire = JSON.stringify(mixed);
