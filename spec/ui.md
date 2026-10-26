@@ -1419,3 +1419,9 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - port `18816`の`--demo`で合成worktreeカード`demo/canvas-check`を作り、合成の稼働中Claude sessionへ`related`接続した。カード詳細から読取専用fake inventoryを開き、対象branchだけに「キャンバスに記録」が表示され、cleanな別branchには操作が出ないことを確認した。inventoryは対象branch changed=2、untracked=0、conflicted=0、別branch clean=0を示した。
 - 対象状態を記録すると成功通知が出て、記録済みボタンが無効化された。inventoryを閉じると親詳細からキャンバスカードへ戻り、再読込後もカード・関係線・安全な状態要約が復元された。UIに完全なパスやGit診断本文は表示されなかった。
 - 一時Graphの合成カードを確認後に削除し、tabとserverを閉じた。実セッション、CLI、実Git/WSL worktree、外部サービスは使用していない。この受入は合成UIとlocalStorageのみであり、実環境との適合性は未確認。
+
+### 新規Graphカードの配置不具合 (2026-10-27追記)
+
+- 隔離`--demo` originで「カードを追加」から合成タスクを保存すると、`.graph-node`の`--x`/`--y`が`0`/`0`になることを再現した。新規カードが重なり、意図したカードを選びにくい。
+- 配置探索の境界で占有中心を返す理論ケースに対する純粋モデルfixtureは追加したが、画面上の再現は解消していない。GUI受入れは失敗扱いとし、配置算出値がdialog、保存モデル、描画まで通る経路の修正が必要。
+- この試験には合成データだけを使い、試験用タブとサーバーを終了した。実セッションへの確認は行っていない。

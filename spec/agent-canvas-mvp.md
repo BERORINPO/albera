@@ -998,3 +998,5 @@ A synthetic late-completion fixture verifies that an older completed turn cannot
 The synthetic `--demo` board now includes an explicitly labeled Codex CLI failed-turn card with only the fixed `turn_failed` event and timestamps. This makes the failure state available for manual UI review without presenting fixture data as a real session. Unit coverage verifies demo lifecycle coverage, board projection of the `failed` state, and event detail rendering that ignores provider error text. README state lists now include failed.
 
 > 2026-10-27追記: 上記実画面確認はport `18816`の隔離demoで実施し、入れ子inventory・target-only記録・親詳細からcanvasへのfocus復帰・再読込後の状態復元を合成カードで確認した。実Git/WSL、実セッションとの適合性は未確認。
+
+> 2026-10-27追記: 別の隔離demo origin (`18819`, `18821`) でカード追加を試すと、保存後の新規タスクカード座標が`(0,0)`となり、複数カードが重なることをDOM上の`--x/--y`で確認した。合成データのみで、実セッションは読んでいない。配置探索が上限まで失敗した場合に占有中心を返さず、障害物境界の外へ退避する純粋モデルの防御策と回帰fixtureを追加したが、同じUI再現で`(0,0)`が再発したため、GUIの配置不具合は未解決として扱う。`npm test`/`arch`/`smoke`は通過したが、カード位置・選択・保存復元を満たすGUI受入れは確認できていない。原因切り分けと修正が次の作業項目。

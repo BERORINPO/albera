@@ -229,7 +229,26 @@ export function nextGraphNodePosition(doc, center, size, obstacles = []) {
       if (!overlaps(x, y)) return { x, y };
     }
   }
-  return { x: coord(center.x), y: coord(center.y) };
+  // Dense boards can exceed the bounded spiral (many project sheets may cover
+  // the viewport). Never return the occupied center; spill just beyond the
+  // nearest side of the complete graph/obstacle bounds.
+  const bounds = [
+    ...doc.nodes.map((node) => ({ x: node.x, y: node.y, width: size.width, height: size.height })),
+    ...obstacles.filter((rect) => [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite)),
+  ];
+  if (!bounds.length) return { x: coord(center.x), y: coord(center.y) };
+  const left = Math.min(...bounds.map((rect) => rect.x));
+  const top = Math.min(...bounds.map((rect) => rect.y));
+  const right = Math.max(...bounds.map((rect) => rect.x + rect.width));
+  const bottom = Math.max(...bounds.map((rect) => rect.y + rect.height));
+  const spill = [
+    { x: coord(right + gap), y: coord(center.y) },
+    { x: coord(left - size.width - gap), y: coord(center.y) },
+    { x: coord(center.x), y: coord(bottom + gap) },
+    { x: coord(center.x), y: coord(top - size.height - gap) },
+  ].filter((point) => !overlaps(point.x, point.y));
+  spill.sort((a, b) => (Math.abs(a.x - center.x) + Math.abs(a.y - center.y)) - (Math.abs(b.x - center.x) + Math.abs(b.y - center.y)));
+  return spill[0] ?? { x: coord(center.x), y: coord(center.y) };
 }
 
 /** Use full sheet and archive-fold bounds so cards cannot cover headings, slips, or counts. @param {any} layout */

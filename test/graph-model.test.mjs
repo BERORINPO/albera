@@ -135,6 +135,15 @@ test('new graph card slots avoid both existing graph cards and session slip rect
     || position.y + size.height + 24 <= slip.y || slip.y + slip.height + 24 <= position.y);
 });
 
+test('graph placement spills beyond large obstacle bounds instead of returning an occupied center', () => {
+  const size = { width: 280, height: 168 };
+  const obstacle = { x: -61_000, y: -61_000, width: 122_000, height: 122_000 };
+  const position = nextGraphNodePosition(empty(), { x: 0, y: 0 }, size, [obstacle]);
+  assert.notDeepEqual(position, { x: 0, y: 0 });
+  assert.ok(position.x + size.width + 24 <= obstacle.x || obstacle.x + obstacle.width + 24 <= position.x
+    || position.y + size.height + 24 <= obstacle.y || obstacle.y + obstacle.height + 24 <= position.y);
+});
+
 test('graph placement obstacles include complete sheets and the archive fold', () => {
   const layout = {
     sheets: [{ x: 10, y: 20, w: 720, h: 520, slips: [{ x: 0, y: 48, h: 100 }] }],
