@@ -1,7 +1,7 @@
 // @ts-check
 // Accessible local editor for graph cards and user-authored relations.
 
-import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
+import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
 import { h } from './view.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
 import { cancelGraphDialog, completeGraphDialogSave, confirmBlockedOperationRelease, confirmGraphRelationRemoval, connectMissingComprehensionEdge, graphDialogFocusTarget } from './graph-dialog-actions.mjs';

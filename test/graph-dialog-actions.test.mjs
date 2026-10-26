@@ -148,6 +148,7 @@ test('dialog focus returns to the invoking control, then source card, then canva
 test('the comprehension editor renders actions only from its current missing-link review', () => {
   const source = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
   const review = fs.readFileSync(new URL('../public/graph-comprehension-review.mjs', import.meta.url), 'utf8');
+  assert.match(source, /import \{[^}]*reviewUnderstandingGaps[^}]*\} from '\.\/graph-model\.mjs'/, 'terminal status validation must import the review model it calls');
   assert.match(source, /comprehensionReviewElements\(t, graph, sessions, node\.id\)/);
   assert.match(review, /reviewUnderstandingGaps\(graph, new Set\(sessions\.map\(\(session\) => session\.id\)\)\)/);
   assert.match(source, /const missingEndpoint = \(key\) => \(\{[\s\S]*?title: t\(key\.startsWith\('session:'\) \? 'graph\.missingSession' : 'graph\.missingNode'\)/);
