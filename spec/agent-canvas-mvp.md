@@ -235,5 +235,6 @@
 
 - CSSで線レイヤーの`pointer-events: none`を継承していたため、委譲線に設定済みの固定titleをhoverできない問題を修正。線自体は見た目を保ち、上下7pxの透明hit領域を追加した。
 - 隔離loopback合成デモでDOM上のhover hit-testがtrueになり、委譲線に「委譲の記録: 予定」の固定title属性と`pointer-events: auto`が付くことを確認。目的文はtitleに含まれない。
-- ブラウザーのネイティブtooltip popupは画面キャプチャに現れず、視認受入は未確認。未知状態もUIから作れないためブラウザー未確認。`npm test`: 506 passed; `npm run arch`: 96 paths, 0 violations; `npm run smoke`: passed; `git diff --check`: passed。
+- 次段階でネイティブtooltipの視認性を補うアプリ描画tooltipを追加。ホバー時に固定の種別/状態ラベルを表示し、表示文字を12px未満に縮めない。隔離loopback合成デモを34%キャンバス倍率で目視し、「委譲の記録: 予定」が読めることを確認。目的文・端点名などの自由入力は表示しない。
+- 未知状態はUIで作成できないため、未知状態のブラウザー表示は未確認。`npm test`: 506 passed; `npm run arch`: 96 paths, 0 violations; `npm run smoke`: passed; `git diff --check`: passed。
 - Pigeonholes自身が外部サービスへ直接リクエストしない説明は維持し、CLI自体の通信可能性と区別した。実CLIは起動していない。

@@ -130,7 +130,9 @@ export function renderGraphLayer(layer, o) {
     (x) => `${x.edge.from}|${x.edge.to}|${x.edge.kind}|${x.edge.status}|${x.edge.purpose}|${x.line?.x1}|${x.line?.y1}|${x.line?.x2}|${x.line?.y2}`,
     (x) => {
       const attributes = graphEdgeAttributes(x.edge, t);
-      const line = h('span', { class: attributes.className });
+      const line = h('span', { class: attributes.className }, attributes.title
+        ? h('span', { class: 'graph-edge__tooltip', 'aria-hidden': 'true', text: attributes.title })
+        : null);
       if (attributes.status) line.setAttribute('data-status', attributes.status);
       if (attributes.title) line.setAttribute('title', attributes.title);
       if (x.line) placeLine(line, x.line.x1, x.line.y1, x.line.x2, x.line.y2);

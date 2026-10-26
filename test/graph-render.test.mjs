@@ -39,6 +39,9 @@ test('each persisted delegation status has a canvas style and unknown status sta
   assert.match(css, /\.graph-edge--delegates-unknown\s*\{/);
   assert.match(css, /\.graph-edge\s*\{[^}]*pointer-events:\s*auto;/);
   assert.match(css, /\.graph-edge::before\s*\{[^}]*inset:\s*-7px 0;/);
+  assert.match(css, /\.graph-edge\[title\]:hover \.graph-edge__tooltip\s*\{\s*display:\s*block;/);
+  assert.match(css, /\.graph-edge__tooltip\s*\{[^}]*pointer-events:\s*none;/);
+  assert.match(css, /\.graph-edge__tooltip\s*\{[^}]*font-size:\s*max\(12px,/);
 });
 
 test('delegation edge attributes expose only the fixed status tooltip, including unknown status', () => {
