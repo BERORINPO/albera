@@ -11,6 +11,7 @@ import {
 import { handoffGuideEl, handoffPlan, handoffRowEl } from './handoff.mjs';
 import { activityRows, asOfNode, contextNodes, doingNodes, langOf, openEl, timeEl } from './labels.mjs';
 import { familyTree } from './ui-state.mjs';
+import { eventSummaryEl, eventsEl } from './events.mjs';
 import { fill, h, partsToNodes, reconcile, setDisclosed } from './view.mjs';
 
 // 時刻のセル・「開く ↗」・lang の決め方は labels.mjs にある (キャンバスと共有。ここから今までどおり使える)
@@ -64,6 +65,10 @@ function familyLinks(t, card) {
  */
 export function metaItems(t, card, pile, ctx, o = {}) {
   const out = [];
+  if (card.source === 'codex') {
+    out.push(h('span', { class: 'is-ink', text: t('source.codex') }));
+    out.push(eventSummaryEl(t, card));
+  }
   if (!o.noProject) {
     const other = isOtherProject(card.project);
     out.push(h('span', { class: other ? 'is-other' : null, title: other ? t('project.otherGloss') : null, text: projectLabel(t, card.project) }));
@@ -268,6 +273,7 @@ export function detailEl(card, pile, ctx) {
       'dl',
       {},
       ...dlRow(t('detail.state'), h('span', {}, ...partsToNodes(t.parts('detail.stateValue', { pile: bucketTitle(t, pile), time: timeEl(t, card, ctx.now) })))),
+      ...dlRow(t('detail.source'), card.source === 'codex' ? t('source.codex') : null),
       ...activityRows(t, card, pile, ctx.now),
       ...dlRow(t('detail.summary'), d.statusDetail ? h('q', { lang: contentLang(d.statusDetail), text: d.statusDetail }) : null),
       ...dlRow(t('detail.error'), d.error ? h('span', { class: 'pre', lang: langOf(t, d.error), text: d.error }) : null),
@@ -280,6 +286,7 @@ export function detailEl(card, pile, ctx) {
       ...dlRow(t('detail.pr'), prList),
       ...dlRow(t('detail.related'), fam),
     ),
+    eventsEl(t, card),
     plan.guide ? handoffGuideEl(t, card, { kind: plan.guide, inBar: false, demo: !!ctx.board?.stats?.demo }) : null,
     h('p', { class: 'detail__acts' }, ...actions),
   );

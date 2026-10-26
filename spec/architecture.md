@@ -8,15 +8,16 @@
 |---|---|---|
 | shared | src/shared/ | constants.mjs (しきい値・ID 形式・PRODUCT。言葉なし) / types.mjs (JSDoc) / i18n.mjs (fill・fillParts・pickForm・normalizeLang)。何も import しない。constants と i18n は画面にも配信 |
 | core | src/core/ | turn / classify (tailFacts) / project / board / session / text (cleanText) / activity (していること・commandHead) / context (窓・段階・contextMemo)。fs・clock・env・言葉なし (now と前回の段階は引数、出力はコードと params) |
-| adapter | src/adapters/ | app-sessions-fs + fake-app-sessions / transcripts-fs + fake-transcripts (末尾・subMtime・subLive) / folder-hints-fs + fake-folder-hints / session-record (許可項目への射影・attachFolders。model は窓のためだけ) / demo-data (合成、en・ja) / map-limit |
+| adapter | src/adapters/ | app-sessions-fs + fake-app-sessions / codex-sessions-fs + fake-codex-sessions (rollout の許可イベントだけ) / transcripts-fs + fake-transcripts (末尾・subMtime・subLive) / folder-hints-fs + fake-folder-hints / session-record (許可項目への射影・attachFolders。model は窓のためだけ) / demo-data (合成、en・ja) / map-limit |
 | entry | src/entry/ | server (起動・CLI・shebang) / config (フラグと env の fail-fast、セッションフォルダの候補、起動例の組み立て) / messages (端末の言葉 en・ja) / service (wiring 1 点・2 秒キャッシュ・ETag・tail 解析の memo と前回の段階をメモリに持つ) / demo (`--demo` の Fake の組。1 分ごとに今の時刻から作り直す) / http (ヘッダー一括・起動時に作る配信表・`/api/hello`) / probe (使用中のポートで応答しているのがこのボードらしいか、デモか実データか) |
-| 画面 | public/ | index.html / tokens.css style.css rows.css tidy.css canvas.css / app actions poll state ui-state render front rows labels cleanup handoff keys notify favicon copy view format times (.mjs) / canvas canvas-slip canvas-sheet canvas-fit canvas-bar canvas-ctl canvas-view canvas-act canvas-layout canvas-desk canvas-fold canvas-camera canvas-input (.mjs、layout・desk・fold・camera は純粋。fit は見えない箱で付箋の中身の高さを測り、layout に入力として渡す) / doing.mjs (していることの言葉、純粋) / i18n.mjs dict-en.mjs dict-ja.mjs dict-en-canvas.mjs dict-ja-canvas.mjs dict-en-handoff.mjs dict-ja-handoff.mjs (言葉はここだけ。dict-<lang>-<part>.mjs は 400 行のための分割) / api.mjs (唯一の fetch)。画面のファイルは 400 行まで (arch 7)。spec/ui.md §1 |
+| 画面 | public/ | index.html / tokens.css style.css rows.css tidy.css canvas.css / app actions poll state ui-state render front rows labels cleanup handoff keys notify favicon copy view format times (.mjs) / canvas canvas-slip canvas-sheet canvas-fit canvas-bar canvas-ctl canvas-view canvas-act canvas-layout canvas-desk canvas-fold canvas-camera canvas-input (.mjs、layout・desk・fold・camera は純粋。fit は見えない箱で付箋の中身の高さを測り、layout に入力として渡す) / doing.mjs (していることの言葉、純粋) / events.mjs (許可済み CLI イベントの時系列) / i18n.mjs dict-en.mjs dict-ja.mjs dict-en-canvas.mjs dict-ja-canvas.mjs dict-en-handoff.mjs dict-ja-handoff.mjs (言葉はここだけ。dict-<lang>-<part>.mjs は 400 行のための分割) / api.mjs (唯一の fetch)。画面のファイルは 400 行まで (arch 7)。spec/ui.md §1 |
 
 ## 2. 外部境界表
 
 | adapter | 相手 | Fake | fixture | credential | 書込 identity |
 |---|---|---|---|---|---|
 | app-sessions-fs | セッションフォルダ (board.md §11 の候補) の `*/*/local_*.json` と `archived-sessions.idx` | fake-app-sessions | 合成のみ (test/helpers, demo-data) | なし | 書き込まない |
+| codex-sessions-fs | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (既定: `~/.codex`)、`session_meta.source=cli` のみ | fake-codex-sessions | 合成 JSONL (`test/codex-sessions.test.mjs`) | なし | 書き込まない。最大 128 KiB の末尾から turn start/complete の code と timestamp のみ採用 |
 | transcripts-fs | `<projectsDir>/*/<cliSessionId>.jsonl` と `<cliSessionId>/subagents/**` | fake-transcripts | 合成のみ | なし | 書き込まない (stat と末尾読みだけ。subagents は stat で数えるだけで開かない。全体は読まない) |
 | folder-hints-fs | アーカイブしていないセッションの cwd とその親 (`.git` の有無、直下のフォルダ名)。ネットワークのパス (`\\server\share`・`//server/share`) は見ない。1 パス 0.5 秒まで | fake-folder-hints | 合成のみ (os.tmpdir の一時フォルダ) | なし | 書き込まない (stat と readdir だけ) |
 | (なし) | ネットワーク | — | — | なし | 外への通信は 0 件 (割り当てたネットワークドライブ上のフォルダだけは、OS がその共有を見に行くことがある)。配置も言葉も AI を使わない |

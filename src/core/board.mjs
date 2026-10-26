@@ -109,7 +109,7 @@ function detailFor(s, c, body) {
   if (c.facts.fresh && isNonEmpty(sd) && cap(sd, CAP.BODY) !== body) d.statusDetail = cap(sd, CAP.BODY);
   if (isNonEmpty(s.branch)) d.branch = cap(s.branch, CAP.TITLE);
   if (isNonEmpty(s.worktreeName)) d.worktreeName = cap(s.worktreeName, CAP.TITLE);
-  if (isNonEmpty(s.cwd)) d.cwd = cap(s.cwd, CAP.CWD);
+  if (s.source !== 'codex' && isNonEmpty(s.cwd)) d.cwd = cap(s.cwd, CAP.CWD);
   if (typeof s.completedTurns === 'number') d.completedTurns = s.completedTurns;
   if (isNonEmpty(s.error)) d.error = cap(/** @type {string} */ (s.error).trim(), CAP.BODY);
   const morePrs = prListOf(s).length - MAX_PRS;
@@ -243,6 +243,8 @@ function makeCard(s, ctx) {
   /** @type {Card} */
   const card = {
     id: s.sessionId,
+    ...(s.source === 'codex' ? { source: 'codex' } : {}),
+    ...(s.source === 'codex' ? { source: 'codex' } : {}),
     bucket: c.bucket,
     reason: c.reason,
     ...(c.reasonParams ? { reasonParams: c.reasonParams } : {}),
@@ -256,6 +258,8 @@ function makeCard(s, ctx) {
     project: { key: ref.key, label: isOther ? null : ctx.labelOf.get(ref.key) ?? ref.name, extra: ref.extra },
     prs: prsForCard(s),
     detail: detailFor(s, c, body),
+    ...(s.source === 'codex' && Array.isArray(s.events) ? { events: s.events.slice(-30).map((event) => ({ type: event.type, at: event.at })) } : {}),
+    ...(s.source === 'codex' && Array.isArray(s.events) ? { events: s.events.slice(-30).map((event) => ({ type: event.type, at: event.at })) } : {}),
   };
   const routine = routineFor(s, ctx);
   if (routine) card.routine = routine;

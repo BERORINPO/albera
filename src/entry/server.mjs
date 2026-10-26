@@ -12,6 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_PORT, PRODUCT } from '../shared/constants.mjs';
 import { createAppSessionsSource } from '../adapters/app-sessions-fs.mjs';
+import { createCodexSessionsSource } from '../adapters/codex-sessions-fs.mjs';
 import { createFolderHints } from '../adapters/folder-hints-fs.mjs';
 import { createTranscriptsSource } from '../adapters/transcripts-fs.mjs';
 import { argsWithoutPort, ConfigError, loadConfig, portHint, shellQuote } from './config.mjs';
@@ -44,9 +45,28 @@ function launcher() {
 function wire(config) {
   if (config.demo) return liveDemoSources(config.lang);
   return {
-    sessionsSource: createAppSessionsSource({ root: config.sessionsRoot }),
+    sessionsSource: createCombinedSessionsSource([
+      createAppSessionsSource({ root: config.sessionsRoot }),
+      createCodexSessionsSource({ root: config.codexHome }),
+    ]),
     transcriptsSource: createTranscriptsSource({ projectsDir: config.projectsDir }),
     folderHints: createFolderHints({ home: config.home }),
+  };
+}
+
+/** @param {Array<{load: () => Promise<{sessions:any[],archivedIds:Set<string>,stats:any}>}>} sources */
+function createCombinedSessionsSource(sources) {
+  return {
+    async load() {
+      const loaded = await Promise.all(sources.map((source) => source.load()));
+      // 既存の診断統計は Claude セッション源の値をそのまま使う。
+      const stats = loaded[0]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
+      return {
+        sessions: loaded.flatMap((source) => source.sessions),
+        archivedIds: new Set(loaded.flatMap((source) => [...source.archivedIds])),
+        stats,
+      };
+    },
   };
 }
 

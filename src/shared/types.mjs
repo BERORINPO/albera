@@ -13,6 +13,7 @@
  * adapter が元の JSON から許可した項目だけを射影したもの。
  * @typedef {Object} SessionRecord
  * @property {string} sessionId            "local_<uuid>"
+ * @property {'codex'=} source             CLI adapter の安全な source code
  * @property {string=} cliSessionId        会話ログ (jsonl) のファイル名
  * @property {string=} title
  * @property {string=} cwd
@@ -48,6 +49,8 @@
  * @property {{origin?: FolderHint, cwd?: FolderHint}=} folders  originCwd / cwd の手掛かり (attachFolders が付ける)。無い = 手掛かりなし
  * @property {string=} model                 (v0.2) CAP.MODEL まで。コンテキストの窓を決めるためだけに使い、JSON には出さない
  * @property {number=} contextExceededCount  (v0.2) 0 以上の整数。1 以上なら Card.detail.contextExceeded に出す
+ * @property {{status:'active'|'complete'|'unknown',startedAt?:number}=} lifecycle
+ * @property {Array<{type:'turn_started'|'turn_completed',at:number}>=} events
  */
 
 /**
@@ -103,6 +106,8 @@
  * 画面に送るカード (文字列は CAP で切ってある)。
  * @typedef {Object} Card
  * @property {string} id
+ * @property {'codex'=} source
+ * @property {Array<{type:'turn_started'|'turn_completed',at:number}>=} events
  * @property {BucketKey} bucket
  * @property {ReasonCode} reason
  * @property {ReasonParams=} reasonParams

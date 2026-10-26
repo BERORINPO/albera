@@ -6,6 +6,7 @@
 import { compactedRecent, askText, bucketTitle, contextMeta, prLabel, reasonLine, shortDoing, titleOf, waitWordsKey } from './format.mjs';
 import { handoffPlan, handoffRowEl } from './handoff.mjs';
 import { asOfNode, contextNodes, doingNodes, langOf, openEl, timeEl } from './labels.mjs';
+import { eventSummaryEl } from './events.mjs';
 import { h, partsToNodes } from './view.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
@@ -134,6 +135,8 @@ function whereLine(t, card) {
   const pname = f?.parentTitle == null ? t('family.parentMissing') : f.parentTitle || t('untitled');
   const parent = f?.parentId ? partsToNodes(t.parts('family.parent', { name: h('bdi', { lang: langOf(t, pname), text: pname }) })) : null;
   const kids = [
+    card.source === 'codex' ? h('span', { class: 'is-ink', text: t('source.codex') }) : null,
+    eventSummaryEl(t, card),
     d.branch ? h('code', { text: d.branch }) : null,
     d.worktreeName ? h('span', { text: d.worktreeName }) : null,
     pr ? h('span', { text: prLabel(t, pr, !!short && short !== card.project?.label) }) : null,
