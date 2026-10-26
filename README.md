@@ -11,7 +11,7 @@ A local board for Claude Code, Codex CLI, GitHub Copilot, and OpenCode sessions,
 Demo data. Also: [canvas](docs/screenshot-canvas.png) · [dark theme](docs/screenshot-dark.png) · [400 px wide](docs/screenshot-narrow.png) · [Japanese](docs/screenshot-ja.png)
 
 - **Session data stays read-only.** It never writes to app session files. A separate local Git worktree is created only after you review the target and confirm in the board. The board listens on 127.0.0.1; Pigeonholes itself does not contact remote services. Git checkout filters configured by a repository may run during a confirmed worktree creation.
-- **No AI behind it.** Piles, labels, context sizes and the canvas layout come from fixed rules. Nothing is sent to a model or anywhere else.
+- **No automatic AI processing.** Piles, labels, context sizes and the canvas layout come from fixed rules. If you explicitly confirm a read-only delegation to a completed local Codex session, only the purpose you entered is passed to Codex on stdin; Codex may use its saved account/configuration for network/API access or usage. Pigeonholes itself does not contact remote services.
 - **Zero dependencies.** Node.js 22 or newer. No build step.
 - **English and Japanese.** The page follows your browser language; the terminal follows your system language.
 
