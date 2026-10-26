@@ -230,6 +230,13 @@ export function nextGraphNodePosition(doc, center, size, obstacles = []) {
   return { x: coord(center.x), y: coord(center.y) };
 }
 
+/** Use full sheet and archive-fold bounds so cards cannot cover headings, slips, or counts. @param {any} layout */
+export function graphPlacementObstacles(layout) {
+  const boxes = (layout?.sheets ?? []).map((sheet) => ({ x: sheet.x, y: sheet.y, width: sheet.w, height: sheet.h }));
+  if (layout?.fold) boxes.push({ x: layout.fold.x, y: layout.fold.y, width: layout.fold.w, height: layout.fold.h });
+  return boxes;
+}
+
 /** @param {GraphDoc} doc @param {string} id @param {Partial<Omit<GraphNode,'id'>>} patch @param {Set<string>} [sessionIds] @returns {GraphDoc} */
 export function updateGraphNode(doc, id, patch, sessionIds = new Set()) {
   const current = doc.nodes.find((node) => node.id === id);

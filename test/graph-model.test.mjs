@@ -3,7 +3,7 @@ import { webcrypto } from 'node:crypto';
 import { test } from 'node:test';
 import { GRAPH_STORAGE_KEY, migrateSavedProviderSessionIds } from '../public/graph-store.mjs';
 import { opaqueProviderSessionId } from '../src/adapters/opaque-session-id.mjs';
-import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, finishGraphDelegationOperation, migrateProviderSessionEndpoints, moveGraphNode, nextGraphNodePosition, normalizeGraph, obsidianOpenUri, releaseBlockedGraphDelegationOperation, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault, startGraphDelegationOperation, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, finishGraphDelegationOperation, graphPlacementObstacles, migrateProviderSessionEndpoints, moveGraphNode, nextGraphNodePosition, normalizeGraph, obsidianOpenUri, releaseBlockedGraphDelegationOperation, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault, startGraphDelegationOperation, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
 
 const g1 = 'g_00000000-0000-4000-8000-000000000001';
 const g2 = 'g_00000000-0000-4000-8000-000000000002';
@@ -133,6 +133,21 @@ test('new graph card slots avoid both existing graph cards and session slip rect
   assert.notDeepEqual(position, { x: 100, y: 200 });
   assert.ok(position.x + size.width + 24 <= slip.x || slip.x + slip.width + 24 <= position.x
     || position.y + size.height + 24 <= slip.y || slip.y + slip.height + 24 <= position.y);
+});
+
+test('graph placement obstacles include complete sheets and the archive fold', () => {
+  const layout = {
+    sheets: [{ x: 10, y: 20, w: 720, h: 520, slips: [{ x: 0, y: 48, h: 100 }] }],
+    fold: { x: 20, y: 560, w: 432, h: 80 },
+  };
+  assert.deepEqual(graphPlacementObstacles(layout), [
+    { x: 10, y: 20, width: 720, height: 520 },
+    { x: 20, y: 560, width: 432, height: 80 },
+  ]);
+  const size = { width: 280, height: 168 };
+  const position = nextGraphNodePosition(empty(), { x: 180, y: 120 }, size, graphPlacementObstacles(layout));
+  assert.ok(position.x + size.width + 24 <= 10 || 754 <= position.x
+    || position.y + size.height + 24 <= 20 || 664 <= position.y);
 });
 
 test('a task created from session detail is linked atomically without copying session content', () => {

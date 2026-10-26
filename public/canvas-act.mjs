@@ -12,7 +12,7 @@ import { neighbour } from './canvas-layout.mjs';
 import { openSession, render, view } from './render.mjs';
 import { state } from './state.mjs';
 import { nextUp, PILES } from './ui-state.mjs';
-import { addGraphNode, addTaskForSession, addWorktreeForSession, moveGraphNode, nextGraphNodePosition, updateGraphNode } from './graph-model.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, graphPlacementObstacles, moveGraphNode, nextGraphNodePosition, updateGraphNode } from './graph-model.mjs';
 import { loadGraph, saveGraph } from './graph-store.mjs';
 import { openGraphNodeDialog } from './graph-dialog.mjs';
 import { GRAPH_CARD_SIZE } from './graph-render.mjs';
@@ -100,13 +100,11 @@ const graphActions = createGraphActions({
   sessionIds: () => new Set(view.index.keys()),
 });
 
-/** Place a new graph card without covering an existing session slip. */
+/** Place a new graph card outside project sheets and the archive fold. */
 function nextCanvasGraphPosition(graph) {
   const vpSize = size();
   const center = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
-  const obstacles = (cv.layout?.sheets ?? []).flatMap((sheet) => (sheet.slips ?? []).map((slip) => ({
-    x: sheet.x + slip.x, y: sheet.y + slip.y, width: CANVAS.SLIP_W, height: slip.h,
-  })));
+  const obstacles = graphPlacementObstacles(cv.layout);
   return nextGraphNodePosition(graph, center, GRAPH_CARD_SIZE, obstacles);
 }
 
