@@ -7,6 +7,7 @@ import { createFakeAppSessionsSource } from '../adapters/fake-app-sessions.mjs';
 import { createFakeFolderHints } from '../adapters/fake-folder-hints.mjs';
 import { createFakeTranscriptsSource } from '../adapters/fake-transcripts.mjs';
 import { createFakeWorktreeSource } from '../adapters/fake-worktrees.mjs';
+import { createFakeWorktreeCreator } from '../adapters/fake-worktree-create.mjs';
 
 /**
  * デモの合成データを DEMO_REBUILD_MS ごとに今の時刻から作り直す Fake の組。
@@ -45,5 +46,6 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
     transcriptsSource: { read: (/** @type {string[]} */ ids) => current().transcripts.read(ids), stats: () => current().transcripts.stats() },
     folderHints: { hintFor: (/** @type {string} */ p) => current().hints.hintFor(p) },
     worktreeSource: { enrich: (/** @type {import('../shared/types.mjs').SessionRecord[]} */ sessions) => current().worktrees.enrich(sessions), stats: () => current().worktrees.stats() },
+    worktreeCreator: createFakeWorktreeCreator(),
   };
 }

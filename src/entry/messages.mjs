@@ -7,7 +7,7 @@ import { fill } from '../shared/i18n.mjs';
 /** @typedef {'en'|'ja'} Lang */
 
 const HELP_EN = [
-  'Pigeonholes {version}: one read-only page for all your Claude desktop app sessions (the Code tab).',
+  'Pigeonholes {version}: a local session board with session files kept read-only and Git worktrees created only on confirmation.',
   '',
   'Usage: {cmd} [options]',
   '  --port <n>             port on 127.0.0.1 (default {port}; env PIGEONHOLES_PORT)',
@@ -17,11 +17,11 @@ const HELP_EN = [
   "  --projects-dir <path>  Claude Code's projects folder with transcripts (env PIGEONHOLES_PROJECTS_DIR)",
   '  --help, --version',
   'PIGEONHOLES_ROOTS: folders, separated by "{sep}", whose direct subfolders are projects (default: your home).',
-  'It only reads files. Nothing leaves this computer.',
+  'Session files are read-only. Worktree creation writes only to the selected local repository after confirmation. Pigeonholes sends no remote requests.',
 ].join('\n');
 
 const HELP_JA = [
-  'Pigeonholes {version}: Claude デスクトップアプリ (Code タブ) のセッションを 1 ページで見渡す、読み取り専用の道具です。',
+  'Pigeonholes {version}: セッションファイルを読み取り専用で扱い、明示確認後にGit worktreeを作成するローカル盤面です。',
   '',
   '使い方: {cmd} [オプション]',
   '  --port <n>             127.0.0.1 で待ち受けるポート (既定 {port}。環境変数 PIGEONHOLES_PORT)',
@@ -31,15 +31,15 @@ const HELP_JA = [
   '  --projects-dir <path>  会話ログのある Claude Code の projects フォルダ (環境変数 PIGEONHOLES_PROJECTS_DIR)',
   '  --help, --version',
   'PIGEONHOLES_ROOTS: 直下のフォルダをプロジェクトとみなすフォルダ。「{sep}」区切り (既定: ホームフォルダ)。',
-  'ファイルを読むだけです。このパソコンの外へは何も送りません。',
+  'セッションファイルは読み取り専用です。確認後のworktree作成だけが選択したローカルリポジトリへ書き込みます。Pigeonholesは外部へリクエストを送りません。',
 ].join('\n');
 
 /** @type {Readonly<Record<Lang, Readonly<Record<string, string>>>>} */
 export const TERM = Object.freeze({
   en: Object.freeze({
     'term.started': 'Pigeonholes: http://127.0.0.1:{port} ({mode})',
-    'term.modeReadOnly': 'read-only',
-    'term.modeDemo': 'demo data, read-only',
+    'term.modeReadOnly': 'session files read-only; worktrees on confirmation',
+    'term.modeDemo': 'demo data; worktree creation disabled',
     'term.alreadyRunning': 'Already running: open http://127.0.0.1:{port}',
     'term.alreadyRunningCheck': "(If you didn't start a board on that port, something else is answering like one. Start on another port: {cmd})",
     'term.runningDemo': 'Port {port} has the demo board, not your sessions. Stop it with Ctrl+C in its terminal, or start on another port: {cmd}',
@@ -55,13 +55,14 @@ export const TERM = Object.freeze({
     'term.noSessionsDir': "Can't find the Claude desktop app's session folder. Looked in:",
     'term.noSessionsDirHint': 'Start a session once in the Code tab of the Claude desktop app, or pass --sessions-dir <path> (or set PIGEONHOLES_SESSIONS_DIR).',
     'term.boardFailed': 'Failed to build the board: {name}',
+    'term.worktreeFailed': 'A worktree operation failed.',
     'term.version': 'pigeonholes {version}',
     'term.help': HELP_EN,
   }),
   ja: Object.freeze({
     'term.started': 'Pigeonholes: http://127.0.0.1:{port} ({mode})',
-    'term.modeReadOnly': '読み取り専用',
-    'term.modeDemo': 'デモデータ・読み取り専用',
+    'term.modeReadOnly': 'セッション読み取り専用・worktreeは確認後',
+    'term.modeDemo': 'デモデータ・worktree作成無効',
     'term.alreadyRunning': 'もう起動しています: http://127.0.0.1:{port} を開いてください',
     'term.alreadyRunningCheck': '(そのポートで自分でボードを起動していないなら、別のものがボードのように応答しています。別の番号で起動してください: {cmd})',
     'term.runningDemo': 'ポート {port} で動いているのはデモのボードで、あなたのセッションではありません。そのターミナルで Ctrl+C で止めるか、別の番号で起動してください: {cmd}',
@@ -77,6 +78,7 @@ export const TERM = Object.freeze({
     'term.noSessionsDir': 'Claude デスクトップアプリのセッションフォルダが見つかりません。探した場所:',
     'term.noSessionsDirHint': 'Claude デスクトップアプリの Code タブで一度セッションを始めるか、--sessions-dir <path> (または PIGEONHOLES_SESSIONS_DIR) で場所を指定してください',
     'term.boardFailed': '盤面の計算に失敗しました: {name}',
+    'term.worktreeFailed': 'worktree 操作に失敗しました。',
     'term.version': 'pigeonholes {version}',
     'term.help': HELP_JA,
   }),

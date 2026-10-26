@@ -382,6 +382,14 @@ R1 を先に置く理由: 動いているセッションは決して隠さない
 - 盤面は言語によらず同じ (Accept-Language も `?lang=` も見ない)。
 - 計算に失敗したら HTTP 500 と `{"error":"board_failed"}`。端末には `term.boardFailed` (エラーの name だけ。title や本文は書かない)。
 
+### 10.1 明示操作 (`POST /api/worktrees`)
+
+- セッションとtranscriptの読み取り専用を変えず、画面の確認完了後に限ってGit worktreeを作る唯一の書き込みAPI。
+- 要求は `Content-Type: application/json`、同じ `http://127.0.0.1:<port>` または `http://localhost:<port>` Origin、最大2048 byte。body は `{sessionId, branch}` のみ。`cwd` や任意パス、未知keyは拒否。
+- サーバーは sessionId を読み込み済みの非アーカイブセッションに照合し、cwdを内部解決する。ネットワークパスやGit repoでないcwdは拒否。新しいbranch名は最大80文字で Git ref として検証。
+- Git は shell なし・時間/出力上限付きで実行。hookを無効化し、checkout filterは実行され得ることを確認画面に明記。Gitは選択セッションの現在のHEADを基点にし、未コミット変更は引き継がない。worktreeはrepoの隣へ作る。CLIやセッションは起動しない。
+- 成功応答は `{ok:true,branch,status,changed,untracked,conflicted}` のみ。失敗は固定理由コードのみ。絶対パス、stdout/stderr、ファイル名、環境値はAPI・ログに出さない。合成デモは `demo_disabled` を返し、書き込まない。
+
 ```
 { v: 2, generatedAt, serverNow,
   counts: {needs_you, trouble, unread, working, recent, cleanup, recommended, active, archived},
@@ -466,8 +474,8 @@ TimeKind   = waiting | stopped | stalled | ended | updated | ago | latest
 | key | en | ja |
 |---|---|---|
 | `term.started` | Pigeonholes: http://127.0.0.1:{port} ({mode}) | Pigeonholes: http://127.0.0.1:{port} ({mode}) |
-| `term.modeReadOnly` | read-only | 読み取り専用 |
-| `term.modeDemo` | demo data, read-only | デモデータ・読み取り専用 |
+| `term.modeReadOnly` | session files read-only; worktrees on confirmation | セッション読み取り専用・worktreeは確認後 |
+| `term.modeDemo` | demo data; worktree creation disabled | デモデータ・worktree作成無効 |
 | `term.alreadyRunning` | Already running: open http://127.0.0.1:{port} | もう起動しています: http://127.0.0.1:{port} を開いてください |
 | `term.alreadyRunningCheck` | (If you didn't start a board on that port, something else is answering like one. Start on another port: {cmd}) | (そのポートで自分でボードを起動していないなら、別のものがボードのように応答しています。別の番号で起動してください: {cmd}) |
 | `term.runningDemo` | Port {port} has the demo board, not your sessions. Stop it with Ctrl+C in its terminal, or start on another port: {cmd} | ポート {port} で動いているのはデモのボードで、あなたのセッションではありません。そのターミナルで Ctrl+C で止めるか、別の番号で起動してください: {cmd} |
@@ -488,7 +496,7 @@ TimeKind   = waiting | stopped | stalled | ended | updated | ago | latest
 
 `term.help` (en。ja は同じ形の日本語。`{sep}` は path.delimiter):
 ```
-Pigeonholes {version}: one read-only page for all your Claude desktop app sessions (the Code tab).
+Pigeonholes {version}: a local session board with session files kept read-only and Git worktrees created only on confirmation.
 
 Usage: {cmd} [options]
   --port <n>             port on 127.0.0.1 (default 8797; env PIGEONHOLES_PORT)
@@ -498,18 +506,18 @@ Usage: {cmd} [options]
   --projects-dir <path>  Claude Code's projects folder with transcripts (env PIGEONHOLES_PROJECTS_DIR)
   --help, --version
 PIGEONHOLES_ROOTS: folders, separated by "{sep}", whose direct subfolders are projects (default: your home).
-It only reads files. Nothing leaves this computer.
+Session files are read-only. Worktree creation writes only to the selected local repository after confirmation. Pigeonholes sends no remote requests.
 ```
 
 ## 12. サーバーとセキュリティ (entry)
 
-- `127.0.0.1` だけに bind する。`Host` が `127.0.0.1:<port>` か `localhost:<port>` 以外なら 403 (DNS rebinding 対策)。GET 以外は 405 (HEAD も)。CORS ヘッダーは付けない。
+- `127.0.0.1` だけに bind する。`Host` が `127.0.0.1:<port>` か `localhost:<port>` 以外なら 403 (DNS rebinding 対策)。通常のendpointはGETのみ。例外として `/api/worktrees` はPOSTだけを受け、Hostに加えて同一Origin・JSON・body上限・key allowlistを検証する。ほかのmethodは405。CORS ヘッダーは付けない。
 - `GET /api/hello` は `{"app":"pigeonholes","demo":<bool>}` だけを返す (ポートが使用中のときの確かめ用、§11)。セッションの中身は入れない。
 - **静的ファイルの表は起動時に作る**: `public/` を 1 回 readdir し、拡張子 `.html .css .mjs .svg .png .ico` のファイルだけを、ファイル名そのままの `/<name>` で配信する (サブフォルダ・dotfile は入れない)。`/` は `public/index.html`。加えて `/src/shared/constants.mjs` と `/src/shared/i18n.mjs`。表にないパスはすべて 404。リクエストのパスとファイルパスを結合しない。Content-Type は拡張子の表から。
 - ヘッダー (全レスポンスに一括):
   - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
   - `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`
-- インラインスクリプト・style 属性は使わない。外への通信は一切しない (gh も fetch も使わない)。
+- インラインスクリプト・style 属性は使わない。Pigeonholesから外部サービスへの通信はしない。唯一のブラウザー `fetch` は同一originの盤面GETと、確認済みworktree作成POST。
 
 ## 13. 構成と検査
 

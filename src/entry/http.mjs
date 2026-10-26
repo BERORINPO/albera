@@ -1,6 +1,6 @@
 // @ts-check
 // entry: HTTP の受け口。横断的なヘッダーは全レスポンスに一括で付ける。spec/board.md §12
-// Host 検査 (DNS rebinding 対策) → GET 以外は 405 → 起動時に作った配信表にあるパスだけ返す (パスの結合はしない)。
+// Host 検査 (DNS rebinding 対策) → 読み取りAPIは GET のみ、明示的な worktree 作成だけ POST → 起動時の配信表。
 
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -10,6 +10,10 @@ import { HELLO_PATH, helloBody } from './probe.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const JS = 'text/javascript; charset=utf-8';
+const WORKTREE_PATH = '/api/worktrees';
+const WORKTREE_BODY_MAX = 2048;
+const SESSION_CARD_ID = /^(?:local|codex)_[0-9a-f-]{36}$/i;
+const SAFE_BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,79}$/;
 
 /** 配信してよい拡張子と Content-Type。 */
 export const STATIC_TYPES = Object.freeze({
@@ -77,22 +81,29 @@ function send(res, status, type, body) {
 }
 
 /**
- * @param {{port: number, getBoard: () => Promise<{body: string, etag: string}>, demo?: boolean,
+ * @param {{port: number, getBoard: () => Promise<{body: string, etag: string}>, createWorktree?:(sessionId:string,branch:string)=>Promise<any>, demo?: boolean,
  *   log?: (key: string, params?: Record<string, unknown>) => void, staticFiles?: StaticTable}} deps
  *   log は messages.mjs のキーで受ける (言葉は server が付ける)。demo は /api/hello で答える (ポートが使用中のときの確かめ用)
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => Promise<void>}
  */
-export function createHandler({ port, getBoard, demo = false, log = () => {}, staticFiles = buildStaticFiles() }) {
+export function createHandler({ port, getBoard, createWorktree, demo = false, log = () => {}, staticFiles = buildStaticFiles() }) {
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   return async (req, res) => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
     const host = String(req.headers.host ?? '').toLowerCase();
     if (!allowedHosts.has(host)) return send(res, 403, 'text/plain; charset=utf-8', 'Forbidden');
+    const pathname = String(req.url ?? '/').split('?')[0];
+    if (pathname === WORKTREE_PATH) {
+      if (req.method !== 'POST') {
+        res.setHeader('Allow', 'POST');
+        return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed');
+      }
+      return serveWorktree(req, res);
+    }
     if (req.method !== 'GET') {
       res.setHeader('Allow', 'GET');
       return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed');
     }
-    const pathname = String(req.url ?? '/').split('?')[0];
     if (pathname === '/api/board') return serveBoard(req, res);
     if (pathname === HELLO_PATH) return send(res, 200, 'application/json; charset=utf-8', helloBody(demo));
     const entry = staticFiles.get(pathname);
@@ -103,6 +114,46 @@ export function createHandler({ port, getBoard, demo = false, log = () => {}, st
       send(res, 500, 'text/plain; charset=utf-8', 'Internal Server Error');
     }
   };
+
+  /** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res */
+  async function serveWorktree(req, res) {
+    const origin = String(req.headers.origin ?? '');
+    if (origin !== `http://127.0.0.1:${port}` && origin !== `http://localhost:${port}`) return send(res, 403, 'application/json; charset=utf-8', JSON.stringify({ error: 'origin_rejected' }));
+    if (String(req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') return send(res, 415, 'application/json; charset=utf-8', JSON.stringify({ error: 'json_required' }));
+    let body = '';
+    try {
+      for await (const chunk of req) {
+        body += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+        if (Buffer.byteLength(body, 'utf8') > WORKTREE_BODY_MAX) return send(res, 413, 'application/json; charset=utf-8', JSON.stringify({ error: 'request_too_large' }));
+      }
+    } catch {
+      return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    }
+    let value;
+    try { value = JSON.parse(body); } catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_json' })); }
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !['sessionId', 'branch'].includes(key))) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (typeof value.sessionId !== 'string' || !SESSION_CARD_ID.test(value.sessionId) || !isSafeBranch(value.branch)) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (!createWorktree) return send(res, 501, 'application/json; charset=utf-8', JSON.stringify({ error: 'worktree_unavailable' }));
+    try {
+      const result = await createWorktree(value.sessionId, value.branch);
+      if (result?.ok === true && result.branch === value.branch && SAFE_BRANCH_RE.test(result.branch) && !result.branch.includes('..') && !result.branch.includes('//') && ['clean', 'changed', 'untracked', 'mixed', 'conflicted', 'unknown'].includes(result.status)) {
+        const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 999 ? value : 0;
+        return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true, branch: result.branch, status: result.status, changed: count(result.changed), untracked: count(result.untracked), conflicted: count(result.conflicted) }));
+      }
+      const reason = ['invalid_target', 'not_repo', 'invalid_branch', 'target_exists', 'creation_failed', 'demo_disabled'].includes(result?.reason) ? result.reason : 'unavailable';
+      const status = reason === 'demo_disabled' ? 403 : reason === 'invalid_branch' ? 400 : reason === 'target_exists' ? 409 : 422;
+      return send(res, status, 'application/json; charset=utf-8', JSON.stringify({ ok: false, reason }));
+    } catch {
+      log('term.worktreeFailed', {});
+      return send(res, 500, 'application/json; charset=utf-8', JSON.stringify({ ok: false, reason: 'failed' }));
+    }
+  }
+
+  /** @param {unknown} value */
+  function isSafeBranch(value) {
+    if (typeof value !== 'string' || !SAFE_BRANCH_RE.test(value) || value.includes('..') || value.includes('//') || value.endsWith('/') || value.endsWith('.')) return false;
+    return value.split('/').every((part) => part && !part.startsWith('.') && !part.endsWith('.') && !part.toLowerCase().endsWith('.lock'));
+  }
 
   /** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res */
   async function serveBoard(req, res) {

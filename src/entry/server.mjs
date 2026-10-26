@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // @ts-check
 // entry: 起動 (CLI)。設定の検証 → adapter の選択 (実データ / デモ) → 127.0.0.1 だけで待ち受け。spec/board.md §11
-//   npx pigeonholes / npm start      実データ (読み取り専用)
-//   npm run demo (--demo)            合成データ。中身の言語は端末の言語
+//   npx pigeonholes / npm start      実データ。セッションデータは読み取り専用、worktreeは確認後
+//   npm run demo (--demo)            合成データ。worktree作成は無効
 // 端末の言葉は messages.mjs。ログに title や本文は書かない。
 
 import fs from 'node:fs';
@@ -16,6 +16,7 @@ import { createCodexSessionsSource } from '../adapters/codex-sessions-fs.mjs';
 import { createFolderHints } from '../adapters/folder-hints-fs.mjs';
 import { createTranscriptsSource } from '../adapters/transcripts-fs.mjs';
 import { createWorktreeSource } from '../adapters/worktrees-git.mjs';
+import { createWorktreeCreator } from '../adapters/worktree-create-git.mjs';
 import { argsWithoutPort, ConfigError, loadConfig, portHint, shellQuote } from './config.mjs';
 import { liveDemoSources } from './demo.mjs';
 import { createHandler } from './http.mjs';
@@ -25,6 +26,7 @@ import { createBoardService } from './service.mjs';
 
 const SELF_PATH = fileURLToPath(import.meta.url);
 const PACKAGE_JSON = path.join(path.dirname(SELF_PATH), '..', '..', 'package.json');
+const SESSION_CARD_ID = /^(?:local|codex)_[0-9a-f-]{36}$/i;
 
 /** package.json の version (読めなければ 0.0.0)。 */
 function readVersion() {
@@ -45,14 +47,16 @@ function launcher() {
 /** @param {import('./config.mjs').RunConfig} config */
 function wire(config) {
   if (config.demo) return liveDemoSources(config.lang);
+  const sessionsSource = createCombinedSessionsSource([
+    createAppSessionsSource({ root: config.sessionsRoot }),
+    createCodexSessionsSource({ root: config.codexHome }),
+  ]);
   return {
-    sessionsSource: createCombinedSessionsSource([
-      createAppSessionsSource({ root: config.sessionsRoot }),
-      createCodexSessionsSource({ root: config.codexHome }),
-    ]),
+    sessionsSource,
     transcriptsSource: createTranscriptsSource({ projectsDir: config.projectsDir }),
     folderHints: createFolderHints({ home: config.home }),
     worktreeSource: createWorktreeSource(),
+    worktreeCreator: createWorktreeCreator(),
   };
 }
 
@@ -108,8 +112,16 @@ function main() {
   }
   const config = loaded;
   const { port } = config;
-  const service = createBoardService({ ...wire(config), roots: config.roots, demo: config.demo });
-  const handler = createHandler({ port, getBoard: () => service.get(), demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });
+  const sources = wire(config);
+  const service = createBoardService({ ...sources, roots: config.roots, demo: config.demo });
+  const createWorktree = async (sessionId, branch) => {
+    if (!SESSION_CARD_ID.test(sessionId)) return { ok: false, reason: 'invalid_target' };
+    const loadedSessions = await sources.sessionsSource.load();
+    const session = loadedSessions.sessions.find((item) => item.sessionId === sessionId);
+    if (!session || session.isArchived || loadedSessions.archivedIds.has(sessionId) || !session.cwd) return { ok: false, reason: 'invalid_target' };
+    return sources.worktreeCreator.create({ cwd: session.cwd, branch });
+  };
+  const handler = createHandler({ port, getBoard: () => service.get(), createWorktree, demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });
   const server = http.createServer(handler);
   server.on('error', async (/** @type {NodeJS.ErrnoException} */ e) => {
     if (e.code === 'EADDRINUSE') {

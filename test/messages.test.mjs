@@ -31,8 +31,8 @@ test('ソースで使っている term.* のキーは全部辞書にある', () 
 });
 
 test('msg: 値を差し込む。知らない言語は en、知らないキーはキーそのもの', () => {
-  assert.equal(msg('en', 'term.started', { port: 18950, mode: msg('en', 'term.modeDemo') }), 'Pigeonholes: http://127.0.0.1:18950 (demo data, read-only)');
-  assert.equal(msg('ja', 'term.started', { port: 18950, mode: msg('ja', 'term.modeReadOnly') }), 'Pigeonholes: http://127.0.0.1:18950 (読み取り専用)');
+  assert.equal(msg('en', 'term.started', { port: 18950, mode: msg('en', 'term.modeDemo') }), 'Pigeonholes: http://127.0.0.1:18950 (demo data; worktree creation disabled)');
+  assert.equal(msg('ja', 'term.started', { port: 18950, mode: msg('ja', 'term.modeReadOnly') }), 'Pigeonholes: http://127.0.0.1:18950 (セッション読み取り専用・worktreeは確認後)');
   assert.equal(msg('fr', 'term.alreadyRunning', { port: 1 }), 'Already running: open http://127.0.0.1:1');
   assert.equal(msg('en', 'term.nope'), 'term.nope');
   assert.equal(msg('en', 'term.badFlag', { flag: '{port}', cmd: 'npx pigeonholes' }), 'Unknown option: {port}. See: npx pigeonholes --help', '値の中の {..} は展開しない');

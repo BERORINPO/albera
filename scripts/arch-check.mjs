@@ -50,7 +50,7 @@ const EXPECTED = {
   shared: ['constants.mjs', 'types.mjs', 'i18n.mjs'],
   core: ['turn.mjs', 'classify.mjs', 'project.mjs', 'board.mjs', 'session.mjs', 'text.mjs', 'activity.mjs', 'context.mjs'],
   adapters: [
-    'app-sessions-fs.mjs', 'fake-app-sessions.mjs', 'codex-sessions-fs.mjs', 'fake-codex-sessions.mjs', 'transcripts-fs.mjs', 'fake-transcripts.mjs', 'folder-hints-fs.mjs', 'fake-folder-hints.mjs', 'worktrees-git.mjs', 'fake-worktrees.mjs',
+    'app-sessions-fs.mjs', 'fake-app-sessions.mjs', 'codex-sessions-fs.mjs', 'fake-codex-sessions.mjs', 'transcripts-fs.mjs', 'fake-transcripts.mjs', 'folder-hints-fs.mjs', 'fake-folder-hints.mjs', 'worktrees-git.mjs', 'fake-worktrees.mjs', 'worktree-create-git.mjs', 'fake-worktree-create.mjs',
     'session-record.mjs', 'demo-data.mjs', 'map-limit.mjs',
   ],
   entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],
@@ -59,7 +59,7 @@ const EXPECTED = {
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
     'actions.mjs', 'canvas.mjs', 'canvas-slip.mjs', 'canvas-sheet.mjs', 'canvas-fit.mjs', 'canvas-bar.mjs', 'canvas-ctl.mjs', 'canvas-view.mjs', 'canvas-act.mjs',
     'canvas-layout.mjs', 'canvas-desk.mjs', 'canvas-fold.mjs', 'canvas-camera.mjs', 'canvas-input.mjs', 'graph-model.mjs', 'graph-store.mjs', 'graph-render.mjs', 'graph-dialog.mjs',
-    'keys.mjs', 'notify.mjs', 'favicon.mjs', 'copy.mjs', 'view.mjs', 'format.mjs', 'doing.mjs', 'events.mjs', 'codex-status.mjs', 'times.mjs', 'i18n.mjs',
+    'keys.mjs', 'notify.mjs', 'favicon.mjs', 'copy.mjs', 'view.mjs', 'format.mjs', 'doing.mjs', 'events.mjs', 'codex-status.mjs', 'times.mjs', 'i18n.mjs', 'worktree-dialog.mjs',
     'dict-en.mjs', 'dict-ja.mjs', 'dict-en-handoff.mjs', 'dict-ja-handoff.mjs', 'dict-en-canvas.mjs', 'dict-ja-canvas.mjs', 'worktree-detail.mjs',
   ],
 };
@@ -130,10 +130,16 @@ check('4b no HTML string injection', [...pub, ...shared, ...core, ...adapters, .
   /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|\bdocument\.write\b/.test(line) ? 'innerHTML and friends are not allowed (use textContent / DOM APIs)' : null,
 );
 
-// 5. read-only: adapters and entry never use APIs that write to the app's files
-check('5 read-only', [...adapters, ...entry], (line) =>
+// 5. Session adapters stay read-only. One separate operation adapter may create a confirmed Git worktree.
+const worktreeCreateAdapter = adapters.filter((f) => path.basename(f) === 'worktree-create-git.mjs');
+check('5a session sources read-only', [...adapters.filter((f) => path.basename(f) !== 'worktree-create-git.mjs'), ...entry], (line) =>
   /\b(writeFile|appendFile|rename|unlink|rmdir|mkdir|copyFile|createWriteStream|truncate|utimes|chmod|watch)\w*\(|\.rm\(|open\([^)]*['"](?:[wax]|r\+)/.test(line)
     ? 'write APIs are not allowed'
+    : null,
+);
+check('5b worktree creation isolated', worktreeCreateAdapter, (line) =>
+  /\b(?:writeFile|appendFile|rename|unlink|rmdir|copyFile|createWriteStream|truncate|utimes|chmod|watch)\w*\(|open\([^)]*['"](?:[wax]|r\+)/.test(line)
+    ? 'only generated worktree/hook directories may be created or cleaned by this adapter'
     : null,
 );
 

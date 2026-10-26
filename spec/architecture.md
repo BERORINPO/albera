@@ -1,6 +1,6 @@
 # アーキテクチャ (Pigeonholes)
 
-形: 4 役割・一方向依存 (entry → adapter → core → shared)。検査は `npm run arch`。Why: アプリが書き換え続けるファイルを読むだけの道具なので、外界 (fs) を adapter に閉じ込め、判定は時計も言葉も持たない純粋関数にして、全規則を合成データのテストで固定する。言葉は画面と端末の辞書だけが持つ。
+形: 4 役割・一方向依存 (entry → adapter → core → shared)。検査は `npm run arch`。セッションファイルは読み取り専用。外界 (fs/Git) は adapter に閉じ込め、判定は時計も言葉も持たない純粋関数にする。ユーザーが画面で明示確認したworktree作成だけは専用Git adapterが行い、合成データでは書き込まない。言葉は画面と端末の辞書だけが持つ。
 
 ## 1. 役割対応表 (scripts/arch-check.mjs と 1:1)
 
@@ -8,9 +8,9 @@
 |---|---|---|
 | shared | src/shared/ | constants.mjs (しきい値・ID 形式・PRODUCT。言葉なし) / types.mjs (JSDoc) / i18n.mjs (fill・fillParts・pickForm・normalizeLang)。何も import しない。constants と i18n は画面にも配信 |
 | core | src/core/ | turn / classify (tailFacts) / project / board / session / text (cleanText) / activity (していること・commandHead) / context (窓・段階・contextMemo)。fs・clock・env・言葉なし (now と前回の段階は引数、出力はコードと params) |
-| adapter | src/adapters/ | app-sessions-fs + fake-app-sessions / codex-sessions-fs + fake-codex-sessions (rollout の許可イベントだけ) / transcripts-fs + fake-transcripts (末尾・subMtime・subLive) / folder-hints-fs + fake-folder-hints / worktrees-git + fake-worktrees (ローカルGitの読み取り専用状態) / session-record (許可項目への射影・attachFolders。model は窓のためだけ) / demo-data (合成、en・ja) / map-limit |
+| adapter | src/adapters/ | app-sessions-fs + fake-app-sessions / codex-sessions-fs + fake-codex-sessions (rollout の許可イベントだけ) / transcripts-fs + fake-transcripts (末尾・subMtime・subLive) / folder-hints-fs + fake-folder-hints / worktrees-git + fake-worktrees (ローカルGitの読み取り専用状態) / worktree-create-git + fake-worktree-create (画面確認後のローカル作成のみ) / session-record (許可項目への射影・attachFolders。model は窓のためだけ) / demo-data (合成、en・ja) / map-limit |
 | entry | src/entry/ | server (起動・CLI・shebang) / config (フラグと env の fail-fast、セッションフォルダの候補、起動例の組み立て) / messages (端末の言葉 en・ja) / service (wiring 1 点・2 秒キャッシュ・ETag・tail 解析の memo と前回の段階をメモリに持つ) / demo (`--demo` の Fake の組。1 分ごとに今の時刻から作り直す) / http (ヘッダー一括・起動時に作る配信表・`/api/hello`) / probe (使用中のポートで応答しているのがこのボードらしいか、デモか実データか) |
-| 画面 | public/ | index.html / tokens.css style.css source-filter.css rows.css tidy.css canvas.css graph.css / app actions poll state ui-state render front rows labels cleanup handoff keys notify favicon copy view format times (.mjs) / canvas canvas-slip canvas-sheet canvas-fit canvas-bar canvas-ctl canvas-view canvas-act canvas-layout canvas-desk canvas-fold canvas-camera canvas-input (.mjs、layout・desk・fold・camera は純粋。fit は見えない箱で付箋の中身の高さを測り、layout に入力として渡す) / graph-model.mjs (純粋なユーザー作成グラフ正規化・編集) graph-store.mjs (localStorage adapter) graph-render.mjs graph-dialog.mjs (安全な canvas DOM) / doing.mjs (していることの言葉、純粋) / events.mjs (許可済み CLI イベントの時系列) / codex-status.mjs (安全な集計値を診断文へ変換、純粋) / worktree-detail.mjs (Git状態要約の表示文、純粋) / i18n.mjs dict-en.mjs dict-ja.mjs dict-en-canvas.mjs dict-ja-canvas.mjs dict-en-handoff.mjs dict-ja-handoff.mjs (言葉はここだけ。dict-<lang>-<part>.mjs は 400 行のための分割) / api.mjs (唯一の fetch)。画面のファイルは 400 行まで (arch 7)。spec/ui.md §1 |
+| 画面 | public/ | index.html / tokens.css style.css source-filter.css rows.css tidy.css canvas.css graph.css / app actions poll state ui-state render front rows labels cleanup handoff keys notify favicon copy view format times (.mjs) / canvas canvas-slip canvas-sheet canvas-fit canvas-bar canvas-ctl canvas-view canvas-act canvas-layout canvas-desk canvas-fold canvas-camera canvas-input (.mjs、layout・desk・fold・camera は純粋。fit は見えない箱で付箋の中身の高さを測り、layout に入力として渡す) / graph-model.mjs (純粋なユーザー作成グラフ正規化・編集) graph-store.mjs (localStorage adapter) graph-render.mjs graph-dialog.mjs (安全な canvas DOM) / worktree-dialog.mjs (作成前の確認・結果) / doing.mjs (していることの言葉、純粋) / events.mjs (許可済み CLI イベントの時系列) / codex-status.mjs (安全な集計値を診断文へ変換、純粋) / worktree-detail.mjs (Git状態要約の表示文、純粋) / i18n.mjs dict-en.mjs dict-ja.mjs dict-en-canvas.mjs dict-ja-canvas.mjs dict-en-handoff.mjs dict-ja-handoff.mjs (言葉はここだけ。dict-<lang>-<part>.mjs は 400 行のための分割) / api.mjs (唯一の fetch)。画面のファイルは 400 行まで (arch 7)。spec/ui.md §1 |
 
 ## 2. 外部境界表
 
@@ -21,7 +21,8 @@
 | transcripts-fs | `<projectsDir>/*/<cliSessionId>.jsonl` と `<cliSessionId>/subagents/**` | fake-transcripts | 合成のみ | なし | 書き込まない (stat と末尾読みだけ。subagents は stat で数えるだけで開かない。全体は読まない) |
 | folder-hints-fs | アーカイブしていないセッションの cwd とその親 (`.git` の有無、直下のフォルダ名)。ネットワークのパス (`\\server\share`・`//server/share`) は見ない。1 パス 0.5 秒まで | fake-folder-hints | 合成のみ (os.tmpdir の一時フォルダ) | なし | 書き込まない (stat と readdir だけ) |
 | worktrees-git | 直近20件までの非アーカイブセッションの cwd から `git rev-parse --show-toplevel`、`git worktree list --porcelain -z`、`git status --porcelain=v1 -z --untracked-files=normal` を shell なし・timeout 付きで読む | fake-worktrees | 合成porcelain/status (`test/worktrees.test.mjs`) | なし | 読み取りコマンドのみ。APIには branch・状態・件数・locked/prunable だけ返し、パス・ファイル名・ロック理由を破棄 |
-| (なし) | ネットワーク | — | — | なし | 外への通信は 0 件 (割り当てたネットワークドライブ上のフォルダだけは、OS がその共有を見に行くことがある)。配置も言葉も AI を使わない |
+| worktree-create-git | 画面で確認したセッションIDからサーバーが解決したcwd。新規branch名だけブラウザーから受ける | fake-worktree-create | `test/worktree-create.test.mjs` のGit/FS mock | なし | 確認後のみ、選択リポジトリの隣にbranch worktreeを作る。session/transcriptファイルは変更しない。hookを一時的に無効化し、checkout filter実行の可能性を確認画面で明示。絶対パス・Git診断は返さない |
+| (なし) | ネットワーク | — | — | なし | Pigeonholesは外部サービスへ送信しない。Git checkout filterは確認後のworktree作成時に実行され得るため、確認画面で通知する。配置も言葉も AI を使わない |
 | (画面) | ブラウザの localStorage | — | — | なし | 画面の好み (`pigeonholes:v1:ui`: 言語・view・引き継ぎのコピー記録) とキャンバスの席 (`pigeonholes:v1:canvas` と狭い画面の `:narrow`)。その PC のブラウザだけ |
 
 ## 3. Origin・監視トポロジ
@@ -62,6 +63,7 @@
 | 2026-10-19 activity-label | 「していること」は tail の最後の tool_use からコード + 安全な対象 (basename・commandHead・host)。Claude の短い説明と計画の手順は cleanText を通して出す | 中身ではなく種類を見せる。却下: command 全文、tool_result の表示 | テスト (FORBIDDEN_WIRE_KEYS・commandHead・cleanText) |
 | 2026-10-19 context-gauge | セッションごとの量 = 最後の実 usage の input + cache_creation + cache_read。窓は推定 (推定なら「約」)、段階は自動要約点に対する割合 (0.60 / 0.83 / 0.93、帯 0.05)。文字だけで出す | 引き継ぎの判断材料。却下: 窓の % だけで判定 (200K は手前で要約)、合計・費用・グラフ、棒や色 | テスト (context) |
 | 2026-10-19 handoff-copy | 引き継ぎは指示文のコピーとセッションを開くことだけ。承認はそのセッションの Claude がアプリの確認で取る。作業中・返事待ちにはボタンを出さない | read-only を守る。却下: ボードからの送信、会話のフォーク | テスト (指示文・ボタンの出る条件) |
+| 2026-10-26 confirmed-worktree | セッション詳細から対象repo・基点branch・未コミット変更を示し、新branch名とcheckout filterの確認を受けてworktreeを作る。session filesは常に読み取り専用。デモでは操作を無効にする | 選択先の明示と副作用を確認して、局所的な作業場所を用意する。却下: background作成・CLI起動・パス受信・診断出力 | mock adapter/HTTP test + synthetic UI |
 | 2026-10-19 tail-facts | tail は 1 回だけ parse (tailFacts)。結果の memo と前回の段階は service がメモリに持ち、core は引数で受ける。ファイル全体は読まない | 盤面ごとの parse を変わった tail だけにする。却下: core に状態、全文読み (5〜7 秒) | テスト (service) |
 | 2026-10-19 measured-rows | キャンバスの行の高さは付箋の中身に合わせる。画面が見えない箱で測り (近く 100% と中くらい 60% の文字の大きさの大きいほう)、配置には数として渡す。足と操作は 1 行、止まったかもの長い行は 2 行分を取る (時刻で行数が変わって行が跳ねない)。席の記録は v 3 | 1 つの大きさの付箋は中身の短いものの下 1/3 が空いた (490px)。却下: 文字数からの見積もり (言語と字幅で外れると最後の行が切れる)、配置の中で DOM を測る (純粋でなくなる) | テスト (行の高さ・刻み・上限) |
 | 2026-10-19 ui-file-size | 画面のファイル (public/) は 400 行まで。辞書は dict-<lang>-<part>.mjs に分け、dict-<lang>.mjs が取り込む (キーの重なりはテストで検出) | AI と人が 1 ファイルを読み切れる大きさ。却下: 辞書だけ例外にする (規則が形だけになる) | 有 (arch 7・arch 6 の辞書の型) |

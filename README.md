@@ -1,6 +1,6 @@
 # Pigeonholes
 
-A read-only page on your own computer that puts Claude Code sessions and local Codex CLI sessions on one board. Claude sessions are sorted into six piles; Codex sessions show safe turn start/completion summaries. See the board as a list or as a canvas with one sheet per project.
+A local board for Claude Code and Codex CLI sessions, with read-only session data and user-confirmed Git worktree creation. Claude sessions are sorted into six piles; Codex sessions show safe turn start/completion summaries. See the board as a list or as a canvas with one sheet per project.
 
 [日本語](README.ja.md)
 
@@ -10,7 +10,7 @@ A read-only page on your own computer that puts Claude Code sessions and local C
 
 Demo data. Also: [canvas](docs/screenshot-canvas.png) · [dark theme](docs/screenshot-dark.png) · [400 px wide](docs/screenshot-narrow.png) · [Japanese](docs/screenshot-ja.png)
 
-- **Read-only.** It reads the app's session files and never writes to them. It listens on 127.0.0.1 only and never contacts another machine: the one request it makes goes to its own port on 127.0.0.1, when that port is busy, to ask whether a board is already there (see [What it reads](#what-it-reads) for folders on network drives).
+- **Session data stays read-only.** It never writes to app session files. A separate local Git worktree is created only after you review the target and confirm in the board. The board listens on 127.0.0.1; Pigeonholes itself does not contact remote services. Git checkout filters configured by a repository may run during a confirmed worktree creation.
 - **No AI behind it.** Piles, labels, context sizes and the canvas layout come from fixed rules. Nothing is sent to a model or anywhere else.
 - **Zero dependencies.** Node.js 22 or newer. No build step.
 - **English and Japanese.** The page follows your browser language; the terminal follows your system language.
@@ -33,7 +33,7 @@ npm start                       # same as: node src/entry/server.mjs
 
 npm needs `--` before flags for the script: `npm start -- --port 8798`, `npm run demo -- --lang en`. Without it, npm takes the flag for itself. `node src/entry/server.mjs --port 8798` works without it.
 
-When the terminal prints `Pigeonholes: http://127.0.0.1:8797 (read-only)`, open that address in a browser. The first scan takes a few seconds. Stop it with Ctrl+C. If it prints `Already running: open http://127.0.0.1:8797`, a board of the same kind is already up; open the address. If the board on that port is the demo and you asked for your sessions (or the other way round), it says so and prints a command for another port instead.
+When the terminal prints `Pigeonholes: http://127.0.0.1:8797 (sessions read-only; worktrees on confirmation)`, open that address in a browser. The first scan takes a few seconds. Stop it with Ctrl+C. If it prints `Already running: open http://127.0.0.1:8797`, a board of the same kind is already up; open the address. If the board on that port is the demo and you asked for your sessions (or the other way round), it says so and prints a command for another port instead.
 
 To try it without reading your sessions, add `--demo` (synthetic data):
 
@@ -45,7 +45,7 @@ Tip: the Claude desktop app has a built-in browser pane. Open the address there 
 
 ## What it reads
 
-Everything is opened read-only. Nothing is sent anywhere, and it does not read the app's settings, cookies or credentials.
+Session lists and transcripts are opened read-only. Pigeonholes does not read app settings, cookies, or credentials. A confirmed worktree creation writes only a new sibling checkout and branch in the selected local Git repository; it does not change session files or start a CLI session.
 
 | What | Windows | macOS | Linux |
 |---|---|---|---|
@@ -63,6 +63,7 @@ Everything is opened read-only. Nothing is sent anywhere, and it does not read t
 - The folder each session ran in (not for archived sessions): only whether a `.git` exists there or above it, and the names of its direct subfolders. This names the project. Network paths (`\\server\share`, `//server/share`) are skipped. A folder on a mapped network drive looks like any other path, so the operating system may reach that share when the board checks it; each check gives up after half a second.
 - The complete working folder path stays inside the local adapter and is not included in the API or page; the board uses a project label instead.
 - For up to 20 recent non-archived session folders, the local adapter may run bounded, read-only Git commands to identify the checked-out branch and summarize tracked changes, untracked files, conflicts, and locked/prunable status. The API and page never receive repository/worktree paths, file names, or lock reasons. The demo uses synthetic Git state.
+- From session details, **Create worktree** asks for a new branch and requires an explicit acknowledgement. It creates a sibling worktree from the selected session's current HEAD; uncommitted changes are not copied. Git hooks are disabled for the operation, while repository checkout filters may run. Paths and Git diagnostics stay local and are not returned to the page. Synthetic demo mode never creates worktrees.
 - Session fields it does not use (for example MCP server settings) are dropped right after reading and never reach the page.
 - The page remembers your choices in this browser's storage: the language, the shortcuts and notifications switches, the view (list or canvas), which piles and project groups you opened, where you put each project's sheet on the canvas, your canvas cards and relations, and which sessions you copied a hand-off instruction for (the session ID, the time and the percentage, kept 24 hours). Projects are remembered by their folder names; groups for projects no longer on the board are removed, and a sheet's place is kept for 7 days after its project leaves the board.
 
@@ -105,7 +106,7 @@ When the context fills up, Claude summarizes the conversation by itself and can 
 4. Claude stops at a safe point, writes the brief, and shows it to you with where the new session will work and whether archiving the old session later would also archive the new one. It asks once whether to start the new session, with the app's new-session card when it has one.
 5. You approve or decline in the app. The new session then appears on the board (as a child of the old one when the app links the two), and the old row says `hand-off copied 3 min ago` until its context grows 5 more points, it is summarized, or 24 hours pass.
 
-**Why the board only copies an instruction.** The board is read-only: it cannot type into a session or press anything in the app, and that is on purpose. The approval stays with you, in the app, and the session's own Claude does the work with everything it knows. The copied text holds only the percentage, no title or ID, and names no tools. Only **Copy for a new session** (below) also carries the stuck session's ID.
+**Why hand-off only copies an instruction.** The board cannot type into a session or press anything in the app. The approval stays with you, in the app, and the session's own Claude does the work with everything it knows. The copied text holds only the percentage, no title or ID, and names no tools. Only **Copy for a new session** (below) also carries the stuck session's ID.
 
 There is no **Hand off** button on Working sessions (pasting would interrupt the turn), on Needs you (it would answer the question) or on a session stopped at the usage limit; their rows say "hand off after it finishes", "answer its question first" or "hand off after the limit resets". A Stuck? session that may be too full to answer gets **Copy for a new session** instead: start a new session in the same folder and paste it there. That text carries the stuck session's ID so the new session can read its recent transcript (read only) and write the brief.
 

@@ -21,6 +21,17 @@ export class BoardVersionError extends Error {
   }
 }
 
+/** A bounded, allowlisted worktree operation result. Never carries command output or paths. */
+export class WorktreeOperationError extends Error {
+  /** @param {number} status @param {string} reason */
+  constructor(status, reason) {
+    super(`worktree operation ${status}: ${reason}`);
+    this.name = 'WorktreeOperationError';
+    this.status = status;
+    this.reason = reason;
+  }
+}
+
 /**
  * 盤面を取得する。変わっていなければ 304。
  * @param {string|null} etag
@@ -39,6 +50,35 @@ export async function fetchBoard(etag, timeoutMs) {
     const data = await res.json();
     if (!data || data.v !== 2 || typeof data.counts !== 'object' || data.counts === null) throw new BoardVersionError(data?.v);
     return { status: 200, etag: res.headers.get('ETag'), data };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Send one explicit, same-origin create request; browser input contains only an opaque session ID and branch label.
+ * @param {string} sessionId @param {string} branch
+ * @returns {Promise<{branch:string,status:string,changed:number,untracked:number,conflicted:number}>}
+ */
+export async function createWorktree(sessionId, branch) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 65_000);
+  try {
+    const res = await fetch('/api/worktrees', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, branch }), cache: 'no-store', credentials: 'same-origin', signal: ctl.signal,
+    });
+    let data = {};
+    try { data = await res.json(); } catch { /* generic error below */ }
+    if (!res.ok || data?.ok !== true || typeof data.branch !== 'string') {
+      throw new WorktreeOperationError(res.status, typeof data?.reason === 'string' ? data.reason : 'failed');
+    }
+    return {
+      branch: data.branch,
+      status: ['clean', 'changed', 'untracked', 'mixed', 'conflicted', 'unknown'].includes(data.status) ? data.status : 'unknown',
+      changed: Number.isSafeInteger(data.changed) && data.changed >= 0 ? data.changed : 0,
+      untracked: Number.isSafeInteger(data.untracked) && data.untracked >= 0 ? data.untracked : 0,
+      conflicted: Number.isSafeInteger(data.conflicted) && data.conflicted >= 0 ? data.conflicted : 0,
+    };
   } finally {
     clearTimeout(timer);
   }

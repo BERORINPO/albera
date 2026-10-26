@@ -18,6 +18,8 @@ import { loadGraph, saveGraph } from './graph-store.mjs';
 import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs';
 import { GRAPH_CARD_SIZE } from './graph-render.mjs';
 import { announce } from './view.mjs';
+import { createWorktree } from './api.mjs';
+import { openWorktreeDialog } from './worktree-dialog.mjs';
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
 
@@ -100,6 +102,20 @@ function newTaskForSession(sessionId) {
   openGraphNodeDialog({
     t: state.t, graph, sessions: graphSessions(), position, initialKind: 'task', initialTitle: state.t('graph.taskFromSessionTitle'),
     onSave: (input) => graphChanged(addTaskForSession(graph, input, `g_${crypto.randomUUID()}`, `e_${crypto.randomUUID()}`, sessionId)),
+  });
+  return true;
+}
+
+function createWorktreeForSession(sessionId) {
+  const entry = view.index.get(sessionId);
+  if (!entry) return false;
+  const card = entry.card;
+  openWorktreeDialog(state.t, {
+    sessionId,
+    project: card.project?.label || state.t('project.other'),
+    baseBranch: card.detail?.gitWorktree?.branch || card.detail?.branch || '',
+    gitWorktree: card.detail?.gitWorktree,
+    worktree: (branch) => createWorktree(sessionId, branch),
   });
   return true;
 }
@@ -224,6 +240,7 @@ export const CANVAS_CLICK = {
   'graph-open': (el) => editGraphNode(el.dataset.id ?? ''),
   'graph-connect': (el) => connectGraphEndpoint(`session:${el.dataset.id ?? ''}`),
   'graph-task-from-session': (el) => newTaskForSession(el.dataset.id ?? ''),
+  'worktree-create': (el) => createWorktreeForSession(el.dataset.id ?? ''),
 };
 
 /** ブラウザが (フォーカスに合わせて) 表示枠をスクロールしたら、その分をカメラに移してスクロールを 0 に戻す。 */

@@ -702,7 +702,7 @@ Rules: placeholders are `{name}`; the plural count is always `{n}`; an English c
 | `app.tabTitle` | ({n}) {pile} — {name} | ({n}) {pile} — {name} |
 | `app.tabOffline` | {title} (offline) | {title} (オフライン) |
 | `mast.home` | Pigeonholes, back to top | Pigeonholes 先頭へ |
-| `mast.trust` | Read-only. Nothing leaves this computer. | 読み取り専用。このパソコンの外へは何も送りません。 |
+| `mast.trust` | Session files stay read-only. Worktrees need confirmation. | セッションは読み取り専用。worktreeは確認後に作成。 |
 | `mast.demo` | Demo data | デモデータ |
 | `mast.help` | Keyboard keys | キー一覧 |
 | `date.asOf` | {wd} {d} {mon}, as of {hm} | {mon} {d} 日 ({wd}) {hm} 時点 |
@@ -1073,7 +1073,7 @@ Unknown kinds fall back to `time.ago`.
 | `help.marks` | Canvas marks | キャンバスの印 |
 | `help.off` | Turn off single-key shortcuts | 一文字キーを使わない |
 | `help.offNote` | Enter, Space, Esc, the arrow keys and Tab keep working. | Enter・Space・Esc・矢印・Tab はそのまま使えます。 |
-| `foot.trust` | Read-only. Nothing leaves this computer. | 読み取り専用。このパソコンの外へは何も送りません。 |
+| `foot.trust` | Session files stay read-only. Worktrees need confirmation. | セッションは読み取り専用。worktreeは確認後に作成。 |
 | `foot.keys.move` | move | 移動 |
 | `foot.keys.open` | open | 開く |
 | `foot.keys.peek` | details | 詳しく |
@@ -1254,6 +1254,7 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - A comprehension-gap card records the person whose understanding is being checked, missing evidence, and needed explanation. The product computes no comprehension score. The graph can represent related, dependency, evidence, explanation, and delegation-record edges.
 - The graph review marks only an explicitly described missing-evidence or needed-explanation item that lacks its corresponding `evidence` or `explains` relation. It says the graph link is missing; it does not infer a person's understanding. The card and editor badges update when those relations change. The card editor points to the missing relation, and a user can add it and then change the card status after review.
 - Session details list linked graph cards with relation type, delegation status, and purpose/evidence. Activating a linked card opens its editor so the user can follow the comprehension or task context from a session.
+- Session details offer an explicit worktree creation dialog. It shows project, base branch, safe current status/flags, new branch input, and that uncommitted changes are omitted; a required acknowledgement calls the same-origin operation API. Git hooks are disabled, possible checkout filters are disclosed, and the result contains branch and safe status counts only. The dialog explains errors and the synthetic demo always disables creation. It never starts a CLI session.
 - A session detail action can create a task with a safe, user-editable default title and a `related` edge to that session in one localStorage write. It copies no session title, prompt, transcript, path, or tool content; if either record cannot be validated, neither is saved.
 - The masthead source selector filters sessions by Claude Code, Codex CLI, or all sources. Existing text search covers session/project content and the existing piles represent state; source filtering composes with search and remains available in list and canvas views. Relations to filtered-out sessions dim with their session cards. Clearing filters resets the source selector too.
 - Session detail labels the CLI provider as the harness: Claude Code for app-session records and Codex CLI for accepted rollout records. Other execution settings are not currently exposed.
