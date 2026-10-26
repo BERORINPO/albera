@@ -27,6 +27,19 @@ test('artifact references allow only public HTTPS URLs without credentials, quer
   assert.equal('auth' in graph.nodes[0], false);
 });
 
+test('execution profiles retain only allowlisted manual conditions and default invalid values to unknown', () => {
+  const profile = node(g1, { kind: 'execution_profile', executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action', secret: 'discard' });
+  const normalized = normalizeGraph({ nodes: [profile], edges: [] }).nodes[0];
+  assert.deepEqual([normalized.executionLocation, normalized.workspaceIsolation, normalized.networkAccess, normalized.approvalMode], ['wsl', 'sandboxed', 'restricted', 'per_action']);
+  assert.equal('secret' in normalized, false);
+  const defaults = normalizeGraph({ nodes: [node(g1, { kind: 'execution_profile' })], edges: [] }).nodes[0];
+  assert.deepEqual([defaults.executionLocation, defaults.workspaceIsolation, defaults.networkAccess, defaults.approvalMode], ['unknown', 'unknown', 'unknown', 'unknown']);
+  const unknowns = normalizeGraph({ nodes: [node(g1, { kind: 'execution_profile', executionLocation: '/private/path', workspaceIsolation: 'yes', networkAccess: 'maybe', approvalMode: 'automatic-ish' })], edges: [] }).nodes[0];
+  assert.deepEqual([unknowns.executionLocation, unknowns.workspaceIsolation, unknowns.networkAccess, unknowns.approvalMode], ['unknown', 'unknown', 'unknown', 'unknown']);
+  const otherKind = normalizeGraph({ nodes: [node(g1, { executionLocation: 'remote', workspaceIsolation: 'sandboxed', networkAccess: 'available', approvalMode: 'automatic' })], edges: [] }).nodes[0];
+  assert.deepEqual([otherKind.executionLocation, otherKind.workspaceIsolation, otherKind.networkAccess, otherKind.approvalMode], ['', '', '', '']);
+});
+
 test('graph nodes can be added, updated, moved and removed immutably', () => {
   let graph = addGraphNode(empty(), { kind: 'understanding_gap', title: 'Explain decision', body: '', status: 'open', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: 'source', neededExplanation: 'rationale' }, g1);
   graph = addGraphNode(graph, { kind: 'artifact', title: 'Design note', body: '', status: 'open', x: 0, y: 0, checkedPerson: '', missingEvidence: '', neededExplanation: '' }, g2);

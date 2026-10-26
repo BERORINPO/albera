@@ -74,6 +74,14 @@ function graphCard(t, node, missing = []) {
     node.kind === 'understanding_gap' && (node.missingEvidence || node.neededExplanation)
       ? h('span', { class: 'graph-node__body', text: [node.missingEvidence && t('graph.missingEvidence', { text: node.missingEvidence }), node.neededExplanation && t('graph.neededExplanation', { text: node.neededExplanation })].filter(Boolean).join('; ') })
       : null,
+    node.kind === 'execution_profile'
+      ? h('span', { class: 'graph-node__body', text: [
+        t(`graph.executionLocation.${node.executionLocation}`),
+        t(`graph.workspaceIsolation.${node.workspaceIsolation}`),
+        t(`graph.networkAccess.${node.networkAccess}`),
+        t(`graph.approvalMode.${node.approvalMode}`),
+      ].join(' / ') })
+      : null,
     reviewLabel ? h('span', { class: 'graph-node__review', text: reviewLabel }) : null,
   );
 }
@@ -120,7 +128,7 @@ export function renderGraphLayer(layer, o) {
     const at = o.drag?.id === id ? o.drag : node;
     el.style.setProperty('--x', String(at.x));
     el.style.setProperty('--y', String(at.y));
-    const hay = [node.title, node.body, node.kind, node.status, node.checkedPerson, node.missingEvidence, node.neededExplanation].join(' ').toLocaleLowerCase();
+    const hay = [node.title, node.body, node.kind, node.status, node.checkedPerson, node.missingEvidence, node.neededExplanation, node.executionLocation, node.workspaceIsolation, node.networkAccess, node.approvalMode].join(' ').toLocaleLowerCase();
     el.classList.toggle('is-dim', !!query && !hay.includes(query));
   }
   for (const el of [...lineRoot.children]) {

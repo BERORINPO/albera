@@ -1,7 +1,7 @@
 // @ts-check
 // Accessible local editor for graph cards and user-authored relations.
 
-import { DELEGATION_STATES, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, reviewUnderstandingGaps, safeArtifactUrl } from './graph-model.mjs';
+import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, reviewUnderstandingGaps, safeArtifactUrl } from './graph-model.mjs';
 import { h } from './view.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
@@ -72,17 +72,36 @@ export function openGraphNodeDialog(o) {
     areaField(t, 'graph.bodyLabel', 'body', node?.body ?? ''),
     referenceField(t, node?.url ?? ''),
     selectField(t, 'graph.statusLabel', 'status', [...GRAPH_NODE_STATES], node?.status ?? 'open', (v) => t(`graph.status.${v}`)),
-    inputField(t, 'graph.checkedPerson', 'checkedPerson', node?.checkedPerson ?? ''),
-    areaField(t, 'graph.missingEvidenceLabel', 'missingEvidence', node?.missingEvidence ?? ''),
-    areaField(t, 'graph.neededExplanationLabel', 'neededExplanation', node?.neededExplanation ?? ''),
+    h('fieldset', { class: 'graph-dialog__profile', 'data-comprehension-fields': '' },
+      h('legend', { text: t('graph.comprehensionFields') }),
+      inputField(t, 'graph.checkedPerson', 'checkedPerson', node?.checkedPerson ?? ''),
+      areaField(t, 'graph.missingEvidenceLabel', 'missingEvidence', node?.missingEvidence ?? ''),
+      areaField(t, 'graph.neededExplanationLabel', 'neededExplanation', node?.neededExplanation ?? ''),
+    ),
+    h('fieldset', { class: 'graph-dialog__profile', 'data-execution-profile': '' },
+      h('legend', { text: t('graph.executionProfile') }),
+      h('p', { class: 'graph-dialog__hint', text: t('graph.executionProfileManual') }),
+      selectField(t, 'graph.executionLocation', 'executionLocation', [...EXECUTION_LOCATIONS], node?.executionLocation ?? 'unknown', (v) => t(`graph.executionLocation.${v}`)),
+      selectField(t, 'graph.workspaceIsolation', 'workspaceIsolation', [...WORKSPACE_ISOLATIONS], node?.workspaceIsolation ?? 'unknown', (v) => t(`graph.workspaceIsolation.${v}`)),
+      selectField(t, 'graph.networkAccess', 'networkAccess', [...NETWORK_ACCESS], node?.networkAccess ?? 'unknown', (v) => t(`graph.networkAccess.${v}`)),
+      selectField(t, 'graph.approvalMode', 'approvalMode', [...APPROVAL_MODES], node?.approvalMode ?? 'unknown', (v) => t(`graph.approvalMode.${v}`)),
+    ),
   );
   const kindSelect = /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="kind"]'));
   const refField = /** @type {HTMLElement|null} */ (form.querySelector('[data-artifact-reference]'));
   const refInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="referenceUrl"]'));
+  const profileFields = /** @type {HTMLElement|null} */ (form.querySelector('[data-execution-profile]'));
+  const comprehensionFields = /** @type {HTMLElement|null} */ (form.querySelector('[data-comprehension-fields]'));
   const syncReferenceField = () => { if (refField) refField.hidden = kindSelect?.value !== 'artifact'; };
+  const syncProfileFields = () => { if (profileFields) profileFields.hidden = kindSelect?.value !== 'execution_profile'; };
+  const syncComprehensionFields = () => { if (comprehensionFields) comprehensionFields.hidden = kindSelect?.value !== 'understanding_gap'; };
   kindSelect?.addEventListener('change', syncReferenceField);
+  kindSelect?.addEventListener('change', syncProfileFields);
+  kindSelect?.addEventListener('change', syncComprehensionFields);
   refInput?.addEventListener('input', () => refInput.setCustomValidity(''));
   syncReferenceField();
+  syncProfileFields();
+  syncComprehensionFields();
   if (node?.url) form.append(h('a', { class: 'graph-dialog__reference-link', href: node.url, target: '_blank', rel: 'noopener noreferrer', text: t('graph.openReference') }));
   if (node) {
     const linked = graph.edges.filter((e) => e.from === `graph:${node.id}` || e.to === `graph:${node.id}`);
@@ -148,6 +167,10 @@ export function openGraphNodeDialog(o) {
       checkedPerson: data.checkedPerson,
       missingEvidence: data.missingEvidence,
       neededExplanation: data.neededExplanation,
+      executionLocation: data.executionLocation,
+      workspaceIsolation: data.workspaceIsolation,
+      networkAccess: data.networkAccess,
+      approvalMode: data.approvalMode,
     });
     dialog.close();
   });

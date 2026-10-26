@@ -3,10 +3,14 @@
 
 export const GRAPH_MAX_NODES = 200;
 export const GRAPH_MAX_EDGES = 500;
-export const GRAPH_NODE_KINDS = Object.freeze(['task', 'artifact', 'decision', 'understanding_gap', 'worktree']);
+export const GRAPH_NODE_KINDS = Object.freeze(['task', 'artifact', 'decision', 'understanding_gap', 'worktree', 'execution_profile']);
 export const GRAPH_NODE_STATES = Object.freeze(['open', 'in_progress', 'blocked', 'done', 'resolved']);
 export const GRAPH_EDGE_KINDS = Object.freeze(['related', 'depends_on', 'delegates', 'evidence', 'explains']);
 export const DELEGATION_STATES = Object.freeze(['planned', 'active', 'blocked', 'completed', 'cancelled']);
+export const EXECUTION_LOCATIONS = Object.freeze(['unknown', 'local', 'wsl', 'remote']);
+export const WORKSPACE_ISOLATIONS = Object.freeze(['unknown', 'sandboxed', 'not_sandboxed']);
+export const NETWORK_ACCESS = Object.freeze(['unknown', 'restricted', 'available']);
+export const APPROVAL_MODES = Object.freeze(['unknown', 'per_action', 'on_demand', 'automatic']);
 const GRAPH_ID = /^g_[0-9a-f-]{36}$/i;
 const EDGE_ID = /^e_[0-9a-f-]{36}$/i;
 const SESSION_ID = /^(?:local_[0-9a-f-]{36}|codex_[0-9a-f-]{36}|copilot_[0-9a-f-]{36}|opencode_[0-9a-f-]{36})$/i;
@@ -27,7 +31,7 @@ export function safeArtifactUrl(value, kind = 'artifact') {
   }
 }
 
-/** @typedef {{id:string,kind:string,title:string,body:string,url:string,status:string,x:number,y:number,checkedPerson:string,missingEvidence:string,neededExplanation:string}} GraphNode */
+/** @typedef {{id:string,kind:string,title:string,body:string,url:string,status:string,x:number,y:number,checkedPerson:string,missingEvidence:string,neededExplanation:string,executionLocation:string,workspaceIsolation:string,networkAccess:string,approvalMode:string}} GraphNode */
 /** @typedef {{id:string,from:string,to:string,kind:string,purpose:string,status:string}} GraphEdge */
 /** @typedef {{v:1,nodes:GraphNode[],edges:GraphEdge[]}} GraphDoc */
 
@@ -36,18 +40,23 @@ export function normalizeGraphNode(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const v = /** @type {Record<string, unknown>} */ (value);
   if (typeof v.id !== 'string' || !GRAPH_ID.test(v.id)) return null;
+  const kind = oneOf(v.kind, GRAPH_NODE_KINDS, 'task');
   return {
     id: v.id,
-    kind: oneOf(v.kind, GRAPH_NODE_KINDS, 'task'),
+    kind,
     title: text(v.title, 100),
     body: text(v.body, 1000),
-    url: safeArtifactUrl(v.url, oneOf(v.kind, GRAPH_NODE_KINDS, 'task')),
+    url: safeArtifactUrl(v.url, kind),
     status: oneOf(v.status, GRAPH_NODE_STATES, 'open'),
     x: coord(v.x),
     y: coord(v.y),
     checkedPerson: text(v.checkedPerson, 100),
     missingEvidence: text(v.missingEvidence, 500),
     neededExplanation: text(v.neededExplanation, 500),
+    executionLocation: kind === 'execution_profile' ? oneOf(v.executionLocation, EXECUTION_LOCATIONS, 'unknown') : '',
+    workspaceIsolation: kind === 'execution_profile' ? oneOf(v.workspaceIsolation, WORKSPACE_ISOLATIONS, 'unknown') : '',
+    networkAccess: kind === 'execution_profile' ? oneOf(v.networkAccess, NETWORK_ACCESS, 'unknown') : '',
+    approvalMode: kind === 'execution_profile' ? oneOf(v.approvalMode, APPROVAL_MODES, 'unknown') : '',
   };
 }
 

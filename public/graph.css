@@ -26,6 +26,8 @@
 .graph-dialog { width: min(38rem, calc(100vw - 2rem)); max-height: min(90dvh, 52rem); overflow: auto; padding: 0; border: var(--rule-ink); background: var(--cv-sheet); color: var(--color-ink); }
 .graph-dialog::backdrop { background: rgb(20 24 32 / 55%); }
 .graph-dialog__form { display: grid; gap: var(--space-md); padding: clamp(1rem, 4vw, 2rem); }
+.graph-dialog__profile { display: grid; gap: var(--space-md); min-width: 0; margin: 0; padding: 0; border: 0; }
+.graph-dialog__profile legend { margin-bottom: var(--space-xs); font-weight: 700; }
 .graph-dialog__form h2, .graph-dialog__form h3, .graph-dialog__form p { margin: 0; }
 .graph-dialog__privacy, .graph-dialog__empty { color: var(--color-ink-2); font-size: var(--text-sm); }
 .graph-dialog__review { padding: var(--space-sm); border-inline-start: 4px solid var(--color-accent); background: var(--color-paper); font-size: var(--text-sm); }
