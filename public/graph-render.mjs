@@ -131,12 +131,13 @@ export function renderGraphLayer(layer, o) {
     (x) => `${x.edge.from}|${x.edge.to}|${x.edge.kind}|${x.edge.status}|${x.edge.purpose}|${x.line?.x1}|${x.line?.y1}|${x.line?.x2}|${x.line?.y2}`,
     (x) => {
       const attributes = graphEdgeAttributes(x.edge, t);
-      const line = h('span', { class: attributes.className }, attributes.title
+      const line = h(attributes.title ? 'button' : 'span', {
+        ...(attributes.title ? { type: 'button', 'data-action': 'graph-edit-edge', 'data-id': x.edge.id } : {}),
+        class: attributes.className,
+      }, attributes.title
         ? h('span', { class: 'graph-edge__tooltip', 'aria-hidden': 'true', text: attributes.title })
         : null);
       if (attributes.title) {
-        line.setAttribute('role', 'img');
-        line.setAttribute('tabindex', '0');
         line.setAttribute('aria-label', attributes.title);
       } else line.setAttribute('aria-hidden', 'true');
       if (attributes.status) line.setAttribute('data-status', attributes.status);

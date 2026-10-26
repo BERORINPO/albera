@@ -300,7 +300,7 @@ export const CANVAS_CLICK = {
     if (id) openRelatedSessionDetail(id, openBar);
   },
   'graph-connect': (el) => connectGraphEndpoint(`session:${el.dataset.id ?? ''}`),
-  'graph-edit-session-edge': (el) => editGraphEdge(el.dataset.id ?? ''),
+  'graph-edit-edge': (el) => editGraphEdge(el.dataset.id ?? ''),
   'delegation-run': (el) => runDelegationForEdge(el.dataset.id ?? '', el.dataset.sourceSession ?? '', { view, state, graphChanged, announce }),
   'graph-task-from-session': (el) => newTaskForSession(el.dataset.id ?? ''),
   'worktree-create': (el) => createWorktreeForSession(el.dataset.id ?? ''),

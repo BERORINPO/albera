@@ -45,12 +45,13 @@ test('each persisted delegation status has a canvas style and unknown status sta
   assert.match(css, /\.graph-edge__tooltip\s*\{[^}]*pointer-events:\s*none;/);
   assert.match(css, /\.graph-edge__tooltip\s*\{[^}]*font-size:\s*max\(12px,/);
   assert.match(renderer, /lineRoot\.removeAttribute\('aria-hidden'\)/);
-  assert.match(renderer, /line\.setAttribute\('role', 'img'\)/);
-  assert.match(renderer, /line\.setAttribute\('tabindex', '0'\)/);
+  assert.match(renderer, /h\(attributes\.title \? 'button' : 'span'/);
+  assert.match(renderer, /'data-action': 'graph-edit-edge', 'data-id': x\.edge\.id/);
   assert.match(renderer, /line\.setAttribute\('aria-label', attributes\.title\)/);
   assert.match(renderer, /else line\.setAttribute\('aria-hidden', 'true'\)/);
   assert.match(renderer, /if \(attributes\.title\) el\.setAttribute\('aria-label', attributes\.title\)/);
   assert.doesNotMatch(renderer, /el\.setAttribute\('aria-label', t\(`graph\.edge\.\$\{edge\.kind\}`\)\)/);
+  assert.match(fs.readFileSync(new URL('../public/canvas-act.mjs', import.meta.url), 'utf8'), /'graph-edit-edge': \(el\) => editGraphEdge\(el\.dataset\.id \?\? ''\)/);
 });
 
 test('delegation edge attributes expose only the fixed status tooltip, including unknown status', () => {
