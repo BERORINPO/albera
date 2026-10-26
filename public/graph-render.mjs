@@ -71,7 +71,7 @@ function graphCard(t, node) {
 
 /**
  * @param {HTMLElement} layer
- * @param {{t:T,graph:any,index:Map<string,{card:any,pile:string}>,layout:any,filter:string,boardReady?:boolean,drag?:{id:string,x:number,y:number}|null}} o
+ * @param {{t:T,graph:any,index:Map<string,{card:any,pile:string}>,layout:any,filter:string,matched?:Set<string>|null,boardReady?:boolean,drag?:{id:string,x:number,y:number}|null}} o
  */
 export function renderGraphLayer(layer, o) {
   const t = o.t;
@@ -122,7 +122,8 @@ export function renderGraphLayer(layer, o) {
       const hay = [n.title, n.body, n.kind, n.status].join(' ').toLocaleLowerCase();
       return !query || hay.includes(query);
     });
-    el.classList.toggle('is-dim', !!query && !touchesMatch);
+    const filteredSession = [edge.from, edge.to].some((endpoint) => endpoint.startsWith('session:') && o.matched != null && !o.matched.has(endpoint.slice(8)));
+    el.classList.toggle('is-dim', (!!query && !touchesMatch) || filteredSession);
     el.setAttribute('aria-label', t(`graph.edge.${edge.kind}`));
   }
 }
