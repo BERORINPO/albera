@@ -941,3 +941,9 @@
 - 一時Git repo統合テストで、mainから親worktree、親worktreeから子worktreeを作成し、親repoで双方の管理フラグを確認。子、親の順にworktreeだけを削除し、ブランチが残ることを確認。実ユーザーrepoは未使用。
 - CIでmacOSとWindowsが失敗した理由は、テストが`os.tmpdir()`から構成した入力パスでnested checkoutを再構成していたため。Gitが返すcanonical repository rootを使うよう修正し、macOS/Windows差を除いた。
 - `npm test`: 592 passed、`npm run arch`: 99 paths / 0 violations、`npm run smoke`: pass、`git diff --check`: pass。デモHTTP serverはloopbackで起動して終了したが、ブラウザー操作はcomputer-useが現在URLを安全判定できず停止したため、この段階のGUI確認は未実施。
+
+### 実セッションsourceのread-only API集計を再確認 (2026-10-27)
+
+- 実データモードのPigeonholes serverをloopbackで起動し、`GET /api/board`を一度読み取り、件数のみを集計してからserverを停止した。応答はHTTP 200、`demo=false`。セッション名/本文、イベント内容、ID、cwd/パス、PR URL等の個別値は表示・ログに出していない。
+- 盤面統計では非archived active 132件。source別ではCodex候補38ファイル/認識0/拒否38、Copilot 0、OpenCode 20 (status unknown)。現在のsourceモデルで未指定sourceはClaudeなのでClaude activeは差し引き112件 (132−0−0−20) と算出される。
+- これは現在のローカル実データがsafe API projectionまで届くread-only経路の証拠であり、ブラウザーでの実セッション画面表示・詳細パネルの目視受入ではない。Codex CLIの実記録が無く、Codexの実セッション互換性は未確認のまま。session fileは変更せず、CLI起動/新規セッション/外部要求は行わなかった。
