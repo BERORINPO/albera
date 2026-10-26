@@ -11,7 +11,10 @@ const base = {
 test('Codex status explains each zero-count cause and uses only safe numeric values', () => {
   const t = makeT('ja');
   assert.match(codexStatusMessages(t, base)[1], /rolloutファイルが見つかりません/);
-  assert.match(codexStatusMessages(t, { ...base, files: 4, rejected: 4 })[1], /形式条件に合うセッションはありません/);
+  const unmatched = codexStatusMessages(t, { ...base, files: 4, rejected: 4 })[1];
+  assert.match(unmatched, /形式条件に合うセッションはありません/);
+  assert.match(unmatched, /保存先がCLI用か確認/);
+  assert.match(unmatched, /形式が変わっていれば対応後に再読み込み/);
   assert.match(codexStatusMessages(t, { ...base, files: 4, detected: 2, recent: 2, completed: 1, interrupted: 1 })[1], /作業中0件/);
 
   const messages = codexStatusMessages(t, {

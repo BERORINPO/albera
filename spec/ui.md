@@ -1094,7 +1094,7 @@ Unknown kinds fall back to `time.ago`.
 | `foot.diag` | Reading status | 読み込みの状態 |
 | `foot.codexSummary` | Codex candidate, recognized, board and lifecycle counts | Codex の候補・認識件数、盤面状態・イベント状態別件数 |
 | `foot.codexNoFiles` | No rollout files matched the expected folder and filename pattern | 認識対象の形式に合う rollout ファイルが見つからない |
-| `foot.codexNoDetected` | Candidate files exist, but none passed the CLI checks | 候補はあるが CLI の形式条件に合わない |
+| `foot.codexNoDetected` | Candidate files exist but none passed the CLI checks; confirm the selected store and check for a format update | 候補はあるが CLI の形式条件に合わない。選択された保存先と形式更新を確認する |
 | `foot.codexNoWorking` | No recent unfinished turn; completed/interrupted are Recent and stale active turns are Stuck? | 新しい未完了ターンがない。完了・中断は「最近」、古い未完了は「止まったかも」 |
 | `foot.bad` | {n} file couldn't be read. \| {n} files couldn't be read. | 読めなかったファイル {n} 件。 |
 | `foot.missing` | {n} transcript not found (last {days} days). \| {n} transcripts not found (last {days} days). | 会話ログが見つからない {n} 件 (最近 {days} 日)。 |

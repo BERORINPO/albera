@@ -371,7 +371,7 @@ export const EN = Object.freeze({
   'foot.diag': 'Reading status',
   'foot.codexSummary': 'Codex CLI: {files} candidate files, {detected} recognized. On the board: {working} working, {trouble} stalled, {recent} recent. Event state: {active} in progress, {completed} complete, {interrupted} interrupted, {unknown} unknown. {rejected} filtered or invalid.',
   'foot.codexNoFiles': 'Why the count is 0: no rollout files matched the expected folder and filename pattern. Check CODEX_HOME or the default location.',
-  'foot.codexNoDetected': 'Why the count is 0: candidate files exist, but none matched the CLI format checks. Malformed records and non-CLI sessions are excluded.',
+  'foot.codexNoDetected': 'Why the count is 0: candidate files exist, but none matched the CLI format checks. Malformed records and non-CLI sessions are excluded. Next, confirm Pigeonholes is reading the Codex CLI store; if its format changed, update the adapter before trying again.',
   'foot.codexNoWorking': 'Why Working is 0: no recognized session has an unfinished turn started within the last 15 minutes. Completed and interrupted turns go to Recent; unfinished turns with no update for 15 minutes go to Stuck?.',
   'foot.bad': { one: "{n} file couldn't be read.", other: "{n} files couldn't be read." },
   'foot.missing': { one: '{n} transcript not found (last {days} days).', other: '{n} transcripts not found (last {days} days).' },

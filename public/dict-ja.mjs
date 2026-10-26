@@ -371,7 +371,7 @@ export const JA = Object.freeze({
   'foot.diag': '読み込みの状態',
   'foot.codexSummary': 'Codex CLI: 候補 {files} 件、認識 {detected} 件。盤面では作業中 {working}、止まったかも {trouble}、最近 {recent}。イベント状態は進行中 {active}、完了 {completed}、中断 {interrupted}、不明 {unknown}。除外・不良 {rejected} 件。',
   'foot.codexNoFiles': '0件表示の理由: 認識対象の形式に合うrolloutファイルが見つかりません。CODEX_HOMEまたは既定の保存先を確認してください。',
-  'foot.codexNoDetected': '0件表示の理由: 候補ファイルはありますが、CLIの形式条件に合うセッションはありません。形式不整合やCLI以外の記録は除外されます。',
+  'foot.codexNoDetected': '0件表示の理由: 候補ファイルはありますが、CLIの形式条件に合うセッションはありません。不正行やCLI以外の記録は除外されます。次に、Pigeonholesが選んだCodex保存先がCLI用か確認し、形式が変わっていれば対応後に再読み込みしてください。',
   'foot.codexNoWorking': '作業中0件の理由: 認識したセッションに、15分以内に開始された未完了ターンがありません。完了・中断は「最近」へ、15分以上更新のない進行中ターンは「止まったかも」へ分類されます。',
   'foot.bad': '読めなかったファイル {n} 件。',
   'foot.missing': '会話ログが見つからない {n} 件 (最近 {days} 日)。',
