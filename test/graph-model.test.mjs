@@ -138,6 +138,7 @@ test('legacy delegation with missing purpose remains readable and can be repaire
     edges: [{ id: e1, from: `graph:${g1}`, to: `session:${session}`, kind: 'delegates', purpose: '', status: 'active' }],
   });
   assert.equal(legacy.edges[0].purpose, '', 'loading old local state does not discard its edge');
+  assert.equal(updateGraphEdge(legacy, e1, { status: 'completed' }), legacy, 'an incomplete legacy delegation cannot change state before purpose is repaired');
   const updated = updateGraphEdge(legacy, e1, { purpose: 'Review the implementation' });
   assert.equal(updated.edges[0].purpose, 'Review the implementation');
   assert.equal(updateGraphEdge(legacy, e1, { purpose: '' }).edges[0].purpose, '', 'a legacy record is retained until a repair is supplied');

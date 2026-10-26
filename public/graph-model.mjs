@@ -237,7 +237,8 @@ export function updateGraphEdge(doc, id, patch) {
   if (!previous) return doc;
   const changed = normalizeGraphEdge({ ...previous, ...patch, id: previous.id, from: previous.from, to: previous.to });
   if (!changed || doc.edges.some((edge) => edge.id !== id && edge.from === changed.from && edge.to === changed.to && edge.kind === changed.kind)) return doc;
-  if (changed.kind === 'delegates' && !changed.purpose && previous.purpose) return doc;
+  if (changed.kind === 'delegates' && !changed.purpose && (changed.kind !== previous.kind || changed.status !== previous.status)) return doc;
+  if (changed.kind === previous.kind && changed.purpose === previous.purpose && changed.status === previous.status) return doc;
   const edges = doc.edges.map((edge) => edge.id === id ? changed : edge);
   return edges.some((edge, i) => edge !== doc.edges[i]) ? { ...doc, edges } : doc;
 }
