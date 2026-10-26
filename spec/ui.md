@@ -1438,3 +1438,10 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - 隔離`--demo`上で成果物カードを作り、合成の短文要約を入力。表示されたREA要約確認checkboxを選んで保存した。
 - 成果物カードの関係editorから合成Codexセッションを選び`related`を追加。カードと関係線は再読み込み後も復元した。確認付き削除を実行し、再読み込み後に一時カード・関係線が残らないことを確認した。
 - REAリンクは開かず、REA実行・外部通信なし。合成内容のみで、完全Evidence/実所見/実セッションは使っていない。実際のREA所見の品質や実セッションとの関連付けは未確認。
+
+### 最新headでセッションカード配置の保存・復元を再確認 (2026-10-27)
+
+- `cb67fa4`を含む現在のローカル作業ツリーで、隔離loopback `--demo`ブラウザーの合成Codex CLIカードを開いた。移動ハンドルへフォーカスして右矢印を押すと通常用紙から移動し、ページ再読込後も個別配置が残ることを確認した。
+- 「元の用紙へ戻す」を押すと通常のプロジェクト用紙へ戻り、その状態も再読込後に復元された。検証用タブを閉じ、demo serverを停止した。
+- 合成UIとブラウザー内状態のみ。実セッション/providerファイル、CLI、worktree操作、外部サービスは不使用。マウスpointer drag、touch操作、スクリーンリーダー実機は未確認。
+- `npm test`: 611 passed、`npm run arch`: 99 paths・違反0、`npm run smoke`: pass、`git diff --check`: pass。smokeは既存の読取専用adapterでローカルセッション情報を読み、集計値のみ出力した。
