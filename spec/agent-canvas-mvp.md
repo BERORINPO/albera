@@ -66,7 +66,7 @@
 - 「理解」は進捗を確認される側の理解を指す。根拠のないスコアは作らず、理解を確認される人、不足根拠、必要な説明をカードに記録する。
 - `delegates` は手動記録を基本とし、完了済みローカルCodex CLIへの確認付きread-only resumeまで実装済み。PM policy、実行条件の検出、Obsidian、WSL、音声 Main AI、企業権限制御の完成条件は後続の製品像依頼で拡張された。ユーザーは未記載PM規則を「この依頼の安全条件だけ」と指定。worktreeの一覧・作成・確認付き削除とpath-freeなキャンバス記録は実装済みだが、実ユーザーrepo上でのGit操作は未検証。
 - REA はユーザー指定の `morluto/rea` (REA: Reverse Engineer Anything) と特定された。公式READMEは、ローカル実行のCLI/MCPからバイナリ・アプリ・実行時挙動を解析し、根拠と制約を含む結果を返すOSSと説明する。ユーザーはキャンバス連携として「ユーザーが確認した短い要約を手動で記録」と指定した。REA所見は成果物カードに入力し、関連タスク・判断・セッションへユーザーが関係付ける。完全なEvidenceは取り込まず、REA自体も起動しない。
-- WSLについて、ユーザーは製品像の対象に含めたが、接続方式の細部は指定していない。安全側の暫定実装として、Windowsで `CODEX_HOME` が `\\wsl.localhost\<distro>` / `\\wsl$\<distro>` の明示共有を指す場合だけ、CodexのPOSIX cwdを内部共有パスへ対応付ける。自動distro列挙と任意UNC探索はしない。worktree一覧の明示操作に限り、対象の明示済みdistroで `wsl.exe --distribution <distro> --exec git ...` を実行する。共有パス・Git出力はAPIへ出さない。作成・削除はWSLでは無効のままとする。実WSL共有は未検証であり、この接続方式が製品として意図されたものかは確認事項として残す。
+- WSLについて、ユーザーは製品像の対象に含めたが、接続方式の細部は指定していない。安全側の実装として、Windowsで `CODEX_HOME` が `\\wsl.localhost\<distro>` / `\\wsl$\<distro>` の明示共有を指す場合だけ、CodexのPOSIX cwdを内部共有パスへ対応付ける。自動distro列挙と任意UNC探索はしない。一覧・作成・削除は、画面で明示操作したときに限り対象の設定済みdistroで `wsl.exe --distribution <distro> --exec git ...` を実行する。作成は枝worktreeだけを作り、削除は同アダプターが作成した決定的なパスのclean・非current・非locked・非prunable項目に限定し、branchを残す。共有パス・Git出力はAPIへ出さない。実WSL共有は未検証であり、この接続方式と副作用説明が製品として意図されたものかは確認事項として残す。
 - デモにはWSL場所ラベルを持つ固定の合成Codexセッションを含め、UIの詳細とworktree操作の説明を実データなしで確認できるようにする。合成レコードを実セッション検出の証拠とは扱わない。
 - PM policy は「この依頼の安全条件だけ適用」と確認した。個別の自動化・承認規則は追加しない。
 - 実装のフォローアップはMVPのPR #3を変更せず、後続PRで扱う。
@@ -83,7 +83,7 @@
 - REAはユーザー指定の `morluto/rea`、正式名は **REA: Reverse Engineer Anything**。利用者が確認した短い所見を成果物カードへ手動記録し、グラフ関係でセッション・タスク・判断と結ぶ方式で合意。REAセットアップ、解析コマンド、自動取込は行わない。
 - 実行条件はユーザーが固定選択肢で手動記録するexecution profileとして追加。場所、作業領域の分離、ネットワーク、承認方式の初期値はすべて「不明」。セッション・環境・アプリ設定からの自動検出ではなく、値が正しいことも検証しない。
 - 検索では、セッションに `related` で結ばれた実行条件プロフィールの4つの固定選択値を、現在の言語の表示語で照合する。プロフィール名・自由記述・根拠文はセッション検索へ流さない。これは利用者が入力した記録を探す機能で、実行条件の検証や検出ではない。
-- 製品像の未完了: WSLは明示WSL共有経由のopt-in session adapterとworktree一覧adapterを追加したが、実WSLファイル共有・実セッションとの適合性は未確認。WSLの作成・削除は未対応。Copilot保存形式はCLI/app共通のためCLIだけとは識別せず、OpenCode legacy形式も状態/イベントはunknownのまま扱う。実行条件の自動検出、Obsidian vault indexing/knowledge extraction、REAの自動解析/完全Evidence取込は未完了。ユーザーは音声Main AIと企業権限制御を完成条件として確認したが、音声の開始/停止主体・処理/保存先と、利用者ロール・許可/禁止操作の仕様は提示待ちであり、ここでは推測して実装しない。Obsidianは手動vault-relative note参照のみ追加し、vault走査や内容取得はしない。委譲は完了済みローカルCodexセッションへの確認付きread-only resumeまで実装したが、実CLI実行は未確認で、一般的なprovider間委譲は未実装。理解負債はユーザー記述の対象者・不足根拠・必要説明をカードに記録するだけで、自動推定やスコアはない。
+- 製品像の未完了: WSLは明示WSL共有経由のopt-in session adapterとworktree一覧/確認付き作成・限定削除adapterを追加したが、実WSLファイル共有・実セッション・実Git互換性は未確認。Copilot保存形式はCLI/app共通のためCLIだけとは識別せず、OpenCode legacy形式も状態/イベントはunknownのまま扱う。実行条件の自動検出、Obsidian vault indexing/knowledge extraction、REAの自動解析/完全Evidence取込は未完了。ユーザーは音声Main AIと企業権限制御を完成条件として確認したが、音声の開始/停止主体・処理/保存先と、利用者ロール・許可/禁止操作の仕様は提示待ちであり、ここでは推測して実装しない。Obsidianは手動vault-relative note参照のみ追加し、vault走査や内容取得はしない。委譲は完了済みローカルCodexセッションへの確認付きread-only resumeまで実装したが、実CLI実行は未確認で、一般的なprovider間委譲は未実装。理解負債はユーザー記述の対象者・不足根拠・必要説明をカードに記録するだけで、自動推定やスコアはない。
 - REA OSSはユーザー指定の https://github.com/morluto/rea.git と確認済み。キャンバスにはユーザーが確認した短い要約を成果物カードへ手動入力し、関連するグラフ対象へ結ぶ。成果物の説明欄は既存モデルで最大1,000文字、参照URLは安全なHTTPSに限定。完全Evidenceの取込・REA実行はしない。
 - REA連携の安全境界: 公式の [CLI and Evidence guide](https://github.com/morluto/rea/blob/main/docs/cli.md) は `--json` が完全なEvidenceを返し、実アプリでは数百MBになる場合があると説明する。公式 [MCP contracts](https://github.com/morluto/rea/blob/main/docs/mcp-contracts.md) も完全なcanonical Evidenceをツール結果に保持するとしている。REAのランタイム解析は対象の起動・操作を伴うため、Pigeonholesは結果を自動取込せず、REA実行もしない。利用者が内容を確認して要約を入力する運用は合意済み。要約本文に機密情報を含めないのは入力者の責任で、Pigeonholesはその意味内容を判定しない。
 - 2026-10-26: ユーザーが明示した実行条件表示の段階として、値を推測しない手動execution profileカードを実装。4項目の選択肢をallowlist化し、空の値は不明に正規化。詳細・一覧カード・検索・localStorageに限って扱い、セッションAPI/wireには追加しない。
@@ -101,7 +101,7 @@
 | セッション・イベント | Claude Code、Codex CLI、Copilot、OpenCodeにread-only adapterがあり、同じboardでallowlistイベント・状態・詳細を表示。関係pickerも表示中の全providerを対象とする | Codex CLI起点の実セッションは未確認。Copilot保存先はCLI/app共通、OpenCode DBもproducer clientをadapterが識別しない。OpenCode旧schemaは一覧以外の状態/イベントをunknown扱い |
 | ハーネス・実行条件 | 詳細に観測可能なprovider/sourceを表示。Codex CLIはCLI markerを満たす記録に限定。場所・分離・network・approvalは不明初期値の手動profileとして関連付け可能 | Copilot/OpenCodeではCLIかアプリかを断定できない。セッションや環境から実行条件を自動検出しない。profile値は利用者申告で、実際の設定・モデル・実行条件の証明ではない |
 | 委譲 | 委譲元/先、目的、状態を関係線と詳細に記録し、完了済みローカルCodexへのread-only実行を最終確認後に開始 | purpose-only stdin、read-only sandbox、出力破棄、固定状態APIをmockで確認。operation IDはcanvasのlocalStorageに保存し、再読込後に明示的な状態確認が可能。サーバー再起動で状態が失われた場合は再試行せずblockedへ閉じる。実CLIは未起動、実セッション互換性と一般provider間委譲は未確認/未実装 |
-| Git worktree / PM policy | local Git worktreeの読取一覧、明示確認後の作成、clean/non-current等を再確認した確認付き削除、canvas上のpath-free記録。Windowsでは明示設定されたWSL distroに対する読み取り専用worktree一覧adapterも追加 | 一時Git repoと合成Codex fixtureを使い、作成dialogの対象/影響説明とack必須、削除dialogの正確なブランチ名+ack必須、削除後のcanvas記録更新までブラウザーで確認。実ユーザーrepoへの操作は未確認。WSL一覧adapterは合成runGitでパス/ファイル名非返却を確認したが、実WSL共有は未検証。WSL worktreeの作成/削除は無効。PM policyは「この依頼の安全条件だけ」で、追加の自動規則なし |
+| Git worktree / PM policy | local Git worktreeの読取一覧、明示確認後の作成、clean/non-current等を再確認した確認付き削除、canvas上のpath-free記録。Windowsでは明示設定されたWSL distroに対する一覧/作成/限定削除adapterも追加 | 一時Git repoと合成Codex fixtureを使い、作成dialogの対象/影響説明とack必須、削除dialogの正確なブランチ名+ack必須、削除後のcanvas記録更新までブラウザーで確認。実ユーザーrepoへの操作は未確認。WSLはmock runGitで境界・要約を確認したが、実WSL共有と実CLI挙動は未検証。WSL削除対象はこのアダプター作成のclean/non-current worktreeに限定。PM policyは「この依頼の安全条件だけ」で、追加の自動規則なし |
 | Comprehension Graph / 理解負債 | 理解を確認される人、未提示の根拠、必要な説明を記録。`evidence`/`explains`未接続を検出し、関係種別を初期選択した接続フォームへ進める | 人の理解度を推定・採点しない。カードの記録と根拠先の妥当性判断は利用者に残る。自動で実セッション内容から理解負債を発見する機能ではない |
 | REA / Knowledge Layer | ユーザー確認済みの短いREA要約をartifactへ手動記録。Obsidian vault-relative note URIを手動登録して明示リンクで開く | REAは起動せず完全Evidenceを取込まない。Obsidian vault走査、内容読取/書込、indexing/知識抽出は未実装 |
 | OpenCode / Copilot / WSL | OpenCode DBとCopilotイベントのread-only adapter。明示設定されたWSL共有を使うopt-in Codex reader | 実WSL共有は未確認。CLI/app producer識別、OpenCode legacy状態、未知形式の挙動には上記の制限がある |
@@ -256,12 +256,13 @@
 - `npm test`: 507 passed; `npm run arch`: 96 paths, 0 violations; `npm run smoke`: passed; `git diff --check`: passed。`npm run smoke`は集計値のみを出力し、秘密値やパスは出ていない。
 - 追試として隔離した空fixtureを通常モードで起動し、Windows computer-use経由でCTAを押してdialogまで確認しようとしたが、Chromeの状態取得が `GetCursorPos failed: アクセスが拒否されました (0x80070005)` で失敗した。対象ウィンドウを再選択して一度再試行しても同じ結果だったため、GUIスキルの復旧規則に従い操作を停止した。fixtureが存在しないこととサーバー停止を確認した。CTAクリック後のdialog表示は引き続き未確認であり、ソース接続と自動テスト以上の実画面動作を検証済みとは扱わない。
 
-### WSLのworktree状態を読み取り専用で表示 (2026-10-26)
+### WSLのworktree確認付きライフサイクル (2026-10-26)
 
 - 明示設定済みの `CODEX_HOME` WSL共有を通じて、セッション詳細のworktree一覧を提供する。逆マッピングは同じ共有のdistro/pathだけに限定し、無関係なUNC共有・別distro・traversalは拒否する。distroの自動列挙はしない。
-- 一覧をユーザーが選んだ時だけ、対象distroへ `wsl.exe --distribution <distro> --exec git ...` でrev-parse/list/statusの読取照会を行う。固定されたGit引数のみでshellを介さず、子プロセスへ渡すWindows環境はPATH/SystemRootに限定する。パス、ロック理由、ファイル名、Git診断は返さず、branch・状態・件数・固定flagだけを返す。
-- WSL worktreeの作成・削除は提供しない。合成runGitテストでdistro制限、パス写像、件数要約、パス/ファイル名の非返却、未設定/不一致時にWSLコマンドを呼ばないことを確認した。実distroへは接続せず、実WSLの表示・操作は未確認。
-- `npm test`: 511 passed; `npm run arch`: 96 paths, 0 violations; `npm run smoke`: passed; `git diff --check`: passed。起動smokeは既存経路を使用し、WSLコマンドは実行していない。
+- 一覧・作成・削除は各画面操作の後にだけ、対象distroへ `wsl.exe --distribution <distro> --exec git ...` で固定引数を渡す。shellは介さず、子プロセスへ渡すWindows環境はPATH/SystemRootに限定する。パス、ロック理由、ファイル名、Git診断は返さず、branch・状態・件数・固定flagだけを返す。
+- 作成は同じ既存確認dialogを使い、UIとAPIの両方で`confirmed: true`を必須にし、`core.hooksPath=/dev/null`を指定したbranch worktree作成だけを行う。Git filterはcheckout時に実行され得る。削除は決定的に生成したアプリ管理パスだけを許可し、clean/non-current/non-locked/non-prunableを再確認してforceなしで作業フォルダだけを削除する。ブランチは残す。UIではignored filesが失われる可能性を説明し、ブランチ名入力と確認を求める。
+- 合成runGitテストでdistro制限、パス写像、確認必須、作成先衝突、hook抑止、managed path限定、状態再確認、forceなし、パス/ファイル名の非返却を確認した。実distroへは接続せず、実WSLの表示・操作は未確認。
+- `npm test`: 514 passed; `npm run arch`: 96 paths, 0 violations; `npm run smoke`: passed; `git diff --check`: passed。起動smokeは既存経路を使用し、WSLコマンドは実行していない。
 
 ### Codex候補の0件理由を実ストアで識別 (2026-10-26)
 

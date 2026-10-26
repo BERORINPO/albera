@@ -155,7 +155,7 @@ export const JA_CANVAS = Object.freeze({
   'worktree.createdUntracked': '{branch}は作成しましたが、キャンバスへ記録を保存できませんでした。worktreeカードを手動で追加してください。',
   'worktree.recordBody': '基点 {base}。確認時: {state}、変更 {changed} 件、未追跡 {untracked} 件、競合 {conflicted} 件。このカードはローカル記録です。編集・削除してもworktree自体は変わりません。',
   'worktree.listButton': 'worktree状態を更新',
-  'worktree.wslUnavailable': 'WSLでは一覧の読み取りだけ利用できます（WindowsでCODEX_HOMEを対象ディストリビューションの共有先に設定した場合）。作成・削除は未対応です。',
+  'worktree.wslUnavailable': '設定済みのWSL共有内で操作します。削除できるのはこのアプリが作成した、clean・未使用のworktreeだけです。ignored filesも消える可能性があります。',
   'detail.executionLocation': '実行場所',
   'worktree.listTitle': 'このリポジトリのworktree',
   'worktree.listLoading': 'worktreeの状態を読み込んでいます…',

@@ -73,7 +73,7 @@ export async function fetchBoard(etag, timeoutMs) {
   }
 }
 
-/** Send one explicit, same-origin create request; browser input contains only an opaque session ID and branch label.
+/** Send one explicit, same-origin create request; browser input contains only an opaque session ID, branch label, and confirmation flag.
  * @param {string} sessionId @param {string} branch
  * @returns {Promise<{branch:string,status:string,changed:number,untracked:number,conflicted:number}>}
  */
@@ -83,7 +83,7 @@ export async function createWorktree(sessionId, branch) {
   try {
     const res = await fetch('/api/worktrees', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, branch }), cache: 'no-store', credentials: 'same-origin', signal: ctl.signal,
+      body: JSON.stringify({ sessionId, branch, confirmed: true }), cache: 'no-store', credentials: 'same-origin', signal: ctl.signal,
     });
     let data = {};
     try { data = await res.json(); } catch { /* generic error below */ }
@@ -104,7 +104,7 @@ export async function createWorktree(sessionId, branch) {
 
 /** Fetch bounded path-free worktree summaries for one selected session's repository.
  * @param {string} sessionId
- * @returns {Promise<Array<{branch:string|null,status:string,changed:number,untracked:number,conflicted:number,detached:boolean,locked:boolean,prunable:boolean,current:boolean}>>}
+ * @returns {Promise<Array<{branch:string|null,status:string,changed:number,untracked:number,conflicted:number,detached:boolean,locked:boolean,prunable:boolean,current:boolean,removable:boolean}>>}
  */
 export async function listWorktrees(sessionId) {
   const ctl = new AbortController();
@@ -120,7 +120,7 @@ export async function listWorktrees(sessionId) {
       changed: Number.isSafeInteger(item?.changed) && item.changed >= 0 ? item.changed : 0,
       untracked: Number.isSafeInteger(item?.untracked) && item.untracked >= 0 ? item.untracked : 0,
       conflicted: Number.isSafeInteger(item?.conflicted) && item.conflicted >= 0 ? item.conflicted : 0,
-      detached: item?.detached === true, locked: item?.locked === true, prunable: item?.prunable === true, current: item?.current === true,
+      detached: item?.detached === true, locked: item?.locked === true, prunable: item?.prunable === true, current: item?.current === true, removable: item?.removable === true,
     }));
   } finally {
     clearTimeout(timer);

@@ -6,7 +6,7 @@ import { openWorktreeRemoveDialog } from './worktree-remove-dialog.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 
-/** @param {T} t @param {{load:()=>Promise<Array<any>>,record?:(item:any)=>boolean,remove?:(branch:string)=>Promise<any>,onRemoved?:(branch:string)=>void}} options */
+/** @param {T} t @param {{load:()=>Promise<Array<any>>,record?:(item:any)=>boolean,remove?:(branch:string)=>Promise<any>,requireRemovableFlag?:boolean,onRemoved?:(branch:string)=>void}} options */
 export function openWorktreeListDialog(t, options) {
   const dialog = h('dialog', { class: 'graph-dialog', 'aria-labelledby': 'worktree-list-title' });
   const form = h('form', { class: 'graph-dialog__form' });
@@ -38,7 +38,7 @@ export function openWorktreeListDialog(t, options) {
     if (removeButton && options.remove) {
       const index = Number(removeButton.getAttribute('data-remove-index'));
       const item = Number.isSafeInteger(index) ? currentItems[index] : null;
-      if (!item?.branch || item.status !== 'clean' || item.current || item.locked || item.prunable) return;
+      if (!item?.branch || item.status !== 'clean' || item.current || item.locked || item.prunable || (options.requireRemovableFlag && item.removable !== true)) return;
       openWorktreeRemoveDialog(t, {
         branch: item.branch, remove: options.remove,
         onRemoved: () => { options.onRemoved?.(item.branch); void load(); },
@@ -66,7 +66,7 @@ export function openWorktreeListDialog(t, options) {
           list.append(h('li', {}, h('strong', { text: `${branch}${item.current ? ` — ${t('worktree.listCurrent')}` : ''}` }),
             h('span', { text: t('worktree.listSummary', { state, counts, flags: flags ? ` (${flags})` : '' }) }),
             options.record ? h('button', { class: 'textbtn', type: 'button', 'data-record-index': String(list.childElementCount), text: t('worktree.record') }) : null,
-            options.remove && item.branch && item.status === 'clean' && !item.current && !item.locked && !item.prunable
+            options.remove && item.branch && item.status === 'clean' && !item.current && !item.locked && !item.prunable && (!options.requireRemovableFlag || item.removable === true)
               ? h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-remove-index': String(list.childElementCount), text: t('worktree.remove') })
               : null));
         }

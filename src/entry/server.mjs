@@ -139,7 +139,8 @@ function main() {
   };
   const createWorktree = async (sessionId, branch) => {
     const session = await activeSessionForId(sessionId);
-    if (session?.executionLocation === 'wsl') return { ok: false, reason: 'unsupported_location' };
+    if (session?.executionLocation === 'wsl') return !config.demo && session.cwd && sources.wslWorktreeSource
+      ? sources.wslWorktreeSource.create({ cwd: session.cwd, branch, confirmed: true }) : { ok: false, reason: 'unsupported_location' };
     return session?.cwd ? sources.worktreeCreator.create({ cwd: session.cwd, branch }) : session;
   };
   const listWorktrees = async (sessionId) => {
@@ -152,7 +153,8 @@ function main() {
   };
   const removeWorktree = async (sessionId, branch, confirmed) => {
     const session = await activeSessionForId(sessionId);
-    if (session?.executionLocation === 'wsl') return { ok: false, reason: 'unsupported_location' };
+    if (session?.executionLocation === 'wsl') return !config.demo && session.cwd && sources.wslWorktreeSource
+      ? sources.wslWorktreeSource.remove({ cwd: session.cwd, branch, confirmed }) : { ok: false, reason: 'unsupported_location' };
     return session?.cwd ? sources.worktreeRemover.remove({ cwd: session.cwd, branch, confirmed }) : session;
   };
   const startDelegation = async (sessionId, purpose, confirmed, operationId) => {

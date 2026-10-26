@@ -132,6 +132,7 @@ function detailBar(t, card, pile, rowCtx, graph, demo) {
   acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'graph-task-from-session', 'data-id': card.id, text: t('graph.taskFromSession') }));
   if (card.detail?.executionLocation === 'wsl') {
     acts.append(h('p', { class: 'detail__note', text: t('worktree.wslUnavailable') }));
+    if (!demo) acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'worktree-create', 'data-id': card.id, text: t('worktree.openCreate') }));
     acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'worktree-list', 'data-id': card.id, text: t('worktree.listButton') }));
   } else acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'worktree-create', 'data-id': card.id, text: t('worktree.openCreate') }));
   acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'canvas-close', 'data-id': card.id, text: t('canvas.close') }));

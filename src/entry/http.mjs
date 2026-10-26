@@ -177,7 +177,7 @@ export function createHandler({ port, getBoard, createWorktree, listWorktrees, r
         branch: typeof item?.branch === 'string' && SAFE_BRANCH_RE.test(item.branch) && !item.branch.includes('..') && !item.branch.includes('//') ? item.branch : null,
         status: ['clean', 'changed', 'untracked', 'mixed', 'conflicted', 'unknown'].includes(item?.status) ? item.status : 'unknown',
         changed: count(item?.changed), untracked: count(item?.untracked), conflicted: count(item?.conflicted),
-        detached: item?.detached === true, locked: item?.locked === true, prunable: item?.prunable === true, current: item?.current === true,
+        detached: item?.detached === true, locked: item?.locked === true, prunable: item?.prunable === true, current: item?.current === true, removable: item?.removable === true,
       }));
       return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ items }));
     } catch {
@@ -202,8 +202,8 @@ export function createHandler({ port, getBoard, createWorktree, listWorktrees, r
     }
     let value;
     try { value = JSON.parse(body); } catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_json' })); }
-    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !['sessionId', 'branch'].includes(key))) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
-    if (typeof value.sessionId !== 'string' || !SESSION_CARD_ID.test(value.sessionId) || !isSafeBranch(value.branch)) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !['sessionId', 'branch', 'confirmed'].includes(key))) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (typeof value.sessionId !== 'string' || !SESSION_CARD_ID.test(value.sessionId) || !isSafeBranch(value.branch) || value.confirmed !== true) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
     if (!createWorktree) return send(res, 501, 'application/json; charset=utf-8', JSON.stringify({ error: 'worktree_unavailable' }));
     try {
       const result = await createWorktree(value.sessionId, value.branch);

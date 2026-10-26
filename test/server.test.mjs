@@ -240,7 +240,7 @@ test('GET 以外は 405 (HEAD も)', async () => {
   }
 });
 
-test('worktree作成APIは同一Origin・JSON・opaque session IDとbranchだけを受け取り、安全な要約だけを返す', async () => {
+test('worktree作成APIは同一Origin・JSON・opaque session ID・branch・明示確認だけを受け、安全な要約だけを返す', async () => {
   const p = await freePort();
   const calls = [];
   const server = http.createServer(createHandler({
@@ -254,7 +254,7 @@ test('worktree作成APIは同一Origin・JSON・opaque session IDとbranchだけ
   await new Promise((resolve) => server.listen(p, '127.0.0.1', resolve));
   const headers = { Origin: `http://127.0.0.1:${p}`, 'Content-Type': 'application/json' };
   try {
-    const valid = await request(p, { path: '/api/worktrees', method: 'POST', headers, body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/canvas' }) });
+    const valid = await request(p, { path: '/api/worktrees', method: 'POST', headers, body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/canvas', confirmed: true }) });
     assert.equal(valid.status, 200, valid.body);
     assert.deepEqual(JSON.parse(valid.body), { ok: true, branch: 'agent/canvas', status: 'clean', changed: 0, untracked: 0, conflicted: 0 });
     assert.deepEqual(calls, [['local_00000000-0000-4000-8000-000000000001', 'agent/canvas']]);
@@ -262,6 +262,8 @@ test('worktree作成APIは同一Origin・JSON・opaque session IDとbranchだけ
 
     const wrongOrigin = await request(p, { path: '/api/worktrees', method: 'POST', headers: { ...headers, Origin: 'https://attacker.example' }, body: '{}' });
     assert.equal(wrongOrigin.status, 403);
+    const unconfirmed = await request(p, { path: '/api/worktrees', method: 'POST', headers, body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/x', confirmed: false }) });
+    assert.equal(unconfirmed.status, 400);
     const extraPath = await request(p, { path: '/api/worktrees', method: 'POST', headers, body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/x', cwd: 'C:\\private\\repo' }) });
     assert.equal(extraPath.status, 400);
     const invalidBranch = await request(p, { path: '/api/worktrees', method: 'POST', headers, body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: '../outside' }) });
@@ -317,7 +319,7 @@ test('worktree一覧APIはopaque session IDだけで呼び出され、上限付�
       return Array.from({ length: 25 }, (_, i) => ({
         branch: i === 0 ? 'main' : i === 1 ? '../secret' : `agent/branch-${i}`,
         status: 'changed', changed: 1, untracked: 2, conflicted: 0, locked: i === 0,
-        prunable: false, detached: false, current: i === 0, path: privatePath, reason: 'secret',
+        prunable: false, detached: false, current: i === 0, removable: i === 0, path: privatePath, reason: 'secret',
       }));
     },
   }));
@@ -327,7 +329,7 @@ test('worktree一覧APIはopaque session IDだけで呼び出され、上限付�
     assert.equal(valid.status, 200, valid.body);
     const body = JSON.parse(valid.body);
     assert.equal(body.items.length, 20);
-    assert.deepEqual(body.items[0], { branch: 'main', status: 'changed', changed: 1, untracked: 2, conflicted: 0, detached: false, locked: true, prunable: false, current: true });
+    assert.deepEqual(body.items[0], { branch: 'main', status: 'changed', changed: 1, untracked: 2, conflicted: 0, detached: false, locked: true, prunable: false, current: true, removable: true });
     assert.equal(body.items[1].branch, null, 'malformed branch labels are discarded');
     for (const secret of [privatePath, 'path', 'secret', 'reason']) assert.ok(!valid.body.includes(secret));
     const invalid = await request(p, { path: '/api/worktrees?sessionId=codex_00000000-0000-4000-8000-000000000001&extra=1' });

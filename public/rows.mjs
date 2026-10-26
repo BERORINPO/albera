@@ -259,7 +259,7 @@ export function detailEl(card, pile, ctx) {
   const gitDetails = worktreeDetailText(t, d.gitWorktree);
   const actions = [
     pile === 'cleanup' ? openEl(t, card, 'textbtn', !!ctx.board?.stats?.demo) : null,
-    ...(card.detail?.executionLocation === 'wsl' ? [h('span', { class: 'detail__note', text: t('worktree.wslUnavailable') })] : []), h('button', { class: 'textbtn', type: 'button', 'data-action': 'worktree-list', 'data-id': card.id, text: t('worktree.listButton') }),
+    ...(card.detail?.executionLocation === 'wsl' ? [h('span', { class: 'detail__note', text: t('worktree.wslUnavailable') }), ctx.board?.stats?.demo ? null : h('button', { class: 'textbtn', type: 'button', 'data-action': 'worktree-create', 'data-id': card.id, text: t('worktree.openCreate') })] : []), h('button', { class: 'textbtn', type: 'button', 'data-action': 'worktree-list', 'data-id': card.id, text: t('worktree.listButton') }),
     card.family?.rootId ? h('button', { class: 'textbtn', type: 'button', 'data-action': 'family', 'data-root': card.family.rootId, text: t('detail.familyOnly') }) : null,
     copyButton(t, { action: 'copy-id', id: card.id, key: 'detail.copyId' }),
     deepLink(card.id) ? copyButton(t, { action: 'copy-link', id: card.id, key: 'detail.copyLink' }) : null,

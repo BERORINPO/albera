@@ -136,13 +136,13 @@ function createWorktreeForSession(sessionId) {
   });
   return true;
 }
-
 function listWorktreesForSession(sessionId) {
   const entry = view.index.get(sessionId);
   if (!entry) return false;
   openWorktreeListDialog(state.t, {
     load: () => listWorktrees(sessionId),
-    remove: entry.card.detail?.executionLocation === 'wsl' ? undefined : (branch) => removeWorktree(sessionId, branch),
+    remove: state.board?.stats?.demo ? undefined : (branch) => removeWorktree(sessionId, branch),
+    requireRemovableFlag: entry.card.detail?.executionLocation === 'wsl',
     onRemoved: (branch) => {
       const graph = loadGraph();
       const card = graph.nodes.find((node) => node.kind === 'worktree' && node.title === branch
