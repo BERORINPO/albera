@@ -4,6 +4,7 @@
 
 import { EN_CANVAS } from './dict-en-canvas.mjs';
 import { EN_HANDOFF } from './dict-en-handoff.mjs';
+import { EN_FILTER } from './dict-en-filter.mjs';
 
 /** @type {Readonly<Record<string, string | {one: string, other: string}>>} */
 export const EN = Object.freeze({
@@ -37,8 +38,6 @@ export const EN = Object.freeze({
   'date.mon.9': 'Oct',
   'date.mon.10': 'Nov',
   'date.mon.11': 'Dec',
-  'filter.label': 'Filter by title, project, summary or what it is doing',
-  'filter.placeholder': 'Filter',
   'lang.switchTo': '日本語',
   'lang.toggleAria': 'Switch language',
 
@@ -394,4 +393,5 @@ export const EN = Object.freeze({
   // 19.13–19.15: dict-en-handoff.mjs
   ...EN_CANVAS,
   ...EN_HANDOFF,
+  ...EN_FILTER,
 });

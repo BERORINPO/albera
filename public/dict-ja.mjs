@@ -4,6 +4,7 @@
 
 import { JA_CANVAS } from './dict-ja-canvas.mjs';
 import { JA_HANDOFF } from './dict-ja-handoff.mjs';
+import { JA_FILTER } from './dict-ja-filter.mjs';
 
 /** @type {Readonly<Record<string, string>>} */
 export const JA = Object.freeze({
@@ -37,8 +38,6 @@ export const JA = Object.freeze({
   'date.mon.9': '10 月',
   'date.mon.10': '11 月',
   'date.mon.11': '12 月',
-  'filter.label': 'タイトル・プロジェクト・要約・していることで絞り込み',
-  'filter.placeholder': '絞り込み',
   'lang.switchTo': 'English',
   'lang.toggleAria': '言語を切り替える',
 
@@ -394,4 +393,5 @@ export const JA = Object.freeze({
   // 19.13–19.15: dict-ja-handoff.mjs
   ...JA_CANVAS,
   ...JA_HANDOFF,
+  ...JA_FILTER,
 });

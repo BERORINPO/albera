@@ -12,6 +12,7 @@ import { renderBanners, renderFront, renderIntro, renderLede } from './front.mjs
 import { otherLang } from './i18n.mjs';
 import { notifyState } from './notify.mjs';
 import { renderLoadingPile, renderPile, renderRecent } from './rows.mjs';
+import { renderProjectFilter } from './project-filter.mjs';
 import { archivedToday, isNew, now, pruneNew, savePrefs, state, takeArrival, zeroSinceToday } from './state.mjs';
 import { batchProgress, cardIndex, cursorAfter, focusSignature, listsFromRows, nextUp, presentIds, visibleModel } from './ui-state.mjs';
 import { announce, fill, h, leaveAndRemove } from './view.mjs';
@@ -118,6 +119,7 @@ function renderMast() {
   document.querySelector('.glyph rect')?.classList.toggle('is-on', needs);
 }
 
+/** プロジェクト名だけを選択肢にし、パスや内部キーは表示しない。 @param {any} board */
 function renderFoot() {
   const t = state.t;
   const s = state.board?.stats ?? {};
@@ -184,7 +186,8 @@ export function render() {
   const at = now();
   const board = state.board;
   const focus = captureFocus();
-  view.visible = board ? visibleModel(board, { q: state.filter, family: state.family, source: state.sourceFilter, t, now: at }) : null;
+  state.projectFilter = renderProjectFilter(/** @type {HTMLSelectElement} */ ($('project-filter')), board, t, state.projectFilter);
+  view.visible = board ? visibleModel(board, { q: state.filter, family: state.family, source: state.sourceFilter, project: state.projectFilter, t, now: at }) : null;
   view.index = cardIndex(board);
   view.present = presentIds(board);
   renderMast();
@@ -326,6 +329,8 @@ export function clearFilters() {
   state.family = null;
   state.sourceFilter = 'all';
   /** @type {HTMLSelectElement} */ ($('source-filter')).value = 'all';
+  state.projectFilter = 'all';
+  /** @type {HTMLSelectElement} */ ($('project-filter')).value = 'all';
 }
 
 /** その行が見えるように欄・グループ・「残りを表示」を開いて、カーソルとフォーカスを置く。 @param {string} id */

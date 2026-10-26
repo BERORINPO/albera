@@ -18,6 +18,7 @@ import { announce, fill } from './view.mjs';
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
 const filterInput = /** @type {HTMLInputElement} */ ($('filter'));
 const sourceFilter = /** @type {HTMLSelectElement} */ ($('source-filter'));
+const projectFilter = /** @type {HTMLSelectElement} */ ($('project-filter'));
 
 /** index.html の data-i18n / data-i18n-attr を今の言語で埋める。 */
 function applyStaticText() {
@@ -294,8 +295,9 @@ let filterTimer = null;
 function announceFilter() {
   const v = view.visible;
   const q = state.filter.trim();
-  if (!v?.filtering || !q) return;
-  announce(v.total === 0 ? state.t('nomatch.query.lead', { q }) : state.t('banner.filter', { q, n: v.total }));
+  if (!v?.filtering) return;
+  if (q) announce(v.total === 0 ? state.t('nomatch.query.lead', { q }) : state.t('banner.filter', { q, n: v.total }));
+  else announce(state.t(v.total === 0 ? 'filter.none' : 'filter.count', { n: v.total }));
 }
 
 /** 毎分ちょうど (分が変わったところ) に時刻の文言を書き直す。 */
@@ -327,6 +329,12 @@ function init() {
   });
   sourceFilter.addEventListener('change', () => {
     state.sourceFilter = ['claude', 'codex', 'copilot', 'opencode'].includes(sourceFilter.value) ? sourceFilter.value : 'all';
+    render();
+    announceFilter();
+  });
+  projectFilter.addEventListener('change', () => {
+    const value = projectFilter.value;
+    state.projectFilter = value === 'all' || [...projectFilter.options].some((option) => option.value === value) ? value : 'all';
     render();
     announceFilter();
   });

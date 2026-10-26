@@ -186,6 +186,22 @@ test('visibleModel: 実行元フィルターは検索と重ねられ、件数も
   assert.equal(combined.total, 0, 'source and text filters are ANDed');
 });
 
+test('visibleModel: project filtering composes with source and search across piles', () => {
+  const b = board();
+  b.buckets.trouble[0].project = { key: 'notes', label: 'notes', extra: 0 };
+  b.recentGroups[0].items.push(c('opencode_00000000-0000-4000-8000-000000000003', {
+    source: 'opencode', title: 'OpenCode notes', project: { key: 'notes', label: 'notes', extra: 0 },
+  }));
+  const byProject = visibleModel(b, { project: 'notes', t: en });
+  assert.equal(byProject.filtering, true);
+  assert.deepEqual(byProject.buckets.trouble.map((x) => x.id), ['t1']);
+  assert.deepEqual(byProject.recentGroups.flatMap((g) => g.items.map((x) => x.id)), ['opencode_00000000-0000-4000-8000-000000000003']);
+  assert.equal(byProject.total, 3);
+  const combined = visibleModel(b, { project: 'notes', source: 'opencode', q: 'notes', t: en });
+  assert.equal(combined.total, 1);
+  assert.deepEqual(combined.recentGroups[0].items.map((x) => x.id), ['opencode_00000000-0000-4000-8000-000000000003']);
+});
+
 test('visibleModel: 親子の絞り込みは根と子孫、定期実行は runIds のどれかが入っていれば', () => {
   const v = visibleModel(board(), { family: 'r1', t: en });
   assert.deepEqual(v.buckets.needs_you.map((x) => x.id), ['n2']);
