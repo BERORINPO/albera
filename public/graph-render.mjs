@@ -175,7 +175,9 @@ export function renderGraphLayer(layer, o) {
     });
     const filteredSession = [edge.from, edge.to].some((endpoint) => endpoint.startsWith('session:') && o.matched != null && !o.matched.has(endpoint.slice(8)));
     el.classList.toggle('is-dim', (!!query && !touchesMatch) || filteredSession);
-    el.setAttribute('aria-label', t(`graph.edge.${edge.kind}`));
+    const attributes = graphEdgeAttributes(edge, t);
+    if (attributes.title) el.setAttribute('aria-label', attributes.title);
+    else el.removeAttribute('aria-label');
   }
 }
 

@@ -49,6 +49,8 @@ test('each persisted delegation status has a canvas style and unknown status sta
   assert.match(renderer, /line\.setAttribute\('tabindex', '0'\)/);
   assert.match(renderer, /line\.setAttribute\('aria-label', attributes\.title\)/);
   assert.match(renderer, /else line\.setAttribute\('aria-hidden', 'true'\)/);
+  assert.match(renderer, /if \(attributes\.title\) el\.setAttribute\('aria-label', attributes\.title\)/);
+  assert.doesNotMatch(renderer, /el\.setAttribute\('aria-label', t\(`graph\.edge\.\$\{edge\.kind\}`\)\)/);
 });
 
 test('delegation edge attributes expose only the fixed status tooltip, including unknown status', () => {
