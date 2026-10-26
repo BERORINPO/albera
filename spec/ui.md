@@ -1344,3 +1344,9 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 
 - 保存Graphの未知statusが「予定」へ変わると実行可になり得たため、正規化値を「状態不明」とし、明示レビューまで実行を止める。
 - `--demo`で未知状態の合成関係を作成。詳細の理由表示、再読込での保存/復元、確認付き削除を確認した。CLI/実セッション/外部サービスは使っていない。
+
+### REA OSSへの手動導線
+
+- 成果物カードの編集・作成フォームは、ユーザー指定のREA repositoryを明示操作で開くリンクを含む。クリック時だけ開き、opener連携とreferrer送信を抑止する。
+- 注意書きは短い確認済み要約だけを成果物説明に記録し、完全なEvidence・機密値を貼らないよう伝える。自動実行・自動fetch・Evidence取込はしない。
+- 隔離demoブラウザーで成果物種別への切替後に案内とリンク名を確認。リンク先は開かず、外部アクセスなし。変更後の確認は`npm test` 570件成功、`npm run arch` 99 paths・違反0、`npm run smoke`・`git diff --check`成功。

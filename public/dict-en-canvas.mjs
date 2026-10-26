@@ -70,6 +70,7 @@ export const EN_CANVAS = Object.freeze({
   'graph.bodyLabel': 'Description',
   'graph.referenceUrl': 'Artifact HTTPS reference',
   'graph.artifactSummaryManual': 'For REA findings, record only a short summary you have reviewed. Do not paste full Evidence or sensitive values.',
+  'graph.openReaProject': 'Open the REA OSS project',
   'graph.referencePrivacy': 'The reference stays in this browser. URLs with credentials, query strings or fragments are rejected. The link opens only when selected.',
   'graph.referenceInvalid': 'Enter an HTTPS URL without credentials, a query string, or a fragment.',
   'graph.openReference': 'Open artifact reference',
