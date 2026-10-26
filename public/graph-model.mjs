@@ -334,26 +334,33 @@ export function removeGraphEdge(doc, id) {
  * understanding or comprehension score.
  * @param {GraphDoc} doc
  * @param {Set<string>} [sessionIds] Current read-only session IDs; dangling session links do not satisfy a gap.
- * @returns {Array<{id:string,missing:Array<'evidence'|'explains'>}>}
+ * @returns {Array<{id:string,missing:Array<'evidence'|'explains'>,incomplete:Array<{kind:'evidence'|'explains',edgeId:string}>}>}
  */
 export function reviewUnderstandingGaps(doc, sessionIds = new Set()) {
   return doc.nodes
     .filter((node) => node.kind === 'understanding_gap')
     .map((node) => {
       const endpoint = `graph:${node.id}`;
-      const connected = new Set(doc.edges
+      const linkedEdges = doc.edges
         .filter((edge) => edge.from === endpoint || edge.to === endpoint)
-        .filter((edge) => edge.purpose.trim())
         .filter((edge) => {
           const other = edge.from === endpoint ? edge.to : edge.from;
           if (other.startsWith('graph:')) return doc.nodes.some((item) => `graph:${item.id}` === other);
           return other.startsWith('session:') && sessionIds.has(other.slice(8));
-        })
+        });
+      const connected = new Set(doc.edges
+        .filter((edge) => linkedEdges.includes(edge))
+        .filter((edge) => edge.purpose.trim())
         .map((edge) => edge.kind));
       const missing = [];
       if (node.missingEvidence && !connected.has('evidence')) missing.push('evidence');
       if (node.neededExplanation && !connected.has('explains')) missing.push('explains');
-      return { id: node.id, missing: /** @type {Array<'evidence'|'explains'>} */ (missing) };
+      const incomplete = /** @type {Array<{kind:'evidence'|'explains',edgeId:string}>} */ ([]);
+      for (const kind of /** @type {Array<'evidence'|'explains'>} */ (missing)) {
+        const edge = linkedEdges.find((item) => item.kind === kind && !item.purpose.trim());
+        if (edge) incomplete.push({ kind, edgeId: edge.id });
+      }
+      return { id: node.id, missing: /** @type {Array<'evidence'|'explains'>} */ (missing), incomplete };
     })
     .filter((item) => item.missing.length > 0);
 }

@@ -260,16 +260,16 @@ test('comprehension review reports only explicitly missing graph links, never a 
   assert.equal(addGraphNode(empty(), { kind: 'understanding_gap', title: 'Already resolved', body: '', status: 'resolved', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: 'source', neededExplanation: '' }, g2).nodes.length, 0, 'a new gap cannot skip its declared evidence link');
   assert.equal(connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'evidence', purpose: '', status: '' }, e1, new Set([session])), graph, 'an evidence relation requires an explicit purpose');
   assert.equal(updateGraphNode(graph, g1, { status: 'done' }), graph, 'done cannot hide missing evidence or explanation links');
-  assert.deepEqual(reviewUnderstandingGaps(graph), [{ id: g1, missing: ['evidence', 'explains'] }]);
+  assert.deepEqual(reviewUnderstandingGaps(graph), [{ id: g1, missing: ['evidence', 'explains'], incomplete: [] }]);
   graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'evidence', purpose: 'Read-only source session', status: '' }, e1, new Set([session]));
-  assert.deepEqual(reviewUnderstandingGaps(graph, new Set([session])), [{ id: g1, missing: ['explains'] }]);
+  assert.deepEqual(reviewUnderstandingGaps(graph, new Set([session])), [{ id: g1, missing: ['explains'], incomplete: [] }]);
   assert.equal(updateGraphNode(graph, g1, { status: 'resolved' }), graph, 'a session link counts only when the current session exists');
   graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'explains', purpose: 'User-authored rationale', status: '' }, 'e_00000000-0000-4000-8000-000000000002', new Set([session]));
   assert.deepEqual(reviewUnderstandingGaps(graph, new Set([session])), []);
   graph = updateGraphNode(graph, g1, { status: 'resolved' }, new Set([session]));
   assert.deepEqual(reviewUnderstandingGaps(graph, new Set([session])), [], 'linked declared gaps may be resolved');
   graph = { ...graph, edges: graph.edges.filter((edge) => edge.kind !== 'evidence') };
-  assert.deepEqual(reviewUnderstandingGaps(graph, new Set([session])), [{ id: g1, missing: ['evidence'] }], 'removing a required relation returns a resolved gap to review');
+  assert.deepEqual(reviewUnderstandingGaps(graph, new Set([session])), [{ id: g1, missing: ['evidence'], incomplete: [] }], 'removing a required relation returns a resolved gap to review');
 
   const unspecified = addGraphNode(empty(), { kind: 'understanding_gap', title: 'Unspecified', body: '', status: 'open', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: '', neededExplanation: '' }, g2);
   assert.deepEqual(reviewUnderstandingGaps(unspecified), [], 'blank fields do not imply missing evidence or lack of understanding');
@@ -302,8 +302,8 @@ test('comprehension review treats relations to unavailable sessions as missing',
     checkedPerson: 'reviewer', missingEvidence: 'source session', neededExplanation: 'decision context',
   }, g1);
   const linked = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'evidence', purpose: 'User-reviewed source session', status: '' }, e1, new Set([session]));
-  assert.deepEqual(reviewUnderstandingGaps(linked, new Set([session])), [{ id: g1, missing: ['explains'] }]);
-  assert.deepEqual(reviewUnderstandingGaps(linked), [{ id: g1, missing: ['evidence', 'explains'] }]);
+  assert.deepEqual(reviewUnderstandingGaps(linked, new Set([session])), [{ id: g1, missing: ['explains'], incomplete: [] }]);
+  assert.deepEqual(reviewUnderstandingGaps(linked), [{ id: g1, missing: ['evidence', 'explains'], incomplete: [] }]);
 });
 
 test('legacy evidence and explanation links need an explicit note before satisfying a comprehension gap', () => {
@@ -318,9 +318,17 @@ test('legacy evidence and explanation links need an explicit note before satisfy
       { id: 'e_00000000-0000-4000-8000-000000000002', from: `graph:${g1}`, to: `graph:${g2}`, kind: 'explains', purpose: '' },
     ],
   });
-  assert.deepEqual(reviewUnderstandingGaps(legacy), [{ id: g1, missing: ['evidence', 'explains'] }]);
+  assert.deepEqual(reviewUnderstandingGaps(legacy), [{
+    id: g1, missing: ['evidence', 'explains'],
+    incomplete: [
+      { kind: 'evidence', edgeId: e1 },
+      { kind: 'explains', edgeId: 'e_00000000-0000-4000-8000-000000000002' },
+    ],
+  }]);
   assert.equal(updateGraphEdge(legacy, e1, { purpose: 'User-reviewed source note' }).edges[0].purpose, 'User-reviewed source note');
   const reviewed = updateGraphEdge(legacy, e1, { purpose: 'User-reviewed source note' });
-  assert.deepEqual(reviewUnderstandingGaps(reviewed), [{ id: g1, missing: ['explains'] }]);
+  assert.deepEqual(reviewUnderstandingGaps(reviewed), [{
+    id: g1, missing: ['explains'], incomplete: [{ kind: 'explains', edgeId: 'e_00000000-0000-4000-8000-000000000002' }],
+  }]);
   assert.equal(updateGraphEdge(reviewed, e1, { purpose: '' }), reviewed, 'a valid evidence note cannot be cleared silently');
 });

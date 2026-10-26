@@ -1,12 +1,13 @@
 // @ts-check
 // Accessible local editor for graph cards and user-authored relations.
 
-import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
+import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
 import { h } from './view.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
 import { cancelGraphDialog, completeGraphDialogSave, confirmBlockedOperationRelease, confirmGraphRelationRemoval, connectMissingComprehensionEdge, graphDialogFocusTarget } from './graph-dialog-actions.mjs';
 import { openGraphConfirmDialog } from './graph-confirm-dialog.mjs';
 import { artifactReferenceField, createArtifactSummaryGuidance, syncArtifactSummaryGuidance } from './graph-rea-summary.mjs';
+import { comprehensionReviewElements } from './graph-comprehension-review.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 
@@ -73,16 +74,7 @@ export function openGraphNodeDialog(o) {
   form.append(h('h2', { id: 'graph-dialog-title', text: title }), h('p', { class: 'graph-dialog__privacy', text: t('graph.localOnly') }));
   const operationLocked = !!node && graph.edges.some((edge) => edge.operationId && edge.status !== 'completed' && (edge.from === `graph:${node.id}` || edge.to === `graph:${node.id}`));
   if (operationLocked) form.append(h('p', { class: 'graph-dialog__privacy', text: t('graph.nodeHasOperation') }));
-  if (node?.kind === 'understanding_gap') {
-    const review = reviewUnderstandingGaps(graph, new Set(sessions.map((session) => session.id))).find((item) => item.id === node.id);
-    if (review?.missing.length) form.append(
-      h('p', { class: 'graph-dialog__review', text: t('graph.reviewHint', { links: review.missing.map((kind) => t(`graph.link.${kind}`)).join(', ') }) }),
-      h('div', { class: 'graph-dialog__review-actions' }, ...review.missing.map((kind) => h('button', {
-        class: 'textbtn', type: 'button', 'data-dialog-action': 'connect-missing', 'data-edge-kind': kind,
-        text: t(`graph.resolveMissing.${kind}`),
-      }))),
-    );
-  }
+  if (node?.kind === 'understanding_gap') form.append(...comprehensionReviewElements(t, graph, sessions, node.id));
   form.append(
     selectField(t, 'graph.kindLabel', 'kind', [...GRAPH_NODE_KINDS], node?.kind ?? o.initialKind ?? 'task', (v) => t(`graph.kind.${v}`)),
     inputField(t, 'graph.titleLabel', 'title', node?.title ?? o.initialTitle ?? '', true),
