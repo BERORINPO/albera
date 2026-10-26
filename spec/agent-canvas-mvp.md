@@ -254,6 +254,7 @@
 - 空状態を名前付きregionとして構造化し、ボタンのfocus-visible輪郭とポインター操作を有効にした。英語/日本語の説明と操作名を追加し、言語切替後も表示を更新する。
 - 単体テストはaction接続、名前付きregion、pointer-events、focus表示、両言語の辞書キーを確認。空fixtureを通常モードで起動したブラウザーのアクセシビリティツリーで、説明regionと「カードを追加」buttonの表示も確認した。クリック後に編集dialogが開く操作は未実施。
 - `npm test`: 507 passed; `npm run arch`: 96 paths, 0 violations; `npm run smoke`: passed; `git diff --check`: passed。`npm run smoke`は集計値のみを出力し、秘密値やパスは出ていない。
+- 追試として隔離した空fixtureを通常モードで起動し、Windows computer-use経由でCTAを押してdialogまで確認しようとしたが、Chromeの状態取得が `GetCursorPos failed: アクセスが拒否されました (0x80070005)` で失敗した。対象ウィンドウを再選択して一度再試行しても同じ結果だったため、GUIスキルの復旧規則に従い操作を停止した。fixtureが存在しないこととサーバー停止を確認した。CTAクリック後のdialog表示は引き続き未確認であり、ソース接続と自動テスト以上の実画面動作を検証済みとは扱わない。
 
 ### Codex候補の0件理由を実ストアで識別 (2026-10-26)
 
