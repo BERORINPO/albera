@@ -162,8 +162,11 @@ export function bindCanvas(viewport, handlers) {
     pts.set(ev.pointerId, local(ev));
     if (pts.size === 2) {
       // 2 本目の指: ドラッグをやめてピンチにする
+      if (drag?.kind === 'connect' && drag.key) handlers.graphConnectHover(drag.endpointKind ?? 'graph', drag.key, null, null);
       drag = null;
       pinch = { dist: pair().dist };
+      viewport.classList.remove('is-panning');
+      viewport.classList.remove('is-connecting');
       return;
     }
     const connectHandle = /** @type {HTMLElement|null} */ (el?.closest('.graph-connect-handle[data-id], .canvas-connect-handle[data-id]') ?? null);
