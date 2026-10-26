@@ -292,7 +292,10 @@ export function openGraphRelationDialog(o) {
     if (purposeInput) purposeInput.required = kindInput.value === 'delegates';
   });
   document.body.append(dialog);
-  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  dialog.addEventListener('close', () => {
+    dialog.remove();
+    if (fromKey.startsWith('graph:')) requestAnimationFrame(() => document.querySelector(`.graph-node[data-id="${CSS.escape(fromKey.slice(6))}"]`)?.focus({ preventScroll: true }));
+  }, { once: true });
   form.addEventListener('click', (ev) => {
     const button = ev.target instanceof Element ? ev.target.closest('[data-dialog-action]') : null;
     const action = button?.getAttribute('data-dialog-action');
@@ -316,7 +319,6 @@ export function openGraphRelationDialog(o) {
     if (!endpointKey(to) || to === fromKey) return;
     o.onConnect({ from: fromKey, to, kind: data.kind, purpose: data.purpose, status: data.status });
     dialog.close();
-    if (fromKey.startsWith('graph:')) requestAnimationFrame(() => document.querySelector(`.graph-node[data-id="${CSS.escape(fromKey.slice(6))}"]`)?.focus({ preventScroll: true }));
   });
   dialog.showModal();
   /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="to"]'))?.focus();
