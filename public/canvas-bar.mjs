@@ -5,6 +5,7 @@
 
 import { handoffGuideEl, handoffPlan } from './handoff.mjs';
 import { bucketTitle, titleOf } from './format.mjs';
+import { obsidianOpenUri } from './graph-model.mjs';
 import { detailEl, detailStamp } from './rows.mjs';
 import { sessionRelationEntries } from './session-relations.mjs';
 import { fill, h } from './view.mjs';
@@ -68,8 +69,13 @@ function sessionRelations(t, card, graph, sessions) {
     const endpoint = entry.endpoint === 'graph'
       ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'graph-open', 'data-id': entry.node.id, text: `${t(`graph.kind.${entry.node.kind}`)}: ${entry.node.title}` })
       : h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'canvas-open-session', 'data-id': entry.sessionId, text: `${t(`source.${entry.sessionId.startsWith('codex_') ? 'codex' : entry.sessionId.startsWith('copilot_') ? 'copilot' : entry.sessionId.startsWith('opencode_') ? 'opencode' : 'claude'}`)} #${entry.sessionId.slice(-8)}` });
+    const localNode = entry.endpoint === 'graph' && entry.node.kind === 'obsidian_note'
+      ? graph.nodes.find((node) => node.id === entry.node.id)
+      : null;
+    const openNoteUri = localNode ? obsidianOpenUri(localNode.knowledgeVault, localNode.knowledgeFile) : '';
     return h('li', {},
       endpoint,
+      openNoteUri ? h('a', { class: 'textbtn graph-session-relations__node', href: openNoteUri, target: '_blank', rel: 'noopener noreferrer', text: t('graph.openKnowledgeNote') }) : null,
       h('span', { text: `${direction} — ${t(`graph.edge.${entry.kind}`)}${status}` }),
       entry.purpose ? h('small', { text: entry.purpose }) : null,
       entry.endpoint === 'graph' && entry.node.kind === 'execution_profile'
