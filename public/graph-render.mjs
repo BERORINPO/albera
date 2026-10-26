@@ -5,6 +5,7 @@ import { CANVAS } from '../src/shared/constants.mjs';
 import { h, reconcile } from './view.mjs';
 import { reviewUnderstandingGaps } from './graph-model.mjs';
 import { comprehensionGapSummary } from './session-relations.mjs';
+import { graphSessionLabel } from './graph-session-label.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 const CARD_W = 280;
@@ -98,6 +99,28 @@ export function graphEdgeAttributes(edge, t) {
     ...(presentation.status ? { status: presentation.status } : {}),
     ...(presentation.title ? { title: presentation.title } : {}),
   };
+}
+
+/** Relation names use safe provider/kind labels and opaque ID suffixes, never card titles or edge metadata. @param {{from:string,to:string,kind:string,status?:string}} edge @param {any} graph @param {Map<string,{card:any,pile:string}>} index @param {T} t */
+export function graphEdgeAccessibleLabel(edge, graph, index, t) {
+  const endpointLabel = (endpoint) => {
+    if (typeof endpoint !== 'string') return t('graph.missingEndpoint');
+    if (endpoint.startsWith('graph:')) {
+      const id = endpoint.slice(6);
+      const node = graph.nodes.find((item) => item.id === id);
+      if (!node) return t('graph.missingNode');
+      const kind = ['task', 'artifact', 'decision', 'understanding_gap'].includes(node.kind) ? node.kind : 'unknown';
+      const suffix = id.slice(-12).toLowerCase();
+      return /^[a-f0-9]{12}$/.test(suffix) ? `${t(`graph.kind.${kind}`)} (${suffix})` : t('graph.unknownEndpoint');
+    }
+    if (endpoint.startsWith('session:')) {
+      const id = endpoint.slice(8);
+      return index.has(id) ? graphSessionLabel({ id }, t) : t('graph.missingSession');
+    }
+    return t('graph.unknownEndpoint');
+  };
+  const relation = graphEdgePresentation(edge, t).title;
+  return t('graph.edgeAccessible', { from: endpointLabel(edge.from), to: endpointLabel(edge.to), relation });
 }
 
 /** @param {string} endpoint @param {any} graph @param {Map<string,{card:any,pile:string}>} index @param {any} layout */
@@ -220,9 +243,10 @@ export function renderGraphLayer(layer, o) {
     (x) => `${x.edge.from}|${x.edge.to}|${x.edge.kind}|${x.edge.status}|${x.edge.purpose}|${x.line?.x1}|${x.line?.y1}|${x.line?.x2}|${x.line?.y2}`,
     (x) => {
       const attributes = graphEdgeAttributes(x.edge, t);
+      const accessibleLabel = graphEdgeAccessibleLabel(x.edge, o.graph, o.index, t);
       const line = h('button', {
         type: 'button', 'data-action': 'graph-edit-edge', 'data-id': x.edge.id,
-        'aria-label': attributes.title,
+        'aria-label': accessibleLabel,
         class: attributes.className,
       }, attributes.title
         ? h('span', { class: 'graph-edge__tooltip', 'aria-hidden': 'true', text: attributes.title })
@@ -289,8 +313,8 @@ export function renderGraphLayer(layer, o) {
     });
     const filteredSession = [edge.from, edge.to].some((endpoint) => endpoint.startsWith('session:') && o.matched != null && !o.matched.has(endpoint.slice(8)));
     el.classList.toggle('is-dim', (!!query && !touchesMatch) || (filteredSession && !relationMatches));
-    const attributes = graphEdgeAttributes(edge, t);
-    if (attributes.title) el.setAttribute('aria-label', attributes.title);
+    const accessibleLabel = graphEdgeAccessibleLabel(edge, o.graph, o.index, t);
+    if (accessibleLabel) el.setAttribute('aria-label', accessibleLabel);
     else el.removeAttribute('aria-label');
   }
 }

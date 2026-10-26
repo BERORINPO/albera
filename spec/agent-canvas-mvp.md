@@ -707,3 +707,9 @@
 - `related` / `depends_on` / `delegates` / `evidence` / `explains` の各線を、種類名を読み上げるボタンとして表示する。Tab/クリックで既存の関係編集dialogを開き、hover/focusでツールチップを表示する。
 - 委譲線は種類とallowlist状態を示し、purposeや任意値をtooltipへ含めない。他の線も状態やpurposeを属性へ流さず、種類だけを表示する。
 - relation presentationとcanvas編集導線のテストを更新。`npm test` — 561 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。ブラウザーのTab/クリック受入は未確認。
+
+### 関係線のアクセシブル名で端点を区別 (2026-10-27)
+
+- 関係線のボタン名に、関係種別と端点の安全な要約を含める。グラフカードは種別と不透明ID末尾、セッションは提供元とID末尾で区別する。
+- カードタイトル、関係目的、任意状態値、完全IDはアクセシブル名へ含めない。ツールチップも既存どおり関係種別とallowlist済み委譲状態に限る。
+- 合成テストで同種関係線の区別とタイトル/目的/完全IDの除外を確認。ブラウザー上の読み上げとフォーカス操作は未確認。

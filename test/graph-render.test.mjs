@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
-import { graphCardAriaLabel, graphCardComprehensionSummary, graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation, graphEdgeSearchText, graphNodeHasMatchedSession, graphNodeSessionFilterMatch } from '../public/graph-render.mjs';
+import { graphCardAriaLabel, graphCardComprehensionSummary, graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAccessibleLabel, graphEdgeAttributes, graphEdgePresentation, graphEdgeSearchText, graphNodeHasMatchedSession, graphNodeSessionFilterMatch } from '../public/graph-render.mjs';
 import { cancelGraphConnection, chooseGraphConnectionTarget, startGraphConnection } from '../public/graph-connect-mode.mjs';
 
 const node = { id: 'g_00000000-0000-4000-8000-000000000001', kind: 'understanding_gap', title: 'Gap', status: 'open' };
@@ -231,7 +231,7 @@ test('each persisted delegation status has a canvas style and unknown status sta
   assert.match(renderer, /lineRoot\.removeAttribute\('aria-hidden'\)/);
   assert.match(renderer, /h\('button', \{[\s\S]*?'data-action': 'graph-edit-edge'/);
   assert.match(renderer, /'data-action': 'graph-edit-edge', 'data-id': x\.edge\.id/);
-  assert.match(renderer, /'aria-label': attributes\.title/);
+  assert.match(renderer, /'aria-label': accessibleLabel/);
   assert.doesNotMatch(renderer, /line\.setAttribute\('aria-hidden', 'true'\)/);
   assert.match(renderer, /line\.setAttribute\('title', attributes\.title\)/);
   assert.doesNotMatch(renderer, /el\.setAttribute\('aria-label', t\(`graph\.edge\.\$\{edge\.kind\}`\)\)/);
@@ -247,4 +247,34 @@ test('delegation edge attributes expose only the fixed status tooltip, including
   assert.equal(JSON.stringify(attrs).includes('private purpose'), false);
   assert.equal('status' in attrs, false);
   assert.deepEqual(graphEdgeAttributes({ kind: 'related', status: 'active' }, (key) => key), { className: 'graph-edge graph-edge--related', title: 'graph.edge.related' });
+});
+
+test('relation accessible names distinguish safe endpoints without exposing titles or edge metadata', () => {
+  const fromId = 'g_00000000-0000-4000-8000-000000000001';
+  const toId = 'g_00000000-0000-4000-8000-000000000002';
+  const sessionId = 'codex_11111111-1111-4111-8111-abcdef123456';
+  const graph = { nodes: [
+    { id: fromId, kind: 'task', title: 'PRIVATE_CARD_TITLE' },
+    { id: toId, kind: 'artifact', title: 'PRIVATE_OTHER_TITLE' },
+  ] };
+  const index = new Map([[sessionId, { card: { source: 'codex' }, pile: 'working' }]]);
+  const edge = { from: `graph:${fromId}`, to: `session:${sessionId}`, kind: 'delegates', status: 'active', purpose: 'PRIVATE_PURPOSE' };
+  const t = (key, params = {}) => ({
+    'graph.edgeAccessible': `${params.from} => ${params.to}: ${params.relation}`,
+    'graph.kind.task': 'Task',
+    'graph.kind.artifact': 'Artifact',
+    'graph.kind.unknown': 'Item',
+    'graph.session': 'Session',
+    'source.codex': 'Codex',
+    'graph.missingNode': 'Missing card',
+    'graph.missingSession': 'Missing session',
+    'graph.missingEndpoint': 'Unknown endpoint',
+    'graph.unknownEndpoint': 'Unknown endpoint',
+    'graph.edge.delegates': 'Delegation record',
+    'graph.delegation.active': 'Active',
+  }[key] ?? key);
+  const label = graphEdgeAccessibleLabel(edge, graph, index, t);
+  assert.equal(label, 'Task (000000000001) => Session: Codex (abcdef123456): Delegation record: Active');
+  assert.doesNotMatch(label, /PRIVATE_|11111111|PRIVATE_CARD_TITLE|PRIVATE_OTHER_TITLE/);
+  assert.notEqual(label, graphEdgeAccessibleLabel({ ...edge, to: `graph:${toId}` }, graph, index, t));
 });
