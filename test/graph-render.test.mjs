@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
-import { graphCardSignature, graphEdgePresentation } from '../public/graph-render.mjs';
+import { graphCardSignature, graphEdgeAttributes, graphEdgePresentation } from '../public/graph-render.mjs';
 
 const node = { id: 'g_00000000-0000-4000-8000-000000000001', kind: 'understanding_gap', title: 'Gap', status: 'open' };
 
@@ -37,4 +37,15 @@ test('each persisted delegation status has a canvas style and unknown status sta
     assert.match(css, new RegExp(`\\.graph-edge--delegates\\[data-status="${status}"\\]`));
   }
   assert.match(css, /\.graph-edge--delegates-unknown\s*\{/);
+});
+
+test('delegation edge attributes expose only the fixed status tooltip, including unknown status', () => {
+  const attrs = graphEdgeAttributes({ kind: 'delegates', status: 'future', purpose: 'private purpose' }, (key) => key);
+  assert.deepEqual(attrs, {
+    className: 'graph-edge graph-edge--delegates graph-edge--delegates-unknown',
+    title: 'graph.edge.delegates: graph.delegation.unknown',
+  });
+  assert.equal(JSON.stringify(attrs).includes('private purpose'), false);
+  assert.equal('status' in attrs, false);
+  assert.deepEqual(graphEdgeAttributes({ kind: 'related', status: 'active' }, (key) => key), { className: 'graph-edge graph-edge--related' });
 });

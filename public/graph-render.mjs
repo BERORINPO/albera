@@ -27,6 +27,16 @@ export function graphEdgePresentation(edge, t) {
   };
 }
 
+/** @param {{kind:string,status?:string}} edge @param {T} t */
+export function graphEdgeAttributes(edge, t) {
+  const presentation = graphEdgePresentation(edge, t);
+  return {
+    className: presentation.className,
+    ...(presentation.status ? { status: presentation.status } : {}),
+    ...(presentation.title ? { title: presentation.title } : {}),
+  };
+}
+
 /** @param {string} endpoint @param {any} graph @param {Map<string,{card:any,pile:string}>} index @param {any} layout */
 function point(endpoint, graph, index, layout) {
   if (endpoint.startsWith('graph:')) {
@@ -119,12 +129,10 @@ export function renderGraphLayer(layer, o) {
     (x) => x.edge.id,
     (x) => `${x.edge.from}|${x.edge.to}|${x.edge.kind}|${x.edge.status}|${x.edge.purpose}|${x.line?.x1}|${x.line?.y1}|${x.line?.x2}|${x.line?.y2}`,
     (x) => {
-      const presentation = graphEdgePresentation(x.edge, t);
-      const line = h('span', { class: presentation.className });
-      if (presentation.status) {
-        line.setAttribute('data-status', presentation.status);
-        line.setAttribute('title', presentation.title);
-      }
+      const attributes = graphEdgeAttributes(x.edge, t);
+      const line = h('span', { class: attributes.className });
+      if (attributes.status) line.setAttribute('data-status', attributes.status);
+      if (attributes.title) line.setAttribute('title', attributes.title);
       if (x.line) placeLine(line, x.line.x1, x.line.y1, x.line.x2, x.line.y2);
       return line;
     },
