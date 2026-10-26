@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { addGraphNode, connectGraph, moveGraphNode, normalizeGraph, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
+import { addGraphNode, connectGraph, moveGraphNode, normalizeGraph, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
 
 const g1 = 'g_00000000-0000-4000-8000-000000000001';
 const g2 = 'g_00000000-0000-4000-8000-000000000002';
@@ -49,4 +49,18 @@ test('graph relations can update purpose and delegation state or be removed', ()
   const remaining = removeGraphEdge(graph, e1).edges;
   assert.equal(remaining.length, 1);
   assert.notEqual(remaining[0].id, e1);
+});
+
+test('comprehension review reports only explicitly missing graph links, never a person score', () => {
+  let graph = addGraphNode(empty(), { kind: 'understanding_gap', title: 'Explain decision', body: '', status: 'open', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: 'decision record', neededExplanation: 'why it was chosen' }, g1);
+  assert.deepEqual(reviewUnderstandingGaps(graph), [{ id: g1, missing: ['evidence', 'explains'] }]);
+  graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'evidence', purpose: 'Read-only source session', status: '' }, e1, new Set([session]));
+  assert.deepEqual(reviewUnderstandingGaps(graph), [{ id: g1, missing: ['explains'] }]);
+  graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'explains', purpose: 'User-authored rationale', status: '' }, 'e_00000000-0000-4000-8000-000000000002', new Set([session]));
+  assert.deepEqual(reviewUnderstandingGaps(graph), []);
+  graph = updateGraphNode(graph, g1, { status: 'resolved' });
+  assert.deepEqual(reviewUnderstandingGaps(graph), [], 'resolved gaps leave the review queue');
+
+  const unspecified = addGraphNode(empty(), { kind: 'understanding_gap', title: 'Unspecified', body: '', status: 'open', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: '', neededExplanation: '' }, g2);
+  assert.deepEqual(reviewUnderstandingGaps(unspecified), [], 'blank fields do not imply missing evidence or lack of understanding');
 });

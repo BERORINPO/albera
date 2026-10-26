@@ -1,7 +1,7 @@
 // @ts-check
 // Accessible local editor for graph cards and user-authored relations.
 
-import { DELEGATION_STATES, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES } from './graph-model.mjs';
+import { DELEGATION_STATES, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, reviewUnderstandingGaps } from './graph-model.mjs';
 import { h } from './view.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
@@ -54,6 +54,10 @@ export function openGraphNodeDialog(o) {
   const form = h('form', { class: 'graph-dialog__form' });
   const title = node ? t('graph.editTitle') : t('graph.newTitle');
   form.append(h('h2', { id: 'graph-dialog-title', text: title }), h('p', { class: 'graph-dialog__privacy', text: t('graph.localOnly') }));
+  if (node?.kind === 'understanding_gap') {
+    const review = reviewUnderstandingGaps(graph).find((item) => item.id === node.id);
+    if (review?.missing.length) form.append(h('p', { class: 'graph-dialog__review', text: t('graph.reviewHint', { links: review.missing.map((kind) => t(`graph.link.${kind}`)).join(', ') }) }));
+  }
   form.append(
     selectField(t, 'graph.kindLabel', 'kind', [...GRAPH_NODE_KINDS], node?.kind ?? 'task', (v) => t(`graph.kind.${v}`)),
     inputField(t, 'graph.titleLabel', 'title', node?.title ?? '', true),

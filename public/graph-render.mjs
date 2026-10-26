@@ -3,6 +3,7 @@
 
 import { CANVAS } from '../src/shared/constants.mjs';
 import { h, reconcile } from './view.mjs';
+import { reviewUnderstandingGaps } from './graph-model.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 const CARD_W = 280;
@@ -48,8 +49,10 @@ function placeLine(line, x1, y1, x2, y2) {
   line.style.setProperty('--angle', `${Math.atan2(dy, dx)}rad`);
 }
 
-/** @param {T} t @param {any} node */
-function graphCard(t, node) {
+/** @param {T} t @param {any} node @param {string[]} missing */
+function graphCard(t, node, missing = []) {
+  const ariaLabel = t('graph.cardAria', { kind: t(`graph.kind.${node.kind}`), title: node.title, status: t(`graph.status.${node.status}`) });
+  const reviewLabel = missing.length ? t('graph.missingLinks', { links: missing.map((kind) => t(`graph.link.${kind}`)).join(', ') }) : '';
   return h(
     'button',
     {
@@ -58,7 +61,7 @@ function graphCard(t, node) {
       'data-key': node.id,
       'data-action': 'graph-open',
       'data-id': node.id,
-      'aria-label': t('graph.cardAria', { kind: t(`graph.kind.${node.kind}`), title: node.title, status: t(`graph.status.${node.status}`) }),
+      'aria-label': `${ariaLabel}${reviewLabel ? ` ${reviewLabel}` : ''}`,
     },
     h('span', { class: 'graph-node__meta' }, t(`graph.kind.${node.kind}`), ' ', h('span', { class: 'graph-node__status', text: t(`graph.status.${node.status}`) })),
     h('span', { class: 'graph-node__title', text: node.title }),
@@ -66,6 +69,7 @@ function graphCard(t, node) {
     node.kind === 'understanding_gap' && (node.missingEvidence || node.neededExplanation)
       ? h('span', { class: 'graph-node__body', text: [node.missingEvidence && t('graph.missingEvidence', { text: node.missingEvidence }), node.neededExplanation && t('graph.neededExplanation', { text: node.neededExplanation })].filter(Boolean).join('; ') })
       : null,
+    reviewLabel ? h('span', { class: 'graph-node__review', text: reviewLabel }) : null,
   );
 }
 
@@ -96,12 +100,13 @@ export function renderGraphLayer(layer, o) {
     },
   );
   const query = o.filter.trim().toLocaleLowerCase();
+  const reviewById = new Map(reviewUnderstandingGaps(o.graph).map((item) => [item.id, item.missing]));
   reconcile(
     cardRoot,
     o.graph.nodes,
     (n) => n.id,
     (n) => JSON.stringify(n),
-    (n) => graphCard(t, n),
+    (n) => graphCard(t, n, reviewById.get(n.id) ?? []),
   );
   for (const el of [...cardRoot.querySelectorAll('.graph-node')]) {
     const id = el.getAttribute('data-id') ?? '';

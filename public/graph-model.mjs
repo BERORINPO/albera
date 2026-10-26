@@ -135,3 +135,23 @@ export function removeGraphEdge(doc, id) {
   const edges = doc.edges.filter((edge) => edge.id !== id);
   return edges.length === doc.edges.length ? doc : { ...doc, edges };
 }
+
+/**
+ * Graph-only review hints for open comprehension gaps. These indicate missing
+ * evidence/explanation links in the user's graph, never a person's inferred
+ * understanding or comprehension score.
+ * @param {GraphDoc} doc
+ * @returns {Array<{id:string,missing:Array<'evidence'|'explains'>}>}
+ */
+export function reviewUnderstandingGaps(doc) {
+  return doc.nodes
+    .filter((node) => node.kind === 'understanding_gap' && node.status !== 'resolved' && node.status !== 'done')
+    .map((node) => {
+      const connected = new Set(doc.edges.filter((edge) => edge.from === `graph:${node.id}` || edge.to === `graph:${node.id}`).map((edge) => edge.kind));
+      const missing = [];
+      if (node.missingEvidence && !connected.has('evidence')) missing.push('evidence');
+      if (node.neededExplanation && !connected.has('explains')) missing.push('explains');
+      return { id: node.id, missing: /** @type {Array<'evidence'|'explains'>} */ (missing) };
+    })
+    .filter((item) => item.missing.length > 0);
+}
