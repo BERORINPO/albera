@@ -32,6 +32,8 @@
 .graph-dialog__field { display: grid; gap: var(--space-2xs); font-weight: 700; }
 .graph-dialog__field input, .graph-dialog__field select, .graph-dialog__field textarea { width: 100%; min-height: 2.75rem; padding: var(--space-xs); border: var(--rule-muted); background: var(--color-paper); color: var(--color-ink); font: inherit; }
 .graph-dialog__field textarea { resize: vertical; }
+.graph-dialog__hint { color: var(--color-ink-2); font-size: var(--text-sm); font-weight: 400; }
+.graph-dialog__reference-link { width: fit-content; overflow-wrap: anywhere; }
 .graph-dialog__ack { display: flex; align-items: flex-start; gap: var(--space-xs); font-size: var(--text-sm); }
 .graph-dialog__ack input { width: 1.25rem; height: 1.25rem; flex: 0 0 auto; accent-color: var(--color-accent); }
 .graph-dialog__field :focus-visible, .graph-dialog__actions :focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }

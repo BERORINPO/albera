@@ -1,7 +1,7 @@
 // @ts-check
 // Accessible local editor for graph cards and user-authored relations.
 
-import { DELEGATION_STATES, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, reviewUnderstandingGaps } from './graph-model.mjs';
+import { DELEGATION_STATES, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, reviewUnderstandingGaps, safeArtifactUrl } from './graph-model.mjs';
 import { h } from './view.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
@@ -20,6 +20,14 @@ function selectField(t, label, name, values, selected, text) {
 /** @param {T} t @param {string} label @param {string} name @param {string} value */
 function areaField(t, label, name, value = '') {
   return h('label', { class: 'graph-dialog__field' }, h('span', { text: t(label) }), h('textarea', { name, maxlength: name === 'body' ? '1000' : '500', rows: name === 'body' ? '4' : '2', text: value }));
+}
+
+/** @param {T} t @param {string} value */
+function referenceField(t, value) {
+  return h('label', { class: 'graph-dialog__field', 'data-artifact-reference': '' },
+    h('span', { text: t('graph.referenceUrl') }),
+    h('input', { name: 'referenceUrl', type: 'url', maxlength: '500', autocomplete: 'off', placeholder: 'https://…', value }),
+    h('span', { class: 'graph-dialog__hint', text: t('graph.referencePrivacy') }));
 }
 
 /** @param {T} t @param {string} label @param {string} value */
@@ -62,11 +70,20 @@ export function openGraphNodeDialog(o) {
     selectField(t, 'graph.kindLabel', 'kind', [...GRAPH_NODE_KINDS], node?.kind ?? o.initialKind ?? 'task', (v) => t(`graph.kind.${v}`)),
     inputField(t, 'graph.titleLabel', 'title', node?.title ?? o.initialTitle ?? '', true),
     areaField(t, 'graph.bodyLabel', 'body', node?.body ?? ''),
+    referenceField(t, node?.url ?? ''),
     selectField(t, 'graph.statusLabel', 'status', [...GRAPH_NODE_STATES], node?.status ?? 'open', (v) => t(`graph.status.${v}`)),
     inputField(t, 'graph.checkedPerson', 'checkedPerson', node?.checkedPerson ?? ''),
     areaField(t, 'graph.missingEvidenceLabel', 'missingEvidence', node?.missingEvidence ?? ''),
     areaField(t, 'graph.neededExplanationLabel', 'neededExplanation', node?.neededExplanation ?? ''),
   );
+  const kindSelect = /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="kind"]'));
+  const refField = /** @type {HTMLElement|null} */ (form.querySelector('[data-artifact-reference]'));
+  const refInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="referenceUrl"]'));
+  const syncReferenceField = () => { if (refField) refField.hidden = kindSelect?.value !== 'artifact'; };
+  kindSelect?.addEventListener('change', syncReferenceField);
+  refInput?.addEventListener('input', () => refInput.setCustomValidity(''));
+  syncReferenceField();
+  if (node?.url) form.append(h('a', { class: 'graph-dialog__reference-link', href: node.url, target: '_blank', rel: 'noopener noreferrer', text: t('graph.openReference') }));
   if (node) {
     const linked = graph.edges.filter((e) => e.from === `graph:${node.id}` || e.to === `graph:${node.id}`);
     form.append(h('h3', { class: 'graph-dialog__subhead', text: t('graph.relations') }));
@@ -114,12 +131,19 @@ export function openGraphNodeDialog(o) {
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();
     const data = Object.fromEntries(new FormData(form).entries());
+    const referenceUrl = safeArtifactUrl(data.referenceUrl, String(data.kind));
+    if (String(data.kind) === 'artifact' && String(data.referenceUrl ?? '').trim() && !referenceUrl) {
+      refInput?.setCustomValidity(t('graph.referenceInvalid'));
+      refInput?.reportValidity();
+      return;
+    }
     o.onSave({
       ...(node ? { id: node.id } : {}),
       ...(o.position ?? {}),
       kind: data.kind,
       title: data.title,
       body: data.body,
+      url: referenceUrl,
       status: data.status,
       checkedPerson: data.checkedPerson,
       missingEvidence: data.missingEvidence,

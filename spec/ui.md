@@ -1247,6 +1247,7 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 ### 10.11 User-authored graph cards and relations
 
 - The canvas offers local cards for tasks, artifacts, decisions, worktrees and comprehension gaps. They are authored by the user, stored only in browser localStorage, and are never sent through the board API. The graph model is an allowlist; unknown fields are discarded and counts and text lengths are bounded.
+- Artifact cards can hold one user-entered HTTPS reference. Credentials, query strings, fragments, non-HTTPS schemes and overlong values are rejected. The reference stays in browser localStorage and is not fetched; a link opens a new tab only after an explicit click.
 - A successful explicit worktree creation adds a `worktree` card to that graph with branch, base and safe creation-time status counts. It is a local snapshot record, not a live registry; editing or deleting it never changes Git state.
 - Cards can be moved with pointer drag or focused-card arrow keys; click / Enter opens an editor. New cards take the first open position around the current view center so they do not cover earlier graph cards. Position, text, status, and links survive reload. Fit all includes graph cards. Existing project sheets and session slips remain in place.
 - Search dims graph cards whose safe user-authored text does not match. Cards and lines remain visible to preserve context. Deleting a card requires a browser confirmation and removes its linked relations.

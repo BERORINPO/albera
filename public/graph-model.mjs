@@ -15,7 +15,19 @@ const text = (value, max) => typeof value === 'string' ? [...value.trim()].slice
 const coord = (value) => Number.isFinite(value) ? Math.max(-COORD_LIMIT, Math.min(COORD_LIMIT, Math.round(Number(value)))) : 0;
 const oneOf = (value, values, fallback) => values.includes(value) ? value : fallback;
 
-/** @typedef {{id:string,kind:string,title:string,body:string,status:string,x:number,y:number,checkedPerson:string,missingEvidence:string,neededExplanation:string}} GraphNode */
+/** User-authored artifact links stay local and open only after an explicit click. */
+export function safeArtifactUrl(value, kind = 'artifact') {
+  if (kind !== 'artifact' || typeof value !== 'string' || value.length > 500) return '';
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'https:' || !url.hostname.includes('.') || url.username || url.password || url.search || url.hash) return '';
+    return url.href;
+  } catch {
+    return '';
+  }
+}
+
+/** @typedef {{id:string,kind:string,title:string,body:string,url:string,status:string,x:number,y:number,checkedPerson:string,missingEvidence:string,neededExplanation:string}} GraphNode */
 /** @typedef {{id:string,from:string,to:string,kind:string,purpose:string,status:string}} GraphEdge */
 /** @typedef {{v:1,nodes:GraphNode[],edges:GraphEdge[]}} GraphDoc */
 
@@ -29,6 +41,7 @@ export function normalizeGraphNode(value) {
     kind: oneOf(v.kind, GRAPH_NODE_KINDS, 'task'),
     title: text(v.title, 100),
     body: text(v.body, 1000),
+    url: safeArtifactUrl(v.url, oneOf(v.kind, GRAPH_NODE_KINDS, 'task')),
     status: oneOf(v.status, GRAPH_NODE_STATES, 'open'),
     x: coord(v.x),
     y: coord(v.y),

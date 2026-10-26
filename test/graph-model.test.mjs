@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, moveGraphNode, nextGraphNodePosition, normalizeGraph, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, moveGraphNode, nextGraphNodePosition, normalizeGraph, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
 
 const g1 = 'g_00000000-0000-4000-8000-000000000001';
 const g2 = 'g_00000000-0000-4000-8000-000000000002';
@@ -13,6 +13,18 @@ test('graph model accepts only bounded user-authored fields and known node kinds
   const graph = normalizeGraph({ v: 999, nodes: [node(g1, { title: '  Task  ', x: 999999, body: 'x'.repeat(1500), secretPath: 'not-kept' }), { ...node('local_bad') }], edges: [] });
   assert.deepEqual([graph.v, graph.nodes.length, graph.nodes[0].title, graph.nodes[0].x, graph.nodes[0].body.length], [1, 1, 'Task', 100000, 1000]);
   assert.equal('secretPath' in graph.nodes[0], false);
+});
+
+test('artifact references allow only public HTTPS URLs without credentials, query, or fragment', () => {
+  assert.equal(safeArtifactUrl('https://github.com/morluto/rea'), 'https://github.com/morluto/rea');
+  for (const value of ['http://github.com/a/b', 'javascript:alert(1)', 'https://user:secret@example.com/report', 'https://example.com/report?token=secret', 'https://example.com/report#secret', 'https://example.com/'.repeat(30)]) {
+    assert.equal(safeArtifactUrl(value), '');
+  }
+  assert.equal(safeArtifactUrl('https://github.com/morluto/rea', 'task'), '');
+  const graph = normalizeGraph({ nodes: [node(g1, { kind: 'artifact', url: 'https://github.com/morluto/rea', auth: 'drop' }), node(g2, { kind: 'task', url: 'https://github.com/morluto/rea' })], edges: [] });
+  assert.equal(graph.nodes[0].url, 'https://github.com/morluto/rea');
+  assert.equal(graph.nodes[1].url, '');
+  assert.equal('auth' in graph.nodes[0], false);
 });
 
 test('graph nodes can be added, updated, moved and removed immutably', () => {
