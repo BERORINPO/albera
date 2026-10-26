@@ -91,3 +91,20 @@
 - 2026-10-26: セッション詳細の理解負債から根拠/説明の接続先をボタンで開ける。グラフカードはカード編集、セッションは実行元と末尾12文字のopaque IDで一意に解決し、衝突時は何も開かない。画面に完全なセッションIDは出さない。
 - 2026-10-26: Obsidian Knowledge Layerの限定的な手動参照段階を追加。ユーザーがvault名と相対note pathをカードへ入力し、関連するタスク/判断/成果物/セッションへ接続できる。URI仕様は公式 [Obsidian URI guide](https://help.obsidian.md/Extending%2BObsidian/Obsidian%2BURI) の `open?vault=…&file=…` に従い、クリック時だけObsidianを開く。ファイル走査・読取・書込は行わない。vault indexingや知識抽出は未実装。
 - 2026-10-26: 関連するObsidianノートをセッション詳細からも明示リンクで開ける。ノートURIはブラウザー内グラフから組み立て、session projection/APIにはvault/pathを渡さない。合成画面で関連付けとリンク表示を確認し、プロトコルは起動していない。
+
+## 製品像への追跡表 (2026-10-26)
+
+| 領域 | 現在の実装 | 未完了・証拠の限界 |
+|---|---|---|
+| 操作可能なCanvas | 一覧/Canvas切替、検索とsource/state/project絞り込み、session slipsとtask/artifact/decision/worktree/理解負債/execution profile/Obsidian参照カード、ドラッグ・キーボード移動、パン・ズーム、関係線、localStorage復元 | 最新のラベル修正以降に全操作をブラウザーから通す手動受入確認は未実施。自動テストと過去の合成ブラウザー確認の範囲を超えて完成とはしない |
+| セッション・イベント | Claude CodeとCodex CLIは同じboardに表示。CopilotとOpenCodeにも読み取り専用adapter。allowlistイベント・状態・詳細を表示 | Codex CLI起点の実セッションは未確認。Copilot保存先はCLI/app共通でproducerを区別できない。OpenCode旧schemaは一覧以外の状態/イベントをunknown扱い |
+| ハーネス・実行条件 | sourceをハーネス表示に使用。場所・分離・network・approvalは不明初期値の手動profileとして関連付け可能 | セッションや環境から条件を自動検出しない。profile値は利用者申告であり、実際の設定・モデル・実行条件の確認根拠にはならない |
+| 委譲 | 委譲元/先、目的、状態を関係線と詳細に記録 | CLI起動・agentへの実委譲は未実装。外部作用は明示操作後のみという境界は維持するが、起動するCLI・引数・入力・権限範囲は仕様未確定 |
+| Git worktree / PM policy | local Git worktreeの読取一覧、明示確認後の作成、clean/non-current等を再確認した確認付き削除、canvas上のpath-free記録。作成/一覧/削除adapterは一時Git repoで統合確認済み | 実ユーザーrepoへの操作とブラウザー確認dialogの一連受入は未確認。WSL worktree操作は無効。PM policyは「この依頼の安全条件だけ」で、追加の自動規則なし |
+| Comprehension Graph / 理解負債 | 理解を確認される人、未提示の根拠、必要な説明を記録。`evidence`/`explains`未接続をグラフ欠損として提示し、根拠先へ移動可能 | 人の理解度を推定・採点しない。記録と関係付けは利用者判断で、自動的に理解負債を発見する機能ではない |
+| REA / Knowledge Layer | ユーザー確認済みの短いREA要約をartifactへ手動記録。Obsidian vault-relative note URIを手動登録して明示リンクで開く | REAは起動せず完全Evidenceを取込まない。Obsidian vault走査、内容読取/書込、indexing/知識抽出は未実装 |
+| OpenCode / Copilot / WSL | OpenCode DBとCopilotイベントのread-only adapter。明示設定されたWSL共有を使うopt-in Codex reader | 実WSL共有は未確認。CLI/app producer識別、OpenCode legacy状態、未知形式の挙動には上記の制限がある |
+| 音声 Main AI | なし | ユーザーは完成条件と指定。開始/停止主体、音声・文字起こしの処理先/保存先、同意と削除の仕様は貼付待ち。推測実装しない |
+| 企業向け権限制御 | なし | ユーザーは完成条件と指定。利用者role、操作ごとの許可/禁止、監査・組織設定の仕様は貼付待ち。推測実装しない |
+
+この表は実装済みと未確認を区別する追跡情報であり、未完了項目の代替完成条件ではない。音声Main AI・企業権限・委譲実行の仕様が確認でき、各機能を実装・検証するまではAgent Canvas製品像全体を完了扱いにしない。
