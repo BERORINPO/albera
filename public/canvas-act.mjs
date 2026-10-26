@@ -284,6 +284,7 @@ export const CANVAS_CLICK = {
   'canvas-sheet-fit': (el) => fitSheet(el.dataset.key ?? ''),
   'graph-new': () => newGraphNode(),
   'graph-open': (el) => editGraphNode(el.dataset.id ?? ''),
+  'canvas-open-session': (el) => openSession(el.dataset.id ?? ''),
   'graph-connect': (el) => connectGraphEndpoint(`session:${el.dataset.id ?? ''}`),
   'graph-task-from-session': (el) => newTaskForSession(el.dataset.id ?? ''),
   'worktree-create': (el) => createWorktreeForSession(el.dataset.id ?? ''),

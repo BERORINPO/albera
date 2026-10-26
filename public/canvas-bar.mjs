@@ -6,6 +6,7 @@
 import { handoffGuideEl, handoffPlan } from './handoff.mjs';
 import { bucketTitle, titleOf } from './format.mjs';
 import { detailEl, detailStamp } from './rows.mjs';
+import { sessionRelationEntries } from './session-relations.mjs';
 import { fill, h } from './view.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
@@ -59,21 +60,19 @@ function defaultBar(t, o) {
  * 案内のあるカードには「引き継ぐ」も置く (帯の引き継ぎの状態を開く。Tab で届き、1 文字キーを止めても使える道)。
  * @param {T} t @param {any} card @param {string} pile @param {any} rowCtx
  */
-function sessionRelations(t, card, graph) {
-  const endpoint = `session:${card.id}`;
-  const edges = graph?.edges?.filter((edge) => edge.from === endpoint || edge.to === endpoint) ?? [];
-  const items = edges.flatMap((edge) => {
-    const other = edge.from === endpoint ? edge.to : edge.from;
-    if (!other.startsWith('graph:')) return [];
-    const node = graph.nodes.find((item) => `graph:${item.id}` === other);
-    if (!node) return [];
-    const direction = edge.from === endpoint ? t('graph.sessionRelationOut') : t('graph.sessionRelationIn');
-    const status = edge.kind === 'delegates' ? ` (${t(`graph.delegation.${edge.status}`)})` : '';
-    return [h('li', {},
-      h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'graph-open', 'data-id': node.id, text: `${t(`graph.kind.${node.kind}`)}: ${node.title}` }),
-      h('span', { text: `${direction} — ${t(`graph.edge.${edge.kind}`)}${status}` }),
-      edge.purpose ? h('small', { text: edge.purpose }) : null,
-    )];
+function sessionRelations(t, card, graph, sessions) {
+  const entries = sessionRelationEntries(graph?.edges ?? [], card.id, graph ?? { nodes: [] }, sessions);
+  const items = entries.map((entry) => {
+    const direction = t(entry.direction === 'out' ? 'graph.sessionRelationOut' : 'graph.sessionRelationIn');
+    const status = entry.kind === 'delegates' ? ` (${t(`graph.delegation.${entry.status}`)})` : '';
+    const endpoint = entry.endpoint === 'graph'
+      ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'graph-open', 'data-id': entry.node.id, text: `${t(`graph.kind.${entry.node.kind}`)}: ${entry.node.title}` })
+      : h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'canvas-open-session', 'data-id': entry.sessionId, text: `${t(`source.${entry.sessionId.startsWith('codex_') ? 'codex' : entry.sessionId.startsWith('copilot_') ? 'copilot' : entry.sessionId.startsWith('opencode_') ? 'opencode' : 'claude'}`)} #${entry.sessionId.slice(-8)}` });
+    return h('li', {},
+      endpoint,
+      h('span', { text: `${direction} — ${t(`graph.edge.${entry.kind}`)}${status}` }),
+      entry.purpose ? h('small', { text: entry.purpose }) : null,
+    );
   });
   return items.length
     ? h('section', { class: 'graph-session-relations', 'aria-label': t('graph.relations') }, h('h3', { text: t('graph.relatedCards') }), h('ul', {}, ...items))
@@ -83,7 +82,7 @@ function sessionRelations(t, card, graph) {
 function detailBar(t, card, pile, rowCtx, graph) {
   const el = detailEl(card, pile, rowCtx);
   el.querySelector('section.handoff')?.remove();
-  const relations = sessionRelations(t, card, graph);
+  const relations = sessionRelations(t, card, graph, [...rowCtx.index.keys()].map((id) => ({ id })));
   if (relations) el.append(relations);
   const acts = el.querySelector('.detail__acts') ?? el.appendChild(h('p', { class: 'detail__acts' }));
   if (handoffPlan(card, rowCtx.handoff?.[card.id], rowCtx.now).guide) {
