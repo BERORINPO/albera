@@ -4,7 +4,7 @@
 import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
 import { h } from './view.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
-import { confirmBlockedOperationRelease, connectMissingComprehensionEdge } from './graph-dialog-actions.mjs';
+import { cancelGraphDialog, confirmBlockedOperationRelease, connectMissingComprehensionEdge } from './graph-dialog-actions.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 
@@ -171,8 +171,9 @@ export function openGraphNodeDialog(o) {
   form.addEventListener('click', (ev) => {
     const button = ev.target instanceof Element ? ev.target.closest('[data-dialog-action]') : null;
     const action = button?.getAttribute('data-dialog-action');
-    if (!action || !node) return;
-    if (action === 'cancel') dialog.close();
+    if (!action) return;
+    if (cancelGraphDialog(action, () => dialog.close())) return;
+    if (!node) return;
     if (action === 'connect' && o.onConnect) {
       dialog.close();
       o.onConnect(`graph:${node.id}`);

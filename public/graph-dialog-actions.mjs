@@ -20,3 +20,10 @@ export function connectMissingComprehensionEdge({ nodeId, edgeKind, close, conne
   connect(`graph:${nodeId}`, edgeKind);
   return true;
 }
+
+/** Cancel either a new-card or existing-card dialog before requiring a node. */
+export function cancelGraphDialog(action, close) {
+  if (action !== 'cancel') return false;
+  close();
+  return true;
+}

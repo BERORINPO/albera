@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { confirmBlockedOperationRelease, connectMissingComprehensionEdge } from '../public/graph-dialog-actions.mjs';
+import { cancelGraphDialog, confirmBlockedOperationRelease, connectMissingComprehensionEdge } from '../public/graph-dialog-actions.mjs';
 
 const blocked = { id: 'edge-1', operationId: 'op-1', kind: 'delegates', status: 'blocked' };
 
@@ -73,6 +73,14 @@ test('unknown comprehension edge kinds fail closed without closing or connecting
   assert.equal(actions, 0);
 });
 
+test('cancel closes a graph dialog even while a new card has no node yet', () => {
+  let closed = 0;
+  assert.equal(cancelGraphDialog('cancel', () => { closed++; }), true);
+  assert.equal(closed, 1);
+  assert.equal(cancelGraphDialog('connect', () => { closed++; }), false);
+  assert.equal(closed, 1);
+});
+
 test('the comprehension editor renders actions only from its current missing-link review', () => {
   const source = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
   assert.match(source, /review\?\.missing\.length/);
@@ -80,4 +88,5 @@ test('the comprehension editor renders actions only from its current missing-lin
   assert.match(source, /'data-dialog-action': 'connect-missing'/);
   assert.match(source, /'data-edge-kind': kind/);
   assert.match(source, /connectMissingComprehensionEdge\(\{ nodeId: node\.id, edgeKind: kind, close: \(\) => dialog\.close\(\), connect: o\.onConnect \}\)/);
+  assert.match(source, /if \(cancelGraphDialog\(action, \(\) => dialog\.close\(\)\)\) return;[\s\S]*?if \(!node\) return;/);
 });
