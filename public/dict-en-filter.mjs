@@ -2,7 +2,7 @@
 // 19.1 search and board filter labels.
 export const EN_FILTER = Object.freeze({
   'filter.menu': 'Filters',
-  'filter.label': 'Filter session and canvas card titles, summaries, projects and statuses',
+  'filter.label': 'Filter sessions, canvas cards and relationships by title, content, purpose, status and more',
   'filter.placeholder': 'Filter',
   'filter.stateLabel': 'State',
   'filter.stateAll': 'All states',

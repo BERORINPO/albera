@@ -246,7 +246,7 @@ export const EN = Object.freeze({
   'banner.family': 'Showing only “{title}” and its related sessions',
   'banner.clear': 'Clear',
   'nomatch.query.lead': 'Nothing matches “{q}”.',
-  'nomatch.query.text': 'Searched session titles, projects and summaries, plus canvas card titles, content, statuses and missing links.',
+  'nomatch.query.text': 'Searched session titles, projects and summaries; canvas card titles, content, statuses and missing links; and relationship types, purposes and delegation states.',
   'nomatch.family': 'Nothing in this family matches.',
   'nomatch.clear': 'Clear filter',
 

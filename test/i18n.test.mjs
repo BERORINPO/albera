@@ -51,10 +51,10 @@ test('セッション0件の案内は特定providerに偏らず、診断欄を�
 });
 
 test('検索案内はセッションとキャンバスカードの両方を区別して説明する', () => {
-  assert.match(JA['filter.label'], /セッションやキャンバスカード/);
-  assert.match(EN['filter.label'], /session and canvas card/);
-  assert.match(JA['nomatch.query.text'], /キャンバスカード/);
-  assert.match(EN['nomatch.query.text'], /canvas card/);
+  assert.match(JA['filter.label'], /セッション・キャンバスカード・関係/);
+  assert.match(EN['filter.label'], /sessions, canvas cards and relationships/);
+  assert.match(JA['nomatch.query.text'], /関係の種類・目的/);
+  assert.match(EN['nomatch.query.text'], /relationship types, purposes/);
 });
 
 test('masthead trust fallback matches the current boundary and does not promise that nothing leaves the computer', () => {
