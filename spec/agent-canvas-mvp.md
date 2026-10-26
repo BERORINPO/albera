@@ -1033,3 +1033,10 @@ The synthetic `--demo` board now includes an explicitly labeled Codex CLI failed
 - 合成pointer-event testで、sessionのcancel・2本目touchによるcancel・pinch継続を確認。session-position action testでは、cancel後に座標がbrowser storageへ保存されず、プレビューstateが消えることを確認した。
 - `npm test`: 611/611 passed、`npm run arch`: 99 role paths / 0 violations、`npm run smoke`: pass、`git diff --check`: pass。smokeはread-only local session scanを行い、aggregate countsだけを出力した。
 - このturnでは実ブラウザーのpointer/touch dragを実行していない。実セッション、CLI起動、providerファイル書込み、Git worktree操作、外部provider requestも行っていない。実データ適合と実スクリーンリーダー読み上げは引き続き未確認。
+
+### 委譲Codex子プロセスへ渡す環境変数をallowlist化 (2026-10-27)
+
+- 明示確認後にCodex CLIを起動するfilesystem/process adapterが、Pigeonholesサーバーの環境変数をすべて継承していた。子プロセスには実行PATH、Codexのローカル設定先、ユーザーホーム、OS一時/アプリ設定場所だけを渡すallowlistを適用した。APIキー、任意token、`NODE_OPTIONS`、Pigeonholes設定などは引き継がない。
+- 合成環境と偽spawnを使い、目的文だけがstdinへ入り、stdout/stderrを破棄し、秘密値や他の環境値がspawn optionsに入らないことを確認。実Codex CLIは起動せず、実セッションも作成していない。
+- `npm test`: 612 passed、`npm run arch`: 99 paths・違反0、`npm run smoke`: pass、`git diff --check`: pass。隔離demoの起動と`/api/hello` (`demo: true`)を確認後、serverを停止。smokeは読取専用adapterを用いてローカルsession統計だけを出力した。
+- 実CLIでの既存セッションresume、実環境の認証方式との適合、実セッション互換性は未確認。目的文の送信はユーザーが画面上で対象と内容を確認して開始した場合に限定し、音声Main AI/企業権限は仕様未定義のまま。

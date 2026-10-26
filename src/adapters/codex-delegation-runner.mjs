@@ -8,6 +8,16 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 const PURPOSE_MAX = 2000;
 const MAX_OPERATIONS = 200;
 const OPERATION_ID = SESSION_ID;
+const CHILD_ENV_KEYS = new Set([
+  'path', 'codex_home', 'home', 'userprofile', 'homedrive', 'homepath',
+  'systemroot', 'windir', 'temp', 'tmp', 'appdata', 'localappdata',
+  'xdg_config_home', 'xdg_data_home',
+]);
+
+/** Give Codex only the environment needed to find its executable and local user configuration. @param {NodeJS.ProcessEnv} [env] */
+export function codexChildEnvironment(env = process.env) {
+  return Object.fromEntries(Object.entries(env).filter(([key, value]) => CHILD_ENV_KEYS.has(key.toLowerCase()) && typeof value === 'string'));
+}
 
 /** Resolve only an absolute executable file from PATH; never let the target repo's cwd supply the command. */
 export function resolveCodexExecutable({ env = process.env, platform = process.platform, exists = fs.existsSync } = {}) {
@@ -46,7 +56,7 @@ export function createCodexDelegationRunner({ spawn = nodeSpawn, executable = re
     let child;
     try {
       child = spawn(executable, ['exec', '--sandbox', 'read-only', 'resume', sessionId, '-'], {
-        cwd, shell: false, windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'],
+        cwd, env: codexChildEnvironment(), shell: false, windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'],
       });
     } catch {
       operations.set(id, { sessionId, status: 'failed' });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import { createCodexDelegationRunner, resolveCodexExecutable } from '../src/adapters/codex-delegation-runner.mjs';
+import { codexChildEnvironment, createCodexDelegationRunner, resolveCodexExecutable } from '../src/adapters/codex-delegation-runner.mjs';
 
 const sessionId = '12345678-1234-1234-1234-1234567890ab';
 const operationId = 'abcdefab-cdef-4abc-8def-abcdefabcdef';
@@ -11,6 +11,16 @@ test('Codex executable resolution ignores relative PATH entries and returns only
   const result = resolveCodexExecutable({ env: { Path: '.;C:\\trusted\\bin;repo\\tools' }, platform: 'win32', exists: (file) => candidates.has(file) });
   assert.equal(result, 'C:\\trusted\\bin\\codex.exe');
   assert.equal(resolveCodexExecutable({ env: { PATH: '.:./tools' }, platform: 'linux', exists: () => true }), null);
+});
+
+test('Codex child environment keeps only local startup paths and excludes arbitrary values and credentials', () => {
+  assert.deepEqual(codexChildEnvironment({
+    PATH: 'C:\\trusted\\bin', CODEX_HOME: 'C:\\synthetic\\codex', USERPROFILE: 'C:\\synthetic\\user',
+    OPENAI_API_KEY: 'PRIVATE-KEY', CODEX_API_KEY: 'PRIVATE-CODEX-KEY', TOKEN: 'PRIVATE-TOKEN',
+    NODE_OPTIONS: '--require private-module', PIGEONHOLES_PORT: '9999',
+  }), {
+    PATH: 'C:\\trusted\\bin', CODEX_HOME: 'C:\\synthetic\\codex', USERPROFILE: 'C:\\synthetic\\user',
+  });
 });
 
 test('confirmed Codex delegation uses read-only resume, sends purpose only on stdin, and discards output', () => {
@@ -26,6 +36,9 @@ test('confirmed Codex delegation uses read-only resume, sends purpose only on st
   assert.equal(calls[0][2].shell, false);
   assert.deepEqual(calls[0][2].stdio, ['pipe', 'ignore', 'ignore']);
   assert.equal(calls[0][2].cwd, '/synthetic/workspace');
+  assert.equal('OPENAI_API_KEY' in calls[0][2].env, false);
+  assert.equal('CODEX_API_KEY' in calls[0][2].env, false);
+  assert.equal('PIGEONHOLES_PORT' in calls[0][2].env, false);
   assert.equal(child.stdin.value, purpose);
   assert.equal(JSON.stringify(calls).includes(purpose), false);
   assert.equal(runner.status(started.operationId), 'running');
