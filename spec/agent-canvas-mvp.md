@@ -978,4 +978,5 @@
 
 - Codex rolloutをCLIと認定する条件は維持し、検出候補が0件になったときの説明を細分化する。source markerなし、別producer marker、許可リスト外originator、ファイル名とheader IDの不一致だけを固定件数として返す。生marker値、ID、ファイル名、パスはAPI/画面へ渡さない。
 - 不明/破損の残りは従来どおり不採用・一般拒否件数にまとめる。未知形式をCLIとして読み込む緩和はしない。これは0件の理由を説明する診断であり、現データ互換や検出成功の証拠ではない。
-- 合成fixtureで各理由区分、stat cache後の集計、APIの固定数値projection、日英UIメッセージから未知producer値が漏れないことを確認。実provider保存データは再走査していない。
+- 合成fixtureで各理由区分、stat cache後の集計、APIの固定数値projection、日英UIメッセージから未知producer値が漏れないことを確認。
+- 変更後、Codex adapterをread-onlyで再確認。候補40、認識0、拒否40。理由はCLI以外のsource marker 40、marker欠落/未対応originator/filename-ID不一致はいずれも0。値・ID・名前・パスは出力していない。これは現在の候補がCLI記録と識別されない証拠であり、実Codex CLIセッションの互換性証拠ではない。CLI起動、セッション作成、providerデータへの書込みはしていない。
