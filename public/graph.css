@@ -5,9 +5,16 @@
 .graph-edge { position: absolute; left: calc(var(--x) * 1px); top: calc(var(--y) * 1px); width: calc(var(--len) * 1px); height: 2px; transform: rotate(var(--angle)); transform-origin: 0 50%; background: var(--color-rule-strong); opacity: 0.78; }
 .graph-edge--depends_on { border-top: 2px dashed var(--color-ink-2); background: transparent; }
 .graph-edge--delegates { height: 3px; background: var(--color-accent); }
+.graph-edge--delegates[data-status="planned"] { height: 2px; border-top: 2px dashed var(--color-accent); background: transparent; }
+.graph-edge--delegates[data-status="active"] { height: 3px; background: var(--color-accent); }
+.graph-edge--delegates[data-status="blocked"] { background: repeating-linear-gradient(90deg, var(--color-ink-2) 0 4px, transparent 4px 8px); }
+.graph-edge--delegates[data-status="completed"] { background: var(--color-ink-2); }
+.graph-edge--delegates[data-status="cancelled"] { height: 2px; border-top: 2px dotted var(--color-ink-2); background: transparent; }
+.graph-edge--delegates-unknown { height: 2px; border-top: 2px dotted var(--color-ink-2); background: transparent; }
 .graph-edge--evidence, .graph-edge--explains { background: var(--color-ink-2); }
 .graph-edge--depends_on::after, .graph-edge--delegates::after, .graph-edge--evidence::after, .graph-edge--explains::after { content: ""; position: absolute; top: calc(-4px * var(--k)); right: calc(-1px * var(--k)); border-top: calc(5px * var(--k)) solid transparent; border-bottom: calc(5px * var(--k)) solid transparent; border-left: calc(7px * var(--k)) solid var(--color-ink-2); }
 .graph-edge--delegates::after { border-left-color: var(--color-accent); }
+.graph-edge--delegates[data-status="blocked"]::after, .graph-edge--delegates[data-status="completed"]::after, .graph-edge--delegates[data-status="cancelled"]::after, .graph-edge--delegates-unknown::after { border-left-color: var(--color-ink-2); }
 .graph-edge.is-dim { opacity: 0.14; }
 .graph-node { position: absolute; left: calc(var(--x) * 1px); top: calc(var(--y) * 1px); width: 280px; min-height: 168px; padding: calc(var(--space-md) * var(--k)); display: flex; flex-direction: column; align-items: flex-start; gap: calc(var(--space-xs) * var(--k)); border: calc(1px * var(--k)) solid var(--color-ink); border-radius: 3px; background: var(--cv-sheet); color: var(--color-ink); text-align: left; cursor: grab; pointer-events: auto; touch-action: none; box-shadow: 0 3px 10px rgb(0 0 0 / 10%); }
 .graph-node:active { cursor: grabbing; }

@@ -171,6 +171,7 @@
 - 公式CLI仕様の`codex exec resume <SESSION_ID> -`を使い、目的文はargvでなくstdinへ渡す。sandboxは`read-only`に固定し、shellを介さず起動する。stdout/stderrは破棄し、APIはoperation IDと固定状態のみを返す。request bodyは同一Origin、JSON、上限付きで、目的文をログ・応答へ出さない。
 - CLI実行ファイルはPATHにある絶対ディレクトリから名前解決し、その絶対パスをchild processへ渡す。作業対象repoのcwdや相対PATH項目から `codex` 実行ファイルを拾わない。見つからない場合は明示エラーにし、起動を試みない。
 - ブラウザーは明示実行前にopaque operation IDとactive状態をlocalStorage上の委譲関係へ保存する。ページ再読込後は明示的な状態確認ができる。operationの実行状態自体はサーバーメモリー内のみであり、サーバー再起動などでIDが見つからない場合は、CLIを再実行せず委譲関係をblockedへ閉じる。完了/失敗の状態反映もユーザーが状態確認を選んだ場合だけ行う。
+- キャンバスの委譲線は許可済み状態を `data-status` に渡し、予定/進行中/阻害中/完了/取消済みを線種または色で区別する。hover tooltipには委譲記録と状態のローカライズ表示を付ける。表示名や目的文は線へ追加せず、詳細では正確な状態と目的を確認する。
 - ヘッダーの信頼表示はセッションデータの読み取り専用性と確認付きworktree作成を説明する文言に統一し、「何も外へ出ない」とは約束しない。確認済みCodex委譲は保存済み設定を利用し、CLIが外部へ接続する可能性を実行前dialogで説明する。
 - 実際のCodex CLIは起動していない。runnerのargv/stdin/出力破棄、APIのOrigin/確認/応答境界をsynthetic mockで確認したのみで、実セッション再開、認証・MCP設定、CLI応答の表示、実データの永続状態更新は未確認。現行ローカル実データのCodex CLI認識0件という制約も継続。
 - 今回の対応はCodex CLIへの片方向のread-only resumeに限定する。ClaudeからCodexへの受け渡しを含む一般的なprovider間委譲、Codexによるファイル書込み、承認・MCP/network設定の選択、企業ロール制御は未実装または仕様待ち。音声Main AIと企業権限制御の壁打ち仕様はユーザー貼付待ち。

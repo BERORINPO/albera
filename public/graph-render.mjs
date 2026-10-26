@@ -15,6 +15,18 @@ export function graphCardSignature(node, missing = []) {
   return JSON.stringify([node, missing]);
 }
 
+/** @param {{kind:string,status?:string}} edge @param {T} t */
+export function graphEdgePresentation(edge, t) {
+  const status = edge.kind === 'delegates' && ['planned', 'active', 'blocked', 'completed', 'cancelled'].includes(edge.status ?? '')
+    ? edge.status
+    : undefined;
+  return {
+    className: `graph-edge graph-edge--${edge.kind}${edge.kind === 'delegates' && !status ? ' graph-edge--delegates-unknown' : ''}`,
+    status,
+    title: edge.kind === 'delegates' ? `${t('graph.edge.delegates')}: ${t(`graph.delegation.${status ?? 'unknown'}`)}` : undefined,
+  };
+}
+
 /** @param {string} endpoint @param {any} graph @param {Map<string,{card:any,pile:string}>} index @param {any} layout */
 function point(endpoint, graph, index, layout) {
   if (endpoint.startsWith('graph:')) {
@@ -107,7 +119,12 @@ export function renderGraphLayer(layer, o) {
     (x) => x.edge.id,
     (x) => `${x.edge.from}|${x.edge.to}|${x.edge.kind}|${x.edge.status}|${x.edge.purpose}|${x.line?.x1}|${x.line?.y1}|${x.line?.x2}|${x.line?.y2}`,
     (x) => {
-      const line = h('span', { class: `graph-edge graph-edge--${x.edge.kind}` });
+      const presentation = graphEdgePresentation(x.edge, t);
+      const line = h('span', { class: presentation.className });
+      if (presentation.status) {
+        line.setAttribute('data-status', presentation.status);
+        line.setAttribute('title', presentation.title);
+      }
       if (x.line) placeLine(line, x.line.x1, x.line.y1, x.line.x2, x.line.y2);
       return line;
     },
