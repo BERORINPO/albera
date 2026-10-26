@@ -373,6 +373,7 @@ export const JA = Object.freeze({
   'foot.codexNoFiles': '0件表示の理由: 認識対象の形式に合うrolloutファイルが見つかりません。CODEX_HOMEまたは既定の保存先を確認してください。',
   'foot.codexNoDetected': '0件表示の理由: 候補ファイルはありますが、CLIの形式条件に合うセッションはありません。不正行やCLI以外の記録は除外されます。次に、Pigeonholesが選んだCodex保存先がCLI用か確認し、形式が変わっていれば対応後に再読み込みしてください。',
   'foot.codexNoWorking': '作業中0件の理由: 認識したセッションに、15分以内に開始された未完了ターンがありません。完了・中断は「最近」へ、15分以上更新のない進行中ターンは「止まったかも」へ分類されます。',
+  'foot.codexWslNotConfigured': 'WSLのCodex保存先は未接続です。Windowsから読むには、対象ディストリビューションの共有先をCODEX_HOMEに設定して再起動してください。Pigeonholesは明示された共有だけを読み、WSLコマンドは実行しません。',
   'foot.bad': '読めなかったファイル {n} 件。',
   'foot.missing': '会話ログが見つからない {n} 件 (最近 {days} 日)。',
   'foot.missingWhy': 'リモートやクラウドで動いた会話は、このパソコンにログが無いため状態が分かりません。',

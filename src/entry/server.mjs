@@ -52,9 +52,10 @@ function launcher() {
 function wire(config) {
   if (config.demo) return liveDemoSources(config.lang);
   const codexWslRoot = process.platform === 'win32' ? wslShareRoot(config.codexHome) : '';
+  const codexWslShareStatus = process.platform !== 'win32' ? 'not_applicable' : codexWslRoot ? 'configured' : 'not_configured';
   const sessionsSource = createCombinedSessionsSource([
     createAppSessionsSource({ root: config.sessionsRoot }),
-    createCodexSessionsSource({ root: config.codexHome, cwdMapper: codexWslRoot ? (cwd) => wslCwdToUnc(cwd, codexWslRoot) : undefined }),
+    createCodexSessionsSource({ root: config.codexHome, cwdMapper: codexWslRoot ? (cwd) => wslCwdToUnc(cwd, codexWslRoot) : undefined, wslShareStatus: codexWslShareStatus }),
     createCopilotSessionsSource({ root: config.copilotHome }),
     createOpenCodeSessionsSource({ root: config.openCodeDb }),
   ]);
@@ -75,7 +76,7 @@ function createCombinedSessionsSource(sources) {
       const loaded = await Promise.all(sources.map((source) => source.load()));
       // 既存の診断統計は Claude セッション源の値をそのまま使う。
       const claudeStats = loaded[0]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
-      const codexStats = loaded[1]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
+      const codexStats = loaded[1]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0, wslShareStatus: 'not_applicable' };
       const copilotStats = loaded[2]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
       const opencodeStats = loaded[3]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
       const stats = { ...claudeStats, sources: { codex: codexStats, copilot: copilotStats, opencode: opencodeStats } };

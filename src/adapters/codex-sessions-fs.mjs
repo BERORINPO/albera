@@ -16,6 +16,7 @@ const ORIGINATORS = new Set(['codex', 'codex_cli_rs']);
 const START_TYPES = new Set(['task_started', 'turn_started']);
 const COMPLETE_TYPES = new Set(['task_complete', 'turn_complete']);
 const ABORT_TYPES = new Set(['turn_aborted']);
+const WSL_SHARE_STATUSES = new Set(['configured', 'not_configured', 'not_applicable']);
 
 /** @param {unknown} v @returns {v is Record<string, any>} */
 const obj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -96,8 +97,8 @@ async function dirs(dir) {
   }
 }
 
-/** @param {string} root @param {number} concurrency @param {(cwd:unknown)=>string|null} [cwdMapper] */
-export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY, cwdMapper }) {
+/** @param {string} root @param {number} concurrency @param {(cwd:unknown)=>string|null} [cwdMapper] @param {string} [wslShareStatus] */
+export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY, cwdMapper, wslShareStatus = 'not_applicable' }) {
   /** @type {Map<string, {mtimeMs:number,size:number,record: any|null}>} */
   const cache = new Map();
 
@@ -169,7 +170,10 @@ export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY
   return {
     /** @returns {Promise<{sessions:any[],archivedIds:Set<string>,stats:{files:number,parsed:number,bad:number,stale:number,dirs:number}}>} */
     async load() {
-      const stats = { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
+      const stats = {
+        files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0,
+        wslShareStatus: WSL_SHARE_STATUSES.has(wslShareStatus) ? wslShareStatus : 'not_applicable',
+      };
       const sessionsRoot = path.join(root, 'sessions');
       const files = [];
       for (const year of await dirs(sessionsRoot)) {

@@ -592,6 +592,7 @@ export function buildBoard({
       failed: sourceSessions.filter((s) => lastEvent(s) === 'turn_failed').length,
       unknown: sourceSessions.filter((s) => s.lifecycle?.status !== 'active' && !['turn_completed', 'turn_aborted', 'turn_failed'].includes(lastEvent(s))).length,
       rejected: count(input.bad),
+      ...(source === 'codex' && ['configured', 'not_configured'].includes(input.wslShareStatus) ? { wslShareStatus: input.wslShareStatus } : {}),
       ...(input.unsupportedRuntime === true ? { unsupportedRuntime: true } : {}),
       ...(source === 'opencode' && input.legacySchema === true ? { legacySchema: true } : {}),
     };

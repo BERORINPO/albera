@@ -100,7 +100,7 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   await rollout(home, activeId, [meta(activeId), envelope('event_msg', { type: 'task_started', prompt: 'PRIVATE-PROMPT' }, activeAt)]);
   await rollout(home, doneId, [meta(doneId), envelope('event_msg', { type: 'task_started' }, doneAt - 1000), envelope('event_msg', { type: 'task_complete', output: 'PRIVATE-OUTPUT' }, doneAt)]);
   await rollout(home, abortedId, [meta(abortedId), envelope('event_msg', { type: 'task_started' }, activeAt - 1000), envelope('event_msg', { type: 'turn_aborted', reason: 'PRIVATE-REASON' }, activeAt)]);
-  const { sessions, stats } = await createCodexSessionsSource({ root: home }).load();
+  const { sessions, stats } = await createCodexSessionsSource({ root: home, wslShareStatus: 'not_configured' }).load();
   const claude = rec(11);
   const build = (items, sourceStats) => buildBoard({ sessions: items, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS, sourceStats });
   const base = build([claude]);
@@ -117,9 +117,13 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   assert.deepEqual(mixed.stats.sources.codex, {
     files: 3, detected: 3, working: 1, trouble: 0, recent: 2,
     active: 1, completed: 1, interrupted: 1, failed: 0, unknown: 0, rejected: 0,
+    wslShareStatus: 'not_configured',
   });
   const wire = JSON.stringify(mixed);
   for (const secret of ['PRIVATE-PROMPT', 'PRIVATE-OUTPUT', 'PRIVATE-REASON', 'C:\\work\\alpha', 'base_instructions', 'environment_secret']) assert.equal(wire.includes(secret), false);
+  const malformedStatus = await createCodexSessionsSource({ root: home, wslShareStatus: 'C:\\private\\share' }).load();
+  assert.equal(malformedStatus.stats.wslShareStatus, 'not_applicable', 'adapter status accepts only fixed categories');
+  assert.equal(JSON.stringify(malformedStatus.stats).includes('C:\\private\\share'), false);
 });
 
 test('CLI と originator の組が合わない Codex ファイルは採用しない', async () => {

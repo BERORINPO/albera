@@ -27,6 +27,17 @@ test('Codex status explains each zero-count cause and uses only safe numeric val
   assert.ok(!messages.join(' ').includes('SECRET_VALUE'));
 });
 
+test('Codex WSL guidance uses only the explicit share configuration category', () => {
+  const t = makeT('ja');
+  const notConfigured = codexStatusMessages(t, { ...base, wslShareStatus: 'not_configured' });
+  assert.match(notConfigured.join(' '), /WSLのCodex保存先は未接続です/);
+  assert.match(notConfigured.join(' '), /WSLコマンドは実行しません/);
+  const configured = codexStatusMessages(t, { ...base, wslShareStatus: 'configured' });
+  assert.equal(configured.some((message) => /WSLのCodex保存先/.test(message)), false);
+  const untrusted = codexStatusMessages(t, { ...base, wslShareStatus: 'C:\\private\\distro' });
+  assert.equal(untrusted.some((message) => message.includes('private')), false);
+});
+
 test('Copilot diagnostics distinguish no candidates, rejected formats, and no working session', () => {
   const t = makeT('ja');
   assert.match(copilotStatusMessages(t, base)[1], /events.jsonlが見つかりません/);

@@ -17,6 +17,7 @@ export function codexStatusMessages(t, input) {
     Object.fromEntries(FIELDS.map((key) => [key, count(input[key])]))
   );
   const messages = [t('foot.codexSummary', stats)];
+  if (input.wslShareStatus === 'not_configured') messages.push(t('foot.codexWslNotConfigured'));
   if (stats.files === 0) messages.push(t('foot.codexNoFiles'));
   else if (stats.detected === 0) messages.push(t('foot.codexNoDetected'));
   else if (stats.working === 0) messages.push(t('foot.codexNoWorking'));
