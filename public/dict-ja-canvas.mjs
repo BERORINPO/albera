@@ -223,6 +223,7 @@ export const JA_CANVAS = Object.freeze({
   'graph.delegationFailed': 'Codexへの委譲に失敗しました。CLI出力は破棄しました。',
   'graph.delegationStillRunning': 'Codexへの委譲は実行中です。Codex CLIセッションを直接確認してください。',
   'graph.delegationStatusLost': '操作状態を取得できません。委譲を再実行していません。重複実行を避けるため、先にCodex CLIセッションを確認してください。',
+  'graph.delegationCliUnavailable': 'Codex CLIがPATH内の絶対パス上に見つからず、委譲は開始されませんでした。',
   'graph.relations': '関係',
   'graph.relatedCards': '関連するカード',
   'graph.sessionRelationOut': 'このセッションから',

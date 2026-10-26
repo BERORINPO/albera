@@ -1,5 +1,5 @@
 // Explicit, user-confirmed execution of a recorded Codex delegation.
-import { delegationStatus, runDelegation } from './api.mjs';
+import { delegationStatus, runDelegation, WorktreeOperationError } from './api.mjs';
 import { loadGraph } from './graph-store.mjs';
 import { updateGraphEdge } from './graph-model.mjs';
 
@@ -45,7 +45,12 @@ export async function runDelegationForEdge(edgeId, sourceId, { view, state, grap
       return true;
     }
     announce(state.t('graph.delegationStillRunning'));
-  } catch {
+  } catch (error) {
+    if (error instanceof WorktreeOperationError && error.reason === 'cli_unavailable') {
+      graphChanged(updateGraphEdge(loadGraph(), edgeId, { status: 'blocked' }));
+      announce(state.t('graph.delegationCliUnavailable'));
+      return false;
+    }
     announce(state.t('graph.delegationStatusLost'));
   }
   return false;

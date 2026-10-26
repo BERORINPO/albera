@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import { createCodexDelegationRunner } from '../src/adapters/codex-delegation-runner.mjs';
+import { createCodexDelegationRunner, resolveCodexExecutable } from '../src/adapters/codex-delegation-runner.mjs';
 
 const sessionId = '12345678-1234-1234-1234-1234567890ab';
 const operationId = 'abcdefab-cdef-4abc-8def-abcdefabcdef';
+
+test('Codex executable resolution ignores relative PATH entries and returns only an absolute CLI binary', () => {
+  const candidates = new Set(['C:\\trusted\\bin\\codex.exe']);
+  const result = resolveCodexExecutable({ env: { Path: '.;C:\\trusted\\bin;repo\\tools' }, platform: 'win32', exists: (file) => candidates.has(file) });
+  assert.equal(result, 'C:\\trusted\\bin\\codex.exe');
+  assert.equal(resolveCodexExecutable({ env: { PATH: '.:./tools' }, platform: 'linux', exists: () => true }), null);
+});
 
 test('confirmed Codex delegation uses read-only resume, sends purpose only on stdin, and discards output', () => {
   const child = new EventEmitter();
@@ -39,6 +46,13 @@ test('refuses unconfirmed, malformed, empty, or oversized delegation without spa
     { sessionId, cwd: '/synthetic', purpose: '  ', confirmed: true, operationId },
     { sessionId, cwd: '/synthetic', purpose: 'x'.repeat(2001), confirmed: true, operationId },
   ]) assert.equal(runner.start(input).ok, false);
+  assert.equal(count, 0);
+});
+
+test('missing Codex CLI fails closed without searching from the target workspace', () => {
+  let count = 0;
+  const runner = createCodexDelegationRunner({ executable: null, spawn: () => (count++, {}) });
+  assert.deepEqual(runner.start({ sessionId, cwd: '/synthetic/repo', purpose: 'review', confirmed: true, operationId }), { ok: false, reason: 'cli_unavailable' });
   assert.equal(count, 0);
 });
 

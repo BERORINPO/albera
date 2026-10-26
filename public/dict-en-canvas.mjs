@@ -223,6 +223,7 @@ export const EN_CANVAS = Object.freeze({
   'graph.delegationFailed': 'Codex delegation failed. CLI output was discarded.',
   'graph.delegationStillRunning': 'Codex delegation is still running. Check the Codex CLI session directly.',
   'graph.delegationStatusLost': 'The operation status is unavailable. The delegation was not retried; review the Codex CLI session before starting another run.',
+  'graph.delegationCliUnavailable': 'Codex CLI was not found in an absolute PATH directory. The delegation was not started.',
   'graph.relations': 'Relations',
   'graph.relatedCards': 'Related canvas cards',
   'graph.sessionRelationOut': 'From this session',

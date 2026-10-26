@@ -169,6 +169,7 @@
 
 - 完了済み・ローカルのCodex CLIセッションを宛先とする送信方向の委譲関係に「委譲を実行」を表示する。実行前に目的文、プロジェクト表示名、保存済みCodex設定/認証と外部利用量の可能性を確認ダイアログに出し、最終確認後だけ開始する。WSL、active/unknown、demoは拒否する。
 - 公式CLI仕様の`codex exec resume <SESSION_ID> -`を使い、目的文はargvでなくstdinへ渡す。sandboxは`read-only`に固定し、shellを介さず起動する。stdout/stderrは破棄し、APIはoperation IDと固定状態のみを返す。request bodyは同一Origin、JSON、上限付きで、目的文をログ・応答へ出さない。
+- CLI実行ファイルはPATHにある絶対ディレクトリから名前解決し、その絶対パスをchild processへ渡す。作業対象repoのcwdや相対PATH項目から `codex` 実行ファイルを拾わない。見つからない場合は明示エラーにし、起動を試みない。
 - operation状態はサーバーメモリー内のみ。ページ再読込やサーバー再起動後の状態照合は未対応。明示実行後は委譲関係にactive/completed/blocked状態を記録する。
 - 実際のCodex CLIは起動していない。runnerのargv/stdin/出力破棄、APIのOrigin/確認/応答境界をsynthetic mockで確認したのみで、実セッション再開、認証・MCP設定、CLI応答の表示、実データの永続状態更新は未確認。現行ローカル実データのCodex CLI認識0件という制約も継続。
 - 今回の対応はCodex CLIへの片方向のread-only resumeに限定する。ClaudeからCodexへの受け渡しを含む一般的なprovider間委譲、Codexによるファイル書込み、承認・MCP/network設定の選択、企業ロール制御は未実装または仕様待ち。音声Main AIと企業権限制御の壁打ち仕様はユーザー貼付待ち。

@@ -153,7 +153,7 @@ export function createHandler({ port, getBoard, createWorktree, listWorktrees, r
     if (!startDelegation) return send(res, 501, 'application/json; charset=utf-8', JSON.stringify({ error: 'delegation_unavailable' }));
     try {
       const result = await startDelegation(value.sessionId, value.purpose, true, value.operationId);
-      if (result?.ok !== true || result.operationId !== value.operationId || !['running', 'completed', 'failed'].includes(result.status)) return send(res, 422, 'application/json; charset=utf-8', JSON.stringify({ error: ['invalid_target', 'unsupported_location', 'session_active', 'session_unknown', 'already_running', 'operation_limit'].includes(result?.reason) ? result.reason : 'unavailable' }));
+      if (result?.ok !== true || result.operationId !== value.operationId || !['running', 'completed', 'failed'].includes(result.status)) return send(res, 422, 'application/json; charset=utf-8', JSON.stringify({ error: ['invalid_target', 'unsupported_location', 'session_active', 'session_unknown', 'already_running', 'operation_limit', 'cli_unavailable'].includes(result?.reason) ? result.reason : 'unavailable' }));
       return send(res, 202, 'application/json; charset=utf-8', JSON.stringify({ operationId: result.operationId, status: result.status }));
     } catch {
       log('term.delegationFailed', {});
