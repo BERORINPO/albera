@@ -1,5 +1,5 @@
 import { sessionRect } from './session-position.mjs';
-import { forgetSessionPosition, loadSessionPositions, saveSessionPositions } from './session-position-store.mjs';
+import { boundedSessionPoint, forgetSessionPosition, loadSessionPositions, saveSessionPositions } from './session-position-store.mjs';
 
 /** DOM/storage side effects for moving the read-only session cards on the local canvas. */
 export function createSessionPositionActions(o) {
@@ -9,7 +9,7 @@ export function createSessionPositionActions(o) {
     const current = positions();
     const rect = sessionRect(o.cv.layout, id, current);
     if (!rect) return false;
-    const next = { ...current, [id]: { x: Math.round(rect.x + dx), y: Math.round(rect.y + dy) } };
+    const next = { ...current, [id]: boundedSessionPoint(rect.x + dx, rect.y + dy) };
     if (!saveSessionPositions(next)) return o.announce(o.getT()('canvas.positionSaveError')), false;
     o.cv.sessionPositions = next;
     o.render();
@@ -32,7 +32,8 @@ export function createSessionPositionActions(o) {
     const current = positions();
     const origin = o.cv.sessionDrag?.id === id ? { x: o.cv.sessionDrag.startX, y: o.cv.sessionDrag.startY } : sessionRect(o.cv.layout, id, current);
     if (!origin) return;
-    o.cv.sessionDrag = { id, x: Math.round(origin.x + dx / o.cv.cam.z), y: Math.round(origin.y + dy / o.cv.cam.z), startX: origin.x, startY: origin.y };
+    const point = boundedSessionPoint(origin.x + dx / o.cv.cam.z, origin.y + dy / o.cv.cam.z);
+    o.cv.sessionDrag = { id, ...point, startX: origin.x, startY: origin.y };
     if (!o.world().querySelector(`.session-positioned[data-id="${CSS.escape(id)}"]`)) o.render();
     const el = /** @type {HTMLElement|null} */ (o.world().querySelector(`.session-positioned[data-id="${CSS.escape(id)}"]`));
     el?.classList.add('is-dragging');
@@ -43,7 +44,7 @@ export function createSessionPositionActions(o) {
   function drop(id) {
     const drag = o.cv.sessionDrag;
     if (!drag || drag.id !== id) return o.render();
-    const next = { ...positions(), [id]: { x: drag.x, y: drag.y } };
+    const next = { ...positions(), [id]: boundedSessionPoint(drag.x, drag.y) };
     o.cv.sessionDrag = null;
     if (!saveSessionPositions(next)) {
       o.render();

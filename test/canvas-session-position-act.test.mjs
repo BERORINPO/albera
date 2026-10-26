@@ -78,3 +78,19 @@ test('pointer drag uses world coordinates and commits only on drop', () => withC
   actions.drop(sessionId);
   assert.deepEqual(loadSessionPositions(storage), { [sessionId]: { x: 160, y: 210 } });
 }));
+
+test('keyboard and pointer movement stay within the storage world bounds', () => withCanvasGlobals((storage) => {
+  const cv = {
+    layout: { sheets: [{ x: 1_000_000, y: 0, slips: [{ id: sessionId, x: 0, y: 0, h: 140 }] }] },
+    cam: { z: 1 }, sessionPositions: {},
+  };
+  const actions = createSessionPositionActions({
+    cv, render() {}, world: () => ({ querySelector: () => null }), focusSlip() {}, announce() {}, getT: () => (key) => key,
+  });
+  assert.equal(actions.moveBy(sessionId, 100, 0), true);
+  assert.deepEqual(loadSessionPositions(storage), { [sessionId]: { x: 1_000_000, y: 0 } });
+  actions.drag(sessionId, 100, 0);
+  assert.equal(cv.sessionDrag.x, 1_000_000);
+  actions.drop(sessionId);
+  assert.deepEqual(loadSessionPositions(storage), { [sessionId]: { x: 1_000_000, y: 0 } });
+}));

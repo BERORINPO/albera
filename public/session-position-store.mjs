@@ -7,6 +7,12 @@ const LIMIT = 1000;
 const WORLD_MAX = 1_000_000;
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
+/** Keep live canvas coordinates in the same bounded range accepted by storage. @param {number} x @param {number} y */
+export function boundedSessionPoint(x, y) {
+  const bound = (value) => Math.max(-WORLD_MAX, Math.min(WORLD_MAX, Math.round(Number.isFinite(value) ? value : 0)));
+  return { x: bound(x), y: bound(y) };
+}
+
 /** @param {unknown} input @returns {Record<string,{x:number,y:number}>} */
 export function normalizeSessionPositions(input) {
   const source = typeof input === 'string' ? (() => { try { return JSON.parse(input); } catch { return null; } })() : input;

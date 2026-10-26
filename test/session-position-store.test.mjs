@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { forgetSessionPosition, loadSessionPositions, normalizeSessionPositions, saveSessionPositions } from '../public/session-position-store.mjs';
+import { boundedSessionPoint, forgetSessionPosition, loadSessionPositions, normalizeSessionPositions, saveSessionPositions } from '../public/session-position-store.mjs';
 import { defaultSessionRect, isPositionedSession, sessionRect } from '../public/session-position.mjs';
 
 class Storage {
@@ -19,6 +19,14 @@ test('session positions keep only recognized opaque IDs and bounded numeric coor
     [codex]: { x: 1_000_001, y: 0 },
     malformed: { x: 1, y: 2 },
   } }), { [claude]: { x: 10, y: -41 } });
+});
+
+test('live session movement clamps to the same bounds accepted by persistent storage', () => {
+  assert.deepEqual(boundedSessionPoint(1_000_001, -1_000_001), { x: 1_000_000, y: -1_000_000 });
+  assert.deepEqual(boundedSessionPoint(Number.NaN, Infinity), { x: 0, y: 0 });
+  assert.deepEqual(normalizeSessionPositions({ v: 1, positions: { [claude]: boundedSessionPoint(1_000_001, -1_000_001) } }), {
+    [claude]: { x: 1_000_000, y: -1_000_000 },
+  });
 });
 
 test('session positions load, save, and forget using browser-local storage only', () => {
