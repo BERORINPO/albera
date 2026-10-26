@@ -205,7 +205,6 @@ export const JA = Object.freeze({
   'detail.error': 'エラー全文',
   'detail.branch': 'ブランチ',
   'detail.worktree': '作業ツリー',
-  'detail.folder': 'フォルダ',
   'detail.created': '作成',
   'detail.turns': 'やりとり',
   'detail.turnsValue': '{n} 回',

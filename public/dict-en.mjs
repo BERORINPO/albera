@@ -205,7 +205,6 @@ export const EN = Object.freeze({
   'detail.error': 'Full error',
   'detail.branch': 'Branch',
   'detail.worktree': 'Worktree',
-  'detail.folder': 'Folder',
   'detail.created': 'Created',
   'detail.turns': 'Turns',
   'detail.turnsValue': '{n}',

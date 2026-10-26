@@ -81,7 +81,7 @@ CLEANUP_SUBGROUP_THRESHOLD = 20
 CLEANUP_NOTES   = ['open_pr', 'exempt', 'starred', 'unread', 'child']   // この順に試す
 OTHER_PROJECT   = { key: '(other)' }
 FORBIDDEN_OUTPUT_KEYS = 元データの巨大項目と秘密 (remoteMcpServersConfig ほか) + 'folders' (adapter 内部の手掛かり)。SessionRecord と JSON の両方で検査する
-FORBIDDEN_WIRE_KEYS   = ['model', 'command', 'input', 'file_path', 'notebook_path', 'description', 'usage', 'compactMetadata', 'todos', 'contextExceededCount']
+FORBIDDEN_WIRE_KEYS   = ['model', 'command', 'input', 'file_path', 'notebook_path', 'description', 'usage', 'compactMetadata', 'todos', 'contextExceededCount', 'cwd'] (the working directory remains adapter/core input and never appears in the API)
                         // JSON にだけ無いこと (model と contextExceededCount は SessionRecord にはある)。'state' は prs[] の要素の中だけ許す (§13)
 
 // v0.2: していること・コンテキスト (§5.1・§5.2)。言葉は持たない
