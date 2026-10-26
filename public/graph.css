@@ -19,6 +19,7 @@
 .graph-node__status { font-weight: 700; }
 .graph-node__title { font-size: calc(var(--text-md) * var(--k)); font-weight: 700; overflow-wrap: anywhere; }
 .graph-node__body { max-height: 3.8em; overflow: hidden; font-size: calc(var(--text-sm) * var(--k)); line-height: 1.45; overflow-wrap: anywhere; }
+.graph-node__review { padding: calc(var(--space-2xs) * var(--k)) calc(var(--space-xs) * var(--k)); border-inline-start: 3px solid var(--color-accent); color: var(--color-ink); font-size: calc(var(--text-sm) * var(--k)); font-weight: 700; overflow-wrap: anywhere; }
 .canvas__viewport[data-level="far"] .graph-node { min-height: 128px; padding: calc(var(--space-2xs) * var(--k)); }
 .canvas__viewport[data-level="far"] .graph-node__meta, .canvas__viewport[data-level="far"] .graph-node__body { display: none; }
 .canvas__viewport[data-level="far"] .graph-node__title { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.2; }
@@ -27,6 +28,7 @@
 .graph-dialog__form { display: grid; gap: var(--space-md); padding: clamp(1rem, 4vw, 2rem); }
 .graph-dialog__form h2, .graph-dialog__form h3, .graph-dialog__form p { margin: 0; }
 .graph-dialog__privacy, .graph-dialog__empty { color: var(--color-ink-2); font-size: var(--text-sm); }
+.graph-dialog__review { padding: var(--space-sm); border-inline-start: 4px solid var(--color-accent); background: var(--color-paper); font-size: var(--text-sm); }
 .graph-dialog__field { display: grid; gap: var(--space-2xs); font-weight: 700; }
 .graph-dialog__field input, .graph-dialog__field select, .graph-dialog__field textarea { width: 100%; min-height: 2.75rem; padding: var(--space-xs); border: var(--rule-muted); background: var(--color-paper); color: var(--color-ink); font: inherit; }
 .graph-dialog__field textarea { resize: vertical; }
