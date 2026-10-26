@@ -141,6 +141,7 @@ export const JA_CANVAS = Object.freeze({
   'graph.taskFromSession': '関連タスクを作成',
   'graph.taskFromSessionTitle': 'セッションからの次のタスク',
   'worktree.openCreate': 'worktreeを作成',
+  'worktree.demoUnavailable': '合成デモではGitのworktree操作は無効です。',
   'worktree.title': '分離したGit worktreeを作成',
   'worktree.target': '対象: {project}。基点: {branch}。',
   'worktree.baseState': '現在の作業状態: {state}{flags}',

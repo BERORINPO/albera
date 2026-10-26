@@ -141,6 +141,7 @@ export const EN_CANVAS = Object.freeze({
   'graph.taskFromSession': 'Create a linked task',
   'graph.taskFromSessionTitle': 'Follow up from session',
   'worktree.openCreate': 'Create worktree',
+  'worktree.demoUnavailable': 'Git worktree actions are disabled in synthetic demo mode.',
   'worktree.title': 'Create an isolated Git worktree',
   'worktree.target': 'Target: {project}. Base: {branch}.',
   'worktree.baseState': 'Current work state: {state}{flags}',
