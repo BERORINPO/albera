@@ -218,6 +218,7 @@ export const EN_CANVAS = Object.freeze({
   'graph.relationIn': 'To this card',
   'graph.noRelations': 'No relations yet.',
   'graph.session': 'Session',
+  'graph.unknownSession': 'Session unavailable',
   'graph.missingNode': 'Missing card',
   'graph.missingSession': 'Missing session',
   'graph.saveError': 'This browser could not save the canvas. Check its storage settings.',

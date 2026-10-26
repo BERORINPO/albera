@@ -3,6 +3,7 @@
 
 import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
 import { h } from './view.mjs';
+import { graphSessionLabel } from './graph-session-label.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 
@@ -52,7 +53,7 @@ function endpointLabel(endpoint, graph, sessions, t) {
     return node ? node.title : t('graph.missingNode');
   }
   const session = sessions.find((s) => s.id === endpoint.slice(8));
-  return session?.title ?? t('graph.missingSession');
+  return session ? graphSessionLabel(session, t) : t('graph.missingSession');
 }
 
 /** @param {T} t @param {Array<{id:string,title:string}>} options @param {string} name @param {string} selected @param {string} excluded */
@@ -228,7 +229,7 @@ export function openGraphRelationDialog(o) {
   const { t, from, graph, sessions, edge } = o;
   const options = [
     ...graph.nodes.map((n) => ({ id: `graph:${n.id}`, title: `${t(`graph.kind.${n.kind}`)}: ${n.title}` })),
-    ...sessions.map((s) => ({ id: `session:${s.id}`, title: `${t('graph.session')}: ${s.title}` })),
+    ...sessions.map((s) => ({ id: `session:${s.id}`, title: graphSessionLabel(s, t) })),
   ];
   const fromKey = endpointKey(from);
   const fromItem = options.find((x) => x.id === fromKey);

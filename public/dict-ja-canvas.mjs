@@ -218,6 +218,7 @@ export const JA_CANVAS = Object.freeze({
   'graph.relationIn': 'このカードへ',
   'graph.noRelations': 'まだ関係はありません。',
   'graph.session': 'セッション',
+  'graph.unknownSession': '利用できないセッション',
   'graph.missingNode': 'カードなし',
   'graph.missingSession': 'セッションなし',
   'graph.saveError': 'このブラウザーに保存できませんでした。ブラウザーの保存設定を確認してください。',
