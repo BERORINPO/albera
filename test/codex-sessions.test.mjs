@@ -49,6 +49,9 @@ test('Codex CLI rollout を検出し、turn status と allowlist イベントだ
   const doneId = uuid(502);
   const ignoredId = uuid(503);
   const abortedId = uuid(505);
+  const noSourceId = uuid(506);
+  const unsupportedOriginatorId = uuid(507);
+  const mismatchNameId = uuid(508);
   const activeAt = NOW - 2 * 60_000;
   const doneAt = NOW - 60_000;
   const activeFile = await rollout(home, activeId, [
@@ -70,15 +73,32 @@ test('Codex CLI rollout を検出し、turn status と allowlist イベントだ
   ]);
   await rollout(home, ignoredId, [meta(ignoredId, 'vscode')]);
   await rollout(home, uuid(504), ['not json']);
+  const missingSource = JSON.parse(meta(noSourceId));
+  delete missingSource.payload.source;
+  await rollout(home, noSourceId, [JSON.stringify(missingSource)]);
+  await rollout(home, unsupportedOriginatorId, [meta(unsupportedOriginatorId, 'cli', 'unknown-producer')]);
+  await rollout(home, mismatchNameId, [meta(uuid(509))]);
 
   const source = createCodexSessionsSource({ root: home });
   const { sessions, stats } = await source.load();
   assert.equal(sessions.length, 3);
   assert.equal(stats.parsed, 3);
-  assert.equal(stats.bad, 2);
-  assert.equal(stats.notCli, 1, 'records without the CLI marker are counted without retaining their source value');
-  assert.equal((await source.load()).stats.notCli, 1, 'the safe reason count survives the read-only stat cache');
+  assert.equal(stats.bad, 5);
+  assert.equal(stats.notCli, 2, 'non-CLI marker states are counted without retaining their values');
+  assert.equal(stats.missingSource, 1);
+  assert.equal(stats.otherSource, 1);
+  assert.equal(stats.unsupportedOriginator, 1);
+  assert.equal(stats.filenameMismatch, 1);
+  assert.equal((await source.load()).stats.unsupportedOriginator, 1, 'safe reason counts survive the read-only stat cache');
   assert.equal(JSON.stringify(stats).includes('vscode'), false, 'the rejected producer value does not enter diagnostics');
+  assert.equal(JSON.stringify(stats).includes('unknown-producer'), false, 'unsupported originator values do not enter diagnostics');
+  const diagnosticBoard = buildBoard({ sessions, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS, sourceStats: { sources: { codex: stats } } });
+  assert.deepEqual(diagnosticBoard.stats.sources.codex, {
+    files: 8, detected: 3, working: 1, trouble: 0, recent: 2,
+    active: 1, completed: 1, interrupted: 1, failed: 0, unknown: 0, rejected: 5,
+    notCli: 2, missingSource: 1, otherSource: 1, unsupportedOriginator: 1, filenameMismatch: 1,
+  });
+  assert.doesNotMatch(JSON.stringify(diagnosticBoard.stats.sources.codex), /vscode|unknown-producer|[A-Z]:\\\\/i);
   const active = sessions.find((s) => s.sessionId === opaqueProviderSessionId('codex', activeId));
   const done = sessions.find((s) => s.sessionId === opaqueProviderSessionId('codex', doneId));
   const aborted = sessions.find((s) => s.sessionId === opaqueProviderSessionId('codex', abortedId));
@@ -128,7 +148,7 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   assert.deepEqual(mixed.stats.sources.codex, {
     files: 3, detected: 3, working: 1, trouble: 0, recent: 2,
     active: 1, completed: 1, interrupted: 1, failed: 0, unknown: 0, rejected: 0,
-    notCli: 0,
+    notCli: 0, missingSource: 0, otherSource: 0, unsupportedOriginator: 0, filenameMismatch: 0,
     wslShareStatus: 'not_configured',
   });
   const wire = JSON.stringify(mixed);

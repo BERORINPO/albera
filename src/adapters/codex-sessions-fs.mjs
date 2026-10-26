@@ -42,8 +42,8 @@ async function readHeader(handle, cwdMapper) {
     const line = JSON.parse(buffer.subarray(0, end).toString('utf8'));
     if (!obj(line) || line.type !== 'session_meta' || !obj(line.payload)) return null;
     const meta = obj(line.payload.meta) ? line.payload.meta : line.payload;
-    if (meta.source !== 'cli') return { rejected: 'not_cli' };
-    if (!ORIGINATORS.has(meta.originator)) return null;
+    if (meta.source !== 'cli') return { rejected: 'not_cli', reason: Object.hasOwn(meta, 'source') ? 'other_source' : 'missing_source' };
+    if (!ORIGINATORS.has(meta.originator)) return { rejected: 'unsupported_originator' };
     const id = typeof meta.id === 'string' && new RegExp(`^${UUID}$`, 'i').test(meta.id) ? meta.id.toLowerCase() : null;
     const cwd = cwdMapper
       ? cwdMapper(meta.cwd)
@@ -101,10 +101,10 @@ async function dirs(dir) {
 
 /** @param {string} root @param {number} concurrency @param {(cwd:unknown)=>string|null} [cwdMapper] @param {string} [wslShareStatus] */
 export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY, cwdMapper, wslShareStatus = 'not_applicable' }) {
-  /** @type {Map<string, {mtimeMs:number,size:number,record: any|null,rejection?:'not_cli'}>} */
+  /** @type {Map<string, {mtimeMs:number,size:number,record: any|null,rejection?:'not_cli'|'unsupported_originator'|'filename_mismatch',reason?:'missing_source'|'other_source'}>} */
   const cache = new Map();
 
-  /** @param {string} file @param {{files:number,parsed:number,bad:number,stale:number,dirs:number,notCli:number}} stats */
+  /** @param {string} file @param {{files:number,parsed:number,bad:number,stale:number,dirs:number,notCli:number,missingSource:number,otherSource:number,unsupportedOriginator:number,filenameMismatch:number}} stats */
   async function readOne(file, stats) {
     let stat;
     try {
@@ -118,7 +118,13 @@ export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY
       if (previous.record) stats.parsed++;
       else {
         stats.bad++;
-        if (previous.rejection === 'not_cli') stats.notCli++;
+        if (previous.rejection === 'not_cli') {
+          stats.notCli++;
+          if (previous.reason === 'missing_source') stats.missingSource++;
+          if (previous.reason === 'other_source') stats.otherSource++;
+        }
+        if (previous.rejection === 'unsupported_originator') stats.unsupportedOriginator++;
+        if (previous.rejection === 'filename_mismatch') stats.filenameMismatch++;
       }
       return previous.record;
     }
@@ -127,9 +133,17 @@ export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY
       handle = await fs.open(file, 'r');
       const meta = await readHeader(handle, cwdMapper);
       if (meta?.rejected === 'not_cli') {
-        cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, record: null, rejection: 'not_cli' });
+        cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, record: null, rejection: 'not_cli', reason: meta.reason });
         stats.bad++;
         stats.notCli++;
+        if (meta.reason === 'missing_source') stats.missingSource++;
+        if (meta.reason === 'other_source') stats.otherSource++;
+        return null;
+      }
+      if (meta?.rejected === 'unsupported_originator') {
+        cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, record: null, rejection: 'unsupported_originator' });
+        stats.bad++;
+        stats.unsupportedOriginator++;
         return null;
       }
       if (!meta) {
@@ -140,8 +154,9 @@ export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY
       const events = await readTail(handle, stat.size);
       const filename = FILE_RE.exec(path.basename(file));
       if (!filename || filename[2].toLowerCase() !== meta.id) {
-        cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, record: null });
+        cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, record: null, rejection: 'filename_mismatch' });
         stats.bad++;
+        stats.filenameMismatch++;
         return null;
       }
       const lifecycle = lifecycleOf(events);
@@ -184,6 +199,7 @@ export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY
     async load() {
       const stats = {
         files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0, notCli: 0,
+        missingSource: 0, otherSource: 0, unsupportedOriginator: 0, filenameMismatch: 0,
         wslShareStatus: WSL_SHARE_STATUSES.has(wslShareStatus) ? wslShareStatus : 'not_applicable',
       };
       const sessionsRoot = path.join(root, 'sessions');

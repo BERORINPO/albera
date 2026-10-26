@@ -6,6 +6,7 @@ import { codexStatusMessages, copilotStatusMessages, openCodeStatusMessages } fr
 const base = {
   files: 0, detected: 0, working: 0, trouble: 0, recent: 0,
   active: 0, completed: 0, interrupted: 0, unknown: 0, rejected: 0, notCli: 0,
+  missingSource: 0, otherSource: 0, unsupportedOriginator: 0, filenameMismatch: 0,
 };
 
 test('Codex status explains each zero-count cause and uses only safe numeric values', () => {
@@ -13,12 +14,16 @@ test('Codex status explains each zero-count cause and uses only safe numeric val
   assert.match(codexStatusMessages(t, base)[1], /rolloutファイルが見つかりません/);
   const unmatched = codexStatusMessages(t, { ...base, files: 4, rejected: 4 })[1];
   assert.match(unmatched, /形式条件に合うセッションはありません/);
-  assert.match(unmatched, /保存先がCLI用か確認/);
-  assert.match(unmatched, /形式が変わっていれば対応後に再読み込み/);
-  const notCli = codexStatusMessages(t, { ...base, files: 4, rejected: 4, notCli: 4 })[1];
-  assert.match(notCli, /すべてCLIの記録として印が付いていません/);
+  assert.match(unmatched, /CODEX_HOMEと保存形式を確認/);
+  assert.match(unmatched, /未対応originator 0件/);
+  const notCli = codexStatusMessages(t, { ...base, files: 4, rejected: 4, notCli: 4, missingSource: 1, otherSource: 3 })[1];
+  assert.match(notCli, /CLI識別情報がありません \(1件\)/);
+  assert.match(notCli, /CLI以外の識別情報があります \(3件\)/);
   assert.match(notCli, /CODEX_HOME/);
   assert.match(codexStatusMessages(t, { ...base, files: 4, detected: 2, recent: 2, completed: 1, interrupted: 1 })[1], /作業中0件/);
+  const fixedReasons = codexStatusMessages(t, { ...base, files: 4, rejected: 4, unsupportedOriginator: 2, filenameMismatch: 1 });
+  assert.match(fixedReasons[1], /未対応originator 2件/);
+  assert.match(fixedReasons[1], /ファイル名とのID不一致 1件/);
 
   const messages = codexStatusMessages(t, {
     ...base, files: 'C:\\secret\\prompt', detected: -1, working: NaN, rejected: Infinity,

@@ -973,3 +973,9 @@
 - 既存のread-only inventoryを再利用し、一覧では対象branchの「キャンバスに記録」だけを表示する。他branchの記録や削除操作はこの導線から行えない。対象branchが見つからない場合は、保存済みスナップショットを変えずにその理由を示す。
 - 記録後、inventory dialogを閉じたときにworktree詳細を閉じてcanvasカードへfocusを戻す。記録せず閉じた場合は元の詳細を保つ。session API/wireは変更せず、パスやGit診断文字列も扱わない。
 - Pure helper/導線配線テストを追加。`npm test`: 601 passed、`npm run arch`: 99 paths・違反0、`npm run smoke`: pass、`git diff --check`: pass。ブラウザー実画面での入れ子dialog/focus遷移と実Git inventory受入は未確認。
+
+### Codex 0件診断の固定理由別件数 (2026-10-27)
+
+- Codex rolloutをCLIと認定する条件は維持し、検出候補が0件になったときの説明を細分化する。source markerなし、別producer marker、許可リスト外originator、ファイル名とheader IDの不一致だけを固定件数として返す。生marker値、ID、ファイル名、パスはAPI/画面へ渡さない。
+- 不明/破損の残りは従来どおり不採用・一般拒否件数にまとめる。未知形式をCLIとして読み込む緩和はしない。これは0件の理由を説明する診断であり、現データ互換や検出成功の証拠ではない。
+- 合成fixtureで各理由区分、stat cache後の集計、APIの固定数値projection、日英UIメッセージから未知producer値が漏れないことを確認。実provider保存データは再走査していない。
