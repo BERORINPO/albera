@@ -390,6 +390,12 @@ R1 を先に置く理由: 動いているセッションは決して隠さない
 - Git は shell なし・時間/出力上限付きで実行。hookを無効化し、checkout filterは実行され得ることを確認画面に明記。Gitは選択セッションの現在のHEADを基点にし、未コミット変更は引き継がない。worktreeはrepoの隣へ作る。CLIやセッションは起動しない。
 - 成功応答は `{ok:true,branch,status,changed,untracked,conflicted}` のみ。失敗は固定理由コードのみ。絶対パス、stdout/stderr、ファイル名、環境値はAPI・ログに出さない。合成デモは `demo_disabled` を返し、書き込まない。
 
+### 10.2 読み取り専用のworktree一覧 (`GET /api/worktrees?sessionId=...`)
+
+- opaque な表示用 session ID だけを受け取り、非アーカイブセッションのcwdはサーバー内で解決する。任意パスや余分なqueryは拒否。
+- 対象repositoryのローカルworktreeを最大20件読み、各statusは上限付きGitコマンドで集計する。wireには `{branch,status,changed,untracked,conflicted,detached,locked,prunable,current}` の許可項目だけを含める。
+- Git path、ファイル名、lock reason、出力、環境値は応答に含めない。デモは合成状態を返す。このendpointは読み取り専用であり、Gitを変更しない。
+
 ```
 { v: 2, generatedAt, serverNow,
   counts: {needs_you, trouble, unread, working, recent, cleanup, recommended, active, archived},
@@ -511,13 +517,13 @@ Session files are read-only. Worktree creation writes only to the selected local
 
 ## 12. サーバーとセキュリティ (entry)
 
-- `127.0.0.1` だけに bind する。`Host` が `127.0.0.1:<port>` か `localhost:<port>` 以外なら 403 (DNS rebinding 対策)。通常のendpointはGETのみ。例外として `/api/worktrees` はPOSTだけを受け、Hostに加えて同一Origin・JSON・body上限・key allowlistを検証する。ほかのmethodは405。CORS ヘッダーは付けない。
+- `127.0.0.1` だけに bind する。`Host` が `127.0.0.1:<port>` か `localhost:<port>` 以外なら 403 (DNS rebinding 対策)。通常のendpointはGETのみ。`/api/worktrees` はsession ID限定のpath-free GETと、Hostに加えて同一Origin・JSON・body上限・key allowlistを検証するPOSTを受ける。ほかのmethodは405。CORS ヘッダーは付けない。
 - `GET /api/hello` は `{"app":"pigeonholes","demo":<bool>}` だけを返す (ポートが使用中のときの確かめ用、§11)。セッションの中身は入れない。
 - **静的ファイルの表は起動時に作る**: `public/` を 1 回 readdir し、拡張子 `.html .css .mjs .svg .png .ico` のファイルだけを、ファイル名そのままの `/<name>` で配信する (サブフォルダ・dotfile は入れない)。`/` は `public/index.html`。加えて `/src/shared/constants.mjs` と `/src/shared/i18n.mjs`。表にないパスはすべて 404。リクエストのパスとファイルパスを結合しない。Content-Type は拡張子の表から。
 - ヘッダー (全レスポンスに一括):
   - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
   - `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`
-- インラインスクリプト・style 属性は使わない。Pigeonholesから外部サービスへの通信はしない。唯一のブラウザー `fetch` は同一originの盤面GETと、確認済みworktree作成POST。
+- インラインスクリプト・style 属性は使わない。Pigeonholesから外部サービスへの通信はしない。唯一のブラウザー `fetch` は同一originの盤面GET・明示要求されたpath-free worktree一覧GET・確認済みworktree作成POST。
 
 ## 13. 構成と検査
 

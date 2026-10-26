@@ -20,6 +20,14 @@ export function createFakeWorktreeSource(table = {}) {
       current = { scanned: active.length, matched, unavailable: active.length - matched, skipped: 0 };
       return out;
     },
+    async listForCwd(cwd) {
+      const summary = map.get(keyOf(cwd));
+      return summary ? [{
+        branch: summary.branch, status: summary.status, changed: summary.changed, untracked: summary.untracked,
+        conflicted: summary.conflicted, locked: summary.locked, prunable: summary.prunable,
+        detached: summary.branch === null, current: true,
+      }] : [];
+    },
     stats: () => ({ ...current }),
   };
 }

@@ -45,7 +45,11 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
     sessionsSource: { load: () => current().sessions.load() },
     transcriptsSource: { read: (/** @type {string[]} */ ids) => current().transcripts.read(ids), stats: () => current().transcripts.stats() },
     folderHints: { hintFor: (/** @type {string} */ p) => current().hints.hintFor(p) },
-    worktreeSource: { enrich: (/** @type {import('../shared/types.mjs').SessionRecord[]} */ sessions) => current().worktrees.enrich(sessions), stats: () => current().worktrees.stats() },
+    worktreeSource: {
+      enrich: (/** @type {import('../shared/types.mjs').SessionRecord[]} */ sessions) => current().worktrees.enrich(sessions),
+      listForCwd: (/** @type {string} */ cwd) => current().worktrees.listForCwd(cwd),
+      stats: () => current().worktrees.stats(),
+    },
     worktreeCreator: createFakeWorktreeCreator(),
   };
 }

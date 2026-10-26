@@ -58,6 +58,31 @@ test('worktree adapter calls only bounded read commands and returns no paths or 
   assert.ok(!JSON.stringify(result[0].gitWorktree).includes('secret'));
 });
 
+test('worktree inventory is capped, path-free, and reports only branch/status flags', async () => {
+  const root = fakePath('repo');
+  const sibling = fakePath('repo-private-sibling');
+  const source = createWorktreeSource({ runGit: async (args) => {
+    if (args.includes('rev-parse')) return `${root}\n`;
+    if (args.includes('worktree')) return [
+      `worktree ${root}`, 'HEAD 1234', 'branch refs/heads/main', '',
+      `worktree ${sibling}`, 'HEAD abcd', 'branch refs/heads/agent/review', 'locked private lock reason', '',
+      '',
+    ].join('\0');
+    if (args.includes('status') && args.includes(sibling)) return '?? private.key\0';
+    if (args.includes('status')) return ' M private/source.mjs\0';
+    throw new Error('unexpected command');
+  } });
+  const result = await source.listForCwd(root);
+  assert.deepEqual(result, [
+    { branch: 'main', status: 'changed', changed: 1, untracked: 0, conflicted: 0, detached: false, locked: false, prunable: false, current: true },
+    { branch: 'agent/review', status: 'untracked', changed: 0, untracked: 1, conflicted: 0, detached: false, locked: true, prunable: false, current: false },
+  ]);
+  assert.ok(!JSON.stringify(result).includes(root));
+  assert.ok(!JSON.stringify(result).includes(sibling));
+  assert.ok(!JSON.stringify(result).includes('private.key'));
+  assert.ok(!JSON.stringify(result).includes('lock reason'));
+});
+
 test('worktree adapter ignores archived sessions and caps unique active locations', async () => {
   let calls = 0;
   const source = createWorktreeSource({ runGit: async () => (calls++, '') });

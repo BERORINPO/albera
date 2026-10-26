@@ -11,7 +11,6 @@ import { familyTree } from './ui-state.mjs';
 import { eventSummaryEl, eventsEl } from './events.mjs';
 import { worktreeDetailText } from './worktree-detail.mjs';
 import { fill, h, partsToNodes, reconcile, setDisclosed } from './view.mjs';
-
 // 時刻のセル・「開く ↗」・lang の決め方は labels.mjs にある (キャンバスと共有。ここから今までどおり使える)
 export { langOf, openEl, timeEl } from './labels.mjs';
 
@@ -261,6 +260,7 @@ export function detailEl(card, pile, ctx) {
   const gitDetails = worktreeDetailText(t, d.gitWorktree);
   const actions = [
     pile === 'cleanup' ? openEl(t, card, 'textbtn', !!ctx.board?.stats?.demo) : null,
+    h('button', { class: 'textbtn', type: 'button', 'data-action': 'worktree-list', 'data-id': card.id, text: t('worktree.listButton') }),
     card.family?.rootId ? h('button', { class: 'textbtn', type: 'button', 'data-action': 'family', 'data-root': card.family.rootId, text: t('detail.familyOnly') }) : null,
     copyButton(t, { action: 'copy-id', id: card.id, key: 'detail.copyId' }),
     deepLink(card.id) ? copyButton(t, { action: 'copy-link', id: card.id, key: 'detail.copyLink' }) : null,

@@ -8,6 +8,7 @@ import { mapLimit } from './map-limit.mjs';
 
 const execFile = promisify(nodeExecFile);
 const MAX_SESSIONS = 20;
+const MAX_LISTED_WORKTREES = 20;
 const MAX_OUTPUT = 512 * 1024;
 const CACHE_MS = 5_000;
 const TIMEOUT_MS = 1_500;
@@ -94,6 +95,9 @@ async function runGit(args, cwd) {
   return typeof result.stdout === 'string' ? result.stdout : '';
 }
 
+/** @param {string} value */
+const isNetworkPath = (value) => NETWORK_PATH_RE.test(value);
+
 /** @param {{runGit?:(args:string[],cwd:string)=>Promise<string>,clock?:()=>number}} [options] */
 export function createWorktreeSource({ runGit: run = runGit, clock = () => Date.now() } = {}) {
   /** @type {Map<string,{at:number,value:WorktreeSummary|null}>} */
@@ -102,7 +106,7 @@ export function createWorktreeSource({ runGit: run = runGit, clock = () => Date.
 
   /** @param {string} cwd */
   async function inspect(cwd) {
-    if (NETWORK_PATH_RE.test(cwd)) return null;
+    if (isNetworkPath(cwd)) return null;
     const top = (await run(['-C', cwd, 'rev-parse', '--show-toplevel'], cwd)).trim();
     if (!path.isAbsolute(top)) return null;
     const list = parseWorktreeList(await run(['-C', top, 'worktree', 'list', '--porcelain', '-z'], top));
@@ -124,6 +128,28 @@ export function createWorktreeSource({ runGit: run = runGit, clock = () => Date.
       locked: match.locked,
       prunable: match.prunable,
     };
+  }
+
+  /** Read-only list for an explicitly requested session detail; Git paths never leave this adapter. @param {string} cwd */
+  async function listForCwd(cwd) {
+    if (!path.isAbsolute(cwd) || isNetworkPath(cwd)) return [];
+    const top = (await run(['-C', cwd, 'rev-parse', '--show-toplevel'], cwd)).trim();
+    if (!path.isAbsolute(top) || isNetworkPath(top)) return [];
+    const rows = parseWorktreeList(await run(['-C', top, 'worktree', 'list', '--porcelain', '-z'], top))
+      .filter((entry) => path.isAbsolute(entry.path) && !isNetworkPath(entry.path))
+      .slice(0, MAX_LISTED_WORKTREES);
+    return mapLimit(rows, 4, async (entry) => {
+      let status = { state: 'unknown', changed: 0, untracked: 0, conflicted: 0 };
+      try {
+        const raw = await run(['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-C', entry.path, 'status', '--porcelain=v1', '-z', '--untracked-files=normal'], entry.path);
+        status = summarizeGitStatus(raw);
+      } catch { /* Keep only the safe branch and an explicit unknown status. */ }
+      return {
+        branch: entry.branch, status: status.state, changed: status.changed, untracked: status.untracked,
+        conflicted: status.conflicted, detached: entry.detached, locked: entry.locked, prunable: entry.prunable,
+        current: pathKey(entry.path) === pathKey(top),
+      };
+    });
   }
 
   return {
@@ -162,5 +188,6 @@ export function createWorktreeSource({ runGit: run = runGit, clock = () => Date.
       });
     },
     stats: () => ({ ...stats }),
+    listForCwd,
   };
 }

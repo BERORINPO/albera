@@ -114,14 +114,22 @@ function main() {
   const { port } = config;
   const sources = wire(config);
   const service = createBoardService({ ...sources, roots: config.roots, demo: config.demo });
-  const createWorktree = async (sessionId, branch) => {
+  const activeSessionForId = async (sessionId) => {
     if (!SESSION_CARD_ID.test(sessionId)) return { ok: false, reason: 'invalid_target' };
     const loadedSessions = await sources.sessionsSource.load();
     const session = loadedSessions.sessions.find((item) => item.sessionId === sessionId);
     if (!session || session.isArchived || loadedSessions.archivedIds.has(sessionId) || !session.cwd) return { ok: false, reason: 'invalid_target' };
-    return sources.worktreeCreator.create({ cwd: session.cwd, branch });
+    return session;
   };
-  const handler = createHandler({ port, getBoard: () => service.get(), createWorktree, demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });
+  const createWorktree = async (sessionId, branch) => {
+    const session = await activeSessionForId(sessionId);
+    return session?.cwd ? sources.worktreeCreator.create({ cwd: session.cwd, branch }) : session;
+  };
+  const listWorktrees = async (sessionId) => {
+    const session = await activeSessionForId(sessionId);
+    return session?.cwd ? sources.worktreeSource.listForCwd(session.cwd) : session;
+  };
+  const handler = createHandler({ port, getBoard: () => service.get(), createWorktree, listWorktrees, demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });
   const server = http.createServer(handler);
   server.on('error', async (/** @type {NodeJS.ErrnoException} */ e) => {
     if (e.code === 'EADDRINUSE') {

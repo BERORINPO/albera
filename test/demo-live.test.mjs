@@ -50,3 +50,17 @@ test('liveDemoSources: DEMO_REBUILD_MS 未満なら作り直さない (同じ合
   const c = await src.sessionsSource.load();
   assert.notDeepEqual(c.sessions.map((s) => s.lastActivityAt), a.sessions.map((s) => s.lastActivityAt));
 });
+
+test('liveDemoSources exposes synthetic worktree inventory without invoking Git', async () => {
+  const src = liveDemoSources('ja', () => Date.UTC(2026, 0, 15, 12, 0, 0));
+  const loaded = await src.sessionsSource.load();
+  const session = loaded.sessions.find((item) => item.cwd && !item.isArchived);
+  assert.ok(session);
+  const items = await src.worktreeSource.listForCwd(session.cwd);
+  assert.ok(items.length <= 20);
+  if (items.length) {
+    assert.equal(typeof items[0].status, 'string');
+    assert.equal(typeof items[0].current, 'boolean');
+  }
+  assert.ok(!JSON.stringify(items).includes(session.cwd));
+});

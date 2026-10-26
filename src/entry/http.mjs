@@ -12,6 +12,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const JS = 'text/javascript; charset=utf-8';
 const WORKTREE_PATH = '/api/worktrees';
 const WORKTREE_BODY_MAX = 2048;
+const MAX_WORKTREE_ITEMS = 20;
 const SESSION_CARD_ID = /^(?:local|codex)_[0-9a-f-]{36}$/i;
 const SAFE_BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,79}$/;
 
@@ -81,12 +82,12 @@ function send(res, status, type, body) {
 }
 
 /**
- * @param {{port: number, getBoard: () => Promise<{body: string, etag: string}>, createWorktree?:(sessionId:string,branch:string)=>Promise<any>, demo?: boolean,
+ * @param {{port: number, getBoard: () => Promise<{body: string, etag: string}>, createWorktree?:(sessionId:string,branch:string)=>Promise<any>, listWorktrees?:(sessionId:string)=>Promise<any>, demo?: boolean,
  *   log?: (key: string, params?: Record<string, unknown>) => void, staticFiles?: StaticTable}} deps
  *   log は messages.mjs のキーで受ける (言葉は server が付ける)。demo は /api/hello で答える (ポートが使用中のときの確かめ用)
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => Promise<void>}
  */
-export function createHandler({ port, getBoard, createWorktree, demo = false, log = () => {}, staticFiles = buildStaticFiles() }) {
+export function createHandler({ port, getBoard, createWorktree, listWorktrees, demo = false, log = () => {}, staticFiles = buildStaticFiles() }) {
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   return async (req, res) => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
@@ -94,6 +95,7 @@ export function createHandler({ port, getBoard, createWorktree, demo = false, lo
     if (!allowedHosts.has(host)) return send(res, 403, 'text/plain; charset=utf-8', 'Forbidden');
     const pathname = String(req.url ?? '/').split('?')[0];
     if (pathname === WORKTREE_PATH) {
+      if (req.method === 'GET') return serveWorktreeList(req, res, host);
       if (req.method !== 'POST') {
         res.setHeader('Allow', 'POST');
         return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed');
@@ -114,6 +116,31 @@ export function createHandler({ port, getBoard, createWorktree, demo = false, lo
       send(res, 500, 'text/plain; charset=utf-8', 'Internal Server Error');
     }
   };
+
+  /** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res @param {string} host */
+  async function serveWorktreeList(req, res, host) {
+    const url = new URL(String(req.url ?? '/'), `http://${host}`);
+    const params = [...url.searchParams.entries()];
+    const sessionIds = url.searchParams.getAll('sessionId');
+    if (params.length !== 1 || sessionIds.length !== 1 || !SESSION_CARD_ID.test(sessionIds[0] ?? '')) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (!listWorktrees) return send(res, 501, 'application/json; charset=utf-8', JSON.stringify({ error: 'worktree_unavailable' }));
+    try {
+      const result = await listWorktrees(sessionIds[0]);
+      if (result?.ok === false) return send(res, 404, 'application/json; charset=utf-8', JSON.stringify({ error: 'session_unavailable' }));
+      const rows = Array.isArray(result) ? result.slice(0, MAX_WORKTREE_ITEMS) : [];
+      const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 999 ? value : 0;
+      const items = rows.map((item) => ({
+        branch: typeof item?.branch === 'string' && SAFE_BRANCH_RE.test(item.branch) && !item.branch.includes('..') && !item.branch.includes('//') ? item.branch : null,
+        status: ['clean', 'changed', 'untracked', 'mixed', 'conflicted', 'unknown'].includes(item?.status) ? item.status : 'unknown',
+        changed: count(item?.changed), untracked: count(item?.untracked), conflicted: count(item?.conflicted),
+        detached: item?.detached === true, locked: item?.locked === true, prunable: item?.prunable === true, current: item?.current === true,
+      }));
+      return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ items }));
+    } catch {
+      log('term.worktreeFailed', {});
+      return send(res, 500, 'application/json; charset=utf-8', JSON.stringify({ error: 'worktree_failed' }));
+    }
+  }
 
   /** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res */
   async function serveWorktree(req, res) {
