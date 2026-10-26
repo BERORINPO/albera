@@ -30,6 +30,7 @@
 .graph-node.is-connect-target { outline: 2px dashed var(--color-accent); outline-offset: 2px; }
 .graph-connect-handle { position: absolute; left: calc(var(--x) * 1px); top: calc(var(--y) * 1px); z-index: 4; width: calc(2.5rem * var(--k)); min-width: calc(var(--hit) * var(--k)); min-height: calc(var(--hit) * var(--k)); border: var(--rule-ink); border-radius: 50%; background: var(--cv-sheet); color: var(--color-ink); font: inherit; font-weight: 700; cursor: crosshair; pointer-events: auto; }
 .graph-connect-handle:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; }
+.canvas__viewport.is-connecting { cursor: crosshair; }
 .graph-connect-handle.is-connect-source, .graph-connect-handle[aria-pressed="true"] { background: var(--color-accent); color: var(--cv-sheet); }
 .graph-node--obsidian_note { border-inline-start: 5px solid var(--color-accent); }
 .graph-node--understanding_gap { border-inline-start: 5px solid var(--color-accent); }

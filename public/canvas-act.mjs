@@ -346,6 +346,13 @@ export function initCanvas() {
       const node = graph.nodes.find((n) => n.id === id);
       if (drag?.id === id && node) graphChanged(moveGraphNode(graph, id, node.x + dx / cv.cam.z, node.y + dy / cv.cam.z));
     },
+    connectGraph: (/** @type {string} */ sourceId, /** @type {string} */ targetId) => graphActions.connectNodes(sourceId, targetId),
+    graphConnectHover: (/** @type {string} */ sourceId, /** @type {string|null} */ targetId) => {
+      world().querySelector('.graph-connect-handle.is-connect-source')?.classList.remove('is-connect-source');
+      world().querySelector('.graph-node.is-connect-target')?.classList.remove('is-connect-target');
+      world().querySelector(`.graph-connect-handle[data-id="${CSS.escape(sourceId)}"]`)?.classList.add('is-connect-source');
+      if (targetId) world().querySelector(`.graph-node[data-id="${CSS.escape(targetId)}"]`)?.classList.add('is-connect-target');
+    },
     openGraph: (/** @type {string} */ id) => graphActions.openNode(id),
     // 動かさずに押した柱: フォーカスを置き、帯に「用紙を動かす」のボタンを出す (ドラッグのできない人の道、WCAG 2.5.7)
     focusHead: (/** @type {HTMLElement} */ head) => {

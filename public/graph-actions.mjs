@@ -45,6 +45,10 @@ export function createGraphActions(o) {
   };
   return {
     connectSession: (id) => connectEndpoint('session:' + id),
+    connectNodes: (sourceId, targetId) => {
+      if (!sourceId || !targetId || sourceId === targetId) return false;
+      return connectEndpoint('graph:' + sourceId, undefined, 'graph:' + targetId);
+    },
     editEdge,
     openNode: (id) => connectMode.target(id) ?? editNode(id),
     startConnect: connectMode.start,

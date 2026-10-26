@@ -11,6 +11,13 @@ const ARROWS = Object.freeze({ ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 
 /** 押しっぱなしで繰り返さないキー (開く・切り替える・全体表示)。 */
 const NO_REPEAT = new Set(['h', 'v', 'z', 'f', '0', 'o']);
 
+/** A graph connection drop is valid only for two distinct, non-empty card IDs. */
+export function graphConnectionDrop(sourceId, targetId) {
+  return typeof sourceId === 'string' && sourceId.length > 0 && typeof targetId === 'string' && targetId.length > 0 && sourceId !== targetId
+    ? { sourceId, targetId }
+    : null;
+}
+
 /**
  * キャンバスのキーから動作の名前を決める (純粋)。null ならブラウザの普段の動きのまま。
  * @param {KeyLike} ev
@@ -117,6 +124,8 @@ export function canvasTarget(el) {
  * @property {(id:string,dx:number,dy:number)=>void} dragGraph
  * @property {(id:string,dx:number,dy:number)=>void} dropGraph
  * @property {(id:string)=>void} openGraph
+ * @property {(sourceId:string,targetId:string)=>void} connectGraph
+ * @property {(sourceId:string,targetId:string|null)=>void} graphConnectHover
  * @property {(head: HTMLElement) => void} focusHead 動かさずに押しただけのとき
  */
 
@@ -132,8 +141,9 @@ const CONTROLS = 'button:not(.sheet__head):not(.graph-node), a, input, summary, 
 export function bindCanvas(viewport, handlers) {
   /** @type {Map<number, {x: number, y: number}>} */
   const pts = new Map();
-  /** @type {null|{kind: 'pan'|'head'|'graph', id: number, x: number, y: number, head?: HTMLElement, key?: string, moved: boolean}} */
+  /** @type {null|{kind: 'pan'|'head'|'graph'|'connect', id: number, x: number, y: number, head?: HTMLElement, key?: string, moved: boolean}} */
   let drag = null;
+  let suppressConnectClick = false;
   /** @type {null|{dist: number}} */
   let pinch = null;
   const local = (/** @type {{clientX: number, clientY: number}} */ ev) => {
@@ -154,10 +164,11 @@ export function bindCanvas(viewport, handlers) {
       pinch = { dist: pair().dist };
       return;
     }
+    const connectHandle = /** @type {HTMLElement|null} */ (el?.closest('.graph-connect-handle[data-id]') ?? null);
     const head = /** @type {HTMLElement|null} */ (el?.closest('.sheet__head') ?? null);
     const graph = /** @type {HTMLElement|null} */ (el?.closest('.graph-node') ?? null);
-    if (!head && el?.closest(CONTROLS)) return;
-    drag = { kind: head ? 'head' : graph ? 'graph' : 'pan', id: ev.pointerId, x: ev.clientX, y: ev.clientY, head: head ?? undefined, key: head?.dataset.key ?? graph?.dataset.id, moved: false };
+    if (!connectHandle && !head && el?.closest(CONTROLS)) return;
+    drag = { kind: connectHandle ? 'connect' : head ? 'head' : graph ? 'graph' : 'pan', id: ev.pointerId, x: ev.clientX, y: ev.clientY, head: head ?? undefined, key: connectHandle?.dataset.id ?? head?.dataset.key ?? graph?.dataset.id, moved: false };
     viewport.setPointerCapture?.(ev.pointerId);
     if (!head) viewport.classList.add('is-panning');
   });
@@ -180,6 +191,13 @@ export function bindCanvas(viewport, handlers) {
     if (drag.kind === 'pan') handlers.pan(now.x - prev.x, now.y - prev.y);
     else if (drag.kind === 'head' && drag.key) handlers.dragSheet(drag.key, dx, dy);
     else if (drag.kind === 'graph' && drag.key) handlers.dragGraph(drag.key, dx, dy);
+    else if (drag.kind === 'connect' && drag.key) {
+      viewport.classList.add('is-connecting');
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const target = under instanceof Element ? under.closest('.graph-node[data-id], .graph-connect-handle[data-id]') : null;
+      const targetId = target instanceof HTMLElement ? target.dataset.id ?? null : null;
+      handlers.graphConnectHover(drag.key, targetId && targetId !== drag.key ? targetId : null);
+    }
   });
   const end = (/** @type {PointerEvent} */ ev) => {
     pts.delete(ev.pointerId);
@@ -188,6 +206,19 @@ export function bindCanvas(viewport, handlers) {
     const d = drag;
     drag = null;
     viewport.classList.remove('is-panning');
+    viewport.classList.remove('is-connecting');
+    if (d.kind === 'connect' && d.key) {
+      handlers.graphConnectHover(d.key, null);
+      if (d.moved && ev.type === 'pointerup') {
+        suppressConnectClick = true;
+        const under = document.elementFromPoint(ev.clientX, ev.clientY);
+        const target = under instanceof Element ? under.closest('.graph-node[data-id], .graph-connect-handle[data-id]') : null;
+        const targetId = target instanceof HTMLElement ? target.dataset.id ?? null : null;
+        const connection = graphConnectionDrop(d.key, targetId);
+        if (connection) handlers.connectGraph(connection.sourceId, connection.targetId);
+      }
+      return;
+    }
     if (d.kind === 'graph' && d.key) {
       if (d.moved) handlers.dropGraph(d.key, ev.clientX - d.x, ev.clientY - d.y);
       else handlers.openGraph(d.key);
@@ -200,6 +231,12 @@ export function bindCanvas(viewport, handlers) {
   };
   viewport.addEventListener('pointerup', end);
   viewport.addEventListener('pointercancel', end);
+  viewport.addEventListener('click', (ev) => {
+    if (!suppressConnectClick) return;
+    suppressConnectClick = false;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  }, true);
   viewport.addEventListener(
     'wheel',
     (ev) => {
