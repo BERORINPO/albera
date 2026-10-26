@@ -265,14 +265,30 @@ const rowSize = (c) => rowIds(c).length;
 /**
  * 絞り込み (文字と親子) を当てた見え方。piles の並びと一致数。
  * @param {any} board
- * @param {{q?: string, family?: string|null, source?: 'all'|'claude'|'codex'|'copilot'|'opencode', project?: string, state?: string, t: T, now?: number}} opts now: 「要約済み」の言葉でも探すときの今
+ * @param {{q?: string, family?: string|null, source?: 'all'|'claude'|'codex'|'copilot'|'opencode', project?: string, state?: string, graph?: any, t: T, now?: number}} opts now: 「要約済み」の言葉でも探すときの今
  */
-export function visibleModel(board, { q = '', family = null, source = 'all', project = 'all', state = 'all', t, now }) {
+export function visibleModel(board, { q = '', family = null, source = 'all', project = 'all', state = 'all', graph = null, t, now }) {
   const qq = String(q ?? '').trim().toLowerCase();
   const fam = family ? new Set(board?.families?.[family]?.memberIds ?? [family]) : null;
+  /** Only the four allowlisted, localized enum values from a linked manual profile enter session search. */
+  const profileTerms = new Map();
+  const profiles = new Map((graph?.nodes ?? []).filter((node) => node?.kind === 'execution_profile').map((node) => [node.id, node]));
+  for (const edge of graph?.edges ?? []) {
+    if (edge?.kind !== 'related') continue;
+    for (const [nodeRef, sessionRef] of [[edge.from, edge.to], [edge.to, edge.from]]) {
+      const profile = typeof nodeRef === 'string' && nodeRef.startsWith('graph:') ? profiles.get(nodeRef.slice(6)) : null;
+      if (!profile || typeof sessionRef !== 'string' || !sessionRef.startsWith('session:')) continue;
+      const terms = profileTerms.get(sessionRef.slice(8)) ?? new Set();
+      for (const field of ['executionLocation', 'workspaceIsolation', 'networkAccess', 'approvalMode']) {
+        const key = `graph.${field}.${profile[field]}`;
+        if (t.has(key)) terms.add(t(key).toLowerCase());
+      }
+      profileTerms.set(sessionRef.slice(8), terms);
+    }
+  }
   const filtering = qq !== '' || fam != null || source !== 'all' || project !== 'all' || state !== 'all';
   /** @param {Card} c @param {string} pile */
-  const ok = (c, pile) => (!fam || fam.has(c.id) || rowIds(c).some((id) => fam.has(id))) && (source === 'all' || (c.source ?? (c.id.startsWith('codex_') ? 'codex' : c.id.startsWith('copilot_') ? 'copilot' : c.id.startsWith('opencode_') ? 'opencode' : 'claude')) === source) && (project === 'all' || c.project?.key === project) && (state === 'all' || state === pile) && matches(c, qq, t, now);
+  const ok = (c, pile) => (!fam || fam.has(c.id) || rowIds(c).some((id) => fam.has(id))) && (source === 'all' || (c.source ?? (c.id.startsWith('codex_') ? 'codex' : c.id.startsWith('copilot_') ? 'copilot' : c.id.startsWith('opencode_') ? 'opencode' : 'claude')) === source) && (project === 'all' || c.project?.key === project) && (state === 'all' || state === pile) && (matches(c, qq, t, now) || rowIds(c).some((id) => [...(profileTerms.get(id) ?? [])].some((term) => term.includes(qq))));
   /** @type {Record<string, Card[]>} */
   const buckets = {};
   for (const pile of LIST_PILES) buckets[pile] = (board?.buckets?.[pile] ?? []).filter((c) => ok(c, pile));

@@ -13,6 +13,7 @@ import { otherLang } from './i18n.mjs';
 import { notifyState } from './notify.mjs';
 import { renderLoadingPile, renderPile, renderRecent } from './rows.mjs';
 import { renderProjectFilter } from './project-filter.mjs';
+import { loadGraph } from './graph-store.mjs';
 import { archivedToday, isNew, now, pruneNew, savePrefs, state, takeArrival, zeroSinceToday } from './state.mjs';
 import { batchProgress, cardIndex, cursorAfter, focusSignature, listsFromRows, nextUp, presentIds, visibleModel } from './ui-state.mjs';
 import { announce, fill, h, leaveAndRemove } from './view.mjs';
@@ -187,7 +188,7 @@ export function render() {
   const board = state.board;
   const focus = captureFocus();
   state.projectFilter = renderProjectFilter(/** @type {HTMLSelectElement} */ ($('project-filter')), board, t, state.projectFilter);
-  view.visible = board ? visibleModel(board, { q: state.filter, family: state.family, source: state.sourceFilter, project: state.projectFilter, state: state.stateFilter, t, now: at }) : null;
+  view.visible = board ? visibleModel(board, { q: state.filter, family: state.family, source: state.sourceFilter, project: state.projectFilter, state: state.stateFilter, graph: loadGraph(), t, now: at }) : null;
   view.index = cardIndex(board);
   view.present = presentIds(board);
   renderMast();

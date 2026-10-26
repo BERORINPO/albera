@@ -209,6 +209,23 @@ test('visibleModel: project filtering composes with source and search across pil
   assert.deepEqual(byState.recentGroups, []);
 });
 
+test('visibleModel: linked execution profile adds only safe enum labels to session search', () => {
+  const b = board();
+  const sessionId = 'codex_00000000-0000-4000-8000-000000000011';
+  b.recentGroups[0].items.push(c(sessionId, { source: 'codex', title: 'Codex task' }));
+  const graph = {
+    nodes: [{ id: 'p1', kind: 'execution_profile', title: 'private title', body: 'private details', executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action' }],
+    edges: [{ kind: 'related', from: `graph:p1`, to: `session:${sessionId}` }],
+  };
+  const byLocation = visibleModel(b, { q: 'Location: WSL', source: 'codex', graph, t: en });
+  assert.deepEqual(byLocation.recentGroups.flatMap((g) => g.items.map((item) => item.id)), [sessionId]);
+  const byIsolation = visibleModel(b, { q: 'Sandboxed', project: 'demo-app', state: 'recent', graph, t: en });
+  assert.deepEqual(byIsolation.recentGroups.flatMap((g) => g.items.map((item) => item.id)), [sessionId]);
+  assert.equal(visibleModel(b, { q: 'private title', graph, t: en }).total, 0, 'profile titles are not searchable through a related session');
+  assert.equal(visibleModel(b, { q: 'private details', graph, t: en }).total, 0, 'profile notes are not searchable through a related session');
+  assert.equal(visibleModel(b, { q: 'Location: WSL', t: en }).total, 0, 'without a linked profile, enum values do not match');
+});
+
 test('visibleModel: state selector filters all six piles including grouped recent and cleanup rows', () => {
   const b = board();
   for (const [pile, total] of [['needs_you', 2], ['trouble', 1], ['unread', 1], ['working', 1], ['recent', 2], ['cleanup', 5]]) {
