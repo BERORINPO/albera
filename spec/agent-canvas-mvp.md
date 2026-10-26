@@ -396,3 +396,9 @@
 - 隔離Chromeの合成デモで、一覧からキャンバス、合成Codex詳細、関係dialogを開き、キャンセル後に「関係を記録」ボタンへフォーカスが戻ることを確認。実セッションは使っていない。セッション詳細で関係を保存する場合や、スクリーンリーダー全体の製品受入は未完了。
 - 復帰先の選択 (起点コントロール → 接続元グラフカード → viewport → なし) をpure helperとして抽出し、各DOM接続状態をfixtureで検証。UIコードを文字列で模擬するだけのテストから選択ロジックの直接テストへ置き換えた。
 - 再検証: `npm test` — 527 passed; `npm run arch` — 96 paths, 0 violations; `npm run smoke` — passed; `git diff --check` — passed。
+
+### Codex fixtureのCI portability修正 (2026-10-26)
+
+- PR CIでCodex adapterのfixtureテストがLinux/macOSで失敗。`cwd` fixtureをWindows絶対パスに固定していたため、adapterの各OS絶対パス検査で除外されていた。Windowsローカルでは通過していた。
+- テスト専用のcwdを実行OSのrootから組み立てるように変更。製品コード、保存データ、実セッションの読取範囲は変更なし。
+- 修正後のPR CI run `40314754367` はWindows/macOS/Linux × Node 22/24の6ジョブ全てでTestsとArchitecture checkが成功。ローカル `npm test` 527 passed、`npm run arch` 96 paths/0 violations、`npm run smoke` passed、`git diff --check` passed。
