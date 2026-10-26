@@ -9,8 +9,8 @@ export function createGraphActions(o) {
   const t = () => o.getT();
   const connectEndpoint = (from, initialKind, initialTo) => {
     const graph = o.loadGraph();
-    return openGraphRelationDialog({ t: t(), from, initialKind, initialTo, graph, sessions: o.graphSessions(), onConnect: (input) => {
-      o.graphChanged(connectGraph(graph, input, 'e_' + crypto.randomUUID(), o.sessionIds()));
+    return openGraphRelationDialog({ t: t(), announce: o.announce, from, initialKind, initialTo, graph, sessions: o.graphSessions(), onConnect: (input) => {
+      return o.graphChanged(connectGraph(graph, input, 'e_' + crypto.randomUUID(), o.sessionIds()));
     } });
   };
   const editEdge = (id) => {
@@ -18,7 +18,7 @@ export function createGraphActions(o) {
     const edge = graph.edges.find((item) => item.id === id);
     if (!edge) return false;
     return openGraphRelationDialog({
-      t: t(), from: edge.from, edge, graph, sessions: o.graphSessions(),
+      t: t(), announce: o.announce, from: edge.from, edge, graph, sessions: o.graphSessions(),
       onConnect: (input) => o.graphChanged(updateGraphEdge(o.loadGraph(), edge.id, input)),
       onDeleteEdge: (key) => o.graphChanged(removeGraphEdge(o.loadGraph(), key)),
       onResolveOperation: (key, operationId) => o.graphChanged(releaseBlockedGraphDelegationOperation(o.loadGraph(), key, operationId, true)),
@@ -29,7 +29,7 @@ export function createGraphActions(o) {
     const node = graph.nodes.find((item) => item.id === id);
     if (!node) return;
     openGraphNodeDialog({
-      t: t(), graph, node, sessions: o.graphSessions(),
+      t: t(), announce: o.announce, graph, node, sessions: o.graphSessions(),
       onSave: (input, sessionIds) => o.graphChanged(updateGraphNode(graph, id, input, sessionIds)),
       onDelete: (key) => o.graphChanged(removeGraphNode(graph, key)),
       onEditEdge: (edge) => editEdge(edge.id),

@@ -285,6 +285,8 @@ export const JA_CANVAS = Object.freeze({
   'graph.missingNode': 'カードなし',
   'graph.missingSession': 'セッションなし',
   'graph.saveError': 'このブラウザーに保存できませんでした。ブラウザーの保存設定を確認してください。',
+  'graph.cardSaved': 'キャンバスカードを保存しました。',
+  'graph.relationSaved': 'キャンバスの関係を保存しました。',
   'filter.sourceLabel': 'セッションの実行元で絞り込む',
   'filter.sourceAll': 'すべての実行元',
   'filter.sourceClaude': 'Claude Code',

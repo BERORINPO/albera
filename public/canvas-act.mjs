@@ -111,7 +111,7 @@ function nextCanvasGraphPosition(graph) {
 function newGraphNode() {
   const graph = loadGraph();
   const position = nextCanvasGraphPosition(graph);
-  openGraphNodeDialog({ t: state.t, graph, sessions: graphSessions(), position, onSave: (input) => graphChanged(addGraphNode(graph, input, `g_${crypto.randomUUID()}`)) });
+  openGraphNodeDialog({ t: state.t, announce, graph, sessions: graphSessions(), position, onSave: (input) => graphChanged(addGraphNode(graph, input, `g_${crypto.randomUUID()}`)) });
 }
 
 function newTaskForSession(sessionId) {
@@ -119,7 +119,7 @@ function newTaskForSession(sessionId) {
   const graph = loadGraph();
   const position = nextCanvasGraphPosition(graph);
   openGraphNodeDialog({
-    t: state.t, graph, sessions: graphSessions(), position, initialKind: 'task', initialTitle: state.t('graph.taskFromSessionTitle'),
+    t: state.t, announce, graph, sessions: graphSessions(), position, initialKind: 'task', initialTitle: state.t('graph.taskFromSessionTitle'),
     onSave: (input) => graphChanged(addTaskForSession(graph, input, `g_${crypto.randomUUID()}`, `e_${crypto.randomUUID()}`, sessionId)),
   });
   return true;

@@ -4,7 +4,7 @@
 import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
 import { h } from './view.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
-import { cancelGraphDialog, confirmBlockedOperationRelease, confirmGraphRelationRemoval, connectMissingComprehensionEdge, graphDialogFocusTarget } from './graph-dialog-actions.mjs';
+import { cancelGraphDialog, completeGraphDialogSave, confirmBlockedOperationRelease, confirmGraphRelationRemoval, connectMissingComprehensionEdge, graphDialogFocusTarget } from './graph-dialog-actions.mjs';
 import { openGraphConfirmDialog } from './graph-confirm-dialog.mjs';
 import { artifactReferenceField, createArtifactSummaryGuidance, syncArtifactSummaryGuidance } from './graph-rea-summary.mjs';
 
@@ -61,7 +61,7 @@ function endpointSelect(t, options, name, selected, excluded = '') {
 const endpointKey = (key) => key.startsWith('graph:') || key.startsWith('session:') ? key : '';
 
 /**
- * @param {{t:T,node?:any,position?:{x:number,y:number},initialKind?:string,initialTitle?:string,graph:any,sessions:Array<{id:string,title:string}>,onSave:(v:any,sessionIds:Set<string>)=>void,onDelete?:(id:string)=>void,onConnect?:(from:string,kind?:string)=>void,onEditEdge?:(edge:any)=>void}} o
+ * @param {{t:T,announce:(text:string)=>void,node?:any,position?:{x:number,y:number},initialKind?:string,initialTitle?:string,graph:any,sessions:Array<{id:string,title:string}>,onSave:(v:any,sessionIds:Set<string>)=>boolean|void,onDelete?:(id:string)=>void,onConnect?:(from:string,kind?:string)=>void,onEditEdge?:(edge:any)=>void}} o
  */
 export function openGraphNodeDialog(o) {
   const { t, node, graph, sessions } = o;
@@ -254,32 +254,35 @@ export function openGraphNodeDialog(o) {
       (knowledgeVaultInput?.validationMessage ? knowledgeVaultInput : knowledgeFileInput)?.reportValidity();
       return;
     }
-    o.onSave({
-      ...(node ? { id: node.id } : {}),
-      ...(o.position ?? {}),
-      kind: data.kind,
-      title: data.title,
-      body: data.body,
-      url: referenceUrl,
-      status: data.status,
-      checkedPerson: data.checkedPerson,
-      missingEvidence: data.missingEvidence,
-      neededExplanation: data.neededExplanation,
-      executionLocation: data.executionLocation,
-      workspaceIsolation: data.workspaceIsolation,
-      networkAccess: data.networkAccess,
-      approvalMode: data.approvalMode,
-      knowledgeVault,
-      knowledgeFile,
-    }, new Set(sessions.map((session) => session.id)));
-    dialog.close();
+    completeGraphDialogSave({
+      save: () => o.onSave({
+        ...(node ? { id: node.id } : {}),
+        ...(o.position ?? {}),
+        kind: data.kind,
+        title: data.title,
+        body: data.body,
+        url: referenceUrl,
+        status: data.status,
+        checkedPerson: data.checkedPerson,
+        missingEvidence: data.missingEvidence,
+        neededExplanation: data.neededExplanation,
+        executionLocation: data.executionLocation,
+        workspaceIsolation: data.workspaceIsolation,
+        networkAccess: data.networkAccess,
+        approvalMode: data.approvalMode,
+        knowledgeVault,
+        knowledgeFile,
+      }, new Set(sessions.map((session) => session.id))),
+      announce: () => o.announce(t('graph.cardSaved')),
+      close: () => dialog.close(),
+    });
   });
   dialog.showModal();
   /** @type {HTMLInputElement|null} */ (form.querySelector('[name="title"]'))?.focus();
 }
 
 /**
- * @param {{t:T,from:string,edge?:any,initialTo?:string,initialKind?:string,graph:any,sessions:Array<{id:string,title:string}>,onConnect:(v:any)=>void,onDeleteEdge?:(id:string)=>void,onResolveOperation?:(id:string,operationId:string)=>boolean}} o
+ * @param {{t:T,announce:(text:string)=>void,from:string,edge?:any,initialTo?:string,initialKind?:string,graph:any,sessions:Array<{id:string,title:string}>,onConnect:(v:any)=>boolean|void,onDeleteEdge?:(id:string)=>void,onResolveOperation?:(id:string,operationId:string)=>boolean}} o
  */
 export function openGraphRelationDialog(o) {
   const { t, from, graph, sessions, edge } = o;
@@ -377,8 +380,11 @@ export function openGraphRelationDialog(o) {
     const data = Object.fromEntries(new FormData(form).entries());
     const to = edge ? edge.to : String(data.to ?? '');
     if (!endpointKey(to) || to === fromKey) return;
-    o.onConnect({ from: fromKey, to, kind: data.kind, purpose: data.purpose, status: data.status });
-    dialog.close();
+    completeGraphDialogSave({
+      save: () => o.onConnect({ from: fromKey, to, kind: data.kind, purpose: data.purpose, status: data.status }),
+      announce: () => o.announce(t('graph.relationSaved')),
+      close: () => dialog.close(),
+    });
   });
   dialog.showModal();
   /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="to"]'))?.focus();

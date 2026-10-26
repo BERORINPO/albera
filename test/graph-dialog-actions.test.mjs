@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { cancelGraphDialog, confirmBlockedOperationRelease, confirmGraphRelationRemoval, connectMissingComprehensionEdge, graphDialogFocusTarget } from '../public/graph-dialog-actions.mjs';
+import { cancelGraphDialog, completeGraphDialogSave, confirmBlockedOperationRelease, confirmGraphRelationRemoval, connectMissingComprehensionEdge, graphDialogFocusTarget } from '../public/graph-dialog-actions.mjs';
 
 const blocked = { id: 'edge-1', operationId: 'op-1', kind: 'delegates', status: 'blocked' };
 
@@ -101,6 +101,35 @@ test('cancel closes a graph dialog even while a new card has no node yet', () =>
   assert.equal(closed, 1);
   assert.equal(cancelGraphDialog('connect', () => { closed++; }), false);
   assert.equal(closed, 1);
+});
+
+test('failed graph persistence keeps the dialog open and does not announce success', () => {
+  const actions = [];
+  assert.equal(completeGraphDialogSave({ save: () => { actions.push('save'); return false; }, announce: () => actions.push('announce'), close: () => actions.push('close') }), false);
+  assert.deepEqual(actions, ['save']);
+});
+
+test('successful graph persistence announces before closing its dialog', () => {
+  const actions = [];
+  assert.equal(completeGraphDialogSave({ save: () => { actions.push('save'); return true; }, announce: () => actions.push('announce'), close: () => actions.push('close') }), true);
+  assert.deepEqual(actions, ['save', 'announce', 'close']);
+});
+
+test('card and relation editors use save outcome to preserve failed edits and announce success', () => {
+  const nodeEditor = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
+  const actions = fs.readFileSync(new URL('../public/graph-actions.mjs', import.meta.url), 'utf8');
+  const canvas = fs.readFileSync(new URL('../public/canvas-act.mjs', import.meta.url), 'utf8');
+  assert.match(nodeEditor, /save: \(\) => o\.onSave\(/);
+  assert.match(nodeEditor, /o\.announce\(t\('graph\.cardSaved'\)\)/);
+  assert.match(nodeEditor, /save: \(\) => o\.onConnect\(/);
+  assert.match(nodeEditor, /o\.announce\(t\('graph\.relationSaved'\)\)/);
+  assert.match(actions, /announce: o\.announce/);
+  assert.match(canvas, /announce, graph, sessions: graphSessions\(\)/);
+  for (const file of ['dict-ja-canvas.mjs', 'dict-en-canvas.mjs']) {
+    const dict = fs.readFileSync(new URL(`../public/${file}`, import.meta.url), 'utf8');
+    assert.match(dict, /'graph\.cardSaved':/);
+    assert.match(dict, /'graph\.relationSaved':/);
+  }
 });
 
 test('dialog focus returns to the invoking control, then source card, then canvas viewport', () => {

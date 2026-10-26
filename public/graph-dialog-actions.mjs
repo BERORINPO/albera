@@ -38,6 +38,16 @@ export function cancelGraphDialog(action, close) {
   return true;
 }
 
+/** Keep a dialog open when local persistence fails; announce success only after save.
+ * @param {{save:()=>boolean|void,announce:()=>void,close:()=>void}} options
+ */
+export function completeGraphDialogSave({ save, announce, close }) {
+  if (save() === false) return false;
+  announce();
+  close();
+  return true;
+}
+
 /** Resolve an in-document focus target after a native dialog is removed.
  * @param {HTMLElement|null} origin @param {HTMLElement|null} sourceCard @param {HTMLElement|null} viewport
  */

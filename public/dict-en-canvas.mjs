@@ -285,6 +285,8 @@ export const EN_CANVAS = Object.freeze({
   'graph.missingNode': 'Missing card',
   'graph.missingSession': 'Missing session',
   'graph.saveError': 'This browser could not save the canvas. Check its storage settings.',
+  'graph.cardSaved': 'Canvas card saved.',
+  'graph.relationSaved': 'Canvas relation saved.',
   'filter.sourceLabel': 'Filter sessions by source',
   'filter.sourceAll': 'All sources',
   'filter.sourceClaude': 'Claude Code',
