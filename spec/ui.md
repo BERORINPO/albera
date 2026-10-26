@@ -1413,3 +1413,9 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - 320×760の明示viewportで隔離`--demo`を開き、キャンバス表示、一覧表示への切替、Claude合成カードの詳細展開を確認した。詳細では状態、ハーネス、コンテキスト、親子関係、合成Git状態が縦方向に閲覧できる。
 - viewport 320pxに対し`documentElement.scrollWidth`と`body.scrollWidth`はいずれも305pxで、キャンバス/一覧/詳細のどの状態でも水平overflowは観測されなかった。画面の見切れた縦コンテンツは通常の縦スクロールで続けて閲覧できる。
 - viewport overrideをresetし、タブとserverを閉じた。合成データのみであり、実セッション、CLI、worktree操作、外部サービスは使用していない。320px幅の複数幅/touch操作やスクリーンリーダー実機は未確認。
+
+### worktreeカード状態更新の隔離GUI受入 (2026-10-27追記)
+
+- port `18816`の`--demo`で合成worktreeカード`demo/canvas-check`を作り、合成の稼働中Claude sessionへ`related`接続した。カード詳細から読取専用fake inventoryを開き、対象branchだけに「キャンバスに記録」が表示され、cleanな別branchには操作が出ないことを確認した。inventoryは対象branch changed=2、untracked=0、conflicted=0、別branch clean=0を示した。
+- 対象状態を記録すると成功通知が出て、記録済みボタンが無効化された。inventoryを閉じると親詳細からキャンバスカードへ戻り、再読込後もカード・関係線・安全な状態要約が復元された。UIに完全なパスやGit診断本文は表示されなかった。
+- 一時Graphの合成カードを確認後に削除し、tabとserverを閉じた。実セッション、CLI、実Git/WSL worktree、外部サービスは使用していない。この受入は合成UIとlocalStorageのみであり、実環境との適合性は未確認。

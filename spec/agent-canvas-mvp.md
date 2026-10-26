@@ -996,3 +996,5 @@ A synthetic late-completion fixture verifies that an older completed turn cannot
 ### Failed Codex turn demo coverage
 
 The synthetic `--demo` board now includes an explicitly labeled Codex CLI failed-turn card with only the fixed `turn_failed` event and timestamps. This makes the failure state available for manual UI review without presenting fixture data as a real session. Unit coverage verifies demo lifecycle coverage, board projection of the `failed` state, and event detail rendering that ignores provider error text. README state lists now include failed.
+
+> 2026-10-27追記: 上記実画面確認はport `18816`の隔離demoで実施し、入れ子inventory・target-only記録・親詳細からcanvasへのfocus復帰・再読込後の状態復元を合成カードで確認した。実Git/WSL、実セッションとの適合性は未確認。
