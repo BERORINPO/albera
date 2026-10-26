@@ -142,8 +142,9 @@ export function renderLedger(nav, toggle, o) {
     if (keysOn) toggle.setAttribute('aria-keyshortcuts', 'v');
     else toggle.removeAttribute('aria-keyshortcuts');
   }
-  // キャンバスからはいつでも一覧へ戻れる。一覧では、セッションがあるときだけ
-  toggle.hidden = o.view !== 'canvas' && (!o.board || (Number(c?.active) || 0) === 0);
+  // セッション 0 件でもキャンバスにタスク/成果物を追加できるため、切替は常に出す。
+  // 読込中・エラー時にも保存済みGraphを開く入口になる。
+  toggle.hidden = false;
 }
 
 /**
