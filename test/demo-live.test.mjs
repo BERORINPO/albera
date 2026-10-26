@@ -64,3 +64,8 @@ test('liveDemoSources exposes synthetic worktree inventory without invoking Git'
   }
   assert.ok(!JSON.stringify(items).includes(session.cwd));
 });
+
+test('liveDemoSources always disables local worktree removal', async () => {
+  const src = liveDemoSources('ja', () => Date.UTC(2026, 0, 15, 12, 0, 0));
+  assert.deepEqual(await src.worktreeRemover.remove({ cwd: 'C:\\demo\\repo', branch: 'demo/branch', confirmed: true }), { ok: false, reason: 'demo_disabled' });
+});

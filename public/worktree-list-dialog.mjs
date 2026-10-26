@@ -2,10 +2,11 @@
 
 import { WorktreeOperationError } from './api.mjs';
 import { h } from './view.mjs';
+import { openWorktreeRemoveDialog } from './worktree-remove-dialog.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 
-/** @param {T} t @param {{load:()=>Promise<Array<any>>,record?:(item:any)=>boolean}} options */
+/** @param {T} t @param {{load:()=>Promise<Array<any>>,record?:(item:any)=>boolean,remove?:(branch:string)=>Promise<any>,onRemoved?:(branch:string)=>void}} options */
 export function openWorktreeListDialog(t, options) {
   const dialog = h('dialog', { class: 'graph-dialog', 'aria-labelledby': 'worktree-list-title' });
   const form = h('form', { class: 'graph-dialog__form' });
@@ -33,6 +34,16 @@ export function openWorktreeListDialog(t, options) {
         message.textContent = t('worktree.recordedHint');
       } else message.textContent = t('worktree.recordFailed');
     }
+    const removeButton = event.target instanceof Element ? event.target.closest('[data-remove-index]') : null;
+    if (removeButton && options.remove) {
+      const index = Number(removeButton.getAttribute('data-remove-index'));
+      const item = Number.isSafeInteger(index) ? currentItems[index] : null;
+      if (!item?.branch || item.status !== 'clean' || item.current || item.locked || item.prunable) return;
+      openWorktreeRemoveDialog(t, {
+        branch: item.branch, remove: options.remove,
+        onRemoved: () => { options.onRemoved?.(item.branch); void load(); },
+      });
+    }
   });
   dialog.showModal();
   void load();
@@ -54,7 +65,10 @@ export function openWorktreeListDialog(t, options) {
           const flags = [item.locked && t('worktree.flagLocked'), item.prunable && t('worktree.flagPrunable')].filter(Boolean).join(', ');
           list.append(h('li', {}, h('strong', { text: `${branch}${item.current ? ` — ${t('worktree.listCurrent')}` : ''}` }),
             h('span', { text: t('worktree.listSummary', { state, counts, flags: flags ? ` (${flags})` : '' }) }),
-            options.record ? h('button', { class: 'textbtn', type: 'button', 'data-record-index': String(list.childElementCount), text: t('worktree.record') }) : null));
+            options.record ? h('button', { class: 'textbtn', type: 'button', 'data-record-index': String(list.childElementCount), text: t('worktree.record') }) : null,
+            options.remove && item.branch && item.status === 'clean' && !item.current && !item.locked && !item.prunable
+              ? h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-remove-index': String(list.childElementCount), text: t('worktree.remove') })
+              : null));
         }
       }
     } catch (error) {

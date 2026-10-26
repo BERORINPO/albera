@@ -307,6 +307,36 @@ test('worktree一覧APIはopaque session IDだけで呼び出され、上限付�
   }
 });
 
+test('worktree削除APIは同一Origin・opaque ID・ブランチ名・確認済み印だけを受け、固定応答を返す', async () => {
+  const p = await freePort();
+  const calls = [];
+  const server = http.createServer(createHandler({
+    port: p, getBoard: async () => ({ body: '{}', etag: '"empty"' }),
+    removeWorktree: async (...args) => { calls.push(args); return { ok: true, branch: args[1], path: 'C:\\private\\repo' }; },
+  }));
+  await new Promise((resolve) => server.listen(p, '127.0.0.1', resolve));
+  const headers = { Origin: `http://127.0.0.1:${p}`, 'Content-Type': 'application/json' };
+  try {
+    const valid = await request(p, { path: '/api/worktrees/remove', method: 'POST', headers,
+      body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/review', confirmed: true }) });
+    assert.equal(valid.status, 200);
+    assert.deepEqual(JSON.parse(valid.body), { ok: true, branch: 'agent/review' });
+    assert.deepEqual(calls, [['local_00000000-0000-4000-8000-000000000001', 'agent/review', true]]);
+    for (const secret of ['C:\\private', 'path', 'diagnostics']) assert.ok(!valid.body.includes(secret));
+    const unconfirmed = await request(p, { path: '/api/worktrees/remove', method: 'POST', headers,
+      body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/review', confirmed: false }) });
+    assert.equal(unconfirmed.status, 400);
+    assert.equal(calls.length, 1);
+    const extra = await request(p, { path: '/api/worktrees/remove', method: 'POST', headers,
+      body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/review', confirmed: true, cwd: 'C:\\private' }) });
+    assert.equal(extra.status, 400);
+    assert.equal(calls.length, 1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('不正なポート・言語・ROOTS・フラグは exit 1 と 1 行の説明', async () => {
   const cases = [
     { args: ['--demo', '--lang', 'en'], env: { PIGEONHOLES_PORT: 'abc' }, re: /^The port must be a number from 1024 to 65535 \(got: abc\)\. Use --port <n> or PIGEONHOLES_PORT\.$/ },

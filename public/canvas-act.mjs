@@ -18,7 +18,7 @@ import { loadGraph, saveGraph } from './graph-store.mjs';
 import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs';
 import { GRAPH_CARD_SIZE } from './graph-render.mjs';
 import { announce } from './view.mjs';
-import { createWorktree, listWorktrees } from './api.mjs';
+import { createWorktree, listWorktrees, removeWorktree } from './api.mjs';
 import { openWorktreeDialog } from './worktree-dialog.mjs';
 import { openWorktreeListDialog } from './worktree-list-dialog.mjs';
 
@@ -140,6 +140,14 @@ function listWorktreesForSession(sessionId) {
   if (!entry) return false;
   openWorktreeListDialog(state.t, {
     load: () => listWorktrees(sessionId),
+    remove: (branch) => removeWorktree(sessionId, branch),
+    onRemoved: (branch) => {
+      const graph = loadGraph();
+      const card = graph.nodes.find((node) => node.kind === 'worktree' && node.title === branch
+        && graph.edges.some((edge) => edge.from === `graph:${node.id}` && edge.to === `session:${sessionId}`));
+      if (!card) return;
+      graphChanged(updateGraphNode(graph, card.id, { status: 'done', body: `${card.body}\n${state.t('worktree.removedRecord')}` }));
+    },
     record: (item) => {
       const graph = loadGraph();
       const vpSize = size();

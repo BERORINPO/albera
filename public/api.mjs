@@ -108,3 +108,22 @@ export async function listWorktrees(sessionId) {
     clearTimeout(timer);
   }
 }
+
+/** Send an explicitly confirmed removal for one clean non-current branch worktree.
+ * @param {string} sessionId @param {string} branch
+ * @returns {Promise<{branch:string}>}
+ */
+export async function removeWorktree(sessionId, branch) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 15_000);
+  try {
+    const res = await fetch('/api/worktrees/remove', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, branch, confirmed: true }), cache: 'no-store', credentials: 'same-origin', signal: ctl.signal,
+    });
+    let data = {};
+    try { data = await res.json(); } catch { /* generic error below */ }
+    if (!res.ok || data?.ok !== true || data.branch !== branch) throw new WorktreeOperationError(res.status, typeof data?.reason === 'string' ? data.reason : 'failed');
+    return { branch: data.branch };
+  } finally { clearTimeout(timer); }
+}

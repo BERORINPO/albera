@@ -17,6 +17,7 @@ import { createFolderHints } from '../adapters/folder-hints-fs.mjs';
 import { createTranscriptsSource } from '../adapters/transcripts-fs.mjs';
 import { createWorktreeSource } from '../adapters/worktrees-git.mjs';
 import { createWorktreeCreator } from '../adapters/worktree-create-git.mjs';
+import { createWorktreeRemover } from '../adapters/worktree-remove-git.mjs';
 import { argsWithoutPort, ConfigError, loadConfig, portHint, shellQuote } from './config.mjs';
 import { liveDemoSources } from './demo.mjs';
 import { createHandler } from './http.mjs';
@@ -57,6 +58,7 @@ function wire(config) {
     folderHints: createFolderHints({ home: config.home }),
     worktreeSource: createWorktreeSource(),
     worktreeCreator: createWorktreeCreator(),
+    worktreeRemover: createWorktreeRemover(),
   };
 }
 
@@ -129,7 +131,11 @@ function main() {
     const session = await activeSessionForId(sessionId);
     return session?.cwd ? sources.worktreeSource.listForCwd(session.cwd) : session;
   };
-  const handler = createHandler({ port, getBoard: () => service.get(), createWorktree, listWorktrees, demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });
+  const removeWorktree = async (sessionId, branch, confirmed) => {
+    const session = await activeSessionForId(sessionId);
+    return session?.cwd ? sources.worktreeRemover.remove({ cwd: session.cwd, branch, confirmed }) : session;
+  };
+  const handler = createHandler({ port, getBoard: () => service.get(), createWorktree, listWorktrees, removeWorktree, demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });
   const server = http.createServer(handler);
   server.on('error', async (/** @type {NodeJS.ErrnoException} */ e) => {
     if (e.code === 'EADDRINUSE') {

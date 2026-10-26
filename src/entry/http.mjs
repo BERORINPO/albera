@@ -82,12 +82,12 @@ function send(res, status, type, body) {
 }
 
 /**
- * @param {{port: number, getBoard: () => Promise<{body: string, etag: string}>, createWorktree?:(sessionId:string,branch:string)=>Promise<any>, listWorktrees?:(sessionId:string)=>Promise<any>, demo?: boolean,
+ * @param {{port: number, getBoard: () => Promise<{body: string, etag: string}>, createWorktree?:(sessionId:string,branch:string)=>Promise<any>, listWorktrees?:(sessionId:string)=>Promise<any>, removeWorktree?:(sessionId:string,branch:string,confirmed:boolean)=>Promise<any>, demo?: boolean,
  *   log?: (key: string, params?: Record<string, unknown>) => void, staticFiles?: StaticTable}} deps
  *   log は messages.mjs のキーで受ける (言葉は server が付ける)。demo は /api/hello で答える (ポートが使用中のときの確かめ用)
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => Promise<void>}
  */
-export function createHandler({ port, getBoard, createWorktree, listWorktrees, demo = false, log = () => {}, staticFiles = buildStaticFiles() }) {
+export function createHandler({ port, getBoard, createWorktree, listWorktrees, removeWorktree, demo = false, log = () => {}, staticFiles = buildStaticFiles() }) {
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   return async (req, res) => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
@@ -101,6 +101,13 @@ export function createHandler({ port, getBoard, createWorktree, listWorktrees, d
         return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed');
       }
       return serveWorktree(req, res);
+    }
+    if (pathname === `${WORKTREE_PATH}/remove`) {
+      if (req.method !== 'POST') {
+        res.setHeader('Allow', 'POST');
+        return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed');
+      }
+      return serveWorktreeRemoval(req, res);
     }
     if (req.method !== 'GET') {
       res.setHeader('Allow', 'GET');
@@ -169,6 +176,37 @@ export function createHandler({ port, getBoard, createWorktree, listWorktrees, d
       }
       const reason = ['invalid_target', 'not_repo', 'invalid_branch', 'target_exists', 'creation_failed', 'demo_disabled'].includes(result?.reason) ? result.reason : 'unavailable';
       const status = reason === 'demo_disabled' ? 403 : reason === 'invalid_branch' ? 400 : reason === 'target_exists' ? 409 : 422;
+      return send(res, status, 'application/json; charset=utf-8', JSON.stringify({ ok: false, reason }));
+    } catch {
+      log('term.worktreeFailed', {});
+      return send(res, 500, 'application/json; charset=utf-8', JSON.stringify({ ok: false, reason: 'failed' }));
+    }
+  }
+
+  /** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res */
+  async function serveWorktreeRemoval(req, res) {
+    const origin = String(req.headers.origin ?? '');
+    if (origin !== `http://127.0.0.1:${port}` && origin !== `http://localhost:${port}`) return send(res, 403, 'application/json; charset=utf-8', JSON.stringify({ error: 'origin_rejected' }));
+    if (String(req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') return send(res, 415, 'application/json; charset=utf-8', JSON.stringify({ error: 'json_required' }));
+    let body = '';
+    try {
+      for await (const chunk of req) {
+        body += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+        if (Buffer.byteLength(body, 'utf8') > WORKTREE_BODY_MAX) return send(res, 413, 'application/json; charset=utf-8', JSON.stringify({ error: 'request_too_large' }));
+      }
+    } catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' })); }
+    let value;
+    try { value = JSON.parse(body); } catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_json' })); }
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !['sessionId', 'branch', 'confirmed'].includes(key))) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (typeof value.sessionId !== 'string' || !SESSION_CARD_ID.test(value.sessionId) || !isSafeBranch(value.branch) || value.confirmed !== true) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (!removeWorktree) return send(res, 501, 'application/json; charset=utf-8', JSON.stringify({ error: 'worktree_unavailable' }));
+    try {
+      const result = await removeWorktree(value.sessionId, value.branch, true);
+      if (result?.ok === true && result.branch === value.branch && SAFE_BRANCH_RE.test(result.branch) && !result.branch.includes('..') && !result.branch.includes('//')) {
+        return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true, branch: result.branch }));
+      }
+      const reason = ['invalid_target', 'not_repo', 'invalid_branch', 'not_found', 'current', 'locked', 'prunable', 'not_clean', 'removal_failed', 'demo_disabled'].includes(result?.reason) ? result.reason : 'unavailable';
+      const status = reason === 'demo_disabled' ? 403 : ['invalid_target', 'not_repo'].includes(reason) ? 422 : reason === 'not_found' ? 404 : reason === 'not_clean' || reason === 'current' || reason === 'locked' || reason === 'prunable' ? 409 : 400;
       return send(res, status, 'application/json; charset=utf-8', JSON.stringify({ ok: false, reason }));
     } catch {
       log('term.worktreeFailed', {});

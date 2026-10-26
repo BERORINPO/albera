@@ -22,11 +22,14 @@ export function createFakeWorktreeSource(table = {}) {
     },
     async listForCwd(cwd) {
       const summary = map.get(keyOf(cwd));
-      return summary ? [{
-        branch: summary.branch, status: summary.status, changed: summary.changed, untracked: summary.untracked,
-        conflicted: summary.conflicted, locked: summary.locked, prunable: summary.prunable,
-        detached: summary.branch === null, current: true,
-      }] : [];
+      return summary ? [
+        {
+          branch: summary.branch, status: summary.status, changed: summary.changed, untracked: summary.untracked,
+          conflicted: summary.conflicted, locked: summary.locked, prunable: summary.prunable,
+          detached: summary.branch === null, current: true,
+        },
+        { branch: 'demo/clean-side', status: 'clean', changed: 0, untracked: 0, conflicted: 0, locked: false, prunable: false, detached: false, current: false },
+      ] : [];
     },
     stats: () => ({ ...current }),
   };

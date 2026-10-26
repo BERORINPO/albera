@@ -8,6 +8,7 @@ import { createFakeFolderHints } from '../adapters/fake-folder-hints.mjs';
 import { createFakeTranscriptsSource } from '../adapters/fake-transcripts.mjs';
 import { createFakeWorktreeSource } from '../adapters/fake-worktrees.mjs';
 import { createFakeWorktreeCreator } from '../adapters/fake-worktree-create.mjs';
+import { createFakeWorktreeRemover } from '../adapters/fake-worktree-remove.mjs';
 
 /**
  * デモの合成データを DEMO_REBUILD_MS ごとに今の時刻から作り直す Fake の組。
@@ -51,5 +52,6 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
       stats: () => current().worktrees.stats(),
     },
     worktreeCreator: createFakeWorktreeCreator(),
+    worktreeRemover: createFakeWorktreeRemover(),
   };
 }
