@@ -508,3 +508,8 @@
 - Graphカードが直接つながるセッションの `project.key` によってプロジェクト絞り込みへ参加する。同一カードに異なるプロジェクトのセッションが複数つながる場合はいずれかの選択プロジェクトに一致すれば残す。直接つながるsessionがないカードは推測で分類せず盤面全体に残す。不一致カードは薄く表示し、読み上げラベルに「絞り込み外」を加える。
 - pure helperのテストで関係方向の両方、複数project、不一致、未接続・未絞り込みの挙動を確認。`npm test` — 540 passed、`npm run arch` — 96 paths/0 violations、`git diff --check` — passed。
 - port 19832の隔離demoで、合成理解負債カードを api-server filterで薄くし、accessible nameに「絞り込み外」が付くこと、接続先のdemo-app filterで通常表示に戻ることを画面確認した。カードは直接接続したCodex/Claude合成セッションのどれかが現在のproject選択に一致すると残る。デモサーバー停止済み。実セッションやCLIは使用していない。
+
+### キャンバスGraphカードの実行元・状態絞り込み (2026-10-26)
+
+- Graphカードは直接つながるsessionの実行元と現在のpile/stateも絞り込みに使う。複数sessionが直接つながる場合、実行元・状態・projectの選択条件すべてに一致する同一sessionが一つ以上あれば通常表示する。条件を別々のsessionで満たしても一致とはしない。直接接続sessionがないカードは分類を推測せず盤面全体に残す。不一致カードは薄く表示し、accessible nameに「絞り込み外」を含める。
+- pure helperのテストでClaude/Codex、working/recent、projectの一致・不一致と、複合条件が同一sessionへ適用されることを確認。合成デモUIでは実行元=Codexで薄く、Claudeで通常表示へ戻ること、Claudeカードに対して状態=workingで薄く、needs_youで通常表示へ戻ることを確認した。合成テストカードの直接接続sessionはneeds_you状態。これらはデモ/fixtureによる確認で、実セッションとの適合性を証明しない。

@@ -90,7 +90,8 @@ export function drawCanvas(at) {
   renderCanvas($('canvas'), {
     t: state.t, board, layout, index: view.index, matched: cv.matched, cursorId: state.cursor?.id ?? null, nextId, now: at,
     demo, handoff: state.prefs.handoff, isNew: (p, id) => isNew(p, id, at), takeArrival, drag: cv.drag,
-    graph: loadGraph(), graphDrag: cv.graphDrag ?? null, graphFilter: state.filter, projectFilter: state.projectFilter,
+    graph: loadGraph(), graphDrag: cv.graphDrag ?? null, graphFilter: state.filter,
+    sessionFilters: { source: state.sourceFilter, state: state.stateFilter, project: state.projectFilter },
   });
   // 表示枠の説明: 1 文字キーを止めているときは矢印だけ (+ − f は効かない)
   const keys = $('cv-keys');

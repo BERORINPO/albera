@@ -35,16 +35,24 @@ export function graphCardSearchText(node, missing = [], t) {
   ].filter((value) => typeof value === 'string' && value.length).join(' ');
 }
 
-/** Cards with direct session relations inherit a project filter from those sessions. Unlinked cards stay board-wide. @param {string} nodeId @param {any[]} edges @param {Map<string,{card:any,pile:string}>} index @param {string} project */
-export function graphNodeProjectMatch(nodeId, edges, index, project) {
-  if (!project || project === 'all') return true;
+/** Cards inherit active provider, state, and project filters from direct session relations. Unlinked cards stay board-wide. @param {string} nodeId @param {any[]} edges @param {Map<string,{card:any,pile:string}>} index @param {{source?:string,state?:string,project?:string}} filters */
+export function graphNodeSessionFilterMatch(nodeId, edges, index, filters = {}) {
+  const { source = 'all', state = 'all', project = 'all' } = filters;
+  if (source === 'all' && state === 'all' && project === 'all') return true;
   const sessionIds = new Set();
   for (const edge of edges ?? []) {
     if (edge?.from === `graph:${nodeId}` && typeof edge.to === 'string' && edge.to.startsWith('session:')) sessionIds.add(edge.to.slice(8));
     if (edge?.to === `graph:${nodeId}` && typeof edge.from === 'string' && edge.from.startsWith('session:')) sessionIds.add(edge.from.slice(8));
   }
   if (!sessionIds.size) return true;
-  return [...sessionIds].some((id) => index.get(id)?.card?.project?.key === project);
+  return [...sessionIds].some((id) => {
+    const entry = index.get(id);
+    if (!entry) return false;
+    const actualSource = entry.card.source ?? (id.startsWith('codex_') ? 'codex' : id.startsWith('copilot_') ? 'copilot' : id.startsWith('opencode_') ? 'opencode' : 'claude');
+    return (source === 'all' || actualSource === source)
+      && (state === 'all' || entry.pile === state)
+      && (project === 'all' || entry.card.project?.key === project);
+  });
 }
 
 /** @param {{kind:string,purpose?:string,status?:string}} edge @param {T} t */
@@ -162,7 +170,7 @@ function graphCard(t, node, missing = []) {
 
 /**
  * @param {HTMLElement} layer
- * @param {{t:T,graph:any,index:Map<string,{card:any,pile:string}>,layout:any,filter:string,projectFilter?:string,matched?:Set<string>|null,boardReady?:boolean,drag?:{id:string,x:number,y:number}|null}} o
+ * @param {{t:T,graph:any,index:Map<string,{card:any,pile:string}>,layout:any,filter:string,sessionFilters?:{source?:string,state?:string,project?:string},matched?:Set<string>|null,boardReady?:boolean,drag?:{id:string,x:number,y:number}|null}} o
  */
 export function renderGraphLayer(layer, o) {
   const t = o.t;
@@ -228,7 +236,7 @@ export function renderGraphLayer(layer, o) {
     el.style.setProperty('--y', String(at.y));
     const missing = reviewById.get(id) ?? [];
     const hay = graphCardSearchText(node, missing, t).toLocaleLowerCase();
-    const dim = (!!query && !hay.includes(query)) || !graphNodeProjectMatch(id, o.graph.edges, o.index, o.projectFilter ?? 'all');
+    const dim = (!!query && !hay.includes(query)) || !graphNodeSessionFilterMatch(id, o.graph.edges, o.index, o.sessionFilters);
     el.classList.toggle('is-dim', dim);
     el.setAttribute('aria-label', `${graphCardAriaLabel(t, node, missing)}${dim ? ` ${t('canvas.noMatch')}` : ''}`);
   }
