@@ -81,19 +81,33 @@ function sessionRelations(t, card, graph, sessions) {
         ].join(' / ') }) })
         : null,
       entry.endpoint === 'graph' && entry.node.kind === 'understanding_gap'
-        ? h('small', { text: [
+        ? h('div', {}, h('small', { text: [
           entry.node.checkedPerson ? t('graph.checkedPersonSummary', { name: entry.node.checkedPerson }) : '',
           entry.node.missingEvidence ? t('graph.missingEvidence', { text: entry.node.missingEvidence }) : '',
           entry.node.neededExplanation ? t('graph.neededExplanation', { text: entry.node.neededExplanation }) : '',
-          entry.node.evidenceLinks.length ? t('graph.evidenceLinks', { targets: entry.node.evidenceLinks.map((link) => link.endpoint === 'graph' ? `${t(`graph.kind.${link.kind}`)}: ${link.title}` : `${t(`source.${link.source}`)} #${link.shortId}`).join(', ') }) : '',
-          entry.node.explanationLinks.length ? t('graph.explanationLinks', { targets: entry.node.explanationLinks.map((link) => link.endpoint === 'graph' ? `${t(`graph.kind.${link.kind}`)}: ${link.title}` : `${t(`source.${link.source}`)} #${link.shortId}`).join(', ') }) : '',
-        ].filter(Boolean).join(' / ') })
+        ].filter(Boolean).join(' / ') }),
+          entry.node.evidenceLinks.length ? h('small', {}, t('graph.evidenceLinks'), ' ', ...gapTargetButtons(t, entry.node.evidenceLinks)) : null,
+          entry.node.explanationLinks.length ? h('small', {}, t('graph.explanationLinks'), ' ', ...gapTargetButtons(t, entry.node.explanationLinks)) : null,
+        )
         : null,
     );
   });
   return items.length
     ? h('section', { class: 'graph-session-relations', 'aria-label': t('graph.relations') }, h('h3', { text: t('graph.relatedCards') }), h('ul', {}, ...items))
     : null;
+}
+
+function gapTargetButtons(t, links) {
+  return links.flatMap((link, index) => [
+    index ? ', ' : '',
+    h('button', {
+      class: 'textbtn graph-session-relations__node', type: 'button',
+      'data-action': link.endpoint === 'graph' ? 'graph-open' : 'canvas-open-short-session',
+      'data-id': link.endpoint === 'graph' ? link.nodeId : link.shortId,
+      ...(link.endpoint === 'session' ? { 'data-source': link.source } : {}),
+      text: link.endpoint === 'graph' ? `${t(`graph.kind.${link.kind}`)}: ${link.title}` : `${t(`source.${link.source}`)} #${link.shortId}`,
+    }),
+  ]);
 }
 
 function detailBar(t, card, pile, rowCtx, graph) {

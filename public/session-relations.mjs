@@ -8,13 +8,13 @@ function gapLinks(edges, graph, nodeId, kind, sessionIds) {
     const other = edge.from === endpoint ? edge.to : edge.from;
     if (other.startsWith('graph:')) {
       const node = graph.nodes.find((item) => `graph:${item.id}` === other);
-      return node ? [{ endpoint: 'graph', kind: node.kind, title: node.title }] : [];
+      return node ? [{ endpoint: 'graph', nodeId: node.id, kind: node.kind, title: node.title }] : [];
     }
     if (other.startsWith('session:')) {
       const id = other.slice('session:'.length);
       if (!sessionIds.has(id)) return [];
       const source = id.startsWith('codex_') ? 'codex' : id.startsWith('copilot_') ? 'copilot' : id.startsWith('opencode_') ? 'opencode' : 'claude';
-      return [{ endpoint: 'session', source, shortId: id.slice(-8) }];
+      return [{ endpoint: 'session', source, shortId: id.slice(-12) }];
     }
     return [];
   });
@@ -73,4 +73,12 @@ export function sessionRelationEntries(edges, sessionId, graph, sessions) {
 /** @param {string} sessionId @param {(kind:'detail', id:string)=>boolean} openBar */
 export function openRelatedSessionDetail(sessionId, openBar) {
   return openBar('detail', sessionId);
+}
+
+/** Resolve only a unique provider-scoped opaque suffix; collisions fail closed. @param {string} source @param {string} shortId @param {Array<{id:string}>} sessions */
+export function resolveRelatedSessionShortId(source, shortId, sessions) {
+  const prefix = source === 'codex' ? 'codex_' : source === 'copilot' ? 'copilot_' : source === 'opencode' ? 'opencode_' : source === 'claude' ? 'local_' : '';
+  if (!prefix || !/^[a-f0-9]{12}$/.test(shortId)) return null;
+  const matches = sessions.filter(({ id }) => id.startsWith(prefix) && id.endsWith(shortId));
+  return matches.length === 1 ? matches[0].id : null;
 }

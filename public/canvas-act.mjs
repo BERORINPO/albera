@@ -21,7 +21,7 @@ import { announce } from './view.mjs';
 import { createWorktree, listWorktrees, removeWorktree } from './api.mjs';
 import { openWorktreeDialog } from './worktree-dialog.mjs';
 import { openWorktreeListDialog } from './worktree-list-dialog.mjs';
-import { openRelatedSessionDetail } from './session-relations.mjs';
+import { openRelatedSessionDetail, resolveRelatedSessionShortId } from './session-relations.mjs';
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
 
@@ -286,6 +286,10 @@ export const CANVAS_CLICK = {
   'graph-new': () => newGraphNode(),
   'graph-open': (el) => editGraphNode(el.dataset.id ?? ''),
   'canvas-open-session': (el) => openRelatedSessionDetail(el.dataset.id ?? '', openBar),
+  'canvas-open-short-session': (el) => {
+    const id = resolveRelatedSessionShortId(el.dataset.source ?? '', el.dataset.id ?? '', [...view.index.keys()].map((id) => ({ id })));
+    if (id) openRelatedSessionDetail(id, openBar);
+  },
   'graph-connect': (el) => connectGraphEndpoint(`session:${el.dataset.id ?? ''}`),
   'graph-task-from-session': (el) => newTaskForSession(el.dataset.id ?? ''),
   'worktree-create': (el) => createWorktreeForSession(el.dataset.id ?? ''),

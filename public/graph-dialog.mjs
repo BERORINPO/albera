@@ -70,6 +70,7 @@ export function openGraphNodeDialog(o) {
     selectField(t, 'graph.kindLabel', 'kind', [...GRAPH_NODE_KINDS], node?.kind ?? o.initialKind ?? 'task', (v) => t(`graph.kind.${v}`)),
     inputField(t, 'graph.titleLabel', 'title', node?.title ?? o.initialTitle ?? '', true),
     areaField(t, 'graph.bodyLabel', 'body', node?.body ?? ''),
+    h('p', { class: 'graph-dialog__hint', 'data-artifact-summary-hint': '', text: t('graph.artifactSummaryManual') }),
     referenceField(t, node?.url ?? ''),
     selectField(t, 'graph.statusLabel', 'status', [...GRAPH_NODE_STATES], node?.status ?? 'open', (v) => t(`graph.status.${v}`)),
     h('fieldset', { class: 'graph-dialog__profile', 'data-comprehension-fields': '' },
@@ -89,10 +90,15 @@ export function openGraphNodeDialog(o) {
   );
   const kindSelect = /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="kind"]'));
   const refField = /** @type {HTMLElement|null} */ (form.querySelector('[data-artifact-reference]'));
+  const artifactSummaryHint = /** @type {HTMLElement|null} */ (form.querySelector('[data-artifact-summary-hint]'));
   const refInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="referenceUrl"]'));
   const profileFields = /** @type {HTMLElement|null} */ (form.querySelector('[data-execution-profile]'));
   const comprehensionFields = /** @type {HTMLElement|null} */ (form.querySelector('[data-comprehension-fields]'));
-  const syncReferenceField = () => { if (refField) refField.hidden = kindSelect?.value !== 'artifact'; };
+  const syncReferenceField = () => {
+    const artifact = kindSelect?.value === 'artifact';
+    if (refField) refField.hidden = !artifact;
+    if (artifactSummaryHint) artifactSummaryHint.hidden = !artifact;
+  };
   const syncProfileFields = () => { if (profileFields) profileFields.hidden = kindSelect?.value !== 'execution_profile'; };
   const syncComprehensionFields = () => { if (comprehensionFields) comprehensionFields.hidden = kindSelect?.value !== 'understanding_gap'; };
   kindSelect?.addEventListener('change', syncReferenceField);

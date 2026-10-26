@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openRelatedSessionDetail, sessionRelationEntries } from '../public/session-relations.mjs';
+import { openRelatedSessionDetail, resolveRelatedSessionShortId, sessionRelationEntries } from '../public/session-relations.mjs';
 
 const first = 'codex_00000000-0000-4000-8000-000000000001';
 const second = 'local_00000000-0000-4000-8000-000000000002';
@@ -51,7 +51,7 @@ test('comprehension-gap relations expose only the user-authored check and eviden
   assert.deepEqual(entries[0].node, {
     id: gapId, kind: 'understanding_gap', title: 'Explain the decision', status: 'open',
     checkedPerson: 'reviewer', missingEvidence: 'source record', neededExplanation: 'rationale',
-    evidenceLinks: [{ endpoint: 'session', source: 'codex', shortId: '00000001' }], explanationLinks: [],
+    evidenceLinks: [{ endpoint: 'session', source: 'codex', shortId: '000000000001' }], explanationLinks: [],
   });
   assert.equal(JSON.stringify(entries).includes('/private/path'), false);
   assert.equal(JSON.stringify(entries).includes('do-not-project'), false);
@@ -71,8 +71,8 @@ test('comprehension summaries list linked evidence and explanations without sess
     { id: 'explains-edge', from: `session:${otherSession}`, to: `graph:${gapId}`, kind: 'explains', purpose: '', status: '' },
   ];
   const entries = sessionRelationEntries(edges, first, { ...graph, edges }, [{ id: first }, { id: otherSession }]);
-  assert.deepEqual(entries[0].node.evidenceLinks, [{ endpoint: 'graph', kind: 'artifact', title: 'Reviewed REA summary' }]);
-  assert.deepEqual(entries[0].node.explanationLinks, [{ endpoint: 'session', source: 'claude', shortId: '00000007' }]);
+  assert.deepEqual(entries[0].node.evidenceLinks, [{ endpoint: 'graph', nodeId: artifactId, kind: 'artifact', title: 'Reviewed REA summary' }]);
+  assert.deepEqual(entries[0].node.explanationLinks, [{ endpoint: 'session', source: 'claude', shortId: '000000000007' }]);
   assert.equal(JSON.stringify(entries).includes('/private/path'), false);
   assert.equal(JSON.stringify(entries).includes('https://example.com/private'), false);
   assert.equal(JSON.stringify(entries).includes(otherSession), false);
@@ -83,4 +83,16 @@ test('following a related session opens the internal detail bar', () => {
   const opened = openRelatedSessionDetail(second, (...args) => { calls.push(args); return true; });
   assert.equal(opened, true);
   assert.deepEqual(calls, [['detail', second]]);
+});
+
+test('opaque short session targets resolve only one matching provider session', () => {
+  const sessions = [
+    { id: 'codex_aaaaaaaa000000000001' },
+    { id: 'local_bbbbbbbb000000000002' },
+  ];
+  assert.equal(resolveRelatedSessionShortId('codex', '000000000001', sessions), sessions[0].id);
+  assert.equal(resolveRelatedSessionShortId('claude', '000000000002', sessions), sessions[1].id);
+  assert.equal(resolveRelatedSessionShortId('codex', '000000000002', sessions), null);
+  assert.equal(resolveRelatedSessionShortId('unknown', '000000000001', sessions), null);
+  assert.equal(resolveRelatedSessionShortId('codex', 'aaaaaaaa000000000001', sessions), null);
 });
