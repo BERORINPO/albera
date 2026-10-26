@@ -85,6 +85,7 @@ function graphSessions() { return graphSessionChoices(view.index); }
 const graphActions = createGraphActions({
   cv, loadGraph, graphChanged, graphSessions, render, announce, getT: () => state.t, world,
   sessionIds: () => new Set(view.index.keys()),
+  refreshWorktree: (sessionId, branch, afterClose) => listWorktreesForSession(sessionId, branch, afterClose),
 });
 const sessionPositionActions = createSessionPositionActions({
   cv, render, focusSlip, world, announce, getT: () => state.t,
@@ -132,13 +133,16 @@ function createWorktreeForSession(sessionId) {
   });
   return true;
 }
-function listWorktreesForSession(sessionId) {
+function listWorktreesForSession(sessionId, recordBranch = '', afterClose = () => {}) {
   const entry = view.index.get(sessionId);
   if (!entry) return false;
+  let recorded = false;
   openWorktreeListDialog(state.t, {
     load: () => listWorktrees(sessionId),
-    remove: state.board?.stats?.demo ? undefined : (branch) => removeWorktree(sessionId, branch),
+    remove: recordBranch || state.board?.stats?.demo ? undefined : (branch) => removeWorktree(sessionId, branch),
     requireRemovableFlag: true,
+    recordBranch,
+    onClose: () => { if (recorded) afterClose(); },
     onRemoved: (branch) => {
       const graph = loadGraph();
       const card = graph.nodes.find((node) => node.kind === 'worktree' && node.title === branch
@@ -156,7 +160,8 @@ function listWorktreesForSession(sessionId) {
         body: worktreeRecordBody(state.t, entry.card.project?.label, base, item),
         status: 'open', ...position, checkedPerson: '', missingEvidence: '', neededExplanation: '',
       }, `g_${crypto.randomUUID()}`, `e_${crypto.randomUUID()}`, sessionId, 'Recorded from read-only worktree inventory');
-      return next !== graph && graphChanged(next);
+      recorded = next !== graph && graphChanged(next);
+      return recorded;
     },
   });
   return true;

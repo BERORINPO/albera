@@ -6,7 +6,12 @@ import { openWorktreeRemoveDialog } from './worktree-remove-dialog.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 
-/** @param {T} t @param {{load:()=>Promise<Array<any>>,record?:(item:any)=>boolean,remove?:(branch:string)=>Promise<any>,requireRemovableFlag?:boolean,onRemoved?:(branch:string)=>void}} options */
+/** @param {{branch?:string|null}} item @param {string} [branch] */
+export function canRecordWorktreeItem(item, branch = '') {
+  return !branch || item.branch === branch;
+}
+
+/** @param {T} t @param {{load:()=>Promise<Array<any>>,record?:(item:any)=>boolean,recordBranch?:string,remove?:(branch:string)=>Promise<any>,requireRemovableFlag?:boolean,onRemoved?:(branch:string)=>void,onClose?:()=>void}} options */
 export function openWorktreeListDialog(t, options) {
   const dialog = h('dialog', { class: 'graph-dialog', 'aria-labelledby': 'worktree-list-title' });
   const form = h('form', { class: 'graph-dialog__form' });
@@ -19,7 +24,7 @@ export function openWorktreeListDialog(t, options) {
     h('div', { class: 'graph-dialog__actions' }, refresh, close));
   dialog.append(form);
   document.body.append(dialog);
-  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  dialog.addEventListener('close', () => { dialog.remove(); options.onClose?.(); }, { once: true });
   form.addEventListener('click', (event) => {
     const action = event.target instanceof Element ? event.target.closest('[data-dialog-action]')?.getAttribute('data-dialog-action') : null;
     if (action === 'close') dialog.close();
@@ -28,6 +33,7 @@ export function openWorktreeListDialog(t, options) {
     if (recordButton && options.record) {
       const index = Number(recordButton.getAttribute('data-record-index'));
       if (!Number.isSafeInteger(index) || !currentItems[index]) return;
+      if (!canRecordWorktreeItem(currentItems[index], options.recordBranch)) return;
       if (options.record(currentItems[index])) {
         recordButton.setAttribute('disabled', '');
         recordButton.textContent = t('worktree.recorded');
@@ -55,9 +61,11 @@ export function openWorktreeListDialog(t, options) {
     try {
       const items = await options.load();
       currentItems = items;
-      if (!items.length) message.textContent = t('worktree.listNone');
+      if (!items.length) message.textContent = options.recordBranch ? t('worktree.refreshCardMissing') : t('worktree.listNone');
       else {
-        message.textContent = '';
+        message.textContent = options.recordBranch && !items.some((item) => item.branch === options.recordBranch)
+          ? t('worktree.refreshCardMissing')
+          : options.recordBranch ? t('worktree.refreshCardHint') : '';
         for (const item of items) {
           const branch = item.branch || t('worktree.listDetached');
           const state = t(`worktree.status.${item.status}`);
@@ -65,7 +73,7 @@ export function openWorktreeListDialog(t, options) {
           const flags = [item.locked && t('worktree.flagLocked'), item.prunable && t('worktree.flagPrunable')].filter(Boolean).join(', ');
           list.append(h('li', {}, h('strong', { text: `${branch}${item.current ? ` — ${t('worktree.listCurrent')}` : ''}` }),
             h('span', { text: t('worktree.listSummary', { state, counts, flags: flags ? ` (${flags})` : '' }) }),
-            options.record ? h('button', { class: 'textbtn', type: 'button', 'data-record-index': String(list.childElementCount), text: t('worktree.record') }) : null,
+            options.record && canRecordWorktreeItem(item, options.recordBranch) ? h('button', { class: 'textbtn', type: 'button', 'data-record-index': String(list.childElementCount), text: t('worktree.record') }) : null,
             options.remove && item.branch && item.status === 'clean' && !item.current && !item.locked && !item.prunable && (!options.requireRemovableFlag || item.removable === true)
               ? h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-remove-index': String(list.childElementCount), text: t('worktree.remove') })
               : null));

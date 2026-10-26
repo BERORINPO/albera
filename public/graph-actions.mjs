@@ -4,7 +4,15 @@ import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs
 import { chooseGraphConnectionTarget, startGraphConnection } from './graph-connect-mode.mjs';
 import { firstUnderstandingGapForReview } from './graph-review-queue.mjs';
 
-/** @param {{cv:any,loadGraph:()=>any,graphChanged:(doc:any)=>boolean,graphSessions:()=>any[],render:()=>void,announce:(text:string)=>void,getT:()=>import('./i18n.mjs').T,world:()=>HTMLElement,sessionIds:()=>Set<string>}} o */
+/** @param {any} node @param {any} graph @param {Set<string>} sessionIds */
+export function linkedWorktreeSessionId(node, graph, sessionIds) {
+  if (node?.kind !== 'worktree' || node.status === 'done') return '';
+  const edge = graph.edges.find((item) => item.from === `graph:${node.id}` && item.kind === 'related' && item.to.startsWith('session:'));
+  const id = edge?.to.slice('session:'.length) ?? '';
+  return sessionIds.has(id) ? id : '';
+}
+
+/** @param {{cv:any,loadGraph:()=>any,graphChanged:(doc:any)=>boolean,graphSessions:()=>any[],render:()=>void,announce:(text:string)=>void,getT:()=>import('./i18n.mjs').T,world:()=>HTMLElement,sessionIds:()=>Set<string>,refreshWorktree?:(sessionId:string,branch:string,afterClose:()=>void)=>void}} o */
 export function createGraphActions(o) {
   const t = () => o.getT();
   const connectEndpoint = (from, initialKind, initialTo) => {
@@ -28,12 +36,14 @@ export function createGraphActions(o) {
     const graph = o.loadGraph();
     const node = graph.nodes.find((item) => item.id === id);
     if (!node) return;
+    const sourceSessionId = linkedWorktreeSessionId(node, graph, o.sessionIds());
     openGraphNodeDialog({
       t: t(), announce: o.announce, graph, node, sessions: o.graphSessions(),
       onSave: (input, sessionIds) => o.graphChanged(updateGraphNode(graph, id, input, sessionIds)),
       onDelete: (key) => o.graphChanged(removeGraphNode(graph, key)),
       onEditEdge: (edge) => editEdge(edge.id),
       onConnect: (from, kind) => connectEndpoint(from, kind),
+      ...(sourceSessionId && o.refreshWorktree ? { onRefreshWorktree: (afterClose) => o.refreshWorktree?.(sourceSessionId, node.title, afterClose) } : {}),
     });
   };
   const connectMode = {
