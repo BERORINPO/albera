@@ -67,6 +67,8 @@ export const EN_CANVAS = Object.freeze({
   'graph.statusLabel': 'Status',
   'graph.checkedPerson': 'Person whose understanding is being checked',
   'graph.checkedPersonSummary': 'Person whose understanding is being checked: {name}',
+  'graph.evidenceLinks': 'Linked evidence: {targets}',
+  'graph.explanationLinks': 'Linked explanation: {targets}',
   'graph.missingEvidenceLabel': 'Evidence that is missing',
   'graph.neededExplanationLabel': 'Explanation needed',
   'graph.missingEvidence': 'Missing evidence: {text}',

@@ -51,9 +51,31 @@ test('comprehension-gap relations expose only the user-authored check and eviden
   assert.deepEqual(entries[0].node, {
     id: gapId, kind: 'understanding_gap', title: 'Explain the decision', status: 'open',
     checkedPerson: 'reviewer', missingEvidence: 'source record', neededExplanation: 'rationale',
+    evidenceLinks: [{ endpoint: 'session', source: 'codex', shortId: '00000001' }], explanationLinks: [],
   });
   assert.equal(JSON.stringify(entries).includes('/private/path'), false);
   assert.equal(JSON.stringify(entries).includes('do-not-project'), false);
+});
+
+test('comprehension summaries list linked evidence and explanations without session titles or file paths', () => {
+  const gapId = 'g_00000000-0000-4000-8000-000000000005';
+  const artifactId = 'g_00000000-0000-4000-8000-000000000006';
+  const otherSession = 'local_00000000-0000-4000-8000-000000000007';
+  const graph = { nodes: [
+    { id: gapId, kind: 'understanding_gap', title: 'Check rationale', status: 'open', checkedPerson: '', missingEvidence: 'trace', neededExplanation: 'decision', body: '', url: '' },
+    { id: artifactId, kind: 'artifact', title: 'Reviewed REA summary', body: '/private/path', url: 'https://example.com/private' },
+  ] };
+  const edges = [
+    { id: 'related-edge', from: `graph:${gapId}`, to: `session:${first}`, kind: 'related', purpose: '', status: '' },
+    { id: 'evidence-edge', from: `graph:${gapId}`, to: `graph:${artifactId}`, kind: 'evidence', purpose: '', status: '' },
+    { id: 'explains-edge', from: `session:${otherSession}`, to: `graph:${gapId}`, kind: 'explains', purpose: '', status: '' },
+  ];
+  const entries = sessionRelationEntries(edges, first, { ...graph, edges }, [{ id: first }, { id: otherSession }]);
+  assert.deepEqual(entries[0].node.evidenceLinks, [{ endpoint: 'graph', kind: 'artifact', title: 'Reviewed REA summary' }]);
+  assert.deepEqual(entries[0].node.explanationLinks, [{ endpoint: 'session', source: 'claude', shortId: '00000007' }]);
+  assert.equal(JSON.stringify(entries).includes('/private/path'), false);
+  assert.equal(JSON.stringify(entries).includes('https://example.com/private'), false);
+  assert.equal(JSON.stringify(entries).includes(otherSession), false);
 });
 
 test('following a related session opens the internal detail bar', () => {

@@ -85,6 +85,8 @@ function sessionRelations(t, card, graph, sessions) {
           entry.node.checkedPerson ? t('graph.checkedPersonSummary', { name: entry.node.checkedPerson }) : '',
           entry.node.missingEvidence ? t('graph.missingEvidence', { text: entry.node.missingEvidence }) : '',
           entry.node.neededExplanation ? t('graph.neededExplanation', { text: entry.node.neededExplanation }) : '',
+          entry.node.evidenceLinks.length ? t('graph.evidenceLinks', { targets: entry.node.evidenceLinks.map((link) => link.endpoint === 'graph' ? `${t(`graph.kind.${link.kind}`)}: ${link.title}` : `${t(`source.${link.source}`)} #${link.shortId}`).join(', ') }) : '',
+          entry.node.explanationLinks.length ? t('graph.explanationLinks', { targets: entry.node.explanationLinks.map((link) => link.endpoint === 'graph' ? `${t(`graph.kind.${link.kind}`)}: ${link.title}` : `${t(`source.${link.source}`)} #${link.shortId}`).join(', ') }) : '',
         ].filter(Boolean).join(' / ') })
         : null,
     );

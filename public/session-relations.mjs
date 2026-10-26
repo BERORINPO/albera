@@ -1,5 +1,25 @@
 // Pure projection of local graph relations for a session detail panel.
 
+/** @param {any[]} edges @param {any} graph @param {string} nodeId @param {'evidence'|'explains'} kind @param {Set<string>} sessionIds */
+function gapLinks(edges, graph, nodeId, kind, sessionIds) {
+  const endpoint = `graph:${nodeId}`;
+  return edges.flatMap((edge) => {
+    if (edge.kind !== kind || (edge.from !== endpoint && edge.to !== endpoint)) return [];
+    const other = edge.from === endpoint ? edge.to : edge.from;
+    if (other.startsWith('graph:')) {
+      const node = graph.nodes.find((item) => `graph:${item.id}` === other);
+      return node ? [{ endpoint: 'graph', kind: node.kind, title: node.title }] : [];
+    }
+    if (other.startsWith('session:')) {
+      const id = other.slice('session:'.length);
+      if (!sessionIds.has(id)) return [];
+      const source = id.startsWith('codex_') ? 'codex' : id.startsWith('copilot_') ? 'copilot' : id.startsWith('opencode_') ? 'opencode' : 'claude';
+      return [{ endpoint: 'session', source, shortId: id.slice(-8) }];
+    }
+    return [];
+  });
+}
+
 /** @param {any[]} edges @param {string} sessionId @param {any} graph @param {Array<{id:string}>} sessions */
 export function sessionRelationEntries(edges, sessionId, graph, sessions) {
   const endpoint = `session:${sessionId}`;
@@ -33,6 +53,8 @@ export function sessionRelationEntries(edges, sessionId, graph, sessions) {
           checkedPerson: node.checkedPerson,
           missingEvidence: node.missingEvidence,
           neededExplanation: node.neededExplanation,
+          evidenceLinks: gapLinks(edges, graph, node.id, 'evidence', sessionIds),
+          explanationLinks: gapLinks(edges, graph, node.id, 'explains', sessionIds),
         };
         return [{ ...base, endpoint: 'graph', node: gap }];
       }
