@@ -50,6 +50,13 @@ test('セッション0件の案内は特定providerに偏らず、診断欄を�
   assert.doesNotMatch(EN['lede.emptyNote'], /Claude desktop app/);
 });
 
+test('masthead trust fallback matches the current boundary and does not promise that nothing leaves the computer', () => {
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.equal(EN['mast.trust'], 'Session data is read-only. Worktrees require confirmation.');
+  assert.match(html, /data-i18n="mast\.trust">Session data is read-only\. Worktrees require confirmation\.<\/span>/);
+  assert.doesNotMatch(html, /Nothing leaves this computer/);
+});
+
 test('理解負債レビューは不足リンクごとの手動接続を案内する', () => {
   assert.equal(JA['graph.resolveMissing.evidence'], '根拠を結ぶ');
   assert.equal(JA['graph.resolveMissing.explains'], '説明先を結ぶ');
