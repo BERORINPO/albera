@@ -8,6 +8,9 @@
  * @param {{entry:DelegationEntry,demo:boolean,target?:{executionLocation?:string,completedLocalCodex:boolean},hasOperationId:boolean}} input
  */
 export function delegationAvailability({ entry, demo, target, hasOperationId }) {
+  if (entry.kind === 'delegates' && entry.direction === 'out' && entry.status === 'unknown') {
+    return { action: null, reason: 'graph.delegationUnavailableUnknown' };
+  }
   if (entry.kind !== 'delegates' || entry.direction !== 'out' || !['planned', 'active'].includes(entry.status)) {
     return { action: null, reason: null };
   }

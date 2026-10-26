@@ -210,6 +210,13 @@ test('delegation operation IDs persist locally only on delegate edges and fail c
   assert.equal(normalizeGraph({ v: 1, nodes: [], edges: [{ ...edge, kind: 'related' }] }).edges[0].operationId, undefined);
 });
 
+test('unknown delegation status stays unknown instead of becoming runnable planned work', () => {
+  const edge = { id: e1, from: `session:${session}`, to: `session:codex_00000000-0000-4000-8000-000000000004`, kind: 'delegates', purpose: 'Review', status: 'future-provider-state' };
+  const graph = normalizeGraph({ v: 1, nodes: [], edges: [edge] });
+  assert.equal(graph.edges[0].status, 'unknown');
+  assert.equal(updateGraphEdge(graph, e1, { purpose: 'Reviewed scope' }).edges[0].status, 'unknown');
+});
+
 test('operation-managed delegation purpose, type and state cannot be edited or removed before completion', () => {
   const operationId = 'abcdefab-cdef-4abc-8def-abcdefabcdef';
   let graph = addGraphNode(empty(), { kind: 'task', title: 'Review', body: '', status: 'open', x: 0, y: 0, checkedPerson: '', missingEvidence: '', neededExplanation: '' }, g1);

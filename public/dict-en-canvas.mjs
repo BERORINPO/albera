@@ -244,6 +244,7 @@ export const EN_CANVAS = Object.freeze({
   'graph.delegation.completed': 'Completed',
   'graph.delegation.cancelled': 'Cancelled',
   'graph.delegation.unknown': 'Unknown status',
+  'graph.delegationUnavailableUnknown': 'This delegation has an unknown or unsupported status, so it cannot run until you review and update the record.',
   'graph.delegationPurposeMissing': 'Purpose missing — edit this delegation record to add what was delegated.',
   'graph.editDelegation': 'Edit delegation record',
   'graph.runDelegation': 'Run this delegation',

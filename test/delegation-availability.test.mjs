@@ -39,6 +39,7 @@ test('active operation can be checked without requiring a completed target; malf
 test('inbound and terminal delegation records do not expose execution actions', () => {
   assert.deepEqual(decide({ direction: 'in' }), { action: null, reason: null });
   assert.deepEqual(decide({ status: 'completed' }), { action: null, reason: null });
+  assert.deepEqual(decide({ status: 'unknown' }), { action: null, reason: 'graph.delegationUnavailableUnknown' });
 });
 
 test('availability output contains no target IDs or session metadata', () => {

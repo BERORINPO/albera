@@ -6,7 +6,7 @@ export const GRAPH_MAX_EDGES = 500;
 export const GRAPH_NODE_KINDS = Object.freeze(['task', 'artifact', 'decision', 'understanding_gap', 'worktree', 'execution_profile', 'obsidian_note']);
 export const GRAPH_NODE_STATES = Object.freeze(['open', 'in_progress', 'blocked', 'done', 'resolved']);
 export const GRAPH_EDGE_KINDS = Object.freeze(['related', 'depends_on', 'delegates', 'evidence', 'explains']);
-export const DELEGATION_STATES = Object.freeze(['planned', 'active', 'blocked', 'completed', 'cancelled']);
+export const DELEGATION_STATES = Object.freeze(['planned', 'active', 'blocked', 'completed', 'cancelled', 'unknown']);
 export const EXECUTION_LOCATIONS = Object.freeze(['unknown', 'local', 'wsl', 'remote']);
 export const WORKSPACE_ISOLATIONS = Object.freeze(['unknown', 'sandboxed', 'not_sandboxed']);
 export const NETWORK_ACCESS = Object.freeze(['unknown', 'restricted', 'available']);
@@ -104,7 +104,7 @@ export function normalizeGraphEdge(value) {
     to,
     kind,
     purpose: text(v.purpose, 240),
-    status: kind === 'delegates' ? oneOf(v.status, DELEGATION_STATES, 'planned') : '',
+    status: kind === 'delegates' ? oneOf(v.status, DELEGATION_STATES, 'unknown') : '',
     ...(kind === 'delegates' && typeof v.operationId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v.operationId) ? { operationId: v.operationId } : {}),
   };
 }
