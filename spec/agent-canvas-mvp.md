@@ -97,8 +97,8 @@
 | 領域 | 現在の実装 | 未完了・証拠の限界 |
 |---|---|---|
 | 操作可能なCanvas | 一覧/Canvas切替、検索とsource/state/project絞り込み、session slipsとtask/artifact/decision/worktree/理解負債/execution profile/Obsidian参照カード、ドラッグ・キーボード移動、パン・ズーム、関係線、localStorage復元 | 最新のラベル修正以降に全操作をブラウザーから通す手動受入確認は未実施。自動テストと過去の合成ブラウザー確認の範囲を超えて完成とはしない |
-| セッション・イベント | Claude CodeとCodex CLIは同じboardに表示。CopilotとOpenCodeにも読み取り専用adapter。allowlistイベント・状態・詳細を表示 | Codex CLI起点の実セッションは未確認。Copilot保存先はCLI/app共通でproducerを区別できない。OpenCode旧schemaは一覧以外の状態/イベントをunknown扱い |
-| ハーネス・実行条件 | sourceをハーネス表示に使用。場所・分離・network・approvalは不明初期値の手動profileとして関連付け可能 | セッションや環境から条件を自動検出しない。profile値は利用者申告であり、実際の設定・モデル・実行条件の確認根拠にはならない |
+| セッション・イベント | Claude Code、Codex CLI、Copilot、OpenCodeにread-only adapterがあり、同じboardでallowlistイベント・状態・詳細を表示。関係pickerも表示中の全providerを対象とする | Codex CLI起点の実セッションは未確認。Copilot保存先はCLI/app共通、OpenCode DBもproducer clientをadapterが識別しない。OpenCode旧schemaは一覧以外の状態/イベントをunknown扱い |
+| ハーネス・実行条件 | 詳細に観測可能なprovider/sourceを表示。Codex CLIはCLI markerを満たす記録に限定。場所・分離・network・approvalは不明初期値の手動profileとして関連付け可能 | Copilot/OpenCodeではCLIかアプリかを断定できない。セッションや環境から実行条件を自動検出しない。profile値は利用者申告で、実際の設定・モデル・実行条件の証明ではない |
 | 委譲 | 委譲元/先、目的、状態を関係線と詳細に記録 | CLI起動・agentへの実委譲は未実装。外部作用は明示操作後のみという境界は維持するが、起動するCLI・引数・入力・権限範囲は仕様未確定 |
 | Git worktree / PM policy | local Git worktreeの読取一覧、明示確認後の作成、clean/non-current等を再確認した確認付き削除、canvas上のpath-free記録。作成/一覧/削除adapterは一時Git repoで統合確認済み | 実ユーザーrepoへの操作とブラウザー確認dialogの一連受入は未確認。WSL worktree操作は無効。PM policyは「この依頼の安全条件だけ」で、追加の自動規則なし |
 | Comprehension Graph / 理解負債 | 理解を確認される人、未提示の根拠、必要な説明を記録。`evidence`/`explains`未接続をグラフ欠損として提示し、根拠先へ移動可能 | 人の理解度を推定・採点しない。記録と関係付けは利用者判断で、自動的に理解負債を発見する機能ではない |
