@@ -10,6 +10,7 @@ import { view } from './render.mjs';
 import { state } from './state.mjs';
 import { nextUp } from './ui-state.mjs';
 import { loadGraph } from './graph-store.mjs';
+import { loadCameraView, saveCameraView } from './canvas-camera-store.mjs';
 
 /** @typedef {import('./canvas-camera.mjs').Camera} Camera */
 /** @typedef {import('./canvas-layout.mjs').Layout} Layout */
@@ -18,7 +19,7 @@ const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.get
 /** これより狭い表示枠 (Claude の横の欄) では、用紙を 1 列にして縦 1 列に並べ、カメラの余白を狭くし、「全体」は幅に合わせる */
 export const NARROW_PX = CANVAS.NARROW_PX;
 
-/** キャンバスの状態 (メモリだけ。席は localStorage、カメラは保存しない)。 */
+/** キャンバスの状態 (席と視点はlocalStorage。視点は数値だけ)。 */
 export const cv = {
   /** @type {Camera} */ cam: { x: 0, y: 0, z: CANVAS.Z_OPEN },
   /** @type {Camera|null} z で戻る先 (全体を表示する前のカメラ) */ before: null,
@@ -70,6 +71,7 @@ export function moveCam(cam) {
   cv.cam = cam;
   cv.atFit = false;
   cv.untouched = false;
+  saveCameraView(false, cam, cv.narrow);
 }
 
 /**
@@ -85,6 +87,7 @@ export function resized(sz) {
   if (cv.atFit) cv.cam = fitCam();
   else if (cv.untouched) cv.cam = openCamera(cv.layout, nextUp(state.board)?.card.id ?? null, sz.w, sz.h, pad());
   else if (was.w !== sz.w) cv.cam = keepCentre(cv.cam, was.w, was.h, sz.w, sz.h);
+  if (!cv.untouched) saveCameraView(cv.atFit, cv.cam, cv.narrow);
   return true;
 }
 
@@ -153,6 +156,7 @@ export function fitAll() {
   cv.cam = fitCam();
   cv.atFit = true;
   cv.untouched = false;
+  saveCameraView(true, cv.cam, cv.narrow);
   apply(true);
 }
 
@@ -163,6 +167,7 @@ export function fitToggle() {
   cv.untouched = false;
   const { w, h } = size();
   cv.cam = cv.before ?? openCamera(/** @type {Layout} */ (cv.layout), nextUp(state.board)?.card.id ?? null, w, h, pad());
+  saveCameraView(false, cv.cam, cv.narrow);
   apply(true);
 }
 

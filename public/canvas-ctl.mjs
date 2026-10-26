@@ -17,6 +17,7 @@ import { isNew, now, pileLists, setView, state, takeArrival } from './state.mjs'
 import { nextUp } from './ui-state.mjs';
 import { announce } from './view.mjs';
 import { loadGraph } from './graph-store.mjs';
+import { loadCameraView } from './canvas-camera-store.mjs';
 
 /** @typedef {import('./canvas-camera.mjs').Camera} Camera */
 /** @typedef {import('./canvas-layout.mjs').Layout} Layout */
@@ -104,11 +105,12 @@ export function drawCanvas(at) {
     cv.fresh = false;
     // 開き直したら z で戻る先は無い (前に開いたときのカメラは、今の配置では別の場所を指す)
     cv.before = null;
-    cv.cam = cv.fitOnOpen ? fitCam() : openCamera(layout, nextId, cv.size.w, cv.size.h, pad());
-    cv.atFit = cv.fitOnOpen;
-    cv.untouched = !cv.fitOnOpen;
+    const savedCamera = cv.fitOnOpen ? null : loadCameraView(cv.narrow);
+    cv.cam = cv.fitOnOpen || savedCamera?.fit ? fitCam() : savedCamera?.camera ?? openCamera(layout, nextId, cv.size.w, cv.size.h, pad());
+    cv.atFit = cv.fitOnOpen || !!savedCamera?.fit;
+    cv.untouched = !cv.fitOnOpen && !savedCamera;
     cv.fitOnOpen = false;
-    if (state.cursor && cv.order.includes(state.cursor.id)) reveal(state.cursor.id, false);
+    if (!savedCamera && state.cursor && cv.order.includes(state.cursor.id)) reveal(state.cursor.id, false);
   }
   apply(true);
 }
