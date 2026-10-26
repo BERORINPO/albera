@@ -24,7 +24,7 @@ export function wslCwdToUnc(cwd, shareRoot) {
   const root = wslShareRoot(shareRoot);
   if (!root || typeof cwd !== 'string' || cwd.length > 2048 || !cwd.startsWith('/') || cwd.startsWith('//') || cwd.includes('\\') || /[\u0000-\u001f\u007f]/u.test(cwd)) return null;
   const segments = cwd.slice(1).split('/');
-  if (segments.some((segment) => segment === '.' || segment === '..' || segment.includes(':'))) return null;
+  if (segments.some((segment) => segment === '.' || segment === '..' || segment.length > 255 || /[<>:"|?*]/u.test(segment) || /[. ]$/u.test(segment) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu.test(segment))) return null;
   const mapped = path.win32.join(root, ...segments.filter(Boolean));
   const prefix = `${root}\\`.toLowerCase();
   return mapped.toLowerCase() === root.toLowerCase() || mapped.toLowerCase().startsWith(prefix) ? mapped : null;

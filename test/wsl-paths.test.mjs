@@ -20,7 +20,7 @@ test('folder hints can opt into only the exact configured WSL distro share', () 
 test('WSL cwd mapping rejects traversal, host paths, and control characters', () => {
   const root = '\\\\wsl.localhost\\Ubuntu';
   assert.equal(wslCwdToUnc('/home/dev/project', root), `${root}\\home\\dev\\project`);
-  for (const cwd of ['/../../outside', '/home/../outside', 'C:\\private', '//server/share', '/home/secret\u0000']) {
+  for (const cwd of ['/../../outside', '/home/../outside', 'C:\\private', '//server/share', '/home/secret\u0000', '/home/dev/name.', '/home/dev/name ', '/home/dev/CON', '/home/dev/a:b']) {
     assert.equal(wslCwdToUnc(cwd, root), null, cwd);
   }
   assert.equal(wslCwdToUnc('/home/dev/project', '\\\\server\\share'), null);
