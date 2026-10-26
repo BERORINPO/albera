@@ -298,9 +298,13 @@ export function loadConfig({ env, argv, home, cwd = process.cwd(), platform = pr
     const configuredCopilotHome = env.COPILOT_HOME?.trim();
     const copilotHome = configuredCopilotHome && P.isAbsolute(configuredCopilotHome) ? configuredCopilotHome : P.join(home, '.copilot');
     const configuredOpenCodeDb = env.OPENCODE_DB?.trim();
+    const configuredXdgDataHome = env.XDG_DATA_HOME?.trim();
+    const openCodeDataHome = configuredXdgDataHome && P.isAbsolute(configuredXdgDataHome)
+      ? configuredXdgDataHome
+      : P.join(home, '.local', 'share');
     const openCodeDb = configuredOpenCodeDb
       ? P.resolve(cwd, configuredOpenCodeDb)
-      : P.join(home, '.local', 'share', 'opencode', 'opencode.db');
+      : P.join(openCodeDataHome, 'opencode', 'opencode.db');
     if (!demo) {
       const explicit = args.sessionsDir ?? env.PIGEONHOLES_SESSIONS_DIR?.trim();
       const tried = explicit ? [P.resolve(cwd, explicit)] : sessionsDirCandidates(platform, env, home);

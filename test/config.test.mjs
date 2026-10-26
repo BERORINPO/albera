@@ -199,6 +199,12 @@ test('loadConfig: OPENCODE_DB can be the only available session source', () => {
   assert.equal(relative.action === 'run' && relative.openCodeDb, '/cwd/custom.db');
   const defaulted = loadConfig({ ...base, env: {}, isFile: (p) => p === NIX_HOME + '/.local/share/opencode/opencode.db' });
   assert.equal(defaulted.action === 'run' && defaulted.openCodeDb, NIX_HOME + '/.local/share/opencode/opencode.db');
+  const xdg = loadConfig({ ...base, env: { XDG_DATA_HOME: '/xdg-data' }, isFile: (p) => p === '/xdg-data/opencode/opencode.db' });
+  assert.equal(xdg.action === 'run' && xdg.openCodeDb, '/xdg-data/opencode/opencode.db');
+  const relativeXdg = loadConfig({ ...base, env: { XDG_DATA_HOME: 'relative' }, isFile: (p) => p === NIX_HOME + '/.local/share/opencode/opencode.db' });
+  assert.equal(relativeXdg.action === 'run' && relativeXdg.openCodeDb, NIX_HOME + '/.local/share/opencode/opencode.db');
+  const explicitWins = loadConfig({ ...base, env: { OPENCODE_DB: '/explicit/opencode.db', XDG_DATA_HOME: '/xdg-data' }, isFile: (p) => p === '/explicit/opencode.db' });
+  assert.equal(explicitWins.action === 'run' && explicitWins.openCodeDb, '/explicit/opencode.db');
 });
 
 test('loadConfig: --help / --version は他の値を確かめずに返す。誤りは決めた言語で出す', () => {
