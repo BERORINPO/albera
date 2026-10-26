@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { safeEventRows } from '../public/events.mjs';
+import { eventsEl, safeEventRows } from '../public/events.mjs';
 
 test('event detail projection keeps only supported event codes and safe integer timestamps', () => {
   const rows = safeEventRows({
