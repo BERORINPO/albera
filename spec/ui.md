@@ -1462,3 +1462,9 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - 隔離`--demo`でObsidianノートカードを作成。`../invalid.md`はフォームの検証メッセージで拒否され、保存されないことを確認した。`Architecture/Agent Canvas.md`は許可され、合成Codex CLIセッションへ`related`で接続できた。
 - session詳細とカード編集画面にObsidianリンクが表示され、URIがvault名/相対ノート名を正しくpercent-encodeすることをDOM属性で確認した。リンクは表示確認のみで、Obsidianプロトコルを起動していない。再読み込み後もカード・関係・リンクが復元した。
 - テストカードはアプリ内確認後に削除し、再読み込み後にカードと関係が存在しないことを確認。vaultやノート本文を読み書きせず、実セッション、CLI、worktree、外部サービスは使用していない。これは手動参照の画面受入で、Vault indexingや知識抽出の検証ではない。
+
+### 320px幅でCodex詳細を再確認、実タッチ入力は未確認 (2026-10-27)
+
+- 隔離`--demo`を320×760 viewportで開き、キャンバス上の合成Codex CLIセッション詳細に状態、ハーネス/WSL、実行状態、ブランチ、合成Git状態、作成時刻、固定イベントコードが表示されることを確認した。詳細は高さ方向にスクロールする。
+- 詳細表示中の`documentElement`/`body`幅は320px、詳細領域は幅320px内で横overflow 0。再読み込み後もCanvas表示と合成イベントは維持され、詳細選択自体は閉じた。viewport override、タブ、サーバーは確認後に解除・終了した。
+- これはviewport/DOMによる狭幅受入で、実タッチ操作の受入ではない。利用可能なブラウザー操作APIはviewport寸法変更とマウスdragを提供するが、touch入力注入を提供しないため、タッチ移動/ピンチ操作は未確認のまま。実セッション/CLI/外部サービス/worktree操作は不使用。

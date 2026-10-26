@@ -1064,3 +1064,8 @@ The synthetic `--demo` board now includes an explicitly labeled Codex CLI failed
 - 状態照会が失敗するなど、処理がまだ動いている可能性を排除できない場合だけ`blocked`を維持する。この状態はoperation lockを保持し、利用者の明示確認まで操作を制限する。
 - model/action/renderer testで、`failed`表示・保存・再編集/削除と、`blocked`のロック保持を確認した。`npm test`: 612/612 passed。`npm run arch`: 99 paths / 0 violations。`npm run smoke`: pass。`git diff --check`: pass。
 - 実Codex CLIは起動しておらず、実セッションも作成・変更していない。実CLI互換性は未確認。音声Main AIと企業向け権限制御は、運用仕様が未定義のため未実装・未確認。
+
+### 320pxでCodex詳細の狭幅表示を再確認 (2026-10-27)
+
+- 隔離`--demo`を320×760にして合成Codex session detailを開き、状態、ハーネス、lifecycle、branch、合成Git状態、イベントを確認。document/body/detail領域は横320px以内でoverflowなし。再読み込み後はcanvas表示とイベントが残り、詳細パネルは閉じた。
+- Computer Useで選べるviewport APIは幅/高さ設定のみ、ブラウザー入力APIはmouse dragまででtouch入力は提供されない。実タッチ移動・pinchは未確認のまま。合成UIだけを使用し、実session/CLI/worktree操作/外部サービスは不使用。viewport・タブ・demo serverを終了。
