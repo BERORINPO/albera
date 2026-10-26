@@ -536,3 +536,5 @@
 
 - 委譲実行、worktree作成、worktree削除の各APIについて、Origin欠落時は403、同一Originでも`application/x-www-form-urlencoded`は415となり、操作関数が呼ばれないことを合成HTTPテストで固定。
 - `npm test` — 541 passed、`npm run arch` — 96 paths/0 violations、`git diff --check` — passed。実CLIやworktree操作、外部サービスは使用していない。
+- port 19837の日本語隔離demoを起動し、一覧画面とキャンバス切替入口の配信を確認。ブラウザー操作APIを利用できず、クリックによるパン/ズーム受入は行っていない。サーバー停止後に待受けがないことを確認。合成GUI内容だけを使い、実セッション/CLIは使用していない。
+- CI run `40331807923` は Windows/macOS/Linux × Node 22/24 の6ジョブすべて成功。
