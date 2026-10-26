@@ -4,11 +4,12 @@ import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs
 import { chooseGraphConnectionTarget, startGraphConnection } from './graph-connect-mode.mjs';
 import { firstUnderstandingGapForReview } from './graph-review-queue.mjs';
 
-/** @param {{cv:any,loadGraph:()=>any,graphChanged:(doc:any)=>boolean,graphSessions:()=>any[],render:()=>void,announce:(text:string)=>void,t:import('./i18n.mjs').T,world:()=>HTMLElement,sessionIds:()=>Set<string>}} o */
+/** @param {{cv:any,loadGraph:()=>any,graphChanged:(doc:any)=>boolean,graphSessions:()=>any[],render:()=>void,announce:(text:string)=>void,getT:()=>import('./i18n.mjs').T,world:()=>HTMLElement,sessionIds:()=>Set<string>}} o */
 export function createGraphActions(o) {
+  const t = () => o.getT();
   const connectEndpoint = (from, initialKind, initialTo) => {
     const graph = o.loadGraph();
-    return openGraphRelationDialog({ t: o.t, from, initialKind, initialTo, graph, sessions: o.graphSessions(), onConnect: (input) => {
+    return openGraphRelationDialog({ t: t(), from, initialKind, initialTo, graph, sessions: o.graphSessions(), onConnect: (input) => {
       o.graphChanged(connectGraph(graph, input, 'e_' + crypto.randomUUID(), o.sessionIds()));
     } });
   };
@@ -17,7 +18,7 @@ export function createGraphActions(o) {
     const edge = graph.edges.find((item) => item.id === id);
     if (!edge) return false;
     return openGraphRelationDialog({
-      t: o.t, from: edge.from, edge, graph, sessions: o.graphSessions(),
+      t: t(), from: edge.from, edge, graph, sessions: o.graphSessions(),
       onConnect: (input) => o.graphChanged(updateGraphEdge(o.loadGraph(), edge.id, input)),
       onDeleteEdge: (key) => o.graphChanged(removeGraphEdge(o.loadGraph(), key)),
       onResolveOperation: (key, operationId) => o.graphChanged(releaseBlockedGraphDelegationOperation(o.loadGraph(), key, operationId, true)),
@@ -28,7 +29,7 @@ export function createGraphActions(o) {
     const node = graph.nodes.find((item) => item.id === id);
     if (!node) return;
     openGraphNodeDialog({
-      t: o.t, graph, node, sessions: o.graphSessions(),
+      t: t(), graph, node, sessions: o.graphSessions(),
       onSave: (input, sessionIds) => o.graphChanged(updateGraphNode(graph, id, input, sessionIds)),
       onDelete: (key) => o.graphChanged(removeGraphNode(graph, key)),
       onEditEdge: (edge) => editEdge(edge.id),
@@ -39,7 +40,7 @@ export function createGraphActions(o) {
     start: (id) => o.cv.graphConnectFrom
       ? chooseGraphConnectionTarget({ cv: o.cv, render: o.render, connect: (from, to) => connectEndpoint('graph:' + from, undefined, 'graph:' + to) }, id)
       : startGraphConnection({
-        cv: o.cv, loadGraph: o.loadGraph, render: o.render, announce: (text) => o.announce(text), t: o.t,
+        cv: o.cv, loadGraph: o.loadGraph, render: o.render, announce: (text) => o.announce(text), t: t(),
         focusTarget: (sourceId) => /** @type {HTMLElement|null} */ (o.world().querySelector('.graph-connect-handle[data-id]:not([data-id="' + CSS.escape(sourceId) + '"])'))?.focus({ preventScroll: true }),
       }, id),
     target: (id) => chooseGraphConnectionTarget({ cv: o.cv, render: o.render, connect: (from, to) => connectEndpoint('graph:' + from, undefined, 'graph:' + to) }, id),

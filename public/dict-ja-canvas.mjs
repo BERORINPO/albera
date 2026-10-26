@@ -70,6 +70,8 @@ export const JA_CANVAS = Object.freeze({
   'graph.bodyLabel': '説明',
   'graph.referenceUrl': '成果物のHTTPS参照先',
   'graph.artifactSummaryManual': 'REAの所見は確認済みの短い要約だけを記録してください。完全なEvidenceや機密値は貼り付けないでください。',
+  'graph.artifactSummaryAttest': 'この要約を確認し、完全なEvidenceや機密値を含めていません',
+  'graph.artifactSummaryAttestRequired': '要約を確認したことをチェックしてください。',
   'graph.openReaProject': 'REA OSSプロジェクトを開く',
   'graph.referencePrivacy': '参照先はこのブラウザーにのみ保存します。URLの認証情報・クエリ・フラグメントは登録できません。開く操作はリンクを選んだときだけ行います。',
   'graph.referenceInvalid': '認証情報・クエリ・フラグメントのないHTTPS URLを入力してください。',

@@ -140,8 +140,7 @@ test('relation removal uses an accessible in-app confirmation naming both endpoi
   const source = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
   const wiring = fs.readFileSync(new URL('../public/canvas-act.mjs', import.meta.url), 'utf8');
   const confirm = fs.readFileSync(new URL('../public/graph-confirm-dialog.mjs', import.meta.url), 'utf8');
-  assert.match(wiring, /t: state\.t, world/);
-  assert.doesNotMatch(wiring, /t: \(key\) => state\.t\(key\)/);
+  assert.match(wiring, /getT: \(\) => state\.t, world/);
   assert.match(confirm, /role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': 'graph-confirm-title', 'aria-describedby': 'graph-confirm-description'/);
   assert.match(confirm, /data-confirm-action': 'cancel'/);
   assert.match(confirm, /data-confirm-action': 'confirm'/);
@@ -178,16 +177,30 @@ test('resolving comprehension debt requires a named checked person in the dialog
 });
 
 test('REA manual-summary guidance appears only for artifact cards and forbids full Evidence', () => {
-  const source = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('../public/graph-rea-summary.mjs', import.meta.url), 'utf8');
   assert.match(source, /'data-artifact-summary-hint'/);
   assert.match(source, /href: 'https:\/\/github\.com\/morluto\/rea', target: '_blank', rel: 'noopener noreferrer', referrerpolicy: 'no-referrer'/);
-  assert.match(source, /if \(artifactSummaryHint\) artifactSummaryHint\.hidden = !artifact/);
-  assert.match(source, /kindSelect\?\.addEventListener\('change', syncReferenceField\)/);
-  assert.match(source, /syncReferenceField\(\)/);
+  assert.match(source, /guidance\.element\.hidden = !artifact/);
+  assert.match(source, /name: 'reaSummaryReviewed', type: 'checkbox', required: true/);
+  assert.match(source, /guidance\.reviewedInput\.disabled = !artifact/);
+  const dialog = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
+  assert.match(dialog, /if \(String\(data\.kind\) === 'artifact' && !reaSummaryReviewedInput\?\.checked\)/);
+  assert.match(dialog, /kindSelect\?\.addEventListener\('change', syncReferenceField\)/);
+  assert.match(dialog, /syncReferenceField\(\)/);
   for (const file of ['dict-ja-canvas.mjs', 'dict-en-canvas.mjs']) {
     const dict = fs.readFileSync(new URL(`../public/${file}`, import.meta.url), 'utf8');
     assert.match(dict, /'graph\.artifactSummaryManual':/);
+    assert.match(dict, /'graph\.artifactSummaryAttest':/);
+    assert.match(dict, /'graph\.artifactSummaryAttestRequired':/);
     assert.match(dict, /'graph\.openReaProject':/);
     assert.match(dict, /full Evidence|完全なEvidence/);
   }
+});
+
+test('graph editors resolve the current UI language when opened', () => {
+  const actions = fs.readFileSync(new URL('../public/graph-actions.mjs', import.meta.url), 'utf8');
+  const canvas = fs.readFileSync(new URL('../public/canvas-act.mjs', import.meta.url), 'utf8');
+  assert.match(actions, /getT:\(\)=>import\('\.\/i18n\.mjs'\)\.T/);
+  assert.match(actions, /const t = \(\) => o\.getT\(\)/);
+  assert.match(canvas, /getT: \(\) => state\.t/);
 });

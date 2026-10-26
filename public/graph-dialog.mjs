@@ -6,6 +6,7 @@ import { h } from './view.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
 import { cancelGraphDialog, confirmBlockedOperationRelease, confirmGraphRelationRemoval, connectMissingComprehensionEdge, graphDialogFocusTarget } from './graph-dialog-actions.mjs';
 import { openGraphConfirmDialog } from './graph-confirm-dialog.mjs';
+import { artifactReferenceField, createArtifactSummaryGuidance, syncArtifactSummaryGuidance } from './graph-rea-summary.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 
@@ -23,14 +24,6 @@ function selectField(t, label, name, values, selected, text) {
 /** @param {T} t @param {string} label @param {string} name @param {string} value */
 function areaField(t, label, name, value = '') {
   return h('label', { class: 'graph-dialog__field' }, h('span', { text: t(label) }), h('textarea', { name, maxlength: name === 'body' ? '1000' : '500', rows: name === 'body' ? '4' : '2', text: value }));
-}
-
-/** @param {T} t @param {string} value */
-function referenceField(t, value) {
-  return h('label', { class: 'graph-dialog__field', 'data-artifact-reference': '' },
-    h('span', { text: t('graph.referenceUrl') }),
-    h('input', { name: 'referenceUrl', type: 'url', maxlength: '500', autocomplete: 'off', placeholder: 'https://…', value }),
-    h('span', { class: 'graph-dialog__hint', text: t('graph.referencePrivacy') }));
 }
 
 /** @param {T} t @param {any} node */
@@ -76,6 +69,7 @@ export function openGraphNodeDialog(o) {
   const dialog = h('dialog', { class: 'graph-dialog', 'aria-labelledby': 'graph-dialog-title' });
   const form = h('form', { class: 'graph-dialog__form' });
   const title = node ? t('graph.editTitle') : t('graph.newTitle');
+  const reaSummaryGuidance = createArtifactSummaryGuidance(t);
   form.append(h('h2', { id: 'graph-dialog-title', text: title }), h('p', { class: 'graph-dialog__privacy', text: t('graph.localOnly') }));
   const operationLocked = !!node && graph.edges.some((edge) => edge.operationId && edge.status !== 'completed' && (edge.from === `graph:${node.id}` || edge.to === `graph:${node.id}`));
   if (operationLocked) form.append(h('p', { class: 'graph-dialog__privacy', text: t('graph.nodeHasOperation') }));
@@ -93,11 +87,8 @@ export function openGraphNodeDialog(o) {
     selectField(t, 'graph.kindLabel', 'kind', [...GRAPH_NODE_KINDS], node?.kind ?? o.initialKind ?? 'task', (v) => t(`graph.kind.${v}`)),
     inputField(t, 'graph.titleLabel', 'title', node?.title ?? o.initialTitle ?? '', true),
     areaField(t, 'graph.bodyLabel', 'body', node?.body ?? ''),
-    h('div', { 'data-artifact-summary-hint': '' },
-      h('p', { class: 'graph-dialog__hint', text: t('graph.artifactSummaryManual') }),
-      h('a', { class: 'graph-dialog__reference-link', href: 'https://github.com/morluto/rea', target: '_blank', rel: 'noopener noreferrer', referrerpolicy: 'no-referrer', text: t('graph.openReaProject') }),
-    ),
-    referenceField(t, node?.url ?? ''),
+    reaSummaryGuidance.element,
+    artifactReferenceField(t, node?.url ?? ''),
     selectField(t, 'graph.statusLabel', 'status', [...GRAPH_NODE_STATES], node?.status ?? 'open', (v) => t(`graph.status.${v}`)),
     h('fieldset', { class: 'graph-dialog__profile', 'data-comprehension-fields': '' },
       h('legend', { text: t('graph.comprehensionFields') }),
@@ -117,7 +108,7 @@ export function openGraphNodeDialog(o) {
   );
   const kindSelect = /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="kind"]'));
   const refField = /** @type {HTMLElement|null} */ (form.querySelector('[data-artifact-reference]'));
-  const artifactSummaryHint = /** @type {HTMLElement|null} */ (form.querySelector('[data-artifact-summary-hint]'));
+  const reaSummaryReviewedInput = reaSummaryGuidance.reviewedInput;
   const refInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="referenceUrl"]'));
   const statusInput = /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="status"]'));
   const profileFields = /** @type {HTMLElement|null} */ (form.querySelector('[data-execution-profile]'));
@@ -127,9 +118,7 @@ export function openGraphNodeDialog(o) {
   const knowledgeFileInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="knowledgeFile"]'));
   const checkedPersonInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="checkedPerson"]'));
   const syncReferenceField = () => {
-    const artifact = kindSelect?.value === 'artifact';
-    if (refField) refField.hidden = !artifact;
-    if (artifactSummaryHint) artifactSummaryHint.hidden = !artifact;
+    syncArtifactSummaryGuidance(kindSelect?.value ?? '', refField, reaSummaryGuidance);
   };
   const syncProfileFields = () => { if (profileFields) profileFields.hidden = kindSelect?.value !== 'execution_profile'; };
   const syncComprehensionFields = () => { if (comprehensionFields) comprehensionFields.hidden = kindSelect?.value !== 'understanding_gap'; };
@@ -145,6 +134,7 @@ export function openGraphNodeDialog(o) {
   kindSelect?.addEventListener('change', syncComprehensionFields);
   kindSelect?.addEventListener('change', syncKnowledgeFields);
   refInput?.addEventListener('input', () => refInput.setCustomValidity(''));
+  reaSummaryReviewedInput?.addEventListener('change', () => reaSummaryReviewedInput.setCustomValidity(''));
   checkedPersonInput?.addEventListener('input', () => checkedPersonInput.setCustomValidity(''));
   statusInput?.addEventListener('change', () => statusInput.setCustomValidity(''));
   for (const name of ['missingEvidence', 'neededExplanation']) form.querySelector(`[name="${name}"]`)?.addEventListener('input', () => statusInput?.setCustomValidity(''));
@@ -220,6 +210,11 @@ export function openGraphNodeDialog(o) {
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();
     const data = Object.fromEntries(new FormData(form).entries());
+    if (String(data.kind) === 'artifact' && !reaSummaryReviewedInput?.checked) {
+      reaSummaryReviewedInput?.setCustomValidity(t('graph.artifactSummaryAttestRequired'));
+      reaSummaryReviewedInput?.reportValidity();
+      return;
+    }
     if (String(data.kind) === 'understanding_gap' && ['done', 'resolved'].includes(String(data.status))) {
       if (!String(data.checkedPerson ?? '').trim()) {
         checkedPersonInput?.setCustomValidity(t('graph.resolveNeedsPerson'));
