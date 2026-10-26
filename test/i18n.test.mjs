@@ -64,6 +64,22 @@ test('理解負債レビューは不足リンクごとの手動接続を案内�
   assert.equal(EN['graph.resolveMissing.explains'], 'Connect explanation');
 });
 
+test('委譲の最終確認は対象セッションの識別子末尾と外部利用条件を示す', () => {
+  for (const lang of ['ja', 'en']) {
+    const confirm = makeT(lang)('graph.runDelegationConfirm', {
+      project: 'demo-app', target: '123456789abc', purpose: 'Review the accepted design',
+    });
+    assert.match(confirm, /123456789abc/);
+    assert.match(confirm, /Review the accepted design/);
+    assert.match(confirm, /localhost/);
+    assert.match(confirm, /Codex/);
+    assert.match(confirm, /network|ネットワーク/i);
+    assert.match(confirm, /usage|利用量/i);
+    assert.match(confirm, /discarded|破棄/);
+    assert.doesNotMatch(confirm, /\{(?:project|target|purpose)\}/);
+  }
+});
+
 test('辞書: 画面の言葉の決まり (感嘆符・絵文字を使わない、欄の名前は 1 つ)', () => {
   for (const [lang, dict] of Object.entries(DICT)) {
     for (const [key, entry] of Object.entries(dict)) {

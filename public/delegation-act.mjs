@@ -4,6 +4,11 @@ import { loadGraph } from './graph-store.mjs';
 import { finishGraphDelegationOperation, startGraphDelegationOperation } from './graph-model.mjs';
 import { isCompletedLocalCodexTarget } from './events.mjs';
 
+/** Keep the last confirmation specific to one opaque session without exposing its full ID. @param {(key:string, params?:Record<string,unknown>)=>string} t @param {string} project @param {string} targetId @param {string} purpose */
+export function delegationConfirmationText(t, project, targetId, purpose) {
+  return t('graph.runDelegationConfirm', { project, provider: 'Codex CLI', target: targetId.slice(-12), purpose });
+}
+
 /** @param {string} edgeId @param {string} sourceId @param {{view:any,state:any,graphChanged:(doc:any)=>boolean,announce:(text:string)=>void}} deps */
 export async function runDelegationForEdge(edgeId, sourceId, { view, state, graphChanged, announce }) {
   const graph = loadGraph();
@@ -29,7 +34,7 @@ export async function runDelegationForEdge(edgeId, sourceId, { view, state, grap
     return false;
   }
   const project = target.project?.label || state.t('project.other');
-  if (!window.confirm(state.t('graph.runDelegationConfirm', { project, purpose: edge.purpose }))) return false;
+  if (!window.confirm(delegationConfirmationText(state.t, project, targetId, edge.purpose))) return false;
   const operationId = crypto.randomUUID();
   if (!graphChanged(startGraphDelegationOperation(graph, edgeId, operationId))) return false;
   try {

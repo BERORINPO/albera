@@ -231,7 +231,7 @@ export const JA_CANVAS = Object.freeze({
   'graph.runDelegation': '委譲を実行',
   'graph.checkDelegation': '委譲状態を確認',
   'graph.delegationUnavailable': 'この対象はキャンバスから再開できません。完了済みのローカルCodex CLIセッションが必要です。',
-  'graph.runDelegationConfirm': 'プロジェクト「{project}」のCodex CLIセッションを、この目的で再開しますか？\n\n{purpose}\n\nPigeonholesはこの目的文だけをlocalhost経由でCodexのstdinへ渡します。保存済みのCodexアカウントと設定が使われ、ネットワーク/APIへ接続する場合があります。Codexの出力は破棄します。利用量が発生し、セッション記録が更新される可能性があります。続行しますか？',
+  'graph.runDelegationConfirm': 'プロジェクト「{project}」の{provider}セッション（ID末尾: {target}）を、この目的で再開しますか？\n\n目的: {purpose}\n\nPigeonholesはこの目的文だけをlocalhost経由でCodexのstdinへ渡します。保存済みのCodexアカウントと設定が使われ、ネットワーク/APIへ接続する場合があります。Codexの出力は破棄します。利用量が発生し、セッション記録が更新される可能性があります。続行しますか？',
   'graph.delegationStarted': 'Codexへの委譲を開始しました。出力はPigeonholesに表示されません。',
   'graph.delegationCompleted': 'Codexへの委譲が完了しました。',
   'graph.delegationFailed': 'Codexへの委譲に失敗しました。CLI出力は破棄しました。',

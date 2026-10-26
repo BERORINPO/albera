@@ -231,7 +231,7 @@ export const EN_CANVAS = Object.freeze({
   'graph.runDelegation': 'Run this delegation',
   'graph.checkDelegation': 'Check delegation status',
   'graph.delegationUnavailable': 'This target cannot be resumed from the canvas. It must be a completed, local Codex CLI session.',
-  'graph.runDelegationConfirm': 'Resume the Codex CLI session for project {project} with this purpose?\n\n{purpose}\n\nPigeonholes will send only this purpose through localhost and Codex stdin. The saved Codex account and configuration may be used, including network/API access. Codex output is discarded. The session may incur usage and may change its session record. Continue?',
+  'graph.runDelegationConfirm': 'Resume the {provider} session for project {project} (ID suffix: {target}) with this purpose?\n\nPurpose: {purpose}\n\nPigeonholes will send only this purpose through localhost and Codex stdin. The saved Codex account and configuration may be used, including network/API access. Codex output is discarded. The session may incur usage and may change its session record. Continue?',
   'graph.delegationStarted': 'Codex delegation started. Its output is not shown in Pigeonholes.',
   'graph.delegationCompleted': 'Codex delegation completed.',
   'graph.delegationFailed': 'Codex delegation failed. CLI output was discarded.',
