@@ -61,3 +61,31 @@ test('WSL removal refuses an untracked arbitrary worktree path', async () => {
   } });
   assert.deepEqual(await source.remove({ cwd, branch: 'feature', confirmed: true }), { ok: false, reason: 'invalid_target' });
 });
+
+test('WSL removal recognizes a managed child created from another managed worktree', async () => {
+  const parentHash = crypto.createHash('sha256').update(`ubuntu\0${root}`).digest('hex').slice(0, 12);
+  const parentBranchHash = crypto.createHash('sha256').update('parent').digest('hex').slice(0, 8);
+  const parent = `${root}-pigeonholes-${parentHash}-parent-${parentBranchHash}`;
+  const childHash = crypto.createHash('sha256').update(`ubuntu\0${parent}`).digest('hex').slice(0, 12);
+  const childBranchHash = crypto.createHash('sha256').update('child').digest('hex').slice(0, 8);
+  const child = `${parent}-pigeonholes-${childHash}-child-${childBranchHash}`;
+  const calls = [];
+  const source = createWslWorktreeSource({ shareRoot, runGit: async (args) => {
+    calls.push(args);
+    if (args.includes('--show-toplevel')) return `${root}\n`;
+    if (args.includes('list')) return [
+      `worktree ${root}`, 'HEAD abc', 'branch refs/heads/main', '',
+      `worktree ${parent}`, 'HEAD def', 'branch refs/heads/parent', '',
+      `worktree ${child}`, 'HEAD ghi', 'branch refs/heads/child', '',
+    ].join('\0');
+    return '';
+  } });
+  const rows = await source.listForCwd(cwd);
+  assert.deepEqual(rows.map(({ branch, removable }) => ({ branch, removable })), [
+    { branch: 'main', removable: false },
+    { branch: 'parent', removable: true },
+    { branch: 'child', removable: true },
+  ]);
+  assert.deepEqual(await source.remove({ cwd, branch: 'child', confirmed: true }), { ok: true, branch: 'child' });
+  assert.deepEqual(calls.find((args) => args.includes('remove')).slice(-2), ['remove', child]);
+});

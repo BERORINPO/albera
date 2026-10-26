@@ -36,6 +36,11 @@ function worktreeTarget(root, distro, branch) {
   return path.posix.join(path.posix.dirname(root), `${path.posix.basename(root)}-pigeonholes-${repoHash}-${slug}-${branchHash}`);
 }
 
+function isManagedWorktreeEntry(target, entries, distro) {
+  return !!target.branch && entries.some((origin) => posixKey(origin.path) !== posixKey(target.path)
+    && posixKey(target.path) === posixKey(worktreeTarget(origin.path, distro, target.branch)));
+}
+
 /** @param {{shareRoot:string,runGit?:(args:string[],distro:string,timeout?:number)=>Promise<string>,fs?:typeof fs}} options */
 export function createWslWorktreeSource({ shareRoot, runGit = runWslGit, fs: fileSystem = fs }) {
   const configuredRoot = wslShareRoot(shareRoot);
@@ -55,11 +60,10 @@ export function createWslWorktreeSource({ shareRoot, runGit = runWslGit, fs: fil
         try {
           status = summarizeGitStatus(await run(['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-C', entry.path, 'status', '--porcelain=v1', '-z', '--untracked-files=normal']));
         } catch { /* Keep only safe branch metadata and an explicit unknown status. */ }
-      const managed = entry.branch ? posixKey(entry.path) === posixKey(worktreeTarget(top, mapped.distro, entry.branch)) : false;
         return {
           branch: entry.branch, status: status.state, changed: status.changed, untracked: status.untracked,
           conflicted: status.conflicted, detached: entry.detached, locked: entry.locked, prunable: entry.prunable,
-          current: posixKey(entry.path) === posixKey(top), removable: managed,
+          current: posixKey(entry.path) === posixKey(top), removable: isManagedWorktreeEntry(entry, entries, mapped.distro),
         };
       }));
       return rows;
@@ -104,7 +108,7 @@ export function createWslWorktreeSource({ shareRoot, runGit = runWslGit, fs: fil
       const entry = entries.find((item) => item.branch === branch);
       if (!entry) return { ok: false, reason: 'not_found' };
       if (posixKey(entry.path) === posixKey(root)) return { ok: false, reason: 'current' };
-      if (!entry.branch || !posixAbsolute(entry.path) || posixKey(entry.path) !== posixKey(worktreeTarget(root, mapped.distro, branch))) return { ok: false, reason: 'invalid_target' };
+      if (!entry.branch || !posixAbsolute(entry.path) || !isManagedWorktreeEntry(entry, entries, mapped.distro)) return { ok: false, reason: 'invalid_target' };
       if (entry.locked) return { ok: false, reason: 'locked' };
       if (entry.prunable) return { ok: false, reason: 'prunable' };
       let status;
