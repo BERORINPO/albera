@@ -192,14 +192,34 @@ test('visibleModel: project filtering composes with source and search across pil
   b.recentGroups[0].items.push(c('opencode_00000000-0000-4000-8000-000000000003', {
     source: 'opencode', title: 'OpenCode notes', project: { key: 'notes', label: 'notes', extra: 0 },
   }));
+  b.buckets.working.push(c('copilot_00000000-0000-4000-8000-000000000004', {
+    bucket: 'working', source: 'copilot', title: 'Copilot notes', project: { key: 'notes', label: 'notes', extra: 0 },
+  }));
   const byProject = visibleModel(b, { project: 'notes', t: en });
   assert.equal(byProject.filtering, true);
   assert.deepEqual(byProject.buckets.trouble.map((x) => x.id), ['t1']);
   assert.deepEqual(byProject.recentGroups.flatMap((g) => g.items.map((x) => x.id)), ['opencode_00000000-0000-4000-8000-000000000003']);
-  assert.equal(byProject.total, 3);
+  assert.equal(byProject.total, 4);
   const combined = visibleModel(b, { project: 'notes', source: 'opencode', q: 'notes', t: en });
   assert.equal(combined.total, 1);
   assert.deepEqual(combined.recentGroups[0].items.map((x) => x.id), ['opencode_00000000-0000-4000-8000-000000000003']);
+  const byState = visibleModel(b, { state: 'working', project: 'notes', source: 'copilot', q: 'notes', t: en });
+  assert.equal(byState.total, 1);
+  assert.deepEqual(byState.buckets.working.map((x) => x.id), ['copilot_00000000-0000-4000-8000-000000000004']);
+  assert.deepEqual(byState.recentGroups, []);
+});
+
+test('visibleModel: state selector filters all six piles including grouped recent and cleanup rows', () => {
+  const b = board();
+  for (const [pile, total] of [['needs_you', 2], ['trouble', 1], ['unread', 1], ['working', 1], ['recent', 2], ['cleanup', 5]]) {
+    const v = visibleModel(b, { state: pile, t: en });
+    assert.equal(v.total, total, pile);
+    for (const other of ['needs_you', 'trouble', 'unread', 'working']) {
+      if (other !== pile) assert.equal(v.buckets[other].length, 0, `${pile} excludes ${other}`);
+    }
+    assert.equal(v.recentGroups.length > 0, pile === 'recent');
+    assert.equal(v.cleanupGroups.length > 0, pile === 'cleanup');
+  }
 });
 
 test('visibleModel: 親子の絞り込みは根と子孫、定期実行は runIds のどれかが入っていれば', () => {

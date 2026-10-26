@@ -187,7 +187,7 @@ export function render() {
   const board = state.board;
   const focus = captureFocus();
   state.projectFilter = renderProjectFilter(/** @type {HTMLSelectElement} */ ($('project-filter')), board, t, state.projectFilter);
-  view.visible = board ? visibleModel(board, { q: state.filter, family: state.family, source: state.sourceFilter, project: state.projectFilter, t, now: at }) : null;
+  view.visible = board ? visibleModel(board, { q: state.filter, family: state.family, source: state.sourceFilter, project: state.projectFilter, state: state.stateFilter, t, now: at }) : null;
   view.index = cardIndex(board);
   view.present = presentIds(board);
   renderMast();
@@ -331,6 +331,8 @@ export function clearFilters() {
   /** @type {HTMLSelectElement} */ ($('source-filter')).value = 'all';
   state.projectFilter = 'all';
   /** @type {HTMLSelectElement} */ ($('project-filter')).value = 'all';
+  state.stateFilter = 'all';
+  /** @type {HTMLSelectElement} */ ($('state-filter')).value = 'all';
 }
 
 /** その行が見えるように欄・グループ・「残りを表示」を開いて、カーソルとフォーカスを置く。 @param {string} id */

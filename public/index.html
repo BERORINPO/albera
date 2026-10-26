@@ -27,8 +27,14 @@
     <span class="masthead__date" id="dateline"></span>
     <span class="masthead__demo" id="demo" data-i18n="mast.demo" hidden>Demo data</span>
     <label class="filter"><span class="vh" data-i18n="filter.label">Filter by title, project, summary or what it is doing</span><input type="search" id="filter" autocomplete="off" spellcheck="false" placeholder="Filter" data-i18n-attr="placeholder:filter.placeholder"><kbd class="hk" aria-hidden="true">/</kbd></label>
-    <label class="source-filter"><span class="vh" data-i18n="filter.sourceLabel">Session source</span><select id="source-filter" aria-label="Session source" data-i18n-attr="aria-label:filter.sourceLabel"><option value="all" data-i18n="filter.sourceAll">All sources</option><option value="claude" data-i18n="filter.sourceClaude">Claude Code</option><option value="codex" data-i18n="filter.sourceCodex">Codex CLI</option><option value="copilot" data-i18n="filter.sourceCopilot">GitHub Copilot</option><option value="opencode" data-i18n="filter.sourceOpenCode">OpenCode</option></select></label>
-    <label class="project-filter"><span class="vh" data-i18n="filter.projectLabel">Project</span><select id="project-filter" aria-label="Project" data-i18n-attr="aria-label:filter.projectLabel"><option value="all" data-i18n="filter.projectAll">All projects</option></select></label>
+    <details class="filter-menu">
+      <summary class="textbtn" data-i18n="filter.menu">Filters</summary>
+      <div class="filter-menu__panel">
+        <label class="source-filter"><span data-i18n="filter.sourceLabel">Session source</span><select id="source-filter" aria-label="Session source" data-i18n-attr="aria-label:filter.sourceLabel"><option value="all" data-i18n="filter.sourceAll">All sources</option><option value="claude" data-i18n="filter.sourceClaude">Claude Code</option><option value="codex" data-i18n="filter.sourceCodex">Codex CLI</option><option value="copilot" data-i18n="filter.sourceCopilot">GitHub Copilot</option><option value="opencode" data-i18n="filter.sourceOpenCode">OpenCode</option></select></label>
+        <label class="project-filter"><span data-i18n="filter.projectLabel">Project</span><select id="project-filter" aria-label="Project" data-i18n-attr="aria-label:filter.projectLabel"><option value="all" data-i18n="filter.projectAll">All projects</option></select></label>
+        <label class="state-filter"><span data-i18n="filter.stateLabel">State</span><select id="state-filter" aria-label="State" data-i18n-attr="aria-label:filter.stateLabel"><option value="all" data-i18n="filter.stateAll">All states</option><option value="needs_you" data-i18n="bucket.needs_you.title">Needs you</option><option value="trouble" data-i18n="bucket.trouble.title">Stuck?</option><option value="unread" data-i18n="bucket.unread.title">Unread</option><option value="working" data-i18n="bucket.working.title">Working</option><option value="recent" data-i18n="bucket.recent.title">Recent</option><option value="cleanup" data-i18n="bucket.cleanup.title">To archive</option></select></label>
+      </div>
+    </details>
     <button class="textbtn" type="button" id="lang" data-action="lang"></button>
     <button class="textbtn" type="button" id="help-btn" data-action="help" aria-label="Keyboard keys" data-i18n-attr="aria-label:mast.help">?</button>
   </header>

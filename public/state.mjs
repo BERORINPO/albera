@@ -43,6 +43,7 @@ export const state = {
   filter: '',
   sourceFilter: 'all',
   projectFilter: 'all',
+  stateFilter: 'all',
   /** @type {string|null} */ family: null,
   /** @type {Cursor|null} */ cursor: null,
   // 新しい盤面を受け取る前のカーソル。index は「その欄で見えていた行」の中の位置なので、描き終えてから見えている行で合わせ直す

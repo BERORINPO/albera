@@ -1,9 +1,9 @@
-/* Provider and project selectors for the combined session board. */
-.source-filter, .project-filter { flex: none; }
-.source-filter select, .project-filter select { min-height: 2.75rem; max-width: 10rem; padding-inline: var(--space-xs); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-control); background: var(--color-paper); color: var(--color-ink); font: inherit; font-size: var(--text-sm); }
-.project-filter select { max-width: 12rem; }
-.source-filter select:focus-visible, .project-filter select:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
-@media (max-width: 23.99rem) {
-  .source-filter, .project-filter { order: 10; flex: 1 1 calc(50% - var(--space-sm)); }
-  .source-filter select, .project-filter select { width: 100%; max-width: none; }
-}
+/* Compact disclosure keeps the masthead usable while exposing all board filters. */
+.filter-menu { position: relative; z-index: 8; flex: none; }
+.filter-menu > summary { display: flex; align-items: center; min-height: 2.75rem; cursor: pointer; list-style: none; }
+.filter-menu > summary::-webkit-details-marker { display: none; }
+.filter-menu > summary:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.filter-menu__panel { position: absolute; inset-block-start: calc(100% + var(--space-xs)); inset-inline-end: 0; display: grid; grid-template-columns: 1fr; gap: var(--space-sm); width: min(18rem, calc(100vw - 2 * var(--gutter))); padding: var(--space-sm); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-control); background: var(--color-paper); box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 18%); }
+.filter-menu__panel label { display: grid; gap: var(--space-2xs); color: var(--color-ink-2); font-size: var(--text-sm); }
+.filter-menu__panel select { width: 100%; min-height: 2.75rem; padding-inline: var(--space-xs); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-control); background: var(--color-paper); color: var(--color-ink); font: inherit; font-size: var(--text-sm); }
+.filter-menu__panel select:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }

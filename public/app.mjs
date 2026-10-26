@@ -19,6 +19,7 @@ const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.get
 const filterInput = /** @type {HTMLInputElement} */ ($('filter'));
 const sourceFilter = /** @type {HTMLSelectElement} */ ($('source-filter'));
 const projectFilter = /** @type {HTMLSelectElement} */ ($('project-filter'));
+const stateFilter = /** @type {HTMLSelectElement} */ ($('state-filter'));
 
 /** index.html の data-i18n / data-i18n-attr を今の言語で埋める。 */
 function applyStaticText() {
@@ -335,6 +336,12 @@ function init() {
   projectFilter.addEventListener('change', () => {
     const value = projectFilter.value;
     state.projectFilter = value === 'all' || [...projectFilter.options].some((option) => option.value === value) ? value : 'all';
+    render();
+    announceFilter();
+  });
+  stateFilter.addEventListener('change', () => {
+    const value = stateFilter.value;
+    state.stateFilter = ['needs_you', 'trouble', 'unread', 'working', 'recent', 'cleanup'].includes(value) ? value : 'all';
     render();
     announceFilter();
   });
