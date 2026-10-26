@@ -810,7 +810,7 @@
 
 ### 実Codex CLIセッションの安全な有無確認 (2026-10-27)
 
-- Codex adapterのread-only走査を行い、表示へ出さず安全な集計値のみを確認した。候補rollout 38件、`not_cli` 38件、認識済みCodex CLIセッション0件。セッション状態・内容・識別子・パスは出力していない。
+- Codex adapterのread-only走査を行い、表示へ出さず安全な集計値のみを確認した。候補rollout 38件、`not_cli` 38件、認識済みCodex CLIセッション0件。追加のheader-only形式監査では38件すべてJSONLの`session_meta` envelopeとして読め、`source=cli`は0件、source別値なし21件、他source 17件、originatorがadapter許可値に一致するもの0件だった。個々のsource/originator値、セッション状態・内容・識別子・パスは出力していない。
 - 実CLI起点の記録が無いため、実セッションの検出・ライフサイクル・GUI表示は引き続き未確認。合成fixtureやデモ表示を実データ検証と扱わない。新規セッション作成やCLI起動は行わない。
 
 ### REA要約の手動確認を保存条件にする (2026-10-27)
