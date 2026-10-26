@@ -263,15 +263,22 @@ function routineFor(s, ctx) {
  * @param {Ctx} ctx
  * @returns {Card}
  */
+const PROVIDER_SOURCES = new Set(['codex', 'copilot', 'opencode']);
+const PROVIDER_STATES = new Set(['active', 'complete', 'interrupted']);
+
 function makeCard(s, ctx) {
   const c = /** @type {Classified} */ (ctx.cls.get(s.sessionId));
   const ref = /** @type {import('./project.mjs').ProjectRef} */ (ctx.projRefs.get(s.sessionId));
   const body = cap(bodyFor(s, c), CAP.BODY);
   const isOther = ref.key === OTHER_PROJECT.key;
+  const sourceState = PROVIDER_SOURCES.has(s.source)
+    ? (PROVIDER_STATES.has(s.lifecycle?.status) ? s.lifecycle.status : 'unknown')
+    : undefined;
   /** @type {Card} */
   const card = {
     id: s.sessionId,
     ...(s.source === 'codex' || s.source === 'copilot' || s.source === 'opencode' ? { source: s.source } : {}),
+    ...(sourceState ? { sourceState } : {}),
     bucket: c.bucket,
     reason: c.reason,
     ...(c.reasonParams ? { reasonParams: c.reasonParams } : {}),

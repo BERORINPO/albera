@@ -40,6 +40,18 @@ test('v は 2。件数の合計は非アーカイブ件数と一致し、アー�
   assert.ok(!JSON.stringify(b).includes(sid(2)));
 });
 
+test('provider source state is projected only as a safe enum; Claude cards stay unchanged', () => {
+  const codex = { ...rec(801), source: 'codex', lifecycle: { status: 'unexpected-sensitive-state' }, events: [] };
+  const claude = rec(802);
+  const result = board([codex, claude]);
+  const cards = [...result.buckets.needs_you, ...result.buckets.trouble, ...result.buckets.unread, ...result.buckets.working, ...result.recentGroups.flatMap((g) => g.items), ...allCleanupRows(result)];
+  const codexCard = cards.find((card) => card.id === codex.sessionId);
+  const claudeCard = cards.find((card) => card.id === claude.sessionId);
+  assert.equal(codexCard?.sourceState, 'unknown');
+  assert.equal(JSON.stringify(result).includes('unexpected-sensitive-state'), false);
+  assert.equal('sourceState' in claudeCard, false);
+});
+
 test('盤面に言葉は入らない: reasonText・gloss・グループの label が無く、stats.demo と formatSuspect がある', () => {
   const b = board([rec(1), idle(2), rec(3, { cwd: '', originCwd: '' })], { demo: true });
   const json = JSON.stringify(b);

@@ -203,7 +203,6 @@ function dlRow(label, value, cls) {
   if (value == null || value === '') return [];
   return [h('dt', { text: label }), h('dd', { class: cls ?? null }, value)];
 }
-
 /**
  * 親子の木 (ul.tree)。自分は太字と「← これ」、他の人は押すとその行へ移る。
  * @param {T} t @param {Card} card @param {RowCtx} ctx
@@ -274,6 +273,7 @@ export function detailEl(card, pile, ctx) {
       {},
       ...dlRow(t('detail.state'), h('span', {}, ...partsToNodes(t.parts('detail.stateValue', { pile: bucketTitle(t, pile), time: timeEl(t, card, ctx.now) })))),
       ...dlRow(t('detail.source'), [card.source ? t(`source.${card.source}`) : t('source.claude'), d.executionLocation ? t(`graph.executionLocation.${d.executionLocation}`) : ''].filter(Boolean).join(' — ')),
+      ...dlRow(t('detail.executionState'), card.sourceState ? t(`sourceState.${card.sourceState}`) : null),
       ...activityRows(t, card, pile, ctx.now),
       ...dlRow(t('detail.summary'), d.statusDetail ? h('q', { lang: contentLang(d.statusDetail), text: d.statusDetail }) : null),
       ...dlRow(t('detail.error'), d.error ? h('span', { class: 'pre', lang: langOf(t, d.error), text: d.error }) : null),

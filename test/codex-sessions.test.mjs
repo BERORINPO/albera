@@ -78,6 +78,11 @@ test('Codex CLI rollout を検出し、turn status と allowlist イベントだ
   const done = sessions.find((s) => s.sessionId === `codex_${doneId}`);
   const aborted = sessions.find((s) => s.sessionId === `codex_${abortedId}`);
   assert.deepEqual(active.lifecycle, { status: 'active', startedAt: activeAt });
+  const mixedBoard = buildBoard({ sessions, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS });
+  const boardItems = [...mixedBoard.buckets.working, ...mixedBoard.recentGroups.flatMap((group) => group.items), ...mixedBoard.cleanupGroups.flatMap((group) => group.items ?? group.projects.flatMap((project) => project.items))];
+  assert.equal(boardItems.find((card) => card.id === active.sessionId)?.sourceState, 'active');
+  assert.equal(boardItems.find((card) => card.id === done.sessionId)?.sourceState, 'complete');
+  assert.equal(boardItems.find((card) => card.id === aborted.sessionId)?.sourceState, 'interrupted');
   assert.deepEqual(active.events, [{ type: 'turn_started', at: activeAt }]);
   assert.deepEqual(done.lifecycle, { status: 'complete' });
   assert.deepEqual(done.events, [{ type: 'turn_started', at: doneAt - 10_000 }, { type: 'turn_completed', at: doneAt }]);

@@ -111,6 +111,7 @@
  * @typedef {Object} Card
  * @property {string} id
  * @property {'codex'|'copilot'|'opencode'=} source
+ * @property {'active'|'complete'|'interrupted'|'unknown'=} sourceState  安全区分だけを持つprovider側の実行状態
  * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted'|'turn_failed',at:number}>=} events
  * @property {BucketKey} bucket
  * @property {ReasonCode} reason
