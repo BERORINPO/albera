@@ -10,9 +10,14 @@ import {
 } from './canvas-ctl.mjs';
 import { bindCanvas, canvasEscapeStep } from './canvas-input.mjs';
 import { neighbour } from './canvas-layout.mjs';
-import { openSession, render } from './render.mjs';
+import { openSession, render, view } from './render.mjs';
 import { state } from './state.mjs';
 import { nextUp, PILES } from './ui-state.mjs';
+import { addGraphNode, connectGraph, moveGraphNode, removeGraphNode, updateGraphNode } from './graph-model.mjs';
+import { loadGraph, saveGraph } from './graph-store.mjs';
+import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs';
+import { GRAPH_CARD_SIZE } from './graph-render.mjs';
+import { announce } from './view.mjs';
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
 
@@ -65,6 +70,50 @@ function nudgeSheet(key, dir) {
   if (!s || !sign) return false;
   placeSheet(s.key, s.x - sign[0] * CANVAS.NUDGE, s.y - sign[1] * CANVAS.NUDGE);
   revealEl(headOf(s.key));
+  return true;
+}
+
+/** Session selectors use an opaque short ID and provider only; session titles and paths may contain sensitive text. */
+function graphSessions() {
+  return [...view.index.keys()].map((id) => ({ id, title: `${id.startsWith('codex_') ? 'Codex' : 'Claude'} session #${id.slice(-8)}` }));
+}
+
+function graphChanged(doc) {
+  if (!saveGraph(doc)) return announce(state.t('graph.saveError'));
+  render();
+}
+
+function newGraphNode() {
+  const graph = loadGraph();
+  const vpSize = size();
+  const position = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
+  openGraphNodeDialog({ t: state.t, graph, sessions: graphSessions(), position, onSave: (input) => graphChanged(addGraphNode(graph, input, `g_${crypto.randomUUID()}`)) });
+}
+
+function editGraphNode(id) {
+  const graph = loadGraph();
+  const node = graph.nodes.find((n) => n.id === id);
+  if (!node) return;
+  openGraphNodeDialog({
+    t: state.t, graph, node, sessions: graphSessions(),
+    onSave: (input) => graphChanged(updateGraphNode(graph, id, input)),
+    onDelete: (key) => graphChanged(removeGraphNode(graph, key)),
+    onConnect: (from) => connectGraphEndpoint(from),
+  });
+}
+
+function connectGraphEndpoint(from) {
+  const graph = loadGraph();
+  return openGraphRelationDialog({ t: state.t, from, graph, sessions: graphSessions(), onConnect: (input) => {
+    graphChanged(connectGraph(graph, input, `e_${crypto.randomUUID()}`, new Set(view.index.keys())));
+  } });
+}
+
+function moveGraphBy(id, dx, dy) {
+  const graph = loadGraph();
+  const node = graph.nodes.find((n) => n.id === id);
+  if (!node) return false;
+  graphChanged(moveGraphNode(graph, id, node.x + dx, node.y + dy));
   return true;
 }
 
@@ -128,6 +177,12 @@ export function runCanvasKey(action) {
     case 'escape':
       return escape();
     default:
+      if (action.startsWith('graph-move-')) {
+        const dir = action.slice('graph-move-'.length);
+        const delta = /** @type {Record<string,number[]>} */ ({ left: [-24, 0], right: [24, 0], up: [0, -24], down: [0, 24] })[dir];
+        const id = /** @type {HTMLElement|null} */ (document.activeElement)?.dataset.id;
+        return id && delta ? moveGraphBy(id, delta[0], delta[1]) : false;
+      }
       return false;
   }
 }
@@ -146,6 +201,9 @@ export const CANVAS_CLICK = {
   'handoff-close': () => closeBar(),
   'canvas-move': (el) => nudgeSheet(el.dataset.key ?? '', el.dataset.dir ?? ''),
   'canvas-sheet-fit': (el) => fitSheet(el.dataset.key ?? ''),
+  'graph-new': () => newGraphNode(),
+  'graph-open': (el) => editGraphNode(el.dataset.id ?? ''),
+  'graph-connect': (el) => connectGraphEndpoint(`session:${el.dataset.id ?? ''}`),
 };
 
 /** ブラウザが (フォーカスに合わせて) 表示枠をスクロールしたら、その分をカメラに移してスクロールを 0 に戻す。 */
@@ -189,6 +247,24 @@ export function initCanvas() {
       if (d && d.key === key) placeSheet(key, d.x, d.y);
       else render();
     },
+    dragGraph: (/** @type {string} */ id, /** @type {number} */ dx, /** @type {number} */ dy) => {
+      const node = loadGraph().nodes.find((n) => n.id === id);
+      const el = /** @type {HTMLElement|null} */ (world().querySelector(`.graph-node[data-id="${CSS.escape(id)}"]`));
+      if (!node || !el) return;
+      cv.graphDrag = { id, x: Math.round(node.x + dx / cv.cam.z), y: Math.round(node.y + dy / cv.cam.z) };
+      el.classList.add('is-dragging');
+      el.style.setProperty('--x', String(cv.graphDrag.x));
+      el.style.setProperty('--y', String(cv.graphDrag.y));
+    },
+    dropGraph: (/** @type {string} */ id, /** @type {number} */ dx, /** @type {number} */ dy) => {
+      world().querySelector(`.graph-node[data-id="${CSS.escape(id)}"]`)?.classList.remove('is-dragging');
+      const drag = cv.graphDrag;
+      cv.graphDrag = null;
+      const graph = loadGraph();
+      const node = graph.nodes.find((n) => n.id === id);
+      if (drag?.id === id && node) graphChanged(moveGraphNode(graph, id, node.x + dx / cv.cam.z, node.y + dy / cv.cam.z));
+    },
+    openGraph: (/** @type {string} */ id) => editGraphNode(id),
     // 動かさずに押した柱: フォーカスを置き、帯に「用紙を動かす」のボタンを出す (ドラッグのできない人の道、WCAG 2.5.7)
     focusHead: (/** @type {HTMLElement} */ head) => {
       head.focus({ preventScroll: true });

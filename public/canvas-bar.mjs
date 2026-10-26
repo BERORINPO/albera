@@ -49,6 +49,7 @@ function defaultBar(t, o) {
       ),
       fit,
       h('button', { class: 'textbtn cbar__arrange', type: 'button', 'data-action': 'canvas-arrange', text: t('canvas.arrange') }),
+      h('button', { class: 'textbtn', type: 'button', 'data-action': 'graph-new', text: t('graph.newButton') }),
     ),
   ];
 }
@@ -65,6 +66,7 @@ function detailBar(t, card, pile, rowCtx) {
   if (handoffPlan(card, rowCtx.handoff?.[card.id], rowCtx.now).guide) {
     acts.prepend(h('button', { class: 'textbtn is-strong', type: 'button', 'data-action': 'handoff-open', 'data-id': card.id, 'aria-label': t('handoff.openAria', { title: titleOf(t, card.title) }), text: t('handoff.open') }));
   }
+  acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'graph-connect', 'data-id': card.id, text: t('graph.connectSession') }));
   acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'canvas-close', 'data-id': card.id, text: t('canvas.close') }));
   return el;
 }

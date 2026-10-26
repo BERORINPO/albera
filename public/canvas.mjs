@@ -11,6 +11,7 @@ import { backEl, colRules, foldEl, headEl, setVars } from './canvas-sheet.mjs';
 import { canvasSig, slipEl, slipFlags } from './canvas-slip.mjs';
 import { groupCards } from './ui-state.mjs';
 import { fill, h, reconcile } from './view.mjs';
+import { renderGraphLayer } from './graph-render.mjs';
 
 export { canvasSig } from './canvas-slip.mjs';
 
@@ -93,6 +94,8 @@ function part(box, sig, build) {
  * @property {string|null} nextId
  * @property {number} now
  * @property {boolean} demo
+ * @property {any} [graph]
+ * @property {{id:string,x:number,y:number}|null} [graphDrag]
  * @property {Record<string, any>} handoff  prefs.handoff
  * @property {(pile: string, id: string) => boolean} isNew
  * @property {(pile: string, id: string) => boolean} takeArrival
@@ -157,14 +160,16 @@ export function renderCanvas(root, o) {
   const world = /** @type {HTMLElement} */ (root.querySelector('#cv-world'));
   const fold = o.layout.fold;
   // まとめは最後 (DOM の順 = tab の順: 用紙のあと、帯の前)。署名が変わったときだけ作り直す
-  const items = fold ? [...o.layout.sheets, fold] : o.layout.sheets;
+  const items = fold ? [...o.layout.sheets, fold] : [...o.layout.sheets];
+  items.push({ key: 'graph-layer' });
   const foldSig = fold ? `${o.t.lang}|${JSON.stringify(fold.items)}` : '';
-  reconcile(world, items, (s) => s.key, (s) => (s === fold ? foldSig : s.key), (s) => (s === fold ? foldEl(o.t, fold) : sheetShell(/** @type {SheetLayout} */ (s))));
+  reconcile(world, items, (s) => s.key, (s) => (s === fold ? foldSig : s.key), (s) => (s === fold ? foldEl(o.t, fold) : s.key === 'graph-layer' ? h('div', { class: 'graph-layer', 'data-key': 'graph-layer' }) : sheetShell(/** @type {SheetLayout} */ (s))));
   const byKey = new Map(o.layout.sheets.map((s) => [s.key, s]));
   for (const el of /** @type {HTMLElement[]} */ ([...world.children])) {
     const s = byKey.get(el.dataset.key ?? '');
     if (s) syncSheet(el, s, o);
     else if (fold && el.dataset.key === FOLD_KEY) setVars(el, { '--x': fold.x, '--y': fold.y, '--w': fold.w, '--h': fold.h });
+    else if (el.dataset.key === 'graph-layer') renderGraphLayer(el, { t: o.t, graph: o.graph ?? { nodes: [], edges: [] }, index: o.index, layout: o.layout, filter: o.graphFilter ?? '', boardReady: !!o.board, drag: o.graphDrag ?? null });
   }
   heads = null;
 }

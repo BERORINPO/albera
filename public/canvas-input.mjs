@@ -4,7 +4,7 @@
 
 import { CANVAS } from '../src/shared/constants.mjs';
 
-/** @typedef {'viewport'|'slip'|'head'|'bar'|'filter'|'field'|'dialog'|'control'|'none'} CanvasTarget */
+/** @typedef {'viewport'|'slip'|'graph'|'head'|'bar'|'filter'|'field'|'dialog'|'control'|'none'} CanvasTarget */
 /** @typedef {{key: string, keyCode?: number, isComposing?: boolean, ctrlKey?: boolean, metaKey?: boolean, altKey?: boolean, shiftKey?: boolean, repeat?: boolean}} KeyLike */
 
 const ARROWS = Object.freeze({ ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' });
@@ -29,6 +29,7 @@ export function canvasKeyAction(ev, ctx) {
   if (dir) {
     // 矢印は 1 文字キーではないので、切替で止めても効く
     if (target === 'head') return ev.shiftKey ? `nudge-${dir}` : null;
+    if (target === 'graph') return `graph-move-${dir}`;
     if (target === 'slip') return ev.shiftKey ? null : `move-${dir}`;
     if (target === 'viewport' || target === 'none') return `pan-${dir}${ev.shiftKey ? '-big' : ''}`;
     return null;
@@ -99,6 +100,7 @@ export function canvasTarget(el) {
   if (el.matches('input[type="checkbox"], input[type="radio"]')) return 'control';
   if (el.matches('input, textarea, select, [contenteditable], [contenteditable] *')) return 'field';
   if (el.matches('.slip__title')) return 'slip';
+  if (el.closest('.graph-node')) return 'graph';
   if (el.matches('.sheet__head')) return 'head';
   if (el.id === 'cv-view') return 'viewport';
   if (el.closest('#cv-bar')) return 'bar';
@@ -112,11 +114,14 @@ export function canvasTarget(el) {
  * @property {(factor: number, px: number, py: number) => void} zoomBy 表示枠の中の点 (px, py) を中心に factor 倍
  * @property {(key: string, dx: number, dy: number) => void} dragSheet 見出しをつかんで動かしている間 (画面の px、つかんだ所から)
  * @property {(key: string, dx: number, dy: number) => void} dropSheet 離したとき
+ * @property {(id:string,dx:number,dy:number)=>void} dragGraph
+ * @property {(id:string,dx:number,dy:number)=>void} dropGraph
+ * @property {(id:string)=>void} openGraph
  * @property {(head: HTMLElement) => void} focusHead 動かさずに押しただけのとき
  */
 
 /** ドラッグを始めない部品 (押せるもの)。見出しは別に扱う。 */
-const CONTROLS = 'button:not(.sheet__head), a, input, summary, select, textarea, label';
+const CONTROLS = 'button:not(.sheet__head):not(.graph-node), a, input, summary, select, textarea, label';
 
 /**
  * 表示枠にポインタ・ホイール・タッチを付ける。机か用紙の空いた所をドラッグ → 動かす、見出しのドラッグ → 用紙を動かす、
@@ -127,7 +132,7 @@ const CONTROLS = 'button:not(.sheet__head), a, input, summary, select, textarea,
 export function bindCanvas(viewport, handlers) {
   /** @type {Map<number, {x: number, y: number}>} */
   const pts = new Map();
-  /** @type {null|{kind: 'pan'|'head', id: number, x: number, y: number, head?: HTMLElement, key?: string, moved: boolean}} */
+  /** @type {null|{kind: 'pan'|'head'|'graph', id: number, x: number, y: number, head?: HTMLElement, key?: string, moved: boolean}} */
   let drag = null;
   /** @type {null|{dist: number}} */
   let pinch = null;
@@ -150,8 +155,9 @@ export function bindCanvas(viewport, handlers) {
       return;
     }
     const head = /** @type {HTMLElement|null} */ (el?.closest('.sheet__head') ?? null);
+    const graph = /** @type {HTMLElement|null} */ (el?.closest('.graph-node') ?? null);
     if (!head && el?.closest(CONTROLS)) return;
-    drag = { kind: head ? 'head' : 'pan', id: ev.pointerId, x: ev.clientX, y: ev.clientY, head: head ?? undefined, key: head?.dataset.key, moved: false };
+    drag = { kind: head ? 'head' : graph ? 'graph' : 'pan', id: ev.pointerId, x: ev.clientX, y: ev.clientY, head: head ?? undefined, key: head?.dataset.key ?? graph?.dataset.id, moved: false };
     viewport.setPointerCapture?.(ev.pointerId);
     if (!head) viewport.classList.add('is-panning');
   });
@@ -172,7 +178,8 @@ export function bindCanvas(viewport, handlers) {
     if (!drag.moved && Math.hypot(dx, dy) <= CANVAS.DRAG_SLOP) return;
     drag.moved = true;
     if (drag.kind === 'pan') handlers.pan(now.x - prev.x, now.y - prev.y);
-    else if (drag.key) handlers.dragSheet(drag.key, dx, dy);
+    else if (drag.kind === 'head' && drag.key) handlers.dragSheet(drag.key, dx, dy);
+    else if (drag.kind === 'graph' && drag.key) handlers.dragGraph(drag.key, dx, dy);
   });
   const end = (/** @type {PointerEvent} */ ev) => {
     pts.delete(ev.pointerId);
@@ -181,6 +188,11 @@ export function bindCanvas(viewport, handlers) {
     const d = drag;
     drag = null;
     viewport.classList.remove('is-panning');
+    if (d.kind === 'graph' && d.key) {
+      if (d.moved) handlers.dropGraph(d.key, ev.clientX - d.x, ev.clientY - d.y);
+      else handlers.openGraph(d.key);
+      return;
+    }
     if (d.kind !== 'head' || !d.key || !d.head) return;
     if (d.moved && ev.type === 'pointerup') handlers.dropSheet(d.key, ev.clientX - d.x, ev.clientY - d.y);
     else if (d.moved) handlers.dropSheet(d.key, 0, 0);

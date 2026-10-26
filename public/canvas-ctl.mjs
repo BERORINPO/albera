@@ -16,6 +16,7 @@ import { jumpPile, jumpTo, render, rowEl, view } from './render.mjs';
 import { isNew, now, pileLists, setView, state, takeArrival } from './state.mjs';
 import { nextUp } from './ui-state.mjs';
 import { announce } from './view.mjs';
+import { loadGraph } from './graph-store.mjs';
 
 /** @typedef {import('./canvas-camera.mjs').Camera} Camera */
 /** @typedef {import('./canvas-layout.mjs').Layout} Layout */
@@ -89,6 +90,7 @@ export function drawCanvas(at) {
   renderCanvas($('canvas'), {
     t: state.t, board, layout, index: view.index, matched: cv.matched, cursorId: state.cursor?.id ?? null, nextId, now: at,
     demo, handoff: state.prefs.handoff, isNew: (p, id) => isNew(p, id, at), takeArrival, drag: cv.drag,
+    graph: loadGraph(), graphDrag: cv.graphDrag ?? null, graphFilter: state.filter,
   });
   // 表示枠の説明: 1 文字キーを止めているときは矢印だけ (+ − f は効かない)
   const keys = $('cv-keys');
