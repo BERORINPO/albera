@@ -32,6 +32,11 @@ test('empty canvas gives a direct accessible action to add a card', () => {
   }
 });
 
+test('canvas comprehension review uses the complete current session index', () => {
+  const renderer = fs.readFileSync(new URL('../public/graph-render.mjs', import.meta.url), 'utf8');
+  assert.match(renderer, /reviewUnderstandingGaps\(o\.graph, new Set\(o\.index\.keys\(\)\)\)/);
+});
+
 test('delegation edge presentation preserves only allowlisted status values for canvas styling', () => {
   const t = (key) => key;
   for (const status of ['planned', 'active', 'blocked', 'completed', 'cancelled']) {

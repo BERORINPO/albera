@@ -182,12 +182,22 @@ test('comprehension review reports only explicitly missing graph links, never a 
   let graph = addGraphNode(empty(), { kind: 'understanding_gap', title: 'Explain decision', body: '', status: 'open', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: 'decision record', neededExplanation: 'why it was chosen' }, g1);
   assert.deepEqual(reviewUnderstandingGaps(graph), [{ id: g1, missing: ['evidence', 'explains'] }]);
   graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'evidence', purpose: 'Read-only source session', status: '' }, e1, new Set([session]));
-  assert.deepEqual(reviewUnderstandingGaps(graph), [{ id: g1, missing: ['explains'] }]);
+  assert.deepEqual(reviewUnderstandingGaps(graph, new Set([session])), [{ id: g1, missing: ['explains'] }]);
   graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'explains', purpose: 'User-authored rationale', status: '' }, 'e_00000000-0000-4000-8000-000000000002', new Set([session]));
-  assert.deepEqual(reviewUnderstandingGaps(graph), []);
+  assert.deepEqual(reviewUnderstandingGaps(graph, new Set([session])), []);
   graph = updateGraphNode(graph, g1, { status: 'resolved' });
   assert.deepEqual(reviewUnderstandingGaps(graph), [], 'resolved gaps leave the review queue');
 
   const unspecified = addGraphNode(empty(), { kind: 'understanding_gap', title: 'Unspecified', body: '', status: 'open', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: '', neededExplanation: '' }, g2);
   assert.deepEqual(reviewUnderstandingGaps(unspecified), [], 'blank fields do not imply missing evidence or lack of understanding');
+});
+
+test('comprehension review treats relations to unavailable sessions as missing', () => {
+  const graph = addGraphNode(empty(), {
+    kind: 'understanding_gap', title: 'Review source availability', body: '', status: 'open', x: 0, y: 0,
+    checkedPerson: 'reviewer', missingEvidence: 'source session', neededExplanation: 'decision context',
+  }, g1);
+  const linked = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'evidence', purpose: '', status: '' }, e1, new Set([session]));
+  assert.deepEqual(reviewUnderstandingGaps(linked, new Set([session])), [{ id: g1, missing: ['explains'] }]);
+  assert.deepEqual(reviewUnderstandingGaps(linked), [{ id: g1, missing: ['evidence', 'explains'] }]);
 });

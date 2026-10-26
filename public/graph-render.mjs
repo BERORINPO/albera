@@ -159,7 +159,7 @@ export function renderGraphLayer(layer, o) {
     },
   );
   const query = o.filter.trim().toLocaleLowerCase();
-  const reviewById = new Map(reviewUnderstandingGaps(o.graph).map((item) => [item.id, item.missing]));
+  const reviewById = new Map(reviewUnderstandingGaps(o.graph, new Set(o.index.keys())).map((item) => [item.id, item.missing]));
   reconcile(
     cardRoot,
     o.graph.nodes,

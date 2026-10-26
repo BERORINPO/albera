@@ -83,6 +83,9 @@ test('cancel closes a graph dialog even while a new card has no node yet', () =>
 
 test('the comprehension editor renders actions only from its current missing-link review', () => {
   const source = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
+  assert.match(source, /reviewUnderstandingGaps\(graph, new Set\(sessions\.map\(\(session\) => session\.id\)\)\)/);
+  assert.match(source, /const missingEndpoint = \(key\) => \(\{[\s\S]*?title: t\(key\.startsWith\('session:'\) \? 'graph\.missingSession' : 'graph\.missingNode'\)/);
+  assert.match(source, /options\.find\(\(x\) => x\.id === edge\.to\) \?\? missingEndpoint\(edge\.to\)/);
   assert.match(source, /review\?\.missing\.length/);
   assert.match(source, /review\.missing\.map\(\(kind\) => h\('button'/);
   assert.match(source, /'data-dialog-action': 'connect-missing'/);

@@ -77,7 +77,7 @@ export function openGraphNodeDialog(o) {
   const operationLocked = !!node && graph.edges.some((edge) => edge.operationId && edge.status !== 'completed' && (edge.from === `graph:${node.id}` || edge.to === `graph:${node.id}`));
   if (operationLocked) form.append(h('p', { class: 'graph-dialog__privacy', text: t('graph.nodeHasOperation') }));
   if (node?.kind === 'understanding_gap') {
-    const review = reviewUnderstandingGaps(graph).find((item) => item.id === node.id);
+    const review = reviewUnderstandingGaps(graph, new Set(sessions.map((session) => session.id))).find((item) => item.id === node.id);
     if (review?.missing.length) form.append(
       h('p', { class: 'graph-dialog__review', text: t('graph.reviewHint', { links: review.missing.map((kind) => t(`graph.link.${kind}`)).join(', ') }) }),
       h('div', { class: 'graph-dialog__review-actions' }, ...review.missing.map((kind) => h('button', {
@@ -246,8 +246,12 @@ export function openGraphRelationDialog(o) {
     ...sessions.map((s) => ({ id: `session:${s.id}`, title: graphSessionLabel(s, t) })),
   ];
   const fromKey = endpointKey(from);
-  const fromItem = options.find((x) => x.id === fromKey);
-  const toItem = edge ? options.find((x) => x.id === edge.to) : null;
+  const missingEndpoint = (key) => ({
+    id: key,
+    title: t(key.startsWith('session:') ? 'graph.missingSession' : 'graph.missingNode'),
+  });
+  const fromItem = options.find((x) => x.id === fromKey) ?? (edge ? missingEndpoint(fromKey) : null);
+  const toItem = edge ? options.find((x) => x.id === edge.to) ?? missingEndpoint(edge.to) : null;
   if (!fromItem || (edge && !toItem)) return false;
   const dialog = h('dialog', { class: 'graph-dialog', 'aria-labelledby': 'graph-connect-title' });
   const form = h('form', { class: 'graph-dialog__form' });

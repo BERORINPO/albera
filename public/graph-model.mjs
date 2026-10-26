@@ -284,13 +284,22 @@ export function removeGraphEdge(doc, id) {
  * evidence/explanation links in the user's graph, never a person's inferred
  * understanding or comprehension score.
  * @param {GraphDoc} doc
+ * @param {Set<string>} [sessionIds] Current read-only session IDs; dangling session links do not satisfy a gap.
  * @returns {Array<{id:string,missing:Array<'evidence'|'explains'>}>}
  */
-export function reviewUnderstandingGaps(doc) {
+export function reviewUnderstandingGaps(doc, sessionIds = new Set()) {
   return doc.nodes
     .filter((node) => node.kind === 'understanding_gap' && node.status !== 'resolved' && node.status !== 'done')
     .map((node) => {
-      const connected = new Set(doc.edges.filter((edge) => edge.from === `graph:${node.id}` || edge.to === `graph:${node.id}`).map((edge) => edge.kind));
+      const endpoint = `graph:${node.id}`;
+      const connected = new Set(doc.edges
+        .filter((edge) => edge.from === endpoint || edge.to === endpoint)
+        .filter((edge) => {
+          const other = edge.from === endpoint ? edge.to : edge.from;
+          if (other.startsWith('graph:')) return doc.nodes.some((item) => `graph:${item.id}` === other);
+          return other.startsWith('session:') && sessionIds.has(other.slice(8));
+        })
+        .map((edge) => edge.kind));
       const missing = [];
       if (node.missingEvidence && !connected.has('evidence')) missing.push('evidence');
       if (node.neededExplanation && !connected.has('explains')) missing.push('explains');
