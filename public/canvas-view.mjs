@@ -85,10 +85,11 @@ export function resized(sz) {
   const was = cv.size;
   cv.size = sz;
   if (!was.w || !sz.w || (was.w === sz.w && was.h === sz.h) || !cv.layout) return false;
+  const crossingWidthClass = (sz.w < NARROW_PX) !== cv.narrow;
   if (cv.atFit) cv.cam = fitCam();
   else if (cv.untouched) cv.cam = openCamera(cv.layout, nextUp(state.board)?.card.id ?? null, sz.w, sz.h, pad());
   else if (was.w !== sz.w) cv.cam = keepCentre(cv.cam, was.w, was.h, sz.w, sz.h);
-  if (cv.cameraReady && !cv.untouched) saveCameraView(cv.atFit, cv.cam, cv.narrow);
+  if (cv.cameraReady && !cv.untouched && !crossingWidthClass) saveCameraView(cv.atFit, cv.cam, cv.narrow);
   return true;
 }
 
