@@ -336,3 +336,11 @@
 - GUI確認で、新規カード編集時にnodeが未生成なため、キャンセル処理が `!node` guardに遮られて閉じない不具合を発見。cancel actionをnode依存処理より前に評価するよう修正し、action helperとdialog配線を合成テストで確認した。ブラウザーでもdialogの「閉じる」で空キャンバスへ戻り、カードが保存されていないことを確認した。
 - 空fixture・サーバー・ブラウザータブは検証後に停止/削除。セッション保存先の内容、実CLI、worktree、外部サービスにはアクセスしていない。
 - この修正後の検証: `npm test` 518 passed、`npm run arch` 96 paths/0 violations、`npm run smoke` passed、`git diff --check` passed。
+
+### 合成デモでのキャンバス操作受入 (2026-10-26)
+
+- 現在の作業treeから専用loopback port 8810で`--demo`を起動し、`/api/hello`が`demo: true`を返すことを確認。ブラウザーでカード追加dialogを開き、タスクカードを作成した。
+- タスクとCodex CLI合成セッションの`related`関係を画面から追加。再読込後にカードと関係が残り、カード詳細で接続先がCodex CLIのopaque short IDだけで表示され、キャンバス上に関係線が描画された。
+- focused cardへ矢印キーを送り、カード位置を動かした。再読込後も移動した位置が復元された。
+- source=Codex CLI、state=Working、project=demo-appを順に指定し、組み合わせ一致が1件になることを確認。canvas上では一致カードだけが強調され、view toggleで一覧に移ると同じ1件のみ表示された。
+- すべて合成データであり、実セッション・プロバイダー保存先・CLI・worktree操作は使っていない。実画面の表示幅は1280px。400px/320pxなどの狭幅、ブラウザー全体の製品受入は別途未完了。
