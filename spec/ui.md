@@ -1456,3 +1456,9 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - 隔離`--demo`で「実行条件」カードを作成し、ハーネスをCodex CLI、未確認の実行場所・分離・通信・承認を「不明」のまま保存した。UIは手動記録であり自動検出しないことをフォームで明示した。
 - 合成Codex CLIセッションに`related`で結び、詳細に「手動記録の実行条件」と各値を表示。再読み込み後のカード/関係/詳細復元を確認した。検索語「Codex CLI」でprofileカードが一致表示に残ることも確認した。
 - test-onlyカードをアプリ内確認後に削除し、再読み込み後にカードと関係が消えていることを確認。合成データとブラウザーlocalStorageのみで、実session source、CLI、worktree、外部サービスは不使用。実セッションのハーネス検証は未確認。
+
+### Obsidianノート参照の安全なGUI受入 (2026-10-27)
+
+- 隔離`--demo`でObsidianノートカードを作成。`../invalid.md`はフォームの検証メッセージで拒否され、保存されないことを確認した。`Architecture/Agent Canvas.md`は許可され、合成Codex CLIセッションへ`related`で接続できた。
+- session詳細とカード編集画面にObsidianリンクが表示され、URIがvault名/相対ノート名を正しくpercent-encodeすることをDOM属性で確認した。リンクは表示確認のみで、Obsidianプロトコルを起動していない。再読み込み後もカード・関係・リンクが復元した。
+- テストカードはアプリ内確認後に削除し、再読み込み後にカードと関係が存在しないことを確認。vaultやノート本文を読み書きせず、実セッション、CLI、worktree、外部サービスは使用していない。これは手動参照の画面受入で、Vault indexingや知識抽出の検証ではない。
