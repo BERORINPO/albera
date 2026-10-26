@@ -37,6 +37,7 @@ export const cv = {
   /** @type {Set<string>|null} 絞り込みに合う ID (null = 絞り込みなし。描くたびに作り直す) */ matched: null,
   /** @type {{key: string, x: number, y: number}|null} ドラッグ中の用紙と今の位置 (描き直しても席へ戻さない) */ drag: null,
   /** @type {{id:string,x:number,y:number}|null} ドラッグ中のユーザー作成カード */ graphDrag: null,
+  /** relation picker source while the user chooses a graph-card target */ graphConnectFrom: null,
   /** 描き直しのあとにプログラムがフォーカスを戻している間 (focusin でカメラもカーソルも動かさない) */ quiet: false,
   size: { w: 0, h: 0 },
 };

@@ -58,7 +58,7 @@ const EXPECTED = {
     'index.html', 'tokens.css', 'style.css', 'source-filter.css', 'rows.css', 'tidy.css', 'canvas.css', 'graph.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
     'actions.mjs', 'canvas.mjs', 'canvas-slip.mjs', 'canvas-sheet.mjs', 'canvas-fit.mjs', 'canvas-bar.mjs', 'canvas-ctl.mjs', 'canvas-view.mjs', 'canvas-act.mjs',
-    'canvas-layout.mjs', 'canvas-desk.mjs', 'canvas-fold.mjs', 'canvas-camera.mjs', 'canvas-input.mjs', 'graph-model.mjs', 'graph-store.mjs', 'graph-render.mjs', 'graph-dialog.mjs',
+    'canvas-layout.mjs', 'canvas-desk.mjs', 'canvas-fold.mjs', 'canvas-camera.mjs', 'canvas-input.mjs', 'graph-model.mjs', 'graph-store.mjs', 'graph-render.mjs', 'graph-dialog.mjs', 'graph-actions.mjs', 'graph-connect-mode.mjs',
     'keys.mjs', 'notify.mjs', 'favicon.mjs', 'copy.mjs', 'view.mjs', 'format.mjs', 'doing.mjs', 'events.mjs', 'codex-status.mjs', 'times.mjs', 'i18n.mjs', 'worktree-dialog.mjs', 'worktree-list-dialog.mjs', 'worktree-remove-dialog.mjs',
     'dict-en.mjs', 'dict-ja.mjs', 'dict-en-handoff.mjs', 'dict-ja-handoff.mjs', 'dict-en-canvas.mjs', 'dict-ja-canvas.mjs', 'worktree-detail.mjs',
   ],

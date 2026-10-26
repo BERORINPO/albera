@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
 import { graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation, graphEdgeSearchText, graphNodeHasMatchedSession, graphNodeSessionFilterMatch } from '../public/graph-render.mjs';
+import { cancelGraphConnection, chooseGraphConnectionTarget, startGraphConnection } from '../public/graph-connect-mode.mjs';
 
 const node = { id: 'g_00000000-0000-4000-8000-000000000001', kind: 'understanding_gap', title: 'Gap', status: 'open' };
 
@@ -104,6 +105,58 @@ test('empty canvas gives a direct accessible action to add a card', () => {
   }
 });
 
+test('canvas graph cards offer a keyboard-usable connect mode with a preselected target and Escape cancel', () => {
+  const renderer = fs.readFileSync(new URL('../public/graph-render.mjs', import.meta.url), 'utf8');
+  const actions = fs.readFileSync(new URL('../public/canvas-act.mjs', import.meta.url), 'utf8');
+  const dialog = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/graph.css', import.meta.url), 'utf8');
+  assert.match(renderer, /'data-action': 'graph-connect-node'/);
+  assert.match(renderer, /'aria-label', t\('graph\.connectCard'/);
+  assert.match(renderer, /'aria-pressed', o\.connectFrom === node\.id/);
+  const graphActions = fs.readFileSync(new URL('../public/graph-actions.mjs', import.meta.url), 'utf8');
+  assert.match(graphActions, /startGraphConnection/);
+  assert.match(graphActions, /chooseGraphConnectionTarget/);
+  assert.match(graphActions, /initialTo, graph, sessions/);
+  assert.match(actions, /if \(cancelGraphConnection\(cv, render\)\)[\s\S]*graph\.connectCancelled/);
+  assert.match(dialog, /endpointSelect\(t, options, 'to', o\.initialTo \?\? ''/);
+  assert.match(css, /\.graph-connect-handle:focus-visible/);
+  assert.match(css, /\.graph-node\.is-connect-target/);
+  for (const file of ['dict-ja-canvas.mjs', 'dict-en-canvas.mjs']) {
+    const dict = fs.readFileSync(new URL('../public/' + file, import.meta.url), 'utf8');
+    assert.match(dict, /'graph\.connectCard':/);
+    assert.match(dict, /'graph\.connectPickTarget':/);
+    assert.match(dict, /'graph\.connectCancelled':/);
+  }
+});
+
+test('graph connection mode selects a different target, keeps self-selection active, and cancels cleanly', () => {
+  const cv = { graphConnectFrom: null };
+  const calls = [];
+  const deps = {
+    cv,
+    loadGraph: () => ({ nodes: [{ id: 'source' }, { id: 'target' }] }),
+    render: () => calls.push('render'),
+    announce: (text) => calls.push(['announce', text]),
+    t: (key) => key,
+    focusTarget: (id) => calls.push(['focus', id]),
+  };
+  assert.equal(startGraphConnection(deps, 'missing'), false);
+  assert.equal(startGraphConnection(deps, 'source'), true);
+  assert.equal(cv.graphConnectFrom, 'source');
+  assert.deepEqual(calls, ['render', ['announce', 'graph.connectPickTarget'], ['focus', 'source']]);
+  assert.equal(chooseGraphConnectionTarget({ cv, render: deps.render, connect: () => calls.push('connect') }, 'source'), false);
+  assert.equal(cv.graphConnectFrom, 'source', 'choosing the source again does not silently cancel');
+  const edges = [];
+  assert.equal(chooseGraphConnectionTarget({ cv, render: deps.render, connect: (from, to) => edges.push([from, to]) }, 'target'), 1);
+  assert.deepEqual(edges, [['source', 'target']]);
+  assert.equal(cv.graphConnectFrom, null);
+  assert.equal(chooseGraphConnectionTarget({ cv, render: deps.render, connect: () => false }, 'target'), null);
+  cv.graphConnectFrom = 'source';
+  assert.equal(cancelGraphConnection(cv, deps.render), true);
+  assert.equal(cv.graphConnectFrom, null);
+  assert.equal(cancelGraphConnection(cv, deps.render), false);
+});
+
 test('canvas comprehension review uses the complete current session index', () => {
   const renderer = fs.readFileSync(new URL('../public/graph-render.mjs', import.meta.url), 'utf8');
   assert.match(renderer, /reviewUnderstandingGaps\(o\.graph, new Set\(o\.index\.keys\(\)\)\)/);
@@ -146,7 +199,7 @@ test('each persisted delegation status has a canvas style and unknown status sta
   assert.match(renderer, /else line\.setAttribute\('aria-hidden', 'true'\)/);
   assert.match(renderer, /if \(attributes\.title\) el\.setAttribute\('aria-label', attributes\.title\)/);
   assert.doesNotMatch(renderer, /el\.setAttribute\('aria-label', t\(`graph\.edge\.\$\{edge\.kind\}`\)\)/);
-  assert.match(fs.readFileSync(new URL('../public/canvas-act.mjs', import.meta.url), 'utf8'), /'graph-edit-edge': \(el\) => editGraphEdge\(el\.dataset\.id \?\? ''\)/);
+  assert.match(fs.readFileSync(new URL('../public/canvas-act.mjs', import.meta.url), 'utf8'), /'graph-edit-edge': \(el\) => graphActions\.editEdge\(el\.dataset\.id \?\? ''\)/);
 });
 
 test('delegation edge attributes expose only the fixed status tooltip, including unknown status', () => {

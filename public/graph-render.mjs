@@ -180,7 +180,7 @@ function graphCard(t, node, missing = []) {
 
 /**
  * @param {HTMLElement} layer
- * @param {{t:T,graph:any,index:Map<string,{card:any,pile:string}>,layout:any,filter:string,sessionFilters?:{source?:string,state?:string,project?:string},matched?:Set<string>|null,boardReady?:boolean,drag?:{id:string,x:number,y:number}|null}} o
+ * @param {{t:T,graph:any,index:Map<string,{card:any,pile:string}>,layout:any,filter:string,sessionFilters?:{source?:string,state?:string,project?:string},matched?:Set<string>|null,boardReady?:boolean,drag?:{id:string,x:number,y:number}|null,connectFrom?:string|null}} o
  */
 export function renderGraphLayer(layer, o) {
   const t = o.t;
@@ -188,7 +188,8 @@ export function renderGraphLayer(layer, o) {
   const lineRoot = layer.querySelector('.graph-layer__edges') ?? h('div', { class: 'graph-layer__edges' });
   lineRoot.removeAttribute('aria-hidden');
   const cardRoot = layer.querySelector('.graph-layer__cards') ?? h('div', { class: 'graph-layer__cards' });
-  layer.append(lineRoot, cardRoot);
+  const connectRoot = layer.querySelector('.graph-layer__connect') ?? h('div', { class: 'graph-layer__connect' });
+  layer.append(lineRoot, cardRoot, connectRoot);
   let empty = layer.querySelector('.graph-layer__empty');
   if (o.boardReady && !o.index.size && !o.graph.nodes.length && !o.graph.edges.length) {
     if (!empty) {
@@ -249,7 +250,25 @@ export function renderGraphLayer(layer, o) {
     const textMatches = !query || hay.includes(query) || graphNodeHasMatchedSession(id, o.graph.edges, o.matched);
     const dim = !textMatches || !graphNodeSessionFilterMatch(id, o.graph.edges, o.index, o.sessionFilters);
     el.classList.toggle('is-dim', dim);
+    el.classList.toggle('is-connect-target', !!o.connectFrom && o.connectFrom !== id);
     el.setAttribute('aria-label', `${graphCardAriaLabel(t, node, missing)}${dim ? ` ${t('canvas.noMatch')}` : ''}`);
+  }
+  reconcile(
+    connectRoot,
+    o.graph.nodes,
+    (node) => node.id,
+    (node) => [node.x, node.y, node.title, o.connectFrom === node.id, o.drag?.id === node.id].join('|'),
+    (node) => h('button', { class: 'graph-connect-handle', type: 'button', 'data-action': 'graph-connect-node', 'data-id': node.id, text: '↗' }),
+  );
+  for (const button of [...connectRoot.querySelectorAll('.graph-connect-handle')]) {
+    const node = o.graph.nodes.find((item) => item.id === button.dataset.key);
+    if (!node) continue;
+    const at = o.drag?.id === node.id ? o.drag : node;
+    button.style.setProperty('--x', String(at.x + CARD_W - 48));
+    button.style.setProperty('--y', String(at.y + 8));
+    button.setAttribute('aria-label', t('graph.connectCard', { title: node.title }));
+    button.setAttribute('aria-pressed', o.connectFrom === node.id ? 'true' : 'false');
+    button.classList.toggle('is-connect-source', o.connectFrom === node.id);
   }
   for (const el of [...lineRoot.children]) {
     const rendered = edges.find((x) => x.edge.id === el.getAttribute('data-key'));

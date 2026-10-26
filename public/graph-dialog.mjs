@@ -260,7 +260,7 @@ export function openGraphNodeDialog(o) {
 }
 
 /**
- * @param {{t:T,from:string,edge?:any,initialKind?:string,graph:any,sessions:Array<{id:string,title:string}>,onConnect:(v:any)=>void,onDeleteEdge?:(id:string)=>void,onResolveOperation?:(id:string,operationId:string)=>boolean}} o
+ * @param {{t:T,from:string,edge?:any,initialTo?:string,initialKind?:string,graph:any,sessions:Array<{id:string,title:string}>,onConnect:(v:any)=>void,onDeleteEdge?:(id:string)=>void,onResolveOperation?:(id:string,operationId:string)=>boolean}} o
  */
 export function openGraphRelationDialog(o) {
   const { t, from, graph, sessions, edge } = o;
@@ -298,7 +298,7 @@ export function openGraphRelationDialog(o) {
   } else {
     form.append(
       fixedField(t, 'graph.from', fromItem.title),
-      edge ? fixedField(t, 'graph.to', toItem.title) : endpointSelect(t, options, 'to', '', fromKey),
+      edge ? fixedField(t, 'graph.to', toItem.title) : endpointSelect(t, options, 'to', o.initialTo ?? '', fromKey),
       selectField(t, 'graph.edgeKind', 'kind', [...GRAPH_EDGE_KINDS], edge?.kind ?? (GRAPH_EDGE_KINDS.includes(o.initialKind ?? '') ? o.initialKind : 'related'), (v) => t(`graph.edge.${v}`)),
       inputField(t, 'graph.purpose', 'purpose', edge?.purpose ?? '', edge?.kind === 'delegates' || o.initialKind === 'delegates'),
       selectField(t, 'graph.delegationStatus', 'status', [...DELEGATION_STATES], edge?.status || 'planned', (v) => t(`graph.delegation.${v}`)),

@@ -1,6 +1,6 @@
 /* User-authored task, artifact, decision, worktree, knowledge and comprehension-gap cards share the canvas world. */
 .graph-layer { position: absolute; inset: 0; pointer-events: none; }
-.graph-layer__edges, .graph-layer__cards { position: absolute; inset: 0; }
+.graph-layer__edges, .graph-layer__cards, .graph-layer__connect { position: absolute; inset: 0; }
 .graph-layer__empty { position: absolute; top: 50%; left: 50%; width: min(calc(28rem * var(--k)), calc(90vw * var(--k))); margin: 0; padding: calc(1rem * var(--k)); transform: translate(-50%, -50%); color: var(--color-ink-2); font-size: calc(var(--text-md) * var(--k)); text-align: center; pointer-events: auto; }
 .graph-layer__empty-action { min-height: calc(var(--hit) * var(--k)); margin-top: calc(var(--space-sm) * var(--k)); padding-inline: calc(var(--space-md) * var(--k)); border-width: calc(1px * var(--k)); font-size: calc(var(--text-base) * var(--k)); }
 .graph-layer__empty-action:focus-visible { outline: calc(3px * var(--k)) solid var(--color-focus); outline-offset: calc(3px * var(--k)); }
@@ -27,6 +27,10 @@
 .graph-node:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; z-index: 2; }
 .graph-node.is-dragging { z-index: 3; box-shadow: 0 8px 20px rgb(0 0 0 / 20%); }
 .graph-node.is-dim { opacity: 0.24; }
+.graph-node.is-connect-target { outline: 2px dashed var(--color-accent); outline-offset: 2px; }
+.graph-connect-handle { position: absolute; left: calc(var(--x) * 1px); top: calc(var(--y) * 1px); z-index: 4; width: calc(2.5rem * var(--k)); min-width: calc(var(--hit) * var(--k)); min-height: calc(var(--hit) * var(--k)); border: var(--rule-ink); border-radius: 50%; background: var(--cv-sheet); color: var(--color-ink); font: inherit; font-weight: 700; cursor: crosshair; pointer-events: auto; }
+.graph-connect-handle:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; }
+.graph-connect-handle.is-connect-source, .graph-connect-handle[aria-pressed="true"] { background: var(--color-accent); color: var(--cv-sheet); }
 .graph-node--obsidian_note { border-inline-start: 5px solid var(--color-accent); }
 .graph-node--understanding_gap { border-inline-start: 5px solid var(--color-accent); }
 .graph-node__meta { display: flex; gap: calc(var(--space-sm) * var(--k)); align-items: center; color: var(--color-ink-2); font-size: calc(var(--text-sm) * var(--k)); }

@@ -592,3 +592,11 @@
 - Codex CLIとCopilotのカードIDは、adapter内でprovider名を含むSHA-256から安定したUUID形opaque IDを作るようにした。保存先のnative IDはCodexのprivate `cliSessionId`としてserver内にのみ残し、boardのJSONには出さない。sourceごとにhash domainを分ける。
 - 既存ブラウザーのGraphはv1からv2へ一度だけ移行し、旧session endpointをブラウザー内WebCryptoで同じopaque IDへ置換する。関係の目的、委譲状態、operation IDを保つ。移行失敗時はv1を保持して次回取得で再試行する。session ID形自体は維持するためworktree/委譲APIの入力検証は変わらない。
 - 合成fixtureでCodex/Copilotのpublic boardにnative IDが含まれないこと、Graph v1の移行で関係内容が保たれ、正規adapter IDと一致し、再実行しても変化しないことを検証した。実セッションや実ブラウザー保存領域への移行は未確認。
+
+### キャンバス上でグラフカードを関係線で接続 (2026-10-26)
+
+- 接続モードのpure helper testを追加。起点設定、自己接続の拒否、別カード選択、選択キャンセルを検証し、npm testは550件成功、npm run archは99 paths・違反0件。
+- localhost demoの/と/graph-render.mjsがHTTP 200で配信されることを確認し、サーバーを停止。GUI操作はComputer UseがChromeの現在URLを判定できず停止したため、接続ハンドルからの操作と関係の保存/再読込、狭幅、スクリーンリーダー全操作は未確認。
+- グラフカードにキーボードでも起動できる接続ハンドルを追加。起点を選ぶと他カードを接続先として選べ、既存の関係ダイアログで関係種別/目的を確認して保存する。接続先はダイアログで事前選択され、Escapeで選択モードをキャンセル可能。保存は既存のGraph localStorage形式を使うため再読み込み後も関係線と目的が復元される。
+- この操作はグラフカード同士の直接接続。実行セッションカードへの関係は従来どおりセッション詳細の関係ダイアログから追加する。ポインタでの端点ドラッグ接続は未実装。
+- 合成デモでの画面操作、再読込後の関係復元、狭幅/スクリーンリーダー全操作は後続のGUI受け入れで確認する。

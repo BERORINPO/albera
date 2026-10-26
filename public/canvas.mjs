@@ -97,6 +97,7 @@ function part(box, sig, build) {
  * @property {any} [graph]
  * @property {{source:string,state:string,project:string}} [sessionFilters]
  * @property {{id:string,x:number,y:number}|null} [graphDrag]
+ * @property {string|null} [graphConnectFrom]
  * @property {Record<string, any>} handoff  prefs.handoff
  * @property {(pile: string, id: string) => boolean} isNew
  * @property {(pile: string, id: string) => boolean} takeArrival
@@ -170,7 +171,7 @@ export function renderCanvas(root, o) {
     const s = byKey.get(el.dataset.key ?? '');
     if (s) syncSheet(el, s, o);
     else if (fold && el.dataset.key === FOLD_KEY) setVars(el, { '--x': fold.x, '--y': fold.y, '--w': fold.w, '--h': fold.h });
-    else if (el.dataset.key === 'graph-layer') renderGraphLayer(el, { t: o.t, graph: o.graph ?? { nodes: [], edges: [] }, index: o.index, layout: o.layout, filter: o.graphFilter ?? '', sessionFilters: o.sessionFilters, matched: o.matched, boardReady: !!o.board, drag: o.graphDrag ?? null });
+    else if (el.dataset.key === 'graph-layer') renderGraphLayer(el, { t: o.t, graph: o.graph ?? { nodes: [], edges: [] }, index: o.index, layout: o.layout, filter: o.graphFilter ?? '', sessionFilters: o.sessionFilters, matched: o.matched, boardReady: !!o.board, drag: o.graphDrag ?? null, connectFrom: o.graphConnectFrom ?? null });
   }
   heads = null;
 }

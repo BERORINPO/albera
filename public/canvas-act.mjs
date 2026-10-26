@@ -12,9 +12,9 @@ import { neighbour } from './canvas-layout.mjs';
 import { openSession, render, view } from './render.mjs';
 import { state } from './state.mjs';
 import { nextUp, PILES } from './ui-state.mjs';
-import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, moveGraphNode, nextGraphNodePosition, releaseBlockedGraphDelegationOperation, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from './graph-model.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, moveGraphNode, nextGraphNodePosition, updateGraphNode } from './graph-model.mjs';
 import { loadGraph, saveGraph } from './graph-store.mjs';
-import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs';
+import { openGraphNodeDialog } from './graph-dialog.mjs';
 import { GRAPH_CARD_SIZE } from './graph-render.mjs';
 import { announce } from './view.mjs';
 import { createWorktree, listWorktrees, removeWorktree } from './api.mjs';
@@ -23,6 +23,8 @@ import { openWorktreeDialog } from './worktree-dialog.mjs';
 import { openWorktreeListDialog } from './worktree-list-dialog.mjs';
 import { worktreeRecordBody } from './worktree-record.mjs';
 import { openRelatedSessionDetail, resolveRelatedSessionShortId } from './session-relations.mjs';
+import { createGraphActions } from './graph-actions.mjs';
+import { cancelGraphConnection } from './graph-connect-mode.mjs';
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
 
@@ -44,6 +46,10 @@ function step(dir) {
 
 /** Esc (spec/ui.md §10.8)。 */
 function escape() {
+  if (cancelGraphConnection(cv, render)) {
+    announce(state.t('graph.connectCancelled'));
+    return true;
+  }
   const input = /** @type {HTMLInputElement} */ ($('filter'));
   const a = document.activeElement;
   const s = canvasEscapeStep({
@@ -88,6 +94,11 @@ function graphChanged(doc) {
   render();
   return true;
 }
+
+const graphActions = createGraphActions({
+  cv, loadGraph, graphChanged, graphSessions, render, announce, t: (key) => state.t(key), world,
+  sessionIds: () => new Set(view.index.keys()),
+});
 
 function newGraphNode() {
   const graph = loadGraph();
@@ -168,37 +179,6 @@ function listWorktreesForSession(sessionId) {
   return true;
 }
 
-function editGraphNode(id) {
-  const graph = loadGraph();
-  const node = graph.nodes.find((n) => n.id === id);
-  if (!node) return;
-  openGraphNodeDialog({
-    t: state.t, graph, node, sessions: graphSessions(),
-    onSave: (input, sessionIds) => graphChanged(updateGraphNode(graph, id, input, sessionIds)),
-    onDelete: (key) => graphChanged(removeGraphNode(graph, key)),
-    onEditEdge: (edge) => editGraphEdge(edge.id),
-    onConnect: (from, kind) => connectGraphEndpoint(from, kind),
-  });
-}
-
-function editGraphEdge(id) {
-  const graph = loadGraph();
-  const edge = graph.edges.find((item) => item.id === id);
-  if (!edge) return false;
-  return openGraphRelationDialog({
-    t: state.t, from: edge.from, edge, graph, sessions: graphSessions(),
-    onConnect: (input) => graphChanged(updateGraphEdge(loadGraph(), edge.id, input)),
-    onDeleteEdge: (key) => graphChanged(removeGraphEdge(loadGraph(), key)),
-    onResolveOperation: (key, operationId) => graphChanged(releaseBlockedGraphDelegationOperation(loadGraph(), key, operationId, true)),
-  });
-}
-
-function connectGraphEndpoint(from, initialKind) {
-  const graph = loadGraph();
-  return openGraphRelationDialog({ t: state.t, from, initialKind, graph, sessions: graphSessions(), onConnect: (input) => {
-    graphChanged(connectGraph(graph, input, `e_${crypto.randomUUID()}`, new Set(view.index.keys())));
-  } });
-}
 
 function moveGraphBy(id, dx, dy) {
   const graph = loadGraph();
@@ -293,14 +273,15 @@ export const CANVAS_CLICK = {
   'canvas-move': (el) => nudgeSheet(el.dataset.key ?? '', el.dataset.dir ?? ''),
   'canvas-sheet-fit': (el) => fitSheet(el.dataset.key ?? ''),
   'graph-new': () => newGraphNode(),
-  'graph-open': (el) => editGraphNode(el.dataset.id ?? ''),
+  'graph-open': (el) => graphActions.openNode(el.dataset.id ?? ''),
+  'graph-connect-node': (el) => graphActions.startConnect(el.dataset.id ?? ''),
   'canvas-open-session': (el) => openRelatedSessionDetail(el.dataset.id ?? '', openBar),
   'canvas-open-short-session': (el) => {
     const id = resolveRelatedSessionShortId(el.dataset.source ?? '', el.dataset.id ?? '', [...view.index.keys()].map((id) => ({ id })));
     if (id) openRelatedSessionDetail(id, openBar);
   },
-  'graph-connect': (el) => connectGraphEndpoint(`session:${el.dataset.id ?? ''}`),
-  'graph-edit-edge': (el) => editGraphEdge(el.dataset.id ?? ''),
+  'graph-connect': (el) => graphActions.connectSession(el.dataset.id ?? ''),
+  'graph-edit-edge': (el) => graphActions.editEdge(el.dataset.id ?? ''),
   'delegation-run': (el) => runDelegationForEdge(el.dataset.id ?? '', el.dataset.sourceSession ?? '', { view, state, graphChanged, announce }),
   'graph-task-from-session': (el) => newTaskForSession(el.dataset.id ?? ''),
   'worktree-create': (el) => createWorktreeForSession(el.dataset.id ?? ''),
@@ -365,7 +346,7 @@ export function initCanvas() {
       const node = graph.nodes.find((n) => n.id === id);
       if (drag?.id === id && node) graphChanged(moveGraphNode(graph, id, node.x + dx / cv.cam.z, node.y + dy / cv.cam.z));
     },
-    openGraph: (/** @type {string} */ id) => editGraphNode(id),
+    openGraph: (/** @type {string} */ id) => graphActions.openNode(id),
     // 動かさずに押した柱: フォーカスを置き、帯に「用紙を動かす」のボタンを出す (ドラッグのできない人の道、WCAG 2.5.7)
     focusHead: (/** @type {HTMLElement} */ head) => {
       head.focus({ preventScroll: true });
