@@ -87,7 +87,7 @@ Session lists and transcripts are opened read-only. Pigeonholes does not read ap
 | Recent | Read within the last 7 days | Nothing |
 | To archive | Idle for 7 days or more, older runs of a scheduled task, retried attempts, sessions whose PRs are all merged or closed | Pick, copy the instruction, paste it into Claude |
 
-The top line names the one session to look at first. The counts list (on the right on wide screens, under the top line on narrow ones) counts every pile. **Open** opens the session in the Claude app. Click a title for details: what it is doing, its context, full summary, project label, branch and worktree status, PRs, related sessions, and buttons to copy the ID or link. The page refreshes every 5 seconds while it is visible. Desktop notifications for Needs you and Stuck? are off until you turn them on in the footer.
+The top line names the one session to look at first. The counts list (on the right on wide screens, under the top line on narrow ones) counts every pile. **Open** opens Claude Code app sessions in Claude. Other providers remain available for detail and safe event review, but are not sent to Claude through its app link. A Codex resume is a separate, explicit, confirmed action. Click a title for details: what it is doing, its context, full summary, project label, branch and worktree status, PRs, related sessions, and buttons to copy the ID or link. The page refreshes every 5 seconds while it is visible. Desktop notifications for Needs you and Stuck? are off until you turn them on in the footer.
 
 ## Doing what
 
