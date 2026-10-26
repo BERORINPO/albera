@@ -32,4 +32,8 @@ test('delegation execution uses an explicit in-app form and has no native confir
   assert.match(dialog, /type: 'submit'.*graph\.delegationConfirmRun/);
   assert.match(dialog, /cancel\.addEventListener\('click', \(\) => dialog\.close\(\)\)/);
   assert.match(dialog, /dialog\.close\(\);\s*onConfirm\(\)/);
+  assert.match(dialog, /'aria-describedby': descriptionIds/);
+  for (const part of ['target', 'purpose', 'transfer', 'network', 'output', 'session']) {
+    assert.match(dialog, new RegExp(`delegation-confirm-${part}`));
+  }
 });
