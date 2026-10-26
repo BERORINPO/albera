@@ -35,7 +35,7 @@ test('OpenCode diagnostics explain database, schema, runtime, and lifecycle zero
   const t = makeT('ja');
   assert.match(openCodeStatusMessages(t, base)[1], /DBが見つかりません/);
   assert.match(openCodeStatusMessages(t, { ...base, files: 1, detected: 0 })[1], /session_v2形式がありません/);
-  assert.match(openCodeStatusMessages(t, { ...base, files: 1, unsupportedRuntime: true })[1], /Node.js 22系は22.18以降/);
+  assert.match(openCodeStatusMessages(t, { ...base, files: 1, unsupportedRuntime: true })[1], /Node.js 22系は22.18以降、または24.4以降/);
   assert.match(openCodeStatusMessages(t, { ...base, files: 1, detected: 2, failed: 1 })[0], /失敗 1/);
   const safe = openCodeStatusMessages(t, { ...base, unsupportedRuntime: true, path: 'C:\\private\\auth.json', prompt: 'PRIVATE_PROMPT' }).join(' ');
   assert.ok(!safe.includes('private'));

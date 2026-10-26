@@ -8,7 +8,9 @@ import { createOpenCodeSessionsSource } from '../src/adapters/opencode-sessions-
 import { buildBoard } from '../src/core/board.mjs';
 import { NOW } from './helpers/fixtures.mjs';
 
-const supported = Number(process.versions.node.split('.')[0]) >= 24 || (Number(process.versions.node.split('.')[0]) === 22 && Number(process.versions.node.split('.')[1]) >= 18);
+const major = Number(process.versions.node.split('.')[0]);
+const minor = Number(process.versions.node.split('.')[1]);
+const supported = major > 24 || (major === 24 && minor >= 4) || (major === 22 && minor >= 18);
 const dirs = new Set();
 after(async () => Promise.all([...dirs].map((dir) => fs.rm(dir, { recursive: true, force: true }))));
 
@@ -67,4 +69,9 @@ test('OpenCode legacy/unknown database schema and older SQLite runtime fail clos
   const oldRuntime = await createOpenCodeSessionsSource({ root: dbPath, version: '22.5.0' }).load();
   assert.equal(oldRuntime.sessions.length, 0);
   assert.equal(oldRuntime.stats.unsupportedRuntime, true);
+  const early24 = await createOpenCodeSessionsSource({ root: dbPath, version: '24.3.0' }).load();
+  assert.equal(early24.sessions.length, 0);
+  assert.equal(early24.stats.unsupportedRuntime, true);
+  const supported24 = await createOpenCodeSessionsSource({ root: dbPath, version: '24.4.0' }).load();
+  assert.equal(supported24.stats.unsupportedRuntime, false);
 });

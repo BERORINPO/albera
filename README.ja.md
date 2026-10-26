@@ -17,7 +17,7 @@ Claude Code・Codex CLI・GitHub Copilot・OpenCodeのローカルセッショ�
 
 ## 使い始める
 
-Node.js 22 以上と、Claude Code・Codex CLI・GitHub Copilot・OpenCode のいずれかのローカル保存先が必要です。OpenCodeの読込にはNode.js 22系は22.18以降、または24以降が必要です。
+Node.js 22 以上と、Claude Code・Codex CLI・GitHub Copilot・OpenCode のいずれかのローカル保存先が必要です。OpenCodeの読込にはNode.js 22系は22.18以降、または24.4以降が必要です。
 
 ```sh
 npx pigeonholes

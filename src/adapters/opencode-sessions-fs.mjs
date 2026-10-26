@@ -18,7 +18,7 @@ export function opaqueOpenCodeId(id) {
 /** @param {string} version */
 function supportsReadonlySqlite(version) {
   const [major, minor] = version.split('.').map(Number);
-  return major >= 24 || (major === 22 && minor >= 18);
+  return major > 24 || (major === 24 && minor >= 4) || (major === 22 && minor >= 18);
 }
 
 /** @param {{root:string,maxSessions?:number,version?:string}} options */

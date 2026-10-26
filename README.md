@@ -17,7 +17,7 @@ Demo data. Also: [canvas](docs/screenshot-canvas.png) · [dark theme](docs/scree
 
 ## Quick start
 
-You need Node.js 22 or newer and a local Claude Code, Codex CLI, GitHub Copilot, or OpenCode session store. OpenCode reading needs Node.js 22.18 or newer in the 22 line, or Node.js 24 or newer.
+You need Node.js 22 or newer and a local Claude Code, Codex CLI, GitHub Copilot, or OpenCode session store. OpenCode reading needs Node.js 22.18 or newer in the 22 line, or Node.js 24.4 or newer.
 
 ```sh
 npx pigeonholes
