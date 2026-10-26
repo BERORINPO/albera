@@ -46,7 +46,7 @@ function endpointSelect(t, options, name, selected, excluded = '') {
 const endpointKey = (key) => key.startsWith('graph:') || key.startsWith('session:') ? key : '';
 
 /**
- * @param {{t:T,node?:any,position?:{x:number,y:number},graph:any,sessions:Array<{id:string,title:string}>,onSave:(v:any)=>void,onDelete?:(id:string)=>void,onConnect?:(from:string)=>void}} o
+ * @param {{t:T,node?:any,position?:{x:number,y:number},graph:any,sessions:Array<{id:string,title:string}>,onSave:(v:any)=>void,onDelete?:(id:string)=>void,onConnect?:(from:string)=>void,onEditEdge?:(edge:any)=>void}} o
  */
 export function openGraphNodeDialog(o) {
   const { t, node, graph, sessions } = o;
@@ -70,7 +70,10 @@ export function openGraphNodeDialog(o) {
       ? h('ul', { class: 'graph-dialog__relations' }, ...linked.map((e) => {
         const other = e.from === `graph:${node.id}` ? e.to : e.from;
         const direction = e.from === `graph:${node.id}` ? t('graph.relationOut') : t('graph.relationIn');
-        return h('li', { text: `${direction}: ${endpointLabel(other, graph, sessions, t)} — ${t(`graph.edge.${e.kind}`)}${e.purpose ? `: ${e.purpose}` : ''}${e.kind === 'delegates' ? ` (${t(`graph.delegation.${e.status}`)})` : ''}` });
+        return h('li', {},
+          h('span', { text: `${direction}: ${endpointLabel(other, graph, sessions, t)} — ${t(`graph.edge.${e.kind}`)}${e.purpose ? `: ${e.purpose}` : ''}${e.kind === 'delegates' ? ` (${t(`graph.delegation.${e.status}`)})` : ''}` }),
+          o.onEditEdge ? h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'edit-edge', 'data-edge-id': e.id, text: t('graph.editRelation') }) : null,
+        );
       }))
       : h('p', { class: 'graph-dialog__empty', text: t('graph.noRelations') }));
   }
@@ -90,6 +93,13 @@ export function openGraphNodeDialog(o) {
     if (action === 'connect' && o.onConnect) {
       dialog.close();
       o.onConnect(`graph:${node.id}`);
+    }
+    if (action === 'edit-edge' && o.onEditEdge) {
+      const edge = graph.edges.find((item) => item.id === button?.getAttribute('data-edge-id'));
+      if (edge) {
+        dialog.close();
+        o.onEditEdge(edge);
+      }
     }
     if (action === 'delete' && o.onDelete && window.confirm(t('graph.deleteConfirm', { title: node.title }))) {
       o.onDelete(node.id);
@@ -117,40 +127,50 @@ export function openGraphNodeDialog(o) {
 }
 
 /**
- * @param {{t:T,from:string,graph:any,sessions:Array<{id:string,title:string}>,onConnect:(v:any)=>void}} o
+ * @param {{t:T,from:string,edge?:any,graph:any,sessions:Array<{id:string,title:string}>,onConnect:(v:any)=>void,onDeleteEdge?:(id:string)=>void}} o
  */
 export function openGraphRelationDialog(o) {
-  const { t, from, graph, sessions } = o;
+  const { t, from, graph, sessions, edge } = o;
   const options = [
     ...graph.nodes.map((n) => ({ id: `graph:${n.id}`, title: `${t(`graph.kind.${n.kind}`)}: ${n.title}` })),
     ...sessions.map((s) => ({ id: `session:${s.id}`, title: `${t('graph.session')}: ${s.title}` })),
   ];
   const fromKey = endpointKey(from);
   const fromItem = options.find((x) => x.id === fromKey);
-  if (!fromItem) return false;
+  const toItem = edge ? options.find((x) => x.id === edge.to) : null;
+  if (!fromItem || (edge && !toItem)) return false;
   const dialog = h('dialog', { class: 'graph-dialog', 'aria-labelledby': 'graph-connect-title' });
   const form = h('form', { class: 'graph-dialog__form' });
   form.append(
-    h('h2', { id: 'graph-connect-title', text: t('graph.connectTitle') }),
+    h('h2', { id: 'graph-connect-title', text: t(edge ? 'graph.editRelationTitle' : 'graph.connectTitle') }),
     h('p', { class: 'graph-dialog__privacy', text: t('graph.recordOnly') }),
     fixedField(t, 'graph.from', fromItem.title),
-    endpointSelect(t, options, 'to', '', fromKey),
-    selectField(t, 'graph.edgeKind', 'kind', [...GRAPH_EDGE_KINDS], 'related', (v) => t(`graph.edge.${v}`)),
-    inputField(t, 'graph.purpose', 'purpose', ''),
-    selectField(t, 'graph.delegationStatus', 'status', [...DELEGATION_STATES], 'planned', (v) => t(`graph.delegation.${v}`)),
-    h('div', { class: 'graph-dialog__actions' }, h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'cancel', text: t('canvas.close') }), h('button', { class: 'btn btn--line', type: 'submit', text: t('graph.connect') })),
+    edge ? fixedField(t, 'graph.to', toItem.title) : endpointSelect(t, options, 'to', '', fromKey),
+    selectField(t, 'graph.edgeKind', 'kind', [...GRAPH_EDGE_KINDS], edge?.kind ?? 'related', (v) => t(`graph.edge.${v}`)),
+    inputField(t, 'graph.purpose', 'purpose', edge?.purpose ?? ''),
+    selectField(t, 'graph.delegationStatus', 'status', [...DELEGATION_STATES], edge?.status || 'planned', (v) => t(`graph.delegation.${v}`)),
+    h('div', { class: 'graph-dialog__actions' },
+      edge && o.onDeleteEdge ? h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-dialog-action': 'delete-edge', text: t('graph.deleteRelation') }) : null,
+      h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'cancel', text: t('canvas.close') }),
+      h('button', { class: 'btn btn--line', type: 'submit', text: t(edge ? 'graph.saveRelation' : 'graph.connect') }),
+    ),
   );
   dialog.append(form);
   document.body.append(dialog);
   dialog.addEventListener('close', () => dialog.remove(), { once: true });
   form.addEventListener('click', (ev) => {
-    const button = ev.target instanceof Element ? ev.target.closest('[data-dialog-action="cancel"]') : null;
-    if (button) dialog.close();
+    const button = ev.target instanceof Element ? ev.target.closest('[data-dialog-action]') : null;
+    const action = button?.getAttribute('data-dialog-action');
+    if (action === 'cancel') dialog.close();
+    if (action === 'delete-edge' && edge && o.onDeleteEdge && window.confirm(t('graph.removeRelationConfirm'))) {
+      o.onDeleteEdge(edge.id);
+      dialog.close();
+    }
   });
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();
     const data = Object.fromEntries(new FormData(form).entries());
-    const to = String(data.to ?? '');
+    const to = edge ? edge.to : String(data.to ?? '');
     if (!endpointKey(to) || to === fromKey) return;
     o.onConnect({ from: fromKey, to, kind: data.kind, purpose: data.purpose, status: data.status });
     dialog.close();

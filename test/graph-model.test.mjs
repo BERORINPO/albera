@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { addGraphNode, connectGraph, moveGraphNode, normalizeGraph, removeGraphNode, updateGraphNode } from '../public/graph-model.mjs';
+import { addGraphNode, connectGraph, moveGraphNode, normalizeGraph, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
 
 const g1 = 'g_00000000-0000-4000-8000-000000000001';
 const g2 = 'g_00000000-0000-4000-8000-000000000002';
@@ -37,4 +37,16 @@ test('relations connect local cards and current sessions, whitelist fields, and 
   assert.equal(connectGraph(graph, { from: `graph:${g1}`, to: 'session:local_bad', kind: 'related', purpose: '', status: '' }, 'e_00000000-0000-4000-8000-000000000002', sessionIds).edges.length, 1);
   assert.equal(connectGraph(graph, { from: `graph:${g1}`, to: `graph:${g2}`, kind: 'related', purpose: '', status: '' }, e1, sessionIds).edges.length, 1, 'duplicate edge id is rejected');
   assert.equal(removeGraphNode(graph, g1).edges.length, 0, 'orphaned edges are removed');
+});
+
+test('graph relations can update purpose and delegation state or be removed', () => {
+  let graph = addGraphNode(empty(), { kind: 'task', title: 'Review', body: '', status: 'open', x: 0, y: 0, checkedPerson: '', missingEvidence: '', neededExplanation: '' }, g1);
+  graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'delegates', purpose: 'Initial scope', status: 'planned' }, e1, new Set([session]));
+  graph = updateGraphEdge(graph, e1, { purpose: 'Confirmed scope', status: 'active' });
+  assert.deepEqual([graph.edges[0].purpose, graph.edges[0].status, graph.edges[0].from, graph.edges[0].to], ['Confirmed scope', 'active', `graph:${g1}`, `session:${session}`]);
+  graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'related', purpose: '', status: '' }, 'e_00000000-0000-4000-8000-000000000002', new Set([session]));
+  assert.equal(updateGraphEdge(graph, e1, { kind: 'related' }).edges[0].kind, 'delegates', 'editing cannot create duplicate edges');
+  const remaining = removeGraphEdge(graph, e1).edges;
+  assert.equal(remaining.length, 1);
+  assert.notEqual(remaining[0].id, e1);
 });

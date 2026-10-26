@@ -13,7 +13,7 @@ import { neighbour } from './canvas-layout.mjs';
 import { openSession, render, view } from './render.mjs';
 import { state } from './state.mjs';
 import { nextUp, PILES } from './ui-state.mjs';
-import { addGraphNode, connectGraph, moveGraphNode, removeGraphNode, updateGraphNode } from './graph-model.mjs';
+import { addGraphNode, connectGraph, moveGraphNode, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from './graph-model.mjs';
 import { loadGraph, saveGraph } from './graph-store.mjs';
 import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs';
 import { GRAPH_CARD_SIZE } from './graph-render.mjs';
@@ -98,6 +98,11 @@ function editGraphNode(id) {
     t: state.t, graph, node, sessions: graphSessions(),
     onSave: (input) => graphChanged(updateGraphNode(graph, id, input)),
     onDelete: (key) => graphChanged(removeGraphNode(graph, key)),
+    onEditEdge: (edge) => openGraphRelationDialog({
+      t: state.t, from: edge.from, edge, graph, sessions: graphSessions(),
+      onConnect: (input) => graphChanged(updateGraphEdge(loadGraph(), edge.id, input)),
+      onDeleteEdge: (key) => graphChanged(removeGraphEdge(loadGraph(), key)),
+    }),
     onConnect: (from) => connectGraphEndpoint(from),
   });
 }

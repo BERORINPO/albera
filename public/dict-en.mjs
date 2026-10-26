@@ -189,7 +189,8 @@ export const EN = Object.freeze({
   // 19.7 detail panel
   'detail.state': 'Now',
   'detail.stateValue': '{pile} ({time})',
-  'detail.source': 'Source',
+  'detail.source': 'Harness',
+  'source.claude': 'Claude Code',
   'detail.events': 'Recent events',
   'source.codex': 'Codex CLI',
   'event.turnStarted': 'Turn started',

@@ -119,3 +119,19 @@ export function connectGraph(doc, input, id, sessionIds = new Set()) {
 function endpointExists(doc, endpoint, sessionIds) {
   return endpoint.startsWith('graph:') ? doc.nodes.some((n) => n.id === endpoint.slice(6)) : sessionIds.has(endpoint.slice(8));
 }
+
+/** @param {GraphDoc} doc @param {string} id @param {Partial<Omit<GraphEdge,'id'|'from'|'to'>>} patch */
+export function updateGraphEdge(doc, id, patch) {
+  const previous = doc.edges.find((edge) => edge.id === id);
+  if (!previous) return doc;
+  const changed = normalizeGraphEdge({ ...previous, ...patch, id: previous.id, from: previous.from, to: previous.to });
+  if (!changed || doc.edges.some((edge) => edge.id !== id && edge.from === changed.from && edge.to === changed.to && edge.kind === changed.kind)) return doc;
+  const edges = doc.edges.map((edge) => edge.id === id ? changed : edge);
+  return edges.some((edge, i) => edge !== doc.edges[i]) ? { ...doc, edges } : doc;
+}
+
+/** @param {GraphDoc} doc @param {string} id */
+export function removeGraphEdge(doc, id) {
+  const edges = doc.edges.filter((edge) => edge.id !== id);
+  return edges.length === doc.edges.length ? doc : { ...doc, edges };
+}

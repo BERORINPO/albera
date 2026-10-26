@@ -273,7 +273,7 @@ export function detailEl(card, pile, ctx) {
       'dl',
       {},
       ...dlRow(t('detail.state'), h('span', {}, ...partsToNodes(t.parts('detail.stateValue', { pile: bucketTitle(t, pile), time: timeEl(t, card, ctx.now) })))),
-      ...dlRow(t('detail.source'), card.source === 'codex' ? t('source.codex') : null),
+      ...dlRow(t('detail.source'), card.source === 'codex' ? t('source.codex') : t('source.claude')),
       ...activityRows(t, card, pile, ctx.now),
       ...dlRow(t('detail.summary'), d.statusDetail ? h('q', { lang: contentLang(d.statusDetail), text: d.statusDetail }) : null),
       ...dlRow(t('detail.error'), d.error ? h('span', { class: 'pre', lang: langOf(t, d.error), text: d.error }) : null),
