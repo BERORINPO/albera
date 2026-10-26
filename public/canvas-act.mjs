@@ -263,6 +263,12 @@ export function runCanvasKey(action) {
 /** 帯とキャンバスのボタン (app.mjs のクリックから)。 @type {Record<string, (el: HTMLElement) => unknown>} */
 export const CANVAS_CLICK = {
   'view-toggle': () => switchView(isCanvas() ? 'list' : 'canvas'),
+  'graph-show-diagnostics': () => {
+    switchView('list');
+    const details = /** @type {HTMLDetailsElement|null} */ ($('foot').querySelector('.foot__diag'));
+    if (details) details.open = true;
+    details?.querySelector('summary')?.focus();
+  },
   slip: (el) => slipClick(el.dataset.id ?? ''),
   // 用紙の帯の「最近 N」「片付け N」と、片付けだけのまとめの見出し: 一覧のその欄へ
   'canvas-back': (el) => canvasJumpPile(el.dataset.pile === 'recent' ? 'recent' : 'cleanup'),

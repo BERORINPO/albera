@@ -225,12 +225,14 @@ export function renderGraphLayer(layer, o) {
       empty = h('section', { class: 'graph-layer__empty', 'aria-label': t('graph.emptyLabel') },
         h('p', { class: 'graph-layer__empty-copy', text: t('graph.empty') }),
         h('button', { class: 'btn btn--line graph-layer__empty-action', type: 'button', 'data-action': 'graph-new', text: t('graph.emptyAction') }),
+        h('button', { class: 'textbtn graph-layer__empty-status', type: 'button', 'data-action': 'graph-show-diagnostics', text: t('graph.emptyStatus') }),
       );
     } else if (empty.dataset.lang !== t.lang) {
       empty.setAttribute('aria-label', t('graph.emptyLabel'));
       empty.replaceChildren(
         h('p', { class: 'graph-layer__empty-copy', text: t('graph.empty') }),
         h('button', { class: 'btn btn--line graph-layer__empty-action', type: 'button', 'data-action': 'graph-new', text: t('graph.emptyAction') }),
+        h('button', { class: 'textbtn graph-layer__empty-status', type: 'button', 'data-action': 'graph-show-diagnostics', text: t('graph.emptyStatus') }),
       );
     }
     empty.dataset.lang = t.lang;

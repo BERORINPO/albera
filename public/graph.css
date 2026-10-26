@@ -3,6 +3,7 @@
 .graph-layer__edges, .graph-layer__cards, .graph-layer__connect { position: absolute; inset: 0; }
 .graph-layer__empty { position: absolute; top: 50%; left: 50%; width: min(calc(28rem * var(--k)), calc(90vw * var(--k))); margin: 0; padding: calc(1rem * var(--k)); transform: translate(-50%, -50%); color: var(--color-ink-2); font-size: calc(var(--text-md) * var(--k)); text-align: center; pointer-events: auto; }
 .graph-layer__empty-action { min-height: calc(var(--hit) * var(--k)); margin-top: calc(var(--space-sm) * var(--k)); padding-inline: calc(var(--space-md) * var(--k)); border-width: calc(1px * var(--k)); font-size: calc(var(--text-base) * var(--k)); }
+.graph-layer__empty-status { display: flex; width: fit-content; min-height: calc(var(--hit) * var(--k)); margin: calc(var(--space-xs) * var(--k)) auto 0; }
 .graph-layer__empty-action:focus-visible { outline: calc(3px * var(--k)) solid var(--color-focus); outline-offset: calc(3px * var(--k)); }
 .graph-edge { appearance: none; position: absolute; left: calc(var(--x) * 1px); top: calc(var(--y) * 1px); width: calc(var(--len) * 1px); height: 2px; margin: 0; padding: 0; border: 0; transform: rotate(var(--angle)); transform-origin: 0 50%; background: var(--color-rule-strong); color: inherit; font: inherit; text-align: start; opacity: 0.78; pointer-events: auto; cursor: pointer; }
 .graph-edge::before { content: ""; position: absolute; inset: calc(-12px * var(--k)) 0; background: transparent; }

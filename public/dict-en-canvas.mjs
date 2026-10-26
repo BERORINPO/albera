@@ -288,4 +288,5 @@ export const EN_CANVAS = Object.freeze({
   'graph.emptyLabel': 'Empty canvas',
   'graph.empty': 'There are no sessions or cards yet. Start with a task, artifact, decision, comprehension gap, or another card.',
   'graph.emptyAction': 'Add a card',
+  'graph.emptyStatus': 'View session loading status',
 });

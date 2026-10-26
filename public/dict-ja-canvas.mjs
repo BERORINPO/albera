@@ -288,4 +288,5 @@ export const JA_CANVAS = Object.freeze({
   'graph.emptyLabel': '空のキャンバス',
   'graph.empty': 'セッションもカードもありません。タスク、成果物、判断、理解負債などのカードから始められます。',
   'graph.emptyAction': 'カードを追加',
+  'graph.emptyStatus': 'セッションの読み込み状態を見る',
 });
