@@ -63,13 +63,13 @@ test('Codex CLI rollout を検出し、turn status と allowlist イベントだ
   ]);
   await rollout(home, doneId, [
     meta(doneId),
-    envelope('event_msg', { type: 'task_started', turn_id: 'secret' }, doneAt - 10_000),
-    envelope('event_msg', { type: 'task_complete', last_agent_message: 'NEVER-WIRE-ANSWER', duration_ms: 10_000 }, doneAt),
+    envelope('event_msg', { type: 'task_started', turn_id: 'private-done-turn' }, doneAt - 10_000),
+    envelope('event_msg', { type: 'task_complete', turn_id: 'private-done-turn', last_agent_message: 'NEVER-WIRE-ANSWER', duration_ms: 10_000 }, doneAt),
   ]);
   await rollout(home, abortedId, [
     meta(abortedId),
-    envelope('event_msg', { type: 'task_started' }, activeAt - 10_000),
-    envelope('event_msg', { type: 'turn_aborted', reason: 'interrupted', turn_id: 'private-id' }, activeAt),
+    envelope('event_msg', { type: 'task_started', turn_id: 'private-aborted-turn' }, activeAt - 10_000),
+    envelope('event_msg', { type: 'turn_aborted', reason: 'interrupted', turn_id: 'private-aborted-turn' }, activeAt),
   ]);
   await rollout(home, ignoredId, [meta(ignoredId, 'vscode')]);
   await rollout(home, uuid(504), ['not json']);
@@ -115,7 +115,7 @@ test('Codex CLI rollout を検出し、turn status と allowlist イベントだ
   assert.deepEqual(aborted.lifecycle, { status: 'interrupted' });
   assert.deepEqual(aborted.events, [{ type: 'turn_started', at: activeAt - 10_000 }, { type: 'turn_aborted', at: activeAt }]);
   const safe = JSON.stringify(sessions);
-  for (const secret of ['NEVER-WIRE-THIS-PROMPT', 'NEVER-WIRE-THIS-KEY', 'NEVER-WIRE-PROMPT', 'NEVER-WIRE-COMMAND', 'NEVER-WIRE-ENV', 'NEVER-WIRE-UNKNOWN', 'NEVER-WIRE-BROKEN', 'NEVER-WIRE-ANSWER', 'private-id']) {
+  for (const secret of ['NEVER-WIRE-THIS-PROMPT', 'NEVER-WIRE-THIS-KEY', 'NEVER-WIRE-PROMPT', 'NEVER-WIRE-COMMAND', 'NEVER-WIRE-ENV', 'NEVER-WIRE-UNKNOWN', 'NEVER-WIRE-BROKEN', 'NEVER-WIRE-ANSWER', 'private-aborted-turn', 'private-done-turn']) {
     assert.equal(safe.includes(secret), false, `sensitive value escaped: ${secret}`);
   }
   assert.equal(active.cwd, SAFE_TEST_CWD); // adapter 内部の project 判定だけに使用
@@ -129,8 +129,8 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   const activeAt = NOW - 2 * 60_000;
   const doneAt = NOW - 60_000;
   await rollout(home, activeId, [meta(activeId), envelope('event_msg', { type: 'task_started', prompt: 'PRIVATE-PROMPT' }, activeAt)]);
-  await rollout(home, doneId, [meta(doneId), envelope('event_msg', { type: 'task_started' }, doneAt - 1000), envelope('event_msg', { type: 'task_complete', output: 'PRIVATE-OUTPUT' }, doneAt)]);
-  await rollout(home, abortedId, [meta(abortedId), envelope('event_msg', { type: 'task_started' }, activeAt - 1000), envelope('event_msg', { type: 'turn_aborted', reason: 'PRIVATE-REASON' }, activeAt)]);
+  await rollout(home, doneId, [meta(doneId), envelope('event_msg', { type: 'task_started', turn_id: 'private-done-turn-2' }, doneAt - 1000), envelope('event_msg', { type: 'task_complete', turn_id: 'private-done-turn-2', output: 'PRIVATE-OUTPUT' }, doneAt)]);
+  await rollout(home, abortedId, [meta(abortedId), envelope('event_msg', { type: 'task_started', turn_id: 'private-aborted-turn-2' }, activeAt - 1000), envelope('event_msg', { type: 'turn_aborted', turn_id: 'private-aborted-turn-2', reason: 'PRIVATE-REASON' }, activeAt)]);
   const { sessions, stats } = await createCodexSessionsSource({ root: home, wslShareStatus: 'not_configured' }).load();
   const claude = rec(11);
   const build = (items, sourceStats) => buildBoard({ sessions: items, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS, sourceStats });
@@ -156,6 +156,31 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   const malformedStatus = await createCodexSessionsSource({ root: home, wslShareStatus: 'C:\\private\\share' }).load();
   assert.equal(malformedStatus.stats.wslShareStatus, 'not_applicable', 'adapter status accepts only fixed categories');
   assert.equal(JSON.stringify(malformedStatus.stats).includes('C:\\private\\share'), false);
+});
+
+test('遅れて記録された古いCodex終端イベントは、新しいターンの状態を上書きせず、turn IDをwireへ出さない', async () => {
+  const home = await fixtureHome();
+  const id = uuid(608);
+  const oldStart = NOW - 30_000;
+  const currentStart = NOW - 20_000;
+  const lateComplete = NOW - 10_000;
+  await rollout(home, id, [
+    meta(id),
+    envelope('event_msg', { type: 'task_started', turn_id: 'PRIVATE-OLD-TURN' }, oldStart),
+    envelope('event_msg', { type: 'task_started', turn_id: 'PRIVATE-CURRENT-TURN' }, currentStart),
+    envelope('event_msg', { type: 'task_complete', turn_id: 'PRIVATE-OLD-TURN', last_agent_message: 'PRIVATE-OLD-ANSWER' }, lateComplete),
+  ]);
+
+  const { sessions } = await createCodexSessionsSource({ root: home }).load();
+  assert.equal(sessions.length, 1);
+  assert.deepEqual(sessions[0].lifecycle, { status: 'active', startedAt: currentStart });
+  assert.deepEqual(sessions[0].events, [
+    { type: 'turn_started', at: oldStart },
+    { type: 'turn_started', at: currentStart },
+  ]);
+  const board = buildBoard({ sessions, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS });
+  const wire = JSON.stringify(board);
+  for (const secret of ['PRIVATE-OLD-TURN', 'PRIVATE-CURRENT-TURN', 'PRIVATE-OLD-ANSWER']) assert.equal(wire.includes(secret), false);
 });
 
 test('task_complete.error は本文を捨てて失敗状態だけを出し、不正なerror形式は完了扱いしない', async () => {

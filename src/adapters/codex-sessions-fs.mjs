@@ -88,11 +88,12 @@ async function readTail(handle, size) {
       const type = line.payload.type;
       const at = timestamp(line.timestamp);
       if (!at) continue;
-      if (typeof type === 'string' && START_TYPES.has(type)) out.push({ type: 'turn_started', at });
+      const turnId = typeof line.payload.turn_id === 'string' && line.payload.turn_id.length <= 128 ? line.payload.turn_id : undefined;
+      if (typeof type === 'string' && START_TYPES.has(type)) out.push({ type: 'turn_started', at, turnId });
       else if (typeof type === 'string' && COMPLETE_TYPES.has(type)) {
-        out.push({ type: terminalType(line.payload), at });
+        out.push({ type: terminalType(line.payload), at, turnId });
       }
-      else if (typeof type === 'string' && ABORT_TYPES.has(type)) out.push({ type: 'turn_aborted', at });
+      else if (typeof type === 'string' && ABORT_TYPES.has(type)) out.push({ type: 'turn_aborted', at, turnId });
     } catch {
       // JSONL の末尾は Codex が書き込み中のことがある。壊れた行だけを捨てる。
     }
@@ -173,7 +174,8 @@ export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY
         stats.bad++;
         return null;
       }
-      const events = await readTail(handle, stat.size);
+      const sourceEvents = await readTail(handle, stat.size);
+      const { lifecycle, events } = projectLifecycle(sourceEvents);
       const filename = FILE_RE.exec(path.basename(file));
       if (!filename || filename[2].toLowerCase() !== meta.id) {
         cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, record: null, rejection: 'filename_mismatch' });
@@ -181,7 +183,6 @@ export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY
         stats.filenameMismatch++;
         return null;
       }
-      const lifecycle = lifecycleOf(events);
       const lastActivityAt = lifecycle.status === 'active' ? Math.max(events.at(-1)?.at ?? meta.createdAt, stat.mtimeMs) : events.at(-1)?.at ?? meta.createdAt;
       const record = {
         source: 'codex',
@@ -251,18 +252,38 @@ export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY
   };
 }
 
-/** @param {Array<{type:string,at:number}>} events */
-function lifecycleOf(events) {
+/** @param {Array<{type:string,at:number,turnId?:string}>} sourceEvents */
+function projectLifecycle(sourceEvents) {
   let state = 'unknown';
   let startedAt;
-  for (const event of events) {
+  let currentTurnId;
+  let hasStart = false;
+  const events = [];
+  for (const event of sourceEvents) {
     if (event.type === 'turn_started') {
       state = 'active';
       startedAt = event.at;
-    } else if (event.type === 'turn_completed') state = 'complete';
+      currentTurnId = event.turnId;
+      hasStart = true;
+      events.push({ type: event.type, at: event.at });
+      continue;
+    }
+
+    if (hasStart && currentTurnId && event.turnId && currentTurnId !== event.turnId) continue;
+    if (hasStart && (currentTurnId === undefined) !== (event.turnId === undefined)) {
+      state = 'unknown';
+      events.push({ type: 'turn_unknown', at: event.at });
+      continue;
+    }
+
+    if (event.type === 'turn_completed') state = 'complete';
     else if (event.type === 'turn_failed') state = 'failed';
     else if (event.type === 'turn_aborted') state = 'interrupted';
     else if (event.type === 'turn_unknown') state = 'unknown';
+    events.push({ type: event.type, at: event.at });
   }
-  return { status: state, ...(state === 'active' && startedAt ? { startedAt } : {}) };
+  return {
+    lifecycle: { status: state, ...(state === 'active' && startedAt ? { startedAt } : {}) },
+    events,
+  };
 }
