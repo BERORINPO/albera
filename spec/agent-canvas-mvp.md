@@ -966,7 +966,7 @@
 
 - 実行条件profileにハーネス種別の固定enum（Claude Code、Codex CLI、GitHub Copilot、OpenCode、その他、不明）を追加。文字列入力は受けず、古いprofileや不正値は「不明」に正規化する。
 - 選択値はブラウザー内graph保存だけに留め、session API/wireやproviderデータに書き戻さない。手動profileが関連するセッションのキャンバスカード・詳細・検索に固定ラベルとして表示する。
-- enumと値のallowlist、検索、関係projection、localStorage round-tripをfixtureで検証。ブラウザー上のこの追加項目の受入確認と実セッション利用は未実施。手動申告は実行中ハーネス/設定の自動検証ではない。
+- enumと値のallowlist、検索、関係projection、localStorage round-tripをfixtureで検証。ブラウザー上の手動入力・関連付け・検索・再読み込み復元は合成demoで受け入れ済み（下記追記）。実セッション利用は未実施で、手動申告は実行中ハーネス/設定の自動検証ではない。
 
 ### セッション付箋の配置操作テストを補強 (2026-10-27)
 
