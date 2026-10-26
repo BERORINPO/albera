@@ -1003,6 +1003,12 @@ A synthetic late-completion fixture verifies that an older completed turn cannot
 
 The synthetic `--demo` board now includes an explicitly labeled Codex CLI failed-turn card with only the fixed `turn_failed` event and timestamps. This makes the failure state available for manual UI review without presenting fixture data as a real session. Unit coverage verifies demo lifecycle coverage, board projection of the `failed` state, and event detail rendering that ignores provider error text. README state lists now include failed.
 
+### REA手動要約からセッションへの関係をGUI確認 (2026-10-27)
+
+- 隔離loopback `--demo`で成果物カードを作り、REAの注意書きに従い合成の短文要約を入力した。成果物の確認checkboxを有効にして保存し、カードの「関係を追加」から合成Codexセッションへ`related`を記録した。
+- キャンバス上に成果物カードと固定ラベルの関係線が表示され、再読み込み後も両方が復元した。成果物カードを確認付きで削除し、再読み込み後に追加カード/関係線0件となることを確認した。
+- 合成要約・合成セッションだけを使用。REA OSSリンクは開かず、REAを起動せず、外部通信なし。完全Evidenceや実所見を取り込んでいない。これは手動記録・関連付け・保存/復元UIの受入で、REA解析結果の正しさや実セッション互換性を証明しない。隔離デモを閉鎖済み。
+
 > 2026-10-27追記: 上記実画面確認はport `18816`の隔離demoで実施し、入れ子inventory・target-only記録・親詳細からcanvasへのfocus復帰・再読込後の状態復元を合成カードで確認した。実Git/WSL、実セッションとの適合性は未確認。
 
 > 2026-10-27追記: 隔離demoで新規Graphカードが`(0,0)`に配置される不具合を確認し、原因はcanvas配置adapterが`nextGraphNodePosition`へカード寸法を渡さず、障害物配列を寸法として渡していたことと判明した。引数順を修正し、観測したviewport/camera/用紙寸法を使う純粋adapterテストを追加。port `18826`の別隔離demoで新規カード座標`(220,-220)`、再読み込み後の同座標復元を確認し、最後に合成カードをUIから削除、タブとサーバーを終了した。合成データのみを使用し、実セッションは読んでいない。
