@@ -58,6 +58,11 @@ test('a confirmed worktree summary is saved as a local worktree card linked to i
   assert.equal(graph.nodes[0].title, 'agent/review');
   assert.deepEqual(normalizeGraph(JSON.parse(JSON.stringify(graph))), graph, 'the safe record and its edge survive browser-storage serialization');
   assert.deepEqual(graph.edges.map(({ from, to, kind, purpose, status }) => ({ from, to, kind, purpose, status })), [{ from: `graph:${g1}`, to: `session:${session}`, kind: 'related', purpose: 'Created by confirmed worktree action', status: '' }]);
+  const refreshed = addWorktreeForSession(graph, { ...input, body: 'At check: changed' }, g2, 'e_00000000-0000-4000-8000-000000000002', session, 'Recorded from read-only worktree inventory');
+  assert.equal(refreshed.nodes.length, 1, 'refresh updates the existing branch record instead of duplicating it');
+  assert.equal(refreshed.nodes[0].id, g1);
+  assert.equal(refreshed.nodes[0].body, 'At check: changed');
+  assert.deepEqual([refreshed.nodes[0].x, refreshed.nodes[0].y], [30, 40], 'refresh keeps the saved canvas placement');
   assert.deepEqual(addWorktreeForSession(empty(), input, g1, e1, 'invalid-session'), empty(), 'invalid session creates no record');
   assert.deepEqual(addWorktreeForSession(empty(), input, g1, 'bad-edge', session), empty(), 'invalid edge ID does not leave an unlinked record behind');
 });

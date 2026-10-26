@@ -101,16 +101,20 @@ export function addTaskForSession(doc, input, id, edgeId, sessionId) {
   return linked.edges.length === withTask.edges.length + 1 ? linked : doc;
 }
 
-/** Persist a safe worktree summary on the canvas and relate it to its source session in one graph update.
+/** Persist or refresh a safe worktree summary on the canvas and relate it to its source session in one graph update.
  * @param {GraphDoc} doc @param {Omit<GraphNode,'id'>} input @param {string} id @param {string} edgeId @param {string} sessionId
+ * @param {string} [purpose]
  * @returns {GraphDoc}
  */
-export function addWorktreeForSession(doc, input, id, edgeId, sessionId) {
+export function addWorktreeForSession(doc, input, id, edgeId, sessionId, purpose = 'Created by confirmed worktree action') {
   if (!SESSION_ID.test(sessionId)) return doc;
+  const existing = doc.nodes.find((node) => node.kind === 'worktree' && node.title === input.title
+    && doc.edges.some((edge) => edge.from === `graph:${node.id}` && edge.to === `session:${sessionId}`));
+  if (existing) return updateGraphNode(doc, existing.id, { ...input, x: existing.x, y: existing.y });
   const withWorktree = addGraphNode(doc, { ...input, kind: 'worktree' }, id);
   if (withWorktree === doc) return doc;
   const linked = connectGraph(withWorktree, {
-    from: `graph:${id}`, to: `session:${sessionId}`, kind: 'related', purpose: 'Created by confirmed worktree action', status: '',
+    from: `graph:${id}`, to: `session:${sessionId}`, kind: 'related', purpose, status: '',
   }, edgeId, new Set([sessionId]));
   return linked.edges.length === withWorktree.edges.length + 1 ? linked : doc;
 }

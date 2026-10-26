@@ -136,8 +136,25 @@ function createWorktreeForSession(sessionId) {
 }
 
 function listWorktreesForSession(sessionId) {
-  if (!view.index.has(sessionId)) return false;
-  openWorktreeListDialog(state.t, { load: () => listWorktrees(sessionId) });
+  const entry = view.index.get(sessionId);
+  if (!entry) return false;
+  openWorktreeListDialog(state.t, {
+    load: () => listWorktrees(sessionId),
+    record: (item) => {
+      const graph = loadGraph();
+      const vpSize = size();
+      const center = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
+      const position = nextGraphNodePosition(graph, center, GRAPH_CARD_SIZE);
+      const base = entry.card.detail?.gitWorktree?.branch || entry.card.detail?.branch || state.t('worktree.currentHead');
+      const branch = item.branch || state.t('worktree.listDetached');
+      const next = addWorktreeForSession(graph, {
+        kind: 'worktree', title: branch,
+        body: state.t('worktree.recordBody', { base, state: state.t(`worktree.status.${item.status}`), changed: item.changed, untracked: item.untracked, conflicted: item.conflicted }),
+        status: 'open', ...position, checkedPerson: '', missingEvidence: '', neededExplanation: '',
+      }, `g_${crypto.randomUUID()}`, `e_${crypto.randomUUID()}`, sessionId, 'Recorded from read-only worktree inventory');
+      return next !== graph && graphChanged(next);
+    },
+  });
   return true;
 }
 
