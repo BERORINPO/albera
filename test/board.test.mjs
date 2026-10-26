@@ -258,7 +258,7 @@ test('本文: 質問文の無い質問ツールの返事待ちは "" (古い nee
   assert.deepEqual([cards.get(sid(2)).body, cards.get(sid(2)).reasonParams], ['', { ask: 'question' }]);
 });
 
-test('文字数の上限: title 200 / 本文 600 / 親の title 40 / cwd 260 (code point 単位)', () => {
+test('文字数の上限: title 200 / 本文 600 / 親の title 40。完全な cwd は wire に出さない', () => {
   const long = '字'.repeat(1000);
   const parent = rec(1, { title: '親'.repeat(100) });
   const s = rec(2, { title: long, cwd: 'C:\\work\\alpha\\' + 'd'.repeat(400), lastFocusedAt: NOW - 2 * HOUR, turnWrapUp: { description: '😀'.repeat(800) }, spawnedFrom: { sessionId: sid(1) } });
@@ -268,7 +268,8 @@ test('文字数の上限: title 200 / 本文 600 / 親の title 40 / cwd 260 (co
   assert.ok(card.title.endsWith('…'));
   assert.equal(Array.from(card.body).length, 600);
   assert.equal(Array.from(card.family.parentTitle).length, 40);
-  assert.equal(Array.from(card.detail.cwd).length, 260);
+  assert.equal('cwd' in card.detail, false);
+  assert.ok(!JSON.stringify(card).includes('C:\\work\\alpha'));
 });
 
 test('出力に元データの大きな項目と folder hints は入らない (許可した項目だけ)', () => {
@@ -285,6 +286,7 @@ test('出力に元データの大きな項目と folder hints は入らない (�
   assert.ok(!json.includes('secret-task-text'));
   assert.ok(!json.includes('bypassPermissions'));
   assert.ok(!json.includes('"container"'));
+  assert.ok(!json.includes('"cwd"'));
   // hint の名前はプロジェクト名としてだけ出る (起動しないまま止まっているので「止まっているかも」)
   assert.deepEqual(board([s]).buckets.trouble[0].project, { key: 'hint-only-name', label: 'hint-only-name', extra: 0 });
 });

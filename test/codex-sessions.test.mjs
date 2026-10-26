@@ -111,7 +111,6 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   const completed = mixed.recentGroups.flatMap((g) => g.items).find((c) => c.source === 'codex');
   assert.ok(completed);
   assert.deepEqual(completed.events.map((e) => e.type), ['turn_started', 'turn_completed']);
-  assert.equal(completed.detail.cwd, undefined);
   const aborted = mixed.recentGroups.flatMap((g) => g.items).find((c) => c.id === `codex_${abortedId}`);
   assert.ok(aborted, 'aborted turn is terminal and does not remain working/stuck');
   assert.deepEqual(aborted.events.map((e) => e.type), ['turn_started', 'turn_aborted']);

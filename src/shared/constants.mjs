@@ -107,7 +107,6 @@ export const CAP = Object.freeze({
   TITLE: 200,
   BODY: 600,
   PARENT_TITLE: 40,
-  CWD: 260,
   ERROR_SNIPPET: 80,
   RESET_SNIPPET: 40,
   RAW: 4000, // adapter が保持する生テキストの上限 (メモリ保護)
@@ -181,6 +180,7 @@ export const FORBIDDEN_WIRE_KEYS = Object.freeze([
   'compactMetadata',
   'todos',
   'contextExceededCount',
+  'cwd',
 ]);
 
 // --- v0.2: していること・コンテキスト (spec/board.md §5.1・§5.2)。言葉は持たない (doing.* / ctx.* は画面の辞書) ---

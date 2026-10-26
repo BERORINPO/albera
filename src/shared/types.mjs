@@ -122,7 +122,7 @@
  * @property {Array<{num: number, repo: string, state: string, url: string|null}>} prs  state はコード (OPEN / MERGED / CLOSED、それ以外は生のまま)
  * @property {{id: string, runs: number, completed: number, stalled: number, latestBucket: BucketKey, runIds?: string[]}=} routine
  * @property {{rootId?: string, parentId?: string, parentTitle?: string|null, children?: {total: number, working: number, needs_you: number, trouble: number, unread: number}}=} family
- * @property {{statusDetail?: string, branch?: string, worktreeName?: string, cwd?: string, completedTurns?: number, error?: string, prsMore?: number, contextExceeded?: number}} detail
+ * @property {{statusDetail?: string, branch?: string, worktreeName?: string, completedTurns?: number, error?: string, prsMore?: number, contextExceeded?: number}} detail
  *   prsMore = 一覧に載せきれなかった PR の数。contextExceeded (v0.2) = SessionRecord.contextExceededCount (1 以上のときだけ、片付けには付かない)
  * @property {{recommended: boolean, note?: NoteCode}=} cleanup
  * @property {Activity=} activity   (v0.2) 最近で transcript があるときだけ。返事待ちと片付けには付かない

@@ -279,7 +279,6 @@ export function detailEl(card, pile, ctx) {
       ...dlRow(t('detail.error'), d.error ? h('span', { class: 'pre', lang: langOf(t, d.error), text: d.error }) : null),
       ...dlRow(t('detail.branch'), d.branch ?? null, 'path'),
       ...dlRow(t('detail.worktree'), d.worktreeName ?? null, 'path'),
-      ...dlRow(t('detail.folder'), d.cwd ?? null, 'path'),
       ...dlRow(t('detail.created'), createdText(t, card.createdAt, ctx.now)),
       ...dlRow(t('detail.turns'), Number(d.completedTurns) > 0 ? t('detail.turnsValue', { n: d.completedTurns }) : null),
       ...dlRow(t('detail.routine'), routine || null),

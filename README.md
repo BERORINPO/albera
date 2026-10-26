@@ -61,6 +61,7 @@ Everything is opened read-only. Nothing is sent anywhere, and it does not read t
 - The session's model name is read only to guess the size of its context window. It is never shown and never reaches the page.
 - How many times the app recorded the session running out of context (a number). It only decides whether a stuck session gets **Copy for a new session**.
 - The folder each session ran in (not for archived sessions): only whether a `.git` exists there or above it, and the names of its direct subfolders. This names the project. Network paths (`\\server\share`, `//server/share`) are skipped. A folder on a mapped network drive looks like any other path, so the operating system may reach that share when the board checks it; each check gives up after half a second.
+- The complete working folder path stays inside the local adapter and is not included in the API or page; the board uses a project label instead.
 - Session fields it does not use (for example MCP server settings) are dropped right after reading and never reach the page.
 - The page remembers your choices in this browser's storage: the language, the shortcuts and notifications switches, the view (list or canvas), which piles and project groups you opened, where you put each project's sheet on the canvas, your canvas cards and relations, and which sessions you copied a hand-off instruction for (the session ID, the time and the percentage, kept 24 hours). Projects are remembered by their folder names; groups for projects no longer on the board are removed, and a sheet's place is kept for 7 days after its project leaves the board.
 
@@ -75,7 +76,7 @@ Everything is opened read-only. Nothing is sent anywhere, and it does not read t
 | Recent | Read within the last 7 days | Nothing |
 | To archive | Idle for 7 days or more, older runs of a scheduled task, retried attempts, sessions whose PRs are all merged or closed | Pick, copy the instruction, paste it into Claude |
 
-The top line names the one session to look at first. The counts list (on the right on wide screens, under the top line on narrow ones) counts every pile. **Open** opens the session in the Claude app. Click a title for details: what it is doing, its context, full summary, folder, branch, PRs, related sessions, and buttons to copy the ID or link. The page refreshes every 5 seconds while it is visible. Desktop notifications for Needs you and Stuck? are off until you turn them on in the footer.
+The top line names the one session to look at first. The counts list (on the right on wide screens, under the top line on narrow ones) counts every pile. **Open** opens the session in the Claude app. Click a title for details: what it is doing, its context, full summary, project label, branch, PRs, related sessions, and buttons to copy the ID or link. The page refreshes every 5 seconds while it is visible. Desktop notifications for Needs you and Stuck? are off until you turn them on in the footer.
 
 ## Doing what
 

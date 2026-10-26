@@ -109,7 +109,6 @@ function detailFor(s, c, body) {
   if (c.facts.fresh && isNonEmpty(sd) && cap(sd, CAP.BODY) !== body) d.statusDetail = cap(sd, CAP.BODY);
   if (isNonEmpty(s.branch)) d.branch = cap(s.branch, CAP.TITLE);
   if (isNonEmpty(s.worktreeName)) d.worktreeName = cap(s.worktreeName, CAP.TITLE);
-  if (s.source !== 'codex' && isNonEmpty(s.cwd)) d.cwd = cap(s.cwd, CAP.CWD);
   if (typeof s.completedTurns === 'number') d.completedTurns = s.completedTurns;
   if (isNonEmpty(s.error)) d.error = cap(/** @type {string} */ (s.error).trim(), CAP.BODY);
   const morePrs = prListOf(s).length - MAX_PRS;
