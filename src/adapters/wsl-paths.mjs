@@ -1,14 +1,17 @@
 // Pure path helpers for an explicitly configured Windows WSL filesystem share.
 import path from 'node:path';
 
-const SHARE = /^(\\\\wsl(?:\.localhost|\$)\\[^\\]+)(?:\\.*)?$/i;
+const SHARE = /^(\\\\wsl(?:\.localhost|\$)\\([^\\]+))(?:\\.*)?$/i;
 
 /** Return only the local WSL distro share root; arbitrary network shares fail closed. @param {unknown} value */
 export function wslShareRoot(value) {
   if (typeof value !== 'string' || value.length > 1024) return '';
   const normalized = value.replaceAll('/', '\\').trim();
   const match = SHARE.exec(normalized);
-  return match?.[1] ?? '';
+  const distro = match?.[2];
+  if (!match?.[1] || !distro || distro === '.' || distro === '..' || distro.length > 64
+    || /[\u0000-\u001f\u007f<>:"|?*]/u.test(distro) || /[. ]$/u.test(distro)) return '';
+  return match[1];
 }
 
 /** True only for a path below the exact configured distro share. @param {unknown} value @param {unknown} shareRoot */

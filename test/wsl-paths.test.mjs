@@ -5,7 +5,10 @@ import { isWslPathInShare, wslCwdToUnc, wslShareRoot } from '../src/adapters/wsl
 test('WSL share root accepts only a configured WSL distro share', () => {
   assert.equal(wslShareRoot('\\\\wsl.localhost\\Ubuntu\\home\\dev\\.codex'), '\\\\wsl.localhost\\Ubuntu');
   assert.equal(wslShareRoot('\\\\wsl$\\Ubuntu'), '\\\\wsl$\\Ubuntu');
+  assert.equal(wslShareRoot('\\\\wsl.localhost\\OpenSUSE Tumbleweed\\.codex'), '\\\\wsl.localhost\\OpenSUSE Tumbleweed');
   assert.equal(wslShareRoot('\\\\server\\share\\.codex'), '');
+  assert.equal(wslShareRoot('\\\\wsl.localhost\\..\\.codex'), '');
+  assert.equal(wslShareRoot('\\\\wsl.localhost\\Ubuntu.\\.codex'), '');
   assert.equal(wslShareRoot('/home/dev/.codex'), '');
 });
 
