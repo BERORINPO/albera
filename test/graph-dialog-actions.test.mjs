@@ -176,3 +176,16 @@ test('resolving comprehension debt requires a named checked person in the dialog
     assert.match(dict, /'graph\.resolveNeedsPerson':/);
   }
 });
+
+test('REA manual-summary guidance appears only for artifact cards and forbids full Evidence', () => {
+  const source = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
+  assert.match(source, /'data-artifact-summary-hint'/);
+  assert.match(source, /if \(artifactSummaryHint\) artifactSummaryHint\.hidden = !artifact/);
+  assert.match(source, /kindSelect\?\.addEventListener\('change', syncReferenceField\)/);
+  assert.match(source, /syncReferenceField\(\)/);
+  for (const file of ['dict-ja-canvas.mjs', 'dict-en-canvas.mjs']) {
+    const dict = fs.readFileSync(new URL(`../public/${file}`, import.meta.url), 'utf8');
+    assert.match(dict, /'graph\.artifactSummaryManual':/);
+    assert.match(dict, /full Evidence|完全なEvidence/);
+  }
+});
