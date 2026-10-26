@@ -600,10 +600,16 @@
 - グラフカードにキーボードでも起動できる接続ハンドルを追加。起点を選ぶと他カードを接続先として選べ、既存の関係ダイアログで関係種別/目的を確認して保存する。接続先はダイアログで事前選択され、Escapeで選択モードをキャンセル可能。保存は既存のGraph localStorage形式を使うため再読み込み後も関係線と目的が復元される。
 - グラフカード同士の接続に加えて、セッション付箋とグラフカード双方に接続ハンドルを設け、session↔graphの端点ドラッグから同じ関係ダイアログを開く。
 - 2026-10-27の隔離demo受入でsession→graphとgraph→sessionの両方向を実操作し、対象が事前選択されたダイアログを保存。再読み込み後にカード1件、session handle 17件、関係線2本を確認した。合成デモのみで、実セッション/CLIは使っていない。
-- pure helperではgraph/sessionの端点組み合わせ、自己接続、空/未知endpointを検証する。session→sessionは実装したがGUIでは未操作。近くまでズームしてsession handleを表示する必要がある。狭幅・スクリーンリーダー全操作は別途未確認。
+- pure helperではgraph/sessionの端点組み合わせ、自己接続、空/未知endpointを検証する。session→session pointer dragは未操作。近くまでズームしてsession handleを表示する必要がある。狭幅・スクリーンリーダー全操作は別途未確認。
 
 ### 新規キャンバスカードの初期配置がセッション付箋と重ならないよう修正 (2026-10-27)
 
 - session handle接続のGUI受入中、新規Graph cardの初期配置が表示中session slipと重なり、drag sourceの方を隠すケースを確認。
 - `nextGraphNodePosition`に任意の障害矩形を加え、キャンバスの全Graph card作成経路からsession slip矩形を渡すようにした。既存graph cardとsession slipの双方を避ける。
 - 合成fixtureのpure testと隔離demoのUIで確認。demo上で17 session slipsと追加カードの矩形を比べ、重なり0件。実セッション/CLIは未使用。
+
+### 合成セッション間の委譲関係を画面から記録し復元 (2026-10-27)
+
+- 隔離した合成デモでCodexセッション詳細の「関係を記録」を開き、Claudeセッションを委譲先、関係種別を「委譲の記録」、目的を合成テキストにして保存した。
+- 保存後のセッション詳細には委譲先、目的、予定状態が表示され、再読み込み後にも同じ内容が残ることを確認した。デモ側はCLIへの委譲を無効と表示し、実行はしていない。
+- この確認はsession→session関係の画面入力・保存・復元を検証する。session→sessionのpointer drag自体は未検証。使ったのは合成レコードと隔離demo originのlocalStorageのみで、実セッション・CLI・外部サービスは未使用。
