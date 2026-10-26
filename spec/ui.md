@@ -1394,3 +1394,10 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - worktreeカードに関連sessionがない場合は接続を促し、関連先があるが現在のボードにない場合はボード更新を案内する。session IDやパスは説明文に含めない。複数の関連先がある場合、稼働中sessionが一つでもあれば更新操作を有効にする。
 - Pure helperの合成テストで未関連、session不在、複数候補中の稼働session、完了カードを確認した。`npm test`: 602 passed、`npm run arch`: 99 paths・違反0、`git diff --check`: pass。
 - ブラウザー上の詳細パネル表示・更新操作は、Windows computer-useがURLの安全判定で前回入力前に停止したため未確認。実Git/WSL inventory、実セッションの稼働状態も未確認。
+
+### Codex失敗状態の隔離デモ画面受入 (2026-10-27)
+
+- loopbackの新規port `18812`で`--demo`を起動し、ブラウザーから合成の`Codex CLI (failed demo)`を検索。一覧へ切り替え、「最近」の該当件数を展開して詳細を開いた。
+- 画面にハーネス`Codex CLI`、実行状態`失敗`、固定イベント`ターン開始`/`失敗`と時刻が表示され、プロバイダーのエラー本文は表示されないことを確認。Codex候補数などの実データ走査ではなく、失敗表示のGUI配線・安全な要約だけの確認。
+- 詳細は「最近」内にあり、検索一致数が1件であることを確認してから一覧へ切り替えた。カードとイベントが一覧上に現れるまで展開が必要だった。worktree操作・永続データ編集はしていない。
+- 隔離デモのブラウザーtabを閉じ、serverを停止。実セッション、CLI起動/新規作成、外部サービスは不使用。実Codexセッションとの適合性は依然未確認。
