@@ -78,6 +78,7 @@ function sessionRelations(t, card, graph, sessions) {
       openNoteUri ? h('a', { class: 'textbtn graph-session-relations__node', href: openNoteUri, target: '_blank', rel: 'noopener noreferrer', text: t('graph.openKnowledgeNote') }) : null,
       h('span', { text: `${direction} — ${t(`graph.edge.${entry.kind}`)}${status}` }),
       entry.purpose ? h('small', { text: entry.purpose }) : entry.kind === 'delegates' ? h('small', { class: 'graph-dialog__hint', text: t('graph.delegationPurposeMissing') }) : null,
+      entry.kind === 'delegates' ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'graph-edit-session-edge', 'data-id': entry.edgeId, text: t('graph.editDelegation') }) : null,
       entry.endpoint === 'graph' && entry.node.kind === 'execution_profile'
         ? h('small', { text: t('graph.executionProfileSummary', { values: [
           t(`graph.executionLocation.${entry.node.executionLocation}`),

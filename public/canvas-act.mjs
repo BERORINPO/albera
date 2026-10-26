@@ -175,12 +175,19 @@ function editGraphNode(id) {
     t: state.t, graph, node, sessions: graphSessions(),
     onSave: (input) => graphChanged(updateGraphNode(graph, id, input)),
     onDelete: (key) => graphChanged(removeGraphNode(graph, key)),
-    onEditEdge: (edge) => openGraphRelationDialog({
-      t: state.t, from: edge.from, edge, graph, sessions: graphSessions(),
-      onConnect: (input) => graphChanged(updateGraphEdge(loadGraph(), edge.id, input)),
-      onDeleteEdge: (key) => graphChanged(removeGraphEdge(loadGraph(), key)),
-    }),
+    onEditEdge: (edge) => editGraphEdge(edge.id),
     onConnect: (from, kind) => connectGraphEndpoint(from, kind),
+  });
+}
+
+function editGraphEdge(id) {
+  const graph = loadGraph();
+  const edge = graph.edges.find((item) => item.id === id);
+  if (!edge) return false;
+  return openGraphRelationDialog({
+    t: state.t, from: edge.from, edge, graph, sessions: graphSessions(),
+    onConnect: (input) => graphChanged(updateGraphEdge(loadGraph(), edge.id, input)),
+    onDeleteEdge: (key) => graphChanged(removeGraphEdge(loadGraph(), key)),
   });
 }
 
@@ -291,6 +298,7 @@ export const CANVAS_CLICK = {
     if (id) openRelatedSessionDetail(id, openBar);
   },
   'graph-connect': (el) => connectGraphEndpoint(`session:${el.dataset.id ?? ''}`),
+  'graph-edit-session-edge': (el) => editGraphEdge(el.dataset.id ?? ''),
   'graph-task-from-session': (el) => newTaskForSession(el.dataset.id ?? ''),
   'worktree-create': (el) => createWorktreeForSession(el.dataset.id ?? ''),
   'worktree-list': (el) => listWorktreesForSession(el.dataset.id ?? ''),

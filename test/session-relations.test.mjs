@@ -9,7 +9,7 @@ const edge = (from, to, purpose, status = 'active') => ({ id: 'edge', from: `ses
 test('session detail projection exposes safe session-to-session delegation in both directions', () => {
   const entries = sessionRelationEntries([edge(first, second, 'Implement the documented change')], first, { nodes: [] }, [{ id: first }, { id: second }]);
   assert.deepEqual(entries, [{
-    direction: 'out', kind: 'delegates', purpose: 'Implement the documented change', status: 'active', endpoint: 'session', sessionId: second,
+    edgeId: 'edge', direction: 'out', kind: 'delegates', purpose: 'Implement the documented change', status: 'active', endpoint: 'session', sessionId: second,
   }]);
   assert.equal(JSON.stringify(entries).includes('title'), false);
 

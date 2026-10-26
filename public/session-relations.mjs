@@ -28,7 +28,7 @@ export function sessionRelationEntries(edges, sessionId, graph, sessions) {
     if (edge.from !== endpoint && edge.to !== endpoint) return [];
     const other = edge.from === endpoint ? edge.to : edge.from;
     const direction = edge.from === endpoint ? 'out' : 'in';
-    const base = { direction, kind: edge.kind, purpose: edge.purpose, status: edge.status };
+    const base = { edgeId: edge.id, direction, kind: edge.kind, purpose: edge.purpose, status: edge.status };
     if (other.startsWith('graph:')) {
       const node = graph.nodes.find((item) => `graph:${item.id}` === other);
       if (!node) return [];

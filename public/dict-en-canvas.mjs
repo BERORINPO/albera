@@ -213,6 +213,7 @@ export const EN_CANVAS = Object.freeze({
   'graph.delegation.completed': 'Completed',
   'graph.delegation.cancelled': 'Cancelled',
   'graph.delegationPurposeMissing': 'Purpose missing — edit this delegation record to add what was delegated.',
+  'graph.editDelegation': 'Edit delegation record',
   'graph.relations': 'Relations',
   'graph.relatedCards': 'Related canvas cards',
   'graph.sessionRelationOut': 'From this session',
