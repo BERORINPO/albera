@@ -161,3 +161,15 @@ test('relation removal uses an accessible in-app confirmation naming both endpoi
     assert.match(dict, /'graph\.removeRelationCancel':/);
   }
 });
+
+test('resolving comprehension debt requires a named checked person in the dialog', () => {
+  const source = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
+  assert.match(source, /String\(data\.checkedPerson \?\? ''\)\.trim\(\)/);
+  assert.match(source, /checkedPersonInput\?\.setCustomValidity\(t\('graph\.resolveNeedsPerson'\)\)/);
+  assert.match(source, /checkedPersonInput\?\.reportValidity\(\)/);
+  assert.match(source, /checkedPersonInput\?\.addEventListener\('input', \(\) => checkedPersonInput\.setCustomValidity\(''\)\)/);
+  for (const file of ['dict-ja-canvas.mjs', 'dict-en-canvas.mjs']) {
+    const dict = fs.readFileSync(new URL(`../public/${file}`, import.meta.url), 'utf8');
+    assert.match(dict, /'graph\.resolveNeedsPerson':/);
+  }
+});

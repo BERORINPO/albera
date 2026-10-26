@@ -252,6 +252,21 @@ test('comprehension review reports only explicitly missing graph links, never a 
   assert.deepEqual(reviewUnderstandingGaps(unspecified), [], 'blank fields do not imply missing evidence or lack of understanding');
 });
 
+test('a comprehension gap cannot be marked done or resolved until the checked person is recorded', () => {
+  const emptyPerson = addGraphNode(empty(), {
+    kind: 'understanding_gap', title: 'Review decision understanding', body: '', status: 'open', x: 0, y: 0,
+    checkedPerson: '', missingEvidence: '', neededExplanation: '',
+  }, g1);
+  assert.equal(addGraphNode(empty(), {
+    kind: 'understanding_gap', title: 'Already resolved', body: '', status: 'resolved', x: 0, y: 0,
+    checkedPerson: '', missingEvidence: '', neededExplanation: '',
+  }, g2).nodes.length, 0);
+  assert.equal(updateGraphNode(emptyPerson, g1, { status: 'done' }), emptyPerson);
+  assert.equal(updateGraphNode(emptyPerson, g1, { status: 'resolved' }), emptyPerson);
+  const identified = updateGraphNode(emptyPerson, g1, { checkedPerson: 'reviewer' });
+  assert.equal(updateGraphNode(identified, g1, { status: 'resolved' }).nodes[0].status, 'resolved');
+});
+
 test('comprehension review treats relations to unavailable sessions as missing', () => {
   const graph = addGraphNode(empty(), {
     kind: 'understanding_gap', title: 'Review source availability', body: '', status: 'open', x: 0, y: 0,

@@ -122,6 +122,7 @@ export function openGraphNodeDialog(o) {
   const knowledgeNoteFields = /** @type {HTMLFieldSetElement|null} */ (form.querySelector('[data-knowledge-note]'));
   const knowledgeVaultInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="knowledgeVault"]'));
   const knowledgeFileInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="knowledgeFile"]'));
+  const checkedPersonInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="checkedPerson"]'));
   const syncReferenceField = () => {
     const artifact = kindSelect?.value === 'artifact';
     if (refField) refField.hidden = !artifact;
@@ -141,6 +142,7 @@ export function openGraphNodeDialog(o) {
   kindSelect?.addEventListener('change', syncComprehensionFields);
   kindSelect?.addEventListener('change', syncKnowledgeFields);
   refInput?.addEventListener('input', () => refInput.setCustomValidity(''));
+  checkedPersonInput?.addEventListener('input', () => checkedPersonInput.setCustomValidity(''));
   statusInput?.addEventListener('change', () => statusInput.setCustomValidity(''));
   for (const name of ['missingEvidence', 'neededExplanation']) form.querySelector(`[name="${name}"]`)?.addEventListener('input', () => statusInput?.setCustomValidity(''));
   knowledgeVaultInput?.addEventListener('input', () => knowledgeVaultInput.setCustomValidity(''));
@@ -216,6 +218,11 @@ export function openGraphNodeDialog(o) {
     ev.preventDefault();
     const data = Object.fromEntries(new FormData(form).entries());
     if (String(data.kind) === 'understanding_gap' && ['done', 'resolved'].includes(String(data.status))) {
+      if (!String(data.checkedPerson ?? '').trim()) {
+        checkedPersonInput?.setCustomValidity(t('graph.resolveNeedsPerson'));
+        checkedPersonInput?.reportValidity();
+        return;
+      }
       const sessionsById = new Set(sessions.map((session) => session.id));
       const candidate = {
         ...graph,

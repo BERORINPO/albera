@@ -89,6 +89,7 @@ export const EN_CANVAS = Object.freeze({
   'graph.missingLinks': 'Graph links missing: {links}',
   'graph.reviewHint': 'These relations are not linked in the graph: {links}. Add the relations, review the evidence or explanation, then update the status. This does not assess a person’s understanding.',
   'graph.resolveNeedsLinks': 'This gap cannot be marked done or resolved until these declared items are linked: {links}.',
+  'graph.resolveNeedsPerson': 'This gap cannot be marked done or resolved until you record whose understanding is being checked.',
   'graph.kind.task': 'Task',
   'graph.kind.artifact': 'Artifact',
   'graph.kind.decision': 'Decision',

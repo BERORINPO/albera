@@ -159,6 +159,7 @@ export function addGraphNode(doc, input, id) {
   const node = normalizeGraphNode({ ...input, id });
   if (!node || !node.title) return doc;
   if (node.kind === 'understanding_gap' && ['done', 'resolved'].includes(node.status)) {
+    if (!node.checkedPerson.trim()) return doc;
     const candidate = { ...doc, nodes: [...doc.nodes, node] };
     if (reviewUnderstandingGaps(candidate).some((item) => item.id === id && item.missing.length > 0)) return doc;
   }
@@ -235,6 +236,7 @@ export function updateGraphNode(doc, id, patch, sessionIds = new Set()) {
   if (!current) return doc;
   const changed = normalizeGraphNode({ ...current, ...patch, id }) ?? current;
   if (patch.status && ['done', 'resolved'].includes(patch.status) && changed.kind === 'understanding_gap') {
+    if (!changed.checkedPerson.trim()) return doc;
     const candidate = { ...doc, nodes: doc.nodes.map((node) => node.id === id ? changed : node) };
     if (reviewUnderstandingGaps(candidate, sessionIds).some((item) => item.id === id && item.missing.length > 0)) return doc;
   }

@@ -690,3 +690,9 @@
 - 理解負債カードに、理解を確認される人・不足根拠・必要な説明を常時表示する。空欄は「未記録」とし、カード上のアクセシブル名にも同じ情報を含める。
 - 解消済み扱いのときに根拠/説明関係が無い場合の「要確認」表示、接続フォームへの導線、利用者による妥当性判断は既存動作を維持。理解の推定や数値評価は追加しない。
 - `npm test` — 559 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。ブラウザーでの視覚/スクリーンリーダー受入は未確認。
+
+### 対象者未記録の理解負債を解消済みにできないよう制約 (2026-10-27)
+
+- UIとpure graph modelの両方で、理解を確認される人が空の理解負債を`done`/`resolved`にできないようにした。UIは対象者欄に理由を出し、入力時に検証エラーを解除する。
+- 根拠/説明の既存リンク条件も維持。モデルテストで空の作成、空の状態遷移、対象者を記録後の遷移を確認し、dialog assertionで案内を確認。
+- `npm test` — 561 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。ブラウザー操作でのvalidationは未確認。
