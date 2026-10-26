@@ -531,3 +531,8 @@
 - 516px幅の隔離demoで合成タスクを作り、ポインターで60×40画面px移動。画面上のカードも同じ差分で移動し、カードの保存座標は`(154,85)`になった。
 - UIから合成Codex CLIセッションへの`related`関係を記録し、再読み込み後にカード題名・座標`(154,85)`・関係線1本が復元されることを確認した。これはポインター操作とbrowser-local保存/復元のGUI確認で、実セッション形式やprovider保存先の適合性は証明しない。
 - 実セッション・CLI・外部サービスは使わず、デモサーバー停止済み。合成カードと関係はport 19836の専用browser originに残る。横幅516pxのみを確認し、ドラッグ/復元の狭幅全体受入は未完了。
+
+### 変更系APIのOrigin欠落と非JSON送信を拒否 (2026-10-26)
+
+- 委譲実行、worktree作成、worktree削除の各APIについて、Origin欠落時は403、同一Originでも`application/x-www-form-urlencoded`は415となり、操作関数が呼ばれないことを合成HTTPテストで固定。
+- `npm test` — 541 passed、`npm run arch` — 96 paths/0 violations、`git diff --check` — passed。実CLIやworktree操作、外部サービスは使用していない。

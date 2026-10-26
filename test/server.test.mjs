@@ -262,6 +262,10 @@ test('worktree作成APIは同一Origin・JSON・opaque session ID・branch・明
 
     const wrongOrigin = await request(p, { path: '/api/worktrees', method: 'POST', headers: { ...headers, Origin: 'https://attacker.example' }, body: '{}' });
     assert.equal(wrongOrigin.status, 403);
+    const missingOrigin = await request(p, { path: '/api/worktrees', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(missingOrigin.status, 403);
+    const formEncoded = await request(p, { path: '/api/worktrees', method: 'POST', headers: { Origin: headers.Origin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'confirmed=true' });
+    assert.equal(formEncoded.status, 415);
     const unconfirmed = await request(p, { path: '/api/worktrees', method: 'POST', headers, body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/x', confirmed: false }) });
     assert.equal(unconfirmed.status, 400);
     const extraPath = await request(p, { path: '/api/worktrees', method: 'POST', headers, body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/x', cwd: 'C:\\private\\repo' }) });
@@ -301,6 +305,10 @@ test('delegation API requires confirmation, sends only the purpose, and returns 
     assert.equal(unconfirmed.status, 400);
     const wrongOrigin = await request(p, { path: '/api/delegations/run', method: 'POST', headers: { ...headers, Origin: 'https://attacker.example' }, body: '{}' });
     assert.equal(wrongOrigin.status, 403);
+    const missingOrigin = await request(p, { path: '/api/delegations/run', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(missingOrigin.status, 403);
+    const formEncoded = await request(p, { path: '/api/delegations/run', method: 'POST', headers: { Origin: headers.Origin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'confirmed=true' });
+    assert.equal(formEncoded.status, 415);
     assert.equal(calls.length, 1);
   } finally {
     server.closeAllConnections();
@@ -360,6 +368,10 @@ test('worktree削除APIは同一Origin・opaque ID・ブランチ名・確認済
     const unconfirmed = await request(p, { path: '/api/worktrees/remove', method: 'POST', headers,
       body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/review', confirmed: false }) });
     assert.equal(unconfirmed.status, 400);
+    const missingOrigin = await request(p, { path: '/api/worktrees/remove', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(missingOrigin.status, 403);
+    const formEncoded = await request(p, { path: '/api/worktrees/remove', method: 'POST', headers: { Origin: headers.Origin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'confirmed=true' });
+    assert.equal(formEncoded.status, 415);
     assert.equal(calls.length, 1);
     const extra = await request(p, { path: '/api/worktrees/remove', method: 'POST', headers,
       body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/review', confirmed: true, cwd: 'C:\\private' }) });
