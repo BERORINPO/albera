@@ -3,6 +3,7 @@ import { delegationStatus, runDelegation, WorktreeOperationError } from './api.m
 import { loadGraph } from './graph-store.mjs';
 import { finishGraphDelegationOperation, startGraphDelegationOperation } from './graph-model.mjs';
 import { persistDelegationOutcome } from './delegation-outcome.mjs';
+import { delegationRuntimeReasonKey } from './delegation-runtime-reason.mjs';
 import { isCompletedLocalCodexTarget } from './events.mjs';
 import { openDelegationConfirmDialog } from './delegation-confirm-dialog.mjs';
 
@@ -29,9 +30,11 @@ async function executeConfirmedDelegation(edgeId, sourceId, targetId, purpose, {
   }
   const operationId = crypto.randomUUID();
   if (!graphChanged(startGraphDelegationOperation(graph, edgeId, operationId))) return false;
+  let startAccepted = false;
   try {
     const started = await runDelegation(targetId, purpose, operationId);
     if (started.operationId !== operationId || !['running', 'completed', 'failed'].includes(started.status)) throw new Error('invalid operation response');
+    startAccepted = true;
     announce(state.t('graph.delegationStarted'));
     for (let attempt = 0; attempt < 600; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -43,9 +46,10 @@ async function executeConfirmedDelegation(edgeId, sourceId, targetId, purpose, {
     }
     announce(state.t('graph.delegationStillRunning'));
   } catch (error) {
-    if (error instanceof WorktreeOperationError && error.reason === 'cli_unavailable') {
+    const reasonKey = !startAccepted && error instanceof WorktreeOperationError ? delegationRuntimeReasonKey(error.reason) : null;
+    if (reasonKey) {
       if (!persistDelegationOutcome({ edgeId, operationId, status: 'blocked', loadGraph, graphChanged })) return false;
-      announce(state.t('graph.delegationCliUnavailable'));
+      announce(state.t(reasonKey));
       return false;
     }
     announce(state.t('graph.delegationStatusLost'));

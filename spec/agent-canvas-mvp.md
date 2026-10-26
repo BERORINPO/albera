@@ -880,6 +880,15 @@
 - 合成pure model testで既存の空`evidence`/`explains`関係の識別、各edge IDの保持、1件補完後に残りだけをレビューすることを確認。UI action testでincomplete向け案内、既存edge ID指定、relation editorへの接続を確認した。
 - この追補は隔離ブラウザーでは未確認。既存の別ブラウザー受入は通常の新規リンク作成であり、空欄の旧形式レコードを描画して修復する受入を意味しない。実セッション/CLI/外部サービスは使っていない。
 
+## 2026-10-27 委譲開始拒否の表示と状態修復
+
+- 最終確認後、対象セッションがactive/消失/別操作中になった場合など、サーバーが委譲開始を拒否した際に、キャンバス上の委譲関係が「進行中」のまま残る状態遷移の穴を修正した。
+- サーバーの固定許可理由コード (`invalid_target`, `unsupported_location`, `session_active`, `session_unknown`, `already_running`, `operation_limit`, `cli_unavailable`) のみを日英の安全な説明文へ対応付け、委譲記録を `blocked` に保存する。未知コード、診断文字列、パス、OSエラーは表示せず、開始応答を受け取った後の状態照会失敗は従来どおり「状態不明」として再実行しない。
+- `test/delegation-act.test.mjs` で許可コードの日英メッセージ、未知/機密値の拒否、開始前の拒否だけを終端状態にできる条件を検証した。
+- `npm test` — 586 passed。`npm run arch` — 99 paths・違反0。`npm run smoke` — passed。`git diff --check` — passed。
+- 隔離 `--demo` をloopbackで起動し、一覧と合成Codexカードを含むGUIが読み込まれることを確認して停止した。開始操作は試していない。実セッション、CLI、外部要求は使っていない。
+- 実セッションとの適合性、Claude実行方式、音声Main AI/企業権限制御の詳細は依然未確認または仕様未定義であり、この変更では範囲を広げていない。
+
 ### 旧関係の修復アクションをDOM fixtureで検証 (2026-10-27)
 
 - Node内の最小DOM fixtureで、空欄の旧`evidence`関係をもとにUI部品を実生成し、表示されるボタンが`edit-edge` actionと保存済みedge IDを持つこと、重複作成用の`connect-missing`を出さないことを確認した。

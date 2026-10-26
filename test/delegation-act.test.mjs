@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { makeT } from '../public/i18n.mjs';
 import { delegationConfirmationDetails } from '../public/delegation-act.mjs';
 import { persistDelegationOutcome } from '../public/delegation-outcome.mjs';
+import { delegationRuntimeReasonKey } from '../public/delegation-runtime-reason.mjs';
 
 const sessionId = 'codex_12345678-1234-1234-1234-1234567890ab';
 const activeGraph = () => ({ nodes: [], edges: [{ id: 'e_00000000-0000-4000-8000-000000000001', kind: 'delegates', status: 'active', operationId: 'op-1' }] });
@@ -58,4 +59,24 @@ test('terminal delegation outcome is announced as persistable only after the gra
   assert.equal(attempted, 1, 'a failed browser storage save does not count as a persisted terminal outcome');
   assert.equal(persistDelegationOutcome({ ...options, operationId: 'wrong-id', graphChanged: () => (attempted++, true) }), false);
   assert.equal(attempted, 1, 'a stale operation ID cannot be announced as saved');
+});
+
+test('delegation start rejections map only fixed safe reasons to localized guidance', () => {
+  const reasons = ['invalid_target', 'unsupported_location', 'session_active', 'session_unknown', 'already_running', 'operation_limit', 'cli_unavailable'];
+  for (const reason of reasons) {
+    const key = delegationRuntimeReasonKey(reason);
+    assert.equal(typeof key, 'string', `known rejection ${reason} is mapped`);
+    assert.notEqual(makeT('ja')(key), key);
+    assert.notEqual(makeT('en')(key), key);
+  }
+  for (const reason of ['failed', 'delegation_failed', 'EACCES', '/private/path', null, { reason: 'cli_unavailable' }]) {
+    assert.equal(delegationRuntimeReasonKey(reason), null);
+  }
+});
+
+test('only a rejection before start is eligible for terminal-blocked guidance', () => {
+  const act = fs.readFileSync(new URL('../public/delegation-act.mjs', import.meta.url), 'utf8');
+  assert.match(act, /let startAccepted = false/);
+  assert.match(act, /!startAccepted && error instanceof WorktreeOperationError/);
+  assert.match(act, /persistDelegationOutcome\(\{ edgeId, operationId, status: 'blocked'/);
 });
