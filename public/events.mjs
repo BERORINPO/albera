@@ -32,7 +32,7 @@ export function eventSummaryEl(t, card) {
   const event = rows?.at(-1);
   const key = event ? eventKey(event.type) : '';
   if (!event || !key) return null;
-  return h('span', { class: 'is-ink' }, h('time', { datetime: new Date(event.at).toISOString(), text: absoluteTime(t, event.at) }), ' ', t(key));
+  return h('span', { class: 'is-ink' }, h('time', { datetime: new Date(event.at).toISOString(), text: absoluteTime(event.at) }), ' ', t(key));
 }
 
 /** @param {T} t @param {{source?:string,events?:Array<{type:string,at:number}>}} card */
@@ -42,7 +42,7 @@ export function eventsEl(t, card) {
   if (!safeRows.length) return h('section', { class: 'detail__events' }, h('h3', { text: t('detail.events') }), h('p', { class: 'detail__events-empty', text: t('detail.eventsUnavailable') }));
   const rows = safeRows.map((event) => {
     const iso = new Date(event.at).toISOString();
-    return h('li', {}, h('time', { datetime: iso, text: absoluteTime(t, event.at) }), ' ', t(eventKey(event.type)));
+    return h('li', {}, h('time', { datetime: iso, text: absoluteTime(event.at) }), ' ', t(eventKey(event.type)));
   });
   return h('section', { class: 'detail__events' }, h('h3', { text: t('detail.events') }), h('ol', {}, ...rows));
 }

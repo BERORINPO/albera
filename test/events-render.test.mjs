@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { eventsEl } from '../public/events.mjs';
+import { eventsEl, eventSummaryEl } from '../public/events.mjs';
 
 function withDocument(fn) {
   const previous = globalThis.document;
@@ -49,6 +49,16 @@ test('event detail timeline emits only the allowlisted label and timestamp', () 
     assert.equal(row.textContent.includes('PRIVATE-'), false);
     assert.equal(row.children[0].tag, 'time');
     assert.equal(row.children[0].attrs.datetime, '2023-11-14T22:13:20.000Z');
+    assert.match(row.children[0].textContent, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
     assert.equal(row.textContent.includes('Turn started'), true);
+  });
+});
+
+test('canvas event summary includes its display timestamp', () => {
+  withDocument(() => {
+    const summary = eventSummaryEl(t, { source: 'codex', events: [{ type: 'turn_started', at: 1_700_000_000_000 }] });
+    assert.equal(summary.tag, 'span');
+    assert.match(summary.children[0].textContent, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    assert.equal(summary.textContent.includes('Turn started'), true);
   });
 });
