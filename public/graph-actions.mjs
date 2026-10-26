@@ -2,6 +2,7 @@
 import { connectGraph, releaseBlockedGraphDelegationOperation, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from './graph-model.mjs';
 import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs';
 import { chooseGraphConnectionTarget, startGraphConnection } from './graph-connect-mode.mjs';
+import { firstUnderstandingGapForReview } from './graph-review-queue.mjs';
 
 /** @param {{cv:any,loadGraph:()=>any,graphChanged:(doc:any)=>boolean,graphSessions:()=>any[],render:()=>void,announce:(text:string)=>void,t:import('./i18n.mjs').T,world:()=>HTMLElement,sessionIds:()=>Set<string>}} o */
 export function createGraphActions(o) {
@@ -54,6 +55,10 @@ export function createGraphActions(o) {
       return connectEndpoint(`${sourceKind === 'graph' ? 'graph' : 'session'}:${sourceId}`, undefined, `${targetKind === 'graph' ? 'graph' : 'session'}:${targetId}`);
     },
     editEdge,
+    reviewFirstGap: () => {
+      const first = firstUnderstandingGapForReview(o.loadGraph(), o.sessionIds());
+      return first ? editNode(first.id) : false;
+    },
     openNode: (id) => connectMode.target(id) ?? editNode(id),
     startConnect: connectMode.start,
   };

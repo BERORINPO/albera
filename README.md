@@ -253,3 +253,4 @@ Specs: [spec/board.md](spec/board.md) (data and rules, in Japanese), [spec/ui.md
 ## License
 
 [MIT](LICENSE)
+- When one or more comprehension-gap cards declare missing evidence or an explanation with no matching live graph relation, the canvas toolbar shows a review count. Selecting it opens the first gap in graph order. The action uses only the current read-only session index to disregard dangling session edges; it does not score, infer, or rank anyone's understanding. The count updates with the graph and disappears when no declared relation is missing.

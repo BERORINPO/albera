@@ -59,6 +59,7 @@ export const JA_CANVAS = Object.freeze({
   'canvas.move.down': '下へ',
   'canvas.move.right': '右へ',
   'canvas.sheetFit': 'この用紙を表示',
+  'graph.reviewCount': '理解負債を確認 {n}件',
   'graph.newButton': 'カードを追加',
   'graph.newTitle': 'キャンバスにカードを追加',
   'graph.editTitle': 'カードを編集',

@@ -10,6 +10,7 @@ import { detailEl, detailStamp } from './rows.mjs';
 import { isCompletedLocalCodexTarget } from './events.mjs';
 import { delegationAvailability } from './delegation-availability.mjs';
 import { comprehensionGapSummary, sessionRelationEntries } from './session-relations.mjs';
+import { reviewUnderstandingGaps } from './graph-model.mjs';
 import { fill, h } from './view.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
@@ -27,6 +28,7 @@ export const zoomText = (t, z) => t('canvas.zoom', { n: Math.round(z * 100) });
 
 /** いつもの帯 (40rem より狭いと、デモのしるしもここ: 帯の左は空いている)。 @param {T} t @param {{z: number, due: number, keysOn: boolean, demo?: boolean}} o */
 function defaultBar(t, o) {
+  const reviewCount = reviewUnderstandingGaps(o.graph ?? { nodes: [], edges: [] }, new Set(o.rowCtx?.index?.keys?.() ?? [])).length;
   const tick = h('span', { class: 'cvtick', 'aria-hidden': 'true' });
   tick.style.setProperty('--p', String(SAMPLE_PCT));
   const fit = h('button', { class: 'textbtn', type: 'button', 'data-action': 'canvas-fit' }, t('canvas.fit'), ' ', h('kbd', { class: 'hk', 'aria-hidden': 'true', text: 'f' }));
@@ -44,6 +46,7 @@ function defaultBar(t, o) {
       'p',
       { class: 'cbar__tools' },
       o.due > 0 ? h('button', { class: 'textbtn cbar__due', type: 'button', 'data-action': 'due-next', text: t('ctx.dueCount', { n: o.due }) }) : null,
+      reviewCount ? h('button', { class: 'textbtn cbar__due', type: 'button', 'data-action': 'graph-review-gaps', text: t('graph.reviewCount', { n: reviewCount }) }) : null,
       h(
         'span',
         { class: 'cbar__zoom' },
@@ -185,7 +188,10 @@ export function renderBar(el, o) {
   const t = o.t;
   const bar = o.bar && (o.bar.kind === 'sheet' ? o.sheet : o.entry) ? o.bar : null;
   let sig;
-  if (!bar) sig = `default|${t.lang}|${o.due}|${o.keysOn}|${o.demo}`;
+  if (!bar) {
+    const reviewCount = reviewUnderstandingGaps(o.graph ?? { nodes: [], edges: [] }, new Set(o.rowCtx?.index?.keys?.() ?? [])).length;
+    sig = `default|${t.lang}|${o.due}|${reviewCount}|${o.keysOn}|${o.demo}`;
+  }
   else if (bar.kind === 'sheet') sig = `sheet|${bar.id}|${t.lang}|${o.sheet?.name}`;
   else {
     const card = /** @type {any} */ (o.entry).card;

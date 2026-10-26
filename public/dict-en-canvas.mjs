@@ -59,6 +59,7 @@ export const EN_CANVAS = Object.freeze({
   'canvas.move.down': 'Move down',
   'canvas.move.right': 'Move right',
   'canvas.sheetFit': 'Show this sheet',
+  'graph.reviewCount': 'Review comprehension gaps ({n})',
   'graph.newButton': 'Add card',
   'graph.newTitle': 'Add a canvas card',
   'graph.editTitle': 'Edit card',

@@ -281,6 +281,7 @@ export const CANVAS_CLICK = {
   'canvas-move': (el) => nudgeSheet(el.dataset.key ?? '', el.dataset.dir ?? ''),
   'canvas-sheet-fit': (el) => fitSheet(el.dataset.key ?? ''),
   'graph-new': () => newGraphNode(),
+  'graph-review-gaps': () => graphActions.reviewFirstGap(),
   'graph-open': (el) => graphActions.openNode(el.dataset.id ?? ''),
   'graph-connect-node': (el) => graphActions.startConnect(el.dataset.id ?? ''),
   'graph-connect-session-handle': (el) => graphActions.connectSession(el.dataset.id ?? ''),
