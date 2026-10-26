@@ -884,8 +884,8 @@
 
 - 最終確認後、対象セッションがactive/消失/別操作中になった場合など、サーバーが委譲開始を拒否した際に、キャンバス上の委譲関係が「進行中」のまま残る状態遷移の穴を修正した。
 - サーバーの固定許可理由コード (`invalid_target`, `unsupported_location`, `session_active`, `session_unknown`, `already_running`, `operation_limit`, `cli_unavailable`) のみを日英の安全な説明文へ対応付け、委譲記録を `blocked` に保存する。未知コード、診断文字列、パス、OSエラーは表示せず、開始応答を受け取った後の状態照会失敗は従来どおり「状態不明」として再実行しない。
-- `test/delegation-act.test.mjs` で許可コードの日英メッセージ、未知/機密値の拒否、開始前の拒否だけを終端状態にできる条件を検証した。
-- `npm test` — 586 passed。`npm run arch` — 99 paths・違反0。`npm run smoke` — passed。`git diff --check` — passed。
+- `test/delegation-act.test.mjs` で許可コードの日英メッセージ、未知/機密値の拒否、開始前の拒否だけを終端状態にできる条件、blocked保存成功後に案内すること、保存失敗時は案内しないことを検証した。
+- `npm test` — 588 passed。`npm run arch` — 99 paths・違反0。`npm run smoke` — passed。`git diff --check` — passed。
 - 隔離 `--demo` をloopbackで起動し、一覧と合成Codexカードを含むGUIが読み込まれることを確認して停止した。開始操作は試していない。実セッション、CLI、外部要求は使っていない。
 - 実セッションとの適合性、Claude実行方式、音声Main AI/企業権限制御の詳細は依然未確認または仕様未定義であり、この変更では範囲を広げていない。
 

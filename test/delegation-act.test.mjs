@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { makeT } from '../public/i18n.mjs';
 import { delegationConfirmationDetails } from '../public/delegation-act.mjs';
 import { persistDelegationOutcome } from '../public/delegation-outcome.mjs';
-import { delegationRuntimeReasonKey } from '../public/delegation-runtime-reason.mjs';
+import { delegationRuntimeReasonKey, handleDelegationStartRejection } from '../public/delegation-runtime-reason.mjs';
 
 const sessionId = 'codex_12345678-1234-1234-1234-1234567890ab';
 const activeGraph = () => ({ nodes: [], edges: [{ id: 'e_00000000-0000-4000-8000-000000000001', kind: 'delegates', status: 'active', operationId: 'op-1' }] });
@@ -77,6 +77,29 @@ test('delegation start rejections map only fixed safe reasons to localized guida
 test('only a rejection before start is eligible for terminal-blocked guidance', () => {
   const act = fs.readFileSync(new URL('../public/delegation-act.mjs', import.meta.url), 'utf8');
   assert.match(act, /let startAccepted = false/);
-  assert.match(act, /!startAccepted && error instanceof WorktreeOperationError/);
-  assert.match(act, /persistDelegationOutcome\(\{ edgeId, operationId, status: 'blocked'/);
+  assert.match(act, /!startAccepted && error instanceof WorktreeOperationError && handleDelegationStartRejection/);
+});
+
+test('a safe rejected start is persisted as blocked before its guidance is announced', () => {
+  const graph = activeGraph();
+  let saved;
+  const announcements = [];
+  const result = handleDelegationStartRejection({
+    reason: 'session_active', edgeId: graph.edges[0].id, operationId: 'op-1',
+    loadGraph: () => graph, graphChanged: (next) => { saved = next; return true; },
+    announce: (message) => announcements.push(message), t: makeT('ja'),
+  });
+  assert.equal(result, true);
+  assert.equal(saved.edges[0].status, 'blocked');
+  assert.match(announcements[0], /既に進行中/);
+});
+
+test('unknown reasons and failed persistence do not announce start rejection', () => {
+  const graph = activeGraph();
+  const args = {
+    edgeId: graph.edges[0].id, operationId: 'op-1', loadGraph: () => graph,
+    graphChanged: () => false, announce: () => assert.fail('must not announce'), t: makeT('ja'),
+  };
+  assert.equal(handleDelegationStartRejection({ ...args, reason: '/private/path' }), false);
+  assert.equal(handleDelegationStartRejection({ ...args, reason: 'session_unknown' }), false);
 });

@@ -3,7 +3,7 @@ import { delegationStatus, runDelegation, WorktreeOperationError } from './api.m
 import { loadGraph } from './graph-store.mjs';
 import { finishGraphDelegationOperation, startGraphDelegationOperation } from './graph-model.mjs';
 import { persistDelegationOutcome } from './delegation-outcome.mjs';
-import { delegationRuntimeReasonKey } from './delegation-runtime-reason.mjs';
+import { handleDelegationStartRejection } from './delegation-runtime-reason.mjs';
 import { isCompletedLocalCodexTarget } from './events.mjs';
 import { openDelegationConfirmDialog } from './delegation-confirm-dialog.mjs';
 
@@ -46,10 +46,9 @@ async function executeConfirmedDelegation(edgeId, sourceId, targetId, purpose, {
     }
     announce(state.t('graph.delegationStillRunning'));
   } catch (error) {
-    const reasonKey = !startAccepted && error instanceof WorktreeOperationError ? delegationRuntimeReasonKey(error.reason) : null;
-    if (reasonKey) {
-      if (!persistDelegationOutcome({ edgeId, operationId, status: 'blocked', loadGraph, graphChanged })) return false;
-      announce(state.t(reasonKey));
+    if (!startAccepted && error instanceof WorktreeOperationError && handleDelegationStartRejection({
+      reason: error.reason, edgeId, operationId, loadGraph, graphChanged, announce, t: state.t,
+    })) {
       return false;
     }
     announce(state.t('graph.delegationStatusLost'));
