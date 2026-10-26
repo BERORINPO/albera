@@ -647,3 +647,9 @@
 - キャンセルまたはEscapeで編集dialogへ戻る。解除確認後は既存pure gateを通し、local graph保存が成功したときだけ両dialogを閉じる。失敗時は既存の保存エラー案内で確認を継続できる。
 - static UI testでaccessible name/description、対象説明、日英辞書、confirm/cancel actionを確認。`npm test` — 555 passed、`npm run arch` — 99 paths・違反0、`git diff --check` — passed、隔離fixtureの`npm run smoke` — passed。
 - この変更を加えた後の画面表示、Escape/Tab、保存・再読み込みはブラウザーで未確認。2026-10-27の旧native confirmを使ったGUI試行のtimeout記録は過去の結果として残す。
+
+### 委譲の終端状態はlocalStorage保存後にだけ通知 (2026-10-27)
+
+- 委譲の`completed`/`blocked`結果をgraph modelへ適用し、保存adapterが成功を返した場合だけ完了/失敗/状態不明の通知を出すようにした。ブラウザー保存に失敗した場合は既存の保存失敗通知に任せ、古い`active`記録を終端状態と誤案内しない。
+- 合成テストで正常保存、保存失敗、operation ID不一致を確認。`npm test` — 556 passed、`npm run arch` — 99 paths・違反0、`git diff --check` — passed、隔離fixtureの`npm run smoke` — passed。
+- 実CLIや実委譲は起動していない。UIの保存失敗表示は構造的に既存通知を使用するが、ブラウザーでの障害注入受入は未実施。

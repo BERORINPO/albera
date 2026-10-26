@@ -3,8 +3,10 @@ import fs from 'node:fs';
 import { test } from 'node:test';
 import { makeT } from '../public/i18n.mjs';
 import { delegationConfirmationDetails } from '../public/delegation-act.mjs';
+import { persistDelegationOutcome } from '../public/delegation-outcome.mjs';
 
 const sessionId = 'codex_12345678-1234-1234-1234-1234567890ab';
+const activeGraph = () => ({ nodes: [], edges: [{ id: 'e_00000000-0000-4000-8000-000000000001', kind: 'delegates', status: 'active', operationId: 'op-1' }] });
 
 test('delegation confirmation identifies the selected project and opaque session suffix in both languages', () => {
   for (const lang of ['ja', 'en']) {
@@ -36,4 +38,24 @@ test('delegation execution uses an explicit in-app form and has no native confir
   for (const part of ['target', 'purpose', 'transfer', 'network', 'output', 'session']) {
     assert.match(dialog, new RegExp(`delegation-confirm-${part}`));
   }
+});
+
+test('terminal delegation outcome is announced as persistable only after the graph save succeeds', () => {
+  let saved;
+  const graph = activeGraph();
+  const options = {
+    edgeId: graph.edges[0].id,
+    operationId: 'op-1',
+    status: 'completed',
+    loadGraph: () => graph,
+    graphChanged: (next) => { saved = next; return true; },
+  };
+  assert.equal(persistDelegationOutcome(options), true);
+  assert.equal(saved.edges[0].status, 'completed');
+
+  let attempted = 0;
+  assert.equal(persistDelegationOutcome({ ...options, graphChanged: () => (attempted++, false) }), false);
+  assert.equal(attempted, 1, 'a failed browser storage save does not count as a persisted terminal outcome');
+  assert.equal(persistDelegationOutcome({ ...options, operationId: 'wrong-id', graphChanged: () => (attempted++, true) }), false);
+  assert.equal(attempted, 1, 'a stale operation ID cannot be announced as saved');
 });

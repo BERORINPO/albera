@@ -2,6 +2,7 @@
 import { delegationStatus, runDelegation, WorktreeOperationError } from './api.mjs';
 import { loadGraph } from './graph-store.mjs';
 import { finishGraphDelegationOperation, startGraphDelegationOperation } from './graph-model.mjs';
+import { persistDelegationOutcome } from './delegation-outcome.mjs';
 import { isCompletedLocalCodexTarget } from './events.mjs';
 import { openDelegationConfirmDialog } from './delegation-confirm-dialog.mjs';
 
@@ -36,14 +37,14 @@ async function executeConfirmedDelegation(edgeId, sourceId, targetId, purpose, {
       await new Promise((resolve) => setTimeout(resolve, 1000));
       const status = await delegationStatus(operationId);
       if (status === 'running') continue;
-      graphChanged(finishGraphDelegationOperation(loadGraph(), edgeId, operationId, status === 'completed' ? 'completed' : 'blocked'));
+      if (!persistDelegationOutcome({ edgeId, operationId, status: status === 'completed' ? 'completed' : 'blocked', loadGraph, graphChanged })) return false;
       announce(state.t(status === 'completed' ? 'graph.delegationCompleted' : 'graph.delegationFailed'));
       return true;
     }
     announce(state.t('graph.delegationStillRunning'));
   } catch (error) {
     if (error instanceof WorktreeOperationError && error.reason === 'cli_unavailable') {
-      graphChanged(finishGraphDelegationOperation(loadGraph(), edgeId, operationId, 'blocked'));
+      if (!persistDelegationOutcome({ edgeId, operationId, status: 'blocked', loadGraph, graphChanged })) return false;
       announce(state.t('graph.delegationCliUnavailable'));
       return false;
     }
@@ -61,10 +62,10 @@ export async function runDelegationForEdge(edgeId, sourceId, { view, state, grap
     try {
       const status = await delegationStatus(edge.operationId);
       if (status === 'running') { announce(state.t('graph.delegationStarted')); return true; }
-      graphChanged(finishGraphDelegationOperation(loadGraph(), edgeId, edge.operationId, status === 'completed' ? 'completed' : 'blocked'));
+      if (!persistDelegationOutcome({ edgeId, operationId: edge.operationId, status: status === 'completed' ? 'completed' : 'blocked', loadGraph, graphChanged })) return false;
       announce(state.t(status === 'completed' ? 'graph.delegationCompleted' : 'graph.delegationFailed'));
     } catch {
-      graphChanged(finishGraphDelegationOperation(loadGraph(), edgeId, edge.operationId, 'blocked'));
+      if (!persistDelegationOutcome({ edgeId, operationId: edge.operationId, status: 'blocked', loadGraph, graphChanged })) return false;
       announce(state.t('graph.delegationStatusLost'));
     }
     return true;
