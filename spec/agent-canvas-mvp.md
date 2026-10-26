@@ -679,3 +679,8 @@
 - Copilot詳細には保存形式だけではCLIとアプリを判別できないことを表示する。OpenCode詳細には、記録はOpenCode由来だがadapterが起動元CLI/アプリを特定しないことを表示する。
 - CLI固有形式ではないproviderデータをCLIセッションと断定しない。説明は表示用辞書だけに置き、wire/APIへ来歴推定値を追加しない。
 - 合成カードでのブラウザー受入とCI結果は未確認。既存のCodex/Claude表示への影響は回帰検証で確認する。
+
+### provider来歴注記の回帰テスト (2026-10-27)
+
+- DOM fixtureでCopilot/OpenCode詳細にだけ来歴注記が付き、Claude/Codexの名称とCodexのWSL場所が保持されることを確認。
+- `npm test` — 558 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。実ブラウザー受入は引き続き未確認。
