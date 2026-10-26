@@ -8,6 +8,7 @@ import { buildBoard } from '../src/core/board.mjs';
 import { NOW, ROOTS, rec, uuid } from './helpers/fixtures.mjs';
 
 const temps = new Set();
+const SAFE_TEST_CWD = path.join(path.parse(process.cwd()).root, 'work', 'alpha');
 after(async () => Promise.all([...temps].map((dir) => fs.rm(dir, { recursive: true, force: true }))));
 
 async function fixtureHome() {
@@ -20,7 +21,7 @@ function envelope(type, payload, at) {
   return JSON.stringify({ timestamp: new Date(at).toISOString(), type, payload });
 }
 
-function meta(id, source = 'cli', originator = 'codex', cwd = 'C:\\work\\alpha') {
+function meta(id, source = 'cli', originator = 'codex', cwd = SAFE_TEST_CWD) {
   return envelope('session_meta', {
     id,
     session_id: id,
@@ -95,7 +96,7 @@ test('Codex CLI rollout を検出し、turn status と allowlist イベントだ
   for (const secret of ['NEVER-WIRE-THIS-PROMPT', 'NEVER-WIRE-THIS-KEY', 'NEVER-WIRE-PROMPT', 'NEVER-WIRE-COMMAND', 'NEVER-WIRE-ENV', 'NEVER-WIRE-UNKNOWN', 'NEVER-WIRE-BROKEN', 'NEVER-WIRE-ANSWER', 'private-id']) {
     assert.equal(safe.includes(secret), false, `sensitive value escaped: ${secret}`);
   }
-  assert.equal(active.cwd, 'C:\\work\\alpha'); // adapter 内部の project 判定だけに使用
+  assert.equal(active.cwd, SAFE_TEST_CWD); // adapter 内部の project 判定だけに使用
 });
 
 test('Codex と Claude を混在しても Claude card は同一で、Codex wire に path や本文を含めない', async () => {
@@ -129,7 +130,7 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
     wslShareStatus: 'not_configured',
   });
   const wire = JSON.stringify(mixed);
-  for (const secret of ['PRIVATE-PROMPT', 'PRIVATE-OUTPUT', 'PRIVATE-REASON', 'C:\\work\\alpha', 'base_instructions', 'environment_secret']) assert.equal(wire.includes(secret), false);
+  for (const secret of ['PRIVATE-PROMPT', 'PRIVATE-OUTPUT', 'PRIVATE-REASON', SAFE_TEST_CWD, 'base_instructions', 'environment_secret']) assert.equal(wire.includes(secret), false);
   const malformedStatus = await createCodexSessionsSource({ root: home, wslShareStatus: 'C:\\private\\share' }).load();
   assert.equal(malformedStatus.stats.wslShareStatus, 'not_applicable', 'adapter status accepts only fixed categories');
   assert.equal(JSON.stringify(malformedStatus.stats).includes('C:\\private\\share'), false);
