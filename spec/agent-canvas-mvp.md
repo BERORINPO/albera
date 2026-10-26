@@ -101,7 +101,7 @@
 | ハーネス・実行条件 | 詳細に観測可能なprovider/sourceを表示。Codex CLIはCLI markerを満たす記録に限定。場所・分離・network・approvalは不明初期値の手動profileとして関連付け可能 | Copilot/OpenCodeではCLIかアプリかを断定できない。セッションや環境から実行条件を自動検出しない。profile値は利用者申告で、実際の設定・モデル・実行条件の証明ではない |
 | 委譲 | 委譲元/先、目的、状態を関係線と詳細に記録 | CLI起動・agentへの実委譲は未実装。外部作用は明示操作後のみという境界は維持するが、起動するCLI・引数・入力・権限範囲は仕様未確定 |
 | Git worktree / PM policy | local Git worktreeの読取一覧、明示確認後の作成、clean/non-current等を再確認した確認付き削除、canvas上のpath-free記録。作成/一覧/削除adapterは一時Git repoで統合確認済み | 一時Git repoと合成Codex fixtureを使い、作成dialogの対象/影響説明とack必須、削除dialogの正確なブランチ名+ack必須、削除後のcanvas記録更新までブラウザーで確認。実ユーザーrepoへの操作は未確認。合成WSL詳細では未対応理由を表示し、作成操作を出さないことも確認。WSL worktree操作は無効。PM policyは「この依頼の安全条件だけ」で、追加の自動規則なし |
-| Comprehension Graph / 理解負債 | 理解を確認される人、未提示の根拠、必要な説明を記録。`evidence`/`explains`未接続をグラフ欠損として提示し、根拠先へ移動可能 | 人の理解度を推定・採点しない。記録と関係付けは利用者判断で、自動的に理解負債を発見する機能ではない |
+| Comprehension Graph / 理解負債 | 理解を確認される人、未提示の根拠、必要な説明を記録。`evidence`/`explains`未接続を検出し、関係種別を初期選択した接続フォームへ進める | 人の理解度を推定・採点しない。カードの記録と根拠先の妥当性判断は利用者に残る。自動で実セッション内容から理解負債を発見する機能ではない |
 | REA / Knowledge Layer | ユーザー確認済みの短いREA要約をartifactへ手動記録。Obsidian vault-relative note URIを手動登録して明示リンクで開く | REAは起動せず完全Evidenceを取込まない。Obsidian vault走査、内容読取/書込、indexing/知識抽出は未実装 |
 | OpenCode / Copilot / WSL | OpenCode DBとCopilotイベントのread-only adapter。明示設定されたWSL共有を使うopt-in Codex reader | 実WSL共有は未確認。CLI/app producer識別、OpenCode legacy状態、未知形式の挙動には上記の制限がある |
 | 音声 Main AI | なし | ユーザーは完成条件と指定。開始/停止主体、音声・文字起こしの処理先/保存先、同意と削除の仕様は貼付待ち。推測実装しない |
@@ -114,3 +114,9 @@
 - すべてのprovider保存先を空にした隔離環境で起動し、合成・実セッションを一件も読み込まない状態を確認した。画面は「セッションはまだありません」と表示し、理由と確認先を「読み込みの状態」へ案内する。
 - provider別診断はCodex CLIがrolloutファイルなし、GitHub Copilotがevents.jsonlなし、OpenCodeがDBなしを理由として示した。件数はすべて0で、秘密値や保存先パスは画面に出なかった。
 - これは空状態UIの確認であり、Codex CLI実セッションの検出、Claudeの実データ表示、狭幅・キーボードの全受入確認を証明しない。
+
+### 理解負債の接続レビュー導線 (2026-10-26)
+
+- open状態の理解負債カードで未接続の `evidence` / `explains` 関係ごとに専用ボタンを表示し、選んだ種別を初期選択した接続フォームへ進む。接続先はユーザーが選び、追加された関係はユーザー記録としてグラフに保存する。
+- 合成デモでカード追加、対象者/不足根拠/必要説明の記入、2種類の関係の接続、未接続バッジの消失、新規タブでの関係と状態の復元をブラウザー操作で確認した。理解度の採点や推定は行わない。
+- 実際の関係先が根拠として妥当かどうかの判断は利用者に残る。合成データでの画面確認であり、実セッションや実データの理解状態を検証したものではない。

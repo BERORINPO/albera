@@ -180,13 +180,13 @@ function editGraphNode(id) {
       onConnect: (input) => graphChanged(updateGraphEdge(loadGraph(), edge.id, input)),
       onDeleteEdge: (key) => graphChanged(removeGraphEdge(loadGraph(), key)),
     }),
-    onConnect: (from) => connectGraphEndpoint(from),
+    onConnect: (from, kind) => connectGraphEndpoint(from, kind),
   });
 }
 
-function connectGraphEndpoint(from) {
+function connectGraphEndpoint(from, initialKind) {
   const graph = loadGraph();
-  return openGraphRelationDialog({ t: state.t, from, graph, sessions: graphSessions(), onConnect: (input) => {
+  return openGraphRelationDialog({ t: state.t, from, initialKind, graph, sessions: graphSessions(), onConnect: (input) => {
     graphChanged(connectGraph(graph, input, `e_${crypto.randomUUID()}`, new Set(view.index.keys())));
   } });
 }

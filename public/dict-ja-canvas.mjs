@@ -76,6 +76,8 @@ export const JA_CANVAS = Object.freeze({
   'graph.neededExplanation': '必要な説明: {text}',
   'graph.link.evidence': '根拠',
   'graph.link.explains': '説明',
+  'graph.resolveMissing.evidence': '根拠を結ぶ',
+  'graph.resolveMissing.explains': '説明先を結ぶ',
   'graph.missingLinks': 'グラフ上で未接続: {links}',
   'graph.reviewHint': '次の関係がまだグラフにありません: {links}。関係を追加し、根拠や説明を確認した後に状態を更新してください。これは人の理解度の判定ではありません。',
   'graph.kind.task': 'タスク',

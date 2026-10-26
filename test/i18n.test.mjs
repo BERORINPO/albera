@@ -50,6 +50,13 @@ test('セッション0件の案内は特定providerに偏らず、診断欄を�
   assert.doesNotMatch(EN['lede.emptyNote'], /Claude desktop app/);
 });
 
+test('理解負債レビューは不足リンクごとの手動接続を案内する', () => {
+  assert.equal(JA['graph.resolveMissing.evidence'], '根拠を結ぶ');
+  assert.equal(JA['graph.resolveMissing.explains'], '説明先を結ぶ');
+  assert.equal(EN['graph.resolveMissing.evidence'], 'Connect evidence');
+  assert.equal(EN['graph.resolveMissing.explains'], 'Connect explanation');
+});
+
 test('辞書: 画面の言葉の決まり (感嘆符・絵文字を使わない、欄の名前は 1 つ)', () => {
   for (const [lang, dict] of Object.entries(DICT)) {
     for (const [key, entry] of Object.entries(dict)) {

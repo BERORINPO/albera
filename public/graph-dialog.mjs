@@ -65,7 +65,7 @@ function endpointSelect(t, options, name, selected, excluded = '') {
 const endpointKey = (key) => key.startsWith('graph:') || key.startsWith('session:') ? key : '';
 
 /**
- * @param {{t:T,node?:any,position?:{x:number,y:number},initialKind?:string,initialTitle?:string,graph:any,sessions:Array<{id:string,title:string}>,onSave:(v:any)=>void,onDelete?:(id:string)=>void,onConnect?:(from:string)=>void,onEditEdge?:(edge:any)=>void}} o
+ * @param {{t:T,node?:any,position?:{x:number,y:number},initialKind?:string,initialTitle?:string,graph:any,sessions:Array<{id:string,title:string}>,onSave:(v:any)=>void,onDelete?:(id:string)=>void,onConnect?:(from:string,kind?:string)=>void,onEditEdge?:(edge:any)=>void}} o
  */
 export function openGraphNodeDialog(o) {
   const { t, node, graph, sessions } = o;
@@ -75,7 +75,13 @@ export function openGraphNodeDialog(o) {
   form.append(h('h2', { id: 'graph-dialog-title', text: title }), h('p', { class: 'graph-dialog__privacy', text: t('graph.localOnly') }));
   if (node?.kind === 'understanding_gap') {
     const review = reviewUnderstandingGaps(graph).find((item) => item.id === node.id);
-    if (review?.missing.length) form.append(h('p', { class: 'graph-dialog__review', text: t('graph.reviewHint', { links: review.missing.map((kind) => t(`graph.link.${kind}`)).join(', ') }) }));
+    if (review?.missing.length) form.append(
+      h('p', { class: 'graph-dialog__review', text: t('graph.reviewHint', { links: review.missing.map((kind) => t(`graph.link.${kind}`)).join(', ') }) }),
+      h('div', { class: 'graph-dialog__review-actions' }, ...review.missing.map((kind) => h('button', {
+        class: 'textbtn', type: 'button', 'data-dialog-action': 'connect-missing', 'data-edge-kind': kind,
+        text: t(`graph.resolveMissing.${kind}`),
+      }))),
+    );
   }
   form.append(
     selectField(t, 'graph.kindLabel', 'kind', [...GRAPH_NODE_KINDS], node?.kind ?? o.initialKind ?? 'task', (v) => t(`graph.kind.${v}`)),
@@ -168,6 +174,12 @@ export function openGraphNodeDialog(o) {
       dialog.close();
       o.onConnect(`graph:${node.id}`);
     }
+    if (action === 'connect-missing' && o.onConnect) {
+      const kind = button?.getAttribute('data-edge-kind') ?? '';
+      if (kind !== 'evidence' && kind !== 'explains') return;
+      dialog.close();
+      o.onConnect(`graph:${node.id}`, kind);
+    }
     if (action === 'edit-edge' && o.onEditEdge) {
       const edge = graph.edges.find((item) => item.id === button?.getAttribute('data-edge-id'));
       if (edge) {
@@ -223,7 +235,7 @@ export function openGraphNodeDialog(o) {
 }
 
 /**
- * @param {{t:T,from:string,edge?:any,graph:any,sessions:Array<{id:string,title:string}>,onConnect:(v:any)=>void,onDeleteEdge?:(id:string)=>void}} o
+ * @param {{t:T,from:string,edge?:any,initialKind?:string,graph:any,sessions:Array<{id:string,title:string}>,onConnect:(v:any)=>void,onDeleteEdge?:(id:string)=>void}} o
  */
 export function openGraphRelationDialog(o) {
   const { t, from, graph, sessions, edge } = o;
@@ -242,7 +254,7 @@ export function openGraphRelationDialog(o) {
     h('p', { class: 'graph-dialog__privacy', text: t('graph.recordOnly') }),
     fixedField(t, 'graph.from', fromItem.title),
     edge ? fixedField(t, 'graph.to', toItem.title) : endpointSelect(t, options, 'to', '', fromKey),
-    selectField(t, 'graph.edgeKind', 'kind', [...GRAPH_EDGE_KINDS], edge?.kind ?? 'related', (v) => t(`graph.edge.${v}`)),
+    selectField(t, 'graph.edgeKind', 'kind', [...GRAPH_EDGE_KINDS], edge?.kind ?? (GRAPH_EDGE_KINDS.includes(o.initialKind ?? '') ? o.initialKind : 'related'), (v) => t(`graph.edge.${v}`)),
     inputField(t, 'graph.purpose', 'purpose', edge?.purpose ?? ''),
     selectField(t, 'graph.delegationStatus', 'status', [...DELEGATION_STATES], edge?.status || 'planned', (v) => t(`graph.delegation.${v}`)),
     h('div', { class: 'graph-dialog__actions' },

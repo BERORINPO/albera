@@ -76,6 +76,8 @@ export const EN_CANVAS = Object.freeze({
   'graph.neededExplanation': 'Explanation needed: {text}',
   'graph.link.evidence': 'evidence',
   'graph.link.explains': 'explanation',
+  'graph.resolveMissing.evidence': 'Connect evidence',
+  'graph.resolveMissing.explains': 'Connect explanation',
   'graph.missingLinks': 'Graph links missing: {links}',
   'graph.reviewHint': 'These relations are not linked in the graph: {links}. Add the relations, review the evidence or explanation, then update the status. This does not assess a person’s understanding.',
   'graph.kind.task': 'Task',
