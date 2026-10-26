@@ -458,3 +458,4 @@
 - 合成Codex fixtureで通常モードを起動し、既存の予定委譲画面を復元。320×720ではdialog幅282px、本文を含めて画面内に収まり、body横幅のoverflowなし。320×480ではdialog領域265×430pxに縦スクロールが生じ、ボタンへTab移動でき、水平overflowなし。
 - 320×480でEscapeするとdialogが閉じ、予定状態が保たれ、実行ボタンへfocusが戻った。委譲実行、CLI起動、外部通信は行っていない。viewportを戻し、確認用タブとサーバーを停止した。
 - `npm test` — 530 passed、`npm run arch` — 96 paths/0 violations、`git diff --check` — passed。
+- 同段階の `npm run smoke` もpassed。スクリプトは設定済みセッション保存先をread-onlyで走査し、出力は件数・時間・安全性チェックの集計に限定された。タイトル、本文、ID、パス、イベント内容は記録していない。smokeサーバーは終了済み。
