@@ -97,7 +97,7 @@
 
 | 領域 | 現在の実装 | 未完了・証拠の限界 |
 |---|---|---|
-| 操作可能なCanvas | 一覧/Canvas切替、検索とsource/state/project絞り込み、session slipsとtask/artifact/decision/worktree/理解負債/execution profile/Obsidian参照カード、ドラッグ・キーボード移動、パン・ズーム、関係線、localStorage復元 | 2026-10-26の合成ブラウザー確認で複数providerの複合絞り込み、カード位置/関係/表示切替の再読み込み保持、詳細からのタスク作成と理解負債リンク、worktreeの確認付き作成/削除、空状態/WSL診断、320/400/768/1280pxの表示と一部キーボードフォーカスを確認。全ダイアログ/全ショートカット/スクリーンリーダー受入、ブラウザーでの最新委譲線表示、実セッション表示は未確認 |
+| 操作可能なCanvas | 一覧/Canvas切替、検索とsource/state/project絞り込み、session slipsとtask/artifact/decision/worktree/理解負債/execution profile/Obsidian参照カード、ドラッグ・キーボード移動、パン・ズーム、関係線、localStorage復元 | 2026-10-26の合成ブラウザー確認で複数providerの複合絞り込み、カード位置/関係/表示切替の再読み込み保持、詳細からのタスク作成と理解負債リンク、worktreeの確認付き作成/削除、空状態/WSL診断、320/400/768/1280pxの表示と一部キーボードフォーカスを確認。委譲線GUI確認では合成の進行中関係1件を線と方向マーカーで確認し、詳細欄の状態/目的も確認。全ダイアログ/全ショートカット/スクリーンリーダー受入、全状態の線表示・tooltip、実セッション表示は未確認 |
 | セッション・イベント | Claude Code、Codex CLI、Copilot、OpenCodeにread-only adapterがあり、同じboardでallowlistイベント・状態・詳細を表示。関係pickerも表示中の全providerを対象とする | Codex CLI起点の実セッションは未確認。Copilot保存先はCLI/app共通、OpenCode DBもproducer clientをadapterが識別しない。OpenCode旧schemaは一覧以外の状態/イベントをunknown扱い |
 | ハーネス・実行条件 | 詳細に観測可能なprovider/sourceを表示。Codex CLIはCLI markerを満たす記録に限定。場所・分離・network・approvalは不明初期値の手動profileとして関連付け可能 | Copilot/OpenCodeではCLIかアプリかを断定できない。セッションや環境から実行条件を自動検出しない。profile値は利用者申告で、実際の設定・モデル・実行条件の証明ではない |
 | 委譲 | 委譲元/先、目的、状態を関係線と詳細に記録し、完了済みローカルCodexへのread-only実行を最終確認後に開始 | purpose-only stdin、read-only sandbox、出力破棄、固定状態APIをmockで確認。operation IDはcanvasのlocalStorageに保存し、再読込後に明示的な状態確認が可能。サーバー再起動で状態が失われた場合は再試行せずblockedへ閉じる。実CLIは未起動、実セッション互換性と一般provider間委譲は未確認/未実装 |
@@ -212,4 +212,10 @@
 ### READMEの委譲通信境界を明記 (2026-10-26)
 
 - READMEの「AIへ何も送らない」と読める包括表現を修正した。通常の分類・表示・キャンバス配置は固定規則だが、ユーザーが画面で明示確認したCodex委譲では、入力した目的文がstdin経由でローカルCodex CLIへ渡る。保存済みアカウント/設定によりCodexが外部通信や利用量を発生させる可能性を併記した。
+
+### GUI確認: 委譲関係線と進行中状態 (2026-10-26)
+
+- 隔離したloopback `--demo` と合成ブラウザー保存データだけで、Codex合成セッションからClaude合成セッションへの委譲記録を作成し、状態を「進行中」に変更した。
+- キャンバス上で関係線と方向マーカーを視認し、詳細欄で進行中状態と合成目的文を確認した。目的文は合成値であり、実セッションやCLIは使っていない。
+- 線のtooltip、予定/阻害中/完了/取消済み各状態のブラウザー表示差分、リロード後の状態反映はこの確認では未確認。状態の描画規則は既存テスト対象。実セッション表示も引き続き未確認。
 - Pigeonholes自身が外部サービスへ直接リクエストしない説明は維持し、CLI自体の通信可能性と区別した。実CLIは起動していない。
