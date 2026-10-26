@@ -614,3 +614,10 @@
 - 保存後のセッション詳細には委譲先、目的、予定状態が表示され、再読み込み後にも同じ内容が残ることを確認した。デモ側はCLIへの委譲を無効と表示し、実行はしていない。
 - 2026-10-27に別の隔離Chrome demoで、Codex付箋の接続ハンドルをClaude付箋へポインタドラッグし、先が事前選択されたダイアログで委譲目的/予定状態を保存した。Codex詳細欄で委譲先と目的を確認し、再読み込み後にも復元された。
 - session→sessionのpointer drag、関係記録、詳細表示、ブラウザー内保存・復元を合成データで確認した。デモが委譲実行を無効と表示することも確認し、CLIや外部サービスは起動していない。実セッションは未使用。
+
+### 確認後のworktree作成をGUIから記録・復元 (2026-10-27)
+
+- 隔離した通常起動を一時Claudeメタデータと、外部remote/checkout hookのない一時Git repoへ向けた。実画面でcanvasのsession detailから作成dialogを開き、対象project `repo`、基点`main`、変更なし、未コミット変更は引き継がれないこと、checkout filter実行の可能性を確認した。
+- ブランチ名と確認checkboxを画面で指定して合成repo内にworktreeを作成。成功文に続き、branch・基点・作成時の状態要約を含むworktreeカードと、sessionへの`Created by confirmed worktree action`関係が表示された。全体表示で両カードが画面内に収まること、再読み込み後もカードと関係が復元されることを確認した。
+- 操作対象は一時fixtureだけ。実ユーザーrepo/worktree、実セッション、CLI、外部サービスは使っていない。隔離サーバーは停止した。実行環境の削除制限により、一時fixture/worktreeは削除できず、OS一時フォルダーに残る。WSL経由の実操作、取消やエラー時のGUI、狭幅のworktree dialog、実セッションとの適合性は未確認。
+- 音声Main AIと企業向け権限制御の起動/停止、処理・保存先、role、allow/deny仕様はユーザー回答で未定義。引き続き推測で仕様化しない。
