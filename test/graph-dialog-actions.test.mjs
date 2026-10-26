@@ -81,7 +81,7 @@ test('cancel closes a graph dialog even while a new card has no node yet', () =>
   assert.equal(closed, 1);
 });
 
-test('dialog focus returns to the invoking control, then graph node, then canvas viewport', () => {
+test('dialog focus returns to the invoking control, then source card, then canvas viewport', () => {
   const origin = { isConnected: true };
   const graphNode = { isConnected: true };
   const viewport = { isConnected: true };
@@ -105,7 +105,9 @@ test('the comprehension editor renders actions only from its current missing-lin
   assert.match(source, /'data-edge-kind': kind/);
   assert.match(source, /connectMissingComprehensionEdge\(\{ nodeId: node\.id, edgeKind: kind, close: \(\) => dialog\.close\(\), connect: o\.onConnect \}\)/);
   assert.match(source, /const returnFocus = document\.activeElement instanceof HTMLElement \? document\.activeElement : null/);
-  assert.match(source, /graphDialogFocusTarget\(returnFocus, graphOrigin, viewport\)/);
+  assert.match(source, /fromKey\.startsWith\('session:'\) \? fromKey\.slice\(8\)/);
+  assert.match(source, /fromKey\.startsWith\('graph:'\) \? '\.graph-node' : '\.slip__title'/);
+  assert.match(source, /graphDialogFocusTarget\(returnFocus, sourceCard, viewport\)/);
   assert.match(source, /target\?\.focus\(\{ preventScroll: true \}\)/);
   assert.match(source, /if \(cancelGraphDialog\(action, \(\) => dialog\.close\(\)\)\) return;[\s\S]*?if \(!node\) return;/);
 });

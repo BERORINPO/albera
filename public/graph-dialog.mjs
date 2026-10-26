@@ -296,11 +296,13 @@ export function openGraphRelationDialog(o) {
   dialog.addEventListener('close', () => {
     dialog.remove();
     requestAnimationFrame(() => {
-      const graphOrigin = fromKey.startsWith('graph:')
-        ? /** @type {HTMLElement|null} */ (document.querySelector(`.graph-node[data-id="${CSS.escape(fromKey.slice(6))}"]`))
+      const sourceId = fromKey.startsWith('graph:') ? fromKey.slice(6) : fromKey.startsWith('session:') ? fromKey.slice(8) : '';
+      const sourceSelector = fromKey.startsWith('graph:') ? '.graph-node' : '.slip__title';
+      const sourceCard = sourceId
+        ? /** @type {HTMLElement|null} */ (document.querySelector(`${sourceSelector}[data-id="${CSS.escape(sourceId)}"]`))
         : null;
       const viewport = /** @type {HTMLElement|null} */ (document.querySelector('#cv-view'));
-      const target = graphDialogFocusTarget(returnFocus, graphOrigin, viewport);
+      const target = graphDialogFocusTarget(returnFocus, sourceCard, viewport);
       target?.focus({ preventScroll: true });
     });
   }, { once: true });
