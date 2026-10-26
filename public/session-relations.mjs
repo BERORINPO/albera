@@ -22,3 +22,8 @@ export function sessionRelationEntries(edges, sessionId, graph, sessions) {
     return [];
   });
 }
+
+/** @param {string} sessionId @param {(kind:'detail', id:string)=>boolean} openBar */
+export function openRelatedSessionDetail(sessionId, openBar) {
+  return openBar('detail', sessionId);
+}

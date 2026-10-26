@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sessionRelationEntries } from '../public/session-relations.mjs';
+import { openRelatedSessionDetail, sessionRelationEntries } from '../public/session-relations.mjs';
 
 const first = 'codex_00000000-0000-4000-8000-000000000001';
 const second = 'local_00000000-0000-4000-8000-000000000002';
@@ -20,4 +20,11 @@ test('session detail projection exposes safe session-to-session delegation in bo
 test('session detail projection ignores dangling session endpoints', () => {
   const entries = sessionRelationEntries([edge(first, second, 'This target is not on the board')], first, { nodes: [] }, [{ id: first }]);
   assert.deepEqual(entries, []);
+});
+
+test('following a related session opens the internal detail bar', () => {
+  const calls = [];
+  const opened = openRelatedSessionDetail(second, (...args) => { calls.push(args); return true; });
+  assert.equal(opened, true);
+  assert.deepEqual(calls, [['detail', second]]);
 });
