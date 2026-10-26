@@ -59,6 +59,14 @@ test('検索案内はセッションとキャンバスカードの両方を区�
   assert.match(EN['nomatch.query.text'], /relationship types, purposes/);
 });
 
+test('キャンバスのキーボード説明はaria-describedby先で選択言語に切り替わる', () => {
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /id="cv-view"[^>]*aria-describedby="cv-keys"/);
+  assert.match(html, /id="cv-keys" data-i18n="canvas\.keys"/);
+  assert.equal(JA['canvas.keys'], '矢印で移動、+ と − で拡大縮小、f で全体');
+  assert.equal(EN['canvas.keys'], 'Arrows pan, + and − zoom, f fits everything.');
+});
+
 test('masthead trust fallback matches the current boundary and does not promise that nothing leaves the computer', () => {
   const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   assert.equal(EN['mast.trust'], 'Session data is read-only. Worktrees require confirmation.');
