@@ -206,4 +206,3 @@ function lifecycleOf(events) {
   }
   return { status: state, ...(state === 'active' && startedAt ? { startedAt } : {}) };
 }
-

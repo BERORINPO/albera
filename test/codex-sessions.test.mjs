@@ -125,4 +125,3 @@ test('CLI と originator の組が合わない Codex ファイルは採用しな
   const { sessions } = await createCodexSessionsSource({ root: home }).load();
   assert.equal(sessions.length, 0);
 });
-
