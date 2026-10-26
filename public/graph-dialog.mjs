@@ -151,7 +151,7 @@ export function openGraphNodeDialog(o) {
         const other = e.from === `graph:${node.id}` ? e.to : e.from;
         const direction = e.from === `graph:${node.id}` ? t('graph.relationOut') : t('graph.relationIn');
         return h('li', {},
-          h('span', { text: `${direction}: ${endpointLabel(other, graph, sessions, t)} — ${t(`graph.edge.${e.kind}`)}${e.purpose ? `: ${e.purpose}` : ''}${e.kind === 'delegates' ? ` (${t(`graph.delegation.${e.status}`)})` : ''}` }),
+          h('span', { text: `${direction}: ${endpointLabel(other, graph, sessions, t)} — ${t(`graph.edge.${e.kind}`)}${e.purpose ? `: ${e.purpose}` : e.kind === 'delegates' ? `: ${t('graph.delegationPurposeMissing')}` : ''}${e.kind === 'delegates' ? ` (${t(`graph.delegation.${e.status}`)})` : ''}` }),
           o.onEditEdge ? h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'edit-edge', 'data-edge-id': e.id, text: t('graph.editRelation') }) : null,
         );
       }))
@@ -255,7 +255,7 @@ export function openGraphRelationDialog(o) {
     fixedField(t, 'graph.from', fromItem.title),
     edge ? fixedField(t, 'graph.to', toItem.title) : endpointSelect(t, options, 'to', '', fromKey),
     selectField(t, 'graph.edgeKind', 'kind', [...GRAPH_EDGE_KINDS], edge?.kind ?? (GRAPH_EDGE_KINDS.includes(o.initialKind ?? '') ? o.initialKind : 'related'), (v) => t(`graph.edge.${v}`)),
-    inputField(t, 'graph.purpose', 'purpose', edge?.purpose ?? ''),
+    inputField(t, 'graph.purpose', 'purpose', edge?.purpose ?? '', edge?.kind === 'delegates' || o.initialKind === 'delegates'),
     selectField(t, 'graph.delegationStatus', 'status', [...DELEGATION_STATES], edge?.status || 'planned', (v) => t(`graph.delegation.${v}`)),
     h('div', { class: 'graph-dialog__actions' },
       edge && o.onDeleteEdge ? h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-dialog-action': 'delete-edge', text: t('graph.deleteRelation') }) : null,
@@ -264,6 +264,11 @@ export function openGraphRelationDialog(o) {
     ),
   );
   dialog.append(form);
+  const kindInput = /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="kind"]'));
+  const purposeInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="purpose"]'));
+  kindInput?.addEventListener('change', () => {
+    if (purposeInput) purposeInput.required = kindInput.value === 'delegates';
+  });
   document.body.append(dialog);
   dialog.addEventListener('close', () => dialog.remove(), { once: true });
   form.addEventListener('click', (ev) => {

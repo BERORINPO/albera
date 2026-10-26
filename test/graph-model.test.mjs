@@ -113,6 +113,7 @@ test('relations connect local cards and current sessions, whitelist fields, and 
   const sessionIds = new Set([session]);
   graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'delegates', purpose: 'Implement the review', status: 'active' }, e1, sessionIds);
   assert.deepEqual([graph.edges.length, graph.edges[0].purpose, graph.edges[0].status], [1, 'Implement the review', 'active']);
+  assert.equal(connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'delegates', purpose: '  ', status: 'planned' }, 'e_00000000-0000-4000-8000-000000000003', sessionIds), graph, 'delegation without a purpose is rejected');
   assert.equal(connectGraph(graph, { from: `graph:${g1}`, to: 'session:local_bad', kind: 'related', purpose: '', status: '' }, 'e_00000000-0000-4000-8000-000000000002', sessionIds).edges.length, 1);
   assert.equal(connectGraph(graph, { from: `graph:${g1}`, to: `graph:${g2}`, kind: 'related', purpose: '', status: '' }, e1, sessionIds).edges.length, 1, 'duplicate edge id is rejected');
   assert.equal(removeGraphNode(graph, g1).edges.length, 0, 'orphaned edges are removed');
@@ -128,6 +129,18 @@ test('graph relations can update purpose and delegation state or be removed', ()
   const remaining = removeGraphEdge(graph, e1).edges;
   assert.equal(remaining.length, 1);
   assert.notEqual(remaining[0].id, e1);
+});
+
+test('legacy delegation with missing purpose remains readable and can be repaired', () => {
+  const legacy = normalizeGraph({
+    v: 1,
+    nodes: [{ id: g1, kind: 'task', title: 'Review', x: 0, y: 0 }],
+    edges: [{ id: e1, from: `graph:${g1}`, to: `session:${session}`, kind: 'delegates', purpose: '', status: 'active' }],
+  });
+  assert.equal(legacy.edges[0].purpose, '', 'loading old local state does not discard its edge');
+  const updated = updateGraphEdge(legacy, e1, { purpose: 'Review the implementation' });
+  assert.equal(updated.edges[0].purpose, 'Review the implementation');
+  assert.equal(updateGraphEdge(legacy, e1, { purpose: '' }).edges[0].purpose, '', 'a legacy record is retained until a repair is supplied');
 });
 
 test('comprehension review reports only explicitly missing graph links, never a person score', () => {

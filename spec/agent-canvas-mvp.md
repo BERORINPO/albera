@@ -141,3 +141,9 @@
 - どのファイル名、ID、ヘッダー値、本文・イベント行も画面・ログ・PRへ出していない。CLI以外または未知のproducerをCodex CLIとして誤表示しないため、末尾のイベント行は読まず、実セッションの開始/完了/中断やキャンバス表示は未確認のままとする。新しいセッションは作成せず、CLIも起動していない。
 - 形式の一次資料: [Codex rollout recorder](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder.rs) は`SessionMeta`へsourceとoriginatorを記録し、[公式CLI originator定義](https://github.com/openai/codex/blob/main/codex-rs/login/src/auth/default_client.rs) はCLI既定originatorを定義している。このプリフライト結果は、現行adapterが識別できる実Codex CLIセッションがローカル保存先になかったことを示す。将来の保存形式全般との互換性を証明するものではない。
 - Codexの認識件数が0の診断には、候補行を除外する理由に加え、Pigeonholesが選んだ保存先がCLI用か確認し、形式変更があればadapter更新後に再読み込みする次の手順を追加した。メッセージの単体テストで保存先や秘密値が表示されないことを維持する。
+
+### 委譲記録の目的を必須化 (2026-10-26)
+
+- 新しい `delegates` 関係は、元・先・目的・記録状態を必須要素として保存する。目的は空白だけの値を認めず、CLI/agent/worktreeの起動は引き続き行わない。
+- 過去のブラウザー保存データにある目的空欄の委譲関係は読み込み時に削除せず、詳細へ欠落の案内を出す。編集フォームで目的を補って保存できる。
+- 合成単体テストで新規空目的の拒否、既存データの保持、目的の補修を確認する。ブラウザー上のdialog操作はこの段階では未確認。

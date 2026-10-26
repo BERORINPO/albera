@@ -212,6 +212,7 @@ export const JA_CANVAS = Object.freeze({
   'graph.delegation.blocked': '阻害中',
   'graph.delegation.completed': '完了',
   'graph.delegation.cancelled': '取消済み',
+  'graph.delegationPurposeMissing': '委譲目的が未記録です。この記録を編集して委譲内容を追加してください。',
   'graph.relations': '関係',
   'graph.relatedCards': '関連するカード',
   'graph.sessionRelationOut': 'このセッションから',
