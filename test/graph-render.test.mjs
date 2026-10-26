@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
 import { graphCardAriaLabel, graphCardComprehensionSummary, graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAccessibleLabel, graphEdgeAttributes, graphEdgePresentation, graphEdgeSearchText, graphNodeHasMatchedSession, graphNodeSessionFilterMatch } from '../public/graph-render.mjs';
+import { GRAPH_NODE_KINDS } from '../public/graph-model.mjs';
 import { cancelGraphConnection, chooseGraphConnectionTarget, startGraphConnection } from '../public/graph-connect-mode.mjs';
 
 const node = { id: 'g_00000000-0000-4000-8000-000000000001', kind: 'understanding_gap', title: 'Gap', status: 'open' };
@@ -282,4 +283,25 @@ test('relation accessible names distinguish safe endpoints without exposing titl
   assert.equal(label, 'Task (000000000001) => Session: Codex (abcdef123456): Delegation record: Active');
   assert.doesNotMatch(label, /PRIVATE_|11111111|PRIVATE_CARD_TITLE|PRIVATE_OTHER_TITLE/);
   assert.notEqual(label, graphEdgeAccessibleLabel({ ...edge, to: `graph:${toId}` }, graph, index, t));
+});
+
+test('relation accessible names localize every supported graph endpoint kind', () => {
+  const kindLabels = Object.fromEntries(GRAPH_NODE_KINDS.map((kind) => [`graph.kind.${kind}`, `kind:${kind}`]));
+  const t = (key, params = {}) => ({
+    ...kindLabels,
+    'graph.edgeAccessible': `${params.from} => ${params.to}: ${params.relation}`,
+    'graph.edge.related': 'Related',
+  }[key] ?? key);
+  for (const [index, kind] of GRAPH_NODE_KINDS.entries()) {
+    const id = `g_00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`;
+    const title = `PRIVATE_TITLE_${kind}`;
+    const label = graphEdgeAccessibleLabel(
+      { from: `graph:${id}`, to: `graph:${id}`, kind: 'related' },
+      { nodes: [{ id, kind, title }] },
+      new Map(),
+      t,
+    );
+    assert.equal(label, `kind:${kind} (${id.slice(-12)}) => kind:${kind} (${id.slice(-12)}): Related`);
+    assert.doesNotMatch(label, /PRIVATE_TITLE/);
+  }
 });

@@ -3,7 +3,7 @@
 
 import { CANVAS } from '../src/shared/constants.mjs';
 import { h, reconcile } from './view.mjs';
-import { reviewUnderstandingGaps } from './graph-model.mjs';
+import { GRAPH_NODE_KINDS, reviewUnderstandingGaps } from './graph-model.mjs';
 import { comprehensionGapSummary } from './session-relations.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
 
@@ -109,7 +109,7 @@ export function graphEdgeAccessibleLabel(edge, graph, index, t) {
       const id = endpoint.slice(6);
       const node = graph.nodes.find((item) => item.id === id);
       if (!node) return t('graph.missingNode');
-      const kind = ['task', 'artifact', 'decision', 'understanding_gap'].includes(node.kind) ? node.kind : 'unknown';
+      const kind = GRAPH_NODE_KINDS.includes(node.kind) ? node.kind : 'unknown';
       const suffix = id.slice(-12).toLowerCase();
       return /^[a-f0-9]{12}$/.test(suffix) ? `${t(`graph.kind.${kind}`)} (${suffix})` : t('graph.unknownEndpoint');
     }
