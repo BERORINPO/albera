@@ -6,7 +6,7 @@
 
 | 領域 | 今回の製品完成条件 | 現状と未確認事項 |
 |---|---|---|
-| 操作可能なキャンバス | セッション・タスク・成果物・判断・関係を配置し、移動、接続、検索/絞り込み、一覧/キャンバス切替、詳細確認、再読み込み後の復元を行える | 主要なポインター/キーボード操作、配置・関係・表示状態の保存/復元、320pxでのキャンバス/一覧/詳細切替と水平overflowなし、提供元/プロジェクト/状態filterの実画面操作を合成データで確認済み。全入力方式とスクリーンリーダー実機は未確認 |
+| 操作可能なキャンバス | セッション・タスク・成果物・判断・関係を配置し、移動、接続、検索/絞り込み、一覧/キャンバス切替、詳細確認、再読み込み後の復元を行える | グラフカードのpointer移動、セッションカードのキーボード移動/リセット、配置・関係・表示状態の保存/復元、320pxでのキャンバス/一覧/詳細切替と水平overflowなし、提供元/プロジェクト/状態filterの実画面操作を合成データで確認済み。セッションカード個別移動のpointer/touch経路、全入力方式とスクリーンリーダー実機は未確認 |
 | セッションとイベント | Claude Code/Codex CLIの実セッションを同一ボードに読み取り専用表示し、安全な時系列と開始/完了/中断状態を詳細で確認できる。対応を追加した他providerも保存形式の根拠を維持する | Claude表示は維持。Codex/Copilot/OpenCodeのadapterとfixtureはあるが、直近のCodex候補40件はすべてCLI markerに不一致で認識0件。固定理由別に内訳を示す。実CLIセッションでの表示・イベント互換性は未確認。Copilot/OpenCodeは保存形式から起動クライアントを識別できない |
 | ハーネス/実行条件 | セッションが使う実行環境を把握できる。値の由来と確認状態を明示し、機密値は出さない | provider/sourceと手動execution profileを表示。実行条件の自動検出・検証は未実装で、手入力値を実環境の事実として扱わない |
 | セッション間の委譲 | 元/先、利用者が入力した目的、状態を追跡し、実際のCLI操作は確認後のみ行う。利用不可の理由と結果を表示する | 手動記録とCodexへの確認付き目的文stdin実行を実装。実CLI実行はこの作業では未実施。Claude実行方式と一般provider間委譲は未決/未実装 |
@@ -992,6 +992,12 @@ Synthetic fixtures cover success, recognized terminal failure, known non-termina
 Codex rollout events now use the producer's `turn_id` only inside the filesystem adapter to correlate start and terminal records. A terminal record with an ID different from the latest start is omitted from the safe timeline and cannot change the current lifecycle. If one side of a current-turn correlation has an ID and the other does not, the result is `unknown`; legacy sequences where both sides omit IDs retain their chronological interpretation. The adapter discards all turn IDs before constructing common events or the board API. This follows the official Codex event shapes: `TurnStartedEvent` and `TurnCompleteEvent` have a turn ID; `TurnAbortedEvent` has an optional turn ID, and the official history reducer prefers exact ID matches ([protocol](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs), [turn history reducer](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/thread_history.rs)).
 
 A synthetic late-completion fixture verifies that an older completed turn cannot replace a newer active turn and that no native turn IDs or answer text reach the board. This remains fixture/source-level verification; real Codex CLI rollout compatibility is still unverified because no accepted CLI session exists in the current local snapshot.
+
+### セッションカードのキーボード移動を再確認 (2026-10-27)
+
+- 隔離`--demo`のキャンバスで合成Codexカードの移動ハンドルへフォーカスし、右矢印を押した。セッションカードが用紙一覧から個別配置へ移り、DOM上の保存座標は`x=24, y=620`となった。
+- 再読み込み後も個別配置と座標が復元した。「元の用紙へ戻す」を操作し、再読み込み後に位置オーバーレイが無く、元のセッション用紙のカードとして表示されることを確認した。
+- 合成データとブラウザー内状態のみ。実セッション/providerファイル、CLI、worktree操作、外部サービスは不使用。これはキーボード移動・保存・復元・リセットのGUI確認であり、実データの受入ではない。隔離サーバーとタブは終了済み。
 
 ### Failed Codex turn demo coverage
 
