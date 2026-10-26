@@ -138,7 +138,10 @@ test('the comprehension editor renders actions only from its current missing-lin
 
 test('relation removal uses an accessible in-app confirmation naming both endpoints', () => {
   const source = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
+  const wiring = fs.readFileSync(new URL('../public/canvas-act.mjs', import.meta.url), 'utf8');
   const confirm = fs.readFileSync(new URL('../public/graph-confirm-dialog.mjs', import.meta.url), 'utf8');
+  assert.match(wiring, /t: state\.t, world/);
+  assert.doesNotMatch(wiring, /t: \(key\) => state\.t\(key\)/);
   assert.match(confirm, /role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': 'graph-confirm-title', 'aria-describedby': 'graph-confirm-description'/);
   assert.match(confirm, /data-confirm-action': 'cancel'/);
   assert.match(confirm, /data-confirm-action': 'confirm'/);

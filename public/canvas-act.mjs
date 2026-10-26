@@ -96,7 +96,7 @@ function graphChanged(doc) {
 }
 
 const graphActions = createGraphActions({
-  cv, loadGraph, graphChanged, graphSessions, render, announce, t: (key) => state.t(key), world,
+  cv, loadGraph, graphChanged, graphSessions, render, announce, t: state.t, world,
   sessionIds: () => new Set(view.index.keys()),
 });
 

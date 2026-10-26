@@ -3,7 +3,7 @@ import { connectGraph, releaseBlockedGraphDelegationOperation, removeGraphEdge, 
 import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs';
 import { chooseGraphConnectionTarget, startGraphConnection } from './graph-connect-mode.mjs';
 
-/** @param {{cv:any,loadGraph:()=>any,graphChanged:(doc:any)=>boolean,graphSessions:()=>any[],render:()=>void,announce:(text:string)=>void,t:(key:string)=>string,world:()=>HTMLElement,sessionIds:()=>Set<string>}} o */
+/** @param {{cv:any,loadGraph:()=>any,graphChanged:(doc:any)=>boolean,graphSessions:()=>any[],render:()=>void,announce:(text:string)=>void,t:import('./i18n.mjs').T,world:()=>HTMLElement,sessionIds:()=>Set<string>}} o */
 export function createGraphActions(o) {
   const connectEndpoint = (from, initialKind, initialTo) => {
     const graph = o.loadGraph();
