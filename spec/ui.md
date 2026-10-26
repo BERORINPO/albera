@@ -1388,3 +1388,9 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - 新規loopbackポート`8812`で隔離`--demo`を起動し、初期一覧画面が合成データとして表示されるところまで確認した。worktreeカード・関係・保存状態は操作していない。
 - Windowsのcomputer-use規則に従い`node_repl`経由で画面を操作しようとしたが、現在のブラウザーURLを安全に特定できず、computer-useが入力前に停止した。回避操作は行わず、隔離デモサーバーを停止した。
 - この試行はworktreeカードの更新ボタン、対象branch限定記録、対象なし案内、focus復帰の画面受入を確認したものではない。これらと実Git inventoryのGUI受入は未確認のまま。
+
+### worktree更新が利用できない理由をカード詳細に表示 (2026-10-27)
+
+- worktreeカードに関連sessionがない場合は接続を促し、関連先があるが現在のボードにない場合はボード更新を案内する。session IDやパスは説明文に含めない。複数の関連先がある場合、稼働中sessionが一つでもあれば更新操作を有効にする。
+- Pure helperの合成テストで未関連、session不在、複数候補中の稼働session、完了カードを確認した。`npm test`: 602 passed、`npm run arch`: 99 paths・違反0、`git diff --check`: pass。
+- ブラウザー上の詳細パネル表示・更新操作は、Windows computer-useがURLの安全判定で前回入力前に停止したため未確認。実Git/WSL inventory、実セッションの稼働状態も未確認。

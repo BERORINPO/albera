@@ -62,7 +62,7 @@ function endpointSelect(t, options, name, selected, excluded = '') {
 const endpointKey = (key) => key.startsWith('graph:') || key.startsWith('session:') ? key : '';
 
 /**
- * @param {{t:T,announce:(text:string)=>void,node?:any,position?:{x:number,y:number},initialKind?:string,initialTitle?:string,graph:any,sessions:Array<{id:string,title:string}>,onSave:(v:any,sessionIds:Set<string>)=>boolean|void,onDelete?:(id:string)=>void,onConnect?:(from:string,kind?:string)=>void,onEditEdge?:(edge:any)=>void,onRefreshWorktree?:(afterClose:()=>void)=>void}} o
+ * @param {{t:T,announce:(text:string)=>void,node?:any,position?:{x:number,y:number},initialKind?:string,initialTitle?:string,graph:any,sessions:Array<{id:string,title:string}>,onSave:(v:any,sessionIds:Set<string>)=>boolean|void,onDelete?:(id:string)=>void,onConnect?:(from:string,kind?:string)=>void,onEditEdge?:(edge:any)=>void,onRefreshWorktree?:(afterClose:()=>void)=>void,worktreeRefreshUnavailable?:'unlinked'|'source_missing'}} o
  */
 export function openGraphNodeDialog(o) {
   const { t, node, graph, sessions } = o;
@@ -157,6 +157,7 @@ export function openGraphNodeDialog(o) {
   const acts = h('div', { class: 'graph-dialog__actions' });
   if (node && o.onConnect) acts.append(h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'connect', text: t('graph.connect') }));
   if (node?.kind === 'worktree' && o.onRefreshWorktree) acts.append(h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'refresh-worktree', text: t('worktree.refreshCard') }));
+  if (node?.kind === 'worktree' && o.worktreeRefreshUnavailable) acts.append(h('p', { class: 'graph-dialog__privacy', role: 'status', text: t(`worktree.refreshUnavailable.${o.worktreeRefreshUnavailable}`) }));
   if (node && o.onDelete && !operationLocked) acts.append(h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-dialog-action': 'delete', text: t('graph.delete') }));
   acts.append(h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'cancel', text: t('canvas.close') }), h('button', { class: 'btn btn--line', type: 'submit', text: t('graph.save') }));
   form.append(acts);

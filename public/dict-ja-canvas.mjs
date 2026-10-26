@@ -193,6 +193,8 @@ export const JA_CANVAS = Object.freeze({
   'worktree.recordBody': '対象 {project}。基点 {base}。確認時: {state}、変更 {changed} 件、未追跡 {untracked} 件、競合 {conflicted} 件。このカードはローカル記録です。編集・削除してもworktree自体は変わりません。',
   'worktree.listButton': 'worktree状態を更新',
   'worktree.refreshCard': 'このカードの状態を確認',
+  'worktree.refreshUnavailable.unlinked': 'worktree状態を確認するには、このカードとセッションを「関連」関係で接続してください。',
+  'worktree.refreshUnavailable.source_missing': '関連セッションが現在のボードにありません。ボードを更新してから再度お試しください。',
   'worktree.refreshCardHint': '対象branchの現在状態を確認し、「キャンバスに記録」で保存してください。',
   'worktree.refreshCardMissing': '対象branchはinventoryにありません。保存済みカードは変更していません。',
   'worktree.wslUnavailable': '設定済みのWSL共有内で操作します。削除できるのはこのアプリが作成した、clean・未使用のworktreeだけです。ignored filesも消える可能性があります。',

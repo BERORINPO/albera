@@ -6,10 +6,18 @@ import { firstUnderstandingGapForReview } from './graph-review-queue.mjs';
 
 /** @param {any} node @param {any} graph @param {Set<string>} sessionIds */
 export function linkedWorktreeSessionId(node, graph, sessionIds) {
-  if (node?.kind !== 'worktree' || node.status === 'done') return '';
-  const edge = graph.edges.find((item) => item.from === `graph:${node.id}` && item.kind === 'related' && item.to.startsWith('session:'));
-  const id = edge?.to.slice('session:'.length) ?? '';
-  return sessionIds.has(id) ? id : '';
+  return worktreeRefreshState(node, graph, sessionIds).sessionId ?? '';
+}
+
+/** @param {any} node @param {any} graph @param {Set<string>} sessionIds */
+export function worktreeRefreshState(node, graph, sessionIds) {
+  if (node?.kind !== 'worktree' || node.status === 'done') return { status: 'not_applicable' };
+  const relatedIds = graph.edges
+    .filter((item) => item.from === `graph:${node.id}` && item.kind === 'related' && item.to.startsWith('session:'))
+    .map((item) => item.to.slice('session:'.length));
+  if (!relatedIds.length) return { status: 'unlinked' };
+  const sessionId = relatedIds.find((id) => sessionIds.has(id));
+  return sessionId ? { status: 'available', sessionId } : { status: 'source_missing' };
 }
 
 /** @param {{cv:any,loadGraph:()=>any,graphChanged:(doc:any)=>boolean,graphSessions:()=>any[],render:()=>void,announce:(text:string)=>void,getT:()=>import('./i18n.mjs').T,world:()=>HTMLElement,sessionIds:()=>Set<string>,refreshWorktree?:(sessionId:string,branch:string,afterClose:()=>void)=>void}} o */
@@ -36,14 +44,15 @@ export function createGraphActions(o) {
     const graph = o.loadGraph();
     const node = graph.nodes.find((item) => item.id === id);
     if (!node) return;
-    const sourceSessionId = linkedWorktreeSessionId(node, graph, o.sessionIds());
+    const refreshState = worktreeRefreshState(node, graph, o.sessionIds());
     openGraphNodeDialog({
       t: t(), announce: o.announce, graph, node, sessions: o.graphSessions(),
       onSave: (input, sessionIds) => o.graphChanged(updateGraphNode(graph, id, input, sessionIds)),
       onDelete: (key) => o.graphChanged(removeGraphNode(graph, key)),
       onEditEdge: (edge) => editEdge(edge.id),
       onConnect: (from, kind) => connectEndpoint(from, kind),
-      ...(sourceSessionId && o.refreshWorktree ? { onRefreshWorktree: (afterClose) => o.refreshWorktree?.(sourceSessionId, node.title, afterClose) } : {}),
+      ...(refreshState.status === 'available' && o.refreshWorktree ? { onRefreshWorktree: (afterClose) => o.refreshWorktree?.(refreshState.sessionId, node.title, afterClose) } : {}),
+      ...(refreshState.status === 'unlinked' || refreshState.status === 'source_missing' ? { worktreeRefreshUnavailable: refreshState.status } : {}),
     });
   };
   const connectMode = {

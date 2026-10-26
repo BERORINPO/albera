@@ -193,6 +193,8 @@ export const EN_CANVAS = Object.freeze({
   'worktree.recordBody': 'Repository {project}. Base {base}. At check: {state}; {changed} changed, {untracked} untracked, {conflicted} conflicts. This is a local record; editing or deleting the card does not change the worktree.',
   'worktree.listButton': 'Refresh worktree status',
   'worktree.refreshCard': 'Check this card’s status',
+  'worktree.refreshUnavailable.unlinked': 'Link this card to a session with a Related connection to check its worktree status.',
+  'worktree.refreshUnavailable.source_missing': 'The related session is not on the current board. Refresh the board and try again.',
   'worktree.refreshCardHint': 'Review the current branch status and choose Record on canvas to save it.',
   'worktree.refreshCardMissing': 'This branch is absent from the inventory. The saved card was not changed.',
   'worktree.wslUnavailable': 'Actions stay inside the configured WSL share. Removal is limited to clean, unused worktrees created by this app. Ignored files may also be removed.',
