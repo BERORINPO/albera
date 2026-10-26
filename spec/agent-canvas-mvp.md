@@ -180,3 +180,9 @@
 - 今回の対応はCodex CLIへの片方向のread-only resumeに限定する。ClaudeからCodexへの受け渡しを含む一般的なprovider間委譲、Codexによるファイル書込み、承認・MCP/network設定の選択、企業ロール制御は未実装または仕様待ち。音声Main AIと企業権限制御の壁打ち仕様はユーザー貼付待ち。
 - 合成runner/API/graph検証では、CLI解決時の絶対PATH指定、相対PATHの無視、Codex未検出時のspawn回避も確認した。これは安全な実行ファイル選択と未導入時の停止を検証するもので、実CLIや実セッションの互換性を確認したものではない。
 - 一次資料: [Codex CLI reference](https://learn.chatgpt.com/docs/developer-commands) は`PROMPT: string | - (read stdin)`と`codex exec resume`のfollow-up promptを定義し、[Codex CLI source](https://github.com/openai/codex/blob/main/codex-rs/exec/src/cli.rs) はresume promptで`-`を使うとstdinから読むことを明記する。
+
+### Codex CLI保存先のread-only再確認 (2026-10-26)
+
+- Codex adapterを通じてローカル保存先を読み取り専用で再走査した。候補rollout 38件、CLIとして認識されたセッション0件。出力したのはこの集計だけで、ファイル名・ID・パス・prompt・ツール入出力・イベント本文・環境値は出力していない。
+- 認識セッションが0件のため、実セッションの開始/完了/中断状態とキャンバス表示は今回も未確認。新しいセッションやCLIプロセスは作成/起動していない。
+- この結果は実データとの適合性を証明しない。現行の保存先にある候補がadapterの認識条件に一致しないことだけを示す。形式一致を確認できる安全な実セッションが無いため、次は合成fixtureでadapterの各状態を検証する。
