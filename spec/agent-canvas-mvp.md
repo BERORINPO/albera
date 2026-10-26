@@ -6,7 +6,7 @@
 
 | 領域 | 今回の製品完成条件 | 現状と未確認事項 |
 |---|---|---|
-| 操作可能なキャンバス | セッション・タスク・成果物・判断・関係を配置し、移動、接続、検索/絞り込み、一覧/キャンバス切替、詳細確認、再読み込み後の復元を行える | グラフカードのpointer移動、セッションカードのキーボード移動/リセット、配置・関係・表示状態の保存/復元、320pxでのキャンバス/一覧/詳細切替と水平overflowなし、提供元/プロジェクト/状態filterの実画面操作を合成データで確認済み。セッションカード個別移動のpointer/touch経路、全入力方式とスクリーンリーダー実機は未確認 |
+| 操作可能なキャンバス | セッション・タスク・成果物・判断・関係を配置し、移動、接続、検索/絞り込み、一覧/キャンバス切替、詳細確認、再読み込み後の復元を行える | グラフカードのpointer移動、セッションカードのキーボード移動/リセット、配置・関係・表示状態の保存/復元、320pxでのキャンバス/一覧/詳細切替と水平overflowなし、提供元/プロジェクト/状態filterの実画面操作を合成データで確認済み。セッションpointer/touchのcancel復帰はevent/action test済みだが、実ブラウザーでのpointer/touch移動、全入力方式とスクリーンリーダー実機は未確認 |
 | セッションとイベント | Claude Code/Codex CLIの実セッションを同一ボードに読み取り専用表示し、安全な時系列と開始/完了/中断状態を詳細で確認できる。対応を追加した他providerも保存形式の根拠を維持する | Claude表示は維持。Codex/Copilot/OpenCodeのadapterとfixtureはあるが、直近のCodex候補40件はすべてCLI markerに不一致で認識0件。固定理由別に内訳を示す。実CLIセッションでの表示・イベント互換性は未確認。Copilot/OpenCodeは保存形式から起動クライアントを識別できない |
 | ハーネス/実行条件 | セッションが使う実行環境を把握できる。値の由来と確認状態を明示し、機密値は出さない | provider/sourceと手動execution profileを表示。実行条件の自動検出・検証は未実装で、手入力値を実環境の事実として扱わない |
 | セッション間の委譲 | 元/先、利用者が入力した目的、状態を追跡し、実際のCLI操作は確認後のみ行う。利用不可の理由と結果を表示する | 手動記録とCodexへの確認付き目的文stdin実行を実装。実CLI実行はこの作業では未実施。Claude実行方式と一般provider間委譲は未決/未実装 |
@@ -1026,3 +1026,10 @@ The synthetic `--demo` board now includes an explicitly labeled Codex CLI failed
 > 2026-10-27追記: 上記実画面確認はport `18816`の隔離demoで実施し、入れ子inventory・target-only記録・親詳細からcanvasへのfocus復帰・再読込後の状態復元を合成カードで確認した。実Git/WSL、実セッションとの適合性は未確認。
 
 > 2026-10-27追記: 隔離demoで新規Graphカードが`(0,0)`に配置される不具合を確認し、原因はcanvas配置adapterが`nextGraphNodePosition`へカード寸法を渡さず、障害物配列を寸法として渡していたことと判明した。引数順を修正し、観測したviewport/camera/用紙寸法を使う純粋adapterテストを追加。port `18826`の別隔離demoで新規カード座標`(220,-220)`、再読み込み後の同座標復元を確認し、最後に合成カードをUIから削除、タブとサーバーを終了した。合成データのみを使用し、実セッションは読んでいない。
+
+### キャンバスdrag cancel時の位置復帰 (2026-10-27)
+
+- `pointercancel`でsession / graph / sheetのプレビュー座標を保存せず、renderで直前の確定位置へ戻すようにした。2本目のtouchがpinchへ切り替わるときも、進行中のカード移動プレビューを破棄する。
+- 合成pointer-event testで、sessionのcancel・2本目touchによるcancel・pinch継続を確認。session-position action testでは、cancel後に座標がbrowser storageへ保存されず、プレビューstateが消えることを確認した。
+- `npm test`: 611/611 passed、`npm run arch`: 99 role paths / 0 violations、`npm run smoke`: pass、`git diff --check`: pass。smokeはread-only local session scanを行い、aggregate countsだけを出力した。
+- このturnでは実ブラウザーのpointer/touch dragを実行していない。実セッション、CLI起動、providerファイル書込み、Git worktree操作、外部provider requestも行っていない。実データ適合と実スクリーンリーダー読み上げは引き続き未確認。

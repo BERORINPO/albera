@@ -129,10 +129,13 @@ export function canvasTarget(el) {
  * @property {(factor: number, px: number, py: number) => void} zoomBy 表示枠の中の点 (px, py) を中心に factor 倍
  * @property {(key: string, dx: number, dy: number) => void} dragSheet 見出しをつかんで動かしている間 (画面の px、つかんだ所から)
  * @property {(key: string, dx: number, dy: number) => void} dropSheet 離したとき
+ * @property {(key: string) => void} cancelSheet ドラッグが取り消されたとき
  * @property {(id:string,dx:number,dy:number)=>void} dragGraph
  * @property {(id:string,dx:number,dy:number)=>void} dropGraph
+ * @property {(id:string)=>void} cancelGraph
  * @property {(id:string,dx:number,dy:number)=>void} dragSession
  * @property {(id:string,dx:number,dy:number)=>void} dropSession
+ * @property {(id:string)=>void} cancelSession
  * @property {(id:string)=>void} openSession
  * @property {(id:string)=>void} openGraph
  * @property {(sourceKind:'graph'|'session',sourceId:string,targetKind:'graph'|'session',targetId:string)=>void} connectGraph
@@ -165,6 +168,12 @@ export function bindCanvas(viewport, handlers) {
     const [a, b] = [...pts.values()];
     return { dist: Math.hypot(a.x - b.x, a.y - b.y), mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
   };
+  const cancelDrag = (current) => {
+    if (!current?.key) return;
+    if (current.kind === 'head') handlers.cancelSheet(current.key);
+    else if (current.kind === 'graph') handlers.cancelGraph(current.key);
+    else if (current.kind === 'session') handlers.cancelSession(current.key);
+  };
   viewport.addEventListener('pointerdown', (ev) => {
     if (ev.button !== 0 && ev.pointerType === 'mouse') return;
     const el = ev.target instanceof Element ? ev.target : null;
@@ -172,6 +181,7 @@ export function bindCanvas(viewport, handlers) {
     if (pts.size === 2) {
       // 2 本目の指: ドラッグをやめてピンチにする
       if (drag?.kind === 'connect' && drag.key) handlers.graphConnectHover(drag.endpointKind ?? 'graph', drag.key, null, null);
+      cancelDrag(drag);
       drag = null;
       pinch = { dist: pair().dist };
       viewport.classList.remove('is-panning');
@@ -239,16 +249,19 @@ export function bindCanvas(viewport, handlers) {
       return;
     }
     if (d.kind === 'session' && d.key) {
-      if (d.moved) handlers.dropSession(d.key, ev.clientX - d.x, ev.clientY - d.y);
+      if (ev.type === 'pointercancel') handlers.cancelSession(d.key);
+      else if (d.moved) handlers.dropSession(d.key, ev.clientX - d.x, ev.clientY - d.y);
       else handlers.openSession(d.key);
       return;
     }
     if (d.kind === 'graph' && d.key) {
-      if (d.moved) handlers.dropGraph(d.key, ev.clientX - d.x, ev.clientY - d.y);
+      if (ev.type === 'pointercancel') handlers.cancelGraph(d.key);
+      else if (d.moved) handlers.dropGraph(d.key, ev.clientX - d.x, ev.clientY - d.y);
       else handlers.openGraph(d.key);
       return;
     }
     if (d.kind !== 'head' || !d.key || !d.head) return;
+    if (ev.type === 'pointercancel') return handlers.cancelSheet(d.key);
     if (d.moved && ev.type === 'pointerup') handlers.dropSheet(d.key, ev.clientX - d.x, ev.clientY - d.y);
     else if (d.moved) handlers.dropSheet(d.key, 0, 0);
     else handlers.focusHead(d.head);

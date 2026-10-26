@@ -26,6 +26,7 @@ import { openRelatedSessionDetail, resolveRelatedSessionShortId } from './sessio
 import { createGraphActions } from './graph-actions.mjs';
 import { cancelGraphConnection } from './graph-connect-mode.mjs';
 import { createSessionPositionActions } from './canvas-session-position-act.mjs';
+import { createCanvasLayoutDragCancelActions } from './canvas-layout-drag-cancel-act.mjs';
 import { focusSlip } from './canvas.mjs';
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
@@ -351,6 +352,7 @@ export function initCanvas() {
     },
     dragSession: sessionPositionActions.drag,
     dropSession: sessionPositionActions.drop,
+    cancelSession: sessionPositionActions.cancel,
     openSession: sessionPositionActions.open,
     connectGraph: (/** @type {'graph'|'session'} */ sourceKind, /** @type {string} */ sourceId, /** @type {'graph'|'session'} */ targetKind, /** @type {string} */ targetId) => graphActions.connectCanvasEndpoints(sourceKind, sourceId, targetKind, targetId),
     graphConnectHover: (/** @type {'graph'|'session'} */ sourceKind, /** @type {string} */ sourceId, /** @type {'graph'|'session'|null} */ targetKind, /** @type {string|null} */ targetId) => {
@@ -363,6 +365,7 @@ export function initCanvas() {
     },
     openGraph: (/** @type {string} */ id) => graphActions.openNode(id),
     // 動かさずに押した柱: フォーカスを置き、帯に「用紙を動かす」のボタンを出す (ドラッグのできない人の道、WCAG 2.5.7)
+    ...createCanvasLayoutDragCancelActions({ cv, render, world, sheetEl }),
     focusHead: (/** @type {HTMLElement} */ head) => {
       head.focus({ preventScroll: true });
       openSheetBar(head.dataset.key ?? '', false);

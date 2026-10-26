@@ -79,6 +79,23 @@ test('pointer drag uses world coordinates and commits only on drop', () => withC
   assert.deepEqual(loadSessionPositions(storage), { [sessionId]: { x: 160, y: 210 } });
 }));
 
+test('cancelled pointer drag discards the preview and leaves saved placement unchanged', () => withCanvasGlobals((storage) => {
+  const cv = { layout, cam: { z: 2 }, sessionPositions: {} };
+  let renders = 0;
+  const actions = createSessionPositionActions({
+    cv, render: () => { renders++; }, world: () => ({ querySelector: () => null }), focusSlip() {},
+    announce: () => assert.fail('cancellation is not a successful move announcement'), getT: () => (key) => key,
+  });
+
+  actions.drag(sessionId, 80, -40);
+  assert.deepEqual(cv.sessionDrag, { id: sessionId, x: 160, y: 210, startX: 120, startY: 230 });
+  actions.cancel(sessionId);
+
+  assert.equal(cv.sessionDrag, null);
+  assert.deepEqual(loadSessionPositions(storage), {}, 'cancellation does not save the preview');
+  assert.equal(renders, 2, 'rerender restores the persisted/generated position');
+}));
+
 test('keyboard and pointer movement stay within the storage world bounds', () => withCanvasGlobals((storage) => {
   const cv = {
     layout: { sheets: [{ x: 1_000_000, y: 0, slips: [{ id: sessionId, x: 0, y: 0, h: 140 }] }] },

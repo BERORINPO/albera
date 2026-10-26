@@ -27,6 +27,11 @@ class GraphTarget extends FakeElement {
   closest(selector) { return selector.startsWith('.graph-node') ? this : null; }
 }
 
+class SessionMoveHandle extends FakeElement {
+  constructor(id = 'session-card') { super(); this.dataset = { id }; }
+  closest(selector) { return selector.includes('.canvas-session-move') ? this : null; }
+}
+
 test('starting a two-finger pinch clears the single-pointer pan cursor and zooms around the midpoint', () => {
   const priorElement = globalThis.Element;
   const priorHTMLElement = globalThis.HTMLElement;
@@ -37,7 +42,8 @@ test('starting a two-finger pinch clears the single-pointer pan cursor and zooms
     const zooms = [];
     bindCanvas(viewport, {
       pan() {}, zoomBy: (...args) => zooms.push(args), dragSheet() {}, dropSheet() {},
-      dragGraph() {}, dropGraph() {}, openGraph() {}, connectGraph() {}, graphConnectHover() {}, focusHead() {},
+      cancelSheet() {}, dragGraph() {}, dropGraph() {}, cancelGraph() {}, openGraph() {}, connectGraph() {}, graphConnectHover() {},
+      dragSession() {}, dropSession() {}, cancelSession() {}, openSession() {}, focusHead() {},
     });
     const pointer = (pointerId, clientX, clientY) => ({ pointerId, pointerType: 'touch', button: 0, clientX, clientY, target: viewport, type: 'pointermove' });
 
@@ -75,6 +81,7 @@ test('a second pointer cancels a pending graph-connection preview before pinch t
     const hover = [];
     bindCanvas(viewport, {
       pan() {}, zoomBy() {}, dragSheet() {}, dropSheet() {}, dragGraph() {}, dropGraph() {}, openGraph() {},
+      cancelSheet() {}, cancelGraph() {}, dragSession() {}, dropSession() {}, cancelSession() {}, openSession() {},
       connectGraph() {}, graphConnectHover: (...args) => hover.push(args), focusHead() {},
     });
     const pointer = (pointerId, clientX, targetEl) => ({ pointerId, pointerType: 'touch', button: 0, clientX, clientY: 100, target: targetEl, type: 'pointermove' });
@@ -93,5 +100,62 @@ test('a second pointer cancels a pending graph-connection preview before pinch t
     else globalThis.HTMLElement = priorHTMLElement;
     if (priorDocument === undefined) delete globalThis.document;
     else globalThis.document = priorDocument;
+  }
+});
+
+test('pointer cancellation restores a moved session preview without committing it', () => {
+  const priorElement = globalThis.Element;
+  globalThis.Element = FakeElement;
+  try {
+    const viewport = new FakeElement();
+    const cancelled = [];
+    const dropped = [];
+    bindCanvas(viewport, {
+      pan() {}, zoomBy() {}, dragSheet() {}, dropSheet() {}, cancelSheet() {},
+      dragGraph() {}, dropGraph() {}, cancelGraph() {}, openGraph() {},
+      dragSession: (...args) => dropped.push(['preview', ...args]),
+      dropSession: (...args) => dropped.push(['commit', ...args]),
+      cancelSession: (id) => cancelled.push(id), openSession() {},
+      connectGraph() {}, graphConnectHover() {}, focusHead() {},
+    });
+    const move = new SessionMoveHandle();
+    const pointer = (type, pointerId, clientX) => ({ type, pointerId, pointerType: 'touch', button: 0, clientX, clientY: 100, target: move });
+    viewport.listeners.get('pointerdown')(pointer('pointerdown', 1, 100));
+    viewport.listeners.get('pointermove')(pointer('pointermove', 1, 132));
+    assert.deepEqual(dropped, [['preview', 'session-card', 32, 0]]);
+
+    viewport.listeners.get('pointercancel')(pointer('pointercancel', 1, 132));
+    assert.deepEqual(cancelled, ['session-card']);
+    assert.equal(dropped.some(([kind]) => kind === 'commit'), false, 'cancelled movement must not be saved');
+  } finally {
+    if (priorElement === undefined) delete globalThis.Element;
+    else globalThis.Element = priorElement;
+  }
+});
+
+test('a second touch cancels a session-card preview before taking over as a pinch', () => {
+  const priorElement = globalThis.Element;
+  globalThis.Element = FakeElement;
+  try {
+    const viewport = new FakeElement();
+    const cancelled = [];
+    const zooms = [];
+    bindCanvas(viewport, {
+      pan() {}, zoomBy: (...args) => zooms.push(args), dragSheet() {}, dropSheet() {}, cancelSheet() {},
+      dragGraph() {}, dropGraph() {}, cancelGraph() {}, openGraph() {},
+      dragSession() {}, dropSession() {}, cancelSession: (id) => cancelled.push(id), openSession() {},
+      connectGraph() {}, graphConnectHover() {}, focusHead() {},
+    });
+    const move = new SessionMoveHandle();
+    const pointer = (type, pointerId, clientX, target = move) => ({ type, pointerId, pointerType: 'touch', button: 0, clientX, clientY: 100, target });
+    viewport.listeners.get('pointerdown')(pointer('pointerdown', 1, 100));
+    viewport.listeners.get('pointermove')(pointer('pointermove', 1, 132));
+    viewport.listeners.get('pointerdown')(pointer('pointerdown', 2, 220, viewport));
+    assert.deepEqual(cancelled, ['session-card']);
+    viewport.listeners.get('pointermove')(pointer('pointermove', 2, 240, viewport));
+    assert.equal(zooms.length, 1);
+  } finally {
+    if (priorElement === undefined) delete globalThis.Element;
+    else globalThis.Element = priorElement;
   }
 });

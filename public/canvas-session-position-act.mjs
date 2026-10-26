@@ -55,5 +55,11 @@ export function createSessionPositionActions(o) {
     o.announce(o.getT()('canvas.sessionMoved'));
   }
 
-  return { moveBy, reset, drag, drop, open: o.openSession };
+  function cancel(id) {
+    if (o.cv.sessionDrag?.id !== id) return;
+    o.cv.sessionDrag = null;
+    o.render();
+  }
+
+  return { moveBy, reset, drag, drop, cancel, open: o.openSession };
 }
