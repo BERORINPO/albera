@@ -126,6 +126,15 @@ test('new graph card slots do not overlap existing cards', () => {
   assert.ok([first, second].every((other) => third.x + size.width + 24 <= other.x || other.x + size.width + 24 <= third.x || third.y + size.height + 24 <= other.y || other.y + size.height + 24 <= third.y));
 });
 
+test('new graph card slots avoid both existing graph cards and session slip rectangles', () => {
+  const size = { width: 280, height: 168 };
+  const slip = { x: 80, y: 180, width: 432, height: 190 };
+  const position = nextGraphNodePosition(empty(), { x: 100, y: 200 }, size, [slip]);
+  assert.notDeepEqual(position, { x: 100, y: 200 });
+  assert.ok(position.x + size.width + 24 <= slip.x || slip.x + slip.width + 24 <= position.x
+    || position.y + size.height + 24 <= slip.y || slip.y + slip.height + 24 <= position.y);
+});
+
 test('a task created from session detail is linked atomically without copying session content', () => {
   const input = { kind: 'artifact', title: 'Follow up', body: 'User-authored task', status: 'open', x: 10, y: 20, checkedPerson: '', missingEvidence: '', neededExplanation: '' };
   const graph = addTaskForSession(empty(), input, g1, e1, session);

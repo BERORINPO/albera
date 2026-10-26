@@ -201,15 +201,18 @@ export function addWorktreeForSession(doc, input, id, edgeId, sessionId, purpose
  * Find the first non-overlapping card slot around the current view center.
  * New cards otherwise stack exactly under the pointer and hide one another.
  * @param {GraphDoc} doc @param {{x:number,y:number}} center @param {{width:number,height:number}} size
+ * @param {Array<{x:number,y:number,width:number,height:number}>} [obstacles] Existing board slips or other rectangles to avoid.
  * @returns {{x:number,y:number}}
  */
-export function nextGraphNodePosition(doc, center, size) {
+export function nextGraphNodePosition(doc, center, size, obstacles = []) {
   const gap = 24;
   const stepX = Math.max(1, size.width + gap);
   const stepY = Math.max(1, size.height + gap);
   const overlaps = (x, y) => doc.nodes.some((node) =>
     x < node.x + size.width + gap && x + size.width + gap > node.x
-    && y < node.y + size.height + gap && y + size.height + gap > node.y);
+    && y < node.y + size.height + gap && y + size.height + gap > node.y)
+    || obstacles.some((rect) => x < rect.x + rect.width + gap && x + size.width + gap > rect.x
+      && y < rect.y + rect.height + gap && y + size.height + gap > rect.y);
   for (let ring = 0; ring <= GRAPH_MAX_NODES; ring++) {
     const points = [];
     if (ring === 0) points.push([0, 0]);

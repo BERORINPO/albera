@@ -601,3 +601,9 @@
 - グラフカード同士の接続に加えて、セッション付箋とグラフカード双方に接続ハンドルを設け、session↔graphの端点ドラッグから同じ関係ダイアログを開く。
 - 2026-10-27の隔離demo受入でsession→graphとgraph→sessionの両方向を実操作し、対象が事前選択されたダイアログを保存。再読み込み後にカード1件、session handle 17件、関係線2本を確認した。合成デモのみで、実セッション/CLIは使っていない。
 - pure helperではgraph/sessionの端点組み合わせ、自己接続、空/未知endpointを検証する。session→sessionは実装したがGUIでは未操作。近くまでズームしてsession handleを表示する必要がある。狭幅・スクリーンリーダー全操作は別途未確認。
+
+### 新規キャンバスカードの初期配置がセッション付箋と重ならないよう修正 (2026-10-27)
+
+- session handle接続のGUI受入中、新規Graph cardの初期配置が表示中session slipと重なり、drag sourceの方を隠すケースを確認。
+- `nextGraphNodePosition`に任意の障害矩形を加え、キャンバスの全Graph card作成経路からsession slip矩形を渡すようにした。既存graph cardとsession slipの双方を避ける。
+- 合成fixtureのpure testと隔離demoのUIで確認。demo上で17 session slipsと追加カードの矩形を比べ、重なり0件。実セッション/CLIは未使用。

@@ -100,20 +100,26 @@ const graphActions = createGraphActions({
   sessionIds: () => new Set(view.index.keys()),
 });
 
-function newGraphNode() {
-  const graph = loadGraph();
+/** Place a new graph card without covering an existing session slip. */
+function nextCanvasGraphPosition(graph) {
   const vpSize = size();
   const center = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
-  const position = nextGraphNodePosition(graph, center, GRAPH_CARD_SIZE);
+  const obstacles = (cv.layout?.sheets ?? []).flatMap((sheet) => (sheet.slips ?? []).map((slip) => ({
+    x: sheet.x + slip.x, y: sheet.y + slip.y, width: CANVAS.SLIP_W, height: slip.h,
+  })));
+  return nextGraphNodePosition(graph, center, GRAPH_CARD_SIZE, obstacles);
+}
+
+function newGraphNode() {
+  const graph = loadGraph();
+  const position = nextCanvasGraphPosition(graph);
   openGraphNodeDialog({ t: state.t, graph, sessions: graphSessions(), position, onSave: (input) => graphChanged(addGraphNode(graph, input, `g_${crypto.randomUUID()}`)) });
 }
 
 function newTaskForSession(sessionId) {
   if (!view.index.has(sessionId)) return false;
   const graph = loadGraph();
-  const vpSize = size();
-  const center = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
-  const position = nextGraphNodePosition(graph, center, GRAPH_CARD_SIZE);
+  const position = nextCanvasGraphPosition(graph);
   openGraphNodeDialog({
     t: state.t, graph, sessions: graphSessions(), position, initialKind: 'task', initialTitle: state.t('graph.taskFromSessionTitle'),
     onSave: (input) => graphChanged(addTaskForSession(graph, input, `g_${crypto.randomUUID()}`, `e_${crypto.randomUUID()}`, sessionId)),
@@ -133,9 +139,7 @@ function createWorktreeForSession(sessionId) {
     worktree: (branch) => createWorktree(sessionId, branch),
     onCreated: (result) => {
       const graph = loadGraph();
-      const vpSize = size();
-      const center = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
-      const position = nextGraphNodePosition(graph, center, GRAPH_CARD_SIZE);
+      const position = nextCanvasGraphPosition(graph);
       const base = card.detail?.gitWorktree?.branch || card.detail?.branch || state.t('worktree.currentHead');
       const next = addWorktreeForSession(graph, {
         kind: 'worktree', title: result.branch,
@@ -163,9 +167,7 @@ function listWorktreesForSession(sessionId) {
     },
     record: (item) => {
       const graph = loadGraph();
-      const vpSize = size();
-      const center = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
-      const position = nextGraphNodePosition(graph, center, GRAPH_CARD_SIZE);
+      const position = nextCanvasGraphPosition(graph);
       const base = entry.card.detail?.gitWorktree?.branch || entry.card.detail?.branch || state.t('worktree.currentHead');
       const branch = item.branch || state.t('worktree.listDetached');
       const next = addWorktreeForSession(graph, {
