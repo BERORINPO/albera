@@ -13,7 +13,7 @@ import { neighbour } from './canvas-layout.mjs';
 import { openSession, render, view } from './render.mjs';
 import { state } from './state.mjs';
 import { nextUp, PILES } from './ui-state.mjs';
-import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, moveGraphNode, nextGraphNodePosition, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from './graph-model.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, moveGraphNode, nextGraphNodePosition, releaseBlockedGraphDelegationOperation, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from './graph-model.mjs';
 import { loadGraph, saveGraph } from './graph-store.mjs';
 import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs';
 import { GRAPH_CARD_SIZE } from './graph-render.mjs';
@@ -189,6 +189,7 @@ function editGraphEdge(id) {
     t: state.t, from: edge.from, edge, graph, sessions: graphSessions(),
     onConnect: (input) => graphChanged(updateGraphEdge(loadGraph(), edge.id, input)),
     onDeleteEdge: (key) => graphChanged(removeGraphEdge(loadGraph(), key)),
+    onResolveOperation: (key, operationId) => graphChanged(releaseBlockedGraphDelegationOperation(loadGraph(), key, operationId, true)),
   });
 }
 

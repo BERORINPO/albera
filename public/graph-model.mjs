@@ -263,6 +263,14 @@ export function finishGraphDelegationOperation(doc, id, operationId, status) {
   return { ...doc, edges: doc.edges.map((item) => item.id === id ? changed : item) };
 }
 
+/** @param {GraphDoc} doc @param {string} id @param {string} operationId @param {boolean} confirmed */
+export function releaseBlockedGraphDelegationOperation(doc, id, operationId, confirmed) {
+  const edge = doc.edges.find((item) => item.id === id);
+  if (confirmed !== true || !edge || edge.kind !== 'delegates' || edge.status !== 'blocked' || edge.operationId !== operationId) return doc;
+  const { operationId: _discarded, ...changed } = edge;
+  return { ...doc, edges: doc.edges.map((item) => item.id === id ? changed : item) };
+}
+
 /** @param {GraphDoc} doc @param {string} id */
 export function removeGraphEdge(doc, id) {
   const target = doc.edges.find((edge) => edge.id === id);

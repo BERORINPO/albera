@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, finishGraphDelegationOperation, moveGraphNode, nextGraphNodePosition, normalizeGraph, obsidianOpenUri, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault, startGraphDelegationOperation, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, finishGraphDelegationOperation, moveGraphNode, nextGraphNodePosition, normalizeGraph, obsidianOpenUri, releaseBlockedGraphDelegationOperation, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault, startGraphDelegationOperation, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
 
 const g1 = 'g_00000000-0000-4000-8000-000000000001';
 const g2 = 'g_00000000-0000-4000-8000-000000000002';
@@ -155,6 +155,14 @@ test('operation-managed delegation purpose, type and state cannot be edited or r
   const completed = finishGraphDelegationOperation(active, e1, operationId, 'completed');
   assert.equal(completed.edges[0].status, 'completed');
   assert.equal(removeGraphEdge(completed, e1).edges.length, 0, 'a terminal completed relation can be removed');
+  const blocked = finishGraphDelegationOperation(active, e1, operationId, 'blocked');
+  assert.equal(removeGraphEdge(blocked, e1), blocked, 'a blocked operation stays locked until human review');
+  assert.equal(releaseBlockedGraphDelegationOperation(blocked, e1, operationId, false), blocked, 'the user must explicitly attest that it is no longer running');
+  assert.equal(releaseBlockedGraphDelegationOperation(blocked, e1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', true), blocked, 'the attestation must match the stored operation ID');
+  const reviewed = releaseBlockedGraphDelegationOperation(blocked, e1, operationId, true);
+  assert.equal(reviewed.edges[0].operationId, undefined);
+  assert.equal(reviewed.edges[0].status, 'blocked', 'human review releases the lock without inventing an outcome');
+  assert.equal(updateGraphEdge(reviewed, e1, { status: 'planned' }).edges[0].status, 'planned', 'after attesting, the user can decide the next relation state');
 });
 
 test('legacy delegation with missing purpose remains readable and can be repaired', () => {

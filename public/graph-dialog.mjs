@@ -237,7 +237,7 @@ export function openGraphNodeDialog(o) {
 }
 
 /**
- * @param {{t:T,from:string,edge?:any,initialKind?:string,graph:any,sessions:Array<{id:string,title:string}>,onConnect:(v:any)=>void,onDeleteEdge?:(id:string)=>void}} o
+ * @param {{t:T,from:string,edge?:any,initialKind?:string,graph:any,sessions:Array<{id:string,title:string}>,onConnect:(v:any)=>void,onDeleteEdge?:(id:string)=>void,onResolveOperation?:(id:string,operationId:string)=>void}} o
  */
 export function openGraphRelationDialog(o) {
   const { t, from, graph, sessions, edge } = o;
@@ -260,8 +260,10 @@ export function openGraphRelationDialog(o) {
       fixedField(t, 'graph.purpose', edge.purpose),
       fixedField(t, 'graph.delegationStatus', t(`graph.delegation.${edge.status}`)),
       h('p', { class: 'graph-dialog__privacy', text: t('graph.operationManaged') }),
+      edge.status === 'blocked' ? h('p', { class: 'graph-dialog__privacy', text: t('graph.blockedOperationNeedsReview') }) : null,
       h('div', { class: 'graph-dialog__actions' },
         edge.status === 'completed' && o.onDeleteEdge ? h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-dialog-action': 'delete-edge', text: t('graph.deleteRelation') }) : null,
+        edge.status === 'blocked' && o.onResolveOperation ? h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'release-operation', text: t('graph.releaseOperationLock') }) : null,
         h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'cancel', text: t('canvas.close') }),
       ),
     );
@@ -291,6 +293,10 @@ export function openGraphRelationDialog(o) {
     const button = ev.target instanceof Element ? ev.target.closest('[data-dialog-action]') : null;
     const action = button?.getAttribute('data-dialog-action');
     if (action === 'cancel') dialog.close();
+    if (action === 'release-operation' && edge?.operationId && edge.status === 'blocked' && o.onResolveOperation && window.confirm(t('graph.resolveBlockedOperationConfirm'))) {
+      o.onResolveOperation(edge.id, edge.operationId);
+      dialog.close();
+    }
     const confirmKey = edge?.operationId ? 'graph.removeCompletedOperationRelationConfirm' : 'graph.removeRelationConfirm';
     if (action === 'delete-edge' && edge && o.onDeleteEdge && (!edge.operationId || edge.status === 'completed') && window.confirm(t(confirmKey))) {
       o.onDeleteEdge(edge.id);
