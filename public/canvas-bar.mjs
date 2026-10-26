@@ -7,6 +7,8 @@ import { handoffGuideEl, handoffPlan } from './handoff.mjs';
 import { bucketTitle, titleOf } from './format.mjs';
 import { obsidianOpenUri } from './graph-model.mjs';
 import { detailEl, detailStamp } from './rows.mjs';
+import { isCompletedLocalCodexTarget } from './events.mjs';
+import { delegationAvailability } from './delegation-availability.mjs';
 import { sessionRelationEntries } from './session-relations.mjs';
 import { fill, h } from './view.mjs';
 
@@ -61,7 +63,8 @@ function defaultBar(t, o) {
  * 案内のあるカードには「引き継ぐ」も置く (帯の引き継ぎの状態を開く。Tab で届き、1 文字キーを止めても使える道)。
  * @param {T} t @param {any} card @param {string} pile @param {any} rowCtx
  */
-function sessionRelations(t, card, graph, sessions, demo) {
+function sessionRelations(t, card, graph, sessionIndex, demo) {
+  const sessions = [...sessionIndex.keys()].map((id) => ({ id }));
   const entries = sessionRelationEntries(graph?.edges ?? [], card.id, graph ?? { nodes: [] }, sessions);
   const items = entries.map((entry) => {
     const direction = t(entry.direction === 'out' ? 'graph.sessionRelationOut' : 'graph.sessionRelationIn');
@@ -73,14 +76,24 @@ function sessionRelations(t, card, graph, sessions, demo) {
       ? graph.nodes.find((node) => node.id === entry.node.id)
       : null;
     const openNoteUri = localNode ? obsidianOpenUri(localNode.knowledgeVault, localNode.knowledgeFile) : '';
+    const targetCard = entry.endpoint === 'session' ? sessionIndex.get(entry.sessionId)?.card : null;
+    const edge = graph?.edges?.find((item) => item.id === entry.edgeId);
+    const delegation = delegationAvailability({
+      entry, demo, hasOperationId: Boolean(edge?.operationId),
+      target: targetCard ? {
+        executionLocation: targetCard.detail?.executionLocation,
+        completedLocalCodex: isCompletedLocalCodexTarget(targetCard),
+      } : undefined,
+    });
     return h('li', {},
       endpoint,
       openNoteUri ? h('a', { class: 'textbtn graph-session-relations__node', href: openNoteUri, target: '_blank', rel: 'noopener noreferrer', text: t('graph.openKnowledgeNote') }) : null,
       h('span', { text: `${direction} — ${t(`graph.edge.${entry.kind}`)}${status}` }),
       entry.purpose ? h('small', { text: entry.purpose }) : entry.kind === 'delegates' ? h('small', { class: 'graph-dialog__hint', text: t('graph.delegationPurposeMissing') }) : null,
       entry.kind === 'delegates' ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'graph-edit-edge', 'data-id': entry.edgeId, text: t('graph.editDelegation') }) : null,
-      !demo && entry.kind === 'delegates' && entry.direction === 'out' && entry.endpoint === 'session' && entry.sessionId.startsWith('codex_') && ['planned', 'active'].includes(entry.status)
-        ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'delegation-run', 'data-id': entry.edgeId, 'data-source-session': card.id, text: t(entry.status === 'active' ? 'graph.checkDelegation' : 'graph.runDelegation') }) : null,
+      delegation.action
+        ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'delegation-run', 'data-id': entry.edgeId, 'data-source-session': card.id, text: t(delegation.action === 'check' ? 'graph.checkDelegation' : 'graph.runDelegation') })
+        : delegation.reason ? h('small', { class: 'graph-dialog__hint', text: t(delegation.reason) }) : null,
       entry.endpoint === 'graph' && entry.node.kind === 'execution_profile'
         ? h('small', { text: t('graph.executionProfileSummary', { values: [
           t(`graph.executionLocation.${entry.node.executionLocation}`),
@@ -122,7 +135,7 @@ function gapTargetButtons(t, links) {
 function detailBar(t, card, pile, rowCtx, graph, demo) {
   const el = detailEl(card, pile, rowCtx);
   el.querySelector('section.handoff')?.remove();
-  const relations = sessionRelations(t, card, graph, [...rowCtx.index.keys()].map((id) => ({ id })), demo);
+  const relations = sessionRelations(t, card, graph, rowCtx.index, demo);
   if (relations) el.append(relations);
   const acts = el.querySelector('.detail__acts') ?? el.appendChild(h('p', { class: 'detail__acts' }));
   if (handoffPlan(card, rowCtx.handoff?.[card.id], rowCtx.now).guide) {

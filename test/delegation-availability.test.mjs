@@ -1,0 +1,48 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { delegationAvailability } from '../public/delegation-availability.mjs';
+
+const base = {
+  kind: 'delegates', direction: 'out', endpoint: 'session',
+  sessionId: 'codex_00000000-0000-4000-8000-000000000002',
+  status: 'planned', purpose: 'Review this synthetic change',
+};
+const target = { executionLocation: 'local', completedLocalCodex: true };
+const decide = (overrides = {}, env = {}) => delegationAvailability({
+  entry: { ...base, ...overrides }, demo: false, target, hasOperationId: false, ...env,
+});
+
+test('planned Codex delegation runs only when purpose and completed local target are present', () => {
+  assert.deepEqual(decide(), { action: 'run', reason: null });
+  assert.deepEqual(decide({ purpose: '' }), { action: null, reason: 'graph.delegationUnavailablePurpose' });
+  assert.deepEqual(decide({}, { target: { executionLocation: 'local', completedLocalCodex: false } }), {
+    action: null, reason: 'graph.delegationUnavailable',
+  });
+  assert.deepEqual(decide({}, { target: { executionLocation: 'wsl', completedLocalCodex: false } }), {
+    action: null, reason: 'graph.delegationUnavailableWsl',
+  });
+});
+
+test('unsupported targets and demo mode explain why a recorded delegation cannot run', () => {
+  assert.deepEqual(decide({ sessionId: 'local_00000000-0000-4000-8000-000000000003' }), {
+    action: null, reason: 'graph.delegationUnavailableProvider',
+  });
+  assert.deepEqual(decide({ endpoint: 'graph' }), { action: null, reason: 'graph.delegationUnavailableTargetType' });
+  assert.deepEqual(decide({}, { demo: true }), { action: null, reason: 'graph.delegationUnavailableDemo' });
+});
+
+test('active operation can be checked without requiring a completed target; malformed active state is explained', () => {
+  assert.deepEqual(decide({ status: 'active' }, { target: undefined, hasOperationId: true }), { action: 'check', reason: null });
+  assert.deepEqual(decide({ status: 'active' }), { action: null, reason: 'graph.delegationUnavailableOperation' });
+});
+
+test('inbound and terminal delegation records do not expose execution actions', () => {
+  assert.deepEqual(decide({ direction: 'in' }), { action: null, reason: null });
+  assert.deepEqual(decide({ status: 'completed' }), { action: null, reason: null });
+});
+
+test('availability output contains no target IDs or session metadata', () => {
+  const result = decide({ sessionId: 'codex_sensitive-synthetic-id' }, { target: { executionLocation: 'local', completedLocalCodex: false } });
+  assert.deepEqual(result, { action: null, reason: 'graph.delegationUnavailable' });
+  assert.doesNotMatch(JSON.stringify(result), /codex_|sensitive-synthetic-id/);
+});
