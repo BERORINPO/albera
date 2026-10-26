@@ -54,13 +54,21 @@ export function createCodexDelegationRunner({ spawn = nodeSpawn, executable = re
     }
     operations.set(id, { sessionId, status: 'running' });
     runningSessions.add(sessionId);
-    const finish = (result) => { operations.set(id, { sessionId, status: result }); runningSessions.delete(sessionId); };
+    let closed = false;
+    const finish = (result) => {
+      operations.set(id, { sessionId, status: result });
+      if (closed) runningSessions.delete(sessionId);
+    };
     child.once('error', () => finish('failed'));
-    child.once('close', (code, signal) => finish(code === 0 && !signal ? 'completed' : 'failed'));
+    child.once('close', (code, signal) => {
+      closed = true;
+      finish(code === 0 && !signal ? 'completed' : 'failed');
+    });
     try {
       child.stdin.end(purpose.trim());
     } catch {
       finish('failed');
+      try { child.kill(); } catch { /* keep the session locked until close */ }
     }
     return { ok: true, operationId: id, status: operations.get(id)?.status ?? 'running' };
   };

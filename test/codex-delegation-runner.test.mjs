@@ -56,3 +56,18 @@ test('missing Codex CLI fails closed without searching from the target workspace
   assert.equal(count, 0);
 });
 
+test('stdin handoff failure terminates the child and keeps the session locked until it closes', () => {
+  const child = new EventEmitter();
+  let killed = false;
+  child.stdin = { end() { throw new Error('synthetic closed pipe'); } };
+  child.kill = () => { killed = true; return true; };
+  const runner = createCodexDelegationRunner({ executable: 'codex-fixture', spawn: () => child });
+  const failed = runner.start({ sessionId, cwd: '/synthetic/workspace', purpose: 'Review the design.', confirmed: true, operationId });
+  assert.deepEqual(failed, { ok: true, operationId, status: 'failed' });
+  assert.equal(killed, true);
+  assert.deepEqual(runner.start({ sessionId, cwd: '/synthetic/workspace', purpose: 'Retry.', confirmed: true, operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }), { ok: false, reason: 'already_running' });
+  child.emit('close', null, 'SIGTERM');
+  assert.equal(runner.status(operationId), 'failed');
+  assert.deepEqual(runner.start({ sessionId, cwd: '/synthetic/workspace', purpose: 'Retry.', confirmed: true, operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }).status, 'failed');
+});
+

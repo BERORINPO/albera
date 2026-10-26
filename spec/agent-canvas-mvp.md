@@ -808,3 +808,9 @@
 - これは自己申告の確認導線であり、内容の自動検査、REAの実行、外部通信、完全Evidence取込ではない。入力内容の安全性を自動保証しない。
 - 隔離`--demo`の合成ブラウザーで、未チェック保存の拒否、成果物以外へ変更した際の案内/チェックの非表示、成果物へ戻した際の未チェック復帰、チェック後の保存、キャンバス表示と確認付き削除を確認した。詳細編集ダイアログも言語切替後に日本語で開くことを確認。デモサーバー停止済み。実セッション/CLI/REA/外部サービスは未使用。
 - `npm test`: 570 passed、`npm run arch`: 99 paths / 0 violations、`npm run smoke`: pass (synthetic fixture)、`git diff --check`: pass。
+
+### Codex委譲のstdin引渡し失敗を安全に閉じる (2026-10-27)
+
+- 明示確認後のCodex委譲で、目的文を子プロセスstdinへ渡す際の同期例外が起きた場合に、子プロセスを終了要求する。子プロセスの`close`を受け取るまでは同じセッションへの重複委譲を拒否し、状態は`failed`として返す。
+- 合成spawnテストでstdin例外、子プロセスへの終了要求、closeまでの二重起動拒否、close後の再試行経路を確認した。Codex CLIや実セッションは起動していない。
+- `npm test`: 572 passed、`npm run arch`: 99 paths / 0 violations、`npm run smoke`: pass (synthetic fixture)、`git diff --check`: pass。
