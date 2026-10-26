@@ -1,4 +1,4 @@
-// smoke: start a server that reads this PC's real data (the Claude app's sessions) read-only on a free port,
+// smoke: start a server against an isolated synthetic Claude fixture and empty provider roots on a free port,
 // fetch / and /api/board, and check the shape and the counts. Prints counts per pile and stops. Exit 1 on failure.
 // Prints only counts and timings (never titles, IDs or paths).
 // v0.2: one more block for recent sessions, as counts and shares only: context seen, guessed windows, levels, compactions,
@@ -8,7 +8,9 @@
 // capped head), a long hex run, key-like or secret-looking tokens (key=value, password: x, --password x, user:pass@), an e-mail,
 // a URL, and control or invisible characters (the ones cleanText removes): any hit fails.
 import { spawn } from 'node:child_process';
+import fs from 'node:fs/promises';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { looksSecret } from '../src/core/text.mjs';
@@ -56,18 +58,22 @@ function listenOn(want) {
   });
 }
 
-/** Environment without any PIGEONHOLES_* from the caller, so only the flags below decide. */
-function cleanEnv() {
+/** Environment isolated from caller data; every provider source resolves under this temporary fixture. @param {string} root */
+function cleanEnv(root) {
   /** @type {Record<string, string|undefined>} */
   const env = {};
   for (const [k, v] of Object.entries(process.env)) if (!k.startsWith('PIGEONHOLES_')) env[k] = v;
+  env.CODEX_HOME = path.join(root, 'codex-home');
+  env.COPILOT_HOME = path.join(root, 'copilot-home');
+  env.OPENCODE_DB = path.join(root, 'opencode.db');
+  env.PIGEONHOLES_ROOTS = path.join(root, 'repo');
   return env;
 }
 
-/** @param {number} port */
-function startServer(port) {
-  const child = spawn(process.execPath, [path.join(ROOT, 'src', 'entry', 'server.mjs'), '--port', String(port), '--lang', 'en'], {
-    env: cleanEnv(),
+/** @param {number} port @param {{root:string,sessions:string,projects:string}} fixture */
+function startServer(port, fixture) {
+  const child = spawn(process.execPath, [path.join(ROOT, 'src', 'entry', 'server.mjs'), '--port', String(port), '--lang', 'en', '--sessions-dir', fixture.sessions, '--projects-dir', fixture.projects], {
+    env: cleanEnv(fixture.root),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let out = '';
@@ -107,7 +113,10 @@ function checkShape(b) {
   expect(c.recommended <= c.cleanup, 'more suggestions than archive candidates');
   const providerSessions = Object.values(b.stats.sources ?? {}).reduce((sum, source) => sum + (Number.isInteger(source?.detected) ? source.detected : 0), 0);
   expect(c.active + c.archived === b.stats.parsed + b.stats.stale + providerSessions, 'active + archived differs from the records read');
-  expect(c.active > 0, 'no unarchived sessions (the real data was not read)');
+  expect(b.stats.files === 1 && b.stats.parsed === 1 && c.active === 1, 'the isolated synthetic Claude fixture was not the only session read');
+  for (const provider of ['codex', 'copilot', 'opencode']) {
+    expect((b.stats.sources?.[provider]?.detected ?? 0) === 0, `the isolated ${provider} source unexpectedly detected sessions`);
+  }
   expect(b.stats.demo === false, 'stats.demo is not false');
   expect(FORMAT_SUSPECTS.includes(b.stats.formatSuspect), `unknown stats.formatSuspect: ${String(b.stats.formatSuspect)}`);
   for (const k of ['needs_you', 'trouble', 'unread', 'working']) expect(Array.isArray(b.buckets?.[k]) && b.buckets[k].length === c[k], `buckets.${k} differs from counts`);
@@ -267,8 +276,27 @@ function checkLabels(b) {
 
 async function main() {
   leakSelfTest();
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pigeonholes-smoke-'));
+  const fixture = { root, sessions: path.join(root, 'sessions'), projects: path.join(root, 'projects') };
   const port = await freePort();
-  const { child, ready } = startServer(port);
+  const sessionDir = path.join(fixture.sessions, 'acct', 'org');
+  const repo = path.join(root, 'repo');
+  await fs.mkdir(sessionDir, { recursive: true });
+  await fs.mkdir(fixture.projects, { recursive: true });
+  await fs.mkdir(repo, { recursive: true });
+  const sessionId = 'local_00000000-0000-4000-8000-000000000001';
+  const now = Date.now();
+  await fs.writeFile(path.join(sessionDir, `${sessionId}.json`), JSON.stringify({
+    sessionId,
+    cliSessionId: '00000000-0000-4000-8000-000000000101',
+    title: 'Synthetic smoke session',
+    cwd: repo,
+    originCwd: repo,
+    createdAt: now - 60_000,
+    lastActivityAt: now - 1_000,
+    isArchived: false,
+  }));
+  const { child, ready } = startServer(port, fixture);
   try {
     console.log(await ready);
     const page = await get(port, '/');
@@ -297,7 +325,18 @@ async function main() {
   } catch (e) {
     failures.push(e instanceof Error ? e.message : String(e));
   } finally {
+    const stopped = child.exitCode !== null || child.signalCode !== null
+      ? Promise.resolve()
+      : new Promise((resolve) => child.once('exit', resolve));
     child.kill();
+    await stopped;
+    const tempRoot = path.resolve(os.tmpdir());
+    const target = path.resolve(fixture.root);
+    if (target !== tempRoot && target.startsWith(`${tempRoot}${path.sep}`) && path.basename(target).startsWith('pigeonholes-smoke-')) {
+      await fs.rm(target, { recursive: true, force: true });
+    } else {
+      failures.push('refused to clean an unexpected smoke fixture path');
+    }
   }
   for (const w of warnings) console.log(`smoke: warning: ${w}`);
   if (failures.length) {

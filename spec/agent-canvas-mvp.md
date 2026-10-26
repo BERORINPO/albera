@@ -621,3 +621,9 @@
 - ブランチ名と確認checkboxを画面で指定して合成repo内にworktreeを作成。成功文に続き、branch・基点・作成時の状態要約を含むworktreeカードと、sessionへの`Created by confirmed worktree action`関係が表示された。全体表示で両カードが画面内に収まること、再読み込み後もカードと関係が復元されることを確認した。
 - 操作対象は一時fixtureだけ。実ユーザーrepo/worktree、実セッション、CLI、外部サービスは使っていない。隔離サーバーは停止した。実行環境の削除制限により、一時fixture/worktreeは削除できず、OS一時フォルダーに残る。WSL経由の実操作、取消やエラー時のGUI、狭幅のworktree dialog、実セッションとの適合性は未確認。
 - 音声Main AIと企業向け権限制御の起動/停止、処理・保存先、role、allow/deny仕様はユーザー回答で未定義。引き続き推測で仕様化しない。
+
+### smoke検証を実データから隔離 (2026-10-27)
+
+- `npm run smoke` が環境の既定ホーム/CODEX_HOME/COPILOT_HOME/OpenCode DBを参照し得る構成だったため、OS一時領域に作る合成Claude sessionだけを明示指定し、Codex/Copilot/OpenCode保存先も同じ一時領域内の未作成先へ固定した。projects dirとrootもfixtureに限定する。
+- smokeはClaudeファイル1件・parsed 1件・active 1件、他3 providerの検出0件を検証し、分離が崩れたら失敗する。出力は合成セッションの件数だけ。
+- server終了後、許可した一時rootであることを検査してfixtureを削除する。実セッション、CLI、外部通信は使わない。
