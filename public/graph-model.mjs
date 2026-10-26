@@ -272,7 +272,8 @@ export function removeGraphNode(doc, id) {
 export function connectGraph(doc, input, id, sessionIds = new Set()) {
   if (!EDGE_ID.test(id) || doc.edges.length >= GRAPH_MAX_EDGES || doc.edges.some((e) => e.id === id)) return doc;
   const edge = normalizeGraphEdge({ ...input, id });
-  if (!edge || (edge.kind === 'delegates' && !edge.purpose) || !endpointExists(doc, edge.from, sessionIds) || !endpointExists(doc, edge.to, sessionIds)) return doc;
+  if (!edge || (['delegates', 'evidence', 'explains'].includes(edge.kind) && !edge.purpose)
+    || !endpointExists(doc, edge.from, sessionIds) || !endpointExists(doc, edge.to, sessionIds)) return doc;
   if (doc.edges.some((e) => e.from === edge.from && e.to === edge.to && e.kind === edge.kind)) return doc;
   return { ...doc, edges: [...doc.edges, edge] };
 }
@@ -289,7 +290,7 @@ export function updateGraphEdge(doc, id, patch) {
   if (previous.operationId) return doc;
   const changed = normalizeGraphEdge({ ...previous, ...patch, id: previous.id, from: previous.from, to: previous.to });
   if (!changed || doc.edges.some((edge) => edge.id !== id && edge.from === changed.from && edge.to === changed.to && edge.kind === changed.kind)) return doc;
-  if (changed.kind === 'delegates' && !changed.purpose && (changed.kind !== previous.kind || changed.status !== previous.status)) return doc;
+  if (['delegates', 'evidence', 'explains'].includes(changed.kind) && !changed.purpose) return doc;
   if (changed.kind === previous.kind && changed.purpose === previous.purpose && changed.status === previous.status && changed.operationId === previous.operationId) return doc;
   const edges = doc.edges.map((edge) => edge.id === id ? changed : edge);
   return edges.some((edge, i) => edge !== doc.edges[i]) ? { ...doc, edges } : doc;
@@ -342,6 +343,7 @@ export function reviewUnderstandingGaps(doc, sessionIds = new Set()) {
       const endpoint = `graph:${node.id}`;
       const connected = new Set(doc.edges
         .filter((edge) => edge.from === endpoint || edge.to === endpoint)
+        .filter((edge) => edge.purpose.trim())
         .filter((edge) => {
           const other = edge.from === endpoint ? edge.to : edge.from;
           if (other.startsWith('graph:')) return doc.nodes.some((item) => `graph:${item.id}` === other);

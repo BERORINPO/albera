@@ -232,6 +232,7 @@ export const EN_CANVAS = Object.freeze({
   'graph.to': 'To',
   'graph.edgeKind': 'Relation type',
   'graph.purpose': 'Purpose or evidence',
+  'graph.purposeRequired': 'Delegation, evidence and explanation relations need a purpose or evidence note.',
   'graph.delegationStatus': 'Recorded delegation status',
   'graph.operationManaged': 'This delegation was started through Pigeonholes. Its purpose and status are locked; removing this record cannot stop or change the Codex process.',
   'graph.operationRelationTitle': 'Codex operation record',

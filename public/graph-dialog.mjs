@@ -323,6 +323,7 @@ export function openGraphRelationDialog(o) {
       edge ? fixedField(t, 'graph.to', toItem.title) : endpointSelect(t, options, 'to', o.initialTo ?? '', fromKey),
       selectField(t, 'graph.edgeKind', 'kind', [...GRAPH_EDGE_KINDS], edge?.kind ?? (GRAPH_EDGE_KINDS.includes(o.initialKind ?? '') ? o.initialKind : 'related'), (v) => t(`graph.edge.${v}`)),
       inputField(t, 'graph.purpose', 'purpose', edge?.purpose ?? '', edge?.kind === 'delegates' || o.initialKind === 'delegates'),
+      h('p', { class: 'graph-dialog__hint', 'data-purpose-hint': '', text: t('graph.purposeRequired'), hidden: true }),
       selectField(t, 'graph.delegationStatus', 'status', [...DELEGATION_STATES], edge?.status || 'planned', (v) => t(`graph.delegation.${v}`)),
       h('div', { class: 'graph-dialog__actions' },
         edge && o.onDeleteEdge ? h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-dialog-action': 'delete-edge', text: t('graph.deleteRelation') }) : null,
@@ -334,9 +335,15 @@ export function openGraphRelationDialog(o) {
   dialog.append(form);
   const kindInput = /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="kind"]'));
   const purposeInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="purpose"]'));
-  kindInput?.addEventListener('change', () => {
-    if (purposeInput) purposeInput.required = kindInput.value === 'delegates';
-  });
+  const purposeHint = /** @type {HTMLElement|null} */ (form.querySelector('[data-purpose-hint]'));
+  const syncPurposeRequired = () => {
+    if (purposeInput && kindInput) {
+      purposeInput.required = ['delegates', 'evidence', 'explains'].includes(kindInput.value);
+      if (purposeHint) purposeHint.hidden = !purposeInput.required;
+    }
+  };
+  kindInput?.addEventListener('change', syncPurposeRequired);
+  syncPurposeRequired();
   document.body.append(dialog);
   dialog.addEventListener('close', () => {
     dialog.remove();

@@ -232,6 +232,7 @@ export const JA_CANVAS = Object.freeze({
   'graph.to': '先',
   'graph.edgeKind': '関係の種類',
   'graph.purpose': '目的・根拠',
+  'graph.purposeRequired': '委譲・根拠・説明の関係には、目的や根拠の説明が必要です。',
   'graph.delegationStatus': '委譲の記録状態',
   'graph.operationManaged': 'この委譲はPigeonholesから開始されました。Codexプロセスを止めたり変更したりできないため、目的と状態は固定されています。',
   'graph.operationRelationTitle': 'Codex操作の記録',

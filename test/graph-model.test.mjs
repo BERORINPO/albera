@@ -258,6 +258,7 @@ test('legacy delegation with missing purpose remains readable and can be repaire
 test('comprehension review reports only explicitly missing graph links, never a person score', () => {
   let graph = addGraphNode(empty(), { kind: 'understanding_gap', title: 'Explain decision', body: '', status: 'open', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: 'decision record', neededExplanation: 'why it was chosen' }, g1);
   assert.equal(addGraphNode(empty(), { kind: 'understanding_gap', title: 'Already resolved', body: '', status: 'resolved', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: 'source', neededExplanation: '' }, g2).nodes.length, 0, 'a new gap cannot skip its declared evidence link');
+  assert.equal(connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'evidence', purpose: '', status: '' }, e1, new Set([session])), graph, 'an evidence relation requires an explicit purpose');
   assert.equal(updateGraphNode(graph, g1, { status: 'done' }), graph, 'done cannot hide missing evidence or explanation links');
   assert.deepEqual(reviewUnderstandingGaps(graph), [{ id: g1, missing: ['evidence', 'explains'] }]);
   graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'evidence', purpose: 'Read-only source session', status: '' }, e1, new Set([session]));
@@ -300,7 +301,26 @@ test('comprehension review treats relations to unavailable sessions as missing',
     kind: 'understanding_gap', title: 'Review source availability', body: '', status: 'open', x: 0, y: 0,
     checkedPerson: 'reviewer', missingEvidence: 'source session', neededExplanation: 'decision context',
   }, g1);
-  const linked = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'evidence', purpose: '', status: '' }, e1, new Set([session]));
+  const linked = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'evidence', purpose: 'User-reviewed source session', status: '' }, e1, new Set([session]));
   assert.deepEqual(reviewUnderstandingGaps(linked, new Set([session])), [{ id: g1, missing: ['explains'] }]);
   assert.deepEqual(reviewUnderstandingGaps(linked), [{ id: g1, missing: ['evidence', 'explains'] }]);
+});
+
+test('legacy evidence and explanation links need an explicit note before satisfying a comprehension gap', () => {
+  const legacy = normalizeGraph({
+    v: 1,
+    nodes: [
+      { id: g1, kind: 'understanding_gap', title: 'Review decision', checkedPerson: 'reviewer', missingEvidence: 'source', neededExplanation: 'reason' },
+      { id: g2, kind: 'artifact', title: 'Source' },
+    ],
+    edges: [
+      { id: e1, from: `graph:${g1}`, to: `graph:${g2}`, kind: 'evidence', purpose: '' },
+      { id: 'e_00000000-0000-4000-8000-000000000002', from: `graph:${g1}`, to: `graph:${g2}`, kind: 'explains', purpose: '' },
+    ],
+  });
+  assert.deepEqual(reviewUnderstandingGaps(legacy), [{ id: g1, missing: ['evidence', 'explains'] }]);
+  assert.equal(updateGraphEdge(legacy, e1, { purpose: 'User-reviewed source note' }).edges[0].purpose, 'User-reviewed source note');
+  const reviewed = updateGraphEdge(legacy, e1, { purpose: 'User-reviewed source note' });
+  assert.deepEqual(reviewUnderstandingGaps(reviewed), [{ id: g1, missing: ['explains'] }]);
+  assert.equal(updateGraphEdge(reviewed, e1, { purpose: '' }), reviewed, 'a valid evidence note cannot be cleared silently');
 });
