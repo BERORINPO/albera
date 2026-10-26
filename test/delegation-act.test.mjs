@@ -54,6 +54,17 @@ test('terminal delegation outcome is announced as persistable only after the gra
   assert.equal(persistDelegationOutcome(options), true);
   assert.equal(saved.edges[0].status, 'completed');
 
+  const failedGraph = activeGraph();
+  let savedFailure;
+  assert.equal(persistDelegationOutcome({
+    ...options,
+    status: 'failed',
+    loadGraph: () => failedGraph,
+    graphChanged: (next) => { savedFailure = next; return true; },
+  }), true);
+  assert.equal(savedFailure.edges[0].status, 'failed');
+  assert.equal(savedFailure.edges[0].operationId, undefined, 'a terminal child failure releases the operation lock');
+
   let attempted = 0;
   assert.equal(persistDelegationOutcome({ ...options, graphChanged: () => (attempted++, false) }), false);
   assert.equal(attempted, 1, 'a failed browser storage save does not count as a persisted terminal outcome');

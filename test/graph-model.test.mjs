@@ -245,6 +245,11 @@ test('operation-managed delegation purpose, type and state cannot be edited or r
   const completed = finishGraphDelegationOperation(active, e1, operationId, 'completed');
   assert.equal(completed.edges[0].status, 'completed');
   assert.equal(removeGraphEdge(completed, e1).edges.length, 0, 'a terminal completed relation can be removed');
+  const failed = finishGraphDelegationOperation(active, e1, operationId, 'failed');
+  assert.equal(failed.edges[0].status, 'failed');
+  assert.equal(failed.edges[0].operationId, undefined, 'a confirmed process exit releases its operation lock');
+  assert.equal(updateGraphEdge(failed, e1, { status: 'planned' }).edges[0].status, 'planned', 'a failed terminal run can be explicitly retried after review');
+  assert.equal(removeGraphEdge(failed, e1).edges.length, 0, 'a failed terminal relation can be removed');
   const blocked = finishGraphDelegationOperation(active, e1, operationId, 'blocked');
   assert.equal(removeGraphEdge(blocked, e1), blocked, 'a blocked operation stays locked until human review');
   assert.equal(releaseBlockedGraphDelegationOperation(blocked, e1, operationId, false), blocked, 'the user must explicitly attest that it is no longer running');

@@ -40,7 +40,8 @@ async function executeConfirmedDelegation(edgeId, sourceId, targetId, purpose, {
       await new Promise((resolve) => setTimeout(resolve, 1000));
       const status = await delegationStatus(operationId);
       if (status === 'running') continue;
-      if (!persistDelegationOutcome({ edgeId, operationId, status: status === 'completed' ? 'completed' : 'blocked', loadGraph, graphChanged })) return false;
+      const outcome = status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'blocked';
+      if (!persistDelegationOutcome({ edgeId, operationId, status: outcome, loadGraph, graphChanged })) return false;
       announce(state.t(status === 'completed' ? 'graph.delegationCompleted' : 'graph.delegationFailed'));
       return true;
     }
@@ -65,7 +66,8 @@ export async function runDelegationForEdge(edgeId, sourceId, { view, state, grap
     try {
       const status = await delegationStatus(edge.operationId);
       if (status === 'running') { announce(state.t('graph.delegationStarted')); return true; }
-      if (!persistDelegationOutcome({ edgeId, operationId: edge.operationId, status: status === 'completed' ? 'completed' : 'blocked', loadGraph, graphChanged })) return false;
+      const outcome = status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'blocked';
+      if (!persistDelegationOutcome({ edgeId, operationId: edge.operationId, status: outcome, loadGraph, graphChanged })) return false;
       announce(state.t(status === 'completed' ? 'graph.delegationCompleted' : 'graph.delegationFailed'));
     } catch {
       if (!persistDelegationOutcome({ edgeId, operationId: edge.operationId, status: 'blocked', loadGraph, graphChanged })) return false;

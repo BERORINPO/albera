@@ -213,7 +213,7 @@ test('canvas comprehension review uses the complete current session index', () =
 
 test('delegation edge presentation preserves only allowlisted status values for canvas styling', () => {
   const t = (key) => key;
-  for (const status of ['planned', 'active', 'blocked', 'completed', 'cancelled']) {
+  for (const status of ['planned', 'active', 'blocked', 'completed', 'failed', 'cancelled']) {
     assert.deepEqual(graphEdgePresentation({ kind: 'delegates', status, purpose: 'private purpose' }, t), {
       className: 'graph-edge graph-edge--delegates',
       status,
@@ -233,7 +233,7 @@ test('delegation edge presentation preserves only allowlisted status values for 
 test('each persisted delegation status has a canvas style and unknown status stays neutral', () => {
   const css = fs.readFileSync(new URL('../public/graph.css', import.meta.url), 'utf8');
   const renderer = fs.readFileSync(new URL('../public/graph-render.mjs', import.meta.url), 'utf8');
-  for (const status of ['planned', 'active', 'blocked', 'completed', 'cancelled']) {
+  for (const status of ['planned', 'active', 'blocked', 'completed', 'failed', 'cancelled']) {
     assert.match(css, new RegExp(`\\.graph-edge--delegates\\[data-status="${status}"\\]`));
   }
   assert.match(css, /\.graph-edge--delegates-unknown\s*\{/);

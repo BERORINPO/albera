@@ -9,7 +9,7 @@
 | 操作可能なキャンバス | セッション・タスク・成果物・判断・関係を配置し、移動、接続、検索/絞り込み、一覧/キャンバス切替、詳細確認、再読み込み後の復元を行える | グラフカードのpointer移動、セッションカードのキーボード移動/リセット、配置・関係・表示状態の保存/復元、320pxでのキャンバス/一覧/詳細切替と水平overflowなし、提供元/プロジェクト/状態filterの実画面操作を合成データで確認済み。セッションpointer/touchのcancel復帰はevent/action test済みだが、実ブラウザーでのpointer/touch移動、全入力方式とスクリーンリーダー実機は未確認 |
 | セッションとイベント | Claude Code/Codex CLIの実セッションを同一ボードに読み取り専用表示し、安全な時系列と開始/完了/中断状態を詳細で確認できる。対応を追加した他providerも保存形式の根拠を維持する | Claude表示は維持。Codex/Copilot/OpenCodeのadapterとfixtureはあるが、直近のCodex候補40件はすべてCLI markerに不一致で認識0件。固定理由別に内訳を示す。実CLIセッションでの表示・イベント互換性は未確認。Copilot/OpenCodeは保存形式から起動クライアントを識別できず、Copilotの`assistant.turn_end`単独では全体完了と判定しない |
 | ハーネス/実行条件 | セッションが使う実行環境を把握できる。値の由来と確認状態を明示し、機密値は出さない | provider/sourceと手動execution profileを表示。実行条件の自動検出・検証は未実装で、手入力値を実環境の事実として扱わない |
-| セッション間の委譲 | 元/先、利用者が入力した目的、状態を追跡し、実際のCLI操作は確認後のみ行う。利用不可の理由と結果を表示する | 手動記録とCodexへの確認付き目的文stdin実行を実装。実CLI実行はこの作業では未実施。Claude実行方式と一般provider間委譲は未決/未実装 |
+| セッション間の委譲 | 元/先、利用者が入力した目的、状態を追跡し、実際のCLI操作は確認後のみ行う。利用不可の理由と結果を表示する | 手動記録とCodexへの確認付き目的文stdin実行を実装。実CLI実行はこの作業では未実施。成功・終了失敗・状態不明を別状態として保持し、確認済み失敗は再編集可能、状態不明は明示確認までロックする。Claude実行方式と一般provider間委譲は未決/未実装 |
 | Git worktree / PMポリシー | repo、branch、状態を追い、作成・削除などの操作前に対象と影響を確認する。追加の自動規則は明示合意なしに導入しない | ローカルと明示設定済みWSL共有向けの一覧/確認付き作成/限定削除、path-free記録を実装。worktreeカードから関連セッションのread-only inventoryを再照会し、対象branchだけを記録更新できる。一時repo fixtureでの確認はあるが、実ユーザーrepo/WSLは未確認。PM規則はユーザーが指定した安全条件のみ |
 | Comprehension Graph / 理解負債 | 進捗確認を受ける側の未理解事項、不足根拠/説明、タスク・判断・成果物・依存関係を結び、発見と解消を支援する。根拠のないスコアを作らない | 対象者、未提示の根拠/説明、手動関係、review stateを記録。未接続や説明不足をレビューでき、関係補完後に解消状態を保存可能。自動理解推定・採点・実セッション内容からの自動発見は行わない |
 | REA | REA所見を関連成果物へ結び、セッション/タスク/判断との関係を追える | 合意済みの方式は利用者が確認した短い要約を手動記録すること。REA実行、完全Evidenceの自動取込はしない |
@@ -1057,3 +1057,10 @@ The synthetic `--demo` board now includes an explicitly labeled Codex CLI failed
 - 公式SDK定義を確認し、`session.error`と`session.shutdown`の固定`shutdownType="error"`だけを共通`turn_failed`へ投影。任意のerrorType/message/stack/errorReason/providerCallIdを表示せず、親stream内の`agentId`付き子agentイベントはセッション本体の状態分類から除外する。
 - 合成fixtureでroot session error、failed shutdown、子agent error、全体完了・中断・個別turn終了・不正/未知行を確認。API projectionで秘密値と子agent IDが出ないこと、診断件数がlifecycleと一致することを検証。
 - 実Copilot保存ログは未確認。`npm test`: 612/612 passed。`npm run arch`: 99 paths / 0 violations。`npm run smoke`: pass。`git diff --check`: pass。smokeはloopbackで起動し、既存read-only scannerで集計だけを出して停止した。
+
+### 確定した委譲失敗と状態不明の区別 (2026-10-27)
+
+- 委譲先プロセスが終了し`failed`を返した場合、キャンバスの関係状態も`failed`として保存し、operation lockを解除する。利用者は失敗結果を確認してから関係を編集・再試行・削除できる。
+- 状態照会が失敗するなど、処理がまだ動いている可能性を排除できない場合だけ`blocked`を維持する。この状態はoperation lockを保持し、利用者の明示確認まで操作を制限する。
+- model/action/renderer testで、`failed`表示・保存・再編集/削除と、`blocked`のロック保持を確認した。`npm test`: 612/612 passed。`npm run arch`: 99 paths / 0 violations。`npm run smoke`: pass。`git diff --check`: pass。
+- 実Codex CLIは起動しておらず、実セッションも作成・変更していない。実CLI互換性は未確認。音声Main AIと企業向け権限制御は、運用仕様が未定義のため未実装・未確認。

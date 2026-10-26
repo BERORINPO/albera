@@ -270,6 +270,7 @@ export const EN_CANVAS = Object.freeze({
   'graph.delegation.active': 'Active',
   'graph.delegation.blocked': 'Blocked',
   'graph.delegation.completed': 'Completed',
+  'graph.delegation.failed': 'Failed',
   'graph.delegation.cancelled': 'Cancelled',
   'graph.delegation.unknown': 'Unknown status',
   'graph.delegationUnavailableUnknown': 'This delegation has an unknown or unsupported status, so it cannot run until you review and update the record.',

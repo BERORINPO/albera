@@ -2,7 +2,7 @@
 // Agent Canvas overlay: local task/artifact/decision/understanding cards and relation lines.
 
 import { h, reconcile } from './view.mjs';
-import { EXECUTION_HARNESSES, GRAPH_NODE_KINDS, reviewUnderstandingGaps } from './graph-model.mjs';
+import { DELEGATION_STATES, EXECUTION_HARNESSES, GRAPH_NODE_KINDS, reviewUnderstandingGaps } from './graph-model.mjs';
 import { comprehensionGapSummary } from './session-relations.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
 import { sessionRect } from './session-position.mjs';
@@ -81,7 +81,7 @@ export function graphEdgeSearchText(edge, t) {
 /** @param {{kind:string,status?:string}} edge @param {T} t */
 export function graphEdgePresentation(edge, t) {
   const kind = ['related', 'depends_on', 'delegates', 'evidence', 'explains'].includes(edge.kind) ? edge.kind : 'related';
-  const status = edge.kind === 'delegates' && ['planned', 'active', 'blocked', 'completed', 'cancelled'].includes(edge.status ?? '')
+  const status = edge.kind === 'delegates' && DELEGATION_STATES.includes(edge.status ?? '')
     ? edge.status
     : undefined;
   return {

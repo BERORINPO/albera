@@ -6,7 +6,7 @@ export const GRAPH_MAX_EDGES = 500;
 export const GRAPH_NODE_KINDS = Object.freeze(['task', 'artifact', 'decision', 'understanding_gap', 'worktree', 'execution_profile', 'obsidian_note']);
 export const GRAPH_NODE_STATES = Object.freeze(['open', 'in_progress', 'blocked', 'done', 'resolved']);
 export const GRAPH_EDGE_KINDS = Object.freeze(['related', 'depends_on', 'delegates', 'evidence', 'explains']);
-export const DELEGATION_STATES = Object.freeze(['planned', 'active', 'blocked', 'completed', 'cancelled', 'unknown']);
+export const DELEGATION_STATES = Object.freeze(['planned', 'active', 'blocked', 'completed', 'failed', 'cancelled', 'unknown']);
 export const EXECUTION_LOCATIONS = Object.freeze(['unknown', 'local', 'wsl', 'remote']);
 export const WORKSPACE_ISOLATIONS = Object.freeze(['unknown', 'sandboxed', 'not_sandboxed']);
 export const NETWORK_ACCESS = Object.freeze(['unknown', 'restricted', 'available']);
@@ -334,10 +334,14 @@ export function rejectGraphDelegationOperation(doc, id, operationId) {
   return { ...doc, edges: doc.edges.map((item) => item.id === id ? changed : item) };
 }
 
-/** @param {GraphDoc} doc @param {string} id @param {string} operationId @param {'completed'|'blocked'} status */
+/** @param {GraphDoc} doc @param {string} id @param {string} operationId @param {'completed'|'failed'|'blocked'} status */
 export function finishGraphDelegationOperation(doc, id, operationId, status) {
   const edge = doc.edges.find((item) => item.id === id);
-  if (!edge || edge.kind !== 'delegates' || edge.status !== 'active' || edge.operationId !== operationId || !['completed', 'blocked'].includes(status)) return doc;
+  if (!edge || edge.kind !== 'delegates' || edge.status !== 'active' || edge.operationId !== operationId || !['completed', 'failed', 'blocked'].includes(status)) return doc;
+  if (status === 'failed') {
+    const { operationId: _discarded, ...rest } = edge;
+    return { ...doc, edges: doc.edges.map((item) => item.id === id ? { ...rest, status } : item) };
+  }
   const changed = { ...edge, status };
   return { ...doc, edges: doc.edges.map((item) => item.id === id ? changed : item) };
 }

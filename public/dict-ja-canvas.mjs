@@ -270,6 +270,7 @@ export const JA_CANVAS = Object.freeze({
   'graph.delegation.active': '進行中',
   'graph.delegation.blocked': '阻害中',
   'graph.delegation.completed': '完了',
+  'graph.delegation.failed': '失敗',
   'graph.delegation.cancelled': '取消済み',
   'graph.delegation.unknown': '状態不明',
   'graph.delegationUnavailableUnknown': '委譲状態が不明か未対応です。記録を確認して更新するまで実行できません。',
