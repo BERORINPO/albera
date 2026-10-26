@@ -101,6 +101,7 @@ function sessionRelations(t, card, graph, sessionIndex, demo) {
         : delegationUnavailableNote(t, delegation.reason),
       entry.endpoint === 'graph' && entry.node.kind === 'execution_profile'
         ? h('small', { text: t('graph.executionProfileSummary', { values: [
+          t(`graph.executionHarness.${entry.node.executionHarness}`),
           t(`graph.executionLocation.${entry.node.executionLocation}`),
           t(`graph.workspaceIsolation.${entry.node.workspaceIsolation}`),
           t(`graph.networkAccess.${entry.node.networkAccess}`),

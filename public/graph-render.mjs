@@ -2,7 +2,7 @@
 // Agent Canvas overlay: local task/artifact/decision/understanding cards and relation lines.
 
 import { h, reconcile } from './view.mjs';
-import { GRAPH_NODE_KINDS, reviewUnderstandingGaps } from './graph-model.mjs';
+import { EXECUTION_HARNESSES, GRAPH_NODE_KINDS, reviewUnderstandingGaps } from './graph-model.mjs';
 import { comprehensionGapSummary } from './session-relations.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
 import { sessionRect } from './session-position.mjs';
@@ -30,6 +30,7 @@ export function graphCardSearchText(node, missing = [], t) {
     node.title, node.body, node.kind, t(`graph.kind.${node.kind}`), node.status,
     status, t(`graph.status.${status}`), node.checkedPerson, node.missingEvidence,
     node.neededExplanation, ...missing.flatMap((kind) => [kind, t(`graph.link.${kind}`)]),
+    ...EXECUTION_HARNESSES.includes(node.executionHarness) ? [t(`graph.executionHarness.${node.executionHarness}`)] : [],
     node.executionLocation, node.workspaceIsolation, node.networkAccess, node.approvalMode,
     ...['executionLocation', 'workspaceIsolation', 'networkAccess', 'approvalMode']
       .map((key) => node[key] ? t(`graph.${key}.${node[key]}`) : ''),
@@ -193,6 +194,7 @@ function graphCard(t, node, missing = []) {
     ...graphCardComprehensionSummary(node, t).map((text) => h('span', { class: 'graph-node__body', text })),
     node.kind === 'execution_profile'
       ? h('span', { class: 'graph-node__body', text: [
+        t(`graph.executionHarness.${node.executionHarness}`),
         t(`graph.executionLocation.${node.executionLocation}`),
         t(`graph.workspaceIsolation.${node.workspaceIsolation}`),
         t(`graph.networkAccess.${node.networkAccess}`),

@@ -86,15 +86,15 @@ test('Obsidian note references are local, vault-relative, allowlisted, and encod
   assert.deepEqual([otherKind.knowledgeVault, otherKind.knowledgeFile], ['', '']);
 });
 
-test('execution profiles retain only allowlisted manual conditions and default invalid values to unknown', () => {
-  const profile = node(g1, { kind: 'execution_profile', executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action', secret: 'discard' });
+test('execution profiles retain only allowlisted manual harness and conditions and default invalid values to unknown', () => {
+  const profile = node(g1, { kind: 'execution_profile', executionHarness: 'codex_cli', executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action', secret: 'discard' });
   const normalized = normalizeGraph({ nodes: [profile], edges: [] }).nodes[0];
-  assert.deepEqual([normalized.executionLocation, normalized.workspaceIsolation, normalized.networkAccess, normalized.approvalMode], ['wsl', 'sandboxed', 'restricted', 'per_action']);
+  assert.deepEqual([normalized.executionHarness, normalized.executionLocation, normalized.workspaceIsolation, normalized.networkAccess, normalized.approvalMode], ['codex_cli', 'wsl', 'sandboxed', 'restricted', 'per_action']);
   assert.equal('secret' in normalized, false);
   const defaults = normalizeGraph({ nodes: [node(g1, { kind: 'execution_profile' })], edges: [] }).nodes[0];
-  assert.deepEqual([defaults.executionLocation, defaults.workspaceIsolation, defaults.networkAccess, defaults.approvalMode], ['unknown', 'unknown', 'unknown', 'unknown']);
-  const unknowns = normalizeGraph({ nodes: [node(g1, { kind: 'execution_profile', executionLocation: '/private/path', workspaceIsolation: 'yes', networkAccess: 'maybe', approvalMode: 'automatic-ish' })], edges: [] }).nodes[0];
-  assert.deepEqual([unknowns.executionLocation, unknowns.workspaceIsolation, unknowns.networkAccess, unknowns.approvalMode], ['unknown', 'unknown', 'unknown', 'unknown']);
+  assert.deepEqual([defaults.executionHarness, defaults.executionLocation, defaults.workspaceIsolation, defaults.networkAccess, defaults.approvalMode], ['unknown', 'unknown', 'unknown', 'unknown', 'unknown']);
+  const unknowns = normalizeGraph({ nodes: [node(g1, { kind: 'execution_profile', executionHarness: 'C:\\private\\path', executionLocation: '/private/path', workspaceIsolation: 'yes', networkAccess: 'maybe', approvalMode: 'automatic-ish' })], edges: [] }).nodes[0];
+  assert.deepEqual([unknowns.executionHarness, unknowns.executionLocation, unknowns.workspaceIsolation, unknowns.networkAccess, unknowns.approvalMode], ['unknown', 'unknown', 'unknown', 'unknown', 'unknown']);
   const otherKind = normalizeGraph({ nodes: [node(g1, { executionLocation: 'remote', workspaceIsolation: 'sandboxed', networkAccess: 'available', approvalMode: 'automatic' })], edges: [] }).nodes[0];
   assert.deepEqual([otherKind.executionLocation, otherKind.workspaceIsolation, otherKind.networkAccess, otherKind.approvalMode], ['', '', '', '']);
 });

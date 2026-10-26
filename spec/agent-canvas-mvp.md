@@ -107,6 +107,7 @@
 - REA OSSはユーザー指定の https://github.com/morluto/rea.git と確認済み。キャンバスにはユーザーが確認した短い要約を成果物カードへ手動入力し、関連するグラフ対象へ結ぶ。成果物の説明欄は既存モデルで最大1,000文字、参照URLは安全なHTTPSに限定。完全Evidenceの取込・REA実行はしない。
 - REA連携の安全境界: 公式の [CLI and Evidence guide](https://github.com/morluto/rea/blob/main/docs/cli.md) は `--json` が完全なEvidenceを返し、実アプリでは数百MBになる場合があると説明する。公式 [MCP contracts](https://github.com/morluto/rea/blob/main/docs/mcp-contracts.md) も完全なcanonical Evidenceをツール結果に保持するとしている。REAのランタイム解析は対象の起動・操作を伴うため、Pigeonholesは結果を自動取込せず、REA実行もしない。利用者が内容を確認して要約を入力する運用は合意済み。要約本文に機密情報を含めないのは入力者の責任で、Pigeonholesはその意味内容を判定しない。
 - 2026-10-26: ユーザーが明示した実行条件表示の段階として、値を推測しない手動execution profileカードを実装。4項目の選択肢をallowlist化し、空の値は不明に正規化。詳細・一覧カード・検索・localStorageに限って扱い、セッションAPI/wireには追加しない。
+- 2026-10-27: 実行profileに手動ハーネス選択（Claude Code/Codex CLI/GitHub Copilot/OpenCode/その他/不明）を追加。観測済providerとは独立したユーザー申告であり、環境やセッションから推定しない。関連セッション詳細・キャンバスカード・検索にenum表示する。
 - 2026-10-26: セッション詳細にも関連付け済みexecution profileの4項目を手動情報として表示し、projectionは許可済みのenum項目だけに限定。body/URL/未知フィールドは詳細projectionに含めない。実行環境の事実確認とは扱わない。
 - 2026-10-26: セッション詳細で理解負債カードの `evidence` / `explains` 接続先も、カード題名または実行元+短いopaque IDで確認できる。パス・本文・URLは含めず、理解度は推定しない。
 - 2026-10-26: セッション詳細の理解負債から根拠/説明の接続先をボタンで開ける。グラフカードはカード編集、セッションは実行元と末尾12文字のopaque IDで一意に解決し、衝突時は何も開かない。画面に完全なセッションIDは出さない。
@@ -121,7 +122,7 @@
 |---|---|---|
 | 操作可能なCanvas | 一覧/Canvas切替、検索とsource/state/project絞り込み、session slipsとtask/artifact/decision/worktree/理解負債/execution profile/Obsidian参照カード、ドラッグ・キーボード移動、パン・ズーム、関係線、localStorage復元 | 2026-10-26の合成ブラウザー確認で複数providerの複合絞り込み、カード位置/関係/表示切替の再読み込み保持、詳細からのタスク作成と理解負債リンク、worktreeの確認付き作成/削除、空状態/WSL診断、320/400/768/1280pxの表示と一部キーボードフォーカスを確認。委譲線GUI確認では5つの許可状態の線表示と方向マーカー、詳細状態を確認し、取消済み状態の再読み込み復元も確認。合成ブラウザーで委譲線のtitle属性とhover hit-testも確認した。全ダイアログ/全ショートカット/スクリーンリーダー受入、ネイティブtooltip popupの視認、未知状態のブラウザー表示、実セッション表示は未確認 |
 | セッション・イベント | Claude Code、Codex CLI、Copilot、OpenCodeにread-only adapterがあり、同じboardでallowlistイベント・状態・詳細を表示。関係pickerも表示中の全providerを対象とする | Codex CLI起点の実セッションは未確認。Copilot保存先はCLI/app共通、OpenCode DBもproducer clientをadapterが識別しない。OpenCode旧schemaは一覧以外の状態/イベントをunknown扱い |
-| ハーネス・実行条件 | 詳細に観測可能なprovider/sourceを表示。Codex CLIはCLI markerを満たす記録に限定。場所・分離・network・approvalは不明初期値の手動profileとして関連付け可能 | Copilot/OpenCodeではCLIかアプリかを断定できない。セッションや環境から実行条件を自動検出しない。profile値は利用者申告で、実際の設定・モデル・実行条件の証明ではない |
+| ハーネス・実行条件 | 詳細に観測可能なprovider/sourceを表示。Codex CLIはCLI markerを満たす記録に限定。ハーネス種別と場所・分離・network・approvalを不明初期値の手動profileとして関連付け可能 | Copilot/OpenCodeではCLIかアプリかをproviderデータから断定できない。profileのハーネス/条件は利用者申告で、実際の設定・モデル・実行条件の証明ではない。セッションや環境から自動検出しない |
 | 委譲 | 委譲元/先、目的、状態を関係線と詳細に記録し、完了済みローカルCodexへのread-only実行を最終確認後に開始 | purpose-only stdin、read-only sandbox、出力破棄、固定状態APIをmockで確認。operation IDはcanvasのlocalStorageに保存し、再読込後に明示的な状態確認が可能。サーバー再起動で状態が失われた場合は再試行せずblockedへ閉じる。実CLIは未起動、実セッション互換性と一般provider間委譲は未確認/未実装 |
 | Git worktree / PM policy | local Git worktreeの読取一覧、明示確認後の作成、clean/non-current等を再確認した確認付き削除、canvas上のpath-free記録。Windowsでは明示設定されたWSL distroに対する一覧/作成/限定削除adapterも追加 | 一時Git repoと合成Codex fixtureを使い、作成dialogの対象/影響説明とack必須、削除dialogの正確なブランチ名+ack必須、削除後のcanvas記録更新までブラウザーで確認。320px合成WSL詳細でpanelの縦スクロール、末尾イベント、refresh/ID/relationship/task/close操作の到達可能性と横はみ出しなしを確認した。実ユーザーrepoへの操作は未確認。WSLはmock runGitで境界・要約を確認したが、実WSL共有と実CLI挙動は未検証。WSL削除対象はこのアダプター作成のclean/non-current worktreeに限定。PM policyは「この依頼の安全条件だけ」で、追加の自動規則なし |
 | Comprehension Graph / 理解負債 | 理解を確認される人、未提示の根拠、必要な説明を記録。`evidence`/`explains`未接続を検出し、関係種別を初期選択した接続フォームへ進める | 人の理解度を推定・採点しない。カードの記録と根拠先の妥当性判断は利用者に残る。自動で実セッション内容から理解負債を発見する機能ではない |
@@ -947,3 +948,9 @@
 - 実データモードのPigeonholes serverをloopbackで起動し、`GET /api/board`を一度読み取り、件数のみを集計してからserverを停止した。応答はHTTP 200、`demo=false`。セッション名/本文、イベント内容、ID、cwd/パス、PR URL等の個別値は表示・ログに出していない。
 - 盤面統計では非archived active 132件。source別ではCodex候補38ファイル/認識0/拒否38、Copilot 0、OpenCode 20 (status unknown)。現在のsourceモデルで未指定sourceはClaudeなのでClaude activeは差し引き112件 (132−0−0−20) と算出される。
 - これは現在のローカル実データがsafe API projectionまで届くread-only経路の証拠であり、ブラウザーでの実セッション画面表示・詳細パネルの目視受入ではない。Codex CLIの実記録が無く、Codexの実セッション互換性は未確認のまま。session fileは変更せず、CLI起動/新規セッション/外部要求は行わなかった。
+
+### ハーネスの手動記録とセッション詳細表示 (2026-10-27)
+
+- 実行条件profileにハーネス種別の固定enum（Claude Code、Codex CLI、GitHub Copilot、OpenCode、その他、不明）を追加。文字列入力は受けず、古いprofileや不正値は「不明」に正規化する。
+- 選択値はブラウザー内graph保存だけに留め、session API/wireやproviderデータに書き戻さない。手動profileが関連するセッションのキャンバスカード・詳細・検索に固定ラベルとして表示する。
+- enumと値のallowlist、検索、関係projection、localStorage round-tripをfixtureで検証。ブラウザー上のこの追加項目の受入確認と実セッション利用は未実施。手動申告は実行中ハーネス/設定の自動検証ではない。

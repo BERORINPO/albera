@@ -270,7 +270,7 @@ const rowSize = (c) => rowIds(c).length;
 export function visibleModel(board, { q = '', family = null, source = 'all', project = 'all', state = 'all', graph = null, t, now }) {
   const qq = String(q ?? '').trim().toLowerCase();
   const fam = family ? new Set(board?.families?.[family]?.memberIds ?? [family]) : null;
-  /** Only the four allowlisted, localized enum values from a linked manual profile enter session search. */
+  /** Only the allowlisted, localized enum values from a linked manual profile enter session search. */
   const profileTerms = new Map();
   const profiles = new Map((graph?.nodes ?? []).filter((node) => node?.kind === 'execution_profile').map((node) => [node.id, node]));
   for (const edge of graph?.edges ?? []) {
@@ -279,7 +279,7 @@ export function visibleModel(board, { q = '', family = null, source = 'all', pro
       const profile = typeof nodeRef === 'string' && nodeRef.startsWith('graph:') ? profiles.get(nodeRef.slice(6)) : null;
       if (!profile || typeof sessionRef !== 'string' || !sessionRef.startsWith('session:')) continue;
       const terms = profileTerms.get(sessionRef.slice(8)) ?? new Set();
-      for (const field of ['executionLocation', 'workspaceIsolation', 'networkAccess', 'approvalMode']) {
+      for (const field of ['executionHarness', 'executionLocation', 'workspaceIsolation', 'networkAccess', 'approvalMode']) {
         const key = `graph.${field}.${profile[field]}`;
         if (t.has(key)) terms.add(t(key).toLowerCase());
       }

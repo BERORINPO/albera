@@ -1,7 +1,7 @@
 // @ts-check
 // Accessible local editor for graph cards and user-authored relations.
 
-import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
+import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_HARNESSES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
 import { h } from './view.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
 import { cancelGraphDialog, completeGraphDialogSave, confirmBlockedOperationRelease, confirmGraphRelationRemoval, connectMissingComprehensionEdge, graphDialogFocusTarget } from './graph-dialog-actions.mjs';
@@ -91,6 +91,7 @@ export function openGraphNodeDialog(o) {
     h('fieldset', { class: 'graph-dialog__profile', 'data-execution-profile': '' },
       h('legend', { text: t('graph.executionProfile') }),
       h('p', { class: 'graph-dialog__hint', text: t('graph.executionProfileManual') }),
+      selectField(t, 'graph.executionHarness', 'executionHarness', [...EXECUTION_HARNESSES], node?.executionHarness ?? 'unknown', (v) => t(`graph.executionHarness.${v}`)),
       selectField(t, 'graph.executionLocation', 'executionLocation', [...EXECUTION_LOCATIONS], node?.executionLocation ?? 'unknown', (v) => t(`graph.executionLocation.${v}`)),
       selectField(t, 'graph.workspaceIsolation', 'workspaceIsolation', [...WORKSPACE_ISOLATIONS], node?.workspaceIsolation ?? 'unknown', (v) => t(`graph.workspaceIsolation.${v}`)),
       selectField(t, 'graph.networkAccess', 'networkAccess', [...NETWORK_ACCESS], node?.networkAccess ?? 'unknown', (v) => t(`graph.networkAccess.${v}`)),
@@ -258,6 +259,7 @@ export function openGraphNodeDialog(o) {
         checkedPerson: data.checkedPerson,
         missingEvidence: data.missingEvidence,
         neededExplanation: data.neededExplanation,
+        executionHarness: data.executionHarness,
         executionLocation: data.executionLocation,
         workspaceIsolation: data.workspaceIsolation,
         networkAccess: data.networkAccess,

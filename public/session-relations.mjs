@@ -37,6 +37,7 @@ export function sessionRelationEntries(edges, sessionId, graph, sessions) {
           id: node.id,
           kind: node.kind,
           title: node.title,
+          executionHarness: node.executionHarness,
           executionLocation: node.executionLocation,
           workspaceIsolation: node.workspaceIsolation,
           networkAccess: node.networkAccess,

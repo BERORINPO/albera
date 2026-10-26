@@ -214,13 +214,15 @@ test('visibleModel: linked execution profile adds only safe enum labels to sessi
   const sessionId = 'codex_00000000-0000-4000-8000-000000000011';
   b.recentGroups[0].items.push(c(sessionId, { source: 'codex', title: 'Codex task' }));
   const graph = {
-    nodes: [{ id: 'p1', kind: 'execution_profile', title: 'private title', body: 'private details', executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action' }],
+    nodes: [{ id: 'p1', kind: 'execution_profile', title: 'private title', body: 'private details', executionHarness: 'codex_cli', executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action' }],
     edges: [{ kind: 'related', from: `graph:p1`, to: `session:${sessionId}` }],
   };
   const byLocation = visibleModel(b, { q: 'Location: WSL', source: 'codex', graph, t: en });
   assert.deepEqual(byLocation.recentGroups.flatMap((g) => g.items.map((item) => item.id)), [sessionId]);
   const byIsolation = visibleModel(b, { q: 'Sandboxed', project: 'demo-app', state: 'recent', graph, t: en });
   assert.deepEqual(byIsolation.recentGroups.flatMap((g) => g.items.map((item) => item.id)), [sessionId]);
+  const byHarness = visibleModel(b, { q: 'Harness: Codex CLI', source: 'codex', graph, t: en });
+  assert.deepEqual(byHarness.recentGroups.flatMap((g) => g.items.map((item) => item.id)), [sessionId]);
   assert.equal(visibleModel(b, { q: 'private title', graph, t: en }).total, 0, 'profile titles are not searchable through a related session');
   assert.equal(visibleModel(b, { q: 'private details', graph, t: en }).total, 0, 'profile notes are not searchable through a related session');
   assert.equal(visibleModel(b, { q: 'Location: WSL', t: en }).total, 0, 'without a linked profile, enum values do not match');

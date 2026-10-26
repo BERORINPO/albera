@@ -5,7 +5,7 @@ import { GRAPH_STORAGE_KEY, loadGraph, saveGraph } from '../public/graph-store.m
 test('graph storage round trips only the bounded local graph schema', () => {
   const values = new Map();
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) } });
-  const graph = { v: 1, nodes: [{ id: 'g_00000000-0000-4000-8000-000000000001', kind: 'execution_profile', title: 'Manual conditions', body: '', url: '', status: 'open', x: 40, y: 60, checkedPerson: '', missingEvidence: '', neededExplanation: '', executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action', prompt: 'must not persist' }], edges: [] };
+  const graph = { v: 1, nodes: [{ id: 'g_00000000-0000-4000-8000-000000000001', kind: 'execution_profile', title: 'Manual conditions', body: '', url: '', status: 'open', x: 40, y: 60, checkedPerson: '', missingEvidence: '', neededExplanation: '', executionHarness: 'codex_cli', executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action', prompt: 'must not persist' }], edges: [] };
   assert.equal(saveGraph(graph), true);
   assert.deepEqual(loadGraph(), { v: 1, nodes: [{ ...graph.nodes[0], prompt: undefined }].map(({ prompt, ...node }) => ({ ...node, knowledgeVault: '', knowledgeFile: '' })), edges: [] });
   assert.equal(values.has(GRAPH_STORAGE_KEY), true);

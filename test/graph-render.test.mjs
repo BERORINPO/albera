@@ -57,6 +57,15 @@ test('canvas card search includes its rendered review state and missing relation
   assert.doesNotMatch(search, /private/);
 });
 
+test('manual execution profile cards render and search their allowlisted harness', () => {
+  const t = (key) => ({
+    'graph.executionHarness.codex_cli': 'Harness: Codex CLI',
+  }[key] ?? key);
+  const profile = { id: 'g_00000000-0000-4000-8000-000000000099', kind: 'execution_profile', title: 'Run conditions', executionHarness: 'codex_cli' };
+  assert.match(graphCardSearchText(profile, [], t), /Harness: Codex CLI/);
+  assert.doesNotMatch(graphCardSearchText({ ...profile, executionHarness: 'C:\\private\\key' }, [], t), /private|key/i);
+});
+
 test('canvas relation search includes the relation purpose, label, and safe delegation status', () => {
   const t = (key) => ({
     'graph.edge.delegates': '委譲の記録',

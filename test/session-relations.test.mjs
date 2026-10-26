@@ -42,15 +42,16 @@ test('execution-profile relations expose only their fixed user-declared fields',
   const profileId = 'g_00000000-0000-4000-8000-000000000003';
   const graph = { nodes: [{
     id: profileId, kind: 'execution_profile', title: 'Manual profile',
-    executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action',
+    executionHarness: 'codex_cli', executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action',
     body: '/private/path', url: 'https://example.com/private', secret: 'do-not-project',
   }] };
   const relation = { id: 'profile-edge', from: `graph:${profileId}`, to: `session:${first}`, kind: 'related', purpose: 'Manual association', status: '' };
   const entries = sessionRelationEntries([relation], first, graph, [{ id: first }]);
   assert.deepEqual(entries[0].node, {
     id: profileId, kind: 'execution_profile', title: 'Manual profile',
-    executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action',
+    executionHarness: 'codex_cli', executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action',
   });
+  assert.equal(entries[0].node.executionHarness, 'codex_cli');
   assert.equal(JSON.stringify(entries).includes('/private/path'), false);
   assert.equal(JSON.stringify(entries).includes('do-not-project'), false);
 });
