@@ -254,5 +254,7 @@ export const EN_CANVAS = Object.freeze({
   'filter.sourceClaude': 'Claude Code',
   'filter.sourceCodex': 'Codex CLI',
   'filter.sourceCopilot': 'GitHub Copilot',
-  'graph.empty': 'No sessions yet. Add a card to organize tasks and evidence.',
+  'graph.emptyLabel': 'Empty canvas',
+  'graph.empty': 'There are no sessions or cards yet. Start with a task, artifact, decision, comprehension gap, or another card.',
+  'graph.emptyAction': 'Add a card',
 });

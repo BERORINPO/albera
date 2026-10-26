@@ -121,7 +121,19 @@ export function renderGraphLayer(layer, o) {
   layer.append(lineRoot, cardRoot);
   let empty = layer.querySelector('.graph-layer__empty');
   if (o.boardReady && !o.index.size && !o.graph.nodes.length && !o.graph.edges.length) {
-    empty ??= h('p', { class: 'graph-layer__empty', text: t('graph.empty') });
+    if (!empty) {
+      empty = h('section', { class: 'graph-layer__empty', 'aria-label': t('graph.emptyLabel') },
+        h('p', { class: 'graph-layer__empty-copy', text: t('graph.empty') }),
+        h('button', { class: 'btn btn--line graph-layer__empty-action', type: 'button', 'data-action': 'graph-new', text: t('graph.emptyAction') }),
+      );
+    } else if (empty.dataset.lang !== t.lang) {
+      empty.setAttribute('aria-label', t('graph.emptyLabel'));
+      empty.replaceChildren(
+        h('p', { class: 'graph-layer__empty-copy', text: t('graph.empty') }),
+        h('button', { class: 'btn btn--line graph-layer__empty-action', type: 'button', 'data-action': 'graph-new', text: t('graph.emptyAction') }),
+      );
+    }
+    empty.dataset.lang = t.lang;
     layer.append(empty);
   } else empty?.remove();
   reconcile(

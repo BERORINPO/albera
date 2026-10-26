@@ -14,6 +14,21 @@ test('graph card reconciliation updates missing-link badges when relations chang
   assert.equal(graphCardSignature(node, ['evidence', 'explains']), missingBoth);
 });
 
+test('empty canvas gives a direct accessible action to add a card', () => {
+  const renderer = fs.readFileSync(new URL('../public/graph-render.mjs', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../public/graph.css', import.meta.url), 'utf8');
+  assert.match(renderer, /'aria-label': t\('graph\.emptyLabel'\)/);
+  assert.match(renderer, /'data-action': 'graph-new'.*text: t\('graph\.emptyAction'\)/);
+  assert.match(renderer, /else if \(empty\.dataset\.lang !== t\.lang\)/, 'language changes refresh the persistent empty state');
+  assert.match(css, /\.graph-layer__empty\s*\{[^}]*pointer-events:\s*auto;/);
+  assert.match(css, /\.graph-layer__empty-action:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--color-focus\);/);
+  for (const file of ['dict-ja-canvas.mjs', 'dict-en-canvas.mjs']) {
+    const dict = fs.readFileSync(new URL(`../public/${file}`, import.meta.url), 'utf8');
+    assert.match(dict, /'graph\.emptyLabel':/);
+    assert.match(dict, /'graph\.emptyAction':/);
+  }
+});
+
 test('delegation edge presentation preserves only allowlisted status values for canvas styling', () => {
   const t = (key) => key;
   for (const status of ['planned', 'active', 'blocked', 'completed', 'cancelled']) {

@@ -138,6 +138,8 @@ Do nothing else.
 
 ![The canvas with demo data: a sheet per project, each session a slip with its time, what it is doing and its context, the bar with the legend and zoom at the bottom](docs/screenshot-canvas.png)
 
+When there are no sessions or cards, the canvas explains the empty state and offers **Add a card** to start a task, artifact, decision, comprehension gap, or another record.
+
 Press `v` (or **Canvas** under the counts) to see the same board as a desk of paper: one sheet per project, one slip per session that needs looking at (Needs you, Stuck?, Unread, Working). `v` again goes back to the list; the page remembers which view you used last.
 
 - **Placement is a fixed rule, not AI.** Sheets are laid out by urgency: the project whose session has waited longest for you is top left. On a sheet Needs you and Stuck? come first, then Unread and Working, in the same order as the list; a child session names its parent ("↳ Parent: …"). Recent and To archive are one line at the foot of the sheet ("Recent 4  To archive 13"); press it to open that pile in the list. Projects with nothing but sessions to archive are listed in one block under the sheets. Each row of slips is as tall as what it holds. The same board gives the same picture, so you can learn where things are.

@@ -254,5 +254,7 @@ export const JA_CANVAS = Object.freeze({
   'filter.sourceClaude': 'Claude Code',
   'filter.sourceCodex': 'Codex CLI',
   'filter.sourceCopilot': 'GitHub Copilot',
-  'graph.empty': 'セッションはありません。カードを追加して、タスクや根拠を整理できます。',
+  'graph.emptyLabel': '空のキャンバス',
+  'graph.empty': 'セッションもカードもありません。タスク、成果物、判断、理解負債などのカードから始められます。',
+  'graph.emptyAction': 'カードを追加',
 });
