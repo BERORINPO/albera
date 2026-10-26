@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
-import { graphCardSignature, graphEdgeAttributes, graphEdgePresentation } from '../public/graph-render.mjs';
+import { graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation } from '../public/graph-render.mjs';
 
 const node = { id: 'g_00000000-0000-4000-8000-000000000001', kind: 'understanding_gap', title: 'Gap', status: 'open' };
 
@@ -12,6 +12,14 @@ test('graph card reconciliation updates missing-link badges when relations chang
   assert.notEqual(missingBoth, missingExplanation);
   assert.notEqual(missingExplanation, complete);
   assert.equal(graphCardSignature(node, ['evidence', 'explains']), missingBoth);
+});
+
+test('resolved comprehension cards show review state while a declared relation is missing', () => {
+  assert.equal(graphCardStatus({ ...node, status: 'resolved' }, ['evidence']), 'review');
+  assert.equal(graphCardStatus({ ...node, status: 'done' }, ['explains']), 'review');
+  assert.equal(graphCardStatus({ ...node, status: 'resolved' }, []), 'resolved');
+  assert.equal(graphCardStatus({ ...node, status: 'open' }, ['evidence']), 'open');
+  assert.equal(graphCardStatus({ ...node, kind: 'task', status: 'done' }, ['evidence']), 'done');
 });
 
 test('empty canvas gives a direct accessible action to add a card', () => {

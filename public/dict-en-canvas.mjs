@@ -127,6 +127,7 @@ export const EN_CANVAS = Object.freeze({
   'graph.status.blocked': 'Blocked',
   'graph.status.done': 'Done',
   'graph.status.resolved': 'Resolved',
+  'graph.status.review': 'Review needed',
   'graph.cardAria': '{kind}: {title}, {status}. Use arrow keys to move; Enter to edit.',
   'graph.save': 'Save',
   'graph.delete': 'Delete',

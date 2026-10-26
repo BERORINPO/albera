@@ -127,6 +127,7 @@ export const JA_CANVAS = Object.freeze({
   'graph.status.blocked': '阻害中',
   'graph.status.done': '完了',
   'graph.status.resolved': '解消済み',
+  'graph.status.review': '要確認',
   'graph.cardAria': '{kind}: {title}、{status}。矢印キーで移動。Enter で編集。',
   'graph.save': '保存',
   'graph.delete': '削除',

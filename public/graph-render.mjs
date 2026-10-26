@@ -15,6 +15,13 @@ export function graphCardSignature(node, missing = []) {
   return JSON.stringify([node, missing]);
 }
 
+/** @param {{kind:string,status?:string}} node @param {string[]} missing */
+export function graphCardStatus(node, missing = []) {
+  return node.kind === 'understanding_gap' && missing.length > 0 && ['done', 'resolved'].includes(node.status ?? '')
+    ? 'review'
+    : node.status ?? 'open';
+}
+
 /** @param {{kind:string,status?:string}} edge @param {T} t */
 export function graphEdgePresentation(edge, t) {
   const status = edge.kind === 'delegates' && ['planned', 'active', 'blocked', 'completed', 'cancelled'].includes(edge.status ?? '')
@@ -78,7 +85,9 @@ function placeLine(line, x1, y1, x2, y2) {
 
 /** @param {T} t @param {any} node @param {string[]} missing */
 function graphCard(t, node, missing = []) {
-  const ariaLabel = t('graph.cardAria', { kind: t(`graph.kind.${node.kind}`), title: node.title, status: t(`graph.status.${node.status}`) });
+  const status = graphCardStatus(node, missing);
+  const statusLabel = t(`graph.status.${status}`);
+  const ariaLabel = t('graph.cardAria', { kind: t(`graph.kind.${node.kind}`), title: node.title, status: statusLabel });
   const reviewLabel = missing.length ? t('graph.missingLinks', { links: missing.map((kind) => t(`graph.link.${kind}`)).join(', ') }) : '';
   return h(
     'button',
@@ -90,7 +99,7 @@ function graphCard(t, node, missing = []) {
       'data-id': node.id,
       'aria-label': `${ariaLabel}${reviewLabel ? ` ${reviewLabel}` : ''}`,
     },
-    h('span', { class: 'graph-node__meta' }, t(`graph.kind.${node.kind}`), ' ', h('span', { class: 'graph-node__status', text: t(`graph.status.${node.status}`) })),
+    h('span', { class: 'graph-node__meta' }, t(`graph.kind.${node.kind}`), ' ', h('span', { class: 'graph-node__status', text: statusLabel })),
     h('span', { class: 'graph-node__title', text: node.title }),
     node.body ? h('span', { class: 'graph-node__body', text: node.body }) : null,
     node.kind === 'understanding_gap' && (node.missingEvidence || node.neededExplanation)
