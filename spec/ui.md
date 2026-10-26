@@ -15,6 +15,7 @@ Every file is under 400 lines, `// @ts-check`, vanilla ESM, no dependencies. Onl
 | `public/index.html` | static skeleton (§2), English first paint, `data-i18n` hooks, `<meta name="pigeonholes" content="1">` | — |
 | `public/tokens.css` | design tokens, byte for byte from design.md §3 (with the canvas tokens) | — |
 | `public/style.css` | base, controls, masthead, front (lede, ledger), page grid, banners, footer, dialogs, motion and reduced motion | — |
+| `public/source-filter.css` | combined Claude Code / Codex CLI source selector and narrow masthead layout | — |
 | `public/rows.css` | pile heads, rows, row detail, family tree, Working two-column rule, the doing line, the context words, the hand-off guide | — |
 | `public/codex-status.mjs` | **pure** Codex source counts and safe zero-count explanations for the diagnostics footer | `codexStatusMessages()` |
 | `public/tidy.css` | the To archive pile: steps, select-all, groups, sub-groups, cleanup rows, selection bar | — |
@@ -1243,3 +1244,17 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - Keyboard only, list: j/k through every pile, Enter opens, Space peeks, x/a/c through a full copy, `h` + Enter copies and opens on a due Unread row, `v` and `z` into the canvas and `v` back, Esc never drops the selection.
 - Canvas: no page scroll at 1280, 768, 400 and 320; no button wraps; far, mid and near each readable and nothing below 13px at any zoom (computed font size × z); on open, the urgent sheets from the top left at 62 % or more (the side pane at about 100 %), with the Needs-you slips in the front row; Tab through every head and slip group; j/k across sheets; arrows move spatially; Shift + arrows move a sheet; `f`, `z`, `0`, `+`, `−`; `h` + Enter copies and opens; Esc closes the bar; dragging a sheet onto another moves the other down, a reload keeps the places, Rearrange gives the same picture twice; the demo rebuild every minute moves no sheet sideways.
 - Privacy: screenshots use the demo only; nothing in a screenshot, test or log comes from real sessions.
+
+### 10.11 User-authored graph cards and relations
+
+- The canvas offers local cards for tasks, artifacts, decisions, and comprehension gaps. They are authored by the user, stored only in browser localStorage, and are never sent through the board API. The graph model is an allowlist; unknown fields are discarded and counts and text lengths are bounded.
+- Cards can be moved with pointer drag or focused-card arrow keys; click / Enter opens an editor. Position, text, status, and links survive reload. Fit all includes graph cards. Existing project sheets and session slips remain in place.
+- Search dims graph cards whose safe user-authored text does not match. Cards and lines remain visible to preserve context. Deleting a card requires a browser confirmation and removes its linked relations.
+- Relations connect graph cards and currently visible Claude/Codex session IDs. Session pickers and relation labels show provider plus an opaque short ID, never a session title, prompt, path, tool input/output, environment value, or credential. A relation records type, purpose/evidence, and, for delegation records, status. It never invokes a CLI, agent, worktree, or external service.
+- Relation records can be edited without changing their endpoints, and can be removed only after an explicit confirmation. The model rejects duplicate edges after edits.
+- A comprehension-gap card records the person whose understanding is being checked, missing evidence, and needed explanation. The product computes no comprehension score. The graph can represent related, dependency, evidence, explanation, and delegation-record edges.
+- Session details list linked graph cards with relation type, delegation status, and purpose/evidence. Activating a linked card opens its editor so the user can follow the comprehension or task context from a session.
+- The masthead source selector filters sessions by Claude Code, Codex CLI, or all sources. Existing text search covers session/project content and the existing piles represent state; source filtering composes with search and remains available in list and canvas views. Relations to filtered-out sessions dim with their session cards. Clearing filters resets the source selector too.
+- Session detail labels the CLI provider as the harness: Claude Code for app-session records and Codex CLI for accepted rollout records. Other execution settings are not currently exposed.
+- Save failures are announced. Dialogs use native modal semantics, labels, visible focus, bounded inputs, and a small-screen width. Graph keys and user-facing strings live in the established canvas dictionaries.
+- Verification for this stage: synthetic model/storage tests, architecture checks, and a demo-browser walkthrough for add/edit/move/connect/filter/reload. Real sessions are not needed to test placement persistence; session endpoint visibility remains bounded to whatever the local read-only board already exposes.

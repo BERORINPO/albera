@@ -16,6 +16,7 @@ import { jumpPile, jumpTo, render, rowEl, view } from './render.mjs';
 import { isNew, now, pileLists, setView, state, takeArrival } from './state.mjs';
 import { nextUp } from './ui-state.mjs';
 import { announce } from './view.mjs';
+import { loadGraph } from './graph-store.mjs';
 
 /** @typedef {import('./canvas-camera.mjs').Camera} Camera */
 /** @typedef {import('./canvas-layout.mjs').Layout} Layout */
@@ -89,6 +90,7 @@ export function drawCanvas(at) {
   renderCanvas($('canvas'), {
     t: state.t, board, layout, index: view.index, matched: cv.matched, cursorId: state.cursor?.id ?? null, nextId, now: at,
     demo, handoff: state.prefs.handoff, isNew: (p, id) => isNew(p, id, at), takeArrival, drag: cv.drag,
+    graph: loadGraph(), graphDrag: cv.graphDrag ?? null, graphFilter: state.filter,
   });
   // 表示枠の説明: 1 文字キーを止めているときは矢印だけ (+ − f は効かない)
   const keys = $('cv-keys');
@@ -118,7 +120,7 @@ function drawBar(at) {
   const sheet = s ? { key: s.key, name: projectLabel(state.t, s.project) } : null;
   const rowCtx = { t: state.t, now: at, board: state.board, index: view.index, handoff: state.prefs.handoff };
   const due = state.board ? dueIds(state.board).length : 0;
-  cv.bar = renderBar($('cv-bar'), { t: state.t, bar, entry, sheet, z: cv.cam.z, due, keysOn: state.prefs.keys !== false, now: at, demo: !!state.board?.stats?.demo, rowCtx });
+  cv.bar = renderBar($('cv-bar'), { t: state.t, bar, entry, sheet, z: cv.cam.z, due, keysOn: state.prefs.keys !== false, now: at, demo: !!state.board?.stats?.demo, rowCtx, graph: loadGraph() });
 }
 
 /** カーソルを付箋へ (描き直し、追い、題名へフォーカス)。 @param {string} id @param {boolean} [focus] */

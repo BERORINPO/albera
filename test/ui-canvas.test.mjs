@@ -341,6 +341,7 @@ test('canvasKeyAction: 矢印は表示枠で動かす (Shift で大きく)、付
     assert.equal(canvasKeyAction(k(key, { shiftKey: true }), at('viewport')), `pan-${dir}-big`);
     assert.equal(canvasKeyAction(k(key), at('none')), `pan-${dir}`);
     assert.equal(canvasKeyAction(k(key), at('slip')), `move-${dir}`);
+    assert.equal(canvasKeyAction(k(key), at('graph')), `graph-move-${dir}`);
     assert.equal(canvasKeyAction(k(key, { shiftKey: true }), at('slip')), null);
     assert.equal(canvasKeyAction(k(key, { shiftKey: true }), at('head')), `nudge-${dir}`);
     assert.equal(canvasKeyAction(k(key), at('head')), null);

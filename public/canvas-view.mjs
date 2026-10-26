@@ -9,6 +9,7 @@ import { applyCamera, slipRect } from './canvas.mjs';
 import { view } from './render.mjs';
 import { state } from './state.mjs';
 import { nextUp } from './ui-state.mjs';
+import { loadGraph } from './graph-store.mjs';
 
 /** @typedef {import('./canvas-camera.mjs').Camera} Camera */
 /** @typedef {import('./canvas-layout.mjs').Layout} Layout */
@@ -33,6 +34,7 @@ export const cv = {
   /** @type {string[]} */ order: [],
   /** @type {Set<string>|null} 絞り込みに合う ID (null = 絞り込みなし。描くたびに作り直す) */ matched: null,
   /** @type {{key: string, x: number, y: number}|null} ドラッグ中の用紙と今の位置 (描き直しても席へ戻さない) */ drag: null,
+  /** @type {{id:string,x:number,y:number}|null} ドラッグ中のユーザー作成カード */ graphDrag: null,
   /** 描き直しのあとにプログラムがフォーカスを戻している間 (focusin でカメラもカーソルも動かさない) */ quiet: false,
   size: { w: 0, h: 0 },
 };
@@ -134,6 +136,11 @@ export function fitCam() {
   /** @type {Array<{x: number, y: number, w: number, h: number}>} */
   const list = [...(sheets.length ? sheets : cv.layout?.sheets ?? [])];
   if (!filtering && cv.layout?.fold) list.push(cv.layout.fold);
+  const query = state.filter.trim().toLocaleLowerCase();
+  for (const node of loadGraph().nodes) {
+    const text = [node.title, node.body, node.kind, node.status, node.checkedPerson, node.missingEvidence, node.neededExplanation].join(' ').toLocaleLowerCase();
+    if (!filtering || text.includes(query)) list.push({ x: node.x, y: node.y, w: 280, h: 168 });
+  }
   if (!list.length) return { x: 0, y: 0, z: 1 };
   const x = Math.min(...list.map((s) => s.x));
   const y = Math.min(...list.map((s) => s.y));

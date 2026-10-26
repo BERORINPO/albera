@@ -17,6 +17,7 @@ import { announce, fill } from './view.mjs';
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
 const filterInput = /** @type {HTMLInputElement} */ ($('filter'));
+const sourceFilter = /** @type {HTMLSelectElement} */ ($('source-filter'));
 
 /** index.html の data-i18n / data-i18n-attr を今の言語で埋める。 */
 function applyStaticText() {
@@ -323,6 +324,11 @@ function init() {
     render();
     if (filterTimer) clearTimeout(filterTimer);
     filterTimer = setTimeout(announceFilter, FILTER_ANNOUNCE_MS);
+  });
+  sourceFilter.addEventListener('change', () => {
+    state.sourceFilter = sourceFilter.value === 'claude' || sourceFilter.value === 'codex' ? sourceFilter.value : 'all';
+    render();
+    announceFilter();
   });
   initCanvas();
   bindKeys(() => state.prefs.keys !== false, runKey, () => state.view);

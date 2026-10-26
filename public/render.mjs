@@ -178,7 +178,7 @@ export function render() {
   const at = now();
   const board = state.board;
   const focus = captureFocus();
-  view.visible = board ? visibleModel(board, { q: state.filter, family: state.family, t, now: at }) : null;
+  view.visible = board ? visibleModel(board, { q: state.filter, family: state.family, source: state.sourceFilter, t, now: at }) : null;
   view.index = cardIndex(board);
   view.present = presentIds(board);
   renderMast();
@@ -318,6 +318,8 @@ export function clearFilters() {
   state.filter = '';
   /** @type {HTMLInputElement} */ ($('filter')).value = '';
   state.family = null;
+  state.sourceFilter = 'all';
+  /** @type {HTMLSelectElement} */ ($('source-filter')).value = 'all';
 }
 
 /** その行が見えるように欄・グループ・「残りを表示」を開いて、カーソルとフォーカスを置く。 @param {string} id */

@@ -189,7 +189,8 @@ export const JA = Object.freeze({
   // 19.7 detail panel
   'detail.state': 'いまの状態',
   'detail.stateValue': '{pile} ({time})',
-  'detail.source': 'ソース',
+  'detail.source': 'ハーネス',
+  'source.claude': 'Claude Code',
   'detail.events': '最近のイベント',
   'source.codex': 'Codex CLI',
   'event.turnStarted': 'ターン開始',

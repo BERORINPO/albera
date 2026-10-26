@@ -41,6 +41,7 @@ export const state = {
   /** @type {'list'|'canvas'} */ view: 'list', // 今の表示 (?view= で開いたときは保存しない。prefs.view が覚えた表示)
   loading: true,
   filter: '',
+  sourceFilter: 'all',
   /** @type {string|null} */ family: null,
   /** @type {Cursor|null} */ cursor: null,
   // 新しい盤面を受け取る前のカーソル。index は「その欄で見えていた行」の中の位置なので、描き終えてから見えている行で合わせ直す
