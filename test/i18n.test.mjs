@@ -62,6 +62,8 @@ test('理解負債レビューは不足リンクごとの手動接続を案内�
   assert.equal(JA['graph.resolveMissing.explains'], '説明先を結ぶ');
   assert.equal(EN['graph.resolveMissing.evidence'], 'Connect evidence');
   assert.equal(EN['graph.resolveMissing.explains'], 'Connect explanation');
+  assert.match(JA['graph.resolveNeedsLinks'], /完了・解消済み/);
+  assert.match(EN['graph.resolveNeedsLinks'], /done or resolved/);
 });
 
 test('委譲の最終確認は対象セッションの識別子末尾と外部利用条件を示す', () => {

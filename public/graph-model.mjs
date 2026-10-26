@@ -136,6 +136,10 @@ export function addGraphNode(doc, input, id) {
   if (!GRAPH_ID.test(id) || doc.nodes.length >= GRAPH_MAX_NODES || doc.nodes.some((n) => n.id === id)) return doc;
   const node = normalizeGraphNode({ ...input, id });
   if (!node || !node.title) return doc;
+  if (node.kind === 'understanding_gap' && ['done', 'resolved'].includes(node.status)) {
+    const candidate = { ...doc, nodes: [...doc.nodes, node] };
+    if (reviewUnderstandingGaps(candidate).some((item) => item.id === id && item.missing.length > 0)) return doc;
+  }
   return { ...doc, nodes: [...doc.nodes, node] };
 }
 
@@ -200,9 +204,16 @@ export function nextGraphNodePosition(doc, center, size) {
   return { x: coord(center.x), y: coord(center.y) };
 }
 
-/** @param {GraphDoc} doc @param {string} id @param {Partial<Omit<GraphNode,'id'>>} patch @returns {GraphDoc} */
-export function updateGraphNode(doc, id, patch) {
-  const nodes = doc.nodes.map((node) => node.id === id ? normalizeGraphNode({ ...node, ...patch, id }) ?? node : node);
+/** @param {GraphDoc} doc @param {string} id @param {Partial<Omit<GraphNode,'id'>>} patch @param {Set<string>} [sessionIds] @returns {GraphDoc} */
+export function updateGraphNode(doc, id, patch, sessionIds = new Set()) {
+  const current = doc.nodes.find((node) => node.id === id);
+  if (!current) return doc;
+  const changed = normalizeGraphNode({ ...current, ...patch, id }) ?? current;
+  if (patch.status && ['done', 'resolved'].includes(patch.status) && changed.kind === 'understanding_gap') {
+    const candidate = { ...doc, nodes: doc.nodes.map((node) => node.id === id ? changed : node) };
+    if (reviewUnderstandingGaps(candidate, sessionIds).some((item) => item.id === id && item.missing.length > 0)) return doc;
+  }
+  const nodes = doc.nodes.map((node) => node.id === id ? changed : node);
   return nodes.some((n, i) => n !== doc.nodes[i]) ? { ...doc, nodes } : doc;
 }
 
@@ -289,7 +300,7 @@ export function removeGraphEdge(doc, id) {
  */
 export function reviewUnderstandingGaps(doc, sessionIds = new Set()) {
   return doc.nodes
-    .filter((node) => node.kind === 'understanding_gap' && node.status !== 'resolved' && node.status !== 'done')
+    .filter((node) => node.kind === 'understanding_gap')
     .map((node) => {
       const endpoint = `graph:${node.id}`;
       const connected = new Set(doc.edges

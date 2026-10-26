@@ -85,6 +85,7 @@ export const JA_CANVAS = Object.freeze({
   'graph.resolveMissing.explains': '説明先を結ぶ',
   'graph.missingLinks': 'グラフ上で未接続: {links}',
   'graph.reviewHint': '次の関係がまだグラフにありません: {links}。関係を追加し、根拠や説明を確認した後に状態を更新してください。これは人の理解度の判定ではありません。',
+  'graph.resolveNeedsLinks': '記録した不足項目（{links}）を関係で結ぶまで、完了・解消済みにできません。',
   'graph.kind.task': 'タスク',
   'graph.kind.artifact': '成果物',
   'graph.kind.decision': '判断',

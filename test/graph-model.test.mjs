@@ -58,7 +58,9 @@ test('execution profiles retain only allowlisted manual conditions and default i
 test('graph nodes can be added, updated, moved and removed immutably', () => {
   let graph = addGraphNode(empty(), { kind: 'understanding_gap', title: 'Explain decision', body: '', status: 'open', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: 'source', neededExplanation: 'rationale' }, g1);
   graph = addGraphNode(graph, { kind: 'artifact', title: 'Design note', body: '', status: 'open', x: 0, y: 0, checkedPerson: '', missingEvidence: '', neededExplanation: '' }, g2);
-  graph = updateGraphNode(graph, g1, { status: 'resolved', neededExplanation: 'updated rationale' });
+  assert.equal(updateGraphNode(graph, g1, { status: 'resolved', neededExplanation: 'updated rationale' }), graph, 'a declared gap cannot be resolved before its links exist');
+  graph = updateGraphNode(graph, g1, { status: 'resolved', missingEvidence: '', neededExplanation: '' });
+  graph = updateGraphNode(graph, g1, { neededExplanation: 'updated rationale' });
   graph = moveGraphNode(graph, g2, 200, 400);
   assert.equal(graph.nodes[0].status, 'resolved');
   assert.equal(graph.nodes[0].neededExplanation, 'updated rationale');
@@ -180,13 +182,18 @@ test('legacy delegation with missing purpose remains readable and can be repaire
 
 test('comprehension review reports only explicitly missing graph links, never a person score', () => {
   let graph = addGraphNode(empty(), { kind: 'understanding_gap', title: 'Explain decision', body: '', status: 'open', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: 'decision record', neededExplanation: 'why it was chosen' }, g1);
+  assert.equal(addGraphNode(empty(), { kind: 'understanding_gap', title: 'Already resolved', body: '', status: 'resolved', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: 'source', neededExplanation: '' }, g2).nodes.length, 0, 'a new gap cannot skip its declared evidence link');
+  assert.equal(updateGraphNode(graph, g1, { status: 'done' }), graph, 'done cannot hide missing evidence or explanation links');
   assert.deepEqual(reviewUnderstandingGaps(graph), [{ id: g1, missing: ['evidence', 'explains'] }]);
   graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'evidence', purpose: 'Read-only source session', status: '' }, e1, new Set([session]));
   assert.deepEqual(reviewUnderstandingGaps(graph, new Set([session])), [{ id: g1, missing: ['explains'] }]);
+  assert.equal(updateGraphNode(graph, g1, { status: 'resolved' }), graph, 'a session link counts only when the current session exists');
   graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'explains', purpose: 'User-authored rationale', status: '' }, 'e_00000000-0000-4000-8000-000000000002', new Set([session]));
   assert.deepEqual(reviewUnderstandingGaps(graph, new Set([session])), []);
-  graph = updateGraphNode(graph, g1, { status: 'resolved' });
-  assert.deepEqual(reviewUnderstandingGaps(graph), [], 'resolved gaps leave the review queue');
+  graph = updateGraphNode(graph, g1, { status: 'resolved' }, new Set([session]));
+  assert.deepEqual(reviewUnderstandingGaps(graph, new Set([session])), [], 'linked declared gaps may be resolved');
+  graph = { ...graph, edges: graph.edges.filter((edge) => edge.kind !== 'evidence') };
+  assert.deepEqual(reviewUnderstandingGaps(graph, new Set([session])), [{ id: g1, missing: ['evidence'] }], 'removing a required relation returns a resolved gap to review');
 
   const unspecified = addGraphNode(empty(), { kind: 'understanding_gap', title: 'Unspecified', body: '', status: 'open', x: 0, y: 0, checkedPerson: 'reviewer', missingEvidence: '', neededExplanation: '' }, g2);
   assert.deepEqual(reviewUnderstandingGaps(unspecified), [], 'blank fields do not imply missing evidence or lack of understanding');

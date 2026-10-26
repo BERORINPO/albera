@@ -66,7 +66,7 @@ function endpointSelect(t, options, name, selected, excluded = '') {
 const endpointKey = (key) => key.startsWith('graph:') || key.startsWith('session:') ? key : '';
 
 /**
- * @param {{t:T,node?:any,position?:{x:number,y:number},initialKind?:string,initialTitle?:string,graph:any,sessions:Array<{id:string,title:string}>,onSave:(v:any)=>void,onDelete?:(id:string)=>void,onConnect?:(from:string,kind?:string)=>void,onEditEdge?:(edge:any)=>void}} o
+ * @param {{t:T,node?:any,position?:{x:number,y:number},initialKind?:string,initialTitle?:string,graph:any,sessions:Array<{id:string,title:string}>,onSave:(v:any,sessionIds:Set<string>)=>void,onDelete?:(id:string)=>void,onConnect?:(from:string,kind?:string)=>void,onEditEdge?:(edge:any)=>void}} o
  */
 export function openGraphNodeDialog(o) {
   const { t, node, graph, sessions } = o;
@@ -113,6 +113,7 @@ export function openGraphNodeDialog(o) {
   const refField = /** @type {HTMLElement|null} */ (form.querySelector('[data-artifact-reference]'));
   const artifactSummaryHint = /** @type {HTMLElement|null} */ (form.querySelector('[data-artifact-summary-hint]'));
   const refInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="referenceUrl"]'));
+  const statusInput = /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="status"]'));
   const profileFields = /** @type {HTMLElement|null} */ (form.querySelector('[data-execution-profile]'));
   const comprehensionFields = /** @type {HTMLElement|null} */ (form.querySelector('[data-comprehension-fields]'));
   const knowledgeNoteFields = /** @type {HTMLFieldSetElement|null} */ (form.querySelector('[data-knowledge-note]'));
@@ -137,6 +138,8 @@ export function openGraphNodeDialog(o) {
   kindSelect?.addEventListener('change', syncComprehensionFields);
   kindSelect?.addEventListener('change', syncKnowledgeFields);
   refInput?.addEventListener('input', () => refInput.setCustomValidity(''));
+  statusInput?.addEventListener('change', () => statusInput.setCustomValidity(''));
+  for (const name of ['missingEvidence', 'neededExplanation']) form.querySelector(`[name="${name}"]`)?.addEventListener('input', () => statusInput?.setCustomValidity(''));
   knowledgeVaultInput?.addEventListener('input', () => knowledgeVaultInput.setCustomValidity(''));
   knowledgeFileInput?.addEventListener('input', () => knowledgeFileInput.setCustomValidity(''));
   syncReferenceField();
@@ -198,6 +201,26 @@ export function openGraphNodeDialog(o) {
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();
     const data = Object.fromEntries(new FormData(form).entries());
+    if (String(data.kind) === 'understanding_gap' && ['done', 'resolved'].includes(String(data.status))) {
+      const sessionsById = new Set(sessions.map((session) => session.id));
+      const candidate = {
+        ...graph,
+        nodes: graph.nodes.map((item) => item.id === node?.id ? {
+          ...item,
+          kind: 'understanding_gap',
+          missingEvidence: String(data.missingEvidence ?? ''),
+          neededExplanation: String(data.neededExplanation ?? ''),
+        } : item),
+      };
+      const missing = node
+        ? reviewUnderstandingGaps(candidate, sessionsById).find((item) => item.id === node.id)?.missing ?? []
+        : [String(data.missingEvidence ?? '').trim() ? 'evidence' : '', String(data.neededExplanation ?? '').trim() ? 'explains' : ''].filter(Boolean);
+      if (missing.length) {
+        statusInput?.setCustomValidity(t('graph.resolveNeedsLinks', { links: missing.map((kind) => t(`graph.link.${kind}`)).join(', ') }));
+        statusInput?.reportValidity();
+        return;
+      }
+    }
     const referenceUrl = safeArtifactUrl(data.referenceUrl, String(data.kind));
     if (String(data.kind) === 'artifact' && String(data.referenceUrl ?? '').trim() && !referenceUrl) {
       refInput?.setCustomValidity(t('graph.referenceInvalid'));
@@ -229,7 +252,7 @@ export function openGraphNodeDialog(o) {
       approvalMode: data.approvalMode,
       knowledgeVault,
       knowledgeFile,
-    });
+    }, new Set(sessions.map((session) => session.id)));
     dialog.close();
   });
   dialog.showModal();

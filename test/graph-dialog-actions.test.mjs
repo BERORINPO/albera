@@ -101,6 +101,8 @@ test('the comprehension editor renders actions only from its current missing-lin
   assert.match(source, /options\.find\(\(x\) => x\.id === edge\.to\) \?\? missingEndpoint\(edge\.to\)/);
   assert.match(source, /review\?\.missing\.length/);
   assert.match(source, /review\.missing\.map\(\(kind\) => h\('button'/);
+  assert.match(source, /graph\.resolveNeedsLinks/);
+  assert.match(source, /statusInput\?\.reportValidity\(\)/);
   assert.match(source, /'data-dialog-action': 'connect-missing'/);
   assert.match(source, /'data-edge-kind': kind/);
   assert.match(source, /connectMissingComprehensionEdge\(\{ nodeId: node\.id, edgeKind: kind, close: \(\) => dialog\.close\(\), connect: o\.onConnect \}\)/);

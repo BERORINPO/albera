@@ -174,7 +174,7 @@ function editGraphNode(id) {
   if (!node) return;
   openGraphNodeDialog({
     t: state.t, graph, node, sessions: graphSessions(),
-    onSave: (input) => graphChanged(updateGraphNode(graph, id, input)),
+    onSave: (input, sessionIds) => graphChanged(updateGraphNode(graph, id, input, sessionIds)),
     onDelete: (key) => graphChanged(removeGraphNode(graph, key)),
     onEditEdge: (edge) => editGraphEdge(edge.id),
     onConnect: (from, kind) => connectGraphEndpoint(from, kind),
