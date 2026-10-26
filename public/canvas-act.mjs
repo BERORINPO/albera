@@ -142,7 +142,7 @@ function listWorktreesForSession(sessionId) {
   if (!entry) return false;
   openWorktreeListDialog(state.t, {
     load: () => listWorktrees(sessionId),
-    remove: (branch) => removeWorktree(sessionId, branch),
+    remove: entry.card.detail?.executionLocation === 'wsl' ? undefined : (branch) => removeWorktree(sessionId, branch),
     onRemoved: (branch) => {
       const graph = loadGraph();
       const card = graph.nodes.find((node) => node.kind === 'worktree' && node.title === branch

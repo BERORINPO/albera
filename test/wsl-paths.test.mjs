@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isWslPathInShare, wslCwdToUnc, wslShareRoot } from '../src/adapters/wsl-paths.mjs';
+import { isWslPathInShare, wslCwdToUnc, wslShareRoot, wslUncToCwd } from '../src/adapters/wsl-paths.mjs';
 
 test('WSL share root accepts only a configured WSL distro share', () => {
   assert.equal(wslShareRoot('\\\\wsl.localhost\\Ubuntu\\home\\dev\\.codex'), '\\\\wsl.localhost\\Ubuntu');
@@ -8,6 +8,7 @@ test('WSL share root accepts only a configured WSL distro share', () => {
   assert.equal(wslShareRoot('\\\\wsl.localhost\\OpenSUSE Tumbleweed\\.codex'), '\\\\wsl.localhost\\OpenSUSE Tumbleweed');
   assert.equal(wslShareRoot('\\\\server\\share\\.codex'), '');
   assert.equal(wslShareRoot('\\\\wsl.localhost\\..\\.codex'), '');
+  assert.equal(wslShareRoot('\\\\wsl.localhost\\-exec\\.codex'), '');
   assert.equal(wslShareRoot('\\\\wsl.localhost\\Ubuntu.\\.codex'), '');
   assert.equal(wslShareRoot('/home/dev/.codex'), '');
 });
@@ -27,4 +28,10 @@ test('WSL cwd mapping rejects traversal, host paths, and control characters', ()
     assert.equal(wslCwdToUnc(cwd, root), null, cwd);
   }
   assert.equal(wslCwdToUnc('/home/dev/project', '\\\\server\\share'), null);
+});
+
+test('WSL UNC path maps back only into the explicitly configured distro share', () => {
+  assert.deepEqual(wslUncToCwd('\\\\wsl.localhost\\Ubuntu\\home\\dev\\project', '\\\\wsl.localhost\\Ubuntu\\.codex'), { distro: 'Ubuntu', cwd: '/home/dev/project' });
+  assert.equal(wslUncToCwd('\\\\wsl.localhost\\Other\\home\\dev', '\\\\wsl.localhost\\Ubuntu\\.codex'), null);
+  assert.equal(wslUncToCwd('\\\\wsl.localhost\\Ubuntu\\home\\..\\etc', '\\\\wsl.localhost\\Ubuntu\\.codex'), null);
 });

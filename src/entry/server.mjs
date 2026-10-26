@@ -20,6 +20,7 @@ import { createTranscriptsSource } from '../adapters/transcripts-fs.mjs';
 import { createWorktreeSource } from '../adapters/worktrees-git.mjs';
 import { createWorktreeCreator } from '../adapters/worktree-create-git.mjs';
 import { createWorktreeRemover } from '../adapters/worktree-remove-git.mjs';
+import { createWslWorktreeSource } from '../adapters/worktrees-wsl.mjs';
 import { createCodexDelegationRunner } from '../adapters/codex-delegation-runner.mjs';
 import { wslCwdToUnc, wslShareRoot } from '../adapters/wsl-paths.mjs';
 import { argsWithoutPort, ConfigError, loadConfig, portHint, shellQuote } from './config.mjs';
@@ -66,6 +67,7 @@ function wire(config) {
     transcriptsSource: createTranscriptsSource({ projectsDir: config.projectsDir }),
     folderHints: createFolderHints({ home: config.home, wslShareRoot: codexWslRoot }),
     worktreeSource: createWorktreeSource(),
+    wslWorktreeSource: codexWslRoot ? createWslWorktreeSource({ shareRoot: codexWslRoot }) : null,
     worktreeCreator: createWorktreeCreator(),
     worktreeRemover: createWorktreeRemover(),
   };
@@ -142,7 +144,10 @@ function main() {
   };
   const listWorktrees = async (sessionId) => {
     const session = await activeSessionForId(sessionId);
-    if (session?.executionLocation === 'wsl') return { ok: false, reason: 'unsupported_location' };
+    if (session?.executionLocation === 'wsl') {
+      if (config.demo) return session.cwd ? sources.worktreeSource.listForCwd(session.cwd) : [];
+      return sources.wslWorktreeSource?.listForCwd(session.cwd) ?? { ok: false, reason: 'unsupported_location' };
+    }
     return session?.cwd ? sources.worktreeSource.listForCwd(session.cwd) : session;
   };
   const removeWorktree = async (sessionId, branch, confirmed) => {

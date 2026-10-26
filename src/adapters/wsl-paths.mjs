@@ -9,8 +9,7 @@ export function wslShareRoot(value) {
   const normalized = value.replaceAll('/', '\\').trim();
   const match = SHARE.exec(normalized);
   const distro = match?.[2];
-  if (!match?.[1] || !distro || distro === '.' || distro === '..' || distro.length > 64
-    || /[\u0000-\u001f\u007f<>:"|?*]/u.test(distro) || /[. ]$/u.test(distro)) return '';
+  if (!match?.[1] || !distro || !/^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}$/u.test(distro) || /[. ]$/u.test(distro)) return '';
   return match[1];
 }
 
@@ -31,4 +30,18 @@ export function wslCwdToUnc(cwd, shareRoot) {
   const mapped = path.win32.join(root, ...segments.filter(Boolean));
   const prefix = `${root}\\`.toLowerCase();
   return mapped.toLowerCase() === root.toLowerCase() || mapped.toLowerCase().startsWith(prefix) ? mapped : null;
+}
+
+/** Map a path inside the one explicitly configured WSL share back to a distro and POSIX path. */
+export function wslUncToCwd(value, shareRoot) {
+  const root = wslShareRoot(shareRoot).replaceAll('/', '\\').replace(/\\+$/, '');
+  if (!root || typeof value !== 'string' || value.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value)) return null;
+  const normalized = value.replaceAll('/', '\\');
+  if (normalized.toLowerCase() !== root.toLowerCase() && !normalized.toLowerCase().startsWith(`${root.toLowerCase()}\\`)) return null;
+  const suffix = normalized.slice(root.length).replace(/^\\+/, '');
+  const parts = suffix ? suffix.split('\\') : [];
+  if (parts.some((part) => !part || part === '.' || part === '..' || part.includes(':'))) return null;
+  const distro = root.split('\\').at(-1);
+  if (!distro) return null;
+  return { distro, cwd: `/${parts.join('/')}` };
 }

@@ -19,13 +19,13 @@ const NETWORK_PATH_RE = /^(?:\\\\|\/\/)/;
 /** @typedef {{branch:string|null,status:'clean'|'changed'|'untracked'|'mixed'|'conflicted'|'unknown',changed:number,untracked:number,conflicted:number,locked:boolean,prunable:boolean}} WorktreeSummary */
 
 /** Git's porcelain `-z` format is NUL-delimited; paths and lock reasons are intentionally kept private. @param {string} raw */
-export function parseWorktreeList(raw) {
+export function parseWorktreeList(raw, isAbsolute = path.isAbsolute) {
   /** @type {GitWorktree[]} */
   const out = [];
   /** @type {Partial<GitWorktree>} */
   let entry = {};
   const push = () => {
-    if (typeof entry.path === 'string' && path.isAbsolute(entry.path)) {
+    if (typeof entry.path === 'string' && isAbsolute(entry.path)) {
       out.push({ path: entry.path, branch: entry.branch ?? null, detached: !!entry.detached, locked: !!entry.locked, prunable: !!entry.prunable });
     }
     entry = {};
