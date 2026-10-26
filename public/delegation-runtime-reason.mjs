@@ -1,5 +1,5 @@
 // Convert the server's fixed delegation rejection codes to safe UI messages.
-import { persistDelegationOutcome } from './delegation-outcome.mjs';
+import { persistRejectedDelegationStart } from './delegation-outcome.mjs';
 const REASONS = Object.freeze({
   invalid_target: 'graph.delegationRejectedTarget',
   unsupported_location: 'graph.delegationRejectedLocation',
@@ -15,10 +15,11 @@ export function delegationRuntimeReasonKey(reason) {
   return typeof reason === 'string' && Object.hasOwn(REASONS, reason) ? REASONS[reason] : null;
 }
 
-/** Persist an explicitly rejected start as blocked before announcing its safe reason. @param {{reason:unknown,edgeId:string,operationId:string,loadGraph:()=>any,graphChanged:(doc:any)=>boolean,announce:(text:string)=>void,t:(key:string)=>string}} o */
-export function handleDelegationStartRejection({ reason, edgeId, operationId, loadGraph, graphChanged, announce, t }) {
+/** Release a matching tentative lock only for a fixed 422 response, which guarantees no child process started. @param {{status:number,reason:unknown,edgeId:string,operationId:string,loadGraph:()=>any,graphChanged:(doc:any)=>boolean,announce:(text:string)=>void,t:(key:string)=>string}} o */
+export function handleDelegationStartRejection({ status, reason, edgeId, operationId, loadGraph, graphChanged, announce, t }) {
+  if (status !== 422) return false;
   const key = delegationRuntimeReasonKey(reason);
-  if (!key || !persistDelegationOutcome({ edgeId, operationId, status: 'blocked', loadGraph, graphChanged })) return false;
+  if (!key || !persistRejectedDelegationStart({ edgeId, operationId, loadGraph, graphChanged })) return false;
   announce(t(key));
   return true;
 }

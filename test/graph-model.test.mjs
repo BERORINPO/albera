@@ -3,7 +3,7 @@ import { webcrypto } from 'node:crypto';
 import { test } from 'node:test';
 import { GRAPH_STORAGE_KEY, migrateSavedProviderSessionIds } from '../public/graph-store.mjs';
 import { opaqueProviderSessionId } from '../src/adapters/opaque-session-id.mjs';
-import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, finishGraphDelegationOperation, graphPlacementObstacles, migrateProviderSessionEndpoints, moveGraphNode, nextGraphNodePosition, normalizeGraph, obsidianOpenUri, releaseBlockedGraphDelegationOperation, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault, startGraphDelegationOperation, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, finishGraphDelegationOperation, graphPlacementObstacles, migrateProviderSessionEndpoints, moveGraphNode, nextGraphNodePosition, normalizeGraph, obsidianOpenUri, rejectGraphDelegationOperation, releaseBlockedGraphDelegationOperation, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault, startGraphDelegationOperation, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
 
 const g1 = 'g_00000000-0000-4000-8000-000000000001';
 const g2 = 'g_00000000-0000-4000-8000-000000000002';
@@ -232,6 +232,10 @@ test('operation-managed delegation purpose, type and state cannot be edited or r
   graph = connectGraph(graph, { from: `graph:${g1}`, to: `session:${session}`, kind: 'delegates', purpose: 'Confirmed scope', status: 'planned' }, e1, new Set([session]));
   const active = startGraphDelegationOperation(graph, e1, operationId);
   assert.deepEqual([active.edges[0].status, active.edges[0].operationId], ['active', operationId]);
+  const rejected = rejectGraphDelegationOperation(active, e1, operationId);
+  assert.deepEqual([rejected.edges[0].status, rejected.edges[0].operationId], ['planned', undefined], 'a matching explicit server rejection clears only the tentative operation');
+  assert.equal(rejectGraphDelegationOperation(active, e1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'), active, 'a stale response cannot release another operation');
+  assert.deepEqual(rejectGraphDelegationOperation(active, e1, operationId), rejected, 'rejection is deterministic');
   assert.equal(startGraphDelegationOperation(active, e1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'), active, 'an operation cannot be replaced');
   assert.equal(updateGraphEdge(active, e1, { status: 'cancelled' }), active, 'a running operation cannot be manually marked cancelled');
   assert.equal(updateGraphEdge(active, e1, { purpose: 'different purpose', kind: 'related' }), active, 'operation metadata is immutable');

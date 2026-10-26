@@ -903,6 +903,8 @@
 
 ## 2026-10-27 委譲開始拒否の表示と状態修復
 
+> 履歴記録。以下に記す「固定拒否をblockedへ保存する」挙動は、2026-10-27後続更新で、HTTP 422の確定拒否なら`planned`へ戻す挙動に置き換えた。通信断・500・未知応答だけが状態未確定としてロック保持の対象。
+
 - 最終確認後、対象セッションがactive/消失/別操作中になった場合など、サーバーが委譲開始を拒否した際に、キャンバス上の委譲関係が「進行中」のまま残る状態遷移の穴を修正した。
 - サーバーの固定許可理由コード (`invalid_target`, `unsupported_location`, `session_active`, `session_unknown`, `already_running`, `operation_limit`, `cli_unavailable`) のみを日英の安全な説明文へ対応付け、委譲記録を `blocked` に保存する。未知コード、診断文字列、パス、OSエラーは表示せず、開始応答を受け取った後の状態照会失敗は従来どおり「状態不明」として再実行しない。
 - `test/delegation-act.test.mjs` で許可コードの日英メッセージ、未知/機密値の拒否、開始前の拒否だけを終端状態にできる条件、blocked保存成功後に案内すること、保存失敗時は案内しないことを検証した。
@@ -1002,6 +1004,12 @@ A synthetic late-completion fixture verifies that an older completed turn cannot
 ### Failed Codex turn demo coverage
 
 The synthetic `--demo` board now includes an explicitly labeled Codex CLI failed-turn card with only the fixed `turn_failed` event and timestamps. This makes the failure state available for manual UI review without presenting fixture data as a real session. Unit coverage verifies demo lifecycle coverage, board projection of the `failed` state, and event detail rendering that ignores provider error text. README state lists now include failed.
+
+### 委譲開始の確定拒否後に安全に再試行できる状態を維持 (2026-10-27)
+
+- 委譲開始APIのHTTP 422と固定allowlist理由は、サーバーがCLIプロセスを起動する前に拒否したことを示す。対象のedge IDとoperation IDが一致する場合に限り、仮のactive/operationIdを消して`planned`へ戻し、理由を通知する。CLI未検出や対象状態変化を直した後に再試行できる。
+- HTTP 500/422外、未知理由、応答の喪失はプロセス開始の有無が確定しないためロックを解除しない。既存の状態照会/手動確認フローを維持する。遅延・別operationの応答は一致するoperation IDが無ければ変更しない。
+- pure modelとUI helperのmock testで、一致する固定拒否後の再試行可能状態、stale ID拒否、未保存時の通知抑止、曖昧な500をロック保持する条件を検証した。Codex CLIは起動していない。
 
 ### REA手動要約からセッションへの関係をGUI確認 (2026-10-27)
 

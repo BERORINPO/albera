@@ -47,7 +47,7 @@ async function executeConfirmedDelegation(edgeId, sourceId, targetId, purpose, {
     announce(state.t('graph.delegationStillRunning'));
   } catch (error) {
     if (!startAccepted && error instanceof WorktreeOperationError && handleDelegationStartRejection({
-      reason: error.reason, edgeId, operationId, loadGraph, graphChanged, announce, t: state.t,
+      status: error.status, reason: error.reason, edgeId, operationId, loadGraph, graphChanged, announce, t: state.t,
     })) {
       return false;
     }

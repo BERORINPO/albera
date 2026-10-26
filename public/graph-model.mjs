@@ -325,6 +325,15 @@ export function startGraphDelegationOperation(doc, id, operationId) {
   return { ...doc, edges: doc.edges.map((item) => item.id === id ? changed : item) };
 }
 
+/** A fixed server rejection means no child process was started; clear the tentative operation and keep the user-authored plan retryable. @param {GraphDoc} doc @param {string} id @param {string} operationId */
+export function rejectGraphDelegationOperation(doc, id, operationId) {
+  const edge = doc.edges.find((item) => item.id === id);
+  if (!edge || edge.kind !== 'delegates' || edge.status !== 'active' || edge.operationId !== operationId) return doc;
+  const { operationId: _discarded, ...rest } = edge;
+  const changed = { ...rest, status: 'planned' };
+  return { ...doc, edges: doc.edges.map((item) => item.id === id ? changed : item) };
+}
+
 /** @param {GraphDoc} doc @param {string} id @param {string} operationId @param {'completed'|'blocked'} status */
 export function finishGraphDelegationOperation(doc, id, operationId, status) {
   const edge = doc.edges.find((item) => item.id === id);

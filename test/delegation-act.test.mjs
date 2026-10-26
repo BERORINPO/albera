@@ -77,29 +77,45 @@ test('delegation start rejections map only fixed safe reasons to localized guida
 test('only a rejection before start is eligible for terminal-blocked guidance', () => {
   const act = fs.readFileSync(new URL('../public/delegation-act.mjs', import.meta.url), 'utf8');
   assert.match(act, /let startAccepted = false/);
+  assert.match(act, /status: error\.status, reason: error\.reason/);
   assert.match(act, /!startAccepted && error instanceof WorktreeOperationError && handleDelegationStartRejection/);
 });
 
-test('a safe rejected start is persisted as blocked before its guidance is announced', () => {
+test('a fixed rejected start clears its tentative lock and preserves a retryable planned edge', () => {
   const graph = activeGraph();
   let saved;
   const announcements = [];
   const result = handleDelegationStartRejection({
-    reason: 'session_active', edgeId: graph.edges[0].id, operationId: 'op-1',
+    status: 422, reason: 'session_active', edgeId: graph.edges[0].id, operationId: 'op-1',
     loadGraph: () => graph, graphChanged: (next) => { saved = next; return true; },
     announce: (message) => announcements.push(message), t: makeT('ja'),
   });
   assert.equal(result, true);
-  assert.equal(saved.edges[0].status, 'blocked');
+  assert.equal(saved.edges[0].status, 'planned');
+  assert.equal(Object.hasOwn(saved.edges[0], 'operationId'), false);
   assert.match(announcements[0], /既に進行中/);
+});
+
+test('a rejected start does not unlock a different or stale graph operation', () => {
+  const graph = activeGraph();
+  let saved = false;
+  const result = handleDelegationStartRejection({
+    status: 422, reason: 'cli_unavailable', edgeId: graph.edges[0].id, operationId: 'wrong-operation',
+    loadGraph: () => graph, graphChanged: () => (saved = true),
+    announce: () => assert.fail('must not announce for a stale operation'), t: makeT('ja'),
+  });
+  assert.equal(result, false);
+  assert.equal(saved, false);
 });
 
 test('unknown reasons and failed persistence do not announce start rejection', () => {
   const graph = activeGraph();
   const args = {
+    status: 422,
     edgeId: graph.edges[0].id, operationId: 'op-1', loadGraph: () => graph,
     graphChanged: () => false, announce: () => assert.fail('must not announce'), t: makeT('ja'),
   };
   assert.equal(handleDelegationStartRejection({ ...args, reason: '/private/path' }), false);
   assert.equal(handleDelegationStartRejection({ ...args, reason: 'session_unknown' }), false);
+  assert.equal(handleDelegationStartRejection({ ...args, status: 500, reason: 'cli_unavailable' }), false, 'an ambiguous server error keeps the operation lock for review');
 });
