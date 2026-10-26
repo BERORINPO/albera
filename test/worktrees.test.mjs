@@ -74,8 +74,8 @@ test('worktree inventory is capped, path-free, and reports only branch/status fl
   } });
   const result = await source.listForCwd(root);
   assert.deepEqual(result, [
-    { branch: 'main', status: 'changed', changed: 1, untracked: 0, conflicted: 0, detached: false, locked: false, prunable: false, current: true },
-    { branch: 'agent/review', status: 'untracked', changed: 0, untracked: 1, conflicted: 0, detached: false, locked: true, prunable: false, current: false },
+    { branch: 'main', status: 'changed', changed: 1, untracked: 0, conflicted: 0, detached: false, locked: false, prunable: false, current: true, removable: false },
+    { branch: 'agent/review', status: 'untracked', changed: 0, untracked: 1, conflicted: 0, detached: false, locked: true, prunable: false, current: false, removable: false },
   ]);
   assert.ok(!JSON.stringify(result).includes(root));
   assert.ok(!JSON.stringify(result).includes(sibling));

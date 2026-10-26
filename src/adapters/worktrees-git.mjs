@@ -2,6 +2,7 @@
 // Read-only local Git adapter. Git paths and porcelain entries stay in this adapter.
 
 import { execFile as nodeExecFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { mapLimit } from './map-limit.mjs';
@@ -15,8 +16,18 @@ const TIMEOUT_MS = 1_500;
 const MAX_COUNT = 999;
 const NETWORK_PATH_RE = /^(?:\\\\|\/\/)/;
 
+/** Deterministic sibling location used only for worktrees created by Pigeonholes. */
+export function managedWorktreePath(root, branch) {
+  const normalized = path.resolve(root).replaceAll('\\', '/').replace(/\/$/, '');
+  const repoKey = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  const repoHash = crypto.createHash('sha256').update(repoKey).digest('hex').slice(0, 12);
+  const branchHash = crypto.createHash('sha256').update(branch).digest('hex').slice(0, 8);
+  const slug = branch.replaceAll('/', '-').replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 48);
+  return path.join(path.dirname(root), `${path.basename(root)}-pigeonholes-${repoHash}-${slug}-${branchHash}`);
+}
+
 /** @typedef {{path:string,branch:string|null,detached:boolean,locked:boolean,prunable:boolean}} GitWorktree */
-/** @typedef {{branch:string|null,status:'clean'|'changed'|'untracked'|'mixed'|'conflicted'|'unknown',changed:number,untracked:number,conflicted:number,locked:boolean,prunable:boolean}} WorktreeSummary */
+/** @typedef {{branch:string|null,status:'clean'|'changed'|'untracked'|'mixed'|'conflicted'|'unknown',changed:number,untracked:number,conflicted:number,locked:boolean,prunable:boolean,removable?:boolean}} WorktreeSummary */
 
 /** Git's porcelain `-z` format is NUL-delimited; paths and lock reasons are intentionally kept private. @param {string} raw */
 export function parseWorktreeList(raw, isAbsolute = path.isAbsolute) {
@@ -148,6 +159,7 @@ export function createWorktreeSource({ runGit: run = runGit, clock = () => Date.
         branch: entry.branch, status: status.state, changed: status.changed, untracked: status.untracked,
         conflicted: status.conflicted, detached: entry.detached, locked: entry.locked, prunable: entry.prunable,
         current: pathKey(entry.path) === pathKey(top),
+        removable: !!entry.branch && pathKey(entry.path) === pathKey(managedWorktreePath(top, entry.branch)),
       };
     });
   }

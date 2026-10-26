@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createWorktreeRemover } from '../src/adapters/worktree-remove-git.mjs';
+import { managedWorktreePath } from '../src/adapters/worktrees-git.mjs';
 
 const root = path.join(path.parse(process.cwd()).root, 'agent-canvas-fixture', 'repo');
-const sibling = path.join(path.dirname(root), 'repo-other');
+const sibling = managedWorktreePath(root, 'agent/review');
 const cwd = path.join(root, 'nested');
-const list = (targetFlags = '') => [
+const list = (targetFlags = '', targetPath = sibling) => [
   `worktree ${root}`, 'HEAD 1234', 'branch refs/heads/main', '',
-  `worktree ${sibling}`, 'HEAD abcd', 'branch refs/heads/agent/review', targetFlags, '', '',
+  `worktree ${targetPath}`, 'HEAD abcd', 'branch refs/heads/agent/review', targetFlags, '', '',
 ].filter(Boolean).join('\0');
 
 test('explicit worktree removal requires confirmation and exact clean non-current branch, never force', async () => {
@@ -60,4 +61,16 @@ test('rejects invalid and network targets before Git and hides command failures'
   assert.deepEqual(await remover.remove({ cwd, branch: '../outside', confirmed: true }), { ok: false, reason: 'invalid_branch' });
   assert.equal(invoked, 0);
   assert.deepEqual(await remover.remove({ cwd, branch: 'agent/review', confirmed: true }), { ok: false, reason: 'not_repo' });
+});
+
+test('refuses to remove a clean worktree not at the Pigeonholes-managed target', async () => {
+  const calls = [];
+  const remover = createWorktreeRemover({ runGit: async (args) => {
+    calls.push(args);
+    if (args.includes('--show-toplevel')) return `${root}\n`;
+    if (args.includes('list')) return list('', path.join(path.dirname(root), 'repo-created-elsewhere'));
+    return '';
+  } });
+  assert.deepEqual(await remover.remove({ cwd, branch: 'agent/review', confirmed: true }), { ok: false, reason: 'invalid_target' });
+  assert.equal(calls.some((args) => args.includes('status') || args.includes('remove')), false);
 });

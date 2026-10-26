@@ -926,3 +926,10 @@
 - 隔離loopback `--demo`上で合成Codex (WSL) セッションの詳細を開き、「関連タスクを作成」から一時タスクを作成。キャンバスにタスクカードと「タスクからCodexセッションへの関連」関係が表示され、セッション詳細にも相手のカードが表示されることを確認した。
 - ページ再読み込み後もカードと関係線が復元した。一時タスクをアプリ内の確認dialogで削除し、再読み込み後にカード/関係が残らないことを確認。demoタブを閉じ、サーバーを停止した。
 - 合成データのみ。実セッション、CLI、worktree操作、外部サービスは使っていない。今回ソース変更はなく、コード検証の最新結果はコードHEAD `0503f68` の `npm test` 590件成功、`npm run arch` 99 paths/違反0、`npm run smoke` 成功。文書変更は`git diff --check`で確認。
+
+### ローカルworktree削除をアプリ管理対象に限定 (2026-10-27)
+
+- PRの安全説明と実装のずれを修正。ローカル一覧にも管理対象フラグを付け、画面はlocal/WSL共通でそのフラグが真の行だけ削除ボタンを出す。サーバー側removerも削除前にPigeonholes決定配置を再計算し、パス不一致をGit status/removeより前に拒否する。
+- worktree作成adapterと照合側で同一の決定的パス関数を共有する。APIにはパスを出さず、削除は従来どおりclean・非current・unlocked・non-prunable、ブランチ名入力、確認が必要。未管理だがcleanなworktreeは削除対象外。
+- 合成テストで実GitによるPigeonholes配置の作成/列挙/削除、未管理のclean worktreeの拒否とGit remove未呼び出し、UIの削除可否フラグ、WSL表示規則を確認。実ユーザーrepoのworktreeは操作していない。
+- `npm test`: 591 passed、`npm run arch`: 99 paths / 0 violations、`npm run smoke`: pass、`git diff --check`: pass。PRブランチへの新コミット後にGitHub Actionsを確認する。

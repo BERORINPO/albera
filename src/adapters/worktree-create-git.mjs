@@ -1,13 +1,12 @@
 // Explicit local Git worktree creation. Session records remain read-only; only the selected repo gets a new worktree.
 // All paths and Git diagnostics stay in this adapter and never enter the API response.
 
-import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { summarizeGitStatus } from './worktrees-git.mjs';
+import { managedWorktreePath, summarizeGitStatus } from './worktrees-git.mjs';
 
 const execFile = promisify(nodeExecFile);
 const NETWORK_PATH_RE = /^(?:\\\\|\/\/)/;
@@ -60,10 +59,7 @@ export function createWorktreeCreator({ runGit: run = runGit, fs: fileSystem = f
         return { ok: false, reason: 'invalid_branch' };
       }
 
-      const repoHash = crypto.createHash('sha256').update(pathKey(root)).digest('hex').slice(0, 12);
-      const branchHash = crypto.createHash('sha256').update(branch).digest('hex').slice(0, 8);
-      const slug = branch.replaceAll('/', '-').replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 48);
-      const target = path.join(path.dirname(root), `${path.basename(root)}-pigeonholes-${repoHash}-${slug}-${branchHash}`);
+      const target = managedWorktreePath(root, branch);
 
       try {
         try {

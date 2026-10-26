@@ -15,7 +15,7 @@ test('WSL worktree actions use the shared detail renderer once while gating remo
   assert.match(worktree, /data-action': 'worktree-list'/);
   assert.match(worktree, /data-action': 'worktree-create'/);
   assert.match(worktree, /worktreeCreationAvailability\(card\.detail\?\.executionLocation, demo\)/);
-  assert.match(actions, /requireRemovableFlag: entry\.card\.detail\?\.executionLocation === 'wsl'/);
+  assert.match(actions, /requireRemovableFlag: true/);
   assert.match(api, /removable: item\?\.removable === true/);
   for (const dict of dictionaries) assert.match(dict, /'worktree\.wslUnavailable':/);
 });

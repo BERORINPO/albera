@@ -43,9 +43,9 @@ test('actual local Git worktree lifecycle stays path-free and removes only the c
     created = true;
 
     const inventory = await createWorktreeSource().listForCwd(repo);
-    assert.deepEqual(inventory.map(({ branch: name, status, current }) => ({ branch: name, status, current })), [
-      { branch: 'main', status: 'clean', current: true },
-      { branch, status: 'clean', current: false },
+    assert.deepEqual(inventory.map(({ branch: name, status, current, removable }) => ({ branch: name, status, current, removable })), [
+      { branch: 'main', status: 'clean', current: true, removable: false },
+      { branch, status: 'clean', current: false, removable: true },
     ]);
     for (const privateValue of [sandbox, repo, 'README.md']) assert.equal(JSON.stringify(inventory).includes(privateValue), false);
 

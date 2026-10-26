@@ -138,7 +138,7 @@ function listWorktreesForSession(sessionId) {
   openWorktreeListDialog(state.t, {
     load: () => listWorktrees(sessionId),
     remove: state.board?.stats?.demo ? undefined : (branch) => removeWorktree(sessionId, branch),
-    requireRemovableFlag: entry.card.detail?.executionLocation === 'wsl',
+    requireRemovableFlag: true,
     onRemoved: (branch) => {
       const graph = loadGraph();
       const card = graph.nodes.find((node) => node.kind === 'worktree' && node.title === branch
