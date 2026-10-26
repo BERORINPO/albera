@@ -20,6 +20,12 @@
 
 この表で「実装済み」はコードがあることを示し、実セッション/実環境での適合性を意味しない。完了と扱うには各完成条件の範囲に対応したGUI・再読み込み・安全性の証拠が必要である。音声Main AIと企業権限制御は完成条件に含まれるが仕様が未定義であり、確認を要する。REAの完全Evidence取込と、Obsidianの自動indexing/知識抽出は現時点の合意からは必須と断定できない。
 
+### OpenCode 旧形式の状態判定 (2026-10-27)
+
+- OpenCode upstream の V1 schema では assistant message に作成/完了時刻、step-finish part に任意文字列の `reason`、tool part に任意構造の入力・出力・metadata が定義されている ([V1 session schema](https://github.com/anomalyco/opencode/blob/dev/packages/schema/src/v1/session.ts))。
+- 現行 adapter は旧形式の `session` 表から許可した一覧metadataだけを読み、`message` / `part` 表は問い合わせない。上流schemaの存在だけでは保存DB上の正確な列配置・全リリース互換性や、中断理由の安全な固定分類は保証されないため、旧形式の状態・イベントは引き続き `unknown` / 空として扱う。合成DB fixture はこの fail-closed 境界を確認するもので、実OpenCode DBの互換性確認ではない。
+- 音声 Main AI と企業権限制御は完成条件とユーザーが確認したが、運用仕様は「未定義」と回答された。開始/停止、処理・保存先、同意/削除、利用者ロールと操作別許可規則は確認待ちで、画面の利用不可説明だけを維持する。
+
 ## 調査結果 (2026-10-26)
 
 対象: `BERORINPO/pigeonholes` の `main` (`933cf35`, `0.2.0`)。作業ブランチ `feat/codex-cli-sessions` で調査。
