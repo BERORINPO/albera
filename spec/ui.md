@@ -1308,3 +1308,10 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 
 - On 2026-10-27, isolated demo acceptance created a synthetic comprehension gap for the person whose understanding was being checked, with explicit missing evidence and needed explanation fields. No understanding score was presented. A synthetic artifact was connected as `evidence` and a decision as `explains`; after both links were present, the gap could be marked resolved. Reload restored the details, status, and both relations. The relation-removal confirmation appeared, but browser control timed out after confirmation and the final removal state could not be established; GUI unlink acceptance remains unverified. Demo-only localStorage was used; no session store, CLI, or external service.
 - On 2026-10-27, relation unlink confirmation was changed from the browser-native prompt to an in-app modal that names both endpoints and relation kind; completed operation records also state that the Codex session will not be changed. Unit and architecture checks pass, but the revised modal's keyboard/browser rendering and post-reload removal flow have not yet received browser acceptance.
+
+### 理解負債の関係解除と再確認をGUIで受入 (2026-10-27)
+
+- 隔離`--demo`のブラウザーLocalStorageに、合成の理解負債・成果物・判断を追加。理解を確認される人、不足する根拠、必要な説明の3項目を表示し、理解度スコアは表示しなかった。
+- 成果物への`evidence`、判断への`explains`関係を画面から追加すると不足案内が消え、状態を「解消済み」に変更できた。再読み込み後も状態と両関係が復元した。
+- 関係線の編集から`evidence`解除を選ぶと、アプリ内確認dialogが両端点と関係種別を示した。確認後、理解負債は「要確認」となり不足する根拠が再表示された。再読み込み後も関係解除と再確認状態が維持された。
+- 合成の説明関係とカードは隔離デモの確認付き削除で片付けた。実セッション、CLI、外部サービスは使わず、理解を自動判定する機能の受入ではない。スクリーンリーダー実機の読み上げは未確認。
