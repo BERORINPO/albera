@@ -4,7 +4,7 @@
 import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
 import { h } from './view.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
-import { cancelGraphDialog, confirmBlockedOperationRelease, connectMissingComprehensionEdge, graphDialogFocusTarget } from './graph-dialog-actions.mjs';
+import { cancelGraphDialog, confirmBlockedOperationRelease, confirmGraphRelationRemoval, connectMissingComprehensionEdge, graphDialogFocusTarget } from './graph-dialog-actions.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 
@@ -339,10 +339,11 @@ export function openGraphRelationDialog(o) {
       resolve: o.onResolveOperation,
     })) dialog.close();
     const confirmKey = edge?.operationId ? 'graph.removeCompletedOperationRelationConfirm' : 'graph.removeRelationConfirm';
-    if (action === 'delete-edge' && edge && o.onDeleteEdge && (!edge.operationId || edge.status === 'completed') && window.confirm(t(confirmKey))) {
-      o.onDeleteEdge(edge.id);
-      dialog.close();
-    }
+    if (action === 'delete-edge' && confirmGraphRelationRemoval({
+      edge,
+      confirm: () => window.confirm(t(confirmKey)),
+      remove: (id) => o.onDeleteEdge?.(id) === true,
+    })) dialog.close();
   });
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();

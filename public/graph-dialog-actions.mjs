@@ -11,6 +11,16 @@ export function confirmBlockedOperationRelease({ edge, confirm, resolve }) {
   return resolve(edge.id, edge.operationId) === true;
 }
 
+/** Remove a graph relation only after confirmation and a successful local save.
+ * Completed operation records are removable; pending/blocked operation records stay locked.
+ * @param {{edge?:any,confirm:()=>boolean,remove:(id:string)=>boolean}} options
+ */
+export function confirmGraphRelationRemoval({ edge, confirm, remove }) {
+  if (!edge || typeof edge.id !== 'string' || !edge.id || (edge.operationId && edge.status !== 'completed')) return false;
+  if (!confirm()) return false;
+  return remove(edge.id) === true;
+}
+
 /** Open relation editing for one explicitly missing comprehension link kind.
  * @param {{nodeId:string,edgeKind:string,close:()=>void,connect:(from:string,kind:string)=>void}} options
  */

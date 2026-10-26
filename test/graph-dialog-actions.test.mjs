@@ -1,9 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { cancelGraphDialog, confirmBlockedOperationRelease, connectMissingComprehensionEdge, graphDialogFocusTarget } from '../public/graph-dialog-actions.mjs';
+import { cancelGraphDialog, confirmBlockedOperationRelease, confirmGraphRelationRemoval, connectMissingComprehensionEdge, graphDialogFocusTarget } from '../public/graph-dialog-actions.mjs';
 
 const blocked = { id: 'edge-1', operationId: 'op-1', kind: 'delegates', status: 'blocked' };
+
+test('relation removal fails closed for locked records, cancellation, and unsuccessful persistence', () => {
+  let confirmed = 0;
+  let removed = 0;
+  const remove = (id) => { assert.equal(id, 'edge-1'); removed++; return true; };
+  const run = (edge, answer = true, save = true) => confirmGraphRelationRemoval({
+    edge,
+    confirm: () => { confirmed++; return answer; },
+    remove: () => { removed++; return save; },
+  });
+
+  assert.equal(run(undefined), false);
+  assert.equal(run({ id: '' }), false);
+  assert.equal(run(blocked), false);
+  assert.equal(run({ ...blocked, status: 'active' }), false);
+  assert.equal(run({ id: 'edge-1' }, false), false);
+  assert.equal(run({ id: 'edge-1' }, true, false), false);
+  assert.equal(confirmed, 2);
+  assert.equal(removed, 1);
+  assert.equal(confirmGraphRelationRemoval({ edge: { id: 'edge-1' }, confirm: () => true, remove }), true);
+  assert.equal(removed, 2);
+});
 
 test('blocked operation release requires a matching eligible record', () => {
   let confirmations = 0;

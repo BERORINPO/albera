@@ -634,3 +634,9 @@
 - 合成成果物カードを`evidence`、判断カードを`explains`で理解負債へ接続。詳細に両端・関係種別・目的が表示され、2種類が揃った後にだけ「解消済み」を保存できた。
 - 再読み込み後も対象者・不足根拠・必要説明・解消状態・両関係を詳細から確認できた。実セッションやCLI、外部サービスは不使用。データは隔離demo originのlocalStorageのみ。
 - 関係解除は確認dialogを表示したが、確認後のブラウザー制御がtimeoutし、解除後の状態は確定できなかった。GUI解除フローは未確認のままとする。隔離demoサーバーとタブは閉じた。
+
+### 関係解除の状態・保存ゲートをpure coreで検証 (2026-10-27)
+
+- 関係解除のUI経路をpure helperへ集約し、IDが無い関係、確認キャンセル、保存失敗、未完了operation記録ではdialogを閉じたり解除完了扱いにしない。完了済みoperation記録だけは通常関係と同様に明示確認後の解除を許す。
+- synthetic unit testで上記の拒否条件と成功経路を確認。`npm test` — 554 passed、`npm run arch` — 99 paths・違反0、`git diff --check` — passed、隔離fixtureを使う`npm run smoke` — passed。
+- これは解除policyのpure検証であり、ネイティブ確認後のGUI保存/復元を画面で受け入れたことは意味しない。GUI解除後の状態は引き続き未確認。
