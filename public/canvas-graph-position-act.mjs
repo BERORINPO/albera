@@ -13,7 +13,7 @@ export function nextCanvasGraphPosition(cv, size, graph) {
   return nextGraphNodePosition(graph, {
     x: cv.cam.x + viewport.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2,
     y: cv.cam.y + viewport.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2,
-  }, graphPlacementObstacles(cv.layout));
+  }, GRAPH_CARD_SIZE, graphPlacementObstacles(cv.layout));
 }
 
 export function nudgeCanvasSheet({ cv, key, dir, placeSheet, headOf, revealEl }) {
