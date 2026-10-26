@@ -428,3 +428,10 @@
 - 確認文にprovider名とsession ID末尾12文字を追加し、フルIDは表示しない。英語/日本語の合成テストで対象末尾・目的・外部利用/usage注意・破棄説明と差込漏れがないことを確認。
 - 隔離デモをport 19711で起動し`/api/hello`の`demo: true`を確認、合成キャンバスを画面表示した。デモでタスクとplanned委譲関係を作成したが、最終確認dialogの実画面表示は未確認。委譲を実行せず、Codex CLI、保存済み実セッション、外部サービスは使用していない。
 - 検証: `npm test` — 529 passed、`npm run arch` — 96 paths/0 violations、`git diff --check` — passed。デモサーバーを停止した。
+
+### 委譲最終確認の隔離画面受入と実行試行の不確実性 (2026-10-26)
+
+- 実保存先の代わりに一時CODEX_HOMEへ合成rollout 2件だけを置き、Claude/Copilot/OpenCodeとプロジェクトの入力先も一時の空フォルダに設定した通常モードを起動。ボードは合成の進行中/完了Codex CLIを表示し、session間の委譲関係を記録した。
+- 実行前確認には合成project label、Codex CLI、ID末尾12文字、目的、purpose-only stdin、account/configurationのnetwork/API利用可能性、usage、破棄出力、session記録変更可能性が画面表示された。
+- ブラウザー自動操作がJavaScript確認dialogで中断したが、結果画面で委譲状態が進行中に変化し、その後「委譲に失敗」と表示された。このため実行確認が意図せず成立し、合成セッションIDに対するCodex CLI実行を試みた可能性がある。対象IDを含む稼働プロセスは確認時に存在せず、CLI実行や外部通信の有無は確定できない。実セッションとの適合性検証として扱わず、以降の実行操作は行っていない。
+- Pigeonholesサーバーとブラウザータブは停止/閉鎖済み。合成fixtureは `work/delegation-confirmation-fixture` に残っている。削除コマンドは端末の安全ポリシーで拒否されたため削除できず、製品データや実セッション保存先には置いていない。
