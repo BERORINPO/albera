@@ -52,7 +52,9 @@ test('セッション0件の案内は特定providerに偏らず、診断欄を�
 
 test('検索案内はセッションとキャンバスカードの両方を区別して説明する', () => {
   assert.match(JA['filter.label'], /セッション・キャンバスカード・関係/);
+  assert.match(JA['filter.label'], /一致したセッションの関連カードも強調表示/);
   assert.match(EN['filter.label'], /sessions, canvas cards and relationships/);
+  assert.match(EN['filter.label'], /Matching sessions also highlight directly linked cards/);
   assert.match(JA['nomatch.query.text'], /関係の種類・目的/);
   assert.match(EN['nomatch.query.text'], /relationship types, purposes/);
 });
