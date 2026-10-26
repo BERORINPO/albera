@@ -275,6 +275,36 @@ test('worktree作成APIは同一Origin・JSON・opaque session IDとbranchだけ
   }
 });
 
+test('delegation API requires confirmation, sends only the purpose, and returns fixed operation state', async () => {
+  const p = await freePort();
+  const calls = [];
+  const server = http.createServer(createHandler({
+    port: p, getBoard: async () => ({ body: '{}', etag: '"empty"' }),
+    startDelegation: async (...args) => { calls.push(args); return { ok: true, operationId: '12345678-1234-1234-1234-1234567890ab' }; },
+    getDelegationStatus: () => 'completed',
+  }));
+  await new Promise((resolve) => server.listen(p, '127.0.0.1', resolve));
+  const headers = { Origin: `http://127.0.0.1:${p}`, 'Content-Type': 'application/json' };
+  const purpose = 'synthetic purpose must not echo';
+  try {
+    const result = await request(p, { path: '/api/delegations/run', method: 'POST', headers, body: JSON.stringify({ sessionId: 'codex_00000000-0000-4000-8000-000000000001', purpose, confirmed: true }) });
+    assert.equal(result.status, 202);
+    assert.deepEqual(JSON.parse(result.body), { operationId: '12345678-1234-1234-1234-1234567890ab', status: 'running' });
+    assert.equal(result.body.includes(purpose), false);
+    assert.deepEqual(calls, [['codex_00000000-0000-4000-8000-000000000001', purpose, true]]);
+    const status = await request(p, { path: '/api/delegations/status/12345678-1234-1234-1234-1234567890ab' });
+    assert.deepEqual(JSON.parse(status.body), { status: 'completed' });
+    const unconfirmed = await request(p, { path: '/api/delegations/run', method: 'POST', headers, body: JSON.stringify({ sessionId: 'codex_00000000-0000-4000-8000-000000000001', purpose, confirmed: false }) });
+    assert.equal(unconfirmed.status, 400);
+    const wrongOrigin = await request(p, { path: '/api/delegations/run', method: 'POST', headers: { ...headers, Origin: 'https://attacker.example' }, body: '{}' });
+    assert.equal(wrongOrigin.status, 403);
+    assert.equal(calls.length, 1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('worktree一覧APIはopaque session IDだけで呼び出され、上限付きの安全な要約だけを返す', async () => {
   const p = await freePort();
   const calls = [];

@@ -61,7 +61,7 @@ function defaultBar(t, o) {
  * 案内のあるカードには「引き継ぐ」も置く (帯の引き継ぎの状態を開く。Tab で届き、1 文字キーを止めても使える道)。
  * @param {T} t @param {any} card @param {string} pile @param {any} rowCtx
  */
-function sessionRelations(t, card, graph, sessions) {
+function sessionRelations(t, card, graph, sessions, demo) {
   const entries = sessionRelationEntries(graph?.edges ?? [], card.id, graph ?? { nodes: [] }, sessions);
   const items = entries.map((entry) => {
     const direction = t(entry.direction === 'out' ? 'graph.sessionRelationOut' : 'graph.sessionRelationIn');
@@ -79,6 +79,8 @@ function sessionRelations(t, card, graph, sessions) {
       h('span', { text: `${direction} — ${t(`graph.edge.${entry.kind}`)}${status}` }),
       entry.purpose ? h('small', { text: entry.purpose }) : entry.kind === 'delegates' ? h('small', { class: 'graph-dialog__hint', text: t('graph.delegationPurposeMissing') }) : null,
       entry.kind === 'delegates' ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'graph-edit-session-edge', 'data-id': entry.edgeId, text: t('graph.editDelegation') }) : null,
+      !demo && entry.kind === 'delegates' && entry.direction === 'out' && entry.endpoint === 'session' && entry.sessionId.startsWith('codex_')
+        ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'delegation-run', 'data-id': entry.edgeId, 'data-source-session': card.id, text: t('graph.runDelegation') }) : null,
       entry.endpoint === 'graph' && entry.node.kind === 'execution_profile'
         ? h('small', { text: t('graph.executionProfileSummary', { values: [
           t(`graph.executionLocation.${entry.node.executionLocation}`),
@@ -117,10 +119,10 @@ function gapTargetButtons(t, links) {
   ]);
 }
 
-function detailBar(t, card, pile, rowCtx, graph) {
+function detailBar(t, card, pile, rowCtx, graph, demo) {
   const el = detailEl(card, pile, rowCtx);
   el.querySelector('section.handoff')?.remove();
-  const relations = sessionRelations(t, card, graph, [...rowCtx.index.keys()].map((id) => ({ id })));
+  const relations = sessionRelations(t, card, graph, [...rowCtx.index.keys()].map((id) => ({ id })), demo);
   if (relations) el.append(relations);
   const acts = el.querySelector('.detail__acts') ?? el.appendChild(h('p', { class: 'detail__acts' }));
   if (handoffPlan(card, rowCtx.handoff?.[card.id], rowCtx.now).guide) {
@@ -189,7 +191,7 @@ export function renderBar(el, o) {
     else if (bar.kind === 'sheet') fill(el, sheetBar(t, /** @type {{key: string, name: string}} */ (o.sheet)));
     else {
       const { card, pile } = /** @type {{card: any, pile: string}} */ (o.entry);
-      fill(el, bar.kind === 'detail' ? detailBar(t, card, pile, o.rowCtx, o.graph) : handoffBar(t, card, { now: o.now, stored: o.rowCtx.handoff?.[card.id], demo: o.demo }));
+      fill(el, bar.kind === 'detail' ? detailBar(t, card, pile, o.rowCtx, o.graph, o.demo) : handoffBar(t, card, { now: o.now, stored: o.rowCtx.handoff?.[card.id], demo: o.demo }));
     }
     // 名前: いつもの帯は「キャンバスの操作」(凡例は aria-hidden なので凡例の名前にしない)、ほかは帯の見出し
     const lead = bar ? el.querySelector('.handoff__lead, .sheetbar__lead')?.textContent ?? '' : '';

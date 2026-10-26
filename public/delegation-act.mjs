@@ -1,0 +1,38 @@
+// Explicit, user-confirmed execution of a recorded Codex delegation.
+import { delegationStatus, runDelegation } from './api.mjs';
+import { loadGraph } from './graph-store.mjs';
+import { updateGraphEdge } from './graph-model.mjs';
+
+/** @param {string} edgeId @param {string} sourceId @param {{view:any,state:any,graphChanged:(doc:any)=>boolean,announce:(text:string)=>void}} deps */
+export async function runDelegationForEdge(edgeId, sourceId, { view, state, graphChanged, announce }) {
+  const graph = loadGraph();
+  const edge = graph.edges.find((item) => item.id === edgeId && item.kind === 'delegates' && item.from === `session:${sourceId}`);
+  if (!edge || edge.status !== 'planned' || !edge.purpose) return false;
+  const targetId = edge.to.startsWith('session:') ? edge.to.slice(8) : '';
+  const target = view.index.get(targetId)?.card;
+  const terminal = ['turn_completed', 'turn_aborted', 'turn_failed'].includes(target?.events?.at(-1)?.type);
+  if (!targetId.startsWith('codex_') || !target || !terminal || target.detail?.executionLocation === 'wsl') {
+    announce(state.t('graph.delegationUnavailable'));
+    return false;
+  }
+  const project = target.project?.label || state.t('project.other');
+  if (!window.confirm(state.t('graph.runDelegationConfirm', { project, purpose: edge.purpose }))) return false;
+  try {
+    const operationId = await runDelegation(targetId, edge.purpose);
+    graphChanged(updateGraphEdge(loadGraph(), edgeId, { status: 'active' }));
+    announce(state.t('graph.delegationStarted'));
+    for (let attempt = 0; attempt < 600; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const status = await delegationStatus(operationId);
+      if (status === 'running') continue;
+      graphChanged(updateGraphEdge(loadGraph(), edgeId, { status: status === 'completed' ? 'completed' : 'blocked' }));
+      announce(state.t(status === 'completed' ? 'graph.delegationCompleted' : 'graph.delegationFailed'));
+      return true;
+    }
+    announce(state.t('graph.delegationStillRunning'));
+  } catch {
+    graphChanged(updateGraphEdge(loadGraph(), edgeId, { status: 'blocked' }));
+    announce(state.t('graph.delegationFailed'));
+  }
+  return false;
+}

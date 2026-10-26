@@ -19,6 +19,7 @@ import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs
 import { GRAPH_CARD_SIZE } from './graph-render.mjs';
 import { announce } from './view.mjs';
 import { createWorktree, listWorktrees, removeWorktree } from './api.mjs';
+import { runDelegationForEdge } from './delegation-act.mjs';
 import { openWorktreeDialog } from './worktree-dialog.mjs';
 import { openWorktreeListDialog } from './worktree-list-dialog.mjs';
 import { openRelatedSessionDetail, resolveRelatedSessionShortId } from './session-relations.mjs';
@@ -299,6 +300,7 @@ export const CANVAS_CLICK = {
   },
   'graph-connect': (el) => connectGraphEndpoint(`session:${el.dataset.id ?? ''}`),
   'graph-edit-session-edge': (el) => editGraphEdge(el.dataset.id ?? ''),
+  'delegation-run': (el) => runDelegationForEdge(el.dataset.id ?? '', el.dataset.sourceSession ?? '', { view, state, graphChanged, announce }),
   'graph-task-from-session': (el) => newTaskForSession(el.dataset.id ?? ''),
   'worktree-create': (el) => createWorktreeForSession(el.dataset.id ?? ''),
   'worktree-list': (el) => listWorktreesForSession(el.dataset.id ?? ''),

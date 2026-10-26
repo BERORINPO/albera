@@ -137,6 +137,7 @@ export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY
       const lastActivityAt = lifecycle.status === 'active' ? Math.max(events.at(-1)?.at ?? meta.createdAt, stat.mtimeMs) : events.at(-1)?.at ?? meta.createdAt;
       const record = {
         source: 'codex',
+        cliSessionId: meta.id,
         ...(cwdMapper ? { executionLocation: 'wsl' } : {}),
         sessionId: `codex_${meta.id}`,
         title: 'Codex CLI',

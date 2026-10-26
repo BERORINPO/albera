@@ -11,6 +11,9 @@ import { HELLO_PATH, helloBody } from './probe.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const JS = 'text/javascript; charset=utf-8';
 const WORKTREE_PATH = '/api/worktrees';
+const DELEGATION_PATH = '/api/delegations';
+const DELEGATION_BODY_MAX = 4096;
+const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const WORKTREE_BODY_MAX = 2048;
 const MAX_WORKTREE_ITEMS = 20;
 const SESSION_CARD_ID = /^(?:local|codex|copilot|opencode)_[0-9a-f-]{36}$/i;
@@ -87,13 +90,24 @@ function send(res, status, type, body) {
  *   log は messages.mjs のキーで受ける (言葉は server が付ける)。demo は /api/hello で答える (ポートが使用中のときの確かめ用)
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => Promise<void>}
  */
-export function createHandler({ port, getBoard, createWorktree, listWorktrees, removeWorktree, demo = false, log = () => {}, staticFiles = buildStaticFiles() }) {
+export function createHandler({ port, getBoard, createWorktree, listWorktrees, removeWorktree, startDelegation, getDelegationStatus, demo = false, log = () => {}, staticFiles = buildStaticFiles() }) {
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   return async (req, res) => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
     const host = String(req.headers.host ?? '').toLowerCase();
     if (!allowedHosts.has(host)) return send(res, 403, 'text/plain; charset=utf-8', 'Forbidden');
     const pathname = String(req.url ?? '/').split('?')[0];
+    if (pathname === `${DELEGATION_PATH}/run`) {
+      if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed'); }
+      return serveDelegation(req, res, host);
+    }
+    if (pathname.startsWith(`${DELEGATION_PATH}/status/`)) {
+      if (req.method !== 'GET') { res.setHeader('Allow', 'GET'); return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed'); }
+      const id = pathname.slice(`${DELEGATION_PATH}/status/`.length);
+      if (!OPERATION_ID.test(id) || String(req.url ?? '').includes('?')) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+      const status = getDelegationStatus?.(id);
+      return ['running', 'completed', 'failed'].includes(status) ? send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ status })) : send(res, 404, 'application/json; charset=utf-8', JSON.stringify({ error: 'operation_unavailable' }));
+    }
     if (pathname === WORKTREE_PATH) {
       if (req.method === 'GET') return serveWorktreeList(req, res, host);
       if (req.method !== 'POST') {
@@ -123,6 +137,29 @@ export function createHandler({ port, getBoard, createWorktree, listWorktrees, r
       send(res, 500, 'text/plain; charset=utf-8', 'Internal Server Error');
     }
   };
+
+  /** A bounded, same-origin request. Purpose text is never logged, echoed, or persisted here. */
+  async function serveDelegation(req, res, host) {
+    const origin = String(req.headers.origin ?? '');
+    if (origin !== `http://127.0.0.1:${port}` && origin !== `http://localhost:${port}`) return send(res, 403, 'application/json; charset=utf-8', JSON.stringify({ error: 'origin_rejected' }));
+    if (String(req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') return send(res, 415, 'application/json; charset=utf-8', JSON.stringify({ error: 'json_required' }));
+    let body = '';
+    try { for await (const chunk of req) { body += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); if (Buffer.byteLength(body, 'utf8') > DELEGATION_BODY_MAX) return send(res, 413, 'application/json; charset=utf-8', JSON.stringify({ error: 'request_too_large' })); } }
+    catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' })); }
+    let value;
+    try { value = JSON.parse(body); } catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_json' })); }
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'confirmed,purpose,sessionId' || value.confirmed !== true || typeof value.sessionId !== 'string' || !/^codex_[0-9a-f-]{36}$/i.test(value.sessionId) || typeof value.purpose !== 'string' || !value.purpose.trim() || value.purpose.length > 2000) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (demo) return send(res, 403, 'application/json; charset=utf-8', JSON.stringify({ error: 'demo_disabled' }));
+    if (!startDelegation) return send(res, 501, 'application/json; charset=utf-8', JSON.stringify({ error: 'delegation_unavailable' }));
+    try {
+      const result = await startDelegation(value.sessionId, value.purpose, true);
+      if (result?.ok !== true || !OPERATION_ID.test(result.operationId ?? '')) return send(res, 422, 'application/json; charset=utf-8', JSON.stringify({ error: ['invalid_target', 'unsupported_location', 'session_active', 'session_unknown'].includes(result?.reason) ? result.reason : 'unavailable' }));
+      return send(res, 202, 'application/json; charset=utf-8', JSON.stringify({ operationId: result.operationId, status: 'running' }));
+    } catch {
+      log('term.delegationFailed', {});
+      return send(res, 500, 'application/json; charset=utf-8', JSON.stringify({ error: 'delegation_failed' }));
+    }
+  }
 
   /** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res @param {string} host */
   async function serveWorktreeList(req, res, host) {

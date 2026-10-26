@@ -32,6 +32,24 @@ export class WorktreeOperationError extends Error {
   }
 }
 
+/** Send only a user-authored delegation purpose after explicit UI confirmation. */
+export async function runDelegation(sessionId, purpose) {
+  const res = await fetch('/api/delegations/run', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, purpose, confirmed: true }), cache: 'no-store', credentials: 'same-origin',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || typeof data.operationId !== 'string') throw new WorktreeOperationError(res.status, typeof data.error === 'string' ? data.error : 'failed');
+  return data.operationId;
+}
+
+export async function delegationStatus(operationId) {
+  const res = await fetch(`/api/delegations/status/${encodeURIComponent(operationId)}`, { cache: 'no-store', credentials: 'same-origin' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !['running', 'completed', 'failed'].includes(data.status)) throw new WorktreeOperationError(res.status, 'failed');
+  return data.status;
+}
+
 /**
  * 盤面を取得する。変わっていなければ 304。
  * @param {string|null} etag
