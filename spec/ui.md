@@ -1445,3 +1445,8 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - 「元の用紙へ戻す」を押すと通常のプロジェクト用紙へ戻り、その状態も再読込後に復元された。検証用タブを閉じ、demo serverを停止した。
 - 合成UIとブラウザー内状態のみ。実セッション/providerファイル、CLI、worktree操作、外部サービスは不使用。マウスpointer drag、touch操作、スクリーンリーダー実機は未確認。
 - `npm test`: 611 passed、`npm run arch`: 99 paths・違反0、`npm run smoke`: pass、`git diff --check`: pass。smokeは既存の読取専用adapterでローカルセッション情報を読み、集計値のみ出力した。
+
+### 合成セッションカードの実ポインタードラッグと復元 (2026-10-27)
+
+- 隔離loopback demoを開き、キャンバス上の合成Codex CLIセッションカードの移動ハンドルをポインターでドラッグした。表示位置が移動し、再読み込み後も同じ配置が復元することを画面とDOMの座標で確認した。
+- データはdemoの合成セッションと、そのブラウザーoriginのcanvas配置のみ。実session source、CLI、worktree、外部サービスは使用していない。これはマウスpointer移動と保存/復元の受入であり、touch操作、すべての入力方式、スクリーンリーダー実機は未確認。デモサーバーと一時タブは終了した。
