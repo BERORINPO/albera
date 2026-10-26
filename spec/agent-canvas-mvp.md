@@ -140,6 +140,13 @@
 - デモには4状態を持つCodexの合成レコードを明示的に追加した。すべてデモと識別でき、実providerデータではない。実セッションは未確認。デモタブとサーバーを閉じた。
 - 検証: `npm test` — 504 passed、`npm run arch` — 96 paths/0 violations、`npm run smoke` — passed、`git diff --check` — passed。
 
+### provider保存先の追加読み取り専用適合確認 (2026-10-26)
+
+- 読み取り前にCopilot adapterがread-onlyで開き、最初の行のproducer markerと検証済みsession ID/時刻で認識し、cwdはプロジェクト手掛かりとして内部利用し、末尾から許可イベント種別・時刻だけを抽出することを確認した。OpenCodeはSQLite `readOnly: true` で開き、legacyでは一覧用列だけを問い合わせ、transcript/message/partを読まないことを確認した。Codex adapterは `source=cli` と許可originatorの一致後だけ末尾の許可イベントを調べる。
+- 現在設定された実保存先をadapterから直接read-only走査し、出力は集計値だけに制限した。Codex: 候補38/認識0、Copilot: event file 0、OpenCode: DB 1/legacy形式20件。全OpenCode行は状態unknownで、transcript eventを推定しない。
+- 実OpenCodeの20件を一時メモリ上でpathを外してcore boardへ渡し、OpenCodeカード20件・状態unknown 20件として投影されること、board cardにcwd/pathが無いことを集計だけで確認した。Claudeのタイトル等やprovider ID・イベント内容・完全パスは出力/PRへ含めていない。
+- この確認は保存形式とadapter→pure-core投影の適合確認。CopilotとCLI起点Codexの実データは見つからず、実Codex CLIイベント・4状態の実GUI表示は引き続き未確認。新規セッション作成、CLI起動、保存先への書込み、外部provider要求はしていない。
+
 ### 既存Codex保存先のプライバシー優先プリフライト (2026-10-26)
 
 - 実データを読む前にCodex adapterを確認した。ファイルは読み取り専用で開き、先頭の上限付きヘッダーからセッション識別に必要なメタデータだけを判定する。CLI markerに合う場合に限り、末尾の上限付き範囲から許可したイベント種別と時刻を抽出し、API/board projectionから作業パスを除外する。プロンプト、ツール入出力、環境値、認証情報、フルパスを出力しない。
