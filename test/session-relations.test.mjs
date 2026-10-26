@@ -96,3 +96,18 @@ test('opaque short session targets resolve only one matching provider session', 
   assert.equal(resolveRelatedSessionShortId('unknown', '000000000001', sessions), null);
   assert.equal(resolveRelatedSessionShortId('codex', 'aaaaaaaa000000000001', sessions), null);
 });
+
+test('Obsidian session relations expose the card title but never the vault or note path', () => {
+  const noteId = 'g_00000000-0000-4000-8000-000000000008';
+  const graph = { nodes: [{
+    id: noteId, kind: 'obsidian_note', title: 'Architecture decision', body: 'Reviewed note summary',
+    knowledgeVault: 'Private Vault', knowledgeFile: 'Private/Client/Decision.md',
+  }] };
+  const edges = [{ id: 'note-edge', from: `graph:${noteId}`, to: `session:${first}`, kind: 'related', purpose: '', status: '' }];
+  const entries = sessionRelationEntries(edges, first, graph, [{ id: first }]);
+  assert.deepEqual(entries[0].node, { id: noteId, kind: 'obsidian_note', title: 'Architecture decision' });
+  const json = JSON.stringify(entries);
+  assert.equal(json.includes('Private Vault'), false);
+  assert.equal(json.includes('Private/Client/Decision.md'), false);
+  assert.equal(json.includes('Reviewed note summary'), false);
+});

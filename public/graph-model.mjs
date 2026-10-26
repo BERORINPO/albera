@@ -3,7 +3,7 @@
 
 export const GRAPH_MAX_NODES = 200;
 export const GRAPH_MAX_EDGES = 500;
-export const GRAPH_NODE_KINDS = Object.freeze(['task', 'artifact', 'decision', 'understanding_gap', 'worktree', 'execution_profile']);
+export const GRAPH_NODE_KINDS = Object.freeze(['task', 'artifact', 'decision', 'understanding_gap', 'worktree', 'execution_profile', 'obsidian_note']);
 export const GRAPH_NODE_STATES = Object.freeze(['open', 'in_progress', 'blocked', 'done', 'resolved']);
 export const GRAPH_EDGE_KINDS = Object.freeze(['related', 'depends_on', 'delegates', 'evidence', 'explains']);
 export const DELEGATION_STATES = Object.freeze(['planned', 'active', 'blocked', 'completed', 'cancelled']);
@@ -29,6 +29,32 @@ export function safeArtifactUrl(value, kind = 'artifact') {
   } catch {
     return '';
   }
+}
+
+/** Obsidian note references stay local and contain only a user-entered vault and relative note path. */
+export function safeObsidianVault(value) {
+  if (typeof value !== 'string' || value.length > 100) return '';
+  const vault = value.trim();
+  if (!vault || /[\\/:?#\u0000-\u001f\u007f]/u.test(vault)) return '';
+  return vault;
+}
+
+/** Only vault-relative note paths are accepted; absolute paths and dot segments are rejected. */
+export function safeObsidianFile(value) {
+  if (typeof value !== 'string' || value.length > 240) return '';
+  const file = value.trim();
+  if (!file || file.startsWith('/') || file.endsWith('/') || /[\\:?#\u0000-\u001f\u007f]/u.test(file)) return '';
+  const segments = file.split('/');
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) return '';
+  return file;
+}
+
+/** Build an Obsidian open URI only from safe user-entered vault-relative references. */
+export function obsidianOpenUri(vaultValue, fileValue) {
+  const vault = safeObsidianVault(vaultValue);
+  const file = safeObsidianFile(fileValue);
+  if (!vault || !file) return '';
+  return `obsidian://open?vault=${encodeURIComponent(vault)}&file=${encodeURIComponent(file)}`;
 }
 
 /** @typedef {{id:string,kind:string,title:string,body:string,url:string,status:string,x:number,y:number,checkedPerson:string,missingEvidence:string,neededExplanation:string,executionLocation:string,workspaceIsolation:string,networkAccess:string,approvalMode:string}} GraphNode */
@@ -57,6 +83,8 @@ export function normalizeGraphNode(value) {
     workspaceIsolation: kind === 'execution_profile' ? oneOf(v.workspaceIsolation, WORKSPACE_ISOLATIONS, 'unknown') : '',
     networkAccess: kind === 'execution_profile' ? oneOf(v.networkAccess, NETWORK_ACCESS, 'unknown') : '',
     approvalMode: kind === 'execution_profile' ? oneOf(v.approvalMode, APPROVAL_MODES, 'unknown') : '',
+    knowledgeVault: kind === 'obsidian_note' ? safeObsidianVault(v.knowledgeVault) : '',
+    knowledgeFile: kind === 'obsidian_note' ? safeObsidianFile(v.knowledgeFile) : '',
   };
 }
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, moveGraphNode, nextGraphNodePosition, normalizeGraph, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, moveGraphNode, nextGraphNodePosition, normalizeGraph, obsidianOpenUri, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
 
 const g1 = 'g_00000000-0000-4000-8000-000000000001';
 const g2 = 'g_00000000-0000-4000-8000-000000000002';
@@ -25,6 +25,21 @@ test('artifact references allow only public HTTPS URLs without credentials, quer
   assert.equal(graph.nodes[0].url, 'https://github.com/morluto/rea');
   assert.equal(graph.nodes[1].url, '');
   assert.equal('auth' in graph.nodes[0], false);
+});
+
+test('Obsidian note references are local, vault-relative, allowlisted, and encoded only for explicit opening', () => {
+  assert.equal(safeObsidianVault('Engineering Notes'), 'Engineering Notes');
+  assert.equal(safeObsidianFile('Architecture/Agent Canvas.md'), 'Architecture/Agent Canvas.md');
+  assert.equal(obsidianOpenUri('Engineering Notes', 'Architecture/Agent Canvas.md'), 'obsidian://open?vault=Engineering%20Notes&file=Architecture%2FAgent%20Canvas.md');
+  for (const vault of ['', '../vault', 'C:\\vault', '/home/user/vault', 'vault?path=secret', 'v\u0000ault']) assert.equal(safeObsidianVault(vault), '');
+  for (const file of ['', '/home/user/vault/note.md', 'C:\\vault\\note.md', '../secret.md', 'folder/../../secret.md', 'note.md#heading', 'note.md?query=secret']) assert.equal(safeObsidianFile(file), '');
+  assert.equal(obsidianOpenUri('vault', '../secret.md'), '');
+
+  const note = normalizeGraph({ nodes: [node(g1, { kind: 'obsidian_note', knowledgeVault: 'Team Vault', knowledgeFile: 'Design/Canvas.md', body: 'Reviewed note summary', secret: 'discard' })], edges: [] }).nodes[0];
+  assert.deepEqual([note.kind, note.knowledgeVault, note.knowledgeFile], ['obsidian_note', 'Team Vault', 'Design/Canvas.md']);
+  assert.equal('secret' in note, false);
+  const otherKind = normalizeGraph({ nodes: [node(g1, { kind: 'task', knowledgeVault: '/private', knowledgeFile: '../private.md' })], edges: [] }).nodes[0];
+  assert.deepEqual([otherKind.knowledgeVault, otherKind.knowledgeFile], ['', '']);
 });
 
 test('execution profiles retain only allowlisted manual conditions and default invalid values to unknown', () => {

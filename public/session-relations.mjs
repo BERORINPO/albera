@@ -58,6 +58,9 @@ export function sessionRelationEntries(edges, sessionId, graph, sessions) {
         };
         return [{ ...base, endpoint: 'graph', node: gap }];
       }
+      if (node.kind === 'obsidian_note') {
+        return [{ ...base, endpoint: 'graph', node: { id: node.id, kind: node.kind, title: node.title } }];
+      }
       return [{ ...base, endpoint: 'graph', node }];
     }
     if (other.startsWith('session:')) {

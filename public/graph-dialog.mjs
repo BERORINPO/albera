@@ -1,7 +1,7 @@
 // @ts-check
 // Accessible local editor for graph cards and user-authored relations.
 
-import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, reviewUnderstandingGaps, safeArtifactUrl } from './graph-model.mjs';
+import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
 import { h } from './view.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
@@ -28,6 +28,16 @@ function referenceField(t, value) {
     h('span', { text: t('graph.referenceUrl') }),
     h('input', { name: 'referenceUrl', type: 'url', maxlength: '500', autocomplete: 'off', placeholder: 'https://…', value }),
     h('span', { class: 'graph-dialog__hint', text: t('graph.referencePrivacy') }));
+}
+
+/** @param {T} t @param {any} node */
+function knowledgeFields(t, node) {
+  return h('fieldset', { class: 'graph-dialog__profile', 'data-knowledge-note': '' },
+    h('legend', { text: t('graph.knowledgeNote') }),
+    h('p', { class: 'graph-dialog__hint', text: t('graph.knowledgeNoteManual') }),
+    h('label', { class: 'graph-dialog__field' }, h('span', { text: t('graph.knowledgeVault') }), h('input', { name: 'knowledgeVault', maxlength: '100', autocomplete: 'off', required: true, value: node?.knowledgeVault ?? '' })),
+    h('label', { class: 'graph-dialog__field' }, h('span', { text: t('graph.knowledgeFile') }), h('input', { name: 'knowledgeFile', maxlength: '240', autocomplete: 'off', required: true, value: node?.knowledgeFile ?? '' })),
+  );
 }
 
 /** @param {T} t @param {string} label @param {string} value */
@@ -87,6 +97,7 @@ export function openGraphNodeDialog(o) {
       selectField(t, 'graph.networkAccess', 'networkAccess', [...NETWORK_ACCESS], node?.networkAccess ?? 'unknown', (v) => t(`graph.networkAccess.${v}`)),
       selectField(t, 'graph.approvalMode', 'approvalMode', [...APPROVAL_MODES], node?.approvalMode ?? 'unknown', (v) => t(`graph.approvalMode.${v}`)),
     ),
+    knowledgeFields(t, node),
   );
   const kindSelect = /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="kind"]'));
   const refField = /** @type {HTMLElement|null} */ (form.querySelector('[data-artifact-reference]'));
@@ -94,6 +105,9 @@ export function openGraphNodeDialog(o) {
   const refInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="referenceUrl"]'));
   const profileFields = /** @type {HTMLElement|null} */ (form.querySelector('[data-execution-profile]'));
   const comprehensionFields = /** @type {HTMLElement|null} */ (form.querySelector('[data-comprehension-fields]'));
+  const knowledgeNoteFields = /** @type {HTMLFieldSetElement|null} */ (form.querySelector('[data-knowledge-note]'));
+  const knowledgeVaultInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="knowledgeVault"]'));
+  const knowledgeFileInput = /** @type {HTMLInputElement|null} */ (form.querySelector('[name="knowledgeFile"]'));
   const syncReferenceField = () => {
     const artifact = kindSelect?.value === 'artifact';
     if (refField) refField.hidden = !artifact;
@@ -101,14 +115,27 @@ export function openGraphNodeDialog(o) {
   };
   const syncProfileFields = () => { if (profileFields) profileFields.hidden = kindSelect?.value !== 'execution_profile'; };
   const syncComprehensionFields = () => { if (comprehensionFields) comprehensionFields.hidden = kindSelect?.value !== 'understanding_gap'; };
+  const syncKnowledgeFields = () => {
+    const enabled = kindSelect?.value === 'obsidian_note';
+    if (knowledgeNoteFields) {
+      knowledgeNoteFields.hidden = !enabled;
+      knowledgeNoteFields.disabled = !enabled;
+    }
+  };
   kindSelect?.addEventListener('change', syncReferenceField);
   kindSelect?.addEventListener('change', syncProfileFields);
   kindSelect?.addEventListener('change', syncComprehensionFields);
+  kindSelect?.addEventListener('change', syncKnowledgeFields);
   refInput?.addEventListener('input', () => refInput.setCustomValidity(''));
+  knowledgeVaultInput?.addEventListener('input', () => knowledgeVaultInput.setCustomValidity(''));
+  knowledgeFileInput?.addEventListener('input', () => knowledgeFileInput.setCustomValidity(''));
   syncReferenceField();
   syncProfileFields();
   syncComprehensionFields();
+  syncKnowledgeFields();
   if (node?.url) form.append(h('a', { class: 'graph-dialog__reference-link', href: node.url, target: '_blank', rel: 'noopener noreferrer', text: t('graph.openReference') }));
+  const knowledgeUri = node?.kind === 'obsidian_note' ? obsidianOpenUri(node.knowledgeVault, node.knowledgeFile) : '';
+  if (knowledgeUri) form.append(h('a', { class: 'graph-dialog__reference-link', href: knowledgeUri, target: '_blank', rel: 'noopener noreferrer', text: t('graph.openKnowledgeNote') }));
   if (node) {
     const linked = graph.edges.filter((e) => e.from === `graph:${node.id}` || e.to === `graph:${node.id}`);
     form.append(h('h3', { class: 'graph-dialog__subhead', text: t('graph.relations') }));
@@ -162,6 +189,14 @@ export function openGraphNodeDialog(o) {
       refInput?.reportValidity();
       return;
     }
+    const knowledgeVault = String(data.kind) === 'obsidian_note' ? safeObsidianVault(data.knowledgeVault) : '';
+    const knowledgeFile = String(data.kind) === 'obsidian_note' ? safeObsidianFile(data.knowledgeFile) : '';
+    if (String(data.kind) === 'obsidian_note' && (!knowledgeVault || !knowledgeFile)) {
+      knowledgeVaultInput?.setCustomValidity(knowledgeVault ? '' : t('graph.knowledgeVaultInvalid'));
+      knowledgeFileInput?.setCustomValidity(knowledgeFile ? '' : t('graph.knowledgeFileInvalid'));
+      (knowledgeVaultInput?.validationMessage ? knowledgeVaultInput : knowledgeFileInput)?.reportValidity();
+      return;
+    }
     o.onSave({
       ...(node ? { id: node.id } : {}),
       ...(o.position ?? {}),
@@ -177,6 +212,8 @@ export function openGraphNodeDialog(o) {
       workspaceIsolation: data.workspaceIsolation,
       networkAccess: data.networkAccess,
       approvalMode: data.approvalMode,
+      knowledgeVault,
+      knowledgeFile,
     });
     dialog.close();
   });
