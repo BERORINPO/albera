@@ -20,8 +20,11 @@ test('empty canvas gives a direct accessible action to add a card', () => {
   assert.match(renderer, /'aria-label': t\('graph\.emptyLabel'\)/);
   assert.match(renderer, /'data-action': 'graph-new'.*text: t\('graph\.emptyAction'\)/);
   assert.match(renderer, /else if \(empty\.dataset\.lang !== t\.lang\)/, 'language changes refresh the persistent empty state');
+  assert.match(css, /\.graph-layer__empty\s*\{[^}]*width:\s*min\(calc\(28rem \* var\(--k\)\), calc\(90vw \* var\(--k\)\)\);/);
+  assert.match(css, /\.graph-layer__empty\s*\{[^}]*font-size:\s*calc\(var\(--text-md\) \* var\(--k\)\);/);
   assert.match(css, /\.graph-layer__empty\s*\{[^}]*pointer-events:\s*auto;/);
-  assert.match(css, /\.graph-layer__empty-action:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--color-focus\);/);
+  assert.match(css, /\.graph-layer__empty-action\s*\{[^}]*min-height:\s*calc\(var\(--hit\) \* var\(--k\)\);/);
+  assert.match(css, /\.graph-layer__empty-action:focus-visible\s*\{[^}]*outline:\s*calc\(3px \* var\(--k\)\) solid var\(--color-focus\);/);
   for (const file of ['dict-ja-canvas.mjs', 'dict-en-canvas.mjs']) {
     const dict = fs.readFileSync(new URL(`../public/${file}`, import.meta.url), 'utf8');
     assert.match(dict, /'graph\.emptyLabel':/);
