@@ -661,3 +661,9 @@
 - `npm test` — 556 passed、`npm run arch` — 99 paths・違反0、`npm run smoke` — 合成fixtureでpass、`git diff --check` — pass。
 - アクセシブル名・説明・日英文言と操作の配線はテスト済み。今回の変更後にブラウザーでTab/Escape/保存/再読み込みを受け入れるGUI確認は未実施。
 - 2026-10-27の再試行では合成demoをlocalhostで起動したが、Windows Computer UseがChromeの現在URLを安全に特定できず、画面確認前に停止した。UI操作は一度も行っていない。停止確認時に19864番portのlistenerは無く、実セッションや実worktreeは使っていない。
+
+### 確認dialogのモーダル意味を支援技術へ明示 (2026-10-27)
+
+- 共通の破壊操作確認dialogに`role="alertdialog"`と`aria-modal="true"`を追加し、確認用モーダルとしての意味を明示した。既存の`aria-labelledby`と`aria-describedby`は維持する。
+- static UI assertionを更新し、`npm test` — 556 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。
+- スクリーンリーダーでの実際の読み上げとブラウザー上のキーボード受入は未確認。

@@ -5,7 +5,7 @@ import { h } from './view.mjs';
 
 /** @param {{t:T,title:string,description:string,confirmLabel:string,parent:HTMLDialogElement,returnFocus:HTMLElement|null,onConfirm:()=>boolean}} o */
 export function openGraphConfirmDialog(o) {
-  const dialog = h('dialog', { class: 'graph-dialog', 'aria-labelledby': 'graph-confirm-title', 'aria-describedby': 'graph-confirm-description' });
+  const dialog = h('dialog', { class: 'graph-dialog', role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': 'graph-confirm-title', 'aria-describedby': 'graph-confirm-description' });
   const form = h('form', { class: 'graph-dialog__form' });
   form.append(
     h('h2', { id: 'graph-confirm-title', text: o.t(o.title) }),
