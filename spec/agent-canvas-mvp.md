@@ -97,7 +97,7 @@
 
 | 領域 | 現在の実装 | 未完了・証拠の限界 |
 |---|---|---|
-| 操作可能なCanvas | 一覧/Canvas切替、検索とsource/state/project絞り込み、session slipsとtask/artifact/decision/worktree/理解負債/execution profile/Obsidian参照カード、ドラッグ・キーボード移動、パン・ズーム、関係線、localStorage復元 | 2026-10-26の合成ブラウザー確認で複数providerの複合絞り込み、カード位置/関係/表示切替の再読み込み保持、詳細からのタスク作成と理解負債リンク、worktreeの確認付き作成/削除、空状態/WSL診断、320/400/768/1280pxの表示と一部キーボードフォーカスを確認。委譲線GUI確認では5つの許可状態の線表示と方向マーカー、詳細状態を確認し、取消済み状態の再読み込み復元も確認。全ダイアログ/全ショートカット/スクリーンリーダー受入、未知状態のブラウザー表示、tooltip実視認、実セッション表示は未確認 |
+| 操作可能なCanvas | 一覧/Canvas切替、検索とsource/state/project絞り込み、session slipsとtask/artifact/decision/worktree/理解負債/execution profile/Obsidian参照カード、ドラッグ・キーボード移動、パン・ズーム、関係線、localStorage復元 | 2026-10-26の合成ブラウザー確認で複数providerの複合絞り込み、カード位置/関係/表示切替の再読み込み保持、詳細からのタスク作成と理解負債リンク、worktreeの確認付き作成/削除、空状態/WSL診断、320/400/768/1280pxの表示と一部キーボードフォーカスを確認。委譲線GUI確認では5つの許可状態の線表示と方向マーカー、詳細状態を確認し、取消済み状態の再読み込み復元も確認。合成ブラウザーで委譲線のtitle属性とhover hit-testも確認した。全ダイアログ/全ショートカット/スクリーンリーダー受入、ネイティブtooltip popupの視認、未知状態のブラウザー表示、実セッション表示は未確認 |
 | セッション・イベント | Claude Code、Codex CLI、Copilot、OpenCodeにread-only adapterがあり、同じboardでallowlistイベント・状態・詳細を表示。関係pickerも表示中の全providerを対象とする | Codex CLI起点の実セッションは未確認。Copilot保存先はCLI/app共通、OpenCode DBもproducer clientをadapterが識別しない。OpenCode旧schemaは一覧以外の状態/イベントをunknown扱い |
 | ハーネス・実行条件 | 詳細に観測可能なprovider/sourceを表示。Codex CLIはCLI markerを満たす記録に限定。場所・分離・network・approvalは不明初期値の手動profileとして関連付け可能 | Copilot/OpenCodeではCLIかアプリかを断定できない。セッションや環境から実行条件を自動検出しない。profile値は利用者申告で、実際の設定・モデル・実行条件の証明ではない |
 | 委譲 | 委譲元/先、目的、状態を関係線と詳細に記録し、完了済みローカルCodexへのread-only実行を最終確認後に開始 | purpose-only stdin、read-only sandbox、出力破棄、固定状態APIをmockで確認。operation IDはcanvasのlocalStorageに保存し、再読込後に明示的な状態確認が可能。サーバー再起動で状態が失われた場合は再試行せずblockedへ閉じる。実CLIは未起動、実セッション互換性と一般provider間委譲は未確認/未実装 |
@@ -230,4 +230,10 @@
 - 隔離loopback `--demo` の合成Codex→Claude関係で、予定/進行中/阻害中/完了/取消済みをUIから順に保存し、各詳細に対応する状態とキャンバス線・方向マーカーを確認した。5状態は線種または色で表示が変わる。
 - 取消済みへ変更後にページを再読み込みし、同じ合成関係を開いて取消済み状態が復元されることを確認した。
 - 未知状態はUIで作成できず、描画titleの固定文言と未知値/目的文の非混入は単体テストで確認した。未知状態のブラウザー描画/tooltip実視認は未確認。実セッション・CLIは未使用。
+
+### 委譲線tooltipのhover hit-testを有効化 (2026-10-26)
+
+- CSSで線レイヤーの`pointer-events: none`を継承していたため、委譲線に設定済みの固定titleをhoverできない問題を修正。線自体は見た目を保ち、上下7pxの透明hit領域を追加した。
+- 隔離loopback合成デモでDOM上のhover hit-testがtrueになり、委譲線に「委譲の記録: 予定」の固定title属性と`pointer-events: auto`が付くことを確認。目的文はtitleに含まれない。
+- ブラウザーのネイティブtooltip popupは画面キャプチャに現れず、視認受入は未確認。未知状態もUIから作れないためブラウザー未確認。`npm test`: 506 passed; `npm run arch`: 96 paths, 0 violations; `npm run smoke`: passed; `git diff --check`: passed。
 - Pigeonholes自身が外部サービスへ直接リクエストしない説明は維持し、CLI自体の通信可能性と区別した。実CLIは起動していない。
