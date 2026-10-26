@@ -79,13 +79,14 @@ export function graphEdgeSearchText(edge, t) {
 
 /** @param {{kind:string,status?:string}} edge @param {T} t */
 export function graphEdgePresentation(edge, t) {
+  const kind = ['related', 'depends_on', 'delegates', 'evidence', 'explains'].includes(edge.kind) ? edge.kind : 'related';
   const status = edge.kind === 'delegates' && ['planned', 'active', 'blocked', 'completed', 'cancelled'].includes(edge.status ?? '')
     ? edge.status
     : undefined;
   return {
-    className: `graph-edge graph-edge--${edge.kind}${edge.kind === 'delegates' && !status ? ' graph-edge--delegates-unknown' : ''}`,
+    className: `graph-edge graph-edge--${kind}${edge.kind === 'delegates' && !status ? ' graph-edge--delegates-unknown' : ''}`,
     status,
-    title: edge.kind === 'delegates' ? `${t('graph.edge.delegates')}: ${t(`graph.delegation.${status ?? 'unknown'}`)}` : undefined,
+    title: kind === 'delegates' ? `${t('graph.edge.delegates')}: ${t(`graph.delegation.${status ?? 'unknown'}`)}` : t(`graph.edge.${kind}`),
   };
 }
 
@@ -219,17 +220,15 @@ export function renderGraphLayer(layer, o) {
     (x) => `${x.edge.from}|${x.edge.to}|${x.edge.kind}|${x.edge.status}|${x.edge.purpose}|${x.line?.x1}|${x.line?.y1}|${x.line?.x2}|${x.line?.y2}`,
     (x) => {
       const attributes = graphEdgeAttributes(x.edge, t);
-      const line = h(attributes.title ? 'button' : 'span', {
-        ...(attributes.title ? { type: 'button', 'data-action': 'graph-edit-edge', 'data-id': x.edge.id } : {}),
+      const line = h('button', {
+        type: 'button', 'data-action': 'graph-edit-edge', 'data-id': x.edge.id,
+        'aria-label': attributes.title,
         class: attributes.className,
       }, attributes.title
         ? h('span', { class: 'graph-edge__tooltip', 'aria-hidden': 'true', text: attributes.title })
         : null);
-      if (attributes.title) {
-        line.setAttribute('aria-label', attributes.title);
-      } else line.setAttribute('aria-hidden', 'true');
       if (attributes.status) line.setAttribute('data-status', attributes.status);
-      if (attributes.title) line.setAttribute('title', attributes.title);
+      line.setAttribute('title', attributes.title);
       if (x.line) placeLine(line, x.line.x1, x.line.y1, x.line.x2, x.line.y2);
       return line;
     },

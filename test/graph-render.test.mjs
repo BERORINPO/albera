@@ -210,7 +210,9 @@ test('delegation edge presentation preserves only allowlisted status values for 
     status: undefined,
     title: 'graph.edge.delegates: graph.delegation.unknown',
   });
-  assert.deepEqual(graphEdgePresentation({ kind: 'related', status: 'active' }, t), { className: 'graph-edge graph-edge--related', status: undefined, title: undefined });
+  for (const kind of ['related', 'depends_on', 'evidence', 'explains']) {
+    assert.deepEqual(graphEdgePresentation({ kind, status: 'active' }, t), { className: `graph-edge graph-edge--${kind}`, status: undefined, title: `graph.edge.${kind}` });
+  }
 });
 
 test('each persisted delegation status has a canvas style and unknown status stays neutral', () => {
@@ -227,11 +229,11 @@ test('each persisted delegation status has a canvas style and unknown status sta
   assert.match(css, /\.graph-edge__tooltip\s*\{[^}]*pointer-events:\s*none;/);
   assert.match(css, /\.graph-edge__tooltip\s*\{[^}]*font-size:\s*max\(12px,/);
   assert.match(renderer, /lineRoot\.removeAttribute\('aria-hidden'\)/);
-  assert.match(renderer, /h\(attributes\.title \? 'button' : 'span'/);
+  assert.match(renderer, /h\('button', \{[\s\S]*?'data-action': 'graph-edit-edge'/);
   assert.match(renderer, /'data-action': 'graph-edit-edge', 'data-id': x\.edge\.id/);
-  assert.match(renderer, /line\.setAttribute\('aria-label', attributes\.title\)/);
-  assert.match(renderer, /else line\.setAttribute\('aria-hidden', 'true'\)/);
-  assert.match(renderer, /if \(attributes\.title\) el\.setAttribute\('aria-label', attributes\.title\)/);
+  assert.match(renderer, /'aria-label': attributes\.title/);
+  assert.doesNotMatch(renderer, /line\.setAttribute\('aria-hidden', 'true'\)/);
+  assert.match(renderer, /line\.setAttribute\('title', attributes\.title\)/);
   assert.doesNotMatch(renderer, /el\.setAttribute\('aria-label', t\(`graph\.edge\.\$\{edge\.kind\}`\)\)/);
   assert.match(fs.readFileSync(new URL('../public/canvas-act.mjs', import.meta.url), 'utf8'), /'graph-edit-edge': \(el\) => graphActions\.editEdge\(el\.dataset\.id \?\? ''\)/);
 });
@@ -244,5 +246,5 @@ test('delegation edge attributes expose only the fixed status tooltip, including
   });
   assert.equal(JSON.stringify(attrs).includes('private purpose'), false);
   assert.equal('status' in attrs, false);
-  assert.deepEqual(graphEdgeAttributes({ kind: 'related', status: 'active' }, (key) => key), { className: 'graph-edge graph-edge--related' });
+  assert.deepEqual(graphEdgeAttributes({ kind: 'related', status: 'active' }, (key) => key), { className: 'graph-edge graph-edge--related', title: 'graph.edge.related' });
 });

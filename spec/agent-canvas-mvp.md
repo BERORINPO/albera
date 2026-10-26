@@ -701,3 +701,9 @@
 
 - 既に完了済みのタスクを理解負債へ変える場合や、解消済みの理解負債から対象者を消す場合にもpure modelで検証する。対象者条件を変更しない既存カードの通常編集は維持する。
 - 合成model testで両方の迂回経路を拒否することを確認。`npm test` — 561 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。
+
+### キャンバスの全関係線をフォーカス・編集可能にする (2026-10-27)
+
+- `related` / `depends_on` / `delegates` / `evidence` / `explains` の各線を、種類名を読み上げるボタンとして表示する。Tab/クリックで既存の関係編集dialogを開き、hover/focusでツールチップを表示する。
+- 委譲線は種類とallowlist状態を示し、purposeや任意値をtooltipへ含めない。他の線も状態やpurposeを属性へ流さず、種類だけを表示する。
+- relation presentationとcanvas編集導線のテストを更新。`npm test` — 561 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。ブラウザーのTab/クリック受入は未確認。
