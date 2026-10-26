@@ -65,7 +65,7 @@ export const JA = Object.freeze({
   'lede.loading': 'セッションを読み込んでいます…',
   'lede.loadingNote': '最初の 1 回は全部を読むので、数秒かかります。',
   'lede.empty': 'セッションはまだありません',
-  'lede.emptyNote': 'Claude デスクトップアプリの Code タブで会話を始めると、ここに並びます。',
+  'lede.emptyNote': '対応するローカル保存データが見つかると表示します。0 件の理由と確認先は、下の「読み込みの状態」で確認できます。',
   'lede.offline': 'サーバーにつながりません',
   'lede.offlineNote': 'ターミナルでボードをもう一度起動してください: {cmd} (clone から使うなら npm start)。つながれば自動で表示します。',
   'lede.serverError': '一覧を作れませんでした',

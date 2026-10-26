@@ -43,6 +43,13 @@ test('辞書: 空の文字列は無い。複数形は en だけで、one と oth
   }
 });
 
+test('セッション0件の案内は特定providerに偏らず、診断欄を案内する', () => {
+  assert.match(JA['lede.emptyNote'], /読み込みの状態/);
+  assert.match(EN['lede.emptyNote'], /Reading status/);
+  assert.doesNotMatch(JA['lede.emptyNote'], /Claude デスクトップアプリ/);
+  assert.doesNotMatch(EN['lede.emptyNote'], /Claude desktop app/);
+});
+
 test('辞書: 画面の言葉の決まり (感嘆符・絵文字を使わない、欄の名前は 1 つ)', () => {
   for (const [lang, dict] of Object.entries(DICT)) {
     for (const [key, entry] of Object.entries(dict)) {

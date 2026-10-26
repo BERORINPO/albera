@@ -62,3 +62,8 @@ test('errorLines: セッションフォルダが無いときは、説明・探�
   assert.deepEqual(errorLines('en', 'term.badFlag', { flag: '--x' }), ['Unknown option: --x. See: pigeonholes --help'], '起動のしかたが無ければ bin 名');
   assert.deepEqual(errorLines('en', 'term.badFlag', { flag: '--x', cmd: 'node /opt/p/server.mjs' }), ['Unknown option: --x. See: node /opt/p/server.mjs --help']);
 });
+
+test('no session store guidance covers all supported providers', () => {
+  assert.match(TERM.en['term.noSessionsDirHint'], /Claude Code, Codex CLI, GitHub Copilot, or OpenCode/);
+  assert.match(TERM.ja['term.noSessionsDirHint'], /Claude Code、Codex CLI、GitHub Copilot、OpenCode/);
+});

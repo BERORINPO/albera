@@ -363,13 +363,13 @@ test('セッションフォルダが無ければ exit 1。説明・探した場�
   const r = await run(['--lang', 'en', '--port', String(await freePort()), '--sessions-dir', missing]);
   assert.equal(r.code, 1);
   assert.deepEqual(lines(r.err), [
-    "Can't find the Claude desktop app's session folder. Looked in:",
+    'No supported session store was found. Checked Claude Code locations:',
     `  ${missing}`,
-    'Start a session once in the Code tab of the Claude desktop app, or pass --sessions-dir <path> (or set PIGEONHOLES_SESSIONS_DIR).',
+    'Use a supported provider (Claude Code, Codex CLI, GitHub Copilot, or OpenCode), or configure its store. See pigeonholes --help.',
   ]);
   const env = await run(['--lang', 'ja'], { PIGEONHOLES_SESSIONS_DIR: missing });
   assert.equal(env.code, 1);
-  assert.match(lines(env.err)[0], /^Claude デスクトップアプリのセッションフォルダが見つかりません。探した場所:$/);
+  assert.match(lines(env.err)[0], /^対応するセッション保存先が見つかりません。確認したClaude Codeの保存先:$/);
   assert.equal(lines(env.err)[1], `  ${missing}`);
 });
 

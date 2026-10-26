@@ -65,7 +65,7 @@ export const EN = Object.freeze({
   'lede.loading': 'Reading your sessions…',
   'lede.loadingNote': 'The first scan reads every session, so it takes a few seconds.',
   'lede.empty': 'No sessions yet.',
-  'lede.emptyNote': 'Start a chat in the Code tab of the Claude desktop app and it will appear here.',
+  'lede.emptyNote': 'Supported local session data appears here when found. Open Reading status below to see why the count is zero and what to check.',
   'lede.offline': "Can't reach the board's server.",
   'lede.offlineNote': 'Start the board again in a terminal: {cmd} (from a clone: npm start). This page connects by itself.',
   'lede.serverError': "The board couldn't be built.",
