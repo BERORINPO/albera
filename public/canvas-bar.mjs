@@ -9,6 +9,7 @@ import { obsidianOpenUri } from './graph-model.mjs';
 import { detailEl, detailStamp } from './rows.mjs';
 import { isCompletedLocalCodexTarget } from './events.mjs';
 import { delegationAvailability } from './delegation-availability.mjs';
+import { delegationUnavailableNote } from './delegation-note.mjs';
 import { comprehensionGapSummary, sessionRelationEntries } from './session-relations.mjs';
 import { reviewUnderstandingGaps } from './graph-model.mjs';
 import { fill, h } from './view.mjs';
@@ -96,7 +97,7 @@ function sessionRelations(t, card, graph, sessionIndex, demo) {
       entry.kind === 'delegates' ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'graph-edit-edge', 'data-id': entry.edgeId, text: t('graph.editDelegation') }) : null,
       delegation.action
         ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'delegation-run', 'data-id': entry.edgeId, 'data-source-session': card.id, text: t(delegation.action === 'check' ? 'graph.checkDelegation' : 'graph.runDelegation') })
-        : delegation.reason ? h('small', { class: 'graph-dialog__hint', text: t(delegation.reason) }) : null,
+        : delegationUnavailableNote(t, delegation.reason),
       entry.endpoint === 'graph' && entry.node.kind === 'execution_profile'
         ? h('small', { text: t('graph.executionProfileSummary', { values: [
           t(`graph.executionLocation.${entry.node.executionLocation}`),

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { delegationAvailability } from '../public/delegation-availability.mjs';
+import { EN_CANVAS } from '../public/dict-en-canvas.mjs';
+import { JA_CANVAS } from '../public/dict-ja-canvas.mjs';
+import { delegationUnavailableNote } from '../public/delegation-note.mjs';
+import fs from 'node:fs';
 
 const base = {
   kind: 'delegates', direction: 'out', endpoint: 'session',
@@ -46,4 +50,46 @@ test('availability output contains no target IDs or session metadata', () => {
   const result = decide({ sessionId: 'codex_sensitive-synthetic-id' }, { target: { executionLocation: 'local', completedLocalCodex: false } });
   assert.deepEqual(result, { action: null, reason: 'graph.delegationUnavailable' });
   assert.doesNotMatch(JSON.stringify(result), /codex_|sensitive-synthetic-id/);
+});
+
+test('every unavailable delegation reason is localized and rendered as an explanatory detail note', () => {
+  const reasons = [
+    'graph.delegationUnavailableUnknown', 'graph.delegationUnavailableDemo',
+    'graph.delegationUnavailableTargetType', 'graph.delegationUnavailableProvider',
+    'graph.delegationUnavailableOperation', 'graph.delegationUnavailablePurpose',
+    'graph.delegationUnavailableWsl', 'graph.delegationUnavailable',
+  ];
+  for (const dictionary of [JA_CANVAS, EN_CANVAS]) {
+    for (const key of reasons) {
+      assert.equal(typeof dictionary[key], 'string', `${key} is localized`);
+      assert.ok(dictionary[key].length > 12, `${key} has an explanatory message`);
+    }
+  }
+  const detail = fs.readFileSync(new URL('../public/canvas-bar.mjs', import.meta.url), 'utf8');
+  assert.match(detail, /delegationUnavailableNote\(t, delegation\.reason\)/);
+  const previousDocument = globalThis.document;
+  class ElementFixture {
+    tagName; className = ''; textContent = '';
+    setAttribute() {}
+    constructor(tagName) { this.tagName = tagName; }
+    append() {}
+  }
+  globalThis.document = {
+    createElement: (tag) => new ElementFixture(tag),
+    createTextNode: (text) => ({ textContent: text }),
+  };
+  try {
+    for (const [dictionary, language] of [[JA_CANVAS, 'Japanese'], [EN_CANVAS, 'English']]) {
+      for (const key of reasons) {
+        const note = delegationUnavailableNote((value) => dictionary[value] ?? value, key);
+        assert.equal(note?.tagName, 'small', `${language} ${key} renders an explanatory note`);
+        assert.equal(note?.className, 'graph-dialog__hint');
+        assert.equal(note?.textContent, dictionary[key]);
+      }
+    }
+    assert.equal(delegationUnavailableNote((key) => key, null), null);
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
 });
