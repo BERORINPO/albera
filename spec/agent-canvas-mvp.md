@@ -660,3 +660,4 @@
 - キャンセル/Escapeでは元の編集画面へ戻り、確認後は既存のpure helperと保存成功ゲートを通る。カードを削除したときは消えたカードへフォーカスを戻さずキャンバスへ復帰する。
 - `npm test` — 556 passed、`npm run arch` — 99 paths・違反0、`npm run smoke` — 合成fixtureでpass、`git diff --check` — pass。
 - アクセシブル名・説明・日英文言と操作の配線はテスト済み。今回の変更後にブラウザーでTab/Escape/保存/再読み込みを受け入れるGUI確認は未実施。
+- 2026-10-27の再試行では合成demoをlocalhostで起動したが、Windows Computer UseがChromeの現在URLを安全に特定できず、画面確認前に停止した。UI操作は一度も行っていない。停止確認時に19864番portのlistenerは無く、実セッションや実worktreeは使っていない。
