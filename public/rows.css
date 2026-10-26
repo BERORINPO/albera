@@ -257,6 +257,7 @@
 .detail__in dl { display: grid; grid-template-columns: minmax(0, 1fr); row-gap: var(--space-2xs); }
 .detail__in dt { color: var(--color-muted); }
 .detail__in dd { margin-bottom: var(--space-xs); color: var(--color-ink); overflow-wrap: anywhere; min-width: 0; }
+.detail__source-note { display: block; margin-top: var(--space-2xs); color: var(--color-muted); font-size: var(--text-sm); }
 .detail__in .path { font-family: var(--font-mono); font-size: var(--text-sm); }
 .detail__in .pre { white-space: pre-wrap; }
 .detail__prs a { color: var(--color-ink); text-underline-offset: 0.2em; text-decoration-color: var(--color-rule-strong); }

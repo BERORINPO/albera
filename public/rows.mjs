@@ -11,6 +11,7 @@ import { familyTree } from './ui-state.mjs';
 import { eventSummaryEl, eventsEl } from './events.mjs';
 import { worktreeDetailText } from './worktree-detail.mjs';
 import { worktreeDetailActions } from './worktree-actions.mjs';
+import { sourceDetailValue } from './source-detail.mjs';
 import { fill, h, partsToNodes, reconcile, setDisclosed } from './view.mjs';
 export { langOf, openEl, timeEl } from './labels.mjs';
 
@@ -40,13 +41,11 @@ const familyParts = (t, f) => [
   f?.parentId ? t('family.parent', { name: f.parentTitle == null ? t('family.parentMissing') : f.parentTitle || t('untitled') }) : null,
   f?.children?.total > 0 ? childrenText(t, f.children) : null,
 ];
-
 /** 親子の項目の言葉 (純粋)。親と子は押した先 (その親子だけ表示) が同じなので 1 つにまとめ、sep.list でつなぐ。無ければ null。 @param {T} t @param {Card['family']} f */
 export function familyText(t, f) {
   const parts = familyParts(t, f).filter((x) => x !== null);
   return parts.length ? parts.join(t('sep.list')) : null;
 }
-
 /** 親子のリンク (1 つ)。まわりの言葉と同じに折り返す (親の題名は 40 字まで: 2 行あれば全部読める、design.md §4)。 @param {T} t @param {Card} card */
 function familyLinks(t, card) {
   const [p, c] = familyParts(t, card.family);
@@ -272,7 +271,7 @@ export function detailEl(card, pile, ctx) {
       'dl',
       {},
       ...dlRow(t('detail.state'), h('span', {}, ...partsToNodes(t.parts('detail.stateValue', { pile: bucketTitle(t, pile), time: timeEl(t, card, ctx.now) })))),
-      ...dlRow(t('detail.source'), [card.source ? t(`source.${card.source}`) : t('source.claude'), d.executionLocation ? t(`graph.executionLocation.${d.executionLocation}`) : ''].filter(Boolean).join(' — ')),
+      ...dlRow(t('detail.source'), sourceDetailValue(t, card, d)),
       ...dlRow(t('detail.executionState'), card.sourceState ? t(`sourceState.${card.sourceState}`) : null),
       ...activityRows(t, card, pile, ctx.now),
       ...dlRow(t('detail.summary'), d.statusDetail ? h('q', { lang: contentLang(d.statusDetail), text: d.statusDetail }) : null),

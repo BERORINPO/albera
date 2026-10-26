@@ -6,6 +6,8 @@
 export const JA_CANVAS = Object.freeze({
   'source.copilot': 'GitHub Copilot',
   'source.opencode': 'OpenCode',
+  'detail.sourceProvenance.copilot': '保存形式からはCopilot CLIとアプリのどちらが作成した記録か判別できません。',
+  'detail.sourceProvenance.opencode': 'OpenCodeの保存記録です。この情報から起動元のCLIやアプリは特定できません。',
   'event.turnFailed': '失敗',
   'detail.executionState': '実行状態',
   'sourceState.active': '進行中',

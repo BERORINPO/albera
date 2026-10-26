@@ -6,6 +6,8 @@
 export const EN_CANVAS = Object.freeze({
   'source.copilot': 'GitHub Copilot',
   'source.opencode': 'OpenCode',
+  'detail.sourceProvenance.copilot': 'The saved format does not identify whether GitHub Copilot CLI or the app created this record.',
+  'detail.sourceProvenance.opencode': 'This is an OpenCode saved record; it does not identify whether a CLI or app created it.',
   'event.turnFailed': 'failed',
   'detail.executionState': 'Run state',
   'sourceState.active': 'In progress',
