@@ -49,13 +49,16 @@ test('notificationsFor: 1〜2 件は 1 件ずつ (質問か理由を本文に)�
   assert.equal(notificationsFor(ja, ['a', 'b', 'c'].map((id) => ({ pile: 'trouble', card: c(id) })))[0].title, '返事待ち・止まったかもが 3 件', '止まったかもも名前で数える');
 });
 
-test('ledeState: 読み込み中・繋がらない・サーバー・版・空・返事・確認・未読・静か', () => {
+test('ledeState: 読み込み中・繋がらない・サーバー・版・空・絞り込み・返事・確認・未読・静か', () => {
   const b = (/** @type {Record<string, any>} */ counts, /** @type {Record<string, any[]>} */ buckets = {}) => ({ counts: { active: 5, ...counts }, buckets: { needs_you: [], trouble: [], unread: [], working: [], ...buckets } });
   assert.equal(ledeState({ board: null, loading: true, fail: null }), 'loading');
   assert.equal(ledeState({ board: null, loading: true, fail: 'offline' }), 'offline');
   assert.equal(ledeState({ board: null, loading: false, fail: 'server' }), 'server');
   assert.equal(ledeState({ board: null, loading: false, fail: 'version' }), 'version');
   assert.equal(ledeState({ board: b({ active: 0 }), loading: false, fail: null }), 'empty');
+  const withNeeds = b({}, { needs_you: [c('outside-filter')] });
+  assert.equal(ledeState({ board: withNeeds, loading: false, fail: null, visible: { filtering: true, total: 0 } }), 'filtered', '一致なしでも未絞り込みの優先セッションを出さない');
+  assert.equal(ledeState({ board: withNeeds, loading: false, fail: null, visible: { filtering: false, total: 1 } }), 'busy', '絞り込み解除後は通常の優先表示へ戻る');
   assert.equal(ledeState({ board: b({}, { needs_you: [c('a')], trouble: [c('t')] }), loading: false, fail: null }), 'busy');
   assert.equal(ledeState({ board: b({}, { trouble: [c('t')], unread: [c('u')] }), loading: false, fail: 'offline' }), 'stuck', 'データがあれば繋がらなくても中身のまま');
   assert.equal(ledeState({ board: b({}, { unread: [c('u')] }), loading: false, fail: null }), 'unread');

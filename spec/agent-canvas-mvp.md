@@ -767,3 +767,9 @@
 - `claude://claude.ai/epitaxy/` はClaude Code app session (`local_...`)だけへ生成する。Codex/Copilot/OpenCodeのIDはClaudeリンクに変換しないため、既存UIは「ここから開けない」状態とし、詳細・安全イベント・IDコピーを利用できる。
 - Codexの確認付き再開は別の明示操作として残し、通常の「開く」やEnterからCLIを起動しない。
 - 合成テストでClaude IDのみURI化され、Codex/Copilot/OpenCode IDはURI化されないことを確認。隔離`--demo`ブラウザーのアクセシビリティツリーでもCodexカードの「開く」がdisabled、Claude用リンクはClaude URIのまま表示されることを確認。実セッション/CLI/外部サービスは使わない。
+
+### 検索中の先頭案内を一致結果に合わせる
+
+- provider/state/project/text filterが有効な間は、全体の`nextUp`を先頭案内に表示せず、一致件数だけを案内する。絞り込み解除時は従来の優先セッション推薦へ戻る。0件でも無関係なセッションは表示しない。
+- テストと隔離`--demo`ブラウザーで、OpenCode 1件一致時の先頭案内・一覧・詳細を確認した。CopilotとOpenCodeの詳細には保存形式から断定できない起動元の説明があり、起動元をCLIと誤認させないことも確認した。
+- 実providerセッション、CLI、外部サービスは使用していない。Voice Main AI/企業権限制御の具体仕様、実セッション表示とWSLの実環境適合性は引き続き未確認。

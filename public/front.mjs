@@ -16,8 +16,8 @@ export const canvasSwitchVisible = (view) => view === 'list' || view === 'canvas
 
 /**
  * lede がどの状態か (純粋)。
- * @param {{board: any, loading: boolean, fail: null|'offline'|'server'|'version'|'render'}} s
- * @returns {'loading'|'offline'|'server'|'version'|'render'|'empty'|'busy'|'stuck'|'unread'|'quiet'}
+ * @param {{board: any, loading: boolean, fail: null|'offline'|'server'|'version'|'render', visible?: any}} s
+ * @returns {'loading'|'offline'|'server'|'version'|'render'|'empty'|'filtered'|'busy'|'stuck'|'unread'|'quiet'}
  */
 export function ledeState(s) {
   if (!s.board) {
@@ -26,6 +26,7 @@ export function ledeState(s) {
   }
   const c = s.board.counts ?? {};
   if ((Number(c.active) || 0) === 0) return 'empty';
+  if (s.visible?.filtering) return 'filtered';
   const next = nextUp(s.board);
   if (!next) return 'quiet';
   return next.pile === 'needs_you' ? 'busy' : next.pile === 'trouble' ? 'stuck' : 'unread';
@@ -45,14 +46,14 @@ function ledeOpen(t, id, demo) {
 /**
  * lede を描く。
  * @param {HTMLElement} el #lede
- * @param {{t: T, now: number, board: any, loading: boolean, fail: any, calmSince: string|null}} o
+ * @param {{t: T, now: number, board: any, loading: boolean, fail: any, calmSince: string|null, visible?: any}} o
  */
 export function renderLede(el, o) {
   const t = o.t;
   const st = ledeState(o);
   const next = o.board ? nextUp(o.board) : null;
   const c = o.board?.counts ?? {};
-  const sig = [t.lang, st, next?.card.id, next?.card.title, next?.card.body, next?.card.since, c.needs_you, c.trouble, c.unread, c.working, c.cleanup, c.recommended, o.calmSince, Math.floor(o.now / MIN)].join('|');
+  const sig = [t.lang, st, o.visible?.total, next?.card.id, next?.card.title, next?.card.body, next?.card.since, c.needs_you, c.trouble, c.unread, c.working, c.cleanup, c.recommended, o.calmSince, Math.floor(o.now / MIN)].join('|');
   if (el.dataset.sig === sig) return;
   el.dataset.sig = sig;
   el.className = 'lede';
@@ -63,6 +64,7 @@ export function renderLede(el, o) {
   if (st === 'loading') return void fill(el, title('lede.loading'), note(t('lede.loadingNote')));
   if (st === 'empty') return void fill(el, title('lede.empty'), note(t('lede.emptyNote')));
   if (st === 'server') return void fill(el, title('lede.serverError'), note(t('lede.serverErrorNote')));
+  if (st === 'filtered') return void fill(el, title('lede.filtered'), note(t('lede.filteredNote', { n: Number(o.visible?.total) || 0 })));
   // 版が違う・描けなかったときは帯が言うので、lede は空にする (見出しは読み上げ用に 1 つだけ残す)
   if (st === 'version' || st === 'render') return void fill(el, h('h1', { class: 'vh', text: t(`banner.${st}.lead`) }));
   if (st === 'offline') return void fill(el, title('lede.offline'), h('p', { class: 'lede__q is-note' }, ...partsToNodes(t.parts('lede.offlineNote', { cmd: h('code', { text: 'npx pigeonholes' }) }))));

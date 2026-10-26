@@ -10,4 +10,6 @@ export const JA_FILTER = Object.freeze({
   'filter.projectAll': 'すべてのプロジェクト',
   'filter.count': '{n} 件が一致',
   'filter.none': '一致する項目はありません',
+  'lede.filtered': '絞り込み結果を表示しています',
+  'lede.filteredNote': '一致した項目は {n} 件です。下の一覧またはキャンバスで確認できます。',
 });

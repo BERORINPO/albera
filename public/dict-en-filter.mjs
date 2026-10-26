@@ -10,4 +10,6 @@ export const EN_FILTER = Object.freeze({
   'filter.projectAll': 'All projects',
   'filter.count': '{n} matching items',
   'filter.none': 'No matching items',
+  'lede.filtered': 'Showing filtered results',
+  'lede.filteredNote': '{n} matching items are shown in the list or canvas below.',
 });
