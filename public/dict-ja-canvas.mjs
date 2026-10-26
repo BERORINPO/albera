@@ -52,6 +52,7 @@ export const JA_CANVAS = Object.freeze({
   'canvas.zoom': '{n}%',
   'canvas.fit': '全体を表示',
   'canvas.arrange': '並べ直す',
+  'canvas.status': '読み込み・機能の状態',
   'canvas.arrangeDone': '{n} 件のプロジェクトを並べ直しました。',
   'canvas.moved': '{project} を動かしました。',
   'canvas.blocked': '{project} はその向きにはもう動かせません。',
@@ -312,4 +313,8 @@ export const JA_CANVAS = Object.freeze({
   'graph.empty': 'セッションもカードもありません。タスク、成果物、判断、理解負債などのカードから始められます。',
   'graph.emptyAction': 'カードを追加',
   'graph.emptyStatus': 'セッションの読み込み状態を見る',
+  'foot.productLimits': '仕様未確定で利用できない機能',
+  'foot.claudeExecutionUnavailable': 'Claude Codeへの実行委譲は利用できません。子セッション作成・既存セッション再開など、実行方式が未確定です。関係の記録のみ利用できます。',
+  'foot.voiceUnavailable': '音声 Main AI は利用できません。開始・停止、音声/文字起こしの処理先と保存先が未定義です。',
+  'foot.enterpriseAuthUnavailable': '企業向け権限制御は利用できません。利用者ロールと操作ごとの許可規則が未定義です。',
 });

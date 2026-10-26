@@ -48,6 +48,7 @@ function defaultBar(t, o) {
       { class: 'cbar__tools' },
       o.due > 0 ? h('button', { class: 'textbtn cbar__due', type: 'button', 'data-action': 'due-next', text: t('ctx.dueCount', { n: o.due }) }) : null,
       reviewCount ? h('button', { class: 'textbtn cbar__due', type: 'button', 'data-action': 'graph-review-gaps', text: t('graph.reviewCount', { n: reviewCount }) }) : null,
+      h('button', { class: 'textbtn', type: 'button', 'data-action': 'graph-show-diagnostics', text: t('canvas.status') }),
       h(
         'span',
         { class: 'cbar__zoom' },

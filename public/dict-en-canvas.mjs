@@ -52,6 +52,7 @@ export const EN_CANVAS = Object.freeze({
   'canvas.zoom': '{n}%',
   'canvas.fit': 'Fit all',
   'canvas.arrange': 'Rearrange',
+  'canvas.status': 'Session and feature status',
   'canvas.arrangeDone': { one: 'Rearranged {n} project.', other: 'Rearranged {n} projects.' },
   'canvas.moved': 'Moved {project}.',
   'canvas.blocked': 'There is no room to move {project} that way.',
@@ -312,4 +313,8 @@ export const EN_CANVAS = Object.freeze({
   'graph.empty': 'There are no sessions or cards yet. Start with a task, artifact, decision, comprehension gap, or another card.',
   'graph.emptyAction': 'Add a card',
   'graph.emptyStatus': 'View session loading status',
+  'foot.productLimits': 'Features unavailable until their policies are defined',
+  'foot.claudeExecutionUnavailable': 'Claude Code execution delegation is unavailable. Its execution model, such as creating a child session or resuming an existing one, is undecided. Recording a relation is available.',
+  'foot.voiceUnavailable': 'Voice Main AI is unavailable. Start/stop behavior and audio/transcript processing and storage are undefined.',
+  'foot.enterpriseAuthUnavailable': 'Enterprise authorization is unavailable. User roles and per-operation allow/deny rules are undefined.',
 });

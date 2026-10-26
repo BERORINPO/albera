@@ -5,6 +5,7 @@
 import { DAY, FORMAT_SUSPECT_MIN, PAGE_SIZE, PREVIEW, RECENT_MS, STALE_AFTER_MS } from '../src/shared/constants.mjs';
 import { canvasFocusFallback, canvasJumpPile, canvasJumpTo, drawCanvas, quietFocus } from './canvas-ctl.mjs';
 import { codexStatusMessages, copilotStatusMessages, openCodeStatusMessages } from './codex-status.mjs';
+import { productLimitMessages } from './product-limits.mjs';
 import { renderCleanup, renderSelbar } from './cleanup.mjs';
 import { faviconKind, setFavicon } from './favicon.mjs';
 import { agoText, agoWords, bucketTitle, dateline, deepLink, quietHint, sentences, tabTitle, timeText } from './format.mjs';
@@ -149,6 +150,8 @@ function renderFoot() {
   }
   const opencode = s.sources?.opencode;
   if (opencode) diag.push(...openCodeStatusMessages(t, opencode).map((text) => h('p', { text })));
+  diag.push(h('h3', { class: 'foot__diag-sub', text: t('foot.productLimits') }));
+  diag.push(...productLimitMessages(t).map((text) => h('p', { text })));
   if (Number(s.bad) > 0) diag.push(h('p', { text: t('foot.bad', { n: s.bad }) }));
   if (Number(s.transcriptsMissingRecent) > 0) diag.push(h('p', { text: sentences(t, t('foot.missing', { n: s.transcriptsMissingRecent, days: RECENT_MS / DAY }), t('foot.missingWhy')) }));
   if (!diag.length) diag.push(h('p', { text: t('foot.allGood') }));
