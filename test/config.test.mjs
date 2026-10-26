@@ -75,6 +75,17 @@ test('Claude セッションフォルダが無くても Codex_HOME/sessions が�
   assert.equal(config.codexHome, 'D:\\codex');
 });
 
+test('Windows CODEX_HOME may explicitly point at one WSL distro share without changing the configured root', () => {
+  const codexHome = '\\\\wsl.localhost\\Ubuntu\\home\\tester\\.codex';
+  const config = loadConfig({
+    env: { CODEX_HOME: codexHome }, argv: [], home: WIN_HOME, platform: 'win32',
+    isDir: (p) => p === `${codexHome}\\sessions`,
+  });
+  assert.equal(config.action, 'run');
+  assert.equal(config.codexHome, codexHome);
+  assert.equal(config.sessionsRoot, '');
+});
+
 test('Claude / Codex の保存先が無くても Copilot の session-state があれば実データモードで起動する', () => {
   const config = loadConfig({
     env: { COPILOT_HOME: 'D:\\copilot' }, argv: [], home: WIN_HOME,
