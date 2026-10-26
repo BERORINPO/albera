@@ -60,6 +60,13 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
           pendingFirstStart: null, lifecycle: { status: 'interrupted' },
           events: [{ type: 'turn_started', at: now - 9 * 60_000 }, { type: 'turn_aborted', at: now - 8 * 60_000 }],
         }, {
+          source: 'codex', sessionId: 'codex_00000000-0000-4000-8000-000000000907',
+          title: 'Codex CLI (failed demo)', cwd: demoFolders[0], createdAt: now - 7 * 60_000,
+          lastActivityAt: now - 6 * 60_000, lastFocusedAt: now - 6 * 60_000,
+          isArchived: false, isStarred: false, autoArchiveExempt: true, prs: [],
+          pendingFirstStart: null, lifecycle: { status: 'failed' },
+          events: [{ type: 'turn_started', at: now - 7 * 60_000 }, { type: 'turn_failed', at: now - 6 * 60_000 }],
+        }, {
           source: 'codex', sessionId: 'codex_00000000-0000-4000-8000-000000000906',
           title: 'Codex CLI (unknown state demo)', cwd: demoFolders[0], createdAt: now - 11 * 60_000,
           lastActivityAt: now - 10 * 60_000, lastFocusedAt: now - 10 * 60_000,

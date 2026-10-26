@@ -26,6 +26,7 @@ const t = (key) => ({
   'detail.events': 'Recent events',
   'detail.eventsUnavailable': 'No safe event summaries are available.',
   'event.turnStarted': 'Turn started',
+  'event.turnFailed': 'Failed',
 }[key] ?? key);
 
 test('event detail renders an empty state without provider payloads', () => {
@@ -51,6 +52,15 @@ test('event detail timeline emits only the allowlisted label and timestamp', () 
     assert.equal(row.children[0].attrs.datetime, '2023-11-14T22:13:20.000Z');
     assert.match(row.children[0].textContent, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
     assert.equal(row.textContent.includes('Turn started'), true);
+  });
+});
+
+test('failed turn detail renders its fixed label and timestamp without provider error text', () => {
+  withDocument(() => {
+    const section = eventsEl(t, { source: 'codex', events: [{ type: 'turn_failed', at: 1_700_000_000_000, message: 'PRIVATE-ERROR' }] });
+    const list = section.children[1];
+    assert.equal(list.children[0].textContent.includes('Failed'), true);
+    assert.equal(list.children[0].textContent.includes('PRIVATE-'), false);
   });
 });
 
