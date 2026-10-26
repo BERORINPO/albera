@@ -316,6 +316,7 @@ export function openGraphRelationDialog(o) {
     if (!endpointKey(to) || to === fromKey) return;
     o.onConnect({ from: fromKey, to, kind: data.kind, purpose: data.purpose, status: data.status });
     dialog.close();
+    if (fromKey.startsWith('graph:')) requestAnimationFrame(() => document.querySelector(`.graph-node[data-id="${CSS.escape(fromKey.slice(6))}"]`)?.focus({ preventScroll: true }));
   });
   dialog.showModal();
   /** @type {HTMLSelectElement|null} */ (form.querySelector('[name="to"]'))?.focus();
