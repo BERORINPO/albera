@@ -582,7 +582,6 @@ export function buildBoard({
   const recentGroups = groupByProject(lists.recent.sort(byNewest)).map(({ key, label, items }) => ({ key, label, items }));
   const cleanupGroups = buildCleanupGroups(active, ctx);
   const count = (/** @type {unknown} */ v) => Number.isSafeInteger(v) && Number(v) >= 0 ? Number(v) : 0;
-  const lastEvent = (/** @type {SessionRecord} */ s) => s.events?.at(-1)?.type;
   const sourceDiagnostics = (/** @type {'codex'|'copilot'|'opencode'} */ source) => {
     const input = sourceStats.sources?.[source];
     if (!input) return undefined;
@@ -594,10 +593,10 @@ export function buildBoard({
       trouble: lists.trouble.filter((c) => c.source === source).length,
       recent: lists.recent.filter((c) => c.source === source).length,
       active: sourceSessions.filter((s) => s.lifecycle?.status === 'active').length,
-      completed: sourceSessions.filter((s) => lastEvent(s) === 'turn_completed').length,
-      interrupted: sourceSessions.filter((s) => lastEvent(s) === 'turn_aborted').length,
-      failed: sourceSessions.filter((s) => lastEvent(s) === 'turn_failed').length,
-      unknown: sourceSessions.filter((s) => s.lifecycle?.status !== 'active' && !['turn_completed', 'turn_aborted', 'turn_failed'].includes(lastEvent(s))).length,
+      completed: sourceSessions.filter((s) => s.lifecycle?.status === 'complete').length,
+      interrupted: sourceSessions.filter((s) => s.lifecycle?.status === 'interrupted').length,
+      failed: sourceSessions.filter((s) => s.lifecycle?.status === 'failed').length,
+      unknown: sourceSessions.filter((s) => !['active', 'complete', 'interrupted', 'failed'].includes(s.lifecycle?.status)).length,
       rejected: count(input.bad),
       ...(source === 'codex' ? {
         notCli: count(input.notCli),

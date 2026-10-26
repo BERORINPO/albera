@@ -40,6 +40,7 @@ test('Copilotイベントを検出し、進行中・完了・中断を安全な�
   const activeId = uuid(801);
   const doneId = uuid(802);
   const abortedId = uuid(803);
+  const callEndedId = uuid(805);
   const activeAt = NOW - 2 * 60_000;
   const doneAt = NOW - 60_000;
   await writeSession(home, activeId, [
@@ -48,22 +49,31 @@ test('Copilotイベントを検出し、進行中・完了・中断を安全な�
     '{ malformed PRIVATE-BROKEN',
     event('future.secret_event', { secret: 'PRIVATE-UNKNOWN' }, activeAt + 2_000),
   ]);
-  await writeSession(home, doneId, [start(doneId, doneAt - 10_000), event('assistant.turn_start', {}, doneAt - 5_000), event('assistant.turn_end', { output: 'PRIVATE-OUTPUT' }, doneAt)]);
+  await writeSession(home, doneId, [start(doneId, doneAt - 10_000), event('assistant.turn_start', {}, doneAt - 5_000), event('session.task_complete', { summary: 'PRIVATE-OUTPUT' }, doneAt)]);
   await writeSession(home, abortedId, [start(abortedId, activeAt - 10_000), event('assistant.turn_start', {}, activeAt - 5_000), event('abort', { reason: 'PRIVATE-REASON' }, activeAt)]);
+  await writeSession(home, callEndedId, [start(callEndedId, doneAt - 10_000), event('assistant.turn_start', {}, doneAt - 5_000), event('assistant.turn_end', { output: 'PRIVATE-OUTPUT' }, doneAt)]);
   const { sessions, stats } = await createCopilotSessionsSource({ root: home }).load();
-  assert.equal(sessions.length, 3);
-  assert.equal(stats.parsed, 3);
+  assert.equal(sessions.length, 4);
+  assert.equal(stats.parsed, 4);
   const active = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', activeId));
   const done = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', doneId));
   const aborted = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', abortedId));
+  const callEnded = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', callEndedId));
   assert.deepEqual(active.lifecycle, { status: 'active', startedAt: activeAt + 1_000 });
-  assert.deepEqual(active.events, [{ type: 'turn_started', at: activeAt }, { type: 'turn_started', at: activeAt + 1_000 }]);
+  assert.deepEqual(active.events, [{ type: 'turn_started', at: activeAt + 1_000 }]);
   assert.deepEqual(done.lifecycle, { status: 'complete' });
   assert.deepEqual(aborted.lifecycle, { status: 'interrupted' });
-  assert.deepEqual(done.events.map((e) => e.type), ['turn_started', 'turn_started', 'turn_completed']);
-  assert.deepEqual(aborted.events.map((e) => e.type), ['turn_started', 'turn_started', 'turn_aborted']);
-  const board = buildBoard({ sessions, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS });
-  for (const providerId of [activeId, doneId, abortedId]) assert.equal(JSON.stringify(board).includes(providerId), false, 'provider-native session ID stays out of board wire');
+  assert.deepEqual(callEnded.lifecycle, { status: 'unknown' }, 'assistant.turn_end only proves one model call ended');
+  assert.deepEqual(done.events.map((e) => e.type), ['turn_started', 'turn_completed']);
+  assert.deepEqual(aborted.events.map((e) => e.type), ['turn_started', 'turn_aborted']);
+  assert.deepEqual(callEnded.events.map((e) => e.type), ['turn_started', 'turn_completed']);
+  const board = buildBoard({ sessions, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS, sourceStats: { sources: { copilot: stats } } });
+  assert.deepEqual(
+    [board.stats.sources.copilot.active, board.stats.sources.copilot.completed, board.stats.sources.copilot.interrupted, board.stats.sources.copilot.unknown],
+    [1, 1, 1, 1],
+    'summary counters use confirmed whole-task lifecycle, not a model-call end event',
+  );
+  for (const providerId of [activeId, doneId, abortedId, callEndedId]) assert.equal(JSON.stringify(board).includes(providerId), false, 'provider-native session ID stays out of board wire');
   for (const secret of ['PRIVATE-PROMPT', 'PRIVATE-ENV', 'PRIVATE-TOOL-INPUT', 'PRIVATE-BROKEN', 'PRIVATE-UNKNOWN', 'PRIVATE-OUTPUT', 'PRIVATE-REASON']) {
     assert.equal(JSON.stringify(sessions).includes(secret), false, `sensitive value escaped: ${secret}`);
   }

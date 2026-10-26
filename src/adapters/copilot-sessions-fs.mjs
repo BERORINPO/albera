@@ -11,7 +11,7 @@ const MAX_SESSIONS = 20;
 const HEADER_BYTES = 32 * 1024;
 const TAIL_BYTES = 128 * 1024;
 const EVENT_LIMIT = 30;
-const START = new Set(['session.start', 'session.resume', 'assistant.turn_start']);
+const START = new Set(['assistant.turn_start']);
 const COMPLETE = new Set(['assistant.turn_end', 'session.task_complete']);
 const INTERRUPT = new Set(['abort']);
 
@@ -56,6 +56,10 @@ async function readEvents(handle, size) {
   }
   /** @type {Array<{type:'turn_started'|'turn_completed'|'turn_aborted',at:number}>} */
   const events = [];
+  /** @type {'unknown'|'active'|'complete'|'interrupted'} */
+  let status = 'unknown';
+  /** @type {number|undefined} */
+  let startedAt;
   for (const raw of content.split(/\r?\n/).slice(-500)) {
     if (!raw || Buffer.byteLength(raw) > 64 * 1024) continue;
     try {
@@ -63,20 +67,19 @@ async function readEvents(handle, size) {
       if (!obj(event) || typeof event.type !== 'string') continue;
       const type = START.has(event.type) ? 'turn_started' : COMPLETE.has(event.type) ? 'turn_completed' : INTERRUPT.has(event.type) ? 'turn_aborted' : null;
       const at = timestamp(event.timestamp);
-      if (type && at) events.push({ type, at });
+      if (type && at) {
+        events.push({ type, at });
+        if (type === 'turn_started') { status = 'active'; startedAt = at; }
+        else if (type === 'turn_aborted') { status = 'interrupted'; startedAt = undefined; }
+        else if (event.type === 'session.task_complete') { status = 'complete'; startedAt = undefined; }
+        else { status = 'unknown'; startedAt = undefined; }
+      }
     } catch { /* malformed or partial event is ignored */ }
   }
-  return events.slice(-EVENT_LIMIT);
-}
-
-/** @param {Array<{type:'turn_started'|'turn_completed'|'turn_aborted',at:number}>} events */
-function lifecycleOf(events) {
-  const last = events.at(-1);
-  if (!last) return { status: /** @type {const} */ ('unknown') };
-  if (last.type === 'turn_started') return { status: /** @type {const} */ ('active'), startedAt: last.at };
-  if (last.type === 'turn_completed') return { status: /** @type {const} */ ('complete') };
-  if (last.type === 'turn_aborted') return { status: /** @type {const} */ ('interrupted') };
-  return { status: /** @type {const} */ ('unknown') };
+  return {
+    events: events.slice(-EVENT_LIMIT),
+    lifecycle: status === 'active' && startedAt ? { status, startedAt } : { status },
+  };
 }
 
 /** @param {{root:string,maxSessions?:number,now?:()=>number}} options */
@@ -120,8 +123,7 @@ export function createCopilotSessionsSource({ root, maxSessions = MAX_SESSIONS }
           stats.bad++;
           continue;
         }
-        const events = await readEvents(handle, stat.size);
-        const lifecycle = lifecycleOf(events);
+        const { events, lifecycle } = await readEvents(handle, stat.size);
         const lastActivityAt = Math.max(events.at(-1)?.at ?? header.createdAt, stat.mtimeMs);
         const record = {
           source: 'copilot',
