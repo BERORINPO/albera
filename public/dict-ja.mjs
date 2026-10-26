@@ -246,7 +246,7 @@ export const JA = Object.freeze({
   'banner.family': '『{title}』の親子だけ表示中',
   'banner.clear': '解除',
   'nomatch.query.lead': '『{q}』に一致するセッションはありません。',
-  'nomatch.query.text': 'セッションの題名・プロジェクト・要約、キャンバスカードの題名・内容・状態・不足リンク、関係の種類・目的・委譲状態を探しました。',
+  'nomatch.query.text': 'セッションの題名・プロジェクト・要約・手動記録したハーネスと実行条件、キャンバスカードの題名・内容・状態・不足リンク、関係の種類・目的・委譲状態を探しました。',
   'nomatch.family': 'この親子には該当するものがありません。',
   'nomatch.clear': '絞り込みを消す',
 
