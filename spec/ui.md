@@ -1407,3 +1407,9 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - 別port `18814`の隔離`--demo`を開き、filter popoverで提供元`Codex CLI`、プロジェクト`demo-app`、状態`作業中`を順に指定。件数が5件から1件へ絞られ、該当する作業中Codexカードと各pileの件数が更新されることを確認。
 - 画面は「1件 / 64件」と一致pile内訳を示した。合成providerデータのみで、検索やfilterによるprovider session/storeの変更はなし。serverを停止し、browser tabを閉じた。
 - 同じターンの実データread-only確認ではCodex候補40、認識0、CLI以外marker 40だった。件数以外のセッション情報は出力せず、セッションファイルは変更していない。実Codex CLIセッションがキャンバスに表示されることは未確認のまま。
+
+### 320px幅でキャンバス・一覧・詳細を受入 (2026-10-27)
+
+- 320×760の明示viewportで隔離`--demo`を開き、キャンバス表示、一覧表示への切替、Claude合成カードの詳細展開を確認した。詳細では状態、ハーネス、コンテキスト、親子関係、合成Git状態が縦方向に閲覧できる。
+- viewport 320pxに対し`documentElement.scrollWidth`と`body.scrollWidth`はいずれも305pxで、キャンバス/一覧/詳細のどの状態でも水平overflowは観測されなかった。画面の見切れた縦コンテンツは通常の縦スクロールで続けて閲覧できる。
+- viewport overrideをresetし、タブとserverを閉じた。合成データのみであり、実セッション、CLI、worktree操作、外部サービスは使用していない。320px幅の複数幅/touch操作やスクリーンリーダー実機は未確認。
