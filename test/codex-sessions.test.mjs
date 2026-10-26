@@ -81,7 +81,7 @@ test('Codex CLI rollout を検出し、turn status と allowlist イベントだ
   assert.deepEqual(active.events, [{ type: 'turn_started', at: activeAt }]);
   assert.deepEqual(done.lifecycle, { status: 'complete' });
   assert.deepEqual(done.events, [{ type: 'turn_started', at: doneAt - 10_000 }, { type: 'turn_completed', at: doneAt }]);
-  assert.deepEqual(aborted.lifecycle, { status: 'complete' });
+  assert.deepEqual(aborted.lifecycle, { status: 'interrupted' });
   assert.deepEqual(aborted.events, [{ type: 'turn_started', at: activeAt - 10_000 }, { type: 'turn_aborted', at: activeAt }]);
   const safe = JSON.stringify(sessions);
   for (const secret of ['NEVER-WIRE-THIS-PROMPT', 'NEVER-WIRE-THIS-KEY', 'NEVER-WIRE-PROMPT', 'NEVER-WIRE-COMMAND', 'NEVER-WIRE-ENV', 'NEVER-WIRE-UNKNOWN', 'NEVER-WIRE-BROKEN', 'NEVER-WIRE-ANSWER', 'private-id']) {

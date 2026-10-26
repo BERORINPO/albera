@@ -91,7 +91,7 @@ export function deriveFacts(s, ti, now, tf) {
   const age = Math.max(0, now - act);
   const recent = age < RECENT_MS;
   const T = ['codex', 'copilot', 'opencode'].includes(s.source) && s.lifecycle
-    ? { turn: /** @type {const} */ (s.lifecycle.status === 'active' ? 'inprogress' : s.lifecycle.status === 'complete' ? 'ended' : 'unknown'), startedAt: s.lifecycle.startedAt, relevant: s.events?.length ?? 0 }
+    ? { turn: /** @type {const} */ (s.lifecycle.status === 'active' ? 'inprogress' : s.lifecycle.status === 'complete' || s.lifecycle.status === 'interrupted' ? 'ended' : 'unknown'), startedAt: s.lifecycle.startedAt, relevant: s.events?.length ?? 0 }
     : recent && ti ? tf?.turn ?? parseTurnEntries(turnEntries(ti.tail, ti.truncatedHead)) : { turn: /** @type {const} */ ('unknown'), relevant: 0 };
   const mainMtime = ti?.mainMtime ?? 0;
   const subMtime = ti?.subMtime ?? 0;

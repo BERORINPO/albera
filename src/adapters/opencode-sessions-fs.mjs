@@ -107,7 +107,7 @@ export function createOpenCodeSessionsSource({ root, maxSessions = MAX_SESSIONS,
           if (!at) continue;
           if (item.type === 'user') { events.push({ type: 'turn_started', at }); finalState = 'active'; }
           else if (item.type === 'idle' && item.outcome === 'succeeded') { events.push({ type: 'turn_completed', at }); finalState = 'complete'; }
-          else if (item.type === 'idle' && item.outcome === 'interrupted') { events.push({ type: 'turn_aborted', at }); finalState = 'complete'; }
+          else if (item.type === 'idle' && item.outcome === 'interrupted') { events.push({ type: 'turn_aborted', at }); finalState = 'interrupted'; }
           else if (item.type === 'idle' && item.outcome === 'failed') { events.push({ type: 'turn_failed', at }); finalState = 'complete'; }
           else if (item.type === 'idle') finalState = 'unknown';
         }
@@ -116,6 +116,8 @@ export function createOpenCodeSessionsSource({ root, maxSessions = MAX_SESSIONS,
           ? { status: /** @type {const} */ ('active'), startedAt: last.at }
           : finalState === 'complete'
             ? { status: /** @type {const} */ ('complete') }
+            : finalState === 'interrupted'
+              ? { status: /** @type {const} */ ('interrupted') }
             : { status: /** @type {const} */ ('unknown') };
         sessions.push({
           source: 'opencode', sessionId: opaqueOpenCodeId(row.id), title: 'OpenCode', cwd: row.directory,

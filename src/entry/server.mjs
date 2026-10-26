@@ -28,6 +28,7 @@ import { createHandler } from './http.mjs';
 import { errorLines, msg } from './messages.mjs';
 import { probeBoard } from './probe.mjs';
 import { createBoardService } from './service.mjs';
+import { codexDelegationBlockReason } from '../core/session.mjs';
 
 const SELF_PATH = fileURLToPath(import.meta.url);
 const PACKAGE_JSON = path.join(path.dirname(SELF_PATH), '..', '..', 'package.json');
@@ -151,10 +152,8 @@ function main() {
   };
   const startDelegation = async (sessionId, purpose, confirmed, operationId) => {
     const session = await activeSessionForId(sessionId);
-    if (session?.ok === false || session?.source !== 'codex' || !session.cliSessionId || !session.cwd) return { ok: false, reason: 'invalid_target' };
-    if (session.executionLocation === 'wsl') return { ok: false, reason: 'unsupported_location' };
-    if (session.lifecycle?.status === 'active') return { ok: false, reason: 'session_active' };
-    if (session.lifecycle?.status !== 'complete') return { ok: false, reason: 'session_unknown' };
+    const reason = codexDelegationBlockReason(session);
+    if (reason) return { ok: false, reason };
     return delegationRunner?.start({ sessionId: session.cliSessionId, cwd: session.cwd, purpose, confirmed, operationId }) ?? { ok: false, reason: 'unavailable' };
   };
   const handler = createHandler({ port, getBoard: () => service.get(), createWorktree, listWorktrees, removeWorktree, startDelegation, getDelegationStatus: (id) => delegationRunner?.status(id), demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });

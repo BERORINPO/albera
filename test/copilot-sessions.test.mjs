@@ -58,6 +58,7 @@ test('Copilotイベントを検出し、進行中・完了・中断を安全な�
   assert.deepEqual(active.lifecycle, { status: 'active', startedAt: activeAt + 1_000 });
   assert.deepEqual(active.events, [{ type: 'turn_started', at: activeAt }, { type: 'turn_started', at: activeAt + 1_000 }]);
   assert.deepEqual(done.lifecycle, { status: 'complete' });
+  assert.deepEqual(aborted.lifecycle, { status: 'interrupted' });
   assert.deepEqual(done.events.map((e) => e.type), ['turn_started', 'turn_started', 'turn_completed']);
   assert.deepEqual(aborted.events.map((e) => e.type), ['turn_started', 'turn_started', 'turn_aborted']);
   for (const secret of ['PRIVATE-PROMPT', 'PRIVATE-ENV', 'PRIVATE-TOOL-INPUT', 'PRIVATE-BROKEN', 'PRIVATE-UNKNOWN', 'PRIVATE-OUTPUT', 'PRIVATE-REASON']) {

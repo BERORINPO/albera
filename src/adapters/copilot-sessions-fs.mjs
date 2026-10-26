@@ -74,6 +74,7 @@ function lifecycleOf(events) {
   if (!last) return { status: /** @type {const} */ ('unknown') };
   if (last.type === 'turn_started') return { status: /** @type {const} */ ('active'), startedAt: last.at };
   if (last.type === 'turn_completed') return { status: /** @type {const} */ ('complete') };
+  if (last.type === 'turn_aborted') return { status: /** @type {const} */ ('interrupted') };
   return { status: /** @type {const} */ ('unknown') };
 }
 

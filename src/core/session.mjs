@@ -8,6 +8,20 @@ import { SESSION_ID_RE } from '../shared/constants.mjs';
 /** 最後に動いた時刻。lastActivityAt が無ければ createdAt。 @param {SessionRecord} s */
 export const activityOf = (s) => s.lastActivityAt ?? s.createdAt ?? 0;
 
+/**
+ * Return a fixed rejection reason for a Codex delegation target, or null if it is terminal and local.
+ * @param {any} session
+ * @returns {'invalid_target'|'unsupported_location'|'session_active'|'session_interrupted'|'session_unknown'|null}
+ */
+export function codexDelegationBlockReason(session) {
+  if (session?.ok === false || session?.source !== 'codex' || !session.cliSessionId || !session.cwd) return 'invalid_target';
+  if (session.executionLocation === 'wsl') return 'unsupported_location';
+  if (session.lifecycle?.status === 'active') return 'session_active';
+  if (session.lifecycle?.status === 'interrupted') return 'session_interrupted';
+  if (session.lifecycle?.status !== 'complete') return 'session_unknown';
+  return null;
+}
+
 /** @param {string|undefined} id */
 const asSessionId = (id) => (typeof id === 'string' && SESSION_ID_RE.test(id) ? id : undefined);
 

@@ -18,6 +18,14 @@ export function safeEventRows(card) {
     : []);
 }
 
+/** @param {{id?:string,source?:string,detail?:{executionLocation?:string},events?:Array<{type:string,at:number}>}} card */
+export function isCompletedLocalCodexTarget(card) {
+  return card.source === 'codex'
+    && typeof card.id === 'string' && card.id.startsWith('codex_')
+    && card.detail?.executionLocation !== 'wsl'
+    && safeEventRows(card)?.at(-1)?.type === 'turn_completed';
+}
+
 /** @param {T} t @param {{source?:string,events?:Array<{type:string,at:number}>}} card */
 export function eventSummaryEl(t, card) {
   const rows = safeEventRows(card);

@@ -210,7 +210,8 @@ function lifecycleOf(events) {
     if (event.type === 'turn_started') {
       state = 'active';
       startedAt = event.at;
-    } else if (event.type === 'turn_completed' || event.type === 'turn_aborted') state = 'complete';
+    } else if (event.type === 'turn_completed') state = 'complete';
+    else if (event.type === 'turn_aborted') state = 'interrupted';
   }
   return { status: state, ...(state === 'active' && startedAt ? { startedAt } : {}) };
 }

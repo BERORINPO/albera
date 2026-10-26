@@ -50,7 +50,7 @@
  * @property {{origin?: FolderHint, cwd?: FolderHint}=} folders  originCwd / cwd の手掛かり (attachFolders が付ける)。無い = 手掛かりなし
  * @property {string=} model                 (v0.2) CAP.MODEL まで。コンテキストの窓を決めるためだけに使い、JSON には出さない
  * @property {number=} contextExceededCount  (v0.2) 0 以上の整数。1 以上なら Card.detail.contextExceeded に出す
- * @property {{status:'active'|'complete'|'unknown',startedAt?:number}=} lifecycle
+ * @property {{status:'active'|'complete'|'interrupted'|'unknown',startedAt?:number}=} lifecycle
  * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted'|'turn_failed',at:number}>=} events
  * @property {GitWorktreeSummary=} gitWorktree  Git adapter が返す、パスを含まない作業状態の要約
  */

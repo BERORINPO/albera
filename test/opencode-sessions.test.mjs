@@ -48,6 +48,7 @@ test('OpenCode V2 SQLiteをread-onlyで読み、安全な状態イベントだ�
   assert.equal(stats.parsed, 5);
   const byLastEvent = (type) => sessions.find((session) => session.events.at(-1)?.type === type);
   assert.deepEqual(byLastEvent('turn_started')?.lifecycle, { status: 'active', startedAt: at });
+  assert.deepEqual(byLastEvent('turn_aborted')?.lifecycle, { status: 'interrupted' });
   assert.deepEqual(byLastEvent('turn_completed')?.events.map((event) => event.type), ['turn_completed']);
   assert.deepEqual(byLastEvent('turn_aborted')?.events.map((event) => event.type), ['turn_aborted']);
   assert.deepEqual(byLastEvent('turn_failed')?.events.map((event) => event.type), ['turn_failed']);
