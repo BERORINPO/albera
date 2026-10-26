@@ -1,10 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openRelatedSessionDetail, resolveRelatedSessionShortId, sessionRelationEntries } from '../public/session-relations.mjs';
+import { comprehensionGapSummary, openRelatedSessionDetail, resolveRelatedSessionShortId, sessionRelationEntries } from '../public/session-relations.mjs';
 
 const first = 'codex_00000000-0000-4000-8000-000000000001';
 const second = 'local_00000000-0000-4000-8000-000000000002';
 const edge = (from, to, purpose, status = 'active') => ({ id: 'edge', from: `session:${from}`, to: `session:${to}`, kind: 'delegates', purpose, status });
+
+test('comprehension details distinguish unrecorded fields from a lack of evidence or explanation', () => {
+  const copy = {
+    'graph.notRecorded': 'Not recorded',
+    'graph.checkedPersonSummary': 'Checked person: {name}',
+    'graph.missingEvidence': 'Missing evidence: {text}',
+    'graph.neededExplanation': 'Explanation needed: {text}',
+  };
+  const t = (key, values = {}) => Object.entries(values).reduce((result, [name, value]) => result.replace(`{${name}}`, value), copy[key]);
+  assert.deepEqual(comprehensionGapSummary({ checkedPerson: '', missingEvidence: '', neededExplanation: '' }, t), [
+    'Checked person: Not recorded', 'Missing evidence: Not recorded', 'Explanation needed: Not recorded',
+  ]);
+  assert.deepEqual(comprehensionGapSummary({ checkedPerson: 'reviewer', missingEvidence: 'decision record', neededExplanation: '' }, t), [
+    'Checked person: reviewer', 'Missing evidence: decision record', 'Explanation needed: Not recorded',
+  ]);
+});
 
 test('session detail projection exposes safe session-to-session delegation in both directions', () => {
   const entries = sessionRelationEntries([edge(first, second, 'Implement the documented change')], first, { nodes: [] }, [{ id: first }, { id: second }]);

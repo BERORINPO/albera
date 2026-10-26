@@ -73,6 +73,7 @@ export const JA_CANVAS = Object.freeze({
   'graph.statusLabel': '状態',
   'graph.checkedPerson': '理解を確認される人',
   'graph.checkedPersonSummary': '理解を確認される人: {name}',
+  'graph.notRecorded': '未記録',
   'graph.evidenceLinks': '関連する根拠:',
   'graph.explanationLinks': '関連する説明:',
   'graph.missingEvidenceLabel': '不足している根拠',

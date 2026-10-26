@@ -667,3 +667,9 @@
 - 共通の破壊操作確認dialogに`role="alertdialog"`と`aria-modal="true"`を追加し、確認用モーダルとしての意味を明示した。既存の`aria-labelledby`と`aria-describedby`は維持する。
 - static UI assertionを更新し、`npm test` — 556 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。
 - スクリーンリーダーでの実際の読み上げとブラウザー上のキーボード受入は未確認。
+
+### 理解負債の詳細で空欄を未記録として表示 (2026-10-27)
+
+- 関連セッションの詳細では、確認対象者・不足根拠・必要な説明の空欄をそれぞれ「未記録」と表示する。空欄を「該当なし」や「負債なし」とは扱わず、記録の有無だけを明示する。
+- 満たされた欄は手入力値を表示し、理解度スコアや自動判定は追加しない。pure summary testで全未記録・一部記録を確認。`npm test` — 557 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。
+- 今回の詳細表示をブラウザー上で確認するGUI受入は未実施。

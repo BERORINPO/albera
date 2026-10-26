@@ -9,7 +9,7 @@ import { obsidianOpenUri } from './graph-model.mjs';
 import { detailEl, detailStamp } from './rows.mjs';
 import { isCompletedLocalCodexTarget } from './events.mjs';
 import { delegationAvailability } from './delegation-availability.mjs';
-import { sessionRelationEntries } from './session-relations.mjs';
+import { comprehensionGapSummary, sessionRelationEntries } from './session-relations.mjs';
 import { fill, h } from './view.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
@@ -103,11 +103,7 @@ function sessionRelations(t, card, graph, sessionIndex, demo) {
         ].join(' / ') }) })
         : null,
       entry.endpoint === 'graph' && entry.node.kind === 'understanding_gap'
-        ? h('div', {}, h('small', { text: [
-          entry.node.checkedPerson ? t('graph.checkedPersonSummary', { name: entry.node.checkedPerson }) : '',
-          entry.node.missingEvidence ? t('graph.missingEvidence', { text: entry.node.missingEvidence }) : '',
-          entry.node.neededExplanation ? t('graph.neededExplanation', { text: entry.node.neededExplanation }) : '',
-        ].filter(Boolean).join(' / ') }),
+        ? h('div', {}, h('small', { text: comprehensionGapSummary(entry.node, t).join(' / ') }),
           entry.node.evidenceLinks.length ? h('small', {}, t('graph.evidenceLinks'), ' ', ...gapTargetButtons(t, entry.node.evidenceLinks)) : null,
           entry.node.explanationLinks.length ? h('small', {}, t('graph.explanationLinks'), ' ', ...gapTargetButtons(t, entry.node.explanationLinks)) : null,
         )

@@ -73,6 +73,16 @@ export function sessionRelationEntries(edges, sessionId, graph, sessions) {
   });
 }
 
+/** Show absent comprehension-gap fields as unrecorded, not as evidence of no debt. @param {{checkedPerson?:string,missingEvidence?:string,neededExplanation?:string}} gap @param {(key:string,params?:Record<string,string>)=>string} t */
+export function comprehensionGapSummary(gap, t) {
+  const notRecorded = t('graph.notRecorded');
+  return [
+    t('graph.checkedPersonSummary', { name: gap.checkedPerson || notRecorded }),
+    t('graph.missingEvidence', { text: gap.missingEvidence || notRecorded }),
+    t('graph.neededExplanation', { text: gap.neededExplanation || notRecorded }),
+  ];
+}
+
 /** @param {string} sessionId @param {(kind:'detail', id:string)=>boolean} openBar */
 export function openRelatedSessionDetail(sessionId, openBar) {
   return openBar('detail', sessionId);
