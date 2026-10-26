@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { confirmBlockedOperationRelease } from '../public/graph-dialog-actions.mjs';
+import fs from 'node:fs';
+import { confirmBlockedOperationRelease, connectMissingComprehensionEdge } from '../public/graph-dialog-actions.mjs';
 
 const blocked = { id: 'edge-1', operationId: 'op-1', kind: 'delegates', status: 'blocked' };
 
@@ -48,4 +49,35 @@ test('successful graph save permits the dialog to close', () => {
 
   assert.equal(result, true);
   assert.deepEqual(resolved, ['edge-1', 'op-1']);
+});
+
+test('a missing comprehension link opens the relation editor with its fixed evidence kind', () => {
+  for (const edgeKind of ['evidence', 'explains']) {
+    const order = [];
+    const connected = [];
+    const result = connectMissingComprehensionEdge({
+      nodeId: 'g_gap', edgeKind,
+      close: () => order.push('close'),
+      connect: (from, kind) => { order.push('connect'); connected.push(from, kind); },
+    });
+    assert.equal(result, true);
+    assert.deepEqual(order, ['close', 'connect']);
+    assert.deepEqual(connected, ['graph:g_gap', edgeKind]);
+  }
+});
+
+test('unknown comprehension edge kinds fail closed without closing or connecting', () => {
+  let actions = 0;
+  assert.equal(connectMissingComprehensionEdge({ nodeId: 'g_gap', edgeKind: 'related', close: () => actions++, connect: () => actions++ }), false);
+  assert.equal(connectMissingComprehensionEdge({ nodeId: '', edgeKind: 'evidence', close: () => actions++, connect: () => actions++ }), false);
+  assert.equal(actions, 0);
+});
+
+test('the comprehension editor renders actions only from its current missing-link review', () => {
+  const source = fs.readFileSync(new URL('../public/graph-dialog.mjs', import.meta.url), 'utf8');
+  assert.match(source, /review\?\.missing\.length/);
+  assert.match(source, /review\.missing\.map\(\(kind\) => h\('button'/);
+  assert.match(source, /'data-dialog-action': 'connect-missing'/);
+  assert.match(source, /'data-edge-kind': kind/);
+  assert.match(source, /connectMissingComprehensionEdge\(\{ nodeId: node\.id, edgeKind: kind, close: \(\) => dialog\.close\(\), connect: o\.onConnect \}\)/);
 });

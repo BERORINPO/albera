@@ -4,7 +4,7 @@
 import { APPROVAL_MODES, DELEGATION_STATES, EXECUTION_LOCATIONS, GRAPH_EDGE_KINDS, GRAPH_NODE_KINDS, GRAPH_NODE_STATES, NETWORK_ACCESS, WORKSPACE_ISOLATIONS, obsidianOpenUri, reviewUnderstandingGaps, safeArtifactUrl, safeObsidianFile, safeObsidianVault } from './graph-model.mjs';
 import { h } from './view.mjs';
 import { graphSessionLabel } from './graph-session-label.mjs';
-import { confirmBlockedOperationRelease } from './graph-dialog-actions.mjs';
+import { confirmBlockedOperationRelease, connectMissingComprehensionEdge } from './graph-dialog-actions.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 
@@ -179,9 +179,7 @@ export function openGraphNodeDialog(o) {
     }
     if (action === 'connect-missing' && o.onConnect) {
       const kind = button?.getAttribute('data-edge-kind') ?? '';
-      if (kind !== 'evidence' && kind !== 'explains') return;
-      dialog.close();
-      o.onConnect(`graph:${node.id}`, kind);
+      connectMissingComprehensionEdge({ nodeId: node.id, edgeKind: kind, close: () => dialog.close(), connect: o.onConnect });
     }
     if (action === 'edit-edge' && o.onEditEdge) {
       const edge = graph.edges.find((item) => item.id === button?.getAttribute('data-edge-id'));

@@ -10,3 +10,13 @@ export function confirmBlockedOperationRelease({ edge, confirm, resolve }) {
   if (!confirm()) return false;
   return resolve(edge.id, edge.operationId) === true;
 }
+
+/** Open relation editing for one explicitly missing comprehension link kind.
+ * @param {{nodeId:string,edgeKind:string,close:()=>void,connect:(from:string,kind:string)=>void}} options
+ */
+export function connectMissingComprehensionEdge({ nodeId, edgeKind, close, connect }) {
+  if (typeof nodeId !== 'string' || !nodeId || (edgeKind !== 'evidence' && edgeKind !== 'explains')) return false;
+  close();
+  connect(`graph:${nodeId}`, edgeKind);
+  return true;
+}
