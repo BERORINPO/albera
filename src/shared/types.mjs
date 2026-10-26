@@ -14,6 +14,7 @@
  * @typedef {Object} SessionRecord
  * @property {string} sessionId            "local_<uuid>"
  * @property {'codex'|'copilot'|'opencode'=} source   CLI adapter の安全な source code
+ * @property {'wsl'=} executionLocation WSL share 経由と確認できた実行場所
  * @property {string=} cliSessionId        会話ログ (jsonl) のファイル名
  * @property {string=} title
  * @property {string=} cwd
@@ -125,7 +126,7 @@
  * @property {Array<{num: number, repo: string, state: string, url: string|null}>} prs  state はコード (OPEN / MERGED / CLOSED、それ以外は生のまま)
  * @property {{id: string, runs: number, completed: number, stalled: number, latestBucket: BucketKey, runIds?: string[]}=} routine
  * @property {{rootId?: string, parentId?: string, parentTitle?: string|null, children?: {total: number, working: number, needs_you: number, trouble: number, unread: number}}=} family
- * @property {{statusDetail?: string, branch?: string, worktreeName?: string, gitWorktree?: GitWorktreeSummary, completedTurns?: number, error?: string, prsMore?: number, contextExceeded?: number}} detail
+ * @property {{executionLocation?:'wsl', statusDetail?: string, branch?: string, worktreeName?: string, gitWorktree?: GitWorktreeSummary, completedTurns?: number, error?: string, prsMore?: number, contextExceeded?: number}} detail
  *   prsMore = 一覧に載せきれなかった PR の数。contextExceeded (v0.2) = SessionRecord.contextExceededCount (1 以上のときだけ、片付けには付かない)
  * @property {{recommended: boolean, note?: NoteCode}=} cleanup
  * @property {Activity=} activity   (v0.2) 最近で transcript があるときだけ。返事待ちと片付けには付かない

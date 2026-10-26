@@ -20,6 +20,7 @@ import { createTranscriptsSource } from '../adapters/transcripts-fs.mjs';
 import { createWorktreeSource } from '../adapters/worktrees-git.mjs';
 import { createWorktreeCreator } from '../adapters/worktree-create-git.mjs';
 import { createWorktreeRemover } from '../adapters/worktree-remove-git.mjs';
+import { wslCwdToUnc, wslShareRoot } from '../adapters/wsl-paths.mjs';
 import { argsWithoutPort, ConfigError, loadConfig, portHint, shellQuote } from './config.mjs';
 import { liveDemoSources } from './demo.mjs';
 import { createHandler } from './http.mjs';
@@ -50,16 +51,17 @@ function launcher() {
 /** @param {import('./config.mjs').RunConfig} config */
 function wire(config) {
   if (config.demo) return liveDemoSources(config.lang);
+  const codexWslRoot = process.platform === 'win32' ? wslShareRoot(config.codexHome) : '';
   const sessionsSource = createCombinedSessionsSource([
     createAppSessionsSource({ root: config.sessionsRoot }),
-    createCodexSessionsSource({ root: config.codexHome }),
+    createCodexSessionsSource({ root: config.codexHome, cwdMapper: codexWslRoot ? (cwd) => wslCwdToUnc(cwd, codexWslRoot) : undefined }),
     createCopilotSessionsSource({ root: config.copilotHome }),
     createOpenCodeSessionsSource({ root: config.openCodeDb }),
   ]);
   return {
     sessionsSource,
     transcriptsSource: createTranscriptsSource({ projectsDir: config.projectsDir }),
-    folderHints: createFolderHints({ home: config.home }),
+    folderHints: createFolderHints({ home: config.home, wslShareRoot: codexWslRoot }),
     worktreeSource: createWorktreeSource(),
     worktreeCreator: createWorktreeCreator(),
     worktreeRemover: createWorktreeRemover(),
@@ -131,14 +133,17 @@ function main() {
   };
   const createWorktree = async (sessionId, branch) => {
     const session = await activeSessionForId(sessionId);
+    if (session?.executionLocation === 'wsl') return { ok: false, reason: 'unsupported_location' };
     return session?.cwd ? sources.worktreeCreator.create({ cwd: session.cwd, branch }) : session;
   };
   const listWorktrees = async (sessionId) => {
     const session = await activeSessionForId(sessionId);
+    if (session?.executionLocation === 'wsl') return { ok: false, reason: 'unsupported_location' };
     return session?.cwd ? sources.worktreeSource.listForCwd(session.cwd) : session;
   };
   const removeWorktree = async (sessionId, branch, confirmed) => {
     const session = await activeSessionForId(sessionId);
+    if (session?.executionLocation === 'wsl') return { ok: false, reason: 'unsupported_location' };
     return session?.cwd ? sources.worktreeRemover.remove({ cwd: session.cwd, branch, confirmed }) : session;
   };
   const handler = createHandler({ port, getBoard: () => service.get(), createWorktree, listWorktrees, removeWorktree, demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });

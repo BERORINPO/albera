@@ -148,6 +148,8 @@ export const EN_CANVAS = Object.freeze({
   'worktree.createdUntracked': 'Created branch {branch}, but its canvas record could not be saved. Add a worktree card manually.',
   'worktree.recordBody': 'Base {base}. At check: {state}; {changed} changed, {untracked} untracked, {conflicted} conflicts. This is a local record; editing or deleting the card does not change the worktree.',
   'worktree.listButton': 'Refresh worktree status',
+  'worktree.wslUnavailable': 'Worktree actions for WSL sessions are not supported. Only the session and safe status summary are shown.',
+  'detail.executionLocation': 'Execution location',
   'worktree.listTitle': 'Worktrees in this repository',
   'worktree.listLoading': 'Reading worktree status…',
   'worktree.listNone': 'No worktrees found. The session may not be in a Git repository, or Git reported no local worktrees.',

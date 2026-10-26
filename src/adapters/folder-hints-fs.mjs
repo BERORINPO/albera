@@ -20,6 +20,7 @@ import {
 } from '../shared/constants.mjs';
 import { cap } from '../core/text.mjs';
 import { cutWorktreeTail } from './session-record.mjs';
+import { isWslPathInShare } from './wsl-paths.mjs';
 
 /** @typedef {import('../shared/types.mjs').FolderHint} FolderHint */
 
@@ -78,12 +79,13 @@ async function repoChildren(dir) {
 }
 
 /**
- * @param {{home: string, ttlMs?: number, maxEntries?: number, clock?: () => number, caseInsensitive?: boolean,
+ * @param {{home: string, wslShareRoot?: string, ttlMs?: number, maxEntries?: number, clock?: () => number, caseInsensitive?: boolean,
  *   timeoutMs?: number, wait?: (ms: number) => Promise<undefined>}} opts
  *   caseInsensitive: パスの比較で大文字小文字を区別しない (Windows と macOS の既定)。wait はテスト用 (待ち時間の作り方)
  */
 export function createFolderHints({
   home,
+  wslShareRoot = '',
   ttlMs = FOLDER_HINT_TTL_MS,
   maxEntries = FOLDER_HINT_CACHE_MAX,
   clock = () => Date.now(),
@@ -120,7 +122,8 @@ export function createFolderHints({
     hintFor(raw) {
       if (typeof raw !== 'string') return Promise.resolve(undefined);
       const cut = cutWorktreeTail(raw.trim());
-      if (cut === '' || !path.isAbsolute(cut) || NETWORK_PATH_RE.test(cut)) return Promise.resolve(undefined);
+      const scopedWsl = isWslPathInShare(cut, wslShareRoot);
+      if (cut === '' || !path.isAbsolute(cut) || (NETWORK_PATH_RE.test(cut) && !scopedWsl)) return Promise.resolve(undefined);
       const dir = path.resolve(cut);
       const key = keyOf(dir);
       const now = clock();

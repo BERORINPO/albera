@@ -105,6 +105,7 @@ function prsForCard(s) {
 function detailFor(s, c, body) {
   /** @type {Card['detail']} */
   const d = {};
+  if (s.executionLocation === 'wsl') d.executionLocation = 'wsl';
   const sd = s.postTurnSummary?.status_detail;
   if (c.facts.fresh && isNonEmpty(sd) && cap(sd, CAP.BODY) !== body) d.statusDetail = cap(sd, CAP.BODY);
   const branch = safeGitLabel(s.branch, true);

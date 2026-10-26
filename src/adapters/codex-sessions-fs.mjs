@@ -29,9 +29,9 @@ function timestamp(v) {
 
 /**
  * 先頭の session_meta だけを read-only で読む。巨大行・破損行・想定外の封筒は無視する。
- * @param {import('node:fs/promises').FileHandle} handle
+ * @param {import('node:fs/promises').FileHandle} handle @param {(cwd:unknown)=>string|null} [cwdMapper]
  */
-async function readHeader(handle) {
+async function readHeader(handle, cwdMapper) {
   const buffer = Buffer.alloc(MAX_HEADER_BYTES + 1);
   const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
   const end = buffer.subarray(0, bytesRead).indexOf(0x0a);
@@ -42,7 +42,9 @@ async function readHeader(handle) {
     const meta = obj(line.payload.meta) ? line.payload.meta : line.payload;
     if (meta.source !== 'cli' || !ORIGINATORS.has(meta.originator)) return null;
     const id = typeof meta.id === 'string' && new RegExp(`^${UUID}$`, 'i').test(meta.id) ? meta.id.toLowerCase() : null;
-    const cwd = typeof meta.cwd === 'string' && path.isAbsolute(meta.cwd) ? meta.cwd : null;
+    const cwd = cwdMapper
+      ? cwdMapper(meta.cwd)
+      : typeof meta.cwd === 'string' && path.isAbsolute(meta.cwd) ? meta.cwd : null;
     const createdAt = timestamp(meta.timestamp) ?? timestamp(line.timestamp);
     if (!id || !cwd || !createdAt) return null;
     return { id, cwd, createdAt };
@@ -94,8 +96,8 @@ async function dirs(dir) {
   }
 }
 
-/** @param {string} root @param {number} concurrency */
-export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY }) {
+/** @param {string} root @param {number} concurrency @param {(cwd:unknown)=>string|null} [cwdMapper] */
+export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY, cwdMapper }) {
   /** @type {Map<string, {mtimeMs:number,size:number,record: any|null}>} */
   const cache = new Map();
 
@@ -117,7 +119,7 @@ export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY
     let handle;
     try {
       handle = await fs.open(file, 'r');
-      const meta = await readHeader(handle);
+      const meta = await readHeader(handle, cwdMapper);
       if (!meta) {
         cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, record: null });
         stats.bad++;
@@ -134,6 +136,7 @@ export function createCodexSessionsSource({ root, concurrency = READ_CONCURRENCY
       const lastActivityAt = lifecycle.status === 'active' ? Math.max(events.at(-1)?.at ?? meta.createdAt, stat.mtimeMs) : events.at(-1)?.at ?? meta.createdAt;
       const record = {
         source: 'codex',
+        ...(cwdMapper ? { executionLocation: 'wsl' } : {}),
         sessionId: `codex_${meta.id}`,
         title: 'Codex CLI',
         cwd: meta.cwd,

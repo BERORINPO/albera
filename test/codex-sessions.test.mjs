@@ -20,14 +20,14 @@ function envelope(type, payload, at) {
   return JSON.stringify({ timestamp: new Date(at).toISOString(), type, payload });
 }
 
-function meta(id, source = 'cli', originator = 'codex') {
+function meta(id, source = 'cli', originator = 'codex', cwd = 'C:\\work\\alpha') {
   return envelope('session_meta', {
     id,
     session_id: id,
     source,
     originator,
     timestamp: new Date(NOW - 5 * 60_000).toISOString(),
-    cwd: 'C:\\work\\alpha',
+    cwd,
     base_instructions: { text: 'NEVER-WIRE-THIS-PROMPT' },
     environment_secret: 'NEVER-WIRE-THIS-KEY',
   }, NOW - 5 * 60_000);
@@ -127,4 +127,22 @@ test('CLI と originator の組が合わない Codex ファイルは採用しな
   await rollout(home, uuid(701), [meta(uuid(701), 'cli', 'Codex Desktop')]);
   const { sessions } = await createCodexSessionsSource({ root: home }).load();
   assert.equal(sessions.length, 0);
+});
+
+test('明示された WSL share 用 cwd mapper だけが POSIX cwd を内部変換し、wire は場所コードだけ返す', async () => {
+  const home = await fixtureHome();
+  const id = uuid(801);
+  const at = NOW - 30_000;
+  await rollout(home, id, [meta(id, 'cli', 'codex', '/home/dev/project'), envelope('event_msg', { type: 'task_started' }, at)]);
+  const share = '\\\\wsl.localhost\\Ubuntu';
+  const mapped = (cwd) => cwd === '/home/dev/project' ? `${share}\\home\\dev\\project` : null;
+  const { sessions } = await createCodexSessionsSource({ root: home, cwdMapper: mapped }).load();
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].cwd, `${share}\\home\\dev\\project`);
+  assert.equal(sessions[0].executionLocation, 'wsl');
+  const board = buildBoard({ sessions, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS });
+  const card = board.buckets.working.find((item) => item.source === 'codex');
+  assert.equal(card.detail.executionLocation, 'wsl');
+  assert.equal(JSON.stringify(board).includes('wsl.localhost'), false);
+  assert.equal(JSON.stringify(board).includes('home\\\\dev\\\\project'), false);
 });

@@ -260,7 +260,7 @@ export function detailEl(card, pile, ctx) {
   const gitDetails = worktreeDetailText(t, d.gitWorktree);
   const actions = [
     pile === 'cleanup' ? openEl(t, card, 'textbtn', !!ctx.board?.stats?.demo) : null,
-    h('button', { class: 'textbtn', type: 'button', 'data-action': 'worktree-list', 'data-id': card.id, text: t('worktree.listButton') }),
+    card.detail?.executionLocation === 'wsl' ? h('span', { class: 'detail__note', text: t('worktree.wslUnavailable') }) : h('button', { class: 'textbtn', type: 'button', 'data-action': 'worktree-list', 'data-id': card.id, text: t('worktree.listButton') }),
     card.family?.rootId ? h('button', { class: 'textbtn', type: 'button', 'data-action': 'family', 'data-root': card.family.rootId, text: t('detail.familyOnly') }) : null,
     copyButton(t, { action: 'copy-id', id: card.id, key: 'detail.copyId' }),
     deepLink(card.id) ? copyButton(t, { action: 'copy-link', id: card.id, key: 'detail.copyLink' }) : null,
@@ -273,7 +273,7 @@ export function detailEl(card, pile, ctx) {
       'dl',
       {},
       ...dlRow(t('detail.state'), h('span', {}, ...partsToNodes(t.parts('detail.stateValue', { pile: bucketTitle(t, pile), time: timeEl(t, card, ctx.now) })))),
-      ...dlRow(t('detail.source'), card.source ? t(`source.${card.source}`) : t('source.claude')),
+      ...dlRow(t('detail.source'), [card.source ? t(`source.${card.source}`) : t('source.claude'), d.executionLocation ? t(`graph.executionLocation.${d.executionLocation}`) : ''].filter(Boolean).join(' — ')),
       ...activityRows(t, card, pile, ctx.now),
       ...dlRow(t('detail.summary'), d.statusDetail ? h('q', { lang: contentLang(d.statusDetail), text: d.statusDetail }) : null),
       ...dlRow(t('detail.error'), d.error ? h('span', { class: 'pre', lang: langOf(t, d.error), text: d.error }) : null),
