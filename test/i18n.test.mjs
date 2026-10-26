@@ -66,17 +66,25 @@ test('理解負債レビューは不足リンクごとの手動接続を案内�
 
 test('委譲の最終確認は対象セッションの識別子末尾と外部利用条件を示す', () => {
   for (const lang of ['ja', 'en']) {
-    const confirm = makeT(lang)('graph.runDelegationConfirm', {
-      project: 'demo-app', target: '123456789abc', purpose: 'Review the accepted design',
-    });
-    assert.match(confirm, /123456789abc/);
-    assert.match(confirm, /Review the accepted design/);
+    const t = makeT(lang);
+    const target = t('graph.delegationConfirmTarget', { project: 'demo-app', target: '123456789abc', provider: 'Codex CLI' });
+    const confirm = [
+      target,
+      t('graph.delegationConfirmPurpose'),
+      t('graph.delegationConfirmTransfer'),
+      t('graph.delegationConfirmNetwork'),
+      t('graph.delegationConfirmOutput'),
+      t('graph.delegationConfirmSession'),
+      t('graph.delegationConfirmRun'),
+    ].join('\n');
+    assert.match(target, /123456789abc/);
+    assert.match(target, /demo-app/);
     assert.match(confirm, /localhost/);
     assert.match(confirm, /Codex/);
     assert.match(confirm, /network|ネットワーク/i);
     assert.match(confirm, /usage|利用量/i);
     assert.match(confirm, /discarded|破棄/);
-    assert.doesNotMatch(confirm, /\{(?:project|target|purpose)\}/);
+    assert.doesNotMatch(confirm, /\{(?:project|target|purpose|provider)\}/);
   }
 });
 

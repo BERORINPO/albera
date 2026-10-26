@@ -435,3 +435,11 @@
 - 実行前確認には合成project label、Codex CLI、ID末尾12文字、目的、purpose-only stdin、account/configurationのnetwork/API利用可能性、usage、破棄出力、session記録変更可能性が画面表示された。
 - ブラウザー自動操作がJavaScript確認dialogで中断したが、結果画面で委譲状態が進行中に変化し、その後「委譲に失敗」と表示された。このため実行確認が意図せず成立し、合成セッションIDに対するCodex CLI実行を試みた可能性がある。対象IDを含む稼働プロセスは確認時に存在せず、CLI実行や外部通信の有無は確定できない。実セッションとの適合性検証として扱わず、以降の実行操作は行っていない。
 - Pigeonholesサーバーとブラウザータブは停止/閉鎖済み。合成fixtureは `work/delegation-confirmation-fixture` に残っている。削除コマンドは端末の安全ポリシーで拒否されたため削除できず、製品データや実セッション保存先には置いていない。
+
+### 委譲確認を画面内ダイアログへ変更 (2026-10-26)
+
+- JavaScript標準の `window.confirm` を削除し、対象provider/project/ID末尾、目的文、stdinへ送る情報、保存済みCodex account/configurationによるnetwork/API/usage、破棄するCLI出力、セッション記録変更の可能性を項目別に示す画面内dialogへ置き換えた。
+- キャンセルとEscapeは閉じるだけで実行callbackを呼ばない。明示した実行ボタンのsubmitだけが委譲を始める。確認が開いている間に関係が削除・変更された場合に備え、実行直前にedge/endpoints/status/purposeを再読込して照合する。閉じた後は呼出元へfocusを戻す。
+- `npm test` — 530 passed、`npm run arch` — 96 paths/0 violations、`git diff --check` — passed。追加した回帰テストは日英の確認項目、full session IDを表示しないこと、native confirmationを使わないこと、キャンセル経路と明示submitの分離を検査する。
+- この修正ではブラウザー上の実行ボタンを押していないため、Codex CLIや外部通信は起動していない。画面内dialogの実ブラウザーvisual/keyboard受入は未確認。前項の自動操作時に実行確認が成立した可能性と、その不確実性は引き続き記録する。
+- 合成fixture `work/delegation-confirmation-fixture` は端末安全ポリシーが削除操作を拒否したため作業ツリーに残存する。削除は実施していない。
