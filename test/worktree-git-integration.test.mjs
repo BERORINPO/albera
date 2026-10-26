@@ -1,0 +1,68 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFile as nodeExecFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { test } from 'node:test';
+import { createWorktreeCreator } from '../src/adapters/worktree-create-git.mjs';
+import { createWorktreeRemover } from '../src/adapters/worktree-remove-git.mjs';
+import { createWorktreeSource } from '../src/adapters/worktrees-git.mjs';
+
+const execFile = promisify(nodeExecFile);
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
+Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' });
+
+/** Run local Git with a fixed executable and no shell. Output is held only in this test process. @param {string[]} args @param {string} cwd */
+async function git(args, cwd) {
+  const { stdout } = await execFile('git', args, { cwd, env, shell: false, windowsHide: true, encoding: 'utf8' });
+  return stdout;
+}
+
+test('actual local Git worktree lifecycle stays path-free and removes only the confirmed clean checkout', async () => {
+  const tempRoot = path.resolve(os.tmpdir());
+  const sandbox = path.resolve(await fs.mkdtemp(path.join(tempRoot, 'pigeonholes-git-integration-')));
+  const repo = path.join(sandbox, 'repo');
+  const hooks = path.join(sandbox, 'empty-hooks');
+  const branch = 'agent/canvas-integration';
+  let created = false;
+  try {
+    await fs.mkdir(repo);
+    await fs.mkdir(hooks);
+    await git(['init', '--template', hooks, '-b', 'main'], repo);
+    await git(['config', 'user.name', 'Pigeonholes Integration Fixture'], repo);
+    await git(['config', 'user.email', 'fixture@example.invalid'], repo);
+    await fs.writeFile(path.join(repo, 'README.md'), 'synthetic fixture\n');
+    await git(['add', 'README.md'], repo);
+    await git(['-c', `core.hooksPath=${hooks}`, '-c', 'commit.gpgSign=false', 'commit', '-m', 'fixture'], repo);
+    assert.equal((await git(['remote'], repo)).trim(), '', 'the synthetic repo has no remote');
+
+    const creator = createWorktreeCreator();
+    const result = await creator.create({ cwd: repo, branch });
+    assert.deepEqual(result, { ok: true, branch, status: 'clean', changed: 0, untracked: 0, conflicted: 0 });
+    created = true;
+
+    const inventory = await createWorktreeSource().listForCwd(repo);
+    assert.deepEqual(inventory.map(({ branch: name, status, current }) => ({ branch: name, status, current })), [
+      { branch: 'main', status: 'clean', current: true },
+      { branch, status: 'clean', current: false },
+    ]);
+    for (const privateValue of [sandbox, repo, 'README.md']) assert.equal(JSON.stringify(inventory).includes(privateValue), false);
+
+    const removed = await createWorktreeRemover().remove({ cwd: repo, branch, confirmed: true });
+    assert.deepEqual(removed, { ok: true, branch });
+    created = false;
+    const remaining = await createWorktreeSource().listForCwd(repo);
+    assert.deepEqual(remaining.map((entry) => entry.branch), ['main']);
+    assert.ok((await git(['show-ref', '--verify', `refs/heads/${branch}`], repo)).includes(branch), 'the local branch remains after removing its worktree');
+  } finally {
+    if (created) {
+      try { await createWorktreeRemover().remove({ cwd: repo, branch, confirmed: true }); } catch { /* sandbox cleanup follows */ }
+    }
+    const tempPrefix = `${tempRoot}${path.sep}`;
+    if (sandbox === tempRoot || !sandbox.startsWith(tempPrefix) || !path.basename(sandbox).startsWith('pigeonholes-git-integration-')) {
+      throw new Error('Refusing to remove an unexpected integration-test path');
+    }
+    await fs.rm(sandbox, { recursive: true, force: true });
+  }
+});
