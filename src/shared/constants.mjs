@@ -181,6 +181,11 @@ export const FORBIDDEN_WIRE_KEYS = Object.freeze([
   'todos',
   'contextExceededCount',
   'cwd',
+  'gitDir',
+  'commonDir',
+  'worktreePath',
+  'lockedReason',
+  'porcelain',
 ]);
 
 // --- v0.2: していること・コンテキスト (spec/board.md §5.1・§5.2)。言葉は持たない (doing.* / ctx.* は画面の辞書) ---

@@ -6,6 +6,7 @@ import { buildDemo } from '../adapters/demo-data.mjs';
 import { createFakeAppSessionsSource } from '../adapters/fake-app-sessions.mjs';
 import { createFakeFolderHints } from '../adapters/fake-folder-hints.mjs';
 import { createFakeTranscriptsSource } from '../adapters/fake-transcripts.mjs';
+import { createFakeWorktreeSource } from '../adapters/fake-worktrees.mjs';
 
 /**
  * デモの合成データを DEMO_REBUILD_MS ごとに今の時刻から作り直す Fake の組。
@@ -20,11 +21,21 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
     const now = clock();
     if (!built || now - built.at >= DEMO_REBUILD_MS) {
       const demo = buildDemo(now, lang);
+      const demoFolders = [...new Set(demo.raws.map((r) => r.cwd).filter((cwd) => typeof cwd === 'string' && cwd))];
       built = {
         at: now,
         sessions: createFakeAppSessionsSource({ raws: demo.raws, archivedIds: demo.archivedIds }),
         transcripts: createFakeTranscriptsSource(demo.transcripts),
         hints: createFakeFolderHints(demo.folderHints),
+        worktrees: createFakeWorktreeSource(Object.fromEntries(demoFolders.map((cwd, i) => {
+          const status = ['changed', 'untracked', 'mixed', 'clean'][i % 4];
+          return [cwd, {
+            branch: i % 4 === 0 ? 'demo/canvas-check' : 'demo/main',
+            status, changed: status === 'changed' || status === 'mixed' ? 2 : 0,
+            untracked: status === 'untracked' || status === 'mixed' ? 1 : 0,
+            conflicted: 0, locked: i === 0, prunable: i === 1,
+          }];
+        }))),
       };
     }
     return built;
@@ -33,5 +44,6 @@ export function liveDemoSources(lang, clock = () => Date.now()) {
     sessionsSource: { load: () => current().sessions.load() },
     transcriptsSource: { read: (/** @type {string[]} */ ids) => current().transcripts.read(ids), stats: () => current().transcripts.stats() },
     folderHints: { hintFor: (/** @type {string} */ p) => current().hints.hintFor(p) },
+    worktreeSource: { enrich: (/** @type {import('../shared/types.mjs').SessionRecord[]} */ sessions) => current().worktrees.enrich(sessions), stats: () => current().worktrees.stats() },
   };
 }

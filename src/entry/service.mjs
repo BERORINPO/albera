@@ -79,12 +79,12 @@ export function createFactsMemo(parse, max = FACTS_CACHE_MAX) {
 }
 
 /**
- * @param {{sessionsSource: SessionsSource, transcriptsSource: TranscriptsSource, folderHints?: FolderHints, roots: string[],
+ * @param {{sessionsSource: SessionsSource, transcriptsSource: TranscriptsSource, folderHints?: FolderHints, worktreeSource?: {enrich:(sessions:SessionRecord[])=>Promise<SessionRecord[]>,stats:()=>{scanned:number,matched:number,unavailable:number,skipped:number}}, roots: string[],
  *   demo?: boolean, clock?: () => number, cacheMs?: number, parseTail?: ParseTail}} deps
  *   folderHints が無ければ手掛かりなし (core は roots の規則だけで決める)。demo は stats.demo になる。
  *   parseTail は core の tailFacts (テストで呼ばれた回数を数えるために差し替えられる)
  */
-export function createBoardService({ sessionsSource, transcriptsSource, folderHints, roots, demo = false, clock = () => Date.now(), cacheMs = BOARD_CACHE_MS, parseTail = tailFacts }) {
+export function createBoardService({ sessionsSource, transcriptsSource, folderHints, worktreeSource, roots, demo = false, clock = () => Date.now(), cacheMs = BOARD_CACHE_MS, parseTail = tailFacts }) {
   /** @type {{body: string, etag: string, at: number}|null} */
   let cached = null;
   /** @type {Promise<{body: string, etag: string, at: number}>|null} */
@@ -96,7 +96,8 @@ export function createBoardService({ sessionsSource, transcriptsSource, folderHi
   async function compute() {
     const t0 = performance.now();
     const loaded = await sessionsSource.load();
-    const sessions = folderHints ? await withFolders(loaded, folderHints) : loaded.sessions;
+    const folderSessions = folderHints ? await withFolders(loaded, folderHints) : loaded.sessions;
+    const sessions = worktreeSource ? await worktreeSource.enrich(folderSessions) : folderSessions;
     const now = clock();
     const targets = selectTranscriptTargets(sessions, loaded.archivedIds, now);
     const byCli = await transcriptsSource.read(targets.map((t) => t.cliSessionId));
@@ -118,6 +119,7 @@ export function createBoardService({ sessionsSource, transcriptsSource, folderHi
       now,
       roots,
       sourceStats: loaded.stats,
+      worktreeStats: worktreeSource?.stats(),
       transcriptStats: transcriptsSource.stats(),
       scanMs: Math.round(performance.now() - t0),
       demo,

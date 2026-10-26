@@ -51,7 +51,10 @@
  * @property {number=} contextExceededCount  (v0.2) 0 以上の整数。1 以上なら Card.detail.contextExceeded に出す
  * @property {{status:'active'|'complete'|'unknown',startedAt?:number}=} lifecycle
  * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted',at:number}>=} events
+ * @property {GitWorktreeSummary=} gitWorktree  Git adapter が返す、パスを含まない作業状態の要約
  */
+
+/** @typedef {{branch:string|null,status:'clean'|'changed'|'untracked'|'mixed'|'conflicted'|'unknown',changed:number,untracked:number,conflicted:number,locked:boolean,prunable:boolean}} GitWorktreeSummary */
 
 /**
  * 会話ログの末尾 (adapter が返す生の材料。解釈は core)。
@@ -122,7 +125,7 @@
  * @property {Array<{num: number, repo: string, state: string, url: string|null}>} prs  state はコード (OPEN / MERGED / CLOSED、それ以外は生のまま)
  * @property {{id: string, runs: number, completed: number, stalled: number, latestBucket: BucketKey, runIds?: string[]}=} routine
  * @property {{rootId?: string, parentId?: string, parentTitle?: string|null, children?: {total: number, working: number, needs_you: number, trouble: number, unread: number}}=} family
- * @property {{statusDetail?: string, branch?: string, worktreeName?: string, completedTurns?: number, error?: string, prsMore?: number, contextExceeded?: number}} detail
+ * @property {{statusDetail?: string, branch?: string, worktreeName?: string, gitWorktree?: GitWorktreeSummary, completedTurns?: number, error?: string, prsMore?: number, contextExceeded?: number}} detail
  *   prsMore = 一覧に載せきれなかった PR の数。contextExceeded (v0.2) = SessionRecord.contextExceededCount (1 以上のときだけ、片付けには付かない)
  * @property {{recommended: boolean, note?: NoteCode}=} cleanup
  * @property {Activity=} activity   (v0.2) 最近で transcript があるときだけ。返事待ちと片付けには付かない
@@ -202,7 +205,8 @@
  * @property {{files: number, parsed: number, bad: number, stale: number, archived: number, active: number, recentTotal: number,
  *   transcriptsMissingRecent: number, unknownTurnRecent: number, recentWithTranscript: number, transcriptsDirMissing: boolean,
  *   scanMs: number, formatSuspect: FormatSuspect, demo: boolean, contextSeen: number, activitySeen: number, contextSuspect: boolean,
- *   sources?: {codex: {files:number, detected:number, working:number, trouble:number, recent:number, active:number, completed:number, interrupted:number, unknown:number, rejected:number}}}} stats
+ *   sources?: {codex: {files:number, detected:number, working:number, trouble:number, recent:number, active:number, completed:number, interrupted:number, unknown:number, rejected:number}},
+ *   worktrees?: {scanned:number,matched:number,unavailable:number,skipped:number}} stats
  *   contextSeen / activitySeen / contextSuspect は v0.2 (spec/board.md §9)
  */
 

@@ -272,6 +272,21 @@ test('文字数の上限: title 200 / 本文 600 / 親の title 40。完全な c
   assert.ok(!JSON.stringify(card).includes('C:\\work\\alpha'));
 });
 
+test('Git worktree detail is an allowlist and suppresses path-like refs and private fields', () => {
+  const s = Object.assign(rec(1, { branch: 'C:\\private\\branch', worktreeName: '\\\\server\\share' }), {
+    gitWorktree: { branch: 'feature/canvas', status: 'changed', changed: 2, untracked: 1, conflicted: 0, locked: true, prunable: false,
+      path: 'C:\\private\\repo', lockedReason: 'private secret reason', commonDir: 'C:\\private\\repo\\.git' },
+  });
+  const b = board([s]);
+  const cards = [...Object.values(b.buckets).flat(), ...b.recentGroups.flatMap((g) => g.items)];
+  const card = cards.find((c) => c.id === sid(1));
+  assert.deepEqual(card.detail.gitWorktree, { branch: 'feature/canvas', status: 'changed', changed: 2, untracked: 1, conflicted: 0, locked: true, prunable: false });
+  assert.equal(card.detail.branch, undefined);
+  assert.equal(card.detail.worktreeName, undefined);
+  const json = JSON.stringify(card);
+  for (const secret of ['C:\\private', 'server\\share', 'private secret reason', 'lockedReason', 'worktreePath', 'commonDir']) assert.ok(!json.includes(secret), secret);
+});
+
 test('出力に元データの大きな項目と folder hints は入らない (許可した項目だけ)', () => {
   const raw = {
     sessionId: sid(1), cliSessionId: cid(1), title: 't', createdAt: NOW - HOUR, lastActivityAt: NOW - HOUR, isArchived: false,

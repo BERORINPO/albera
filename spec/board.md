@@ -81,7 +81,7 @@ CLEANUP_SUBGROUP_THRESHOLD = 20
 CLEANUP_NOTES   = ['open_pr', 'exempt', 'starred', 'unread', 'child']   // この順に試す
 OTHER_PROJECT   = { key: '(other)' }
 FORBIDDEN_OUTPUT_KEYS = 元データの巨大項目と秘密 (remoteMcpServersConfig ほか) + 'folders' (adapter 内部の手掛かり)。SessionRecord と JSON の両方で検査する
-FORBIDDEN_WIRE_KEYS   = ['model', 'command', 'input', 'file_path', 'notebook_path', 'description', 'usage', 'compactMetadata', 'todos', 'contextExceededCount', 'cwd'] (the working directory remains adapter/core input and never appears in the API)
+FORBIDDEN_WIRE_KEYS   = ['model', 'command', 'input', 'file_path', 'notebook_path', 'description', 'usage', 'compactMetadata', 'todos', 'contextExceededCount', 'cwd', 'gitDir', 'commonDir', 'worktreePath', 'lockedReason', 'porcelain'] (local paths, Git porcelain and lock reasons never appear in the API)
                         // JSON にだけ無いこと (model と contextExceededCount は SessionRecord にはある)。'state' は prs[] の要素の中だけ許す (§13)
 
 // v0.2: していること・コンテキスト (§5.1・§5.2)。言葉は持たない
@@ -400,7 +400,7 @@ Card = { id, bucket, reason: ReasonCode, reasonParams?, title, body, since, time
          prs: [{num, repo, state, url|null}],
          routine?: {id, runs, completed, stalled, latestBucket, runIds?},
          family?: {rootId?, parentId?, parentTitle?, children?: {total, working, needs_you, trouble, unread}},
-         detail: {statusDetail?, branch?, worktreeName?, cwd?, completedTurns?, error?, prsMore?, contextExceeded?},
+         detail: {statusDetail?, branch?, worktreeName?, gitWorktree?: {branch?,status,changed,untracked,conflicted,locked,prunable}, completedTurns?, error?, prsMore?, contextExceeded?},
          cleanup?: {recommended, note?: NoteCode},
          activity?: Activity, context?: Context }                                  // v0.2 (§5.1・§5.2)
 

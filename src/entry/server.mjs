@@ -15,6 +15,7 @@ import { createAppSessionsSource } from '../adapters/app-sessions-fs.mjs';
 import { createCodexSessionsSource } from '../adapters/codex-sessions-fs.mjs';
 import { createFolderHints } from '../adapters/folder-hints-fs.mjs';
 import { createTranscriptsSource } from '../adapters/transcripts-fs.mjs';
+import { createWorktreeSource } from '../adapters/worktrees-git.mjs';
 import { argsWithoutPort, ConfigError, loadConfig, portHint, shellQuote } from './config.mjs';
 import { liveDemoSources } from './demo.mjs';
 import { createHandler } from './http.mjs';
@@ -51,6 +52,7 @@ function wire(config) {
     ]),
     transcriptsSource: createTranscriptsSource({ projectsDir: config.projectsDir }),
     folderHints: createFolderHints({ home: config.home }),
+    worktreeSource: createWorktreeSource(),
   };
 }
 

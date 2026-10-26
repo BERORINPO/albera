@@ -1,7 +1,4 @@
 // @ts-check
-// 画面: 返事待ち・止まったかも・未読・作業中・最近の行と、行の「詳しく」(親子の木を含む)。
-// 行は ID ごとに使い回し、署名が変わったものだけ作り直す。カーソル・開閉・選択は作り直さずに syncRow で合わせる。
-
 import { MAX_PR_BADGES, MAX_PRS, PREVIEW, RECENT_MS, DAY } from '../src/shared/constants.mjs';
 import { copyButton } from './copy.mjs';
 import {
@@ -12,6 +9,7 @@ import { handoffGuideEl, handoffPlan, handoffRowEl } from './handoff.mjs';
 import { activityRows, asOfNode, contextNodes, doingNodes, langOf, openEl, timeEl } from './labels.mjs';
 import { familyTree } from './ui-state.mjs';
 import { eventSummaryEl, eventsEl } from './events.mjs';
+import { worktreeDetailText } from './worktree-detail.mjs';
 import { fill, h, partsToNodes, reconcile, setDisclosed } from './view.mjs';
 
 // 時刻のセル・「開く ↗」・lang の決め方は labels.mjs にある (キャンバスと共有。ここから今までどおり使える)
@@ -259,6 +257,8 @@ export function detailEl(card, pile, ctx) {
     : null;
   const routine = card.routine ? [routineHistory(t, card.routine), routineFlaky(t, card.routine)].filter(Boolean).join(t('sep.sentence')) : '';
   const fam = familyTreeEl(t, card, ctx);
+  const git = d.gitWorktree ?? null;
+  const gitDetails = worktreeDetailText(t, d.gitWorktree);
   const actions = [
     pile === 'cleanup' ? openEl(t, card, 'textbtn', !!ctx.board?.stats?.demo) : null,
     card.family?.rootId ? h('button', { class: 'textbtn', type: 'button', 'data-action': 'family', 'data-root': card.family.rootId, text: t('detail.familyOnly') }) : null,
@@ -277,8 +277,10 @@ export function detailEl(card, pile, ctx) {
       ...activityRows(t, card, pile, ctx.now),
       ...dlRow(t('detail.summary'), d.statusDetail ? h('q', { lang: contentLang(d.statusDetail), text: d.statusDetail }) : null),
       ...dlRow(t('detail.error'), d.error ? h('span', { class: 'pre', lang: langOf(t, d.error), text: d.error }) : null),
-      ...dlRow(t('detail.branch'), d.branch ?? null, 'path'),
+      ...dlRow(t('detail.branch'), git?.branch ?? d.branch ?? null, 'path'),
       ...dlRow(t('detail.worktree'), d.worktreeName ?? null, 'path'),
+      ...dlRow(t('detail.gitState'), gitDetails.status),
+      ...dlRow(t('detail.gitFlags'), gitDetails.flags),
       ...dlRow(t('detail.created'), createdText(t, card.createdAt, ctx.now)),
       ...dlRow(t('detail.turns'), Number(d.completedTurns) > 0 ? t('detail.turnsValue', { n: d.completedTurns }) : null),
       ...dlRow(t('detail.routine'), routine || null),

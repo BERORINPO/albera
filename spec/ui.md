@@ -267,12 +267,13 @@ Rows of the `dl`, each only when present:
 4. `detail.context` (when `context`): `contextValueText(t, ctx)` = `detail.contextValue` with `{pct}`, `{used}`, `{window}`, `{at}` (`tokensText` of `used`, `window`, `compactAt`), then `detail.contextEst` when `inferred`, then `ctx.compacted` when `compacted` is present (any age); then, by pile, `ctx.afterWork` (Working), `ctx.answerFirst` (Needs you) or `ctx.afterLimit` (Stuck? limit) at `due`/`soon`.
 5. `detail.summary`: `detail.statusDetail` as `<q lang>`.
 6. `detail.error`: `detail.error` (full error, pre-wrap), for Stuck? and `old_error`.
-7. `detail.branch` / `detail.worktree`.
-8. `detail.created`: `date.today` when today, else `absoluteTime` (`YYYY-MM-DD HH:mm`).
-9. `detail.turns`: `detail.turnsValue`.
-10. `detail.routine`: `routineHistory(t, routine)` (+ `routine.flaky`).
-11. `detail.pr`: up to 10 lines `pr.detail` (open first; state words from `pr.state.*`, unknown states raw); a link only when `url` is non-null (`rel="noopener noreferrer"`, `target="_blank"`); `detail.prsMore` → `pr.more`.
-12. `detail.related`: the family tree (below).
+7. `detail.branch` / `detail.worktree`; when a path-free `gitWorktree` summary exists, show its branch in preference to session metadata.
+8. `detail.gitState`: clean, changed, untracked, mixed, conflicted or unknown, with counts only; `detail.gitFlags` may show locked/prunable. File names, worktree paths, common Git directory and lock reasons are never sent.
+9. `detail.created`: `date.today` when today, else `absoluteTime` (`YYYY-MM-DD HH:mm`).
+10. `detail.turns`: `detail.turnsValue`.
+11. `detail.routine`: `routineHistory(t, routine)` (+ `routine.flaky`).
+12. `detail.pr`: up to 10 lines `pr.detail` (open first; state words from `pr.state.*`, unknown states raw); a link only when `url` is non-null (`rel="noopener noreferrer"`, `target="_blank"`); `detail.prsMore` → `pr.more`.
+13. `detail.related`: the family tree (below).
 
 Actions (text buttons, one row): [`open.row`] (only in To archive rows, which have no row-level Open) · [`detail.familyOnly`] (when in a family) · [`detail.copyId`] · [`detail.copyLink`]. A copy button's label becomes `detail.copied` for `COPIED_LABEL_MS` (2.5 s); no toast.
 
@@ -1210,10 +1211,10 @@ Everything the UI reads. Fields not listed are not used by the UI. `folders` hin
 | To archive | `cleanupGroups[]`: `reason`, `recommendedReason`, `count`, `recommendedCount`, `items[]` or `projects[]` (`key`, `label` null = no project folder, `lastActivityAt`, `count`, `recommendedCount`, `items[]`); cards add `cleanup.{recommended, note}` (NoteCode), `routine.{runIds, latestBucket}`, `reasonParams` (`older`, `total`, `latestBucket`, `prs`, `more`, `error`, `question`), `lastActivityAt`, `since`, `timeKind` |
 | doing line, `asOfText`, `shortDoing` (§8.4, §10.3) | `activity.{kind, target, n, note, step, live, at}` (optional; never on Needs you or To archive cards) |
 | context words, hand-off (§8.5, §9) | `context.{used, window, inferred, pct, compactAt, level, compacted.{at, trigger}}` (optional; never on To archive cards), `detail.contextExceeded`, `lastActivityAt` (the 24 h row rule) |
-| detail panel | `detail.{statusDetail, branch, worktreeName, completedTurns, error, prsMore, contextExceeded}`, `prs[].{num,repo,state,url}`, `createdAt`, `routine.{completed,stalled,runs}`, `family.*` |
+| detail panel | `detail.{statusDetail, branch, worktreeName, gitWorktree.{branch,status,changed,untracked,conflicted,locked,prunable}, completedTurns, error, prsMore, contextExceeded}`, `prs[].{num,repo,state,url}`, `createdAt`, `routine.{completed,stalled,runs}`, `family.*` |
 | family tree, family filter | `families[rootId].{title, memberIds}`, every card's `family.parentId`, `createdAt`, `bucket`, `routine.runIds` |
 | canvas (`buildSheets`, slips) | every card in `buckets`, `recentGroups` and `cleanupGroups` with its `id`, `bucket`, `title`, `body`, `since`, `timeKind`, `startedAt`, `project.{key,label}`, `lastActivityAt`, `createdAt`, `family.{rootId,parentId}`, `detail.{branch,worktreeName}`, `prs`, `activity`, `context`; `families` |
-| notices, footer | `stats.formatSuspect` (null \| 'no_timestamps' \| 'no_session_files'), `stats.demo`, `stats.archived`, `stats.bad`, `stats.transcriptsMissingRecent`, `stats.transcriptsDirMissing`, `stats.unknownTurnRecent`, `stats.recentWithTranscript`, `stats.contextSuspect`, `stats.activitySeen` (`stats.contextSeen` is for smoke only) |
+| notices, footer | `stats.formatSuspect` (null \| 'no_timestamps' \| 'no_session_files'), `stats.demo`, `stats.archived`, `stats.bad`, `stats.transcriptsMissingRecent`, `stats.transcriptsDirMissing`, `stats.unknownTurnRecent`, `stats.recentWithTranscript`, `stats.contextSuspect`, `stats.activitySeen` (`stats.contextSeen` is for smoke only), optional path-free `stats.worktrees.{scanned,matched,unavailable,skipped}` |
 | batch progress, selection pruning | the set of every card ID plus every `routine.runIds` member (present IDs), and the cleanup subset |
 
 New in v2 for the UI: `reasonParams` (replaces `reasonText`), `cleanup.note` as a code, `project.label: null`, `startedAt`, `stats.formatSuspect`, `stats.demo`. Added in v0.2 (still `v: 2`; optional, additive, ignored by a v0.1 page): `activity`, `context`, `detail.contextExceeded`, `stats.contextSeen`, `stats.activitySeen`, `stats.contextSuspect`. HTTP 500 carries `{"error":"board_failed"}` (the UI shows its own words).
