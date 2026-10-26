@@ -26,6 +26,10 @@
 - 現行 adapter は旧形式の `session` 表から許可した一覧metadataだけを読み、`message` / `part` 表は問い合わせない。上流schemaの存在だけでは保存DB上の正確な列配置・全リリース互換性や、中断理由の安全な固定分類は保証されないため、旧形式の状態・イベントは引き続き `unknown` / 空として扱う。合成DB fixture はこの fail-closed 境界を確認するもので、実OpenCode DBの互換性確認ではない。
 - 音声 Main AI と企業権限制御は完成条件とユーザーが確認したが、運用仕様は「未定義」と回答された。開始/停止、処理・保存先、同意/削除、利用者ロールと操作別許可規則は確認待ちで、画面の利用不可説明だけを維持する。
 
+### OpenCode失敗状態の投影 (2026-10-27)
+
+- V2 `idle.outcome="failed"` は `turn_failed` とlifecycle `failed` に揃える。以前はイベントだけが失敗でlifecycleは完了となり、画面と診断件数が食い違っていた。合成SQLite fixtureでfailed状態とactive/completed/interrupted/failed/unknown各1件の集計を固定した。実OpenCode DBでの状態互換性は未確認。
+
 ## 調査結果 (2026-10-26)
 
 対象: `BERORINPO/pigeonholes` の `main` (`933cf35`, `0.2.0`)。作業ブランチ `feat/codex-cli-sessions` で調査。

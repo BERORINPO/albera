@@ -51,9 +51,15 @@ test('OpenCode V2 SQLiteをread-onlyで読み、安全な状態イベントだ�
   assert.deepEqual(byLastEvent('turn_aborted')?.lifecycle, { status: 'interrupted' });
   assert.deepEqual(byLastEvent('turn_completed')?.events.map((event) => event.type), ['turn_completed']);
   assert.deepEqual(byLastEvent('turn_aborted')?.events.map((event) => event.type), ['turn_aborted']);
+  assert.deepEqual(byLastEvent('turn_failed')?.lifecycle, { status: 'failed' });
   assert.deepEqual(byLastEvent('turn_failed')?.events.map((event) => event.type), ['turn_failed']);
   assert.equal(sessions.find((session) => session.lifecycle.status === 'unknown')?.lifecycle.status, 'unknown', 'malformed terminal data does not look active');
   const board = buildBoard({ sessions, archivedIds: new Set(), turns: new Map(), now: NOW, roots: [dir], sourceStats: { sources: { opencode: stats } } });
+  assert.deepEqual(
+    [board.stats.sources.opencode.active, board.stats.sources.opencode.completed, board.stats.sources.opencode.interrupted, board.stats.sources.opencode.failed, board.stats.sources.opencode.unknown],
+    [1, 1, 1, 1, 1],
+    'source diagnostics reflect normalized lifecycle rather than event labels',
+  );
   const wire = JSON.stringify(board);
   for (const secret of [...ids, dir, 'PRIVATE-PROMPT', 'PRIVATE-ENV', 'PRIVATE-TOOL', 'PRIVATE-OUTPUT', 'PRIVATE-RESULT', 'PRIVATE-REASON', 'PRIVATE-ERROR', 'PRIVATE-UNKNOWN', 'malformed-json']) assert.equal(wire.includes(secret), false, `sensitive value escaped: ${secret}`);
   assert.deepEqual(await fs.readFile(dbPath), before, 'database bytes remain unchanged after reading');
