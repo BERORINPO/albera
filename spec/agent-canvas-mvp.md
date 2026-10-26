@@ -653,3 +653,10 @@
 - 委譲の`completed`/`blocked`結果をgraph modelへ適用し、保存adapterが成功を返した場合だけ完了/失敗/状態不明の通知を出すようにした。ブラウザー保存に失敗した場合は既存の保存失敗通知に任せ、古い`active`記録を終端状態と誤案内しない。
 - 合成テストで正常保存、保存失敗、operation ID不一致を確認。`npm test` — 556 passed、`npm run arch` — 99 paths・違反0、`git diff --check` — passed、隔離fixtureの`npm run smoke` — passed。
 - 実CLIや実委譲は起動していない。UIの保存失敗表示は構造的に既存通知を使用するが、ブラウザーでの障害注入受入は未実施。
+
+### グラフ破壊操作の確認dialogを共通化 (2026-10-27)
+
+- カード削除、関係解除、ブロック済みCodex委譲の追跡ロック解除を、対象と影響を説明するアクセシブルなアプリ内dialogに統一した。カード削除は関連関係も削除することを示し、worktreeカードはキャンバス記録だけが消えてGit worktreeは残ると説明する。追跡ロック解除はPigeonholesの記録だけを解除し、Codexへ接続・停止しないことを示す。
+- キャンセル/Escapeでは元の編集画面へ戻り、確認後は既存のpure helperと保存成功ゲートを通る。カードを削除したときは消えたカードへフォーカスを戻さずキャンバスへ復帰する。
+- `npm test` — 556 passed、`npm run arch` — 99 paths・違反0、`npm run smoke` — 合成fixtureでpass、`git diff --check` — pass。
+- アクセシブル名・説明・日英文言と操作の配線はテスト済み。今回の変更後にブラウザーでTab/Escape/保存/再読み込みを受け入れるGUI確認は未実施。
