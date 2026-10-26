@@ -22,6 +22,19 @@ export function graphCardStatus(node, missing = []) {
     : node.status ?? 'open';
 }
 
+/** @param {any} node @param {string[]} missing @param {T} t */
+export function graphCardSearchText(node, missing = [], t) {
+  const status = graphCardStatus(node, missing);
+  return [
+    node.title, node.body, node.kind, t(`graph.kind.${node.kind}`), node.status,
+    status, t(`graph.status.${status}`), node.checkedPerson, node.missingEvidence,
+    node.neededExplanation, ...missing.flatMap((kind) => [kind, t(`graph.link.${kind}`)]),
+    node.executionLocation, node.workspaceIsolation, node.networkAccess, node.approvalMode,
+    ...['executionLocation', 'workspaceIsolation', 'networkAccess', 'approvalMode']
+      .map((key) => node[key] ? t(`graph.${key}.${node[key]}`) : ''),
+  ].filter((value) => typeof value === 'string' && value.length).join(' ');
+}
+
 /** @param {{kind:string,status?:string}} edge @param {T} t */
 export function graphEdgePresentation(edge, t) {
   const status = edge.kind === 'delegates' && ['planned', 'active', 'blocked', 'completed', 'cancelled'].includes(edge.status ?? '')
@@ -183,7 +196,7 @@ export function renderGraphLayer(layer, o) {
     const at = o.drag?.id === id ? o.drag : node;
     el.style.setProperty('--x', String(at.x));
     el.style.setProperty('--y', String(at.y));
-    const hay = [node.title, node.body, node.kind, node.status, node.checkedPerson, node.missingEvidence, node.neededExplanation, node.executionLocation, node.workspaceIsolation, node.networkAccess, node.approvalMode].join(' ').toLocaleLowerCase();
+    const hay = graphCardSearchText(node, reviewById.get(id) ?? [], t).toLocaleLowerCase();
     el.classList.toggle('is-dim', !!query && !hay.includes(query));
   }
   for (const el of [...lineRoot.children]) {

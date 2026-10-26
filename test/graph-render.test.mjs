@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
-import { graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation } from '../public/graph-render.mjs';
+import { graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation } from '../public/graph-render.mjs';
 
 const node = { id: 'g_00000000-0000-4000-8000-000000000001', kind: 'understanding_gap', title: 'Gap', status: 'open' };
 
@@ -20,6 +20,19 @@ test('resolved comprehension cards show review state while a declared relation i
   assert.equal(graphCardStatus({ ...node, status: 'resolved' }, []), 'resolved');
   assert.equal(graphCardStatus({ ...node, status: 'open' }, ['evidence']), 'open');
   assert.equal(graphCardStatus({ ...node, kind: 'task', status: 'done' }, ['evidence']), 'done');
+});
+
+test('canvas card search includes its rendered review state and missing relations', () => {
+  const t = (key) => ({
+    'graph.kind.understanding_gap': '理解負債',
+    'graph.status.review': '要確認',
+    'graph.link.evidence': '根拠',
+  }[key] ?? key);
+  const search = graphCardSearchText({ ...node, status: 'resolved', missingEvidence: 'source doc' }, ['evidence'], t);
+  assert.match(search, /要確認/);
+  assert.match(search, /根拠/);
+  assert.match(search, /source doc/);
+  assert.doesNotMatch(search, /private/);
 });
 
 test('empty canvas gives a direct accessible action to add a card', () => {
