@@ -192,6 +192,7 @@ export const JA = Object.freeze({
   'detail.source': 'ハーネス',
   'source.claude': 'Claude Code',
   'detail.events': '最近のイベント',
+  'detail.eventsUnavailable': '安全に表示できるイベント要約はありません。',
   'source.codex': 'Codex CLI',
   'event.turnStarted': 'ターン開始',
   'event.turnCompleted': 'ターン完了',

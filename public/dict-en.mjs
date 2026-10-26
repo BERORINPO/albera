@@ -192,6 +192,7 @@ export const EN = Object.freeze({
   'detail.source': 'Harness',
   'source.claude': 'Claude Code',
   'detail.events': 'Recent events',
+  'detail.eventsUnavailable': 'No safe event summaries are available.',
   'source.codex': 'Codex CLI',
   'event.turnStarted': 'Turn started',
   'event.turnCompleted': 'Turn completed',
