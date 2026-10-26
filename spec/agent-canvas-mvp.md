@@ -696,3 +696,8 @@
 - UIとpure graph modelの両方で、理解を確認される人が空の理解負債を`done`/`resolved`にできないようにした。UIは対象者欄に理由を出し、入力時に検証エラーを解除する。
 - 根拠/説明の既存リンク条件も維持。モデルテストで空の作成、空の状態遷移、対象者を記録後の遷移を確認し、dialog assertionで案内を確認。
 - `npm test` — 561 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。ブラウザー操作でのvalidationは未確認。
+
+### 対象者条件のモデル迂回を防止 (2026-10-27)
+
+- 既に完了済みのタスクを理解負債へ変える場合や、解消済みの理解負債から対象者を消す場合にもpure modelで検証する。対象者条件を変更しない既存カードの通常編集は維持する。
+- 合成model testで両方の迂回経路を拒否することを確認。`npm test` — 561 passed、`npm run arch` — 99 paths・違反0、隔離fixtureの`npm run smoke` — passed、`git diff --check` — passed。

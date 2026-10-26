@@ -235,7 +235,10 @@ export function updateGraphNode(doc, id, patch, sessionIds = new Set()) {
   const current = doc.nodes.find((node) => node.id === id);
   if (!current) return doc;
   const changed = normalizeGraphNode({ ...current, ...patch, id }) ?? current;
-  if (patch.status && ['done', 'resolved'].includes(patch.status) && changed.kind === 'understanding_gap') {
+  const terminalGapChanged = changed.kind === 'understanding_gap'
+    && ['done', 'resolved'].includes(changed.status)
+    && (current.kind !== changed.kind || current.status !== changed.status || current.checkedPerson !== changed.checkedPerson);
+  if (terminalGapChanged) {
     if (!changed.checkedPerson.trim()) return doc;
     const candidate = { ...doc, nodes: doc.nodes.map((node) => node.id === id ? changed : node) };
     if (reviewUnderstandingGaps(candidate, sessionIds).some((item) => item.id === id && item.missing.length > 0)) return doc;

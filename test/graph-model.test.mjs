@@ -265,6 +265,12 @@ test('a comprehension gap cannot be marked done or resolved until the checked pe
   assert.equal(updateGraphNode(emptyPerson, g1, { status: 'resolved' }), emptyPerson);
   const identified = updateGraphNode(emptyPerson, g1, { checkedPerson: 'reviewer' });
   assert.equal(updateGraphNode(identified, g1, { status: 'resolved' }).nodes[0].status, 'resolved');
+  const completedTask = addGraphNode(empty(), {
+    kind: 'task', title: 'Completed task', body: '', status: 'done', x: 0, y: 0,
+  }, g2);
+  assert.equal(updateGraphNode(completedTask, g2, { kind: 'understanding_gap' }), completedTask, 'converting an already done task cannot bypass the person requirement');
+  const resolved = updateGraphNode(identified, g1, { status: 'resolved' });
+  assert.equal(updateGraphNode(resolved, g1, { checkedPerson: '' }), resolved, 'a resolved gap cannot lose its checked person');
 });
 
 test('comprehension review treats relations to unavailable sessions as missing', () => {
