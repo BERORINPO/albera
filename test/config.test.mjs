@@ -62,6 +62,19 @@ test('parseArgs: 知らないフラグ・位置引数・値の無いフラグは
   throwsConfig(() => parseArgs(['--lang=']), 'term.missingValue', { flag: '--lang' });
 });
 
+test('Claude セッションフォルダが無くても Codex_HOME/sessions があれば実データモードで起動設定を作る', () => {
+  const config = loadConfig({
+    env: { CODEX_HOME: 'D:\\codex' },
+    argv: [],
+    home: WIN_HOME,
+    platform: 'win32',
+    isDir: (p) => p === 'D:\\codex\\sessions',
+  });
+  assert.equal(config.action, 'run');
+  assert.equal(config.sessionsRoot, '');
+  assert.equal(config.codexHome, 'D:\\codex');
+});
+
 test('端末の言語: --lang → PIGEONHOLES_LANG → LC_ALL → LC_MESSAGES → LANG → Intl → en', () => {
   assert.equal(pickTerminalLang({}, 'ja', 'en-US'), 'ja');
   assert.equal(pickTerminalLang({ PIGEONHOLES_LANG: 'ja' }, 'en', 'ja-JP'), 'en', 'フラグが勝つ');
@@ -152,7 +165,7 @@ test('loadConfig: 候補のうち最初に存在したフォルダ。フラグ�
 test('loadConfig: フラグは環境変数に勝つ。デモはセッションフォルダが無くても起動する', () => {
   const base = { home: NIX_HOME, cwd: '/cwd', platform: 'linux', intlLocale: 'en-US', isDir: dirs([]) };
   const c = loadConfig({ ...base, argv: ['--port', '9100', '--demo', '--lang', 'ja', '--projects-dir', '/flag'], env: { PIGEONHOLES_PORT: 'abc', PIGEONHOLES_LANG: 'xx', PIGEONHOLES_PROJECTS_DIR: '/env' } });
-  assert.deepEqual(c, { action: 'run', lang: 'ja', demo: true, port: 9100, roots: [NIX_HOME], sessionsRoot: '', projectsDir: '/flag', home: NIX_HOME });
+  assert.deepEqual(c, { action: 'run', lang: 'ja', demo: true, port: 9100, roots: [NIX_HOME], sessionsRoot: '', codexHome: NIX_HOME + '/.codex', projectsDir: '/flag', home: NIX_HOME });
   const env = loadConfig({ ...base, argv: [], env: { PIGEONHOLES_PORT: '9200', PIGEONHOLES_DEMO: '1', PIGEONHOLES_ROOTS: '/a:/b' } });
   assert.equal(env.action === 'run' && env.port, 9200);
   assert.equal(env.action === 'run' && env.demo, true);

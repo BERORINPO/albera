@@ -4,6 +4,7 @@
 
 import { DAY, FORMAT_SUSPECT_MIN, PAGE_SIZE, PREVIEW, RECENT_MS, STALE_AFTER_MS } from '../src/shared/constants.mjs';
 import { canvasFocusFallback, canvasJumpPile, canvasJumpTo, drawCanvas, quietFocus } from './canvas-ctl.mjs';
+import { codexStatusMessages } from './codex-status.mjs';
 import { renderCleanup, renderSelbar } from './cleanup.mjs';
 import { faviconKind, setFavicon } from './favicon.mjs';
 import { agoText, agoWords, bucketTitle, dateline, deepLink, quietHint, sentences, tabTitle, timeText } from './format.mjs';
@@ -128,13 +129,17 @@ function renderFoot() {
   const ctxFormat = !!s.contextSuspect;
   const actFormat = s.activitySeen === 0 && Number(s.recentWithTranscript) >= FORMAT_SUSPECT_MIN;
   // 署名は足元に出す値だけ (scanMs や contextSeen などで毎回作り直して、開いた「読み込みの状態」を閉じないように)
-  const sig = [t.lang, keysOn, notify, state.prefs.notify, !!state.board, s.bad, s.transcriptsMissingRecent, s.transcriptsDirMissing, badFormat, ctxFormat, actFormat, s.demo, archived].join('|');
+  const sig = [t.lang, keysOn, notify, state.prefs.notify, !!state.board, s.bad, s.transcriptsMissingRecent, s.transcriptsDirMissing, badFormat, ctxFormat, actFormat, s.demo, archived, JSON.stringify(s.sources?.codex ?? null)].join('|');
   const foot = $('foot');
   if (foot.dataset.sig === sig) return;
   foot.dataset.sig = sig;
   const diagOpen = /** @type {HTMLDetailsElement|null} */ (foot.querySelector('details.foot__diag'))?.open ?? false;
   const key = (/** @type {string[]} */ keys, /** @type {string} */ label) => h('span', {}, ...keys.flatMap((k) => [h('kbd', { text: k }), ' ']), label);
   const diag = [];
+  const codex = s.sources?.codex;
+  if (codex) {
+    diag.push(...codexStatusMessages(t, codex).map((text) => h('p', { text })));
+  }
   if (Number(s.bad) > 0) diag.push(h('p', { text: t('foot.bad', { n: s.bad }) }));
   if (Number(s.transcriptsMissingRecent) > 0) diag.push(h('p', { text: sentences(t, t('foot.missing', { n: s.transcriptsMissingRecent, days: RECENT_MS / DAY }), t('foot.missingWhy')) }));
   if (!diag.length) diag.push(h('p', { text: t('foot.allGood') }));

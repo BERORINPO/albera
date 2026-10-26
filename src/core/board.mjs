@@ -109,7 +109,7 @@ function detailFor(s, c, body) {
   if (c.facts.fresh && isNonEmpty(sd) && cap(sd, CAP.BODY) !== body) d.statusDetail = cap(sd, CAP.BODY);
   if (isNonEmpty(s.branch)) d.branch = cap(s.branch, CAP.TITLE);
   if (isNonEmpty(s.worktreeName)) d.worktreeName = cap(s.worktreeName, CAP.TITLE);
-  if (isNonEmpty(s.cwd)) d.cwd = cap(s.cwd, CAP.CWD);
+  if (s.source !== 'codex' && isNonEmpty(s.cwd)) d.cwd = cap(s.cwd, CAP.CWD);
   if (typeof s.completedTurns === 'number') d.completedTurns = s.completedTurns;
   if (isNonEmpty(s.error)) d.error = cap(/** @type {string} */ (s.error).trim(), CAP.BODY);
   const morePrs = prListOf(s).length - MAX_PRS;
@@ -243,6 +243,7 @@ function makeCard(s, ctx) {
   /** @type {Card} */
   const card = {
     id: s.sessionId,
+    ...(s.source === 'codex' ? { source: 'codex' } : {}),
     bucket: c.bucket,
     reason: c.reason,
     ...(c.reasonParams ? { reasonParams: c.reasonParams } : {}),
@@ -256,6 +257,7 @@ function makeCard(s, ctx) {
     project: { key: ref.key, label: isOther ? null : ctx.labelOf.get(ref.key) ?? ref.name, extra: ref.extra },
     prs: prsForCard(s),
     detail: detailFor(s, c, body),
+    ...(s.source === 'codex' && Array.isArray(s.events) ? { events: s.events.slice(-30).map((event) => ({ type: event.type, at: event.at })) } : {}),
   };
   const routine = routineFor(s, ctx);
   if (routine) card.routine = routine;
@@ -498,7 +500,7 @@ function liveInputs(active, turns, now, given) {
  * @param {Map<string, TranscriptInput>} input.turns sessionId がキー
  * @param {number} input.now
  * @param {string[]} input.roots
- * @param {{files?: number, parsed?: number, bad?: number, stale?: number, dirs?: number}=} input.sourceStats
+ * @param {{files?: number, parsed?: number, bad?: number, stale?: number, dirs?: number, sources?: {codex?: {files?: number, bad?: number}}}=} input.sourceStats
  * @param {{dirMissing?: boolean}=} input.transcriptStats
  * @param {number=} input.scanMs
  * @param {boolean=} input.demo デモデータで動いているとき true (stats.demo)
@@ -543,6 +545,22 @@ export function buildBoard({
   for (const k of /** @type {const} */ (['needs_you', 'trouble', 'unread', 'working'])) lists[k].sort(PILE_ORDER[k]);
   const recentGroups = groupByProject(lists.recent.sort(byNewest)).map(({ key, label, items }) => ({ key, label, items }));
   const cleanupGroups = buildCleanupGroups(active, ctx);
+  const codexInput = sourceStats.sources?.codex;
+  const codexSessions = active.filter((s) => s.source === 'codex');
+  const count = (/** @type {unknown} */ v) => Number.isSafeInteger(v) && Number(v) >= 0 ? Number(v) : 0;
+  const lastEvent = (/** @type {SessionRecord} */ s) => s.events?.at(-1)?.type;
+  const codexDiagnostics = codexInput ? {
+    files: count(codexInput.files),
+    detected: codexSessions.length,
+    working: lists.working.filter((c) => c.source === 'codex').length,
+    trouble: lists.trouble.filter((c) => c.source === 'codex').length,
+    recent: lists.recent.filter((c) => c.source === 'codex').length,
+    active: codexSessions.filter((s) => s.lifecycle?.status === 'active').length,
+    completed: codexSessions.filter((s) => lastEvent(s) === 'turn_completed').length,
+    interrupted: codexSessions.filter((s) => lastEvent(s) === 'turn_aborted').length,
+    unknown: codexSessions.filter((s) => s.lifecycle?.status !== 'active' && !['turn_completed', 'turn_aborted'].includes(lastEvent(s))).length,
+    rejected: count(codexInput.bad),
+  } : undefined;
 
   const cleanupCount = [...cls.values()].filter((c) => c.bucket === 'cleanup').length;
   return {
@@ -576,6 +594,7 @@ export function buildBoard({
       scanMs,
       formatSuspect,
       demo: !!demo,
+      ...(codexDiagnostics ? { sources: { codex: codexDiagnostics } } : {}),
       ...live.stats,
     },
   };
