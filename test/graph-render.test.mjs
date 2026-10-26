@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
-import { graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation } from '../public/graph-render.mjs';
+import { graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation, graphEdgeSearchText } from '../public/graph-render.mjs';
 
 const node = { id: 'g_00000000-0000-4000-8000-000000000001', kind: 'understanding_gap', title: 'Gap', status: 'open' };
 
@@ -33,6 +33,19 @@ test('canvas card search includes its rendered review state and missing relation
   assert.match(search, /根拠/);
   assert.match(search, /source doc/);
   assert.doesNotMatch(search, /private/);
+});
+
+test('canvas relation search includes the relation purpose, label, and safe delegation status', () => {
+  const t = (key) => ({
+    'graph.edge.delegates': '委譲の記録',
+    'graph.delegation.active': '進行中',
+  }[key] ?? key);
+  const search = graphEdgeSearchText({ kind: 'delegates', purpose: 'Review the migration summary', status: 'active' }, t);
+  assert.match(search, /委譲の記録/);
+  assert.match(search, /Review the migration summary/);
+  assert.match(search, /進行中/);
+  const unknown = graphEdgeSearchText({ kind: 'delegates', purpose: '', status: 'private-status-value' }, t);
+  assert.doesNotMatch(unknown, /private-status-value/);
 });
 
 test('empty canvas gives a direct accessible action to add a card', () => {

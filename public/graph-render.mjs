@@ -35,6 +35,17 @@ export function graphCardSearchText(node, missing = [], t) {
   ].filter((value) => typeof value === 'string' && value.length).join(' ');
 }
 
+/** @param {{kind:string,purpose?:string,status?:string}} edge @param {T} t */
+export function graphEdgeSearchText(edge, t) {
+  const status = graphEdgePresentation(edge, t).status;
+  return [
+    edge.kind,
+    t(`graph.edge.${edge.kind}`),
+    edge.purpose,
+    status ? t(`graph.delegation.${status}`) : '',
+  ].filter((value) => typeof value === 'string' && value.length).join(' ');
+}
+
 /** @param {{kind:string,status?:string}} edge @param {T} t */
 export function graphEdgePresentation(edge, t) {
   const status = edge.kind === 'delegates' && ['planned', 'active', 'blocked', 'completed', 'cancelled'].includes(edge.status ?? '')
@@ -200,16 +211,19 @@ export function renderGraphLayer(layer, o) {
     el.classList.toggle('is-dim', !!query && !hay.includes(query));
   }
   for (const el of [...lineRoot.children]) {
-    const edge = edges.find((x) => x.edge.id === el.getAttribute('data-key'))?.edge;
+    const rendered = edges.find((x) => x.edge.id === el.getAttribute('data-key'));
+    const edge = rendered?.edge;
     if (!edge) continue;
     const from = edge.from.startsWith('graph:') ? o.graph.nodes.find((n) => n.id === edge.from.slice(6)) : null;
     const to = edge.to.startsWith('graph:') ? o.graph.nodes.find((n) => n.id === edge.to.slice(6)) : null;
-    const touchesMatch = [from, to].filter(Boolean).some((n) => {
-      const hay = [n.title, n.body, n.kind, n.status].join(' ').toLocaleLowerCase();
-      return !query || hay.includes(query);
+    const relationHay = graphEdgeSearchText(edge, t).toLocaleLowerCase();
+    const relationMatches = !!query && relationHay.includes(query);
+    const touchesMatch = !query || relationMatches || [from, to].filter(Boolean).some((n) => {
+      const hay = graphCardSearchText(n, reviewById.get(n.id) ?? [], t).toLocaleLowerCase();
+      return hay.includes(query);
     });
     const filteredSession = [edge.from, edge.to].some((endpoint) => endpoint.startsWith('session:') && o.matched != null && !o.matched.has(endpoint.slice(8)));
-    el.classList.toggle('is-dim', (!!query && !touchesMatch) || filteredSession);
+    el.classList.toggle('is-dim', (!!query && !touchesMatch) || (filteredSession && !relationMatches));
     const attributes = graphEdgeAttributes(edge, t);
     if (attributes.title) el.setAttribute('aria-label', attributes.title);
     else el.removeAttribute('aria-label');
