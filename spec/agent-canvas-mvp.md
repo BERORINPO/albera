@@ -959,4 +959,5 @@
 
 - 個別セッション付箋のkeyboard moveとresetが、ブラウザー内保存後に座標を復元する操作handler testを追加。pointer dragはzoomを考慮したworld座標でpreviewし、drop時だけ保存する。
 - 操作値とstorage validatorの境界が不一致だったため、keyboard/pointerのlive座標を保存が受け入れる同じ範囲へclampするpure helperを共有した。上下限を越えても画面上の座標と再読み込み後の保存座標がずれない。
+- localStorageが保存を拒否する場合の操作テストも追加。未保存座標を表示状態へ反映せず、固定の保存エラー通知を出す。
 - このテストはDOM操作handlerとstorage adapterの合成確認であり、実ブラウザー受入ではない。ドラッグの実画面操作、狭幅/touch、実セッションの位置復元は未確認のまま。

@@ -94,3 +94,19 @@ test('keyboard and pointer movement stay within the storage world bounds', () =>
   actions.drop(sessionId);
   assert.deepEqual(loadSessionPositions(storage), { [sessionId]: { x: 1_000_000, y: 0 } });
 }));
+
+test('failed browser storage does not report a moved card or leave an unsaved live position', () => withCanvasGlobals((storage) => {
+  storage.setItem = () => { throw new Error('blocked storage'); };
+  const announcements = [];
+  let renders = 0;
+  const cv = { layout, cam: { z: 1 } };
+  const actions = createSessionPositionActions({
+    cv, render: () => { renders++; }, world: () => ({ querySelector: () => null }), focusSlip() {},
+    announce: (value) => announcements.push(value), getT: () => (key) => key,
+  });
+
+  assert.equal(actions.moveBy(sessionId, 12, 0), false);
+  assert.deepEqual(cv.sessionPositions, {});
+  assert.equal(renders, 0);
+  assert.deepEqual(announcements, ['canvas.positionSaveError']);
+}));
