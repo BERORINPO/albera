@@ -513,3 +513,9 @@
 
 - Graphカードは直接つながるsessionの実行元と現在のpile/stateも絞り込みに使う。複数sessionが直接つながる場合、実行元・状態・projectの選択条件すべてに一致する同一sessionが一つ以上あれば通常表示する。条件を別々のsessionで満たしても一致とはしない。直接接続sessionがないカードは分類を推測せず盤面全体に残す。不一致カードは薄く表示し、accessible nameに「絞り込み外」を含める。
 - pure helperのテストでClaude/Codex、working/recent、projectの一致・不一致と、複合条件が同一sessionへ適用されることを確認。合成デモUIでは実行元=Codexで薄く、Claudeで通常表示へ戻ること、Claudeカードに対して状態=workingで薄く、needs_youで通常表示へ戻ることを確認した。合成テストカードの直接接続sessionはneeds_you状態。これらはデモ/fixtureによる確認で、実セッションとの適合性を証明しない。
+
+### セッション検索から関連カードへ辿る (2026-10-26)
+
+- キャンバスの文字検索に一致した直接接続sessionがある場合、接続されたGraphカードも一致として強調し、関係線も強調する。検索語に合わないカードへsessionの内容は複製しない。複数の選択フィルターは、同一の直接接続sessionがすべてを満たす条件を保つ。
+- unit testで関係方向の両側、未一致・未接続ケースを確認。隔離demo (19833) で合成タスクを合成Codex CLIカードへ接続し、Codexの表示名で検索。一致セッション1件、Graphカードに `is-dim` なし、関係線に `is-dim` なしを確認した。これはGUIの合成確認で、実CLI/実セッション形式は未確認。
+- `npm test` — 541 passed、`npm run arch` — 96 paths/0 violations、`git diff --check` — passed。デモサーバーは停止。確認データはこの隔離ブラウザーoriginのlocalStorageにだけ保存され、provider保存先・CLI・外部サービスは使用していない。

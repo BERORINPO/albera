@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
-import { graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation, graphEdgeSearchText, graphNodeSessionFilterMatch } from '../public/graph-render.mjs';
+import { graphCardSearchText, graphCardSignature, graphCardStatus, graphEdgeAttributes, graphEdgePresentation, graphEdgeSearchText, graphNodeHasMatchedSession, graphNodeSessionFilterMatch } from '../public/graph-render.mjs';
 
 const node = { id: 'g_00000000-0000-4000-8000-000000000001', kind: 'understanding_gap', title: 'Gap', status: 'open' };
 
@@ -69,6 +69,21 @@ test('canvas source, state, and project filters follow direct session relations 
   assert.equal(graphNodeSessionFilterMatch(nodeId, edges, index, { source: 'codex', state: 'working' }), false, 'all selected filters must match the same linked session');
   assert.equal(graphNodeSessionFilterMatch(nodeId, edges, index, { source: 'claude', project: 'beta' }), false);
   assert.equal(graphNodeSessionFilterMatch('unlinked', edges, index, { project: 'gamma' }), true, 'unlinked cards remain board-wide when project cannot be derived');
+});
+
+test('canvas graph cards and relation lines can follow a directly matched session in either relation direction', () => {
+  const nodeId = 'g_00000000-0000-4000-8000-000000000001';
+  const alphaId = 'claude_00000000-0000-4000-8000-000000000001';
+  const betaId = 'codex_00000000-0000-4000-8000-000000000002';
+  const edges = [
+    { from: `graph:${nodeId}`, to: `session:${alphaId}` },
+    { from: `session:${betaId}`, to: `graph:${nodeId}` },
+  ];
+  assert.equal(graphNodeHasMatchedSession(nodeId, edges, new Set([alphaId])), true);
+  assert.equal(graphNodeHasMatchedSession(nodeId, edges, new Set([betaId])), true);
+  assert.equal(graphNodeHasMatchedSession(nodeId, edges, new Set(['other'])), false);
+  assert.equal(graphNodeHasMatchedSession(nodeId, edges, null), false);
+  assert.equal(graphNodeHasMatchedSession('unlinked', edges, new Set([alphaId])), false);
 });
 
 test('empty canvas gives a direct accessible action to add a card', () => {

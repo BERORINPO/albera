@@ -55,6 +55,16 @@ export function graphNodeSessionFilterMatch(nodeId, edges, index, filters = {}) 
   });
 }
 
+/** A direct session relation can keep a graph card searchable when that session matches the active board query. @param {string} nodeId @param {any[]} edges @param {Set<string>|null|undefined} matched */
+export function graphNodeHasMatchedSession(nodeId, edges, matched) {
+  if (!matched) return false;
+  return (edges ?? []).some((edge) => {
+    if (edge?.from === `graph:${nodeId}` && typeof edge.to === 'string' && edge.to.startsWith('session:')) return matched.has(edge.to.slice(8));
+    if (edge?.to === `graph:${nodeId}` && typeof edge.from === 'string' && edge.from.startsWith('session:')) return matched.has(edge.from.slice(8));
+    return false;
+  });
+}
+
 /** @param {{kind:string,purpose?:string,status?:string}} edge @param {T} t */
 export function graphEdgeSearchText(edge, t) {
   const status = graphEdgePresentation(edge, t).status;
@@ -236,7 +246,8 @@ export function renderGraphLayer(layer, o) {
     el.style.setProperty('--y', String(at.y));
     const missing = reviewById.get(id) ?? [];
     const hay = graphCardSearchText(node, missing, t).toLocaleLowerCase();
-    const dim = (!!query && !hay.includes(query)) || !graphNodeSessionFilterMatch(id, o.graph.edges, o.index, o.sessionFilters);
+    const textMatches = !query || hay.includes(query) || graphNodeHasMatchedSession(id, o.graph.edges, o.matched);
+    const dim = !textMatches || !graphNodeSessionFilterMatch(id, o.graph.edges, o.index, o.sessionFilters);
     el.classList.toggle('is-dim', dim);
     el.setAttribute('aria-label', `${graphCardAriaLabel(t, node, missing)}${dim ? ` ${t('canvas.noMatch')}` : ''}`);
   }
@@ -248,7 +259,8 @@ export function renderGraphLayer(layer, o) {
     const to = edge.to.startsWith('graph:') ? o.graph.nodes.find((n) => n.id === edge.to.slice(6)) : null;
     const relationHay = graphEdgeSearchText(edge, t).toLocaleLowerCase();
     const relationMatches = !!query && relationHay.includes(query);
-    const touchesMatch = !query || relationMatches || [from, to].filter(Boolean).some((n) => {
+    const touchesSessionMatch = [edge.from, edge.to].some((endpoint) => endpoint.startsWith('session:') && o.matched?.has(endpoint.slice(8)));
+    const touchesMatch = !query || relationMatches || touchesSessionMatch || [from, to].filter(Boolean).some((n) => {
       const hay = graphCardSearchText(n, reviewById.get(n.id) ?? [], t).toLocaleLowerCase();
       return hay.includes(query);
     });
