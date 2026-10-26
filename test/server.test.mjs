@@ -280,21 +280,22 @@ test('delegation API requires confirmation, sends only the purpose, and returns 
   const calls = [];
   const server = http.createServer(createHandler({
     port: p, getBoard: async () => ({ body: '{}', etag: '"empty"' }),
-    startDelegation: async (...args) => { calls.push(args); return { ok: true, operationId: '12345678-1234-1234-1234-1234567890ab' }; },
+    startDelegation: async (...args) => { calls.push(args); return { ok: true, operationId: args[3], status: 'running' }; },
     getDelegationStatus: () => 'completed',
   }));
   await new Promise((resolve) => server.listen(p, '127.0.0.1', resolve));
   const headers = { Origin: `http://127.0.0.1:${p}`, 'Content-Type': 'application/json' };
   const purpose = 'synthetic purpose must not echo';
   try {
-    const result = await request(p, { path: '/api/delegations/run', method: 'POST', headers, body: JSON.stringify({ sessionId: 'codex_00000000-0000-4000-8000-000000000001', purpose, confirmed: true }) });
+    const opId = '12345678-1234-1234-1234-1234567890ab';
+    const result = await request(p, { path: '/api/delegations/run', method: 'POST', headers, body: JSON.stringify({ sessionId: 'codex_00000000-0000-4000-8000-000000000001', purpose, confirmed: true, operationId: opId }) });
     assert.equal(result.status, 202);
-    assert.deepEqual(JSON.parse(result.body), { operationId: '12345678-1234-1234-1234-1234567890ab', status: 'running' });
+    assert.deepEqual(JSON.parse(result.body), { operationId: opId, status: 'running' });
     assert.equal(result.body.includes(purpose), false);
-    assert.deepEqual(calls, [['codex_00000000-0000-4000-8000-000000000001', purpose, true]]);
-    const status = await request(p, { path: '/api/delegations/status/12345678-1234-1234-1234-1234567890ab' });
+    assert.deepEqual(calls, [['codex_00000000-0000-4000-8000-000000000001', purpose, true, opId]]);
+    const status = await request(p, { path: `/api/delegations/status/${opId}` });
     assert.deepEqual(JSON.parse(status.body), { status: 'completed' });
-    const unconfirmed = await request(p, { path: '/api/delegations/run', method: 'POST', headers, body: JSON.stringify({ sessionId: 'codex_00000000-0000-4000-8000-000000000001', purpose, confirmed: false }) });
+    const unconfirmed = await request(p, { path: '/api/delegations/run', method: 'POST', headers, body: JSON.stringify({ sessionId: 'codex_00000000-0000-4000-8000-000000000001', purpose, confirmed: false, operationId: opId }) });
     assert.equal(unconfirmed.status, 400);
     const wrongOrigin = await request(p, { path: '/api/delegations/run', method: 'POST', headers: { ...headers, Origin: 'https://attacker.example' }, body: '{}' });
     assert.equal(wrongOrigin.status, 403);

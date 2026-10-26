@@ -33,14 +33,14 @@ export class WorktreeOperationError extends Error {
 }
 
 /** Send only a user-authored delegation purpose after explicit UI confirmation. */
-export async function runDelegation(sessionId, purpose) {
+export async function runDelegation(sessionId, purpose, operationId) {
   const res = await fetch('/api/delegations/run', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, purpose, confirmed: true }), cache: 'no-store', credentials: 'same-origin',
+    body: JSON.stringify({ sessionId, purpose, operationId, confirmed: true }), cache: 'no-store', credentials: 'same-origin',
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || typeof data.operationId !== 'string') throw new WorktreeOperationError(res.status, typeof data.error === 'string' ? data.error : 'failed');
-  return data.operationId;
+  return { operationId: data.operationId, status: data.status };
 }
 
 export async function delegationStatus(operationId) {

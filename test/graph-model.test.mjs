@@ -131,6 +131,15 @@ test('graph relations can update purpose and delegation state or be removed', ()
   assert.notEqual(remaining[0].id, e1);
 });
 
+test('delegation operation IDs persist locally only on delegate edges and fail closed when malformed', () => {
+  const opId = '12345678-1234-4234-8234-1234567890ab';
+  const invalid = 'C:\\private\\session';
+  const edge = { id: 'e_00000000-0000-4000-8000-000000000002', from: 'session:local_00000000-0000-4000-8000-000000000001', to: 'session:codex_00000000-0000-4000-8000-000000000002', kind: 'delegates', purpose: 'Review', status: 'active', operationId: opId };
+  assert.equal(normalizeGraph({ v: 1, nodes: [], edges: [edge] }).edges[0].operationId, opId);
+  assert.equal(normalizeGraph({ v: 1, nodes: [], edges: [{ ...edge, operationId: invalid }] }).edges[0].operationId, undefined);
+  assert.equal(normalizeGraph({ v: 1, nodes: [], edges: [{ ...edge, kind: 'related' }] }).edges[0].operationId, undefined);
+});
+
 test('legacy delegation with missing purpose remains readable and can be repaired', () => {
   const legacy = normalizeGraph({
     v: 1,

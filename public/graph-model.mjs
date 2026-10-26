@@ -58,7 +58,7 @@ export function obsidianOpenUri(vaultValue, fileValue) {
 }
 
 /** @typedef {{id:string,kind:string,title:string,body:string,url:string,status:string,x:number,y:number,checkedPerson:string,missingEvidence:string,neededExplanation:string,executionLocation:string,workspaceIsolation:string,networkAccess:string,approvalMode:string}} GraphNode */
-/** @typedef {{id:string,from:string,to:string,kind:string,purpose:string,status:string}} GraphEdge */
+/** @typedef {{id:string,from:string,to:string,kind:string,purpose:string,status:string,operationId?:string}} GraphEdge */
 /** @typedef {{v:1,nodes:GraphNode[],edges:GraphEdge[]}} GraphDoc */
 
 /** @param {unknown} value @returns {GraphNode|null} */
@@ -104,6 +104,7 @@ export function normalizeGraphEdge(value) {
     kind,
     purpose: text(v.purpose, 240),
     status: kind === 'delegates' ? oneOf(v.status, DELEGATION_STATES, 'planned') : '',
+    ...(kind === 'delegates' && typeof v.operationId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v.operationId) ? { operationId: v.operationId } : {}),
   };
 }
 
@@ -238,7 +239,7 @@ export function updateGraphEdge(doc, id, patch) {
   const changed = normalizeGraphEdge({ ...previous, ...patch, id: previous.id, from: previous.from, to: previous.to });
   if (!changed || doc.edges.some((edge) => edge.id !== id && edge.from === changed.from && edge.to === changed.to && edge.kind === changed.kind)) return doc;
   if (changed.kind === 'delegates' && !changed.purpose && (changed.kind !== previous.kind || changed.status !== previous.status)) return doc;
-  if (changed.kind === previous.kind && changed.purpose === previous.purpose && changed.status === previous.status) return doc;
+  if (changed.kind === previous.kind && changed.purpose === previous.purpose && changed.status === previous.status && changed.operationId === previous.operationId) return doc;
   const edges = doc.edges.map((edge) => edge.id === id ? changed : edge);
   return edges.some((edge, i) => edge !== doc.edges[i]) ? { ...doc, edges } : doc;
 }

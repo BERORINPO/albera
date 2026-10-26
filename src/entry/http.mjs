@@ -148,13 +148,13 @@ export function createHandler({ port, getBoard, createWorktree, listWorktrees, r
     catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' })); }
     let value;
     try { value = JSON.parse(body); } catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_json' })); }
-    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'confirmed,purpose,sessionId' || value.confirmed !== true || typeof value.sessionId !== 'string' || !/^codex_[0-9a-f-]{36}$/i.test(value.sessionId) || typeof value.purpose !== 'string' || !value.purpose.trim() || value.purpose.length > 2000) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'confirmed,operationId,purpose,sessionId' || value.confirmed !== true || typeof value.sessionId !== 'string' || !/^codex_[0-9a-f-]{36}$/i.test(value.sessionId) || !OPERATION_ID.test(value.operationId ?? '') || typeof value.purpose !== 'string' || !value.purpose.trim() || value.purpose.length > 2000) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
     if (demo) return send(res, 403, 'application/json; charset=utf-8', JSON.stringify({ error: 'demo_disabled' }));
     if (!startDelegation) return send(res, 501, 'application/json; charset=utf-8', JSON.stringify({ error: 'delegation_unavailable' }));
     try {
-      const result = await startDelegation(value.sessionId, value.purpose, true);
-      if (result?.ok !== true || !OPERATION_ID.test(result.operationId ?? '')) return send(res, 422, 'application/json; charset=utf-8', JSON.stringify({ error: ['invalid_target', 'unsupported_location', 'session_active', 'session_unknown'].includes(result?.reason) ? result.reason : 'unavailable' }));
-      return send(res, 202, 'application/json; charset=utf-8', JSON.stringify({ operationId: result.operationId, status: 'running' }));
+      const result = await startDelegation(value.sessionId, value.purpose, true, value.operationId);
+      if (result?.ok !== true || result.operationId !== value.operationId || !['running', 'completed', 'failed'].includes(result.status)) return send(res, 422, 'application/json; charset=utf-8', JSON.stringify({ error: ['invalid_target', 'unsupported_location', 'session_active', 'session_unknown', 'already_running', 'operation_limit'].includes(result?.reason) ? result.reason : 'unavailable' }));
+      return send(res, 202, 'application/json; charset=utf-8', JSON.stringify({ operationId: result.operationId, status: result.status }));
     } catch {
       log('term.delegationFailed', {});
       return send(res, 500, 'application/json; charset=utf-8', JSON.stringify({ error: 'delegation_failed' }));

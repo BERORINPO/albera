@@ -149,13 +149,13 @@ function main() {
     if (session?.executionLocation === 'wsl') return { ok: false, reason: 'unsupported_location' };
     return session?.cwd ? sources.worktreeRemover.remove({ cwd: session.cwd, branch, confirmed }) : session;
   };
-  const startDelegation = async (sessionId, purpose, confirmed) => {
+  const startDelegation = async (sessionId, purpose, confirmed, operationId) => {
     const session = await activeSessionForId(sessionId);
     if (session?.ok === false || session?.source !== 'codex' || !session.cliSessionId || !session.cwd) return { ok: false, reason: 'invalid_target' };
     if (session.executionLocation === 'wsl') return { ok: false, reason: 'unsupported_location' };
     if (session.lifecycle?.status === 'active') return { ok: false, reason: 'session_active' };
     if (session.lifecycle?.status !== 'complete') return { ok: false, reason: 'session_unknown' };
-    return delegationRunner?.start({ sessionId: session.cliSessionId, cwd: session.cwd, purpose, confirmed }) ?? { ok: false, reason: 'unavailable' };
+    return delegationRunner?.start({ sessionId: session.cliSessionId, cwd: session.cwd, purpose, confirmed, operationId }) ?? { ok: false, reason: 'unavailable' };
   };
   const handler = createHandler({ port, getBoard: () => service.get(), createWorktree, listWorktrees, removeWorktree, startDelegation, getDelegationStatus: (id) => delegationRunner?.status(id), demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });
   const server = http.createServer(handler);

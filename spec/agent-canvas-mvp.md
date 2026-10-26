@@ -64,7 +64,7 @@
 
 - ユーザーが依頼した次の縦断機能として、ユーザー作成のタスク・成果物・判断・理解負債カードと関係線を canvas に追加する。ブラウザー内だけに保存し、セッション・プロンプト・ツール内容を複製しない。詳細は `spec/ui.md` §10.11。
 - 「理解」は進捗を確認される側の理解を指す。根拠のないスコアは作らず、理解を確認される人、不足根拠、必要な説明をカードに記録する。
-- 関係の `delegates` は追跡用記録に限り、自動委譲や CLI 実行はしない。PM policy、実行条件の検出、Obsidian、WSL、音声 Main AI、企業権限制御は今段階の完了条件に含まれない。ユーザーの後続依頼でworktreeの明示作成・一覧・確認付き削除を段階実装中。実Gitへの作成・削除は未検証。
+- `delegates` は手動記録を基本とし、後続段階では最終確認後に完了済みローカルCodex CLIへread-onlyで実行できる。PM policy、実行条件の検出、Obsidian、WSL、音声 Main AI、企業権限制御の完成条件は後続の製品像依頼で拡張された。ユーザーは未記載PM規則を「この依頼の安全条件だけ」と指定。worktreeの作成・一覧・確認付き削除を段階実装中。実ユーザーrepo上のGit操作は未検証。
 - REA はユーザー指定の `morluto/rea` (REA: Reverse Engineer Anything) と特定された。公式READMEは、ローカル実行のCLI/MCPからバイナリ・アプリ・実行時挙動を解析し、根拠と制約を含む結果を返すOSSと説明する。ユーザーはキャンバス連携として「ユーザーが確認した短い要約を手動で記録」と指定した。REA所見は成果物カードに入力し、関連タスク・判断・セッションへユーザーが関係付ける。完全なEvidenceは取り込まず、REA自体も起動しない。
 - WSLについて、ユーザーは製品像の対象に含めたが、接続方式の細部は指定していない。安全側の暫定実装として、Windowsで `CODEX_HOME` が `\\wsl.localhost\<distro>` / `\\wsl$\<distro>` の明示共有を指す場合だけ、CodexのPOSIX cwdを内部共有パスへ対応付ける。自動distro列挙、`wsl.exe` 実行、任意UNC探索はしない。共有パスはAPIへ出さず、WSLのGit worktree操作は未対応として画面とサーバーで抑止する。実WSL共有は未検証であり、この方式が製品として意図された接続方式かは確認事項として残す。
 - デモにはWSL場所ラベルを持つ固定の合成Codexセッションを含め、UIの詳細とworktree操作の説明を実データなしで確認できるようにする。合成レコードを実セッション検出の証拠とは扱わない。
@@ -99,7 +99,7 @@
 | 操作可能なCanvas | 一覧/Canvas切替、検索とsource/state/project絞り込み、session slipsとtask/artifact/decision/worktree/理解負債/execution profile/Obsidian参照カード、ドラッグ・キーボード移動、パン・ズーム、関係線、localStorage復元 | 2026-10-26の合成ブラウザー確認で複数providerのCanvas表示、Codex CLI + project + state + textの複合絞り込み、ユーザー作成カード/関係の表示、カード位置・関係・表示切替の再読み込み保持を確認。詳細パネルの各種操作、Worktree確認ダイアログ、全キーボード/狭幅条件を通す受入は未完了。実セッション表示とは別に扱う |
 | セッション・イベント | Claude Code、Codex CLI、Copilot、OpenCodeにread-only adapterがあり、同じboardでallowlistイベント・状態・詳細を表示。関係pickerも表示中の全providerを対象とする | Codex CLI起点の実セッションは未確認。Copilot保存先はCLI/app共通、OpenCode DBもproducer clientをadapterが識別しない。OpenCode旧schemaは一覧以外の状態/イベントをunknown扱い |
 | ハーネス・実行条件 | 詳細に観測可能なprovider/sourceを表示。Codex CLIはCLI markerを満たす記録に限定。場所・分離・network・approvalは不明初期値の手動profileとして関連付け可能 | Copilot/OpenCodeではCLIかアプリかを断定できない。セッションや環境から実行条件を自動検出しない。profile値は利用者申告で、実際の設定・モデル・実行条件の証明ではない |
-| 委譲 | 委譲元/先、目的、状態を関係線と詳細に記録 | CLI起動・agentへの実委譲は未実装。外部作用は明示操作後のみという境界は維持するが、起動するCLI・引数・入力・権限範囲は仕様未確定 |
+| 委譲 | 委譲元/先、目的、状態を関係線と詳細に記録し、完了済みローカルCodexへのread-only実行を最終確認後に開始 | purpose-only stdin、read-only sandbox、出力破棄、固定状態APIをmockで確認。operation IDはcanvasのlocalStorageに保存し、再読込後に明示的な状態確認が可能。サーバー再起動で状態が失われた場合は再試行せずblockedへ閉じる。実CLIは未起動、実セッション互換性と一般provider間委譲は未確認/未実装 |
 | Git worktree / PM policy | local Git worktreeの読取一覧、明示確認後の作成、clean/non-current等を再確認した確認付き削除、canvas上のpath-free記録。作成/一覧/削除adapterは一時Git repoで統合確認済み | 一時Git repoと合成Codex fixtureを使い、作成dialogの対象/影響説明とack必須、削除dialogの正確なブランチ名+ack必須、削除後のcanvas記録更新までブラウザーで確認。実ユーザーrepoへの操作は未確認。合成WSL詳細では未対応理由を表示し、作成操作を出さないことも確認。WSL worktree操作は無効。PM policyは「この依頼の安全条件だけ」で、追加の自動規則なし |
 | Comprehension Graph / 理解負債 | 理解を確認される人、未提示の根拠、必要な説明を記録。`evidence`/`explains`未接続を検出し、関係種別を初期選択した接続フォームへ進める | 人の理解度を推定・採点しない。カードの記録と根拠先の妥当性判断は利用者に残る。自動で実セッション内容から理解負債を発見する機能ではない |
 | REA / Knowledge Layer | ユーザー確認済みの短いREA要約をartifactへ手動記録。Obsidian vault-relative note URIを手動登録して明示リンクで開く | REAは起動せず完全Evidenceを取込まない。Obsidian vault走査、内容読取/書込、indexing/知識抽出は未実装 |
