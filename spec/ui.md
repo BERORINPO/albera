@@ -15,6 +15,7 @@ Every file is under 400 lines, `// @ts-check`, vanilla ESM, no dependencies. Onl
 | `public/index.html` | static skeleton (§2), English first paint, `data-i18n` hooks, `<meta name="pigeonholes" content="1">` | — |
 | `public/tokens.css` | design tokens, byte for byte from design.md §3 (with the canvas tokens) | — |
 | `public/style.css` | base, controls, masthead, front (lede, ledger), page grid, banners, footer, dialogs, motion and reduced motion | — |
+| `public/source-filter.css` | combined Claude Code / Codex CLI source selector and narrow masthead layout | — |
 | `public/rows.css` | pile heads, rows, row detail, family tree, Working two-column rule, the doing line, the context words, the hand-off guide | — |
 | `public/codex-status.mjs` | **pure** Codex source counts and safe zero-count explanations for the diagnostics footer | `codexStatusMessages()` |
 | `public/tidy.css` | the To archive pile: steps, select-all, groups, sub-groups, cleanup rows, selection bar | — |
@@ -1252,5 +1253,6 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - Relations connect graph cards and currently visible Claude/Codex session IDs. Session pickers and relation labels show provider plus an opaque short ID, never a session title, prompt, path, tool input/output, environment value, or credential. A relation records type, purpose/evidence, and, for delegation records, status. It never invokes a CLI, agent, worktree, or external service.
 - A comprehension-gap card records the person whose understanding is being checked, missing evidence, and needed explanation. The product computes no comprehension score. The graph can represent related, dependency, evidence, explanation, and delegation-record edges.
 - Session details list linked graph cards with relation type, delegation status, and purpose/evidence. Activating a linked card opens its editor so the user can follow the comprehension or task context from a session.
+- The masthead source selector filters sessions by Claude Code, Codex CLI, or all sources. Existing text search covers session/project content and the existing piles represent state; source filtering composes with search and remains available in list and canvas views. Clearing filters resets the source selector too.
 - Save failures are announced. Dialogs use native modal semantics, labels, visible focus, bounded inputs, and a small-screen width. Graph keys and user-facing strings live in the established canvas dictionaries.
 - Verification for this stage: synthetic model/storage tests, architecture checks, and a demo-browser walkthrough for add/edit/move/connect/filter/reload. Real sessions are not needed to test placement persistence; session endpoint visibility remains bounded to whatever the local read-only board already exposes.

@@ -136,6 +136,7 @@ Press `v` (or **Canvas** under the counts) to see the same board as a desk of pa
 - Session details show linked cards, relation type, delegation status and purpose/evidence. Select a linked card to open its details.
 - **The bar** at the bottom holds the legend, the zoom and Fit all (which never goes below 30%, so names stay readable; a longer desk is read by scrolling). Click a title (or press Space) to see that session's details there, and **Hand off** opens the hand-off guide there.
 - The filter dims what does not match instead of moving anything. Picking and archiving stay in the list.
+- Choose Claude Code or Codex CLI in the source selector to filter both list and canvas. Text search still covers project and session details; the existing piles let you browse by state.
 
 The canvas replaces the Overview of version 0.1.
 

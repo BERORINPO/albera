@@ -167,6 +167,17 @@ test('visibleModel: 文字の絞り込みは今の言語の理由文でも当た
   assert.equal(s.cleanupGroups[0].projects.length, 1);
 });
 
+test('visibleModel: 実行元フィルターは検索と重ねられ、件数も絞る', () => {
+  const b = board();
+  b.recentGroups[0].items.push(c('codex_00000000-0000-4000-8000-000000000001', { source: 'codex', title: 'Codex task' }));
+  const codex = visibleModel(b, { source: 'codex', t: en });
+  assert.equal(codex.filtering, true);
+  assert.deepEqual(codex.recentGroups.flatMap((g) => g.items.map((item) => item.id)), ['codex_00000000-0000-4000-8000-000000000001']);
+  assert.equal(codex.total, 1);
+  const combined = visibleModel(b, { source: 'codex', q: 'no match', t: en });
+  assert.equal(combined.total, 0, 'source and text filters are ANDed');
+});
+
 test('visibleModel: 親子の絞り込みは根と子孫、定期実行は runIds のどれかが入っていれば', () => {
   const v = visibleModel(board(), { family: 'r1', t: en });
   assert.deepEqual(v.buckets.needs_you.map((x) => x.id), ['n2']);

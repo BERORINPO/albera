@@ -55,7 +55,7 @@ const EXPECTED = {
   ],
   entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],
   public: [
-    'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css', 'graph.css',
+    'index.html', 'tokens.css', 'style.css', 'source-filter.css', 'rows.css', 'tidy.css', 'canvas.css', 'graph.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
     'actions.mjs', 'canvas.mjs', 'canvas-slip.mjs', 'canvas-sheet.mjs', 'canvas-fit.mjs', 'canvas-bar.mjs', 'canvas-ctl.mjs', 'canvas-view.mjs', 'canvas-act.mjs',
     'canvas-layout.mjs', 'canvas-desk.mjs', 'canvas-fold.mjs', 'canvas-camera.mjs', 'canvas-input.mjs', 'graph-model.mjs', 'graph-store.mjs', 'graph-render.mjs', 'graph-dialog.mjs',

@@ -94,5 +94,9 @@ export const EN_CANVAS = Object.freeze({
   'graph.missingNode': 'Missing card',
   'graph.missingSession': 'Missing session',
   'graph.saveError': 'This browser could not save the canvas. Check its storage settings.',
+  'filter.sourceLabel': 'Filter sessions by source',
+  'filter.sourceAll': 'All sources',
+  'filter.sourceClaude': 'Claude Code',
+  'filter.sourceCodex': 'Codex CLI',
   'graph.empty': 'No sessions yet. Add a card to organize tasks and evidence.',
 });

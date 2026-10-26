@@ -94,5 +94,9 @@ export const JA_CANVAS = Object.freeze({
   'graph.missingNode': 'カードなし',
   'graph.missingSession': 'セッションなし',
   'graph.saveError': 'このブラウザーに保存できませんでした。ブラウザーの保存設定を確認してください。',
+  'filter.sourceLabel': 'セッションの実行元で絞り込む',
+  'filter.sourceAll': 'すべての実行元',
+  'filter.sourceClaude': 'Claude Code',
+  'filter.sourceCodex': 'Codex CLI',
   'graph.empty': 'セッションはありません。カードを追加して、タスクや根拠を整理できます。',
 });
