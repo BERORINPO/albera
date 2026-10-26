@@ -75,3 +75,39 @@ test('OpenCode legacy/unknown database schema and older SQLite runtime fail clos
   const supported24 = await createOpenCodeSessionsSource({ root: dbPath, version: '24.4.0' }).load();
   assert.equal(supported24.stats.unsupportedRuntime, false);
 });
+
+test('OpenCode V1 lists sessions from allowlisted columns without reading transcript tables', { skip: !supported }, async () => {
+  const { dir, dbPath, db } = await fixture();
+  db.exec(`
+    DROP TABLE session_v2;
+    DROP TABLE session_message;
+    CREATE TABLE session (
+      id TEXT PRIMARY KEY, directory TEXT, parent_id TEXT, time_created INTEGER,
+      time_updated INTEGER, time_archived INTEGER, title TEXT, permission TEXT, model TEXT
+    );
+    CREATE TABLE message (id TEXT, session_id TEXT, data TEXT);
+    CREATE TABLE part (id TEXT, message_id TEXT, data TEXT);
+  `);
+  const at = NOW - 60_000;
+  db.prepare('INSERT INTO session VALUES (?, ?, NULL, ?, ?, NULL, ?, ?, ?)')
+    .run('private-v1-session', dir, at, at, 'PRIVATE-TITLE', 'PRIVATE-PERMISSION', 'PRIVATE-MODEL');
+  db.prepare('INSERT INTO message VALUES (?, ?, ?)')
+    .run('private-message', 'private-v1-session', JSON.stringify({ prompt: 'PRIVATE-PROMPT', env: { TOKEN: 'PRIVATE-ENV' } }));
+  db.prepare('INSERT INTO part VALUES (?, ?, ?)')
+    .run('private-part', 'private-message', JSON.stringify({ toolInput: 'PRIVATE-TOOL-INPUT', output: 'PRIVATE-OUTPUT' }));
+  db.close();
+  const before = await fs.readFile(dbPath);
+
+  const { sessions, stats } = await createOpenCodeSessionsSource({ root: dbPath }).load();
+  assert.equal(stats.parsed, 1);
+  assert.equal(stats.legacySchema, true);
+  assert.equal(sessions[0].lifecycle.status, 'unknown');
+  assert.deepEqual(sessions[0].events, []);
+  const board = buildBoard({ sessions, archivedIds: new Set(), turns: new Map(), now: NOW, roots: [dir], sourceStats: { sources: { opencode: stats } } });
+  const wire = JSON.stringify(board);
+  for (const secret of ['private-v1-session', 'private-message', 'PRIVATE-TITLE', 'PRIVATE-PERMISSION', 'PRIVATE-MODEL', 'PRIVATE-PROMPT', 'PRIVATE-ENV', 'PRIVATE-TOOL-INPUT', 'PRIVATE-OUTPUT', dir]) {
+    assert.equal(wire.includes(secret), false, `sensitive value escaped: ${secret}`);
+  }
+  assert.equal(board.stats.sources.opencode.legacySchema, true);
+  assert.deepEqual(await fs.readFile(dbPath), before, 'database bytes remain unchanged after read-only scanning');
+});

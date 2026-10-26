@@ -1,5 +1,5 @@
 // @ts-check
-// adapter: OpenCode V2 SQLite session index, opened strictly read-only. Only safe event codes/times and a private directory hint escape.
+// adapter: OpenCode SQLite session index, opened strictly read-only. Only safe event codes/times and a private directory hint escape.
 
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -24,7 +24,7 @@ function supportsReadonlySqlite(version) {
 /** @param {{root:string,maxSessions?:number,version?:string}} options */
 export function createOpenCodeSessionsSource({ root, maxSessions = MAX_SESSIONS, version = process.versions.node }) {
   async function load() {
-    const stats = { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0, unsupportedRuntime: false };
+    const stats = { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0, unsupportedRuntime: false, legacySchema: false };
     let stat;
     try { stat = await fs.stat(root); } catch { return { sessions: [], archivedIds: new Set(), stats }; }
     if (!stat.isFile()) return { sessions: [], archivedIds: new Set(), stats };
@@ -39,8 +39,42 @@ export function createOpenCodeSessionsSource({ root, maxSessions = MAX_SESSIONS,
       db = new DatabaseSync(root, { readOnly: true, timeout: 250 });
       const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get('session_v2');
       if (!exists) {
-        stats.bad = 1;
-        return { sessions: [], archivedIds: new Set(), stats };
+        const legacy = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get('session');
+        const columns = legacy ? new Set(db.prepare('PRAGMA table_info(session)').all().map((column) => column.name)) : new Set();
+        const required = ['id', 'directory', 'parent_id', 'time_created', 'time_updated', 'time_archived'];
+        if (!legacy || required.some((column) => !columns.has(column))) {
+          stats.bad = 1;
+          return { sessions: [], archivedIds: new Set(), stats };
+        }
+        // V1 transcript/message and part tables carry prompts, tool I/O, and other arbitrary data.
+        // We deliberately do not query them. List safe session metadata only; lifecycle stays unknown.
+        stats.legacySchema = true;
+        const rows = db.prepare(`
+          SELECT id, directory, parent_id, time_created, time_updated
+          FROM session
+          WHERE time_archived IS NULL
+          ORDER BY time_updated DESC
+          LIMIT ?
+        `).all(Math.max(1, Math.min(MAX_SESSIONS, maxSessions)));
+        const sessions = [];
+        for (const row of rows) {
+          if (typeof row.id !== 'string' || !row.id || typeof row.directory !== 'string' || !path.isAbsolute(row.directory)) {
+            stats.bad++;
+            continue;
+          }
+          const createdAt = validTime(row.time_created);
+          const updatedAt = validTime(row.time_updated);
+          if (!createdAt || !updatedAt) { stats.bad++; continue; }
+          sessions.push({
+            source: 'opencode', sessionId: opaqueOpenCodeId(row.id), title: 'OpenCode', cwd: row.directory,
+            ...(typeof row.parent_id === 'string' && row.parent_id ? { spawnedFromId: opaqueOpenCodeId(row.parent_id) } : {}),
+            createdAt, lastActivityAt: updatedAt, isArchived: false, isStarred: false,
+            autoArchiveExempt: true, prs: [], pendingFirstStart: null,
+            lifecycle: { status: /** @type {const} */ ('unknown') }, events: [],
+          });
+        }
+        stats.parsed = sessions.length;
+        return { sessions, archivedIds: new Set(), stats };
       }
       const rows = db.prepare(`
         SELECT id, directory, parent_id, time_created, time_updated

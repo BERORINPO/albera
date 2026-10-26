@@ -30,6 +30,7 @@ export function openCodeStatusMessages(t, input) {
   );
   const messages = [t('foot.opencodeSummary', stats)];
   if (input.unsupportedRuntime === true) messages.push(t('foot.opencodeRuntime'));
+  else if (input.legacySchema === true) messages.push(t('foot.opencodeLegacy'));
   else if (stats.files === 0) messages.push(t('foot.opencodeNoFiles'));
   else if (stats.detected === 0) messages.push(t('foot.opencodeNoDetected'));
   else if (stats.working === 0) messages.push(t('foot.opencodeNoWorking'));

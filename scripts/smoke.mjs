@@ -105,7 +105,8 @@ function checkShape(b) {
   }
   expect(c.needs_you + c.trouble + c.unread + c.working + c.recent + c.cleanup === c.active, 'the piles do not add up to counts.active');
   expect(c.recommended <= c.cleanup, 'more suggestions than archive candidates');
-  expect(c.active + c.archived === b.stats.parsed + b.stats.stale, 'active + archived differs from the records read');
+  const providerSessions = Object.values(b.stats.sources ?? {}).reduce((sum, source) => sum + (Number.isInteger(source?.detected) ? source.detected : 0), 0);
+  expect(c.active + c.archived === b.stats.parsed + b.stats.stale + providerSessions, 'active + archived differs from the records read');
   expect(c.active > 0, 'no unarchived sessions (the real data was not read)');
   expect(b.stats.demo === false, 'stats.demo is not false');
   expect(FORMAT_SUSPECTS.includes(b.stats.formatSuspect), `unknown stats.formatSuspect: ${String(b.stats.formatSuspect)}`);
@@ -115,9 +116,16 @@ function checkShape(b) {
   expect(b.cleanupGroups.reduce((/** @type {number} */ n, /** @type {any} */ g) => n + g.count, 0) === c.cleanup, 'cleanupGroups differ from counts.cleanup');
   const cards = [...Object.values(b.buckets).flat(), ...b.recentGroups.flatMap((/** @type {any} */ g) => g.items)];
   for (const card of /** @type {any[]} */ (cards)) {
-    expect(/^local_[0-9a-f-]{36}$/.test(card.id), 'a card ID has the wrong shape');
+    expect(/^(?:local|codex|copilot|opencode)_[0-9a-f-]{36}$/.test(card.id), 'a card ID has the wrong shape');
     expect(Array.from(card.title).length <= 200 && Array.from(card.body).length <= 600, 'title / body over the cap');
     expect(!('reasonText' in card), 'reasonText is still on the wire (v2 sends codes only)');
+  }
+  const opencode = b.stats.sources?.opencode;
+  if (opencode?.legacySchema === true) {
+    const openCodeCards = cards.filter((/** @type {any} */ card) => card.source === 'opencode');
+    expect(openCodeCards.length === opencode.detected, 'legacy OpenCode board cards differ from the safe session count');
+    expect(opencode.unknown === opencode.detected && opencode.active === 0 && opencode.completed === 0 && opencode.interrupted === 0 && opencode.failed === 0, 'legacy OpenCode inferred an event status without reading its transcript tables');
+    expect(openCodeCards.every((/** @type {any} */ card) => Array.isArray(card.events) && card.events.length === 0), 'legacy OpenCode board cards contain transcript events');
   }
   // oldest first for the piles that wait on you
   for (const k of ['needs_you', 'trouble', 'unread']) {

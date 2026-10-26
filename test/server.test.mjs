@@ -67,7 +67,8 @@ function cleanEnv(extra = {}) {
   /** @type {Record<string, string|undefined>} */
   const env = {};
   for (const [k, v] of Object.entries(process.env)) if (!DROP_ENV_RE.test(k)) env[k] = v;
-  return { ...env, PIGEONHOLES_PORT: String(guardPort), ...extra };
+  // Keep integration tests hermetic even when the developer has a local OpenCode database.
+  return { ...env, OPENCODE_DB: path.join(os.tmpdir(), 'pigeonholes-test-no-opencode.db'), PIGEONHOLES_PORT: String(guardPort), ...extra };
 }
 
 /**

@@ -11,6 +11,7 @@ export const JA_CANVAS = Object.freeze({
   'foot.opencodeSummary': 'OpenCode: DB {files} 件、認識 {detected} 件。盤面では作業中 {working}、止まったかも {trouble}、最近 {recent}。最後のイベントは進行中 {active}、完了 {completed}、中断 {interrupted}、失敗 {failed}、不明 {unknown}。除外・不良 {rejected} 件。',
   'foot.opencodeNoFiles': '0件表示の理由: OpenCodeのDBが見つかりません。OPENCODE_DBまたは既定の保存先を確認してください。',
   'foot.opencodeNoDetected': '0件表示の理由: DBに対応するsession_v2形式がありません。旧形式や未知のスキーマは除外します。',
+  'foot.opencodeLegacy': '旧OpenCode形式を検出しました。安全なセッション一覧だけを表示し、プロンプトやツール内容を含む履歴テーブルは読みません。そのため状態とイベントは不明です。',
   'foot.opencodeNoWorking': '作業中0件の理由: 最近の未完了ターンがありません。完了・失敗・中断は「最近」へ、古い未完了は「止まったかも」へ分類されます。',
   'foot.opencodeRuntime': 'OpenCodeの読込には組み込みのread-only SQLite APIが必要です。Node.js 22系は22.18以降、または24.4以降を使ってください。',
   'foot.copilotSummary': 'GitHub Copilot: 候補 {files} 件、認識 {detected} 件。盤面では作業中 {working}、止まったかも {trouble}、最近 {recent}。イベント状態は進行中 {active}、完了 {completed}、中断 {interrupted}、不明 {unknown}。除外・不良 {rejected} 件。',

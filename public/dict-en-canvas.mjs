@@ -11,6 +11,7 @@ export const EN_CANVAS = Object.freeze({
   'foot.opencodeSummary': 'OpenCode: {files} database files, {detected} recognized. On the board: {working} working, {trouble} stalled, {recent} recent. Last event: {active} in progress, {completed} complete, {interrupted} interrupted, {failed} failed, {unknown} unknown. {rejected} filtered or invalid.',
   'foot.opencodeNoFiles': 'Why the count is 0: the OpenCode database was not found. Check OPENCODE_DB or the default data folder.',
   'foot.opencodeNoDetected': 'Why the count is 0: the database has no supported session_v2 tables. Older or unknown schemas are excluded.',
+  'foot.opencodeLegacy': 'An older OpenCode format was detected. Only safe session-list fields are shown; transcript tables containing prompts and tool data are not read, so status and events are unknown.',
   'foot.opencodeNoWorking': 'Why Working is 0: no recent unfinished turn. Completed, failed, or interrupted turns go to Recent; stale turns go to Stuck?.',
   'foot.opencodeRuntime': 'OpenCode reading needs Node.js 22.18 or newer in the 22 line, or Node.js 24.4 or newer, for the built-in read-only SQLite API. Upgrade Node.js to enable this source.',
   'foot.copilotSummary': 'GitHub Copilot: {files} candidate files, {detected} recognized. On the board: {working} working, {trouble} stalled, {recent} recent. Event state: {active} in progress, {completed} complete, {interrupted} interrupted, {unknown} unknown. {rejected} filtered or invalid.',

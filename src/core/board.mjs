@@ -592,6 +592,7 @@ export function buildBoard({
       unknown: sourceSessions.filter((s) => s.lifecycle?.status !== 'active' && !['turn_completed', 'turn_aborted', 'turn_failed'].includes(lastEvent(s))).length,
       rejected: count(input.bad),
       ...(input.unsupportedRuntime === true ? { unsupportedRuntime: true } : {}),
+      ...(source === 'opencode' && input.legacySchema === true ? { legacySchema: true } : {}),
     };
   };
   const codexDiagnostics = sourceDiagnostics('codex');
