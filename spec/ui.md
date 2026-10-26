@@ -1381,3 +1381,4 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - graph modelから関数をimportし、理解負債UI回帰テストで利用箇所に対応するimportを確認するようにした。隔離`--demo`で根拠/説明関係が揃った合成カードを「解消済み」に保存し、成功通知、カード状態更新、再読み込み後の復元を確認。修正後の試行では新しいコンソールエラーは出なかった。
 - 検証用の理解負債・成果物・判断カードは確認付きUI操作で削除し、タブとデモサーバーを閉じた。実セッション、CLI、worktree、外部サービスは使用していない。
 - `npm test`: 588 passed。`npm run arch`: 99 paths、違反0。`npm run smoke`: pass。`git diff --check`: pass。
+- 追加の英語UI受入では、理解確認対象者のみを設定した合成カードを`Resolved`に保存し、成功通知と再読み込み後の状態復元を確認。カードは確認付きUI操作で削除し、英語デモサーバーとタブを閉じた。実セッション/CLI/外部サービスは不使用。
