@@ -50,7 +50,7 @@
  * @property {string=} model                 (v0.2) CAP.MODEL まで。コンテキストの窓を決めるためだけに使い、JSON には出さない
  * @property {number=} contextExceededCount  (v0.2) 0 以上の整数。1 以上なら Card.detail.contextExceeded に出す
  * @property {{status:'active'|'complete'|'unknown',startedAt?:number}=} lifecycle
- * @property {Array<{type:'turn_started'|'turn_completed',at:number}>=} events
+ * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted',at:number}>=} events
  */
 
 /**
@@ -107,7 +107,7 @@
  * @typedef {Object} Card
  * @property {string} id
  * @property {'codex'=} source
- * @property {Array<{type:'turn_started'|'turn_completed',at:number}>=} events
+ * @property {Array<{type:'turn_started'|'turn_completed'|'turn_aborted',at:number}>=} events
  * @property {BucketKey} bucket
  * @property {ReasonCode} reason
  * @property {ReasonParams=} reasonParams

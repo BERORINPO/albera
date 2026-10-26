@@ -46,6 +46,7 @@ test('Codex CLI rollout を検出し、turn status と allowlist イベントだ
   const activeId = uuid(501);
   const doneId = uuid(502);
   const ignoredId = uuid(503);
+  const abortedId = uuid(505);
   const activeAt = NOW - 2 * 60_000;
   const doneAt = NOW - 60_000;
   const activeFile = await rollout(home, activeId, [
@@ -60,22 +61,30 @@ test('Codex CLI rollout を検出し、turn status と allowlist イベントだ
     envelope('event_msg', { type: 'task_started', turn_id: 'secret' }, doneAt - 10_000),
     envelope('event_msg', { type: 'task_complete', last_agent_message: 'NEVER-WIRE-ANSWER', duration_ms: 10_000 }, doneAt),
   ]);
+  await rollout(home, abortedId, [
+    meta(abortedId),
+    envelope('event_msg', { type: 'task_started' }, activeAt - 10_000),
+    envelope('event_msg', { type: 'turn_aborted', reason: 'interrupted', turn_id: 'private-id' }, activeAt),
+  ]);
   await rollout(home, ignoredId, [meta(ignoredId, 'vscode')]);
   await rollout(home, uuid(504), ['not json']);
 
   const source = createCodexSessionsSource({ root: home });
   const { sessions, stats } = await source.load();
-  assert.equal(sessions.length, 2);
-  assert.equal(stats.parsed, 2);
+  assert.equal(sessions.length, 3);
+  assert.equal(stats.parsed, 3);
   assert.equal(stats.bad, 2);
   const active = sessions.find((s) => s.sessionId === `codex_${activeId}`);
   const done = sessions.find((s) => s.sessionId === `codex_${doneId}`);
+  const aborted = sessions.find((s) => s.sessionId === `codex_${abortedId}`);
   assert.deepEqual(active.lifecycle, { status: 'active', startedAt: activeAt });
   assert.deepEqual(active.events, [{ type: 'turn_started', at: activeAt }]);
   assert.deepEqual(done.lifecycle, { status: 'complete' });
   assert.deepEqual(done.events, [{ type: 'turn_started', at: doneAt - 10_000 }, { type: 'turn_completed', at: doneAt }]);
+  assert.deepEqual(aborted.lifecycle, { status: 'complete' });
+  assert.deepEqual(aborted.events, [{ type: 'turn_started', at: activeAt - 10_000 }, { type: 'turn_aborted', at: activeAt }]);
   const safe = JSON.stringify(sessions);
-  for (const secret of ['NEVER-WIRE-THIS-PROMPT', 'NEVER-WIRE-THIS-KEY', 'NEVER-WIRE-PROMPT', 'NEVER-WIRE-COMMAND', 'NEVER-WIRE-ENV', 'NEVER-WIRE-UNKNOWN', 'NEVER-WIRE-BROKEN', 'NEVER-WIRE-ANSWER']) {
+  for (const secret of ['NEVER-WIRE-THIS-PROMPT', 'NEVER-WIRE-THIS-KEY', 'NEVER-WIRE-PROMPT', 'NEVER-WIRE-COMMAND', 'NEVER-WIRE-ENV', 'NEVER-WIRE-UNKNOWN', 'NEVER-WIRE-BROKEN', 'NEVER-WIRE-ANSWER', 'private-id']) {
     assert.equal(safe.includes(secret), false, `sensitive value escaped: ${secret}`);
   }
   assert.equal(active.cwd, 'C:\\work\\alpha'); // adapter 内部の project 判定だけに使用
@@ -85,10 +94,12 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   const home = await fixtureHome();
   const activeId = uuid(601);
   const doneId = uuid(602);
+  const abortedId = uuid(603);
   const activeAt = NOW - 2 * 60_000;
   const doneAt = NOW - 60_000;
   await rollout(home, activeId, [meta(activeId), envelope('event_msg', { type: 'task_started', prompt: 'PRIVATE-PROMPT' }, activeAt)]);
   await rollout(home, doneId, [meta(doneId), envelope('event_msg', { type: 'task_started' }, doneAt - 1000), envelope('event_msg', { type: 'task_complete', output: 'PRIVATE-OUTPUT' }, doneAt)]);
+  await rollout(home, abortedId, [meta(abortedId), envelope('event_msg', { type: 'task_started' }, activeAt - 1000), envelope('event_msg', { type: 'turn_aborted', reason: 'PRIVATE-REASON' }, activeAt)]);
   const { sessions } = await createCodexSessionsSource({ root: home }).load();
   const claude = rec(11);
   const build = (items) => buildBoard({ sessions: items, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS });
@@ -101,8 +112,11 @@ test('Codex と Claude を混在しても Claude card は同一で、Codex wire 
   assert.ok(completed);
   assert.deepEqual(completed.events.map((e) => e.type), ['turn_started', 'turn_completed']);
   assert.equal(completed.detail.cwd, undefined);
+  const aborted = mixed.recentGroups.flatMap((g) => g.items).find((c) => c.id === `codex_${abortedId}`);
+  assert.ok(aborted, 'aborted turn is terminal and does not remain working/stuck');
+  assert.deepEqual(aborted.events.map((e) => e.type), ['turn_started', 'turn_aborted']);
   const wire = JSON.stringify(mixed);
-  for (const secret of ['PRIVATE-PROMPT', 'PRIVATE-OUTPUT', 'C:\\work\\alpha', 'base_instructions', 'environment_secret']) assert.equal(wire.includes(secret), false);
+  for (const secret of ['PRIVATE-PROMPT', 'PRIVATE-OUTPUT', 'PRIVATE-REASON', 'C:\\work\\alpha', 'base_instructions', 'environment_secret']) assert.equal(wire.includes(secret), false);
 });
 
 test('CLI と originator の組が合わない Codex ファイルは採用しない', async () => {

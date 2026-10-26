@@ -15,6 +15,7 @@ const EVENT_LIMIT = 30;
 const ORIGINATORS = new Set(['codex', 'codex_cli_rs']);
 const START_TYPES = new Set(['task_started', 'turn_started']);
 const COMPLETE_TYPES = new Set(['task_complete', 'turn_complete']);
+const ABORT_TYPES = new Set(['turn_aborted']);
 
 /** @param {unknown} v @returns {v is Record<string, any>} */
 const obj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -76,6 +77,7 @@ async function readTail(handle, size) {
       if (!at) continue;
       if (typeof type === 'string' && START_TYPES.has(type)) out.push({ type: 'turn_started', at });
       else if (typeof type === 'string' && COMPLETE_TYPES.has(type)) out.push({ type: 'turn_completed', at });
+      else if (typeof type === 'string' && ABORT_TYPES.has(type)) out.push({ type: 'turn_aborted', at });
     } catch {
       // JSONL の末尾は Codex が書き込み中のことがある。壊れた行だけを捨てる。
     }
@@ -200,7 +202,7 @@ function lifecycleOf(events) {
     if (event.type === 'turn_started') {
       state = 'active';
       startedAt = event.at;
-    } else if (event.type === 'turn_completed') state = 'complete';
+    } else if (event.type === 'turn_completed' || event.type === 'turn_aborted') state = 'complete';
   }
   return { status: state, ...(state === 'active' && startedAt ? { startedAt } : {}) };
 }

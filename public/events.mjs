@@ -7,7 +7,7 @@ import { h } from './view.mjs';
 /** @typedef {import('./i18n.mjs').T} T */
 
 /** @param {string} type */
-const eventKey = (type) => type === 'turn_started' ? 'event.turnStarted' : type === 'turn_completed' ? 'event.turnCompleted' : '';
+const eventKey = (type) => type === 'turn_started' ? 'event.turnStarted' : type === 'turn_completed' ? 'event.turnCompleted' : type === 'turn_aborted' ? 'event.turnAborted' : '';
 
 /** @param {T} t @param {{source?:string,events?:Array<{type:string,at:number}>}} card */
 export function eventSummaryEl(t, card) {

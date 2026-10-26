@@ -194,6 +194,7 @@ export const EN = Object.freeze({
   'source.codex': 'Codex CLI',
   'event.turnStarted': 'Turn started',
   'event.turnCompleted': 'Turn completed',
+  'event.turnAborted': 'Turn interrupted',
   'detail.activity': 'Doing',
   'detail.step': 'Step',
   'detail.context': 'Context',

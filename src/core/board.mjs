@@ -244,7 +244,6 @@ function makeCard(s, ctx) {
   const card = {
     id: s.sessionId,
     ...(s.source === 'codex' ? { source: 'codex' } : {}),
-    ...(s.source === 'codex' ? { source: 'codex' } : {}),
     bucket: c.bucket,
     reason: c.reason,
     ...(c.reasonParams ? { reasonParams: c.reasonParams } : {}),
@@ -258,7 +257,6 @@ function makeCard(s, ctx) {
     project: { key: ref.key, label: isOther ? null : ctx.labelOf.get(ref.key) ?? ref.name, extra: ref.extra },
     prs: prsForCard(s),
     detail: detailFor(s, c, body),
-    ...(s.source === 'codex' && Array.isArray(s.events) ? { events: s.events.slice(-30).map((event) => ({ type: event.type, at: event.at })) } : {}),
     ...(s.source === 'codex' && Array.isArray(s.events) ? { events: s.events.slice(-30).map((event) => ({ type: event.type, at: event.at })) } : {}),
   };
   const routine = routineFor(s, ctx);

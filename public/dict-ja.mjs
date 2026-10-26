@@ -194,6 +194,7 @@ export const JA = Object.freeze({
   'source.codex': 'Codex CLI',
   'event.turnStarted': 'ターン開始',
   'event.turnCompleted': 'ターン完了',
+  'event.turnAborted': 'ターン中断',
   'detail.activity': 'していること',
   'detail.step': '手順',
   'detail.context': 'コンテキスト',
