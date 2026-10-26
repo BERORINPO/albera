@@ -46,7 +46,7 @@ function endpointSelect(t, options, name, selected, excluded = '') {
 const endpointKey = (key) => key.startsWith('graph:') || key.startsWith('session:') ? key : '';
 
 /**
- * @param {{t:T,node?:any,position?:{x:number,y:number},graph:any,sessions:Array<{id:string,title:string}>,onSave:(v:any)=>void,onDelete?:(id:string)=>void,onConnect?:(from:string)=>void,onEditEdge?:(edge:any)=>void}} o
+ * @param {{t:T,node?:any,position?:{x:number,y:number},initialKind?:string,initialTitle?:string,graph:any,sessions:Array<{id:string,title:string}>,onSave:(v:any)=>void,onDelete?:(id:string)=>void,onConnect?:(from:string)=>void,onEditEdge?:(edge:any)=>void}} o
  */
 export function openGraphNodeDialog(o) {
   const { t, node, graph, sessions } = o;
@@ -59,8 +59,8 @@ export function openGraphNodeDialog(o) {
     if (review?.missing.length) form.append(h('p', { class: 'graph-dialog__review', text: t('graph.reviewHint', { links: review.missing.map((kind) => t(`graph.link.${kind}`)).join(', ') }) }));
   }
   form.append(
-    selectField(t, 'graph.kindLabel', 'kind', [...GRAPH_NODE_KINDS], node?.kind ?? 'task', (v) => t(`graph.kind.${v}`)),
-    inputField(t, 'graph.titleLabel', 'title', node?.title ?? '', true),
+    selectField(t, 'graph.kindLabel', 'kind', [...GRAPH_NODE_KINDS], node?.kind ?? o.initialKind ?? 'task', (v) => t(`graph.kind.${v}`)),
+    inputField(t, 'graph.titleLabel', 'title', node?.title ?? o.initialTitle ?? '', true),
     areaField(t, 'graph.bodyLabel', 'body', node?.body ?? ''),
     selectField(t, 'graph.statusLabel', 'status', [...GRAPH_NODE_STATES], node?.status ?? 'open', (v) => t(`graph.status.${v}`)),
     inputField(t, 'graph.checkedPerson', 'checkedPerson', node?.checkedPerson ?? ''),

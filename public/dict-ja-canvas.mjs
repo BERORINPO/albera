@@ -76,6 +76,8 @@ export const JA_CANVAS = Object.freeze({
   'graph.deleteRelation': '関係を解除',
   'graph.removeRelationConfirm': 'この関係を解除しますか？',
   'graph.connectSession': '関係を記録',
+  'graph.taskFromSession': '関連タスクを作成',
+  'graph.taskFromSessionTitle': 'セッションからの次のタスク',
   'graph.connectTitle': 'カード間の関係を記録',
   'graph.from': '元',
   'graph.to': '先',

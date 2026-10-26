@@ -90,6 +90,7 @@ function detailBar(t, card, pile, rowCtx, graph) {
     acts.prepend(h('button', { class: 'textbtn is-strong', type: 'button', 'data-action': 'handoff-open', 'data-id': card.id, 'aria-label': t('handoff.openAria', { title: titleOf(t, card.title) }), text: t('handoff.open') }));
   }
   acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'graph-connect', 'data-id': card.id, text: t('graph.connectSession') }));
+  acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'graph-task-from-session', 'data-id': card.id, text: t('graph.taskFromSession') }));
   acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'canvas-close', 'data-id': card.id, text: t('canvas.close') }));
   return el;
 }

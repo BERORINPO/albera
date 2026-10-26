@@ -13,7 +13,7 @@ import { neighbour } from './canvas-layout.mjs';
 import { openSession, render, view } from './render.mjs';
 import { state } from './state.mjs';
 import { nextUp, PILES } from './ui-state.mjs';
-import { addGraphNode, connectGraph, moveGraphNode, nextGraphNodePosition, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from './graph-model.mjs';
+import { addGraphNode, addTaskForSession, connectGraph, moveGraphNode, nextGraphNodePosition, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from './graph-model.mjs';
 import { loadGraph, saveGraph } from './graph-store.mjs';
 import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs';
 import { GRAPH_CARD_SIZE } from './graph-render.mjs';
@@ -89,6 +89,19 @@ function newGraphNode() {
   const center = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
   const position = nextGraphNodePosition(graph, center, GRAPH_CARD_SIZE);
   openGraphNodeDialog({ t: state.t, graph, sessions: graphSessions(), position, onSave: (input) => graphChanged(addGraphNode(graph, input, `g_${crypto.randomUUID()}`)) });
+}
+
+function newTaskForSession(sessionId) {
+  if (!view.index.has(sessionId)) return false;
+  const graph = loadGraph();
+  const vpSize = size();
+  const center = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
+  const position = nextGraphNodePosition(graph, center, GRAPH_CARD_SIZE);
+  openGraphNodeDialog({
+    t: state.t, graph, sessions: graphSessions(), position, initialKind: 'task', initialTitle: state.t('graph.taskFromSessionTitle'),
+    onSave: (input) => graphChanged(addTaskForSession(graph, input, `g_${crypto.randomUUID()}`, `e_${crypto.randomUUID()}`, sessionId)),
+  });
+  return true;
 }
 
 function editGraphNode(id) {
@@ -210,6 +223,7 @@ export const CANVAS_CLICK = {
   'graph-new': () => newGraphNode(),
   'graph-open': (el) => editGraphNode(el.dataset.id ?? ''),
   'graph-connect': (el) => connectGraphEndpoint(`session:${el.dataset.id ?? ''}`),
+  'graph-task-from-session': (el) => newTaskForSession(el.dataset.id ?? ''),
 };
 
 /** ブラウザが (フォーカスに合わせて) 表示枠をスクロールしたら、その分をカメラに移してスクロールを 0 に戻す。 */

@@ -76,6 +76,8 @@ export const EN_CANVAS = Object.freeze({
   'graph.deleteRelation': 'Remove relation',
   'graph.removeRelationConfirm': 'Remove this relation?',
   'graph.connectSession': 'Record relation',
+  'graph.taskFromSession': 'Create a linked task',
+  'graph.taskFromSessionTitle': 'Follow up from session',
   'graph.connectTitle': 'Record a relation between cards',
   'graph.from': 'From',
   'graph.to': 'To',

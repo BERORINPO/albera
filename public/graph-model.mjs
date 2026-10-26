@@ -87,6 +87,20 @@ export function addGraphNode(doc, input, id) {
   return { ...doc, nodes: [...doc.nodes, node] };
 }
 
+/** Create a task and its local session relation as one immutable change.
+ * @param {GraphDoc} doc @param {Omit<GraphNode,'id'>} input @param {string} id @param {string} edgeId @param {string} sessionId
+ * @returns {GraphDoc}
+ */
+export function addTaskForSession(doc, input, id, edgeId, sessionId) {
+  if (!SESSION_ID.test(sessionId)) return doc;
+  const withTask = addGraphNode(doc, { ...input, kind: 'task' }, id);
+  if (withTask === doc) return doc;
+  const linked = connectGraph(withTask, {
+    from: `graph:${id}`, to: `session:${sessionId}`, kind: 'related', purpose: 'Created from this session', status: '',
+  }, edgeId, new Set([sessionId]));
+  return linked.edges.length === withTask.edges.length + 1 ? linked : doc;
+}
+
 /**
  * Find the first non-overlapping card slot around the current view center.
  * New cards otherwise stack exactly under the pointer and hide one another.

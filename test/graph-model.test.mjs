@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { addGraphNode, connectGraph, moveGraphNode, nextGraphNodePosition, normalizeGraph, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
+import { addGraphNode, addTaskForSession, connectGraph, moveGraphNode, nextGraphNodePosition, normalizeGraph, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
 
 const g1 = 'g_00000000-0000-4000-8000-000000000001';
 const g2 = 'g_00000000-0000-4000-8000-000000000002';
@@ -38,6 +38,16 @@ test('new graph card slots do not overlap existing cards', () => {
   assert.ok(second.x + size.width + 24 <= first.x || first.x + size.width + 24 <= second.x || second.y + size.height + 24 <= first.y || first.y + size.height + 24 <= second.y);
   const third = nextGraphNodePosition(addGraphNode(withFirst, { ...node(g2), x: second.x, y: second.y }, g2), { x: 100, y: 200 }, size);
   assert.ok([first, second].every((other) => third.x + size.width + 24 <= other.x || other.x + size.width + 24 <= third.x || third.y + size.height + 24 <= other.y || other.y + size.height + 24 <= third.y));
+});
+
+test('a task created from session detail is linked atomically without copying session content', () => {
+  const input = { kind: 'artifact', title: 'Follow up', body: 'User-authored task', status: 'open', x: 10, y: 20, checkedPerson: '', missingEvidence: '', neededExplanation: '' };
+  const graph = addTaskForSession(empty(), input, g1, e1, session);
+  assert.equal(graph.nodes.length, 1);
+  assert.equal(graph.nodes[0].kind, 'task');
+  assert.deepEqual(graph.edges.map(({ from, to, kind, purpose, status }) => ({ from, to, kind, purpose, status })), [{ from: `graph:${g1}`, to: `session:${session}`, kind: 'related', purpose: 'Created from this session', status: '' }]);
+  assert.deepEqual(addTaskForSession(empty(), input, g1, e1, 'invalid-session'), empty(), 'invalid session creates no card');
+  assert.deepEqual(addTaskForSession(empty(), input, g1, 'bad-edge', session), empty(), 'invalid edge ID does not leave an unlinked task behind');
 });
 
 test('relations connect local cards and current sessions, whitelist fields, and track delegation state without executing it', () => {
