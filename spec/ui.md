@@ -1382,3 +1382,9 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - 検証用の理解負債・成果物・判断カードは確認付きUI操作で削除し、タブとデモサーバーを閉じた。実セッション、CLI、worktree、外部サービスは使用していない。
 - `npm test`: 588 passed。`npm run arch`: 99 paths、違反0。`npm run smoke`: pass。`git diff --check`: pass。
 - 追加の英語UI受入では、理解確認対象者のみを設定した合成カードを`Resolved`に保存し、成功通知と再読み込み後の状態復元を確認。カードは確認付きUI操作で削除し、英語デモサーバーとタブを閉じた。実セッション/CLI/外部サービスは不使用。
+
+### worktreeカード状態更新の実画面確認を試行 (2026-10-27)
+
+- 新規loopbackポート`8812`で隔離`--demo`を起動し、初期一覧画面が合成データとして表示されるところまで確認した。worktreeカード・関係・保存状態は操作していない。
+- Windowsのcomputer-use規則に従い`node_repl`経由で画面を操作しようとしたが、現在のブラウザーURLを安全に特定できず、computer-useが入力前に停止した。回避操作は行わず、隔離デモサーバーを停止した。
+- この試行はworktreeカードの更新ボタン、対象branch限定記録、対象なし案内、focus復帰の画面受入を確認したものではない。これらと実Git inventoryのGUI受入は未確認のまま。
