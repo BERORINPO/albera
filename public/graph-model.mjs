@@ -3,7 +3,7 @@
 
 export const GRAPH_MAX_NODES = 200;
 export const GRAPH_MAX_EDGES = 500;
-export const GRAPH_NODE_KINDS = Object.freeze(['task', 'artifact', 'decision', 'understanding_gap']);
+export const GRAPH_NODE_KINDS = Object.freeze(['task', 'artifact', 'decision', 'understanding_gap', 'worktree']);
 export const GRAPH_NODE_STATES = Object.freeze(['open', 'in_progress', 'blocked', 'done', 'resolved']);
 export const GRAPH_EDGE_KINDS = Object.freeze(['related', 'depends_on', 'delegates', 'evidence', 'explains']);
 export const DELEGATION_STATES = Object.freeze(['planned', 'active', 'blocked', 'completed', 'cancelled']);
@@ -99,6 +99,20 @@ export function addTaskForSession(doc, input, id, edgeId, sessionId) {
     from: `graph:${id}`, to: `session:${sessionId}`, kind: 'related', purpose: 'Created from this session', status: '',
   }, edgeId, new Set([sessionId]));
   return linked.edges.length === withTask.edges.length + 1 ? linked : doc;
+}
+
+/** Persist a safe worktree summary on the canvas and relate it to its source session in one graph update.
+ * @param {GraphDoc} doc @param {Omit<GraphNode,'id'>} input @param {string} id @param {string} edgeId @param {string} sessionId
+ * @returns {GraphDoc}
+ */
+export function addWorktreeForSession(doc, input, id, edgeId, sessionId) {
+  if (!SESSION_ID.test(sessionId)) return doc;
+  const withWorktree = addGraphNode(doc, { ...input, kind: 'worktree' }, id);
+  if (withWorktree === doc) return doc;
+  const linked = connectGraph(withWorktree, {
+    from: `graph:${id}`, to: `session:${sessionId}`, kind: 'related', purpose: 'Created by confirmed worktree action', status: '',
+  }, edgeId, new Set([sessionId]));
+  return linked.edges.length === withWorktree.edges.length + 1 ? linked : doc;
 }
 
 /**

@@ -105,7 +105,8 @@ export function openGraphNodeDialog(o) {
         o.onEditEdge(edge);
       }
     }
-    if (action === 'delete' && o.onDelete && window.confirm(t('graph.deleteConfirm', { title: node.title }))) {
+    const deleteMessage = node.kind === 'worktree' ? 'graph.worktreeDeleteConfirm' : 'graph.deleteConfirm';
+    if (action === 'delete' && o.onDelete && window.confirm(t(deleteMessage, { title: node.title }))) {
       o.onDelete(node.id);
       dialog.close();
     }

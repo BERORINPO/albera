@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { addGraphNode, addTaskForSession, connectGraph, moveGraphNode, nextGraphNodePosition, normalizeGraph, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, moveGraphNode, nextGraphNodePosition, normalizeGraph, removeGraphEdge, removeGraphNode, reviewUnderstandingGaps, updateGraphEdge, updateGraphNode } from '../public/graph-model.mjs';
 
 const g1 = 'g_00000000-0000-4000-8000-000000000001';
 const g2 = 'g_00000000-0000-4000-8000-000000000002';
@@ -48,6 +48,18 @@ test('a task created from session detail is linked atomically without copying se
   assert.deepEqual(graph.edges.map(({ from, to, kind, purpose, status }) => ({ from, to, kind, purpose, status })), [{ from: `graph:${g1}`, to: `session:${session}`, kind: 'related', purpose: 'Created from this session', status: '' }]);
   assert.deepEqual(addTaskForSession(empty(), input, g1, e1, 'invalid-session'), empty(), 'invalid session creates no card');
   assert.deepEqual(addTaskForSession(empty(), input, g1, 'bad-edge', session), empty(), 'invalid edge ID does not leave an unlinked task behind');
+});
+
+test('a confirmed worktree summary is saved as a local worktree card linked to its source session', () => {
+  const input = { kind: 'artifact', title: 'agent/review', body: 'Base main; clean (0 changed, 0 untracked)', status: 'open', x: 30, y: 40, checkedPerson: '', missingEvidence: '', neededExplanation: '' };
+  const graph = addWorktreeForSession(empty(), input, g1, e1, session);
+  assert.equal(graph.nodes.length, 1);
+  assert.equal(graph.nodes[0].kind, 'worktree');
+  assert.equal(graph.nodes[0].title, 'agent/review');
+  assert.deepEqual(normalizeGraph(JSON.parse(JSON.stringify(graph))), graph, 'the safe record and its edge survive browser-storage serialization');
+  assert.deepEqual(graph.edges.map(({ from, to, kind, purpose, status }) => ({ from, to, kind, purpose, status })), [{ from: `graph:${g1}`, to: `session:${session}`, kind: 'related', purpose: 'Created by confirmed worktree action', status: '' }]);
+  assert.deepEqual(addWorktreeForSession(empty(), input, g1, e1, 'invalid-session'), empty(), 'invalid session creates no record');
+  assert.deepEqual(addWorktreeForSession(empty(), input, g1, 'bad-edge', session), empty(), 'invalid edge ID does not leave an unlinked record behind');
 });
 
 test('relations connect local cards and current sessions, whitelist fields, and track delegation state without executing it', () => {

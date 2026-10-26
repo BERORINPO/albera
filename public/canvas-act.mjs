@@ -13,7 +13,7 @@ import { neighbour } from './canvas-layout.mjs';
 import { openSession, render, view } from './render.mjs';
 import { state } from './state.mjs';
 import { nextUp, PILES } from './ui-state.mjs';
-import { addGraphNode, addTaskForSession, connectGraph, moveGraphNode, nextGraphNodePosition, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from './graph-model.mjs';
+import { addGraphNode, addTaskForSession, addWorktreeForSession, connectGraph, moveGraphNode, nextGraphNodePosition, removeGraphEdge, removeGraphNode, updateGraphEdge, updateGraphNode } from './graph-model.mjs';
 import { loadGraph, saveGraph } from './graph-store.mjs';
 import { openGraphNodeDialog, openGraphRelationDialog } from './graph-dialog.mjs';
 import { GRAPH_CARD_SIZE } from './graph-render.mjs';
@@ -81,8 +81,9 @@ function graphSessions() {
 }
 
 function graphChanged(doc) {
-  if (!saveGraph(doc)) return announce(state.t('graph.saveError'));
+  if (!saveGraph(doc)) return announce(state.t('graph.saveError')), false;
   render();
+  return true;
 }
 
 function newGraphNode() {
@@ -116,6 +117,19 @@ function createWorktreeForSession(sessionId) {
     baseBranch: card.detail?.gitWorktree?.branch || card.detail?.branch || '',
     gitWorktree: card.detail?.gitWorktree,
     worktree: (branch) => createWorktree(sessionId, branch),
+    onCreated: (result) => {
+      const graph = loadGraph();
+      const vpSize = size();
+      const center = { x: cv.cam.x + vpSize.w / (2 * cv.cam.z) - GRAPH_CARD_SIZE.width / 2, y: cv.cam.y + vpSize.h / (2 * cv.cam.z) - GRAPH_CARD_SIZE.height / 2 };
+      const position = nextGraphNodePosition(graph, center, GRAPH_CARD_SIZE);
+      const base = card.detail?.gitWorktree?.branch || card.detail?.branch || state.t('worktree.currentHead');
+      const next = addWorktreeForSession(graph, {
+        kind: 'worktree', title: result.branch,
+        body: state.t('worktree.recordBody', { base, state: state.t(`worktree.status.${result.status}`), changed: result.changed, untracked: result.untracked, conflicted: result.conflicted }),
+        status: 'open', ...position, checkedPerson: '', missingEvidence: '', neededExplanation: '',
+      }, `g_${crypto.randomUUID()}`, `e_${crypto.randomUUID()}`, sessionId);
+      return next === graph ? false : graphChanged(next);
+    },
   });
   return true;
 }

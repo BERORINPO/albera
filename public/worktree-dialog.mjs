@@ -6,7 +6,7 @@ import { h } from './view.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
 
-/** @param {T} t @param {{sessionId:string,project:string,baseBranch:string,gitWorktree?:any,worktree:(branch:string)=>Promise<any>}} o */
+/** @param {T} t @param {{sessionId:string,project:string,baseBranch:string,gitWorktree?:any,worktree:(branch:string)=>Promise<any>,onCreated?:(result:any)=>boolean|Promise<boolean>}} o */
 export function openWorktreeDialog(t, o) {
   const dialog = h('dialog', { class: 'graph-dialog', 'aria-labelledby': 'worktree-dialog-title' });
   const form = h('form', { class: 'graph-dialog__form' });
@@ -43,7 +43,11 @@ export function openWorktreeDialog(t, o) {
     message.textContent = t('worktree.creating');
     try {
       const result = await o.worktree(branch.value.trim());
-      message.textContent = t('worktree.created', { branch: result.branch, status: t(`worktree.status.${result.status}`) });
+      let recorded = null;
+      if (o.onCreated) {
+        try { recorded = await o.onCreated(result); } catch { recorded = false; }
+      }
+      message.textContent = t(recorded === true ? 'worktree.createdTracked' : recorded === false ? 'worktree.createdUntracked' : 'worktree.created', { branch: result.branch, status: t(`worktree.status.${result.status}`) });
       submit.hidden = true;
     } catch (error) {
       message.textContent = error instanceof WorktreeOperationError
