@@ -14,6 +14,7 @@ const EVENT_LIMIT = 30;
 const START = new Set(['assistant.turn_start']);
 const COMPLETE = new Set(['assistant.turn_end', 'session.task_complete']);
 const INTERRUPT = new Set(['abort']);
+const FAILURE = new Set(['session.error']);
 
 /** @param {unknown} value @returns {value is Record<string, any>} */
 const obj = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -54,9 +55,9 @@ async function readEvents(handle, size) {
     if (newline < 0) return [];
     content = content.slice(newline + 1);
   }
-  /** @type {Array<{type:'turn_started'|'turn_completed'|'turn_aborted',at:number}>} */
+  /** @type {Array<{type:'turn_started'|'turn_completed'|'turn_aborted'|'turn_failed',at:number}>} */
   const events = [];
-  /** @type {'unknown'|'active'|'complete'|'interrupted'} */
+  /** @type {'unknown'|'active'|'complete'|'interrupted'|'failed'} */
   let status = 'unknown';
   /** @type {number|undefined} */
   let startedAt;
@@ -65,12 +66,16 @@ async function readEvents(handle, size) {
     try {
       const event = JSON.parse(raw);
       if (!obj(event) || typeof event.type !== 'string') continue;
-      const type = START.has(event.type) ? 'turn_started' : COMPLETE.has(event.type) ? 'turn_completed' : INTERRUPT.has(event.type) ? 'turn_aborted' : null;
+      // The SDK also persists child-agent events on the parent stream. They are not the root session lifecycle.
+      if (event.agentId !== undefined && event.agentId !== null) continue;
+      const failedShutdown = event.type === 'session.shutdown' && obj(event.data) && event.data.shutdownType === 'error';
+      const type = START.has(event.type) ? 'turn_started' : COMPLETE.has(event.type) ? 'turn_completed' : INTERRUPT.has(event.type) ? 'turn_aborted' : FAILURE.has(event.type) || failedShutdown ? 'turn_failed' : null;
       const at = timestamp(event.timestamp);
       if (type && at) {
         events.push({ type, at });
         if (type === 'turn_started') { status = 'active'; startedAt = at; }
         else if (type === 'turn_aborted') { status = 'interrupted'; startedAt = undefined; }
+        else if (type === 'turn_failed') { status = 'failed'; startedAt = undefined; }
         else if (event.type === 'session.task_complete') { status = 'complete'; startedAt = undefined; }
         else { status = 'unknown'; startedAt = undefined; }
       }

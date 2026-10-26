@@ -17,8 +17,8 @@ async function fixtureHome() {
   return dir;
 }
 
-function event(type, data, at) {
-  return JSON.stringify({ type, timestamp: new Date(at).toISOString(), data });
+function event(type, data, at, envelope = {}) {
+  return JSON.stringify({ type, timestamp: new Date(at).toISOString(), data, ...envelope });
 }
 
 async function writeSession(home, id, rows) {
@@ -41,6 +41,9 @@ test('Copilotイベントを検出し、進行中・完了・中断を安全な�
   const doneId = uuid(802);
   const abortedId = uuid(803);
   const callEndedId = uuid(805);
+  const errorId = uuid(806);
+  const childErrorId = uuid(807);
+  const shutdownErrorId = uuid(808);
   const activeAt = NOW - 2 * 60_000;
   const doneAt = NOW - 60_000;
   await writeSession(home, activeId, [
@@ -52,29 +55,41 @@ test('Copilotイベントを検出し、進行中・完了・中断を安全な�
   await writeSession(home, doneId, [start(doneId, doneAt - 10_000), event('assistant.turn_start', {}, doneAt - 5_000), event('session.task_complete', { summary: 'PRIVATE-OUTPUT' }, doneAt)]);
   await writeSession(home, abortedId, [start(abortedId, activeAt - 10_000), event('assistant.turn_start', {}, activeAt - 5_000), event('abort', { reason: 'PRIVATE-REASON' }, activeAt)]);
   await writeSession(home, callEndedId, [start(callEndedId, doneAt - 10_000), event('assistant.turn_start', {}, doneAt - 5_000), event('assistant.turn_end', { output: 'PRIVATE-OUTPUT' }, doneAt)]);
+  await writeSession(home, errorId, [start(errorId, doneAt - 10_000), event('assistant.turn_start', {}, doneAt - 5_000), event('session.error', { errorType: 'PRIVATE-ERROR-TYPE', message: 'PRIVATE-ERROR-MESSAGE', stack: 'PRIVATE-ERROR-STACK' }, doneAt)]);
+  await writeSession(home, childErrorId, [start(childErrorId, activeAt), event('assistant.turn_start', {}, activeAt + 1_000), event('session.error', { message: 'PRIVATE-CHILD-ERROR' }, activeAt + 2_000, { agentId: 'PRIVATE-CHILD-ID' })]);
+  await writeSession(home, shutdownErrorId, [start(shutdownErrorId, doneAt - 5_000), event('session.shutdown', { shutdownType: 'error', errorReason: 'PRIVATE-SHUTDOWN-ERROR' }, doneAt)]);
   const { sessions, stats } = await createCopilotSessionsSource({ root: home }).load();
-  assert.equal(sessions.length, 4);
-  assert.equal(stats.parsed, 4);
+  assert.equal(sessions.length, 7);
+  assert.equal(stats.parsed, 7);
   const active = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', activeId));
   const done = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', doneId));
   const aborted = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', abortedId));
   const callEnded = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', callEndedId));
+  const failed = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', errorId));
+  const childError = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', childErrorId));
+  const shutdownError = sessions.find((s) => s.sessionId === opaqueProviderSessionId('copilot', shutdownErrorId));
   assert.deepEqual(active.lifecycle, { status: 'active', startedAt: activeAt + 1_000 });
   assert.deepEqual(active.events, [{ type: 'turn_started', at: activeAt + 1_000 }]);
   assert.deepEqual(done.lifecycle, { status: 'complete' });
   assert.deepEqual(aborted.lifecycle, { status: 'interrupted' });
   assert.deepEqual(callEnded.lifecycle, { status: 'unknown' }, 'assistant.turn_end only proves one model call ended');
+  assert.deepEqual(failed.lifecycle, { status: 'failed' }, 'session.error reports a processing failure without exposing its details');
+  assert.deepEqual(childError.lifecycle, { status: 'active', startedAt: activeAt + 1_000 }, 'a child-agent error does not change the parent session state');
+  assert.deepEqual(shutdownError.lifecycle, { status: 'failed' }, 'shutdownType=error reports a fixed failure state');
   assert.deepEqual(done.events.map((e) => e.type), ['turn_started', 'turn_completed']);
   assert.deepEqual(aborted.events.map((e) => e.type), ['turn_started', 'turn_aborted']);
   assert.deepEqual(callEnded.events.map((e) => e.type), ['turn_started', 'turn_completed']);
+  assert.deepEqual(failed.events.map((e) => e.type), ['turn_started', 'turn_failed']);
+  assert.deepEqual(childError.events.map((e) => e.type), ['turn_started']);
+  assert.deepEqual(shutdownError.events.map((e) => e.type), ['turn_failed']);
   const board = buildBoard({ sessions, archivedIds: new Set(), turns: new Map(), now: NOW, roots: ROOTS, sourceStats: { sources: { copilot: stats } } });
   assert.deepEqual(
-    [board.stats.sources.copilot.active, board.stats.sources.copilot.completed, board.stats.sources.copilot.interrupted, board.stats.sources.copilot.unknown],
-    [1, 1, 1, 1],
+    [board.stats.sources.copilot.active, board.stats.sources.copilot.completed, board.stats.sources.copilot.interrupted, board.stats.sources.copilot.failed, board.stats.sources.copilot.unknown],
+    [2, 1, 1, 2, 1],
     'summary counters use confirmed whole-task lifecycle, not a model-call end event',
   );
-  for (const providerId of [activeId, doneId, abortedId, callEndedId]) assert.equal(JSON.stringify(board).includes(providerId), false, 'provider-native session ID stays out of board wire');
-  for (const secret of ['PRIVATE-PROMPT', 'PRIVATE-ENV', 'PRIVATE-TOOL-INPUT', 'PRIVATE-BROKEN', 'PRIVATE-UNKNOWN', 'PRIVATE-OUTPUT', 'PRIVATE-REASON']) {
+  for (const providerId of [activeId, doneId, abortedId, callEndedId, errorId, childErrorId, shutdownErrorId]) assert.equal(JSON.stringify(board).includes(providerId), false, 'provider-native session ID stays out of board wire');
+  for (const secret of ['PRIVATE-PROMPT', 'PRIVATE-ENV', 'PRIVATE-TOOL-INPUT', 'PRIVATE-BROKEN', 'PRIVATE-UNKNOWN', 'PRIVATE-OUTPUT', 'PRIVATE-REASON', 'PRIVATE-ERROR-TYPE', 'PRIVATE-ERROR-MESSAGE', 'PRIVATE-ERROR-STACK', 'PRIVATE-CHILD-ERROR', 'PRIVATE-CHILD-ID', 'PRIVATE-SHUTDOWN-ERROR']) {
     assert.equal(JSON.stringify(sessions).includes(secret), false, `sensitive value escaped: ${secret}`);
   }
 });
