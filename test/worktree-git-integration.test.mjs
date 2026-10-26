@@ -37,12 +37,13 @@ test('actual local Git worktree lifecycle keeps nested managed worktrees removab
     await git(['add', 'README.md'], repo);
     await git(['-c', `core.hooksPath=${hooks}`, '-c', 'commit.gpgSign=false', 'commit', '-m', 'fixture'], repo);
     assert.equal((await git(['remote'], repo)).trim(), '', 'the synthetic repo has no remote');
+    const repoRoot = (await git(['-C', repo, 'rev-parse', '--show-toplevel'], repo)).trim();
 
     const creator = createWorktreeCreator();
     const result = await creator.create({ cwd: repo, branch });
     assert.deepEqual(result, { ok: true, branch, status: 'clean', changed: 0, untracked: 0, conflicted: 0 });
 
-    const child = await creator.create({ cwd: managedWorktreePath(repo, branch), branch: childBranch });
+    const child = await creator.create({ cwd: managedWorktreePath(repoRoot, branch), branch: childBranch });
     assert.deepEqual(child, { ok: true, branch: childBranch, status: 'clean', changed: 0, untracked: 0, conflicted: 0 });
     createdBranches = [branch, childBranch];
 

@@ -939,4 +939,5 @@
 - managedパスの照合を、一覧中にある同一Gitリポジトリの全worktreeルートに対して行う。アプリ管理のworktreeを起点に作成した子worktreeも、元repoから管理対象として検出でき、既存の明示確認・clean制約を通じて削除できる。
 - 同じルールを明示設定WSL adapterにも適用。synthetic WSL fixtureで親/子両方の管理フラグと、親repoからの子削除引数を検証した。これはmockであり、実WSL distroではない。
 - 一時Git repo統合テストで、mainから親worktree、親worktreeから子worktreeを作成し、親repoで双方の管理フラグを確認。子、親の順にworktreeだけを削除し、ブランチが残ることを確認。実ユーザーrepoは未使用。
+- CIでmacOSとWindowsが失敗した理由は、テストが`os.tmpdir()`から構成した入力パスでnested checkoutを再構成していたため。Gitが返すcanonical repository rootを使うよう修正し、macOS/Windows差を除いた。
 - `npm test`: 592 passed、`npm run arch`: 99 paths / 0 violations、`npm run smoke`: pass、`git diff --check`: pass。デモHTTP serverはloopbackで起動して終了したが、ブラウザー操作はcomputer-useが現在URLを安全判定できず停止したため、この段階のGUI確認は未実施。
