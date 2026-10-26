@@ -34,5 +34,11 @@
 .graph-dialog__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-xs); margin-top: var(--space-sm); }
 .graph-dialog__delete { margin-right: auto; color: var(--color-ink); }
 .graph-dialog__relations { display: grid; gap: var(--space-xs); margin: 0; padding-inline-start: 1.25rem; overflow-wrap: anywhere; }
+.graph-session-relations { display: grid; gap: var(--space-xs); margin-block: var(--space-md); padding: var(--space-sm); border: var(--rule-muted); }
+.graph-session-relations h3, .graph-session-relations ul { margin: 0; }
+.graph-session-relations ul { display: grid; gap: var(--space-xs); padding-inline-start: 1.25rem; }
+.graph-session-relations li { display: grid; justify-items: start; gap: var(--space-2xs); overflow-wrap: anywhere; }
+.graph-session-relations__node { font-weight: 700; text-align: start; }
+.graph-session-relations small { color: var(--color-ink-2); }
 @media (max-width: 39.99rem) { .graph-node { width: min(280px, calc(100vw - 3rem)); } }
 

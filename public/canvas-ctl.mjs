@@ -120,7 +120,7 @@ function drawBar(at) {
   const sheet = s ? { key: s.key, name: projectLabel(state.t, s.project) } : null;
   const rowCtx = { t: state.t, now: at, board: state.board, index: view.index, handoff: state.prefs.handoff };
   const due = state.board ? dueIds(state.board).length : 0;
-  cv.bar = renderBar($('cv-bar'), { t: state.t, bar, entry, sheet, z: cv.cam.z, due, keysOn: state.prefs.keys !== false, now: at, demo: !!state.board?.stats?.demo, rowCtx });
+  cv.bar = renderBar($('cv-bar'), { t: state.t, bar, entry, sheet, z: cv.cam.z, due, keysOn: state.prefs.keys !== false, now: at, demo: !!state.board?.stats?.demo, rowCtx, graph: loadGraph() });
 }
 
 /** カーソルを付箋へ (描き直し、追い、題名へフォーカス)。 @param {string} id @param {boolean} [focus] */
