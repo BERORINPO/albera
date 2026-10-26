@@ -443,3 +443,11 @@
 - `npm test` — 530 passed、`npm run arch` — 96 paths/0 violations、`git diff --check` — passed。追加した回帰テストは日英の確認項目、full session IDを表示しないこと、native confirmationを使わないこと、キャンセル経路と明示submitの分離を検査する。
 - この修正ではブラウザー上の実行ボタンを押していないため、Codex CLIや外部通信は起動していない。画面内dialogの実ブラウザーvisual/keyboard受入は未確認。前項の自動操作時に実行確認が成立した可能性と、その不確実性は引き続き記録する。
 - 合成fixture `work/delegation-confirmation-fixture` は端末安全ポリシーが削除操作を拒否したため作業ツリーに残存する。削除は実施していない。
+
+### 委譲確認画面の合成GUI受入 (2026-10-26)
+
+- 既存の合成Codex fixtureだけを入力にし、Claude/Copilot/Projectsはfixture内の空ソース、OpenCodeは存在しない合成DBへ向けて通常モードをloopback起動した。実セッション保存先は設定せず、実セッションは読み取っていない。
+- 合成進行中Codexから完了済み合成Codexへの委譲関係を画面から「予定」として記録し、対象project/provider/ID末尾、目的、stdinへ渡す範囲、network/API/usage可能性、破棄出力、セッション記録変更の注意が実ブラウザーに表示されることを確認。
+- 「閉じる」とEscapeの両方でdialogが閉じ、関係は「予定」のまま、focusが呼出元の「委譲を実行」ボタンへ戻った。実行ボタンは押していないため委譲API/CLIは呼び出していない。port 19827の確認用サーバーと一時ブラウザータブは停止/閉鎖済み。
+- 合成関係と目的文はport 19827のブラウザーlocalStorageに残る場合がある。ユーザー既存originやセッション保存データには書き込んでいない。fixtureは以前の試行で作成され、未追跡で残っている。
+- この確認は画面表示と2種類の取消経路を対象にする。実Codexセッションとの適合性、実行submit後のCLI/外部利用、スクリーンリーダー受入は未確認。前回試行の実行有無に関する不確実性も解消していない。
