@@ -44,7 +44,7 @@ function request(address, api, { method = 'GET', route = '/v1/health', body, tok
 async function apiFixture(overrides = {}, gatewayOverrides = {}, credentialOptions = {}) {
   const f = fakeGateway(gatewayOverrides);
   const runtimeApi = createRuntimeApi({ gateway: f.gateway, ...overrides });
-  const api = { ...runtimeApi, credential: runtimeApi.createCredential(['health', 'runs:read', 'events:read', 'runs:start', 'runs:stop'], credentialOptions) };
+  const api = { ...runtimeApi, credential: runtimeApi.createCredential(['health', 'providers:read', 'runs:read', 'events:read', 'runs:start', 'runs:stop'], credentialOptions) };
   const address = await api.listen();
   return { ...f, api, address, close: () => api.close() };
 }
@@ -57,6 +57,7 @@ test('Runtime API requires a valid Gateway and bounded stream configuration', ()
   assert.throws(() => createRuntimeApi({ gateway, streamLifetimeMs: 60_001 }), /streamLifetimeMs/);
   const api = createRuntimeApi({ gateway });
   assert.throws(() => api.createCredential(['admin']), /scopes/);
+  assert.throws(() => api.createCredential(['provider:read']), /scopes/);
   assert.throws(() => api.createCredential(['runs:read'], { ttlMs: 86_400_001 }), /ttlMs/);
   assert.throws(() => api.createCredential(['runs:read'], { sessionId: 'caller supplied identity' }), /sessionId/);
   for (let i = 0; i < 256; i++) api.createCredential(['runs:read']);
@@ -132,6 +133,31 @@ test('API projects run/event data and only forwards allowlisted start and stop r
   assert.equal(stopped.status, 200);
   assert.deepEqual(f.calls.at(-1), ['stop', '12345678-1234-4234-8234-123456789abc']);
   assert.equal(stopped.text.includes('secret'), false);
+});
+
+test('provider catalog is read-only, scope-protected, and reports profile verification honestly', async (t) => {
+  const f = await apiFixture();
+  t.after(f.close);
+  const limitedToken = f.api.createCredential(['health']);
+
+  const forbidden = await request(f.address, f.api, { route: '/v1/providers', token: limitedToken });
+  assert.equal(forbidden.status, 401);
+
+  const response = await request(f.address, f.api, { route: '/v1/providers' });
+  assert.equal(response.status, 200);
+  const body = JSON.parse(response.text);
+  assert.deepEqual(Object.keys(body.providers[0]).sort(), ['eventTransport', 'id', 'inputTransport', 'profiles', 'runtimeValidation', 'status', 'unavailableReason'].sort());
+  assert.deepEqual(body.providers.map(({ id, status, profiles, runtimeValidation, inputTransport, eventTransport, unavailableReason }) => ({
+    id, status, profiles, runtimeValidation, inputTransport, eventTransport, unavailableReason,
+  })), [
+    { id: 'claude', status: 'profile-only', profiles: ['read-only'], runtimeValidation: 'argv-only', inputTransport: false, eventTransport: 'lifecycle-only', unavailableReason: null },
+    { id: 'codex', status: 'unavailable', profiles: [], runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
+    { id: 'opencode', status: 'unavailable', profiles: [], runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
+  ]);
+  body.providers[0].profiles.push('workspace-write');
+  const fresh = JSON.parse((await request(f.address, f.api, { route: '/v1/providers' })).text);
+  assert.deepEqual(fresh.providers[0].profiles, ['read-only']);
+  assert.equal(f.calls.length, 0);
 });
 
 test('session credentials enforce least-privilege scopes and can be revoked independently', async (t) => {

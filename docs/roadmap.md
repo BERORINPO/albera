@@ -6,7 +6,7 @@ Statuses: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `VERIFIED`. A phase is `VERIF
 |---|---|---|---|
 | 1. Runtime Foundation | Isolated process lifecycle, approval, executable validation, platform stop adapters, bounded events, resource caps and tests | Current main / read-only Observer | VERIFIED |
 | 2. Secure Runtime API | Separate authenticated service, authorization, streaming, input/cancel, audit and recovery | Phase 1 | IN_PROGRESS |
-| 3. Real CLI Integration | Codex, Claude Code, OpenCode provider adapters and documented capabilities | Phases 1–2 | NOT_STARTED |
+| 3. Real CLI Integration | Codex, Claude Code, OpenCode provider adapters and documented capabilities | Phases 1–2 | IN_PROGRESS |
 | 4. Live Agent Canvas | Real lifecycle projection, nodes, task assignment and approved controls | Phases 2–3; existing canvas work remains in its own PR chain | NOT_STARTED |
 | 5. Orchestration | Goal decomposition, dependencies, dispatch, concurrency, retry, handoff, human intervention and verification | Phases 2–4 | NOT_STARTED |
 | 6. Git Integration | Worktrees, branches, diffs, conflicts, test results and PR support | Phases 2–5 | NOT_STARTED |

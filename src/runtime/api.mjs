@@ -1,6 +1,7 @@
 // Experimental authenticated Runtime API. It is intentionally separate from the read-only Observer.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
+import { listRuntimeProviderCapabilities } from './provider-catalog.mjs';
 
 const MAX_BODY_BYTES = 20 * 1024;
 const MAX_STREAMS = 4;
@@ -11,7 +12,7 @@ const MAX_CREDENTIALS = 256;
 const MAX_TRACKED_RUNS = 64;
 const MAX_EVENT_SCAN = 256;
 const MAX_PENDING_STREAM_EVENTS = 256;
-const API_SCOPES = new Set(['health', 'runs:read', 'events:read', 'runs:start', 'runs:stop']);
+const API_SCOPES = new Set(['health', 'providers:read', 'runs:read', 'events:read', 'runs:start', 'runs:stop']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
 const RUN_STATUSES = new Set(['starting', 'running', 'stopping', 'stopped', 'exited', 'failed', 'interrupted']);
@@ -81,6 +82,9 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
 
     try {
       if (req.method === 'GET' && url.pathname === '/v1/health') return sendJson(res, 200, { status: 'ok' });
+      if (req.method === 'GET' && url.pathname === '/v1/providers') {
+        return sendJson(res, 200, { providers: listRuntimeProviderCapabilities() });
+      }
       if (req.method === 'GET' && url.pathname === '/v1/runs') {
         const liveRuns = gateway.list().filter((run) => run && runOwners.get(run.id) === credential.sessionId).map(projectRun).filter(Boolean);
         const liveIds = new Set(liveRuns.map((run) => run.id));
@@ -520,6 +524,7 @@ function purgeExpiredCredentials(credentials) {
 }
 function requiredScope(method, pathname) {
   if (method === 'GET' && pathname === '/v1/health') return 'health';
+  if (method === 'GET' && pathname === '/v1/providers') return 'providers:read';
   if (method === 'GET' && pathname === '/v1/runs') return 'runs:read';
   if (method === 'GET' && ['/v1/events', '/v1/events/stream'].includes(pathname)) return 'events:read';
   if (method === 'POST' && pathname === '/v1/runs') return 'runs:start';
