@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // @ts-check
 // entry: 起動 (CLI)。設定の検証 → adapter の選択 (実データ / デモ) → 127.0.0.1 だけで待ち受け。spec/board.md §11
-//   npx pigeonholes / npm start      実データ (読み取り専用)
-//   npm run demo (--demo)            合成データ。中身の言語は端末の言語
+//   npx pigeonholes / npm start      実データ。セッションデータは読み取り専用、worktreeは確認後
+//   npm run demo (--demo)            合成データ。worktree作成は無効
 // 端末の言葉は messages.mjs。ログに title や本文は書かない。
 
 import fs from 'node:fs';
@@ -13,17 +13,28 @@ import { fileURLToPath } from 'node:url';
 import { DEFAULT_PORT, PRODUCT } from '../shared/constants.mjs';
 import { createAppSessionsSource } from '../adapters/app-sessions-fs.mjs';
 import { createCodexSessionsSource } from '../adapters/codex-sessions-fs.mjs';
+import { createCopilotSessionsSource } from '../adapters/copilot-sessions-fs.mjs';
+import { createOpenCodeSessionsSource } from '../adapters/opencode-sessions-fs.mjs';
 import { createFolderHints } from '../adapters/folder-hints-fs.mjs';
 import { createTranscriptsSource } from '../adapters/transcripts-fs.mjs';
+import { createWorktreeSource } from '../adapters/worktrees-git.mjs';
+import { createWorktreeCreator } from '../adapters/worktree-create-git.mjs';
+import { createWorktreeRemover } from '../adapters/worktree-remove-git.mjs';
+import { createWslWorktreeSource } from '../adapters/worktrees-wsl.mjs';
+import { createCodexDelegationRunner } from '../adapters/codex-delegation-runner.mjs';
+import { createLiveVoiceSession } from './live-voice.mjs';
+import { wslCwdToUnc, wslShareRoot } from '../adapters/wsl-paths.mjs';
 import { argsWithoutPort, ConfigError, loadConfig, portHint, shellQuote } from './config.mjs';
 import { liveDemoSources } from './demo.mjs';
 import { createHandler } from './http.mjs';
 import { errorLines, msg } from './messages.mjs';
 import { probeBoard } from './probe.mjs';
 import { createBoardService } from './service.mjs';
+import { codexDelegationBlockReason } from '../core/session.mjs';
 
 const SELF_PATH = fileURLToPath(import.meta.url);
 const PACKAGE_JSON = path.join(path.dirname(SELF_PATH), '..', '..', 'package.json');
+const SESSION_CARD_ID = /^(?:local|codex|copilot|opencode)_[0-9a-f-]{36}$/i;
 
 /** package.json の version (読めなければ 0.0.0)。 */
 function readVersion() {
@@ -44,13 +55,22 @@ function launcher() {
 /** @param {import('./config.mjs').RunConfig} config */
 function wire(config) {
   if (config.demo) return liveDemoSources(config.lang);
+  const codexWslRoot = process.platform === 'win32' ? wslShareRoot(config.codexHome) : '';
+  const codexWslShareStatus = process.platform !== 'win32' ? 'not_applicable' : codexWslRoot ? 'configured' : 'not_configured';
+  const sessionsSource = createCombinedSessionsSource([
+    createAppSessionsSource({ root: config.sessionsRoot }),
+    createCodexSessionsSource({ root: config.codexHome, cwdMapper: codexWslRoot ? (cwd) => wslCwdToUnc(cwd, codexWslRoot) : undefined, wslShareStatus: codexWslShareStatus }),
+    createCopilotSessionsSource({ root: config.copilotHome }),
+    createOpenCodeSessionsSource({ root: config.openCodeDb }),
+  ]);
   return {
-    sessionsSource: createCombinedSessionsSource([
-      createAppSessionsSource({ root: config.sessionsRoot }),
-      createCodexSessionsSource({ root: config.codexHome }),
-    ]),
+    sessionsSource,
     transcriptsSource: createTranscriptsSource({ projectsDir: config.projectsDir }),
-    folderHints: createFolderHints({ home: config.home }),
+    folderHints: createFolderHints({ home: config.home, wslShareRoot: codexWslRoot }),
+    worktreeSource: createWorktreeSource(),
+    wslWorktreeSource: codexWslRoot ? createWslWorktreeSource({ shareRoot: codexWslRoot }) : null,
+    worktreeCreator: createWorktreeCreator(),
+    worktreeRemover: createWorktreeRemover(),
   };
 }
 
@@ -61,8 +81,10 @@ function createCombinedSessionsSource(sources) {
       const loaded = await Promise.all(sources.map((source) => source.load()));
       // 既存の診断統計は Claude セッション源の値をそのまま使う。
       const claudeStats = loaded[0]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
-      const codexStats = loaded[1]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
-      const stats = { ...claudeStats, sources: { codex: codexStats } };
+      const codexStats = loaded[1]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0, wslShareStatus: 'not_applicable' };
+      const copilotStats = loaded[2]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
+      const opencodeStats = loaded[3]?.stats ?? { files: 0, parsed: 0, bad: 0, stale: 0, dirs: 0 };
+      const stats = { ...claudeStats, sources: { codex: codexStats, copilot: copilotStats, opencode: opencodeStats } };
       return {
         sessions: loaded.flatMap((source) => source.sessions),
         archivedIds: new Set(loaded.flatMap((source) => [...source.archivedIds])),
@@ -106,8 +128,44 @@ function main() {
   }
   const config = loaded;
   const { port } = config;
-  const service = createBoardService({ ...wire(config), roots: config.roots, demo: config.demo });
-  const handler = createHandler({ port, getBoard: () => service.get(), demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });
+  const sources = wire(config);
+  const delegationRunner = config.demo ? null : createCodexDelegationRunner();
+  const startVoiceSession = config.demo ? null : createLiveVoiceSession();
+  const service = createBoardService({ ...sources, roots: config.roots, demo: config.demo });
+  const activeSessionForId = async (sessionId) => {
+    if (!SESSION_CARD_ID.test(sessionId)) return { ok: false, reason: 'invalid_target' };
+    const loadedSessions = await sources.sessionsSource.load();
+    const session = loadedSessions.sessions.find((item) => item.sessionId === sessionId);
+    if (!session || session.isArchived || loadedSessions.archivedIds.has(sessionId) || !session.cwd) return { ok: false, reason: 'invalid_target' };
+    return session;
+  };
+  const createWorktree = async (sessionId, branch) => {
+    const session = await activeSessionForId(sessionId);
+    if (session?.executionLocation === 'wsl') return !config.demo && session.cwd && sources.wslWorktreeSource
+      ? sources.wslWorktreeSource.create({ cwd: session.cwd, branch, confirmed: true }) : { ok: false, reason: 'unsupported_location' };
+    return session?.cwd ? sources.worktreeCreator.create({ cwd: session.cwd, branch }) : session;
+  };
+  const listWorktrees = async (sessionId) => {
+    const session = await activeSessionForId(sessionId);
+    if (session?.executionLocation === 'wsl') {
+      if (config.demo) return session.cwd ? sources.worktreeSource.listForCwd(session.cwd) : [];
+      return sources.wslWorktreeSource?.listForCwd(session.cwd) ?? { ok: false, reason: 'unsupported_location' };
+    }
+    return session?.cwd ? sources.worktreeSource.listForCwd(session.cwd) : session;
+  };
+  const removeWorktree = async (sessionId, branch, confirmed) => {
+    const session = await activeSessionForId(sessionId);
+    if (session?.executionLocation === 'wsl') return !config.demo && session.cwd && sources.wslWorktreeSource
+      ? sources.wslWorktreeSource.remove({ cwd: session.cwd, branch, confirmed }) : { ok: false, reason: 'unsupported_location' };
+    return session?.cwd ? sources.worktreeRemover.remove({ cwd: session.cwd, branch, confirmed }) : session;
+  };
+  const startDelegation = async (sessionId, purpose, confirmed, operationId) => {
+    const session = await activeSessionForId(sessionId);
+    const reason = codexDelegationBlockReason(session);
+    if (reason) return { ok: false, reason };
+    return delegationRunner?.start({ sessionId: session.cliSessionId, cwd: session.cwd, purpose, confirmed, operationId }) ?? { ok: false, reason: 'unavailable' };
+  };
+  const handler = createHandler({ port, getBoard: () => service.get(), createWorktree, listWorktrees, removeWorktree, startDelegation, getDelegationStatus: (id) => delegationRunner?.status(id), startVoiceSession, voiceConfigured: startVoiceSession?.configured === true, demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });
   const server = http.createServer(handler);
   server.on('error', async (/** @type {NodeJS.ErrnoException} */ e) => {
     if (e.code === 'EADDRINUSE') {

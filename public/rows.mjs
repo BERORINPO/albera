@@ -1,7 +1,4 @@
 // @ts-check
-// 画面: 返事待ち・止まったかも・未読・作業中・最近の行と、行の「詳しく」(親子の木を含む)。
-// 行は ID ごとに使い回し、署名が変わったものだけ作り直す。カーソル・開閉・選択は作り直さずに syncRow で合わせる。
-
 import { MAX_PR_BADGES, MAX_PRS, PREVIEW, RECENT_MS, DAY } from '../src/shared/constants.mjs';
 import { copyButton } from './copy.mjs';
 import {
@@ -12,9 +9,10 @@ import { handoffGuideEl, handoffPlan, handoffRowEl } from './handoff.mjs';
 import { activityRows, asOfNode, contextNodes, doingNodes, langOf, openEl, timeEl } from './labels.mjs';
 import { familyTree } from './ui-state.mjs';
 import { eventSummaryEl, eventsEl } from './events.mjs';
+import { worktreeDetailText } from './worktree-detail.mjs';
+import { worktreeDetailActions } from './worktree-actions.mjs';
+import { sourceDetailValue } from './source-detail.mjs';
 import { fill, h, partsToNodes, reconcile, setDisclosed } from './view.mjs';
-
-// 時刻のセル・「開く ↗」・lang の決め方は labels.mjs にある (キャンバスと共有。ここから今までどおり使える)
 export { langOf, openEl, timeEl } from './labels.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
@@ -43,13 +41,11 @@ const familyParts = (t, f) => [
   f?.parentId ? t('family.parent', { name: f.parentTitle == null ? t('family.parentMissing') : f.parentTitle || t('untitled') }) : null,
   f?.children?.total > 0 ? childrenText(t, f.children) : null,
 ];
-
 /** 親子の項目の言葉 (純粋)。親と子は押した先 (その親子だけ表示) が同じなので 1 つにまとめ、sep.list でつなぐ。無ければ null。 @param {T} t @param {Card['family']} f */
 export function familyText(t, f) {
   const parts = familyParts(t, f).filter((x) => x !== null);
   return parts.length ? parts.join(t('sep.list')) : null;
 }
-
 /** 親子のリンク (1 つ)。まわりの言葉と同じに折り返す (親の題名は 40 字まで: 2 行あれば全部読める、design.md §4)。 @param {T} t @param {Card} card */
 function familyLinks(t, card) {
   const [p, c] = familyParts(t, card.family);
@@ -65,8 +61,8 @@ function familyLinks(t, card) {
  */
 export function metaItems(t, card, pile, ctx, o = {}) {
   const out = [];
-  if (card.source === 'codex') {
-    out.push(h('span', { class: 'is-ink', text: t('source.codex') }));
+  if (card.source === 'codex' || card.source === 'copilot' || card.source === 'opencode') {
+    out.push(h('span', { class: 'is-ink', text: t(`source.${card.source}`) }));
     out.push(eventSummaryEl(t, card));
   }
   if (!o.noProject) {
@@ -206,7 +202,6 @@ function dlRow(label, value, cls) {
   if (value == null || value === '') return [];
   return [h('dt', { text: label }), h('dd', { class: cls ?? null }, value)];
 }
-
 /**
  * 親子の木 (ul.tree)。自分は太字と「← これ」、他の人は押すとその行へ移る。
  * @param {T} t @param {Card} card @param {RowCtx} ctx
@@ -259,8 +254,11 @@ export function detailEl(card, pile, ctx) {
     : null;
   const routine = card.routine ? [routineHistory(t, card.routine), routineFlaky(t, card.routine)].filter(Boolean).join(t('sep.sentence')) : '';
   const fam = familyTreeEl(t, card, ctx);
+  const git = d.gitWorktree ?? null;
+  const gitDetails = worktreeDetailText(t, d.gitWorktree);
   const actions = [
     pile === 'cleanup' ? openEl(t, card, 'textbtn', !!ctx.board?.stats?.demo) : null,
+    ...worktreeDetailActions(t, card, !!ctx.board?.stats?.demo),
     card.family?.rootId ? h('button', { class: 'textbtn', type: 'button', 'data-action': 'family', 'data-root': card.family.rootId, text: t('detail.familyOnly') }) : null,
     copyButton(t, { action: 'copy-id', id: card.id, key: 'detail.copyId' }),
     deepLink(card.id) ? copyButton(t, { action: 'copy-link', id: card.id, key: 'detail.copyLink' }) : null,
@@ -273,12 +271,15 @@ export function detailEl(card, pile, ctx) {
       'dl',
       {},
       ...dlRow(t('detail.state'), h('span', {}, ...partsToNodes(t.parts('detail.stateValue', { pile: bucketTitle(t, pile), time: timeEl(t, card, ctx.now) })))),
-      ...dlRow(t('detail.source'), card.source === 'codex' ? t('source.codex') : t('source.claude')),
+      ...dlRow(t('detail.source'), sourceDetailValue(t, card, d)),
+      ...dlRow(t('detail.executionState'), card.sourceState ? t(`sourceState.${card.sourceState}`) : null),
       ...activityRows(t, card, pile, ctx.now),
       ...dlRow(t('detail.summary'), d.statusDetail ? h('q', { lang: contentLang(d.statusDetail), text: d.statusDetail }) : null),
       ...dlRow(t('detail.error'), d.error ? h('span', { class: 'pre', lang: langOf(t, d.error), text: d.error }) : null),
-      ...dlRow(t('detail.branch'), d.branch ?? null, 'path'),
+      ...dlRow(t('detail.branch'), git?.branch ?? d.branch ?? null, 'path'),
       ...dlRow(t('detail.worktree'), d.worktreeName ?? null, 'path'),
+      ...dlRow(t('detail.gitState'), gitDetails.status),
+      ...dlRow(t('detail.gitFlags'), gitDetails.flags),
       ...dlRow(t('detail.created'), createdText(t, card.createdAt, ctx.now)),
       ...dlRow(t('detail.turns'), Number(d.completedTurns) > 0 ? t('detail.turnsValue', { n: d.completedTurns }) : null),
       ...dlRow(t('detail.routine'), routine || null),

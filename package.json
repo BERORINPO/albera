@@ -1,7 +1,7 @@
 {
   "name": "pigeonholes",
   "version": "0.2.0",
-  "description": "Unofficial, read-only local board for Claude Code and Codex CLI sessions with safe event summaries.",
+  "description": "Unofficial local board for Claude Code, Codex CLI, and GitHub Copilot sessions with safe event summaries and confirmed Git worktree operations.",
   "type": "module",
   "bin": {
     "pigeonholes": "src/entry/server.mjs"

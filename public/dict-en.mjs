@@ -4,6 +4,7 @@
 
 import { EN_CANVAS } from './dict-en-canvas.mjs';
 import { EN_HANDOFF } from './dict-en-handoff.mjs';
+import { EN_FILTER } from './dict-en-filter.mjs';
 
 /** @type {Readonly<Record<string, string | {one: string, other: string}>>} */
 export const EN = Object.freeze({
@@ -12,7 +13,7 @@ export const EN = Object.freeze({
   'app.tabTitle': '({n}) {pile} — {name}',
   'app.tabOffline': '{title} (offline)',
   'mast.home': 'Pigeonholes, back to top',
-  'mast.trust': 'Read-only. Nothing leaves this computer.',
+  'mast.trust': 'Session data is read-only. Worktrees require confirmation.',
   'mast.demo': 'Demo data',
   'mast.help': 'Keyboard keys',
   'date.asOf': '{wd} {d} {mon}, as of {hm}',
@@ -37,8 +38,6 @@ export const EN = Object.freeze({
   'date.mon.9': 'Oct',
   'date.mon.10': 'Nov',
   'date.mon.11': 'Dec',
-  'filter.label': 'Filter by title, project, summary or what it is doing',
-  'filter.placeholder': 'Filter',
   'lang.switchTo': '日本語',
   'lang.toggleAria': 'Switch language',
 
@@ -66,7 +65,7 @@ export const EN = Object.freeze({
   'lede.loading': 'Reading your sessions…',
   'lede.loadingNote': 'The first scan reads every session, so it takes a few seconds.',
   'lede.empty': 'No sessions yet.',
-  'lede.emptyNote': 'Start a chat in the Code tab of the Claude desktop app and it will appear here.',
+  'lede.emptyNote': 'Supported local session data appears here when found. Open Reading status below to see why the count is zero and what to check.',
   'lede.offline': "Can't reach the board's server.",
   'lede.offlineNote': 'Start the board again in a terminal: {cmd} (from a clone: npm start). This page connects by itself.',
   'lede.serverError': "The board couldn't be built.",
@@ -192,6 +191,7 @@ export const EN = Object.freeze({
   'detail.source': 'Harness',
   'source.claude': 'Claude Code',
   'detail.events': 'Recent events',
+  'detail.eventsUnavailable': 'No safe event summaries are available.',
   'source.codex': 'Codex CLI',
   'event.turnStarted': 'Turn started',
   'event.turnCompleted': 'Turn completed',
@@ -205,6 +205,16 @@ export const EN = Object.freeze({
   'detail.error': 'Full error',
   'detail.branch': 'Branch',
   'detail.worktree': 'Worktree',
+  'detail.gitState': 'Git working state',
+  'detail.gitFlags': 'Worktree notes',
+  'detail.gitState.clean': 'Clean',
+  'detail.gitState.changed': '{changed} tracked changes',
+  'detail.gitState.untracked': '{untracked} untracked files',
+  'detail.gitState.mixed': '{changed} tracked changes, {untracked} untracked files',
+  'detail.gitState.conflicted': '{conflicted} conflicts',
+  'detail.gitState.unknown': 'Unknown',
+  'detail.gitLocked': 'Locked',
+  'detail.gitPrunable': 'Prunable',
   'detail.created': 'Created',
   'detail.turns': 'Turns',
   'detail.turnsValue': '{n}',
@@ -236,7 +246,7 @@ export const EN = Object.freeze({
   'banner.family': 'Showing only “{title}” and its related sessions',
   'banner.clear': 'Clear',
   'nomatch.query.lead': 'Nothing matches “{q}”.',
-  'nomatch.query.text': 'Searched titles, projects, summaries and what sessions are doing.',
+  'nomatch.query.text': 'Searched session titles, projects and summaries; manually recorded harness and execution conditions; canvas card titles, content, statuses and missing links; and relationship types, purposes and delegation states.',
   'nomatch.family': 'Nothing in this family matches.',
   'nomatch.clear': 'Clear filter',
 
@@ -340,7 +350,7 @@ export const EN = Object.freeze({
   'help.marks': 'Canvas marks',
   'help.off': 'Turn off single-key shortcuts',
   'help.offNote': 'Enter, Space, Esc, the arrow keys and Tab keep working.',
-  'foot.trust': 'Read-only. Nothing leaves this computer.',
+  'foot.trust': 'Session data is read-only. Worktrees require confirmation.',
   'foot.keys.move': 'move',
   'foot.keys.open': 'open',
   'foot.keys.peek': 'details',
@@ -361,8 +371,10 @@ export const EN = Object.freeze({
   'foot.diag': 'Reading status',
   'foot.codexSummary': 'Codex CLI: {files} candidate files, {detected} recognized. On the board: {working} working, {trouble} stalled, {recent} recent. Event state: {active} in progress, {completed} complete, {interrupted} interrupted, {unknown} unknown. {rejected} filtered or invalid.',
   'foot.codexNoFiles': 'Why the count is 0: no rollout files matched the expected folder and filename pattern. Check CODEX_HOME or the default location.',
-  'foot.codexNoDetected': 'Why the count is 0: candidate files exist, but none matched the CLI format checks. Malformed records and non-CLI sessions are excluded.',
+  'foot.codexNoDetected': 'Why the count is 0: candidate files exist, but none matched the CLI format checks. Missing CLI marker: {missingSource}; other producer marker: {otherSource}; unsupported originator: {unsupportedOriginator}; filename/ID mismatch: {filenameMismatch}. Values and paths are hidden; malformed records are excluded. Check CODEX_HOME and the saved format.',
+  'foot.codexNoCliMarkers': 'Rollout candidates were found, but CLI identification is missing on {missingSource} or identifies a different producer on {otherSource}. Marker values are not shown. Check that CODEX_HOME points to the Codex CLI session store.',
   'foot.codexNoWorking': 'Why Working is 0: no recognized session has an unfinished turn started within the last 15 minutes. Completed and interrupted turns go to Recent; unfinished turns with no update for 15 minutes go to Stuck?.',
+  'foot.codexWslNotConfigured': 'WSL Codex storage is not connected. To read it from Windows, set CODEX_HOME to the intended distro share and restart. Pigeonholes reads only that explicit share and does not run WSL commands.',
   'foot.bad': { one: "{n} file couldn't be read.", other: "{n} files couldn't be read." },
   'foot.missing': { one: '{n} transcript not found (last {days} days).', other: '{n} transcripts not found (last {days} days).' },
   'foot.missingWhy': 'Sessions that ran remotely or in the cloud have no log on this computer, so their state is unknown.',
@@ -383,4 +395,5 @@ export const EN = Object.freeze({
   // 19.13–19.15: dict-en-handoff.mjs
   ...EN_CANVAS,
   ...EN_HANDOFF,
+  ...EN_FILTER,
 });

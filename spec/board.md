@@ -73,6 +73,8 @@ FAMILY_MAX_DEPTH 10, PROJECT_PARENT_MAX_DEPTH 5
 SESSION_ID_RE = /^local_[0-9a-f-]{36}$/   // これに合わない ID のセッションは捨てて stats.bad に数える
 CLI_SESSION_ID_RE = /^[0-9a-f-]{36}$/i, ASK_TOOLS = ['AskUserQuestion', 'ExitPlanMode']
 
+Codex/Copilot/OpenCode adapter は provider-native ID を出さず、provider-scoped の安定したopaque UUID形 sessionId を SessionRecord と public Card.id に使う。Codexの `cliSessionId` はdelegate/既存server内部処理のためだけに保持し、wireには出さない。既存のCanvas Graph v1に保存されたCodex/Copilot session endpointは、初回board取得時にブラウザー内WebCryptoでGraph v2へ移し、relation purpose/state/operationIdを保つ。
+
 BUCKETS         = [{key, tone, defaultOpen}] × 6 (needs_you, trouble, unread, working, recent, cleanup の順)
                   defaultOpen: recent だけ false (cleanup は true に変更)。tone は画面では使わない (色で状態を分けない)
 ACTION_BUCKETS  = ['needs_you', 'trouble', 'unread']
@@ -81,7 +83,7 @@ CLEANUP_SUBGROUP_THRESHOLD = 20
 CLEANUP_NOTES   = ['open_pr', 'exempt', 'starred', 'unread', 'child']   // この順に試す
 OTHER_PROJECT   = { key: '(other)' }
 FORBIDDEN_OUTPUT_KEYS = 元データの巨大項目と秘密 (remoteMcpServersConfig ほか) + 'folders' (adapter 内部の手掛かり)。SessionRecord と JSON の両方で検査する
-FORBIDDEN_WIRE_KEYS   = ['model', 'command', 'input', 'file_path', 'notebook_path', 'description', 'usage', 'compactMetadata', 'todos', 'contextExceededCount', 'cwd'] (the working directory remains adapter/core input and never appears in the API)
+FORBIDDEN_WIRE_KEYS   = ['model', 'command', 'input', 'file_path', 'notebook_path', 'description', 'usage', 'compactMetadata', 'todos', 'contextExceededCount', 'cwd', 'gitDir', 'commonDir', 'worktreePath', 'lockedReason', 'porcelain'] (local paths, Git porcelain and lock reasons never appear in the API)
                         // JSON にだけ無いこと (model と contextExceededCount は SessionRecord にはある)。'state' は prs[] の要素の中だけ許す (§13)
 
 // v0.2: していること・コンテキスト (§5.1・§5.2)。言葉は持たない
@@ -382,6 +384,26 @@ R1 を先に置く理由: 動いているセッションは決して隠さない
 - 盤面は言語によらず同じ (Accept-Language も `?lang=` も見ない)。
 - 計算に失敗したら HTTP 500 と `{"error":"board_failed"}`。端末には `term.boardFailed` (エラーの name だけ。title や本文は書かない)。
 
+### 10.1 明示操作 (`POST /api/worktrees`)
+
+- セッションとtranscriptの読み取り専用を変えず、画面の確認完了後に限ってGit worktreeを作る唯一の書き込みAPI。
+- 要求は `Content-Type: application/json`、同じ `http://127.0.0.1:<port>` または `http://localhost:<port>` Origin、最大2048 byte。body は `{sessionId, branch}` のみ。`cwd` や任意パス、未知keyは拒否。
+- サーバーは sessionId を読み込み済みの非アーカイブセッションに照合し、cwdを内部解決する。ネットワークパスやGit repoでないcwdは拒否。新しいbranch名は最大80文字で Git ref として検証。
+- Git は shell なし・時間/出力上限付きで実行。hookを無効化し、checkout filterは実行され得ることを確認画面に明記。Gitは選択セッションの現在のHEADを基点にし、未コミット変更は引き継がない。worktreeはrepoの隣へ作る。CLIやセッションは起動しない。
+- 成功応答は `{ok:true,branch,status,changed,untracked,conflicted}` のみ。失敗は固定理由コードのみ。絶対パス、stdout/stderr、ファイル名、環境値はAPI・ログに出さない。合成デモは `demo_disabled` を返し、書き込まない。
+
+### 10.2 読み取り専用のworktree一覧 (`GET /api/worktrees?sessionId=...`)
+
+- opaque な表示用 session ID だけを受け取り、非アーカイブセッションのcwdはサーバー内で解決する。任意パスや余分なqueryは拒否。
+- 対象repositoryのローカルworktreeを最大20件読み、各statusは上限付きGitコマンドで集計する。wireには `{branch,status,changed,untracked,conflicted,detached,locked,prunable,current}` の許可項目だけを含める。
+- Git path、ファイル名、lock reason、出力、環境値は応答に含めない。デモは合成状態を返す。このendpointは読み取り専用であり、Gitを変更しない。
+
+### 10.3 明示確認後のworktree削除 (`POST /api/worktrees/remove`)
+
+- body は `{sessionId,branch,confirmed:true}` のみ。session IDからcwdをサーバー側で解決し、branch完全一致の worktree を adapter 内で再確認する。パスは受け取らない。
+- current・変更/未追跡・locked・prunable・branch不一致を拒否し、`git worktree remove` を `--force` なしで実行する。Gitがcleanと判定しても ignored files が消える可能性をUIで事前に示し、branch自体は残ることを伝える。
+- 成功応答は `{ok:true,branch}`、失敗は固定理由コード。パス・ファイル名・Git診断は応答/ログに含めない。デモは常に無効。
+
 ```
 { v: 2, generatedAt, serverNow,
   counts: {needs_you, trouble, unread, working, recent, cleanup, recommended, active, archived},
@@ -400,7 +422,7 @@ Card = { id, bucket, reason: ReasonCode, reasonParams?, title, body, since, time
          prs: [{num, repo, state, url|null}],
          routine?: {id, runs, completed, stalled, latestBucket, runIds?},
          family?: {rootId?, parentId?, parentTitle?, children?: {total, working, needs_you, trouble, unread}},
-         detail: {statusDetail?, branch?, worktreeName?, cwd?, completedTurns?, error?, prsMore?, contextExceeded?},
+         detail: {statusDetail?, branch?, worktreeName?, gitWorktree?: {branch?,status,changed,untracked,conflicted,locked,prunable}, completedTurns?, error?, prsMore?, contextExceeded?},
          cleanup?: {recommended, note?: NoteCode},
          activity?: Activity, context?: Context }                                  // v0.2 (§5.1・§5.2)
 
@@ -466,8 +488,8 @@ TimeKind   = waiting | stopped | stalled | ended | updated | ago | latest
 | key | en | ja |
 |---|---|---|
 | `term.started` | Pigeonholes: http://127.0.0.1:{port} ({mode}) | Pigeonholes: http://127.0.0.1:{port} ({mode}) |
-| `term.modeReadOnly` | read-only | 読み取り専用 |
-| `term.modeDemo` | demo data, read-only | デモデータ・読み取り専用 |
+| `term.modeReadOnly` | session files read-only; worktrees on confirmation | セッション読み取り専用・worktreeは確認後 |
+| `term.modeDemo` | demo data; worktree creation disabled | デモデータ・worktree作成無効 |
 | `term.alreadyRunning` | Already running: open http://127.0.0.1:{port} | もう起動しています: http://127.0.0.1:{port} を開いてください |
 | `term.alreadyRunningCheck` | (If you didn't start a board on that port, something else is answering like one. Start on another port: {cmd}) | (そのポートで自分でボードを起動していないなら、別のものがボードのように応答しています。別の番号で起動してください: {cmd}) |
 | `term.runningDemo` | Port {port} has the demo board, not your sessions. Stop it with Ctrl+C in its terminal, or start on another port: {cmd} | ポート {port} で動いているのはデモのボードで、あなたのセッションではありません。そのターミナルで Ctrl+C で止めるか、別の番号で起動してください: {cmd} |
@@ -488,7 +510,7 @@ TimeKind   = waiting | stopped | stalled | ended | updated | ago | latest
 
 `term.help` (en。ja は同じ形の日本語。`{sep}` は path.delimiter):
 ```
-Pigeonholes {version}: one read-only page for all your Claude desktop app sessions (the Code tab).
+Pigeonholes {version}: a local session board with session files kept read-only and Git worktrees created only on confirmation.
 
 Usage: {cmd} [options]
   --port <n>             port on 127.0.0.1 (default 8797; env PIGEONHOLES_PORT)
@@ -498,18 +520,18 @@ Usage: {cmd} [options]
   --projects-dir <path>  Claude Code's projects folder with transcripts (env PIGEONHOLES_PROJECTS_DIR)
   --help, --version
 PIGEONHOLES_ROOTS: folders, separated by "{sep}", whose direct subfolders are projects (default: your home).
-It only reads files. Nothing leaves this computer.
+Session files are read-only. Worktree creation writes only to the selected local repository after confirmation. Pigeonholes sends no remote requests.
 ```
 
 ## 12. サーバーとセキュリティ (entry)
 
-- `127.0.0.1` だけに bind する。`Host` が `127.0.0.1:<port>` か `localhost:<port>` 以外なら 403 (DNS rebinding 対策)。GET 以外は 405 (HEAD も)。CORS ヘッダーは付けない。
+- `127.0.0.1` だけに bind する。`Host` が `127.0.0.1:<port>` か `localhost:<port>` 以外なら 403 (DNS rebinding 対策)。通常のendpointはGETのみ。`/api/worktrees` はsession ID限定のpath-free GETと、Hostに加えて同一Origin・JSON・body上限・key allowlistを検証する作成POSTを受ける。`/api/worktrees/remove` は削除確認済みPOSTを受ける。ほかのmethodは405。CORS ヘッダーは付けない。
 - `GET /api/hello` は `{"app":"pigeonholes","demo":<bool>}` だけを返す (ポートが使用中のときの確かめ用、§11)。セッションの中身は入れない。
 - **静的ファイルの表は起動時に作る**: `public/` を 1 回 readdir し、拡張子 `.html .css .mjs .svg .png .ico` のファイルだけを、ファイル名そのままの `/<name>` で配信する (サブフォルダ・dotfile は入れない)。`/` は `public/index.html`。加えて `/src/shared/constants.mjs` と `/src/shared/i18n.mjs`。表にないパスはすべて 404。リクエストのパスとファイルパスを結合しない。Content-Type は拡張子の表から。
 - ヘッダー (全レスポンスに一括):
   - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
   - `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: no-store`
-- インラインスクリプト・style 属性は使わない。外への通信は一切しない (gh も fetch も使わない)。
+- インラインスクリプト・style 属性は使わない。Pigeonholesから外部サービスへの通信はしない。唯一のブラウザー `fetch` は同一originの盤面GET・明示要求されたpath-free worktree一覧GET・確認済みworktree作成POST・削除範囲を再確認したworktree削除POST。
 
 ## 13. 構成と検査
 

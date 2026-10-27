@@ -67,7 +67,8 @@ function cleanEnv(extra = {}) {
   /** @type {Record<string, string|undefined>} */
   const env = {};
   for (const [k, v] of Object.entries(process.env)) if (!DROP_ENV_RE.test(k)) env[k] = v;
-  return { ...env, PIGEONHOLES_PORT: String(guardPort), ...extra };
+  // Keep integration tests hermetic even when the developer has a local OpenCode database.
+  return { ...env, OPENCODE_DB: path.join(os.tmpdir(), 'pigeonholes-test-no-opencode.db'), PIGEONHOLES_PORT: String(guardPort), ...extra };
 }
 
 /**
@@ -82,7 +83,9 @@ function start(args, { env = {}, waitExit = false } = {}) {
   child.stdout.on('data', (d) => (out += d));
   child.stderr.on('data', (d) => (err += d));
   const ready = new Promise((resolve) => {
-    const timer = setTimeout(() => resolve({ code: null, out, err, timeout: true }), 10000);
+    // node --test runs many files in parallel; on Windows/Node 22 the child can
+    // be scheduled late under CI load even though it starts normally.
+    const timer = setTimeout(() => resolve({ code: null, out, err, timeout: true }), 30000);
     if (!waitExit) {
       child.stdout.on('data', () => {
         if (READY_RE.test(out)) {
@@ -106,7 +109,7 @@ const run = (args, env = {}) => start(args, { env, waitExit: true }).ready;
 /**
  * Host やパスをそのまま送れるように http.request を使う。
  * @param {number} port
- * @param {{path?: string, method?: string, headers?: Record<string, string>}} o
+ * @param {{path?: string, method?: string, headers?: Record<string, string>, body?: string}} o
  * @returns {Promise<{status: number, headers: http.IncomingHttpHeaders, body: string}>}
  */
 function request(port, o = {}) {
@@ -121,7 +124,7 @@ function request(port, o = {}) {
       },
     );
     req.on('error', reject);
-    req.end();
+    req.end(o.body);
   });
 }
 
@@ -142,7 +145,7 @@ before(async () => {
   child = s.child;
   const r = await s.ready;
   assert.equal(r.code, null, r.err);
-  assert.equal(lines(r.out)[0], `Pigeonholes: http://127.0.0.1:${port} (demo data, read-only)`);
+  assert.equal(lines(r.out)[0], `Pigeonholes: http://127.0.0.1:${port} (demo data; worktree creation disabled)`, `server startup timed out=${r.timeout === true}; stderr=${r.err}`);
 });
 after(async () => {
   child?.kill();
@@ -239,6 +242,149 @@ test('GET 以外は 405 (HEAD も)', async () => {
   }
 });
 
+test('worktree作成APIは同一Origin・JSON・opaque session ID・branch・明示確認だけを受け、安全な要約だけを返す', async () => {
+  const p = await freePort();
+  const calls = [];
+  const server = http.createServer(createHandler({
+    port: p,
+    getBoard: async () => ({ body: '{}', etag: '"empty"' }),
+    createWorktree: async (sessionId, branch) => {
+      calls.push([sessionId, branch]);
+      return { ok: true, branch, status: 'clean', changed: 0, untracked: 0, conflicted: 0, path: 'C:\\private\\repo', diagnostics: 'secret' };
+    },
+  }));
+  await new Promise((resolve) => server.listen(p, '127.0.0.1', resolve));
+  const headers = { Origin: `http://127.0.0.1:${p}`, 'Content-Type': 'application/json' };
+  try {
+    const valid = await request(p, { path: '/api/worktrees', method: 'POST', headers, body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/canvas', confirmed: true }) });
+    assert.equal(valid.status, 200, valid.body);
+    assert.deepEqual(JSON.parse(valid.body), { ok: true, branch: 'agent/canvas', status: 'clean', changed: 0, untracked: 0, conflicted: 0 });
+    assert.deepEqual(calls, [['local_00000000-0000-4000-8000-000000000001', 'agent/canvas']]);
+    for (const secret of ['C:\\private', 'diagnostics', 'secret']) assert.ok(!valid.body.includes(secret));
+
+    const wrongOrigin = await request(p, { path: '/api/worktrees', method: 'POST', headers: { ...headers, Origin: 'https://attacker.example' }, body: '{}' });
+    assert.equal(wrongOrigin.status, 403);
+    const missingOrigin = await request(p, { path: '/api/worktrees', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(missingOrigin.status, 403);
+    const formEncoded = await request(p, { path: '/api/worktrees', method: 'POST', headers: { Origin: headers.Origin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'confirmed=true' });
+    assert.equal(formEncoded.status, 415);
+    const unconfirmed = await request(p, { path: '/api/worktrees', method: 'POST', headers, body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/x', confirmed: false }) });
+    assert.equal(unconfirmed.status, 400);
+    const extraPath = await request(p, { path: '/api/worktrees', method: 'POST', headers, body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/x', cwd: 'C:\\private\\repo' }) });
+    assert.equal(extraPath.status, 400);
+    const invalidBranch = await request(p, { path: '/api/worktrees', method: 'POST', headers, body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: '../outside' }) });
+    assert.equal(invalidBranch.status, 400);
+    const tooLarge = await request(p, { path: '/api/worktrees', method: 'POST', headers, body: ' '.repeat(2049) });
+    assert.equal(tooLarge.status, 413);
+    assert.equal(calls.length, 1, 'invalid requests never invoke the operation');
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('delegation API requires confirmation, sends only the purpose, and returns fixed operation state', async () => {
+  const p = await freePort();
+  const calls = [];
+  const server = http.createServer(createHandler({
+    port: p, getBoard: async () => ({ body: '{}', etag: '"empty"' }),
+    startDelegation: async (...args) => { calls.push(args); return { ok: true, operationId: args[3], status: 'running' }; },
+    getDelegationStatus: () => 'completed',
+  }));
+  await new Promise((resolve) => server.listen(p, '127.0.0.1', resolve));
+  const headers = { Origin: `http://127.0.0.1:${p}`, 'Content-Type': 'application/json' };
+  const purpose = 'synthetic purpose must not echo';
+  try {
+    const opId = '12345678-1234-1234-1234-1234567890ab';
+    const result = await request(p, { path: '/api/delegations/run', method: 'POST', headers, body: JSON.stringify({ sessionId: 'codex_00000000-0000-4000-8000-000000000001', purpose, confirmed: true, operationId: opId }) });
+    assert.equal(result.status, 202);
+    assert.deepEqual(JSON.parse(result.body), { operationId: opId, status: 'running' });
+    assert.equal(result.body.includes(purpose), false);
+    assert.deepEqual(calls, [['codex_00000000-0000-4000-8000-000000000001', purpose, true, opId]]);
+    const status = await request(p, { path: `/api/delegations/status/${opId}` });
+    assert.deepEqual(JSON.parse(status.body), { status: 'completed' });
+    const unconfirmed = await request(p, { path: '/api/delegations/run', method: 'POST', headers, body: JSON.stringify({ sessionId: 'codex_00000000-0000-4000-8000-000000000001', purpose, confirmed: false, operationId: opId }) });
+    assert.equal(unconfirmed.status, 400);
+    const wrongOrigin = await request(p, { path: '/api/delegations/run', method: 'POST', headers: { ...headers, Origin: 'https://attacker.example' }, body: '{}' });
+    assert.equal(wrongOrigin.status, 403);
+    const missingOrigin = await request(p, { path: '/api/delegations/run', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(missingOrigin.status, 403);
+    const formEncoded = await request(p, { path: '/api/delegations/run', method: 'POST', headers: { Origin: headers.Origin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'confirmed=true' });
+    assert.equal(formEncoded.status, 415);
+    assert.equal(calls.length, 1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('worktree一覧APIはopaque session IDだけで呼び出され、上限付きの安全な要約だけを返す', async () => {
+  const p = await freePort();
+  const calls = [];
+  const privatePath = 'C:\\private\\repo';
+  const server = http.createServer(createHandler({
+    port: p, getBoard: async () => ({ body: '{}', etag: '"empty"' }),
+    listWorktrees: async (sessionId) => {
+      calls.push(sessionId);
+      return Array.from({ length: 25 }, (_, i) => ({
+        branch: i === 0 ? 'main' : i === 1 ? '../secret' : `agent/branch-${i}`,
+        status: 'changed', changed: 1, untracked: 2, conflicted: 0, locked: i === 0,
+        prunable: false, detached: false, current: i === 0, removable: i === 0, path: privatePath, reason: 'secret',
+      }));
+    },
+  }));
+  await new Promise((resolve) => server.listen(p, '127.0.0.1', resolve));
+  try {
+    const valid = await request(p, { path: '/api/worktrees?sessionId=codex_00000000-0000-4000-8000-000000000001' });
+    assert.equal(valid.status, 200, valid.body);
+    const body = JSON.parse(valid.body);
+    assert.equal(body.items.length, 20);
+    assert.deepEqual(body.items[0], { branch: 'main', status: 'changed', changed: 1, untracked: 2, conflicted: 0, detached: false, locked: true, prunable: false, current: true, removable: true });
+    assert.equal(body.items[1].branch, null, 'malformed branch labels are discarded');
+    for (const secret of [privatePath, 'path', 'secret', 'reason']) assert.ok(!valid.body.includes(secret));
+    const invalid = await request(p, { path: '/api/worktrees?sessionId=codex_00000000-0000-4000-8000-000000000001&extra=1' });
+    assert.equal(invalid.status, 400);
+    assert.equal(calls.length, 1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('worktree削除APIは同一Origin・opaque ID・ブランチ名・確認済み印だけを受け、固定応答を返す', async () => {
+  const p = await freePort();
+  const calls = [];
+  const server = http.createServer(createHandler({
+    port: p, getBoard: async () => ({ body: '{}', etag: '"empty"' }),
+    removeWorktree: async (...args) => { calls.push(args); return { ok: true, branch: args[1], path: 'C:\\private\\repo' }; },
+  }));
+  await new Promise((resolve) => server.listen(p, '127.0.0.1', resolve));
+  const headers = { Origin: `http://127.0.0.1:${p}`, 'Content-Type': 'application/json' };
+  try {
+    const valid = await request(p, { path: '/api/worktrees/remove', method: 'POST', headers,
+      body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/review', confirmed: true }) });
+    assert.equal(valid.status, 200);
+    assert.deepEqual(JSON.parse(valid.body), { ok: true, branch: 'agent/review' });
+    assert.deepEqual(calls, [['local_00000000-0000-4000-8000-000000000001', 'agent/review', true]]);
+    for (const secret of ['C:\\private', 'path', 'diagnostics']) assert.ok(!valid.body.includes(secret));
+    const unconfirmed = await request(p, { path: '/api/worktrees/remove', method: 'POST', headers,
+      body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/review', confirmed: false }) });
+    assert.equal(unconfirmed.status, 400);
+    const missingOrigin = await request(p, { path: '/api/worktrees/remove', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(missingOrigin.status, 403);
+    const formEncoded = await request(p, { path: '/api/worktrees/remove', method: 'POST', headers: { Origin: headers.Origin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'confirmed=true' });
+    assert.equal(formEncoded.status, 415);
+    assert.equal(calls.length, 1);
+    const extra = await request(p, { path: '/api/worktrees/remove', method: 'POST', headers,
+      body: JSON.stringify({ sessionId: 'local_00000000-0000-4000-8000-000000000001', branch: 'agent/review', confirmed: true, cwd: 'C:\\private' }) });
+    assert.equal(extra.status, 400);
+    assert.equal(calls.length, 1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('不正なポート・言語・ROOTS・フラグは exit 1 と 1 行の説明', async () => {
   const cases = [
     { args: ['--demo', '--lang', 'en'], env: { PIGEONHOLES_PORT: 'abc' }, re: /^The port must be a number from 1024 to 65535 \(got: abc\)\. Use --port <n> or PIGEONHOLES_PORT\.$/ },
@@ -264,13 +410,13 @@ test('セッションフォルダが無ければ exit 1。説明・探した場�
   const r = await run(['--lang', 'en', '--port', String(await freePort()), '--sessions-dir', missing]);
   assert.equal(r.code, 1);
   assert.deepEqual(lines(r.err), [
-    "Can't find the Claude desktop app's session folder. Looked in:",
+    'No supported session store was found. Checked Claude Code locations:',
     `  ${missing}`,
-    'Start a session once in the Code tab of the Claude desktop app, or pass --sessions-dir <path> (or set PIGEONHOLES_SESSIONS_DIR).',
+    'Use a supported provider (Claude Code, Codex CLI, GitHub Copilot, or OpenCode), or configure its store. See pigeonholes --help.',
   ]);
   const env = await run(['--lang', 'ja'], { PIGEONHOLES_SESSIONS_DIR: missing });
   assert.equal(env.code, 1);
-  assert.match(lines(env.err)[0], /^Claude デスクトップアプリのセッションフォルダが見つかりません。探した場所:$/);
+  assert.match(lines(env.err)[0], /^対応するセッション保存先が見つかりません。確認したClaude Codeの保存先:$/);
   assert.equal(lines(env.err)[1], `  ${missing}`);
 });
 
@@ -280,7 +426,7 @@ test('フラグは環境変数に勝つ (ポート・言語・デモ)', async ()
   try {
     const r = await s.ready;
     assert.equal(r.code, null, r.err);
-    assert.equal(lines(r.out)[0], `Pigeonholes: http://127.0.0.1:${p} (デモデータ・読み取り専用)`);
+    assert.equal(lines(r.out)[0], `Pigeonholes: http://127.0.0.1:${p} (デモデータ・worktree作成無効)`);
     assert.equal((await request(p, { path: '/api/board' })).status, 200);
   } finally {
     s.child.kill();
@@ -411,7 +557,7 @@ test('実データの形 (一時フォルダの合成ファイル) を読む: �
   try {
     const r = await s.ready;
     assert.equal(r.code, null, r.err);
-    assert.equal(lines(r.out)[0], `Pigeonholes: http://127.0.0.1:${p} (read-only)`);
+    assert.equal(lines(r.out)[0], `Pigeonholes: http://127.0.0.1:${p} (session files read-only; worktrees on confirmation)`);
     const res = await request(p, { path: '/api/board' });
     assert.equal(res.status, 200);
     const b = JSON.parse(res.body);

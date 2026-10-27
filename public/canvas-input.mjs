@@ -4,12 +4,25 @@
 
 import { CANVAS } from '../src/shared/constants.mjs';
 
-/** @typedef {'viewport'|'slip'|'graph'|'head'|'bar'|'filter'|'field'|'dialog'|'control'|'none'} CanvasTarget */
+/** @typedef {'viewport'|'slip'|'graph'|'session'|'head'|'bar'|'filter'|'field'|'dialog'|'control'|'none'} CanvasTarget */
 /** @typedef {{key: string, keyCode?: number, isComposing?: boolean, ctrlKey?: boolean, metaKey?: boolean, altKey?: boolean, shiftKey?: boolean, repeat?: boolean}} KeyLike */
 
 const ARROWS = Object.freeze({ ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' });
 /** 押しっぱなしで繰り返さないキー (開く・切り替える・全体表示)。 */
 const NO_REPEAT = new Set(['h', 'v', 'z', 'f', '0', 'o']);
+
+export function canvasMoveDelta(dir) {
+  return /** @type {Record<string,number[]>} */ ({ left: [-24, 0], right: [24, 0], up: [0, -24], down: [0, 24] })[dir] ?? null;
+}
+
+/** A graph connection drop is valid only for two distinct, non-empty card IDs. */
+export function graphConnectionDrop(sourceId, targetId, sourceKind = 'graph', targetKind = 'graph') {
+  const validKind = (kind) => kind === 'graph' || kind === 'session';
+  return typeof sourceId === 'string' && sourceId.length > 0 && typeof targetId === 'string' && targetId.length > 0
+    && validKind(sourceKind) && validKind(targetKind) && (sourceKind !== targetKind || sourceId !== targetId)
+    ? { sourceId, targetId, sourceKind, targetKind }
+    : null;
+}
 
 /**
  * キャンバスのキーから動作の名前を決める (純粋)。null ならブラウザの普段の動きのまま。
@@ -30,6 +43,7 @@ export function canvasKeyAction(ev, ctx) {
     // 矢印は 1 文字キーではないので、切替で止めても効く
     if (target === 'head') return ev.shiftKey ? `nudge-${dir}` : null;
     if (target === 'graph') return `graph-move-${dir}`;
+    if (target === 'session') return `session-move-${dir}`;
     if (target === 'slip') return ev.shiftKey ? null : `move-${dir}`;
     if (target === 'viewport' || target === 'none') return `pan-${dir}${ev.shiftKey ? '-big' : ''}`;
     return null;
@@ -100,6 +114,7 @@ export function canvasTarget(el) {
   if (el.matches('input[type="checkbox"], input[type="radio"]')) return 'control';
   if (el.matches('input, textarea, select, [contenteditable], [contenteditable] *')) return 'field';
   if (el.matches('.slip__title')) return 'slip';
+  if (el.closest('.canvas-session-move')) return 'session';
   if (el.closest('.graph-node')) return 'graph';
   if (el.matches('.sheet__head')) return 'head';
   if (el.id === 'cv-view') return 'viewport';
@@ -114,9 +129,17 @@ export function canvasTarget(el) {
  * @property {(factor: number, px: number, py: number) => void} zoomBy 表示枠の中の点 (px, py) を中心に factor 倍
  * @property {(key: string, dx: number, dy: number) => void} dragSheet 見出しをつかんで動かしている間 (画面の px、つかんだ所から)
  * @property {(key: string, dx: number, dy: number) => void} dropSheet 離したとき
+ * @property {(key: string) => void} cancelSheet ドラッグが取り消されたとき
  * @property {(id:string,dx:number,dy:number)=>void} dragGraph
  * @property {(id:string,dx:number,dy:number)=>void} dropGraph
+ * @property {(id:string)=>void} cancelGraph
+ * @property {(id:string,dx:number,dy:number)=>void} dragSession
+ * @property {(id:string,dx:number,dy:number)=>void} dropSession
+ * @property {(id:string)=>void} cancelSession
+ * @property {(id:string)=>void} openSession
  * @property {(id:string)=>void} openGraph
+ * @property {(sourceKind:'graph'|'session',sourceId:string,targetKind:'graph'|'session',targetId:string)=>void} connectGraph
+ * @property {(sourceKind:'graph'|'session',sourceId:string,targetKind:'graph'|'session'|null,targetId:string|null)=>void} graphConnectHover
  * @property {(head: HTMLElement) => void} focusHead 動かさずに押しただけのとき
  */
 
@@ -132,8 +155,9 @@ const CONTROLS = 'button:not(.sheet__head):not(.graph-node), a, input, summary, 
 export function bindCanvas(viewport, handlers) {
   /** @type {Map<number, {x: number, y: number}>} */
   const pts = new Map();
-  /** @type {null|{kind: 'pan'|'head'|'graph', id: number, x: number, y: number, head?: HTMLElement, key?: string, moved: boolean}} */
+  /** @type {null|{kind: 'pan'|'head'|'graph'|'session'|'connect', id: number, x: number, y: number, head?: HTMLElement, key?: string, endpointKind?: 'graph'|'session', moved: boolean}} */
   let drag = null;
+  let suppressConnectClick = false;
   /** @type {null|{dist: number}} */
   let pinch = null;
   const local = (/** @type {{clientX: number, clientY: number}} */ ev) => {
@@ -144,20 +168,32 @@ export function bindCanvas(viewport, handlers) {
     const [a, b] = [...pts.values()];
     return { dist: Math.hypot(a.x - b.x, a.y - b.y), mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
   };
+  const cancelDrag = (current) => {
+    if (!current?.key) return;
+    if (current.kind === 'head') handlers.cancelSheet(current.key);
+    else if (current.kind === 'graph') handlers.cancelGraph(current.key);
+    else if (current.kind === 'session') handlers.cancelSession(current.key);
+  };
   viewport.addEventListener('pointerdown', (ev) => {
     if (ev.button !== 0 && ev.pointerType === 'mouse') return;
     const el = ev.target instanceof Element ? ev.target : null;
     pts.set(ev.pointerId, local(ev));
     if (pts.size === 2) {
       // 2 本目の指: ドラッグをやめてピンチにする
+      if (drag?.kind === 'connect' && drag.key) handlers.graphConnectHover(drag.endpointKind ?? 'graph', drag.key, null, null);
+      cancelDrag(drag);
       drag = null;
       pinch = { dist: pair().dist };
+      viewport.classList.remove('is-panning');
+      viewport.classList.remove('is-connecting');
       return;
     }
+    const connectHandle = /** @type {HTMLElement|null} */ (el?.closest('.graph-connect-handle[data-id], .canvas-connect-handle[data-id]') ?? null);
+    const moveHandle = /** @type {HTMLElement|null} */ (el?.closest('.canvas-session-move[data-id]') ?? null);
     const head = /** @type {HTMLElement|null} */ (el?.closest('.sheet__head') ?? null);
     const graph = /** @type {HTMLElement|null} */ (el?.closest('.graph-node') ?? null);
-    if (!head && el?.closest(CONTROLS)) return;
-    drag = { kind: head ? 'head' : graph ? 'graph' : 'pan', id: ev.pointerId, x: ev.clientX, y: ev.clientY, head: head ?? undefined, key: head?.dataset.key ?? graph?.dataset.id, moved: false };
+    if (!connectHandle && !head && !moveHandle && el?.closest(CONTROLS)) return;
+    drag = { kind: connectHandle ? 'connect' : moveHandle ? 'session' : head ? 'head' : graph ? 'graph' : 'pan', id: ev.pointerId, x: ev.clientX, y: ev.clientY, head: head ?? undefined, key: connectHandle?.dataset.id ?? moveHandle?.dataset.id ?? head?.dataset.key ?? graph?.dataset.id, endpointKind: connectHandle ? (connectHandle.dataset.endpoint === 'session' ? 'session' : 'graph') : undefined, moved: false };
     viewport.setPointerCapture?.(ev.pointerId);
     if (!head) viewport.classList.add('is-panning');
   });
@@ -180,6 +216,15 @@ export function bindCanvas(viewport, handlers) {
     if (drag.kind === 'pan') handlers.pan(now.x - prev.x, now.y - prev.y);
     else if (drag.kind === 'head' && drag.key) handlers.dragSheet(drag.key, dx, dy);
     else if (drag.kind === 'graph' && drag.key) handlers.dragGraph(drag.key, dx, dy);
+    else if (drag.kind === 'session' && drag.key) handlers.dragSession(drag.key, dx, dy);
+    else if (drag.kind === 'connect' && drag.key) {
+      viewport.classList.add('is-connecting');
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const target = under instanceof Element ? under.closest('.graph-node[data-id], .slip:not(.is-faded)[data-id]') : null;
+      const targetId = target instanceof HTMLElement ? target.dataset.id ?? null : null;
+      const targetKind = target?.matches('.slip') ? 'session' : targetId ? 'graph' : null;
+      handlers.graphConnectHover(drag.endpointKind ?? 'graph', drag.key, targetKind, targetId);
+    }
   });
   const end = (/** @type {PointerEvent} */ ev) => {
     pts.delete(ev.pointerId);
@@ -188,18 +233,47 @@ export function bindCanvas(viewport, handlers) {
     const d = drag;
     drag = null;
     viewport.classList.remove('is-panning');
+    viewport.classList.remove('is-connecting');
+    if (d.kind === 'connect' && d.key) {
+      handlers.graphConnectHover(d.endpointKind ?? 'graph', d.key, null, null);
+      if (d.moved && ev.type === 'pointerup') {
+        suppressConnectClick = true;
+        setTimeout(() => { suppressConnectClick = false; }, 0);
+        const under = document.elementFromPoint(ev.clientX, ev.clientY);
+        const target = under instanceof Element ? under.closest('.graph-node[data-id], .slip:not(.is-faded)[data-id]') : null;
+        const targetId = target instanceof HTMLElement ? target.dataset.id ?? null : null;
+        const targetKind = target?.matches('.slip') ? 'session' : targetId ? 'graph' : null;
+        const connection = graphConnectionDrop(d.key, targetId, d.endpointKind, targetKind);
+        if (connection) handlers.connectGraph(connection.sourceKind, connection.sourceId, connection.targetKind, connection.targetId);
+      }
+      return;
+    }
+    if (d.kind === 'session' && d.key) {
+      if (ev.type === 'pointercancel') handlers.cancelSession(d.key);
+      else if (d.moved) handlers.dropSession(d.key, ev.clientX - d.x, ev.clientY - d.y);
+      else handlers.openSession(d.key);
+      return;
+    }
     if (d.kind === 'graph' && d.key) {
-      if (d.moved) handlers.dropGraph(d.key, ev.clientX - d.x, ev.clientY - d.y);
+      if (ev.type === 'pointercancel') handlers.cancelGraph(d.key);
+      else if (d.moved) handlers.dropGraph(d.key, ev.clientX - d.x, ev.clientY - d.y);
       else handlers.openGraph(d.key);
       return;
     }
     if (d.kind !== 'head' || !d.key || !d.head) return;
+    if (ev.type === 'pointercancel') return handlers.cancelSheet(d.key);
     if (d.moved && ev.type === 'pointerup') handlers.dropSheet(d.key, ev.clientX - d.x, ev.clientY - d.y);
     else if (d.moved) handlers.dropSheet(d.key, 0, 0);
     else handlers.focusHead(d.head);
   };
   viewport.addEventListener('pointerup', end);
   viewport.addEventListener('pointercancel', end);
+  viewport.addEventListener('click', (ev) => {
+    if (!suppressConnectClick) return;
+    suppressConnectClick = false;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  }, true);
   viewport.addEventListener(
     'wheel',
     (ev) => {

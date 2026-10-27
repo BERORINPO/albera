@@ -25,14 +25,17 @@ for (const lang of /** @type {const} */ (['en', 'ja'])) {
     let now = Date.UTC(2026, 0, 15, 12, 0, 0);
     const src = liveDemoSources(lang, () => now);
     const first = await boardAt(src, now);
-    assert.equal(first.counts.working, 5);
+    assert.equal(first.counts.working, 7);
     assert.equal(first.counts.trouble, 3);
     const ids = first.buckets.working.map((c) => c.id).sort();
     const startedFirst = first.buckets.working.map((c) => (typeof c.startedAt === 'number' ? now - c.startedAt : null));
 
     now += 2 * HOUR;
     const later = await boardAt(src, now);
-    assert.equal(later.counts.working, 5, 'working rows did not drift into another pile');
+    assert.equal(later.counts.working, 7, 'working rows did not drift into another pile');
+    assert.ok(later.buckets.working.some((card) => card.source === 'copilot'), 'the demo includes a synthetic Copilot session');
+    const wsl = later.buckets.working.find((card) => card.source === 'codex');
+    assert.equal(wsl?.detail.executionLocation, 'wsl', 'the demo includes a synthetic WSL Codex card');
     assert.equal(later.counts.trouble, 3);
     assert.deepEqual(later.buckets.working.map((c) => c.id).sort(), ids, 'the same IDs every rebuild');
     assert.deepEqual(later.buckets.working.map((c) => (typeof c.startedAt === 'number' ? now - c.startedAt : null)), startedFirst);
@@ -49,4 +52,23 @@ test('liveDemoSources: DEMO_REBUILD_MS 未満なら作り直さない (同じ合
   now += 1;
   const c = await src.sessionsSource.load();
   assert.notDeepEqual(c.sessions.map((s) => s.lastActivityAt), a.sessions.map((s) => s.lastActivityAt));
+});
+
+test('liveDemoSources exposes synthetic worktree inventory without invoking Git', async () => {
+  const src = liveDemoSources('ja', () => Date.UTC(2026, 0, 15, 12, 0, 0));
+  const loaded = await src.sessionsSource.load();
+  const session = loaded.sessions.find((item) => item.cwd && !item.isArchived);
+  assert.ok(session);
+  const items = await src.worktreeSource.listForCwd(session.cwd);
+  assert.ok(items.length <= 20);
+  if (items.length) {
+    assert.equal(typeof items[0].status, 'string');
+    assert.equal(typeof items[0].current, 'boolean');
+  }
+  assert.ok(!JSON.stringify(items).includes(session.cwd));
+});
+
+test('liveDemoSources always disables local worktree removal', async () => {
+  const src = liveDemoSources('ja', () => Date.UTC(2026, 0, 15, 12, 0, 0));
+  assert.deepEqual(await src.worktreeRemover.remove({ cwd: 'C:\\demo\\repo', branch: 'demo/branch', confirmed: true }), { ok: false, reason: 'demo_disabled' });
 });

@@ -1,0 +1,90 @@
+// Read-only Git worktree inventory. The server returns allowlisted metadata only.
+
+import { WorktreeOperationError } from './api.mjs';
+import { h } from './view.mjs';
+import { openWorktreeRemoveDialog } from './worktree-remove-dialog.mjs';
+
+/** @typedef {import('./i18n.mjs').T} T */
+
+/** @param {{branch?:string|null}} item @param {string} [branch] */
+export function canRecordWorktreeItem(item, branch = '') {
+  return !branch || item.branch === branch;
+}
+
+/** @param {T} t @param {{load:()=>Promise<Array<any>>,record?:(item:any)=>boolean,recordBranch?:string,remove?:(branch:string)=>Promise<any>,requireRemovableFlag?:boolean,onRemoved?:(branch:string)=>void,onClose?:()=>void}} options */
+export function openWorktreeListDialog(t, options) {
+  const dialog = h('dialog', { class: 'graph-dialog', 'aria-labelledby': 'worktree-list-title' });
+  const form = h('form', { class: 'graph-dialog__form' });
+  const message = h('p', { class: 'graph-dialog__review', role: 'status', 'aria-live': 'polite', text: t('worktree.listLoading') });
+  const list = h('ul', { class: 'graph-dialog__relations', 'aria-label': t('worktree.listTitle') });
+  const refresh = h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'refresh', text: t('worktree.listButton') });
+  const close = h('button', { class: 'textbtn', type: 'button', 'data-dialog-action': 'close', text: t('canvas.close') });
+  /** @type {any[]} */ let currentItems = [];
+  form.append(h('h2', { id: 'worktree-list-title', text: t('worktree.listTitle') }), message, list,
+    h('div', { class: 'graph-dialog__actions' }, refresh, close));
+  dialog.append(form);
+  document.body.append(dialog);
+  dialog.addEventListener('close', () => { dialog.remove(); options.onClose?.(); }, { once: true });
+  form.addEventListener('click', (event) => {
+    const action = event.target instanceof Element ? event.target.closest('[data-dialog-action]')?.getAttribute('data-dialog-action') : null;
+    if (action === 'close') dialog.close();
+    if (action === 'refresh') void load();
+    const recordButton = event.target instanceof Element ? event.target.closest('[data-record-index]') : null;
+    if (recordButton && options.record) {
+      const index = Number(recordButton.getAttribute('data-record-index'));
+      if (!Number.isSafeInteger(index) || !currentItems[index]) return;
+      if (!canRecordWorktreeItem(currentItems[index], options.recordBranch)) return;
+      if (options.record(currentItems[index])) {
+        recordButton.setAttribute('disabled', '');
+        recordButton.textContent = t('worktree.recorded');
+        message.textContent = t('worktree.recordedHint');
+      } else message.textContent = t('worktree.recordFailed');
+    }
+    const removeButton = event.target instanceof Element ? event.target.closest('[data-remove-index]') : null;
+    if (removeButton && options.remove) {
+      const index = Number(removeButton.getAttribute('data-remove-index'));
+      const item = Number.isSafeInteger(index) ? currentItems[index] : null;
+      if (!item?.branch || item.status !== 'clean' || item.current || item.locked || item.prunable || (options.requireRemovableFlag && item.removable !== true)) return;
+      openWorktreeRemoveDialog(t, {
+        branch: item.branch, remove: options.remove,
+        onRemoved: () => { options.onRemoved?.(item.branch); void load(); },
+      });
+    }
+  });
+  dialog.showModal();
+  void load();
+
+  async function load() {
+    refresh.disabled = true;
+    message.textContent = t('worktree.listLoading');
+    list.replaceChildren();
+    try {
+      const items = await options.load();
+      currentItems = items;
+      if (!items.length) message.textContent = options.recordBranch ? t('worktree.refreshCardMissing') : t('worktree.listNone');
+      else {
+        message.textContent = options.recordBranch && !items.some((item) => item.branch === options.recordBranch)
+          ? t('worktree.refreshCardMissing')
+          : options.recordBranch ? t('worktree.refreshCardHint') : '';
+        for (const item of items) {
+          const branch = item.branch || t('worktree.listDetached');
+          const state = t(`worktree.status.${item.status}`);
+          const counts = `${item.changed} / ${item.untracked} / ${item.conflicted}`;
+          const flags = [item.locked && t('worktree.flagLocked'), item.prunable && t('worktree.flagPrunable')].filter(Boolean).join(', ');
+          list.append(h('li', {}, h('strong', { text: `${branch}${item.current ? ` — ${t('worktree.listCurrent')}` : ''}` }),
+            h('span', { text: t('worktree.listSummary', { state, counts, flags: flags ? ` (${flags})` : '' }) }),
+            options.record && canRecordWorktreeItem(item, options.recordBranch) ? h('button', { class: 'textbtn', type: 'button', 'data-record-index': String(list.childElementCount), text: t('worktree.record') }) : null,
+            options.remove && item.branch && item.status === 'clean' && !item.current && !item.locked && !item.prunable && (!options.requireRemovableFlag || item.removable === true)
+              ? h('button', { class: 'textbtn graph-dialog__delete', type: 'button', 'data-remove-index': String(list.childElementCount), text: t('worktree.remove') })
+              : null));
+        }
+      }
+    } catch (error) {
+      message.textContent = error instanceof WorktreeOperationError && error.reason === 'session_unavailable'
+        ? t('worktree.listSessionUnavailable')
+        : t('worktree.listFailed');
+    } finally {
+      refresh.disabled = false;
+    }
+  }
+}

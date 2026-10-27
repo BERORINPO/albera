@@ -14,10 +14,13 @@ import { poll, schedule } from './poll.mjs';
 import { clearFilters, jumpPile, jumpTo, moveCursor, openSession, render, renderTimes, rowEl, setCursorRow, view } from './render.mjs';
 import { closeBatch, loadPrefs, reselectLeft, savePrefs, setLang, state } from './state.mjs';
 import { announce, fill } from './view.mjs';
+import { initVoice } from './voice.mjs';
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
 const filterInput = /** @type {HTMLInputElement} */ ($('filter'));
 const sourceFilter = /** @type {HTMLSelectElement} */ ($('source-filter'));
+const projectFilter = /** @type {HTMLSelectElement} */ ($('project-filter'));
+const stateFilter = /** @type {HTMLSelectElement} */ ($('state-filter'));
 
 /** index.html の data-i18n / data-i18n-attr を今の言語で埋める。 */
 function applyStaticText() {
@@ -294,8 +297,9 @@ let filterTimer = null;
 function announceFilter() {
   const v = view.visible;
   const q = state.filter.trim();
-  if (!v?.filtering || !q) return;
-  announce(v.total === 0 ? state.t('nomatch.query.lead', { q }) : state.t('banner.filter', { q, n: v.total }));
+  if (!v?.filtering) return;
+  if (q) announce(v.total === 0 ? state.t('nomatch.query.lead', { q }) : state.t('banner.filter', { q, n: v.total }));
+  else announce(state.t(v.total === 0 ? 'filter.none' : 'filter.count', { n: v.total }));
 }
 
 /** 毎分ちょうど (分が変わったところ) に時刻の文言を書き直す。 */
@@ -326,11 +330,24 @@ function init() {
     filterTimer = setTimeout(announceFilter, FILTER_ANNOUNCE_MS);
   });
   sourceFilter.addEventListener('change', () => {
-    state.sourceFilter = sourceFilter.value === 'claude' || sourceFilter.value === 'codex' ? sourceFilter.value : 'all';
+    state.sourceFilter = ['claude', 'codex', 'copilot', 'opencode'].includes(sourceFilter.value) ? sourceFilter.value : 'all';
+    render();
+    announceFilter();
+  });
+  projectFilter.addEventListener('change', () => {
+    const value = projectFilter.value;
+    state.projectFilter = value === 'all' || [...projectFilter.options].some((option) => option.value === value) ? value : 'all';
+    render();
+    announceFilter();
+  });
+  stateFilter.addEventListener('change', () => {
+    const value = stateFilter.value;
+    state.stateFilter = ['needs_you', 'trouble', 'unread', 'working', 'recent', 'cleanup'].includes(value) ? value : 'all';
     render();
     announceFilter();
   });
   initCanvas();
+  initVoice({ t: () => state.t });
   bindKeys(() => state.prefs.keys !== false, runKey, () => state.view);
   // Tab で行の題名 (片付けの行ならチェックボックスも) に来たら、そこをカーソルにする (Enter / Space / x がその行に効くように)
   document.addEventListener('focusin', (ev) => {

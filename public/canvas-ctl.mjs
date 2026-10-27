@@ -17,6 +17,8 @@ import { isNew, now, pileLists, setView, state, takeArrival } from './state.mjs'
 import { nextUp } from './ui-state.mjs';
 import { announce } from './view.mjs';
 import { loadGraph } from './graph-store.mjs';
+import { loadCameraView } from './canvas-camera-store.mjs';
+import { loadSessionPositions } from './session-position-store.mjs';
 
 /** @typedef {import('./canvas-camera.mjs').Camera} Camera */
 /** @typedef {import('./canvas-layout.mjs').Layout} Layout */
@@ -59,12 +61,16 @@ function settleCursor(prev) {
 /** 毎回の描画 (render.mjs から)。配置 → 描く → 席を保存 → カメラ → 帯。 @param {number} at */
 export function drawCanvas(at) {
   const board = state.board;
+  cv.sessionPositions ??= loadSessionPositions();
   const sz0 = size();
   // Claude の横の欄ほど狭いときは、1 列の用紙を縦 1 列に並べる (縦に読むだけで済むように)。狭いときの席は別に持ち、
   // 幅がその境を越えたら、その幅の席を読み直して開いたときのカメラにする (広い画面の並びを狭い欄で上書きしない)
   const narrow = sz0.w < NARROW_PX;
   if (cv.seats === undefined || cv.narrow !== narrow) {
-    if (cv.seats !== undefined) cv.fresh = true;
+    if (cv.seats !== undefined) {
+      cv.fresh = true;
+      cv.cameraReady = false;
+    }
     cv.seats = loadSeats(narrow);
     cv.narrow = narrow;
   }
@@ -90,7 +96,8 @@ export function drawCanvas(at) {
   renderCanvas($('canvas'), {
     t: state.t, board, layout, index: view.index, matched: cv.matched, cursorId: state.cursor?.id ?? null, nextId, now: at,
     demo, handoff: state.prefs.handoff, isNew: (p, id) => isNew(p, id, at), takeArrival, drag: cv.drag,
-    graph: loadGraph(), graphDrag: cv.graphDrag ?? null, graphFilter: state.filter,
+    graph: loadGraph(), graphDrag: cv.graphDrag ?? null, sessionPositions: cv.sessionPositions, sessionDrag: cv.sessionDrag, graphConnectFrom: cv.graphConnectFrom, graphFilter: state.filter,
+    sessionFilters: { source: state.sourceFilter, state: state.stateFilter, project: state.projectFilter },
   });
   // 表示枠の説明: 1 文字キーを止めているときは矢印だけ (+ − f は効かない)
   const keys = $('cv-keys');
@@ -103,11 +110,15 @@ export function drawCanvas(at) {
     cv.fresh = false;
     // 開き直したら z で戻る先は無い (前に開いたときのカメラは、今の配置では別の場所を指す)
     cv.before = null;
-    cv.cam = cv.fitOnOpen ? fitCam() : openCamera(layout, nextId, cv.size.w, cv.size.h, pad());
-    cv.atFit = cv.fitOnOpen;
-    cv.untouched = !cv.fitOnOpen;
+    const fitOpened = cv.fitOnOpen;
+    const savedCamera = cv.fitOnOpen ? null : loadCameraView(cv.narrow);
+    cv.cam = cv.fitOnOpen || savedCamera?.fit ? fitCam() : savedCamera?.camera ?? openCamera(layout, nextId, cv.size.w, cv.size.h, pad());
+    cv.atFit = cv.fitOnOpen || !!savedCamera?.fit;
+    cv.untouched = !cv.fitOnOpen && !savedCamera;
     cv.fitOnOpen = false;
-    if (state.cursor && cv.order.includes(state.cursor.id)) reveal(state.cursor.id, false);
+    cv.cameraReady = true;
+    if (fitOpened) saveCameraView(true, cv.cam, cv.narrow);
+    if (!savedCamera && state.cursor && cv.order.includes(state.cursor.id)) reveal(state.cursor.id, false);
   }
   apply(true);
 }
@@ -261,6 +272,7 @@ export function switchView(target, o = {}) {
   if (target === 'canvas' && state.view !== 'canvas') {
     cv.fresh = true;
     cv.fitOnOpen = !!o.fit;
+    cv.cameraReady = false;
   } else if (target === 'canvas' && o.fit) return fitAll();
   state.view = target;
   render();

@@ -5,7 +5,13 @@
 
 import { handoffGuideEl, handoffPlan } from './handoff.mjs';
 import { bucketTitle, titleOf } from './format.mjs';
+import { obsidianOpenUri } from './graph-model.mjs';
 import { detailEl, detailStamp } from './rows.mjs';
+import { isCompletedLocalCodexTarget } from './events.mjs';
+import { delegationAvailability } from './delegation-availability.mjs';
+import { delegationUnavailableNote } from './delegation-note.mjs';
+import { comprehensionGapSummary, sessionRelationEntries } from './session-relations.mjs';
+import { reviewUnderstandingGaps } from './graph-model.mjs';
 import { fill, h } from './view.mjs';
 
 /** @typedef {import('./i18n.mjs').T} T */
@@ -23,6 +29,7 @@ export const zoomText = (t, z) => t('canvas.zoom', { n: Math.round(z * 100) });
 
 /** いつもの帯 (40rem より狭いと、デモのしるしもここ: 帯の左は空いている)。 @param {T} t @param {{z: number, due: number, keysOn: boolean, demo?: boolean}} o */
 function defaultBar(t, o) {
+  const reviewCount = reviewUnderstandingGaps(o.graph ?? { nodes: [], edges: [] }, new Set(o.rowCtx?.index?.keys?.() ?? [])).length;
   const tick = h('span', { class: 'cvtick', 'aria-hidden': 'true' });
   tick.style.setProperty('--p', String(SAMPLE_PCT));
   const fit = h('button', { class: 'textbtn', type: 'button', 'data-action': 'canvas-fit' }, t('canvas.fit'), ' ', h('kbd', { class: 'hk', 'aria-hidden': 'true', text: 'f' }));
@@ -40,6 +47,8 @@ function defaultBar(t, o) {
       'p',
       { class: 'cbar__tools' },
       o.due > 0 ? h('button', { class: 'textbtn cbar__due', type: 'button', 'data-action': 'due-next', text: t('ctx.dueCount', { n: o.due }) }) : null,
+      reviewCount ? h('button', { class: 'textbtn cbar__due', type: 'button', 'data-action': 'graph-review-gaps', text: t('graph.reviewCount', { n: reviewCount }) }) : null,
+      h('button', { class: 'textbtn', type: 'button', 'data-action': 'graph-show-diagnostics', text: t('canvas.status') }),
       h(
         'span',
         { class: 'cbar__zoom' },
@@ -59,37 +68,83 @@ function defaultBar(t, o) {
  * 案内のあるカードには「引き継ぐ」も置く (帯の引き継ぎの状態を開く。Tab で届き、1 文字キーを止めても使える道)。
  * @param {T} t @param {any} card @param {string} pile @param {any} rowCtx
  */
-function sessionRelations(t, card, graph) {
-  const endpoint = `session:${card.id}`;
-  const edges = graph?.edges?.filter((edge) => edge.from === endpoint || edge.to === endpoint) ?? [];
-  const items = edges.flatMap((edge) => {
-    const other = edge.from === endpoint ? edge.to : edge.from;
-    if (!other.startsWith('graph:')) return [];
-    const node = graph.nodes.find((item) => `graph:${item.id}` === other);
-    if (!node) return [];
-    const direction = edge.from === endpoint ? t('graph.sessionRelationOut') : t('graph.sessionRelationIn');
-    const status = edge.kind === 'delegates' ? ` (${t(`graph.delegation.${edge.status}`)})` : '';
-    return [h('li', {},
-      h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'graph-open', 'data-id': node.id, text: `${t(`graph.kind.${node.kind}`)}: ${node.title}` }),
-      h('span', { text: `${direction} — ${t(`graph.edge.${edge.kind}`)}${status}` }),
-      edge.purpose ? h('small', { text: edge.purpose }) : null,
-    )];
+function sessionRelations(t, card, graph, sessionIndex, demo) {
+  const sessions = [...sessionIndex.keys()].map((id) => ({ id }));
+  const entries = sessionRelationEntries(graph?.edges ?? [], card.id, graph ?? { nodes: [] }, sessions);
+  const items = entries.map((entry) => {
+    const direction = t(entry.direction === 'out' ? 'graph.sessionRelationOut' : 'graph.sessionRelationIn');
+    const status = entry.kind === 'delegates' ? ` (${t(`graph.delegation.${entry.status}`)})` : '';
+    const endpoint = entry.endpoint === 'graph'
+      ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'graph-open', 'data-id': entry.node.id, text: `${t(`graph.kind.${entry.node.kind}`)}: ${entry.node.title}` })
+      : h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'canvas-open-session', 'data-id': entry.sessionId, text: `${t(`source.${entry.sessionId.startsWith('codex_') ? 'codex' : entry.sessionId.startsWith('copilot_') ? 'copilot' : entry.sessionId.startsWith('opencode_') ? 'opencode' : 'claude'}`)} #${entry.sessionId.slice(-8)}` });
+    const localNode = entry.endpoint === 'graph' && entry.node.kind === 'obsidian_note'
+      ? graph.nodes.find((node) => node.id === entry.node.id)
+      : null;
+    const openNoteUri = localNode ? obsidianOpenUri(localNode.knowledgeVault, localNode.knowledgeFile) : '';
+    const targetCard = entry.endpoint === 'session' ? sessionIndex.get(entry.sessionId)?.card : null;
+    const edge = graph?.edges?.find((item) => item.id === entry.edgeId);
+    const delegation = delegationAvailability({
+      entry, demo, hasOperationId: Boolean(edge?.operationId),
+      target: targetCard ? {
+        executionLocation: targetCard.detail?.executionLocation,
+        completedLocalCodex: isCompletedLocalCodexTarget(targetCard),
+      } : undefined,
+    });
+    return h('li', {},
+      endpoint,
+      openNoteUri ? h('a', { class: 'textbtn graph-session-relations__node', href: openNoteUri, target: '_blank', rel: 'noopener noreferrer', text: t('graph.openKnowledgeNote') }) : null,
+      h('span', { text: `${direction} — ${t(`graph.edge.${entry.kind}`)}${status}` }),
+      entry.purpose ? h('small', { text: entry.purpose }) : entry.kind === 'delegates' ? h('small', { class: 'graph-dialog__hint', text: t('graph.delegationPurposeMissing') }) : null,
+      entry.kind === 'delegates' ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'graph-edit-edge', 'data-id': entry.edgeId, text: t('graph.editDelegation') }) : null,
+      delegation.action
+        ? h('button', { class: 'textbtn graph-session-relations__node', type: 'button', 'data-action': 'delegation-run', 'data-id': entry.edgeId, 'data-source-session': card.id, text: t(delegation.action === 'check' ? 'graph.checkDelegation' : 'graph.runDelegation') })
+        : delegationUnavailableNote(t, delegation.reason),
+      entry.endpoint === 'graph' && entry.node.kind === 'execution_profile'
+        ? h('small', { text: t('graph.executionProfileSummary', { values: [
+          t(`graph.executionHarness.${entry.node.executionHarness}`),
+          t(`graph.executionLocation.${entry.node.executionLocation}`),
+          t(`graph.workspaceIsolation.${entry.node.workspaceIsolation}`),
+          t(`graph.networkAccess.${entry.node.networkAccess}`),
+          t(`graph.approvalMode.${entry.node.approvalMode}`),
+        ].join(' / ') }) })
+        : null,
+      entry.endpoint === 'graph' && entry.node.kind === 'understanding_gap'
+        ? h('div', {}, h('small', { text: comprehensionGapSummary(entry.node, t).join(' / ') }),
+          entry.node.evidenceLinks.length ? h('small', {}, t('graph.evidenceLinks'), ' ', ...gapTargetButtons(t, entry.node.evidenceLinks)) : null,
+          entry.node.explanationLinks.length ? h('small', {}, t('graph.explanationLinks'), ' ', ...gapTargetButtons(t, entry.node.explanationLinks)) : null,
+        )
+        : null,
+    );
   });
   return items.length
     ? h('section', { class: 'graph-session-relations', 'aria-label': t('graph.relations') }, h('h3', { text: t('graph.relatedCards') }), h('ul', {}, ...items))
     : null;
 }
 
-function detailBar(t, card, pile, rowCtx, graph) {
+function gapTargetButtons(t, links) {
+  return links.flatMap((link, index) => [
+    index ? ', ' : '',
+    h('button', {
+      class: 'textbtn graph-session-relations__node', type: 'button',
+      'data-action': link.endpoint === 'graph' ? 'graph-open' : 'canvas-open-short-session',
+      'data-id': link.endpoint === 'graph' ? link.nodeId : link.shortId,
+      ...(link.endpoint === 'session' ? { 'data-source': link.source } : {}),
+      text: link.endpoint === 'graph' ? `${t(`graph.kind.${link.kind}`)}: ${link.title}` : `${t(`source.${link.source}`)} #${link.shortId}`,
+    }),
+  ]);
+}
+
+function detailBar(t, card, pile, rowCtx, graph, demo) {
   const el = detailEl(card, pile, rowCtx);
   el.querySelector('section.handoff')?.remove();
-  const relations = sessionRelations(t, card, graph);
+  const relations = sessionRelations(t, card, graph, rowCtx.index, demo);
   if (relations) el.append(relations);
   const acts = el.querySelector('.detail__acts') ?? el.appendChild(h('p', { class: 'detail__acts' }));
   if (handoffPlan(card, rowCtx.handoff?.[card.id], rowCtx.now).guide) {
     acts.prepend(h('button', { class: 'textbtn is-strong', type: 'button', 'data-action': 'handoff-open', 'data-id': card.id, 'aria-label': t('handoff.openAria', { title: titleOf(t, card.title) }), text: t('handoff.open') }));
   }
   acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'graph-connect', 'data-id': card.id, text: t('graph.connectSession') }));
+  acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'graph-task-from-session', 'data-id': card.id, text: t('graph.taskFromSession') }));
   acts.append(h('button', { class: 'textbtn', type: 'button', 'data-action': 'canvas-close', 'data-id': card.id, text: t('canvas.close') }));
   return el;
 }
@@ -136,7 +191,10 @@ export function renderBar(el, o) {
   const t = o.t;
   const bar = o.bar && (o.bar.kind === 'sheet' ? o.sheet : o.entry) ? o.bar : null;
   let sig;
-  if (!bar) sig = `default|${t.lang}|${o.due}|${o.keysOn}|${o.demo}`;
+  if (!bar) {
+    const reviewCount = reviewUnderstandingGaps(o.graph ?? { nodes: [], edges: [] }, new Set(o.rowCtx?.index?.keys?.() ?? [])).length;
+    sig = `default|${t.lang}|${o.due}|${reviewCount}|${o.keysOn}|${o.demo}`;
+  }
   else if (bar.kind === 'sheet') sig = `sheet|${bar.id}|${t.lang}|${o.sheet?.name}`;
   else {
     const card = /** @type {any} */ (o.entry).card;
@@ -150,7 +208,7 @@ export function renderBar(el, o) {
     else if (bar.kind === 'sheet') fill(el, sheetBar(t, /** @type {{key: string, name: string}} */ (o.sheet)));
     else {
       const { card, pile } = /** @type {{card: any, pile: string}} */ (o.entry);
-      fill(el, bar.kind === 'detail' ? detailBar(t, card, pile, o.rowCtx, o.graph) : handoffBar(t, card, { now: o.now, stored: o.rowCtx.handoff?.[card.id], demo: o.demo }));
+      fill(el, bar.kind === 'detail' ? detailBar(t, card, pile, o.rowCtx, o.graph, o.demo) : handoffBar(t, card, { now: o.now, stored: o.rowCtx.handoff?.[card.id], demo: o.demo }));
     }
     // 名前: いつもの帯は「キャンバスの操作」(凡例は aria-hidden なので凡例の名前にしない)、ほかは帯の見出し
     const lead = bar ? el.querySelector('.handoff__lead, .sheetbar__lead')?.textContent ?? '' : '';

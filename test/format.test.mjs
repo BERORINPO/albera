@@ -238,8 +238,11 @@ test('cleanupGroupName: 日数は定数から', () => {
   assert.equal(cleanupGroupName(ja, 'old_error'), '7 日以上エラーのまま');
 });
 
-test('deepLink: ID の形が正しいときだけ', () => {
+test('deepLink: Claude app session ID のときだけ', () => {
   assert.equal(deepLink('local_00000000-0000-4000-8000-000000000001'), 'claude://claude.ai/epitaxy/local_00000000-0000-4000-8000-000000000001');
+  assert.equal(deepLink('codex_00000000-0000-4000-8000-000000000001'), null);
+  assert.equal(deepLink('copilot_00000000-0000-4000-8000-000000000001'), null);
+  assert.equal(deepLink('opencode_00000000-0000-4000-8000-000000000001'), null);
   assert.equal(deepLink('local_x'), null);
   assert.equal(deepLink('javascript:alert(1)'), null);
 });

@@ -43,6 +43,76 @@ test('辞書: 空の文字列は無い。複数形は en だけで、one と oth
   }
 });
 
+test('セッション0件の案内は特定providerに偏らず、診断欄を案内する', () => {
+  assert.match(JA['lede.emptyNote'], /読み込みの状態/);
+  assert.match(EN['lede.emptyNote'], /Reading status/);
+  assert.doesNotMatch(JA['lede.emptyNote'], /Claude デスクトップアプリ/);
+  assert.doesNotMatch(EN['lede.emptyNote'], /Claude desktop app/);
+});
+
+test('検索案内はセッションとキャンバスカードの両方を区別して説明する', () => {
+  assert.match(JA['filter.label'], /セッション・キャンバスカード・関係/);
+  assert.match(JA['filter.label'], /一致したセッションの関連カードも強調表示/);
+  assert.match(JA['filter.label'], /手動記録したハーネスや実行条件/);
+  assert.match(EN['filter.label'], /sessions, canvas cards and relationships/);
+  assert.match(EN['filter.label'], /Matching sessions also highlight directly linked cards/);
+  assert.match(EN['filter.label'], /recorded harness and execution conditions/);
+  assert.match(JA['nomatch.query.text'], /関係の種類・目的/);
+  assert.match(JA['nomatch.query.text'], /手動記録したハーネスと実行条件/);
+  assert.match(EN['nomatch.query.text'], /relationship types, purposes/);
+  assert.match(EN['nomatch.query.text'], /manually recorded harness and execution conditions/);
+});
+
+test('キャンバスのキーボード説明はaria-describedby先で選択言語に切り替わる', () => {
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /id="cv-view"[^>]*aria-describedby="cv-keys"/);
+  assert.match(html, /id="cv-keys" data-i18n="canvas\.keys"/);
+  assert.equal(JA['canvas.keys'], '矢印で移動、+ と − で拡大縮小、f で全体');
+  assert.equal(EN['canvas.keys'], 'Arrows pan, + and − zoom, f fits everything.');
+});
+
+test('masthead trust fallback matches the current boundary and does not promise that nothing leaves the computer', () => {
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.equal(EN['mast.trust'], 'Session data is read-only. Worktrees require confirmation.');
+  assert.match(html, /data-i18n="mast\.trust">Session data is read-only\. Worktrees require confirmation\.<\/span>/);
+  assert.doesNotMatch(html, /Nothing leaves this computer/);
+});
+
+test('理解負債レビューは不足リンクごとの手動接続を案内する', () => {
+  assert.equal(JA['graph.resolveMissing.evidence'], '根拠を結ぶ');
+  assert.equal(JA['graph.resolveMissing.explains'], '説明先を結ぶ');
+  assert.equal(EN['graph.resolveMissing.evidence'], 'Connect evidence');
+  assert.equal(EN['graph.resolveMissing.explains'], 'Connect explanation');
+  assert.match(JA['graph.resolveNeedsLinks'], /完了・解消済み/);
+  assert.match(EN['graph.resolveNeedsLinks'], /done or resolved/);
+  assert.equal(JA['graph.status.review'], '要確認');
+  assert.equal(EN['graph.status.review'], 'Review needed');
+});
+
+test('委譲の最終確認は対象セッションの識別子末尾と外部利用条件を示す', () => {
+  for (const lang of ['ja', 'en']) {
+    const t = makeT(lang);
+    const target = t('graph.delegationConfirmTarget', { project: 'demo-app', target: '123456789abc', provider: 'Codex CLI' });
+    const confirm = [
+      target,
+      t('graph.delegationConfirmPurpose'),
+      t('graph.delegationConfirmTransfer'),
+      t('graph.delegationConfirmNetwork'),
+      t('graph.delegationConfirmOutput'),
+      t('graph.delegationConfirmSession'),
+      t('graph.delegationConfirmRun'),
+    ].join('\n');
+    assert.match(target, /123456789abc/);
+    assert.match(target, /demo-app/);
+    assert.match(confirm, /localhost/);
+    assert.match(confirm, /Codex/);
+    assert.match(confirm, /network|ネットワーク/i);
+    assert.match(confirm, /usage|利用量/i);
+    assert.match(confirm, /discarded|破棄/);
+    assert.doesNotMatch(confirm, /\{(?:project|target|purpose|provider)\}/);
+  }
+});
+
 test('辞書: 画面の言葉の決まり (感嘆符・絵文字を使わない、欄の名前は 1 つ)', () => {
   for (const [lang, dict] of Object.entries(DICT)) {
     for (const [key, entry] of Object.entries(dict)) {

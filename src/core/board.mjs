@@ -105,10 +105,27 @@ function prsForCard(s) {
 function detailFor(s, c, body) {
   /** @type {Card['detail']} */
   const d = {};
+  if (s.executionLocation === 'wsl') d.executionLocation = 'wsl';
   const sd = s.postTurnSummary?.status_detail;
   if (c.facts.fresh && isNonEmpty(sd) && cap(sd, CAP.BODY) !== body) d.statusDetail = cap(sd, CAP.BODY);
-  if (isNonEmpty(s.branch)) d.branch = cap(s.branch, CAP.TITLE);
-  if (isNonEmpty(s.worktreeName)) d.worktreeName = cap(s.worktreeName, CAP.TITLE);
+  const branch = safeGitLabel(s.branch, true);
+  const worktreeName = safeGitLabel(s.worktreeName, false);
+  if (branch) d.branch = branch;
+  if (worktreeName) d.worktreeName = worktreeName;
+  if (s.gitWorktree && typeof s.gitWorktree === 'object') {
+    const g = s.gitWorktree;
+    const status = ['clean', 'changed', 'untracked', 'mixed', 'conflicted', 'unknown'].includes(g.status) ? g.status : 'unknown';
+    const count = (v) => Number.isSafeInteger(v) && v >= 0 ? Math.min(999, v) : 0;
+    d.gitWorktree = {
+      branch: safeGitLabel(g.branch, true),
+      status,
+      changed: count(g.changed),
+      untracked: count(g.untracked),
+      conflicted: count(g.conflicted),
+      locked: !!g.locked,
+      prunable: !!g.prunable,
+    };
+  }
   if (typeof s.completedTurns === 'number') d.completedTurns = s.completedTurns;
   if (isNonEmpty(s.error)) d.error = cap(/** @type {string} */ (s.error).trim(), CAP.BODY);
   const morePrs = prListOf(s).length - MAX_PRS;
@@ -116,6 +133,18 @@ function detailFor(s, c, body) {
   const exceeded = s.contextExceededCount;
   if (c.bucket !== 'cleanup' && typeof exceeded === 'number' && Number.isInteger(exceeded) && exceeded >= 1) d.contextExceeded = exceeded;
   return d;
+}
+
+/** Remove path-like, URL-like, or secret-looking values from Git labels before they reach the wire. @param {unknown} raw @param {boolean} allowSlash */
+function safeGitLabel(raw, allowSlash) {
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim().replace(/^refs\/heads\//, '');
+  if (!value || value.length > 100 || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  if (/^(?:[a-z]:[\\/]|\\\\|\/)/i.test(value) || /^(?:[a-z]+:\/\/|file:)/i.test(value)) return null;
+  if (/(?:password|passwd|token|secret|api[_-]?key|authorization)\s*[:=]/i.test(value)) return null;
+  if (!allowSlash && /[\\/]/.test(value)) return null;
+  if (allowSlash && (value.includes('..') || value.includes('//'))) return null;
+  return cap(value, CAP.TITLE);
 }
 
 /**
@@ -234,15 +263,22 @@ function routineFor(s, ctx) {
  * @param {Ctx} ctx
  * @returns {Card}
  */
+const PROVIDER_SOURCES = new Set(['codex', 'copilot', 'opencode']);
+const PROVIDER_STATES = new Set(['active', 'complete', 'interrupted', 'failed']);
+
 function makeCard(s, ctx) {
   const c = /** @type {Classified} */ (ctx.cls.get(s.sessionId));
   const ref = /** @type {import('./project.mjs').ProjectRef} */ (ctx.projRefs.get(s.sessionId));
   const body = cap(bodyFor(s, c), CAP.BODY);
   const isOther = ref.key === OTHER_PROJECT.key;
+  const sourceState = PROVIDER_SOURCES.has(s.source)
+    ? (PROVIDER_STATES.has(s.lifecycle?.status) ? s.lifecycle.status : 'unknown')
+    : undefined;
   /** @type {Card} */
   const card = {
     id: s.sessionId,
-    ...(s.source === 'codex' ? { source: 'codex' } : {}),
+    ...(s.source === 'codex' || s.source === 'copilot' || s.source === 'opencode' ? { source: s.source } : {}),
+    ...(sourceState ? { sourceState } : {}),
     bucket: c.bucket,
     reason: c.reason,
     ...(c.reasonParams ? { reasonParams: c.reasonParams } : {}),
@@ -256,7 +292,7 @@ function makeCard(s, ctx) {
     project: { key: ref.key, label: isOther ? null : ctx.labelOf.get(ref.key) ?? ref.name, extra: ref.extra },
     prs: prsForCard(s),
     detail: detailFor(s, c, body),
-    ...(s.source === 'codex' && Array.isArray(s.events) ? { events: s.events.slice(-30).map((event) => ({ type: event.type, at: event.at })) } : {}),
+    ...(s.source && Array.isArray(s.events) ? { events: s.events.slice(-30).map((event) => ({ type: event.type, at: event.at })) } : {}),
   };
   const routine = routineFor(s, ctx);
   if (routine) card.routine = routine;
@@ -499,7 +535,8 @@ function liveInputs(active, turns, now, given) {
  * @param {Map<string, TranscriptInput>} input.turns sessionId がキー
  * @param {number} input.now
  * @param {string[]} input.roots
- * @param {{files?: number, parsed?: number, bad?: number, stale?: number, dirs?: number, sources?: {codex?: {files?: number, bad?: number}}}=} input.sourceStats
+ * @param {{files?: number, parsed?: number, bad?: number, stale?: number, dirs?: number, sources?: Record<string, {files?: number, bad?: number}>}=} input.sourceStats
+ * @param {{scanned:number,matched:number,unavailable:number,skipped:number}=} input.worktreeStats
  * @param {{dirMissing?: boolean}=} input.transcriptStats
  * @param {number=} input.scanMs
  * @param {boolean=} input.demo デモデータで動いているとき true (stats.demo)
@@ -508,7 +545,7 @@ function liveInputs(active, turns, now, given) {
  * @returns {Board}
  */
 export function buildBoard({
-  sessions, archivedIds, turns, now, roots, sourceStats = {}, transcriptStats = {}, scanMs = 0, demo = false, tailFacts: givenFacts, prevContext,
+  sessions, archivedIds, turns, now, roots, sourceStats = {}, transcriptStats = {}, worktreeStats, scanMs = 0, demo = false, tailFacts: givenFacts, prevContext,
 }) {
   const byId = new Map(sessions.map((s) => [s.sessionId, s]));
   const active = sessions.filter((s) => !isArchived(s, archivedIds));
@@ -544,22 +581,38 @@ export function buildBoard({
   for (const k of /** @type {const} */ (['needs_you', 'trouble', 'unread', 'working'])) lists[k].sort(PILE_ORDER[k]);
   const recentGroups = groupByProject(lists.recent.sort(byNewest)).map(({ key, label, items }) => ({ key, label, items }));
   const cleanupGroups = buildCleanupGroups(active, ctx);
-  const codexInput = sourceStats.sources?.codex;
-  const codexSessions = active.filter((s) => s.source === 'codex');
   const count = (/** @type {unknown} */ v) => Number.isSafeInteger(v) && Number(v) >= 0 ? Number(v) : 0;
-  const lastEvent = (/** @type {SessionRecord} */ s) => s.events?.at(-1)?.type;
-  const codexDiagnostics = codexInput ? {
-    files: count(codexInput.files),
-    detected: codexSessions.length,
-    working: lists.working.filter((c) => c.source === 'codex').length,
-    trouble: lists.trouble.filter((c) => c.source === 'codex').length,
-    recent: lists.recent.filter((c) => c.source === 'codex').length,
-    active: codexSessions.filter((s) => s.lifecycle?.status === 'active').length,
-    completed: codexSessions.filter((s) => lastEvent(s) === 'turn_completed').length,
-    interrupted: codexSessions.filter((s) => lastEvent(s) === 'turn_aborted').length,
-    unknown: codexSessions.filter((s) => s.lifecycle?.status !== 'active' && !['turn_completed', 'turn_aborted'].includes(lastEvent(s))).length,
-    rejected: count(codexInput.bad),
-  } : undefined;
+  const sourceDiagnostics = (/** @type {'codex'|'copilot'|'opencode'} */ source) => {
+    const input = sourceStats.sources?.[source];
+    if (!input) return undefined;
+    const sourceSessions = active.filter((s) => s.source === source);
+    return {
+      files: count(input.files),
+      detected: sourceSessions.length,
+      working: lists.working.filter((c) => c.source === source).length,
+      trouble: lists.trouble.filter((c) => c.source === source).length,
+      recent: lists.recent.filter((c) => c.source === source).length,
+      active: sourceSessions.filter((s) => s.lifecycle?.status === 'active').length,
+      completed: sourceSessions.filter((s) => s.lifecycle?.status === 'complete').length,
+      interrupted: sourceSessions.filter((s) => s.lifecycle?.status === 'interrupted').length,
+      failed: sourceSessions.filter((s) => s.lifecycle?.status === 'failed').length,
+      unknown: sourceSessions.filter((s) => !['active', 'complete', 'interrupted', 'failed'].includes(s.lifecycle?.status)).length,
+      rejected: count(input.bad),
+      ...(source === 'codex' ? {
+        notCli: count(input.notCli),
+        missingSource: count(input.missingSource),
+        otherSource: count(input.otherSource),
+        unsupportedOriginator: count(input.unsupportedOriginator),
+        filenameMismatch: count(input.filenameMismatch),
+      } : {}),
+      ...(source === 'codex' && ['configured', 'not_configured'].includes(input.wslShareStatus) ? { wslShareStatus: input.wslShareStatus } : {}),
+      ...(input.unsupportedRuntime === true ? { unsupportedRuntime: true } : {}),
+      ...(source === 'opencode' && input.legacySchema === true ? { legacySchema: true } : {}),
+    };
+  };
+  const codexDiagnostics = sourceDiagnostics('codex');
+  const copilotDiagnostics = sourceDiagnostics('copilot');
+  const opencodeDiagnostics = sourceDiagnostics('opencode');
 
   const cleanupCount = [...cls.values()].filter((c) => c.bucket === 'cleanup').length;
   return {
@@ -593,7 +646,13 @@ export function buildBoard({
       scanMs,
       formatSuspect,
       demo: !!demo,
-      ...(codexDiagnostics ? { sources: { codex: codexDiagnostics } } : {}),
+      ...(worktreeStats ? { worktrees: {
+        scanned: Number.isSafeInteger(worktreeStats.scanned) && worktreeStats.scanned >= 0 ? worktreeStats.scanned : 0,
+        matched: Number.isSafeInteger(worktreeStats.matched) && worktreeStats.matched >= 0 ? worktreeStats.matched : 0,
+        unavailable: Number.isSafeInteger(worktreeStats.unavailable) && worktreeStats.unavailable >= 0 ? worktreeStats.unavailable : 0,
+        skipped: Number.isSafeInteger(worktreeStats.skipped) && worktreeStats.skipped >= 0 ? worktreeStats.skipped : 0,
+      } } : {}),
+      ...(codexDiagnostics || copilotDiagnostics || opencodeDiagnostics ? { sources: { ...(codexDiagnostics ? { codex: codexDiagnostics } : {}), ...(copilotDiagnostics ? { copilot: copilotDiagnostics } : {}), ...(opencodeDiagnostics ? { opencode: opencodeDiagnostics } : {}) } } : {}),
       ...live.stats,
     },
   };

@@ -31,8 +31,8 @@ test('ソースで使っている term.* のキーは全部辞書にある', () 
 });
 
 test('msg: 値を差し込む。知らない言語は en、知らないキーはキーそのもの', () => {
-  assert.equal(msg('en', 'term.started', { port: 18950, mode: msg('en', 'term.modeDemo') }), 'Pigeonholes: http://127.0.0.1:18950 (demo data, read-only)');
-  assert.equal(msg('ja', 'term.started', { port: 18950, mode: msg('ja', 'term.modeReadOnly') }), 'Pigeonholes: http://127.0.0.1:18950 (読み取り専用)');
+  assert.equal(msg('en', 'term.started', { port: 18950, mode: msg('en', 'term.modeDemo') }), 'Pigeonholes: http://127.0.0.1:18950 (demo data; worktree creation disabled)');
+  assert.equal(msg('ja', 'term.started', { port: 18950, mode: msg('ja', 'term.modeReadOnly') }), 'Pigeonholes: http://127.0.0.1:18950 (セッション読み取り専用・worktreeは確認後)');
   assert.equal(msg('fr', 'term.alreadyRunning', { port: 1 }), 'Already running: open http://127.0.0.1:1');
   assert.equal(msg('en', 'term.nope'), 'term.nope');
   assert.equal(msg('en', 'term.badFlag', { flag: '{port}', cmd: 'npx pigeonholes' }), 'Unknown option: {port}. See: npx pigeonholes --help', '値の中の {..} は展開しない');
@@ -61,4 +61,9 @@ test('errorLines: セッションフォルダが無いときは、説明・探�
   assert.match(errorLines('en', 'term.badRoots', { sep: ':', bad: 'rel' })[0], /separated by ":" \(invalid: rel\)/);
   assert.deepEqual(errorLines('en', 'term.badFlag', { flag: '--x' }), ['Unknown option: --x. See: pigeonholes --help'], '起動のしかたが無ければ bin 名');
   assert.deepEqual(errorLines('en', 'term.badFlag', { flag: '--x', cmd: 'node /opt/p/server.mjs' }), ['Unknown option: --x. See: node /opt/p/server.mjs --help']);
+});
+
+test('no session store guidance covers all supported providers', () => {
+  assert.match(TERM.en['term.noSessionsDirHint'], /Claude Code, Codex CLI, GitHub Copilot, or OpenCode/);
+  assert.match(TERM.ja['term.noSessionsDirHint'], /Claude Code、Codex CLI、GitHub Copilot、OpenCode/);
 });

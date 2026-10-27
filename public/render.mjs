@@ -4,7 +4,8 @@
 
 import { DAY, FORMAT_SUSPECT_MIN, PAGE_SIZE, PREVIEW, RECENT_MS, STALE_AFTER_MS } from '../src/shared/constants.mjs';
 import { canvasFocusFallback, canvasJumpPile, canvasJumpTo, drawCanvas, quietFocus } from './canvas-ctl.mjs';
-import { codexStatusMessages } from './codex-status.mjs';
+import { codexStatusMessages, copilotStatusMessages, openCodeStatusMessages } from './codex-status.mjs';
+import { productLimitMessages } from './product-limits.mjs';
 import { renderCleanup, renderSelbar } from './cleanup.mjs';
 import { faviconKind, setFavicon } from './favicon.mjs';
 import { agoText, agoWords, bucketTitle, dateline, deepLink, quietHint, sentences, tabTitle, timeText } from './format.mjs';
@@ -12,6 +13,8 @@ import { renderBanners, renderFront, renderIntro, renderLede } from './front.mjs
 import { otherLang } from './i18n.mjs';
 import { notifyState } from './notify.mjs';
 import { renderLoadingPile, renderPile, renderRecent } from './rows.mjs';
+import { renderProjectFilter } from './project-filter.mjs';
+import { loadGraph } from './graph-store.mjs';
 import { archivedToday, isNew, now, pruneNew, savePrefs, state, takeArrival, zeroSinceToday } from './state.mjs';
 import { batchProgress, cardIndex, cursorAfter, focusSignature, listsFromRows, nextUp, presentIds, visibleModel } from './ui-state.mjs';
 import { announce, fill, h, leaveAndRemove } from './view.mjs';
@@ -118,6 +121,7 @@ function renderMast() {
   document.querySelector('.glyph rect')?.classList.toggle('is-on', needs);
 }
 
+/** プロジェクト名だけを選択肢にし、パスや内部キーは表示しない。 @param {any} board */
 function renderFoot() {
   const t = state.t;
   const s = state.board?.stats ?? {};
@@ -129,7 +133,7 @@ function renderFoot() {
   const ctxFormat = !!s.contextSuspect;
   const actFormat = s.activitySeen === 0 && Number(s.recentWithTranscript) >= FORMAT_SUSPECT_MIN;
   // 署名は足元に出す値だけ (scanMs や contextSeen などで毎回作り直して、開いた「読み込みの状態」を閉じないように)
-  const sig = [t.lang, keysOn, notify, state.prefs.notify, !!state.board, s.bad, s.transcriptsMissingRecent, s.transcriptsDirMissing, badFormat, ctxFormat, actFormat, s.demo, archived, JSON.stringify(s.sources?.codex ?? null)].join('|');
+  const sig = [t.lang, keysOn, notify, state.prefs.notify, !!state.board, s.bad, s.transcriptsMissingRecent, s.transcriptsDirMissing, badFormat, ctxFormat, actFormat, s.demo, archived, JSON.stringify(s.sources?.codex ?? null), JSON.stringify(s.sources?.copilot ?? null), JSON.stringify(s.sources?.opencode ?? null)].join('|');
   const foot = $('foot');
   if (foot.dataset.sig === sig) return;
   foot.dataset.sig = sig;
@@ -140,6 +144,14 @@ function renderFoot() {
   if (codex) {
     diag.push(...codexStatusMessages(t, codex).map((text) => h('p', { text })));
   }
+  const copilot = s.sources?.copilot;
+  if (copilot) {
+    diag.push(...copilotStatusMessages(t, copilot).map((text) => h('p', { text })));
+  }
+  const opencode = s.sources?.opencode;
+  if (opencode) diag.push(...openCodeStatusMessages(t, opencode).map((text) => h('p', { text })));
+  diag.push(h('h3', { class: 'foot__diag-sub', text: t('foot.productLimits') }));
+  diag.push(...productLimitMessages(t).map((text) => h('p', { text })));
   if (Number(s.bad) > 0) diag.push(h('p', { text: t('foot.bad', { n: s.bad }) }));
   if (Number(s.transcriptsMissingRecent) > 0) diag.push(h('p', { text: sentences(t, t('foot.missing', { n: s.transcriptsMissingRecent, days: RECENT_MS / DAY }), t('foot.missingWhy')) }));
   if (!diag.length) diag.push(h('p', { text: t('foot.allGood') }));
@@ -178,7 +190,8 @@ export function render() {
   const at = now();
   const board = state.board;
   const focus = captureFocus();
-  view.visible = board ? visibleModel(board, { q: state.filter, family: state.family, source: state.sourceFilter, t, now: at }) : null;
+  state.projectFilter = renderProjectFilter(/** @type {HTMLSelectElement} */ ($('project-filter')), board, t, state.projectFilter);
+  view.visible = board ? visibleModel(board, { q: state.filter, family: state.family, source: state.sourceFilter, project: state.projectFilter, state: state.stateFilter, graph: loadGraph(), t, now: at }) : null;
   view.index = cardIndex(board);
   view.present = presentIds(board);
   renderMast();
@@ -320,6 +333,10 @@ export function clearFilters() {
   state.family = null;
   state.sourceFilter = 'all';
   /** @type {HTMLSelectElement} */ ($('source-filter')).value = 'all';
+  state.projectFilter = 'all';
+  /** @type {HTMLSelectElement} */ ($('project-filter')).value = 'all';
+  state.stateFilter = 'all';
+  /** @type {HTMLSelectElement} */ ($('state-filter')).value = 'all';
 }
 
 /** その行が見えるように欄・グループ・「残りを表示」を開いて、カーソルとフォーカスを置く。 @param {string} id */

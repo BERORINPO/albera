@@ -174,8 +174,71 @@ test('visibleModel: 実行元フィルターは検索と重ねられ、件数も
   assert.equal(codex.filtering, true);
   assert.deepEqual(codex.recentGroups.flatMap((g) => g.items.map((item) => item.id)), ['codex_00000000-0000-4000-8000-000000000001']);
   assert.equal(codex.total, 1);
+  b.recentGroups[0].items.push(c('copilot_00000000-0000-4000-8000-000000000002', { source: 'copilot', title: 'Copilot task' }));
+  const copilot = visibleModel(b, { source: 'copilot', t: en });
+  assert.equal(copilot.filtering, true);
+  assert.deepEqual(copilot.recentGroups.flatMap((g) => g.items.map((item) => item.id)), ['copilot_00000000-0000-4000-8000-000000000002']);
+  b.recentGroups[0].items.push(c('opencode_00000000-0000-4000-8000-000000000003', { source: 'opencode', title: 'OpenCode task' }));
+  const opencode = visibleModel(b, { source: 'opencode', t: en });
+  assert.equal(opencode.filtering, true);
+  assert.deepEqual(opencode.recentGroups.flatMap((g) => g.items.map((item) => item.id)), ['opencode_00000000-0000-4000-8000-000000000003']);
   const combined = visibleModel(b, { source: 'codex', q: 'no match', t: en });
   assert.equal(combined.total, 0, 'source and text filters are ANDed');
+});
+
+test('visibleModel: project filtering composes with source and search across piles', () => {
+  const b = board();
+  b.buckets.trouble[0].project = { key: 'notes', label: 'notes', extra: 0 };
+  b.recentGroups[0].items.push(c('opencode_00000000-0000-4000-8000-000000000003', {
+    source: 'opencode', title: 'OpenCode notes', project: { key: 'notes', label: 'notes', extra: 0 },
+  }));
+  b.buckets.working.push(c('copilot_00000000-0000-4000-8000-000000000004', {
+    bucket: 'working', source: 'copilot', title: 'Copilot notes', project: { key: 'notes', label: 'notes', extra: 0 },
+  }));
+  const byProject = visibleModel(b, { project: 'notes', t: en });
+  assert.equal(byProject.filtering, true);
+  assert.deepEqual(byProject.buckets.trouble.map((x) => x.id), ['t1']);
+  assert.deepEqual(byProject.recentGroups.flatMap((g) => g.items.map((x) => x.id)), ['opencode_00000000-0000-4000-8000-000000000003']);
+  assert.equal(byProject.total, 4);
+  const combined = visibleModel(b, { project: 'notes', source: 'opencode', q: 'notes', t: en });
+  assert.equal(combined.total, 1);
+  assert.deepEqual(combined.recentGroups[0].items.map((x) => x.id), ['opencode_00000000-0000-4000-8000-000000000003']);
+  const byState = visibleModel(b, { state: 'working', project: 'notes', source: 'copilot', q: 'notes', t: en });
+  assert.equal(byState.total, 1);
+  assert.deepEqual(byState.buckets.working.map((x) => x.id), ['copilot_00000000-0000-4000-8000-000000000004']);
+  assert.deepEqual(byState.recentGroups, []);
+});
+
+test('visibleModel: linked execution profile adds only safe enum labels to session search', () => {
+  const b = board();
+  const sessionId = 'codex_00000000-0000-4000-8000-000000000011';
+  b.recentGroups[0].items.push(c(sessionId, { source: 'codex', title: 'Codex task' }));
+  const graph = {
+    nodes: [{ id: 'p1', kind: 'execution_profile', title: 'private title', body: 'private details', executionHarness: 'codex_cli', executionLocation: 'wsl', workspaceIsolation: 'sandboxed', networkAccess: 'restricted', approvalMode: 'per_action' }],
+    edges: [{ kind: 'related', from: `graph:p1`, to: `session:${sessionId}` }],
+  };
+  const byLocation = visibleModel(b, { q: 'Location: WSL', source: 'codex', graph, t: en });
+  assert.deepEqual(byLocation.recentGroups.flatMap((g) => g.items.map((item) => item.id)), [sessionId]);
+  const byIsolation = visibleModel(b, { q: 'Sandboxed', project: 'demo-app', state: 'recent', graph, t: en });
+  assert.deepEqual(byIsolation.recentGroups.flatMap((g) => g.items.map((item) => item.id)), [sessionId]);
+  const byHarness = visibleModel(b, { q: 'Harness: Codex CLI', source: 'codex', graph, t: en });
+  assert.deepEqual(byHarness.recentGroups.flatMap((g) => g.items.map((item) => item.id)), [sessionId]);
+  assert.equal(visibleModel(b, { q: 'private title', graph, t: en }).total, 0, 'profile titles are not searchable through a related session');
+  assert.equal(visibleModel(b, { q: 'private details', graph, t: en }).total, 0, 'profile notes are not searchable through a related session');
+  assert.equal(visibleModel(b, { q: 'Location: WSL', t: en }).total, 0, 'without a linked profile, enum values do not match');
+});
+
+test('visibleModel: state selector filters all six piles including grouped recent and cleanup rows', () => {
+  const b = board();
+  for (const [pile, total] of [['needs_you', 2], ['trouble', 1], ['unread', 1], ['working', 1], ['recent', 2], ['cleanup', 5]]) {
+    const v = visibleModel(b, { state: pile, t: en });
+    assert.equal(v.total, total, pile);
+    for (const other of ['needs_you', 'trouble', 'unread', 'working']) {
+      if (other !== pile) assert.equal(v.buckets[other].length, 0, `${pile} excludes ${other}`);
+    }
+    assert.equal(v.recentGroups.length > 0, pile === 'recent');
+    assert.equal(v.cleanupGroups.length > 0, pile === 'cleanup');
+  }
 });
 
 test('visibleModel: 親子の絞り込みは根と子孫、定期実行は runIds のどれかが入っていれば', () => {

@@ -118,7 +118,7 @@ export const FAMILY_MAX_DEPTH = 10;
 export const PROJECT_PARENT_MAX_DEPTH = 5;
 
 // --- 識別子 ---
-export const SESSION_ID_RE = /^local_[0-9a-f-]{36}$/;
+export const SESSION_ID_RE = /^(?:local|codex|copilot|opencode)_[0-9a-f-]{36}$/;
 // 利用者の返事を待つツール。tool_result がまだ無ければ「あなたの返事待ち」に出す
 export const ASK_TOOLS = Object.freeze(['AskUserQuestion', 'ExitPlanMode']);
 export const CLI_SESSION_ID_RE = /^[0-9a-f-]{36}$/i;
@@ -181,6 +181,11 @@ export const FORBIDDEN_WIRE_KEYS = Object.freeze([
   'todos',
   'contextExceededCount',
   'cwd',
+  'gitDir',
+  'commonDir',
+  'worktreePath',
+  'lockedReason',
+  'porcelain',
 ]);
 
 // --- v0.2: していること・コンテキスト (spec/board.md §5.1・§5.2)。言葉は持たない (doing.* / ctx.* は画面の辞書) ---

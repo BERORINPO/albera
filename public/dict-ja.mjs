@@ -4,6 +4,7 @@
 
 import { JA_CANVAS } from './dict-ja-canvas.mjs';
 import { JA_HANDOFF } from './dict-ja-handoff.mjs';
+import { JA_FILTER } from './dict-ja-filter.mjs';
 
 /** @type {Readonly<Record<string, string>>} */
 export const JA = Object.freeze({
@@ -12,7 +13,7 @@ export const JA = Object.freeze({
   'app.tabTitle': '({n}) {pile} — {name}',
   'app.tabOffline': '{title} (オフライン)',
   'mast.home': 'Pigeonholes 先頭へ',
-  'mast.trust': '読み取り専用。このパソコンの外へは何も送りません。',
+  'mast.trust': 'セッションは読み取り専用。worktreeは確認後に作成。',
   'mast.demo': 'デモデータ',
   'mast.help': 'キー一覧',
   'date.asOf': '{mon} {d} 日 ({wd}) {hm} 時点',
@@ -37,8 +38,6 @@ export const JA = Object.freeze({
   'date.mon.9': '10 月',
   'date.mon.10': '11 月',
   'date.mon.11': '12 月',
-  'filter.label': 'タイトル・プロジェクト・要約・していることで絞り込み',
-  'filter.placeholder': '絞り込み',
   'lang.switchTo': 'English',
   'lang.toggleAria': '言語を切り替える',
 
@@ -66,7 +65,7 @@ export const JA = Object.freeze({
   'lede.loading': 'セッションを読み込んでいます…',
   'lede.loadingNote': '最初の 1 回は全部を読むので、数秒かかります。',
   'lede.empty': 'セッションはまだありません',
-  'lede.emptyNote': 'Claude デスクトップアプリの Code タブで会話を始めると、ここに並びます。',
+  'lede.emptyNote': '対応するローカル保存データが見つかると表示します。0 件の理由と確認先は、下の「読み込みの状態」で確認できます。',
   'lede.offline': 'サーバーにつながりません',
   'lede.offlineNote': 'ターミナルでボードをもう一度起動してください: {cmd} (clone から使うなら npm start)。つながれば自動で表示します。',
   'lede.serverError': '一覧を作れませんでした',
@@ -192,6 +191,7 @@ export const JA = Object.freeze({
   'detail.source': 'ハーネス',
   'source.claude': 'Claude Code',
   'detail.events': '最近のイベント',
+  'detail.eventsUnavailable': '安全に表示できるイベント要約はありません。',
   'source.codex': 'Codex CLI',
   'event.turnStarted': 'ターン開始',
   'event.turnCompleted': 'ターン完了',
@@ -205,6 +205,16 @@ export const JA = Object.freeze({
   'detail.error': 'エラー全文',
   'detail.branch': 'ブランチ',
   'detail.worktree': '作業ツリー',
+  'detail.gitState': 'Git の作業状態',
+  'detail.gitFlags': '作業ツリーの状態',
+  'detail.gitState.clean': '変更なし',
+  'detail.gitState.changed': '追跡中の変更 {changed} 件',
+  'detail.gitState.untracked': '未追跡ファイル {untracked} 件',
+  'detail.gitState.mixed': '追跡中の変更 {changed} 件、未追跡ファイル {untracked} 件',
+  'detail.gitState.conflicted': '競合 {conflicted} 件',
+  'detail.gitState.unknown': '不明',
+  'detail.gitLocked': 'ロック中',
+  'detail.gitPrunable': '整理候補',
   'detail.created': '作成',
   'detail.turns': 'やりとり',
   'detail.turnsValue': '{n} 回',
@@ -236,7 +246,7 @@ export const JA = Object.freeze({
   'banner.family': '『{title}』の親子だけ表示中',
   'banner.clear': '解除',
   'nomatch.query.lead': '『{q}』に一致するセッションはありません。',
-  'nomatch.query.text': 'タイトル・プロジェクト・要約・していることを探しました。',
+  'nomatch.query.text': 'セッションの題名・プロジェクト・要約・手動記録したハーネスと実行条件、キャンバスカードの題名・内容・状態・不足リンク、関係の種類・目的・委譲状態を探しました。',
   'nomatch.family': 'この親子には該当するものがありません。',
   'nomatch.clear': '絞り込みを消す',
 
@@ -340,7 +350,7 @@ export const JA = Object.freeze({
   'help.marks': 'キャンバスの印',
   'help.off': '一文字キーを使わない',
   'help.offNote': 'Enter・Space・Esc・矢印・Tab はそのまま使えます。',
-  'foot.trust': '読み取り専用。このパソコンの外へは何も送りません。',
+  'foot.trust': 'セッションは読み取り専用。worktreeは確認後に作成。',
   'foot.keys.move': '移動',
   'foot.keys.open': '開く',
   'foot.keys.peek': '詳しく',
@@ -361,8 +371,10 @@ export const JA = Object.freeze({
   'foot.diag': '読み込みの状態',
   'foot.codexSummary': 'Codex CLI: 候補 {files} 件、認識 {detected} 件。盤面では作業中 {working}、止まったかも {trouble}、最近 {recent}。イベント状態は進行中 {active}、完了 {completed}、中断 {interrupted}、不明 {unknown}。除外・不良 {rejected} 件。',
   'foot.codexNoFiles': '0件表示の理由: 認識対象の形式に合うrolloutファイルが見つかりません。CODEX_HOMEまたは既定の保存先を確認してください。',
-  'foot.codexNoDetected': '0件表示の理由: 候補ファイルはありますが、CLIの形式条件に合うセッションはありません。形式不整合やCLI以外の記録は除外されます。',
+  'foot.codexNoDetected': '0件表示の理由: 候補ファイルはありますが、CLIの形式条件に合うセッションはありません。CLI識別情報なし {missingSource}件、別producer {otherSource}件、未対応originator {unsupportedOriginator}件、ファイル名とのID不一致 {filenameMismatch}件です。値やパスは表示せず、不正形式は除外します。CODEX_HOMEと保存形式を確認してください。',
+  'foot.codexNoCliMarkers': '候補ファイルはありますが、CLI識別情報がありません ({missingSource}件) またはCLI以外の識別情報があります ({otherSource}件)。識別情報の値は表示していません。CODEX_HOMEがCodex CLIのセッション保存先か確認してください。',
   'foot.codexNoWorking': '作業中0件の理由: 認識したセッションに、15分以内に開始された未完了ターンがありません。完了・中断は「最近」へ、15分以上更新のない進行中ターンは「止まったかも」へ分類されます。',
+  'foot.codexWslNotConfigured': 'WSLのCodex保存先は未接続です。Windowsから読むには、対象ディストリビューションの共有先をCODEX_HOMEに設定して再起動してください。Pigeonholesは明示された共有だけを読み、WSLコマンドは実行しません。',
   'foot.bad': '読めなかったファイル {n} 件。',
   'foot.missing': '会話ログが見つからない {n} 件 (最近 {days} 日)。',
   'foot.missingWhy': 'リモートやクラウドで動いた会話は、このパソコンにログが無いため状態が分かりません。',
@@ -383,4 +395,5 @@ export const JA = Object.freeze({
   // 19.13–19.15: dict-ja-handoff.mjs
   ...JA_CANVAS,
   ...JA_HANDOFF,
+  ...JA_FILTER,
 });

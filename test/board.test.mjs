@@ -40,6 +40,21 @@ test('v は 2。件数の合計は非アーカイブ件数と一致し、アー�
   assert.ok(!JSON.stringify(b).includes(sid(2)));
 });
 
+test('provider source state is projected only as a safe enum; Claude cards stay unchanged', () => {
+  const codex = { ...rec(801), source: 'codex', lifecycle: { status: 'unexpected-sensitive-state' }, events: [] };
+  const failed = { ...rec(803), source: 'codex', lifecycle: { status: 'failed' }, events: [{ type: 'turn_failed', at: NOW - MIN }] };
+  const claude = rec(802);
+  const result = board([codex, failed, claude]);
+  const cards = [...result.buckets.needs_you, ...result.buckets.trouble, ...result.buckets.unread, ...result.buckets.working, ...result.recentGroups.flatMap((g) => g.items), ...allCleanupRows(result)];
+  const codexCard = cards.find((card) => card.id === codex.sessionId);
+  const failedCard = cards.find((card) => card.id === failed.sessionId);
+  const claudeCard = cards.find((card) => card.id === claude.sessionId);
+  assert.equal(codexCard?.sourceState, 'unknown');
+  assert.equal(failedCard?.sourceState, 'failed');
+  assert.equal(JSON.stringify(result).includes('unexpected-sensitive-state'), false);
+  assert.equal('sourceState' in claudeCard, false);
+});
+
 test('盤面に言葉は入らない: reasonText・gloss・グループの label が無く、stats.demo と formatSuspect がある', () => {
   const b = board([rec(1), idle(2), rec(3, { cwd: '', originCwd: '' })], { demo: true });
   const json = JSON.stringify(b);
@@ -270,6 +285,21 @@ test('文字数の上限: title 200 / 本文 600 / 親の title 40。完全な c
   assert.equal(Array.from(card.family.parentTitle).length, 40);
   assert.equal('cwd' in card.detail, false);
   assert.ok(!JSON.stringify(card).includes('C:\\work\\alpha'));
+});
+
+test('Git worktree detail is an allowlist and suppresses path-like refs and private fields', () => {
+  const s = Object.assign(rec(1, { branch: 'C:\\private\\branch', worktreeName: '\\\\server\\share' }), {
+    gitWorktree: { branch: 'feature/canvas', status: 'changed', changed: 2, untracked: 1, conflicted: 0, locked: true, prunable: false,
+      path: 'C:\\private\\repo', lockedReason: 'private secret reason', commonDir: 'C:\\private\\repo\\.git' },
+  });
+  const b = board([s]);
+  const cards = [...Object.values(b.buckets).flat(), ...b.recentGroups.flatMap((g) => g.items)];
+  const card = cards.find((c) => c.id === sid(1));
+  assert.deepEqual(card.detail.gitWorktree, { branch: 'feature/canvas', status: 'changed', changed: 2, untracked: 1, conflicted: 0, locked: true, prunable: false });
+  assert.equal(card.detail.branch, undefined);
+  assert.equal(card.detail.worktreeName, undefined);
+  const json = JSON.stringify(card);
+  for (const secret of ['C:\\private', 'server\\share', 'private secret reason', 'lockedReason', 'worktreePath', 'commonDir']) assert.ok(!json.includes(secret), secret);
 });
 
 test('出力に元データの大きな項目と folder hints は入らない (許可した項目だけ)', () => {

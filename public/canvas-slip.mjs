@@ -135,7 +135,7 @@ function whereLine(t, card) {
   const pname = f?.parentTitle == null ? t('family.parentMissing') : f.parentTitle || t('untitled');
   const parent = f?.parentId ? partsToNodes(t.parts('family.parent', { name: h('bdi', { lang: langOf(t, pname), text: pname }) })) : null;
   const kids = [
-    card.source === 'codex' ? h('span', { class: 'is-ink', text: t('source.codex') }) : null,
+    card.source ? h('span', { class: 'is-ink', text: t(`source.${card.source}`) }) : null,
     eventSummaryEl(t, card),
     d.branch ? h('code', { text: d.branch }) : null,
     d.worktreeName ? h('span', { text: d.worktreeName }) : null,
@@ -200,6 +200,7 @@ export function slipEl(t, card, slip, o) {
     longDoing(t, card, pile, faded, o.now),
     short ? line('slip__doing slip__doing--short', h('span', { lang: langOf(t, short), text: short })) : null,
     line('slip__foot', h('span', { class: 'slip__time', id: timeId }, timeEl(t, card, o.now)), ...ctx),
-    line('slip__acts', ...[openEl(t, card, 'slip__open', o.demo), ho].map(offTab)),
+    line('slip__acts', ...[openEl(t, card, 'slip__open', o.demo), ho, h('button', { class: 'canvas-connect-handle', type: 'button', 'data-endpoint': 'session', 'data-action': 'graph-connect-session-handle', 'data-id': card.id, 'aria-label': t('graph.connectSession'), text: '↗' })].map(offTab)),
+    h('button', { class: 'canvas-session-move', type: 'button', 'data-id': card.id, 'aria-label': t('canvas.moveSession', { title: titleOf(t, card.title) }), text: '↔' }),
   );
 }

@@ -240,7 +240,10 @@ export function tabTitle(t, counts, offline = false) {
 
 /** Claude アプリで開くリンク。ID の形が違えば null。 @param {string} id */
 export function deepLink(id) {
-  return SESSION_ID_RE.test(String(id)) ? DEEP_LINK_PREFIX + id : null;
+  const value = String(id);
+  // The deep-link scheme belongs to Claude Code app sessions only. Other
+  // providers must not be routed to Claude or implicitly resumed from here.
+  return /^local_[0-9a-f-]{36}$/i.test(value) && SESSION_ID_RE.test(value) ? DEEP_LINK_PREFIX + value : null;
 }
 
 /** 無題なら (無題)。 @param {T} t @param {unknown} title */

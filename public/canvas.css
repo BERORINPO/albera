@@ -166,6 +166,7 @@ html:has(.board[data-view="canvas"]), html:has(.board[data-view="canvas"]) > bod
   border-top: calc(1px * var(--k)) solid var(--color-rule);
   overflow: hidden;
 }
+.slip.is-session-positioned { visibility: hidden; }
 .slip.is-top { border-top-color: transparent; }
 /* the cursor: the band and an ink bar on the inline-start edge (the band alone is 1.08:1 on the sheet; the bar is the state's mark, WCAG 1.4.11) */
 .slip.is-cursor { background: var(--cv-cursor); }
@@ -217,6 +218,14 @@ html:has(.board[data-view="canvas"]), html:has(.board[data-view="canvas"]) > bod
 .slip .ctx.is-low { display: none; }
 .ctx__w, .ctx__m, .ctx__lv { white-space: nowrap; }
 .slip__acts { column-gap: calc(var(--space-md) * var(--k)); }
+.canvas-connect-handle, .canvas-session-move, .canvas-session-reset { position: relative; flex: none; min-width: calc(var(--hit) * var(--k)); min-height: calc(var(--hit) * var(--k)); padding: 0; border: var(--rule-ink); border-radius: 50%; background: var(--cv-sheet); color: var(--color-ink-2); font: inherit; line-height: 1; cursor: crosshair; touch-action: none; }
+.slip .canvas-session-move, .session-positioned .canvas-session-reset { position: absolute; inset-block-start: calc(5px * var(--k)); inset-inline-end: calc(5px * var(--k)); z-index: 2; cursor: grab; }
+.session-positioned .canvas-session-reset { inset-block-start: auto; inset-block-end: calc(5px * var(--k)); }
+.slip:not(:hover):not(:focus-within) .canvas-session-move, .session-positioned:not(:hover):not(:focus-within) .canvas-session-reset { opacity: 0; }
+.canvas-session-move:focus-visible, .canvas-session-reset:focus-visible { outline: calc(3px * var(--k)) solid var(--color-focus); outline-offset: 2px; }
+.canvas-connect-handle:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.canvas-connect-handle.is-connect-source { background: var(--color-accent); color: var(--cv-sheet); }
+.slip.is-connect-target { outline: 2px dashed var(--color-accent); outline-offset: 2px; }
 .slip__acts .textbtn { padding: 0; font-size: 1em; }
 .slip__acts .textbtn::before { inset: calc(-0.7rem * var(--k)) calc(-0.3rem * var(--k)); }
 .slip__acts .ctx { color: var(--color-muted); }

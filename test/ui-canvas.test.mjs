@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { CANVAS, CANVAS_STORAGE_KEY, HOUR, UI_STORAGE_KEY } from '../src/shared/constants.mjs';
 import { clampZ, colsCap, fitRect, headPin, isNarrow, keepCentre, LEAVE_PX, levelOf, FIT_MIN, minZoom, openCamera, panBy, revealRect, stepZoom, toScreen, toWorld, zoomAt } from '../public/canvas-camera.mjs';
 import { layoutBoard, readingOrder } from '../public/canvas-layout.mjs';
-import { canvasEscapeStep, canvasKeyAction } from '../public/canvas-input.mjs';
+import { canvasEscapeStep, canvasKeyAction, canvasMoveDelta, graphConnectionDrop } from '../public/canvas-input.mjs';
 import { canvasSig, loadSeats, matchedIds, saveSeats } from '../public/canvas.mjs';
 import { slipFlags } from '../public/canvas-slip.mjs';
 import { keyAction } from '../public/keys.mjs';
@@ -17,6 +17,17 @@ const k = (key, o = {}) => ({ key, ...o });
 /** @param {any} target @param {boolean} [keysOn] */
 const at = (target, keysOn = true) => ({ keysOn, target });
 const near = (/** @type {number} */ a, /** @type {number} */ b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
+
+test('graph connection drop accepts distinct cards and rejects self/invalid targets', () => {
+  assert.deepEqual(graphConnectionDrop('source', 'target'), { sourceId: 'source', targetId: 'target', sourceKind: 'graph', targetKind: 'graph' });
+  assert.deepEqual(graphConnectionDrop('node', 'session', 'graph', 'session'), { sourceId: 'node', targetId: 'session', sourceKind: 'graph', targetKind: 'session' });
+  assert.deepEqual(graphConnectionDrop('first', 'second', 'session', 'session'), { sourceId: 'first', targetId: 'second', sourceKind: 'session', targetKind: 'session' });
+  assert.equal(graphConnectionDrop('source', 'source'), null);
+  assert.equal(graphConnectionDrop('same', 'same', 'session', 'session'), null);
+  assert.equal(graphConnectionDrop('', 'target'), null);
+  assert.equal(graphConnectionDrop('source', null), null);
+  assert.equal(graphConnectionDrop('source', 'target', 'unknown', 'session'), null);
+});
 
 /** 保存の入れ替え (ブラウザの localStorage の代わり)。 @param {any} store @param {() => void} fn */
 function withStorage(store, fn) {
@@ -342,12 +353,19 @@ test('canvasKeyAction: 矢印は表示枠で動かす (Shift で大きく)、付
     assert.equal(canvasKeyAction(k(key), at('none')), `pan-${dir}`);
     assert.equal(canvasKeyAction(k(key), at('slip')), `move-${dir}`);
     assert.equal(canvasKeyAction(k(key), at('graph')), `graph-move-${dir}`);
+    assert.equal(canvasKeyAction(k(key), at('session')), `session-move-${dir}`);
     assert.equal(canvasKeyAction(k(key, { shiftKey: true }), at('slip')), null);
     assert.equal(canvasKeyAction(k(key, { shiftKey: true }), at('head')), `nudge-${dir}`);
     assert.equal(canvasKeyAction(k(key), at('head')), null);
     assert.equal(canvasKeyAction(k(key), at('bar')), null, '帯のボタンの矢印はブラウザのまま');
     assert.equal(canvasKeyAction(k(key), at('slip', false)), `move-${dir}`, '矢印は 1 文字キーを止めても効く');
   }
+});
+
+test('canvasMoveDelta: セッションカードの矢印移動は固定刻みで、不明方向は無効', () => {
+  assert.deepEqual(canvasMoveDelta('right'), [24, 0]);
+  assert.deepEqual(canvasMoveDelta('up'), [0, -24]);
+  assert.equal(canvasMoveDelta('diagonal'), null);
 });
 
 test('canvasKeyAction: §10.8 の表のキー', () => {

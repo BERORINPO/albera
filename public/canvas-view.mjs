@@ -10,6 +10,8 @@ import { view } from './render.mjs';
 import { state } from './state.mjs';
 import { nextUp } from './ui-state.mjs';
 import { loadGraph } from './graph-store.mjs';
+import { loadCameraView, saveCameraView } from './canvas-camera-store.mjs';
+import { sessionRect } from './session-position.mjs';
 
 /** @typedef {import('./canvas-camera.mjs').Camera} Camera */
 /** @typedef {import('./canvas-layout.mjs').Layout} Layout */
@@ -18,7 +20,7 @@ const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.get
 /** これより狭い表示枠 (Claude の横の欄) では、用紙を 1 列にして縦 1 列に並べ、カメラの余白を狭くし、「全体」は幅に合わせる */
 export const NARROW_PX = CANVAS.NARROW_PX;
 
-/** キャンバスの状態 (メモリだけ。席は localStorage、カメラは保存しない)。 */
+/** キャンバスの状態 (席と視点はlocalStorage。視点は数値だけ)。 */
 export const cv = {
   /** @type {Camera} */ cam: { x: 0, y: 0, z: CANVAS.Z_OPEN },
   /** @type {Camera|null} z で戻る先 (全体を表示する前のカメラ) */ before: null,
@@ -29,12 +31,16 @@ export const cv = {
   /** 今の席が狭い表示枠のものか (幅が NARROW_PX を越えたら、その幅の席を読み直す) */ narrow: false,
   /** @type {import('./canvas-bar.mjs').BarState|null} */ bar: null,
   /** 次に描くとき、開いたときのカメラにする */ fresh: true,
+  /** 初回カメラ復元後にだけ永続化を許可する (起動時のfocusinが保存値を消さないようにする) */ cameraReady: false,
   /** 開くときに全体を表示する (一覧の z) */ fitOnOpen: false,
   /** 次に描くとき、席を捨てて並べ直す */ repack: false,
   /** @type {string[]} */ order: [],
   /** @type {Set<string>|null} 絞り込みに合う ID (null = 絞り込みなし。描くたびに作り直す) */ matched: null,
   /** @type {{key: string, x: number, y: number}|null} ドラッグ中の用紙と今の位置 (描き直しても席へ戻さない) */ drag: null,
   /** @type {{id:string,x:number,y:number}|null} ドラッグ中のユーザー作成カード */ graphDrag: null,
+  /** @type {Record<string,{x:number,y:number}>|undefined} ブラウザー内のセッションカード配置 */ sessionPositions: undefined,
+  /** @type {{id:string,x:number,y:number,startX:number,startY:number}|null} ドラッグ中のセッションカード */ sessionDrag: null,
+  /** relation picker source while the user chooses a graph-card target */ graphConnectFrom: null,
   /** 描き直しのあとにプログラムがフォーカスを戻している間 (focusin でカメラもカーソルも動かさない) */ quiet: false,
   size: { w: 0, h: 0 },
 };
@@ -70,6 +76,7 @@ export function moveCam(cam) {
   cv.cam = cam;
   cv.atFit = false;
   cv.untouched = false;
+  if (cv.cameraReady) saveCameraView(false, cam, cv.narrow);
 }
 
 /**
@@ -82,9 +89,11 @@ export function resized(sz) {
   const was = cv.size;
   cv.size = sz;
   if (!was.w || !sz.w || (was.w === sz.w && was.h === sz.h) || !cv.layout) return false;
+  const crossingWidthClass = (sz.w < NARROW_PX) !== cv.narrow;
   if (cv.atFit) cv.cam = fitCam();
   else if (cv.untouched) cv.cam = openCamera(cv.layout, nextUp(state.board)?.card.id ?? null, sz.w, sz.h, pad());
   else if (was.w !== sz.w) cv.cam = keepCentre(cv.cam, was.w, was.h, sz.w, sz.h);
+  if (cv.cameraReady && !cv.untouched && !crossingWidthClass) saveCameraView(cv.atFit, cv.cam, cv.narrow);
   return true;
 }
 
@@ -141,6 +150,10 @@ export function fitCam() {
     const text = [node.title, node.body, node.kind, node.status, node.checkedPerson, node.missingEvidence, node.neededExplanation].join(' ').toLocaleLowerCase();
     if (!filtering || text.includes(query)) list.push({ x: node.x, y: node.y, w: 280, h: 168 });
   }
+  for (const [id, pos] of Object.entries(cv.sessionPositions ?? {})) {
+    const rect = sessionRect(cv.layout, id, { [id]: pos });
+    if (rect && (!filtering || ok(id))) list.push(rect);
+  }
   if (!list.length) return { x: 0, y: 0, z: 1 };
   const x = Math.min(...list.map((s) => s.x));
   const y = Math.min(...list.map((s) => s.y));
@@ -153,6 +166,7 @@ export function fitAll() {
   cv.cam = fitCam();
   cv.atFit = true;
   cv.untouched = false;
+  if (cv.cameraReady) saveCameraView(true, cv.cam, cv.narrow);
   apply(true);
 }
 
@@ -163,6 +177,7 @@ export function fitToggle() {
   cv.untouched = false;
   const { w, h } = size();
   cv.cam = cv.before ?? openCamera(/** @type {Layout} */ (cv.layout), nextUp(state.board)?.card.id ?? null, w, h, pad());
+  if (cv.cameraReady) saveCameraView(false, cv.cam, cv.narrow);
   apply(true);
 }
 

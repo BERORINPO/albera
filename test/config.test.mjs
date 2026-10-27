@@ -75,6 +75,27 @@ test('Claude セッションフォルダが無くても Codex_HOME/sessions が�
   assert.equal(config.codexHome, 'D:\\codex');
 });
 
+test('Windows CODEX_HOME may explicitly point at one WSL distro share without changing the configured root', () => {
+  const codexHome = '\\\\wsl.localhost\\Ubuntu\\home\\tester\\.codex';
+  const config = loadConfig({
+    env: { CODEX_HOME: codexHome }, argv: [], home: WIN_HOME, platform: 'win32',
+    isDir: (p) => p === `${codexHome}\\sessions`,
+  });
+  assert.equal(config.action, 'run');
+  assert.equal(config.codexHome, codexHome);
+  assert.equal(config.sessionsRoot, '');
+});
+
+test('Claude / Codex の保存先が無くても Copilot の session-state があれば実データモードで起動する', () => {
+  const config = loadConfig({
+    env: { COPILOT_HOME: 'D:\\copilot' }, argv: [], home: WIN_HOME,
+    platform: 'win32', isDir: (p) => p === 'D:\\copilot\\session-state',
+  });
+  assert.equal(config.action, 'run');
+  assert.equal(config.sessionsRoot, '');
+  assert.equal(config.copilotHome, 'D:\\copilot');
+});
+
 test('端末の言語: --lang → PIGEONHOLES_LANG → LC_ALL → LC_MESSAGES → LANG → Intl → en', () => {
   assert.equal(pickTerminalLang({}, 'ja', 'en-US'), 'ja');
   assert.equal(pickTerminalLang({ PIGEONHOLES_LANG: 'ja' }, 'en', 'ja-JP'), 'en', 'フラグが勝つ');
@@ -165,7 +186,11 @@ test('loadConfig: 候補のうち最初に存在したフォルダ。フラグ�
 test('loadConfig: フラグは環境変数に勝つ。デモはセッションフォルダが無くても起動する', () => {
   const base = { home: NIX_HOME, cwd: '/cwd', platform: 'linux', intlLocale: 'en-US', isDir: dirs([]) };
   const c = loadConfig({ ...base, argv: ['--port', '9100', '--demo', '--lang', 'ja', '--projects-dir', '/flag'], env: { PIGEONHOLES_PORT: 'abc', PIGEONHOLES_LANG: 'xx', PIGEONHOLES_PROJECTS_DIR: '/env' } });
-  assert.deepEqual(c, { action: 'run', lang: 'ja', demo: true, port: 9100, roots: [NIX_HOME], sessionsRoot: '', codexHome: NIX_HOME + '/.codex', projectsDir: '/flag', home: NIX_HOME });
+  assert.deepEqual(c, { action: 'run', lang: 'ja', demo: true, port: 9100, roots: [NIX_HOME], sessionsRoot: '', codexHome: NIX_HOME + '/.codex', copilotHome: NIX_HOME + '/.copilot', openCodeDb: NIX_HOME + '/.local/share/opencode/opencode.db', projectsDir: '/flag', home: NIX_HOME });
+  const copilot = loadConfig({ ...base, argv: ['--demo'], env: { COPILOT_HOME: '/copilot-home' } });
+  assert.equal(copilot.action === 'run' && copilot.copilotHome, '/copilot-home');
+  const relativeCopilot = loadConfig({ ...base, argv: ['--demo'], env: { COPILOT_HOME: 'relative' } });
+  assert.equal(relativeCopilot.action === 'run' && relativeCopilot.copilotHome, NIX_HOME + '/.copilot');
   const env = loadConfig({ ...base, argv: [], env: { PIGEONHOLES_PORT: '9200', PIGEONHOLES_DEMO: '1', PIGEONHOLES_ROOTS: '/a:/b' } });
   assert.equal(env.action === 'run' && env.port, 9200);
   assert.equal(env.action === 'run' && env.demo, true);
@@ -175,6 +200,22 @@ test('loadConfig: フラグは環境変数に勝つ。デモはセッション�
   // 旧名の環境変数は読まない
   const old = loadConfig({ ...base, argv: ['--demo'], env: { SESSION_BOARD_PORT: '9300' } });
   assert.equal(old.action === 'run' && old.port, DEFAULT_PORT);
+});
+
+test('loadConfig: OPENCODE_DB can be the only available session source', () => {
+  const base = { argv: [], home: NIX_HOME, cwd: '/cwd', platform: 'linux', intlLocale: 'en-US', isDir: dirs([]) };
+  const configured = loadConfig({ ...base, env: { OPENCODE_DB: '/data/custom.db' }, isFile: (p) => p === '/data/custom.db' });
+  assert.equal(configured.action === 'run' && configured.openCodeDb, '/data/custom.db');
+  const relative = loadConfig({ ...base, env: { OPENCODE_DB: 'custom.db' }, isFile: (p) => p === '/cwd/custom.db' });
+  assert.equal(relative.action === 'run' && relative.openCodeDb, '/cwd/custom.db');
+  const defaulted = loadConfig({ ...base, env: {}, isFile: (p) => p === NIX_HOME + '/.local/share/opencode/opencode.db' });
+  assert.equal(defaulted.action === 'run' && defaulted.openCodeDb, NIX_HOME + '/.local/share/opencode/opencode.db');
+  const xdg = loadConfig({ ...base, env: { XDG_DATA_HOME: '/xdg-data' }, isFile: (p) => p === '/xdg-data/opencode/opencode.db' });
+  assert.equal(xdg.action === 'run' && xdg.openCodeDb, '/xdg-data/opencode/opencode.db');
+  const relativeXdg = loadConfig({ ...base, env: { XDG_DATA_HOME: 'relative' }, isFile: (p) => p === NIX_HOME + '/.local/share/opencode/opencode.db' });
+  assert.equal(relativeXdg.action === 'run' && relativeXdg.openCodeDb, NIX_HOME + '/.local/share/opencode/opencode.db');
+  const explicitWins = loadConfig({ ...base, env: { OPENCODE_DB: '/explicit/opencode.db', XDG_DATA_HOME: '/xdg-data' }, isFile: (p) => p === '/explicit/opencode.db' });
+  assert.equal(explicitWins.action === 'run' && explicitWins.openCodeDb, '/explicit/opencode.db');
 });
 
 test('loadConfig: --help / --version は他の値を確かめずに返す。誤りは決めた言語で出す', () => {

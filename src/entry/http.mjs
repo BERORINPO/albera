@@ -1,6 +1,6 @@
 // @ts-check
 // entry: HTTP の受け口。横断的なヘッダーは全レスポンスに一括で付ける。spec/board.md §12
-// Host 検査 (DNS rebinding 対策) → GET 以外は 405 → 起動時に作った配信表にあるパスだけ返す (パスの結合はしない)。
+// Host 検査 (DNS rebinding 対策) → 読み取りAPIは GET のみ、明示的な worktree 作成だけ POST → 起動時の配信表。
 
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -10,6 +10,17 @@ import { HELLO_PATH, helloBody } from './probe.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const JS = 'text/javascript; charset=utf-8';
+const WORKTREE_PATH = '/api/worktrees';
+const DELEGATION_PATH = '/api/delegations';
+const VOICE_SESSION_PATH = '/api/voice/session';
+const VOICE_STATUS_PATH = '/api/voice/status';
+const VOICE_BODY_MAX = 132_000;
+const DELEGATION_BODY_MAX = 4096;
+const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const WORKTREE_BODY_MAX = 2048;
+const MAX_WORKTREE_ITEMS = 20;
+const SESSION_CARD_ID = /^(?:local|codex|copilot|opencode)_[0-9a-f-]{36}$/i;
+const SAFE_BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,79}$/;
 
 /** 配信してよい拡張子と Content-Type。 */
 export const STATIC_TYPES = Object.freeze({
@@ -77,22 +88,57 @@ function send(res, status, type, body) {
 }
 
 /**
- * @param {{port: number, getBoard: () => Promise<{body: string, etag: string}>, demo?: boolean,
+ * @param {{port: number, getBoard: () => Promise<{body: string, etag: string}>, createWorktree?:(sessionId:string,branch:string)=>Promise<any>, listWorktrees?:(sessionId:string)=>Promise<any>, removeWorktree?:(sessionId:string,branch:string,confirmed:boolean)=>Promise<any>, demo?: boolean,
  *   log?: (key: string, params?: Record<string, unknown>) => void, staticFiles?: StaticTable}} deps
  *   log は messages.mjs のキーで受ける (言葉は server が付ける)。demo は /api/hello で答える (ポートが使用中のときの確かめ用)
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => Promise<void>}
  */
-export function createHandler({ port, getBoard, demo = false, log = () => {}, staticFiles = buildStaticFiles() }) {
+export function createHandler({ port, getBoard, createWorktree, listWorktrees, removeWorktree, startDelegation, getDelegationStatus, startVoiceSession, voiceConfigured = false, demo = false, log = () => {}, staticFiles = buildStaticFiles() }) {
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   return async (req, res) => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
     const host = String(req.headers.host ?? '').toLowerCase();
     if (!allowedHosts.has(host)) return send(res, 403, 'text/plain; charset=utf-8', 'Forbidden');
+    const pathname = String(req.url ?? '/').split('?')[0];
+    if (pathname === VOICE_STATUS_PATH) {
+      if (req.method !== 'GET') { res.setHeader('Allow', 'GET'); return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed'); }
+      res.setHeader('Cache-Control', 'no-store');
+      return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ available: !demo && voiceConfigured }));
+    }
+    if (pathname === VOICE_SESSION_PATH) {
+      if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed'); }
+      return serveVoiceSession(req, res);
+    }
+    if (pathname === `${DELEGATION_PATH}/run`) {
+      if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed'); }
+      return serveDelegation(req, res, host);
+    }
+    if (pathname.startsWith(`${DELEGATION_PATH}/status/`)) {
+      if (req.method !== 'GET') { res.setHeader('Allow', 'GET'); return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed'); }
+      const id = pathname.slice(`${DELEGATION_PATH}/status/`.length);
+      if (!OPERATION_ID.test(id) || String(req.url ?? '').includes('?')) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+      const status = getDelegationStatus?.(id);
+      return ['running', 'completed', 'failed'].includes(status) ? send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ status })) : send(res, 404, 'application/json; charset=utf-8', JSON.stringify({ error: 'operation_unavailable' }));
+    }
+    if (pathname === WORKTREE_PATH) {
+      if (req.method === 'GET') return serveWorktreeList(req, res, host);
+      if (req.method !== 'POST') {
+        res.setHeader('Allow', 'POST');
+        return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed');
+      }
+      return serveWorktree(req, res);
+    }
+    if (pathname === `${WORKTREE_PATH}/remove`) {
+      if (req.method !== 'POST') {
+        res.setHeader('Allow', 'POST');
+        return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed');
+      }
+      return serveWorktreeRemoval(req, res);
+    }
     if (req.method !== 'GET') {
       res.setHeader('Allow', 'GET');
       return send(res, 405, 'text/plain; charset=utf-8', 'Method Not Allowed');
     }
-    const pathname = String(req.url ?? '/').split('?')[0];
     if (pathname === '/api/board') return serveBoard(req, res);
     if (pathname === HELLO_PATH) return send(res, 200, 'application/json; charset=utf-8', helloBody(demo));
     const entry = staticFiles.get(pathname);
@@ -103,6 +149,150 @@ export function createHandler({ port, getBoard, demo = false, log = () => {}, st
       send(res, 500, 'text/plain; charset=utf-8', 'Internal Server Error');
     }
   };
+
+  /** The browser sends only an SDP offer after a deliberate start action. Nothing is logged or persisted. */
+  async function serveVoiceSession(req, res) {
+    res.setHeader('Cache-Control', 'no-store');
+    const origin = String(req.headers.origin ?? '');
+    if (origin !== `http://127.0.0.1:${port}` && origin !== `http://localhost:${port}`) return send(res, 403, 'application/json; charset=utf-8', JSON.stringify({ error: 'origin_rejected' }));
+    if (String(req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') return send(res, 415, 'application/json; charset=utf-8', JSON.stringify({ error: 'json_required' }));
+    let body = '';
+    try { for await (const chunk of req) { body += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); if (Buffer.byteLength(body, 'utf8') > VOICE_BODY_MAX) return send(res, 413, 'application/json; charset=utf-8', JSON.stringify({ error: 'request_too_large' })); } }
+    catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' })); }
+    let value;
+    try { value = JSON.parse(body); } catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_json' })); }
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'confirmed,sdp' || value.confirmed !== true || typeof value.sdp !== 'string' || !value.sdp.trim() || value.sdp.length > 128_000) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (demo || !startVoiceSession) return send(res, 501, 'application/json; charset=utf-8', JSON.stringify({ error: 'voice_unavailable' }));
+    try {
+      const result = await startVoiceSession(value.sdp);
+      if (result?.ok !== true || typeof result.sessionId !== 'string' || !/^live_[A-Za-z0-9_-]{1,128}$/.test(result.sessionId) || typeof result.answerSdp !== 'string' || !result.answerSdp.trim() || result.answerSdp.length > 128_000) {
+        const reason = result?.reason === 'not_configured' ? 'not_configured' : 'voice_unavailable';
+        return send(res, reason === 'not_configured' ? 503 : 502, 'application/json; charset=utf-8', JSON.stringify({ error: reason }));
+      }
+      return send(res, 201, 'application/json; charset=utf-8', JSON.stringify({ sessionId: result.sessionId, sdp: result.answerSdp }));
+    } catch {
+      return send(res, 502, 'application/json; charset=utf-8', JSON.stringify({ error: 'voice_unavailable' }));
+    }
+  }
+
+  /** A bounded, same-origin request. Purpose text is never logged, echoed, or persisted here. */
+  async function serveDelegation(req, res, host) {
+    const origin = String(req.headers.origin ?? '');
+    if (origin !== `http://127.0.0.1:${port}` && origin !== `http://localhost:${port}`) return send(res, 403, 'application/json; charset=utf-8', JSON.stringify({ error: 'origin_rejected' }));
+    if (String(req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') return send(res, 415, 'application/json; charset=utf-8', JSON.stringify({ error: 'json_required' }));
+    let body = '';
+    try { for await (const chunk of req) { body += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); if (Buffer.byteLength(body, 'utf8') > DELEGATION_BODY_MAX) return send(res, 413, 'application/json; charset=utf-8', JSON.stringify({ error: 'request_too_large' })); } }
+    catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' })); }
+    let value;
+    try { value = JSON.parse(body); } catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_json' })); }
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'confirmed,operationId,purpose,sessionId' || value.confirmed !== true || typeof value.sessionId !== 'string' || !/^codex_[0-9a-f-]{36}$/i.test(value.sessionId) || !OPERATION_ID.test(value.operationId ?? '') || typeof value.purpose !== 'string' || !value.purpose.trim() || value.purpose.length > 2000) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (demo) return send(res, 403, 'application/json; charset=utf-8', JSON.stringify({ error: 'demo_disabled' }));
+    if (!startDelegation) return send(res, 501, 'application/json; charset=utf-8', JSON.stringify({ error: 'delegation_unavailable' }));
+    try {
+      const result = await startDelegation(value.sessionId, value.purpose, true, value.operationId);
+      if (result?.ok !== true || result.operationId !== value.operationId || !['running', 'completed', 'failed'].includes(result.status)) return send(res, 422, 'application/json; charset=utf-8', JSON.stringify({ error: ['invalid_target', 'unsupported_location', 'session_active', 'session_unknown', 'already_running', 'operation_limit', 'cli_unavailable'].includes(result?.reason) ? result.reason : 'unavailable' }));
+      return send(res, 202, 'application/json; charset=utf-8', JSON.stringify({ operationId: result.operationId, status: result.status }));
+    } catch {
+      log('term.delegationFailed', {});
+      return send(res, 500, 'application/json; charset=utf-8', JSON.stringify({ error: 'delegation_failed' }));
+    }
+  }
+
+  /** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res @param {string} host */
+  async function serveWorktreeList(req, res, host) {
+    const url = new URL(String(req.url ?? '/'), `http://${host}`);
+    const params = [...url.searchParams.entries()];
+    const sessionIds = url.searchParams.getAll('sessionId');
+    if (params.length !== 1 || sessionIds.length !== 1 || !SESSION_CARD_ID.test(sessionIds[0] ?? '')) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (!listWorktrees) return send(res, 501, 'application/json; charset=utf-8', JSON.stringify({ error: 'worktree_unavailable' }));
+    try {
+      const result = await listWorktrees(sessionIds[0]);
+      if (result?.ok === false) return send(res, 404, 'application/json; charset=utf-8', JSON.stringify({ error: 'session_unavailable' }));
+      const rows = Array.isArray(result) ? result.slice(0, MAX_WORKTREE_ITEMS) : [];
+      const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 999 ? value : 0;
+      const items = rows.map((item) => ({
+        branch: typeof item?.branch === 'string' && SAFE_BRANCH_RE.test(item.branch) && !item.branch.includes('..') && !item.branch.includes('//') ? item.branch : null,
+        status: ['clean', 'changed', 'untracked', 'mixed', 'conflicted', 'unknown'].includes(item?.status) ? item.status : 'unknown',
+        changed: count(item?.changed), untracked: count(item?.untracked), conflicted: count(item?.conflicted),
+        detached: item?.detached === true, locked: item?.locked === true, prunable: item?.prunable === true, current: item?.current === true, removable: item?.removable === true,
+      }));
+      return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ items }));
+    } catch {
+      log('term.worktreeFailed', {});
+      return send(res, 500, 'application/json; charset=utf-8', JSON.stringify({ error: 'worktree_failed' }));
+    }
+  }
+
+  /** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res */
+  async function serveWorktree(req, res) {
+    const origin = String(req.headers.origin ?? '');
+    if (origin !== `http://127.0.0.1:${port}` && origin !== `http://localhost:${port}`) return send(res, 403, 'application/json; charset=utf-8', JSON.stringify({ error: 'origin_rejected' }));
+    if (String(req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') return send(res, 415, 'application/json; charset=utf-8', JSON.stringify({ error: 'json_required' }));
+    let body = '';
+    try {
+      for await (const chunk of req) {
+        body += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+        if (Buffer.byteLength(body, 'utf8') > WORKTREE_BODY_MAX) return send(res, 413, 'application/json; charset=utf-8', JSON.stringify({ error: 'request_too_large' }));
+      }
+    } catch {
+      return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    }
+    let value;
+    try { value = JSON.parse(body); } catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_json' })); }
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !['sessionId', 'branch', 'confirmed'].includes(key))) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (typeof value.sessionId !== 'string' || !SESSION_CARD_ID.test(value.sessionId) || !isSafeBranch(value.branch) || value.confirmed !== true) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (!createWorktree) return send(res, 501, 'application/json; charset=utf-8', JSON.stringify({ error: 'worktree_unavailable' }));
+    try {
+      const result = await createWorktree(value.sessionId, value.branch);
+      if (result?.ok === true && result.branch === value.branch && SAFE_BRANCH_RE.test(result.branch) && !result.branch.includes('..') && !result.branch.includes('//') && ['clean', 'changed', 'untracked', 'mixed', 'conflicted', 'unknown'].includes(result.status)) {
+        const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 999 ? value : 0;
+        return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true, branch: result.branch, status: result.status, changed: count(result.changed), untracked: count(result.untracked), conflicted: count(result.conflicted) }));
+      }
+      const reason = ['invalid_target', 'not_repo', 'invalid_branch', 'target_exists', 'creation_failed', 'demo_disabled'].includes(result?.reason) ? result.reason : 'unavailable';
+      const status = reason === 'demo_disabled' ? 403 : reason === 'invalid_branch' ? 400 : reason === 'target_exists' ? 409 : 422;
+      return send(res, status, 'application/json; charset=utf-8', JSON.stringify({ ok: false, reason }));
+    } catch {
+      log('term.worktreeFailed', {});
+      return send(res, 500, 'application/json; charset=utf-8', JSON.stringify({ ok: false, reason: 'failed' }));
+    }
+  }
+
+  /** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res */
+  async function serveWorktreeRemoval(req, res) {
+    const origin = String(req.headers.origin ?? '');
+    if (origin !== `http://127.0.0.1:${port}` && origin !== `http://localhost:${port}`) return send(res, 403, 'application/json; charset=utf-8', JSON.stringify({ error: 'origin_rejected' }));
+    if (String(req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') return send(res, 415, 'application/json; charset=utf-8', JSON.stringify({ error: 'json_required' }));
+    let body = '';
+    try {
+      for await (const chunk of req) {
+        body += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+        if (Buffer.byteLength(body, 'utf8') > WORKTREE_BODY_MAX) return send(res, 413, 'application/json; charset=utf-8', JSON.stringify({ error: 'request_too_large' }));
+      }
+    } catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' })); }
+    let value;
+    try { value = JSON.parse(body); } catch { return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_json' })); }
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !['sessionId', 'branch', 'confirmed'].includes(key))) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (typeof value.sessionId !== 'string' || !SESSION_CARD_ID.test(value.sessionId) || !isSafeBranch(value.branch) || value.confirmed !== true) return send(res, 400, 'application/json; charset=utf-8', JSON.stringify({ error: 'invalid_request' }));
+    if (!removeWorktree) return send(res, 501, 'application/json; charset=utf-8', JSON.stringify({ error: 'worktree_unavailable' }));
+    try {
+      const result = await removeWorktree(value.sessionId, value.branch, true);
+      if (result?.ok === true && result.branch === value.branch && SAFE_BRANCH_RE.test(result.branch) && !result.branch.includes('..') && !result.branch.includes('//')) {
+        return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true, branch: result.branch }));
+      }
+      const reason = ['invalid_target', 'not_repo', 'invalid_branch', 'not_found', 'current', 'locked', 'prunable', 'not_clean', 'removal_failed', 'demo_disabled'].includes(result?.reason) ? result.reason : 'unavailable';
+      const status = reason === 'demo_disabled' ? 403 : ['invalid_target', 'not_repo'].includes(reason) ? 422 : reason === 'not_found' ? 404 : reason === 'not_clean' || reason === 'current' || reason === 'locked' || reason === 'prunable' ? 409 : 400;
+      return send(res, status, 'application/json; charset=utf-8', JSON.stringify({ ok: false, reason }));
+    } catch {
+      log('term.worktreeFailed', {});
+      return send(res, 500, 'application/json; charset=utf-8', JSON.stringify({ ok: false, reason: 'failed' }));
+    }
+  }
+
+  /** @param {unknown} value */
+  function isSafeBranch(value) {
+    if (typeof value !== 'string' || !SAFE_BRANCH_RE.test(value) || value.includes('..') || value.includes('//') || value.endsWith('/') || value.endsWith('.')) return false;
+    return value.split('/').every((part) => part && !part.startsWith('.') && !part.endsWith('.') && !part.toLowerCase().endsWith('.lock'));
+  }
 
   /** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res */
   async function serveBoard(req, res) {

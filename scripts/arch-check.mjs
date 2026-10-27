@@ -50,17 +50,17 @@ const EXPECTED = {
   shared: ['constants.mjs', 'types.mjs', 'i18n.mjs'],
   core: ['turn.mjs', 'classify.mjs', 'project.mjs', 'board.mjs', 'session.mjs', 'text.mjs', 'activity.mjs', 'context.mjs'],
   adapters: [
-    'app-sessions-fs.mjs', 'fake-app-sessions.mjs', 'codex-sessions-fs.mjs', 'fake-codex-sessions.mjs', 'transcripts-fs.mjs', 'fake-transcripts.mjs', 'folder-hints-fs.mjs', 'fake-folder-hints.mjs',
-    'session-record.mjs', 'demo-data.mjs', 'map-limit.mjs',
+    'app-sessions-fs.mjs', 'fake-app-sessions.mjs', 'codex-sessions-fs.mjs', 'fake-codex-sessions.mjs', 'copilot-sessions-fs.mjs', 'fake-copilot-sessions.mjs', 'opencode-sessions-fs.mjs', 'fake-opencode-sessions.mjs', 'transcripts-fs.mjs', 'fake-transcripts.mjs', 'folder-hints-fs.mjs', 'fake-folder-hints.mjs', 'worktrees-git.mjs', 'fake-worktrees.mjs', 'worktree-create-git.mjs', 'fake-worktree-create.mjs', 'worktree-remove-git.mjs', 'fake-worktree-remove.mjs',
+    'session-record.mjs', 'demo-data.mjs', 'map-limit.mjs', 'opaque-session-id.mjs',
   ],
-  entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],
+  entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs', 'live-voice.mjs'],
   public: [
-    'index.html', 'tokens.css', 'style.css', 'source-filter.css', 'rows.css', 'tidy.css', 'canvas.css', 'graph.css',
-    'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
+    'index.html', 'tokens.css', 'style.css', 'source-filter.css', 'rows.css', 'tidy.css', 'canvas.css', 'graph.css', 'voice.css',
+    'app.mjs', 'api.mjs', 'voice.mjs', 'voice-store.mjs', 'voice-transcript.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
     'actions.mjs', 'canvas.mjs', 'canvas-slip.mjs', 'canvas-sheet.mjs', 'canvas-fit.mjs', 'canvas-bar.mjs', 'canvas-ctl.mjs', 'canvas-view.mjs', 'canvas-act.mjs',
-    'canvas-layout.mjs', 'canvas-desk.mjs', 'canvas-fold.mjs', 'canvas-camera.mjs', 'canvas-input.mjs', 'graph-model.mjs', 'graph-store.mjs', 'graph-render.mjs', 'graph-dialog.mjs',
-    'keys.mjs', 'notify.mjs', 'favicon.mjs', 'copy.mjs', 'view.mjs', 'format.mjs', 'doing.mjs', 'events.mjs', 'codex-status.mjs', 'times.mjs', 'i18n.mjs',
-    'dict-en.mjs', 'dict-ja.mjs', 'dict-en-handoff.mjs', 'dict-ja-handoff.mjs', 'dict-en-canvas.mjs', 'dict-ja-canvas.mjs',
+    'canvas-layout.mjs', 'canvas-desk.mjs', 'canvas-fold.mjs', 'canvas-camera.mjs', 'canvas-input.mjs', 'graph-model.mjs', 'graph-store.mjs', 'graph-render.mjs', 'graph-dialog.mjs', 'graph-actions.mjs', 'graph-connect-mode.mjs',
+    'keys.mjs', 'notify.mjs', 'favicon.mjs', 'copy.mjs', 'view.mjs', 'format.mjs', 'doing.mjs', 'events.mjs', 'codex-status.mjs', 'times.mjs', 'i18n.mjs', 'worktree-dialog.mjs', 'worktree-list-dialog.mjs', 'worktree-remove-dialog.mjs',
+    'dict-en.mjs', 'dict-ja.mjs', 'dict-en-handoff.mjs', 'dict-ja-handoff.mjs', 'dict-en-canvas.mjs', 'dict-ja-canvas.mjs', 'worktree-detail.mjs',
   ],
 };
 const DIR_OF = { shared: 'src/shared', core: 'src/core', adapters: 'src/adapters', entry: 'src/entry', public: 'public' };
@@ -130,10 +130,22 @@ check('4b no HTML string injection', [...pub, ...shared, ...core, ...adapters, .
   /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|\bdocument\.write\b/.test(line) ? 'innerHTML and friends are not allowed (use textContent / DOM APIs)' : null,
 );
 
-// 5. read-only: adapters and entry never use APIs that write to the app's files
-check('5 read-only', [...adapters, ...entry], (line) =>
+// 5. Session adapters stay read-only. Confirmed worktree operations are isolated in dedicated adapters.
+const worktreeCreateAdapter = adapters.filter((f) => path.basename(f) === 'worktree-create-git.mjs');
+const worktreeRemoveAdapter = adapters.filter((f) => path.basename(f) === 'worktree-remove-git.mjs');
+check('5a session sources read-only', [...adapters.filter((f) => path.basename(f) !== 'worktree-create-git.mjs'), ...entry], (line) =>
   /\b(writeFile|appendFile|rename|unlink|rmdir|mkdir|copyFile|createWriteStream|truncate|utimes|chmod|watch)\w*\(|\.rm\(|open\([^)]*['"](?:[wax]|r\+)/.test(line)
     ? 'write APIs are not allowed'
+    : null,
+);
+check('5b worktree creation isolated', worktreeCreateAdapter, (line) =>
+  /\b(?:writeFile|appendFile|rename|unlink|rmdir|copyFile|createWriteStream|truncate|utimes|chmod|watch)\w*\(|open\([^)]*['"](?:[wax]|r\+)/.test(line)
+    ? 'only generated worktree/hook directories may be created or cleaned by this adapter'
+    : null,
+);
+check('5c confirmed worktree removal isolated', worktreeRemoveAdapter, (line) =>
+  /\b(?:writeFile|appendFile|rename|unlink|rmdir|copyFile|createWriteStream|truncate|utimes|chmod|watch)\w*\(|open\([^)]*['"](?:[wax]|r\+)/.test(line)
+    ? 'worktree removal must run only through the bounded Git adapter'
     : null,
 );
 

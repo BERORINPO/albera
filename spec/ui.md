@@ -1,6 +1,6 @@
 # Pigeonholes: screen spec (v0.2)
 
-Status: locked for v0.2 (v0.1 plus: what each session is doing, its context size, the hand-off guide and the canvas view; the v0.1 Overview is retired, the canvas far zoom does its job). The look (tokens, type, motion, voice) is `spec/design.md`. Classification and the API are `spec/board.md`. This text is the source of truth for the screen. Rules that came out of design review: Open is never hover-only, every time carries its state word, the paste step is the headline after copying, diagnostics sit behind a toggle, the board never sends or presses anything (the hand-off is a copied instruction and an Open).
+Status: locked for v0.2 (v0.1 plus: what each session is doing, its context size, the hand-off guide and the canvas view; the v0.1 Overview is retired, the canvas far zoom does its job). The look (tokens, type, motion, voice) is `spec/design.md`. Classification and the API are `spec/board.md`. This text is the source of truth for the screen. Rules that came out of design review: Open is never hover-only, every time carries its state word, the paste step is the headline after copying, diagnostics sit behind a toggle. Voice is a separate explicit action and never receives canvas or session context.
 
 Contents: 1 files · 2 page skeleton · 3 layout by width · 4 masthead · 5 the first 3 seconds · 6 counts ledger · 7 board notices · 8 piles and rows · 9 detail panel and the hand-off guide · 10 the canvas (10.11 decided while building) · 11 filtering · 12 cleanup flow · 13 notifications, favicon, tab title · 14 keyboard · 15 focus and re-rendering · 16 updates and time · 17 language · 18 first run, help, footer · 19 copy deck · 20 data from /api/board v2 · 21 tests and acceptance.
 
@@ -17,13 +17,16 @@ Every file is under 400 lines, `// @ts-check`, vanilla ESM, no dependencies. Onl
 | `public/style.css` | base, controls, masthead, front (lede, ledger), page grid, banners, footer, dialogs, motion and reduced motion | — |
 | `public/source-filter.css` | combined Claude Code / Codex CLI source selector and narrow masthead layout | — |
 | `public/rows.css` | pile heads, rows, row detail, family tree, Working two-column rule, the doing line, the context words, the hand-off guide | — |
-| `public/codex-status.mjs` | **pure** Codex source counts and safe zero-count explanations for the diagnostics footer | `codexStatusMessages()` |
+| `public/codex-status.mjs` | **pure** Codex, Copilot, and OpenCode source counts and safe zero-count explanations for the diagnostics footer, including the Windows WSL opt-in status | `codexStatusMessages()`, `copilotStatusMessages()`, `openCodeStatusMessages()` |
 | `public/tidy.css` | the To archive pile: steps, select-all, groups, sub-groups, cleanup rows, selection bar | — |
 | `public/canvas.css` | the canvas view (§10): page grid, front strip, viewport, sheets, running heads, slips, the band line, the Only-to-archive block, tick, the measuring box, levels, the canvas bar | — |
 | `public/app.mjs` | boot: resolve language and view, load prefs, build static text, wire one delegated `click`/`change` listener, `keys.mjs` and `canvas-input.mjs`, start the poll loop (`poll.mjs`) and the minute tick | `init()` (runs on import) |
 | `public/actions.mjs` | the list's click and key actions moved out of `app.mjs`: the cleanup copies, the hand-off guide from a row or `h`, the guide's buttons (any guide, found through `view.index`), the due walk | `copyChunk()`, `copySmall()`, `openHandoff()`, `handoffKey()`, `runGuide(btn)`, `dueNext()` |
 | `public/poll.mjs` | the poll loop (§16): a fetch failure (offline, server, version) is told apart from a failure to draw a 200 board | `poll()`, `schedule()` |
-| `public/api.mjs` | the only `fetch`: `GET /api/board` with `If-None-Match`, timeout, `v === 2` check | `fetchBoard(etag, timeoutMs)`, `BoardHttpError`, `BoardVersionError` |
+| `public/api.mjs` | the only `fetch`: board reads and same-origin, explicitly requested operation calls; sanitizes voice errors | `fetchBoard(etag, timeoutMs)`, `createVoiceSession(sdp)`, `voiceAvailability()` |
+| `public/voice.mjs` | explicit GPT-Live WebRTC start, browser-local audio/transcript persistence, mic mute, saved history and delete | `initVoice()` |
+| `public/voice-store.mjs` | IndexedDB adapter for transcripts and separate user/assistant audio | `saveVoiceSession()`, `listVoiceSessions()`, `getVoiceAudio()`, `deleteVoiceSession()` |
+| `public/voice.css` | responsive voice dialog, transcript, local history and audio players | — |
 | `public/state.mjs` | the single in-memory state object and its setters; prefs in localStorage `pigeonholes:v1:ui` (every read and write in try/catch) | `state`, `loadPrefs()`, `savePrefs()`, `setBoard()`, `pruneNew()`, `snapshot()`, `restore()`, `setCursor()`, `pick()`, `unpick()`, `startBatch()`, `reselectLeft()`, `setView()`, `storeHandoff()` |
 | `public/ui-state.mjs` | **pure** selection, copy, batch, cursor and lede logic | `planCopy`, `commitCopy`, `pruneSelection`, `reselectIds`, `batchProgress`, `checkState`, `nextUp`, `cursorAfter`, `listsFromRows`, `stalePrefKeys`, `focusSignature`, `stepOf` |
 | `public/render.mjs` | render orchestrator: masthead texts, front, then the list (piles) or the canvas, footer, tab title, favicon, keeping focus | `render()`, `renderTimes()` |
@@ -37,6 +40,7 @@ Every file is under 400 lines, `// @ts-check`, vanilla ESM, no dependencies. Onl
 | `public/canvas-desk.mjs` | **pure** placement on the desk (§10.4): pack (urgency order, in shelves, the shelf width that fits best), the first arrangement, settle (with the kept heights), push-down, drop, the seats record | `pack`, `arrange`, `settle`, `pushDown`, `dropSheet`, `parseSeats`, `cmpKey` |
 | `public/canvas-camera.mjs` | **pure** camera math (§10.6): also the column cap of a new seat for the viewport width and where a running head is pinned (or its sheet hidden) | `levelOf`, `clampZ`, `stepZoom`, `zoomAt`, `fitRect`, `openCamera`, `revealRect`, `toWorld`, `toScreen`, `isNarrow`, `colsCap`, `headPin`, `LEAVE_PX` |
 | `public/canvas.mjs` | the canvas DOM: sheets and slips kept in sync, running heads pinned (or a leaving sheet hidden), levels, the camera transform; seats storage (wide and narrow); which slips match the filter | `renderCanvas()`, `applyCamera()`, `focusSlip()`, `slipRect()`, `matchedIds()`, `loadSeats()`, `saveSeats()` (+ `canvasSig` re-exported) |
+| `public/canvas-camera-store.mjs` | browser storage adapter for numeric viewport camera state only, split between wide and narrow views | `parseCameraView()`, `loadCameraView()`, `saveCameraView()` |
 | `public/canvas-sheet.mjs` | the parts of a sheet (split out for the 400-line rule): running head, column rules, the band line, the "Only to archive" block | `headEl()`, `colRules()`, `backEl()`, `foldEl()`, `setVars()` |
 | `public/canvas-fit.mjs` | the row heights (§10.4 step 4): lays each slip out in the hidden `#cv-measure` box at the near and mid text sizes and returns its height, cached by `canvasSig` | `slipHeights()` |
 | `public/canvas-slip.mjs` | one slip's DOM (all three zoom levels) and its accessible name (built from its content) | `slipEl()`, `slipFlags()`, `canvasSig()` (pure) |
@@ -44,6 +48,7 @@ Every file is under 400 lines, `// @ts-check`, vanilla ESM, no dependencies. Onl
 | `public/canvas-ctl.mjs` | canvas control: cursor, opening and closing the bar (detail, hand-off, sheet), switching views, drawing, rearrange / moving a sheet, jumps; re-exports `canvas-view.mjs` | `drawCanvas()`, `switchView()`, `openBar()`, `openSheetBar()`, `closeBar()`, `rearrange()`, `placeSheet()`, `moveCanvasCursor()`, `canvasJumpTo()`, `canvasJumpPile()`, `canvasFocusFallback()` and smaller helpers |
 | `public/canvas-view.mjs` | canvas state `cv` and the camera: apply, move, reveal a slip or an element, fit all / a sheet / back, zoom, resize; `quietFocus` (a focus put back after a render moves neither camera nor cursor) | `cv`, `apply()`, `moveCam()`, `reveal()`, `revealEl()`, `quietFocus()`, `fitAll()`, `fitSheet()`, `fitToggle()`, `zoomTo()`, `resized()` and smaller helpers |
 | `public/canvas-act.mjs` | wiring of the canvas keys and clicks to `canvas-ctl.mjs` | `runCanvasKey()`, `CANVAS_CLICK`, `initCanvas()` |
+| `public/canvas-layout-drag-cancel-act.mjs` | cancel sheet and graph-card drag previews without saving their temporary coordinates | `createCanvasLayoutDragCancelActions()` |
 | `public/canvas-input.mjs` | pointer, wheel, touch and keys on the canvas | `canvasKeyAction(ev, ctx)`, `canvasEscapeStep()`, `canvasTarget()` (pure), `bindCanvas()` |
 | `public/keys.mjs` | keyboard map (§14), help dialog, single-key off switch | `keyAction(ev, ctx)` (pure), `bindKeys()`, `openHelp()` |
 | `public/notify.mjs` | opt-in notifications | `arrivals(prev, board)` (pure), `notifyArrivals()`, `notifyState()` |
@@ -267,12 +272,13 @@ Rows of the `dl`, each only when present:
 4. `detail.context` (when `context`): `contextValueText(t, ctx)` = `detail.contextValue` with `{pct}`, `{used}`, `{window}`, `{at}` (`tokensText` of `used`, `window`, `compactAt`), then `detail.contextEst` when `inferred`, then `ctx.compacted` when `compacted` is present (any age); then, by pile, `ctx.afterWork` (Working), `ctx.answerFirst` (Needs you) or `ctx.afterLimit` (Stuck? limit) at `due`/`soon`.
 5. `detail.summary`: `detail.statusDetail` as `<q lang>`.
 6. `detail.error`: `detail.error` (full error, pre-wrap), for Stuck? and `old_error`.
-7. `detail.branch` / `detail.worktree`.
-8. `detail.created`: `date.today` when today, else `absoluteTime` (`YYYY-MM-DD HH:mm`).
-9. `detail.turns`: `detail.turnsValue`.
-10. `detail.routine`: `routineHistory(t, routine)` (+ `routine.flaky`).
-11. `detail.pr`: up to 10 lines `pr.detail` (open first; state words from `pr.state.*`, unknown states raw); a link only when `url` is non-null (`rel="noopener noreferrer"`, `target="_blank"`); `detail.prsMore` → `pr.more`.
-12. `detail.related`: the family tree (below).
+7. `detail.branch` / `detail.worktree`; when a path-free `gitWorktree` summary exists, show its branch in preference to session metadata.
+8. `detail.gitState`: clean, changed, untracked, mixed, conflicted or unknown, with counts only; `detail.gitFlags` may show locked/prunable. File names, worktree paths, common Git directory and lock reasons are never sent.
+9. `detail.created`: `date.today` when today, else `absoluteTime` (`YYYY-MM-DD HH:mm`).
+10. `detail.turns`: `detail.turnsValue`.
+11. `detail.routine`: `routineHistory(t, routine)` (+ `routine.flaky`).
+12. `detail.pr`: up to 10 lines `pr.detail` (open first; state words from `pr.state.*`, unknown states raw); a link only when `url` is non-null (`rel="noopener noreferrer"`, `target="_blank"`); `detail.prsMore` → `pr.more`.
+13. `detail.related`: the family tree (below).
 
 Actions (text buttons, one row): [`open.row`] (only in To archive rows, which have no row-level Open) · [`detail.familyOnly`] (when in a family) · [`detail.copyId`] · [`detail.copyLink`]. A copy button's label becomes `detail.copied` for `COPIED_LABEL_MS` (2.5 s); no toast.
 
@@ -449,7 +455,7 @@ A pure function of (board, saved seats, the viewport aspect at the last Rearrang
 
 `Camera = {x, y, z}`: the world point at the viewport's top-left and the zoom (`Z_MIN` 0.15 … `Z_MAX` 1.5).
 
-- **On open** (`openCamera(layout, nextId, vw, vh, pad)`): the rectangle of the sheets that are not quiet (any Needs you, Stuck?, Unread or Working), at the zoom that fits it clamped to `Z_OPEN` (0.62) … 100 % (below `NARROW_PX` the width alone decides), aligned top-left: its top-left (heads included, `HEAD_ROOM`) at the padding, so the urgency-ordered desk is read from its top-left and no sheet starts within a head height of the viewport top on a fresh pack. When the lede's slip is then outside the view, `revealRect` pans just enough to show it. With no such sheet: fit all. The camera is not saved; seats are.
+- **On open** (`openCamera(layout, nextId, vw, vh, pad)`): if the user has a stored camera for this viewport width class, restore its numeric `{x,y,z}`; a stored Fit state recomputes fit for the current layout. Explicit `fitOnOpen` from the list takes priority. Without a saved camera, use the rectangle of the sheets that are not quiet (any Needs you, Stuck?, Unread or Working), at the zoom that fits it clamped to `Z_OPEN` (0.62) … 100 % (below `NARROW_PX` the width alone decides), aligned top-left: its top-left (heads included, `HEAD_ROOM`) at the padding, so the urgency-ordered desk is read from its top-left and no sheet starts within a head height of the viewport top on a fresh pack. When the lede's slip is then outside the view, `revealRect` pans just enough to show it. With no such sheet: fit all. Only camera numbers and the fit flag are stored; wide and narrow views use separate keys. Broken or unavailable storage is ignored. Seats remain separately stored.
 - **Fit all** (`f`, `canvas.fit`; `fitRect(bounds, vw, vh, pad)`): the bounds of every sheet and the fold (only the sheets with matches while filtering) plus `HEAD_ROOM` above the top row for the running heads, at most 100 %, centred across, top aligned. It always fits the width; it fits the height too, but never below `FIT_MIN` (0.3), so a project name and the marks stay readable and a longer desk is read from the top by scrolling (never shrunk to `Z_MIN`). Below `NARROW_PX` the opening camera decides by the width alone.
 - **Pinned heads** (`headPin(top, h, head, z)`): a running head is pinned from the moment the viewport top would cut it (its sheet's top rule is less than the head's height below the viewport top) while part of the sheet is still on screen, so a sheet near the top never shows without its head or with the bottom pixels of one. The pinned box (desk behind the name, the sheet's top rule under it, one rule width wider than the sheet on each side) sits 2px above the viewport top and is always whole; slips that scroll under it go under its rule. When less than `LEAVE_PX` (20px) of the sheet would show under the box, the whole sheet is hidden (`.is-leaving`, `clip-path`, so focus stays): no half head and no sliver of the double rule at the viewport top. The open camera never puts a sheet in that band (§10.6 On open).
 - **`z`** toggles fit all ⇄ the camera before it. In the list, `z` opens the canvas at fit all.
@@ -701,7 +707,7 @@ Rules: placeholders are `{name}`; the plural count is always `{n}`; an English c
 | `app.tabTitle` | ({n}) {pile} — {name} | ({n}) {pile} — {name} |
 | `app.tabOffline` | {title} (offline) | {title} (オフライン) |
 | `mast.home` | Pigeonholes, back to top | Pigeonholes 先頭へ |
-| `mast.trust` | Read-only. Nothing leaves this computer. | 読み取り専用。このパソコンの外へは何も送りません。 |
+| `mast.trust` | Session files stay read-only. Worktrees need confirmation. | セッションは読み取り専用。worktreeは確認後に作成。 |
 | `mast.demo` | Demo data | デモデータ |
 | `mast.help` | Keyboard keys | キー一覧 |
 | `date.asOf` | {wd} {d} {mon}, as of {hm} | {mon} {d} 日 ({wd}) {hm} 時点 |
@@ -1072,7 +1078,7 @@ Unknown kinds fall back to `time.ago`.
 | `help.marks` | Canvas marks | キャンバスの印 |
 | `help.off` | Turn off single-key shortcuts | 一文字キーを使わない |
 | `help.offNote` | Enter, Space, Esc, the arrow keys and Tab keep working. | Enter・Space・Esc・矢印・Tab はそのまま使えます。 |
-| `foot.trust` | Read-only. Nothing leaves this computer. | 読み取り専用。このパソコンの外へは何も送りません。 |
+| `foot.trust` | Session files stay read-only. Worktrees need confirmation. | セッションは読み取り専用。worktreeは確認後に作成。 |
 | `foot.keys.move` | move | 移動 |
 | `foot.keys.open` | open | 開く |
 | `foot.keys.peek` | details | 詳しく |
@@ -1093,8 +1099,9 @@ Unknown kinds fall back to `time.ago`.
 | `foot.diag` | Reading status | 読み込みの状態 |
 | `foot.codexSummary` | Codex candidate, recognized, board and lifecycle counts | Codex の候補・認識件数、盤面状態・イベント状態別件数 |
 | `foot.codexNoFiles` | No rollout files matched the expected folder and filename pattern | 認識対象の形式に合う rollout ファイルが見つからない |
-| `foot.codexNoDetected` | Candidate files exist, but none passed the CLI checks | 候補はあるが CLI の形式条件に合わない |
+| `foot.codexNoDetected` | Candidate files exist but none passed the CLI checks; confirm the selected store and check for a format update | 候補はあるが CLI の形式条件に合わない。選択された保存先と形式更新を確認する |
 | `foot.codexNoWorking` | No recent unfinished turn; completed/interrupted are Recent and stale active turns are Stuck? | 新しい未完了ターンがない。完了・中断は「最近」、古い未完了は「止まったかも」 |
+| `foot.codexWslNotConfigured` | WSL Codex storage is not connected on Windows; set the intended distro share and restart. Detection does not run WSL commands; the worktree inventory runs a read-only query only after you select it. | WindowsからWSLのCodex保存先が未接続。対象共有を設定して再起動する。検出時はWSLコマンドを実行せず、worktree一覧を選んだときだけ読取照会を行う。 |
 | `foot.bad` | {n} file couldn't be read. \| {n} files couldn't be read. | 読めなかったファイル {n} 件。 |
 | `foot.missing` | {n} transcript not found (last {days} days). \| {n} transcripts not found (last {days} days). | 会話ログが見つからない {n} 件 (最近 {days} 日)。 |
 | `foot.missingWhy` | Sessions that ran remotely or in the cloud have no log on this computer, so their state is unknown. | リモートやクラウドで動いた会話は、このパソコンにログが無いため状態が分かりません。 |
@@ -1210,10 +1217,10 @@ Everything the UI reads. Fields not listed are not used by the UI. `folders` hin
 | To archive | `cleanupGroups[]`: `reason`, `recommendedReason`, `count`, `recommendedCount`, `items[]` or `projects[]` (`key`, `label` null = no project folder, `lastActivityAt`, `count`, `recommendedCount`, `items[]`); cards add `cleanup.{recommended, note}` (NoteCode), `routine.{runIds, latestBucket}`, `reasonParams` (`older`, `total`, `latestBucket`, `prs`, `more`, `error`, `question`), `lastActivityAt`, `since`, `timeKind` |
 | doing line, `asOfText`, `shortDoing` (§8.4, §10.3) | `activity.{kind, target, n, note, step, live, at}` (optional; never on Needs you or To archive cards) |
 | context words, hand-off (§8.5, §9) | `context.{used, window, inferred, pct, compactAt, level, compacted.{at, trigger}}` (optional; never on To archive cards), `detail.contextExceeded`, `lastActivityAt` (the 24 h row rule) |
-| detail panel | `detail.{statusDetail, branch, worktreeName, completedTurns, error, prsMore, contextExceeded}`, `prs[].{num,repo,state,url}`, `createdAt`, `routine.{completed,stalled,runs}`, `family.*` |
+| detail panel | `detail.{statusDetail, branch, worktreeName, gitWorktree.{branch,status,changed,untracked,conflicted,locked,prunable}, completedTurns, error, prsMore, contextExceeded}`, `prs[].{num,repo,state,url}`, `createdAt`, `routine.{completed,stalled,runs}`, `family.*` |
 | family tree, family filter | `families[rootId].{title, memberIds}`, every card's `family.parentId`, `createdAt`, `bucket`, `routine.runIds` |
 | canvas (`buildSheets`, slips) | every card in `buckets`, `recentGroups` and `cleanupGroups` with its `id`, `bucket`, `title`, `body`, `since`, `timeKind`, `startedAt`, `project.{key,label}`, `lastActivityAt`, `createdAt`, `family.{rootId,parentId}`, `detail.{branch,worktreeName}`, `prs`, `activity`, `context`; `families` |
-| notices, footer | `stats.formatSuspect` (null \| 'no_timestamps' \| 'no_session_files'), `stats.demo`, `stats.archived`, `stats.bad`, `stats.transcriptsMissingRecent`, `stats.transcriptsDirMissing`, `stats.unknownTurnRecent`, `stats.recentWithTranscript`, `stats.contextSuspect`, `stats.activitySeen` (`stats.contextSeen` is for smoke only) |
+| notices, footer | `stats.formatSuspect` (null \| 'no_timestamps' \| 'no_session_files'), `stats.demo`, `stats.archived`, `stats.bad`, `stats.transcriptsMissingRecent`, `stats.transcriptsDirMissing`, `stats.unknownTurnRecent`, `stats.recentWithTranscript`, `stats.contextSuspect`, `stats.activitySeen` (`stats.contextSeen` is for smoke only), optional path-free `stats.worktrees.{scanned,matched,unavailable,skipped}` |
 | batch progress, selection pruning | the set of every card ID plus every `routine.runIds` member (present IDs), and the cleanup subset |
 
 New in v2 for the UI: `reasonParams` (replaces `reasonText`), `cleanup.note` as a code, `project.label: null`, `startedAt`, `stats.formatSuspect`, `stats.demo`. Added in v0.2 (still `v: 2`; optional, additive, ignored by a v0.1 page): `activity`, `context`, `detail.contextExceeded`, `stats.contextSeen`, `stats.activitySeen`, `stats.contextSuspect`. HTTP 500 carries `{"error":"board_failed"}` (the UI shows its own words).
@@ -1245,15 +1252,258 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 
 ### 10.11 User-authored graph cards and relations
 
-- The canvas offers local cards for tasks, artifacts, decisions, and comprehension gaps. They are authored by the user, stored only in browser localStorage, and are never sent through the board API. The graph model is an allowlist; unknown fields are discarded and counts and text lengths are bounded.
-- Cards can be moved with pointer drag or focused-card arrow keys; click / Enter opens an editor. Position, text, status, and links survive reload. Fit all includes graph cards. Existing project sheets and session slips remain in place.
+- The canvas offers local cards for tasks, artifacts, decisions, worktrees, comprehension gaps and execution profiles. They are authored by the user, stored only in browser localStorage, and are never sent through the board API. The graph model is an allowlist; unknown fields are discarded and counts and text lengths are bounded.
+- An execution profile records only fixed choices for location (unknown/local/WSL/remote), workspace isolation (unknown/sandboxed/not sandboxed), network access (unknown/restricted/available) and approval mode (unknown/per action/on demand/automatic). Every field defaults to unknown. These are manual declarations, not detected settings; the profile does not read session files, environment variables, or app configuration. It can be related to a session like any graph card.
+- Artifact cards can hold one user-entered HTTPS reference. Credentials, query strings, fragments, non-HTTPS schemes and overlong values are rejected. The reference stays in browser localStorage and is not fetched; a link opens a new tab only after an explicit click.
+- An Obsidian-note card stores only a user-entered vault name and vault-relative note path in browser localStorage. Absolute paths, traversal segments and URL-like query/fragment values are rejected. It does not scan vaults or read/write notes. A properly encoded `obsidian://open?vault=…&file=…` link is offered only for explicit user activation; tests never activate the external protocol. This is a manual reference layer, not vault indexing or knowledge extraction.
+- REA findings use the existing artifact card: the user reviews the REA result, manually enters a short summary (artifact description capped at 1,000 characters), then connects the card to relevant tasks, decisions or sessions. Pigeonholes never runs REA or imports full Evidence; it cannot inspect the summary's meaning for secrets, so the person entering it is responsible for keeping sensitive content out.
+- A successful explicit worktree creation adds a `worktree` card to that graph with branch, base and safe creation-time status counts. It is a local snapshot record, not a live registry; editing or deleting it never changes Git state.
+- Cards can be moved with pointer drag or focused-card arrow keys; click / Enter opens an editor. New cards take the first open position around the current view center so they do not cover earlier graph cards. Position, text, status, and links survive reload. Fit all includes graph cards. Existing project sheets and session slips remain in place.
 - Search dims graph cards whose safe user-authored text does not match. Cards and lines remain visible to preserve context. Deleting a card requires a browser confirmation and removes its linked relations.
-- Relations connect graph cards and currently visible Claude/Codex session IDs. Session pickers and relation labels show provider plus an opaque short ID, never a session title, prompt, path, tool input/output, environment value, or credential. A relation records type, purpose/evidence, and, for delegation records, status. It never invokes a CLI, agent, worktree, or external service.
+- Relations connect graph cards and currently visible session IDs from the supported providers. Session pickers and relation labels show provider plus an opaque short ID, never a session title, prompt, path, tool input/output, environment value, or credential. A relation records type, purpose/evidence, and, for delegation records, status. Saving, editing, or removing the relation itself never invokes a CLI, agent, worktree, or external service. The separate explicit `Run delegation` action is available only for eligible completed local Codex CLI targets and has its own final confirmation.
+- A new delegation record requires a non-empty purpose; its source, target, purpose, and planned/active/blocked/completed/cancelled status are stored together. Existing local delegation records with a blank purpose remain readable and show a repair hint; editing that record requires adding the missing purpose. Other relation types may leave purpose blank.
+- From a session detail, the user can open a delegation row's editor, update its purpose/status, or remove it after explicit confirmation. The editor shows both endpoints and never runs either session's CLI. A separate run action, when eligible, follows the explicit Codex confirmation and purpose-only transfer flow below.
 - Relation records can be edited without changing their endpoints, and can be removed only after an explicit confirmation. The model rejects duplicate edges after edits.
 - A comprehension-gap card records the person whose understanding is being checked, missing evidence, and needed explanation. The product computes no comprehension score. The graph can represent related, dependency, evidence, explanation, and delegation-record edges.
-- The graph review marks only an explicitly described missing-evidence or needed-explanation item that lacks its corresponding `evidence` or `explains` relation. It says the graph link is missing; it does not infer a person's understanding. The card editor points to the missing relation, and a user can add it and then change the card status after review.
-- Session details list linked graph cards with relation type, delegation status, and purpose/evidence. Activating a linked card opens its editor so the user can follow the comprehension or task context from a session.
-- The masthead source selector filters sessions by Claude Code, Codex CLI, or all sources. Existing text search covers session/project content and the existing piles represent state; source filtering composes with search and remains available in list and canvas views. Relations to filtered-out sessions dim with their session cards. Clearing filters resets the source selector too.
-- Session detail labels the CLI provider as the harness: Claude Code for app-session records and Codex CLI for accepted rollout records. Other execution settings are not currently exposed.
+- The graph review marks only an explicitly described missing-evidence or needed-explanation item that lacks its corresponding `evidence` or `explains` relation. It says the graph link is missing; it does not infer a person's understanding. The card and editor badges update when those relations change. The card editor offers one button for each missing kind; it opens the relation editor with that kind preselected, then the user chooses and records the evidence/explanation endpoint and can change the gap status after review.
+- A session relation satisfies that review only while its target exists in the current read-only session index. If a provider session disappears, the old relation remains local history but does not count as available evidence; the graph review shows the link as missing. Editing the stale relation shows a fixed “Missing session” label, never its identifier or path, and lets the user delete the relation or leave it for later.
+- Session details list linked graph cards and linked sessions with relation direction, type, delegation status, and purpose/evidence. A delegation row has an edit action that opens its fixed-endpoint record editor, where status/purpose can be updated or the edge removed after confirmation. A linked graph card opens its editor; a linked session opens that session's detail panel. Session-to-session labels contain only provider and an opaque short ID, never the session title or transcript.
+- If a linked graph card is an Obsidian-note reference, the session detail also offers a clearly labeled `Open in Obsidian` link. It is built client-side from the local graph record and is never added to session projections or API responses. It opens only after explicit activation; the relation entry itself contains only the card's safe title/kind/ID projection.
+- When an execution-profile card is related to a session, the session detail shows the card title and its four fixed, user-declared values. The detail projection includes only the profile ID/kind/title and allowlisted enums; it never includes card body, URL or unknown properties. These values are labeled as manual and are not presented as runtime-verified facts.
+- When a comprehension-gap card is related to a session, the detail shows the person whose understanding is being checked, the explicitly missing evidence and the needed explanation. Graph cards and provider-scoped opaque session IDs connected through `evidence` and `explains` edges are keyboard-accessible buttons that open the linked graph editor or session detail. A short-ID collision disables resolution by failing closed. It does not score or infer that person's understanding. The detail projection excludes card body, URL and unknown properties and never renders a full session ID.
+- Session details offer an explicit worktree creation dialog. It shows project, base branch, safe current status/flags, new branch input, and that uncommitted changes are omitted; a required acknowledgement calls the same-origin operation API. Git hooks are disabled, possible checkout filters are disclosed, and the result contains branch and safe status counts only. The dialog explains errors and the synthetic demo always disables creation. It never starts a CLI session.
+- Session details can refresh a read-only inventory of up to 20 local worktrees in the selected repository. Each row shows only a branch (or detached HEAD), current-session marker, safe status counts, and locked/prunable flags. No path or lock reason crosses the adapter boundary; an empty result explains that the session may not be in a Git repository or Git returned no local worktrees.
+- A listed worktree can be recorded locally on the canvas and linked to its source session. Re-recording the same branch for that session refreshes the existing card's safe summary rather than adding a duplicate. This does not create, change, or delete Git worktrees.
+- A removal action appears only for a branch worktree reported clean, non-current, unlocked, non-prunable, and at the deterministic path managed by Pigeonholes (for both local and WSL adapters). It opens a second dialog that names the branch, explains that the working directory (including possibly ignored files) will be removed while the branch stays, requires typing the branch name and checking an acknowledgement, then sends a same-origin request. The API requires `confirmed: true`; the adapter rechecks the target and invokes `git worktree remove` without force; the demo and unsupported states disable it. Session files remain read-only.
+- After successful creation, the browser-local graph stores a `worktree` card with branch, base branch, and the safe status counts at creation, linked to the source session. This is a user-facing record, not a live worktree registry; editing or deleting the card does not change Git state. If graph storage fails after Git succeeds, the dialog says the worktree exists but its card was not saved.
+- A session detail action can create a task with a safe, user-editable default title and a `related` edge to that session in one localStorage write. It copies no session title, prompt, transcript, path, or tool content; if either record cannot be validated, neither is saved.
+- A compact masthead filter panel offers source, state, and project selectors. Source choices cover Claude Code, Codex CLI, GitHub Copilot, OpenCode, and all sources; state choices cover the six board piles; project choices use the safe project label. All three compose with text search. The list shows only matching rows and the canvas dims nonmatching session slips while keeping project sheets in place. The result count updates, and clearing filters resets all selectors.
+- Session details label the observed provider/source: Claude Code app-session records, Codex CLI records with the accepted CLI markers, GitHub Copilot `session-state` records, and OpenCode database records. Copilot's CLI and app share a local store, and the OpenCode adapter does not identify the producing client; those labels do not prove which UI or CLI created a session. Other execution settings are available only as manually entered profiles, not detected runtime facts.
+- On Windows, Codex diagnostics state when WSL storage is not connected and advise setting `CODEX_HOME` to the intended distro share before restarting. The wire carries only `configured` / `not_configured`; it never includes the environment value or share path. Explicit worktree actions may invoke `wsl.exe` only for the distro derived from that configured share, and return branch/state/count summaries without paths. They never discover distros. Creation requires the existing confirmation dialog; removal is offered only for clean, non-current, unlocked, non-prunable worktrees at the deterministic path managed by this adapter, and requires typing the branch name. WSL operations have synthetic mock coverage only; no live distro has been used.
+- OpenCode source diagnostics use counts only and explain missing database, unsupported schema, zero recent work, or an unsupported Node runtime. The adapter reads only the V2 session index, parent IDs and timestamps plus user/idle event times and idle outcomes. Unknown idle outcomes leave lifecycle state unknown. Prompt contents, tool payloads, auth data, database paths and raw provider IDs are not returned.
+- Session details with no allowlisted event rows explicitly say that no safe event summaries are available; unsupported event codes and malformed timestamps are omitted from the rendered timeline.
 - Save failures are announced. Dialogs use native modal semantics, labels, visible focus, bounded inputs, and a small-screen width. Graph keys and user-facing strings live in the established canvas dictionaries.
-- Verification for this stage: synthetic model/storage tests, architecture checks, and a demo-browser walkthrough for add/edit/move/connect/filter/reload. Real sessions are not needed to test placement persistence; session endpoint visibility remains bounded to whatever the local read-only board already exposes.
+- Verification for this stage: synthetic model/storage tests, architecture checks, and a demo-browser walkthrough for add/edit/move/connect/filter/reload. Source, state, project, and text filters were combined against synthetic demo data; the list shows the matching state and the canvas dims nonmatching slips while retaining project sheets. Real sessions are not needed to test placement persistence; session endpoint visibility remains bounded to whatever the local read-only board already exposes.
+- On 2026-10-26, a second isolated demo-browser walkthrough exercised the Comprehension Graph path: add a gap with explicit person/evidence/explanation fields; open the evidence and explanation relation editors with the corresponding kind selected; add both links; manually set the gap to resolved; reload and verify the card, state, and both links are restored. This used synthetic demo sessions and browser-local graph state only; no user understanding was inferred, and no real session or CLI was used.
+- Keyboard acceptance found that adding or editing a comprehension relation closed both dialogs and left focus on the document. Any close of a graph-origin relation dialog now returns focus to its source graph card after redraw, including cancel. In the isolated demo, keyboard navigation opened a gap card, reached the fixed evidence/explanation action, opened the relation editor, then both save and cancel returned focus to the source card. The card and graph-only records survived reload; no CLI or external service ran.
+- On 2026-10-26, a fresh isolated normal-mode board with empty temporary Claude, Codex, Copilot, and OpenCode sources showed the empty canvas. The “Add card” CTA opened its editor. This exposed and fixed a bug where the cancel handler returned early for a new card because it had no node yet; the dialog now closes for both new and existing cards. The close action was verified in the browser, and no card was saved. No actual session source, CLI, worktree, or external service was used.
+- Execution profiles were checked in the synthetic demo: all four selectors started at unknown, a user-authored profile could be linked to a synthetic session, and both its fixed values and relation remained after reloading. This validates only browser-local profile behavior; it does not validate that a declared setting matches any runtime.
+- On 2026-10-26, an isolated browser-local comprehension card was linked to synthetic Codex demo data, then the server was restarted at the same loopback origin with empty temporary stores for every provider. After reload, the card flagged both links as missing; its relation editor showed “Session missing” without an ID or path and exposed the explicit unlink confirmation. No session store was read, and only the synthetic browser-local relation was removed.
+- On 2026-10-26, an isolated demo browser added a synthetic task card, focused it, moved it right with the arrow key, and reloaded the page. The card remained on the canvas at its saved position after reload. This verifies the focused-card keyboard move and browser-local persistence path only; the data was synthetic and no real session store was read.
+- On 2026-10-26, the isolated demo browser connected a synthetic task card to a synthetic Codex CLI session. The canvas drew the relation line between the session slip and graph card; after reload, the card and relation were still present, and the session detail listed the related card alongside the safe event and harness summary. The demo card was deleted through its confirmation UI after the check. No real session store was read.
+- On 2026-10-26, a Codex demo detail walkthrough exposed that event rows had valid `datetime` attributes but rendered no visible timestamp because the display formatter was called with an extra argument. Both the event timeline and canvas event summary now show the local date and time. The isolated browser showed the timestamp beside “Turn started”; automated render tests cover both renderers. Only synthetic demo events were used.
+- On 2026-10-26, an isolated demo browser filtered the list to Codex CLI and opened one completed and one interrupted synthetic session. Both details showed the Codex CLI harness, the corresponding completion/interruption state, and timestamped start/end events. This validates the UI rendering path only; no real CLI or session store was used.
+- On 2026-10-26, responsive checks at 1280, 768, 400, and 320 px found no horizontal overflow in the canvas toolbar. At 320 px, the Codex WSL detail panel exposed duplicate worktree guidance and refresh controls because both the shared detail renderer and the canvas bar appended them. Removed the second append while retaining the canvas-only create action for non-WSL sessions; the refreshed demo detail showed one guidance notice and one refresh button, with the remaining controls reachable by scrolling inside the panel. Viewport overrides and the isolated server were reset/stopped after the check.
+- On 2026-10-26, an isolated demo canvas accepted a pointer drag on a newly authored task card at 62% zoom. Moving it 160×110 screen pixels updated its board position by the corresponding inverse-zoom delta; after reload, the same position and title were restored. The app deletion action could not be completed because browser input timed out, so this synthetic card remains only in the isolated browser origin's localStorage; its demo server was stopped. No session source was read.
+- Relation dialogs now remember their invoking control. After save, cancel, or confirmed removal, focus returns to that control if it remains mounted; if the graph redraw removed it, focus falls back to the source graph card or session slip, then the canvas viewport. In the isolated demo, adding two relations from a synthetic Codex detail returned focus to its source slip; the detail showed both links and they remained after reload.
+- Graph cards can now be connected by dragging a card's connection handle onto another card; the existing relation dialog opens with the target preselected. Self-drops and cancelled pointer gestures create no relation, and a completed drag suppresses the handle's follow-up click so it cannot accidentally start keyboard connection mode. The pure drop validator is covered by automated tests. In the isolated synthetic demo, two temporary graph cards were created, one handle was dragged onto the other, the preselected-target dialog was saved, and after reload both cards remained and one graph edge was present. No session store or CLI was used.
+- Session slips now expose a matching source handle in the near canvas view. Dragging either a session handle onto a graph card or a graph-card handle onto a session slip opens the same relation dialog with the target preselected; sessions can also be chosen as targets for session-origin relations. Synthetic demo acceptance exercised both session↔graph drag directions, saved both relations, and after reload found one graph card, 17 session handles and two graph edges. On 2026-10-27, a separate isolated Chrome demo dragged a Codex slip handle onto a Claude slip, saved a planned delegation with synthetic purpose text, and confirmed the relation in session details after reload. Demo mode disabled CLI execution. These checks used only demo/localStorage data, no real session store or CLI.
+- The same acceptance exposed that a newly added graph card could cover a session slip and intercept its handle. Initial placement now searches around both existing graph cards and session-slip rectangles for every graph-card creation path. A fresh synthetic demo created a card and measured zero overlaps against 17 slips. Pure model tests cover the collision rule; no real session store or CLI was used.
+- On 2026-10-27, the isolated synthetic demo recorded a planned delegation from a Codex session to a Claude session through the session detail’s relation dialog. The detail showed the target, user-entered purpose, and planned state; after reload, the same relation remained. A separate pointer drag between those session slip handles opened the target-preselected relation dialog, and its saved delegation also remained in session details after reload. Demo mode stated that CLI delegation is disabled, and no execution was started. This verifies dialog and pointer entry paths with browser-local persistence; no real session store or CLI was used.
+
+- On 2026-10-27, an isolated normal-mode run used synthetic Claude metadata and a temporary Git repository with no remote or checkout hooks. The browser displayed the selected project, base branch, clean status and checkout impact before the required checkbox and branch-name submission. The created worktree appeared as a safe-metadata canvas card linked to its session; fit-all and reload confirmed both cards and the relation remained visible/restored. Only temporary synthetic data was used; the isolated server was stopped. Environment policy blocked recursive cleanup, so the temporary fixture/worktree remains under the OS temp directory. Real user repositories/sessions, CLI, external services, and WSL operations remain unverified.
+- On 2026-10-27, a separate isolated demo at 320px opened the synthetic Codex WSL detail. The panel was 320px wide with 397px visible height and 592px scroll height; scrolling reached the final event and all refresh, copy, relation, task, and close controls. Document/body/canvas widths were each 320px. The WSL worktree action remained explicitly disabled in demo mode. No live WSL share, real session, or Git operation was used.
+- On 2026-10-27, the empty-canvas state hid the reading-status footer while its empty message directed users there for zero-count reasons. Added a keyboard-accessible action that switches to list view, expands “Reading status,” and focuses its summary. In an isolated normal-mode run, the Codex adapter found 38 rollout candidates, recognized 0, and rejected all 38 as non-CLI at the metadata-header check; event bodies for those candidates were not read. The canvas stayed empty and the opened diagnostics showed aggregate counts plus the reason and next step. Other provider/project stores were pointed to isolated empty locations. No real CLI was started or session created, and no full paths, IDs, prompts, or event payloads were displayed.
+- Voice Main AI direction: reproduce ChatGPT Live-level conversation and save audio plus transcript. GPT-Live API `gpt-live-1` provides browser WebRTC full-duplex audio, interruptions and captions, but differs from ChatGPT’s `GPT-Live-1.1` / Quip. Audio and transcript are stored only in this browser’s IndexedDB, with explicit delete. API-side `store:false` avoids retained recordings; standard abuse-monitoring logs may retain content up to 30 days. Enterprise roles and allow/deny rules remain undefined and unavailable.
+
+- On 2026-10-27, isolated `--demo` at loopback port 18979 created a synthetic artifact, added a `related` edge to a synthetic Codex CLI demo session, and reloaded to confirm both were restored. The accessible relation button opened editing; the in-app removal confirmation named the safe endpoints and kind. Confirming removed the edge, and a reload kept it absent. The artifact was then removed with its confirmation and stayed absent after reload. The server was stopped. This verifies ordinary relation unlink and card deletion in the GUI with synthetic browser-local data; it does not verify comprehension-gap unlink policy or screen-reader speech.
+
+- The smoke runner now creates one synthetic Claude session under an OS temporary root, explicitly points Claude/projects there, and overrides Codex, Copilot, OpenCode, and project roots to that fixture. It asserts exactly one Claude file/card and zero detections from other providers, then removes the validated temporary root after stopping the server. This avoids reading the caller's home/provider stores and makes `npm run smoke` deterministic.
+
+- On 2026-10-27, isolated demo acceptance created a synthetic comprehension gap for the person whose understanding was being checked, with explicit missing evidence and needed explanation fields. No understanding score was presented. A synthetic artifact was connected as `evidence` and a decision as `explains`; after both links were present, the gap could be marked resolved. Reload restored the details, status, and both relations. The relation-removal confirmation appeared, but browser control timed out after confirmation and the final removal state could not be established; GUI unlink acceptance remains unverified. Demo-only localStorage was used; no session store, CLI, or external service.
+- On 2026-10-27, relation unlink confirmation was changed from the browser-native prompt to an in-app modal that names both endpoints and relation kind; completed operation records also state that the Codex session will not be changed. Unit and architecture checks pass, but the revised modal's keyboard/browser rendering and post-reload removal flow have not yet received browser acceptance.
+
+### 理解負債の関係解除と再確認をGUIで受入 (2026-10-27)
+
+- 隔離`--demo`のブラウザーLocalStorageに、合成の理解負債・成果物・判断を追加。理解を確認される人、不足する根拠、必要な説明の3項目を表示し、理解度スコアは表示しなかった。
+- 成果物への`evidence`、判断への`explains`関係を画面から追加すると不足案内が消え、状態を「解消済み」に変更できた。再読み込み後も状態と両関係が復元した。
+- 関係線の編集から`evidence`解除を選ぶと、アプリ内確認dialogが両端点と関係種別を示した。確認後、理解負債は「要確認」となり不足する根拠が再表示された。再読み込み後も関係解除と再確認状態が維持された。
+- 合成の説明関係とカードは隔離デモの確認付き削除で片付けた。実セッション、CLI、外部サービスは使わず、理解を自動判定する機能の受入ではない。スクリーンリーダー実機の読み上げは未確認。
+
+### キャンバス操作帯から理解負債を順に確認
+
+- 根拠または説明を記録した理解負債に対応する有効な`evidence` / `explains`関係が不足している場合、通常のキャンバス操作帯に件数ボタンを表示する。現在の読み取り専用セッション一覧に存在しないsession endpointは有効な関係として数えない。
+- ボタンはグラフ内で最初に確認が必要なカードの編集dialogを開く。キャンバスカードからの既存接続導線を再利用するため、利用者は根拠・説明先を選び、接続を確認した後で状態を更新する。関係がすべて記録されると件数ボタンは消える。
+- 対象者の理解度を推定・採点・順位付けしない。件数は不足関係のあるカード数であり、人の能力や理解を表さない。
+- 合成`--demo`のGUIで、合成gapを作成し件数表示、ボタンから対象dialogを開く動作を確認した。合成カードは確認付き削除で片付け、デモサーバーを停止。実セッション/CLI/外部サービスは使用していない。
+
+### provider詳細と検索中の先頭案内
+
+- 隔離`--demo`のCopilot詳細に「CLIとアプリを判別できない」旨、OpenCode詳細に「起動元のCLI/アプリを特定できない」旨が表示されることを確認。どちらも安全な完了/進行状態とイベント時刻だけが見えた。
+- OpenCodeで文字検索すると、一致数が1件の案内へ切り替わり、絞り込み前の無関係なClaudeセッション推薦とOpen linkは先頭に出なくなった。検索結果は最近欄に残り、OpenCode詳細へ到達できた。
+- この確認中、検索が有効でも先頭案内が無関係なセッションを推奨するUI不整合を修正した。絞り込み0件を含む純粋状態テストを追加し、フィルター用翻訳辞書に表示文言を追加。確認は合成データのみで、デモサーバーは停止済み。実セッション/CLI/外部サービスは不使用。
+
+### 新規グラフカードの配置確認 — 未コミット作業
+
+- 純粋配置モデルがプロジェクト用紙全体と片付け欄を障害物として扱うよう変更し、合成テストを追加。隔離`--demo`のブラウザーでカード追加・視覚配置・確認付き削除を確認した。実セッションやCLIは使用していない。
+- 音声Main AIと企業権限制御は完成条件とされている一方、詳細はユーザー回答で「未定義」。仕様が決まるまで実装しない。
+
+### 実行条件カードとセッション詳細の合成受入
+
+- 隔離`--demo`で手動記録の実行条件カードを作り、合成Codex CLIカードへ接続。詳細に手動記録と4つのunknown-safe enum値が表示され、再読み込み後も関係と値が戻ることを確認した。テストカード/関係は確認付きUI操作で削除し、サーバー停止済み。
+- 受入中にgraph relation accessible nameがprofile kindを「不明」と表示する欠陥を発見。許可済み全カード種別をローカライズし、タイトル/目的/完全IDを除外するテストを追加した。browser reload後の名前も確認した。
+- 自動harness検出、実セッションとの適合性、スクリーンリーダー実発話は未確認。
+
+### 未知の委譲状態をfail-closedにする
+
+- 保存Graphの未知statusが「予定」へ変わると実行可になり得たため、正規化値を「状態不明」とし、明示レビューまで実行を止める。
+- `--demo`で未知状態の合成関係を作成。詳細の理由表示、再読込での保存/復元、確認付き削除を確認した。CLI/実セッション/外部サービスは使っていない。
+
+### REA OSSへの手動導線
+
+- 成果物カードの編集・作成フォームは、ユーザー指定のREA repositoryを明示操作で開くリンクを含む。クリック時だけ開き、opener連携とreferrer送信を抑止する。
+- 注意書きは短い確認済み要約だけを成果物説明に記録し、完全なEvidence・機密値を貼らないよう伝える。自動実行・自動fetch・Evidence取込はしない。
+- 隔離demoブラウザーで成果物種別への切替後に案内とリンク名を確認。リンク先は開かず、外部アクセスなし。変更後の確認は`npm test` 570件成功、`npm run arch` 99 paths・違反0、`npm run smoke`・`git diff --check`成功。
+
+### REA短文要約の確認チェックと編集時の言語
+
+- REA要約を記録する成果物カードは、保存前に「短い要約を確認し、完全Evidenceや機密値を含めていない」チェックを必須とする。チェック状態は永続化しない。カード種別を成果物以外に変えるとチェックは解除・無効化され、成果物へ戻しても再確認が必要。
+- チェックは利用者の自己申告であり、説明本文を自動走査しない。自動検査・REA実行・外部通信・完全Evidenceの取込は行わない。
+- Graph編集操作はダイアログを開く時点の現在言語を参照する。UI起動時の言語を閉じ込めず、言語切替後に開く追加/編集dialogでも選択中の翻訳を使う。
+- 隔離`--demo`の合成ブラウザーで、未チェックの成果物保存がHTML検証で止まること、種別変更と復帰でチェックがリセットされること、チェック後に保存・表示・確認付き削除できることを確認。言語切替後に既存理解負債カードの編集dialogが日本語で開くことも確認。実セッション/CLI/外部サービスは使用していない。
+
+### キーボードによるカード間関係の作成を受入
+
+- 隔離`--demo`ブラウザーで合成カードの関係ハンドルにSpaceを押し、接続モードへ入った後、別カードのハンドルへフォーカスが移ることを確認。接続先でSpaceを押すと、両端点を示す関係dialogが開く。
+- 関係を保存するとCanvasの関係ボタンとして表示され、ページ再読み込み後も関係と端点カードが残った。関係解除の確認、カード削除の確認を画面で実行し、再読込後に合成カード/関係が残らないことを確認。実セッション/CLI/外部サービスは不使用。これはアクセシビリティツリーの検証であり、スクリーンリーダー実機の音声出力を検証したものではない。
+
+### 委譲開始が拒否された場合の説明と記録
+
+- 実行確認後に対象がactive/消失済み、別操作中、または利用不能と判明したときは、固定理由コードだけを日英の案内へ変換し、ブラウザー内の委譲記録を`blocked`として保存してから案内する。拒否詳細・診断文字列・パスはUIへ渡さない。
+- 開始応答を受け取る前の拒否だけをこの経路で終端扱いにする。開始受理後に状態照会が失敗した場合は「状態を確認できない」とし、自動再試行しない。
+- 合成テストでは、既知コード、未知/機密らしい値、blocked保存成功後の案内順、保存失敗時に案内しないことを確認した。隔離デモの再起動とGUIロードも確認したが、拒否経路をブラウザー操作で発火させる確認は未実施。実セッション・CLI・外部要求は使用していない。
+
+### 理解負債の関係を再読み込みで再確認 (2026-10-27)
+
+- 隔離`--demo`で合成の理解負債・成果物・判断を作成し、画面から短い根拠説明付き`evidence`と`explains`を追加。未接続案内が消え、再読み込み後も両関係が表示されることを確認した。確認付き削除で3カードと関連関係を片付け、タブとサーバーを閉じた。
+- 今回の再実行では、状態を「解消済み」に選択して保存した後の再読み込み表示が「未着手」だったため、状態変更の永続化はこの実行では確認できなかった。以前の受入記録と異なるため、次回のGUI確認で保存操作と結果を再確認する。これは最新の確認範囲を記録するもので、理解度の推定は行わない。
+- 全データは隔離デモと合成データのみ。実セッション、CLI、worktree、外部サービスは使用していない。
+
+### 理解負債の解消状態保存を修正・再受入 (2026-10-27)
+
+- 再現で、カード編集フォームの解消状態検証が`reviewUnderstandingGaps`を呼ぶ一方、`graph-dialog.mjs`でimportしておらず、保存時に`ReferenceError`になることをブラウザーコンソールで確認した。
+- graph modelから関数をimportし、理解負債UI回帰テストで利用箇所に対応するimportを確認するようにした。隔離`--demo`で根拠/説明関係が揃った合成カードを「解消済み」に保存し、成功通知、カード状態更新、再読み込み後の復元を確認。修正後の試行では新しいコンソールエラーは出なかった。
+- 検証用の理解負債・成果物・判断カードは確認付きUI操作で削除し、タブとデモサーバーを閉じた。実セッション、CLI、worktree、外部サービスは使用していない。
+- `npm test`: 588 passed。`npm run arch`: 99 paths、違反0。`npm run smoke`: pass。`git diff --check`: pass。
+- 追加の英語UI受入では、理解確認対象者のみを設定した合成カードを`Resolved`に保存し、成功通知と再読み込み後の状態復元を確認。カードは確認付きUI操作で削除し、英語デモサーバーとタブを閉じた。実セッション/CLI/外部サービスは不使用。
+
+### worktreeカード状態更新の実画面確認を試行 (2026-10-27)
+
+- 新規loopbackポート`8812`で隔離`--demo`を起動し、初期一覧画面が合成データとして表示されるところまで確認した。worktreeカード・関係・保存状態は操作していない。
+- Windowsのcomputer-use規則に従い`node_repl`経由で画面を操作しようとしたが、現在のブラウザーURLを安全に特定できず、computer-useが入力前に停止した。回避操作は行わず、隔離デモサーバーを停止した。
+- この試行はworktreeカードの更新ボタン、対象branch限定記録、対象なし案内、focus復帰の画面受入を確認したものではない。これらと実Git inventoryのGUI受入は未確認のまま。
+
+### worktree更新が利用できない理由をカード詳細に表示 (2026-10-27)
+
+- worktreeカードに関連sessionがない場合は接続を促し、関連先があるが現在のボードにない場合はボード更新を案内する。session IDやパスは説明文に含めない。複数の関連先がある場合、稼働中sessionが一つでもあれば更新操作を有効にする。
+- Pure helperの合成テストで未関連、session不在、複数候補中の稼働session、完了カードを確認した。`npm test`: 602 passed、`npm run arch`: 99 paths・違反0、`git diff --check`: pass。
+- ブラウザー上の詳細パネル表示・更新操作は、Windows computer-useがURLの安全判定で前回入力前に停止したため未確認。実Git/WSL inventory、実セッションの稼働状態も未確認。
+
+### Codex失敗状態の隔離デモ画面受入 (2026-10-27)
+
+- loopbackの新規port `18812`で`--demo`を起動し、ブラウザーから合成の`Codex CLI (failed demo)`を検索。一覧へ切り替え、「最近」の該当件数を展開して詳細を開いた。
+- 画面にハーネス`Codex CLI`、実行状態`失敗`、固定イベント`ターン開始`/`失敗`と時刻が表示され、プロバイダーのエラー本文は表示されないことを確認。Codex候補数などの実データ走査ではなく、失敗表示のGUI配線・安全な要約だけの確認。
+- 詳細は「最近」内にあり、検索一致数が1件であることを確認してから一覧へ切り替えた。カードとイベントが一覧上に現れるまで展開が必要だった。worktree操作・永続データ編集はしていない。
+- 隔離デモのブラウザーtabを閉じ、serverを停止。実セッション、CLI起動/新規作成、外部サービスは不使用。実Codexセッションとの適合性は依然未確認。
+
+### 提供元・プロジェクト・状態filterの画面受入 (2026-10-27)
+
+- 別port `18814`の隔離`--demo`を開き、filter popoverで提供元`Codex CLI`、プロジェクト`demo-app`、状態`作業中`を順に指定。件数が5件から1件へ絞られ、該当する作業中Codexカードと各pileの件数が更新されることを確認。
+- 画面は「1件 / 64件」と一致pile内訳を示した。合成providerデータのみで、検索やfilterによるprovider session/storeの変更はなし。serverを停止し、browser tabを閉じた。
+- 同じターンの実データread-only確認ではCodex候補40、認識0、CLI以外marker 40だった。件数以外のセッション情報は出力せず、セッションファイルは変更していない。実Codex CLIセッションがキャンバスに表示されることは未確認のまま。
+
+### 320px幅でキャンバス・一覧・詳細を受入 (2026-10-27)
+
+- 320×760の明示viewportで隔離`--demo`を開き、キャンバス表示、一覧表示への切替、Claude合成カードの詳細展開を確認した。詳細では状態、ハーネス、コンテキスト、親子関係、合成Git状態が縦方向に閲覧できる。
+- viewport 320pxに対し`documentElement.scrollWidth`と`body.scrollWidth`はいずれも305pxで、キャンバス/一覧/詳細のどの状態でも水平overflowは観測されなかった。画面の見切れた縦コンテンツは通常の縦スクロールで続けて閲覧できる。
+- viewport overrideをresetし、タブとserverを閉じた。合成データのみであり、実セッション、CLI、worktree操作、外部サービスは使用していない。320px幅の複数幅/touch操作やスクリーンリーダー実機は未確認。
+
+### worktreeカード状態更新の隔離GUI受入 (2026-10-27追記)
+
+- port `18816`の`--demo`で合成worktreeカード`demo/canvas-check`を作り、合成の稼働中Claude sessionへ`related`接続した。カード詳細から読取専用fake inventoryを開き、対象branchだけに「キャンバスに記録」が表示され、cleanな別branchには操作が出ないことを確認した。inventoryは対象branch changed=2、untracked=0、conflicted=0、別branch clean=0を示した。
+- 対象状態を記録すると成功通知が出て、記録済みボタンが無効化された。inventoryを閉じると親詳細からキャンバスカードへ戻り、再読込後もカード・関係線・安全な状態要約が復元された。UIに完全なパスやGit診断本文は表示されなかった。
+- 一時Graphの合成カードを確認後に削除し、tabとserverを閉じた。実セッション、CLI、実Git/WSL worktree、外部サービスは使用していない。この受入は合成UIとlocalStorageのみであり、実環境との適合性は未確認。
+
+### 新規Graphカード配置の回帰確認 (2026-10-27追記)
+
+- 隔離`--demo` originで「カードを追加」から合成タスクを保存すると、`.graph-node`の`--x`/`--y`が`0`/`0`になることを再現した。原因はcanvas配置adapterがカード寸法の代わりに障害物配列を`nextGraphNodePosition`へ渡していたことだった。
+- 引数順を修正し、viewport、camera、用紙範囲が再現条件のadapter回帰テストを追加した。port `18826`の隔離demoではカード座標`(220,-220)`になり、再読み込み後も同じ位置で復元された。UIから合成カードを削除して再読み込み後に0件、タブとserverも終了した。
+- この試験は合成データとブラウザーlocalStorageだけを使用し、実セッションへの確認は行っていない。
+
+### セッションカードのキーボード移動・保存・リセット (2026-10-27追記)
+
+- 隔離loopback `--demo`で合成Codexセッションの移動ハンドルにフォーカスして右矢印を押し、個別配置の座標`(24,620)`を確認した。再読み込み後も同じ座標と配置が残った。
+- 「元の用紙へ戻す」ボタンで位置overrideを消し、再読み込み後も個別配置なしの通常セッションカードへ戻ることを確認した。一時demoタブとserverは閉鎖/停止済み。
+- 合成データ、ブラウザー内状態のみ。実セッション、CLI、providerファイル、worktree、外部サービスは不使用。実スクリーンリーダー読み上げと他の入力方式は未確認。
+
+### REA短文要約を成果物に記録し、Codexセッションへ関連付け (2026-10-27)
+
+- 隔離`--demo`上で成果物カードを作り、合成の短文要約を入力。表示されたREA要約確認checkboxを選んで保存した。
+- 成果物カードの関係editorから合成Codexセッションを選び`related`を追加。カードと関係線は再読み込み後も復元した。確認付き削除を実行し、再読み込み後に一時カード・関係線が残らないことを確認した。
+- REAリンクは開かず、REA実行・外部通信なし。合成内容のみで、完全Evidence/実所見/実セッションは使っていない。実際のREA所見の品質や実セッションとの関連付けは未確認。
+
+### 最新headでセッションカード配置の保存・復元を再確認 (2026-10-27)
+
+- `cb67fa4`を含む現在のローカル作業ツリーで、隔離loopback `--demo`ブラウザーの合成Codex CLIカードを開いた。移動ハンドルへフォーカスして右矢印を押すと通常用紙から移動し、ページ再読込後も個別配置が残ることを確認した。
+- 「元の用紙へ戻す」を押すと通常のプロジェクト用紙へ戻り、その状態も再読込後に復元された。検証用タブを閉じ、demo serverを停止した。
+- 合成UIとブラウザー内状態のみ。実セッション/providerファイル、CLI、worktree操作、外部サービスは不使用。マウスpointer drag、touch操作、スクリーンリーダー実機は未確認。
+- `npm test`: 611 passed、`npm run arch`: 99 paths・違反0、`npm run smoke`: pass、`git diff --check`: pass。smokeは既存の読取専用adapterでローカルセッション情報を読み、集計値のみ出力した。
+
+### 合成セッションカードの実ポインタードラッグと復元 (2026-10-27)
+
+- 隔離loopback demoを開き、キャンバス上の合成Codex CLIセッションカードの移動ハンドルをポインターでドラッグした。表示位置が移動し、再読み込み後も同じ配置が復元することを画面とDOMの座標で確認した。
+- データはdemoの合成セッションと、そのブラウザーoriginのcanvas配置のみ。実session source、CLI、worktree、外部サービスは使用していない。これはマウスpointer移動と保存/復元の受入であり、touch操作、すべての入力方式、スクリーンリーダー実機は未確認。デモサーバーと一時タブは終了した。
+
+### 手動ハーネスprofileの作成・関連付けをGUI受入 (2026-10-27)
+
+- 隔離`--demo`で「実行条件」カードを作成し、ハーネスをCodex CLI、未確認の実行場所・分離・通信・承認を「不明」のまま保存した。UIは手動記録であり自動検出しないことをフォームで明示した。
+- 合成Codex CLIセッションに`related`で結び、詳細に「手動記録の実行条件」と各値を表示。再読み込み後のカード/関係/詳細復元を確認した。検索語「Codex CLI」でprofileカードが一致表示に残ることも確認した。
+- test-onlyカードをアプリ内確認後に削除し、再読み込み後にカードと関係が消えていることを確認。合成データとブラウザーlocalStorageのみで、実session source、CLI、worktree、外部サービスは不使用。実セッションのハーネス検証は未確認。
+
+### Obsidianノート参照の安全なGUI受入 (2026-10-27)
+
+- 隔離`--demo`でObsidianノートカードを作成。`../invalid.md`はフォームの検証メッセージで拒否され、保存されないことを確認した。`Architecture/Agent Canvas.md`は許可され、合成Codex CLIセッションへ`related`で接続できた。
+- session詳細とカード編集画面にObsidianリンクが表示され、URIがvault名/相対ノート名を正しくpercent-encodeすることをDOM属性で確認した。リンクは表示確認のみで、Obsidianプロトコルを起動していない。再読み込み後もカード・関係・リンクが復元した。
+- テストカードはアプリ内確認後に削除し、再読み込み後にカードと関係が存在しないことを確認。vaultやノート本文を読み書きせず、実セッション、CLI、worktree、外部サービスは使用していない。これは手動参照の画面受入で、Vault indexingや知識抽出の検証ではない。
+
+### 320px幅でCodex詳細を再確認、実タッチ入力は未確認 (2026-10-27)
+
+- 隔離`--demo`を320×760 viewportで開き、キャンバス上の合成Codex CLIセッション詳細に状態、ハーネス/WSL、実行状態、ブランチ、合成Git状態、作成時刻、固定イベントコードが表示されることを確認した。詳細は高さ方向にスクロールする。
+- 詳細表示中の`documentElement`/`body`幅は320px、詳細領域は幅320px内で横overflow 0。再読み込み後もCanvas表示と合成イベントは維持され、詳細選択自体は閉じた。viewport override、タブ、サーバーは確認後に解除・終了した。
+- これはviewport/DOMによる狭幅受入で、実タッチ操作の受入ではない。利用可能なブラウザー操作APIはviewport寸法変更とマウスdragを提供するが、touch入力注入を提供しないため、タッチ移動/ピンチ操作は未確認のまま。実セッション/CLI/外部サービス/worktree操作は不使用。
+
+### GPT-Live音声ダイアログの隔離GUI確認 (2026-10-27)
+
+- 別ポートの`--demo`を開き、音声ボタンから会話ダイアログを表示。API利用料とブラウザー内保存/削除、OpenAIの標準不正利用監視ログについての説明、保存履歴の空状態、APIキー未設定時の案内、開始ボタン無効化を確認した。
+- 音声の開始は行わず、マイク権限を求めず、OpenAI APIへ接続していない。実IndexedDBへの音声保存/削除、実ブラウザーでのWebRTC/GPT-Live互換性は未確認。保存ロジックはfake IndexedDBのテストで字幕・両音声の保存/取得/削除を確認した。
+- demo tab/serverは閉じて停止した。実セッションやCLIは使っていない。
+
+### GPT-Live字幕の話者交代を保持 (2026-10-27)
+
+- GPT-Liveの許可済み入力/出力caption deltaを連続した話者単位にまとめ、話者が交代したら別の字幕行として順序を保持する。1行の上限を設け、provider IDやイベント全体は字幕記録へ含めない。
+- 合成イベントfixtureでuser → assistant → userの順序、同一話者deltaの連結、入力配列の不変性を確認。`npm test`: 618/618 passed、`npm run arch`: 104 paths / 0 violations、`git diff --check`: passed。
+- 実APIイベント列との適合、実音声字幕、実ブラウザー再生/永続化は未確認。実API接続やマイク利用は行っていない。
+
+### Voiceの初期表示に正しい保存説明を出す
+
+- JavaScript/i18n適用前のHTML fallbackが「録音を保存しない」と誤っていたため、ブラウザー内へ字幕と分離した音声を保存し、API課金が別であることを初期HTMLにも明記した。開始ボタンの初期ラベルも翻訳辞書と一致させた。
+- source assertionがHTML first paintの保存先・課金・ログ保持案内を検証する。`npm test`: 619/619 passed、`npm run arch`: 104 paths / 0 violations、`git diff --check`: passed。
+
+### Voice接続中断時の部分保存
+
+- 利用者が明示的に開始した後、接続が予期せず終了した場合は、MediaRecorderを止めて取得済み音声と字幕をブラウザー内へ`interrupted`として保存する。片方の話者音声が取得できていない場合は、その音声を作らず詳細に取得不可と表示する。音声・字幕がどちらも無い場合は空記録を作らない。
+- 合成IndexedDBテストで、中断状態、取得済み片側音声と字幕の保存/読出し、未取得側が無いこと、空記録拒否を確認した。`npm test` と `npm run arch` は通過し、`git diff --check` も通過。
+- 実WebRTC切断時のブラウザー挙動と実音声の部分保存は、実API/マイク接続を行っていないため未確認。
+
+### Voice録音停止時の最終チャンクを待つ
+
+- 明示停止・切断時の共通終了処理は、 dataavailable を先に受け取ってから stop 完了を待ち、最後のチャンクをIndexedDBへ含める。MediaRecorderの停止例外では待ち続けず、保存可能なチャンクの処理とリソース解放へ進む。
+- 合成MediaRecorder fixtureで停止イベント前に到着する最終チャンクを確認し、停止例外でも終了待ちがrejectしないことを確認した。`npm test`: 621/621 passed。
+- 実ブラウザーMediaRecorder/WebRTCのstopイベント順序と録音再生は引き続き未確認。
+
+### GPT-Liveセッションを確認付きで終了
+
+- 公式OpenAI DocsのGPT-Live WebRTC手順に従い、明示停止時はdata channelに`session.close`を送り、`session.closed`受信後にpeer connectionと音声トラックを解放する。作成設定は`session.close`だけをfrontend client allowlistに加え、未知のコマンドは引き続き拒否する。
+- close確認の有無だけをブラウザー内記録へboolean/nullで保存。確認できない場合は最終利用量が不明と表示し、プロバイダーイベント本文・ID・利用量は記録しない。予期しない切断時はcloseを送らず中断保存へ進む。
+- 合成テストでclose要求の固定wire形、started待機、closed確認、タイムアウト時のfail-closedを確認。`npm test`: 623/623 passed。実API/WebRTCのcloseイベントは未確認。
+- 根拠: [GPT-Live WebRTC guide](https://developers.openai.com/api/docs/guides/voice-webrtc), [GPT-Live session lifecycle](https://developers.openai.com/api/docs/guides/live-conversations)。

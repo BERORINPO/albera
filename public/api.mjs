@@ -1,5 +1,5 @@
 // @ts-check
-// 画面: サーバーとの通信はこのファイルだけ (唯一の fetch 呼び出し元)。GET /api/board しかしない。
+// 画面: サーバーとの通信はこのファイルだけ (唯一の fetch 呼び出し元)。
 
 /** サーバーには繋がったが、盤面を返せなかった (5xx など)。繋がらないときの TypeError / AbortError とは分ける。 */
 export class BoardHttpError extends Error {
@@ -19,6 +19,58 @@ export class BoardVersionError extends Error {
     this.name = 'BoardVersionError';
     this.v = v;
   }
+}
+
+/** A bounded, allowlisted worktree operation result. Never carries command output or paths. */
+export class WorktreeOperationError extends Error {
+  /** @param {number} status @param {string} reason */
+  constructor(status, reason) {
+    super(`worktree operation ${status}: ${reason}`);
+    this.name = 'WorktreeOperationError';
+    this.status = status;
+    this.reason = reason;
+  }
+}
+
+/** Voice errors carry only fixed reason codes, never provider response bodies. */
+export class VoiceApiError extends Error {
+  /** @param {string} reason */
+  constructor(reason) { super(reason); this.name = 'VoiceApiError'; this.reason = reason; }
+}
+
+export async function voiceAvailability() {
+  const res = await fetch('/api/voice/status', { cache: 'no-store', credentials: 'same-origin' });
+  const data = await res.json().catch(() => ({}));
+  return res.ok && data.available === true;
+}
+
+/** Only an SDP offer crosses the local boundary; provider credentials remain server-side. */
+export async function createVoiceSession(sdp) {
+  const res = await fetch('/api/voice/session', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sdp, confirmed: true }), cache: 'no-store', credentials: 'same-origin',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || typeof data.sessionId !== 'string' || typeof data.sdp !== 'string') throw new VoiceApiError(data.error === 'not_configured' ? 'not_configured' : 'unavailable');
+  return { sessionId: data.sessionId, sdp: data.sdp };
+}
+
+/** Send only a user-authored delegation purpose after explicit UI confirmation. */
+export async function runDelegation(sessionId, purpose, operationId) {
+  const res = await fetch('/api/delegations/run', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, purpose, operationId, confirmed: true }), cache: 'no-store', credentials: 'same-origin',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || typeof data.operationId !== 'string') throw new WorktreeOperationError(res.status, typeof data.error === 'string' ? data.error : 'failed');
+  return { operationId: data.operationId, status: data.status };
+}
+
+export async function delegationStatus(operationId) {
+  const res = await fetch(`/api/delegations/status/${encodeURIComponent(operationId)}`, { cache: 'no-store', credentials: 'same-origin' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !['running', 'completed', 'failed'].includes(data.status)) throw new WorktreeOperationError(res.status, 'failed');
+  return data.status;
 }
 
 /**
@@ -42,4 +94,77 @@ export async function fetchBoard(etag, timeoutMs) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Send one explicit, same-origin create request; browser input contains only an opaque session ID, branch label, and confirmation flag.
+ * @param {string} sessionId @param {string} branch
+ * @returns {Promise<{branch:string,status:string,changed:number,untracked:number,conflicted:number}>}
+ */
+export async function createWorktree(sessionId, branch) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 65_000);
+  try {
+    const res = await fetch('/api/worktrees', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, branch, confirmed: true }), cache: 'no-store', credentials: 'same-origin', signal: ctl.signal,
+    });
+    let data = {};
+    try { data = await res.json(); } catch { /* generic error below */ }
+    if (!res.ok || data?.ok !== true || typeof data.branch !== 'string') {
+      throw new WorktreeOperationError(res.status, typeof data?.reason === 'string' ? data.reason : 'failed');
+    }
+    return {
+      branch: data.branch,
+      status: ['clean', 'changed', 'untracked', 'mixed', 'conflicted', 'unknown'].includes(data.status) ? data.status : 'unknown',
+      changed: Number.isSafeInteger(data.changed) && data.changed >= 0 ? data.changed : 0,
+      untracked: Number.isSafeInteger(data.untracked) && data.untracked >= 0 ? data.untracked : 0,
+      conflicted: Number.isSafeInteger(data.conflicted) && data.conflicted >= 0 ? data.conflicted : 0,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Fetch bounded path-free worktree summaries for one selected session's repository.
+ * @param {string} sessionId
+ * @returns {Promise<Array<{branch:string|null,status:string,changed:number,untracked:number,conflicted:number,detached:boolean,locked:boolean,prunable:boolean,current:boolean,removable:boolean}>>}
+ */
+export async function listWorktrees(sessionId) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 12_000);
+  try {
+    const res = await fetch(`/api/worktrees?sessionId=${encodeURIComponent(sessionId)}`, { cache: 'no-store', credentials: 'same-origin', signal: ctl.signal });
+    let data = {};
+    try { data = await res.json(); } catch { /* generic error below */ }
+    if (!res.ok || !Array.isArray(data?.items)) throw new WorktreeOperationError(res.status, typeof data?.error === 'string' ? data.error : 'failed');
+    return data.items.slice(0, 20).map((item) => ({
+      branch: typeof item?.branch === 'string' ? item.branch : null,
+      status: ['clean', 'changed', 'untracked', 'mixed', 'conflicted', 'unknown'].includes(item?.status) ? item.status : 'unknown',
+      changed: Number.isSafeInteger(item?.changed) && item.changed >= 0 ? item.changed : 0,
+      untracked: Number.isSafeInteger(item?.untracked) && item.untracked >= 0 ? item.untracked : 0,
+      conflicted: Number.isSafeInteger(item?.conflicted) && item.conflicted >= 0 ? item.conflicted : 0,
+      detached: item?.detached === true, locked: item?.locked === true, prunable: item?.prunable === true, current: item?.current === true, removable: item?.removable === true,
+    }));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Send an explicitly confirmed removal for one clean non-current branch worktree.
+ * @param {string} sessionId @param {string} branch
+ * @returns {Promise<{branch:string}>}
+ */
+export async function removeWorktree(sessionId, branch) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 15_000);
+  try {
+    const res = await fetch('/api/worktrees/remove', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, branch, confirmed: true }), cache: 'no-store', credentials: 'same-origin', signal: ctl.signal,
+    });
+    let data = {};
+    try { data = await res.json(); } catch { /* generic error below */ }
+    if (!res.ok || data?.ok !== true || data.branch !== branch) throw new WorktreeOperationError(res.status, typeof data?.reason === 'string' ? data.reason : 'failed');
+    return { branch: data.branch };
+  } finally { clearTimeout(timer); }
 }

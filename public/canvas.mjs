@@ -12,6 +12,8 @@ import { canvasSig, slipEl, slipFlags } from './canvas-slip.mjs';
 import { groupCards } from './ui-state.mjs';
 import { fill, h, reconcile } from './view.mjs';
 import { renderGraphLayer } from './graph-render.mjs';
+import { isPositionedSession } from './session-position.mjs';
+import { renderPositionedSessions } from './session-positioned-render.mjs';
 
 export { canvasSig } from './canvas-slip.mjs';
 
@@ -95,7 +97,11 @@ function part(box, sig, build) {
  * @property {number} now
  * @property {boolean} demo
  * @property {any} [graph]
+ * @property {{source:string,state:string,project:string}} [sessionFilters]
  * @property {{id:string,x:number,y:number}|null} [graphDrag]
+ * @property {Record<string,{x:number,y:number}>} [sessionPositions]
+ * @property {{id:string,x:number,y:number,startX:number,startY:number}|null} [sessionDrag]
+ * @property {string|null} [graphConnectFrom]
  * @property {Record<string, any>} handoff  prefs.handoff
  * @property {(pile: string, id: string) => boolean} isNew
  * @property {(pile: string, id: string) => boolean} takeArrival
@@ -132,6 +138,9 @@ function syncSheet(el, s, o) {
     if (!sl) continue;
     setVars(li, { '--x': sl.x, '--y': sl.y, '--w': SLIP_W, '--h': sl.h });
     const ok = !o.matched || o.matched.has(sl.id);
+    const positioned = isPositionedSession(sl.id, o.index, o.sessionPositions, o.sessionDrag);
+    li.inert = positioned;
+    li.classList.toggle('is-session-positioned', positioned);
     li.classList.toggle('is-top', sl.row === 0);
     li.classList.toggle('is-cursor', sl.id === o.cursorId);
     li.classList.toggle('is-dim', !ok);
@@ -141,7 +150,7 @@ function syncSheet(el, s, o) {
     const off = btn.querySelector('.slip__nomatch');
     if (!ok && !off) btn.append(h('span', { class: 'vh slip__nomatch', text: `${t('sep.list')}${t('canvas.noMatch')}` }));
     else if (ok && off) off.remove();
-    if (!ok) continue;
+    if (!ok || positioned) continue;
     first ??= btn;
     if (sl.id === o.cursorId) cur = btn;
   }
@@ -169,7 +178,10 @@ export function renderCanvas(root, o) {
     const s = byKey.get(el.dataset.key ?? '');
     if (s) syncSheet(el, s, o);
     else if (fold && el.dataset.key === FOLD_KEY) setVars(el, { '--x': fold.x, '--y': fold.y, '--w': fold.w, '--h': fold.h });
-    else if (el.dataset.key === 'graph-layer') renderGraphLayer(el, { t: o.t, graph: o.graph ?? { nodes: [], edges: [] }, index: o.index, layout: o.layout, filter: o.graphFilter ?? '', matched: o.matched, boardReady: !!o.board, drag: o.graphDrag ?? null });
+    else if (el.dataset.key === 'graph-layer') {
+      renderGraphLayer(el, { t: o.t, graph: o.graph ?? { nodes: [], edges: [] }, index: o.index, layout: o.layout, filter: o.graphFilter ?? '', sessionFilters: o.sessionFilters, matched: o.matched, boardReady: !!o.board, drag: o.graphDrag ?? null, connectFrom: o.graphConnectFrom ?? null, sessionPositions: o.sessionPositions, sessionDrag: o.sessionDrag });
+      renderPositionedSessions(el, { t: o.t, index: o.index, layout: o.layout, positions: o.sessionPositions ?? {}, drag: o.sessionDrag ?? null, matched: o.matched, nextId: o.nextId ?? null, now: o.now, handoff: o.handoff, demo: o.demo, isNew: o.isNew, takeArrival: o.takeArrival });
+    }
   }
   heads = null;
 }

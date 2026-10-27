@@ -265,22 +265,38 @@ const rowSize = (c) => rowIds(c).length;
 /**
  * 絞り込み (文字と親子) を当てた見え方。piles の並びと一致数。
  * @param {any} board
- * @param {{q?: string, family?: string|null, source?: 'all'|'claude'|'codex', t: T, now?: number}} opts now: 「要約済み」の言葉でも探すときの今
+ * @param {{q?: string, family?: string|null, source?: 'all'|'claude'|'codex'|'copilot'|'opencode', project?: string, state?: string, graph?: any, t: T, now?: number}} opts now: 「要約済み」の言葉でも探すときの今
  */
-export function visibleModel(board, { q = '', family = null, source = 'all', t, now }) {
+export function visibleModel(board, { q = '', family = null, source = 'all', project = 'all', state = 'all', graph = null, t, now }) {
   const qq = String(q ?? '').trim().toLowerCase();
   const fam = family ? new Set(board?.families?.[family]?.memberIds ?? [family]) : null;
-  const filtering = qq !== '' || fam != null || source !== 'all';
-  /** @param {Card} c */
-  const ok = (c) => (!fam || fam.has(c.id) || rowIds(c).some((id) => fam.has(id))) && (source === 'all' || (c.source === 'codex' || c.id.startsWith('codex_') ? 'codex' : 'claude') === source) && matches(c, qq, t, now);
+  /** Only the allowlisted, localized enum values from a linked manual profile enter session search. */
+  const profileTerms = new Map();
+  const profiles = new Map((graph?.nodes ?? []).filter((node) => node?.kind === 'execution_profile').map((node) => [node.id, node]));
+  for (const edge of graph?.edges ?? []) {
+    if (edge?.kind !== 'related') continue;
+    for (const [nodeRef, sessionRef] of [[edge.from, edge.to], [edge.to, edge.from]]) {
+      const profile = typeof nodeRef === 'string' && nodeRef.startsWith('graph:') ? profiles.get(nodeRef.slice(6)) : null;
+      if (!profile || typeof sessionRef !== 'string' || !sessionRef.startsWith('session:')) continue;
+      const terms = profileTerms.get(sessionRef.slice(8)) ?? new Set();
+      for (const field of ['executionHarness', 'executionLocation', 'workspaceIsolation', 'networkAccess', 'approvalMode']) {
+        const key = `graph.${field}.${profile[field]}`;
+        if (t.has(key)) terms.add(t(key).toLowerCase());
+      }
+      profileTerms.set(sessionRef.slice(8), terms);
+    }
+  }
+  const filtering = qq !== '' || fam != null || source !== 'all' || project !== 'all' || state !== 'all';
+  /** @param {Card} c @param {string} pile */
+  const ok = (c, pile) => (!fam || fam.has(c.id) || rowIds(c).some((id) => fam.has(id))) && (source === 'all' || (c.source ?? (c.id.startsWith('codex_') ? 'codex' : c.id.startsWith('copilot_') ? 'copilot' : c.id.startsWith('opencode_') ? 'opencode' : 'claude')) === source) && (project === 'all' || c.project?.key === project) && (state === 'all' || state === pile) && (matches(c, qq, t, now) || rowIds(c).some((id) => [...(profileTerms.get(id) ?? [])].some((term) => term.includes(qq))));
   /** @type {Record<string, Card[]>} */
   const buckets = {};
-  for (const pile of LIST_PILES) buckets[pile] = (board?.buckets?.[pile] ?? []).filter(ok);
-  const recentGroups = (board?.recentGroups ?? []).map((/** @type {any} */ g) => ({ ...g, items: (g.items ?? []).filter(ok) })).filter((/** @type {any} */ g) => g.items.length);
+  for (const pile of LIST_PILES) buckets[pile] = (board?.buckets?.[pile] ?? []).filter((c) => ok(c, pile));
+  const recentGroups = (board?.recentGroups ?? []).map((/** @type {any} */ g) => ({ ...g, items: (g.items ?? []).filter((c) => ok(c, 'recent')) })).filter((/** @type {any} */ g) => g.items.length);
   const cleanupGroups = (board?.cleanupGroups ?? [])
     .map((/** @type {any} */ g) => {
-      if (!g.projects) return { ...g, items: (g.items ?? []).filter(ok) };
-      const projects = g.projects.map((/** @type {any} */ p) => ({ ...p, items: (p.items ?? []).filter(ok) })).filter((/** @type {any} */ p) => p.items.length);
+      if (!g.projects) return { ...g, items: (g.items ?? []).filter((c) => ok(c, 'cleanup')) };
+      const projects = g.projects.map((/** @type {any} */ p) => ({ ...p, items: (p.items ?? []).filter((c) => ok(c, 'cleanup')) })).filter((/** @type {any} */ p) => p.items.length);
       return { ...g, projects };
     })
     .filter((/** @type {any} */ g) => groupCards(g).length);
