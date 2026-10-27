@@ -25,18 +25,6 @@ function runNode(args) {
   return result.stdout;
 }
 
-function runInstalledEntry(entry, args) {
-  const result = spawnSync(process.execPath, [entry, ...args], {
-    cwd: root,
-    encoding: 'utf8',
-    maxBuffer: 2 * 1024 * 1024,
-    shell: false,
-    windowsHide: true,
-  });
-  if (result.error || result.status !== 0) throw new Error('package_smoke_entry_failed');
-  return result.stdout;
-}
-
 try {
   const packed = JSON.parse(runNode(['pack', '--json', '--ignore-scripts', '--pack-destination', temporaryRoot]));
   assert.equal(packed.length, 1);
@@ -52,7 +40,7 @@ try {
   const manifest = JSON.parse(await readFile(path.join(installedRoot, 'package.json'), 'utf8'));
   assert.equal(manifest.bin?.albera, 'src/entry/server.mjs');
   assert.equal(manifest.bin?.['albera-runtime'], 'src/runtime/entry.mjs');
-  const help = runInstalledEntry(path.join(installedRoot, manifest.bin['albera-runtime']), ['--help']);
+  const help = runNode(['exec', '--prefix', installRoot, '--offline', '--', 'albera-runtime', '--help']);
   assert.match(help, /ALBERA Runtime/);
   assert.match(help, /read-only session dashboard/);
   console.log('package smoke: packed and installed ALBERA locally; Runtime CLI help and approval UI assets verified (no publish, no provider launch)');
