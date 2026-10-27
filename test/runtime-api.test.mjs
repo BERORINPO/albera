@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import test from 'node:test';
 import { createRuntimeApi } from '../src/runtime/api.mjs';
 import { createRuntimeApprovalBroker } from '../src/runtime/approval-broker.mjs';
@@ -533,6 +533,61 @@ test('audit failure after a Gateway start closes the Gateway to stop unrecorded 
   assert.equal(writes, 2);
   assert.deepEqual(f.calls.map(([action]) => action), ['start']);
   assert.equal(gatewayClosed, true);
+});
+
+test('real journal capacity exhaustion after launch fails the API closed and shuts down the Gateway', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-journal-capacity-api-'));
+  const file = path.join(root, 'audit.jsonl');
+  const maxBytes = 2048;
+  const journal = await openTestJournal(file, { maxBytes });
+  let sequence = 0;
+  while (true) {
+    const size = (await readFile(file)).byteLength;
+    const remaining = maxBytes - size;
+    const at = Date.now();
+    const requestId = '12345678-1234-4234-8234-123456789abc';
+    const sessionId = 'a'.repeat(32);
+    const requestedBytes = Buffer.byteLength(`${JSON.stringify({
+      version: 1, sequence: sequence + 1, sessionId, requestId, action: 'run.start', phase: 'requested', at, provider: 'claude',
+    })}\n`);
+    const acceptedBytes = Buffer.byteLength(`${JSON.stringify({
+      version: 1, sequence: sequence + 2, sessionId, requestId, action: 'run.start', phase: 'accepted', at, provider: 'claude', runId: requestId,
+    })}\n`);
+    if (remaining < requestedBytes + acceptedBytes) {
+      assert.ok(remaining >= requestedBytes, 'capacity must admit the request audit record before rejecting its result');
+      break;
+    }
+    sequence++;
+    await journal.append({
+      sessionId, requestId: `${String(sequence).padStart(8, '0')}-1234-4234-8234-123456789abc`,
+      action: 'run.start', phase: 'requested', at,
+    });
+  }
+  const bytesBeforeApiRequest = await readFile(file);
+
+  let gatewayClosed = false;
+  const f = await apiFixture({ journal }, { async close() { gatewayClosed = true; } });
+  t.after(async () => { await f.close(); await journal.close(); await rm(root, { recursive: true, force: true }); });
+  const response = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'synthetic capacity case' }),
+  });
+  assert.equal(response.status, 503);
+  assert.deepEqual(JSON.parse(response.text), { error: 'audit_unavailable' });
+  assert.equal(gatewayClosed, true);
+  assert.deepEqual(f.calls.map(([action]) => action), ['start']);
+  const records = journal.list();
+  assert.equal(records.at(-1).phase, 'requested');
+  assert.equal(records.some((record) => record.phase === 'accepted' && record.action === 'run.start'), false);
+  const health = await request(f.address, f.api, { route: '/v1/health' });
+  assert.equal(health.status, 503);
+  const bytesAfterFailure = await readFile(file);
+  assert.deepEqual(bytesAfterFailure.subarray(0, bytesBeforeApiRequest.byteLength), bytesBeforeApiRequest);
+  await journal.close();
+  const recovered = await openTestJournal(file, { maxBytes });
+  assert.equal(recovered.list().length, records.length);
+  assert.equal(recovered.list().at(-1).phase, 'requested');
+  assert.equal(recovered.list().some((record) => record.phase === 'accepted' && record.action === 'run.start'), false);
+  await recovered.close();
 });
 
 test('failure to audit a denied Gateway request permanently fails the API closed', async (t) => {
