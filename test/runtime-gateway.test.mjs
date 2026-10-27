@@ -194,6 +194,31 @@ test('host authorization receives the exact canonical executable, cwd and argv b
   assert.equal('confirmed' in run, false);
 });
 
+test('Gateway refuses an executable changed while host authorization is pending', async (t) => {
+  let authorized;
+  let approve;
+  let spawned = false;
+  const authorizedSignal = new Promise((resolve) => { authorized = resolve; });
+  const approvalGate = new Promise((resolve) => { approve = resolve; });
+  const f = await fixture({
+    resolveExecutableImpl: async () => path.join(f.root, `provider${process.platform === 'win32' ? '.exe' : ''}`),
+    authorize: async () => { authorized(); await approvalGate; return true; },
+    spawnImpl: () => { spawned = true; return new FakeChild(); },
+  });
+  t.after(f.dispose);
+  const executable = path.join(f.root, `provider${process.platform === 'win32' ? '.exe' : ''}`);
+  await writeFile(executable, 'approved executable fixture');
+  await chmod(executable, 0o700);
+
+  const start = f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture prompt' });
+  await authorizedSignal;
+  await writeFile(executable, 'replacement executable fixture with different identity');
+  approve();
+
+  await assert.rejects(start, (error) => error.code === 'executable_unavailable');
+  assert.equal(spawned, false);
+});
+
 test('authorization sees a redacted provider environment summary and spawn uses its pre-approval snapshot', async (t) => {
   let seen;
   let capturedEnvironment;

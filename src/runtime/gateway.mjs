@@ -162,6 +162,7 @@ export class RuntimeGateway {
       catch { throw new GatewayError('executable_unavailable'); }
       if (typeof executable !== 'string' || !path.isAbsolute(executable)) throw new GatewayError('executable_unavailable');
       executable = await validateExecutable(executable, this.#platform);
+      const executableIdentity = await getExecutableIdentity(executable);
       if (this.#closing) throw new GatewayError('gateway_closed');
       const environment = childEnvironment(provider, this.#env);
       const authorized = await this.#authorizeSafely({
@@ -172,6 +173,12 @@ export class RuntimeGateway {
       });
       if (this.#closing) throw new GatewayError('gateway_closed');
       if (!authorized) throw new GatewayError('confirmation_required');
+      let currentExecutable;
+      try { currentExecutable = await validateExecutable(executable, this.#platform); }
+      catch { throw new GatewayError('executable_unavailable'); }
+      if (currentExecutable !== executable || await getExecutableIdentity(currentExecutable) !== executableIdentity) {
+        throw new GatewayError('executable_unavailable');
+      }
 
       let child;
       try {
@@ -395,6 +402,13 @@ async function validateExecutable(executable, platform) {
       if (path.win32.extname(canonical).toLowerCase() !== '.exe') throw new GatewayError('executable_unavailable');
     } else await access(canonical, fsConstants.X_OK);
     return canonical;
+  } catch { throw new GatewayError('executable_unavailable'); }
+}
+async function getExecutableIdentity(executable) {
+  try {
+    const details = await stat(executable, { bigint: true });
+    if (!details.isFile()) throw new GatewayError('executable_unavailable');
+    return [details.dev, details.ino, details.mode, details.size, details.mtimeNs, details.ctimeNs].map(String).join(':');
   } catch { throw new GatewayError('executable_unavailable'); }
 }
 function validateArgs(args) {
