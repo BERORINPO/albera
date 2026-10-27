@@ -40,7 +40,18 @@ try {
   const manifest = JSON.parse(await readFile(path.join(installedRoot, 'package.json'), 'utf8'));
   assert.equal(manifest.bin?.albera, 'src/entry/server.mjs');
   assert.equal(manifest.bin?.['albera-runtime'], 'src/runtime/entry.mjs');
-  const help = runNode(['exec', '--prefix', installRoot, '--offline', '--', 'albera-runtime', '--help']);
+  const binDirectory = path.join(installRoot, 'node_modules', '.bin');
+  for (const name of ['albera', 'albera-runtime']) {
+    await access(path.join(binDirectory, process.platform === 'win32' ? `${name}.cmd` : name));
+  }
+  const runtimeEntry = process.platform === 'win32'
+    ? path.join(installedRoot, manifest.bin['albera-runtime'])
+    : path.join(binDirectory, 'albera-runtime');
+  const child = spawnSync(process.execPath, [runtimeEntry, '--help'], {
+    cwd: root, encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, shell: false, windowsHide: true,
+  });
+  if (child.error || child.status !== 0) throw new Error('package_smoke_runtime_import_failed');
+  const help = child.stdout;
   assert.match(help, /ALBERA Runtime/);
   assert.match(help, /read-only session dashboard/);
   console.log('package smoke: packed and installed ALBERA locally; Runtime CLI help and approval UI assets verified (no publish, no provider launch)');

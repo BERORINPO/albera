@@ -2,12 +2,11 @@
 // Independent local Runtime command. The default `albera` command stays read-only.
 import path from 'node:path';
 import process from 'node:process';
-import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { openRuntimeAuditJournal } from './audit-journal.mjs';
 import { createRuntimeHost } from './host.mjs';
 import { loadOrCreateRuntimeSessionId } from './session-identity.mjs';
-
-const P = process.platform === 'win32' ? path.win32 : path;
 
 export function parseRuntimeArgs(argv, platform = process.platform) {
   const Path = platform === 'win32' ? path.win32 : path;
@@ -94,4 +93,10 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(P.resolve(process.argv[1])).href) void main();
+function isMainModule(moduleUrl, argvPath) {
+  if (typeof argvPath !== 'string' || argvPath.length === 0) return false;
+  try { return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(argvPath); }
+  catch { return false; }
+}
+
+if (isMainModule(import.meta.url, process.argv[1])) void main();
