@@ -434,7 +434,12 @@ export class RuntimeGateway {
     }
   }
   #snapshot(run) {
-    return { id: run.id, provider: run.provider, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt, exitCode: run.exitCode, signal: run.signal, treeStopConfirmed: run.treeStopConfirmed };
+    return {
+      id: run.id, provider: run.provider, status: run.status, profile: run.profile,
+      ...(run.inputMode === null ? {} : { inputMode: run.inputMode }),
+      startedAt: run.startedAt, finishedAt: run.finishedAt, exitCode: run.exitCode, signal: run.signal,
+      treeStopConfirmed: run.treeStopConfirmed,
+    };
   }
   #clearTimer(run) { if (run.timer) clearTimeout(run.timer); run.timer = null; }
   #pruneRuns() {

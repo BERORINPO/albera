@@ -16,6 +16,8 @@ const MAX_SESSION_EVENTS = 256;
 const API_SCOPES = new Set(['health', 'providers:read', 'runs:read', 'events:read', 'runs:start', 'runs:stop', 'runs:input', 'approvals:read', 'approvals:decide']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
+const PROFILES = new Set(['read-only', 'read-only-streaming']);
+const INPUT_MODES = new Set(['claude-stream-json']);
 const RUN_STATUSES = new Set(['starting', 'running', 'stopping', 'stopped', 'exited', 'failed', 'interrupted']);
 const EVENT_TYPES = new Set(['started', 'stop_requested', 'stopped', 'exited', 'failed', 'stop_failed', 'input_sent']);
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGABRT']);
@@ -616,6 +618,9 @@ function projectRun(run) {
   result.id = run.id;
   result.provider = run.provider;
   result.status = run.status;
+  if (typeof run.profile === 'string' && PROFILES.has(run.profile)) result.profile = run.profile;
+  if (run.provider === 'claude' && run.profile === 'read-only-streaming'
+    && typeof run.inputMode === 'string' && INPUT_MODES.has(run.inputMode)) result.inputMode = run.inputMode;
   for (const key of ['startedAt', 'finishedAt']) if (run[key] === null || (typeof run[key] === 'number' && Number.isFinite(run[key]))) result[key] = run[key];
   if (run.exitCode === null || (Number.isInteger(run.exitCode) && Number.isSafeInteger(run.exitCode))) result.exitCode = run.exitCode;
   if (run.signal === null || (typeof run.signal === 'string' && SIGNALS.has(run.signal))) result.signal = run.signal;

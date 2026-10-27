@@ -141,6 +141,38 @@ test('API projects run/event data and only forwards allowlisted start and stop r
   assert.equal(stopped.text.includes('secret'), false);
 });
 
+test('run projection exposes only known profile and streaming input metadata required by the control UI', async (t) => {
+  const run = {
+    id: '12345678-1234-4234-8234-123456789abc', provider: 'claude', status: 'running',
+    profile: 'read-only-streaming', inputMode: 'claude-stream-json', cwd: 'secret-path',
+    prompt: 'secret-prompt', args: ['secret-argument'],
+  };
+  const f = await apiFixture({}, { start: async () => run, list: () => [run] });
+  t.after(f.close);
+
+  const started = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs',
+    body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'synthetic task', profile: 'read-only-streaming' }),
+  });
+  assert.equal(started.status, 202);
+  assert.deepEqual(JSON.parse(started.text).run, {
+    id: run.id, provider: 'claude', status: 'running', profile: 'read-only-streaming', inputMode: 'claude-stream-json',
+  });
+
+  const listed = await request(f.address, f.api, { route: '/v1/runs' });
+  assert.deepEqual(JSON.parse(listed.text).runs, [
+    { id: run.id, provider: 'claude', status: 'running', profile: 'read-only-streaming', inputMode: 'claude-stream-json' },
+  ]);
+  assert.equal(listed.text.includes('secret-path'), false);
+  assert.equal(listed.text.includes('secret-prompt'), false);
+  assert.equal(listed.text.includes('secret-argument'), false);
+
+  run.profile = 'secret-profile';
+  run.inputMode = 'secret-transport';
+  const invalidMetadata = await request(f.address, f.api, { route: '/v1/runs' });
+  assert.deepEqual(JSON.parse(invalidMetadata.text).runs, [{ id: run.id, provider: 'claude', status: 'running' }]);
+});
+
 test('provider catalog is read-only, scope-protected, and reports profile verification honestly', async (t) => {
   const f = await apiFixture();
   t.after(f.close);

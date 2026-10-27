@@ -614,7 +614,11 @@ test('follow-up input requires exact host approval, serializes requests, and emi
   });
   t.after(f.dispose);
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'initial task', profile: RUNTIME_PROFILES.readOnlyStreaming });
+  assert.equal(run.profile, RUNTIME_PROFILES.readOnlyStreaming);
+  assert.equal(run.inputMode, 'claude-stream-json');
   await waitFor(() => f.gateway.get(run.id).status === 'running');
+  assert.equal(f.gateway.list()[0].profile, RUNTIME_PROFILES.readOnlyStreaming);
+  assert.equal(f.gateway.list()[0].inputMode, 'claude-stream-json');
   const sending = f.gateway.sendInput(run.id, 'private follow-up');
   await waitFor(() => approvals.filter((item) => item.action === 'input').length === 1);
   await assert.rejects(f.gateway.sendInput(run.id, 'concurrent follow-up'), (error) => error.code === 'input_busy');
