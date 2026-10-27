@@ -152,13 +152,13 @@ test('provider catalog is read-only, scope-protected, and reports profile verifi
   const response = await request(f.address, f.api, { route: '/v1/providers' });
   assert.equal(response.status, 200);
   const body = JSON.parse(response.text);
-  assert.deepEqual(Object.keys(body.providers[0]).sort(), ['eventTransport', 'id', 'inputTransport', 'profiles', 'runtimeValidation', 'status', 'unavailableReason'].sort());
-  assert.deepEqual(body.providers.map(({ id, status, profiles, runtimeValidation, inputTransport, eventTransport, unavailableReason }) => ({
-    id, status, profiles, runtimeValidation, inputTransport, eventTransport, unavailableReason,
+  assert.deepEqual(Object.keys(body.providers[0]).sort(), ['eventTransport', 'id', 'inputTransport', 'profileMinimumVersions', 'profiles', 'runtimeValidation', 'status', 'unavailableReason'].sort());
+  assert.deepEqual(body.providers.map(({ id, status, profiles, profileMinimumVersions, runtimeValidation, inputTransport, eventTransport, unavailableReason }) => ({
+    id, status, profiles, profileMinimumVersions, runtimeValidation, inputTransport, eventTransport, unavailableReason,
   })), [
-    { id: 'claude', status: 'profile-only', profiles: ['read-only', 'read-only-streaming'], runtimeValidation: 'synthetic-transport-only', inputTransport: true, eventTransport: 'lifecycle-only', unavailableReason: null },
-    { id: 'codex', status: 'unavailable', profiles: [], runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
-    { id: 'opencode', status: 'unavailable', profiles: [], runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
+    { id: 'claude', status: 'profile-only', profiles: ['read-only', 'read-only-streaming'], profileMinimumVersions: { 'read-only': '2.1.248', 'read-only-streaming': '2.1.259' }, runtimeValidation: 'synthetic-transport-only', inputTransport: true, eventTransport: 'lifecycle-only', unavailableReason: null },
+    { id: 'codex', status: 'unavailable', profiles: [], profileMinimumVersions: {}, runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
+    { id: 'opencode', status: 'unavailable', profiles: [], profileMinimumVersions: {}, runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
   ]);
   for (const provider of body.providers) {
     if (provider.status === 'profile-only') {
@@ -168,8 +168,10 @@ test('provider catalog is read-only, scope-protected, and reports profile verifi
     }
   }
   body.providers[0].profiles.push('workspace-write');
+  body.providers[0].profileMinimumVersions['read-only'] = '0.0.0';
   const fresh = JSON.parse((await request(f.address, f.api, { route: '/v1/providers' })).text);
   assert.deepEqual(fresh.providers[0].profiles, ['read-only', 'read-only-streaming']);
+  assert.deepEqual(fresh.providers[0].profileMinimumVersions, { 'read-only': '2.1.248', 'read-only-streaming': '2.1.259' });
   assert.equal(f.calls.length, 0);
 });
 

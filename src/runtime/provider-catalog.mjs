@@ -4,6 +4,7 @@ const PROVIDERS = Object.freeze([
     id: 'claude',
     status: 'profile-only',
     profiles: Object.freeze(['read-only', 'read-only-streaming']),
+    profileMinimumVersions: Object.freeze({ 'read-only': '2.1.248', 'read-only-streaming': '2.1.259' }),
     runtimeValidation: 'synthetic-transport-only',
     inputTransport: true,
     eventTransport: 'lifecycle-only',
@@ -31,5 +32,9 @@ const PROVIDERS = Object.freeze([
 
 /** Return fresh JSON-safe projections; this catalog does not inspect machine configuration or run providers. */
 export function listRuntimeProviderCapabilities() {
-  return PROVIDERS.map((provider) => ({ ...provider, profiles: [...provider.profiles] }));
+  return PROVIDERS.map((provider) => ({
+    ...provider,
+    profiles: [...provider.profiles],
+    profileMinimumVersions: { ...(provider.profileMinimumVersions ?? {}) },
+  }));
 }

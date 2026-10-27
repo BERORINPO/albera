@@ -30,7 +30,7 @@
 
 Request bodies are JSON and capped at 20 KiB. Output, prompt, paths, argv, and environment are not projected into run/event responses. Runs created outside the API or under another API credential are not visible to a session. There is no route for arbitrary argv, caller-supplied confirmation, direct provider stdin, or filesystem operations.
 
-The provider catalog reports Claude as `profile-only`, with `read-only` and `read-only-streaming` profiles, `runtimeValidation: synthetic-transport-only`, lifecycle-only events, and a Guardian-backed input transport. The synthetic test proves only ALBERA's JSONL pipe contract, not installed Claude CLI compatibility. Codex and OpenCode are `unavailable` with `profile_unavailable`. The catalog is static: it does not inspect installed versions, settings, credentials, or managed policy and must not be read as a compatibility or safety certification.
+The provider catalog reports Claude as `profile-only`, with `read-only` and `read-only-streaming` profiles, per-profile minimum CLI versions, `runtimeValidation: synthetic-transport-only`, lifecycle-only events, and a Guardian-backed input transport. The documented minimums are Claude Code v2.1.248 for `--restricted` and v2.1.259 for `--permission-prompts none` used by streaming. The synthetic test proves only ALBERA's JSONL pipe contract, not installed Claude CLI compatibility. Codex and OpenCode are `unavailable` with `profile_unavailable`. The catalog is static: it does not inspect installed versions, settings, credentials, or managed policy and must not be read as a compatibility or safety certification.
 
 ## Security limits and unfinished work
 
