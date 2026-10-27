@@ -738,6 +738,37 @@ test('concurrent stop requests send one termination signal', async (t) => {
   assert.equal(signals, 1);
 });
 
+test('a stop approval that resolves during Gateway shutdown does not repeat the stop action', async (t) => {
+  let releaseApproval;
+  let stopApprovalSeen;
+  const approvalGate = new Promise((resolve) => { releaseApproval = resolve; });
+  const approvalSeen = new Promise((resolve) => { stopApprovalSeen = resolve; });
+  let signals = 0;
+  const f = await fixture({
+    authorize: async ({ action }) => {
+      if (action === 'stop') { stopApprovalSeen(); await approvalGate; }
+      return true;
+    },
+    spawnImpl: () => {
+      const child = new FakeChild();
+      const kill = child.kill.bind(child);
+      child.kill = (signal) => { if (signal === 'SIGTERM') signals++; return kill(signal); };
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
+    },
+  });
+  t.after(f.dispose);
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'shutdown stop fixture' });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+  const stopping = f.gateway.stop(run.id);
+  await approvalSeen;
+  const closing = f.gateway.close();
+  releaseApproval();
+  await assert.rejects(stopping, (error) => error.code === 'gateway_closed');
+  assert.deepEqual(await closing, []);
+  assert.equal(signals, 1, 'shutdown owns the single process termination request');
+});
+
 test('executable resolver accepts only the fixed provider command and executable files', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-provider-'));
   t.after(() => rm(root, { recursive: true, force: true }));
