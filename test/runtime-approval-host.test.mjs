@@ -148,10 +148,14 @@ test('approval host rejects cross-origin and forged CSRF control requests', asyn
   const f = await fixture(t);
   const start = { provider: 'claude', cwd: f.root, prompt: 'synthetic prompt' };
   assert.equal((await post(f, '/api/runs', start, { ...f.postHeaders, Origin: 'http://attacker.invalid' })).status, 403);
-  assert.equal((await post(f, '/api/runs', start, { ...f.postHeaders, 'X-ALBERA-CSRF': 'incorrect' })).status, 403);
+  const forgedCsrf = await post(f, '/api/runs', start, { ...f.postHeaders, 'X-ALBERA-CSRF': 'incorrect' });
+  assert.equal(forgedCsrf.status, 403);
+  assert.equal(forgedCsrf.headers.get('set-cookie'), null);
   const noOriginHeaders = { ...f.postHeaders };
   delete noOriginHeaders.Origin;
-  assert.equal((await post(f, '/api/runs', start, noOriginHeaders)).status, 403);
+  const noOrigin = await post(f, '/api/runs', start, noOriginHeaders);
+  assert.equal(noOrigin.status, 403);
+  assert.equal(noOrigin.headers.get('set-cookie'), null);
   assert.equal((await get(f, '/api/runs')).status, 200);
   assert.deepEqual((await (await get(f, '/api/approvals')).json()).approvals, []);
 });
