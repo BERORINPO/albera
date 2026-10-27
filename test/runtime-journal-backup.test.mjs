@@ -149,7 +149,7 @@ test('encrypted backup refuses an output directory replaced after its ACL check'
   const source = await sourceFixture(t);
   const outputDirectory = path.join(source.root, 'backup-destination');
   const replacedDirectory = `${outputDirectory}.checked`;
-  await mkdir(outputDirectory);
+  await mkdir(outputDirectory, { mode: 0o700 });
   const outputPath = path.join(outputDirectory, 'backup.albera');
   let replaced = false;
 
@@ -161,7 +161,7 @@ test('encrypted backup refuses an output directory replaced after its ACL check'
       if (target !== outputDirectory || kind !== 'directory' || replaced) return;
       replaced = true;
       await rename(outputDirectory, replacedDirectory);
-      await mkdir(outputDirectory);
+      await mkdir(outputDirectory, { mode: 0o700 });
     },
   }), /backup_directory_changed_during_create/);
   assert.deepEqual(await readFile(outputPath), Buffer.alloc(0), 'the replacement destination remains empty');
