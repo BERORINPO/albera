@@ -18,7 +18,7 @@ Claude Code's current official [CLI reference](https://code.claude.com/docs/en/c
 
 ## Verification
 
-`test/runtime-api.test.mjs` verifies the per-profile minimums, unavailable-provider states, fresh projections, and zero provider probes. The catalog test uses only synthetic API state and does not run a provider.
+`test/runtime-api.test.mjs` verifies the per-profile minimums, unavailable-provider states, fresh projections, and zero provider probes. The catalog test uses only synthetic API state and does not run a provider. Local Windows verification: focused API tests 27/27; `npm test` 513 passed / 3 skipped; `npm run arch` (82 paths, 0 violations); `npm run smoke`; `npm run package:smoke`; `git diff --check`. GitHub Actions run 40499714556 passed all six Windows/macOS/Linux × Node 22/24 jobs, including Windows Runtime storage ACL integration.
 
 ## Consequences and limits
 
