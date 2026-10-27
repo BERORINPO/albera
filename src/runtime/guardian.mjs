@@ -3,6 +3,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
+import { terminatePosixTree } from './posix-tree-termination.mjs';
 import { terminateWindowsTree } from './windows-tree-termination.mjs';
 
 const MAX_LINE_BYTES = 1024 * 1024;
@@ -132,12 +133,11 @@ function terminateTree(signal, pid) {
         killFallback: () => provider?.kill('SIGKILL') ?? false,
       });
     } else {
-      signalGroup(pid, signal);
-      if (signal !== 'SIGKILL') {
-        await new Promise((resolve) => setTimeout(resolve, PARENT_EXIT_GRACE_MS));
-        signalGroup(pid, 'SIGKILL');
-      }
-      result = { treeConfirmed: true, fallbackAttempted: false, fallbackAccepted: false };
+      result = await terminatePosixTree(pid, signal, {
+        fallbackImpl: () => provider?.kill('SIGKILL') ?? false,
+        delayImpl: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        graceMs: PARENT_EXIT_GRACE_MS,
+      });
     }
     terminationResult = result;
     cleanupComplete = true;
@@ -148,11 +148,6 @@ function terminateTree(signal, pid) {
     return result;
   })();
   return terminationPromise;
-}
-
-function signalGroup(pid, signal) {
-  try { process.kill(-pid, signal); }
-  catch (error) { if (!error || error.code !== 'ESRCH') { try { provider?.kill('SIGKILL'); } catch { /* process already exited */ } } }
 }
 
 function send(message) {
