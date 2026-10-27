@@ -119,6 +119,48 @@ test('approval-host POST bodies time out without consuming a bootstrap code', as
   assert.equal((await authenticatedOutcome).type, 'error');
 });
 
+test('approval host refuses excess concurrent connections without consuming bootstrap state', async (t) => {
+  const f = await fixture(t, { maxConnections: 1, requestBodyTimeoutMs: 5_000 }, { authenticate: false });
+  const requestPath = `${new URL(f.base).pathname}/api/session`;
+  const bootstrapBody = JSON.stringify({ bootstrapCode: f.address.bootstrapCode });
+  const first = http.request(new URL(requestPath, f.base), {
+    method: 'POST',
+    headers: {
+      Origin: f.origin,
+      'Content-Type': 'application/json',
+      'Content-Length': String(Buffer.byteLength(bootstrapBody)),
+      'Sec-Fetch-Site': 'same-origin',
+    },
+  });
+  const firstSocket = new Promise((resolve) => first.once('socket', resolve));
+  const firstOutcome = new Promise((resolve) => {
+    first.once('response', (response) => { response.resume(); resolve({ type: 'response', status: response.statusCode }); });
+    first.once('error', (error) => resolve({ type: 'error', code: error.code }));
+  });
+  first.on('error', () => {});
+  first.write(bootstrapBody.slice(0, 8));
+  await firstSocket;
+
+  const excess = http.request(new URL(requestPath, f.base), {
+    method: 'POST',
+    headers: {
+      Origin: f.origin,
+      'Content-Type': 'application/json',
+      'Content-Length': '100',
+      'Sec-Fetch-Site': 'same-origin',
+    },
+  });
+  const excessOutcome = new Promise((resolve) => {
+    excess.once('response', (response) => { response.resume(); resolve({ type: 'response', status: response.statusCode }); });
+    excess.once('error', (error) => resolve({ type: 'error', code: error.code }));
+  });
+  excess.end('{"bootstrapCode":');
+  const result = await excessOutcome;
+  assert.ok(result.type === 'error' || result.status === 503, `unexpected excess connection outcome: ${JSON.stringify(result)}`);
+  first.end(bootstrapBody.slice(8));
+  assert.deepEqual(await firstOutcome, { type: 'response', status: 200 });
+});
+
 async function connectRuntime(root, journal, sessionId, gatewayOverrides = {}) {
   const runtime = createRuntimeHost({
     roots: [root], journal, hostOptions: { sessionId },

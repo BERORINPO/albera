@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const MAX_SESSIONS = 32;
+const MAX_HOST_CONNECTIONS = 64;
 const MAX_BODY_BYTES = 20 * 1024;
 const MAX_STREAM_BUFFER = 64 * 1024;
 const DEFAULT_REQUEST_BODY_TIMEOUT_MS = 15_000;
@@ -24,12 +25,13 @@ const API_TOKEN_SCOPES = Object.freeze(['providers:read', 'runs:read', 'events:r
 /**
  * Host the approval/control screen on an isolated loopback origin. Runtime API credentials stay server-side;
  * the browser gets an HttpOnly SameSite cookie and a short-lived in-memory CSRF token.
- * @param {{api: {listen: Function, createCredential: Function}, sessionId?: string, sessionLifetimeMs?: number, maxSessions?: number, requestBodyTimeoutMs?: number, roots?: string[]}} options
+ * @param {{api: {listen: Function, createCredential: Function}, sessionId?: string, sessionLifetimeMs?: number, maxSessions?: number, maxConnections?: number, requestBodyTimeoutMs?: number, roots?: string[]}} options
  */
-export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = DEFAULT_SESSION_TTL_MS, maxSessions = MAX_SESSIONS, requestBodyTimeoutMs = DEFAULT_REQUEST_BODY_TIMEOUT_MS, roots = [] } = {}) {
+export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = DEFAULT_SESSION_TTL_MS, maxSessions = MAX_SESSIONS, maxConnections = MAX_HOST_CONNECTIONS, requestBodyTimeoutMs = DEFAULT_REQUEST_BODY_TIMEOUT_MS, roots = [] } = {}) {
   if (!api || typeof api.listen !== 'function' || typeof api.createCredential !== 'function') throw new TypeError('approval host requires a Runtime API');
   if (!Number.isInteger(sessionLifetimeMs) || sessionLifetimeMs < 60_000 || sessionLifetimeMs > 60 * 60 * 1000) throw new TypeError('sessionLifetimeMs must be between 60000 and 3600000');
   if (!Number.isInteger(maxSessions) || maxSessions < 1 || maxSessions > MAX_SESSIONS) throw new TypeError('maxSessions must be between 1 and 32');
+  if (!Number.isInteger(maxConnections) || maxConnections < 1 || maxConnections > MAX_HOST_CONNECTIONS) throw new TypeError('maxConnections must be between 1 and 64');
   if (!Number.isInteger(requestBodyTimeoutMs) || requestBodyTimeoutMs < 100 || requestBodyTimeoutMs > 120_000) throw new TypeError('requestBodyTimeoutMs must be between 100 and 120000');
   if (!Array.isArray(roots) || roots.some((root) => typeof root !== 'string' || !path.isAbsolute(root))) throw new TypeError('roots must contain absolute paths');
   if (sessionId !== undefined && (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId))) throw new TypeError('sessionId must be 32 lowercase hexadecimal characters');
@@ -51,6 +53,10 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
   let serverPort;
   let closing = false;
   const server = http.createServer((req, res) => { void handle(req, res); });
+  server.maxConnections = maxConnections;
+  server.headersTimeout = 5_000;
+  server.requestTimeout = requestBodyTimeoutMs + 5_000;
+  server.keepAliveTimeout = 5_000;
 
   function send(res, status, body, type = 'application/json; charset=utf-8', headers = {}) {
     res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', ...headers });
