@@ -31,7 +31,7 @@ node src/runtime/entry.mjs --root "C:\work\project" --journal "C:\Users\You\AppD
 
 Enter the one-time code printed by the terminal in the Runtime screen. Start, input, and stop requests each wait for an explicit approval. The journal does not store prompts, argv, environment values, or provider output. A sibling `.session-id` file stores a non-secret random identity so the UI can replay journal history after restart. Only a fixed Claude Code profile is currently constructed; compatibility with an installed CLI has not been verified, and provider output is not collected. The standard profile places the prompt in the process arguments, which may be visible to same-user process inspection. An allowed working root is not an OS sandbox: the CLI runs with the current OS user's privileges. The Runtime screen supports Japanese and English browser languages, but does not identify the provider account or estimate cost.
 
-You can create a manual encrypted journal backup while Runtime is stopped. Backup prompts for the passphrase twice without echoing it; verification and restore prompt once. Both require at least 12 UTF-8 bytes and refuse existing output paths:
+You can create a manual encrypted journal backup while Runtime is stopped. Backup prompts for the passphrase twice without echoing it; verification and restore prompt once. Every passphrase must contain at least 12 UTF-8 bytes. Backup and restore refuse existing output paths; verification only reads the selected backup and writes nothing:
 
 ```sh
 node src/runtime/entry.mjs backup --journal "/absolute/path/to/private/albera-runtime.jsonl" --output "/absolute/path/to/archive.albera"
