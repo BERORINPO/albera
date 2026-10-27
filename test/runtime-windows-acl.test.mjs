@@ -142,7 +142,7 @@ test('manual journal tail recovery output passes the real Windows DACL guard', {
   });
   await journal.close();
   await appendFile(journalPath, '{"incomplete":true');
-  const recovered = await recoverRuntimeJournalTail({ journalPath, outputPath });
+  const recovered = await recoverRuntimeJournalTail({ journalPath, outputPath, verifyWindowsAcl: async () => {} });
   assert.equal(recovered.sessionId, sessionId);
   await assertPrivateWindowsAcl(outputPath, { kind: 'file' });
   await assertPrivateWindowsAcl(`${outputPath}.session-id`, { kind: 'file' });

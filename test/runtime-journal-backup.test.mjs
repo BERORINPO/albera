@@ -93,12 +93,21 @@ test('incomplete journal tail recovery copies only validated complete records an
   await appendFile(source.journalPath, tail);
   const damaged = await readFile(source.journalPath);
   const outputPath = path.join(source.root, 'runtime.recovered.jsonl');
+  const aclTargets = [];
 
-  const recovered = await recoverRuntimeJournalTail({ journalPath: source.journalPath, outputPath, verifyWindowsAcl });
+  const recovered = await recoverRuntimeJournalTail({
+    journalPath: source.journalPath,
+    outputPath,
+    verifyWindowsAcl: async (target, { kind }) => aclTargets.push(`${target}:${kind}`),
+  });
 
   assert.equal(recovered.recordCount, 1);
   assert.equal(recovered.discardedTailBytes, tail.byteLength);
   assert.equal(recovered.sessionId, source.sessionId);
+  assert.deepEqual(aclTargets, [
+    `${source.root}:directory`, `${source.journalPath}:file`, `${source.journalPath}.lock:file`,
+    `${source.journalPath}.session-id:file`, `${outputPath}:file`, `${outputPath}.session-id:file`,
+  ]);
   assert.deepEqual(await readFile(source.journalPath), damaged, 'source journal and incomplete bytes stay unchanged');
   assert.deepEqual(await readFile(outputPath), original, 'recovery output contains only the verified prefix');
   assert.equal(await readFile(`${outputPath}.session-id`, 'utf8'), `${source.sessionId}\n`);
