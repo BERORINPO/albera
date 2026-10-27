@@ -202,6 +202,50 @@ test('approval UI closes its lifecycle stream and stops polling when the browser
   assert.equal(calls.filter((call) => call.url === '/api/runs').length, 1);
 });
 
+test('approval UI localizes the control screen for Japanese browsers', async () => {
+  class FakeElement {
+    children = [];
+    listeners = new Map();
+    hidden = false;
+    value = '';
+    textContent = '';
+    append(...items) { this.children.push(...items); }
+    replaceChildren(...items) { this.children = [...items]; }
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+  }
+  const elements = new Map();
+  const document = {
+    documentElement: { lang: 'en' },
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, new FakeElement());
+      return elements.get(id);
+    },
+    createElement() { return new FakeElement(); },
+  };
+  const response = { ok: false, status: 401, json: async () => ({ error: 'session_expired' }) };
+  const source = await readFile(new URL('../src/runtime/approval-ui/approval.mjs', import.meta.url), 'utf8');
+  vm.runInNewContext(source, {
+    document,
+    navigator: { language: 'ja-JP' },
+    window: { addEventListener() {} },
+    fetch: async () => response,
+    setTimeout() { return 1; },
+    clearTimeout() {},
+  });
+  await new Promise((resolve) => {
+    const waitForLocalization = () => {
+      if (elements.get('bootstrap-form')?.listeners.has('submit')
+        && elements.get('connection')?.textContent.includes('一回限りのコード')) return resolve();
+      setImmediate(waitForLocalization);
+    };
+    waitForLocalization();
+  });
+  assert.equal(document.documentElement.lang, 'ja');
+  assert.equal(elements.get('runtime-control-title').textContent, 'Runtime 操作');
+  assert.equal(elements.get('start-button').textContent, '起動を申請');
+  assert.match(elements.get('connection').textContent, /一回限りのコード/);
+});
+
 test('approval host refreshes active browser sessions and rejects an expired idle cookie', async (t) => {
   const realNow = Date.now;
   let now = realNow();

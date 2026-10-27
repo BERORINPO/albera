@@ -11,16 +11,16 @@
   <body>
     <header>
       <p class="eyebrow">ALBERA · LOCAL RUNTIME</p>
-      <h1>Runtime control</h1>
-      <p class="lede">A separate local control surface. Every start, input, and stop waits for your decision.</p>
+      <h1 id="runtime-control-title">Runtime control</h1>
+      <p id="runtime-control-lede" class="lede">A separate local control surface. Every start, input, and stop waits for your decision.</p>
       <p id="connection" role="status">Connecting…</p>
     </header>
     <section id="bootstrap" class="bootstrap" aria-labelledby="bootstrap-title">
       <h2 id="bootstrap-title">Unlock this Runtime host</h2>
-      <p>Enter the one-time code printed by the terminal that started ALBERA Runtime. The code is not saved.</p>
+      <p id="bootstrap-description">Enter the one-time code printed by the terminal that started ALBERA Runtime. The code is not saved.</p>
       <form id="bootstrap-form">
-        <label>One-time terminal code <input id="bootstrap-code" type="password" autocomplete="off" required></label>
-        <button type="submit">Unlock local controls</button>
+        <label><span id="bootstrap-code-label">One-time terminal code</span> <input id="bootstrap-code" type="password" autocomplete="off" required></label>
+        <button id="unlock-button" type="submit">Unlock local controls</button>
       </form>
       <p id="bootstrap-status" role="status"></p>
     </section>
@@ -28,10 +28,10 @@
       <section aria-labelledby="start-title">
         <h2 id="start-title">Start a read-only Claude session</h2>
         <form id="start-form">
-          <label>Allowed project root <select id="root" required></select></label>
-          <label>Task prompt <textarea id="prompt" maxlength="16000" required rows="5"></textarea></label>
-          <label>Session profile <select id="profile"><option value="read-only">Read only</option><option value="read-only-streaming">Read only with approved input</option></select></label>
-          <button type="submit">Request start</button>
+          <label><span id="root-label">Allowed project root</span> <select id="root" required></select></label>
+          <label><span id="prompt-label">Task prompt</span> <textarea id="prompt" maxlength="16000" required rows="5"></textarea></label>
+          <label><span id="profile-label">Session profile</span> <select id="profile"><option value="read-only">Read only</option><option value="read-only-streaming">Read only with approved input</option></select></label>
+          <button id="start-button" type="submit">Request start</button>
         </form>
         <p id="form-status" role="status"></p>
       </section>
@@ -41,7 +41,7 @@
       </section>
       <section aria-labelledby="runs-title">
         <h2 id="runs-title">Runtime sessions</h2>
-        <p class="muted">Provider output is discarded. Send follow-up text only when you independently know the provider is waiting for it.</p>
+        <p id="runs-warning" class="muted">Provider output is discarded. Send follow-up text only when you independently know the provider is waiting for it.</p>
         <div id="runs" class="stack" aria-live="polite"></div>
       </section>
       <section aria-labelledby="events-title">
@@ -49,6 +49,6 @@
         <ol id="events" class="events" aria-live="polite"></ol>
       </section>
     </main>
-    <footer>Local loopback only · prompts and paths are not saved by this screen · provider output is not collected</footer>
+    <footer id="runtime-footer">Local loopback only · prompts and paths are not saved by this screen · provider output is not collected</footer>
   </body>
 </html>
