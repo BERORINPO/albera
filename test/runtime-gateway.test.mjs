@@ -14,11 +14,12 @@ async function fixture(options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-'));
   const cwd = path.join(root, 'project');
   await mkdir(cwd);
-  const { buildLaunchImpl = (_provider, profile, prompt) => ({ profile, args: Array.isArray(prompt) ? prompt : [] }), ...gatewayOptions } = options;
+  const { buildLaunchImpl = (_provider, profile, prompt) => ({ profile, args: Array.isArray(prompt) ? prompt : [] }), probeVersionImpl = async () => '99.0.0', ...gatewayOptions } = options;
   const gateway = new RuntimeGateway({
     roots: [root],
     authorize: async () => true,
     resolveExecutableImpl: async () => process.execPath,
+    probeVersionImpl,
     buildLaunchImpl,
     ...gatewayOptions,
   });
@@ -128,13 +129,15 @@ test('trusted approval broker gates streaming provider launch on an explicit one
 test('denying a broker approval prevents Gateway spawn', async (t) => {
   const broker = createRuntimeApprovalBroker();
   let spawned = false;
-  const f = await fixture({ authorize: broker.authorize, spawnImpl: () => { spawned = true; return new FakeChild(); } });
+  let probed = false;
+  const f = await fixture({ authorize: broker.authorize, probeVersionImpl: async () => { probed = true; return '99.0.0'; }, spawnImpl: () => { spawned = true; return new FakeChild(); } });
   t.after(async () => { broker.close(); await f.dispose(); });
   const starting = f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'denied task' });
   await waitFor(() => broker.listPending().length === 1);
   const [approval] = broker.listPending();
   assert.equal(broker.decide(approval.id, false), true);
   await assert.rejects(starting, (error) => error.code === 'confirmation_required');
+  assert.equal(probed, false);
   assert.equal(spawned, false);
   assert.equal(f.gateway.list().length, 0);
 });
@@ -185,6 +188,7 @@ test('host authorization receives the exact canonical executable, cwd and argv b
   assert.equal(spawnCount, 1);
   assert.deepEqual(seen[0], {
     action: 'start', provider: 'claude', profile: 'read-only', executable: process.execPath, cwd: await realpath(f.cwd), args,
+    minimumCliVersion: '2.1.248', versionCheck: true,
     environment: { providerVariables: [], endpointOverrides: [] },
     platform: process.platform, maxDurationMs: 15 * 60 * 1000, maxActive: 4,
   });
@@ -192,6 +196,23 @@ test('host authorization receives the exact canonical executable, cwd and argv b
   assert.equal(Object.isFrozen(seen[0].args), true);
   assert.equal(run.status, 'starting');
   assert.equal('confirmed' in run, false);
+});
+
+test('Gateway checks the approved CLI version before main spawn and fails closed below the profile minimum', async (t) => {
+  const calls = [];
+  let spawned = false;
+  const f = await fixture({
+    authorize: async (request) => { calls.push(['authorize', request.minimumCliVersion, request.versionCheck]); return true; },
+    probeVersionImpl: async (executable, options) => { calls.push(['probe', executable, options.platform]); return '2.1.247'; },
+    spawnImpl: () => { spawned = true; return new FakeChild(); },
+  });
+  t.after(f.dispose);
+  await assert.rejects(f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'synthetic' }), (error) => error.code === 'cli_version_unavailable');
+  assert.deepEqual(calls, [
+    ['authorize', '2.1.248', true],
+    ['probe', process.execPath, process.platform],
+  ]);
+  assert.equal(spawned, false);
 });
 
 test('Gateway refuses an executable changed while host authorization is pending', async (t) => {

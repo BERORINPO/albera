@@ -275,7 +275,7 @@ test('approval UI discloses possible external transmission and charges before st
     if (url === '/api/approvals') return jsonResponse({ approvals: [
       {
         id: '12345678-1234-4234-8234-123456789abc', expiresAt: Date.now() + 10000,
-        request: { action: 'start', provider: 'claude', initialInput: 'synthetic task text', args: ['--restricted'] },
+        request: { action: 'start', provider: 'claude', executable: 'C:\\tools\\claude.exe', minimumCliVersion: '2.1.259', versionCheck: true, initialInput: 'synthetic task text', args: ['--restricted'] },
       },
       {
         id: '22345678-1234-4234-8234-123456789abc', expiresAt: Date.now() + 10000,
@@ -307,6 +307,7 @@ test('approval UI discloses possible external transmission and charges before st
     assert.equal(notice.attributes.get('role'), 'note');
   }
   assert.match(flatten(cards[0]), /synthetic task text/);
+  assert.match(flatten(cards[0]), /After approval, ALBERA runs C:\\tools\\claude\.exe --version before launch and requires Claude Code 2\.1\.259 or later\./);
   assert.match(flatten(cards[1]), /synthetic follow-up text/);
 });
 

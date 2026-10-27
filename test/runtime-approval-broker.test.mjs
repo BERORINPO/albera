@@ -5,7 +5,7 @@ import { createRuntimeApprovalBroker } from '../src/runtime/approval-broker.mjs'
 test('approval broker exposes a frozen allowlist projection and resolves exactly once', async () => {
   const broker = createRuntimeApprovalBroker({ makeId: () => 'approval-request-0001' });
   const request = {
-    action: 'start', provider: 'claude', profile: 'read-only-streaming', executable: '/opt/claude', cwd: '/work/project',
+    action: 'start', provider: 'claude', profile: 'read-only-streaming', executable: '/opt/claude', cwd: '/work/project', minimumCliVersion: '2.1.259', versionCheck: true,
     args: ['--print', '--input-format', 'stream-json'], initialInput: 'ALBERA task:\nsynthetic prompt',
     environment: { providerVariables: ['ANTHROPIC_API_KEY'], endpointOverrides: [{ variable: 'ANTHROPIC_BASE_URL', protocol: 'https', host: 'api.example.test' }], secretValue: 'must not escape' },
     platform: 'linux', maxDurationMs: 60_000, maxActive: 4, unexpectedSecret: 'must not escape',
@@ -16,6 +16,8 @@ test('approval broker exposes a frozen allowlist projection and resolves exactly
   const [item] = broker.listPending();
   assert.equal(item.id, 'approval-request-0001');
   assert.equal(item.request.initialInput, 'ALBERA task:\nsynthetic prompt');
+  assert.equal(item.request.minimumCliVersion, '2.1.259');
+  assert.equal(item.request.versionCheck, true);
   assert.deepEqual(item.request.args, ['--print', '--input-format', 'stream-json']);
   assert.equal(Object.isFrozen(item.request), true);
   assert.equal(Object.isFrozen(item.request.args), true);

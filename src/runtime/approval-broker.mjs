@@ -1,6 +1,7 @@
 // In-process bridge between RuntimeGateway authorization and a trusted host approval UI.
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { PROFILE_MINIMUM_VERSIONS } from './profile-policy.mjs';
 
 const ACTIONS = new Set(['start', 'stop', 'input']);
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
@@ -98,6 +99,14 @@ function projectApproval(request) {
     if (typeof request.profile !== 'string' || !PROFILES.has(request.profile)) return null;
     output.profile = request.profile;
   }
+  if (request.minimumCliVersion !== undefined) {
+    if (typeof request.minimumCliVersion !== 'string' || !Object.values(PROFILE_MINIMUM_VERSIONS).includes(request.minimumCliVersion)) return null;
+    output.minimumCliVersion = request.minimumCliVersion;
+  }
+  if (request.versionCheck !== undefined) {
+    if (request.versionCheck !== true) return null;
+    output.versionCheck = true;
+  }
   if (request.executable !== undefined) {
     if (typeof request.executable !== 'string' || !path.isAbsolute(request.executable) || request.executable.length > 4096) return null;
     output.executable = request.executable;
@@ -159,7 +168,8 @@ function projectApproval(request) {
   }
   if (request.action === 'start'
     && (!output.profile || !output.executable || !output.cwd || !output.args || !output.environment
-      || !output.platform || !output.maxDurationMs || !output.maxActive)) return null;
+      || !output.platform || !output.maxDurationMs || !output.maxActive
+      || output.minimumCliVersion !== PROFILE_MINIMUM_VERSIONS[output.profile] || output.versionCheck !== true)) return null;
   if (request.action === 'stop' && (!output.runId || typeof output.force !== 'boolean')) return null;
   if (request.action === 'input' && (!output.runId || typeof output.text !== 'string' || output.text.length === 0)) return null;
   return Object.freeze(output);

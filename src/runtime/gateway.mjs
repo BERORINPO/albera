@@ -6,6 +6,8 @@ import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSupervised } from './supervisor.mjs';
+import { probeCliVersion } from './cli-version.mjs';
+import { isVersionAtLeast, PROFILE_MINIMUM_VERSIONS } from './profile-policy.mjs';
 
 export const RUNTIME_PROVIDERS = Object.freeze({ claude: 'claude', codex: 'codex', opencode: 'opencode' });
 export const RUNTIME_PROFILES = Object.freeze({ readOnly: 'read-only', readOnlyStreaming: 'read-only-streaming' });
@@ -37,7 +39,7 @@ const PROVIDER_ENDPOINT_ENV = Object.freeze({
 });
 
 export class GatewayError extends Error {
-  /** @param {'confirmation_required'|'unknown_provider'|'invalid_args'|'cwd_not_allowed'|'executable_unavailable'|'capacity'|'unknown_run'|'spawn_failed'|'stop_failed'|'authorization_failed'|'gateway_closed'|'unsupported_profile'|'profile_unavailable'} code */
+  /** @param {'confirmation_required'|'unknown_provider'|'invalid_args'|'cwd_not_allowed'|'executable_unavailable'|'capacity'|'unknown_run'|'spawn_failed'|'stop_failed'|'authorization_failed'|'gateway_closed'|'unsupported_profile'|'profile_unavailable'|'cli_version_unavailable'} code */
   constructor(code) { super(code); this.name = 'GatewayError'; this.code = code; }
 }
 
@@ -100,17 +102,17 @@ export async function resolveProviderExecutable(provider, { platform = process.p
 
 /**
  * Memory-only lifecycle gateway. `authorize` is a trusted host callback, not request data; default denies.
- * @param {{roots: string[], authorize?: (request: object) => boolean|Promise<boolean>, platform?: string, maxActive?: number, runTimeoutMs?: number, spawnImpl?: typeof spawn, resolveExecutableImpl?: (provider: string, options: object) => Promise<string|null>, buildLaunchImpl?: (provider: string, profile: string, prompt: string) => {profile: string, args: string[]}, env?: NodeJS.ProcessEnv, now?: () => number, signalTreeImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>}} options
+ * @param {{roots: string[], authorize?: (request: object) => boolean|Promise<boolean>, platform?: string, maxActive?: number, runTimeoutMs?: number, spawnImpl?: typeof spawn, resolveExecutableImpl?: (provider: string, options: object) => Promise<string|null>, probeVersionImpl?: (executable: string, options: object) => Promise<string>, buildLaunchImpl?: (provider: string, profile: string, prompt: string) => {profile: string, args: string[]}, env?: NodeJS.ProcessEnv, now?: () => number, signalTreeImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>}} options
  */
 export class RuntimeGateway {
-  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #buildLaunch; #authorize; #env; #now; #signalTree; #closing = false;
+  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #probeVersion; #buildLaunch; #authorize; #env; #now; #signalTree; #closing = false;
   /** @type {Map<string, Run>} */ #runs = new Map();
   #pendingStarts = 0;
   /** @type {Array<{id: number, runId: string, provider: string, type: string, at: number, code?: number|null, signal?: string|null}>} */ #events = [];
   #eventSubscribers = new Set();
   #nextEventId = 1;
 
-  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawnSupervised, resolveExecutableImpl = resolveProviderExecutable, buildLaunchImpl = (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile), env = process.env, now = Date.now, signalTreeImpl } = {}) {
+  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawnSupervised, resolveExecutableImpl = resolveProviderExecutable, probeVersionImpl = probeCliVersion, buildLaunchImpl = (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile), env = process.env, now = Date.now, signalTreeImpl } = {}) {
     if (!Array.isArray(roots) || roots.length === 0 || roots.some((root) => typeof root !== 'string' || !path.isAbsolute(root))) throw new TypeError('RuntimeGateway requires absolute allowed roots');
     if (typeof authorize !== 'function') throw new TypeError('RuntimeGateway requires a host authorization callback');
     if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > MAX_ACTIVE) throw new TypeError('maxActive must be between 1 and 4');
@@ -121,6 +123,7 @@ export class RuntimeGateway {
     this.#runTimeoutMs = runTimeoutMs;
     this.#spawn = spawnImpl;
     this.#resolveExecutable = resolveExecutableImpl;
+    this.#probeVersion = probeVersionImpl;
     if (typeof buildLaunchImpl !== 'function') throw new TypeError('buildLaunchImpl must be a function');
     this.#buildLaunch = buildLaunchImpl;
     this.#authorize = authorize;
@@ -165,8 +168,10 @@ export class RuntimeGateway {
       const executableIdentity = await getExecutableIdentity(executable);
       if (this.#closing) throw new GatewayError('gateway_closed');
       const environment = childEnvironment(provider, this.#env);
+      const minimumCliVersion = PROFILE_MINIMUM_VERSIONS[profile];
       const authorized = await this.#authorizeSafely({
         action: 'start', provider, profile, executable, cwd: resolvedCwd, args: launchArgs,
+        minimumCliVersion, versionCheck: true,
         ...(initialInput === null ? {} : { initialInput }),
         environment: environmentSummary(provider, environment),
         platform: this.#platform, maxDurationMs: this.#runTimeoutMs, maxActive: this.#maxActive,
@@ -174,6 +179,15 @@ export class RuntimeGateway {
       if (this.#closing) throw new GatewayError('gateway_closed');
       if (!authorized) throw new GatewayError('confirmation_required');
       let currentExecutable;
+      try { currentExecutable = await validateExecutable(executable, this.#platform); }
+      catch { throw new GatewayError('executable_unavailable'); }
+      if (currentExecutable !== executable || await getExecutableIdentity(currentExecutable) !== executableIdentity) {
+        throw new GatewayError('executable_unavailable');
+      }
+      let installedVersion;
+      try { installedVersion = await this.#probeVersion(executable, { platform: this.#platform }); }
+      catch { throw new GatewayError('cli_version_unavailable'); }
+      if (!isVersionAtLeast(installedVersion, minimumCliVersion)) throw new GatewayError('cli_version_unavailable');
       try { currentExecutable = await validateExecutable(executable, this.#platform); }
       catch { throw new GatewayError('executable_unavailable'); }
       if (currentExecutable !== executable || await getExecutableIdentity(currentExecutable) !== executableIdentity) {

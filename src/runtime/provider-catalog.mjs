@@ -1,11 +1,13 @@
 // Static provider readiness metadata for trusted Runtime API clients. It never probes or launches a CLI.
+import { PROFILE_MINIMUM_VERSIONS } from './profile-policy.mjs';
+
 const PROVIDERS = Object.freeze([
   Object.freeze({
     id: 'claude',
     status: 'profile-only',
     profiles: Object.freeze(['read-only', 'read-only-streaming']),
-    profileMinimumVersions: Object.freeze({ 'read-only': '2.1.248', 'read-only-streaming': '2.1.259' }),
-    runtimeValidation: 'synthetic-transport-only',
+    profileMinimumVersions: PROFILE_MINIMUM_VERSIONS,
+    runtimeValidation: 'approved-version-preflight-and-synthetic-transport',
     inputTransport: true,
     eventTransport: 'lifecycle-only',
     unavailableReason: null,

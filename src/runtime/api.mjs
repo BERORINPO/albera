@@ -23,7 +23,7 @@ const SESSION_ID_RE = /^[0-9a-f]{32}$/;
 const GATEWAY_ERRORS = new Set([
   'confirmation_required', 'unknown_provider', 'invalid_args', 'cwd_not_allowed', 'executable_unavailable',
   'capacity', 'unknown_run', 'spawn_failed', 'stop_failed', 'authorization_failed', 'gateway_closed',
-  'unsupported_profile', 'profile_unavailable', 'audit_unavailable', 'input_unavailable', 'input_not_ready',
+  'unsupported_profile', 'profile_unavailable', 'cli_version_unavailable', 'audit_unavailable', 'input_unavailable', 'input_not_ready',
   'input_busy', 'input_failed',
 ]);
 
@@ -251,7 +251,7 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
         : code === 'unknown_run' ? 404
           : code === 'capacity' ? 429
             : code === 'gateway_closed' ? 503
-              : ['unsupported_profile', 'profile_unavailable', 'input_unavailable'].includes(code) ? 422
+              : ['unsupported_profile', 'profile_unavailable', 'cli_version_unavailable', 'input_unavailable'].includes(code) ? 422
             : ['input_not_ready', 'input_busy'].includes(code) ? 409
               : ['input_failed'].includes(code) ? 502
                 : ['unknown_provider', 'invalid_args', 'cwd_not_allowed'].includes(code) ? 400

@@ -156,7 +156,7 @@ test('provider catalog is read-only, scope-protected, and reports profile verifi
   assert.deepEqual(body.providers.map(({ id, status, profiles, profileMinimumVersions, runtimeValidation, inputTransport, eventTransport, unavailableReason }) => ({
     id, status, profiles, profileMinimumVersions, runtimeValidation, inputTransport, eventTransport, unavailableReason,
   })), [
-    { id: 'claude', status: 'profile-only', profiles: ['read-only', 'read-only-streaming'], profileMinimumVersions: { 'read-only': '2.1.248', 'read-only-streaming': '2.1.259' }, runtimeValidation: 'synthetic-transport-only', inputTransport: true, eventTransport: 'lifecycle-only', unavailableReason: null },
+    { id: 'claude', status: 'profile-only', profiles: ['read-only', 'read-only-streaming'], profileMinimumVersions: { 'read-only': '2.1.248', 'read-only-streaming': '2.1.259' }, runtimeValidation: 'approved-version-preflight-and-synthetic-transport', inputTransport: true, eventTransport: 'lifecycle-only', unavailableReason: null },
     { id: 'codex', status: 'unavailable', profiles: [], profileMinimumVersions: {}, runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
     { id: 'opencode', status: 'unavailable', profiles: [], profileMinimumVersions: {}, runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
   ]);
@@ -670,6 +670,15 @@ test('unrecognized Gateway errors never expose message or caller-controlled erro
   assert.deepEqual(JSON.parse(response.text), { error: 'runtime_error' });
   assert.equal(response.text.includes('private'), false);
   assert.equal(response.text.includes('api_key_secret'), false);
+});
+
+test('CLI version preflight failures use a stable client error without exposing probe output', async (t) => {
+  const f = await apiFixture({}, { start: async () => { const error = new Error('private version output'); error.code = 'cli_version_unavailable'; throw error; } });
+  t.after(f.close);
+  const response = await request(f.address, f.api, { method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'task' }) });
+  assert.equal(response.status, 422);
+  assert.deepEqual(JSON.parse(response.text), { error: 'cli_version_unavailable' });
+  assert.equal(response.text.includes('private version output'), false);
 });
 
 test('bounded authenticated SSE streams expose lifecycle projections and close with the API', async (t) => {
