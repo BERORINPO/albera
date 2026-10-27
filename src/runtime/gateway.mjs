@@ -7,8 +7,10 @@ import path from 'node:path';
 import process from 'node:process';
 
 export const RUNTIME_PROVIDERS = Object.freeze({ claude: 'claude', codex: 'codex', opencode: 'opencode' });
+export const RUNTIME_PROFILES = Object.freeze({ readOnly: 'read-only' });
 const MAX_ARGS = 128;
 const MAX_ARG_BYTES = 32 * 1024;
+const MAX_PROMPT_BYTES = 16 * 1024;
 const MAX_RUNS = 64;
 const MAX_EVENTS = 256;
 const MAX_ACTIVE = 4;
@@ -31,8 +33,30 @@ const PROVIDER_ENDPOINT_ENV = Object.freeze({
 });
 
 export class GatewayError extends Error {
-  /** @param {'confirmation_required'|'unknown_provider'|'invalid_args'|'cwd_not_allowed'|'executable_unavailable'|'capacity'|'unknown_run'|'spawn_failed'|'stop_failed'|'authorization_failed'|'gateway_closed'} code */
+  /** @param {'confirmation_required'|'unknown_provider'|'invalid_args'|'cwd_not_allowed'|'executable_unavailable'|'capacity'|'unknown_run'|'spawn_failed'|'stop_failed'|'authorization_failed'|'gateway_closed'|'unsupported_profile'|'profile_unavailable'} code */
   constructor(code) { super(code); this.name = 'GatewayError'; this.code = code; }
+}
+
+/** Build a provider-specific, read-only launch vector. No caller-supplied argv is accepted. */
+export function buildProviderLaunch(provider, prompt, profile = RUNTIME_PROFILES.readOnly) {
+  if (!Object.hasOwn(RUNTIME_PROVIDERS, provider)) throw new GatewayError('unknown_provider');
+  if (profile !== RUNTIME_PROFILES.readOnly) throw new GatewayError('unsupported_profile');
+  if (typeof prompt !== 'string' || prompt.includes('\0') || Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) throw new GatewayError('invalid_args');
+  // Keep user text in a clearly labeled positional prompt, so leading CLI-looking text cannot
+  // be reinterpreted as an option by provider argument parsers.
+  const taskPrompt = `ALBERA task:\n${prompt}`;
+  let args;
+  if (provider === 'claude') {
+    // Claude Code's restricted mode removes command-running tools and confines file tools to the project.
+    args = ['--restricted', '--permission-mode', 'plan', '--print', '--max-turns', '1', '--no-session-persistence', taskPrompt];
+  } else {
+    // Codex's read-only filesystem sandbox does not prove MCP side effects are disabled, and
+    // OpenCode merges remote, user, project, plugin and inline configuration. Until ALBERA owns
+    // and verifies the complete per-run tool/configuration policy, fail closed for both.
+    throw new GatewayError('profile_unavailable');
+  }
+  validateArgs(args);
+  return Object.freeze({ profile, args: Object.freeze(args) });
 }
 
 /** Resolve a fixed provider command from PATH. Windows command shims (.cmd/.bat) are never accepted. */
@@ -62,16 +86,16 @@ export async function resolveProviderExecutable(provider, { platform = process.p
 
 /**
  * Memory-only lifecycle gateway. `authorize` is a trusted host callback, not request data; default denies.
- * @param {{roots: string[], authorize?: (request: object) => boolean|Promise<boolean>, platform?: string, maxActive?: number, runTimeoutMs?: number, spawnImpl?: typeof spawn, resolveExecutableImpl?: (provider: string, options: object) => Promise<string|null>, env?: NodeJS.ProcessEnv, now?: () => number, signalTreeImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>}} options
+ * @param {{roots: string[], authorize?: (request: object) => boolean|Promise<boolean>, platform?: string, maxActive?: number, runTimeoutMs?: number, spawnImpl?: typeof spawn, resolveExecutableImpl?: (provider: string, options: object) => Promise<string|null>, buildLaunchImpl?: (provider: string, profile: string, prompt: string) => {profile: string, args: string[]}, env?: NodeJS.ProcessEnv, now?: () => number, signalTreeImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>}} options
  */
 export class RuntimeGateway {
-  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #authorize; #env; #now; #signalTree; #closing = false;
+  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #buildLaunch; #authorize; #env; #now; #signalTree; #closing = false;
   /** @type {Map<string, Run>} */ #runs = new Map();
   #pendingStarts = 0;
   /** @type {Array<{id: number, runId: string, provider: string, type: string, at: number, code?: number|null, signal?: string|null}>} */ #events = [];
   #nextEventId = 1;
 
-  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawn, resolveExecutableImpl = resolveProviderExecutable, env = process.env, now = Date.now, signalTreeImpl } = {}) {
+  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawn, resolveExecutableImpl = resolveProviderExecutable, buildLaunchImpl = (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile), env = process.env, now = Date.now, signalTreeImpl } = {}) {
     if (!Array.isArray(roots) || roots.length === 0 || roots.some((root) => typeof root !== 'string' || !path.isAbsolute(root))) throw new TypeError('RuntimeGateway requires absolute allowed roots');
     if (typeof authorize !== 'function') throw new TypeError('RuntimeGateway requires a host authorization callback');
     if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > MAX_ACTIVE) throw new TypeError('maxActive must be between 1 and 4');
@@ -82,6 +106,8 @@ export class RuntimeGateway {
     this.#runTimeoutMs = runTimeoutMs;
     this.#spawn = spawnImpl;
     this.#resolveExecutable = resolveExecutableImpl;
+    if (typeof buildLaunchImpl !== 'function') throw new TypeError('buildLaunchImpl must be a function');
+    this.#buildLaunch = buildLaunchImpl;
     this.#authorize = authorize;
     this.#env = env;
     this.#now = now;
@@ -89,11 +115,15 @@ export class RuntimeGateway {
   }
 
   /** Start a fixed provider executable after trusted host authorization of the exact launch tuple. */
-  async start({ provider, cwd, args = [] } = {}) {
+  async start(request = {}) {
     if (this.#closing) throw new GatewayError('gateway_closed');
+    if (request === null || typeof request !== 'object' || Object.hasOwn(request, 'args')) throw new GatewayError('invalid_args');
+    const { provider, cwd, prompt, profile = RUNTIME_PROFILES.readOnly } = request;
     if (!Object.hasOwn(RUNTIME_PROVIDERS, provider)) throw new GatewayError('unknown_provider');
-    validateArgs(args);
-    const launchArgs = [...args];
+    const launch = this.#buildLaunch(provider, profile, prompt);
+    if (!launch || launch.profile !== profile || !Array.isArray(launch.args)) throw new GatewayError('unsupported_profile');
+    validateArgs(launch.args);
+    const launchArgs = [...launch.args];
     this.#pruneRuns();
     const active = [...this.#runs.values()].filter((run) => isActive(run.status)).length;
     if (active + this.#pendingStarts >= this.#maxActive || this.#runs.size + this.#pendingStarts >= MAX_RUNS) throw new GatewayError('capacity');
@@ -109,7 +139,7 @@ export class RuntimeGateway {
       if (this.#closing) throw new GatewayError('gateway_closed');
       const environment = childEnvironment(provider, this.#env);
       const authorized = await this.#authorizeSafely({
-        action: 'start', provider, executable, cwd: resolvedCwd, args: launchArgs,
+        action: 'start', provider, profile, executable, cwd: resolvedCwd, args: launchArgs,
         environment: environmentSummary(provider, environment),
         platform: this.#platform, maxDurationMs: this.#runTimeoutMs, maxActive: this.#maxActive,
       });

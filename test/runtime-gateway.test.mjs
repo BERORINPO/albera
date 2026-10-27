@@ -7,17 +7,19 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import test from 'node:test';
-import { GatewayError, RuntimeGateway, RUNTIME_PROVIDERS, resolveProviderExecutable } from '../src/runtime/gateway.mjs';
+import { buildProviderLaunch, GatewayError, RuntimeGateway, RUNTIME_PROFILES, RUNTIME_PROVIDERS, resolveProviderExecutable } from '../src/runtime/gateway.mjs';
 
 async function fixture(options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-'));
   const cwd = path.join(root, 'project');
   await mkdir(cwd);
+  const { buildLaunchImpl = (_provider, profile, prompt) => ({ profile, args: Array.isArray(prompt) ? prompt : [] }), ...gatewayOptions } = options;
   const gateway = new RuntimeGateway({
     roots: [root],
     authorize: async () => true,
     resolveExecutableImpl: async () => process.execPath,
-    ...options,
+    buildLaunchImpl,
+    ...gatewayOptions,
   });
   return { root, cwd, gateway, dispose: async () => { await gateway.close({ timeoutMs: 100 }); await rm(root, { recursive: true, force: true }); } };
 }
@@ -43,6 +45,47 @@ test('providers are an explicit fixed allowlist and unknown names do not resolve
   assert.equal(await resolveProviderExecutable('other', { pathValue: '' }), null);
 });
 
+test('read-only provider profile generates fixed Claude argv and refuses unverified providers', async () => {
+  assert.deepEqual(buildProviderLaunch('claude', 'fixture prompt'), {
+    profile: RUNTIME_PROFILES.readOnly,
+    args: ['--restricted', '--permission-mode', 'plan', '--print', '--max-turns', '1', '--no-session-persistence', 'ALBERA task:\nfixture prompt'],
+  });
+  assert.equal(Object.isFrozen(buildProviderLaunch('claude', 'fixture prompt')), true);
+  assert.equal(Object.isFrozen(buildProviderLaunch('claude', 'fixture prompt').args), true);
+  assert.throws(() => buildProviderLaunch('codex', 'fixture prompt'), (error) => error.code === 'profile_unavailable');
+  assert.throws(() => buildProviderLaunch('opencode', 'fixture prompt'), (error) => error.code === 'profile_unavailable');
+  assert.throws(() => buildProviderLaunch('claude', 'fixture prompt', 'workspace-write'), (error) => error.code === 'unsupported_profile');
+  for (const prompt of [undefined, 'bad\0prompt', 'x'.repeat(17 * 1024)]) {
+    assert.throws(() => buildProviderLaunch('claude', prompt), (error) => error.code === 'invalid_args');
+  }
+  assert.equal(buildProviderLaunch('claude', '--dangerously-skip-permissions').args.at(-1), 'ALBERA task:\n--dangerously-skip-permissions');
+});
+
+test('default Gateway generates the read-only profile and refuses raw request argv', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-profile-'));
+  const seen = [];
+  let spawnedArgs;
+  let resolveCount = 0;
+  let spawnCount = 0;
+  const gateway = new RuntimeGateway({
+    roots: [root],
+    authorize: async (request) => { seen.push(request); return true; },
+    resolveExecutableImpl: async () => { resolveCount++; return process.execPath; },
+    spawnImpl: (_executable, args) => { spawnCount++; spawnedArgs = args; return new FakeChild(); },
+    env: { PATH: process.env.PATH },
+  });
+  t.after(async () => { await gateway.close({ timeoutMs: 100 }); await rm(root, { recursive: true, force: true }); });
+  await gateway.start({ provider: 'claude', cwd: root, prompt: 'fixture prompt' });
+  assert.equal(seen[0].profile, 'read-only');
+  assert.deepEqual(spawnedArgs, buildProviderLaunch('claude', 'fixture prompt').args);
+  await assert.rejects(gateway.start({ provider: 'claude', cwd: root, args: ['--dangerously-skip-permissions'] }), (error) => error.code === 'invalid_args');
+  await assert.rejects(gateway.start({ provider: 'codex', cwd: root, prompt: 'fixture prompt' }), (error) => error.code === 'profile_unavailable');
+  await assert.rejects(gateway.start({ provider: 'opencode', cwd: root, prompt: 'fixture prompt' }), (error) => error.code === 'profile_unavailable');
+  assert.equal(seen.length, 1);
+  assert.equal(resolveCount, 1);
+  assert.equal(spawnCount, 1);
+});
+
 test('default authorization denies start and caller booleans cannot grant execution', async (t) => {
   const f = await fixture({ authorize: undefined });
   t.after(f.dispose);
@@ -60,10 +103,10 @@ test('host authorization receives the exact canonical executable, cwd and argv b
   });
   t.after(f.dispose);
   const args = ['--print', 'fixture prompt'];
-  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, args });
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: args });
   assert.equal(spawnCount, 1);
   assert.deepEqual(seen[0], {
-    action: 'start', provider: 'claude', executable: process.execPath, cwd: await realpath(f.cwd), args,
+    action: 'start', provider: 'claude', profile: 'read-only', executable: process.execPath, cwd: await realpath(f.cwd), args,
     environment: { providerVariables: [], endpointOverrides: [] },
     platform: process.platform, maxDurationMs: 15 * 60 * 1000, maxActive: 4,
   });
@@ -93,7 +136,7 @@ test('authorization sees a redacted provider environment summary and spawn uses 
   t.after(f.dispose);
 
   const sourceArgs = ['--print', 'synthetic prompt'];
-  const starting = f.gateway.start({ provider: 'claude', cwd: f.cwd, args: sourceArgs });
+  const starting = f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: sourceArgs });
   await waitFor(() => seen);
   assert.deepEqual(seen.args, ['--print', 'synthetic prompt']);
   assert.equal(Object.isFrozen(seen.args), true);
@@ -124,7 +167,7 @@ test('authorization sees a redacted provider environment summary and spawn uses 
 test('authorization callback errors fail closed and expose only a stable error code', async (t) => {
   const f = await fixture({ authorize: () => { throw new Error('private authorization detail'); } });
   t.after(f.dispose);
-  await assert.rejects(f.gateway.start({ provider: 'claude', cwd: f.cwd }), (error) => error.code === 'authorization_failed' && !error.message.includes('private'));
+  await assert.rejects(f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture prompt' }), (error) => error.code === 'authorization_failed' && !error.message.includes('private'));
 });
 
 test('missing or invalid executable fails closed before authorization or spawn', async (t) => {
@@ -136,7 +179,7 @@ test('missing or invalid executable fails closed before authorization or spawn',
     spawnImpl: () => { spawned = true; return new FakeChild(); },
   });
   t.after(f.dispose);
-  await assert.rejects(f.gateway.start({ provider: 'claude', cwd: f.cwd }), (error) => error.code === 'executable_unavailable');
+  await assert.rejects(f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture prompt' }), (error) => error.code === 'executable_unavailable');
   assert.equal(authorized, false);
   assert.equal(spawned, false);
 });
@@ -147,9 +190,10 @@ test('unknown provider, malformed argv, NUL and oversized argv are rejected befo
   t.after(f.dispose);
   for (const input of [
     { provider: 'gemini', cwd: f.cwd },
-    { provider: 'claude', cwd: f.cwd, args: ['bad\0arg'] },
-    { provider: 'claude', cwd: f.cwd, args: ['x'.repeat(33 * 1024)] },
-    { provider: 'claude', cwd: f.cwd, args: ['valid', 42] },
+    { provider: 'claude', cwd: f.cwd, prompt: ['bad\0arg'] },
+    { provider: 'claude', cwd: f.cwd, prompt: ['x'.repeat(33 * 1024)] },
+    { provider: 'claude', cwd: f.cwd, prompt: ['valid', 42] },
+    { provider: 'claude', cwd: f.cwd, args: ['raw argv is not accepted'] },
   ]) await assert.rejects(f.gateway.start(input), GatewayError);
   assert.equal(spawnCount, 0);
 });
@@ -157,12 +201,12 @@ test('unknown provider, malformed argv, NUL and oversized argv are rejected befo
 test('cwd must be an existing canonical directory contained by an allowed root', async (t) => {
   const f = await fixture({ spawnImpl: () => new FakeChild() });
   t.after(f.dispose);
-  await assert.rejects(f.gateway.start({ provider: 'claude', cwd: os.tmpdir() }), (error) => error.code === 'cwd_not_allowed');
-  await assert.rejects(f.gateway.start({ provider: 'claude', cwd: path.join(f.root, 'missing') }), (error) => error.code === 'cwd_not_allowed');
+  await assert.rejects(f.gateway.start({ provider: 'claude', cwd: os.tmpdir(), prompt: 'fixture' }), (error) => error.code === 'cwd_not_allowed');
+  await assert.rejects(f.gateway.start({ provider: 'claude', cwd: path.join(f.root, 'missing'), prompt: 'fixture' }), (error) => error.code === 'cwd_not_allowed');
   const link = path.join(f.root, 'escape');
   try {
     await symlink(os.tmpdir(), link, 'junction');
-    await assert.rejects(f.gateway.start({ provider: 'claude', cwd: link }), (error) => error.code === 'cwd_not_allowed');
+    await assert.rejects(f.gateway.start({ provider: 'claude', cwd: link, prompt: 'fixture' }), (error) => error.code === 'cwd_not_allowed');
   } catch (error) {
     if (!['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) throw error;
     t.diagnostic('symlink escape case skipped: this Windows environment does not permit junction creation');
@@ -180,7 +224,7 @@ test('spawn uses an absolute executable, argv, shell:false and a minimized provi
   try {
     const f = await fixture({ spawnImpl: (_exe, _args, options) => { captured = options; return new FakeChild(); } });
     t.after(async () => { await f.dispose(); restoreSecret(); });
-    await f.gateway.start({ provider: 'codex', cwd: f.cwd, args: ['--help'] });
+    await f.gateway.start({ provider: 'codex', cwd: f.cwd, prompt: ['--help'] });
     assert.equal(captured.shell, false);
     assert.equal(captured.detached, process.platform !== 'win32');
     assert.equal(captured.stdio, 'ignore');
@@ -197,9 +241,9 @@ test('active-run reservation prevents concurrent starts above the configured lim
     spawnImpl: () => new FakeChild(),
   });
   t.after(f.dispose);
-  const first = f.gateway.start({ provider: 'claude', cwd: f.cwd });
+  const first = f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
   await new Promise((resolve) => setImmediate(resolve));
-  await assert.rejects(f.gateway.start({ provider: 'codex', cwd: f.cwd }), (error) => error.code === 'capacity');
+  await assert.rejects(f.gateway.start({ provider: 'codex', cwd: f.cwd, prompt: 'fixture' }), (error) => error.code === 'capacity');
   release();
   await first;
 });
@@ -218,7 +262,7 @@ test('records and lifecycle events are bounded and never include argv, cwd or se
   const f = await fixture({ spawnImpl: () => { const child = new FakeChild(); children.push(child); queueMicrotask(() => child.emit('spawn')); return child; } });
   t.after(f.dispose);
   for (let i = 0; i < 140; i++) {
-    const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, args: [secret] });
+    const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: [secret] });
     const child = children.at(-1);
     child.emit('close', 0, null);
     assert.equal(f.gateway.get(run.id).status, 'exited');
@@ -241,7 +285,7 @@ test('run duration timeout requests stop and repeated stop is idempotent', async
     signalTreeImpl: (_pid, signal, child) => child.kill(signal),
   });
   t.after(f.dispose);
-  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd });
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
   await waitFor(() => f.gateway.get(run.id).status === 'stopped');
   assert.deepEqual(f.gateway.events().map((event) => event.type), ['started', 'stop_requested', 'stopped']);
 });
@@ -258,7 +302,7 @@ test('timeout falls back to terminating the direct child if process-tree termina
     signalTreeImpl: () => { throw new Error('synthetic signal adapter failure'); },
   });
   t.after(f.dispose);
-  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd });
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
   await waitFor(() => f.gateway.get(run.id).status === 'failed');
   assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
   assert.deepEqual(f.gateway.events().map((event) => event.type), ['started', 'stop_requested', 'stop_failed', 'failed']);
@@ -271,7 +315,7 @@ test('manual stop requires separate authorization; denied stop leaves the run ac
     spawnImpl: () => { const child = new FakeChild(); queueMicrotask(() => child.emit('spawn')); return child; },
   });
   t.after(f.dispose);
-  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd });
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   await assert.rejects(f.gateway.stop(run.id), (error) => error.code === 'confirmation_required');
   assert.equal(f.gateway.get(run.id).status, 'running');
@@ -291,7 +335,7 @@ test('concurrent stop requests send one termination signal', async (t) => {
     },
   });
   t.after(f.dispose);
-  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd });
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   await Promise.all([f.gateway.stop(run.id), f.gateway.stop(run.id)]);
   await waitFor(() => f.gateway.get(run.id).status === 'stopped');
@@ -320,7 +364,7 @@ test('local helper process integration: starts, reports lifecycle only, stops, a
     authorize: async () => true,
   });
   t.after(f.dispose);
-  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, args: ['-e', 'setInterval(() => {}, 1000)'] });
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: ['-e', 'setInterval(() => {}, 1000)'] });
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   const returned = JSON.stringify({ run: f.gateway.get(run.id), events: f.gateway.events() });
   assert.ok(!returned.includes(f.cwd));
@@ -334,7 +378,7 @@ test('local helper process integration: starts, reports lifecycle only, stops, a
 test('local helper process integration: abnormal exit is represented without output capture', async (t) => {
   const f = await fixture({ resolveExecutableImpl: async () => process.execPath });
   t.after(f.dispose);
-  const run = await f.gateway.start({ provider: 'codex', cwd: f.cwd, args: ['-e', 'process.exit(7)'] });
+  const run = await f.gateway.start({ provider: 'codex', cwd: f.cwd, prompt: ['-e', 'process.exit(7)'] });
   await waitFor(() => f.gateway.get(run.id).status === 'exited');
   assert.equal(f.gateway.get(run.id).exitCode, 7);
   assert.deepEqual(f.gateway.events().map((event) => event.type), ['started', 'exited']);
@@ -347,7 +391,7 @@ test('orderly host close stops active children even when interactive stop approv
     resolveExecutableImpl: async () => process.execPath,
   });
   t.after(f.dispose);
-  const run = await f.gateway.start({ provider: 'opencode', cwd: f.cwd, args: ['-e', 'setInterval(() => {}, 1000)'] });
+  const run = await f.gateway.start({ provider: 'opencode', cwd: f.cwd, prompt: ['-e', 'setInterval(() => {}, 1000)'] });
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   assert.deepEqual(await f.gateway.close({ timeoutMs: 5000 }), []);
   assert.equal(f.gateway.get(run.id).status, 'stopped');
@@ -367,7 +411,7 @@ test('orderly close invalidates starts awaiting authorization and rejects starts
   });
   t.after(f.dispose);
 
-  const startResult = f.gateway.start({ provider: 'claude', cwd: f.cwd, args: ['--print', 'synthetic prompt'] })
+  const startResult = f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: ['--print', 'synthetic prompt'] })
     .then((value) => ({ value }), (error) => ({ error }));
   await waitFor(() => approvalSeen);
   assert.deepEqual(await f.gateway.close({ timeoutMs: 10 }), []);
@@ -376,7 +420,7 @@ test('orderly close invalidates starts awaiting authorization and rejects starts
   assert.equal(outcome.error.code, 'gateway_closed');
   assert.equal(spawnCount, 0);
   await assert.rejects(
-    f.gateway.start({ provider: 'codex', cwd: f.cwd, args: [] }),
+    f.gateway.start({ provider: 'codex', cwd: f.cwd, prompt: [] }),
     (error) => error.code === 'gateway_closed',
   );
 });
@@ -392,7 +436,7 @@ test('local helper process tree integration: stopping the approved helper stops 
   });
   const heartbeatCode = `let n=0;const fs=require('node:fs');setInterval(()=>fs.writeFileSync(${JSON.stringify(heartbeatPath)},String(++n)),50)`;
   const parentCode = `const{spawn}=require('node:child_process');const fs=require('node:fs');const c=spawn(${JSON.stringify(process.execPath)},['-e',${JSON.stringify(heartbeatCode)}],{stdio:'ignore'});fs.writeFileSync(${JSON.stringify(childPidPath)},String(c.pid));setInterval(()=>{},1000)`;
-  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, args: ['-e', parentCode] });
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: ['-e', parentCode] });
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   await waitFor(() => {
     try { childPid = Number(readFileSync(childPidPath, 'utf8')); return Number.isInteger(childPid) && childPid > 0; }
