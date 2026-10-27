@@ -23,4 +23,4 @@ The browser will not send this cookie to ordinary paths on another loopback port
 
 ## Verification
 
-`test/runtime-approval-host.test.mjs` verifies the random path-scoped `Set-Cookie` attribute on bootstrap, session refresh, and authenticated API activity; refuses API routes outside the prefix; and exercises the composed approval host through the prefixed URL. Browser GUI acceptance remains separate and is not inferred from these HTTP tests.
+`test/runtime-approval-host.test.mjs` verifies the random path-scoped `Set-Cookie` attribute on bootstrap, session refresh, and authenticated API activity; refuses API routes outside the prefix; and exercises the composed approval host through the prefixed URL. The authenticated read-only screen was separately inspected in a real browser and recorded in `docs/progress.md`; this does not establish browser acceptance of approval decisions or start/input/stop action flows.
