@@ -19,7 +19,7 @@
 | `GET /v1/health` | Returns only `{status:"ok"}` |
 | `GET /v1/runs` | Returns Gateway run projections with an explicit field allowlist |
 | `GET /v1/events?after=&limit=` | Returns bounded lifecycle event projections |
-| `GET /v1/events/stream?after=` | Authenticated SSE; up to four clients, 250 ms default polling, 60 second maximum lifetime, and 64 KiB write-buffer cap |
+| `GET /v1/events/stream?after=` | Authenticated SSE; resumes from a validated `Last-Event-ID` header (which takes precedence over `after`), up to four clients, 250 ms default polling, 60 second maximum lifetime, and 64 KiB write-buffer cap |
 | `POST /v1/runs` | Accepts only `provider`, `cwd`, `prompt`, and optional `profile`; Gateway host authorization still decides whether to start |
 | `POST /v1/runs/:id/stop` | Requests a stop through the Gateway, which independently requires host authorization |
 
@@ -28,6 +28,6 @@ Request bodies are JSON and capped at 20 KiB. Output, prompt, paths, argv, and e
 ## Security limits and unfinished work
 
 - Loopback plus a bearer token is not OS-user authentication. A local process that obtains the in-memory credential can use the API. HTTP is not encrypted against privileged local packet inspection. Do not expose or persist the token, and keep the module disconnected from application startup until an explicit host/approval design is reviewed.
-- No GUI approval flow, event/audit persistence, reconnection/recovery, provider input, or Runtime API integration tests with real CLIs exist yet.
+- No GUI approval flow, event/audit persistence, restart recovery, provider input, or Runtime API integration tests with real CLIs exist yet. SSE reconnect cursors work only while the in-memory Gateway event ring remains available.
 - The API does not supervise Gateway crashes or establish OS-level process ownership. Phase 1 RT-10 remains blocked; the API must not be run as a persistent service.
 - API tests use a fake Gateway and the default-deny real Gateway. No AI CLI is invoked.

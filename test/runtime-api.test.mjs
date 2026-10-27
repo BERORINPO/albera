@@ -19,9 +19,9 @@ function fakeGateway(overrides = {}) {
   return { gateway, calls };
 }
 
-function request(address, api, { method = 'GET', route = '/v1/health', body, token = api.credential, host = `${address.host}:${address.port}`, origin, contentType = 'application/json' } = {}) {
+function request(address, api, { method = 'GET', route = '/v1/health', body, token = api.credential, host = `${address.host}:${address.port}`, origin, contentType = 'application/json', extraHeaders = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const headers = { Host: host };
+    const headers = { Host: host, ...extraHeaders };
     if (token) headers.Authorization = `Bearer ${token}`;
     if (origin) headers.Origin = origin;
     if (body !== undefined) {
@@ -188,7 +188,9 @@ test('bounded authenticated SSE streams expose lifecycle projections and close w
   const api = { ...runtimeApi, credential: runtimeApi.createCredential(['health', 'runs:read', 'events:read', 'runs:start', 'runs:stop']) };
   const address = await api.listen();
   t.after(() => api.close());
-  const first = http.request({ host: address.host, port: address.port, path: '/v1/events/stream?after=0', headers: { Host: `${address.host}:${address.port}`, Authorization: `Bearer ${api.credential}` } });
+  const invalidCursor = await request(address, api, { route: '/v1/events/stream', extraHeaders: { 'Last-Event-ID': '-1' } });
+  assert.equal(invalidCursor.status, 400);
+  const first = http.request({ host: address.host, port: address.port, path: '/v1/events/stream?after=0', headers: { Host: `${address.host}:${address.port}`, Authorization: `Bearer ${api.credential}`, 'Last-Event-ID': '1' } });
   let response;
   let text = '';
   first.on('response', (res) => { response = res; res.setEncoding('utf8'); res.on('data', (chunk) => { text += chunk; }); });

@@ -73,7 +73,7 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
         return sendJson(res, 200, { events: gateway.events({ after, limit }).map(projectEvent).filter(Boolean) });
       }
       if (req.method === 'GET' && url.pathname === '/v1/events/stream') {
-        const after = queryInteger(url.searchParams.get('after'), 0, Number.MAX_SAFE_INTEGER);
+        const after = eventCursor(req, url);
         return streamEvents(req, res, after);
       }
       if (req.method === 'POST' && url.pathname === '/v1/runs') {
@@ -286,6 +286,11 @@ function queryInteger(value, fallback, max) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed > max) throw new ApiError(400, 'invalid_request');
   return parsed;
+}
+function eventCursor(req, url) {
+  const header = req.headers['last-event-id'];
+  if (header !== undefined && typeof header !== 'string') throw new ApiError(400, 'invalid_request');
+  return queryInteger(header === undefined ? url.searchParams.get('after') : header, 0, Number.MAX_SAFE_INTEGER);
 }
 async function readBody(req) {
   const chunks = [];
