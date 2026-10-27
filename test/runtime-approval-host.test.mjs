@@ -342,6 +342,25 @@ test('approval host refreshes active browser sessions and rejects an expired idl
   assert.equal((await get(f, '/api/runs')).status, 401);
 });
 
+test('approval host uses a twenty-minute idle TTL and refreshes it on authenticated requests', async (t) => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  t.after(() => { Date.now = realNow; });
+  const f = await fixture(t);
+  const createdAt = now;
+  const idleTtlMs = 20 * 60 * 1000;
+
+  assert.equal(f.session.expiresAt, createdAt + idleTtlMs);
+  now = createdAt + 19 * 60 * 1000;
+  const refreshed = await get(f, '/api/runs');
+  assert.equal(refreshed.status, 200);
+  assert.equal(Number(refreshed.headers.get('set-cookie').match(/Max-Age=(\d+)/)?.[1]) * 1000, idleTtlMs);
+
+  now = createdAt + 39 * 60 * 1000 + 1;
+  assert.equal((await get(f, '/api/runs')).status, 401);
+});
+
 test('approval host enforces an eight-hour absolute session lifetime during active polling', async (t) => {
   const realNow = Date.now;
   let now = realNow();
