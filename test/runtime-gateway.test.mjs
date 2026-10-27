@@ -904,6 +904,29 @@ test('orderly close invalidates starts awaiting authorization and rejects starts
   );
 });
 
+test('orderly close invalidates starts after version probing and before spawn', async (t) => {
+  let releaseProbe;
+  let probeSeen;
+  let spawnCount = 0;
+  const probeGate = new Promise((resolve) => { releaseProbe = resolve; });
+  const probeStarted = new Promise((resolve) => { probeSeen = resolve; });
+  const f = await fixture({
+    probeVersionImpl: async () => { probeSeen(); await probeGate; return '99.0.0'; },
+    spawnImpl: () => { spawnCount++; return new FakeChild(); },
+  });
+  t.after(f.dispose);
+
+  const startResult = f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'synthetic final identity race' })
+    .then((value) => ({ value }), (error) => ({ error }));
+  await probeStarted;
+  assert.deepEqual(await f.gateway.close({ timeoutMs: 10 }), []);
+  releaseProbe();
+  const outcome = await startResult;
+  assert.equal(outcome.error.code, 'gateway_closed');
+  assert.equal(spawnCount, 0);
+  assert.deepEqual(f.gateway.list(), []);
+});
+
 test('local helper process tree integration: stopping the approved helper stops its child too', async (t) => {
   const f = await fixture({ resolveExecutableImpl: async () => process.execPath });
   const childPidPath = path.join(f.root, 'child-pid.txt');

@@ -195,6 +195,9 @@ export class RuntimeGateway {
       if (currentExecutable !== executable || await getExecutableIdentity(currentExecutable) !== executableIdentity) {
         throw new GatewayError('executable_unavailable');
       }
+      // These executable checks await filesystem operations. Shutdown can begin during
+      // the final identity query, so check again adjacent to spawn with no await between.
+      if (this.#closing) throw new GatewayError('gateway_closed');
 
       let child;
       try {
