@@ -392,6 +392,11 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
       credentials.set(digest, { scopes: new Set(scopes), expiresAt: Date.now() + ttlMs, sessionId: sessionId ?? randomBytes(16).toString('hex') });
       return token;
     },
+    /** Force a final trusted-host lifecycle capture before shutdown; this is not an HTTP route. */
+    async flushEvents() {
+      if (capturePromise) await capturePromise;
+      return captureGatewayEvents();
+    },
     /** Revoke a session capability immediately without affecting other sessions. */
     revokeCredential(token) {
       if (typeof token !== 'string') return false;

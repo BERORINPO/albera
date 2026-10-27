@@ -2,11 +2,17 @@
 
 ## Current focus
 
-- Goal: ALBERA v1.0; current focus is finishing the isolated Secure Runtime API foundation before real provider integration.
-- Branch: `codex/secure-runtime-api` (PR #10 Draft, base `codex/runtime-gateway`).
+- Goal: ALBERA v1.0; current focus is a separate, approval-gated Runtime host before real provider integration.
+- Branch: `codex/runtime-approval-host` (stacked on PR #10 Draft, base `codex/secure-runtime-api`).
 - Original base: `origin/main` at `c5beabcb4d03071ae37e46be40023acec8bcfc1c` when Runtime Gateway work began.
-- Current slice: host-authorized input transport through the isolated Runtime Gateway/API. Implementation and synthetic process verification are underway; no UI wiring or real CLI launch.
-- No Runtime Gateway code is wired to the existing read-only server or UI.
+- Current slice: a separate `albera-runtime` command with loopback approval UI, one-time terminal bootstrap, server-side API credentials and synthetic host-to-Gateway verification. The default `albera` Observer remains disconnected and read-only.
+- Runtime UI/host is a local prototype; real CLI/browser compatibility, active-process recovery and v1.0 orchestration remain incomplete.
+
+## Latest verified slice
+
+| Date | Change | Verification | Status |
+| --- | --- | --- | --- |
+| 2026-10-27 | Added a standalone `albera-runtime` approval host and runtime-only UI, one-time terminal bootstrap, server-side API credentials, fixed-route proxy, cookie/CSRF/Origin protections, SSE lifecycle updates, graceful shutdown event flush, and a stable non-secret journal session identity. The default read-only `albera` Observer remains disconnected. | Local Windows Node 24.13.0: `npm test` 488/488; `npm run arch` 82 paths / 0 violations; `npm run smoke` passed; `git diff --check` passed; `node src/runtime/entry.mjs --help` passed. Runtime tests used synthetic child processes only; no real AI CLI or interactive browser session was exercised. | Runtime host preview is locally verified; cross-platform CI and browser/provider compatibility remain unverified. |
 
 ## Evidence log
 

@@ -1,6 +1,6 @@
 # ALBERA
 
-ALBERA takes its name and spirit from Anni Albers's woven art. Its long-term direction is a development platform where people and multiple AIs weave knowledge, code, and development work together. The current release is only a read-only local dashboard for Claude Desktop / Claude Code sessions: it groups sessions by what needs your answer, may be stuck, finished but unread, working, recent, and ready to archive. It also shows what each session is doing and an estimate of context use, and helps you prepare a hand-off. See sessions as a list or as a canvas with one sheet per project. Chats from the app's other tabs are not shown.
+ALBERA takes its name and spirit from Anni Albers's woven art. Its long-term direction is a development platform where people and multiple AIs weave knowledge, code, and development work together. The regular `albera` command is a read-only local dashboard for Claude Desktop / Claude Code sessions: it groups sessions by what needs your answer, may be stuck, finished but unread, working, recent, and ready to archive. A separate experimental `albera-runtime` command provides an isolated local Runtime approval/control screen that can start a real CLI after explicit approval. Installed CLI compatibility and browser GUI acceptance are unverified. The session dashboard also shows what each session is doing and an estimate of context use, and helps you prepare a hand-off. See sessions as a list or as a canvas with one sheet per project. Chats from the app's other tabs are not shown.
 
 [日本語](README.ja.md)
 
@@ -15,9 +15,25 @@ Demo data. Also: [canvas](docs/screenshot-canvas.png) · [dark theme](docs/scree
 - **Zero dependencies.** Node.js 22 or newer. No build step.
 - **English and Japanese.** The page follows your browser language; the terminal follows your system language.
 
+## Runtime preview (experimental)
+
+`albera-runtime` runs as a separate process from the read-only `albera` server. Until an npm package release, start it from a clone with an absolute allowed project root and an absolute audit journal path:
+
+```sh
+node src/runtime/entry.mjs --root "/absolute/path/to/project" --journal "/absolute/path/to/private/albera-runtime.jsonl"
+```
+
+On Windows PowerShell:
+
+```powershell
+node src/runtime/entry.mjs --root "C:\work\project" --journal "C:\Users\You\AppData\Local\ALBERA\runtime.audit.jsonl"
+```
+
+Enter the one-time code printed by the terminal in the Runtime screen. Start, input, and stop requests each wait for an explicit approval. The journal does not store prompts, argv, environment values, or provider output. A sibling `.session-id` file stores a non-secret random identity so the UI can replay journal history after restart. Only a fixed Claude Code profile is currently constructed; compatibility with an installed CLI has not been verified, and provider output is not collected. The standard profile places the prompt in the process arguments, which may be visible to same-user process inspection. An allowed working root is not an OS sandbox: the CLI runs with the current OS user's privileges. The Runtime screen is English-only and does not identify the provider account or estimate cost.
+
 ## Long-term direction (not implemented)
 
-The following are product plans, not features of this release: running, monitoring, and controlling multiple AI CLIs; orchestration by a Main AI; an infinite canvas and graph views; a Knowledge Graph, Harness Graph, and Comprehension Graph; Git worktree and PR integration; and human intervention, approvals, and development policy enforcement. The current release does not execute or control agents and does not provide those graphs or integrations.
+The following remain product plans beyond the Runtime preview: integrated support for multiple AI CLIs; orchestration by a Main AI; an infinite canvas and graph views; a Knowledge Graph, Harness Graph, and Comprehension Graph; Git worktree and PR integration; and development policy enforcement. The regular `albera` session dashboard does not execute or control agents.
 
 ## Quick start
 
