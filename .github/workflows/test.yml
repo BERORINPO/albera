@@ -28,6 +28,11 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Tests
         run: npm test
+      - name: Windows Runtime storage ACL integration
+        if: runner.os == 'Windows'
+        run: node --test test/runtime-windows-acl.test.mjs
+        env:
+          ALBERA_RUN_WINDOWS_ACL_INTEGRATION: '1'
       - name: Architecture check
         run: npm run arch
       # Smoke reads the user's local Claude session store; run locally, not on hosted CI.

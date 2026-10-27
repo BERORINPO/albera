@@ -58,7 +58,9 @@ test('ACL inspection is a no-op off Windows', async () => {
   await assert.doesNotReject(assertPrivateWindowsAcl('/tmp/audit.jsonl', { platform: 'linux' }));
 });
 
-test('Windows ACL query reads a real system DACL', { skip: process.platform !== 'win32' }, async () => {
+test('Windows ACL query reads a real system DACL', {
+  skip: process.platform !== 'win32' || process.env.ALBERA_RUN_WINDOWS_ACL_INTEGRATION !== '1',
+}, async () => {
   const acl = await inspectWindowsAcl(os.homedir());
   assert.match(acl.owner, /^S-\d-/);
   assert.match(acl.currentUser, /^S-\d-/);
