@@ -125,6 +125,6 @@ export async function inspectWindowsAcl(targetPath) {
         resolve(result);
       } catch { fail(); }
     });
-    timer = setTimeout(fail, 5000);
+    timer = setTimeout(fail, 20000);
   });
 }

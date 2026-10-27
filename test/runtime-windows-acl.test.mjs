@@ -64,7 +64,7 @@ test('Windows ACL query reads a real system DACL', { skip: process.platform !== 
   assert.match(acl.currentUser, /^S-\d-/);
   assert.equal(acl.daclPresent, true);
   assert.ok(Array.isArray(acl.rules));
-  await assertPrivateWindowsAcl(os.homedir(), { kind: 'directory' });
+  await assertPrivateWindowsAcl(os.homedir(), { kind: 'directory', inspect: async () => acl });
 });
 
 test('journal ACL refusal happens before existing journal content is read or changed', async (t) => {
