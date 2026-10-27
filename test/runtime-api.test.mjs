@@ -5,6 +5,7 @@ import path from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import test from 'node:test';
 import { createRuntimeApi } from '../src/runtime/api.mjs';
+import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
 import { RuntimeGateway } from '../src/runtime/gateway.mjs';
 
 function fakeGateway(overrides = {}) {
@@ -14,6 +15,7 @@ function fakeGateway(overrides = {}) {
     async stop(id) { calls.push(['stop', id]); return { id, provider: 'claude', status: 'stopped', args: ['secret'] }; },
     list() { return [{ id: '12345678-1234-4234-8234-123456789abc', provider: 'claude', status: 'running', command: 'secret' }]; },
     events({ after = 0 } = {}) { return [{ id: 1, runId: '12345678-1234-4234-8234-123456789abc', provider: 'claude', type: 'started', at: 1, prompt: 'secret', path: 'secret' }].filter((event) => event.id > after); },
+    async close() { calls.push(['close']); },
     ...overrides,
   };
   return { gateway, calls };
@@ -56,6 +58,7 @@ test('Runtime API requires a valid Gateway and bounded stream configuration', ()
   const api = createRuntimeApi({ gateway });
   assert.throws(() => api.createCredential(['admin']), /scopes/);
   assert.throws(() => api.createCredential(['runs:read'], { ttlMs: 86_400_001 }), /ttlMs/);
+  assert.throws(() => api.createCredential(['runs:read'], { sessionId: 'caller supplied identity' }), /sessionId/);
   for (let i = 0; i < 256; i++) api.createCredential(['runs:read']);
   assert.throws(() => api.createCredential(['runs:read']), /credential_capacity/);
 });
@@ -253,6 +256,75 @@ test('SSE retains lifecycle events emitted before a session start is registered'
   const closed = new Promise((resolve) => streamResponse.once('close', resolve));
   await f.api.close();
   await closed;
+});
+
+test('injected audit journal records only redacted start and stop decisions', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-audit-'));
+  const journal = await openRuntimeAuditJournal(path.join(root, 'audit.jsonl'));
+  const f = await apiFixture({ journal });
+  t.after(async () => { await f.close(); await journal.close(); await rm(root, { recursive: true, force: true }); });
+  const started = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\private\\project', prompt: 'private task text' }),
+  });
+  assert.equal(started.status, 202);
+  const runId = JSON.parse(started.text).run.id;
+  const stopped = await request(f.address, f.api, { method: 'POST', route: `/v1/runs/${runId}/stop` });
+  assert.equal(stopped.status, 200);
+
+  const records = journal.list();
+  assert.deepEqual(records.map(({ action, phase }) => [action, phase]), [
+    ['run.start', 'requested'], ['run.start', 'accepted'], ['run.stop', 'requested'], ['run.stop', 'accepted'],
+  ]);
+  assert.equal(records[1].runId, runId);
+  const stored = JSON.stringify(records);
+  for (const secret of ['private task text', 'private\\project', f.api.credential]) assert.equal(stored.includes(secret), false);
+});
+
+test('audit persistence failure prevents a run from being started', async (t) => {
+  const f = await apiFixture({ journal: { append: async () => { throw new Error('storage unavailable'); } } });
+  t.after(f.close);
+  const response = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'never start' }),
+  });
+  assert.equal(response.status, 503);
+  assert.deepEqual(f.calls, []);
+});
+
+test('audit failure after a Gateway start closes the Gateway to stop unrecorded execution', async (t) => {
+  let writes = 0;
+  let gatewayClosed = false;
+  const f = await apiFixture({ journal: { append: async () => { writes++; if (writes === 2) throw new Error('disk full'); } } }, {
+    async close() { gatewayClosed = true; },
+  });
+  t.after(f.close);
+  const response = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'may start then fail audit' }),
+  });
+  assert.equal(response.status, 503);
+  assert.equal(writes, 2);
+  assert.deepEqual(f.calls.map(([action]) => action), ['start']);
+  assert.equal(gatewayClosed, true);
+});
+
+test('failure to audit a denied Gateway request permanently fails the API closed', async (t) => {
+  let writes = 0;
+  let starts = 0;
+  let gatewayClosed = false;
+  const f = await apiFixture({ journal: { append: async () => { writes++; if (writes === 2) throw new Error('disk full'); } } }, {
+    async start() { starts++; const error = new Error('denied'); error.code = 'confirmation_required'; throw error; },
+    async close() { gatewayClosed = true; },
+  });
+  t.after(f.close);
+  const payload = JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'denied task' });
+  const denied = await request(f.address, f.api, { method: 'POST', route: '/v1/runs', body: payload });
+  assert.equal(denied.status, 503);
+  assert.deepEqual(JSON.parse(denied.text), { error: 'audit_unavailable' });
+  const health = await request(f.address, f.api, { route: '/v1/health' });
+  assert.equal(health.status, 503);
+  assert.deepEqual(JSON.parse(health.text), { error: 'audit_unavailable' });
+  assert.equal(writes, 2);
+  assert.equal(starts, 1);
+  assert.equal(gatewayClosed, true);
 });
 
 test('invalid content type, malformed JSON, oversized body, and unsupported method fail with stable responses', async (t) => {

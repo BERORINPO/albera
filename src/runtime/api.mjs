@@ -1,5 +1,5 @@
 // Experimental authenticated Runtime API. It is intentionally separate from the read-only Observer.
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 
 const MAX_BODY_BYTES = 20 * 1024;
@@ -17,10 +17,11 @@ const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
 const RUN_STATUSES = new Set(['starting', 'running', 'stopping', 'stopped', 'exited', 'failed']);
 const EVENT_TYPES = new Set(['started', 'stop_requested', 'stopped', 'exited', 'failed', 'stop_failed']);
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGABRT']);
+const SESSION_ID_RE = /^[0-9a-f]{32}$/;
 const GATEWAY_ERRORS = new Set([
   'confirmation_required', 'unknown_provider', 'invalid_args', 'cwd_not_allowed', 'executable_unavailable',
   'capacity', 'unknown_run', 'spawn_failed', 'stop_failed', 'authorization_failed', 'gateway_closed',
-  'unsupported_profile', 'profile_unavailable',
+  'unsupported_profile', 'profile_unavailable', 'audit_unavailable',
 ]);
 
 class ApiError extends Error {
@@ -29,12 +30,14 @@ class ApiError extends Error {
 }
 
 /**
- * Create an isolated loopback API. Scoped bearer credentials are generated per session and are never persisted.
+ * Create an isolated loopback API. Bearer credentials are never persisted; optional audit records omit credential values.
  * The Gateway still performs its separate host authorization; possession of this token alone cannot launch.
  * @param {{gateway: {start: Function, stop: Function, list: Function, events: Function}, pollIntervalMs?: number, streamLifetimeMs?: number, maxStreams?: number}} options
  */
-export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetimeMs = MAX_STREAM_LIFETIME_MS, maxStreams = MAX_STREAMS } = {}) {
+export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, streamLifetimeMs = MAX_STREAM_LIFETIME_MS, maxStreams = MAX_STREAMS } = {}) {
   if (!gateway || ['start', 'stop', 'list', 'events'].some((method) => typeof gateway[method] !== 'function')) throw new TypeError('Runtime API requires a Gateway');
+  if (journal !== undefined && (!journal || typeof journal.append !== 'function')) throw new TypeError('journal must provide append()');
+  if (journal !== undefined && typeof gateway.close !== 'function') throw new TypeError('audited Gateway must provide close() for fail-closed cleanup');
   if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 100 || pollIntervalMs > 1000) throw new TypeError('pollIntervalMs must be between 100 and 1000');
   if (!Number.isInteger(streamLifetimeMs) || streamLifetimeMs < 1000 || streamLifetimeMs > MAX_STREAM_LIFETIME_MS) throw new TypeError('streamLifetimeMs must be between 1000 and 60000');
   if (!Number.isInteger(maxStreams) || maxStreams < 1 || maxStreams > MAX_STREAMS) throw new TypeError('maxStreams must be between 1 and 4');
@@ -44,6 +47,7 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
   /** @type {Set<() => void>} */
   const streams = new Set();
   let closing = false;
+  let auditFailure = false;
   let listenPromise;
   let closePromise;
   const server = http.createServer((req, res) => { void handle(req, res); });
@@ -53,6 +57,7 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
 
   async function handle(req, res) {
     setSecurityHeaders(res);
+    if (auditFailure) return sendJson(res, 503, { error: 'audit_unavailable' });
     if (closing) return sendJson(res, 503, { error: 'api_closed' });
     const port = server.address()?.port;
     if (!Number.isInteger(port)) return sendJson(res, 503, { error: 'api_not_listening' });
@@ -91,9 +96,33 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
         if (keys.some((key) => !['provider', 'cwd', 'prompt', 'profile'].includes(key))) throw new ApiError(400, 'invalid_request');
         const request = /** @type {{provider: string, cwd: string, prompt: string, profile?: string}} */ ({ provider: input.provider, cwd: input.cwd, prompt: input.prompt });
         if (Object.hasOwn(input, 'profile')) request.profile = input.profile;
-        const run = await gateway.start(request);
+        const requestId = randomUUID();
+        const auditProvider = PROVIDERS.has(request.provider) ? request.provider : undefined;
+        await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.start', phase: 'requested', ...(auditProvider ? { provider: auditProvider } : {}) });
+        let run;
+        try { run = await gateway.start(request); }
+        catch (error) {
+          try { await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.start', phase: safeFailurePhase(error), ...(auditProvider ? { provider: auditProvider } : {}), errorCode: safeGatewayCode(error) }); }
+          catch (auditError) {
+            try { await gateway.close(); } catch { /* stop any execution whose failed start could not be audited */ }
+            throw auditError;
+          }
+          throw error;
+        }
         const safeRun = projectRun(run);
-        if (!safeRun) throw new ApiError(502, 'runtime_invalid_response');
+        if (!safeRun) {
+          try { await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.start', phase: 'failed', ...(auditProvider ? { provider: auditProvider } : {}), errorCode: 'runtime_invalid_response' }); }
+          catch { auditFailure = Boolean(journal); }
+          try { await gateway.close?.(); } catch { /* fail closed even if cleanup reports an error */ }
+          throw new ApiError(502, 'runtime_invalid_response');
+        }
+        try {
+          await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.start', phase: 'accepted', provider: safeRun.provider, runId: safeRun.id });
+        } catch {
+          auditFailure = true;
+          try { await gateway.close?.(); } catch { /* fail closed even if cleanup reports an error */ }
+          throw new ApiError(503, 'audit_unavailable');
+        }
         pruneRunOwners(runOwners, gateway.list());
         runOwners.set(safeRun.id, credential.sessionId);
         return sendJson(res, 202, { run: safeRun });
@@ -104,9 +133,31 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
         if (runOwners.get(stopMatch[1]) !== credential.sessionId) throw new ApiError(404, 'not_found');
         const body = await readBody(req);
         if (body.length !== 0) throw new ApiError(400, 'invalid_request');
-        const run = await gateway.stop(stopMatch[1]);
+        const requestId = randomUUID();
+        await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.stop', phase: 'requested', runId: stopMatch[1] });
+        let run;
+        try { run = await gateway.stop(stopMatch[1]); }
+        catch (error) {
+          try { await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.stop', phase: safeFailurePhase(error), runId: stopMatch[1], errorCode: safeGatewayCode(error) }); }
+          catch (auditError) {
+            try { await gateway.close(); } catch { /* stop remaining executions when a stop decision cannot be audited */ }
+            throw auditError;
+          }
+          throw error;
+        }
         const safeRun = projectRun(run);
-        if (!safeRun) throw new ApiError(502, 'runtime_invalid_response');
+        if (!safeRun) {
+          try { await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.stop', phase: 'failed', runId: stopMatch[1], errorCode: 'runtime_invalid_response' }); }
+          catch { auditFailure = Boolean(journal); }
+          try { await gateway.close?.(); } catch { /* fail closed even if cleanup reports an error */ }
+          throw new ApiError(502, 'runtime_invalid_response');
+        }
+        try { await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.stop', phase: 'accepted', runId: safeRun.id }); }
+        catch {
+          auditFailure = true;
+          try { await gateway.close?.(); } catch { /* fail closed even if cleanup reports an error */ }
+          throw new ApiError(503, 'audit_unavailable');
+        }
         return sendJson(res, 200, { run: safeRun });
       }
       return sendJson(res, 404, { error: 'not_found' });
@@ -124,6 +175,15 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
                 : ['unknown_provider', 'invalid_args', 'cwd_not_allowed'].includes(code) ? 400
                   : 500;
       return sendJson(res, status, { error: code });
+    }
+  }
+
+  async function writeAudit(record) {
+    if (!journal) return;
+    try { await journal.append({ ...record, at: Date.now() }); }
+    catch {
+      auditFailure = true;
+      throw new ApiError(503, 'audit_unavailable');
     }
   }
 
@@ -180,15 +240,16 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
 
   return Object.freeze({
     /** Mint a session-scoped capability in the trusted host; no credential-minting route exists. */
-    createCredential(scopes, { ttlMs = 60 * 60 * 1000 } = {}) {
+    createCredential(scopes, { ttlMs = 60 * 60 * 1000, sessionId } = {}) {
       if (closing) throw new ApiError(503, 'api_closed');
       if (!Array.isArray(scopes) || scopes.length === 0 || scopes.some((scope) => typeof scope !== 'string' || !API_SCOPES.has(scope))) throw new TypeError('scopes must be a non-empty list of supported API scopes');
       if (!Number.isInteger(ttlMs) || ttlMs < 1000 || ttlMs > MAX_CREDENTIAL_LIFETIME_MS) throw new TypeError('ttlMs must be between 1000 and 86400000');
+      if (sessionId !== undefined && (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId))) throw new TypeError('sessionId must be 32 lowercase hexadecimal characters');
       purgeExpiredCredentials(credentials);
       if (credentials.size >= MAX_CREDENTIALS) throw new RangeError('credential_capacity');
       const token = randomBytes(32).toString('hex');
       const digest = createHash('sha256').update(token).digest('hex');
-      credentials.set(digest, { scopes: new Set(scopes), expiresAt: Date.now() + ttlMs, sessionId: randomBytes(16).toString('hex') });
+      credentials.set(digest, { scopes: new Set(scopes), expiresAt: Date.now() + ttlMs, sessionId: sessionId ?? randomBytes(16).toString('hex') });
       return token;
     },
     /** Revoke a session capability immediately without affecting other sessions. */
@@ -292,6 +353,8 @@ function authenticate(header, credentials, requiredScope) {
   purgeExpiredCredentials(credentials);
   return matched && matched.expiresAt > Date.now() && matched.scopes.has(requiredScope) ? matched : false;
 }
+function safeFailurePhase(error) { return error?.code === 'confirmation_required' ? 'denied' : 'failed'; }
+function safeGatewayCode(error) { return typeof error?.code === 'string' && GATEWAY_ERRORS.has(error.code) ? error.code : 'runtime_error'; }
 function purgeExpiredCredentials(credentials) {
   const now = Date.now();
   for (const [digest, entry] of credentials) if (entry.expiresAt <= now) credentials.delete(digest);
