@@ -475,6 +475,30 @@ test('timeout falls back to terminating the direct child if process-tree termina
   assert.deepEqual(await f.gateway.close({ timeoutMs: 10 }), [run.id]);
 });
 
+test('Gateway close timeout also bounds an unresolved process-tree stop adapter', async (t) => {
+  let child;
+  const f = await fixture({
+    spawnImpl: () => { child = new FakeChild(); child.pid = 424245; queueMicrotask(() => child.emit('spawn')); return child; },
+    signalTreeImpl: () => {
+      child.exitCode = 0;
+      child.emit('close', 0, null);
+      return new Promise(() => {});
+    },
+  });
+  t.after(async () => {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.signalCode = 'SIGKILL';
+      child.emit('close', null, 'SIGKILL');
+    }
+    await f.dispose();
+  });
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+  const started = Date.now();
+  assert.deepEqual(await f.gateway.close({ timeoutMs: 25 }), [run.id], 'a child close must not hide an unresolved tree-stop result');
+  assert.ok(Date.now() - started < 1000, 'close must honor its timeout while the stop adapter is unresolved');
+});
+
 test('supervised stop records Guardian tree confirmation instead of pipe acceptance', async (t) => {
   const child = new FakeChild();
   child.pid = 424243;

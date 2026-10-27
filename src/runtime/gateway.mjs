@@ -8,6 +8,7 @@ import process from 'node:process';
 import { spawnSupervised } from './supervisor.mjs';
 import { probeCliVersion } from './cli-version.mjs';
 import { isVersionAtLeast, PROFILE_MINIMUM_VERSIONS } from './profile-policy.mjs';
+import { runWindowsTaskkill } from './windows-tree-termination.mjs';
 
 export const RUNTIME_PROVIDERS = Object.freeze({ claude: 'claude', codex: 'codex', opencode: 'opencode' });
 export const RUNTIME_PROFILES = Object.freeze({ readOnly: 'read-only', readOnlyStreaming: 'read-only-streaming' });
@@ -297,15 +298,24 @@ export class RuntimeGateway {
     // Subscribe before requesting stop: a supervised child can report its provider exit
     // before the guardian process itself emits the definitive `close` event.
     const closeWaits = active.map((run) => waitForClose(run.child));
-    await Promise.allSettled(active.map((run) => this.#requestStop(run)));
+    // Start all stops immediately, but keep the caller's timeout over both the stop
+    // adapter and process-close phases. A hung platform helper must not hang host close.
+    const pendingStops = new Set(active.map((run) => run.id));
+    const stopRequests = active.map((run) => this.#requestStop(run)
+      .catch(() => {})
+      .finally(() => pendingStops.delete(run.id)));
     if (!active.length) return uncertain;
     let timer;
     await Promise.race([
-      Promise.all(closeWaits),
-      new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+      Promise.all([...closeWaits, ...stopRequests]).then(() => true),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
     ]);
     clearTimeout(timer);
-    return [...new Set([...uncertain, ...active.filter((run) => isActive(run.status) || run.treeStopConfirmed === false).map((run) => run.id)])];
+    return [...new Set([
+      ...uncertain,
+      ...pendingStops,
+      ...active.filter((run) => isActive(run.status) || run.treeStopConfirmed === false).map((run) => run.id),
+    ])];
   }
 
   async #authorizeSafely(request) {
@@ -492,15 +502,7 @@ async function signalProcessTree(pid, signal, child, platform, spawnImpl) {
   }
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!systemRoot) throw new Error('system_root_unavailable');
-  const taskkill = path.join(systemRoot, 'System32', 'taskkill.exe');
   // Windows cannot deliver a graceful POSIX signal to a process tree. /F is disclosed to
   // the host authorization callback before a user-requested stop and is also used for cleanup.
-  const args = ['/PID', String(pid), '/T', '/F'];
-  await new Promise((resolve, reject) => {
-    let killer;
-    try { killer = spawnImpl(taskkill, args, { shell: false, windowsHide: true, stdio: 'ignore' }); }
-    catch (error) { reject(error); return; }
-    killer.once('error', reject);
-    killer.once('close', (code) => code === 0 ? resolve() : reject(new Error('taskkill_failed')));
-  });
+  await runWindowsTaskkill(pid, { systemRoot, spawnImpl });
 }

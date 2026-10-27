@@ -51,3 +51,19 @@ test('taskkill spawn errors and missing SystemRoot use the direct-child fallback
   assert.deepEqual(missingRoot, { treeConfirmed: false, fallbackAttempted: true, fallbackAccepted: false });
   assert.equal(fallbackCalls, 2);
 });
+
+test('taskkill timeout kills the utility and reports only direct-child fallback', async () => {
+  let utilityKillCalled = false;
+  let fallbackCalls = 0;
+  const utility = new EventEmitter();
+  utility.kill = () => { utilityKillCalled = true; return true; };
+  const result = await terminateWindowsTree(5678, {
+    systemRoot: 'C:\\Windows',
+    timeoutMs: 5,
+    spawnImpl: () => utility,
+    killFallback: () => { fallbackCalls++; return true; },
+  });
+  assert.equal(utilityKillCalled, true);
+  assert.equal(fallbackCalls, 1);
+  assert.deepEqual(result, { treeConfirmed: false, fallbackAttempted: true, fallbackAccepted: true });
+});

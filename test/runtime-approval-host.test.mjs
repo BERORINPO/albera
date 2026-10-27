@@ -129,12 +129,14 @@ test('approval host issues one-time HttpOnly SameSite sessions and never serves 
   assert.match(html.headers.get('content-security-policy'), /default-src 'none'/);
   assert.match(await html.text(), /ALBERA Runtime approvals/);
   const script = await (await fetch(`${f.base}/approval.mjs`)).text();
+  const stylesheet = await (await fetch(`${f.base}/approval.css`)).text();
   assert.match(script, /textContent/);
   assert.doesNotMatch(script, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
   assert.doesNotMatch(script, /Bearer\s|localStorage|sessionStorage/);
   assert.match(script, /Runtime browser session expired\. Restart ALBERA Runtime/);
   assert.match(script, /eventStream\?\.close\(\)/);
   assert.match(script, /if \(retry\) refreshTimer = setTimeout\(refresh, 1500\)/);
+  assert.match(stylesheet, /main\[hidden\]\s*\{\s*display:\s*none;/);
 });
 
 test('approval UI closes its lifecycle stream and stops polling when the browser session expires', async () => {

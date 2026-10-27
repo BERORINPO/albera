@@ -11,6 +11,7 @@ h2 { font-size:1.25rem; }
 .lede { max-width:62ch; }
 #connection { color:var(--accent); }
 main { display:grid; gap:26px; padding:24px 0 40px; }
+main[hidden] { display:none; }
 section { border-top:1px solid var(--line); padding-top:16px; }
 form { display:grid; gap:14px; }
 label { display:grid; gap:5px; font-weight:600; }
