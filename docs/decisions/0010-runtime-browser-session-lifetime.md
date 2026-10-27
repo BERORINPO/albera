@@ -4,7 +4,7 @@ Date: 2026-10-27
 
 ## Status
 
-Accepted by the user; implementation and cross-platform verification in progress.
+Implemented; GitHub Actions run 40490814403 passed all six Windows/macOS/Linux × Node 22/24 jobs on `10f6d94`.
 
 ## Context
 
@@ -29,4 +29,4 @@ The user explicitly selected the 20-minute idle timeout plus eight-hour absolute
 
 ## Verification
 
-Synthetic HTTP tests use a controlled clock to verify active idle renewal, cookie `Max-Age` capping at the absolute limit, expiry after inactivity, expiry at the eight-hour maximum, and no renewal on invalid CSRF/Origin. No real provider process is used. Cross-platform CI evidence will be appended after the implementation commit completes its matrix.
+Synthetic HTTP tests use a controlled clock to verify active idle renewal, cookie `Max-Age` capping at the absolute limit, expiry after inactivity, expiry at the eight-hour maximum, and no renewal on invalid CSRF/Origin. Local Windows Node 24.13.0 `node --test test/runtime-approval-host.test.mjs`: 11/11; full `npm test`: 505 passed, 3 skipped; `npm run arch`: 82 paths / 0 violations; `npm run smoke`: passed; `git diff --check`: passed. Actions run 40490814403 passed all six Windows/macOS/Linux × Node 22/24 jobs on `10f6d94`. No real provider process is used.
