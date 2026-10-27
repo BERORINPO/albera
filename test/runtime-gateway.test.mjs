@@ -491,6 +491,71 @@ test('supervised stop records Guardian tree confirmation instead of pipe accepta
   await waitFor(() => f.gateway.get(run.id).status === 'failed');
 });
 
+test('supervised stop falls back to the OS process-tree adapter when the Guardian channel fails', async (t) => {
+  const child = new FakeChild();
+  child.pid = 424244;
+  child.supervised = true;
+  child.stopTree = async () => { throw new Error('guardian_channel_unavailable'); };
+  let fallbackRequest;
+  const f = await fixture({
+    spawnImpl: () => { queueMicrotask(() => child.emit('spawn')); return child; },
+    signalTreeFallbackImpl: async (pid, signal, target) => {
+      fallbackRequest = { pid, signal, target };
+      target.signalCode = signal;
+      queueMicrotask(() => target.emit('close', null, signal));
+    },
+  });
+  t.after(f.dispose);
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+
+  await f.gateway.stop(run.id);
+  await waitFor(() => f.gateway.get(run.id).status === 'stopped');
+  assert.equal(fallbackRequest.pid, child.pid);
+  assert.equal(fallbackRequest.signal, 'SIGTERM');
+  assert.equal(fallbackRequest.target, child);
+  assert.equal(f.gateway.get(run.id).treeStopConfirmed, true);
+});
+
+test('failed Guardian and OS stop paths remain explicitly unconfirmed', async (t) => {
+  const child = new FakeChild();
+  child.pid = 424245;
+  child.supervised = true;
+  child.stopTree = async () => { throw new Error('guardian_channel_unavailable'); };
+  const f = await fixture({
+    spawnImpl: () => { queueMicrotask(() => child.emit('spawn')); return child; },
+    signalTreeFallbackImpl: async () => { throw new Error('os_tree_stop_failed'); },
+  });
+  t.after(f.dispose);
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+
+  await f.gateway.stop(run.id);
+  await waitFor(() => f.gateway.get(run.id).status === 'failed');
+  assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
+  assert.ok(f.gateway.events().some((event) => event.type === 'stop_failed'));
+});
+
+test('supervised stop avoids OS PID fallback after the Guardian reports provider exit', async (t) => {
+  const child = new FakeChild();
+  child.pid = 424246;
+  child.supervised = true;
+  child.stopTree = async () => { child.exitCode = 0; throw new Error('guardian_ack_lost'); };
+  let fallbackCalled = false;
+  const f = await fixture({
+    spawnImpl: () => { queueMicrotask(() => child.emit('spawn')); return child; },
+    signalTreeFallbackImpl: async () => { fallbackCalled = true; },
+  });
+  t.after(f.dispose);
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+
+  await f.gateway.stop(run.id);
+  await waitFor(() => f.gateway.get(run.id).status === 'failed');
+  assert.equal(fallbackCalled, false);
+  assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
+});
+
 test('manual stop requires separate authorization; denied stop leaves the run active', async (t) => {
   const f = await fixture({
     authorize: async ({ action }) => action !== 'stop',
@@ -658,6 +723,32 @@ test('local helper process integration: abnormal exit is represented without out
   assert.equal(f.gateway.get(run.id).exitCode, 7);
   assert.deepEqual(f.gateway.events().map((event) => event.type), ['started', 'exited']);
   assert.ok(!JSON.stringify(f.gateway.events()).includes('process.exit'));
+});
+
+test('local helper process integration: OS tree fallback stops a child when the Guardian channel fails', async (t) => {
+  let child;
+  const f = await fixture({
+    spawnImpl: (executable, args, options) => {
+      child = spawn(executable, args, {
+        cwd: options.cwd, env: options.env, shell: false,
+        detached: process.platform !== 'win32', windowsHide: true, stdio: 'ignore',
+      });
+      child.supervised = true;
+      child.stopTree = async () => { throw new Error('synthetic_guardian_channel_failure'); };
+      return child;
+    },
+  });
+  t.after(async () => {
+    await f.dispose();
+    if (child?.exitCode === null && child?.signalCode === null) child.kill('SIGKILL');
+  });
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: ['-e', 'setInterval(() => {}, 1000)'] });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+
+  await f.gateway.stop(run.id);
+  await waitFor(() => f.gateway.get(run.id).status === 'stopped');
+  assert.equal(f.gateway.get(run.id).treeStopConfirmed, true);
+  assert.ok(child.exitCode !== null || child.signalCode !== null);
 });
 
 test('orderly host close stops active children even when interactive stop approval is denied', async (t) => {

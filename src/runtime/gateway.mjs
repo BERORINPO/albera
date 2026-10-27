@@ -102,17 +102,17 @@ export async function resolveProviderExecutable(provider, { platform = process.p
 
 /**
  * Memory-only lifecycle gateway. `authorize` is a trusted host callback, not request data; default denies.
- * @param {{roots: string[], authorize?: (request: object) => boolean|Promise<boolean>, platform?: string, maxActive?: number, runTimeoutMs?: number, spawnImpl?: typeof spawn, resolveExecutableImpl?: (provider: string, options: object) => Promise<string|null>, probeVersionImpl?: (executable: string, options: object) => Promise<string>, buildLaunchImpl?: (provider: string, profile: string, prompt: string) => {profile: string, args: string[]}, env?: NodeJS.ProcessEnv, now?: () => number, signalTreeImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>}} options
+ * @param {{roots: string[], authorize?: (request: object) => boolean|Promise<boolean>, platform?: string, maxActive?: number, runTimeoutMs?: number, spawnImpl?: typeof spawn, resolveExecutableImpl?: (provider: string, options: object) => Promise<string|null>, probeVersionImpl?: (executable: string, options: object) => Promise<string>, buildLaunchImpl?: (provider: string, profile: string, prompt: string) => {profile: string, args: string[]}, env?: NodeJS.ProcessEnv, now?: () => number, signalTreeImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>, signalTreeFallbackImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>}} options
  */
 export class RuntimeGateway {
-  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #probeVersion; #buildLaunch; #authorize; #env; #now; #signalTree; #closing = false;
+  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #probeVersion; #buildLaunch; #authorize; #env; #now; #signalTree; #signalTreeFallback; #closing = false;
   /** @type {Map<string, Run>} */ #runs = new Map();
   #pendingStarts = 0;
   /** @type {Array<{id: number, runId: string, provider: string, type: string, at: number, code?: number|null, signal?: string|null}>} */ #events = [];
   #eventSubscribers = new Set();
   #nextEventId = 1;
 
-  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawnSupervised, resolveExecutableImpl = resolveProviderExecutable, probeVersionImpl = probeCliVersion, buildLaunchImpl = (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile), env = process.env, now = Date.now, signalTreeImpl } = {}) {
+  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawnSupervised, resolveExecutableImpl = resolveProviderExecutable, probeVersionImpl = probeCliVersion, buildLaunchImpl = (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile), env = process.env, now = Date.now, signalTreeImpl, signalTreeFallbackImpl } = {}) {
     if (!Array.isArray(roots) || roots.length === 0 || roots.some((root) => typeof root !== 'string' || !path.isAbsolute(root))) throw new TypeError('RuntimeGateway requires absolute allowed roots');
     if (typeof authorize !== 'function') throw new TypeError('RuntimeGateway requires a host authorization callback');
     if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > MAX_ACTIVE) throw new TypeError('maxActive must be between 1 and 4');
@@ -129,9 +129,10 @@ export class RuntimeGateway {
     this.#authorize = authorize;
     this.#env = env;
     this.#now = now;
+    this.#signalTreeFallback = signalTreeFallbackImpl ?? ((pid, signal, child) => signalProcessTree(pid, signal, child, this.#platform, spawn));
     this.#signalTree = signalTreeImpl ?? ((pid, signal, child) => child.supervised === true
       ? child.stopTree(signal)
-      : signalProcessTree(pid, signal, child, this.#platform, spawn));
+      : this.#signalTreeFallback(pid, signal, child));
   }
 
   /** Start a fixed provider executable after trusted host authorization of the exact launch tuple. */
@@ -342,15 +343,27 @@ export class RuntimeGateway {
         if (run.treeStopConfirmed === false) this.#emit(run, 'stop_failed');
       }
     } catch {
-      if (Number.isInteger(pid) && pid > 0) {
-        run.treeStopConfirmed = false;
-        this.#emit(run, 'stop_failed');
+      let fallbackConfirmed = false;
+      if (run.child.supervised === true && Number.isInteger(pid) && pid > 0
+        && run.child.exitCode === null && run.child.signalCode === null && run.child.closed !== true) {
+        try {
+          // If the Guardian pipe/ack failed, terminate the known provider process group/tree
+          // through the OS adapter instead of only asking the possibly failed Guardian again.
+          await this.#signalTreeFallback(pid, 'SIGTERM', run.child);
+          fallbackConfirmed = true;
+        } catch { /* keep cleanup uncertain and still ask the Guardian/direct child to stop */ }
       }
-      try {
-        if (run.child.kill('SIGTERM') === false) throw new Error('child_signal_failed');
-      } catch {
-        if (run.status === 'stopping') { run.status = 'running'; this.#emit(run, 'stop_failed'); }
-        throw new GatewayError('stop_failed');
+      if (Number.isInteger(pid) && pid > 0) {
+        run.treeStopConfirmed = fallbackConfirmed;
+        if (!fallbackConfirmed) this.#emit(run, 'stop_failed');
+      }
+      if (!fallbackConfirmed) {
+        try {
+          if (run.child.kill('SIGTERM') === false) throw new Error('child_signal_failed');
+        } catch {
+          if (run.status === 'stopping') { run.status = 'running'; this.#emit(run, 'stop_failed'); }
+          throw new GatewayError('stop_failed');
+        }
       }
     }
     run.timer = setTimeout(() => {
