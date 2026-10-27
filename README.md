@@ -10,8 +10,8 @@ A local board for Claude Code, Codex CLI, GitHub Copilot, and OpenCode sessions,
 
 Demo data. Also: [canvas](docs/screenshot-canvas.png) · [dark theme](docs/screenshot-dark.png) · [400 px wide](docs/screenshot-narrow.png) · [Japanese](docs/screenshot-ja.png)
 
-- **Session data stays read-only.** It never writes to app session files. A separate local Git worktree is created only after you review the target and confirm in the board. WSL worktrees use the explicitly configured distro share; creation requires confirmation and removal is limited to clean worktrees previously created by Pigeonholes. The board listens on 127.0.0.1; Pigeonholes itself does not contact remote services. Git checkout filters configured by a repository may run during a confirmed worktree creation.
-- **No automatic AI processing.** Piles, labels, context sizes and the canvas layout come from fixed rules. If you explicitly confirm a read-only delegation to a completed local Codex session, only the purpose you entered is passed to Codex on stdin; Codex may use its saved account/configuration for network/API access or usage. Pigeonholes itself does not contact remote services.
+- **Session data stays read-only.** It never writes to app session files. A separate local Git worktree is created only after you review the target and confirm in the board. WSL worktrees use the explicitly configured distro share; creation requires confirmation and removal is limited to clean worktrees previously created by Pigeonholes. The board listens on 127.0.0.1. Voice connects to OpenAI only after you start a conversation in the board. Git checkout filters configured by a repository may run during a confirmed worktree creation.
+- **No automatic AI processing.** Piles, labels, context sizes and the canvas layout come from fixed rules. If you explicitly confirm a read-only delegation to a completed local Codex session, only the purpose you entered is passed to Codex on stdin. Voice sends microphone audio to OpenAI GPT-Live only after you start it; API usage is billed separately from ChatGPT. Audio tracks and transcripts are saved in this browser's IndexedDB and can be deleted from voice history. OpenAI's standard abuse-monitoring logs may retain content for up to 30 days.
 - **Zero dependencies.** Node.js 22 or newer. No build step.
 - **English and Japanese.** The page follows your browser language; the terminal follows your system language.
 
@@ -47,7 +47,7 @@ Tip: the Claude desktop app has a built-in browser pane. Open the address there 
 
 ## What it reads
 
-Session lists and transcripts are opened read-only. Pigeonholes does not read app settings, cookies, or credentials. A confirmed worktree creation writes only a new sibling checkout and branch in the selected local Git repository, including the explicitly configured WSL distro when applicable; it does not change session files or start a CLI session.
+Session lists and transcripts are opened read-only. Pigeonholes does not read app settings or cookies. The optional GPT-Live integration reads `OPENAI_API_KEY` from the server process environment only. A confirmed worktree creation writes only a new sibling checkout and branch in the selected local Git repository, including the explicitly configured WSL distro when applicable; it does not change session files or start a CLI session.
 
 | What | Windows | macOS | Linux |
 |---|---|---|---|
@@ -157,6 +157,12 @@ Press `v` (or **Canvas** under the counts) to see the same board as a desk of pa
 - Open **Filters** to combine source, state and project selectors with text search. Source includes Claude Code, Codex CLI, GitHub Copilot and OpenCode; project choices show safe labels. Search also matches the four fixed, user-declared values on an execution profile linked to a session, but never the profile title or notes. These values are manual records, not verified runtime facts. The list shows matching rows, while the canvas dims nonmatches and keeps project sheets in place. A graph card and its relation line stay emphasized when a directly linked session matches the search and filters.
 
 The canvas replaces the Overview of version 0.1.
+
+## Voice conversations
+
+Voice is optional. Set `OPENAI_API_KEY` in the server process environment before starting Pigeonholes. The board checks only whether the variable is set; it does not show or log its value. Starting a conversation asks for microphone permission and connects to OpenAI GPT-Live. API usage is billed separately from a ChatGPT plan.
+
+Pigeonholes stores the transcript and separate microphone/assistant audio tracks in this browser's IndexedDB. Use the saved conversation list to play or delete them. The records do not sync to another browser or device. GPT-Live recording storage is disabled; OpenAI's standard abuse-monitoring logs may retain content for up to 30 days. This uses the GPT-Live API model `gpt-live-1`, not ChatGPT's private Live model.
 
 ## Keys
 

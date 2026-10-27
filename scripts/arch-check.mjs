@@ -53,10 +53,10 @@ const EXPECTED = {
     'app-sessions-fs.mjs', 'fake-app-sessions.mjs', 'codex-sessions-fs.mjs', 'fake-codex-sessions.mjs', 'copilot-sessions-fs.mjs', 'fake-copilot-sessions.mjs', 'opencode-sessions-fs.mjs', 'fake-opencode-sessions.mjs', 'transcripts-fs.mjs', 'fake-transcripts.mjs', 'folder-hints-fs.mjs', 'fake-folder-hints.mjs', 'worktrees-git.mjs', 'fake-worktrees.mjs', 'worktree-create-git.mjs', 'fake-worktree-create.mjs', 'worktree-remove-git.mjs', 'fake-worktree-remove.mjs',
     'session-record.mjs', 'demo-data.mjs', 'map-limit.mjs', 'opaque-session-id.mjs',
   ],
-  entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],
+  entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs', 'live-voice.mjs'],
   public: [
-    'index.html', 'tokens.css', 'style.css', 'source-filter.css', 'rows.css', 'tidy.css', 'canvas.css', 'graph.css',
-    'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
+    'index.html', 'tokens.css', 'style.css', 'source-filter.css', 'rows.css', 'tidy.css', 'canvas.css', 'graph.css', 'voice.css',
+    'app.mjs', 'api.mjs', 'voice.mjs', 'voice-store.mjs', 'voice-transcript.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
     'actions.mjs', 'canvas.mjs', 'canvas-slip.mjs', 'canvas-sheet.mjs', 'canvas-fit.mjs', 'canvas-bar.mjs', 'canvas-ctl.mjs', 'canvas-view.mjs', 'canvas-act.mjs',
     'canvas-layout.mjs', 'canvas-desk.mjs', 'canvas-fold.mjs', 'canvas-camera.mjs', 'canvas-input.mjs', 'graph-model.mjs', 'graph-store.mjs', 'graph-render.mjs', 'graph-dialog.mjs', 'graph-actions.mjs', 'graph-connect-mode.mjs',
     'keys.mjs', 'notify.mjs', 'favicon.mjs', 'copy.mjs', 'view.mjs', 'format.mjs', 'doing.mjs', 'events.mjs', 'codex-status.mjs', 'times.mjs', 'i18n.mjs', 'worktree-dialog.mjs', 'worktree-list-dialog.mjs', 'worktree-remove-dialog.mjs',

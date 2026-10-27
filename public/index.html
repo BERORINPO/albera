@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="/tidy.css">
 <link rel="stylesheet" href="/canvas.css">
 <link rel="stylesheet" href="/graph.css">
+<link rel="stylesheet" href="/voice.css">
 <script type="module" src="/app.mjs"></script>
 </head>
 <body>
@@ -26,6 +27,7 @@
     <span class="masthead__trust" data-i18n="mast.trust">Session data is read-only. Worktrees require confirmation.</span>
     <span class="masthead__date" id="dateline"></span>
     <span class="masthead__demo" id="demo" data-i18n="mast.demo" hidden>Demo data</span>
+    <button class="textbtn" type="button" id="voice-open" data-i18n="voice.open">Voice</button>
     <label class="filter"><span class="vh" data-i18n="filter.label">Filter by title, project, summary or what it is doing</span><input type="search" id="filter" autocomplete="off" spellcheck="false" placeholder="Filter" data-i18n-attr="placeholder:filter.placeholder"><kbd class="hk" aria-hidden="true">/</kbd></label>
     <details class="filter-menu">
       <summary class="textbtn" data-i18n="filter.menu">Filters</summary>
@@ -114,6 +116,26 @@
 <p class="vh" id="cv-keys" data-i18n="canvas.keys">Arrows pan, + and − zoom, f fits everything.</p>
 <dialog id="help" class="dialog"></dialog>
 <dialog id="fallback" class="dialog"></dialog>
+<dialog id="voice-dialog" class="dialog voice" aria-labelledby="voice-title">
+  <p class="voice__close"><button class="textbtn" type="button" id="voice-close" data-i18n="voice.close">Close</button></p>
+  <h2 id="voice-title" data-i18n="voice.title">Voice conversation</h2>
+  <p data-i18n="voice.disclosure">Audio is sent to OpenAI GPT-Live and usage charges may apply. Recordings are not stored; captions stay on this page until you end the conversation.</p>
+  <p class="voice__status" id="voice-status" role="status" aria-live="polite" data-i18n="voice.checking">Checking availability…</p>
+  <div class="voice__transcript" id="voice-transcript" aria-live="polite"></div>
+  <section class="voice__history" aria-labelledby="voice-history-title"><h3 id="voice-history-title" data-i18n="voice.history">Saved conversations on this browser</h3><ul id="voice-history-list"></ul></section>
+  <section id="voice-record-detail" class="voice__record" hidden></section>
+  <audio id="voice-audio" autoplay></audio>
+  <div class="voice__controls">
+    <button class="btn btn--fill" type="button" id="voice-start" data-i18n="voice.start" disabled>Start listening</button>
+    <button class="textbtn" type="button" id="voice-mute" data-i18n="voice.mute" hidden>Mute microphone</button>
+    <button class="textbtn" type="button" id="voice-stop" data-i18n="voice.stop" hidden>End conversation</button>
+  </div>
+</dialog>
+<dialog id="voice-delete-dialog" class="dialog" aria-labelledby="voice-delete-title">
+  <h2 id="voice-delete-title" data-i18n="voice.deleteTitle">Delete saved conversation?</h2>
+  <p data-i18n="voice.deleteNote">This removes its transcript and both audio tracks from this browser.</p>
+  <div class="voice__controls"><button class="textbtn" type="button" id="voice-delete-cancel" data-i18n="voice.cancel">Cancel</button><button class="btn btn--fill" type="button" id="voice-delete-confirm" data-i18n="voice.deleteConfirm">Delete</button></div>
+</dialog>
 <noscript><p class="banner">Pigeonholes needs JavaScript.</p></noscript>
 </body>
 </html>

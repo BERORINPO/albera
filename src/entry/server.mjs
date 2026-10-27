@@ -22,6 +22,7 @@ import { createWorktreeCreator } from '../adapters/worktree-create-git.mjs';
 import { createWorktreeRemover } from '../adapters/worktree-remove-git.mjs';
 import { createWslWorktreeSource } from '../adapters/worktrees-wsl.mjs';
 import { createCodexDelegationRunner } from '../adapters/codex-delegation-runner.mjs';
+import { createLiveVoiceSession } from './live-voice.mjs';
 import { wslCwdToUnc, wslShareRoot } from '../adapters/wsl-paths.mjs';
 import { argsWithoutPort, ConfigError, loadConfig, portHint, shellQuote } from './config.mjs';
 import { liveDemoSources } from './demo.mjs';
@@ -129,6 +130,7 @@ function main() {
   const { port } = config;
   const sources = wire(config);
   const delegationRunner = config.demo ? null : createCodexDelegationRunner();
+  const startVoiceSession = config.demo ? null : createLiveVoiceSession();
   const service = createBoardService({ ...sources, roots: config.roots, demo: config.demo });
   const activeSessionForId = async (sessionId) => {
     if (!SESSION_CARD_ID.test(sessionId)) return { ok: false, reason: 'invalid_target' };
@@ -163,7 +165,7 @@ function main() {
     if (reason) return { ok: false, reason };
     return delegationRunner?.start({ sessionId: session.cliSessionId, cwd: session.cwd, purpose, confirmed, operationId }) ?? { ok: false, reason: 'unavailable' };
   };
-  const handler = createHandler({ port, getBoard: () => service.get(), createWorktree, listWorktrees, removeWorktree, startDelegation, getDelegationStatus: (id) => delegationRunner?.status(id), demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });
+  const handler = createHandler({ port, getBoard: () => service.get(), createWorktree, listWorktrees, removeWorktree, startDelegation, getDelegationStatus: (id) => delegationRunner?.status(id), startVoiceSession, voiceConfigured: startVoiceSession?.configured === true, demo: config.demo, log: (key, params) => console.error(msg(lang, key, params)) });
   const server = http.createServer(handler);
   server.on('error', async (/** @type {NodeJS.ErrnoException} */ e) => {
     if (e.code === 'EADDRINUSE') {

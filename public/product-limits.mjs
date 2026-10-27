@@ -5,7 +5,6 @@
 
 const UNAVAILABLE = /** @type {const} */ ([
   'foot.claudeExecutionUnavailable',
-  'foot.voiceUnavailable',
   'foot.enterpriseAuthUnavailable',
 ]);
 

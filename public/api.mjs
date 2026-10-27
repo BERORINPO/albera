@@ -32,6 +32,29 @@ export class WorktreeOperationError extends Error {
   }
 }
 
+/** Voice errors carry only fixed reason codes, never provider response bodies. */
+export class VoiceApiError extends Error {
+  /** @param {string} reason */
+  constructor(reason) { super(reason); this.name = 'VoiceApiError'; this.reason = reason; }
+}
+
+export async function voiceAvailability() {
+  const res = await fetch('/api/voice/status', { cache: 'no-store', credentials: 'same-origin' });
+  const data = await res.json().catch(() => ({}));
+  return res.ok && data.available === true;
+}
+
+/** Only an SDP offer crosses the local boundary; provider credentials remain server-side. */
+export async function createVoiceSession(sdp) {
+  const res = await fetch('/api/voice/session', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sdp, confirmed: true }), cache: 'no-store', credentials: 'same-origin',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || typeof data.sessionId !== 'string' || typeof data.sdp !== 'string') throw new VoiceApiError(data.error === 'not_configured' ? 'not_configured' : 'unavailable');
+  return { sessionId: data.sessionId, sdp: data.sdp };
+}
+
 /** Send only a user-authored delegation purpose after explicit UI confirmation. */
 export async function runDelegation(sessionId, purpose, operationId) {
   const res = await fetch('/api/delegations/run', {

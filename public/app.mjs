@@ -14,6 +14,7 @@ import { poll, schedule } from './poll.mjs';
 import { clearFilters, jumpPile, jumpTo, moveCursor, openSession, render, renderTimes, rowEl, setCursorRow, view } from './render.mjs';
 import { closeBatch, loadPrefs, reselectLeft, savePrefs, setLang, state } from './state.mjs';
 import { announce, fill } from './view.mjs';
+import { initVoice } from './voice.mjs';
 
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
 const filterInput = /** @type {HTMLInputElement} */ ($('filter'));
@@ -346,6 +347,7 @@ function init() {
     announceFilter();
   });
   initCanvas();
+  initVoice({ t: () => state.t });
   bindKeys(() => state.prefs.keys !== false, runKey, () => state.view);
   // Tab で行の題名 (片付けの行ならチェックボックスも) に来たら、そこをカーソルにする (Enter / Space / x がその行に効くように)
   document.addEventListener('focusin', (ev) => {

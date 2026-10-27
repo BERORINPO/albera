@@ -15,7 +15,7 @@
 | REA | REA所見を関連成果物へ結び、セッション/タスク/判断との関係を追える | 合意済みの方式は利用者が確認した短い要約を手動記録すること。REA実行、完全Evidenceの自動取込はしない |
 | Obsidian Knowledge Layer | キャンバス上で知識への関係を管理する | 手動vault-relativeノート参照を実装し、隔離demoで不正path拒否・保存/復元・session詳細への明示リンクをGUI確認済み。Obsidian protocolは開いていない。vault走査、ノート内容の読取/書込、indexing/知識抽出の完成条件は確認されておらず、追加しない |
 | OpenCode / Copilot CLI / WSL | 対象に含める場合は、各保存形式と実行場所を安全に識別・表示する | OpenCode/Copilot adapterとWSL opt-in経路は実装済み。Copilot CLI/appの識別、OpenCode legacyの状態、実WSL互換性は未確認。合成データは実利用の証拠ではない |
-| 音声 Main AI | 完成条件。開始/停止、処理先、音声/文字起こしの保存先、同意・削除の挙動を画面で明示する | ユーザー回答は「未定義」。根幹の動作・プライバシー要件がないため、UIの利用不可理由のみ表示し、動作は実装しない |
+| 音声 Main AI | ChatGPT Live相当の自然な全二重音声会話。開始/停止、処理先、音声/文字起こしの保存先、同意・削除を明示し、両方を保存する | ユーザーはChatGPTリアルタイム音声相当を希望し、保存先として「このブラウザーだけ」を選択。実装中: 明示開始時だけOpenAI GPT-Live `gpt-live-1` WebRTCへ接続し、API側`store:false`、字幕とマイク/AI音声をIndexedDBへ保存、個別削除を用意。ChatGPT Liveの`GPT-Live-1.1` / Quipとは別モデルで、API課金はChatGPT契約と別。実API・実マイク接続、実ブラウザー保存のGUI受入は未確認であり、完成条件は未達 |
 | 企業向け権限制御 | 完成条件。利用者ロールと操作ごとの許可/拒否を一貫して適用し、画面で権限不足を説明する | ユーザー回答は「未定義」。主体/権威ソース/許可規則がないため、利用不可理由のみ表示し、ロールや権限を推測して実装しない |
 
 この表で「実装済み」はコードがあることを示し、実セッション/実環境での適合性を意味しない。完了と扱うには各完成条件の範囲に対応したGUI・再読み込み・安全性の証拠が必要である。音声Main AIと企業権限制御は完成条件に含まれるが仕様が未定義であり、確認を要する。REAの完全Evidence取込と、Obsidianの自動indexing/知識抽出は現時点の合意からは必須と断定できない。
@@ -24,7 +24,8 @@
 
 - OpenCode upstream の V1 schema では assistant message に作成/完了時刻、step-finish part に任意文字列の `reason`、tool part に任意構造の入力・出力・metadata が定義されている ([V1 session schema](https://github.com/anomalyco/opencode/blob/dev/packages/schema/src/v1/session.ts))。
 - 現行 adapter は旧形式の `session` 表から許可した一覧metadataだけを読み、`message` / `part` 表は問い合わせない。上流schemaの存在だけでは保存DB上の正確な列配置・全リリース互換性や、中断理由の安全な固定分類は保証されないため、旧形式の状態・イベントは引き続き `unknown` / 空として扱う。合成DB fixture はこの fail-closed 境界を確認するもので、実OpenCode DBの互換性確認ではない。
-- 音声 Main AI と企業権限制御は完成条件とユーザーが確認したが、運用仕様は「未定義」と回答された。開始/停止、処理・保存先、同意/削除、利用者ロールと操作別許可規則は確認待ちで、画面の利用不可説明だけを維持する。
+- 音声 Main AI の保存先はブラウザー内のみと決定済み。処理先はOpenAI GPT-Live API、利用開始は画面上の明示操作に限定し、両音声・字幕のブラウザー内保存と削除を実装中。実APIの互換性・音質やIndexedDBの実ブラウザー受入は未確認。
+- 企業向け権限制御は完成条件だが、利用者ロール、認証主体、操作別の許可規則は「未定義」。権威ソースを推測せず、未完了として残す。
 
 ### OpenCode失敗状態の投影 (2026-10-27)
 
