@@ -28,6 +28,8 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Tests
         run: npm test
+      - name: Installed package smoke
+        run: npm run package:smoke
       - name: Windows Runtime storage ACL integration
         if: runner.os == 'Windows'
         run: node --test test/runtime-windows-acl.test.mjs

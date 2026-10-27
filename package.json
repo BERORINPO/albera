@@ -40,6 +40,7 @@
     "demo": "node src/entry/server.mjs --demo",
     "test": "node --test",
     "arch": "node scripts/arch-check.mjs",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "package:smoke": "node scripts/package-smoke.mjs"
   }
 }
