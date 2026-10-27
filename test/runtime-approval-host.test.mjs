@@ -121,6 +121,23 @@ test('approval host issues one-time HttpOnly SameSite sessions and never serves 
   assert.doesNotMatch(script, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
   assert.doesNotMatch(script, /Bearer\s|localStorage|sessionStorage/);
 });
+
+test('approval host refreshes the browser session expiry and rejects an expired cookie', async (t) => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  t.after(() => { Date.now = realNow; });
+  const f = await fixture(t);
+
+  now += 1000;
+  const refreshedResponse = await get(f, '/api/session');
+  assert.equal(refreshedResponse.status, 200);
+  const refreshed = await refreshedResponse.json();
+  assert.ok(refreshed.expiresAt > f.session.expiresAt);
+  now = refreshed.expiresAt + 1;
+  assert.equal((await get(f, '/api/runs')).status, 401);
+});
+
 test('approval host rejects cross-origin and forged CSRF control requests', async (t) => {
   const f = await fixture(t);
   const start = { provider: 'claude', cwd: f.root, prompt: 'synthetic prompt' };
