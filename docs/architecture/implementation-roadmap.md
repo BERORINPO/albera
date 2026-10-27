@@ -3,7 +3,7 @@
 **Scope:** Local-first development; existing read-only Observer remains working. **Status:** Planning only. Codex may have newer implementation changes: reconcile with current Git branch before any code modification.
 
 ## Sequencing rules
-Do not run a second developer agent on the same uncommitted workspace. Current `codex/runtime-gateway` local modifications remain owned by the active Codex session; this package is design-only and does not modify GitHub. Use feature branches and small reviewable PRs. Each feature starts from a verified main/base and updates architectural fitness checks.
+Do not run a second developer agent on the same uncommitted workspace. Current `codex/runtime-gateway` local modifications remain owned by the active Codex session; this package changes only documentation in a dedicated GitHub PR; it does not alter application source, main, or Codex's active runtime branch. Use feature branches and small reviewable PRs. Each feature starts from a verified main/base and updates architectural fitness checks.
 
 | Wave | Deliverable | Blocking prerequisites | Proof |
 |---|---|---|---|
