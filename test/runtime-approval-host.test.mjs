@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -125,8 +126,26 @@ test('approval host rejects cross-origin and forged CSRF control requests', asyn
   const start = { provider: 'claude', cwd: f.root, prompt: 'synthetic prompt' };
   assert.equal((await post(f, '/api/runs', start, { ...f.postHeaders, Origin: 'http://attacker.invalid' })).status, 403);
   assert.equal((await post(f, '/api/runs', start, { ...f.postHeaders, 'X-ALBERA-CSRF': 'incorrect' })).status, 403);
+  const noOriginHeaders = { ...f.postHeaders };
+  delete noOriginHeaders.Origin;
+  assert.equal((await post(f, '/api/runs', start, noOriginHeaders)).status, 403);
   assert.equal((await get(f, '/api/runs')).status, 200);
   assert.deepEqual((await (await get(f, '/api/approvals')).json()).approvals, []);
+});
+
+test('approval host rejects forged and mismatched loopback Host headers', async (t) => {
+  const f = await fixture(t);
+  const requestWithHost = (host) => new Promise((resolve, reject) => {
+    const req = http.request(f.base, { path: '/api/session', headers: { Cookie: f.cookie, Host: host } }, (res) => {
+      res.resume();
+      res.once('end', () => resolve(res.statusCode));
+    });
+    req.once('error', reject);
+    req.end();
+  });
+  assert.equal(await requestWithHost('attacker.invalid'), 403);
+  const mismatchedPort = new URL(f.base).port === '65535' ? '1' : String(Number(new URL(f.base).port) + 1);
+  assert.equal(await requestWithHost(`127.0.0.1:${mismatchedPort}`), 403);
 });
 
 test('separate approval host gates a synthetic start and streams allowlisted lifecycle events', async (t) => {
