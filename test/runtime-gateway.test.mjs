@@ -353,6 +353,34 @@ test('orderly host close stops active children even when interactive stop approv
   assert.equal(f.gateway.get(run.id).status, 'stopped');
 });
 
+test('orderly close invalidates starts awaiting authorization and rejects starts after close', async (t) => {
+  let releaseApproval;
+  let approvalSeen;
+  let spawnCount = 0;
+  const approvalGate = new Promise((resolve) => { releaseApproval = resolve; });
+  const f = await fixture({
+    authorize: async ({ action }) => {
+      if (action === 'start') { approvalSeen = true; await approvalGate; }
+      return true;
+    },
+    spawnImpl: () => { spawnCount++; return new FakeChild(); },
+  });
+  t.after(f.dispose);
+
+  const startResult = f.gateway.start({ provider: 'claude', cwd: f.cwd, args: ['--print', 'synthetic prompt'] })
+    .then((value) => ({ value }), (error) => ({ error }));
+  await waitFor(() => approvalSeen);
+  assert.deepEqual(await f.gateway.close({ timeoutMs: 10 }), []);
+  releaseApproval();
+  const outcome = await startResult;
+  assert.equal(outcome.error.code, 'gateway_closed');
+  assert.equal(spawnCount, 0);
+  await assert.rejects(
+    f.gateway.start({ provider: 'codex', cwd: f.cwd, args: [] }),
+    (error) => error.code === 'gateway_closed',
+  );
+});
+
 test('local helper process tree integration: stopping the approved helper stops its child too', async (t) => {
   const f = await fixture({ resolveExecutableImpl: async () => process.execPath });
   const childPidPath = path.join(f.root, 'child-pid.txt');

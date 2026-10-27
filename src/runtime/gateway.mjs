@@ -31,7 +31,7 @@ const PROVIDER_ENDPOINT_ENV = Object.freeze({
 });
 
 export class GatewayError extends Error {
-  /** @param {'confirmation_required'|'unknown_provider'|'invalid_args'|'cwd_not_allowed'|'executable_unavailable'|'capacity'|'unknown_run'|'spawn_failed'|'stop_failed'|'authorization_failed'} code */
+  /** @param {'confirmation_required'|'unknown_provider'|'invalid_args'|'cwd_not_allowed'|'executable_unavailable'|'capacity'|'unknown_run'|'spawn_failed'|'stop_failed'|'authorization_failed'|'gateway_closed'} code */
   constructor(code) { super(code); this.name = 'GatewayError'; this.code = code; }
 }
 
@@ -65,7 +65,7 @@ export async function resolveProviderExecutable(provider, { platform = process.p
  * @param {{roots: string[], authorize?: (request: object) => boolean|Promise<boolean>, platform?: string, maxActive?: number, runTimeoutMs?: number, spawnImpl?: typeof spawn, resolveExecutableImpl?: (provider: string, options: object) => Promise<string|null>, env?: NodeJS.ProcessEnv, now?: () => number, signalTreeImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>}} options
  */
 export class RuntimeGateway {
-  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #authorize; #env; #now; #signalTree;
+  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #authorize; #env; #now; #signalTree; #closing = false;
   /** @type {Map<string, Run>} */ #runs = new Map();
   #pendingStarts = 0;
   /** @type {Array<{id: number, runId: string, provider: string, type: string, at: number, code?: number|null, signal?: string|null}>} */ #events = [];
@@ -90,6 +90,7 @@ export class RuntimeGateway {
 
   /** Start a fixed provider executable after trusted host authorization of the exact launch tuple. */
   async start({ provider, cwd, args = [] } = {}) {
+    if (this.#closing) throw new GatewayError('gateway_closed');
     if (!Object.hasOwn(RUNTIME_PROVIDERS, provider)) throw new GatewayError('unknown_provider');
     validateArgs(args);
     const launchArgs = [...args];
@@ -99,17 +100,21 @@ export class RuntimeGateway {
     this.#pendingStarts++;
     try {
       const resolvedCwd = await this.#allowedDirectory(cwd);
+      if (this.#closing) throw new GatewayError('gateway_closed');
       let executable;
       try { executable = await this.#resolveExecutable(provider, { platform: this.#platform }); }
       catch { throw new GatewayError('executable_unavailable'); }
       if (typeof executable !== 'string' || !path.isAbsolute(executable)) throw new GatewayError('executable_unavailable');
       executable = await validateExecutable(executable, this.#platform);
+      if (this.#closing) throw new GatewayError('gateway_closed');
       const environment = childEnvironment(provider, this.#env);
-      if (!await this.#authorizeSafely({
+      const authorized = await this.#authorizeSafely({
         action: 'start', provider, executable, cwd: resolvedCwd, args: launchArgs,
         environment: environmentSummary(provider, environment),
         platform: this.#platform, maxDurationMs: this.#runTimeoutMs, maxActive: this.#maxActive,
-      })) throw new GatewayError('confirmation_required');
+      });
+      if (this.#closing) throw new GatewayError('gateway_closed');
+      if (!authorized) throw new GatewayError('confirmation_required');
 
       let child;
       try {
@@ -170,6 +175,7 @@ export class RuntimeGateway {
   /** Host shutdown cleanup; returns active run IDs and IDs whose process-tree cleanup is uncertain. */
   async close({ timeoutMs = STOP_GRACE_MS + 1000 } = {}) {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > MAX_RUN_TIMEOUT_MS) throw new TypeError('invalid shutdown timeout');
+    this.#closing = true;
     const active = [...this.#runs.values()].filter((run) => isActive(run.status));
     const uncertain = [...this.#runs.values()].filter((run) => run.treeStopConfirmed === false).map((run) => run.id);
     await Promise.allSettled(active.map((run) => this.#requestStop(run)));
