@@ -205,6 +205,7 @@ function parseRecords(buffer) {
   const lines = buffer.toString('utf8').split('\n');
   lines.pop();
   const records = [];
+  const eventIds = new Map();
   for (const line of lines) {
     if (!line || Buffer.byteLength(line) > MAX_RECORD_BYTES) throw new JournalError('journal_corrupt');
     let record;
@@ -215,7 +216,11 @@ function parseRecords(buffer) {
     let normalized;
     try { normalized = validateInput(payload); }
     catch { throw new JournalError('journal_corrupt'); }
-    if (normalized.kind === 'event' && !Number.isSafeInteger(normalized.eventId)) throw new JournalError('journal_corrupt');
+    if (normalized.kind === 'event') {
+      const expectedEventId = (eventIds.get(normalized.sessionId) ?? 0) + 1;
+      if (!Number.isSafeInteger(normalized.eventId) || normalized.eventId !== expectedEventId) throw new JournalError('journal_corrupt');
+      eventIds.set(normalized.sessionId, expectedEventId);
+    }
     records.push(Object.freeze({ version, sequence, ...payload }));
     if (records.length > MAX_RECORDS) throw new JournalError('journal_capacity_exceeded');
   }

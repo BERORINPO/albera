@@ -49,14 +49,17 @@ test('journal persists allowlisted lifecycle events in the same monotonic sequen
   assert.equal(event.eventId, 1);
   const otherSessionEvent = await journal.append({ kind: 'event', sessionId: SESSION_B, eventType: 'started', at: 2, provider: 'claude', runId: RUN_A });
   assert.equal(otherSessionEvent.eventId, 1);
-  assert.equal(journal.list({ sessionId: SESSION_A, kind: 'event' }).length, 1);
-  assert.equal(journal.list({ sessionId: SESSION_A, kind: 'event', after: 1 }).length, 0);
+  const secondSessionAEvent = await journal.append({ kind: 'event', sessionId: SESSION_A, eventType: 'exited', at: 3, provider: 'claude', runId: RUN_A, code: 0 });
+  assert.equal(secondSessionAEvent.eventId, 2);
+  assert.equal(journal.list({ sessionId: SESSION_A, kind: 'event' }).length, 2);
+  assert.equal(journal.list({ sessionId: SESSION_A, kind: 'event', after: 1 }).length, 1);
   assert.equal(journal.list({ sessionId: SESSION_A, kind: 'event', after: 0 })[0].eventId, 1);
   assert.equal(journal.list({ sessionId: SESSION_A, kind: 'audit' }).length, 1);
   assert.throws(() => journal.append({ kind: 'event', sessionId: SESSION_A, eventType: 'started', at: 3, provider: 'claude', runId: RUN_A, prompt: 'secret' }), /invalid_journal_record/);
   await journal.close();
   const reopened = await openRuntimeAuditJournal(file);
-  assert.equal(reopened.list({ sessionId: SESSION_A, kind: 'event' })[0].eventId, 1);
+  assert.deepEqual(reopened.list({ sessionId: SESSION_A, kind: 'event' }).map(({ eventId }) => eventId), [1, 2]);
+  assert.deepEqual(reopened.list({ sessionId: SESSION_B, kind: 'event' }).map(({ eventId }) => eventId), [1]);
   await reopened.close();
 });
 
@@ -95,6 +98,26 @@ test('audit journal refuses incomplete or corrupt existing data without modifyin
   await writeFile(file, corrupt, 'utf8');
   await assert.rejects(openRuntimeAuditJournal(file), (error) => error.code === 'journal_incomplete_tail');
   assert.equal(await readFile(file, 'utf8'), corrupt);
+});
+
+test('journal rejects duplicate, skipped, or non-initial per-session event cursors without modifying data', async (t) => {
+  const cases = [
+    { name: 'duplicate', ids: [1, 1] },
+    { name: 'skipped', ids: [1, 3] },
+    { name: 'non-initial', ids: [2] },
+  ];
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-event-cursor-corrupt-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const { name, ids } of cases) {
+    const file = path.join(root, `${name}.jsonl`);
+    const content = ids.map((eventId, index) => JSON.stringify({
+      version: 1, sequence: index + 1, kind: 'event', eventId, sessionId: SESSION_A,
+      eventType: 'started', at: index + 1, provider: 'claude', runId: RUN_A,
+    })).join('\n') + '\n';
+    await writeFile(file, content, 'utf8');
+    await assert.rejects(openRuntimeAuditJournal(file), (error) => error.code === 'journal_corrupt', name);
+    assert.equal(await readFile(file, 'utf8'), content, `${name} journal must remain untouched`);
+  }
 });
 
 test('journal startup preserves an unrelated lock-path file', async (t) => {
