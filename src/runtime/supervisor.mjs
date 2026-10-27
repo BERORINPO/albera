@@ -12,6 +12,7 @@ const MAX_PROTOCOL_BYTES = 1024 * 1024;
 const MAX_INPUT_BYTES = 16 * 1024;
 const MAX_PENDING_INPUTS = 4;
 const INPUT_ACK_TIMEOUT_MS = 5000;
+const TREE_STOP_ACK_TIMEOUT_MS = 5000;
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGABRT']);
 
 /** Start an approved executable under a small guardian that cleans it up if this parent disappears. */
@@ -43,6 +44,7 @@ class SupervisedChild extends EventEmitter {
   #closed = false;
   #inputEnabled;
   #pendingInputs = new Map();
+  #pendingTreeStop;
 
   constructor(guardian, launch, inputEnabled = false) {
     super();
@@ -71,6 +73,32 @@ class SupervisedChild extends EventEmitter {
     this.killed = true;
     try { return this.#guardian.stdin.write(`${JSON.stringify({ type: 'stop', signal })}\n`); }
     catch { return false; }
+  }
+
+  stopTree(signal = 'SIGTERM') {
+    if (!SIGNALS.has(signal) || this.#closed || !this.#guardian.stdin.writable) return Promise.reject(new Error('tree_stop_unavailable'));
+    if (this.#pendingTreeStop) return this.#pendingTreeStop.promise;
+    let resolveStop;
+    let rejectStop;
+    const promise = new Promise((resolve, reject) => { resolveStop = resolve; rejectStop = reject; });
+    const timer = setTimeout(() => {
+      if (this.#pendingTreeStop?.promise !== promise) return;
+      this.#pendingTreeStop = undefined;
+      rejectStop(new Error('tree_stop_ack_timeout'));
+    }, TREE_STOP_ACK_TIMEOUT_MS);
+    timer.unref?.();
+    this.#pendingTreeStop = { promise, resolve: resolveStop, reject: rejectStop, timer };
+    this.killed = true;
+    try {
+      // Writable backpressure (`write` returning false) still means the message was
+      // accepted into the stream buffer. Pipe errors are handled by #fail above.
+      this.#guardian.stdin.write(`${JSON.stringify({ type: 'stop', signal })}\n`);
+    } catch {
+      clearTimeout(timer);
+      this.#pendingTreeStop = undefined;
+      rejectStop(new Error('tree_stop_pipe_failed'));
+    }
+    return promise;
   }
 
   writeInput(text) {
@@ -131,6 +159,12 @@ class SupervisedChild extends EventEmitter {
         this.#providerExited = true;
         this.exitCode = message.code;
         this.signalCode = message.signal;
+      } else if (message?.type === 'tree_stop' && typeof message.treeConfirmed === 'boolean') {
+        const pending = this.#pendingTreeStop;
+        if (!pending) return this.#fail();
+        this.#pendingTreeStop = undefined;
+        clearTimeout(pending.timer);
+        pending.resolve({ treeConfirmed: message.treeConfirmed });
       } else if (message?.type === 'input_accepted' && typeof message.requestId === 'string') {
         const pending = this.#pendingInputs.get(message.requestId);
         if (!pending) return this.#fail();
@@ -164,6 +198,11 @@ class SupervisedChild extends EventEmitter {
       pending.reject(new Error('supervisor_failed'));
     }
     this.#pendingInputs.clear();
+    if (this.#pendingTreeStop) {
+      clearTimeout(this.#pendingTreeStop.timer);
+      this.#pendingTreeStop.reject(new Error('supervisor_failed'));
+      this.#pendingTreeStop = undefined;
+    }
   }
 }
 

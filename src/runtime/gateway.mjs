@@ -130,7 +130,7 @@ export class RuntimeGateway {
     this.#env = env;
     this.#now = now;
     this.#signalTree = signalTreeImpl ?? ((pid, signal, child) => child.supervised === true
-      ? child.kill(signal)
+      ? child.stopTree(signal)
       : signalProcessTree(pid, signal, child, this.#platform, spawn));
   }
 
@@ -329,9 +329,15 @@ export class RuntimeGateway {
       return;
     }
     try {
-      if (Number.isInteger(pid) && pid > 0) await this.#signalTree(pid, 'SIGTERM', run.child);
+      let treeResult;
+      if (Number.isInteger(pid) && pid > 0) treeResult = await this.#signalTree(pid, 'SIGTERM', run.child);
       else if (run.child.kill('SIGTERM') === false) throw new Error('child_signal_failed');
-      if (Number.isInteger(pid) && pid > 0) run.treeStopConfirmed = true;
+      if (Number.isInteger(pid) && pid > 0) {
+        run.treeStopConfirmed = run.child.supervised === true
+          ? (typeof treeResult?.treeConfirmed === 'boolean' ? treeResult.treeConfirmed : null)
+          : true;
+        if (run.treeStopConfirmed === false) this.#emit(run, 'stop_failed');
+      }
     } catch {
       if (Number.isInteger(pid) && pid > 0) {
         run.treeStopConfirmed = false;

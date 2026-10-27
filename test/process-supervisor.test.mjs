@@ -25,7 +25,7 @@ test('supervised child rejects provider input after a stop request', async (t) =
   });
   const closed = new Promise((resolve) => child.once('close', resolve));
   await started;
-  assert.equal(child.kill('SIGTERM'), true);
+  assert.deepEqual(await child.stopTree('SIGTERM'), { treeConfirmed: true });
   await assert.rejects(child.writeInput('must not be queued after stop'), (error) => error.message === 'input_unavailable');
   await closed;
 });

@@ -475,6 +475,22 @@ test('timeout falls back to terminating the direct child if process-tree termina
   assert.deepEqual(await f.gateway.close({ timeoutMs: 10 }), [run.id]);
 });
 
+test('supervised stop records Guardian tree confirmation instead of pipe acceptance', async (t) => {
+  const child = new FakeChild();
+  child.pid = 424243;
+  child.supervised = true;
+  child.stopTree = async () => ({ treeConfirmed: false });
+  const f = await fixture({ spawnImpl: () => { queueMicrotask(() => child.emit('spawn')); return child; } });
+  t.after(f.dispose);
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+  await f.gateway.stop(run.id);
+  assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
+  child.signalCode = 'SIGKILL';
+  child.emit('close', null, 'SIGKILL');
+  await waitFor(() => f.gateway.get(run.id).status === 'failed');
+});
+
 test('manual stop requires separate authorization; denied stop leaves the run active', async (t) => {
   const f = await fixture({
     authorize: async ({ action }) => action !== 'stop',

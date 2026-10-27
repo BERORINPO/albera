@@ -24,6 +24,8 @@ let cleanupComplete = false;
 let stopping = false;
 let terminationStarted = false;
 let finished = false;
+let terminationPromise;
+let terminationResult;
 let inputMode = null;
 let initialInput = null;
 
@@ -99,7 +101,7 @@ function startProvider(message) {
   });
   provider.once('close', (code, signal) => {
     providerExited = true;
-    if (!parentAlive && !cleanupComplete) return;
+    if (terminationStarted && !cleanupComplete) return;
     finish(0, { type: 'exit', code: Number.isInteger(code) ? code : null, signal: typeof signal === 'string' ? signal : null });
   });
 }
@@ -116,25 +118,36 @@ function sendProviderInput(text, callback) {
   catch (error) { callback(error); }
 }
 
-async function terminateTree(signal, pid) {
-  if (cleanupComplete || terminationStarted || !Number.isInteger(pid) || pid < 1) return;
+function terminateTree(signal, pid) {
+  if (terminationPromise) return terminationPromise;
+  if (cleanupComplete || terminationStarted || !Number.isInteger(pid) || pid < 1) return Promise.resolve(terminationResult);
   terminationStarted = true;
   stopping = true;
-  if (process.platform === 'win32') {
-    await terminateWindowsTree(pid, {
-      systemRoot: process.env.SystemRoot ?? process.env.SYSTEMROOT,
-      spawnImpl: spawn,
-      killFallback: () => provider?.kill('SIGKILL') ?? false,
-    });
-  } else {
-    signalGroup(pid, signal);
-    if (signal !== 'SIGKILL') {
-      await new Promise((resolve) => setTimeout(resolve, PARENT_EXIT_GRACE_MS));
-      signalGroup(pid, 'SIGKILL');
+  terminationPromise = (async () => {
+    let result;
+    if (process.platform === 'win32') {
+      result = await terminateWindowsTree(pid, {
+        systemRoot: process.env.SystemRoot ?? process.env.SYSTEMROOT,
+        spawnImpl: spawn,
+        killFallback: () => provider?.kill('SIGKILL') ?? false,
+      });
+    } else {
+      signalGroup(pid, signal);
+      if (signal !== 'SIGKILL') {
+        await new Promise((resolve) => setTimeout(resolve, PARENT_EXIT_GRACE_MS));
+        signalGroup(pid, 'SIGKILL');
+      }
+      result = { treeConfirmed: true, fallbackAttempted: false, fallbackAccepted: false };
     }
-  }
-  cleanupComplete = true;
-  if (providerExited || !provider) finish(0, providerExited ? { type: 'exit', code: provider.exitCode ?? null, signal: provider.signalCode ?? null } : undefined);
+    terminationResult = result;
+    cleanupComplete = true;
+    // Report the actual platform termination outcome. A successful direct-child fallback
+    // does not prove that Windows descendants were stopped.
+    if (parentAlive) send({ type: 'tree_stop', treeConfirmed: result?.treeConfirmed === true });
+    if (providerExited || !provider) finish(0, providerExited ? { type: 'exit', code: provider.exitCode ?? null, signal: provider.signalCode ?? null } : undefined);
+    return result;
+  })();
+  return terminationPromise;
 }
 
 function signalGroup(pid, signal) {
