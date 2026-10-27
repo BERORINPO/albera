@@ -13,7 +13,12 @@ import { normalizeLang } from '../shared/i18n.mjs';
 const MAX_ECHO = 40;
 const MAX_ECHO_LIST = 200;
 // Keep the previous release's environment names as read-only fallbacks during the rename.
-const envValue = (env, key) => env[key] ?? env[key.replace(/^ALBERA_/, 'PIGEONHOLES_')];
+const envValue = (env, key) => {
+  const current = env[key];
+  if (typeof current === 'string' && current.trim()) return current;
+  const legacy = env[key.replace(/^ALBERA_/, 'PIGEONHOLES_')];
+  return typeof legacy === 'string' && legacy.trim() ? legacy : undefined;
+};
 const MSIX_PACKAGE = 'Claude_pzs8sxrjxfjjc';
 const APP_DIR = 'Claude';
 const SESSIONS_DIR = 'claude-code-sessions';

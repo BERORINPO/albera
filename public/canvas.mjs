@@ -32,7 +32,8 @@ const legacySeatsKey = (narrow) => (narrow ? `${LEGACY_CANVAS_STORAGE_KEY}:narro
 export function loadSeats(narrow = false) {
   try {
     const current = localStorage.getItem(seatsKey(narrow));
-    return parseSeats(current ?? localStorage.getItem(legacySeatsKey(narrow)));
+    const seats = parseSeats(current);
+    return seats ?? parseSeats(localStorage.getItem(legacySeatsKey(narrow)));
   } catch {
     return null;
   }

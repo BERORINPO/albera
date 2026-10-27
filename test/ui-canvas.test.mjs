@@ -457,9 +457,16 @@ test('loadSeats / saveSeats: 保存したものを読み戻す。狭い表示枠
     mem.data[`${LEGACY_CANVAS_STORAGE_KEY}:narrow`] = JSON.stringify(stack);
     assert.deepEqual(loadSeats(), doc, '旧 Pigeonholes キーの席を読み込む');
     assert.deepEqual(loadSeats(true), stack, '旧キーの狭い画面の席も読み込む');
+    mem.data[CANVAS_STORAGE_KEY] = '{not json';
+    mem.data[`${CANVAS_STORAGE_KEY}:narrow`] = JSON.stringify({ ...stack, v: 1 });
+    assert.deepEqual(loadSeats(), doc, '壊れた新キーは旧キーへフォールバックする');
+    assert.deepEqual(loadSeats(true), stack, '無効な新キーでも狭い画面の旧キーへフォールバックする');
+    assert.equal(mem.data[LEGACY_CANVAS_STORAGE_KEY], JSON.stringify(doc), 'フォールバックしても旧データを保持する');
     saveSeats(doc);
     assert.equal(mem.data[LEGACY_CANVAS_STORAGE_KEY], JSON.stringify(doc), '旧キーの記録は削除しない');
     assert.deepEqual(JSON.parse(mem.data[CANVAS_STORAGE_KEY]), doc, '新キーへ保存する');
+    delete mem.data[LEGACY_CANVAS_STORAGE_KEY];
+    delete mem.data[`${LEGACY_CANVAS_STORAGE_KEY}:narrow`];
     mem.data[CANVAS_STORAGE_KEY] = '{not json';
     assert.equal(loadSeats(), null);
     mem.data[CANVAS_STORAGE_KEY] = JSON.stringify({ ...doc, v: 1 });

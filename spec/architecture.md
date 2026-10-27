@@ -20,7 +20,7 @@
 | transcripts-fs | `<projectsDir>/*/<cliSessionId>.jsonl` と `<cliSessionId>/subagents/**` | fake-transcripts | 合成のみ | なし | 書き込まない (stat と末尾読みだけ。subagents は stat で数えるだけで開かない。全体は読まない) |
 | folder-hints-fs | アーカイブしていないセッションの cwd とその親 (`.git` の有無、直下のフォルダ名)。ネットワークのパス (`\\server\share`・`//server/share`) は見ない。1 パス 0.5 秒まで | fake-folder-hints | 合成のみ (os.tmpdir の一時フォルダ) | なし | 書き込まない (stat と readdir だけ) |
 | (なし) | ネットワーク | — | — | なし | 外への通信は 0 件 (割り当てたネットワークドライブ上のフォルダだけは、OS がその共有を見に行くことがある)。配置も言葉も AI を使わない |
-| (画面) | ブラウザの localStorage | — | — | なし | 画面の好み (`albera:v1:ui`: 言語・view・引き継ぎのコピー記録) とキャンバスの席 (`albera:v1:canvas` と狭い画面の `:narrow`)。旧 `pigeonholes:v1:*` は新キーがない場合にだけ読み込み、旧データは削除しない。その PC のブラウザだけ |
+| (画面) | ブラウザの localStorage | — | — | なし | 画面の好み (`albera:v1:ui`: 言語・view・引き継ぎのコピー記録) とキャンバスの席 (`albera:v1:canvas` と狭い画面の `:narrow`)。新キーが無いか壊れている場合は旧 `pigeonholes:v1:*` を読み込み、旧データは削除しない。その PC のブラウザだけ |
 
 ## 3. Origin・監視トポロジ
 

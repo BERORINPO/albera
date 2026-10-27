@@ -80,9 +80,23 @@ test('端末の言語: --lang → ALBERA_LANG → LC_ALL → LC_MESSAGES → LAN
 test('環境変数の名称変更: ALBERA_* を優先し、未設定なら旧 PIGEONHOLES_* を引き継ぐ', () => {
   assert.equal(pickTerminalLang({ PIGEONHOLES_LANG: 'ja' }, undefined, 'en-US'), 'ja');
   assert.equal(pickTerminalLang({ ALBERA_LANG: 'en', PIGEONHOLES_LANG: 'ja' }, undefined, 'ja-JP'), 'en');
+  assert.equal(pickTerminalLang({ ALBERA_LANG: ' ', PIGEONHOLES_LANG: 'ja' }, undefined, 'en-US'), 'ja', '空の新変数は旧値へフォールバック');
   const config = loadConfig({ home: NIX_HOME, cwd: '/cwd', platform: 'linux', argv: ['--demo'], env: { PIGEONHOLES_PORT: '9201', PIGEONHOLES_ROOTS: '/legacy' } });
   assert.equal(config.port, 9201);
   assert.deepEqual(config.roots, ['/legacy']);
+  const preferred = loadConfig({ home: NIX_HOME, cwd: '/cwd', platform: 'linux', argv: ['--demo'], env: { ALBERA_PORT: '9202', PIGEONHOLES_PORT: '9201', ALBERA_ROOTS: '/new', PIGEONHOLES_ROOTS: '/legacy' } });
+  assert.equal(preferred.port, 9202, '新しい設定が旧設定に勝つ');
+  assert.deepEqual(preferred.roots, ['/new']);
+  const blankFallback = loadConfig({ home: NIX_HOME, cwd: '/cwd', platform: 'linux', argv: ['--demo'], env: { ALBERA_PORT: '', PIGEONHOLES_PORT: '9201' } });
+  assert.equal(blankFallback.port, 9201);
+  throwsConfig(() => loadConfig({ home: NIX_HOME, cwd: '/cwd', platform: 'linux', argv: ['--demo'], env: { ALBERA_PORT: 'bad', PIGEONHOLES_PORT: '9201' } }), 'term.badPort', { raw: 'bad' });
+  const projectDir = resolveProjectsDir({ flag: undefined, env: { PIGEONHOLES_PROJECTS_DIR: '/legacy-projects' }, home: NIX_HOME, cwd: '/cwd', platform: 'linux' });
+  assert.equal(projectDir, '/legacy-projects');
+  const sessionConfig = loadConfig({ home: NIX_HOME, cwd: '/cwd', platform: 'linux', argv: [], env: { PIGEONHOLES_SESSIONS_DIR: '/legacy-sessions', PIGEONHOLES_PROJECTS_DIR: '/legacy-projects' }, isDir: (p) => p === '/legacy-sessions' });
+  assert.equal(sessionConfig.sessionsRoot, '/legacy-sessions');
+  assert.equal(sessionConfig.projectsDir, '/legacy-projects');
+  const legacyDemo = loadConfig({ home: NIX_HOME, cwd: '/cwd', platform: 'linux', argv: [], env: { PIGEONHOLES_DEMO: 'true' } });
+  assert.equal(legacyDemo.demo, true);
 });
 
 test('端末の言語: --lang / ALBERA_LANG が不正なら、それを除いた順で決めた言語で ConfigError', () => {

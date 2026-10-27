@@ -1,6 +1,6 @@
 # ALBERA
 
-ALBERA takes its name and spirit from Anni Albers's woven art: people and multiple AIs weave knowledge, code, and development work together. This release is a read-only local view of Claude Code sessions, arranging what needs your answer, may be stuck, finished but unread, working, recent, and ready to archive. It also shows what each session is doing and how full its context is, and helps you prepare a hand-off. See sessions as a list or as a canvas with one sheet per project. Chats from the app's other tabs are not shown.
+ALBERA takes its name and spirit from Anni Albers's woven art. Its long-term direction is a development platform where people and multiple AIs weave knowledge, code, and development work together. The current release is only a read-only local dashboard for Claude Desktop / Claude Code sessions: it groups sessions by what needs your answer, may be stuck, finished but unread, working, recent, and ready to archive. It also shows what each session is doing and an estimate of context use, and helps you prepare a hand-off. See sessions as a list or as a canvas with one sheet per project. Chats from the app's other tabs are not shown.
 
 [日本語](README.ja.md)
 
@@ -15,15 +15,15 @@ Demo data. Also: [canvas](docs/screenshot-canvas.png) · [dark theme](docs/scree
 - **Zero dependencies.** Node.js 22 or newer. No build step.
 - **English and Japanese.** The page follows your browser language; the terminal follows your system language.
 
+## Long-term direction (not implemented)
+
+The following are product plans, not features of this release: running, monitoring, and controlling multiple AI CLIs; orchestration by a Main AI; an infinite canvas and graph views; a Knowledge Graph, Harness Graph, and Comprehension Graph; Git worktree and PR integration; and human intervention, approvals, and development policy enforcement. The current release does not execute or control agents and does not provide those graphs or integrations.
+
 ## Quick start
 
-You need Node.js 22 or newer and the Claude desktop app, with at least one session in its Code tab.
+You need Node.js 22 or newer and the Claude desktop app, with at least one session in its Code tab. The `albera` package is not published on npm yet; use the clone instructions below for this branch. The `npx albera` commands later in this README apply after a package release.
 
-```sh
-npx albera
-```
-
-From a clone:
+Clone and run the current source:
 
 ```sh
 git clone https://github.com/BERORINPO/pigeonholes.git albera
@@ -35,10 +35,10 @@ npm needs `--` before flags for the script: `npm start -- --port 8798`, `npm run
 
 When the terminal prints `ALBERA: http://127.0.0.1:8797 (read-only)`, open that address in a browser. The first scan takes a few seconds. Stop it with Ctrl+C. If it prints `Already running: open http://127.0.0.1:8797`, a board of the same kind is already up; open the address. If the board on that port is the demo and you asked for your sessions (or the other way round), it says so and prints a command for another port instead.
 
-To try it without reading your sessions, add `--demo` (synthetic data):
+To try synthetic data without reading your sessions, run:
 
 ```sh
-npx albera --demo          # from a clone: npm run demo
+npm run demo
 ```
 
 Tip: the Claude desktop app has a built-in browser pane. Open the address there and the board sits next to your conversation. The list and the canvas both work down to about 400 px wide. In that pane, desktop notifications are not available, and **Open** may be blocked; then use **Copy link** in the details, or open the board in your usual browser.
@@ -191,9 +191,9 @@ Flags win over environment variables. Both `--flag value` and `--flag=value` wor
 | `--sessions-dir <path>` | `ALBERA_SESSIONS_DIR` | searched (see [What it reads](#what-it-reads)) |
 | `--projects-dir <path>` | `ALBERA_PROJECTS_DIR` | `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` |
 | — | `ALBERA_ROOTS` | your home folder. Absolute paths separated by `;` (or `:` on macOS and Linux). A session in `<root>/<name>/...` outside any git repository is grouped under `<name>` |
-
-The previous `PIGEONHOLES_*` environment variables are also read when the corresponding `ALBERA_*` variable is not set.
 | `--help`, `--version` | — | — |
+
+The previous `PIGEONHOLES_*` environment variables are also read when the corresponding `ALBERA_*` variable is unset or blank. A non-empty `ALBERA_*` value takes precedence.
 
 Projects are named after the git repository a session runs in. Worktrees under `.claude/worktrees/` count as their repository.
 
