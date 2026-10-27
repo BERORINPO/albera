@@ -298,6 +298,7 @@ function readBody(req, timeoutMs) {
     }, timeoutMs);
     timer.unref?.();
     req.on('data', (chunk) => {
+      if (settled) return;
       size += chunk.length;
       if (size > MAX_BODY_BYTES) { finish(reject, new Error('body_too_large')); req.destroy(); return; }
       chunks.push(chunk);

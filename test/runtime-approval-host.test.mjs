@@ -119,6 +119,33 @@ test('approval-host POST bodies time out without consuming a bootstrap code', as
   assert.equal((await authenticatedOutcome).type, 'error');
 });
 
+test('oversized bootstrap POST is destroyed without consuming the one-time code', async (t) => {
+  const f = await fixture(t, {}, { authenticate: false });
+  const oversizedBody = 'x'.repeat(20 * 1024 + 1);
+  const request = http.request(new URL(`${new URL(f.base).pathname}/api/session`, f.base), {
+    method: 'POST',
+    headers: {
+      Origin: f.origin,
+      'Content-Type': 'application/json',
+      'Content-Length': String(Buffer.byteLength(oversizedBody)),
+      'Sec-Fetch-Site': 'same-origin',
+    },
+  });
+  const outcome = new Promise((resolve) => {
+    request.once('response', (response) => { response.resume(); resolve({ type: 'response', status: response.statusCode }); });
+    request.once('error', (error) => resolve({ type: 'error', code: error.code }));
+  });
+  request.end(oversizedBody);
+  assert.equal((await outcome).type, 'error');
+
+  const retry = await fetch(`${f.base}/api/session`, {
+    method: 'POST',
+    headers: { Origin: f.origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
+    body: JSON.stringify({ bootstrapCode: f.address.bootstrapCode }),
+  });
+  assert.equal(retry.status, 200);
+});
+
 test('approval host refuses excess concurrent connections without consuming bootstrap state', async (t) => {
   const f = await fixture(t, { maxConnections: 1, requestBodyTimeoutMs: 5_000 }, { authenticate: false });
   const requestPath = `${new URL(f.base).pathname}/api/session`;
