@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { fsyncSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -12,6 +13,7 @@ const SESSION_A = 'a'.repeat(32);
 const SESSION_B = 'b'.repeat(32);
 const REQUEST_A = '12345678-1234-4234-8234-123456789abc';
 const RUN_A = '22345678-1234-4234-8234-123456789abc';
+const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 function auditRecord(overrides = {}) {
   return { sessionId: SESSION_A, requestId: REQUEST_A, action: 'run.start', phase: 'requested', at: 1, provider: 'claude', ...overrides };
 }
@@ -40,6 +42,64 @@ test('audit journal persists serialized allowlisted records and reopens without 
   const reopened = await openTestJournal(file);
   assert.deepEqual(reopened.list({ sessionId: SESSION_A }).map(({ sequence, phase }) => [sequence, phase]), [[1, 'requested'], [2, 'accepted'], [4, 'accepted']]);
   await reopened.close();
+});
+
+test('journal preserves a legacy v1 prefix and anchors new v2 records to its exact bytes', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-v1-migration-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'runtime.audit.jsonl');
+  const legacyRecord = {
+    version: 1, sequence: 1, sessionId: SESSION_A, requestId: REQUEST_A,
+    action: 'run.start', phase: 'requested', at: 1, provider: 'claude',
+  };
+  const legacyPrefix = Buffer.from(`${JSON.stringify(legacyRecord)}\n`);
+  await writeFile(file, legacyPrefix, { mode: 0o600 });
+
+  const journal = await openTestJournal(file);
+  const added = await journal.append(auditRecord({ phase: 'accepted', at: 2 }));
+  assert.equal(added.version, 2);
+  assert.equal(added.previousHash, sha256(legacyPrefix));
+  await journal.close();
+
+  const migratedBytes = await readFile(file);
+  assert.deepEqual(migratedBytes.subarray(0, legacyPrefix.length), legacyPrefix, 'legacy bytes remain unchanged');
+  const reopened = await openTestJournal(file);
+  const next = await reopened.append(auditRecord({ phase: 'failed', at: 3, errorCode: 'provider_unavailable' }));
+  assert.equal(next.previousHash, added.recordHash);
+  await reopened.close();
+  const final = await openTestJournal(file);
+  assert.deepEqual(final.list().map(({ version }) => version), [1, 2, 2]);
+  await final.close();
+  const editedLegacyPrefix = migratedBytes.toString('utf8').replace('"at":1', '"at":9');
+  await writeFile(file, editedLegacyPrefix, { encoding: 'utf8', mode: 0o600 });
+  await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_corrupt');
+  assert.equal(await readFile(file, 'utf8'), editedLegacyPrefix, 'legacy prefix tampering must not be repaired');
+});
+
+test('journal detects v2 record edits, removals, and reordering without modifying corrupt bytes', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-chain-corrupt-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'runtime.audit.jsonl');
+  const journal = await openTestJournal(file);
+  for (const [index, phase] of ['requested', 'accepted', 'failed'].entries()) {
+    await journal.append(auditRecord({
+      requestId: `${String(index + 1).padStart(8, '0')}-1234-4234-8234-123456789abc`,
+      phase, at: index + 1,
+    }));
+  }
+  await journal.close();
+  const original = (await readFile(file)).toString('utf8').trimEnd().split('\n');
+  const cases = [
+    { name: 'edit', lines: [original[0].replace('requested', 'accepted'), ...original.slice(1)] },
+    { name: 'remove', lines: [original[0], original[2]] },
+    { name: 'reorder', lines: [original[1], original[0], original[2]] },
+  ];
+  for (const { name, lines } of cases) {
+    const corrupted = `${lines.join('\n')}\n`;
+    await writeFile(file, corrupted, { encoding: 'utf8', mode: 0o600 });
+    await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_corrupt', name);
+    assert.equal(await readFile(file, 'utf8'), corrupted, `${name} journal must remain untouched`);
+  }
 });
 
 test('journal persists allowlisted lifecycle events in the same monotonic sequence', async (t) => {

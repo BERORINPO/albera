@@ -582,11 +582,12 @@ test('real journal capacity exhaustion after launch fails the API closed and shu
     const at = Date.now();
     const requestId = '12345678-1234-4234-8234-123456789abc';
     const sessionId = 'a'.repeat(32);
+    const previousHash = journal.list().at(-1)?.recordHash ?? 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
     const requestedBytes = Buffer.byteLength(`${JSON.stringify({
-      version: 1, sequence: sequence + 1, sessionId, requestId, action: 'run.start', phase: 'requested', at, provider: 'claude',
+      version: 2, sequence: sequence + 1, sessionId, requestId, action: 'run.start', phase: 'requested', at, provider: 'claude', previousHash, recordHash: '0'.repeat(64),
     })}\n`);
     const acceptedBytes = Buffer.byteLength(`${JSON.stringify({
-      version: 1, sequence: sequence + 2, sessionId, requestId, action: 'run.start', phase: 'accepted', at, provider: 'claude', runId: requestId,
+      version: 2, sequence: sequence + 2, sessionId, requestId, action: 'run.start', phase: 'accepted', at, provider: 'claude', runId: requestId, previousHash: '0'.repeat(64), recordHash: '0'.repeat(64),
     })}\n`);
     if (remaining < requestedBytes + acceptedBytes) {
       assert.ok(remaining >= requestedBytes, 'capacity must admit the request audit record before rejecting its result');

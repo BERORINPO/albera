@@ -1,12 +1,12 @@
 // Host-configured, append-only audit journal. It stores only allowlisted control metadata.
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { constants as fsConstants, fsyncSync, writeSync } from 'node:fs';
 import { mkdir, open, readFile, lstat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { assertPrivateWindowsAcl, RuntimeStorageAclError } from './windows-acl.mjs';
 
-const JOURNAL_VERSION = 1;
+const JOURNAL_VERSION = 2;
 const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
 const HARD_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_RECORD_BYTES = 2048;
@@ -47,7 +47,7 @@ export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX
   try {
     const existing = await readExisting(filePath, maxBytes, verifyWindowsAcl);
     if (existing.byteLength > maxBytes) throw new JournalError('journal_capacity_exceeded');
-    const records = parseRecords(existing);
+    const { records, chainHead } = parseRecords(existing);
     if (records.length > MAX_RECORDS) throw new JournalError('journal_capacity_exceeded');
     const flags = fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | (fsConstants.O_NOFOLLOW ?? 0);
     dataHandle = await open(filePath, flags, 0o600);
@@ -55,7 +55,7 @@ export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX
     if (!fileInfo.isFile() || fileInfo.size !== existing.byteLength) throw new JournalError('journal_changed_during_open');
     assertSingleLink(fileInfo, 'journal_hard_linked_file');
     assertPrivatePosixStorage(fileInfo, 'journal_permissions', 'file');
-    return new RuntimeAuditJournal(filePath, lockPath, lock, lockText, dataHandle, records, existing.byteLength, maxBytes, syncFile);
+    return new RuntimeAuditJournal(filePath, lockPath, lock, lockText, dataHandle, records, chainHead, existing.byteLength, maxBytes, syncFile);
   } catch (error) {
     await dataHandle?.close().catch(() => {});
     await releaseLock(lockPath, lock, lockText);
@@ -70,6 +70,7 @@ class RuntimeAuditJournal {
   #lockText;
   #dataHandle;
   #records;
+  #chainHead;
   #eventSequences = new Map();
   #bytes;
   #maxBytes;
@@ -79,13 +80,14 @@ class RuntimeAuditJournal {
   #failed = false;
   #closePromise;
 
-  constructor(filePath, lockPath, lockHandle, lockText, dataHandle, records, bytes, maxBytes, syncFile) {
+  constructor(filePath, lockPath, lockHandle, lockText, dataHandle, records, chainHead, bytes, maxBytes, syncFile) {
     this.#filePath = filePath;
     this.#lockPath = lockPath;
     this.#lockHandle = lockHandle;
     this.#lockText = lockText;
     this.#dataHandle = dataHandle;
     this.#records = records;
+    this.#chainHead = chainHead;
     for (const record of records) {
       if ((record.kind ?? 'audit') === 'event' && Number.isSafeInteger(record.eventId)) {
         this.#eventSequences.set(record.sessionId, Math.max(this.#eventSequences.get(record.sessionId) ?? 0, record.eventId));
@@ -104,7 +106,8 @@ class RuntimeAuditJournal {
     try {
       const sequence = this.#records.length ? this.#records.at(-1).sequence + 1 : 1;
       const eventId = payload.kind === 'event' ? (this.#eventSequences.get(payload.sessionId) ?? 0) + 1 : undefined;
-      const record = Object.freeze({ version: JOURNAL_VERSION, sequence, ...payload, ...(eventId === undefined ? {} : { eventId }) });
+      const unsignedRecord = { version: JOURNAL_VERSION, sequence, ...payload, ...(eventId === undefined ? {} : { eventId }), previousHash: this.#chainHead };
+      const record = Object.freeze({ ...unsignedRecord, recordHash: hashRecord(unsignedRecord) });
       const line = Buffer.from(`${JSON.stringify(record)}\n`, 'utf8');
       const bytes = line.byteLength;
       if (bytes > MAX_RECORD_BYTES) throw new JournalError('journal_record_too_large');
@@ -118,6 +121,7 @@ class RuntimeAuditJournal {
       this.#syncFile(this.#dataHandle.fd);
       this.#bytes += bytes;
       this.#records.push(record);
+      this.#chainHead = record.recordHash;
       if (eventId !== undefined) this.#eventSequences.set(payload.sessionId, eventId);
       return Promise.resolve({ ...record });
     } catch (error) {
@@ -207,19 +211,50 @@ async function readExisting(filePath, maxBytes, verifyWindowsAcl) {
 }
 
 function parseRecords(buffer) {
-  if (buffer.length === 0) return [];
+  if (buffer.length === 0) return { records: [], chainHead: hashBytes(buffer) };
   if (buffer.at(-1) !== 0x0a) throw new JournalError('journal_incomplete_tail');
-  const lines = buffer.toString('utf8').split('\n');
-  lines.pop();
+  const lineBytes = [];
+  let lineStart = 0;
+  for (let index = 0; index < buffer.length; index++) {
+    if (buffer[index] === 0x0a) {
+      lineBytes.push(buffer.subarray(lineStart, index));
+      lineStart = index + 1;
+    }
+  }
   const records = [];
   const eventIds = new Map();
-  for (const line of lines) {
-    if (!line || Buffer.byteLength(line) > MAX_RECORD_BYTES) throw new JournalError('journal_corrupt');
+  let legacyPrefixBytes = 0;
+  let chainHead = hashBytes(buffer);
+  let sawVersion2 = false;
+  for (const rawLine of lineBytes) {
+    const line = rawLine.toString('utf8');
+    if (!line || rawLine.byteLength > MAX_RECORD_BYTES || !Buffer.from(line, 'utf8').equals(rawLine)) throw new JournalError('journal_corrupt');
     let record;
     try { record = JSON.parse(line); }
     catch { throw new JournalError('journal_corrupt'); }
-    const { version, sequence, ...payload } = record ?? {};
-    if (version !== JOURNAL_VERSION || sequence !== records.length + 1) throw new JournalError('journal_corrupt');
+    const { version, sequence } = record ?? {};
+    const { previousHash, recordHash } = record ?? {};
+    const payload = { ...(record ?? {}) };
+    delete payload.version;
+    delete payload.sequence;
+    if (version === JOURNAL_VERSION) {
+      delete payload.previousHash;
+      delete payload.recordHash;
+    }
+    if (![1, JOURNAL_VERSION].includes(version) || sequence !== records.length + 1) throw new JournalError('journal_corrupt');
+    if (version === 1 && sawVersion2) throw new JournalError('journal_corrupt');
+    if (version === JOURNAL_VERSION) {
+      const expectedPreviousHash = sawVersion2 ? chainHead : hashBytes(buffer.subarray(0, legacyPrefixBytes));
+      if (typeof previousHash !== 'string' || previousHash !== expectedPreviousHash
+        || typeof recordHash !== 'string' || !/^[0-9a-f]{64}$/.test(recordHash)) throw new JournalError('journal_corrupt');
+      const unsignedRecord = { ...record };
+      delete unsignedRecord.recordHash;
+      if (hashRecord(unsignedRecord) !== recordHash) throw new JournalError('journal_corrupt');
+      sawVersion2 = true;
+      chainHead = recordHash;
+    } else {
+      legacyPrefixBytes += rawLine.byteLength + 1;
+    }
     let normalized;
     try { normalized = validateInput(payload); }
     catch { throw new JournalError('journal_corrupt'); }
@@ -228,11 +263,14 @@ function parseRecords(buffer) {
       if (!Number.isSafeInteger(normalized.eventId) || normalized.eventId !== expectedEventId) throw new JournalError('journal_corrupt');
       eventIds.set(normalized.sessionId, expectedEventId);
     }
-    records.push(Object.freeze({ version, sequence, ...payload }));
+    records.push(Object.freeze({ version, sequence, ...payload, ...(version === JOURNAL_VERSION ? { previousHash, recordHash } : {}) }));
     if (records.length > MAX_RECORDS) throw new JournalError('journal_capacity_exceeded');
   }
-  return records;
+  return { records, chainHead };
 }
+
+function hashBytes(value) { return createHash('sha256').update(value).digest('hex'); }
+function hashRecord(record) { return hashBytes(Buffer.from(JSON.stringify(record), 'utf8')); }
 
 async function acquireLock(lockPath, lockText, verifyWindowsAcl) {
   for (let attempt = 0; attempt < 2; attempt++) {

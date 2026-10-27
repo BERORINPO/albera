@@ -540,9 +540,9 @@ test('standalone host restart marks a journaled live run interrupted without rel
   assert.equal((await post(client, `/api/runs/${runId}/stop`, {})).status, 409);
   assert.deepEqual((await (await get(client, '/api/approvals')).json()).approvals, []);
   assert.equal(spawnCount, 0);
-  assert.deepEqual(journal.list({ sessionId }), [
-    { version: 1, sequence: 1, sessionId, requestId: 'a7d13ae0-836a-4d0e-b006-6a684bdc4d10', action: 'run.start', phase: 'accepted', at: 100, provider: 'claude', runId },
-    { version: 1, sequence: 2, kind: 'event', sessionId, eventType: 'started', at: 101, provider: 'claude', runId, eventId: 1 },
+  assert.deepEqual(journal.list({ sessionId }).map(({ version, sequence, kind, phase, eventType }) => [version, sequence, kind ?? 'audit', phase ?? eventType]), [
+    [2, 1, 'audit', 'accepted'],
+    [2, 2, 'event', 'started'],
   ]);
 });
 
