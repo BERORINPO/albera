@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented locally; full suite and cross-platform CI pending.
+Implemented; GitHub Actions run 40485149160 passed all six Windows/macOS/Linux × Node 22/24 jobs.
 
 ## Decision
 
