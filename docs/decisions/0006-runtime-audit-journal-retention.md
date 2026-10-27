@@ -19,7 +19,7 @@ Automatic rotation or retention expiry could destroy audit and recovery evidence
 
 ## Verification
 
-`test/runtime-audit-journal.test.mjs` exercises capacity rejection, confirms previous records remain byte-for-byte intact after the failed write and close, reopens the journal, and confirms all prior records are still readable. A synchronous-append regression verifies the complete line is visible and the injected sync function has returned before `append()` returns its Promise; another verifies sync failure rejects and prevents later writes without truncating bytes. The tests use temporary synthetic journals and do not touch user data.
+`test/runtime-audit-journal.test.mjs` exercises capacity rejection, confirms previous records remain byte-for-byte intact after the failed write and close, reopens the journal, and confirms all prior records are still readable. A synchronous-append regression verifies the complete line is visible and the injected sync function has returned before `append()` returns its Promise; another verifies sync failure rejects and prevents later writes without truncating bytes. These temporary-journal tests passed across Windows/macOS/Linux × Node 22/24 in GitHub Actions run 40497148500 on `ee12cfb` and do not touch user data.
 
 ## Consequences and limits
 

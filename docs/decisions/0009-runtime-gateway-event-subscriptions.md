@@ -4,7 +4,7 @@ Date: 2026-10-27
 
 ## Status
 
-Implemented; GitHub Actions run 40486837838 passed all six Windows/macOS/Linux × Node 22/24 jobs on `d1d83ef`.
+Implemented; the synchronous append update passed all six Windows/macOS/Linux × Node 22/24 jobs in GitHub Actions run 40497148500 on `ee12cfb`.
 
 ## Context
 
@@ -27,4 +27,4 @@ The Runtime API previously discovered lifecycle events only by polling the Gatew
 
 ## Verification
 
-Verification: `test/runtime-audit-journal.test.mjs` proves record bytes are present and the injected sync operation has completed before `append()` returns its Promise; API event-capture tests verify notification-driven persistence before the safety poll. Latest cross-platform evidence for the earlier async implementation is Actions run 40486837838; the synchronous durability change requires a new matrix run. No AI CLI was invoked.
+Verification: `test/runtime-audit-journal.test.mjs` proves record bytes are present and the injected sync operation has completed before `append()` returns its Promise; another regression checks sync failure rejects and blocks later writes without truncating bytes. API event-capture tests verify notification-driven persistence before the safety poll. GitHub Actions run 40497148500 passed tests and architecture checks on Windows/macOS/Linux × Node 22/24. No AI CLI was invoked.
