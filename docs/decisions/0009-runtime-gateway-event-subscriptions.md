@@ -4,7 +4,7 @@ Date: 2026-10-27
 
 ## Status
 
-Implemented locally; cross-platform Actions verification pending.
+Implemented; GitHub Actions run 40486837838 passed all six Windows/macOS/Linux × Node 22/24 jobs on `d1d83ef`.
 
 ## Context
 
@@ -27,4 +27,4 @@ The Runtime API previously discovered lifecycle events only by polling the Gatew
 
 ## Verification
 
-Local Windows Node 24.13.0: `node --test test/runtime-api.test.mjs test/runtime-gateway.test.mjs` passed 59/59; full `npm test` passed 501 with 3 skips; `npm run arch` reported 82 paths and 0 violations; `npm run smoke` passed; `git diff --check` passed. The journal-capture test uses a synthetic Gateway notification and confirms persistence before its 1-second safety poll. No AI CLI was invoked. Cross-platform Actions verification is pending.
+Local Windows Node 24.13.0: `node --test test/runtime-api.test.mjs test/runtime-gateway.test.mjs` passed 59/59; full `npm test` passed 501 with 3 skips; `npm run arch` reported 82 paths and 0 violations; `npm run smoke` passed; `git diff --check` passed. GitHub Actions run 40486837838 passed all six Windows/macOS/Linux × Node 22/24 test and architecture jobs on `d1d83ef`. The journal-capture test uses a synthetic Gateway notification and confirms persistence before its 1-second safety poll. No AI CLI was invoked.
