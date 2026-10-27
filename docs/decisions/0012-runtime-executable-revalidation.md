@@ -18,7 +18,7 @@ Host approval can remain pending while an executable is replaced. Rechecking aft
 
 ## Verification
 
-`test/runtime-gateway.test.mjs` replaces a temporary executable fixture while the approval callback is blocked and verifies the Gateway rejects the start without calling `spawn`. This test does not run a real provider. Cross-platform CI evidence will be recorded after the branch run completes.
+`test/runtime-gateway.test.mjs` replaces a temporary executable fixture while the approval callback is blocked and verifies the Gateway rejects the start without calling `spawn`. This test does not run a real provider. Full local verification passed on Windows: `npm test` (513 passed, 3 skipped), `npm run arch` (82 paths, 0 violations), `npm run smoke`, and `npm run package:smoke`. GitHub Actions run 40499144241 passed all six Windows/macOS/Linux × Node 22/24 jobs, including Windows Runtime storage ACL integration.
 
 ## Consequences and limits
 
