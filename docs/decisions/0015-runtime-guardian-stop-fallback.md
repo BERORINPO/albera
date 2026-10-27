@@ -21,4 +21,4 @@ The OS adapter provides an independent cleanup attempt when the Guardian channel
 
 ## Evidence
 
-`test/runtime-gateway.test.mjs` covers a successful injected fallback, both paths failing with an unconfirmed result, skipping the fallback after a provider exit is reported, and an actual OS tree-adapter stop of a synthetic local Node helper when its Guardian stop method is injected to fail. This does not reproduce a real Guardian pipe failure or launch a provider. Cross-platform CI evidence is recorded in `docs/progress.md` after the implementation commit.
+`test/runtime-gateway.test.mjs` covers a successful injected fallback, both paths failing with an unconfirmed result, skipping the fallback after a provider exit is reported, and an actual OS tree-adapter stop of a synthetic local Node helper when its Guardian stop method is injected to fail. This does not reproduce a real Guardian pipe failure or launch a provider. GitHub Actions run 40509304068 passed all Windows/macOS/Linux × Node 22/24 jobs, including Windows storage ACL integration. No real provider was launched.
