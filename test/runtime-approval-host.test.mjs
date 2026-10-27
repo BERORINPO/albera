@@ -475,10 +475,15 @@ test('closing the approval host ends active event streams and drains the API', a
   const response = await fetch(`${f.base}/api/events/stream?after=0`, { headers: f.headers, signal: controller.signal });
   assert.equal(response.status, 200);
   const closing = f.runtime.close();
-  await Promise.race([
-    closing,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('host_shutdown_timeout')), 10_000)),
-  ]);
+  let shutdownTimer;
+  try {
+    await Promise.race([
+      closing,
+      new Promise((_, reject) => { shutdownTimer = setTimeout(() => reject(new Error('host_shutdown_timeout')), 10_000); }),
+    ]);
+  } finally {
+    clearTimeout(shutdownTimer);
+  }
   controller.abort();
   const events = f.journal.list({ sessionId: f.runtime.sessionId, kind: 'event' });
   assert.ok(events.some((event) => event.eventType === 'stop_requested'));
