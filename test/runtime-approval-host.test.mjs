@@ -74,7 +74,7 @@ test('concurrent bootstrap requests can consume the one-time code only once', as
   assert.equal(responses.filter((response) => response.headers.has('set-cookie')).length, 1);
 });
 
-test('incomplete bootstrap request bodies time out without consuming the one-time code', async (t) => {
+test('approval-host POST bodies time out without consuming a bootstrap code', async (t) => {
   const f = await fixture(t, { requestBodyTimeoutMs: 100 }, { authenticate: false });
   const request = http.request(new URL(`${new URL(f.base).pathname}/api/session`, f.base), {
     method: 'POST',
@@ -98,6 +98,25 @@ test('incomplete bootstrap request bodies time out without consuming the one-tim
     body: JSON.stringify({ bootstrapCode: f.address.bootstrapCode }),
   });
   assert.equal(retry.status, 200);
+
+  const session = await retry.json();
+  const authenticatedPost = http.request(new URL(`${new URL(f.base).pathname}/api/runs`, f.base), {
+    method: 'POST',
+    headers: {
+      Origin: f.origin,
+      'Content-Type': 'application/json',
+      'Content-Length': '100',
+      Cookie: retry.headers.get('set-cookie').split(';', 1)[0],
+      'Sec-Fetch-Site': 'same-origin',
+      'X-ALBERA-CSRF': session.csrfToken,
+    },
+  });
+  const authenticatedOutcome = new Promise((resolve) => {
+    authenticatedPost.once('response', (response) => { response.resume(); resolve({ type: 'response', status: response.statusCode }); });
+    authenticatedPost.once('error', (error) => resolve({ type: 'error', code: error.code }));
+  });
+  authenticatedPost.write('{"provider":');
+  assert.equal((await authenticatedOutcome).type, 'error');
 });
 
 async function connectRuntime(root, journal, sessionId, gatewayOverrides = {}) {
