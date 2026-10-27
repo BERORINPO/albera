@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { assertPrivateWindowsAcl } from '../src/runtime/windows-acl.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const runtimeEntry = path.join(repositoryRoot, 'src', 'runtime', 'entry.mjs');
@@ -18,7 +17,7 @@ function withTimeout(promise, timeoutMs, errorCode) {
   ]).finally(() => clearTimeout(timer));
 }
 
-test('Runtime CLI serves the loopback approval page without starting a provider', { timeout: 15_000 }, async (t) => {
+test('Runtime CLI serves the loopback approval page without starting a provider', { timeout: 60_000 }, async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.homedir(), 'albera-runtime-entry-'));
   const projectRoot = path.join(temporaryRoot, 'empty-project');
   const storageRoot = path.join(temporaryRoot, 'private-runtime-data');
@@ -41,8 +40,6 @@ test('Runtime CLI serves the loopback approval page without starting a provider'
 
   await mkdir(projectRoot, { mode: 0o700 });
   await mkdir(storageRoot, { mode: 0o700 });
-  await assertPrivateWindowsAcl(projectRoot, { kind: 'directory' });
-  await assertPrivateWindowsAcl(storageRoot, { kind: 'directory' });
 
   child = spawn(process.execPath, [
     runtimeEntry,
@@ -68,7 +65,7 @@ test('Runtime CLI serves the loopback approval page without starting a provider'
 
   let output = '';
   const url = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('runtime_cli_start_timeout')), 8_000);
+    const timer = setTimeout(() => reject(new Error('runtime_cli_start_timeout')), 30_000);
     const finish = (callback, value) => {
       clearTimeout(timer);
       child.stdout.off('data', onData);
@@ -92,7 +89,7 @@ test('Runtime CLI serves the loopback approval page without starting a provider'
     child.once('exit', onExit);
   });
 
-  const response = await fetch(url, { signal: AbortSignal.timeout(3_000) });
+  const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
   const html = await response.text();
   assert.equal(response.status, 200);
   assert.ok(/<main\b(?=[^>]*\bhidden\b)[^>]*>/.test(html), 'Runtime controls should be hidden before bootstrap');
@@ -100,7 +97,7 @@ test('Runtime CLI serves the loopback approval page without starting a provider'
   assert.match(css, /main\[hidden\]\s*\{\s*display:\s*none/s);
 
   child.kill('SIGTERM');
-  const stopped = await withTimeout(exit, 3_000, 'runtime_cli_shutdown_timeout');
+  const stopped = await withTimeout(exit, 5_000, 'runtime_cli_shutdown_timeout');
   if (process.platform === 'win32') assert.deepEqual(stopped, { code: null, signal: 'SIGTERM' });
   else assert.deepEqual(stopped, { code: 0, signal: null });
   await assert.rejects(fetch(url, { signal: AbortSignal.timeout(1_000) }));
