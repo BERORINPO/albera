@@ -381,8 +381,9 @@ test('Gateway lifecycle subscriptions are bounded and observer failures cannot i
   const f = await fixture({ spawnImpl: () => { const child = new FakeChild(); children.push(child); return child; } });
   t.after(f.dispose);
   let observed = 0;
-  const unsubscribers = Array.from({ length: 7 }, () => f.gateway.subscribeEvents(() => { observed++; }));
+  const unsubscribers = Array.from({ length: 6 }, () => f.gateway.subscribeEvents(() => { observed++; }));
   unsubscribers.push(f.gateway.subscribeEvents(() => { throw new Error('observer_failure'); }));
+  unsubscribers.push(f.gateway.subscribeEvents(async () => { throw new Error('async_observer_failure'); }));
   assert.throws(() => f.gateway.subscribeEvents(() => {}), { name: 'RangeError', message: 'event_listener_capacity' });
   const unsubscribe = unsubscribers.pop();
   assert.equal(unsubscribe(), true);
@@ -391,8 +392,9 @@ test('Gateway lifecycle subscriptions are bounded and observer failures cannot i
 
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'bounded subscription fixture' });
   assert.doesNotThrow(() => children[0].emit('spawn'));
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(f.gateway.get(run.id).status, 'running');
-  assert.equal(observed, 8);
+  assert.equal(observed, 7);
   await Promise.all(unsubscribers.map((remove) => remove()));
 });
 

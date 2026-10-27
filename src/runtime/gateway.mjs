@@ -367,7 +367,10 @@ export class RuntimeGateway {
     this.#events.push(event);
     if (this.#events.length > MAX_EVENTS) this.#events.splice(0, this.#events.length - MAX_EVENTS);
     for (const listener of [...this.#eventSubscribers]) {
-      try { listener(event); } catch { /* observers cannot interrupt the authorized process lifecycle */ }
+      try {
+        const result = listener(event);
+        if (result && typeof result.then === 'function') void Promise.resolve(result).catch(() => {});
+      } catch { /* observers cannot interrupt the authorized process lifecycle */ }
     }
   }
   #snapshot(run) {
