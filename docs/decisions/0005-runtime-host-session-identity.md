@@ -17,7 +17,7 @@ The Runtime API can replay run and event projections when a trusted host reissue
 ## Consequences and limits
 
 - Journaled run/event projections survive normal Runtime host restarts and can appear in the new UI session.
-- A crash can still occur before the API poller records the last lifecycle event. The Guardian remains responsible for killing child trees after host loss.
+- A hard host crash can still occur after lifecycle emission but before the notification-triggered asynchronous journal append completes. Periodic polling remains a backstop, not a durability guarantee. The Guardian remains responsible for killing child trees after host loss.
 - POSIX mode checks do not apply on Windows; the sidecar therefore uses the shared Windows DACL verifier before existing metadata is accessed, and refuses unsafe ACLs without repair. The Windows integration ran in Actions run 40487083932 as part of the six-job Windows/macOS/Linux × Node 22/24 matrix. OS-user authentication remains outside this identity file's scope.
 - The identity binds only to the chosen journal path. Moving a journal without its sidecar deliberately starts a different API session.
 
