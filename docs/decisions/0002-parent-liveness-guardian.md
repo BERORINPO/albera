@@ -18,7 +18,7 @@ This adds no runtime package dependency and does not connect the Gateway to the 
 
 - This verifies containment when the Gateway host disappears, not when the Guardian itself is forcibly terminated or crashes.
 - POSIX cleanup uses process groups; descendants that deliberately create a new session can escape that group.
-- Windows tree termination uses `taskkill /T /F`; PID reuse and forceful termination remain risks. A native Job Object helper with controlled process creation is still needed for stronger guarantees.
+- Windows tree termination uses `taskkill /T /F`; the Guardian now checks its exit status and attempts to kill the direct child if taskkill fails. This cannot prove descendant cleanup after a failed tree kill. PID reuse and forceful termination remain risks; a native Job Object helper with controlled process creation is still needed for stronger guarantees.
 - Run/event state is memory-only. The Guardian kills an active provider after parent loss; it does not restore a run or audit history after restart.
 - The API remains disconnected and must not be hosted persistently.
 

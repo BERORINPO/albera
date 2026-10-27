@@ -3,6 +3,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
+import { terminateWindowsTree } from './windows-tree-termination.mjs';
 
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_ARGS = 128;
@@ -120,7 +121,11 @@ async function terminateTree(signal, pid) {
   terminationStarted = true;
   stopping = true;
   if (process.platform === 'win32') {
-    await taskkillTree(pid);
+    await terminateWindowsTree(pid, {
+      systemRoot: process.env.SystemRoot ?? process.env.SYSTEMROOT,
+      spawnImpl: spawn,
+      killFallback: () => provider?.kill('SIGKILL') ?? false,
+    });
   } else {
     signalGroup(pid, signal);
     if (signal !== 'SIGKILL') {
@@ -135,18 +140,6 @@ async function terminateTree(signal, pid) {
 function signalGroup(pid, signal) {
   try { process.kill(-pid, signal); }
   catch (error) { if (!error || error.code !== 'ESRCH') { try { provider?.kill('SIGKILL'); } catch { /* process already exited */ } } }
-}
-
-function taskkillTree(pid) {
-  const root = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-  if (!root) { try { provider?.kill('SIGKILL'); } catch { /* process already exited */ } return Promise.resolve(); }
-  return new Promise((resolve) => {
-    let killer;
-    try { killer = spawn(path.join(root, 'System32', 'taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { shell: false, windowsHide: true, stdio: 'ignore' }); }
-    catch { try { provider?.kill('SIGKILL'); } catch { /* process already exited */ } resolve(); return; }
-    killer.once('error', () => { try { provider?.kill('SIGKILL'); } catch { /* process already exited */ } resolve(); });
-    killer.once('close', () => resolve());
-  });
 }
 
 function send(message) {
