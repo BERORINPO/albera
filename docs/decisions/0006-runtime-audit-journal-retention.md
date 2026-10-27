@@ -27,6 +27,8 @@ Automatic rotation or retention expiry could destroy audit and recovery evidence
 
 A non-destructive one-off sample wrote 100 synthetic audit records to a newly created directory under the current user's home directory with the real Windows DACL guard enabled. The DACL passed. Windows Node 24.13.0 measured p50 0.586 ms, p95 0.723 ms, max 8.271 ms per sequential append including `fsync`. The generated directory was removed after the measurement. An initial LocalAppData candidate was refused by the same DACL guard and was preserved by the refusal path. This is evidence for one local directory and system only; it does not characterize other filesystems, disk states, or concurrency.
 
+The restore path reads an already opened, file-identity-checked backup only up to the validated size, probes at most one byte for concurrent growth, and rechecks the size before decrypting. `test/runtime-journal-backup.test.mjs` covers normal reads, a file that grows during the read, and an oversized declared length. Commit `778f632` passed Actions run `40538766885` across Windows/macOS/Linux × Node 22/24, including the Windows Runtime storage ACL integration. This bounds restore input memory; it does not address lost passphrases, key recovery, or retention policy.
+
 ## Consequences and limits
 
 - This is not an indefinite retention or durability guarantee. Disk loss, corruption, and manual deletion remain possible.
