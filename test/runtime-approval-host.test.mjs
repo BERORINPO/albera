@@ -322,6 +322,120 @@ test('approval UI localizes the control screen for Japanese browsers', async () 
   assert.match(elements.get('connection').textContent, /一回限りのコード/);
 });
 
+test('synthetic approval UI routes start, approve, stop, and input through scoped CSRF requests', async () => {
+  class FakeElement {
+    children = [];
+    listeners = new Map();
+    attributes = new Map();
+    dataset = {};
+    hidden = false;
+    value = '';
+    textContent = '';
+    append(...items) { this.children.push(...items); }
+    prepend(item) { this.children.unshift(item); }
+    replaceChildren(...items) { this.children = [...items]; }
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+    setAttribute(name, value) { this.attributes.set(name, value); }
+    querySelector() { return null; }
+    get lastElementChild() { return this.children.at(-1); }
+    remove() {}
+  }
+
+  const runId = '12345678-1234-4234-8234-123456789abc';
+  const approvalId = '22345678-1234-4234-8234-123456789abc';
+  const csrfToken = 'synthetic-ui-csrf';
+  const calls = [];
+  const timers = [];
+  let runState = 'idle';
+  let pendingApproval = false;
+  const elements = new Map();
+  const document = {
+    documentElement: { lang: 'en' },
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, new FakeElement());
+      return elements.get(id);
+    },
+    createElement(tag) { const element = new FakeElement(); element.tagName = tag; return element; },
+  };
+  const ok = (data, status = 200) => ({ ok: true, status, json: async () => data });
+  const fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url === 'api/session') return ok({ csrfToken, roots: ['C:\\synthetic-project'] });
+    if (url === 'api/approvals') return ok({ approvals: pendingApproval ? [{
+      id: approvalId,
+      expiresAt: Date.now() + 60_000,
+      request: { action: 'start', provider: 'claude', profile: 'read-only', cwd: 'C:\\synthetic-project', initialInput: 'synthetic task' },
+    }] : [] });
+    if (url === 'api/runs') return options.method === 'POST'
+      ? (runState = 'pending', pendingApproval = true, ok({ status: 'pending_approval' }, 202))
+      : ok({ runs: runState === 'running' ? [{ id: runId, provider: 'claude', profile: 'read-only-streaming', status: 'running', inputMode: 'claude-stream-json' }] : [] });
+    if (url === `api/approvals/${approvalId}` && options.method === 'POST') {
+      pendingApproval = false;
+      runState = 'running';
+      return ok({ decision: 'approved' });
+    }
+    if (url === `api/runs/${runId}/stop` && options.method === 'POST') return ok({ status: 'stop_requested' }, 202);
+    if (url === `api/runs/${runId}/input` && options.method === 'POST') return ok({ status: 'input_sent' }, 202);
+    throw new Error(`unexpected_request_${url}`);
+  };
+  class FakeEventSource {
+    constructor() {}
+    addEventListener() {}
+    close() {}
+  }
+  const findElement = (root, predicate) => {
+    if (predicate(root)) return root;
+    for (const child of root.children) {
+      const found = findElement(child, predicate);
+      if (found) return found;
+    }
+    return undefined;
+  };
+
+  const source = await readFile(new URL('../src/runtime/approval-ui/approval.mjs', import.meta.url), 'utf8');
+  vm.runInNewContext(source, {
+    document, navigator: { language: 'en' }, window: { addEventListener() {} }, EventSource: FakeEventSource,
+    fetch, setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; }, clearTimeout() {},
+  });
+  await new Promise((resolve) => {
+    const waitForInitialization = () => elements.get('start-form')?.listeners.has('submit')
+      && elements.get('connection')?.textContent === 'Connected to the local Runtime host' ? resolve() : setImmediate(waitForInitialization);
+    waitForInitialization();
+  });
+
+  document.getElementById('prompt');
+  elements.get('root').value = 'C:\\synthetic-project';
+  elements.get('profile').value = 'read-only-streaming';
+  elements.get('prompt').value = 'synthetic task';
+  const submitButton = elements.get('start-button');
+  await elements.get('start-form').listeners.get('submit')({ preventDefault() {}, submitter: submitButton });
+  const approvalButton = findElement(elements.get('approvals'), (element) => element.tagName === 'button' && element.textContent === 'Approve');
+  assert.ok(approvalButton, 'the synthetic start response should render a pending approval');
+  await approvalButton.listeners.get('click')();
+
+  const stopButton = findElement(elements.get('runs'), (element) => element.tagName === 'button' && element.textContent === 'Request stop');
+  const input = findElement(elements.get('runs'), (element) => element.tagName === 'textarea');
+  const inputForm = findElement(elements.get('runs'), (element) => element.tagName === 'form');
+  assert.ok(stopButton);
+  assert.ok(input);
+  assert.ok(inputForm);
+  await stopButton.listeners.get('click')();
+  input.value = 'synthetic follow-up';
+  await inputForm.listeners.get('submit')({ preventDefault() {} });
+
+  const posts = calls.filter(({ options }) => options.method === 'POST');
+  assert.deepEqual(posts.map(({ url }) => url), ['api/runs', `api/approvals/${approvalId}`, `api/runs/${runId}/stop`, `api/runs/${runId}/input`]);
+  assert.equal(JSON.parse(posts[0].options.body).prompt, 'synthetic task');
+  assert.deepEqual(JSON.parse(posts[1].options.body), { decision: 'approve' });
+  assert.equal(posts[2].options.body, undefined);
+  assert.deepEqual(JSON.parse(posts[3].options.body), { text: 'synthetic follow-up' });
+  for (const { options } of posts) {
+    assert.equal(options.headers['X-ALBERA-CSRF'], csrfToken);
+    assert.equal(options.credentials, 'same-origin');
+    assert.equal(Object.hasOwn(options.headers, 'Authorization'), false);
+  }
+});
+
 test('approval UI discloses external transmission, charges, and filesystem scope before approval', async () => {
   class FakeElement {
     children = [];
