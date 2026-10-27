@@ -4,7 +4,7 @@ Date: 2026-10-28
 
 ## Status
 
-Implemented; cross-platform Actions pending.
+Implemented; Actions run 40587255056 passed all six Windows/macOS/Linux × Node 22/24 jobs.
 
 ## Context
 
@@ -19,4 +19,4 @@ Check the Gateway closing state after the final asynchronous executable identity
 - A trusted host can finish shutdown while a version probe is pending; when it resolves, the start request cannot spawn afterward.
 - The executable identity checks remain in place. This change only closes the lifecycle race and does not remove the OS-level replacement race between the last identity check and `spawn()`.
 - A synthetic regression holds the version probe, awaits completed Gateway shutdown, releases the probe, and verifies a `gateway_closed` result, zero spawn calls, and no run records.
-- Windows Node 24.13.0: `npm test` 558 passed / 6 skipped, `npm run arch`, `npm run smoke`, `npm run package:smoke`, and `git diff --check` passed. Cross-platform Actions are pending.
+- Windows Node 24.13.0: `npm test` 558 passed / 6 skipped, `npm run arch`, `npm run smoke`, `npm run package:smoke`, and `git diff --check` passed. Actions run [40587255056](https://github.com/BERORINPO/pigeonholes/actions/runs/40587255056) passed all six Windows/macOS/Linux × Node 22/24 jobs, including Windows Runtime storage ACL integration.
