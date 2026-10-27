@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   test:
-    name: ALBERA / ${{ matrix.os }} / Node ${{ matrix.node }}
+    # Keep these job names aligned with main's required status-check contexts.
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
