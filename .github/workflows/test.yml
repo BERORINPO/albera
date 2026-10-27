@@ -1,4 +1,4 @@
-name: test
+name: ALBERA checks
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    name: ALBERA / ${{ matrix.os }} / Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
