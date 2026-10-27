@@ -1,6 +1,6 @@
 # アーキテクチャ (ALBERA)
 
-形: 4 役割・一方向依存 (entry → adapter → core → shared)。検査は `npm run arch`。Why: アプリが書き換え続けるファイルを読むだけの道具なので、外界 (fs) を adapter に閉じ込め、判定は時計も言葉も持たない純粋関数にして、全規則を合成データのテストで固定する。言葉は画面と端末の辞書だけが持つ。
+形: 4 つの読み取り専用アプリ層 (entry → adapter → core → shared) と、そこから分離した Runtime Gateway 境界。検査は `npm run arch`。読み取り専用サーバーから Gateway を import できないこと、Gateway のプロセス起動が独立した層に閉じることを検査する。既存アプリの外界 (fs) は adapter に閉じ込め、判定は時計も言葉も持たない純粋関数にし、全規則を合成データのテストで固定する。言葉は画面と端末の辞書だけが持つ。
 
 ## 1. 役割対応表 (scripts/arch-check.mjs と 1:1)
 
@@ -10,6 +10,7 @@
 | core | src/core/ | turn / classify (tailFacts) / project / board / session / text (cleanText) / activity (していること・commandHead) / context (窓・段階・contextMemo)。fs・clock・env・言葉なし (now と前回の段階は引数、出力はコードと params) |
 | adapter | src/adapters/ | app-sessions-fs + fake-app-sessions / transcripts-fs + fake-transcripts (末尾・subMtime・subLive) / folder-hints-fs + fake-folder-hints / session-record (許可項目への射影・attachFolders。model は窓のためだけ) / demo-data (合成、en・ja) / map-limit |
 | entry | src/entry/ | server (起動・CLI・shebang) / config (フラグと env の fail-fast、セッションフォルダの候補、起動例の組み立て) / messages (端末の言葉 en・ja) / service (wiring 1 点・2 秒キャッシュ・ETag・tail 解析の memo と前回の段階をメモリに持つ) / demo (`--demo` の Fake の組。1 分ごとに今の時刻から作り直す) / http (ヘッダー一括・起動時に作る配信表・`/api/hello`) / probe (使用中のポートで応答しているのがこのボードらしいか、デモか実データか) |
+| runtime | src/runtime/ | `gateway.mjs`: 固定 provider allowlist の実行ファイル検証、ホスト提供の承認 callback、プロセス起動/停止、固定形式のライフサイクルイベント。許可ルートは working directory の検査に限り、OS sandbox ではない。画面、HTTP、盤面、永続化とは未接続 |
 | 画面 | public/ | index.html / tokens.css style.css rows.css tidy.css canvas.css / app actions poll state ui-state render front rows labels cleanup handoff keys notify favicon copy view format times (.mjs) / canvas canvas-slip canvas-sheet canvas-fit canvas-bar canvas-ctl canvas-view canvas-act canvas-layout canvas-desk canvas-fold canvas-camera canvas-input (.mjs、layout・desk・fold・camera は純粋。fit は見えない箱で付箋の中身の高さを測り、layout に入力として渡す) / doing.mjs (していることの言葉、純粋) / i18n.mjs dict-en.mjs dict-ja.mjs dict-en-canvas.mjs dict-ja-canvas.mjs dict-en-handoff.mjs dict-ja-handoff.mjs (言葉はここだけ。dict-<lang>-<part>.mjs は 400 行のための分割) / api.mjs (唯一の fetch)。画面のファイルは 400 行まで (arch 7)。spec/ui.md §1 |
 
 ## 2. 外部境界表
