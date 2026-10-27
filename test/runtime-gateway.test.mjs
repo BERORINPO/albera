@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile, chmod } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -62,7 +62,7 @@ test('host authorization receives the exact canonical executable, cwd and argv b
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, args });
   assert.equal(spawnCount, 1);
   assert.deepEqual(seen[0], {
-    action: 'start', provider: 'claude', executable: process.execPath, cwd: f.cwd, args,
+    action: 'start', provider: 'claude', executable: process.execPath, cwd: await realpath(f.cwd), args,
     platform: process.platform, maxDurationMs: 15 * 60 * 1000, maxActive: 4,
   });
   assert.equal(Object.isFrozen(seen[0]), true);
