@@ -122,7 +122,7 @@ test('approval host issues one-time HttpOnly SameSite sessions and never serves 
   assert.doesNotMatch(script, /Bearer\s|localStorage|sessionStorage/);
 });
 
-test('approval host refreshes the browser session expiry and rejects an expired cookie', async (t) => {
+test('approval host refreshes active browser sessions and rejects an expired idle cookie', async (t) => {
   const realNow = Date.now;
   let now = realNow();
   Date.now = () => now;
@@ -130,11 +130,17 @@ test('approval host refreshes the browser session expiry and rejects an expired 
   const f = await fixture(t);
 
   now += 1000;
-  const refreshedResponse = await get(f, '/api/session');
-  assert.equal(refreshedResponse.status, 200);
-  const refreshed = await refreshedResponse.json();
-  assert.ok(refreshed.expiresAt > f.session.expiresAt);
-  now = refreshed.expiresAt + 1;
+  const activeResponse = await get(f, '/api/runs');
+  assert.equal(activeResponse.status, 200);
+  const refreshedCookie = activeResponse.headers.get('set-cookie');
+  assert.match(refreshedCookie, /HttpOnly/);
+  assert.match(refreshedCookie, /SameSite=Strict/);
+  const ttlMs = Number(refreshedCookie.match(/Max-Age=(\d+)/)?.[1]) * 1000;
+  assert.ok(Number.isFinite(ttlMs) && ttlMs >= 60_000);
+
+  now = f.session.expiresAt + 1;
+  assert.equal((await get(f, '/api/runs')).status, 200);
+  now += ttlMs + 1;
   assert.equal((await get(f, '/api/runs')).status, 401);
 });
 

@@ -70,14 +70,18 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
     if (req.method === 'POST' && url.pathname === '/api/session') return createSession(req, res, expectedOrigin);
     if (!url.pathname.startsWith('/api/')) return send(res, 404, JSON.stringify({ error: 'not_found' }));
 
-    const session = findSession(req.headers.cookie);
-    if (!session) return send(res, 401, JSON.stringify({ error: 'session_required' }));
+    const authenticatedSession = findSession(req.headers.cookie);
+    if (!authenticatedSession) return send(res, 401, JSON.stringify({ error: 'session_required' }));
+    const { token: sessionToken, session } = authenticatedSession;
     const upstream = upstreamRoute(req.method ?? '', url, req.headers['last-event-id']);
     if (!upstream) return send(res, 404, JSON.stringify({ error: 'not_found' }));
     if (req.method !== 'GET') {
       if (origin !== expectedOrigin || (site !== undefined && site !== 'same-origin')) return send(res, 403, JSON.stringify({ error: 'forbidden' }));
       if (!constantTimeStringEqual(req.headers['x-albera-csrf'], session.csrfToken)) return send(res, 403, JSON.stringify({ error: 'csrf_failed' }));
     }
+
+    session.expiresAt = Date.now() + sessionLifetimeMs;
+    res.setHeader('Set-Cookie', cookieHeader(sessionToken, sessionLifetimeMs));
 
     let body;
     if (req.method === 'POST') {
@@ -128,7 +132,8 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
 
   function findSession(rawCookie) {
     const value = parseCookie(rawCookie, 'albera_runtime_session');
-    return sessionForToken(value);
+    const session = sessionForToken(value);
+    return session ? { token: value, session } : undefined;
   }
 
   function sessionForToken(value) {
