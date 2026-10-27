@@ -247,11 +247,13 @@ test('approval UI localizes the control screen for Japanese browsers', async () 
   assert.equal(document.documentElement.lang, 'ja');
   assert.equal(elements.get('runtime-control-title').textContent, 'Runtime 操作');
   assert.equal(elements.get('start-button').textContent, '起動を申請');
+  assert.match(elements.get('filesystem-disclosure').textContent, /OSのサンドボックスではありません/);
+  assert.match(elements.get('filesystem-disclosure').textContent, /OSユーザー権限/);
   assert.match(elements.get('provider-disclosure').textContent, /外部プロバイダーへ送信され、費用が発生する場合があります/);
   assert.match(elements.get('connection').textContent, /一回限りのコード/);
 });
 
-test('approval UI discloses possible external transmission and charges before start approval', async () => {
+test('approval UI discloses external transmission, charges, and filesystem scope before approval', async () => {
   class FakeElement {
     children = [];
     listeners = new Map();
@@ -306,9 +308,12 @@ test('approval UI discloses possible external transmission and charges before st
   const flatten = (element) => [element.textContent, ...element.children.flatMap(flatten)].join(' ');
   assert.equal(cards.length, 2);
   for (const card of cards) {
+    assert.match(flatten(card), /The allowed root sets only the working directory; it is not a sandbox/);
+    assert.match(flatten(card), /runs with your OS account permissions and may access other local files and resources/);
     assert.match(flatten(card), /may send approved text to an external provider and may incur charges/);
-    const notice = card.children.find((element) => element.className === 'notice');
-    assert.equal(notice.attributes.get('role'), 'note');
+    const notices = card.children.filter((element) => element.className === 'notice');
+    assert.ok(notices.length >= 2);
+    assert.ok(notices.every((notice) => notice.attributes.get('role') === 'note'));
   }
   assert.match(flatten(cards[0]), /synthetic task text/);
   assert.match(flatten(cards[0]), /After approval, ALBERA runs C:\\tools\\claude\.exe --version before launch and requires Claude Code 2\.1\.259 or later\./);

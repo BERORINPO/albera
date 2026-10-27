@@ -30,6 +30,7 @@
         <form id="start-form">
           <label><span id="root-label">Allowed project root</span> <select id="root" required></select></label>
           <label><span id="prompt-label">Task prompt</span> <textarea id="prompt" maxlength="16000" required rows="5"></textarea></label>
+          <p id="filesystem-disclosure" class="notice" role="note">The allowed root sets only the working directory; it is not a sandbox. The Claude process runs with your OS account permissions and may access other local files and resources. Use only projects and data you are comfortable exposing to this process.</p>
           <p id="provider-disclosure" class="muted">The configured Claude account may send approved text to an external provider and may incur charges. Runtime cannot identify the account or estimate cost. Check your CLI account before approval.</p>
           <label><span id="profile-label">Session profile</span> <select id="profile"><option value="read-only">Read only</option><option value="read-only-streaming">Read only with approved input</option></select></label>
           <button id="start-button" type="submit">Request start</button>
