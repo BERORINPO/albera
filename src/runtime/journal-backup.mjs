@@ -65,7 +65,7 @@ export async function restoreRuntimeJournal({ backupPath, destinationDirectory, 
   try {
     const openedInfo = await backupHandle.stat();
     if (!openedInfo.isFile() || openedInfo.size > MAX_BACKUP_BYTES || openedInfo.dev !== backupInfo.dev || openedInfo.ino !== backupInfo.ino) throw new Error('backup_file_invalid');
-    encrypted = await backupHandle.readFile();
+    encrypted = await readBoundedBackupHandle(backupHandle, openedInfo.size);
   } finally {
     await backupHandle.close();
   }
@@ -87,6 +87,24 @@ export async function restoreRuntimeJournal({ backupPath, destinationDirectory, 
     // Preserve the newly created directory and any partial restore for explicit user inspection.
     throw error;
   }
+}
+
+/** Read only the opened file's previously validated size, with one bounded growth probe. */
+export async function readBoundedBackupHandle(handle, expectedSize) {
+  if (!Number.isSafeInteger(expectedSize) || expectedSize < 0 || expectedSize > MAX_BACKUP_BYTES) throw new Error('backup_file_invalid');
+  const contents = Buffer.allocUnsafe(expectedSize);
+  let offset = 0;
+  while (offset < expectedSize) {
+    const { bytesRead } = await handle.read(contents, offset, expectedSize - offset, offset);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  if (offset !== expectedSize) throw new Error('backup_file_invalid');
+
+  const extraByte = Buffer.allocUnsafe(1);
+  const { bytesRead } = await handle.read(extraByte, 0, 1, offset);
+  if (bytesRead !== 0 || (await handle.stat()).size !== expectedSize) throw new Error('backup_file_invalid');
+  return contents;
 }
 
 /** Copy a validated complete-record prefix to a new journal beside the source, preserving the original bytes. */

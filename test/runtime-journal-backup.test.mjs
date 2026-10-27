@@ -4,12 +4,35 @@ import path from 'node:path';
 import { appendFile, lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
-import { backupRuntimeJournal, recoverRuntimeJournalTail, restoreRuntimeJournal } from '../src/runtime/journal-backup.mjs';
+import { backupRuntimeJournal, readBoundedBackupHandle, recoverRuntimeJournalTail, restoreRuntimeJournal } from '../src/runtime/journal-backup.mjs';
 import { loadOrCreateRuntimeSessionId, readRuntimeSessionId } from '../src/runtime/session-identity.mjs';
 import { parseRuntimeArgs } from '../src/runtime/entry.mjs';
 
 const verifyWindowsAcl = async () => {};
 const PASSPHRASE = 'synthetic test phrase 2026';
+
+test('backup restore reads only the validated size and rejects a file that grows while being read', async () => {
+  const data = Buffer.from('backup');
+  const makeHandle = (contents) => ({
+    requests: [],
+    async read(buffer, offset, length, at) {
+      this.requests.push(length);
+      const count = Math.max(0, Math.min(length, contents.byteLength - at));
+      if (count) contents.copy(buffer, offset, at, at + count);
+      return { bytesRead: count };
+    },
+    async stat() { return { size: contents.byteLength }; },
+  });
+  const handle = makeHandle(data);
+  assert.deepEqual(await readBoundedBackupHandle(handle, data.byteLength), data);
+  assert.deepEqual(handle.requests, [data.byteLength, 1]);
+
+  const grownHandle = makeHandle(Buffer.concat([data, Buffer.from('x')]));
+  await assert.rejects(readBoundedBackupHandle(grownHandle, data.byteLength), /backup_file_invalid/);
+  assert.deepEqual(grownHandle.requests, [data.byteLength, 1], 'growth detection reads no more than one extra byte');
+  const oversizedHandle = { async read() { assert.fail('oversized input must be rejected before reading'); } };
+  await assert.rejects(readBoundedBackupHandle(oversizedHandle, Number.MAX_SAFE_INTEGER), /backup_file_invalid/);
+});
 
 async function sourceFixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-journal-backup-'));
