@@ -14,9 +14,9 @@ const LOCK_MAGIC = 'ALBERA_RUNTIME_AUDIT_LOCK_V1';
 const SESSION_ID_RE = /^[0-9a-f]{32}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
-const ACTIONS = new Set(['run.start', 'run.stop']);
+const ACTIONS = new Set(['run.start', 'run.stop', 'run.input']);
 const PHASES = new Set(['requested', 'accepted', 'denied', 'failed']);
-const EVENT_TYPES = new Set(['started', 'stop_requested', 'stopped', 'exited', 'failed', 'stop_failed']);
+const EVENT_TYPES = new Set(['started', 'stop_requested', 'stopped', 'exited', 'failed', 'stop_failed', 'input_sent']);
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGABRT']);
 
 export class JournalError extends Error {

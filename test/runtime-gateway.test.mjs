@@ -26,7 +26,7 @@ async function fixture(options = {}) {
 async function waitFor(predicate, timeoutMs = 3000) {
   const end = Date.now() + timeoutMs;
   while (Date.now() < end) {
-    const value = predicate();
+    const value = await predicate();
     if (value) return value;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -59,6 +59,17 @@ test('read-only provider profile generates fixed Claude argv and refuses unverif
     assert.throws(() => buildProviderLaunch('claude', prompt), (error) => error.code === 'invalid_args');
   }
   assert.equal(buildProviderLaunch('claude', '--dangerously-skip-permissions').args.at(-1), 'ALBERA task:\n--dangerously-skip-permissions');
+});
+
+test('streaming read-only profile fixes stream-json transport and keeps prompts out of argv', () => {
+  const launch = buildProviderLaunch('claude', 'initial secret', RUNTIME_PROFILES.readOnlyStreaming);
+  assert.deepEqual(launch.args, [
+    '--restricted', '--safe-mode', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan', '--permission-prompts', 'none',
+    '--print', '--max-turns', '1', '--no-session-persistence', '--input-format', 'stream-json', '--output-format', 'stream-json',
+  ]);
+  assert.equal(launch.inputMode, 'claude-stream-json');
+  assert.equal(launch.initialInput, 'ALBERA task:\ninitial secret');
+  assert.equal(JSON.stringify(launch.args).includes('initial secret'), false);
 });
 
 test('default Gateway generates the read-only profile and refuses raw request argv', async (t) => {
@@ -319,6 +330,68 @@ test('manual stop requires separate authorization; denied stop leaves the run ac
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   await assert.rejects(f.gateway.stop(run.id), (error) => error.code === 'confirmation_required');
   assert.equal(f.gateway.get(run.id).status, 'running');
+});
+
+test('follow-up input requires exact host approval, serializes requests, and emits no content', async (t) => {
+  const approvals = [];
+  const writes = [];
+  let inputAllowed = true;
+  let releaseApproval;
+  const gate = new Promise((resolve) => { releaseApproval = resolve; });
+  const f = await fixture({
+    authorize: async (request) => {
+      approvals.push(request);
+      if (request.action === 'input' && approvals.filter((item) => item.action === 'input').length === 1) await gate;
+      return request.action !== 'input' || inputAllowed;
+    },
+    buildLaunchImpl: (_provider, profile, prompt) => ({ profile, args: [], inputMode: 'claude-stream-json', initialInput: prompt }),
+    spawnImpl: () => {
+      const child = new FakeChild();
+      child.writeInput = async (text) => { writes.push(text); };
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
+    },
+  });
+  t.after(f.dispose);
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'initial task', profile: RUNTIME_PROFILES.readOnlyStreaming });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+  const sending = f.gateway.sendInput(run.id, 'private follow-up');
+  await waitFor(() => approvals.filter((item) => item.action === 'input').length === 1);
+  await assert.rejects(f.gateway.sendInput(run.id, 'concurrent follow-up'), (error) => error.code === 'input_busy');
+  assert.equal(approvals.find((item) => item.action === 'input').text, 'ALBERA follow-up:\nprivate follow-up');
+  releaseApproval();
+  await sending;
+  assert.deepEqual(writes, ['ALBERA follow-up:\nprivate follow-up']);
+  const events = JSON.stringify(f.gateway.events());
+  assert.match(events, /input_sent/);
+  assert.equal(events.includes('private follow-up'), false);
+  assert.equal(JSON.stringify(f.gateway.list()).includes('private follow-up'), false);
+  inputAllowed = false;
+  await assert.rejects(f.gateway.sendInput(run.id, 'denied private text'), (error) => error.code === 'confirmation_required');
+  assert.deepEqual(writes, ['ALBERA follow-up:\nprivate follow-up']);
+});
+
+test('streaming input transport works with a synthetic helper process and no AI CLI', async (t) => {
+  const f = await fixture({
+    authorize: async () => true,
+    buildLaunchImpl: (_provider, profile) => ({
+      profile, args: ['-e', "import fs from 'node:fs';process.stdin.setEncoding('utf8');process.stdin.on('data',d=>fs.appendFileSync(process.argv[1],d));setInterval(()=>{},1000);", path.join(f.root, 'inputs.jsonl')],
+      inputMode: 'claude-stream-json', initialInput: 'ALBERA task:\nsynthetic initial',
+    }),
+  });
+  t.after(f.dispose);
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'synthetic initial', profile: RUNTIME_PROFILES.readOnlyStreaming });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+  await f.gateway.sendInput(run.id, 'synthetic second');
+  const marker = path.join(f.root, 'inputs.jsonl');
+  await waitFor(async () => {
+    try { return (await readFile(marker, 'utf8')).trim().split('\n').length === 2; } catch { return false; }
+  });
+  const messages = (await readFile(marker, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(messages.map((message) => message.message.content), ['ALBERA task:\nsynthetic initial', 'ALBERA follow-up:\nsynthetic second']);
+  assert.ok(messages.every((message) => message.type === 'user' && message.parent_tool_use_id === null));
+  await f.gateway.stop(run.id);
+  await waitFor(() => f.gateway.get(run.id).status === 'stopped');
 });
 
 test('concurrent stop requests send one termination signal', async (t) => {

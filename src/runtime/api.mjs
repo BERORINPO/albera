@@ -13,17 +13,18 @@ const MAX_TRACKED_RUNS = 64;
 const MAX_PENDING_STREAM_EVENTS = 256;
 const MAX_SESSION_EVENT_LOGS = 256;
 const MAX_SESSION_EVENTS = 256;
-const API_SCOPES = new Set(['health', 'providers:read', 'runs:read', 'events:read', 'runs:start', 'runs:stop']);
+const API_SCOPES = new Set(['health', 'providers:read', 'runs:read', 'events:read', 'runs:start', 'runs:stop', 'runs:input']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
 const RUN_STATUSES = new Set(['starting', 'running', 'stopping', 'stopped', 'exited', 'failed', 'interrupted']);
-const EVENT_TYPES = new Set(['started', 'stop_requested', 'stopped', 'exited', 'failed', 'stop_failed']);
+const EVENT_TYPES = new Set(['started', 'stop_requested', 'stopped', 'exited', 'failed', 'stop_failed', 'input_sent']);
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGABRT']);
 const SESSION_ID_RE = /^[0-9a-f]{32}$/;
 const GATEWAY_ERRORS = new Set([
   'confirmation_required', 'unknown_provider', 'invalid_args', 'cwd_not_allowed', 'executable_unavailable',
   'capacity', 'unknown_run', 'spawn_failed', 'stop_failed', 'authorization_failed', 'gateway_closed',
-  'unsupported_profile', 'profile_unavailable', 'audit_unavailable',
+  'unsupported_profile', 'profile_unavailable', 'audit_unavailable', 'input_unavailable', 'input_not_ready',
+  'input_busy', 'input_failed',
 ]);
 
 class ApiError extends Error {
@@ -34,7 +35,7 @@ class ApiError extends Error {
 /**
  * Create an isolated loopback API. Bearer credentials are never persisted; optional audit records omit credential values.
  * The Gateway still performs its separate host authorization; possession of this token alone cannot launch.
- * @param {{gateway: {start: Function, stop: Function, list: Function, events: Function}, pollIntervalMs?: number, streamLifetimeMs?: number, maxStreams?: number}} options
+ * @param {{gateway: {start: Function, stop: Function, list: Function, events: Function, sendInput?: Function}, pollIntervalMs?: number, streamLifetimeMs?: number, maxStreams?: number}} options
  */
 export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, streamLifetimeMs = MAX_STREAM_LIFETIME_MS, maxStreams = MAX_STREAMS } = {}) {
   if (!gateway || ['start', 'stop', 'list', 'events'].some((method) => typeof gateway[method] !== 'function')) throw new TypeError('Runtime API requires a Gateway');
@@ -180,7 +181,43 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
           try { await gateway.close?.(); } catch { /* fail closed even if cleanup reports an error */ }
           throw new ApiError(503, 'audit_unavailable');
         }
-        if (journal) await captureGatewayEvents();
+        await captureGatewayEvents();
+        return sendJson(res, 200, { run: safeRun });
+      }
+      const inputMatch = req.method === 'POST' && url.pathname.match(/^\/v1\/runs\/([^/]+)\/input$/);
+      if (inputMatch) {
+        if (!UUID_RE.test(inputMatch[1]) || runOwners.get(inputMatch[1]) !== credential.sessionId) throw new ApiError(404, 'not_found');
+        if (recoveredRuns.has(inputMatch[1]) && !gateway.list().some((run) => run?.id === inputMatch[1])) throw new ApiError(409, 'run_not_active');
+        const body = await readJson(req);
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1
+          || typeof body.text !== 'string' || body.text.length === 0) throw new ApiError(400, 'invalid_request');
+        if (typeof gateway.sendInput !== 'function') throw new ApiError(422, 'input_unavailable');
+        const requestId = randomUUID();
+        await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.input', phase: 'requested', runId: inputMatch[1] });
+        let run;
+        try { run = await gateway.sendInput(inputMatch[1], body.text); }
+        catch (error) {
+          try { await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.input', phase: safeFailurePhase(error), runId: inputMatch[1], errorCode: safeGatewayCode(error) }); }
+          catch (auditError) {
+            try { await gateway.close(); } catch { /* stop executions when input authorization could not be recorded */ }
+            throw auditError;
+          }
+          throw error;
+        }
+        const safeRun = projectRun(run);
+        if (!safeRun) {
+          try { await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.input', phase: 'failed', runId: inputMatch[1], errorCode: 'runtime_invalid_response' }); }
+          catch { auditFailure = Boolean(journal); }
+          try { await gateway.close?.(); } catch { /* fail closed on malformed Gateway response */ }
+          throw new ApiError(502, 'runtime_invalid_response');
+        }
+        try { await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.input', phase: 'accepted', provider: safeRun.provider, runId: safeRun.id }); }
+        catch {
+          auditFailure = true;
+          try { await gateway.close?.(); } catch { /* fail closed if accepted input cannot be audited */ }
+          throw new ApiError(503, 'audit_unavailable');
+        }
+        await captureGatewayEvents();
         return sendJson(res, 200, { run: safeRun });
       }
       return sendJson(res, 404, { error: 'not_found' });
@@ -194,7 +231,9 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
         : code === 'unknown_run' ? 404
           : code === 'capacity' ? 429
             : code === 'gateway_closed' ? 503
-              : ['unsupported_profile', 'profile_unavailable'].includes(code) ? 422
+              : ['unsupported_profile', 'profile_unavailable', 'input_unavailable'].includes(code) ? 422
+            : ['input_not_ready', 'input_busy'].includes(code) ? 409
+              : ['input_failed'].includes(code) ? 502
                 : ['unknown_provider', 'invalid_args', 'cwd_not_allowed'].includes(code) ? 400
                   : 500;
       return sendJson(res, status, { error: code });
@@ -518,6 +557,7 @@ function requiredScope(method, pathname) {
   if (method === 'GET' && ['/v1/events', '/v1/events/stream'].includes(pathname)) return 'events:read';
   if (method === 'POST' && pathname === '/v1/runs') return 'runs:start';
   if (method === 'POST' && /^\/v1\/runs\/[^/]+\/stop$/.test(pathname)) return 'runs:stop';
+  if (method === 'POST' && /^\/v1\/runs\/[^/]+\/input$/.test(pathname)) return 'runs:input';
   return null;
 }
 function sendJson(res, status, value) {

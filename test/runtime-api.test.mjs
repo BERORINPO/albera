@@ -13,6 +13,7 @@ function fakeGateway(overrides = {}) {
   const gateway = {
     async start(input) { calls.push(['start', input]); return { id: '12345678-1234-4234-8234-123456789abc', provider: 'claude', status: 'starting', cwd: 'secret-path', prompt: 'secret-prompt' }; },
     async stop(id) { calls.push(['stop', id]); return { id, provider: 'claude', status: 'stopped', args: ['secret'] }; },
+    async sendInput(id, text) { calls.push(['input', id, text]); return { id, provider: 'claude', status: 'running' }; },
     list() { return [{ id: '12345678-1234-4234-8234-123456789abc', provider: 'claude', status: 'running', command: 'secret' }]; },
     events({ after = 0 } = {}) { return [{ id: 1, runId: '12345678-1234-4234-8234-123456789abc', provider: 'claude', type: 'started', at: 1, prompt: 'secret', path: 'secret' }].filter((event) => event.id > after); },
     async close() { calls.push(['close']); },
@@ -150,7 +151,7 @@ test('provider catalog is read-only, scope-protected, and reports profile verifi
   assert.deepEqual(body.providers.map(({ id, status, profiles, runtimeValidation, inputTransport, eventTransport, unavailableReason }) => ({
     id, status, profiles, runtimeValidation, inputTransport, eventTransport, unavailableReason,
   })), [
-    { id: 'claude', status: 'profile-only', profiles: ['read-only'], runtimeValidation: 'argv-only', inputTransport: false, eventTransport: 'lifecycle-only', unavailableReason: null },
+    { id: 'claude', status: 'profile-only', profiles: ['read-only', 'read-only-streaming'], runtimeValidation: 'synthetic-transport-only', inputTransport: true, eventTransport: 'lifecycle-only', unavailableReason: null },
     { id: 'codex', status: 'unavailable', profiles: [], runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
     { id: 'opencode', status: 'unavailable', profiles: [], runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
   ]);
@@ -163,8 +164,46 @@ test('provider catalog is read-only, scope-protected, and reports profile verifi
   }
   body.providers[0].profiles.push('workspace-write');
   const fresh = JSON.parse((await request(f.address, f.api, { route: '/v1/providers' })).text);
-  assert.deepEqual(fresh.providers[0].profiles, ['read-only']);
+  assert.deepEqual(fresh.providers[0].profiles, ['read-only', 'read-only-streaming']);
   assert.equal(f.calls.length, 0);
+});
+
+test('follow-up input route requires runs:input, enforces ownership, and never audits message text', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-input-audit-'));
+  const journal = await openRuntimeAuditJournal(path.join(root, 'audit.jsonl'));
+  const sessionId = 'a'.repeat(32);
+  const f = await apiFixture({ journal }, {}, { sessionId });
+  t.after(async () => { await f.close(); await journal.close(); await rm(root, { recursive: true, force: true }); });
+
+  const noInputScope = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs/12345678-1234-4234-8234-123456789abc/input', body: JSON.stringify({ text: 'should not pass' }),
+  });
+  assert.equal(noInputScope.status, 401);
+  const inputToken = f.api.createCredential(['runs:input'], { sessionId });
+  const foreignToken = f.api.createCredential(['runs:input'], { sessionId: 'b'.repeat(32) });
+  const started = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'initial' }),
+  });
+  assert.equal(started.status, 202);
+  const runId = JSON.parse(started.text).run.id;
+  const foreign = await request(f.address, f.api, {
+    method: 'POST', route: `/v1/runs/${runId}/input`, token: foreignToken, body: JSON.stringify({ text: 'foreign session' }),
+  });
+  assert.equal(foreign.status, 404);
+
+  const privateText = 'private follow-up that must never enter the journal';
+  const accepted = await request(f.address, f.api, {
+    method: 'POST', route: `/v1/runs/${runId}/input`, token: inputToken, body: JSON.stringify({ text: privateText }),
+  });
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(f.calls.at(-1), ['input', runId, privateText]);
+  const invalid = await request(f.address, f.api, {
+    method: 'POST', route: `/v1/runs/${runId}/input`, token: inputToken, body: JSON.stringify({ text: 'text', extra: true }),
+  });
+  assert.equal(invalid.status, 400);
+  const records = journal.list().filter((record) => record.action === 'run.input');
+  assert.deepEqual(records.map(({ phase }) => phase), ['requested', 'accepted']);
+  assert.equal(JSON.stringify(journal.list()).includes(privateText), false);
 });
 
 test('session credentials enforce least-privilege scopes and can be revoked independently', async (t) => {

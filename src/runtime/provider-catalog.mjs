@@ -3,9 +3,9 @@ const PROVIDERS = Object.freeze([
   Object.freeze({
     id: 'claude',
     status: 'profile-only',
-    profiles: Object.freeze(['read-only']),
-    runtimeValidation: 'argv-only',
-    inputTransport: false,
+    profiles: Object.freeze(['read-only', 'read-only-streaming']),
+    runtimeValidation: 'synthetic-transport-only',
+    inputTransport: true,
     eventTransport: 'lifecycle-only',
     unavailableReason: null,
   }),

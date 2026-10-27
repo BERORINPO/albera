@@ -22,10 +22,11 @@ test('audit journal persists serialized allowlisted records and reopens without 
     journal.append(auditRecord()),
     journal.append(auditRecord({ requestId: '32345678-1234-4234-8234-123456789abc', phase: 'accepted', runId: RUN_A })),
     journal.append(auditRecord({ sessionId: SESSION_B, requestId: '42345678-1234-4234-8234-123456789abc', phase: 'denied', errorCode: 'confirmation_required' })),
+    journal.append(auditRecord({ requestId: '52345678-1234-4234-8234-123456789abc', action: 'run.input', phase: 'accepted', runId: RUN_A })),
   ]);
-  assert.deepEqual(records.map(({ sequence }) => sequence), [1, 2, 3]);
-  assert.equal(journal.list().length, 3);
-  assert.equal(journal.list({ sessionId: SESSION_A }).length, 2);
+  assert.deepEqual(records.map(({ sequence }) => sequence), [1, 2, 3, 4]);
+  assert.equal(journal.list().length, 4);
+  assert.equal(journal.list({ sessionId: SESSION_A }).length, 3);
   assert.equal(journal.list({ sessionId: SESSION_B }).length, 1);
   assert.throws(() => journal.append(auditRecord({ prompt: 'synthetic-secret' })), /invalid_journal_record/);
   await journal.close();
@@ -34,7 +35,7 @@ test('audit journal persists serialized allowlisted records and reopens without 
   assert.equal(content.includes('synthetic-secret'), false);
   assert.equal(content.includes('prompt'), false);
   const reopened = await openRuntimeAuditJournal(file);
-  assert.deepEqual(reopened.list({ sessionId: SESSION_A }).map(({ sequence, phase }) => [sequence, phase]), [[1, 'requested'], [2, 'accepted']]);
+  assert.deepEqual(reopened.list({ sessionId: SESSION_A }).map(({ sequence, phase }) => [sequence, phase]), [[1, 'requested'], [2, 'accepted'], [4, 'accepted']]);
   await reopened.close();
 });
 

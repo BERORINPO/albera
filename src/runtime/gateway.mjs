@@ -8,7 +8,7 @@ import process from 'node:process';
 import { spawnSupervised } from './supervisor.mjs';
 
 export const RUNTIME_PROVIDERS = Object.freeze({ claude: 'claude', codex: 'codex', opencode: 'opencode' });
-export const RUNTIME_PROFILES = Object.freeze({ readOnly: 'read-only' });
+export const RUNTIME_PROFILES = Object.freeze({ readOnly: 'read-only', readOnlyStreaming: 'read-only-streaming' });
 const MAX_ARGS = 128;
 const MAX_ARG_BYTES = 32 * 1024;
 const MAX_PROMPT_BYTES = 16 * 1024;
@@ -18,6 +18,8 @@ const MAX_ACTIVE = 4;
 const DEFAULT_RUN_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_RUN_TIMEOUT_MS = 60 * 60 * 1000;
 const STOP_GRACE_MS = 3000;
+const STREAM_INPUT_MODE = 'claude-stream-json';
+const STREAM_INPUT_PREFIX = 'ALBERA follow-up:\n';
 const BASE_ENV = new Set([
   'PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP',
   'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE', 'TERM', 'COLORTERM',
@@ -41,7 +43,7 @@ export class GatewayError extends Error {
 /** Build a provider-specific, read-only launch vector. No caller-supplied argv is accepted. */
 export function buildProviderLaunch(provider, prompt, profile = RUNTIME_PROFILES.readOnly) {
   if (!Object.hasOwn(RUNTIME_PROVIDERS, provider)) throw new GatewayError('unknown_provider');
-  if (profile !== RUNTIME_PROFILES.readOnly) throw new GatewayError('unsupported_profile');
+  if (![RUNTIME_PROFILES.readOnly, RUNTIME_PROFILES.readOnlyStreaming].includes(profile)) throw new GatewayError('unsupported_profile');
   if (typeof prompt !== 'string' || prompt.includes('\0') || Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) throw new GatewayError('invalid_args');
   // Keep user text in a clearly labeled positional prompt, so leading CLI-looking text cannot
   // be reinterpreted as an option by provider argument parsers.
@@ -50,10 +52,12 @@ export function buildProviderLaunch(provider, prompt, profile = RUNTIME_PROFILES
   if (provider === 'claude') {
     // Restricted mode confines built-in tools/settings. Safe mode disables customizations, while
     // the explicit MCP deny rule prevents configured MCP tools from crossing the process boundary.
-    args = [
-      '--restricted', '--safe-mode', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan',
-      '--print', '--max-turns', '1', '--no-session-persistence', taskPrompt,
-    ];
+    const safeFlags = ['--restricted', '--safe-mode', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan'];
+    if (profile === RUNTIME_PROFILES.readOnlyStreaming) {
+      args = [...safeFlags, '--permission-prompts', 'none', '--print', '--max-turns', '1', '--no-session-persistence', '--input-format', 'stream-json', '--output-format', 'stream-json'];
+    } else {
+      args = [...safeFlags, '--print', '--max-turns', '1', '--no-session-persistence', taskPrompt];
+    }
   } else {
     // Codex's read-only filesystem sandbox does not prove MCP side effects are disabled, and
     // OpenCode merges remote, user, project, plugin and inline configuration. Until ALBERA owns
@@ -61,7 +65,11 @@ export function buildProviderLaunch(provider, prompt, profile = RUNTIME_PROFILES
     throw new GatewayError('profile_unavailable');
   }
   validateArgs(args);
-  return Object.freeze({ profile, args: Object.freeze(args) });
+  return Object.freeze({
+    profile,
+    args: Object.freeze(args),
+    ...(profile === RUNTIME_PROFILES.readOnlyStreaming ? { inputMode: STREAM_INPUT_MODE, initialInput: taskPrompt } : {}),
+  });
 }
 
 /** Resolve a fixed provider command from PATH. Windows command shims (.cmd/.bat) are never accepted. */
@@ -87,7 +95,7 @@ export async function resolveProviderExecutable(provider, { platform = process.p
   return null;
 }
 
-/** @typedef {{id: string, provider: string, status: 'starting'|'running'|'stopping'|'stopped'|'exited'|'failed', startedAt: number|null, finishedAt: number|null, exitCode: number|null, signal: string|null, treeStopConfirmed: boolean|null, timer: ReturnType<typeof setTimeout>|null, child: import('node:child_process').ChildProcess}} Run */
+/** @typedef {{id: string, provider: string, profile: string, inputMode: string|null, inputPending: boolean, status: 'starting'|'running'|'stopping'|'stopped'|'exited'|'failed', startedAt: number|null, finishedAt: number|null, exitCode: number|null, signal: string|null, treeStopConfirmed: boolean|null, timer: ReturnType<typeof setTimeout>|null, child: import('node:child_process').ChildProcess}} Run */
 
 /**
  * Memory-only lifecycle gateway. `authorize` is a trusted host callback, not request data; default denies.
@@ -130,6 +138,15 @@ export class RuntimeGateway {
     const launch = this.#buildLaunch(provider, profile, prompt);
     if (!launch || launch.profile !== profile || !Array.isArray(launch.args)) throw new GatewayError('unsupported_profile');
     validateArgs(launch.args);
+    const inputMode = launch.inputMode ?? null;
+    const initialInput = launch.initialInput ?? null;
+    if ((inputMode !== null && inputMode !== STREAM_INPUT_MODE)
+      || (inputMode === null && initialInput !== null)
+      || (inputMode !== null && (provider !== RUNTIME_PROVIDERS.claude || profile !== RUNTIME_PROFILES.readOnlyStreaming))
+      || (profile === RUNTIME_PROFILES.readOnlyStreaming && inputMode !== STREAM_INPUT_MODE)
+      || (inputMode !== null && (typeof initialInput !== 'string' || initialInput.includes('\0') || Buffer.byteLength(initialInput) > MAX_PROMPT_BYTES))) {
+      throw new GatewayError('unsupported_profile');
+    }
     const launchArgs = [...launch.args];
     this.#pruneRuns();
     const active = [...this.#runs.values()].filter((run) => isActive(run.status)).length;
@@ -147,6 +164,7 @@ export class RuntimeGateway {
       const environment = childEnvironment(provider, this.#env);
       const authorized = await this.#authorizeSafely({
         action: 'start', provider, profile, executable, cwd: resolvedCwd, args: launchArgs,
+        ...(initialInput === null ? {} : { initialInput }),
         environment: environmentSummary(provider, environment),
         platform: this.#platform, maxDurationMs: this.#runTimeoutMs, maxActive: this.#maxActive,
       });
@@ -158,10 +176,11 @@ export class RuntimeGateway {
         child = this.#spawn(executable, launchArgs, {
           cwd: resolvedCwd, env: environment, shell: false,
           detached: this.#platform !== 'win32', windowsHide: true, stdio: 'ignore',
+          ...(inputMode === null ? {} : { inputMode, initialInput }),
         });
       } catch { throw new GatewayError('spawn_failed'); }
       const run = /** @type {Run} */ ({
-        id: randomUUID(), provider, status: 'starting', startedAt: null, finishedAt: null,
+        id: randomUUID(), provider, profile, inputMode, inputPending: false, status: 'starting', startedAt: null, finishedAt: null,
         exitCode: null, signal: null, treeStopConfirmed: null, timer: null, child,
       });
       this.#runs.set(run.id, run);
@@ -197,6 +216,29 @@ export class RuntimeGateway {
     if (!await this.#authorizeSafely({ action: 'stop', provider: run.provider, runId: run.id, force: this.#platform === 'win32' })) throw new GatewayError('confirmation_required');
     await this.#requestStop(run);
     return this.#snapshot(run);
+  }
+
+  /** Send one bounded follow-up only after independent host approval for this exact text. */
+  async sendInput(id, text) {
+    const run = this.#runs.get(id);
+    if (!run) throw new GatewayError('unknown_run');
+    if (run.inputMode !== STREAM_INPUT_MODE || typeof run.child.writeInput !== 'function') throw new GatewayError('input_unavailable');
+    if (run.status !== 'running') throw new GatewayError('input_not_ready');
+    if (run.inputPending) throw new GatewayError('input_busy');
+    if (typeof text !== 'string' || text.length === 0 || text.includes('\0')
+      || Buffer.byteLength(text) + Buffer.byteLength(STREAM_INPUT_PREFIX) > MAX_PROMPT_BYTES) throw new GatewayError('invalid_args');
+    run.inputPending = true;
+    try {
+      const message = `${STREAM_INPUT_PREFIX}${text}`;
+      if (!await this.#authorizeSafely({ action: 'input', provider: run.provider, profile: run.profile, runId: run.id, text: message })) {
+        throw new GatewayError('confirmation_required');
+      }
+      if (run.status !== 'running') throw new GatewayError('input_not_ready');
+      try { await run.child.writeInput(message); }
+      catch { throw new GatewayError('input_failed'); }
+      this.#emit(run, 'input_sent');
+      return this.#snapshot(run);
+    } finally { run.inputPending = false; }
   }
 
   get(id) { const run = this.#runs.get(id); if (!run) throw new GatewayError('unknown_run'); return this.#snapshot(run); }
