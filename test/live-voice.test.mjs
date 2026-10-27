@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { createHandler } from '../src/entry/http.mjs';
 import { createLiveVoiceSession } from '../src/entry/live-voice.mjs';
 import { deleteVoiceSession, getVoiceAudio, listVoiceSessions, saveVoiceSession, voiceStorageAvailable } from '../public/voice-store.mjs';
-import { projectVoiceDelta } from '../public/voice-transcript.mjs';
+import { appendVoiceCaption, projectVoiceDelta } from '../public/voice-transcript.mjs';
 
 const SESSION_ID = 'voice_00000000-0000-4000-8000-000000000001';
 
@@ -116,4 +116,18 @@ test('GPT-Live caption projection accepts only bounded caption deltas', () => {
   assert.equal(projectVoiceDelta({ type: 'session.closed', id: 'private-id', delta: 'not a caption' }), null);
   assert.equal(projectVoiceDelta({ type: 'session.output_transcript.delta', delta: { text: 'not text' } }), null);
   assert.equal(projectVoiceDelta('not an event'), null);
+});
+
+test('voice transcript keeps speaker turns ordered and joins only adjacent deltas', () => {
+  const empty = [];
+  const one = appendVoiceCaption(empty, { role: 'user', delta: 'Question' });
+  const continued = appendVoiceCaption(one, { role: 'user', delta: ' one' });
+  const answer = appendVoiceCaption(continued, { role: 'assistant', delta: 'Answer' });
+  const nextQuestion = appendVoiceCaption(answer, { role: 'user', delta: 'Question two' });
+  assert.deepEqual(nextQuestion, [
+    { role: 'user', text: 'Question one' },
+    { role: 'assistant', text: 'Answer' },
+    { role: 'user', text: 'Question two' },
+  ]);
+  assert.deepEqual(empty, []);
 });

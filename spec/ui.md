@@ -1477,3 +1477,9 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - 別ポートの`--demo`を開き、音声ボタンから会話ダイアログを表示。API利用料とブラウザー内保存/削除、OpenAIの標準不正利用監視ログについての説明、保存履歴の空状態、APIキー未設定時の案内、開始ボタン無効化を確認した。
 - 音声の開始は行わず、マイク権限を求めず、OpenAI APIへ接続していない。実IndexedDBへの音声保存/削除、実ブラウザーでのWebRTC/GPT-Live互換性は未確認。保存ロジックはfake IndexedDBのテストで字幕・両音声の保存/取得/削除を確認した。
 - demo tab/serverは閉じて停止した。実セッションやCLIは使っていない。
+
+### GPT-Live字幕の話者交代を保持 (2026-10-27)
+
+- GPT-Liveの許可済み入力/出力caption deltaを連続した話者単位にまとめ、話者が交代したら別の字幕行として順序を保持する。1行の上限を設け、provider IDやイベント全体は字幕記録へ含めない。
+- 合成イベントfixtureでuser → assistant → userの順序、同一話者deltaの連結、入力配列の不変性を確認。`npm test`: 618/618 passed、`npm run arch`: 104 paths / 0 violations、`git diff --check`: passed。
+- 実APIイベント列との適合、実音声字幕、実ブラウザー再生/永続化は未確認。実API接続やマイク利用は行っていない。

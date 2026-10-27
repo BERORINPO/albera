@@ -1,7 +1,7 @@
 // UI adapter: microphone audio, assistant audio, and captions stay in browser storage.
 import { createVoiceSession, VoiceApiError, voiceAvailability } from './api.mjs';
 import { deleteVoiceSession, getVoiceAudio, listVoiceSessions, saveVoiceSession, voiceStorageAvailable } from './voice-store.mjs';
-import { projectVoiceDelta } from './voice-transcript.mjs';
+import { appendVoiceCaption, projectVoiceDelta } from './voice-transcript.mjs';
 
 /** @param {{t: () => (key: string) => string}} options */
 export function initVoice({ t }) {
@@ -22,7 +22,6 @@ export function initVoice({ t }) {
   let recorders = /** @type {Record<string, MediaRecorder>} */ ({});
   let parts = /** @type {Record<string, Blob[]>} */ ({ user: [], assistant: [] });
   let transcriptRows = /** @type {Array<{role:'user'|'assistant',text:string}>} */ ([]);
-  let transcriptLines = /** @type {Record<string, {row: {role:'user'|'assistant',text:string}, line: HTMLParagraphElement}|null>} */ ({ user: null, assistant: null });
   let startedAt = 0;
   let pendingDeleteId = '';
   let stopping = false;
@@ -39,21 +38,16 @@ export function initVoice({ t }) {
     recorders[role] = recorder;
   };
   const appendDelta = (role, delta) => {
-    if (typeof delta !== 'string' || !delta || delta.length > 4096) return;
-    let segment = transcriptLines[role];
-    if (!segment) {
-      const row = { role, text: '' };
-      transcriptRows.push(row);
+    const previousLength = transcriptRows.length;
+    transcriptRows = appendVoiceCaption(transcriptRows, { role, delta });
+    if (transcriptRows.length > previousLength) {
       const line = document.createElement('p');
       line.className = `voice__line voice__line--${role}`;
       const label = document.createElement('strong');
       label.textContent = `${t()(`voice.${role}`)}: `;
-      line.append(label, document.createTextNode(''));
+      line.append(label, document.createTextNode(delta));
       transcript.append(line);
-      segment = transcriptLines[role] = { row, line };
-    }
-    segment.row.text += delta;
-    segment.line.append(document.createTextNode(delta));
+    } else transcript.lastElementChild?.append(document.createTextNode(delta));
   };
   const setTranscript = (item) => {
     const caption = projectVoiceDelta(item);
@@ -76,7 +70,6 @@ export function initVoice({ t }) {
     recorders = {};
     parts = { user: [], assistant: [] };
     transcriptRows = [];
-    transcriptLines = { user: null, assistant: null };
   }
   async function refreshHistory() {
     history.replaceChildren();
