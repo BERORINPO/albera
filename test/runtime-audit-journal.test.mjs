@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
 
@@ -156,6 +156,33 @@ test('journal startup preserves an unrelated lock-path file', async (t) => {
   await writeFile(lockFile, existing, { encoding: 'utf8', mode: 0o600 });
   await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_locked');
   assert.equal(await readFile(lockFile, 'utf8'), existing);
+});
+
+test('journal refuses a hard-linked data file without changing either path', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-hardlink-file-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const original = path.join(root, 'user-data.txt');
+  const journal = path.join(root, 'runtime.audit.jsonl');
+  const content = 'existing user data must not be appended to\n';
+  await writeFile(original, content, { encoding: 'utf8', mode: 0o600 });
+  await link(original, journal);
+  await assert.rejects(openTestJournal(journal), (error) => error.code === 'journal_hard_linked_file');
+  assert.equal(await readFile(original, 'utf8'), content);
+  assert.equal(await readFile(journal, 'utf8'), content);
+});
+
+test('journal refuses a hard-linked lock path without changing either path', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-hardlink-lock-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const original = path.join(root, 'user-data.txt');
+  const journal = path.join(root, 'runtime.audit.jsonl');
+  const lockFile = `${journal}.lock`;
+  const content = 'unrelated lock-path data\n';
+  await writeFile(original, content, { encoding: 'utf8', mode: 0o600 });
+  await link(original, lockFile);
+  await assert.rejects(openTestJournal(journal), (error) => error.code === 'journal_lock_hard_linked');
+  assert.equal(await readFile(original, 'utf8'), content);
+  assert.equal(await readFile(lockFile, 'utf8'), content);
 });
 
 test('audit journal fails closed at its configured capacity and keeps earlier records', async (t) => {

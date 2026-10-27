@@ -52,6 +52,7 @@ export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX
     dataHandle = await open(filePath, flags, 0o600);
     const fileInfo = await dataHandle.stat();
     if (!fileInfo.isFile() || fileInfo.size !== existing.byteLength) throw new JournalError('journal_changed_during_open');
+    assertSingleLink(fileInfo, 'journal_hard_linked_file');
     assertPrivatePosixStorage(fileInfo, 'journal_permissions', 'file');
     return new RuntimeAuditJournal(filePath, lockPath, lock, lockText, dataHandle, records, existing.byteLength, maxBytes);
   } catch (error) {
@@ -198,6 +199,7 @@ async function readExisting(filePath, maxBytes, verifyWindowsAcl) {
   try {
     const info = await lstat(filePath);
     if (info.isSymbolicLink() || !info.isFile()) throw new JournalError('journal_not_regular_file');
+    assertSingleLink(info, 'journal_hard_linked_file');
     assertPrivatePosixStorage(info, 'journal_permissions', 'file');
     await verifyWindowsAcl(filePath, { kind: 'file' });
     if (info.size > maxBytes) throw new JournalError('journal_capacity_exceeded');
@@ -241,7 +243,9 @@ async function acquireLock(lockPath, lockText, verifyWindowsAcl) {
     try {
       const handle = await open(lockPath, 'wx', 0o600);
       try {
-        assertPrivatePosixStorage(await handle.stat(), 'journal_lock_permissions', 'file');
+        const info = await handle.stat();
+        assertSingleLink(info, 'journal_lock_hard_linked');
+        assertPrivatePosixStorage(info, 'journal_lock_permissions', 'file');
         await handle.writeFile(lockText, 'utf8');
         await handle.sync();
         return handle;
@@ -262,6 +266,7 @@ async function removeStaleLock(lockPath, verifyWindowsAcl) {
   try {
     const info = await lstat(lockPath);
     if (info.isSymbolicLink() || !info.isFile()) return false;
+    assertSingleLink(info, 'journal_lock_hard_linked');
     assertPrivatePosixStorage(info, 'journal_lock_permissions', 'file');
     await verifyWindowsAcl(lockPath, { kind: 'file' });
     const content = await readFile(lockPath, 'utf8');
@@ -291,6 +296,10 @@ function assertPrivatePosixStorage(info, code, kind) {
     ? (info.mode & 0o700) === 0o700
     : (info.mode & 0o600) === 0o600 && (info.mode & 0o100) === 0;
   if (!privateBits || !ownedByCurrentUser || !usableOwnerBits) throw new JournalError(code);
+}
+
+function assertSingleLink(info, code) {
+  if (!Number.isSafeInteger(info.nlink) || info.nlink !== 1) throw new JournalError(code);
 }
 
 async function releaseLock(lockPath, handle, lockText) {

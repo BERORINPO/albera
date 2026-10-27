@@ -78,6 +78,7 @@ async function main() {
     if (!runtime) await journal?.close().catch(() => {});
     if (error?.code === 'runtime_storage_acl_not_private'
       || ['journal_directory_permissions', 'journal_permissions', 'journal_lock_permissions'].includes(error?.code)
+      || ['journal_hard_linked_file', 'journal_lock_hard_linked'].includes(error?.code)
       || error?.code === 'runtime_session_identity_permissions') {
       console.error('ALBERA Runtime could not start because journal storage permissions allow other local principals to access or change its data. Choose a private directory; ALBERA will not change existing permissions.');
       process.exitCode = 1;
