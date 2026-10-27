@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented for the Runtime audit journal and pending cross-platform CI verification.
+Implemented for the Runtime audit journal; GitHub Actions run 40484508966 passed all Windows/macOS/Linux × Node 22/24 jobs, including both POSIX permission regressions.
 
 ## Decision
 
