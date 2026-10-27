@@ -14,4 +14,4 @@ Statuses: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `VERIFIED`. A phase is `VERIF
 | 8. Comprehension | Explain diffs/decisions/dependencies and record evidence of developer understanding | Phases 4–7 | NOT_STARTED |
 | 9. Integration & Release | E2E, security, GUI, cross-platform, performance, install/migration/docs and v1.0 gates | Phases 1–8 | NOT_STARTED |
 
-The current product remains a read-only local dashboard. Phase 2 has an isolated authenticated loopback API prototype, but Phase 1 RT-10 process ownership is still blocked; the API is not connected to application startup and must not be hosted persistently until that gate and the remaining Phase 2 controls are met.
+The current product remains a read-only local dashboard. Phase 2 has an isolated authenticated loopback API prototype. A parent-liveness Guardian now cleans up the provider tree when the Gateway host disappears, but cross-platform verification, Guardian-failure/PID-reuse containment, and durable run-state recovery remain incomplete; the API is not connected to application startup and must not be hosted persistently.

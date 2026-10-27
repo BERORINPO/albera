@@ -5,6 +5,7 @@ import { access, realpath, stat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { spawnSupervised } from './supervisor.mjs';
 
 export const RUNTIME_PROVIDERS = Object.freeze({ claude: 'claude', codex: 'codex', opencode: 'opencode' });
 export const RUNTIME_PROFILES = Object.freeze({ readOnly: 'read-only' });
@@ -95,7 +96,7 @@ export class RuntimeGateway {
   /** @type {Array<{id: number, runId: string, provider: string, type: string, at: number, code?: number|null, signal?: string|null}>} */ #events = [];
   #nextEventId = 1;
 
-  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawn, resolveExecutableImpl = resolveProviderExecutable, buildLaunchImpl = (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile), env = process.env, now = Date.now, signalTreeImpl } = {}) {
+  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawnSupervised, resolveExecutableImpl = resolveProviderExecutable, buildLaunchImpl = (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile), env = process.env, now = Date.now, signalTreeImpl } = {}) {
     if (!Array.isArray(roots) || roots.length === 0 || roots.some((root) => typeof root !== 'string' || !path.isAbsolute(root))) throw new TypeError('RuntimeGateway requires absolute allowed roots');
     if (typeof authorize !== 'function') throw new TypeError('RuntimeGateway requires a host authorization callback');
     if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > MAX_ACTIVE) throw new TypeError('maxActive must be between 1 and 4');
@@ -111,7 +112,7 @@ export class RuntimeGateway {
     this.#authorize = authorize;
     this.#env = env;
     this.#now = now;
-    this.#signalTree = signalTreeImpl ?? ((pid, signal, child) => signalProcessTree(pid, signal, child, this.#platform, this.#spawn));
+    this.#signalTree = signalTreeImpl ?? ((pid, signal, child) => signalProcessTree(pid, signal, child, this.#platform, spawn));
   }
 
   /** Start a fixed provider executable after trusted host authorization of the exact launch tuple. */

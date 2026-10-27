@@ -29,5 +29,5 @@ Request bodies are JSON and capped at 20 KiB. Output, prompt, paths, argv, and e
 
 - Loopback plus a bearer token is not OS-user authentication. A local process that obtains the in-memory credential can use the API. HTTP is not encrypted against privileged local packet inspection. Do not expose or persist the token, and keep the module disconnected from application startup until an explicit host/approval design is reviewed.
 - No GUI approval flow, event/audit persistence, restart recovery, provider input, or Runtime API integration tests with real CLIs exist yet. SSE reconnect cursors work only while the in-memory Gateway event ring remains available.
-- The API does not supervise Gateway crashes or establish OS-level process ownership. Phase 1 RT-10 remains blocked; the API must not be run as a persistent service.
+- The Gateway default spawn path has a parent-liveness guardian, but guardian failure, Windows PID reuse, durable event history and run-state recovery remain unresolved. Phase 1 RT-10 remains in progress; the API must not be run as a persistent service.
 - API tests use a fake Gateway and the default-deny real Gateway. No AI CLI is invoked.

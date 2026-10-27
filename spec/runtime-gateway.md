@@ -2,9 +2,9 @@
 
 ## Scope and status
 
-`src/runtime/gateway.mjs` is an isolated, in-memory process lifecycle foundation. The existing local dashboard remains a read-only Claude Code session observer. No Observer layer, existing HTTP route, UI control, persistence layer or orchestration code imports or wires the Gateway. The separate authenticated API prototype is described in `spec/runtime-api.md`; it is not connected to application startup. Tests use fakes and local Node.js helper processes; no AI CLI is invoked.
+`src/runtime/gateway.mjs` is an isolated, in-memory process lifecycle foundation. Its default spawn path uses `supervisor.mjs` and `guardian.mjs`: the Gateway keeps a private stdin pipe open to the guardian, which starts the approved provider and reaps its process tree if the Gateway process disappears. The existing local dashboard remains a read-only Claude Code session observer. No Observer layer, existing HTTP route, UI control, persistence layer or orchestration code imports or wires the Gateway. The separate authenticated API prototype is described in `spec/runtime-api.md`; it is not connected to application startup. Tests use fakes and local Node.js helper processes; no AI CLI is invoked.
 
-The Gateway is not yet a user-facing Runtime feature and is not an OS sandbox. The API prototype is not production-ready; neither module may be exposed as a persistent service.
+The Gateway is not yet a user-facing Runtime feature and is not an OS sandbox. Guardian cleanup covers Gateway parent loss, but guardian-process failure, Windows PID reuse, breakaway descendants, and durable state recovery are not solved. The API prototype is not production-ready; neither module may be exposed as a persistent service.
 
 ## Launch contract
 
@@ -31,7 +31,7 @@ An authorized stop sends `SIGTERM` to the POSIX process group. Windows uses `tas
 - The child runs with the current OS user's privileges. The allowed-root check is not filesystem isolation. Do not expose this Gateway until an OS-level sandbox/policy is designed and verified on each supported platform.
 - PATH resolution verifies file type and executable permission, but does not attest vendor identity or prevent replacement between validation and spawn.
 - Writable provider profiles, prompt/input transport, output parsing, secret redaction, authentication, local API authorization, audit persistence and resource quotas are not implemented. The read-only profile vectors are not a substitute for the OS sandbox and host approval API.
-- `close()` handles orderly shutdown only. A Gateway crash/restart can orphan descendants or lose active-run state; this Phase 1 limitation is blocked on a process supervisor with platform-native ownership (for example, Windows Job Objects and POSIX service/cgroup policy). Until then, keep this module disconnected and do not run it as a persistent user-facing service.
+- The default spawn path now uses a per-run parent-liveness Guardian; `test/process-supervisor.test.mjs` verifies that the Guardian reaps a synthetic helper after its Gateway host is killed. Guardian failure, Windows PID reuse, breakaway descendants and run/event state recovery remain unresolved. Keep this module disconnected and do not run it as a persistent user-facing service until cross-platform crash tests and durable restart semantics are verified.
 - Windows `.cmd` and `.bat` providers are rejected. Supporting them requires a separately reviewed fixed adapter; do not enable `shell: true` or construct command strings from argv.
 - Real Claude Code, Codex CLI and OpenCode compatibility, account cost, outbound data handling, GUI approval, and GUI acceptance have not been verified.
 
