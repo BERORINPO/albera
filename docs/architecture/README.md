@@ -5,15 +5,15 @@
 This release collects the existing RFC and ADR-001 through ADR-007, plus the newly authored ADR-008 (Main AI), ADR-009 (Canvas/Computer Use), ADR-010 (performance/OSS) and implementation validation artifacts. Existing pre-v4 ADRs are preserved unchanged to retain their review provenance. The documents are intended for human review and Codex planning, not a mandate to merge or run privileged Hyper-V operations.
 
 ## Read in this order
-1. `System-Design-RFC-v0.1.md` — goals, users, baseline assumptions.
-2. `ADR-002-control-guest-trust.md`, `ADR-003-event-store-reconciliation.md` — security and durable state.
-3. `ADR-001-environment-provider.md`, `ADR-004-image-snapshot-lifecycle.md`, `ADR-005-computer-pool-scheduler.md` — Compute.
-4. `ADR-006-agent-memory-handoff.md`, `ADR-007-verified-integration.md` — durable work, memory and verification.
-5. `ADR-008-main-ai-orchestration.md` — delegation and safe bounded autonomy.
-6. `ADR-009-canvas-computer-use.md` — observability, GUI, human takeover.
-7. `ADR-010-performance-observability-oss.md` — optimization and adoption.
-8. `PoC-001-hyperv-work-handoff.md`, `Experiment-Plan-and-Benchmark-Spec.md` — executable hypotheses.
-9. `Acceptance-Criteria-Traceability.md`, `acceptance-criteria.json`, `Implementation-Roadmap.md`, `OSS-Research-and-Risks.md` — release and engineering contracts.
+1. [System Design RFC](system-design.md) — goals, users, baseline assumptions.
+2. [ADR-002-control-guest-trust.md](decisions/ADR-002-control-guest-trust.md), [ADR-003-event-store-reconciliation.md](decisions/ADR-003-event-store-reconciliation.md) — security and durable state.
+3. [ADR-001-environment-provider.md](decisions/ADR-001-environment-provider.md), [ADR-004-image-snapshot-lifecycle.md](decisions/ADR-004-image-snapshot-lifecycle.md), [ADR-005-computer-pool-scheduler.md](decisions/ADR-005-computer-pool-scheduler.md) — Compute.
+4. [ADR-006-agent-memory-handoff.md](decisions/ADR-006-agent-memory-handoff.md), [ADR-007-verified-integration.md](decisions/ADR-007-verified-integration.md) — durable work, memory and verification.
+5. [ADR-008-main-ai-orchestration.md](decisions/ADR-008-main-ai-orchestration.md) — delegation and safe bounded autonomy.
+6. [ADR-009-canvas-computer-use.md](decisions/ADR-009-canvas-computer-use.md) — observability, GUI, human takeover.
+7. [ADR-010-performance-observability-oss.md](decisions/ADR-010-performance-observability-oss.md) — optimization and adoption.
+8. [PoC-001](experiments/PoC-001-hyperv-work-handoff.md), [Benchmark Spec](experiments/benchmark-spec.md) — executable hypotheses.
+9. [Acceptance Criteria](acceptance-criteria.md), [Machine-readable Acceptance Criteria](acceptance-criteria.json), [Implementation Roadmap](implementation-roadmap.md), [OSS Research](oss-research.md) — release and engineering contracts.
 
 ## Design status and decision gates
 All ADRs remain **Proposed** pending reviews. Hyper-V PoC is **NOT_RUN**. All acceptance criteria are **NOT_VERIFIED** until linked evidence exists. Do not reinterpret example JSON or draft SLOs as existing production behavior.
