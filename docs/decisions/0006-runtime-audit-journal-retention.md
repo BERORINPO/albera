@@ -23,11 +23,13 @@ Automatic rotation or retention expiry could destroy audit and recovery evidence
 
 `test/runtime-audit-journal.test.mjs` exercises capacity rejection, confirms previous records remain byte-for-byte intact after the failed write and close, reopens the journal, and confirms all prior records are still readable. A synchronous-append regression verifies the complete line is visible and the injected sync function has returned before `append()` returns its Promise; another verifies sync failure rejects and prevents later writes without truncating bytes. These temporary-journal tests passed across Windows/macOS/Linux × Node 22/24 in GitHub Actions run 40497148500 on `ee12cfb` and do not touch user data.
 
+A non-destructive one-off sample wrote 100 synthetic audit records to a newly created directory under the current user's home directory with the real Windows DACL guard enabled. The DACL passed. Windows Node 24.13.0 measured p50 0.586 ms, p95 0.723 ms, max 8.271 ms per sequential append including `fsync`. The generated directory was removed after the measurement. An initial LocalAppData candidate was refused by the same DACL guard and was preserved by the refusal path. This is evidence for one local directory and system only; it does not characterize other filesystems, disk states, or concurrency.
+
 ## Consequences and limits
 
 - This is not an indefinite retention or durability guarantee. Disk loss, corruption, and manual deletion remain possible.
 - A crash during the write/flush can still leave a partial or non-durable tail. Startup refuses incomplete records and preserves the file; it does not attempt automatic repair.
-- Synchronous `fsync` blocks the Runtime event loop while the storage flushes. Measure this on supported local filesystems before production hosting; avoid slow or remote journal paths.
+- Synchronous `fsync` blocks the Runtime event loop while the storage flushes. One real-DACL local Windows home-directory sample is recorded above; measure additional supported local filesystems before production hosting and avoid slow or remote journal paths.
 - The journal is unencrypted. Windows DACL and POSIX mode checks protect access at the selected storage objects, but a production backup workflow and encryption policy are not implemented.
 - At capacity, Runtime stops rather than pruning data or continuing without audit.
 - The hash chain detects accidental or partial edits, removal, and reordering when the file is checked. It is not a signature or MAC: a writer able to replace the entire journal can recompute the chain. Truncating a valid suffix is also not detectable without an independently stored or remotely anchored head hash.
