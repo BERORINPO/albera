@@ -35,7 +35,7 @@ class ApiError extends Error {
 /**
  * Create an isolated loopback API. Bearer credentials are never persisted; optional audit records omit credential values.
  * The Gateway still performs its separate host authorization; possession of this token alone cannot launch.
- * @param {{gateway: {start: Function, stop: Function, list: Function, events: Function, sendInput?: Function}, pollIntervalMs?: number, streamLifetimeMs?: number, maxStreams?: number}} options
+ * @param {{gateway: {start: Function, stop: Function, list: Function, events: Function, subscribeEvents?: Function, sendInput?: Function}, pollIntervalMs?: number, streamLifetimeMs?: number, maxStreams?: number}} options
  */
 export function createRuntimeApi({ gateway, journal, approvalBroker, pollIntervalMs = 250, streamLifetimeMs = MAX_STREAM_LIFETIME_MS, maxStreams = MAX_STREAMS } = {}) {
   if (!gateway || ['start', 'stop', 'list', 'events'].some((method) => typeof gateway[method] !== 'function')) throw new TypeError('Runtime API requires a Gateway');
@@ -61,6 +61,9 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
   let listenPromise;
   let closePromise;
   let captureTimer;
+  const unsubscribeGatewayEvents = typeof gateway.subscribeEvents === 'function'
+    ? gateway.subscribeEvents(() => { void captureGatewayEvents().catch(() => {}); })
+    : undefined;
   const server = http.createServer((req, res) => { void handle(req, res); });
   server.headersTimeout = 5_000;
   server.requestTimeout = 10_000;
@@ -163,7 +166,7 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
         runOwners.set(safeRun.id, credential.sessionId);
         recoveredRuns.set(safeRun.id, safeRun);
         while (recoveredRuns.size > MAX_TRACKED_RUNS) recoveredRuns.delete(recoveredRuns.keys().next().value);
-        await captureGatewayEvents();
+        await captureAvailableGatewayEvents();
         return sendJson(res, 202, { run: safeRun });
       }
       const stopMatch = req.method === 'POST' && url.pathname.match(/^\/v1\/runs\/([^/]+)\/stop$/);
@@ -311,8 +314,20 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
       if (!journal) return;
       await failClosed();
       throw new ApiError(503, 'audit_unavailable');
-    }).finally(() => { capturePromise = undefined; });
+    }).finally(() => {
+      capturePromise = undefined;
+      if (!closing && !auditFailure && [...pendingGatewayEvents.values()].some((event) => runOwners.has(event.runId))) {
+        queueMicrotask(() => { void captureGatewayEvents().catch(() => {}); });
+      }
+    });
     return capturePromise;
+  }
+
+  async function captureAvailableGatewayEvents() {
+    await captureGatewayEvents();
+    // A lifecycle callback can race the start audit append, leaving an event pending while its
+    // run owner is installed. A second pass drains it immediately instead of waiting for the poll.
+    if ([...pendingGatewayEvents.values()].some((event) => runOwners.has(event.runId))) await captureGatewayEvents();
   }
 
   function streamEvents(req, res, after, sessionId) {
@@ -430,6 +445,7 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
       closing = true;
       clearInterval(captureTimer);
       captureTimer = undefined;
+      unsubscribeGatewayEvents?.();
       credentials.clear();
       for (const close of [...streams]) close();
       approvalBroker?.close();

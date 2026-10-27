@@ -490,6 +490,41 @@ test('background lifecycle capture persists events without an open event stream'
   assert.deepEqual(persisted.map((event) => event.eventType), ['started', 'exited']);
 });
 
+test('Gateway event notifications persist lifecycle changes before the next safety poll', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-event-subscription-'));
+  const journal = await openTestJournal(path.join(root, 'audit.jsonl'));
+  const runId = '12345678-1234-4234-8234-123456789abc';
+  let subscriber;
+  let unsubscribed = false;
+  let sourceEvents = [];
+  const f = await apiFixture({ journal, pollIntervalMs: 1000 }, {
+    subscribeEvents(listener) {
+      subscriber = listener;
+      return () => { unsubscribed = true; subscriber = undefined; };
+    },
+    async start() { return { id: runId, provider: 'claude', status: 'starting' }; },
+    events: ({ after = 0 } = {}) => sourceEvents.filter((event) => event.id > after),
+  }, { sessionId: 'a'.repeat(32) });
+  t.after(async () => { await f.close(); await journal.close(); await rm(root, { recursive: true, force: true }); });
+  const started = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'event subscription fixture' }),
+  });
+  assert.equal(started.status, 202);
+  assert.equal(typeof subscriber, 'function');
+  sourceEvents = [{ id: 1, runId, provider: 'claude', type: 'exited', at: 2, code: 0, signal: null }];
+  subscriber(sourceEvents[0]);
+  const deadline = Date.now() + 500;
+  let persisted = [];
+  while (Date.now() < deadline) {
+    persisted = journal.list({ kind: 'event' });
+    if (persisted.some((event) => event.eventType === 'exited')) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.deepEqual(persisted.map((event) => event.eventType), ['exited']);
+  await f.close();
+  assert.equal(unsubscribed, true);
+});
+
 test('lifecycle event persistence failure fails the API closed and shuts down the Gateway', async (t) => {
   let writes = 0;
   let gatewayClosed = false;

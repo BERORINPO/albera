@@ -14,6 +14,7 @@ const MAX_ARG_BYTES = 32 * 1024;
 const MAX_PROMPT_BYTES = 16 * 1024;
 const MAX_RUNS = 64;
 const MAX_EVENTS = 256;
+const MAX_EVENT_SUBSCRIBERS = 8;
 const MAX_ACTIVE = 4;
 const DEFAULT_RUN_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_RUN_TIMEOUT_MS = 60 * 60 * 1000;
@@ -106,6 +107,7 @@ export class RuntimeGateway {
   /** @type {Map<string, Run>} */ #runs = new Map();
   #pendingStarts = 0;
   /** @type {Array<{id: number, runId: string, provider: string, type: string, at: number, code?: number|null, signal?: string|null}>} */ #events = [];
+  #eventSubscribers = new Set();
   #nextEventId = 1;
 
   constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawnSupervised, resolveExecutableImpl = resolveProviderExecutable, buildLaunchImpl = (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile), env = process.env, now = Date.now, signalTreeImpl } = {}) {
@@ -251,6 +253,19 @@ export class RuntimeGateway {
     return this.#events.filter((event) => event.id > cursor).slice(0, take).map((event) => ({ ...event }));
   }
 
+  /** Subscribe to lifecycle changes so trusted hosts can persist them without waiting for a poll. */
+  subscribeEvents(listener) {
+    if (typeof listener !== 'function') throw new TypeError('event listener must be a function');
+    if (this.#eventSubscribers.size >= MAX_EVENT_SUBSCRIBERS) throw new RangeError('event_listener_capacity');
+    this.#eventSubscribers.add(listener);
+    let active = true;
+    return () => {
+      if (!active) return false;
+      active = false;
+      return this.#eventSubscribers.delete(listener);
+    };
+  }
+
   /** Host shutdown cleanup; returns active run IDs and IDs whose process-tree cleanup is uncertain. */
   async close({ timeoutMs = STOP_GRACE_MS + 1000 } = {}) {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > MAX_RUN_TIMEOUT_MS) throw new TypeError('invalid shutdown timeout');
@@ -348,8 +363,12 @@ export class RuntimeGateway {
   }
 
   #emit(run, type, extra = {}) {
-    this.#events.push({ id: this.#nextEventId++, runId: run.id, provider: run.provider, type, at: this.#now(), ...extra });
+    const event = Object.freeze({ id: this.#nextEventId++, runId: run.id, provider: run.provider, type, at: this.#now(), ...extra });
+    this.#events.push(event);
     if (this.#events.length > MAX_EVENTS) this.#events.splice(0, this.#events.length - MAX_EVENTS);
+    for (const listener of [...this.#eventSubscribers]) {
+      try { listener(event); } catch { /* observers cannot interrupt the authorized process lifecycle */ }
+    }
   }
   #snapshot(run) {
     return { id: run.id, provider: run.provider, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt, exitCode: run.exitCode, signal: run.signal, treeStopConfirmed: run.treeStopConfirmed };

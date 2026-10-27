@@ -356,6 +356,26 @@ test('records and lifecycle events are bounded and never include argv, cwd or se
   assert.deepEqual(Object.keys(events[0]).sort(), ['at', 'id', 'provider', 'runId', 'type']);
 });
 
+test('Gateway lifecycle subscriptions publish immutable events and unsubscribe idempotently', async (t) => {
+  const children = [];
+  const f = await fixture({ spawnImpl: () => { const child = new FakeChild(); children.push(child); return child; } });
+  t.after(f.dispose);
+  const observed = [];
+  const unsubscribe = f.gateway.subscribeEvents((event) => observed.push(event));
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'subscription fixture' });
+  children[0].emit('spawn');
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].runId, run.id);
+  assert.equal(observed[0].type, 'started');
+  assert.equal(Object.isFrozen(observed[0]), true);
+  assert.throws(() => { observed[0].type = 'tampered'; }, TypeError);
+  assert.equal(unsubscribe(), true);
+  assert.equal(unsubscribe(), false);
+  children[0].emit('close', 0, null);
+  assert.equal(observed.length, 1);
+  assert.deepEqual(f.gateway.events().map((event) => event.type), ['started', 'exited']);
+});
+
 test('run duration timeout requests stop and repeated stop is idempotent', async (t) => {
   const f = await fixture({
     runTimeoutMs: 30,
