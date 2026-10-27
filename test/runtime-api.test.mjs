@@ -132,6 +132,7 @@ test('session credentials enforce least-privilege scopes and can be revoked inde
   t.after(f.close);
   const readToken = f.api.createCredential(['runs:read']);
   const startToken = f.api.createCredential(['runs:start']);
+  const expiringToken = f.api.createCredential(['runs:read'], { ttlMs: 1000 });
 
   const read = await request(f.address, f.api, { route: '/v1/runs', token: readToken });
   assert.equal(read.status, 200);
@@ -153,6 +154,8 @@ test('session credentials enforce least-privilege scopes and can be revoked inde
   assert.equal(f.api.revokeCredential(readToken), true);
   assert.equal((await request(f.address, f.api, { route: '/v1/runs', token: readToken })).status, 401);
   assert.equal(f.api.revokeCredential(readToken), false);
+  await new Promise((resolve) => setTimeout(resolve, 1050));
+  assert.equal((await request(f.address, f.api, { route: '/v1/runs', token: expiringToken })).status, 401);
 });
 
 test('invalid content type, malformed JSON, oversized body, and unsupported method fail with stable responses', async (t) => {
