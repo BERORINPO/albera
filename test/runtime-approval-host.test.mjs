@@ -6,8 +6,11 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import test from 'node:test';
+import { createRuntimeApi } from '../src/runtime/api.mjs';
+import { createRuntimeApprovalBroker } from '../src/runtime/approval-broker.mjs';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
 import { createRuntimeHost } from '../src/runtime/host.mjs';
+import { createRuntimeApprovalHost } from '../src/runtime/approval-host.mjs';
 import { parseRuntimeArgs, RUNTIME_HELP } from '../src/runtime/entry.mjs';
 import { loadOrCreateRuntimeSessionId } from '../src/runtime/session-identity.mjs';
 
@@ -267,6 +270,31 @@ test('approval host issues one-time HttpOnly SameSite sessions and never serves 
   assert.match(script, /eventStream\?\.close\(\)/);
   assert.match(script, /if \(retry\) refreshTimer = setTimeout\(refresh, 1500\)/);
   assert.match(stylesheet, /main\[hidden\]\s*\{\s*display:\s*none;/);
+});
+
+test('approval host revokes its API capability before leaving the API open', async (t) => {
+  const gateway = { async start() {}, async stop() {}, list: () => [], events: () => [], async close() {} };
+  const api = createRuntimeApi({ gateway, approvalBroker: createRuntimeApprovalBroker() });
+  let apiAddress;
+  let hostToken;
+  const apiFacade = {
+    async listen(port) { apiAddress = await api.listen(port); return apiAddress; },
+    createCredential(scopes, options) { hostToken = api.createCredential(scopes, options); return hostToken; },
+    revokeCredential(token) { return api.revokeCredential(token); },
+    close() { return api.close(); },
+  };
+  const host = createRuntimeApprovalHost({ api: apiFacade });
+  t.after(async () => { await host.close({ closeApi: false }); await api.close(); });
+  await host.listen();
+
+  const healthUrl = `http://127.0.0.1:${apiAddress.port}/v1/providers`;
+  const headers = { Authorization: `Bearer ${hostToken}`, Origin: `http://127.0.0.1:${apiAddress.port}` };
+  assert.equal((await fetch(healthUrl, { headers })).status, 200);
+
+  await host.close({ closeApi: false });
+
+  assert.equal(host.sessionCount, 0);
+  assert.equal((await fetch(healthUrl, { headers })).status, 401, 'the closed UI capability cannot authorize new API requests');
 });
 
 test('approval UI closes its lifecycle stream and stops polling when the browser session expires', async () => {

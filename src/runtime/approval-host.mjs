@@ -25,10 +25,10 @@ const API_TOKEN_SCOPES = Object.freeze(['providers:read', 'runs:read', 'events:r
 /**
  * Host the approval/control screen on an isolated loopback origin. Runtime API credentials stay server-side;
  * the browser gets an HttpOnly SameSite cookie and a short-lived in-memory CSRF token.
- * @param {{api: {listen: Function, createCredential: Function}, sessionId?: string, sessionLifetimeMs?: number, maxSessions?: number, maxConnections?: number, requestBodyTimeoutMs?: number, roots?: string[]}} options
+ * @param {{api: {listen: Function, createCredential: Function, revokeCredential: Function}, sessionId?: string, sessionLifetimeMs?: number, maxSessions?: number, maxConnections?: number, requestBodyTimeoutMs?: number, roots?: string[]}} options
  */
 export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = DEFAULT_SESSION_TTL_MS, maxSessions = MAX_SESSIONS, maxConnections = MAX_HOST_CONNECTIONS, requestBodyTimeoutMs = DEFAULT_REQUEST_BODY_TIMEOUT_MS, roots = [] } = {}) {
-  if (!api || typeof api.listen !== 'function' || typeof api.createCredential !== 'function') throw new TypeError('approval host requires a Runtime API');
+  if (!api || typeof api.listen !== 'function' || typeof api.createCredential !== 'function' || typeof api.revokeCredential !== 'function') throw new TypeError('approval host requires a Runtime API with credential revocation');
   if (!Number.isInteger(sessionLifetimeMs) || sessionLifetimeMs < 60_000 || sessionLifetimeMs > 60 * 60 * 1000) throw new TypeError('sessionLifetimeMs must be between 60000 and 3600000');
   if (!Number.isInteger(maxSessions) || maxSessions < 1 || maxSessions > MAX_SESSIONS) throw new TypeError('maxSessions must be between 1 and 32');
   if (!Number.isInteger(maxConnections) || maxConnections < 1 || maxConnections > MAX_HOST_CONNECTIONS) throw new TypeError('maxConnections must be between 1 and 64');
@@ -237,6 +237,9 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
       closing = true;
       closePromise = (async () => {
         sessions.clear();
+        // Revoke the private API capability even when the composition root will
+        // close the API later, so no new privileged request can arrive meanwhile.
+        api.revokeCredential(token);
         await listenPromise?.catch(() => {});
         const closed = stopServer();
         if (closeApi) await api.close();
