@@ -38,6 +38,28 @@ test('audit journal persists serialized allowlisted records and reopens without 
   await reopened.close();
 });
 
+test('journal persists allowlisted lifecycle events in the same monotonic sequence', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-event-journal-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'runtime.audit.jsonl');
+  const journal = await openRuntimeAuditJournal(file);
+  const audit = await journal.append(auditRecord({ phase: 'accepted', runId: RUN_A }));
+  const event = await journal.append({ kind: 'event', sessionId: SESSION_A, eventType: 'started', at: 2, provider: 'claude', runId: RUN_A });
+  assert.equal(event.sequence, audit.sequence + 1);
+  assert.equal(event.eventId, 1);
+  const otherSessionEvent = await journal.append({ kind: 'event', sessionId: SESSION_B, eventType: 'started', at: 2, provider: 'claude', runId: RUN_A });
+  assert.equal(otherSessionEvent.eventId, 1);
+  assert.equal(journal.list({ sessionId: SESSION_A, kind: 'event' }).length, 1);
+  assert.equal(journal.list({ sessionId: SESSION_A, kind: 'event', after: 1 }).length, 0);
+  assert.equal(journal.list({ sessionId: SESSION_A, kind: 'event', after: 0 })[0].eventId, 1);
+  assert.equal(journal.list({ sessionId: SESSION_A, kind: 'audit' }).length, 1);
+  assert.throws(() => journal.append({ kind: 'event', sessionId: SESSION_A, eventType: 'started', at: 3, provider: 'claude', runId: RUN_A, prompt: 'secret' }), /invalid_journal_record/);
+  await journal.close();
+  const reopened = await openRuntimeAuditJournal(file);
+  assert.equal(reopened.list({ sessionId: SESSION_A, kind: 'event' })[0].eventId, 1);
+  await reopened.close();
+});
+
 test('audit journal enforces one live writer and releases its lock on close', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-lock-'));
   t.after(() => rm(root, { recursive: true, force: true }));

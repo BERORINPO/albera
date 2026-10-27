@@ -41,10 +41,10 @@ function request(address, api, { method = 'GET', route = '/v1/health', body, tok
   });
 }
 
-async function apiFixture(overrides = {}, gatewayOverrides = {}) {
+async function apiFixture(overrides = {}, gatewayOverrides = {}, credentialOptions = {}) {
   const f = fakeGateway(gatewayOverrides);
   const runtimeApi = createRuntimeApi({ gateway: f.gateway, ...overrides });
-  const api = { ...runtimeApi, credential: runtimeApi.createCredential(['health', 'runs:read', 'events:read', 'runs:start', 'runs:stop']) };
+  const api = { ...runtimeApi, credential: runtimeApi.createCredential(['health', 'runs:read', 'events:read', 'runs:start', 'runs:stop'], credentialOptions) };
   const address = await api.listen();
   return { ...f, api, address, close: () => api.close() };
 }
@@ -271,7 +271,7 @@ test('injected audit journal records only redacted start and stop decisions', as
   const stopped = await request(f.address, f.api, { method: 'POST', route: `/v1/runs/${runId}/stop` });
   assert.equal(stopped.status, 200);
 
-  const records = journal.list();
+  const records = journal.list().filter((record) => record.action);
   assert.deepEqual(records.map(({ action, phase }) => [action, phase]), [
     ['run.start', 'requested'], ['run.start', 'accepted'], ['run.stop', 'requested'], ['run.stop', 'accepted'],
   ]);
@@ -280,20 +280,106 @@ test('injected audit journal records only redacted start and stop decisions', as
   for (const secret of ['private task text', 'private\\project', f.api.credential]) assert.equal(stored.includes(secret), false);
 });
 
+test('journal restart replays session events and restores unfinished runs as interrupted', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-recovery-'));
+  const file = path.join(root, 'audit.jsonl');
+  const journal = await openRuntimeAuditJournal(file);
+  const first = await apiFixture({ journal }, {}, { sessionId: 'c'.repeat(32) });
+  const started = await request(first.address, first.api, {
+    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'recovery fixture' }),
+  });
+  assert.equal(started.status, 202);
+  const startEvent = journal.list({ kind: 'event', sessionId: 'c'.repeat(32) })[0];
+  assert.ok(startEvent);
+  await first.close();
+  await journal.close();
+
+  const reopened = await openRuntimeAuditJournal(file);
+  const emptyGateway = fakeGateway({ list: () => [], events: () => [] });
+  const runtimeApi = createRuntimeApi({ gateway: emptyGateway.gateway, journal: reopened });
+  const api = { ...runtimeApi, credential: runtimeApi.createCredential(['health', 'runs:read', 'events:read', 'runs:stop'], { sessionId: 'c'.repeat(32) }) };
+  const foreignCredential = runtimeApi.createCredential(['runs:read', 'events:read'], { sessionId: 'd'.repeat(32) });
+  const address = await api.listen();
+  t.after(async () => { await api.close(); await reopened.close(); await rm(root, { recursive: true, force: true }); });
+
+  const runsResponse = await request(address, api, { route: '/v1/runs' });
+  const recovered = JSON.parse(runsResponse.text).runs;
+  assert.equal(runsResponse.status, 200);
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].status, 'interrupted');
+  assert.equal(recovered[0].id, JSON.parse(started.text).run.id);
+  const eventsResponse = await request(address, api, { route: `/v1/events?after=${startEvent.eventId - 1}` });
+  const replayed = JSON.parse(eventsResponse.text).events;
+  assert.equal(replayed.length, 1);
+  assert.equal(replayed[0].id, startEvent.eventId);
+  assert.equal(replayed[0].type, 'started');
+  const foreignRuns = await request(address, api, { route: '/v1/runs', token: foreignCredential });
+  const foreignEvents = await request(address, api, { route: '/v1/events', token: foreignCredential });
+  assert.deepEqual(JSON.parse(foreignRuns.text).runs, []);
+  assert.deepEqual(JSON.parse(foreignEvents.text).events, []);
+  const stop = await request(address, api, { method: 'POST', route: `/v1/runs/${recovered[0].id}/stop` });
+  assert.equal(stop.status, 409);
+  assert.deepEqual(JSON.parse(stop.text), { error: 'run_not_active' });
+});
+
+test('background lifecycle capture persists events without an open event stream', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-event-poll-'));
+  const journal = await openRuntimeAuditJournal(path.join(root, 'audit.jsonl'));
+  let sourceEvents = [];
+  const f = await apiFixture({ journal }, { events: ({ after = 0 } = {}) => sourceEvents.filter((event) => event.id > after) });
+  t.after(async () => { await f.close(); await journal.close(); await rm(root, { recursive: true, force: true }); });
+  const started = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'background capture fixture' }),
+  });
+  assert.equal(started.status, 202);
+  const runId = JSON.parse(started.text).run.id;
+  sourceEvents = [
+    { id: 1, runId, provider: 'claude', type: 'started', at: 1 },
+    { id: 2, runId, provider: 'claude', type: 'exited', at: 2, code: 0, signal: null },
+  ];
+  const deadline = Date.now() + 1500;
+  let persisted;
+  while (Date.now() < deadline) {
+    persisted = journal.list({ kind: 'event' });
+    if (persisted.some((event) => event.eventType === 'exited')) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.deepEqual(persisted.map((event) => event.eventType), ['started', 'exited']);
+});
+
+test('lifecycle event persistence failure fails the API closed and shuts down the Gateway', async (t) => {
+  let writes = 0;
+  let gatewayClosed = false;
+  const f = await apiFixture({ journal: {
+    append: async () => { writes++; if (writes === 3) throw new Error('event disk full'); }, list: () => [],
+  } }, { async close() { gatewayClosed = true; } });
+  t.after(f.close);
+  const response = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'event persistence fail' }),
+  });
+  assert.equal(response.status, 503);
+  assert.deepEqual(JSON.parse(response.text), { error: 'audit_unavailable' });
+  assert.equal(gatewayClosed, true);
+  const health = await request(f.address, f.api, { route: '/v1/health' });
+  assert.equal(health.status, 503);
+  assert.equal(writes, 3);
+});
+
 test('audit persistence failure prevents a run from being started', async (t) => {
-  const f = await apiFixture({ journal: { append: async () => { throw new Error('storage unavailable'); } } });
+  const f = await apiFixture({ journal: { append: async () => { throw new Error('storage unavailable'); }, list: () => [] } });
   t.after(f.close);
   const response = await request(f.address, f.api, {
     method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'never start' }),
   });
   assert.equal(response.status, 503);
-  assert.deepEqual(f.calls, []);
+  assert.equal(f.calls.some(([action]) => action === 'start'), false);
+  assert.equal(f.calls.some(([action]) => action === 'close'), true);
 });
 
 test('audit failure after a Gateway start closes the Gateway to stop unrecorded execution', async (t) => {
   let writes = 0;
   let gatewayClosed = false;
-  const f = await apiFixture({ journal: { append: async () => { writes++; if (writes === 2) throw new Error('disk full'); } } }, {
+  const f = await apiFixture({ journal: { append: async () => { writes++; if (writes === 2) throw new Error('disk full'); }, list: () => [] } }, {
     async close() { gatewayClosed = true; },
   });
   t.after(f.close);
@@ -310,7 +396,7 @@ test('failure to audit a denied Gateway request permanently fails the API closed
   let writes = 0;
   let starts = 0;
   let gatewayClosed = false;
-  const f = await apiFixture({ journal: { append: async () => { writes++; if (writes === 2) throw new Error('disk full'); } } }, {
+  const f = await apiFixture({ journal: { append: async () => { writes++; if (writes === 2) throw new Error('disk full'); }, list: () => [] } }, {
     async start() { starts++; const error = new Error('denied'); error.code = 'confirmation_required'; throw error; },
     async close() { gatewayClosed = true; },
   });

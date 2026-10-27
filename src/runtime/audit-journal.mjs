@@ -16,6 +16,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
 const ACTIONS = new Set(['run.start', 'run.stop']);
 const PHASES = new Set(['requested', 'accepted', 'denied', 'failed']);
+const EVENT_TYPES = new Set(['started', 'stop_requested', 'stopped', 'exited', 'failed', 'stop_failed']);
+const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGABRT']);
 
 export class JournalError extends Error {
   constructor(code) { super(code); this.code = code; }
@@ -59,6 +61,7 @@ class RuntimeAuditJournal {
   #lockText;
   #dataHandle;
   #records;
+  #eventSequences = new Map();
   #bytes;
   #maxBytes;
   #queue = Promise.resolve();
@@ -74,6 +77,11 @@ class RuntimeAuditJournal {
     this.#lockText = lockText;
     this.#dataHandle = dataHandle;
     this.#records = records;
+    for (const record of records) {
+      if ((record.kind ?? 'audit') === 'event' && Number.isSafeInteger(record.eventId)) {
+        this.#eventSequences.set(record.sessionId, Math.max(this.#eventSequences.get(record.sessionId) ?? 0, record.eventId));
+      }
+    }
     this.#bytes = bytes;
     this.#maxBytes = maxBytes;
   }
@@ -87,7 +95,8 @@ class RuntimeAuditJournal {
       if (this.#failed) throw new JournalError('journal_failed');
       try {
         const sequence = this.#records.length ? this.#records.at(-1).sequence + 1 : 1;
-        const record = Object.freeze({ version: JOURNAL_VERSION, sequence, ...payload });
+        const eventId = payload.kind === 'event' ? (this.#eventSequences.get(payload.sessionId) ?? 0) + 1 : undefined;
+        const record = Object.freeze({ version: JOURNAL_VERSION, sequence, ...payload, ...(eventId === undefined ? {} : { eventId }) });
         const line = Buffer.from(`${JSON.stringify(record)}\n`, 'utf8');
         const bytes = line.byteLength;
         if (bytes > MAX_RECORD_BYTES) throw new JournalError('journal_record_too_large');
@@ -101,6 +110,7 @@ class RuntimeAuditJournal {
         await this.#dataHandle.sync();
         this.#bytes += bytes;
         this.#records.push(record);
+        if (eventId !== undefined) this.#eventSequences.set(payload.sessionId, eventId);
         return { ...record };
       } catch (error) {
         if (error instanceof JournalError) throw error;
@@ -112,12 +122,14 @@ class RuntimeAuditJournal {
     return task;
   }
 
-  /** Read a bounded immutable snapshot, optionally restricted to one session and sequence cursor. */
-  list({ sessionId, after = 0, limit = 100 } = {}) {
+  /** Read a bounded immutable snapshot; audit records use the journal sequence, events use their session cursor. */
+  list({ sessionId, kind, after = 0, limit = 100 } = {}) {
     if (sessionId !== undefined && !SESSION_ID_RE.test(sessionId)) throw new TypeError('invalid_session_id');
+    if (kind !== undefined && !['audit', 'event'].includes(kind)) throw new TypeError('invalid_journal_kind');
     if (!Number.isSafeInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new TypeError('invalid_journal_cursor');
     return this.#records
-      .filter((record) => record.sequence > after && (sessionId === undefined || record.sessionId === sessionId))
+      .filter((record) => (kind === 'event' ? record.eventId > after : record.sequence > after) && (sessionId === undefined || record.sessionId === sessionId)
+        && (kind === undefined || (record.kind ?? 'audit') === kind))
       .slice(0, limit)
       .map((record) => ({ ...record }));
   }
@@ -143,20 +155,32 @@ class RuntimeAuditJournal {
 
 function validateInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('invalid_journal_record');
-  const allowed = new Set(['sessionId', 'requestId', 'action', 'phase', 'at', 'provider', 'runId', 'errorCode']);
+  const allowed = new Set(['kind', 'sessionId', 'requestId', 'action', 'phase', 'at', 'provider', 'runId', 'errorCode', 'eventType', 'eventId', 'code', 'signal']);
   if (Object.keys(input).some((key) => !allowed.has(key))) throw new TypeError('invalid_journal_record');
-  if (!SESSION_ID_RE.test(input.sessionId) || !UUID_RE.test(input.requestId)
-    || !ACTIONS.has(input.action) || !PHASES.has(input.phase)
+  const kind = input.kind ?? 'audit';
+  if (!['audit', 'event'].includes(kind) || !SESSION_ID_RE.test(input.sessionId)
     || !Number.isSafeInteger(input.at) || input.at < 0) throw new TypeError('invalid_journal_record');
   if (input.provider !== undefined && !PROVIDERS.has(input.provider)) throw new TypeError('invalid_journal_record');
   if (input.runId !== undefined && !UUID_RE.test(input.runId)) throw new TypeError('invalid_journal_record');
-  if (input.errorCode !== undefined && (typeof input.errorCode !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(input.errorCode))) throw new TypeError('invalid_journal_record');
+  if (kind === 'event') {
+    if (input.requestId !== undefined || input.action !== undefined || input.phase !== undefined || input.errorCode !== undefined
+      || !EVENT_TYPES.has(input.eventType) || !PROVIDERS.has(input.provider) || !UUID_RE.test(input.runId)
+      || (input.eventId !== undefined && (!Number.isSafeInteger(input.eventId) || input.eventId < 1))
+      || (input.code !== undefined && input.code !== null && !Number.isSafeInteger(input.code))
+      || (input.signal !== undefined && input.signal !== null && !SIGNALS.has(input.signal))) throw new TypeError('invalid_journal_record');
+    return {
+      kind, sessionId: input.sessionId, eventType: input.eventType, at: input.at,
+      provider: input.provider, runId: input.runId,
+      ...(input.eventId === undefined ? {} : { eventId: input.eventId }),
+      ...(input.code === undefined ? {} : { code: input.code }),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    };
+  }
+  if (input.eventType !== undefined || input.eventId !== undefined || input.code !== undefined || input.signal !== undefined
+    || !UUID_RE.test(input.requestId) || !ACTIONS.has(input.action) || !PHASES.has(input.phase)) throw new TypeError('invalid_journal_record');
   return {
-    sessionId: input.sessionId,
-    requestId: input.requestId,
-    action: input.action,
-    phase: input.phase,
-    at: input.at,
+    ...(input.kind === undefined ? {} : { kind }),
+    sessionId: input.sessionId, requestId: input.requestId, action: input.action, phase: input.phase, at: input.at,
     ...(input.provider === undefined ? {} : { provider: input.provider }),
     ...(input.runId === undefined ? {} : { runId: input.runId }),
     ...(input.errorCode === undefined ? {} : { errorCode: input.errorCode }),
@@ -188,8 +212,10 @@ function parseRecords(buffer) {
     catch { throw new JournalError('journal_corrupt'); }
     const { version, sequence, ...payload } = record ?? {};
     if (version !== JOURNAL_VERSION || sequence !== records.length + 1) throw new JournalError('journal_corrupt');
-    try { validateInput(payload); }
+    let normalized;
+    try { normalized = validateInput(payload); }
     catch { throw new JournalError('journal_corrupt'); }
+    if (normalized.kind === 'event' && !Number.isSafeInteger(normalized.eventId)) throw new JournalError('journal_corrupt');
     records.push(Object.freeze({ version, sequence, ...payload }));
     if (records.length > MAX_RECORDS) throw new JournalError('journal_capacity_exceeded');
   }
