@@ -3,6 +3,7 @@ import http from 'node:http';
 import { test } from 'node:test';
 import { createHandler } from '../src/entry/http.mjs';
 import { createLiveVoiceSession } from '../src/entry/live-voice.mjs';
+import { stopVoiceRecorders } from '../public/voice.mjs';
 import { deleteVoiceSession, getVoiceAudio, listVoiceSessions, saveVoiceSession, voiceStorageAvailable } from '../public/voice-store.mjs';
 import { appendVoiceCaption, projectVoiceDelta } from '../public/voice-transcript.mjs';
 
@@ -116,6 +117,27 @@ test('browser voice store preserves an interrupted partial capture without inven
   assert.equal(await (await getVoiceAudio(SESSION_ID, 'user', factory)).text(), 'partial mic');
   assert.equal(await getVoiceAudio(SESSION_ID, 'assistant', factory), null);
   await assert.rejects(saveVoiceSession({ ...session, id: 'voice_00000000-0000-4000-8000-000000000002', transcript: [] }, { user: null, assistant: null }, factory), /voice_capture_empty/);
+});
+
+test('voice recorder shutdown waits for final data and tolerates stop errors', async () => {
+  const chunks = [];
+  const listeners = new Map();
+  const recorder = {
+    state: 'recording',
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    removeEventListener(type, listener) { if (listeners.get(type) === listener) listeners.delete(type); },
+    stop() {
+      this.state = 'inactive';
+      this.ondataavailable?.({ data: new Blob(['final chunk']) });
+      listeners.get('stop')?.();
+    },
+  };
+  recorder.ondataavailable = (event) => chunks.push(event.data);
+  await stopVoiceRecorders({ user: recorder });
+  assert.equal(await chunks[0].text(), 'final chunk');
+
+  const broken = { state: 'recording', addEventListener() {}, removeEventListener() {}, stop() { throw new Error('synthetic stop failure'); } };
+  await assert.doesNotReject(stopVoiceRecorders({ assistant: broken }));
 });
 
 test('GPT-Live caption projection accepts only bounded caption deltas', () => {

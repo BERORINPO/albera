@@ -3,6 +3,22 @@ import { createVoiceSession, VoiceApiError, voiceAvailability } from './api.mjs'
 import { deleteVoiceSession, getVoiceAudio, listVoiceSessions, saveVoiceSession, voiceStorageAvailable } from './voice-store.mjs';
 import { appendVoiceCaption, projectVoiceDelta } from './voice-transcript.mjs';
 
+/** @param {Record<string, MediaRecorder>} recorders */
+export async function stopVoiceRecorders(recorders) {
+  await Promise.all(Object.values(recorders ?? {}).map((recorder) => new Promise((resolve) => {
+    if (!recorder || recorder.state === 'inactive') { resolve(undefined); return; }
+    let settled = false;
+    const finish = () => { if (settled) return; settled = true; resolve(undefined); };
+    try {
+      recorder.addEventListener('stop', finish, { once: true });
+      recorder.stop();
+    } catch {
+      recorder.removeEventListener?.('stop', finish);
+      finish();
+    }
+  })));
+}
+
 /** @param {{t: () => (key: string) => string}} options */
 export function initVoice({ t }) {
   const $ = (id) => document.getElementById(id);
@@ -79,14 +95,9 @@ export function initVoice({ t }) {
     stop.disabled = true;
     stop.hidden = true;
     say(outcome === 'interrupted' ? 'voice.savingInterrupted' : 'voice.saving');
-    const active = Object.values(recorders);
-    const stopped = active.map((recorder) => new Promise((resolve) => {
-      if (recorder.state === 'inactive') return resolve(undefined);
-      recorder.addEventListener('stop', () => resolve(undefined), { once: true }); recorder.stop();
-    }));
     if (channel) channel.close(); channel = null;
+    await stopVoiceRecorders(recorders);
     if (peer) peer.close(); peer = null;
-    await Promise.all(stopped);
     for (const track of stream?.getTracks() ?? []) track.stop(); stream = null; audio.srcObject = null;
     const audioRows = Object.fromEntries(['user', 'assistant'].map((role) => {
       const blobs = parts[role];

@@ -24,7 +24,7 @@
 
 - OpenCode upstream の V1 schema では assistant message に作成/完了時刻、step-finish part に任意文字列の `reason`、tool part に任意構造の入力・出力・metadata が定義されている ([V1 session schema](https://github.com/anomalyco/opencode/blob/dev/packages/schema/src/v1/session.ts))。
 - 現行 adapter は旧形式の `session` 表から許可した一覧metadataだけを読み、`message` / `part` 表は問い合わせない。上流schemaの存在だけでは保存DB上の正確な列配置・全リリース互換性や、中断理由の安全な固定分類は保証されないため、旧形式の状態・イベントは引き続き `unknown` / 空として扱う。合成DB fixture はこの fail-closed 境界を確認するもので、実OpenCode DBの互換性確認ではない。
-- 音声 Main AI の保存先はブラウザー内のみと決定済み。処理先はOpenAI GPT-Live API、利用開始は画面上の明示操作に限定する。通常終了時に両音声・字幕を保存し、予期しない切断時も取得済みデータを`interrupted`として保存する。片方の音声が無い場合は作らず、音声/字幕とも空なら保存しない。実APIの互換性・音質やIndexedDBの実ブラウザー受入は未確認。
+- 音声 Main AI の保存先はブラウザー内のみと決定済み。処理先はOpenAI GPT-Live API、利用開始は画面上の明示操作に限定する。通常終了時に両音声・字幕を保存し、予期しない切断時も取得済みデータを`interrupted`として保存する。レコーダー停止完了後に最終チャンクを集め、片方の音声が無い場合は作らず、音声/字幕とも空なら保存しない。実APIの互換性・音質やIndexedDBの実ブラウザー受入は未確認。
 - 企業向け権限制御は完成条件だが、利用者ロール、認証主体、操作別の許可規則は「未定義」。権威ソースを推測せず、未完了として残す。
 
 ### OpenCode失敗状態の投影 (2026-10-27)

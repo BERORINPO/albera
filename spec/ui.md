@@ -1494,3 +1494,9 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - 利用者が明示的に開始した後、接続が予期せず終了した場合は、MediaRecorderを止めて取得済み音声と字幕をブラウザー内へ`interrupted`として保存する。片方の話者音声が取得できていない場合は、その音声を作らず詳細に取得不可と表示する。音声・字幕がどちらも無い場合は空記録を作らない。
 - 合成IndexedDBテストで、中断状態、取得済み片側音声と字幕の保存/読出し、未取得側が無いこと、空記録拒否を確認した。`npm test` と `npm run arch` は通過し、`git diff --check` も通過。
 - 実WebRTC切断時のブラウザー挙動と実音声の部分保存は、実API/マイク接続を行っていないため未確認。
+
+### Voice録音停止時の最終チャンクを待つ
+
+- 明示停止・切断時の共通終了処理は、 dataavailable を先に受け取ってから stop 完了を待ち、最後のチャンクをIndexedDBへ含める。MediaRecorderの停止例外では待ち続けず、保存可能なチャンクの処理とリソース解放へ進む。
+- 合成MediaRecorder fixtureで停止イベント前に到着する最終チャンクを確認し、停止例外でも終了待ちがrejectしないことを確認した。`npm test`: 621/621 passed。
+- 実ブラウザーMediaRecorder/WebRTCのstopイベント順序と録音再生は引き続き未確認。
