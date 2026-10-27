@@ -2,7 +2,7 @@
 // 画面: ただ 1 つの状態のかたまりと、その setter。好み (prefs) は localStorage に保存する (読み書きは全部 try/catch)。
 // 選択とコピー済みと batch はメモリだけ (再読み込みで消える)。
 
-import { NEW_BADGE_MS, UI_STORAGE_KEY } from '../src/shared/constants.mjs';
+import { LEGACY_UI_STORAGE_KEY, NEW_BADGE_MS, UI_STORAGE_KEY } from '../src/shared/constants.mjs';
 import { dayKey, hm } from './format.mjs';
 import { latchHandoffs, pruneHandoffs } from './handoff.mjs';
 import { makeT } from './i18n.mjs';
@@ -63,13 +63,23 @@ export const now = () => Date.now() + state.offset;
 
 export function loadPrefs() {
   try {
-    const raw = localStorage.getItem(UI_STORAGE_KEY);
-    const v = raw ? JSON.parse(raw) : null;
+    const current = localStorage.getItem(UI_STORAGE_KEY);
+    const legacy = localStorage.getItem(LEGACY_UI_STORAGE_KEY);
+    const parse = (raw) => {
+      if (raw === null) return null;
+      try {
+        const value = JSON.parse(raw);
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+      } catch {
+        return null;
+      }
+    };
+    const v = parse(current) ?? parse(legacy);
     state.prefs = v && typeof v === 'object' ? { ...defaults(), ...v, open: { ...(v.open ?? {}) }, more: { ...(v.more ?? {}) } } : defaults();
     state.prefs.view = state.prefs.view === 'canvas' ? 'canvas' : 'list';
     for (const k of stalePrefKeys(state.prefs, null).prefs) delete /** @type {any} */ (state.prefs)[k];
     state.prefs.handoff = pruneHandoffs(state.prefs.handoff, now());
-    state.storageOk = true;
+    state.storageOk = (current === null && legacy === null) || v !== null;
   } catch {
     state.prefs = defaults();
     state.storageOk = false;

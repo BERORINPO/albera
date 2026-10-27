@@ -8,10 +8,10 @@ import { JA_HANDOFF } from './dict-ja-handoff.mjs';
 /** @type {Readonly<Record<string, string>>} */
 export const JA = Object.freeze({
   // 19.1 app, masthead, dates
-  'app.name': 'Pigeonholes',
+  'app.name': 'ALBERA',
   'app.tabTitle': '({n}) {pile} — {name}',
   'app.tabOffline': '{title} (オフライン)',
-  'mast.home': 'Pigeonholes 先頭へ',
+  'mast.home': 'ALBERA 先頭へ',
   'mast.trust': '読み取り専用。このパソコンの外へは何も送りません。',
   'mast.demo': 'デモデータ',
   'mast.help': 'キー一覧',

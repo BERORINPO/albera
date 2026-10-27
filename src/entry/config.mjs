@@ -12,6 +12,13 @@ import { normalizeLang } from '../shared/i18n.mjs';
 
 const MAX_ECHO = 40;
 const MAX_ECHO_LIST = 200;
+// Keep the previous release's environment names as read-only fallbacks during the rename.
+const envValue = (env, key) => {
+  const current = env[key];
+  if (typeof current === 'string' && current.trim()) return current;
+  const legacy = env[key.replace(/^ALBERA_/, 'PIGEONHOLES_')];
+  return typeof legacy === 'string' && legacy.trim() ? legacy : undefined;
+};
 const MSIX_PACKAGE = 'Claude_pzs8sxrjxfjjc';
 const APP_DIR = 'Claude';
 const SESSIONS_DIR = 'claude-code-sessions';
@@ -88,7 +95,7 @@ export function parseArgs(argv) {
 }
 
 /**
- * --lang と PIGEONHOLES_LANG を除いた言語 (LC_ALL → LC_MESSAGES → LANG → Intl の既定 → en)。
+ * --lang と ALBERA_LANG を除いた言語 (LC_ALL → LC_MESSAGES → LANG → Intl の既定 → en)。
  * 'C' と 'POSIX' で始まるものは「指定なし」として飛ばす。en / ja 以外の指定は en。
  * @param {Record<string, string|undefined>} env
  * @param {string|undefined} intlLocale
@@ -104,15 +111,15 @@ export function localeLang(env, intlLocale) {
 }
 
 /**
- * 端末の言語: --lang → PIGEONHOLES_LANG → localeLang。
- * --lang / PIGEONHOLES_LANG が en / ja でなければ、それを除いた順で決めた言語の ConfigError。
+ * 端末の言語: --lang → ALBERA_LANG → localeLang。
+ * --lang / ALBERA_LANG が en / ja でなければ、それを除いた順で決めた言語の ConfigError。
  * @param {Record<string, string|undefined>} env
  * @param {string|undefined} argvLang
  * @param {string|undefined} intlLocale
  * @returns {Lang}
  */
 export function pickTerminalLang(env, argvLang, intlLocale) {
-  const explicit = [argvLang, env.PIGEONHOLES_LANG].map((v) => v?.trim()).find((v) => !!v);
+  const explicit = [argvLang, envValue(env, 'ALBERA_LANG')].map((v) => v?.trim()).find((v) => !!v);
   if (!explicit) return localeLang(env, intlLocale);
   const lang = normalizeLang(explicit);
   if (!lang) throw new ConfigError('term.badLang', { raw: clip(explicit) }, localeLang(env, intlLocale));
@@ -173,13 +180,13 @@ export function sessionsDirCandidates(platform, env, home) {
 }
 
 /**
- * 会話ログのフォルダ: --projects-dir → PIGEONHOLES_PROJECTS_DIR → $CLAUDE_CONFIG_DIR/projects (絶対パスのとき) → ~/.claude/projects。
+ * 会話ログのフォルダ: --projects-dir → ALBERA_PROJECTS_DIR → $CLAUDE_CONFIG_DIR/projects (絶対パスのとき) → ~/.claude/projects。
  * 無くても起動する (transcriptsDirMissing になる)。
  * @param {{flag?: string, env: Record<string, string|undefined>, home: string, cwd: string, platform: string}} o
  */
 export function resolveProjectsDir({ flag, env, home, cwd, platform }) {
   const P = pathFor(platform);
-  const explicit = flag ?? env.PIGEONHOLES_PROJECTS_DIR?.trim();
+  const explicit = flag ?? envValue(env, 'ALBERA_PROJECTS_DIR')?.trim();
   if (explicit) return P.resolve(cwd, explicit);
   const base = env.CLAUDE_CONFIG_DIR?.trim();
   return P.join(base && P.isAbsolute(base) ? base : P.join(home, '.claude'), 'projects');
@@ -220,11 +227,11 @@ export function argsWithoutPort(argv) {
  * 環境変数での書き方はシェルごとに違うので出さない (--port はどのシェルでも同じ)。
  * @param {string} platform
  * @param {number} busyPort
- * @param {string} [launcher] 起動のしかた (npx で入れたなら 'npx pigeonholes'、clone なら 'node <path>')
+ * @param {string} [launcher] 起動のしかた (npx で入れたなら 'npx albera'、clone なら 'node <path>')
  * @param {string[]} [args] 起動の引数 (--port は除く。argsWithoutPort)
  * @returns {{port: number, cmd: string}}
  */
-export function portHint(platform, busyPort, launcher = 'npx pigeonholes', args = []) {
+export function portHint(platform, busyPort, launcher = 'npx albera', args = []) {
   const port = busyPort < 65535 ? busyPort + 1 : busyPort - 1;
   return { port, cmd: [launcher, ...args.map((a) => shellQuote(a, platform)), '--port', String(port)].join(' ') };
 }
@@ -285,13 +292,13 @@ export function loadConfig({ env, argv, home, cwd = process.cwd(), platform = pr
   if (args.version) return { action: 'version', lang };
   try {
     const P = pathFor(platform);
-    const port = parsePort(args.port ?? env.PIGEONHOLES_PORT);
-    const roots = parseRoots(env.PIGEONHOLES_ROOTS, home, platform);
-    const demo = args.demo || /^(1|true|yes)$/i.test(env.PIGEONHOLES_DEMO?.trim() ?? '');
+    const port = parsePort(args.port ?? envValue(env, 'ALBERA_PORT'));
+    const roots = parseRoots(envValue(env, 'ALBERA_ROOTS'), home, platform);
+    const demo = args.demo || /^(1|true|yes)$/i.test(envValue(env, 'ALBERA_DEMO')?.trim() ?? '');
     const projectsDir = resolveProjectsDir({ flag: args.projectsDir, env, home, cwd, platform });
     let sessionsRoot = '';
     if (!demo) {
-      const explicit = args.sessionsDir ?? env.PIGEONHOLES_SESSIONS_DIR?.trim();
+      const explicit = args.sessionsDir ?? envValue(env, 'ALBERA_SESSIONS_DIR')?.trim();
       const tried = explicit ? [P.resolve(cwd, explicit)] : sessionsDirCandidates(platform, env, home);
       const found = tried.find((p) => isDir(p));
       if (!found) throw new ConfigError('term.noSessionsDir', { tried });

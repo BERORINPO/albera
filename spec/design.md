@@ -1,4 +1,4 @@
-# Pigeonholes: design system (locked)
+# ALBERA: design system (locked)
 
 Status: locked for v1; v0.2 adds the canvas look (§3 canvas tokens, §12), approved by the owner. Source: the direction "Almanac", chosen from four design directions for clarity and feasibility, with details taken from the other three. The screen itself is specified in `spec/ui.md`; this file fixes the look, the motion and the voice. Change a value here first, then in `public/tokens.css`.
 
@@ -268,14 +268,14 @@ The row's Hand off text button is ink and 700 (`.textbtn.is-strong`): it is the 
 5. **Content is quoted, never translated**: titles, questions, summaries, error text and folder names pass through. Inline content sits in quotes written in the template (『』 in Japanese, “ ” in English); a whole question body is a `<q>` element. Claude's own short words in the doing line (its description of a command, the plan step in progress) are content too: quoted or prefixed (`doing.note`, `doing.step`), never translated. Targets (file names, command heads, hosts, connector names) are shown as `code`.
 6. **No separator chains.** Meta items are separated by space (CSS `column-gap`), lists by 「、」 / ", ", sentences by 「。」 / ". ". One `·` is never used as a joiner.
 7. **No metaphor in functional copy**: no "edition", "desk", "sheet", "slip", "tray", "shelf" in errors, loading or buttons ("desk", "sheet" and "slip" are names in this spec only; the screen says Canvas, project and session). (The product name is the only metaphor.)
-8. **Never**: "!", emoji, praise (お疲れさま, Great job), apologies (申し訳ありません, Oops), "AI", "smart", 「〜しましょう」, internal words (盤面, epitaxy, formatSuspect, contextSuspect, reason codes, activity kinds, level codes, token field names), personal paths, model names, shell-specific syntax in the UI. The only commands shown are the ways to start the board: `npx pigeonholes`, and `npm start` in a clone. The canvas placement is a fixed rule: never call it "AI" or "smart"; its button is "Rearrange".
+8. **Never**: "!", emoji, praise (お疲れさま, Great job), apologies (申し訳ありません, Oops), "AI", "smart", 「〜しましょう」, internal words (盤面, epitaxy, formatSuspect, contextSuspect, reason codes, activity kinds, level codes, token field names), personal paths, model names, shell-specific syntax in the UI. The only commands shown are the ways to start the board: `npx albera`, and `npm start` in a clone. The canvas placement is a fixed rule: never call it "AI" or "smart"; its button is "Rearrange".
 9. English is 1.5 to 3 times longer than Japanese. Buttons never wrap to two lines; their parent row wraps instead.
 10. "Claude" appears only descriptively ("paste it into Claude", "the Claude app"). The disclaimer says the tool is unofficial.
 
 ## 10. Identity
 
-- **Name**: Pigeonholes (npm package and bin `pigeonholes`). Never "Claude" in the name, logo or page title.
-- **Wordmark**: a 2×3 cabinet glyph (six 6×3.5 cells in a 16-unit box, 1px ink strokes) followed by "Pigeonholes" in `--font-display` 600 at `--text-md`. The top-left cell fills with `--color-accent` while anything needs you. The same glyph, the same layout, is the favicon (ui.md §13) and its cell order matches the ledger and keys 1 to 6 (left column: Needs you, Stuck?, Unread; right column: Working, Recent, To archive).
+- **Name**: ALBERA (npm package and bin `albera`). Never "Claude" in the name, logo or page title.
+- **Wordmark**: a 2×3 cabinet glyph (six 6×3.5 cells in a 16-unit box, 1px ink strokes) followed by "ALBERA" in `--font-display` 600 at `--text-md`. The top-left cell fills with `--color-accent` while anything needs you. The same glyph, the same layout, is the favicon (ui.md §13) and its cell order matches the ledger and keys 1 to 6 (left column: Needs you, Stuck?, Unread; right column: Working, Recent, To archive).
 - **No other logo**, no sparkle, no Claude orange, no warm cream paper.
 
 ## 11. The never list

@@ -1,12 +1,12 @@
-# Pigeonholes
+# ALBERA
 
-A read-only page on your own computer that sorts every session in the Code tab of the Claude desktop app (Claude Code) into six piles: needs your answer, may be stuck, finished but unread, working, recent, and ready to archive. It also says what each session is doing and how full its context is, and helps you hand a full session off to a new one. See the piles as a list, or as a canvas with one sheet per project. Chats from the app's other tabs are not shown.
+ALBERA takes its name and spirit from Anni Albers's woven art. Its long-term direction is a development platform where people and multiple AIs weave knowledge, code, and development work together. The current release is only a read-only local dashboard for Claude Desktop / Claude Code sessions: it groups sessions by what needs your answer, may be stuck, finished but unread, working, recent, and ready to archive. It also shows what each session is doing and an estimate of context use, and helps you prepare a hand-off. See sessions as a list or as a canvas with one sheet per project. Chats from the app's other tabs are not shown.
 
 [日本語](README.ja.md)
 
 > Unofficial community tool. Not affiliated with, endorsed by, or supported by Anthropic. Claude is a trademark of Anthropic.
 
-![Pigeonholes with demo data: the session to answer first at the top, a count for each pile on the right, then the piles](docs/screenshot.png)
+![ALBERA with demo data: the session to answer first at the top, a count for each pile on the right, then the piles](docs/screenshot.png)
 
 Demo data. Also: [canvas](docs/screenshot-canvas.png) · [dark theme](docs/screenshot-dark.png) · [400 px wide](docs/screenshot-narrow.png) · [Japanese](docs/screenshot-ja.png)
 
@@ -15,30 +15,30 @@ Demo data. Also: [canvas](docs/screenshot-canvas.png) · [dark theme](docs/scree
 - **Zero dependencies.** Node.js 22 or newer. No build step.
 - **English and Japanese.** The page follows your browser language; the terminal follows your system language.
 
+## Long-term direction (not implemented)
+
+The following are product plans, not features of this release: running, monitoring, and controlling multiple AI CLIs; orchestration by a Main AI; an infinite canvas and graph views; a Knowledge Graph, Harness Graph, and Comprehension Graph; Git worktree and PR integration; and human intervention, approvals, and development policy enforcement. The current release does not execute or control agents and does not provide those graphs or integrations.
+
 ## Quick start
 
-You need Node.js 22 or newer and the Claude desktop app, with at least one session in its Code tab.
+You need Node.js 22 or newer and the Claude desktop app, with at least one session in its Code tab. The `albera` package is not published on npm yet; use the clone instructions below for this branch. The `npx albera` commands later in this README apply after a package release.
+
+Clone and run the current source:
 
 ```sh
-npx pigeonholes
-```
-
-From a clone:
-
-```sh
-git clone https://github.com/BERORINPO/pigeonholes.git
-cd pigeonholes
+git clone https://github.com/BERORINPO/pigeonholes.git albera
+cd albera
 npm start                       # same as: node src/entry/server.mjs
 ```
 
 npm needs `--` before flags for the script: `npm start -- --port 8798`, `npm run demo -- --lang en`. Without it, npm takes the flag for itself. `node src/entry/server.mjs --port 8798` works without it.
 
-When the terminal prints `Pigeonholes: http://127.0.0.1:8797 (read-only)`, open that address in a browser. The first scan takes a few seconds. Stop it with Ctrl+C. If it prints `Already running: open http://127.0.0.1:8797`, a board of the same kind is already up; open the address. If the board on that port is the demo and you asked for your sessions (or the other way round), it says so and prints a command for another port instead.
+When the terminal prints `ALBERA: http://127.0.0.1:8797 (read-only)`, open that address in a browser. The first scan takes a few seconds. Stop it with Ctrl+C. If it prints `Already running: open http://127.0.0.1:8797`, a board of the same kind is already up; open the address. If the board on that port is the demo and you asked for your sessions (or the other way round), it says so and prints a command for another port instead.
 
-To try it without reading your sessions, add `--demo` (synthetic data):
+To try synthetic data without reading your sessions, run:
 
 ```sh
-npx pigeonholes --demo          # from a clone: npm run demo
+npm run demo
 ```
 
 Tip: the Claude desktop app has a built-in browser pane. Open the address there and the board sits next to your conversation. The list and the canvas both work down to about 400 px wide. In that pane, desktop notifications are not available, and **Open** may be blocked; then use **Copy link** in the details, or open the board in your usual browser.
@@ -172,7 +172,7 @@ Archiving deletes nothing; you can restore any session in the Claude app. The su
 
 ## Compatibility
 
-- **Undocumented files.** Pigeonholes reads the desktop app's local files, which are not a public API. An app update can change them and break the board, or put sessions in the wrong pile. If token counts can no longer be read, the board hides the context numbers; if tool use can't be read, the doing labels go missing. The footer says so in both cases. Please open an issue with your app version.
+- **Undocumented files.** ALBERA reads the desktop app's local files, which are not a public API. An app update can change them and break the board, or put sessions in the wrong pile. If token counts can no longer be read, the board hides the context numbers; if tool use can't be read, the doing labels go missing. The footer says so in both cases. Please open an issue with your app version.
 - **Context sizes are estimates.** No file states the size of a session's context window. The board takes it from the model name (`[1m]`), from what the transcript proves, or from known model families, and writes `~` when it guessed. Where a 200K window summarizes itself is an estimate too, and the count can lag behind a very large tool result.
 - **The new-session card.** The hand-off relies on the session's Claude asking through the app's new-session card, an app feature that is not publicly documented. If it is missing, Claude gives you the brief in a code block to paste into a new session.
 - **Open link.** Open uses the app's `claude://` link. It is best-effort: some browsers and embedded panes block it. Use **Copy link** or **Copy ID** in the details instead.
@@ -185,13 +185,15 @@ Flags win over environment variables. Both `--flag value` and `--flag=value` wor
 
 | Flag | Environment variable | Default |
 |---|---|---|
-| `--port <n>` | `PIGEONHOLES_PORT` | `8797` (1024–65535) |
-| `--lang en\|ja` | `PIGEONHOLES_LANG` | your system language. Sets the terminal messages and the demo content |
-| `--demo` | `PIGEONHOLES_DEMO=1` | off |
-| `--sessions-dir <path>` | `PIGEONHOLES_SESSIONS_DIR` | searched (see [What it reads](#what-it-reads)) |
-| `--projects-dir <path>` | `PIGEONHOLES_PROJECTS_DIR` | `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` |
-| — | `PIGEONHOLES_ROOTS` | your home folder. Absolute paths separated by `;` (or `:` on macOS and Linux). A session in `<root>/<name>/...` outside any git repository is grouped under `<name>` |
+| `--port <n>` | `ALBERA_PORT` | `8797` (1024–65535) |
+| `--lang en\|ja` | `ALBERA_LANG` | your system language. Sets the terminal messages and the demo content |
+| `--demo` | `ALBERA_DEMO=1` | off |
+| `--sessions-dir <path>` | `ALBERA_SESSIONS_DIR` | searched (see [What it reads](#what-it-reads)) |
+| `--projects-dir <path>` | `ALBERA_PROJECTS_DIR` | `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` |
+| — | `ALBERA_ROOTS` | your home folder. Absolute paths separated by `;` (or `:` on macOS and Linux). A session in `<root>/<name>/...` outside any git repository is grouped under `<name>` |
 | `--help`, `--version` | — | — |
+
+The previous `PIGEONHOLES_*` environment variables are also read when the corresponding `ALBERA_*` variable is unset or blank. A non-empty `ALBERA_*` value takes precedence.
 
 Projects are named after the git repository a session runs in. Worktrees under `.claude/worktrees/` count as their repository.
 
@@ -201,7 +203,7 @@ The page address takes `?lang=en` or `?lang=ja`, `?theme=light` or `?theme=dark`
 
 | You see | Do this |
 |---|---|
-| `Port 8797 is used by another app` | Start on another port. The message prints a command you can paste (for example `npx pigeonholes --port 8798`); it keeps the other flags you used, such as `--demo` |
+| `Port 8797 is used by another app` | Start on another port. The message prints a command you can paste (for example `npx albera --port 8798`); it keeps the other flags you used, such as `--demo` |
 | `Port 8797 has the demo board, not your sessions` (or the other way round) | Stop the other board with Ctrl+C in its terminal, or paste the printed command for another port |
 | `Can't find the Claude desktop app's session folder` | Start a session once in the Code tab of the Claude desktop app, or pass `--sessions-dir <path>`. Chats in the app's other tabs do not create this folder. The message lists every folder it tried |
 | The page says it can't reach the server | The terminal was closed. Start it again; the page reconnects by itself |

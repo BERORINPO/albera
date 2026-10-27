@@ -21,8 +21,8 @@ const FORMAT_SUSPECTS = [null, 'no_timestamps', 'no_session_files'];
 const LEVELS = ['notice', 'due', 'soon'];
 const WINDOWS = [200_000, 1_000_000];
 const TOOL_WARN_SHARE = 0.5;
-// PIGEONHOLES_TEST_PORTS=18970-18989 keeps the smoke server inside a port range (as in test/server.test.mjs)
-const PORT_RANGE = /^(\d+)-(\d+)$/.exec(process.env.PIGEONHOLES_TEST_PORTS ?? '');
+// ALBERA_TEST_PORTS=18970-18989 keeps the smoke server inside a port range (as in test/server.test.mjs)
+const PORT_RANGE = /^(\d+)-(\d+)$/.exec(process.env.ALBERA_TEST_PORTS ?? '');
 /** @type {string[]} */
 const failures = [];
 /** @type {string[]} */
@@ -31,7 +31,7 @@ const expect = (/** @type {boolean} */ ok, /** @type {string} */ msg) => {
   if (!ok) failures.push(msg);
 };
 
-/** A free port from the OS (or from PIGEONHOLES_TEST_PORTS), never the default port (a board the owner runs may want it). @returns {Promise<number>} */
+/** A free port from the OS (or from ALBERA_TEST_PORTS), never the default port (a board the owner runs may want it). @returns {Promise<number>} */
 async function freePort() {
   if (PORT_RANGE) {
     const [min, max] = [Number(PORT_RANGE[1]), Number(PORT_RANGE[2])];
@@ -56,11 +56,11 @@ function listenOn(want) {
   });
 }
 
-/** Environment without any PIGEONHOLES_* from the caller, so only the flags below decide. */
+/** Environment without any ALBERA_* from the caller, so only the flags below decide. */
 function cleanEnv() {
   /** @type {Record<string, string|undefined>} */
   const env = {};
-  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith('PIGEONHOLES_')) env[k] = v;
+  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith('ALBERA_') && !k.startsWith('PIGEONHOLES_')) env[k] = v;
   return env;
 }
 
@@ -264,7 +264,7 @@ async function main() {
   try {
     console.log(await ready);
     const page = await get(port, '/');
-    expect(page.status === 200 && page.text.includes('name="pigeonholes"'), `/ is not the 200 board page (${page.status})`);
+    expect(page.status === 200 && page.text.includes('name="albera"'), `/ is not the 200 board page (${page.status})`);
     expect(!!page.csp && page.csp.includes("default-src 'self'"), 'no CSP header');
     const t0 = Date.now();
     const api = await get(port, '/api/board');

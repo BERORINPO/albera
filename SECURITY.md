@@ -10,7 +10,7 @@ Please report privately through GitHub: open the repository's **Security** tab a
 
 ## Threat model
 
-Pigeonholes is a local, read-only viewer. It shows what the Claude desktop app has already written to files in your user account.
+ALBERA is a local, read-only viewer. It shows what the Claude desktop app has already written to files in your user account.
 
 What it does to keep that data on your computer:
 
@@ -29,9 +29,9 @@ What it does to keep that data on your computer:
 
 ## Limits
 
-- **Programs running as you can read the board**, just as they can read the app's files directly. Pigeonholes adds no login. It does not protect you from malware or anyone else who can run programs under your account.
+- **Programs running as you can read the board**, just as they can read the app's files directly. ALBERA adds no login. It does not protect you from malware or anyone else who can run programs under your account.
 - **Other user accounts on the same computer can connect to 127.0.0.1 ports.** The app's files are protected by file permissions; the board is not. On a shared computer, stop the board when you are not using it.
 - **Never expose the port.** Do not forward it, tunnel it, put it behind a reverse proxy, or change the code to listen on another address. The Host allowlist stops most of these, but do not rely on it alone.
-- **Something else can answer on the board's port.** When the port is in use, the board asks that port whether a Pigeonholes board is there (`/api/hello`). Any program can answer the same way, so the terminal only says it looks like a board and suggests another port if you did not start one. Open the address the board you started printed.
+- **Something else can answer on the board's port.** When the port is in use, the board asks that port whether a ALBERA board is there (`/api/hello`). Any program can answer the same way, so the terminal only says it looks like a board and suggests another port if you did not start one. Open the address the board you started printed.
 - **The browser remembers your view choices** for this address (`127.0.0.1:<port>`): the language, the switches, the view (list or canvas), which piles and project groups you opened, by folder name, where each project's sheet sits on the canvas, by folder name (kept 7 days after the project leaves the board), and which sessions you copied a hand-off instruction for (the session ID, the time and the context percentage, kept 24 hours). A page served later on the same address and port in the same browser could read them; clear the site data if that matters.
 - **Read the instruction before you send it.** The copied texts are plain text and the board sends none of them itself. The archive instruction is three lines, then session IDs. The hand-off instruction asks Claude to stop at a safe point, write a brief, and ask you once before it starts a new session; it carries the context percentage and, for a session too full to answer, that session's ID, and nothing else from the board. Check either before pasting it into Claude.

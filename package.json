@@ -1,10 +1,10 @@
 {
-  "name": "pigeonholes",
+  "name": "albera",
   "version": "0.2.0",
-  "description": "Unofficial, read-only local board for your Claude Code sessions in the Claude desktop app: what needs you, what's stuck, what to clean up.",
+  "description": "Anni Albers-inspired read-only local dashboard for Claude Code sessions, part of the ALBERA development platform.",
   "type": "module",
   "bin": {
-    "pigeonholes": "src/entry/server.mjs"
+    "albera": "src/entry/server.mjs"
   },
   "files": [
     "src",

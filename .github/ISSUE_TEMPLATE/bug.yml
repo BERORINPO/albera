@@ -48,10 +48,10 @@ body:
       required: true
 
   - type: input
-    id: pigeonholes-version
+    id: albera-version
     attributes:
-      label: Pigeonholes version
-      description: Output of `npx pigeonholes --version`, or the commit if you run from a clone.
+      label: ALBERA version
+      description: Output of `npx albera --version`, or the commit if you run from a clone.
     validations:
       required: true
 
@@ -60,7 +60,7 @@ body:
     attributes:
       label: How you start it
       options:
-        - npx pigeonholes
+        - npx albera
         - npm start (from a clone)
         - node src/entry/server.mjs (from a clone)
         - Other

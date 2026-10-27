@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Rebrand Pigeonholes as ALBERA. The npm package and CLI command are now `albera`; runtime configuration uses `ALBERA_*`, with the previous `PIGEONHOLES_*` names kept as fallbacks during migration.
+- Browser preferences and canvas positions migrate from the old local-storage keys by reading them and writing to the new ALBERA keys. Existing entries are retained.
+- This release remains read-only and keeps the existing session board scope.
+
 All notable changes are listed here. Versions follow [Semantic Versioning](https://semver.org/); while the version starts with 0, a minor release may change behaviour.
 
 ## 0.2.0 - 2026-10-19

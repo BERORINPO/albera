@@ -8,10 +8,10 @@ import { EN_HANDOFF } from './dict-en-handoff.mjs';
 /** @type {Readonly<Record<string, string | {one: string, other: string}>>} */
 export const EN = Object.freeze({
   // 19.1 app, masthead, dates
-  'app.name': 'Pigeonholes',
+  'app.name': 'ALBERA',
   'app.tabTitle': '({n}) {pile} — {name}',
   'app.tabOffline': '{title} (offline)',
-  'mast.home': 'Pigeonholes, back to top',
+  'mast.home': 'ALBERA, back to top',
   'mast.trust': 'Read-only. Nothing leaves this computer.',
   'mast.demo': 'Demo data',
   'mast.help': 'Keyboard keys',

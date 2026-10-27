@@ -63,7 +63,7 @@ export function renderLede(el, o) {
   if (st === 'server') return void fill(el, title('lede.serverError'), note(t('lede.serverErrorNote')));
   // 版が違う・描けなかったときは帯が言うので、lede は空にする (見出しは読み上げ用に 1 つだけ残す)
   if (st === 'version' || st === 'render') return void fill(el, h('h1', { class: 'vh', text: t(`banner.${st}.lead`) }));
-  if (st === 'offline') return void fill(el, title('lede.offline'), h('p', { class: 'lede__q is-note' }, ...partsToNodes(t.parts('lede.offlineNote', { cmd: h('code', { text: 'npx pigeonholes' }) }))));
+  if (st === 'offline') return void fill(el, title('lede.offline'), h('p', { class: 'lede__q is-note' }, ...partsToNodes(t.parts('lede.offlineNote', { cmd: h('code', { text: 'npx albera' }) }))));
   if (st === 'quiet' || !next) {
     const working = Number(c.working) || 0;
     const line = sentences(t, o.calmSince ? t('lede.calmSince', { time: o.calmSince }) : '', working > 0 ? t('lede.calmWorking', { n: working }) : t('lede.calmIdle'));

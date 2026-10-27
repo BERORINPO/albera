@@ -1,7 +1,7 @@
 // キャンバスの純粋な部分 (spec/ui.md §10.5–§10.8): カメラの計算・キー・Esc の順・付箋の署名・席の保存・表示の切り替えの状態 (合成データ)。
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CANVAS, CANVAS_STORAGE_KEY, HOUR, UI_STORAGE_KEY } from '../src/shared/constants.mjs';
+import { CANVAS, CANVAS_STORAGE_KEY, HOUR, LEGACY_CANVAS_STORAGE_KEY, LEGACY_UI_STORAGE_KEY, UI_STORAGE_KEY } from '../src/shared/constants.mjs';
 import { clampZ, colsCap, fitRect, headPin, isNarrow, keepCentre, LEAVE_PX, levelOf, FIT_MIN, minZoom, openCamera, panBy, revealRect, stepZoom, toScreen, toWorld, zoomAt } from '../public/canvas-camera.mjs';
 import { layoutBoard, readingOrder } from '../public/canvas-layout.mjs';
 import { canvasEscapeStep, canvasKeyAction } from '../public/canvas-input.mjs';
@@ -453,6 +453,20 @@ test('loadSeats / saveSeats: 保存したものを読み戻す。狭い表示枠
     assert.deepEqual(JSON.parse(mem.data[`${CANVAS_STORAGE_KEY}:narrow`]), stack);
     assert.deepEqual(loadSeats(), doc);
     assert.deepEqual(loadSeats(true), stack, '広い画面と狭い欄の並びは互いを上書きしない');
+    mem.data[LEGACY_CANVAS_STORAGE_KEY] = JSON.stringify(doc);
+    mem.data[`${LEGACY_CANVAS_STORAGE_KEY}:narrow`] = JSON.stringify(stack);
+    assert.deepEqual(loadSeats(), doc, '旧 Pigeonholes キーの席を読み込む');
+    assert.deepEqual(loadSeats(true), stack, '旧キーの狭い画面の席も読み込む');
+    mem.data[CANVAS_STORAGE_KEY] = '{not json';
+    mem.data[`${CANVAS_STORAGE_KEY}:narrow`] = JSON.stringify({ ...stack, v: 1 });
+    assert.deepEqual(loadSeats(), doc, '壊れた新キーは旧キーへフォールバックする');
+    assert.deepEqual(loadSeats(true), stack, '無効な新キーでも狭い画面の旧キーへフォールバックする');
+    assert.equal(mem.data[LEGACY_CANVAS_STORAGE_KEY], JSON.stringify(doc), 'フォールバックしても旧データを保持する');
+    saveSeats(doc);
+    assert.equal(mem.data[LEGACY_CANVAS_STORAGE_KEY], JSON.stringify(doc), '旧キーの記録は削除しない');
+    assert.deepEqual(JSON.parse(mem.data[CANVAS_STORAGE_KEY]), doc, '新キーへ保存する');
+    delete mem.data[LEGACY_CANVAS_STORAGE_KEY];
+    delete mem.data[`${LEGACY_CANVAS_STORAGE_KEY}:narrow`];
     mem.data[CANVAS_STORAGE_KEY] = '{not json';
     assert.equal(loadSeats(), null);
     mem.data[CANVAS_STORAGE_KEY] = JSON.stringify({ ...doc, v: 1 });
@@ -479,6 +493,14 @@ test('表示: prefs.view を覚える (既定は list)。v0.1 の全体 (Overvie
     const saved = JSON.parse(mem.data[UI_STORAGE_KEY]);
     assert.equal(saved.view, 'list');
     assert.equal('overview' in saved, false);
+    mem.data[LEGACY_UI_STORAGE_KEY] = JSON.stringify({ view: 'canvas', lang: 'ja', keys: false });
+    delete mem.data[UI_STORAGE_KEY];
+    loadPrefs();
+    assert.equal(state.prefs.view, 'canvas', '旧 Pigeonholes キーの表示設定を読み込む');
+    assert.equal(state.prefs.lang, 'ja');
+    setView('list');
+    assert.ok(mem.data[LEGACY_UI_STORAGE_KEY], '旧キーの保存データは削除しない');
+    assert.equal(JSON.parse(mem.data[UI_STORAGE_KEY]).view, 'list', '新キーへ保存する');
     mem.data[UI_STORAGE_KEY] = JSON.stringify({ view: 'sideways' });
     loadPrefs();
     assert.equal(state.prefs.view, 'list', '知らない値は一覧');

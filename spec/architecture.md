@@ -1,4 +1,4 @@
-# アーキテクチャ (Pigeonholes)
+# アーキテクチャ (ALBERA)
 
 形: 4 役割・一方向依存 (entry → adapter → core → shared)。検査は `npm run arch`。Why: アプリが書き換え続けるファイルを読むだけの道具なので、外界 (fs) を adapter に閉じ込め、判定は時計も言葉も持たない純粋関数にして、全規則を合成データのテストで固定する。言葉は画面と端末の辞書だけが持つ。
 
@@ -20,7 +20,7 @@
 | transcripts-fs | `<projectsDir>/*/<cliSessionId>.jsonl` と `<cliSessionId>/subagents/**` | fake-transcripts | 合成のみ | なし | 書き込まない (stat と末尾読みだけ。subagents は stat で数えるだけで開かない。全体は読まない) |
 | folder-hints-fs | アーカイブしていないセッションの cwd とその親 (`.git` の有無、直下のフォルダ名)。ネットワークのパス (`\\server\share`・`//server/share`) は見ない。1 パス 0.5 秒まで | fake-folder-hints | 合成のみ (os.tmpdir の一時フォルダ) | なし | 書き込まない (stat と readdir だけ) |
 | (なし) | ネットワーク | — | — | なし | 外への通信は 0 件 (割り当てたネットワークドライブ上のフォルダだけは、OS がその共有を見に行くことがある)。配置も言葉も AI を使わない |
-| (画面) | ブラウザの localStorage | — | — | なし | 画面の好み (`pigeonholes:v1:ui`: 言語・view・引き継ぎのコピー記録) とキャンバスの席 (`pigeonholes:v1:canvas` と狭い画面の `:narrow`)。その PC のブラウザだけ |
+| (画面) | ブラウザの localStorage | — | — | なし | 画面の好み (`albera:v1:ui`: 言語・view・引き継ぎのコピー記録) とキャンバスの席 (`albera:v1:canvas` と狭い画面の `:narrow`)。新キーが無いか壊れている場合は旧 `pigeonholes:v1:*` を読み込み、旧データは削除しない。その PC のブラウザだけ |
 
 ## 3. Origin・監視トポロジ
 
@@ -41,8 +41,9 @@
 | 2026-10-17 dom-only | 画面は textContent と DOM API だけで描く。style 属性も使わない (CSSOM は可) | title・報告は任意の文字列 (XSS)、CSP style-src 'self' | 有 (arch 4b) |
 | 2026-10-17 single-fetch | fetch は public/api.mjs だけ | 通信を 1 か所に集める | 有 (arch 4a) |
 | 2026-10-18 name | 名前は Pigeonholes、npm と bin は `pigeonholes`、env は `PIGEONHOLES_*`。名前・ロゴ・題名に "Claude" を入れない | 公開用で非公式。却下: Session Board (一般名詞)、Kawaraban (英語話者に伝わらない) | 無 |
+| 2026-10-27 rebrand | 製品名・npm/bin・画面と新しい設定名を ALBERA / `albera` / `ALBERA_*` に変更。旧 env 名とブラウザ保存キーは読み込み互換を維持し、保存キー移行で削除しない | アンニ・アルバースの織物芸術に着想した開発プラットフォーム。現行機能の read-only 制約と範囲は維持 | テスト・arch |
 | 2026-10-18 codes-on-wire | /api/board v2 はコードと params だけ (reasonText・label の言葉・gloss を削除、500 は `board_failed`)。言葉は public/dict-*.mjs と entry/messages.mjs | 2 言語で JSON と ETag を共有。却下: Accept-Language で JSON を変える | 有 (arch 6: 仮名・漢字の文字列は辞書だけ) |
-| 2026-10-18 ui-language | 画面は en 既定、navigator.languages が ja なら ja、`?lang=` が優先、切替は localStorage `pigeonholes:v1:ui`。端末は --lang > PIGEONHOLES_LANG > LC_* / LANG > Intl | OSS で英語話者も使う。日本語の環境なら設定なしで日本語 | テスト (辞書のキーと placeholder の一致) |
+| 2026-10-18 ui-language | 画面は en 既定、navigator.languages が ja なら ja、`?lang=` が優先、切替は localStorage `albera:v1:ui`。端末は --lang > ALBERA_LANG > LC_* / LANG > Intl | OSS で英語話者も使う。日本語の環境なら設定なしで日本語 | テスト (辞書のキーと placeholder の一致) |
 | 2026-10-18 oldest-first | 返事待ち・止まったかも・未読は古い順、返事待ちと止まったかもは打ち切らない。作業中は新しい順 | 一番長く待っているものを見落とさない (「他 N 件」に隠れて終わった気になる) | テスト (board) |
 | 2026-10-18 started-at | 作業中の経過は transcript の指示行の timestamp (Card.startedAt)。無ければ「更新」の時刻 | 推測しない。却下: lastActivityAt から推定 | テスト (turn) |
 | 2026-10-18 format-suspect | 日時の無いレコードが 20% 超 (5 件以上)、またはフォルダはあるのにファイル 0 のとき stats.formatSuspect を立て、おすすめを全部切る | 形式が変わると全部が「30 日以上」に見え、一括で片付けてしまう | テスト (board) |

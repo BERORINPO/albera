@@ -3,7 +3,7 @@
 // 配置は canvas-layout.mjs (純粋)、用紙の部品 (柱・線・帯・まとめ) は canvas-sheet.mjs、付箋 1 枚は canvas-slip.mjs、表示枠の下の帯は canvas-bar.mjs。
 // 用紙は project key、付箋は session ID で使い回す。縮尺を変えても作り直さない (data-level で CSS が見せ方を変える)。
 
-import { CANVAS, CANVAS_STORAGE_KEY } from '../src/shared/constants.mjs';
+import { CANVAS, CANVAS_STORAGE_KEY, LEGACY_CANVAS_STORAGE_KEY } from '../src/shared/constants.mjs';
 import { projectLabel } from './format.mjs';
 import { headPin, levelOf } from './canvas-camera.mjs';
 import { FOLD_KEY, parseSeats } from './canvas-layout.mjs';
@@ -26,11 +26,14 @@ const { SLIP_W, SLIP_H } = CANVAS;
 
 /** @param {boolean} narrow */
 const seatsKey = (narrow) => (narrow ? `${CANVAS_STORAGE_KEY}:narrow` : CANVAS_STORAGE_KEY);
+const legacySeatsKey = (narrow) => (narrow ? `${LEGACY_CANVAS_STORAGE_KEY}:narrow` : LEGACY_CANVAS_STORAGE_KEY);
 
 /** 保存した席の記録 (壊れていれば null = 新しく並べる)。 @param {boolean} [narrow] */
 export function loadSeats(narrow = false) {
   try {
-    return parseSeats(localStorage.getItem(seatsKey(narrow)));
+    const current = localStorage.getItem(seatsKey(narrow));
+    const seats = parseSeats(current);
+    return seats ?? parseSeats(localStorage.getItem(legacySeatsKey(narrow)));
   } catch {
     return null;
   }

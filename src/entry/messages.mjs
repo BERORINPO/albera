@@ -7,37 +7,37 @@ import { fill } from '../shared/i18n.mjs';
 /** @typedef {'en'|'ja'} Lang */
 
 const HELP_EN = [
-  'Pigeonholes {version}: one read-only page for all your Claude desktop app sessions (the Code tab).',
+  'ALBERA {version}: one read-only page for all your Claude desktop app sessions (the Code tab).',
   '',
   'Usage: {cmd} [options]',
-  '  --port <n>             port on 127.0.0.1 (default {port}; env PIGEONHOLES_PORT)',
-  '  --lang en|ja           language of these messages and the demo (env PIGEONHOLES_LANG)',
-  '  --demo                 show synthetic demo data instead of your sessions (env PIGEONHOLES_DEMO=1)',
-  "  --sessions-dir <path>  the app's claude-code-sessions folder (env PIGEONHOLES_SESSIONS_DIR)",
-  "  --projects-dir <path>  Claude Code's projects folder with transcripts (env PIGEONHOLES_PROJECTS_DIR)",
+  '  --port <n>             port on 127.0.0.1 (default {port}; env ALBERA_PORT)',
+  '  --lang en|ja           language of these messages and the demo (env ALBERA_LANG)',
+  '  --demo                 show synthetic demo data instead of your sessions (env ALBERA_DEMO=1)',
+  "  --sessions-dir <path>  the app's claude-code-sessions folder (env ALBERA_SESSIONS_DIR)",
+  "  --projects-dir <path>  Claude Code's projects folder with transcripts (env ALBERA_PROJECTS_DIR)",
   '  --help, --version',
-  'PIGEONHOLES_ROOTS: folders, separated by "{sep}", whose direct subfolders are projects (default: your home).',
+  'ALBERA_ROOTS: folders, separated by "{sep}", whose direct subfolders are projects (default: your home).',
   'It only reads files. Nothing leaves this computer.',
 ].join('\n');
 
 const HELP_JA = [
-  'Pigeonholes {version}: Claude デスクトップアプリ (Code タブ) のセッションを 1 ページで見渡す、読み取り専用の道具です。',
+  'ALBERA {version}: Claude デスクトップアプリ (Code タブ) のセッションを 1 ページで見渡す、読み取り専用の道具です。',
   '',
   '使い方: {cmd} [オプション]',
-  '  --port <n>             127.0.0.1 で待ち受けるポート (既定 {port}。環境変数 PIGEONHOLES_PORT)',
-  '  --lang en|ja           このメッセージとデモの言語 (環境変数 PIGEONHOLES_LANG)',
-  '  --demo                 自分のセッションの代わりに合成のデモデータを出す (環境変数 PIGEONHOLES_DEMO=1)',
-  '  --sessions-dir <path>  アプリの claude-code-sessions フォルダ (環境変数 PIGEONHOLES_SESSIONS_DIR)',
-  '  --projects-dir <path>  会話ログのある Claude Code の projects フォルダ (環境変数 PIGEONHOLES_PROJECTS_DIR)',
+  '  --port <n>             127.0.0.1 で待ち受けるポート (既定 {port}。環境変数 ALBERA_PORT)',
+  '  --lang en|ja           このメッセージとデモの言語 (環境変数 ALBERA_LANG)',
+  '  --demo                 自分のセッションの代わりに合成のデモデータを出す (環境変数 ALBERA_DEMO=1)',
+  '  --sessions-dir <path>  アプリの claude-code-sessions フォルダ (環境変数 ALBERA_SESSIONS_DIR)',
+  '  --projects-dir <path>  会話ログのある Claude Code の projects フォルダ (環境変数 ALBERA_PROJECTS_DIR)',
   '  --help, --version',
-  'PIGEONHOLES_ROOTS: 直下のフォルダをプロジェクトとみなすフォルダ。「{sep}」区切り (既定: ホームフォルダ)。',
+  'ALBERA_ROOTS: 直下のフォルダをプロジェクトとみなすフォルダ。「{sep}」区切り (既定: ホームフォルダ)。',
   'ファイルを読むだけです。このパソコンの外へは何も送りません。',
 ].join('\n');
 
 /** @type {Readonly<Record<Lang, Readonly<Record<string, string>>>>} */
 export const TERM = Object.freeze({
   en: Object.freeze({
-    'term.started': 'Pigeonholes: http://127.0.0.1:{port} ({mode})',
+    'term.started': 'ALBERA: http://127.0.0.1:{port} ({mode})',
     'term.modeReadOnly': 'read-only',
     'term.modeDemo': 'demo data, read-only',
     'term.alreadyRunning': 'Already running: open http://127.0.0.1:{port}',
@@ -46,20 +46,20 @@ export const TERM = Object.freeze({
     'term.runningLive': 'Port {port} has a board with your real sessions, not the demo. Start the demo on another port: {cmd}',
     'term.portBusy': 'Port {port} is used by another app. Start on another port: {cmd}',
     'term.cantStart': "Can't start the server: {code}",
-    'term.badPort': 'The port must be a number from 1024 to 65535 (got: {raw}). Use --port <n> or PIGEONHOLES_PORT.',
-    'term.badRoots': 'PIGEONHOLES_ROOTS must be absolute paths separated by "{sep}" (invalid: {bad})',
+    'term.badPort': 'The port must be a number from 1024 to 65535 (got: {raw}). Use --port <n> or ALBERA_PORT.',
+    'term.badRoots': 'ALBERA_ROOTS must be absolute paths separated by "{sep}" (invalid: {bad})',
     'term.empty': '(empty)',
-    'term.badLang': '--lang and PIGEONHOLES_LANG must be en or ja (got: {raw})',
+    'term.badLang': '--lang and ALBERA_LANG must be en or ja (got: {raw})',
     'term.badFlag': 'Unknown option: {flag}. See: {cmd} --help',
     'term.missingValue': '{flag} needs a value. See: {cmd} --help',
     'term.noSessionsDir': "Can't find the Claude desktop app's session folder. Looked in:",
-    'term.noSessionsDirHint': 'Start a session once in the Code tab of the Claude desktop app, or pass --sessions-dir <path> (or set PIGEONHOLES_SESSIONS_DIR).',
+    'term.noSessionsDirHint': 'Start a session once in the Code tab of the Claude desktop app, or pass --sessions-dir <path> (or set ALBERA_SESSIONS_DIR).',
     'term.boardFailed': 'Failed to build the board: {name}',
-    'term.version': 'pigeonholes {version}',
+    'term.version': 'albera {version}',
     'term.help': HELP_EN,
   }),
   ja: Object.freeze({
-    'term.started': 'Pigeonholes: http://127.0.0.1:{port} ({mode})',
+    'term.started': 'ALBERA: http://127.0.0.1:{port} ({mode})',
     'term.modeReadOnly': '読み取り専用',
     'term.modeDemo': 'デモデータ・読み取り専用',
     'term.alreadyRunning': 'もう起動しています: http://127.0.0.1:{port} を開いてください',
@@ -68,16 +68,16 @@ export const TERM = Object.freeze({
     'term.runningLive': 'ポート {port} で動いているのはあなたのセッションのボードで、デモではありません。デモは別の番号で起動してください: {cmd}',
     'term.portBusy': 'ポート {port} は別のアプリが使っています。別の番号で起動してください: {cmd}',
     'term.cantStart': 'サーバーを起動できません: {code}',
-    'term.badPort': 'ポートは 1024〜65535 の数字にしてください (今: {raw})。--port <n> か PIGEONHOLES_PORT で指定します',
-    'term.badRoots': 'PIGEONHOLES_ROOTS は絶対パスを「{sep}」区切りで書いてください (不正: {bad})',
+    'term.badPort': 'ポートは 1024〜65535 の数字にしてください (今: {raw})。--port <n> か ALBERA_PORT で指定します',
+    'term.badRoots': 'ALBERA_ROOTS は絶対パスを「{sep}」区切りで書いてください (不正: {bad})',
     'term.empty': '(空)',
-    'term.badLang': '--lang と PIGEONHOLES_LANG は en か ja にしてください (今: {raw})',
+    'term.badLang': '--lang と ALBERA_LANG は en か ja にしてください (今: {raw})',
     'term.badFlag': '知らないオプションです: {flag}。{cmd} --help を見てください',
     'term.missingValue': '{flag} には値が必要です。{cmd} --help を見てください',
     'term.noSessionsDir': 'Claude デスクトップアプリのセッションフォルダが見つかりません。探した場所:',
-    'term.noSessionsDirHint': 'Claude デスクトップアプリの Code タブで一度セッションを始めるか、--sessions-dir <path> (または PIGEONHOLES_SESSIONS_DIR) で場所を指定してください',
+    'term.noSessionsDirHint': 'Claude デスクトップアプリの Code タブで一度セッションを始めるか、--sessions-dir <path> (または ALBERA_SESSIONS_DIR) で場所を指定してください',
     'term.boardFailed': '盤面の計算に失敗しました: {name}',
-    'term.version': 'pigeonholes {version}',
+    'term.version': 'albera {version}',
     'term.help': HELP_JA,
   }),
 });
@@ -103,7 +103,7 @@ export function msg(lang, key, params = {}) {
  * @returns {string[]}
  */
 export function errorLines(lang, key, params = {}) {
-  const p = { cmd: 'pigeonholes', ...params };
+  const p = { cmd: 'albera', ...params };
   if (key === 'term.noSessionsDir') {
     const tried = Array.isArray(p.tried) ? p.tried.map(String) : [];
     return [msg(lang, key), ...tried.map((dir) => `  ${dir}`), msg(lang, 'term.noSessionsDirHint')];

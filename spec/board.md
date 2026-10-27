@@ -1,4 +1,4 @@
-# Pigeonholes: 判定・API・起動の仕様
+# ALBERA: 判定・API・起動の仕様
 
 > この文書は「どのセッションをどの欄に入れるか」「/api/board が何を返すか」「どう起動するか」を決める。画面は `spec/ui.md`、見た目は `spec/design.md`、ファイルの形は `spec/architecture.md`。
 > 合成データ以外の実データ (件数・題名・パス) はこの文書に書かない。
@@ -10,7 +10,7 @@
   - B から: `summaryFresh`、task-notification の読み飛ばし、`stop_hook_summary`、未読判定の 2 秒の余裕、ID の正規表現、`errorNow` の時刻チェック。
   - 実データでの確認で追加: subagents フォルダでのバックグラウンド検出、ローカルコマンド行の読み飛ばし、無音しきい値 15 分、tail の 2MB 再読込。gitAnchors / writtenBranches は当たらなかったので削った。
 - 2026-10-19 の v0.2 (株主承認済みの計画): 「していること」(`Card.activity`)、コンテキスト量 (`Card.context`)、引き継ぎ (指示文のコピーとセッションを開くことだけ)、キャンバス表示を足した。v0.1 の全体 (Overview) はキャンバスの縮小表示に置き換えて廃止した。/api/board は v2 のまま (省略可能な項目の追加だけ)。
-- 2026-10-18 の作り直し (公開に向けて): 名前を **Pigeonholes** にし、`/api/board` を v2 (**言葉ではなくコード**) にし、返事待ち・止まったかも・未読を古い順にし、作業中の経過時間 (`startedAt`)、形式の異常検知 (`formatSuspect`)、実際のフォルダを見るプロジェクト判定 (folder hints) を足した。画面は 2 言語 (en 既定・ja)。
+- 2026-10-18 の作り直し (公開に向けて): 名前を **ALBERA** にし、`/api/board` を v2 (**言葉ではなくコード**) にし、返事待ち・止まったかも・未読を古い順にし、作業中の経過時間 (`startedAt`)、形式の異常検知 (`formatSuspect`)、実際のフォルダを見るプロジェクト判定 (folder hints) を足した。画面は 2 言語 (en 既定・ja)。
 
 ## 2. 設計の前提になった観察
 
@@ -25,7 +25,7 @@
 shared は言葉を持たない (表示の言葉は `public/dict-*.mjs` と `src/entry/messages.mjs`)。
 
 ```
-PRODUCT              = { name: 'Pigeonholes', bin: 'pigeonholes' }   // 名前・ロゴ・題名に "Claude" を入れない
+PRODUCT              = { name: 'ALBERA', bin: 'albera' }   // 名前・ロゴ・題名に "Claude" を入れない
 
 // 分類
 RECENT_MS            = 7 days     // 「最近」の窓。全バケット共通の 1 本だけ
@@ -56,7 +56,7 @@ DEFAULT_PORT         = 8797
 POLL_MS 5 s, HIDDEN_POLL_MS 60 s (通知 ON でタブが隠れているとき), FETCH_TIMEOUT_MS 4 s, FIRST_FETCH_TIMEOUT_MS 20 s
 STALE_AFTER_MS 15 s, NEW_BADGE_MS 60 s, QUIET_HINT_MS 5 min, COPIED_LABEL_MS 2.5 s, SKIP_EXPLAIN_MS 2 min
 COPY_CHUNK 50, PREVIEW = { unread: 8, working: 8, recentGroup: 5 }, PAGE_SIZE 20, MAX_PRS 10, MAX_PR_BADGES 2
-UI_STORAGE_KEY 'pigeonholes:v1:ui', DEEP_LINK_PREFIX 'claude://claude.ai/epitaxy/', GITHUB_URL_RE
+UI_STORAGE_KEY 'albera:v1:ui', DEEP_LINK_PREFIX 'claude://claude.ai/epitaxy/', GITHUB_URL_RE
 (PREVIEW_COUNT と TOAST_MS は削除。OVERVIEW_SHELF_MAX は v0.2 で全体と一緒に削除)
 COMPACT_SHOW_MS 1 h (「要約済み」を行に出す時間)、HANDOFF = { ROW_MS 24 h, COPIED_MS 24 h, REARM_PCT 5 } (ui.md §9)
 CANVAS = { SLIP_W 432, SLIP_H 176, SLIP_H_MIN 96, SLIP_H_MAX 320, BACK_HEAD 44, FOLD_ROW 40, FOOT_H 8, GAP_X 96, GAP_Y 120,
@@ -65,7 +65,7 @@ CANVAS = { SLIP_W 432, SLIP_H 176, SLIP_H_MIN 96, SLIP_H_MAX 320, BACK_HEAD 44, 
            NUDGE 32, SNAP 8, DRAG_SLOP 4, REVEAL_MARGIN 24, NARROW_PX 640, SEAT_KEEP_MS 7 days }
          // 大きさは world の単位 (100% の CSS px)。PAD・HEAD_ROOM・PAN_STEP・DRAG_SLOP・REVEAL_MARGIN・NARROW_PX は画面の px
          // SLIP_H は付箋の中身を測る前 (と測れないとき) の行の高さ。測った高さは SLIP_H_MIN〜SLIP_H_MAX に収める (ui.md §10.4 の 4)
-CANVAS_STORAGE_KEY 'pigeonholes:v1:canvas' (キャンバスの席。画面の localStorage だけ。狭い画面 (NARROW_PX 未満) は ':narrow' を付けた別の key)
+CANVAS_STORAGE_KEY 'albera:v1:canvas' (キャンバスの席。画面の localStorage だけ。狭い画面 (NARROW_PX 未満) は ':narrow' を付けた別の key)
 
 CAP: TITLE 200 / BODY 600 / PARENT_TITLE 40 / CWD 260 / ERROR_SNIPPET 80 / RESET_SNIPPET 40 / RAW 4000 / MODEL 80 / ACT_TARGET 32 / ACT_TEXT 40
      (code point 単位。切ったら末尾に「…」。CAP.REASON は削除: 理由の文を作るものが無くなった)
@@ -428,19 +428,19 @@ TimeKind   = waiting | stopped | stalled | ended | updated | ago | latest
 
 ## 11. 起動と端末 (entry)
 
-**起動のしかた**: `npx pigeonholes` (bin)、`npm start`、`node src/entry/server.mjs`。`server.mjs` の 1 行目は `#!/usr/bin/env node`。package.json の `bin` は `{ "pigeonholes": "src/entry/server.mjs" }`。
+**起動のしかた**: `npx albera` (bin)、`npm start`、`node src/entry/server.mjs`。`server.mjs` の 1 行目は `#!/usr/bin/env node`。package.json の `bin` は `{ "albera": "src/entry/server.mjs" }`。
 
 **設定** (フラグは環境変数に勝つ。`--flag value` と `--flag=value` の両方を受ける):
 
 | フラグ | 環境変数 | 既定 / 検証 |
 |---|---|---|
-| `--port <n>` | `PIGEONHOLES_PORT` | 8797。1024〜65535 の整数でなければ exit 1 |
-| `--lang en\|ja` | `PIGEONHOLES_LANG` | 下の言語の決め方。en / ja 以外は exit 1 |
-| `--demo` | `PIGEONHOLES_DEMO=1` | 合成データで動かす (Fake adapter)。デモの中身の言語は端末の言語 |
-| `--sessions-dir <path>` | `PIGEONHOLES_SESSIONS_DIR` | 下の候補。相対パスは今のフォルダから解決 |
-| `--projects-dir <path>` | `PIGEONHOLES_PROJECTS_DIR` | `$CLAUDE_CONFIG_DIR/projects` (絶対パスのとき) → `~/.claude/projects`。無くても起動する (transcriptsDirMissing) |
-| — | `PIGEONHOLES_ROOTS` | 既定 `[home]`。`path.delimiter` と `;` (どの OS でも) で分け、全部絶対パスでなければ exit 1 |
-| `--help` / `--version` | — | 使い方 / `pigeonholes <version>` を出して exit 0 |
+| `--port <n>` | `ALBERA_PORT` | 8797。1024〜65535 の整数でなければ exit 1 |
+| `--lang en\|ja` | `ALBERA_LANG` | 下の言語の決め方。en / ja 以外は exit 1 |
+| `--demo` | `ALBERA_DEMO=1` | 合成データで動かす (Fake adapter)。デモの中身の言語は端末の言語 |
+| `--sessions-dir <path>` | `ALBERA_SESSIONS_DIR` | 下の候補。相対パスは今のフォルダから解決 |
+| `--projects-dir <path>` | `ALBERA_PROJECTS_DIR` | `$CLAUDE_CONFIG_DIR/projects` (絶対パスのとき) → `~/.claude/projects`。無くても起動する (transcriptsDirMissing) |
+| — | `ALBERA_ROOTS` | 既定 `[home]`。`path.delimiter` と `;` (どの OS でも) で分け、全部絶対パスでなければ exit 1 |
+| `--help` / `--version` | — | 使い方 / `albera <version>` を出して exit 0 |
 
 旧名の `SESSION_BOARD_*` は読まない。知らないフラグ・値の無いフラグは exit 1 (`term.badFlag` / `term.missingValue`)。
 
@@ -450,22 +450,22 @@ TimeKind   = waiting | stopped | stalled | ended | updated | ago | latest
 - linux: `$XDG_CONFIG_HOME/Claude/claude-code-sessions` (XDG_CONFIG_HOME があるとき) → `~/.config/Claude/claude-code-sessions`
 - 見つからない (デモでないとき) → exit 1。`term.noSessionsDir` の後に、探したパスを 1 行に 1 つ、最後に `term.noSessionsDirHint`。
 
-**端末の言語** (`pickTerminalLang(env, argvLang, intlLocale)`、純粋関数。PORT と ROOTS より先に決める): `--lang` → `PIGEONHOLES_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` (`C` / `POSIX` で始まるものは「指定なし」として飛ばす) → `Intl.DateTimeFormat().resolvedOptions().locale` → `en`。`normalizeLang` は先頭の英字が `ja` なら ja、`en` なら en、それ以外は null (LC_* と LANG では en に落とす)。`--lang` / `PIGEONHOLES_LANG` が不正なら、それを除いた順で決めた言語でエラーを出す。
+**端末の言語** (`pickTerminalLang(env, argvLang, intlLocale)`、純粋関数。PORT と ROOTS より先に決める): `--lang` → `ALBERA_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` (`C` / `POSIX` で始まるものは「指定なし」として飛ばす) → `Intl.DateTimeFormat().resolvedOptions().locale` → `en`。`normalizeLang` は先頭の英字が `ja` なら ja、`en` なら en、それ以外は null (LC_* と LANG では en に落とす)。`--lang` / `ALBERA_LANG` が不正なら、それを除いた順で決めた言語でエラーを出す。
 
 **起動の流れ**: 設定 → adapter を選ぶ (実データ / デモ) → 127.0.0.1 だけで待ち受け → 1 行 `term.started` (URL を含む。テストと smoke は `/http:\/\/127\.0\.0\.1:\d+/` で起動完了を判定する) → 初回の全件スキャンを先に済ませる。ログに title や本文は書かない。
 
-**ポートが使用中** (EADDRINUSE): `probe.mjs` が `GET /api/hello` を見る。このボードは `{"app":"pigeonholes","demo":<bool>}` を返す (`parseHello` は純粋関数。形が違えば null)。応答は真似できるので、端末の案内は「このボードらしい」までしか言わない。
+**ポートが使用中** (EADDRINUSE): `probe.mjs` が `GET /api/hello` を見る。このボードは `{"app":"albera","demo":<bool>}` を返す (`parseHello` は純粋関数。形が違えば null)。応答は真似できるので、端末の案内は「このボードらしい」までしか言わない。
 - 同じ種類 (実データで起動して実データ、`--demo` で起動してデモ) → `term.alreadyRunning` と `term.alreadyRunningCheck` (自分で起動していなければ別の番号で、`{cmd}`) を出して exit 0。
 - 種類が違う → `term.runningDemo` (実データで起動したのにデモが動いている) または `term.runningLive` (`--demo` で起動したのに実データが動いている) を出して exit 1。デモのつもりで実データを開かせない (またはその逆)。
 - それ以外 → `term.portBusy` を出して exit 1。
-- `{cmd}` = `portHint(platform, port, launcher, argsWithoutPort(argv)).cmd` (純粋関数): 起動のしかた + 付けていたフラグ (`--port` を除く。`--demo`・`--lang`・`--sessions-dir` などは残す) + `--port <port+1>`。空白や記号のある値は `shellQuote` で引用する (win32 は `"…"`、それ以外は `'…'`)。環境変数での書き方はシェルごとに違う (PowerShell・cmd・bash) ので出さない。起動のしかたは npm で入れたなら `npx pigeonholes`、clone なら `node <server.mjs の絶対パス>` (同じく引用する)。
-- `term.badFlag` / `term.missingValue` / `term.help` の `{cmd}` も同じ起動のしかた (clone では `pigeonholes` というコマンドは無いため)。
+- `{cmd}` = `portHint(platform, port, launcher, argsWithoutPort(argv)).cmd` (純粋関数): 起動のしかた + 付けていたフラグ (`--port` を除く。`--demo`・`--lang`・`--sessions-dir` などは残す) + `--port <port+1>`。空白や記号のある値は `shellQuote` で引用する (win32 は `"…"`、それ以外は `'…'`)。環境変数での書き方はシェルごとに違う (PowerShell・cmd・bash) ので出さない。起動のしかたは npm で入れたなら `npx albera`、clone なら `node <server.mjs の絶対パス>` (同じく引用する)。
+- `term.badFlag` / `term.missingValue` / `term.help` の `{cmd}` も同じ起動のしかた (clone では `albera` というコマンドは無いため)。
 
 **端末の言葉** (`src/entry/messages.mjs`、`msg(lang, key, params)`):
 
 | key | en | ja |
 |---|---|---|
-| `term.started` | Pigeonholes: http://127.0.0.1:{port} ({mode}) | Pigeonholes: http://127.0.0.1:{port} ({mode}) |
+| `term.started` | ALBERA: http://127.0.0.1:{port} ({mode}) | ALBERA: http://127.0.0.1:{port} ({mode}) |
 | `term.modeReadOnly` | read-only | 読み取り専用 |
 | `term.modeDemo` | demo data, read-only | デモデータ・読み取り専用 |
 | `term.alreadyRunning` | Already running: open http://127.0.0.1:{port} | もう起動しています: http://127.0.0.1:{port} を開いてください |
@@ -474,37 +474,37 @@ TimeKind   = waiting | stopped | stalled | ended | updated | ago | latest
 | `term.runningLive` | Port {port} has a board with your real sessions, not the demo. Start the demo on another port: {cmd} | ポート {port} で動いているのはあなたのセッションのボードで、デモではありません。デモは別の番号で起動してください: {cmd} |
 | `term.portBusy` | Port {port} is used by another app. Start on another port: {cmd} | ポート {port} は別のアプリが使っています。別の番号で起動してください: {cmd} |
 | `term.cantStart` | Can't start the server: {code} | サーバーを起動できません: {code} |
-| `term.badPort` | The port must be a number from 1024 to 65535 (got: {raw}). Use --port <n> or PIGEONHOLES_PORT. | ポートは 1024〜65535 の数字にしてください (今: {raw})。--port <n> か PIGEONHOLES_PORT で指定します |
-| `term.badRoots` | PIGEONHOLES_ROOTS must be absolute paths separated by "{sep}" (invalid: {bad}) | PIGEONHOLES_ROOTS は絶対パスを「{sep}」区切りで書いてください (不正: {bad}) |
+| `term.badPort` | The port must be a number from 1024 to 65535 (got: {raw}). Use --port <n> or ALBERA_PORT. | ポートは 1024〜65535 の数字にしてください (今: {raw})。--port <n> か ALBERA_PORT で指定します |
+| `term.badRoots` | ALBERA_ROOTS must be absolute paths separated by "{sep}" (invalid: {bad}) | ALBERA_ROOTS は絶対パスを「{sep}」区切りで書いてください (不正: {bad}) |
 | `term.empty` | (empty) | (空) |
-| `term.badLang` | --lang and PIGEONHOLES_LANG must be en or ja (got: {raw}) | --lang と PIGEONHOLES_LANG は en か ja にしてください (今: {raw}) |
+| `term.badLang` | --lang and ALBERA_LANG must be en or ja (got: {raw}) | --lang と ALBERA_LANG は en か ja にしてください (今: {raw}) |
 | `term.badFlag` | Unknown option: {flag}. See: {cmd} --help | 知らないオプションです: {flag}。{cmd} --help を見てください |
 | `term.missingValue` | {flag} needs a value. See: {cmd} --help | {flag} には値が必要です。{cmd} --help を見てください |
 | `term.noSessionsDir` | Can't find the Claude desktop app's session folder. Looked in: | Claude デスクトップアプリのセッションフォルダが見つかりません。探した場所: |
-| `term.noSessionsDirHint` | Start a session once in the Code tab of the Claude desktop app, or pass --sessions-dir <path> (or set PIGEONHOLES_SESSIONS_DIR). | Claude デスクトップアプリの Code タブで一度セッションを始めるか、--sessions-dir <path> (または PIGEONHOLES_SESSIONS_DIR) で場所を指定してください |
+| `term.noSessionsDirHint` | Start a session once in the Code tab of the Claude desktop app, or pass --sessions-dir <path> (or set ALBERA_SESSIONS_DIR). | Claude デスクトップアプリの Code タブで一度セッションを始めるか、--sessions-dir <path> (または ALBERA_SESSIONS_DIR) で場所を指定してください |
 | `term.boardFailed` | Failed to build the board: {name} | 盤面の計算に失敗しました: {name} |
-| `term.version` | pigeonholes {version} | pigeonholes {version} |
+| `term.version` | albera {version} | albera {version} |
 | `term.help` | 下の使い方 (en) | 下の使い方 (ja) |
 
 `term.help` (en。ja は同じ形の日本語。`{sep}` は path.delimiter):
 ```
-Pigeonholes {version}: one read-only page for all your Claude desktop app sessions (the Code tab).
+ALBERA {version}: one read-only page for all your Claude desktop app sessions (the Code tab).
 
 Usage: {cmd} [options]
-  --port <n>             port on 127.0.0.1 (default 8797; env PIGEONHOLES_PORT)
-  --lang en|ja           language of these messages and the demo (env PIGEONHOLES_LANG)
-  --demo                 show synthetic demo data instead of your sessions (env PIGEONHOLES_DEMO=1)
-  --sessions-dir <path>  the app's claude-code-sessions folder (env PIGEONHOLES_SESSIONS_DIR)
-  --projects-dir <path>  Claude Code's projects folder with transcripts (env PIGEONHOLES_PROJECTS_DIR)
+  --port <n>             port on 127.0.0.1 (default 8797; env ALBERA_PORT)
+  --lang en|ja           language of these messages and the demo (env ALBERA_LANG)
+  --demo                 show synthetic demo data instead of your sessions (env ALBERA_DEMO=1)
+  --sessions-dir <path>  the app's claude-code-sessions folder (env ALBERA_SESSIONS_DIR)
+  --projects-dir <path>  Claude Code's projects folder with transcripts (env ALBERA_PROJECTS_DIR)
   --help, --version
-PIGEONHOLES_ROOTS: folders, separated by "{sep}", whose direct subfolders are projects (default: your home).
+ALBERA_ROOTS: folders, separated by "{sep}", whose direct subfolders are projects (default: your home).
 It only reads files. Nothing leaves this computer.
 ```
 
 ## 12. サーバーとセキュリティ (entry)
 
 - `127.0.0.1` だけに bind する。`Host` が `127.0.0.1:<port>` か `localhost:<port>` 以外なら 403 (DNS rebinding 対策)。GET 以外は 405 (HEAD も)。CORS ヘッダーは付けない。
-- `GET /api/hello` は `{"app":"pigeonholes","demo":<bool>}` だけを返す (ポートが使用中のときの確かめ用、§11)。セッションの中身は入れない。
+- `GET /api/hello` は `{"app":"albera","demo":<bool>}` だけを返す (ポートが使用中のときの確かめ用、§11)。セッションの中身は入れない。
 - **静的ファイルの表は起動時に作る**: `public/` を 1 回 readdir し、拡張子 `.html .css .mjs .svg .png .ico` のファイルだけを、ファイル名そのままの `/<name>` で配信する (サブフォルダ・dotfile は入れない)。`/` は `public/index.html`。加えて `/src/shared/constants.mjs` と `/src/shared/i18n.mjs`。表にないパスはすべて 404。リクエストのパスとファイルパスを結合しない。Content-Type は拡張子の表から。
 - ヘッダー (全レスポンスに一括):
   - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
@@ -587,7 +587,7 @@ It only reads files. Nothing leaves this computer.
 - adapter は `*-fs.mjs` ↔ `fake-*.mjs` の組 (app-sessions / transcripts / folder-hints)。補助は `session-record.mjs` (許可項目への射影と attachFolders)、`map-limit.mjs` (同時に開くファイル数の上限)、`demo-data.mjs` (合成データ)。core の `session.mjs` は activityOf / parentOf / prListOf / rootOf。
 - entry は `server.mjs` (起動・CLI) / `config.mjs` (フラグと環境変数の検証) / `messages.mjs` (端末の言葉) / `service.mjs` (wiring・キャッシュ・ETag) / `http.mjs` (ヘッダー一括・配信表) / `probe.mjs`。
 - 共有の `constants.mjs` と `i18n.mjs` は `/src/shared/...` で画面にも配信する。画面は `../src/shared/...` を import し、ブラウザでも Node でも同じファイルに解決される。
-- Windows の npm scripts では `PIGEONHOLES_DEMO=1 node ...` と書けないので、`npm run demo` は `--demo` を使う。
+- Windows の npm scripts では `ALBERA_DEMO=1 node ...` と書けないので、`npm run demo` は `--demo` を使う。
 
 **判定**
 - retried は title が空でないときだけ (無題同士がすべて一致するため)。最新回の判定で createdAt が同じときは sessionId で決める。
@@ -617,5 +617,5 @@ It only reads files. Nothing leaves this computer.
 - **service の memo**: 1 つの `Map<cliSessionId, {key, facts}>`。印 `key` は `${cli}|${size}|${mainMtime}|${truncatedHead ? 1 : 0}` で、同じなら parse しない。cli ごとに 1 件だけなので古い印は溜まらない。上限 FACTS_CACHE_MAX を超えたら長く使われていないものから捨て、今回の盤面で読まなかった cli は捨てる。`createFactsMemo(parse, max)` を export (テスト用)。`prevContext` は盤面ごとに `contextMemo(board, sessions)` で置き換える。
 - **model**: SessionRecord には残し (窓の推定だけに使う)、FORBIDDEN_OUTPUT_KEYS には入れない。JSON には FORBIDDEN_WIRE_KEYS で出ないことを、テストと smoke が JSON を木として歩いて確かめる (文字列の `"model"` 検索だと、ファイル名などの値に同じ語があると誤検出するため)。
 - **subLive**: adapter の `countFreshJsonl(dir, since)` が stat だけで数える (newestMtimeUnder と同じ上限、新しいフォルダから降りる、`*.jsonl` だけ。meta の `.json` は数えない、どのファイルも開かない)。
-- `npm run smoke` は PIGEONHOLES_TEST_PORTS (`18970-18989` の形) を受け付け、その範囲の空きポートで起動する (既定のポートは使わない)。
+- `npm run smoke` は ALBERA_TEST_PORTS (`18970-18989` の形) を受け付け、その範囲の空きポートで起動する (既定のポートは使わない)。
 - `npm run smoke` はラベル (activity の target・note・step) を数だけで検査する: 絶対パス (`:` の後ろ・`\Users\…`・`~user/` も)・空白を含むパスの残り (2 つの `\` の間に空白のある区切り)・UUID (32 文字で切られた頭 `8-4-4-4-` も)・16 進の長い並び・鍵の形・秘密らしい並び (cleanText と同じ looksSecret)・`key=value` と `password: x`・`--password x`・`user:pass@`・メール・URL・制御文字と見えない文字 (`\p{Cf}` など、cleanText が消すもの) が 1 件でもあれば失敗 (どの検査も、起動時に合成の見本に当たり普通の言葉に当たらないことを確かめる)。`/` と `\` だけのものは数を出すだけ (and/or・相対パス・正規表現)。文字列そのものは出さない。

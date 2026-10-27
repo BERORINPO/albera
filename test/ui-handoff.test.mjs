@@ -1,7 +1,7 @@
 // 引き継ぎ (spec/ui.md §9.1–§9.4) の純粋関数と、それにつながる好み・キー・詳しくの作り直し (合成データ)。
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { HANDOFF, HOUR, MIN, UI_STORAGE_KEY } from '../src/shared/constants.mjs';
+import { HANDOFF, HOUR, MIN, LEGACY_UI_STORAGE_KEY, UI_STORAGE_KEY } from '../src/shared/constants.mjs';
 import { dueIds, handoffArmed, handoffPlan, handoffText, latchHandoffs, pruneHandoffs, rescueText } from '../public/handoff.mjs';
 import { makeT } from '../public/i18n.mjs';
 import { keyAction } from '../public/keys.mjs';
@@ -156,6 +156,14 @@ test('prefs.handoff と prefs.view: storage が無い・壊れていても既定
     loadPrefs();
     assert.equal(state.prefs.view, 'list');
     assert.deepEqual(state.prefs.handoff, {});
+    assert.equal(state.storageOk, false, '新旧キーがともに無効なら保存状態を警告する');
+    store[LEGACY_UI_STORAGE_KEY] = JSON.stringify({ view: 'canvas', lang: 'ja' });
+    loadPrefs();
+    assert.equal(state.prefs.view, 'canvas', '壊れた新キーのときは有効な旧設定へ戻る');
+    assert.equal(state.prefs.lang, 'ja');
+    assert.equal(state.storageOk, true);
+    assert.ok(store[LEGACY_UI_STORAGE_KEY], '旧データを削除しない');
+    delete store[LEGACY_UI_STORAGE_KEY];
     store[UI_STORAGE_KEY] = JSON.stringify({ view: 'sideways', handoff: { x: { at: Date.now() - HANDOFF.COPIED_MS - 1, pct: 80 }, y: { at: Date.now(), pct: 70 } } });
     loadPrefs();
     assert.equal(state.prefs.view, 'list', '知らない表示は list');
