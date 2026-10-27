@@ -3,7 +3,7 @@
 ## Current focus
 
 - Goal: ALBERA v1.0; current focus is a separate, approval-gated Runtime host before real provider integration.
-- Branch: `codex/runtime-approval-host` (stacked on PR #10 Draft, base `codex/secure-runtime-api`).
+- Branch: `codex/runtime-host-recovery` (stacked on PR #11 Draft, based on `codex/runtime-approval-host`).
 - Original base: `origin/main` at `c5beabcb4d03071ae37e46be40023acec8bcfc1c` when Runtime Gateway work began.
 - Current slice: a separate `albera-runtime` command with loopback approval UI, one-time terminal bootstrap, server-side API credentials and synthetic host-to-Gateway verification. The default `albera` Observer remains disconnected and read-only.
 - Runtime UI/host is a local prototype; real CLI/browser compatibility, active-process recovery and v1.0 orchestration remain incomplete.
@@ -12,6 +12,7 @@
 
 | Date | Change | Verification | Status |
 | --- | --- | --- | --- |
+| 2026-10-27 | Added a full composition-root restart/replay regression: launch a synthetic run behind the standalone host, close the host and journal, reopen both using the journal sidecar identity, then verify the completed run and `started`/`stop_requested`/`stopped` events replay in a new browser session; the old browser cookie is rejected and the journal contains neither prompt text nor the project path. | Local Windows Node 24.13.0: focused `node --test test/runtime-approval-host.test.mjs` 7/7; full `npm test` 489/489; `npm run arch` 82 paths / 0 violations; `npm run smoke` passed; `git diff --check` passed. All runtime processes were synthetic helpers; no real AI CLI was invoked. Cross-platform CI for this new regression is pending; preceding Runtime host commit `01f7a9e` passed all six matrix jobs in run 40476942556. | Host-level completed-run/event replay is verified locally; active process recovery, GUI acceptance, Windows ACL review and provider compatibility remain incomplete. |
 | 2026-10-27 | Added a standalone `albera-runtime` approval host and runtime-only UI, one-time terminal bootstrap, server-side API credentials, fixed-route proxy, cookie/CSRF/Origin protections, SSE lifecycle updates, graceful shutdown event flush, and a stable non-secret journal session identity. The default read-only `albera` Observer remains disconnected. | Local Windows Node 24.13.0 at `01f7a9e`: `npm test` 488/488; `npm run arch` 82 paths / 0 violations; `npm run smoke` passed; `git diff --check` passed; `node src/runtime/entry.mjs --help` passed. GitHub Actions run 40476942556 passed all six Windows/macOS/Linux × Node 22/24 test and architecture jobs on the same commit. Runtime tests used synthetic child processes only; no real AI CLI was invoked. A manual Windows GUI check was attempted but blocked before browser interaction because the computer-use helper returned `GetCursorPos` access denied twice; the local Runtime process was stopped and its listener confirmed closed. | Runtime host preview and cross-platform CI are verified; browser/provider compatibility and active process recovery remain unverified. |
 
 ## Evidence log

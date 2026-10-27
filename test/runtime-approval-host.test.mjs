@@ -51,6 +51,32 @@ async function fixture(t) {
   return { runtime, journal, address, base, session, cookie, headers, postHeaders, root };
 }
 
+async function connectRuntime(root, journal, sessionId) {
+  const runtime = createRuntimeHost({
+    roots: [root], journal, hostOptions: { sessionId },
+    gatewayOptions: {
+      resolveExecutableImpl: async () => process.execPath,
+      buildLaunchImpl: (_provider, profile) => ({ profile, args: [] }),
+      spawnImpl: () => fakeChild(),
+      signalTreeImpl: (_pid, signal, child) => child.kill(signal),
+      env: {},
+    },
+  });
+  const address = await runtime.listen();
+  const base = address.url.slice(0, -1);
+  const sessionResponse = await fetch(`${base}/api/session`, {
+    method: 'POST',
+    headers: { Origin: base, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
+    body: JSON.stringify({ bootstrapCode: address.bootstrapCode }),
+  });
+  assert.equal(sessionResponse.status, 200);
+  const session = await sessionResponse.json();
+  const cookie = sessionResponse.headers.get('set-cookie').split(';', 1)[0];
+  const headers = { Cookie: cookie };
+  const postHeaders = { ...headers, Origin: base, 'Sec-Fetch-Site': 'same-origin', 'X-ALBERA-CSRF': session.csrfToken };
+  return { runtime, journal, address, base, session, cookie, headers, postHeaders, root };
+}
+
 async function get(f, route, headers = f.headers) { return fetch(`${f.base}${route}`, { headers }); }
 async function post(f, route, body, headers = f.postHeaders) {
   return fetch(`${f.base}${route}`, {
@@ -163,6 +189,62 @@ test('closing the approval host ends active event streams and drains the API', a
   const events = f.journal.list({ sessionId: f.runtime.sessionId, kind: 'event' });
   assert.ok(events.some((event) => event.eventType === 'stop_requested'));
   assert.ok(events.some((event) => event.eventType === 'stopped'), JSON.stringify(events.map((event) => event.eventType)));
+});
+
+test('standalone host restart reuses the journal identity and replays completed run history', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-host-replay-'));
+  const journalPath = path.join(root, 'runtime.audit.jsonl');
+  let journal = await openRuntimeAuditJournal(journalPath);
+  let sessionId = await loadOrCreateRuntimeSessionId(journalPath);
+  let client = await connectRuntime(root, journal, sessionId);
+  let runtime = client.runtime;
+  const oldCookie = client.cookie;
+  t.after(async () => {
+    await runtime?.close().catch(() => {});
+    await journal?.close().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const taskText = 'synthetic replay fixture prompt';
+  const pendingStart = post(client, '/api/runs', { provider: 'claude', cwd: root, prompt: taskText });
+  let startApproval;
+  await waitFor(async () => {
+    startApproval = (await (await get(client, '/api/approvals')).json()).approvals[0];
+    return Boolean(startApproval);
+  });
+  assert.equal((await post(client, `/api/approvals/${startApproval.id}`, { decision: 'approve' })).status, 200);
+  const started = await pendingStart;
+  assert.equal(started.status, 202);
+  const runId = (await started.json()).run.id;
+  await waitFor(async () => journal.list({ kind: 'event', sessionId }).some((event) => event.eventType === 'started'));
+
+  const eventsBeforeRestart = journal.list({ kind: 'event', sessionId });
+  assert.ok(eventsBeforeRestart.some((event) => event.eventType === 'started'));
+  await runtime.close();
+  runtime = undefined;
+  journal = undefined;
+
+  journal = await openRuntimeAuditJournal(journalPath);
+  const recoveredSessionId = await loadOrCreateRuntimeSessionId(journalPath);
+  assert.equal(recoveredSessionId, sessionId);
+  sessionId = recoveredSessionId;
+  client = await connectRuntime(root, journal, sessionId);
+  runtime = client.runtime;
+
+  const runs = await get(client, '/api/runs');
+  assert.equal(runs.status, 200);
+  assert.equal((await get(client, '/api/runs', { Cookie: oldCookie })).status, 401);
+  const recovered = (await runs.json()).runs;
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].id, runId);
+  assert.equal(recovered[0].status, 'stopped');
+
+  const events = await get(client, '/api/events?after=0');
+  const replayed = (await events.json()).events;
+  assert.deepEqual(replayed.map((event) => event.type), ['started', 'stop_requested', 'stopped']);
+  const journalText = await readFile(journalPath, 'utf8');
+  assert.equal(journalText.includes(taskText), false);
+  assert.equal(journalText.includes(root), false);
 });
 
 test('Runtime CLI requires explicit absolute project roots and an audit journal', () => {
