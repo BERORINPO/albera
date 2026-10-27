@@ -9,9 +9,10 @@ import { spawnSupervised } from './supervisor.mjs';
 import { probeCliVersion } from './cli-version.mjs';
 import { isVersionAtLeast, PROFILE_MINIMUM_VERSIONS } from './profile-policy.mjs';
 import { runWindowsTaskkill } from './windows-tree-termination.mjs';
-
-export const RUNTIME_PROVIDERS = Object.freeze({ claude: 'claude', codex: 'codex', opencode: 'opencode' });
-export const RUNTIME_PROFILES = Object.freeze({ readOnly: 'read-only', readOnlyStreaming: 'read-only-streaming' });
+import { buildProviderLaunch, RUNTIME_PROFILES, RUNTIME_PROVIDERS } from './agent-harness-adapter.mjs';
+import { GatewayError } from './errors.mjs';
+export { buildProviderLaunch, RUNTIME_PROFILES, RUNTIME_PROVIDERS } from './agent-harness-adapter.mjs';
+export { GatewayError } from './errors.mjs';
 const MAX_ARGS = 128;
 const MAX_ARG_BYTES = 32 * 1024;
 const MAX_PROMPT_BYTES = 16 * 1024;
@@ -38,43 +39,6 @@ const PROVIDER_ENDPOINT_ENV = Object.freeze({
   codex: ['OPENAI_BASE_URL'],
   opencode: ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL'],
 });
-
-export class GatewayError extends Error {
-  /** @param {'confirmation_required'|'unknown_provider'|'invalid_args'|'cwd_not_allowed'|'executable_unavailable'|'capacity'|'unknown_run'|'spawn_failed'|'stop_failed'|'authorization_failed'|'gateway_closed'|'unsupported_profile'|'profile_unavailable'|'cli_version_unavailable'} code */
-  constructor(code) { super(code); this.name = 'GatewayError'; this.code = code; }
-}
-
-/** Build a provider-specific, read-only launch vector. No caller-supplied argv is accepted. */
-export function buildProviderLaunch(provider, prompt, profile = RUNTIME_PROFILES.readOnly) {
-  if (!Object.hasOwn(RUNTIME_PROVIDERS, provider)) throw new GatewayError('unknown_provider');
-  if (![RUNTIME_PROFILES.readOnly, RUNTIME_PROFILES.readOnlyStreaming].includes(profile)) throw new GatewayError('unsupported_profile');
-  if (typeof prompt !== 'string' || prompt.includes('\0') || Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) throw new GatewayError('invalid_args');
-  // Keep user text in a clearly labeled positional prompt, so leading CLI-looking text cannot
-  // be reinterpreted as an option by provider argument parsers.
-  const taskPrompt = `ALBERA task:\n${prompt}`;
-  let args;
-  if (provider === 'claude') {
-    // Restricted mode confines built-in tools/settings. Safe mode disables customizations, while
-    // the explicit MCP deny rule prevents configured MCP tools from crossing the process boundary.
-    const safeFlags = ['--restricted', '--safe-mode', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan'];
-    if (profile === RUNTIME_PROFILES.readOnlyStreaming) {
-      args = [...safeFlags, '--permission-prompts', 'none', '--print', '--max-turns', '1', '--no-session-persistence', '--input-format', 'stream-json', '--output-format', 'stream-json'];
-    } else {
-      args = [...safeFlags, '--print', '--max-turns', '1', '--no-session-persistence', taskPrompt];
-    }
-  } else {
-    // Codex's read-only filesystem sandbox does not prove MCP side effects are disabled, and
-    // OpenCode merges remote, user, project, plugin and inline configuration. Until ALBERA owns
-    // and verifies the complete per-run tool/configuration policy, fail closed for both.
-    throw new GatewayError('profile_unavailable');
-  }
-  validateArgs(args);
-  return Object.freeze({
-    profile,
-    args: Object.freeze(args),
-    ...(profile === RUNTIME_PROFILES.readOnlyStreaming ? { inputMode: STREAM_INPUT_MODE, initialInput: taskPrompt } : {}),
-  });
-}
 
 /** Resolve a fixed provider command from PATH. Windows command shims (.cmd/.bat) are never accepted. */
 export async function resolveProviderExecutable(provider, { platform = process.platform, pathValue, env = process.env } = {}) {

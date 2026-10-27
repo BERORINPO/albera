@@ -54,7 +54,7 @@ const EXPECTED = {
     'session-record.mjs', 'demo-data.mjs', 'map-limit.mjs',
   ],
   entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],
-  runtime: ['gateway.mjs', 'api.mjs', 'approval-broker.mjs', 'approval-host.mjs', 'audit-journal.mjs', 'journal-backup.mjs', 'entry.mjs', 'host.mjs', 'session-identity.mjs', 'supervisor.mjs', 'guardian.mjs'],
+  runtime: ['gateway.mjs', 'api.mjs', 'approval-broker.mjs', 'approval-host.mjs', 'audit-journal.mjs', 'journal-backup.mjs', 'entry.mjs', 'host.mjs', 'session-identity.mjs', 'supervisor.mjs', 'guardian.mjs', 'environment-provider.mjs', 'environment-operations.mjs', 'mock-environment-provider.mjs', 'agent-harness-adapter.mjs', 'errors.mjs'],
   public: [
     'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
@@ -163,6 +163,19 @@ check('5b runtime process boundary', runtime, (line) => {
 check('5c runtime approval UI uses safe DOM APIs', runtimeUi, (line) =>
   /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|\bdocument\.write\b/.test(line)
     ? 'approval UI must render untrusted request text with textContent / DOM APIs'
+    : null,
+);
+
+// 5d provider contracts and test doubles describe lifecycle state; they never execute host commands.
+const providerContracts = [
+  'src/runtime/environment-provider.mjs',
+  'src/runtime/environment-operations.mjs',
+  'src/runtime/mock-environment-provider.mjs',
+  'src/runtime/agent-harness-adapter.mjs',
+];
+check('5d provider contracts have no process execution', providerContracts, (line) =>
+  /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?child_process['"]|\b(?:spawn|exec|execFile|execSync|execFileSync|spawnSync)\s*\(/.test(line)
+    ? 'provider contracts and MockProvider must not execute host commands'
     : null,
 );
 

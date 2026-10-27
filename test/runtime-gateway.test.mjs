@@ -9,6 +9,7 @@ import process from 'node:process';
 import test from 'node:test';
 import { createRuntimeApprovalBroker } from '../src/runtime/approval-broker.mjs';
 import { buildProviderLaunch, GatewayError, RuntimeGateway, RUNTIME_PROFILES, RUNTIME_PROVIDERS, resolveProviderExecutable } from '../src/runtime/gateway.mjs';
+import { AgentHarnessAdapter, ClaudeReadOnlyHarnessAdapter } from '../src/runtime/agent-harness-adapter.mjs';
 
 async function fixture(options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-'));
@@ -45,6 +46,16 @@ class FakeChild extends EventEmitter {
 test('providers are an explicit fixed allowlist and unknown names do not resolve', async () => {
   assert.deepEqual(RUNTIME_PROVIDERS, { claude: 'claude', codex: 'codex', opencode: 'opencode' });
   assert.equal(await resolveProviderExecutable('other', { pathValue: '' }), null);
+});
+
+test('AgentHarnessAdapter is an explicit seam and Claude adapter only returns fixed read-only argv', () => {
+  assert.throws(() => new AgentHarnessAdapter('other'), (error) => error.code === 'unknown_provider');
+  assert.throws(() => new AgentHarnessAdapter('claude').buildLaunch('task'), (error) => error.code === 'adapter_not_implemented');
+  const launch = new ClaudeReadOnlyHarnessAdapter().buildLaunch('task');
+  assert.equal(launch.profile, RUNTIME_PROFILES.readOnly);
+  assert.ok(launch.args.includes('--restricted'));
+  assert.ok(launch.args.includes('--safe-mode'));
+  assert.equal(launch.args.some((arg) => /(?:exec|powershell|bash)/i.test(arg)), false);
 });
 
 test('read-only provider profile generates fixed Claude argv and refuses unverified providers', async () => {
