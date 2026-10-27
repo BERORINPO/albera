@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const MAX_SESSIONS = 32;
 const MAX_BODY_BYTES = 20 * 1024;
 const MAX_STREAM_BUFFER = 64 * 1024;
+const DEFAULT_REQUEST_BODY_TIMEOUT_MS = 15_000;
 const DEFAULT_SESSION_TTL_MS = 20 * 60 * 1000;
 const MAX_SESSION_AGE_MS = 8 * 60 * 60 * 1000;
 const SESSION_ID_RE = /^[0-9a-f]{32}$/;
@@ -23,12 +24,13 @@ const API_TOKEN_SCOPES = Object.freeze(['providers:read', 'runs:read', 'events:r
 /**
  * Host the approval/control screen on an isolated loopback origin. Runtime API credentials stay server-side;
  * the browser gets an HttpOnly SameSite cookie and a short-lived in-memory CSRF token.
- * @param {{api: {listen: Function, createCredential: Function}, sessionId?: string, sessionLifetimeMs?: number, maxSessions?: number, roots?: string[]}} options
+ * @param {{api: {listen: Function, createCredential: Function}, sessionId?: string, sessionLifetimeMs?: number, maxSessions?: number, requestBodyTimeoutMs?: number, roots?: string[]}} options
  */
-export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = DEFAULT_SESSION_TTL_MS, maxSessions = MAX_SESSIONS, roots = [] } = {}) {
+export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = DEFAULT_SESSION_TTL_MS, maxSessions = MAX_SESSIONS, requestBodyTimeoutMs = DEFAULT_REQUEST_BODY_TIMEOUT_MS, roots = [] } = {}) {
   if (!api || typeof api.listen !== 'function' || typeof api.createCredential !== 'function') throw new TypeError('approval host requires a Runtime API');
   if (!Number.isInteger(sessionLifetimeMs) || sessionLifetimeMs < 60_000 || sessionLifetimeMs > 60 * 60 * 1000) throw new TypeError('sessionLifetimeMs must be between 60000 and 3600000');
   if (!Number.isInteger(maxSessions) || maxSessions < 1 || maxSessions > MAX_SESSIONS) throw new TypeError('maxSessions must be between 1 and 32');
+  if (!Number.isInteger(requestBodyTimeoutMs) || requestBodyTimeoutMs < 100 || requestBodyTimeoutMs > 120_000) throw new TypeError('requestBodyTimeoutMs must be between 100 and 120000');
   if (!Array.isArray(roots) || roots.some((root) => typeof root !== 'string' || !path.isAbsolute(root))) throw new TypeError('roots must contain absolute paths');
   if (sessionId !== undefined && (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId))) throw new TypeError('sessionId must be 32 lowercase hexadecimal characters');
 
@@ -127,7 +129,7 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
     }
     if (bootstrapUsed) return send(res, 403, JSON.stringify({ error: 'bootstrap_consumed' }));
     let body;
-    try { body = JSON.parse((await readBody(req)).toString('utf8')); } catch { return send(res, 400, JSON.stringify({ error: 'invalid_request' })); }
+    try { body = JSON.parse((await readBody(req, requestBodyTimeoutMs)).toString('utf8')); } catch { return send(res, 400, JSON.stringify({ error: 'invalid_request' })); }
     if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1) {
       return send(res, 403, JSON.stringify({ error: 'bootstrap_invalid' }));
     }
@@ -273,17 +275,30 @@ function safeCursor(raw) {
   return /^\d{1,16}$/.test(raw) && Number.isSafeInteger(Number(raw)) ? raw : 'invalid';
 }
 
-function readBody(req) {
+function readBody(req, timeoutMs) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    const timer = setTimeout(() => {
+      finish(reject, new Error('request_body_timeout'));
+      req.destroy();
+    }, timeoutMs);
+    timer.unref?.();
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) { reject(new Error('body_too_large')); req.destroy(); return; }
+      if (size > MAX_BODY_BYTES) { finish(reject, new Error('body_too_large')); req.destroy(); return; }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
+    req.once('end', () => finish(resolve, Buffer.concat(chunks)));
+    req.once('error', (error) => finish(reject, error));
+    req.once('aborted', () => finish(reject, new Error('request_aborted')));
   });
 }
 

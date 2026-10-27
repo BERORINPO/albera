@@ -74,6 +74,32 @@ test('concurrent bootstrap requests can consume the one-time code only once', as
   assert.equal(responses.filter((response) => response.headers.has('set-cookie')).length, 1);
 });
 
+test('incomplete bootstrap request bodies time out without consuming the one-time code', async (t) => {
+  const f = await fixture(t, { requestBodyTimeoutMs: 100 }, { authenticate: false });
+  const request = http.request(new URL(`${new URL(f.base).pathname}/api/session`, f.base), {
+    method: 'POST',
+    headers: {
+      Origin: f.origin,
+      'Content-Type': 'application/json',
+      'Content-Length': '100',
+      'Sec-Fetch-Site': 'same-origin',
+    },
+  });
+  const outcome = new Promise((resolve) => {
+    request.once('response', (response) => { response.resume(); resolve({ type: 'response', status: response.statusCode }); });
+    request.once('error', (error) => resolve({ type: 'error', code: error.code }));
+  });
+  request.write('{"bootstrapCode":');
+
+  assert.equal((await outcome).type, 'error');
+  const retry = await fetch(`${f.base}/api/session`, {
+    method: 'POST',
+    headers: { Origin: f.origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
+    body: JSON.stringify({ bootstrapCode: f.address.bootstrapCode }),
+  });
+  assert.equal(retry.status, 200);
+});
+
 async function connectRuntime(root, journal, sessionId, gatewayOverrides = {}) {
   const runtime = createRuntimeHost({
     roots: [root], journal, hostOptions: { sessionId },
