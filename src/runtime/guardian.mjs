@@ -45,7 +45,8 @@ process.stdin.on('data', (chunk) => {
     } else if (configured && message?.type === 'input' && inputMode === INPUT_MODE
       && UUID_RE.test(message.requestId ?? '') && typeof message.text === 'string'
       && message.text.length > 0 && !message.text.includes('\0') && Buffer.byteLength(message.text) <= MAX_INPUT_BYTES) {
-      sendProviderInput(message.text, (error) => send({ type: error ? 'input_rejected' : 'input_accepted', requestId: message.requestId }));
+      if (stopping || providerExited) send({ type: 'input_rejected', requestId: message.requestId });
+      else sendProviderInput(message.text, (error) => send({ type: error ? 'input_rejected' : 'input_accepted', requestId: message.requestId }));
     } else return fail();
   }
 });

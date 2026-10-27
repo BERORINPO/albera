@@ -6,9 +6,29 @@ import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
+import { spawnSupervised } from '../src/runtime/supervisor.mjs';
 
 const supervisorUrl = pathToFileURL(path.resolve('src/runtime/supervisor.mjs')).href;
 const gatewayUrl = pathToFileURL(path.resolve('src/runtime/gateway.mjs')).href;
+
+test('supervised child rejects provider input after a stop request', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-input-stop-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+    ['path', 'systemroot', 'windir', 'temp', 'tmp', 'userprofile', 'home', 'tmpdir'].includes(key.toLowerCase())));
+  const child = spawnSupervised(process.execPath, ['-e', 'process.stdin.resume();setInterval(()=>{},1000)'], {
+    cwd: root, env, inputMode: 'claude-stream-json', initialInput: 'synthetic initial input',
+  });
+  const started = new Promise((resolve, reject) => {
+    child.once('spawn', resolve);
+    child.once('error', reject);
+  });
+  const closed = new Promise((resolve) => child.once('close', resolve));
+  await started;
+  assert.equal(child.kill('SIGTERM'), true);
+  await assert.rejects(child.writeInput('must not be queued after stop'), (error) => error.message === 'input_unavailable');
+  await closed;
+});
 
 test('local process guardian reaps its provider tree when the Gateway host crashes', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-guardian-'));

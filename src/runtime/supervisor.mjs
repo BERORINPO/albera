@@ -75,7 +75,7 @@ class SupervisedChild extends EventEmitter {
 
   writeInput(text) {
     if (!this.#inputEnabled || typeof text !== 'string' || text.length === 0 || text.includes('\0')
-      || Buffer.byteLength(text) > MAX_INPUT_BYTES || this.#closed || !this.#guardian.stdin.writable) {
+      || Buffer.byteLength(text) > MAX_INPUT_BYTES || this.killed || this.#closed || !this.#guardian.stdin.writable) {
       return Promise.reject(new Error('input_unavailable'));
     }
     if (this.#pendingInputs.size >= MAX_PENDING_INPUTS) return Promise.reject(new Error('input_busy'));
