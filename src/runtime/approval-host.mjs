@@ -128,11 +128,16 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
     if (bootstrapUsed) return send(res, 403, JSON.stringify({ error: 'bootstrap_consumed' }));
     let body;
     try { body = JSON.parse((await readBody(req)).toString('utf8')); } catch { return send(res, 400, JSON.stringify({ error: 'invalid_request' })); }
-    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1
-      || !constantTimeStringEqual(body.bootstrapCode, bootstrapCode)) return send(res, 403, JSON.stringify({ error: 'bootstrap_invalid' }));
-    bootstrapUsed = true;
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1) {
+      return send(res, 403, JSON.stringify({ error: 'bootstrap_invalid' }));
+    }
     purgeSessions();
     if (sessions.size >= maxSessions) return send(res, 503, JSON.stringify({ error: 'session_capacity' }));
+    // The body read above yields to other requests. Recheck immediately before
+    // consuming the code so concurrent bootstrap POSTs cannot both mint sessions.
+    if (bootstrapUsed) return send(res, 403, JSON.stringify({ error: 'bootstrap_consumed' }));
+    if (!constantTimeStringEqual(body.bootstrapCode, bootstrapCode)) return send(res, 403, JSON.stringify({ error: 'bootstrap_invalid' }));
+    bootstrapUsed = true;
     const sessionToken = randomBytes(32).toString('base64url');
     const csrfToken = randomBytes(32).toString('base64url');
     const now = Date.now();

@@ -27,7 +27,7 @@ function fakeChild() {
   return child;
 }
 
-async function fixture(t, hostOptions = {}) {
+async function fixture(t, hostOptions = {}, { authenticate = true } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-approval-host-'));
   const journal = await openTestJournal(path.join(root, 'runtime.audit.jsonl'));
   const runtime = createRuntimeHost({
@@ -45,18 +45,34 @@ async function fixture(t, hostOptions = {}) {
   const address = await runtime.listen();
   const base = address.url.slice(0, -1);
   const origin = new URL(base).origin;
-  const sessionResponse = await fetch(`${base}/api/session`, {
-    method: 'POST',
-    headers: { Origin: origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
-    body: JSON.stringify({ bootstrapCode: address.bootstrapCode }),
-  });
-  const session = await sessionResponse.json();
-  const cookie = sessionResponse.headers.get('set-cookie').split(';', 1)[0];
-  const headers = { Cookie: cookie };
-  const postHeaders = { ...headers, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-ALBERA-CSRF': session.csrfToken };
+  let session;
+  let cookie;
+  let headers;
+  let postHeaders;
+  if (authenticate) {
+    const sessionResponse = await fetch(`${base}/api/session`, {
+      method: 'POST',
+      headers: { Origin: origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
+      body: JSON.stringify({ bootstrapCode: address.bootstrapCode }),
+    });
+    session = await sessionResponse.json();
+    cookie = sessionResponse.headers.get('set-cookie').split(';', 1)[0];
+    headers = { Cookie: cookie };
+    postHeaders = { ...headers, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-ALBERA-CSRF': session.csrfToken };
+  }
   t.after(async () => { await runtime.close(); await rm(root, { recursive: true, force: true }); });
   return { runtime, journal, address, base, origin, session, cookie, headers, postHeaders, root };
 }
+
+test('concurrent bootstrap requests can consume the one-time code only once', async (t) => {
+  const f = await fixture(t, {}, { authenticate: false });
+  const headers = { Origin: f.origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' };
+  const body = JSON.stringify({ bootstrapCode: f.address.bootstrapCode });
+  const responses = await Promise.all([1, 2].map(() => fetch(`${f.base}/api/session`, { method: 'POST', headers, body })));
+
+  assert.deepEqual(responses.map((response) => response.status).sort(), [200, 403]);
+  assert.equal(responses.filter((response) => response.headers.has('set-cookie')).length, 1);
+});
 
 async function connectRuntime(root, journal, sessionId, gatewayOverrides = {}) {
   const runtime = createRuntimeHost({
