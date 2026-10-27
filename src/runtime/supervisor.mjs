@@ -27,6 +27,7 @@ export function spawnSupervised(executable, args, options) {
 }
 
 class SupervisedChild extends EventEmitter {
+  supervised = true;
   pid = undefined;
   exitCode = null;
   signalCode = null;

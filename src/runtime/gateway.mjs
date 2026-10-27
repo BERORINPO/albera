@@ -112,7 +112,9 @@ export class RuntimeGateway {
     this.#authorize = authorize;
     this.#env = env;
     this.#now = now;
-    this.#signalTree = signalTreeImpl ?? ((pid, signal, child) => signalProcessTree(pid, signal, child, this.#platform, spawn));
+    this.#signalTree = signalTreeImpl ?? ((pid, signal, child) => child.supervised === true
+      ? child.kill(signal)
+      : signalProcessTree(pid, signal, child, this.#platform, spawn));
   }
 
   /** Start a fixed provider executable after trusted host authorization of the exact launch tuple. */
