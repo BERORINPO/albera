@@ -17,7 +17,7 @@ function withTimeout(promise, timeoutMs, errorCode) {
   ]).finally(() => clearTimeout(timer));
 }
 
-test('Runtime CLI serves the loopback approval page without starting a provider', { timeout: 60_000 }, async (t) => {
+test('Runtime CLI serves the loopback approval page without starting a provider', { timeout: 240_000 }, async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.homedir(), 'albera-runtime-entry-'));
   const projectRoot = path.join(temporaryRoot, 'empty-project');
   const storageRoot = path.join(temporaryRoot, 'private-runtime-data');
@@ -65,7 +65,9 @@ test('Runtime CLI serves the loopback approval page without starting a provider'
 
   let output = '';
   const url = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('runtime_cli_start_timeout')), 30_000);
+    // Windows checks the journal directory, identity directory, and identity file through PowerShell.
+    // Each bounded DACL inspection can take up to 60 seconds on hosted runners.
+    const timer = setTimeout(() => reject(new Error(`runtime_cli_start_timeout: ${stderr || 'no diagnostic output'}`)), 200_000);
     const finish = (callback, value) => {
       clearTimeout(timer);
       child.stdout.off('data', onData);
