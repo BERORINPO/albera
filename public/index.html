@@ -119,14 +119,14 @@
 <dialog id="voice-dialog" class="dialog voice" aria-labelledby="voice-title">
   <p class="voice__close"><button class="textbtn" type="button" id="voice-close" data-i18n="voice.close">Close</button></p>
   <h2 id="voice-title" data-i18n="voice.title">Voice conversation</h2>
-  <p data-i18n="voice.disclosure">Audio is sent to OpenAI GPT-Live and usage charges may apply. Recordings are not stored; captions stay on this page until you end the conversation.</p>
+    <p data-i18n="voice.disclosure">Starting sends microphone audio to OpenAI GPT-Live. API charges are separate from ChatGPT. Pigeonholes saves the transcript and separate microphone/assistant audio tracks only in this browser. OpenAI may retain content in standard abuse-monitoring logs for up to 30 days. End the conversation to save it here.</p>
   <p class="voice__status" id="voice-status" role="status" aria-live="polite" data-i18n="voice.checking">Checking availability…</p>
   <div class="voice__transcript" id="voice-transcript" aria-live="polite"></div>
   <section class="voice__history" aria-labelledby="voice-history-title"><h3 id="voice-history-title" data-i18n="voice.history">Saved conversations on this browser</h3><ul id="voice-history-list"></ul></section>
   <section id="voice-record-detail" class="voice__record" hidden></section>
   <audio id="voice-audio" autoplay></audio>
   <div class="voice__controls">
-    <button class="btn btn--fill" type="button" id="voice-start" data-i18n="voice.start" disabled>Start listening</button>
+      <button class="btn btn--fill" type="button" id="voice-start" data-i18n="voice.start" disabled>Start conversation</button>
     <button class="textbtn" type="button" id="voice-mute" data-i18n="voice.mute" hidden>Mute microphone</button>
     <button class="textbtn" type="button" id="voice-stop" data-i18n="voice.stop" hidden>End conversation</button>
   </div>

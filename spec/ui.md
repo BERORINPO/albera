@@ -1483,3 +1483,8 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - GPT-Liveの許可済み入力/出力caption deltaを連続した話者単位にまとめ、話者が交代したら別の字幕行として順序を保持する。1行の上限を設け、provider IDやイベント全体は字幕記録へ含めない。
 - 合成イベントfixtureでuser → assistant → userの順序、同一話者deltaの連結、入力配列の不変性を確認。`npm test`: 618/618 passed、`npm run arch`: 104 paths / 0 violations、`git diff --check`: passed。
 - 実APIイベント列との適合、実音声字幕、実ブラウザー再生/永続化は未確認。実API接続やマイク利用は行っていない。
+
+### Voiceの初期表示に正しい保存説明を出す
+
+- JavaScript/i18n適用前のHTML fallbackが「録音を保存しない」と誤っていたため、ブラウザー内へ字幕と分離した音声を保存し、API課金が別であることを初期HTMLにも明記した。開始ボタンの初期ラベルも翻訳辞書と一致させた。
+- source assertionがHTML first paintの保存先・課金・ログ保持案内を検証する。`npm test`: 619/619 passed、`npm run arch`: 104 paths / 0 violations、`git diff --check`: passed。
