@@ -48,8 +48,12 @@ export function buildProviderLaunch(provider, prompt, profile = RUNTIME_PROFILES
   const taskPrompt = `ALBERA task:\n${prompt}`;
   let args;
   if (provider === 'claude') {
-    // Claude Code's restricted mode removes command-running tools and confines file tools to the project.
-    args = ['--restricted', '--permission-mode', 'plan', '--print', '--max-turns', '1', '--no-session-persistence', taskPrompt];
+    // Restricted mode confines built-in tools/settings. Safe mode disables customizations, while
+    // the explicit MCP deny rule prevents configured MCP tools from crossing the process boundary.
+    args = [
+      '--restricted', '--safe-mode', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan',
+      '--print', '--max-turns', '1', '--no-session-persistence', taskPrompt,
+    ];
   } else {
     // Codex's read-only filesystem sandbox does not prove MCP side effects are disabled, and
     // OpenCode merges remote, user, project, plugin and inline configuration. Until ALBERA owns

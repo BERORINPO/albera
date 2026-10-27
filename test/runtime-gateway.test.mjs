@@ -48,7 +48,7 @@ test('providers are an explicit fixed allowlist and unknown names do not resolve
 test('read-only provider profile generates fixed Claude argv and refuses unverified providers', async () => {
   assert.deepEqual(buildProviderLaunch('claude', 'fixture prompt'), {
     profile: RUNTIME_PROFILES.readOnly,
-    args: ['--restricted', '--permission-mode', 'plan', '--print', '--max-turns', '1', '--no-session-persistence', 'ALBERA task:\nfixture prompt'],
+    args: ['--restricted', '--safe-mode', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan', '--print', '--max-turns', '1', '--no-session-persistence', 'ALBERA task:\nfixture prompt'],
   });
   assert.equal(Object.isFrozen(buildProviderLaunch('claude', 'fixture prompt')), true);
   assert.equal(Object.isFrozen(buildProviderLaunch('claude', 'fixture prompt').args), true);
