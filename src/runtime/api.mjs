@@ -8,6 +8,9 @@ const MAX_STREAM_LIFETIME_MS = 60_000;
 const MAX_BUFFERED_RESPONSE_BYTES = 64 * 1024;
 const MAX_CREDENTIAL_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const MAX_CREDENTIALS = 256;
+const MAX_TRACKED_RUNS = 64;
+const MAX_EVENT_SCAN = 256;
+const MAX_PENDING_STREAM_EVENTS = 256;
 const API_SCOPES = new Set(['health', 'runs:read', 'events:read', 'runs:start', 'runs:stop']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
@@ -37,6 +40,7 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
   if (!Number.isInteger(maxStreams) || maxStreams < 1 || maxStreams > MAX_STREAMS) throw new TypeError('maxStreams must be between 1 and 4');
 
   const credentials = new Map();
+  const runOwners = new Map();
   /** @type {Set<() => void>} */
   const streams = new Set();
   let closing = false;
@@ -66,15 +70,19 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
 
     try {
       if (req.method === 'GET' && url.pathname === '/v1/health') return sendJson(res, 200, { status: 'ok' });
-      if (req.method === 'GET' && url.pathname === '/v1/runs') return sendJson(res, 200, { runs: gateway.list().map(projectRun).filter(Boolean) });
+      if (req.method === 'GET' && url.pathname === '/v1/runs') {
+        return sendJson(res, 200, { runs: gateway.list()
+          .filter((run) => run && runOwners.get(run.id) === credential.sessionId)
+          .map(projectRun).filter(Boolean) });
+      }
       if (req.method === 'GET' && url.pathname === '/v1/events') {
         const after = queryInteger(url.searchParams.get('after'), 0, Number.MAX_SAFE_INTEGER);
         const limit = queryInteger(url.searchParams.get('limit'), 100, 100);
-        return sendJson(res, 200, { events: gateway.events({ after, limit }).map(projectEvent).filter(Boolean) });
+        return sendJson(res, 200, { events: sessionEvents(gateway, runOwners, credential.sessionId, after, limit).events });
       }
       if (req.method === 'GET' && url.pathname === '/v1/events/stream') {
         const after = eventCursor(req, url);
-        return streamEvents(req, res, after);
+        return streamEvents(req, res, after, credential.sessionId);
       }
       if (req.method === 'POST' && url.pathname === '/v1/runs') {
         const input = await readJson(req);
@@ -86,11 +94,14 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
         const run = await gateway.start(request);
         const safeRun = projectRun(run);
         if (!safeRun) throw new ApiError(502, 'runtime_invalid_response');
+        pruneRunOwners(runOwners, gateway.list());
+        runOwners.set(safeRun.id, credential.sessionId);
         return sendJson(res, 202, { run: safeRun });
       }
       const stopMatch = req.method === 'POST' && url.pathname.match(/^\/v1\/runs\/([^/]+)\/stop$/);
       if (stopMatch) {
         if (!UUID_RE.test(stopMatch[1])) throw new ApiError(404, 'not_found');
+        if (runOwners.get(stopMatch[1]) !== credential.sessionId) throw new ApiError(404, 'not_found');
         const body = await readBody(req);
         if (body.length !== 0) throw new ApiError(400, 'invalid_request');
         const run = await gateway.stop(stopMatch[1]);
@@ -116,7 +127,7 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
     }
   }
 
-  function streamEvents(req, res, after) {
+  function streamEvents(req, res, after, sessionId) {
     if (streams.size >= maxStreams) return sendJson(res, 429, { error: 'stream_limit' });
     res.statusCode = 200;
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -127,6 +138,7 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
     let closed = false;
     let timer;
     let lastKeepalive = Date.now();
+    const pendingEvents = new Map();
     const close = () => {
       if (closed) return;
       closed = true;
@@ -141,11 +153,20 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
       if (closed || res.destroyed) return close();
       if (Date.now() >= deadline || res.writableLength > MAX_BUFFERED_RESPONSE_BYTES) return close();
       try {
-        for (const event of gateway.events({ after, limit: 100 }).map(projectEvent).filter(Boolean)) {
+        const newlyOwned = [];
+        for (const [id, event] of pendingEvents) {
+          const owner = runOwners.get(event.runId);
+          if (owner === sessionId) newlyOwned.push(event);
+          if (owner !== undefined) pendingEvents.delete(id);
+        }
+        const page = sessionEvents(gateway, runOwners, sessionId, after, 100);
+        for (const event of [...newlyOwned, ...page.events]) {
           if (closed || res.writableLength > MAX_BUFFERED_RESPONSE_BYTES) return close();
           res.write(`id: ${event.id}\nevent: lifecycle\ndata: ${JSON.stringify(event)}\n\n`);
-          after = event.id;
         }
+        for (const event of page.pendingEvents) pendingEvents.set(event.id, event);
+        while (pendingEvents.size > MAX_PENDING_STREAM_EVENTS) pendingEvents.delete(pendingEvents.keys().next().value);
+        after = page.scannedAfter;
         if (Date.now() - lastKeepalive >= 15_000 && res.writableLength < 1024) {
           res.write(': keepalive\n\n');
           lastKeepalive = Date.now();
@@ -167,7 +188,7 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
       if (credentials.size >= MAX_CREDENTIALS) throw new RangeError('credential_capacity');
       const token = randomBytes(32).toString('hex');
       const digest = createHash('sha256').update(token).digest('hex');
-      credentials.set(digest, { scopes: new Set(scopes), expiresAt: Date.now() + ttlMs });
+      credentials.set(digest, { scopes: new Set(scopes), expiresAt: Date.now() + ttlMs, sessionId: randomBytes(16).toString('hex') });
       return token;
     },
     /** Revoke a session capability immediately without affecting other sessions. */
@@ -207,6 +228,41 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
       return closePromise;
     },
   });
+}
+
+function pruneRunOwners(runOwners, runs) {
+  const visibleIds = new Set((Array.isArray(runs) ? runs : [])
+    .filter((run) => run && typeof run.id === 'string' && UUID_RE.test(run.id))
+    .map((run) => run.id));
+  for (const runId of runOwners.keys()) if (!visibleIds.has(runId)) runOwners.delete(runId);
+  while (runOwners.size > MAX_TRACKED_RUNS) runOwners.delete(runOwners.keys().next().value);
+}
+
+function sessionEvents(gateway, runOwners, sessionId, after, limit) {
+  const events = [];
+  const pendingEvents = [];
+  let scannedAfter = after;
+  let scanned = 0;
+  while (events.length < limit && scanned < MAX_EVENT_SCAN) {
+    const batchLimit = Math.min(100, MAX_EVENT_SCAN - scanned);
+    const batch = gateway.events({ after: scannedAfter, limit: batchLimit });
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    const priorCursor = scannedAfter;
+    for (const raw of batch) {
+      if (!raw || !Number.isSafeInteger(raw.id) || raw.id <= scannedAfter) continue;
+      scannedAfter = raw.id;
+      scanned++;
+      const event = projectEvent(raw);
+      if (event) {
+        const owner = runOwners.get(event.runId);
+        if (owner === sessionId) events.push(event);
+        else if (owner === undefined) pendingEvents.push(event);
+      }
+      if (events.length >= limit || scanned >= MAX_EVENT_SCAN) break;
+    }
+    if (scannedAfter === priorCursor || batch.length < batchLimit) break;
+  }
+  return { events, pendingEvents, scannedAfter };
 }
 
 function setSecurityHeaders(res) {

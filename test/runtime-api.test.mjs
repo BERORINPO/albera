@@ -96,9 +96,9 @@ test('API projects run/event data and only forwards allowlisted start and stop r
   t.after(f.close);
 
   const list = await request(f.address, f.api, { route: '/v1/runs' });
-  assert.deepEqual(JSON.parse(list.text), { runs: [{ id: '12345678-1234-4234-8234-123456789abc', provider: 'claude', status: 'running' }] });
+  assert.deepEqual(JSON.parse(list.text), { runs: [] });
   const events = await request(f.address, f.api, { route: '/v1/events?after=0&limit=1' });
-  assert.deepEqual(JSON.parse(events.text), { events: [{ id: 1, runId: '12345678-1234-4234-8234-123456789abc', provider: 'claude', type: 'started', at: 1 }] });
+  assert.deepEqual(JSON.parse(events.text), { events: [] });
   assert.equal((await request(f.address, f.api, { route: '/v1/events?after=-1' })).status, 400);
 
   const rejected = await request(f.address, f.api, {
@@ -120,6 +120,10 @@ test('API projects run/event data and only forwards allowlisted start and stop r
   assert.deepEqual(f.calls[0][1], { provider: 'claude', cwd: 'C:\\work', prompt: 'task', profile: 'read-only' });
   assert.equal(started.text.includes('secret-path'), false);
   assert.equal(started.text.includes('secret-prompt'), false);
+  const ownedRuns = await request(f.address, f.api, { route: '/v1/runs' });
+  assert.deepEqual(JSON.parse(ownedRuns.text), { runs: [{ id: '12345678-1234-4234-8234-123456789abc', provider: 'claude', status: 'running' }] });
+  const ownedEvents = await request(f.address, f.api, { route: '/v1/events?after=0&limit=1' });
+  assert.deepEqual(JSON.parse(ownedEvents.text), { events: [{ id: 1, runId: '12345678-1234-4234-8234-123456789abc', provider: 'claude', type: 'started', at: 1 }] });
 
   const stopped = await request(f.address, f.api, { method: 'POST', route: '/v1/runs/12345678-1234-4234-8234-123456789abc/stop' });
   assert.equal(stopped.status, 200);
@@ -158,6 +162,99 @@ test('session credentials enforce least-privilege scopes and can be revoked inde
   assert.equal((await request(f.address, f.api, { route: '/v1/runs', token: expiringToken })).status, 401);
 });
 
+test('session capabilities cannot inspect or stop runs owned by another session', async (t) => {
+  const f = await apiFixture();
+  t.after(f.close);
+  const scopes = ['runs:read', 'events:read', 'runs:start', 'runs:stop'];
+  const firstSession = f.api.createCredential(scopes);
+  const secondSession = f.api.createCredential(scopes);
+  const started = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', token: firstSession,
+    body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'session one' }),
+  });
+  assert.equal(started.status, 202);
+
+  const firstRuns = await request(f.address, f.api, { route: '/v1/runs', token: firstSession });
+  const secondRuns = await request(f.address, f.api, { route: '/v1/runs', token: secondSession });
+  assert.equal(JSON.parse(firstRuns.text).runs.length, 1);
+  assert.deepEqual(JSON.parse(secondRuns.text), { runs: [] });
+  const firstEvents = await request(f.address, f.api, { route: '/v1/events', token: firstSession });
+  const secondEvents = await request(f.address, f.api, { route: '/v1/events', token: secondSession });
+  assert.equal(JSON.parse(firstEvents.text).events.length, 1);
+  assert.deepEqual(JSON.parse(secondEvents.text), { events: [] });
+
+  const foreignStream = http.request({
+    host: f.address.host,
+    port: f.address.port,
+    path: '/v1/events/stream',
+    headers: { Host: `${f.address.host}:${f.address.port}`, Authorization: `Bearer ${secondSession}` },
+  });
+  let foreignStreamText = '';
+  let foreignResponse;
+  foreignStream.on('response', (response) => {
+    foreignResponse = response;
+    response.setEncoding('utf8');
+    response.on('data', (chunk) => { foreignStreamText += chunk; });
+  });
+  foreignStream.on('error', () => {});
+  foreignStream.end();
+  await new Promise((resolve, reject) => { foreignStream.once('response', resolve); foreignStream.once('error', reject); });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(foreignStreamText.includes('data:'), false);
+  const foreignClosed = new Promise((resolve) => foreignResponse.once('close', resolve));
+  foreignResponse.destroy();
+  await foreignClosed;
+
+  const runId = JSON.parse(started.text).run.id;
+  const foreignStop = await request(f.address, f.api, { method: 'POST', route: `/v1/runs/${runId}/stop`, token: secondSession });
+  assert.equal(foreignStop.status, 404);
+  assert.deepEqual(f.calls.filter(([action]) => action === 'stop'), []);
+  const ownedStop = await request(f.address, f.api, { method: 'POST', route: `/v1/runs/${runId}/stop`, token: firstSession });
+  assert.equal(ownedStop.status, 200);
+});
+
+test('SSE retains lifecycle events emitted before a session start is registered', async (t) => {
+  const run = { id: '22345678-1234-4234-8234-123456789abc', provider: 'claude', status: 'starting' };
+  const event = { id: 1, runId: run.id, provider: 'claude', type: 'started', at: 1 };
+  const f = await apiFixture({ pollIntervalMs: 100, streamLifetimeMs: 1200 }, {
+    async start() {
+      events.push(event);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      return run;
+    },
+    list() { return [run]; },
+    events({ after = 0, limit = 100 } = {}) { return events.filter((entry) => entry.id > after).slice(0, limit); },
+  });
+  const events = [];
+  t.after(f.close);
+  const stream = http.request({
+    host: f.address.host,
+    port: f.address.port,
+    path: '/v1/events/stream',
+    headers: { Host: `${f.address.host}:${f.address.port}`, Authorization: `Bearer ${f.api.credential}` },
+  });
+  let streamResponse;
+  let streamText = '';
+  stream.on('response', (response) => {
+    streamResponse = response;
+    response.setEncoding('utf8');
+    response.on('data', (chunk) => { streamText += chunk; });
+  });
+  stream.end();
+  await new Promise((resolve, reject) => { stream.once('response', resolve); stream.once('error', reject); });
+
+  const started = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'delayed owner registration' }),
+  });
+  assert.equal(started.status, 202);
+  const deadline = Date.now() + 1000;
+  while (!streamText.includes('id: 1') && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.match(streamText, /id: 1\nevent: lifecycle/);
+  const closed = new Promise((resolve) => streamResponse.once('close', resolve));
+  await f.api.close();
+  await closed;
+});
+
 test('invalid content type, malformed JSON, oversized body, and unsupported method fail with stable responses', async (t) => {
   const f = await apiFixture();
   t.after(f.close);
@@ -188,6 +285,10 @@ test('bounded authenticated SSE streams expose lifecycle projections and close w
   const api = { ...runtimeApi, credential: runtimeApi.createCredential(['health', 'runs:read', 'events:read', 'runs:start', 'runs:stop']) };
   const address = await api.listen();
   t.after(() => api.close());
+  const started = await request(address, api, {
+    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'stream test' }),
+  });
+  assert.equal(started.status, 202);
   const invalidCursor = await request(address, api, { route: '/v1/events/stream', extraHeaders: { 'Last-Event-ID': '-1' } });
   assert.equal(invalidCursor.status, 400);
   const first = http.request({ host: address.host, port: address.port, path: '/v1/events/stream?after=0', headers: { Host: `${address.host}:${address.port}`, Authorization: `Bearer ${api.credential}`, 'Last-Event-ID': '1' } });
