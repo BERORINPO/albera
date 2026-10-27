@@ -249,6 +249,72 @@ test('session capabilities cannot inspect or stop runs owned by another session'
   assert.equal(ownedStop.status, 200);
 });
 
+test('unaudited API event cursors are dense and isolated per session', async (t) => {
+  const runs = [];
+  const sourceEvents = [];
+  const f = await apiFixture({}, {
+    async start() {
+      const index = runs.length + 1;
+      const id = `12345678-1234-4234-8234-${String(index).padStart(12, '0')}`;
+      const run = { id, provider: 'claude', status: 'running' };
+      runs.push(run);
+      sourceEvents.push({ id: sourceEvents.length + 1, runId: id, provider: 'claude', type: 'started', at: index });
+      return run;
+    },
+    list() { return runs; },
+    events({ after = 0, limit = 100 } = {}) { return sourceEvents.filter((event) => event.id > after).slice(0, limit); },
+  });
+  t.after(f.close);
+  const scopes = ['runs:start', 'runs:read', 'events:read'];
+  const first = f.api.createCredential(scopes);
+  const second = f.api.createCredential(scopes);
+  const firstStart = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', token: first,
+    body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'first' }),
+  });
+  const secondStart = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', token: second,
+    body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'second' }),
+  });
+  assert.equal(firstStart.status, 202);
+  assert.equal(secondStart.status, 202);
+
+  const firstRunId = JSON.parse(firstStart.text).run.id;
+  sourceEvents.push({ id: 3, runId: firstRunId, provider: 'claude', type: 'exited', at: 3 });
+  const firstEvents = await request(f.address, f.api, { route: '/v1/events?after=1', token: first });
+  const secondEvents = await request(f.address, f.api, { route: '/v1/events', token: second });
+  assert.deepEqual(JSON.parse(firstEvents.text).events.map(({ id, type }) => ({ id, type })), [{ id: 2, type: 'exited' }]);
+  assert.deepEqual(JSON.parse(secondEvents.text).events.map(({ id, type }) => ({ id, type })), [{ id: 1, type: 'started' }]);
+  for (let index = 0; index < 260; index++) {
+    sourceEvents.push({ id: sourceEvents.length + 1, runId: firstRunId, provider: 'claude', type: 'exited', at: index + 4 });
+  }
+  const boundedEvents = await request(f.address, f.api, { route: '/v1/events?after=0&limit=100', token: first });
+  const boundedIds = JSON.parse(boundedEvents.text).events.map((event) => event.id);
+  assert.equal(boundedIds.length, 100);
+  assert.deepEqual([boundedIds[0], boundedIds.at(-1)], [7, 106]);
+});
+
+test('unaudited event capture can recover from a transient Gateway read error', async (t) => {
+  const runId = '32345678-1234-4234-8234-123456789abc';
+  let failOnce = true;
+  const events = [{ id: 1, runId, provider: 'claude', type: 'started', at: 1 }];
+  const f = await apiFixture({}, {
+    async start() { return { id: runId, provider: 'claude', status: 'running' }; },
+    events({ after = 0 } = {}) {
+      if (failOnce) { failOnce = false; throw new Error('synthetic transient event read failure'); }
+      return events.filter((event) => event.id > after);
+    },
+  });
+  t.after(f.close);
+  const started = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'transient event read' }),
+  });
+  assert.equal(started.status, 202);
+  const captured = await request(f.address, f.api, { route: '/v1/events' });
+  assert.deepEqual(JSON.parse(captured.text).events.map(({ id, type }) => ({ id, type })), [{ id: 1, type: 'started' }]);
+  assert.equal(f.calls.some(([action]) => action === 'close'), false);
+});
+
 test('SSE retains lifecycle events emitted before a session start is registered', async (t) => {
   const run = { id: '22345678-1234-4234-8234-123456789abc', provider: 'claude', status: 'starting' };
   const event = { id: 1, runId: run.id, provider: 'claude', type: 'started', at: 1 };
@@ -482,7 +548,7 @@ test('bounded authenticated SSE streams expose lifecycle projections and close w
   assert.equal(started.status, 202);
   const invalidCursor = await request(address, api, { route: '/v1/events/stream', extraHeaders: { 'Last-Event-ID': '-1' } });
   assert.equal(invalidCursor.status, 400);
-  const first = http.request({ host: address.host, port: address.port, path: '/v1/events/stream?after=0', headers: { Host: `${address.host}:${address.port}`, Authorization: `Bearer ${api.credential}`, 'Last-Event-ID': '1' } });
+  const first = http.request({ host: address.host, port: address.port, path: '/v1/events/stream?after=1', headers: { Host: `${address.host}:${address.port}`, Authorization: `Bearer ${api.credential}`, 'Last-Event-ID': '0' } });
   let response;
   let text = '';
   first.on('response', (res) => { response = res; res.setEncoding('utf8'); res.on('data', (chunk) => { text += chunk; }); });
@@ -494,7 +560,7 @@ test('bounded authenticated SSE streams expose lifecycle projections and close w
   events = [{ id: 2, runId: '12345678-1234-4234-8234-123456789abc', provider: 'claude', type: 'exited', at: 2, secret: 'never-wire' }];
   await new Promise((resolve) => {
     const deadline = Date.now() + 1500;
-    const check = () => text.includes('id: 2') ? resolve() : Date.now() > deadline ? resolve() : setTimeout(check, 20);
+    const check = () => text.includes('id: 1') ? resolve() : Date.now() > deadline ? resolve() : setTimeout(check, 20);
     check();
   });
   assert.match(text, /event: lifecycle/);

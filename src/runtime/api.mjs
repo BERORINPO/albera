@@ -10,8 +10,9 @@ const MAX_BUFFERED_RESPONSE_BYTES = 64 * 1024;
 const MAX_CREDENTIAL_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const MAX_CREDENTIALS = 256;
 const MAX_TRACKED_RUNS = 64;
-const MAX_EVENT_SCAN = 256;
 const MAX_PENDING_STREAM_EVENTS = 256;
+const MAX_SESSION_EVENT_LOGS = 256;
+const MAX_SESSION_EVENTS = 256;
 const API_SCOPES = new Set(['health', 'providers:read', 'runs:read', 'events:read', 'runs:start', 'runs:stop']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
@@ -46,7 +47,8 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
   const credentials = new Map();
   const runOwners = new Map();
   const recoveredRuns = new Map();
-  const pendingJournalEvents = new Map();
+  const pendingGatewayEvents = new Map();
+  const sessionEventLogs = new Map();
   let gatewayEventCursor = 0;
   let capturePromise;
   if (journal) restoreJournalState(journal, runOwners, recoveredRuns);
@@ -98,7 +100,8 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
           await captureGatewayEvents();
           return sendJson(res, 200, { events: journal.list({ sessionId: credential.sessionId, kind: 'event', after, limit }).map(projectJournalEvent).filter(Boolean) });
         }
-        return sendJson(res, 200, { events: sessionEvents(gateway, runOwners, credential.sessionId, after, limit).events });
+        await captureGatewayEvents();
+        return sendJson(res, 200, { events: sessionEvents(sessionEventLogs, credential.sessionId, after, limit) });
       }
       if (req.method === 'GET' && url.pathname === '/v1/events/stream') {
         const after = eventCursor(req, url);
@@ -142,7 +145,7 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
         runOwners.set(safeRun.id, credential.sessionId);
         recoveredRuns.set(safeRun.id, safeRun);
         while (recoveredRuns.size > MAX_TRACKED_RUNS) recoveredRuns.delete(recoveredRuns.keys().next().value);
-        if (journal) await captureGatewayEvents();
+        await captureGatewayEvents();
         return sendJson(res, 202, { run: safeRun });
       }
       const stopMatch = req.method === 'POST' && url.pathname.match(/^\/v1\/runs\/([^/]+)\/stop$/);
@@ -217,7 +220,7 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
   }
 
   function captureGatewayEvents() {
-    if (!journal || closing || auditFailure) return Promise.resolve();
+    if (closing || auditFailure) return Promise.resolve();
     if (capturePromise) return capturePromise;
     capturePromise = (async () => {
       for (let pageIndex = 0; pageIndex < 3; pageIndex++) {
@@ -229,22 +232,27 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
           gatewayEventCursor = raw.id;
           advanced = true;
           const event = projectEvent(raw);
-          if (event) pendingJournalEvents.set(event.id, event);
+          if (event) pendingGatewayEvents.set(event.id, event);
         }
-        for (const [sourceId, event] of pendingJournalEvents) {
+        for (const [sourceId, event] of pendingGatewayEvents) {
           const sessionId = runOwners.get(event.runId);
           if (!sessionId) continue;
-          const stored = await journal.append({
-            kind: 'event', sessionId, eventType: event.type, at: event.at, provider: event.provider, runId: event.runId,
-            ...(event.code === undefined ? {} : { code: event.code }), ...(event.signal === undefined ? {} : { signal: event.signal }),
-          });
-          pendingJournalEvents.delete(sourceId);
-          recoveredRuns.set(event.runId, applyRecoveredEvent(recoveredRuns.get(event.runId), event, stored.sequence));
+          if (journal) {
+            const stored = await journal.append({
+              kind: 'event', sessionId, eventType: event.type, at: event.at, provider: event.provider, runId: event.runId,
+              ...(event.code === undefined ? {} : { code: event.code }), ...(event.signal === undefined ? {} : { signal: event.signal }),
+            });
+            recoveredRuns.set(event.runId, applyRecoveredEvent(recoveredRuns.get(event.runId), event, stored.sequence));
+          } else {
+            appendSessionEvent(sessionEventLogs, sessionId, event);
+          }
+          pendingGatewayEvents.delete(sourceId);
         }
-        while (pendingJournalEvents.size > MAX_PENDING_STREAM_EVENTS) pendingJournalEvents.delete(pendingJournalEvents.keys().next().value);
+        while (pendingGatewayEvents.size > MAX_PENDING_STREAM_EVENTS) pendingGatewayEvents.delete(pendingGatewayEvents.keys().next().value);
         if (!advanced || batch.length < 100) break;
       }
     })().catch(async () => {
+      if (!journal) return;
       await failClosed();
       throw new ApiError(503, 'audit_unavailable');
     }).finally(() => { capturePromise = undefined; });
@@ -262,7 +270,6 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
     let closed = false;
     let timer;
     let lastKeepalive = Date.now();
-    const pendingEvents = new Map();
     const close = () => {
       if (closed) return;
       closed = true;
@@ -295,20 +302,13 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
           }
           return;
         }
-        const newlyOwned = [];
-        for (const [id, event] of pendingEvents) {
-          const owner = runOwners.get(event.runId);
-          if (owner === sessionId) newlyOwned.push(event);
-          if (owner !== undefined) pendingEvents.delete(id);
-        }
-        const page = sessionEvents(gateway, runOwners, sessionId, after, 100);
-        for (const event of [...newlyOwned, ...page.events]) {
+        await captureGatewayEvents();
+        const events = sessionEvents(sessionEventLogs, sessionId, after, 100);
+        for (const event of events) {
           if (closed || res.writableLength > MAX_BUFFERED_RESPONSE_BYTES) return close();
           res.write(`id: ${event.id}\nevent: lifecycle\ndata: ${JSON.stringify(event)}\n\n`);
+          after = event.id;
         }
-        for (const event of page.pendingEvents) pendingEvents.set(event.id, event);
-        while (pendingEvents.size > MAX_PENDING_STREAM_EVENTS) pendingEvents.delete(pendingEvents.keys().next().value);
-        after = page.scannedAfter;
         if (Date.now() - lastKeepalive >= 15_000 && res.writableLength < 1024) {
           res.write(': keepalive\n\n');
           lastKeepalive = Date.now();
@@ -352,10 +352,8 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
           server.off('error', onError);
           const address = server.address();
           if (!address || typeof address === 'string') return reject(new Error('api_listen_failed'));
-          if (journal) {
-            captureTimer = setInterval(() => { void captureGatewayEvents().catch(() => {}); }, pollIntervalMs);
-            captureTimer.unref?.();
-          }
+          captureTimer = setInterval(() => { void captureGatewayEvents().catch(() => {}); }, pollIntervalMs);
+          captureTimer.unref?.();
           resolve(Object.freeze({ host: '127.0.0.1', port: address.port }));
         };
         server.once('error', onError);
@@ -462,31 +460,22 @@ function projectJournalEvent(record) {
   return event;
 }
 
-function sessionEvents(gateway, runOwners, sessionId, after, limit) {
-  const events = [];
-  const pendingEvents = [];
-  let scannedAfter = after;
-  let scanned = 0;
-  while (events.length < limit && scanned < MAX_EVENT_SCAN) {
-    const batchLimit = Math.min(100, MAX_EVENT_SCAN - scanned);
-    const batch = gateway.events({ after: scannedAfter, limit: batchLimit });
-    if (!Array.isArray(batch) || batch.length === 0) break;
-    const priorCursor = scannedAfter;
-    for (const raw of batch) {
-      if (!raw || !Number.isSafeInteger(raw.id) || raw.id <= scannedAfter) continue;
-      scannedAfter = raw.id;
-      scanned++;
-      const event = projectEvent(raw);
-      if (event) {
-        const owner = runOwners.get(event.runId);
-        if (owner === sessionId) events.push(event);
-        else if (owner === undefined) pendingEvents.push(event);
-      }
-      if (events.length >= limit || scanned >= MAX_EVENT_SCAN) break;
-    }
-    if (scannedAfter === priorCursor || batch.length < batchLimit) break;
+function appendSessionEvent(logs, sessionId, event) {
+  let log = logs.get(sessionId);
+  if (!log) {
+    if (logs.size >= MAX_SESSION_EVENT_LOGS) logs.delete(logs.keys().next().value);
+    log = { nextId: 1, events: [] };
+    logs.set(sessionId, log);
   }
-  return { events, pendingEvents, scannedAfter };
+  const projected = { ...event, id: log.nextId++ };
+  log.events.push(projected);
+  if (log.events.length > MAX_SESSION_EVENTS) log.events.splice(0, log.events.length - MAX_SESSION_EVENTS);
+}
+
+function sessionEvents(logs, sessionId, after, limit) {
+  const log = logs.get(sessionId);
+  if (!log) return [];
+  return log.events.filter((event) => event.id > after).slice(0, limit).map((event) => ({ ...event }));
 }
 
 function setSecurityHeaders(res) {
