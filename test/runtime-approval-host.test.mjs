@@ -51,7 +51,7 @@ async function fixture(t) {
   return { runtime, journal, address, base, session, cookie, headers, postHeaders, root };
 }
 
-async function connectRuntime(root, journal, sessionId) {
+async function connectRuntime(root, journal, sessionId, gatewayOverrides = {}) {
   const runtime = createRuntimeHost({
     roots: [root], journal, hostOptions: { sessionId },
     gatewayOptions: {
@@ -60,6 +60,7 @@ async function connectRuntime(root, journal, sessionId) {
       spawnImpl: () => fakeChild(),
       signalTreeImpl: (_pid, signal, child) => child.kill(signal),
       env: {},
+      ...gatewayOverrides,
     },
   });
   const address = await runtime.listen();
@@ -245,6 +246,47 @@ test('standalone host restart reuses the journal identity and replays completed 
   const journalText = await readFile(journalPath, 'utf8');
   assert.equal(journalText.includes(taskText), false);
   assert.equal(journalText.includes(root), false);
+});
+
+test('standalone host restart marks a journaled live run interrupted without relaunch or stale stop', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-host-interrupted-'));
+  const journalPath = path.join(root, 'runtime.audit.jsonl');
+  let journal = await openRuntimeAuditJournal(journalPath);
+  const sessionId = await loadOrCreateRuntimeSessionId(journalPath);
+  const runId = 'f3e1a401-63ca-4d19-a31c-953ab6c15ce7';
+  await journal.append({
+    sessionId, requestId: 'a7d13ae0-836a-4d0e-b006-6a684bdc4d10',
+    action: 'run.start', phase: 'accepted', at: 100, provider: 'claude', runId,
+  });
+  await journal.append({
+    kind: 'event', sessionId, eventType: 'started', at: 101, provider: 'claude', runId,
+  });
+  await journal.close();
+  journal = await openRuntimeAuditJournal(journalPath);
+
+  let spawnCount = 0;
+  const client = await connectRuntime(root, journal, sessionId, {
+    spawnImpl: () => { spawnCount++; return fakeChild(); },
+  });
+  let runtime = client.runtime;
+  t.after(async () => {
+    await runtime?.close().catch(() => {});
+    await journal?.close().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const runs = await get(client, '/api/runs');
+  assert.equal(runs.status, 200);
+  assert.deepEqual((await runs.json()).runs.map((run) => ({ id: run.id, status: run.status })), [
+    { id: runId, status: 'interrupted' },
+  ]);
+  assert.equal((await post(client, `/api/runs/${runId}/stop`, {})).status, 409);
+  assert.deepEqual((await (await get(client, '/api/approvals')).json()).approvals, []);
+  assert.equal(spawnCount, 0);
+  assert.deepEqual(journal.list({ sessionId }), [
+    { version: 1, sequence: 1, sessionId, requestId: 'a7d13ae0-836a-4d0e-b006-6a684bdc4d10', action: 'run.start', phase: 'accepted', at: 100, provider: 'claude', runId },
+    { version: 1, sequence: 2, kind: 'event', sessionId, eventType: 'started', at: 101, provider: 'claude', runId, eventId: 1 },
+  ]);
 });
 
 test('Runtime CLI requires explicit absolute project roots and an audit journal', () => {
