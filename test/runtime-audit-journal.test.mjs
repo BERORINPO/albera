@@ -98,7 +98,7 @@ test('audit journal refuses incomplete or corrupt existing data without modifyin
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'runtime.audit.jsonl');
   const corrupt = '{"version":1';
-  await writeFile(file, corrupt, 'utf8');
+  await writeFile(file, corrupt, { encoding: 'utf8', mode: 0o600 });
   await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_incomplete_tail');
   assert.equal(await readFile(file, 'utf8'), corrupt);
 });
@@ -141,7 +141,7 @@ test('journal rejects duplicate, skipped, or non-initial per-session event curso
       version: 1, sequence: index + 1, kind: 'event', eventId, sessionId: SESSION_A,
       eventType: 'started', at: index + 1, provider: 'claude', runId: RUN_A,
     })).join('\n') + '\n';
-    await writeFile(file, content, 'utf8');
+    await writeFile(file, content, { encoding: 'utf8', mode: 0o600 });
     await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_corrupt', name);
     assert.equal(await readFile(file, 'utf8'), content, `${name} journal must remain untouched`);
   }
@@ -153,7 +153,7 @@ test('journal startup preserves an unrelated lock-path file', async (t) => {
   const file = path.join(root, 'runtime.audit.jsonl');
   const lockFile = `${file}.lock`;
   const existing = 'user-owned lock metadata';
-  await writeFile(lockFile, existing, 'utf8');
+  await writeFile(lockFile, existing, { encoding: 'utf8', mode: 0o600 });
   await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_locked');
   assert.equal(await readFile(lockFile, 'utf8'), existing);
 });
