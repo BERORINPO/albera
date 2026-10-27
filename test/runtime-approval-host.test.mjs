@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
@@ -124,6 +125,81 @@ test('approval host issues one-time HttpOnly SameSite sessions and never serves 
   assert.match(script, /Runtime browser session expired\. Restart ALBERA Runtime/);
   assert.match(script, /eventStream\?\.close\(\)/);
   assert.match(script, /if \(retry\) refreshTimer = setTimeout\(refresh, 1500\)/);
+});
+
+test('approval UI closes its lifecycle stream and stops polling when the browser session expires', async () => {
+  class FakeElement {
+    children = [];
+    listeners = new Map();
+    hidden = false;
+    value = '';
+    textContent = '';
+
+    append(...items) { this.children.push(...items); }
+    replaceChildren(...items) { this.children = [...items]; }
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+    setAttribute() {}
+  }
+
+  const elements = new Map();
+  const timers = [];
+  const calls = [];
+  let eventSource;
+  const document = {
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, new FakeElement());
+      return elements.get(id);
+    },
+    createElement() { return new FakeElement(); },
+  };
+  const response = (status, data) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
+  const fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url === '/api/session' && options.method === 'POST') {
+      return response(200, { csrfToken: 'synthetic-csrf', roots: ['C:\\project'] });
+    }
+    if (url === '/api/session') return response(401, { error: 'session_expired' });
+    if (url === '/api/approvals' || url === '/api/runs') return response(401, { error: 'session_expired' });
+    throw new Error(`unexpected_request_${url}`);
+  };
+  class FakeEventSource {
+    closed = false;
+    listeners = new Map();
+    constructor(url) { this.url = url; eventSource = this; }
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+    close() { this.closed = true; }
+  }
+
+  const source = await readFile(new URL('../src/runtime/approval-ui/approval.mjs', import.meta.url), 'utf8');
+  vm.runInNewContext(source, {
+    document,
+    window: { addEventListener() {} },
+    EventSource: FakeEventSource,
+    fetch,
+    setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimeout() {},
+  });
+  await new Promise((resolve) => {
+    const waitForBootstrap = () => {
+      if (elements.get('bootstrap-form')?.listeners.has('submit')
+        && /one-time code/.test(elements.get('connection')?.textContent ?? '')) return resolve();
+      setImmediate(waitForBootstrap);
+    };
+    waitForBootstrap();
+  });
+  assert.match(elements.get('connection').textContent, /one-time code/);
+
+  const submit = elements.get('bootstrap-form').listeners.get('submit');
+  document.getElementById('bootstrap-code');
+  elements.get('bootstrap-code').value = 'synthetic-bootstrap-code';
+  await submit({ preventDefault() {} });
+
+  assert.equal(eventSource.url, '/api/events/stream?after=0');
+  assert.equal(eventSource.closed, true);
+  assert.equal(elements.get('controls').hidden, true);
+  assert.match(elements.get('connection').textContent, /Runtime browser session expired/);
+  assert.equal(timers.length, 0, 'expired session must not schedule another polling cycle');
+  assert.equal(calls.filter((call) => call.url === '/api/runs').length, 1);
 });
 
 test('approval host refreshes active browser sessions and rejects an expired idle cookie', async (t) => {
