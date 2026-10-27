@@ -235,16 +235,19 @@ export class RuntimeGateway {
 
   /** Stop a known run only after trusted host authorization for that run ID. */
   async stop(id) {
+    if (this.#closing) throw new GatewayError('gateway_closed');
     const run = this.#runs.get(id);
     if (!run) throw new GatewayError('unknown_run');
     if (!isActive(run.status) || run.status === 'stopping') return this.#snapshot(run);
     if (!await this.#authorizeSafely({ action: 'stop', provider: run.provider, runId: run.id, force: this.#platform === 'win32' })) throw new GatewayError('confirmation_required');
+    if (this.#closing) throw new GatewayError('gateway_closed');
     await this.#requestStop(run);
     return this.#snapshot(run);
   }
 
   /** Send one bounded follow-up only after independent host approval for this exact text. */
   async sendInput(id, text) {
+    if (this.#closing) throw new GatewayError('gateway_closed');
     const run = this.#runs.get(id);
     if (!run) throw new GatewayError('unknown_run');
     if (run.inputMode !== STREAM_INPUT_MODE || typeof run.child.writeInput !== 'function') throw new GatewayError('input_unavailable');
@@ -258,6 +261,7 @@ export class RuntimeGateway {
       if (!await this.#authorizeSafely({ action: 'input', provider: run.provider, profile: run.profile, runId: run.id, text: message })) {
         throw new GatewayError('confirmation_required');
       }
+      if (this.#closing) throw new GatewayError('gateway_closed');
       if (run.status !== 'running') throw new GatewayError('input_not_ready');
       try { await run.child.writeInput(message); }
       catch { throw new GatewayError('input_failed'); }

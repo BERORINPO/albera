@@ -685,6 +685,37 @@ test('input approval cannot send after a concurrent stop changes the run state',
   await waitFor(() => f.gateway.get(run.id).status === 'stopped');
 });
 
+test('input approval cannot send after Gateway shutdown starts', async (t) => {
+  let releaseApproval;
+  let inputApprovalSeen;
+  const approvalGate = new Promise((resolve) => { releaseApproval = resolve; });
+  const inputSeen = new Promise((resolve) => { inputApprovalSeen = resolve; });
+  const writes = [];
+  const f = await fixture({
+    authorize: async ({ action }) => {
+      if (action === 'input') { inputApprovalSeen(); await approvalGate; }
+      return true;
+    },
+    buildLaunchImpl: (_provider, profile) => ({ profile, args: [], inputMode: 'claude-stream-json', initialInput: 'ALBERA task:\nshutdown fixture' }),
+    spawnImpl: () => {
+      const child = new FakeChild();
+      child.writeInput = async (text) => { writes.push(text); };
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
+    },
+  });
+  t.after(f.dispose);
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'shutdown fixture', profile: RUNTIME_PROFILES.readOnlyStreaming });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+  const sending = f.gateway.sendInput(run.id, 'must not arrive during shutdown');
+  await inputSeen;
+  const closing = f.gateway.close();
+  releaseApproval();
+  await assert.rejects(sending, (error) => error.code === 'gateway_closed');
+  assert.deepEqual(writes, []);
+  assert.deepEqual(await closing, []);
+});
+
 test('concurrent stop requests send one termination signal', async (t) => {
   let stopApprovals = 0;
   let signals = 0;
