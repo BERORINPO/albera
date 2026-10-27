@@ -1,10 +1,11 @@
 // Explicit offline backup for the Runtime journal. The payload is always authenticated ciphertext.
 import { createCipheriv, createDecipheriv, randomBytes, scrypt } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { lstat, mkdir, open } from 'node:fs/promises';
+import process from 'node:process';
+import { lstat, mkdir, open, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { assertPrivatePosixStorage, openRuntimeAuditJournal, validateRuntimeAuditJournalSnapshot } from './audit-journal.mjs';
+import { assertPrivatePosixStorage, openRuntimeAuditJournal, recoverRuntimeAuditJournalPrefix, validateRuntimeAuditJournalSnapshot } from './audit-journal.mjs';
 import { readRuntimeSessionId } from './session-identity.mjs';
 import { assertPrivateWindowsAcl } from './windows-acl.mjs';
 
@@ -18,6 +19,7 @@ const MAX_JOURNAL_BYTES = 64 * 1024 * 1024;
 const MAX_BACKUP_BYTES = MAGIC.length + SALT_BYTES + NONCE_BYTES + TAG_BYTES + MAX_JOURNAL_BYTES + 128;
 const SESSION_ID_RE = /^[0-9a-f]{32}$/;
 const NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
+const RECOVERY_LOCK_MAGIC = 'ALBERA_RUNTIME_AUDIT_LOCK_V1';
 
 /** Create a new, authenticated encrypted backup without changing the source journal. */
 export async function backupRuntimeJournal({ journalPath, outputPath, passphrase, verifyWindowsAcl = assertPrivateWindowsAcl }) {
@@ -83,6 +85,98 @@ export async function restoreRuntimeJournal({ backupPath, destinationDirectory, 
     return { journalPath, sessionId };
   } catch (error) {
     // Preserve the newly created directory and any partial restore for explicit user inspection.
+    throw error;
+  }
+}
+
+/** Copy a validated complete-record prefix to a new journal beside the source, preserving the original bytes. */
+export async function recoverRuntimeJournalTail({ journalPath, outputPath, verifyWindowsAcl = assertPrivateWindowsAcl }) {
+  assertAbsolutePath(journalPath, 'journal_path_must_be_absolute');
+  assertAbsolutePath(outputPath, 'recovery_path_must_be_absolute');
+  const source = path.resolve(journalPath);
+  const output = path.resolve(outputPath);
+  const sourceIdentity = `${source}.session-id`;
+  const lockPath = `${source}.lock`;
+  if ([source, sourceIdentity, lockPath].some((candidate) => output === candidate)
+    || path.dirname(output) !== path.dirname(source) || `${output}.session-id` === source || `${output}.session-id` === sourceIdentity) {
+    throw new Error('journal_recovery_path_conflict');
+  }
+
+  const directoryPath = path.dirname(source);
+  const directoryInfo = await lstat(directoryPath);
+  if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) throw new Error('journal_directory_invalid');
+  assertPrivatePosixStorage(directoryInfo, 'journal_directory_permissions', 'directory');
+  await verifyWindowsAcl(directoryPath, { kind: 'directory' });
+  const sourceInfo = await lstat(source);
+  if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink() || sourceInfo.nlink !== 1 || sourceInfo.size > MAX_JOURNAL_BYTES) {
+    throw new Error('journal_file_invalid');
+  }
+  assertPrivatePosixStorage(sourceInfo, 'journal_permissions', 'file');
+  await verifyWindowsAcl(source, { kind: 'file' });
+
+  const lockHandle = await open(lockPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | NOFOLLOW, 0o600);
+  const nonce = randomBytes(16).toString('hex');
+  const lockText = JSON.stringify({ magic: RECOVERY_LOCK_MAGIC, pid: process.pid, nonce });
+  let lockInfo;
+  let lockTextWritten = false;
+  try {
+    lockInfo = await lockHandle.stat();
+    if (!lockInfo.isFile() || lockInfo.nlink !== 1) throw new Error('journal_lock_invalid');
+    assertPrivatePosixStorage(lockInfo, 'journal_lock_permissions', 'file');
+    await verifyWindowsAcl(lockPath, { kind: 'file' });
+    await lockHandle.writeFile(lockText, 'utf8');
+    lockTextWritten = true;
+    await lockHandle.sync();
+    const sourceHandle = await open(source, fsConstants.O_RDONLY | NOFOLLOW);
+    let snapshot;
+    try {
+      const openedInfo = await sourceHandle.stat();
+      if (!openedInfo.isFile() || openedInfo.dev !== sourceInfo.dev || openedInfo.ino !== sourceInfo.ino
+        || openedInfo.size !== sourceInfo.size) throw new Error('journal_changed_during_recovery');
+      snapshot = await sourceHandle.readFile();
+      const afterInfo = await sourceHandle.stat();
+      if (afterInfo.size !== openedInfo.size || snapshot.byteLength !== openedInfo.size) throw new Error('journal_changed_during_recovery');
+    } finally {
+      await sourceHandle.close();
+    }
+    const recovered = recoverRuntimeAuditJournalPrefix(snapshot, { maxBytes: MAX_JOURNAL_BYTES });
+    const sessionId = await readRuntimeSessionId(source, { verifyWindowsAcl });
+    const identityPath = `${output}.session-id`;
+    await assertPathMissing(output, 'journal_recovery_output_exists');
+    await assertPathMissing(identityPath, 'journal_recovery_identity_exists');
+    const outputHandle = await open(output, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | NOFOLLOW, 0o600);
+    try {
+      const info = await outputHandle.stat();
+      if (!info.isFile() || info.nlink !== 1) throw new Error('journal_recovery_output_invalid');
+      assertPrivatePosixStorage(info, 'journal_permissions', 'file');
+      await verifyWindowsAcl(output, { kind: 'file' });
+      await outputHandle.writeFile(recovered.snapshot);
+      await outputHandle.sync();
+    } finally {
+      await outputHandle.close();
+    }
+    await writeNewPrivateFile(identityPath, Buffer.from(`${sessionId}\n`, 'ascii'), verifyWindowsAcl);
+    return { journalPath: output, identityPath, sessionId, ...recovered };
+  } finally {
+    await lockHandle.close().catch(() => {});
+    try {
+      const current = await lstat(lockPath);
+      const currentHandle = await open(lockPath, fsConstants.O_RDONLY | NOFOLLOW);
+      let currentText;
+      try { currentText = await currentHandle.readFile('utf8'); }
+      finally { await currentHandle.close(); }
+      if (current.dev === lockInfo.dev && current.ino === lockInfo.ino
+        && ((lockTextWritten && currentText === lockText) || (!lockTextWritten && current.size === 0))) await unlink(lockPath);
+    } catch { /* Preserve any lock not provably owned by this recovery operation. */ }
+  }
+}
+
+async function assertPathMissing(filePath, code) {
+  try {
+    await lstat(filePath);
+    throw new Error(code);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
     throw error;
   }
 }

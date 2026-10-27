@@ -32,6 +32,20 @@ export function validateRuntimeAuditJournalSnapshot(snapshot, { maxBytes = HARD_
   return records.length;
 }
 
+/** Return the validated complete-record prefix of an incomplete-tail journal without changing the source. */
+export function recoverRuntimeAuditJournalPrefix(snapshot, { maxBytes = HARD_MAX_BYTES } = {}) {
+  if (!Buffer.isBuffer(snapshot) || snapshot.byteLength === 0 || snapshot.byteLength > maxBytes
+    || snapshot.at(-1) === 0x0a) throw new JournalError('journal_recovery_not_applicable');
+  const lastNewline = snapshot.lastIndexOf(0x0a);
+  if (lastNewline < 0 || snapshot.byteLength - lastNewline - 1 > MAX_RECORD_BYTES) {
+    throw new JournalError('journal_incomplete_tail_unrecoverable');
+  }
+  const prefix = Buffer.from(snapshot.subarray(0, lastNewline + 1));
+  const { records } = parseRecords(prefix);
+  if (records.length === 0) throw new JournalError('journal_incomplete_tail_unrecoverable');
+  return { snapshot: prefix, recordCount: records.length, discardedTailBytes: snapshot.byteLength - prefix.byteLength };
+}
+
 /**
  * Open an explicitly located, single-writer append-only Runtime audit journal.
  * The journal never stores tokens, prompts, paths, argv, environment or process output.

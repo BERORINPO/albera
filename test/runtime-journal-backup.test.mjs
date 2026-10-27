@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
-import { backupRuntimeJournal, restoreRuntimeJournal } from '../src/runtime/journal-backup.mjs';
+import { backupRuntimeJournal, recoverRuntimeJournalTail, restoreRuntimeJournal } from '../src/runtime/journal-backup.mjs';
 import { loadOrCreateRuntimeSessionId, readRuntimeSessionId } from '../src/runtime/session-identity.mjs';
 import { parseRuntimeArgs } from '../src/runtime/entry.mjs';
 
@@ -86,6 +86,62 @@ test('restore refuses an existing destination and leaves its contents unchanged'
   assert.equal(await readFile(markerPath, 'utf8'), 'preserve me');
 });
 
+test('incomplete journal tail recovery copies only validated complete records and preserves the source', async (t) => {
+  const source = await sourceFixture(t);
+  const original = await readFile(source.journalPath);
+  const tail = Buffer.from('{"version":2,"sequence":2', 'utf8');
+  await appendFile(source.journalPath, tail);
+  const damaged = await readFile(source.journalPath);
+  const outputPath = path.join(source.root, 'runtime.recovered.jsonl');
+
+  const recovered = await recoverRuntimeJournalTail({ journalPath: source.journalPath, outputPath, verifyWindowsAcl });
+
+  assert.equal(recovered.recordCount, 1);
+  assert.equal(recovered.discardedTailBytes, tail.byteLength);
+  assert.equal(recovered.sessionId, source.sessionId);
+  assert.deepEqual(await readFile(source.journalPath), damaged, 'source journal and incomplete bytes stay unchanged');
+  assert.deepEqual(await readFile(outputPath), original, 'recovery output contains only the verified prefix');
+  assert.equal(await readFile(`${outputPath}.session-id`, 'utf8'), `${source.sessionId}\n`);
+  const reopened = await openRuntimeAuditJournal(outputPath, { verifyWindowsAcl });
+  assert.equal(reopened.list().length, 1);
+  await reopened.close();
+});
+
+test('tail recovery refuses complete corruption, active lock, and existing outputs without modifying source', async (t) => {
+  const source = await sourceFixture(t);
+  const original = await readFile(source.journalPath);
+  const corrupt = Buffer.from(original);
+  corrupt[2] ^= 0x01;
+  await writeFile(source.journalPath, Buffer.concat([corrupt, Buffer.from('{"partial"', 'utf8')]));
+  const damaged = await readFile(source.journalPath);
+  const corruptOutput = path.join(source.root, 'corrupt.recovered.jsonl');
+  await assert.rejects(recoverRuntimeJournalTail({ journalPath: source.journalPath, outputPath: corruptOutput, verifyWindowsAcl }), /journal_corrupt/);
+  assert.deepEqual(await readFile(source.journalPath), damaged);
+  await assert.rejects(lstat(corruptOutput), { code: 'ENOENT' });
+
+  await writeFile(`${source.journalPath}.lock`, 'active writer', { flag: 'wx' });
+  const lockedOutput = path.join(source.root, 'locked.recovered.jsonl');
+  await assert.rejects(recoverRuntimeJournalTail({ journalPath: source.journalPath, outputPath: lockedOutput, verifyWindowsAcl }));
+  assert.deepEqual(await readFile(source.journalPath), damaged);
+  await rm(`${source.journalPath}.lock`);
+
+  const existingOutput = path.join(source.root, 'existing.recovered.jsonl');
+  await writeFile(existingOutput, 'keep this file', { flag: 'wx' });
+  await assert.rejects(recoverRuntimeJournalTail({ journalPath: source.journalPath, outputPath: existingOutput, verifyWindowsAcl }));
+  assert.equal(await readFile(existingOutput, 'utf8'), 'keep this file');
+  assert.deepEqual(await readFile(source.journalPath), damaged);
+
+  const identitySource = await sourceFixture(t);
+  const identityCollisionOutput = path.join(identitySource.root, 'identity-collision.jsonl');
+  await writeFile(`${identityCollisionOutput}.session-id`, 'preserve existing identity', { flag: 'wx' });
+  await appendFile(identitySource.journalPath, '{"partial"');
+  const identitySourceBefore = await readFile(identitySource.journalPath);
+  await assert.rejects(recoverRuntimeJournalTail({ journalPath: identitySource.journalPath, outputPath: identityCollisionOutput, verifyWindowsAcl }), /journal_recovery_identity_exists/);
+  await assert.rejects(lstat(identityCollisionOutput), { code: 'ENOENT' });
+  assert.equal(await readFile(`${identityCollisionOutput}.session-id`, 'utf8'), 'preserve existing identity');
+  assert.deepEqual(await readFile(identitySource.journalPath), identitySourceBefore);
+});
+
 test('runtime CLI exposes explicit backup and restore paths without passphrase arguments', () => {
   assert.deepEqual(parseRuntimeArgs(['backup', '--journal', '/tmp/runtime.audit.jsonl', '--output', '/tmp/archive.albera']), {
     command: 'backup', journalPath: '/tmp/runtime.audit.jsonl', outputPath: '/tmp/archive.albera', backupPath: undefined, destinationDirectory: undefined, help: false,
@@ -95,4 +151,8 @@ test('runtime CLI exposes explicit backup and restore paths without passphrase a
   });
   assert.throws(() => parseRuntimeArgs(['backup', '--journal', '/tmp/journal']), /runtime_backup_options_required/);
   assert.throws(() => parseRuntimeArgs(['backup', '--journal', 'relative', '--output', '/tmp/archive']), /runtime_path_must_be_absolute/);
+  assert.deepEqual(parseRuntimeArgs(['recover-tail', '--journal', '/tmp/runtime.audit.jsonl', '--output', '/tmp/runtime.recovered.jsonl']), {
+    command: 'recover-tail', journalPath: '/tmp/runtime.audit.jsonl', outputPath: '/tmp/runtime.recovered.jsonl', backupPath: undefined, destinationDirectory: undefined, help: false,
+  });
+  assert.throws(() => parseRuntimeArgs(['recover-tail', '--journal', '/tmp/runtime.audit.jsonl']), /runtime_backup_options_required/);
 });

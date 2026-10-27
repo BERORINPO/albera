@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
-import { backupRuntimeJournal, restoreRuntimeJournal } from '../src/runtime/journal-backup.mjs';
+import { backupRuntimeJournal, recoverRuntimeJournalTail, restoreRuntimeJournal } from '../src/runtime/journal-backup.mjs';
 import { loadOrCreateRuntimeSessionId } from '../src/runtime/session-identity.mjs';
 import { assertPrivateWindowsAcl, inspectWindowsAcl, RuntimeStorageAclError } from '../src/runtime/windows-acl.mjs';
 
@@ -125,4 +125,26 @@ test('manual journal backup and restored files pass the real Windows DACL guard'
   await assertPrivateWindowsAcl(destinationDirectory, { kind: 'directory' });
   await assertPrivateWindowsAcl(restored.journalPath, { kind: 'file' });
   await assertPrivateWindowsAcl(`${restored.journalPath}.session-id`, { kind: 'file' });
+});
+
+test('manual journal tail recovery output passes the real Windows DACL guard', {
+  skip: process.platform !== 'win32' || process.env.ALBERA_RUN_WINDOWS_ACL_INTEGRATION !== '1',
+}, async (t) => {
+  const root = await mkdtemp(path.join(os.homedir(), 'albera-tail-recovery-acl-'));
+  const journalPath = path.join(root, 'runtime.audit.jsonl');
+  const outputPath = path.join(root, 'runtime.recovered.jsonl');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const journal = await openRuntimeAuditJournal(journalPath);
+  const sessionId = await loadOrCreateRuntimeSessionId(journalPath);
+  await journal.append({
+    sessionId, requestId: '12345678-1234-4234-8234-123456789abc',
+    action: 'run.start', phase: 'requested', at: 1, provider: 'claude',
+  });
+  await journal.close();
+  await appendFile(journalPath, '{"incomplete":true');
+  const recovered = await recoverRuntimeJournalTail({ journalPath, outputPath });
+  assert.equal(recovered.sessionId, sessionId);
+  await assertPrivateWindowsAcl(outputPath, { kind: 'file' });
+  await assertPrivateWindowsAcl(`${outputPath}.session-id`, { kind: 'file' });
+  await assertPrivateWindowsAcl(root, { kind: 'directory' });
 });

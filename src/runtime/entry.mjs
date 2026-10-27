@@ -7,15 +7,15 @@ import { fileURLToPath } from 'node:url';
 import { openRuntimeAuditJournal } from './audit-journal.mjs';
 import { createRuntimeHost } from './host.mjs';
 import { loadOrCreateRuntimeSessionId } from './session-identity.mjs';
-import { backupRuntimeJournal, restoreRuntimeJournal } from './journal-backup.mjs';
+import { backupRuntimeJournal, recoverRuntimeJournalTail, restoreRuntimeJournal } from './journal-backup.mjs';
 
 export function parseRuntimeArgs(argv, platform = process.platform) {
   const Path = platform === 'win32' ? path.win32 : path;
-  const command = argv[0] === 'backup' || argv[0] === 'restore' ? argv[0] : 'serve';
+  const command = ['backup', 'restore', 'recover-tail'].includes(argv[0]) ? argv[0] : 'serve';
   const args = command === 'serve' ? argv : argv.slice(1);
   if (command !== 'serve') {
     const options = { command, journalPath: undefined, outputPath: undefined, backupPath: undefined, destinationDirectory: undefined, help: false };
-    const accepted = command === 'backup' ? ['--journal', '--output'] : ['--backup', '--destination'];
+    const accepted = command === 'restore' ? ['--backup', '--destination'] : ['--journal', '--output'];
     for (let i = 0; i < args.length; i++) {
       const arg = String(args[i]);
       if (arg === '--help' || arg === '-h') { options.help = true; continue; }
@@ -23,12 +23,12 @@ export function parseRuntimeArgs(argv, platform = process.platform) {
       const value = args[++i];
       if (typeof value !== 'string' || value.length === 0 || value.startsWith('--')) throw new Error('runtime_option_requires_value');
       if (!Path.isAbsolute(value)) throw new Error('runtime_path_must_be_absolute');
-      const key = command === 'backup' ? (arg === '--journal' ? 'journalPath' : 'outputPath')
+      const key = command !== 'restore' ? (arg === '--journal' ? 'journalPath' : 'outputPath')
         : (arg === '--backup' ? 'backupPath' : 'destinationDirectory');
       if (options[key]) throw new Error('runtime_option_must_be_unique');
       options[key] = value;
     }
-    if (!options.help && (command === 'backup' ? (!options.journalPath || !options.outputPath) : (!options.backupPath || !options.destinationDirectory))) {
+    if (!options.help && (command !== 'restore' ? (!options.journalPath || !options.outputPath) : (!options.backupPath || !options.destinationDirectory))) {
       throw new Error('runtime_backup_options_required');
     }
     return Object.freeze(options);
@@ -62,6 +62,7 @@ Usage:
   albera-runtime --root <absolute-project-directory> [--root <directory> ...] --journal <absolute-jsonl-path> [--port <0-65535>]
   albera-runtime backup --journal <absolute-jsonl-path> --output <new-encrypted-backup-path>
   albera-runtime restore --backup <absolute-backup-path> --destination <new-private-directory>
+  albera-runtime recover-tail --journal <absolute-jsonl-path> --output <new-jsonl-path-in-same-directory>
 
 The regular "albera" command remains a read-only session dashboard. Runtime binds only to 127.0.0.1.
 Each provider start, input, and stop requires a visible one-use decision in the local approval page.
@@ -70,6 +71,7 @@ The journal stores redacted decisions and lifecycle events, never prompts or pro
 Journal storage permissions are checked without repair; Runtime refuses broad or unverifiable Windows DACLs and POSIX ownership/modes.
 Backups are created only while Runtime is stopped. Backup and restore passphrases are entered in a hidden terminal prompt, never as command-line arguments or environment variables.
 Restore creates a new directory and never overwrites existing files. Keep the passphrase separately; ALBERA cannot recover it.
+recover-tail requires Runtime to be stopped and copies only the fully validated record prefix to a new file beside the original. It keeps the original journal and incomplete tail unchanged, refuses an existing writer lock, and preserves the session identity. It cannot recover a possibly lost final event.
 `;
 
 async function readHiddenPassphrase(prompt) {
@@ -105,20 +107,24 @@ async function main() {
   try { options = parseRuntimeArgs(process.argv.slice(2)); }
   catch (error) { console.error(`ALBERA Runtime: ${error.message}`); process.exitCode = 2; return; }
   if (options.help) { console.log(RUNTIME_HELP); return; }
-  if (options.command === 'backup' || options.command === 'restore') {
+  if (options.command === 'backup' || options.command === 'restore' || options.command === 'recover-tail') {
     try {
-      const passphrase = await readHiddenPassphrase(options.command === 'backup' ? 'Backup passphrase (12+ UTF-8 bytes): ' : 'Backup passphrase: ');
       if (options.command === 'backup') {
+        const passphrase = await readHiddenPassphrase('Backup passphrase (12+ UTF-8 bytes): ');
         const confirmation = await readHiddenPassphrase('Confirm passphrase: ');
         if (passphrase !== confirmation) throw new Error('backup_passphrase_mismatch');
         const result = await backupRuntimeJournal({ journalPath: options.journalPath, outputPath: options.outputPath, passphrase });
         console.log(`Encrypted Runtime backup created (${result.bytes} bytes).`);
-      } else {
+      } else if (options.command === 'restore') {
+        const passphrase = await readHiddenPassphrase('Backup passphrase: ');
         const result = await restoreRuntimeJournal({ backupPath: options.backupPath, destinationDirectory: options.destinationDirectory, passphrase });
         console.log(`Runtime journal restored to ${result.journalPath}.`);
+      } else {
+        const result = await recoverRuntimeJournalTail({ journalPath: options.journalPath, outputPath: options.outputPath });
+        console.log(`Recovered ${result.recordCount} complete records to ${result.journalPath}; preserved the original and ${result.discardedTailBytes} incomplete tail bytes.`);
       }
     } catch (error) {
-      console.error(`ALBERA Runtime backup: ${error.message}`);
+      console.error(`ALBERA Runtime ${options.command}: ${error.message}`);
       process.exitCode = 1;
     }
     return;
