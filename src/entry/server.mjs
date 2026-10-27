@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 // entry: 起動 (CLI)。設定の検証 → adapter の選択 (実データ / デモ) → 127.0.0.1 だけで待ち受け。spec/board.md §11
-//   npx pigeonholes / npm start      実データ (読み取り専用)
+//   npx albera / npm start      実データ (読み取り専用)
 //   npm run demo (--demo)            合成データ。中身の言語は端末の言語
 // 端末の言葉は messages.mjs。ログに title や本文は書かない。
 

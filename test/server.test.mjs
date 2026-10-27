@@ -19,8 +19,8 @@ import { FORBIDDEN_OUTPUT_KEYS, FORBIDDEN_WIRE_KEYS } from '../src/shared/consta
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER = path.join(ROOT, 'src', 'entry', 'server.mjs');
 const READY_RE = /http:\/\/127\.0\.0\.1:\d+/;
-// 使うポートの範囲。ほかの作業とポートを分けたいときは PIGEONHOLES_TEST_PORTS=18950-18969 のように狭められる
-const [PORT_MIN, PORT_MAX] = (/^(\d+)-(\d+)$/.exec(process.env.PIGEONHOLES_TEST_PORTS ?? '') ?? [null, '18950', '18989']).slice(1).map(Number);
+// 使うポートの範囲。ほかの作業とポートを分けたいときは ALBERA_TEST_PORTS=18950-18969 のように狭められる
+const [PORT_MIN, PORT_MAX] = (/^(\d+)-(\d+)$/.exec(process.env.ALBERA_TEST_PORTS ?? '') ?? [null, '18950', '18989']).slice(1).map(Number);
 // 起動のしかた (clone から動かしているので node <このファイルの絶対パス>。空白を含むパスなら引用符つき)
 const LAUNCH = String.raw`node ['"]?.+/src/entry/server\.mjs['"]?`;
 const VERSION = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8')).version;
@@ -55,11 +55,11 @@ async function freePort() {
 /** 誤って設定の検証を通っても、既定のポート (所有者のボード) には繋がないための番号 (before で決める) */
 let guardPort = PORT_MAX;
 
-/** 走らせる人の設定や言語に結果を左右させないために、子に渡さない環境変数 (PIGEONHOLES_* と、端末の言語を決める LC_* / LANG / LANGUAGE)。 */
-const DROP_ENV_RE = /^(PIGEONHOLES_|LC_|LANG$|LANGUAGE$)/;
+/** 走らせる人の設定や言語に結果を左右させないために、子に渡さない環境変数 (ALBERA_* と、端末の言語を決める LC_* / LANG / LANGUAGE)。 */
+const DROP_ENV_RE = /^(ALBERA_|PIGEONHOLES_|LC_|LANG$|LANGUAGE$)/;
 
 /**
- * 呼び出し元の PIGEONHOLES_* と言語の環境変数を消した環境 (言語に頼るケースは extra で明示する)。
+ * 呼び出し元の ALBERA_* と言語の環境変数を消した環境 (言語に頼るケースは extra で明示する)。
  * ポートは既定で guardPort (フラグか extra で上書きする)。
  * @param {Record<string, string>} extra
  */
@@ -67,7 +67,7 @@ function cleanEnv(extra = {}) {
   /** @type {Record<string, string|undefined>} */
   const env = {};
   for (const [k, v] of Object.entries(process.env)) if (!DROP_ENV_RE.test(k)) env[k] = v;
-  return { ...env, PIGEONHOLES_PORT: String(guardPort), ...extra };
+  return { ...env, ALBERA_PORT: String(guardPort), ...extra };
 }
 
 /**
@@ -135,14 +135,14 @@ let port;
 /** @type {import('node:child_process').ChildProcess} */
 let child;
 before(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pigeonholes-server-test-'));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'albera-server-test-'));
   guardPort = await freePort();
   port = await freePort();
   const s = start(['--demo', '--port', String(port), '--lang', 'en']);
   child = s.child;
   const r = await s.ready;
   assert.equal(r.code, null, r.err);
-  assert.equal(lines(r.out)[0], `Pigeonholes: http://127.0.0.1:${port} (demo data, read-only)`);
+  assert.equal(lines(r.out)[0], `ALBERA: http://127.0.0.1:${port} (demo data, read-only)`);
 });
 after(async () => {
   child?.kill();
@@ -158,7 +158,7 @@ test('/ は 200 で HTML、CSP などのヘッダーが付き、このボード�
   assert.equal(r.headers['referrer-policy'], 'no-referrer');
   assert.equal(r.headers['cache-control'], 'no-store');
   assert.equal(r.headers['access-control-allow-origin'], undefined);
-  assert.match(r.body, /<meta name="pigeonholes" content="1"\s*\/?>/);
+  assert.match(r.body, /<meta name="albera" content="1"\s*\/?>/);
   assert.equal((await request(port, { path: '/index.html' })).body, r.body);
 });
 
@@ -166,10 +166,10 @@ test('/api/hello はこのボードの名前とデモかどうかだけを返す
   const r = await request(port, { path: '/api/hello' });
   assert.equal(r.status, 200);
   assert.match(String(r.headers['content-type']), /application\/json/);
-  assert.deepEqual(JSON.parse(r.body), { app: 'pigeonholes', demo: true });
+  assert.deepEqual(JSON.parse(r.body), { app: 'albera', demo: true });
   assert.equal(parseHello(r.body), 'demo');
-  assert.equal(parseHello('{"app":"pigeonholes","demo":false}'), 'live');
-  for (const other of ['<title>another app</title>', '{"app":"other","demo":true}', '{"app":"pigeonholes"}', '']) assert.equal(parseHello(other), null, other);
+  assert.equal(parseHello('{"app":"albera","demo":false}'), 'live');
+  for (const other of ['<title>another app</title>', '{"app":"other","demo":true}', '{"app":"albera"}', '']) assert.equal(parseHello(other), null, other);
 });
 
 test('public/ 直下の画面のファイルと shared の 2 ファイルが、拡張子に合った Content-Type で配信される', async () => {
@@ -241,14 +241,14 @@ test('GET 以外は 405 (HEAD も)', async () => {
 
 test('不正なポート・言語・ROOTS・フラグは exit 1 と 1 行の説明', async () => {
   const cases = [
-    { args: ['--demo', '--lang', 'en'], env: { PIGEONHOLES_PORT: 'abc' }, re: /^The port must be a number from 1024 to 65535 \(got: abc\)\. Use --port <n> or PIGEONHOLES_PORT\.$/ },
+    { args: ['--demo', '--lang', 'en'], env: { ALBERA_PORT: 'abc' }, re: /^The port must be a number from 1024 to 65535 \(got: abc\)\. Use --port <n> or ALBERA_PORT\.$/ },
     { args: ['--demo', '--lang', 'ja', '--port', '80'], env: {}, re: /^ポートは 1024〜65535 の数字にしてください \(今: 80\)/ },
-    { args: ['--demo', '--lang', 'fr'], env: { LANG: 'ja_JP.UTF-8' }, re: /^--lang と PIGEONHOLES_LANG は en か ja にしてください \(今: fr\)$/ },
-    { args: ['--demo'], env: { PIGEONHOLES_LANG: 'xx', LANG: 'en_US.UTF-8' }, re: /^--lang and PIGEONHOLES_LANG must be en or ja \(got: xx\)$/ },
-    { args: ['--demo', '--lang', 'en'], env: { PIGEONHOLES_ROOTS: 'relative-dir' }, re: /^PIGEONHOLES_ROOTS must be absolute paths separated by ".+" \(invalid: relative-dir\)$/ },
+    { args: ['--demo', '--lang', 'fr'], env: { LANG: 'ja_JP.UTF-8' }, re: /^--lang と ALBERA_LANG は en か ja にしてください \(今: fr\)$/ },
+    { args: ['--demo'], env: { ALBERA_LANG: 'xx', LANG: 'en_US.UTF-8' }, re: /^--lang and ALBERA_LANG must be en or ja \(got: xx\)$/ },
+    { args: ['--demo', '--lang', 'en'], env: { ALBERA_ROOTS: 'relative-dir' }, re: /^ALBERA_ROOTS must be absolute paths separated by ".+" \(invalid: relative-dir\)$/ },
     { args: ['--demo', '--lang', 'en', '--bogus'], env: {}, re: new RegExp(`^Unknown option: --bogus\\. See: ${LAUNCH} --help$`) },
     { args: ['--lang', 'en', '--port'], env: {}, re: new RegExp(`^--port needs a value\\. See: ${LAUNCH} --help$`) },
-    { args: ['--demo'], env: { LC_ALL: 'ja_JP.UTF-8', PIGEONHOLES_PORT: 'abc' }, re: /^ポートは 1024〜65535 の数字にしてください/ },
+    { args: ['--demo'], env: { LC_ALL: 'ja_JP.UTF-8', ALBERA_PORT: 'abc' }, re: /^ポートは 1024〜65535 の数字にしてください/ },
   ];
   for (const c of cases) {
     const r = await run(c.args, c.env);
@@ -266,9 +266,9 @@ test('セッションフォルダが無ければ exit 1。説明・探した場�
   assert.deepEqual(lines(r.err), [
     "Can't find the Claude desktop app's session folder. Looked in:",
     `  ${missing}`,
-    'Start a session once in the Code tab of the Claude desktop app, or pass --sessions-dir <path> (or set PIGEONHOLES_SESSIONS_DIR).',
+    'Start a session once in the Code tab of the Claude desktop app, or pass --sessions-dir <path> (or set ALBERA_SESSIONS_DIR).',
   ]);
-  const env = await run(['--lang', 'ja'], { PIGEONHOLES_SESSIONS_DIR: missing });
+  const env = await run(['--lang', 'ja'], { ALBERA_SESSIONS_DIR: missing });
   assert.equal(env.code, 1);
   assert.match(lines(env.err)[0], /^Claude デスクトップアプリのセッションフォルダが見つかりません。探した場所:$/);
   assert.equal(lines(env.err)[1], `  ${missing}`);
@@ -276,11 +276,11 @@ test('セッションフォルダが無ければ exit 1。説明・探した場�
 
 test('フラグは環境変数に勝つ (ポート・言語・デモ)', async () => {
   const p = await freePort();
-  const s = start(['--demo', '--port', String(p), '--lang', 'ja'], { env: { PIGEONHOLES_PORT: 'abc', PIGEONHOLES_LANG: 'xx' } });
+  const s = start(['--demo', '--port', String(p), '--lang', 'ja'], { env: { ALBERA_PORT: 'abc', ALBERA_LANG: 'xx' } });
   try {
     const r = await s.ready;
     assert.equal(r.code, null, r.err);
-    assert.equal(lines(r.out)[0], `Pigeonholes: http://127.0.0.1:${p} (デモデータ・読み取り専用)`);
+    assert.equal(lines(r.out)[0], `ALBERA: http://127.0.0.1:${p} (デモデータ・読み取り専用)`);
     assert.equal((await request(p, { path: '/api/board' })).status, 200);
   } finally {
     s.child.kill();
@@ -290,13 +290,13 @@ test('フラグは環境変数に勝つ (ポート・言語・デモ)', async ()
 test('--help と --version は exit 0', async () => {
   const help = await run(['--help', '--lang', 'en']);
   assert.equal(help.code, 0, help.err);
-  assert.match(help.out, new RegExp(`^Pigeonholes ${VERSION.replaceAll('.', '\\.')}: `));
+  assert.match(help.out, new RegExp(`^ALBERA ${VERSION.replaceAll('.', '\\.')}: `));
   assert.match(help.out, new RegExp(`Usage: ${LAUNCH} \\[options\\]`));
   const ja = await run(['-h', '--lang', 'ja']);
   assert.match(ja.out, new RegExp(`使い方: ${LAUNCH} \\[オプション\\]`));
   const v = await run(['--version']);
   assert.equal(v.code, 0);
-  assert.equal(v.out.trim(), `pigeonholes ${VERSION}`);
+  assert.equal(v.out.trim(), `albera ${VERSION}`);
 });
 
 test('ポートで同じ種類のボード (ここではデモ) がもう動いていれば、URL と「自分で起動していなければ」の 1 行を出して exit 0', async () => {
@@ -349,7 +349,7 @@ test('配信表は起動時に public/ から作る: 決まった拡張子の直
   await fs.mkdir(path.join(pub, 'sub'), { recursive: true });
   await fs.mkdir(shared, { recursive: true });
   for (const [name, body] of [
-    ['index.html', '<meta name="pigeonholes" content="1">'],
+    ['index.html', '<meta name="albera" content="1">'],
     ['new-panel.mjs', 'export {};'],
     ['logo.svg', '<svg/>'],
     ['icon.png', 'png'],
@@ -411,7 +411,7 @@ test('実データの形 (一時フォルダの合成ファイル) を読む: �
   try {
     const r = await s.ready;
     assert.equal(r.code, null, r.err);
-    assert.equal(lines(r.out)[0], `Pigeonholes: http://127.0.0.1:${p} (read-only)`);
+    assert.equal(lines(r.out)[0], `ALBERA: http://127.0.0.1:${p} (read-only)`);
     const res = await request(p, { path: '/api/board' });
     assert.equal(res.status, 200);
     const b = JSON.parse(res.body);

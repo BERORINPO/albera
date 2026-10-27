@@ -163,13 +163,13 @@ test('contentLang: 仮名か漢字があれば ja', () => {
 });
 
 test('tabTitle: 返事待ち > 止まったかも > 名前だけ。オフラインなら印', () => {
-  assert.equal(tabTitle(en, { needs_you: 4, trouble: 2 }), '(4) Needs you — Pigeonholes');
-  assert.equal(tabTitle(ja, { needs_you: 4, trouble: 2 }), '(4) 返事待ち — Pigeonholes');
-  assert.equal(tabTitle(en, { needs_you: 0, trouble: 2 }), '(2) Stuck? — Pigeonholes');
-  assert.equal(tabTitle(en, { needs_you: 0, trouble: 0 }), 'Pigeonholes');
-  assert.equal(tabTitle(en, null), 'Pigeonholes');
-  assert.equal(tabTitle(en, { needs_you: 1 }, true), '(1) Needs you — Pigeonholes (offline)');
-  assert.equal(tabTitle(ja, { needs_you: 0 }, true), 'Pigeonholes (オフライン)');
+  assert.equal(tabTitle(en, { needs_you: 4, trouble: 2 }), '(4) Needs you — ALBERA');
+  assert.equal(tabTitle(ja, { needs_you: 4, trouble: 2 }), '(4) 返事待ち — ALBERA');
+  assert.equal(tabTitle(en, { needs_you: 0, trouble: 2 }), '(2) Stuck? — ALBERA');
+  assert.equal(tabTitle(en, { needs_you: 0, trouble: 0 }), 'ALBERA');
+  assert.equal(tabTitle(en, null), 'ALBERA');
+  assert.equal(tabTitle(en, { needs_you: 1 }, true), '(1) Needs you — ALBERA (offline)');
+  assert.equal(tabTitle(ja, { needs_you: 0 }, true), 'ALBERA (オフライン)');
 });
 
 test('dateline と絶対時刻: 自前のテンプレートで (Intl を使わない)', () => {

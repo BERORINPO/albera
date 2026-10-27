@@ -81,7 +81,7 @@ function showBoard(r) {
     state.etag = r.etag;
     if (moved) announce(t('live.moved', { title: titleOf(t, view.index.get(moved.id)?.card.title), pile: bucketTitle(t, moved.to) }));
   } catch (e) {
-    console.error('Pigeonholes: could not draw the board', e);
+    console.error('ALBERA: could not draw the board', e);
     restore(kept.s);
     state.offset = kept.offset;
     state.lastOk = kept.lastOk;
@@ -89,7 +89,7 @@ function showBoard(r) {
     try {
       render();
     } catch (e2) {
-      console.error('Pigeonholes: could not draw the previous board either', e2);
+      console.error('ALBERA: could not draw the previous board either', e2);
     }
     return;
   }

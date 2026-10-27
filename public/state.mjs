@@ -2,7 +2,7 @@
 // 画面: ただ 1 つの状態のかたまりと、その setter。好み (prefs) は localStorage に保存する (読み書きは全部 try/catch)。
 // 選択とコピー済みと batch はメモリだけ (再読み込みで消える)。
 
-import { NEW_BADGE_MS, UI_STORAGE_KEY } from '../src/shared/constants.mjs';
+import { LEGACY_UI_STORAGE_KEY, NEW_BADGE_MS, UI_STORAGE_KEY } from '../src/shared/constants.mjs';
 import { dayKey, hm } from './format.mjs';
 import { latchHandoffs, pruneHandoffs } from './handoff.mjs';
 import { makeT } from './i18n.mjs';
@@ -63,7 +63,8 @@ export const now = () => Date.now() + state.offset;
 
 export function loadPrefs() {
   try {
-    const raw = localStorage.getItem(UI_STORAGE_KEY);
+    const current = localStorage.getItem(UI_STORAGE_KEY);
+    const raw = current ?? localStorage.getItem(LEGACY_UI_STORAGE_KEY);
     const v = raw ? JSON.parse(raw) : null;
     state.prefs = v && typeof v === 'object' ? { ...defaults(), ...v, open: { ...(v.open ?? {}) }, more: { ...(v.more ?? {}) } } : defaults();
     state.prefs.view = state.prefs.view === 'canvas' ? 'canvas' : 'list';

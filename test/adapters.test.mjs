@@ -27,7 +27,7 @@ import { HOUR, NOW, rec } from './helpers/fixtures.mjs';
 /** @type {string} */
 let tmp;
 before(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pigeonholes-test-'));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'albera-test-'));
 });
 after(async () => {
   await fs.rm(tmp, { recursive: true, force: true });

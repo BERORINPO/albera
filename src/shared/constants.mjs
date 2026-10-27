@@ -4,7 +4,7 @@
 // ブラウザにも /src/shared/constants.mjs として同じファイルを配信する (サーバーと画面で値がずれないように)。
 
 // 名前・ロゴ・題名に "Claude" を入れない (非公式の道具なので)
-export const PRODUCT = Object.freeze({ name: 'Pigeonholes', bin: 'pigeonholes' });
+export const PRODUCT = Object.freeze({ name: 'ALBERA', bin: 'albera' });
 
 export const SEC = 1000;
 export const MIN = 60 * SEC;
@@ -61,7 +61,8 @@ export const PREVIEW = Object.freeze({ unread: 8, working: 8, recentGroup: 5 });
 export const PAGE_SIZE = 20;
 export const MAX_PRS = 10;
 export const MAX_PR_BADGES = 2;
-export const UI_STORAGE_KEY = 'pigeonholes:v1:ui';
+export const UI_STORAGE_KEY = 'albera:v1:ui';
+export const LEGACY_UI_STORAGE_KEY = 'pigeonholes:v1:ui';
 export const DEEP_LINK_PREFIX = 'claude://claude.ai/epitaxy/';
 export const GITHUB_URL_RE = /^https:\/\/github\.com\//;
 export const COMPACT_SHOW_MS = 1 * HOUR; // 「要約済み」を行に出す時間
@@ -100,7 +101,8 @@ export const CANVAS = Object.freeze({
   NARROW_PX: 640,
   SEAT_KEEP_MS: 7 * DAY,
 });
-export const CANVAS_STORAGE_KEY = 'pigeonholes:v1:canvas'; // キャンバスの席 (画面の localStorage だけ)
+export const CANVAS_STORAGE_KEY = 'albera:v1:canvas'; // キャンバスの席 (画面の localStorage だけ)
+export const LEGACY_CANVAS_STORAGE_KEY = 'pigeonholes:v1:canvas';
 
 // --- 文字数の上限 (code point 単位。切ったら末尾に「…」) ---
 export const CAP = Object.freeze({

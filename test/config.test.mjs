@@ -62,10 +62,10 @@ test('parseArgs: 知らないフラグ・位置引数・値の無いフラグは
   throwsConfig(() => parseArgs(['--lang=']), 'term.missingValue', { flag: '--lang' });
 });
 
-test('端末の言語: --lang → PIGEONHOLES_LANG → LC_ALL → LC_MESSAGES → LANG → Intl → en', () => {
+test('端末の言語: --lang → ALBERA_LANG → LC_ALL → LC_MESSAGES → LANG → Intl → en', () => {
   assert.equal(pickTerminalLang({}, 'ja', 'en-US'), 'ja');
-  assert.equal(pickTerminalLang({ PIGEONHOLES_LANG: 'ja' }, 'en', 'ja-JP'), 'en', 'フラグが勝つ');
-  assert.equal(pickTerminalLang({ PIGEONHOLES_LANG: 'ja-JP' }, undefined, 'en-US'), 'ja');
+  assert.equal(pickTerminalLang({ ALBERA_LANG: 'ja' }, 'en', 'ja-JP'), 'en', 'フラグが勝つ');
+  assert.equal(pickTerminalLang({ ALBERA_LANG: 'ja-JP' }, undefined, 'en-US'), 'ja');
   assert.equal(pickTerminalLang({ LC_ALL: 'ja_JP.UTF-8', LANG: 'en_US.UTF-8' }, undefined, 'en-US'), 'ja');
   assert.equal(pickTerminalLang({ LC_MESSAGES: 'en_US.UTF-8', LANG: 'ja_JP.UTF-8' }, undefined, 'ja-JP'), 'en');
   assert.equal(pickTerminalLang({ LANG: 'C.UTF-8' }, undefined, 'ja-JP'), 'ja', 'C は指定なし扱いで Intl へ');
@@ -77,12 +77,20 @@ test('端末の言語: --lang → PIGEONHOLES_LANG → LC_ALL → LC_MESSAGES �
   assert.equal(localeLang({ LANG: 'ja_JP.UTF-8' }, 'en'), 'ja');
 });
 
-test('端末の言語: --lang / PIGEONHOLES_LANG が不正なら、それを除いた順で決めた言語で ConfigError', () => {
+test('環境変数の名称変更: ALBERA_* を優先し、未設定なら旧 PIGEONHOLES_* を引き継ぐ', () => {
+  assert.equal(pickTerminalLang({ PIGEONHOLES_LANG: 'ja' }, undefined, 'en-US'), 'ja');
+  assert.equal(pickTerminalLang({ ALBERA_LANG: 'en', PIGEONHOLES_LANG: 'ja' }, undefined, 'ja-JP'), 'en');
+  const config = loadConfig({ home: NIX_HOME, cwd: '/cwd', platform: 'linux', argv: ['--demo'], env: { PIGEONHOLES_PORT: '9201', PIGEONHOLES_ROOTS: '/legacy' } });
+  assert.equal(config.port, 9201);
+  assert.deepEqual(config.roots, ['/legacy']);
+});
+
+test('端末の言語: --lang / ALBERA_LANG が不正なら、それを除いた順で決めた言語で ConfigError', () => {
   const e = throwsConfig(() => pickTerminalLang({ LANG: 'ja_JP.UTF-8' }, 'fr', 'en-US'), 'term.badLang', { raw: 'fr' });
   assert.equal(e.lang, 'ja');
-  const e2 = throwsConfig(() => pickTerminalLang({ PIGEONHOLES_LANG: 'klingon' }, undefined, 'en-US'), 'term.badLang', { raw: 'klingon' });
+  const e2 = throwsConfig(() => pickTerminalLang({ ALBERA_LANG: 'klingon' }, undefined, 'en-US'), 'term.badLang', { raw: 'klingon' });
   assert.equal(e2.lang, 'en');
-  assert.equal(pickTerminalLang({ PIGEONHOLES_LANG: 'xx' }, 'ja', 'en'), 'ja', 'フラグがあれば環境変数は見ない');
+  assert.equal(pickTerminalLang({ ALBERA_LANG: 'xx' }, 'ja', 'en'), 'ja', 'フラグがあれば環境変数は見ない');
 });
 
 test('parsePort: 空なら既定、1024〜65535 の整数でなければ ConfigError (今の値は 40 字まで)', () => {
@@ -121,13 +129,13 @@ test('セッションフォルダの候補: win32 は APPDATA → MSIX 版、dar
   assert.deepEqual(sessionsDirCandidates('linux', { XDG_CONFIG_HOME: '/home/tester/.config' }, NIX_HOME), ['/home/tester/.config/Claude/claude-code-sessions']);
 });
 
-test('会話ログのフォルダ: フラグ → PIGEONHOLES_PROJECTS_DIR → CLAUDE_CONFIG_DIR (絶対パスのとき) → ~/.claude/projects', () => {
+test('会話ログのフォルダ: フラグ → ALBERA_PROJECTS_DIR → CLAUDE_CONFIG_DIR (絶対パスのとき) → ~/.claude/projects', () => {
   const base = { home: NIX_HOME, cwd: '/cwd', platform: 'linux' };
   assert.equal(resolveProjectsDir({ ...base, env: {} }), '/home/tester/.claude/projects');
   assert.equal(resolveProjectsDir({ ...base, env: { CLAUDE_CONFIG_DIR: '/cfg' } }), '/cfg/projects');
   assert.equal(resolveProjectsDir({ ...base, env: { CLAUDE_CONFIG_DIR: 'rel' } }), '/home/tester/.claude/projects');
-  assert.equal(resolveProjectsDir({ ...base, env: { PIGEONHOLES_PROJECTS_DIR: 'logs', CLAUDE_CONFIG_DIR: '/cfg' } }), '/cwd/logs');
-  assert.equal(resolveProjectsDir({ ...base, flag: '/flag', env: { PIGEONHOLES_PROJECTS_DIR: '/env' } }), '/flag');
+  assert.equal(resolveProjectsDir({ ...base, env: { ALBERA_PROJECTS_DIR: 'logs', CLAUDE_CONFIG_DIR: '/cfg' } }), '/cwd/logs');
+  assert.equal(resolveProjectsDir({ ...base, flag: '/flag', env: { ALBERA_PROJECTS_DIR: '/env' } }), '/flag');
   assert.equal(resolveProjectsDir({ home: WIN_HOME, cwd: 'C:\\cwd', platform: 'win32', env: {} }), 'C:\\Users\\tester\\.claude\\projects');
 });
 
@@ -142,46 +150,46 @@ test('loadConfig: 候補のうち最初に存在したフォルダ。フラグ�
   assert.equal(both.action === 'run' && both.sessionsRoot, 'C:\\R\\Claude\\claude-code-sessions');
   const store = loadConfig({ ...base, env, isDir: dirs([msix]) });
   assert.equal(store.action === 'run' && store.sessionsRoot, msix, 'Microsoft Store 版');
-  const flag = loadConfig({ ...base, argv: ['--sessions-dir', 'mine'], env: { ...env, PIGEONHOLES_SESSIONS_DIR: 'C:\\envdir' }, isDir: dirs(['C:\\cwd\\mine', msix]) });
+  const flag = loadConfig({ ...base, argv: ['--sessions-dir', 'mine'], env: { ...env, ALBERA_SESSIONS_DIR: 'C:\\envdir' }, isDir: dirs(['C:\\cwd\\mine', msix]) });
   assert.equal(flag.action === 'run' && flag.sessionsRoot, 'C:\\cwd\\mine');
-  const e = throwsConfig(() => loadConfig({ ...base, env: { ...env, PIGEONHOLES_SESSIONS_DIR: 'C:\\envdir' }, isDir: dirs([msix]) }), 'term.noSessionsDir', { tried: ['C:\\envdir'] });
+  const e = throwsConfig(() => loadConfig({ ...base, env: { ...env, ALBERA_SESSIONS_DIR: 'C:\\envdir' }, isDir: dirs([msix]) }), 'term.noSessionsDir', { tried: ['C:\\envdir'] });
   assert.equal(e.lang, 'en');
   throwsConfig(() => loadConfig({ ...base, env, isDir: dirs([]) }), 'term.noSessionsDir', { tried: ['C:\\R\\Claude\\claude-code-sessions', msix] });
 });
 
 test('loadConfig: フラグは環境変数に勝つ。デモはセッションフォルダが無くても起動する', () => {
   const base = { home: NIX_HOME, cwd: '/cwd', platform: 'linux', intlLocale: 'en-US', isDir: dirs([]) };
-  const c = loadConfig({ ...base, argv: ['--port', '9100', '--demo', '--lang', 'ja', '--projects-dir', '/flag'], env: { PIGEONHOLES_PORT: 'abc', PIGEONHOLES_LANG: 'xx', PIGEONHOLES_PROJECTS_DIR: '/env' } });
+  const c = loadConfig({ ...base, argv: ['--port', '9100', '--demo', '--lang', 'ja', '--projects-dir', '/flag'], env: { ALBERA_PORT: 'abc', ALBERA_LANG: 'xx', ALBERA_PROJECTS_DIR: '/env' } });
   assert.deepEqual(c, { action: 'run', lang: 'ja', demo: true, port: 9100, roots: [NIX_HOME], sessionsRoot: '', projectsDir: '/flag', home: NIX_HOME });
-  const env = loadConfig({ ...base, argv: [], env: { PIGEONHOLES_PORT: '9200', PIGEONHOLES_DEMO: '1', PIGEONHOLES_ROOTS: '/a:/b' } });
+  const env = loadConfig({ ...base, argv: [], env: { ALBERA_PORT: '9200', ALBERA_DEMO: '1', ALBERA_ROOTS: '/a:/b' } });
   assert.equal(env.action === 'run' && env.port, 9200);
   assert.equal(env.action === 'run' && env.demo, true);
   assert.deepEqual(env.action === 'run' && env.roots, ['/a', '/b']);
-  assert.equal(loadConfig({ ...base, argv: [], env: { PIGEONHOLES_DEMO: 'true' } }).action, 'run');
-  throwsConfig(() => loadConfig({ ...base, argv: [], env: { PIGEONHOLES_DEMO: '0' } }), 'term.noSessionsDir');
-  // 旧名の環境変数は読まない
+  assert.equal(loadConfig({ ...base, argv: [], env: { ALBERA_DEMO: 'true' } }).action, 'run');
+  throwsConfig(() => loadConfig({ ...base, argv: [], env: { ALBERA_DEMO: '0' } }), 'term.noSessionsDir');
+  // ALBERA と PIGEONHOLES 以外の環境変数名は読まない
   const old = loadConfig({ ...base, argv: ['--demo'], env: { SESSION_BOARD_PORT: '9300' } });
   assert.equal(old.action === 'run' && old.port, DEFAULT_PORT);
 });
 
 test('loadConfig: --help / --version は他の値を確かめずに返す。誤りは決めた言語で出す', () => {
   const base = { home: NIX_HOME, cwd: '/cwd', platform: 'linux', intlLocale: 'en-US', isDir: dirs([]) };
-  assert.deepEqual(loadConfig({ ...base, argv: ['--help'], env: { PIGEONHOLES_PORT: 'abc' } }), { action: 'help', lang: 'en' });
+  assert.deepEqual(loadConfig({ ...base, argv: ['--help'], env: { ALBERA_PORT: 'abc' } }), { action: 'help', lang: 'en' });
   assert.deepEqual(loadConfig({ ...base, argv: ['--version', '--lang', 'ja'], env: {} }), { action: 'version', lang: 'ja' });
-  assert.equal(throwsConfig(() => loadConfig({ ...base, argv: ['--demo'], env: { PIGEONHOLES_PORT: '80', LANG: 'ja_JP.UTF-8' } }), 'term.badPort').lang, 'ja');
+  assert.equal(throwsConfig(() => loadConfig({ ...base, argv: ['--demo'], env: { ALBERA_PORT: '80', LANG: 'ja_JP.UTF-8' } }), 'term.badPort').lang, 'ja');
   assert.equal(throwsConfig(() => loadConfig({ ...base, argv: ['--nope', '--lang', 'ja'], env: {} }), 'term.badFlag').lang, 'ja', 'フラグの誤りも --lang の言語で');
   assert.equal(throwsConfig(() => loadConfig({ ...base, argv: ['--nope', '--lang', 'fr'], env: { LANG: 'ja_JP.UTF-8' } }), 'term.badFlag').lang, 'ja');
-  assert.equal(throwsConfig(() => loadConfig({ ...base, argv: ['--demo'], env: { PIGEONHOLES_ROOTS: 'rel', PIGEONHOLES_LANG: 'ja' } }), 'term.badRoots').lang, 'ja');
+  assert.equal(throwsConfig(() => loadConfig({ ...base, argv: ['--demo'], env: { ALBERA_ROOTS: 'rel', ALBERA_LANG: 'ja' } }), 'term.badRoots').lang, 'ja');
 });
 
 test('portHint: 次の番号での起動例。付けていたフラグは残し、空白や記号のある値は OS に合わせて引用する', () => {
-  assert.deepEqual(portHint('win32', 8797), { port: 8798, cmd: 'npx pigeonholes --port 8798' });
-  assert.deepEqual(portHint('linux', 8797), { port: 8798, cmd: 'npx pigeonholes --port 8798' });
+  assert.deepEqual(portHint('win32', 8797), { port: 8798, cmd: 'npx albera --port 8798' });
+  assert.deepEqual(portHint('linux', 8797), { port: 8798, cmd: 'npx albera --port 8798' });
   assert.deepEqual(portHint('darwin', 65535, 'node /opt/p/server.mjs'), { port: 65534, cmd: 'node /opt/p/server.mjs --port 65534' });
   const args = argsWithoutPort(['--demo', '--port', '8797', '--lang=ja', '--port=1', '--sessions-dir', '/data/my sessions']);
   assert.deepEqual(args, ['--demo', '--lang=ja', '--sessions-dir', '/data/my sessions'], '--port とその値だけ除く');
-  assert.equal(portHint('linux', 8797, 'npx pigeonholes', args).cmd, "npx pigeonholes --demo --lang=ja --sessions-dir '/data/my sessions' --port 8798", '--demo を落とさない');
-  assert.equal(portHint('win32', 8797, 'npx pigeonholes', ['--sessions-dir', 'D:\\My Sessions']).cmd, 'npx pigeonholes --sessions-dir "D:\\My Sessions" --port 8798');
+  assert.equal(portHint('linux', 8797, 'npx albera', args).cmd, "npx albera --demo --lang=ja --sessions-dir '/data/my sessions' --port 8798", '--demo を落とさない');
+  assert.equal(portHint('win32', 8797, 'npx albera', ['--sessions-dir', 'D:\\My Sessions']).cmd, 'npx albera --sessions-dir "D:\\My Sessions" --port 8798');
 });
 
 test('shellQuote: 記号の無い値はそのまま、ほかは POSIX なら \'…\'、win32 なら "…"', () => {

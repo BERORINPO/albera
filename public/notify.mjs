@@ -40,7 +40,7 @@ export function notifyState() {
  * @returns {Array<{title: string, body: string, tag: string, id: string}>}
  */
 export function notificationsFor(t, list) {
-  if (list.length >= 3) return [{ title: t('notify.many', { n: list.length }), body: '', tag: 'pigeonholes-many', id: list[0].card.id }];
+  if (list.length >= 3) return [{ title: t('notify.many', { n: list.length }), body: '', tag: 'albera-many', id: list[0].card.id }];
   return list.map(({ pile, card }) => {
     const title = t(pile === 'needs_you' ? 'notify.needs_you' : 'notify.trouble', { title: titleOf(t, card.title) });
     const body = pile === 'needs_you' ? card.body || askText(t, card) : reasonLine(t, card);

@@ -1,4 +1,4 @@
-# Pigeonholes: screen spec (v0.2)
+# ALBERA: screen spec (v0.2)
 
 Status: locked for v0.2 (v0.1 plus: what each session is doing, its context size, the hand-off guide and the canvas view; the v0.1 Overview is retired, the canvas far zoom does its job). The look (tokens, type, motion, voice) is `spec/design.md`. Classification and the API are `spec/board.md`. This text is the source of truth for the screen. Rules that came out of design review: Open is never hover-only, every time carries its state word, the paste step is the headline after copying, diagnostics sit behind a toggle, the board never sends or presses anything (the hand-off is a copied instruction and an Open).
 
@@ -12,7 +12,7 @@ Every file is under 400 lines, `// @ts-check`, vanilla ESM, no dependencies. Onl
 
 | file | role | main exports |
 |---|---|---|
-| `public/index.html` | static skeleton (§2), English first paint, `data-i18n` hooks, `<meta name="pigeonholes" content="1">` | — |
+| `public/index.html` | static skeleton (§2), English first paint, `data-i18n` hooks, `<meta name="albera" content="1">` | — |
 | `public/tokens.css` | design tokens, byte for byte from design.md §3 (with the canvas tokens) | — |
 | `public/style.css` | base, controls, masthead, front (lede, ledger), page grid, banners, footer, dialogs, motion and reduced motion | — |
 | `public/rows.css` | pile heads, rows, row detail, family tree, Working two-column rule, the doing line, the context words, the hand-off guide | — |
@@ -22,7 +22,7 @@ Every file is under 400 lines, `// @ts-check`, vanilla ESM, no dependencies. Onl
 | `public/actions.mjs` | the list's click and key actions moved out of `app.mjs`: the cleanup copies, the hand-off guide from a row or `h`, the guide's buttons (any guide, found through `view.index`), the due walk | `copyChunk()`, `copySmall()`, `openHandoff()`, `handoffKey()`, `runGuide(btn)`, `dueNext()` |
 | `public/poll.mjs` | the poll loop (§16): a fetch failure (offline, server, version) is told apart from a failure to draw a 200 board | `poll()`, `schedule()` |
 | `public/api.mjs` | the only `fetch`: `GET /api/board` with `If-None-Match`, timeout, `v === 2` check | `fetchBoard(etag, timeoutMs)`, `BoardHttpError`, `BoardVersionError` |
-| `public/state.mjs` | the single in-memory state object and its setters; prefs in localStorage `pigeonholes:v1:ui` (every read and write in try/catch) | `state`, `loadPrefs()`, `savePrefs()`, `setBoard()`, `pruneNew()`, `snapshot()`, `restore()`, `setCursor()`, `pick()`, `unpick()`, `startBatch()`, `reselectLeft()`, `setView()`, `storeHandoff()` |
+| `public/state.mjs` | the single in-memory state object and its setters; prefs in localStorage `albera:v1:ui` (every read and write in try/catch) | `state`, `loadPrefs()`, `savePrefs()`, `setBoard()`, `pruneNew()`, `snapshot()`, `restore()`, `setCursor()`, `pick()`, `unpick()`, `startBatch()`, `reselectLeft()`, `setView()`, `storeHandoff()` |
 | `public/ui-state.mjs` | **pure** selection, copy, batch, cursor and lede logic | `planCopy`, `commitCopy`, `pruneSelection`, `reselectIds`, `batchProgress`, `checkState`, `nextUp`, `cursorAfter`, `listsFromRows`, `stalePrefKeys`, `focusSignature`, `stepOf` |
 | `public/render.mjs` | render orchestrator: masthead texts, front, then the list (piles) or the canvas, footer, tab title, favicon, keeping focus | `render()`, `renderTimes()` |
 | `public/front.mjs` | lede (all states, and fitting it to its lines), counts ledger, the view switch and the due count, board notices, first-run legend | `renderFront()`, `fitLede()`, `renderBanners()`, `renderIntro()` |
@@ -59,7 +59,7 @@ Every file is under 400 lines, `// @ts-check`, vanilla ESM, no dependencies. Onl
 | `public/dict-ja-canvas.mjs` | Japanese §19.9 | `JA_CANVAS` |
 | `public/dict-ja-handoff.mjs` | Japanese §19.13–§19.15 | `JA_HANDOFF` |
 
-`public/overview.mjs` and `public/overview.css` (v0.1) are removed with the Overview; so are `prefs.overview` and `prefs.overviewQuiet` (dropped on load). New prefs (same key `pigeonholes:v1:ui`): `view` (`'list' | 'canvas'`, §10.1) and `handoff` (`{[sessionId]: {at, pct}}`, §9.2). The canvas seats live under their own key `CANVAS_STORAGE_KEY` (§10.4). Every module stays under 400 lines (checked by `npm run arch`, rule 7); split a helper module out rather than grow one past it. Dictionary parts are `public/dict-<lang>-<part>.mjs`, taken in by `dict-<lang>.mjs` (a test checks that no key is in two parts).
+`public/overview.mjs` and `public/overview.css` (v0.1) are removed with the Overview; so are `prefs.overview` and `prefs.overviewQuiet` (dropped on load). New prefs (same key `albera:v1:ui`): `view` (`'list' | 'canvas'`, §10.1) and `handoff` (`{[sessionId]: {at, pct}}`, §9.2). The canvas seats live under their own key `CANVAS_STORAGE_KEY` (§10.4). Every module stays under 400 lines (checked by `npm run arch`, rule 7); split a helper module out rather than grow one past it. Dictionary parts are `public/dict-<lang>-<part>.mjs`, taken in by `dict-<lang>.mjs` (a test checks that no key is in two parts).
 
 The server serves every file in `public/` by name (board.md §12), so no allowlist edit is needed when a file is added.
 
@@ -72,8 +72,8 @@ The server serves every file in `public/` by name (board.md §12), so no allowli
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <meta name="pigeonholes" content="1">
-  <title>Pigeonholes</title>
+  <meta name="albera" content="1">
+  <title>ALBERA</title>
   <link rel="icon" href="data:image/svg+xml,…plain cabinet…">
   <link rel="stylesheet" href="/tokens.css"> <!-- then style.css, rows.css, tidy.css, canvas.css -->
   <script type="module" src="/app.mjs"></script>
@@ -101,7 +101,7 @@ The server serves every file in `public/` by name (board.md §12), so no allowli
 <p class="vh" id="cv-keys"></p>   <!-- the viewport's keys: canvas.keys, or canvas.keysOff with single-key shortcuts off (§10.8) -->
 <dialog id="help"></dialog>
 <dialog id="fallback"></dialog>
-<noscript>Pigeonholes needs JavaScript.</noscript>
+<noscript>ALBERA needs JavaScript.</noscript>
 </body>
 </html>
 ```
@@ -147,7 +147,7 @@ The dateline is the time of the last successful fetch (200 or 304), rewritten on
 | **first run** | as the data says | | | the legend appears once at the top of the archive page (§18) |
 | **empty** (`counts.active === 0`) | `lede.empty` | — | `lede.emptyNote` | none. Piles hidden; footer shown |
 | **offline, data shown** | unchanged (last data) | | | banner `banner.offline` above (§7); dateline shows `date.stale`; tab title gets `app.tabOffline`; Open still works |
-| **offline, never loaded** | `lede.offline` | — | `lede.offlineNote` with `{cmd}` = a `<code>` "npx pigeonholes" (via `partsToNodes`); the sentence also names `npm start` for a clone | none. Polling continues; the board appears by itself |
+| **offline, never loaded** | `lede.offline` | — | `lede.offlineNote` with `{cmd}` = a `<code>` "npx albera" (via `partsToNodes`); the sentence also names `npm start` for a clone | none. Polling continues; the board appears by itself |
 | **draw failed** (a 200 board could not be drawn) | unchanged (the previous data), or a visually hidden `h1` with `banner.render.lead` when there is none | | | banner `banner.render` (§7); the state goes back to before that board, the ETag is not taken (the next poll tries again) and the error goes to the console. Never reported as offline |
 | **server error (500), no data** | `lede.serverError` | — | `lede.serverErrorNote` | none. With data: banner `banner.server` instead |
 | **version mismatch** (`v !== 2`) | unchanged (or empty) | | | banner `banner.version` with [Reload]; polling stops |
@@ -623,7 +623,7 @@ From top to bottom inside the pile (open by default):
 
 **Favicon** (`favicon.mjs`): `faviconKind(counts)` → `needs` (Needs you > 0), `stuck` (Needs you 0, Stuck? > 0), `none`. `faviconHref(kind)` builds a 16×16 SVG data URI of the wordmark cabinet: a `#f0f8f7` tile (rx 2.5), six cells stroked `#101b24`; `needs` fills the top-left cell `#2e54ae`; `stuck` fills the middle-left cell `#101b24`; no numbers. The link's `href` changes only when the kind changes. Same icon in both themes. (`img-src 'self' data:` already allows it.)
 
-**Tab title** (`tabTitle(t, counts, offline)`): Needs you > 0 → `app.tabTitle` with `{n}` = Needs you and `{pile}` = `bucket.needs_you.title`; else Stuck? > 0 → the same with Stuck?; else `app.name`. Offline → wrapped in `app.tabOffline`. Examples: `(4) Needs you — Pigeonholes`, `(4) 返事待ち — Pigeonholes`, `Pigeonholes`.
+**Tab title** (`tabTitle(t, counts, offline)`): Needs you > 0 → `app.tabTitle` with `{n}` = Needs you and `{pile}` = `bucket.needs_you.title`; else Stuck? > 0 → the same with Stuck?; else `app.name`. Offline → wrapped in `app.tabOffline`. Examples: `(4) Needs you — ALBERA`, `(4) 返事待ち — ALBERA`, `ALBERA`.
 
 ## 14. Keyboard
 
@@ -696,10 +696,10 @@ Rules: placeholders are `{name}`; the plural count is always `{n}`; an English c
 
 | key | en | ja |
 |---|---|---|
-| `app.name` | Pigeonholes | Pigeonholes |
+| `app.name` | ALBERA | ALBERA |
 | `app.tabTitle` | ({n}) {pile} — {name} | ({n}) {pile} — {name} |
 | `app.tabOffline` | {title} (offline) | {title} (オフライン) |
-| `mast.home` | Pigeonholes, back to top | Pigeonholes 先頭へ |
+| `mast.home` | ALBERA, back to top | ALBERA 先頭へ |
 | `mast.trust` | Read-only. Nothing leaves this computer. | 読み取り専用。このパソコンの外へは何も送りません。 |
 | `mast.demo` | Demo data | デモデータ |
 | `mast.help` | Keyboard keys | キー一覧 |
