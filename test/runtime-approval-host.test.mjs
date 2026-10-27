@@ -121,6 +121,9 @@ test('approval host issues one-time HttpOnly SameSite sessions and never serves 
   assert.match(script, /textContent/);
   assert.doesNotMatch(script, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
   assert.doesNotMatch(script, /Bearer\s|localStorage|sessionStorage/);
+  assert.match(script, /Runtime browser session expired\. Restart ALBERA Runtime/);
+  assert.match(script, /eventStream\?\.close\(\)/);
+  assert.match(script, /if \(retry\) refreshTimer = setTimeout\(refresh, 1500\)/);
 });
 
 test('approval host refreshes active browser sessions and rejects an expired idle cookie', async (t) => {

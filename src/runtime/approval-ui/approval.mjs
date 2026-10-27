@@ -17,7 +17,11 @@ async function request(path, { method = 'GET', body } = {}) {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `request_failed_${response.status}`);
+  if (!response.ok) {
+    const error = new Error(data.error || `request_failed_${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -36,6 +40,7 @@ function button(label, action, secondary = false) {
 }
 
 async function refresh() {
+  let retry = true;
   try {
     const [approvals, runs] = await Promise.all([
       request('/api/approvals'), request('/api/runs'),
@@ -44,9 +49,16 @@ async function refresh() {
     renderRuns(runs.runs);
     $('connection').textContent = 'Connected to the local Runtime host';
   } catch (error) {
-    $('connection').textContent = `Runtime unavailable: ${error.message}`;
+    if (error.status === 401) {
+      retry = false;
+      eventStream?.close();
+      $('controls').hidden = true;
+      $('connection').textContent = 'Runtime browser session expired. Restart ALBERA Runtime and open the new URL printed in its terminal.';
+    } else {
+      $('connection').textContent = `Runtime unavailable: ${error.message}`;
+    }
   } finally {
-    refreshTimer = setTimeout(refresh, 1500);
+    if (retry) refreshTimer = setTimeout(refresh, 1500);
   }
 }
 
