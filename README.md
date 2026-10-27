@@ -31,6 +31,15 @@ node src/runtime/entry.mjs --root "C:\work\project" --journal "C:\Users\You\AppD
 
 Enter the one-time code printed by the terminal in the Runtime screen. Start, input, and stop requests each wait for an explicit approval. The journal does not store prompts, argv, environment values, or provider output. A sibling `.session-id` file stores a non-secret random identity so the UI can replay journal history after restart. Only a fixed Claude Code profile is currently constructed; compatibility with an installed CLI has not been verified, and provider output is not collected. The standard profile places the prompt in the process arguments, which may be visible to same-user process inspection. An allowed working root is not an OS sandbox: the CLI runs with the current OS user's privileges. The Runtime screen is English-only and does not identify the provider account or estimate cost.
 
+You can create a manual encrypted journal backup while Runtime is stopped. The command prompts twice without echoing the passphrase, requires at least 12 UTF-8 bytes, and refuses an existing output file:
+
+```sh
+node src/runtime/entry.mjs backup --journal "/absolute/path/to/private/albera-runtime.jsonl" --output "/absolute/path/to/archive.albera"
+node src/runtime/entry.mjs restore --backup "/absolute/path/to/archive.albera" --destination "/absolute/path/to/new-restore-directory"
+```
+
+Backup encryption uses Node.js scrypt and AES-256-GCM. Restore validates the authenticated payload before creating a new directory and never overwrites existing files. Keep the passphrase separately; it cannot be recovered. The backup is encrypted but remains a local file: ALBERA does not upload it or create backups automatically. This manual prototype does not provide key recovery, retention scheduling, or a production backup policy.
+
 ## Long-term direction (not implemented)
 
 The following remain product plans beyond the Runtime preview: integrated support for multiple AI CLIs; orchestration by a Main AI; an infinite canvas and graph views; a Knowledge Graph, Harness Graph, and Comprehension Graph; Git worktree and PR integration; and development policy enforcement. The regular `albera` session dashboard does not execute or control agents.

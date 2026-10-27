@@ -31,6 +31,15 @@ node src/runtime/entry.mjs --root "C:\work\project" --journal "C:\Users\You\AppD
 
 起動したターミナルに表示される一回限りのコードを、Runtime画面に入力します。画面では開始・入力・停止の各要求を個別に承認し、許可された作業ルート内で実行します。監査ジャーナルはプロンプト・引数・環境値・出力を保存しません。隣に作る`.session-id`ファイルは秘密でないランダムIDを保持し、再起動後に履歴を戻すために使います。現状はClaude Code用の固定プロファイルのみですが、実際のインストール済CLIとの互換性は未確認です。AIの出力は取り込みません。通常プロファイルはプロンプトをプロセス引数に含めるため、同一OSユーザーのプロセス確認から見える可能性があります。作業ルートの指定はOSサンドボックスではなく、CLIはそのユーザー権限で動きます。Runtime画面は現在英語のみで、プロバイダーのアカウント名や利用料金の見積もりは表示しません。
 
+Runtime停止中に、監査ジャーナルの暗号化バックアップを手動で作成できます。コマンドはパスフレーズを画面に表示せず2回入力させ、UTF-8で12バイト以上を求めます。既存ファイルは上書きしません。
+
+```sh
+node src/runtime/entry.mjs backup --journal "/absolute/path/to/private/albera-runtime.jsonl" --output "/absolute/path/to/archive.albera"
+node src/runtime/entry.mjs restore --backup "/absolute/path/to/archive.albera" --destination "/absolute/path/to/new-restore-directory"
+```
+
+暗号化にはNode.jsのscryptとAES-256-GCMを使います。復元では認証付きデータを検証してから新規ディレクトリを作り、既存ファイルを上書きしません。パスフレーズは別に保管してください。ALBERAから復元できません。バックアップは暗号化されたローカルファイルで、自動作成や外部送信はありません。鍵の回復、保持スケジュール、本番用バックアップ方針は未実装です。
+
 ## 長期構想 (未実装)
 
 以下は将来構想であり、Runtimeプレビューを除いて未実装です。複数 AI CLI の統合、Main AI によるオーケストレーション、無限キャンバスとグラフ表示、Knowledge Graph・Harness Graph・Comprehension Graph、Git worktree・PR 連携、開発ポリシーの適用を計画しています。通常の `albera` ダッシュボードは引き続きエージェントを実行・操作しません。

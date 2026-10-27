@@ -24,6 +24,14 @@ export class JournalError extends Error {
   constructor(code) { super(code); this.code = code; }
 }
 
+/** Validate an immutable journal snapshot without changing or repairing it. */
+export function validateRuntimeAuditJournalSnapshot(snapshot, { maxBytes = HARD_MAX_BYTES } = {}) {
+  if (!Buffer.isBuffer(snapshot) || snapshot.byteLength > maxBytes) throw new JournalError('journal_snapshot_invalid');
+  const { records } = parseRecords(snapshot);
+  if (records.length > MAX_RECORDS) throw new JournalError('journal_snapshot_invalid');
+  return records.length;
+}
+
 /**
  * Open an explicitly located, single-writer append-only Runtime audit journal.
  * The journal never stores tokens, prompts, paths, argv, environment or process output.
@@ -141,6 +149,28 @@ class RuntimeAuditJournal {
         && (kind === undefined || (record.kind ?? 'audit') === kind))
       .slice(0, limit)
       .map((record) => ({ ...record }));
+  }
+
+  /** Read a validated byte-for-byte snapshot while this instance owns the exclusive journal lock. */
+  async snapshot() {
+    if (this.#closing || this.#closed) throw new JournalError('journal_closed');
+    const handle = await open(this.#filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    try {
+      const [snapshotInfo, liveInfo] = await Promise.all([handle.stat(), this.#dataHandle.stat()]);
+      if (!snapshotInfo.isFile() || snapshotInfo.size > this.#maxBytes
+        || snapshotInfo.dev !== liveInfo.dev || snapshotInfo.ino !== liveInfo.ino) {
+        throw new JournalError('journal_changed_during_snapshot');
+      }
+      assertSingleLink(snapshotInfo, 'journal_hard_linked_file');
+      assertPrivatePosixStorage(snapshotInfo, 'journal_permissions', 'file');
+      const snapshot = await handle.readFile();
+      if (snapshot.byteLength !== this.#bytes || validateRuntimeAuditJournalSnapshot(snapshot, { maxBytes: this.#maxBytes }) !== this.#records.length) {
+        throw new JournalError('journal_changed_during_snapshot');
+      }
+      return snapshot;
+    } finally {
+      await handle.close();
+    }
   }
 
   /** Close descriptors and release only this process's lock. Appends are synced before their promises are returned. */
@@ -321,7 +351,7 @@ async function removeStaleLock(lockPath, verifyWindowsAcl) {
   }
 }
 
-function assertPrivatePosixStorage(info, code, kind) {
+export function assertPrivatePosixStorage(info, code, kind) {
   if (process.platform === 'win32') return;
   const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
   const privateBits = (info.mode & 0o077) === 0;
@@ -332,7 +362,7 @@ function assertPrivatePosixStorage(info, code, kind) {
   if (!privateBits || !ownedByCurrentUser || !usableOwnerBits) throw new JournalError(code);
 }
 
-function assertSingleLink(info, code) {
+export function assertSingleLink(info, code) {
   if (!Number.isSafeInteger(info.nlink) || info.nlink !== 1) throw new JournalError(code);
 }
 

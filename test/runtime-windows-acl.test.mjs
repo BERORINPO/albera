@@ -4,6 +4,7 @@ import path from 'node:path';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
+import { backupRuntimeJournal, restoreRuntimeJournal } from '../src/runtime/journal-backup.mjs';
 import { loadOrCreateRuntimeSessionId } from '../src/runtime/session-identity.mjs';
 import { assertPrivateWindowsAcl, inspectWindowsAcl, RuntimeStorageAclError } from '../src/runtime/windows-acl.mjs';
 
@@ -102,4 +103,26 @@ test('session identity ACL refusal preserves the existing identity', async (t) =
   assert.deepEqual(await readFile(identityPath), before);
   assert.match(first, /^[0-9a-f]{32}$/);
   await rm(root, { recursive: true, force: true });
+});
+
+test('manual journal backup and restored files pass the real Windows DACL guard', {
+  skip: process.platform !== 'win32' || process.env.ALBERA_RUN_WINDOWS_ACL_INTEGRATION !== '1',
+}, async (t) => {
+  const root = await mkdtemp(path.join(os.homedir(), 'albera-backup-acl-'));
+  const journalPath = path.join(root, 'runtime.audit.jsonl');
+  const backupPath = path.join(root, 'runtime.backup.albera');
+  const destinationDirectory = path.join(root, 'restored');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const journal = await openRuntimeAuditJournal(journalPath);
+  const sessionId = await loadOrCreateRuntimeSessionId(journalPath);
+  await journal.append({
+    sessionId, requestId: '12345678-1234-4234-8234-123456789abc',
+    action: 'run.start', phase: 'requested', at: 1, provider: 'claude',
+  });
+  await journal.close();
+  await backupRuntimeJournal({ journalPath, outputPath: backupPath, passphrase: 'synthetic Windows DACL test phrase' });
+  const restored = await restoreRuntimeJournal({ backupPath, destinationDirectory, passphrase: 'synthetic Windows DACL test phrase' });
+  await assertPrivateWindowsAcl(destinationDirectory, { kind: 'directory' });
+  await assertPrivateWindowsAcl(restored.journalPath, { kind: 'file' });
+  await assertPrivateWindowsAcl(`${restored.journalPath}.session-id`, { kind: 'file' });
 });

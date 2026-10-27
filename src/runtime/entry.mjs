@@ -7,12 +7,35 @@ import { fileURLToPath } from 'node:url';
 import { openRuntimeAuditJournal } from './audit-journal.mjs';
 import { createRuntimeHost } from './host.mjs';
 import { loadOrCreateRuntimeSessionId } from './session-identity.mjs';
+import { backupRuntimeJournal, restoreRuntimeJournal } from './journal-backup.mjs';
 
 export function parseRuntimeArgs(argv, platform = process.platform) {
   const Path = platform === 'win32' ? path.win32 : path;
+  const command = argv[0] === 'backup' || argv[0] === 'restore' ? argv[0] : 'serve';
+  const args = command === 'serve' ? argv : argv.slice(1);
+  if (command !== 'serve') {
+    const options = { command, journalPath: undefined, outputPath: undefined, backupPath: undefined, destinationDirectory: undefined, help: false };
+    const accepted = command === 'backup' ? ['--journal', '--output'] : ['--backup', '--destination'];
+    for (let i = 0; i < args.length; i++) {
+      const arg = String(args[i]);
+      if (arg === '--help' || arg === '-h') { options.help = true; continue; }
+      if (!accepted.includes(arg)) throw new Error('invalid_runtime_option');
+      const value = args[++i];
+      if (typeof value !== 'string' || value.length === 0 || value.startsWith('--')) throw new Error('runtime_option_requires_value');
+      if (!Path.isAbsolute(value)) throw new Error('runtime_path_must_be_absolute');
+      const key = command === 'backup' ? (arg === '--journal' ? 'journalPath' : 'outputPath')
+        : (arg === '--backup' ? 'backupPath' : 'destinationDirectory');
+      if (options[key]) throw new Error('runtime_option_must_be_unique');
+      options[key] = value;
+    }
+    if (!options.help && (command === 'backup' ? (!options.journalPath || !options.outputPath) : (!options.backupPath || !options.destinationDirectory))) {
+      throw new Error('runtime_backup_options_required');
+    }
+    return Object.freeze(options);
+  }
   const options = { roots: [], port: 0, journalPath: undefined, help: false };
-  for (let i = 0; i < argv.length; i++) {
-    const arg = String(argv[i]);
+  for (let i = 0; i < args.length; i++) {
+    const arg = String(args[i]);
     if (arg === '--help' || arg === '-h') { options.help = true; continue; }
     if (!['--root', '--port', '--journal'].includes(arg)) throw new Error('invalid_runtime_option');
     const value = argv[++i];
@@ -37,19 +60,69 @@ export const RUNTIME_HELP = `ALBERA Runtime — separate local execution and app
 
 Usage:
   albera-runtime --root <absolute-project-directory> [--root <directory> ...] --journal <absolute-jsonl-path> [--port <0-65535>]
+  albera-runtime backup --journal <absolute-jsonl-path> --output <new-encrypted-backup-path>
+  albera-runtime restore --backup <absolute-backup-path> --destination <new-private-directory>
 
 The regular "albera" command remains a read-only session dashboard. Runtime binds only to 127.0.0.1.
 Each provider start, input, and stop requires a visible one-use decision in the local approval page.
 Only Claude Code is currently profile-configured; installed CLI compatibility is not verified.
 The journal stores redacted decisions and lifecycle events, never prompts or process output.
 Journal storage permissions are checked without repair; Runtime refuses broad or unverifiable Windows DACLs and POSIX ownership/modes.
+Backups are created only while Runtime is stopped. Backup and restore passphrases are entered in a hidden terminal prompt, never as command-line arguments or environment variables.
+Restore creates a new directory and never overwrites existing files. Keep the passphrase separately; ALBERA cannot recover it.
 `;
+
+async function readHiddenPassphrase(prompt) {
+  const input = process.stdin;
+  if (!input.isTTY || typeof input.setRawMode !== 'function') throw new Error('backup_requires_interactive_tty');
+  const wasRaw = input.isRaw;
+  process.stderr.write(prompt);
+  input.setRawMode(true);
+  input.resume();
+  return new Promise((resolve, reject) => {
+    let value = '';
+    const cleanup = () => {
+      input.off('data', onData);
+      input.setRawMode(Boolean(wasRaw));
+      input.pause();
+      process.stderr.write('\n');
+    };
+    const onData = (chunk) => {
+      for (const char of String(chunk)) {
+        if (char === '\u0003') { cleanup(); reject(new Error('backup_prompt_cancelled')); return; }
+        if (char === '\r' || char === '\n') { cleanup(); resolve(value); return; }
+        if (char === '\u007f' || char === '\b') { value = value.slice(0, -1); continue; }
+        if (char >= ' ' && char !== '\u007f') value += char;
+        if (Buffer.byteLength(value, 'utf8') > 1024) { cleanup(); reject(new Error('backup_passphrase_length_invalid')); return; }
+      }
+    };
+    input.on('data', onData);
+  });
+}
 
 async function main() {
   let options;
   try { options = parseRuntimeArgs(process.argv.slice(2)); }
   catch (error) { console.error(`ALBERA Runtime: ${error.message}`); process.exitCode = 2; return; }
   if (options.help) { console.log(RUNTIME_HELP); return; }
+  if (options.command === 'backup' || options.command === 'restore') {
+    try {
+      const passphrase = await readHiddenPassphrase(options.command === 'backup' ? 'Backup passphrase (12+ UTF-8 bytes): ' : 'Backup passphrase: ');
+      if (options.command === 'backup') {
+        const confirmation = await readHiddenPassphrase('Confirm passphrase: ');
+        if (passphrase !== confirmation) throw new Error('backup_passphrase_mismatch');
+        const result = await backupRuntimeJournal({ journalPath: options.journalPath, outputPath: options.outputPath, passphrase });
+        console.log(`Encrypted Runtime backup created (${result.bytes} bytes).`);
+      } else {
+        const result = await restoreRuntimeJournal({ backupPath: options.backupPath, destinationDirectory: options.destinationDirectory, passphrase });
+        console.log(`Runtime journal restored to ${result.journalPath}.`);
+      }
+    } catch (error) {
+      console.error(`ALBERA Runtime backup: ${error.message}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
   let journal;
   let runtime;
   try {
