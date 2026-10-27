@@ -30,3 +30,4 @@ jobs:
         run: npm test
       - name: Architecture check
         run: npm run arch
+      # Smoke reads the user's local Claude session store; run locally, not on hosted CI.
