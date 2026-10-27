@@ -125,7 +125,7 @@ async function refresh() {
   let retry = true;
   try {
     const [approvals, runs] = await Promise.all([
-      request('/api/approvals'), request('/api/runs'),
+      request('api/approvals'), request('api/runs'),
     ]);
     renderApprovals(approvals.approvals);
     renderRuns(runs.runs);
@@ -222,7 +222,7 @@ function renderRuns(items) {
         form.append(input, send);
         form.addEventListener('submit', async (event) => {
           event.preventDefault();
-          try { await request(`/api/runs/${run.id}/input`, { method: 'POST', body: { text: input.value } }); input.value = ''; }
+          try { await request(`api/runs/${run.id}/input`, { method: 'POST', body: { text: input.value } }); input.value = ''; }
           catch (error) { $('form-status').textContent = error.message; }
         });
         controls.append(form);
@@ -246,12 +246,12 @@ function renderEvents(items) {
 }
 
 async function decide(id, decision) {
-  try { await request(`/api/approvals/${id}`, { method: 'POST', body: { decision } }); await refreshOnce(); }
+  try { await request(`api/approvals/${id}`, { method: 'POST', body: { decision } }); await refreshOnce(); }
   catch (error) { $('connection').textContent = t('decisionError', error.message); }
 }
 
 async function stop(id) {
-  try { await request(`/api/runs/${id}/stop`, { method: 'POST' }); }
+  try { await request(`api/runs/${id}/stop`, { method: 'POST' }); }
   catch (error) { $('form-status').textContent = error.message; }
 }
 
@@ -266,7 +266,7 @@ async function start(event) {
   buttonElement.disabled = true;
   $('form-status').textContent = t('waitingApproval');
   try {
-    await request('/api/runs', { method: 'POST', body: {
+    await request('api/runs', { method: 'POST', body: {
       provider: 'claude', cwd: $('root').value, prompt: $('prompt').value,
       profile: $('profile').value,
     } });
@@ -285,12 +285,12 @@ async function initialize() {
     event.preventDefault();
     const code = $('bootstrap-code').value;
     $('bootstrap-code').value = '';
-    try { await useSession(await request('/api/session', { method: 'POST', body: { bootstrapCode: code } })); }
+    try { await useSession(await request('api/session', { method: 'POST', body: { bootstrapCode: code } })); }
     catch (error) { $('bootstrap-status').textContent = t('unlockFailed', error.message); }
   });
   translateStaticText();
   try {
-    const session = await request('/api/session');
+    const session = await request('api/session');
     await useSession(session);
   } catch {
     $('connection').textContent = t('connectCode');
@@ -311,7 +311,7 @@ async function useSession(session) {
   $('bootstrap').hidden = true;
   $('controls').hidden = false;
   $('start-form').addEventListener('submit', start);
-  eventStream = new EventSource('/api/events/stream?after=0');
+  eventStream = new EventSource('api/events/stream?after=0');
   eventStream.addEventListener('lifecycle', (event) => {
     try { renderEvents([JSON.parse(event.data)]); } catch { $('connection').textContent = t('eventDisplayFailed'); }
   });

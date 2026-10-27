@@ -21,6 +21,7 @@ The CLI requires a journal so accepted/denied control decisions and captured lif
 ## Browser boundary
 
 - Both servers bind to `127.0.0.1`; the API port and credential are not displayed.
+- The approval URL has a random per-process path prefix, and the HttpOnly browser cookie is scoped to that path. Browsers do not scope cookies by port, so this reduces cookie delivery to ordinary routes on sibling loopback services. Cookie Path is defense in depth, not a security boundary or authentication factor ([RFC 6265 §8.5](https://www.rfc-editor.org/rfc/rfc6265.html#section-8.5)); the bootstrap code remains separate.
 - The browser host accepts only `127.0.0.1:<port>` or `localhost:<port>` Host values, rejects cross-site fetches, and requires an exact Origin plus a per-session CSRF token for mutations.
 - The browser session uses a random cookie token stored as a hash by the host. The API bearer is separate and server-side. The browser has no credential minting, arbitrary proxy, file, shell, or raw argv route.
 - `Content-Security-Policy` permits only same-origin scripts/styles/connections. Request content is rendered with DOM `textContent` and element creation; no HTML-string insertion is used.

@@ -37,6 +37,9 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
     ...(sessionId ? { sessionId } : {}),
   });
   const bootstrapCode = randomBytes(32).toString('base64url');
+  // Cookie scope has no port component. A high-entropy per-host path keeps the
+  // browser session cookie away from unrelated services on the same loopback host.
+  const basePath = `/r/${randomBytes(16).toString('hex')}/`;
   const sessions = new Map();
   let bootstrapUsed = false;
   let apiAddress;
@@ -65,19 +68,23 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
 
     let url;
     try { url = new URL(req.url ?? '/', expectedOrigin); } catch { return send(res, 400, JSON.stringify({ error: 'invalid_request' })); }
-    if (req.method === 'GET' && Object.hasOwn(UI_FILES, url.pathname)) {
-      const [relative, type] = UI_FILES[url.pathname];
+    if (!url.pathname.startsWith(basePath)) return send(res, 404, JSON.stringify({ error: 'not_found' }));
+    const scopedPath = `/${url.pathname.slice(basePath.length)}`;
+    if (req.method === 'GET' && Object.hasOwn(UI_FILES, scopedPath)) {
+      const [relative, type] = UI_FILES[scopedPath];
       try { return send(res, 200, fs.readFileSync(path.join(ROOT, relative)), type); }
       catch { return send(res, 500, JSON.stringify({ error: 'host_unavailable' })); }
     }
-    if (req.method === 'GET' && url.pathname === '/api/session') return readSession(req, res);
-    if (req.method === 'POST' && url.pathname === '/api/session') return createSession(req, res, expectedOrigin);
-    if (!url.pathname.startsWith('/api/')) return send(res, 404, JSON.stringify({ error: 'not_found' }));
+    if (req.method === 'GET' && scopedPath === '/api/session') return readSession(req, res);
+    if (req.method === 'POST' && scopedPath === '/api/session') return createSession(req, res, expectedOrigin);
+    if (!scopedPath.startsWith('/api/')) return send(res, 404, JSON.stringify({ error: 'not_found' }));
 
     const authenticatedSession = findSession(req.headers.cookie);
     if (!authenticatedSession) return send(res, 401, JSON.stringify({ error: 'session_required' }));
     const { token: sessionToken, session } = authenticatedSession;
-    const upstream = upstreamRoute(req.method ?? '', url, req.headers['last-event-id']);
+    const scopedUrl = new URL(url);
+    scopedUrl.pathname = scopedPath;
+    const upstream = upstreamRoute(req.method ?? '', scopedUrl, req.headers['last-event-id']);
     if (!upstream) return send(res, 404, JSON.stringify({ error: 'not_found' }));
     if (req.method !== 'GET') {
       if (origin !== expectedOrigin || (site !== undefined && site !== 'same-origin')) return send(res, 403, JSON.stringify({ error: 'forbidden' }));
@@ -106,7 +113,7 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
     const now = Date.now();
     existing.expiresAt = Math.min(now + sessionLifetimeMs, existing.absoluteExpiresAt);
     return send(res, 200, JSON.stringify({ csrfToken: existing.csrfToken, expiresAt: existing.expiresAt, roots }), undefined, {
-      'Set-Cookie': cookieHeader(cookie, existing.expiresAt - now),
+      'Set-Cookie': cookieHeader(cookie, existing.expiresAt - now, basePath),
       'Vary': 'Cookie, Origin',
     });
   }
@@ -133,7 +140,7 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
     const expiresAt = Math.min(now + sessionLifetimeMs, absoluteExpiresAt);
     sessions.set(hash(sessionToken), { csrfToken, expiresAt, absoluteExpiresAt });
     return send(res, 200, JSON.stringify({ csrfToken, expiresAt, roots }), undefined, {
-      'Set-Cookie': cookieHeader(sessionToken, sessionLifetimeMs),
+      'Set-Cookie': cookieHeader(sessionToken, sessionLifetimeMs, basePath),
       'Vary': 'Cookie, Origin',
     });
   }
@@ -208,7 +215,7 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
         const address = server.address();
         if (!address || typeof address === 'string') throw new Error('approval_host_listen_failed');
         serverPort = address.port;
-        return Object.freeze({ host: '127.0.0.1', port: address.port, url: `http://127.0.0.1:${address.port}/`, bootstrapCode });
+        return Object.freeze({ host: '127.0.0.1', port: address.port, url: `http://127.0.0.1:${address.port}${basePath}`, bootstrapCode });
       })();
       return listenPromise;
     },
@@ -285,8 +292,8 @@ function parseCookie(header, key) {
   return undefined;
 }
 
-function cookieHeader(value, ttlMs) {
-  return `albera_runtime_session=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(ttlMs / 1000)}`;
+function cookieHeader(value, ttlMs, pathScope) {
+  return `albera_runtime_session=${value}; HttpOnly; SameSite=Strict; Path=${pathScope}; Max-Age=${Math.floor(ttlMs / 1000)}`;
 }
 
 function hash(value) { return createHash('sha256').update(value).digest('hex'); }

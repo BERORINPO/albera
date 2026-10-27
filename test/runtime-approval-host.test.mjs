@@ -44,17 +44,18 @@ async function fixture(t, hostOptions = {}) {
   });
   const address = await runtime.listen();
   const base = address.url.slice(0, -1);
+  const origin = new URL(base).origin;
   const sessionResponse = await fetch(`${base}/api/session`, {
     method: 'POST',
-    headers: { Origin: base, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
+    headers: { Origin: origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
     body: JSON.stringify({ bootstrapCode: address.bootstrapCode }),
   });
   const session = await sessionResponse.json();
   const cookie = sessionResponse.headers.get('set-cookie').split(';', 1)[0];
   const headers = { Cookie: cookie };
-  const postHeaders = { ...headers, Origin: base, 'Sec-Fetch-Site': 'same-origin', 'X-ALBERA-CSRF': session.csrfToken };
+  const postHeaders = { ...headers, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-ALBERA-CSRF': session.csrfToken };
   t.after(async () => { await runtime.close(); await rm(root, { recursive: true, force: true }); });
-  return { runtime, journal, address, base, session, cookie, headers, postHeaders, root };
+  return { runtime, journal, address, base, origin, session, cookie, headers, postHeaders, root };
 }
 
 async function connectRuntime(root, journal, sessionId, gatewayOverrides = {}) {
@@ -71,17 +72,18 @@ async function connectRuntime(root, journal, sessionId, gatewayOverrides = {}) {
   });
   const address = await runtime.listen();
   const base = address.url.slice(0, -1);
+  const origin = new URL(base).origin;
   const sessionResponse = await fetch(`${base}/api/session`, {
     method: 'POST',
-    headers: { Origin: base, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
+    headers: { Origin: origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
     body: JSON.stringify({ bootstrapCode: address.bootstrapCode }),
   });
   assert.equal(sessionResponse.status, 200);
   const session = await sessionResponse.json();
   const cookie = sessionResponse.headers.get('set-cookie').split(';', 1)[0];
   const headers = { Cookie: cookie };
-  const postHeaders = { ...headers, Origin: base, 'Sec-Fetch-Site': 'same-origin', 'X-ALBERA-CSRF': session.csrfToken };
-  return { runtime, journal, address, base, session, cookie, headers, postHeaders, root };
+  const postHeaders = { ...headers, Origin: origin, 'Sec-Fetch-Site': 'same-origin', 'X-ALBERA-CSRF': session.csrfToken };
+  return { runtime, journal, address, base, origin, session, cookie, headers, postHeaders, root };
 }
 
 async function get(f, route, headers = f.headers) { return fetch(`${f.base}${route}`, { headers }); }
@@ -107,10 +109,12 @@ test('approval host issues one-time HttpOnly SameSite sessions and never serves 
   const cookie = cookieResponse.headers.get('set-cookie');
   assert.match(cookie, /HttpOnly/);
   assert.match(cookie, /SameSite=Strict/);
+  assert.ok(cookie.includes(`Path=${new URL(`${f.base}/`).pathname}`));
   assert.equal(cookie.includes(f.session.csrfToken), false);
+  assert.equal((await fetch(`${f.origin}/api/session`, { headers: f.headers })).status, 404);
   assert.equal((await fetch(`${f.base}/api/session`)).status, 401);
   assert.equal((await fetch(`${f.base}/api/session`, {
-    method: 'POST', headers: { Origin: f.base, 'Content-Type': 'application/json' },
+    method: 'POST', headers: { Origin: f.origin, 'Content-Type': 'application/json' },
     body: JSON.stringify({ bootstrapCode: f.address.bootstrapCode }),
   })).status, 403);
   assert.equal((await get(f, '/api/approvals', {})).status, 401);
@@ -155,11 +159,11 @@ test('approval UI closes its lifecycle stream and stops polling when the browser
   const response = (status, data) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
   const fetch = async (url, options = {}) => {
     calls.push({ url, options });
-    if (url === '/api/session' && options.method === 'POST') {
+    if (url === 'api/session' && options.method === 'POST') {
       return response(200, { csrfToken: 'synthetic-csrf', roots: ['C:\\project'] });
     }
-    if (url === '/api/session') return response(401, { error: 'session_expired' });
-    if (url === '/api/approvals' || url === '/api/runs') return response(401, { error: 'session_expired' });
+    if (url === 'api/session') return response(401, { error: 'session_expired' });
+    if (url === 'api/approvals' || url === 'api/runs') return response(401, { error: 'session_expired' });
     throw new Error(`unexpected_request_${url}`);
   };
   class FakeEventSource {
@@ -194,12 +198,12 @@ test('approval UI closes its lifecycle stream and stops polling when the browser
   elements.get('bootstrap-code').value = 'synthetic-bootstrap-code';
   await submit({ preventDefault() {} });
 
-  assert.equal(eventSource.url, '/api/events/stream?after=0');
+  assert.equal(eventSource.url, 'api/events/stream?after=0');
   assert.equal(eventSource.closed, true);
   assert.equal(elements.get('controls').hidden, true);
   assert.match(elements.get('connection').textContent, /Runtime browser session expired/);
   assert.equal(timers.length, 0, 'expired session must not schedule another polling cycle');
-  assert.equal(calls.filter((call) => call.url === '/api/runs').length, 1);
+  assert.equal(calls.filter((call) => call.url === 'api/runs').length, 1);
 });
 
 test('approval UI localizes the control screen for Japanese browsers', async () => {
@@ -271,8 +275,8 @@ test('approval UI discloses possible external transmission and charges before st
   };
   const jsonResponse = (data) => ({ ok: true, status: 200, json: async () => data });
   const fetch = async (url) => {
-    if (url === '/api/session') return jsonResponse({ csrfToken: 'synthetic', roots: ['C:\\project'] });
-    if (url === '/api/approvals') return jsonResponse({ approvals: [
+    if (url === 'api/session') return jsonResponse({ csrfToken: 'synthetic', roots: ['C:\\project'] });
+    if (url === 'api/approvals') return jsonResponse({ approvals: [
       {
         id: '12345678-1234-4234-8234-123456789abc', expiresAt: Date.now() + 10000,
         request: { action: 'start', provider: 'claude', executable: 'C:\\tools\\claude.exe', minimumCliVersion: '2.1.259', versionCheck: true, initialInput: 'synthetic task text', args: ['--restricted'] },
@@ -282,7 +286,7 @@ test('approval UI discloses possible external transmission and charges before st
         request: { action: 'input', provider: 'claude', text: 'synthetic follow-up text', runId: '32345678-1234-4234-8234-123456789abc' },
       },
     ] });
-    if (url === '/api/runs') return jsonResponse({ runs: [] });
+    if (url === 'api/runs') return jsonResponse({ runs: [] });
     throw new Error(`unexpected_request_${url}`);
   };
   class FakeEventSource { addEventListener() {} close() {} }
@@ -372,7 +376,8 @@ test('approval host rejects cross-origin and forged CSRF control requests', asyn
 test('approval host rejects forged and mismatched loopback Host headers', async (t) => {
   const f = await fixture(t);
   const requestWithHost = (host) => new Promise((resolve, reject) => {
-    const req = http.request(f.base, { path: '/api/session', headers: { Cookie: f.cookie, Host: host } }, (res) => {
+    const path = new URL(`${f.base}/api/session`).pathname;
+    const req = http.request(f.base, { path, headers: { Cookie: f.cookie, Host: host } }, (res) => {
       res.resume();
       res.once('end', () => resolve(res.statusCode));
     });
