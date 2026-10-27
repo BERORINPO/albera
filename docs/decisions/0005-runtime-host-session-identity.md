@@ -18,9 +18,9 @@ The Runtime API can replay run and event projections when a trusted host reissue
 
 - Journaled run/event projections survive normal Runtime host restarts and can appear in the new UI session.
 - A crash can still occur before the API poller records the last lifecycle event. The Guardian remains responsible for killing child trees after host loss.
-- Windows ACL inheritance is not verified by POSIX mode checks and needs a dedicated Windows security review.
+- POSIX mode checks do not apply on Windows; the sidecar therefore uses the shared Windows DACL verifier before existing metadata is accessed, and refuses unsafe ACLs without repair. The Windows integration ran in Actions run 40487083932 as part of the six-job Windows/macOS/Linux × Node 22/24 matrix. OS-user authentication remains outside this identity file's scope.
 - The identity binds only to the chosen journal path. Moving a journal without its sidecar deliberately starts a different API session.
 
 ## Evidence
 
-`test/runtime-approval-host.test.mjs` verifies ID creation/reuse, private POSIX mode, rejection of malformed or permissive identity files, and preservation of malformed contents. Existing Runtime API recovery tests verify journal replay for a reissued session ID. No real CLI or provider process is used.
+`test/runtime-approval-host.test.mjs` verifies ID creation/reuse, private POSIX mode, rejection of malformed or permissive identity files, and preservation of malformed contents. `test/runtime-windows-acl.test.mjs` verifies DACL refusal preserves the existing identity sidecar. Existing Runtime API recovery tests verify journal replay for a reissued session ID. GitHub Actions run 40487083932 passed all six Windows/macOS/Linux × Node 22/24 jobs. No real CLI or provider process is used.
