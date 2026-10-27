@@ -99,7 +99,7 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
 
     let body;
     if (req.method === 'POST') {
-      try { body = await readBody(req); }
+      try { body = await readBody(req, requestBodyTimeoutMs); }
       catch { return send(res, 400, JSON.stringify({ error: 'invalid_request' })); }
     }
     try { await proxy(req, res, upstream, body); }
