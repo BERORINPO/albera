@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented as a containment layer; cross-platform CI and stronger OS-level ownership remain pending.
+Implemented as a containment layer; its helper-process and architecture matrix passed on Windows/macOS/Linux × Node 22/24 (Actions run 40465491826). Stronger OS-level ownership remains pending.
 
 ## Context
 
@@ -24,7 +24,7 @@ This adds no runtime package dependency and does not connect the Gateway to the 
 
 ## Evidence
 
-`test/process-supervisor.test.mjs` kills a separate RuntimeGateway host running a synthetic local Node helper and verifies that its heartbeat stops. Existing orderly stop and descendant-stop integration tests also cover the normal termination path. These tests never invoke a real AI CLI. Cross-platform CI is required before claiming RT-10 verified.
+`test/process-supervisor.test.mjs` kills a separate RuntimeGateway host running a synthetic local Node helper and verifies that its heartbeat stops. Existing orderly stop and descendant-stop integration tests also cover the normal termination path. Actions run 40465491826 passed tests and architecture checks for Windows/macOS/Linux × Node 22/24; local Windows Node 24.13.0 `npm test` passed 446/446. These tests never invoke a real AI CLI. RT-10 is verified for this contained, disconnected prototype; persistent restart recovery and stronger process ownership remain blocked and are not claimed.
 
 ## References
 
