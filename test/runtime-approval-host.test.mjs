@@ -326,6 +326,68 @@ test('approval UI discloses external transmission, charges, and filesystem scope
   assert.match(flatten(cards[1]), /synthetic follow-up text/);
 });
 
+test('approval UI warns in English and Japanese when a recovered run may still be active', async () => {
+  for (const language of ['en-US', 'ja-JP']) {
+    class FakeElement {
+      children = [];
+      listeners = new Map();
+      attributes = new Map();
+      hidden = false;
+      value = '';
+      textContent = '';
+      className = '';
+      tagName = '';
+      append(...items) { this.children.push(...items); }
+      replaceChildren(...items) { this.children = [...items]; }
+      addEventListener(type, listener) { this.listeners.set(type, listener); }
+      setAttribute(name, value) { this.attributes.set(name, value); }
+    }
+    const elements = new Map();
+    const document = {
+      documentElement: { lang: 'en' },
+      getElementById(id) {
+        if (!elements.has(id)) elements.set(id, new FakeElement());
+        return elements.get(id);
+      },
+      createElement(tag) { const element = new FakeElement(); element.tagName = tag; return element; },
+    };
+    const jsonResponse = (data) => ({ ok: true, status: 200, json: async () => data });
+    const fetch = async (url) => {
+      if (url === 'api/session') return jsonResponse({ csrfToken: 'synthetic', roots: ['C:\\project'] });
+      if (url === 'api/approvals') return jsonResponse({ approvals: [] });
+      if (url === 'api/runs') return jsonResponse({ runs: [
+        { id: '12345678-1234-4234-8234-123456789abc', provider: 'claude', profile: 'read-only', status: 'interrupted' },
+      ] });
+      throw new Error(`unexpected_request_${url}`);
+    };
+    class FakeEventSource { addEventListener() {} close() {} }
+    const source = await readFile(new URL('../src/runtime/approval-ui/approval.mjs', import.meta.url), 'utf8');
+    vm.runInNewContext(source, {
+      document, navigator: { language }, window: { addEventListener() {} }, EventSource: FakeEventSource, fetch,
+      setTimeout() { return 1; }, clearTimeout() {},
+    });
+    await new Promise((resolve) => {
+      const waitForRun = () => elements.get('runs')?.children.length ? resolve() : setImmediate(waitForRun);
+      waitForRun();
+    });
+
+    const [card] = elements.get('runs').children;
+    const all = (element) => [element, ...element.children.flatMap(all)];
+    const descendants = all(card);
+    const warning = descendants.find((element) => element.className === 'notice');
+    assert.ok(warning);
+    assert.equal(warning.attributes.get('role'), 'note');
+    if (language.startsWith('ja')) {
+      assert.match(warning.textContent, /プロバイダープロセスを再起動しておらず、現在も動作中か確認できません/);
+      assert.match(warning.textContent, /同じ作業を再開する前にプロセス状態を確認/);
+    } else {
+      assert.match(warning.textContent, /did not restart its provider process and cannot confirm whether it is still running/);
+      assert.match(warning.textContent, /Check the process before starting equivalent work again/);
+    }
+    assert.equal(descendants.some((element) => element.tagName === 'button'), false);
+  }
+});
+
 test('approval host refreshes active browser sessions and rejects an expired idle cookie', async (t) => {
   const realNow = Date.now;
   let now = realNow();

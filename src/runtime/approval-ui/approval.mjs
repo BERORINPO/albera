@@ -23,6 +23,7 @@ const messages = {
     field_maxDurationMs: 'maximum duration (ms)', field_maxActive: 'maximum active runs', field_force: 'force stop',
     status_starting: 'starting', status_running: 'running', status_stopping: 'stopping', status_stopped: 'stopped',
     status_exited: 'exited', status_failed: 'failed', status_interrupted: 'interrupted', status_started: 'started',
+    interruptedWarning: 'Runtime stopped while this run had no recorded terminal result. ALBERA did not restart its provider process and cannot confirm whether it is still running. Check the process before starting equivalent work again.',
     status_stop_requested: 'stop requested', status_input_sent: 'input sent', status_stop_failed: 'stop failed',
     stop: 'Request stop', followupLabel: 'Exact follow-up text', requestInput: 'Request approved input',
     decisionError: 'Decision not accepted: {0}', waitingApproval: 'Waiting for the host approval decision…',
@@ -52,6 +53,7 @@ const messages = {
     field_maxDurationMs: '最大実行時間 (ms)', field_maxActive: '同時実行上限', field_force: '強制停止',
     status_starting: '起動中', status_running: '実行中', status_stopping: '停止中', status_stopped: '停止済み',
     status_exited: '終了', status_failed: '失敗', status_interrupted: '中断', status_started: '起動',
+    interruptedWarning: 'この実行は終了結果が記録される前にRuntimeが停止しました。ALBERAはプロバイダープロセスを再起動しておらず、現在も動作中か確認できません。同じ作業を再開する前にプロセス状態を確認してください。',
     status_stop_requested: '停止要求', status_input_sent: '入力送信済み', status_stop_failed: '停止失敗',
     stop: '停止を申請', followupLabel: '送信する追加テキスト', requestInput: '入力を申請',
     decisionError: '判断を受け付けられませんでした: {0}', waitingApproval: 'ホストの承認を待っています…',
@@ -213,6 +215,11 @@ function renderRuns(items) {
     card.append(text('h3', `${run.provider} · ${describe('status', run.status)}`));
     card.append(text('p', t('run', run.id), 'muted'));
     card.append(text('p', t('profile', run.profile ?? 'unknown')));
+    if (run.status === 'interrupted') {
+      const warning = text('p', t('interruptedWarning'), 'notice');
+      warning.setAttribute('role', 'note');
+      card.append(warning);
+    }
     if (['starting', 'running', 'stopping'].includes(run.status)) {
       const controls = text('div', '', 'actions');
       controls.append(button(t('stop'), () => stop(run.id), true));
