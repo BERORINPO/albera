@@ -17,7 +17,7 @@ The journal can detect local edits to a v2 record and many incomplete, removed, 
 
 ## Verification
 
-`test/runtime-audit-journal.test.mjs` verifies the v1 prefix remains byte-identical, the first v2 record anchors to its SHA-256, later v2 records chain to their predecessor, and edits/removal/reordering are rejected without modifying the corrupt file. Cross-platform CI evidence will be added after the branch run completes.
+`test/runtime-audit-journal.test.mjs` verifies the v1 prefix remains byte-identical, the first v2 record anchors to its SHA-256, later v2 records chain to their predecessor, and edits/removal/reordering are rejected without modifying the corrupt file. Full local verification passed on Windows: `npm test` (512 passed, 3 skipped), `npm run arch` (82 paths, 0 violations), `npm run smoke`, and `npm run package:smoke`. GitHub Actions run 40498380655 passed all six Windows/macOS/Linux × Node 22/24 jobs, including the real Windows Runtime storage ACL integration step.
 
 ## Consequences and limits
 
