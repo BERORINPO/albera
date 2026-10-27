@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import os from 'node:os';
 import process from 'node:process';
 import test from 'node:test';
 import { probeCliVersion } from '../src/runtime/cli-version.mjs';
@@ -27,7 +28,7 @@ test('CLI version probe uses fixed argv, a temporary cwd, and a minimized enviro
   assert.equal(invocation.executable, 'C:\\tools\\claude.exe');
   assert.deepEqual(invocation.args, ['--version']);
   assert.equal(invocation.options.shell, false);
-  assert.equal(invocation.options.cwd, process.env.TEMP ?? process.env.TMPDIR ?? (await import('node:os')).default.tmpdir());
+  assert.equal(invocation.options.cwd, os.tmpdir());
   assert.equal('ANTHROPIC_API_KEY' in invocation.options.env, false);
   assert.equal('HOME' in invocation.options.env, false);
 });

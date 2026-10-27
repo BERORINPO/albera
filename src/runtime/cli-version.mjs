@@ -31,7 +31,6 @@ export function probeCliVersion(executable, { platform = process.platform, spawn
       try { child?.kill('SIGKILL'); } catch { /* child may already have exited */ }
     };
     const timer = setTimeout(() => { stop(); finish(new Error('cli_version_probe_timeout')); }, timeoutMs);
-    timer.unref?.();
     try {
       child = spawnImpl(executable, ['--version'], {
         cwd: os.tmpdir(), env, shell: false, detached: platform !== 'win32', windowsHide: true,
