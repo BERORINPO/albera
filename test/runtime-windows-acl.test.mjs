@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { appendFile, lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
 import { backupRuntimeJournal, recoverRuntimeJournalTail, restoreRuntimeJournal } from '../src/runtime/journal-backup.mjs';
 import { loadOrCreateRuntimeSessionId } from '../src/runtime/session-identity.mjs';
-import { assertPrivateWindowsAcl, inspectWindowsAcl, RuntimeStorageAclError } from '../src/runtime/windows-acl.mjs';
+import { assertPrivateWindowsAcl, inspectWindowsAcl, inspectWindowsAcls, RuntimeStorageAclError } from '../src/runtime/windows-acl.mjs';
 
 const USER = 'S-1-5-21-1-2-3-1001';
 const fileStat = { isSymbolicLink: () => false, isFile: () => true, isDirectory: () => false };
@@ -18,6 +18,32 @@ const descriptor = (rules = [], overrides = {}) => ({
   rules: [{ sid: USER, allow: true, rights: 0x001f01ff }, ...rules],
   ...overrides,
 });
+
+function recordAclChecks(checks) {
+  return async (target, { kind }) => { checks.push({ target, kind }); };
+}
+
+async function verifyRecordedAclChecks(checks) {
+  const kinds = new Map();
+  for (const { target, kind } of checks) {
+    assert.ok(!kinds.has(target) || kinds.get(target) === kind, `inconsistent ACL target kind: ${target}`);
+    kinds.set(target, kind);
+  }
+  assert.ok(kinds.size > 0, 'the Runtime operation must request ACL validation');
+  const targets = [];
+  for (const target of kinds.keys()) {
+    try { await lstat(target); targets.push(target); }
+    catch (error) { if (error?.code !== 'ENOENT') throw error; }
+  }
+  assert.ok(targets.length > 0, 'at least one checked object must still exist');
+  const descriptors = await inspectWindowsAcls(targets);
+  for (let index = 0; index < targets.length; index++) {
+    await assertPrivateWindowsAcl(targets[index], {
+      kind: kinds.get(targets[index]),
+      inspect: async () => descriptors[index],
+    });
+  }
+}
 
 test('Windows Runtime storage ACL accepts current user with trusted system principals', async () => {
   await assert.doesNotReject(assertPrivateWindowsAcl('C:\\runtime\\audit.jsonl', {
@@ -68,6 +94,17 @@ test('Windows ACL query reads a real system DACL', {
   assert.equal(acl.daclPresent, true);
   assert.ok(Array.isArray(acl.rules));
   await assertPrivateWindowsAcl(os.homedir(), { kind: 'directory', inspect: async () => acl });
+
+  const root = await mkdtemp(path.join(os.homedir(), 'albera-acl-batch-'));
+  try {
+    const file = path.join(root, 'created.txt');
+    await writeFile(file, 'temporary ACL fixture', { flag: 'wx' });
+    const [directoryAcl, fileAcl] = await inspectWindowsAcls([root, file]);
+    await assertPrivateWindowsAcl(root, { kind: 'directory', inspect: async () => directoryAcl });
+    await assertPrivateWindowsAcl(file, { kind: 'file', inspect: async () => fileAcl });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('journal ACL refusal happens before existing journal content is read or changed', async (t) => {
@@ -113,18 +150,20 @@ test('manual journal backup and restored files pass the real Windows DACL guard'
   const backupPath = path.join(root, 'runtime.backup.albera');
   const destinationDirectory = path.join(root, 'restored');
   t.after(() => rm(root, { recursive: true, force: true }));
-  const journal = await openRuntimeAuditJournal(journalPath);
-  const sessionId = await loadOrCreateRuntimeSessionId(journalPath);
+  const checks = [];
+  const verifyWindowsAcl = recordAclChecks(checks);
+  const journal = await openRuntimeAuditJournal(journalPath, { verifyWindowsAcl });
+  const sessionId = await loadOrCreateRuntimeSessionId(journalPath, { verifyWindowsAcl });
   await journal.append({
     sessionId, requestId: '12345678-1234-4234-8234-123456789abc',
     action: 'run.start', phase: 'requested', at: 1, provider: 'claude',
   });
   await journal.close();
-  await backupRuntimeJournal({ journalPath, outputPath: backupPath, passphrase: 'synthetic Windows DACL test phrase' });
-  const restored = await restoreRuntimeJournal({ backupPath, destinationDirectory, passphrase: 'synthetic Windows DACL test phrase' });
-  await assertPrivateWindowsAcl(destinationDirectory, { kind: 'directory' });
-  await assertPrivateWindowsAcl(restored.journalPath, { kind: 'file' });
-  await assertPrivateWindowsAcl(`${restored.journalPath}.session-id`, { kind: 'file' });
+  await backupRuntimeJournal({ journalPath, outputPath: backupPath, passphrase: 'synthetic Windows DACL test phrase', verifyWindowsAcl });
+  const restored = await restoreRuntimeJournal({ backupPath, destinationDirectory, passphrase: 'synthetic Windows DACL test phrase', verifyWindowsAcl });
+  await verifyRecordedAclChecks(checks);
+  assert.ok(checks.some(({ target, kind }) => target === backupPath && kind === 'file'));
+  assert.ok(checks.some(({ target, kind }) => target === restored.journalPath && kind === 'file'));
 });
 
 test('manual journal tail recovery output passes the real Windows DACL guard', {
@@ -134,17 +173,19 @@ test('manual journal tail recovery output passes the real Windows DACL guard', {
   const journalPath = path.join(root, 'runtime.audit.jsonl');
   const outputPath = path.join(root, 'runtime.recovered.jsonl');
   t.after(() => rm(root, { recursive: true, force: true }));
-  const journal = await openRuntimeAuditJournal(journalPath);
-  const sessionId = await loadOrCreateRuntimeSessionId(journalPath);
+  const checks = [];
+  const verifyWindowsAcl = recordAclChecks(checks);
+  const journal = await openRuntimeAuditJournal(journalPath, { verifyWindowsAcl });
+  const sessionId = await loadOrCreateRuntimeSessionId(journalPath, { verifyWindowsAcl });
   await journal.append({
     sessionId, requestId: '12345678-1234-4234-8234-123456789abc',
     action: 'run.start', phase: 'requested', at: 1, provider: 'claude',
   });
   await journal.close();
   await appendFile(journalPath, '{"incomplete":true');
-  const recovered = await recoverRuntimeJournalTail({ journalPath, outputPath, verifyWindowsAcl: async () => {} });
+  const recovered = await recoverRuntimeJournalTail({ journalPath, outputPath, verifyWindowsAcl });
   assert.equal(recovered.sessionId, sessionId);
-  await assertPrivateWindowsAcl(outputPath, { kind: 'file' });
-  await assertPrivateWindowsAcl(`${outputPath}.session-id`, { kind: 'file' });
-  await assertPrivateWindowsAcl(root, { kind: 'directory' });
+  await verifyRecordedAclChecks(checks);
+  assert.ok(checks.some(({ target, kind }) => target === outputPath && kind === 'file'));
+  assert.ok(checks.some(({ target, kind }) => target === `${outputPath}.session-id` && kind === 'file'));
 });
