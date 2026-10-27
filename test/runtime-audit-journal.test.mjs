@@ -152,5 +152,16 @@ test('audit journal fails closed at its configured capacity and keeps earlier re
   assert.ok(sequence > 1);
   const previous = journal.list({ limit: 100 });
   assert.equal(previous.length, sequence - 1);
+  const savedBytes = await readFile(file);
+  await assert.rejects(
+    journal.append(auditRecord({ requestId: '92345678-1234-4234-8234-123456789abc', at: sequence + 1 })),
+    (error) => error.code === 'journal_capacity_exceeded',
+  );
   await journal.close();
+
+  assert.deepEqual(await readFile(file), savedBytes, 'capacity refusal must not truncate or rewrite earlier records');
+  const reopened = await openTestJournal(file, { maxBytes: 2048 });
+  assert.deepEqual(reopened.list({ limit: 100 }), previous, 'all earlier records remain available after reopening');
+  await reopened.close();
+  assert.deepEqual(await readFile(file), savedBytes, 'reopen and close must preserve the journal byte-for-byte');
 });
