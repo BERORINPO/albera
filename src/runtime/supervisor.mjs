@@ -46,6 +46,8 @@ class SupervisedChild extends EventEmitter {
   #pendingInputs = new Map();
   #pendingTreeStop;
 
+  get closed() { return this.#closed; }
+
   constructor(guardian, launch, inputEnabled = false) {
     super();
     this.#guardian = guardian;

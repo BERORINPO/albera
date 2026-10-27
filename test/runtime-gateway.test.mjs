@@ -672,6 +672,33 @@ test('orderly host close stops active children even when interactive stop approv
   assert.equal(f.gateway.get(run.id).status, 'stopped');
 });
 
+test('orderly host close waits for the child close event after an early exit status', async (t) => {
+  let child;
+  const f = await fixture({
+    spawnImpl: () => {
+      child = new EventEmitter();
+      child.pid = 12345;
+      child.exitCode = null;
+      child.signalCode = null;
+      child.supervised = true;
+      child.kill = () => true;
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
+    },
+    signalTreeImpl: async () => {
+      child.exitCode = 0;
+      setTimeout(() => child.emit('close', 0, null), 25);
+      return { treeConfirmed: true };
+    },
+  });
+  t.after(f.dispose);
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: ['-e', 'setInterval(() => {}, 1000)'] });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+
+  assert.deepEqual(await f.gateway.close({ timeoutMs: 1000 }), []);
+  assert.equal(f.gateway.get(run.id).status, 'stopped');
+});
+
 test('orderly close invalidates starts awaiting authorization and rejects starts after close', async (t) => {
   let releaseApproval;
   let approvalSeen;

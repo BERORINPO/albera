@@ -293,11 +293,14 @@ export class RuntimeGateway {
     this.#closing = true;
     const active = [...this.#runs.values()].filter((run) => isActive(run.status));
     const uncertain = [...this.#runs.values()].filter((run) => run.treeStopConfirmed === false).map((run) => run.id);
+    // Subscribe before requesting stop: a supervised child can report its provider exit
+    // before the guardian process itself emits the definitive `close` event.
+    const closeWaits = active.map((run) => waitForClose(run.child));
     await Promise.allSettled(active.map((run) => this.#requestStop(run)));
     if (!active.length) return uncertain;
     let timer;
     await Promise.race([
-      Promise.all(active.map((run) => waitForClose(run.child))),
+      Promise.all(closeWaits),
       new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
     ]);
     clearTimeout(timer);
@@ -465,7 +468,7 @@ function environmentSummary(provider, environment) {
 function isActive(status) { return status === 'starting' || status === 'running' || status === 'stopping'; }
 function safeKill(child) { try { child.kill('SIGKILL'); } catch { /* child may have exited */ } }
 function waitForClose(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  if (child.closed === true) return Promise.resolve();
   return new Promise((resolve) => child.once('close', resolve));
 }
 async function signalProcessTree(pid, signal, child, platform, spawnImpl) {
