@@ -10,6 +10,8 @@ import { createRuntimeApprovalBroker } from '../src/runtime/approval-broker.mjs'
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
 import { buildProviderLaunch, RuntimeGateway } from '../src/runtime/gateway.mjs';
 
+const openTestJournal = (filePath, options = {}) => openRuntimeAuditJournal(filePath, { ...options, verifyWindowsAcl: async () => {} });
+
 function fakeGateway(overrides = {}) {
   const calls = [];
   const gateway = {
@@ -173,7 +175,7 @@ test('provider catalog is read-only, scope-protected, and reports profile verifi
 
 test('follow-up input route requires runs:input, enforces ownership, and never audits message text', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-input-audit-'));
-  const journal = await openRuntimeAuditJournal(path.join(root, 'audit.jsonl'));
+  const journal = await openTestJournal(path.join(root, 'audit.jsonl'));
   const sessionId = 'a'.repeat(32);
   const f = await apiFixture({ journal }, {}, { sessionId });
   t.after(async () => { await f.close(); await journal.close(); await rm(root, { recursive: true, force: true }); });
@@ -401,7 +403,7 @@ test('SSE retains lifecycle events emitted before a session start is registered'
 
 test('injected audit journal records only redacted start and stop decisions', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-audit-'));
-  const journal = await openRuntimeAuditJournal(path.join(root, 'audit.jsonl'));
+  const journal = await openTestJournal(path.join(root, 'audit.jsonl'));
   const f = await apiFixture({ journal });
   t.after(async () => { await f.close(); await journal.close(); await rm(root, { recursive: true, force: true }); });
   const started = await request(f.address, f.api, {
@@ -424,7 +426,7 @@ test('injected audit journal records only redacted start and stop decisions', as
 test('journal restart replays session events and restores unfinished runs as interrupted', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-recovery-'));
   const file = path.join(root, 'audit.jsonl');
-  const journal = await openRuntimeAuditJournal(file);
+  const journal = await openTestJournal(file);
   const first = await apiFixture({ journal }, {}, { sessionId: 'c'.repeat(32) });
   const started = await request(first.address, first.api, {
     method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'recovery fixture' }),
@@ -435,7 +437,7 @@ test('journal restart replays session events and restores unfinished runs as int
   await first.close();
   await journal.close();
 
-  const reopened = await openRuntimeAuditJournal(file);
+  const reopened = await openTestJournal(file);
   const emptyGateway = fakeGateway({ list: () => [], events: () => [] });
   const runtimeApi = createRuntimeApi({ gateway: emptyGateway.gateway, journal: reopened });
   const api = { ...runtimeApi, credential: runtimeApi.createCredential(['health', 'runs:read', 'events:read', 'runs:stop'], { sessionId: 'c'.repeat(32) }) };
@@ -465,7 +467,7 @@ test('journal restart replays session events and restores unfinished runs as int
 
 test('background lifecycle capture persists events without an open event stream', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-event-poll-'));
-  const journal = await openRuntimeAuditJournal(path.join(root, 'audit.jsonl'));
+  const journal = await openTestJournal(path.join(root, 'audit.jsonl'));
   let sourceEvents = [];
   const f = await apiFixture({ journal }, { events: ({ after = 0 } = {}) => sourceEvents.filter((event) => event.id > after) });
   t.after(async () => { await f.close(); await journal.close(); await rm(root, { recursive: true, force: true }); });

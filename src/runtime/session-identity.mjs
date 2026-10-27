@@ -4,6 +4,7 @@ import { lstat, open } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
+import { assertPrivateWindowsAcl } from './windows-acl.mjs';
 
 const SESSION_ID_RE = /^[0-9a-f]{32}$/;
 const NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
@@ -12,10 +13,11 @@ const NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
  * Read or create a mode-restricted sidecar that lets the trusted host reissue a journal's session boundary.
  * Existing symlinks, non-files, malformed identifiers, and permissive POSIX modes fail closed without modification.
  */
-export async function loadOrCreateRuntimeSessionId(journalPath) {
+export async function loadOrCreateRuntimeSessionId(journalPath, { verifyWindowsAcl = assertPrivateWindowsAcl } = {}) {
   if (typeof journalPath !== 'string' || !path.isAbsolute(journalPath)) throw new TypeError('journal_path_must_be_absolute');
   const identityPath = `${journalPath}.session-id`;
-  try { return await readIdentity(identityPath); }
+  await verifyWindowsAcl(path.dirname(identityPath), { kind: 'directory' });
+  try { return await readIdentity(identityPath, verifyWindowsAcl); }
   catch (error) {
     if (!error || typeof error !== 'object' || error.code !== 'ENOENT') throw error;
   }
@@ -29,17 +31,18 @@ export async function loadOrCreateRuntimeSessionId(journalPath) {
     return sessionId;
   } catch (error) {
     if (!error || typeof error !== 'object' || error.code !== 'EEXIST') throw error;
-    return readIdentity(identityPath);
+    return readIdentity(identityPath, verifyWindowsAcl);
   } finally {
     await handle?.close().catch(() => {});
   }
 }
 
-async function readIdentity(filePath) {
+async function readIdentity(filePath, verifyWindowsAcl) {
   if (process.platform === 'win32') {
     const entry = await lstat(filePath);
     if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('runtime_session_identity_invalid');
   }
+  await verifyWindowsAcl(filePath, { kind: 'file' });
   const handle = await open(filePath, fsConstants.O_RDONLY | NOFOLLOW);
   try {
     const info = await handle.stat();

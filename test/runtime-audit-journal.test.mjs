@@ -5,6 +5,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
 
+const openTestJournal = (filePath, options = {}) => openRuntimeAuditJournal(filePath, { ...options, verifyWindowsAcl: async () => {} });
+
 const SESSION_A = 'a'.repeat(32);
 const SESSION_B = 'b'.repeat(32);
 const REQUEST_A = '12345678-1234-4234-8234-123456789abc';
@@ -17,7 +19,7 @@ test('audit journal persists serialized allowlisted records and reopens without 
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'runtime.audit.jsonl');
-  const journal = await openRuntimeAuditJournal(file);
+  const journal = await openTestJournal(file);
   const records = await Promise.all([
     journal.append(auditRecord()),
     journal.append(auditRecord({ requestId: '32345678-1234-4234-8234-123456789abc', phase: 'accepted', runId: RUN_A })),
@@ -34,7 +36,7 @@ test('audit journal persists serialized allowlisted records and reopens without 
   const content = await readFile(file, 'utf8');
   assert.equal(content.includes('synthetic-secret'), false);
   assert.equal(content.includes('prompt'), false);
-  const reopened = await openRuntimeAuditJournal(file);
+  const reopened = await openTestJournal(file);
   assert.deepEqual(reopened.list({ sessionId: SESSION_A }).map(({ sequence, phase }) => [sequence, phase]), [[1, 'requested'], [2, 'accepted'], [4, 'accepted']]);
   await reopened.close();
 });
@@ -43,7 +45,7 @@ test('journal persists allowlisted lifecycle events in the same monotonic sequen
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-event-journal-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'runtime.audit.jsonl');
-  const journal = await openRuntimeAuditJournal(file);
+  const journal = await openTestJournal(file);
   const audit = await journal.append(auditRecord({ phase: 'accepted', runId: RUN_A }));
   const event = await journal.append({ kind: 'event', sessionId: SESSION_A, eventType: 'started', at: 2, provider: 'claude', runId: RUN_A });
   assert.equal(event.sequence, audit.sequence + 1);
@@ -58,7 +60,7 @@ test('journal persists allowlisted lifecycle events in the same monotonic sequen
   assert.equal(journal.list({ sessionId: SESSION_A, kind: 'audit' }).length, 1);
   assert.throws(() => journal.append({ kind: 'event', sessionId: SESSION_A, eventType: 'started', at: 3, provider: 'claude', runId: RUN_A, prompt: 'secret' }), /invalid_journal_record/);
   await journal.close();
-  const reopened = await openRuntimeAuditJournal(file);
+  const reopened = await openTestJournal(file);
   assert.deepEqual(reopened.list({ sessionId: SESSION_A, kind: 'event' }).map(({ eventId }) => eventId), [1, 2]);
   assert.deepEqual(reopened.list({ sessionId: SESSION_B, kind: 'event' }).map(({ eventId }) => eventId), [1]);
   await reopened.close();
@@ -68,10 +70,10 @@ test('audit journal enforces one live writer and releases its lock on close', as
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-lock-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'runtime.audit.jsonl');
-  const journal = await openRuntimeAuditJournal(file);
-  await assert.rejects(openRuntimeAuditJournal(file), (error) => error.code === 'journal_locked');
+  const journal = await openTestJournal(file);
+  await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_locked');
   await journal.close();
-  const reopened = await openRuntimeAuditJournal(file);
+  const reopened = await openTestJournal(file);
   await reopened.close();
 });
 
@@ -79,14 +81,14 @@ test('journal close drains writes already accepted into its queue', async (t) =>
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-drain-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'runtime.audit.jsonl');
-  const journal = await openRuntimeAuditJournal(file);
+  const journal = await openTestJournal(file);
   const writes = Array.from({ length: 20 }, (_, index) => journal.append(auditRecord({
     requestId: `${String(index + 1).padStart(8, '0')}-1234-4234-8234-123456789abc`, at: index + 1,
   })));
   const closed = journal.close();
   await Promise.all(writes);
   await closed;
-  const reopened = await openRuntimeAuditJournal(file);
+  const reopened = await openTestJournal(file);
   assert.equal(reopened.list({ limit: 100 }).length, 20);
   await reopened.close();
 });
@@ -97,7 +99,7 @@ test('audit journal refuses incomplete or corrupt existing data without modifyin
   const file = path.join(root, 'runtime.audit.jsonl');
   const corrupt = '{"version":1';
   await writeFile(file, corrupt, 'utf8');
-  await assert.rejects(openRuntimeAuditJournal(file), (error) => error.code === 'journal_incomplete_tail');
+  await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_incomplete_tail');
   assert.equal(await readFile(file, 'utf8'), corrupt);
 });
 
@@ -116,7 +118,7 @@ test('journal rejects duplicate, skipped, or non-initial per-session event curso
       eventType: 'started', at: index + 1, provider: 'claude', runId: RUN_A,
     })).join('\n') + '\n';
     await writeFile(file, content, 'utf8');
-    await assert.rejects(openRuntimeAuditJournal(file), (error) => error.code === 'journal_corrupt', name);
+    await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_corrupt', name);
     assert.equal(await readFile(file, 'utf8'), content, `${name} journal must remain untouched`);
   }
 });
@@ -128,7 +130,7 @@ test('journal startup preserves an unrelated lock-path file', async (t) => {
   const lockFile = `${file}.lock`;
   const existing = 'user-owned lock metadata';
   await writeFile(lockFile, existing, 'utf8');
-  await assert.rejects(openRuntimeAuditJournal(file), (error) => error.code === 'journal_locked');
+  await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_locked');
   assert.equal(await readFile(lockFile, 'utf8'), existing);
 });
 
@@ -136,7 +138,7 @@ test('audit journal fails closed at its configured capacity and keeps earlier re
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-full-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'runtime.audit.jsonl');
-  const journal = await openRuntimeAuditJournal(file, { maxBytes: 2048 });
+  const journal = await openTestJournal(file, { maxBytes: 2048 });
   let sequence = 0;
   while (true) {
     try {

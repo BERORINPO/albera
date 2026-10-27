@@ -9,6 +9,9 @@ import { createRuntimeHost } from '../src/runtime/host.mjs';
 import { parseRuntimeArgs, RUNTIME_HELP } from '../src/runtime/entry.mjs';
 import { loadOrCreateRuntimeSessionId } from '../src/runtime/session-identity.mjs';
 
+const openTestJournal = (filePath, options = {}) => openRuntimeAuditJournal(filePath, { ...options, verifyWindowsAcl: async () => {} });
+const loadTestSessionId = (journalPath) => loadOrCreateRuntimeSessionId(journalPath, { verifyWindowsAcl: async () => {} });
+
 function fakeChild() {
   const child = new EventEmitter();
   child.pid = undefined;
@@ -24,7 +27,7 @@ function fakeChild() {
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-approval-host-'));
-  const journal = await openRuntimeAuditJournal(path.join(root, 'runtime.audit.jsonl'));
+  const journal = await openTestJournal(path.join(root, 'runtime.audit.jsonl'));
   const runtime = createRuntimeHost({
     roots: [root],
     journal,
@@ -195,8 +198,8 @@ test('closing the approval host ends active event streams and drains the API', a
 test('standalone host restart reuses the journal identity and replays completed run history', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-host-replay-'));
   const journalPath = path.join(root, 'runtime.audit.jsonl');
-  let journal = await openRuntimeAuditJournal(journalPath);
-  let sessionId = await loadOrCreateRuntimeSessionId(journalPath);
+  let journal = await openTestJournal(journalPath);
+  let sessionId = await loadTestSessionId(journalPath);
   let client = await connectRuntime(root, journal, sessionId);
   let runtime = client.runtime;
   const oldCookie = client.cookie;
@@ -225,8 +228,8 @@ test('standalone host restart reuses the journal identity and replays completed 
   runtime = undefined;
   journal = undefined;
 
-  journal = await openRuntimeAuditJournal(journalPath);
-  const recoveredSessionId = await loadOrCreateRuntimeSessionId(journalPath);
+  journal = await openTestJournal(journalPath);
+  const recoveredSessionId = await loadTestSessionId(journalPath);
   assert.equal(recoveredSessionId, sessionId);
   sessionId = recoveredSessionId;
   client = await connectRuntime(root, journal, sessionId);
@@ -251,8 +254,8 @@ test('standalone host restart reuses the journal identity and replays completed 
 test('standalone host restart marks a journaled live run interrupted without relaunch or stale stop', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-host-interrupted-'));
   const journalPath = path.join(root, 'runtime.audit.jsonl');
-  let journal = await openRuntimeAuditJournal(journalPath);
-  const sessionId = await loadOrCreateRuntimeSessionId(journalPath);
+  let journal = await openTestJournal(journalPath);
+  const sessionId = await loadTestSessionId(journalPath);
   const runId = 'f3e1a401-63ca-4d19-a31c-953ab6c15ce7';
   await journal.append({
     sessionId, requestId: 'a7d13ae0-836a-4d0e-b006-6a684bdc4d10',
@@ -262,7 +265,7 @@ test('standalone host restart marks a journaled live run interrupted without rel
     kind: 'event', sessionId, eventType: 'started', at: 101, provider: 'claude', runId,
   });
   await journal.close();
-  journal = await openRuntimeAuditJournal(journalPath);
+  journal = await openTestJournal(journalPath);
 
   let spawnCount = 0;
   const client = await connectRuntime(root, journal, sessionId, {
@@ -299,25 +302,26 @@ test('Runtime CLI requires explicit absolute project roots and an audit journal'
     roots: ['/workspace'], journalPath: '/tmp/albera.jsonl', port: 0,
   });
   assert.match(RUNTIME_HELP, /regular "albera" command remains a read-only/);
+  assert.match(RUNTIME_HELP, /Windows.*DACLs are checked without repair/);
 });
 
 test('Runtime session identity is stable, private on POSIX, and malformed files are preserved', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-session-identity-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const journal = path.join(root, 'runtime.audit.jsonl');
-  const first = await loadOrCreateRuntimeSessionId(journal);
+  const first = await loadTestSessionId(journal);
   assert.match(first, /^[0-9a-f]{32}$/);
-  assert.equal(await loadOrCreateRuntimeSessionId(journal), first);
+  assert.equal(await loadTestSessionId(journal), first);
   const identityPath = `${journal}.session-id`;
   if (process.platform !== 'win32') {
     const info = await stat(identityPath);
     assert.equal(info.mode & 0o077, 0);
     await chmod(identityPath, 0o644);
-    await assert.rejects(loadOrCreateRuntimeSessionId(journal), /runtime_session_identity_permissions/);
+    await assert.rejects(loadTestSessionId(journal), /runtime_session_identity_permissions/);
   }
   const malformed = 'not a session id\n';
   await writeFile(identityPath, malformed, 'utf8');
   if (process.platform !== 'win32') await chmod(identityPath, 0o600);
-  await assert.rejects(loadOrCreateRuntimeSessionId(journal), /runtime_session_identity_invalid/);
+  await assert.rejects(loadTestSessionId(journal), /runtime_session_identity_invalid/);
   assert.equal(await readFile(identityPath, 'utf8'), malformed);
 });

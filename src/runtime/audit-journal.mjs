@@ -4,6 +4,7 @@ import { constants as fsConstants } from 'node:fs';
 import { mkdir, open, readFile, lstat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { assertPrivateWindowsAcl, RuntimeStorageAclError } from './windows-acl.mjs';
 
 const JOURNAL_VERSION = 1;
 const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
@@ -27,18 +28,19 @@ export class JournalError extends Error {
  * Open an explicitly located, single-writer append-only Runtime audit journal.
  * The journal never stores tokens, prompts, paths, argv, environment or process output.
  */
-export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX_BYTES } = {}) {
+export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX_BYTES, verifyWindowsAcl = assertPrivateWindowsAcl } = {}) {
   if (typeof filePath !== 'string' || filePath.length === 0 || !path.isAbsolute(filePath)) throw new TypeError('journal_path_must_be_absolute');
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > HARD_MAX_BYTES) throw new TypeError('invalid_journal_capacity');
   await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  await verifyWindowsAcl(path.dirname(filePath), { kind: 'directory' });
 
   const lockPath = `${filePath}.lock`;
   const nonce = randomBytes(16).toString('hex');
   const lockText = JSON.stringify({ magic: LOCK_MAGIC, pid: process.pid, nonce });
-  const lock = await acquireLock(lockPath, lockText);
+  const lock = await acquireLock(lockPath, lockText, verifyWindowsAcl);
   let dataHandle;
   try {
-    const existing = await readExisting(filePath, maxBytes);
+    const existing = await readExisting(filePath, maxBytes, verifyWindowsAcl);
     if (existing.byteLength > maxBytes) throw new JournalError('journal_capacity_exceeded');
     const records = parseRecords(existing);
     if (records.length > MAX_RECORDS) throw new JournalError('journal_capacity_exceeded');
@@ -187,10 +189,11 @@ function validateInput(input) {
   };
 }
 
-async function readExisting(filePath, maxBytes) {
+async function readExisting(filePath, maxBytes, verifyWindowsAcl) {
   try {
     const info = await lstat(filePath);
     if (info.isSymbolicLink() || !info.isFile()) throw new JournalError('journal_not_regular_file');
+    await verifyWindowsAcl(filePath, { kind: 'file' });
     if (info.size > maxBytes) throw new JournalError('journal_capacity_exceeded');
     return await readFile(filePath);
   } catch (error) {
@@ -227,7 +230,7 @@ function parseRecords(buffer) {
   return records;
 }
 
-async function acquireLock(lockPath, lockText) {
+async function acquireLock(lockPath, lockText, verifyWindowsAcl) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const handle = await open(lockPath, 'wx', 0o600);
@@ -241,17 +244,18 @@ async function acquireLock(lockPath, lockText) {
       }
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
-      const stale = await removeStaleLock(lockPath);
+      const stale = await removeStaleLock(lockPath, verifyWindowsAcl);
       if (!stale || attempt === 1) throw new JournalError('journal_locked');
     }
   }
   throw new JournalError('journal_locked');
 }
 
-async function removeStaleLock(lockPath) {
+async function removeStaleLock(lockPath, verifyWindowsAcl) {
   try {
     const info = await lstat(lockPath);
     if (info.isSymbolicLink() || !info.isFile()) return false;
+    await verifyWindowsAcl(lockPath, { kind: 'file' });
     const content = await readFile(lockPath, 'utf8');
     const owner = JSON.parse(content);
     if (owner?.magic !== LOCK_MAGIC || !Number.isSafeInteger(owner.pid) || owner.pid < 1 || !/^[0-9a-f]{32}$/.test(owner.nonce ?? '')) return false;
@@ -264,6 +268,7 @@ async function removeStaleLock(lockPath) {
     await unlink(lockPath);
     return true;
   } catch (error) {
+    if (error instanceof RuntimeStorageAclError) throw error;
     if (error?.code === 'ENOENT') return true;
     return false;
   }
