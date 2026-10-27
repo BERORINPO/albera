@@ -15,6 +15,9 @@ This release collects the existing RFC and ADR-001 through ADR-007, plus the new
 8. [PoC-001](experiments/PoC-001-hyperv-work-handoff.md), [Benchmark Spec](experiments/benchmark-spec.md) — executable hypotheses.
 9. [Acceptance Criteria](acceptance-criteria.md), [Machine-readable Acceptance Criteria](acceptance-criteria.json), [Implementation Roadmap](implementation-roadmap.md), [OSS Research](oss-research.md) — release and engineering contracts.
 
+## Review record
+[Architecture Review — 2026-10-28](architecture-review-2026-10-28.md) documents blockers, review boundaries, and required implementation evidence. All high-risk items remain OPEN.
+
 ## Design status and decision gates
 All ADRs remain **Proposed** pending reviews. Hyper-V PoC is **NOT_RUN**. All acceptance criteria are **NOT_VERIFIED** until linked evidence exists. Do not reinterpret example JSON or draft SLOs as existing production behavior.
 
