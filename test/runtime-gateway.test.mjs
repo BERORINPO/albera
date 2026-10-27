@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import test from 'node:test';
+import { createRuntimeApprovalBroker } from '../src/runtime/approval-broker.mjs';
 import { buildProviderLaunch, GatewayError, RuntimeGateway, RUNTIME_PROFILES, RUNTIME_PROVIDERS, resolveProviderExecutable } from '../src/runtime/gateway.mjs';
 
 async function fixture(options = {}) {
@@ -88,6 +89,54 @@ test('streaming initial input is included in host approval and remains outside a
   assert.equal(approval.args.includes(prompt), false);
   assert.equal(spawned.options.initialInput, approval.initialInput);
   assert.deepEqual(spawned.args, approval.args);
+});
+
+test('trusted approval broker gates streaming provider launch on an explicit one-use decision', async (t) => {
+  const broker = createRuntimeApprovalBroker();
+  let spawned = false;
+  const child = new FakeChild();
+  const f = await fixture({
+    authorize: broker.authorize,
+    buildLaunchImpl: (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile),
+    spawnImpl: () => { spawned = true; queueMicrotask(() => child.emit('spawn')); return child; },
+    signalTreeImpl: (_pid, signal, target) => target.kill(signal),
+  });
+  t.after(async () => { broker.close(); await f.dispose(); });
+  const starting = f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'review this task', profile: RUNTIME_PROFILES.readOnlyStreaming });
+  await waitFor(() => broker.listPending().length === 1);
+  const [approval] = broker.listPending();
+  assert.equal(approval.request.action, 'start');
+  assert.equal(approval.request.cwd, f.cwd);
+  assert.equal(approval.request.initialInput, 'ALBERA task:\nreview this task');
+  assert.equal(JSON.stringify(approval.request.args).includes('review this task'), false);
+  assert.equal(spawned, false);
+  assert.equal(broker.decide(approval.id, true), true);
+  const run = await starting;
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+  assert.equal(spawned, true);
+  assert.equal(broker.decide(approval.id, true), false);
+  const stopping = f.gateway.stop(run.id);
+  await waitFor(() => broker.listPending().length === 1);
+  const [stopApproval] = broker.listPending();
+  assert.equal(stopApproval.request.action, 'stop');
+  assert.equal(stopApproval.request.runId, run.id);
+  assert.equal(broker.decide(stopApproval.id, true), true);
+  await stopping;
+  await waitFor(() => f.gateway.get(run.id).status === 'stopped');
+});
+
+test('denying a broker approval prevents Gateway spawn', async (t) => {
+  const broker = createRuntimeApprovalBroker();
+  let spawned = false;
+  const f = await fixture({ authorize: broker.authorize, spawnImpl: () => { spawned = true; return new FakeChild(); } });
+  t.after(async () => { broker.close(); await f.dispose(); });
+  const starting = f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'denied task' });
+  await waitFor(() => broker.listPending().length === 1);
+  const [approval] = broker.listPending();
+  assert.equal(broker.decide(approval.id, false), true);
+  await assert.rejects(starting, (error) => error.code === 'confirmation_required');
+  assert.equal(spawned, false);
+  assert.equal(f.gateway.list().length, 0);
 });
 
 test('default Gateway generates the read-only profile and refuses raw request argv', async (t) => {

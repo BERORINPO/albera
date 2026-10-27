@@ -54,7 +54,7 @@ const EXPECTED = {
     'session-record.mjs', 'demo-data.mjs', 'map-limit.mjs',
   ],
   entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],
-  runtime: ['gateway.mjs', 'api.mjs', 'audit-journal.mjs', 'supervisor.mjs', 'guardian.mjs'],
+  runtime: ['gateway.mjs', 'api.mjs', 'approval-broker.mjs', 'audit-journal.mjs', 'supervisor.mjs', 'guardian.mjs'],
   public: [
     'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
