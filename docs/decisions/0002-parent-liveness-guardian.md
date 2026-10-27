@@ -27,7 +27,7 @@ This adds no runtime package dependency and does not connect the Gateway to the 
 
 ## Evidence
 
-`test/process-supervisor.test.mjs` kills a separate RuntimeGateway host running a synthetic local Node helper and verifies that its heartbeat stops. It also verifies the Guardian stop acknowledgment on real helper processes. `test/runtime-gateway.test.mjs` verifies a supervised direct-child-only result is exposed as uncertain. Actions run 40465491826 passed tests and architecture checks for Windows/macOS/Linux × Node 22/24; current local evidence is recorded in `docs/progress.md`. These tests never invoke a real AI CLI. RT-10 is verified for this contained, disconnected prototype; persistent restart recovery and stronger process ownership remain blocked and are not claimed.
+`test/process-supervisor.test.mjs` kills a separate RuntimeGateway host running a synthetic local Node helper and verifies that its heartbeat stops. It also verifies the Guardian stop acknowledgment on real helper processes. `test/runtime-gateway.test.mjs` verifies a supervised direct-child-only result is exposed as uncertain. Actions run 40505992646 passed tests, package smoke and architecture checks for Windows/macOS/Linux × Node 22/24, including Windows Runtime storage ACL integration. These tests never invoke a real AI CLI. RT-10 is verified for this contained, disconnected prototype; persistent restart recovery and stronger process ownership remain blocked and are not claimed.
 
 ## References
 
