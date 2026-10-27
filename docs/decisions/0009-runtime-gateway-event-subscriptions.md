@@ -20,11 +20,11 @@ The Runtime API previously discovered lifecycle events only by polling the Gatew
 
 ## Consequences and limits
 
-- Journal capture normally starts on the same event turn rather than waiting for the polling interval.
+- Journal capture starts on the same event turn rather than waiting for the polling interval. Each append now writes the complete record and synchronously calls `fsync` before returning its Promise, so the API's `await` does not yield before the flush attempt completes.
 - Gateway event storage remains bounded and the existing poll remains as a recovery backstop.
-- Capture and journal append are asynchronous. A hard host crash before the append completes can still lose the final event, and this change does not recover or relaunch active processes.
+- A host or system crash during the write/flush can still leave a partial or non-durable tail. Startup preserves and refuses an incomplete journal rather than truncating it. Synchronous flush can block the Runtime event loop on slow storage. This change does not recover or relaunch active processes.
 - API-03 remains in progress until crash ownership, durable event capture limits, GUI acceptance, backup/retention policy, and packaging are addressed.
 
 ## Verification
 
-Local Windows Node 24.13.0: `node --test test/runtime-api.test.mjs test/runtime-gateway.test.mjs` passed 59/59; full `npm test` passed 501 with 3 skips; `npm run arch` reported 82 paths and 0 violations; `npm run smoke` passed; `git diff --check` passed. GitHub Actions run 40486837838 passed all six Windows/macOS/Linux × Node 22/24 test and architecture jobs on `d1d83ef`. The journal-capture test uses a synthetic Gateway notification and confirms persistence before its 1-second safety poll. No AI CLI was invoked.
+Verification: `test/runtime-audit-journal.test.mjs` proves record bytes are present and the injected sync operation has completed before `append()` returns its Promise; API event-capture tests verify notification-driven persistence before the safety poll. Latest cross-platform evidence for the earlier async implementation is Actions run 40486837838; the synchronous durability change requires a new matrix run. No AI CLI was invoked.

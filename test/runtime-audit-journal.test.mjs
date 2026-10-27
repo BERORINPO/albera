@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { fsyncSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { chmod, link, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -77,7 +78,39 @@ test('audit journal enforces one live writer and releases its lock on close', as
   await reopened.close();
 });
 
-test('journal close drains writes already accepted into its queue', async (t) => {
+test('journal append writes and syncs each accepted record before returning its promise', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-sync-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'runtime.audit.jsonl');
+  const syncedDescriptors = [];
+  const journal = await openTestJournal(file, {
+    syncFile(fd) { syncedDescriptors.push(fd); fsyncSync(fd); },
+  });
+  const pending = journal.append(auditRecord());
+  const content = readFileSync(file, 'utf8');
+  assert.equal(content.endsWith('\n'), true, 'complete record is visible before append returns');
+  assert.equal(JSON.parse(content).phase, 'requested');
+  assert.equal(syncedDescriptors.length, 1, 'fsync has completed before append returns');
+  assert.deepEqual(await pending, journal.list()[0]);
+  await journal.close();
+});
+
+test('journal sync failure rejects the append, refuses later writes, and preserves current bytes', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-sync-failure-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'runtime.audit.jsonl');
+  let syncCalls = 0;
+  const journal = await openTestJournal(file, { syncFile() { syncCalls++; throw new Error('synthetic_sync_failure'); } });
+  await assert.rejects(journal.append(auditRecord()), (error) => error.code === 'journal_write_failed');
+  assert.equal(syncCalls, 1);
+  const saved = readFileSync(file);
+  assert.equal(saved.at(-1), 0x0a, 'the failed sync does not truncate the complete appended record');
+  await assert.rejects(journal.append(auditRecord({ phase: 'accepted' })), (error) => error.code === 'journal_failed');
+  await journal.close();
+  assert.deepEqual(await readFile(file), saved, 'close preserves all bytes after the failed sync');
+});
+
+test('journal close preserves records accepted by synchronous appends', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-drain-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'runtime.audit.jsonl');

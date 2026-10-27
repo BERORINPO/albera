@@ -1,6 +1,6 @@
 // Host-configured, append-only audit journal. It stores only allowlisted control metadata.
 import { randomBytes } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, fsyncSync, writeSync } from 'node:fs';
 import { mkdir, open, readFile, lstat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -28,9 +28,10 @@ export class JournalError extends Error {
  * Open an explicitly located, single-writer append-only Runtime audit journal.
  * The journal never stores tokens, prompts, paths, argv, environment or process output.
  */
-export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX_BYTES, verifyWindowsAcl = assertPrivateWindowsAcl } = {}) {
+export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX_BYTES, verifyWindowsAcl = assertPrivateWindowsAcl, syncFile = fsyncSync } = {}) {
   if (typeof filePath !== 'string' || filePath.length === 0 || !path.isAbsolute(filePath)) throw new TypeError('journal_path_must_be_absolute');
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > HARD_MAX_BYTES) throw new TypeError('invalid_journal_capacity');
+  if (typeof syncFile !== 'function') throw new TypeError('invalid_journal_sync');
   await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const directoryPath = path.dirname(filePath);
   const directoryInfo = await lstat(directoryPath);
@@ -54,7 +55,7 @@ export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX
     if (!fileInfo.isFile() || fileInfo.size !== existing.byteLength) throw new JournalError('journal_changed_during_open');
     assertSingleLink(fileInfo, 'journal_hard_linked_file');
     assertPrivatePosixStorage(fileInfo, 'journal_permissions', 'file');
-    return new RuntimeAuditJournal(filePath, lockPath, lock, lockText, dataHandle, records, existing.byteLength, maxBytes);
+    return new RuntimeAuditJournal(filePath, lockPath, lock, lockText, dataHandle, records, existing.byteLength, maxBytes, syncFile);
   } catch (error) {
     await dataHandle?.close().catch(() => {});
     await releaseLock(lockPath, lock, lockText);
@@ -72,13 +73,13 @@ class RuntimeAuditJournal {
   #eventSequences = new Map();
   #bytes;
   #maxBytes;
-  #queue = Promise.resolve();
+  #syncFile;
   #closing = false;
   #closed = false;
   #failed = false;
   #closePromise;
 
-  constructor(filePath, lockPath, lockHandle, lockText, dataHandle, records, bytes, maxBytes) {
+  constructor(filePath, lockPath, lockHandle, lockText, dataHandle, records, bytes, maxBytes, syncFile) {
     this.#filePath = filePath;
     this.#lockPath = lockPath;
     this.#lockHandle = lockHandle;
@@ -92,6 +93,7 @@ class RuntimeAuditJournal {
     }
     this.#bytes = bytes;
     this.#maxBytes = maxBytes;
+    this.#syncFile = syncFile;
   }
 
   /** Append a stable audit phase. Only the enumerated, non-content metadata is accepted. */
@@ -99,35 +101,30 @@ class RuntimeAuditJournal {
     if (this.#closing || this.#closed) return Promise.reject(new JournalError('journal_closed'));
     if (this.#failed) return Promise.reject(new JournalError('journal_failed'));
     const payload = validateInput(input);
-    const task = this.#queue.then(async () => {
-      if (this.#failed) throw new JournalError('journal_failed');
-      try {
-        const sequence = this.#records.length ? this.#records.at(-1).sequence + 1 : 1;
-        const eventId = payload.kind === 'event' ? (this.#eventSequences.get(payload.sessionId) ?? 0) + 1 : undefined;
-        const record = Object.freeze({ version: JOURNAL_VERSION, sequence, ...payload, ...(eventId === undefined ? {} : { eventId }) });
-        const line = Buffer.from(`${JSON.stringify(record)}\n`, 'utf8');
-        const bytes = line.byteLength;
-        if (bytes > MAX_RECORD_BYTES) throw new JournalError('journal_record_too_large');
-        if (this.#records.length >= MAX_RECORDS || this.#bytes + bytes > this.#maxBytes) throw new JournalError('journal_capacity_exceeded');
-        let offset = 0;
-        while (offset < bytes) {
-          const { bytesWritten } = await this.#dataHandle.write(line, offset, bytes - offset, null);
-          if (bytesWritten <= 0) throw new Error('journal_short_write');
-          offset += bytesWritten;
-        }
-        await this.#dataHandle.sync();
-        this.#bytes += bytes;
-        this.#records.push(record);
-        if (eventId !== undefined) this.#eventSequences.set(payload.sessionId, eventId);
-        return { ...record };
-      } catch (error) {
-        if (error instanceof JournalError) throw error;
-        this.#failed = true;
-        throw new JournalError('journal_write_failed');
+    try {
+      const sequence = this.#records.length ? this.#records.at(-1).sequence + 1 : 1;
+      const eventId = payload.kind === 'event' ? (this.#eventSequences.get(payload.sessionId) ?? 0) + 1 : undefined;
+      const record = Object.freeze({ version: JOURNAL_VERSION, sequence, ...payload, ...(eventId === undefined ? {} : { eventId }) });
+      const line = Buffer.from(`${JSON.stringify(record)}\n`, 'utf8');
+      const bytes = line.byteLength;
+      if (bytes > MAX_RECORD_BYTES) throw new JournalError('journal_record_too_large');
+      if (this.#records.length >= MAX_RECORDS || this.#bytes + bytes > this.#maxBytes) throw new JournalError('journal_capacity_exceeded');
+      let offset = 0;
+      while (offset < bytes) {
+        const bytesWritten = writeSync(this.#dataHandle.fd, line, offset, bytes - offset, null);
+        if (bytesWritten <= 0) throw new Error('journal_short_write');
+        offset += bytesWritten;
       }
-    });
-    this.#queue = task.catch(() => {});
-    return task;
+      this.#syncFile(this.#dataHandle.fd);
+      this.#bytes += bytes;
+      this.#records.push(record);
+      if (eventId !== undefined) this.#eventSequences.set(payload.sessionId, eventId);
+      return Promise.resolve({ ...record });
+    } catch (error) {
+      if (error instanceof JournalError) return Promise.reject(error);
+      this.#failed = true;
+      return Promise.reject(new JournalError('journal_write_failed'));
+    }
   }
 
   /** Read a bounded immutable snapshot; audit records use the journal sequence, events use their session cursor. */
@@ -142,13 +139,12 @@ class RuntimeAuditJournal {
       .map((record) => ({ ...record }));
   }
 
-  /** Wait for queued writes, close descriptors, and release only this process's lock. */
+  /** Close descriptors and release only this process's lock. Appends are synced before their promises are returned. */
   close() {
     if (this.#closePromise) return this.#closePromise;
     this.#closing = true;
     this.#closePromise = (async () => {
       try {
-        await this.#queue;
         await this.#dataHandle.close();
       } finally {
         this.#closed = true;

@@ -8,6 +8,7 @@ Implemented for the local prototype; production retention, backup, and encryptio
 
 - Keep the Runtime audit journal append-only. ALBERA does not rotate, compact, expire, or delete journal records automatically.
 - Enforce a 16 MiB default capacity, a configurable limit no greater than 64 MiB, 20,000 records, and a per-record size bound.
+- Append each bounded JSONL record with synchronous writes and `fsync` before returning the append Promise. On write or sync failure, reject the append and fail the journal closed; do not truncate or roll back any bytes.
 - When the byte or record limit is reached, reject the write. The Runtime host treats audit-write failure as fatal and shuts down the API and Gateway rather than continuing without an audit trail.
 - Preserve all bytes written before capacity is reached. Reopening the journal must recover those records without rewriting the file.
 - Do not create automatic backups. The journal contains local control metadata, is not encrypted, and remains at the user-selected path. Operators who need backup or longer retention must use a reviewed local backup process that preserves the journal's access controls. No external upload is performed by ALBERA.
@@ -18,10 +19,12 @@ Automatic rotation or retention expiry could destroy audit and recovery evidence
 
 ## Verification
 
-`test/runtime-audit-journal.test.mjs` exercises capacity rejection, confirms previous records remain byte-for-byte intact after the failed write and close, reopens the journal, and confirms all prior records are still readable. The test uses a temporary synthetic journal and does not touch user data.
+`test/runtime-audit-journal.test.mjs` exercises capacity rejection, confirms previous records remain byte-for-byte intact after the failed write and close, reopens the journal, and confirms all prior records are still readable. A synchronous-append regression verifies the complete line is visible and the injected sync function has returned before `append()` returns its Promise; another verifies sync failure rejects and prevents later writes without truncating bytes. The tests use temporary synthetic journals and do not touch user data.
 
 ## Consequences and limits
 
 - This is not an indefinite retention or durability guarantee. Disk loss, corruption, and manual deletion remain possible.
+- A crash during the write/flush can still leave a partial or non-durable tail. Startup refuses incomplete records and preserves the file; it does not attempt automatic repair.
+- Synchronous `fsync` blocks the Runtime event loop while the storage flushes. Measure this on supported local filesystems before production hosting; avoid slow or remote journal paths.
 - The journal is unencrypted. Windows DACL and POSIX mode checks protect access at the selected storage objects, but a production backup workflow and encryption policy are not implemented.
 - At capacity, Runtime stops rather than pruning data or continuing without audit.
