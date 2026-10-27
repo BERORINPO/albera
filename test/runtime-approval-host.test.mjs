@@ -826,6 +826,31 @@ test('closing the approval host ends active event streams and drains the API', a
   assert.ok(events.some((event) => event.eventType === 'stopped'), JSON.stringify(events.map((event) => event.eventType)));
 });
 
+test('Runtime shutdown settles a start that is still waiting for host approval without spawning', async (t) => {
+  const f = await fixture(t);
+  const pendingStart = post(f, '/api/runs', { provider: 'claude', cwd: f.root, prompt: 'must not launch after shutdown' })
+    .then((response) => ({ status: response.status }), (error) => ({ error }));
+  await waitFor(() => f.runtime.broker.size === 1);
+
+  const closing = f.runtime.close();
+  let shutdownTimer;
+  try {
+    await Promise.race([
+      closing,
+      new Promise((_, reject) => { shutdownTimer = setTimeout(() => reject(new Error('host_shutdown_timeout')), 10_000); }),
+    ]);
+  } finally {
+    clearTimeout(shutdownTimer);
+  }
+
+  assert.equal(f.runtime.broker.size, 0, 'shutdown must deny and clear pending approval requests');
+  const startResult = await pendingStart;
+  assert.ok(startResult.status === 403 || startResult.error instanceof TypeError, 'the pending request must be denied or its browser connection closed');
+  assert.deepEqual(f.runtime.gateway.list(), [], 'no child process may be spawned without approval');
+  const expectedResult = startResult.status === 403 ? 'denied' : 'failed';
+  assert.deepEqual(f.journal.list({ sessionId: f.runtime.sessionId, kind: 'audit' }).map(({ phase }) => phase), ['requested', expectedResult]);
+});
+
 test('standalone host restart reuses the journal identity and replays completed run history', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-host-replay-'));
   const journalPath = path.join(root, 'runtime.audit.jsonl');
