@@ -1,6 +1,6 @@
 # 0005 — Windows Runtime storage ACL verification
 
-- Status: Implemented; Windows behavior verified locally, cross-platform CI pending
+- Status: Implemented; Windows behavior verified locally and on the cross-platform CI matrix
 - Date: 2026-10-27
 - Scope: Optional Runtime audit journal, lock file, and journal session-identity sidecar
 
@@ -21,7 +21,8 @@ The verifier invokes the system Windows PowerShell by its absolute path, without
 - Unit cases cover allowed trusted principals, broad data grants, external ACL/owner changes, deny ACEs, a null DACL, missing user Full Control, and harmless execute/traverse rights.
 - Windows-only test queries and validates the actual current user's profile DACL through the Windows security APIs.
 - Journal and sidecar integration tests confirm ACL refusal occurs before existing metadata is read or modified.
-- The Windows/macOS/Linux × Node 22/24 workflow must pass before this decision is treated as cross-platform verified.
+- Local Windows Node 24.13.0: `npm test` 497/497, `npm run arch` 82 paths / 0 violations, `npm run smoke` passed, and `git diff --check` passed.
+- GitHub Actions run 40480832114 on commit `f8ae7b5` passed all six Windows/macOS/Linux × Node 22/24 test and architecture jobs. The PowerShell timeout is bounded at 60 seconds to tolerate hosted-runner load.
 
 ## References
 
