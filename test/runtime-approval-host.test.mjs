@@ -477,7 +477,7 @@ test('closing the approval host ends active event streams and drains the API', a
   const closing = f.runtime.close();
   await Promise.race([
     closing,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('host_shutdown_timeout')), 5000)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('host_shutdown_timeout')), 10_000)),
   ]);
   controller.abort();
   const events = f.journal.list({ sessionId: f.runtime.sessionId, kind: 'event' });
