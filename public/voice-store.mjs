@@ -27,9 +27,9 @@ const requestResult = (request) => new Promise((resolve, reject) => {
   request.onerror = () => reject(new Error('voice_storage_unavailable'));
 });
 
-/** @param {{id:string,createdAt:number,durationSeconds:number,outcome:'complete'|'interrupted',transcript:Array<{role:string,text:string}>}} session @param {{user:Blob|null,assistant:Blob|null}} audio @param {IDBFactory} [factory] */
+/** @param {{id:string,createdAt:number,durationSeconds:number,outcome:'complete'|'interrupted',closeConfirmed:boolean|null,transcript:Array<{role:string,text:string}>}} session @param {{user:Blob|null,assistant:Blob|null}} audio @param {IDBFactory} [factory] */
 export async function saveVoiceSession(session, audio, factory = indexedDB) {
-  if (!session || !/^voice_[0-9a-f-]{36}$/i.test(session.id) || !Number.isSafeInteger(session.createdAt) || session.createdAt < 0 || !Number.isFinite(session.durationSeconds) || session.durationSeconds < 0 || !['complete', 'interrupted'].includes(session.outcome) || !Array.isArray(session.transcript) || session.transcript.length > 10_000 || !session.transcript.every((line) => ['user', 'assistant'].includes(line.role) && typeof line.text === 'string' && line.text.length <= 100_000) || session.transcript.reduce((sum, line) => sum + line.text.length, 0) > 1_000_000) throw new Error('invalid_voice_record');
+  if (!session || !/^voice_[0-9a-f-]{36}$/i.test(session.id) || !Number.isSafeInteger(session.createdAt) || session.createdAt < 0 || !Number.isFinite(session.durationSeconds) || session.durationSeconds < 0 || !['complete', 'interrupted'].includes(session.outcome) || ![true, false, null].includes(session.closeConfirmed) || !Array.isArray(session.transcript) || session.transcript.length > 10_000 || !session.transcript.every((line) => ['user', 'assistant'].includes(line.role) && typeof line.text === 'string' && line.text.length <= 100_000) || session.transcript.reduce((sum, line) => sum + line.text.length, 0) > 1_000_000) throw new Error('invalid_voice_record');
   if (!['user', 'assistant'].some((role) => audio?.[role] instanceof Blob && audio[role].size) && !session.transcript.length) throw new Error('voice_capture_empty');
   const db = await openDb(factory);
   try {

@@ -22,7 +22,7 @@ export function createLiveVoiceSession({ apiKey = process.env.OPENAI_API_KEY ?? 
             delegation: { type: 'client' },
             audio: { output: { voice: 'marin' } },
             client: { data_channel: {
-              allowed_client_events: [],
+              allowed_client_events: ['session.close'],
               allowed_server_events: ['session.started', 'session.closed', 'session.input_transcript.delta', 'session.output_transcript.delta', 'session.usage.updated', 'error'],
             } },
           },

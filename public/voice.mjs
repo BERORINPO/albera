@@ -2,6 +2,7 @@
 import { createVoiceSession, VoiceApiError, voiceAvailability } from './api.mjs';
 import { deleteVoiceSession, getVoiceAudio, listVoiceSessions, saveVoiceSession, voiceStorageAvailable } from './voice-store.mjs';
 import { appendVoiceCaption, projectVoiceDelta } from './voice-transcript.mjs';
+import { requestLiveSessionClose } from './live-close.mjs';
 
 /** @param {Record<string, MediaRecorder>} recorders */
 export async function stopVoiceRecorders(recorders) {
@@ -40,6 +41,12 @@ export function initVoice({ t }) {
   let transcriptRows = /** @type {Array<{role:'user'|'assistant',text:string}>} */ ([]);
   let startedAt = 0;
   let captureStartedAt = 0;
+  let sessionStarted = false;
+  let sessionClosed = false;
+  let resolveSessionStarted = () => {};
+  let resolveSessionClosed = () => {};
+  let sessionStartedSignal = Promise.resolve(false);
+  let sessionClosedSignal = Promise.resolve(false);
   let pendingDeleteId = '';
   let stopping = false;
   let objectUrls = /** @type {string[]} */ ([]);
@@ -88,6 +95,10 @@ export function initVoice({ t }) {
     parts = { user: [], assistant: [] };
     transcriptRows = [];
     captureStartedAt = 0;
+    sessionStarted = false;
+    sessionClosed = false;
+    resolveSessionStarted(false);
+    resolveSessionClosed(false);
   }
   async function finishCapture(outcome) {
     if (stopping) return;
@@ -95,6 +106,19 @@ export function initVoice({ t }) {
     stop.disabled = true;
     stop.hidden = true;
     say(outcome === 'interrupted' ? 'voice.savingInterrupted' : 'voice.saving');
+    let closeConfirmed = null;
+    if (outcome === 'complete') {
+      say('voice.closing');
+      closeConfirmed = await requestLiveSessionClose({
+        channel,
+        isStarted: () => sessionStarted,
+        isClosed: () => sessionClosed,
+        startedSignal: sessionStartedSignal,
+        closedSignal: sessionClosedSignal,
+        closeEventId: `pigeonholes-close-${crypto.randomUUID()}`,
+      });
+      if (!closeConfirmed) say('voice.closeUnconfirmed');
+    }
     if (channel) channel.close(); channel = null;
     await stopVoiceRecorders(recorders);
     if (peer) peer.close(); peer = null;
@@ -108,8 +132,8 @@ export function initVoice({ t }) {
     try {
       if (!hasCapture) { say(outcome === 'interrupted' ? 'voice.interruptedEmpty' : 'voice.noCapture'); return; }
       const now = Date.now();
-      const session = { id: `voice_${crypto.randomUUID()}`, createdAt: captureStartedAt || startedAt || now, durationSeconds: Math.max(1, Math.round((now - (captureStartedAt || startedAt || now)) / 1000)), outcome, transcript: transcriptRows };
-      await saveVoiceSession(session, audioRows); say(outcome === 'interrupted' ? 'voice.interruptedSaved' : 'voice.saved'); await refreshHistory();
+      const session = { id: `voice_${crypto.randomUUID()}`, createdAt: captureStartedAt || startedAt || now, durationSeconds: Math.max(1, Math.round((now - (captureStartedAt || startedAt || now)) / 1000)), outcome, closeConfirmed, transcript: transcriptRows };
+      await saveVoiceSession(session, audioRows); say(outcome === 'interrupted' ? 'voice.interruptedSaved' : closeConfirmed ? 'voice.saved' : 'voice.savedCloseUnconfirmed'); await refreshHistory();
     } catch { say('voice.saveFailed'); }
     finally { clearActive(); stopping = false; stop.disabled = false; start.hidden = false; start.disabled = !available; }
   }
@@ -137,6 +161,7 @@ export function initVoice({ t }) {
     detail.replaceChildren(); detail.hidden = false;
     const outcome = record.outcome === 'interrupted' ? 'interrupted' : 'complete';
     const heading = document.createElement('h3'); heading.textContent = `${new Date(record.createdAt).toLocaleString()} — ${t()(`voice.outcome.${outcome}`)}`; detail.append(heading);
+    if (record.closeConfirmed === false) { const note = document.createElement('p'); note.textContent = t()('voice.closeUnconfirmed'); detail.append(note); }
     const lines = document.createElement('div'); lines.className = 'voice__transcript';
     for (const row of record.transcript) {
       const line = document.createElement('p'); line.className = `voice__line voice__line--${row.role}`;
@@ -168,6 +193,9 @@ export function initVoice({ t }) {
   });
   start.addEventListener('click', async () => {
     start.disabled = true; detail.hidden = true; transcript.replaceChildren(); say('voice.connecting'); captureStartedAt = Date.now();
+    sessionStarted = false; sessionClosed = false;
+    sessionStartedSignal = new Promise((resolve) => { resolveSessionStarted = resolve; });
+    sessionClosedSignal = new Promise((resolve) => { resolveSessionClosed = resolve; });
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       addRecorder('user', stream);
@@ -181,7 +209,12 @@ export function initVoice({ t }) {
       for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
       channel = peer.createDataChannel('live-events');
       channel.addEventListener('open', () => { startedAt = Date.now(); say('voice.listening'); start.hidden = true; mute.hidden = false; stop.hidden = false; });
-      channel.addEventListener('message', (event) => { try { setTranscript(JSON.parse(event.data)); } catch {} });
+      channel.addEventListener('message', (event) => { try {
+        const item = JSON.parse(event.data);
+        if (item?.type === 'session.started') { sessionStarted = true; resolveSessionStarted(true); }
+        if (item?.type === 'session.closed') { sessionClosed = true; resolveSessionClosed(true); }
+        setTranscript(item);
+      } catch {} });
       await peer.setLocalDescription(await peer.createOffer());
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('ice_timeout')), 8000);

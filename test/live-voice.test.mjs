@@ -3,6 +3,7 @@ import http from 'node:http';
 import { test } from 'node:test';
 import { createHandler } from '../src/entry/http.mjs';
 import { createLiveVoiceSession } from '../src/entry/live-voice.mjs';
+import { requestLiveSessionClose } from '../public/live-close.mjs';
 import { stopVoiceRecorders } from '../public/voice.mjs';
 import { deleteVoiceSession, getVoiceAudio, listVoiceSessions, saveVoiceSession, voiceStorageAvailable } from '../public/voice-store.mjs';
 import { appendVoiceCaption, projectVoiceDelta } from '../public/voice-transcript.mjs';
@@ -22,7 +23,7 @@ test('GPT-Live server adapter uses fixed non-stored config and returns only sess
   const body = JSON.parse(call.options.body);
   assert.deepEqual(body.session, {
     model: 'gpt-live-1', store: false, delegation: { type: 'client' }, audio: { output: { voice: 'marin' } },
-    client: { data_channel: { allowed_client_events: [], allowed_server_events: ['session.started', 'session.closed', 'session.input_transcript.delta', 'session.output_transcript.delta', 'session.usage.updated', 'error'] } },
+    client: { data_channel: { allowed_client_events: ['session.close'], allowed_server_events: ['session.started', 'session.closed', 'session.input_transcript.delta', 'session.output_transcript.delta', 'session.usage.updated', 'error'] } },
   });
   assert.deepEqual(body.transport, { type: 'webrtc', sdp: 'synthetic-offer' });
   assert.equal(session.configured, true);
@@ -97,7 +98,7 @@ class MemoryFactory {
 
 test('browser voice store persists both audio tracks and transcript, lists and deletes them', async () => {
   const factory = new MemoryFactory();
-  const session = { id: SESSION_ID, createdAt: 100, durationSeconds: 17, outcome: 'complete', transcript: [{ role: 'user', text: 'synthetic question' }, { role: 'assistant', text: 'synthetic answer' }] };
+  const session = { id: SESSION_ID, createdAt: 100, durationSeconds: 17, outcome: 'complete', closeConfirmed: true, transcript: [{ role: 'user', text: 'synthetic question' }, { role: 'assistant', text: 'synthetic answer' }] };
   await saveVoiceSession(session, { user: new Blob(['mic']), assistant: new Blob(['reply']) }, factory);
   assert.equal((await listVoiceSessions(factory))[0].transcript[1].text, 'synthetic answer');
   assert.equal(await (await getVoiceAudio(SESSION_ID, 'user', factory)).text(), 'mic');
@@ -111,12 +112,35 @@ test('browser voice store persists both audio tracks and transcript, lists and d
 
 test('browser voice store preserves an interrupted partial capture without inventing missing audio', async () => {
   const factory = new MemoryFactory();
-  const session = { id: SESSION_ID, createdAt: 100, durationSeconds: 5, outcome: 'interrupted', transcript: [{ role: 'user', text: 'partial synthetic caption' }] };
+  const session = { id: SESSION_ID, createdAt: 100, durationSeconds: 5, outcome: 'interrupted', closeConfirmed: null, transcript: [{ role: 'user', text: 'partial synthetic caption' }] };
   await saveVoiceSession(session, { user: new Blob(['partial mic']), assistant: null }, factory);
   assert.equal((await listVoiceSessions(factory))[0].outcome, 'interrupted');
   assert.equal(await (await getVoiceAudio(SESSION_ID, 'user', factory)).text(), 'partial mic');
   assert.equal(await getVoiceAudio(SESSION_ID, 'assistant', factory), null);
   await assert.rejects(saveVoiceSession({ ...session, id: 'voice_00000000-0000-4000-8000-000000000002', transcript: [] }, { user: null, assistant: null }, factory), /voice_capture_empty/);
+});
+
+test('GPT-Live explicit stop sends only session.close and waits for session.closed', async () => {
+  const sent = [];
+  let resolveClosed;
+  const closedSignal = new Promise((resolve) => { resolveClosed = resolve; });
+  const close = requestLiveSessionClose({
+    channel: { readyState: 'open', send: (value) => sent.push(JSON.parse(value)) },
+    isStarted: () => true, isClosed: () => false, startedSignal: Promise.resolve(true), closedSignal,
+    closeEventId: 'local-close-id', timeoutMs: 50,
+  });
+  assert.deepEqual(sent, [{ type: 'session.close', event_id: 'local-close-id' }]);
+  resolveClosed(true);
+  assert.equal(await close, true);
+});
+
+test('GPT-Live close fails closed when startup or finalization is not confirmed', async () => {
+  let sends = 0;
+  const options = { channel: { readyState: 'open', send: () => { sends++; } }, isStarted: () => false, isClosed: () => false, startedSignal: Promise.resolve(false), closedSignal: Promise.resolve(false), closeEventId: 'local-close-id', timeoutMs: 1 };
+  assert.equal(await requestLiveSessionClose(options), false);
+  assert.equal(sends, 0);
+  assert.equal(await requestLiveSessionClose({ ...options, isStarted: () => true }), false);
+  assert.equal(sends, 1);
 });
 
 test('voice recorder shutdown waits for final data and tolerates stop errors', async () => {

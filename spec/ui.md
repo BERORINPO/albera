@@ -1500,3 +1500,10 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 - 明示停止・切断時の共通終了処理は、 dataavailable を先に受け取ってから stop 完了を待ち、最後のチャンクをIndexedDBへ含める。MediaRecorderの停止例外では待ち続けず、保存可能なチャンクの処理とリソース解放へ進む。
 - 合成MediaRecorder fixtureで停止イベント前に到着する最終チャンクを確認し、停止例外でも終了待ちがrejectしないことを確認した。`npm test`: 621/621 passed。
 - 実ブラウザーMediaRecorder/WebRTCのstopイベント順序と録音再生は引き続き未確認。
+
+### GPT-Liveセッションを確認付きで終了
+
+- 公式OpenAI DocsのGPT-Live WebRTC手順に従い、明示停止時はdata channelに`session.close`を送り、`session.closed`受信後にpeer connectionと音声トラックを解放する。作成設定は`session.close`だけをfrontend client allowlistに加え、未知のコマンドは引き続き拒否する。
+- close確認の有無だけをブラウザー内記録へboolean/nullで保存。確認できない場合は最終利用量が不明と表示し、プロバイダーイベント本文・ID・利用量は記録しない。予期しない切断時はcloseを送らず中断保存へ進む。
+- 合成テストでclose要求の固定wire形、started待機、closed確認、タイムアウト時のfail-closedを確認。`npm test`: 623/623 passed。実API/WebRTCのcloseイベントは未確認。
+- 根拠: [GPT-Live WebRTC guide](https://developers.openai.com/api/docs/guides/voice-webrtc), [GPT-Live session lifecycle](https://developers.openai.com/api/docs/guides/live-conversations)。
