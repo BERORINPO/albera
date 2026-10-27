@@ -93,7 +93,7 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
 
     const now = Date.now();
     session.expiresAt = Math.min(now + sessionLifetimeMs, session.absoluteExpiresAt);
-    res.setHeader('Set-Cookie', cookieHeader(sessionToken, session.expiresAt - now));
+    res.setHeader('Set-Cookie', cookieHeader(sessionToken, session.expiresAt - now, basePath));
 
     let body;
     if (req.method === 'POST') {

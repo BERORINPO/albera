@@ -13,6 +13,7 @@ Browser cookies are scoped by host and path, not by port. The approval host list
 - Generate a fresh 128-bit random path prefix for each Runtime approval host.
 - Serve its UI and fixed API proxy routes only below that prefix.
 - Set the browser session cookie `Path` to the same prefix.
+- Reissue the same scoped cookie on every authenticated request so the browser's idle expiry follows the server-side sliding idle TTL.
 - Keep the one-time bootstrap code separate and out of the URL.
 - Treat the path prefix as routing isolation, not an authentication factor. Continue to rely on the one-time code, HttpOnly session cookie, Host/Origin validation, CSRF token, and default-deny approval broker.
 
@@ -22,4 +23,4 @@ The browser will not send this cookie to ordinary paths on another loopback port
 
 ## Verification
 
-`test/runtime-approval-host.test.mjs` verifies the random path-scoped `Set-Cookie` attribute, refuses API routes outside the prefix, and exercises the composed approval host through the prefixed URL. Browser GUI acceptance remains separate and is not inferred from these HTTP tests.
+`test/runtime-approval-host.test.mjs` verifies the random path-scoped `Set-Cookie` attribute on bootstrap, session refresh, and authenticated API activity; refuses API routes outside the prefix; and exercises the composed approval host through the prefixed URL. Browser GUI acceptance remains separate and is not inferred from these HTTP tests.

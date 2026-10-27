@@ -111,6 +111,12 @@ test('approval host issues one-time HttpOnly SameSite sessions and never serves 
   assert.match(cookie, /SameSite=Strict/);
   assert.ok(cookie.includes(`Path=${new URL(`${f.base}/`).pathname}`));
   assert.equal(cookie.includes(f.session.csrfToken), false);
+  const activityResponse = await get(f, '/api/approvals');
+  assert.equal(activityResponse.status, 200);
+  const refreshedCookie = activityResponse.headers.get('set-cookie');
+  assert.ok(refreshedCookie.includes(`Path=${new URL(`${f.base}/`).pathname}`));
+  assert.doesNotMatch(refreshedCookie, /Path=undefined/);
+  assert.match(refreshedCookie, /Max-Age=\d+/);
   assert.equal((await fetch(`${f.origin}/api/session`, { headers: f.headers })).status, 404);
   assert.equal((await fetch(`${f.base}/api/session`)).status, 401);
   assert.equal((await fetch(`${f.base}/api/session`, {
