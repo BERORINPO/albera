@@ -14,6 +14,7 @@ Implemented for the local prototype; encrypted manual backup/restore is availabl
 - When the byte or record limit is reached, reject the write. The Runtime host treats audit-write failure as fatal and shuts down the API and Gateway rather than continuing without an audit trail.
 - Preserve all bytes written before capacity is reached. Reopening the journal must recover those records without rewriting the file.
 - Do not create automatic backups. The journal contains local control metadata and remains at the user-selected path. An explicit `albera-runtime backup` command can create a passphrase-encrypted copy only while the Runtime writer lock is available; it includes the stable session identity so history and event cursors survive restoration. `restore` authenticates and validates the payload before creating a new destination directory. Both commands refuse overwrites, do not delete or change the source, and do not upload data. The CLI accepts the passphrase only through a hidden interactive terminal prompt, uses scrypt (N=32768, r=8, p=1) and AES-256-GCM, and requires at least 12 UTF-8 bytes.
+- `albera-runtime verify-backup --backup <absolute-path>` authenticates and validates an encrypted backup offline using the same hidden passphrase prompt. It does not create or modify files and does not start Runtime or a provider process.
 
 ## Rationale
 

@@ -4,9 +4,9 @@ import path from 'node:path';
 import { appendFile, lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
-import { backupRuntimeJournal, readBoundedBackupHandle, recoverRuntimeJournalTail, restoreRuntimeJournal } from '../src/runtime/journal-backup.mjs';
+import { backupRuntimeJournal, readBoundedBackupHandle, recoverRuntimeJournalTail, restoreRuntimeJournal, verifyRuntimeJournalBackup } from '../src/runtime/journal-backup.mjs';
 import { loadOrCreateRuntimeSessionId, readRuntimeSessionId } from '../src/runtime/session-identity.mjs';
-import { parseRuntimeArgs } from '../src/runtime/entry.mjs';
+import { parseRuntimeArgs, RUNTIME_HELP } from '../src/runtime/entry.mjs';
 
 const verifyWindowsAcl = async () => {};
 const PASSPHRASE = 'synthetic test phrase 2026';
@@ -95,6 +95,30 @@ test('wrong passphrase and authenticated tampering fail before creating a restor
   const tamperedDestination = path.join(source.root, 'tampered');
   await assert.rejects(restoreRuntimeJournal({ backupPath, destinationDirectory: tamperedDestination, passphrase: PASSPHRASE, verifyWindowsAcl }), /backup_authentication_failed/);
   await assert.rejects(lstat(tamperedDestination), { code: 'ENOENT' });
+});
+
+test('offline backup verification checks authentication and journal validity without writing files', async (t) => {
+  const source = await sourceFixture(t);
+  const backupPath = path.join(source.root, 'verify.albera');
+  const destinationDirectory = path.join(source.root, 'must-not-exist');
+  const sourceBefore = await readFile(source.journalPath);
+  await backupRuntimeJournal({ ...source, outputPath: backupPath, passphrase: PASSPHRASE, verifyWindowsAcl });
+  const backupBefore = await readFile(backupPath);
+
+  assert.deepEqual(await verifyRuntimeJournalBackup({ backupPath, passphrase: PASSPHRASE }), { recordCount: 1 });
+  assert.deepEqual(await readFile(source.journalPath), sourceBefore);
+  assert.deepEqual(await readFile(backupPath), backupBefore);
+  await assert.rejects(lstat(destinationDirectory), { code: 'ENOENT' });
+
+  await assert.rejects(verifyRuntimeJournalBackup({ backupPath, passphrase: 'another synthetic phrase' }), /backup_authentication_failed/);
+  const tampered = Buffer.from(backupBefore);
+  tampered[tampered.length - 1] ^= 0x01;
+  await writeFile(backupPath, tampered);
+  const tamperedBefore = await readFile(backupPath);
+  await assert.rejects(verifyRuntimeJournalBackup({ backupPath, passphrase: PASSPHRASE }), /backup_authentication_failed/);
+  assert.deepEqual(await readFile(source.journalPath), sourceBefore);
+  assert.deepEqual(await readFile(backupPath), tamperedBefore);
+  await assert.rejects(lstat(destinationDirectory), { code: 'ENOENT' });
 });
 
 test('restore refuses an existing destination and leaves its contents unchanged', async (t) => {
@@ -187,4 +211,10 @@ test('runtime CLI exposes explicit backup and restore paths without passphrase a
     command: 'recover-tail', journalPath: '/tmp/runtime.audit.jsonl', outputPath: '/tmp/runtime.recovered.jsonl', backupPath: undefined, destinationDirectory: undefined, help: false,
   });
   assert.throws(() => parseRuntimeArgs(['recover-tail', '--journal', '/tmp/runtime.audit.jsonl']), /runtime_backup_options_required/);
+  assert.deepEqual(parseRuntimeArgs(['verify-backup', '--backup', '/tmp/archive.albera']), {
+    command: 'verify-backup', journalPath: undefined, outputPath: undefined, backupPath: '/tmp/archive.albera', destinationDirectory: undefined, help: false,
+  });
+  assert.throws(() => parseRuntimeArgs(['verify-backup']), /runtime_backup_options_required/);
+  assert.throws(() => parseRuntimeArgs(['verify-backup', '--backup', '/tmp/archive.albera', '--destination', '/tmp/out']), /invalid_runtime_option/);
+  assert.match(RUNTIME_HELP, /albera-runtime verify-backup --backup <absolute-backup-path>/);
 });

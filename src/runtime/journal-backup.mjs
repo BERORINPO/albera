@@ -55,23 +55,8 @@ export async function backupRuntimeJournal({ journalPath, outputPath, passphrase
 
 /** Restore into a newly created private directory; existing destinations are never modified. */
 export async function restoreRuntimeJournal({ backupPath, destinationDirectory, passphrase, verifyWindowsAcl = assertPrivateWindowsAcl }) {
-  assertAbsolutePath(backupPath, 'backup_path_must_be_absolute');
   assertAbsolutePath(destinationDirectory, 'destination_must_be_absolute');
-  assertPassphrase(passphrase);
-  const backupInfo = await lstat(backupPath);
-  if (!backupInfo.isFile() || backupInfo.isSymbolicLink() || backupInfo.size > MAX_BACKUP_BYTES) throw new Error('backup_file_invalid');
-  const backupHandle = await open(backupPath, fsConstants.O_RDONLY | NOFOLLOW);
-  let encrypted;
-  try {
-    const openedInfo = await backupHandle.stat();
-    if (!openedInfo.isFile() || openedInfo.size > MAX_BACKUP_BYTES || openedInfo.dev !== backupInfo.dev || openedInfo.ino !== backupInfo.ino) throw new Error('backup_file_invalid');
-    encrypted = await readBoundedBackupHandle(backupHandle, openedInfo.size);
-  } finally {
-    await backupHandle.close();
-  }
-  const { snapshot, sessionId } = await decryptPayload(encrypted, passphrase);
-  validateRuntimeAuditJournalSnapshot(snapshot, { maxBytes: MAX_JOURNAL_BYTES });
-  if (!SESSION_ID_RE.test(sessionId)) throw new Error('backup_payload_invalid');
+  const { snapshot, sessionId } = await decodeBackup(backupPath, passphrase);
 
   await mkdir(destinationDirectory, { recursive: false, mode: 0o700 });
   try {
@@ -87,6 +72,36 @@ export async function restoreRuntimeJournal({ backupPath, destinationDirectory, 
     // Preserve the newly created directory and any partial restore for explicit user inspection.
     throw error;
   }
+}
+
+/** Authenticate and validate an encrypted backup without creating or changing any files. */
+export async function verifyRuntimeJournalBackup({ backupPath, passphrase }) {
+  const { recordCount, snapshot } = await decodeBackup(backupPath, passphrase);
+  try {
+    return Object.freeze({ recordCount });
+  } finally {
+    snapshot.fill(0);
+  }
+}
+
+async function decodeBackup(backupPath, passphrase) {
+  assertAbsolutePath(backupPath, 'backup_path_must_be_absolute');
+  assertPassphrase(passphrase);
+  const backupInfo = await lstat(backupPath);
+  if (!backupInfo.isFile() || backupInfo.isSymbolicLink() || backupInfo.size > MAX_BACKUP_BYTES) throw new Error('backup_file_invalid');
+  const backupHandle = await open(backupPath, fsConstants.O_RDONLY | NOFOLLOW);
+  let encrypted;
+  try {
+    const openedInfo = await backupHandle.stat();
+    if (!openedInfo.isFile() || openedInfo.size > MAX_BACKUP_BYTES || openedInfo.dev !== backupInfo.dev || openedInfo.ino !== backupInfo.ino) throw new Error('backup_file_invalid');
+    encrypted = await readBoundedBackupHandle(backupHandle, openedInfo.size);
+  } finally {
+    await backupHandle.close();
+  }
+  const { snapshot, sessionId } = await decryptPayload(encrypted, passphrase);
+  const recordCount = validateRuntimeAuditJournalSnapshot(snapshot, { maxBytes: MAX_JOURNAL_BYTES });
+  if (!SESSION_ID_RE.test(sessionId)) throw new Error('backup_payload_invalid');
+  return { snapshot, sessionId, recordCount };
 }
 
 /** Read only the opened file's previously validated size, with one bounded growth probe. */

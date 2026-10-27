@@ -31,14 +31,15 @@ node src/runtime/entry.mjs --root "C:\work\project" --journal "C:\Users\You\AppD
 
 Enter the one-time code printed by the terminal in the Runtime screen. Start, input, and stop requests each wait for an explicit approval. The journal does not store prompts, argv, environment values, or provider output. A sibling `.session-id` file stores a non-secret random identity so the UI can replay journal history after restart. Only a fixed Claude Code profile is currently constructed; compatibility with an installed CLI has not been verified, and provider output is not collected. The standard profile places the prompt in the process arguments, which may be visible to same-user process inspection. An allowed working root is not an OS sandbox: the CLI runs with the current OS user's privileges. The Runtime screen supports Japanese and English browser languages, but does not identify the provider account or estimate cost.
 
-You can create a manual encrypted journal backup while Runtime is stopped. Backup prompts for the passphrase twice without echoing it; restore prompts once. Both require at least 12 UTF-8 bytes and refuse existing output paths:
+You can create a manual encrypted journal backup while Runtime is stopped. Backup prompts for the passphrase twice without echoing it; verification and restore prompt once. Both require at least 12 UTF-8 bytes and refuse existing output paths:
 
 ```sh
 node src/runtime/entry.mjs backup --journal "/absolute/path/to/private/albera-runtime.jsonl" --output "/absolute/path/to/archive.albera"
+node src/runtime/entry.mjs verify-backup --backup "/absolute/path/to/archive.albera"
 node src/runtime/entry.mjs restore --backup "/absolute/path/to/archive.albera" --destination "/absolute/path/to/new-restore-directory"
 ```
 
-Backup encryption uses Node.js scrypt and AES-256-GCM. Restore validates the authenticated payload before creating a new directory and never overwrites existing files. Keep the passphrase separately; it cannot be recovered. The backup is encrypted but remains a local file: ALBERA does not upload it or create backups automatically. This manual prototype does not provide key recovery, retention scheduling, or a production backup policy.
+Backup encryption uses Node.js scrypt and AES-256-GCM. `verify-backup` checks the passphrase, authentication tag, and journal structure offline without writing files. Restore validates the authenticated payload before creating a new directory and never overwrites existing files. Keep the passphrase separately; it cannot be recovered. The backup is encrypted but remains a local file: ALBERA does not upload it or create backups automatically. This manual prototype does not provide key recovery, retention scheduling, or a production backup policy.
 
 If a host crash leaves an incomplete final JSONL record, Runtime refuses to start and preserves the original file. After confirming Runtime is stopped, copy the complete, validated record prefix to a new file in the same private directory while preserving the source and session identity:
 

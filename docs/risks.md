@@ -20,3 +20,5 @@
 ### Restore input bound (2026-10-28)
 
 The encrypted backup restore path now reads only the opened file's previously validated size and checks for concurrent growth with a one-byte probe before decrypting. This prevents an input file that grows after its initial size check from driving an unbounded `readFile()` allocation. Regression coverage and six-platform CI passed in Actions run 40538766885. This does not provide key recovery, retention, or protection against same-user replacement of a valid backup.
+
+`albera-runtime verify-backup` now authenticates and validates a backup without writing files or starting Runtime/Provider. The passphrase is read from a hidden TTY prompt; the decrypted journal buffer is cleared after validation. Local regression and package smoke passed on Windows Node 24.13.0. Cross-platform CI for this follow-up has not run yet; key recovery, retention, and protection against same-user replacement remain open.

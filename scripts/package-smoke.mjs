@@ -54,6 +54,7 @@ try {
   const help = child.stdout;
   assert.match(help, /ALBERA Runtime/);
   assert.match(help, /read-only session dashboard/);
+  assert.match(help, /albera-runtime verify-backup --backup <absolute-backup-path>/);
   console.log('package smoke: packed and installed ALBERA locally; Runtime CLI help and approval UI assets verified (no publish, no provider launch)');
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
