@@ -2,9 +2,9 @@
 
 ## Scope and status
 
-`src/runtime/gateway.mjs` is an isolated, in-memory process lifecycle foundation. The existing local dashboard remains a read-only Claude Code session observer. No Observer layer, HTTP route, UI control, persistence layer or orchestration code imports this module. Tests use fakes and a local Node.js helper process; no AI CLI is invoked.
+`src/runtime/gateway.mjs` is an isolated, in-memory process lifecycle foundation. The existing local dashboard remains a read-only Claude Code session observer. No Observer layer, existing HTTP route, UI control, persistence layer or orchestration code imports or wires the Gateway. The separate authenticated API prototype is described in `spec/runtime-api.md`; it is not connected to application startup. Tests use fakes and local Node.js helper processes; no AI CLI is invoked.
 
-This module is not yet a user-facing Runtime feature and is not an OS sandbox. It is not ready to expose through an API.
+The Gateway is not yet a user-facing Runtime feature and is not an OS sandbox. The API prototype is not production-ready; neither module may be exposed as a persistent service.
 
 ## Launch contract
 

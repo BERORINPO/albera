@@ -19,11 +19,19 @@ Statuses: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `VERIFIED`. Every `VERIFIED` 
 | RT-11 | Unit tests, OS process integration tests and architecture checks pass; fake/provider-helper results are clearly distinguished from real AI CLI checks | VERIFIED | Local Windows Node 24.13.0: 24 focused runtime tests and 436 full tests pass; arch and smoke pass locally. Draft PR #9 Actions run 40461054915 passed tests and architecture checks across Windows/macOS/Linux × Node 22/24; hosted CI omits user-data-dependent smoke; no real AI CLI was invoked |
 | RT-12 | No real CLI provider is invoked without explicit user-visible approval; existing Observer behavior remains read-only | VERIFIED | Runtime module is not imported by HTTP/UI/entry; integration test launches only a synthetic local Node helper, never a real AI CLI |
 
+## Phase 2 — Secure Runtime API
+
+| ID | Acceptance criterion | Status | Evidence |
+|---|---|---|---|
+| API-01 | Runtime API binds only to loopback, uses an ephemeral bearer capability, validates Host/Origin, and cannot bypass Gateway approval | VERIFIED | `node --test test/runtime-api.test.mjs`: 7/7. Tests verify loopback binding, auth/Host/Origin rejection, no CORS permission, and valid API credentials still receive `confirmation_required` from a default-deny Gateway |
+| API-02 | Run/event responses are field-projected; request body, event-stream client count, lifetime and buffering are bounded | VERIFIED | `test/runtime-api.test.mjs`: body cap, allowlisted start shape, redacted run/event projections, SSE limit/close and lifecycle event projection pass |
+| API-03 | Production host/UI, explicit approval UX, provider input, persistent audit/recovery and crash-safe process ownership are implemented and cross-platform verified | IN_PROGRESS | API prototype only; no app startup integration, no input route, no persistence, no OS process supervisor; Phase 1 RT-10 remains BLOCKED |
+
 ## Product v1.0
 
 | ID | Acceptance criterion | Status | Evidence |
 |---|---|---|---|
-| V1-01 | Real CLI launch, monitor, input and cancellation through a secure Runtime API | NOT_STARTED | — |
+| V1-01 | Real CLI launch, monitor, input and cancellation through a secure Runtime API | IN_PROGRESS | Isolated authenticated loopback API prototype supports host-authorized start/stop requests and bounded lifecycle streams. No real CLI, input transport, app integration, persistence, or crash recovery has been verified. |
 | V1-02 | Real Agent Canvas lifecycle projection and approved task assignment | NOT_STARTED | — |
 | V1-03 | Multi-agent orchestration with dependency, retry and human approval policies | NOT_STARTED | — |
 | V1-04 | Isolated Git worktree and PR workflow | NOT_STARTED | — |
