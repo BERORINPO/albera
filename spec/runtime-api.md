@@ -7,8 +7,8 @@
 ## Network boundary
 
 - `listen()` binds only to IPv4 `127.0.0.1`; callers cannot choose a public interface. Port `0` is the default.
-- The API creates a random 256-bit bearer credential per instance. It exists only in memory and is returned to the trusted creator. It is not written to disk, environment variables, process arguments, or logs.
-- Every route requires `Authorization: Bearer <credential>`. The credential is hashed and compared in constant time. API authorization grants access to the local API only; it does not authorize a process start or stop.
+- The trusted creator can mint up to 256 random 256-bit bearer credentials per session with `health`, `runs:read`, `events:read`, `runs:start`, and `runs:stop` scopes. Each credential is memory-only, expires within 24 hours (one hour by default), and can be revoked independently. Closing the API clears all credentials. The API has no credential-minting route.
+- Every route requires `Authorization: Bearer <credential>` with its matching scope. Token hashes are compared in constant time. API authorization grants only the scoped local API access; it does not authorize a process start or stop.
 - Host must be exactly `127.0.0.1:<port>` or `localhost:<port>`. If an Origin header is present, it must be the matching HTTP loopback origin. No CORS permission is returned.
 - JSON responses use `no-store`, `nosniff`, `no-referrer`, a restrictive CSP and same-origin resource policy. Errors expose stable codes, not exception messages.
 

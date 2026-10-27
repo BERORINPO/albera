@@ -23,7 +23,7 @@ Statuses: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `VERIFIED`. Every `VERIFIED` 
 
 | ID | Acceptance criterion | Status | Evidence |
 |---|---|---|---|
-| API-01 | Runtime API binds only to loopback, uses an ephemeral bearer capability, validates Host/Origin, and cannot bypass Gateway approval | VERIFIED | `node --test test/runtime-api.test.mjs`: 7/7. Tests verify loopback binding, auth/Host/Origin rejection, no CORS permission, and valid API credentials still receive `confirmation_required` from a default-deny Gateway |
+| API-01 | Runtime API binds only to loopback, uses expiring session-scoped bearer capabilities, validates Host/Origin, and cannot bypass Gateway approval | VERIFIED | `node --test test/runtime-api.test.mjs`: 9/9. Tests verify scope separation/revocation, credential cap and close invalidation, loopback binding, auth/Host/Origin rejection, no CORS permission, and valid API credentials still receive `confirmation_required` from a default-deny Gateway |
 | API-02 | Run/event responses are field-projected; request body, event-stream client count, lifetime and buffering are bounded | VERIFIED | `test/runtime-api.test.mjs`: body cap, allowlisted start shape, redacted run/event projections, SSE limit/close and lifecycle event projection pass |
 | API-03 | Production host/UI, explicit approval UX, provider input, persistent audit/recovery and crash-safe process ownership are implemented and cross-platform verified | IN_PROGRESS | API prototype only; no app startup integration, no input route, no persistence, no OS process supervisor; Phase 1 RT-10 remains BLOCKED |
 

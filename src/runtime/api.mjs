@@ -6,6 +6,9 @@ const MAX_BODY_BYTES = 20 * 1024;
 const MAX_STREAMS = 4;
 const MAX_STREAM_LIFETIME_MS = 60_000;
 const MAX_BUFFERED_RESPONSE_BYTES = 64 * 1024;
+const MAX_CREDENTIAL_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const MAX_CREDENTIALS = 256;
+const API_SCOPES = new Set(['health', 'runs:read', 'events:read', 'runs:start', 'runs:stop']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
 const RUN_STATUSES = new Set(['starting', 'running', 'stopping', 'stopped', 'exited', 'failed']);
@@ -23,7 +26,7 @@ class ApiError extends Error {
 }
 
 /**
- * Create an isolated loopback API. The bearer credential is generated per instance and is never persisted.
+ * Create an isolated loopback API. Scoped bearer credentials are generated per session and are never persisted.
  * The Gateway still performs its separate host authorization; possession of this token alone cannot launch.
  * @param {{gateway: {start: Function, stop: Function, list: Function, events: Function}, pollIntervalMs?: number, streamLifetimeMs?: number, maxStreams?: number}} options
  */
@@ -33,8 +36,7 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
   if (!Number.isInteger(streamLifetimeMs) || streamLifetimeMs < 1000 || streamLifetimeMs > MAX_STREAM_LIFETIME_MS) throw new TypeError('streamLifetimeMs must be between 1000 and 60000');
   if (!Number.isInteger(maxStreams) || maxStreams < 1 || maxStreams > MAX_STREAMS) throw new TypeError('maxStreams must be between 1 and 4');
 
-  const credential = randomBytes(32).toString('hex');
-  const credentialDigest = createHash('sha256').update(credential).digest();
+  const credentials = new Map();
   /** @type {Set<() => void>} */
   const streams = new Set();
   let closing = false;
@@ -52,7 +54,11 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
     if (!Number.isInteger(port)) return sendJson(res, 503, { error: 'api_not_listening' });
     if (!validHost(req.headers.host, port)) return sendJson(res, 403, { error: 'forbidden' });
     if (!validOrigin(req.headers.origin, port)) return sendJson(res, 403, { error: 'forbidden' });
-    if (!hasCredential(req.headers.authorization, credentialDigest)) return sendJson(res, 401, { error: 'unauthorized' });
+    const urlPath = (() => { try { return new URL(req.url ?? '/', 'http://127.0.0.1').pathname; } catch { return ''; } })();
+    const scope = requiredScope(req.method, urlPath);
+    if (!scope) return sendJson(res, 404, { error: 'not_found' });
+    const credential = authenticate(req.headers.authorization, credentials, scope);
+    if (!credential) return sendJson(res, 401, { error: 'unauthorized' });
 
     let url;
     try { url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`); }
@@ -152,7 +158,24 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
   }
 
   return Object.freeze({
-    credential,
+    /** Mint a session-scoped capability in the trusted host; no credential-minting route exists. */
+    createCredential(scopes, { ttlMs = 60 * 60 * 1000 } = {}) {
+      if (closing) throw new ApiError(503, 'api_closed');
+      if (!Array.isArray(scopes) || scopes.length === 0 || scopes.some((scope) => typeof scope !== 'string' || !API_SCOPES.has(scope))) throw new TypeError('scopes must be a non-empty list of supported API scopes');
+      if (!Number.isInteger(ttlMs) || ttlMs < 1000 || ttlMs > MAX_CREDENTIAL_LIFETIME_MS) throw new TypeError('ttlMs must be between 1000 and 86400000');
+      purgeExpiredCredentials(credentials);
+      if (credentials.size >= MAX_CREDENTIALS) throw new RangeError('credential_capacity');
+      const token = randomBytes(32).toString('hex');
+      const digest = createHash('sha256').update(token).digest('hex');
+      credentials.set(digest, { scopes: new Set(scopes), expiresAt: Date.now() + ttlMs });
+      return token;
+    },
+    /** Revoke a session capability immediately without affecting other sessions. */
+    revokeCredential(token) {
+      if (typeof token !== 'string') return false;
+      const digest = createHash('sha256').update(token).digest('hex');
+      return credentials.delete(digest);
+    },
     /** Bind only to IPv4 loopback; callers cannot choose a public interface. @param {number} [port] */
     listen(port = 0) {
       if (closing) return Promise.reject(new ApiError(503, 'api_closed'));
@@ -176,6 +199,7 @@ export function createRuntimeApi({ gateway, pollIntervalMs = 250, streamLifetime
     close() {
       if (closePromise) return closePromise;
       closing = true;
+      credentials.clear();
       for (const close of [...streams]) close();
       if (!server.listening && !listenPromise) closePromise = Promise.resolve();
       else if (!server.listening && listenPromise) closePromise = listenPromise.then(() => new Promise((resolve) => server.close(() => resolve())), () => undefined);
@@ -200,10 +224,29 @@ function validOrigin(origin, port) {
   if (origin === undefined) return true;
   return origin === `http://127.0.0.1:${port}` || origin === `http://localhost:${port}`;
 }
-function hasCredential(header, digest) {
+function authenticate(header, credentials, requiredScope) {
   if (typeof header !== 'string' || !header.startsWith('Bearer ') || header.length > 256) return false;
   const candidate = createHash('sha256').update(header.slice(7)).digest();
-  return timingSafeEqual(candidate, digest);
+  const digestHex = candidate.toString('hex');
+  let matched;
+  for (const [storedHex, entry] of credentials) {
+    const stored = Buffer.from(storedHex, 'hex');
+    if (timingSafeEqual(candidate, stored)) matched = entry;
+  }
+  purgeExpiredCredentials(credentials);
+  return matched && matched.expiresAt > Date.now() && matched.scopes.has(requiredScope) ? matched : false;
+}
+function purgeExpiredCredentials(credentials) {
+  const now = Date.now();
+  for (const [digest, entry] of credentials) if (entry.expiresAt <= now) credentials.delete(digest);
+}
+function requiredScope(method, pathname) {
+  if (method === 'GET' && pathname === '/v1/health') return 'health';
+  if (method === 'GET' && pathname === '/v1/runs') return 'runs:read';
+  if (method === 'GET' && ['/v1/events', '/v1/events/stream'].includes(pathname)) return 'events:read';
+  if (method === 'POST' && pathname === '/v1/runs') return 'runs:start';
+  if (method === 'POST' && /^\/v1\/runs\/[^/]+\/stop$/.test(pathname)) return 'runs:stop';
+  return null;
 }
 function sendJson(res, status, value) {
   if (res.destroyed) return;

@@ -41,7 +41,8 @@ function request(address, api, { method = 'GET', route = '/v1/health', body, tok
 
 async function apiFixture(overrides = {}, gatewayOverrides = {}) {
   const f = fakeGateway(gatewayOverrides);
-  const api = createRuntimeApi({ gateway: f.gateway, ...overrides });
+  const runtimeApi = createRuntimeApi({ gateway: f.gateway, ...overrides });
+  const api = { ...runtimeApi, credential: runtimeApi.createCredential(['health', 'runs:read', 'events:read', 'runs:start', 'runs:stop']) };
   const address = await api.listen();
   return { ...f, api, address, close: () => api.close() };
 }
@@ -52,6 +53,20 @@ test('Runtime API requires a valid Gateway and bounded stream configuration', ()
   assert.throws(() => createRuntimeApi({ gateway, maxStreams: 5 }), /maxStreams/);
   assert.throws(() => createRuntimeApi({ gateway, pollIntervalMs: 10 }), /pollIntervalMs/);
   assert.throws(() => createRuntimeApi({ gateway, streamLifetimeMs: 60_001 }), /streamLifetimeMs/);
+  const api = createRuntimeApi({ gateway });
+  assert.throws(() => api.createCredential(['admin']), /scopes/);
+  assert.throws(() => api.createCredential(['runs:read'], { ttlMs: 86_400_001 }), /ttlMs/);
+  for (let i = 0; i < 256; i++) api.createCredential(['runs:read']);
+  assert.throws(() => api.createCredential(['runs:read']), /credential_capacity/);
+});
+
+test('closing the API invalidates session credentials and prevents new credentials', async () => {
+  const gateway = fakeGateway().gateway;
+  const api = createRuntimeApi({ gateway });
+  const credential = api.createCredential(['runs:read']);
+  await api.close();
+  assert.equal(api.revokeCredential(credential), false);
+  assert.throws(() => api.createCredential(['runs:read']), /api_closed/);
 });
 
 test('API binds to IPv4 loopback, requires bearer auth, validates host/origin, and emits restrictive headers', async (t) => {
@@ -112,6 +127,34 @@ test('API projects run/event data and only forwards allowlisted start and stop r
   assert.equal(stopped.text.includes('secret'), false);
 });
 
+test('session credentials enforce least-privilege scopes and can be revoked independently', async (t) => {
+  const f = await apiFixture();
+  t.after(f.close);
+  const readToken = f.api.createCredential(['runs:read']);
+  const startToken = f.api.createCredential(['runs:start']);
+
+  const read = await request(f.address, f.api, { route: '/v1/runs', token: readToken });
+  assert.equal(read.status, 200);
+  const cannotStart = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', token: readToken,
+    body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'task' }),
+  });
+  assert.equal(cannotStart.status, 401);
+  assert.equal(f.calls.length, 0);
+
+  const started = await request(f.address, f.api, {
+    method: 'POST', route: '/v1/runs', token: startToken,
+    body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'task' }),
+  });
+  assert.equal(started.status, 202);
+  const cannotRead = await request(f.address, f.api, { route: '/v1/runs', token: startToken });
+  assert.equal(cannotRead.status, 401);
+
+  assert.equal(f.api.revokeCredential(readToken), true);
+  assert.equal((await request(f.address, f.api, { route: '/v1/runs', token: readToken })).status, 401);
+  assert.equal(f.api.revokeCredential(readToken), false);
+});
+
 test('invalid content type, malformed JSON, oversized body, and unsupported method fail with stable responses', async (t) => {
   const f = await apiFixture();
   t.after(f.close);
@@ -138,7 +181,8 @@ test('unrecognized Gateway errors never expose message or caller-controlled erro
 test('bounded authenticated SSE streams expose lifecycle projections and close with the API', async (t) => {
   let events = [];
   const f = fakeGateway({ events: ({ after = 0 } = {}) => events.filter((event) => event.id > after) });
-  const api = createRuntimeApi({ gateway: f.gateway, maxStreams: 1, pollIntervalMs: 100, streamLifetimeMs: 1000 });
+  const runtimeApi = createRuntimeApi({ gateway: f.gateway, maxStreams: 1, pollIntervalMs: 100, streamLifetimeMs: 1000 });
+  const api = { ...runtimeApi, credential: runtimeApi.createCredential(['health', 'runs:read', 'events:read', 'runs:start', 'runs:stop']) };
   const address = await api.listen();
   t.after(() => api.close());
   const first = http.request({ host: address.host, port: address.port, path: '/v1/events/stream?after=0', headers: { Host: `${address.host}:${address.port}`, Authorization: `Bearer ${api.credential}` } });
@@ -183,7 +227,8 @@ test('valid API credentials cannot bypass the Gateway default-deny approval call
     resolveExecutableImpl: async () => process.execPath,
     spawnImpl: (...args) => { spawned.push(args); throw new Error('must_not_spawn'); },
   });
-  const api = createRuntimeApi({ gateway });
+  const runtimeApi = createRuntimeApi({ gateway });
+  const api = { ...runtimeApi, credential: runtimeApi.createCredential(['health', 'runs:read', 'events:read', 'runs:start', 'runs:stop']) };
   const address = await api.listen();
   t.after(async () => { await api.close(); await gateway.close(); await rm(root, { recursive: true, force: true }); });
   const payload = JSON.stringify({ provider: 'claude', cwd: root, prompt: 'fixture task' });
