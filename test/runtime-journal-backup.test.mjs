@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { appendFile, lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
 import { backupRuntimeJournal, readBoundedBackupHandle, recoverRuntimeJournalTail, restoreRuntimeJournal, verifyRuntimeJournalBackup } from '../src/runtime/journal-backup.mjs';
@@ -68,6 +68,104 @@ test('encrypted backup restores exact journal bytes and stable session identity 
   if (process.platform !== 'win32') {
     assert.equal((await stat(destinationDirectory)).mode & 0o077, 0);
   }
+});
+
+test('encrypted backup checks destination directory and empty file permissions before writing ciphertext', async (t) => {
+  const source = await sourceFixture(t);
+  const outputPath = path.join(source.root, 'checked.backup.albera');
+  const aclTargets = [];
+  await backupRuntimeJournal({
+    ...source,
+    outputPath,
+    passphrase: PASSPHRASE,
+    verifyWindowsAcl: async (target, { kind }) => {
+      aclTargets.push(`${target}:${kind}`);
+      if (target === outputPath) assert.equal((await stat(target)).size, 0, 'ACL check runs before ciphertext is written');
+    },
+  });
+  assert.deepEqual(aclTargets, [
+    `${source.root}:directory`, `${source.root}:directory`,
+    `${source.journalPath}:file`, `${source.journalPath}.session-id:file`, `${outputPath}:file`,
+  ]);
+
+  const deniedDirectory = path.join(source.root, 'denied-backups');
+  await mkdir(deniedDirectory);
+  const deniedDirectoryOutput = path.join(deniedDirectory, 'backup.albera');
+  await assert.rejects(backupRuntimeJournal({
+    ...source,
+    outputPath: deniedDirectoryOutput,
+    passphrase: PASSPHRASE,
+    verifyWindowsAcl: async (target, { kind }) => {
+      if (target === deniedDirectory && kind === 'directory') throw new Error('backup_directory_permissions');
+    },
+  }), /backup_directory_permissions/);
+  await assert.rejects(lstat(deniedDirectoryOutput), { code: 'ENOENT' });
+
+  const deniedFileOutput = path.join(source.root, 'denied-file.backup.albera');
+  await assert.rejects(backupRuntimeJournal({
+    ...source,
+    outputPath: deniedFileOutput,
+    passphrase: PASSPHRASE,
+    verifyWindowsAcl: async (target, { kind }) => {
+      if (target === deniedFileOutput && kind === 'file') {
+        assert.equal((await stat(target)).size, 0, 'refused output is still empty');
+        throw new Error('backup_file_permissions');
+      }
+    },
+  }), /backup_file_permissions/);
+  assert.deepEqual(await readFile(deniedFileOutput), Buffer.alloc(0), 'permission failure writes no ciphertext');
+});
+
+test('encrypted backup refuses a POSIX output directory readable by other users', { skip: process.platform === 'win32' }, async (t) => {
+  const source = await sourceFixture(t);
+  const outputDirectory = path.join(source.root, 'broad-backup-directory');
+  await mkdir(outputDirectory, { mode: 0o700 });
+  await chmod(outputDirectory, 0o755);
+  const outputPath = path.join(outputDirectory, 'backup.albera');
+
+  await assert.rejects(backupRuntimeJournal({ ...source, outputPath, passphrase: PASSPHRASE, verifyWindowsAcl }), /backup_directory_permissions/);
+  await assert.rejects(lstat(outputPath), { code: 'ENOENT' });
+});
+
+test('encrypted backup refuses an output path replaced during ACL verification', async (t) => {
+  const source = await sourceFixture(t);
+  const outputPath = path.join(source.root, 'raced.backup.albera');
+  const originalCreatedFile = `${outputPath}.created`;
+  await assert.rejects(backupRuntimeJournal({
+    ...source,
+    outputPath,
+    passphrase: PASSPHRASE,
+    verifyWindowsAcl: async (target, { kind }) => {
+      if (target !== outputPath || kind !== 'file') return;
+      await rename(outputPath, originalCreatedFile);
+      await writeFile(outputPath, 'preserve replacement', { flag: 'wx' });
+    },
+  }), /backup_file_changed_during_permission_check/);
+  assert.equal(await readFile(outputPath, 'utf8'), 'preserve replacement');
+  assert.deepEqual(await readFile(originalCreatedFile), Buffer.alloc(0), 'the original opened file remains empty');
+});
+
+test('encrypted backup refuses an output directory replaced after its ACL check', async (t) => {
+  const source = await sourceFixture(t);
+  const outputDirectory = path.join(source.root, 'backup-destination');
+  const replacedDirectory = `${outputDirectory}.checked`;
+  await mkdir(outputDirectory);
+  const outputPath = path.join(outputDirectory, 'backup.albera');
+  let replaced = false;
+
+  await assert.rejects(backupRuntimeJournal({
+    ...source,
+    outputPath,
+    passphrase: PASSPHRASE,
+    verifyWindowsAcl: async (target, { kind }) => {
+      if (target !== outputDirectory || kind !== 'directory' || replaced) return;
+      replaced = true;
+      await rename(outputDirectory, replacedDirectory);
+      await mkdir(outputDirectory);
+    },
+  }), /backup_directory_changed_during_create/);
+  assert.deepEqual(await readFile(outputPath), Buffer.alloc(0), 'the replacement destination remains empty');
+  await assert.rejects(lstat(path.join(replacedDirectory, 'backup.albera')), { code: 'ENOENT' });
 });
 
 test('backup requires the exclusive journal lock and never overwrites an existing output', async (t) => {

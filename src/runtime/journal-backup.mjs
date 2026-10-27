@@ -26,7 +26,13 @@ export async function backupRuntimeJournal({ journalPath, outputPath, passphrase
   assertAbsolutePath(journalPath, 'journal_path_must_be_absolute');
   assertAbsolutePath(outputPath, 'backup_path_must_be_absolute');
   assertPassphrase(passphrase);
-  if ([journalPath, `${journalPath}.session-id`, `${journalPath}.lock`].some((source) => path.resolve(outputPath) === path.resolve(source))) throw new Error('backup_path_conflicts_with_source');
+  const resolvedOutputPath = path.resolve(outputPath);
+  if ([journalPath, `${journalPath}.session-id`, `${journalPath}.lock`].some((source) => resolvedOutputPath === path.resolve(source))) throw new Error('backup_path_conflicts_with_source');
+  const outputDirectory = path.dirname(resolvedOutputPath);
+  const outputDirectoryInfo = await lstat(outputDirectory, { bigint: true });
+  if (!outputDirectoryInfo.isDirectory() || outputDirectoryInfo.isSymbolicLink()) throw new Error('backup_directory_invalid');
+  assertPrivatePosixStorage({ mode: Number(outputDirectoryInfo.mode), uid: Number(outputDirectoryInfo.uid) }, 'backup_directory_permissions', 'directory');
+  await verifyWindowsAcl(outputDirectory, { kind: 'directory' });
   const info = await lstat(journalPath);
   if (!info.isFile() || info.isSymbolicLink()) throw new Error('journal_file_invalid');
 
@@ -43,8 +49,22 @@ export async function backupRuntimeJournal({ journalPath, outputPath, passphrase
   }
 
   const encrypted = await encryptPayload(payload, passphrase);
-  const handle = await open(outputPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | NOFOLLOW, 0o600);
+  const handle = await open(resolvedOutputPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | NOFOLLOW, 0o600);
   try {
+    const currentDirectoryInfo = await lstat(outputDirectory, { bigint: true });
+    if (!currentDirectoryInfo.isDirectory() || currentDirectoryInfo.isSymbolicLink()
+      || !sameFileIdentity(outputDirectoryInfo, currentDirectoryInfo)) throw new Error('backup_directory_changed_during_create');
+    const outputInfo = await handle.stat();
+    const outputHandleIdentity = await handle.stat({ bigint: true });
+    if (!outputInfo.isFile() || outputInfo.nlink !== 1) throw new Error('backup_file_invalid');
+    assertPrivatePosixStorage(outputInfo, 'backup_file_permissions', 'file');
+    const pathInfoBeforeAcl = await lstat(resolvedOutputPath, { bigint: true });
+    if (!pathInfoBeforeAcl.isFile() || pathInfoBeforeAcl.isSymbolicLink()
+      || !sameFileIdentity(outputHandleIdentity, pathInfoBeforeAcl)) throw new Error('backup_file_changed_during_permission_check');
+    await verifyWindowsAcl(resolvedOutputPath, { kind: 'file' });
+    const pathInfoAfterAcl = await lstat(resolvedOutputPath, { bigint: true });
+    if (!pathInfoAfterAcl.isFile() || pathInfoAfterAcl.isSymbolicLink()
+      || !sameFileIdentity(outputHandleIdentity, pathInfoAfterAcl)) throw new Error('backup_file_changed_during_permission_check');
     await handle.writeFile(encrypted);
     await handle.sync();
   } finally {
@@ -292,6 +312,11 @@ async function writeNewPrivateFile(filePath, contents, verifyWindowsAcl) {
   } finally {
     await handle.close();
   }
+}
+
+function sameFileIdentity(left, right) {
+  return typeof left.dev === 'bigint' && typeof left.ino === 'bigint' && left.ino !== 0n
+    && left.dev === right.dev && left.ino === right.ino;
 }
 
 function assertAbsolutePath(value, code) {
