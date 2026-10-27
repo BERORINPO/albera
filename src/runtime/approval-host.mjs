@@ -9,6 +9,7 @@ const MAX_SESSIONS = 32;
 const MAX_BODY_BYTES = 20 * 1024;
 const MAX_STREAM_BUFFER = 64 * 1024;
 const DEFAULT_SESSION_TTL_MS = 20 * 60 * 1000;
+const MAX_SESSION_AGE_MS = 8 * 60 * 60 * 1000;
 const SESSION_ID_RE = /^[0-9a-f]{32}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -31,7 +32,10 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
   if (!Array.isArray(roots) || roots.some((root) => typeof root !== 'string' || !path.isAbsolute(root))) throw new TypeError('roots must contain absolute paths');
   if (sessionId !== undefined && (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId))) throw new TypeError('sessionId must be 32 lowercase hexadecimal characters');
 
-  const token = api.createCredential(API_TOKEN_SCOPES, sessionId ? { sessionId } : undefined);
+  const token = api.createCredential(API_TOKEN_SCOPES, {
+    ttlMs: MAX_SESSION_AGE_MS,
+    ...(sessionId ? { sessionId } : {}),
+  });
   const bootstrapCode = randomBytes(32).toString('base64url');
   const sessions = new Map();
   let bootstrapUsed = false;
@@ -80,8 +84,9 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
       if (!constantTimeStringEqual(req.headers['x-albera-csrf'], session.csrfToken)) return send(res, 403, JSON.stringify({ error: 'csrf_failed' }));
     }
 
-    session.expiresAt = Date.now() + sessionLifetimeMs;
-    res.setHeader('Set-Cookie', cookieHeader(sessionToken, sessionLifetimeMs));
+    const now = Date.now();
+    session.expiresAt = Math.min(now + sessionLifetimeMs, session.absoluteExpiresAt);
+    res.setHeader('Set-Cookie', cookieHeader(sessionToken, session.expiresAt - now));
 
     let body;
     if (req.method === 'POST') {
@@ -98,9 +103,10 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
     const cookie = parseCookie(req.headers.cookie, 'albera_runtime_session');
     const existing = sessionForToken(cookie);
     if (!existing) return send(res, 401, JSON.stringify({ error: 'bootstrap_required' }));
-    existing.expiresAt = Date.now() + sessionLifetimeMs;
+    const now = Date.now();
+    existing.expiresAt = Math.min(now + sessionLifetimeMs, existing.absoluteExpiresAt);
     return send(res, 200, JSON.stringify({ csrfToken: existing.csrfToken, expiresAt: existing.expiresAt, roots }), undefined, {
-      'Set-Cookie': cookieHeader(cookie, sessionLifetimeMs),
+      'Set-Cookie': cookieHeader(cookie, existing.expiresAt - now),
       'Vary': 'Cookie, Origin',
     });
   }
@@ -122,8 +128,10 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
     if (sessions.size >= maxSessions) return send(res, 503, JSON.stringify({ error: 'session_capacity' }));
     const sessionToken = randomBytes(32).toString('base64url');
     const csrfToken = randomBytes(32).toString('base64url');
-    const expiresAt = Date.now() + sessionLifetimeMs;
-    sessions.set(hash(sessionToken), { csrfToken, expiresAt });
+    const now = Date.now();
+    const absoluteExpiresAt = now + MAX_SESSION_AGE_MS;
+    const expiresAt = Math.min(now + sessionLifetimeMs, absoluteExpiresAt);
+    sessions.set(hash(sessionToken), { csrfToken, expiresAt, absoluteExpiresAt });
     return send(res, 200, JSON.stringify({ csrfToken, expiresAt, roots }), undefined, {
       'Set-Cookie': cookieHeader(sessionToken, sessionLifetimeMs),
       'Vary': 'Cookie, Origin',
@@ -141,12 +149,14 @@ export function createRuntimeApprovalHost({ api, sessionId, sessionLifetimeMs = 
     const key = hash(value);
     const session = sessions.get(key);
     if (!session) return undefined;
-    if (session.expiresAt <= Date.now()) { sessions.delete(key); return undefined; }
+    const now = Date.now();
+    if (session.expiresAt <= now || session.absoluteExpiresAt <= now) { sessions.delete(key); return undefined; }
     return session;
   }
 
   function purgeSessions() {
-    for (const [key, session] of sessions) if (session.expiresAt <= Date.now()) sessions.delete(key);
+    const now = Date.now();
+    for (const [key, session] of sessions) if (session.expiresAt <= now || session.absoluteExpiresAt <= now) sessions.delete(key);
   }
 
   async function proxy(req, res, upstream, body) {

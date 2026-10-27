@@ -26,12 +26,13 @@ function fakeChild() {
   return child;
 }
 
-async function fixture(t) {
+async function fixture(t, hostOptions = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-approval-host-'));
   const journal = await openTestJournal(path.join(root, 'runtime.audit.jsonl'));
   const runtime = createRuntimeHost({
     roots: [root],
     journal,
+    hostOptions,
     gatewayOptions: {
       resolveExecutableImpl: async () => process.execPath,
       buildLaunchImpl: (_provider, profile) => ({ profile, args: [] }),
@@ -141,6 +142,26 @@ test('approval host refreshes active browser sessions and rejects an expired idl
   now = f.session.expiresAt + 1;
   assert.equal((await get(f, '/api/runs')).status, 200);
   now += ttlMs + 1;
+  assert.equal((await get(f, '/api/runs')).status, 401);
+});
+
+test('approval host enforces an eight-hour absolute session lifetime during active polling', async (t) => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  t.after(() => { Date.now = realNow; });
+  const f = await fixture(t, { sessionLifetimeMs: 60 * 60 * 1000 });
+  const createdAt = now;
+  const renewalIntervalMs = 59 * 60 * 1000;
+
+  for (let hour = 1; hour <= 8; hour++) {
+    now = createdAt + hour * renewalIntervalMs;
+    const response = await get(f, '/api/runs');
+    assert.equal(response.status, 200, `active request ${hour} should renew the idle timeout`);
+    if (hour === 8) assert.match(response.headers.get('set-cookie'), /Max-Age=480(?:;|$)/);
+  }
+
+  now = createdAt + 8 * 60 * 60 * 1000 + 1;
   assert.equal((await get(f, '/api/runs')).status, 401);
 });
 
