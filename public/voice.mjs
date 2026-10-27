@@ -23,6 +23,7 @@ export function initVoice({ t }) {
   let parts = /** @type {Record<string, Blob[]>} */ ({ user: [], assistant: [] });
   let transcriptRows = /** @type {Array<{role:'user'|'assistant',text:string}>} */ ([]);
   let startedAt = 0;
+  let captureStartedAt = 0;
   let pendingDeleteId = '';
   let stopping = false;
   let objectUrls = /** @type {string[]} */ ([]);
@@ -70,6 +71,36 @@ export function initVoice({ t }) {
     recorders = {};
     parts = { user: [], assistant: [] };
     transcriptRows = [];
+    captureStartedAt = 0;
+  }
+  async function finishCapture(outcome) {
+    if (stopping) return;
+    stopping = true;
+    stop.disabled = true;
+    stop.hidden = true;
+    say(outcome === 'interrupted' ? 'voice.savingInterrupted' : 'voice.saving');
+    const active = Object.values(recorders);
+    const stopped = active.map((recorder) => new Promise((resolve) => {
+      if (recorder.state === 'inactive') return resolve(undefined);
+      recorder.addEventListener('stop', () => resolve(undefined), { once: true }); recorder.stop();
+    }));
+    if (channel) channel.close(); channel = null;
+    if (peer) peer.close(); peer = null;
+    await Promise.all(stopped);
+    for (const track of stream?.getTracks() ?? []) track.stop(); stream = null; audio.srcObject = null;
+    const audioRows = Object.fromEntries(['user', 'assistant'].map((role) => {
+      const blobs = parts[role];
+      const blob = blobs.length ? new Blob(blobs, { type: blobs[0]?.type || 'audio/webm' }) : null;
+      return [role, blob];
+    }));
+    const hasCapture = Object.values(audioRows).some((blob) => blob?.size) || transcriptRows.length > 0;
+    try {
+      if (!hasCapture) { say(outcome === 'interrupted' ? 'voice.interruptedEmpty' : 'voice.noCapture'); return; }
+      const now = Date.now();
+      const session = { id: `voice_${crypto.randomUUID()}`, createdAt: captureStartedAt || startedAt || now, durationSeconds: Math.max(1, Math.round((now - (captureStartedAt || startedAt || now)) / 1000)), outcome, transcript: transcriptRows };
+      await saveVoiceSession(session, audioRows); say(outcome === 'interrupted' ? 'voice.interruptedSaved' : 'voice.saved'); await refreshHistory();
+    } catch { say('voice.saveFailed'); }
+    finally { clearActive(); stopping = false; stop.disabled = false; start.hidden = false; start.disabled = !available; }
   }
   async function refreshHistory() {
     history.replaceChildren();
@@ -93,7 +124,8 @@ export function initVoice({ t }) {
     for (const url of objectUrls) URL.revokeObjectURL(url);
     objectUrls = [];
     detail.replaceChildren(); detail.hidden = false;
-    const heading = document.createElement('h3'); heading.textContent = new Date(record.createdAt).toLocaleString(); detail.append(heading);
+    const outcome = record.outcome === 'interrupted' ? 'interrupted' : 'complete';
+    const heading = document.createElement('h3'); heading.textContent = `${new Date(record.createdAt).toLocaleString()} — ${t()(`voice.outcome.${outcome}`)}`; detail.append(heading);
     const lines = document.createElement('div'); lines.className = 'voice__transcript';
     for (const row of record.transcript) {
       const line = document.createElement('p'); line.className = `voice__line voice__line--${row.role}`;
@@ -102,7 +134,7 @@ export function initVoice({ t }) {
     detail.append(lines);
     for (const role of ['user', 'assistant']) {
       const blob = await getVoiceAudio(id, role);
-      if (!blob) continue;
+      if (!blob) { const missing = document.createElement('p'); missing.textContent = t()(`voice.${role}AudioMissing`); detail.append(missing); continue; }
       const label = document.createElement('label'); label.textContent = t()(`voice.${role}Audio`);
       const player = document.createElement('audio'); player.controls = true; player.src = URL.createObjectURL(blob);
       objectUrls.push(player.src);
@@ -124,7 +156,7 @@ export function initVoice({ t }) {
     } catch { available = false; say('voice.unavailable'); }
   });
   start.addEventListener('click', async () => {
-    start.disabled = true; detail.hidden = true; transcript.replaceChildren(); say('voice.connecting');
+    start.disabled = true; detail.hidden = true; transcript.replaceChildren(); say('voice.connecting'); captureStartedAt = Date.now();
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       addRecorder('user', stream);
@@ -134,7 +166,7 @@ export function initVoice({ t }) {
         audio.srcObject = remote; void audio.play().catch(() => {});
         if (!recorders.assistant) addRecorder('assistant', remote);
       };
-      peer.onconnectionstatechange = () => { if (!stopping && peer && ['failed', 'closed'].includes(peer.connectionState)) { clearActive(); say('voice.disconnected'); } };
+      peer.onconnectionstatechange = () => { if (!stopping && peer && ['failed', 'closed'].includes(peer.connectionState)) { void finishCapture('interrupted'); say('voice.disconnected'); } };
       for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
       channel = peer.createDataChannel('live-events');
       channel.addEventListener('open', () => { startedAt = Date.now(); say('voice.listening'); start.hidden = true; mute.hidden = false; stop.hidden = false; });
@@ -148,8 +180,9 @@ export function initVoice({ t }) {
       const value = await createVoiceSession(peer.localDescription?.sdp ?? '');
       await peer.setRemoteDescription({ type: 'answer', sdp: value.sdp });
     } catch (error) {
-      clearActive();
-      say(error instanceof Error && ['NotAllowedError', 'NotFoundError', 'SecurityError'].includes(error.name) ? 'voice.micDenied' : error instanceof VoiceApiError && error.reason === 'not_configured' ? 'voice.unconfigured' : 'voice.unavailable');
+      const key = error instanceof Error && ['NotAllowedError', 'NotFoundError', 'SecurityError'].includes(error.name) ? 'voice.micDenied' : error instanceof VoiceApiError && error.reason === 'not_configured' ? 'voice.unconfigured' : 'voice.unavailable';
+      if (Object.values(parts).some((rows) => rows.length) || transcriptRows.length) { say(key); await finishCapture('interrupted'); }
+      else { clearActive(); say(key); }
     }
   });
   mute.addEventListener('click', () => {
@@ -157,21 +190,7 @@ export function initVoice({ t }) {
     track.enabled = !track.enabled; mute.textContent = t()(track.enabled ? 'voice.mute' : 'voice.unmute');
   });
   stop.addEventListener('click', async () => {
-    stopping = true; stop.disabled = true; stop.hidden = true; say('voice.saving');
-    const active = Object.values(recorders);
-    const stopped = active.map((recorder) => new Promise((resolve) => {
-      if (recorder.state === 'inactive') return resolve(undefined);
-      recorder.addEventListener('stop', () => resolve(undefined), { once: true }); recorder.stop();
-    }));
-    if (channel) channel.close(); channel = null;
-    if (peer) peer.close(); peer = null;
-    await Promise.all(stopped);
-    for (const track of stream?.getTracks() ?? []) track.stop(); stream = null; audio.srcObject = null;
-    const session = { id: `voice_${crypto.randomUUID()}`, createdAt: startedAt, durationSeconds: Math.max(1, Math.round((Date.now() - startedAt) / 1000)), transcript: transcriptRows };
-    const audioRows = { user: new Blob(parts.user, { type: parts.user[0]?.type || 'audio/webm' }), assistant: new Blob(parts.assistant, { type: parts.assistant[0]?.type || 'audio/webm' }) };
-    try { await saveVoiceSession(session, audioRows); say('voice.saved'); await refreshHistory(); }
-    catch { say('voice.saveFailed'); }
-    clearActive(); stopping = false; stop.disabled = false; start.hidden = false; start.disabled = !available;
+    await finishCapture('complete');
   });
   mute.hidden = stop.hidden = true;
   history.addEventListener('click', async (event) => {
@@ -198,7 +217,7 @@ export function initVoice({ t }) {
     if ((peer || stream) && !stopping) { event.preventDefault(); event.returnValue = ''; }
   });
   dialog.addEventListener('close', () => {
-    if (peer || stream) { clearActive(); say('voice.ended'); }
+    if (peer || stream) void finishCapture('interrupted');
     for (const url of objectUrls) URL.revokeObjectURL(url); objectUrls = [];
   });
   void refreshHistory();

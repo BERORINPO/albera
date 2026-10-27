@@ -1488,3 +1488,9 @@ Acceptance (screenshots with the demo server on a free port in 18950–18989, `?
 
 - JavaScript/i18n適用前のHTML fallbackが「録音を保存しない」と誤っていたため、ブラウザー内へ字幕と分離した音声を保存し、API課金が別であることを初期HTMLにも明記した。開始ボタンの初期ラベルも翻訳辞書と一致させた。
 - source assertionがHTML first paintの保存先・課金・ログ保持案内を検証する。`npm test`: 619/619 passed、`npm run arch`: 104 paths / 0 violations、`git diff --check`: passed。
+
+### Voice接続中断時の部分保存
+
+- 利用者が明示的に開始した後、接続が予期せず終了した場合は、MediaRecorderを止めて取得済み音声と字幕をブラウザー内へ`interrupted`として保存する。片方の話者音声が取得できていない場合は、その音声を作らず詳細に取得不可と表示する。音声・字幕がどちらも無い場合は空記録を作らない。
+- 合成IndexedDBテストで、中断状態、取得済み片側音声と字幕の保存/読出し、未取得側が無いこと、空記録拒否を確認した。`npm test` と `npm run arch` は通過し、`git diff --check` も通過。
+- 実WebRTC切断時のブラウザー挙動と実音声の部分保存は、実API/マイク接続を行っていないため未確認。

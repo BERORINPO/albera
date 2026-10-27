@@ -96,7 +96,7 @@ class MemoryFactory {
 
 test('browser voice store persists both audio tracks and transcript, lists and deletes them', async () => {
   const factory = new MemoryFactory();
-  const session = { id: SESSION_ID, createdAt: 100, durationSeconds: 17, transcript: [{ role: 'user', text: 'synthetic question' }, { role: 'assistant', text: 'synthetic answer' }] };
+  const session = { id: SESSION_ID, createdAt: 100, durationSeconds: 17, outcome: 'complete', transcript: [{ role: 'user', text: 'synthetic question' }, { role: 'assistant', text: 'synthetic answer' }] };
   await saveVoiceSession(session, { user: new Blob(['mic']), assistant: new Blob(['reply']) }, factory);
   assert.equal((await listVoiceSessions(factory))[0].transcript[1].text, 'synthetic answer');
   assert.equal(await (await getVoiceAudio(SESSION_ID, 'user', factory)).text(), 'mic');
@@ -106,6 +106,16 @@ test('browser voice store persists both audio tracks and transcript, lists and d
   assert.equal(await getVoiceAudio(SESSION_ID, 'user', factory), null);
   assert.equal(await voiceStorageAvailable(factory), true);
   await assert.rejects(saveVoiceSession({ ...session, id: 'bad' }, { user: new Blob(['x']), assistant: new Blob(['y']) }, factory), /invalid_voice_record/);
+});
+
+test('browser voice store preserves an interrupted partial capture without inventing missing audio', async () => {
+  const factory = new MemoryFactory();
+  const session = { id: SESSION_ID, createdAt: 100, durationSeconds: 5, outcome: 'interrupted', transcript: [{ role: 'user', text: 'partial synthetic caption' }] };
+  await saveVoiceSession(session, { user: new Blob(['partial mic']), assistant: null }, factory);
+  assert.equal((await listVoiceSessions(factory))[0].outcome, 'interrupted');
+  assert.equal(await (await getVoiceAudio(SESSION_ID, 'user', factory)).text(), 'partial mic');
+  assert.equal(await getVoiceAudio(SESSION_ID, 'assistant', factory), null);
+  await assert.rejects(saveVoiceSession({ ...session, id: 'voice_00000000-0000-4000-8000-000000000002', transcript: [] }, { user: null, assistant: null }, factory), /voice_capture_empty/);
 });
 
 test('GPT-Live caption projection accepts only bounded caption deltas', () => {
