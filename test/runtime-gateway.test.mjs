@@ -106,7 +106,7 @@ test('trusted approval broker gates streaming provider launch on an explicit one
   await waitFor(() => broker.listPending().length === 1);
   const [approval] = broker.listPending();
   assert.equal(approval.request.action, 'start');
-  assert.equal(approval.request.cwd, f.cwd);
+  assert.equal(approval.request.cwd, await realpath(f.cwd));
   assert.equal(approval.request.initialInput, 'ALBERA task:\nreview this task');
   assert.equal(JSON.stringify(approval.request.args).includes('review this task'), false);
   assert.equal(spawned, false);

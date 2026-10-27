@@ -13,7 +13,7 @@ const MAX_TRACKED_RUNS = 64;
 const MAX_PENDING_STREAM_EVENTS = 256;
 const MAX_SESSION_EVENT_LOGS = 256;
 const MAX_SESSION_EVENTS = 256;
-const API_SCOPES = new Set(['health', 'providers:read', 'runs:read', 'events:read', 'runs:start', 'runs:stop', 'runs:input']);
+const API_SCOPES = new Set(['health', 'providers:read', 'runs:read', 'events:read', 'runs:start', 'runs:stop', 'runs:input', 'approvals:read', 'approvals:decide']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
 const RUN_STATUSES = new Set(['starting', 'running', 'stopping', 'stopped', 'exited', 'failed', 'interrupted']);
@@ -37,9 +37,10 @@ class ApiError extends Error {
  * The Gateway still performs its separate host authorization; possession of this token alone cannot launch.
  * @param {{gateway: {start: Function, stop: Function, list: Function, events: Function, sendInput?: Function}, pollIntervalMs?: number, streamLifetimeMs?: number, maxStreams?: number}} options
  */
-export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, streamLifetimeMs = MAX_STREAM_LIFETIME_MS, maxStreams = MAX_STREAMS } = {}) {
+export function createRuntimeApi({ gateway, journal, approvalBroker, pollIntervalMs = 250, streamLifetimeMs = MAX_STREAM_LIFETIME_MS, maxStreams = MAX_STREAMS } = {}) {
   if (!gateway || ['start', 'stop', 'list', 'events'].some((method) => typeof gateway[method] !== 'function')) throw new TypeError('Runtime API requires a Gateway');
   if (journal !== undefined && (!journal || typeof journal.append !== 'function' || typeof journal.list !== 'function')) throw new TypeError('journal must provide append() and list()');
+  if (approvalBroker !== undefined && (!approvalBroker || typeof approvalBroker.listPending !== 'function' || typeof approvalBroker.decide !== 'function' || typeof approvalBroker.close !== 'function')) throw new TypeError('approvalBroker must provide listPending(), decide() and close()');
   if (journal !== undefined && typeof gateway.close !== 'function') throw new TypeError('audited Gateway must provide close() for fail-closed cleanup');
   if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 100 || pollIntervalMs > 1000) throw new TypeError('pollIntervalMs must be between 100 and 1000');
   if (!Number.isInteger(streamLifetimeMs) || streamLifetimeMs < 1000 || streamLifetimeMs > MAX_STREAM_LIFETIME_MS) throw new TypeError('streamLifetimeMs must be between 1000 and 60000');
@@ -87,6 +88,22 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
       if (req.method === 'GET' && url.pathname === '/v1/health') return sendJson(res, 200, { status: 'ok' });
       if (req.method === 'GET' && url.pathname === '/v1/providers') {
         return sendJson(res, 200, { providers: listRuntimeProviderCapabilities() });
+      }
+      if (req.method === 'GET' && url.pathname === '/v1/approvals') {
+        if (!approvalBroker) throw new ApiError(404, 'not_found');
+        const approvals = approvalBroker.listPending();
+        if (!Array.isArray(approvals) || approvals.length > 32) throw new ApiError(503, 'approval_unavailable');
+        return sendJson(res, 200, { approvals });
+      }
+      const approvalMatch = req.method === 'POST' && url.pathname.match(/^\/v1\/approvals\/([^/]+)$/);
+      if (approvalMatch) {
+        if (!approvalBroker) throw new ApiError(404, 'not_found');
+        if (!UUID_RE.test(approvalMatch[1])) throw new ApiError(404, 'not_found');
+        const body = await readJson(req);
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1
+          || !['approve', 'deny'].includes(body.decision)) throw new ApiError(400, 'invalid_request');
+        if (!approvalBroker.decide(approvalMatch[1], body.decision === 'approve')) throw new ApiError(404, 'not_found');
+        return sendJson(res, 200, { decided: true });
       }
       if (req.method === 'GET' && url.pathname === '/v1/runs') {
         const liveRuns = gateway.list().filter((run) => run && runOwners.get(run.id) === credential.sessionId).map(projectRun).filter(Boolean);
@@ -365,6 +382,7 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
     createCredential(scopes, { ttlMs = 60 * 60 * 1000, sessionId } = {}) {
       if (closing) throw new ApiError(503, 'api_closed');
       if (!Array.isArray(scopes) || scopes.length === 0 || scopes.some((scope) => typeof scope !== 'string' || !API_SCOPES.has(scope))) throw new TypeError('scopes must be a non-empty list of supported API scopes');
+      if (!approvalBroker && scopes.some((scope) => scope.startsWith('approvals:'))) throw new TypeError('approval scopes require an approval broker');
       if (!Number.isInteger(ttlMs) || ttlMs < 1000 || ttlMs > MAX_CREDENTIAL_LIFETIME_MS) throw new TypeError('ttlMs must be between 1000 and 86400000');
       if (sessionId !== undefined && (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId))) throw new TypeError('sessionId must be 32 lowercase hexadecimal characters');
       purgeExpiredCredentials(credentials);
@@ -401,7 +419,7 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
       });
       return listenPromise;
     },
-    /** Close the API only. Gateway/process ownership remains with its trusted host. */
+    /** Close the API, deny pending approvals, and leave active Gateway/process ownership with its trusted host. */
     close() {
       if (closePromise) return closePromise;
       closing = true;
@@ -409,6 +427,7 @@ export function createRuntimeApi({ gateway, journal, pollIntervalMs = 250, strea
       captureTimer = undefined;
       credentials.clear();
       for (const close of [...streams]) close();
+      approvalBroker?.close();
       closePromise = (async () => {
         await capturePromise?.catch(() => {});
         if (!server.listening && !listenPromise) return;
@@ -553,6 +572,8 @@ function purgeExpiredCredentials(credentials) {
 function requiredScope(method, pathname) {
   if (method === 'GET' && pathname === '/v1/health') return 'health';
   if (method === 'GET' && pathname === '/v1/providers') return 'providers:read';
+  if (method === 'GET' && pathname === '/v1/approvals') return 'approvals:read';
+  if (method === 'POST' && /^\/v1\/approvals\/[^/]+$/.test(pathname)) return 'approvals:decide';
   if (method === 'GET' && pathname === '/v1/runs') return 'runs:read';
   if (method === 'GET' && ['/v1/events', '/v1/events/stream'].includes(pathname)) return 'events:read';
   if (method === 'POST' && pathname === '/v1/runs') return 'runs:start';

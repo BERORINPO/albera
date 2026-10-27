@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import test from 'node:test';
 import { createRuntimeApi } from '../src/runtime/api.mjs';
+import { createRuntimeApprovalBroker } from '../src/runtime/approval-broker.mjs';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
 import { buildProviderLaunch, RuntimeGateway } from '../src/runtime/gateway.mjs';
 
@@ -59,6 +61,7 @@ test('Runtime API requires a valid Gateway and bounded stream configuration', ()
   const api = createRuntimeApi({ gateway });
   assert.throws(() => api.createCredential(['admin']), /scopes/);
   assert.throws(() => api.createCredential(['provider:read']), /scopes/);
+  assert.throws(() => api.createCredential(['approvals:read']), /approval broker/);
   assert.throws(() => api.createCredential(['runs:read'], { ttlMs: 86_400_001 }), /ttlMs/);
   assert.throws(() => api.createCredential(['runs:read'], { sessionId: 'caller supplied identity' }), /sessionId/);
   for (let i = 0; i < 256; i++) api.createCredential(['runs:read']);
@@ -640,4 +643,138 @@ test('valid API credentials cannot bypass the Gateway default-deny approval call
   assert.equal(denied.status, 403);
   assert.deepEqual(JSON.parse(denied.text), { error: 'confirmation_required' });
   assert.equal(spawned.length, 0);
+});
+
+test('approval routes require separate host-only scopes and decide one pending request once', async (t) => {
+  const broker = createRuntimeApprovalBroker();
+  const pending = broker.authorize({
+    action: 'input', provider: 'claude', profile: 'read-only-streaming', runId: '12345678-1234-4234-8234-123456789abc',
+    text: 'exact synthetic text for human approval',
+  });
+  const gateway = fakeGateway().gateway;
+  const runtimeApi = createRuntimeApi({ gateway, approvalBroker: broker });
+  const api = {
+    ...runtimeApi,
+    credential: runtimeApi.createCredential(['health']),
+    taskCredential: runtimeApi.createCredential(['runs:start', 'runs:input']),
+    approvalReader: runtimeApi.createCredential(['approvals:read']),
+    approvalDecider: runtimeApi.createCredential(['approvals:decide']),
+  };
+  const address = await api.listen();
+  t.after(async () => { await api.close(); });
+
+  assert.equal((await request(address, api, { route: '/v1/approvals', token: api.taskCredential })).status, 401);
+  assert.equal((await request(address, api, {
+    method: 'POST', route: '/v1/approvals/12345678-1234-4234-8234-123456789abc', token: api.taskCredential,
+    body: JSON.stringify({ decision: 'approve' }),
+  })).status, 401);
+  const listed = await request(address, api, { route: '/v1/approvals', token: api.approvalReader });
+  assert.equal(listed.status, 200);
+  const item = JSON.parse(listed.text).approvals[0];
+  assert.equal(item.request.text, 'exact synthetic text for human approval');
+  assert.equal((await request(address, api, { route: '/v1/approvals', token: api.approvalDecider })).status, 401);
+  const invalid = await request(address, api, {
+    method: 'POST', route: `/v1/approvals/${item.id}`, token: api.approvalDecider,
+    body: JSON.stringify({ decision: 'approve', confirmed: true }),
+  });
+  assert.equal(invalid.status, 400);
+  const decided = await request(address, api, {
+    method: 'POST', route: `/v1/approvals/${item.id}`, token: api.approvalDecider,
+    body: JSON.stringify({ decision: 'approve' }),
+  });
+  assert.equal(decided.status, 200);
+  assert.equal(await pending, true);
+  assert.equal((await request(address, api, {
+    method: 'POST', route: `/v1/approvals/${item.id}`, token: api.approvalDecider,
+    body: JSON.stringify({ decision: 'deny' }),
+  })).status, 404);
+});
+
+test('closing Runtime API denies pending host approval requests', async (t) => {
+  const broker = createRuntimeApprovalBroker();
+  const pending = broker.authorize({ action: 'input', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', text: 'pending synthetic approval' });
+  const runtimeApi = createRuntimeApi({ gateway: fakeGateway().gateway, approvalBroker: broker });
+  const address = await runtimeApi.listen();
+  t.after(() => runtimeApi.close());
+  assert.equal(broker.size, 1);
+  await runtimeApi.close();
+  assert.equal(await pending, false);
+  assert.equal(address.host, '127.0.0.1');
+});
+
+test('Runtime API host approval routes carry a synthetic launch from request through human decision', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-host-approval-e2e-'));
+  const broker = createRuntimeApprovalBroker();
+  let child;
+  const gateway = new RuntimeGateway({
+    roots: [root],
+    authorize: broker.authorize,
+    resolveExecutableImpl: async () => process.execPath,
+    buildLaunchImpl: (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile),
+    env: {},
+    spawnImpl: () => {
+      child = new EventEmitter();
+      child.pid = 12345;
+      child.exitCode = null;
+      child.signalCode = null;
+      child.kill = (signal) => {
+        child.signalCode = signal;
+        queueMicrotask(() => child.emit('close', null, signal));
+        return true;
+      };
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
+    },
+    signalTreeImpl: (_pid, signal, target) => target.kill(signal),
+  });
+  const runtimeApi = createRuntimeApi({ gateway, approvalBroker: broker });
+  const api = {
+    ...runtimeApi,
+    runToken: runtimeApi.createCredential(['runs:start', 'runs:read', 'runs:stop']),
+    approvalRead: runtimeApi.createCredential(['approvals:read']),
+    approvalDecide: runtimeApi.createCredential(['approvals:decide']),
+  };
+  const address = await api.listen();
+  t.after(async () => { await api.close(); await gateway.close({ timeoutMs: 100 }); await rm(root, { recursive: true, force: true }); });
+
+  const startResponse = request(address, api, {
+    method: 'POST', route: '/v1/runs', token: api.runToken,
+    body: JSON.stringify({ provider: 'claude', cwd: root, prompt: 'synthetic end-to-end approval task', profile: 'read-only-streaming' }),
+  });
+  let approval;
+  for (let i = 0; i < 100 && !approval; i++) {
+    const listed = await request(address, api, { route: '/v1/approvals', token: api.approvalRead });
+    approval = JSON.parse(listed.text).approvals[0];
+    if (!approval) await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(approval);
+  assert.equal(approval.request.action, 'start');
+  assert.equal(approval.request.initialInput, 'ALBERA task:\nsynthetic end-to-end approval task');
+  assert.equal(JSON.stringify(approval.request.args).includes('synthetic end-to-end approval task'), false);
+  assert.equal((await request(address, api, { route: '/v1/approvals', token: api.runToken })).status, 401);
+  const approved = await request(address, api, {
+    method: 'POST', route: `/v1/approvals/${approval.id}`, token: api.approvalDecide,
+    body: JSON.stringify({ decision: 'approve' }),
+  });
+  assert.equal(approved.status, 200);
+  const started = await startResponse;
+  assert.equal(started.status, 202);
+  const runId = JSON.parse(started.text).run.id;
+
+  const stopResponse = request(address, api, { method: 'POST', route: `/v1/runs/${runId}/stop`, token: api.runToken });
+  approval = undefined;
+  for (let i = 0; i < 100 && !approval; i++) {
+    const listed = await request(address, api, { route: '/v1/approvals', token: api.approvalRead });
+    approval = JSON.parse(listed.text).approvals[0];
+    if (!approval) await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(approval.request.action, 'stop');
+  assert.equal(approval.request.runId, runId);
+  const denied = await request(address, api, {
+    method: 'POST', route: `/v1/approvals/${approval.id}`, token: api.approvalDecide,
+    body: JSON.stringify({ decision: 'deny' }),
+  });
+  assert.equal(denied.status, 200);
+  assert.equal((await stopResponse).status, 403);
+  assert.equal(gateway.get(runId).status, 'running');
 });
