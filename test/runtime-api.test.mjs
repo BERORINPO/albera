@@ -6,7 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import test from 'node:test';
 import { createRuntimeApi } from '../src/runtime/api.mjs';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
-import { RuntimeGateway } from '../src/runtime/gateway.mjs';
+import { buildProviderLaunch, RuntimeGateway } from '../src/runtime/gateway.mjs';
 
 function fakeGateway(overrides = {}) {
   const calls = [];
@@ -154,6 +154,13 @@ test('provider catalog is read-only, scope-protected, and reports profile verifi
     { id: 'codex', status: 'unavailable', profiles: [], runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
     { id: 'opencode', status: 'unavailable', profiles: [], runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
   ]);
+  for (const provider of body.providers) {
+    if (provider.status === 'profile-only') {
+      for (const profile of provider.profiles) assert.equal(buildProviderLaunch(provider.id, 'catalog contract', profile).profile, profile);
+    } else {
+      assert.throws(() => buildProviderLaunch(provider.id, 'catalog contract'), (error) => error.code === provider.unavailableReason);
+    }
+  }
   body.providers[0].profiles.push('workspace-write');
   const fresh = JSON.parse((await request(f.address, f.api, { route: '/v1/providers' })).text);
   assert.deepEqual(fresh.providers[0].profiles, ['read-only']);
