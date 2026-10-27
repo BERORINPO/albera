@@ -22,7 +22,7 @@ The verifier invokes the system Windows PowerShell by its absolute path, without
 - Windows-only test queries and validates the actual current user's profile DACL through the Windows security APIs.
 - Journal and sidecar integration tests confirm ACL refusal occurs before existing metadata is read or modified.
 - Local Windows Node 24.13.0: `npm test` 496 passed / 1 skipped, plus `ALBERA_RUN_WINDOWS_ACL_INTEGRATION=1 node --test test/runtime-windows-acl.test.mjs` 7/7; `npm run arch` 82 paths / 0 violations; `npm run smoke` passed.
-- GitHub Actions run 40480832114 on commit `f8ae7b5` passed all six Windows/macOS/Linux × Node 22/24 test and architecture jobs. Its Windows ACL query took 34–39 seconds under parallel test load, so the real DACL integration now runs in a separate Windows-only workflow step; the 20-second fail-closed timeout remains unchanged. The isolated-step matrix rerun is pending.
+- GitHub Actions run 40480832114 on commit `f8ae7b5` passed all six Windows/macOS/Linux × Node 22/24 test and architecture jobs. Its Windows ACL query took 34–39 seconds under parallel test load, so the real DACL integration now runs in a separate Windows-only workflow step; the 60-second fail-closed timeout remains unchanged. The isolated-step matrix rerun is pending.
 
 ## References
 
