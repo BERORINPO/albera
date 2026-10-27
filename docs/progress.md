@@ -53,3 +53,4 @@
 ## Verification policy
 
 Record the exact command, platform, result, and whether the exercised process was a mock, a local helper process, or a real AI CLI. Keep raw secrets, prompts, process output and user-specific paths out of this file.
+| 2026-10-27 | 固定Gateway lifecycle購読の容量・例外契約 | Gateway event subscriptionの上限8件、解除後の枠再利用、購読者例外が承認済みrunの起動を妨げないことを回帰テスト化。`node --test test/runtime-gateway.test.mjs`: 33/33; `npm test`: 502 passed / 3 skipped; `npm run arch`: 82 paths / 0 violations; `npm run smoke`: pass; `git diff --check`: pass. GitHub Actions run 40488136408 passed all six Windows/macOS/Linux × Node 22/24 jobs. No real provider invoked. | subscription境界の検証を追加。API-03とV1-01は未完了のまま |

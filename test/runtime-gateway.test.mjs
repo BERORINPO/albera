@@ -376,6 +376,26 @@ test('Gateway lifecycle subscriptions publish immutable events and unsubscribe i
   assert.deepEqual(f.gateway.events().map((event) => event.type), ['started', 'exited']);
 });
 
+test('Gateway lifecycle subscriptions are bounded and observer failures cannot interrupt runs', async (t) => {
+  const children = [];
+  const f = await fixture({ spawnImpl: () => { const child = new FakeChild(); children.push(child); return child; } });
+  t.after(f.dispose);
+  let observed = 0;
+  const unsubscribers = Array.from({ length: 7 }, () => f.gateway.subscribeEvents(() => { observed++; }));
+  unsubscribers.push(f.gateway.subscribeEvents(() => { throw new Error('observer_failure'); }));
+  assert.throws(() => f.gateway.subscribeEvents(() => {}), { name: 'RangeError', message: 'event_listener_capacity' });
+  const unsubscribe = unsubscribers.pop();
+  assert.equal(unsubscribe(), true);
+  assert.equal(unsubscribe(), false);
+  unsubscribers.push(f.gateway.subscribeEvents(() => { observed++; }));
+
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'bounded subscription fixture' });
+  assert.doesNotThrow(() => children[0].emit('spawn'));
+  assert.equal(f.gateway.get(run.id).status, 'running');
+  assert.equal(observed, 8);
+  await Promise.all(unsubscribers.map((remove) => remove()));
+});
+
 test('run duration timeout requests stop and repeated stop is idempotent', async (t) => {
   const f = await fixture({
     runTimeoutMs: 30,
