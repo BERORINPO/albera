@@ -14,7 +14,7 @@ This module is not yet a user-facing Runtime feature and is not an OS sandbox. I
 - The command is resolved from PATH, canonicalized, and checked as a file with executable permission on POSIX. Windows accepts `.exe` only. `.cmd` and `.bat` shims are rejected; no shell is used.
 - The working directory must resolve to an existing directory inside one of the configured absolute roots. This constrains only the selected working directory, not filesystem access by the child.
 - Arguments are argv entries, capped at 128 entries and 32 KiB, and reject NUL. The host must approve the exact arguments. Provider-specific safe argument profiles are not implemented; this is a remaining gate before any provider integration.
-- Child environment inherits only a small OS allowlist plus a provider-specific credential/configuration allowlist. Environment data and arguments are never returned, persisted or included in lifecycle events.
+- Child environment inherits only a small OS allowlist plus a provider-specific credential/configuration allowlist. The host authorization callback receives a frozen summary of provider-variable names and endpoint protocol/host; it never receives credential values or endpoint userinfo, path, query or fragment. Arguments and the exact child-environment snapshot are copied before authorization and reused for spawn, so caller mutation during an asynchronous approval cannot change the approved launch. Environment values and arguments are never returned, persisted or included in lifecycle events.
 - At most four runs are active; run duration is capped at 60 minutes (default 15 minutes). Run records are capped at 64 and lifecycle events at 256 in memory. These limits are not CPU or memory quotas.
 
 ## Lifecycle and cleanup
@@ -27,7 +27,7 @@ An authorized stop sends `SIGTERM` to the POSIX process group. Windows uses `tas
 
 - The child runs with the current OS user's privileges. The allowed-root check is not filesystem isolation. Do not expose this Gateway until an OS-level sandbox/policy is designed and verified on each supported platform.
 - PATH resolution verifies file type and executable permission, but does not attest vendor identity or prevent replacement between validation and spawn.
-- Provider-specific argument restrictions, prompt/input transport, output parsing, secret redaction, authentication, local API authorization, audit persistence and resource quotas are not implemented.
+- Provider-specific safe argument profiles, prompt/input transport, output parsing, secret redaction, authentication, local API authorization, audit persistence and resource quotas are not implemented.
 - `close()` handles orderly shutdown only. A Gateway crash/restart can orphan descendants or lose active-run state; this Phase 1 limitation is blocked on a process supervisor with platform-native ownership (for example, Windows Job Objects and POSIX service/cgroup policy). Until then, keep this module disconnected and do not run it as a persistent user-facing service.
 - Windows `.cmd` and `.bat` providers are rejected. Supporting them requires a separately reviewed fixed adapter; do not enable `shell: true` or construct command strings from argv.
 - Real Claude Code, Codex CLI and OpenCode compatibility, account cost, outbound data handling, GUI approval, and GUI acceptance have not been verified.

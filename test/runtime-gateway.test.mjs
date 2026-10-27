@@ -56,6 +56,7 @@ test('host authorization receives the exact canonical executable, cwd and argv b
   const f = await fixture({
     authorize: async (request) => { seen.push(request); return true; },
     spawnImpl: () => { spawnCount++; return new FakeChild(); },
+    env: { PATH: process.env.PATH },
   });
   t.after(f.dispose);
   const args = ['--print', 'fixture prompt'];
@@ -63,12 +64,61 @@ test('host authorization receives the exact canonical executable, cwd and argv b
   assert.equal(spawnCount, 1);
   assert.deepEqual(seen[0], {
     action: 'start', provider: 'claude', executable: process.execPath, cwd: await realpath(f.cwd), args,
+    environment: { providerVariables: [], endpointOverrides: [] },
     platform: process.platform, maxDurationMs: 15 * 60 * 1000, maxActive: 4,
   });
   assert.equal(Object.isFrozen(seen[0]), true);
   assert.equal(Object.isFrozen(seen[0].args), true);
   assert.equal(run.status, 'starting');
   assert.equal('confirmed' in run, false);
+});
+
+test('authorization sees a redacted provider environment summary and spawn uses its pre-approval snapshot', async (t) => {
+  let seen;
+  let capturedEnvironment;
+  let capturedArgs;
+  let release;
+  const approvalGate = new Promise((resolve) => { release = resolve; });
+  const sourceEnvironment = {
+    PATH: process.env.PATH,
+    ANTHROPIC_API_KEY: 'synthetic-api-secret-before-approval',
+    ANTHROPIC_BASE_URL: 'https://user:password@api.example.test:8443/private/path?token=synthetic-query-secret',
+    AWS_SECRET_ACCESS_KEY: 'unrelated-secret-must-not-inherit',
+  };
+  const f = await fixture({
+    env: sourceEnvironment,
+    authorize: async (request) => { seen = request; await approvalGate; return true; },
+    spawnImpl: (_executable, args, options) => { capturedArgs = args; capturedEnvironment = options.env; return new FakeChild(); },
+  });
+  t.after(f.dispose);
+
+  const sourceArgs = ['--print', 'synthetic prompt'];
+  const starting = f.gateway.start({ provider: 'claude', cwd: f.cwd, args: sourceArgs });
+  await waitFor(() => seen);
+  assert.deepEqual(seen.args, ['--print', 'synthetic prompt']);
+  assert.equal(Object.isFrozen(seen.args), true);
+  assert.deepEqual(seen.environment, {
+    providerVariables: ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL'],
+    endpointOverrides: [{ variable: 'ANTHROPIC_BASE_URL', protocol: 'https', host: 'api.example.test:8443' }],
+  });
+  assert.equal(Object.isFrozen(seen.environment), true);
+  assert.equal(Object.isFrozen(seen.environment.providerVariables), true);
+  assert.equal(Object.isFrozen(seen.environment.endpointOverrides), true);
+  assert.equal(Object.isFrozen(seen.environment.endpointOverrides[0]), true);
+  assert.ok(!JSON.stringify(seen.environment).includes('synthetic-api-secret-before-approval'));
+  assert.ok(!JSON.stringify(seen.environment).includes('synthetic-query-secret'));
+  assert.ok(!JSON.stringify(seen.environment).includes('password'));
+
+  sourceEnvironment.ANTHROPIC_API_KEY = 'synthetic-api-secret-after-approval-request';
+  sourceEnvironment.ANTHROPIC_BASE_URL = 'https://changed.example.test';
+  sourceArgs[0] = '--dangerously-skip-permissions';
+  sourceArgs[1] = 'mutated after approval request';
+  release();
+  await starting;
+  assert.deepEqual(capturedArgs, ['--print', 'synthetic prompt']);
+  assert.equal(capturedEnvironment.ANTHROPIC_API_KEY, 'synthetic-api-secret-before-approval');
+  assert.equal(capturedEnvironment.ANTHROPIC_BASE_URL, 'https://user:password@api.example.test:8443/private/path?token=synthetic-query-secret');
+  assert.equal('AWS_SECRET_ACCESS_KEY' in capturedEnvironment, false);
 });
 
 test('authorization callback errors fail closed and expose only a stable error code', async (t) => {

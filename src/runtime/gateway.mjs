@@ -24,6 +24,11 @@ const PROVIDER_ENV = Object.freeze({
   codex: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'CODEX_HOME'],
   opencode: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'],
 });
+const PROVIDER_ENDPOINT_ENV = Object.freeze({
+  claude: ['ANTHROPIC_BASE_URL'],
+  codex: ['OPENAI_BASE_URL'],
+  opencode: ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL'],
+});
 
 export class GatewayError extends Error {
   /** @param {'confirmation_required'|'unknown_provider'|'invalid_args'|'cwd_not_allowed'|'executable_unavailable'|'capacity'|'unknown_run'|'spawn_failed'|'stop_failed'|'authorization_failed'} code */
@@ -57,16 +62,16 @@ export async function resolveProviderExecutable(provider, { platform = process.p
 
 /**
  * Memory-only lifecycle gateway. `authorize` is a trusted host callback, not request data; default denies.
- * @param {{roots: string[], authorize?: (request: object) => boolean|Promise<boolean>, platform?: string, maxActive?: number, runTimeoutMs?: number, spawnImpl?: typeof spawn, resolveExecutableImpl?: (provider: string, options: object) => Promise<string|null>, now?: () => number, signalTreeImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>}} options
+ * @param {{roots: string[], authorize?: (request: object) => boolean|Promise<boolean>, platform?: string, maxActive?: number, runTimeoutMs?: number, spawnImpl?: typeof spawn, resolveExecutableImpl?: (provider: string, options: object) => Promise<string|null>, env?: NodeJS.ProcessEnv, now?: () => number, signalTreeImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>}} options
  */
 export class RuntimeGateway {
-  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #authorize; #now; #signalTree;
+  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #authorize; #env; #now; #signalTree;
   /** @type {Map<string, Run>} */ #runs = new Map();
   #pendingStarts = 0;
   /** @type {Array<{id: number, runId: string, provider: string, type: string, at: number, code?: number|null, signal?: string|null}>} */ #events = [];
   #nextEventId = 1;
 
-  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawn, resolveExecutableImpl = resolveProviderExecutable, now = Date.now, signalTreeImpl } = {}) {
+  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawn, resolveExecutableImpl = resolveProviderExecutable, env = process.env, now = Date.now, signalTreeImpl } = {}) {
     if (!Array.isArray(roots) || roots.length === 0 || roots.some((root) => typeof root !== 'string' || !path.isAbsolute(root))) throw new TypeError('RuntimeGateway requires absolute allowed roots');
     if (typeof authorize !== 'function') throw new TypeError('RuntimeGateway requires a host authorization callback');
     if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > MAX_ACTIVE) throw new TypeError('maxActive must be between 1 and 4');
@@ -78,6 +83,7 @@ export class RuntimeGateway {
     this.#spawn = spawnImpl;
     this.#resolveExecutable = resolveExecutableImpl;
     this.#authorize = authorize;
+    this.#env = env;
     this.#now = now;
     this.#signalTree = signalTreeImpl ?? ((pid, signal, child) => signalProcessTree(pid, signal, child, this.#platform, this.#spawn));
   }
@@ -86,6 +92,7 @@ export class RuntimeGateway {
   async start({ provider, cwd, args = [] } = {}) {
     if (!Object.hasOwn(RUNTIME_PROVIDERS, provider)) throw new GatewayError('unknown_provider');
     validateArgs(args);
+    const launchArgs = [...args];
     this.#pruneRuns();
     const active = [...this.#runs.values()].filter((run) => isActive(run.status)).length;
     if (active + this.#pendingStarts >= this.#maxActive || this.#runs.size + this.#pendingStarts >= MAX_RUNS) throw new GatewayError('capacity');
@@ -97,15 +104,17 @@ export class RuntimeGateway {
       catch { throw new GatewayError('executable_unavailable'); }
       if (typeof executable !== 'string' || !path.isAbsolute(executable)) throw new GatewayError('executable_unavailable');
       executable = await validateExecutable(executable, this.#platform);
+      const environment = childEnvironment(provider, this.#env);
       if (!await this.#authorizeSafely({
-        action: 'start', provider, executable, cwd: resolvedCwd, args: [...args],
+        action: 'start', provider, executable, cwd: resolvedCwd, args: launchArgs,
+        environment: environmentSummary(provider, environment),
         platform: this.#platform, maxDurationMs: this.#runTimeoutMs, maxActive: this.#maxActive,
       })) throw new GatewayError('confirmation_required');
 
       let child;
       try {
-        child = this.#spawn(executable, args, {
-          cwd: resolvedCwd, env: childEnvironment(provider), shell: false,
+        child = this.#spawn(executable, launchArgs, {
+          cwd: resolvedCwd, env: environment, shell: false,
           detached: this.#platform !== 'win32', windowsHide: true, stdio: 'ignore',
         });
       } catch { throw new GatewayError('spawn_failed'); }
@@ -285,9 +294,32 @@ function validateArgs(args) {
   if (!Array.isArray(args) || args.length > MAX_ARGS || args.some((arg) => typeof arg !== 'string' || arg.includes('\0'))) throw new GatewayError('invalid_args');
   if (args.reduce((size, arg) => size + Buffer.byteLength(arg), 0) > MAX_ARG_BYTES) throw new GatewayError('invalid_args');
 }
-function childEnvironment(provider) {
+function childEnvironment(provider, source = process.env) {
   const allowed = new Set([...BASE_ENV, ...PROVIDER_ENV[provider]].map((key) => key.toUpperCase()));
-  return Object.fromEntries(Object.entries(process.env).filter(([key, value]) => allowed.has(key.toUpperCase()) && typeof value === 'string'));
+  return Object.fromEntries(Object.entries(source).filter(([key, value]) => allowed.has(key.toUpperCase()) && typeof value === 'string'));
+}
+function environmentSummary(provider, environment) {
+  const findValue = (name) => {
+    const key = Object.keys(environment).find((candidate) => candidate.toUpperCase() === name.toUpperCase());
+    return key === undefined ? undefined : environment[key];
+  };
+  const providerVariables = PROVIDER_ENV[provider]
+    .filter((name) => findValue(name) !== undefined)
+    .sort();
+  const endpointOverrides = PROVIDER_ENDPOINT_ENV[provider].flatMap((name) => {
+    const value = findValue(name);
+    if (value === undefined) return [];
+    try {
+      const endpoint = new URL(value);
+      return [{ variable: name, protocol: endpoint.protocol.slice(0, -1), host: endpoint.host || null }];
+    } catch {
+      return [{ variable: name, protocol: 'invalid', host: null }];
+    }
+  });
+  return Object.freeze({
+    providerVariables: Object.freeze(providerVariables),
+    endpointOverrides: Object.freeze(endpointOverrides.map((endpoint) => Object.freeze(endpoint))),
+  });
 }
 function isActive(status) { return status === 'starting' || status === 'running' || status === 'stopping'; }
 function safeKill(child) { try { child.kill('SIGKILL'); } catch { /* child may have exited */ } }
