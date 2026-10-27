@@ -24,7 +24,7 @@ The CLI requires a journal so accepted/denied control decisions and captured lif
 - The browser host accepts only `127.0.0.1:<port>` or `localhost:<port>` Host values, rejects cross-site fetches, and requires an exact Origin plus a per-session CSRF token for mutations.
 - The browser session uses a random cookie token stored as a hash by the host. The API bearer is separate and server-side. The browser has no credential minting, arbitrary proxy, file, shell, or raw argv route.
 - `Content-Security-Policy` permits only same-origin scripts/styles/connections. Request content is rendered with DOM `textContent` and element creation; no HTML-string insertion is used.
-- Run start, input, and stop requests wait for the broker decision. The screen shows exact prompt/input and the projected executable, working root, fixed arguments, resource caps, endpoint host/protocol, and environment variable names before approval.
+- Run start, input, and stop requests wait for the broker decision. The screen shows exact prompt/input and the projected executable, working root, fixed arguments, resource caps, endpoint host/protocol, and environment variable names before approval. Start/input screens and each approval card disclose that approved text may be sent to an external provider and may incur charges; Runtime cannot identify the configured account or estimate cost.
 - Lifecycle events are relayed as bounded SSE. Process stdout/stderr and model responses are discarded; the UI cannot show provider replies. Follow-up input therefore may be sent only when the user independently knows the provider is ready.
 
 ## Current limits

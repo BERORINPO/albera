@@ -243,7 +243,71 @@ test('approval UI localizes the control screen for Japanese browsers', async () 
   assert.equal(document.documentElement.lang, 'ja');
   assert.equal(elements.get('runtime-control-title').textContent, 'Runtime 操作');
   assert.equal(elements.get('start-button').textContent, '起動を申請');
+  assert.match(elements.get('provider-disclosure').textContent, /外部プロバイダーへ送信され、費用が発生する場合があります/);
   assert.match(elements.get('connection').textContent, /一回限りのコード/);
+});
+
+test('approval UI discloses possible external transmission and charges before start approval', async () => {
+  class FakeElement {
+    children = [];
+    listeners = new Map();
+    attributes = new Map();
+    hidden = false;
+    value = '';
+    textContent = '';
+    append(...items) { this.children.push(...items); }
+    replaceChildren(...items) { this.children = [...items]; }
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+    setAttribute(name, value) { this.attributes.set(name, value); }
+  }
+  const elements = new Map();
+  const document = {
+    documentElement: { lang: 'en' },
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, new FakeElement());
+      return elements.get(id);
+    },
+    createElement() { return new FakeElement(); },
+  };
+  const jsonResponse = (data) => ({ ok: true, status: 200, json: async () => data });
+  const fetch = async (url) => {
+    if (url === '/api/session') return jsonResponse({ csrfToken: 'synthetic', roots: ['C:\\project'] });
+    if (url === '/api/approvals') return jsonResponse({ approvals: [
+      {
+        id: '12345678-1234-4234-8234-123456789abc', expiresAt: Date.now() + 10000,
+        request: { action: 'start', provider: 'claude', initialInput: 'synthetic task text', args: ['--restricted'] },
+      },
+      {
+        id: '22345678-1234-4234-8234-123456789abc', expiresAt: Date.now() + 10000,
+        request: { action: 'input', provider: 'claude', text: 'synthetic follow-up text', runId: '32345678-1234-4234-8234-123456789abc' },
+      },
+    ] });
+    if (url === '/api/runs') return jsonResponse({ runs: [] });
+    throw new Error(`unexpected_request_${url}`);
+  };
+  class FakeEventSource { addEventListener() {} close() {} }
+  const source = await readFile(new URL('../src/runtime/approval-ui/approval.mjs', import.meta.url), 'utf8');
+  vm.runInNewContext(source, {
+    document, window: { addEventListener() {} }, EventSource: FakeEventSource, fetch,
+    setTimeout() { return 1; }, clearTimeout() {},
+  });
+  await new Promise((resolve) => {
+    const waitForApproval = () => {
+      if (elements.get('approvals')?.children.length) return resolve();
+      setImmediate(waitForApproval);
+    };
+    waitForApproval();
+  });
+  const cards = elements.get('approvals').children;
+  const flatten = (element) => [element.textContent, ...element.children.flatMap(flatten)].join(' ');
+  assert.equal(cards.length, 2);
+  for (const card of cards) {
+    assert.match(flatten(card), /may send approved text to an external provider and may incur charges/);
+    const notice = card.children.find((element) => element.className === 'notice');
+    assert.equal(notice.attributes.get('role'), 'note');
+  }
+  assert.match(flatten(cards[0]), /synthetic task text/);
+  assert.match(flatten(cards[1]), /synthetic follow-up text/);
 });
 
 test('approval host refreshes active browser sessions and rejects an expired idle cookie', async (t) => {

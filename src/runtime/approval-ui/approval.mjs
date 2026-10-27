@@ -14,6 +14,7 @@ const messages = {
     eventsTitle: 'Recent lifecycle events', footer: 'Local loopback only · prompts and paths are not saved by this screen · provider output is not collected',
     noApprovals: 'No pending decisions.', expires: 'Decision expires at {0}', fixedArguments: 'fixed arguments',
     environmentNames: 'environment names', none: 'none', endpoint: 'endpoint', exactText: 'Exact text to send',
+    providerDisclosure: 'The configured Claude account may send approved text to an external provider and may incur charges. Runtime cannot identify the account or estimate cost. Check your CLI account before approval.',
     approve: 'Approve', deny: 'Deny', noRuns: 'No Runtime sessions yet.', run: 'Run {0}', profile: 'Profile: {0}',
     action_start: 'Start request', action_stop: 'Stop request', action_input: 'Input request',
     field_executable: 'executable', field_cwd: 'working directory', field_runId: 'run ID', field_platform: 'platform',
@@ -40,6 +41,7 @@ const messages = {
     eventsTitle: '最近のライフサイクルイベント', footer: 'ローカルループバックのみ · この画面は指示文やパスを保存しません · プロバイダー出力は収集しません',
     noApprovals: '判断待ちの要求はありません。', expires: '判断期限: {0}', fixedArguments: '固定引数',
     environmentNames: '環境変数名', none: 'なし', endpoint: 'エンドポイント', exactText: '送信するテキスト',
+    providerDisclosure: '設定されたClaudeアカウントから、承認したテキストが外部プロバイダーへ送信され、費用が発生する場合があります。Runtimeはアカウントや費用を確認できません。承認前にCLIのアカウント設定を確認してください。',
     approve: '承認', deny: '拒否', noRuns: 'Runtimeセッションはまだありません。', run: '実行 {0}', profile: 'プロファイル: {0}',
     action_start: '起動要求', action_stop: '停止要求', action_input: '入力要求',
     field_executable: '実行ファイル', field_cwd: '作業ディレクトリ', field_runId: '実行ID', field_platform: 'OS',
@@ -70,7 +72,7 @@ function translateStaticText() {
     'bootstrap-description': 'bootstrapDescription', 'bootstrap-code-label': 'codeLabel', 'unlock-button': 'unlock',
     'start-title': 'startTitle', 'root-label': 'rootLabel', 'prompt-label': 'promptLabel', 'profile-label': 'profileLabel',
     'start-button': 'requestStart', 'approvals-title': 'approvalsTitle', 'runs-title': 'runsTitle',
-    'runs-warning': 'runsWarning', 'events-title': 'eventsTitle', 'runtime-footer': 'footer',
+    'provider-disclosure': 'providerDisclosure', 'runs-warning': 'runsWarning', 'events-title': 'eventsTitle', 'runtime-footer': 'footer',
   };
   for (const [id, key] of Object.entries(ids)) $(id).textContent = t(key);
   const profile = $('profile');
@@ -151,6 +153,11 @@ function renderApprovals(items) {
     const card = text('article', '', 'card');
     card.append(text('h3', `${describe('action', item.request.action)} · ${item.request.provider}`));
     card.append(text('p', t('expires', new Date(item.expiresAt).toLocaleTimeString(locale)), 'muted'));
+    if (['start', 'input'].includes(item.request.action)) {
+      const disclosure = text('p', t('providerDisclosure'), 'notice');
+      disclosure.setAttribute('role', 'note');
+      card.append(disclosure);
+    }
     const details = document.createElement('dl');
     const fieldLabels = { profile: t('profileLabel'), executable: t('field_executable'), cwd: t('field_cwd'), runId: t('field_runId'), platform: t('field_platform'), maxDurationMs: t('field_maxDurationMs'), maxActive: t('field_maxActive'), force: t('field_force') };
     for (const key of ['profile', 'executable', 'cwd', 'runId', 'platform', 'maxDurationMs', 'maxActive', 'force']) {
