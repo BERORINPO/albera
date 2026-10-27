@@ -4,7 +4,7 @@ Date: 2026-10-28
 
 ## Status
 
-Implemented; actual Windows storage ACL integration passed 9/9 locally. Cross-platform CI is pending.
+Implemented; actual Windows storage ACL integration passed 9/9 locally. GitHub Actions run 40579849549 on `2040e6b` passed all six Windows/macOS/Linux × Node 22/24 jobs.
 
 ## Context
 
@@ -21,4 +21,4 @@ Windows ACL inspection remains pathname-based rather than handle-bound. The iden
 
 ## Verification
 
-`test/runtime-journal-backup.test.mjs` asserts the parent and opened output file are validated, rejects synthetic directory/file ACL failures before writing ciphertext, checks that file and directory paths replaced during ACL verification are refused, and checks POSIX rejection of a broadly accessible output directory on non-Windows platforms. Actual Windows Runtime storage ACL integration passed 9/9 and verified backup generation/restoration in an ACL-accepted user-profile directory. Local Windows `npm test` passed 555 with 6 skips; `npm run arch`, `npm run smoke`, `npm run package:smoke`, and `git diff --check` passed. Cross-platform CI evidence will be added to `docs/progress.md` after completion.
+`test/runtime-journal-backup.test.mjs` asserts the parent and opened output file are validated, rejects synthetic directory/file ACL failures before writing ciphertext, checks that file and directory paths replaced during ACL verification are refused, and checks POSIX rejection of a broadly accessible output directory on non-Windows platforms. Actual Windows Runtime storage ACL integration passed 9/9 and verified backup generation/restoration in an ACL-accepted user-profile directory. Local Windows `npm test` passed 555 with 6 skips; `npm run arch`, `npm run smoke`, `npm run package:smoke`, and `git diff --check` passed. GitHub Actions run [40579849549](https://github.com/BERORINPO/pigeonholes/actions/runs/40579849549) passed all six Windows/macOS/Linux × Node 22/24 jobs on `2040e6b`, including Windows Runtime storage ACL integration.
