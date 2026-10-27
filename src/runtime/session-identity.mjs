@@ -47,7 +47,10 @@ async function readIdentity(filePath, verifyWindowsAcl) {
   try {
     const info = await handle.stat();
     if (!info.isFile() || info.size > 64) throw new Error('runtime_session_identity_invalid');
-    if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) throw new Error('runtime_session_identity_permissions');
+    if (process.platform !== 'win32') {
+      const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+      if ((info.mode & 0o077) !== 0 || uid === undefined || info.uid !== uid) throw new Error('runtime_session_identity_permissions');
+    }
     let value = await handle.readFile('utf8');
     if (value.endsWith('\n')) value = value.slice(0, -1);
     if (value.endsWith('\r')) value = value.slice(0, -1);

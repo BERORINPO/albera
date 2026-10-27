@@ -32,7 +32,11 @@ export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX
   if (typeof filePath !== 'string' || filePath.length === 0 || !path.isAbsolute(filePath)) throw new TypeError('journal_path_must_be_absolute');
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > HARD_MAX_BYTES) throw new TypeError('invalid_journal_capacity');
   await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  await verifyWindowsAcl(path.dirname(filePath), { kind: 'directory' });
+  const directoryPath = path.dirname(filePath);
+  const directoryInfo = await lstat(directoryPath);
+  if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()) throw new JournalError('journal_directory_invalid');
+  assertPrivatePosixStorage(directoryInfo, 'journal_directory_permissions', 'directory');
+  await verifyWindowsAcl(directoryPath, { kind: 'directory' });
 
   const lockPath = `${filePath}.lock`;
   const nonce = randomBytes(16).toString('hex');
@@ -48,6 +52,7 @@ export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX
     dataHandle = await open(filePath, flags, 0o600);
     const fileInfo = await dataHandle.stat();
     if (!fileInfo.isFile() || fileInfo.size !== existing.byteLength) throw new JournalError('journal_changed_during_open');
+    assertPrivatePosixStorage(fileInfo, 'journal_permissions', 'file');
     return new RuntimeAuditJournal(filePath, lockPath, lock, lockText, dataHandle, records, existing.byteLength, maxBytes);
   } catch (error) {
     await dataHandle?.close().catch(() => {});
@@ -193,6 +198,7 @@ async function readExisting(filePath, maxBytes, verifyWindowsAcl) {
   try {
     const info = await lstat(filePath);
     if (info.isSymbolicLink() || !info.isFile()) throw new JournalError('journal_not_regular_file');
+    assertPrivatePosixStorage(info, 'journal_permissions', 'file');
     await verifyWindowsAcl(filePath, { kind: 'file' });
     if (info.size > maxBytes) throw new JournalError('journal_capacity_exceeded');
     return await readFile(filePath);
@@ -235,6 +241,7 @@ async function acquireLock(lockPath, lockText, verifyWindowsAcl) {
     try {
       const handle = await open(lockPath, 'wx', 0o600);
       try {
+        assertPrivatePosixStorage(await handle.stat(), 'journal_lock_permissions', 'file');
         await handle.writeFile(lockText, 'utf8');
         await handle.sync();
         return handle;
@@ -255,6 +262,7 @@ async function removeStaleLock(lockPath, verifyWindowsAcl) {
   try {
     const info = await lstat(lockPath);
     if (info.isSymbolicLink() || !info.isFile()) return false;
+    assertPrivatePosixStorage(info, 'journal_lock_permissions', 'file');
     await verifyWindowsAcl(lockPath, { kind: 'file' });
     const content = await readFile(lockPath, 'utf8');
     const owner = JSON.parse(content);
@@ -268,10 +276,21 @@ async function removeStaleLock(lockPath, verifyWindowsAcl) {
     await unlink(lockPath);
     return true;
   } catch (error) {
-    if (error instanceof RuntimeStorageAclError) throw error;
+    if (error instanceof JournalError || error instanceof RuntimeStorageAclError) throw error;
     if (error?.code === 'ENOENT') return true;
     return false;
   }
+}
+
+function assertPrivatePosixStorage(info, code, kind) {
+  if (process.platform === 'win32') return;
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  const privateBits = (info.mode & 0o077) === 0;
+  const ownedByCurrentUser = uid !== undefined && info.uid === uid;
+  const usableOwnerBits = kind === 'directory'
+    ? (info.mode & 0o700) === 0o700
+    : (info.mode & 0o600) === 0o600 && (info.mode & 0o100) === 0;
+  if (!privateBits || !ownedByCurrentUser || !usableOwnerBits) throw new JournalError(code);
 }
 
 async function releaseLock(lockPath, handle, lockText) {

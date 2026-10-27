@@ -43,7 +43,7 @@ The regular "albera" command remains a read-only session dashboard. Runtime bind
 Each provider start, input, and stop requires a visible one-use decision in the local approval page.
 Only Claude Code is currently profile-configured; installed CLI compatibility is not verified.
 The journal stores redacted decisions and lifecycle events, never prompts or process output.
-On Windows, journal storage DACLs are checked without repair; Runtime refuses broad or unverifiable permissions.
+Journal storage permissions are checked without repair; Runtime refuses broad or unverifiable Windows DACLs and POSIX ownership/modes.
 `;
 
 async function main() {
@@ -76,7 +76,9 @@ async function main() {
   } catch (error) {
     await runtime?.close().catch(() => {});
     if (!runtime) await journal?.close().catch(() => {});
-    if (error?.code === 'runtime_storage_acl_not_private') {
+    if (error?.code === 'runtime_storage_acl_not_private'
+      || ['journal_directory_permissions', 'journal_permissions', 'journal_lock_permissions'].includes(error?.code)
+      || error?.code === 'runtime_session_identity_permissions') {
       console.error('ALBERA Runtime could not start because journal storage permissions allow other local principals to access or change its data. Choose a private directory; ALBERA will not change existing permissions.');
       process.exitCode = 1;
       return;

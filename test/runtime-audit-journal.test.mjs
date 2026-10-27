@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
 
@@ -101,6 +101,30 @@ test('audit journal refuses incomplete or corrupt existing data without modifyin
   await writeFile(file, corrupt, 'utf8');
   await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_incomplete_tail');
   assert.equal(await readFile(file, 'utf8'), corrupt);
+});
+
+test('POSIX journal refuses a group-readable file without changing its bytes', { skip: process.platform === 'win32' }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-permissions-file-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'runtime.audit.jsonl');
+  const content = 'existing user data\n';
+  await writeFile(file, content, { mode: 0o600 });
+  await chmod(file, 0o640);
+  await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_permissions');
+  assert.equal(await readFile(file, 'utf8'), content);
+});
+
+test('POSIX journal refuses a broadly accessible directory without changing existing data', { skip: process.platform === 'win32' }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-permissions-dir-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = path.join(root, 'shared');
+  await mkdir(directory, { mode: 0o700 });
+  await chmod(directory, 0o755);
+  const file = path.join(directory, 'runtime.audit.jsonl');
+  const content = 'existing user data\n';
+  await writeFile(file, content, { mode: 0o600 });
+  await assert.rejects(openTestJournal(file), (error) => error.code === 'journal_directory_permissions');
+  assert.equal(await readFile(file, 'utf8'), content);
 });
 
 test('journal rejects duplicate, skipped, or non-initial per-session event cursors without modifying data', async (t) => {

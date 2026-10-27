@@ -302,7 +302,7 @@ test('Runtime CLI requires explicit absolute project roots and an audit journal'
     roots: ['/workspace'], journalPath: '/tmp/albera.jsonl', port: 0,
   });
   assert.match(RUNTIME_HELP, /regular "albera" command remains a read-only/);
-  assert.match(RUNTIME_HELP, /Windows.*DACLs are checked without repair/);
+  assert.match(RUNTIME_HELP, /Journal storage permissions are checked without repair/);
 });
 
 test('Runtime session identity is stable, private on POSIX, and malformed files are preserved', async (t) => {
@@ -316,6 +316,7 @@ test('Runtime session identity is stable, private on POSIX, and malformed files 
   if (process.platform !== 'win32') {
     const info = await stat(identityPath);
     assert.equal(info.mode & 0o077, 0);
+    assert.equal(info.uid, process.getuid());
     await chmod(identityPath, 0o644);
     await assert.rejects(loadTestSessionId(journal), /runtime_session_identity_permissions/);
   }
