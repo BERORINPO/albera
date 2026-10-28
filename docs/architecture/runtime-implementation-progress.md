@@ -2,7 +2,7 @@
 
 **Updated:** 2026-10-28
 **Working branch:** `codex/runtime-architecture-alignment`
-**Runtime source/test HEAD audited:** `1ac2f3d36ca079946060d8318bfe5cc2822fcb5a` (subsequent commits update this progress ledger only); PR #19 is stacked on PR #17 head `8a829d116e39ca10f273594f409f38315f20570f`. Analysis is in `runtime-gap-analysis.md`.
+**Runtime source/test HEAD audited:** `9b8174759421fe1d176dadd9c70471487ea241fc` (adds the ADR-002 Mock IPC contract tests; runtime production code is unchanged); PR #19 is stacked on PR #17 head `8a829d116e39ca10f273594f409f38315f20570f`. Analysis is in `runtime-gap-analysis.md`.
 **Architecture source:** PR #18 head `b7684740322bda5a4e2d1233299bca251d95ed6c` (Proposed, independent branch; its absence from the Runtime branch is intentional).
 
 This file is the continuation ledger. `VERIFIED` refers only to the stated evidence and scope; it does not imply that a Proposed ADR has been accepted.
@@ -326,3 +326,11 @@ PR #18 is an independent, open Draft targeting `main` and contains Proposed syst
 The one observed Windows Node 24 failure was Actions run [40610906045](https://github.com/BERORINPO/pigeonholes/actions/runs/40610906045), at the pre-isolation head `ddf554c`. The general `runtime-entry.test.mjs` test spawned the real CLI, causing multiple PowerShell ACL probes (up to 60 seconds each) to run inside a loopback-host test. The test ended with `ALBERA Runtime could not verify journal storage permissions`; it failed closed and reported no existing-data change. Commit `ede04c5` replaced that general test with an injected verifier and kept real DACL checks in the dedicated gated `runtime-windows-acl.test.mjs` suite. This isolated the host test from hosted-runner PowerShell startup latency without weakening the runtime ACL verifier.
 
 Reproducibility check: the exact gated local Windows ACL suite passed **11/11** on Node `v24.13.0`; current Actions run [40673108010](https://github.com/BERORINPO/pigeonholes/actions/runs/40673108010) passed 6/6, including Windows Node 22/24 ACL integrations. Later runs after the test isolation also passed. Evidence points to a runner/test-harness latency failure rather than a repeatable DACL-policy defect, but one local pass and subsequent green CI do not prove the issue impossible under all hosted-runner conditions. No ACLs on existing user data were changed.
+
+## ADR-002 Host Broker trust contract — 9b81747
+
+Added `adr-002-host-broker-trust-contract.md` to specify separate restricted Windows virtual service identities, a local-only named-pipe ACL/token contract, the bounded operation-reference request, fixed actions, and Broker-side verification of operation, Lease generation, digest and single-use short-lived approval. Updated this gap analysis to distinguish a specified/mock-tested boundary from an implemented OS boundary. No Windows service, named pipe, ACL, privilege or network setting was created or changed; no Hyper-V operation was run.
+
+Added `test/runtime-host-broker-ipc.test.mjs` with a synthetic peer-identity map, the real local SQLite authorization/journal checks, `LocalEnvironmentHostBroker` and `MockEnvironmentProvider`. Seven cases cover authenticated and unauthorized peers, caller identity/arbitrary action rejection, request/operation replay, expired approval, stale Lease generation, Operation ID/generation/digest mismatch, and secret-bearing Provider error projection. This mock does not prove OS identity, process separation, independent human approval or restart-persistent replay protection. The approval-receipt authority/protected-store contract and minimum Hyper-V rights remain open gates, so ADR-002 remains Proposed and its acceptance criteria stay NOT_VERIFIED.
+
+Local Windows / Node `v24.13.0`: focused Mock IPC tests **7/7 passed**; `npm test` **706 total (698 passed, 8 skipped, 0 failed)**; `npm run arch` **95 paths, 0 violations**; `npm run smoke`, `npm run package:smoke`, and `git diff --check` passed. Cross-platform CI for `9b81747` is the final verification gate for this implementation slice.
