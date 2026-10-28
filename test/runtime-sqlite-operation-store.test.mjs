@@ -528,6 +528,44 @@ test('timeout after provider success reconciles by inspection and never duplicat
   assert.equal((await f.coordinator.execute(request)).operationId, request.operationId);
 });
 
+test('provider action completing after coordinator timeout remains UNKNOWN until inspection and is never replayed', async (t) => {
+  let state = 'off';
+  let starts = 0;
+  const delayedProvider = {
+    providerId: 'mock',
+    create: async (operation) => ({ computerId: operation.computerId, providerId: 'mock', state: 'off',
+      generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:00.000Z' }),
+    inspect: async (operation) => ({ computerId: operation.computerId, providerId: 'mock', state,
+      generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:01.000Z' }),
+    start: async (operation) => {
+      starts++;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      state = 'running';
+      return { computerId: operation.computerId, providerId: 'mock', state,
+        generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:02.000Z' };
+    },
+    stop: async (operation) => ({ computerId: operation.computerId, providerId: 'mock', state: 'off',
+      generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:03.000Z' }),
+    destroy: async (operation) => ({ computerId: operation.computerId, providerId: 'mock', state: 'missing',
+      generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:04.000Z' }),
+  };
+  const f = await fixture(t, { provider: delayedProvider });
+  const request = f.operation('start');
+
+  const timedOut = await f.coordinator.execute(request);
+  assert.equal(timedOut.status, 'UNKNOWN');
+  assert.equal(timedOut.errorCode, 'provider_timeout');
+  assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
+
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(state, 'running', 'the timed-out provider action may still complete');
+  const reconciled = await f.coordinator.reconcile(request.operationId);
+  assert.equal(reconciled.status, 'SUCCEEDED');
+  assert.equal(reconciled.observedState, 'running');
+  assert.equal((await f.coordinator.execute(request)).status, 'SUCCEEDED');
+  assert.equal(starts, 1, 'idempotent replay never invokes a second provider mutation');
+});
+
 test('typed Hyper-V adapter runs behind the durable journal and reconciles a lost create reply without replay', async (t) => {
   const calls = { create: 0, inspect: 0, start: 0, stop: 0, destroy: 0 };
   let state = 'missing';

@@ -1,7 +1,7 @@
 # Runtime Gateway Architecture Gap Analysis
 
 **Reviewed:** 2026-10-28
-**Code baseline:** PR #17 base `8a829d116e39ca10f273594f409f38315f20570f` plus current PR #19 branch through `05ec93eff715cc77d75736cfcd56d6e668ee0687`; this review also adds the Broker observation error-normalization change tracked in the progress ledger.
+**Code baseline:** PR #17 base `8a829d116e39ca10f273594f409f38315f20570f` plus the PR #19 implementation branch at this review; latest code, tests, and documentation checkpoints are recorded in `runtime-implementation-progress.md`.
 **Architecture baseline:** PR #18, `docs/albera-architecture-v4` at `b7684740322bda5a4e2d1233299bca251d95ed6c`
 **Scope:** current implementation compared with the Proposed system design and ADRs. `IMPLEMENTED` means evidence exists for the stated, limited scope; it does not mean the Proposed end-state is production-ready.
 
@@ -80,6 +80,8 @@ GitHub Actions run `40609502224` for the scheduler head passed Ubuntu/macOS Node
 The latest PR #19 code review found that `HyperVEnvironmentProvider` sanitized exceptions thrown by Broker methods, but called `validateObservedEnvironment()` outside that boundary. A Broker response implemented as a hostile JavaScript `Proxy` could throw from `getPrototypeOf` or another reflection trap; its raw exception message could then escape and reach the operation coordinator. Although a wire JSON decoder cannot directly encode a Proxy, this adapter accepts an injected Broker client and must treat its return value as untrusted.
 
 The adapter now catches failures while validating Broker observations and raises the fixed `invalid_provider_observation` code with `unknown` outcome. A regression test injects a Proxy whose reflection trap throws a credential-like message and verifies the message does not escape. The focused provider suite passes 18/18. This hardens the in-process adapter boundary only; it does not authenticate or implement IPC.
+
+The durable coordinator also has a delayed-Mock regression: an action completing after the configured deadline remains `UNKNOWN`, is resolved by a later inspection, and an idempotent replay does not invoke the mutation twice. The focused SQLite suite passes 30/30 and the full local suite passes 614 with 7 platform skips.
 
 The Architecture Draft's `acceptance-criteria.json` was read from `docs/albera-architecture-v4`. All 17 criteria remain `NOT_VERIFIED` by design: local tests cover portions of SEC-01/02, DUR-01/02 and CMP-02, but do not provide the required end-to-end host/guest, restore, tenant-isolation, orchestration, Git-promotion, UI ownership or fixed-machine performance evidence. No criterion should be promoted based on this PR.
 

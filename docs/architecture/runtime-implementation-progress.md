@@ -76,6 +76,12 @@ This file is the continuation ledger. `VERIFIED` refers only to the stated evide
 - The Architecture Draft acceptance file was inspected from PR #18. All 17 criteria remain `NOT_VERIFIED`; this change hardens only the in-process injected-client adapter and does not add authenticated IPC or satisfy end-to-end host/guest, restore, isolation, orchestration, Git promotion, UI ownership, or fixed-machine performance evidence.
 - No dependency was added. No VM, host network, credential, administrator or privileged operation was used. Hyper-V adapter performance remains unmeasured.
 
+## Late Provider completion after timeout
+
+- Added a durable coordinator fault test where a Mock Provider mutation continues past the coordinator deadline and completes afterward. The operation remains `UNKNOWN` at timeout, a later state inspection resolves it to `SUCCEEDED`, and replaying the idempotent request does not invoke the mutation a second time. This verifies timeout as uncertainty rather than cancellation or failure; the Provider side effect may still be running after the caller receives `UNKNOWN`.
+- Local Windows Node `v24.13.0`: focused SQLite suite 30/30; full `npm test` 621 total (614 passed, 7 skipped, 0 failed). The runbook proposal at `docs/architecture/sqlite-operation-store-recovery-runbook.md` describes safe stale-marker handling but is not an executable operator procedure; service startup and recovery CLI remain missing.
+- This is Mock-only evidence. It does not prove provider cancellation, VM termination, or authenticated Host Broker behavior. No new dependency or real external action was used.
+
 ## Hyper-V readiness constraints (not verified)
 
 - Intended host family is Windows with Hyper-V, but supported Windows edition/build, host configuration and Hyper-V feature prerequisites are **not selected or verified**. No host readiness probe or real Hyper-V API binding exists.
