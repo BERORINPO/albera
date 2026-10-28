@@ -45,13 +45,7 @@ export async function openSqliteEnvironmentStore(databasePath, {
   if (!directoryInfo?.isDirectory() || directoryInfo.isSymbolicLink()) throw new EnvironmentStoreError('database_directory_invalid');
   assertPrivatePosixStorage(directoryInfo, 'database_directory_permissions', 'directory');
   await verifyAcl(verifyWindowsAcl, directory, 'directory');
-  if (!restoreSnapshot) {
-    const marker = await lstat(`${databasePath}.restore-incomplete`).catch((error) => {
-      if (error?.code === 'ENOENT') return null;
-      throw new EnvironmentStoreError('restore_marker_check_failed');
-    });
-    if (marker) throw new EnvironmentStoreError('restore_incomplete_marker_present');
-  }
+  if (!restoreSnapshot) await assertNoRestoreMarker(databasePath);
 
   try {
     const handle = await open(databasePath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0), 0o600);
@@ -81,6 +75,9 @@ export async function openSqliteEnvironmentStore(databasePath, {
     if (!after.isFile() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) {
       throw new EnvironmentStoreError('database_changed_during_open');
     }
+    // Close the check/create race with restore: if restore installed its marker
+    // after the initial check, this opener must not expose the copied database.
+    if (!restoreSnapshot) await assertNoRestoreMarker(databasePath);
     assertSingleLink(after, 'database_hard_linked_file');
     assertPrivatePosixStorage(after, 'database_file_permissions', 'file');
     await verifyAcl(verifyWindowsAcl, databasePath, 'file');
@@ -871,6 +868,14 @@ async function verifyAcl(verifyWindowsAcl, target, kind) {
     if (error instanceof RuntimeStorageAclError) throw error;
     throw new EnvironmentStoreError('database_acl_check_failed');
   }
+}
+
+async function assertNoRestoreMarker(databasePath) {
+  const marker = await lstat(`${databasePath}.restore-incomplete`).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw new EnvironmentStoreError('restore_marker_check_failed');
+  });
+  if (marker) throw new EnvironmentStoreError('restore_incomplete_marker_present');
 }
 
 async function assertPrivateDatabaseFile(databasePath, verifyWindowsAcl, prefix) {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -172,6 +173,27 @@ test('incomplete SQLite restore leaves a fail-closed marker that blocks ordinary
   assert.ok((await stat(restoredPath)).isFile(), 'preserve copied data for diagnosis');
   assert.match(await readFile(markerPath, 'utf8'), /^ALBERA_SQLITE_RECOVERY_OWNER_V1_INCOMPLETE:/);
   await assert.rejects(openSqliteEnvironmentStore(restoredPath, { verifyWindowsAcl: async () => {} }),
+    (error) => error.code === 'restore_incomplete_marker_present');
+});
+
+test('ordinary SQLite store open rechecks the restore marker after opening the database', async (t) => {
+  const root = await mkdtemp(path.join(os.homedir(), '.albera-operation-store-restore-race-'));
+  const databasePath = path.join(root, 'racing-open.sqlite');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  function MarkerAppearingDatabase(filePath) {
+    const db = new DatabaseSync(filePath);
+    writeFileSync(`${filePath}.restore-incomplete`, 'ALBERA_SQLITE_RECOVERY_OWNER_V1_INCOMPLETE:test-race\n', { flag: 'wx', mode: 0o600 });
+    return db;
+  }
+
+  await assert.rejects(openSqliteEnvironmentStore(databasePath, {
+    verifyWindowsAcl: async () => {}, DatabaseImpl: MarkerAppearingDatabase,
+  }), (error) => error.code === 'restore_incomplete_marker_present');
+  assert.match(await readFile(`${databasePath}.restore-incomplete`, 'utf8'), /INCOMPLETE:test-race/);
+  const db = new DatabaseSync(databasePath, { readOnly: true });
+  try { assert.equal(db.prepare('PRAGMA user_version').get().user_version, 0, 'the rejected opener did not migrate or expose the database'); }
+  finally { db.close(); }
+  await assert.rejects(openSqliteEnvironmentStore(databasePath, { verifyWindowsAcl: async () => {} }),
     (error) => error.code === 'restore_incomplete_marker_present');
 });
 
