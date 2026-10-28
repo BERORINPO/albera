@@ -1787,6 +1787,51 @@ test('typed Hyper-V adapter reconciles a lost destroy reply by inspection withou
   assert.deepEqual(calls, { create: 1, inspect: 1, destroy: 1 });
 });
 
+test('Hyper-V start reply loss stays UNKNOWN when inspection lags, then reconciles without replay', async (t) => {
+  const calls = { start: 0, inspect: 0 };
+  let state = 'off';
+  const observedAt = () => `2026-10-28T00:00:0${calls.inspect}.000Z`;
+  const broker = {
+    createVm: async () => { throw new Error('unexpected_create'); },
+    inspectVm: async (operation) => {
+      calls.inspect++;
+      return { computerId: operation.computerId, providerId: 'hyperv', state,
+        generation: operation.expectedGeneration, observedAt: observedAt() };
+    },
+    startVm: async () => {
+      calls.start++;
+      throw Object.assign(new Error('reply lost token=late-state-secret'), { code: 'provider_timeout' });
+    },
+    stopVm: async () => { throw new Error('unexpected_stop'); },
+    removeVm: async () => { throw new Error('unexpected_remove'); },
+  };
+  const f = await fixture(t, { provider: new HyperVEnvironmentProvider({ broker }) });
+  const request = f.operation('start');
+
+  const uncertain = await f.coordinator.execute(request);
+  assert.equal(uncertain.status, 'UNKNOWN');
+  assert.equal(uncertain.errorCode, 'provider_timeout');
+  assert.equal(calls.start, 1);
+
+  const lagging = await f.coordinator.reconcile(request.operationId);
+  assert.equal(lagging.status, 'UNKNOWN', 'a stale off observation is not proof that start failed');
+  assert.equal(lagging.observedState, 'off');
+  assert.equal(lagging.errorCode, 'provider_timeout');
+  assert.equal(f.store.getComputer(f.computerId).observedState, 'off');
+  assert.equal((await f.coordinator.execute(request)).status, 'UNKNOWN');
+  assert.equal(calls.start, 1, 'neither a lagging observation nor replay retries start');
+
+  state = 'running'; // The original provider action becomes visible after the first inspection.
+  const reconciled = await f.coordinator.reconcile(request.operationId);
+  assert.equal(reconciled.status, 'SUCCEEDED');
+  assert.equal(reconciled.observedState, 'running');
+  assert.equal((await f.coordinator.execute(request)).status, 'SUCCEEDED');
+  assert.deepEqual(calls, { start: 1, inspect: 2 });
+  assert.doesNotMatch(JSON.stringify({ operation: f.store.getOperation(request.operationId),
+    events: f.store.listEvents(request.operationId) }), /late-state-secret/);
+  assert.equal((await readFile(f.databasePath)).includes(Buffer.from('late-state-secret')), false);
+});
+
 test('inspection failure remains UNKNOWN and no implicit provider retry is performed', async (t) => {
   const f = await fixture(t);
   f.provider.failNext('create', { timing: 'after', code: 'create_reply_lost' });
