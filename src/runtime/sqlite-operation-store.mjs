@@ -5,10 +5,11 @@ import path from 'node:path';
 import process from 'node:process';
 import { DatabaseSync } from 'node:sqlite';
 import { assertPrivatePosixStorage, assertSingleLink } from './audit-journal.mjs';
+import { validateGuestEvent } from './boundary-protocols.mjs';
 import { assertPrivateWindowsAcl, RuntimeStorageAclError } from './windows-acl.mjs';
 import { EnvironmentProviderError, validateEnvironmentCapacity, validateEnvironmentOperation, validateEnvironmentQuota, validateEnvironmentSpec, validateObservedEnvironment } from './environment-provider.mjs';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const DEFAULT_MAX_RECORDS = 20_000;
 const HARD_MAX_RECORDS = 100_000;
 const DESIRED_STATES = Object.freeze({ create: 'off', inspect: null, start: 'running', stop: 'off', destroy: 'missing' });
@@ -391,6 +392,48 @@ class SqliteEnvironmentOperationStore {
         type: row.event_type, schemaVersion: row.schema_version, provenance: row.provenance, payload: JSON.parse(row.payload_json), recordedAt: row.recorded_at }));
   }
 
+  /** Persist a validated but untrusted Guest claim after the caller authenticates its transport. */
+  recordGuestEvent(input) {
+    this.#assertOpen();
+    let event;
+    try { event = validateGuestEvent(input); }
+    catch { throw new EnvironmentStoreError('guest_event_invalid'); }
+    const timestamp = this.#timestamp();
+    const digest = createHash('sha256').update(JSON.stringify(sortObject(event))).digest('hex');
+    return this.#transaction(() => {
+      const computer = this.#db.prepare('SELECT generation FROM computers WHERE id = ?').get(event.computerId);
+      if (!computer) throw new EnvironmentStoreError('guest_computer_unknown');
+      if (computer.generation !== event.generation) throw new EnvironmentStoreError('guest_generation_stale');
+      const lease = this.#db.prepare(`SELECT state, expires_at FROM leases
+        WHERE computer_id = ? AND run_id = ? AND generation = ? ORDER BY created_at DESC LIMIT 1`)
+        .get(event.computerId, event.runId, event.generation);
+      if (!lease || lease.state !== 'ACTIVE' || Date.parse(lease.expires_at) <= Date.parse(timestamp)) {
+        throw new EnvironmentStoreError('guest_lease_inactive');
+      }
+      const byMessage = this.#db.prepare('SELECT * FROM guest_event_receipts WHERE message_id = ?').get(event.messageId);
+      if (byMessage) {
+        if (byMessage.computer_id !== event.computerId || byMessage.run_id !== event.runId
+          || byMessage.generation !== event.generation || byMessage.sequence !== event.sequence || byMessage.payload_digest !== digest) {
+          throw new EnvironmentStoreError('guest_message_id_conflict');
+        }
+        return Object.freeze({ status: 'DUPLICATE', messageId: event.messageId, sequence: event.sequence });
+      }
+      const last = this.#db.prepare(`SELECT COALESCE(MAX(sequence), 0) AS sequence FROM guest_event_receipts
+        WHERE computer_id = ? AND run_id = ? AND generation = ?`)
+        .get(event.computerId, event.runId, event.generation).sequence;
+      if (event.sequence <= last) throw new EnvironmentStoreError('guest_event_replayed');
+      if (event.sequence !== last + 1) throw new EnvironmentStoreError('guest_event_sequence_mismatch');
+      this.#assertCapacity(2);
+      this.#db.prepare(`INSERT INTO guest_event_receipts
+        (message_id, computer_id, run_id, generation, sequence, payload_digest, received_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(event.messageId, event.computerId, event.runId, event.generation, event.sequence, digest, timestamp);
+      const { provenance, ...payload } = event;
+      this.#event(event.computerId, null, `guest.${event.eventType}`, payload, timestamp, provenance);
+      return Object.freeze({ status: 'ACCEPTED', messageId: event.messageId, sequence: event.sequence });
+    });
+  }
+
   diagnostics() {
     this.#assertOpen();
     return Object.freeze({
@@ -433,7 +476,7 @@ class SqliteEnvironmentOperationStore {
   }
 
   #assertCapacity(additional) {
-    const count = this.#db.prepare('SELECT (SELECT COUNT(*) FROM computers) + (SELECT COUNT(*) FROM operations) + (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM leases) AS count').get().count;
+    const count = this.#db.prepare('SELECT (SELECT COUNT(*) FROM computers) + (SELECT COUNT(*) FROM operations) + (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM leases) + (SELECT COUNT(*) FROM guest_event_receipts) AS count').get().count;
     if (count + additional > this.#maxRecords) throw new EnvironmentStoreError('store_capacity_exceeded');
   }
 
@@ -478,7 +521,7 @@ function migrate(db) {
   const version = db.prepare('PRAGMA user_version').get()?.user_version;
   if (!Number.isSafeInteger(version) || version > SCHEMA_VERSION) throw new EnvironmentStoreError('database_schema_newer');
   if (version === SCHEMA_VERSION) return;
-  if (version !== 0 && version !== 1) throw new EnvironmentStoreError('database_schema_unsupported');
+  if (![0, 1, 2].includes(version)) throw new EnvironmentStoreError('database_schema_unsupported');
   inTransaction(db, () => {
     if (version === 0) db.exec(`
       CREATE TABLE computers (
@@ -513,7 +556,13 @@ function migrate(db) {
       CREATE INDEX operations_computer_idx ON operations(computer_id, created_at);
       CREATE INDEX events_operation_idx ON events(operation_id, aggregate_seq);
     `);
-    else db.exec('ALTER TABLE computers ADD COLUMN capacity_json TEXT; ALTER TABLE leases ADD COLUMN reservation_json TEXT; ALTER TABLE leases ADD COLUMN quota_json TEXT;');
+    else if (version === 1) db.exec('ALTER TABLE computers ADD COLUMN capacity_json TEXT; ALTER TABLE leases ADD COLUMN reservation_json TEXT; ALTER TABLE leases ADD COLUMN quota_json TEXT;');
+    db.exec(`CREATE TABLE guest_event_receipts (
+      message_id TEXT PRIMARY KEY, computer_id TEXT NOT NULL REFERENCES computers(id), run_id TEXT NOT NULL,
+      generation INTEGER NOT NULL CHECK(generation >= 1), sequence INTEGER NOT NULL CHECK(sequence >= 1),
+      payload_digest TEXT NOT NULL CHECK(length(payload_digest) = 64), received_at TEXT NOT NULL,
+      UNIQUE(computer_id, run_id, generation, sequence)
+    ) STRICT;`);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   });
 }

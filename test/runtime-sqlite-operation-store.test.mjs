@@ -58,7 +58,7 @@ async function fixture(t, options = {}) {
 
 test('SQLite store uses WAL, FULL synchronous writes, foreign keys, and a versioned schema', async (t) => {
   const f = await fixture(t);
-  assert.deepEqual(f.store.diagnostics(), { journalMode: 'wal', synchronous: 2, foreignKeys: 1, schemaVersion: 2 });
+  assert.deepEqual(f.store.diagnostics(), { journalMode: 'wal', synchronous: 2, foreignKeys: 1, schemaVersion: 3 });
   assert.equal(f.store.getComputer(f.computerId).generation, 1);
   if (process.platform !== 'win32') assert.equal((await stat(f.databasePath)).mode & 0o777, 0o600);
 });
@@ -106,7 +106,7 @@ test('schema v1 migration preserves existing Computer and Lease rows', async (t)
   let store;
   try {
     store = await openSqliteEnvironmentStore(databasePath, { verifyWindowsAcl: async () => {} });
-    assert.equal(store.diagnostics().schemaVersion, 2);
+    assert.equal(store.diagnostics().schemaVersion, 3);
     assert.equal(store.getComputer('legacy-computer').projectId, 'legacy-project');
     assert.equal(store.getComputer('legacy-computer').capacity, null);
     assert.equal(store.getLease('legacy-lease').state, 'ACTIVE');
@@ -115,6 +115,68 @@ test('schema v1 migration preserves existing Computer and Lease rows', async (t)
     store?.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('schema v2 migration creates the durable Guest event inbox without deleting existing rows', async (t) => {
+  const f = await fixture(t);
+  const computer = f.store.getComputer(f.computerId);
+  const lease = f.store.getLease(f.lease.leaseId);
+  f.store.close();
+  const db = new DatabaseSync(f.databasePath);
+  db.exec('DROP TABLE guest_event_receipts; PRAGMA user_version = 2');
+  db.close();
+  await f.reopen();
+  assert.equal(f.store.diagnostics().schemaVersion, 3);
+  assert.equal(f.store.getComputer(f.computerId).generation, computer.generation);
+  assert.equal(f.store.getLease(f.lease.leaseId).runId, lease.runId);
+  assert.deepEqual(f.store.recordGuestEvent({
+    protocolVersion: 1, type: 'guest.event', messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    computerId: f.computerId, runId: lease.runId, generation: lease.generation, sequence: 1,
+    occurredAt: '2026-10-28T00:00:00.000Z', eventType: 'heartbeat', agentVersion: '0.1.0',
+  }).status, 'ACCEPTED');
+});
+
+test('durable Guest event intake acknowledges exact retries and rejects replay, gaps, conflicts and stale leases', async (t) => {
+  const f = await fixture(t);
+  const event = {
+    protocolVersion: 1, type: 'guest.event', messageId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    computerId: f.computerId, runId: f.lease.runId, generation: f.lease.generation, sequence: 1,
+    occurredAt: '2026-10-28T00:00:00.000Z', eventType: 'heartbeat', agentVersion: '0.1.0',
+  };
+  assert.deepEqual(f.store.recordGuestEvent(event), { status: 'ACCEPTED', messageId: event.messageId, sequence: 1 });
+  assert.deepEqual(f.store.recordGuestEvent(event),
+    { status: 'DUPLICATE', messageId: event.messageId, sequence: 1 }, 'same message id and payload remains idempotent after restart-safe persistence');
+  assert.throws(() => f.store.recordGuestEvent({ ...event, agentVersion: '0.2.0' }),
+    (error) => error.code === 'guest_message_id_conflict');
+  assert.throws(() => f.store.recordGuestEvent({ ...event, messageId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }),
+    (error) => error.code === 'guest_event_replayed');
+  assert.throws(() => f.store.recordGuestEvent({ ...event, messageId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', sequence: 3 }),
+    (error) => error.code === 'guest_event_sequence_mismatch');
+  assert.equal(f.store.listEvents(f.computerId).filter((record) => record.provenance === 'untrusted_guest').length, 1);
+  await f.reopen();
+  assert.equal(f.store.recordGuestEvent(event).status, 'DUPLICATE');
+  f.store.revokeLease(f.lease.leaseId, { reason: 'restore' });
+  assert.throws(() => f.store.recordGuestEvent({
+    ...event, messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', sequence: 2,
+  }), (error) => error.code === 'guest_generation_stale');
+});
+
+test('durable Guest event intake rejects inactive, expired, unknown and malformed host context', async (t) => {
+  const f = await fixture(t);
+  const event = {
+    protocolVersion: 1, type: 'guest.event', messageId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+    computerId: f.computerId, runId: f.lease.runId, generation: f.lease.generation, sequence: 1,
+    occurredAt: '2026-10-28T00:00:00.000Z', eventType: 'heartbeat', agentVersion: '0.1.0',
+  };
+  assert.throws(() => f.store.recordGuestEvent({ ...event, computerId: 'unknown-computer' }),
+    (error) => error.code === 'guest_computer_unknown');
+  assert.throws(() => f.store.recordGuestEvent({ ...event, runId: 'unknown-run' }),
+    (error) => error.code === 'guest_lease_inactive');
+  assert.throws(() => f.store.recordGuestEvent({ ...event, sequence: 0 }),
+    (error) => error.code === 'guest_event_invalid');
+  f.advance(60 * 60 * 60 * 1000);
+  assert.throws(() => f.store.recordGuestEvent(event), (error) => error.code === 'guest_lease_inactive');
+  assert.equal(f.store.listEvents(f.computerId).some((record) => record.provenance === 'untrusted_guest'), false);
 });
 
 test('scheduler atomically reserves only compatible host capacity and enforces hard project quotas', async (t) => {
