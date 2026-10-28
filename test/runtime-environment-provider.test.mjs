@@ -25,6 +25,7 @@ function operation(action, overrides = {}) {
     taskId: 'task-1',
     runId: 'run-1',
     computerId: 'computer-1',
+    providerId: 'mock',
     leaseId: 'lease-1',
     expectedGeneration: 1,
     policyVersion: 1,

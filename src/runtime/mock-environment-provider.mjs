@@ -7,7 +7,7 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
   #now;
 
   constructor({ now = () => new Date().toISOString() } = {}) {
-    super();
+    super('mock');
     if (typeof now !== 'function') throw new TypeError('invalid_clock');
     this.#now = now;
   }

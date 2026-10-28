@@ -14,7 +14,7 @@ const ACTION_SET = new Set(ENVIRONMENT_ACTIONS);
 const KIND_SET = new Set(ENVIRONMENT_KINDS);
 const CAPABILITY_SET = new Set(ENVIRONMENT_CAPABILITIES);
 const SPEC_KEYS = new Set(['projectId', 'kind', 'os', 'architecture', 'imageDigest', 'capabilities', 'networkProfileId', 'securityProfileId', 'resources']);
-const OPERATION_KEYS = new Set(['operationId', 'idempotencyKey', 'subjectId', 'projectId', 'taskId', 'runId', 'computerId', 'leaseId', 'expectedGeneration', 'policyVersion', 'action', 'spec']);
+const OPERATION_KEYS = new Set(['operationId', 'idempotencyKey', 'subjectId', 'projectId', 'taskId', 'runId', 'computerId', 'providerId', 'leaseId', 'expectedGeneration', 'policyVersion', 'action', 'spec']);
 
 export class EnvironmentProviderError extends Error {
   constructor(code, { outcome = 'unknown' } = {}) {
@@ -27,6 +27,11 @@ export class EnvironmentProviderError extends Error {
 
 /** Implementations must expose typed lifecycle methods; generic host command execution is forbidden. */
 export class EnvironmentProvider {
+  constructor(providerId) {
+    if (!isId(providerId)) throw new TypeError('invalid_provider_id');
+    Object.defineProperty(this, 'providerId', { value: providerId, enumerable: true });
+  }
+
   async create(_operation) { throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' }); }
   async inspect(_operation) { throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' }); }
   async start(_operation) { throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' }); }
@@ -74,6 +79,7 @@ export function validateEnvironmentOperation(operation) {
     || !isId(operation.taskId)
     || !isId(operation.runId)
     || !isId(operation.computerId)
+    || !isId(operation.providerId)
     || !isId(operation.leaseId)
     || !isId(operation.idempotencyKey)
     || !Number.isSafeInteger(operation.expectedGeneration) || operation.expectedGeneration < 1
@@ -93,7 +99,7 @@ export function validateEnvironmentOperation(operation) {
 export function validateObservedEnvironment(observed, expected) {
   if (!isRecord(observed)
     || observed.computerId !== expected.computerId
-    || !isId(observed.providerId)
+    || !isId(observed.providerId) || observed.providerId !== expected.providerId
     || !ENVIRONMENT_STATES.includes(observed.state)
     || !Number.isSafeInteger(observed.generation) || observed.generation < 1
     || typeof observed.observedAt !== 'string' || !Number.isFinite(Date.parse(observed.observedAt))) {

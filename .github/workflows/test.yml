@@ -26,6 +26,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
+      - name: Install locked dependencies
+        run: npm ci
       - name: Tests
         run: npm test
       - name: Installed package smoke

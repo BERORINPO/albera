@@ -54,7 +54,7 @@ const EXPECTED = {
     'session-record.mjs', 'demo-data.mjs', 'map-limit.mjs',
   ],
   entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],
-  runtime: ['gateway.mjs', 'api.mjs', 'approval-broker.mjs', 'approval-host.mjs', 'audit-journal.mjs', 'journal-backup.mjs', 'entry.mjs', 'host.mjs', 'session-identity.mjs', 'supervisor.mjs', 'guardian.mjs', 'environment-provider.mjs', 'environment-operations.mjs', 'mock-environment-provider.mjs', 'agent-harness-adapter.mjs', 'errors.mjs'],
+  runtime: ['gateway.mjs', 'api.mjs', 'approval-broker.mjs', 'approval-host.mjs', 'audit-journal.mjs', 'journal-backup.mjs', 'entry.mjs', 'host.mjs', 'session-identity.mjs', 'supervisor.mjs', 'guardian.mjs', 'environment-provider.mjs', 'environment-operations.mjs', 'mock-environment-provider.mjs', 'agent-harness-adapter.mjs', 'sqlite-operation-store.mjs', 'errors.mjs'],
   public: [
     'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
@@ -116,10 +116,11 @@ check('2c adapter imports', adapters, (line) => {
   if (s == null) return null;
   return s.startsWith('node:') || s.startsWith('../shared/') || s.startsWith('../core/') || s.startsWith('./') ? null : `an adapter cannot import ${s}`;
 });
-check('2d runtime imports', runtime, (line) => {
+check('2d runtime imports', runtime, (line, file) => {
   const s = specOf(line);
   if (s == null) return null;
-  return s.startsWith('node:') || s.startsWith('./') ? null : `runtime cannot import ${s}`;
+  const isolatedSqliteDriver = posix(file) === 'src/runtime/sqlite-operation-store.mjs' && s === 'better-sqlite3';
+  return s.startsWith('node:') || s.startsWith('./') || isolatedSqliteDriver ? null : `runtime cannot import ${s}`;
 });
 check('2e runtime isolation', [...entry, ...adapters, ...core, ...shared], (line) => {
   const s = specOf(line);
@@ -152,11 +153,12 @@ check('5 read-only', [...adapters, ...entry], (line) =>
 check('5a no process execution in read-only layers', [...adapters, ...entry], (line) =>
   /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?child_process['"]|\b(?:spawn|exec|execFile)\s*\(/.test(line) ? 'process execution is restricted to src/runtime/' : null,
 );
-check('5b runtime process boundary', runtime, (line) => {
+check('5b runtime process boundary', runtime, (line, file) => {
   if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null;
   if (/(?:import\s*\(\s*|require\s*\(\s*)['"](?:node:)?child_process['"]/.test(line)) return 'dynamic child_process loading is not allowed';
   if (/from\s+['"](?:node:)?child_process['"]/.test(line) && !/^\s*import\s+\{\s*spawn\s*\}\s+from\s+['"]node:child_process['"]\s*;?/.test(line)) return 'only the named asynchronous spawn API may be imported';
-  if (/\b(?:exec|execSync|execFile|execFileSync|spawnSync)\s*\(/.test(line)) return 'only asynchronous spawn is allowed in the runtime boundary';
+  const sqliteStatement = posix(file) === 'src/runtime/sqlite-operation-store.mjs' && /\bdb\.exec\s*\(/.test(line);
+  if (/\b(?:exec|execSync|execFile|execFileSync|spawnSync)\s*\(/.test(line) && !sqliteStatement) return 'only asynchronous spawn is allowed in the runtime boundary';
   if (/\bshell\s*:\s*true\b/.test(line)) return 'shell execution is not allowed';
   return null;
 });

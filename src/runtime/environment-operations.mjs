@@ -98,6 +98,62 @@ export class EnvironmentOperationCoordinator {
   }
 }
 
+/** Durable coordinator: journal intent first, never replay an existing request, reconcile UNKNOWN by inspection. */
+export class DurableEnvironmentOperationCoordinator {
+  #store;
+  #provider;
+  #timeoutMs;
+
+  constructor({ store, provider, providerTimeoutMs = 30_000 } = {}) {
+    if (!store || !['beginOperation', 'recordProviderOutcome', 'recordReconciliation', 'getOperation'].every((method) => typeof store[method] === 'function')) {
+      throw new TypeError('invalid_environment_store');
+    }
+    if (!provider || !['create', 'inspect', 'start', 'stop', 'destroy'].every((method) => typeof provider[method] === 'function')
+      || typeof provider.providerId !== 'string') throw new TypeError('invalid_environment_provider');
+    if (!Number.isSafeInteger(providerTimeoutMs) || providerTimeoutMs < 1 || providerTimeoutMs > 300_000) throw new TypeError('invalid_provider_timeout');
+    this.#store = store;
+    this.#provider = provider;
+    this.#timeoutMs = providerTimeoutMs;
+  }
+
+  async execute(input) {
+    const operation = validateEnvironmentOperation(input);
+    if (operation.providerId !== this.#provider.providerId) throw new EnvironmentProviderError('provider_mismatch', { outcome: 'not_applied' });
+    const begun = this.#store.beginOperation(operation);
+    // The durable idempotency record is authoritative: retries return its state without another side effect.
+    if (!begun.created) return publicSnapshot(begun.operation);
+    let observed;
+    try {
+      observed = await withTimeout(this.#provider[operation.action](operation), this.#timeoutMs);
+    } catch (error) {
+      this.#store.recordProviderOutcome(operation.operationId, {
+        errorCode: safeCode(error),
+        outcome: error?.outcome === 'not_applied' ? 'not_applied' : 'unknown',
+      });
+      return publicSnapshot(this.#store.getOperation(operation.operationId));
+    }
+    this.#store.recordProviderOutcome(operation.operationId, { observed });
+    return publicSnapshot(this.#store.getOperation(operation.operationId));
+  }
+
+  async reconcile(operationId) {
+    const record = this.#store.getOperation(operationId);
+    if (!record) throw new EnvironmentProviderError('unknown_operation', { outcome: 'not_applied' });
+    if (record.status !== 'UNKNOWN') return publicSnapshot(record);
+    const { spec: _spec, ...request } = record.request;
+    const inspectRequest = { ...request, action: 'inspect' };
+    let observed;
+    try {
+      observed = await withTimeout(this.#provider.inspect(inspectRequest), this.#timeoutMs);
+    } catch (error) {
+      this.#store.recordReconciliation(operationId, undefined, { errorCode: safeCode(error) });
+      return publicSnapshot(this.#store.getOperation(operationId));
+    }
+    this.#store.recordReconciliation(operationId, observed);
+    return publicSnapshot(this.#store.getOperation(operationId));
+  }
+}
+
 function snapshot(record) {
   return Object.freeze({
     operationId: record.operation.operationId,
@@ -132,4 +188,21 @@ function sortObject(value) {
 
 function safeCode(error) {
   return typeof error?.code === 'string' && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : 'provider_outcome_unknown';
+}
+
+function publicSnapshot(record) {
+  if (!record) throw new EnvironmentProviderError('operation_unknown', { outcome: 'not_applied' });
+  const { request: _request, actionDigest: _actionDigest, ...snapshot } = record;
+  return Object.freeze(snapshot);
+}
+
+function withTimeout(promise, timeoutMs) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new EnvironmentProviderError('provider_timeout')), timeoutMs);
+      timer.unref?.();
+    }),
+  ]).finally(() => clearTimeout(timer));
 }

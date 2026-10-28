@@ -42,5 +42,8 @@
     "arch": "node scripts/arch-check.mjs",
     "smoke": "node scripts/smoke.mjs",
     "package:smoke": "node scripts/package-smoke.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3"
   }
 }
