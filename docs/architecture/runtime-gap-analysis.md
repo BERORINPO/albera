@@ -91,7 +91,7 @@ The delayed-completion test exposed an additional journal race: while a dispatch
 
 This serializes host journal decisions only. It does not cancel an in-flight Provider call or establish authenticated Broker-side exclusion. If an operation remains `UNKNOWN`, its Lease/capacity remains reserved and additional mutation is refused until state can be reconciled. Real-provider fencing and termination proof remain unimplemented.
 
-The Architecture Draft's `acceptance-criteria.json` was read from `docs/albera-architecture-v4`. All 17 criteria remain `NOT_VERIFIED` by design: local tests cover portions of SEC-01/02, DUR-01/02 and CMP-02, but do not provide the required end-to-end host/guest, restore, tenant-isolation, orchestration, Git-promotion, UI ownership or fixed-machine performance evidence. No criterion should be promoted based on this PR.
+The Architecture Draft's `acceptance-criteria.json` was read from `docs/albera-architecture-v4`. It contains 18 criteria, and all 18 remain `NOT_VERIFIED` by design: local tests cover portions of SEC-01/02, DUR-01/02 and CMP-02, but do not provide the required end-to-end host/guest, restore, tenant-isolation, orchestration, Git-promotion, UI ownership or fixed-machine performance evidence. No criterion should be promoted based on this PR.
 
 ## Broker IPC design findings (proposal only; ADR-002 remains Proposed)
 
