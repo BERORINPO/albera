@@ -5,6 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { performance } from 'node:perf_hooks';
 import { proposeComputerPlacement } from '../src/runtime/computer-scheduler.mjs';
+import { createGuestSessionCapabilityService } from '../src/runtime/guest-session-capability.mjs';
 import { openSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
 
 const samples = Number.parseInt(process.env.ALBERA_RUNTIME_BENCH_SAMPLES
@@ -28,6 +29,8 @@ try {
   const leaseWrites = [];
   const operationWrites = [];
   const eventPageReads = [];
+  const guestCapabilityIssues = [];
+  const guestCapabilityAuthentications = [];
   const placementRequirements = {
     projectId: 'bench-placement-project', kind: 'ephemeral', os: 'linux', architecture: 'x64',
     imageDigest: `sha256:${'c'.repeat(64)}`, capabilities: ['terminal'],
@@ -70,6 +73,36 @@ try {
     if (page.status !== 'OK' || page.events.length < 1) throw new Error('benchmark_event_page_failed');
     eventPageReads.push(performance.now() - startEventPage);
   }
+
+  const guestSessions = createGuestSessionCapabilityService({
+    resolveActiveContext: store.resolveActiveGuestSessionContext.bind(store),
+  });
+  try {
+    const guestComputerId = 'bench-computer-0000';
+    const guestRunId = 'bench-run-0000';
+    let capability = await guestSessions.issue({ computerId: guestComputerId, runId: guestRunId });
+    for (let index = 0; index < 25; index++) {
+      await guestSessions.authenticateTransport({ transport: { guestSessionCredential: capability.credential } });
+    }
+    for (let index = 0; index < samples; index++) {
+      const start = performance.now();
+      capability = await guestSessions.issue({ computerId: guestComputerId, runId: guestRunId });
+      guestCapabilityIssues.push(performance.now() - start);
+    }
+    for (let index = 0; index < samples; index++) {
+      const start = performance.now();
+      const peer = await guestSessions.authenticateTransport({
+        transport: { guestSessionCredential: capability.credential },
+      });
+      if (!peer || peer.computerId !== guestComputerId || peer.runId !== guestRunId) {
+        throw new Error('benchmark_guest_capability_failed');
+      }
+      guestCapabilityAuthentications.push(performance.now() - start);
+    }
+  } finally {
+    guestSessions.close();
+  }
+
   const schedulerScaling = {};
   for (const count of placementPoolSizes) {
     const candidates = placementCandidates(count);
@@ -98,8 +131,12 @@ try {
     records: { computers: samples, leases: samples, operations: samples, events: samples * 3 },
     transactionLatency: { registerComputer: summarize(computerWrites), reserveLease: summarize(leaseWrites), beginOperation: summarize(operationWrites),
       readEventPage: summarize(eventPageReads) },
+    guestSessionCapabilityLatency: {
+      issueAndResolveActiveLease: summarize(guestCapabilityIssues),
+      authenticateAndResolveCurrentLease: summarize(guestCapabilityAuthentications),
+    },
     scheduler: { samplesPerPoolSize: samples, proposalLatencyByCandidateCount: schedulerScaling },
-    scope: 'synthetic local store transactions and in-memory placement proposals only; excludes startup ACL checks, provider work, OS scheduling, and remote I/O',
+    scope: 'synthetic local store transactions, Guest capability resolution, and in-memory placement proposals only; excludes startup ACL checks, network/TLS, provider work, OS scheduling, and remote I/O',
   }));
 } finally {
   store?.close();
