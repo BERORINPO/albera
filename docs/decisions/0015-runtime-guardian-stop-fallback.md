@@ -13,7 +13,7 @@ The Runtime Gateway asks the Guardian to stop the approved provider tree and wai
 - When a supervised child's Guardian stop request fails, try the platform process-tree adapter using the provider PID only while the supervisor still reports the provider live and the Guardian process open.
 - Treat a POSIX process-group adapter result according to its own group signal evidence. On Windows, taskkill success is only a cleanup request and is not tree-stop confirmation; only ADR 0020's Job Object active-process count can confirm a Windows tree.
 - If the Guardian has already reported provider exit, do not use its PID for the OS fallback. Preserve an uncertain stop result because descendants cannot be proven gone and the PID may be reused.
-- Keep manual stop authorization and existing Windows forceful-stop disclosure unchanged. No caller-supplied PID or signal is accepted.
+- Manual stop bypasses approval under ADR 0022; preserve Windows forceful-stop disclosure in the control UI and lifecycle event. No caller-supplied PID or signal is accepted.
 
 ## Consequences and remaining risks
 

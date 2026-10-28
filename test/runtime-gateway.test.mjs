@@ -16,7 +16,7 @@ async function fixture(options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-'));
   const cwd = path.join(root, 'project');
   await mkdir(cwd);
-  const executable = path.join(root, `provider${process.platform === 'win32' ? '.exe' : ''}`);
+  const executable = path.join(root, `provider${(options.platform ?? process.platform) === 'win32' ? '.exe' : ''}`);
   await writeFile(executable, 'synthetic provider executable fixture');
   await chmod(executable, 0o700);
   const { buildLaunchImpl = (_provider, profile, prompt) => ({ profile, args: Array.isArray(prompt) ? prompt : [] }), probeVersionImpl = async () => '99.0.0', ...gatewayOptions } = options;
@@ -131,13 +131,8 @@ test('trusted approval broker gates streaming provider launch on an explicit one
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   assert.equal(spawned, true);
   assert.equal(broker.decide(approval.id, true), false);
-  const stopping = f.gateway.stop(run.id);
-  await waitFor(() => broker.listPending().length === 1);
-  const [stopApproval] = broker.listPending();
-  assert.equal(stopApproval.request.action, 'stop');
-  assert.equal(stopApproval.request.runId, run.id);
-  assert.equal(broker.decide(stopApproval.id, true), true);
-  await stopping;
+  await f.gateway.stop(run.id);
+  assert.equal(broker.listPending().length, 0);
   await waitFor(() => f.gateway.get(run.id).status === 'stopped');
 });
 
@@ -671,16 +666,22 @@ test('Job-managed Guardian failure never falls back to a reusable PID', async (t
   assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
 });
 
-test('manual stop requires separate authorization; denied stop leaves the run active', async (t) => {
+test('manual stop proceeds immediately even when the host would deny stop authorization', async (t) => {
+  let stopAuthorizationCalls = 0;
   const f = await fixture({
-    authorize: async ({ action }) => action !== 'stop',
+    platform: 'win32',
+    authorize: async ({ action }) => { if (action === 'stop') stopAuthorizationCalls++; return action !== 'stop'; },
     spawnImpl: () => { const child = new FakeChild(); queueMicrotask(() => child.emit('spawn')); return child; },
   });
   t.after(f.dispose);
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
   await waitFor(() => f.gateway.get(run.id).status === 'running');
-  await assert.rejects(f.gateway.stop(run.id), (error) => error.code === 'confirmation_required');
-  assert.equal(f.gateway.get(run.id).status, 'running');
+  await f.gateway.stop(run.id);
+  await waitFor(() => f.gateway.get(run.id).status === 'stopped');
+  assert.equal(stopAuthorizationCalls, 0);
+  const stopEvent = f.gateway.events().find((event) => event.type === 'stop_requested');
+  assert.equal(stopEvent.stopReason, 'user_cancel');
+  assert.equal(stopEvent.force, true);
 });
 
 test('follow-up input requires exact host approval, serializes requests, and emits no content', async (t) => {
@@ -813,10 +814,9 @@ test('input approval cannot send after Gateway shutdown starts', async (t) => {
 });
 
 test('concurrent stop requests send one termination signal', async (t) => {
-  let stopApprovals = 0;
   let signals = 0;
   const f = await fixture({
-    authorize: async ({ action }) => { if (action === 'stop') stopApprovals++; return true; },
+    authorize: async () => true,
     spawnImpl: () => {
       const child = new FakeChild();
       const kill = child.kill.bind(child);
@@ -830,19 +830,14 @@ test('concurrent stop requests send one termination signal', async (t) => {
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   await Promise.all([f.gateway.stop(run.id), f.gateway.stop(run.id)]);
   await waitFor(() => f.gateway.get(run.id).status === 'stopped');
-  assert.equal(stopApprovals, 2);
   assert.equal(signals, 1);
 });
 
-test('a stop approval that resolves during Gateway shutdown does not repeat the stop action', async (t) => {
-  let releaseApproval;
-  let stopApprovalSeen;
-  const approvalGate = new Promise((resolve) => { releaseApproval = resolve; });
-  const approvalSeen = new Promise((resolve) => { stopApprovalSeen = resolve; });
+test('manual stop does not wait on authorization and shutdown does not repeat its signal', async (t) => {
   let signals = 0;
   const f = await fixture({
     authorize: async ({ action }) => {
-      if (action === 'stop') { stopApprovalSeen(); await approvalGate; }
+      if (action === 'stop') throw new Error('stop must not request authorization');
       return true;
     },
     spawnImpl: () => {
@@ -857,10 +852,8 @@ test('a stop approval that resolves during Gateway shutdown does not repeat the 
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'shutdown stop fixture' });
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   const stopping = f.gateway.stop(run.id);
-  await approvalSeen;
   const closing = f.gateway.close();
-  releaseApproval();
-  await assert.rejects(stopping, (error) => error.code === 'gateway_closed');
+  await stopping;
   assert.deepEqual(await closing, []);
   assert.equal(signals, 1, 'shutdown owns the single process termination request');
 });
@@ -895,7 +888,9 @@ test('local helper process integration: starts, reports lifecycle only, stops, a
   assert.ok(['stopping', 'stopped'].includes(stopped.status));
   await waitFor(() => f.gateway.get(run.id).status === 'stopped');
   assert.equal(f.gateway.get(run.id).stopReason, 'user_cancel');
-  assert.equal(f.gateway.events().find((event) => event.type === 'stop_requested').stopReason, 'user_cancel');
+  const stopEvent = f.gateway.events().find((event) => event.type === 'stop_requested');
+  assert.equal(stopEvent.stopReason, 'user_cancel');
+  assert.equal(stopEvent.force, process.platform === 'win32');
   assert.deepEqual(await f.gateway.close(), []);
 });
 
@@ -939,7 +934,7 @@ test('local POSIX process-group fallback remains unconfirmed when Guardian chann
   assert.ok(child.exitCode !== null || child.signalCode !== null);
 });
 
-test('orderly host close stops active children even when interactive stop approval is denied', async (t) => {
+test('orderly host close stops active children without waiting for a stop approval', async (t) => {
   const f = await fixture({
     authorize: async ({ action }) => action === 'start',
     resolveExecutableImpl: async () => process.execPath,

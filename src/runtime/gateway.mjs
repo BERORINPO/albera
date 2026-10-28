@@ -74,7 +74,7 @@ export class RuntimeGateway {
   #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #probeVersion; #buildLaunch; #authorize; #env; #now; #signalTree; #signalTreeFallback; #closing = false;
   /** @type {Map<string, Run>} */ #runs = new Map();
   #pendingStarts = 0;
-  /** @type {Array<{id: number, runId: string, provider: string, type: string, at: number, code?: number|null, signal?: string|null}>} */ #events = [];
+  /** @type {Array<{id: number, runId: string, provider: string, type: string, at: number, code?: number|null, signal?: string|null, stopReason?: string, force?: boolean}>} */ #events = [];
   #eventSubscribers = new Set();
   #nextEventId = 1;
 
@@ -206,14 +206,12 @@ export class RuntimeGateway {
     } finally { this.#pendingStarts--; }
   }
 
-  /** Stop a known run only after trusted host authorization for that run ID. */
+  /** Stop a known run immediately; stopping reduces risk and must not wait for approval. */
   async stop(id) {
     if (this.#closing) throw new GatewayError('gateway_closed');
     const run = this.#runs.get(id);
     if (!run) throw new GatewayError('unknown_run');
     if (!isActive(run.status) || run.status === 'stopping') return this.#snapshot(run);
-    if (!await this.#authorizeSafely({ action: 'stop', provider: run.provider, runId: run.id, force: this.#platform === 'win32' })) throw new GatewayError('confirmation_required');
-    if (this.#closing) throw new GatewayError('gateway_closed');
     await this.#requestStop(run);
     return this.#snapshot(run);
   }
@@ -310,7 +308,7 @@ export class RuntimeGateway {
     if (!isActive(run.status) || run.status === 'stopping') return;
     run.status = 'stopping';
     run.stopReason = reason;
-    this.#emit(run, 'stop_requested', { stopReason: reason });
+    this.#emit(run, 'stop_requested', { stopReason: reason, force: this.#platform === 'win32' });
     const pid = run.child.pid;
     if (run.child.exitCode !== null || run.child.signalCode !== null) {
       if (run.child.jobObjectManaged === true) {

@@ -44,21 +44,22 @@ test('approval broker denies invalid requests, invalid decisions, and queue over
     cwd: '/work', args: [], environment: { providerVariables: [], endpointOverrides: [] }, platform: 'linux',
     minimumCliVersion: '2.1.248', versionCheck: true, maxDurationMs: 60_000, maxActive: 1,
   }), false);
-  const pending = Array.from({ length: 32 }, () => broker.authorize({ action: 'stop', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', force: false }));
-  assert.equal(broker.size, 32);
   assert.equal(await broker.authorize({ action: 'stop', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', force: false }), false);
+  const pending = Array.from({ length: 32 }, () => broker.authorize({ action: 'input', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', text: 'synthetic input' }));
+  assert.equal(broker.size, 32);
+  assert.equal(await broker.authorize({ action: 'input', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', text: 'synthetic input' }), false);
   const [item] = broker.listPending();
   assert.equal(broker.decide(item.id, 'approve'), false);
   broker.close();
   assert.deepEqual(await Promise.all(pending), Array(32).fill(false));
   assert.equal(broker.size, 0);
-  assert.equal(await broker.authorize({ action: 'stop', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', force: false }), false);
+  assert.equal(await broker.authorize({ action: 'input', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', text: 'synthetic input' }), false);
 });
 
 test('approval broker fails closed if its ID source collides', async () => {
   const broker = createRuntimeApprovalBroker({ makeId: () => 'approval-request-0001' });
-  const first = broker.authorize({ action: 'stop', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', force: false });
-  assert.equal(await broker.authorize({ action: 'stop', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', force: false }), false);
+  const first = broker.authorize({ action: 'input', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', text: 'synthetic input' });
+  assert.equal(await broker.authorize({ action: 'input', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', text: 'synthetic input' }), false);
   broker.close();
   assert.equal(await first, false);
 });
