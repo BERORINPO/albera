@@ -7,8 +7,15 @@ export function proposeComputerPlacement({ computers, requirements, quota }) {
   if (!Array.isArray(computers)) throw new TypeError('invalid_computer_candidates');
   const rejected = new Set();
   const eligible = [];
+  const candidateIdCounts = new Map();
+  for (const computer of computers) {
+    if (computer && isEnvironmentId(computer.computerId)) {
+      candidateIdCounts.set(computer.computerId, (candidateIdCounts.get(computer.computerId) ?? 0) + 1);
+    }
+  }
   for (const computer of computers) {
     if (!computer || !isEnvironmentId(computer.computerId)) { rejected.add('candidate_invalid'); continue; }
+    if (candidateIdCounts.get(computer.computerId) > 1) { rejected.add('candidate_duplicate'); continue; }
     if (computer.projectId !== spec.projectId) { rejected.add('project_mismatch'); continue; }
     if (computer.leaseAvailable !== true) { rejected.add('lease_unavailable'); continue; }
     if (!computer.capacity) { rejected.add('capacity_unknown'); continue; }

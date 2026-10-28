@@ -95,3 +95,20 @@ test('placement rejects an invalid capacity and reports no winner without modify
   assert.equal(result.computerId, valid.computerId);
   assert.deepEqual(result.reasonCodes, []);
 });
+
+test('placement rejects every duplicate Computer ID independent of candidate order', () => {
+  const first = {
+    computerId: 'computer-duplicate', projectId: 'project-a', leaseAvailable: true,
+    capacity: { os: 'linux', architecture: 'x64', capabilities: ['terminal'],
+      networkProfileIds: ['net-a'], securityProfileIds: ['sec-a'],
+      resources: { vcpu: 2, memoryMiB: 2048, diskGiB: 32 } },
+  };
+  const conflicting = structuredClone(first);
+  conflicting.capacity.resources = { vcpu: 8, memoryMiB: 8192, diskGiB: 128 };
+  for (const candidates of [[first, conflicting], [conflicting, first]]) {
+    const result = proposeComputerPlacement({ computers: candidates, requirements, quota });
+    assert.equal(result.status, 'NO_CAPACITY');
+    assert.equal(result.computerId, null);
+    assert.deepEqual(result.reasonCodes, ['candidate_duplicate']);
+  }
+});
