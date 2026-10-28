@@ -1,11 +1,11 @@
 // Test helper for cross-process SQLite quota and Guest receipt races. It is not a product command.
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
-import { writeSync } from 'node:fs';
+import { writeFileSync, writeSync } from 'node:fs';
 import { openSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
 import { reserveComputerForRun } from '../src/runtime/computer-scheduler.mjs';
 
-const [databasePath, workerId, mode = 'scheduler', operationId, expectedGeneration, actionDigest] = process.argv.slice(2);
+const [databasePath, workerId, mode = 'scheduler', operationId, expectedGeneration, actionDigest, providerStatePath] = process.argv.slice(2);
 const projectId = 'race-project';
 const requirements = {
   projectId, kind: 'ephemeral', os: 'linux', architecture: 'x64',
@@ -19,7 +19,7 @@ const store = await openSqliteEnvironmentStore(databasePath, {
   recoverInterruptedRequests: false,
   ...(['guest-event', 'begin-operation', 'release-lease', 'crash-after-begin'].includes(mode)
     ? { now: () => '2026-10-28T00:30:00.000Z' }
-    : ['broker-dispatch', 'crash-after-dispatch'].includes(mode) ? { now: () => '2026-10-28T00:00:30.000Z' } : {}),
+    : ['broker-dispatch', 'crash-after-dispatch', 'crash-after-provider-effect'].includes(mode) ? { now: () => '2026-10-28T00:00:30.000Z' } : {}),
 });
 const startOperation = (workerId) => ({
   operationId: `race-operation-${workerId}`, idempotencyKey: `race-idempotency-${workerId}`,
@@ -56,6 +56,17 @@ try {
     });
     writeSync(1, `RESULT ${JSON.stringify({ status: 'CLAIMED', operationId: operation.operationId })}\n`);
     process.exit(24);
+  } else if (mode === 'crash-after-provider-effect') {
+    if (typeof providerStatePath !== 'string' || !providerStatePath) throw new Error('provider_state_path_invalid');
+    const operation = store.resolveBrokerDispatch({
+      protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+      operationId, expectedGeneration: Number(expectedGeneration), actionDigest: `sha256:${actionDigest}`,
+    });
+    // Simulate an irreversible external Provider effect, persist its observation,
+    // then terminate before any outcome can be written back to the operation journal.
+    writeFileSync(providerStatePath, JSON.stringify({ state: 'off', generation: operation.expectedGeneration }), { flag: 'wx', mode: 0o600 });
+    writeSync(1, `RESULT ${JSON.stringify({ status: 'SIDE_EFFECT', operationId: operation.operationId })}\n`);
+    process.exit(25);
   } else if (mode === 'begin-operation') {
     const result = store.beginOperation(startOperation(workerId));
     process.stdout.write(`RESULT ${JSON.stringify({ status: result.created ? 'CREATED' : 'REPLAYED', operationId: result.operation.operationId })}\n`);

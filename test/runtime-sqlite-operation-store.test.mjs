@@ -26,7 +26,7 @@ const spec = {
 
 async function fixture(t, {
   provider: injectedProvider, authorizeOperation: injectedAuthorizer,
-  prepareStore, prepareProvider, ...storeOptions
+  providerFactory, prepareStore, prepareProvider, ...storeOptions
 } = {}) {
   const root = await mkdtemp(path.join(os.homedir(), '.albera-operation-store-test-'));
   const databasePath = path.join(root, 'operations.sqlite');
@@ -47,7 +47,7 @@ async function fixture(t, {
     store?.close();
     await rm(root, { recursive: true, force: true });
   });
-  const provider = injectedProvider ?? new MockEnvironmentProvider({ now });
+  const provider = injectedProvider ?? providerFactory?.({ root, now }) ?? new MockEnvironmentProvider({ now });
   prepareProvider?.(provider);
   const broker = new LocalEnvironmentHostBroker({ store, provider });
   let coordinator = new DurableEnvironmentOperationCoordinator({ store, broker, authorizeOperation, nowMs: () => nowMs, providerTimeoutMs: 100 });
@@ -868,6 +868,66 @@ test('abrupt host exit after dispatch claim preserves UNKNOWN and denies redispa
     operationId: request.operationId, expectedGeneration: request.expectedGeneration,
     actionDigest: `sha256:${begun.operation.actionDigest}`,
   }), (error) => error.code === 'operation_not_dispatchable');
+});
+
+test('process crash after a durable Provider side effect reconciles by inspect without duplicate create', { timeout: 60_000 }, async (t) => {
+  const providerStatePath = path.join(os.tmpdir(), `albera-provider-observation-${randomUUID()}.json`);
+  let createCalls = 0;
+  let inspectCalls = 0;
+  const f = await fixture(t, {
+    providerFactory: ({ now }) => {
+      const observe = (operation, state) => ({
+        computerId: operation.computerId, providerId: 'mock', state,
+        generation: operation.expectedGeneration, observedAt: now(),
+      });
+      return {
+        providerId: 'mock',
+        async create(operation) { createCalls++; return observe(operation, 'off'); },
+        async inspect(operation) {
+          inspectCalls++;
+          let providerState;
+          try { providerState = JSON.parse(await readFile(providerStatePath, 'utf8')); }
+          catch { return observe(operation, 'missing'); }
+          return observe(operation, providerState.state);
+        },
+        async start(operation) { return observe(operation, 'running'); },
+        async stop(operation) { return observe(operation, 'off'); },
+        async destroy(operation) { return observe(operation, 'missing'); },
+      };
+    },
+  });
+  t.after(() => rm(providerStatePath, { force: true }));
+  const request = f.operation('create');
+  const begun = f.store.beginOperation(request);
+  await recordExecutionApproval(f, request, begun);
+
+  const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
+  f.store.close();
+  const worker = spawnSynchronizedStoreWorker(workerPath, f.databasePath, 1, 'crash-after-provider-effect',
+    request.operationId, String(request.expectedGeneration), begun.operation.actionDigest, providerStatePath);
+  t.after(async () => {
+    if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    await worker.exited;
+  });
+  const resultLine = worker.result;
+  await worker.ready;
+  worker.child.stdin.end('go\n');
+  const providerEffect = await resultLine;
+  await worker.exited;
+
+  assert.equal(worker.child.exitCode, 25, JSON.stringify(providerEffect));
+  assert.equal(providerEffect.status, 'SIDE_EFFECT');
+  assert.deepEqual(JSON.parse(await readFile(providerStatePath, 'utf8')), { state: 'off', generation: request.expectedGeneration });
+
+  await f.reopen();
+  assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
+  const reconciled = await f.coordinator.reconcile(request.operationId);
+  assert.equal(reconciled.status, 'SUCCEEDED');
+  assert.equal(reconciled.observedState, 'off');
+  assert.equal(inspectCalls, 1);
+  assert.equal(createCalls, 0, 'recovery must inspect the persisted provider effect, not repeat create');
+  assert.equal((await f.coordinator.execute(request)).status, 'SUCCEEDED');
+  assert.equal(createCalls, 0, 'idempotent replay after reconciliation does not dispatch create');
 });
 
 test('startup recovery marks only an interrupted pre-dispatch request UNKNOWN', async (t) => {
