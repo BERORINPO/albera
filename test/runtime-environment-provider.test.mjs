@@ -184,6 +184,19 @@ test('Hyper-V adapter requires the complete fixed Broker method set', () => {
   assert.throws(() => new HyperVEnvironmentProvider({ broker }), /invalid_hyperv_broker_client/);
 });
 
+test('Hyper-V adapter normalizes hostile Broker client reflection failures', () => {
+  for (const broker of [
+    new Proxy({}, { getPrototypeOf() { throw new Error('credential=prototype-secret'); } }),
+    new Proxy({}, { ownKeys() { throw new Error('credential=keys-secret'); } }),
+  ]) {
+    assert.throws(() => new HyperVEnvironmentProvider({ broker }), (error) => {
+      assert.equal(error.message, 'invalid_hyperv_broker_client');
+      assert.doesNotMatch(error.message, /credential=/);
+      return true;
+    });
+  }
+});
+
 test('Hyper-V adapter captures validated Broker methods and ignores later method replacement', async () => {
   let originalCalls = 0;
   let replacementCalls = 0;

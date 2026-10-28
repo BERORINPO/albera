@@ -25,10 +25,8 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
 
   constructor({ broker }) {
     super('hyperv');
-    if (!isRecord(broker)) {
-      throw new TypeError('invalid_hyperv_broker_client');
-    }
-    const descriptors = Object.getOwnPropertyDescriptors(broker);
+    const descriptors = readBrokerDescriptors(broker);
+    if (!descriptors) throw new TypeError('invalid_hyperv_broker_client');
     const methods = {};
     for (const [action, name] of Object.entries(BROKER_METHODS)) {
       const descriptor = descriptors[name];
@@ -91,12 +89,18 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
   }
 }
 
-function isRecord(value) {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) return false;
-  if (Object.getOwnPropertySymbols(value).length > 0) return false;
-  return Object.values(Object.getOwnPropertyDescriptors(value)).every((descriptor) => Object.hasOwn(descriptor, 'value'));
+function readBrokerDescriptors(value) {
+  try {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    if (Object.getOwnPropertySymbols(value).length > 0) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (!Object.values(descriptors).every((descriptor) => Object.hasOwn(descriptor, 'value'))) return null;
+    return descriptors;
+  } catch {
+    return null;
+  }
 }
 
 function dataProperty(value, key) {
