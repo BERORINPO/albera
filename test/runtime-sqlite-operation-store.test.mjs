@@ -175,6 +175,30 @@ test('incomplete SQLite restore leaves a fail-closed marker that blocks ordinary
     (error) => error.code === 'restore_incomplete_marker_present');
 });
 
+test('abrupt restore-owner exit after database copy keeps the destination quarantined', async (t) => {
+  const f = await fixture(t);
+  const backupPath = path.join(f.root, 'operations-backup.sqlite');
+  const restoredPath = path.join(f.root, 'crashed-restore.sqlite');
+  await f.store.backupTo(backupPath);
+  const moduleUrl = new URL('../src/runtime/sqlite-operation-store.mjs', import.meta.url).href;
+  const source = `import { restoreSqliteEnvironmentStore } from ${JSON.stringify(moduleUrl)};\nawait restoreSqliteEnvironmentStore(process.argv[1], process.argv[2], { now: () => process.exit(77), verifyWindowsAcl: async () => {} });`;
+  const childEnv = Object.fromEntries(['SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP']
+    .filter((key) => process.env[key]).map((key) => [key, process.env[key]]));
+  const child = spawn(process.execPath, ['--input-type=module', '-e', source, backupPath, restoredPath], {
+    cwd: path.dirname(path.dirname(fileURLToPath(import.meta.url))), shell: false, windowsHide: true,
+    env: childEnv, stdio: 'ignore',
+  });
+  const exit = await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+  assert.deepEqual(exit, { code: 77, signal: null });
+  assert.ok((await stat(restoredPath)).isFile());
+  assert.match(await readFile(`${restoredPath}.restore-incomplete`, 'utf8'), /^ALBERA_SQLITE_RECOVERY_OWNER_V1_INCOMPLETE:/);
+  await assert.rejects(openSqliteEnvironmentStore(restoredPath, { verifyWindowsAcl: async () => {} }),
+    (error) => error.code === 'restore_incomplete_marker_present');
+});
+
 test('schema v1 migration preserves existing Computer and Lease rows', async (t) => {
   const root = await mkdtemp(path.join(os.homedir(), '.albera-operation-store-migration-'));
   const databasePath = path.join(root, 'operations.sqlite');
