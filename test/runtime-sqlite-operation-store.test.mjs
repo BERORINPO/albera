@@ -21,7 +21,7 @@ async function fixture(t, options = {}) {
   const databasePath = path.join(root, 'operations.sqlite');
   let nowMs = Date.parse('2026-10-28T00:00:00.000Z');
   const now = () => new Date(nowMs).toISOString();
-  let store = await openSqliteEnvironmentStore(databasePath, { now, ...options });
+  let store = await openSqliteEnvironmentStore(databasePath, { now, verifyWindowsAcl: async () => {}, ...options });
   t.after(async () => {
     store?.close();
     await rm(root, { recursive: true, force: true });
@@ -46,7 +46,7 @@ async function fixture(t, options = {}) {
     get coordinator() { return coordinator; },
     reopen: async () => {
       store.close();
-      store = await openSqliteEnvironmentStore(databasePath, { now, ...options });
+      store = await openSqliteEnvironmentStore(databasePath, { now, verifyWindowsAcl: async () => {}, ...options });
       coordinator = new DurableEnvironmentOperationCoordinator({ store, provider, providerTimeoutMs: 100 });
     },
     get store() { return store; },
@@ -332,7 +332,7 @@ test('database open refuses symlink paths and preserves existing corrupt databas
   await writeFile(targetPath, 'user-owned-bytes', { mode: 0o600 });
   const { symlink } = await import('node:fs/promises');
   try { await symlink(targetPath, linkPath); } catch { return t.skip('symlink creation is unavailable'); }
-  await assert.rejects(openSqliteEnvironmentStore(linkPath), (error) => error.code === 'database_file_invalid');
-  await assert.rejects(openSqliteEnvironmentStore(targetPath), (error) => error.code === 'database_open_failed' || error.code === 'database_integrity_failed');
+  await assert.rejects(openSqliteEnvironmentStore(linkPath, { verifyWindowsAcl: async () => {} }), (error) => error.code === 'database_file_invalid');
+  await assert.rejects(openSqliteEnvironmentStore(targetPath, { verifyWindowsAcl: async () => {} }), (error) => error.code === 'database_open_failed' || error.code === 'database_integrity_failed');
   assert.equal(await readFile(targetPath, 'utf8'), 'user-owned-bytes');
 });

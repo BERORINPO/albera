@@ -6,6 +6,7 @@ import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
 import { backupRuntimeJournal, recoverRuntimeJournalTail, restoreRuntimeJournal } from '../src/runtime/journal-backup.mjs';
 import { loadOrCreateRuntimeSessionId } from '../src/runtime/session-identity.mjs';
+import { openSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
 import { assertPrivateWindowsAcl, inspectWindowsAcl, inspectWindowsAcls, RuntimeStorageAclError } from '../src/runtime/windows-acl.mjs';
 
 const USER = 'S-1-5-21-1-2-3-1001';
@@ -105,6 +106,17 @@ test('Windows ACL query reads a real system DACL', {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('SQLite operation store opens only when its private Windows DACL checks pass', {
+  skip: process.platform !== 'win32' || process.env.ALBERA_RUN_WINDOWS_ACL_INTEGRATION !== '1',
+}, async (t) => {
+  const root = await mkdtemp(path.join(os.homedir(), 'albera-sqlite-acl-'));
+  let store;
+  t.after(async () => { store?.close(); await rm(root, { recursive: true, force: true }); });
+  store = await openSqliteEnvironmentStore(path.join(root, 'operations.sqlite'));
+  const computer = store.registerComputer({ computerId: 'acl-computer', projectId: 'acl-project', providerId: 'mock' });
+  assert.equal(computer.computerId, 'acl-computer');
 });
 
 test('journal ACL refusal happens before existing journal content is read or changed', async (t) => {

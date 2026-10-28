@@ -64,7 +64,7 @@ This branch adds deterministic contract tests for the adapter seam, malformed pr
 
 Local verification on Windows, Node `v24.13.0` (scheduler diff):
 
-- `npm test`: 593 tests; 587 passed, 6 skipped, 0 failed.
+- `npm test`: 594 tests; 587 passed, 7 skipped, 0 failed.
 - `npm run arch`: passed; 90 role-table paths checked and 0 violations, including the provider no-process-execution rule.
 - `npm run smoke`: passed; the existing Observer served its read-only dashboard.
 - `npm run package:smoke`: passed; local package/install/Runtime help checks, with no publish or provider launch.
@@ -72,4 +72,4 @@ Local verification on Windows, Node `v24.13.0` (scheduler diff):
 - `npm run bench:runtime-store`: passed, 40 synthetic local SQLite transactions per operation. Latest concurrent verification run was noisy and is not a baseline; rerun isolated before recording numbers.
 - `git diff --check`: passed.
 
-GitHub Actions run `40608413296` tested the pre-scheduler PR #19 head: Ubuntu and macOS Node 22/24 passed; Windows Node 22/24 were still in progress at the last fetch. It does not validate this uncommitted scheduler diff. A new six-job run is required after push. No product performance benchmark was run; Observer smoke elapsed time is not a workload performance baseline.
+GitHub Actions run `40609502224` for the scheduler head passed Ubuntu/macOS Node 22/24, but Windows Node 22/24 were cancelled at the 10-minute job limit while the full test step was still running. The logs showed each SQLite test fixture doing repeated real PowerShell DACL queries (about 60–90 seconds per fixture on that runner). Synthetic store tests now stub the ACL verifier; a dedicated gated Windows integration test still opens the real SQLite store with real DACL checks. Locally, the Windows ACL integration suite passes 10/10, and a fresh six-job Actions run is required after this correction. No product performance benchmark was run; Observer smoke elapsed time is not a workload performance baseline.
