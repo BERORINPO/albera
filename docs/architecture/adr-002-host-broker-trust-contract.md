@@ -55,3 +55,13 @@ The low-privilege Control Plane and privileged Broker are separate processes wit
 - Validate crash/restart replay persistence, durable request/operation deduplication, multi-session policy, and fixed action argument resolution.
 - Keep real VM, network, firewall, and credential operations disabled until their separate ADR acceptance gates pass.
 
+## Current Windows implementation state — BLOCKED
+
+The native Windows Named Pipe adapter and its Windows Node 22/24 integration tests have **not** been implemented in this checkpoint. The request requires prior approval for real ACL changes and service registration, while this environment provides no separate approval for those operations. No service, account, user right, persistent ACL, named-pipe DACL, or network setting was changed. The gated Windows Runtime storage ACL integration was not invoked.
+
+The local host is Windows / Node `v24.13.0`, but `cl.exe`, `link.exe`, and `msbuild.exe` are unavailable, so a native Node addon cannot be built and exercised locally. The Node `net` API does support Windows named-pipe paths but exposes no parameter for a Windows security descriptor and no API to inspect the connected process token. Replacing the gap with a default-DACL `net` pipe would falsely claim the required boundary and is explicitly rejected. A native Windows API bridge, or another narrowly scoped maintained binding with equivalent documented behavior, must be selected and built before that code can be validated.
+
+The existing OS-authenticated service identity also cannot be verified in this session: the ALBERA services are not registered, and creating/configuring them or assigning service/user rights requires the separately approved deployment step. A same-user child process is not evidence for a Control Plane service SID or a different Windows-user denial. Therefore actual Windows DACL/token-auth tests, separate service identity, service-restart replay proof, and Windows Node 22/24 IPC CI remain **BLOCKED / NOT VERIFIED**. Existing Mock IPC tests remain contract tests only. No code has been added that exposes an unauthenticated Broker route or changes Observer behavior.
+
+To unblock the next implementation attempt, authorize only the disposable named-pipe DACL integration test first (temporary pipe object, spawned test client, automatic handle closure; no service or persistent ACL changes). Service registration, service-account configuration, and user-right changes require a separate explicit approval. After the temporary native boundary passes on Windows Node 22/24, review service identity and approval-store design before deployment. Hyper-V actions remain out of scope.
+
