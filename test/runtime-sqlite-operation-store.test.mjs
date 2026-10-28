@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
 import { DurableEnvironmentOperationCoordinator } from '../src/runtime/environment-operations.mjs';
 import { reserveComputerForRun } from '../src/runtime/computer-scheduler.mjs';
 import { EnvironmentStoreError, openSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
@@ -167,6 +170,88 @@ test('legacy outstanding lease with unknown resource usage blocks quota admissio
       expiresAt: new Date(Date.parse(f.now()) + 60 * 60 * 1000).toISOString() },
     requirements: spec, quota: { maxComputers: 2, vcpu: 8, memoryMiB: 8192, diskGiB: 128 },
   }), (error) => error.code === 'project_usage_unknown');
+});
+
+test('separate processes cannot exceed an atomic project quota during simultaneous placement', { timeout: 60_000 }, async (t) => {
+  const root = await mkdtemp(path.join(os.homedir(), '.albera-scheduler-race-'));
+  const databasePath = path.join(root, 'operations.sqlite');
+  const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
+  const capacity = { os: 'linux', architecture: 'x64', capabilities: ['terminal'],
+    networkProfileIds: ['deny-egress-v1'], securityProfileIds: ['guest-restricted-v1'],
+    resources: { vcpu: 4, memoryMiB: 4096, diskGiB: 32 } };
+  let store = await openSqliteEnvironmentStore(databasePath, { verifyWindowsAcl: async () => {} });
+  store.registerComputer({ computerId: 'race-computer-a', projectId: 'race-project', providerId: 'mock', capacity });
+  store.registerComputer({ computerId: 'race-computer-b', projectId: 'race-project', providerId: 'mock', capacity });
+  store.close();
+  store = undefined;
+
+  const workers = [];
+  t.after(async () => {
+    for (const worker of workers) {
+      if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    }
+    await Promise.all(workers.map((worker) => worker.exited));
+    store?.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const spawnContender = (workerId) => {
+    const child = spawn(process.execPath, [workerPath, databasePath, String(workerId)], {
+      cwd: path.dirname(path.dirname(workerPath)), shell: false, windowsHide: true,
+      env: Object.fromEntries(['SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP'].filter((key) => process.env[key])
+        .map((key) => [key, process.env[key]])),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const lines = createInterface({ input: child.stdout });
+    let resolveReady;
+    let rejectReady;
+    let readySettled = false;
+    let resolveResult;
+    let rejectResult;
+    let resultSettled = false;
+    const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; child.once('error', reject); });
+    const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
+    const exited = new Promise((resolve) => child.once('exit', (code, signal) => {
+      lines.close();
+      if (!readySettled) { readySettled = true; rejectReady(new Error(`scheduler_contender_exited_before_ready_${code ?? signal ?? 'unknown'}`)); }
+      if (!resultSettled) {
+        resultSettled = true;
+        rejectResult(new Error(`scheduler_contender_exited_${code ?? signal ?? 'unknown'}`));
+      }
+      resolve();
+    }));
+    lines.on('line', (line) => {
+      if (line === 'READY' && !readySettled) { readySettled = true; resolveReady(); }
+      else if (line.startsWith('RESULT ')) {
+        resultSettled = true;
+        try { resolveResult(JSON.parse(line.slice(7))); }
+        catch { rejectResult(new Error('scheduler_contender_result_invalid')); }
+      }
+    });
+    child.stderr.setEncoding('utf8');
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-1024); });
+    child.on('exit', () => { if (!resultSettled && stderr) rejectResult(new Error(`scheduler_contender_failed: ${stderr}`)); });
+    return { child, ready, result, exited };
+  };
+
+  workers.push(...Array.from({ length: 8 }, (_, index) => spawnContender(index + 1)));
+  const allResults = Promise.all(workers.map((worker) => worker.result));
+  allResults.catch(() => {});
+  await Promise.all(workers.map((worker) => worker.ready));
+  for (const worker of workers) worker.child.stdin.end('go\n');
+  const outcomes = await allResults;
+  await Promise.all(workers.map((worker) => worker.exited));
+
+  const winners = outcomes.filter((outcome) => outcome.status === 'PROPOSED');
+  assert.equal(winners.length, 1, JSON.stringify(outcomes));
+  assert.ok(outcomes.every((outcome) => outcome.status === 'NO_CAPACITY'
+    || outcome.status === 'PROPOSED' || ['project_quota_exceeded', 'computer_already_leased'].includes(outcome.errorCode)), JSON.stringify(outcomes));
+
+  store = await openSqliteEnvironmentStore(databasePath, { verifyWindowsAcl: async () => {} });
+  const activeLeases = outcomes.map(({ leaseId }) => leaseId).filter(Boolean)
+    .map((leaseId) => store.getLease(leaseId)).filter((lease) => lease?.state === 'ACTIVE');
+  assert.equal(activeLeases.length, 1);
 });
 
 test('durable intent is recorded before provider action and idempotent replay never repeats the side effect', async (t) => {
