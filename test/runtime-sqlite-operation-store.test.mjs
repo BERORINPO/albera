@@ -15,6 +15,7 @@ import { EnvironmentStoreError, openSqliteEnvironmentStore, restoreSqliteEnviron
 import { LocalEnvironmentHostBroker } from '../src/runtime/environment-host-broker.mjs';
 import { HyperVEnvironmentProvider } from '../src/runtime/hyperv-environment-provider.mjs';
 import { MockEnvironmentProvider } from '../src/runtime/mock-environment-provider.mjs';
+import { createGuestEventIntake } from '../src/runtime/guest-event-intake.mjs';
 
 const spec = {
   projectId: 'project-a', kind: 'ephemeral', os: 'linux', architecture: 'x64',
@@ -477,6 +478,52 @@ test('durable Guest event intake acknowledges exact retries and rejects replay, 
   assert.throws(() => f.store.recordGuestEvent({
     ...event, messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', sequence: 2,
   }), (error) => error.code === 'guest_generation_stale');
+});
+
+test('GuestEventIntake binds an authenticated transport to Host identity and records claims without changing operations', async (t) => {
+  const f = await fixture(t);
+  const operation = f.operation('start');
+  f.store.beginOperation(operation);
+  let resolverCalls = 0;
+  const intake = createGuestEventIntake({
+    store: f.store,
+    authenticateTransport: async ({ transport }) => transport?.peer === 'host-authenticated' ? 'peer-a' : false,
+    resolveGuestContext: async ({ peer }) => {
+      resolverCalls += 1;
+      assert.equal(peer, 'peer-a');
+      return { computerId: f.computerId, runId: f.lease.runId, generation: f.lease.generation };
+    },
+  });
+  const message = {
+    protocolVersion: 1, type: 'guest.event', messageId: randomUUID(), computerId: f.computerId,
+    runId: f.lease.runId, generation: f.lease.generation, sequence: 1,
+    occurredAt: f.now(), eventType: 'operation.completed', operationId: operation.operationId,
+    claimedOutcome: 'succeeded',
+  };
+
+  assert.deepEqual(await intake.receive({ transport: { peer: 'host-authenticated' }, message }), {
+    status: 'ACCEPTED', messageId: message.messageId, sequence: 1,
+  });
+  assert.equal(f.store.getOperation(operation.operationId).status, 'REQUESTED', 'Guest outcome is a claim and does not complete a Host operation');
+  const guestRecords = f.store.listEvents(f.computerId).filter((record) => record.provenance === 'untrusted_guest');
+  assert.equal(guestRecords.length, 1);
+  assert.equal(guestRecords[0].type, 'guest.operation.completed');
+  assert.equal(guestRecords[0].provenance, 'untrusted_guest');
+  assert.deepEqual(await intake.receive({ transport: { peer: 'host-authenticated' }, message }), {
+    status: 'DUPLICATE', messageId: message.messageId, sequence: 1,
+  });
+  assert.equal(f.store.listEvents(f.computerId).filter((record) => record.provenance === 'untrusted_guest').length, 1);
+
+  const resolverCallsBeforeDeniedPeer = resolverCalls;
+  await assert.rejects(intake.receive({ transport: { peer: 'untrusted' }, message }),
+    (error) => error.code === 'guest_authentication_failed');
+  assert.equal(resolverCalls, resolverCallsBeforeDeniedPeer, 'failed transport authentication never resolves Guest identity');
+
+  await assert.rejects(intake.receive({
+    transport: { peer: 'host-authenticated' },
+    message: { ...message, messageId: randomUUID(), computerId: 'attacker-computer', sequence: 2 },
+  }), (error) => error.code === 'guest_identity_mismatch');
+  assert.equal(f.store.listEvents(f.computerId).filter((record) => record.provenance === 'untrusted_guest').length, 1);
 });
 
 test('durable Guest event intake rejects inactive, expired, unknown and malformed host context', async (t) => {
