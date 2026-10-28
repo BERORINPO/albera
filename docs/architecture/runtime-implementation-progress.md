@@ -252,3 +252,11 @@ The SQLite store now explicitly sets its per-connection WAL auto-checkpoint thre
 ## Reverification after WAL checkpoint CI record
 
 On Windows / Node `v24.13.0`, the clean branch at `1e8cf74` was rechecked: `npm test` **680 total (672 passed, 8 skipped, 0 failed)**; `npm run arch` **95 role-table paths, 0 violations**; `npm run smoke` passed in read-only mode; and `npm run package:smoke` passed with a local temporary package install, CLI help and UI asset checks. No provider was launched, nothing was published, and no repository or user session data was modified. This revalidates the existing code state; the only source change at `1e8cf74` is documentation.
+
+## Guest event-ingress capability contract
+
+Added `guest-session-capability.mjs`: an ephemeral, Host-resolved per-Computer/Run/generation bearer capability limited to Guest event intake. Credentials are 256-bit random values; only SHA-256 digests are retained in memory; expiry is capped at five minutes or Lease expiry (whichever is earlier), issuance replaces the previous Run credential, and a bounded pool prevents unbounded session growth. Authentication rechecks Host context and generation. Service close/restart revokes all credentials. The intake still records only provisional `untrusted_guest` claims; no execution/approval authority is granted.
+
+Initial focused run found a test-fixture identity mismatch (the capacity test resolver returned the first Computer for a second Computer request). The fixture was corrected to resolve the requested IDs. Focused Guest capability tests pass **8/8**; focused capability + SQLite suites pass **81/81**; full `npm test` passes **680, skips 8, fails 0**; `npm run arch` reports **95 paths, 0 violations**; `npm run smoke`, `npm run package:smoke`, and `git diff --check` pass. No external dependency, endpoint or provider launch was added.
+
+This remains a memory-only testable seam, not a production enrollment, transport-authentication, TLS/channel-binding or durable-revocation solution. It is not connected to Observer, the Control API or Host Broker. ADR-002 remains PARTIAL and related acceptance criteria remain NOT_VERIFIED.
