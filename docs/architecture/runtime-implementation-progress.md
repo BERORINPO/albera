@@ -2,7 +2,7 @@
 
 **Updated:** 2026-10-28
 **Working branch:** `codex/runtime-architecture-alignment`
-**Code base:** PR #19 head `1ac2f3d36ca079946060d8318bfe5cc2822fcb5a`; PR #19 is stacked on PR #17 head `8a829d116e39ca10f273594f409f38315f20570f`. Analysis is in `runtime-gap-analysis.md`.
+**Runtime source/test HEAD audited:** `1ac2f3d36ca079946060d8318bfe5cc2822fcb5a` (subsequent commits update this progress ledger only); PR #19 is stacked on PR #17 head `8a829d116e39ca10f273594f409f38315f20570f`. Analysis is in `runtime-gap-analysis.md`.
 **Architecture source:** PR #18 head `b7684740322bda5a4e2d1233299bca251d95ed6c` (Proposed, independent branch; its absence from the Runtime branch is intentional).
 
 This file is the continuation ledger. `VERIFIED` refers only to the stated evidence and scope; it does not imply that a Proposed ADR has been accepted.
