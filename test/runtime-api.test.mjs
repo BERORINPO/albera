@@ -79,6 +79,44 @@ test('closing the API invalidates session credentials and prevents new credentia
   assert.throws(() => api.createCredential(['runs:read']), /api_closed/);
 });
 
+test('environment operation routes require opt-in scopes, inject authenticated session, and project responses', async (t) => {
+  const calls = [];
+  const environmentControlPlane = {
+    async execute(value) {
+      calls.push(['execute', value]);
+      return { operationId: 'op-1', subjectId: value.sessionId, projectId: 'p1', taskId: 't1', runId: 'r1', computerId: 'c1', leaseId: 'l1', generation: 1, action: 'start', status: 'SUCCEEDED', desiredState: 'running', observedState: 'running', observedAt: null, errorCode: null, createdAt: 1, updatedAt: 2, request: { secret: true }, credential: 'secret' };
+    },
+    async reconcile(value) { calls.push(['reconcile', value]); return { operationId: value.operationId, subjectId: value.sessionId, status: 'UNKNOWN', request: { secret: true } }; },
+  };
+  const gateway = fakeGateway().gateway;
+  const runtimeApi = createRuntimeApi({ gateway, environmentControlPlane });
+  const sessionId = '0123456789abcdef0123456789abcdef';
+  const api = { ...runtimeApi, credential: runtimeApi.createCredential(['environments:execute', 'environments:reconcile'], { sessionId }) };
+  const address = await api.listen();
+  t.after(() => api.close());
+
+  const execute = await request(address, api, { method: 'POST', route: '/v1/environments/operations', body: JSON.stringify({ projectId: 'p1' }) });
+  assert.equal(execute.status, 200);
+  assert.deepEqual(calls[0], ['execute', { sessionId, input: { projectId: 'p1' } }]);
+  assert.equal(execute.text.includes('secret'), false);
+  assert.equal(execute.text.includes('credential'), false);
+  const reconcile = await request(address, api, { method: 'POST', route: '/v1/environments/operations/op-1/reconcile' });
+  assert.deepEqual(calls[1], ['reconcile', { sessionId, operationId: 'op-1' }]);
+  assert.equal(reconcile.text.includes('request'), false);
+  const wrongScope = await request(address, api, { method: 'POST', route: '/v1/environments/operations', token: runtimeApi.createCredential(['runs:read']) , body: '{}' });
+  assert.equal(wrongScope.status, 401);
+});
+
+test('environment operation scopes and routes stay unavailable when control plane is not composed', async (t) => {
+  const f = await apiFixture();
+  t.after(f.close);
+  assert.throws(() => f.api.createCredential(['environments:execute']), /environment control plane/);
+  const response = await request(f.address, f.api, { method: 'POST', route: '/v1/environments/operations', token: f.api.createCredential(['runs:read']), body: '{}' });
+  assert.equal(response.status, 401);
+  const absent = await request(f.address, f.api, { method: 'POST', route: '/v1/environments/operations', token: f.api.createCredential(['health']), body: '{}' });
+  assert.equal(absent.status, 401);
+});
+
 test('API binds to IPv4 loopback, requires bearer auth, validates host/origin, and emits restrictive headers', async (t) => {
   const f = await apiFixture();
   t.after(f.close);

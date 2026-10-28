@@ -13,7 +13,7 @@ const MAX_TRACKED_RUNS = 64;
 const MAX_PENDING_STREAM_EVENTS = 256;
 const MAX_SESSION_EVENT_LOGS = 256;
 const MAX_SESSION_EVENTS = 256;
-const API_SCOPES = new Set(['health', 'providers:read', 'runs:read', 'events:read', 'runs:start', 'runs:stop', 'runs:input', 'approvals:read', 'approvals:decide']);
+const API_SCOPES = new Set(['health', 'providers:read', 'runs:read', 'events:read', 'runs:start', 'runs:stop', 'runs:input', 'approvals:read', 'approvals:decide', 'environments:execute', 'environments:reconcile']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
 const PROFILES = new Set(['read-only', 'read-only-streaming']);
@@ -40,10 +40,13 @@ class ApiError extends Error {
  * The Gateway still performs its separate host authorization; possession of this token alone cannot launch.
  * @param {{gateway: {start: Function, stop: Function, list: Function, events: Function, subscribeEvents?: Function, sendInput?: Function}, pollIntervalMs?: number, streamLifetimeMs?: number, maxStreams?: number}} options
  */
-export function createRuntimeApi({ gateway, journal, approvalBroker, pollIntervalMs = 250, streamLifetimeMs = MAX_STREAM_LIFETIME_MS, maxStreams = MAX_STREAMS } = {}) {
+export function createRuntimeApi({ gateway, journal, approvalBroker, environmentControlPlane, pollIntervalMs = 250, streamLifetimeMs = MAX_STREAM_LIFETIME_MS, maxStreams = MAX_STREAMS } = {}) {
   if (!gateway || ['start', 'stop', 'list', 'events'].some((method) => typeof gateway[method] !== 'function')) throw new TypeError('Runtime API requires a Gateway');
   if (journal !== undefined && (!journal || typeof journal.append !== 'function' || typeof journal.list !== 'function')) throw new TypeError('journal must provide append() and list()');
   if (approvalBroker !== undefined && (!approvalBroker || typeof approvalBroker.listPending !== 'function' || typeof approvalBroker.decide !== 'function' || typeof approvalBroker.close !== 'function')) throw new TypeError('approvalBroker must provide listPending(), decide() and close()');
+  if (environmentControlPlane !== undefined && (!environmentControlPlane || typeof environmentControlPlane !== 'object')) throw new TypeError('environmentControlPlane must provide execute() and reconcile()');
+  const environmentExecute = environmentControlPlane ? captureApiMethod(environmentControlPlane, 'execute') : undefined;
+  const environmentReconcile = environmentControlPlane ? captureApiMethod(environmentControlPlane, 'reconcile') : undefined;
   if (journal !== undefined && typeof gateway.close !== 'function') throw new TypeError('audited Gateway must provide close() for fail-closed cleanup');
   if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 100 || pollIntervalMs > 1000) throw new TypeError('pollIntervalMs must be between 100 and 1000');
   if (!Number.isInteger(streamLifetimeMs) || streamLifetimeMs < 1000 || streamLifetimeMs > MAX_STREAM_LIFETIME_MS) throw new TypeError('streamLifetimeMs must be between 1000 and 60000');
@@ -100,6 +103,24 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
         const approvals = approvalBroker.listPending();
         if (!Array.isArray(approvals) || approvals.length > 32) throw new ApiError(503, 'approval_unavailable');
         return sendJson(res, 200, { approvals });
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/environments/operations') {
+        if (!environmentControlPlane) throw new ApiError(404, 'not_found');
+        const input = await readJson(req);
+        let operation;
+        try { operation = projectEnvironmentOperation(await environmentExecute({ sessionId: credential.sessionId, input }), credential.sessionId); }
+        catch (error) { throw environmentApiError(error); }
+        return sendJson(res, 200, { operation });
+      }
+      const reconcileMatch = req.method === 'POST' && url.pathname.match(/^\/v1\/environments\/operations\/([^/]+)\/reconcile$/);
+      if (reconcileMatch) {
+        if (!environmentControlPlane) throw new ApiError(404, 'not_found');
+        const body = await readBody(req);
+        if (body.length !== 0) throw new ApiError(400, 'invalid_request');
+        let operation;
+        try { operation = projectEnvironmentOperation(await environmentReconcile({ sessionId: credential.sessionId, operationId: reconcileMatch[1] }), credential.sessionId); }
+        catch (error) { throw environmentApiError(error); }
+        return sendJson(res, 200, { operation });
       }
       const approvalMatch = req.method === 'POST' && url.pathname.match(/^\/v1\/approvals\/([^/]+)$/);
       if (approvalMatch) {
@@ -402,6 +423,7 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
       if (closing) throw new ApiError(503, 'api_closed');
       if (!Array.isArray(scopes) || scopes.length === 0 || scopes.some((scope) => typeof scope !== 'string' || !API_SCOPES.has(scope))) throw new TypeError('scopes must be a non-empty list of supported API scopes');
       if (!approvalBroker && scopes.some((scope) => scope.startsWith('approvals:'))) throw new TypeError('approval scopes require an approval broker');
+      if (!environmentControlPlane && scopes.some((scope) => scope.startsWith('environments:'))) throw new TypeError('environment scopes require an environment control plane');
       if (!Number.isInteger(ttlMs) || ttlMs < 1000 || ttlMs > MAX_CREDENTIAL_LIFETIME_MS) throw new TypeError('ttlMs must be between 1000 and 86400000');
       if (sessionId !== undefined && (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId))) throw new TypeError('sessionId must be 32 lowercase hexadecimal characters');
       purgeExpiredCredentials(credentials);
@@ -608,7 +630,43 @@ function requiredScope(method, pathname) {
   if (method === 'POST' && pathname === '/v1/runs') return 'runs:start';
   if (method === 'POST' && /^\/v1\/runs\/[^/]+\/stop$/.test(pathname)) return 'runs:stop';
   if (method === 'POST' && /^\/v1\/runs\/[^/]+\/input$/.test(pathname)) return 'runs:input';
+  if (method === 'POST' && pathname === '/v1/environments/operations') return 'environments:execute';
+  if (method === 'POST' && /^\/v1\/environments\/operations\/[^/]+\/reconcile$/.test(pathname)) return 'environments:reconcile';
   return null;
+}
+
+function environmentApiError(error) {
+  const allowed = new Set(['unauthorized', 'unknown_operation', 'invalid_request', 'authorization_denied', 'idempotency_conflict', 'operation_id_conflict', 'policy_unavailable', 'operation_unavailable']);
+  const code = typeof error?.code === 'string' && allowed.has(error.code) ? error.code : 'operation_unavailable';
+  const status = code === 'unauthorized' ? 401
+    : code === 'unknown_operation' ? 404
+      : code === 'invalid_request' ? 400
+        : code === 'authorization_denied' ? 403
+          : code === 'idempotency_conflict' || code === 'operation_id_conflict' ? 409 : 503;
+  return new ApiError(status, code);
+}
+function captureApiMethod(target, name) {
+  let current = target;
+  while (current) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, name);
+    if (descriptor) {
+      if (!Object.hasOwn(descriptor, 'value') || typeof descriptor.value !== 'function') throw new TypeError(`environmentControlPlane.${name} must be a data method`);
+      return descriptor.value.bind(target);
+    }
+    current = Object.getPrototypeOf(current);
+  }
+  throw new TypeError(`environmentControlPlane.${name} is required`);
+}
+function projectEnvironmentOperation(operation, sessionId) {
+  const fields = ['operationId', 'subjectId', 'projectId', 'taskId', 'runId', 'computerId', 'leaseId', 'generation', 'action', 'status', 'desiredState', 'observedState', 'observedAt', 'errorCode', 'createdAt', 'updatedAt'];
+  const subject = operation && typeof operation === 'object' ? Object.getOwnPropertyDescriptor(operation, 'subjectId') : undefined;
+  if (!operation || typeof operation !== 'object' || Array.isArray(operation) || !subject || !Object.hasOwn(subject, 'value') || subject.value !== sessionId) throw new ApiError(502, 'runtime_invalid_response');
+  const result = {};
+  for (const key of fields) {
+    const descriptor = Object.getOwnPropertyDescriptor(operation, key);
+    if (descriptor && Object.hasOwn(descriptor, 'value')) result[key] = descriptor.value;
+  }
+  return result;
 }
 function sendJson(res, status, value) {
   if (res.destroyed) return;

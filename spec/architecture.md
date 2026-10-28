@@ -33,6 +33,10 @@
 
 ## 4. 決定ログ
 
+### Runtime environment operation boundary (opt-in prototype)
+
+`src/runtime/environment-control-plane.mjs` binds the separately authenticated Runtime API session to the operation `subjectId`, obtains `policyVersion` from a trusted host resolver, rejects caller-supplied trust/approval fields, checks operation ownership before reconciliation, and returns an explicit safe projection. `api.mjs` exposes these routes only when this service is explicitly composed and only through separately minted `environments:execute` / `environments:reconcile` credentials. `createRuntimeHost()` and the read-only Observer do not compose it. The resolver and coordinator authorization callback are trusted host seams, not a human approval verifier; this remains a local prototype and does not satisfy ADR-002's authenticated Control Plane-to-Broker IPC, service identity or privilege separation. No public UI mints these capabilities.
+
 | 日付+topic | 決定 | 理由と却下案 | lint 昇格 |
 |---|---|---|---|
 | 2026-10-17 read-only | アプリのファイルは読むだけ。片付けは指示文のコピーで Claude に渡す | 書き込みは競合と破損の危険。却下: idx を直接書く | 有 (arch 5) |
