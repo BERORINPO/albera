@@ -129,7 +129,8 @@ function spawnSynchronizedStoreWorker(workerPath, databasePath, workerId, mode, 
 test('SQLite store uses WAL, FULL synchronous writes, foreign keys, and a versioned schema', async (t) => {
   const f = await fixture(t);
   assert.deepEqual(f.store.diagnostics(), {
-    journalMode: 'wal', synchronous: 2, foreignKeys: 1, walAutoCheckpointPages: 1000, schemaVersion: 4,
+    journalMode: 'wal', synchronous: 2, foreignKeys: 1, walAutoCheckpointPages: 1000,
+    maxRecords: 20_000, maxGuestRecords: 5_000, schemaVersion: 4,
   });
   assert.equal(f.store.getComputer(f.computerId).generation, 1);
   if (process.platform !== 'win32') assert.equal((await stat(f.databasePath)).mode & 0o777, 0o600);
@@ -490,6 +491,37 @@ test('schema v3 migration adds durable approval records without changing existin
   assert.equal(f.store.diagnostics().schemaVersion, 4);
   assert.deepEqual(f.store.getOperation(request.operationId), before);
   assert.deepEqual(f.store.listOperationAuthorizations(request.operationId), []);
+});
+
+test('untrusted Guest events have a separate record budget and exact retries remain free at the limit', async (t) => {
+  const f = await fixture(t, { maxRecords: 32, maxGuestRecords: 4 });
+  const baseEvent = {
+    protocolVersion: 1, type: 'guest.event', computerId: f.computerId, runId: f.lease.runId,
+    generation: f.lease.generation, occurredAt: f.now(), eventType: 'heartbeat', agentVersion: '1.0',
+  };
+  const first = { ...baseEvent, messageId: randomUUID(), sequence: 1 };
+  const second = { ...baseEvent, messageId: randomUUID(), sequence: 2 };
+  assert.equal(f.store.recordGuestEvent(first).status, 'ACCEPTED');
+  assert.equal(f.store.recordGuestEvent(second).status, 'ACCEPTED');
+  assert.equal(f.store.recordGuestEvent(first).status, 'DUPLICATE', 'dedupe does not consume additional budget');
+  assert.throws(() => f.store.recordGuestEvent({ ...baseEvent, messageId: randomUUID(), sequence: 3 }),
+    (error) => error.code === 'guest_event_capacity');
+  const db = new DatabaseSync(f.databasePath);
+  const guestRecordCount = db.prepare(`SELECT (SELECT COUNT(*) FROM guest_event_receipts)
+    + (SELECT COUNT(*) FROM events WHERE provenance = 'untrusted_guest') AS count`).get().count;
+  db.close();
+  assert.equal(guestRecordCount, 4, 'capacity refusal inserts neither a receipt nor a journal event');
+  assert.equal(f.store.listEvents(f.computerId).filter((record) => record.provenance === 'untrusted_guest').length, 2,
+    'capacity refusal leaves the Guest event journal unchanged');
+  const controlOperation = f.operation('inspect');
+  assert.equal(f.store.beginOperation(controlOperation).operation.status, 'REQUESTED',
+    'the Guest-only budget leaves shared store capacity for Host control operations');
+});
+
+test('Guest record budget cannot be configured above three quarters of shared store capacity', async () => {
+  await assert.rejects(openSqliteEnvironmentStore(path.join(os.tmpdir(), `albera-invalid-guest-budget-${randomUUID()}.sqlite`), {
+    maxRecords: 32, maxGuestRecords: 25, verifyWindowsAcl: async () => {},
+  }), (error) => error instanceof TypeError && error.message === 'invalid_guest_store_capacity');
 });
 
 test('durable Guest event intake acknowledges exact retries and rejects replay, gaps, conflicts and stale leases', async (t) => {

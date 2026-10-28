@@ -12,6 +12,8 @@ import { EnvironmentProviderError, validateEnvironmentCapacity, validateEnvironm
 const SCHEMA_VERSION = 4;
 const DEFAULT_MAX_RECORDS = 20_000;
 const HARD_MAX_RECORDS = 100_000;
+const DEFAULT_GUEST_RECORD_RATIO = 0.25;
+const MAX_GUEST_RECORD_RATIO = 0.75;
 const WAL_AUTOCHECKPOINT_PAGES = 1_000;
 const RECOVERY_OWNER_MAGIC = 'ALBERA_SQLITE_RECOVERY_OWNER_V1';
 const RESTORE_INVALIDATE = Symbol('restoreInvalidate');
@@ -27,6 +29,7 @@ export async function openSqliteEnvironmentStore(databasePath, {
   verifyWindowsAcl = assertPrivateWindowsAcl,
   now = () => new Date().toISOString(),
   maxRecords = DEFAULT_MAX_RECORDS,
+  maxGuestRecords = Math.floor(maxRecords * DEFAULT_GUEST_RECORD_RATIO),
   DatabaseImpl = DatabaseSync,
   recoverInterruptedRequests = false,
   [RESTORE_MODE]: restoreSnapshot = false,
@@ -36,6 +39,10 @@ export async function openSqliteEnvironmentStore(databasePath, {
     throw new EnvironmentStoreError('database_path_invalid');
   }
   if (!Number.isSafeInteger(maxRecords) || maxRecords < 32 || maxRecords > HARD_MAX_RECORDS) throw new TypeError('invalid_store_capacity');
+  if (!Number.isSafeInteger(maxGuestRecords) || maxGuestRecords < 2
+    || maxGuestRecords > Math.floor(maxRecords * MAX_GUEST_RECORD_RATIO)) {
+    throw new TypeError('invalid_guest_store_capacity');
+  }
   if (typeof now !== 'function' || typeof DatabaseImpl !== 'function' || typeof recoverInterruptedRequests !== 'boolean'
     || typeof restoreSnapshot !== 'boolean' || (restoreSnapshot && !recoverInterruptedRequests)) {
     throw new TypeError('invalid_store_options');
@@ -91,7 +98,9 @@ export async function openSqliteEnvironmentStore(databasePath, {
     const integrity = db.prepare('PRAGMA quick_check(1)').get()?.quick_check;
     if (integrity !== 'ok') throw new EnvironmentStoreError('database_integrity_failed');
     migrate(db);
-    const store = new SqliteEnvironmentOperationStore(db, { databasePath, verifyWindowsAcl, now, maxRecords, recoveryOwnerLock });
+    const store = new SqliteEnvironmentOperationStore(db, {
+      databasePath, verifyWindowsAcl, now, maxRecords, maxGuestRecords, recoveryOwnerLock,
+    });
     // Recovery is opt-in and holds a fail-closed owner marker for the store's lifetime.
     if (recoverInterruptedRequests) {
       if (restoreSnapshot) store[RESTORE_INVALIDATE]();
@@ -157,12 +166,14 @@ class SqliteEnvironmentOperationStore {
   #verifyWindowsAcl;
   #now;
   #maxRecords;
+  #maxGuestRecords;
   #recoveryOwnerLock;
   #closed = false;
 
-  constructor(db, { databasePath, verifyWindowsAcl, now, maxRecords, recoveryOwnerLock }) {
+  constructor(db, { databasePath, verifyWindowsAcl, now, maxRecords, maxGuestRecords, recoveryOwnerLock }) {
     this.#db = db; this.#databasePath = databasePath; this.#verifyWindowsAcl = verifyWindowsAcl;
-    this.#now = now; this.#maxRecords = maxRecords; this.#recoveryOwnerLock = recoveryOwnerLock;
+    this.#now = now; this.#maxRecords = maxRecords; this.#maxGuestRecords = maxGuestRecords;
+    this.#recoveryOwnerLock = recoveryOwnerLock;
   }
 
   /** Create an exclusive, consistent SQLite snapshot inside the same private storage directory. */
@@ -783,6 +794,7 @@ class SqliteEnvironmentOperationStore {
         .get(event.computerId, event.runId, event.generation).sequence;
       if (event.sequence <= last) throw new EnvironmentStoreError('guest_event_replayed');
       if (event.sequence !== last + 1) throw new EnvironmentStoreError('guest_event_sequence_mismatch');
+      this.#assertGuestEventCapacity(2);
       this.#assertCapacity(2);
       this.#db.prepare(`INSERT INTO guest_event_receipts
         (message_id, computer_id, run_id, generation, sequence, payload_digest, received_at)
@@ -801,6 +813,8 @@ class SqliteEnvironmentOperationStore {
       synchronous: this.#db.prepare('PRAGMA synchronous').get()?.synchronous,
       foreignKeys: this.#db.prepare('PRAGMA foreign_keys').get()?.foreign_keys,
       walAutoCheckpointPages: this.#db.prepare('PRAGMA wal_autocheckpoint').get()?.wal_autocheckpoint,
+      maxRecords: this.#maxRecords,
+      maxGuestRecords: this.#maxGuestRecords,
       schemaVersion: this.#db.prepare('PRAGMA user_version').get()?.user_version,
     });
   }
@@ -861,6 +875,12 @@ class SqliteEnvironmentOperationStore {
   #assertCapacity(additional) {
     const count = this.#db.prepare('SELECT (SELECT COUNT(*) FROM computers) + (SELECT COUNT(*) FROM operations) + (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM leases) + (SELECT COUNT(*) FROM guest_event_receipts) + (SELECT COUNT(*) FROM operation_authorizations) AS count').get().count;
     if (count + additional > this.#maxRecords) throw new EnvironmentStoreError('store_capacity_exceeded');
+  }
+
+  #assertGuestEventCapacity(additional) {
+    const count = this.#db.prepare(`SELECT (SELECT COUNT(*) FROM guest_event_receipts)
+      + (SELECT COUNT(*) FROM events WHERE provenance = 'untrusted_guest') AS count`).get().count;
+    if (count + additional > this.#maxGuestRecords) throw new EnvironmentStoreError('guest_event_capacity');
   }
 
   #assertProjectQuota(projectId, reservation, quota, leaseId) {
