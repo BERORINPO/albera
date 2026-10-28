@@ -1,7 +1,7 @@
 # Runtime Gateway Architecture Gap Analysis
 
 **Reviewed:** 2026-10-28
-**Code baseline:** `codex/runtime-event-subscription` at `8a829d116e39ca10f273594f409f38315f20570f` (worktree snapshot; PR #17)
+**Code baseline:** PR #17 base `8a829d116e39ca10f273594f409f38315f20570f` plus current PR #19 branch through `05ec93eff715cc77d75736cfcd56d6e668ee0687`; this review also adds the Broker observation error-normalization change tracked in the progress ledger.
 **Architecture baseline:** PR #18, `docs/albera-architecture-v4` at `b7684740322bda5a4e2d1233299bca251d95ed6c`
 **Scope:** current implementation compared with the Proposed system design and ADRs. `IMPLEMENTED` means evidence exists for the stated, limited scope; it does not mean the Proposed end-state is production-ready.
 
@@ -74,6 +74,14 @@ Local verification on Windows, Node `v24.13.0` (scheduler diff):
 - `git diff --check`: passed.
 
 GitHub Actions run `40609502224` for the scheduler head passed Ubuntu/macOS Node 22/24, but Windows Node 22/24 were cancelled at the 10-minute job limit while the full test step was still running. The logs showed each SQLite test fixture doing repeated real PowerShell DACL queries (about 60–90 seconds per fixture on that runner). Synthetic store tests now stub the ACL verifier; a dedicated gated Windows integration test still opens the real SQLite store with real DACL checks. Locally, the Windows ACL integration suite passes 10/10, and a fresh six-job Actions run is required after this correction. No product performance benchmark was run; Observer smoke elapsed time is not a workload performance baseline.
+
+## Follow-up review — provider response reflection failures
+
+The latest PR #19 code review found that `HyperVEnvironmentProvider` sanitized exceptions thrown by Broker methods, but called `validateObservedEnvironment()` outside that boundary. A Broker response implemented as a hostile JavaScript `Proxy` could throw from `getPrototypeOf` or another reflection trap; its raw exception message could then escape and reach the operation coordinator. Although a wire JSON decoder cannot directly encode a Proxy, this adapter accepts an injected Broker client and must treat its return value as untrusted.
+
+The adapter now catches failures while validating Broker observations and raises the fixed `invalid_provider_observation` code with `unknown` outcome. A regression test injects a Proxy whose reflection trap throws a credential-like message and verifies the message does not escape. The focused provider suite passes 18/18. This hardens the in-process adapter boundary only; it does not authenticate or implement IPC.
+
+The Architecture Draft's `acceptance-criteria.json` was read from `docs/albera-architecture-v4`. All 17 criteria remain `NOT_VERIFIED` by design: local tests cover portions of SEC-01/02, DUR-01/02 and CMP-02, but do not provide the required end-to-end host/guest, restore, tenant-isolation, orchestration, Git-promotion, UI ownership or fixed-machine performance evidence. No criterion should be promoted based on this PR.
 
 ## Broker IPC design findings (proposal only; ADR-002 remains Proposed)
 

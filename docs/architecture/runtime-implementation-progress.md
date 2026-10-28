@@ -69,6 +69,13 @@ This file is the continuation ledger. `VERIFIED` refers only to the stated evide
 - Local Windows Node `v24.13.0`: focused provider tests passed 17/17; SQLite durable store tests passed 29/29; full `npm test` passed 619 total (612 passed, 7 skipped, 0 failed); `npm run arch` passed with 92 paths and 0 violations; `npm run smoke`, `npm run package:smoke`, and `git diff --check` passed. `npm audit --omit=dev` reports 0 vulnerabilities. Actions run `40621425672` passed all six Windows/macOS/Linux × Node 22/24 jobs on code/test head `8eeb8e4`, including both gated Windows ACL integrations. The subsequent change only refreshes this progress record.
 - No dependency or performance-sensitive runtime code was added. Existing local SQLite/placement microbenchmarks remain the only measurements; the adapter's broker latency and lifecycle behavior are unmeasured because it is not connected to a Broker.
 
+## Follow-up provider-boundary review
+
+- Local review found that an injected Broker response could be a hostile JavaScript `Proxy` whose reflection trap throws a credential-like message during observation validation. `HyperVEnvironmentProvider` now maps any such validation exception to the fixed `invalid_provider_observation` error with `unknown` outcome; the raw message is not propagated. A regression test covers the trap.
+- Local Windows Node `v24.13.0`: provider suite 18/18; full `npm test` 620 total (613 passed, 7 skipped, 0 failed); `npm run arch` passed with 92 role paths and 0 violations; `npm run smoke`, `npm run package:smoke`, `npm audit --omit=dev` (0 vulnerabilities), and `git diff --check` passed. This is local evidence for the current working diff; GitHub Actions must run after it is pushed.
+- The Architecture Draft acceptance file was inspected from PR #18. All 17 criteria remain `NOT_VERIFIED`; this change hardens only the in-process injected-client adapter and does not add authenticated IPC or satisfy end-to-end host/guest, restore, isolation, orchestration, Git promotion, UI ownership, or fixed-machine performance evidence.
+- No dependency was added. No VM, host network, credential, administrator or privileged operation was used. Hyper-V adapter performance remains unmeasured.
+
 ## Hyper-V readiness constraints (not verified)
 
 - Intended host family is Windows with Hyper-V, but supported Windows edition/build, host configuration and Hyper-V feature prerequisites are **not selected or verified**. No host readiness probe or real Hyper-V API binding exists.

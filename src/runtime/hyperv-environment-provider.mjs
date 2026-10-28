@@ -75,7 +75,15 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
         outcome: outcomeCandidate === 'not_applied' ? 'not_applied' : 'unknown',
       });
     }
-    const normalized = validateObservedEnvironment(observed, operation);
+    let normalized;
+    try {
+      normalized = validateObservedEnvironment(observed, operation);
+    }
+    catch {
+      // Broker results are untrusted boundary data. A malformed object or a
+      // hostile Proxy can throw during reflection; never expose its message.
+      throw new EnvironmentProviderError('invalid_provider_observation', { outcome: 'unknown' });
+    }
     if (action !== 'inspect' && normalized.generation !== operation.expectedGeneration) {
       throw new EnvironmentProviderError('stale_provider_observation');
     }

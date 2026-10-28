@@ -130,6 +130,27 @@ test('Hyper-V adapter rejects observations with wrong identity, state or timesta
   }
 });
 
+test('Hyper-V adapter sanitizes exceptions raised while inspecting Broker observations', async () => {
+  const secret = 'credential=proxy-observation-secret';
+  const hostileObservation = new Proxy({}, {
+    getPrototypeOf() { throw new Error(secret); },
+  });
+  const provider = new HyperVEnvironmentProvider({ broker: {
+    createVm: async () => hostileObservation,
+    inspectVm: async () => hostileObservation,
+    startVm: async () => hostileObservation,
+    stopVm: async () => hostileObservation,
+    removeVm: async () => hostileObservation,
+  } });
+
+  await assert.rejects(provider.start(hypervOperation('start')), (error) => {
+    assert.equal(error.code, 'invalid_provider_observation');
+    assert.equal(error.outcome, 'unknown');
+    assert.doesNotMatch(error.message, /proxy-observation-secret/);
+    return true;
+  });
+});
+
 test('Hyper-V adapter reduces untrusted Broker errors to a safe code and outcome', async () => {
   const provider = new HyperVEnvironmentProvider({ broker: {
     createVm: async () => { throw Object.assign(new Error('password=secret'), { code: 'Bad Code' }); },
