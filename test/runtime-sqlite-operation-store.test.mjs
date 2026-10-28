@@ -23,11 +23,15 @@ const spec = {
   resources: { vcpu: 2, memoryMiB: 2048, diskGiB: 32 },
 };
 
-async function fixture(t, { provider: injectedProvider, authorizeOperation: injectedAuthorizer, ...storeOptions } = {}) {
+async function fixture(t, {
+  provider: injectedProvider, authorizeOperation: injectedAuthorizer,
+  prepareStore, prepareProvider, ...storeOptions
+} = {}) {
   const root = await mkdtemp(path.join(os.homedir(), '.albera-operation-store-test-'));
   const databasePath = path.join(root, 'operations.sqlite');
   let nowMs = Date.parse('2026-10-28T00:00:00.000Z');
   const now = () => new Date(nowMs).toISOString();
+  const advance = (milliseconds) => { nowMs += milliseconds; };
   const authorizeOperation = injectedAuthorizer ?? (({ operation, actionDigest, purpose }) => ({
     decision: 'approved', approvalId: randomUUID(), approverId: 'human-approver',
     operationId: operation.operationId, idempotencyKey: operation.idempotencyKey,
@@ -37,11 +41,13 @@ async function fixture(t, { provider: injectedProvider, authorizeOperation: inje
   let store = await openSqliteEnvironmentStore(databasePath, {
     now, verifyWindowsAcl: async () => {}, recoverInterruptedRequests: true, ...storeOptions,
   });
+  prepareStore?.(store, { advance });
   t.after(async () => {
     store?.close();
     await rm(root, { recursive: true, force: true });
   });
   const provider = injectedProvider ?? new MockEnvironmentProvider({ now });
+  prepareProvider?.(provider);
   const broker = new LocalEnvironmentHostBroker({ store, provider });
   let coordinator = new DurableEnvironmentOperationCoordinator({ store, broker, authorizeOperation, nowMs: () => nowMs, providerTimeoutMs: 100 });
   const computerId = 'computer-a';
@@ -57,7 +63,7 @@ async function fixture(t, { provider: injectedProvider, authorizeOperation: inje
     ...(action === 'create' ? { spec } : {}), ...overrides,
   });
   return {
-    root, databasePath, now, advance: (milliseconds) => { nowMs += milliseconds; },
+    root, databasePath, now, advance,
     provider, broker, operation, computerId, lease, authorizeOperation,
     get coordinator() { return coordinator; },
     reopen: async () => {
@@ -900,16 +906,21 @@ test('expired and overlong authorization grants fail closed before journaling', 
 });
 
 test('authorization expiring after the durable dispatch claim prevents provider I/O', async (t) => {
-  const f = await fixture(t);
   const calls = { create: 0 };
-  const create = f.provider.create.bind(f.provider);
-  f.provider.create = async (...args) => { calls.create++; return create(...args); };
-  const resolve = f.store.resolveBrokerDispatch.bind(f.store);
-  f.store.resolveBrokerDispatch = (...args) => {
-    const operation = resolve(...args);
-    f.advance(2 * 60 * 1000);
-    return operation;
-  };
+  const f = await fixture(t, {
+    prepareProvider(provider) {
+      const create = provider.create.bind(provider);
+      provider.create = async (...args) => { calls.create++; return create(...args); };
+    },
+    prepareStore(store, { advance }) {
+      const resolve = store.resolveBrokerDispatch.bind(store);
+      store.resolveBrokerDispatch = (...args) => {
+        const operation = resolve(...args);
+        advance(2 * 60 * 1000);
+        return operation;
+      };
+    },
+  });
   const request = f.operation('create');
   const result = await f.coordinator.execute(request);
   assert.equal(result.status, 'FAILED');
@@ -967,6 +978,7 @@ test('Broker dispatch refuses an expired approval while the Lease remains active
 });
 
 test('UNKNOWN reconciliation requires a separate inspect-bound authorization', async (t) => {
+  let inspections = 0;
   const f = await fixture(t, { authorizeOperation: ({ operation, actionDigest, purpose }) => {
     if (purpose === 'reconcile') throw new Error('approval_missing');
     return {
@@ -975,13 +987,13 @@ test('UNKNOWN reconciliation requires a separate inspect-bound authorization', a
       subjectId: operation.subjectId, projectId: operation.projectId, policyVersion: operation.policyVersion,
       actionDigest, purpose, expiresAt: new Date(Date.parse('2026-10-28T00:01:00.000Z')).toISOString(),
     };
+  }, prepareProvider(provider) {
+    const inspect = provider.inspect.bind(provider);
+    provider.inspect = async (...args) => { inspections++; return inspect(...args); };
   } });
   f.provider.failNext('create', { timing: 'after', code: 'provider_reply_lost' });
   const request = f.operation('create');
   assert.equal((await f.coordinator.execute(request)).status, 'UNKNOWN');
-  let inspections = 0;
-  const inspect = f.provider.inspect.bind(f.provider);
-  f.provider.inspect = async (...args) => { inspections++; return inspect(...args); };
   await assert.rejects(f.coordinator.reconcile(request.operationId), (error) => error.code === 'authorization_denied');
   assert.equal(inspections, 0);
   assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
@@ -1011,10 +1023,14 @@ test('Broker journal resolution binds the typed reference and atomically claims 
 });
 
 test('local Host Broker accepts only its one-time journal-derived claim capability', async (t) => {
-  const f = await fixture(t);
   let creates = 0;
-  const create = f.provider.create.bind(f.provider);
-  f.provider.create = (...args) => { creates++; return create(...args); };
+  let replacements = 0;
+  const f = await fixture(t, { prepareProvider(provider) {
+    const create = provider.create.bind(provider);
+    provider.create = (...args) => { creates++; return create(...args); };
+  } });
+  f.provider.create = () => { replacements++; throw new Error('replacement_provider_method_called'); };
+  f.store.resolveBrokerDispatch = () => { throw new Error('replacement_store_resolver_called'); };
   const operation = f.operation('create');
   const begun = f.store.beginOperation(operation);
   await recordExecutionApproval(f, operation, begun);
@@ -1027,18 +1043,21 @@ test('local Host Broker accepts only its one-time journal-derived claim capabili
   const observed = await f.broker.executeClaim(claim);
   assert.equal(observed.state, 'off');
   assert.equal(creates, 1);
+  assert.equal(replacements, 0, 'Provider method replacement after Broker construction cannot redirect dispatch');
+  assert.equal(f.store.getOperation(operation.operationId).status, 'UNKNOWN', 'Broker uses the captured durable Store resolver');
   assert.throws(() => f.broker.executeClaim(claim), (error) => error.code === 'broker_claim_invalid');
   assert.equal(creates, 1, 'a consumed in-process dispatch capability cannot be replayed');
 });
 
 test('Host Broker resolves reconciliation inspection only from a consumed inspect authorization', async (t) => {
-  const f = await fixture(t);
+  let inspections = 0;
+  const f = await fixture(t, { prepareProvider(provider) {
+    const inspect = provider.inspect.bind(provider);
+    provider.inspect = (...args) => { inspections++; return inspect(...args); };
+  } });
   f.provider.failNext('create', { timing: 'after', code: 'create_reply_lost' });
   const operation = f.operation('create');
   assert.equal((await f.coordinator.execute(operation)).status, 'UNKNOWN');
-  let inspections = 0;
-  const inspect = f.provider.inspect.bind(f.provider);
-  f.provider.inspect = (...args) => { inspections++; return inspect(...args); };
   assert.throws(() => f.broker.inspectOperation({ operationId: operation.operationId, approvalId: randomUUID() }),
     (error) => error instanceof EnvironmentStoreError && error.code === 'broker_inspection_unauthorized');
   assert.equal(inspections, 0, 'forged approval reference does not reach the Provider');
@@ -1050,15 +1069,15 @@ test('Host Broker resolves reconciliation inspection only from a consumed inspec
 });
 
 test('Host Broker refuses inspection after restore advances the Computer generation', async (t) => {
-  const f = await fixture(t);
+  let inspections = 0;
+  const f = await fixture(t, { prepareProvider(provider) {
+    const inspect = provider.inspect.bind(provider);
+    provider.inspect = (...args) => { inspections++; return inspect(...args); };
+  } });
   f.provider.failNext('create', { timing: 'after', code: 'create_reply_lost' });
   const operation = f.operation('create');
   assert.equal((await f.coordinator.execute(operation)).status, 'UNKNOWN');
   f.store.revokeLease(f.lease.leaseId, { reason: 'restore' });
-  let inspections = 0;
-  const inspect = f.provider.inspect.bind(f.provider);
-  f.provider.inspect = (...args) => { inspections++; return inspect(...args); };
-
   const reconciled = await f.coordinator.reconcile(operation.operationId);
   assert.equal(reconciled.status, 'UNKNOWN');
   assert.equal(reconciled.errorCode, 'stale_generation');
