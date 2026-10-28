@@ -770,15 +770,20 @@ test('unrecognized Gateway errors never expose message or caller-controlled erro
   assert.equal(response.text.includes('api_key_secret'), false);
 
   const secret = 'credential-like proxy error text';
-  const hostile = new Proxy({}, { getOwnPropertyDescriptor() { throw new Error(secret); } });
-  const proxyFixture = await apiFixture({}, { start: async () => { throw hostile; } });
-  t.after(proxyFixture.close);
-  const proxyResponse = await request(proxyFixture.address, proxyFixture.api, {
-    method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'task' }),
-  });
-  assert.equal(proxyResponse.status, 500);
-  assert.deepEqual(JSON.parse(proxyResponse.text), { error: 'runtime_error' });
-  assert.equal(proxyResponse.text.includes(secret), false);
+  const hostileErrors = [
+    new Proxy({}, { getOwnPropertyDescriptor() { throw new Error(secret); } }),
+    new Proxy({}, { getPrototypeOf() { throw new Error(secret); } }),
+  ];
+  for (const hostile of hostileErrors) {
+    const proxyFixture = await apiFixture({}, { start: async () => { throw hostile; } });
+    t.after(proxyFixture.close);
+    const proxyResponse = await request(proxyFixture.address, proxyFixture.api, {
+      method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'task' }),
+    });
+    assert.equal(proxyResponse.status, 500);
+    assert.deepEqual(JSON.parse(proxyResponse.text), { error: 'runtime_error' });
+    assert.equal(proxyResponse.text.includes(secret), false);
+  }
 });
 
 test('CLI version preflight failures use a stable client error without exposing probe output', async (t) => {

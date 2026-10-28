@@ -14,6 +14,8 @@ Therefore, the project does not yet declare a supported Hyper-V host matrix. ADR
 
 Microsoft's Hyper-V host requirements list Windows 10/11 Pro or Enterprise for client Hyper-V, a 64-bit SLAT-capable processor with VM Monitor Mode extensions, hardware virtualization enabled in BIOS/UEFI, DEP enabled, and sufficient memory. Microsoft's installation guidance separately states that Windows Home editions cannot install the Hyper-V role. These are platform prerequisites, not ALBERA security or compatibility acceptance.
 
+Microsoft's pages are not fully aligned on client editions: the system-requirements and install pages list Pro/Enterprise, while the overview also lists Windows 11 Education. ALBERA should use Pro/Enterprise as the conservative initial client target unless Microsoft clarifies the supported role/feature behavior for Education and ALBERA tests it. The published page coverage also does not certify a particular current servicing build; the project must choose builds that remain serviced at the time of release.
+
 References:
 
 - [System requirements for Hyper-V on Windows and Windows Server](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/host-hardware-requirements)
