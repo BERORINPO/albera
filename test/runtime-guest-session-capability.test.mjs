@@ -7,7 +7,7 @@ const at = '2026-10-28T12:00:00.000Z';
 
 function context(overrides = {}) {
   return {
-    computerId: 'computer-1', runId: 'run-1', generation: 4,
+    computerId: 'computer-1', leaseId: 'lease-1', runId: 'run-1', generation: 4,
     leaseExpiresAt: '2026-10-28T12:30:00.000Z', ...overrides,
   };
 }
@@ -76,6 +76,12 @@ test('Guest capability is invalidated when Host Lease resolution fails or its ge
   const second = await f.service.issue({ computerId: 'computer-1', runId: 'run-1' });
   current = null;
   assert.equal(await f.service.authenticateTransport({ transport: { guestSessionCredential: second.credential } }), null);
+
+  current = context();
+  const third = await f.service.issue({ computerId: 'computer-1', runId: 'run-1' });
+  current = context({ leaseId: 'lease-replacement' });
+  assert.equal(await f.service.authenticateTransport({ transport: { guestSessionCredential: third.credential } }), null,
+    'same-generation Lease replacement still invalidates the old credential');
 });
 
 test('Guest capability accepts only the exact credential transport field and ignores accessors', async (t) => {

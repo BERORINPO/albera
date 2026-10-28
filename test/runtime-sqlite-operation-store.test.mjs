@@ -520,7 +520,7 @@ test('durable Guest event intake acknowledges exact retries and rejects replay, 
 test('Guest capability context resolves only the current active Computer, Run, Lease and generation', async (t) => {
   const f = await fixture(t);
   assert.deepEqual(f.store.resolveActiveGuestSessionContext({ computerId: f.computerId, runId: f.lease.runId }), {
-    computerId: f.computerId, runId: f.lease.runId, generation: f.lease.generation,
+    computerId: f.computerId, leaseId: f.lease.leaseId, runId: f.lease.runId, generation: f.lease.generation,
     leaseExpiresAt: f.lease.expiresAt,
   });
   assert.throws(() => f.store.resolveActiveGuestSessionContext({ computerId: f.computerId, runId: 'other-run' }),

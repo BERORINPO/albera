@@ -740,14 +740,14 @@ class SqliteEnvironmentOperationStore {
     this.#assertOpen();
     if (!isId(computerId) || !isId(runId)) throw new EnvironmentStoreError('guest_session_context_invalid');
     const timestamp = this.#timestamp();
-    const row = this.#db.prepare(`SELECT c.id AS computer_id, c.generation, l.run_id, l.expires_at
+    const row = this.#db.prepare(`SELECT c.id AS computer_id, c.generation, l.id AS lease_id, l.run_id, l.expires_at
       FROM computers c JOIN leases l ON l.computer_id = c.id
       WHERE c.id = ? AND l.run_id = ? AND l.project_id = c.project_id
         AND l.generation = c.generation AND l.state = 'ACTIVE' AND l.expires_at > ?
       ORDER BY l.created_at DESC LIMIT 1`).get(computerId, runId, timestamp);
     if (!row) throw new EnvironmentStoreError('guest_session_context_unavailable');
     return Object.freeze({
-      computerId: row.computer_id, runId: row.run_id,
+      computerId: row.computer_id, leaseId: row.lease_id, runId: row.run_id,
       generation: row.generation, leaseExpiresAt: row.expires_at,
     });
   }

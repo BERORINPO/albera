@@ -50,7 +50,7 @@ export function createGuestSessionCapabilityService({
       if (!TOKEN_RE.test(credential)) throw new Error('guest_session_unavailable');
       const expiresAt = new Date(expiry).toISOString();
       sessions.set(digest(credential), Object.freeze({
-        computerId, runId, generation: context.generation, expiresAt,
+        computerId, leaseId: context.leaseId, runId, generation: context.generation, expiresAt,
       }));
       return Object.freeze({
         credential,
@@ -79,7 +79,7 @@ export function createGuestSessionCapabilityService({
       try { current = await resolveContext(session.computerId, session.runId); }
       catch { sessions.delete(key); return null; }
       if (closed || sessions.get(key) !== session) return null;
-      if (current.generation !== session.generation) {
+      if (current.leaseId !== session.leaseId || current.generation !== session.generation) {
         sessions.delete(key);
         return null;
       }
@@ -124,10 +124,10 @@ function readContext(input) {
     if (Object.getOwnPropertySymbols(input).length) throw new Error();
     const descriptors = Object.getOwnPropertyDescriptors(input);
     const keys = Object.keys(descriptors);
-    if (keys.length !== 4 || keys.some((key) => !['computerId', 'runId', 'generation', 'leaseExpiresAt'].includes(key))) throw new Error();
+    if (keys.length !== 5 || keys.some((key) => !['computerId', 'leaseId', 'runId', 'generation', 'leaseExpiresAt'].includes(key))) throw new Error();
     if (keys.some((key) => !Object.hasOwn(descriptors[key], 'value'))) throw new Error();
     const value = Object.fromEntries(keys.map((key) => [key, descriptors[key].value]));
-    if (!isId(value.computerId) || !isId(value.runId) || !Number.isSafeInteger(value.generation) || value.generation < 1
+    if (!isId(value.computerId) || !isId(value.leaseId) || !isId(value.runId) || !Number.isSafeInteger(value.generation) || value.generation < 1
       || typeof value.leaseExpiresAt !== 'string' || !Number.isFinite(Date.parse(value.leaseExpiresAt))) throw new Error();
     return Object.freeze(value);
   } catch { throw new Error('guest_session_unavailable'); }
