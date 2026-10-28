@@ -127,6 +127,7 @@ test('SQLite snapshot restore verifies the backup, recovers pending work, and fe
   assert.equal(restored.getComputer(f.computerId).generation, f.lease.generation + 1);
   assert.equal(restored.getComputer(f.computerId).observedState, 'unknown');
   assert.equal(restored.getLease(f.lease.leaseId).state, 'REVOKED');
+  await assert.rejects(stat(`${restoredPath}.restore-incomplete`), (error) => error.code === 'ENOENT');
   assert.ok(restored.listEvents(f.computerId).some((event) => event.type === 'computer.snapshot_restored'));
   assert.throws(() => restored.beginOperation({ ...request, operationId: 'operation-start-after-restore', idempotencyKey: 'idem-start-after-restore' }),
     (error) => error.code === 'stale_generation');
@@ -156,6 +157,22 @@ test('SQLite backup and restore refuse overwrite, tampering, and path aliasing w
     now: f.now, verifyWindowsAcl: async () => {},
   }), (error) => error.code === 'snapshot_invalid');
   await assert.rejects(stat(path.join(f.root, 'must-not-exist.sqlite')), (error) => error.code === 'ENOENT');
+});
+
+test('incomplete SQLite restore leaves a fail-closed marker that blocks ordinary store opens', async (t) => {
+  const f = await fixture(t);
+  const backupPath = path.join(f.root, 'operations-backup.sqlite');
+  const restoredPath = path.join(f.root, 'incomplete-restore.sqlite');
+  await f.store.backupTo(backupPath);
+  await assert.rejects(restoreSqliteEnvironmentStore(backupPath, restoredPath, {
+    now: () => 'invalid-clock', verifyWindowsAcl: async () => {},
+  }), (error) => error.code === 'clock_invalid');
+
+  const markerPath = `${restoredPath}.restore-incomplete`;
+  assert.ok((await stat(restoredPath)).isFile(), 'preserve copied data for diagnosis');
+  assert.match(await readFile(markerPath, 'utf8'), /^ALBERA_SQLITE_RECOVERY_OWNER_V1_INCOMPLETE:/);
+  await assert.rejects(openSqliteEnvironmentStore(restoredPath, { verifyWindowsAcl: async () => {} }),
+    (error) => error.code === 'restore_incomplete_marker_present');
 });
 
 test('schema v1 migration preserves existing Computer and Lease rows', async (t) => {

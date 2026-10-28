@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants, closeSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { chmod, copyFile, link, lstat, mkdir, mkdtemp, open, rm, unlink } from 'node:fs/promises';
+import { chmod, copyFile, link, lstat, mkdir, mkdtemp, open, readFile, rm, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { DatabaseSync } from 'node:sqlite';
@@ -45,6 +45,13 @@ export async function openSqliteEnvironmentStore(databasePath, {
   if (!directoryInfo?.isDirectory() || directoryInfo.isSymbolicLink()) throw new EnvironmentStoreError('database_directory_invalid');
   assertPrivatePosixStorage(directoryInfo, 'database_directory_permissions', 'directory');
   await verifyAcl(verifyWindowsAcl, directory, 'directory');
+  if (!restoreSnapshot) {
+    const marker = await lstat(`${databasePath}.restore-incomplete`).catch((error) => {
+      if (error?.code === 'ENOENT') return null;
+      throw new EnvironmentStoreError('restore_marker_check_failed');
+    });
+    if (marker) throw new EnvironmentStoreError('restore_incomplete_marker_present');
+  }
 
   try {
     const handle = await open(databasePath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0), 0o600);
@@ -117,17 +124,26 @@ export async function restoreSqliteEnvironmentStore(backupPath, databasePath, op
   await verifyAcl(verifyWindowsAcl, directory, 'directory');
   await assertPrivateDatabaseFile(backupPath, verifyWindowsAcl, 'backup');
   await verifyStandaloneSnapshot(backupPath);
-  try { await copyFile(backupPath, databasePath, fsConstants.COPYFILE_EXCL); }
-  catch (error) {
-    if (error?.code === 'EEXIST') throw new EnvironmentStoreError('restore_destination_exists');
-    throw new EnvironmentStoreError('restore_copy_failed');
+  if (await lstat(databasePath).then(() => true, () => false)) throw new EnvironmentStoreError('restore_destination_exists');
+  const restoreMarker = await createRestoreMarker(databasePath, verifyWindowsAcl);
+  let store;
+  try {
+    try { await copyFile(backupPath, databasePath, fsConstants.COPYFILE_EXCL); }
+    catch (error) {
+      if (error?.code === 'EEXIST') throw new EnvironmentStoreError('restore_destination_exists');
+      throw new EnvironmentStoreError('restore_copy_failed');
+    }
+    if (process.platform !== 'win32') await chmod(databasePath, 0o600);
+    await assertPrivateDatabaseFile(databasePath, verifyWindowsAcl, 'restored_database');
+    store = await openSqliteEnvironmentStore(databasePath, {
+      ...options, verifyWindowsAcl, recoverInterruptedRequests: true, [RESTORE_MODE]: true,
+    });
+    await releaseRestoreMarker(restoreMarker, verifyWindowsAcl);
+    return store;
+  } catch (error) {
+    store?.close();
+    throw error;
   }
-  if (process.platform !== 'win32') await chmod(databasePath, 0o600);
-  await assertPrivateDatabaseFile(databasePath, verifyWindowsAcl, 'restored_database');
-  const store = await openSqliteEnvironmentStore(databasePath, {
-    ...options, verifyWindowsAcl, recoverInterruptedRequests: true, [RESTORE_MODE]: true,
-  });
-  return store;
 }
 
 class SqliteEnvironmentOperationStore {
@@ -865,6 +881,36 @@ async function assertPrivateDatabaseFile(databasePath, verifyWindowsAcl, prefix)
   assertSingleLink(info, `${prefix}_hard_linked_file`);
   assertPrivatePosixStorage(info, `${prefix}_file_permissions`, 'file');
   await verifyAcl(verifyWindowsAcl, databasePath, 'file');
+}
+
+async function createRestoreMarker(databasePath, verifyWindowsAcl) {
+  const markerPath = `${databasePath}.restore-incomplete`;
+  const token = `${RECOVERY_OWNER_MAGIC}_INCOMPLETE:${randomUUID()}\n`;
+  let handle;
+  try {
+    handle = await open(markerPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0), 0o600);
+    await handle.writeFile(token, 'utf8');
+    await handle.sync();
+  } catch (error) {
+    if (error?.code === 'EEXIST') throw new EnvironmentStoreError('restore_in_progress');
+    throw new EnvironmentStoreError('restore_marker_create_failed');
+  } finally { await handle?.close(); }
+  await assertPrivateDatabaseFile(markerPath, verifyWindowsAcl, 'restore_marker');
+  const identity = await lstat(markerPath);
+  return Object.freeze({ markerPath, token, dev: identity.dev, ino: identity.ino });
+}
+
+async function releaseRestoreMarker(marker, verifyWindowsAcl) {
+  let current;
+  try { current = await lstat(marker.markerPath); }
+  catch { throw new EnvironmentStoreError('restore_marker_changed'); }
+  if (!current.isFile() || current.isSymbolicLink() || current.dev !== marker.dev || current.ino !== marker.ino
+    || await readFile(marker.markerPath, 'utf8').catch(() => null) !== marker.token) {
+    throw new EnvironmentStoreError('restore_marker_changed');
+  }
+  await assertPrivateDatabaseFile(marker.markerPath, verifyWindowsAcl, 'restore_marker');
+  try { await unlink(marker.markerPath); }
+  catch { throw new EnvironmentStoreError('restore_marker_release_failed'); }
 }
 
 async function verifyStandaloneSnapshot(snapshotPath) {
