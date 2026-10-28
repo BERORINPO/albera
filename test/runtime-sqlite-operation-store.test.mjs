@@ -56,6 +56,46 @@ async function fixture(t, options = {}) {
   };
 }
 
+function spawnSynchronizedStoreWorker(workerPath, databasePath, workerId, mode) {
+  const child = spawn(process.execPath, [workerPath, databasePath, String(workerId), mode], {
+    cwd: path.dirname(path.dirname(workerPath)), shell: false, windowsHide: true,
+    env: Object.fromEntries(['SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP'].filter((key) => process.env[key])
+      .map((key) => [key, process.env[key]])),
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const lines = createInterface({ input: child.stdout });
+  let resolveReady;
+  let rejectReady;
+  let readySettled = false;
+  let resolveResult;
+  let rejectResult;
+  let resultSettled = false;
+  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; child.once('error', reject); });
+  const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
+  const exited = new Promise((resolve) => child.once('exit', (code, signal) => {
+    lines.close();
+    if (!readySettled) { readySettled = true; rejectReady(new Error(`store_worker_exited_before_ready_${code ?? signal ?? 'unknown'}`)); }
+    if (!resultSettled) {
+      resultSettled = true;
+      rejectResult(new Error(`store_worker_exited_${code ?? signal ?? 'unknown'}`));
+    }
+    resolve();
+  }));
+  lines.on('line', (line) => {
+    if (line === 'READY' && !readySettled) { readySettled = true; resolveReady(); }
+    else if (line.startsWith('RESULT ')) {
+      resultSettled = true;
+      try { resolveResult(JSON.parse(line.slice(7))); }
+      catch { rejectResult(new Error('store_worker_result_invalid')); }
+    }
+  });
+  child.stderr.setEncoding('utf8');
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-1024); });
+  child.on('exit', () => { if (!resultSettled && stderr) rejectResult(new Error(`store_worker_failed: ${stderr}`)); });
+  return { child, ready, result, exited };
+}
+
 test('SQLite store uses WAL, FULL synchronous writes, foreign keys, and a versioned schema', async (t) => {
   const f = await fixture(t);
   assert.deepEqual(f.store.diagnostics(), { journalMode: 'wal', synchronous: 2, foreignKeys: 1, schemaVersion: 3 });
@@ -257,47 +297,7 @@ test('separate processes cannot exceed an atomic project quota during simultaneo
     await rm(root, { recursive: true, force: true });
   });
 
-  const spawnContender = (workerId) => {
-    const child = spawn(process.execPath, [workerPath, databasePath, String(workerId)], {
-      cwd: path.dirname(path.dirname(workerPath)), shell: false, windowsHide: true,
-      env: Object.fromEntries(['SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP'].filter((key) => process.env[key])
-        .map((key) => [key, process.env[key]])),
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    const lines = createInterface({ input: child.stdout });
-    let resolveReady;
-    let rejectReady;
-    let readySettled = false;
-    let resolveResult;
-    let rejectResult;
-    let resultSettled = false;
-    const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; child.once('error', reject); });
-    const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
-    const exited = new Promise((resolve) => child.once('exit', (code, signal) => {
-      lines.close();
-      if (!readySettled) { readySettled = true; rejectReady(new Error(`scheduler_contender_exited_before_ready_${code ?? signal ?? 'unknown'}`)); }
-      if (!resultSettled) {
-        resultSettled = true;
-        rejectResult(new Error(`scheduler_contender_exited_${code ?? signal ?? 'unknown'}`));
-      }
-      resolve();
-    }));
-    lines.on('line', (line) => {
-      if (line === 'READY' && !readySettled) { readySettled = true; resolveReady(); }
-      else if (line.startsWith('RESULT ')) {
-        resultSettled = true;
-        try { resolveResult(JSON.parse(line.slice(7))); }
-        catch { rejectResult(new Error('scheduler_contender_result_invalid')); }
-      }
-    });
-    child.stderr.setEncoding('utf8');
-    let stderr = '';
-    child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-1024); });
-    child.on('exit', () => { if (!resultSettled && stderr) rejectResult(new Error(`scheduler_contender_failed: ${stderr}`)); });
-    return { child, ready, result, exited };
-  };
-
-  workers.push(...Array.from({ length: 8 }, (_, index) => spawnContender(index + 1)));
+  workers.push(...Array.from({ length: 8 }, (_, index) => spawnSynchronizedStoreWorker(workerPath, databasePath, index + 1, 'scheduler')));
   const allResults = Promise.all(workers.map((worker) => worker.result));
   allResults.catch(() => {});
   await Promise.all(workers.map((worker) => worker.ready));
@@ -314,6 +314,33 @@ test('separate processes cannot exceed an atomic project quota during simultaneo
   const activeLeases = outcomes.map(({ leaseId }) => leaseId).filter(Boolean)
     .map((leaseId) => store.getLease(leaseId)).filter((lease) => lease?.state === 'ACTIVE');
   assert.equal(activeLeases.length, 1);
+});
+
+test('separate processes durably accept one copy of a synchronized Guest event delivery', { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
+  f.store.close();
+  const workers = Array.from({ length: 8 }, (_, index) => spawnSynchronizedStoreWorker(workerPath, f.databasePath, index + 1, 'guest-event'));
+  t.after(async () => {
+    for (const worker of workers) {
+      if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    }
+    await Promise.all(workers.map((worker) => worker.exited));
+  });
+
+  const allResults = Promise.all(workers.map((worker) => worker.result));
+  allResults.catch(() => {});
+  await Promise.all(workers.map((worker) => worker.ready));
+  for (const worker of workers) worker.child.stdin.end('go\n');
+  const outcomes = await allResults;
+  await Promise.all(workers.map((worker) => worker.exited));
+  assert.equal(outcomes.filter((outcome) => outcome.status === 'ACCEPTED').length, 1, JSON.stringify(outcomes));
+  assert.equal(outcomes.filter((outcome) => outcome.status === 'DUPLICATE').length, 7, JSON.stringify(outcomes));
+
+  await f.reopen();
+  const guestEvents = f.store.listEvents(f.computerId).filter((event) => event.provenance === 'untrusted_guest');
+  assert.equal(guestEvents.length, 1);
+  assert.equal(guestEvents[0].type, 'guest.heartbeat');
 });
 
 test('durable intent is recorded before provider action and idempotent replay never repeats the side effect', async (t) => {
