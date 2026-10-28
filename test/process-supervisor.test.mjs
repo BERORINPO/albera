@@ -72,7 +72,8 @@ test('local process guardian reaps its provider tree when the Gateway host crash
     host.once('close', () => { hostClosed = true; if (!Number.isInteger(providerPid)) reject(new Error('supervised_provider_did_not_start')); });
   });
   let timeout;
-  try { await Promise.race([ready, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('supervised_provider_start_timeout')), 5000); })]); }
+  // Full executable hashing runs before approval; allow slower CI hosts to finish it.
+  try { await Promise.race([ready, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('supervised_provider_start_timeout')), 30_000); })]); }
   finally { clearTimeout(timeout); }
   let beforeCrash;
   const heartbeatDeadline = Date.now() + 5000;

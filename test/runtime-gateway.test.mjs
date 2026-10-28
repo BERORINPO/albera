@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, unlink, writeFile, chmod } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import test from 'node:test';
 import { createRuntimeApprovalBroker } from '../src/runtime/approval-broker.mjs';
+import { captureExecutableIdentity } from '../src/runtime/executable-identity.mjs';
 import { buildProviderLaunch, GatewayError, RuntimeGateway, RUNTIME_PROFILES, RUNTIME_PROVIDERS, resolveProviderExecutable } from '../src/runtime/gateway.mjs';
 import { AgentHarnessAdapter, ClaudeReadOnlyHarnessAdapter } from '../src/runtime/agent-harness-adapter.mjs';
 
@@ -15,16 +16,19 @@ async function fixture(options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-'));
   const cwd = path.join(root, 'project');
   await mkdir(cwd);
+  const executable = path.join(root, `provider${process.platform === 'win32' ? '.exe' : ''}`);
+  await writeFile(executable, 'synthetic provider executable fixture');
+  await chmod(executable, 0o700);
   const { buildLaunchImpl = (_provider, profile, prompt) => ({ profile, args: Array.isArray(prompt) ? prompt : [] }), probeVersionImpl = async () => '99.0.0', ...gatewayOptions } = options;
   const gateway = new RuntimeGateway({
     roots: [root],
     authorize: async () => true,
-    resolveExecutableImpl: async () => process.execPath,
+    resolveExecutableImpl: async () => executable,
     probeVersionImpl,
     buildLaunchImpl,
     ...gatewayOptions,
   });
-  return { root, cwd, gateway, dispose: async () => { await gateway.close({ timeoutMs: 100 }); await rm(root, { recursive: true, force: true }); } };
+  return { root, cwd, executable, gateway, dispose: async () => { await gateway.close({ timeoutMs: 100 }); await rm(root, { recursive: true, force: true }); } };
 }
 async function waitFor(predicate, timeoutMs = 3000) {
   const end = Date.now() + timeoutMs;
@@ -155,6 +159,9 @@ test('denying a broker approval prevents Gateway spawn', async (t) => {
 
 test('default Gateway generates the read-only profile and refuses raw request argv', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-profile-'));
+  const executable = path.join(root, `provider${process.platform === 'win32' ? '.exe' : ''}`);
+  await writeFile(executable, 'synthetic provider executable fixture');
+  await chmod(executable, 0o700);
   const seen = [];
   let spawnedArgs;
   let resolveCount = 0;
@@ -162,7 +169,8 @@ test('default Gateway generates the read-only profile and refuses raw request ar
   const gateway = new RuntimeGateway({
     roots: [root],
     authorize: async (request) => { seen.push(request); return true; },
-    resolveExecutableImpl: async () => { resolveCount++; return process.execPath; },
+    resolveExecutableImpl: async () => { resolveCount++; return executable; },
+    probeVersionImpl: async () => '99.0.0',
     spawnImpl: (_executable, args) => { spawnCount++; spawnedArgs = args; return new FakeChild(); },
     env: { PATH: process.env.PATH },
   });
@@ -197,8 +205,10 @@ test('host authorization receives the exact canonical executable, cwd and argv b
   const args = ['--print', 'fixture prompt'];
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: args });
   assert.equal(spawnCount, 1);
+  const executableIdentity = await captureExecutableIdentity(f.executable);
   assert.deepEqual(seen[0], {
-    action: 'start', provider: 'claude', profile: 'read-only', executable: process.execPath, cwd: await realpath(f.cwd), args,
+    action: 'start', provider: 'claude', profile: 'read-only', executable: f.executable, cwd: await realpath(f.cwd), args,
+    executableSha256: executableIdentity.sha256,
     minimumCliVersion: '2.1.248', versionCheck: true,
     environment: { providerVariables: [], endpointOverrides: [] },
     platform: process.platform, maxDurationMs: 15 * 60 * 1000, maxActive: 4,
@@ -221,7 +231,7 @@ test('Gateway checks the approved CLI version before main spawn and fails closed
   await assert.rejects(f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'synthetic' }), (error) => error.code === 'cli_version_unavailable');
   assert.deepEqual(calls, [
     ['authorize', '2.1.248', true],
-    ['probe', process.execPath, process.platform],
+    ['probe', f.executable, process.platform],
   ]);
   assert.equal(spawned, false);
 });
@@ -247,8 +257,53 @@ test('Gateway refuses an executable changed while host authorization is pending'
   await writeFile(executable, 'replacement executable fixture with different identity');
   approve();
 
-  await assert.rejects(start, (error) => error.code === 'executable_unavailable');
+  await assert.rejects(start, (error) => error.code === 'executable_unavailable' && !error.message.includes(f.root));
   assert.equal(spawned, false);
+});
+
+test('Gateway keeps the canonical executable when its PATH junction is retargeted during approval', async (t) => {
+  let authorized;
+  let approve;
+  let spawnedExecutable;
+  const authorizedSignal = new Promise((resolve) => { authorized = resolve; });
+  const approvalGate = new Promise((resolve) => { approve = resolve; });
+  const f = await fixture({
+    resolveExecutableImpl: async () => path.join(f.root, 'provider-link', `provider${process.platform === 'win32' ? '.exe' : ''}`),
+    authorize: async () => { authorized(); await approvalGate; return true; },
+    spawnImpl: (executable) => { spawnedExecutable = executable; return new FakeChild(); },
+  });
+  t.after(f.dispose);
+  const executableName = `provider${process.platform === 'win32' ? '.exe' : ''}`;
+  const firstTarget = path.join(f.root, 'provider-a');
+  const secondTarget = path.join(f.root, 'provider-b');
+  const link = path.join(f.root, 'provider-link');
+  await mkdir(firstTarget);
+  await mkdir(secondTarget);
+  const firstExecutable = path.join(firstTarget, executableName);
+  const secondExecutable = path.join(secondTarget, executableName);
+  await writeFile(firstExecutable, 'approved executable A');
+  await writeFile(secondExecutable, 'replacement executable B');
+  await chmod(firstExecutable, 0o700);
+  await chmod(secondExecutable, 0o700);
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  try { await symlink(firstTarget, link, linkType); }
+  catch (error) {
+    if (process.platform === 'win32' && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+      t.diagnostic('junction retarget case skipped: junction creation is unavailable in this Windows environment');
+      return;
+    }
+    throw error;
+  }
+
+  const start = f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'synthetic' });
+  await authorizedSignal;
+  await unlink(link);
+  await symlink(secondTarget, link, linkType);
+  approve();
+
+  await start;
+  assert.equal(spawnedExecutable, await realpath(firstExecutable));
+  assert.notEqual(spawnedExecutable, await realpath(secondExecutable));
 });
 
 test('authorization sees a redacted provider environment summary and spawn uses its pre-approval snapshot', async (t) => {
@@ -651,6 +706,7 @@ test('follow-up input requires exact host approval, serializes requests, and emi
 test('streaming input transport works with a synthetic helper process and no AI CLI', async (t) => {
   const f = await fixture({
     authorize: async () => true,
+    resolveExecutableImpl: async () => process.execPath,
     buildLaunchImpl: (_provider, profile) => ({
       profile, args: ['-e', "import fs from 'node:fs';process.stdin.setEncoding('utf8');process.stdin.on('data',d=>fs.appendFileSync(process.argv[1],d));setInterval(()=>{},1000);", path.join(f.root, 'inputs.jsonl')],
       inputMode: 'claude-stream-json', initialInput: 'ALBERA task:\nsynthetic initial',
@@ -834,6 +890,7 @@ test('local helper process integration: abnormal exit is represented without out
 test('local helper process integration: OS tree fallback stops a child when the Guardian channel fails', async (t) => {
   let child;
   const f = await fixture({
+    resolveExecutableImpl: async () => process.execPath,
     spawnImpl: (executable, args, options) => {
       child = spawn(executable, args, {
         cwd: options.cwd, env: options.env, shell: false,

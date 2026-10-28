@@ -8,6 +8,7 @@ const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
 const PROFILES = new Set(['read-only', 'read-only-streaming']);
 const RUN_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+const SHA256_RE = /^[a-f0-9]{64}$/;
 const MAX_PENDING_APPROVALS = 32;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 300_000;
@@ -111,6 +112,10 @@ function projectApproval(request) {
     if (typeof request.executable !== 'string' || !path.isAbsolute(request.executable) || request.executable.length > 4096) return null;
     output.executable = request.executable;
   }
+  if (request.executableSha256 !== undefined) {
+    if (typeof request.executableSha256 !== 'string' || !SHA256_RE.test(request.executableSha256)) return null;
+    output.executableSha256 = request.executableSha256;
+  }
   if (request.cwd !== undefined) {
     if (typeof request.cwd !== 'string' || !path.isAbsolute(request.cwd) || request.cwd.length > 4096) return null;
     output.cwd = request.cwd;
@@ -168,7 +173,7 @@ function projectApproval(request) {
   }
   if (request.action === 'start'
     && (!output.profile || !output.executable || !output.cwd || !output.args || !output.environment
-      || !output.platform || !output.maxDurationMs || !output.maxActive
+      || !output.executableSha256 || !output.platform || !output.maxDurationMs || !output.maxActive
       || output.minimumCliVersion !== PROFILE_MINIMUM_VERSIONS[output.profile] || output.versionCheck !== true)) return null;
   if (request.action === 'stop' && (!output.runId || typeof output.force !== 'boolean')) return null;
   if (request.action === 'input' && (!output.runId || typeof output.text !== 'string' || output.text.length === 0)) return null;

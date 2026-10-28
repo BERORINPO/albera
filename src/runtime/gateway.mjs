@@ -11,6 +11,7 @@ import { isVersionAtLeast, PROFILE_MINIMUM_VERSIONS } from './profile-policy.mjs
 import { runWindowsTaskkill } from './windows-tree-termination.mjs';
 import { buildProviderLaunch, RUNTIME_PROFILES, RUNTIME_PROVIDERS } from './agent-harness-adapter.mjs';
 import { GatewayError } from './errors.mjs';
+import { captureExecutableIdentity, sameExecutableIdentity } from './executable-identity.mjs';
 export { buildProviderLaunch, RUNTIME_PROFILES, RUNTIME_PROVIDERS } from './agent-harness-adapter.mjs';
 export { GatewayError } from './errors.mjs';
 const MAX_ARGS = 128;
@@ -137,6 +138,7 @@ export class RuntimeGateway {
       const minimumCliVersion = PROFILE_MINIMUM_VERSIONS[profile];
       const authorized = await this.#authorizeSafely({
         action: 'start', provider, profile, executable, cwd: resolvedCwd, args: launchArgs,
+        executableSha256: executableIdentity.sha256,
         minimumCliVersion, versionCheck: true,
         ...(initialInput === null ? {} : { initialInput }),
         environment: environmentSummary(provider, environment),
@@ -147,7 +149,7 @@ export class RuntimeGateway {
       let currentExecutable;
       try { currentExecutable = await validateExecutable(executable, this.#platform); }
       catch { throw new GatewayError('executable_unavailable'); }
-      if (currentExecutable !== executable || await getExecutableIdentity(currentExecutable) !== executableIdentity) {
+      if (currentExecutable !== executable || !sameExecutableIdentity(await getExecutableIdentity(currentExecutable), executableIdentity)) {
         throw new GatewayError('executable_unavailable');
       }
       let installedVersion;
@@ -156,7 +158,7 @@ export class RuntimeGateway {
       if (!isVersionAtLeast(installedVersion, minimumCliVersion)) throw new GatewayError('cli_version_unavailable');
       try { currentExecutable = await validateExecutable(executable, this.#platform); }
       catch { throw new GatewayError('executable_unavailable'); }
-      if (currentExecutable !== executable || await getExecutableIdentity(currentExecutable) !== executableIdentity) {
+      if (currentExecutable !== executable || !sameExecutableIdentity(await getExecutableIdentity(currentExecutable), executableIdentity)) {
         throw new GatewayError('executable_unavailable');
       }
       // These executable checks await filesystem operations. Shutdown can begin during
@@ -430,11 +432,8 @@ async function validateExecutable(executable, platform) {
   } catch { throw new GatewayError('executable_unavailable'); }
 }
 async function getExecutableIdentity(executable) {
-  try {
-    const details = await stat(executable, { bigint: true });
-    if (!details.isFile()) throw new GatewayError('executable_unavailable');
-    return [details.dev, details.ino, details.mode, details.size, details.mtimeNs, details.ctimeNs].map(String).join(':');
-  } catch { throw new GatewayError('executable_unavailable'); }
+  try { return await captureExecutableIdentity(executable); }
+  catch { throw new GatewayError('executable_unavailable'); }
 }
 function validateArgs(args) {
   if (!Array.isArray(args) || args.length > MAX_ARGS || args.some((arg) => typeof arg !== 'string' || arg.includes('\0'))) throw new GatewayError('invalid_args');

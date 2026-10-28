@@ -19,7 +19,7 @@ const messages = {
     filesystemDisclosure: 'The allowed root sets only the working directory; it is not a sandbox. The Claude process runs with your OS account permissions and may access other local files and resources. Use only projects and data you are comfortable exposing to this process.',
     approve: 'Approve', deny: 'Deny', noRuns: 'No Runtime sessions yet.', run: 'Run {0}', profile: 'Profile: {0}',
     action_start: 'Start request', action_stop: 'Stop request', action_input: 'Input request',
-    field_executable: 'executable', field_cwd: 'working directory', field_runId: 'run ID', field_platform: 'platform',
+    field_executable: 'executable', field_executableSha256: 'executable SHA-256', field_cwd: 'working directory', field_runId: 'run ID', field_platform: 'platform',
     field_maxDurationMs: 'maximum duration (ms)', field_maxActive: 'maximum active runs', field_force: 'force stop',
     status_starting: 'starting', status_running: 'running', status_stopping: 'stopping', status_stopped: 'stopped',
     status_exited: 'exited', status_failed: 'failed', status_interrupted: 'interrupted', status_started: 'started',
@@ -49,7 +49,7 @@ const messages = {
     filesystemDisclosure: '許可ルートが決めるのは作業ディレクトリだけで、OSのサンドボックスではありません。Claudeプロセスは現在のOSユーザー権限で動作し、このフォルダー外のローカルファイルや資源にもアクセスできる場合があります。プロセスに見せてもよいプロジェクトとデータだけで利用してください。',
     approve: '承認', deny: '拒否', noRuns: 'Runtimeセッションはまだありません。', run: '実行 {0}', profile: 'プロファイル: {0}',
     action_start: '起動要求', action_stop: '停止要求', action_input: '入力要求',
-    field_executable: '実行ファイル', field_cwd: '作業ディレクトリ', field_runId: '実行ID', field_platform: 'OS',
+    field_executable: '実行ファイル', field_executableSha256: '実行ファイルのSHA-256', field_cwd: '作業ディレクトリ', field_runId: '実行ID', field_platform: 'OS',
     field_maxDurationMs: '最大実行時間 (ms)', field_maxActive: '同時実行上限', field_force: '強制停止',
     status_starting: '起動中', status_running: '実行中', status_stopping: '停止中', status_stopped: '停止済み',
     status_exited: '終了', status_failed: '失敗', status_interrupted: '中断', status_started: '起動',
@@ -173,8 +173,8 @@ function renderApprovals(items) {
       check.setAttribute('role', 'note');
       card.append(check);
     }
-    const fieldLabels = { profile: t('profileLabel'), executable: t('field_executable'), cwd: t('field_cwd'), runId: t('field_runId'), platform: t('field_platform'), maxDurationMs: t('field_maxDurationMs'), maxActive: t('field_maxActive'), force: t('field_force') };
-    for (const key of ['profile', 'executable', 'cwd', 'runId', 'platform', 'maxDurationMs', 'maxActive', 'force']) {
+    const fieldLabels = { profile: t('profileLabel'), executable: t('field_executable'), executableSha256: t('field_executableSha256'), cwd: t('field_cwd'), runId: t('field_runId'), platform: t('field_platform'), maxDurationMs: t('field_maxDurationMs'), maxActive: t('field_maxActive'), force: t('field_force') };
+    for (const key of ['profile', 'executable', 'executableSha256', 'cwd', 'runId', 'platform', 'maxDurationMs', 'maxActive', 'force']) {
       if (item.request[key] !== undefined) {
         details.append(text('dt', fieldLabels[key] ?? key), text('dd', key === 'profile' ? describe('profile', item.request[key]) : item.request[key]));
       }

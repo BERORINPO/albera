@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { createRuntimeApi } from '../src/runtime/api.mjs';
 import { createRuntimeApprovalBroker } from '../src/runtime/approval-broker.mjs';
@@ -922,12 +922,16 @@ test('closing Runtime API denies pending host approval requests', async (t) => {
 
 test('Runtime API host approval routes carry a synthetic launch from request through human decision', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-host-approval-e2e-'));
+  const executable = path.join(root, `synthetic-provider${process.platform === 'win32' ? '.exe' : ''}`);
+  await writeFile(executable, 'synthetic provider executable fixture');
+  await chmod(executable, 0o700);
   const broker = createRuntimeApprovalBroker();
   let child;
   const gateway = new RuntimeGateway({
     roots: [root],
     authorize: broker.authorize,
-    resolveExecutableImpl: async () => process.execPath,
+    resolveExecutableImpl: async () => executable,
+    probeVersionImpl: async () => '99.0.0',
     buildLaunchImpl: (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile),
     env: {},
     spawnImpl: () => {
