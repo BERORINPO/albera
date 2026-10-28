@@ -1664,7 +1664,7 @@ test('typed Hyper-V adapter reconciles lost create, start, and stop replies with
       state = 'running';
       if (loseFirstStartReply) {
         loseFirstStartReply = false;
-        throw Object.assign(new Error('start reply lost token=do-not-persist'), { code: 'provider_timeout' });
+        throw Object.assign(new Error('start reply lost token=do-not-persist'), { code: 'credentialabcdef012345' });
       }
     }
     if (action === 'stop') {
@@ -1687,8 +1687,15 @@ test('typed Hyper-V adapter reconciles lost create, start, and stop replies with
       events: f.store.listEvents(operationId),
     });
     assert.doesNotMatch(persisted, new RegExp(marker));
-    const databaseBytes = await readFile(f.databasePath);
-    assert.equal(databaseBytes.includes(Buffer.from(marker)), false);
+    for (const suffix of ['', '-wal', '-shm']) {
+      let databaseBytes;
+      try { databaseBytes = await readFile(`${f.databasePath}${suffix}`); }
+      catch (error) {
+        if (error?.code === 'ENOENT') continue;
+        throw error;
+      }
+      assert.equal(databaseBytes.includes(Buffer.from(marker)), false, `failure detail is absent from SQLite ${suffix || 'database'} bytes`);
+    }
   };
 
   const create = f.operation('create');
@@ -1708,10 +1715,11 @@ test('typed Hyper-V adapter reconciles lost create, start, and stop replies with
   const startRequest = f.operation('start');
   const uncertainStart = await f.coordinator.execute(startRequest);
   assert.equal(uncertainStart.status, 'UNKNOWN');
-  assert.equal(uncertainStart.errorCode, 'provider_timeout');
+  assert.equal(uncertainStart.errorCode, 'provider_outcome_unknown');
   assert.doesNotMatch(JSON.stringify(uncertainStart), /do-not-persist/);
   assert.equal(f.store.getOperation(startRequest.operationId).status, 'UNKNOWN');
   await assertFailureDetailNotPersisted(startRequest.operationId, 'do-not-persist');
+  await assertFailureDetailNotPersisted(startRequest.operationId, 'credentialabcdef012345');
   const start = await f.coordinator.reconcile(startRequest.operationId);
   assert.equal(start.status, 'SUCCEEDED');
   assert.equal(start.observedState, 'running');

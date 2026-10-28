@@ -163,6 +163,18 @@ test('Hyper-V adapter reduces untrusted Broker errors to a safe code and outcome
     return true;
   });
 
+  const codeSecret = 'credentialabcdef012345';
+  const secretCodeProvider = new HyperVEnvironmentProvider({ broker: {
+    createVm: async () => { throw Object.assign(new Error('hidden failure'), { code: codeSecret }); },
+    inspectVm: async () => {}, startVm: async () => {}, stopVm: async () => {}, removeVm: async () => {},
+  } });
+  await assert.rejects(secretCodeProvider.create(hypervOperation('create')), (error) => {
+    assert.equal(error.code, 'provider_outcome_unknown');
+    assert.equal(error.message, 'provider_outcome_unknown');
+    assert.doesNotMatch(JSON.stringify({ code: error.code, message: error.message }), new RegExp(codeSecret));
+    return true;
+  });
+
   const accessorError = new Error('hidden failure');
   Object.defineProperty(accessorError, 'code', { get() { throw new Error('credential=accessor-secret'); } });
   const accessorProvider = new HyperVEnvironmentProvider({ broker: {

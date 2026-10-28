@@ -14,6 +14,11 @@ const BROKER_METHODS = Object.freeze({
   stop: 'stopVm',
   destroy: 'removeVm',
 });
+const SAFE_BROKER_ERROR_CODES = new Set([
+  'authorization_denied', 'broker_timeout', 'generation_mismatch', 'invalid_provider_state',
+  'operation_conflict', 'operation_unknown', 'provider_outcome_unknown', 'provider_state_unknown',
+  'provider_timeout', 'provider_unavailable', 'stale_generation',
+]);
 
 /**
  * Typed adapter seam for a future authenticated Host Broker client.
@@ -56,8 +61,8 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
       throw new EnvironmentProviderError('provider_operation_mismatch', { outcome: 'not_applied' });
     }
 
-    // Invoke only a fixed typed lifecycle method. Keep only a bounded error
-    // code and the definitive/not-applied bit; Broker messages may contain paths
+    // Invoke only a fixed typed lifecycle method. Keep only an allowlisted error
+    // code and the definitive/not-applied bit; Broker fields may contain paths
     // or credentials and must not escape through this adapter.
     let observed;
     try {
@@ -66,9 +71,8 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
     catch (error) {
       const codeCandidate = dataProperty(error, 'code');
       const outcomeCandidate = dataProperty(error, 'outcome');
-      const code = typeof codeCandidate === 'string' && /^[a-z0-9_]{1,64}$/.test(codeCandidate)
-        ? codeCandidate
-        : 'provider_outcome_unknown';
+      const code = typeof codeCandidate === 'string' && SAFE_BROKER_ERROR_CODES.has(codeCandidate)
+        ? codeCandidate : 'provider_outcome_unknown';
       throw new EnvironmentProviderError(code, {
         outcome: outcomeCandidate === 'not_applied' ? 'not_applied' : 'unknown',
       });
