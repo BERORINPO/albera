@@ -79,7 +79,7 @@ This file is the continuation ledger. `VERIFIED` refers only to the stated evide
 ## Late Provider completion after timeout
 
 - Added a durable coordinator fault test where a Mock Provider mutation continues past the coordinator deadline and completes afterward. The operation remains `UNKNOWN` at timeout, a later state inspection resolves it to `SUCCEEDED`, and replaying the idempotent request does not invoke the mutation a second time. This verifies timeout as uncertainty rather than cancellation or failure; the Provider side effect may still be running after the caller receives `UNKNOWN`.
-- Local Windows Node `v24.13.0`: focused SQLite suite 30/30; full `npm test` 621 total (614 passed, 7 skipped, 0 failed). The runbook proposal at `docs/architecture/sqlite-operation-store-recovery-runbook.md` describes safe stale-marker handling but is not an executable operator procedure; service startup and recovery CLI remain missing.
+- Local Windows Node `v24.13.0`: focused SQLite suite 30/30; full `npm test` 621 total (614 passed, 7 skipped, 0 failed). Actions run `40623067185` passed all six Windows/macOS/Linux × Node 22/24 jobs on code/test commit `8ef47f1`; both Windows gated storage ACL integrations passed. The runbook proposal at `docs/architecture/sqlite-operation-store-recovery-runbook.md` describes safe stale-marker handling but is not an executable operator procedure; service startup and recovery CLI remain missing.
 - This is Mock-only evidence. It does not prove provider cancellation, VM termination, or authenticated Host Broker behavior. No new dependency or real external action was used.
 
 ## Hyper-V readiness constraints (not verified)
