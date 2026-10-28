@@ -102,7 +102,13 @@ test('API binds to IPv4 loopback, requires bearer auth, validates host/origin, a
 });
 
 test('API projects run/event data and only forwards allowlisted start and stop requests', async (t) => {
-  const f = await apiFixture();
+  const runId = '12345678-1234-4234-8234-123456789abc';
+  const f = await apiFixture({}, {
+    events: ({ after = 0 } = {}) => [
+      { id: 1, runId, provider: 'claude', type: 'started', at: 1, prompt: 'synthetic-secret' },
+      { id: 2, runId, provider: 'claude', type: 'stop_requested', at: 2, stopReason: 'synthetic-secret' },
+    ].filter((event) => event.id > after),
+  });
   t.after(f.close);
 
   const list = await request(f.address, f.api, { route: '/v1/runs' });
@@ -133,7 +139,10 @@ test('API projects run/event data and only forwards allowlisted start and stop r
   const ownedRuns = await request(f.address, f.api, { route: '/v1/runs' });
   assert.deepEqual(JSON.parse(ownedRuns.text), { runs: [{ id: '12345678-1234-4234-8234-123456789abc', provider: 'claude', status: 'running' }] });
   const ownedEvents = await request(f.address, f.api, { route: '/v1/events?after=0&limit=1' });
-  assert.deepEqual(JSON.parse(ownedEvents.text), { events: [{ id: 1, runId: '12345678-1234-4234-8234-123456789abc', provider: 'claude', type: 'started', at: 1 }] });
+  assert.deepEqual(JSON.parse(ownedEvents.text), { events: [{ id: 1, runId, provider: 'claude', type: 'started', at: 1 }] });
+  const projectedEvents = await request(f.address, f.api, { route: '/v1/events?after=0&limit=10' });
+  assert.deepEqual(JSON.parse(projectedEvents.text).events[1], { id: 2, runId, provider: 'claude', type: 'stop_requested', at: 2 });
+  assert.equal(projectedEvents.text.includes('synthetic-secret'), false);
 
   const stopped = await request(f.address, f.api, { method: 'POST', route: '/v1/runs/12345678-1234-4234-8234-123456789abc/stop' });
   assert.equal(stopped.status, 200);
@@ -144,7 +153,7 @@ test('API projects run/event data and only forwards allowlisted start and stop r
 test('run projection exposes only known profile and streaming input metadata required by the control UI', async (t) => {
   const run = {
     id: '12345678-1234-4234-8234-123456789abc', provider: 'claude', status: 'running',
-    profile: 'read-only-streaming', inputMode: 'claude-stream-json', cwd: 'secret-path',
+    profile: 'read-only-streaming', inputMode: 'claude-stream-json', stopReason: 'timeout', cwd: 'secret-path',
     prompt: 'secret-prompt', args: ['secret-argument'],
   };
   const f = await apiFixture({}, { start: async () => run, list: () => [run] });
@@ -156,13 +165,16 @@ test('run projection exposes only known profile and streaming input metadata req
   });
   assert.equal(started.status, 202);
   assert.deepEqual(JSON.parse(started.text).run, {
-    id: run.id, provider: 'claude', status: 'running', profile: 'read-only-streaming', inputMode: 'claude-stream-json',
+    id: run.id, provider: 'claude', status: 'running', profile: 'read-only-streaming', inputMode: 'claude-stream-json', stopReason: 'timeout',
   });
 
   const listed = await request(f.address, f.api, { route: '/v1/runs' });
   assert.deepEqual(JSON.parse(listed.text).runs, [
-    { id: run.id, provider: 'claude', status: 'running', profile: 'read-only-streaming', inputMode: 'claude-stream-json' },
+    { id: run.id, provider: 'claude', status: 'running', profile: 'read-only-streaming', inputMode: 'claude-stream-json', stopReason: 'timeout' },
   ]);
+  run.stopReason = 'secret-text';
+  const redacted = await request(f.address, f.api, { route: '/v1/runs' });
+  assert.equal(JSON.stringify(JSON.parse(redacted.text)).includes('secret-text'), false);
   assert.equal(listed.text.includes('secret-path'), false);
   assert.equal(listed.text.includes('secret-prompt'), false);
   assert.equal(listed.text.includes('secret-argument'), false);
@@ -503,7 +515,8 @@ test('background lifecycle capture persists events without an open event stream'
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-event-poll-'));
   const journal = await openTestJournal(path.join(root, 'audit.jsonl'));
   let sourceEvents = [];
-  const f = await apiFixture({ journal }, { events: ({ after = 0 } = {}) => sourceEvents.filter((event) => event.id > after) });
+  const sessionId = 'c'.repeat(32);
+  const f = await apiFixture({ journal }, { events: ({ after = 0 } = {}) => sourceEvents.filter((event) => event.id > after) }, { sessionId });
   t.after(async () => { await f.close(); await journal.close(); await rm(root, { recursive: true, force: true }); });
   const started = await request(f.address, f.api, {
     method: 'POST', route: '/v1/runs', body: JSON.stringify({ provider: 'claude', cwd: 'C:\\work', prompt: 'background capture fixture' }),
@@ -512,16 +525,31 @@ test('background lifecycle capture persists events without an open event stream'
   const runId = JSON.parse(started.text).run.id;
   sourceEvents = [
     { id: 1, runId, provider: 'claude', type: 'started', at: 1 },
-    { id: 2, runId, provider: 'claude', type: 'exited', at: 2, code: 0, signal: null },
+    { id: 2, runId, provider: 'claude', type: 'stop_requested', at: 2, stopReason: 'timeout' },
+    { id: 3, runId, provider: 'claude', type: 'stopped', at: 3, code: null, signal: 'SIGTERM' },
   ];
   const deadline = Date.now() + 1500;
   let persisted;
   while (Date.now() < deadline) {
     persisted = journal.list({ kind: 'event' });
-    if (persisted.some((event) => event.eventType === 'exited')) break;
+    if (persisted.some((event) => event.eventType === 'stopped')) break;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  assert.deepEqual(persisted.map((event) => event.eventType), ['started', 'exited']);
+  assert.deepEqual(persisted.map((event) => event.eventType), ['started', 'stop_requested', 'stopped']);
+  assert.equal(persisted[1].stopReason, 'timeout');
+  const response = await request(f.address, f.api, { route: '/v1/events?after=0' });
+  assert.deepEqual(JSON.parse(response.text).events[1], {
+    id: 2, runId, provider: 'claude', type: 'stop_requested', at: 2, stopReason: 'timeout',
+  });
+  await f.close();
+  const restoredApi = createRuntimeApi({
+    gateway: fakeGateway({ list: () => [] }).gateway, journal, pollIntervalMs: 1000,
+  });
+  const restoredCredential = restoredApi.createCredential(['runs:read'], { sessionId });
+  const address = await restoredApi.listen();
+  const restoredRuns = await request(address, { credential: restoredCredential }, { route: '/v1/runs', token: restoredCredential });
+  assert.equal(JSON.parse(restoredRuns.text).runs[0].stopReason, 'timeout');
+  await restoredApi.close();
 });
 
 test('Gateway event notifications persist lifecycle changes before the next safety poll', async (t) => {

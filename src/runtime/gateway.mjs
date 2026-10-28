@@ -63,7 +63,7 @@ export async function resolveProviderExecutable(provider, { platform = process.p
   return null;
 }
 
-/** @typedef {{id: string, provider: string, profile: string, inputMode: string|null, inputPending: boolean, status: 'starting'|'running'|'stopping'|'stopped'|'exited'|'failed', startedAt: number|null, finishedAt: number|null, exitCode: number|null, signal: string|null, treeStopConfirmed: boolean|null, timer: ReturnType<typeof setTimeout>|null, child: import('node:child_process').ChildProcess}} Run */
+/** @typedef {{id: string, provider: string, profile: string, inputMode: string|null, inputPending: boolean, status: 'starting'|'running'|'stopping'|'stopped'|'exited'|'failed', stopReason: 'user_cancel'|'timeout'|'host_shutdown'|null, startedAt: number|null, finishedAt: number|null, exitCode: number|null, signal: string|null, treeStopConfirmed: boolean|null, timer: ReturnType<typeof setTimeout>|null, child: import('node:child_process').ChildProcess}} Run */
 
 /**
  * Memory-only lifecycle gateway. `authorize` is a trusted host callback, not request data; default denies.
@@ -172,14 +172,14 @@ export class RuntimeGateway {
         });
       } catch { throw new GatewayError('spawn_failed'); }
       const run = /** @type {Run} */ ({
-        id: randomUUID(), provider, profile, inputMode, inputPending: false, status: 'starting', startedAt: null, finishedAt: null,
+        id: randomUUID(), provider, profile, inputMode, inputPending: false, status: 'starting', stopReason: null, startedAt: null, finishedAt: null,
         exitCode: null, signal: null, treeStopConfirmed: null, timer: null, child,
       });
       this.#runs.set(run.id, run);
       child.once('spawn', () => {
         if (run.status !== 'starting') return;
         run.status = 'running'; run.startedAt = this.#now(); this.#emit(run, 'started');
-        run.timer = setTimeout(() => { void this.#requestStop(run).catch(() => safeKill(run.child)); }, this.#runTimeoutMs);
+        run.timer = setTimeout(() => { void this.#requestStop(run, 'timeout').catch(() => safeKill(run.child)); }, this.#runTimeoutMs);
         run.timer.unref?.();
       });
       child.once('error', () => {
@@ -272,7 +272,7 @@ export class RuntimeGateway {
     // Start all stops immediately, but keep the caller's timeout over both the stop
     // adapter and process-close phases. A hung platform helper must not hang host close.
     const pendingStops = new Set(active.map((run) => run.id));
-    const stopRequests = active.map((run) => this.#requestStop(run)
+    const stopRequests = active.map((run) => this.#requestStop(run, 'host_shutdown')
       .catch(() => {})
       .finally(() => pendingStops.delete(run.id)));
     if (!active.length) return uncertain;
@@ -300,9 +300,11 @@ export class RuntimeGateway {
     catch { throw new GatewayError('authorization_failed'); }
   }
 
-  async #requestStop(run) {
+  async #requestStop(run, reason = 'user_cancel') {
     if (!isActive(run.status) || run.status === 'stopping') return;
-    run.status = 'stopping'; this.#emit(run, 'stop_requested');
+    run.status = 'stopping';
+    run.stopReason = reason;
+    this.#emit(run, 'stop_requested', { stopReason: reason });
     const pid = run.child.pid;
     if (run.child.exitCode !== null || run.child.signalCode !== null) {
       // Do not signal a stale PID after the direct child has exited. Windows cannot reliably
@@ -321,7 +323,7 @@ export class RuntimeGateway {
         run.treeStopConfirmed = run.child.supervised === true
           ? (typeof treeResult?.treeConfirmed === 'boolean' ? treeResult.treeConfirmed : null)
           : true;
-        if (run.treeStopConfirmed === false) this.#emit(run, 'stop_failed');
+        if (run.treeStopConfirmed === false) this.#emit(run, 'stop_failed', { stopReason: reason });
       }
     } catch {
       let fallbackConfirmed = false;
@@ -336,13 +338,13 @@ export class RuntimeGateway {
       }
       if (Number.isInteger(pid) && pid > 0) {
         run.treeStopConfirmed = fallbackConfirmed;
-        if (!fallbackConfirmed) this.#emit(run, 'stop_failed');
+        if (!fallbackConfirmed) this.#emit(run, 'stop_failed', { stopReason: reason });
       }
       if (!fallbackConfirmed) {
         try {
           if (run.child.kill('SIGTERM') === false) throw new Error('child_signal_failed');
         } catch {
-          if (run.status === 'stopping') { run.status = 'running'; this.#emit(run, 'stop_failed'); }
+          if (run.status === 'stopping') { run.status = 'running'; this.#emit(run, 'stop_failed', { stopReason: reason }); }
           throw new GatewayError('stop_failed');
         }
       }
@@ -357,14 +359,14 @@ export class RuntimeGateway {
         Promise.resolve(escalation).catch(() => {
           if (Number.isInteger(childPid) && childPid > 0 && run.treeStopConfirmed !== false) {
             run.treeStopConfirmed = false;
-            this.#emit(run, 'stop_failed');
+            this.#emit(run, 'stop_failed', { stopReason: reason });
           }
           safeKill(run.child);
         });
       } catch {
         if (Number.isInteger(childPid) && childPid > 0 && run.treeStopConfirmed !== false) {
           run.treeStopConfirmed = false;
-          this.#emit(run, 'stop_failed');
+          this.#emit(run, 'stop_failed', { stopReason: reason });
         }
         safeKill(run.child);
       }
@@ -400,6 +402,7 @@ export class RuntimeGateway {
   #snapshot(run) {
     return {
       id: run.id, provider: run.provider, status: run.status, profile: run.profile,
+      stopReason: run.stopReason,
       ...(run.inputMode === null ? {} : { inputMode: run.inputMode }),
       startedAt: run.startedAt, finishedAt: run.finishedAt, exitCode: run.exitCode, signal: run.signal,
       treeStopConfirmed: run.treeStopConfirmed,

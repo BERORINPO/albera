@@ -127,6 +127,22 @@ test('journal persists allowlisted lifecycle events in the same monotonic sequen
   await reopened.close();
 });
 
+test('journal persists only bounded stop reasons on stop lifecycle events', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'albera-stop-reason-journal-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'runtime.audit.jsonl');
+  const journal = await openTestJournal(file);
+  const record = { kind: 'event', sessionId: SESSION_A, eventType: 'stop_requested', at: 2, provider: 'claude', runId: RUN_A, stopReason: 'timeout' };
+  const appended = await journal.append(record);
+  assert.equal(appended.stopReason, 'timeout');
+  assert.throws(() => journal.append({ ...record, stopReason: 'secret-input' }), /invalid_journal_record/);
+  assert.throws(() => journal.append({ ...record, eventType: 'started' }), /invalid_journal_record/);
+  await journal.close();
+  const reopened = await openTestJournal(file);
+  assert.equal(reopened.list({ kind: 'event' })[0].stopReason, 'timeout');
+  await reopened.close();
+});
+
 test('audit journal enforces one live writer and releases its lock on close', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-audit-lock-'));
   t.after(() => rm(root, { recursive: true, force: true }));

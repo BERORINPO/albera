@@ -21,6 +21,7 @@ const INPUT_MODES = new Set(['claude-stream-json']);
 const RUN_STATUSES = new Set(['starting', 'running', 'stopping', 'stopped', 'exited', 'failed', 'interrupted']);
 const EVENT_TYPES = new Set(['started', 'stop_requested', 'stopped', 'exited', 'failed', 'stop_failed', 'input_sent']);
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGABRT']);
+const STOP_REASONS = new Set(['user_cancel', 'timeout', 'host_shutdown']);
 const SESSION_ID_RE = /^[0-9a-f]{32}$/;
 const GATEWAY_ERRORS = new Set([
   'confirmation_required', 'unknown_provider', 'invalid_args', 'cwd_not_allowed', 'executable_unavailable',
@@ -302,6 +303,7 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
             const stored = await journal.append({
               kind: 'event', sessionId, eventType: event.type, at: event.at, provider: event.provider, runId: event.runId,
               ...(event.code === undefined ? {} : { code: event.code }), ...(event.signal === undefined ? {} : { signal: event.signal }),
+              ...(event.stopReason === undefined ? {} : { stopReason: event.stopReason }),
             });
             recoveredRuns.set(event.runId, applyRecoveredEvent(recoveredRuns.get(event.runId), event, stored.sequence));
           } else {
@@ -497,7 +499,7 @@ function restoreJournalState(journal, runOwners, recoveredRuns) {
         runOwners.set(record.runId, record.sessionId);
         recoveredRuns.set(record.runId, {
           id: record.runId, provider: record.provider, status: 'starting', startedAt: record.at,
-          finishedAt: null, exitCode: null, signal: null, treeStopConfirmed: null,
+          finishedAt: null, exitCode: null, signal: null, treeStopConfirmed: null, stopReason: null,
         });
       }
     }
@@ -520,7 +522,7 @@ function applyRecoveredEvent(prior, event, sequence) {
   if (!prior || !event) return prior;
   const run = { ...prior };
   if (event.type === 'started') { run.status = 'running'; run.startedAt = event.at; }
-  else if (event.type === 'stop_requested') run.status = 'stopping';
+  else if (event.type === 'stop_requested') { run.status = 'stopping'; run.stopReason = event.stopReason ?? null; }
   else if (event.type === 'stopped' || event.type === 'exited' || event.type === 'failed') {
     run.status = event.type;
     run.finishedAt = event.at;
@@ -536,6 +538,10 @@ function projectJournalEvent(record) {
     || !UUID_RE.test(record.runId ?? '') || !PROVIDERS.has(record.provider) || !EVENT_TYPES.has(record.eventType)
     || !Number.isSafeInteger(record.at) || record.at < 0) return null;
   const event = { id: record.eventId, runId: record.runId, provider: record.provider, type: record.eventType, at: record.at };
+  if (record.stopReason !== undefined) {
+    if (!STOP_REASONS.has(record.stopReason) || !['stop_requested', 'stop_failed'].includes(record.eventType)) return null;
+    event.stopReason = record.stopReason;
+  }
   if (record.code === null || Number.isSafeInteger(record.code)) event.code = record.code;
   if (record.signal === null || (typeof record.signal === 'string' && SIGNALS.has(record.signal))) event.signal = record.signal;
   return event;
@@ -625,6 +631,7 @@ function projectRun(run) {
   if (run.exitCode === null || (Number.isInteger(run.exitCode) && Number.isSafeInteger(run.exitCode))) result.exitCode = run.exitCode;
   if (run.signal === null || (typeof run.signal === 'string' && SIGNALS.has(run.signal))) result.signal = run.signal;
   if (run.treeStopConfirmed === null || typeof run.treeStopConfirmed === 'boolean') result.treeStopConfirmed = run.treeStopConfirmed;
+  if (run.stopReason === null || STOP_REASONS.has(run.stopReason)) result.stopReason = run.stopReason;
   return result;
 }
 function projectEvent(event) {
@@ -637,6 +644,8 @@ function projectEvent(event) {
   for (const key of ['id', 'runId', 'provider', 'type', 'at']) result[key] = event[key];
   if (event.code === null || (Number.isInteger(event.code) && Number.isSafeInteger(event.code))) result.code = event.code;
   if (event.signal === null || (typeof event.signal === 'string' && SIGNALS.has(event.signal))) result.signal = event.signal;
+  if (event.stopReason !== undefined && STOP_REASONS.has(event.stopReason)
+    && ['stop_requested', 'stop_failed'].includes(event.type)) result.stopReason = event.stopReason;
   return result;
 }
 function queryInteger(value, fallback, max) {

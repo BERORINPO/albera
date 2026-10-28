@@ -464,7 +464,9 @@ test('run duration timeout requests stop and repeated stop is idempotent', async
   t.after(f.dispose);
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
   await waitFor(() => f.gateway.get(run.id).status === 'stopped');
+  assert.equal(f.gateway.get(run.id).stopReason, 'timeout');
   assert.deepEqual(f.gateway.events().map((event) => event.type), ['started', 'stop_requested', 'stopped']);
+  assert.equal(f.gateway.events()[1].stopReason, 'timeout');
 });
 
 test('timeout falls back to terminating the direct child if process-tree termination fails', async (t) => {
@@ -813,6 +815,8 @@ test('local helper process integration: starts, reports lifecycle only, stops, a
   const stopped = await f.gateway.stop(run.id);
   assert.ok(['stopping', 'stopped'].includes(stopped.status));
   await waitFor(() => f.gateway.get(run.id).status === 'stopped');
+  assert.equal(f.gateway.get(run.id).stopReason, 'user_cancel');
+  assert.equal(f.gateway.events().find((event) => event.type === 'stop_requested').stopReason, 'user_cancel');
   assert.deepEqual(await f.gateway.close(), []);
 });
 
@@ -822,6 +826,7 @@ test('local helper process integration: abnormal exit is represented without out
   const run = await f.gateway.start({ provider: 'codex', cwd: f.cwd, prompt: ['-e', 'process.exit(7)'] });
   await waitFor(() => f.gateway.get(run.id).status === 'exited');
   assert.equal(f.gateway.get(run.id).exitCode, 7);
+  assert.equal(f.gateway.get(run.id).stopReason, null);
   assert.deepEqual(f.gateway.events().map((event) => event.type), ['started', 'exited']);
   assert.ok(!JSON.stringify(f.gateway.events()).includes('process.exit'));
 });
@@ -862,6 +867,8 @@ test('orderly host close stops active children even when interactive stop approv
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   assert.deepEqual(await f.gateway.close({ timeoutMs: 5000 }), []);
   assert.equal(f.gateway.get(run.id).status, 'stopped');
+  assert.equal(f.gateway.get(run.id).stopReason, 'host_shutdown');
+  assert.equal(f.gateway.events().find((event) => event.type === 'stop_requested').stopReason, 'host_shutdown');
 });
 
 test('orderly host close waits for the child close event after an early exit status', async (t) => {

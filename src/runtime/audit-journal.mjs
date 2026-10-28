@@ -18,6 +18,7 @@ const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
 const ACTIONS = new Set(['run.start', 'run.stop', 'run.input']);
 const PHASES = new Set(['requested', 'accepted', 'denied', 'failed']);
 const EVENT_TYPES = new Set(['started', 'stop_requested', 'stopped', 'exited', 'failed', 'stop_failed', 'input_sent']);
+const STOP_REASONS = new Set(['user_cancel', 'timeout', 'host_shutdown']);
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGABRT']);
 
 export class JournalError extends Error {
@@ -207,7 +208,7 @@ class RuntimeAuditJournal {
 
 function validateInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('invalid_journal_record');
-  const allowed = new Set(['kind', 'sessionId', 'requestId', 'action', 'phase', 'at', 'provider', 'runId', 'errorCode', 'eventType', 'eventId', 'code', 'signal']);
+  const allowed = new Set(['kind', 'sessionId', 'requestId', 'action', 'phase', 'at', 'provider', 'runId', 'errorCode', 'eventType', 'eventId', 'code', 'signal', 'stopReason']);
   if (Object.keys(input).some((key) => !allowed.has(key))) throw new TypeError('invalid_journal_record');
   const kind = input.kind ?? 'audit';
   if (!['audit', 'event'].includes(kind) || !SESSION_ID_RE.test(input.sessionId)
@@ -219,16 +220,18 @@ function validateInput(input) {
       || !EVENT_TYPES.has(input.eventType) || !PROVIDERS.has(input.provider) || !UUID_RE.test(input.runId)
       || (input.eventId !== undefined && (!Number.isSafeInteger(input.eventId) || input.eventId < 1))
       || (input.code !== undefined && input.code !== null && !Number.isSafeInteger(input.code))
-      || (input.signal !== undefined && input.signal !== null && !SIGNALS.has(input.signal))) throw new TypeError('invalid_journal_record');
+      || (input.signal !== undefined && input.signal !== null && !SIGNALS.has(input.signal))
+      || (input.stopReason !== undefined && (!STOP_REASONS.has(input.stopReason) || !['stop_requested', 'stop_failed'].includes(input.eventType)))) throw new TypeError('invalid_journal_record');
     return {
       kind, sessionId: input.sessionId, eventType: input.eventType, at: input.at,
       provider: input.provider, runId: input.runId,
       ...(input.eventId === undefined ? {} : { eventId: input.eventId }),
       ...(input.code === undefined ? {} : { code: input.code }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
+      ...(input.stopReason === undefined ? {} : { stopReason: input.stopReason }),
     };
   }
-  if (input.eventType !== undefined || input.eventId !== undefined || input.code !== undefined || input.signal !== undefined
+  if (input.eventType !== undefined || input.eventId !== undefined || input.code !== undefined || input.signal !== undefined || input.stopReason !== undefined
     || !UUID_RE.test(input.requestId) || !ACTIONS.has(input.action) || !PHASES.has(input.phase)) throw new TypeError('invalid_journal_record');
   return {
     ...(input.kind === undefined ? {} : { kind }),
