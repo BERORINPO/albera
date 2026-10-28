@@ -7,7 +7,8 @@ import { performance } from 'node:perf_hooks';
 import { proposeComputerPlacement } from '../src/runtime/computer-scheduler.mjs';
 import { openSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
 
-const samples = Number.parseInt(process.env.ALB_RUNTIME_BENCH_SAMPLES ?? '40', 10);
+const samples = Number.parseInt(process.env.ALBERA_RUNTIME_BENCH_SAMPLES
+  ?? process.env.ALB_RUNTIME_BENCH_SAMPLES ?? '40', 10);
 if (!Number.isSafeInteger(samples) || samples < 10 || samples > 500) throw new Error('bench_samples_out_of_range');
 const root = await mkdtemp(path.join(os.homedir(), '.albera-sqlite-benchmark-'));
 let store;
@@ -26,6 +27,7 @@ try {
   const computerWrites = [];
   const leaseWrites = [];
   const operationWrites = [];
+  const eventPageReads = [];
   const placementRequirements = {
     projectId: 'bench-placement-project', kind: 'ephemeral', os: 'linux', architecture: 'x64',
     imageDigest: `sha256:${'c'.repeat(64)}`, capabilities: ['terminal'],
@@ -62,6 +64,11 @@ try {
       subjectId: lease.subjectId, projectId, taskId: lease.taskId, runId: lease.runId, computerId, providerId: 'mock',
       leaseId: lease.leaseId, expectedGeneration: lease.generation, policyVersion: 1, action: 'inspect' });
     operationWrites.push(performance.now() - startOperation);
+
+    const startEventPage = performance.now();
+    const page = store.readEventPage(computerId, { limit: 10 });
+    if (page.status !== 'OK' || page.events.length < 1) throw new Error('benchmark_event_page_failed');
+    eventPageReads.push(performance.now() - startEventPage);
   }
   const schedulerScaling = {};
   for (const count of placementPoolSizes) {
@@ -79,9 +86,18 @@ try {
 
   console.log(JSON.stringify({
     driver: 'node:sqlite', node: process.version, platform: `${process.platform}-${process.arch}`,
+    generatedAt: new Date().toISOString(),
+    machineProfile: {
+      osType: os.type(),
+      osRelease: os.release(),
+      cpuModel: os.cpus()[0]?.model?.trim() ?? 'unknown',
+      logicalCpuCount: os.availableParallelism?.() ?? os.cpus().length,
+      totalMemoryBytes: os.totalmem(),
+    },
     samples, journalMode: store.diagnostics().journalMode, synchronous: store.diagnostics().synchronous,
     records: { computers: samples, leases: samples, operations: samples, events: samples * 3 },
-    transactionLatency: { registerComputer: summarize(computerWrites), reserveLease: summarize(leaseWrites), beginOperation: summarize(operationWrites) },
+    transactionLatency: { registerComputer: summarize(computerWrites), reserveLease: summarize(leaseWrites), beginOperation: summarize(operationWrites),
+      readEventPage: summarize(eventPageReads) },
     scheduler: { samplesPerPoolSize: samples, proposalLatencyByCandidateCount: schedulerScaling },
     scope: 'synthetic local store transactions and in-memory placement proposals only; excludes startup ACL checks, provider work, OS scheduling, and remote I/O',
   }));

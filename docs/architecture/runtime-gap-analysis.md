@@ -47,7 +47,7 @@ This change adds an explicit `AgentHarnessAdapter` seam for the existing Claude 
 | ADR-007 | Verified Git integration | **NOT IMPLEMENTED** | No submission quarantine, integration candidate, independent verifier or evidence-bound promotion pipeline. |
 | ADR-008 | Main AI orchestration | **NOT IMPLEMENTED** | No Main AI task planner, scheduling authority, budgets or delegated approval model. |
 | ADR-009 | Canvas / computer use | **NOT IMPLEMENTED (future scope)** | Existing dashboard visualization is not the proposed authenticated project/task/computer graph, terminal/browser/desktop driver or exclusive input lease. |
-| ADR-010 | Performance / observability / OSS governance | **PARTIAL** | Tests/CI and architectural checks exist. Proposed benchmarks are targets, not measurements; no new OSS dependency was added. |
+| ADR-010 | Performance / observability / OSS governance | **PARTIAL** | Tests/CI and architectural checks exist. A local synthetic benchmark JSON at `docs/architecture/benchmarks/runtime-store-baseline-2026-10-28.json` records a machine profile, 40 samples and p50/p95 measurements, including event-page reads and scheduler pools up to 10,000 candidates. It is a reproducible local baseline, not an agreed reference-host comparison or SLO; there are no paired load-plus-fault runs. No new OSS dependency was added. |
 
 All ADRs are Proposed. This report does not promote any ADR to Accepted or mark any PR #18 machine-readable criterion as verified.
 
