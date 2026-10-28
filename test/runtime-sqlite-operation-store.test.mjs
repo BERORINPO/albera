@@ -25,7 +25,9 @@ async function fixture(t, options = {}) {
   const databasePath = path.join(root, 'operations.sqlite');
   let nowMs = Date.parse('2026-10-28T00:00:00.000Z');
   const now = () => new Date(nowMs).toISOString();
-  let store = await openSqliteEnvironmentStore(databasePath, { now, verifyWindowsAcl: async () => {}, ...options });
+  let store = await openSqliteEnvironmentStore(databasePath, {
+    now, verifyWindowsAcl: async () => {}, recoverInterruptedRequests: true, ...options,
+  });
   t.after(async () => {
     store?.close();
     await rm(root, { recursive: true, force: true });
@@ -50,15 +52,17 @@ async function fixture(t, options = {}) {
     get coordinator() { return coordinator; },
     reopen: async () => {
       store.close();
-      store = await openSqliteEnvironmentStore(databasePath, { now, verifyWindowsAcl: async () => {}, ...options });
+      store = await openSqliteEnvironmentStore(databasePath, {
+        now, verifyWindowsAcl: async () => {}, recoverInterruptedRequests: true, ...options,
+      });
       coordinator = new DurableEnvironmentOperationCoordinator({ store, provider, providerTimeoutMs: 100 });
     },
     get store() { return store; },
   };
 }
 
-function spawnSynchronizedStoreWorker(workerPath, databasePath, workerId, mode) {
-  const child = spawn(process.execPath, [workerPath, databasePath, String(workerId), mode], {
+function spawnSynchronizedStoreWorker(workerPath, databasePath, workerId, mode, ...args) {
+  const child = spawn(process.execPath, [workerPath, databasePath, String(workerId), mode, ...args], {
     cwd: path.dirname(path.dirname(workerPath)), shell: false, windowsHide: true,
     env: Object.fromEntries(['SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP'].filter((key) => process.env[key])
       .map((key) => [key, process.env[key]])),
@@ -342,6 +346,51 @@ test('separate processes durably accept one copy of a synchronized Guest event d
   const guestEvents = f.store.listEvents(f.computerId).filter((event) => event.provenance === 'untrusted_guest');
   assert.equal(guestEvents.length, 1);
   assert.equal(guestEvents[0].type, 'guest.heartbeat');
+});
+
+test('separate processes atomically claim one Broker dispatch from the durable journal', { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const request = f.operation('create');
+  const begun = f.store.beginOperation(request);
+  const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
+  f.store.close();
+  const workers = Array.from({ length: 8 }, (_, index) => spawnSynchronizedStoreWorker(
+    workerPath, f.databasePath, index + 1, 'broker-dispatch', request.operationId,
+    String(request.expectedGeneration), begun.operation.actionDigest,
+  ));
+  t.after(async () => {
+    for (const worker of workers) {
+      if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    }
+    await Promise.all(workers.map((worker) => worker.exited));
+  });
+
+  const allResults = Promise.all(workers.map((worker) => worker.result));
+  allResults.catch(() => {});
+  await Promise.all(workers.map((worker) => worker.ready));
+  for (const worker of workers) worker.child.stdin.end('go\n');
+  const outcomes = await allResults;
+  await Promise.all(workers.map((worker) => worker.exited));
+
+  assert.equal(outcomes.filter((outcome) => outcome.status === 'CLAIMED').length, 1, JSON.stringify(outcomes));
+  assert.equal(outcomes.filter((outcome) => outcome.errorCode === 'operation_not_dispatchable').length, 7, JSON.stringify(outcomes));
+  await f.reopen();
+  assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
+  assert.equal(f.store.listEvents(f.computerId).filter((event) => event.type === 'operation.dispatch_authorized').length, 1);
+});
+
+test('startup recovery marks only an interrupted pre-dispatch request UNKNOWN', async (t) => {
+  const f = await fixture(t);
+  const request = f.operation('create');
+  f.store.beginOperation(request);
+  const passiveStore = await openSqliteEnvironmentStore(f.databasePath, {
+    now: f.now, verifyWindowsAcl: async () => {},
+  });
+  assert.equal(passiveStore.getOperation(request.operationId).status, 'REQUESTED', 'default observer handle does not run startup recovery');
+  passiveStore.close();
+  await f.reopen();
+  assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
+  assert.equal(f.store.getOperation(request.operationId).errorCode, 'host_interrupted');
 });
 
 test('durable intent is recorded before provider action and idempotent replay never repeats the side effect', async (t) => {

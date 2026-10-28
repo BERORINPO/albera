@@ -24,13 +24,16 @@ export async function openSqliteEnvironmentStore(databasePath, {
   now = () => new Date().toISOString(),
   maxRecords = DEFAULT_MAX_RECORDS,
   DatabaseImpl = DatabaseSync,
+  recoverInterruptedRequests = false,
 } = {}) {
   if (typeof databasePath !== 'string' || !path.isAbsolute(databasePath) || path.resolve(databasePath) !== databasePath
     || databasePath === path.parse(databasePath).root || (process.platform === 'win32' && isWindowsUncPath(databasePath))) {
     throw new EnvironmentStoreError('database_path_invalid');
   }
   if (!Number.isSafeInteger(maxRecords) || maxRecords < 32 || maxRecords > HARD_MAX_RECORDS) throw new TypeError('invalid_store_capacity');
-  if (typeof now !== 'function' || typeof DatabaseImpl !== 'function') throw new TypeError('invalid_store_options');
+  if (typeof now !== 'function' || typeof DatabaseImpl !== 'function' || typeof recoverInterruptedRequests !== 'boolean') {
+    throw new TypeError('invalid_store_options');
+  }
   const directory = path.dirname(databasePath);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const directoryInfo = await lstat(directory).catch(() => null);
@@ -76,7 +79,9 @@ export async function openSqliteEnvironmentStore(databasePath, {
     if (integrity !== 'ok') throw new EnvironmentStoreError('database_integrity_failed');
     migrate(db);
     const store = new SqliteEnvironmentOperationStore(db, { now, maxRecords });
-    store.recoverInterruptedRequests();
+    // Only the elected host owner performs startup recovery. Other processes may open
+    // a shared WAL for serialized mutations and must not mark live REQUESTED work UNKNOWN.
+    if (recoverInterruptedRequests) store.recoverInterruptedRequests();
     return store;
   } catch (error) {
     db?.close();
