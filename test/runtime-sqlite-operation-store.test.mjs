@@ -24,6 +24,7 @@ const spec = {
   networkProfileId: 'deny-egress-v1', securityProfileId: 'guest-restricted-v1',
   resources: { vcpu: 2, memoryMiB: 2048, diskGiB: 32 },
 };
+const WAL_JOURNAL_SIZE_LIMIT_BYTES = 4 * 1024 * 1024;
 
 async function fixture(t, {
   provider: injectedProvider, authorizeOperation: injectedAuthorizer,
@@ -130,6 +131,7 @@ test('SQLite store uses WAL, FULL synchronous writes, foreign keys, and a versio
   const f = await fixture(t);
   assert.deepEqual(f.store.diagnostics(), {
     journalMode: 'wal', synchronous: 2, foreignKeys: 1, walAutoCheckpointPages: 1000,
+    walJournalSizeLimitBytes: WAL_JOURNAL_SIZE_LIMIT_BYTES,
     maxRecords: 20_000, maxGuestRecords: 5_000, schemaVersion: 4,
   });
   assert.equal(f.store.getComputer(f.computerId).generation, 1);
@@ -165,6 +167,39 @@ test('PASSIVE WAL checkpoint preserves journal reads while an independent connec
       assert.equal(f.store.getComputer(computerId).computerId, computerId);
       assert.equal(f.store.listEvents(computerId)[0].type, 'computer.registered');
     }
+  } finally {
+    if (readerOpen) reader.close();
+  }
+});
+
+test('WAL size limit trims a reset log but does not truncate frames pinned by a reader', async (t) => {
+  const f = await fixture(t);
+  const reader = new DatabaseSync(f.databasePath);
+  let readerOpen = true;
+  try {
+    reader.exec('BEGIN');
+    const initialCount = reader.prepare('SELECT COUNT(*) AS count FROM computers').get().count;
+    const computerIds = Array.from({ length: 1_300 }, (_, index) => `wal-size-limit-computer-${index}`);
+    for (const computerId of computerIds) {
+      f.store.registerComputer({ computerId, projectId: 'project-a', providerId: 'mock' });
+    }
+
+    const pinnedCheckpoint = f.store.checkpointWal();
+    assert.ok(pinnedCheckpoint.remainingFrames > 0, 'a pinned read snapshot prevents full checkpoint/reset');
+    const pinnedWalBytes = (await stat(`${f.databasePath}-wal`)).size;
+    assert.ok(pinnedWalBytes > WAL_JOURNAL_SIZE_LIMIT_BYTES,
+      'journal_size_limit is not a hard bound while an older reader pins the WAL');
+    assert.equal(reader.prepare('SELECT COUNT(*) AS count FROM computers').get().count, initialCount);
+
+    reader.exec('COMMIT');
+    reader.close();
+    readerOpen = false;
+    const releasedCheckpoint = f.store.checkpointWal();
+    assert.equal(releasedCheckpoint.remainingFrames, 0);
+    f.store.registerComputer({ computerId: 'wal-size-limit-after-release', projectId: 'project-a', providerId: 'mock' });
+    assert.ok((await stat(`${f.databasePath}-wal`)).size <= WAL_JOURNAL_SIZE_LIMIT_BYTES,
+      'the next write resets the fully checkpointed WAL to its configured idle size');
+    assert.equal(f.store.getComputer(computerIds.at(-1)).computerId, computerIds.at(-1));
   } finally {
     if (readerOpen) reader.close();
   }

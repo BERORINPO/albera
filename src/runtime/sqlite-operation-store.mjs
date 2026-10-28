@@ -15,6 +15,7 @@ const HARD_MAX_RECORDS = 100_000;
 const DEFAULT_GUEST_RECORD_RATIO = 0.25;
 const MAX_GUEST_RECORD_RATIO = 0.75;
 const WAL_AUTOCHECKPOINT_PAGES = 1_000;
+const WAL_JOURNAL_SIZE_LIMIT_BYTES = 4 * 1024 * 1024;
 const RECOVERY_OWNER_MAGIC = 'ALBERA_SQLITE_RECOVERY_OWNER_V1';
 const RESTORE_INVALIDATE = Symbol('restoreInvalidate');
 const RESTORE_MODE = Symbol('restoreMode');
@@ -95,6 +96,7 @@ export async function openSqliteEnvironmentStore(databasePath, {
     if (String(mode).toLowerCase() !== 'wal') throw new EnvironmentStoreError('wal_mode_unavailable');
     db.exec('PRAGMA synchronous = FULL');
     db.exec(`PRAGMA wal_autocheckpoint = ${WAL_AUTOCHECKPOINT_PAGES}`);
+    db.exec(`PRAGMA journal_size_limit = ${WAL_JOURNAL_SIZE_LIMIT_BYTES}`);
     const integrity = db.prepare('PRAGMA quick_check(1)').get()?.quick_check;
     if (integrity !== 'ok') throw new EnvironmentStoreError('database_integrity_failed');
     migrate(db);
@@ -813,6 +815,7 @@ class SqliteEnvironmentOperationStore {
       synchronous: this.#db.prepare('PRAGMA synchronous').get()?.synchronous,
       foreignKeys: this.#db.prepare('PRAGMA foreign_keys').get()?.foreign_keys,
       walAutoCheckpointPages: this.#db.prepare('PRAGMA wal_autocheckpoint').get()?.wal_autocheckpoint,
+      walJournalSizeLimitBytes: this.#db.prepare('PRAGMA journal_size_limit').get()?.journal_size_limit,
       maxRecords: this.#maxRecords,
       maxGuestRecords: this.#maxGuestRecords,
       schemaVersion: this.#db.prepare('PRAGMA user_version').get()?.user_version,
