@@ -1821,6 +1821,11 @@ test('Hyper-V start reply loss stays UNKNOWN when inspection lags, then reconcil
   assert.equal((await f.coordinator.execute(request)).status, 'UNKNOWN');
   assert.equal(calls.start, 1, 'neither a lagging observation nor replay retries start');
 
+  await f.reopen();
+  assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN', 'reopening the durable Store preserves the uncertain operation');
+  assert.equal((await f.coordinator.execute(request)).status, 'UNKNOWN');
+  assert.equal(calls.start, 1, 'host restart and idempotent replay do not redispatch the provider action');
+
   state = 'running'; // The original provider action becomes visible after the first inspection.
   const reconciled = await f.coordinator.reconcile(request.operationId);
   assert.equal(reconciled.status, 'SUCCEEDED');
