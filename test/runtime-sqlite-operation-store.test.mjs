@@ -526,6 +526,29 @@ test('GuestEventIntake binds an authenticated transport to Host identity and rec
   assert.equal(f.store.listEvents(f.computerId).filter((record) => record.provenance === 'untrusted_guest').length, 1);
 });
 
+test('GuestEventIntake rejects a pre-restore peer generation at the durable Store fence', async (t) => {
+  const f = await fixture(t);
+  const oldGeneration = f.lease.generation;
+  f.store.revokeLease(f.lease.leaseId, { reason: 'restore' });
+  const intake = createGuestEventIntake({
+    store: f.store,
+    authenticateTransport: async () => 'authenticated-old-peer',
+    resolveGuestContext: async () => ({
+      computerId: f.computerId, runId: f.lease.runId, generation: oldGeneration,
+    }),
+  });
+  const message = {
+    protocolVersion: 1, type: 'guest.event', messageId: randomUUID(), computerId: f.computerId,
+    runId: f.lease.runId, generation: oldGeneration, sequence: 1,
+    occurredAt: f.now(), eventType: 'heartbeat', agentVersion: '0.1.0',
+  };
+
+  await assert.rejects(intake.receive({ transport: {}, message }),
+    (error) => error.code === 'guest_generation_stale');
+  assert.equal(f.store.getComputer(f.computerId).generation, oldGeneration + 1);
+  assert.equal(f.store.listEvents(f.computerId).some((record) => record.provenance === 'untrusted_guest'), false);
+});
+
 test('durable Guest event intake rejects inactive, expired, unknown and malformed host context', async (t) => {
   const f = await fixture(t);
   const event = {
