@@ -16,6 +16,7 @@ import { LocalEnvironmentHostBroker } from '../src/runtime/environment-host-brok
 import { HyperVEnvironmentProvider } from '../src/runtime/hyperv-environment-provider.mjs';
 import { MockEnvironmentProvider } from '../src/runtime/mock-environment-provider.mjs';
 import { createGuestEventIntake } from '../src/runtime/guest-event-intake.mjs';
+import { createGuestSessionCapabilityService } from '../src/runtime/guest-session-capability.mjs';
 
 const spec = {
   projectId: 'project-a', kind: 'ephemeral', os: 'linux', architecture: 'x64',
@@ -514,6 +515,59 @@ test('durable Guest event intake acknowledges exact retries and rejects replay, 
   assert.throws(() => f.store.recordGuestEvent({
     ...event, messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', sequence: 2,
   }), (error) => error.code === 'guest_generation_stale');
+});
+
+test('Guest capability context resolves only the current active Computer, Run, Lease and generation', async (t) => {
+  const f = await fixture(t);
+  assert.deepEqual(f.store.resolveActiveGuestSessionContext({ computerId: f.computerId, runId: f.lease.runId }), {
+    computerId: f.computerId, runId: f.lease.runId, generation: f.lease.generation,
+    leaseExpiresAt: f.lease.expiresAt,
+  });
+  assert.throws(() => f.store.resolveActiveGuestSessionContext({ computerId: f.computerId, runId: 'other-run' }),
+    (error) => error.code === 'guest_session_context_unavailable');
+  f.store.revokeLease(f.lease.leaseId, { reason: 'restore' });
+  assert.throws(() => f.store.resolveActiveGuestSessionContext({ computerId: f.computerId, runId: f.lease.runId }),
+    (error) => error.code === 'guest_session_context_unavailable');
+});
+
+test('Guest capability context refuses expired Leases', async (t) => {
+  const f = await fixture(t);
+  f.advance(60 * 60 * 1000);
+  assert.throws(() => f.store.resolveActiveGuestSessionContext({ computerId: f.computerId, runId: f.lease.runId }),
+    (error) => error.code === 'guest_session_context_unavailable');
+});
+
+test('Guest capability authenticates SQLite-backed event intake and is revoked after restore', async (t) => {
+  const f = await fixture(t);
+  const capability = createGuestSessionCapabilityService({
+    resolveActiveContext: f.store.resolveActiveGuestSessionContext.bind(f.store), now: f.now,
+  });
+  t.after(() => capability.close());
+  const issued = await capability.issue({ computerId: f.computerId, runId: f.lease.runId });
+  const operation = f.operation('start');
+  f.store.beginOperation(operation);
+  const intake = createGuestEventIntake({
+    store: f.store, authenticateTransport: capability.authenticateTransport,
+    resolveGuestContext: async ({ peer }) => peer,
+  });
+  const message = {
+    protocolVersion: 1, type: 'guest.event', messageId: randomUUID(), computerId: f.computerId,
+    runId: f.lease.runId, generation: f.lease.generation, sequence: 1,
+    occurredAt: f.now(), eventType: 'operation.completed', operationId: operation.operationId,
+    claimedOutcome: 'succeeded',
+  };
+  assert.equal((await intake.receive({
+    transport: { guestSessionCredential: issued.credential }, message,
+  })).status, 'ACCEPTED');
+  assert.equal(f.store.getOperation(operation.operationId).status, 'REQUESTED',
+    'Guest capability cannot complete a Host-owned operation');
+  assert.equal(f.store.listEvents(f.computerId).find((record) => record.type === 'guest.operation.completed')?.provenance,
+    'untrusted_guest');
+  f.store.revokeLease(f.lease.leaseId, { reason: 'restore' });
+  await assert.rejects(intake.receive({
+    transport: { guestSessionCredential: issued.credential },
+    message: { ...message, messageId: randomUUID(), sequence: 2 },
+  }), (error) => error.code === 'guest_authentication_failed');
 });
 
 test('GuestEventIntake binds an authenticated transport to Host identity and records claims without changing operations', async (t) => {
