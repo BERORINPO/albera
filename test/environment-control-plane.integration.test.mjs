@@ -168,5 +168,24 @@ test('authenticated Runtime API drives durable MockProvider create, UNKNOWN reco
   assert.equal(destroyed.body.operation.status, 'SUCCEEDED');
   assert.equal(destroyed.body.operation.observedState, 'missing');
   assert.equal(providerDestroys, 1);
-  assert.equal(grantCount, 8, 'each execute/reconcile request gets a fresh authorization decision, including denied requests');
+
+  const idempotencyConflict = await send(address, token, '/v1/environments/operations', {
+    operationId: 'operation-conflicting-start', idempotencyKey: 'idem-start-a', projectId: 'project-a',
+    taskId: 'task-a', runId: 'run-a', computerId: 'computer-a', providerId: 'mock', leaseId: 'lease-a',
+    expectedGeneration: 1, action: 'stop',
+  });
+  assert.equal(idempotencyConflict.status, 409);
+  assert.deepEqual(idempotencyConflict.body, { error: 'idempotency_conflict' });
+  assert.equal(providerStops, 1, 'an idempotency conflict never reaches Provider');
+
+  store.revokeLease('lease-a', { reason: 'restore' });
+  const staleLease = await send(address, token, '/v1/environments/operations', {
+    operationId: 'operation-stale-start-a', idempotencyKey: 'idem-stale-start-a', projectId: 'project-a',
+    taskId: 'task-a', runId: 'run-a', computerId: 'computer-a', providerId: 'mock', leaseId: 'lease-a',
+    expectedGeneration: 1, action: 'start',
+  });
+  assert.equal(staleLease.status, 409);
+  assert.deepEqual(staleLease.body, { error: 'stale_generation' });
+  assert.equal(providerStarts, 1, 'a pre-restore Lease generation never reaches Provider');
+  assert.equal(grantCount, 10, 'each execute/reconcile request gets a fresh authorization decision, including denied requests');
 });
