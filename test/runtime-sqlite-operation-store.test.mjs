@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { DurableEnvironmentOperationCoordinator } from '../src/runtime/environment-operations.mjs';
 import { reserveComputerForRun } from '../src/runtime/computer-scheduler.mjs';
 import { EnvironmentStoreError, openSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
+import { HyperVEnvironmentProvider } from '../src/runtime/hyperv-environment-provider.mjs';
 import { MockEnvironmentProvider } from '../src/runtime/mock-environment-provider.mjs';
 
 const spec = {
@@ -20,29 +21,29 @@ const spec = {
   resources: { vcpu: 2, memoryMiB: 2048, diskGiB: 32 },
 };
 
-async function fixture(t, options = {}) {
+async function fixture(t, { provider: injectedProvider, ...storeOptions } = {}) {
   const root = await mkdtemp(path.join(os.homedir(), '.albera-operation-store-test-'));
   const databasePath = path.join(root, 'operations.sqlite');
   let nowMs = Date.parse('2026-10-28T00:00:00.000Z');
   const now = () => new Date(nowMs).toISOString();
   let store = await openSqliteEnvironmentStore(databasePath, {
-    now, verifyWindowsAcl: async () => {}, recoverInterruptedRequests: true, ...options,
+    now, verifyWindowsAcl: async () => {}, recoverInterruptedRequests: true, ...storeOptions,
   });
   t.after(async () => {
     store?.close();
     await rm(root, { recursive: true, force: true });
   });
-  const provider = new MockEnvironmentProvider({ now });
+  const provider = injectedProvider ?? new MockEnvironmentProvider({ now });
   let coordinator = new DurableEnvironmentOperationCoordinator({ store, provider, providerTimeoutMs: 100 });
   const computerId = 'computer-a';
-  const registered = store.registerComputer({ computerId, projectId: 'project-a', providerId: 'mock' });
+  const registered = store.registerComputer({ computerId, projectId: 'project-a', providerId: provider.providerId });
   const lease = store.reserveLease({
     leaseId: 'lease-a', subjectId: 'human-a', projectId: 'project-a', taskId: 'task-a', runId: 'run-a', computerId,
     expiresAt: new Date(nowMs + 60 * 60 * 1000).toISOString(),
   });
   const operation = (action, overrides = {}) => ({
     operationId: `operation-${action}-a`, idempotencyKey: `idem-${action}-a`, subjectId: lease.subjectId,
-    projectId: lease.projectId, taskId: lease.taskId, runId: lease.runId, computerId, providerId: 'mock',
+    projectId: lease.projectId, taskId: lease.taskId, runId: lease.runId, computerId, providerId: provider.providerId,
     leaseId: lease.leaseId, expectedGeneration: lease.generation, policyVersion: 1, action,
     ...(action === 'create' ? { spec } : {}), ...overrides,
   });
@@ -53,7 +54,7 @@ async function fixture(t, options = {}) {
     reopen: async () => {
       store.close();
       store = await openSqliteEnvironmentStore(databasePath, {
-        now, verifyWindowsAcl: async () => {}, recoverInterruptedRequests: true, ...options,
+        now, verifyWindowsAcl: async () => {}, recoverInterruptedRequests: true, ...storeOptions,
       });
       coordinator = new DurableEnvironmentOperationCoordinator({ store, provider, providerTimeoutMs: 100 });
     },
@@ -525,6 +526,55 @@ test('timeout after provider success reconciles by inspection and never duplicat
   assert.equal(reconciled.status, 'SUCCEEDED');
   assert.equal(reconciled.observedState, 'off');
   assert.equal((await f.coordinator.execute(request)).operationId, request.operationId);
+});
+
+test('typed Hyper-V adapter runs behind the durable journal and reconciles a lost create reply without replay', async (t) => {
+  const calls = { create: 0, inspect: 0, start: 0, stop: 0, destroy: 0 };
+  let state = 'missing';
+  let loseFirstCreateReply = true;
+  const broker = Object.fromEntries([
+    ['createVm', 'create'], ['inspectVm', 'inspect'], ['startVm', 'start'],
+    ['stopVm', 'stop'], ['removeVm', 'destroy'],
+  ].map(([method, action]) => [method, async (operation) => {
+    calls[action]++;
+    if (action === 'create') {
+      state = 'off';
+      if (loseFirstCreateReply) {
+        loseFirstCreateReply = false;
+        throw Object.assign(new Error('transport_reply_lost'), { code: 'provider_timeout' });
+      }
+    }
+    if (action === 'start') state = 'running';
+    if (action === 'stop' || action === 'destroy') state = action === 'stop' ? 'off' : 'missing';
+    return {
+      computerId: operation.computerId, providerId: 'hyperv', state,
+      generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:00.000Z',
+    };
+  }]));
+  const f = await fixture(t, { provider: new HyperVEnvironmentProvider({ broker }) });
+
+  const create = f.operation('create');
+  const uncertain = await f.coordinator.execute(create);
+  assert.equal(uncertain.status, 'UNKNOWN');
+  assert.equal(uncertain.errorCode, 'provider_timeout');
+  assert.equal(f.store.getOperation(create.operationId).status, 'UNKNOWN');
+
+  const reconciled = await f.coordinator.reconcile(create.operationId);
+  assert.equal(reconciled.status, 'SUCCEEDED');
+  assert.equal(reconciled.observedState, 'off');
+  assert.equal((await f.coordinator.execute(create)).operationId, create.operationId);
+  assert.equal(calls.create, 1, 'an uncertain create is not replayed');
+
+  const start = await f.coordinator.execute(f.operation('start'));
+  assert.equal(start.status, 'SUCCEEDED');
+  assert.equal(start.observedState, 'running');
+  const inspect = await f.coordinator.execute(f.operation('inspect'));
+  assert.equal(inspect.status, 'SUCCEEDED');
+  assert.equal(inspect.observedState, 'running');
+  const stop = await f.coordinator.execute(f.operation('stop'));
+  assert.equal(stop.status, 'SUCCEEDED');
+  assert.equal(stop.observedState, 'off');
+  assert.deepEqual(calls, { create: 1, inspect: 2, start: 1, stop: 1, destroy: 0 });
 });
 
 test('inspection failure remains UNKNOWN and no implicit provider retry is performed', async (t) => {
