@@ -1,9 +1,11 @@
 using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using Microsoft.Win32.SafeHandles;
 
 internal static class Program
 {
@@ -12,6 +14,7 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "restricted-client") return RunRestrictedClient(args[1]);
         if (args.Length == 2 && args[0] == "inspect") return await InspectAsync(args[1]);
         if (args.Length != 7 || args[0] != "serve") return 64;
         string pipeName = args[1], database = args[2];
@@ -121,4 +124,77 @@ internal static class Program
         await db.OpenAsync(); await using var command = db.CreateCommand(); command.CommandText = "SELECT COUNT(*) FROM claims;";
         Console.WriteLine(await command.ExecuteScalarAsync()); return 0;
     }
+
+    private static int RunRestrictedClient(string pipeName)
+    {
+        const uint TokenDuplicate = 0x0002;
+        const uint TokenImpersonate = 0x0004;
+        const uint TokenQuery = 0x0008;
+        const uint DisableMaxPrivilege = 0x0001;
+        const int SecurityImpersonation = 2;
+        const int TokenImpersonation = 2;
+        const string SyntheticRestrictingSid = "S-1-5-21-111111111-222222222-333333333-4444";
+
+        if (!OpenProcessToken(GetCurrentProcess(), TokenDuplicate | TokenQuery, out SafeAccessTokenHandle processToken))
+            return ReportRestrictedTokenSetupFailure("open_token");
+        using (processToken)
+        {
+            if (!ConvertStringSidToSid(SyntheticRestrictingSid, out IntPtr sid))
+                return ReportRestrictedTokenSetupFailure("sid_parse");
+            try
+            {
+                var restrictingSid = new SidAndAttributes { Sid = sid, Attributes = 0 };
+                if (!CreateRestrictedToken(processToken, DisableMaxPrivilege, 0, IntPtr.Zero, 0, IntPtr.Zero,
+                        1, ref restrictingSid, out SafeAccessTokenHandle restrictedPrimary))
+                    return ReportRestrictedTokenSetupFailure("create_restricted_token");
+                using (restrictedPrimary)
+                {
+                    if (!DuplicateTokenEx(restrictedPrimary, TokenQuery | TokenImpersonate | TokenDuplicate,
+                            IntPtr.Zero, SecurityImpersonation, TokenImpersonation, out SafeAccessTokenHandle impersonationToken))
+                        return ReportRestrictedTokenSetupFailure("duplicate_impersonation_token");
+                    using (impersonationToken)
+                    {
+                        string outcome = WindowsIdentity.RunImpersonated(impersonationToken, () =>
+                        {
+                            try
+                            {
+                                using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut,
+                                    PipeOptions.None, TokenImpersonationLevel.Identification);
+                                client.Connect(3000);
+                                return "connected";
+                            }
+                            catch (UnauthorizedAccessException) { return "access_denied"; }
+                            catch (IOException ex) when ((ex.HResult & 0xffff) == 5) { return "access_denied"; }
+                        });
+                        if (outcome != "access_denied")
+                        {
+                            Console.WriteLine("RESTRICTED_TOKEN_PIPE_DENIAL=false");
+                            return 2;
+                        }
+                        Console.WriteLine("RESTRICTED_TOKEN_PIPE_DENIAL=true");
+                        Console.WriteLine("TOKEN_USER_CHANGED=false");
+                        Console.WriteLine("RESTRICTING_SID_MATCHED_PIPE_DACL=false");
+                        return 0;
+                    }
+                }
+            }
+            finally { _ = LocalFree(sid); }
+        }
+    }
+
+    private static int ReportRestrictedTokenSetupFailure(string stage)
+    {
+        Console.WriteLine($"RESTRICTED_TOKEN_SETUP=BLOCKED_{stage}");
+        return 3;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SidAndAttributes { public IntPtr Sid; public uint Attributes; }
+
+    [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(IntPtr process, uint desiredAccess, out SafeAccessTokenHandle token);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool ConvertStringSidToSid(string stringSid, out IntPtr sid);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool CreateRestrictedToken(SafeAccessTokenHandle existingToken, uint flags, uint disableSidCount, IntPtr sidsToDisable, uint deletePrivilegeCount, IntPtr privilegesToDelete, uint restrictedSidCount, ref SidAndAttributes sidsToRestrict, out SafeAccessTokenHandle newToken);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool DuplicateTokenEx(SafeAccessTokenHandle existingToken, uint desiredAccess, IntPtr tokenAttributes, int impersonationLevel, int tokenType, out SafeAccessTokenHandle newToken);
+    [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr memory);
 }
