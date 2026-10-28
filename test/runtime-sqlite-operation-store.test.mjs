@@ -1692,6 +1692,53 @@ test('typed Hyper-V adapter runs behind the durable journal and reconciles a los
   assert.deepEqual(calls, { create: 1, inspect: 2, start: 1, stop: 1, destroy: 0 });
 });
 
+test('typed Hyper-V adapter reconciles a lost destroy reply by inspection without repeating removal', async (t) => {
+  const calls = { create: 0, inspect: 0, destroy: 0 };
+  let state = 'missing';
+  let loseDestroyReply = true;
+  const broker = {
+    createVm: async (operation) => {
+      calls.create++;
+      state = 'off';
+      return { computerId: operation.computerId, providerId: 'hyperv', state,
+        generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:00.000Z' };
+    },
+    inspectVm: async (operation) => {
+      calls.inspect++;
+      return { computerId: operation.computerId, providerId: 'hyperv', state,
+        generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:00.000Z' };
+    },
+    startVm: async () => { throw new Error('unexpected_start'); },
+    stopVm: async () => { throw new Error('unexpected_stop'); },
+    removeVm: async (operation) => {
+      calls.destroy++;
+      state = 'missing';
+      if (loseDestroyReply) {
+        loseDestroyReply = false;
+        throw Object.assign(new Error('remove reply lost secret=never-expose'), { code: 'provider_timeout' });
+      }
+      return { computerId: operation.computerId, providerId: 'hyperv', state,
+        generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:00.000Z' };
+    },
+  };
+  const f = await fixture(t, { provider: new HyperVEnvironmentProvider({ broker }) });
+  assert.equal((await f.coordinator.execute(f.operation('create'))).status, 'SUCCEEDED');
+
+  const request = f.operation('destroy');
+  const uncertain = await f.coordinator.execute(request);
+  assert.equal(uncertain.status, 'UNKNOWN');
+  assert.equal(uncertain.errorCode, 'provider_timeout');
+  assert.doesNotMatch(JSON.stringify(uncertain), /never-expose/);
+  assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
+  assert.equal(calls.destroy, 1);
+
+  const reconciled = await f.coordinator.reconcile(request.operationId);
+  assert.equal(reconciled.status, 'SUCCEEDED');
+  assert.equal(reconciled.observedState, 'missing');
+  assert.equal((await f.coordinator.execute(request)).operationId, request.operationId);
+  assert.deepEqual(calls, { create: 1, inspect: 1, destroy: 1 });
+});
+
 test('inspection failure remains UNKNOWN and no implicit provider retry is performed', async (t) => {
   const f = await fixture(t);
   f.provider.failNext('create', { timing: 'after', code: 'create_reply_lost' });

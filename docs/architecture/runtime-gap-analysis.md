@@ -162,3 +162,7 @@ The shared runtime benchmark now records issue/active-Lease resolution and authe
 ## Cross-process idempotency verification
 
 Eight synchronized SQLite worker processes now exercise both same-key cases: seven identical retries converge on the one durable operation and one `operation.requested` event, while payloads with the same key but different action are rejected as `idempotency_conflict`. Recovery reopens the store and preserves the single undispatched intent as `UNKNOWN`. GitHub Actions run [40665872246](https://github.com/BERORINPO/pigeonholes/actions/runs/40665872246) for `50af123` passed all six Windows/macOS/Linux × Node 22/24 jobs, including both Windows Runtime storage ACL integrations. This strengthens local SQLite contention evidence for ADR-003; it does not establish cross-host ownership, Provider exactly-once effects, or power-loss behavior.
+
+## Hyper-V destroy ambiguity test
+
+The typed Hyper-V adapter now has an end-to-end synthetic test for an ambiguous `removeVm`: the fake Broker applies removal and loses the reply, the durable operation remains `UNKNOWN`, and inspection of `missing` resolves it without repeating destroy. Secret-bearing Broker exception text is not returned. This verifies only the injected adapter and journal protocol; there is no authenticated IPC, real Hyper-V action, cleanup guarantee, or privilege boundary. Cross-platform CI for this test is pending; Hyper-V readiness remains unverified.
