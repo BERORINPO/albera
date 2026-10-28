@@ -1,6 +1,7 @@
 // Test helper for cross-process SQLite quota and Guest receipt races. It is not a product command.
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
+import { writeSync } from 'node:fs';
 import { openSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
 import { reserveComputerForRun } from '../src/runtime/computer-scheduler.mjs';
 
@@ -16,7 +17,14 @@ const quota = { maxComputers: 1, vcpu: 4, memoryMiB: 4096, diskGiB: 32 };
 const store = await openSqliteEnvironmentStore(databasePath, {
   verifyWindowsAcl: async () => {},
   recoverInterruptedRequests: false,
-  ...(['guest-event', 'broker-dispatch', 'begin-operation', 'release-lease'].includes(mode) ? { now: () => '2026-10-28T00:30:00.000Z' } : {}),
+  ...(['guest-event', 'broker-dispatch', 'begin-operation', 'release-lease', 'crash-after-begin', 'crash-after-dispatch'].includes(mode)
+    ? { now: () => '2026-10-28T00:30:00.000Z' } : {}),
+});
+const startOperation = (workerId) => ({
+  operationId: `race-operation-${workerId}`, idempotencyKey: `race-idempotency-${workerId}`,
+  subjectId: 'human-a', projectId: 'project-a', taskId: 'task-a', runId: 'run-a',
+  computerId: 'computer-a', providerId: 'mock', leaseId: 'lease-a', expectedGeneration: 1,
+  policyVersion: 1, action: 'start',
 });
 const input = createInterface({ input: process.stdin });
 const go = new Promise((resolve) => input.once('line', resolve));
@@ -36,13 +44,19 @@ try {
       operationId, expectedGeneration: Number(expectedGeneration), actionDigest: `sha256:${actionDigest}`,
     });
     process.stdout.write(`RESULT ${JSON.stringify({ status: 'CLAIMED', operationId: operation.operationId })}\n`);
-  } else if (mode === 'begin-operation') {
-    const result = store.beginOperation({
-      operationId: `race-operation-${workerId}`, idempotencyKey: `race-idempotency-${workerId}`,
-      subjectId: 'human-a', projectId: 'project-a', taskId: 'task-a', runId: 'run-a',
-      computerId: 'computer-a', providerId: 'mock', leaseId: 'lease-a', expectedGeneration: 1,
-      policyVersion: 1, action: 'start',
+  } else if (mode === 'crash-after-begin') {
+    const result = store.beginOperation(startOperation(workerId));
+    writeSync(1, `RESULT ${JSON.stringify({ status: result.operation.status, operationId: result.operation.operationId })}\n`);
+    process.exit(23);
+  } else if (mode === 'crash-after-dispatch') {
+    const operation = store.resolveBrokerDispatch({
+      protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+      operationId, expectedGeneration: Number(expectedGeneration), actionDigest: `sha256:${actionDigest}`,
     });
+    writeSync(1, `RESULT ${JSON.stringify({ status: 'CLAIMED', operationId: operation.operationId })}\n`);
+    process.exit(24);
+  } else if (mode === 'begin-operation') {
+    const result = store.beginOperation(startOperation(workerId));
     process.stdout.write(`RESULT ${JSON.stringify({ status: result.created ? 'CREATED' : 'REPLAYED', operationId: result.operation.operationId })}\n`);
   } else if (mode === 'release-lease') {
     const lease = store.releaseLease('lease-a', {

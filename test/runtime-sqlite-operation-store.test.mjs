@@ -442,6 +442,66 @@ test('Lease release and a new mutation cannot both win a cross-process race', { 
   }
 });
 
+test('abrupt host exit after durable intent recovers to UNKNOWN without replay', { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
+  f.store.close();
+  const worker = spawnSynchronizedStoreWorker(workerPath, f.databasePath, 1, 'crash-after-begin');
+  t.after(async () => {
+    if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    await worker.exited;
+  });
+  const result = worker.result;
+  await worker.ready;
+  worker.child.stdin.end('go\n');
+  const operation = await result;
+  await worker.exited;
+
+  assert.equal(worker.child.exitCode, 23, JSON.stringify(operation));
+  assert.equal(operation.status, 'REQUESTED');
+  await f.reopen();
+  const recovered = f.store.getOperation(operation.operationId);
+  assert.equal(recovered.status, 'UNKNOWN');
+  assert.equal(recovered.errorCode, 'host_interrupted');
+  const retry = f.store.beginOperation({
+    operationId: operation.operationId, idempotencyKey: 'race-idempotency-1',
+    subjectId: 'human-a', projectId: 'project-a', taskId: 'task-a', runId: 'run-a',
+    computerId: f.computerId, providerId: 'mock', leaseId: f.lease.leaseId,
+    expectedGeneration: f.lease.generation, policyVersion: 1, action: 'start',
+  });
+  assert.equal(retry.created, false);
+  assert.equal(retry.operation.status, 'UNKNOWN');
+});
+
+test('abrupt host exit after dispatch claim preserves UNKNOWN and denies redispatch', { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const request = f.operation('create');
+  const begun = f.store.beginOperation(request);
+  const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
+  f.store.close();
+  const worker = spawnSynchronizedStoreWorker(workerPath, f.databasePath, 1, 'crash-after-dispatch',
+    request.operationId, String(request.expectedGeneration), begun.operation.actionDigest);
+  t.after(async () => {
+    if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    await worker.exited;
+  });
+  const result = worker.result;
+  await worker.ready;
+  worker.child.stdin.end('go\n');
+  const claim = await result;
+  await worker.exited;
+
+  assert.equal(worker.child.exitCode, 24, JSON.stringify(claim));
+  assert.equal(claim.status, 'CLAIMED');
+  await f.reopen();
+  assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
+  assert.throws(() => f.store.resolveBrokerDispatch({
+    protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+    operationId: request.operationId, expectedGeneration: request.expectedGeneration,
+    actionDigest: `sha256:${begun.operation.actionDigest}`,
+  }), (error) => error.code === 'operation_not_dispatchable');
+});
+
 test('startup recovery marks only an interrupted pre-dispatch request UNKNOWN', async (t) => {
   const f = await fixture(t);
   const request = f.operation('create');
