@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { DurableEnvironmentOperationCoordinator } from '../src/runtime/environment-operations.mjs';
 import { reserveComputerForRun } from '../src/runtime/computer-scheduler.mjs';
 import { EnvironmentStoreError, openSqliteEnvironmentStore, restoreSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
+import { LocalEnvironmentHostBroker } from '../src/runtime/environment-host-broker.mjs';
 import { HyperVEnvironmentProvider } from '../src/runtime/hyperv-environment-provider.mjs';
 import { MockEnvironmentProvider } from '../src/runtime/mock-environment-provider.mjs';
 
@@ -41,7 +42,8 @@ async function fixture(t, { provider: injectedProvider, authorizeOperation: inje
     await rm(root, { recursive: true, force: true });
   });
   const provider = injectedProvider ?? new MockEnvironmentProvider({ now });
-  let coordinator = new DurableEnvironmentOperationCoordinator({ store, provider, authorizeOperation, nowMs: () => nowMs, providerTimeoutMs: 100 });
+  const broker = new LocalEnvironmentHostBroker({ store, provider });
+  let coordinator = new DurableEnvironmentOperationCoordinator({ store, broker, authorizeOperation, nowMs: () => nowMs, providerTimeoutMs: 100 });
   const computerId = 'computer-a';
   const registered = store.registerComputer({ computerId, projectId: 'project-a', providerId: provider.providerId });
   const lease = store.reserveLease({
@@ -56,14 +58,14 @@ async function fixture(t, { provider: injectedProvider, authorizeOperation: inje
   });
   return {
     root, databasePath, now, advance: (milliseconds) => { nowMs += milliseconds; },
-    provider, operation, computerId, lease, authorizeOperation,
+    provider, broker, operation, computerId, lease, authorizeOperation,
     get coordinator() { return coordinator; },
     reopen: async () => {
       store.close();
       store = await openSqliteEnvironmentStore(databasePath, {
         now, verifyWindowsAcl: async () => {}, recoverInterruptedRequests: true, ...storeOptions,
       });
-      coordinator = new DurableEnvironmentOperationCoordinator({ store, provider, authorizeOperation, nowMs: () => nowMs, providerTimeoutMs: 100 });
+      coordinator = new DurableEnvironmentOperationCoordinator({ store, broker: new LocalEnvironmentHostBroker({ store, provider }), authorizeOperation, nowMs: () => nowMs, providerTimeoutMs: 100 });
     },
     get store() { return store; },
   };
@@ -831,10 +833,10 @@ test('durable intent is recorded before provider action and idempotent replay ne
 
 test('durable coordinator requires a trusted authorization callback', async (t) => {
   const f = await fixture(t);
-  assert.throws(() => new DurableEnvironmentOperationCoordinator({ store: f.store, provider: f.provider }),
+  assert.throws(() => new DurableEnvironmentOperationCoordinator({ store: f.store, broker: f.broker }),
     (error) => error instanceof TypeError && error.message === 'authorization_required');
   const coordinator = new DurableEnvironmentOperationCoordinator({
-    store: f.store, provider: f.provider, authorizeOperation: () => ({}), nowMs: () => Number.NaN,
+    store: f.store, broker: f.broker, authorizeOperation: () => ({}), nowMs: () => Number.NaN,
   });
   await assert.rejects(coordinator.execute(f.operation('create')),
     (error) => error.code === 'authorization_clock_invalid');
@@ -1006,6 +1008,61 @@ test('Broker journal resolution binds the typed reference and atomically claims 
     (error) => error instanceof EnvironmentStoreError && error.code === 'operation_not_dispatchable');
   assert.throws(() => f.store.resolveBrokerDispatch({ ...brokerRef, actionDigest: `sha256:${'f'.repeat(64)}` }),
     (error) => error instanceof EnvironmentStoreError && error.code === 'broker_authorization_mismatch');
+});
+
+test('local Host Broker accepts only its one-time journal-derived claim capability', async (t) => {
+  const f = await fixture(t);
+  let creates = 0;
+  const create = f.provider.create.bind(f.provider);
+  f.provider.create = (...args) => { creates++; return create(...args); };
+  const operation = f.operation('create');
+  const begun = f.store.beginOperation(operation);
+  await recordExecutionApproval(f, operation, begun);
+  const claim = f.broker.claimOperation({
+    protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+    operationId: operation.operationId, expectedGeneration: operation.expectedGeneration,
+    actionDigest: `sha256:${begun.operation.actionDigest}`,
+  });
+  assert.deepEqual(Object.keys(claim), [], 'the Control Plane receives no Provider operation payload');
+  const observed = await f.broker.executeClaim(claim);
+  assert.equal(observed.state, 'off');
+  assert.equal(creates, 1);
+  assert.throws(() => f.broker.executeClaim(claim), (error) => error.code === 'broker_claim_invalid');
+  assert.equal(creates, 1, 'a consumed in-process dispatch capability cannot be replayed');
+});
+
+test('Host Broker resolves reconciliation inspection only from a consumed inspect authorization', async (t) => {
+  const f = await fixture(t);
+  f.provider.failNext('create', { timing: 'after', code: 'create_reply_lost' });
+  const operation = f.operation('create');
+  assert.equal((await f.coordinator.execute(operation)).status, 'UNKNOWN');
+  let inspections = 0;
+  const inspect = f.provider.inspect.bind(f.provider);
+  f.provider.inspect = (...args) => { inspections++; return inspect(...args); };
+  assert.throws(() => f.broker.inspectOperation({ operationId: operation.operationId, approvalId: randomUUID() }),
+    (error) => error instanceof EnvironmentStoreError && error.code === 'broker_inspection_unauthorized');
+  assert.equal(inspections, 0, 'forged approval reference does not reach the Provider');
+  const reconciled = await f.coordinator.reconcile(operation.operationId);
+  assert.equal(reconciled.status, 'SUCCEEDED');
+  assert.equal(inspections, 1);
+  const grants = f.store.listOperationAuthorizations(operation.operationId);
+  assert.deepEqual(grants.map(({ purpose, state }) => [purpose, state]).sort(), [['execute', 'CONSUMED'], ['reconcile', 'CONSUMED']]);
+});
+
+test('Host Broker refuses inspection after restore advances the Computer generation', async (t) => {
+  const f = await fixture(t);
+  f.provider.failNext('create', { timing: 'after', code: 'create_reply_lost' });
+  const operation = f.operation('create');
+  assert.equal((await f.coordinator.execute(operation)).status, 'UNKNOWN');
+  f.store.revokeLease(f.lease.leaseId, { reason: 'restore' });
+  let inspections = 0;
+  const inspect = f.provider.inspect.bind(f.provider);
+  f.provider.inspect = (...args) => { inspections++; return inspect(...args); };
+
+  const reconciled = await f.coordinator.reconcile(operation.operationId);
+  assert.equal(reconciled.status, 'UNKNOWN');
+  assert.equal(reconciled.errorCode, 'stale_generation');
+  assert.equal(inspections, 0, 'a stale Lease epoch is rejected before Provider inspection');
 });
 
 test('Broker journal resolution refuses a stored operation payload whose digest no longer matches', async (t) => {

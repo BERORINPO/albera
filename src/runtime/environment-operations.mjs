@@ -101,22 +101,22 @@ export class EnvironmentOperationCoordinator {
 /** Durable coordinator: journal intent first, never replay an existing request, reconcile UNKNOWN by inspection. */
 export class DurableEnvironmentOperationCoordinator {
   #store;
-  #provider;
+  #broker;
   #timeoutMs;
   #authorizeOperation;
   #nowMs;
 
-  constructor({ store, provider, authorizeOperation, nowMs = Date.now, providerTimeoutMs = 30_000 } = {}) {
+  constructor({ store, broker, authorizeOperation, nowMs = Date.now, providerTimeoutMs = 30_000 } = {}) {
     if (!store || !['beginOperation', 'recordOperationAuthorization', 'recordProviderOutcome', 'recordReconciliation', 'getOperation'].every((method) => typeof store[method] === 'function')) {
       throw new TypeError('invalid_environment_store');
     }
-    if (!provider || !['create', 'inspect', 'start', 'stop', 'destroy'].every((method) => typeof provider[method] === 'function')
-      || typeof provider.providerId !== 'string') throw new TypeError('invalid_environment_provider');
+    if (!broker || !['claimOperation', 'executeClaim', 'inspectOperation'].every((method) => typeof broker[method] === 'function')
+      || typeof broker.providerId !== 'string') throw new TypeError('invalid_environment_broker');
     if (typeof authorizeOperation !== 'function') throw new TypeError('authorization_required');
     if (typeof nowMs !== 'function') throw new TypeError('invalid_authorization_clock');
     if (!Number.isSafeInteger(providerTimeoutMs) || providerTimeoutMs < 1 || providerTimeoutMs > 300_000) throw new TypeError('invalid_provider_timeout');
     this.#store = store;
-    this.#provider = provider;
+    this.#broker = broker;
     this.#authorizeOperation = authorizeOperation;
     this.#nowMs = nowMs;
     this.#timeoutMs = providerTimeoutMs;
@@ -124,7 +124,7 @@ export class DurableEnvironmentOperationCoordinator {
 
   async execute(input) {
     const operation = validateEnvironmentOperation(input);
-    if (operation.providerId !== this.#provider.providerId) throw new EnvironmentProviderError('provider_mismatch', { outcome: 'not_applied' });
+    if (operation.providerId !== this.#broker.providerId) throw new EnvironmentProviderError('provider_mismatch', { outcome: 'not_applied' });
     const actionDigest = `sha256:${digest(operation)}`;
     const grant = await this.#authorize(operation, actionDigest, 'execute');
     const begun = this.#store.beginOperation(operation);
@@ -134,7 +134,7 @@ export class DurableEnvironmentOperationCoordinator {
     let providerInvoked = false;
     try {
       this.#store.recordOperationAuthorization(operation.operationId, grant.authorization, { purpose: 'execute' });
-      const authorizedOperation = this.#store.resolveBrokerDispatch({
+      const dispatchClaim = this.#broker.claimOperation({
         protocolVersion: 1,
         type: 'broker.operation.request',
         requestId: randomUUID(),
@@ -149,7 +149,7 @@ export class DurableEnvironmentOperationCoordinator {
         return publicSnapshot(this.#store.getOperation(operation.operationId));
       }
       providerInvoked = true;
-      observed = await withTimeout(this.#provider[authorizedOperation.action](authorizedOperation), this.#timeoutMs);
+      observed = await withTimeout(this.#broker.executeClaim(dispatchClaim), this.#timeoutMs);
     } catch (error) {
       this.#store.recordProviderOutcome(operation.operationId, {
         errorCode: safeCode(error),
@@ -171,10 +171,10 @@ export class DurableEnvironmentOperationCoordinator {
     if (grant.expiresAtMs <= this.#authorizationTime()) {
       throw new EnvironmentProviderError('authorization_expired', { outcome: 'not_applied' });
     }
-    this.#store.recordOperationAuthorization(operationId, grant.authorization, { purpose: 'reconcile' });
+    const persistedAuthorization = this.#store.recordOperationAuthorization(operationId, grant.authorization, { purpose: 'reconcile' });
     let observed;
     try {
-      observed = await withTimeout(this.#provider.inspect(inspectRequest), this.#timeoutMs);
+      observed = await withTimeout(this.#broker.inspectOperation({ operationId, approvalId: persistedAuthorization.approvalId }), this.#timeoutMs);
     } catch (error) {
       this.#store.recordReconciliation(operationId, undefined, { errorCode: safeCode(error) });
       return publicSnapshot(this.#store.getOperation(operationId));

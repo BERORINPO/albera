@@ -622,6 +622,42 @@ class SqliteEnvironmentOperationStore {
     });
   }
 
+  /** Resolve a reconciliation inspect only from the UNKNOWN journal row and its consumed inspect grant. */
+  resolveBrokerInspection({ operationId, approvalId } = {}) {
+    this.#assertOpen();
+    if (!isId(operationId) || !isId(approvalId)) throw new EnvironmentStoreError('broker_inspection_invalid');
+    return this.#transaction(() => {
+      const row = this.#db.prepare('SELECT * FROM operations WHERE id = ?').get(operationId);
+      if (!row) throw new EnvironmentStoreError('operation_unknown');
+      if (row.status !== 'UNKNOWN') throw new EnvironmentStoreError('operation_not_reconcilable');
+      let journalOperation;
+      try { journalOperation = validateEnvironmentOperation(JSON.parse(row.request_json)); }
+      catch { throw new EnvironmentStoreError('operation_journal_corrupt'); }
+      if (journalOperation.operationId !== row.id || journalOperation.idempotencyKey !== row.idempotency_key
+        || digestOperation(journalOperation) !== row.action_digest) {
+        throw new EnvironmentStoreError('operation_journal_corrupt');
+      }
+      const { spec: _spec, ...requestWithoutSpec } = journalOperation;
+      const inspectOperation = validateEnvironmentOperation({ ...requestWithoutSpec, action: 'inspect' });
+      const inspectDigest = digestOperation(inspectOperation);
+      const authorization = this.#db.prepare(`SELECT * FROM operation_authorizations
+        WHERE approval_id = ? AND operation_id = ? AND purpose = 'reconcile'`).get(approvalId, row.id);
+      if (!authorization || authorization.state !== 'CONSUMED' || !authorization.consumed_at
+        || authorization.operation_idempotency_key !== row.idempotency_key
+        || authorization.subject_id !== row.subject_id || authorization.project_id !== row.project_id
+        || authorization.policy_version !== journalOperation.policyVersion
+        || authorization.action_digest !== inspectDigest) {
+        throw new EnvironmentStoreError('broker_inspection_unauthorized');
+      }
+      if (Date.parse(authorization.expires_at) <= Date.parse(this.#timestamp())) {
+        throw new EnvironmentStoreError('authorization_expired');
+      }
+      const computer = this.#db.prepare('SELECT generation FROM computers WHERE id = ?').get(row.computer_id);
+      if (computer?.generation !== row.generation) throw new EnvironmentStoreError('stale_generation');
+      return inspectOperation;
+    });
+  }
+
   getComputer(computerId) {
     this.#assertOpen();
     const row = this.#db.prepare('SELECT * FROM computers WHERE id = ?').get(computerId);
