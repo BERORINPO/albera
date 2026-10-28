@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { DurableEnvironmentOperationCoordinator } from '../src/runtime/environment-operations.mjs';
 import { reserveComputerForRun } from '../src/runtime/computer-scheduler.mjs';
-import { EnvironmentStoreError, openSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
+import { EnvironmentStoreError, openSqliteEnvironmentStore, restoreSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
 import { HyperVEnvironmentProvider } from '../src/runtime/hyperv-environment-provider.mjs';
 import { MockEnvironmentProvider } from '../src/runtime/mock-environment-provider.mjs';
 
@@ -107,6 +107,55 @@ test('SQLite store uses WAL, FULL synchronous writes, foreign keys, and a versio
   assert.deepEqual(f.store.diagnostics(), { journalMode: 'wal', synchronous: 2, foreignKeys: 1, schemaVersion: 3 });
   assert.equal(f.store.getComputer(f.computerId).generation, 1);
   if (process.platform !== 'win32') assert.equal((await stat(f.databasePath)).mode & 0o777, 0o600);
+});
+
+test('SQLite snapshot restore verifies the backup, recovers pending work, and fences every restored Lease generation', async (t) => {
+  const f = await fixture(t);
+  const request = f.operation('start');
+  f.store.beginOperation(request);
+  const backupPath = path.join(f.root, 'operations-backup.sqlite');
+  assert.deepEqual(await f.store.backupTo(backupPath), { status: 'BACKED_UP', schemaVersion: 3 });
+  assert.equal(f.store.getOperation(request.operationId).status, 'REQUESTED', 'snapshot does not mutate the live store');
+  if (process.platform !== 'win32') assert.equal((await stat(backupPath)).mode & 0o777, 0o600);
+
+  const restoredPath = path.join(f.root, 'operations-restored.sqlite');
+  const restored = await restoreSqliteEnvironmentStore(backupPath, restoredPath, {
+    now: f.now, verifyWindowsAcl: async () => {},
+  });
+  assert.equal(restored.getOperation(request.operationId).status, 'UNKNOWN');
+  assert.equal(restored.getOperation(request.operationId).errorCode, 'host_interrupted');
+  assert.equal(restored.getComputer(f.computerId).generation, f.lease.generation + 1);
+  assert.equal(restored.getComputer(f.computerId).observedState, 'unknown');
+  assert.equal(restored.getLease(f.lease.leaseId).state, 'REVOKED');
+  assert.ok(restored.listEvents(f.computerId).some((event) => event.type === 'computer.snapshot_restored'));
+  assert.throws(() => restored.beginOperation({ ...request, operationId: 'operation-start-after-restore', idempotencyKey: 'idem-start-after-restore' }),
+    (error) => error.code === 'stale_generation');
+  assert.equal(f.store.getLease(f.lease.leaseId).state, 'ACTIVE', 'restore does not mutate the source store');
+  restored.close();
+});
+
+test('SQLite backup and restore refuse overwrite, tampering, and path aliasing without deleting existing data', async (t) => {
+  const f = await fixture(t);
+  const backupPath = path.join(f.root, 'operations-backup.sqlite');
+  await f.store.backupTo(backupPath);
+  await assert.rejects(f.store.backupTo(backupPath), (error) => error.code === 'backup_destination_exists');
+  await assert.rejects(restoreSqliteEnvironmentStore(backupPath, f.databasePath, {
+    now: f.now, verifyWindowsAcl: async () => {},
+  }), (error) => error.code === 'restore_destination_exists');
+
+  const occupiedPath = path.join(f.root, 'occupied.sqlite');
+  await writeFile(occupiedPath, 'preserve existing bytes', { flag: 'wx' });
+  await assert.rejects(restoreSqliteEnvironmentStore(backupPath, occupiedPath, {
+    now: f.now, verifyWindowsAcl: async () => {},
+  }), (error) => error.code === 'restore_destination_exists');
+  assert.equal(await readFile(occupiedPath, 'utf8'), 'preserve existing bytes');
+
+  const tamperedPath = path.join(f.root, 'tampered.sqlite');
+  await writeFile(tamperedPath, 'not a sqlite snapshot', { mode: 0o600, flag: 'wx' });
+  await assert.rejects(restoreSqliteEnvironmentStore(tamperedPath, path.join(f.root, 'must-not-exist.sqlite'), {
+    now: f.now, verifyWindowsAcl: async () => {},
+  }), (error) => error.code === 'snapshot_invalid');
+  await assert.rejects(stat(path.join(f.root, 'must-not-exist.sqlite')), (error) => error.code === 'ENOENT');
 });
 
 test('schema v1 migration preserves existing Computer and Lease rows', async (t) => {

@@ -6,7 +6,7 @@ import test from 'node:test';
 import { openRuntimeAuditJournal } from '../src/runtime/audit-journal.mjs';
 import { backupRuntimeJournal, recoverRuntimeJournalTail, restoreRuntimeJournal } from '../src/runtime/journal-backup.mjs';
 import { loadOrCreateRuntimeSessionId } from '../src/runtime/session-identity.mjs';
-import { openSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
+import { openSqliteEnvironmentStore, restoreSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
 import { assertPrivateWindowsAcl, inspectWindowsAcl, inspectWindowsAcls, RuntimeStorageAclError } from '../src/runtime/windows-acl.mjs';
 
 const USER = 'S-1-5-21-1-2-3-1001';
@@ -119,6 +119,26 @@ test('SQLite operation store and recovery-owner marker pass their private Window
   const computer = store.registerComputer({ computerId: 'acl-computer', projectId: 'acl-project', providerId: 'mock' });
   assert.equal(computer.computerId, 'acl-computer');
   await assertPrivateWindowsAcl(`${databasePath}.recovery-owner`, { kind: 'file' });
+});
+
+test('SQLite snapshot backup and restore verify private Windows DACLs on every created file', {
+  skip: process.platform !== 'win32' || process.env.ALBERA_RUN_WINDOWS_ACL_INTEGRATION !== '1',
+}, async (t) => {
+  const root = await mkdtemp(path.join(os.homedir(), 'albera-sqlite-backup-acl-'));
+  let store;
+  let restored;
+  t.after(async () => { restored?.close(); store?.close(); await rm(root, { recursive: true, force: true }); });
+  const checks = [];
+  const verifyWindowsAcl = recordAclChecks(checks);
+  const databasePath = path.join(root, 'operations.sqlite');
+  const backupPath = path.join(root, 'operations.backup.sqlite');
+  const restoredPath = path.join(root, 'operations.restored.sqlite');
+  store = await openSqliteEnvironmentStore(databasePath, { verifyWindowsAcl });
+  await store.backupTo(backupPath);
+  restored = await restoreSqliteEnvironmentStore(backupPath, restoredPath, { verifyWindowsAcl });
+  await verifyRecordedAclChecks(checks);
+  assert.ok(checks.some(({ target, kind }) => target === backupPath && kind === 'file'));
+  assert.ok(checks.some(({ target, kind }) => target === restoredPath && kind === 'file'));
 });
 
 test('journal ACL refusal happens before existing journal content is read or changed', async (t) => {

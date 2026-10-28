@@ -1,15 +1,17 @@
 # SQLite Operation Store Recovery Owner Runbook
 
-**Status:** Proposal for review only. This is not an approved production procedure.
-**Scope:** Prototype SQLite `recovery-owner` marker handling.
+**Status:** Proposal for review only. The repository now contains prototype backup/restore helpers, but this is not an approved production procedure.
+**Scope:** Prototype SQLite `recovery-owner` marker and same-host snapshot/restore behavior.
 
 The store defaults `recoverInterruptedRequests` to `false`. If recovery is enabled, it exclusively creates `<databasePath>.recovery-owner`, writes a versioned marker containing a PID and random nonce, and holds the file handle until the store closes. If that path already exists, startup fails closed with `recovery_owner_locked`. The process never decides that an existing marker is stale and never removes it automatically.
 
 Recovery converts operations still in `REQUESTED` to `UNKNOWN` and records `host_interrupted`. It does not prove that a provider-side effect did not happen and does not retry it. The Store blocks later mutations and Lease release for that Computer generation until the operation is reconciled to a terminal state; reconciliation must inspect provider state and cannot prove an unobservable in-flight call has stopped.
 
+`SqliteEnvironmentOperationStore.backupTo(path)` creates a consistent SQLite `VACUUM INTO` snapshot inside the live database's private directory, validates full SQLite integrity, foreign keys, schema version and required tables, then publishes without replacing an existing destination. `restoreSqliteEnvironmentStore(backupPath, newDatabasePath, options)` accepts only a private same-directory snapshot and a new destination. It starts exclusive interrupted-operation recovery and, before returning the Store handle, marks unresolved requested work `UNKNOWN`, revokes all nonreleased Leases and advances every Computer generation with unknown observed state. Existing source/destination files are preserved. This primitive is only a local same-host testable capability: it does not encrypt/off-host backup data, rotate Guest credentials, restore provider/VM state, repair ACLs, or provide an operator CLI. The destination DB remains if a post-copy restore step fails so its evidence is not silently removed.
+
 ## Current limitation
 
-There is no supported service startup integration, operator recovery CLI, or production process-owner identity. The marker PID is diagnostic text only: it can be stale, reused, malformed, or forged. This runbook documents required safeguards but does not make production recovery supported. Do not use it to unlock a live or ambiguously owned database.
+There is no supported service startup integration, operator recovery CLI, or production process-owner identity. The marker PID is diagnostic text only: it can be stale, reused, malformed, or forged. Gated real Windows tests cover private DACLs on the temporary backup/restore path, but cross-platform filesystem behavior, crash/power-loss guarantees, encrypted backup handling and credential rotation are unverified. Do not use the helpers or this runbook as a production recovery procedure or to unlock a live or ambiguously owned database.
 
 ## Required operator sequence before a recovery command exists
 

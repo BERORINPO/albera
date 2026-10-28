@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants, closeSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { mkdir, open, lstat } from 'node:fs/promises';
+import { chmod, copyFile, link, lstat, mkdir, mkdtemp, open, rm, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { DatabaseSync } from 'node:sqlite';
@@ -13,6 +13,8 @@ const SCHEMA_VERSION = 3;
 const DEFAULT_MAX_RECORDS = 20_000;
 const HARD_MAX_RECORDS = 100_000;
 const RECOVERY_OWNER_MAGIC = 'ALBERA_SQLITE_RECOVERY_OWNER_V1';
+const RESTORE_INVALIDATE = Symbol('restoreInvalidate');
+const RESTORE_MODE = Symbol('restoreMode');
 const DESIRED_STATES = Object.freeze({ create: 'off', inspect: null, start: 'running', stop: 'off', destroy: 'missing' });
 
 export class EnvironmentStoreError extends Error {
@@ -26,13 +28,15 @@ export async function openSqliteEnvironmentStore(databasePath, {
   maxRecords = DEFAULT_MAX_RECORDS,
   DatabaseImpl = DatabaseSync,
   recoverInterruptedRequests = false,
+  [RESTORE_MODE]: restoreSnapshot = false,
 } = {}) {
   if (typeof databasePath !== 'string' || !path.isAbsolute(databasePath) || path.resolve(databasePath) !== databasePath
     || databasePath === path.parse(databasePath).root || (process.platform === 'win32' && isWindowsUncPath(databasePath))) {
     throw new EnvironmentStoreError('database_path_invalid');
   }
   if (!Number.isSafeInteger(maxRecords) || maxRecords < 32 || maxRecords > HARD_MAX_RECORDS) throw new TypeError('invalid_store_capacity');
-  if (typeof now !== 'function' || typeof DatabaseImpl !== 'function' || typeof recoverInterruptedRequests !== 'boolean') {
+  if (typeof now !== 'function' || typeof DatabaseImpl !== 'function' || typeof recoverInterruptedRequests !== 'boolean'
+    || typeof restoreSnapshot !== 'boolean' || (restoreSnapshot && !recoverInterruptedRequests)) {
     throw new TypeError('invalid_store_options');
   }
   const directory = path.dirname(databasePath);
@@ -81,9 +85,12 @@ export async function openSqliteEnvironmentStore(databasePath, {
     const integrity = db.prepare('PRAGMA quick_check(1)').get()?.quick_check;
     if (integrity !== 'ok') throw new EnvironmentStoreError('database_integrity_failed');
     migrate(db);
-    const store = new SqliteEnvironmentOperationStore(db, { now, maxRecords, recoveryOwnerLock });
+    const store = new SqliteEnvironmentOperationStore(db, { databasePath, verifyWindowsAcl, now, maxRecords, recoveryOwnerLock });
     // Recovery is opt-in and holds a fail-closed owner marker for the store's lifetime.
-    if (recoverInterruptedRequests) store.recoverInterruptedRequests();
+    if (recoverInterruptedRequests) {
+      if (restoreSnapshot) store[RESTORE_INVALIDATE]();
+      else store.recoverInterruptedRequests();
+    }
     return store;
   } catch (error) {
     db?.close();
@@ -94,15 +101,112 @@ export async function openSqliteEnvironmentStore(databasePath, {
   }
 }
 
+/** Restore a verified snapshot to a new private DB, fence every Computer generation, and recover pending work.
+ * The created database is preserved on error for diagnosis; callers must not expose it until this resolves. */
+export async function restoreSqliteEnvironmentStore(backupPath, databasePath, options = {}) {
+  const verifyWindowsAcl = options.verifyWindowsAcl ?? assertPrivateWindowsAcl;
+  if (typeof backupPath !== 'string' || !path.isAbsolute(backupPath) || path.resolve(backupPath) !== backupPath
+    || typeof databasePath !== 'string' || !path.isAbsolute(databasePath) || path.resolve(databasePath) !== databasePath
+    || backupPath === databasePath || path.dirname(backupPath) !== path.dirname(databasePath)) {
+    throw new EnvironmentStoreError('restore_path_invalid');
+  }
+  const directory = path.dirname(databasePath);
+  const directoryInfo = await lstat(directory).catch(() => null);
+  if (!directoryInfo?.isDirectory() || directoryInfo.isSymbolicLink()) throw new EnvironmentStoreError('database_directory_invalid');
+  assertPrivatePosixStorage(directoryInfo, 'database_directory_permissions', 'directory');
+  await verifyAcl(verifyWindowsAcl, directory, 'directory');
+  await assertPrivateDatabaseFile(backupPath, verifyWindowsAcl, 'backup');
+  await verifyStandaloneSnapshot(backupPath);
+  try { await copyFile(backupPath, databasePath, fsConstants.COPYFILE_EXCL); }
+  catch (error) {
+    if (error?.code === 'EEXIST') throw new EnvironmentStoreError('restore_destination_exists');
+    throw new EnvironmentStoreError('restore_copy_failed');
+  }
+  if (process.platform !== 'win32') await chmod(databasePath, 0o600);
+  await assertPrivateDatabaseFile(databasePath, verifyWindowsAcl, 'restored_database');
+  const store = await openSqliteEnvironmentStore(databasePath, {
+    ...options, verifyWindowsAcl, recoverInterruptedRequests: true, [RESTORE_MODE]: true,
+  });
+  return store;
+}
+
 class SqliteEnvironmentOperationStore {
   #db;
+  #databasePath;
+  #verifyWindowsAcl;
   #now;
   #maxRecords;
   #recoveryOwnerLock;
   #closed = false;
 
-  constructor(db, { now, maxRecords, recoveryOwnerLock }) {
-    this.#db = db; this.#now = now; this.#maxRecords = maxRecords; this.#recoveryOwnerLock = recoveryOwnerLock;
+  constructor(db, { databasePath, verifyWindowsAcl, now, maxRecords, recoveryOwnerLock }) {
+    this.#db = db; this.#databasePath = databasePath; this.#verifyWindowsAcl = verifyWindowsAcl;
+    this.#now = now; this.#maxRecords = maxRecords; this.#recoveryOwnerLock = recoveryOwnerLock;
+  }
+
+  /** Create an exclusive, consistent SQLite snapshot inside the same private storage directory. */
+  async backupTo(backupPath) {
+    this.#assertOpen();
+    if (typeof backupPath !== 'string' || !path.isAbsolute(backupPath) || path.resolve(backupPath) !== backupPath
+      || path.dirname(backupPath) !== path.dirname(this.#databasePath)
+      || [this.#databasePath, `${this.#databasePath}-wal`, `${this.#databasePath}-shm`, `${this.#databasePath}.recovery-owner`].includes(backupPath)) {
+      throw new EnvironmentStoreError('backup_path_invalid');
+    }
+    const directory = path.dirname(this.#databasePath);
+    const stagingDirectory = await mkdtemp(path.join(directory, '.albera-sqlite-backup-'));
+    try {
+      if (process.platform !== 'win32') await chmod(stagingDirectory, 0o700);
+      const stageInfo = await lstat(stagingDirectory);
+      assertPrivatePosixStorage(stageInfo, 'backup_staging_permissions', 'directory');
+      await verifyAcl(this.#verifyWindowsAcl, stagingDirectory, 'directory');
+      const stagedPath = path.join(stagingDirectory, 'snapshot.sqlite');
+      this.#db.exec(`VACUUM INTO '${quoteSqliteString(stagedPath)}'`);
+      if (process.platform !== 'win32') await chmod(stagedPath, 0o600);
+      await assertPrivateDatabaseFile(stagedPath, this.#verifyWindowsAcl, 'backup');
+      await verifyStandaloneSnapshot(stagedPath);
+      try { await link(stagedPath, backupPath); }
+      catch (error) {
+        if (error?.code === 'EEXIST') throw new EnvironmentStoreError('backup_destination_exists');
+        throw new EnvironmentStoreError('backup_publish_failed');
+      }
+      await unlink(stagedPath);
+      await assertPrivateDatabaseFile(backupPath, this.#verifyWindowsAcl, 'backup');
+      return Object.freeze({ status: 'BACKED_UP', schemaVersion: SCHEMA_VERSION });
+    } catch (error) {
+      if (error instanceof EnvironmentStoreError || error instanceof RuntimeStorageAclError) throw error;
+      throw new EnvironmentStoreError('backup_failed');
+    } finally {
+      await rm(stagingDirectory, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  /** Invalidate restored authority before a restored store can be handed to a caller. */
+  [RESTORE_INVALIDATE]() {
+    this.#assertOpen();
+    const timestamp = this.#timestamp();
+    return this.#transaction(() => {
+      const pending = this.#db.prepare("SELECT id, computer_id FROM operations WHERE status = 'REQUESTED'").all();
+      const computers = this.#db.prepare('SELECT id, generation FROM computers ORDER BY id').all();
+      const activeLeases = this.#db.prepare("SELECT id, computer_id FROM leases WHERE state <> 'RELEASED'").all();
+      this.#assertCapacity(computers.length + activeLeases.length + pending.length);
+      const updatePending = this.#db.prepare("UPDATE operations SET status = 'UNKNOWN', error_code = 'host_interrupted', updated_at = ? WHERE id = ? AND status = 'REQUESTED'");
+      for (const operation of pending) {
+        updatePending.run(timestamp, operation.id);
+        this.#event(operation.id, operation.id, 'operation.unknown', { status: 'UNKNOWN', errorCode: 'host_interrupted' }, timestamp);
+      }
+      for (const computer of computers) {
+        if (computer.generation >= Number.MAX_SAFE_INTEGER) throw new EnvironmentStoreError('generation_exhausted');
+        const generation = computer.generation + 1;
+        this.#db.prepare("UPDATE computers SET generation = ?, observed_state = 'unknown', observed_at = ?, row_version = row_version + 1 WHERE id = ?")
+          .run(generation, timestamp, computer.id);
+        this.#event(computer.id, null, 'computer.snapshot_restored', { generation }, timestamp);
+      }
+      this.#db.prepare("UPDATE leases SET state = 'REVOKED' WHERE state <> 'RELEASED'").run();
+      for (const lease of activeLeases) {
+        this.#event(lease.computer_id, null, 'lease.revoked', { leaseId: lease.id, reason: 'snapshot_restore' }, timestamp);
+      }
+      return Object.freeze({ computersInvalidated: computers.length, leasesRevoked: activeLeases.length });
+    });
   }
 
   /** Convert process-interrupted REQUESTED work to UNKNOWN; no provider action is replayed. */
@@ -752,3 +856,35 @@ async function verifyAcl(verifyWindowsAcl, target, kind) {
     throw new EnvironmentStoreError('database_acl_check_failed');
   }
 }
+
+async function assertPrivateDatabaseFile(databasePath, verifyWindowsAcl, prefix) {
+  let info;
+  try { info = await lstat(databasePath); }
+  catch { throw new EnvironmentStoreError(`${prefix}_file_invalid`); }
+  if (!info.isFile() || info.isSymbolicLink()) throw new EnvironmentStoreError(`${prefix}_file_invalid`);
+  assertSingleLink(info, `${prefix}_hard_linked_file`);
+  assertPrivatePosixStorage(info, `${prefix}_file_permissions`, 'file');
+  await verifyAcl(verifyWindowsAcl, databasePath, 'file');
+}
+
+async function verifyStandaloneSnapshot(snapshotPath) {
+  let db;
+  try {
+    db = new DatabaseSync(snapshotPath, { readOnly: true });
+    const integrity = db.prepare('PRAGMA integrity_check').all();
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok'
+      || db.prepare('PRAGMA foreign_key_check').all().length !== 0
+      || db.prepare('PRAGMA user_version').get()?.user_version !== SCHEMA_VERSION) {
+      throw new EnvironmentStoreError('snapshot_integrity_failed');
+    }
+    const tables = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all().map((row) => row.name));
+    if (!['computers', 'leases', 'operations', 'events', 'guest_event_receipts'].every((name) => tables.has(name))) {
+      throw new EnvironmentStoreError('snapshot_schema_invalid');
+    }
+  } catch (error) {
+    if (error instanceof EnvironmentStoreError) throw error;
+    throw new EnvironmentStoreError('snapshot_invalid');
+  } finally { db?.close(); }
+}
+
+function quoteSqliteString(value) { return value.replaceAll("'", "''"); }
