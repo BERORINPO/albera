@@ -109,6 +109,27 @@ test('Hyper-V adapter preserves ambiguous Broker failures and rejects stale muta
   assert.equal(inspected.generation, 2);
 });
 
+test('Hyper-V adapter rejects observations with wrong identity, state or timestamp', async () => {
+  let observation;
+  const provider = new HyperVEnvironmentProvider({ broker: {
+    createVm: async () => observation, inspectVm: async () => observation,
+    startVm: async () => observation, stopVm: async () => observation, removeVm: async () => observation,
+  } });
+  const base = { computerId: 'computer-1', providerId: 'hyperv', state: 'running', generation: 1,
+    observedAt: '2026-10-28T00:00:00.000Z' };
+  const invalidObservations = [
+    { ...base, computerId: 'computer-attacker' },
+    { ...base, providerId: 'mock' },
+    { ...base, state: 'powered_on' },
+    { ...base, observedAt: 'not-a-timestamp' },
+  ];
+  for (const value of invalidObservations) {
+    observation = value;
+    await assert.rejects(provider.start(hypervOperation('start')),
+      (error) => error.code === 'invalid_provider_observation');
+  }
+});
+
 test('Hyper-V adapter reduces untrusted Broker errors to a safe code and outcome', async () => {
   const provider = new HyperVEnvironmentProvider({ broker: {
     createVm: async () => { throw Object.assign(new Error('password=secret'), { code: 'Bad Code' }); },
