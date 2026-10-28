@@ -110,6 +110,36 @@ test('SQLite store uses WAL, FULL synchronous writes, foreign keys, and a versio
   if (process.platform !== 'win32') assert.equal((await stat(f.databasePath)).mode & 0o777, 0o600);
 });
 
+test('event pages use stable aggregate cursors and reject invalid or future cursors', async (t) => {
+  const f = await fixture(t);
+  const first = f.store.readEventPage(f.computerId, { limit: 1 });
+  assert.equal(first.status, 'OK');
+  assert.deepEqual(first.events.map((event) => event.sequence), [1]);
+  assert.equal(first.nextSequence, 1);
+  assert.equal(first.headSequence, 2);
+  assert.equal(first.hasMore, true);
+  const second = f.store.readEventPage(f.computerId, { afterSequence: first.nextSequence, limit: 1 });
+  assert.equal(second.status, 'OK');
+  assert.deepEqual(second.events.map((event) => event.sequence), [2]);
+  assert.equal(second.nextSequence, 2);
+  assert.equal(second.hasMore, false);
+  assert.throws(() => f.store.readEventPage(f.computerId, { afterSequence: -1 }), /invalid_event_query/);
+  assert.throws(() => f.store.readEventPage(f.computerId, { afterSequence: 3 }),
+    (error) => error instanceof EnvironmentStoreError && error.code === 'event_cursor_ahead');
+});
+
+test('event pages require snapshot resync when retained aggregate history has a gap', async (t) => {
+  const f = await fixture(t);
+  const db = new DatabaseSync(f.databasePath);
+  try { db.prepare('DELETE FROM events WHERE aggregate_id = ? AND aggregate_seq = 1').run(f.computerId); }
+  finally { db.close(); }
+  const page = f.store.readEventPage(f.computerId, { afterSequence: 0 });
+  assert.equal(page.status, 'RESYNC_REQUIRED');
+  assert.deepEqual(page.events, []);
+  assert.equal(page.firstAvailableSequence, 2);
+  assert.equal(page.headSequence, 2);
+});
+
 test('SQLite snapshot restore verifies the backup, recovers pending work, and fences every restored Lease generation', async (t) => {
   const f = await fixture(t);
   const request = f.operation('start');

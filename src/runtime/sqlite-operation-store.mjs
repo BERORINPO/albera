@@ -574,8 +574,54 @@ class SqliteEnvironmentOperationStore {
     this.#assertOpen();
     if (!isId(aggregateId) || !Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) throw new TypeError('invalid_event_query');
     return this.#db.prepare('SELECT * FROM events WHERE aggregate_id = ? ORDER BY aggregate_seq LIMIT ?').all(aggregateId, limit)
-      .map((row) => ({ id: row.id, aggregateId: row.aggregate_id, sequence: row.aggregate_seq, operationId: row.operation_id,
-        type: row.event_type, schemaVersion: row.schema_version, provenance: row.provenance, payload: JSON.parse(row.payload_json), recordedAt: row.recorded_at }));
+      .map(mapEvent);
+  }
+
+  /** Read a stable per-aggregate event page; callers must snapshot/resync on a retained-history gap. */
+  readEventPage(aggregateId, { afterSequence = 0, limit = 1000 } = {}) {
+    this.#assertOpen();
+    if (!isId(aggregateId) || !Number.isSafeInteger(afterSequence) || afterSequence < 0
+      || !Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) throw new TypeError('invalid_event_query');
+    this.#db.exec('BEGIN');
+    try {
+      const bounds = this.#db.prepare('SELECT MIN(aggregate_seq) AS first_sequence, MAX(aggregate_seq) AS head_sequence FROM events WHERE aggregate_id = ?')
+        .get(aggregateId);
+      const headSequence = bounds.head_sequence ?? 0;
+      if (afterSequence > headSequence) throw new EnvironmentStoreError('event_cursor_ahead');
+      if (bounds.first_sequence !== null && afterSequence < bounds.first_sequence - 1) {
+        this.#db.exec('COMMIT');
+        return Object.freeze({
+          status: 'RESYNC_REQUIRED', events: Object.freeze([]), afterSequence,
+          firstAvailableSequence: bounds.first_sequence, headSequence,
+        });
+      }
+      const rows = this.#db.prepare('SELECT * FROM events WHERE aggregate_id = ? AND aggregate_seq > ? ORDER BY aggregate_seq LIMIT ?')
+        .all(aggregateId, afterSequence, limit + 1);
+      if (rows.length > 0 && rows[0].aggregate_seq !== afterSequence + 1) {
+        this.#db.exec('COMMIT');
+        return Object.freeze({
+          status: 'RESYNC_REQUIRED', events: Object.freeze([]), afterSequence,
+          firstAvailableSequence: rows[0].aggregate_seq, headSequence,
+        });
+      }
+      for (let index = 1; index < rows.length; index += 1) {
+        if (rows[index].aggregate_seq !== rows[index - 1].aggregate_seq + 1) {
+          this.#db.exec('COMMIT');
+          return Object.freeze({
+            status: 'RESYNC_REQUIRED', events: Object.freeze([]), afterSequence,
+            firstAvailableSequence: rows[index].aggregate_seq, headSequence,
+          });
+        }
+      }
+      const hasMore = rows.length > limit;
+      const events = rows.slice(0, limit).map(mapEvent);
+      const nextSequence = events.at(-1)?.sequence ?? afterSequence;
+      this.#db.exec('COMMIT');
+      return Object.freeze({ status: 'OK', events: Object.freeze(events), nextSequence, headSequence, hasMore });
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original read failure */ }
+      throw error;
+    }
   }
 
   /** Persist a validated but untrusted Guest claim after the caller authenticates its transport. */
@@ -781,6 +827,12 @@ function mapLease(row) {
     state: row.state, createdAt: row.created_at,
     requirements: row.reservation_json ? JSON.parse(row.reservation_json) : null,
     quota: row.quota_json ? JSON.parse(row.quota_json) : null });
+}
+
+function mapEvent(row) {
+  return { id: row.id, aggregateId: row.aggregate_id, sequence: row.aggregate_seq,
+    operationId: row.operation_id, type: row.event_type, schemaVersion: row.schema_version,
+    provenance: row.provenance, payload: JSON.parse(row.payload_json), recordedAt: row.recorded_at };
 }
 
 function sameLease(row, expected) {
