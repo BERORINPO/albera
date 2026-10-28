@@ -22,11 +22,17 @@ const spec = {
   resources: { vcpu: 2, memoryMiB: 2048, diskGiB: 32 },
 };
 
-async function fixture(t, { provider: injectedProvider, ...storeOptions } = {}) {
+async function fixture(t, { provider: injectedProvider, authorizeOperation: injectedAuthorizer, ...storeOptions } = {}) {
   const root = await mkdtemp(path.join(os.homedir(), '.albera-operation-store-test-'));
   const databasePath = path.join(root, 'operations.sqlite');
   let nowMs = Date.parse('2026-10-28T00:00:00.000Z');
   const now = () => new Date(nowMs).toISOString();
+  const authorizeOperation = injectedAuthorizer ?? (({ operation, actionDigest, purpose }) => ({
+    decision: 'approved', approvalId: 'approval-test-1', approverId: 'human-approver',
+    operationId: operation.operationId, idempotencyKey: operation.idempotencyKey,
+    subjectId: operation.subjectId, projectId: operation.projectId, policyVersion: operation.policyVersion,
+    actionDigest, purpose, expiresAt: new Date(nowMs + 60_000).toISOString(),
+  }));
   let store = await openSqliteEnvironmentStore(databasePath, {
     now, verifyWindowsAcl: async () => {}, recoverInterruptedRequests: true, ...storeOptions,
   });
@@ -35,7 +41,7 @@ async function fixture(t, { provider: injectedProvider, ...storeOptions } = {}) 
     await rm(root, { recursive: true, force: true });
   });
   const provider = injectedProvider ?? new MockEnvironmentProvider({ now });
-  let coordinator = new DurableEnvironmentOperationCoordinator({ store, provider, providerTimeoutMs: 100 });
+  let coordinator = new DurableEnvironmentOperationCoordinator({ store, provider, authorizeOperation, nowMs: () => nowMs, providerTimeoutMs: 100 });
   const computerId = 'computer-a';
   const registered = store.registerComputer({ computerId, projectId: 'project-a', providerId: provider.providerId });
   const lease = store.reserveLease({
@@ -57,7 +63,7 @@ async function fixture(t, { provider: injectedProvider, ...storeOptions } = {}) 
       store = await openSqliteEnvironmentStore(databasePath, {
         now, verifyWindowsAcl: async () => {}, recoverInterruptedRequests: true, ...storeOptions,
       });
-      coordinator = new DurableEnvironmentOperationCoordinator({ store, provider, providerTimeoutMs: 100 });
+      coordinator = new DurableEnvironmentOperationCoordinator({ store, provider, authorizeOperation, nowMs: () => nowMs, providerTimeoutMs: 100 });
     },
     get store() { return store; },
   };
@@ -753,6 +759,114 @@ test('durable intent is recorded before provider action and idempotent replay ne
   assert.equal(f.store.listEvents(request.operationId).length, 1);
   await assert.rejects(f.coordinator.execute({ ...request, operationId: 'operation-create-conflict', spec: { ...spec, resources: { ...spec.resources, vcpu: 3 } } }),
     (error) => error instanceof EnvironmentStoreError && error.code === 'idempotency_conflict');
+});
+
+test('durable coordinator requires a trusted authorization callback', async (t) => {
+  const f = await fixture(t);
+  assert.throws(() => new DurableEnvironmentOperationCoordinator({ store: f.store, provider: f.provider }),
+    (error) => error instanceof TypeError && error.message === 'authorization_required');
+  const coordinator = new DurableEnvironmentOperationCoordinator({
+    store: f.store, provider: f.provider, authorizeOperation: () => ({}), nowMs: () => Number.NaN,
+  });
+  await assert.rejects(coordinator.execute(f.operation('create')),
+    (error) => error.code === 'authorization_clock_invalid');
+  assert.equal(f.store.getOperation('operation-create-a'), null);
+});
+
+test('authorization denial fails before journaling and raw denial details are not returned', async (t) => {
+  const f = await fixture(t, { authorizeOperation: async () => { throw new Error('token=secret-denial-detail'); } });
+  const request = f.operation('create');
+  await assert.rejects(f.coordinator.execute(request), (error) => {
+    assert.equal(error.code, 'authorization_denied');
+    assert.doesNotMatch(error.message, /secret-denial-detail/);
+    return true;
+  });
+  assert.equal(f.store.getOperation(request.operationId), null);
+  assert.equal(f.store.listEvents(request.operationId).length, 0);
+});
+
+test('authorization grant must bind the exact subject, project, policy, digest and purpose', async (t) => {
+  const mutations = [
+    ['decision', (grant) => ({ ...grant, decision: 'denied' })],
+    ['operation', (grant) => ({ ...grant, operationId: 'operation-other' })],
+    ['idempotency key', (grant) => ({ ...grant, idempotencyKey: 'idempotency-other' })],
+    ['subject', (grant) => ({ ...grant, subjectId: 'human-other' })],
+    ['project', (grant) => ({ ...grant, projectId: 'project-other' })],
+    ['policy', (grant) => ({ ...grant, policyVersion: grant.policyVersion + 1 })],
+    ['digest', (grant) => ({ ...grant, actionDigest: `sha256:${'0'.repeat(64)}` })],
+    ['purpose', (grant) => ({ ...grant, purpose: 'reconcile' })],
+    ['extra data', (grant) => ({ ...grant, accessToken: 'must-not-be-accepted' })],
+  ];
+  for (const [label, mutate] of mutations) {
+    await t.test(label, async (subtest) => {
+      const f = await fixture(subtest, { authorizeOperation: ({ operation, actionDigest, purpose }) => mutate({
+        decision: 'approved', approvalId: 'approval-test-1', approverId: 'human-approver',
+        operationId: operation.operationId, idempotencyKey: operation.idempotencyKey,
+        subjectId: operation.subjectId, projectId: operation.projectId, policyVersion: operation.policyVersion,
+        actionDigest, purpose, expiresAt: new Date(Date.parse('2026-10-28T00:01:00.000Z')).toISOString(),
+      }) });
+      const request = f.operation('create');
+      await assert.rejects(f.coordinator.execute(request), (error) => error.code === 'authorization_invalid');
+      assert.equal(f.store.getOperation(request.operationId), null);
+    });
+  }
+});
+
+test('expired and overlong authorization grants fail closed before journaling', async (t) => {
+  for (const [label, offset] of [['expired', -1], ['overlong', 5 * 60 * 1000 + 1]]) {
+    await t.test(label, async (subtest) => {
+      const f = await fixture(subtest, { authorizeOperation: ({ operation, actionDigest, purpose }) => ({
+        decision: 'approved', approvalId: 'approval-test-1', approverId: 'human-approver',
+        operationId: operation.operationId, idempotencyKey: operation.idempotencyKey,
+        subjectId: operation.subjectId, projectId: operation.projectId, policyVersion: operation.policyVersion,
+        actionDigest, purpose, expiresAt: new Date(Date.parse('2026-10-28T00:00:00.000Z') + offset).toISOString(),
+      }) });
+      const request = f.operation('create');
+      await assert.rejects(f.coordinator.execute(request), (error) => error.code === 'authorization_expired'
+        || error.code === 'authorization_invalid');
+      assert.equal(f.store.getOperation(request.operationId), null);
+    });
+  }
+});
+
+test('authorization expiring after the durable dispatch claim prevents provider I/O', async (t) => {
+  const f = await fixture(t);
+  const calls = { create: 0 };
+  const create = f.provider.create.bind(f.provider);
+  f.provider.create = async (...args) => { calls.create++; return create(...args); };
+  const resolve = f.store.resolveBrokerDispatch.bind(f.store);
+  f.store.resolveBrokerDispatch = (...args) => {
+    const operation = resolve(...args);
+    f.advance(2 * 60 * 1000);
+    return operation;
+  };
+  const request = f.operation('create');
+  const result = await f.coordinator.execute(request);
+  assert.equal(result.status, 'FAILED');
+  assert.equal(result.errorCode, 'authorization_expired');
+  assert.equal(calls.create, 0);
+  assert.equal(f.store.getOperation(request.operationId).status, 'FAILED');
+});
+
+test('UNKNOWN reconciliation requires a separate inspect-bound authorization', async (t) => {
+  const f = await fixture(t, { authorizeOperation: ({ operation, actionDigest, purpose }) => {
+    if (purpose === 'reconcile') throw new Error('approval_missing');
+    return {
+      decision: 'approved', approvalId: 'approval-test-1', approverId: 'human-approver',
+      operationId: operation.operationId, idempotencyKey: operation.idempotencyKey,
+      subjectId: operation.subjectId, projectId: operation.projectId, policyVersion: operation.policyVersion,
+      actionDigest, purpose, expiresAt: new Date(Date.parse('2026-10-28T00:01:00.000Z')).toISOString(),
+    };
+  } });
+  f.provider.failNext('create', { timing: 'after', code: 'provider_reply_lost' });
+  const request = f.operation('create');
+  assert.equal((await f.coordinator.execute(request)).status, 'UNKNOWN');
+  let inspections = 0;
+  const inspect = f.provider.inspect.bind(f.provider);
+  f.provider.inspect = async (...args) => { inspections++; return inspect(...args); };
+  await assert.rejects(f.coordinator.reconcile(request.operationId), (error) => error.code === 'authorization_denied');
+  assert.equal(inspections, 0);
+  assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
 });
 
 test('Broker journal resolution binds the typed reference and atomically claims one dispatch under a live Lease', async (t) => {

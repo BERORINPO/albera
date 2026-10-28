@@ -103,22 +103,30 @@ export class DurableEnvironmentOperationCoordinator {
   #store;
   #provider;
   #timeoutMs;
+  #authorizeOperation;
+  #nowMs;
 
-  constructor({ store, provider, providerTimeoutMs = 30_000 } = {}) {
+  constructor({ store, provider, authorizeOperation, nowMs = Date.now, providerTimeoutMs = 30_000 } = {}) {
     if (!store || !['beginOperation', 'recordProviderOutcome', 'recordReconciliation', 'getOperation'].every((method) => typeof store[method] === 'function')) {
       throw new TypeError('invalid_environment_store');
     }
     if (!provider || !['create', 'inspect', 'start', 'stop', 'destroy'].every((method) => typeof provider[method] === 'function')
       || typeof provider.providerId !== 'string') throw new TypeError('invalid_environment_provider');
+    if (typeof authorizeOperation !== 'function') throw new TypeError('authorization_required');
+    if (typeof nowMs !== 'function') throw new TypeError('invalid_authorization_clock');
     if (!Number.isSafeInteger(providerTimeoutMs) || providerTimeoutMs < 1 || providerTimeoutMs > 300_000) throw new TypeError('invalid_provider_timeout');
     this.#store = store;
     this.#provider = provider;
+    this.#authorizeOperation = authorizeOperation;
+    this.#nowMs = nowMs;
     this.#timeoutMs = providerTimeoutMs;
   }
 
   async execute(input) {
     const operation = validateEnvironmentOperation(input);
     if (operation.providerId !== this.#provider.providerId) throw new EnvironmentProviderError('provider_mismatch', { outcome: 'not_applied' });
+    const actionDigest = `sha256:${digest(operation)}`;
+    const grant = await this.#authorize(operation, actionDigest, 'execute');
     const begun = this.#store.beginOperation(operation);
     // The durable idempotency record is authoritative: retries return its state without another side effect.
     if (!begun.created) return publicSnapshot(begun.operation);
@@ -133,6 +141,12 @@ export class DurableEnvironmentOperationCoordinator {
         expectedGeneration: operation.expectedGeneration,
         actionDigest: `sha256:${begun.operation.actionDigest}`,
       });
+      if (grant.expiresAtMs <= this.#authorizationTime()) {
+        this.#store.recordProviderOutcome(operation.operationId, {
+          errorCode: 'authorization_expired', outcome: 'not_applied',
+        });
+        return publicSnapshot(this.#store.getOperation(operation.operationId));
+      }
       providerInvoked = true;
       observed = await withTimeout(this.#provider[authorizedOperation.action](authorizedOperation), this.#timeoutMs);
     } catch (error) {
@@ -152,6 +166,10 @@ export class DurableEnvironmentOperationCoordinator {
     if (record.status !== 'UNKNOWN') return publicSnapshot(record);
     const { spec: _spec, ...request } = record.request;
     const inspectRequest = { ...request, action: 'inspect' };
+    const grant = await this.#authorize(inspectRequest, `sha256:${digest(inspectRequest)}`, 'reconcile');
+    if (grant.expiresAtMs <= this.#authorizationTime()) {
+      throw new EnvironmentProviderError('authorization_expired', { outcome: 'not_applied' });
+    }
     let observed;
     try {
       observed = await withTimeout(this.#provider.inspect(inspectRequest), this.#timeoutMs);
@@ -162,7 +180,69 @@ export class DurableEnvironmentOperationCoordinator {
     this.#store.recordReconciliation(operationId, observed);
     return publicSnapshot(this.#store.getOperation(operationId));
   }
+
+  async #authorize(operation, actionDigest, purpose) {
+    let grant;
+    try {
+      grant = await this.#authorizeOperation(Object.freeze({
+        operation,
+        actionDigest,
+        purpose,
+      }));
+    } catch {
+      throw new EnvironmentProviderError('authorization_denied', { outcome: 'not_applied' });
+    }
+    return validateAuthorizationGrant(grant, operation, actionDigest, purpose, this.#authorizationTime());
+  }
+
+  #authorizationTime() {
+    let nowMs;
+    try { nowMs = this.#nowMs(); }
+    catch { throw new EnvironmentProviderError('authorization_clock_invalid', { outcome: 'not_applied' }); }
+    if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+      throw new EnvironmentProviderError('authorization_clock_invalid', { outcome: 'not_applied' });
+    }
+    return nowMs;
+  }
 }
+
+const MAX_APPROVAL_TTL_MS = 5 * 60 * 1000;
+
+/** Validate a trusted authorizer's short-lived, exact-operation human approval assertion. */
+function validateAuthorizationGrant(grant, operation, actionDigest, purpose, nowMs) {
+  try {
+    const keys = ['decision', 'approvalId', 'approverId', 'operationId', 'idempotencyKey', 'subjectId', 'projectId', 'policyVersion', 'actionDigest', 'purpose', 'expiresAt'];
+    if (!grant || typeof grant !== 'object' || Array.isArray(grant)
+      || Object.getPrototypeOf(grant) !== Object.prototype
+      || Object.getOwnPropertySymbols(grant).length > 0
+      || Object.keys(grant).length !== keys.length
+      || keys.some((key) => !Object.hasOwn(grant, key))
+      || Object.values(Object.getOwnPropertyDescriptors(grant)).some((descriptor) => !Object.hasOwn(descriptor, 'value'))
+      || grant.decision !== 'approved'
+      || !isAuthorizationId(grant.approvalId)
+      || !isAuthorizationId(grant.approverId)
+      || grant.operationId !== operation.operationId
+      || grant.idempotencyKey !== operation.idempotencyKey
+      || grant.subjectId !== operation.subjectId
+      || grant.projectId !== operation.projectId
+      || grant.policyVersion !== operation.policyVersion
+      || grant.actionDigest !== actionDigest
+      || grant.purpose !== purpose
+      || typeof grant.expiresAt !== 'string') {
+      throw new EnvironmentProviderError('authorization_invalid', { outcome: 'not_applied' });
+    }
+    const expiresAtMs = Date.parse(grant.expiresAt);
+    if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs || expiresAtMs > nowMs + MAX_APPROVAL_TTL_MS) {
+      throw new EnvironmentProviderError(expiresAtMs <= nowMs ? 'authorization_expired' : 'authorization_invalid', { outcome: 'not_applied' });
+    }
+    return Object.freeze({ expiresAtMs });
+  } catch (error) {
+    if (error instanceof EnvironmentProviderError) throw error;
+    throw new EnvironmentProviderError('authorization_invalid', { outcome: 'not_applied' });
+  }
+}
+
+function isAuthorizationId(value) { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value); }
 
 function snapshot(record) {
   return Object.freeze({
