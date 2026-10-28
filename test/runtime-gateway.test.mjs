@@ -534,6 +534,7 @@ test('timeout falls back to terminating the direct child if process-tree termina
       return child;
     },
     signalTreeImpl: () => { throw new Error('synthetic signal adapter failure'); },
+    signalTreeFallbackImpl: async () => ({ treeConfirmed: false }),
   });
   t.after(f.dispose);
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
@@ -580,7 +581,7 @@ test('supervised stop records Guardian tree confirmation instead of pipe accepta
   assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
   child.signalCode = 'SIGKILL';
   child.emit('close', null, 'SIGKILL');
-  await waitFor(() => f.gateway.get(run.id).status === 'failed');
+  assert.equal(f.gateway.get(run.id).status, 'failed');
 });
 
 test('supervised stop falls back to the OS process-tree adapter when the Guardian channel fails', async (t) => {
@@ -595,6 +596,7 @@ test('supervised stop falls back to the OS process-tree adapter when the Guardia
       fallbackRequest = { pid, signal, target };
       target.signalCode = signal;
       queueMicrotask(() => target.emit('close', null, signal));
+      return { treeConfirmed: true };
     },
   });
   t.after(f.dispose);
@@ -645,6 +647,27 @@ test('supervised stop avoids OS PID fallback after the Guardian reports provider
   await f.gateway.stop(run.id);
   await waitFor(() => f.gateway.get(run.id).status === 'failed');
   assert.equal(fallbackCalled, false);
+  assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
+});
+
+test('Job-managed Guardian failure never falls back to a reusable PID', async (t) => {
+  const child = new FakeChild();
+  child.pid = 424247;
+  child.supervised = true;
+  child.jobObjectManaged = true;
+  child.closed = false;
+  child.stopTree = async () => { throw new Error('job_control_channel_lost'); };
+  let fallbackCalls = 0;
+  const f = await fixture({
+    spawnImpl: () => { queueMicrotask(() => child.emit('spawn')); return child; },
+    signalTreeFallbackImpl: async () => { fallbackCalls++; return { treeConfirmed: true }; },
+  });
+  t.after(f.dispose);
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+  await f.gateway.stop(run.id);
+  await waitFor(() => f.gateway.get(run.id).status === 'failed');
+  assert.equal(fallbackCalls, 0, 'a PID-based adapter is forbidden for Job-managed ownership');
   assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
 });
 
@@ -887,7 +910,7 @@ test('local helper process integration: abnormal exit is represented without out
   assert.ok(!JSON.stringify(f.gateway.events()).includes('process.exit'));
 });
 
-test('local helper process integration: OS tree fallback stops a child when the Guardian channel fails', async (t) => {
+test('local helper process integration: PID fallback does not confirm the tree when Guardian channel fails', async (t) => {
   let child;
   const f = await fixture({
     resolveExecutableImpl: async () => process.execPath,
@@ -908,9 +931,9 @@ test('local helper process integration: OS tree fallback stops a child when the 
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: ['-e', 'setInterval(() => {}, 1000)'] });
   await waitFor(() => f.gateway.get(run.id).status === 'running');
 
-  await f.gateway.stop(run.id);
-  await waitFor(() => f.gateway.get(run.id).status === 'stopped');
-  assert.equal(f.gateway.get(run.id).treeStopConfirmed, true);
+  await assert.rejects(f.gateway.stop(run.id), (error) => error.code === 'stop_failed');
+  await waitFor(() => f.gateway.get(run.id).status === 'failed');
+  assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
   assert.ok(child.exitCode !== null || child.signalCode !== null);
 });
 

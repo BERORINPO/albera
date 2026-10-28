@@ -3,11 +3,13 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const GUARDIAN_PATH = fileURLToPath(new URL('./guardian.mjs', import.meta.url));
+const WINDOWS_JOB_GUARDIAN_PATH = fileURLToPath(new URL('./windows-job-guardian/bin/Release/net10.0-windows/win-x64/publish/albera-windows-job-guardian.exe', import.meta.url));
 const MAX_PROTOCOL_BYTES = 1024 * 1024;
 const MAX_INPUT_BYTES = 16 * 1024;
 const MAX_PENDING_INPUTS = 4;
@@ -21,7 +23,19 @@ export function spawnSupervised(executable, args, options) {
     ...(options.inputMode === undefined ? {} : { inputMode: options.inputMode, initialInput: options.initialInput }) });
   if (Buffer.byteLength(launch) > MAX_PROTOCOL_BYTES) throw new TypeError('supervisor_request_too_large');
 
-  const guardian = spawn(process.execPath, [GUARDIAN_PATH], {
+  const jobObjectManaged = process.platform === 'win32';
+  let command;
+  let commandArgs;
+  if (jobObjectManaged) {
+    if (process.arch !== 'x64') throw new Error('windows_job_guardian_unsupported_architecture');
+    if (!existsSync(WINDOWS_JOB_GUARDIAN_PATH)) throw new Error('windows_job_guardian_unavailable');
+    command = WINDOWS_JOB_GUARDIAN_PATH;
+    commandArgs = [];
+  } else {
+    command = process.execPath;
+    commandArgs = [GUARDIAN_PATH];
+  }
+  const guardian = spawn(command, commandArgs, {
     cwd: options.cwd,
     env: guardianEnvironment(options.env),
     shell: false,
@@ -29,7 +43,7 @@ export function spawnSupervised(executable, args, options) {
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'ignore'],
   });
-  return new SupervisedChild(guardian, launch, options.inputMode === 'claude-stream-json');
+  return new SupervisedChild(guardian, launch, options.inputMode === 'claude-stream-json', jobObjectManaged);
 }
 
 class SupervisedChild extends EventEmitter {
@@ -38,6 +52,8 @@ class SupervisedChild extends EventEmitter {
   exitCode = null;
   signalCode = null;
   killed = false;
+  jobObjectManaged = false;
+  treeStopConfirmed = null;
   #guardian;
   #buffer = '';
   #providerExited = false;
@@ -48,10 +64,11 @@ class SupervisedChild extends EventEmitter {
 
   get closed() { return this.#closed; }
 
-  constructor(guardian, launch, inputEnabled = false) {
+  constructor(guardian, launch, inputEnabled = false, jobObjectManaged = false) {
     super();
     this.#guardian = guardian;
     this.#inputEnabled = inputEnabled;
+    this.jobObjectManaged = jobObjectManaged;
     guardian.once('error', () => this.#fail());
     guardian.once('close', (code, signal) => {
       if (!this.#providerExited) this.#fail();
@@ -157,10 +174,12 @@ class SupervisedChild extends EventEmitter {
         this.emit('spawn');
       } else if (message?.type === 'exit'
         && (message.code === null || Number.isSafeInteger(message.code))
+        && (!this.jobObjectManaged || typeof message.treeConfirmed === 'boolean')
         && (message.signal === null || SIGNALS.has(message.signal))) {
         this.#providerExited = true;
         this.exitCode = message.code;
         this.signalCode = message.signal;
+        if (this.jobObjectManaged) this.treeStopConfirmed = message.treeConfirmed;
       } else if (message?.type === 'tree_stop' && typeof message.treeConfirmed === 'boolean') {
         const pending = this.#pendingTreeStop;
         if (!pending) return this.#fail();

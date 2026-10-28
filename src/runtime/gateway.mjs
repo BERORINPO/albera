@@ -193,9 +193,13 @@ export class RuntimeGateway {
         if (run.status === 'failed') return;
         run.exitCode = Number.isInteger(code) ? code : null;
         run.signal = typeof signal === 'string' ? signal : null;
-        run.status = run.status === 'stopping'
-          ? (run.treeStopConfirmed === false ? 'failed' : 'stopped')
-          : 'exited';
+        if (child.jobObjectManaged === true) {
+          if (typeof child.treeStopConfirmed === 'boolean') run.treeStopConfirmed = child.treeStopConfirmed;
+          else if (run.treeStopConfirmed !== false) run.treeStopConfirmed = null;
+        }
+        run.status = (child.jobObjectManaged === true && child.treeStopConfirmed !== true) || run.treeStopConfirmed === false
+          ? 'failed'
+          : run.status === 'stopping' ? 'stopped' : 'exited';
         run.finishedAt = this.#now(); this.#emit(run, run.status, { code: run.exitCode, signal: run.signal });
       });
       return this.#snapshot(run);
@@ -309,6 +313,11 @@ export class RuntimeGateway {
     this.#emit(run, 'stop_requested', { stopReason: reason });
     const pid = run.child.pid;
     if (run.child.exitCode !== null || run.child.signalCode !== null) {
+      if (run.child.jobObjectManaged === true) {
+        run.treeStopConfirmed = typeof run.child.treeStopConfirmed === 'boolean' ? run.child.treeStopConfirmed : null;
+        if (run.treeStopConfirmed !== true) this.#emit(run, 'stop_failed', { stopReason: reason });
+        return;
+      }
       // Do not signal a stale PID after the direct child has exited. Windows cannot reliably
       // enumerate descendants from an exited parent, so report cleanup as uncertain.
       if (Number.isInteger(pid) && pid > 0) {
@@ -324,25 +333,27 @@ export class RuntimeGateway {
       if (Number.isInteger(pid) && pid > 0) {
         run.treeStopConfirmed = run.child.supervised === true
           ? (typeof treeResult?.treeConfirmed === 'boolean' ? treeResult.treeConfirmed : null)
-          : true;
+          : (typeof treeResult?.treeConfirmed === 'boolean' ? treeResult.treeConfirmed : true);
         if (run.treeStopConfirmed === false) this.#emit(run, 'stop_failed', { stopReason: reason });
       }
     } catch {
       let fallbackConfirmed = false;
-      if (run.child.supervised === true && Number.isInteger(pid) && pid > 0
+      let fallbackRequested = false;
+      if (run.child.supervised === true && run.child.jobObjectManaged !== true && Number.isInteger(pid) && pid > 0
         && run.child.exitCode === null && run.child.signalCode === null && run.child.closed !== true) {
         try {
           // If the Guardian pipe/ack failed, terminate the known provider process group/tree
           // through the OS adapter instead of only asking the possibly failed Guardian again.
-          await this.#signalTreeFallback(pid, 'SIGTERM', run.child);
-          fallbackConfirmed = true;
+          const fallbackResult = await this.#signalTreeFallback(pid, 'SIGTERM', run.child);
+          fallbackConfirmed = fallbackResult?.treeConfirmed === true;
+          fallbackRequested = fallbackResult?.terminationRequested === true;
         } catch { /* keep cleanup uncertain and still ask the Guardian/direct child to stop */ }
       }
       if (Number.isInteger(pid) && pid > 0) {
         run.treeStopConfirmed = fallbackConfirmed;
         if (!fallbackConfirmed) this.#emit(run, 'stop_failed', { stopReason: reason });
       }
-      if (!fallbackConfirmed) {
+      if (!fallbackConfirmed && !fallbackRequested) {
         try {
           if (run.child.kill('SIGTERM') === false) throw new Error('child_signal_failed');
         } catch {
@@ -358,7 +369,10 @@ export class RuntimeGateway {
         const escalation = Number.isInteger(childPid) && childPid > 0
           ? this.#signalTree(childPid, 'SIGKILL', run.child)
           : safeKill(run.child);
-        Promise.resolve(escalation).catch(() => {
+        Promise.resolve(escalation).then((result) => {
+          if (typeof result?.treeConfirmed === 'boolean') run.treeStopConfirmed = result.treeConfirmed;
+          if (run.treeStopConfirmed === false) this.#emit(run, 'stop_failed', { stopReason: reason });
+        }).catch(() => {
           if (Number.isInteger(childPid) && childPid > 0 && run.treeStopConfirmed !== false) {
             run.treeStopConfirmed = false;
             this.#emit(run, 'stop_failed', { stopReason: reason });

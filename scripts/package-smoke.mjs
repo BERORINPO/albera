@@ -37,6 +37,9 @@ try {
   for (const asset of ['index.html', 'approval.mjs', 'approval.css']) {
     await access(path.join(installedRoot, 'src', 'runtime', 'approval-ui', asset));
   }
+  if (process.platform === 'win32') {
+    await access(path.join(installedRoot, 'src', 'runtime', 'windows-job-guardian', 'bin', 'Release', 'net10.0-windows', 'win-x64', 'publish', 'albera-windows-job-guardian.exe'));
+  }
   const manifest = JSON.parse(await readFile(path.join(installedRoot, 'package.json'), 'utf8'));
   assert.equal(manifest.bin?.albera, 'src/entry/server.mjs');
   assert.equal(manifest.bin?.['albera-runtime'], 'src/runtime/entry.mjs');
