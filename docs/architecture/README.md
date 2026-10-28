@@ -21,6 +21,13 @@ This release collects the existing RFC and ADR-001 through ADR-007, plus the new
 ## Design status and decision gates
 All ADRs remain **Proposed** pending reviews. Hyper-V PoC is **NOT_RUN**. All acceptance criteria are **NOT_VERIFIED** until linked evidence exists. Do not reinterpret example JSON or draft SLOs as existing production behavior.
 
+## Decision log — Runtime implementation deltas
+| date+topic | decision | reason and rejected alternative | lint promotion |
+|---|---|---|---|
+| 2026-10-29 IPC (R-11) | ADR-002 names restricted-ACL named pipes; the current stack uses loopback HTTP with a bearer token | Records the current stack boundary without implying the ADR transport is implemented. Rejected for this interim record: describing named pipes as current behavior. | no |
+| 2026-10-29 storage (R-12) | ADR-003 specifies SQLite; the current stack uses a JSONL live journal | Records the implementation delta without claiming SQLite durability. Rejected for this interim record: describing SQLite as implemented. | no |
+| 2026-10-29 interim mode | Runtime Gateway runs provider CLIs on the host as the current user without VM isolation; untrusted code is prohibited until Hyper-V provider and ADR-required egress enforcement | Makes the current trust boundary explicit. Rejected: treating host-direct execution as isolated or suitable for untrusted code. | no |
+
 ## Immediate engineering handoff
 1. Reconcile with up-to-date source and uncommitted local changes; do not overwrite Codex's runtime branch.
 2. Review ADR-002 trust model, then confirm ADR-003 lifecycle and operation journal.
