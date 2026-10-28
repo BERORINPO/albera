@@ -450,3 +450,68 @@ test('local helper process tree integration: stopping the approved helper stops 
   await new Promise((resolve) => setTimeout(resolve, 250));
   assert.equal(Number(await readFile(heartbeatPath, 'utf8')), stoppedAt);
 });
+
+test('POSIX stop waits for a SIGTERM-ignoring descendant and escalates to SIGKILL', { skip: process.platform === 'win32' }, async (t) => {
+  const f = await fixture({ resolveExecutableImpl: async () => process.execPath });
+  const childPidPath = path.join(f.root, 'ignore-child-pid.txt');
+  let childPid;
+  t.after(async () => {
+    await f.dispose();
+    if (childPid) { try { process.kill(childPid, 'SIGKILL'); } catch { /* helper already exited */ } }
+  });
+  const childCode = `process.on('SIGTERM',()=>{});setInterval(()=>{},1000)`;
+  const parentCode = `const{spawn}=require('node:child_process');const fs=require('node:fs');process.on('SIGTERM',()=>{});const c=spawn(${JSON.stringify(process.execPath)},['-e',${JSON.stringify(childCode)}],{stdio:'ignore'});fs.writeFileSync(${JSON.stringify(childPidPath)},String(c.pid));setInterval(()=>{},1000)`;
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: ['-e', parentCode] });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+  await waitFor(() => { try { childPid = Number(readFileSync(childPidPath, 'utf8')); return childPid > 0; } catch { return false; } });
+  const began = Date.now();
+  await f.gateway.stop(run.id);
+  assert.notEqual(f.gateway.get(run.id).treeStopConfirmed, true);
+  await waitFor(() => ['stopped', 'failed'].includes(f.gateway.get(run.id).status), 10000);
+  assert.equal(f.gateway.get(run.id).status, f.gateway.get(run.id).treeStopConfirmed === true ? 'stopped' : 'failed');
+  assert.ok([true, false].includes(f.gateway.get(run.id).treeStopConfirmed));
+  assert.ok(Date.now() - began >= 2500, 'SIGKILL escalation should wait through the SIGTERM grace period');
+});
+
+test('POSIX stop keeps escalation active after the leader closes while a descendant survives', { skip: process.platform === 'win32' }, async (t) => {
+  const f = await fixture({ resolveExecutableImpl: async () => process.execPath });
+  const childPidPath = path.join(f.root, 'leader-first-child-pid.txt');
+  let childPid;
+  t.after(async () => {
+    await f.dispose();
+    if (childPid) { try { process.kill(childPid, 'SIGKILL'); } catch { /* helper already exited */ } }
+  });
+  const childCode = `process.on('SIGTERM',()=>{});setInterval(()=>{},1000)`;
+  const parentCode = `const{spawn}=require('node:child_process');const fs=require('node:fs');const c=spawn(${JSON.stringify(process.execPath)},['-e',${JSON.stringify(childCode)}],{stdio:'ignore'});fs.writeFileSync(${JSON.stringify(childPidPath)},String(c.pid));setInterval(()=>{},1000)`;
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: ['-e', parentCode] });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+  await waitFor(() => { try { childPid = Number(readFileSync(childPidPath, 'utf8')); return childPid > 0; } catch { return false; } });
+  await f.gateway.stop(run.id);
+  await waitFor(() => f.gateway.get(run.id).exitCode !== null || f.gateway.get(run.id).signal !== null);
+  assert.equal(f.gateway.get(run.id).status, 'stopping');
+  assert.notEqual(f.gateway.get(run.id).treeStopConfirmed, true);
+  await waitFor(() => ['stopped', 'failed'].includes(f.gateway.get(run.id).status), 10000);
+  assert.equal(f.gateway.get(run.id).status, f.gateway.get(run.id).treeStopConfirmed === true ? 'stopped' : 'failed');
+  assert.ok([true, false].includes(f.gateway.get(run.id).treeStopConfirmed));
+});
+
+test('POSIX process-group confirmation does not cover a descendant that calls setsid', { skip: process.platform === 'win32' }, async (t) => {
+  const f = await fixture({ resolveExecutableImpl: async () => process.execPath });
+  const childPidPath = path.join(f.root, 'setsid-child-pid.txt');
+  let childPid;
+  t.after(async () => {
+    await f.dispose();
+    if (childPid) { try { process.kill(childPid, 'SIGKILL'); } catch { /* helper already exited */ } }
+  });
+  const childCode = `process.on('SIGTERM',()=>{});setInterval(()=>{},1000)`;
+  const parentCode = `const{spawn}=require('node:child_process');const fs=require('node:fs');const c=spawn(${JSON.stringify(process.execPath)},['-e',${JSON.stringify(childCode)}],{detached:true,stdio:'ignore'});c.unref();fs.writeFileSync(${JSON.stringify(childPidPath)},String(c.pid));process.on('SIGTERM',()=>{});setInterval(()=>{},1000)`;
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: ['-e', parentCode] });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+  await waitFor(() => { try { childPid = Number(readFileSync(childPidPath, 'utf8')); return childPid > 0; } catch { return false; } });
+  await f.gateway.stop(run.id);
+  assert.notEqual(f.gateway.get(run.id).treeStopConfirmed, true);
+  await waitFor(() => ['stopped', 'failed'].includes(f.gateway.get(run.id).status), 10000);
+  // Confirmation proves only that the original group is gone; it cannot see this detached helper.
+  assert.equal(f.gateway.get(run.id).treeStopConfirmed, true);
+  assert.doesNotThrow(() => process.kill(childPid, 0));
+});
