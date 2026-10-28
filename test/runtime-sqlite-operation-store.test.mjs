@@ -197,6 +197,45 @@ test('ordinary SQLite store open rechecks the restore marker after opening the d
     (error) => error.code === 'restore_incomplete_marker_present');
 });
 
+test('failed restore invalidation rolls back all journal changes and leaves the destination quarantined', async (t) => {
+  const f = await fixture(t);
+  const request = f.operation('start');
+  f.store.beginOperation(request);
+  const backupPath = path.join(f.root, 'operations-backup.sqlite');
+  const restoredPath = path.join(f.root, 'failed-restore.sqlite');
+  await f.store.backupTo(backupPath);
+  function FailingRestoreDatabase(filePath) {
+    const db = new DatabaseSync(filePath);
+    let shouldFail = true;
+    return new Proxy(db, {
+      get(target, property) {
+        if (property === 'prepare') return (sql) => {
+          if (shouldFail && sql.includes('INSERT INTO events')) {
+            shouldFail = false;
+            throw new Error('injected_restore_event_failure');
+          }
+          return target.prepare(sql);
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  }
+
+  await assert.rejects(restoreSqliteEnvironmentStore(backupPath, restoredPath, {
+    now: f.now, verifyWindowsAcl: async () => {}, DatabaseImpl: FailingRestoreDatabase,
+  }), (error) => error.code === 'store_transaction_failed');
+  const db = new DatabaseSync(restoredPath, { readOnly: true });
+  try {
+    assert.equal(db.prepare('SELECT status FROM operations WHERE id = ?').get(request.operationId).status, 'REQUESTED');
+    assert.equal(db.prepare('SELECT generation FROM computers WHERE id = ?').get(f.computerId).generation, f.lease.generation);
+    assert.equal(db.prepare('SELECT state FROM leases WHERE id = ?').get(f.lease.leaseId).state, 'ACTIVE');
+  } finally { db.close(); }
+  assert.match(await readFile(`${restoredPath}.restore-incomplete`, 'utf8'), /INCOMPLETE:/);
+  await assert.rejects(openSqliteEnvironmentStore(restoredPath, { verifyWindowsAcl: async () => {} }),
+    (error) => error.code === 'restore_incomplete_marker_present');
+});
+
 test('abrupt restore-owner exit after database copy keeps the destination quarantined', async (t) => {
   const f = await fixture(t);
   const backupPath = path.join(f.root, 'operations-backup.sqlite');
