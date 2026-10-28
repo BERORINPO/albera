@@ -16,7 +16,7 @@ const quota = { maxComputers: 1, vcpu: 4, memoryMiB: 4096, diskGiB: 32 };
 const store = await openSqliteEnvironmentStore(databasePath, {
   verifyWindowsAcl: async () => {},
   recoverInterruptedRequests: false,
-  ...(['guest-event', 'broker-dispatch'].includes(mode) ? { now: () => '2026-10-28T00:30:00.000Z' } : {}),
+  ...(['guest-event', 'broker-dispatch', 'begin-operation'].includes(mode) ? { now: () => '2026-10-28T00:30:00.000Z' } : {}),
 });
 const input = createInterface({ input: process.stdin });
 const go = new Promise((resolve) => input.once('line', resolve));
@@ -36,6 +36,14 @@ try {
       operationId, expectedGeneration: Number(expectedGeneration), actionDigest: `sha256:${actionDigest}`,
     });
     process.stdout.write(`RESULT ${JSON.stringify({ status: 'CLAIMED', operationId: operation.operationId })}\n`);
+  } else if (mode === 'begin-operation') {
+    const result = store.beginOperation({
+      operationId: `race-operation-${workerId}`, idempotencyKey: `race-idempotency-${workerId}`,
+      subjectId: 'human-a', projectId: 'project-a', taskId: 'task-a', runId: 'run-a',
+      computerId: 'computer-a', providerId: 'mock', leaseId: 'lease-a', expectedGeneration: 1,
+      policyVersion: 1, action: 'start',
+    });
+    process.stdout.write(`RESULT ${JSON.stringify({ status: result.created ? 'CREATED' : 'REPLAYED', operationId: result.operation.operationId })}\n`);
   } else if (mode === 'scheduler') {
     const result = reserveComputerForRun({
       store,

@@ -380,6 +380,34 @@ test('separate processes atomically claim one Broker dispatch from the durable j
   assert.equal(f.store.listEvents(f.computerId).filter((event) => event.type === 'operation.dispatch_authorized').length, 1);
 });
 
+test('separate processes admit only one unresolved mutation for the same Computer generation', { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
+  f.store.close();
+  const workers = Array.from({ length: 8 }, (_, index) => spawnSynchronizedStoreWorker(
+    workerPath, f.databasePath, index + 1, 'begin-operation',
+  ));
+  t.after(async () => {
+    for (const worker of workers) {
+      if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    }
+    await Promise.all(workers.map((worker) => worker.exited));
+  });
+
+  const allResults = Promise.all(workers.map((worker) => worker.result));
+  allResults.catch(() => {});
+  await Promise.all(workers.map((worker) => worker.ready));
+  for (const worker of workers) worker.child.stdin.end('go\n');
+  const outcomes = await allResults;
+  await Promise.all(workers.map((worker) => worker.exited));
+
+  assert.equal(outcomes.filter((outcome) => outcome.status === 'CREATED').length, 1, JSON.stringify(outcomes));
+  assert.equal(outcomes.filter((outcome) => outcome.errorCode === 'computer_operation_unresolved').length, 7, JSON.stringify(outcomes));
+  await f.reopen();
+  const admitted = outcomes.find((outcome) => outcome.status === 'CREATED');
+  assert.equal(f.store.getOperation(admitted.operationId).status, 'UNKNOWN', 'startup recovery marks the admitted but undispatched intent uncertain');
+});
+
 test('startup recovery marks only an interrupted pre-dispatch request UNKNOWN', async (t) => {
   const f = await fixture(t);
   const request = f.operation('create');

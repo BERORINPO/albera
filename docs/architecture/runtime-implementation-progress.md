@@ -97,3 +97,9 @@ This file is the continuation ledger. `VERIFIED` refers only to the stated evide
 - CPU, RAM, disk, disk-chain and I/O quotas require host-side enforcement and capacity measurements. The current Scheduler uses synthetic host capacity records only.
 - Linux Guest task transport needs an authenticated narrow Guest Session endpoint; PowerShell Direct applies only to supported Windows guests and must not become a generic command surface. Neither Guest transport is implemented.
 - Current adapter lifecycle is limited to typed create/inspect/start/stop/destroy calls. Checkpoint/restore, credential rotation, capability discovery, readiness attestation and native VM correlation remain absent. Do not classify any Hyper-V acceptance criterion as verified.
+
+## Cross-process mutation serialization verification
+
+The unresolved-mutation guard now has a synchronized eight-process regression in addition to the in-process REQUESTED/UNKNOWN cases. Eight workers open the same SQLite journal and attempt distinct `start` operations against one Computer generation and Lease. Exactly one request is admitted; seven receive `computer_operation_unresolved`. Reopening through startup recovery correctly changes the admitted but undispatched request to `UNKNOWN`. Focused SQLite tests pass 31/31.
+
+On Windows Node `v24.13.0`, after this test change: `npm test` passes 615, skips 7, fails 0 (622 total); `npm run arch` reports 92 role paths and 0 violations; `npm run smoke`, `npm run package:smoke`, `npm audit --omit=dev` (0 vulnerabilities), and `git diff --check` pass. Cross-platform CI for this test addition is pending. This verifies journal serialization among competing local processes only; it does not establish cancellation or provider-side fencing for an already-dispatched action.
