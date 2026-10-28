@@ -927,6 +927,65 @@ test('separate processes atomically claim one Broker dispatch from the durable j
   assert.equal(f.store.listEvents(f.computerId).filter((event) => event.type === 'operation.authorization_consumed').length, 1);
 });
 
+test('separate processes with one idempotency key and payload persist exactly one operation', { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
+  f.store.close();
+  const workers = Array.from({ length: 8 }, (_, index) => spawnSynchronizedStoreWorker(
+    workerPath, f.databasePath, index + 1, 'idempotency-same',
+  ));
+  t.after(async () => {
+    for (const worker of workers) {
+      if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    }
+    await Promise.all(workers.map((worker) => worker.exited));
+  });
+
+  const allResults = Promise.all(workers.map((worker) => worker.result));
+  allResults.catch(() => {});
+  await Promise.all(workers.map((worker) => worker.ready));
+  for (const worker of workers) worker.child.stdin.end('go\n');
+  const outcomes = await allResults;
+  await Promise.all(workers.map((worker) => worker.exited));
+
+  assert.equal(outcomes.filter((outcome) => outcome.status === 'CREATED').length, 1, JSON.stringify(outcomes));
+  assert.equal(outcomes.filter((outcome) => outcome.status === 'REPLAYED').length, 7, JSON.stringify(outcomes));
+  assert.ok(outcomes.every((outcome) => outcome.operationId === 'race-operation-shared-idempotency'), JSON.stringify(outcomes));
+  await f.reopen();
+  assert.equal(f.store.getOperation('race-operation-shared-idempotency').status, 'UNKNOWN');
+  assert.equal(f.store.listEvents('race-operation-shared-idempotency').filter((event) => event.type === 'operation.requested').length, 1);
+});
+
+test('separate processes cannot reuse one idempotency key for different payloads', { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
+  f.store.close();
+  const workers = Array.from({ length: 8 }, (_, index) => spawnSynchronizedStoreWorker(
+    workerPath, f.databasePath, index + 1, 'idempotency-conflict',
+  ));
+  t.after(async () => {
+    for (const worker of workers) {
+      if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    }
+    await Promise.all(workers.map((worker) => worker.exited));
+  });
+
+  const allResults = Promise.all(workers.map((worker) => worker.result));
+  allResults.catch(() => {});
+  await Promise.all(workers.map((worker) => worker.ready));
+  for (const worker of workers) worker.child.stdin.end('go\n');
+  const outcomes = await allResults;
+  await Promise.all(workers.map((worker) => worker.exited));
+
+  assert.equal(outcomes.filter((outcome) => outcome.status === 'CREATED').length, 1, JSON.stringify(outcomes));
+  assert.ok(outcomes.filter((outcome) => outcome.errorCode === 'idempotency_conflict').length >= 1, JSON.stringify(outcomes));
+  assert.ok(outcomes.every((outcome) => outcome.status === 'CREATED' || outcome.status === 'REPLAYED'
+    || outcome.errorCode === 'idempotency_conflict'), JSON.stringify(outcomes));
+  await f.reopen();
+  assert.ok(['start', 'stop'].includes(f.store.getOperation('race-operation-shared-idempotency').action));
+  assert.equal(f.store.listEvents('race-operation-shared-idempotency').filter((event) => event.type === 'operation.requested').length, 1);
+});
+
 test('separate processes admit only one unresolved mutation for the same Computer generation', { timeout: 60_000 }, async (t) => {
   const f = await fixture(t);
   const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));

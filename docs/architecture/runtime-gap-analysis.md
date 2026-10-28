@@ -158,3 +158,7 @@ This is a local credential contract, not the ADR-002 Guest Session endpoint: it 
 ## Guest capability synthetic performance sample
 
 The shared runtime benchmark now records issue/active-Lease resolution and authenticate/current-Lease resolution. A 20-sample Windows x64 / Node v24.13.0 synthetic run measured p50/p95 of 0.163/0.232 ms for issue and 0.113/0.147 ms for authentication in one local SQLite WAL store. The capture is `benchmarks/runtime-guest-capability-2026-10-28.json`. CI run `40658973257` passed all six OS/Node jobs including both Windows ACL integrations. The measurement excludes networking/TLS, startup ACL, concurrency and Provider activity, so it is a diagnostic baseline only and does not satisfy an agreed SLO or production endpoint performance gate.
+
+## Cross-process idempotency verification
+
+Eight synchronized SQLite worker processes now exercise both same-key cases: seven identical retries converge on the one durable operation and one `operation.requested` event, while payloads with the same key but different action are rejected as `idempotency_conflict`. Recovery reopens the store and preserves the single undispatched intent as `UNKNOWN`. This strengthens the local SQLite contention evidence for ADR-003; it does not establish cross-host ownership, Provider exactly-once effects, or power-loss behavior. The new cross-platform CI run is pending, so the evidence remains local until the Windows/macOS/Linux × Node 22/24 matrix completes.

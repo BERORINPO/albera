@@ -17,7 +17,7 @@ const quota = { maxComputers: 1, vcpu: 4, memoryMiB: 4096, diskGiB: 32 };
 const store = await openSqliteEnvironmentStore(databasePath, {
   verifyWindowsAcl: async () => {},
   recoverInterruptedRequests: false,
-  ...(['guest-event', 'begin-operation', 'release-lease', 'crash-after-begin'].includes(mode)
+  ...(['guest-event', 'begin-operation', 'idempotency-same', 'idempotency-conflict', 'release-lease', 'crash-after-begin'].includes(mode)
     ? { now: () => '2026-10-28T00:30:00.000Z' }
     : ['broker-dispatch', 'crash-after-dispatch', 'crash-after-provider-effect'].includes(mode) ? { now: () => '2026-10-28T00:00:30.000Z' } : {}),
 });
@@ -26,6 +26,10 @@ const startOperation = (workerId) => ({
   subjectId: 'human-a', projectId: 'project-a', taskId: 'task-a', runId: 'run-a',
   computerId: 'computer-a', providerId: 'mock', leaseId: 'lease-a', expectedGeneration: 1,
   policyVersion: 1, action: 'start',
+});
+const sharedIdempotencyOperation = (action = 'start') => ({
+  ...startOperation(1), operationId: 'race-operation-shared-idempotency',
+  idempotencyKey: 'race-idempotency-shared', action,
 });
 const input = createInterface({ input: process.stdin });
 const go = new Promise((resolve) => input.once('line', resolve));
@@ -70,6 +74,10 @@ try {
   } else if (mode === 'begin-operation') {
     const result = store.beginOperation(startOperation(workerId));
     process.stdout.write(`RESULT ${JSON.stringify({ status: result.created ? 'CREATED' : 'REPLAYED', operationId: result.operation.operationId })}\n`);
+  } else if (mode === 'idempotency-same' || mode === 'idempotency-conflict') {
+    const action = mode === 'idempotency-conflict' && workerId % 2 === 0 ? 'stop' : 'start';
+    const result = store.beginOperation(sharedIdempotencyOperation(action));
+    process.stdout.write(`RESULT ${JSON.stringify({ status: result.created ? 'CREATED' : 'REPLAYED', operationId: result.operation.operationId, action: result.operation.action })}\n`);
   } else if (mode === 'release-lease') {
     const lease = store.releaseLease('lease-a', {
       computerId: 'computer-a', providerId: 'mock', state: 'off', generation: 1,
