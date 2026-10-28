@@ -16,7 +16,7 @@ const quota = { maxComputers: 1, vcpu: 4, memoryMiB: 4096, diskGiB: 32 };
 const store = await openSqliteEnvironmentStore(databasePath, {
   verifyWindowsAcl: async () => {},
   recoverInterruptedRequests: false,
-  ...(['guest-event', 'broker-dispatch', 'begin-operation'].includes(mode) ? { now: () => '2026-10-28T00:30:00.000Z' } : {}),
+  ...(['guest-event', 'broker-dispatch', 'begin-operation', 'release-lease'].includes(mode) ? { now: () => '2026-10-28T00:30:00.000Z' } : {}),
 });
 const input = createInterface({ input: process.stdin });
 const go = new Promise((resolve) => input.once('line', resolve));
@@ -44,6 +44,12 @@ try {
       policyVersion: 1, action: 'start',
     });
     process.stdout.write(`RESULT ${JSON.stringify({ status: result.created ? 'CREATED' : 'REPLAYED', operationId: result.operation.operationId })}\n`);
+  } else if (mode === 'release-lease') {
+    const lease = store.releaseLease('lease-a', {
+      computerId: 'computer-a', providerId: 'mock', state: 'off', generation: 1,
+      observedAt: '2026-10-28T00:30:00.000Z',
+    });
+    process.stdout.write(`RESULT ${JSON.stringify({ status: lease.state })}\n`);
   } else if (mode === 'scheduler') {
     const result = reserveComputerForRun({
       store,

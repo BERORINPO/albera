@@ -408,6 +408,40 @@ test('separate processes admit only one unresolved mutation for the same Compute
   assert.equal(f.store.getOperation(admitted.operationId).status, 'UNKNOWN', 'startup recovery marks the admitted but undispatched intent uncertain');
 });
 
+test('Lease release and a new mutation cannot both win a cross-process race', { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
+  f.store.close();
+  const mutation = spawnSynchronizedStoreWorker(workerPath, f.databasePath, 1, 'begin-operation');
+  const release = spawnSynchronizedStoreWorker(workerPath, f.databasePath, 2, 'release-lease');
+  const workers = [mutation, release];
+  t.after(async () => {
+    for (const worker of workers) {
+      if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    }
+    await Promise.all(workers.map((worker) => worker.exited));
+  });
+
+  const outcomesPromise = Promise.all(workers.map((worker) => worker.result));
+  outcomesPromise.catch(() => {});
+  await Promise.all(workers.map((worker) => worker.ready));
+  for (const worker of workers) worker.child.stdin.end('go\n');
+  const [mutationResult, releaseResult] = await outcomesPromise;
+  await Promise.all(workers.map((worker) => worker.exited));
+
+  await f.reopen();
+  const lease = f.store.getLease(f.lease.leaseId);
+  if (mutationResult.status === 'CREATED') {
+    assert.equal(releaseResult.errorCode, 'computer_operation_unresolved');
+    assert.equal(lease.state, 'ACTIVE');
+    assert.equal(f.store.getOperation(mutationResult.operationId).status, 'UNKNOWN');
+  } else {
+    assert.equal(mutationResult.errorCode, 'lease_not_authorized');
+    assert.equal(releaseResult.status, 'RELEASED');
+    assert.equal(lease.state, 'RELEASED');
+  }
+});
+
 test('startup recovery marks only an interrupted pre-dispatch request UNKNOWN', async (t) => {
   const f = await fixture(t);
   const request = f.operation('create');
