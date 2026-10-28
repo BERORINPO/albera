@@ -910,7 +910,9 @@ test('local helper process integration: abnormal exit is represented without out
   assert.ok(!JSON.stringify(f.gateway.events()).includes('process.exit'));
 });
 
-test('local helper process integration: PID fallback does not confirm the tree when Guardian channel fails', async (t) => {
+test('local POSIX process-group fallback confirms the tree when Guardian channel fails', {
+  skip: process.platform === 'win32',
+}, async (t) => {
   let child;
   const f = await fixture({
     resolveExecutableImpl: async () => process.execPath,
@@ -931,9 +933,9 @@ test('local helper process integration: PID fallback does not confirm the tree w
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: ['-e', 'setInterval(() => {}, 1000)'] });
   await waitFor(() => f.gateway.get(run.id).status === 'running');
 
-  await assert.rejects(f.gateway.stop(run.id), (error) => error.code === 'stop_failed');
-  await waitFor(() => f.gateway.get(run.id).status === 'failed');
-  assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
+  await f.gateway.stop(run.id);
+  await waitFor(() => f.gateway.get(run.id).status === 'stopped');
+  assert.equal(f.gateway.get(run.id).treeStopConfirmed, true);
   assert.ok(child.exitCode !== null || child.signalCode !== null);
 });
 
