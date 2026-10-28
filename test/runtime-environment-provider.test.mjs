@@ -91,17 +91,35 @@ test('Hyper-V adapter rejects malformed or mismatched operations before Broker d
 });
 
 test('Hyper-V adapter preserves ambiguous Broker failures and rejects stale mutation observations', async () => {
-  const ambiguous = Object.assign(new Error('broker_timeout'), { code: 'broker_timeout' });
+  const ambiguous = Object.assign(new Error('broker_timeout credential=do-not-expose'), { code: 'broker_timeout' });
   const provider = new HyperVEnvironmentProvider({ broker: {
     createVm: async () => { throw ambiguous; },
     inspectVm: async (op) => ({ computerId: op.computerId, providerId: 'hyperv', state: 'off', generation: 2, observedAt: '2026-10-28T00:00:00.000Z' }),
     startVm: async (op) => ({ computerId: op.computerId, providerId: 'hyperv', state: 'running', generation: 2, observedAt: '2026-10-28T00:00:00.000Z' }),
     stopVm: async () => {}, removeVm: async () => {},
   } });
-  await assert.rejects(provider.create(hypervOperation('create')), (error) => error === ambiguous);
+  await assert.rejects(provider.create(hypervOperation('create')), (error) => {
+    assert.equal(error.code, 'broker_timeout');
+    assert.equal(error.outcome, 'unknown');
+    assert.doesNotMatch(error.message, /do-not-expose/);
+    return true;
+  });
   await assert.rejects(provider.start(hypervOperation('start')), (error) => error.code === 'stale_provider_observation');
   const inspected = await provider.inspect(hypervOperation('inspect'));
   assert.equal(inspected.generation, 2);
+});
+
+test('Hyper-V adapter reduces untrusted Broker errors to a safe code and outcome', async () => {
+  const provider = new HyperVEnvironmentProvider({ broker: {
+    createVm: async () => { throw Object.assign(new Error('password=secret'), { code: 'Bad Code' }); },
+    inspectVm: async () => {}, startVm: async () => {}, stopVm: async () => {}, removeVm: async () => {},
+  } });
+  await assert.rejects(provider.create(hypervOperation('create')), (error) => {
+    assert.equal(error.code, 'provider_outcome_unknown');
+    assert.equal(error.outcome, 'unknown');
+    assert.doesNotMatch(error.message, /secret/);
+    return true;
+  });
 });
 
 test('Hyper-V adapter requires the complete fixed Broker method set', () => {

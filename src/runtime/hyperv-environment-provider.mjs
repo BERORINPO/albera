@@ -58,9 +58,21 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
       throw new EnvironmentProviderError('provider_operation_mismatch', { outcome: 'not_applied' });
     }
 
-    // Invoke only a fixed typed lifecycle method. Preserving thrown errors lets
-    // the coordinator keep timeout/transport ambiguity as UNKNOWN.
-    const observed = await this.#brokerMethods[action](operation);
+    // Invoke only a fixed typed lifecycle method. Keep only a bounded error
+    // code and the definitive/not-applied bit; Broker messages may contain paths
+    // or credentials and must not escape through this adapter.
+    let observed;
+    try {
+      observed = await this.#brokerMethods[action](operation);
+    }
+    catch (error) {
+      const code = typeof error?.code === 'string' && /^[a-z0-9_]{1,64}$/.test(error.code)
+        ? error.code
+        : 'provider_outcome_unknown';
+      throw new EnvironmentProviderError(code, {
+        outcome: error?.outcome === 'not_applied' ? 'not_applied' : 'unknown',
+      });
+    }
     const normalized = validateObservedEnvironment(observed, operation);
     if (action !== 'inspect' && normalized.generation !== operation.expectedGeneration) {
       throw new EnvironmentProviderError('stale_provider_observation');
