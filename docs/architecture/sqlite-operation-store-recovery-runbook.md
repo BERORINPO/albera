@@ -5,7 +5,7 @@
 
 The store defaults `recoverInterruptedRequests` to `false`. If recovery is enabled, it exclusively creates `<databasePath>.recovery-owner`, writes a versioned marker containing a PID and random nonce, and holds the file handle until the store closes. If that path already exists, startup fails closed with `recovery_owner_locked`. The process never decides that an existing marker is stale and never removes it automatically.
 
-Recovery converts operations still in `REQUESTED` to `UNKNOWN` and records `host_interrupted`. It does not prove that a provider-side effect did not happen and does not retry it. Reconciliation must inspect the provider state before any later action.
+Recovery converts operations still in `REQUESTED` to `UNKNOWN` and records `host_interrupted`. It does not prove that a provider-side effect did not happen and does not retry it. The Store blocks later mutations and Lease release for that Computer generation until the operation is reconciled to a terminal state; reconciliation must inspect provider state and cannot prove an unobservable in-flight call has stopped.
 
 ## Current limitation
 

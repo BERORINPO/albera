@@ -435,6 +435,8 @@ test('Broker journal resolution binds the typed reference and atomically claims 
   const f = await fixture(t);
   const input = f.operation('create');
   const begun = f.store.beginOperation(input);
+  assert.throws(() => f.store.beginOperation(f.operation('start')),
+    (error) => error instanceof EnvironmentStoreError && error.code === 'computer_operation_unresolved');
   const brokerRef = {
     protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
     operationId: input.operationId, expectedGeneration: input.expectedGeneration,
@@ -531,6 +533,7 @@ test('timeout after provider success reconciles by inspection and never duplicat
 test('provider action completing after coordinator timeout remains UNKNOWN until inspection and is never replayed', async (t) => {
   let state = 'off';
   let starts = 0;
+  let stops = 0;
   const delayedProvider = {
     providerId: 'mock',
     create: async (operation) => ({ computerId: operation.computerId, providerId: 'mock', state: 'off',
@@ -544,8 +547,12 @@ test('provider action completing after coordinator timeout remains UNKNOWN until
       return { computerId: operation.computerId, providerId: 'mock', state,
         generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:02.000Z' };
     },
-    stop: async (operation) => ({ computerId: operation.computerId, providerId: 'mock', state: 'off',
-      generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:03.000Z' }),
+    stop: async (operation) => {
+      stops++;
+      state = 'off';
+      return { computerId: operation.computerId, providerId: 'mock', state,
+        generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:03.000Z' };
+    },
     destroy: async (operation) => ({ computerId: operation.computerId, providerId: 'mock', state: 'missing',
       generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:04.000Z' }),
   };
@@ -556,6 +563,14 @@ test('provider action completing after coordinator timeout remains UNKNOWN until
   assert.equal(timedOut.status, 'UNKNOWN');
   assert.equal(timedOut.errorCode, 'provider_timeout');
   assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
+  await assert.rejects(f.coordinator.execute(f.operation('stop', {
+    operationId: 'operation-stop-while-start-unknown', idempotencyKey: 'idem-stop-while-start-unknown',
+  })), (error) => error.code === 'computer_operation_unresolved');
+  assert.throws(() => f.store.releaseLease(f.lease.leaseId, {
+    computerId: f.computerId, providerId: 'mock', state: 'off', generation: f.lease.generation,
+    observedAt: '2026-10-28T00:00:01.000Z',
+  }), (error) => error.code === 'computer_operation_unresolved');
+  assert.equal(stops, 0);
 
   await new Promise((resolve) => setTimeout(resolve, 80));
   assert.equal(state, 'running', 'the timed-out provider action may still complete');
@@ -564,6 +579,14 @@ test('provider action completing after coordinator timeout remains UNKNOWN until
   assert.equal(reconciled.observedState, 'running');
   assert.equal((await f.coordinator.execute(request)).status, 'SUCCEEDED');
   assert.equal(starts, 1, 'idempotent replay never invokes a second provider mutation');
+  const stopped = await f.coordinator.execute(f.operation('stop'));
+  assert.equal(stopped.status, 'SUCCEEDED');
+  assert.equal(stops, 1);
+  const released = f.store.releaseLease(f.lease.leaseId, {
+    computerId: f.computerId, providerId: 'mock', state: 'off', generation: f.lease.generation,
+    observedAt: '2026-10-28T00:00:03.000Z',
+  });
+  assert.equal(released.state, 'RELEASED');
 });
 
 test('typed Hyper-V adapter runs behind the durable journal and reconciles a lost create reply without replay', async (t) => {

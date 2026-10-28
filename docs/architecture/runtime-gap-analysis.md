@@ -83,6 +83,14 @@ The adapter now catches failures while validating Broker observations and raises
 
 The durable coordinator also has a delayed-Mock regression: an action completing after the configured deadline remains `UNKNOWN`, is resolved by a later inspection, and an idempotent replay does not invoke the mutation twice. The focused SQLite suite passes 30/30 and the full local suite passes 614 with 7 platform skips.
 
+## Follow-up review — serialize unresolved Provider mutations
+
+The delayed-completion test exposed an additional journal race: while a dispatched mutation remained `UNKNOWN`, the same Computer generation could accept a different mutation and could release its Lease using a temporary `off` observation. A timed-out Provider call may still complete later, so those paths could overlap a start/stop or release capacity before execution has converged.
+
+`SqliteEnvironmentOperationStore.beginOperation()` now rejects new `create`, `start`, `stop`, or `destroy` intents while that Computer generation has a mutating operation in `REQUESTED` or `UNKNOWN`. `releaseLease()` applies the same guard; `inspect` remains available for reconciliation. Both checks run inside SQLite transactions. Tests cover the pre-dispatch `REQUESTED` window, a delayed timed-out `start`, refusal of a concurrent `stop` and lease release, then successful inspection, stop, and release after resolution. Focused SQLite tests pass 30/30; full local tests pass 614 with 7 platform skips and `npm run arch` reports 92 paths / 0 violations.
+
+This serializes host journal decisions only. It does not cancel an in-flight Provider call or establish authenticated Broker-side exclusion. If an operation remains `UNKNOWN`, its Lease/capacity remains reserved and additional mutation is refused until state can be reconciled. Real-provider fencing and termination proof remain unimplemented.
+
 The Architecture Draft's `acceptance-criteria.json` was read from `docs/albera-architecture-v4`. All 17 criteria remain `NOT_VERIFIED` by design: local tests cover portions of SEC-01/02, DUR-01/02 and CMP-02, but do not provide the required end-to-end host/guest, restore, tenant-isolation, orchestration, Git-promotion, UI ownership or fixed-machine performance evidence. No criterion should be promoted based on this PR.
 
 ## Broker IPC design findings (proposal only; ADR-002 remains Proposed)

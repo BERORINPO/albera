@@ -240,6 +240,9 @@ class SqliteEnvironmentOperationStore {
       if (!lease) throw new EnvironmentStoreError('lease_unknown');
       if (lease.state === 'RELEASED') return mapLease(lease);
       const computer = this.#db.prepare('SELECT * FROM computers WHERE id = ?').get(lease.computer_id);
+      if (hasUnresolvedProviderMutation(this.#db, computer.id, computer.generation)) {
+        throw new EnvironmentStoreError('computer_operation_unresolved');
+      }
       const observation = validateObservedEnvironment(observed, { computerId: computer.id, providerId: computer.provider_id });
       if (observation.generation !== computer.generation || !['off', 'missing'].includes(observation.state)) {
         throw new EnvironmentStoreError('stop_not_confirmed');
@@ -274,6 +277,10 @@ class SqliteEnvironmentOperationStore {
         || lease.task_id !== operation.taskId || lease.run_id !== operation.runId || lease.computer_id !== operation.computerId
         || lease.generation !== operation.expectedGeneration || lease.state !== 'ACTIVE' || Date.parse(lease.expires_at) <= Date.parse(timestamp)) {
         throw new EnvironmentStoreError('lease_not_authorized');
+      }
+      if (operation.action !== 'inspect'
+        && hasUnresolvedProviderMutation(this.#db, operation.computerId, operation.expectedGeneration)) {
+        throw new EnvironmentStoreError('computer_operation_unresolved');
       }
       this.#assertCapacity(2);
       this.#db.prepare(`INSERT INTO operations (
@@ -684,6 +691,14 @@ function sortObject(value) {
 function isId(value) { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value); }
 function isTimestamp(value) { return typeof value === 'string' && Number.isFinite(Date.parse(value)); }
 function isWindowsUncPath(value) { return /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+/.test(value); }
+
+function hasUnresolvedProviderMutation(db, computerId, generation) {
+  return Boolean(db.prepare(`SELECT id FROM operations
+    WHERE computer_id = ? AND generation = ?
+      AND action IN ('create', 'start', 'stop', 'destroy')
+      AND status IN ('REQUESTED', 'UNKNOWN')
+    LIMIT 1`).get(computerId, generation));
+}
 
 async function acquireRecoveryOwnerLock(databasePath, verifyWindowsAcl) {
   const lockPath = `${databasePath}.recovery-owner`;

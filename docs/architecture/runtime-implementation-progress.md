@@ -82,6 +82,13 @@ This file is the continuation ledger. `VERIFIED` refers only to the stated evide
 - Local Windows Node `v24.13.0`: focused SQLite suite 30/30; full `npm test` 621 total (614 passed, 7 skipped, 0 failed). Actions run `40623067185` passed all six Windows/macOS/Linux × Node 22/24 jobs on code/test commit `8ef47f1`; both Windows gated storage ACL integrations passed. The runbook proposal at `docs/architecture/sqlite-operation-store-recovery-runbook.md` describes safe stale-marker handling but is not an executable operator procedure; service startup and recovery CLI remain missing.
 - This is Mock-only evidence. It does not prove provider cancellation, VM termination, or authenticated Host Broker behavior. No new dependency or real external action was used.
 
+## Serialize mutations behind unresolved Computer operations
+
+- Review of late Provider completion exposed a state race: after one mutation timed out to `UNKNOWN`, the same Lease could start another mutation or release capacity based on a transient `off` observation while the original Provider call might still finish later.
+- `beginOperation()` now rejects a new `create`/`start`/`stop`/`destroy` for the same Computer generation while a mutation is `REQUESTED` or `UNKNOWN`. `releaseLease()` also refuses to release capacity under those conditions. Read-only `inspect` remains available for reconciliation. The guard executes inside the same SQLite transaction, so cross-process callers cannot both pass it concurrently.
+- Regression coverage checks a second mutation while the first intent is only `REQUESTED`, a stop and Lease release during a timed-out delayed start, and successful reconciliation followed by stop and release. Focused SQLite tests pass 30/30; full `npm test` passes 621 total (614 passed, 7 skipped, 0 failed); `npm run arch` passes 92 role paths with 0 violations.
+- The unresolved operation remains `UNKNOWN`; this guard does not cancel or prove termination of an already dispatched Provider call. Authenticated Broker serialization and provider-side fencing remain required before real execution.
+
 ## Hyper-V readiness constraints (not verified)
 
 - Intended host family is Windows with Hyper-V, but supported Windows edition/build, host configuration and Hyper-V feature prerequisites are **not selected or verified**. No host readiness probe or real Hyper-V API binding exists.
