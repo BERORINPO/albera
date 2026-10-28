@@ -17,8 +17,9 @@ const quota = { maxComputers: 1, vcpu: 4, memoryMiB: 4096, diskGiB: 32 };
 const store = await openSqliteEnvironmentStore(databasePath, {
   verifyWindowsAcl: async () => {},
   recoverInterruptedRequests: false,
-  ...(['guest-event', 'broker-dispatch', 'begin-operation', 'release-lease', 'crash-after-begin', 'crash-after-dispatch'].includes(mode)
-    ? { now: () => '2026-10-28T00:30:00.000Z' } : {}),
+  ...(['guest-event', 'begin-operation', 'release-lease', 'crash-after-begin'].includes(mode)
+    ? { now: () => '2026-10-28T00:30:00.000Z' }
+    : ['broker-dispatch', 'crash-after-dispatch'].includes(mode) ? { now: () => '2026-10-28T00:00:30.000Z' } : {}),
 });
 const startOperation = (workerId) => ({
   operationId: `race-operation-${workerId}`, idempotencyKey: `race-idempotency-${workerId}`,

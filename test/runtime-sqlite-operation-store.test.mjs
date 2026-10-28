@@ -28,7 +28,7 @@ async function fixture(t, { provider: injectedProvider, authorizeOperation: inje
   let nowMs = Date.parse('2026-10-28T00:00:00.000Z');
   const now = () => new Date(nowMs).toISOString();
   const authorizeOperation = injectedAuthorizer ?? (({ operation, actionDigest, purpose }) => ({
-    decision: 'approved', approvalId: 'approval-test-1', approverId: 'human-approver',
+    decision: 'approved', approvalId: randomUUID(), approverId: 'human-approver',
     operationId: operation.operationId, idempotencyKey: operation.idempotencyKey,
     subjectId: operation.subjectId, projectId: operation.projectId, policyVersion: operation.policyVersion,
     actionDigest, purpose, expiresAt: new Date(nowMs + 60_000).toISOString(),
@@ -56,7 +56,7 @@ async function fixture(t, { provider: injectedProvider, authorizeOperation: inje
   });
   return {
     root, databasePath, now, advance: (milliseconds) => { nowMs += milliseconds; },
-    provider, operation, computerId, lease,
+    provider, operation, computerId, lease, authorizeOperation,
     get coordinator() { return coordinator; },
     reopen: async () => {
       store.close();
@@ -67,6 +67,13 @@ async function fixture(t, { provider: injectedProvider, authorizeOperation: inje
     },
     get store() { return store; },
   };
+}
+
+async function recordExecutionApproval(f, operation, begun) {
+  const authorization = await f.authorizeOperation({
+    operation, actionDigest: `sha256:${begun.operation.actionDigest}`, purpose: 'execute',
+  });
+  return f.store.recordOperationAuthorization(operation.operationId, authorization, { purpose: 'execute' });
 }
 
 function spawnSynchronizedStoreWorker(workerPath, databasePath, workerId, mode, ...args) {
@@ -111,7 +118,7 @@ function spawnSynchronizedStoreWorker(workerPath, databasePath, workerId, mode, 
 
 test('SQLite store uses WAL, FULL synchronous writes, foreign keys, and a versioned schema', async (t) => {
   const f = await fixture(t);
-  assert.deepEqual(f.store.diagnostics(), { journalMode: 'wal', synchronous: 2, foreignKeys: 1, schemaVersion: 3 });
+  assert.deepEqual(f.store.diagnostics(), { journalMode: 'wal', synchronous: 2, foreignKeys: 1, schemaVersion: 4 });
   assert.equal(f.store.getComputer(f.computerId).generation, 1);
   if (process.platform !== 'win32') assert.equal((await stat(f.databasePath)).mode & 0o777, 0o600);
 });
@@ -151,7 +158,7 @@ test('SQLite snapshot restore verifies the backup, recovers pending work, and fe
   const request = f.operation('start');
   f.store.beginOperation(request);
   const backupPath = path.join(f.root, 'operations-backup.sqlite');
-  assert.deepEqual(await f.store.backupTo(backupPath), { status: 'BACKED_UP', schemaVersion: 3 });
+  assert.deepEqual(await f.store.backupTo(backupPath), { status: 'BACKED_UP', schemaVersion: 4 });
   assert.equal(f.store.getOperation(request.operationId).status, 'REQUESTED', 'snapshot does not mutate the live store');
   if (process.platform !== 'win32') assert.equal((await stat(backupPath)).mode & 0o777, 0o600);
 
@@ -170,6 +177,39 @@ test('SQLite snapshot restore verifies the backup, recovers pending work, and fe
     (error) => error.code === 'stale_generation');
   assert.equal(f.store.getLease(f.lease.leaseId).state, 'ACTIVE', 'restore does not mutate the source store');
   restored.close();
+});
+
+test('SQLite restore migrates a valid schema v3 snapshot without changing source bytes or dropping existing rows', async (t) => {
+  const f = await fixture(t);
+  const computer = f.store.getComputer(f.computerId);
+  const lease = f.store.getLease(f.lease.leaseId);
+  const operation = f.operation('create');
+  f.store.beginOperation(operation);
+  const priorEventCount = f.store.listEvents(f.computerId).length;
+  const backupPath = path.join(f.root, 'schema-v3.backup.sqlite');
+  const restoredPath = path.join(f.root, 'schema-v3.restored.sqlite');
+  await f.store.backupTo(backupPath);
+  const legacy = new DatabaseSync(backupPath);
+  legacy.exec('DROP TABLE operation_authorizations; PRAGMA user_version = 3');
+  legacy.close();
+  const sourceBytes = await readFile(backupPath);
+
+  const restored = await restoreSqliteEnvironmentStore(backupPath, restoredPath, {
+    now: () => '2026-10-28T00:00:00.000Z', verifyWindowsAcl: async () => {},
+  });
+  assert.equal(restored.diagnostics().schemaVersion, 4);
+  const restoredComputer = restored.getComputer(f.computerId);
+  assert.equal(restoredComputer.computerId, computer.computerId);
+  assert.equal(restoredComputer.projectId, computer.projectId);
+  assert.equal(restoredComputer.providerId, computer.providerId);
+  assert.equal(restoredComputer.generation, computer.generation + 1, 'restore advances the stored Computer epoch');
+  assert.equal(restored.getLease(f.lease.leaseId).leaseId, lease.leaseId);
+  assert.equal(restored.getLease(f.lease.leaseId).generation, lease.generation, 'the historical Lease row is retained');
+  assert.equal(restored.getLease(f.lease.leaseId).state, 'REVOKED', 'restore revokes the historical Lease');
+  assert.equal(restored.getOperation(operation.operationId).status, 'UNKNOWN', 'pre-restore operation is retained and conservatively recovered');
+  assert.ok(restored.listEvents(f.computerId).length > priorEventCount, 'existing events remain and restore fencing is appended');
+  restored.close();
+  assert.deepEqual(await readFile(backupPath), sourceBytes, 'restoring never rewrites the legacy snapshot');
 });
 
 test('SQLite backup and restore refuse overwrite, tampering, and path aliasing without deleting existing data', async (t) => {
@@ -360,7 +400,7 @@ test('schema v1 migration preserves existing Computer and Lease rows', async (t)
   let store;
   try {
     store = await openSqliteEnvironmentStore(databasePath, { verifyWindowsAcl: async () => {} });
-    assert.equal(store.diagnostics().schemaVersion, 3);
+    assert.equal(store.diagnostics().schemaVersion, 4);
     assert.equal(store.getComputer('legacy-computer').projectId, 'legacy-project');
     assert.equal(store.getComputer('legacy-computer').capacity, null);
     assert.equal(store.getLease('legacy-lease').state, 'ACTIVE');
@@ -377,10 +417,10 @@ test('schema v2 migration creates the durable Guest event inbox without deleting
   const lease = f.store.getLease(f.lease.leaseId);
   f.store.close();
   const db = new DatabaseSync(f.databasePath);
-  db.exec('DROP TABLE guest_event_receipts; PRAGMA user_version = 2');
+  db.exec('DROP TABLE operation_authorizations; DROP TABLE guest_event_receipts; PRAGMA user_version = 2');
   db.close();
   await f.reopen();
-  assert.equal(f.store.diagnostics().schemaVersion, 3);
+  assert.equal(f.store.diagnostics().schemaVersion, 4);
   assert.equal(f.store.getComputer(f.computerId).generation, computer.generation);
   assert.equal(f.store.getLease(f.lease.leaseId).runId, lease.runId);
   assert.deepEqual(f.store.recordGuestEvent({
@@ -388,6 +428,22 @@ test('schema v2 migration creates the durable Guest event inbox without deleting
     computerId: f.computerId, runId: lease.runId, generation: lease.generation, sequence: 1,
     occurredAt: '2026-10-28T00:00:00.000Z', eventType: 'heartbeat', agentVersion: '0.1.0',
   }).status, 'ACCEPTED');
+});
+
+test('schema v3 migration adds durable approval records without changing existing operation state', async (t) => {
+  const f = await fixture(t);
+  const request = f.operation('create');
+  f.store.beginOperation(request);
+  f.store.recordProviderOutcome(request.operationId, { errorCode: 'fixture_failed', outcome: 'not_applied' });
+  const before = f.store.getOperation(request.operationId);
+  f.store.close();
+  const db = new DatabaseSync(f.databasePath);
+  db.exec('DROP TABLE operation_authorizations; PRAGMA user_version = 3');
+  db.close();
+  await f.reopen();
+  assert.equal(f.store.diagnostics().schemaVersion, 4);
+  assert.deepEqual(f.store.getOperation(request.operationId), before);
+  assert.deepEqual(f.store.listOperationAuthorizations(request.operationId), []);
 });
 
 test('durable Guest event intake acknowledges exact retries and rejects replay, gaps, conflicts and stale leases', async (t) => {
@@ -561,6 +617,7 @@ test('separate processes atomically claim one Broker dispatch from the durable j
   const f = await fixture(t);
   const request = f.operation('create');
   const begun = f.store.beginOperation(request);
+  await recordExecutionApproval(f, request, begun);
   const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
   f.store.close();
   const workers = Array.from({ length: 8 }, (_, index) => spawnSynchronizedStoreWorker(
@@ -585,7 +642,9 @@ test('separate processes atomically claim one Broker dispatch from the durable j
   assert.equal(outcomes.filter((outcome) => outcome.errorCode === 'operation_not_dispatchable').length, 7, JSON.stringify(outcomes));
   await f.reopen();
   assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
+  assert.equal(f.store.listOperationAuthorizations(request.operationId)[0].state, 'CONSUMED', 'the one-time claim is consumed by the winning transaction');
   assert.equal(f.store.listEvents(f.computerId).filter((event) => event.type === 'operation.dispatch_authorized').length, 1);
+  assert.equal(f.store.listEvents(f.computerId).filter((event) => event.type === 'operation.authorization_consumed').length, 1);
 });
 
 test('separate processes admit only one unresolved mutation for the same Computer generation', { timeout: 60_000 }, async (t) => {
@@ -685,6 +744,7 @@ test('abrupt host exit after dispatch claim preserves UNKNOWN and denies redispa
   const f = await fixture(t);
   const request = f.operation('create');
   const begun = f.store.beginOperation(request);
+  await recordExecutionApproval(f, request, begun);
   const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
   f.store.close();
   const worker = spawnSynchronizedStoreWorker(workerPath, f.databasePath, 1, 'crash-after-dispatch',
@@ -753,6 +813,14 @@ test('durable intent is recorded before provider action and idempotent replay ne
   assert.equal(first.status, 'SUCCEEDED');
   assert.equal(first.desiredState, 'off');
   assert.equal(first.observedState, 'off');
+  const approvals = f.store.listOperationAuthorizations(request.operationId);
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0].purpose, 'execute');
+  assert.equal(approvals[0].state, 'CONSUMED');
+  assert.equal(approvals[0].actionDigest, `sha256:${f.store.getOperation(request.operationId).actionDigest}`);
+  assert.ok(f.store.listEvents(f.computerId).some((event) => event.type === 'operation.authorization_recorded'));
+  assert.ok(f.store.listEvents(f.computerId).some((event) => event.type === 'operation.authorization_consumed'));
+  assert.doesNotMatch(JSON.stringify(approvals), /token|secret|credential/i);
   assert.equal(f.store.listEvents(f.computerId).find((event) => event.type === 'operation.succeeded').provenance, 'provider');
   const duplicate = await f.coordinator.execute({ ...request, operationId: 'operation-create-retry' });
   assert.equal(duplicate.operationId, request.operationId);
@@ -800,7 +868,7 @@ test('authorization grant must bind the exact subject, project, policy, digest a
   for (const [label, mutate] of mutations) {
     await t.test(label, async (subtest) => {
       const f = await fixture(subtest, { authorizeOperation: ({ operation, actionDigest, purpose }) => mutate({
-        decision: 'approved', approvalId: 'approval-test-1', approverId: 'human-approver',
+        decision: 'approved', approvalId: randomUUID(), approverId: 'human-approver',
         operationId: operation.operationId, idempotencyKey: operation.idempotencyKey,
         subjectId: operation.subjectId, projectId: operation.projectId, policyVersion: operation.policyVersion,
         actionDigest, purpose, expiresAt: new Date(Date.parse('2026-10-28T00:01:00.000Z')).toISOString(),
@@ -816,7 +884,7 @@ test('expired and overlong authorization grants fail closed before journaling', 
   for (const [label, offset] of [['expired', -1], ['overlong', 5 * 60 * 1000 + 1]]) {
     await t.test(label, async (subtest) => {
       const f = await fixture(subtest, { authorizeOperation: ({ operation, actionDigest, purpose }) => ({
-        decision: 'approved', approvalId: 'approval-test-1', approverId: 'human-approver',
+        decision: 'approved', approvalId: randomUUID(), approverId: 'human-approver',
         operationId: operation.operationId, idempotencyKey: operation.idempotencyKey,
         subjectId: operation.subjectId, projectId: operation.projectId, policyVersion: operation.policyVersion,
         actionDigest, purpose, expiresAt: new Date(Date.parse('2026-10-28T00:00:00.000Z') + offset).toISOString(),
@@ -848,11 +916,59 @@ test('authorization expiring after the durable dispatch claim prevents provider 
   assert.equal(f.store.getOperation(request.operationId).status, 'FAILED');
 });
 
+test('durable authorization ledger rejects mismatches, expired claims and reused approval IDs', async (t) => {
+  const f = await fixture(t);
+  const request = f.operation('create');
+  const begun = f.store.beginOperation(request);
+  const authorization = await f.authorizeOperation({
+    operation: request, actionDigest: `sha256:${begun.operation.actionDigest}`, purpose: 'execute',
+  });
+
+  assert.throws(() => f.store.recordOperationAuthorization(request.operationId,
+    { ...authorization, purpose: 'reconcile' }, { purpose: 'execute' }),
+  (error) => error instanceof EnvironmentStoreError && error.code === 'authorization_record_mismatch');
+  assert.throws(() => f.store.recordOperationAuthorization(request.operationId,
+    { ...authorization, actionDigest: `sha256:${'0'.repeat(64)}` }, { purpose: 'execute' }),
+  (error) => error instanceof EnvironmentStoreError && error.code === 'authorization_record_mismatch');
+
+  const recorded = f.store.recordOperationAuthorization(request.operationId, authorization, { purpose: 'execute' });
+  assert.equal(recorded.state, 'RECORDED');
+  assert.throws(() => f.store.recordOperationAuthorization(request.operationId, authorization, { purpose: 'execute' }),
+    (error) => error instanceof EnvironmentStoreError && error.code === 'authorization_reused');
+  assert.equal(f.store.listOperationAuthorizations(request.operationId).length, 1);
+
+  const expiredFixture = await fixture(t);
+  const expiredOperation = expiredFixture.operation('create');
+  const expiredBegin = expiredFixture.store.beginOperation(expiredOperation);
+  const shortGrant = await expiredFixture.authorizeOperation({
+    operation: expiredOperation, actionDigest: `sha256:${expiredBegin.operation.actionDigest}`, purpose: 'execute',
+  });
+  expiredFixture.advance(60_001);
+  assert.throws(() => expiredFixture.store.recordOperationAuthorization(expiredOperation.operationId, shortGrant, { purpose: 'execute' }),
+    (error) => error instanceof EnvironmentStoreError && error.code === 'authorization_expired');
+  assert.equal(expiredFixture.store.listOperationAuthorizations(expiredOperation.operationId).length, 0);
+});
+
+test('Broker dispatch refuses an expired approval while the Lease remains active', async (t) => {
+  const f = await fixture(t);
+  const request = f.operation('create');
+  const begun = f.store.beginOperation(request);
+  await recordExecutionApproval(f, request, begun);
+  f.advance(6 * 60 * 1000);
+  assert.throws(() => f.store.resolveBrokerDispatch({
+    protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+    operationId: request.operationId, expectedGeneration: request.expectedGeneration,
+    actionDigest: `sha256:${begun.operation.actionDigest}`,
+  }), (error) => error instanceof EnvironmentStoreError && error.code === 'authorization_expired');
+  assert.equal(f.store.getOperation(request.operationId).status, 'REQUESTED');
+  assert.equal(f.store.listOperationAuthorizations(request.operationId)[0].state, 'RECORDED');
+});
+
 test('UNKNOWN reconciliation requires a separate inspect-bound authorization', async (t) => {
   const f = await fixture(t, { authorizeOperation: ({ operation, actionDigest, purpose }) => {
     if (purpose === 'reconcile') throw new Error('approval_missing');
     return {
-      decision: 'approved', approvalId: 'approval-test-1', approverId: 'human-approver',
+      decision: 'approved', approvalId: randomUUID(), approverId: 'human-approver',
       operationId: operation.operationId, idempotencyKey: operation.idempotencyKey,
       subjectId: operation.subjectId, projectId: operation.projectId, policyVersion: operation.policyVersion,
       actionDigest, purpose, expiresAt: new Date(Date.parse('2026-10-28T00:01:00.000Z')).toISOString(),
@@ -880,6 +996,10 @@ test('Broker journal resolution binds the typed reference and atomically claims 
     operationId: input.operationId, expectedGeneration: input.expectedGeneration,
     actionDigest: `sha256:${begun.operation.actionDigest}`,
   };
+  assert.throws(() => f.store.resolveBrokerDispatch(brokerRef),
+    (error) => error instanceof EnvironmentStoreError && error.code === 'broker_authorization_missing');
+  assert.equal(f.store.getOperation(input.operationId).status, 'REQUESTED', 'missing approval cannot claim the dispatch');
+  await recordExecutionApproval(f, input, begun);
   assert.deepEqual(f.store.resolveBrokerDispatch(brokerRef), input);
   assert.equal(f.store.getOperation(input.operationId).status, 'UNKNOWN', 'dispatch intent is durable before provider I/O');
   assert.throws(() => f.store.resolveBrokerDispatch({ ...brokerRef, requestId: randomUUID() }),
@@ -892,6 +1012,7 @@ test('Broker journal resolution refuses a stored operation payload whose digest 
   const f = await fixture(t);
   const input = f.operation('create');
   const begun = f.store.beginOperation(input);
+  await recordExecutionApproval(f, input, begun);
   const tamperedDb = new DatabaseSync(f.databasePath);
   tamperedDb.prepare('UPDATE operations SET request_json = ? WHERE id = ?')
     .run(JSON.stringify({ ...input, policyVersion: input.policyVersion + 1 }), input.operationId);
@@ -907,6 +1028,7 @@ test('Broker journal resolution rejects an expired, revoked, or restored Lease b
   const expired = await fixture(t);
   const expiredInput = expired.operation('create');
   const expiredRecord = expired.store.beginOperation(expiredInput).operation;
+  await recordExecutionApproval(expired, expiredInput, { operation: expiredRecord });
   expired.advance(60 * 60 * 1000);
   assert.throws(() => expired.store.resolveBrokerDispatch({
     protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
@@ -917,6 +1039,7 @@ test('Broker journal resolution rejects an expired, revoked, or restored Lease b
   const revoked = await fixture(t);
   const revokedInput = revoked.operation('create');
   const revokedRecord = revoked.store.beginOperation(revokedInput).operation;
+  await recordExecutionApproval(revoked, revokedInput, { operation: revokedRecord });
   revoked.store.revokeLease(revoked.lease.leaseId, { reason: 'policy_changed' });
   assert.throws(() => revoked.store.resolveBrokerDispatch({
     protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
@@ -927,6 +1050,7 @@ test('Broker journal resolution rejects an expired, revoked, or restored Lease b
   const restored = await fixture(t);
   const restoredInput = restored.operation('create');
   const restoredRecord = restored.store.beginOperation(restoredInput).operation;
+  await recordExecutionApproval(restored, restoredInput, { operation: restoredRecord });
   restored.store.revokeLease(restored.lease.leaseId, { reason: 'restore' });
   assert.throws(() => restored.store.resolveBrokerDispatch({
     protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
@@ -939,6 +1063,7 @@ test('operation intent interrupted by host close becomes UNKNOWN after reopen an
   const f = await fixture(t);
   const request = f.operation('create');
   const begun = f.store.beginOperation(request);
+  await recordExecutionApproval(f, request, begun);
   assert.equal(begun.created, true);
   assert.equal(begun.operation.status, 'REQUESTED');
   f.store.resolveBrokerDispatch({
@@ -965,6 +1090,8 @@ test('timeout after provider success reconciles by inspection and never duplicat
   const reconciled = await f.coordinator.reconcile(request.operationId);
   assert.equal(reconciled.status, 'SUCCEEDED');
   assert.equal(reconciled.observedState, 'off');
+  const approvals = f.store.listOperationAuthorizations(request.operationId);
+  assert.deepEqual(approvals.map(({ purpose, state }) => [purpose, state]).sort(), [['execute', 'CONSUMED'], ['reconcile', 'CONSUMED']]);
   assert.equal((await f.coordinator.execute(request)).operationId, request.operationId);
 });
 

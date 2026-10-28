@@ -9,7 +9,7 @@ import { assertBrokerRequestMatchesAuthorization, validateBrokerRequest, validat
 import { assertPrivateWindowsAcl, RuntimeStorageAclError } from './windows-acl.mjs';
 import { EnvironmentProviderError, validateEnvironmentCapacity, validateEnvironmentOperation, validateEnvironmentQuota, validateEnvironmentSpec, validateObservedEnvironment } from './environment-provider.mjs';
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const DEFAULT_MAX_RECORDS = 20_000;
 const HARD_MAX_RECORDS = 100_000;
 const RECOVERY_OWNER_MAGIC = 'ALBERA_SQLITE_RECOVERY_OWNER_V1';
@@ -422,6 +422,58 @@ class SqliteEnvironmentOperationStore {
     });
   }
 
+  /** Persist only non-secret approval evidence. The trusted authorizer remains responsible for identity and policy verification. */
+  recordOperationAuthorization(operationId, authorization, { purpose } = {}) {
+    this.#assertOpen();
+    if (!isId(operationId) || !['execute', 'reconcile'].includes(purpose)) {
+      throw new EnvironmentStoreError('authorization_record_invalid');
+    }
+    const timestamp = this.#timestamp();
+    return this.#transaction(() => {
+      const row = this.#db.prepare('SELECT * FROM operations WHERE id = ?').get(operationId);
+      if (!row) throw new EnvironmentStoreError('operation_unknown');
+      if (row.status !== (purpose === 'execute' ? 'REQUESTED' : 'UNKNOWN')) {
+        throw new EnvironmentStoreError('authorization_operation_state_invalid');
+      }
+      let request;
+      try { request = validateEnvironmentOperation(JSON.parse(row.request_json)); }
+      catch { throw new EnvironmentStoreError('operation_journal_corrupt'); }
+      const { spec: _spec, ...requestWithoutSpec } = request;
+      const authorizationDigest = purpose === 'execute' ? row.action_digest
+        : digestOperation({ ...requestWithoutSpec, action: 'inspect' });
+      const normalized = normalizeOperationAuthorization(authorization, {
+        operationId: row.id, idempotencyKey: row.idempotency_key, subjectId: row.subject_id,
+        projectId: row.project_id, policyVersion: request.policyVersion,
+        actionDigest: `sha256:${authorizationDigest}`, purpose, nowMs: Date.parse(timestamp),
+      });
+      if (this.#db.prepare('SELECT approval_id FROM operation_authorizations WHERE approval_id = ?').get(normalized.approvalId)) {
+        throw new EnvironmentStoreError('authorization_reused');
+      }
+      this.#assertCapacity(2);
+      const state = purpose === 'reconcile' ? 'CONSUMED' : 'RECORDED';
+      this.#db.prepare(`INSERT INTO operation_authorizations (
+        approval_id, operation_id, purpose, operation_idempotency_key, approver_id, subject_id, project_id,
+        policy_version, action_digest, expires_at, state, recorded_at, consumed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(normalized.approvalId, row.id, purpose, row.idempotency_key, normalized.approverId,
+          row.subject_id, row.project_id, request.policyVersion, authorizationDigest, normalized.expiresAt,
+          state, timestamp, purpose === 'reconcile' ? timestamp : null);
+      this.#event(row.computer_id, row.id, purpose === 'reconcile' ? 'operation.authorization_consumed' : 'operation.authorization_recorded', {
+        approvalId: normalized.approvalId, approverId: normalized.approverId, subjectId: row.subject_id,
+        projectId: row.project_id, actionDigest: `sha256:${authorizationDigest}`, policyVersion: request.policyVersion,
+        purpose, generation: row.generation, expiresAt: normalized.expiresAt,
+      }, timestamp);
+      return mapOperationAuthorization(this.#db.prepare('SELECT * FROM operation_authorizations WHERE approval_id = ?').get(normalized.approvalId));
+    });
+  }
+
+  listOperationAuthorizations(operationId) {
+    this.#assertOpen();
+    if (!isId(operationId)) throw new EnvironmentStoreError('operation_id_invalid');
+    return this.#db.prepare('SELECT * FROM operation_authorizations WHERE operation_id = ? ORDER BY recorded_at, approval_id')
+      .all(operationId).map(mapOperationAuthorization);
+  }
+
   recordProviderOutcome(operationId, { observed, errorCode, outcome = 'unknown' } = {}) {
     this.#assertOpen();
     if (!isId(operationId)) throw new EnvironmentStoreError('operation_id_invalid');
@@ -538,8 +590,29 @@ class SqliteEnvironmentOperationStore {
         || Date.parse(lease.expires_at) <= Date.parse(this.#timestamp())) {
         throw new EnvironmentStoreError('lease_not_authorized');
       }
-      // Claim dispatch durably before the external side effect. A crash after this point is UNKNOWN and must reconcile, never replay.
       const timestamp = this.#timestamp();
+      const authorization = this.#db.prepare(`SELECT * FROM operation_authorizations
+        WHERE operation_id = ? AND purpose = 'execute'`).get(row.id);
+      if (!authorization || authorization.state !== 'RECORDED'
+        || authorization.operation_idempotency_key !== row.idempotency_key
+        || authorization.subject_id !== row.subject_id || authorization.project_id !== row.project_id
+        || authorization.policy_version !== journalOperation.policyVersion
+        || authorization.action_digest !== row.action_digest) {
+        throw new EnvironmentStoreError('broker_authorization_missing');
+      }
+      if (Date.parse(authorization.expires_at) <= Date.parse(timestamp)) {
+        throw new EnvironmentStoreError('authorization_expired');
+      }
+      // Claim dispatch durably before the external side effect. A crash after this point is UNKNOWN and must reconcile, never replay.
+      this.#assertCapacity(2);
+      this.#db.prepare("UPDATE operation_authorizations SET state = 'CONSUMED', consumed_at = ? WHERE approval_id = ? AND state = 'RECORDED'")
+        .run(timestamp, authorization.approval_id);
+      this.#event(row.computer_id, row.id, 'operation.authorization_consumed', {
+        approvalId: authorization.approval_id, approverId: authorization.approver_id,
+        subjectId: row.subject_id, projectId: row.project_id, actionDigest: `sha256:${row.action_digest}`,
+        policyVersion: journalOperation.policyVersion, purpose: 'execute', generation: row.generation,
+        expiresAt: authorization.expires_at,
+      }, timestamp);
       this.#db.prepare("UPDATE operations SET status = 'UNKNOWN', updated_at = ? WHERE id = ? AND status = 'REQUESTED'")
         .run(timestamp, row.id);
       this.#event(row.computer_id, row.id, 'operation.dispatch_authorized', {
@@ -711,7 +784,7 @@ class SqliteEnvironmentOperationStore {
   }
 
   #assertCapacity(additional) {
-    const count = this.#db.prepare('SELECT (SELECT COUNT(*) FROM computers) + (SELECT COUNT(*) FROM operations) + (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM leases) + (SELECT COUNT(*) FROM guest_event_receipts) AS count').get().count;
+    const count = this.#db.prepare('SELECT (SELECT COUNT(*) FROM computers) + (SELECT COUNT(*) FROM operations) + (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM leases) + (SELECT COUNT(*) FROM guest_event_receipts) + (SELECT COUNT(*) FROM operation_authorizations) AS count').get().count;
     if (count + additional > this.#maxRecords) throw new EnvironmentStoreError('store_capacity_exceeded');
   }
 
@@ -756,7 +829,7 @@ function migrate(db) {
   const version = db.prepare('PRAGMA user_version').get()?.user_version;
   if (!Number.isSafeInteger(version) || version > SCHEMA_VERSION) throw new EnvironmentStoreError('database_schema_newer');
   if (version === SCHEMA_VERSION) return;
-  if (![0, 1, 2].includes(version)) throw new EnvironmentStoreError('database_schema_unsupported');
+  if (![0, 1, 2, 3].includes(version)) throw new EnvironmentStoreError('database_schema_unsupported');
   inTransaction(db, () => {
     if (version === 0) db.exec(`
       CREATE TABLE computers (
@@ -792,12 +865,21 @@ function migrate(db) {
       CREATE INDEX events_operation_idx ON events(operation_id, aggregate_seq);
     `);
     else if (version === 1) db.exec('ALTER TABLE computers ADD COLUMN capacity_json TEXT; ALTER TABLE leases ADD COLUMN reservation_json TEXT; ALTER TABLE leases ADD COLUMN quota_json TEXT;');
-    db.exec(`CREATE TABLE guest_event_receipts (
+    if (version <= 2) db.exec(`CREATE TABLE guest_event_receipts (
       message_id TEXT PRIMARY KEY, computer_id TEXT NOT NULL REFERENCES computers(id), run_id TEXT NOT NULL,
       generation INTEGER NOT NULL CHECK(generation >= 1), sequence INTEGER NOT NULL CHECK(sequence >= 1),
       payload_digest TEXT NOT NULL CHECK(length(payload_digest) = 64), received_at TEXT NOT NULL,
       UNIQUE(computer_id, run_id, generation, sequence)
     ) STRICT;`);
+    db.exec(`CREATE TABLE operation_authorizations (
+      approval_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL REFERENCES operations(id),
+      purpose TEXT NOT NULL CHECK(purpose IN ('execute','reconcile')),
+      operation_idempotency_key TEXT NOT NULL, approver_id TEXT NOT NULL, subject_id TEXT NOT NULL, project_id TEXT NOT NULL,
+      policy_version INTEGER NOT NULL CHECK(policy_version >= 1), action_digest TEXT NOT NULL CHECK(length(action_digest) = 64),
+      expires_at TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('RECORDED','CONSUMED')),
+      recorded_at TEXT NOT NULL, consumed_at TEXT
+    ) STRICT;
+    CREATE INDEX operation_authorizations_operation_idx ON operation_authorizations(operation_id, purpose, recorded_at);`);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   });
 }
@@ -833,6 +915,45 @@ function mapEvent(row) {
   return { id: row.id, aggregateId: row.aggregate_id, sequence: row.aggregate_seq,
     operationId: row.operation_id, type: row.event_type, schemaVersion: row.schema_version,
     provenance: row.provenance, payload: JSON.parse(row.payload_json), recordedAt: row.recorded_at };
+}
+
+function mapOperationAuthorization(row) {
+  return Object.freeze({
+    approvalId: row.approval_id, operationId: row.operation_id, purpose: row.purpose,
+    idempotencyKey: row.operation_idempotency_key, approverId: row.approver_id,
+    subjectId: row.subject_id, projectId: row.project_id, policyVersion: row.policy_version,
+    actionDigest: `sha256:${row.action_digest}`, expiresAt: row.expires_at,
+    state: row.state, recordedAt: row.recorded_at, consumedAt: row.consumed_at,
+  });
+}
+
+function normalizeOperationAuthorization(authorization, expected) {
+  const keys = ['decision', 'approvalId', 'approverId', 'operationId', 'idempotencyKey', 'subjectId', 'projectId',
+    'policyVersion', 'actionDigest', 'purpose', 'expiresAt'];
+  let descriptors;
+  try {
+    if (!authorization || typeof authorization !== 'object' || Array.isArray(authorization)
+      || Object.getPrototypeOf(authorization) !== Object.prototype || Object.getOwnPropertySymbols(authorization).length > 0
+      || Object.keys(authorization).length !== keys.length) throw new Error('invalid_authorization');
+    descriptors = Object.getOwnPropertyDescriptors(authorization);
+  } catch { throw new EnvironmentStoreError('authorization_record_invalid'); }
+  if (keys.some((key) => !Object.hasOwn(descriptors, key) || !Object.hasOwn(descriptors[key], 'value'))) {
+    throw new EnvironmentStoreError('authorization_record_invalid');
+  }
+  const grant = Object.fromEntries(keys.map((key) => [key, descriptors[key].value]));
+  if (grant.decision !== 'approved' || !isId(grant.approvalId) || !isId(grant.approverId)
+    || grant.operationId !== expected.operationId || grant.idempotencyKey !== expected.idempotencyKey
+    || grant.subjectId !== expected.subjectId || grant.projectId !== expected.projectId
+    || grant.policyVersion !== expected.policyVersion || grant.actionDigest !== expected.actionDigest
+    || grant.purpose !== expected.purpose || typeof grant.expiresAt !== 'string') {
+    throw new EnvironmentStoreError('authorization_record_mismatch');
+  }
+  const expiresAtMs = Date.parse(grant.expiresAt);
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= expected.nowMs) throw new EnvironmentStoreError('authorization_expired');
+  if (!Number.isSafeInteger(expected.nowMs) || expiresAtMs > expected.nowMs + 5 * 60 * 1000) {
+    throw new EnvironmentStoreError('authorization_record_invalid');
+  }
+  return Object.freeze({ ...grant, expiresAt: new Date(expiresAtMs).toISOString() });
 }
 
 function sameLease(row, expected) {
@@ -980,14 +1101,18 @@ async function verifyStandaloneSnapshot(snapshotPath) {
   let db;
   try {
     db = new DatabaseSync(snapshotPath, { readOnly: true });
+    const version = db.prepare('PRAGMA user_version').get()?.user_version;
     const integrity = db.prepare('PRAGMA integrity_check').all();
     if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok'
       || db.prepare('PRAGMA foreign_key_check').all().length !== 0
-      || db.prepare('PRAGMA user_version').get()?.user_version !== SCHEMA_VERSION) {
+      || !Number.isSafeInteger(version) || version < 1 || version > SCHEMA_VERSION) {
       throw new EnvironmentStoreError('snapshot_integrity_failed');
     }
     const tables = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all().map((row) => row.name));
-    if (!['computers', 'leases', 'operations', 'events', 'guest_event_receipts'].every((name) => tables.has(name))) {
+    const requiredTables = ['computers', 'leases', 'operations', 'events'];
+    if (version >= 2) requiredTables.push('guest_event_receipts');
+    if (version >= 4) requiredTables.push('operation_authorizations');
+    if (!requiredTables.every((name) => tables.has(name))) {
       throw new EnvironmentStoreError('snapshot_schema_invalid');
     }
   } catch (error) {

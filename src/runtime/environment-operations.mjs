@@ -107,7 +107,7 @@ export class DurableEnvironmentOperationCoordinator {
   #nowMs;
 
   constructor({ store, provider, authorizeOperation, nowMs = Date.now, providerTimeoutMs = 30_000 } = {}) {
-    if (!store || !['beginOperation', 'recordProviderOutcome', 'recordReconciliation', 'getOperation'].every((method) => typeof store[method] === 'function')) {
+    if (!store || !['beginOperation', 'recordOperationAuthorization', 'recordProviderOutcome', 'recordReconciliation', 'getOperation'].every((method) => typeof store[method] === 'function')) {
       throw new TypeError('invalid_environment_store');
     }
     if (!provider || !['create', 'inspect', 'start', 'stop', 'destroy'].every((method) => typeof provider[method] === 'function')
@@ -133,6 +133,7 @@ export class DurableEnvironmentOperationCoordinator {
     let observed;
     let providerInvoked = false;
     try {
+      this.#store.recordOperationAuthorization(operation.operationId, grant.authorization, { purpose: 'execute' });
       const authorizedOperation = this.#store.resolveBrokerDispatch({
         protocolVersion: 1,
         type: 'broker.operation.request',
@@ -170,6 +171,7 @@ export class DurableEnvironmentOperationCoordinator {
     if (grant.expiresAtMs <= this.#authorizationTime()) {
       throw new EnvironmentProviderError('authorization_expired', { outcome: 'not_applied' });
     }
+    this.#store.recordOperationAuthorization(operationId, grant.authorization, { purpose: 'reconcile' });
     let observed;
     try {
       observed = await withTimeout(this.#provider.inspect(inspectRequest), this.#timeoutMs);
@@ -235,7 +237,8 @@ function validateAuthorizationGrant(grant, operation, actionDigest, purpose, now
     if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs || expiresAtMs > nowMs + MAX_APPROVAL_TTL_MS) {
       throw new EnvironmentProviderError(expiresAtMs <= nowMs ? 'authorization_expired' : 'authorization_invalid', { outcome: 'not_applied' });
     }
-    return Object.freeze({ expiresAtMs });
+    const authorization = Object.freeze(Object.fromEntries(keys.map((key) => [key, grant[key]])));
+    return Object.freeze({ expiresAtMs, authorization });
   } catch (error) {
     if (error instanceof EnvironmentProviderError) throw error;
     throw new EnvironmentProviderError('authorization_invalid', { outcome: 'not_applied' });
