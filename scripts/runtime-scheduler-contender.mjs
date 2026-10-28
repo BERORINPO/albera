@@ -2,6 +2,7 @@
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { writeFileSync, writeSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { openSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
 import { reserveComputerForRun } from '../src/runtime/computer-scheduler.mjs';
 
@@ -14,12 +15,29 @@ const requirements = {
   resources: { vcpu: 2, memoryMiB: 2048, diskGiB: 16 },
 };
 const quota = { maxComputers: 1, vcpu: 4, memoryMiB: 4096, diskGiB: 32 };
+class ExitBeforeCommitDatabase {
+  #database;
+
+  constructor(databasePath) { this.#database = new DatabaseSync(databasePath); }
+  prepare(sql) { return this.#database.prepare(sql); }
+  exec(sql) {
+    if (sql.trim().toUpperCase() === 'COMMIT') {
+      writeSync(1, 'RESULT {"status":"EXIT_BEFORE_COMMIT"}\n');
+      process.exit(26);
+    }
+    return this.#database.exec(sql);
+  }
+  close() { this.#database.close(); }
+}
+
 const store = await openSqliteEnvironmentStore(databasePath, {
   verifyWindowsAcl: async () => {},
   recoverInterruptedRequests: false,
+  ...(mode === 'crash-before-dispatch-commit' ? { DatabaseImpl: ExitBeforeCommitDatabase } : {}),
   ...(['guest-event', 'begin-operation', 'idempotency-same', 'idempotency-conflict', 'release-lease', 'crash-after-begin'].includes(mode)
     ? { now: () => '2026-10-28T00:30:00.000Z' }
-    : ['broker-dispatch', 'crash-after-dispatch', 'crash-after-provider-effect'].includes(mode) ? { now: () => '2026-10-28T00:00:30.000Z' } : {}),
+    : ['broker-dispatch', 'crash-after-dispatch', 'crash-after-provider-effect', 'crash-before-dispatch-commit'].includes(mode)
+      ? { now: () => '2026-10-28T00:00:30.000Z' } : {}),
 });
 const startOperation = (workerId) => ({
   operationId: `race-operation-${workerId}`, idempotencyKey: `race-idempotency-${workerId}`,
@@ -60,6 +78,12 @@ try {
     });
     writeSync(1, `RESULT ${JSON.stringify({ status: 'CLAIMED', operationId: operation.operationId })}\n`);
     process.exit(24);
+  } else if (mode === 'crash-before-dispatch-commit') {
+    store.resolveBrokerDispatch({
+      protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+      operationId, expectedGeneration: Number(expectedGeneration), actionDigest: `sha256:${actionDigest}`,
+    });
+    throw new Error('fault_injection_commit_not_intercepted');
   } else if (mode === 'crash-after-provider-effect') {
     if (typeof providerStatePath !== 'string' || !providerStatePath) throw new Error('provider_state_path_invalid');
     const operation = store.resolveBrokerDispatch({

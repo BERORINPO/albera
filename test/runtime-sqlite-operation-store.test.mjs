@@ -1109,6 +1109,41 @@ test('abrupt host exit after dispatch claim preserves UNKNOWN and denies redispa
   }), (error) => error.code === 'operation_not_dispatchable');
 });
 
+test('abrupt process exit before dispatch transaction commit rolls back the claim and recovers without Provider I/O', { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  const request = f.operation('create');
+  const begun = f.store.beginOperation(request);
+  await recordExecutionApproval(f, request, begun);
+  const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
+  f.store.close();
+  const worker = spawnSynchronizedStoreWorker(workerPath, f.databasePath, 1, 'crash-before-dispatch-commit',
+    request.operationId, String(request.expectedGeneration), begun.operation.actionDigest);
+  t.after(async () => {
+    if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    await worker.exited;
+  });
+  const result = worker.result;
+  await worker.ready;
+  worker.child.stdin.end('go\n');
+  const claim = await result;
+  await worker.exited;
+
+  assert.equal(worker.child.exitCode, 26, JSON.stringify(claim));
+  assert.equal(claim.status, 'EXIT_BEFORE_COMMIT');
+  await f.reopen();
+  assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
+  assert.equal(f.store.getOperation(request.operationId).errorCode, 'host_interrupted');
+  assert.equal(f.store.listOperationAuthorizations(request.operationId)[0].state, 'RECORDED',
+    'uncommitted consumption is rolled back; startup recovery still prevents execution');
+  assert.equal(f.store.listEvents(f.computerId).filter((event) => event.type === 'operation.authorization_consumed').length, 0);
+  assert.equal(f.store.listEvents(f.computerId).filter((event) => event.type === 'operation.dispatch_authorized').length, 0);
+  assert.throws(() => f.store.resolveBrokerDispatch({
+    protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+    operationId: request.operationId, expectedGeneration: request.expectedGeneration,
+    actionDigest: `sha256:${begun.operation.actionDigest}`,
+  }), (error) => error.code === 'operation_not_dispatchable');
+});
+
 test('process crash after a durable Provider side effect reconciles by inspect without duplicate create', { timeout: 60_000 }, async (t) => {
   const providerStatePath = path.join(os.tmpdir(), `albera-provider-observation-${randomUUID()}.json`);
   let createCalls = 0;
@@ -1181,6 +1216,22 @@ test('startup recovery marks only an interrupted pre-dispatch request UNKNOWN', 
   await f.reopen();
   assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
   assert.equal(f.store.getOperation(request.operationId).errorCode, 'host_interrupted');
+});
+
+test('SQLite Operation ID cannot be reused with a different idempotency key or payload', async (t) => {
+  const f = await fixture(t);
+  const original = f.operation('create');
+  const created = f.store.beginOperation(original);
+  assert.equal(created.created, true);
+
+  assert.throws(() => f.store.beginOperation(f.operation('start', {
+    operationId: original.operationId,
+    idempotencyKey: 'different-idempotency-key',
+  })), (error) => error instanceof EnvironmentStoreError && error.code === 'operation_id_conflict');
+
+  assert.equal(f.store.getOperation(original.operationId).action, 'create');
+  assert.equal(f.store.listEvents(original.operationId).filter((event) => event.type === 'operation.requested').length, 1,
+    'the rejected duplicate creates no second durable intent');
 });
 
 test('startup recovery holds one exclusive owner marker and preserves stale markers for manual review', async (t) => {
