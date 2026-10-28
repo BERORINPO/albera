@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { EnvironmentProviderError, validateEnvironmentOperation, validateObservedEnvironment } from './environment-provider.mjs';
 
 const TARGET_STATE = Object.freeze({ create: 'off', start: 'running', stop: 'off', destroy: 'missing' });
@@ -123,12 +123,22 @@ export class DurableEnvironmentOperationCoordinator {
     // The durable idempotency record is authoritative: retries return its state without another side effect.
     if (!begun.created) return publicSnapshot(begun.operation);
     let observed;
+    let providerInvoked = false;
     try {
-      observed = await withTimeout(this.#provider[operation.action](operation), this.#timeoutMs);
+      const authorizedOperation = this.#store.resolveBrokerDispatch({
+        protocolVersion: 1,
+        type: 'broker.operation.request',
+        requestId: randomUUID(),
+        operationId: operation.operationId,
+        expectedGeneration: operation.expectedGeneration,
+        actionDigest: `sha256:${begun.operation.actionDigest}`,
+      });
+      providerInvoked = true;
+      observed = await withTimeout(this.#provider[authorizedOperation.action](authorizedOperation), this.#timeoutMs);
     } catch (error) {
       this.#store.recordProviderOutcome(operation.operationId, {
         errorCode: safeCode(error),
-        outcome: error?.outcome === 'not_applied' ? 'not_applied' : 'unknown',
+        outcome: !providerInvoked || error?.outcome === 'not_applied' ? 'not_applied' : 'unknown',
       });
       return publicSnapshot(this.#store.getOperation(operation.operationId));
     }

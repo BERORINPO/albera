@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -358,12 +359,82 @@ test('durable intent is recorded before provider action and idempotent replay ne
     (error) => error instanceof EnvironmentStoreError && error.code === 'idempotency_conflict');
 });
 
+test('Broker journal resolution binds the typed reference and atomically claims one dispatch under a live Lease', async (t) => {
+  const f = await fixture(t);
+  const input = f.operation('create');
+  const begun = f.store.beginOperation(input);
+  const brokerRef = {
+    protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+    operationId: input.operationId, expectedGeneration: input.expectedGeneration,
+    actionDigest: `sha256:${begun.operation.actionDigest}`,
+  };
+  assert.deepEqual(f.store.resolveBrokerDispatch(brokerRef), input);
+  assert.equal(f.store.getOperation(input.operationId).status, 'UNKNOWN', 'dispatch intent is durable before provider I/O');
+  assert.throws(() => f.store.resolveBrokerDispatch({ ...brokerRef, requestId: randomUUID() }),
+    (error) => error instanceof EnvironmentStoreError && error.code === 'operation_not_dispatchable');
+  assert.throws(() => f.store.resolveBrokerDispatch({ ...brokerRef, actionDigest: `sha256:${'f'.repeat(64)}` }),
+    (error) => error instanceof EnvironmentStoreError && error.code === 'broker_authorization_mismatch');
+});
+
+test('Broker journal resolution refuses a stored operation payload whose digest no longer matches', async (t) => {
+  const f = await fixture(t);
+  const input = f.operation('create');
+  const begun = f.store.beginOperation(input);
+  const tamperedDb = new DatabaseSync(f.databasePath);
+  tamperedDb.prepare('UPDATE operations SET request_json = ? WHERE id = ?')
+    .run(JSON.stringify({ ...input, policyVersion: input.policyVersion + 1 }), input.operationId);
+  tamperedDb.close();
+  assert.throws(() => f.store.resolveBrokerDispatch({
+    protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+    operationId: input.operationId, expectedGeneration: input.expectedGeneration,
+    actionDigest: `sha256:${begun.operation.actionDigest}`,
+  }), (error) => error instanceof EnvironmentStoreError && error.code === 'operation_journal_corrupt');
+});
+
+test('Broker journal resolution rejects an expired, revoked, or restored Lease before dispatch', async (t) => {
+  const expired = await fixture(t);
+  const expiredInput = expired.operation('create');
+  const expiredRecord = expired.store.beginOperation(expiredInput).operation;
+  expired.advance(60 * 60 * 1000);
+  assert.throws(() => expired.store.resolveBrokerDispatch({
+    protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+    operationId: expiredInput.operationId, expectedGeneration: expiredInput.expectedGeneration,
+    actionDigest: `sha256:${expiredRecord.actionDigest}`,
+  }), (error) => error.code === 'lease_not_authorized');
+
+  const revoked = await fixture(t);
+  const revokedInput = revoked.operation('create');
+  const revokedRecord = revoked.store.beginOperation(revokedInput).operation;
+  revoked.store.revokeLease(revoked.lease.leaseId, { reason: 'policy_changed' });
+  assert.throws(() => revoked.store.resolveBrokerDispatch({
+    protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+    operationId: revokedInput.operationId, expectedGeneration: revokedInput.expectedGeneration,
+    actionDigest: `sha256:${revokedRecord.actionDigest}`,
+  }), (error) => error.code === 'lease_not_authorized');
+
+  const restored = await fixture(t);
+  const restoredInput = restored.operation('create');
+  const restoredRecord = restored.store.beginOperation(restoredInput).operation;
+  restored.store.revokeLease(restored.lease.leaseId, { reason: 'restore' });
+  assert.throws(() => restored.store.resolveBrokerDispatch({
+    protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+    operationId: restoredInput.operationId, expectedGeneration: restoredInput.expectedGeneration,
+    actionDigest: `sha256:${restoredRecord.actionDigest}`,
+  }), (error) => error.code === 'stale_generation');
+});
+
 test('operation intent interrupted by host close becomes UNKNOWN after reopen and is inspected without blind replay', async (t) => {
   const f = await fixture(t);
   const request = f.operation('create');
   const begun = f.store.beginOperation(request);
   assert.equal(begun.created, true);
   assert.equal(begun.operation.status, 'REQUESTED');
+  f.store.resolveBrokerDispatch({
+    protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
+    operationId: request.operationId, expectedGeneration: request.expectedGeneration,
+    actionDigest: `sha256:${begun.operation.actionDigest}`,
+  });
+  assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN', 'dispatch claim precedes provider I/O');
   await f.reopen();
   assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
   const reconciled = await f.coordinator.reconcile(request.operationId);

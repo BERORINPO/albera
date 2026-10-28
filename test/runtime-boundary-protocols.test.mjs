@@ -43,6 +43,12 @@ test('Broker requests carry only a bounded operation reference and immutable-act
   assert.throws(() => assertBrokerRequestMatchesAuthorization(brokerRequest({ actionDigest: `sha256:${'b'.repeat(64)}` }), {
     operationId, expectedGeneration: 4, actionDigest: digest,
   }), (error) => error.code === 'broker_authorization_mismatch');
+  const opaqueOperationId = 'operation-start-project-a';
+  assert.equal(validateBrokerRequest(brokerRequest({ operationId: opaqueOperationId })).operationId, opaqueOperationId,
+    'Broker references match the Journal contract for bounded opaque IDs');
+  assertBrokerRequestMatchesAuthorization(brokerRequest({ operationId: opaqueOperationId }), {
+    operationId: opaqueOperationId, expectedGeneration: 4, actionDigest: digest,
+  });
 });
 
 test('Broker responses allow typed state only and reject provider output or secret fields', () => {

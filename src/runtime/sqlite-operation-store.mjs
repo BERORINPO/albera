@@ -5,7 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { DatabaseSync } from 'node:sqlite';
 import { assertPrivatePosixStorage, assertSingleLink } from './audit-journal.mjs';
-import { validateGuestEvent } from './boundary-protocols.mjs';
+import { assertBrokerRequestMatchesAuthorization, validateBrokerRequest, validateGuestEvent } from './boundary-protocols.mjs';
 import { assertPrivateWindowsAcl, RuntimeStorageAclError } from './windows-acl.mjs';
 import { EnvironmentProviderError, validateEnvironmentCapacity, validateEnvironmentOperation, validateEnvironmentQuota, validateEnvironmentSpec, validateObservedEnvironment } from './environment-provider.mjs';
 
@@ -361,6 +361,51 @@ class SqliteEnvironmentOperationStore {
     this.#assertOpen();
     const row = this.#db.prepare('SELECT * FROM operations WHERE id = ?').get(operationId);
     return row ? this.#getOperationRow(row) : null;
+  }
+
+  /**
+   * Resolve a bounded Broker reference against the authoritative journal immediately before dispatch.
+   * The caller must authenticate the OS transport separately; this method does not authenticate callers.
+   */
+  resolveBrokerDispatch(input) {
+    this.#assertOpen();
+    let request;
+    try { request = validateBrokerRequest(input); }
+    catch { throw new EnvironmentStoreError('broker_request_invalid'); }
+    return this.#transaction(() => {
+      const row = this.#db.prepare('SELECT * FROM operations WHERE id = ?').get(request.operationId);
+      if (!row) throw new EnvironmentStoreError('operation_unknown');
+      let journalOperation;
+      try { journalOperation = validateEnvironmentOperation(JSON.parse(row.request_json)); }
+      catch { throw new EnvironmentStoreError('operation_journal_corrupt'); }
+      if (journalOperation.operationId !== row.id || journalOperation.idempotencyKey !== row.idempotency_key
+        || digestOperation(journalOperation) !== row.action_digest) {
+        throw new EnvironmentStoreError('operation_journal_corrupt');
+      }
+      try {
+        assertBrokerRequestMatchesAuthorization(request, {
+          operationId: row.id, expectedGeneration: row.generation, actionDigest: `sha256:${row.action_digest}`,
+        });
+      } catch { throw new EnvironmentStoreError('broker_authorization_mismatch'); }
+      if (row.status !== 'REQUESTED') throw new EnvironmentStoreError('operation_not_dispatchable');
+      const computer = this.#db.prepare('SELECT generation FROM computers WHERE id = ?').get(row.computer_id);
+      if (computer?.generation !== row.generation) throw new EnvironmentStoreError('stale_generation');
+      const lease = this.#db.prepare('SELECT * FROM leases WHERE id = ?').get(row.lease_id);
+      if (!lease || lease.subject_id !== row.subject_id || lease.project_id !== row.project_id
+        || lease.task_id !== row.task_id || lease.run_id !== row.run_id || lease.computer_id !== row.computer_id
+        || lease.generation !== row.generation || lease.state !== 'ACTIVE'
+        || Date.parse(lease.expires_at) <= Date.parse(this.#timestamp())) {
+        throw new EnvironmentStoreError('lease_not_authorized');
+      }
+      // Claim dispatch durably before the external side effect. A crash after this point is UNKNOWN and must reconcile, never replay.
+      const timestamp = this.#timestamp();
+      this.#db.prepare("UPDATE operations SET status = 'UNKNOWN', updated_at = ? WHERE id = ? AND status = 'REQUESTED'")
+        .run(timestamp, row.id);
+      this.#event(row.computer_id, row.id, 'operation.dispatch_authorized', {
+        action: row.action, generation: row.generation, status: 'UNKNOWN',
+      }, timestamp);
+      return Object.freeze({ ...journalOperation });
+    });
   }
 
   getComputer(computerId) {

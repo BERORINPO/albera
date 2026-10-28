@@ -21,7 +21,7 @@ export class BoundaryProtocolError extends Error {
 export function validateBrokerRequest(input) {
   const data = readRecord(input, new Set(['protocolVersion', 'type', 'requestId', 'operationId', 'expectedGeneration', 'actionDigest']), 'invalid_broker_request');
   if (data.protocolVersion !== PROTOCOL_VERSION || data.type !== 'broker.operation.request'
-    || !UUID_RE.test(data.requestId) || !UUID_RE.test(data.operationId)
+    || !UUID_RE.test(data.requestId) || !isId(data.operationId)
     || !isGeneration(data.expectedGeneration) || !DIGEST_RE.test(data.actionDigest)) {
     throw new BoundaryProtocolError('invalid_broker_request');
   }
@@ -33,7 +33,7 @@ export function assertBrokerRequestMatchesAuthorization(requestInput, authorizat
   const request = validateBrokerRequest(requestInput);
   const trusted = readRecord(authorization,
     new Set(['operationId', 'expectedGeneration', 'actionDigest']), 'invalid_broker_authorization');
-  if (!UUID_RE.test(trusted.operationId) || !isGeneration(trusted.expectedGeneration) || !DIGEST_RE.test(trusted.actionDigest)) {
+  if (!isId(trusted.operationId) || !isGeneration(trusted.expectedGeneration) || !DIGEST_RE.test(trusted.actionDigest)) {
     throw new BoundaryProtocolError('invalid_broker_authorization');
   }
   if (request.operationId !== trusted.operationId || request.expectedGeneration !== trusted.expectedGeneration
@@ -50,7 +50,7 @@ export function validateBrokerResponse(input) {
     'observedState', 'observedAt', 'errorCode',
   ]), 'invalid_broker_response');
   if (data.protocolVersion !== PROTOCOL_VERSION || data.type !== 'broker.operation.response'
-    || !UUID_RE.test(data.requestId) || !UUID_RE.test(data.operationId) || !isGeneration(data.expectedGeneration)
+    || !UUID_RE.test(data.requestId) || !isId(data.operationId) || !isGeneration(data.expectedGeneration)
     || !['accepted', 'denied', 'succeeded', 'failed', 'unknown'].includes(data.status)
     || !OBSERVED_STATES.has(data.observedState)
     || (data.observedAt !== undefined && !isTimestamp(data.observedAt))
@@ -73,7 +73,7 @@ export function validateGuestCommand(input) {
     'generation', 'action', 'payloadDigest', 'deadlineAt',
   ]), 'invalid_guest_command');
   if (data.protocolVersion !== PROTOCOL_VERSION || data.type !== 'guest.command'
-    || !UUID_RE.test(data.messageId) || !UUID_RE.test(data.operationId)
+    || !UUID_RE.test(data.messageId) || !isId(data.operationId)
     || !isId(data.computerId) || !isId(data.runId) || !isGeneration(data.generation)
     || !GUEST_ACTIONS.has(data.action) || !DIGEST_RE.test(data.payloadDigest) || !isTimestamp(data.deadlineAt)) {
     throw new BoundaryProtocolError('invalid_guest_command');
@@ -100,7 +100,7 @@ export function validateGuestEvent(input) {
     throw new BoundaryProtocolError('invalid_guest_event');
   }
   if (['operation.accepted', 'operation.completed', 'artifact.proposed'].includes(data.eventType)
-    && !UUID_RE.test(data.operationId)) throw new BoundaryProtocolError('invalid_guest_event');
+    && !isId(data.operationId)) throw new BoundaryProtocolError('invalid_guest_event');
   if (data.eventType === 'operation.completed' && !['succeeded', 'failed', 'unknown'].includes(data.claimedOutcome)) {
     throw new BoundaryProtocolError('invalid_guest_event');
   }
