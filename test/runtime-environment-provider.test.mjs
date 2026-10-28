@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EnvironmentOperationCoordinator } from '../src/runtime/environment-operations.mjs';
 import { EnvironmentProviderError, validateEnvironmentCapacity, validateEnvironmentOperation, validateEnvironmentQuota, validateEnvironmentSpec } from '../src/runtime/environment-provider.mjs';
+import { HyperVEnvironmentProvider } from '../src/runtime/hyperv-environment-provider.mjs';
 import { MockEnvironmentProvider } from '../src/runtime/mock-environment-provider.mjs';
 
 const spec = Object.freeze({
@@ -35,6 +36,10 @@ function operation(action, overrides = {}) {
   };
 }
 
+function hypervOperation(action, overrides = {}) {
+  return operation(action, { providerId: 'hyperv', ...overrides });
+}
+
 test('environment contract rejects malformed IDs, generations, paths and arbitrary executable fields', () => {
   assert.throws(() => validateEnvironmentSpec({ ...spec, imageDigest: '/tmp/image.vhdx' }), /invalid_environment_spec/);
   assert.throws(() => validateEnvironmentSpec({ ...spec, networkProfileId: '../switch' }), /invalid_environment_spec/);
@@ -47,6 +52,60 @@ test('environment contract rejects malformed IDs, generations, paths and arbitra
   Object.defineProperty(getterOperation, 'taskId', { get() { getterCalled = true; return 'task-1'; } });
   assert.throws(() => validateEnvironmentOperation(getterOperation), /invalid_environment_operation/);
   assert.equal(getterCalled, false);
+});
+
+test('Hyper-V adapter maps only fixed typed lifecycle methods and validates observations', async () => {
+  const calls = [];
+  const methods = Object.fromEntries([
+    ['createVm', 'off'], ['inspectVm', 'off'], ['startVm', 'running'],
+    ['stopVm', 'off'], ['removeVm', 'missing'],
+  ].map(([name, observedState]) => [name, async (op) => {
+    calls.push([name, op.action]);
+    return { computerId: op.computerId, providerId: 'hyperv', state: observedState,
+      generation: op.expectedGeneration, observedAt: '2026-10-28T00:00:00.000Z' };
+  }]));
+  const provider = new HyperVEnvironmentProvider({ broker: methods });
+  for (const action of ['create', 'inspect', 'start', 'stop', 'destroy']) {
+    const result = await provider[action](hypervOperation(action));
+    assert.equal(result.providerId, 'hyperv');
+  }
+  assert.deepEqual(calls, [
+    ['createVm', 'create'], ['inspectVm', 'inspect'], ['startVm', 'start'],
+    ['stopVm', 'stop'], ['removeVm', 'destroy'],
+  ]);
+});
+
+test('Hyper-V adapter rejects malformed or mismatched operations before Broker dispatch', async () => {
+  let calls = 0;
+  const methods = Object.fromEntries(['createVm', 'inspectVm', 'startVm', 'stopVm', 'removeVm']
+    .map((name) => [name, async () => { calls++; throw new Error('must not be called'); }]));
+  const provider = new HyperVEnvironmentProvider({ broker: methods });
+  await assert.rejects(provider.start(hypervOperation('start', { command: 'powershell' })),
+    (error) => error.code === 'invalid_environment_operation' && error.outcome === 'not_applied');
+  await assert.rejects(provider.start(operation('start')), (error) => error.code === 'provider_operation_mismatch');
+  await assert.rejects(provider.stop(hypervOperation('start')), (error) => error.code === 'provider_operation_mismatch');
+  assert.equal(calls, 0);
+});
+
+test('Hyper-V adapter preserves ambiguous Broker failures and rejects stale mutation observations', async () => {
+  const ambiguous = Object.assign(new Error('broker_timeout'), { code: 'broker_timeout' });
+  const provider = new HyperVEnvironmentProvider({ broker: {
+    createVm: async () => { throw ambiguous; },
+    inspectVm: async (op) => ({ computerId: op.computerId, providerId: 'hyperv', state: 'off', generation: 2, observedAt: '2026-10-28T00:00:00.000Z' }),
+    startVm: async (op) => ({ computerId: op.computerId, providerId: 'hyperv', state: 'running', generation: 2, observedAt: '2026-10-28T00:00:00.000Z' }),
+    stopVm: async () => {}, removeVm: async () => {},
+  } });
+  await assert.rejects(provider.create(hypervOperation('create')), (error) => error === ambiguous);
+  await assert.rejects(provider.start(hypervOperation('start')), (error) => error.code === 'stale_provider_observation');
+  const inspected = await provider.inspect(hypervOperation('inspect'));
+  assert.equal(inspected.generation, 2);
+});
+
+test('Hyper-V adapter requires the complete fixed Broker method set', () => {
+  assert.throws(() => new HyperVEnvironmentProvider({ broker: { startVm() {} } }), /invalid_hyperv_broker_client/);
+  const broker = Object.create({ createVm() {} });
+  Object.assign(broker, { inspectVm() {}, startVm() {}, stopVm() {}, removeVm() {} });
+  assert.throws(() => new HyperVEnvironmentProvider({ broker }), /invalid_hyperv_broker_client/);
 });
 
 test('placement capacity and quotas accept bounded host policy and reject malformed data', () => {
