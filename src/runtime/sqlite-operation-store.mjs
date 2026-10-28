@@ -12,6 +12,7 @@ import { EnvironmentProviderError, validateEnvironmentCapacity, validateEnvironm
 const SCHEMA_VERSION = 4;
 const DEFAULT_MAX_RECORDS = 20_000;
 const HARD_MAX_RECORDS = 100_000;
+const WAL_AUTOCHECKPOINT_PAGES = 1_000;
 const RECOVERY_OWNER_MAGIC = 'ALBERA_SQLITE_RECOVERY_OWNER_V1';
 const RESTORE_INVALIDATE = Symbol('restoreInvalidate');
 const RESTORE_MODE = Symbol('restoreMode');
@@ -86,6 +87,7 @@ export async function openSqliteEnvironmentStore(databasePath, {
     const mode = db.prepare('PRAGMA journal_mode = WAL').get()?.journal_mode;
     if (String(mode).toLowerCase() !== 'wal') throw new EnvironmentStoreError('wal_mode_unavailable');
     db.exec('PRAGMA synchronous = FULL');
+    db.exec(`PRAGMA wal_autocheckpoint = ${WAL_AUTOCHECKPOINT_PAGES}`);
     const integrity = db.prepare('PRAGMA quick_check(1)').get()?.quick_check;
     if (integrity !== 'ok') throw new EnvironmentStoreError('database_integrity_failed');
     migrate(db);
@@ -781,7 +783,27 @@ class SqliteEnvironmentOperationStore {
       journalMode: String(this.#db.prepare('PRAGMA journal_mode').get()?.journal_mode).toLowerCase(),
       synchronous: this.#db.prepare('PRAGMA synchronous').get()?.synchronous,
       foreignKeys: this.#db.prepare('PRAGMA foreign_keys').get()?.foreign_keys,
+      walAutoCheckpointPages: this.#db.prepare('PRAGMA wal_autocheckpoint').get()?.wal_autocheckpoint,
       schemaVersion: this.#db.prepare('PRAGMA user_version').get()?.user_version,
+    });
+  }
+
+  /** Run one non-blocking WAL checkpoint; readers may defer frames without losing journal data. */
+  checkpointWal() {
+    this.#assertOpen();
+    let row;
+    try { row = this.#db.prepare('PRAGMA wal_checkpoint(PASSIVE)').get(); }
+    catch { throw new EnvironmentStoreError('wal_checkpoint_failed'); }
+    const logFrames = row?.log;
+    const checkpointedFrames = row?.checkpointed;
+    const busy = row?.busy;
+    if (![logFrames, checkpointedFrames, busy].every(Number.isSafeInteger)) {
+      throw new EnvironmentStoreError('wal_checkpoint_failed');
+    }
+    const remainingFrames = logFrames < 0 ? 0 : Math.max(0, logFrames - checkpointedFrames);
+    return Object.freeze({
+      mode: 'PASSIVE', busy: busy !== 0,
+      logFrames: Math.max(0, logFrames), checkpointedFrames: Math.max(0, checkpointedFrames), remainingFrames,
     });
   }
 

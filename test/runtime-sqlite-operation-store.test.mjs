@@ -127,9 +127,45 @@ function spawnSynchronizedStoreWorker(workerPath, databasePath, workerId, mode, 
 
 test('SQLite store uses WAL, FULL synchronous writes, foreign keys, and a versioned schema', async (t) => {
   const f = await fixture(t);
-  assert.deepEqual(f.store.diagnostics(), { journalMode: 'wal', synchronous: 2, foreignKeys: 1, schemaVersion: 4 });
+  assert.deepEqual(f.store.diagnostics(), {
+    journalMode: 'wal', synchronous: 2, foreignKeys: 1, walAutoCheckpointPages: 1000, schemaVersion: 4,
+  });
   assert.equal(f.store.getComputer(f.computerId).generation, 1);
   if (process.platform !== 'win32') assert.equal((await stat(f.databasePath)).mode & 0o777, 0o600);
+});
+
+test('PASSIVE WAL checkpoint preserves journal reads while an independent connection pins a snapshot', async (t) => {
+  const f = await fixture(t);
+  const reader = new DatabaseSync(f.databasePath);
+  let readerOpen = true;
+  try {
+    reader.exec('BEGIN');
+    const initialComputerCount = reader.prepare('SELECT COUNT(*) AS count FROM computers').get().count;
+    const computerIds = Array.from({ length: 12 }, (_, index) => `wal-reader-computer-${index}`);
+    for (const computerId of computerIds) {
+      f.store.registerComputer({ computerId, projectId: 'project-a', providerId: 'mock' });
+    }
+
+    const duringReader = f.store.checkpointWal();
+    assert.equal(duringReader.mode, 'PASSIVE');
+    assert.ok(duringReader.logFrames >= duringReader.checkpointedFrames);
+    assert.ok(duringReader.remainingFrames >= 0);
+    assert.ok(duringReader.remainingFrames > 0, 'the active reader can defer checkpoint progress');
+    assert.equal(reader.prepare('SELECT COUNT(*) AS count FROM computers').get().count, initialComputerCount,
+      'the pinned reader retains its original snapshot after a checkpoint attempt');
+
+    reader.exec('COMMIT');
+    reader.close();
+    readerOpen = false;
+    const afterReader = f.store.checkpointWal();
+    assert.equal(afterReader.remainingFrames, 0);
+    for (const computerId of computerIds) {
+      assert.equal(f.store.getComputer(computerId).computerId, computerId);
+      assert.equal(f.store.listEvents(computerId)[0].type, 'computer.registered');
+    }
+  } finally {
+    if (readerOpen) reader.close();
+  }
 });
 
 test('event pages use stable aggregate cursors and reject invalid or future cursors', async (t) => {

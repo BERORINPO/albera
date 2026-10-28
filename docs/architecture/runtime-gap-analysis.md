@@ -51,6 +51,12 @@ This change adds an explicit `AgentHarnessAdapter` seam for the existing Claude 
 
 All ADRs are Proposed. This report does not promote any ADR to Accepted or mark any PR #18 machine-readable criterion as verified.
 
+### ADR-003 WAL checkpoint evidence and bound
+
+The store now configures SQLite's per-connection automatic checkpoint threshold to 1,000 pages and exposes an explicit `checkpointWal()` maintenance call that uses `PASSIVE` mode and returns log/checkpointed/remaining frame counts. A regression opens an independent SQLite reader transaction, appends Computer journal records from the store, verifies the pinned reader retains its original snapshot while checkpoint progress is deferred, then closes the reader and confirms a later checkpoint catches up and all records remain readable. This proves the local SQLite connection behavior only; it does not simulate a separate OS process, prolonged production load, power loss, or network storage.
+
+This is **not a hard WAL-size bound**. SQLite's documented PASSIVE behavior does not wait for readers; a sufficiently long-lived reader can keep the log from resetting and the WAL may continue to grow. The current store's own read APIs use short synchronous transactions, but there is no cross-process reader deadline, disk quota, forced-reader cancellation, or WAL-growth alert. ADR-003 acceptance item 7 therefore remains `NOT_VERIFIED` until an operational policy and sustained slow-reader/load evidence demonstrate bounded storage behavior without dropping journal entries. See [SQLite WAL checkpoint documentation](https://www.sqlite.org/wal.html).
+
 ## Design issues and alternatives
 
 1. **System Design §17 ADR queue conflicts with the files in the same proposal.** The queue labels ADR-005 as guest identity/lease, ADR-006 as Git integration, ADR-007 as memory, ADR-008 as Canvas and ADR-009 as packaging; actual ADR-005 is Computer Pool, ADR-006 is Agent Memory, ADR-007 is Verified Integration, ADR-008 is Main AI Orchestration, ADR-009 is Canvas, and ADR-010 is Performance/OSS. Treat the numbered ADR files and the acceptance-criteria references as authoritative provisionally; correct §17 before ADR acceptance to avoid links and gate evidence pointing to the wrong decision.
