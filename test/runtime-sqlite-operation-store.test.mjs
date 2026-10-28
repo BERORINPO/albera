@@ -1681,6 +1681,15 @@ test('typed Hyper-V adapter reconciles lost create, start, and stop replies with
     };
   }]));
   const f = await fixture(t, { provider: new HyperVEnvironmentProvider({ broker }) });
+  const assertFailureDetailNotPersisted = async (operationId, marker) => {
+    const persisted = JSON.stringify({
+      operation: f.store.getOperation(operationId),
+      events: f.store.listEvents(operationId),
+    });
+    assert.doesNotMatch(persisted, new RegExp(marker));
+    const databaseBytes = await readFile(f.databasePath);
+    assert.equal(databaseBytes.includes(Buffer.from(marker)), false);
+  };
 
   const create = f.operation('create');
   const uncertain = await f.coordinator.execute(create);
@@ -1688,6 +1697,7 @@ test('typed Hyper-V adapter reconciles lost create, start, and stop replies with
   assert.equal(uncertain.errorCode, 'provider_timeout');
   assert.doesNotMatch(JSON.stringify(uncertain), /do-not-persist/);
   assert.equal(f.store.getOperation(create.operationId).status, 'UNKNOWN');
+  await assertFailureDetailNotPersisted(create.operationId, 'do-not-persist');
 
   const reconciled = await f.coordinator.reconcile(create.operationId);
   assert.equal(reconciled.status, 'SUCCEEDED');
@@ -1701,6 +1711,7 @@ test('typed Hyper-V adapter reconciles lost create, start, and stop replies with
   assert.equal(uncertainStart.errorCode, 'provider_timeout');
   assert.doesNotMatch(JSON.stringify(uncertainStart), /do-not-persist/);
   assert.equal(f.store.getOperation(startRequest.operationId).status, 'UNKNOWN');
+  await assertFailureDetailNotPersisted(startRequest.operationId, 'do-not-persist');
   const start = await f.coordinator.reconcile(startRequest.operationId);
   assert.equal(start.status, 'SUCCEEDED');
   assert.equal(start.observedState, 'running');
@@ -1715,6 +1726,7 @@ test('typed Hyper-V adapter reconciles lost create, start, and stop replies with
   assert.equal(uncertainStop.errorCode, 'provider_timeout');
   assert.doesNotMatch(JSON.stringify(uncertainStop), /do-not-persist/);
   assert.equal(f.store.getOperation(stopRequest.operationId).status, 'UNKNOWN');
+  await assertFailureDetailNotPersisted(stopRequest.operationId, 'do-not-persist');
   const stop = await f.coordinator.reconcile(stopRequest.operationId);
   assert.equal(stop.status, 'SUCCEEDED');
   assert.equal(stop.observedState, 'off');
@@ -1761,6 +1773,11 @@ test('typed Hyper-V adapter reconciles a lost destroy reply by inspection withou
   assert.equal(uncertain.errorCode, 'provider_timeout');
   assert.doesNotMatch(JSON.stringify(uncertain), /never-expose/);
   assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
+  assert.doesNotMatch(JSON.stringify({
+    operation: f.store.getOperation(request.operationId),
+    events: f.store.listEvents(request.operationId),
+  }), /never-expose/);
+  assert.equal((await readFile(f.databasePath)).includes(Buffer.from('never-expose')), false);
   assert.equal(calls.destroy, 1);
 
   const reconciled = await f.coordinator.reconcile(request.operationId);
