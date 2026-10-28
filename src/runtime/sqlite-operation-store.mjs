@@ -6,9 +6,9 @@ import process from 'node:process';
 import { DatabaseSync } from 'node:sqlite';
 import { assertPrivatePosixStorage, assertSingleLink } from './audit-journal.mjs';
 import { assertPrivateWindowsAcl, RuntimeStorageAclError } from './windows-acl.mjs';
-import { EnvironmentProviderError, validateEnvironmentOperation, validateObservedEnvironment } from './environment-provider.mjs';
+import { EnvironmentProviderError, validateEnvironmentCapacity, validateEnvironmentOperation, validateEnvironmentQuota, validateEnvironmentSpec, validateObservedEnvironment } from './environment-provider.mjs';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const DEFAULT_MAX_RECORDS = 20_000;
 const HARD_MAX_RECORDS = 100_000;
 const DESIRED_STATES = Object.freeze({ create: 'off', inspect: null, start: 'running', stop: 'off', destroy: 'missing' });
@@ -109,30 +109,47 @@ class SqliteEnvironmentOperationStore {
     });
   }
 
-  registerComputer({ computerId, projectId, providerId }) {
+  registerComputer({ computerId, projectId, providerId, capacity }) {
     this.#assertOpen();
     if (![computerId, projectId, providerId].every(isId)) throw new EnvironmentStoreError('computer_registration_invalid');
+    let capacityJson = null;
+    if (capacity !== undefined) {
+      try { capacityJson = JSON.stringify(validateEnvironmentCapacity(capacity)); }
+      catch { throw new EnvironmentStoreError('computer_capacity_invalid'); }
+    }
     const timestamp = this.#timestamp();
     return this.#transaction(() => {
       this.#assertCapacity(2);
       const existing = this.#db.prepare('SELECT * FROM computers WHERE id = ?').get(computerId);
       if (existing) {
         if (existing.project_id !== projectId || existing.provider_id !== providerId) throw new EnvironmentStoreError('computer_id_conflict');
+        if (capacityJson !== null && existing.capacity_json !== capacityJson) throw new EnvironmentStoreError('computer_capacity_conflict');
         return mapComputer(existing);
       }
-      this.#db.prepare(`INSERT INTO computers (id, project_id, provider_id, desired_state, observed_state, generation, row_version, observed_at)
-        VALUES (?, ?, ?, 'missing', 'missing', 1, 1, ?)`)
-        .run(computerId, projectId, providerId, timestamp);
+      this.#db.prepare(`INSERT INTO computers (id, project_id, provider_id, desired_state, observed_state, generation, row_version, observed_at, capacity_json)
+        VALUES (?, ?, ?, 'missing', 'missing', 1, 1, ?, ?)`)
+        .run(computerId, projectId, providerId, timestamp, capacityJson);
       this.#event(computerId, null, 'computer.registered', { projectId, providerId, generation: 1 }, timestamp);
       return mapComputer(this.#db.prepare('SELECT * FROM computers WHERE id = ?').get(computerId));
     });
   }
 
   /** Reserve one exclusive Lease. The Computer generation advances on restore, not ordinary task reassignment. */
-  reserveLease({ leaseId, subjectId, projectId, taskId, runId, computerId, expiresAt }) {
+  reserveLease({ leaseId, subjectId, projectId, taskId, runId, computerId, expiresAt, requirements, quota }) {
     this.#assertOpen();
     if (![leaseId, subjectId, projectId, taskId, runId, computerId].every(isId) || !isTimestamp(expiresAt)) {
       throw new EnvironmentStoreError('lease_request_invalid');
+    }
+    let reservationJson = null;
+    let quotaJson = null;
+    if ((requirements === undefined) !== (quota === undefined)) throw new EnvironmentStoreError('lease_reservation_invalid');
+    if (requirements !== undefined) {
+      try {
+        const spec = validateEnvironmentSpec(requirements);
+        if (spec.projectId !== projectId) throw new TypeError('project_mismatch');
+        reservationJson = JSON.stringify(spec);
+        quotaJson = JSON.stringify(validateEnvironmentQuota(quota));
+      } catch { throw new EnvironmentStoreError('lease_reservation_invalid'); }
     }
     const timestamp = this.#timestamp();
     const normalizedExpiry = new Date(Date.parse(expiresAt)).toISOString();
@@ -141,19 +158,24 @@ class SqliteEnvironmentOperationStore {
       this.#assertCapacity(2);
       const prior = this.#db.prepare('SELECT * FROM leases WHERE id = ?').get(leaseId);
       if (prior) {
-        if (!sameLease(prior, { subjectId, projectId, taskId, runId, computerId, expiresAt: normalizedExpiry })) throw new EnvironmentStoreError('lease_id_conflict');
+        if (!sameLease(prior, { subjectId, projectId, taskId, runId, computerId, expiresAt: normalizedExpiry, reservationJson, quotaJson })) throw new EnvironmentStoreError('lease_id_conflict');
         return mapLease(prior);
       }
       const computer = this.#db.prepare('SELECT * FROM computers WHERE id = ?').get(computerId);
       if (!computer || computer.project_id !== projectId) throw new EnvironmentStoreError('computer_not_owned');
+      if (reservationJson !== null) {
+        if (!computer.capacity_json) throw new EnvironmentStoreError('computer_capacity_unknown');
+        if (!fitsCapacity(JSON.parse(computer.capacity_json), JSON.parse(reservationJson))) throw new EnvironmentStoreError('computer_incompatible');
+        this.#assertProjectQuota(projectId, JSON.parse(reservationJson), JSON.parse(quotaJson), leaseId);
+      }
       const outstanding = this.#db.prepare(`SELECT id FROM leases WHERE computer_id = ? AND state <> 'RELEASED' LIMIT 1`).get(computerId);
       if (outstanding) throw new EnvironmentStoreError('computer_already_leased');
       const generation = computer.generation;
       this.#db.prepare('UPDATE computers SET row_version = row_version + 1 WHERE id = ? AND generation = ?')
         .run(computerId, computer.generation);
-      this.#db.prepare(`INSERT INTO leases (id, subject_id, project_id, task_id, run_id, computer_id, generation, expires_at, state, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`)
-        .run(leaseId, subjectId, projectId, taskId, runId, computerId, generation, normalizedExpiry, timestamp);
+      this.#db.prepare(`INSERT INTO leases (id, subject_id, project_id, task_id, run_id, computer_id, generation, expires_at, state, created_at, reservation_json, quota_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`)
+        .run(leaseId, subjectId, projectId, taskId, runId, computerId, generation, normalizedExpiry, timestamp, reservationJson, quotaJson);
       this.#event(computerId, null, 'lease.issued', { leaseId, projectId, taskId, runId, generation, expiresAt: normalizedExpiry }, timestamp);
       return mapLease(this.#db.prepare('SELECT * FROM leases WHERE id = ?').get(leaseId));
     });
@@ -346,6 +368,15 @@ class SqliteEnvironmentOperationStore {
     return row ? mapComputer(row) : null;
   }
 
+  listComputers(projectId) {
+    this.#assertOpen();
+    if (!isId(projectId)) throw new TypeError('invalid_project_id');
+    return this.#db.prepare('SELECT * FROM computers WHERE project_id = ? ORDER BY id').all(projectId).map((row) => {
+      const lease = this.#db.prepare("SELECT id, state FROM leases WHERE computer_id = ? AND state <> 'RELEASED'").get(row.id);
+      return Object.freeze({ ...mapComputer(row), leaseAvailable: !lease });
+    });
+  }
+
   getLease(leaseId) {
     this.#assertOpen();
     const row = this.#db.prepare('SELECT * FROM leases WHERE id = ?').get(leaseId);
@@ -406,6 +437,25 @@ class SqliteEnvironmentOperationStore {
     if (count + additional > this.#maxRecords) throw new EnvironmentStoreError('store_capacity_exceeded');
   }
 
+  #assertProjectQuota(projectId, reservation, quota, leaseId) {
+    const active = this.#db.prepare("SELECT computer_id, reservation_json, quota_json FROM leases WHERE project_id = ? AND state <> 'RELEASED' AND id <> ?")
+      .all(projectId, leaseId);
+    let vcpu = 0;
+    let memoryMiB = 0;
+    let diskGiB = 0;
+    for (const row of active) {
+      if (!row.reservation_json || !row.quota_json) throw new EnvironmentStoreError('project_usage_unknown');
+      if (row.quota_json !== JSON.stringify(quota)) throw new EnvironmentStoreError('project_quota_conflict');
+      const resources = JSON.parse(row.reservation_json).resources;
+      vcpu += resources.vcpu;
+      memoryMiB += resources.memoryMiB;
+      diskGiB += resources.diskGiB;
+    }
+    if (active.length + 1 > quota.maxComputers || vcpu + reservation.resources.vcpu > quota.vcpu
+      || memoryMiB + reservation.resources.memoryMiB > quota.memoryMiB
+      || diskGiB + reservation.resources.diskGiB > quota.diskGiB) throw new EnvironmentStoreError('project_quota_exceeded');
+  }
+
   #timestamp() {
     const value = this.#now();
     if (!isTimestamp(value)) throw new EnvironmentStoreError('clock_invalid');
@@ -428,19 +478,19 @@ function migrate(db) {
   const version = db.prepare('PRAGMA user_version').get()?.user_version;
   if (!Number.isSafeInteger(version) || version > SCHEMA_VERSION) throw new EnvironmentStoreError('database_schema_newer');
   if (version === SCHEMA_VERSION) return;
-  if (version !== 0) throw new EnvironmentStoreError('database_schema_unsupported');
+  if (version !== 0 && version !== 1) throw new EnvironmentStoreError('database_schema_unsupported');
   inTransaction(db, () => {
-    db.exec(`
+    if (version === 0) db.exec(`
       CREATE TABLE computers (
         id TEXT PRIMARY KEY, project_id TEXT NOT NULL, provider_id TEXT NOT NULL,
         desired_state TEXT NOT NULL, observed_state TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation >= 1),
-        row_version INTEGER NOT NULL CHECK(row_version >= 1), observed_at TEXT
+        row_version INTEGER NOT NULL CHECK(row_version >= 1), observed_at TEXT, capacity_json TEXT
       ) STRICT;
       CREATE TABLE leases (
         id TEXT PRIMARY KEY, subject_id TEXT NOT NULL, project_id TEXT NOT NULL, task_id TEXT NOT NULL, run_id TEXT NOT NULL,
         computer_id TEXT NOT NULL REFERENCES computers(id), generation INTEGER NOT NULL CHECK(generation >= 1),
         expires_at TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('ACTIVE','EXPIRED','REVOKED','QUARANTINED','RELEASED')),
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL, reservation_json TEXT, quota_json TEXT
       ) STRICT;
       CREATE UNIQUE INDEX one_unreleased_lease_per_computer ON leases(computer_id) WHERE state <> 'RELEASED';
       CREATE TABLE operations (
@@ -462,8 +512,9 @@ function migrate(db) {
       ) STRICT;
       CREATE INDEX operations_computer_idx ON operations(computer_id, created_at);
       CREATE INDEX events_operation_idx ON events(operation_id, aggregate_seq);
-      PRAGMA user_version = ${SCHEMA_VERSION};
     `);
+    else db.exec('ALTER TABLE computers ADD COLUMN capacity_json TEXT; ALTER TABLE leases ADD COLUMN reservation_json TEXT; ALTER TABLE leases ADD COLUMN quota_json TEXT;');
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   });
 }
 
@@ -482,18 +533,33 @@ function inTransaction(db, callback) {
 function mapComputer(row) {
   return Object.freeze({ computerId: row.id, projectId: row.project_id, providerId: row.provider_id,
     desiredState: row.desired_state, observedState: row.observed_state, generation: row.generation,
-    rowVersion: row.row_version, observedAt: row.observed_at });
+    rowVersion: row.row_version, observedAt: row.observed_at,
+    capacity: row.capacity_json ? JSON.parse(row.capacity_json) : null });
 }
 
 function mapLease(row) {
   return Object.freeze({ leaseId: row.id, subjectId: row.subject_id, projectId: row.project_id, taskId: row.task_id,
     runId: row.run_id, computerId: row.computer_id, generation: row.generation, expiresAt: row.expires_at,
-    state: row.state, createdAt: row.created_at });
+    state: row.state, createdAt: row.created_at,
+    requirements: row.reservation_json ? JSON.parse(row.reservation_json) : null,
+    quota: row.quota_json ? JSON.parse(row.quota_json) : null });
 }
 
 function sameLease(row, expected) {
   return row.subject_id === expected.subjectId && row.project_id === expected.projectId && row.task_id === expected.taskId
-    && row.run_id === expected.runId && row.computer_id === expected.computerId && row.expires_at === expected.expiresAt;
+    && row.run_id === expected.runId && row.computer_id === expected.computerId && row.expires_at === expected.expiresAt
+    && row.reservation_json === expected.reservationJson && row.quota_json === expected.quotaJson;
+}
+
+function fitsCapacity(capacity, spec) {
+  const supported = new Set(capacity.capabilities);
+  return capacity.os === spec.os && capacity.architecture === spec.architecture
+    && spec.capabilities.every((capability) => supported.has(capability))
+    && capacity.networkProfileIds.includes(spec.networkProfileId)
+    && capacity.securityProfileIds.includes(spec.securityProfileId)
+    && capacity.resources.vcpu >= spec.resources.vcpu
+    && capacity.resources.memoryMiB >= spec.resources.memoryMiB
+    && capacity.resources.diskGiB >= spec.resources.diskGiB;
 }
 
 function digestOperation(operation) {

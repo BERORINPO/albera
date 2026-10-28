@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { DurableEnvironmentOperationCoordinator } from '../src/runtime/environment-operations.mjs';
+import { reserveComputerForRun } from '../src/runtime/computer-scheduler.mjs';
 import { EnvironmentStoreError, openSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
 import { MockEnvironmentProvider } from '../src/runtime/mock-environment-provider.mjs';
 
@@ -53,9 +55,118 @@ async function fixture(t, options = {}) {
 
 test('SQLite store uses WAL, FULL synchronous writes, foreign keys, and a versioned schema', async (t) => {
   const f = await fixture(t);
-  assert.deepEqual(f.store.diagnostics(), { journalMode: 'wal', synchronous: 2, foreignKeys: 1, schemaVersion: 1 });
+  assert.deepEqual(f.store.diagnostics(), { journalMode: 'wal', synchronous: 2, foreignKeys: 1, schemaVersion: 2 });
   assert.equal(f.store.getComputer(f.computerId).generation, 1);
   if (process.platform !== 'win32') assert.equal((await stat(f.databasePath)).mode & 0o777, 0o600);
+});
+
+test('schema v1 migration preserves existing Computer and Lease rows', async (t) => {
+  const root = await mkdtemp(path.join(os.homedir(), '.albera-operation-store-migration-'));
+  const databasePath = path.join(root, 'operations.sqlite');
+  const db = new DatabaseSync(databasePath);
+  db.exec(`
+    CREATE TABLE computers (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL, provider_id TEXT NOT NULL,
+      desired_state TEXT NOT NULL, observed_state TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation >= 1),
+      row_version INTEGER NOT NULL CHECK(row_version >= 1), observed_at TEXT
+    ) STRICT;
+    CREATE TABLE leases (
+      id TEXT PRIMARY KEY, subject_id TEXT NOT NULL, project_id TEXT NOT NULL, task_id TEXT NOT NULL, run_id TEXT NOT NULL,
+      computer_id TEXT NOT NULL REFERENCES computers(id), generation INTEGER NOT NULL CHECK(generation >= 1),
+      expires_at TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('ACTIVE','EXPIRED','REVOKED','QUARANTINED','RELEASED')),
+      created_at TEXT NOT NULL
+    ) STRICT;
+    CREATE UNIQUE INDEX one_unreleased_lease_per_computer ON leases(computer_id) WHERE state <> 'RELEASED';
+    CREATE TABLE operations (
+      id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL, subject_id TEXT NOT NULL, project_id TEXT NOT NULL,
+      task_id TEXT NOT NULL, run_id TEXT NOT NULL, computer_id TEXT NOT NULL REFERENCES computers(id),
+      provider_id TEXT NOT NULL, lease_id TEXT NOT NULL REFERENCES leases(id), generation INTEGER NOT NULL CHECK(generation >= 1),
+      action TEXT NOT NULL CHECK(action IN ('create','inspect','start','stop','destroy')),
+      action_digest TEXT NOT NULL, request_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('REQUESTED','UNKNOWN','SUCCEEDED','FAILED')),
+      desired_state TEXT, observed_state TEXT NOT NULL, observed_at TEXT, error_code TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(subject_id, project_id, idempotency_key)
+    ) STRICT;
+    CREATE TABLE events (
+      id TEXT PRIMARY KEY, aggregate_id TEXT NOT NULL, aggregate_seq INTEGER NOT NULL,
+      operation_id TEXT REFERENCES operations(id), event_type TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+      provenance TEXT NOT NULL CHECK(provenance IN ('control_plane','provider','untrusted_guest')),
+      payload_json TEXT NOT NULL, recorded_at TEXT NOT NULL, UNIQUE(aggregate_id, aggregate_seq)
+    ) STRICT;
+    INSERT INTO computers VALUES ('legacy-computer','legacy-project','mock','missing','missing',1,1,NULL);
+    INSERT INTO leases VALUES ('legacy-lease','human','legacy-project','task','run','legacy-computer',1,'2026-10-29T00:00:00.000Z','ACTIVE','2026-10-28T00:00:00.000Z');
+    PRAGMA user_version = 1;
+  `);
+  db.close();
+  if (process.platform !== 'win32') await chmod(databasePath, 0o600);
+  let store;
+  try {
+    store = await openSqliteEnvironmentStore(databasePath, { verifyWindowsAcl: async () => {} });
+    assert.equal(store.diagnostics().schemaVersion, 2);
+    assert.equal(store.getComputer('legacy-computer').projectId, 'legacy-project');
+    assert.equal(store.getComputer('legacy-computer').capacity, null);
+    assert.equal(store.getLease('legacy-lease').state, 'ACTIVE');
+    assert.equal(store.getLease('legacy-lease').requirements, null);
+  } finally {
+    store?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('scheduler atomically reserves only compatible host capacity and enforces hard project quotas', async (t) => {
+  const f = await fixture(t);
+  const capacity = { os: 'linux', architecture: 'x64', capabilities: ['terminal'],
+    networkProfileIds: ['deny-egress-v1'], securityProfileIds: ['guest-restricted-v1'],
+    resources: { vcpu: 4, memoryMiB: 4096, diskGiB: 64 } };
+  f.store.registerComputer({ computerId: 'sched-a', projectId: 'sched-project', providerId: 'mock', capacity });
+  f.store.registerComputer({ computerId: 'sched-b', projectId: 'sched-project', providerId: 'mock', capacity: {
+    ...capacity, resources: { vcpu: 8, memoryMiB: 8192, diskGiB: 128 },
+  } });
+  const requirements = { ...spec, projectId: 'sched-project' };
+  const quota = { maxComputers: 1, vcpu: 4, memoryMiB: 4096, diskGiB: 64 };
+  const leaseBase = { leaseId: 'sched-lease-a', subjectId: 'human-a', taskId: 'task-sched', runId: 'run-sched',
+    expiresAt: new Date(Date.parse(f.now()) + 60 * 60 * 1000).toISOString() };
+  const reserved = reserveComputerForRun({ store: f.store, lease: leaseBase, requirements, quota });
+  assert.equal(reserved.status, 'PROPOSED');
+  assert.equal(reserved.computerId, 'sched-a', 'best fit is deterministic');
+  assert.equal(reserved.lease.requirements.resources.vcpu, 2);
+  assert.throws(() => reserveComputerForRun({ store: f.store,
+    lease: { ...leaseBase, leaseId: 'sched-lease-b', taskId: 'task-sched-b', runId: 'run-sched-b' }, requirements, quota,
+  }), (error) => error.code === 'project_quota_exceeded');
+  assert.equal(f.store.getLease('sched-lease-b'), null);
+});
+
+test('scheduler treats expired or revoked reservations as held until observed release', async (t) => {
+  const f = await fixture(t);
+  const capacity = { os: 'linux', architecture: 'x64', capabilities: ['terminal'],
+    networkProfileIds: ['deny-egress-v1'], securityProfileIds: ['guest-restricted-v1'],
+    resources: { vcpu: 4, memoryMiB: 4096, diskGiB: 64 } };
+  f.store.registerComputer({ computerId: 'held-a', projectId: 'held-project', providerId: 'mock', capacity });
+  const requirements = { ...spec, projectId: 'held-project' };
+  const quota = { maxComputers: 1, vcpu: 4, memoryMiB: 4096, diskGiB: 64 };
+  const leaseBase = { subjectId: 'human-a', taskId: 'held-task', runId: 'held-run',
+    expiresAt: new Date(Date.parse(f.now()) + 60 * 60 * 1000).toISOString() };
+  reserveComputerForRun({ store: f.store, lease: { ...leaseBase, leaseId: 'held-lease' }, requirements, quota });
+  f.store.expireLeases(new Date(Date.parse(f.now()) + 2 * 60 * 60 * 1000).toISOString());
+  const result = reserveComputerForRun({ store: f.store,
+    lease: { ...leaseBase, leaseId: 'held-next-lease', taskId: 'held-next-task', runId: 'held-next-run' }, requirements, quota,
+  });
+  assert.equal(result.status, 'NO_CAPACITY');
+  assert.ok(result.reasonCodes.includes('lease_unavailable'));
+});
+
+test('legacy outstanding lease with unknown resource usage blocks quota admission', async (t) => {
+  const f = await fixture(t);
+  const capacity = { os: 'linux', architecture: 'x64', capabilities: ['terminal'],
+    networkProfileIds: ['deny-egress-v1'], securityProfileIds: ['guest-restricted-v1'],
+    resources: { vcpu: 4, memoryMiB: 4096, diskGiB: 64 } };
+  f.store.registerComputer({ computerId: 'unknown-usage', projectId: 'project-a', providerId: 'mock', capacity });
+  assert.throws(() => reserveComputerForRun({ store: f.store,
+    lease: { leaseId: 'unknown-usage-lease', subjectId: 'human-a', taskId: 'unknown-task', runId: 'unknown-run',
+      expiresAt: new Date(Date.parse(f.now()) + 60 * 60 * 1000).toISOString() },
+    requirements: spec, quota: { maxComputers: 2, vcpu: 8, memoryMiB: 8192, diskGiB: 128 },
+  }), (error) => error.code === 'project_usage_unknown');
 });
 
 test('durable intent is recorded before provider action and idempotent replay never repeats the side effect', async (t) => {

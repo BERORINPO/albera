@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EnvironmentOperationCoordinator } from '../src/runtime/environment-operations.mjs';
-import { EnvironmentProviderError, validateEnvironmentOperation, validateEnvironmentSpec } from '../src/runtime/environment-provider.mjs';
+import { EnvironmentProviderError, validateEnvironmentCapacity, validateEnvironmentOperation, validateEnvironmentQuota, validateEnvironmentSpec } from '../src/runtime/environment-provider.mjs';
 import { MockEnvironmentProvider } from '../src/runtime/mock-environment-provider.mjs';
 
 const spec = Object.freeze({
@@ -47,6 +47,29 @@ test('environment contract rejects malformed IDs, generations, paths and arbitra
   Object.defineProperty(getterOperation, 'taskId', { get() { getterCalled = true; return 'task-1'; } });
   assert.throws(() => validateEnvironmentOperation(getterOperation), /invalid_environment_operation/);
   assert.equal(getterCalled, false);
+});
+
+test('placement capacity and quotas accept bounded host policy and reject malformed data', () => {
+  const capacity = validateEnvironmentCapacity({
+    os: 'linux', architecture: 'x64', capabilities: ['terminal', 'browser'],
+    networkProfileIds: ['deny-egress-v1'], securityProfileIds: ['guest-restricted-v1'],
+    resources: { vcpu: 8, memoryMiB: 8192, diskGiB: 128 },
+  });
+  assert.deepEqual(capacity.capabilities, ['browser', 'terminal']);
+  assert.equal(Object.isFrozen(capacity.resources), true);
+  assert.throws(() => validateEnvironmentCapacity({
+    os: 'linux', architecture: 'x64', capabilities: ['powershell'],
+    networkProfileIds: ['deny-egress-v1'], securityProfileIds: ['guest-restricted-v1'],
+    resources: { vcpu: 8, memoryMiB: 8192, diskGiB: 128 },
+  }), /invalid_environment_capacity/);
+  assert.throws(() => validateEnvironmentCapacity({
+    os: 'linux', architecture: 'x64', capabilities: [],
+    networkProfileIds: ['deny-egress-v1'], securityProfileIds: ['guest-restricted-v1'],
+    resources: { vcpu: 8, memoryMiB: 8192, diskGiB: 128 }, guestReported: true,
+  }), /invalid_environment_capacity/);
+  assert.deepEqual(validateEnvironmentQuota({ maxComputers: 2, vcpu: 8, memoryMiB: 8192, diskGiB: 256 }),
+    { maxComputers: 2, vcpu: 8, memoryMiB: 8192, diskGiB: 256 });
+  assert.throws(() => validateEnvironmentQuota({ maxComputers: 2, vcpu: 8, memoryMiB: 8192 }), /invalid_environment_quota/);
 });
 
 test('MockProvider drives typed lifecycle and reports observed state separately from requested state', async () => {
