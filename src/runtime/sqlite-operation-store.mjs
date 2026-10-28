@@ -127,7 +127,13 @@ export async function restoreSqliteEnvironmentStore(backupPath, databasePath, op
   try {
     try { await copyFile(backupPath, databasePath, fsConstants.COPYFILE_EXCL); }
     catch (error) {
-      if (error?.code === 'EEXIST') throw new EnvironmentStoreError('restore_destination_exists');
+      if (error?.code === 'EEXIST') {
+        // A normal open may have created this previously absent destination after
+        // our first check. EXCL guarantees no snapshot bytes were copied; release
+        // only our marker so the competing opener is not left quarantined.
+        await releaseRestoreMarker(restoreMarker, verifyWindowsAcl);
+        throw new EnvironmentStoreError('restore_destination_exists');
+      }
       throw new EnvironmentStoreError('restore_copy_failed');
     }
     if (process.platform !== 'win32') await chmod(databasePath, 0o600);

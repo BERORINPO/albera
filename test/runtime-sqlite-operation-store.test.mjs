@@ -176,6 +176,27 @@ test('incomplete SQLite restore leaves a fail-closed marker that blocks ordinary
     (error) => error.code === 'restore_incomplete_marker_present');
 });
 
+test('restore releases its marker without overwriting a database created after its absence check', async (t) => {
+  const f = await fixture(t);
+  const backupPath = path.join(f.root, 'operations-backup.sqlite');
+  const destinationPath = path.join(f.root, 'racing-restore.sqlite');
+  const markerPath = `${destinationPath}.restore-incomplete`;
+  await f.store.backupTo(backupPath);
+  let injected = false;
+  const verifyWindowsAcl = async (target) => {
+    if (!injected && target === markerPath) {
+      injected = true;
+      await writeFile(destinationPath, 'created-by-concurrent-normal-open', { flag: 'wx', mode: 0o600 });
+    }
+  };
+
+  await assert.rejects(restoreSqliteEnvironmentStore(backupPath, destinationPath, {
+    now: f.now, verifyWindowsAcl,
+  }), (error) => error.code === 'restore_destination_exists');
+  assert.equal(await readFile(destinationPath, 'utf8'), 'created-by-concurrent-normal-open');
+  await assert.rejects(stat(markerPath), (error) => error.code === 'ENOENT');
+});
+
 test('ordinary SQLite store open rechecks the restore marker after opening the database', async (t) => {
   const root = await mkdtemp(path.join(os.homedir(), '.albera-operation-store-restore-race-'));
   const databasePath = path.join(root, 'racing-open.sqlite');
