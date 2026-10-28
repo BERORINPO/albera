@@ -541,7 +541,7 @@ test('typed Hyper-V adapter runs behind the durable journal and reconciles a los
       state = 'off';
       if (loseFirstCreateReply) {
         loseFirstCreateReply = false;
-        throw Object.assign(new Error('transport_reply_lost'), { code: 'provider_timeout' });
+        throw Object.assign(new Error('transport_reply_lost credential=do-not-persist'), { code: 'provider_timeout' });
       }
     }
     if (action === 'start') state = 'running';
@@ -557,6 +557,7 @@ test('typed Hyper-V adapter runs behind the durable journal and reconciles a los
   const uncertain = await f.coordinator.execute(create);
   assert.equal(uncertain.status, 'UNKNOWN');
   assert.equal(uncertain.errorCode, 'provider_timeout');
+  assert.doesNotMatch(JSON.stringify(uncertain), /do-not-persist/);
   assert.equal(f.store.getOperation(create.operationId).status, 'UNKNOWN');
 
   const reconciled = await f.coordinator.reconcile(create.operationId);

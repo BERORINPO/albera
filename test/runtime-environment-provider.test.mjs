@@ -62,12 +62,15 @@ test('Hyper-V adapter maps only fixed typed lifecycle methods and validates obse
   ].map(([name, observedState]) => [name, async (op) => {
     calls.push([name, op.action]);
     return { computerId: op.computerId, providerId: 'hyperv', state: observedState,
-      generation: op.expectedGeneration, observedAt: '2026-10-28T00:00:00.000Z' };
+      generation: op.expectedGeneration, observedAt: '2026-10-28T00:00:00.000Z',
+      secret: 'broker-secret-must-not-escape', hostPath: 'C:\\sensitive\\vm.vhdx' };
   }]));
   const provider = new HyperVEnvironmentProvider({ broker: methods });
   for (const action of ['create', 'inspect', 'start', 'stop', 'destroy']) {
     const result = await provider[action](hypervOperation(action));
     assert.equal(result.providerId, 'hyperv');
+    assert.equal(Object.hasOwn(result, 'secret'), false);
+    assert.equal(Object.hasOwn(result, 'hostPath'), false);
   }
   assert.deepEqual(calls, [
     ['createVm', 'create'], ['inspectVm', 'inspect'], ['startVm', 'start'],
