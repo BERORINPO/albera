@@ -33,7 +33,7 @@
     "cli"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node src/entry/server.mjs",
@@ -41,9 +41,7 @@
     "test": "node --test",
     "arch": "node scripts/arch-check.mjs",
     "smoke": "node scripts/smoke.mjs",
+    "bench:runtime-store": "node scripts/runtime-sqlite-benchmark.mjs",
     "package:smoke": "node scripts/package-smoke.mjs"
-  },
-  "dependencies": {
-    "better-sqlite3": "13.0.3"
   }
 }

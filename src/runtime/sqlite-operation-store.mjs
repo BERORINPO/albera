@@ -3,7 +3,7 @@ import { constants as fsConstants } from 'node:fs';
 import { mkdir, open, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 import { assertPrivatePosixStorage, assertSingleLink } from './audit-journal.mjs';
 import { assertPrivateWindowsAcl, RuntimeStorageAclError } from './windows-acl.mjs';
 import { EnvironmentProviderError, validateEnvironmentOperation, validateObservedEnvironment } from './environment-provider.mjs';
@@ -22,7 +22,7 @@ export async function openSqliteEnvironmentStore(databasePath, {
   verifyWindowsAcl = assertPrivateWindowsAcl,
   now = () => new Date().toISOString(),
   maxRecords = DEFAULT_MAX_RECORDS,
-  DatabaseImpl = Database,
+  DatabaseImpl = DatabaseSync,
 } = {}) {
   if (typeof databasePath !== 'string' || !path.isAbsolute(databasePath) || path.resolve(databasePath) !== databasePath
     || databasePath === path.parse(databasePath).root || (process.platform === 'win32' && isWindowsUncPath(databasePath))) {
@@ -58,7 +58,7 @@ export async function openSqliteEnvironmentStore(databasePath, {
 
   let db;
   try {
-    db = new DatabaseImpl(databasePath, { timeout: 5000 });
+    db = new DatabaseImpl(databasePath);
     const after = await lstat(databasePath);
     if (!after.isFile() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) {
       throw new EnvironmentStoreError('database_changed_during_open');
@@ -66,13 +66,13 @@ export async function openSqliteEnvironmentStore(databasePath, {
     assertSingleLink(after, 'database_hard_linked_file');
     assertPrivatePosixStorage(after, 'database_file_permissions', 'file');
     await verifyAcl(verifyWindowsAcl, databasePath, 'file');
-    db.pragma('foreign_keys = ON');
-    db.pragma('busy_timeout = 5000');
-    const mode = db.pragma('journal_mode = WAL', { simple: true });
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec('PRAGMA busy_timeout = 5000');
+    const mode = db.prepare('PRAGMA journal_mode = WAL').get()?.journal_mode;
     if (String(mode).toLowerCase() !== 'wal') throw new EnvironmentStoreError('wal_mode_unavailable');
-    db.pragma('synchronous = FULL');
-    const [integrity] = db.pragma('quick_check(1)');
-    if (integrity?.quick_check !== 'ok') throw new EnvironmentStoreError('database_integrity_failed');
+    db.exec('PRAGMA synchronous = FULL');
+    const integrity = db.prepare('PRAGMA quick_check(1)').get()?.quick_check;
+    if (integrity !== 'ok') throw new EnvironmentStoreError('database_integrity_failed');
     migrate(db);
     const store = new SqliteEnvironmentOperationStore(db, { now, maxRecords });
     store.recoverInterruptedRequests();
@@ -128,7 +128,7 @@ class SqliteEnvironmentOperationStore {
     });
   }
 
-  /** Reserve one exclusive, generation-fenced Lease; expired/revoked Leases continue holding capacity. */
+  /** Reserve one exclusive Lease. The Computer generation advances on restore, not ordinary task reassignment. */
   reserveLease({ leaseId, subjectId, projectId, taskId, runId, computerId, expiresAt }) {
     this.#assertOpen();
     if (![leaseId, subjectId, projectId, taskId, runId, computerId].every(isId) || !isTimestamp(expiresAt)) {
@@ -148,9 +148,9 @@ class SqliteEnvironmentOperationStore {
       if (!computer || computer.project_id !== projectId) throw new EnvironmentStoreError('computer_not_owned');
       const outstanding = this.#db.prepare(`SELECT id FROM leases WHERE computer_id = ? AND state <> 'RELEASED' LIMIT 1`).get(computerId);
       if (outstanding) throw new EnvironmentStoreError('computer_already_leased');
-      const generation = computer.generation + 1;
-      this.#db.prepare('UPDATE computers SET generation = ?, row_version = row_version + 1 WHERE id = ? AND generation = ?')
-        .run(generation, computerId, computer.generation);
+      const generation = computer.generation;
+      this.#db.prepare('UPDATE computers SET row_version = row_version + 1 WHERE id = ? AND generation = ?')
+        .run(computerId, computer.generation);
       this.#db.prepare(`INSERT INTO leases (id, subject_id, project_id, task_id, run_id, computer_id, generation, expires_at, state, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`)
         .run(leaseId, subjectId, projectId, taskId, runId, computerId, generation, normalizedExpiry, timestamp);
@@ -175,7 +175,7 @@ class SqliteEnvironmentOperationStore {
     });
   }
 
-  /** Revoke authority and advance the computer epoch; this does not stop any guest/process. */
+  /** Revoke Lease authority. Only restore advances the Computer epoch; revocation never asserts the guest stopped. */
   revokeLease(leaseId, { reason = 'revoked' } = {}) {
     this.#assertOpen();
     if (!isId(leaseId) || !['revoked', 'restore', 'policy_changed'].includes(reason)) throw new EnvironmentStoreError('lease_revoke_invalid');
@@ -183,9 +183,12 @@ class SqliteEnvironmentOperationStore {
     return this.#transaction(() => {
       const lease = this.#db.prepare('SELECT * FROM leases WHERE id = ?').get(leaseId);
       if (!lease) throw new EnvironmentStoreError('lease_unknown');
-      if (lease.state === 'RELEASED' || lease.state === 'REVOKED') return { lease: mapLease(lease), generation: this.#computerGeneration(lease.computer_id) };
       const computer = this.#db.prepare('SELECT * FROM computers WHERE id = ?').get(lease.computer_id);
-      const generation = computer.generation + 1;
+      if (lease.state === 'RELEASED' || (lease.state === 'REVOKED'
+        && (reason !== 'restore' || computer.generation !== lease.generation))) {
+        return { lease: mapLease(lease), generation: computer.generation };
+      }
+      const generation = computer.generation + (reason === 'restore' && computer.generation === lease.generation ? 1 : 0);
       this.#db.prepare("UPDATE leases SET state = 'REVOKED' WHERE id = ?").run(leaseId);
       this.#db.prepare("UPDATE computers SET generation = ?, observed_state = 'unknown', observed_at = ?, row_version = row_version + 1 WHERE id = ?")
         .run(generation, timestamp, lease.computer_id);
@@ -305,10 +308,12 @@ class SqliteEnvironmentOperationStore {
       if (record.status !== 'UNKNOWN') return this.#getOperationRow(record);
       const computer = this.#db.prepare('SELECT generation FROM computers WHERE id = ?').get(record.computer_id);
       if (computer?.generation !== record.generation) {
-        this.#db.prepare("UPDATE operations SET error_code = 'stale_generation', updated_at = ? WHERE id = ?").run(timestamp, operationId);
-        this.#event(record.computer_id, operationId, 'operation.reconciliation_fenced', {
-          action: record.action, status: 'UNKNOWN', generation: record.generation,
-        }, timestamp, 'provider');
+        if (record.error_code !== 'stale_generation') {
+          this.#db.prepare("UPDATE operations SET error_code = 'stale_generation', updated_at = ? WHERE id = ?").run(timestamp, operationId);
+          this.#event(record.computer_id, operationId, 'operation.reconciliation_fenced', {
+            action: record.action, status: 'UNKNOWN', generation: record.generation,
+          }, timestamp, 'provider');
+        }
         return this.#getOperationRow(this.#db.prepare('SELECT * FROM operations WHERE id = ?').get(operationId));
       }
       let state = 'unknown';
@@ -358,10 +363,10 @@ class SqliteEnvironmentOperationStore {
   diagnostics() {
     this.#assertOpen();
     return Object.freeze({
-      journalMode: String(this.#db.pragma('journal_mode', { simple: true })).toLowerCase(),
-      synchronous: this.#db.pragma('synchronous', { simple: true }),
-      foreignKeys: this.#db.pragma('foreign_keys', { simple: true }),
-      schemaVersion: this.#db.pragma('user_version', { simple: true }),
+      journalMode: String(this.#db.prepare('PRAGMA journal_mode').get()?.journal_mode).toLowerCase(),
+      synchronous: this.#db.prepare('PRAGMA synchronous').get()?.synchronous,
+      foreignKeys: this.#db.prepare('PRAGMA foreign_keys').get()?.foreign_keys,
+      schemaVersion: this.#db.prepare('PRAGMA user_version').get()?.user_version,
     });
   }
 
@@ -409,7 +414,7 @@ class SqliteEnvironmentOperationStore {
 
   #transaction(callback) {
     this.#assertOpen();
-    try { return this.#db.transaction(callback).immediate(); }
+    try { return inTransaction(this.#db, callback); }
     catch (error) {
       if (error instanceof EnvironmentStoreError || error instanceof EnvironmentProviderError) throw error;
       throw new EnvironmentStoreError('store_transaction_failed');
@@ -420,11 +425,11 @@ class SqliteEnvironmentOperationStore {
 }
 
 function migrate(db) {
-  const version = db.pragma('user_version', { simple: true });
+  const version = db.prepare('PRAGMA user_version').get()?.user_version;
   if (!Number.isSafeInteger(version) || version > SCHEMA_VERSION) throw new EnvironmentStoreError('database_schema_newer');
   if (version === SCHEMA_VERSION) return;
   if (version !== 0) throw new EnvironmentStoreError('database_schema_unsupported');
-  db.transaction(() => {
+  inTransaction(db, () => {
     db.exec(`
       CREATE TABLE computers (
         id TEXT PRIMARY KEY, project_id TEXT NOT NULL, provider_id TEXT NOT NULL,
@@ -459,7 +464,19 @@ function migrate(db) {
       CREATE INDEX events_operation_idx ON events(operation_id, aggregate_seq);
       PRAGMA user_version = ${SCHEMA_VERSION};
     `);
-  }).immediate();
+  });
+}
+
+function inTransaction(db, callback) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = callback();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* preserve the original transaction failure */ }
+    throw error;
+  }
 }
 
 function mapComputer(row) {

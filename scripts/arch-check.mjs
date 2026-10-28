@@ -119,8 +119,7 @@ check('2c adapter imports', adapters, (line) => {
 check('2d runtime imports', runtime, (line, file) => {
   const s = specOf(line);
   if (s == null) return null;
-  const isolatedSqliteDriver = posix(file) === 'src/runtime/sqlite-operation-store.mjs' && s === 'better-sqlite3';
-  return s.startsWith('node:') || s.startsWith('./') || isolatedSqliteDriver ? null : `runtime cannot import ${s}`;
+  return s.startsWith('node:') || s.startsWith('./') ? null : `runtime cannot import ${s}`;
 });
 check('2e runtime isolation', [...entry, ...adapters, ...core, ...shared], (line) => {
   const s = specOf(line);

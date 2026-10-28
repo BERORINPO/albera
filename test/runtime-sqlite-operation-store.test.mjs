@@ -54,7 +54,7 @@ async function fixture(t, options = {}) {
 test('SQLite store uses WAL, FULL synchronous writes, foreign keys, and a versioned schema', async (t) => {
   const f = await fixture(t);
   assert.deepEqual(f.store.diagnostics(), { journalMode: 'wal', synchronous: 2, foreignKeys: 1, schemaVersion: 1 });
-  assert.equal(f.store.getComputer(f.computerId).generation, 2);
+  assert.equal(f.store.getComputer(f.computerId).generation, 1);
   if (process.platform !== 'win32') assert.equal((await stat(f.databasePath)).mode & 0o777, 0o600);
 });
 
@@ -138,6 +138,31 @@ test('reconciliation from a revoked generation stays UNKNOWN even when the provi
   assert.equal(reconciled.status, 'UNKNOWN');
   assert.equal(reconciled.errorCode, 'stale_generation');
   assert.equal(f.store.getComputer(f.computerId).observedState, 'unknown');
+  const fencedEvents = f.store.listEvents(f.computerId).filter((event) => event.type === 'operation.reconciliation_fenced').length;
+  f.store.recordReconciliation(request.operationId, {
+    computerId: f.computerId, providerId: 'mock', state: 'off', generation: f.lease.generation, observedAt: f.now(),
+  });
+  assert.equal(f.store.listEvents(f.computerId).filter((event) => event.type === 'operation.reconciliation_fenced').length, fencedEvents,
+    'repeated stale-generation inspection does not grow the event log');
+});
+
+test('policy revocation denies further requests without pretending a VM restore advanced its generation', async (t) => {
+  const f = await fixture(t);
+  const revoked = f.store.revokeLease(f.lease.leaseId, { reason: 'policy_changed' });
+  assert.equal(revoked.generation, f.lease.generation);
+  assert.throws(() => f.store.beginOperation(f.operation('start', {
+    operationId: 'operation-revoked-start', idempotencyKey: 'idem-revoked-start',
+  })), (error) => error.code === 'lease_not_authorized');
+  assert.equal(f.store.getComputer(f.computerId).observedState, 'unknown');
+});
+
+test('a later restore advances generation even after an earlier policy revocation', async (t) => {
+  const f = await fixture(t);
+  f.store.revokeLease(f.lease.leaseId, { reason: 'policy_changed' });
+  const restored = f.store.revokeLease(f.lease.leaseId, { reason: 'restore' });
+  assert.equal(restored.generation, f.lease.generation + 1);
+  assert.equal(f.store.revokeLease(f.lease.leaseId, { reason: 'restore' }).generation, restored.generation,
+    'replay is idempotent after the Computer generation has advanced');
 });
 
 test('Lease expiry does not free a computer; release requires current-generation stop observation', async (t) => {
@@ -152,7 +177,30 @@ test('Lease expiry does not free a computer; release requires current-generation
   const released = f.store.releaseLease(f.lease.leaseId, { computerId: f.computerId, providerId: 'mock', state: 'off', generation: f.lease.generation, observedAt: f.now() });
   assert.equal(released.state, 'RELEASED');
   const next = f.store.reserveLease({ leaseId: 'lease-b', subjectId: 'human-a', projectId: 'project-a', taskId: 'task-b', runId: 'run-b', computerId: f.computerId, expiresAt: new Date(Date.parse(f.now()) + 60_000).toISOString() });
-  assert.equal(next.generation, f.lease.generation + 1);
+  assert.equal(next.generation, f.lease.generation, 'ordinary task reassignment does not simulate a VM restore');
+});
+
+test('a released off Computer can be leased to a new Run without desynchronizing Provider generation', async (t) => {
+  const f = await fixture(t);
+  const create = f.operation('create');
+  assert.equal((await f.coordinator.execute(create)).status, 'SUCCEEDED');
+  const { spec: _spec, ...inspectRequest } = create;
+  const observed = await f.provider.inspect({ ...inspectRequest, action: 'inspect' });
+  f.store.releaseLease(f.lease.leaseId, observed);
+  const nextLease = f.store.reserveLease({
+    leaseId: 'lease-next', subjectId: f.lease.subjectId, projectId: f.lease.projectId,
+    taskId: 'task-next', runId: 'run-next', computerId: f.computerId,
+    expiresAt: new Date(Date.parse(f.now()) + 60_000).toISOString(),
+  });
+  const start = f.operation('start', {
+    operationId: 'operation-start-next', idempotencyKey: 'idem-start-next',
+    leaseId: nextLease.leaseId, taskId: nextLease.taskId, runId: nextLease.runId,
+    expectedGeneration: nextLease.generation,
+  });
+  const started = await f.coordinator.execute(start);
+  assert.equal(started.status, 'SUCCEEDED');
+  assert.equal(started.generation, f.lease.generation);
+  assert.equal(started.observedState, 'running');
 });
 
 test('operation/event storage excludes prompts and arbitrary secret fields', async (t) => {
