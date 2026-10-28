@@ -524,6 +524,29 @@ test('Guest record budget cannot be configured above three quarters of shared st
   }), (error) => error instanceof TypeError && error.message === 'invalid_guest_store_capacity');
 });
 
+test('global Store record capacity fails closed without replacing earlier journal state', async (t) => {
+  const f = await fixture(t, { maxRecords: 32, maxGuestRecords: 4 });
+  const countRecords = () => {
+    const db = new DatabaseSync(f.databasePath);
+    try {
+      return db.prepare(`SELECT (SELECT COUNT(*) FROM computers) + (SELECT COUNT(*) FROM operations)
+        + (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM leases)
+        + (SELECT COUNT(*) FROM guest_event_receipts) + (SELECT COUNT(*) FROM operation_authorizations) AS count`).get().count;
+    } finally { db.close(); }
+  };
+  let index = 0;
+  while (countRecords() + 2 <= 32) {
+    f.store.registerComputer({ computerId: `capacity-computer-${index++}`, projectId: 'project-a', providerId: 'mock' });
+  }
+  const countAtLimit = countRecords();
+  const lastComputer = f.store.getComputer(`capacity-computer-${index - 1}`);
+  assert.throws(() => f.store.registerComputer({ computerId: 'capacity-computer-rejected', projectId: 'project-a', providerId: 'mock' }),
+    (error) => error.code === 'store_capacity_exceeded');
+  assert.equal(countRecords(), countAtLimit, 'capacity refusal does not delete or partially replace journal records');
+  assert.equal(f.store.getComputer(lastComputer.computerId).computerId, lastComputer.computerId);
+  assert.equal(f.store.getComputer('capacity-computer-rejected'), null);
+});
+
 test('durable Guest event intake acknowledges exact retries and rejects replay, gaps, conflicts and stale leases', async (t) => {
   const f = await fixture(t);
   const event = {
