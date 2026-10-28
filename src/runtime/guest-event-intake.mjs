@@ -46,11 +46,21 @@ export function createGuestEventIntake({ store, authenticateTransport, resolveGu
       // The Store performs its own validation and adds the trusted `untrusted_guest` provenance.
       try { return recordGuestEvent(message); }
       catch (error) {
-        const code = SAFE_STORE_ERRORS.has(error?.code) ? error.code : 'guest_event_store_unavailable';
-        throw new GuestEventIntakeError(code);
+        throw new GuestEventIntakeError(safeStoreErrorCode(error));
       }
     },
   });
+}
+
+function safeStoreErrorCode(error) {
+  try {
+    if ((typeof error !== 'object' || error === null) && typeof error !== 'function') return 'guest_event_store_unavailable';
+    const descriptor = Object.getOwnPropertyDescriptor(error, 'code');
+    const code = descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+    return SAFE_STORE_ERRORS.has(code) ? code : 'guest_event_store_unavailable';
+  } catch {
+    return 'guest_event_store_unavailable';
+  }
 }
 
 function captureMethod(target, name) {

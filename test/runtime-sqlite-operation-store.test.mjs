@@ -526,6 +526,28 @@ test('GuestEventIntake binds an authenticated transport to Host identity and rec
   assert.equal(f.store.listEvents(f.computerId).filter((record) => record.provenance === 'untrusted_guest').length, 1);
 });
 
+test('Guest intake normalizes hostile Store error reflection without leaking exception text', async () => {
+  const secret = 'credential-like store exception text';
+  const hostile = new Proxy({}, {
+    getOwnPropertyDescriptor() { throw new Error(secret); },
+  });
+  const intake = createGuestEventIntake({
+    store: { recordGuestEvent() { throw hostile; } },
+    authenticateTransport: async () => 'peer-a',
+    resolveGuestContext: async () => ({ computerId: 'computer-a', runId: 'run-a', generation: 1 }),
+  });
+  const message = {
+    protocolVersion: 1, type: 'guest.event', messageId: randomUUID(), computerId: 'computer-a', runId: 'run-a',
+    generation: 1, sequence: 1, occurredAt: '2026-10-28T00:00:00.000Z', eventType: 'heartbeat', agentVersion: '0.1.0',
+  };
+  await assert.rejects(intake.receive({ transport: {}, message }), (error) => {
+    assert.equal(error.code, 'guest_event_store_unavailable');
+    assert.equal(error.message, 'guest_event_store_unavailable');
+    assert.equal(error.message.includes(secret), false);
+    return true;
+  });
+});
+
 test('GuestEventIntake rejects a pre-restore peer generation at the durable Store fence', async (t) => {
   const f = await fixture(t);
   const oldGeneration = f.lease.generation;
