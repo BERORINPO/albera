@@ -30,6 +30,13 @@ This file is the continuation ledger. `VERIFIED` refers only to the stated evide
 - Initial local Windows Node `v24.13.0` evidence: focused `test/runtime-sqlite-operation-store.test.mjs` passed 68/68; full `npm test` passed 672 total (664 passed, 8 skipped, 0 failed); `npm run arch` passed 95 paths/0 violations; `npm run smoke`, `npm run package:smoke`, `npm audit --omit=dev` (0 vulnerabilities), and `git diff --check` passed. No external transport or real Guest was exercised, and no performance claim is made for the intake seam.
 - Follow-up restore-fence regression: authenticated intake with a pre-restore Computer/Run/generation is rejected by the Store after generation advancement, and no Guest receipt is appended. Local Windows Node `v24.13.0`: focused SQLite suite 69/69; full `npm test` 673 total (665 passed, 8 skipped, 0 failed); `npm run arch` 95 paths/0 violations; smoke, package smoke, audit (0 vulnerabilities), and `git diff --check` passed. The test proves lease-generation fencing only; credential revocation remains unimplemented because no Guest credentials are issued.
 
+## Latest local checkpoint — Hostile Provider error projection
+
+- Review found that coordinator error normalization read `error.code` and `error.outcome` through ordinary property access. A future injected Provider/Broker exception implemented as a hostile Proxy or accessor could throw during the catch path or expose its message rather than preserving a conservative unknown result.
+- `environment-operations.mjs` now reads only own data-property descriptors inside a guarded reflection boundary. Unknown or hostile values map to `provider_outcome_unknown` and `UNKNOWN`; no exception message is returned. The same safe projection applies to the in-memory test coordinator.
+- A durable SQLite→Coordinator→Local Broker test injects a Proxy whose property access and reflection traps throw a credential-like string, then verifies the operation remains `UNKNOWN`, receives only the fixed code, and does not expose the string. This does not establish cross-process Broker authentication or make the local Broker a security boundary.
+- Local Windows Node `v24.13.0`: focused SQLite suite 70/70; full `npm test` 674 total (666 passed, 8 skipped, 0 failed); `npm run arch` 95 paths/0 violations; `npm run smoke`, `npm run package:smoke`, `npm audit --omit=dev` (0 vulnerabilities), and `git diff --check` passed. The new adversarial exception test is synthetic; no remote Provider or OS Broker boundary exists to exercise.
+
 ## Current local evidence
 
 - Baseline gap-analysis commit: `a1a8babc22e056bc2a6829601545217156a3d4d4`.

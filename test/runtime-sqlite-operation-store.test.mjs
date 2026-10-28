@@ -1300,6 +1300,27 @@ test('provider action completing after coordinator timeout remains UNKNOWN until
   assert.equal(released.state, 'RELEASED');
 });
 
+test('durable coordinator sanitizes hostile Provider error Proxies and preserves UNKNOWN', async (t) => {
+  const secret = 'credential=never-disclose';
+  const hostile = new Proxy({}, {
+    get() { throw new Error(secret); },
+    getOwnPropertyDescriptor() { throw new Error(secret); },
+    ownKeys() { throw new Error(secret); },
+  });
+  const f = await fixture(t, {
+    prepareProvider(provider) {
+      provider.create = async () => { throw hostile; };
+    },
+  });
+  const request = f.operation('create');
+
+  const result = await f.coordinator.execute(request);
+  assert.equal(result.status, 'UNKNOWN');
+  assert.equal(result.errorCode, 'provider_outcome_unknown');
+  assert.equal(f.store.getOperation(request.operationId).status, 'UNKNOWN');
+  assert.equal(JSON.stringify(result).includes(secret), false);
+});
+
 test('typed Hyper-V adapter runs behind the durable journal and reconciles a lost create reply without replay', async (t) => {
   const calls = { create: 0, inspect: 0, start: 0, stop: 0, destroy: 0 };
   let state = 'missing';

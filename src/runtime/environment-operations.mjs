@@ -54,7 +54,7 @@ export class EnvironmentOperationCoordinator {
       record.status = operation.action === 'inspect' || record.observedState === record.desiredState ? 'SUCCEEDED' : 'UNKNOWN';
     } catch (error) {
       record.errorCode = safeCode(error);
-      record.status = error?.outcome === 'not_applied' ? 'FAILED' : 'UNKNOWN';
+      record.status = safeOutcome(error) === 'not_applied' ? 'FAILED' : 'UNKNOWN';
     }
     record.updatedAt = this.#now();
     return snapshot(record);
@@ -153,7 +153,7 @@ export class DurableEnvironmentOperationCoordinator {
     } catch (error) {
       this.#store.recordProviderOutcome(operation.operationId, {
         errorCode: safeCode(error),
-        outcome: !providerInvoked || error?.outcome === 'not_applied' ? 'not_applied' : 'unknown',
+        outcome: !providerInvoked || safeOutcome(error) === 'not_applied' ? 'not_applied' : 'unknown',
       });
       return publicSnapshot(this.#store.getOperation(operation.operationId));
     }
@@ -280,7 +280,20 @@ function sortObject(value) {
 }
 
 function safeCode(error) {
-  return typeof error?.code === 'string' && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : 'provider_outcome_unknown';
+  const code = readOwnDataProperty(error, 'code');
+  return typeof code === 'string' && /^[a-z0-9_]{1,64}$/.test(code) ? code : 'provider_outcome_unknown';
+}
+
+function safeOutcome(error) {
+  return readOwnDataProperty(error, 'outcome') === 'not_applied' ? 'not_applied' : 'unknown';
+}
+
+function readOwnDataProperty(value, key) {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+  } catch { return undefined; }
 }
 
 function publicSnapshot(record) {
