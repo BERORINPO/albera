@@ -130,3 +130,26 @@ test('Boundary validators reject accessors and nested executable payloads withou
     generation: 4, action: 'task.start', payloadDigest: digest, deadlineAt: at, extras: { token: 'secret' },
   }), (error) => error.code === 'invalid_guest_command');
 });
+
+test('Boundary validators normalize hostile Proxy reflection failures to fixed schema errors', () => {
+  const secret = 'credential-like provider exception text';
+  const hostilePrototype = new Proxy({}, {
+    getPrototypeOf() { throw new Error(secret); },
+  });
+  assert.throws(() => validateBrokerRequest(hostilePrototype), (error) => {
+    assert.equal(error.code, 'invalid_broker_request');
+    assert.equal(error.message, 'invalid_broker_request');
+    assert.equal(error.message.includes(secret), false);
+    return true;
+  });
+
+  const hostileReflection = new Proxy({ eventType: 'heartbeat' }, {
+    ownKeys() { throw new Error(secret); },
+  });
+  assert.throws(() => validateGuestEvent(hostileReflection), (error) => {
+    assert.equal(error.code, 'invalid_guest_event');
+    assert.equal(error.message, 'invalid_guest_event');
+    assert.equal(error.message.includes(secret), false);
+    return true;
+  });
+});

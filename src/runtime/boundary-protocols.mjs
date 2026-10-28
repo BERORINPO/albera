@@ -127,29 +127,38 @@ export function assertGuestEventFenced(eventInput, trustedContext) {
 }
 
 function readRecord(input, allowedKeys, errorCode) {
-  if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new BoundaryProtocolError(errorCode);
-  const prototype = Object.getPrototypeOf(input);
-  if (prototype !== Object.prototype && prototype !== null) throw new BoundaryProtocolError(errorCode);
-  if (Object.getOwnPropertySymbols(input).length > 0) throw new BoundaryProtocolError(errorCode);
-  const descriptors = Object.getOwnPropertyDescriptors(input);
-  const keys = Object.keys(descriptors);
-  if (keys.length > 16 || keys.some((key) => !allowedKeys.has(key))) throw new BoundaryProtocolError(errorCode);
-  const result = Object.create(null);
-  for (const key of keys) {
-    const descriptor = descriptors[key];
-    if (!Object.hasOwn(descriptor, 'value')) throw new BoundaryProtocolError(errorCode);
-    const value = descriptor.value;
-    if (typeof value === 'string' && value.length > 128) throw new BoundaryProtocolError(errorCode);
-    if (!['string', 'number'].includes(typeof value)) throw new BoundaryProtocolError(errorCode);
-    result[key] = value;
+  try {
+    if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new BoundaryProtocolError(errorCode);
+    const prototype = Object.getPrototypeOf(input);
+    if (prototype !== Object.prototype && prototype !== null) throw new BoundaryProtocolError(errorCode);
+    if (Object.getOwnPropertySymbols(input).length > 0) throw new BoundaryProtocolError(errorCode);
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const keys = Object.keys(descriptors);
+    if (keys.length > 16 || keys.some((key) => !allowedKeys.has(key))) throw new BoundaryProtocolError(errorCode);
+    const result = Object.create(null);
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (!Object.hasOwn(descriptor, 'value')) throw new BoundaryProtocolError(errorCode);
+      const value = descriptor.value;
+      if (typeof value === 'string' && value.length > 128) throw new BoundaryProtocolError(errorCode);
+      if (!['string', 'number'].includes(typeof value)) throw new BoundaryProtocolError(errorCode);
+      result[key] = value;
+    }
+    if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 2048) throw new BoundaryProtocolError(errorCode);
+    return result;
+  } catch {
+    // Reflection traps on injected objects must not leak provider/transport exception text.
+    throw new BoundaryProtocolError(errorCode);
   }
-  if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 2048) throw new BoundaryProtocolError(errorCode);
-  return result;
 }
 
 function ownDataValue(input, key) {
-  const descriptor = Object.getOwnPropertyDescriptor(input, key);
-  return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(input, key);
+    return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 function isId(value) { return typeof value === 'string' && ID_RE.test(value); }
 function isGeneration(value) { return Number.isSafeInteger(value) && value > 0; }
