@@ -1642,10 +1642,12 @@ test('durable coordinator sanitizes hostile Provider error Proxies and preserves
   assert.equal(JSON.stringify(result).includes(secret), false);
 });
 
-test('typed Hyper-V adapter runs behind the durable journal and reconciles a lost create reply without replay', async (t) => {
+test('typed Hyper-V adapter reconciles lost create, start, and stop replies without replay', async (t) => {
   const calls = { create: 0, inspect: 0, start: 0, stop: 0, destroy: 0 };
   let state = 'missing';
   let loseFirstCreateReply = true;
+  let loseFirstStartReply = true;
+  let loseFirstStopReply = true;
   const broker = Object.fromEntries([
     ['createVm', 'create'], ['inspectVm', 'inspect'], ['startVm', 'start'],
     ['stopVm', 'stop'], ['removeVm', 'destroy'],
@@ -1658,8 +1660,21 @@ test('typed Hyper-V adapter runs behind the durable journal and reconciles a los
         throw Object.assign(new Error('transport_reply_lost credential=do-not-persist'), { code: 'provider_timeout' });
       }
     }
-    if (action === 'start') state = 'running';
-    if (action === 'stop' || action === 'destroy') state = action === 'stop' ? 'off' : 'missing';
+    if (action === 'start') {
+      state = 'running';
+      if (loseFirstStartReply) {
+        loseFirstStartReply = false;
+        throw Object.assign(new Error('start reply lost token=do-not-persist'), { code: 'provider_timeout' });
+      }
+    }
+    if (action === 'stop') {
+      state = 'off';
+      if (loseFirstStopReply) {
+        loseFirstStopReply = false;
+        throw Object.assign(new Error('stop reply lost secret=do-not-persist'), { code: 'provider_timeout' });
+      }
+    }
+    if (action === 'destroy') state = 'missing';
     return {
       computerId: operation.computerId, providerId: 'hyperv', state,
       generation: operation.expectedGeneration, observedAt: '2026-10-28T00:00:00.000Z',
@@ -1680,16 +1695,32 @@ test('typed Hyper-V adapter runs behind the durable journal and reconciles a los
   assert.equal((await f.coordinator.execute(create)).operationId, create.operationId);
   assert.equal(calls.create, 1, 'an uncertain create is not replayed');
 
-  const start = await f.coordinator.execute(f.operation('start'));
+  const startRequest = f.operation('start');
+  const uncertainStart = await f.coordinator.execute(startRequest);
+  assert.equal(uncertainStart.status, 'UNKNOWN');
+  assert.equal(uncertainStart.errorCode, 'provider_timeout');
+  assert.doesNotMatch(JSON.stringify(uncertainStart), /do-not-persist/);
+  assert.equal(f.store.getOperation(startRequest.operationId).status, 'UNKNOWN');
+  const start = await f.coordinator.reconcile(startRequest.operationId);
   assert.equal(start.status, 'SUCCEEDED');
   assert.equal(start.observedState, 'running');
+  assert.equal((await f.coordinator.execute(startRequest)).operationId, startRequest.operationId);
+  assert.equal(calls.start, 1, 'an uncertain start is not replayed');
   const inspect = await f.coordinator.execute(f.operation('inspect'));
   assert.equal(inspect.status, 'SUCCEEDED');
   assert.equal(inspect.observedState, 'running');
-  const stop = await f.coordinator.execute(f.operation('stop'));
+  const stopRequest = f.operation('stop');
+  const uncertainStop = await f.coordinator.execute(stopRequest);
+  assert.equal(uncertainStop.status, 'UNKNOWN');
+  assert.equal(uncertainStop.errorCode, 'provider_timeout');
+  assert.doesNotMatch(JSON.stringify(uncertainStop), /do-not-persist/);
+  assert.equal(f.store.getOperation(stopRequest.operationId).status, 'UNKNOWN');
+  const stop = await f.coordinator.reconcile(stopRequest.operationId);
   assert.equal(stop.status, 'SUCCEEDED');
   assert.equal(stop.observedState, 'off');
-  assert.deepEqual(calls, { create: 1, inspect: 2, start: 1, stop: 1, destroy: 0 });
+  assert.equal((await f.coordinator.execute(stopRequest)).operationId, stopRequest.operationId);
+  assert.equal(calls.stop, 1, 'an uncertain stop is not replayed');
+  assert.deepEqual(calls, { create: 1, inspect: 4, start: 1, stop: 1, destroy: 0 });
 });
 
 test('typed Hyper-V adapter reconciles a lost destroy reply by inspection without repeating removal', async (t) => {
