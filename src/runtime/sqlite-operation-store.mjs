@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, closeSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, open, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -12,6 +12,7 @@ import { EnvironmentProviderError, validateEnvironmentCapacity, validateEnvironm
 const SCHEMA_VERSION = 3;
 const DEFAULT_MAX_RECORDS = 20_000;
 const HARD_MAX_RECORDS = 100_000;
+const RECOVERY_OWNER_MAGIC = 'ALBERA_SQLITE_RECOVERY_OWNER_V1';
 const DESIRED_STATES = Object.freeze({ create: 'off', inspect: null, start: 'running', stop: 'off', destroy: 'missing' });
 
 export class EnvironmentStoreError extends Error {
@@ -61,7 +62,9 @@ export async function openSqliteEnvironmentStore(databasePath, {
   }
 
   let db;
+  let recoveryOwnerLock;
   try {
+    if (recoverInterruptedRequests) recoveryOwnerLock = await acquireRecoveryOwnerLock(databasePath, verifyWindowsAcl);
     db = new DatabaseImpl(databasePath);
     const after = await lstat(databasePath);
     if (!after.isFile() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) {
@@ -78,13 +81,13 @@ export async function openSqliteEnvironmentStore(databasePath, {
     const integrity = db.prepare('PRAGMA quick_check(1)').get()?.quick_check;
     if (integrity !== 'ok') throw new EnvironmentStoreError('database_integrity_failed');
     migrate(db);
-    const store = new SqliteEnvironmentOperationStore(db, { now, maxRecords });
-    // Only the elected host owner performs startup recovery. Other processes may open
-    // a shared WAL for serialized mutations and must not mark live REQUESTED work UNKNOWN.
+    const store = new SqliteEnvironmentOperationStore(db, { now, maxRecords, recoveryOwnerLock });
+    // Recovery is opt-in and holds a fail-closed owner marker for the store's lifetime.
     if (recoverInterruptedRequests) store.recoverInterruptedRequests();
     return store;
   } catch (error) {
     db?.close();
+    recoveryOwnerLock?.release();
     if (error instanceof EnvironmentStoreError || error instanceof RuntimeStorageAclError) throw error;
     // Preserve the database and sidecars for diagnosis; never repair or delete uncertain state.
     throw new EnvironmentStoreError('database_open_failed');
@@ -95,9 +98,12 @@ class SqliteEnvironmentOperationStore {
   #db;
   #now;
   #maxRecords;
+  #recoveryOwnerLock;
   #closed = false;
 
-  constructor(db, { now, maxRecords }) { this.#db = db; this.#now = now; this.#maxRecords = maxRecords; }
+  constructor(db, { now, maxRecords, recoveryOwnerLock }) {
+    this.#db = db; this.#now = now; this.#maxRecords = maxRecords; this.#recoveryOwnerLock = recoveryOwnerLock;
+  }
 
   /** Convert process-interrupted REQUESTED work to UNKNOWN; no provider action is replayed. */
   recoverInterruptedRequests() {
@@ -496,8 +502,11 @@ class SqliteEnvironmentOperationStore {
 
   close() {
     if (this.#closed) return;
-    this.#db.close();
-    this.#closed = true;
+    try { this.#db.close(); }
+    finally {
+      this.#closed = true;
+      this.#recoveryOwnerLock?.release();
+    }
   }
 
   #getOperationRow(row) {
@@ -675,6 +684,51 @@ function sortObject(value) {
 function isId(value) { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value); }
 function isTimestamp(value) { return typeof value === 'string' && Number.isFinite(Date.parse(value)); }
 function isWindowsUncPath(value) { return /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+/.test(value); }
+
+async function acquireRecoveryOwnerLock(databasePath, verifyWindowsAcl) {
+  const lockPath = `${databasePath}.recovery-owner`;
+  const token = JSON.stringify({ magic: RECOVERY_OWNER_MAGIC, pid: process.pid, nonce: randomUUID() });
+  let descriptor;
+  try {
+    descriptor = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR
+      | (fsConstants.O_NOFOLLOW ?? 0), 0o600);
+  } catch (error) {
+    if (error?.code === 'EEXIST') throw new EnvironmentStoreError('recovery_owner_locked');
+    throw new EnvironmentStoreError('recovery_owner_lock_unavailable');
+  }
+
+  let identity;
+  try {
+    identity = fstatSync(descriptor);
+    assertSingleLink(identity, 'recovery_owner_lock_hard_linked');
+    assertPrivatePosixStorage(identity, 'recovery_owner_lock_permissions', 'file');
+    writeFileSync(descriptor, token, 'utf8');
+    fsyncSync(descriptor);
+    await verifyAcl(verifyWindowsAcl, lockPath, 'file');
+  } catch (error) {
+    try { closeSync(descriptor); } catch { /* preserve the original failure */ }
+    try {
+      const current = lstatSync(lockPath);
+      if (identity && current.dev === identity.dev && current.ino === identity.ino && readFileSync(lockPath, 'utf8') === token) unlinkSync(lockPath);
+    } catch { /* preserve unexpected lock state for diagnosis */ }
+    if (error instanceof EnvironmentStoreError || error instanceof RuntimeStorageAclError) throw error;
+    throw new EnvironmentStoreError('recovery_owner_lock_unavailable');
+  }
+
+  let released = false;
+  return Object.freeze({
+    release() {
+      if (released) return;
+      closeSync(descriptor);
+      const current = lstatSync(lockPath);
+      if (current.dev !== identity.dev || current.ino !== identity.ino || readFileSync(lockPath, 'utf8') !== token) {
+        throw new EnvironmentStoreError('recovery_owner_lock_changed');
+      }
+      unlinkSync(lockPath);
+      released = true;
+    },
+  });
+}
 
 async function verifyAcl(verifyWindowsAcl, target, kind) {
   try { await verifyWindowsAcl(target, { kind }); }

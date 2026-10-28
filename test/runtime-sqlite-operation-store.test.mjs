@@ -393,6 +393,28 @@ test('startup recovery marks only an interrupted pre-dispatch request UNKNOWN', 
   assert.equal(f.store.getOperation(request.operationId).errorCode, 'host_interrupted');
 });
 
+test('startup recovery holds one exclusive owner marker and preserves stale markers for manual review', async (t) => {
+  const f = await fixture(t);
+  const lockPath = `${f.databasePath}.recovery-owner`;
+  const originalMarker = await readFile(lockPath);
+  await assert.rejects(openSqliteEnvironmentStore(f.databasePath, {
+    verifyWindowsAcl: async () => {}, recoverInterruptedRequests: true,
+  }), (error) => error.code === 'recovery_owner_locked');
+  assert.deepEqual(await readFile(lockPath), originalMarker, 'a competing owner does not alter the live owner marker');
+
+  const shared = await openSqliteEnvironmentStore(f.databasePath, { verifyWindowsAcl: async () => {} });
+  shared.close();
+  f.store.close();
+  assert.equal(await readFile(lockPath).then(() => true, () => false), false, 'clean close releases the exact owned marker');
+
+  const staleMarker = 'operator-reviewed-recovery-owner-marker';
+  await writeFile(lockPath, staleMarker, { mode: 0o600 });
+  await assert.rejects(openSqliteEnvironmentStore(f.databasePath, {
+    verifyWindowsAcl: async () => {}, recoverInterruptedRequests: true,
+  }), (error) => error.code === 'recovery_owner_locked');
+  assert.equal(await readFile(lockPath, 'utf8'), staleMarker, 'startup never guesses whether an existing marker is stale');
+});
+
 test('durable intent is recorded before provider action and idempotent replay never repeats the side effect', async (t) => {
   const f = await fixture(t);
   const request = f.operation('create');
