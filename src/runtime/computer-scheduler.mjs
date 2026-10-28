@@ -6,7 +6,7 @@ export function proposeComputerPlacement({ computers, requirements, quota }) {
   const projectQuota = validateEnvironmentQuota(quota);
   if (!Array.isArray(computers)) throw new TypeError('invalid_computer_candidates');
   const rejected = new Set();
-  const eligible = [];
+  let winner = null;
   const candidateIdCounts = new Map();
   for (const computer of computers) {
     if (computer && isEnvironmentId(computer.computerId)) {
@@ -14,8 +14,9 @@ export function proposeComputerPlacement({ computers, requirements, quota }) {
     }
   }
   for (const computer of computers) {
-    if (!computer || !isEnvironmentId(computer.computerId)) { rejected.add('candidate_invalid'); continue; }
-    if (candidateIdCounts.get(computer.computerId) > 1) { rejected.add('candidate_duplicate'); continue; }
+    const computerId = computer?.computerId;
+    if (!isEnvironmentId(computerId)) { rejected.add('candidate_invalid'); continue; }
+    if (candidateIdCounts.get(computerId) > 1) { rejected.add('candidate_duplicate'); continue; }
     if (computer.projectId !== spec.projectId) { rejected.add('project_mismatch'); continue; }
     if (computer.leaseAvailable !== true) { rejected.add('lease_unavailable'); continue; }
     if (!computer.capacity) { rejected.add('capacity_unknown'); continue; }
@@ -28,23 +29,25 @@ export function proposeComputerPlacement({ computers, requirements, quota }) {
     if (!capacity.securityProfileIds.includes(spec.securityProfileId)) { rejected.add('security_profile_mismatch'); continue; }
     if (capacity.resources.vcpu < spec.resources.vcpu || capacity.resources.memoryMiB < spec.resources.memoryMiB
       || capacity.resources.diskGiB < spec.resources.diskGiB) { rejected.add('resource_capacity_insufficient'); continue; }
-    eligible.push(computer);
+    const candidate = { computerId, capacity };
+    if (!winner || comparePlacement(candidate, winner) < 0) winner = candidate;
   }
-  eligible.sort((left, right) => {
-    const a = left.capacity.resources;
-    const b = right.capacity.resources;
-    return (a.diskGiB - spec.resources.diskGiB) - (b.diskGiB - spec.resources.diskGiB)
-      || (a.memoryMiB - spec.resources.memoryMiB) - (b.memoryMiB - spec.resources.memoryMiB)
-      || (a.vcpu - spec.resources.vcpu) - (b.vcpu - spec.resources.vcpu)
-      || (left.computerId < right.computerId ? -1 : left.computerId > right.computerId ? 1 : 0);
-  });
   return Object.freeze({
-    status: eligible.length ? 'PROPOSED' : 'NO_CAPACITY',
-    computerId: eligible[0]?.computerId ?? null,
+    status: winner ? 'PROPOSED' : 'NO_CAPACITY',
+    computerId: winner?.computerId ?? null,
     requirements: spec,
     quota: projectQuota,
-    reasonCodes: Object.freeze(eligible.length ? [] : [...rejected].sort()),
+    reasonCodes: Object.freeze(winner ? [] : [...rejected].sort()),
   });
+}
+
+function comparePlacement(left, right) {
+  const a = left.capacity.resources;
+  const b = right.capacity.resources;
+  return a.diskGiB - b.diskGiB
+    || a.memoryMiB - b.memoryMiB
+    || a.vcpu - b.vcpu
+    || (left.computerId < right.computerId ? -1 : left.computerId > right.computerId ? 1 : 0);
 }
 
 /** Re-read candidates, propose, then let the SQLite store atomically revalidate and reserve. */

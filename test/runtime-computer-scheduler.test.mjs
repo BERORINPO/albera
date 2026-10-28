@@ -112,3 +112,25 @@ test('placement rejects every duplicate Computer ID independent of candidate ord
     assert.deepEqual(result.reasonCodes, ['candidate_duplicate']);
   }
 });
+
+test('placement remains deterministic over a large candidate pool without depending on input order', () => {
+  const candidates = Array.from({ length: 10_000 }, (_, index) => ({
+    computerId: `pool-${String(index).padStart(5, '0')}`,
+    projectId: 'project-a',
+    leaseAvailable: true,
+    capacity: {
+      os: 'linux', architecture: 'x64', capabilities: ['terminal'],
+      networkProfileIds: ['net-a'], securityProfileIds: ['sec-a'],
+      resources: {
+        vcpu: 2 + (index % 4),
+        memoryMiB: 2048 + ((index % 8) * 256),
+        diskGiB: 32 + (index % 16),
+      },
+    },
+  }));
+  const forward = proposeComputerPlacement({ computers: candidates, requirements, quota });
+  const reverse = proposeComputerPlacement({ computers: [...candidates].reverse(), requirements, quota });
+  assert.equal(forward.status, 'PROPOSED');
+  assert.equal(forward.computerId, 'pool-00000');
+  assert.equal(reverse.computerId, forward.computerId);
+});
