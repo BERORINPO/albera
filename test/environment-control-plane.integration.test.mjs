@@ -45,10 +45,19 @@ test('authenticated Runtime API drives durable MockProvider create, UNKNOWN reco
   const store = await openSqliteEnvironmentStore(path.join(root, 'operations.sqlite'), { verifyWindowsAcl: async () => {} });
   const provider = new MockEnvironmentProvider();
   let providerCreates = 0;
+  let providerStarts = 0;
+  let providerStops = 0;
+  let providerDestroys = 0;
   let providerInspections = 0;
   const create = provider.create.bind(provider);
+  const start = provider.start.bind(provider);
+  const stop = provider.stop.bind(provider);
+  const destroy = provider.destroy.bind(provider);
   const inspect = provider.inspect.bind(provider);
   provider.create = async (operation) => { providerCreates++; return create(operation); };
+  provider.start = async (operation) => { providerStarts++; return start(operation); };
+  provider.stop = async (operation) => { providerStops++; return stop(operation); };
+  provider.destroy = async (operation) => { providerDestroys++; return destroy(operation); };
   provider.inspect = async (operation) => { providerInspections++; return inspect(operation); };
   let grantCount = 0;
   let denyAuthorizations = false;
@@ -126,5 +135,38 @@ test('authenticated Runtime API drives durable MockProvider create, UNKNOWN reco
   assert.equal(replay.status, 200);
   assert.equal(replay.body.operation.status, 'SUCCEEDED');
   assert.equal(providerCreates, 1, 'idempotent replay does not repeat a Provider mutation');
-  assert.equal(grantCount, 4, 'every execute/reconcile request gets a fresh trusted authorization decision, including denied requests');
+
+  const submit = async (action) => send(address, token, '/v1/environments/operations', {
+    operationId: `operation-${action}-a`, idempotencyKey: `idem-${action}-a`, projectId: 'project-a',
+    taskId: 'task-a', runId: 'run-a', computerId: 'computer-a', providerId: 'mock', leaseId: 'lease-a',
+    expectedGeneration: 1, action,
+  });
+  const started = await submit('start');
+  assert.equal(started.status, 200);
+  assert.equal(started.body.operation.status, 'SUCCEEDED');
+  assert.equal(started.body.operation.observedState, 'running');
+  assert.equal(providerStarts, 1);
+
+  const inspected = await submit('inspect');
+  assert.equal(inspected.status, 200);
+  assert.equal(inspected.body.operation.status, 'SUCCEEDED');
+  assert.equal(inspected.body.operation.observedState, 'running');
+  assert.equal(providerInspections, 2, 'one inspect reconciles the lost reply and another serves the explicit state query');
+
+  const stopped = await submit('stop');
+  assert.equal(stopped.status, 200);
+  assert.equal(stopped.body.operation.status, 'SUCCEEDED');
+  assert.equal(stopped.body.operation.observedState, 'off');
+  assert.equal(providerStops, 1);
+
+  const destroyed = await send(address, token, '/v1/environments/operations', {
+    operationId: 'operation-destroy-a', idempotencyKey: 'idem-destroy-a', projectId: 'project-a',
+    taskId: 'task-a', runId: 'run-a', computerId: 'computer-a', providerId: 'mock', leaseId: 'lease-a',
+    expectedGeneration: 1, action: 'destroy',
+  });
+  assert.equal(destroyed.status, 200);
+  assert.equal(destroyed.body.operation.status, 'SUCCEEDED');
+  assert.equal(destroyed.body.operation.observedState, 'missing');
+  assert.equal(providerDestroys, 1);
+  assert.equal(grantCount, 8, 'each execute/reconcile request gets a fresh authorization decision, including denied requests');
 });
