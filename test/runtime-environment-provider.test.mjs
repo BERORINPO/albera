@@ -120,6 +120,19 @@ test('Hyper-V adapter reduces untrusted Broker errors to a safe code and outcome
     assert.doesNotMatch(error.message, /secret/);
     return true;
   });
+
+  const accessorError = new Error('hidden failure');
+  Object.defineProperty(accessorError, 'code', { get() { throw new Error('credential=accessor-secret'); } });
+  const accessorProvider = new HyperVEnvironmentProvider({ broker: {
+    createVm: async () => { throw accessorError; },
+    inspectVm: async () => {}, startVm: async () => {}, stopVm: async () => {}, removeVm: async () => {},
+  } });
+  await assert.rejects(accessorProvider.create(hypervOperation('create')), (error) => {
+    assert.equal(error.code, 'provider_outcome_unknown');
+    assert.equal(error.outcome, 'unknown');
+    assert.doesNotMatch(error.message, /accessor-secret/);
+    return true;
+  });
 });
 
 test('Hyper-V adapter requires the complete fixed Broker method set', () => {

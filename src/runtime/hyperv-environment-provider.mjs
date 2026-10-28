@@ -66,11 +66,13 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
       observed = await this.#brokerMethods[action](operation);
     }
     catch (error) {
-      const code = typeof error?.code === 'string' && /^[a-z0-9_]{1,64}$/.test(error.code)
-        ? error.code
+      const codeCandidate = dataProperty(error, 'code');
+      const outcomeCandidate = dataProperty(error, 'outcome');
+      const code = typeof codeCandidate === 'string' && /^[a-z0-9_]{1,64}$/.test(codeCandidate)
+        ? codeCandidate
         : 'provider_outcome_unknown';
       throw new EnvironmentProviderError(code, {
-        outcome: error?.outcome === 'not_applied' ? 'not_applied' : 'unknown',
+        outcome: outcomeCandidate === 'not_applied' ? 'not_applied' : 'unknown',
       });
     }
     const normalized = validateObservedEnvironment(observed, operation);
@@ -87,4 +89,15 @@ function isRecord(value) {
   if (prototype !== Object.prototype && prototype !== null) return false;
   if (Object.getOwnPropertySymbols(value).length > 0) return false;
   return Object.values(Object.getOwnPropertyDescriptors(value)).every((descriptor) => Object.hasOwn(descriptor, 'value'));
+}
+
+function dataProperty(value, key) {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+  }
+  catch {
+    return undefined;
+  }
 }
