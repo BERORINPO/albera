@@ -636,13 +636,14 @@ function requiredScope(method, pathname) {
 }
 
 function environmentApiError(error) {
-  const allowed = new Set(['unauthorized', 'unknown_operation', 'invalid_request', 'authorization_denied', 'idempotency_conflict', 'operation_id_conflict', 'policy_unavailable', 'operation_unavailable']);
+  const allowed = new Set(['unauthorized', 'unknown_operation', 'invalid_request', 'authorization_denied', 'authorization_invalid', 'authorization_expired', 'lease_not_authorized', 'lease_expired', 'stale_generation', 'idempotency_conflict', 'operation_id_conflict', 'provider_mismatch', 'policy_unavailable', 'operation_unavailable']);
   const code = typeof error?.code === 'string' && allowed.has(error.code) ? error.code : 'operation_unavailable';
   const status = code === 'unauthorized' ? 401
     : code === 'unknown_operation' ? 404
       : code === 'invalid_request' ? 400
-        : code === 'authorization_denied' ? 403
-          : code === 'idempotency_conflict' || code === 'operation_id_conflict' ? 409 : 503;
+        : ['authorization_denied', 'authorization_invalid', 'authorization_expired', 'lease_not_authorized', 'lease_expired'].includes(code) ? 403
+          : ['stale_generation', 'idempotency_conflict', 'operation_id_conflict'].includes(code) ? 409
+            : code === 'provider_mismatch' ? 400 : 503;
   return new ApiError(status, code);
 }
 function captureApiMethod(target, name) {

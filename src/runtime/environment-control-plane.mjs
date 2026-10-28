@@ -11,6 +11,10 @@ const SNAPSHOT_KEYS = [
   'generation', 'action', 'status', 'desiredState', 'observedState', 'observedAt',
   'errorCode', 'createdAt', 'updatedAt',
 ];
+const SAFE_COORDINATOR_ERRORS = new Set([
+  'authorization_denied', 'authorization_invalid', 'authorization_expired', 'lease_not_authorized',
+  'lease_expired', 'stale_generation', 'idempotency_conflict', 'operation_id_conflict', 'provider_mismatch',
+]);
 
 /**
  * Bind typed environment operations to an authenticated Runtime API session.
@@ -32,7 +36,7 @@ export function createEnvironmentControlPlane({ coordinator, store, policyVersio
       if (!Number.isSafeInteger(policyVersion) || policyVersion < 1) throw safeError('policy_unavailable');
       let operation;
       try { operation = await execute({ ...input, subjectId: sessionId, policyVersion }); }
-      catch { throw safeError('operation_unavailable'); }
+      catch (error) { throw safeError(SAFE_COORDINATOR_ERRORS.has(error?.code) ? error.code : 'operation_unavailable'); }
       return projectSnapshot(operation, sessionId);
     },
 
@@ -44,7 +48,8 @@ export function createEnvironmentControlPlane({ coordinator, store, policyVersio
       const owner = record?.subjectId ?? record?.request?.subjectId;
       if (!record || owner !== sessionId) throw safeError('unknown_operation');
       let result;
-      try { result = await reconcile(operationId); } catch { throw safeError('operation_unavailable'); }
+      try { result = await reconcile(operationId); }
+      catch (error) { throw safeError(SAFE_COORDINATOR_ERRORS.has(error?.code) ? error.code : 'operation_unavailable'); }
       return projectSnapshot(result, sessionId);
     },
   });
