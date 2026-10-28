@@ -36,7 +36,7 @@ export function createEnvironmentControlPlane({ coordinator, store, policyVersio
       if (!Number.isSafeInteger(policyVersion) || policyVersion < 1) throw safeError('policy_unavailable');
       let operation;
       try { operation = await execute({ ...input, subjectId: sessionId, policyVersion }); }
-      catch (error) { throw safeError(SAFE_COORDINATOR_ERRORS.has(error?.code) ? error.code : 'operation_unavailable'); }
+      catch (error) { throw safeError(safeCoordinatorErrorCode(error)); }
       return projectSnapshot(operation, sessionId);
     },
 
@@ -49,10 +49,21 @@ export function createEnvironmentControlPlane({ coordinator, store, policyVersio
       if (!record || owner !== sessionId) throw safeError('unknown_operation');
       let result;
       try { result = await reconcile(operationId); }
-      catch (error) { throw safeError(SAFE_COORDINATOR_ERRORS.has(error?.code) ? error.code : 'operation_unavailable'); }
+      catch (error) { throw safeError(safeCoordinatorErrorCode(error)); }
       return projectSnapshot(result, sessionId);
     },
   });
+}
+
+function safeCoordinatorErrorCode(error) {
+  try {
+    if ((typeof error !== 'object' || error === null) && typeof error !== 'function') return 'operation_unavailable';
+    const descriptor = Object.getOwnPropertyDescriptor(error, 'code');
+    const code = descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+    return SAFE_COORDINATOR_ERRORS.has(code) ? code : 'operation_unavailable';
+  } catch {
+    return 'operation_unavailable';
+  }
 }
 
 function captureMethod(target, name) {

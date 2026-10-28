@@ -267,10 +267,9 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, environment
       return sendJson(res, 404, { error: 'not_found' });
     } catch (error) {
       if (res.headersSent || res.destroyed) return;
-      if (error instanceof ApiError) return sendJson(res, error.status, { error: error.code });
-      const code = error && typeof error === 'object' && typeof error.code === 'string' && GATEWAY_ERRORS.has(error.code)
-        ? error.code
-        : 'runtime_error';
+      const apiError = projectApiError(error);
+      if (apiError) return sendJson(res, apiError.status, { error: apiError.code });
+      const code = safeGatewayCode(error);
       const status = code === 'confirmation_required' ? 403
         : code === 'unknown_run' ? 404
           : code === 'capacity' ? 429
@@ -614,8 +613,31 @@ function authenticate(header, credentials, requiredScope) {
   purgeExpiredCredentials(credentials);
   return matched && matched.expiresAt > Date.now() && matched.scopes.has(requiredScope) ? matched : false;
 }
-function safeFailurePhase(error) { return error?.code === 'confirmation_required' ? 'denied' : 'failed'; }
-function safeGatewayCode(error) { return typeof error?.code === 'string' && GATEWAY_ERRORS.has(error.code) ? error.code : 'runtime_error'; }
+function safeFailurePhase(error) { return readOwnDataProperty(error, 'code') === 'confirmation_required' ? 'denied' : 'failed'; }
+function safeGatewayCode(error) {
+  const code = readOwnDataProperty(error, 'code');
+  return typeof code === 'string' && GATEWAY_ERRORS.has(code) ? code : 'runtime_error';
+}
+function projectApiError(error) {
+  try {
+    if (!(error instanceof ApiError)) return null;
+    const status = readOwnDataProperty(error, 'status');
+    const code = readOwnDataProperty(error, 'code');
+    if (!Number.isSafeInteger(status) || typeof code !== 'string' || !/^[a-z0-9_]{1,64}$/.test(code)) return null;
+    return { status, code };
+  } catch {
+    return null;
+  }
+}
+function readOwnDataProperty(value, key) {
+  try {
+    if ((typeof value !== 'object' || value === null) && typeof value !== 'function') return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
 function purgeExpiredCredentials(credentials) {
   const now = Date.now();
   for (const [digest, entry] of credentials) if (entry.expiresAt <= now) credentials.delete(digest);
@@ -637,7 +659,8 @@ function requiredScope(method, pathname) {
 
 function environmentApiError(error) {
   const allowed = new Set(['unauthorized', 'unknown_operation', 'invalid_request', 'authorization_denied', 'authorization_invalid', 'authorization_expired', 'lease_not_authorized', 'lease_expired', 'stale_generation', 'idempotency_conflict', 'operation_id_conflict', 'provider_mismatch', 'policy_unavailable', 'operation_unavailable']);
-  const code = typeof error?.code === 'string' && allowed.has(error.code) ? error.code : 'operation_unavailable';
+  const candidate = readOwnDataProperty(error, 'code');
+  const code = typeof candidate === 'string' && allowed.has(candidate) ? candidate : 'operation_unavailable';
   const status = code === 'unauthorized' ? 401
     : code === 'unknown_operation' ? 404
       : code === 'invalid_request' ? 400

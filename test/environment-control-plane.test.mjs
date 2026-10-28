@@ -67,3 +67,28 @@ test('environment control plane captures method references and masks policy look
   const denied = createEnvironmentControlPlane({ coordinator: f.coordinator, store: f.store, policyVersionForProject: () => { throw new Error('private detail'); } });
   await assert.rejects(denied.execute({ sessionId, input }), { code: 'policy_unavailable' });
 });
+
+test('environment control plane normalizes hostile Coordinator error reflection', async () => {
+  const secret = 'credential-like coordinator exception text';
+  const hostile = new Proxy({}, { getOwnPropertyDescriptor() { throw new Error(secret); } });
+  const record = { subjectId: sessionId, request: { subjectId: sessionId } };
+  const control = createEnvironmentControlPlane({
+    coordinator: {
+      async execute() { throw hostile; },
+      async reconcile() { throw hostile; },
+    },
+    store: { getOperation: () => record },
+    policyVersionForProject: () => 1,
+  });
+  for (const action of [
+    () => control.execute({ sessionId, input }),
+    () => control.reconcile({ sessionId, operationId: 'op-1' }),
+  ]) {
+    await assert.rejects(action(), (error) => {
+      assert.equal(error.code, 'operation_unavailable');
+      assert.equal(error.message, 'operation_unavailable');
+      assert.equal(error.message.includes(secret), false);
+      return true;
+    });
+  }
+});
