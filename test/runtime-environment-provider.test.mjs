@@ -108,6 +108,26 @@ test('Hyper-V adapter requires the complete fixed Broker method set', () => {
   assert.throws(() => new HyperVEnvironmentProvider({ broker }), /invalid_hyperv_broker_client/);
 });
 
+test('Hyper-V adapter captures validated Broker methods and ignores later method replacement', async () => {
+  let originalCalls = 0;
+  let replacementCalls = 0;
+  const broker = {
+    createVm: async () => {}, inspectVm: async () => {},
+    startVm: async (op) => {
+      originalCalls++;
+      return { computerId: op.computerId, providerId: 'hyperv', state: 'running',
+        generation: op.expectedGeneration, observedAt: '2026-10-28T00:00:00.000Z' };
+    },
+    stopVm: async () => {}, removeVm: async () => {},
+  };
+  const provider = new HyperVEnvironmentProvider({ broker });
+  broker.startVm = async () => { replacementCalls++; throw new Error('replacement_must_not_run'); };
+  const result = await provider.start(hypervOperation('start'));
+  assert.equal(result.state, 'running');
+  assert.equal(originalCalls, 1);
+  assert.equal(replacementCalls, 0);
+});
+
 test('placement capacity and quotas accept bounded host policy and reject malformed data', () => {
   const capacity = validateEnvironmentCapacity({
     os: 'linux', architecture: 'x64', capabilities: ['terminal', 'browser'],

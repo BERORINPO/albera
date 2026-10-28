@@ -21,14 +21,23 @@ const BROKER_METHODS = Object.freeze({
  * The injected client must itself be a trusted Broker boundary; this is not one.
  */
 export class HyperVEnvironmentProvider extends EnvironmentProvider {
-  #broker;
+  #brokerMethods;
 
   constructor({ broker }) {
     super('hyperv');
-    if (!isRecord(broker) || Object.values(BROKER_METHODS).some((name) => typeof broker[name] !== 'function')) {
+    if (!isRecord(broker)) {
       throw new TypeError('invalid_hyperv_broker_client');
     }
-    this.#broker = broker;
+    const descriptors = Object.getOwnPropertyDescriptors(broker);
+    const methods = {};
+    for (const [action, name] of Object.entries(BROKER_METHODS)) {
+      const descriptor = descriptors[name];
+      if (!descriptor || !Object.hasOwn(descriptor, 'value') || typeof descriptor.value !== 'function') {
+        throw new TypeError('invalid_hyperv_broker_client');
+      }
+      methods[action] = descriptor.value.bind(broker);
+    }
+    this.#brokerMethods = Object.freeze(methods);
   }
 
   create(input) { return this.#invoke('create', input); }
@@ -51,7 +60,7 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
 
     // Invoke only a fixed typed lifecycle method. Preserving thrown errors lets
     // the coordinator keep timeout/transport ambiguity as UNKNOWN.
-    const observed = await this.#broker[BROKER_METHODS[action]](operation);
+    const observed = await this.#brokerMethods[action](operation);
     const normalized = validateObservedEnvironment(observed, operation);
     if (action !== 'inspect' && normalized.generation !== operation.expectedGeneration) {
       throw new EnvironmentProviderError('stale_provider_observation');
