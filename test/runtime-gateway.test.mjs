@@ -207,7 +207,7 @@ test('host authorization receives the exact canonical executable, cwd and argv b
   assert.equal(spawnCount, 1);
   const executableIdentity = await captureExecutableIdentity(f.executable);
   assert.deepEqual(seen[0], {
-    action: 'start', provider: 'claude', profile: 'read-only', executable: f.executable, cwd: await realpath(f.cwd), args,
+    action: 'start', provider: 'claude', profile: 'read-only', executable: await realpath(f.executable), cwd: await realpath(f.cwd), args,
     executableSha256: executableIdentity.sha256,
     minimumCliVersion: '2.1.248', versionCheck: true,
     environment: { providerVariables: [], endpointOverrides: [] },
@@ -231,7 +231,7 @@ test('Gateway checks the approved CLI version before main spawn and fails closed
   await assert.rejects(f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'synthetic' }), (error) => error.code === 'cli_version_unavailable');
   assert.deepEqual(calls, [
     ['authorize', '2.1.248', true],
-    ['probe', f.executable, process.platform],
+    ['probe', await realpath(f.executable), process.platform],
   ]);
   assert.equal(spawned, false);
 });
