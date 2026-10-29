@@ -1,3 +1,38 @@
 <!doctype html>
-<!-- Stub (part A): the room page. -->
-<html lang="en"><head><meta charset="utf-8"><title>ALBERA room</title></head><body></body></html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>ALBERA control room</title>
+    <link rel="stylesheet" href="room.css">
+    <link rel="stylesheet" href="cam.css">
+    <link rel="stylesheet" href="figure.css">
+    <link rel="stylesheet" href="bero.css">
+    <script type="module" src="app.mjs"></script>
+  </head>
+  <body>
+    <header class="top">
+      <span class="brand" data-w="brand">ALBERA</span>
+      <span id="counts" class="sm sub"></span>
+      <span class="grow"></span>
+      <span id="phase" class="sm sub" role="status">Connecting…</span>
+    </header>
+    <section id="bootstrap" class="bootstrap" hidden aria-labelledby="bootstrap-title">
+      <h1 id="bootstrap-title" data-w="unlock_title">Unlock the control room</h1>
+      <p data-w="unlock_body">Enter the one-time code printed by the terminal that started the room. The code is not saved.</p>
+      <form id="bootstrap-form">
+        <label><span data-w="unlock_label">One-time terminal code</span> <input id="bootstrap-code" type="password" autocomplete="off" required></label>
+        <button type="submit" class="primary" data-w="unlock_button">Unlock</button>
+      </form>
+      <p id="bootstrap-status" role="status"></p>
+    </section>
+    <main id="room" class="room" hidden>
+      <div id="viewport" class="viewport" aria-label="Control room canvas" data-w-label="canvas_label"></div>
+      <aside id="ledger" class="ledger" aria-labelledby="ledger-title">
+        <p id="ledger-title" class="ledger-title" data-w="ledger_title">Ledger · what the AI did / what you decided</p>
+      </aside>
+      <p class="hint sm sub" data-w="hint">Drag to pan · wheel to zoom · Ctrl twice to find the AI cursors</p>
+    </main>
+  </body>
+</html>
