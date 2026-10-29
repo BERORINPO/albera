@@ -97,6 +97,8 @@ export function createRoomHost({
   const events = []; // RoomEvent[], seq ascending
   const cards = new Map(); // cardId -> { vmId, code, choices, closed }
   const checkChains = new Map(); // vmId -> the promise of the VM's last queued check
+  const checkStates = new Map(); // vmId -> {state: checking|passed|failed|unavailable, checks, failed, detail} for the camera
+  const runs = new Map(); // vmId -> how many hands runs started (a check belongs to the run it was queued in)
   const bootstrapCode = randomBytes(32).toString('base64url');
   // Cookies do not separate ports: every host gets its own cookie name (fixed at listen), so two rooms
   // (or a room and a demo) on 127.0.0.1 never overwrite each other's session.
@@ -182,6 +184,8 @@ export function createRoomHost({
   function recordFleetEvent(vmId, event) {
     if (closed || !byId.has(vmId)) return;
     const vmChecks = event?.type === 'end' && event.outcome === 'claimed_done' ? checksByVm.get(vmId) : undefined;
+    if (event?.type === 'start') { runs.set(vmId, (runs.get(vmId) ?? 0) + 1); checkStates.delete(vmId); }
+    if (vmChecks) checkStates.set(vmId, Object.freeze({ state: 'checking', checks: vmChecks.length, failed: 0, detail: '' }));
     try {
       if (event?.type === 'start') journal.record({ vmId, actor: 'hands', code: 'hands_started', params: { task: cleanText(event.task) } });
       else {
@@ -195,12 +199,13 @@ export function createRoomHost({
   // ---- automatic checks (one at a time per VM; the checker never sees anything but the VM id and its fixed checks) ----
 
   function queueCheck(vmId, vmChecks) {
-    const next = (checkChains.get(vmId) ?? Promise.resolve()).then(() => runCheck(vmId, vmChecks));
+    const run = runs.get(vmId) ?? 0; // the run this DONE belongs to, taken now (the check itself may start later)
+    const next = (checkChains.get(vmId) ?? Promise.resolve()).then(() => runCheck(vmId, vmChecks, run));
     checkChains.set(vmId, next);
     void next.finally(() => { if (checkChains.get(vmId) === next) checkChains.delete(vmId); });
   }
 
-  async function runCheck(vmId, vmChecks) {
+  async function runCheck(vmId, vmChecks, run) {
     let timer;
     const timeout = new Promise((resolve) => {
       timer = setTimeout(() => resolve({ verdict: 'unavailable', results: [], code: 'guest_check_timeout' }), checkTimeoutMs);
@@ -212,7 +217,10 @@ export function createRoomHost({
     finally { clearTimeout(timer); }
     if (!validCheckReport(report, vmChecks.length)) report = { verdict: 'unavailable', results: [], code: 'guest_check_invalid' };
     if (closed) return;
-    try { journal.record({ vmId, actor: 'bero', code: 'check_done', params: checkDoneParams(report, vmChecks.length) }); } catch { /* keep going */ }
+    const params = checkDoneParams(report, vmChecks.length);
+    // The camera shows the verdict until the VM's next run starts; a check of an older run never overwrites a newer one.
+    if ((runs.get(vmId) ?? 0) === run) checkStates.set(vmId, Object.freeze({ state: params.verdict, checks: params.checks, failed: params.failed, detail: params.detail }));
+    try { journal.record({ vmId, actor: 'bero', code: 'check_done', params }); } catch { /* keep going */ }
   }
 
   function validDirectorLedger(item) {
@@ -321,7 +329,7 @@ export function createRoomHost({
     return {
       vmId: tile.vmId, label: tile.label,
       capturedAt: frame.capturedAt === null ? null : new Date(frame.capturedAt).toISOString(),
-      status, error: frame.error, agent: agents[tile.vmId] ?? null,
+      status, error: frame.error, agent: agents[tile.vmId] ?? null, check: checkStates.get(tile.vmId) ?? null,
     };
   }
 

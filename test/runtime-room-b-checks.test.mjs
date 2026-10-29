@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -8,12 +8,15 @@ import { createAgentStatusBoard } from '../src/runtime/agent-status-board.mjs';
 import { createMockDesktopBroker } from '../src/runtime/mock-desktop-broker.mjs';
 import { HyperVDesktopDriver } from '../src/runtime/hyperv-desktop-driver.mjs';
 import { checkReport, createFakeGuestChecker, unavailable } from '../src/runtime/fake-guest-checker.mjs';
-import { createHyperVGuestChecker, GUEST_CHECK_PWSH_ARGS, GUEST_CHECK_TIMEOUT_MS } from '../src/runtime/hyperv-guest-check-prototype.mjs';
+import { createHyperVGuestChecker, pwshCandidates, GUEST_CHECK_PWSH_ARGS, GUEST_CHECK_TIMEOUT_MS } from '../src/runtime/hyperv-guest-check-prototype.mjs';
+import { bandText, camTone } from '../src/runtime/room-ui/cam.mjs';
+import WORDS_CAM from '../src/runtime/room-ui/words-cam.mjs';
 import { cleanParams, validCheck, validCheckReport, validEvent } from '../src/runtime/room-contract.mjs';
 import { loadRoomChecks, parseRuntimeArgs, RUNTIME_HELP } from '../src/runtime/entry.mjs';
 import { DEMO_CHECKS, startRoomDemo } from '../src/runtime/room-demo.mjs';
 
 const SECRET = 'S3cret-Guest-Pa55word!';
+const PWSH = process.execPath; // any existing absolute file stands in for pwsh.exe when runPowerShell is faked
 const screen = Object.freeze({ width: 64, height: 48 });
 const FILE_A = 'C:\\Users\\Administrator\\Desktop\\room1.txt';
 const CHECKS_A = Object.freeze([
@@ -116,12 +119,12 @@ test('fake checker: reports in order (the last repeats), unknown VMs and bad che
 
 test('hyperv checker: fixed argv without the password, the request (with the password) only on stdin', async (t) => {
   const pwsh = fakePowerShell(() => ({ ok: true, findings: ['ok', 'ok'] }));
-  const checker = createHyperVGuestChecker({ passwordFile: passwordFile(t), runPowerShell: pwsh.run });
+  const checker = createHyperVGuestChecker({ passwordFile: passwordFile(t), pwsh: PWSH, runPowerShell: pwsh.run });
   const report = await checker.run('albera-clone-01', CHECKS_A);
   assert.equal(report.verdict, 'passed');
   assert.ok(validCheckReport(report, 2));
   const [call] = pwsh.calls;
-  assert.equal(call.command, 'pwsh');
+  assert.equal(call.command, PWSH);
   assert.deepEqual(call.args, GUEST_CHECK_PWSH_ARGS);
   assert.deepEqual(call.args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-File']);
   assert.match(call.args[3], /hyperv-guest[\\/]check-io\.ps1$/);
@@ -135,7 +138,7 @@ test('hyperv checker: fixed argv without the password, the request (with the pas
 test('hyperv checker: the password is read at each run (BOM and line break removed)', async (t) => {
   const file = passwordFile(t, `\uFEFFfirst\n`);
   const pwsh = fakePowerShell(() => ({ ok: true, findings: ['ok', 'ok'] }));
-  const checker = createHyperVGuestChecker({ passwordFile: file, runPowerShell: pwsh.run });
+  const checker = createHyperVGuestChecker({ passwordFile: file, pwsh: PWSH, runPowerShell: pwsh.run });
   await checker.run('vm-a', CHECKS_A);
   writeFileSync(file, 'second');
   await checker.run('vm-a', CHECKS_A);
@@ -146,7 +149,7 @@ test('hyperv checker: failures are unavailable with a fixed code, never the VM\'
   const file = passwordFile(t);
   const run = async (reply, checks = CHECKS_A, options = {}) => {
     const pwsh = fakePowerShell(reply);
-    const report = await createHyperVGuestChecker({ passwordFile: file, runPowerShell: pwsh.run, ...options }).run('vm-a', checks);
+    const report = await createHyperVGuestChecker({ passwordFile: file, pwsh: PWSH, runPowerShell: pwsh.run, ...options }).run('vm-a', checks);
     assert.ok(validCheckReport(report, checks.length), JSON.stringify(report));
     assert.ok(!JSON.stringify(report).includes(SECRET));
     return { report, calls: pwsh.calls };
@@ -174,7 +177,7 @@ test('hyperv checker: a missing, empty or huge password file never starts pwsh',
     const file = path.join(dir, name);
     if (text !== null) writeFileSync(file, text);
     const pwsh = fakePowerShell(() => ({ ok: true, findings: ['ok', 'ok'] }));
-    const report = await createHyperVGuestChecker({ passwordFile: file, runPowerShell: pwsh.run }).run('vm-a', CHECKS_A);
+    const report = await createHyperVGuestChecker({ passwordFile: file, pwsh: PWSH, runPowerShell: pwsh.run }).run('vm-a', CHECKS_A);
     assert.deepEqual([report, pwsh.calls.length], [unavailable('guest_password_unreadable'), 0], name);
   }
   assert.throws(() => createHyperVGuestChecker({}), /guest_password_file_required/);
@@ -286,7 +289,7 @@ test('host: with the Hyper-V checker the password never reaches the ledger, even
   const file = passwordFile(t);
   const replies = [{ ok: true, findings: ['ok', 'differs'] }, { ok: false, code: SECRET }, { stdout: `error: ${SECRET}` }];
   const pwsh = fakePowerShell(() => replies.shift());
-  const checker = createHyperVGuestChecker({ passwordFile: file, runPowerShell: pwsh.run });
+  const checker = createHyperVGuestChecker({ passwordFile: file, pwsh: PWSH, runPowerShell: pwsh.run });
   const { host, journal } = makeHost({ checker });
   const address = await host.listen(0);
   for (let i = 0; i < 3; i++) { host.recordFleetEvent('vm-a', DONE); await host.checksSettled(); }
@@ -366,4 +369,87 @@ test('demo: the booking form\'s DONE is checked and passes; Tests fails first, t
   assert.equal(journals[0].entries.find((e) => e.code === 'check_done').params.verdict, 'passed');
   assert.equal((await demo.checker.run('demo-tests', DEMO_CHECKS['demo-tests'])).verdict, 'failed');
   assert.equal((await demo.checker.run('demo-tests', DEMO_CHECKS['demo-tests'])).verdict, 'passed');
+});
+
+// ---- follow-ups: pwsh path, guest script, camera state ----
+
+test('hyperv checker: pwsh is an absolute path checked once; a missing one never runs and never reads the password', async (t) => {
+  assert.deepEqual(pwshCandidates({ ProgramFiles: 'D:\\Apps', LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }),
+    ['D:\\Apps\\PowerShell\\7\\pwsh.exe', 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe']);
+  assert.deepEqual(pwshCandidates({ ProgramFiles: 'relative', LOCALAPPDATA: '.\\here' }), ['C:\\Program Files\\PowerShell\\7\\pwsh.exe']);
+  assert.deepEqual(pwshCandidates({}), ['C:\\Program Files\\PowerShell\\7\\pwsh.exe']);
+  for (const pwsh of ['pwsh', 'pwsh.exe', '.\\pwsh.exe', '\\\\server\\share\\pwsh.exe', '']) {
+    assert.throws(() => createHyperVGuestChecker({ passwordFile: 'x', pwsh }), /invalid_guest_check_options/, pwsh);
+  }
+  const fake = fakePowerShell(() => ({ ok: true, findings: ['ok', 'ok'] }));
+  const missing = createHyperVGuestChecker({ passwordFile: passwordFile(t), pwsh: path.join(tempDir(t), 'pwsh.exe'), runPowerShell: fake.run });
+  assert.deepEqual(await missing.run('vm-a', CHECKS_A), unavailable('guest_pwsh_missing'));
+  assert.equal(fake.calls.length, 0);
+});
+
+test('check-io.ps1: the guest block uses .NET calls only, and no cmdlet ever receives the password', () => {
+  const script = readFileSync(new URL('../src/runtime/hyperv-guest/check-io.ps1', import.meta.url), 'utf8');
+  const block = script.slice(script.indexOf('$GuestCheck = {'), script.indexOf('# ---- the request'));
+  assert.ok(block.length > 200, 'found the guest block');
+  for (const cmdlet of ['Test-Path', 'Get-Item', 'Get-Content', 'New-Object', 'Join-Path', 'Select-', 'ForEach-Object', 'Where-Object']) {
+    assert.ok(!block.replace(/^\s*#.*$/gm, '').includes(cmdlet), `guest block must not call ${cmdlet}`);
+  }
+  for (const call of ['[System.IO.File]::Exists', '[System.IO.Directory]::Exists', '[System.IO.File]::Open']) assert.ok(block.includes(call), call);
+  const code = script.replace(/^\s*#.*$/gm, '');
+  assert.ok(!/ConvertTo-SecureString|ConvertFrom-Json|AsPlainText/.test(code), 'no cmdlet parses or converts the password');
+  assert.match(code, /\.AppendChar\(\$ch\)/);
+  assert.match(code, /JsonDocument\]::Parse/);
+});
+
+async function stateVm(host, vmId) {
+  const address = await host.listen(0);
+  const origin = new URL(address.url).origin;
+  const session = await fetch(`${address.url}api/session`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ bootstrapCode: address.bootstrapCode }) });
+  const cookie = session.headers.get('set-cookie').split(';')[0];
+  return async () => (await (await fetch(`${address.url}api/state?since=0`, { headers: { Cookie: cookie } })).json()).vms.find((vm) => vm.vmId === vmId);
+}
+
+test('host state: each VM carries its check (checking, then the verdict) until its next run starts', async (t) => {
+  let release;
+  const checker = { run: () => new Promise((resolve) => { release = resolve; }) };
+  const { host } = makeHost({ checker });
+  t.after(() => host.close());
+  const vmA = await stateVm(host, 'vm-a');
+  assert.equal((await vmA()).check, null);
+  host.recordFleetEvent('vm-a', DONE);
+  assert.deepEqual((await vmA()).check, { state: 'checking', checks: 2, failed: 0, detail: '' });
+  release(checkReport(CHECKS_A, ['ok', 'ok']));
+  await host.checksSettled();
+  assert.deepEqual((await vmA()).check, { state: 'passed', checks: 2, failed: 0, detail: '' });
+  host.recordFleetEvent('vm-a', { type: 'start', task: 'again' });
+  assert.equal((await vmA()).check, null);
+  // a check of an older run that ends after a new run started does not come back on the camera
+  host.recordFleetEvent('vm-a', DONE);
+  host.recordFleetEvent('vm-a', { type: 'start', task: 'third' });
+  await new Promise((resolve) => { setImmediate(resolve); }); // the queued check has called checker.run
+  release(checkReport(CHECKS_A, ['missing', 'ok']));
+  await host.checksSettled();
+  assert.equal((await vmA()).check, null);
+});
+
+test('cam: a passed check shows verified; failed / unavailable keep the claim and add the finding', () => {
+  const t = (code, params = {}) => `${code}${JSON.stringify(params)}`;
+  const done = { state: 'done', outcome: 'claimed_done', claim: 'DONE: wrote it' };
+  const passed = { state: 'passed', checks: 1, failed: 0, detail: '' };
+  assert.deepEqual(bandText(done, t, passed), { text: 'cam.verified{"ok":1,"checks":1}', claim: false, verified: true });
+  assert.deepEqual(bandText(done, t, { state: 'checking', checks: 1, failed: 0, detail: '' }), { text: 'cam.checking{"claim":"DONE: wrote it"}', claim: true });
+  assert.deepEqual(bandText(done, t, { state: 'failed', checks: 2, failed: 1, detail: `${FILE_A}: missing` }),
+    { text: `cam.claim_failed${JSON.stringify({ claim: 'DONE: wrote it', detail: `${FILE_A}: missing` })}`, claim: true });
+  assert.match(bandText(done, t, { state: 'unavailable', checks: 1, failed: 0, detail: 'guest_auth_failed' }).text, /^cam\.claim_unavailable.*guest_auth_failed/);
+  // no check, a running AI or another outcome: unchanged
+  assert.deepEqual(bandText(done, t, null), { text: 'cam.claim{"claim":"DONE: wrote it"}', claim: true });
+  assert.equal(bandText({ ...done, outcome: 'claimed_failed' }, t, passed).text.startsWith('cam.claim{'), true);
+  assert.equal(bandText({ state: 'running', step: 1, usd: 0 }, t, passed).text.startsWith('cam.band'), true);
+  assert.equal(bandText(done, t, { state: 'bogus' }).text.startsWith('cam.claim{'), true);
+  assert.equal(camTone({ status: 'live', agent: done, check: passed }), 'done');
+  assert.equal(camTone({ status: 'live', agent: done, check: { state: 'failed' } }), 'stuck');
+  assert.equal(camTone({ status: 'live', agent: done, check: { state: 'checking' } }), 'wait');
+  assert.equal(camTone({ status: 'live', agent: done, check: null }), 'wait');
+  assert.equal(WORDS_CAM.ja['cam.verified'].replace('{checks}', '1').replace('{ok}', '1'), '確認済み: 1 件中 1 件 OK');
+  assert.deepEqual(Object.keys(WORDS_CAM.ja).sort(), Object.keys(WORDS_CAM.en).sort());
 });
