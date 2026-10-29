@@ -25,7 +25,7 @@ test('supervised child rejects provider input after a stop request', async (t) =
   });
   const closed = new Promise((resolve) => child.once('close', resolve));
   await started;
-  assert.equal(child.kill('SIGTERM'), true);
+  assert.deepEqual(await child.stopTree('SIGTERM'), { treeConfirmed: true });
   await assert.rejects(child.writeInput('must not be queued after stop'), (error) => error.message === 'input_unavailable');
   await closed;
 });
@@ -72,7 +72,8 @@ test('local process guardian reaps its provider tree when the Gateway host crash
     host.once('close', () => { hostClosed = true; if (!Number.isInteger(providerPid)) reject(new Error('supervised_provider_did_not_start')); });
   });
   let timeout;
-  try { await Promise.race([ready, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('supervised_provider_start_timeout')), 5000); })]); }
+  // Full executable hashing runs before approval; allow slower CI hosts to finish it.
+  try { await Promise.race([ready, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('supervised_provider_start_timeout')), 30_000); })]); }
   finally { clearTimeout(timeout); }
   let beforeCrash;
   const heartbeatDeadline = Date.now() + 5000;
