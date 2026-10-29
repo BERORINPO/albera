@@ -21,6 +21,8 @@ import * as roomJournalModule from './room-journal.mjs';
 import * as roomFiguresModule from './room-figures.mjs';
 import * as beroDirectorModule from './bero-director.mjs';
 import { createAnthropicComputerUseClient, DEFAULT_COMPUTER_USE_MODEL } from './anthropic-computer-use-client.mjs';
+import { createAnthropicPlannerClient } from './anthropic-planner-client.mjs';
+import { createPlannedAgentLoop } from './planned-agent-loop.mjs';
 import { loadOrCreateRuntimeSessionId } from './session-identity.mjs';
 import { backupRuntimeJournal, recoverRuntimeJournalTail, restoreRuntimeJournal, verifyRuntimeJournalBackup } from './journal-backup.mjs';
 
@@ -54,7 +56,8 @@ function parseWallArgs(args) {
 
 const AGENT_MAX_TASK_LENGTH = 2000;
 const AGENT_MODEL_RE = /^[A-Za-z0-9._-]{1,64}$/;
-const AGENT_DEFAULTS = Object.freeze({ model: DEFAULT_COMPUTER_USE_MODEL, maxSteps: 40, maxUsd: 0.5, maxMinutes: 15 });
+// planner: null runs the hands alone; a model name runs them under a planner (planned-agent-loop.mjs).
+const AGENT_DEFAULTS = Object.freeze({ model: DEFAULT_COMPUTER_USE_MODEL, planner: null, maxSteps: 40, maxUsd: 0.5, maxMinutes: 15 });
 const AGENT_NUMBER_OPTIONS = Object.freeze({ '--max-steps': ['maxSteps', 200, true], '--max-usd': ['maxUsd', 100, false], '--max-minutes': ['maxMinutes', 240, false] });
 
 function parseAgentArgs(args) {
@@ -63,7 +66,7 @@ function parseAgentArgs(args) {
   for (let i = 0; i < args.length; i++) {
     const arg = String(args[i]);
     if (arg === '--help' || arg === '-h') { options.help = true; continue; }
-    if (!['--vm', '--task', '--model', ...Object.keys(AGENT_NUMBER_OPTIONS)].includes(arg)) throw new Error('invalid_runtime_option');
+    if (!['--vm', '--task', '--model', '--planner', ...Object.keys(AGENT_NUMBER_OPTIONS)].includes(arg)) throw new Error('invalid_runtime_option');
     if (seen.has(arg)) throw new Error('runtime_option_must_be_unique');
     seen.add(arg);
     const value = args[++i];
@@ -74,9 +77,9 @@ function parseAgentArgs(args) {
     } else if (arg === '--task') {
       if (value.length > AGENT_MAX_TASK_LENGTH) throw new Error('runtime_agent_task_too_long');
       options.task = value;
-    } else if (arg === '--model') {
+    } else if (arg === '--model' || arg === '--planner') {
       if (!AGENT_MODEL_RE.test(value) || !Object.hasOwn(MODEL_PRICES, value)) throw new Error('runtime_agent_model_unknown');
-      options.model = value;
+      options[arg.slice(2)] = value;
     } else {
       const [key, max, integer] = AGENT_NUMBER_OPTIONS[arg];
       const number = Number(value);
@@ -88,7 +91,7 @@ function parseAgentArgs(args) {
   return Object.freeze(options);
 }
 
-const FLEET_DEFAULTS = Object.freeze({ model: DEFAULT_COMPUTER_USE_MODEL, maxSteps: 40, maxUsdPerVm: 0.5, maxUsdTotal: 2, maxMinutes: 15, port: 0 });
+const FLEET_DEFAULTS = Object.freeze({ model: DEFAULT_COMPUTER_USE_MODEL, planner: null, maxSteps: 40, maxUsdPerVm: 0.5, maxUsdTotal: 2, maxMinutes: 15, port: 0 });
 // The same limits as a workspace file (workspace.mjs LIMIT_RULES).
 const FLEET_NUMBER_OPTIONS = Object.freeze(Object.fromEntries(
   [['--max-steps', 'maxSteps'], ['--max-usd-per-vm', 'maxUsdPerVm'], ['--max-usd-total', 'maxUsdTotal'], ['--max-minutes', 'maxMinutes']]
@@ -101,7 +104,7 @@ function parseFleetArgs(args) {
   for (let i = 0; i < args.length; i++) {
     const arg = String(args[i]);
     if (arg === '--help' || arg === '-h') { options.help = true; continue; }
-    if (!['--job', '--model', '--port', ...Object.keys(FLEET_NUMBER_OPTIONS)].includes(arg)) throw new Error('invalid_runtime_option');
+    if (!['--job', '--model', '--planner', '--port', ...Object.keys(FLEET_NUMBER_OPTIONS)].includes(arg)) throw new Error('invalid_runtime_option');
     if (arg !== '--job' && seen.has(arg)) throw new Error('runtime_option_must_be_unique');
     seen.add(arg);
     const value = args[++i];
@@ -115,9 +118,9 @@ function parseFleetArgs(args) {
       if (options.jobs.some((job) => job.vmId === vmId)) throw new Error('runtime_fleet_vm_duplicate');
       if (options.jobs.length >= MAX_FLEET_JOBS) throw new Error('runtime_fleet_too_many_jobs');
       options.jobs.push(Object.freeze({ vmId, task }));
-    } else if (arg === '--model') {
+    } else if (arg === '--model' || arg === '--planner') {
       if (!AGENT_MODEL_RE.test(value) || !Object.hasOwn(MODEL_PRICES, value)) throw new Error('runtime_agent_model_unknown');
-      options.model = value;
+      options[arg.slice(2)] = value;
     } else if (arg === '--port') {
       if (!/^\d+$/.test(value) || Number(value) > 65535) throw new Error('runtime_port_invalid');
       options.port = Number(value);
@@ -319,9 +322,9 @@ Usage:
   albera-runtime restore --backup <absolute-backup-path> --destination <new-private-directory>
   albera-runtime recover-tail --journal <absolute-jsonl-path> --output <new-jsonl-path-in-same-directory>
   albera-runtime wall --vm <hyper-v-vm-name>[:<label>] [--vm ...] [--port <0-65535>]
-  albera-runtime agent --vm <hyper-v-vm-name> --task <text> [--model claude-haiku-5-5] [--max-steps 40] [--max-usd 0.50] [--max-minutes 15]
-  albera-runtime fleet --job <vm>=<task> [--job ...] [--model claude-haiku-5-5] [--max-steps 40] [--max-usd-per-vm 0.50] [--max-usd-total 2] [--max-minutes 15] [--port <0-65535>]
-  albera-runtime room --job <vm>=<task> [--job ...] [--model claude-haiku-5-5] [--max-steps 40] [--max-usd-per-vm 0.50] [--max-usd-total 2] [--max-minutes 15] [--port <0-65535>]
+  albera-runtime agent --vm <hyper-v-vm-name> --task <text> [--model claude-haiku-5-5] [--planner claude-sonnet-5-5] [--max-steps 40] [--max-usd 0.50] [--max-minutes 15]
+  albera-runtime fleet --job <vm>=<task> [--job ...] [--model claude-haiku-5-5] [--planner claude-sonnet-5-5] [--max-steps 40] [--max-usd-per-vm 0.50] [--max-usd-total 2] [--max-minutes 15] [--port <0-65535>]
+  albera-runtime room --job <vm>=<task> [--job ...] [--model claude-haiku-5-5] [--planner claude-sonnet-5-5] [--max-steps 40] [--max-usd-per-vm 0.50] [--max-usd-total 2] [--max-minutes 15] [--port <0-65535>]
                       [--checks <checks.json> --guest-password-file <file>]
   albera-runtime room --workspace <albera.workspace.json> [--guest-password-file <file>] [--port <0-65535>]
   albera-runtime room --demo [--port <0-65535>]
@@ -335,10 +338,11 @@ Backups are created only while Runtime is stopped. Backup, verification, and res
 Restore creates a new directory and never overwrites existing files. Keep the passphrase separately; ALBERA cannot recover it.
 wall is a local, view-only development command: it shows the latest screen of up to 16 Hyper-V VMs you name, refreshed every 2 seconds, on 127.0.0.1 behind the same one-time code. It never sends input to a VM, keeps only the newest frame in memory and saves nothing. Screens can show secrets; use it only on a PC and display you trust. It uses the same-user prototype Broker and needs Hyper-V Administrators membership.
 agent lets an AI operate one Hyper-V VM desktop through screenshots, mouse and keyboard until it says it is done or a limit (steps, USD, minutes) is reached. Ctrl+C stops it before the next action. The Anthropic API key is read only from ANTHROPIC_API_KEY. Screens are sent to the Anthropic API and can show secrets; use only a VM that holds nothing sensitive. The AI saying DONE is a claim, not proof that the task succeeded. It uses the same-user prototype Broker and needs Hyper-V Administrators membership.
+--planner <model> (agent, fleet, room) adds a planner: that model sees the task and the screen, writes 1 to 8 short sub-goals, gives the hands one at a time (at most 15 steps each), looks at the screen after each and decides next, replan (at most 2), done or failed. Its calls count toward the same USD limits; its DONE is a claim too.
 fleet runs up to 8 agents at once (one per VM, each with its own lease) and shows the desktop wall with each AI's pointer and status drawn over its screen. Cost grows with the number of VMs: every loop stops at --max-usd-per-vm and all stop together at --max-usd-total (each may finish the response already paid for, so the total can pass the limit slightly). Ctrl+C stops all agents and keeps the wall open; press it again to exit. The wall shows what each AI claims, not whether it succeeded: check every VM yourself. Same API key, privacy and Broker notes as agent.
 room is the control room: the fleet's VMs as cameras on a canvas, with Bero (a rule-based main AI, no LLM) pointing out stalls, DONE claims and limits and opening decision cards. A card choice can stop the hands on a VM or start a short fixed job there (close a blocking dialog, or look again whether the original task is done); the browser cannot type a task. Jobs started from cards share the same per-VM and total USD limits. Ctrl+C stops all agents and keeps the room open; press it again to exit. --demo runs 3 fake VMs with a scripted AI: no VM, no API key, no network. Same API key, privacy and Broker notes as fleet.
 room --checks checks the VM itself when its AI claims DONE, and asks you only when a check fails or cannot run. The file maps VM names to at most 8 read-only checks each: {"<vm>": [{"kind": "file_exists", "path": "C:\\\\x.txt"}, {"kind": "file_text", "path": "C:\\\\x.txt", "text": "expected"}, {"kind": "dir_has", "path": "C:\\\\dir", "name": "entry"}]}. file_text compares the file's trimmed text (first 64 KiB) inside the VM; only ok / missing / differs / error comes back, never file contents. Checks run over PowerShell Direct as the guest user Administrator, with the password read from --guest-password-file at each check (never from the command line or the environment, never printed). Both options are needed together. It uses a same-user prototype and needs Hyper-V Administrators membership.
-room --workspace starts the room from one JSON file you can keep in a repository and review: {"version": 1, "name": "booking-site", "vms": [{"vm": "<hyper-v-vm-name>", "label": "<camera label>", "task": "<task>", "checks": [...]}], "limits": {"model": "claude-haiku-5-5", "maxSteps": 40, "maxUsdPerVm": 0.5, "maxUsdTotal": 2, "maxMinutes": 15}}. No other room option may be given with it, so the file is the one place to read. Secrets never go in the file: if any VM has checks, give --guest-password-file on the command line. See examples/albera.workspace.example.json.
+room --workspace starts the room from one JSON file you can keep in a repository and review: {"version": 1, "name": "booking-site", "vms": [{"vm": "<hyper-v-vm-name>", "label": "<camera label>", "task": "<task>", "checks": [...]}], "limits": {"model": "claude-haiku-5-5", "planner": "claude-sonnet-5-5", "maxSteps": 40, "maxUsdPerVm": 0.5, "maxUsdTotal": 2, "maxMinutes": 15}}. No other room option may be given with it, so the file is the one place to read. Secrets never go in the file: if any VM has checks, give --guest-password-file on the command line. See examples/albera.workspace.example.json.
 recover-tail requires Runtime to be stopped and copies only the fully validated record prefix to a new file beside the original. It keeps the original journal and incomplete tail unchanged, refuses an existing writer lock, and preserves the session identity. It cannot recover a possibly lost final event.
 `;
 
@@ -398,12 +402,22 @@ async function runWall(options) {
 }
 
 function formatAgentEvent(event) {
-  if (event.type === 'step') return `step ${event.step}: ${event.toolUses} tool call(s), $${event.usd.toFixed(4)}, ${Math.round(event.ms / 1000)}s`;
+  // Planned runs: each (re)plan, and every step's note (its `[plan i/n]` prefix tells where the run is).
+  if (event.type === 'plan') return `plan${event.revision ? ` (replan ${event.revision})` : ''}:${event.goals.map((goal, i) => `\n  ${i + 1}. ${goal}`).join('')}`;
+  if (event.type === 'step') {
+    const note = event.note?.startsWith('[plan ') ? ` ${event.note}` : '';
+    return `step ${event.step}: ${event.toolUses} tool call(s), $${event.usd.toFixed(4)}, ${Math.round(event.ms / 1000)}s${note}`;
+  }
   if (event.type !== 'action') return null;
   const where = event.cursor ? ` at ${event.cursor[0]},${event.cursor[1]}` : '';
   const length = event.textLength === undefined ? '' : ` (${event.textLength} chars)`;
   return `  ${event.action}${length}${where} ${event.ok ? 'ok' : `failed: ${event.code}`}`;
 }
+
+const plannerText = (options) => (options.planner ? ` planned by ${options.planner}` : '');
+const fleetPlanner = (apiKey, options) => (options.planner
+  ? { createClient: () => createAnthropicPlannerClient({ apiKey, model: options.planner }), prices: MODEL_PRICES[options.planner] }
+  : null);
 
 async function runAgent(options) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -417,7 +431,7 @@ async function runAgent(options) {
   try {
     const broker = createHyperVDesktopBrokerPrototype();
     const driver = new HyperVDesktopDriver({ broker, resolveCurrentLease: async () => lease });
-    loop = createDesktopAgentLoop({
+    const loopOptions = {
       driver,
       client: createAnthropicComputerUseClient({ apiKey, model: options.model }),
       vmId: options.vm, lease, task: options.task,
@@ -425,7 +439,10 @@ async function runAgent(options) {
       prices: MODEL_PRICES[options.model],
       settleMs: 500,
       onEvent: (event) => { const line = formatAgentEvent(event); if (line) console.log(line); },
-    });
+    };
+    loop = options.planner
+      ? createPlannedAgentLoop({ ...loopOptions, plannerClient: createAnthropicPlannerClient({ apiKey, model: options.planner }), plannerPrices: MODEL_PRICES[options.planner] })
+      : createDesktopAgentLoop(loopOptions);
   } catch {
     console.error('ALBERA Runtime agent could not start. Check the VM name and options.');
     process.exitCode = 1;
@@ -433,7 +450,7 @@ async function runAgent(options) {
   }
   process.once('SIGINT', () => loop.stop('stopped_by_user'));
   process.once('SIGTERM', () => loop.stop('stopped_by_user'));
-  console.log(`ALBERA agent started on ${options.vm} with ${options.model} (limits: ${options.maxSteps} steps, $${options.maxUsd}, ${options.maxMinutes} min). Press Ctrl+C to stop.`);
+  console.log(`ALBERA agent started on ${options.vm} with ${options.model}${plannerText(options)} (limits: ${options.maxSteps} steps, $${options.maxUsd}, ${options.maxMinutes} min). Press Ctrl+C to stop.`);
   const result = await loop.run();
   console.log(`result: ${result.outcome}${result.reason ? ` (${result.reason})` : ''}; ${result.steps} steps, ${result.actions} actions, $${result.usd.toFixed(4)}, ${Math.round(result.ms / 1000)}s`);
   if (result.claim) console.log(`AI said: ${result.claim}`);
@@ -453,7 +470,7 @@ async function runFleet(options) {
       createDriver: (vmId, lease) => new HyperVDesktopDriver({ broker, resolveCurrentLease: async () => lease }),
       createClient: () => createAnthropicComputerUseClient({ apiKey, model: options.model }),
       limits: { maxSteps: options.maxSteps, maxUsd: options.maxUsdPerVm, maxMs: options.maxMinutes * 60_000 },
-      prices: MODEL_PRICES[options.model], totalMaxUsd: options.maxUsdTotal, settleMs: 500,
+      prices: MODEL_PRICES[options.model], totalMaxUsd: options.maxUsdTotal, settleMs: 500, planner: fleetPlanner(apiKey, options),
       onEvent: (vmId, event) => { const line = formatAgentEvent(event); if (line) console.log(`[${vmId}] ${line}`); },
     });
     wall = createDesktopWallHost({
@@ -463,7 +480,7 @@ async function runFleet(options) {
     const address = await wall.listen(options.port);
     console.log(`ALBERA desktop wall listening at ${address.url}`);
     console.log(`One-time UI bootstrap code: ${address.bootstrapCode}`);
-    console.log(`Starting ${options.jobs.length} agent(s) with ${options.model} (per VM: ${options.maxSteps} steps, $${options.maxUsdPerVm}, ${options.maxMinutes} min; total $${options.maxUsdTotal}). Press Ctrl+C to stop all agents.`);
+    console.log(`Starting ${options.jobs.length} agent(s) with ${options.model}${plannerText(options)} (per VM: ${options.maxSteps} steps, $${options.maxUsdPerVm}, ${options.maxMinutes} min; total $${options.maxUsdTotal}). Press Ctrl+C to stop all agents.`);
     let finished = false;
     let stopRequested = false;
     const onSignal = () => {
@@ -538,7 +555,7 @@ async function runRoom(given) {
       createDriver: (vmId, lease) => new HyperVDesktopDriver({ broker, resolveCurrentLease: async () => lease }),
       createClient: () => createAnthropicComputerUseClient({ apiKey, model: options.model }),
       limits: { maxSteps: options.maxSteps, maxUsd: options.maxUsdPerVm, maxMs: options.maxMinutes * 60_000 },
-      prices: MODEL_PRICES[options.model], totalMaxUsd: options.maxUsdTotal, settleMs: 500,
+      prices: MODEL_PRICES[options.model], totalMaxUsd: options.maxUsdTotal, settleMs: 500, planner: fleetPlanner(apiKey, options),
       onEvent: (vmId, event) => {
         room?.recordFleetEvent(vmId, event);
         const line = formatAgentEvent(event);
@@ -554,7 +571,7 @@ async function runRoom(given) {
     const checked = Object.keys(checks);
     if (checked.length) console.log(`Automatic checks after a DONE claim on: ${checked.join(', ')}.`);
     console.log(`One-time UI bootstrap code: ${address.bootstrapCode}`);
-    console.log(`Starting ${options.jobs.length} agent(s) with ${options.model} (per VM: ${options.maxSteps} steps, $${options.maxUsdPerVm}, ${options.maxMinutes} min; total $${options.maxUsdTotal}, card jobs included). Press Ctrl+C to stop all agents.`);
+    console.log(`Starting ${options.jobs.length} agent(s) with ${options.model}${plannerText(options)} (per VM: ${options.maxSteps} steps, $${options.maxUsdPerVm}, ${options.maxMinutes} min; total $${options.maxUsdTotal}, card jobs included). Press Ctrl+C to stop all agents.`);
     let stopRequested = false;
     const onSignal = () => {
       if (!stopRequested) { stopRequested = true; fleet.close('stopped_by_user'); return; }
