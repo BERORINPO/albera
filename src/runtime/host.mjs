@@ -22,10 +22,14 @@ export function createRuntimeHost({ roots, journal, gatewayOptions = {}, hostOpt
     close() {
       if (closePromise) return closePromise;
       closePromise = (async () => {
+        // Begin Gateway shutdown synchronously before yielding to HTTP server closure.
+        // An already-authenticated in-flight decision must not send input or otherwise
+        // perform a user action in the interval before the public Approval Host drains.
+        const gatewayClose = gateway.close();
         await approvalHost.close({ closeApi: false });
         let uncertain = [];
         try {
-          uncertain = await gateway.close();
+          uncertain = await gatewayClose;
           await api.flushEvents();
         } finally {
           await api.close();
