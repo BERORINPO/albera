@@ -130,7 +130,9 @@ test('room: api needs the one-time code; the cookie is HttpOnly, SameSite=Strict
     method: 'POST', headers: { Origin: r.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ bootstrapCode: r.address.bootstrapCode }),
   });
   const setCookie = res.headers.get('set-cookie');
-  assert.match(setCookie, /albera_room_session=/);
+  assert.ok(setCookie.startsWith(`${r.host.cookieName}=`));
+  assert.match(r.host.cookieName, new RegExp(`^albera_room_${r.address.port}_[0-9a-f]{12}$`));
+  assert.match(setCookie, /Max-Age=28800/);
   assert.match(setCookie, /HttpOnly/);
   assert.match(setCookie, /SameSite=Strict/);
   assert.match(setCookie, /Path=\/room\//);
@@ -140,7 +142,7 @@ test('room: api needs the one-time code; the cookie is HttpOnly, SameSite=Strict
   assert.equal(again.status, 403);
   const cookie = setCookie.split(';')[0];
   assert.equal((await r.get('api/state', cookie)).status, 200);
-  assert.equal((await r.get('api/state', 'albera_room_session=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')).status, 401);
+  assert.equal((await r.get('api/state', `${r.host.cookieName}=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`)).status, 401);
 });
 
 test('room: a foreign Host header and cross-site requests are refused', async (t) => {
@@ -423,4 +425,36 @@ test('demo: the room runs end to end with fake C/D parts and no network', async 
   assert.deepEqual(await res.json(), { ok: true, effect: 'nudge', result: 'started' });
   for (let i = 0; i < 400 && demo.broker.hasDialog('demo-tests'); i++) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(demo.broker.hasDialog('demo-tests'), false, 'the nudge job pressed OK');
+});
+
+test('room: two hosts on 127.0.0.1 use different cookie names, so one never replaces the other\'s session', async (t) => {
+  const a = await start(t);
+  const b = await start(t);
+  assert.notEqual(a.host.cookieName, b.host.cookieName);
+  const cookieA = await a.unlock();
+  const cookieB = await b.unlock();
+  // A browser sends every 127.0.0.1 cookie for /room/ to both ports.
+  const both = `${cookieB}; ${cookieA}`;
+  assert.equal((await a.get('api/state', both)).status, 200);
+  assert.equal((await b.get('api/state', both)).status, 200);
+});
+
+test('room: a stale or malformed cookie of the same name does not hide a valid one', async (t) => {
+  const r = await start(t);
+  const cookie = await r.unlock();
+  const name = r.host.cookieName;
+  for (const header of [`${name}=bad!; ${cookie}`, `${name}=${'A'.repeat(43)}; ${cookie}`, `${cookie}; ${name}=bad!`]) {
+    assert.equal((await r.get('api/state', header)).status, 200, header.slice(0, 40));
+  }
+});
+
+test('room: a session in use stays valid past the idle limit; an idle one expires', async (t) => {
+  const r = await start(t);
+  const cookie = await r.unlock();
+  for (let i = 0; i < 30; i++) {
+    r.clock.t += 60_000;
+    assert.equal((await r.get('api/state', cookie)).status, 200, `minute ${i + 1}`);
+  }
+  r.clock.t += 20 * 60_000 + 1;
+  assert.equal((await r.get('api/state', cookie)).status, 401);
 });
