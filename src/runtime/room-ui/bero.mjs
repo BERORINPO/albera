@@ -45,6 +45,8 @@ export function glideMs(from, to, { reduced = false } = {}) {
   return Math.round(Math.min(GLIDE_MS, Math.max(600, Math.hypot(to.x - from.x, to.y - from.y) * 1.6)));
 }
 
+/** One figure per camera (and one summary): a figure's slot is its VM, or 'all'. */
+export const figureSlot = (spec, near) => near?.vmId ?? spec?.vmId ?? 'all';
 const centerOf = (r) => (r ? { x: r.x + r.w / 2, y: r.y + r.h / 2 } : null);
 const targetNode = (to) => (to?.vmId ? `cam:${to.vmId}` : to?.figureId ? `fig:${to.figureId}` : null);
 
@@ -78,7 +80,8 @@ export function createBero(canvas, { words, figureWords, renderFigure, cards } =
 
   let pos = { ...HOME };
   let sayingCard = null; // cardId whose choices belong under the bubble
-  const pointed = [];
+  const pointed = []; // wires and glows from Bero: removed when it moves on or hushes
+  const figures = new Map(); // slot (vmId, or 'all' for the summary) -> nodeId: one figure per slot
   canvas.place(NODE_ID, root, pos);
 
   function lookToward(point) {
@@ -100,7 +103,7 @@ export function createBero(canvas, { words, figureWords, renderFigure, cards } =
     while (pointed.length) {
       const p = pointed.pop();
       p.wire?.remove();
-      canvas.remove(p.glowId);
+      if (p.glowId) canvas.remove(p.glowId);
     }
   }
 
@@ -132,6 +135,7 @@ export function createBero(canvas, { words, figureWords, renderFigure, cards } =
   }
 
   async function doMove(to) {
+    clearPoints();
     if (to === 'home') return glide(HOME);
     const nodeId = targetNode(to);
     if (!nodeId || !canvas.rectOf(nodeId)) return undefined;
@@ -151,11 +155,14 @@ export function createBero(canvas, { words, figureWords, renderFigure, cards } =
     glow.style.height = `${r.h}px`;
     const glowId = `glow:${vmId}`;
     canvas.place(glowId, glow, { x: r.x, y: r.y });
-    const wire = canvas.wire(NODE_ID, camId, { tone: 'me' });
-    pointed.push({ glowId, wire });
+    const point = { glowId, wire: canvas.wire(NODE_ID, camId, { tone: 'me' }) };
+    pointed.push(point);
     await wait(reduced ? 0 : 700);
-    // the glow fades on its own; the wire stays until the next point or hush
-    setTimeout(() => glow.classList.add('fade'), reduced ? 0 : POINT_MS);
+    // a point is a gesture: the glow fades and the wire goes away on their own (or earlier, when Bero moves on)
+    setTimeout(() => {
+      glow.classList.add('fade');
+      point.wire?.remove();
+    }, reduced ? 0 : POINT_MS);
   }
 
   async function doSay(code, params, cardId) {
@@ -186,10 +193,14 @@ export function createBero(canvas, { words, figureWords, renderFigure, cards } =
     const node = renderFigure(spec, { words: figureWords ?? words });
     if (!node) return;
     const nodeId = `fig:${spec.figureId}`;
+    const slot = figureSlot(spec, near);
+    const old = figures.get(slot);
+    if (old) canvas.remove(old); // the new figure replaces the old one beside the same camera
     const size = { w: 340, h: 220 };
     const at = canvas.freeSpot(near?.vmId ? `cam:${near.vmId}` : NODE_ID, size);
     canvas.place(nodeId, node, at);
-    canvas.wire(NODE_ID, nodeId, { dashed: true, tone: 'me' });
+    figures.set(slot, nodeId);
+    pointed.push({ wire: canvas.wire(NODE_ID, nodeId, { dashed: true, tone: 'me' }) });
     await wait(reduced ? 0 : 1200);
   }
 

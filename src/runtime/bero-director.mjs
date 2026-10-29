@@ -29,7 +29,8 @@ export function createBeroDirector({
   patrolMs = 20_000,
   labelOf = (vmId) => vmId,
   storyGapMs = 6_000,
-  progressEvery = 5,
+  progressEvery = 8,
+  progressMinMs = 60_000,
   summaryQuietMs = 10_000,
 } = {}) {
   if (typeof buildFigure !== 'function') throw new TypeError('buildFigure is required');
@@ -39,6 +40,7 @@ export function createBeroDirector({
   const vmEntries = new Map(); // vmId -> recent ledger entries
   const recent = [];
   const stepsSinceFigure = new Map();
+  const lastProgressAt = new Map(); // vmId -> when its last flow figure was drawn
   const noticedStall = new Map(); // vmId -> lastActionAt already told
   const snoozeUntil = new Map(); // vmId -> no stall notice before this time
   let seq = 0;
@@ -122,13 +124,17 @@ export function createBeroDirector({
     return { acts: [{ type: 'say', code, params: { cam: cam(s.vmId) }, cardId: null }], ledger: [] };
   }
 
-  function progressStory() {
+  /** Rare on purpose: only with no card open anywhere, and at most once per progressMinMs per VM. */
+  function progressStory(now) {
+    if (open.size > 0) return null;
     let best = null;
     for (const [vmId, n] of stepsSinceFigure) {
-      if (n >= progressEvery && !cardFor(vmId) && (!best || n > best.n)) best = { vmId, n };
+      if (n < progressEvery || now - (lastProgressAt.get(vmId) ?? -Infinity) < progressMinMs) continue;
+      if (!best || n > best.n) best = { vmId, n };
     }
     if (!best) return null;
     stepsSinceFigure.set(best.vmId, 0);
+    lastProgressAt.set(best.vmId, now);
     const figure = buildFigure('flow', entriesOf(best.vmId), { vmId: best.vmId, figureId: nextId('fig') });
     if (!figure) return null;
     return {
@@ -182,7 +188,7 @@ export function createBeroDirector({
     }
     const nothingWaiting = queue.length === 0;
     if (nothingWaiting && now - lastStoryAt >= storyGapMs * 2) {
-      const told = summaryStory(now) ?? progressStory();
+      const told = summaryStory(now) ?? progressStory(now);
       if (told) return told;
     }
     if (now - idleSince >= patrolMs) return patrolStory(agents);
