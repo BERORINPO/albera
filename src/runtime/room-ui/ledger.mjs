@@ -11,12 +11,22 @@ export function clockOf(at) {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-/** Params a ledger line needs, with nested codes turned into words. @param {{t: Function}} words @param {any} entry */
-export function entryParams(words, entry) {
+/** The camera label of a VM id: labelOf(vmId) when given and non-empty, else the id. */
+export function camLabel(vmId, labelOf) {
+  if (!vmId) return '';
+  const label = typeof labelOf === 'function' ? labelOf(vmId) : null;
+  return typeof label === 'string' && label ? label : vmId;
+}
+
+/**
+ * Params a ledger line needs, with nested codes turned into words.
+ * @param {{t: Function}} words @param {any} entry @param {(vmId: string) => string} [labelOf]
+ */
+export function entryParams(words, entry, labelOf) {
   const p = entry.params ?? {};
   return {
     ...p,
-    cam: entry.vmId ?? '',
+    cam: camLabel(entry.vmId, labelOf),
     doing: p.note || p.action || '',
     outcomeText: p.outcome ? words.t(`outcome_${p.outcome}`, {}) : '',
     effectText: p.effect ? words.t(`effect_${p.effect}`, {}) : '',
@@ -25,9 +35,9 @@ export function entryParams(words, entry) {
   };
 }
 
-/** One ledger line (no time). @param {{t: Function}} words @param {any} entry */
-export function entryText(words, entry) {
-  return words.t(`led_${entry.code}`, entryParams(words, entry));
+/** One ledger line (no time). @param {{t: Function}} words @param {any} entry @param {(vmId: string) => string} [labelOf] */
+export function entryText(words, entry, labelOf) {
+  return words.t(`led_${entry.code}`, entryParams(words, entry, labelOf));
 }
 
 /**
@@ -46,8 +56,8 @@ export function nextRows(rows, entry, max = LEDGER_ROWS) {
   return { rows: grown.slice(Math.max(0, grown.length - max)), added: key, replaced: null };
 }
 
-/** @param {HTMLElement} el @param {{words: {t: Function}}} options */
-export function createLedger(el, { words }) {
+/** @param {HTMLElement} el @param {{words: {t: Function}, labelOf?: (vmId: string) => string}} options */
+export function createLedger(el, { words, labelOf }) {
   el.classList.add('rf-ledger');
   const title = document.createElement('div');
   title.className = 'rf-ledger-t';
@@ -65,7 +75,7 @@ export function createLedger(el, { words }) {
     who.className = `rf-who rf-actor-${entry.actor}`;
     who.textContent = words.t(`actor_${entry.actor}`, {});
     time.textContent = clockOf(entry.at);
-    text.textContent = entryText(words, entry);
+    text.textContent = entryText(words, entry, labelOf);
   }
 
   function add(entry) {

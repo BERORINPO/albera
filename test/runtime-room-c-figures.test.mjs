@@ -139,11 +139,14 @@ test('null when there is not enough to draw', () => {
 
 test('figure layout helpers', () => {
   assert.deepEqual(wrapLabel('short'), ['short']);
+  assert.deepEqual(wrapLabel('Moving photo 9 into its date folder', 22), ['Moving photo 9 into', 'its date folder'], 'breaks at spaces, never mid-word');
+  assert.deepEqual(wrapLabel('one two three four five six seven eight nine', 12), ['one two', 'three four\u2026']);
   const two = wrapLabel('a'.repeat(30), 22);
-  assert.deepEqual(two.map((s) => s.length), [22, 8]);
+  assert.deepEqual(two.map((s) => s.length), [22, 8], 'text without spaces is split by chars');
   const cut = wrapLabel('a'.repeat(60), 22);
   assert.equal(cut[1].length, 22);
   assert.ok(cut[1].endsWith('\u2026'));
+  for (const s of [...wrapLabel('x'.repeat(40) + ' y'), ...wrapLabel('ab cd '.repeat(20), 10)]) assert.ok(s.length <= 22);
   const { boxes, height } = flowLayout(3);
   assert.equal(boxes.length, 3);
   for (let i = 1; i < 3; i++) assert.ok(boxes[i].y >= boxes[i - 1].y + boxes[i - 1].h, 'boxes do not overlap');
@@ -186,6 +189,10 @@ test('words: every ledger code, outcome, effect, card and figure title in en and
   const line = entryText(words, { seq: 1, at: 0, vmId: VM, actor: 'hands', code: 'hands_ended', params: { outcome: 'claimed_done' } });
   assert.ok(line.includes('未確認'), 'a DONE claim stays a claim');
   assert.equal(entryText(words, { seq: 1, at: 0, vmId: VM, actor: 'human', code: 'human_choice', params: { effect: 'stop' } }), '止めて');
+  const stalled = { seq: 2, at: 0, vmId: 'demo-photos', actor: 'bero', code: 'hands_stalled', params: { seconds: 30 } };
+  assert.equal(entryText(words, stalled, (id) => (id === 'demo-photos' ? 'Photos' : '')), 'Photos 30 秒 動きなし', 'labelOf gives the camera label');
+  assert.equal(entryText(words, stalled, () => ''), 'demo-photos 30 秒 動きなし', 'falls back to the VM id');
+  assert.equal(entryText(words, stalled), 'demo-photos 30 秒 動きなし');
   assert.match(clockOf(0), /^\d\d:\d\d$/);
   assert.equal(clockOf(Number.NaN), '--:--');
 });
