@@ -38,26 +38,34 @@ export function createAnthropicComputerUseClient({
   if (typeof fetchImpl !== 'function') throw new TypeError('invalid_fetch');
 
   async function attempt(body, signal) {
-    const timeout = AbortSignal.timeout(timeoutMs);
-    const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-    let response;
+    // A referenced timer (not AbortSignal.timeout, whose timer is unref'd) keeps the process
+    // alive until the deadline, so a hung upstream always ends as anthropic_timeout.
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(), timeoutMs);
+    const combined = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
     try {
-      response = await fetchImpl(apiUrl, {
-        method: 'POST',
-        headers: { 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION, 'content-type': 'application/json' },
-        body,
-        signal: combined,
-      });
+      let response;
+      try {
+        response = await fetchImpl(apiUrl, {
+          method: 'POST',
+          headers: { 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION, 'content-type': 'application/json' },
+          body,
+          signal: combined,
+        });
+      }
+      catch {
+        if (signal?.aborted) throw new ComputerUseClientError('computer_use_aborted');
+        if (timeout.signal.aborted) throw new ComputerUseClientError('anthropic_timeout');
+        return { retry: true, error: new ComputerUseClientError('anthropic_network_error') };
+      }
+      if (response.ok) return { value: await parseSuccess(response) };
+      const type = await readErrorType(response);
+      const error = new ComputerUseClientError(`anthropic_http_${response.status}${type ? `_${type}` : ''}`, { status: response.status });
+      return RETRY_STATUSES.has(response.status) ? { retry: true, error } : { error, fatal: true };
     }
-    catch {
-      if (signal?.aborted) throw new ComputerUseClientError('computer_use_aborted');
-      if (timeout.aborted) throw new ComputerUseClientError('anthropic_timeout');
-      return { retry: true, error: new ComputerUseClientError('anthropic_network_error') };
+    finally {
+      clearTimeout(timer);
     }
-    if (response.ok) return { value: await parseSuccess(response) };
-    const type = await readErrorType(response);
-    const error = new ComputerUseClientError(`anthropic_http_${response.status}${type ? `_${type}` : ''}`, { status: response.status });
-    return RETRY_STATUSES.has(response.status) ? { retry: true, error } : { error, fatal: true };
   }
 
   return Object.freeze({
