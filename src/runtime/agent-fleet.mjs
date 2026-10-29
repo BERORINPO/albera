@@ -1,4 +1,5 @@
 import { createDesktopAgentLoop } from './desktop-agent-loop.mjs';
+import { createPlannedAgentLoop } from './planned-agent-loop.mjs';
 import { createAgentStatusBoard } from './agent-status-board.mjs';
 
 export const MAX_FLEET_JOBS = 8;
@@ -17,12 +18,16 @@ const VM_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
  * `limits.maxUsd`, and every job counts toward `totalMaxUsd`; a job is refused when no budget is left.
  * Each job gets a fresh lease (generation = job number on that VM). `onEvent` also receives
  * `{type: 'start', job, task}` when a job starts, so a watcher can record which task the hands were given.
- * @param {{jobs: {vmId: string, task: string}[], createDriver: Function, createClient: Function, limits: object, prices: object, totalMaxUsd: number, board?: object, now?: () => number, settleMs?: number, onEvent?: (vmId: string, event: object) => void, keepAlive?: boolean, vmIds?: string[]}} options
+ *
+ * Planner (`planner: {createClient, prices}`): every job runs as a planned loop (planned-agent-loop.mjs): a stronger
+ * model splits the task into sub-goals for the hands. Its calls count toward the same per-VM and total USD limits.
+ * @param {{jobs: {vmId: string, task: string}[], createDriver: Function, createClient: Function, limits: object, prices: object, totalMaxUsd: number, board?: object, now?: () => number, settleMs?: number, onEvent?: (vmId: string, event: object) => void, keepAlive?: boolean, vmIds?: string[], planner?: {createClient: Function, prices: object} | null}} options
  */
 export function createAgentFleet({
   jobs, createDriver, createClient, limits, prices, totalMaxUsd, board = createAgentStatusBoard(),
-  now = Date.now, settleMs = 0, onEvent = () => {}, keepAlive = false, vmIds = [],
+  now = Date.now, settleMs = 0, onEvent = () => {}, keepAlive = false, vmIds = [], planner = null,
 } = {}) {
+  if (planner !== null && (typeof planner?.createClient !== 'function' || !planner.prices)) throw new TypeError('invalid_fleet_planner');
   if (!Array.isArray(jobs) || jobs.length < (keepAlive ? 0 : 1) || jobs.length > MAX_FLEET_JOBS) throw new TypeError('invalid_fleet_jobs');
   if (new Set(jobs.map((job) => job?.vmId)).size !== jobs.length) throw new TypeError('invalid_fleet_jobs');
   if (typeof totalMaxUsd !== 'number' || !Number.isFinite(totalMaxUsd) || totalMaxUsd <= 0) throw new TypeError('invalid_fleet_total_limit');
@@ -63,11 +68,14 @@ export function createAgentFleet({
       desktopSessionId: `agent-${vmId}`, ownerType: 'AI', ownerId: `albera-agent-${vmId}`, generation,
       expiresAt: new Date(now() + limits.maxMs + LEASE_SLACK_MS).toISOString(),
     });
-    const loop = createDesktopAgentLoop({
+    const options = {
       driver: createDriver(vmId, lease), client: createClient(vmId, task), vmId, lease, task,
       limits: { ...limits, maxUsd }, prices, now, settleMs,
       onEvent: (event) => handle(vmId, event),
-    });
+    };
+    const loop = planner
+      ? createPlannedAgentLoop({ ...options, plannerClient: planner.createClient(vmId, task), plannerPrices: planner.prices })
+      : createDesktopAgentLoop(options);
     vm.jobs = generation;
     vm.runUsd = 0;
     vm.loop = loop;

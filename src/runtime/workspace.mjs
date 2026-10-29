@@ -22,7 +22,7 @@ const NAME_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
 const VM_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const TOP_KEYS = new Set(['version', 'name', 'vms', 'limits']);
 const VM_KEYS = new Set(['vm', 'label', 'task', 'checks']);
-const LIMIT_KEYS = new Set(['model', ...Object.keys(LIMIT_RULES)]);
+const LIMIT_KEYS = new Set(['model', 'planner', ...Object.keys(LIMIT_RULES)]);
 
 /** A camera label: 1 to 32 characters (any script), no control characters. */
 export function isLabel(value) {
@@ -78,7 +78,7 @@ export function parseWorkspace(text, { knownModels = [] } = {}) {
     if (!raw.limits || typeof raw.limits !== 'object' || Array.isArray(raw.limits)) throw new Error('workspace_limits_invalid');
     for (const [key, value] of Object.entries(raw.limits)) {
       if (!LIMIT_KEYS.has(key)) throw new Error('workspace_unknown_field');
-      if (key === 'model') {
+      if (key === 'model' || key === 'planner') {
         if (typeof value !== 'string' || !knownModels.includes(value)) throw new Error('workspace_model_unknown');
       } else if (!validLimit(key, value)) throw new Error('workspace_limit_invalid');
       limits[key] = value;
