@@ -9,6 +9,8 @@ import { createRuntimeHost } from './host.mjs';
 import { createDesktopWallHost, MAX_WALL_VMS } from './desktop-wall-host.mjs';
 import { HyperVDesktopDriver } from './hyperv-desktop-driver.mjs';
 import { createHyperVDesktopBrokerPrototype } from './hyperv-desktop-broker-prototype.mjs';
+import { createDesktopAgentLoop, MODEL_PRICES } from './desktop-agent-loop.mjs';
+import { createAnthropicComputerUseClient, DEFAULT_COMPUTER_USE_MODEL } from './anthropic-computer-use-client.mjs';
 import { loadOrCreateRuntimeSessionId } from './session-identity.mjs';
 import { backupRuntimeJournal, recoverRuntimeJournalTail, restoreRuntimeJournal, verifyRuntimeJournalBackup } from './journal-backup.mjs';
 
@@ -40,9 +42,46 @@ function parseWallArgs(args) {
   return Object.freeze({ ...options, vms: Object.freeze(options.vms) });
 }
 
+const AGENT_MAX_TASK_LENGTH = 2000;
+const AGENT_MODEL_RE = /^[A-Za-z0-9._-]{1,64}$/;
+const AGENT_DEFAULTS = Object.freeze({ model: DEFAULT_COMPUTER_USE_MODEL, maxSteps: 40, maxUsd: 0.5, maxMinutes: 15 });
+const AGENT_NUMBER_OPTIONS = Object.freeze({ '--max-steps': ['maxSteps', 200, true], '--max-usd': ['maxUsd', 100, false], '--max-minutes': ['maxMinutes', 240, false] });
+
+function parseAgentArgs(args) {
+  const options = { command: 'agent', vm: undefined, task: undefined, ...AGENT_DEFAULTS, help: false };
+  const seen = new Set();
+  for (let i = 0; i < args.length; i++) {
+    const arg = String(args[i]);
+    if (arg === '--help' || arg === '-h') { options.help = true; continue; }
+    if (!['--vm', '--task', '--model', ...Object.keys(AGENT_NUMBER_OPTIONS)].includes(arg)) throw new Error('invalid_runtime_option');
+    if (seen.has(arg)) throw new Error('runtime_option_must_be_unique');
+    seen.add(arg);
+    const value = args[++i];
+    if (typeof value !== 'string' || value.length === 0 || value.startsWith('--')) throw new Error('runtime_option_requires_value');
+    if (arg === '--vm') {
+      if (!WALL_VM_RE.test(value)) throw new Error('runtime_agent_vm_invalid');
+      options.vm = value;
+    } else if (arg === '--task') {
+      if (value.length > AGENT_MAX_TASK_LENGTH) throw new Error('runtime_agent_task_too_long');
+      options.task = value;
+    } else if (arg === '--model') {
+      if (!AGENT_MODEL_RE.test(value) || !Object.hasOwn(MODEL_PRICES, value)) throw new Error('runtime_agent_model_unknown');
+      options.model = value;
+    } else {
+      const [key, max, integer] = AGENT_NUMBER_OPTIONS[arg];
+      const number = Number(value);
+      if (!/^\d+(\.\d+)?$/.test(value) || !(number > 0) || number > max || (integer && !Number.isInteger(number))) throw new Error('runtime_agent_limit_invalid');
+      options[key] = number;
+    }
+  }
+  if (!options.help && (!options.vm || !options.task)) throw new Error('runtime_agent_vm_and_task_required');
+  return Object.freeze(options);
+}
+
 export function parseRuntimeArgs(argv, platform = process.platform) {
   const Path = platform === 'win32' ? path.win32 : path;
   if (argv[0] === 'wall') return parseWallArgs(argv.slice(1));
+  if (argv[0] === 'agent') return parseAgentArgs(argv.slice(1));
   const command = ['backup', 'restore', 'recover-tail', 'verify-backup'].includes(argv[0]) ? argv[0] : 'serve';
   const args = command === 'serve' ? argv : argv.slice(1);
   if (command !== 'serve') {
@@ -101,6 +140,7 @@ Usage:
   albera-runtime restore --backup <absolute-backup-path> --destination <new-private-directory>
   albera-runtime recover-tail --journal <absolute-jsonl-path> --output <new-jsonl-path-in-same-directory>
   albera-runtime wall --vm <hyper-v-vm-name>[:<label>] [--vm ...] [--port <0-65535>]
+  albera-runtime agent --vm <hyper-v-vm-name> --task <text> [--model claude-haiku-5-5] [--max-steps 40] [--max-usd 0.50] [--max-minutes 15]
 
 The regular "albera" command remains a read-only session dashboard. Runtime binds only to 127.0.0.1.
 Each provider start, input, and stop requires a visible one-use decision in the local approval page.
@@ -110,6 +150,7 @@ Journal storage permissions are checked without repair; Runtime refuses broad or
 Backups are created only while Runtime is stopped. Backup, verification, and restore passphrases are entered in a hidden terminal prompt, never as command-line arguments or environment variables. verify-backup authenticates and validates a backup offline without writing files.
 Restore creates a new directory and never overwrites existing files. Keep the passphrase separately; ALBERA cannot recover it.
 wall is a local, view-only development command: it shows the latest screen of up to 16 Hyper-V VMs you name, refreshed every 2 seconds, on 127.0.0.1 behind the same one-time code. It never sends input to a VM, keeps only the newest frame in memory and saves nothing. Screens can show secrets; use it only on a PC and display you trust. It uses the same-user prototype Broker and needs Hyper-V Administrators membership.
+agent lets an AI operate one Hyper-V VM desktop through screenshots, mouse and keyboard until it says it is done or a limit (steps, USD, minutes) is reached. Ctrl+C stops it before the next action. The Anthropic API key is read only from ANTHROPIC_API_KEY. Screens are sent to the Anthropic API and can show secrets; use only a VM that holds nothing sensitive. The AI saying DONE is a claim, not proof that the task succeeded. It uses the same-user prototype Broker and needs Hyper-V Administrators membership.
 recover-tail requires Runtime to be stopped and copies only the fully validated record prefix to a new file beside the original. It keeps the original journal and incomplete tail unchanged, refuses an existing writer lock, and preserves the session identity. It cannot recover a possibly lost final event.
 `;
 
@@ -168,12 +209,57 @@ async function runWall(options) {
   }
 }
 
+function formatAgentEvent(event) {
+  if (event.type === 'step') return `step ${event.step}: ${event.toolUses} tool call(s), $${event.usd.toFixed(4)}, ${Math.round(event.ms / 1000)}s`;
+  if (event.type !== 'action') return null;
+  const where = event.cursor ? ` at ${event.cursor[0]},${event.cursor[1]}` : '';
+  const length = event.textLength === undefined ? '' : ` (${event.textLength} chars)`;
+  return `  ${event.action}${length}${where} ${event.ok ? 'ok' : `failed: ${event.code}`}`;
+}
+
+async function runAgent(options) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) { console.error('ALBERA Runtime agent: set the ANTHROPIC_API_KEY environment variable first.'); process.exitCode = 1; return; }
+  const started = Date.now();
+  const lease = Object.freeze({
+    desktopSessionId: `agent-${options.vm}`, ownerType: 'AI', ownerId: 'albera-agent', generation: 1,
+    expiresAt: new Date(started + (options.maxMinutes + 1) * 60_000).toISOString(),
+  });
+  let loop;
+  try {
+    const broker = createHyperVDesktopBrokerPrototype();
+    const driver = new HyperVDesktopDriver({ broker, resolveCurrentLease: async () => lease });
+    loop = createDesktopAgentLoop({
+      driver,
+      client: createAnthropicComputerUseClient({ apiKey, model: options.model }),
+      vmId: options.vm, lease, task: options.task,
+      limits: { maxSteps: options.maxSteps, maxUsd: options.maxUsd, maxMs: options.maxMinutes * 60_000 },
+      prices: MODEL_PRICES[options.model],
+      settleMs: 500,
+      onEvent: (event) => { const line = formatAgentEvent(event); if (line) console.log(line); },
+    });
+  } catch {
+    console.error('ALBERA Runtime agent could not start. Check the VM name and options.');
+    process.exitCode = 1;
+    return;
+  }
+  process.once('SIGINT', () => loop.stop('stopped_by_user'));
+  process.once('SIGTERM', () => loop.stop('stopped_by_user'));
+  console.log(`ALBERA agent started on ${options.vm} with ${options.model} (limits: ${options.maxSteps} steps, $${options.maxUsd}, ${options.maxMinutes} min). Press Ctrl+C to stop.`);
+  const result = await loop.run();
+  console.log(`result: ${result.outcome}${result.reason ? ` (${result.reason})` : ''}; ${result.steps} steps, ${result.actions} actions, $${result.usd.toFixed(4)}, ${Math.round(result.ms / 1000)}s`);
+  if (result.claim) console.log(`AI said: ${result.claim}`);
+  if (result.outcome === 'claimed_done') console.log('Note: this is only what the AI claimed. Check the VM yourself.');
+  process.exitCode = result.outcome === 'claimed_done' ? 0 : 1;
+}
+
 async function main() {
   let options;
   try { options = parseRuntimeArgs(process.argv.slice(2)); }
   catch (error) { console.error(`ALBERA Runtime: ${error.message}`); process.exitCode = 2; return; }
   if (options.help) { console.log(RUNTIME_HELP); return; }
   if (options.command === 'wall') { await runWall(options); return; }
+  if (options.command === 'agent') { await runAgent(options); return; }
   if (options.command === 'backup' || options.command === 'restore' || options.command === 'recover-tail' || options.command === 'verify-backup') {
     try {
       if (options.command === 'backup') {
