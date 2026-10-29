@@ -17,6 +17,7 @@ const MAX_ACTIVE = 4;
 const DEFAULT_RUN_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_RUN_TIMEOUT_MS = 60 * 60 * 1000;
 const STOP_GRACE_MS = 3000;
+const STOP_POLL_MS = 100;
 const BASE_ENV = new Set([
   'PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP',
   'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE', 'TERM', 'COLORTERM',
@@ -156,6 +157,7 @@ export class RuntimeGateway {
       const run = /** @type {Run} */ ({
         id: randomUUID(), provider, status: 'starting', startedAt: null, finishedAt: null,
         exitCode: null, signal: null, treeStopConfirmed: null, timer: null, child,
+        closeInfo: null, stopStartedAt: null, stopEscalated: false, stopMonitorCancelled: false,
       });
       this.#runs.set(run.id, run);
       child.once('spawn', () => {
@@ -169,10 +171,15 @@ export class RuntimeGateway {
         this.#clearTimer(run); run.status = 'failed'; run.finishedAt = this.#now(); this.#emit(run, 'failed');
       });
       child.once('close', (code, signal) => {
-        this.#clearTimer(run);
         if (run.status === 'failed') return;
         run.exitCode = Number.isInteger(code) ? code : null;
         run.signal = typeof signal === 'string' ? signal : null;
+        if (this.#platform !== 'win32' && run.status === 'stopping' && run.stopStartedAt !== null) {
+          run.closeInfo = { code: run.exitCode, signal: run.signal };
+          if (run.treeStopConfirmed === true || run.treeStopConfirmed === false) this.#finishPosixStop(run);
+          return;
+        }
+        this.#clearTimer(run);
         run.status = run.status === 'stopping'
           ? (run.treeStopConfirmed === false ? 'failed' : 'stopped')
           : 'exited';
@@ -212,10 +219,18 @@ export class RuntimeGateway {
     if (!active.length) return uncertain;
     let timer;
     await Promise.race([
-      Promise.all(active.map((run) => waitForClose(run.child))),
+      waitForRunsSettled(active),
       new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
     ]);
     clearTimeout(timer);
+    for (const run of this.#runs.values()) {
+      if (this.#platform !== 'win32' && run.status === 'stopping' && run.stopStartedAt !== null) {
+        run.stopMonitorCancelled = true;
+        this.#clearTimer(run);
+        if (run.treeStopConfirmed !== true) run.treeStopConfirmed = false;
+        if (run.closeInfo) this.#finishPosixStop(run);
+      } else if (run.timer) this.#clearTimer(run);
+    }
     return [...new Set([...uncertain, ...active.filter((run) => isActive(run.status) || run.treeStopConfirmed === false).map((run) => run.id)])];
   }
 
@@ -241,6 +256,19 @@ export class RuntimeGateway {
         run.treeStopConfirmed = false;
         this.#emit(run, 'stop_failed');
       }
+      return;
+    }
+    if (this.#platform !== 'win32' && Number.isInteger(run.child.pid) && run.child.pid > 0) {
+      const pid = run.child.pid;
+      run.stopStartedAt = Date.now();
+      run.treeStopConfirmed = null;
+      try { await this.#signalTree(pid, 'SIGTERM', run.child); }
+      catch {
+        run.treeStopConfirmed = false;
+        this.#emit(run, 'stop_failed');
+        try { run.child.kill('SIGTERM'); } catch { /* process-group observation remains authoritative */ }
+      }
+      this.#schedulePosixObservation(run, pid);
       return;
     }
     try {
@@ -282,6 +310,43 @@ export class RuntimeGateway {
       }
     }, STOP_GRACE_MS);
     run.timer.unref?.();
+  }
+
+  #schedulePosixObservation(run, pid) {
+    run.timer = setTimeout(async () => {
+      run.timer = null;
+      if (run.status !== 'stopping') return;
+      const observed = processGroupGone(pid);
+      if (observed === true) {
+        // A failed signal attempt stays unconfirmed even if the group later disappears.
+        if (run.treeStopConfirmed !== false) run.treeStopConfirmed = true;
+        this.#finishPosixStop(run);
+        return;
+      }
+      const elapsed = Date.now() - run.stopStartedAt;
+      if (!run.stopEscalated && elapsed >= STOP_GRACE_MS) {
+        run.stopEscalated = true;
+        try { await this.#signalTree(pid, 'SIGKILL', run.child); }
+        catch { /* keep observing until the bounded deadline */ }
+      }
+      if (run.stopMonitorCancelled) return;
+      if (run.stopEscalated && elapsed >= STOP_GRACE_MS * 2) {
+        run.treeStopConfirmed = false;
+        this.#emit(run, 'stop_failed');
+        this.#finishPosixStop(run);
+        return;
+      }
+      this.#schedulePosixObservation(run, pid);
+    }, STOP_POLL_MS);
+    run.timer.unref?.();
+  }
+
+  #finishPosixStop(run) {
+    this.#clearTimer(run);
+    if (!run.closeInfo) return;
+    run.status = run.treeStopConfirmed === true ? 'stopped' : 'failed';
+    run.finishedAt = this.#now();
+    this.#emit(run, run.status, { code: run.exitCode, signal: run.signal });
   }
 
   async #allowedDirectory(cwd) {
@@ -359,9 +424,15 @@ function environmentSummary(provider, environment) {
 }
 function isActive(status) { return status === 'starting' || status === 'running' || status === 'stopping'; }
 function safeKill(child) { try { child.kill('SIGKILL'); } catch { /* child may have exited */ } }
-function waitForClose(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  return new Promise((resolve) => child.once('close', resolve));
+function processGroupGone(pid) {
+  try { process.kill(-pid, 0); return false; }
+  catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ESRCH') return true;
+    return false;
+  }
+}
+async function waitForRunsSettled(runs) {
+  while (runs.some((run) => isActive(run.status))) await new Promise((resolve) => setTimeout(resolve, STOP_POLL_MS));
 }
 async function signalProcessTree(pid, signal, child, platform, spawnImpl) {
   if (platform !== 'win32') {
