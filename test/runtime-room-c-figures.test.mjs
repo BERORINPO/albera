@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRoomJournal } from '../src/runtime/room-journal.mjs';
 import { buildFigure, cutLabel, whoRows } from '../src/runtime/room-figures.mjs';
-import { validFigure, validLedgerEntry, LEDGER_CODES, FIGURE_KINDS, HAND_OUTCOMES, EFFECTS, CARD_CODES } from '../src/runtime/room-contract.mjs';
+import { validFigure, validLedgerEntry, LEDGER_CODES, FIGURE_KINDS, HAND_OUTCOMES, EFFECTS, CARD_CODES, CHECK_VERDICTS, CHECK_FINDINGS } from '../src/runtime/room-contract.mjs';
 import { wrapLabel, flowLayout, whoLayout, whoKey, stage, MAX_STAGE } from '../src/runtime/room-ui/figure.mjs';
-import { nextRows, entryText, clockOf, LEDGER_ROWS } from '../src/runtime/room-ui/ledger.mjs';
+import { nextRows, entryText, clockOf, checkMark, detailText, LEDGER_ROWS } from '../src/runtime/room-ui/ledger.mjs';
 import { FIGURE_WORDS } from '../src/runtime/room-ui/words-figure.mjs';
 
 const VM = 'albera-clone-01';
@@ -180,7 +180,8 @@ test('words: every ledger code, outcome, effect, card and figure title in en and
     const need = [
       ...LEDGER_CODES.map((c) => `led_${c}`), ...HAND_OUTCOMES.map((c) => `outcome_${c}`), ...EFFECTS.map((c) => `effect_${c}`),
       ...CARD_CODES.map((c) => `what_${c}`), ...FIGURE_KINDS.map((k) => `fig_${k}`), ...FIGURE_KINDS.map((k) => `fig_${k}_kind`),
-      'who_job_stop', 'who_job_nudge', 'who_job_recheck', 'fig_sources', 'ledger_title', 'fig_done', 'fig_now',
+      ...CHECK_VERDICTS.map((v) => `verdict_${v}`), ...CHECK_VERDICTS.map((v) => `mark_${v}`), ...CHECK_FINDINGS.map((f) => `finding_${f}`),
+      'mark_checking', 'who_job_stop', 'who_job_nudge', 'who_job_recheck', 'fig_sources', 'ledger_title', 'fig_done', 'fig_now',
     ];
     for (const key of need) assert.ok(typeof d[key] === 'string' && d[key].length > 0, `${lang}.${key}`);
   }
@@ -195,4 +196,70 @@ test('words: every ledger code, outcome, effect, card and figure title in en and
   assert.equal(entryText(words, stalled), 'demo-photos 30 秒 動きなし');
   assert.match(clockOf(0), /^\d\d:\d\d$/);
   assert.equal(clockOf(Number.NaN), '--:--');
+});
+
+const check = (seq, code, params, vmId = VM) => ({ seq, at: 0, vmId, actor: 'bero', code, params });
+
+test('check words: started, passed, failed, unavailable in ja and en', () => {
+  const ja = fakeWords('ja');
+  const label = () => 'clone-01';
+  assert.equal(entryText(ja, check(1, 'check_started', { count: 1 }), label), 'clone-01 を自動で確かめている (1 件)');
+  const passed = entryText(ja, check(2, 'check_done', { verdict: 'passed', checks: 1, failed: 0, detail: '' }), label);
+  assert.equal(passed, 'clone-01 を自動で確かめた: 1 件中 1 件 OK (確認済)');
+  const failed = check(3, 'check_done', { verdict: 'failed', checks: 2, failed: 1, detail: 'C:\\Users\\a\\Desktop\\room1.txt: differs' });
+  assert.equal(entryText(ja, failed, label), 'clone-01 を確かめた: 1 件が違う (room1.txt: 中身が違う)');
+  assert.equal(entryText(ja, check(4, 'check_done', { verdict: 'unavailable', checks: 1, failed: 0, detail: '' }), label), 'clone-01 は確かめられなかった');
+  const en = fakeWords('en');
+  assert.equal(entryText(en, failed, label), 'clone-01 checked: 1 not as expected (room1.txt: text differs)');
+  assert.ok(entryText(en, check(5, 'check_done', { verdict: 'passed', checks: 3, failed: 0 }), label).includes('3 of 3 OK'));
+});
+
+test('check words: only a passed check says verified; odd verdicts count as unavailable', () => {
+  for (const lang of ['en', 'ja']) {
+    const d = FIGURE_WORDS[lang];
+    const verified = lang === 'en' ? /verified/i : /確認済/;
+    const others = Object.entries(d).filter(([key]) => key !== 'verdict_passed' && key !== 'mark_passed');
+    for (const [key, text] of others) assert.doesNotMatch(text, verified, `${lang}.${key} must not call anything verified`);
+    assert.match(d.verdict_passed, verified);
+  }
+  const words = fakeWords('ja');
+  const odd = check(1, 'check_done', { verdict: 'pass', checks: 1, failed: 0 });
+  assert.equal(entryText(words, odd), `${VM} は確かめられなかった`);
+  assert.equal(checkMark(odd), 'unavailable');
+  assert.equal(checkMark(check(2, 'check_done', {})), 'unavailable');
+});
+
+test('check detail: "path: finding" turns into the file name and the finding in words', () => {
+  const words = fakeWords('ja');
+  assert.equal(detailText(words, 'C:\\work\\out: missing'), 'out: ない');
+  assert.equal(detailText(words, 'C:\\work\\photos\\: error'), 'photos: 読めなかった');
+  assert.equal(detailText(words, 'something else'), 'something else', 'an unknown detail is shown as it came');
+  assert.equal(detailText(words, 'C:\\a.txt: exploded'), 'C:\\a.txt: exploded');
+  assert.equal(detailText(words, undefined), '');
+});
+
+test('check marks: pass / fail / unavailable / checking, nothing for other rows', () => {
+  assert.equal(checkMark(check(1, 'check_started', { count: 2 })), 'checking');
+  for (const verdict of CHECK_VERDICTS) assert.equal(checkMark(check(2, 'check_done', { verdict })), verdict);
+  assert.equal(checkMark({ seq: 3, code: 'hands_ended', params: { outcome: 'claimed_done' } }), null);
+  for (const lang of ['en', 'ja']) {
+    const marks = ['passed', 'failed', 'unavailable', 'checking'].map((m) => FIGURE_WORDS[lang][`mark_${m}`]);
+    assert.equal(new Set(marks).size, 4, `${lang}: each mark has its own words, not only a colour`);
+  }
+});
+
+test('ledger rows: check_started folds into the check_done of the same VM', () => {
+  let rows = [];
+  rows = nextRows(rows, check(1, 'check_started', { count: 1 })).rows;
+  rows = nextRows(rows, check(2, 'check_started', { count: 2 }, 'other-vm')).rows;
+  rows = nextRows(rows, { seq: 3, at: 0, vmId: VM, actor: 'hands', code: 'hands_ended', params: { outcome: 'claimed_done' } }).rows;
+  const done = nextRows(rows, check(4, 'check_done', { verdict: 'passed', checks: 1, failed: 0 }));
+  assert.equal(done.added, 'seq:4');
+  assert.equal(done.replaced, null);
+  assert.deepEqual(done.rows.map((r) => r.entry.seq), [2, 3, 4], 'the started row of this VM is gone, the result is at the bottom');
+  const again = nextRows(done.rows, check(5, 'check_started', { count: 1 })).rows;
+  const second = nextRows(again, check(6, 'check_done', { verdict: 'failed', checks: 1, failed: 1, detail: 'C:\\x.txt: missing' })).rows;
+  assert.deepEqual(second.map((r) => r.entry.seq), [2, 3, 4, 6], 'a recheck folds its own start, the first result stays');
+  const lone = nextRows([], check(7, 'check_done', { verdict: 'unavailable' }));
+  assert.deepEqual(lone.rows.map((r) => r.entry.seq), [7], 'a result without a start row is simply added');
 });
