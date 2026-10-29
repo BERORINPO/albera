@@ -50,9 +50,10 @@ export const overlaps = (a, b, gap = 0) =>
 
 /**
  * An empty place for a w x h box beside `near`: right, below, left, above, then rings further out.
- * Never over any rect in `blocked` (cameras); also avoids `soft` rects (other nodes) when it can.
+ * Never over any rect in `blocked` (cameras and other placed nodes). When nothing beside `near` is free,
+ * it grows the world outward: right of everything, then below everything.
  */
-export function findFreeSpot(near, { w, h }, blocked, soft = [], gap = SPOT_GAP) {
+export function findFreeSpot(near, { w, h }, blocked, gap = SPOT_GAP) {
   const base = near ?? boundsOf(blocked) ?? { x: 0, y: 0, w: 0, h: 0 };
   const candidates = [];
   for (let ring = 0; ring < 12; ring++) {
@@ -66,14 +67,16 @@ export function findFreeSpot(near, { w, h }, blocked, soft = [], gap = SPOT_GAP)
       { x: base.x - w - d, y: base.y + base.h + d },
     );
   }
-  const fits = (c, list) => list.every((r) => !overlaps({ ...c, w, h }, r, gap / 2));
-  const clean = candidates.find((c) => fits(c, [...blocked, ...soft]));
-  if (clean) return clean;
-  const hard = candidates.find((c) => fits(c, blocked));
-  if (hard) return hard;
-  const all = boundsOf(blocked) ?? base; // last resort: to the right of everything
-  return { x: all.x + all.w + gap, y: all.y };
+  const fits = (c) => blocked.every((r) => !overlaps({ ...c, w, h }, r, gap / 2));
+  const beside = candidates.find(fits);
+  if (beside) return beside;
+  const all = boundsOf(blocked) ?? base;
+  const right = { x: all.x + all.w + gap, y: Math.max(all.y, base.y) };
+  return fits(right) ? right : { x: Math.max(all.x, base.x), y: all.y + all.h + gap };
 }
+
+/** Nodes that may sit on others: Bero floats and moves, a glow is drawn over its camera on purpose. */
+export const isOverlay = (nodeId) => nodeId === 'bero' || nodeId.startsWith('glow:');
 
 /** A soft S-curve from the edge of rect a that faces b to the edge of b that faces a. */
 export function wirePath(a, b) {
@@ -133,15 +136,25 @@ export function createCanvas(viewportEl) {
     if (a && b) line.path.setAttribute('d', wirePath(a, b));
   }
 
+  const obstacles = (exceptId) => [...nodes.keys()].filter((id) => id !== exceptId && !isOverlay(id)).map(rectOf);
+
   function place(nodeId, el, { x, y }) {
     const prev = nodes.get(nodeId);
     if (prev && prev.el !== el) prev.el.remove();
     el.classList.add('node');
     el.dataset.node = nodeId;
-    el.style.left = `${x}px`;
-    el.style.top = `${y}px`;
     if (el.parentNode !== world) world.append(el);
-    nodes.set(nodeId, { el, x, y });
+    let at = { x, y };
+    // A figure or card is measured once it is in the world: if its real size lands on a camera or another
+    // node (the caller asked freeSpot with a guessed size), move it to a free spot beside where it was asked.
+    if (!isCamera(nodeId) && !isOverlay(nodeId)) {
+      const size = { w: el.offsetWidth, h: el.offsetHeight };
+      const blocked = obstacles(nodeId);
+      if (blocked.some((r) => overlaps({ ...at, ...size }, r))) at = findFreeSpot({ ...at, w: 0, h: 0 }, size, blocked);
+    }
+    el.style.left = `${at.x}px`;
+    el.style.top = `${at.y}px`;
+    nodes.set(nodeId, { el, x: at.x, y: at.y });
     for (const line of lines) if (line.from === nodeId || line.to === nodeId) route(line);
   }
 
@@ -153,14 +166,15 @@ export function createCanvas(viewportEl) {
     for (const line of [...lines]) if (line.from === nodeId || line.to === nodeId) line.remove();
   }
 
-  function lookAt({ x, y, zoom = 1 }) {
+  function lookAt({ x, y, zoom = 1 }, { smooth = true } = {}) {
     view = lookTransform({ x, y, zoom }, viewportEl.clientWidth, viewportEl.clientHeight);
-    apply(true);
+    apply(smooth);
   }
 
-  function lookAll() {
-    const rects = [...nodes.keys()].map(rectOf).filter(Boolean);
-    lookAt(fitAll(rects, viewportEl.clientWidth, viewportEl.clientHeight));
+  /** smooth: false jumps (used for the first frame after unlock). */
+  function lookAll({ smooth = true } = {}) {
+    const rects = [...nodes.keys()].filter((id) => !isOverlay(id)).map(rectOf);
+    lookAt(fitAll(rects, viewportEl.clientWidth, viewportEl.clientHeight), { smooth });
   }
 
   function wire(fromNodeId, toNodeId, { dashed = false, tone = 'me' } = {}) {
@@ -180,10 +194,7 @@ export function createCanvas(viewportEl) {
   }
 
   function freeSpot(nearNodeId, { w, h }) {
-    const ids = [...nodes.keys()];
-    const blocked = ids.filter(isCamera).map(rectOf);
-    const soft = ids.filter((id) => !isCamera(id) && id !== 'bero').map(rectOf);
-    return findFreeSpot(rectOf(nearNodeId), { w, h }, blocked, soft);
+    return findFreeSpot(rectOf(nearNodeId), { w, h }, obstacles(null));
   }
 
   // Pan: drag on empty desk (not on a node). Wheel: zoom around the pointer (pinch arrives as ctrl+wheel).

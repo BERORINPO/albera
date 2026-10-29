@@ -9,7 +9,7 @@ import canvasDict from './words-canvas.mjs';
 
 export const POLL_MS = 1000;
 export const CAM_W = 320;
-export const CAM_H = 250;
+export const CAM_H = 310; // a camera with its claim line is about 300 px tall
 export const CAM_GAP = 48;
 export const CTRL_TWICE_MS = 450;
 const EVENT_KINDS = ['bero', 'ledger', 'card_closed'];
@@ -119,16 +119,21 @@ function boot() {
     const camWords = makeWords(parts.dicts.cam);
     const figureWords = makeWords(parts.dicts.figure);
     const beroWords = makeWords(parts.dicts.bero);
-    const renderFigure = parts.renderFigure ?? (() => document.createElement('div'));
+    const labels = new Map(); // vmId -> camera label, from the latest poll
+    const labelOf = (vmId) => labels.get(vmId) ?? String(vmId ?? '');
+    // Every figure gets the camera labels and frame URLs, whoever draws it (Bero or a card).
+    const renderFigure = parts.renderFigure
+      ? (spec, opts = {}) => parts.renderFigure(spec, { frameUrl: api.frameUrl, ...opts, labelOf })
+      : () => document.createElement('div');
     const cards = parts.createCards?.(canvas, {
-      words: beroWords, renderFigure, frameUrl: api.frameUrl,
+      words: beroWords, renderFigure, frameUrl: api.frameUrl, labelOf,
       onChoose: async (cardId, choiceId) => {
         const result = await api.decide(cardId, choiceId);
         if (!result.ok) phase('choose_failed');
       },
     }) ?? null;
-    const bero = parts.createBero?.(canvas, { words: beroWords, figureWords, renderFigure, cards }) ?? null;
-    const ledger = parts.createLedger?.($('ledger'), { words: figureWords }) ?? null;
+    const bero = parts.createBero?.(canvas, { words: beroWords, figureWords, renderFigure, cards, labelOf }) ?? null;
+    const ledger = parts.createLedger?.($('ledger'), { words: figureWords, labelOf }) ?? null;
     const cams = new Map(); // vmId -> { update(vm) }
 
     // Without Bero (part D), still follow 'look' so the canvas moves with the host.
@@ -155,9 +160,11 @@ function boot() {
 
     function syncCams(vms) {
       const slots = gridLayout(vms.length);
+      const first = cams.size === 0;
       let added = false;
       vms.forEach((vm, index) => {
         if (typeof vm?.vmId !== 'string') return;
+        labels.set(vm.vmId, String(vm.label ?? vm.vmId));
         let cam = cams.get(vm.vmId);
         if (!cam) {
           cam = parts.createCam ? parts.createCam(vm, { index, words: camWords }) : missingCam(vm);
@@ -169,7 +176,8 @@ function boot() {
       });
       const live = new Set(vms.map((vm) => vm?.vmId));
       for (const vmId of [...cams.keys()]) if (!live.has(vmId)) { canvas.remove(`cam:${vmId}`); cams.delete(vmId); }
-      if (added) requestAnimationFrame(() => canvas.lookAll());
+      // The first frame after unlock jumps straight to all cameras; later cameras glide into view.
+      if (added) canvas.lookAll({ smooth: !first });
     }
 
     const onKey = createCtrlTwice(() => parts.spotlight?.(canvas, [...cams.keys()]));
