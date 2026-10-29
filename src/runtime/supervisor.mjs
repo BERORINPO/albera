@@ -3,11 +3,16 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { captureExecutableIdentity } from './executable-identity.mjs';
 
 const GUARDIAN_PATH = fileURLToPath(new URL('./guardian.mjs', import.meta.url));
+const WINDOWS_JOB_GUARDIAN_PATH = fileURLToPath(new URL('./windows-job-guardian/bin/Release/net10.0-windows/win-x64/publish/albera-windows-job-guardian.exe', import.meta.url));
+const WINDOWS_JOB_GUARDIAN_MANIFEST = `${WINDOWS_JOB_GUARDIAN_PATH}.manifest.json`;
 const MAX_PROTOCOL_BYTES = 1024 * 1024;
 const MAX_INPUT_BYTES = 16 * 1024;
 const MAX_PENDING_INPUTS = 4;
@@ -15,21 +20,52 @@ const INPUT_ACK_TIMEOUT_MS = 5000;
 const TREE_STOP_ACK_TIMEOUT_MS = 5000;
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGABRT']);
 
+/**
+ * Verify the Windows Job guardian against the digest recorded at publish time. This is async
+ * (hashes the file), so the Gateway runs it before its final synchronous shutdown check and
+ * spawns synchronously afterwards. Digest checks cannot pin the later path-based process creation.
+ */
+export async function verifyWindowsJobGuardian({ guardianPath = WINDOWS_JOB_GUARDIAN_PATH, guardianManifestPath, arch = process.arch } = {}) {
+  if (arch !== 'x64') throw new Error('windows_job_guardian_unsupported_architecture');
+  const manifestPath = guardianManifestPath ?? (guardianPath === WINDOWS_JOB_GUARDIAN_PATH
+    ? WINDOWS_JOB_GUARDIAN_MANIFEST : `${guardianPath}.manifest.json`);
+  try {
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    if (typeof manifest.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(manifest.sha256)) throw new Error('invalid_manifest');
+    const identity = await captureExecutableIdentity(guardianPath);
+    if (identity.sha256 !== manifest.sha256) throw new Error('guardian_digest_mismatch');
+  } catch { throw new Error('windows_job_guardian_unavailable'); }
+}
+
 /** Start an approved executable under a small guardian that cleans it up if this parent disappears. */
 export function spawnSupervised(executable, args, options) {
   const launch = JSON.stringify({ type: 'launch', executable, args, cwd: options.cwd, env: options.env,
     ...(options.inputMode === undefined ? {} : { inputMode: options.inputMode, initialInput: options.initialInput }) });
   if (Buffer.byteLength(launch) > MAX_PROTOCOL_BYTES) throw new TypeError('supervisor_request_too_large');
 
-  const guardian = spawn(process.execPath, [GUARDIAN_PATH], {
-    cwd: options.cwd,
+  const platform = options.platform ?? process.platform;
+  const jobObjectManaged = platform === 'win32';
+  let command;
+  let commandArgs;
+  if (jobObjectManaged) {
+    if ((options.arch ?? process.arch) !== 'x64') throw new Error('windows_job_guardian_unsupported_architecture');
+    const guardianPath = options.guardianPath ?? WINDOWS_JOB_GUARDIAN_PATH;
+    if (!existsSync(guardianPath)) throw new Error('windows_job_guardian_unavailable');
+    command = guardianPath;
+    commandArgs = [];
+  } else {
+    command = process.execPath;
+    commandArgs = [GUARDIAN_PATH];
+  }
+  const guardian = spawn(command, commandArgs, {
+    cwd: jobObjectManaged ? path.dirname(command) : options.cwd,
     env: guardianEnvironment(options.env),
     shell: false,
     detached: process.platform !== 'win32',
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'ignore'],
   });
-  return new SupervisedChild(guardian, launch, options.inputMode === 'claude-stream-json');
+  return new SupervisedChild(guardian, launch, options.inputMode === 'claude-stream-json', jobObjectManaged);
 }
 
 class SupervisedChild extends EventEmitter {
@@ -38,6 +74,8 @@ class SupervisedChild extends EventEmitter {
   exitCode = null;
   signalCode = null;
   killed = false;
+  jobObjectManaged = false;
+  treeStopConfirmed = null;
   #guardian;
   #buffer = '';
   #providerExited = false;
@@ -48,10 +86,11 @@ class SupervisedChild extends EventEmitter {
 
   get closed() { return this.#closed; }
 
-  constructor(guardian, launch, inputEnabled = false) {
+  constructor(guardian, launch, inputEnabled = false, jobObjectManaged = false) {
     super();
     this.#guardian = guardian;
     this.#inputEnabled = inputEnabled;
+    this.jobObjectManaged = jobObjectManaged;
     guardian.once('error', () => this.#fail());
     guardian.once('close', (code, signal) => {
       if (!this.#providerExited) this.#fail();
@@ -157,10 +196,12 @@ class SupervisedChild extends EventEmitter {
         this.emit('spawn');
       } else if (message?.type === 'exit'
         && (message.code === null || Number.isSafeInteger(message.code))
+        && (!this.jobObjectManaged || typeof message.treeConfirmed === 'boolean')
         && (message.signal === null || SIGNALS.has(message.signal))) {
         this.#providerExited = true;
         this.exitCode = message.code;
         this.signalCode = message.signal;
+        if (this.jobObjectManaged) this.treeStopConfirmed = message.treeConfirmed;
       } else if (message?.type === 'tree_stop' && typeof message.treeConfirmed === 'boolean') {
         const pending = this.#pendingTreeStop;
         if (!pending) return this.#fail();
