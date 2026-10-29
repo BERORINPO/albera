@@ -26,5 +26,10 @@ button { width:fit-content; padding:8px 14px; border:1px solid var(--live); back
 .tile.stale img { filter:grayscale(1) brightness(.6); }
 .tile.error, .tile.pending { border-color:var(--bad); }
 .tile.stale .rec::before, .tile.error .rec::before, .tile.pending .rec::before { animation:none; background:#555; }
+.tile .dot { position:absolute; width:14px; height:14px; margin:-7px 0 0 -7px; border-radius:50%; background:rgba(226,90,74,.85); border:2px solid #fff; pointer-events:none; }
+.tile .dot[hidden], .tile .agentbar[hidden] { display:none; }
+.tile .agentbar { position:absolute; left:0; right:0; bottom:0; padding:2px 8px; background:rgba(0,0,0,.75); font-size:.8rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tile.withbar .note { bottom:1.7em; }
+.tile.claim .agentbar { border-top:2px dashed var(--stale); color:var(--stale); }
 @keyframes blink { to { visibility:hidden; } }
 @media (prefers-reduced-motion:reduce) { .tile .rec::before { animation:none; } }
