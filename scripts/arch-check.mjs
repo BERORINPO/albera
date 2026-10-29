@@ -54,7 +54,7 @@ const EXPECTED = {
     'session-record.mjs', 'demo-data.mjs', 'map-limit.mjs',
   ],
   entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],
-    runtime: ['gateway.mjs', 'api.mjs', 'approval-broker.mjs', 'approval-host.mjs', 'audit-journal.mjs', 'journal-backup.mjs', 'entry.mjs', 'host.mjs', 'session-identity.mjs', 'supervisor.mjs', 'guardian.mjs', 'environment-provider.mjs', 'environment-host-broker.mjs', 'environment-control-plane.mjs', 'hyperv-environment-provider.mjs', 'environment-operations.mjs', 'computer-scheduler.mjs', 'mock-environment-provider.mjs', 'agent-harness-adapter.mjs', 'sqlite-operation-store.mjs', 'boundary-protocols.mjs', 'guest-event-intake.mjs', 'errors.mjs', 'desktop-control.mjs', 'hyperv-desktop-driver.mjs', 'mock-desktop-broker.mjs', 'hyperv-desktop-broker-prototype.mjs', 'hyperv-desktop/desktop-io.ps1', 'hyperv-environment-broker-prototype.mjs', 'hyperv-env/env-io.ps1'],
+    runtime: ['gateway.mjs', 'api.mjs', 'approval-broker.mjs', 'approval-host.mjs', 'audit-journal.mjs', 'journal-backup.mjs', 'entry.mjs', 'host.mjs', 'session-identity.mjs', 'supervisor.mjs', 'guardian.mjs', 'environment-provider.mjs', 'environment-host-broker.mjs', 'environment-control-plane.mjs', 'hyperv-environment-provider.mjs', 'environment-operations.mjs', 'computer-scheduler.mjs', 'mock-environment-provider.mjs', 'agent-harness-adapter.mjs', 'sqlite-operation-store.mjs', 'boundary-protocols.mjs', 'guest-event-intake.mjs', 'errors.mjs', 'desktop-control.mjs', 'hyperv-desktop-driver.mjs', 'mock-desktop-broker.mjs', 'hyperv-desktop-broker-prototype.mjs', 'hyperv-desktop/desktop-io.ps1', 'desktop-wall-host.mjs', 'wall-ui/index.html', 'wall-ui/wall.mjs', 'wall-ui/wall.css', 'hyperv-environment-broker-prototype.mjs', 'hyperv-env/env-io.ps1'],
   public: [
     'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
@@ -86,7 +86,7 @@ const core = listFiles('src/core');
 const adapters = listFiles('src/adapters');
 const entry = listFiles('src/entry');
 const runtime = listFiles('src/runtime');
-const runtimeUi = listFiles('src/runtime/approval-ui', ['.mjs', '.js', '.html', '.css']);
+const runtimeUi = ['src/runtime/approval-ui', 'src/runtime/wall-ui'].flatMap((dir) => listFiles(dir, ['.mjs', '.js', '.html', '.css']));
 const pub = listFiles('public');
 
 // 1. core and shared know nothing of the outside world
@@ -161,9 +161,9 @@ check('5b runtime process boundary', runtime, (line, file) => {
   if (/\bshell\s*:\s*true\b/.test(line)) return 'shell execution is not allowed';
   return null;
 });
-check('5c runtime approval UI uses safe DOM APIs', runtimeUi, (line) =>
+check('5c runtime UI (approval, wall) uses safe DOM APIs', runtimeUi, (line) =>
   /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|\bdocument\.write\b/.test(line)
-    ? 'approval UI must render untrusted request text with textContent / DOM APIs'
+    ? 'runtime UI (approval, wall) must render untrusted text with textContent / DOM APIs'
     : null,
 );
 
@@ -178,6 +178,7 @@ const providerContracts = [
   'src/runtime/desktop-control.mjs',
   'src/runtime/hyperv-desktop-driver.mjs',
   'src/runtime/mock-desktop-broker.mjs',
+  'src/runtime/desktop-wall-host.mjs',
 ];
 check('5d provider contracts have no process execution', providerContracts, (line) =>
   /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?child_process['"]|\b(?:spawn|exec|execFile|execSync|execFileSync|spawnSync)\s*\(/.test(line)
@@ -219,12 +220,12 @@ for (const f of ui7) {
   }
 }
 results.push(`7 UI files under ${UI_MAX_LINES} lines: ${ui7.length} files, ${long7} violations`);
-if (runtimeUi.length === 0) violations.push('[7 runtime approval UI under 400 lines] no files to check (false-safe)');
+if (runtimeUi.length === 0) violations.push('[7 runtime UI under 400 lines] no files to check (false-safe)');
 for (const f of runtimeUi) {
   const n = fs.readFileSync(path.join(ROOT, f), 'utf8').replace(/\n$/, '').split('\n').length;
-  if (n > UI_MAX_LINES) violations.push(`[7 runtime approval UI under 400 lines] ${posix(f)} has ${n} lines`);
+  if (n > UI_MAX_LINES) violations.push(`[7 runtime UI under 400 lines] ${posix(f)} has ${n} lines`);
 }
-results.push(`7 runtime approval UI under ${UI_MAX_LINES} lines: ${runtimeUi.length} files`);
+results.push(`7 runtime UI under ${UI_MAX_LINES} lines: ${runtimeUi.length} files`);
 
 for (const r of results) console.log(r);
 console.log(`suppressed (arch-allow): ${suppressed}`);

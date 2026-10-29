@@ -1,5 +1,6 @@
 // PROTOTYPE. This runs as the same OS user as the caller; it is NOT the privileged Host Broker
-// that ADR-002 requires. It is not called from any entry point, API route or host composition.
+// that ADR-002 requires. It is used only by `albera-runtime wall` (a local, view-only development
+// command the user starts explicitly). No API route or host composition uses it.
 // Reaching a VM needs membership in the local "Hyper-V Administrators" group.
 // Transport: a fixed `pwsh -File <fixed path>` process; the VM name and the action travel as JSON
 // on stdin. No command line is ever assembled from data.

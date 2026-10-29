@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>ALBERA desktop wall</title>
+    <link rel="stylesheet" href="wall.css">
+    <script type="module" src="wall.mjs"></script>
+  </head>
+  <body>
+    <header>
+      <p class="eyebrow">ALBERA · LOCAL RUNTIME · VIEW ONLY</p>
+      <p id="connection" role="status">Connecting…</p>
+    </header>
+    <section id="bootstrap" class="bootstrap" hidden aria-labelledby="bootstrap-title">
+      <h1 id="bootstrap-title">Unlock the desktop wall</h1>
+      <p>Enter the one-time code printed by the terminal that started the wall. The code is not saved.</p>
+      <form id="bootstrap-form">
+        <label>One-time terminal code <input id="bootstrap-code" type="password" autocomplete="off" required></label>
+        <button type="submit">Unlock</button>
+      </form>
+      <p id="bootstrap-status" role="status"></p>
+    </section>
+    <main id="wall" class="wall" hidden aria-label="VM screens"></main>
+    <footer>Local loopback only · view only · only the latest frame is kept in memory</footer>
+  </body>
+</html>

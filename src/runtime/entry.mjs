@@ -6,11 +6,43 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { openRuntimeAuditJournal } from './audit-journal.mjs';
 import { createRuntimeHost } from './host.mjs';
+import { createDesktopWallHost, MAX_WALL_VMS } from './desktop-wall-host.mjs';
+import { HyperVDesktopDriver } from './hyperv-desktop-driver.mjs';
+import { createHyperVDesktopBrokerPrototype } from './hyperv-desktop-broker-prototype.mjs';
 import { loadOrCreateRuntimeSessionId } from './session-identity.mjs';
 import { backupRuntimeJournal, recoverRuntimeJournalTail, restoreRuntimeJournal, verifyRuntimeJournalBackup } from './journal-backup.mjs';
 
+const WALL_VM_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const WALL_LABEL_RE = /^[ -~]{1,32}$/;
+
+function parseWallArgs(args) {
+  const options = { command: 'wall', vms: [], port: 0, help: false };
+  for (let i = 0; i < args.length; i++) {
+    const arg = String(args[i]);
+    if (arg === '--help' || arg === '-h') { options.help = true; continue; }
+    if (arg !== '--vm' && arg !== '--port') throw new Error('invalid_runtime_option');
+    const value = args[++i];
+    if (typeof value !== 'string' || value.length === 0 || value.startsWith('--')) throw new Error('runtime_option_requires_value');
+    if (arg === '--port') {
+      if (!/^\d+$/.test(value) || Number(value) > 65535) throw new Error('runtime_port_invalid');
+      options.port = Number(value);
+      continue;
+    }
+    const separator = value.indexOf(':');
+    const vmId = separator < 0 ? value : value.slice(0, separator);
+    const label = separator < 0 ? vmId : value.slice(separator + 1);
+    if (!WALL_VM_RE.test(vmId) || !WALL_LABEL_RE.test(label)) throw new Error('runtime_wall_vm_invalid');
+    if (options.vms.some((vm) => vm.vmId === vmId)) throw new Error('runtime_wall_vm_duplicate');
+    options.vms.push(Object.freeze({ vmId, label }));
+  }
+  if (!options.help && options.vms.length === 0) throw new Error('runtime_wall_vm_required');
+  if (options.vms.length > MAX_WALL_VMS) throw new Error('runtime_wall_vm_too_many');
+  return Object.freeze({ ...options, vms: Object.freeze(options.vms) });
+}
+
 export function parseRuntimeArgs(argv, platform = process.platform) {
   const Path = platform === 'win32' ? path.win32 : path;
+  if (argv[0] === 'wall') return parseWallArgs(argv.slice(1));
   const command = ['backup', 'restore', 'recover-tail', 'verify-backup'].includes(argv[0]) ? argv[0] : 'serve';
   const args = command === 'serve' ? argv : argv.slice(1);
   if (command !== 'serve') {
@@ -68,6 +100,7 @@ Usage:
   albera-runtime verify-backup --backup <absolute-backup-path>
   albera-runtime restore --backup <absolute-backup-path> --destination <new-private-directory>
   albera-runtime recover-tail --journal <absolute-jsonl-path> --output <new-jsonl-path-in-same-directory>
+  albera-runtime wall --vm <hyper-v-vm-name>[:<label>] [--vm ...] [--port <0-65535>]
 
 The regular "albera" command remains a read-only session dashboard. Runtime binds only to 127.0.0.1.
 Each provider start, input, and stop requires a visible one-use decision in the local approval page.
@@ -76,6 +109,7 @@ The journal stores redacted decisions and lifecycle events, never prompts or pro
 Journal storage permissions are checked without repair; Runtime refuses broad or unverifiable Windows DACLs and POSIX ownership/modes.
 Backups are created only while Runtime is stopped. Backup, verification, and restore passphrases are entered in a hidden terminal prompt, never as command-line arguments or environment variables. verify-backup authenticates and validates a backup offline without writing files.
 Restore creates a new directory and never overwrites existing files. Keep the passphrase separately; ALBERA cannot recover it.
+wall is a local, view-only development command: it shows the latest screen of up to 16 Hyper-V VMs you name, refreshed every 2 seconds, on 127.0.0.1 behind the same one-time code. It never sends input to a VM, keeps only the newest frame in memory and saves nothing. Screens can show secrets; use it only on a PC and display you trust. It uses the same-user prototype Broker and needs Hyper-V Administrators membership.
 recover-tail requires Runtime to be stopped and copies only the fully validated record prefix to a new file beside the original. It keeps the original journal and incomplete tail unchanged, refuses an existing writer lock, and preserves the session identity. It cannot recover a possibly lost final event.
 `;
 
@@ -107,11 +141,39 @@ async function readHiddenPassphrase(prompt) {
   });
 }
 
+async function runWall(options) {
+  let wall;
+  try {
+    const broker = createHyperVDesktopBrokerPrototype();
+    wall = createDesktopWallHost({
+      vms: options.vms,
+      driver: (resolveCurrentLease) => new HyperVDesktopDriver({ broker, resolveCurrentLease }),
+    });
+    const address = await wall.listen(options.port);
+    console.log(`ALBERA desktop wall (view only) listening at ${address.url}`);
+    console.log(`One-time UI bootstrap code: ${address.bootstrapCode}`);
+    console.log('Open that local URL to watch the VM screens. Press Ctrl+C to stop.');
+    let stopping = false;
+    const stop = async () => {
+      if (stopping) return;
+      stopping = true;
+      await wall.close().catch(() => {});
+    };
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+  } catch {
+    await wall?.close().catch(() => {});
+    console.error('ALBERA desktop wall could not start. Check the VM names and port.');
+    process.exitCode = 1;
+  }
+}
+
 async function main() {
   let options;
   try { options = parseRuntimeArgs(process.argv.slice(2)); }
   catch (error) { console.error(`ALBERA Runtime: ${error.message}`); process.exitCode = 2; return; }
   if (options.help) { console.log(RUNTIME_HELP); return; }
+  if (options.command === 'wall') { await runWall(options); return; }
   if (options.command === 'backup' || options.command === 'restore' || options.command === 'recover-tail' || options.command === 'verify-backup') {
     try {
       if (options.command === 'backup') {
