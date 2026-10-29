@@ -57,7 +57,8 @@ function el(tag, cls, text) {
   return e;
 }
 
-export function createBero(canvas, { words, figureWords, renderFigure, cards } = {}) {
+/** frameUrl / labelOf are optional and passed on to renderFigure; figure words fall back to Bero's words. */
+export function createBero(canvas, { words, figureWords, renderFigure, cards, frameUrl, labelOf } = {}) {
   const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, reduced ? Math.min(ms, 60) : ms));
   const t = (code, params) => (words ? words.t(code, params) : code);
@@ -190,7 +191,7 @@ export function createBero(canvas, { words, figureWords, renderFigure, cards } =
 
   async function doFigure(spec, near) {
     if (typeof renderFigure !== 'function') return;
-    const node = renderFigure(spec, { words: figureWords ?? words });
+    const node = renderFigure(spec, { words: figureWords ?? words, frameUrl, labelOf });
     if (!node) return;
     const nodeId = `fig:${spec.figureId}`;
     const slot = figureSlot(spec, near);
