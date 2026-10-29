@@ -1,1 +1,56 @@
-/* Stub (part B). */
+/* Cameras on the room canvas (part B). Tokens come from room.css (part A); fallbacks keep a camera readable alone. */
+.room-cam {
+  position: absolute; width: 320px; background: var(--sheet, #222); border: 1px solid var(--rule, #555); border-radius: 10px;
+  overflow: hidden; font-size: 13px; color: var(--ink, #eee);
+  transition: box-shadow 0.6s var(--ease, ease), border-color 0.6s var(--ease, ease);
+}
+.room-cam .cam-hd { display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px; background: var(--paper-2, #2a2a2a); font-weight: 700; }
+.room-cam .cam-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-cam .cam-rec { flex: none; color: var(--rec, #e5534b); font-family: var(--mono, monospace); font-size: 11.5px; font-weight: 400; }
+.room-cam .cam-rec::before { content: ""; display: inline-block; width: 0.6em; height: 0.6em; margin-right: 0.4em; border-radius: 50%; background: currentColor; animation: cam-blink 1.4s steps(2, start) infinite; }
+.room-cam:not(.st-live) .cam-rec { color: var(--muted, #999); }
+.room-cam:not(.st-live) .cam-rec::before { animation: none; }
+
+.room-cam .cam-scr { position: relative; height: 180px; margin: 7px; border-radius: 5px; background: var(--screen, #234); overflow: hidden; }
+.room-cam .cam-img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.room-cam.st-stale .cam-img { filter: grayscale(0.8) brightness(0.6); }
+.room-cam .cam-note {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 8px; background: rgba(0, 0, 0, 0.7);
+  color: var(--stuck, #e0b040); font-size: 12px; text-align: center;
+}
+
+/* the AI cursor: a red dot that glides, and a ring on each click */
+.room-cam .cam-cur {
+  position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; z-index: 3; pointer-events: none;
+  background: var(--rec, #e5534b); box-shadow: 0 0 0 2px #fff;
+  transition: left 0.9s var(--ease, ease), top 0.9s var(--ease, ease);
+}
+.room-cam .cam-rip {
+  position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; z-index: 2; pointer-events: none;
+  border: 2px solid var(--rec, #e5534b); animation: cam-rip 0.7s ease-out forwards;
+}
+
+.room-cam .cam-ft { display: flex; gap: 6px; align-items: baseline; padding: 0 10px 8px; color: var(--ink-2, #ccc); font-family: var(--mono, monospace); font-size: 12px; }
+.room-cam .cam-pill { flex: none; font-family: var(--font, sans-serif); font-weight: 700; }
+.room-cam .cam-band { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-cam.tone-work .cam-pill { color: var(--work, #e0a070); }
+.room-cam.tone-wait .cam-pill { color: var(--wait, #9fb0ff); }
+.room-cam.tone-stuck .cam-pill { color: var(--stuck, #e0b040); }
+.room-cam.tone-off .cam-pill { color: var(--muted, #999); }
+
+/* a finished run: the AI's own claim under a dashed line, never a pass */
+.room-cam.claim .cam-ft { border-top: 2px dashed var(--stuck, #e0b040); padding-top: 6px; margin: 0 7px; padding-left: 3px; padding-right: 3px; }
+.room-cam.claim .cam-band { white-space: normal; color: var(--stuck, #e0b040); }
+
+.room-cam.tone-stuck { border-color: var(--stuck, #e0b040); }
+
+/* Ctrl twice: only the AI cursors stay bright */
+.cam-spotlight .room-cam.spot .cam-img, .cam-spotlight .room-cam.spot .cam-hd, .cam-spotlight .room-cam.spot .cam-ft { filter: brightness(0.25); transition: filter 0.3s; }
+.cam-spotlight .room-cam.spot .cam-cur { box-shadow: 0 0 0 2px #fff, 0 0 18px 6px var(--rec, #e5534b); }
+
+@keyframes cam-rip { from { transform: scale(1); opacity: 1; } to { transform: scale(3.2); opacity: 0; } }
+@keyframes cam-blink { to { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) {
+  .room-cam .cam-rec::before, .room-cam .cam-rip { animation: none; }
+  .room-cam .cam-cur { transition: none; }
+}

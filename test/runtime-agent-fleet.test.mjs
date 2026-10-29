@@ -160,3 +160,91 @@ test('fleet: jobs are validated', () => {
   assert.throws(() => createAgentFleet({ ...base, jobs: Array.from({ length: 9 }, (_, i) => ({ vmId: `v${i}`, task: 't' })) }), /invalid_fleet_jobs/);
   assert.throws(() => createAgentFleet({ ...base, totalMaxUsd: 0, jobs: [{ vmId: 'a', task: 't' }] }), /invalid_fleet_total_limit/);
 });
+
+// ---- room mode: startJob / stopVm (Fake client + mock broker only) ----
+
+function roomFleet({ scripts = {}, jobs = [], vmIds = ['vm-a', 'vm-b'], perVm = 10, totalMaxUsd = 100 } = {}) {
+  const events = [];
+  const leases = [];
+  const brokers = new Map();
+  const fleet = createAgentFleet({
+    jobs, vmIds, keepAlive: true, limits: { ...limits, maxUsd: perVm }, prices, totalMaxUsd,
+    createDriver: (vmId, lease) => {
+      leases.push(lease);
+      if (!brokers.has(vmId)) brokers.set(vmId, createMockDesktopBroker(screen));
+      return new HyperVDesktopDriver({ broker: brokers.get(vmId), resolveCurrentLease: async () => lease, screen });
+    },
+    createClient: (vmId, task) => createFakeComputerUseClient(scripts[task] ?? [fakeText('DONE')]),
+    onEvent: (vmId, event) => events.push([vmId, event.type, event.task]),
+  });
+  return { fleet, events, leases, brokers };
+}
+const settle = async (fleet, vmId) => { await fleet.idle(vmId); };
+
+test('fleet room mode: startJob runs one job per VM, refuses a busy or unknown VM, and gives each job a new lease', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const { fleet, events, leases } = roomFleet({ scripts: { slow: [async () => { await gate; return move(); }, fakeText('DONE: slow')], quick: [fakeText('DONE: quick')] } });
+  const running = fleet.run();
+  assert.deepEqual(fleet.startJob('vm-a', 'slow'), { ok: true });
+  assert.deepEqual(fleet.startJob('vm-a', 'quick'), { ok: false, code: 'vm_busy' });
+  assert.deepEqual(fleet.startJob('vm-z', 'quick'), { ok: false, code: 'vm_unknown' });
+  assert.deepEqual(fleet.startJob('vm-b', ''), { ok: false, code: 'fleet_stopped' });
+  assert.equal(fleet.isBusy('vm-a'), true);
+  release();
+  await settle(fleet, 'vm-a');
+  assert.deepEqual(fleet.startJob('vm-a', 'quick'), { ok: true });
+  await settle(fleet, 'vm-a');
+  assert.deepEqual(leases.map((l) => [l.ownerId, l.generation]), [['albera-agent-vm-a', 1], ['albera-agent-vm-a', 2]]);
+  assert.deepEqual(events.filter(([, type]) => type === 'start'), [['vm-a', 'start', 'slow'], ['vm-a', 'start', 'quick']]);
+  fleet.close();
+  const { results } = await running;
+  assert.equal(results['vm-a'].claim, 'DONE: quick');
+  assert.deepEqual(fleet.startJob('vm-b', 'quick'), { ok: false, code: 'fleet_stopped' });
+});
+
+test('fleet room mode: stopVm stops only that VM; run() waits for close()', async () => {
+  const forever = Array.from({ length: 50 }, () => async () => { await new Promise((resolve) => setTimeout(resolve, 2)); return move(); });
+  const { fleet } = roomFleet({ scripts: { loop: forever } });
+  let done = false;
+  const running = fleet.run().then((r) => { done = true; return r; });
+  fleet.startJob('vm-a', 'loop');
+  fleet.startJob('vm-b', 'loop');
+  assert.equal(fleet.stopVm('vm-a'), true);
+  await settle(fleet, 'vm-a');
+  assert.equal(fleet.stopVm('vm-a'), false, 'nothing left to stop');
+  assert.equal(fleet.isBusy('vm-b'), true);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(done, false, 'room mode stays alive after jobs end');
+  fleet.close();
+  const { results } = await running;
+  assert.deepEqual([results['vm-a'].outcome, results['vm-a'].reason], ['stopped', 'stopped_by_human']);
+  assert.deepEqual([results['vm-b'].outcome, results['vm-b'].reason], ['stopped', 'fleet_closed']);
+});
+
+test('fleet room mode: jobs on a VM share its USD limit, and the total limit covers new jobs', async () => {
+  // each move() costs $0.10 at the Haiku price
+  const { fleet } = roomFleet({ perVm: 0.25, totalMaxUsd: 0.45, scripts: { two: [move(), move(), fakeText('DONE')], one: [move(), fakeText('DONE')] } });
+  const running = fleet.run();
+  assert.deepEqual(fleet.startJob('vm-a', 'two'), { ok: true });
+  await settle(fleet, 'vm-a');
+  assert.ok(Math.abs(fleet.spentUsd() - 0.2) < 1e-3, String(fleet.spentUsd()));
+  assert.deepEqual(fleet.startJob('vm-a', 'one'), { ok: true }, '$0.05 left on vm-a');
+  await settle(fleet, 'vm-a');
+  assert.deepEqual(fleet.startJob('vm-a', 'one'), { ok: false, code: 'over_budget' }, 'vm-a spent its own limit');
+  assert.deepEqual(fleet.startJob('vm-b', 'two'), { ok: true });
+  await settle(fleet, 'vm-b');
+  assert.ok(fleet.spentUsd() >= 0.45);
+  assert.deepEqual(fleet.startJob('vm-b', 'one'), { ok: false, code: 'over_budget' }, 'the total limit was reached');
+  fleet.close();
+  const { stopReason } = await running;
+  assert.equal(stopReason, 'max_usd_total');
+});
+
+test('fleet room mode: needs at least one VM; the batch mode still needs jobs', () => {
+  const base = { createDriver: () => ({}), createClient: () => ({}), limits, prices, totalMaxUsd: 1 };
+  assert.throws(() => createAgentFleet({ ...base, jobs: [], keepAlive: true }), /invalid_fleet_jobs/);
+  assert.throws(() => createAgentFleet({ ...base, jobs: [], vmIds: ['../x'], keepAlive: true }), /invalid_fleet_vms/);
+  assert.throws(() => createAgentFleet({ ...base, jobs: [], vmIds: ['a'] }), /invalid_fleet_jobs/);
+  assert.doesNotThrow(() => createAgentFleet({ ...base, jobs: [], vmIds: ['a'], keepAlive: true }));
+});
