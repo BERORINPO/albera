@@ -132,7 +132,7 @@ function boot() {
         if (!result.ok) phase('choose_failed');
       },
     }) ?? null;
-    const bero = parts.createBero?.(canvas, { words: beroWords, figureWords, renderFigure, cards, labelOf }) ?? null;
+    const bero = parts.createBero?.(canvas, { words: beroWords, figureWords, renderFigure, cards, labelOf, frameUrl: api.frameUrl }) ?? null;
     const ledger = parts.createLedger?.($('ledger'), { words: figureWords, labelOf }) ?? null;
     const cams = new Map(); // vmId -> { update(vm) }
 
