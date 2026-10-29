@@ -208,8 +208,8 @@ export function createRoomHost({
   async function runCheck(vmId, vmChecks, run) {
     let timer;
     const timeout = new Promise((resolve) => {
+      // A referenced timer (cleared in finally): an unref'd one lets Node 22 end the event loop while a check still waits.
       timer = setTimeout(() => resolve({ verdict: 'unavailable', results: [], code: 'guest_check_timeout' }), checkTimeoutMs);
-      timer.unref?.();
     });
     let report;
     try { report = await Promise.race([Promise.resolve().then(() => checker.run(vmId, vmChecks)), timeout]); }

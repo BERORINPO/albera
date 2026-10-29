@@ -46,7 +46,7 @@ export function createFakeGuestChecker(script = {}, { delayMs = 0 } = {}) {
     calls,
     async run(vmId, checks) {
       calls.push(Object.freeze({ vmId, count: Array.isArray(checks) ? checks.length : 0 }));
-      if (delayMs > 0) await new Promise((resolve) => { setTimeout(resolve, delayMs).unref?.(); });
+      if (delayMs > 0) await new Promise((resolve) => { setTimeout(resolve, delayMs); });
       if (!validVmName(vmId) || !validChecks(checks)) return unavailable('guest_check_invalid');
       const list = Array.isArray(script[vmId]) ? script[vmId] : [];
       if (list.length === 0) return unavailable('guest_unavailable');
