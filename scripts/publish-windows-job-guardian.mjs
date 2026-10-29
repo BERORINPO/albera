@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { captureExecutableIdentity } from '../src/runtime/executable-identity.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 if (process.platform !== 'win32') {
@@ -22,6 +24,9 @@ if (result.error || result.status !== 0) {
   if (result.stderr) process.stderr.write(result.stderr);
   process.exit(result.status ?? 1);
 }
+const guardian = path.join(output, 'albera-windows-job-guardian.exe');
+const identity = await captureExecutableIdentity(guardian);
+await writeFile(`${guardian}.manifest.json`, `${JSON.stringify({ sha256: identity.sha256 }, null, 2)}\n`, 'utf8');
 const probe = spawnSync('dotnet', ['build', path.join(root, 'test', 'windows-job-probe', 'WindowsJobProbe.csproj'), '--configuration', 'Release', '-p:EnableWindowsTargeting=true'], {
   cwd: root, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, shell: false, windowsHide: true,
 });
