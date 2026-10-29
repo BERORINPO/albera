@@ -1,2 +1,41 @@
-// Stub from the room contract (spec/room.md §3, part A). Replace this file with the implementation.
-export {};
+// Words for part A (top bar, unlock form, connection line). Other parts keep their own words-*.mjs.
+export default {
+  en: {
+    title: 'ALBERA control room',
+    brand: 'ALBERA',
+    counts: 'VM {vms} · AI {ais} running',
+    connecting: 'Connecting…',
+    watching: 'Bero is watching {count} cameras',
+    no_cams: 'No cameras yet',
+    offline: 'Room host unavailable - retrying',
+    locked: 'Enter the one-time code to open the room.',
+    unlock_title: 'Unlock the control room',
+    unlock_body: 'Enter the one-time code printed by the terminal that started the room. The code is not saved.',
+    unlock_label: 'One-time terminal code',
+    unlock_button: 'Unlock',
+    unlock_failed: 'Could not unlock. Restart the room and open the new URL.',
+    ledger_title: 'Ledger · what the AI did / what you decided',
+    canvas_label: 'Control room canvas',
+    hint: 'Drag to pan · wheel to zoom · Ctrl twice to find the AI cursors',
+    choose_failed: 'That choice did not go through.',
+  },
+  ja: {
+    title: 'ALBERA コントロールルーム',
+    brand: 'ALBERA',
+    counts: 'VM {vms} · AI {ais} 動作中',
+    connecting: '接続しています…',
+    watching: 'ベロが {count} 台のカメラを見ています',
+    no_cams: 'まだカメラがありません',
+    offline: 'ルームのホストに繋がりません。再試行中',
+    locked: 'ワンタイムコードを入れるとルームが開きます。',
+    unlock_title: 'コントロールルームを開く',
+    unlock_body: 'ルームを起動したターミナルに表示されたワンタイムコードを入れてください。コードは保存されません。',
+    unlock_label: 'ターミナルのワンタイムコード',
+    unlock_button: '開く',
+    unlock_failed: '開けませんでした。ルームを起動し直して新しい URL を開いてください。',
+    ledger_title: '台帳 · AI がしたこと / あなたが決めたこと',
+    canvas_label: 'コントロールルームのキャンバス',
+    hint: 'ドラッグで移動 · ホイールで拡大縮小 · Ctrl 2 回で AI のカーソルを探す',
+    choose_failed: 'その選択は通りませんでした。',
+  },
+};
