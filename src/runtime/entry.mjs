@@ -2,7 +2,7 @@
 // Independent local Runtime command. The default `albera` command stays read-only.
 import path from 'node:path';
 import process from 'node:process';
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { openRuntimeAuditJournal } from './audit-journal.mjs';
 import { createRuntimeHost } from './host.mjs';
@@ -14,6 +14,8 @@ import { createAgentFleet, MAX_FLEET_JOBS } from './agent-fleet.mjs';
 import { createDesktopAgentLoop, MODEL_PRICES } from './desktop-agent-loop.mjs';
 import { createRoomHost } from './room-host.mjs';
 import { missingRoomParts, startRoomDemo } from './room-demo.mjs';
+import { createHyperVGuestChecker } from './hyperv-guest-check-prototype.mjs';
+import { validCheck, MAX_CHECKS_PER_VM } from './room-contract.mjs';
 import * as roomJournalModule from './room-journal.mjs';
 import * as roomFiguresModule from './room-figures.mjs';
 import * as beroDirectorModule from './bero-director.mjs';
@@ -133,7 +135,7 @@ function parseRoomArgs(args) {
   const demo = args.filter((arg) => arg === '--demo').length;
   if (demo > 1) throw new Error('runtime_option_must_be_unique');
   const rest = args.filter((arg) => arg !== '--demo');
-  if (demo === 0) return Object.freeze({ ...parseFleetArgs(rest), command: 'room', demo: false });
+  if (demo === 0) return parseRoomCheckArgs(rest);
   const options = { command: 'room', demo: true, jobs: Object.freeze([]), port: 0, help: false };
   let portSeen = false;
   for (let i = 0; i < rest.length; i++) {
@@ -147,6 +149,57 @@ function parseRoomArgs(args) {
     options.port = Number(value);
   }
   return Object.freeze(options);
+}
+
+// room --checks <file> --guest-password-file <file>: taken out before the fleet options are parsed. Both or neither.
+// Only the paths are kept here; the files are read when the room starts (the password file only by the checker).
+const ROOM_CHECK_OPTIONS = Object.freeze({ '--checks': 'checksFile', '--guest-password-file': 'guestPasswordFile' });
+
+function parseRoomCheckArgs(args) {
+  const found = {};
+  const rest = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = String(args[i]);
+    if (!Object.hasOwn(ROOM_CHECK_OPTIONS, arg)) { rest.push(args[i]); continue; }
+    const key = ROOM_CHECK_OPTIONS[arg];
+    if (Object.hasOwn(found, key)) throw new Error('runtime_option_must_be_unique');
+    const value = args[++i];
+    if (typeof value !== 'string' || value.length === 0 || value.startsWith('--')) throw new Error('runtime_option_requires_value');
+    found[key] = value;
+  }
+  const fleet = parseFleetArgs(rest);
+  if (!fleet.help && Object.keys(found).length === 1) throw new Error('runtime_room_checks_need_both_files');
+  return Object.freeze({ ...fleet, command: 'room', demo: false, checksFile: found.checksFile ?? null, guestPasswordFile: found.guestPasswordFile ?? null });
+}
+
+const MAX_CHECKS_FILE_BYTES = 64 * 1024;
+
+/**
+ * Read and validate a checks file: { "<vmId>": [Check, ...] } for VMs of this room only, 1 to 8 valid checks each.
+ * Throws an Error whose message is a fixed code. The password file is only checked to be a file (never read here).
+ */
+export function loadRoomChecks({ checksFile, guestPasswordFile, vmIds }, io = { statSync, readFileSync }) {
+  let passwordStat;
+  try { passwordStat = io.statSync(guestPasswordFile); } catch { throw new Error('runtime_room_password_file_missing'); }
+  if (!passwordStat.isFile()) throw new Error('runtime_room_password_file_missing');
+  let parsed;
+  try {
+    const stat = io.statSync(checksFile);
+    if (!stat.isFile() || stat.size > MAX_CHECKS_FILE_BYTES) throw new Error('too_big');
+    parsed = JSON.parse(io.readFileSync(checksFile, 'utf8').replace(/^﻿/, ''));
+  } catch { throw new Error('runtime_room_checks_unreadable'); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('runtime_room_checks_invalid');
+  const known = new Set(vmIds);
+  const out = {};
+  for (const [vmId, list] of Object.entries(parsed)) {
+    if (!known.has(vmId)) throw new Error('runtime_room_checks_unknown_vm');
+    if (!Array.isArray(list) || list.length < 1) throw new Error('runtime_room_checks_invalid');
+    if (list.length > MAX_CHECKS_PER_VM) throw new Error('runtime_room_checks_too_many');
+    if (!list.every(validCheck)) throw new Error('runtime_room_check_invalid');
+    out[vmId] = Object.freeze(list.map((check) => Object.freeze({ ...check })));
+  }
+  if (Object.keys(out).length === 0) throw new Error('runtime_room_checks_invalid');
+  return Object.freeze(out);
 }
 
 export function parseRuntimeArgs(argv, platform = process.platform) {
@@ -216,6 +269,7 @@ Usage:
   albera-runtime agent --vm <hyper-v-vm-name> --task <text> [--model claude-haiku-5-5] [--max-steps 40] [--max-usd 0.50] [--max-minutes 15]
   albera-runtime fleet --job <vm>=<task> [--job ...] [--model claude-haiku-5-5] [--max-steps 40] [--max-usd-per-vm 0.50] [--max-usd-total 2] [--max-minutes 15] [--port <0-65535>]
   albera-runtime room --job <vm>=<task> [--job ...] [--model claude-haiku-5-5] [--max-steps 40] [--max-usd-per-vm 0.50] [--max-usd-total 2] [--max-minutes 15] [--port <0-65535>]
+                      [--checks <checks.json> --guest-password-file <file>]
   albera-runtime room --demo [--port <0-65535>]
 
 The regular "albera" command remains a read-only session dashboard. Runtime binds only to 127.0.0.1.
@@ -229,6 +283,7 @@ wall is a local, view-only development command: it shows the latest screen of up
 agent lets an AI operate one Hyper-V VM desktop through screenshots, mouse and keyboard until it says it is done or a limit (steps, USD, minutes) is reached. Ctrl+C stops it before the next action. The Anthropic API key is read only from ANTHROPIC_API_KEY. Screens are sent to the Anthropic API and can show secrets; use only a VM that holds nothing sensitive. The AI saying DONE is a claim, not proof that the task succeeded. It uses the same-user prototype Broker and needs Hyper-V Administrators membership.
 fleet runs up to 8 agents at once (one per VM, each with its own lease) and shows the desktop wall with each AI's pointer and status drawn over its screen. Cost grows with the number of VMs: every loop stops at --max-usd-per-vm and all stop together at --max-usd-total (each may finish the response already paid for, so the total can pass the limit slightly). Ctrl+C stops all agents and keeps the wall open; press it again to exit. The wall shows what each AI claims, not whether it succeeded: check every VM yourself. Same API key, privacy and Broker notes as agent.
 room is the control room: the fleet's VMs as cameras on a canvas, with Bero (a rule-based main AI, no LLM) pointing out stalls, DONE claims and limits and opening decision cards. A card choice can stop the hands on a VM or start a short fixed job there (close a blocking dialog, or look again whether the original task is done); the browser cannot type a task. Jobs started from cards share the same per-VM and total USD limits. Ctrl+C stops all agents and keeps the room open; press it again to exit. --demo runs 3 fake VMs with a scripted AI: no VM, no API key, no network. Same API key, privacy and Broker notes as fleet.
+room --checks checks the VM itself when its AI claims DONE, and asks you only when a check fails or cannot run. The file maps VM names to at most 8 read-only checks each: {"<vm>": [{"kind": "file_exists", "path": "C:\\\\x.txt"}, {"kind": "file_text", "path": "C:\\\\x.txt", "text": "expected"}, {"kind": "dir_has", "path": "C:\\\\dir", "name": "entry"}]}. file_text compares the file's trimmed text (first 64 KiB) inside the VM; only ok / missing / differs / error comes back, never file contents. Checks run over PowerShell Direct as the guest user Administrator, with the password read from --guest-password-file at each check (never from the command line or the environment, never printed). Both options are needed together. It uses a same-user prototype and needs Hyper-V Administrators membership.
 recover-tail requires Runtime to be stopped and copies only the fully validated record prefix to a new file beside the original. It keeps the original journal and incomplete tail unchanged, refuses an existing writer lock, and preserves the session identity. It cannot recover a possibly lost final event.
 `;
 
@@ -402,6 +457,14 @@ async function runRoom(options) {
   if (!apiKey) { console.error('ALBERA Runtime room: set the ANTHROPIC_API_KEY environment variable first.'); process.exitCode = 1; return; }
   const missing = missingRoomParts({ journalModule: roomJournalModule, figuresModule: roomFiguresModule, directorModule: beroDirectorModule });
   if (missing.length) { console.error(`ALBERA Runtime room: these room parts are not built yet: ${missing.join(', ')}.`); process.exitCode = 1; return; }
+  let checks = {};
+  let checker = null;
+  if (options.checksFile) {
+    // The error is a fixed code; neither file's content is ever printed.
+    try { checks = loadRoomChecks({ checksFile: options.checksFile, guestPasswordFile: options.guestPasswordFile, vmIds: options.jobs.map((job) => job.vmId) }); }
+    catch (error) { console.error(`ALBERA Runtime room: ${error.message}`); process.exitCode = 2; return; }
+    checker = createHyperVGuestChecker({ passwordFile: options.guestPasswordFile });
+  }
   let room;
   try {
     const broker = createHyperVDesktopBrokerPrototype();
@@ -421,11 +484,13 @@ async function runRoom(options) {
       },
     });
     room = createRoomHost({
-      vms: options.jobs.map(({ vmId, task }) => ({ vmId, label: vmId.slice(0, 32), task })), board, journal, director, fleet,
+      vms: options.jobs.map(({ vmId, task }) => ({ vmId, label: vmId.slice(0, 32), task })), board, journal, director, fleet, checker, checks,
       driver: (resolveCurrentLease) => new HyperVDesktopDriver({ broker, resolveCurrentLease }),
     });
     const address = await room.listen(options.port);
     console.log(`ALBERA control room listening at ${address.url}`);
+    const checked = Object.keys(checks);
+    if (checked.length) console.log(`Automatic checks after a DONE claim on: ${checked.join(', ')}.`);
     console.log(`One-time UI bootstrap code: ${address.bootstrapCode}`);
     console.log(`Starting ${options.jobs.length} agent(s) with ${options.model} (per VM: ${options.maxSteps} steps, $${options.maxUsdPerVm}, ${options.maxMinutes} min; total $${options.maxUsdTotal}, card jobs included). Press Ctrl+C to stop all agents.`);
     let stopRequested = false;
@@ -437,7 +502,9 @@ async function runRoom(options) {
     process.on('SIGTERM', onSignal);
     const outcome = await fleet.run();
     console.log(`total cost: $${outcome.totalUsd.toFixed(4)}${outcome.stopReason ? ` (stopped: ${outcome.stopReason})` : ''}`);
-    console.log('Note: results and "DONE" are only what each AI claimed. Check every VM yourself.');
+    console.log(checked.length
+      ? 'Note: results and "DONE" are only what each AI claimed. The room shows the automatic checks; check the other VMs yourself.'
+      : 'Note: results and "DONE" are only what each AI claimed. Check every VM yourself.');
     console.log('The room is still open. Press Ctrl+C again to exit.');
   } catch {
     await room?.close().catch(() => {});
