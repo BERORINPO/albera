@@ -9,13 +9,17 @@ Coding agents routinely execute untrusted project code, tool hooks, dependencies
 
 ## Proposed decision
 
-**Three mutually distrustful execution domains:**
+**Five mutually distrustful execution domains:**
 
 1. **Canvas / unprivileged client:** sends authenticated intentions (`request task`, `approve exact action`, `request takeover`); never handles hypervisor credentials.
 2. **Control Plane (low privilege):** durable project identity and ACL; policy evaluation; approval records; immutable audit journal; lease and auth epoch; event/evidence ingestion; integration decisions. It does not execute arbitrary host commands.
 3. **Privileged Host Broker:** only narrowly enumerated Hyper-V actions on allowlisted VM IDs, image roots and network profiles; verifies authenticated caller, operation ID, authorization bound to trusted stored record, policy/lease generation, quotas and state. Uses elevated host permissions; cannot be reached by guest or unauthenticated observer.
 4. **Guest VM and Guest Agent:** untrusted compute; receives narrowly scoped commands, produces provisional events/artifacts. Guest admins cannot mint approvals or attest their own isolation.
 5. **Independent Verification Workspace:** separate from authoring guest, seeded from immutable revisions; signs/reports verification only via trusted verifier identity and host-measured execution context. Treat test outputs as evidence, not absolute proof of safety.
+
+## Interim host-direct Runtime mode
+
+The current Runtime Gateway runs provider CLIs directly on the host as the current user, without VM isolation. Do not use this mode for untrusted code. Exit criteria: a Hyper-V provider and egress controls enforced as required by this ADR.
 
 ## Trust diagram
 
