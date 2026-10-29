@@ -2,11 +2,12 @@
 // that ADR-002 requires. It is used only by `albera-runtime wall` (a local, view-only development
 // command the user starts explicitly). No API route or host composition uses it.
 // Reaching a VM needs membership in the local "Hyper-V Administrators" group.
-// Transport: a fixed `pwsh -File <fixed path>` process; the VM name and the action travel as JSON
-// on stdin. No command line is ever assembled from data.
+// Transport: a fixed `pwsh -File <fixed path>` process; the VM name and the action's primitive steps
+// (planDesktopInput: move / down / up / press / release / tap / text / wheel / sleep with bounded numbers)
+// travel as JSON on stdin. No command line is ever assembled from data.
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { validateDesktopAction, validateDesktopScreen } from './desktop-control.mjs';
+import { MAX_SCREEN_DIMENSION, planDesktopInput, validateDesktopScreen } from './desktop-control.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./hyperv-desktop/desktop-io.ps1', import.meta.url));
 const PWSH_ARGS = Object.freeze(['-NoProfile', '-NonInteractive', '-File', SCRIPT_PATH]);
@@ -30,8 +31,14 @@ export function createHyperVDesktopBrokerPrototype({ pwsh = 'pwsh', timeoutMs = 
     },
     async sendVmInput({ vmId, action }) {
       // Re-validate with the largest allowed screen; the Driver already applied the real size.
-      const checked = validateDesktopAction(action, { width: 4096, height: 4096 });
-      await run({ op: 'input', vm: checkedVm(vmId), action: checked });
+      let steps;
+      try {
+        steps = planDesktopInput(action, { width: MAX_SCREEN_DIMENSION, height: MAX_SCREEN_DIMENSION });
+      }
+      catch {
+        throw brokerError('desktop_input_rejected', 'not_applied');
+      }
+      await run({ op: 'input', vm: checkedVm(vmId), steps });
       return { ok: true };
     },
   };
