@@ -171,11 +171,11 @@ export function validEvent(ev) {
 // ---- automatic checks (spec/room.md §7) ----
 
 // A Windows absolute path on a local drive: no "..", no wildcards, no UNC, no control characters.
-const WIN_PATH_RE = /^[A-Za-z]:\(?:[^\/:*?"<>|\u0000-\u001f]+\)*[^\/:*?"<>|\u0000-\u001f]*$/;
-const NAME_RE = /^[^\/:*?"<>|\u0000-\u001f]{1,255}$/;
+const WIN_PATH_RE = /^[A-Za-z]:\\(?:[^\\/:*?"<>|\u0000-\u001f]+\\)*[^\\/:*?"<>|\u0000-\u001f]*$/;
+const NAME_RE = /^[^\\/:*?"<>|\u0000-\u001f]{1,255}$/;
 
 export function isGuestPath(p) {
-  return typeof p === 'string' && p.length <= 260 && WIN_PATH_RE.test(p) && !p.split('\').some((part) => part === '..' || part === '.');
+  return typeof p === 'string' && p.length <= 260 && WIN_PATH_RE.test(p) && !p.split('\\').some((part) => part === '..' || part === '.');
 }
 
 /** @typedef {{kind: 'file_exists', path: string} | {kind: 'file_text', path: string, text: string} | {kind: 'dir_has', path: string, name: string}} Check */
