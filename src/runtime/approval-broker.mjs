@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { PROFILE_MINIMUM_VERSIONS } from './profile-policy.mjs';
 
-const ACTIONS = new Set(['start', 'stop', 'input']);
+const ACTIONS = new Set(['start', 'input']);
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
 const PROFILES = new Set(['read-only', 'read-only-streaming']);
 const RUN_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -175,7 +175,6 @@ function projectApproval(request) {
     && (!output.profile || !output.executable || !output.cwd || !output.args || !output.environment
       || !output.executableSha256 || !output.platform || !output.maxDurationMs || !output.maxActive
       || output.minimumCliVersion !== PROFILE_MINIMUM_VERSIONS[output.profile] || output.versionCheck !== true)) return null;
-  if (request.action === 'stop' && (!output.runId || typeof output.force !== 'boolean')) return null;
   if (request.action === 'input' && (!output.runId || typeof output.text !== 'string' || output.text.length === 0)) return null;
   return Object.freeze(output);
 }
