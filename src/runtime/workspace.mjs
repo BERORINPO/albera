@@ -21,7 +21,9 @@ export const LIMIT_RULES = Object.freeze({
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
 const VM_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const TOP_KEYS = new Set(['version', 'name', 'vms', 'limits']);
-const VM_KEYS = new Set(['vm', 'label', 'task', 'checks']);
+const VM_KEYS = new Set(['vm', 'label', 'task', 'checks', 'capture']);
+/** Where a VM's screen comes from: the host thumbnail (default) or the opt-in helper inside the guest. */
+export const CAPTURE_SOURCES = Object.freeze(['host', 'guest']);
 const LIMIT_KEYS = new Set(['model', 'planner', ...Object.keys(LIMIT_RULES)]);
 
 /** A camera label: 1 to 32 characters (any script), no control characters. */
@@ -39,7 +41,8 @@ export function validLimit(key, value) {
  * Parse and validate a workspace file's text. Throws an Error whose message is a fixed code (never the file content).
  * @param {string} text
  * @param {{knownModels: string[]}} options models the room can price
- * @returns {{name: string, jobs: {vmId: string, task: string}[], labels: Record<string, string>, checks: Record<string, object[]>, limits: object}}
+ * @returns {{name: string, jobs: {vmId: string, task: string}[], labels: Record<string, string>, checks: Record<string, object[]>,
+ *   guestCapture: string[], limits: object}}
  */
 export function parseWorkspace(text, { knownModels = [] } = {}) {
   if (typeof text !== 'string' || text.length > MAX_WORKSPACE_BYTES) throw new Error('workspace_too_big');
@@ -54,6 +57,7 @@ export function parseWorkspace(text, { knownModels = [] } = {}) {
   const jobs = [];
   const labels = {};
   const checks = {};
+  const guestCapture = [];
   for (const entry of raw.vms) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('workspace_vm_invalid');
     if (Object.keys(entry).some((key) => !VM_KEYS.has(key))) throw new Error('workspace_unknown_field');
@@ -69,6 +73,8 @@ export function parseWorkspace(text, { knownModels = [] } = {}) {
       if (!entry.checks.every(validCheck)) throw new Error('workspace_check_invalid');
       checks[vm] = Object.freeze(entry.checks.map((check) => Object.freeze({ ...check })));
     }
+    if (entry.capture !== undefined && !CAPTURE_SOURCES.includes(entry.capture)) throw new Error('workspace_capture_invalid');
+    if (entry.capture === 'guest') guestCapture.push(vm);
     labels[vm] = label;
     jobs.push(Object.freeze({ vmId: vm, task }));
   }
@@ -87,6 +93,6 @@ export function parseWorkspace(text, { knownModels = [] } = {}) {
   if (limits.maxUsdPerVm !== undefined && limits.maxUsdTotal !== undefined && limits.maxUsdPerVm > limits.maxUsdTotal) throw new Error('workspace_limit_invalid');
 
   return Object.freeze({
-    name: raw.name, jobs: Object.freeze(jobs), labels: Object.freeze(labels), checks: Object.freeze(checks), limits: Object.freeze(limits),
+    name: raw.name, jobs: Object.freeze(jobs), labels: Object.freeze(labels), checks: Object.freeze(checks), guestCapture: Object.freeze(guestCapture), limits: Object.freeze(limits),
   });
 }

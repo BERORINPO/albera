@@ -15,6 +15,7 @@ import { createDesktopAgentLoop, MODEL_PRICES } from './desktop-agent-loop.mjs';
 import { createRoomHost } from './room-host.mjs';
 import { missingRoomParts, startRoomDemo } from './room-demo.mjs';
 import { createHyperVGuestChecker } from './hyperv-guest-check-prototype.mjs';
+import { createGuestScreenSource, runGuestCaptureSetup, GUEST_SETUP_OPS } from './hyperv-guest-capture-prototype.mjs';
 import { validCheck, MAX_CHECKS_PER_VM } from './room-contract.mjs';
 import { parseWorkspace, LIMIT_RULES, MAX_WORKSPACE_BYTES } from './workspace.mjs';
 import * as roomJournalModule from './room-journal.mjs';
@@ -28,6 +29,64 @@ import { backupRuntimeJournal, recoverRuntimeJournalTail, restoreRuntimeJournal,
 
 const WALL_VM_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const WALL_LABEL_RE = /^[ -~]{1,32}$/;
+
+// --guest-capture <vm> (repeatable) and --guest-password-file <file> (wall, agent, fleet, room): these VMs take their
+// screen from the opt-in helper inside the guest (hyperv-guest/screen-helper.ps1) instead of the host thumbnail.
+// Taken out before the command's own options are parsed; the password file is kept as a path only (read by the source).
+function takeGuestCaptureArgs(args, { passwordFile = true } = {}) {
+  const rest = [];
+  const guestCapture = [];
+  let guestPasswordFile = null;
+  for (let i = 0; i < args.length; i++) {
+    const arg = String(args[i]);
+    if (arg !== '--guest-capture' && !(passwordFile && arg === '--guest-password-file')) { rest.push(args[i]); continue; }
+    const value = args[++i];
+    if (typeof value !== 'string' || value.length === 0 || value.startsWith('--')) throw new Error('runtime_option_requires_value');
+    if (arg === '--guest-password-file') {
+      if (guestPasswordFile !== null) throw new Error('runtime_option_must_be_unique');
+      guestPasswordFile = value;
+    } else {
+      if (!WALL_VM_RE.test(value)) throw new Error('runtime_guest_capture_vm_invalid');
+      if (guestCapture.includes(value)) throw new Error('runtime_option_must_be_unique');
+      guestCapture.push(value);
+    }
+  }
+  return { rest, guestCapture: Object.freeze(guestCapture), guestPasswordFile };
+}
+
+function checkGuestCapture(guestCapture, guestPasswordFile, vmIds) {
+  if (guestCapture.length > 0 && !guestPasswordFile) throw new Error('runtime_guest_capture_needs_password_file');
+  if (!guestCapture.every((vm) => vmIds.includes(vm))) throw new Error('runtime_guest_capture_unknown_vm');
+}
+
+function withGuestCapture(args, parse, vmIdsOf) {
+  const { rest, guestCapture, guestPasswordFile } = takeGuestCaptureArgs(args);
+  const options = parse(rest);
+  if (!options.help) {
+    if (guestPasswordFile && guestCapture.length === 0) throw new Error('runtime_guest_password_file_needs_guest_capture');
+    checkGuestCapture(guestCapture, guestPasswordFile, vmIdsOf(options));
+  }
+  return Object.freeze({ ...options, guestCapture, guestPasswordFile });
+}
+
+// guest-capture install|remove --vm <name> --guest-password-file <file>: puts the helper into one VM, or takes it out.
+function parseGuestCaptureArgs(args) {
+  const options = { command: 'guest-capture', op: args[0], vm: null, guestPasswordFile: null, help: false };
+  if (args.includes('--help') || args.includes('-h')) return Object.freeze({ ...options, help: true });
+  if (!GUEST_SETUP_OPS.includes(options.op)) throw new Error('runtime_guest_capture_op_invalid');
+  for (let i = 1; i < args.length; i++) {
+    const arg = String(args[i]);
+    const key = arg === '--vm' ? 'vm' : arg === '--guest-password-file' ? 'guestPasswordFile' : null;
+    if (!key) throw new Error('invalid_runtime_option');
+    if (options[key] !== null) throw new Error('runtime_option_must_be_unique');
+    const value = args[++i];
+    if (typeof value !== 'string' || value.length === 0 || value.startsWith('--')) throw new Error('runtime_option_requires_value');
+    if (key === 'vm' && !WALL_VM_RE.test(value)) throw new Error('runtime_guest_capture_vm_invalid');
+    options[key] = value;
+  }
+  if (!options.vm || !options.guestPasswordFile) throw new Error('runtime_guest_capture_needs_vm_and_password_file');
+  return Object.freeze(options);
+}
 
 function parseWallArgs(args) {
   const options = { command: 'wall', vms: [], port: 0, help: false };
@@ -160,7 +219,8 @@ function parseRoomArgs(args) {
 // Only the paths are kept here; the files are read when the room starts (the password file only by the checker).
 const ROOM_CHECK_OPTIONS = Object.freeze({ '--checks': 'checksFile', '--guest-password-file': 'guestPasswordFile' });
 
-function parseRoomCheckArgs(args) {
+function parseRoomCheckArgs(given) {
+  const { rest: args, guestCapture } = takeGuestCaptureArgs(given, { passwordFile: false });
   const found = {};
   const rest = [];
   for (let i = 0; i < args.length; i++) {
@@ -173,8 +233,13 @@ function parseRoomCheckArgs(args) {
     found[key] = value;
   }
   const fleet = parseFleetArgs(rest);
-  if (!fleet.help && Object.keys(found).length === 1) throw new Error('runtime_room_checks_need_both_files');
-  return Object.freeze({ ...fleet, command: 'room', demo: false, checksFile: found.checksFile ?? null, guestPasswordFile: found.guestPasswordFile ?? null });
+  if (!fleet.help) {
+    if (Object.keys(found).length === 1 && !(found.guestPasswordFile && guestCapture.length > 0)) throw new Error('runtime_room_checks_need_both_files');
+    checkGuestCapture(guestCapture, found.guestPasswordFile, fleet.jobs.map((job) => job.vmId));
+  }
+  return Object.freeze({
+    ...fleet, command: 'room', demo: false, checksFile: found.checksFile ?? null, guestPasswordFile: found.guestPasswordFile ?? null, guestCapture,
+  });
 }
 
 // room --workspace <file> [--guest-password-file <file>] [--port <n>]: VMs, tasks, labels, checks and limits come from
@@ -202,7 +267,8 @@ function parseRoomWorkspaceArgs(args) {
 
 /**
  * Read a workspace file and turn it into the room's options. Throws an Error whose message is a fixed code.
- * A workspace with checks needs --guest-password-file (checked to be a file here, read only by the checker).
+ * A workspace with checks or a guest-capture VM needs --guest-password-file (checked to be a file here, read only by the
+ * checker and the guest screen source).
  */
 export function loadRoomWorkspace({ workspaceFile, guestPasswordFile, port = 0 }, io = { statSync, readFileSync }) {
   let text;
@@ -215,15 +281,16 @@ export function loadRoomWorkspace({ workspaceFile, guestPasswordFile, port = 0 }
   try { workspace = parseWorkspace(text, { knownModels: Object.keys(MODEL_PRICES) }); }
   catch (error) { throw new Error(`runtime_room_${error.message}`); }
   const hasChecks = Object.keys(workspace.checks).length > 0;
-  if (hasChecks) {
+  const hasGuestCapture = workspace.guestCapture.length > 0;
+  if (hasChecks || hasGuestCapture) {
     let stat;
     try { stat = guestPasswordFile ? io.statSync(guestPasswordFile) : null; } catch { stat = null; }
-    if (!stat?.isFile()) throw new Error('runtime_room_workspace_checks_need_password_file');
+    if (!stat?.isFile()) throw new Error(hasChecks ? 'runtime_room_workspace_checks_need_password_file' : 'runtime_room_workspace_guest_capture_needs_password_file');
   }
   return Object.freeze({
     command: 'room', demo: false, help: false, port, workspaceName: workspace.name,
     jobs: workspace.jobs, labels: workspace.labels, checks: workspace.checks,
-    guestPasswordFile: hasChecks ? guestPasswordFile : null, checksFile: null,
+    guestPasswordFile: hasChecks || hasGuestCapture ? guestPasswordFile : null, checksFile: null, guestCapture: workspace.guestCapture,
     ...FLEET_DEFAULTS, port, ...workspace.limits,
   });
 }
@@ -260,9 +327,10 @@ export function loadRoomChecks({ checksFile, guestPasswordFile, vmIds }, io = { 
 
 export function parseRuntimeArgs(argv, platform = process.platform) {
   const Path = platform === 'win32' ? path.win32 : path;
-  if (argv[0] === 'wall') return parseWallArgs(argv.slice(1));
-  if (argv[0] === 'agent') return parseAgentArgs(argv.slice(1));
-  if (argv[0] === 'fleet') return parseFleetArgs(argv.slice(1));
+  if (argv[0] === 'wall') return withGuestCapture(argv.slice(1), parseWallArgs, (o) => o.vms.map((vm) => vm.vmId));
+  if (argv[0] === 'agent') return withGuestCapture(argv.slice(1), parseAgentArgs, (o) => [o.vm]);
+  if (argv[0] === 'fleet') return withGuestCapture(argv.slice(1), parseFleetArgs, (o) => o.jobs.map((job) => job.vmId));
+  if (argv[0] === 'guest-capture') return parseGuestCaptureArgs(argv.slice(1));
   if (argv[0] === 'room') return parseRoomArgs(argv.slice(1));
   const command = ['backup', 'restore', 'recover-tail', 'verify-backup'].includes(argv[0]) ? argv[0] : 'serve';
   const args = command === 'serve' ? argv : argv.slice(1);
@@ -328,6 +396,8 @@ Usage:
                       [--checks <checks.json> --guest-password-file <file>]
   albera-runtime room --workspace <albera.workspace.json> [--guest-password-file <file>] [--port <0-65535>]
   albera-runtime room --demo [--port <0-65535>]
+  albera-runtime guest-capture install|remove --vm <hyper-v-vm-name> --guest-password-file <file>
+  (wall, agent, fleet and room --job also take [--guest-capture <vm> ...] --guest-password-file <file>)
 
 The regular "albera" command remains a read-only session dashboard. Runtime binds only to 127.0.0.1.
 Each provider start, input, and stop requires a visible one-use decision in the local approval page.
@@ -342,7 +412,8 @@ agent lets an AI operate one Hyper-V VM desktop through screenshots, mouse and k
 fleet runs up to 8 agents at once (one per VM, each with its own lease) and shows the desktop wall with each AI's pointer and status drawn over its screen. Cost grows with the number of VMs: every loop stops at --max-usd-per-vm and all stop together at --max-usd-total (each may finish the response already paid for, so the total can pass the limit slightly). Ctrl+C stops all agents and keeps the wall open; press it again to exit. The wall shows what each AI claims, not whether it succeeded: check every VM yourself. Same API key, privacy and Broker notes as agent.
 room is the control room: the fleet's VMs as cameras on a canvas, with Bero (a rule-based main AI, no LLM) pointing out stalls, DONE claims and limits and opening decision cards. A card choice can stop the hands on a VM or start a short fixed job there (close a blocking dialog, or look again whether the original task is done); the browser cannot type a task. Jobs started from cards share the same per-VM and total USD limits. Ctrl+C stops all agents and keeps the room open; press it again to exit. --demo runs 3 fake VMs with a scripted AI: no VM, no API key, no network. Same API key, privacy and Broker notes as fleet.
 room --checks checks the VM itself when its AI claims DONE, and asks you only when a check fails or cannot run. The file maps VM names to at most 8 read-only checks each: {"<vm>": [{"kind": "file_exists", "path": "C:\\\\x.txt"}, {"kind": "file_text", "path": "C:\\\\x.txt", "text": "expected"}, {"kind": "dir_has", "path": "C:\\\\dir", "name": "entry"}]}. file_text compares the file's trimmed text (first 64 KiB) inside the VM; only ok / missing / differs / error comes back, never file contents. Checks run over PowerShell Direct as the guest user Administrator, with the password read from --guest-password-file at each check (never from the command line or the environment, never printed). Both options are needed together. It uses a same-user prototype and needs Hyper-V Administrators membership.
-room --workspace starts the room from one JSON file you can keep in a repository and review: {"version": 1, "name": "booking-site", "vms": [{"vm": "<hyper-v-vm-name>", "label": "<camera label>", "task": "<task>", "checks": [...]}], "limits": {"model": "claude-haiku-5-5", "planner": "claude-sonnet-5-5", "maxSteps": 40, "maxUsdPerVm": 0.5, "maxUsdTotal": 2, "maxMinutes": 15}}. No other room option may be given with it, so the file is the one place to read. Secrets never go in the file: if any VM has checks, give --guest-password-file on the command line. See examples/albera.workspace.example.json.
+room --workspace starts the room from one JSON file you can keep in a repository and review: {"version": 1, "name": "booking-site", "vms": [{"vm": "<hyper-v-vm-name>", "label": "<camera label>", "task": "<task>", "checks": [...]}], "limits": {"model": "claude-haiku-5-5", "planner": "claude-sonnet-5-5", "maxSteps": 40, "maxUsdPerVm": 0.5, "maxUsdTotal": 2, "maxMinutes": 15}}. No other room option may be given with it, so the file is the one place to read. Secrets never go in the file: if any VM has checks or "capture": "guest", give --guest-password-file on the command line. See examples/albera.workspace.example.json.
+guest-capture is OPT-IN, for VMs whose host thumbnail does not work (a GPU-partitioned VM keeps showing its boot logo there). install puts a small PowerShell helper into that VM over PowerShell Direct, as the guest user Administrator with the password from --guest-password-file (never from the command line or the environment, never printed): a scheduled task starts it at each logon of Administrator, without a window, and it saves the screen under C:\\ProgramData\\Albera about once a second (only the newest frame). remove stops it and deletes the task and the files. Then --guest-capture <vm> (or "capture": "guest" on that VM in a workspace file) takes that VM's screen from the helper; input still comes from the host. The frame is guest data and is checked like any screen. The first frame after a logon can take a minute or two (the helper compiles a little C# with the guest's built-in compiler). It uses a same-user prototype and needs Hyper-V Administrators membership.
 recover-tail requires Runtime to be stopped and copies only the fully validated record prefix to a new file beside the original. It keeps the original journal and incomplete tail unchanged, refuses an existing writer lock, and preserves the session identity. It cannot recover a possibly lost final event.
 `;
 
@@ -374,10 +445,24 @@ async function readHiddenPassphrase(prompt) {
   });
 }
 
+/** The opt-in guest screen source of the VMs named with --guest-capture (or capture: "guest"), or null. */
+function guestScreensOf(options) {
+  return options.guestCapture?.length ? createGuestScreenSource({ vms: [...options.guestCapture], passwordFile: options.guestPasswordFile }) : null;
+}
+
+async function runGuestCapture(options) {
+  const result = await runGuestCaptureSetup({ op: options.op, vmId: options.vm, passwordFile: options.guestPasswordFile });
+  if (!result.ok) { console.error(`ALBERA Runtime guest-capture ${options.op}: ${result.code}`); process.exitCode = 1; return; }
+  if (options.op === 'remove') { console.log(`Removed the ALBERA screen helper from ${options.vm}.`); return; }
+  console.log(`Installed the ALBERA screen helper in ${options.vm}. It runs now and at each logon of Administrator; the first frame can take a minute or two.`);
+  console.log(`Use it with --guest-capture ${options.vm} --guest-password-file <file>. Take it out with: albera-runtime guest-capture remove --vm ${options.vm} --guest-password-file <file>`);
+}
+
 async function runWall(options) {
   let wall;
+  const guestScreens = guestScreensOf(options);
   try {
-    const broker = createHyperVDesktopBrokerPrototype();
+    const broker = createHyperVDesktopBrokerPrototype({ guestScreens });
     wall = createDesktopWallHost({
       vms: options.vms,
       driver: (resolveCurrentLease) => new HyperVDesktopDriver({ broker, resolveCurrentLease }),
@@ -390,11 +475,13 @@ async function runWall(options) {
     const stop = async () => {
       if (stopping) return;
       stopping = true;
+      guestScreens?.close();
       await wall.close().catch(() => {});
     };
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
   } catch {
+    guestScreens?.close();
     await wall?.close().catch(() => {});
     console.error('ALBERA desktop wall could not start. Check the VM names and port.');
     process.exitCode = 1;
@@ -428,8 +515,9 @@ async function runAgent(options) {
     expiresAt: new Date(started + (options.maxMinutes + 1) * 60_000).toISOString(),
   });
   let loop;
+  const guestScreens = guestScreensOf(options);
   try {
-    const broker = createHyperVDesktopBrokerPrototype();
+    const broker = createHyperVDesktopBrokerPrototype({ guestScreens });
     const driver = new HyperVDesktopDriver({ broker, resolveCurrentLease: async () => lease });
     const loopOptions = {
       driver,
@@ -444,6 +532,7 @@ async function runAgent(options) {
       ? createPlannedAgentLoop({ ...loopOptions, plannerClient: createAnthropicPlannerClient({ apiKey, model: options.planner }), plannerPrices: MODEL_PRICES[options.planner] })
       : createDesktopAgentLoop(loopOptions);
   } catch {
+    guestScreens?.close();
     console.error('ALBERA Runtime agent could not start. Check the VM name and options.');
     process.exitCode = 1;
     return;
@@ -452,6 +541,7 @@ async function runAgent(options) {
   process.once('SIGTERM', () => loop.stop('stopped_by_user'));
   console.log(`ALBERA agent started on ${options.vm} with ${options.model}${plannerText(options)} (limits: ${options.maxSteps} steps, $${options.maxUsd}, ${options.maxMinutes} min). Press Ctrl+C to stop.`);
   const result = await loop.run();
+  guestScreens?.close();
   console.log(`result: ${result.outcome}${result.reason ? ` (${result.reason})` : ''}; ${result.steps} steps, ${result.actions} actions, $${result.usd.toFixed(4)}, ${Math.round(result.ms / 1000)}s`);
   if (result.claim) console.log(`AI said: ${result.claim}`);
   if (result.outcome === 'claimed_done') console.log('Note: this is only what the AI claimed. Check the VM yourself.');
@@ -462,8 +552,9 @@ async function runFleet(options) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) { console.error('ALBERA Runtime fleet: set the ANTHROPIC_API_KEY environment variable first.'); process.exitCode = 1; return; }
   let wall;
+  const guestScreens = guestScreensOf(options);
   try {
-    const broker = createHyperVDesktopBrokerPrototype();
+    const broker = createHyperVDesktopBrokerPrototype({ guestScreens });
     const board = createAgentStatusBoard();
     const fleet = createAgentFleet({
       jobs: options.jobs, board,
@@ -485,6 +576,7 @@ async function runFleet(options) {
     let stopRequested = false;
     const onSignal = () => {
       if (!finished && !stopRequested) { stopRequested = true; fleet.stop('stopped_by_user'); return; }
+      guestScreens?.close();
       void wall.close().catch(() => {});
     };
     process.on('SIGINT', onSignal);
@@ -500,6 +592,7 @@ async function runFleet(options) {
     console.log('The wall is still open. Press Ctrl+C again to exit.');
     process.exitCode = Object.values(outcome.results).every((r) => r.outcome === 'claimed_done') ? 0 : 1;
   } catch {
+    guestScreens?.close();
     await wall?.close().catch(() => {});
     console.error('ALBERA Runtime fleet could not start. Check the VM names, options and port.');
     process.exitCode = 1;
@@ -545,8 +638,9 @@ async function runRoom(given) {
     checker = createHyperVGuestChecker({ passwordFile: options.guestPasswordFile });
   }
   let room;
+  const guestScreens = guestScreensOf(options);
   try {
-    const broker = createHyperVDesktopBrokerPrototype();
+    const broker = createHyperVDesktopBrokerPrototype({ guestScreens });
     const board = createAgentStatusBoard();
     const journal = roomJournalModule.createRoomJournal({});
     const director = beroDirectorModule.createBeroDirector({ buildFigure: roomFiguresModule.buildFigure, labelOf });
@@ -575,6 +669,7 @@ async function runRoom(given) {
     let stopRequested = false;
     const onSignal = () => {
       if (!stopRequested) { stopRequested = true; fleet.close('stopped_by_user'); return; }
+      guestScreens?.close();
       void room.close().catch(() => {});
     };
     process.on('SIGINT', onSignal);
@@ -586,6 +681,7 @@ async function runRoom(given) {
       : 'Note: results and "DONE" are only what each AI claimed. Check every VM yourself.');
     console.log('The room is still open. Press Ctrl+C again to exit.');
   } catch {
+    guestScreens?.close();
     await room?.close().catch(() => {});
     console.error('ALBERA Runtime room could not start. Check the VM names, options and port.');
     process.exitCode = 1;
@@ -597,6 +693,11 @@ async function main() {
   try { options = parseRuntimeArgs(process.argv.slice(2)); }
   catch (error) { console.error(`ALBERA Runtime: ${error.message}`); process.exitCode = 2; return; }
   if (options.help) { console.log(RUNTIME_HELP); return; }
+  // Only checked to be a file here; the guest screen source and the setup read it.
+  if ((options.guestCapture?.length || options.command === 'guest-capture') && !statSync(options.guestPasswordFile, { throwIfNoEntry: false })?.isFile()) {
+    console.error('ALBERA Runtime: runtime_guest_password_file_missing'); process.exitCode = 2; return;
+  }
+  if (options.command === 'guest-capture') { await runGuestCapture(options); return; }
   if (options.command === 'wall') { await runWall(options); return; }
   if (options.command === 'agent') { await runAgent(options); return; }
   if (options.command === 'fleet') { await runFleet(options); return; }

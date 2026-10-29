@@ -36,7 +36,7 @@ export function pwshCandidates(env = process.env) {
 }
 
 /** The first candidate that exists, or null. lstat, not stat: a Store app alias is a reparse point that stat refuses. */
-async function firstExisting(candidates) {
+export async function firstExisting(candidates) {
   for (const candidate of candidates) {
     const found = await lstat(candidate).then((s) => s.isFile() || s.isSymbolicLink(), () => false);
     if (found) return candidate;
@@ -80,7 +80,7 @@ export function createHyperVGuestChecker({ user = 'Administrator', passwordFile,
 }
 
 /** The password file's text without a BOM and trailing line breaks, or null (missing, empty, too big). */
-async function readPassword(file) {
+export async function readPassword(file) {
   let handle;
   try {
     handle = await open(file, 'r');

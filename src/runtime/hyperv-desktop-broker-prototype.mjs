@@ -5,6 +5,10 @@
 // Transport: a fixed `pwsh -File <fixed path>` process; the VM name and the action's primitive steps
 // (planDesktopInput: move / down / up / press / release / tap / text / wheel / sleep with bounded numbers)
 // travel as JSON on stdin. No command line is ever assembled from data.
+// `guestScreens` (hyperv-guest-capture-prototype.mjs) is the opt-in in-guest screen source: the VMs it handles take
+// their screen from the helper inside the guest; every VM, those included, still gets its input from the host here.
+// On those VMs the helper's frame is the guest's real desktop (1024x768 on a GPU-partitioned VM, measured on
+// albera-clone-03), and SetAbsolutePosition lands at the same pixel, so no coordinate scaling is applied.
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MAX_SCREEN_DIMENSION, planDesktopInput, validateDesktopScreen } from './desktop-control.mjs';
@@ -17,15 +21,20 @@ const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-export function createHyperVDesktopBrokerPrototype({ pwsh = 'pwsh', timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+export function createHyperVDesktopBrokerPrototype({ pwsh = 'pwsh', timeoutMs = DEFAULT_TIMEOUT_MS, guestScreens = null } = {}) {
   if (typeof pwsh !== 'string' || pwsh.length === 0 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new TypeError('invalid_hyperv_desktop_prototype_options');
+  }
+  if (guestScreens !== null && (typeof guestScreens?.handles !== 'function' || typeof guestScreens.capture !== 'function')) {
     throw new TypeError('invalid_hyperv_desktop_prototype_options');
   }
   const run = (request) => runScript(pwsh, timeoutMs, request);
   return {
     async captureVmScreen({ vmId, width, height }) {
       const screen = validateDesktopScreen({ width, height });
-      const result = await run({ op: 'capture', vm: checkedVm(vmId), width: screen.width, height: screen.height });
+      const vm = checkedVm(vmId);
+      if (guestScreens?.handles(vm)) return guestScreens.capture({ vmId: vm, width: screen.width, height: screen.height });
+      const result = await run({ op: 'capture', vm, width: screen.width, height: screen.height });
       if (typeof result.png !== 'string') throw brokerError('desktop_unavailable');
       return Buffer.from(result.png, 'base64');
     },
