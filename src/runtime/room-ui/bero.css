@@ -3,7 +3,7 @@
 .bero {
   --bero-me: var(--me, oklch(82% 0.09 300));
   --bero-glide: 1400ms;
-  position: absolute; z-index: 8; display: flex; align-items: flex-start; gap: 10px; pointer-events: none;
+  position: absolute; z-index: 8; display: flex; width: max-content; align-items: flex-start; gap: 10px; pointer-events: none;
   transition: left var(--bero-glide) var(--ease, cubic-bezier(.22, 1, .36, 1)), top var(--bero-glide) var(--ease, cubic-bezier(.22, 1, .36, 1)),
     transform var(--bero-glide) var(--ease, cubic-bezier(.22, 1, .36, 1)), translate var(--bero-glide) var(--ease, cubic-bezier(.22, 1, .36, 1));
   will-change: left, top, transform;
@@ -23,7 +23,8 @@
 @keyframes bero-blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.1); } }
 
 .bero-bubble {
-  max-width: 290px; background: var(--paper, oklch(21% 0.004 75)); color: var(--ink, oklch(91% 0.003 75)); border: 1px solid var(--bero-me);
+  /* max-content: the node sits absolutely in the world, so without it the bubble shrinks to a narrow column near an edge */
+  width: max-content; min-width: 260px; max-width: 340px; flex: none; background: var(--paper, oklch(21% 0.004 75)); color: var(--ink, oklch(91% 0.003 75)); border: 1px solid var(--bero-me);
   border-radius: 12px; padding: 9px 12px; font-size: 14.5px; line-height: 1.55; transform-origin: 0 0; pointer-events: auto;
   transition: opacity 0.35s, transform 0.45s var(--ease, cubic-bezier(.22, 1, .36, 1));
 }

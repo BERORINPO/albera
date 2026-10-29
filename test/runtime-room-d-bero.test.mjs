@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createBeroDirector, CARD_CHOICES, CHOICE_CODES } from '../src/runtime/bero-director.mjs';
 import { SAY_CODES, CARD_CODES, validAct, validCard, validLedgerEntry, isCode, LEDGER_CODES } from '../src/runtime/room-contract.mjs';
 import { WORDS_BERO, sayKey, cardKey, choiceKey } from '../src/runtime/room-ui/words-bero.mjs';
-import { typingSchedule, eyeOffset, bubbleSide, glideMs, MAX_TYPING_MS, CHAR_MS } from '../src/runtime/room-ui/bero.mjs';
+import { typingSchedule, eyeOffset, bubbleSide, glideMs, figureSlot, MAX_TYPING_MS, CHAR_MS } from '../src/runtime/room-ui/bero.mjs';
 import { createAnswerGate, avoidRect } from '../src/runtime/room-ui/cards.mjs';
 
 const VM = 'albera-clone-01';
@@ -37,6 +37,18 @@ const allValid = (out) => {
   for (const l of out.ledger) assert.ok(validLedgerEntry({ seq: 1, at: 1, ...l }), `invalid ledger ${JSON.stringify(l)}`);
 };
 const types = (out) => out.acts.map((a) => a.type);
+
+test('say and card params carry the camera label, never the VM id', () => {
+  const { d } = make({ labelOf: (id) => (id === VM ? 'Photos' : 'Tests') });
+  const outs = [d.tick({ now: 1000, entries: [ended(VM, 'claimed_done')] }), d.tick({ now: 60_000, agents: { [VM2]: running(0) } })];
+  for (const out of outs) {
+    const say = out.acts.find((a) => a.type === 'say');
+    const card = out.acts.find((a) => a.type === 'card').card;
+    assert.ok(['Photos', 'Tests'].includes(say.params.cam));
+    assert.equal(card.params.cam, say.params.cam);
+    assert.ok(!JSON.stringify(say.params).includes('albera-clone'));
+  }
+});
 
 test('stall: a running VM with no action for stallMs gets one card, said with its chips', () => {
   const { d, figs } = make();
@@ -152,23 +164,35 @@ test('openCards returns copies', () => {
   assert.notEqual(d.openCards()[0].params.claim, 'changed');
 });
 
-test('progress: a flow figure every few steps when nothing else is going on', () => {
+test('progress: a flow figure every 8 steps, at most once a minute per VM, only with no card open', () => {
   const { d, figs } = make();
-  const steps = Array.from({ length: 5 }, (_, i) => entry(VM, 'hands_step', { step: i + 1, usd: 0, action: 'left_click', note: 'n' }));
-  assert.deepEqual(d.tick({ now: 1000, entries: steps }).acts, []); // too soon after start (quiet needed)
-  const out = d.tick({ now: 13_000, agents: { [VM]: running(12_500) } });
+  const steps = (n) => Array.from({ length: n }, (_, i) => entry(VM, 'hands_step', { step: i + 1, usd: 0, action: 'left_click', note: 'n' }));
+  assert.deepEqual(d.tick({ now: 1000, entries: steps(7) }).acts, []);
+  assert.ok(!d.tick({ now: 13_000, agents: { [VM]: running(12_500) } }).acts.some((a) => a.type === 'figure')); // 7 < 8
+  const out = d.tick({ now: 13_500, entries: steps(1), agents: { [VM]: running(13_400) } });
   allValid(out);
   assert.deepEqual(types(out), ['look', 'move', 'say', 'figure']);
   assert.equal(out.acts[3].figure.kind, 'flow');
   assert.deepEqual(out.acts[3].near, { vmId: VM });
   assert.deepEqual(out.ledger, [{ vmId: VM, actor: 'bero', code: 'bero_figure', params: { kind: 'flow' } }]);
-  assert.equal(figs.calls.at(-1).n, 5);
-  assert.ok(!d.tick({ now: 40_000, agents: { [VM]: running(39_500) } }).acts.some((a) => a.type === 'figure'));
+  assert.equal(figs.calls.at(-1).n, 8);
+  // 8 more steps right away: still not before a minute has passed
+  d.tick({ now: 27_000, entries: steps(8), agents: { [VM]: running(26_900) } });
+  for (let now = 28_000; now < 73_000; now += 1000) assert.ok(!d.tick({ now, agents: { [VM]: running(now - 100) } }).acts.some((a) => a.type === 'figure'));
+  let at = null;
+  for (let now = 73_000; now < 120_000 && at === null; now += 1000) if (d.tick({ now, agents: { [VM]: running(now - 100) } }).acts.some((a) => a.type === 'figure')) at = now;
+  assert.ok(at !== null && at >= 73_500);
+});
+
+test('progress waits while any card is open', () => {
+  const { d } = make();
+  d.tick({ now: 1000, entries: [ended(VM2, 'claimed_done'), ...Array.from({ length: 9 }, (_, i) => entry(VM, 'hands_step', { step: i + 1 }))] });
+  for (let now = 2000; now < 100_000; now += 1000) assert.ok(!d.tick({ now, agents: { [VM]: running(now - 100) } }).acts.some((a) => a.type === 'figure'));
 });
 
 test('progress is skipped when buildFigure returns null', () => {
   const { d } = make({ nullFor: ['flow'] });
-  const steps = Array.from({ length: 6 }, (_, i) => entry(VM, 'hands_step', { step: i + 1 }));
+  const steps = Array.from({ length: 9 }, (_, i) => entry(VM, 'hands_step', { step: i + 1 }));
   d.tick({ now: 1000, entries: steps });
   const out = d.tick({ now: 13_000, agents: { [VM]: running(12_900) } });
   assert.ok(!out.acts.some((a) => a.type === 'say' || a.type === 'figure'));
@@ -247,6 +271,8 @@ test('ui helpers: typing schedule, eyes, bubble side, glide', () => {
   assert.equal(glideMs({ x: 0, y: 0 }, { x: 10, y: 0 }), 600);
   assert.equal(glideMs({ x: 0, y: 0 }, { x: 5000, y: 0 }), 1400);
   assert.equal(glideMs({ x: 0, y: 0 }, { x: 5000, y: 0 }, { reduced: true }), 0);
+  assert.equal(figureSlot({ vmId: VM }, { vmId: VM }), VM);
+  assert.equal(figureSlot({ vmId: null }, null), 'all');
 });
 
 test('cards keep off Bero', () => {

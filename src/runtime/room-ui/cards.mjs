@@ -37,7 +37,8 @@ function el(tag, cls, text) {
   return e;
 }
 
-export function createCards(canvas, { words, renderFigure, frameUrl, onChoose } = {}) {
+/** figureWords / labelOf are optional: without them the card figure uses Bero's words and VM ids. */
+export function createCards(canvas, { words, figureWords, renderFigure, frameUrl, labelOf, onChoose } = {}) {
   const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   const t = (code, params) => (words ? words.t(code, params) : code);
   const open = new Map(); // cardId -> { card, root, buttons }
@@ -55,7 +56,7 @@ export function createCards(canvas, { words, renderFigure, frameUrl, onChoose } 
       root.append(el('div', 'bero-card-note', t('bero.ui.claim_note')));
     }
     if (card.figure && typeof renderFigure === 'function') {
-      const fig = renderFigure(card.figure, { words, frameUrl });
+      const fig = renderFigure(card.figure, { words: figureWords ?? words, frameUrl, labelOf });
       if (fig) root.append(fig);
     }
     const row = el('div', 'bero-card-choices');
