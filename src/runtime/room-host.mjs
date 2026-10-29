@@ -30,7 +30,6 @@ const SESSION_MAX_AGE_MS = 8 * 60 * 60 * 1000;
 const LEASE_TTL_MS = 60_000;
 const MAX_TASK_LENGTH = 2000;
 const BASE = '/room/';
-const COOKIE = 'albera_room_session';
 const LABEL_RE = /^[\x20-\x7e]{1,32}$/;
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const TYPES = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
@@ -89,6 +88,9 @@ export function createRoomHost({
   const events = []; // RoomEvent[], seq ascending
   const cards = new Map(); // cardId -> { vmId, code, choices, closed }
   const bootstrapCode = randomBytes(32).toString('base64url');
+  // Cookies do not separate ports: every host gets its own cookie name (fixed at listen), so two rooms
+  // (or a room and a demo) on 127.0.0.1 never overwrite each other's session.
+  let cookieName = `albera_room_${randomBytes(6).toString('hex')}`;
   const sessions = new Map();
   let bootstrapUsed = false;
   let eventSeq = 0;
@@ -357,20 +359,23 @@ export function createRoomHost({
     const at = now();
     sessions.set(hash(token), { expiresAt: at + SESSION_TTL_MS, absoluteExpiresAt: at + SESSION_MAX_AGE_MS });
     return json(res, 200, { ok: true }, {
-      'Set-Cookie': `${COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=${BASE}; Max-Age=${SESSION_TTL_MS / 1000}`,
+      // The browser keeps the cookie for the absolute lifetime; the server enforces the sliding idle limit.
+      // (A Max-Age of the idle limit would make the browser drop a session that is still in use.)
+      'Set-Cookie': `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=${BASE}; Max-Age=${SESSION_MAX_AGE_MS / 1000}`,
     });
   }
 
   function sessionToken(rawCookie) {
     if (typeof rawCookie !== 'string' || rawCookie.length > 4096) return undefined;
+    // Every cookie with our name is tried: a stale or malformed one must not hide a valid one in the same header.
     for (const part of rawCookie.split(';')) {
       const at = part.indexOf('=');
-      if (at < 0 || part.slice(0, at).trim() !== COOKIE) continue;
+      if (at < 0 || part.slice(0, at).trim() !== cookieName) continue;
       const value = part.slice(at + 1).trim();
-      if (!/^[A-Za-z0-9_-]{40,48}$/.test(value)) return undefined;
+      if (!/^[A-Za-z0-9_-]{40,48}$/.test(value)) continue;
       const session = sessions.get(hash(value));
       const t = now();
-      if (!session || session.expiresAt <= t || session.absoluteExpiresAt <= t) { sessions.delete(hash(value)); return undefined; }
+      if (!session || session.expiresAt <= t || session.absoluteExpiresAt <= t) { sessions.delete(hash(value)); continue; }
       session.expiresAt = Math.min(t + SESSION_TTL_MS, session.absoluteExpiresAt);
       return value;
     }
@@ -394,6 +399,7 @@ export function createRoomHost({
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('room_host_listen_failed');
       serverPort = address.port;
+      cookieName = `albera_room_${serverPort}_${randomBytes(6).toString('hex')}`;
       void captureOnce();
       captureTimer = setInterval(() => { void captureOnce(); }, captureIntervalMs);
       captureTimer.unref?.();
@@ -404,6 +410,8 @@ export function createRoomHost({
     captureOnce,
     tickOnce,
     recordFleetEvent,
+    /** The session cookie name of this host (unique per host instance). */
+    get cookieName() { return cookieName; },
     async close() {
       if (closed) return;
       closed = true;
