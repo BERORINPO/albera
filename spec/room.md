@@ -179,3 +179,24 @@ Files:
 |---|---|---|---|
 | 2026-10-29 checks-readonly | checks are three fixed read-only kinds compared inside the VM; only findings leave the VM | no guest data in the host, no arbitrary commands. Rejected: let the AI write a check script | `validCheck` + tests (B) |
 | 2026-10-29 checks-secret | the guest password comes only from a file named on the command line, read per run, passed on stdin | never in argv, env, logs or the browser | tests (B) |
+
+## 8. Workspace file (v0.9)
+
+One JSON file names a room's VMs, tasks, camera labels, automatic checks and limits, so a team keeps it in a repository and
+reviews it like code. `albera-runtime room --workspace <file> [--guest-password-file <file>] [--port <n>]`; no other room
+option is accepted with it. Example: `examples/albera.workspace.example.json`. Parser: `src/runtime/workspace.mjs` (pure).
+
+```json
+{ "version": 1, "name": "booking-site",
+  "vms": [ { "vm": "<hyper-v-vm>", "label": "<any script, 1-32>", "task": "<1-2000>", "checks": [Check, ...] } ],
+  "limits": { "model": "claude-haiku-5-5", "maxSteps": 40, "maxUsdPerVm": 0.5, "maxUsdTotal": 2, "maxMinutes": 15 } }
+```
+
+Rules: unknown fields are refused (a typo or a pasted secret fails loudly); 1-8 VMs, unique; checks as §7; limits within
+the same table as the CLI (`LIMIT_RULES`), per-VM not above total; errors are fixed codes, the file content is never printed.
+
+| date+topic | decision | why / rejected | lint |
+|---|---|---|---|
+| 2026-10-30 workspace-no-secrets | the workspace file never holds secrets or machine paths; the guest password file stays a CLI option | the file is meant to be shared and committed | unknown fields refused (tests) |
+| 2026-10-30 workspace-exclusive | `--workspace` takes no other room options | one place to read what a room does. Rejected: CLI overrides on top of the file | tests |
+| 2026-10-30 labels-any-script | camera labels may be Japanese (no control characters, 1-32 chars) | labels are shown with textContent only | `isLabel` tests |

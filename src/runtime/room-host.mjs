@@ -9,6 +9,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isEnvironmentId } from './environment-provider.mjs';
+import { isLabel } from './workspace.mjs';
 import { cleanText, isCode, isId, validAct, validCheck, validCheckReport, validLedgerEntry, EFFECTS, LEDGER_CODES, MAX_CHECKS_PER_VM, MAX_TEXT } from './room-contract.mjs';
 
 export const ROOM_DESKTOP_SESSION_ID = 'room-view';
@@ -30,7 +31,6 @@ const SESSION_MAX_AGE_MS = 8 * 60 * 60 * 1000;
 const LEASE_TTL_MS = 60_000;
 const MAX_TASK_LENGTH = 2000;
 const BASE = '/room/';
-const LABEL_RE = /^[\x20-\x7e]{1,32}$/;
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const TYPES = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 const UI_NAMES = ['room.css', 'cam.css', 'figure.css', 'bero.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs',
@@ -488,7 +488,7 @@ function normalizeVms(vms) {
     const label = entry?.label ?? vmId;
     const task = entry?.task ?? '';
     if (!isEnvironmentId(vmId) || !isId(vmId) || seen.has(vmId)) throw new TypeError('invalid_room_vm');
-    if (typeof label !== 'string' || !LABEL_RE.test(label)) throw new TypeError('invalid_room_label');
+    if (!isLabel(label)) throw new TypeError('invalid_room_label');
     if (typeof task !== 'string' || task.length > MAX_TASK_LENGTH) throw new TypeError('invalid_room_task');
     seen.add(vmId);
     return Object.freeze({ vmId, label, task });

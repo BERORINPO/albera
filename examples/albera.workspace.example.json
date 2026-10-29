@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "name": "notepad-and-folders",
+  "vms": [
+    {
+      "vm": "albera-clone-01",
+      "label": "メモ帳",
+      "task": "Open Notepad, type exactly this text without quotes: 'control room clone 01', save it to the Desktop as room1.txt (full path C:\\Users\\Administrator\\Desktop\\room1.txt) and close Notepad.",
+      "checks": [
+        { "kind": "file_text", "path": "C:\\Users\\Administrator\\Desktop\\room1.txt", "text": "control room clone 01" }
+      ]
+    },
+    {
+      "vm": "albera-clone-02",
+      "label": "フォルダ作り",
+      "task": "Using File Explorer, create a new folder on the Desktop named room-two, then open it and create a new text document inside it named notes.txt (the final file must be exactly notes.txt).",
+      "checks": [
+        { "kind": "dir_has", "path": "C:\\Users\\Administrator\\Desktop\\room-two", "name": "notes.txt" }
+      ]
+    }
+  ],
+  "limits": { "model": "claude-haiku-5-5", "maxSteps": 40, "maxUsdPerVm": 0.2, "maxUsdTotal": 0.4, "maxMinutes": 10 }
+}

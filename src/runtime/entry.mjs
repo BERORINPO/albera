@@ -16,6 +16,7 @@ import { createRoomHost } from './room-host.mjs';
 import { missingRoomParts, startRoomDemo } from './room-demo.mjs';
 import { createHyperVGuestChecker } from './hyperv-guest-check-prototype.mjs';
 import { validCheck, MAX_CHECKS_PER_VM } from './room-contract.mjs';
+import { parseWorkspace, LIMIT_RULES, MAX_WORKSPACE_BYTES } from './workspace.mjs';
 import * as roomJournalModule from './room-journal.mjs';
 import * as roomFiguresModule from './room-figures.mjs';
 import * as beroDirectorModule from './bero-director.mjs';
@@ -88,10 +89,11 @@ function parseAgentArgs(args) {
 }
 
 const FLEET_DEFAULTS = Object.freeze({ model: DEFAULT_COMPUTER_USE_MODEL, maxSteps: 40, maxUsdPerVm: 0.5, maxUsdTotal: 2, maxMinutes: 15, port: 0 });
-const FLEET_NUMBER_OPTIONS = Object.freeze({
-  '--max-steps': ['maxSteps', 200, true], '--max-usd-per-vm': ['maxUsdPerVm', 100, false],
-  '--max-usd-total': ['maxUsdTotal', 800, false], '--max-minutes': ['maxMinutes', 240, false],
-});
+// The same limits as a workspace file (workspace.mjs LIMIT_RULES).
+const FLEET_NUMBER_OPTIONS = Object.freeze(Object.fromEntries(
+  [['--max-steps', 'maxSteps'], ['--max-usd-per-vm', 'maxUsdPerVm'], ['--max-usd-total', 'maxUsdTotal'], ['--max-minutes', 'maxMinutes']]
+    .map(([flag, key]) => [flag, [key, ...LIMIT_RULES[key]]]),
+));
 
 function parseFleetArgs(args) {
   const options = { command: 'fleet', jobs: [], ...FLEET_DEFAULTS, help: false };
@@ -135,7 +137,7 @@ function parseRoomArgs(args) {
   const demo = args.filter((arg) => arg === '--demo').length;
   if (demo > 1) throw new Error('runtime_option_must_be_unique');
   const rest = args.filter((arg) => arg !== '--demo');
-  if (demo === 0) return parseRoomCheckArgs(rest);
+  if (demo === 0) return rest.includes('--workspace') ? parseRoomWorkspaceArgs(rest) : parseRoomCheckArgs(rest);
   const options = { command: 'room', demo: true, jobs: Object.freeze([]), port: 0, help: false };
   let portSeen = false;
   for (let i = 0; i < rest.length; i++) {
@@ -170,6 +172,57 @@ function parseRoomCheckArgs(args) {
   const fleet = parseFleetArgs(rest);
   if (!fleet.help && Object.keys(found).length === 1) throw new Error('runtime_room_checks_need_both_files');
   return Object.freeze({ ...fleet, command: 'room', demo: false, checksFile: found.checksFile ?? null, guestPasswordFile: found.guestPasswordFile ?? null });
+}
+
+// room --workspace <file> [--guest-password-file <file>] [--port <n>]: VMs, tasks, labels, checks and limits come from
+// the file; nothing else may be given on the command line, so the file is the one place a team reviews.
+const ROOM_WORKSPACE_OPTIONS = Object.freeze({ '--workspace': 'workspaceFile', '--guest-password-file': 'guestPasswordFile', '--port': 'port' });
+
+function parseRoomWorkspaceArgs(args) {
+  const found = {};
+  let help = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = String(args[i]);
+    if (arg === '--help' || arg === '-h') { help = true; continue; }
+    if (!Object.hasOwn(ROOM_WORKSPACE_OPTIONS, arg)) throw new Error('runtime_room_workspace_takes_no_other_options');
+    const key = ROOM_WORKSPACE_OPTIONS[arg];
+    if (Object.hasOwn(found, key)) throw new Error('runtime_option_must_be_unique');
+    const value = args[++i];
+    if (typeof value !== 'string' || value.length === 0 || value.startsWith('--')) throw new Error('runtime_option_requires_value');
+    if (key === 'port' && (!/^\d+$/.test(value) || Number(value) > 65535)) throw new Error('runtime_port_invalid');
+    found[key] = key === 'port' ? Number(value) : value;
+  }
+  return Object.freeze({
+    command: 'room', demo: false, help, workspaceFile: found.workspaceFile ?? null, guestPasswordFile: found.guestPasswordFile ?? null, port: found.port ?? 0,
+  });
+}
+
+/**
+ * Read a workspace file and turn it into the room's options. Throws an Error whose message is a fixed code.
+ * A workspace with checks needs --guest-password-file (checked to be a file here, read only by the checker).
+ */
+export function loadRoomWorkspace({ workspaceFile, guestPasswordFile, port = 0 }, io = { statSync, readFileSync }) {
+  let text;
+  try {
+    const stat = io.statSync(workspaceFile);
+    if (!stat.isFile() || stat.size > MAX_WORKSPACE_BYTES) throw new Error('too_big');
+    text = io.readFileSync(workspaceFile, 'utf8');
+  } catch { throw new Error('runtime_room_workspace_unreadable'); }
+  let workspace;
+  try { workspace = parseWorkspace(text, { knownModels: Object.keys(MODEL_PRICES) }); }
+  catch (error) { throw new Error(`runtime_room_${error.message}`); }
+  const hasChecks = Object.keys(workspace.checks).length > 0;
+  if (hasChecks) {
+    let stat;
+    try { stat = guestPasswordFile ? io.statSync(guestPasswordFile) : null; } catch { stat = null; }
+    if (!stat?.isFile()) throw new Error('runtime_room_workspace_checks_need_password_file');
+  }
+  return Object.freeze({
+    command: 'room', demo: false, help: false, port, workspaceName: workspace.name,
+    jobs: workspace.jobs, labels: workspace.labels, checks: workspace.checks,
+    guestPasswordFile: hasChecks ? guestPasswordFile : null, checksFile: null,
+    ...FLEET_DEFAULTS, port, ...workspace.limits,
+  });
 }
 
 const MAX_CHECKS_FILE_BYTES = 64 * 1024;
@@ -270,6 +323,7 @@ Usage:
   albera-runtime fleet --job <vm>=<task> [--job ...] [--model claude-haiku-5-5] [--max-steps 40] [--max-usd-per-vm 0.50] [--max-usd-total 2] [--max-minutes 15] [--port <0-65535>]
   albera-runtime room --job <vm>=<task> [--job ...] [--model claude-haiku-5-5] [--max-steps 40] [--max-usd-per-vm 0.50] [--max-usd-total 2] [--max-minutes 15] [--port <0-65535>]
                       [--checks <checks.json> --guest-password-file <file>]
+  albera-runtime room --workspace <albera.workspace.json> [--guest-password-file <file>] [--port <0-65535>]
   albera-runtime room --demo [--port <0-65535>]
 
 The regular "albera" command remains a read-only session dashboard. Runtime binds only to 127.0.0.1.
@@ -284,6 +338,7 @@ agent lets an AI operate one Hyper-V VM desktop through screenshots, mouse and k
 fleet runs up to 8 agents at once (one per VM, each with its own lease) and shows the desktop wall with each AI's pointer and status drawn over its screen. Cost grows with the number of VMs: every loop stops at --max-usd-per-vm and all stop together at --max-usd-total (each may finish the response already paid for, so the total can pass the limit slightly). Ctrl+C stops all agents and keeps the wall open; press it again to exit. The wall shows what each AI claims, not whether it succeeded: check every VM yourself. Same API key, privacy and Broker notes as agent.
 room is the control room: the fleet's VMs as cameras on a canvas, with Bero (a rule-based main AI, no LLM) pointing out stalls, DONE claims and limits and opening decision cards. A card choice can stop the hands on a VM or start a short fixed job there (close a blocking dialog, or look again whether the original task is done); the browser cannot type a task. Jobs started from cards share the same per-VM and total USD limits. Ctrl+C stops all agents and keeps the room open; press it again to exit. --demo runs 3 fake VMs with a scripted AI: no VM, no API key, no network. Same API key, privacy and Broker notes as fleet.
 room --checks checks the VM itself when its AI claims DONE, and asks you only when a check fails or cannot run. The file maps VM names to at most 8 read-only checks each: {"<vm>": [{"kind": "file_exists", "path": "C:\\\\x.txt"}, {"kind": "file_text", "path": "C:\\\\x.txt", "text": "expected"}, {"kind": "dir_has", "path": "C:\\\\dir", "name": "entry"}]}. file_text compares the file's trimmed text (first 64 KiB) inside the VM; only ok / missing / differs / error comes back, never file contents. Checks run over PowerShell Direct as the guest user Administrator, with the password read from --guest-password-file at each check (never from the command line or the environment, never printed). Both options are needed together. It uses a same-user prototype and needs Hyper-V Administrators membership.
+room --workspace starts the room from one JSON file you can keep in a repository and review: {"version": 1, "name": "booking-site", "vms": [{"vm": "<hyper-v-vm-name>", "label": "<camera label>", "task": "<task>", "checks": [...]}], "limits": {"model": "claude-haiku-5-5", "maxSteps": 40, "maxUsdPerVm": 0.5, "maxUsdTotal": 2, "maxMinutes": 15}}. No other room option may be given with it, so the file is the one place to read. Secrets never go in the file: if any VM has checks, give --guest-password-file on the command line. See examples/albera.workspace.example.json.
 recover-tail requires Runtime to be stopped and copies only the fully validated record prefix to a new file beside the original. It keeps the original journal and incomplete tail unchanged, refuses an existing writer lock, and preserves the session identity. It cannot recover a possibly lost final event.
 `;
 
@@ -451,14 +506,21 @@ async function runRoomDemo(options) {
   process.once('SIGTERM', stop);
 }
 
-async function runRoom(options) {
-  if (options.demo) { await runRoomDemo(options); return; }
+async function runRoom(given) {
+  if (given.demo) { await runRoomDemo(given); return; }
+  let options = given;
+  if (given.workspaceFile) {
+    // The error is a fixed code; the workspace file's content is never printed.
+    try { options = loadRoomWorkspace(given); }
+    catch (error) { console.error(`ALBERA Runtime room: ${error.message}`); process.exitCode = 2; return; }
+  }
+  const labelOf = (vmId) => options.labels?.[vmId] ?? vmId.slice(0, 32);
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) { console.error('ALBERA Runtime room: set the ANTHROPIC_API_KEY environment variable first.'); process.exitCode = 1; return; }
   const missing = missingRoomParts({ journalModule: roomJournalModule, figuresModule: roomFiguresModule, directorModule: beroDirectorModule });
   if (missing.length) { console.error(`ALBERA Runtime room: these room parts are not built yet: ${missing.join(', ')}.`); process.exitCode = 1; return; }
-  let checks = {};
-  let checker = null;
+  let checks = options.checks ?? {};
+  let checker = Object.keys(checks).length ? createHyperVGuestChecker({ passwordFile: options.guestPasswordFile }) : null;
   if (options.checksFile) {
     // The error is a fixed code; neither file's content is ever printed.
     try { checks = loadRoomChecks({ checksFile: options.checksFile, guestPasswordFile: options.guestPasswordFile, vmIds: options.jobs.map((job) => job.vmId) }); }
@@ -470,7 +532,7 @@ async function runRoom(options) {
     const broker = createHyperVDesktopBrokerPrototype();
     const board = createAgentStatusBoard();
     const journal = roomJournalModule.createRoomJournal({});
-    const director = beroDirectorModule.createBeroDirector({ buildFigure: roomFiguresModule.buildFigure, labelOf: (vmId) => vmId.slice(0, 32) });
+    const director = beroDirectorModule.createBeroDirector({ buildFigure: roomFiguresModule.buildFigure, labelOf });
     const fleet = createAgentFleet({
       jobs: options.jobs, board, keepAlive: true,
       createDriver: (vmId, lease) => new HyperVDesktopDriver({ broker, resolveCurrentLease: async () => lease }),
@@ -484,11 +546,11 @@ async function runRoom(options) {
       },
     });
     room = createRoomHost({
-      vms: options.jobs.map(({ vmId, task }) => ({ vmId, label: vmId.slice(0, 32), task })), board, journal, director, fleet, checker, checks,
+      vms: options.jobs.map(({ vmId, task }) => ({ vmId, label: labelOf(vmId), task })), board, journal, director, fleet, checker, checks,
       driver: (resolveCurrentLease) => new HyperVDesktopDriver({ broker, resolveCurrentLease }),
     });
     const address = await room.listen(options.port);
-    console.log(`ALBERA control room listening at ${address.url}`);
+    console.log(`ALBERA control room${options.workspaceName ? ` (workspace ${options.workspaceName})` : ''} listening at ${address.url}`);
     const checked = Object.keys(checks);
     if (checked.length) console.log(`Automatic checks after a DONE claim on: ${checked.join(', ')}.`);
     console.log(`One-time UI bootstrap code: ${address.bootstrapCode}`);
