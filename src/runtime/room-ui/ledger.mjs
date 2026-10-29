@@ -1,8 +1,12 @@
 // Today's ledger (part C): the bottom-right list of what the AI did and what you decided.
 // Newest at the bottom, at most 6 rows. hands_step rows collapse to one line per VM (updated in place),
-// so the list is about decisions and events, not every step. Text goes in with textContent only.
+// so the list is about decisions and events, not every step. A check_started row is folded into the
+// check_done row of the same VM that follows it. Check rows carry a mark (text + colour). Text goes in with textContent only.
 
 export const LEDGER_ROWS = 6;
+// Copies of CHECK_VERDICTS / CHECK_FINDINGS (room-contract.mjs is not served to the browser).
+const VERDICTS = ['passed', 'failed', 'unavailable'];
+const FINDINGS = ['ok', 'missing', 'differs', 'error'];
 
 /** hh:mm of an epoch ms (the viewer's local time). @param {number} at */
 export function clockOf(at) {
@@ -18,20 +22,52 @@ export function camLabel(vmId, labelOf) {
   return typeof label === 'string' && label ? label : vmId;
 }
 
+/** The verdict of a check_done entry; anything unknown counts as unavailable (never as passed). @param {any} p */
+export function verdictOf(p) {
+  return VERDICTS.includes(p?.verdict) ? p.verdict : 'unavailable';
+}
+
+/** The mark a check row shows (passed | failed | unavailable | checking), or null for other rows. @param {any} entry */
+export function checkMark(entry) {
+  if (entry?.code === 'check_started') return 'checking';
+  return entry?.code === 'check_done' ? verdictOf(entry.params) : null;
+}
+
+/**
+ * The failing check in words: "C:\x\room1.txt: differs" -> "room1.txt: <finding_differs>".
+ * A detail that is not "path: finding" is shown as it came. @param {{t: Function}} words @param {unknown} detail
+ */
+export function detailText(words, detail) {
+  if (typeof detail !== 'string' || !detail) return '';
+  const m = detail.match(/^(.*): ([a-z]+)$/);
+  if (!m || !FINDINGS.includes(m[2])) return detail;
+  const name = m[1].split('\\').filter(Boolean).at(-1) ?? m[1];
+  return `${name}: ${words.t(`finding_${m[2]}`, {})}`;
+}
+
+/** Words of a check_done verdict. @param {{t: Function}} words @param {any} p @param {string} cam */
+function verdictText(words, p, cam) {
+  const checks = Number.isFinite(p.checks) ? p.checks : 0;
+  const failed = Number.isFinite(p.failed) ? p.failed : 0;
+  return words.t(`verdict_${verdictOf(p)}`, { cam, checks, failed, ok: Math.max(0, checks - failed), detailText: detailText(words, p.detail) });
+}
+
 /**
  * Params a ledger line needs, with nested codes turned into words.
  * @param {{t: Function}} words @param {any} entry @param {(vmId: string) => string} [labelOf]
  */
 export function entryParams(words, entry, labelOf) {
   const p = entry.params ?? {};
+  const cam = camLabel(entry.vmId, labelOf);
   return {
     ...p,
-    cam: camLabel(entry.vmId, labelOf),
+    cam,
     doing: p.note || p.action || '',
     outcomeText: p.outcome ? words.t(`outcome_${p.outcome}`, {}) : '',
     effectText: p.effect ? words.t(`effect_${p.effect}`, {}) : '',
     whatText: p.what ? words.t(`what_${p.what}`, {}) : '',
     kindText: p.kind ? words.t(`fig_${p.kind}_kind`, {}) : '',
+    verdictText: entry.code === 'check_done' ? verdictText(words, p, cam) : '',
   };
 }
 
@@ -42,7 +78,9 @@ export function entryText(words, entry, labelOf) {
 
 /**
  * Pure: the next row list after one entry. A row is {key, entry}; a hands_step row has key `step:<vmId>`
- * and replaces the earlier step row of that VM in place. Returns {rows, added, replaced}.
+ * and replaces the earlier step row of that VM in place. A check_done row takes the place of the newest
+ * check_started row of its VM: that row is dropped and the result is added at the bottom.
+ * Returns {rows, added, replaced}.
  * @param {{key: string, entry: any}[]} rows @param {any} entry
  */
 export function nextRows(rows, entry, max = LEDGER_ROWS) {
@@ -52,7 +90,9 @@ export function nextRows(rows, entry, max = LEDGER_ROWS) {
     const next = rows.map((r, i) => (i === at ? { key, entry } : r));
     return { rows: next, added: null, replaced: key };
   }
-  const grown = [...rows, { key, entry }];
+  const started = entry.code === 'check_done'
+    ? rows.findLastIndex((r) => r.entry.code === 'check_started' && r.entry.vmId === entry.vmId) : -1;
+  const grown = [...rows.filter((_, i) => i !== started), { key, entry }];
   return { rows: grown.slice(Math.max(0, grown.length - max)), added: key, replaced: null };
 }
 
@@ -75,7 +115,17 @@ export function createLedger(el, { words, labelOf }) {
     who.className = `rf-who rf-actor-${entry.actor}`;
     who.textContent = words.t(`actor_${entry.actor}`, {});
     time.textContent = clockOf(entry.at);
-    text.textContent = entryText(words, entry, labelOf);
+    const line = entryText(words, entry, labelOf);
+    const mark = checkMark(entry);
+    if (!mark) {
+      text.textContent = line;
+      return;
+    }
+    const markEl = document.createElement('span');
+    markEl.className = `rf-mark rf-mark-${mark}`;
+    markEl.textContent = words.t(`mark_${mark}`, {});
+    text.replaceChildren(markEl, document.createTextNode(` ${line}`));
+    text.title = line;
   }
 
   function add(entry) {
