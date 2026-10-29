@@ -15,16 +15,31 @@ export const LEDGER_CODES = Object.freeze([
   'hands_started', 'hands_step', 'hands_ended', 'hands_stalled',
   'bero_noticed', 'bero_figure', 'bero_card',
   'human_choice',
+  'check_started', 'check_done',
 ]);
+
+/**
+ * Automatic checks (spec/room.md §7). When the hands of a VM claim DONE, the host checks the VM itself
+ * (read-only, fixed operations, no AI) and records the verdict. Only the verdict leaves the VM, never file contents.
+ *   file_exists {path}            the file exists
+ *   file_text   {path, text}      the file's text, trimmed, equals `text` (file read up to 64 KiB)
+ *   dir_has     {path, name}      the folder exists and holds an entry named `name`
+ */
+export const CHECK_KINDS = Object.freeze(['file_exists', 'file_text', 'dir_has']);
+export const CHECK_VERDICTS = Object.freeze(['passed', 'failed', 'unavailable']);
+/** Per check: what was found. `differs` = the file exists but its text is not the expected one. */
+export const CHECK_FINDINGS = Object.freeze(['ok', 'missing', 'differs', 'error']);
+export const MAX_CHECKS_PER_VM = 8;
 
 /** Outcomes copied from desktop-agent-loop (never a verdict: claimed_* are claims). */
 export const HAND_OUTCOMES = Object.freeze(['claimed_done', 'claimed_failed', 'limit_reached', 'stopped', 'refused', 'error']);
 
 /** Bero speech codes (owner of the words: D, room-ui/words-bero.mjs). */
-export const SAY_CODES = Object.freeze(['patrol', 'stalled', 'claimed_done', 'claimed_failed', 'limit_reached', 'error', 'progress', 'summary', 'ask', 'doing_it', 'thanks']);
+export const SAY_CODES = Object.freeze(['patrol', 'stalled', 'claimed_done', 'claimed_failed', 'limit_reached', 'error', 'progress', 'summary', 'ask', 'doing_it', 'thanks',
+  'checking', 'verified', 'check_failed', 'check_unavailable']);
 
 /** Decision card codes and what a choice does (owner of the words: D). Effects are executed by the host (B). */
-export const CARD_CODES = Object.freeze(['stalled', 'claimed_done', 'claimed_failed', 'limit_reached', 'error']);
+export const CARD_CODES = Object.freeze(['stalled', 'claimed_done', 'claimed_failed', 'limit_reached', 'error', 'check_failed', 'check_unavailable']);
 export const EFFECTS = Object.freeze(['stop', 'nudge', 'recheck', 'accept', 'dismiss']);
 
 /** Figures (owner of the words and drawing: C). */
@@ -152,3 +167,34 @@ export function validEvent(ev) {
  * Effect asked by a choice (D -> host B).
  * @typedef {{effect: 'stop'|'nudge'|'recheck'|'accept'|'dismiss', vmId: string, cardId: string, choiceId: string}} Effect
  */
+
+// ---- automatic checks (spec/room.md §7) ----
+
+// A Windows absolute path on a local drive: no "..", no wildcards, no UNC, no control characters.
+const WIN_PATH_RE = /^[A-Za-z]:\(?:[^\/:*?"<>|\u0000-\u001f]+\)*[^\/:*?"<>|\u0000-\u001f]*$/;
+const NAME_RE = /^[^\/:*?"<>|\u0000-\u001f]{1,255}$/;
+
+export function isGuestPath(p) {
+  return typeof p === 'string' && p.length <= 260 && WIN_PATH_RE.test(p) && !p.split('\').some((part) => part === '..' || part === '.');
+}
+
+/** @typedef {{kind: 'file_exists', path: string} | {kind: 'file_text', path: string, text: string} | {kind: 'dir_has', path: string, name: string}} Check */
+export function validCheck(c) {
+  if (!c || !CHECK_KINDS.includes(c.kind) || !isGuestPath(c.path)) return false;
+  const keys = Object.keys(c).sort().join(',');
+  if (c.kind === 'file_exists') return keys === 'kind,path';
+  if (c.kind === 'file_text') return keys === 'kind,path,text' && typeof c.text === 'string' && c.text.length <= MAX_TEXT && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(c.text);
+  return keys === 'kind,name,path' && typeof c.name === 'string' && NAME_RE.test(c.name) && c.name !== '..' && c.name !== '.';
+}
+
+/**
+ * What a checker returns for one VM. `results` is in the order of the checks given.
+ * @typedef {{verdict: 'passed'|'failed'|'unavailable', results: {kind: string, path: string, finding: 'ok'|'missing'|'differs'|'error'}[], code?: string}} CheckReport
+ *   passed = every finding ok. failed = at least one missing / differs. unavailable = the VM could not be checked (code says why).
+ */
+export function validCheckReport(r, count) {
+  return Boolean(r) && CHECK_VERDICTS.includes(r.verdict) && Array.isArray(r.results) && r.results.length <= MAX_CHECKS_PER_VM
+    && (r.verdict === 'unavailable' || r.results.length === count)
+    && r.results.every((x) => CHECK_KINDS.includes(x.kind) && isGuestPath(x.path) && CHECK_FINDINGS.includes(x.finding))
+    && (r.verdict !== 'passed' || r.results.every((x) => x.finding === 'ok'));
+}

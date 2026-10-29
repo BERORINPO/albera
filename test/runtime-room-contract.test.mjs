@@ -63,3 +63,18 @@ test('status board keeps the AI note and when it last acted', () => {
   assert.equal(e.note, 'Opening Notepad');
   assert.equal(e.lastActionAt, 250);
 });
+
+test('checks: only fixed read-only kinds on plain local paths', async () => {
+  const { validCheck, validCheckReport, isGuestPath } = await import('../src/runtime/room-contract.mjs');
+  assert.ok(validCheck({ kind: 'file_exists', path: 'C:\Users\Administrator\Desktop\room1.txt' }));
+  assert.ok(validCheck({ kind: 'file_text', path: 'C:\x\a.txt', text: 'control room clone 01' }));
+  assert.ok(validCheck({ kind: 'dir_has', path: 'C:\Users\Administrator\Desktop\room-two', name: 'notes.txt' }));
+  for (const bad of ['C:\x\..\y', '\\server\share\a', 'C:\x\*.txt', 'relative\a.txt', 'C:/x/a.txt']) assert.ok(!isGuestPath(bad), bad);
+  assert.ok(!validCheck({ kind: 'run_script', path: 'C:\x' }));
+  assert.ok(!validCheck({ kind: 'file_exists', path: 'C:\x\a', extra: 1 }));
+  assert.ok(!validCheck({ kind: 'dir_has', path: 'C:\x', name: '..' }));
+  const results = [{ kind: 'file_exists', path: 'C:\x\a', finding: 'ok' }];
+  assert.ok(validCheckReport({ verdict: 'passed', results }, 1));
+  assert.ok(!validCheckReport({ verdict: 'passed', results: [{ ...results[0], finding: 'missing' }] }, 1));
+  assert.ok(validCheckReport({ verdict: 'unavailable', results: [], code: 'guest_unreachable' }, 1));
+});
