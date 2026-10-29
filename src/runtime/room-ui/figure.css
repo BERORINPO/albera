@@ -39,8 +39,9 @@ rect.rf-d, path.rf-d { fill: none; }
 .rf-src-h { font-family: var(--font, sans-serif); font-size: 10.5px; }
 .rf-src-l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* the ledger (bottom right) */
-.rf-ledger { position: absolute; right: 16px; bottom: 16px; width: 330px; padding: 8px 12px; font-size: 13px; z-index: 9;
+/* the ledger: docked to the bottom right of the window (not the canvas), always fully on screen, scrolls inside */
+.rf-ledger { position: fixed; right: 16px; bottom: 16px; width: min(340px, calc(100vw - 32px)); padding: 8px 12px; font-size: 13px; z-index: 20;
+  max-height: min(40vh, calc(100vh - 96px)); overflow-y: auto; overscroll-behavior: contain; box-sizing: border-box;
   background: color-mix(in oklch, var(--paper, oklch(21% 0.004 75)) 92%, transparent);
   border: 1px solid var(--rule, oklch(40% 0.004 75)); border-radius: 10px; }
 .rf-ledger-t { margin-bottom: 2px; font-size: 12px; font-weight: 700; color: var(--muted, oklch(68% 0.004 75)); }
