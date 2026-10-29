@@ -44,6 +44,11 @@
 
 .room-cam.tone-stuck { border-color: var(--stuck, #e0b040); }
 
+/* a DONE that ALBERA's own check passed: a solid line instead of the dashed claim line */
+.room-cam.tone-done .cam-pill { color: var(--done, #6cc08a); }
+.room-cam.verified .cam-ft { border-top: 2px solid var(--done, #6cc08a); padding-top: 6px; margin: 0 7px; padding-left: 3px; padding-right: 3px; }
+.room-cam.verified .cam-band { white-space: normal; color: var(--done, #6cc08a); }
+
 /* Ctrl twice: only the AI cursors stay bright */
 .cam-spotlight .room-cam.spot .cam-img, .cam-spotlight .room-cam.spot .cam-hd, .cam-spotlight .room-cam.spot .cam-ft { filter: brightness(0.25); transition: filter 0.3s; }
 .cam-spotlight .room-cam.spot .cam-cur { box-shadow: 0 0 0 2px #fff, 0 0 18px 6px var(--rec, #e5534b); }

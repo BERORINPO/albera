@@ -1,4 +1,5 @@
-// Words for the cameras (part B). Codes are used by cam.mjs only. A finished run is always shown as a claim.
+// Words for the cameras (part B). Codes are used by cam.mjs only. A finished run is shown as a claim, except a DONE
+// whose automatic check by ALBERA passed (cam.verified).
 const en = {
   'cam.title': 'CAM {n} · {label}',
   'cam.rec': 'REC {time}',
@@ -8,6 +9,10 @@ const en = {
   'cam.band': 'step {step} · {action} · ${usd}',
   'cam.claim': 'AI claims: {claim} (self-reported, check the VM)',
   'cam.no_message': '(no message)',
+  'cam.checking': 'AI claims: {claim} (ALBERA is checking the VM)',
+  'cam.verified': 'Verified: {ok} of {checks} checks OK',
+  'cam.claim_failed': 'AI claims: {claim} (self-reported, check the VM) · check failed: {detail}',
+  'cam.claim_unavailable': 'AI claims: {claim} (self-reported, check the VM) · could not check: {detail}',
   'cam.ended': 'AI run ended: {outcome} (not verified)',
   'cam.outcome.limit_reached': 'limit reached',
   'cam.outcome.stopped': 'stopped',
@@ -16,6 +21,7 @@ const en = {
   'cam.tone.work': 'working',
   'cam.tone.wait': 'your turn',
   'cam.tone.stuck': 'look here',
+  'cam.tone.done': 'verified',
   'cam.tone.off': 'idle',
   'cam.note.pending': 'waiting for the first frame',
   'cam.note.stale': 'old frame: the picture is not fresh',
@@ -31,6 +37,10 @@ const ja = {
   'cam.band': 'step {step} · {action} · ${usd}',
   'cam.claim': 'AI の申告: {claim}（自己申告です。VM を確かめてください）',
   'cam.no_message': '（メッセージなし）',
+  'cam.checking': 'AI の申告: {claim}（ALBERA が VM を確認しています）',
+  'cam.verified': '確認済み: {checks} 件中 {ok} 件 OK',
+  'cam.claim_failed': 'AI の申告: {claim}（自己申告です。VM を確かめてください）· 確認で不合格: {detail}',
+  'cam.claim_unavailable': 'AI の申告: {claim}（自己申告です。VM を確かめてください）· 確認できませんでした: {detail}',
   'cam.ended': 'AI の作業が終わりました: {outcome}（確認されていません）',
   'cam.outcome.limit_reached': '上限に到達',
   'cam.outcome.stopped': '停止',
@@ -39,6 +49,7 @@ const ja = {
   'cam.tone.work': '作業中',
   'cam.tone.wait': 'あなた待ち',
   'cam.tone.stuck': '要確認',
+  'cam.tone.done': '確認済み',
   'cam.tone.off': '待機',
   'cam.note.pending': '最初の画面を待っています',
   'cam.note.stale': '古い画面です（更新が止まっています）',

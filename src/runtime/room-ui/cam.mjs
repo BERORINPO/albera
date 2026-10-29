@@ -1,5 +1,6 @@
 // A camera on the room canvas (spec/room.md §5, part B): the VM's live screen with the AI cursor drawn over it.
-// Text is set with textContent only. The band and the claim line show what the AI reports, never a verdict.
+// Text is set with textContent only. The band shows what the AI reports; a DONE stays a claim unless ALBERA's own
+// automatic check of that run passed (vm.check, spec/room.md §7), which is shown until the VM's next run.
 const CLICKS = new Set(['left_click', 'right_click', 'middle_click', 'double_click', 'triple_click', 'left_mouse_down', 'left_click_drag']);
 const SPOT_MS = 1800;
 const RIPPLE_MS = 700;
@@ -24,18 +25,41 @@ export function cursorSpot(cursor, natural, box) {
   return { left: (left / box.w) * 100, top: (top / box.h) * 100 };
 }
 
-/** The tone of a camera from its frame and its hands: work | wait | stuck | done | off. */
+const CHECK_STATES = new Set(['checking', 'passed', 'failed', 'unavailable']);
+
+/** The automatic check of a VM's DONE claim, when there is one for its finished run (else null). */
+function checkOf(agent, check) {
+  if (agent?.state !== 'done' || agent.outcome !== 'claimed_done' || !CHECK_STATES.has(check?.state)) return null;
+  return check;
+}
+
+/** The tone of a camera from its frame, its hands and its check: work | wait | stuck | done | off. */
 export function camTone(vm) {
   const agent = vm?.agent;
   if (vm?.status === 'error') return 'stuck';
   if (!agent || agent.state === 'idle') return 'off';
+  const check = checkOf(agent, vm?.check);
+  if (check) return check.state === 'passed' ? 'done' : check.state === 'checking' ? 'wait' : 'stuck';
   if (agent.state === 'done') return agent.outcome === 'claimed_done' ? 'wait' : 'stuck';
   return vm.status === 'stale' ? 'stuck' : 'work';
 }
 
-/** The band under the screen: the AI's own report while it runs, a claim (dashed) when it ended. */
-export function bandText(agent, t) {
+const count = (n) => (Number.isSafeInteger(n) && n >= 0 ? n : 0);
+
+/**
+ * The band under the screen: the AI's own report while it runs, a claim (dashed) when it ended.
+ * A DONE whose automatic check passed is shown as verified (`verified: true`); a failed or unavailable check keeps
+ * the claim wording and adds what the check found.
+ */
+export function bandText(agent, t, vmCheck = null) {
   if (!agent || agent.state === 'idle') return { text: t('cam.idle'), claim: false };
+  const check = checkOf(agent, vmCheck);
+  if (check) {
+    const claim = agent.claim || t('cam.no_message');
+    if (check.state === 'passed') return { text: t('cam.verified', { ok: count(check.checks) - count(check.failed), checks: count(check.checks) }), claim: false, verified: true };
+    if (check.state === 'checking') return { text: t('cam.checking', { claim }), claim: true };
+    return { text: t(`cam.claim_${check.state}`, { claim, detail: String(check.detail ?? '') }), claim: true };
+  }
   if (agent.state === 'done') {
     if (agent.outcome === 'claimed_done' || agent.outcome === 'claimed_failed') {
       return { text: t('cam.claim', { claim: agent.claim || t('cam.no_message') }), claim: true };
@@ -92,16 +116,17 @@ export function createCam(vm, { index = 0, words } = {}) {
     setTimeout(() => ring.remove(), RIPPLE_MS);
   }
 
-  function updateAgent(agent) {
+  function updateAgent(agent, check) {
     const running = agent?.state === 'running';
     state.cursor = running ? agent.cursor : null;
     placeDot();
     const grew = running && state.actions !== null && Number.isSafeInteger(agent.actions) && agent.actions > state.actions;
     if (grew && CLICKS.has(agent.lastAction)) ripple();
     state.actions = Number.isSafeInteger(agent?.actions) ? agent.actions : null;
-    const { text, claim } = bandText(agent, t);
+    const { text, claim, verified = false } = bandText(agent, t, check);
     band.textContent = text;
     el.classList.toggle('claim', claim);
+    el.classList.toggle('verified', verified);
   }
 
   function update(next) {
@@ -121,7 +146,7 @@ export function createCam(vm, { index = 0, words } = {}) {
       img.src = screenUrl(next.vmId, next.capturedAt);
       img.hidden = false;
     }
-    updateAgent(next.agent ?? null);
+    updateAgent(next.agent ?? null, next.check ?? null);
   }
 
   img.addEventListener('load', placeDot);

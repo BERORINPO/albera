@@ -159,11 +159,12 @@ Checker (B):
 createFakeGuestChecker(script) -> { run(vmId, checks) -> Promise<CheckReport> }      // script: vmId -> CheckReport[] in order
 // hyperv-guest-check-prototype.mjs  (same-user prototype, like the desktop broker)
 createHyperVGuestChecker({ user = 'Administrator', passwordFile }) -> { run(vmId, checks) -> Promise<CheckReport> }
-  // pwsh -NoProfile -File hyperv-guest/check-io.ps1, request on stdin as JSON {vmName, user, password, checks}
-  // the script runs Invoke-Command -VMName with ONE fixed script block that only does Test-Path / Get-Item / a bounded text read
-  // and compares inside the VM. Only findings come back. The password is read from the file at each run, never logged,
-  // never put on a command line, never in an event, error or report.
+  // <absolute path to pwsh.exe> -NoProfile -File hyperv-guest/check-io.ps1, request on stdin as JSON {vmName, user, password, checks}
+  // the script runs Invoke-Command -VMName with ONE fixed script block that only uses .NET calls ([System.IO.File]::Exists,
+  // [System.IO.Directory]::Exists, a bounded [System.IO.File]::Open read) and compares inside the VM. Only findings come back.
+  // The password is read from the file at each run, never logged, never put on a command line, never in an event, error or report.
 ```
+A passed check trusts the guest: an AI with admin rights inside the VM could fake it, so it is not tamper-proof.
 CLI (B): `room --job ... --checks <file.json> --guest-password-file <file>`; checks file = `{ "<vmId>": [Check, ...] }`, validated
 with `validCheck`, at most 8 per VM, unknown VM ids rejected. `--demo` uses the fake checker: Booking form passes, Tests' DONE fails once.
 
