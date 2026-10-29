@@ -292,6 +292,57 @@ const TEXT = {
       { content: 'リリースを知らせる', activeForm: 'リリースを知らせています' },
     ],
   },
+  zh: {
+    config: '决定配置文件放在哪里',
+    configDetail: '已准备好两个方案。',
+    configAsk: '放在文件夹 A 还是文件夹 B?',
+    wording: '确定演示界面的文案',
+    colour: '商量按钮的颜色',
+    colourAsk: '按钮用蓝色还是绿色?',
+    tally: '汇总每周报告 (演示)',
+    limit: '因用量上限而停下的演示',
+    failed: '启动失败的演示',
+    readme: '整理 README',
+    readmeWrap: '分成了 4 个标题,把启动步骤缩成 3 行。还没有 commit。',
+    login: '修复登录界面的缺陷',
+    loginReport: '"[PR #12](https://github.com/demo-org/demo-app/pull/12) 已提交。21 项测试全部通过。 ⏎ 详情见这里"',
+    search: '添加搜索框',
+    background: '在后台调研',
+    release: '发布准备 (演示)',
+    changelog: '编写更新日志',
+    version: '商量版本号怎么定',
+    versionDetail: '有件事需要你决定。',
+    versionAsk: '下一个版本用 1.1 还是 2.0?',
+    deps: '检查依赖项',
+    recent: ['确定设计配色', '整理笔记', '随手记', '调整页面边距', '表格排序'],
+    routine: '【每日】检查失效链接 (演示)',
+    merged: '删除旧功能 (已 merge)',
+    buildFail: '构建一直失败',
+    oldQuestion: '有个旧问题还没回答',
+    oldQuestionDetail: '正在等你回复。',
+    oldQuestionAsk: '就这样继续可以吗?',
+    halfway: '中途放弃的调研',
+    compress: '压缩图片',
+    oldChat: (/** @type {number} */ i) => `旧对话 ${i}`,
+    oldParent: '旧的父会话',
+    fromParent: '从父会话开始的工作',
+    explain: '说明构建失败的原因',
+    archived: (/** @type {number} */ i) => `已归档 ${i}`,
+    go: '请继续。',
+    ask: '构建为什么会失败?',
+    done: '完成了。详情见报告。',
+    searchLead: '现在把搜索框接到页眉上。',
+    testNote: '运行单元测试',
+    loginTest: '运行登录测试',
+    sortNote: '按日期排序 ~/projects/notes/inbox.md',
+    buildNote: '构建服务器',
+    steps: ['阅读解析器', '为解析器编写测试', '修复边界情况'],
+    todos: [
+      { content: '编写发布说明', activeForm: '正在编写发布说明' },
+      { content: '打标签', activeForm: '正在打标签' },
+      { content: '发布公告', activeForm: '正在发布公告' },
+    ],
+  },
 };
 
 /**
@@ -307,11 +358,11 @@ function raw(n, fields) {
  * 返事待ち 4 / 止まったかも 3 / 未読 3 / 作業中 5 / 最近 7 (3 プロジェクト + フォルダなし) / 片付け候補 35 / アーカイブ済み 3。
  * プロジェクトは demo-app・notes・site・api-server の 4 つ (+ フォルダなし)。
  * @param {number} now
- * @param {string} [lang] 端末の言語 ('en' | 'ja')。それ以外は en
+ * @param {string} [lang] 端末の言語 ('en' | 'ja' | 'zh')。それ以外は en
  * @returns {{raws: Array<Record<string, unknown>>, archivedIds: string[], transcripts: Map<string, TranscriptInput>, folderHints: Record<string, FolderHint>}}
  */
 export function buildDemo(now, lang = 'en') {
-  const x = lang === 'ja' ? TEXT.ja : TEXT.en;
+  const x = lang === 'ja' || lang === 'zh' ? TEXT[lang] : TEXT.en;
   const t = (/** @type {number} */ ms) => now - ms;
   /** @type {Array<Record<string, unknown>>} */
   const raws = [];

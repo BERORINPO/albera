@@ -12,7 +12,7 @@ import { ACTION_PILES, commitCopy, cursorAfter, PILES, presentIds, pruneSelectio
 
 /**
  * @typedef {Object} Prefs
- * @property {'en'|'ja'=} lang
+ * @property {'en'|'ja'|'zh'=} lang
  * @property {Record<string, boolean>} open      recent / cleanup / sub:<reason>:<key>
  * @property {Record<string, boolean>} more      欄ごとの「残りを表示」
  * @property {boolean} notify
@@ -109,7 +109,7 @@ export function storeHandoff(id, rec) {
   savePrefs();
 }
 
-/** 言語を変える (辞書を引き直すだけ。盤面は取り直さない)。 @param {'en'|'ja'} lang */
+/** 言語を変える (辞書を引き直すだけ。盤面は取り直さない)。 @param {'en'|'ja'|'zh'} lang */
 export function setLang(lang) {
   state.t = makeT(lang);
 }

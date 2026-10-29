@@ -8,7 +8,7 @@ import path from 'node:path';
 import { DEFAULT_PORT } from '../shared/constants.mjs';
 import { normalizeLang } from '../shared/i18n.mjs';
 
-/** @typedef {'en'|'ja'} Lang */
+/** @typedef {'en'|'ja'|'zh'} Lang */
 
 const MAX_ECHO = 40;
 const MAX_ECHO_LIST = 200;
@@ -96,7 +96,7 @@ export function parseArgs(argv) {
 
 /**
  * --lang と ALBERA_LANG を除いた言語 (LC_ALL → LC_MESSAGES → LANG → Intl の既定 → en)。
- * 'C' と 'POSIX' で始まるものは「指定なし」として飛ばす。en / ja 以外の指定は en。
+ * 'C' と 'POSIX' で始まるものは「指定なし」として飛ばす。en / ja / zh 以外の指定は en。
  * @param {Record<string, string|undefined>} env
  * @param {string|undefined} intlLocale
  * @returns {Lang}
@@ -112,7 +112,7 @@ export function localeLang(env, intlLocale) {
 
 /**
  * 端末の言語: --lang → ALBERA_LANG → localeLang。
- * --lang / ALBERA_LANG が en / ja でなければ、それを除いた順で決めた言語の ConfigError。
+ * --lang / ALBERA_LANG が en / ja / zh でなければ、それを除いた順で決めた言語の ConfigError。
  * @param {Record<string, string|undefined>} env
  * @param {string|undefined} argvLang
  * @param {string|undefined} intlLocale

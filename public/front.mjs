@@ -158,7 +158,7 @@ export function renderBanners(el, o) {
   if (el.dataset.sig === sig) return;
   el.dataset.sig = sig;
   /** @param {string} lead @param {string} text @param {Node|null} [ctl] */
-  const banner = (lead, text, ctl = null) => h('p', { class: 'banner' }, h('b', { text: lead }), text ? `${t.lang === 'ja' ? '' : ' '}${text}` : null, ctl ? h('span', { class: 'banner__ctl' }, ctl) : null);
+  const banner = (lead, text, ctl = null) => h('p', { class: 'banner' }, h('b', { text: lead }), text ? `${t.lang === 'en' ? ' ' : ''}${text}` : null, ctl ? h('span', { class: 'banner__ctl' }, ctl) : null);
   const out = [];
   const reload = () => h('button', { class: 'btn btn--line', type: 'button', 'data-action': 'reload', text: t('banner.version.btn') });
   if (o.fail === 'version') out.push(banner(t('banner.version.lead'), t('banner.version.text'), reload()));

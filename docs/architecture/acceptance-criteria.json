@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "status": "PROPOSED",
+  "criteria": [
+    {
+      "id": "SEC-01",
+      "requirement": "Guest cannot obtain host management privileges",
+      "design": "ADR-002,009",
+      "evidenceRequired": "forged guest claims; failed host operation; audit",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "SEC-02",
+      "requirement": "Reverted VM credentials and leases cannot revive",
+      "design": "ADR-002,004,005",
+      "evidenceRequired": "restore/old-generation requests denied",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "SEC-03",
+      "requirement": "Project data isolation including indexing and caches",
+      "design": "ADR-002,006,009",
+      "evidenceRequired": "adversarial ACL suite",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "DUR-01",
+      "requirement": "Operation intent persisted before provider mutation",
+      "design": "ADR-003",
+      "evidenceRequired": "crash at journal boundaries",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "DUR-02",
+      "requirement": "Ambiguous provision/start cannot duplicate resource",
+      "design": "ADR-003,005",
+      "evidenceRequired": "timeout-after-success injection",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "CMP-01",
+      "requirement": "VM-A work continues on VM-B via Git + handoff",
+      "design": "ADR-004,006,PoC-001",
+      "evidenceRequired": "full handoff test incl. deleted A",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "CMP-02",
+      "requirement": "Pool respects capabilities/quotas/ownership",
+      "design": "ADR-005",
+      "evidenceRequired": "property + concurrent stress tests",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "MEM-01",
+      "requirement": "Memory provenance and commit scope validated",
+      "design": "ADR-006",
+      "evidenceRequired": "stale-claim + source mismatch test",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "MEM-02",
+      "requirement": "Search has no cross-tenant leaks",
+      "design": "ADR-006",
+      "evidenceRequired": "raw ID, rank, cache, counts tests",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "ORC-01",
+      "requirement": "Main AI cannot self-approve or exceed budget",
+      "design": "ADR-008",
+      "evidenceRequired": "mock adversarial planner/tool requests",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "ORC-02",
+      "requirement": "Unknown Run reconciled before retry",
+      "design": "ADR-003,008",
+      "evidenceRequired": "disconnection/partial failure",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "INT-01",
+      "requirement": "Git candidate bound to exact commit + verification",
+      "design": "ADR-007",
+      "evidenceRequired": "commit changed during verification",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "INT-02",
+      "requirement": "No protected branch promotion without approval",
+      "design": "ADR-007",
+      "evidenceRequired": "denied/stale approvals + branch rules",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "CMPH-01",
+      "requirement": "Understanding not inferred from AI summary alone",
+      "design": "ADR-007",
+      "evidenceRequired": "manual reviewer policy test",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "UI-01",
+      "requirement": "Revision gaps force safe resync",
+      "design": "ADR-009",
+      "evidenceRequired": "disconnected/replay integration test",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "UI-02",
+      "requirement": "Human/AI desktop input ownership is exclusive",
+      "design": "ADR-009",
+      "evidenceRequired": "takeover races and stale inputs",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "PERF-01",
+      "requirement": "Baselines reported on fixed reference machine",
+      "design": "ADR-010",
+      "evidenceRequired": "benchmark JSON + machine profile",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "PERF-02",
+      "requirement": "No regression in security/correctness at higher throughput",
+      "design": "ADR-010",
+      "evidenceRequired": "paired load+fault runs",
+      "status": "NOT_VERIFIED"
+    }
+  ]
+}
