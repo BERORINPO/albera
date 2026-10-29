@@ -4,11 +4,13 @@
   "description": "Anni Albers-inspired read-only local dashboard for Claude Code sessions, part of the ALBERA development platform.",
   "type": "module",
   "bin": {
-    "albera": "src/entry/server.mjs",
-    "albera-runtime": "src/runtime/entry.mjs"
+    "albera": "src/entry/server.mjs"
   },
   "files": [
-    "src",
+    "src/entry",
+    "src/core",
+    "src/adapters",
+    "src/shared",
     "public",
     "README.md",
     "README.ja.md",

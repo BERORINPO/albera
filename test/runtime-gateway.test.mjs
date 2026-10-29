@@ -203,6 +203,7 @@ test('host authorization receives the exact canonical executable, cwd and argv b
   const executableIdentity = await captureExecutableIdentity(f.executable);
   assert.deepEqual(seen[0], {
     action: 'start', provider: 'claude', profile: 'read-only', executable: await realpath(f.executable), cwd: await realpath(f.cwd), args,
+    cwdIdentity: seen[0].cwdIdentity,
     executableSha256: executableIdentity.sha256,
     minimumCliVersion: '2.1.248', versionCheck: true,
     environment: { providerVariables: [], endpointOverrides: [] },
@@ -299,6 +300,43 @@ test('Gateway keeps the canonical executable when its PATH junction is retargete
   await start;
   assert.equal(spawnedExecutable, await realpath(firstExecutable));
   assert.notEqual(spawnedExecutable, await realpath(secondExecutable));
+});
+
+test('Gateway refuses a cwd symlink retargeted outside the allowed root during approval', async (t) => {
+  let authorized;
+  let approve;
+  let approvalRequest;
+  let spawned = false;
+  const authorizedSignal = new Promise((resolve) => { authorized = resolve; });
+  const approvalGate = new Promise((resolve) => { approve = resolve; });
+  const f = await fixture({
+    authorize: async (request) => { approvalRequest = request; authorized(); await approvalGate; return true; },
+    spawnImpl: () => { spawned = true; return new FakeChild(); },
+  });
+  t.after(f.dispose);
+  const firstTarget = path.join(f.root, 'approved-project');
+  const link = path.join(f.root, 'project-link');
+  await mkdir(firstTarget);
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  try { await symlink(firstTarget, link, linkType); }
+  catch (error) {
+    if (process.platform === 'win32' && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+      t.diagnostic('cwd junction retarget case skipped: junction creation is unavailable in this Windows environment');
+      return;
+    }
+    throw error;
+  }
+
+  const start = f.gateway.start({ provider: 'claude', cwd: link, prompt: 'synthetic' });
+  await authorizedSignal;
+  assert.equal(typeof approvalRequest.cwdIdentity, 'string');
+  assert.ok(!approvalRequest.cwdIdentity.includes(f.root));
+  await unlink(link);
+  await symlink(os.tmpdir(), link, linkType);
+  approve();
+
+  await assert.rejects(start, (error) => error.code === 'cwd_not_allowed');
+  assert.equal(spawned, false);
 });
 
 test('authorization sees a redacted provider environment summary and spawn uses its pre-approval snapshot', async (t) => {

@@ -2,6 +2,10 @@
 
 Statuses: `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `VERIFIED`. Every `VERIFIED` item must link to reproducible evidence in `docs/progress.md`.
 
+## Runtime publication gate
+
+Integrating source code into `main` and publishing an npm package are separate decisions. Main integration may proceed under the repository's review policy while the published package remains Observer-only. npm publication stays blocked until every Runtime publication blocker below and any linked blocking issue is cleared, verified, and reviewed; clearing the gate requires an explicit release decision. The tracked blockers include Issue #28 (R-03 executable identity and OS launch race), Issue #29 (Windows Job Object stop evidence and remaining host-policy limits), and Issue #33 (POSIX process-tree stop confirmation). A package smoke check must also prove that `npm pack --dry-run --json` contains the Observer entry and no `src/runtime/**` files or `albera-runtime` bin.
+
 ## Phase 1 — Runtime Foundation
 
 | ID | Acceptance criterion | Status | Evidence |
