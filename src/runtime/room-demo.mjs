@@ -1,6 +1,7 @@
 // `albera-runtime room --demo`: the whole control room with 3 fake VMs and no network.
 // A drawing mock Broker stands in for Hyper-V and a scripted client stands in for the AI. One VM keeps clicking,
-// one stalls behind a dialog (so Bero should notice), one ends with a DONE claim. Nothing here touches a VM.
+// one stalls behind a dialog (so Bero should notice), one ends with a DONE claim. A fake checker plays the automatic
+// checks (spec/room.md §7): the booking form's DONE passes, Tests' first DONE fails. Nothing here touches a VM.
 import { crc32, deflateSync } from 'node:zlib';
 import { createAgentFleet } from './agent-fleet.mjs';
 import { createAgentStatusBoard } from './agent-status-board.mjs';
@@ -8,6 +9,7 @@ import { MODEL_PRICES } from './desktop-agent-loop.mjs';
 import { HyperVDesktopDriver } from './hyperv-desktop-driver.mjs';
 import { fakeReply, fakeText, fakeToolUse } from './fake-computer-use-client.mjs';
 import { createRoomHost, NUDGE_TASK } from './room-host.mjs';
+import { createFakeGuestChecker } from './fake-guest-checker.mjs';
 import * as journalModule from './room-journal.mjs';
 import * as figuresModule from './room-figures.mjs';
 import * as directorModule from './bero-director.mjs';
@@ -18,6 +20,17 @@ export const DEMO_VMS = Object.freeze([
   Object.freeze({ vmId: 'demo-tests', label: 'Tests', task: 'Run the test suite in the test app and report the result.', script: 'staller' }),
   Object.freeze({ vmId: 'demo-form', label: 'Booking form', task: 'Fill in the booking form and save it.', script: 'finisher' }),
 ]);
+/** Automatic checks of the demo: the booking form passes; Tests' first DONE fails (no report yet), its next one passes. */
+export const DEMO_CHECKS = Object.freeze({
+  'demo-form': Object.freeze([
+    Object.freeze({ kind: 'file_exists', path: 'C:\\Users\\demo\\Documents\\booking.txt' }),
+    Object.freeze({ kind: 'file_text', path: 'C:\\Users\\demo\\Documents\\booking.txt', text: 'saved' }),
+  ]),
+  'demo-tests': Object.freeze([
+    Object.freeze({ kind: 'dir_has', path: 'C:\\Users\\demo\\Desktop', name: 'test-report.txt' }),
+  ]),
+});
+const DEMO_CHECK_SCRIPT = Object.freeze({ 'demo-form': [['ok', 'ok']], 'demo-tests': [['missing'], ['ok']] });
 const DIALOG = Object.freeze({ x: 250, y: 170, w: 300, h: 140, ok: [400, 285] });
 const SHADES = Object.freeze([70, 90, 110]);
 const USAGE = Object.freeze({ input_tokens: 3000, output_tokens: 120 });
@@ -186,14 +199,15 @@ export async function startRoomDemo({ port = 0, delayMs = 1500, stallMs = 20_000
     limits: { maxSteps: 400, maxUsd: 0.5, maxMs: 30 * 60_000 }, prices: MODEL_PRICES['claude-haiku-5-5'], totalMaxUsd: 1,
     onEvent: (vmId, event) => host?.recordFleetEvent(vmId, event),
   });
+  const checker = createFakeGuestChecker(DEMO_CHECK_SCRIPT, { delayMs });
   host = createRoomHost({
-    vms: DEMO_VMS.map(({ vmId, label, task }) => ({ vmId, label, task })), board, journal, director, fleet, now,
+    vms: DEMO_VMS.map(({ vmId, label, task }) => ({ vmId, label, task })), board, journal, director, fleet, now, checker, checks: DEMO_CHECKS,
     driver: (resolveCurrentLease) => new HyperVDesktopDriver({ broker, resolveCurrentLease, screen: DEMO_SCREEN, now }),
   });
   const address = await host.listen(port);
   const running = fleet.run().catch(() => null);
   return Object.freeze({
-    url: address.url, bootstrapCode: address.bootstrapCode, host, fleet, broker,
+    url: address.url, bootstrapCode: address.bootstrapCode, host, fleet, broker, checker,
     async close() {
       fleet.close('demo_closed');
       await running;
