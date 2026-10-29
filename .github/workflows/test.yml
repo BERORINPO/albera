@@ -26,8 +26,25 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
+      - name: Set up .NET 10 for the Windows Broker integration
+        if: runner.os == 'Windows'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Build Windows Job Guardian
+        if: runner.os == 'Windows'
+        run: npm run build:windows-job-guardian
       - name: Tests
         run: npm test
+      - name: Installed package smoke
+        run: npm run package:smoke
+      - name: Windows Runtime storage ACL integration
+        if: runner.os == 'Windows'
+        run: node --test test/runtime-windows-acl.test.mjs
+        env:
+          ALBERA_RUN_WINDOWS_ACL_INTEGRATION: '1'
       - name: Architecture check
         run: npm run arch
       # Smoke reads the user's local Claude session store; run locally, not on hosted CI.
