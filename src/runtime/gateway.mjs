@@ -128,7 +128,7 @@ export class RuntimeGateway {
     if (active + this.#pendingStarts >= this.#maxActive || this.#runs.size + this.#pendingStarts >= MAX_RUNS) throw new GatewayError('capacity');
     this.#pendingStarts++;
     try {
-      const resolvedCwd = await this.#allowedDirectory(cwd);
+      const { path: resolvedCwd, identity: cwdIdentity } = await this.#allowedDirectory(cwd);
       if (this.#closing) throw new GatewayError('gateway_closed');
       let executable;
       try { executable = await this.#resolveExecutable(provider, { platform: this.#platform }); }
@@ -141,6 +141,7 @@ export class RuntimeGateway {
       const minimumCliVersion = PROFILE_MINIMUM_VERSIONS[profile];
       const authorized = await this.#authorizeSafely({
         action: 'start', provider, profile, executable, cwd: resolvedCwd, args: launchArgs,
+        cwdIdentity,
         executableSha256: executableIdentity.sha256,
         minimumCliVersion, versionCheck: true,
         ...(initialInput === null ? {} : { initialInput }),
@@ -149,6 +150,7 @@ export class RuntimeGateway {
       });
       if (this.#closing) throw new GatewayError('gateway_closed');
       if (!authorized) throw new GatewayError('confirmation_required');
+      await this.#allowedDirectory(cwd, cwdIdentity);
       let currentExecutable;
       try { currentExecutable = await validateExecutable(executable, this.#platform); }
       catch { throw new GatewayError('executable_unavailable'); }
@@ -169,6 +171,7 @@ export class RuntimeGateway {
         if (error?.message === 'windows_job_guardian_unsupported_architecture') throw new GatewayError(error.message);
         throw new GatewayError('windows_job_guardian_unavailable');
       }
+      const { path: currentCwd } = await this.#allowedDirectory(cwd, cwdIdentity);
       // These executable checks await filesystem operations. Shutdown can begin during
       // the final identity query, so check again adjacent to spawn with no await between.
       if (this.#closing) throw new GatewayError('gateway_closed');
@@ -176,7 +179,7 @@ export class RuntimeGateway {
       let child;
       try {
         child = this.#spawn(executable, launchArgs, {
-          cwd: resolvedCwd, env: environment, shell: false,
+          cwd: currentCwd, env: environment, shell: false,
           detached: this.#platform !== 'win32', windowsHide: true, stdio: 'ignore',
           ...(inputMode === null ? {} : { inputMode, initialInput }),
         });
@@ -402,15 +405,18 @@ export class RuntimeGateway {
     run.timer.unref?.();
   }
 
-  async #allowedDirectory(cwd) {
+  async #allowedDirectory(cwd, expectedIdentity) {
     if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new GatewayError('cwd_not_allowed');
     try {
       const target = await realpath(cwd);
-      if (!(await stat(target)).isDirectory()) throw new GatewayError('cwd_not_allowed');
+      const details = await stat(target, { bigint: true });
+      if (!details.isDirectory()) throw new GatewayError('cwd_not_allowed');
+      const identity = `${details.dev}:${details.ino}`;
+      if (expectedIdentity !== undefined && identity !== expectedIdentity) throw new GatewayError('cwd_not_allowed');
       for (const root of this.#roots) {
         const allowedRoot = await realpath(root);
         const relative = path.relative(allowedRoot, target);
-        if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) return target;
+        if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) return { path: target, identity };
       }
     } catch (error) { if (error instanceof GatewayError) throw error; }
     throw new GatewayError('cwd_not_allowed');
