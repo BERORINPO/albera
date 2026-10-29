@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createBeroDirector, CARD_CHOICES, CHOICE_CODES } from '../src/runtime/bero-director.mjs';
-import { SAY_CODES, CARD_CODES, validAct, validCard, validLedgerEntry, isCode, LEDGER_CODES } from '../src/runtime/room-contract.mjs';
+import { SAY_CODES, CARD_CODES, HAND_OUTCOMES, validAct, validCard, validLedgerEntry, isCode, LEDGER_CODES } from '../src/runtime/room-contract.mjs';
 import { WORDS_BERO, sayKey, cardKey, choiceKey } from '../src/runtime/room-ui/words-bero.mjs';
 import { typingSchedule, eyeOffset, bubbleSide, glideMs, figureSlot, MAX_TYPING_MS, CHAR_MS } from '../src/runtime/room-ui/bero.mjs';
 import { createAnswerGate, avoidRect } from '../src/runtime/room-ui/cards.mjs';
@@ -11,6 +11,8 @@ const VM2 = 'albera-clone-02';
 let seq = 0;
 const entry = (vmId, code, params = {}, actor = 'hands') => ({ seq: ++seq, at: 1000 + seq, vmId, actor, code, params });
 const ended = (vmId, outcome, claim = 'DONE: saved the file') => entry(vmId, 'hands_ended', { outcome, claim, steps: 7, usd: 0.02 });
+const checkStarted = (vmId, count = 1) => entry(vmId, 'check_started', { count }, 'bero');
+const checkDone = (vmId, verdict, { checks = 1, failed = 0, detail = '' } = {}) => entry(vmId, 'check_done', { verdict, checks, failed, detail }, 'bero');
 
 /** A fake of part C: records calls, returns a valid figure (or null when told to). */
 function fakeFigures({ nullFor = [] } = {}) {
@@ -82,7 +84,7 @@ test('stall card without a figure when buildFigure returns null', () => {
 });
 
 test('ended runs open the matching card; DONE stays a claim', () => {
-  for (const [outcome, choices] of Object.entries(CARD_CHOICES).filter(([k]) => k !== 'stalled')) {
+  for (const [outcome, choices] of Object.entries(CARD_CHOICES).filter(([k]) => HAND_OUTCOMES.includes(k))) {
     const { d } = make();
     const out = d.tick({ now: 1000, entries: [ended(VM, outcome)] });
     allValid(out);
@@ -248,6 +250,13 @@ test('words: every say, card and choice code has en and ja, and none calls a cla
     for (const c of CHOICE_CODES) assert.ok(dict[choiceKey(c)], `${lang} ${choiceKey(c)}`);
     for (const k of ['bero.ui.name', 'bero.ui.for', 'bero.ui.claim_note']) assert.ok(dict[k]);
     for (const k of [sayKey('claimed_done'), cardKey('claimed_done')]) assert.ok(!/verified|confirmed|確認済|検証済/i.test(dict[k]));
+    // only `verified` (after a passed check) may say it was confirmed, and it names how many checks passed
+    for (const c of ['checking', 'check_failed', 'check_unavailable']) {
+      for (const k of [sayKey(c), cardKey(c)]) if (dict[k]) assert.ok(!/verified|confirmed|確かめたので|確認済|検証済/i.test(dict[k]), k);
+    }
+    assert.ok(dict[sayKey('verified')].includes('{checks}'));
+    assert.ok(dict[sayKey('check_failed')].includes('{detail}'));
+    for (const k of ['bero.ui.finding', 'bero.ui.ai_claim']) assert.ok(dict[k]);
   }
   assert.deepEqual(Object.keys(WORDS_BERO.en).sort(), Object.keys(WORDS_BERO.ja).sort());
   for (const c of CHOICE_CODES) assert.ok(isCode(c));
@@ -292,4 +301,111 @@ test('cards answer once', () => {
   gate.release('card-1');
   assert.equal(gate.take(card, 'later'), true);
   assert.equal(gate.take(null, 'later'), false);
+});
+
+// ---- automatic checks (spec/room.md §7) ----
+
+test('checks: check_started -> hands_ended says checking (no card), then passed says verified with the counts', () => {
+  const { d } = make({ labelOf: () => 'Booking' });
+  const first = d.tick({ now: 1000, entries: [checkStarted(VM, 2), ended(VM, 'claimed_done')] });
+  allValid(first);
+  assert.deepEqual(types(first), ['look', 'move', 'point', 'say']);
+  assert.equal(first.acts[3].code, 'checking');
+  assert.deepEqual(first.acts[3].params, { cam: 'Booking' });
+  assert.equal(first.acts[3].cardId, null);
+  assert.deepEqual(first.ledger, []);
+  assert.equal(d.openCards().length, 0);
+  assert.deepEqual(d.tick({ now: 3000, entries: [checkDone(VM, 'passed', { checks: 2 })] }).acts, []); // the gap
+  const second = d.tick({ now: 8000 });
+  allValid(second);
+  assert.deepEqual(types(second), ['look', 'move', 'point', 'say']);
+  assert.equal(second.acts[3].code, 'verified');
+  assert.deepEqual(second.acts[3].params, { cam: 'Booking', checks: 2, failed: 0 });
+  assert.deepEqual(second.ledger, []);
+  assert.equal(d.openCards().length, 0);
+  for (let now = 9000; now < 60_000; now += 1000) assert.ok(!d.tick({ now }).acts.some((a) => a.type === 'card'));
+});
+
+test('checks: a verdict that arrives before checking was said replaces it', () => {
+  const { d } = make();
+  d.tick({ now: 1000, entries: [ended(VM2, 'error')] }); // VM2's card takes the first story
+  d.tick({ now: 2000, entries: [checkStarted(VM), ended(VM, 'claimed_done'), checkDone(VM, 'passed')] });
+  const next = d.tick({ now: 8000 });
+  assert.equal(next.acts.at(-1).code, 'verified');
+  assert.deepEqual(d.tick({ now: 20_000 }).acts.filter((a) => a.type === 'say'), []);
+});
+
+test('checks: failed opens a check_failed card with the finding, said with its chips', () => {
+  const { d } = make({ labelOf: () => 'Tests' });
+  d.tick({ now: 1000, entries: [checkStarted(VM, 3), ended(VM, 'claimed_done', 'DONE: all tests pass')] });
+  const detail = 'C:\\work\\report.txt: missing';
+  const out = d.tick({ now: 8000, entries: [checkDone(VM, 'failed', { checks: 3, failed: 1, detail })] });
+  allValid(out);
+  assert.deepEqual(types(out), ['look', 'move', 'point', 'say', 'card']);
+  const card = out.acts[4].card;
+  assert.ok(validCard(card));
+  assert.equal(card.code, 'check_failed');
+  assert.deepEqual(card.params, { cam: 'Tests', detail, claim: 'DONE: all tests pass' });
+  assert.deepEqual(card.choices.map((c) => [c.code, c.effect]), [['check_again', 'recheck'], ['mark_done', 'accept'], ['later', 'dismiss']]);
+  const say = out.acts[3];
+  assert.equal(say.code, 'check_failed');
+  assert.equal(say.cardId, card.cardId);
+  assert.deepEqual(say.params, { cam: 'Tests', checks: 3, failed: 1, detail });
+  assert.deepEqual(out.ledger.map((l) => [l.code, l.params]), [['bero_noticed', { what: 'check_failed' }], ['bero_card', { cardCode: 'check_failed' }]]);
+  assert.equal(d.openCards().length, 1);
+});
+
+test('checks: unavailable opens a check_unavailable card, mark done first', () => {
+  const { d } = make();
+  d.tick({ now: 1000, entries: [checkStarted(VM), ended(VM, 'claimed_done')] });
+  const out = d.tick({ now: 8000, entries: [checkDone(VM, 'unavailable', { checks: 1, failed: 0 })] });
+  allValid(out);
+  const card = out.acts.at(-1).card;
+  assert.equal(card.code, 'check_unavailable');
+  assert.deepEqual(card.choices.map((c) => [c.code, c.effect]), [['mark_done', 'accept'], ['check_again', 'recheck'], ['later', 'dismiss']]);
+  assert.equal(out.acts.find((a) => a.type === 'say').code, 'check_unavailable');
+});
+
+test('checks: a VM without checks keeps the claimed_done card next to a checked one', () => {
+  const { d } = make();
+  const first = d.tick({ now: 1000, entries: [ended(VM2, 'claimed_done'), checkStarted(VM), ended(VM, 'claimed_done')] });
+  assert.equal(first.acts.at(-1).card.code, 'claimed_done');
+  assert.equal(first.acts.at(-1).card.vmId, VM2);
+  const second = d.tick({ now: 8000 });
+  assert.equal(second.acts.at(-1).code, 'checking');
+  assert.equal(second.acts.at(-1).params.cam, 'CAM 01');
+  assert.deepEqual(d.openCards().map((c) => [c.vmId, c.code]), [[VM2, 'claimed_done']]);
+});
+
+test('checks: a passed check closes a claimed_done card still open for that VM', () => {
+  const { d } = make();
+  const card = d.tick({ now: 1000, entries: [ended(VM, 'claimed_done'), checkStarted(VM)] }).acts.at(-1).card;
+  assert.equal(card.code, 'claimed_done');
+  const out = d.tick({ now: 8000, entries: [checkDone(VM, 'passed')] });
+  assert.equal(out.acts.at(-1).code, 'verified');
+  assert.equal(d.openCards().length, 0);
+  assert.deepEqual(d.decide(card.cardId, 'mark-done', 9000), { ok: false, code: 'card_closed' });
+});
+
+test('checks: recheck after a failure, then the new DONE is checked and passes', () => {
+  const { d } = make();
+  d.tick({ now: 1000, entries: [checkStarted(VM), ended(VM, 'claimed_done')] });
+  const card = d.tick({ now: 8000, entries: [checkDone(VM, 'failed', { failed: 1, detail: 'C:\\a.txt: differs' })] }).acts.at(-1).card;
+  const res = d.decide(card.cardId, 'check-again', 9000);
+  assert.ok(res.ok);
+  assert.equal(res.effect.effect, 'recheck');
+  assert.equal(d.tick({ now: 9500 }).acts[0].code, 'doing_it');
+  const again = d.tick({ now: 20_000, entries: [entry(VM, 'hands_started', { task: 'recheck' }), checkStarted(VM), ended(VM, 'claimed_done')] });
+  assert.equal(again.acts.at(-1).code, 'checking');
+  const passed = d.tick({ now: 30_000, entries: [checkDone(VM, 'passed')] });
+  assert.equal(passed.acts.at(-1).code, 'verified');
+  assert.equal(d.openCards().length, 0);
+});
+
+test('checks: a bad verdict is ignored, a stall card does not hold the checking line back', () => {
+  const { d } = make();
+  d.tick({ now: 50_000, agents: { [VM]: running(0) } }); // stall card on VM
+  const out = d.tick({ now: 60_000, entries: [checkStarted(VM), ended(VM, 'claimed_done'), checkDone(VM, 'maybe')] });
+  assert.equal(out.acts.at(-1).code, 'checking');
+  assert.deepEqual(d.tick({ now: 70_000 }).acts.filter((a) => a.type === 'say' || a.type === 'card'), []);
 });

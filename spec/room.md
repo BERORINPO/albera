@@ -131,3 +131,51 @@ createCards(canvas, { words, renderFigure, frameUrl, onChoose(cardId, choiceId) 
 | 2026-10-29 figures-from-log | figures are built only from ledger entries and pinned frames, and show their sources | a figure must not invent what happened | `validFigure` (sources required) |
 | 2026-10-29 claims | hands DONE stays a claim; the card offers "check again" / "mark done", never shows a pass | same as the wall | tests (D, C) |
 | 2026-10-29 decide-route | the only write route runs effects of open cards; no free text from the browser reaches a hands task | the browser must not be a way to type tasks into VMs | tests (B) |
+
+## 7. Automatic checks (v0.9)
+
+Why: a DONE claim made the person the checker for every VM. Now ALBERA checks the VM itself and the person is asked only when the check fails or cannot run.
+
+Flow:
+```
+hands 'end' with claimed_done, and the VM has checks
+  -> host records `check_started` {count} BEFORE `hands_ended` (same moment, in this order)
+  -> host runs checker.run(vmId, checks) (async, one at a time per VM, 60 s timeout)
+  -> host records `check_done` {verdict, checks, failed, detail} (detail: first failing "path: finding", cut to 200)
+Director: hands_ended(claimed_done) for a VM with a pending check_started -> no card, say `checking`.
+          check_done passed -> say `verified` (no card). failed -> card `check_failed`. unavailable -> card `check_unavailable`.
+          A VM without checks keeps today's `claimed_done` card.
+```
+`recheck` jobs end like any job, so their DONE is checked again.
+
+Ledger params: `check_started` {count}; `check_done` {verdict, checks, failed, detail}. Actor of both: `bero` (Bero had them checked).
+Say params: `cam`, `checks`, `failed`, `detail`. Card params: `cam`, `detail`, `claim`.
+Choices (D): check_failed -> check_again = recheck, mark_done = accept (the person overrides), later = dismiss;
+check_unavailable -> mark_done = accept, check_again = recheck, later = dismiss.
+
+Checker (B):
+```js
+// fake-guest-checker.mjs
+createFakeGuestChecker(script) -> { run(vmId, checks) -> Promise<CheckReport> }      // script: vmId -> CheckReport[] in order
+// hyperv-guest-check-prototype.mjs  (same-user prototype, like the desktop broker)
+createHyperVGuestChecker({ user = 'Administrator', passwordFile }) -> { run(vmId, checks) -> Promise<CheckReport> }
+  // <absolute path to pwsh.exe> -NoProfile -File hyperv-guest/check-io.ps1, request on stdin as JSON {vmName, user, password, checks}
+  // the script runs Invoke-Command -VMName with ONE fixed script block that only uses .NET calls ([System.IO.File]::Exists,
+  // [System.IO.Directory]::Exists, a bounded [System.IO.File]::Open read) and compares inside the VM. Only findings come back.
+  // The password is read from the file at each run, never logged, never put on a command line, never in an event, error or report.
+```
+A passed check trusts the guest: an AI with admin rights inside the VM could fake it, so it is not tamper-proof.
+CLI (B): `room --job ... --checks <file.json> --guest-password-file <file>`; checks file = `{ "<vmId>": [Check, ...] }`, validated
+with `validCheck`, at most 8 per VM, unknown VM ids rejected. `--demo` uses the fake checker: Booking form passes, Tests' DONE fails once.
+
+Files:
+| Part | Files |
+|---|---|
+| B | `room-host.mjs`, `room-demo.mjs`, `entry.mjs` (room flags), new `fake-guest-checker.mjs`, `hyperv-guest-check-prototype.mjs`, `hyperv-guest/check-io.ps1`, test `test/runtime-room-b-checks.test.mjs` |
+| C | `room-ui/words-figure.mjs` (check_* ledger words), `room-ui/ledger.mjs` (a check row shows a pass / fail mark), test `test/runtime-room-c-figures.test.mjs` |
+| D | `bero-director.mjs`, `room-ui/words-bero.mjs`, `room-ui/cards.mjs` (check cards show each finding), test `test/runtime-room-d-bero.test.mjs` |
+
+| date+topic | decision | why / rejected | lint |
+|---|---|---|---|
+| 2026-10-29 checks-readonly | checks are three fixed read-only kinds compared inside the VM; only findings leave the VM | no guest data in the host, no arbitrary commands. Rejected: let the AI write a check script | `validCheck` + tests (B) |
+| 2026-10-29 checks-secret | the guest password comes only from a file named on the command line, read per run, passed on stdin | never in argv, env, logs or the browser | tests (B) |

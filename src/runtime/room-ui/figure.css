@@ -52,6 +52,12 @@ rect.rf-d, path.rf-d { fill: none; }
 .rf-actor-hands { color: var(--work, oklch(80% 0.095 47)); }
 .rf-actor-bero { color: var(--muted, oklch(68% 0.004 75)); }
 .rf-actor-human { color: var(--me, oklch(82% 0.09 300)); }
+/* check marks: the word says it, the colour repeats it (green passed, red failed, yellow unavailable, grey checking) */
+.rf-mark { font-weight: 700; }
+.rf-mark-passed { color: var(--done, oklch(82.5% 0.09 142)); }
+.rf-mark-failed { color: var(--rec, oklch(70% 0.19 25)); }
+.rf-mark-unavailable { color: var(--stuck, oklch(82.5% 0.105 85)); }
+.rf-mark-checking { color: var(--muted, oklch(68% 0.004 75)); }
 
 @keyframes rf-draw { to { stroke-dashoffset: 0; } }
 @keyframes rf-fade { to { opacity: 1; } }

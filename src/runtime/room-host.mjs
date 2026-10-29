@@ -9,7 +9,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isEnvironmentId } from './environment-provider.mjs';
-import { cleanText, isCode, isId, validAct, validLedgerEntry, EFFECTS, LEDGER_CODES } from './room-contract.mjs';
+import { cleanText, isCode, isId, validAct, validCheck, validCheckReport, validLedgerEntry, EFFECTS, LEDGER_CODES, MAX_CHECKS_PER_VM, MAX_TEXT } from './room-contract.mjs';
 
 export const ROOM_DESKTOP_SESSION_ID = 'room-view';
 export const ROOM_OWNER_ID = 'room-viewer';
@@ -43,6 +43,8 @@ const SAFE_ERROR_CODES = new Set([
   'desktop_lease_stale', 'desktop_lease_expired', 'desktop_lease_owner_mismatch', 'desktop_lease_session_mismatch',
 ]);
 const DECIDE_CODES = new Set(['card_unknown', 'card_closed', 'choice_unknown']);
+const CHECK_TIMEOUT_MS = 65_000; // the checker's own limit is 60 s; this one only keeps a VM's queue moving
+const CHECK_CODE_RE = /^[a-z][a-z0-9_]{0,40}$/;
 
 /** Fixed task texts for card effects. Only the VM's own task (given at start) is ever added to them. */
 export const NUDGE_TASK = 'Something may be blocking the screen, such as a dialog or a message box. '
@@ -60,11 +62,18 @@ export function recheckTask(task) {
  * `driver` is `capture({vmId, lease})` or a factory `(resolveCurrentLease) => driver`, as for the wall.
  * `vms[].task` is the task the VM's hands were first given; `recheck` asks about it.
  * Wire the fleet's `onEvent` to `host.recordFleetEvent` so hands entries reach the journal in order.
+ * Automatic checks (spec/room.md §7): `checks` = { vmId: Check[] } and `checker.run(vmId, checks)`. When a VM with
+ * checks ends with `claimed_done`, `check_started` is recorded before `hands_ended`, the checker runs (one at a time
+ * per VM) and `check_done` records the verdict. VMs without checks behave as before.
  */
 export function createRoomHost({
-  vms, driver, board, journal, director, fleet, captureIntervalMs = 1000, staleAfterMs = 10_000, tickMs = 1000, now = Date.now,
+  vms, driver, board, journal, director, fleet, checker = null, checks = {}, checkTimeoutMs = CHECK_TIMEOUT_MS,
+  captureIntervalMs = 1000, staleAfterMs = 10_000, tickMs = 1000, now = Date.now,
 } = {}) {
   const tiles = normalizeVms(vms);
+  const checksByVm = normalizeChecks(checks, tiles);
+  if (checksByVm.size > 0 && typeof checker?.run !== 'function') throw new TypeError('room host requires a checker with run() when checks are given');
+  if (!Number.isInteger(checkTimeoutMs) || checkTimeoutMs < 10 || checkTimeoutMs > 600_000) throw new TypeError('checkTimeoutMs must be between 10 and 600000');
   if (!Number.isInteger(captureIntervalMs) || captureIntervalMs < 10 || captureIntervalMs > 60_000) throw new TypeError('captureIntervalMs must be between 10 and 60000');
   if (!Number.isInteger(staleAfterMs) || staleAfterMs < 100 || staleAfterMs > 3_600_000) throw new TypeError('staleAfterMs must be between 100 and 3600000');
   if (!Number.isInteger(tickMs) || tickMs < 10 || tickMs > 60_000) throw new TypeError('tickMs must be between 10 and 60000');
@@ -87,6 +96,9 @@ export function createRoomHost({
   const pinned = new Map(); // frameId -> png (oldest first)
   const events = []; // RoomEvent[], seq ascending
   const cards = new Map(); // cardId -> { vmId, code, choices, closed }
+  const checkChains = new Map(); // vmId -> the promise of the VM's last queued check
+  const checkStates = new Map(); // vmId -> {state: checking|passed|failed|unavailable, checks, failed, detail} for the camera
+  const runs = new Map(); // vmId -> how many hands runs started (a check belongs to the run it was queued in)
   const bootstrapCode = randomBytes(32).toString('base64url');
   // Cookies do not separate ports: every host gets its own cookie name (fixed at listen), so two rooms
   // (or a room and a demo) on 127.0.0.1 never overwrite each other's session.
@@ -165,13 +177,50 @@ export function createRoomHost({
     if (events.length > MAX_KEPT_EVENTS) events.splice(0, events.length - MAX_KEPT_EVENTS);
   }
 
-  /** Fleet onEvent -> journal. A job start becomes `hands_started` with its task; other events go to the journal as is. */
+  /**
+   * Fleet onEvent -> journal. A job start becomes `hands_started` with its task; other events go to the journal as is.
+   * A DONE claim on a VM with checks first records `check_started` (so it comes before `hands_ended`), then queues the check.
+   */
   function recordFleetEvent(vmId, event) {
     if (closed || !byId.has(vmId)) return;
+    const vmChecks = event?.type === 'end' && event.outcome === 'claimed_done' ? checksByVm.get(vmId) : undefined;
+    if (event?.type === 'start') { runs.set(vmId, (runs.get(vmId) ?? 0) + 1); checkStates.delete(vmId); }
+    if (vmChecks) checkStates.set(vmId, Object.freeze({ state: 'checking', checks: vmChecks.length, failed: 0, detail: '' }));
     try {
       if (event?.type === 'start') journal.record({ vmId, actor: 'hands', code: 'hands_started', params: { task: cleanText(event.task) } });
-      else journal.recordFleetEvent(vmId, event);
+      else {
+        if (vmChecks) journal.record({ vmId, actor: 'bero', code: 'check_started', params: { count: vmChecks.length } });
+        journal.recordFleetEvent(vmId, event);
+      }
     } catch { /* a journal failure must not stop the hands */ }
+    if (vmChecks) queueCheck(vmId, vmChecks);
+  }
+
+  // ---- automatic checks (one at a time per VM; the checker never sees anything but the VM id and its fixed checks) ----
+
+  function queueCheck(vmId, vmChecks) {
+    const run = runs.get(vmId) ?? 0; // the run this DONE belongs to, taken now (the check itself may start later)
+    const next = (checkChains.get(vmId) ?? Promise.resolve()).then(() => runCheck(vmId, vmChecks, run));
+    checkChains.set(vmId, next);
+    void next.finally(() => { if (checkChains.get(vmId) === next) checkChains.delete(vmId); });
+  }
+
+  async function runCheck(vmId, vmChecks, run) {
+    let timer;
+    const timeout = new Promise((resolve) => {
+      // A referenced timer (cleared in finally): an unref'd one lets Node 22 end the event loop while a check still waits.
+      timer = setTimeout(() => resolve({ verdict: 'unavailable', results: [], code: 'guest_check_timeout' }), checkTimeoutMs);
+    });
+    let report;
+    try { report = await Promise.race([Promise.resolve().then(() => checker.run(vmId, vmChecks)), timeout]); }
+    catch { report = { verdict: 'unavailable', results: [], code: 'guest_check_failed' }; }
+    finally { clearTimeout(timer); }
+    if (!validCheckReport(report, vmChecks.length)) report = { verdict: 'unavailable', results: [], code: 'guest_check_invalid' };
+    if (closed) return;
+    const params = checkDoneParams(report, vmChecks.length);
+    // The camera shows the verdict until the VM's next run starts; a check of an older run never overwrites a newer one.
+    if ((runs.get(vmId) ?? 0) === run) checkStates.set(vmId, Object.freeze({ state: params.verdict, checks: params.checks, failed: params.failed, detail: params.detail }));
+    try { journal.record({ vmId, actor: 'bero', code: 'check_done', params }); } catch { /* keep going */ }
   }
 
   function validDirectorLedger(item) {
@@ -280,7 +329,7 @@ export function createRoomHost({
     return {
       vmId: tile.vmId, label: tile.label,
       capturedAt: frame.capturedAt === null ? null : new Date(frame.capturedAt).toISOString(),
-      status, error: frame.error, agent: agents[tile.vmId] ?? null,
+      status, error: frame.error, agent: agents[tile.vmId] ?? null, check: checkStates.get(tile.vmId) ?? null,
     };
   }
 
@@ -410,6 +459,8 @@ export function createRoomHost({
     captureOnce,
     tickOnce,
     recordFleetEvent,
+    /** Resolves when every queued automatic check has recorded its `check_done`. */
+    async checksSettled() { while (checkChains.size > 0) await Promise.allSettled([...checkChains.values()]); },
     /** The session cookie name of this host (unique per host instance). */
     get cookieName() { return cookieName; },
     async close() {
@@ -442,6 +493,27 @@ function normalizeVms(vms) {
     seen.add(vmId);
     return Object.freeze({ vmId, label, task });
   }));
+}
+
+/** { vmId: Check[] } -> Map of frozen copies. Every VM must be a room VM, with 1 to 8 valid checks. */
+function normalizeChecks(checks, tiles) {
+  if (checks === null || typeof checks !== 'object' || Array.isArray(checks)) throw new TypeError('invalid_room_checks');
+  const known = new Set(tiles.map((tile) => tile.vmId));
+  const out = new Map();
+  for (const [vmId, list] of Object.entries(checks)) {
+    if (!known.has(vmId)) throw new TypeError('invalid_room_checks');
+    if (!Array.isArray(list) || list.length < 1 || list.length > MAX_CHECKS_PER_VM || !list.every(validCheck)) throw new TypeError('invalid_room_checks');
+    out.set(vmId, Object.freeze(list.map((check) => Object.freeze({ ...check }))));
+  }
+  return out;
+}
+
+/** `check_done` params: verdict, how many checks, how many did not pass, and the first problem ("path: finding" or the code). */
+function checkDoneParams(report, count) {
+  const bad = report.results.filter((result) => result.finding !== 'ok');
+  const code = typeof report.code === 'string' && CHECK_CODE_RE.test(report.code) ? report.code : '';
+  const detail = bad.length ? `${bad[0].path}: ${bad[0].finding}` : report.verdict === 'unavailable' ? (code || 'guest_unavailable') : '';
+  return { verdict: report.verdict, checks: count, failed: bad.length, detail: cleanText(detail, MAX_TEXT) };
 }
 
 function matchId(scoped, re) {

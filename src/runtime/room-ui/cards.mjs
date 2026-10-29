@@ -1,11 +1,13 @@
 // Decision cards (part D): who it is for, the question, an optional before / after figure, and the choices.
 // The first choice is the primary button. A card answers once: after a choice every button is disabled.
 // A DONE claim is shown as a claim, with a note that nobody has checked it.
+// A check card (spec/room.md §7) shows what the check found first, then the AI's claim below it, labelled as its claim.
 import { cardKey, choiceKey } from './words-bero.mjs';
 
 export const CARD_SIZE = Object.freeze({ w: 300, h: 220 });
 export const CLOSE_MS = 450;
 const CLAIM_CARDS = new Set(['claimed_done', 'claimed_failed']);
+const CHECK_CARDS = new Set(['check_failed', 'check_unavailable']);
 
 export const nodeIdOf = (cardId) => `card:${cardId}`;
 
@@ -37,6 +39,18 @@ function el(tag, cls, text) {
   return e;
 }
 
+/** The finding (when there is one) above, the AI's own claim under it. Text only, never markup. */
+function checkParts(params, t) {
+  const parts = [];
+  if (params.detail) {
+    const box = el('div', 'bero-card-finding');
+    box.append(el('div', 'bero-card-label', t('bero.ui.finding')), el('code', 'bero-card-detail', params.detail));
+    parts.push(box);
+  }
+  if (params.claim) parts.push(el('div', 'bero-card-label', t('bero.ui.ai_claim')), el('blockquote', 'bero-card-claim', params.claim));
+  return parts;
+}
+
 /** figureWords / labelOf are optional: without them the card figure uses Bero's words and VM ids. */
 export function createCards(canvas, { words, figureWords, renderFigure, frameUrl, labelOf, onChoose } = {}) {
   const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -55,6 +69,7 @@ export function createCards(canvas, { words, figureWords, renderFigure, frameUrl
       if (card.params.claim) root.append(el('blockquote', 'bero-card-claim', card.params.claim));
       root.append(el('div', 'bero-card-note', t('bero.ui.claim_note')));
     }
+    if (CHECK_CARDS.has(card.code)) root.append(...checkParts(card.params, t));
     if (card.figure && typeof renderFigure === 'function') {
       const fig = renderFigure(card.figure, { words: figureWords ?? words, frameUrl, labelOf });
       if (fig) root.append(fig);

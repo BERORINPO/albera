@@ -1,7 +1,7 @@
 // Bero, the main AI of the control room (spec/room.md §3 part D). Rules + dictionaries, no LLM.
 // Pure: no node: imports, no clock, no I/O. Time comes in as `now`; figures come from the injected buildFigure (part C).
 // One situation (a "story") is told at a time: its acts are emitted together in one tick, the rest wait in a queue.
-import { cleanParams, validAct, validCard, validLedgerEntry } from './room-contract.mjs';
+import { CHECK_VERDICTS, cleanParams, cleanText, validAct, validCard, validLedgerEntry } from './room-contract.mjs';
 
 /** What each card offers. The first choice is the primary button. Choice codes are D's own (words in room-ui/words-bero.mjs). */
 export const CARD_CHOICES = Object.freeze({
@@ -10,11 +10,15 @@ export const CARD_CHOICES = Object.freeze({
   claimed_failed: [['check_again', 'recheck'], ['noted', 'accept'], ['later', 'dismiss']],
   limit_reached: [['check_again', 'recheck'], ['noted', 'accept'], ['later', 'dismiss']],
   error: [['check_again', 'recheck'], ['later', 'dismiss']],
+  check_failed: [['check_again', 'recheck'], ['mark_done', 'accept'], ['later', 'dismiss']],
+  check_unavailable: [['mark_done', 'accept'], ['check_again', 'recheck'], ['later', 'dismiss']],
 });
 export const CHOICE_CODES = Object.freeze([...new Set(Object.values(CARD_CHOICES).flat().map(([code]) => code))]);
 
 const ENDED_CARDS = new Set(['claimed_done', 'claimed_failed', 'limit_reached', 'error']);
 const RUN_EFFECTS = new Set(['stop', 'nudge', 'recheck']);
+const CHECK_CARDS = Object.freeze({ failed: 'check_failed', unavailable: 'check_unavailable' });
+const SPOKEN = new Set(['checking', 'verified']); // stories told without a card
 const PER_VM_ENTRIES = 60;
 const RECENT_ENTRIES = 80;
 const CLOSED_KEPT = 200;
@@ -43,6 +47,7 @@ export function createBeroDirector({
   const lastProgressAt = new Map(); // vmId -> when its last flow figure was drawn
   const noticedStall = new Map(); // vmId -> lastActionAt already told
   const snoozeUntil = new Map(); // vmId -> no stall notice before this time
+  const checking = new Map(); // vmId -> { claim } between check_started and check_done (spec/room.md §7)
   let seq = 0;
   let lastStoryAt = null;
   let idleSince = null; // patrol counts from here
@@ -54,6 +59,7 @@ export function createBeroDirector({
   const cardFor = (vmId) => [...open.values()].find((c) => c.vmId === vmId) ?? null;
   const queued = (pred) => queue.some(pred);
   const entriesOf = (vmId) => [...(vmEntries.get(vmId) ?? [])];
+  const dropQueued = (pred) => { for (let i = queue.length - 1; i >= 0; i -= 1) if (pred(queue[i])) queue.splice(i, 1); };
 
   function remember(entry) {
     push(recent, entry, RECENT_ENTRIES);
@@ -62,15 +68,45 @@ export function createBeroDirector({
     push(vmEntries.get(entry.vmId), entry, PER_VM_ENTRIES);
     if (entry.code === 'hands_step') stepsSinceFigure.set(entry.vmId, (stepsSinceFigure.get(entry.vmId) ?? 0) + 1);
     if (entry.code === 'hands_started') stepsSinceFigure.set(entry.vmId, 0);
+    if (entry.code === 'check_started') checking.set(entry.vmId, { claim: '' });
+    if (entry.code === 'check_done') checkDone(entry);
     if (entry.code !== 'hands_ended') return;
     // The run is over: a stall story still waiting for it is no longer true.
     noticedStall.delete(entry.vmId);
     stepsSinceFigure.set(entry.vmId, 0);
-    for (let i = queue.length - 1; i >= 0; i -= 1) if (queue[i].kind === 'stall' && queue[i].vmId === entry.vmId) queue.splice(i, 1);
+    dropQueued((s) => s.kind === 'stall' && s.vmId === entry.vmId);
     const outcome = entry.params?.outcome;
-    if (ENDED_CARDS.has(outcome) && !queued((s) => s.entrySeq === entry.seq)) {
+    if (queued((s) => s.entrySeq === entry.seq)) return;
+    const pending = checking.get(entry.vmId);
+    if (outcome === 'claimed_done' && pending) {
+      // The host is checking this VM: no card yet, Bero only says so. The verdict decides what comes next.
+      pending.claim = cleanText(entry.params?.claim);
+      queue.push({ kind: 'checking', vmId: entry.vmId, entrySeq: entry.seq });
+      return;
+    }
+    if (ENDED_CARDS.has(outcome)) {
       queue.push({ kind: 'ended', code: outcome, vmId: entry.vmId, entrySeq: entry.seq, params: entry.params });
     }
+  }
+
+  /** A verdict replaces the "checking" line and any claimed_done story of that VM still waiting or open. */
+  function checkDone(entry) {
+    const vmId = entry.vmId;
+    const p = entry.params ?? {};
+    if (!CHECK_VERDICTS.includes(p.verdict)) return;
+    const claim = checking.get(vmId)?.claim ?? '';
+    checking.delete(vmId);
+    dropQueued((s) => s.vmId === vmId && (s.kind === 'checking' || (s.kind === 'ended' && s.code === 'claimed_done')));
+    const done = cardFor(vmId);
+    if (done?.code === 'claimed_done') closeCard(done.cardId);
+    const counts = { checks: num(p.checks), failed: num(p.failed), detail: cleanText(p.detail) };
+    if (p.verdict === 'passed') queue.push({ kind: 'verified', vmId, entrySeq: entry.seq, params: counts });
+    else queue.push({ kind: 'check', code: CHECK_CARDS[p.verdict], vmId, entrySeq: entry.seq, params: { ...counts, claim } });
+  }
+
+  function closeCard(cardId) {
+    open.delete(cardId);
+    push(closed, cardId, CLOSED_KEPT);
   }
 
   function noticeStalls(now, agents) {
@@ -95,9 +131,14 @@ export function createBeroDirector({
 
   function cardStory(s, now) {
     let params;
+    let said = null; // say params when they differ from the card's
     let figure = null;
     const ledger = [];
-    if (s.kind === 'stall') {
+    if (s.kind === 'check') {
+      const p = s.params;
+      params = { cam: cam(s.vmId), detail: p.detail, claim: p.claim };
+      said = cleanParams({ cam: cam(s.vmId), checks: p.checks, failed: p.failed, detail: p.detail });
+    } else if (s.kind === 'stall') {
       const seconds = Math.max(1, Math.round((now - s.since) / 1000));
       params = { cam: cam(s.vmId), seconds };
       figure = buildFigure('ba', entriesOf(s.vmId), { vmId: s.vmId, figureId: nextId('fig'), frames: { before: null, after: null } });
@@ -113,10 +154,24 @@ export function createBeroDirector({
       { type: 'look', at: { vmId: s.vmId } },
       { type: 'move', to: { vmId: s.vmId } },
       { type: 'point', vmId: s.vmId },
-      { type: 'say', code: s.code, params: card.params, cardId: card.cardId },
+      { type: 'say', code: s.code, params: said ?? card.params, cardId: card.cardId },
       { type: 'card', card },
     ];
     return { acts, ledger };
+  }
+
+  /** `checking` (the host is looking at the VM) and `verified` (its checks passed): words only, no card, no ledger. */
+  function spokenStory(s) {
+    const params = cleanParams({ cam: cam(s.vmId), ...(s.kind === 'verified' ? { checks: s.params.checks, failed: s.params.failed } : {}) });
+    return {
+      acts: [
+        { type: 'look', at: { vmId: s.vmId } },
+        { type: 'move', to: { vmId: s.vmId } },
+        { type: 'point', vmId: s.vmId },
+        { type: 'say', code: s.kind, params, cardId: null },
+      ],
+      ledger: [],
+    };
   }
 
   function replyStory(s) {
@@ -175,12 +230,13 @@ export function createBeroDirector({
     return { acts: [{ type: 'hush' }, { type: 'look', at: 'all' }, ...points], ledger: [] };
   }
 
-  /** Replies first, then waiting cards (FIFO, skipping VMs that still have an open card), then figures, then patrol. */
+  /** Replies first, then waiting situations (FIFO; a card waits while its VM still has one open), then figures, then patrol. */
   function nextStory(now, agents) {
     const r = queue.findIndex((s) => s.kind === 'reply');
     if (r >= 0) return replyStory(queue.splice(r, 1)[0]);
     if (now - lastStoryAt < storyGapMs) return null;
     for (let i = 0; i < queue.length; i += 1) {
+      if (SPOKEN.has(queue[i].kind)) return spokenStory(queue.splice(i, 1)[0]);
       if (cardFor(queue[i].vmId)) continue;
       const story = cardStory(queue.splice(i, 1)[0], now);
       if (story) return story;
@@ -215,8 +271,7 @@ export function createBeroDirector({
     if (!card) return { ok: false, code: closed.includes(cardId) ? 'card_closed' : 'card_unknown' };
     const choice = card.choices.find((c) => c.choiceId === choiceId);
     if (!choice) return { ok: false, code: 'choice_unknown' };
-    open.delete(cardId);
-    push(closed, cardId, CLOSED_KEPT);
+    closeCard(cardId);
     const at = Number.isFinite(now) ? now : (lastChoiceAt ?? 0);
     if (card.code === 'stalled') {
       snoozeUntil.set(card.vmId, at + stallMs); // "later" (or any answer) means: do not ask again right away
