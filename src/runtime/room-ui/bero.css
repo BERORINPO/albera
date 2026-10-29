@@ -67,6 +67,9 @@
 .bero-card-for { font-size: 13px; color: var(--muted, oklch(68% 0.004 75)); }
 .bero-card-q { margin: 2px 0 6px; font-weight: 700; }
 .bero-card-claim { margin: 0 0 4px; padding: 4px 8px; border-left: 2px solid var(--wait, oklch(84% 0.075 262)); font-size: 13px; color: var(--ink-2, oklch(86% 0.003 75)); overflow-wrap: anywhere; }
+.bero-card-finding { margin: 0 0 8px; padding: 6px 8px; border-left: 3px solid var(--stuck, oklch(78% 0.13 60)); }
+.bero-card-detail { display: block; font-family: var(--mono, ui-monospace, monospace); font-size: 13px; font-weight: 700; overflow-wrap: anywhere; white-space: pre-wrap; }
+.bero-card-label { font-size: 12px; color: var(--muted, oklch(68% 0.004 75)); margin-bottom: 2px; }
 .bero-card-note { font-size: 12px; color: var(--muted, oklch(68% 0.004 75)); margin-bottom: 6px; }
 .bero-card-choices { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .bero-card-choices button { font: inherit; color: inherit; background: none; border: 1px solid var(--rule-strong, oklch(62% 0.004 75)); border-radius: 4px; padding: 2px 10px; cursor: pointer; }

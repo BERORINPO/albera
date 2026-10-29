@@ -1,6 +1,7 @@
 // Words for Bero (part D): say codes, card codes, choice codes and the avatar / card chrome.
 // Keys are namespaced (`bero.say.*`, `bero.card.*`, `bero.choice.*`, `bero.ui.*`) so the dictionaries of other parts never collide.
-// A hands DONE is always a claim: no line here says it was checked or verified.
+// A hands DONE is always a claim: no line here says it was checked or verified, except `verified`,
+// which Bero says only after ALBERA's own checks on the VM passed (spec/room.md §7), and which names what was checked.
 export const sayKey = (code) => `bero.say.${code}`;
 export const cardKey = (code) => `bero.card.${code}`;
 export const choiceKey = (code) => `bero.choice.${code}`;
@@ -11,6 +12,8 @@ const en = {
   'bero.ui.claim_note': 'This is what the AI says about itself. Nobody has checked it yet.',
   'bero.ui.ba_note': 'Before / after frames of this camera',
   'bero.ui.chosen': 'Sent',
+  'bero.ui.finding': 'What the check found on the VM',
+  'bero.ui.ai_claim': "The AI's claim",
 
   'bero.say.patrol': 'Looking around the cameras.',
   'bero.say.stalled': '{cam} has not moved for {seconds} s. Something may be in the way. Shall I have it closed?',
@@ -23,12 +26,18 @@ const en = {
   'bero.say.ask': 'One thing for you to decide.',
   'bero.say.doing_it': 'Got it. Passing that to the hands on {cam}.',
   'bero.say.thanks': 'Noted. I will keep watching {cam}.',
+  'bero.say.checking': '{cam} says it is done. I am checking the VM myself before I ask you anything.',
+  'bero.say.verified': '{cam}: all {checks} checks on the VM passed. Confirmed, nothing for you to do.',
+  'bero.say.check_failed': '{cam} says it is done, but {failed} of {checks} checks on the VM did not pass: {detail}',
+  'bero.say.check_unavailable': '{cam} says it is done, but I could not check the VM. For now it is only its own claim.',
 
   'bero.card.stalled': '{cam} has not moved for {seconds} s. Have it close what is in the way?',
   'bero.card.claimed_done': '{cam} says it is done. Check the screen again, or take its word?',
   'bero.card.claimed_failed': '{cam} says it could not finish. Have it look again?',
   'bero.card.limit_reached': '{cam} stopped at its limit ({steps} steps, ${usd}). Check what it got done?',
   'bero.card.error': '{cam} stopped with an error. Have it look at the screen again?',
+  'bero.card.check_failed': '{cam}: the check on the VM did not pass. Have it try again, or mark it done anyway?',
+  'bero.card.check_unavailable': '{cam}: the VM could not be checked. Take its word, or have it look again?',
 
   'bero.choice.close_it': 'Close it',
   'bero.choice.stop_it': 'Stop',
@@ -44,6 +53,8 @@ const ja = {
   'bero.ui.claim_note': 'AI 自身の申告です。まだ誰も確かめていません。',
   'bero.ui.ba_note': 'このカメラの前と後',
   'bero.ui.chosen': '伝えました',
+  'bero.ui.finding': 'VM の確認で見つかったこと',
+  'bero.ui.ai_claim': 'AI の申告',
 
   'bero.say.patrol': 'カメラを見回っています。',
   'bero.say.stalled': '{cam} が {seconds} 秒止まっています。何かが邪魔しているみたい。閉じさせますか?',
@@ -56,12 +67,18 @@ const ja = {
   'bero.say.ask': 'ひとつ決めてほしいことがあります。',
   'bero.say.doing_it': '了解。{cam} の手に渡しました。',
   'bero.say.thanks': 'わかりました。{cam} はこのまま見ておきます。',
+  'bero.say.checking': '{cam} が終わったと言っています。あなたに聞く前に、VM を直接確かめています。',
+  'bero.say.verified': '{cam}: VM で {checks} 件の確認が通りました。確かめたので、あなたの作業はありません。',
+  'bero.say.check_failed': '{cam} は終わったと言っていますが、VM の確認 {checks} 件のうち {failed} 件が通りませんでした: {detail}',
+  'bero.say.check_unavailable': '{cam} は終わったと言っていますが、VM を確かめられませんでした。いまは本人の申告だけです。',
 
   'bero.card.stalled': '{cam} が {seconds} 秒止まっています。邪魔なものを閉じさせますか?',
   'bero.card.claimed_done': '{cam} が終わったと言っています。画面をもう一度確かめますか?',
   'bero.card.claimed_failed': '{cam} ができなかったと言っています。もう一度見させますか?',
   'bero.card.limit_reached': '{cam} が上限で止まりました ({steps} 手 · ${usd})。どこまでできたか確かめますか?',
   'bero.card.error': '{cam} がエラーで止まりました。画面をもう一度見させますか?',
+  'bero.card.check_failed': '{cam}: VM の確認が通りませんでした。やり直させますか、それとも終わりにしますか?',
+  'bero.card.check_unavailable': '{cam}: VM を確かめられませんでした。申告どおり終わりにしますか、もう一度見させますか?',
 
   'bero.choice.close_it': '閉じさせて',
   'bero.choice.stop_it': '止める',
