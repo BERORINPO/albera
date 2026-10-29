@@ -1,0 +1,4 @@
+local-secrets/
+runs/
+.cursor.json
+*.png
