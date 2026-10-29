@@ -33,8 +33,8 @@ export function runWindowsTaskkill(pid, { systemRoot, spawnImpl, timeoutMs = WIN
 }
 
 /**
- * Attempt the Windows tree kill first, then fall back to signaling the direct child
- * if taskkill is missing, fails, reports non-zero, or exceeds its bounded wait.
+ * taskkill is a PID-based termination request, not an OS-owned process-tree completion
+ * proof. Keep the legacy cleanup attempt, but never turn its zero exit code into confirmed.
  */
 export function terminateWindowsTree(pid, { systemRoot, spawnImpl, killFallback, timeoutMs = WINDOWS_TASKKILL_TIMEOUT_MS } = {}) {
   if (!Number.isSafeInteger(pid) || pid < 1 || typeof spawnImpl !== 'function' || typeof killFallback !== 'function'
@@ -45,9 +45,9 @@ export function terminateWindowsTree(pid, { systemRoot, spawnImpl, killFallback,
   const fallback = () => {
     let accepted = false;
     try { accepted = killFallback() !== false; } catch { /* direct child may already be gone */ }
-    return { treeConfirmed: false, fallbackAttempted: true, fallbackAccepted: accepted };
+    return { treeConfirmed: false, terminationRequested: accepted, fallbackAttempted: true, fallbackAccepted: accepted };
   };
   return runWindowsTaskkill(pid, { systemRoot, spawnImpl, timeoutMs })
-    .then(() => ({ treeConfirmed: true, fallbackAttempted: false, fallbackAccepted: false }))
+    .then(() => ({ treeConfirmed: false, terminationRequested: true, fallbackAttempted: false, fallbackAccepted: false }))
     .catch(() => fallback());
 }

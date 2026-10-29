@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 const locale = /^ja(?:-|$)/i.test(globalThis.navigator?.language ?? '') ? 'ja' : 'en';
 const messages = {
   en: {
-    title: 'Runtime control', lede: 'A separate local control surface. Every start, input, and stop waits for your decision.',
+    title: 'Runtime control', lede: 'A separate local control surface. Starts and input wait for your decision. Stop acts immediately; on Windows it forcefully terminates the process tree.',
     connected: 'Connected to the local Runtime host', connectCode: 'Enter the one-time code printed by the Runtime host.',
     expired: 'Runtime browser session expired. Restart ALBERA Runtime and open the new URL printed in its terminal.',
     unavailable: 'Runtime unavailable: {0}', bootstrapTitle: 'Unlock this Runtime host',
@@ -18,14 +18,14 @@ const messages = {
     providerDisclosure: 'The configured Claude account may send approved text to an external provider and may incur charges. Runtime cannot identify the account or estimate cost. Check your CLI account before approval.',
     filesystemDisclosure: 'The allowed root sets only the working directory; it is not a sandbox. The Claude process runs with your OS account permissions and may access other local files and resources. Use only projects and data you are comfortable exposing to this process.',
     approve: 'Approve', deny: 'Deny', noRuns: 'No Runtime sessions yet.', run: 'Run {0}', profile: 'Profile: {0}',
-    action_start: 'Start request', action_stop: 'Stop request', action_input: 'Input request',
-    field_executable: 'executable', field_cwd: 'working directory', field_runId: 'run ID', field_platform: 'platform',
-    field_maxDurationMs: 'maximum duration (ms)', field_maxActive: 'maximum active runs', field_force: 'force stop',
+    action_start: 'Start request', action_input: 'Input request',
+    field_executable: 'executable', field_executableSha256: 'executable SHA-256', field_cwd: 'working directory', field_runId: 'run ID', field_platform: 'platform',
+    field_maxDurationMs: 'maximum duration (ms)', field_maxActive: 'maximum active runs',
     status_starting: 'starting', status_running: 'running', status_stopping: 'stopping', status_stopped: 'stopped',
     status_exited: 'exited', status_failed: 'failed', status_interrupted: 'interrupted', status_started: 'started',
     interruptedWarning: 'Runtime stopped while this run had no recorded terminal result. ALBERA did not restart its provider process and cannot confirm whether it is still running. Check the process before starting equivalent work again.',
     status_stop_requested: 'stop requested', status_input_sent: 'input sent', status_stop_failed: 'stop failed',
-    stop: 'Request stop', followupLabel: 'Exact follow-up text', requestInput: 'Request approved input',
+    stop: 'Stop now', followupLabel: 'Exact follow-up text', requestInput: 'Request approved input',
     decisionError: 'Decision not accepted: {0}', waitingApproval: 'Waiting for the host approval decision…',
     runStarted: 'Run started. Provider output is not collected.', runFailed: 'Run was not started: {0}',
     unlockFailed: 'Could not unlock this host: {0}', noRoots: 'No allowed project roots were configured.',
@@ -48,14 +48,15 @@ const messages = {
     providerDisclosure: '設定されたClaudeアカウントから、承認したテキストが外部プロバイダーへ送信され、費用が発生する場合があります。Runtimeはアカウントや費用を確認できません。承認前にCLIのアカウント設定を確認してください。',
     filesystemDisclosure: '許可ルートが決めるのは作業ディレクトリだけで、OSのサンドボックスではありません。Claudeプロセスは現在のOSユーザー権限で動作し、このフォルダー外のローカルファイルや資源にもアクセスできる場合があります。プロセスに見せてもよいプロジェクトとデータだけで利用してください。',
     approve: '承認', deny: '拒否', noRuns: 'Runtimeセッションはまだありません。', run: '実行 {0}', profile: 'プロファイル: {0}',
-    action_start: '起動要求', action_stop: '停止要求', action_input: '入力要求',
-    field_executable: '実行ファイル', field_cwd: '作業ディレクトリ', field_runId: '実行ID', field_platform: 'OS',
-    field_maxDurationMs: '最大実行時間 (ms)', field_maxActive: '同時実行上限', field_force: '強制停止',
+    action_start: '起動要求', action_input: '入力要求',
+    field_executable: '実行ファイル', field_executableSha256: '実行ファイルのSHA-256', field_cwd: '作業ディレクトリ', field_runId: '実行ID', field_platform: 'OS',
+    field_maxDurationMs: '最大実行時間 (ms)', field_maxActive: '同時実行上限',
     status_starting: '起動中', status_running: '実行中', status_stopping: '停止中', status_stopped: '停止済み',
     status_exited: '終了', status_failed: '失敗', status_interrupted: '中断', status_started: '起動',
     interruptedWarning: 'この実行は終了結果が記録される前にRuntimeが停止しました。ALBERAはプロバイダープロセスを再起動しておらず、現在も動作中か確認できません。同じ作業を再開する前にプロセス状態を確認してください。',
     status_stop_requested: '停止要求', status_input_sent: '入力送信済み', status_stop_failed: '停止失敗',
-    stop: '停止を申請', followupLabel: '送信する追加テキスト', requestInput: '入力を申請',
+    lede: '独立したローカル操作画面です。起動と入力には承認が必要です。停止は即時実行され、Windowsではプロセスツリーを強制終了します。',
+    stop: '今すぐ停止', followupLabel: '送信する追加テキスト', requestInput: '入力を申請',
     decisionError: '判断を受け付けられませんでした: {0}', waitingApproval: 'ホストの承認を待っています…',
     runStarted: '実行を開始しました。プロバイダー出力は収集されません。', runFailed: '実行を開始できませんでした: {0}',
     unlockFailed: 'ホストのロックを解除できませんでした: {0}', noRoots: '許可されたプロジェクトルートが設定されていません。',
@@ -173,8 +174,8 @@ function renderApprovals(items) {
       check.setAttribute('role', 'note');
       card.append(check);
     }
-    const fieldLabels = { profile: t('profileLabel'), executable: t('field_executable'), cwd: t('field_cwd'), runId: t('field_runId'), platform: t('field_platform'), maxDurationMs: t('field_maxDurationMs'), maxActive: t('field_maxActive'), force: t('field_force') };
-    for (const key of ['profile', 'executable', 'cwd', 'runId', 'platform', 'maxDurationMs', 'maxActive', 'force']) {
+    const fieldLabels = { profile: t('profileLabel'), executable: t('field_executable'), executableSha256: t('field_executableSha256'), cwd: t('field_cwd'), runId: t('field_runId'), platform: t('field_platform'), maxDurationMs: t('field_maxDurationMs'), maxActive: t('field_maxActive') };
+    for (const key of ['profile', 'executable', 'executableSha256', 'cwd', 'runId', 'platform', 'maxDurationMs', 'maxActive', 'force']) {
       if (item.request[key] !== undefined) {
         details.append(text('dt', fieldLabels[key] ?? key), text('dd', key === 'profile' ? describe('profile', item.request[key]) : item.request[key]));
       }
