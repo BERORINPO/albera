@@ -54,7 +54,11 @@ const EXPECTED = {
     'session-record.mjs', 'demo-data.mjs', 'map-limit.mjs',
   ],
   entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],
-    runtime: ['gateway.mjs', 'api.mjs', 'approval-broker.mjs', 'approval-host.mjs', 'audit-journal.mjs', 'journal-backup.mjs', 'entry.mjs', 'host.mjs', 'session-identity.mjs', 'supervisor.mjs', 'guardian.mjs', 'environment-provider.mjs', 'environment-host-broker.mjs', 'environment-control-plane.mjs', 'hyperv-environment-provider.mjs', 'environment-operations.mjs', 'computer-scheduler.mjs', 'mock-environment-provider.mjs', 'agent-harness-adapter.mjs', 'sqlite-operation-store.mjs', 'boundary-protocols.mjs', 'guest-event-intake.mjs', 'errors.mjs', 'desktop-control.mjs', 'hyperv-desktop-driver.mjs', 'mock-desktop-broker.mjs', 'hyperv-desktop-broker-prototype.mjs', 'hyperv-desktop/desktop-io.ps1', 'desktop-wall-host.mjs', 'computer-use-mapping.mjs', 'anthropic-computer-use-client.mjs', 'fake-computer-use-client.mjs', 'desktop-agent-loop.mjs', 'agent-status-board.mjs', 'agent-fleet.mjs', 'wall-ui/index.html', 'wall-ui/wall.mjs', 'wall-ui/wall.css', 'hyperv-environment-broker-prototype.mjs', 'hyperv-env/env-io.ps1'],
+    runtime: ['gateway.mjs', 'api.mjs', 'approval-broker.mjs', 'approval-host.mjs', 'audit-journal.mjs', 'journal-backup.mjs', 'entry.mjs', 'host.mjs', 'session-identity.mjs', 'supervisor.mjs', 'guardian.mjs', 'environment-provider.mjs', 'environment-host-broker.mjs', 'environment-control-plane.mjs', 'hyperv-environment-provider.mjs', 'environment-operations.mjs', 'computer-scheduler.mjs', 'mock-environment-provider.mjs', 'agent-harness-adapter.mjs', 'sqlite-operation-store.mjs', 'boundary-protocols.mjs', 'guest-event-intake.mjs', 'errors.mjs', 'desktop-control.mjs', 'hyperv-desktop-driver.mjs', 'mock-desktop-broker.mjs', 'hyperv-desktop-broker-prototype.mjs', 'hyperv-desktop/desktop-io.ps1', 'desktop-wall-host.mjs', 'computer-use-mapping.mjs', 'anthropic-computer-use-client.mjs', 'fake-computer-use-client.mjs', 'desktop-agent-loop.mjs', 'agent-status-board.mjs', 'agent-fleet.mjs', 'wall-ui/index.html', 'wall-ui/wall.mjs', 'wall-ui/wall.css', 'hyperv-environment-broker-prototype.mjs', 'hyperv-env/env-io.ps1',
+    // control room (spec/room.md §3)
+    'room-contract.mjs', 'room-host.mjs', 'room-demo.mjs', 'room-journal.mjs', 'room-figures.mjs', 'bero-director.mjs',
+    ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
+      'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs'].map((f) => `room-ui/${f}`)],
   public: [
     'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
@@ -86,7 +90,7 @@ const core = listFiles('src/core');
 const adapters = listFiles('src/adapters');
 const entry = listFiles('src/entry');
 const runtime = listFiles('src/runtime');
-const runtimeUi = ['src/runtime/approval-ui', 'src/runtime/wall-ui'].flatMap((dir) => listFiles(dir, ['.mjs', '.js', '.html', '.css']));
+const runtimeUi = ['src/runtime/approval-ui', 'src/runtime/wall-ui', 'src/runtime/room-ui'].flatMap((dir) => listFiles(dir, ['.mjs', '.js', '.html', '.css']));
 const pub = listFiles('public');
 
 // 1. core and shared know nothing of the outside world
@@ -161,7 +165,7 @@ check('5b runtime process boundary', runtime, (line, file) => {
   if (/\bshell\s*:\s*true\b/.test(line)) return 'shell execution is not allowed';
   return null;
 });
-check('5c runtime UI (approval, wall) uses safe DOM APIs', runtimeUi, (line) =>
+check('5c runtime UI (approval, wall, room) uses safe DOM APIs', runtimeUi, (line) =>
   /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|\bdocument\.write\b/.test(line)
     ? 'runtime UI (approval, wall) must render untrusted text with textContent / DOM APIs'
     : null,
@@ -184,7 +188,19 @@ const providerContracts = [
   'src/runtime/desktop-agent-loop.mjs',
   'src/runtime/agent-status-board.mjs',
   'src/runtime/agent-fleet.mjs',
+  'src/runtime/room-contract.mjs',
+  'src/runtime/room-host.mjs',
+  'src/runtime/room-demo.mjs',
+  'src/runtime/room-journal.mjs',
+  'src/runtime/room-figures.mjs',
+  'src/runtime/bero-director.mjs',
 ];
+// The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch.
+check('5e room pure modules', ['src/runtime/room-contract.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs'], (line) => {
+  if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null;
+  for (const [re, label] of FORBIDDEN_PURE) if (/** @type {RegExp} */ (re).test(line)) return `${label} is not allowed in a pure room module`;
+  return null;
+});
 check('5d provider contracts have no process execution', providerContracts, (line) =>
   /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?child_process['"]|\b(?:spawn|exec|execFile|execSync|execFileSync|spawnSync)\s*\(/.test(line)
     ? 'provider contracts and MockProvider must not execute host commands'

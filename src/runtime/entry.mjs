@@ -12,6 +12,11 @@ import { createHyperVDesktopBrokerPrototype } from './hyperv-desktop-broker-prot
 import { createAgentStatusBoard } from './agent-status-board.mjs';
 import { createAgentFleet, MAX_FLEET_JOBS } from './agent-fleet.mjs';
 import { createDesktopAgentLoop, MODEL_PRICES } from './desktop-agent-loop.mjs';
+import { createRoomHost } from './room-host.mjs';
+import { missingRoomParts, startRoomDemo } from './room-demo.mjs';
+import * as roomJournalModule from './room-journal.mjs';
+import * as roomFiguresModule from './room-figures.mjs';
+import * as beroDirectorModule from './bero-director.mjs';
 import { createAnthropicComputerUseClient, DEFAULT_COMPUTER_USE_MODEL } from './anthropic-computer-use-client.mjs';
 import { loadOrCreateRuntimeSessionId } from './session-identity.mjs';
 import { backupRuntimeJournal, recoverRuntimeJournalTail, restoreRuntimeJournal, verifyRuntimeJournalBackup } from './journal-backup.mjs';
@@ -123,11 +128,33 @@ function parseFleetArgs(args) {
   return Object.freeze({ ...options, jobs: Object.freeze(options.jobs) });
 }
 
+// room: the fleet's options, or --demo (with --port only) for the scripted room with fake VMs.
+function parseRoomArgs(args) {
+  const demo = args.filter((arg) => arg === '--demo').length;
+  if (demo > 1) throw new Error('runtime_option_must_be_unique');
+  const rest = args.filter((arg) => arg !== '--demo');
+  if (demo === 0) return Object.freeze({ ...parseFleetArgs(rest), command: 'room', demo: false });
+  const options = { command: 'room', demo: true, jobs: Object.freeze([]), port: 0, help: false };
+  let portSeen = false;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = String(rest[i]);
+    if (arg === '--help' || arg === '-h') { options.help = true; continue; }
+    if (arg !== '--port') throw new Error(arg === '--job' ? 'runtime_room_demo_takes_no_jobs' : 'invalid_runtime_option');
+    if (portSeen) throw new Error('runtime_option_must_be_unique');
+    portSeen = true;
+    const value = rest[++i];
+    if (typeof value !== 'string' || !/^\d+$/.test(value) || Number(value) > 65535) throw new Error('runtime_port_invalid');
+    options.port = Number(value);
+  }
+  return Object.freeze(options);
+}
+
 export function parseRuntimeArgs(argv, platform = process.platform) {
   const Path = platform === 'win32' ? path.win32 : path;
   if (argv[0] === 'wall') return parseWallArgs(argv.slice(1));
   if (argv[0] === 'agent') return parseAgentArgs(argv.slice(1));
   if (argv[0] === 'fleet') return parseFleetArgs(argv.slice(1));
+  if (argv[0] === 'room') return parseRoomArgs(argv.slice(1));
   const command = ['backup', 'restore', 'recover-tail', 'verify-backup'].includes(argv[0]) ? argv[0] : 'serve';
   const args = command === 'serve' ? argv : argv.slice(1);
   if (command !== 'serve') {
@@ -188,6 +215,8 @@ Usage:
   albera-runtime wall --vm <hyper-v-vm-name>[:<label>] [--vm ...] [--port <0-65535>]
   albera-runtime agent --vm <hyper-v-vm-name> --task <text> [--model claude-haiku-5-5] [--max-steps 40] [--max-usd 0.50] [--max-minutes 15]
   albera-runtime fleet --job <vm>=<task> [--job ...] [--model claude-haiku-5-5] [--max-steps 40] [--max-usd-per-vm 0.50] [--max-usd-total 2] [--max-minutes 15] [--port <0-65535>]
+  albera-runtime room --job <vm>=<task> [--job ...] [--model claude-haiku-5-5] [--max-steps 40] [--max-usd-per-vm 0.50] [--max-usd-total 2] [--max-minutes 15] [--port <0-65535>]
+  albera-runtime room --demo [--port <0-65535>]
 
 The regular "albera" command remains a read-only session dashboard. Runtime binds only to 127.0.0.1.
 Each provider start, input, and stop requires a visible one-use decision in the local approval page.
@@ -199,6 +228,7 @@ Restore creates a new directory and never overwrites existing files. Keep the pa
 wall is a local, view-only development command: it shows the latest screen of up to 16 Hyper-V VMs you name, refreshed every 2 seconds, on 127.0.0.1 behind the same one-time code. It never sends input to a VM, keeps only the newest frame in memory and saves nothing. Screens can show secrets; use it only on a PC and display you trust. It uses the same-user prototype Broker and needs Hyper-V Administrators membership.
 agent lets an AI operate one Hyper-V VM desktop through screenshots, mouse and keyboard until it says it is done or a limit (steps, USD, minutes) is reached. Ctrl+C stops it before the next action. The Anthropic API key is read only from ANTHROPIC_API_KEY. Screens are sent to the Anthropic API and can show secrets; use only a VM that holds nothing sensitive. The AI saying DONE is a claim, not proof that the task succeeded. It uses the same-user prototype Broker and needs Hyper-V Administrators membership.
 fleet runs up to 8 agents at once (one per VM, each with its own lease) and shows the desktop wall with each AI's pointer and status drawn over its screen. Cost grows with the number of VMs: every loop stops at --max-usd-per-vm and all stop together at --max-usd-total (each may finish the response already paid for, so the total can pass the limit slightly). Ctrl+C stops all agents and keeps the wall open; press it again to exit. The wall shows what each AI claims, not whether it succeeded: check every VM yourself. Same API key, privacy and Broker notes as agent.
+room is the control room: the fleet's VMs as cameras on a canvas, with Bero (a rule-based main AI, no LLM) pointing out stalls, DONE claims and limits and opening decision cards. A card choice can stop the hands on a VM or start a short fixed job there (close a blocking dialog, or look again whether the original task is done); the browser cannot type a task. Jobs started from cards share the same per-VM and total USD limits. Ctrl+C stops all agents and keeps the room open; press it again to exit. --demo runs 3 fake VMs with a scripted AI: no VM, no API key, no network. Same API key, privacy and Broker notes as fleet.
 recover-tail requires Runtime to be stopped and copies only the fully validated record prefix to a new file beside the original. It keeps the original journal and incomplete tail unchanged, refuses an existing writer lock, and preserves the session identity. It cannot recover a possibly lost final event.
 `;
 
@@ -349,6 +379,73 @@ async function runFleet(options) {
   }
 }
 
+async function runRoomDemo(options) {
+  let demo;
+  try { demo = await startRoomDemo({ port: options.port }); }
+  catch (error) {
+    if (error?.code === 'room_parts_missing') console.error(`ALBERA room demo: these room parts are not built yet: ${error.missing.join(', ')}.`);
+    else console.error('ALBERA room demo could not start. Check the port.');
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`ALBERA control room (demo: 3 fake VMs, no network) listening at ${demo.url}`);
+  console.log(`One-time UI bootstrap code: ${demo.bootstrapCode}`);
+  console.log('Press Ctrl+C to stop.');
+  const stop = () => { void demo.close().catch(() => {}); };
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+}
+
+async function runRoom(options) {
+  if (options.demo) { await runRoomDemo(options); return; }
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) { console.error('ALBERA Runtime room: set the ANTHROPIC_API_KEY environment variable first.'); process.exitCode = 1; return; }
+  const missing = missingRoomParts({ journalModule: roomJournalModule, figuresModule: roomFiguresModule, directorModule: beroDirectorModule });
+  if (missing.length) { console.error(`ALBERA Runtime room: these room parts are not built yet: ${missing.join(', ')}.`); process.exitCode = 1; return; }
+  let room;
+  try {
+    const broker = createHyperVDesktopBrokerPrototype();
+    const board = createAgentStatusBoard();
+    const journal = roomJournalModule.createRoomJournal({});
+    const director = beroDirectorModule.createBeroDirector({ buildFigure: roomFiguresModule.buildFigure, labelOf: (vmId) => vmId.slice(0, 32) });
+    const fleet = createAgentFleet({
+      jobs: options.jobs, board, keepAlive: true,
+      createDriver: (vmId, lease) => new HyperVDesktopDriver({ broker, resolveCurrentLease: async () => lease }),
+      createClient: () => createAnthropicComputerUseClient({ apiKey, model: options.model }),
+      limits: { maxSteps: options.maxSteps, maxUsd: options.maxUsdPerVm, maxMs: options.maxMinutes * 60_000 },
+      prices: MODEL_PRICES[options.model], totalMaxUsd: options.maxUsdTotal, settleMs: 500,
+      onEvent: (vmId, event) => {
+        room?.recordFleetEvent(vmId, event);
+        const line = formatAgentEvent(event);
+        if (line) console.log(`[${vmId}] ${line}`);
+      },
+    });
+    room = createRoomHost({
+      vms: options.jobs.map(({ vmId, task }) => ({ vmId, label: vmId.slice(0, 32), task })), board, journal, director, fleet,
+      driver: (resolveCurrentLease) => new HyperVDesktopDriver({ broker, resolveCurrentLease }),
+    });
+    const address = await room.listen(options.port);
+    console.log(`ALBERA control room listening at ${address.url}`);
+    console.log(`One-time UI bootstrap code: ${address.bootstrapCode}`);
+    console.log(`Starting ${options.jobs.length} agent(s) with ${options.model} (per VM: ${options.maxSteps} steps, $${options.maxUsdPerVm}, ${options.maxMinutes} min; total $${options.maxUsdTotal}, card jobs included). Press Ctrl+C to stop all agents.`);
+    let stopRequested = false;
+    const onSignal = () => {
+      if (!stopRequested) { stopRequested = true; fleet.close('stopped_by_user'); return; }
+      void room.close().catch(() => {});
+    };
+    process.on('SIGINT', onSignal);
+    process.on('SIGTERM', onSignal);
+    const outcome = await fleet.run();
+    console.log(`total cost: $${outcome.totalUsd.toFixed(4)}${outcome.stopReason ? ` (stopped: ${outcome.stopReason})` : ''}`);
+    console.log('Note: results and "DONE" are only what each AI claimed. Check every VM yourself.');
+    console.log('The room is still open. Press Ctrl+C again to exit.');
+  } catch {
+    await room?.close().catch(() => {});
+    console.error('ALBERA Runtime room could not start. Check the VM names, options and port.');
+    process.exitCode = 1;
+  }
+}
+
 async function main() {
   let options;
   try { options = parseRuntimeArgs(process.argv.slice(2)); }
@@ -357,6 +454,7 @@ async function main() {
   if (options.command === 'wall') { await runWall(options); return; }
   if (options.command === 'agent') { await runAgent(options); return; }
   if (options.command === 'fleet') { await runFleet(options); return; }
+  if (options.command === 'room') { await runRoom(options); return; }
   if (options.command === 'backup' || options.command === 'restore' || options.command === 'recover-tail' || options.command === 'verify-backup') {
     try {
       if (options.command === 'backup') {

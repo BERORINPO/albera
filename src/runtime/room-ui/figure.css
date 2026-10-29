@@ -1,0 +1,66 @@
+/* Bero's figures and the ledger (part C). Tokens come from room.css; the fallbacks are the mock's values. */
+.rf-fig {
+  width: 330px; padding: 10px 12px; font-size: 13.5px;
+  background: var(--sheet, oklch(23% 0.004 75)); color: var(--ink, oklch(91% 0.003 75));
+  border: 1px dashed var(--me, oklch(82% 0.09 300)); border-radius: 10px;
+  transform-origin: 20% 0; animation: rf-pop 0.7s var(--ease, cubic-bezier(0.22, 1, 0.36, 1)) both;
+}
+.rf-fig.rf-who { width: 440px; }
+.rf-title { display: block; color: var(--me, oklch(82% 0.09 300)); font-size: 12px; }
+.rf-svg { display: block; width: 100%; height: auto; margin: 4px 0; overflow: visible; }
+
+/* strokes draw themselves, then labels fade in; .rf-sN is the place in the sequence */
+.rf-d { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-dasharray: 600; stroke-dashoffset: 600; animation: rf-draw 1.2s ease-out forwards; }
+.rf-f { opacity: 0; animation: rf-fade 0.5s ease-out forwards; }
+.rf-d.rf-now { stroke-width: 2.5; }
+.rf-dash { stroke-dasharray: 4 4; stroke-dashoffset: 0; animation: rf-fade 0.5s ease-out forwards; opacity: 0; }
+.rf-s0 { animation-delay: 0s; } .rf-s1 { animation-delay: .3s; } .rf-s2 { animation-delay: .6s; } .rf-s3 { animation-delay: .9s; }
+.rf-s4 { animation-delay: 1.2s; } .rf-s5 { animation-delay: 1.5s; } .rf-s6 { animation-delay: 1.8s; } .rf-s7 { animation-delay: 2.1s; }
+.rf-s8 { animation-delay: 2.4s; } .rf-s9 { animation-delay: 2.7s; } .rf-s10 { animation-delay: 3s; } .rf-s11 { animation-delay: 3.3s; }
+.rf-s12 { animation-delay: 3.6s; } .rf-s13 { animation-delay: 3.9s; } .rf-s14 { animation-delay: 4.2s; } .rf-s15 { animation-delay: 4.5s; }
+
+.rf-label { font-size: 11px; fill: var(--ink, oklch(91% 0.003 75)); }
+.rf-state, .rf-lane { font-size: 11px; }
+.rf-lane-line { stroke: var(--rule-strong, oklch(62% 0.004 75)); stroke-dasharray: 3 4; stroke-dashoffset: 0; animation: rf-fade 0.5s ease-out forwards; opacity: 0; }
+
+/* tones: green = done, orange = hands at work, purple = you / Bero, grey = waiting */
+.rf-t-done { stroke: var(--done, oklch(82.5% 0.09 142)); fill: var(--done, oklch(82.5% 0.09 142)); }
+.rf-t-work, .rf-t-hands { stroke: var(--work, oklch(80% 0.095 47)); fill: var(--work, oklch(80% 0.095 47)); }
+.rf-t-me, .rf-t-human { stroke: var(--me, oklch(82% 0.09 300)); fill: var(--me, oklch(82% 0.09 300)); }
+.rf-t-bero, .rf-t-muted { stroke: var(--muted, oklch(68% 0.004 75)); fill: var(--muted, oklch(68% 0.004 75)); }
+rect.rf-d, path.rf-d { fill: none; }
+.rf-svg text { stroke: none; }
+.rf-fill-human { fill: var(--me, oklch(82% 0.09 300)); }
+.rf-fill-bero { fill: var(--muted, oklch(68% 0.004 75)); }
+.rf-fill-hands { fill: var(--work, oklch(80% 0.095 47)); }
+
+.rf-src { display: flex; flex-direction: column; margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--rule, oklch(40% 0.004 75));
+  font-family: var(--mono, "Cascadia Mono", Consolas, monospace); font-size: 11px; line-height: 1.6; color: var(--muted, oklch(68% 0.004 75)); }
+.rf-src-h { font-family: var(--font, sans-serif); font-size: 10.5px; }
+.rf-src-l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* the ledger: docked to the bottom right of the window (not the canvas), always fully on screen, scrolls inside */
+.rf-ledger { position: fixed; right: 16px; bottom: 16px; width: min(340px, calc(100vw - 32px)); padding: 8px 12px; font-size: 13px; z-index: 20;
+  max-height: min(40vh, calc(100vh - 96px)); overflow-y: auto; overscroll-behavior: contain; box-sizing: border-box;
+  background: color-mix(in oklch, var(--paper, oklch(21% 0.004 75)) 92%, transparent);
+  border: 1px solid var(--rule, oklch(40% 0.004 75)); border-radius: 10px; }
+.rf-ledger-t { margin-bottom: 2px; font-size: 12px; font-weight: 700; color: var(--muted, oklch(68% 0.004 75)); }
+.rf-row { display: grid; grid-template-columns: 44px 40px 1fr; gap: 6px; padding: 3px 0; animation: rf-slide 0.6s var(--ease, cubic-bezier(0.22, 1, 0.36, 1)); }
+.rf-row > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rf-time { font-family: var(--mono, monospace); font-size: 11.5px; color: var(--muted, oklch(68% 0.004 75)); }
+.rf-who { font-weight: 700; }
+.rf-actor-hands { color: var(--work, oklch(80% 0.095 47)); }
+.rf-actor-bero { color: var(--muted, oklch(68% 0.004 75)); }
+.rf-actor-human { color: var(--me, oklch(82% 0.09 300)); }
+
+@keyframes rf-draw { to { stroke-dashoffset: 0; } }
+@keyframes rf-fade { to { opacity: 1; } }
+/* individual scale / rotate, so the canvas may still position the figure with transform */
+@keyframes rf-pop { from { scale: 0.6; rotate: -4deg; opacity: 0; } to { scale: 1; rotate: 0deg; opacity: 1; } }
+@keyframes rf-slide { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .rf-fig, .rf-row, .rf-d, .rf-f, .rf-dash, .rf-lane-line { animation: none; }
+  .rf-d { stroke-dashoffset: 0; }
+  .rf-f, .rf-dash, .rf-lane-line { opacity: 1; }
+}

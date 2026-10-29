@@ -7,14 +7,16 @@ const VM_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const ACTION_RE = /^[a-z_]{1,32}$/;
 const OUTCOME_RE = /^[a-z_]{1,32}$/;
 
-const fresh = () => ({ state: 'idle', step: 0, actions: 0, usd: 0, cursor: null, lastAction: null, outcome: null, claim: '' });
+const MAX_NOTE_LENGTH = 160;
+const fresh = () => ({ state: 'idle', step: 0, actions: 0, usd: 0, cursor: null, lastAction: null, outcome: null, claim: '', note: '', lastActionAt: null });
 
 const count = (value, fallback) => (Number.isSafeInteger(value) && value >= 0 ? value : fallback);
 const usdOf = (value, fallback) => (Number.isFinite(value) && value >= 0 ? value : fallback);
 const cursorOf = (value, fallback) => (Array.isArray(value) && value.length === 2 && value.every((n) => Number.isSafeInteger(n) && n >= 0) ? [value[0], value[1]] : fallback);
 const claimOf = (value) => (typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, MAX_CLAIM_LENGTH) : '');
 
-export function createAgentStatusBoard() {
+/** `now` stamps lastActionAt (epoch ms) so a watcher can tell how long a running VM has not acted. */
+export function createAgentStatusBoard({ now = Date.now } = {}) {
   const entries = new Map();
 
   function record(vmId, event) {
@@ -23,10 +25,11 @@ export function createAgentStatusBoard() {
     const prev = entries.get(vmId) ?? fresh();
     let next = prev;
     if (event.type === 'step') {
-      next = { ...prev, state: 'running', step: count(event.step, prev.step), usd: usdOf(event.usd, prev.usd) };
+      const note = typeof event.note === 'string' ? claimOf(event.note).slice(0, MAX_NOTE_LENGTH) : prev.note;
+      next = { ...prev, state: 'running', step: count(event.step, prev.step), usd: usdOf(event.usd, prev.usd), note, lastActionAt: prev.lastActionAt ?? now() };
     } else if (event.type === 'action') {
       const lastAction = typeof event.action === 'string' && ACTION_RE.test(event.action) ? event.action : prev.lastAction;
-      next = { ...prev, state: 'running', actions: prev.actions + 1, lastAction, cursor: cursorOf(event.cursor, prev.cursor) };
+      next = { ...prev, state: 'running', actions: prev.actions + 1, lastAction, cursor: cursorOf(event.cursor, prev.cursor), lastActionAt: now() };
     } else if (event.type === 'end') {
       next = {
         ...prev, state: 'done', step: count(event.steps, prev.step), actions: count(event.actions, prev.actions), usd: usdOf(event.usd, prev.usd),

@@ -1,0 +1,92 @@
+/* Control room shell and canvas (part A). Tokens follow the v07 / v08b mocks (graphite dark). */
+:root {
+  color-scheme: dark;
+  --paper: oklch(21% 0.004 75); --paper-2: oklch(26.5% 0.004 75); --paper-3: oklch(31% 0.004 75);
+  --rule: oklch(40% 0.004 75); --rule-strong: oklch(62% 0.004 75); --muted: oklch(68% 0.004 75);
+  --ink-2: oklch(86% 0.003 75); --ink: oklch(91% 0.003 75);
+  --accent: oklch(84% 0.075 262); --accent-fill: oklch(82% 0.085 262); --on-accent: oklch(21% 0.03 262);
+  --desk: oklch(15% 0.004 75); --dot: oklch(27% 0.004 75); --sheet: oklch(23% 0.004 75);
+  --work: oklch(80% 0.095 47); --wait: oklch(84% 0.075 262); --stuck: oklch(82.5% 0.105 85); --done: oklch(82.5% 0.09 142);
+  --rec: oklch(70% 0.19 25); --screen: oklch(42% 0.09 250); --me: oklch(82% 0.09 300);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --look: 1.6s;
+  --font: "BIZ UDPGothic", "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", Meiryo, sans-serif;
+  --mono: "Cascadia Mono", "BIZ UDGothic", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--desk); color: var(--ink); font-family: var(--font); font-size: 15px; line-height: 1.55;
+}
+button { font: inherit; color: inherit; background: none; border: 1px solid var(--rule-strong); border-radius: 4px; padding: 2px 10px; cursor: pointer; }
+button.primary { background: var(--accent-fill); color: var(--on-accent); border-color: transparent; font-weight: 700; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sub { color: var(--muted); }
+.sm { font-size: 13px; }
+.grow { flex: 1; }
+
+/* top bar */
+.top {
+  display: flex; align-items: center; gap: 14px; padding: 0 18px; min-height: 50px; flex: none; z-index: 10;
+  background: var(--paper); border-bottom: 1px solid var(--rule);
+}
+.brand { font-weight: 700; font-size: 18px; letter-spacing: 0.04em; }
+#counts { font-variant-numeric: tabular-nums; }
+#phase { max-width: 50vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* unlock form (same flow as the wall) */
+.bootstrap { margin: 12vh auto 0; width: min(520px, calc(100vw - 32px)); padding: 20px 24px; background: var(--paper); border: 1px solid var(--rule); border-radius: 10px; }
+.bootstrap h1 { margin: 0 0 8px; font-size: 20px; }
+.bootstrap p { color: var(--ink-2); }
+.bootstrap form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.bootstrap label { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 220px; font-size: 13px; color: var(--muted); }
+.bootstrap input { font: inherit; color: var(--ink); background: var(--desk); border: 1px solid var(--rule-strong); border-radius: 4px; padding: 4px 8px; }
+#bootstrap-status { color: var(--stuck); min-height: 1.5em; }
+
+/* the room: canvas viewport + ledger panel on top of it */
+.room { position: relative; flex: 1; min-height: 0; }
+.viewport {
+  position: absolute; inset: 0; overflow: hidden; cursor: grab; touch-action: none; user-select: none;
+  background-color: var(--desk);
+  background-image: radial-gradient(var(--dot) 1.2px, transparent 1.4px);
+  background-size: 22px 22px;
+}
+.viewport.panning { cursor: grabbing; }
+/* The world is wide so a node without its own width (Bero's bubble) is not squeezed to min-content.
+   It paints nothing itself; nodes may also sit at negative coordinates. */
+.world { position: absolute; left: 0; top: 0; width: 100000px; height: 100000px; transform-origin: 0 0; pointer-events: none; }
+.world > * { pointer-events: auto; }
+/* look-at: the world and the dots glide together with the mock's ease-out */
+.viewport.gliding { transition: background-position var(--look) var(--ease), background-size var(--look) var(--ease); }
+.viewport.gliding > .world { transition: transform var(--look) var(--ease); }
+.node { position: absolute; cursor: default; user-select: text; }
+
+/* wires: they draw themselves (stroke-dashoffset goes from the path length to 0) */
+.wires { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; z-index: 1; }
+.wire { fill: none; stroke-width: 2; stroke-linecap: round; transition: stroke-dashoffset 0.9s var(--ease), opacity 0.6s; }
+.wire.tone-me { stroke: var(--me); }
+.wire.tone-work { stroke: var(--work); }
+.wire.tone-wait { stroke: var(--wait); }
+.wire.tone-done { stroke: var(--done); }
+
+/* ledger panel (rows come from part C) */
+.ledger {
+  position: absolute; right: 16px; bottom: 16px; width: min(340px, calc(100vw - 32px)); max-height: 40vh; overflow: auto; z-index: 9;
+  padding: 8px 12px; font-size: 13px;
+  background: color-mix(in oklch, var(--paper) 92%, transparent); border: 1px solid var(--rule); border-radius: 10px;
+}
+.ledger-title { margin: 0 0 2px; font-size: 12px; color: var(--muted); font-weight: 700; }
+.hint { position: absolute; left: 16px; bottom: 10px; margin: 0; z-index: 9; pointer-events: none; }
+
+/* a camera placeholder while part B has not landed */
+.cam-missing { width: 300px; height: 200px; border: 1px dashed var(--rule-strong); border-radius: 10px; padding: 8px 10px; color: var(--muted); font-size: 13px; background: var(--sheet); }
+
+@media (max-width: 640px) {
+  .top { gap: 8px; padding: 0 12px; }
+  #phase { max-width: 40vw; }
+  .hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .viewport.gliding, .viewport.gliding > .world, .wire { transition-duration: 0.01s; }
+}
