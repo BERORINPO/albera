@@ -207,7 +207,7 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, environment
         catch (error) {
           try { await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.stop', phase: safeFailurePhase(error), runId: stopMatch[1], errorCode: safeGatewayCode(error) }); }
           catch (auditError) {
-            try { await gateway.close(); } catch { /* stop remaining executions when a stop decision cannot be audited */ }
+            try { await gateway.close(); } catch { /* stop remaining executions when the stop request cannot be audited */ }
             throw auditError;
           }
           throw error;
@@ -324,6 +324,7 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, environment
               kind: 'event', sessionId, eventType: event.type, at: event.at, provider: event.provider, runId: event.runId,
               ...(event.code === undefined ? {} : { code: event.code }), ...(event.signal === undefined ? {} : { signal: event.signal }),
               ...(event.stopReason === undefined ? {} : { stopReason: event.stopReason }),
+              ...(event.force === undefined ? {} : { force: event.force }),
             });
             recoveredRuns.set(event.runId, applyRecoveredEvent(recoveredRuns.get(event.runId), event, stored.sequence));
           } else {
@@ -563,6 +564,10 @@ function projectJournalEvent(record) {
     if (!STOP_REASONS.has(record.stopReason) || !['stop_requested', 'stop_failed'].includes(record.eventType)) return null;
     event.stopReason = record.stopReason;
   }
+  if (record.force !== undefined) {
+    if (typeof record.force !== 'boolean' || record.eventType !== 'stop_requested') return null;
+    event.force = record.force;
+  }
   if (record.code === null || Number.isSafeInteger(record.code)) event.code = record.code;
   if (record.signal === null || (typeof record.signal === 'string' && SIGNALS.has(record.signal))) event.signal = record.signal;
   return event;
@@ -728,6 +733,7 @@ function projectEvent(event) {
   if (event.signal === null || (typeof event.signal === 'string' && SIGNALS.has(event.signal))) result.signal = event.signal;
   if (event.stopReason !== undefined && STOP_REASONS.has(event.stopReason)
     && ['stop_requested', 'stop_failed'].includes(event.type)) result.stopReason = event.stopReason;
+  if (typeof event.force === 'boolean' && event.type === 'stop_requested') result.force = event.force;
   return result;
 }
 function queryInteger(value, fallback, max) {

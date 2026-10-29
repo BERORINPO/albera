@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import test from 'node:test';
 import { createRuntimeApi } from '../src/runtime/api.mjs';
 import { createRuntimeApprovalBroker } from '../src/runtime/approval-broker.mjs';
@@ -144,7 +144,7 @@ test('API projects run/event data and only forwards allowlisted start and stop r
   const f = await apiFixture({}, {
     events: ({ after = 0 } = {}) => [
       { id: 1, runId, provider: 'claude', type: 'started', at: 1, prompt: 'synthetic-secret' },
-      { id: 2, runId, provider: 'claude', type: 'stop_requested', at: 2, stopReason: 'synthetic-secret' },
+      { id: 2, runId, provider: 'claude', type: 'stop_requested', at: 2, stopReason: 'synthetic-secret', force: true },
     ].filter((event) => event.id > after),
   });
   t.after(f.close);
@@ -179,7 +179,7 @@ test('API projects run/event data and only forwards allowlisted start and stop r
   const ownedEvents = await request(f.address, f.api, { route: '/v1/events?after=0&limit=1' });
   assert.deepEqual(JSON.parse(ownedEvents.text), { events: [{ id: 1, runId, provider: 'claude', type: 'started', at: 1 }] });
   const projectedEvents = await request(f.address, f.api, { route: '/v1/events?after=0&limit=10' });
-  assert.deepEqual(JSON.parse(projectedEvents.text).events[1], { id: 2, runId, provider: 'claude', type: 'stop_requested', at: 2 });
+  assert.deepEqual(JSON.parse(projectedEvents.text).events[1], { id: 2, runId, provider: 'claude', type: 'stop_requested', at: 2, force: true });
   assert.equal(projectedEvents.text.includes('synthetic-secret'), false);
 
   const stopped = await request(f.address, f.api, { method: 'POST', route: '/v1/runs/12345678-1234-4234-8234-123456789abc/stop' });
@@ -563,7 +563,7 @@ test('background lifecycle capture persists events without an open event stream'
   const runId = JSON.parse(started.text).run.id;
   sourceEvents = [
     { id: 1, runId, provider: 'claude', type: 'started', at: 1 },
-    { id: 2, runId, provider: 'claude', type: 'stop_requested', at: 2, stopReason: 'timeout' },
+    { id: 2, runId, provider: 'claude', type: 'stop_requested', at: 2, stopReason: 'timeout', force: true },
     { id: 3, runId, provider: 'claude', type: 'stopped', at: 3, code: null, signal: 'SIGTERM' },
   ];
   const deadline = Date.now() + 1500;
@@ -575,9 +575,10 @@ test('background lifecycle capture persists events without an open event stream'
   }
   assert.deepEqual(persisted.map((event) => event.eventType), ['started', 'stop_requested', 'stopped']);
   assert.equal(persisted[1].stopReason, 'timeout');
+  assert.equal(persisted[1].force, true);
   const response = await request(f.address, f.api, { route: '/v1/events?after=0' });
   assert.deepEqual(JSON.parse(response.text).events[1], {
-    id: 2, runId, provider: 'claude', type: 'stop_requested', at: 2, stopReason: 'timeout',
+    id: 2, runId, provider: 'claude', type: 'stop_requested', at: 2, stopReason: 'timeout', force: true,
   });
   await f.close();
   const restoredApi = createRuntimeApi({
@@ -920,14 +921,18 @@ test('closing Runtime API denies pending host approval requests', async (t) => {
   assert.equal(address.host, '127.0.0.1');
 });
 
-test('Runtime API host approval routes carry a synthetic launch from request through human decision', async (t) => {
+test('Runtime API host approval routes gate synthetic launch while manual stop bypasses the broker', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-host-approval-e2e-'));
+  const executable = path.join(root, `synthetic-provider${process.platform === 'win32' ? '.exe' : ''}`);
+  await writeFile(executable, 'synthetic provider executable fixture');
+  await chmod(executable, 0o700);
   const broker = createRuntimeApprovalBroker();
   let child;
   const gateway = new RuntimeGateway({
     roots: [root],
     authorize: broker.authorize,
-    resolveExecutableImpl: async () => process.execPath,
+    resolveExecutableImpl: async () => executable,
+    probeVersionImpl: async () => '99.0.0',
     buildLaunchImpl: (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile),
     env: {},
     spawnImpl: () => {
@@ -979,20 +984,9 @@ test('Runtime API host approval routes carry a synthetic launch from request thr
   assert.equal(started.status, 202);
   const runId = JSON.parse(started.text).run.id;
 
-  const stopResponse = request(address, api, { method: 'POST', route: `/v1/runs/${runId}/stop`, token: api.runToken });
-  approval = undefined;
-  for (let i = 0; i < 100 && !approval; i++) {
-    const listed = await request(address, api, { route: '/v1/approvals', token: api.approvalRead });
-    approval = JSON.parse(listed.text).approvals[0];
-    if (!approval) await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.equal(approval.request.action, 'stop');
-  assert.equal(approval.request.runId, runId);
-  const denied = await request(address, api, {
-    method: 'POST', route: `/v1/approvals/${approval.id}`, token: api.approvalDecide,
-    body: JSON.stringify({ decision: 'deny' }),
-  });
-  assert.equal(denied.status, 200);
-  assert.equal((await stopResponse).status, 403);
-  assert.equal(gateway.get(runId).status, 'running');
+  const stopResponse = await request(address, api, { method: 'POST', route: `/v1/runs/${runId}/stop`, token: api.runToken });
+  assert.equal(stopResponse.status, 200);
+  assert.equal(gateway.get(runId).status, 'stopped');
+  assert.equal(broker.size, 0);
+  assert.equal(gateway.events().find((event) => event.type === 'stop_requested').force, process.platform === 'win32');
 });

@@ -208,7 +208,7 @@ class RuntimeAuditJournal {
 
 function validateInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('invalid_journal_record');
-  const allowed = new Set(['kind', 'sessionId', 'requestId', 'action', 'phase', 'at', 'provider', 'runId', 'errorCode', 'eventType', 'eventId', 'code', 'signal', 'stopReason']);
+  const allowed = new Set(['kind', 'sessionId', 'requestId', 'action', 'phase', 'at', 'provider', 'runId', 'errorCode', 'eventType', 'eventId', 'code', 'signal', 'stopReason', 'force']);
   if (Object.keys(input).some((key) => !allowed.has(key))) throw new TypeError('invalid_journal_record');
   const kind = input.kind ?? 'audit';
   if (!['audit', 'event'].includes(kind) || !SESSION_ID_RE.test(input.sessionId)
@@ -221,7 +221,8 @@ function validateInput(input) {
       || (input.eventId !== undefined && (!Number.isSafeInteger(input.eventId) || input.eventId < 1))
       || (input.code !== undefined && input.code !== null && !Number.isSafeInteger(input.code))
       || (input.signal !== undefined && input.signal !== null && !SIGNALS.has(input.signal))
-      || (input.stopReason !== undefined && (!STOP_REASONS.has(input.stopReason) || !['stop_requested', 'stop_failed'].includes(input.eventType)))) throw new TypeError('invalid_journal_record');
+      || (input.stopReason !== undefined && (!STOP_REASONS.has(input.stopReason) || !['stop_requested', 'stop_failed'].includes(input.eventType)))
+      || (input.force !== undefined && (typeof input.force !== 'boolean' || input.eventType !== 'stop_requested'))) throw new TypeError('invalid_journal_record');
     return {
       kind, sessionId: input.sessionId, eventType: input.eventType, at: input.at,
       provider: input.provider, runId: input.runId,
@@ -229,9 +230,10 @@ function validateInput(input) {
       ...(input.code === undefined ? {} : { code: input.code }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
       ...(input.stopReason === undefined ? {} : { stopReason: input.stopReason }),
+      ...(input.force === undefined ? {} : { force: input.force }),
     };
   }
-  if (input.eventType !== undefined || input.eventId !== undefined || input.code !== undefined || input.signal !== undefined || input.stopReason !== undefined
+  if (input.eventType !== undefined || input.eventId !== undefined || input.code !== undefined || input.signal !== undefined || input.stopReason !== undefined || input.force !== undefined
     || !UUID_RE.test(input.requestId) || !ACTIONS.has(input.action) || !PHASES.has(input.phase)) throw new TypeError('invalid_journal_record');
   return {
     ...(input.kind === undefined ? {} : { kind }),
