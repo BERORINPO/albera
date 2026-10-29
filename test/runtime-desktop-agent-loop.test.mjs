@@ -49,12 +49,12 @@ test('mapping: every supported operation maps to a validated ALBERA action', () 
 
 test('mapping: unsupported operations and bad arguments are reported, never mapped', () => {
   const m = (name, input) => mapComputerToolUse(fakeToolUse(name, input), screen);
-  for (const name of ['triple_click', 'middle_click', 'left_click_drag', 'hold_key', 'zoom', 'bash']) {
+  // Fine-grained operations (drag, triple/middle click, hold_key, modifiers) are covered in runtime-computer-use-mapping.test.mjs.
+  for (const name of ['left_click_drag', 'hold_key', 'zoom', 'bash']) {
     assert.ok(m(name, { coordinate: [1, 1] }).unsupported, name);
   }
-  assert.ok(m('left_click', { coordinate: [1, 1], text: 'shift' }).unsupported);
+  assert.ok(m('left_click', { coordinate: [1, 1], text: 'hyper' }).unsupported);
   assert.ok(m('scroll', { scroll_direction: 'left' }).unsupported);
-  assert.ok(m('scroll', { scroll_direction: 'up', text: 'ctrl' }).unsupported);
   assert.ok(m('wait', { duration: -1 }).unsupported);
   assert.ok(m('key', { text: 'not-a-key' }).unsupported);
   assert.ok(m('type', { text: 'café' }).unsupported);
@@ -194,7 +194,7 @@ test('loop: tool_result shape, screenshot image, unsupported action and Not exec
     script: [
       fakeReply([
         fakeToolUse('screenshot', {}, 't1'),
-        fakeToolUse('triple_click', { coordinate: [1, 1] }, 't2'),
+        fakeToolUse('zoom', { coordinate: [1, 1] }, 't2'),
         fakeToolUse('left_click', { coordinate: [1, 1] }, 't3'),
       ]),
       fakeReply([fakeToolUse('cursor_position', {}, 't4')]),

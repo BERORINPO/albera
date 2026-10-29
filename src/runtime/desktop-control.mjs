@@ -7,8 +7,8 @@ import { isEnvironmentId } from './environment-provider.mjs';
  */
 
 export const DESKTOP_ACTIONS = Object.freeze([
-  'screenshot', 'left_click', 'right_click', 'double_click', 'mouse_move',
-  'left_mouse_down', 'left_mouse_up', 'type', 'key', 'scroll', 'wait',
+  'screenshot', 'left_click', 'right_click', 'middle_click', 'double_click', 'triple_click', 'mouse_move',
+  'left_mouse_down', 'left_mouse_up', 'left_click_drag', 'type', 'key', 'hold_key', 'scroll', 'wait',
 ]);
 export const DESKTOP_OWNER_TYPES = Object.freeze(['AI', 'HUMAN']);
 
@@ -19,6 +19,7 @@ export const DEFAULT_SCROLL_AMOUNT = 3;
 export const MAX_WAIT_MS = 10_000;
 export const MAX_KEY_MODIFIERS = 3;
 export const MAX_SCREEN_DIMENSION = 4096;
+export const MAX_HOLD_MS = 5_000;
 
 const MODIFIERS = new Set(['ctrl', 'alt', 'shift', 'super']);
 const NAMED_KEYS = new Set([
@@ -32,17 +33,22 @@ const OWNER_TYPE_SET = new Set(DESKTOP_OWNER_TYPES);
 const LEASE_KEYS = new Set(['desktopSessionId', 'ownerType', 'ownerId', 'generation', 'expiresAt']);
 const SCREEN_KEYS = new Set(['width', 'height']);
 // Allowed fields per action: [required, optional].
+// `modifiers` ("shift", "ctrl+shift") are held for the click, drag or scroll and always released.
 const ACTION_FIELDS = Object.freeze({
   screenshot: [[], []],
-  left_click: [[], ['coordinate']],
-  right_click: [[], ['coordinate']],
-  double_click: [[], ['coordinate']],
+  left_click: [[], ['coordinate', 'modifiers']],
+  right_click: [[], ['coordinate', 'modifiers']],
+  middle_click: [[], ['coordinate', 'modifiers']],
+  double_click: [[], ['coordinate', 'modifiers']],
+  triple_click: [[], ['coordinate', 'modifiers']],
   mouse_move: [['coordinate'], []],
   left_mouse_down: [[], []],
   left_mouse_up: [[], []],
+  left_click_drag: [['startCoordinate', 'coordinate'], ['modifiers']],
   type: [['text'], []],
   key: [['key'], ['repeat']],
-  scroll: [['direction'], ['amount', 'coordinate']],
+  hold_key: [['key', 'durationMs'], []],
+  scroll: [['direction'], ['amount', 'coordinate', 'modifiers']],
   wait: [['durationMs'], []],
 });
 
@@ -75,8 +81,14 @@ export function validateDesktopAction(action, screen) {
     throw new TypeError('invalid_desktop_action');
   }
   const out = { action: action.action };
+  if (Object.hasOwn(action, 'startCoordinate')) out.startCoordinate = normalizeCoordinate(action.startCoordinate, size);
   if (Object.hasOwn(action, 'coordinate')) out.coordinate = normalizeCoordinate(action.coordinate, size);
+  if (Object.hasOwn(action, 'modifiers')) out.modifiers = normalizeModifiers(action.modifiers);
   if (action.action === 'type') out.text = normalizeText(action.text);
+  if (action.action === 'hold_key') {
+    out.key = normalizeHeldKey(action.key);
+    out.durationMs = boundedInt(action.durationMs, 1, MAX_HOLD_MS);
+  }
   if (action.action === 'key') {
     out.key = normalizeKey(action.key);
     if (Object.hasOwn(action, 'repeat')) out.repeat = boundedInt(action.repeat, 1, MAX_KEY_REPEAT);
@@ -88,6 +100,112 @@ export function validateDesktopAction(action, screen) {
   }
   if (action.action === 'wait') out.durationMs = boundedInt(action.durationMs, 1, MAX_WAIT_MS);
   return Object.freeze(out);
+}
+
+// ---- input plan: one validated action -> a bounded list of primitive device steps ----
+// The Broker executes only these fixed primitives; it never sees key names or action names it would
+// have to interpret. A Broker must release every key and button a plan pressed if any step fails.
+export const DESKTOP_INPUT_OPS = Object.freeze(['move', 'down', 'up', 'press', 'release', 'tap', 'text', 'wheel', 'sleep']);
+export const MAX_PLAN_STEPS = 256;
+export const MAX_PLAN_SLEEP_MS = 12_000;
+export const MAX_DRAG_STEPS = 48;
+const DRAG_PX_PER_STEP = 16;
+const MIN_DRAG_STEPS = 4;
+const DRAG_PAUSE_MS = 12;
+const MOVE_SETTLE_MS = 80;
+const BUTTON_MS = 60;
+const MODIFIER_SETTLE_MS = 30;
+const WHEEL_NOTCH = 120;
+const BUTTONS = Object.freeze({ left: 1, right: 2, middle: 3 });
+const CLICK_PLANS = Object.freeze({
+  left_click: [BUTTONS.left, 1], right_click: [BUTTONS.right, 1], middle_click: [BUTTONS.middle, 1],
+  double_click: [BUTTONS.left, 2], triple_click: [BUTTONS.left, 3],
+});
+const VK = Object.freeze({
+  return: 0x0d, enter: 0x0d, escape: 0x1b, esc: 0x1b, tab: 0x09, backspace: 0x08, delete: 0x2e, space: 0x20,
+  up: 0x26, down: 0x28, left: 0x25, right: 0x27, home: 0x24, end: 0x23, page_up: 0x21, page_down: 0x22, insert: 0x2d,
+  ctrl: 0x11, alt: 0x12, shift: 0x10, super: 0x5b,
+  '-': 0xbd, '=': 0xbb, ',': 0xbc, '.': 0xbe, '/': 0xbf, ';': 0xba, "'": 0xde, '[': 0xdb, ']': 0xdd, '\\': 0xdc, '`': 0xc0,
+});
+
+/** Validate `action` against `screen`, then return its frozen primitive steps. Throws TypeError('invalid_desktop_action'). */
+export function planDesktopInput(action, screen) {
+  const a = validateDesktopAction(action, screen);
+  const steps = [];
+  const sleep = (ms) => steps.push({ op: 'sleep', ms });
+  const moveTo = ([x, y]) => steps.push({ op: 'move', x, y });
+  const mods = a.modifiers ? a.modifiers.split('+').map(vkOf) : [];
+  const withModifiers = (body) => {
+    for (const vk of mods) steps.push({ op: 'press', vk });
+    if (mods.length) sleep(MODIFIER_SETTLE_MS);
+    body();
+    for (const vk of [...mods].reverse()) steps.push({ op: 'release', vk });
+  };
+  if (Object.hasOwn(CLICK_PLANS, a.action)) {
+    const [button, times] = CLICK_PLANS[a.action];
+    if (a.coordinate) { moveTo(a.coordinate); sleep(MOVE_SETTLE_MS); }
+    withModifiers(() => {
+      for (let i = 0; i < times; i++) {
+        steps.push({ op: 'down', button }); sleep(BUTTON_MS);
+        steps.push({ op: 'up', button }); sleep(BUTTON_MS);
+      }
+    });
+  }
+  else if (a.action === 'left_click_drag') {
+    moveTo(a.startCoordinate); sleep(MOVE_SETTLE_MS);
+    withModifiers(() => {
+      steps.push({ op: 'down', button: BUTTONS.left }); sleep(BUTTON_MS);
+      for (const point of dragPath(a.startCoordinate, a.coordinate)) { moveTo(point); sleep(DRAG_PAUSE_MS); }
+      sleep(BUTTON_MS);
+      steps.push({ op: 'up', button: BUTTONS.left });
+    });
+  }
+  else if (a.action === 'mouse_move') moveTo(a.coordinate);
+  else if (a.action === 'left_mouse_down') steps.push({ op: 'down', button: BUTTONS.left });
+  else if (a.action === 'left_mouse_up') steps.push({ op: 'up', button: BUTTONS.left });
+  else if (a.action === 'type') steps.push({ op: 'text', text: a.text });
+  else if (a.action === 'key') {
+    const codes = a.key.split('+').map(vkOf);
+    const main = codes.pop();
+    for (let i = 0; i < (a.repeat ?? 1); i++) {
+      for (const vk of codes) steps.push({ op: 'press', vk });
+      steps.push({ op: 'tap', vk: main });
+      for (const vk of [...codes].reverse()) steps.push({ op: 'release', vk });
+    }
+  }
+  else if (a.action === 'hold_key') {
+    const codes = a.key.split('+').map(vkOf);
+    for (const vk of codes) steps.push({ op: 'press', vk });
+    sleep(a.durationMs);
+    for (const vk of [...codes].reverse()) steps.push({ op: 'release', vk });
+  }
+  else if (a.action === 'scroll') {
+    if (a.coordinate) moveTo(a.coordinate);
+    const notches = a.amount ?? DEFAULT_SCROLL_AMOUNT;
+    withModifiers(() => steps.push({ op: 'wheel', delta: (a.direction === 'up' ? 1 : -1) * WHEEL_NOTCH * notches }));
+  }
+  else if (a.action === 'wait') sleep(a.durationMs);
+  else throw new TypeError('invalid_desktop_action'); // screenshot is a capture, not input
+  if (steps.length > MAX_PLAN_STEPS || steps.reduce((ms, step) => ms + (step.ms ?? 0), 0) > MAX_PLAN_SLEEP_MS) {
+    throw new TypeError('invalid_desktop_action');
+  }
+  return Object.freeze(steps.map((step) => Object.freeze(step)));
+}
+
+/** Evenly spaced integer points after `from`, ending exactly on `to`; 4..MAX_DRAG_STEPS of them. */
+export function dragPath(from, to) {
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  const n = Math.min(MAX_DRAG_STEPS, Math.max(MIN_DRAG_STEPS, Math.ceil(Math.hypot(dx, dy) / DRAG_PX_PER_STEP)));
+  return Array.from({ length: n }, (_, i) => [Math.round(from[0] + (dx * (i + 1)) / n), Math.round(from[1] + (dy * (i + 1)) / n)]);
+}
+
+function vkOf(name) {
+  if (Object.hasOwn(VK, name)) return VK[name];
+  const fn = name.match(/^f([1-9]|1[0-2])$/);
+  if (fn) return 0x6f + Number(fn[1]);
+  if (/^[a-z0-9]$/.test(name)) return name.toUpperCase().charCodeAt(0);
+  throw new TypeError('invalid_desktop_action');
 }
 
 /** Validate the shape of a desktop-control lease. Throws TypeError('invalid_desktop_lease'). */
@@ -162,6 +280,22 @@ function normalizeKey(value) {
     throw new TypeError('invalid_desktop_action');
   }
   return [...parts, main].join('+');
+}
+
+/** hold_key may hold modifiers alone ("shift") as well as a normal key combination. */
+function normalizeHeldKey(value) {
+  if (typeof value === 'string' && value.toLowerCase().split('+').every((part) => MODIFIERS.has(part))) return normalizeModifiers(value);
+  return normalizeKey(value);
+}
+
+/** "Shift+CTRL" -> "shift+ctrl": 1-3 distinct modifier names, order kept. */
+function normalizeModifiers(value) {
+  if (typeof value !== 'string' || value.length > 32) throw new TypeError('invalid_desktop_action');
+  const parts = value.toLowerCase().split('+');
+  if (parts.length > MAX_KEY_MODIFIERS || new Set(parts).size !== parts.length || parts.some((part) => !MODIFIERS.has(part))) {
+    throw new TypeError('invalid_desktop_action');
+  }
+  return parts.join('+');
 }
 
 function boundedInt(value, min, max) {

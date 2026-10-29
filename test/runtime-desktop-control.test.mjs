@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import {
   DESKTOP_ACTIONS,
   DesktopControlError,
+  MAX_DRAG_STEPS,
+  MAX_HOLD_MS,
   MAX_TYPE_LENGTH,
   assertLeaseCurrent,
+  dragPath,
+  planDesktopInput,
   validateDesktopAction,
   validateDesktopLease,
 } from '../src/runtime/desktop-control.mjs';
@@ -36,8 +40,8 @@ function makeDriver(overrides = {}) {
 test('the action list is frozen and covers the documented operations', () => {
   assert.equal(Object.isFrozen(DESKTOP_ACTIONS), true);
   assert.deepEqual([...DESKTOP_ACTIONS].sort(), [
-    'double_click', 'key', 'left_click', 'left_mouse_down', 'left_mouse_up', 'mouse_move',
-    'right_click', 'screenshot', 'scroll', 'type', 'wait',
+    'double_click', 'hold_key', 'key', 'left_click', 'left_click_drag', 'left_mouse_down', 'left_mouse_up',
+    'middle_click', 'mouse_move', 'right_click', 'screenshot', 'scroll', 'triple_click', 'type', 'wait',
   ]);
 });
 
@@ -55,6 +59,13 @@ test('validateDesktopAction accepts well-formed actions and returns frozen copie
     { action: 'key', key: 'F5' },
     { action: 'scroll', direction: 'down', amount: 5, coordinate: [1, 1] },
     { action: 'wait', durationMs: 500 },
+    { action: 'triple_click', coordinate: [1, 2] },
+    { action: 'middle_click' },
+    { action: 'left_click', coordinate: [1, 2], modifiers: 'shift' },
+    { action: 'left_click_drag', startCoordinate: [0, 0], coordinate: [63, 47], modifiers: 'ctrl+shift' },
+    { action: 'hold_key', key: 'shift', durationMs: MAX_HOLD_MS },
+    { action: 'hold_key', key: 'ctrl+a', durationMs: 1 },
+    { action: 'scroll', direction: 'up', modifiers: 'ctrl' },
   ];
   for (const input of accepted) {
     const out = validateDesktopAction(input, screen);
@@ -62,12 +73,87 @@ test('validateDesktopAction accepts well-formed actions and returns frozen copie
     assert.equal(out.action, input.action);
   }
   assert.equal(validateDesktopAction({ action: 'key', key: 'CTRL+C' }, screen).key, 'ctrl+c');
+  assert.equal(validateDesktopAction({ action: 'left_click', modifiers: 'Shift+CTRL' }, screen).modifiers, 'shift+ctrl');
+});
+
+test('validateDesktopAction rejects bad drags, holds and modifiers', () => {
+  const rejected = [
+    { action: 'middle_click', button: 3 },
+    { action: 'left_click_drag', coordinate: [1, 1] },
+    { action: 'left_click_drag', startCoordinate: [1, 1] },
+    { action: 'left_click_drag', startCoordinate: [64, 0], coordinate: [1, 1] },
+    { action: 'left_click_drag', startCoordinate: [0, 0], coordinate: [1, 48] },
+    { action: 'hold_key', key: 'shift' },
+    { action: 'hold_key', key: 'shift', durationMs: 0 },
+    { action: 'hold_key', key: 'shift', durationMs: MAX_HOLD_MS + 1 },
+    { action: 'hold_key', key: 'printscreen', durationMs: 10 },
+    { action: 'left_click', modifiers: 'hyper' },
+    { action: 'left_click', modifiers: 'cmd' },
+    { action: 'left_click', modifiers: 'shift+shift' },
+    { action: 'left_click', modifiers: 'shift+a' },
+    { action: 'left_click', modifiers: '' },
+    { action: 'left_click', modifiers: 'ctrl+alt+shift+super' },
+    { action: 'left_click', modifiers: ['shift'] },
+    { action: 'mouse_move', coordinate: [1, 1], modifiers: 'shift' },
+    { action: 'type', text: 'a', modifiers: 'shift' },
+  ];
+  for (const input of rejected) {
+    assert.throws(() => validateDesktopAction(input, screen), /invalid_desktop_action/, JSON.stringify(input));
+  }
+});
+
+test('planDesktopInput turns actions into bounded primitive steps that release what they press', () => {
+  const ops = (action) => planDesktopInput(action, screen).filter((step) => step.op !== 'sleep');
+  assert.deepEqual(ops({ action: 'triple_click', coordinate: [5, 6] }), [
+    { op: 'move', x: 5, y: 6 },
+    { op: 'down', button: 1 }, { op: 'up', button: 1 },
+    { op: 'down', button: 1 }, { op: 'up', button: 1 },
+    { op: 'down', button: 1 }, { op: 'up', button: 1 },
+  ]);
+  assert.deepEqual(ops({ action: 'middle_click' }), [{ op: 'down', button: 3 }, { op: 'up', button: 3 }]);
+  assert.deepEqual(ops({ action: 'left_click', coordinate: [1, 1], modifiers: 'ctrl+shift' }), [
+    { op: 'move', x: 1, y: 1 },
+    { op: 'press', vk: 0x11 }, { op: 'press', vk: 0x10 },
+    { op: 'down', button: 1 }, { op: 'up', button: 1 },
+    { op: 'release', vk: 0x10 }, { op: 'release', vk: 0x11 },
+  ]);
+  assert.deepEqual(ops({ action: 'key', key: 'ctrl+s', repeat: 2 }), [
+    { op: 'press', vk: 0x11 }, { op: 'tap', vk: 0x53 }, { op: 'release', vk: 0x11 },
+    { op: 'press', vk: 0x11 }, { op: 'tap', vk: 0x53 }, { op: 'release', vk: 0x11 },
+  ]);
+  assert.deepEqual(planDesktopInput({ action: 'hold_key', key: 'shift+f5', durationMs: 900 }, screen), [
+    { op: 'press', vk: 0x10 }, { op: 'press', vk: 0x74 }, { op: 'sleep', ms: 900 }, { op: 'release', vk: 0x74 }, { op: 'release', vk: 0x10 },
+  ]);
+  assert.deepEqual(ops({ action: 'scroll', direction: 'down', amount: 2, modifiers: 'ctrl' }), [
+    { op: 'press', vk: 0x11 }, { op: 'wheel', delta: -240 }, { op: 'release', vk: 0x11 },
+  ]);
+  assert.deepEqual(ops({ action: 'type', text: 'hi' }), [{ op: 'text', text: 'hi' }]);
+  assert.throws(() => planDesktopInput({ action: 'screenshot' }, screen), /invalid_desktop_action/);
+  assert.throws(() => planDesktopInput({ action: 'left_click', coordinate: [64, 0] }, screen), /invalid_desktop_action/);
+  assert.equal(Object.isFrozen(planDesktopInput({ action: 'middle_click' }, screen)[0]), true);
+});
+
+test('a drag is down at the start, smooth interpolated moves, up at the end', () => {
+  const steps = planDesktopInput({ action: 'left_click_drag', startCoordinate: [0, 0], coordinate: [60, 40], modifiers: 'alt' }, screen);
+  const ops = steps.filter((step) => step.op !== 'sleep');
+  assert.deepEqual(ops.slice(0, 3), [{ op: 'move', x: 0, y: 0 }, { op: 'press', vk: 0x12 }, { op: 'down', button: 1 }]);
+  assert.deepEqual(ops.slice(-3), [{ op: 'move', x: 60, y: 40 }, { op: 'up', button: 1 }, { op: 'release', vk: 0x12 }]);
+  const moves = ops.slice(3, -2);
+  assert.ok(moves.length >= 4 && moves.every((step) => step.op === 'move'));
+  for (let i = 1; i < moves.length; i++) {
+    assert.ok(Math.hypot(moves[i].x - moves[i - 1].x, moves[i].y - moves[i - 1].y) <= 17, 'no jumps');
+  }
+  // Long drags are capped; zero-length ones still get a few moves.
+  assert.equal(dragPath([0, 0], [4000, 4000]).length, MAX_DRAG_STEPS);
+  assert.deepEqual(dragPath([10, 10], [10, 10]), [[10, 10], [10, 10], [10, 10], [10, 10]]);
+  const big = { width: 4096, height: 4096 };
+  const longest = planDesktopInput({ action: 'left_click_drag', startCoordinate: [0, 0], coordinate: [4095, 4095], modifiers: 'ctrl+alt+shift' }, big);
+  assert.ok(longest.length <= 256);
 });
 
 test('validateDesktopAction rejects unknown actions, extra fields, bad coordinates, text and keys', () => {
   const rejected = [
     null, 'left_click', [], {},
-    { action: 'middle_click' },
     { action: 'screenshot', extra: 1 },
     { action: 'left_click', coordinate: [64, 0] },
     { action: 'left_click', coordinate: [0, 48] },
@@ -192,6 +278,42 @@ test('driver validates before touching the broker', async () => {
   assert.equal(broker.captures.length, 0);
   const missing = new HyperVDesktopDriver({ broker, resolveCurrentLease: async () => { throw new Error('C:\\secret\\path'); }, now: () => NOW, screen });
   await expectCode(missing.capture({ vmId: 'vm-1', lease }), 'desktop_lease_unavailable');
+});
+
+test('mock broker runs each action as a primitive sequence and releases held input when a step fails', async () => {
+  const { driver, broker } = makeDriver();
+  await driver.act({ vmId: 'vm-1', lease, action: { action: 'left_click', coordinate: [9, 9], modifiers: 'shift' } });
+  assert.deepEqual(broker.inputs[0].steps, planDesktopInput({ action: 'left_click', coordinate: [9, 9], modifiers: 'shift' }, screen));
+  assert.deepEqual(broker.device.filter((step) => step.op !== 'sleep').map((step) => step.op), ['move', 'press', 'down', 'up', 'release']);
+
+  // Fail mid-drag while the button and shift are held: both are released, newest first.
+  broker.device.length = 0;
+  const drag = { action: 'left_click_drag', startCoordinate: [0, 0], coordinate: [60, 40], modifiers: 'shift' };
+  const failAt = planDesktopInput(drag, screen).findIndex((step, i) => i > 6 && step.op === 'move');
+  broker.failNextAtStep(failAt);
+  await assert.rejects(driver.act({ vmId: 'vm-1', lease, action: drag }), (error) => error.code === 'desktop_input_rejected');
+  assert.deepEqual(broker.device.slice(-2), [{ op: 'up', button: 1 }, { op: 'release', vk: 0x10 }]);
+
+  // hold_key failing during the hold still releases the key.
+  broker.device.length = 0;
+  broker.failNextAtStep(1);
+  await assert.rejects(driver.act({ vmId: 'vm-1', lease, action: { action: 'hold_key', key: 'ctrl', durationMs: 100 } }));
+  assert.deepEqual(broker.device, [{ op: 'press', vk: 0x11 }, { op: 'release', vk: 0x11 }]);
+});
+
+test('driver checks the lease before every fine-grained action', async () => {
+  const { driver, broker, setCurrent } = makeDriver();
+  setCurrent({ ...lease, generation: 4 });
+  for (const action of [
+    { action: 'left_click_drag', startCoordinate: [0, 0], coordinate: [5, 5] },
+    { action: 'hold_key', key: 'shift', durationMs: 10 },
+    { action: 'triple_click' },
+    { action: 'middle_click', modifiers: 'ctrl' },
+  ]) {
+    await assert.rejects(driver.act({ vmId: 'vm-1', lease, action }), (error) => error.code === 'desktop_lease_stale' && error.outcome === 'not_applied');
+  }
+  assert.equal(broker.inputs.length, 0);
+  assert.equal(broker.device.length, 0);
 });
 
 test('driver maps broker errors to a safe code set and hides messages', async () => {
