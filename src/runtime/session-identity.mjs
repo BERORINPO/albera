@@ -17,7 +17,7 @@ export async function loadOrCreateRuntimeSessionId(journalPath, { verifyWindowsA
   if (typeof journalPath !== 'string' || !path.isAbsolute(journalPath)) throw new TypeError('journal_path_must_be_absolute');
   const identityPath = `${journalPath}.session-id`;
   await verifyWindowsAcl(path.dirname(identityPath), { kind: 'directory' });
-  try { return await readIdentity(identityPath, verifyWindowsAcl); }
+  try { return await readRuntimeSessionId(journalPath, { verifyWindowsAcl }); }
   catch (error) {
     if (!error || typeof error !== 'object' || error.code !== 'ENOENT') throw error;
   }
@@ -31,10 +31,16 @@ export async function loadOrCreateRuntimeSessionId(journalPath, { verifyWindowsA
     return sessionId;
   } catch (error) {
     if (!error || typeof error !== 'object' || error.code !== 'EEXIST') throw error;
-    return readIdentity(identityPath, verifyWindowsAcl);
+    return readRuntimeSessionId(journalPath, { verifyWindowsAcl });
   } finally {
     await handle?.close().catch(() => {});
   }
+}
+
+/** Read the existing journal identity without creating or repairing a sidecar. */
+export async function readRuntimeSessionId(journalPath, { verifyWindowsAcl = assertPrivateWindowsAcl } = {}) {
+  if (typeof journalPath !== 'string' || !path.isAbsolute(journalPath)) throw new TypeError('journal_path_must_be_absolute');
+  return readIdentity(`${journalPath}.session-id`, verifyWindowsAcl);
 }
 
 async function readIdentity(filePath, verifyWindowsAcl) {
@@ -47,7 +53,10 @@ async function readIdentity(filePath, verifyWindowsAcl) {
   try {
     const info = await handle.stat();
     if (!info.isFile() || info.size > 64) throw new Error('runtime_session_identity_invalid');
-    if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) throw new Error('runtime_session_identity_permissions');
+    if (process.platform !== 'win32') {
+      const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+      if ((info.mode & 0o077) !== 0 || uid === undefined || info.uid !== uid) throw new Error('runtime_session_identity_permissions');
+    }
     let value = await handle.readFile('utf8');
     if (value.endsWith('\n')) value = value.slice(0, -1);
     if (value.endsWith('\r')) value = value.slice(0, -1);

@@ -1,0 +1,65 @@
+{
+  "driver": "node:sqlite",
+  "node": "v24.13.0",
+  "platform": "win32-x64",
+  "generatedAt": "2026-10-28T05:15:32.693Z",
+  "machineProfile": {
+    "osType": "Windows_NT",
+    "osRelease": "10.0.26300",
+    "cpuModel": "AMD Ryzen 7 5800X3D 8-Core Processor",
+    "logicalCpuCount": 16,
+    "totalMemoryBytes": 34282192896
+  },
+  "samples": 40,
+  "journalMode": "wal",
+  "synchronous": 2,
+  "records": {
+    "computers": 40,
+    "leases": 40,
+    "operations": 40,
+    "events": 120
+  },
+  "transactionLatency": {
+    "registerComputer": {
+      "p50Ms": 0.911,
+      "p95Ms": 1.367,
+      "maxMs": 2.25
+    },
+    "reserveLease": {
+      "p50Ms": 1.105,
+      "p95Ms": 1.614,
+      "maxMs": 1.832
+    },
+    "beginOperation": {
+      "p50Ms": 1.281,
+      "p95Ms": 1.866,
+      "maxMs": 2.548
+    },
+    "readEventPage": {
+      "p50Ms": 0.173,
+      "p95Ms": 0.231,
+      "maxMs": 0.399
+    }
+  },
+  "scheduler": {
+    "samplesPerPoolSize": 40,
+    "proposalLatencyByCandidateCount": {
+      "100": {
+        "p50Ms": 0.462,
+        "p95Ms": 0.612,
+        "maxMs": 0.757
+      },
+      "1000": {
+        "p50Ms": 4.441,
+        "p95Ms": 8.16,
+        "maxMs": 8.355
+      },
+      "10000": {
+        "p50Ms": 62.048,
+        "p95Ms": 73.816,
+        "maxMs": 76.875
+      }
+    }
+  },
+  "scope": "synthetic local store transactions and in-memory placement proposals only; excludes startup ACL checks, provider work, OS scheduling, and remote I/O"
+}

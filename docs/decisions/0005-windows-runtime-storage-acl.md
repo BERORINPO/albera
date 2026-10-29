@@ -1,6 +1,6 @@
 # 0005 — Windows Runtime storage ACL verification
 
-- Status: Implemented; Windows behavior verified locally and on the prior cross-platform matrix; isolated-step matrix passed in run 40481759222 on `e19b0a4`
+- Status: Implemented; Windows behavior verified locally and on cross-platform matrices; latest full matrix passed in run 40487083932.
 - Date: 2026-10-27
 - Scope: Optional Runtime audit journal, lock file, and journal session-identity sidecar
 
