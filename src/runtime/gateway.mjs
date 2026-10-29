@@ -5,15 +5,21 @@ import { access, realpath, stat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { spawnSupervised } from './supervisor.mjs';
-
-export const RUNTIME_PROVIDERS = Object.freeze({ claude: 'claude', codex: 'codex', opencode: 'opencode' });
-export const RUNTIME_PROFILES = Object.freeze({ readOnly: 'read-only', readOnlyStreaming: 'read-only-streaming' });
+import { spawnSupervised, verifyWindowsJobGuardian } from './supervisor.mjs';
+import { probeCliVersion } from './cli-version.mjs';
+import { isVersionAtLeast, PROFILE_MINIMUM_VERSIONS } from './profile-policy.mjs';
+import { runWindowsTaskkill } from './windows-tree-termination.mjs';
+import { buildProviderLaunch, RUNTIME_PROFILES, RUNTIME_PROVIDERS } from './agent-harness-adapter.mjs';
+import { GatewayError } from './errors.mjs';
+import { captureExecutableIdentity, sameExecutableIdentity } from './executable-identity.mjs';
+export { buildProviderLaunch, RUNTIME_PROFILES, RUNTIME_PROVIDERS } from './agent-harness-adapter.mjs';
+export { GatewayError } from './errors.mjs';
 const MAX_ARGS = 128;
 const MAX_ARG_BYTES = 32 * 1024;
 const MAX_PROMPT_BYTES = 16 * 1024;
 const MAX_RUNS = 64;
 const MAX_EVENTS = 256;
+const MAX_EVENT_SUBSCRIBERS = 8;
 const MAX_ACTIVE = 4;
 const DEFAULT_RUN_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_RUN_TIMEOUT_MS = 60 * 60 * 1000;
@@ -34,43 +40,6 @@ const PROVIDER_ENDPOINT_ENV = Object.freeze({
   codex: ['OPENAI_BASE_URL'],
   opencode: ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL'],
 });
-
-export class GatewayError extends Error {
-  /** @param {'confirmation_required'|'unknown_provider'|'invalid_args'|'cwd_not_allowed'|'executable_unavailable'|'capacity'|'unknown_run'|'spawn_failed'|'stop_failed'|'authorization_failed'|'gateway_closed'|'unsupported_profile'|'profile_unavailable'} code */
-  constructor(code) { super(code); this.name = 'GatewayError'; this.code = code; }
-}
-
-/** Build a provider-specific, read-only launch vector. No caller-supplied argv is accepted. */
-export function buildProviderLaunch(provider, prompt, profile = RUNTIME_PROFILES.readOnly) {
-  if (!Object.hasOwn(RUNTIME_PROVIDERS, provider)) throw new GatewayError('unknown_provider');
-  if (![RUNTIME_PROFILES.readOnly, RUNTIME_PROFILES.readOnlyStreaming].includes(profile)) throw new GatewayError('unsupported_profile');
-  if (typeof prompt !== 'string' || prompt.includes('\0') || Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) throw new GatewayError('invalid_args');
-  // Keep user text in a clearly labeled positional prompt, so leading CLI-looking text cannot
-  // be reinterpreted as an option by provider argument parsers.
-  const taskPrompt = `ALBERA task:\n${prompt}`;
-  let args;
-  if (provider === 'claude') {
-    // Restricted mode confines built-in tools/settings. Safe mode disables customizations, while
-    // the explicit MCP deny rule prevents configured MCP tools from crossing the process boundary.
-    const safeFlags = ['--restricted', '--safe-mode', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan'];
-    if (profile === RUNTIME_PROFILES.readOnlyStreaming) {
-      args = [...safeFlags, '--permission-prompts', 'none', '--print', '--max-turns', '1', '--no-session-persistence', '--input-format', 'stream-json', '--output-format', 'stream-json'];
-    } else {
-      args = [...safeFlags, '--print', '--max-turns', '1', '--no-session-persistence', taskPrompt];
-    }
-  } else {
-    // Codex's read-only filesystem sandbox does not prove MCP side effects are disabled, and
-    // OpenCode merges remote, user, project, plugin and inline configuration. Until ALBERA owns
-    // and verifies the complete per-run tool/configuration policy, fail closed for both.
-    throw new GatewayError('profile_unavailable');
-  }
-  validateArgs(args);
-  return Object.freeze({
-    profile,
-    args: Object.freeze(args),
-    ...(profile === RUNTIME_PROFILES.readOnlyStreaming ? { inputMode: STREAM_INPUT_MODE, initialInput: taskPrompt } : {}),
-  });
-}
 
 /** Resolve a fixed provider command from PATH. Windows command shims (.cmd/.bat) are never accepted. */
 export async function resolveProviderExecutable(provider, { platform = process.platform, pathValue, env = process.env } = {}) {
@@ -95,20 +64,21 @@ export async function resolveProviderExecutable(provider, { platform = process.p
   return null;
 }
 
-/** @typedef {{id: string, provider: string, profile: string, inputMode: string|null, inputPending: boolean, status: 'starting'|'running'|'stopping'|'stopped'|'exited'|'failed', startedAt: number|null, finishedAt: number|null, exitCode: number|null, signal: string|null, treeStopConfirmed: boolean|null, timer: ReturnType<typeof setTimeout>|null, child: import('node:child_process').ChildProcess}} Run */
+/** @typedef {{id: string, provider: string, profile: string, inputMode: string|null, inputPending: boolean, status: 'starting'|'running'|'stopping'|'stopped'|'exited'|'failed', stopReason: 'user_cancel'|'timeout'|'host_shutdown'|null, startedAt: number|null, finishedAt: number|null, exitCode: number|null, signal: string|null, treeStopConfirmed: boolean|null, timer: ReturnType<typeof setTimeout>|null, child: import('node:child_process').ChildProcess}} Run */
 
 /**
  * Memory-only lifecycle gateway. `authorize` is a trusted host callback, not request data; default denies.
- * @param {{roots: string[], authorize?: (request: object) => boolean|Promise<boolean>, platform?: string, maxActive?: number, runTimeoutMs?: number, spawnImpl?: typeof spawn, resolveExecutableImpl?: (provider: string, options: object) => Promise<string|null>, buildLaunchImpl?: (provider: string, profile: string, prompt: string) => {profile: string, args: string[]}, env?: NodeJS.ProcessEnv, now?: () => number, signalTreeImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>}} options
+ * @param {{roots: string[], authorize?: (request: object) => boolean|Promise<boolean>, platform?: string, maxActive?: number, runTimeoutMs?: number, spawnImpl?: typeof spawn, resolveExecutableImpl?: (provider: string, options: object) => Promise<string|null>, probeVersionImpl?: (executable: string, options: object) => Promise<string>, buildLaunchImpl?: (provider: string, profile: string, prompt: string) => {profile: string, args: string[]}, env?: NodeJS.ProcessEnv, now?: () => number, signalTreeImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>, signalTreeFallbackImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>}} options
  */
 export class RuntimeGateway {
-  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #buildLaunch; #authorize; #env; #now; #signalTree; #closing = false;
+  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #verifyGuardian; #resolveExecutable; #probeVersion; #buildLaunch; #authorize; #env; #now; #signalTree; #signalTreeFallback; #closing = false;
   /** @type {Map<string, Run>} */ #runs = new Map();
   #pendingStarts = 0;
-  /** @type {Array<{id: number, runId: string, provider: string, type: string, at: number, code?: number|null, signal?: string|null}>} */ #events = [];
+  /** @type {Array<{id: number, runId: string, provider: string, type: string, at: number, code?: number|null, signal?: string|null, stopReason?: string, force?: boolean}>} */ #events = [];
+  #eventSubscribers = new Set();
   #nextEventId = 1;
 
-  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawnSupervised, resolveExecutableImpl = resolveProviderExecutable, buildLaunchImpl = (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile), env = process.env, now = Date.now, signalTreeImpl } = {}) {
+  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawnSupervised, verifyGuardianImpl, resolveExecutableImpl = resolveProviderExecutable, probeVersionImpl = probeCliVersion, buildLaunchImpl = (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile), env = process.env, now = Date.now, signalTreeImpl, signalTreeFallbackImpl } = {}) {
     if (!Array.isArray(roots) || roots.length === 0 || roots.some((root) => typeof root !== 'string' || !path.isAbsolute(root))) throw new TypeError('RuntimeGateway requires absolute allowed roots');
     if (typeof authorize !== 'function') throw new TypeError('RuntimeGateway requires a host authorization callback');
     if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > MAX_ACTIVE) throw new TypeError('maxActive must be between 1 and 4');
@@ -118,15 +88,20 @@ export class RuntimeGateway {
     this.#maxActive = maxActive;
     this.#runTimeoutMs = runTimeoutMs;
     this.#spawn = spawnImpl;
+    // Only the default supervised spawn on Windows uses the Job guardian that must be verified.
+    this.#verifyGuardian = verifyGuardianImpl
+      ?? (spawnImpl === spawnSupervised && platform === 'win32' ? verifyWindowsJobGuardian : async () => {});
     this.#resolveExecutable = resolveExecutableImpl;
+    this.#probeVersion = probeVersionImpl;
     if (typeof buildLaunchImpl !== 'function') throw new TypeError('buildLaunchImpl must be a function');
     this.#buildLaunch = buildLaunchImpl;
     this.#authorize = authorize;
     this.#env = env;
     this.#now = now;
+    this.#signalTreeFallback = signalTreeFallbackImpl ?? ((pid, signal, child) => signalProcessTree(pid, signal, child, this.#platform, spawn));
     this.#signalTree = signalTreeImpl ?? ((pid, signal, child) => child.supervised === true
-      ? child.kill(signal)
-      : signalProcessTree(pid, signal, child, this.#platform, spawn));
+      ? child.stopTree(signal)
+      : this.#signalTreeFallback(pid, signal, child));
   }
 
   /** Start a fixed provider executable after trusted host authorization of the exact launch tuple. */
@@ -153,41 +128,75 @@ export class RuntimeGateway {
     if (active + this.#pendingStarts >= this.#maxActive || this.#runs.size + this.#pendingStarts >= MAX_RUNS) throw new GatewayError('capacity');
     this.#pendingStarts++;
     try {
-      const resolvedCwd = await this.#allowedDirectory(cwd);
+      const { path: resolvedCwd, identity: cwdIdentity } = await this.#allowedDirectory(cwd);
       if (this.#closing) throw new GatewayError('gateway_closed');
       let executable;
       try { executable = await this.#resolveExecutable(provider, { platform: this.#platform }); }
       catch { throw new GatewayError('executable_unavailable'); }
       if (typeof executable !== 'string' || !path.isAbsolute(executable)) throw new GatewayError('executable_unavailable');
       executable = await validateExecutable(executable, this.#platform);
+      const executableIdentity = await getExecutableIdentity(executable);
       if (this.#closing) throw new GatewayError('gateway_closed');
       const environment = childEnvironment(provider, this.#env);
+      const minimumCliVersion = PROFILE_MINIMUM_VERSIONS[profile];
       const authorized = await this.#authorizeSafely({
         action: 'start', provider, profile, executable, cwd: resolvedCwd, args: launchArgs,
+        cwdIdentity,
+        executableSha256: executableIdentity.sha256,
+        minimumCliVersion, versionCheck: true,
         ...(initialInput === null ? {} : { initialInput }),
         environment: environmentSummary(provider, environment),
         platform: this.#platform, maxDurationMs: this.#runTimeoutMs, maxActive: this.#maxActive,
       });
       if (this.#closing) throw new GatewayError('gateway_closed');
       if (!authorized) throw new GatewayError('confirmation_required');
+      await this.#allowedDirectory(cwd, cwdIdentity);
+      let currentExecutable;
+      try { currentExecutable = await validateExecutable(executable, this.#platform); }
+      catch { throw new GatewayError('executable_unavailable'); }
+      if (currentExecutable !== executable || !sameExecutableIdentity(await getExecutableIdentity(currentExecutable), executableIdentity)) {
+        throw new GatewayError('executable_unavailable');
+      }
+      let installedVersion;
+      try { installedVersion = await this.#probeVersion(executable, { platform: this.#platform }); }
+      catch { throw new GatewayError('cli_version_unavailable'); }
+      if (!isVersionAtLeast(installedVersion, minimumCliVersion)) throw new GatewayError('cli_version_unavailable');
+      try { currentExecutable = await validateExecutable(executable, this.#platform); }
+      catch { throw new GatewayError('executable_unavailable'); }
+      if (currentExecutable !== executable || !sameExecutableIdentity(await getExecutableIdentity(currentExecutable), executableIdentity)) {
+        throw new GatewayError('executable_unavailable');
+      }
+      try { await this.#verifyGuardian(); }
+      catch (error) {
+        if (error?.message === 'windows_job_guardian_unsupported_architecture') throw new GatewayError(error.message);
+        throw new GatewayError('windows_job_guardian_unavailable');
+      }
+      const { path: currentCwd } = await this.#allowedDirectory(cwd, cwdIdentity);
+      // These executable checks await filesystem operations. Shutdown can begin during
+      // the final identity query, so check again adjacent to spawn with no await between.
+      if (this.#closing) throw new GatewayError('gateway_closed');
 
       let child;
       try {
         child = this.#spawn(executable, launchArgs, {
-          cwd: resolvedCwd, env: environment, shell: false,
+          cwd: currentCwd, env: environment, shell: false,
           detached: this.#platform !== 'win32', windowsHide: true, stdio: 'ignore',
           ...(inputMode === null ? {} : { inputMode, initialInput }),
         });
-      } catch { throw new GatewayError('spawn_failed'); }
+      } catch (error) {
+        if (error?.message === 'windows_job_guardian_unavailable'
+          || error?.message === 'windows_job_guardian_unsupported_architecture') throw new GatewayError(error.message);
+        throw new GatewayError('spawn_failed');
+      }
       const run = /** @type {Run} */ ({
-        id: randomUUID(), provider, profile, inputMode, inputPending: false, status: 'starting', startedAt: null, finishedAt: null,
+        id: randomUUID(), provider, profile, inputMode, inputPending: false, status: 'starting', stopReason: null, startedAt: null, finishedAt: null,
         exitCode: null, signal: null, treeStopConfirmed: null, timer: null, child,
       });
       this.#runs.set(run.id, run);
       child.once('spawn', () => {
         if (run.status !== 'starting') return;
         run.status = 'running'; run.startedAt = this.#now(); this.#emit(run, 'started');
-        run.timer = setTimeout(() => { void this.#requestStop(run).catch(() => safeKill(run.child)); }, this.#runTimeoutMs);
+        run.timer = setTimeout(() => { void this.#requestStop(run, 'timeout').catch(() => safeKill(run.child)); }, this.#runTimeoutMs);
         run.timer.unref?.();
       });
       child.once('error', () => {
@@ -199,27 +208,32 @@ export class RuntimeGateway {
         if (run.status === 'failed') return;
         run.exitCode = Number.isInteger(code) ? code : null;
         run.signal = typeof signal === 'string' ? signal : null;
-        run.status = run.status === 'stopping'
-          ? (run.treeStopConfirmed === false ? 'failed' : 'stopped')
-          : 'exited';
+        if (child.jobObjectManaged === true) {
+          if (typeof child.treeStopConfirmed === 'boolean') run.treeStopConfirmed = child.treeStopConfirmed;
+          else if (run.treeStopConfirmed !== false) run.treeStopConfirmed = null;
+        }
+        run.status = (child.jobObjectManaged === true && child.treeStopConfirmed !== true) || run.treeStopConfirmed === false
+          ? 'failed'
+          : run.status === 'stopping' ? 'stopped' : 'exited';
         run.finishedAt = this.#now(); this.#emit(run, run.status, { code: run.exitCode, signal: run.signal });
       });
       return this.#snapshot(run);
     } finally { this.#pendingStarts--; }
   }
 
-  /** Stop a known run only after trusted host authorization for that run ID. */
+  /** Stop a known run immediately; stopping reduces risk and must not wait for approval. */
   async stop(id) {
+    if (this.#closing) throw new GatewayError('gateway_closed');
     const run = this.#runs.get(id);
     if (!run) throw new GatewayError('unknown_run');
     if (!isActive(run.status) || run.status === 'stopping') return this.#snapshot(run);
-    if (!await this.#authorizeSafely({ action: 'stop', provider: run.provider, runId: run.id, force: this.#platform === 'win32' })) throw new GatewayError('confirmation_required');
     await this.#requestStop(run);
     return this.#snapshot(run);
   }
 
   /** Send one bounded follow-up only after independent host approval for this exact text. */
   async sendInput(id, text) {
+    if (this.#closing) throw new GatewayError('gateway_closed');
     const run = this.#runs.get(id);
     if (!run) throw new GatewayError('unknown_run');
     if (run.inputMode !== STREAM_INPUT_MODE || typeof run.child.writeInput !== 'function') throw new GatewayError('input_unavailable');
@@ -233,6 +247,7 @@ export class RuntimeGateway {
       if (!await this.#authorizeSafely({ action: 'input', provider: run.provider, profile: run.profile, runId: run.id, text: message })) {
         throw new GatewayError('confirmation_required');
       }
+      if (this.#closing) throw new GatewayError('gateway_closed');
       if (run.status !== 'running') throw new GatewayError('input_not_ready');
       try { await run.child.writeInput(message); }
       catch { throw new GatewayError('input_failed'); }
@@ -251,21 +266,46 @@ export class RuntimeGateway {
     return this.#events.filter((event) => event.id > cursor).slice(0, take).map((event) => ({ ...event }));
   }
 
+  /** Subscribe to lifecycle changes so trusted hosts can persist them without waiting for a poll. */
+  subscribeEvents(listener) {
+    if (typeof listener !== 'function') throw new TypeError('event listener must be a function');
+    if (this.#eventSubscribers.size >= MAX_EVENT_SUBSCRIBERS) throw new RangeError('event_listener_capacity');
+    this.#eventSubscribers.add(listener);
+    let active = true;
+    return () => {
+      if (!active) return false;
+      active = false;
+      return this.#eventSubscribers.delete(listener);
+    };
+  }
+
   /** Host shutdown cleanup; returns active run IDs and IDs whose process-tree cleanup is uncertain. */
   async close({ timeoutMs = STOP_GRACE_MS + 1000 } = {}) {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > MAX_RUN_TIMEOUT_MS) throw new TypeError('invalid shutdown timeout');
     this.#closing = true;
     const active = [...this.#runs.values()].filter((run) => isActive(run.status));
     const uncertain = [...this.#runs.values()].filter((run) => run.treeStopConfirmed === false).map((run) => run.id);
-    await Promise.allSettled(active.map((run) => this.#requestStop(run)));
+    // Subscribe before requesting stop: a supervised child can report its provider exit
+    // before the guardian process itself emits the definitive `close` event.
+    const closeWaits = active.map((run) => waitForClose(run.child));
+    // Start all stops immediately, but keep the caller's timeout over both the stop
+    // adapter and process-close phases. A hung platform helper must not hang host close.
+    const pendingStops = new Set(active.map((run) => run.id));
+    const stopRequests = active.map((run) => this.#requestStop(run, 'host_shutdown')
+      .catch(() => {})
+      .finally(() => pendingStops.delete(run.id)));
     if (!active.length) return uncertain;
     let timer;
     await Promise.race([
-      Promise.all(active.map((run) => waitForClose(run.child))),
-      new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+      Promise.all([...closeWaits, ...stopRequests]).then(() => true),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
     ]);
     clearTimeout(timer);
-    return [...new Set([...uncertain, ...active.filter((run) => isActive(run.status) || run.treeStopConfirmed === false).map((run) => run.id)])];
+    return [...new Set([
+      ...uncertain,
+      ...pendingStops,
+      ...active.filter((run) => isActive(run.status) || run.treeStopConfirmed === false).map((run) => run.id),
+    ])];
   }
 
   async #authorizeSafely(request) {
@@ -279,11 +319,18 @@ export class RuntimeGateway {
     catch { throw new GatewayError('authorization_failed'); }
   }
 
-  async #requestStop(run) {
+  async #requestStop(run, reason = 'user_cancel') {
     if (!isActive(run.status) || run.status === 'stopping') return;
-    run.status = 'stopping'; this.#emit(run, 'stop_requested');
+    run.status = 'stopping';
+    run.stopReason = reason;
+    this.#emit(run, 'stop_requested', { stopReason: reason, force: this.#platform === 'win32' });
     const pid = run.child.pid;
     if (run.child.exitCode !== null || run.child.signalCode !== null) {
+      if (run.child.jobObjectManaged === true) {
+        run.treeStopConfirmed = typeof run.child.treeStopConfirmed === 'boolean' ? run.child.treeStopConfirmed : null;
+        if (run.treeStopConfirmed !== true) this.#emit(run, 'stop_failed', { stopReason: reason });
+        return;
+      }
       // Do not signal a stale PID after the direct child has exited. Windows cannot reliably
       // enumerate descendants from an exited parent, so report cleanup as uncertain.
       if (Number.isInteger(pid) && pid > 0) {
@@ -293,19 +340,39 @@ export class RuntimeGateway {
       return;
     }
     try {
-      if (Number.isInteger(pid) && pid > 0) await this.#signalTree(pid, 'SIGTERM', run.child);
+      let treeResult;
+      if (Number.isInteger(pid) && pid > 0) treeResult = await this.#signalTree(pid, 'SIGTERM', run.child);
       else if (run.child.kill('SIGTERM') === false) throw new Error('child_signal_failed');
-      if (Number.isInteger(pid) && pid > 0) run.treeStopConfirmed = true;
-    } catch {
       if (Number.isInteger(pid) && pid > 0) {
-        run.treeStopConfirmed = false;
-        this.#emit(run, 'stop_failed');
+        run.treeStopConfirmed = run.child.supervised === true
+          ? (typeof treeResult?.treeConfirmed === 'boolean' ? treeResult.treeConfirmed : null)
+          : (typeof treeResult?.treeConfirmed === 'boolean' ? treeResult.treeConfirmed : true);
+        if (run.treeStopConfirmed === false) this.#emit(run, 'stop_failed', { stopReason: reason });
       }
-      try {
-        if (run.child.kill('SIGTERM') === false) throw new Error('child_signal_failed');
-      } catch {
-        if (run.status === 'stopping') { run.status = 'running'; this.#emit(run, 'stop_failed'); }
-        throw new GatewayError('stop_failed');
+    } catch {
+      let fallbackConfirmed = false;
+      let fallbackRequested = false;
+      if (run.child.supervised === true && run.child.jobObjectManaged !== true && Number.isInteger(pid) && pid > 0
+        && run.child.exitCode === null && run.child.signalCode === null && run.child.closed !== true) {
+        try {
+          // If the Guardian pipe/ack failed, terminate the known provider process group/tree
+          // through the OS adapter instead of only asking the possibly failed Guardian again.
+          const fallbackResult = await this.#signalTreeFallback(pid, 'SIGTERM', run.child);
+          fallbackConfirmed = fallbackResult?.treeConfirmed === true;
+          fallbackRequested = fallbackResult?.terminationRequested === true;
+        } catch { /* keep cleanup uncertain and still ask the Guardian/direct child to stop */ }
+      }
+      if (Number.isInteger(pid) && pid > 0) {
+        run.treeStopConfirmed = fallbackConfirmed;
+        if (!fallbackConfirmed) this.#emit(run, 'stop_failed', { stopReason: reason });
+      }
+      if (!fallbackConfirmed && !fallbackRequested) {
+        try {
+          if (run.child.kill('SIGTERM') === false) throw new Error('child_signal_failed');
+        } catch {
+          if (run.status === 'stopping') { run.status = 'running'; this.#emit(run, 'stop_failed', { stopReason: reason }); }
+          throw new GatewayError('stop_failed');
+        }
       }
     }
     run.timer = setTimeout(() => {
@@ -315,17 +382,20 @@ export class RuntimeGateway {
         const escalation = Number.isInteger(childPid) && childPid > 0
           ? this.#signalTree(childPid, 'SIGKILL', run.child)
           : safeKill(run.child);
-        Promise.resolve(escalation).catch(() => {
+        Promise.resolve(escalation).then((result) => {
+          if (typeof result?.treeConfirmed === 'boolean') run.treeStopConfirmed = result.treeConfirmed;
+          if (run.treeStopConfirmed === false) this.#emit(run, 'stop_failed', { stopReason: reason });
+        }).catch(() => {
           if (Number.isInteger(childPid) && childPid > 0 && run.treeStopConfirmed !== false) {
             run.treeStopConfirmed = false;
-            this.#emit(run, 'stop_failed');
+            this.#emit(run, 'stop_failed', { stopReason: reason });
           }
           safeKill(run.child);
         });
       } catch {
         if (Number.isInteger(childPid) && childPid > 0 && run.treeStopConfirmed !== false) {
           run.treeStopConfirmed = false;
-          this.#emit(run, 'stop_failed');
+          this.#emit(run, 'stop_failed', { stopReason: reason });
         }
         safeKill(run.child);
       }
@@ -333,26 +403,42 @@ export class RuntimeGateway {
     run.timer.unref?.();
   }
 
-  async #allowedDirectory(cwd) {
+  async #allowedDirectory(cwd, expectedIdentity) {
     if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new GatewayError('cwd_not_allowed');
     try {
       const target = await realpath(cwd);
-      if (!(await stat(target)).isDirectory()) throw new GatewayError('cwd_not_allowed');
+      const details = await stat(target, { bigint: true });
+      if (!details.isDirectory()) throw new GatewayError('cwd_not_allowed');
+      const identity = `${details.dev}:${details.ino}`;
+      if (expectedIdentity !== undefined && identity !== expectedIdentity) throw new GatewayError('cwd_not_allowed');
       for (const root of this.#roots) {
         const allowedRoot = await realpath(root);
         const relative = path.relative(allowedRoot, target);
-        if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) return target;
+        if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) return { path: target, identity };
       }
     } catch (error) { if (error instanceof GatewayError) throw error; }
     throw new GatewayError('cwd_not_allowed');
   }
 
   #emit(run, type, extra = {}) {
-    this.#events.push({ id: this.#nextEventId++, runId: run.id, provider: run.provider, type, at: this.#now(), ...extra });
+    const event = Object.freeze({ id: this.#nextEventId++, runId: run.id, provider: run.provider, type, at: this.#now(), ...extra });
+    this.#events.push(event);
     if (this.#events.length > MAX_EVENTS) this.#events.splice(0, this.#events.length - MAX_EVENTS);
+    for (const listener of [...this.#eventSubscribers]) {
+      try {
+        const result = listener(event);
+        if (result && typeof result.then === 'function') void Promise.resolve(result).catch(() => {});
+      } catch { /* observers cannot interrupt the authorized process lifecycle */ }
+    }
   }
   #snapshot(run) {
-    return { id: run.id, provider: run.provider, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt, exitCode: run.exitCode, signal: run.signal, treeStopConfirmed: run.treeStopConfirmed };
+    return {
+      id: run.id, provider: run.provider, status: run.status, profile: run.profile,
+      stopReason: run.stopReason,
+      ...(run.inputMode === null ? {} : { inputMode: run.inputMode }),
+      startedAt: run.startedAt, finishedAt: run.finishedAt, exitCode: run.exitCode, signal: run.signal,
+      treeStopConfirmed: run.treeStopConfirmed,
+    };
   }
   #clearTimer(run) { if (run.timer) clearTimeout(run.timer); run.timer = null; }
   #pruneRuns() {
@@ -374,6 +460,10 @@ async function validateExecutable(executable, platform) {
     } else await access(canonical, fsConstants.X_OK);
     return canonical;
   } catch { throw new GatewayError('executable_unavailable'); }
+}
+async function getExecutableIdentity(executable) {
+  try { return await captureExecutableIdentity(executable); }
+  catch { throw new GatewayError('executable_unavailable'); }
 }
 function validateArgs(args) {
   if (!Array.isArray(args) || args.length > MAX_ARGS || args.some((arg) => typeof arg !== 'string' || arg.includes('\0'))) throw new GatewayError('invalid_args');
@@ -409,7 +499,7 @@ function environmentSummary(provider, environment) {
 function isActive(status) { return status === 'starting' || status === 'running' || status === 'stopping'; }
 function safeKill(child) { try { child.kill('SIGKILL'); } catch { /* child may have exited */ } }
 function waitForClose(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  if (child.closed === true) return Promise.resolve();
   return new Promise((resolve) => child.once('close', resolve));
 }
 async function signalProcessTree(pid, signal, child, platform, spawnImpl) {
@@ -420,15 +510,7 @@ async function signalProcessTree(pid, signal, child, platform, spawnImpl) {
   }
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!systemRoot) throw new Error('system_root_unavailable');
-  const taskkill = path.join(systemRoot, 'System32', 'taskkill.exe');
   // Windows cannot deliver a graceful POSIX signal to a process tree. /F is disclosed to
   // the host authorization callback before a user-requested stop and is also used for cleanup.
-  const args = ['/PID', String(pid), '/T', '/F'];
-  await new Promise((resolve, reject) => {
-    let killer;
-    try { killer = spawnImpl(taskkill, args, { shell: false, windowsHide: true, stdio: 'ignore' }); }
-    catch (error) { reject(error); return; }
-    killer.once('error', reject);
-    killer.once('close', (code) => code === 0 ? resolve() : reject(new Error('taskkill_failed')));
-  });
+  await runWindowsTaskkill(pid, { systemRoot, spawnImpl });
 }
