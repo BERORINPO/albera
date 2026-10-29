@@ -228,3 +228,29 @@ test('albera-runtime wall parses --vm name[:label] and --port, and is in the hel
   assert.equal(parseRuntimeArgs(['wall', '--help']).help, true);
   assert.match(RUNTIME_HELP, /albera-runtime wall --vm/);
 });
+
+test('agent status is shown on /api/vms only when a statusSource is given (read-only)', async (t) => {
+  const plain = await start(t);
+  await plain.host.captureOnce();
+  const plainList = await (await plain.get('api/vms', await plain.unlock())).json();
+  for (const vm of plainList.vms) assert.equal(Object.hasOwn(vm, 'agent'), false);
+
+  const state = { 'vm-a': { state: 'running', step: 2, actions: 1, usd: 0.001, cursor: [3, 4], lastAction: 'left_click', outcome: null, claim: '' } };
+  const w = await start(t, { statusSource: { snapshot: () => state } });
+  await w.host.captureOnce();
+  const cookie = await w.unlock();
+  const list = await (await w.get('api/vms', cookie)).json();
+  assert.deepEqual(list.vms.find((vm) => vm.vmId === 'vm-a').agent, state['vm-a']);
+  assert.equal(list.vms.find((vm) => vm.vmId === 'vm-b').agent, null);
+  assert.equal((await w.get('api/vms', cookie, { method: 'POST' })).status, 405);
+  assert.equal(w.broker.inputs.length, 0);
+  assert.throws(() => createDesktopWallHost({ vms: VMS, driver: {}, statusSource: {} }), /statusSource/);
+});
+
+test('a throwing statusSource does not break the wall list', async (t) => {
+  const w = await start(t, { statusSource: { snapshot: () => { throw new Error('boom'); } } });
+  await w.host.captureOnce();
+  const res = await w.get('api/vms', await w.unlock());
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).vms.length, 2);
+});

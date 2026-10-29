@@ -38,12 +38,14 @@ const SAFE_ERROR_CODES = new Set([
  * @param {{vms: {vmId: string, label?: string}[], driver: object|Function, captureIntervalMs?: number, staleAfterMs?: number, now?: () => number}} options
  * `driver` is an object with `capture({vmId, lease})`, or a factory `(resolveCurrentLease) => driver` so the
  * view-only lease stays inside this host.
+ * `statusSource` (optional) is any object with `snapshot()`; its per-VM entry is shown read-only as `agent` in `/api/vms`.
  */
-export function createDesktopWallHost({ vms, driver, captureIntervalMs = 2000, staleAfterMs = 10_000, now = Date.now } = {}) {
+export function createDesktopWallHost({ vms, driver, captureIntervalMs = 2000, staleAfterMs = 10_000, now = Date.now, statusSource } = {}) {
   const tiles = normalizeVms(vms);
   if (!Number.isInteger(captureIntervalMs) || captureIntervalMs < 10 || captureIntervalMs > 60_000) throw new TypeError('captureIntervalMs must be between 10 and 60000');
   if (!Number.isInteger(staleAfterMs) || staleAfterMs < 100 || staleAfterMs > 3_600_000) throw new TypeError('staleAfterMs must be between 100 and 3600000');
   if (typeof now !== 'function') throw new TypeError('now must be a function');
+  if (statusSource !== undefined && typeof statusSource?.snapshot !== 'function') throw new TypeError('statusSource must have snapshot()');
 
   // View-only lease: HUMAN owner, generation 1, expiry renewed by this host before each capture.
   let leaseExpiresAt = now() + LEASE_TTL_MS;
@@ -109,7 +111,7 @@ export function createDesktopWallHost({ vms, driver, captureIntervalMs = 2000, s
     }
   }
 
-  function describe(tile) {
+  function describe(tile, agents) {
     const frame = frames.get(tile.vmId);
     const status = frame.error ? 'error'
       : frame.capturedAt === null ? 'pending'
@@ -118,7 +120,13 @@ export function createDesktopWallHost({ vms, driver, captureIntervalMs = 2000, s
       vmId: tile.vmId, label: tile.label,
       capturedAt: frame.capturedAt === null ? null : new Date(frame.capturedAt).toISOString(),
       status, error: frame.error,
+      ...(agents ? { agent: agents[tile.vmId] ?? null } : {}),
     };
+  }
+
+  function agentSnapshot() {
+    if (!statusSource) return null;
+    try { return statusSource.snapshot(); } catch { return {}; }
   }
 
   function json(res, status, body, headers) { send(res, status, JSON.stringify(body), 'application/json; charset=utf-8', headers); }
@@ -151,7 +159,10 @@ export function createDesktopWallHost({ vms, driver, captureIntervalMs = 2000, s
     if (!token) return json(res, 401, { error: 'session_required' });
     if (req.method !== 'GET') return json(res, 405, { error: 'read_only' });
     if (scoped === '/api/session') return json(res, 200, { ok: true });
-    if (scoped === '/api/vms') return json(res, 200, { staleAfterMs, vms: tiles.map(describe) });
+    if (scoped === '/api/vms') {
+      const agents = agentSnapshot();
+      return json(res, 200, { staleAfterMs, vms: tiles.map((tile) => describe(tile, agents)) });
+    }
     const match = scoped.match(/^\/api\/vms\/([^/]+)\/screen\.png$/);
     let vmId;
     try { vmId = match ? decodeURIComponent(match[1]) : undefined; } catch { vmId = undefined; }
