@@ -53,7 +53,10 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
   background-size: 22px 22px;
 }
 .viewport.panning { cursor: grabbing; }
-.world { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-origin: 0 0; will-change: transform; }
+/* The world is wide so a node without its own width (Bero's bubble) is not squeezed to min-content.
+   It paints nothing itself; nodes may also sit at negative coordinates. */
+.world { position: absolute; left: 0; top: 0; width: 100000px; height: 100000px; transform-origin: 0 0; pointer-events: none; }
+.world > * { pointer-events: auto; }
 /* look-at: the world and the dots glide together with the mock's ease-out */
 .viewport.gliding { transition: background-position var(--look) var(--ease), background-size var(--look) var(--ease); }
 .viewport.gliding > .world { transition: transform var(--look) var(--ease); }

@@ -56,9 +56,28 @@ test('freeSpot never lands on a camera, and avoids other nodes when it can', () 
     assert.ok(cams.every((c) => !overlaps({ ...spot, ...box }, c)), `spot near ${JSON.stringify(near)} is over a camera`);
   }
   const figure = { ...findFreeSpot(cams[2], box, cams), ...box };
-  const second = findFreeSpot(cams[2], box, cams, [figure]);
+  const second = findFreeSpot(cams[2], box, [...cams, figure]);
   assert.ok(!overlaps({ ...second, ...box }, figure));
   assert.ok(cams.every((c) => !overlaps({ ...second, ...box }, c)));
+});
+
+test('freeSpot grows the world outward when nothing beside the node is free', () => {
+  // a node boxed in on every side by cameras: the spot goes right of everything, never on top of anything
+  const ring = [];
+  for (let gx = -2; gx <= 2; gx++) for (let gy = -2; gy <= 2; gy++) if (gx || gy) ring.push({ x: gx * 110, y: gy * 110, w: 100, h: 100 });
+  const near = { x: 0, y: 0, w: 100, h: 100 };
+  const box = { w: 2000, h: 2000 };
+  const spot = findFreeSpot(near, box, [...ring, near]);
+  assert.ok([...ring, near].every((r) => !overlaps({ ...spot, ...box }, r)));
+  assert.ok(spot.x >= 2 * 110 + 100);
+  // many figures in a row, each placed next to the same camera, never overlap each other or a camera
+  const cams = gridLayout(4).map(({ x, y }) => cam(x, y));
+  const placed = [];
+  for (let i = 0; i < 6; i++) {
+    const s = { ...findFreeSpot(cams[0], { w: 440, h: 260 }, [...cams, ...placed]), w: 440, h: 260 };
+    assert.ok([...cams, ...placed].every((r) => !overlaps(s, r)), `figure ${i} overlaps`);
+    placed.push(s);
+  }
 });
 
 test('wires leave from the facing edges', () => {
