@@ -5,7 +5,7 @@ import { access, realpath, stat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { spawnSupervised } from './supervisor.mjs';
+import { spawnSupervised, verifyWindowsJobGuardian } from './supervisor.mjs';
 import { probeCliVersion } from './cli-version.mjs';
 import { isVersionAtLeast, PROFILE_MINIMUM_VERSIONS } from './profile-policy.mjs';
 import { runWindowsTaskkill } from './windows-tree-termination.mjs';
@@ -71,14 +71,14 @@ export async function resolveProviderExecutable(provider, { platform = process.p
  * @param {{roots: string[], authorize?: (request: object) => boolean|Promise<boolean>, platform?: string, maxActive?: number, runTimeoutMs?: number, spawnImpl?: typeof spawn, resolveExecutableImpl?: (provider: string, options: object) => Promise<string|null>, probeVersionImpl?: (executable: string, options: object) => Promise<string>, buildLaunchImpl?: (provider: string, profile: string, prompt: string) => {profile: string, args: string[]}, env?: NodeJS.ProcessEnv, now?: () => number, signalTreeImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>, signalTreeFallbackImpl?: (pid: number, signal: 'SIGTERM'|'SIGKILL', child: import('node:child_process').ChildProcess) => void|Promise<void>}} options
  */
 export class RuntimeGateway {
-  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #resolveExecutable; #probeVersion; #buildLaunch; #authorize; #env; #now; #signalTree; #signalTreeFallback; #closing = false;
+  #roots; #platform; #maxActive; #runTimeoutMs; #spawn; #verifyGuardian; #resolveExecutable; #probeVersion; #buildLaunch; #authorize; #env; #now; #signalTree; #signalTreeFallback; #closing = false;
   /** @type {Map<string, Run>} */ #runs = new Map();
   #pendingStarts = 0;
   /** @type {Array<{id: number, runId: string, provider: string, type: string, at: number, code?: number|null, signal?: string|null}>} */ #events = [];
   #eventSubscribers = new Set();
   #nextEventId = 1;
 
-  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawnSupervised, resolveExecutableImpl = resolveProviderExecutable, probeVersionImpl = probeCliVersion, buildLaunchImpl = (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile), env = process.env, now = Date.now, signalTreeImpl, signalTreeFallbackImpl } = {}) {
+  constructor({ roots, authorize = () => false, platform = process.platform, maxActive = MAX_ACTIVE, runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS, spawnImpl = spawnSupervised, verifyGuardianImpl, resolveExecutableImpl = resolveProviderExecutable, probeVersionImpl = probeCliVersion, buildLaunchImpl = (provider, profile, prompt) => buildProviderLaunch(provider, prompt, profile), env = process.env, now = Date.now, signalTreeImpl, signalTreeFallbackImpl } = {}) {
     if (!Array.isArray(roots) || roots.length === 0 || roots.some((root) => typeof root !== 'string' || !path.isAbsolute(root))) throw new TypeError('RuntimeGateway requires absolute allowed roots');
     if (typeof authorize !== 'function') throw new TypeError('RuntimeGateway requires a host authorization callback');
     if (!Number.isInteger(maxActive) || maxActive < 1 || maxActive > MAX_ACTIVE) throw new TypeError('maxActive must be between 1 and 4');
@@ -88,6 +88,9 @@ export class RuntimeGateway {
     this.#maxActive = maxActive;
     this.#runTimeoutMs = runTimeoutMs;
     this.#spawn = spawnImpl;
+    // Only the default supervised spawn on Windows uses the Job guardian that must be verified.
+    this.#verifyGuardian = verifyGuardianImpl
+      ?? (spawnImpl === spawnSupervised && platform === 'win32' ? verifyWindowsJobGuardian : async () => {});
     this.#resolveExecutable = resolveExecutableImpl;
     this.#probeVersion = probeVersionImpl;
     if (typeof buildLaunchImpl !== 'function') throw new TypeError('buildLaunchImpl must be a function');
@@ -161,6 +164,11 @@ export class RuntimeGateway {
       if (currentExecutable !== executable || !sameExecutableIdentity(await getExecutableIdentity(currentExecutable), executableIdentity)) {
         throw new GatewayError('executable_unavailable');
       }
+      try { await this.#verifyGuardian(); }
+      catch (error) {
+        if (error?.message === 'windows_job_guardian_unsupported_architecture') throw new GatewayError(error.message);
+        throw new GatewayError('windows_job_guardian_unavailable');
+      }
       // These executable checks await filesystem operations. Shutdown can begin during
       // the final identity query, so check again adjacent to spawn with no await between.
       if (this.#closing) throw new GatewayError('gateway_closed');
@@ -172,7 +180,11 @@ export class RuntimeGateway {
           detached: this.#platform !== 'win32', windowsHide: true, stdio: 'ignore',
           ...(inputMode === null ? {} : { inputMode, initialInput }),
         });
-      } catch { throw new GatewayError('spawn_failed'); }
+      } catch (error) {
+        if (error?.message === 'windows_job_guardian_unavailable'
+          || error?.message === 'windows_job_guardian_unsupported_architecture') throw new GatewayError(error.message);
+        throw new GatewayError('spawn_failed');
+      }
       const run = /** @type {Run} */ ({
         id: randomUUID(), provider, profile, inputMode, inputPending: false, status: 'starting', stopReason: null, startedAt: null, finishedAt: null,
         exitCode: null, signal: null, treeStopConfirmed: null, timer: null, child,

@@ -11,6 +11,7 @@ The Node Guardian previously launched a provider by path and used `taskkill /PID
 ## Decision
 
 - On Windows x64, launch a small self-contained .NET 10 guardian. If the packaged helper is absent or the architecture is unsupported, fail closed before creating a run. POSIX continues to use the Node Guardian.
+- The publisher records the built guardian's SHA-256 in an adjacent manifest. Before spawning, Runtime parses that manifest and captures the guardian identity through one opened file handle; missing, malformed, unreadable, or mismatched data fails closed before a run is registered. The guardian process uses its own publish directory as cwd; provider cwd remains in the private launch message.
 - The helper creates an unnamed Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, without either breakaway limit flag. It starts the provider with `CREATE_SUSPENDED`, assigns that process to the Job, and resumes its primary thread only after assignment succeeds. Provider stdin/stdout/stderr inheritance is restricted to an explicit handle list; output is directed to `NUL` and is not relayed as control events.
 - Stop uses `TerminateJobObject` as a termination request. It reports `treeConfirmed: true` only after `QueryInformationJobObject(JobObjectBasicAccountingInformation)` returns `ActiveProcesses == 0` within a bounded drain interval. Termination API success, taskkill success, root-process exit, PID disappearance, or a timeout does not prove a drained Job.
 - The Gateway never uses the provider PID as a fallback for a Job-managed Windows run. If the helper control channel or process is lost before a drain acknowledgement, the state stays unknown/failed. The Job's kill-on-close limit is a cleanup mechanism; because the unnamed Job handle cannot be recovered after owner loss, it is not an acknowledgement or restart reconciliation proof.
@@ -19,7 +20,7 @@ The Node Guardian previously launched a provider by path and used `taskkill /PID
 
 ## Verification
 
-`test/windows-job-supervisor.test.mjs` builds/uses a temporary synthetic process tree and verifies: root-child-grandchild termination before confirmation; root exit while a descendant remains; denial of `CREATE_BREAKAWAY_FROM_JOB`; and guardian termination causing Job handle close cleanup without an `exit`/confirmed acknowledgement. A Gateway regression verifies that a Job-managed control-channel failure never calls the PID-based fallback. These tests use the actual local Windows kernel Job Object and synthetic Node/.NET processes only.
+`test/windows-job-supervisor.test.mjs` includes a fake-file regression that changes guardian contents after writing a matching manifest and expects rejection before spawn. The Windows integration tests build/use a temporary synthetic process tree and verify: root-child-grandchild termination before confirmation; root exit while a descendant remains; denial of `CREATE_BREAKAWAY_FROM_JOB`; and guardian termination causing Job handle close cleanup without an `exit`/confirmed acknowledgement. A Gateway regression verifies that a Job-managed control-channel failure never calls the PID-based fallback. These integration tests use the actual local Windows kernel Job Object and synthetic Node/.NET processes only.
 
 ## Consequences and remaining risks
 
