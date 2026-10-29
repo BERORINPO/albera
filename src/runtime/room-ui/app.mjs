@@ -126,7 +126,7 @@ function boot() {
       ? (spec, opts = {}) => parts.renderFigure(spec, { frameUrl: api.frameUrl, ...opts, labelOf })
       : () => document.createElement('div');
     const cards = parts.createCards?.(canvas, {
-      words: beroWords, renderFigure, frameUrl: api.frameUrl, labelOf,
+      words: beroWords, figureWords, renderFigure, frameUrl: api.frameUrl, labelOf,
       onChoose: async (cardId, choiceId) => {
         const result = await api.decide(cardId, choiceId);
         if (!result.ok) phase('choose_failed');
