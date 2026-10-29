@@ -1,20 +1,33 @@
 // Bero's figures (part C): flow / who / ba drawn as SVG, stroke by stroke, with the ledger lines they came from.
 // SVG through createElementNS, text through textContent. Motion lives in figure.css: `.rf-d` strokes draw
 // themselves, `.rf-f` parts fade in, and `.rf-s<N>` is the step in the sequence (no inline styles: CSP).
-import { clockOf, entryText, entryParams } from './ledger.mjs';
+import { clockOf, entryText, entryParams, camLabel } from './ledger.mjs';
 
 const SVG = 'http://www.w3.org/2000/svg';
 export const FIG_W = 330;
 export const MAX_STAGE = 15;
 const LANES = ['human', 'bero', 'hands'];
 
-/** Pure: split a label into at most two lines of `per` chars (the second ends with an ellipsis if cut). */
-export function wrapLabel(label, per = 22) {
-  const s = String(label ?? '');
-  if (s.length <= per) return [s];
-  const second = s.slice(per);
-  return [s.slice(0, per), second.length > per ? `${second.slice(0, per - 1)}…` : second];
+/**
+ * Pure: wrap a label into at most `max` lines of `per` chars, breaking at spaces. A word longer than a line
+ * (or text without spaces, like Japanese) is split by chars. Text that does not fit ends with an ellipsis.
+ */
+export function wrapLabel(label, per = 22, max = 2) {
+  const words = String(label ?? '').trim().split(/\s+/).flatMap((w) => (w.length <= per ? [w] : chunks(w, per)));
+  const lines = [];
+  for (const w of words) {
+    const last = lines.length ? lines[lines.length - 1] : null;
+    if (last !== null && last.length + 1 + w.length <= per) lines[lines.length - 1] = `${last} ${w}`;
+    else lines.push(w);
+  }
+  if (lines.length <= max) return lines.length ? lines : [''];
+  const kept = lines.slice(0, max);
+  const tail = kept[max - 1];
+  kept[max - 1] = `${tail.length < per ? tail : tail.slice(0, per - 1).trimEnd()}…`;
+  return kept;
 }
+
+const chunks = (s, n) => Array.from({ length: Math.ceil(s.length / n) }, (_, i) => s.slice(i * n, i * n + n));
 
 /** Pure: flow boxes stacked top to bottom. @param {number} n */
 export function flowLayout(n) {
@@ -36,22 +49,24 @@ export const stage = (i) => `rf-s${Math.min(MAX_STAGE, Math.max(0, Math.round(i)
 
 /**
  * @param {any} spec a FigureSpec (validFigure)
- * @param {{words: {t: Function}, frameUrl: (frameId: string) => string}} options
+ * @param {{words: {t: Function}, frameUrl?: (frameId: string) => string, labelOf?: (vmId: string) => string}} options
+ *   labelOf: the camera label for a VM id (falls back to the id). frameUrl: without it, ba shows "not taken yet".
  * @returns {HTMLElement}
  */
-export function renderFigure(spec, { words, frameUrl }) {
+export function renderFigure(spec, { words, frameUrl, labelOf } = /** @type {any} */ ({})) {
   const root = document.createElement('div');
   root.className = `rf-fig rf-${spec.kind}`;
   root.dataset.node = `fig:${spec.figureId}`;
   const title = document.createElement('b');
   title.className = 'rf-title';
-  title.textContent = words.t(`fig_${spec.kind}`, { cam: spec.vmId ?? '' });
+  title.textContent = words.t(`fig_${spec.kind}`, { cam: camLabel(spec.vmId, labelOf) });
   const draw = DRAW[spec.kind];
-  root.append(title, draw ? draw(spec, words, frameUrl) : document.createElement('div'), sourcesOf(spec, words));
+  const url = typeof frameUrl === 'function' ? frameUrl : null;
+  root.append(title, draw ? draw(spec, words, url) : document.createElement('div'), sourcesOf(spec, words, labelOf));
   return root;
 }
 
-function sourcesOf(spec, words) {
+function sourcesOf(spec, words, labelOf) {
   const box = document.createElement('div');
   box.className = 'rf-src';
   const head = document.createElement('span');
@@ -61,7 +76,7 @@ function sourcesOf(spec, words) {
   for (const e of spec.sources) {
     const line = document.createElement('span');
     line.className = 'rf-src-l';
-    line.textContent = `${clockOf(e.at)} ${entryText(words, e)}`;
+    line.textContent = `${clockOf(e.at)} ${entryText(words, e, labelOf)}`;
     box.append(line);
   }
   return box;
@@ -119,7 +134,7 @@ const DRAW = {
     [['before', 2], ['after', 170]].forEach(([side, x], i) => {
       const frameId = spec[side]?.frameId ?? null;
       svg.append(text(words.t(`fig_${side}`, {}), { x, y: 13 }, `rf-f rf-lane ${stage(i * 2)}`));
-      if (frameId) {
+      if (frameId && frameUrl) {
         const img = el('image', { x, y: 20, width: w, height: h, preserveAspectRatio: 'xMidYMid meet' }, `rf-f ${stage(i * 2 + 1)}`);
         img.setAttribute('href', frameUrl(frameId));
         svg.append(img);
