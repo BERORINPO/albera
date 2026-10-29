@@ -90,7 +90,7 @@ async function fixture(t, { approvalTtlMs = 60_000, providerFailure } = {}) {
     if (providerFailure) throw providerFailure;
     return create(...args);
   };
-  const broker = new LocalEnvironmentHostBroker({ store, provider });
+  let broker = new LocalEnvironmentHostBroker({ store, provider });
   store.registerComputer({ computerId: 'computer-a', projectId: 'project-a', providerId: provider.providerId });
   const lease = store.reserveLease({
     leaseId: 'lease-a', subjectId: 'subject-a', projectId: 'project-a', taskId: 'task-a',
@@ -110,16 +110,25 @@ async function fixture(t, { approvalTtlMs = 60_000, providerFailure } = {}) {
     subjectId: operation.subjectId, projectId: operation.projectId, policyVersion: operation.policyVersion,
     actionDigest, purpose: 'execute', expiresAt: new Date(nowMs + approvalTtlMs).toISOString(),
   }, { purpose: 'execute' });
-  const ipc = createMockIpc({ broker, expectedServiceSid: CONTROL_PLANE_SID });
+  let ipc = createMockIpc({ broker, expectedServiceSid: CONTROL_PLANE_SID });
   t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
   return {
-    store, provider, broker, ipc, operation, actionDigest,
+    get store() { return store; }, get broker() { return broker; }, get ipc() { return ipc; },
+    provider, operation, actionDigest,
     request: (overrides = {}) => ({
       protocolVersion: 1, type: 'broker.operation.request', requestId: randomUUID(),
       operationId: operation.operationId, expectedGeneration: operation.expectedGeneration,
       actionDigest, ...overrides,
     }),
     connect: (sid = CONTROL_PLANE_SID) => ipc.connect(sid),
+    async restartBroker({ recoverInterruptedRequests = true } = {}) {
+      store.close();
+      store = await openSqliteEnvironmentStore(path.join(root, 'operations.sqlite'), {
+        now: () => new Date(nowMs).toISOString(), verifyWindowsAcl: async () => {}, recoverInterruptedRequests,
+      });
+      broker = new LocalEnvironmentHostBroker({ store, provider });
+      ipc = createMockIpc({ broker, expectedServiceSid: CONTROL_PLANE_SID });
+    },
     advance: (milliseconds) => { nowMs += milliseconds; },
     get createCalls() { return createCalls; },
   };
@@ -154,9 +163,28 @@ test('Mock IPC rejects caller-supplied identity, arbitrary actions, and malforme
   const client = f.connect();
   const request = f.request();
   assert.deepEqual(await client.send({ ...request, callerSid: CONTROL_PLANE_SID }), { error: 'invalid_request' });
+  assert.deepEqual(await client.send({ ...request, approval: { decision: 'approved', approverId: 'client-claimed' } }), { error: 'invalid_request' });
+  assert.deepEqual(await client.send({ ...request, approverId: 'client-claimed', approvalId: 'client-approval' }), { error: 'invalid_request' });
   assert.deepEqual(await client.send({ ...request, action: 'powershell', command: 'Start-VM' }), { error: 'invalid_request' });
   assert.equal(f.store.getOperation(f.operation.operationId).status, 'REQUESTED');
   assert.equal(f.createCalls, 0);
+});
+
+test('Mock IPC denies a replay after Broker restart and a lost response without repeating the synthetic side effect', async (t) => {
+  const f = await fixture(t);
+  const request = f.request();
+  const first = await f.connect().send(request);
+  assert.equal(first.status, 'succeeded');
+  assert.equal(f.createCalls, 1);
+  // Simulate transport response loss: the client does not persist the response.
+  await f.restartBroker();
+
+  const replay = await f.connect().send(request);
+  assert.equal(replay.status, 'denied');
+  assert.equal(replay.errorCode, 'operation_conflict');
+  assert.equal(f.createCalls, 1, 'the new Broker process must consult the durable operation claim before Provider access');
+  assert.equal(f.store.getOperation(f.operation.operationId).status, 'UNKNOWN', 'the lost reply stays uncertain after restart');
+  assert.equal(f.store.listOperationAuthorizations(f.operation.operationId)[0].state, 'CONSUMED');
 });
 
 test('Mock IPC consumes a request ID and a journaled operation at most once', async (t) => {
@@ -175,6 +203,7 @@ test('Mock IPC consumes a request ID and a journaled operation at most once', as
 test('Mock IPC rejects expired approval and stale Lease generation before Provider I/O', async (t) => {
   const expired = await fixture(t, { approvalTtlMs: 1_000 });
   expired.advance(1_001);
+  await expired.restartBroker({ recoverInterruptedRequests: false });
   const expiredResponse = await expired.connect().send(expired.request());
   assert.equal(expiredResponse.status, 'denied');
   assert.equal(expiredResponse.errorCode, 'authorization_denied');
@@ -183,6 +212,7 @@ test('Mock IPC rejects expired approval and stale Lease generation before Provid
 
   const stale = await fixture(t);
   stale.store.revokeLease('lease-a', { reason: 'restore' });
+  await stale.restartBroker({ recoverInterruptedRequests: false });
   const staleResponse = await stale.connect().send(stale.request());
   assert.equal(staleResponse.status, 'denied');
   assert.equal(staleResponse.errorCode, 'generation_mismatch');

@@ -510,7 +510,7 @@ test('synthetic approval UI routes start, approve, stop, and input through scope
   assert.ok(approvalButton, 'the synthetic start response should render a pending approval');
   await approvalButton.listeners.get('click')();
 
-  const stopButton = findElement(elements.get('runs'), (element) => element.tagName === 'button' && element.textContent === 'Request stop');
+  const stopButton = findElement(elements.get('runs'), (element) => element.tagName === 'button' && element.textContent === 'Stop now');
   const input = findElement(elements.get('runs'), (element) => element.tagName === 'textarea');
   const inputForm = findElement(elements.get('runs'), (element) => element.tagName === 'form');
   assert.ok(stopButton);
@@ -561,7 +561,7 @@ test('approval UI discloses external transmission, charges, and filesystem scope
     if (url === 'api/approvals') return jsonResponse({ approvals: [
       {
         id: '12345678-1234-4234-8234-123456789abc', expiresAt: Date.now() + 10000,
-        request: { action: 'start', provider: 'claude', executable: 'C:\\tools\\claude.exe', minimumCliVersion: '2.1.259', versionCheck: true, initialInput: 'synthetic task text', args: ['--restricted'] },
+        request: { action: 'start', provider: 'claude', executable: 'C:\\tools\\claude.exe', executableSha256: 'a'.repeat(64), minimumCliVersion: '2.1.259', versionCheck: true, initialInput: 'synthetic task text', args: ['--restricted'] },
       },
       {
         id: '22345678-1234-4234-8234-123456789abc', expiresAt: Date.now() + 10000,
@@ -597,6 +597,7 @@ test('approval UI discloses external transmission, charges, and filesystem scope
   }
   assert.match(flatten(cards[0]), /synthetic task text/);
   assert.match(flatten(cards[0]), /After approval, ALBERA runs C:\\tools\\claude\.exe --version before launch and requires Claude Code 2\.1\.259 or later\./);
+  assert.match(flatten(cards[0]), /executable SHA-256 a{64}/);
   assert.match(flatten(cards[1]), /synthetic follow-up text/);
 });
 
@@ -755,7 +756,7 @@ test('approval host rejects forged and mismatched loopback Host headers', async 
   assert.equal(await requestWithHost(`127.0.0.1:${mismatchedPort}`), 403);
 });
 
-test('separate approval host gates a synthetic start and streams allowlisted lifecycle events', async (t) => {
+test('separate approval host gates start while manual stop bypasses approval and streams lifecycle events', async (t) => {
   const f = await fixture(t);
   const pendingStart = post(f, '/api/runs', {
     provider: 'claude', cwd: f.root, prompt: '<img src=x onerror=alert(1)>', profile: 'read-only',
@@ -789,12 +790,15 @@ test('separate approval host gates a synthetic start and streams allowlisted lif
   assert.match(chunk, /"type":"started"/);
   assert.equal(chunk.includes('<img src=x onerror=alert(1)>'), false);
 
-  const stop = post(f, `/api/runs/${runId}/stop`);
-  await waitFor(async () => (await (await get(f, '/api/approvals')).json()).approvals.some((item) => item.request.action === 'stop'));
-  const stopApproval = (await (await get(f, '/api/approvals')).json()).approvals[0];
-  assert.equal((await post(f, `/api/approvals/${stopApproval.id}`, { decision: 'deny' })).status, 200);
-  assert.equal((await stop).status, 403);
-  assert.equal(f.runtime.gateway.get(runId).status, 'running');
+  const stop = await post(f, `/api/runs/${runId}/stop`);
+  assert.equal(stop.status, 200);
+  await waitFor(() => f.runtime.gateway.get(runId).status === 'stopped');
+  assert.deepEqual((await (await get(f, '/api/approvals')).json()).approvals, []);
+  await waitFor(() => f.journal.list({ sessionId: f.runtime.sessionId, kind: 'event' })
+    .some((event) => event.eventType === 'stop_requested'));
+  const stopEvent = f.journal.list({ sessionId: f.runtime.sessionId, kind: 'event' })
+    .find((event) => event.eventType === 'stop_requested');
+  assert.equal(stopEvent.force, process.platform === 'win32');
 });
 
 test('closing the approval host ends active event streams and drains the API', async (t) => {

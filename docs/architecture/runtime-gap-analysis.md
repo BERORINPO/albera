@@ -27,6 +27,14 @@ Technical recommendation before claiming that criterion: define a measured activ
 - Existing `codex/runtime-gateway` / PR #9 is an ancestor of the active code snapshot, not a separate dirty worktree. Its tip is `832c7d02e807be53c0e4b3c8486ac53ca19092f3`; the newer active code contains subsequent lifecycle and security fixes. Work proceeds in a separate branch/worktree based on the active code snapshot so these fixes are retained.
 - The architecture source is read from PR #18's fetched remote ref; its branch and PR are not modified.
 
+## Issue #22 — durable approval and replay evidence
+
+The existing `src/runtime/sqlite-operation-store.mjs` is reused for the current single-host prototype. It commits the operation intent and approval record before dispatch; immediately before Provider I/O, one SQLite transaction checks the stored operation digest, exact approval binding/expiry, active Lease and Computer generation, consumes the approval, and moves the operation to `UNKNOWN`. Reopening with recovery enabled never replays an uncertain operation. No second journal or dependency was added.
+
+Issue #22 regressions cover a process exit immediately before the dispatch transaction's `COMMIT` (SQLite rolls back the consumption and startup safely marks the request `UNKNOWN`), abrupt exit after a committed claim, a synthetic Provider side effect followed by process exit before outcome persistence, Broker reconstruction after a simulated lost response, expiry and generation revocation across reopen, caller-supplied approval/approver claims, duplicate Operation ID with a different idempotency key, and timeout-after-success reconciliation. The synthetic Provider is invoked at most once; ambiguous state remains `UNKNOWN` until a separately authorized inspect.
+
+This evidence is for the existing Node `LocalEnvironmentHostBroker` + local SQLite contract, not the selected C#/.NET 10 Windows Service. The current callback-injected authorizer is trusted only inside this in-process prototype; approval records have no independently verifiable signature, and the Control Plane and Broker do not yet have separate OS identities or a Broker-owned database inaccessible to the Control Plane. Therefore Issue #22 does not establish production trusted-issuer authenticity, service ACLs, or the independent Broker's restart behavior; those remain explicit implementation gates. ADR-002 remains Proposed, and ADR-003 durability claims remain scoped to the tested single-host SQLite semantics.
+
 ## Runtime areas
 
 | # | Area | Status | Evidence and gap | Risk | Recommended follow-up | Verification |
