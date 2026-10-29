@@ -2,7 +2,7 @@
 
 ALBERA takes its name and spirit from Anni Albers's woven art. Its long-term direction is a development platform where people and multiple AIs weave knowledge, code, and development work together. The current release is only a read-only local dashboard for Claude Desktop / Claude Code sessions: it groups sessions by what needs your answer, may be stuck, finished but unread, working, recent, and ready to archive. It also shows what each session is doing and an estimate of context use, and helps you prepare a hand-off. See sessions as a list or as a canvas with one sheet per project. Chats from the app's other tabs are not shown.
 
-[日本語](README.ja.md)
+English · [日本語](README.ja.md) · [简体中文](README.zh-CN.md)
 
 > Unofficial community tool. Not affiliated with, endorsed by, or supported by Anthropic. Claude is a trademark of Anthropic.
 
