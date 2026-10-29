@@ -17,7 +17,7 @@ export async function loadOrCreateRuntimeSessionId(journalPath, { verifyWindowsA
   if (typeof journalPath !== 'string' || !path.isAbsolute(journalPath)) throw new TypeError('journal_path_must_be_absolute');
   const identityPath = `${journalPath}.session-id`;
   await verifyWindowsAcl(path.dirname(identityPath), { kind: 'directory' });
-  try { return await readIdentity(identityPath, verifyWindowsAcl); }
+  try { return await readRuntimeSessionId(journalPath, { verifyWindowsAcl }); }
   catch (error) {
     if (!error || typeof error !== 'object' || error.code !== 'ENOENT') throw error;
   }
@@ -31,10 +31,16 @@ export async function loadOrCreateRuntimeSessionId(journalPath, { verifyWindowsA
     return sessionId;
   } catch (error) {
     if (!error || typeof error !== 'object' || error.code !== 'EEXIST') throw error;
-    return readIdentity(identityPath, verifyWindowsAcl);
+    return readRuntimeSessionId(journalPath, { verifyWindowsAcl });
   } finally {
     await handle?.close().catch(() => {});
   }
+}
+
+/** Read the existing journal identity without creating or repairing a sidecar. */
+export async function readRuntimeSessionId(journalPath, { verifyWindowsAcl = assertPrivateWindowsAcl } = {}) {
+  if (typeof journalPath !== 'string' || !path.isAbsolute(journalPath)) throw new TypeError('journal_path_must_be_absolute');
+  return readIdentity(`${journalPath}.session-id`, verifyWindowsAcl);
 }
 
 async function readIdentity(filePath, verifyWindowsAcl) {

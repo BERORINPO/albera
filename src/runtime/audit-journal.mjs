@@ -1,12 +1,12 @@
 // Host-configured, append-only audit journal. It stores only allowlisted control metadata.
-import { randomBytes } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { constants as fsConstants, fsyncSync, writeSync } from 'node:fs';
 import { mkdir, open, readFile, lstat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { assertPrivateWindowsAcl, RuntimeStorageAclError } from './windows-acl.mjs';
 
-const JOURNAL_VERSION = 1;
+const JOURNAL_VERSION = 2;
 const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
 const HARD_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_RECORD_BYTES = 2048;
@@ -18,19 +18,43 @@ const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
 const ACTIONS = new Set(['run.start', 'run.stop', 'run.input']);
 const PHASES = new Set(['requested', 'accepted', 'denied', 'failed']);
 const EVENT_TYPES = new Set(['started', 'stop_requested', 'stopped', 'exited', 'failed', 'stop_failed', 'input_sent']);
+const STOP_REASONS = new Set(['user_cancel', 'timeout', 'host_shutdown']);
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGABRT']);
 
 export class JournalError extends Error {
   constructor(code) { super(code); this.code = code; }
 }
 
+/** Validate an immutable journal snapshot without changing or repairing it. */
+export function validateRuntimeAuditJournalSnapshot(snapshot, { maxBytes = HARD_MAX_BYTES } = {}) {
+  if (!Buffer.isBuffer(snapshot) || snapshot.byteLength > maxBytes) throw new JournalError('journal_snapshot_invalid');
+  const { records } = parseRecords(snapshot);
+  if (records.length > MAX_RECORDS) throw new JournalError('journal_snapshot_invalid');
+  return records.length;
+}
+
+/** Return the validated complete-record prefix of an incomplete-tail journal without changing the source. */
+export function recoverRuntimeAuditJournalPrefix(snapshot, { maxBytes = HARD_MAX_BYTES } = {}) {
+  if (!Buffer.isBuffer(snapshot) || snapshot.byteLength === 0 || snapshot.byteLength > maxBytes
+    || snapshot.at(-1) === 0x0a) throw new JournalError('journal_recovery_not_applicable');
+  const lastNewline = snapshot.lastIndexOf(0x0a);
+  if (lastNewline < 0 || snapshot.byteLength - lastNewline - 1 > MAX_RECORD_BYTES) {
+    throw new JournalError('journal_incomplete_tail_unrecoverable');
+  }
+  const prefix = Buffer.from(snapshot.subarray(0, lastNewline + 1));
+  const { records } = parseRecords(prefix);
+  if (records.length === 0) throw new JournalError('journal_incomplete_tail_unrecoverable');
+  return { snapshot: prefix, recordCount: records.length, discardedTailBytes: snapshot.byteLength - prefix.byteLength };
+}
+
 /**
  * Open an explicitly located, single-writer append-only Runtime audit journal.
  * The journal never stores tokens, prompts, paths, argv, environment or process output.
  */
-export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX_BYTES, verifyWindowsAcl = assertPrivateWindowsAcl } = {}) {
+export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX_BYTES, verifyWindowsAcl = assertPrivateWindowsAcl, syncFile = fsyncSync } = {}) {
   if (typeof filePath !== 'string' || filePath.length === 0 || !path.isAbsolute(filePath)) throw new TypeError('journal_path_must_be_absolute');
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > HARD_MAX_BYTES) throw new TypeError('invalid_journal_capacity');
+  if (typeof syncFile !== 'function') throw new TypeError('invalid_journal_sync');
   await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const directoryPath = path.dirname(filePath);
   const directoryInfo = await lstat(directoryPath);
@@ -46,7 +70,7 @@ export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX
   try {
     const existing = await readExisting(filePath, maxBytes, verifyWindowsAcl);
     if (existing.byteLength > maxBytes) throw new JournalError('journal_capacity_exceeded');
-    const records = parseRecords(existing);
+    const { records, chainHead } = parseRecords(existing);
     if (records.length > MAX_RECORDS) throw new JournalError('journal_capacity_exceeded');
     const flags = fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | (fsConstants.O_NOFOLLOW ?? 0);
     dataHandle = await open(filePath, flags, 0o600);
@@ -54,7 +78,7 @@ export async function openRuntimeAuditJournal(filePath, { maxBytes = DEFAULT_MAX
     if (!fileInfo.isFile() || fileInfo.size !== existing.byteLength) throw new JournalError('journal_changed_during_open');
     assertSingleLink(fileInfo, 'journal_hard_linked_file');
     assertPrivatePosixStorage(fileInfo, 'journal_permissions', 'file');
-    return new RuntimeAuditJournal(filePath, lockPath, lock, lockText, dataHandle, records, existing.byteLength, maxBytes);
+    return new RuntimeAuditJournal(filePath, lockPath, lock, lockText, dataHandle, records, chainHead, existing.byteLength, maxBytes, syncFile);
   } catch (error) {
     await dataHandle?.close().catch(() => {});
     await releaseLock(lockPath, lock, lockText);
@@ -69,22 +93,24 @@ class RuntimeAuditJournal {
   #lockText;
   #dataHandle;
   #records;
+  #chainHead;
   #eventSequences = new Map();
   #bytes;
   #maxBytes;
-  #queue = Promise.resolve();
+  #syncFile;
   #closing = false;
   #closed = false;
   #failed = false;
   #closePromise;
 
-  constructor(filePath, lockPath, lockHandle, lockText, dataHandle, records, bytes, maxBytes) {
+  constructor(filePath, lockPath, lockHandle, lockText, dataHandle, records, chainHead, bytes, maxBytes, syncFile) {
     this.#filePath = filePath;
     this.#lockPath = lockPath;
     this.#lockHandle = lockHandle;
     this.#lockText = lockText;
     this.#dataHandle = dataHandle;
     this.#records = records;
+    this.#chainHead = chainHead;
     for (const record of records) {
       if ((record.kind ?? 'audit') === 'event' && Number.isSafeInteger(record.eventId)) {
         this.#eventSequences.set(record.sessionId, Math.max(this.#eventSequences.get(record.sessionId) ?? 0, record.eventId));
@@ -92,6 +118,7 @@ class RuntimeAuditJournal {
     }
     this.#bytes = bytes;
     this.#maxBytes = maxBytes;
+    this.#syncFile = syncFile;
   }
 
   /** Append a stable audit phase. Only the enumerated, non-content metadata is accepted. */
@@ -99,35 +126,32 @@ class RuntimeAuditJournal {
     if (this.#closing || this.#closed) return Promise.reject(new JournalError('journal_closed'));
     if (this.#failed) return Promise.reject(new JournalError('journal_failed'));
     const payload = validateInput(input);
-    const task = this.#queue.then(async () => {
-      if (this.#failed) throw new JournalError('journal_failed');
-      try {
-        const sequence = this.#records.length ? this.#records.at(-1).sequence + 1 : 1;
-        const eventId = payload.kind === 'event' ? (this.#eventSequences.get(payload.sessionId) ?? 0) + 1 : undefined;
-        const record = Object.freeze({ version: JOURNAL_VERSION, sequence, ...payload, ...(eventId === undefined ? {} : { eventId }) });
-        const line = Buffer.from(`${JSON.stringify(record)}\n`, 'utf8');
-        const bytes = line.byteLength;
-        if (bytes > MAX_RECORD_BYTES) throw new JournalError('journal_record_too_large');
-        if (this.#records.length >= MAX_RECORDS || this.#bytes + bytes > this.#maxBytes) throw new JournalError('journal_capacity_exceeded');
-        let offset = 0;
-        while (offset < bytes) {
-          const { bytesWritten } = await this.#dataHandle.write(line, offset, bytes - offset, null);
-          if (bytesWritten <= 0) throw new Error('journal_short_write');
-          offset += bytesWritten;
-        }
-        await this.#dataHandle.sync();
-        this.#bytes += bytes;
-        this.#records.push(record);
-        if (eventId !== undefined) this.#eventSequences.set(payload.sessionId, eventId);
-        return { ...record };
-      } catch (error) {
-        if (error instanceof JournalError) throw error;
-        this.#failed = true;
-        throw new JournalError('journal_write_failed');
+    try {
+      const sequence = this.#records.length ? this.#records.at(-1).sequence + 1 : 1;
+      const eventId = payload.kind === 'event' ? (this.#eventSequences.get(payload.sessionId) ?? 0) + 1 : undefined;
+      const unsignedRecord = { version: JOURNAL_VERSION, sequence, ...payload, ...(eventId === undefined ? {} : { eventId }), previousHash: this.#chainHead };
+      const record = Object.freeze({ ...unsignedRecord, recordHash: hashRecord(unsignedRecord) });
+      const line = Buffer.from(`${JSON.stringify(record)}\n`, 'utf8');
+      const bytes = line.byteLength;
+      if (bytes > MAX_RECORD_BYTES) throw new JournalError('journal_record_too_large');
+      if (this.#records.length >= MAX_RECORDS || this.#bytes + bytes > this.#maxBytes) throw new JournalError('journal_capacity_exceeded');
+      let offset = 0;
+      while (offset < bytes) {
+        const bytesWritten = writeSync(this.#dataHandle.fd, line, offset, bytes - offset, null);
+        if (bytesWritten <= 0) throw new Error('journal_short_write');
+        offset += bytesWritten;
       }
-    });
-    this.#queue = task.catch(() => {});
-    return task;
+      this.#syncFile(this.#dataHandle.fd);
+      this.#bytes += bytes;
+      this.#records.push(record);
+      this.#chainHead = record.recordHash;
+      if (eventId !== undefined) this.#eventSequences.set(payload.sessionId, eventId);
+      return Promise.resolve({ ...record });
+    } catch (error) {
+      if (error instanceof JournalError) return Promise.reject(error);
+      this.#failed = true;
+      return Promise.reject(new JournalError('journal_write_failed'));
+    }
   }
 
   /** Read a bounded immutable snapshot; audit records use the journal sequence, events use their session cursor. */
@@ -142,13 +166,34 @@ class RuntimeAuditJournal {
       .map((record) => ({ ...record }));
   }
 
-  /** Wait for queued writes, close descriptors, and release only this process's lock. */
+  /** Read a validated byte-for-byte snapshot while this instance owns the exclusive journal lock. */
+  async snapshot() {
+    if (this.#closing || this.#closed) throw new JournalError('journal_closed');
+    const handle = await open(this.#filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    try {
+      const [snapshotInfo, liveInfo] = await Promise.all([handle.stat(), this.#dataHandle.stat()]);
+      if (!snapshotInfo.isFile() || snapshotInfo.size > this.#maxBytes
+        || snapshotInfo.dev !== liveInfo.dev || snapshotInfo.ino !== liveInfo.ino) {
+        throw new JournalError('journal_changed_during_snapshot');
+      }
+      assertSingleLink(snapshotInfo, 'journal_hard_linked_file');
+      assertPrivatePosixStorage(snapshotInfo, 'journal_permissions', 'file');
+      const snapshot = await handle.readFile();
+      if (snapshot.byteLength !== this.#bytes || validateRuntimeAuditJournalSnapshot(snapshot, { maxBytes: this.#maxBytes }) !== this.#records.length) {
+        throw new JournalError('journal_changed_during_snapshot');
+      }
+      return snapshot;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /** Close descriptors and release only this process's lock. Appends are synced before their promises are returned. */
   close() {
     if (this.#closePromise) return this.#closePromise;
     this.#closing = true;
     this.#closePromise = (async () => {
       try {
-        await this.#queue;
         await this.#dataHandle.close();
       } finally {
         this.#closed = true;
@@ -163,7 +208,7 @@ class RuntimeAuditJournal {
 
 function validateInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('invalid_journal_record');
-  const allowed = new Set(['kind', 'sessionId', 'requestId', 'action', 'phase', 'at', 'provider', 'runId', 'errorCode', 'eventType', 'eventId', 'code', 'signal']);
+  const allowed = new Set(['kind', 'sessionId', 'requestId', 'action', 'phase', 'at', 'provider', 'runId', 'errorCode', 'eventType', 'eventId', 'code', 'signal', 'stopReason', 'force']);
   if (Object.keys(input).some((key) => !allowed.has(key))) throw new TypeError('invalid_journal_record');
   const kind = input.kind ?? 'audit';
   if (!['audit', 'event'].includes(kind) || !SESSION_ID_RE.test(input.sessionId)
@@ -175,16 +220,20 @@ function validateInput(input) {
       || !EVENT_TYPES.has(input.eventType) || !PROVIDERS.has(input.provider) || !UUID_RE.test(input.runId)
       || (input.eventId !== undefined && (!Number.isSafeInteger(input.eventId) || input.eventId < 1))
       || (input.code !== undefined && input.code !== null && !Number.isSafeInteger(input.code))
-      || (input.signal !== undefined && input.signal !== null && !SIGNALS.has(input.signal))) throw new TypeError('invalid_journal_record');
+      || (input.signal !== undefined && input.signal !== null && !SIGNALS.has(input.signal))
+      || (input.stopReason !== undefined && (!STOP_REASONS.has(input.stopReason) || !['stop_requested', 'stop_failed'].includes(input.eventType)))
+      || (input.force !== undefined && (typeof input.force !== 'boolean' || input.eventType !== 'stop_requested'))) throw new TypeError('invalid_journal_record');
     return {
       kind, sessionId: input.sessionId, eventType: input.eventType, at: input.at,
       provider: input.provider, runId: input.runId,
       ...(input.eventId === undefined ? {} : { eventId: input.eventId }),
       ...(input.code === undefined ? {} : { code: input.code }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
+      ...(input.stopReason === undefined ? {} : { stopReason: input.stopReason }),
+      ...(input.force === undefined ? {} : { force: input.force }),
     };
   }
-  if (input.eventType !== undefined || input.eventId !== undefined || input.code !== undefined || input.signal !== undefined
+  if (input.eventType !== undefined || input.eventId !== undefined || input.code !== undefined || input.signal !== undefined || input.stopReason !== undefined || input.force !== undefined
     || !UUID_RE.test(input.requestId) || !ACTIONS.has(input.action) || !PHASES.has(input.phase)) throw new TypeError('invalid_journal_record');
   return {
     ...(input.kind === undefined ? {} : { kind }),
@@ -211,19 +260,50 @@ async function readExisting(filePath, maxBytes, verifyWindowsAcl) {
 }
 
 function parseRecords(buffer) {
-  if (buffer.length === 0) return [];
+  if (buffer.length === 0) return { records: [], chainHead: hashBytes(buffer) };
   if (buffer.at(-1) !== 0x0a) throw new JournalError('journal_incomplete_tail');
-  const lines = buffer.toString('utf8').split('\n');
-  lines.pop();
+  const lineBytes = [];
+  let lineStart = 0;
+  for (let index = 0; index < buffer.length; index++) {
+    if (buffer[index] === 0x0a) {
+      lineBytes.push(buffer.subarray(lineStart, index));
+      lineStart = index + 1;
+    }
+  }
   const records = [];
   const eventIds = new Map();
-  for (const line of lines) {
-    if (!line || Buffer.byteLength(line) > MAX_RECORD_BYTES) throw new JournalError('journal_corrupt');
+  let legacyPrefixBytes = 0;
+  let chainHead = hashBytes(buffer);
+  let sawVersion2 = false;
+  for (const rawLine of lineBytes) {
+    const line = rawLine.toString('utf8');
+    if (!line || rawLine.byteLength > MAX_RECORD_BYTES || !Buffer.from(line, 'utf8').equals(rawLine)) throw new JournalError('journal_corrupt');
     let record;
     try { record = JSON.parse(line); }
     catch { throw new JournalError('journal_corrupt'); }
-    const { version, sequence, ...payload } = record ?? {};
-    if (version !== JOURNAL_VERSION || sequence !== records.length + 1) throw new JournalError('journal_corrupt');
+    const { version, sequence } = record ?? {};
+    const { previousHash, recordHash } = record ?? {};
+    const payload = { ...(record ?? {}) };
+    delete payload.version;
+    delete payload.sequence;
+    if (version === JOURNAL_VERSION) {
+      delete payload.previousHash;
+      delete payload.recordHash;
+    }
+    if (![1, JOURNAL_VERSION].includes(version) || sequence !== records.length + 1) throw new JournalError('journal_corrupt');
+    if (version === 1 && sawVersion2) throw new JournalError('journal_corrupt');
+    if (version === JOURNAL_VERSION) {
+      const expectedPreviousHash = sawVersion2 ? chainHead : hashBytes(buffer.subarray(0, legacyPrefixBytes));
+      if (typeof previousHash !== 'string' || previousHash !== expectedPreviousHash
+        || typeof recordHash !== 'string' || !/^[0-9a-f]{64}$/.test(recordHash)) throw new JournalError('journal_corrupt');
+      const unsignedRecord = { ...record };
+      delete unsignedRecord.recordHash;
+      if (hashRecord(unsignedRecord) !== recordHash) throw new JournalError('journal_corrupt');
+      sawVersion2 = true;
+      chainHead = recordHash;
+    } else {
+      legacyPrefixBytes += rawLine.byteLength + 1;
+    }
     let normalized;
     try { normalized = validateInput(payload); }
     catch { throw new JournalError('journal_corrupt'); }
@@ -232,11 +312,14 @@ function parseRecords(buffer) {
       if (!Number.isSafeInteger(normalized.eventId) || normalized.eventId !== expectedEventId) throw new JournalError('journal_corrupt');
       eventIds.set(normalized.sessionId, expectedEventId);
     }
-    records.push(Object.freeze({ version, sequence, ...payload }));
+    records.push(Object.freeze({ version, sequence, ...payload, ...(version === JOURNAL_VERSION ? { previousHash, recordHash } : {}) }));
     if (records.length > MAX_RECORDS) throw new JournalError('journal_capacity_exceeded');
   }
-  return records;
+  return { records, chainHead };
 }
+
+function hashBytes(value) { return createHash('sha256').update(value).digest('hex'); }
+function hashRecord(record) { return hashBytes(Buffer.from(JSON.stringify(record), 'utf8')); }
 
 async function acquireLock(lockPath, lockText, verifyWindowsAcl) {
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -287,7 +370,7 @@ async function removeStaleLock(lockPath, verifyWindowsAcl) {
   }
 }
 
-function assertPrivatePosixStorage(info, code, kind) {
+export function assertPrivatePosixStorage(info, code, kind) {
   if (process.platform === 'win32') return;
   const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
   const privateBits = (info.mode & 0o077) === 0;
@@ -298,7 +381,7 @@ function assertPrivatePosixStorage(info, code, kind) {
   if (!privateBits || !ownedByCurrentUser || !usableOwnerBits) throw new JournalError(code);
 }
 
-function assertSingleLink(info, code) {
+export function assertSingleLink(info, code) {
   if (!Number.isSafeInteger(info.nlink) || info.nlink !== 1) throw new JournalError(code);
 }
 

@@ -3,6 +3,8 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
+import { terminatePosixTree } from './posix-tree-termination.mjs';
+import { terminateWindowsTree } from './windows-tree-termination.mjs';
 
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_ARGS = 128;
@@ -23,6 +25,8 @@ let cleanupComplete = false;
 let stopping = false;
 let terminationStarted = false;
 let finished = false;
+let terminationPromise;
+let terminationResult;
 let inputMode = null;
 let initialInput = null;
 
@@ -98,7 +102,7 @@ function startProvider(message) {
   });
   provider.once('close', (code, signal) => {
     providerExited = true;
-    if (!parentAlive && !cleanupComplete) return;
+    if (terminationStarted && !cleanupComplete) return;
     finish(0, { type: 'exit', code: Number.isInteger(code) ? code : null, signal: typeof signal === 'string' ? signal : null });
   });
 }
@@ -115,38 +119,35 @@ function sendProviderInput(text, callback) {
   catch (error) { callback(error); }
 }
 
-async function terminateTree(signal, pid) {
-  if (cleanupComplete || terminationStarted || !Number.isInteger(pid) || pid < 1) return;
+function terminateTree(signal, pid) {
+  if (terminationPromise) return terminationPromise;
+  if (cleanupComplete || terminationStarted || !Number.isInteger(pid) || pid < 1) return Promise.resolve(terminationResult);
   terminationStarted = true;
   stopping = true;
-  if (process.platform === 'win32') {
-    await taskkillTree(pid);
-  } else {
-    signalGroup(pid, signal);
-    if (signal !== 'SIGKILL') {
-      await new Promise((resolve) => setTimeout(resolve, PARENT_EXIT_GRACE_MS));
-      signalGroup(pid, 'SIGKILL');
+  terminationPromise = (async () => {
+    let result;
+    if (process.platform === 'win32') {
+      result = await terminateWindowsTree(pid, {
+        systemRoot: process.env.SystemRoot ?? process.env.SYSTEMROOT,
+        spawnImpl: spawn,
+        killFallback: () => provider?.kill('SIGKILL') ?? false,
+      });
+    } else {
+      result = await terminatePosixTree(pid, signal, {
+        fallbackImpl: () => provider?.kill('SIGKILL') ?? false,
+        delayImpl: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        graceMs: PARENT_EXIT_GRACE_MS,
+      });
     }
-  }
-  cleanupComplete = true;
-  if (providerExited || !provider) finish(0, providerExited ? { type: 'exit', code: provider.exitCode ?? null, signal: provider.signalCode ?? null } : undefined);
-}
-
-function signalGroup(pid, signal) {
-  try { process.kill(-pid, signal); }
-  catch (error) { if (!error || error.code !== 'ESRCH') { try { provider?.kill('SIGKILL'); } catch { /* process already exited */ } } }
-}
-
-function taskkillTree(pid) {
-  const root = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-  if (!root) { try { provider?.kill('SIGKILL'); } catch { /* process already exited */ } return Promise.resolve(); }
-  return new Promise((resolve) => {
-    let killer;
-    try { killer = spawn(path.join(root, 'System32', 'taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { shell: false, windowsHide: true, stdio: 'ignore' }); }
-    catch { try { provider?.kill('SIGKILL'); } catch { /* process already exited */ } resolve(); return; }
-    killer.once('error', () => { try { provider?.kill('SIGKILL'); } catch { /* process already exited */ } resolve(); });
-    killer.once('close', () => resolve());
-  });
+    terminationResult = result;
+    cleanupComplete = true;
+    // Report the actual platform termination outcome. A successful direct-child fallback
+    // does not prove that Windows descendants were stopped.
+    if (parentAlive) send({ type: 'tree_stop', treeConfirmed: result?.treeConfirmed === true });
+    if (providerExited || !provider) finish(0, providerExited ? { type: 'exit', code: provider.exitCode ?? null, signal: provider.signalCode ?? null } : undefined);
+    return result;
+  })();
+  return terminationPromise;
 }
 
 function send(message) {

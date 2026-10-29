@@ -8,26 +8,37 @@ import process from 'node:process';
 const SYSTEM_SID = 'S-1-5-18';
 const ADMINISTRATORS_SID = 'S-1-5-32-544';
 const POWERSHELL_RELATIVE_PATH = path.join('System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+const MAX_ACL_BATCH_TARGETS = 32;
+const MAX_ACL_BATCH_INPUT_BYTES = 32 * 1024;
+const MAX_ACL_BATCH_OUTPUT_BYTES = 256 * 1024;
 const SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
-$p = $env:ALBERA_ACL_TARGET
-$acl = Get-Acl -LiteralPath $p -ErrorAction Stop
-$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-$sddl = $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::All)
-$raw = [System.Security.AccessControl.RawSecurityDescriptor]::new($sddl)
-$rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object {
-  [pscustomobject]@{
-    sid = $_.IdentityReference.Value
-    allow = ($_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow)
-    rights = [int64]$_.FileSystemRights
+$targets = ConvertFrom-Json -InputObject $env:ALBERA_ACL_TARGETS -ErrorAction Stop
+if ($targets.Count -lt 1 -or $targets.Count -gt 32) { throw 'invalid_acl_target_count' }
+$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$results = @(
+  foreach ($p in $targets) {
+    $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
+    $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+    $sddl = $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::All)
+    $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new($sddl)
+    $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object {
+      [pscustomobject]@{
+        sid = $_.IdentityReference.Value
+        allow = ($_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow)
+        rights = [int64]$_.FileSystemRights
+      }
+    })
+    [pscustomobject]@{
+      path = $p
+      owner = $owner
+      currentUser = $currentUser
+      daclPresent = ($null -ne $raw.DiscretionaryAcl)
+      rules = $rules
+    }
   }
-})
-[pscustomobject]@{
-  owner = $owner
-  currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-  daclPresent = ($null -ne $raw.DiscretionaryAcl)
-  rules = $rules
-} | ConvertTo-Json -Compress -Depth 4
+)
+ConvertTo-Json -InputObject $results -Compress -Depth 4
 `;
 const ENCODED_SCRIPT = Buffer.from(SCRIPT, 'utf16le').toString('base64');
 const ALLOWED_SIDS = new Set([SYSTEM_SID, ADMINISTRATORS_SID]);
@@ -77,6 +88,20 @@ export async function assertPrivateWindowsAcl(targetPath, { kind = 'file', platf
 }
 
 export async function inspectWindowsAcl(targetPath) {
+  const [descriptor] = await inspectWindowsAcls([targetPath]);
+  return descriptor;
+}
+
+/** Inspect a bounded set of Windows DACLs in one PowerShell process. */
+export async function inspectWindowsAcls(targetPaths) {
+  if (process.platform !== 'win32') throw new RuntimeStorageAclError('runtime_storage_acl_check_failed');
+  if (!Array.isArray(targetPaths) || targetPaths.length < 1 || targetPaths.length > MAX_ACL_BATCH_TARGETS
+    || targetPaths.some((target) => typeof target !== 'string' || !path.win32.isAbsolute(target))
+    || new Set(targetPaths).size !== targetPaths.length) {
+    throw new RuntimeStorageAclError('runtime_storage_acl_check_failed');
+  }
+  const targetsJson = JSON.stringify(targetPaths);
+  if (Buffer.byteLength(targetsJson, 'utf8') > MAX_ACL_BATCH_INPUT_BYTES) throw new RuntimeStorageAclError('runtime_storage_acl_check_failed');
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!systemRoot || !path.win32.isAbsolute(systemRoot)) throw new RuntimeStorageAclError('runtime_storage_acl_check_failed');
   const executable = path.win32.join(systemRoot, POWERSHELL_RELATIVE_PATH);
@@ -105,14 +130,14 @@ export async function inspectWindowsAcl(targetPath) {
           TEMP: temp,
           TMP: temp,
           PSModulePath: path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules'),
-          ALBERA_ACL_TARGET: targetPath,
+          ALBERA_ACL_TARGETS: targetsJson,
         },
       });
     } catch { fail(); return; }
     child.once('error', fail);
     child.stdout.on('data', (chunk) => {
       outputBytes += chunk.length;
-      if (outputBytes > 64 * 1024) { fail(); return; }
+      if (outputBytes > MAX_ACL_BATCH_OUTPUT_BYTES) { fail(); return; }
       output += chunk.toString('utf8');
     });
     child.once('close', (code) => {
@@ -120,9 +145,28 @@ export async function inspectWindowsAcl(targetPath) {
       clearTimeout(timer);
       if (code !== 0) { fail(); return; }
       try {
-        const result = JSON.parse(output.trim());
+        const parsed = JSON.parse(output.trim());
+        const results = Array.isArray(parsed) ? parsed : [parsed];
+        if (results.length !== targetPaths.length) throw new Error('acl_result_count_invalid');
+        const byPath = new Map();
+        for (const result of results) {
+          if (!result || typeof result.path !== 'string' || byPath.has(result.path)
+            || typeof result.owner !== 'string' || typeof result.currentUser !== 'string'
+            || typeof result.daclPresent !== 'boolean' || !Array.isArray(result.rules)) throw new Error('acl_result_invalid');
+          byPath.set(result.path, Object.freeze({
+            owner: result.owner,
+            currentUser: result.currentUser,
+            daclPresent: result.daclPresent,
+            rules: Object.freeze(result.rules.map((rule) => Object.freeze(rule))),
+          }));
+        }
+        const descriptors = targetPaths.map((target) => {
+          const descriptor = byPath.get(target);
+          if (!descriptor) throw new Error('acl_result_target_invalid');
+          return descriptor;
+        });
         settled = true;
-        resolve(result);
+        resolve(Object.freeze(descriptors));
       } catch { fail(); }
     });
     timer = setTimeout(fail, 60000);
