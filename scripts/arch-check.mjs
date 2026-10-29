@@ -54,6 +54,7 @@ const EXPECTED = {
     'session-record.mjs', 'demo-data.mjs', 'map-limit.mjs',
   ],
   entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],
+    runtime: ['gateway.mjs', 'api.mjs', 'approval-broker.mjs', 'approval-host.mjs', 'audit-journal.mjs', 'journal-backup.mjs', 'entry.mjs', 'host.mjs', 'session-identity.mjs', 'supervisor.mjs', 'guardian.mjs', 'environment-provider.mjs', 'environment-host-broker.mjs', 'environment-control-plane.mjs', 'hyperv-environment-provider.mjs', 'environment-operations.mjs', 'computer-scheduler.mjs', 'mock-environment-provider.mjs', 'agent-harness-adapter.mjs', 'sqlite-operation-store.mjs', 'boundary-protocols.mjs', 'guest-event-intake.mjs', 'errors.mjs'],
   public: [
     'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
@@ -63,7 +64,7 @@ const EXPECTED = {
     'dict-en.mjs', 'dict-ja.mjs', 'dict-zh.mjs', 'dict-en-handoff.mjs', 'dict-ja-handoff.mjs', 'dict-zh-handoff.mjs', 'dict-en-canvas.mjs', 'dict-ja-canvas.mjs', 'dict-zh-canvas.mjs',
   ],
 };
-const DIR_OF = { shared: 'src/shared', core: 'src/core', adapters: 'src/adapters', entry: 'src/entry', public: 'public' };
+const DIR_OF = { shared: 'src/shared', core: 'src/core', adapters: 'src/adapters', entry: 'src/entry', runtime: 'src/runtime', public: 'public' };
 let expectedCount = 0;
 for (const [role, names] of Object.entries(EXPECTED)) {
   for (const n of names) {
@@ -84,6 +85,8 @@ const shared = listFiles('src/shared');
 const core = listFiles('src/core');
 const adapters = listFiles('src/adapters');
 const entry = listFiles('src/entry');
+const runtime = listFiles('src/runtime');
+const runtimeUi = listFiles('src/runtime/approval-ui', ['.mjs', '.js', '.html', '.css']);
 const pub = listFiles('public');
 
 // 1. core and shared know nothing of the outside world
@@ -113,6 +116,16 @@ check('2c adapter imports', adapters, (line) => {
   if (s == null) return null;
   return s.startsWith('node:') || s.startsWith('../shared/') || s.startsWith('../core/') || s.startsWith('./') ? null : `an adapter cannot import ${s}`;
 });
+check('2d runtime imports', runtime, (line, file) => {
+  const s = specOf(line);
+  if (s == null) return null;
+  return s.startsWith('node:') || s.startsWith('./') ? null : `runtime cannot import ${s}`;
+});
+check('2e runtime isolation', [...entry, ...adapters, ...core, ...shared], (line) => {
+  const s = specOf(line);
+  if (s?.includes('/runtime/')) return `existing app layers cannot import runtime module ${s}`;
+  return /\bimport\s*\(\s*['"][^'"]*\/runtime\//.test(line) ? 'existing app layers cannot dynamically import the runtime module' : null;
+});
 
 // 3. every touch point with the outside world (*-fs.mjs) has a Fake
 const fsAdapters = adapters.filter((f) => f.endsWith('-fs.mjs'));
@@ -134,6 +147,38 @@ check('4b no HTML string injection', [...pub, ...shared, ...core, ...adapters, .
 check('5 read-only', [...adapters, ...entry], (line) =>
   /\b(writeFile|appendFile|rename|unlink|rmdir|mkdir|copyFile|createWriteStream|truncate|utimes|chmod|watch)\w*\(|\.rm\(|open\([^)]*['"](?:[wax]|r\+)/.test(line)
     ? 'write APIs are not allowed'
+    : null,
+);
+check('5a no process execution in read-only layers', [...adapters, ...entry], (line) =>
+  /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?child_process['"]|\b(?:spawn|exec|execFile)\s*\(/.test(line) ? 'process execution is restricted to src/runtime/' : null,
+);
+check('5b runtime process boundary', runtime, (line, file) => {
+  if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null;
+  if (/(?:import\s*\(\s*|require\s*\(\s*)['"](?:node:)?child_process['"]/.test(line)) return 'dynamic child_process loading is not allowed';
+  if (/from\s+['"](?:node:)?child_process['"]/.test(line) && !/^\s*import\s+\{\s*spawn\s*\}\s+from\s+['"]node:child_process['"]\s*;?/.test(line)) return 'only the named asynchronous spawn API may be imported';
+  const sqliteStatement = posix(file) === 'src/runtime/sqlite-operation-store.mjs' && /\bdb\.exec\s*\(/.test(line);
+  if (/\b(?:exec|execSync|execFile|execFileSync|spawnSync)\s*\(/.test(line) && !sqliteStatement) return 'only asynchronous spawn is allowed in the runtime boundary';
+  if (/\bshell\s*:\s*true\b/.test(line)) return 'shell execution is not allowed';
+  return null;
+});
+check('5c runtime approval UI uses safe DOM APIs', runtimeUi, (line) =>
+  /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|\bdocument\.write\b/.test(line)
+    ? 'approval UI must render untrusted request text with textContent / DOM APIs'
+    : null,
+);
+
+// 5d provider contracts and test doubles describe lifecycle state; they never execute host commands.
+const providerContracts = [
+  'src/runtime/environment-provider.mjs',
+  'src/runtime/hyperv-environment-provider.mjs',
+  'src/runtime/environment-operations.mjs',
+  'src/runtime/mock-environment-provider.mjs',
+  'src/runtime/agent-harness-adapter.mjs',
+  'src/runtime/boundary-protocols.mjs',
+];
+check('5d provider contracts have no process execution', providerContracts, (line) =>
+  /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?child_process['"]|\b(?:spawn|exec|execFile|execSync|execFileSync|spawnSync)\s*\(/.test(line)
+    ? 'provider contracts and MockProvider must not execute host commands'
     : null,
 );
 
@@ -171,6 +216,12 @@ for (const f of ui7) {
   }
 }
 results.push(`7 UI files under ${UI_MAX_LINES} lines: ${ui7.length} files, ${long7} violations`);
+if (runtimeUi.length === 0) violations.push('[7 runtime approval UI under 400 lines] no files to check (false-safe)');
+for (const f of runtimeUi) {
+  const n = fs.readFileSync(path.join(ROOT, f), 'utf8').replace(/\n$/, '').split('\n').length;
+  if (n > UI_MAX_LINES) violations.push(`[7 runtime approval UI under 400 lines] ${posix(f)} has ${n} lines`);
+}
+results.push(`7 runtime approval UI under ${UI_MAX_LINES} lines: ${runtimeUi.length} files`);
 
 for (const r of results) console.log(r);
 console.log(`suppressed (arch-allow): ${suppressed}`);
