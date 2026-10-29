@@ -39,7 +39,6 @@ export const JA = Object.freeze({
   'date.mon.11': '12 月',
   'filter.label': 'タイトル・プロジェクト・要約・していることで絞り込み',
   'filter.placeholder': '絞り込み',
-  'lang.switchTo': 'English',
   'lang.toggleAria': '言語を切り替える',
 
   // 19.2 lede

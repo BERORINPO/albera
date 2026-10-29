@@ -1,4 +1,4 @@
-// 端末の言葉 (src/entry/messages.mjs): en と ja のキーと placeholder がそろっていること、使っているキーが全部あること。
+// 端末の言葉 (src/entry/messages.mjs): en・ja・zh のキーと placeholder がそろっていること、使っているキーが全部あること。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,11 +10,13 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CJK = /[　-ヿ㐀-鿿！-｠]/;
 const placeholders = (/** @type {string} */ s) => [...new Set([...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]))].sort();
 
-test('en と ja は同じキーで、キーごとの placeholder も同じ。空の文は無い', () => {
+test('en・ja・zh は同じキーで、キーごとの placeholder も同じ。空の文は無い', () => {
   assert.deepEqual(Object.keys(TERM.ja).sort(), Object.keys(TERM.en).sort());
+  assert.deepEqual(Object.keys(TERM.zh).sort(), Object.keys(TERM.en).sort());
   for (const k of Object.keys(TERM.en)) {
     assert.deepEqual(placeholders(TERM.ja[k]), placeholders(TERM.en[k]), k);
-    assert.ok(TERM.en[k].trim() !== '' && TERM.ja[k].trim() !== '', k);
+    assert.deepEqual(placeholders(TERM.zh[k]), placeholders(TERM.en[k]), `zh ${k}`);
+    assert.ok(TERM.en[k].trim() !== '' && TERM.ja[k].trim() !== '' && TERM.zh[k].trim() !== '', k);
     assert.doesNotMatch(TERM.en[k], CJK, `en の ${k} に日本語`);
   }
 });
@@ -33,17 +35,18 @@ test('ソースで使っている term.* のキーは全部辞書にある', () 
 test('msg: 値を差し込む。知らない言語は en、知らないキーはキーそのもの', () => {
   assert.equal(msg('en', 'term.started', { port: 18950, mode: msg('en', 'term.modeDemo') }), 'ALBERA: http://127.0.0.1:18950 (demo data, read-only)');
   assert.equal(msg('ja', 'term.started', { port: 18950, mode: msg('ja', 'term.modeReadOnly') }), 'ALBERA: http://127.0.0.1:18950 (読み取り専用)');
+  assert.equal(msg('zh', 'term.started', { port: 18950, mode: msg('zh', 'term.modeReadOnly') }), 'ALBERA: http://127.0.0.1:18950 (只读)');
   assert.equal(msg('fr', 'term.alreadyRunning', { port: 1 }), 'Already running: open http://127.0.0.1:1');
   assert.equal(msg('en', 'term.nope'), 'term.nope');
   assert.equal(msg('en', 'term.badFlag', { flag: '{port}', cmd: 'npx albera' }), 'Unknown option: {port}. See: npx albera --help', '値の中の {..} は展開しない');
 });
 
 test('起動の行には URL が入る (テストと smoke はこれで起動完了を判定する)', () => {
-  for (const lang of ['en', 'ja']) assert.match(msg(lang, 'term.started', { port: 8797, mode: 'x' }), /http:\/\/127\.0\.0\.1:\d+/);
+  for (const lang of ['en', 'ja', 'zh']) assert.match(msg(lang, 'term.started', { port: 8797, mode: 'x' }), /http:\/\/127\.0\.0\.1:\d+/);
 });
 
 test('help: 版・既定のポート・区切り文字が入り、placeholder が残らない', () => {
-  for (const lang of ['en', 'ja']) {
+  for (const lang of ['en', 'ja', 'zh']) {
     const h = msg(lang, 'term.help', { version: '9.9.9', port: 8797, sep: ';', cmd: 'npx albera' });
     assert.ok(h.includes('npx albera ['), `${lang}: 使い方の行は起動のしかた`);
     assert.match(h, /^ALBERA 9\.9\.9: /);

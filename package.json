@@ -11,6 +11,7 @@
     "public",
     "README.md",
     "README.ja.md",
+    "README.zh-CN.md",
     "LICENSE"
   ],
   "license": "MIT",

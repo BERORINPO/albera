@@ -8,7 +8,7 @@ import { renderCleanup, renderSelbar } from './cleanup.mjs';
 import { faviconKind, setFavicon } from './favicon.mjs';
 import { agoText, agoWords, bucketTitle, dateline, deepLink, quietHint, sentences, tabTitle, timeText } from './format.mjs';
 import { renderBanners, renderFront, renderIntro, renderLede } from './front.mjs';
-import { otherLang } from './i18n.mjs';
+import { LANG_NAMES } from './i18n.mjs';
 import { notifyState } from './notify.mjs';
 import { renderLoadingPile, renderPile, renderRecent } from './rows.mjs';
 import { archivedToday, isNew, now, pruneNew, savePrefs, state, takeArrival, zeroSinceToday } from './state.mjs';
@@ -107,11 +107,16 @@ function renderMast() {
   else if (at - state.lastOk > STALE_AFTER_MS) date.textContent = t('date.stale', { ago: agoText(t, at - state.lastOk) });
   else date.textContent = dateline(t, state.lastOk);
   $('demo').hidden = !state.board?.stats?.demo;
-  // 言語ボタンの名前は見えている言葉 (「日本語」/「English」) から始める (WCAG 2.5.3)。lang は見えている言葉にだけ付ける
-  const lang = $('lang');
+  // 言語の選び箱 (select): 選べる言葉は各言語の自分の名前 (English / 日本語 / 简体中文)。名前は見えている言葉に lang を付けて出す。
+  // 矢印キーと Enter で選べ、読み上げには「言語を切り替える」が名前になる
+  const lang = /** @type {HTMLSelectElement} */ ($('lang'));
   if (lang.dataset.lang !== t.lang) {
     lang.dataset.lang = t.lang;
-    fill(lang, h('span', { lang: otherLang(t.lang), text: t('lang.switchTo') }), h('span', { class: 'vh', text: ` (${t('lang.toggleAria')})` }));
+    if (lang.options.length === 0) {
+      for (const [code, name] of Object.entries(LANG_NAMES)) lang.append(h('option', { value: code, lang: code, text: name }));
+    }
+    lang.value = t.lang;
+    lang.setAttribute('aria-label', t('lang.toggleAria'));
   }
   const needs = (Number(state.board?.counts?.needs_you) || 0) > 0;
   document.querySelector('.glyph rect')?.classList.toggle('is-on', needs);

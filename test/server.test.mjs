@@ -243,8 +243,9 @@ test('不正なポート・言語・ROOTS・フラグは exit 1 と 1 行の説�
   const cases = [
     { args: ['--demo', '--lang', 'en'], env: { ALBERA_PORT: 'abc' }, re: /^The port must be a number from 1024 to 65535 \(got: abc\)\. Use --port <n> or ALBERA_PORT\.$/ },
     { args: ['--demo', '--lang', 'ja', '--port', '80'], env: {}, re: /^ポートは 1024〜65535 の数字にしてください \(今: 80\)/ },
-    { args: ['--demo', '--lang', 'fr'], env: { LANG: 'ja_JP.UTF-8' }, re: /^--lang と ALBERA_LANG は en か ja にしてください \(今: fr\)$/ },
-    { args: ['--demo'], env: { ALBERA_LANG: 'xx', LANG: 'en_US.UTF-8' }, re: /^--lang and ALBERA_LANG must be en or ja \(got: xx\)$/ },
+    { args: ['--demo', '--lang', 'fr'], env: { LANG: 'ja_JP.UTF-8' }, re: /^--lang と ALBERA_LANG は en・ja・zh のどれかにしてください \(今: fr\)$/ },
+    { args: ['--demo', '--lang', 'fr'], env: { LANG: 'zh_CN.UTF-8' }, re: /^--lang 和 ALBERA_LANG 必须是 en、ja 或 zh \(当前: fr\)$/ },
+    { args: ['--demo'], env: { ALBERA_LANG: 'xx', LANG: 'en_US.UTF-8' }, re: /^--lang and ALBERA_LANG must be en, ja or zh \(got: xx\)$/ },
     { args: ['--demo', '--lang', 'en'], env: { ALBERA_ROOTS: 'relative-dir' }, re: /^ALBERA_ROOTS must be absolute paths separated by ".+" \(invalid: relative-dir\)$/ },
     { args: ['--demo', '--lang', 'en', '--bogus'], env: {}, re: new RegExp(`^Unknown option: --bogus\\. See: ${LAUNCH} --help$`) },
     { args: ['--lang', 'en', '--port'], env: {}, re: new RegExp(`^--port needs a value\\. See: ${LAUNCH} --help$`) },
