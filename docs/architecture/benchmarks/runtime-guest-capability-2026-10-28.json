@@ -1,0 +1,27 @@
+{
+  "driver": "node:sqlite",
+  "node": "v24.13.0",
+  "platform": "win32-x64",
+  "generatedAt": "2026-10-28T08:43:30.986Z",
+  "machineProfile": {
+    "osType": "Windows_NT",
+    "osRelease": "10.0.26300",
+    "cpuModel": "AMD Ryzen 7 5800X3D 8-Core Processor",
+    "logicalCpuCount": 16,
+    "totalMemoryBytes": 34282192896
+  },
+  "samples": 20,
+  "scope": "single-process synthetic benchmark using one active Lease in the local SQLite WAL store; excludes network/TLS, startup ACL checks, provider work, contention, and remote I/O",
+  "guestSessionCapabilityLatency": {
+    "issueAndResolveActiveLease": {
+      "p50Ms": 0.163,
+      "p95Ms": 0.232,
+      "maxMs": 0.262
+    },
+    "authenticateAndResolveCurrentLease": {
+      "p50Ms": 0.113,
+      "p95Ms": 0.147,
+      "maxMs": 0.169
+    }
+  }
+}
