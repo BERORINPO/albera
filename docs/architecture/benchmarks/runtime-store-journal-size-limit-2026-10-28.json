@@ -1,0 +1,51 @@
+{
+  "kind": "before-after-diagnostic",
+  "driver": "node:sqlite",
+  "node": "v24.13.0",
+  "platform": "win32-x64",
+  "machineProfile": {
+    "osType": "Windows_NT",
+    "osRelease": "10.0.26300",
+    "cpuModel": "AMD Ryzen 7 5800X3D 8-Core Processor",
+    "logicalCpuCount": 16,
+    "totalMemoryBytes": 34282192896
+  },
+  "baseline": {
+    "source": "runtime-store-baseline-2026-10-28.json",
+    "generatedAt": "2026-10-28T05:15:32.693Z",
+    "samples": 40,
+    "transactionLatencyMs": {
+      "registerComputer": { "p50": 0.911, "p95": 1.367 },
+      "reserveLease": { "p50": 1.105, "p95": 1.614 },
+      "beginOperation": { "p50": 1.281, "p95": 1.866 },
+      "readEventPage": { "p50": 0.173, "p95": 0.231 }
+    },
+    "schedulerProposalLatencyMs": {
+      "100": { "p50": 0.462, "p95": 0.612 },
+      "1000": { "p50": 4.441, "p95": 8.16 },
+      "10000": { "p50": 62.048, "p95": 73.816 }
+    }
+  },
+  "after": {
+    "generatedAt": "2026-10-28T09:19:17.446Z",
+    "samples": 40,
+    "journalSizeLimitBytes": 4194304,
+    "transactionLatencyMs": {
+      "registerComputer": { "p50": 0.896, "p95": 1.161 },
+      "reserveLease": { "p50": 1.058, "p95": 1.542 },
+      "beginOperation": { "p50": 1.268, "p95": 1.737 },
+      "readEventPage": { "p50": 0.156, "p95": 0.228 }
+    },
+    "guestSessionCapabilityLatencyMs": {
+      "issueAndResolveActiveLease": { "p50": 0.17, "p95": 0.377 },
+      "authenticateAndResolveCurrentLease": { "p50": 0.109, "p95": 0.188 }
+    },
+    "schedulerProposalLatencyMs": {
+      "100": { "p50": 0.449, "p95": 0.639 },
+      "1000": { "p50": 4.134, "p95": 6.431 },
+      "10000": { "p50": 72.831, "p95": 78.14 }
+    }
+  },
+  "interpretation": "The synthetic 40-sample workload is not paired and does not cross the 1,000-page auto-checkpoint threshold. Transaction medians and p95 values show no clear regression, but this run does not measure checkpoint/reset cost or WAL growth under sustained writes.",
+  "scope": "Synthetic local SQLite WAL transactions, Guest capability resolution, and in-memory placement only; excludes startup ACL checks, network/TLS, provider work, OS scheduling, and remote I/O. Diagnostic only, not an SLO."
+}

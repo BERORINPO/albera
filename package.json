@@ -4,11 +4,13 @@
   "description": "Anni Albers-inspired read-only local dashboard for Claude Code sessions, part of the ALBERA development platform.",
   "type": "module",
   "bin": {
-    "albera": "src/entry/server.mjs",
-    "albera-runtime": "src/runtime/entry.mjs"
+    "albera": "src/entry/server.mjs"
   },
   "files": [
-    "src",
+    "src/entry",
+    "src/core",
+    "src/adapters",
+    "src/shared",
     "public",
     "README.md",
     "README.ja.md",
@@ -33,14 +35,16 @@
     "cli"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node src/entry/server.mjs",
     "demo": "node src/entry/server.mjs --demo",
     "test": "node --test",
     "arch": "node scripts/arch-check.mjs",
+    "build:windows-job-guardian": "node scripts/publish-windows-job-guardian.mjs",
     "smoke": "node scripts/smoke.mjs",
+    "bench:runtime-store": "node scripts/runtime-sqlite-benchmark.mjs",
     "package:smoke": "node scripts/package-smoke.mjs"
   }
 }
