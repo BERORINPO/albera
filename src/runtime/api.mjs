@@ -13,17 +13,20 @@ const MAX_TRACKED_RUNS = 64;
 const MAX_PENDING_STREAM_EVENTS = 256;
 const MAX_SESSION_EVENT_LOGS = 256;
 const MAX_SESSION_EVENTS = 256;
-const API_SCOPES = new Set(['health', 'providers:read', 'runs:read', 'events:read', 'runs:start', 'runs:stop', 'runs:input', 'approvals:read', 'approvals:decide']);
+const API_SCOPES = new Set(['health', 'providers:read', 'runs:read', 'events:read', 'runs:start', 'runs:stop', 'runs:input', 'approvals:read', 'approvals:decide', 'environments:execute', 'environments:reconcile']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDERS = new Set(['claude', 'codex', 'opencode']);
+const PROFILES = new Set(['read-only', 'read-only-streaming']);
+const INPUT_MODES = new Set(['claude-stream-json']);
 const RUN_STATUSES = new Set(['starting', 'running', 'stopping', 'stopped', 'exited', 'failed', 'interrupted']);
 const EVENT_TYPES = new Set(['started', 'stop_requested', 'stopped', 'exited', 'failed', 'stop_failed', 'input_sent']);
 const SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP', 'SIGQUIT', 'SIGABRT']);
+const STOP_REASONS = new Set(['user_cancel', 'timeout', 'host_shutdown']);
 const SESSION_ID_RE = /^[0-9a-f]{32}$/;
 const GATEWAY_ERRORS = new Set([
   'confirmation_required', 'unknown_provider', 'invalid_args', 'cwd_not_allowed', 'executable_unavailable',
   'capacity', 'unknown_run', 'spawn_failed', 'stop_failed', 'authorization_failed', 'gateway_closed',
-  'unsupported_profile', 'profile_unavailable', 'audit_unavailable', 'input_unavailable', 'input_not_ready',
+  'unsupported_profile', 'profile_unavailable', 'cli_version_unavailable', 'audit_unavailable', 'input_unavailable', 'input_not_ready',
   'input_busy', 'input_failed',
 ]);
 
@@ -35,12 +38,15 @@ class ApiError extends Error {
 /**
  * Create an isolated loopback API. Bearer credentials are never persisted; optional audit records omit credential values.
  * The Gateway still performs its separate host authorization; possession of this token alone cannot launch.
- * @param {{gateway: {start: Function, stop: Function, list: Function, events: Function, sendInput?: Function}, pollIntervalMs?: number, streamLifetimeMs?: number, maxStreams?: number}} options
+ * @param {{gateway: {start: Function, stop: Function, list: Function, events: Function, subscribeEvents?: Function, sendInput?: Function}, pollIntervalMs?: number, streamLifetimeMs?: number, maxStreams?: number}} options
  */
-export function createRuntimeApi({ gateway, journal, approvalBroker, pollIntervalMs = 250, streamLifetimeMs = MAX_STREAM_LIFETIME_MS, maxStreams = MAX_STREAMS } = {}) {
+export function createRuntimeApi({ gateway, journal, approvalBroker, environmentControlPlane, pollIntervalMs = 250, streamLifetimeMs = MAX_STREAM_LIFETIME_MS, maxStreams = MAX_STREAMS } = {}) {
   if (!gateway || ['start', 'stop', 'list', 'events'].some((method) => typeof gateway[method] !== 'function')) throw new TypeError('Runtime API requires a Gateway');
   if (journal !== undefined && (!journal || typeof journal.append !== 'function' || typeof journal.list !== 'function')) throw new TypeError('journal must provide append() and list()');
   if (approvalBroker !== undefined && (!approvalBroker || typeof approvalBroker.listPending !== 'function' || typeof approvalBroker.decide !== 'function' || typeof approvalBroker.close !== 'function')) throw new TypeError('approvalBroker must provide listPending(), decide() and close()');
+  if (environmentControlPlane !== undefined && (!environmentControlPlane || typeof environmentControlPlane !== 'object')) throw new TypeError('environmentControlPlane must provide execute() and reconcile()');
+  const environmentExecute = environmentControlPlane ? captureApiMethod(environmentControlPlane, 'execute') : undefined;
+  const environmentReconcile = environmentControlPlane ? captureApiMethod(environmentControlPlane, 'reconcile') : undefined;
   if (journal !== undefined && typeof gateway.close !== 'function') throw new TypeError('audited Gateway must provide close() for fail-closed cleanup');
   if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 100 || pollIntervalMs > 1000) throw new TypeError('pollIntervalMs must be between 100 and 1000');
   if (!Number.isInteger(streamLifetimeMs) || streamLifetimeMs < 1000 || streamLifetimeMs > MAX_STREAM_LIFETIME_MS) throw new TypeError('streamLifetimeMs must be between 1000 and 60000');
@@ -61,6 +67,9 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
   let listenPromise;
   let closePromise;
   let captureTimer;
+  const unsubscribeGatewayEvents = typeof gateway.subscribeEvents === 'function'
+    ? gateway.subscribeEvents(() => { void captureGatewayEvents().catch(() => {}); })
+    : undefined;
   const server = http.createServer((req, res) => { void handle(req, res); });
   server.headersTimeout = 5_000;
   server.requestTimeout = 10_000;
@@ -94,6 +103,24 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
         const approvals = approvalBroker.listPending();
         if (!Array.isArray(approvals) || approvals.length > 32) throw new ApiError(503, 'approval_unavailable');
         return sendJson(res, 200, { approvals });
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/environments/operations') {
+        if (!environmentControlPlane) throw new ApiError(404, 'not_found');
+        const input = await readJson(req);
+        let operation;
+        try { operation = projectEnvironmentOperation(await environmentExecute({ sessionId: credential.sessionId, input }), credential.sessionId); }
+        catch (error) { throw environmentApiError(error); }
+        return sendJson(res, 200, { operation });
+      }
+      const reconcileMatch = req.method === 'POST' && url.pathname.match(/^\/v1\/environments\/operations\/([^/]+)\/reconcile$/);
+      if (reconcileMatch) {
+        if (!environmentControlPlane) throw new ApiError(404, 'not_found');
+        const body = await readBody(req);
+        if (body.length !== 0) throw new ApiError(400, 'invalid_request');
+        let operation;
+        try { operation = projectEnvironmentOperation(await environmentReconcile({ sessionId: credential.sessionId, operationId: reconcileMatch[1] }), credential.sessionId); }
+        catch (error) { throw environmentApiError(error); }
+        return sendJson(res, 200, { operation });
       }
       const approvalMatch = req.method === 'POST' && url.pathname.match(/^\/v1\/approvals\/([^/]+)$/);
       if (approvalMatch) {
@@ -163,7 +190,7 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
         runOwners.set(safeRun.id, credential.sessionId);
         recoveredRuns.set(safeRun.id, safeRun);
         while (recoveredRuns.size > MAX_TRACKED_RUNS) recoveredRuns.delete(recoveredRuns.keys().next().value);
-        await captureGatewayEvents();
+        await captureAvailableGatewayEvents();
         return sendJson(res, 202, { run: safeRun });
       }
       const stopMatch = req.method === 'POST' && url.pathname.match(/^\/v1\/runs\/([^/]+)\/stop$/);
@@ -180,7 +207,7 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
         catch (error) {
           try { await writeAudit({ sessionId: credential.sessionId, requestId, action: 'run.stop', phase: safeFailurePhase(error), runId: stopMatch[1], errorCode: safeGatewayCode(error) }); }
           catch (auditError) {
-            try { await gateway.close(); } catch { /* stop remaining executions when a stop decision cannot be audited */ }
+            try { await gateway.close(); } catch { /* stop remaining executions when the stop request cannot be audited */ }
             throw auditError;
           }
           throw error;
@@ -240,15 +267,14 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
       return sendJson(res, 404, { error: 'not_found' });
     } catch (error) {
       if (res.headersSent || res.destroyed) return;
-      if (error instanceof ApiError) return sendJson(res, error.status, { error: error.code });
-      const code = error && typeof error === 'object' && typeof error.code === 'string' && GATEWAY_ERRORS.has(error.code)
-        ? error.code
-        : 'runtime_error';
+      const apiError = projectApiError(error);
+      if (apiError) return sendJson(res, apiError.status, { error: apiError.code });
+      const code = safeGatewayCode(error);
       const status = code === 'confirmation_required' ? 403
         : code === 'unknown_run' ? 404
           : code === 'capacity' ? 429
             : code === 'gateway_closed' ? 503
-              : ['unsupported_profile', 'profile_unavailable', 'input_unavailable'].includes(code) ? 422
+              : ['unsupported_profile', 'profile_unavailable', 'cli_version_unavailable', 'input_unavailable'].includes(code) ? 422
             : ['input_not_ready', 'input_busy'].includes(code) ? 409
               : ['input_failed'].includes(code) ? 502
                 : ['unknown_provider', 'invalid_args', 'cwd_not_allowed'].includes(code) ? 400
@@ -297,6 +323,8 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
             const stored = await journal.append({
               kind: 'event', sessionId, eventType: event.type, at: event.at, provider: event.provider, runId: event.runId,
               ...(event.code === undefined ? {} : { code: event.code }), ...(event.signal === undefined ? {} : { signal: event.signal }),
+              ...(event.stopReason === undefined ? {} : { stopReason: event.stopReason }),
+              ...(event.force === undefined ? {} : { force: event.force }),
             });
             recoveredRuns.set(event.runId, applyRecoveredEvent(recoveredRuns.get(event.runId), event, stored.sequence));
           } else {
@@ -311,8 +339,20 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
       if (!journal) return;
       await failClosed();
       throw new ApiError(503, 'audit_unavailable');
-    }).finally(() => { capturePromise = undefined; });
+    }).finally(() => {
+      capturePromise = undefined;
+      if (!closing && !auditFailure && [...pendingGatewayEvents.values()].some((event) => runOwners.has(event.runId))) {
+        queueMicrotask(() => { void captureGatewayEvents().catch(() => {}); });
+      }
+    });
     return capturePromise;
+  }
+
+  async function captureAvailableGatewayEvents() {
+    await captureGatewayEvents();
+    // A lifecycle callback can race the start audit append, leaving an event pending while its
+    // run owner is installed. A second pass drains it immediately instead of waiting for the poll.
+    if ([...pendingGatewayEvents.values()].some((event) => runOwners.has(event.runId))) await captureGatewayEvents();
   }
 
   function streamEvents(req, res, after, sessionId) {
@@ -383,6 +423,7 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
       if (closing) throw new ApiError(503, 'api_closed');
       if (!Array.isArray(scopes) || scopes.length === 0 || scopes.some((scope) => typeof scope !== 'string' || !API_SCOPES.has(scope))) throw new TypeError('scopes must be a non-empty list of supported API scopes');
       if (!approvalBroker && scopes.some((scope) => scope.startsWith('approvals:'))) throw new TypeError('approval scopes require an approval broker');
+      if (!environmentControlPlane && scopes.some((scope) => scope.startsWith('environments:'))) throw new TypeError('environment scopes require an environment control plane');
       if (!Number.isInteger(ttlMs) || ttlMs < 1000 || ttlMs > MAX_CREDENTIAL_LIFETIME_MS) throw new TypeError('ttlMs must be between 1000 and 86400000');
       if (sessionId !== undefined && (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId))) throw new TypeError('sessionId must be 32 lowercase hexadecimal characters');
       purgeExpiredCredentials(credentials);
@@ -391,6 +432,11 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
       const digest = createHash('sha256').update(token).digest('hex');
       credentials.set(digest, { scopes: new Set(scopes), expiresAt: Date.now() + ttlMs, sessionId: sessionId ?? randomBytes(16).toString('hex') });
       return token;
+    },
+    /** Force a final trusted-host lifecycle capture before shutdown; this is not an HTTP route. */
+    async flushEvents() {
+      if (capturePromise) await capturePromise;
+      return captureGatewayEvents();
     },
     /** Revoke a session capability immediately without affecting other sessions. */
     revokeCredential(token) {
@@ -425,6 +471,7 @@ export function createRuntimeApi({ gateway, journal, approvalBroker, pollInterva
       closing = true;
       clearInterval(captureTimer);
       captureTimer = undefined;
+      unsubscribeGatewayEvents?.();
       credentials.clear();
       for (const close of [...streams]) close();
       approvalBroker?.close();
@@ -474,7 +521,7 @@ function restoreJournalState(journal, runOwners, recoveredRuns) {
         runOwners.set(record.runId, record.sessionId);
         recoveredRuns.set(record.runId, {
           id: record.runId, provider: record.provider, status: 'starting', startedAt: record.at,
-          finishedAt: null, exitCode: null, signal: null, treeStopConfirmed: null,
+          finishedAt: null, exitCode: null, signal: null, treeStopConfirmed: null, stopReason: null,
         });
       }
     }
@@ -497,7 +544,7 @@ function applyRecoveredEvent(prior, event, sequence) {
   if (!prior || !event) return prior;
   const run = { ...prior };
   if (event.type === 'started') { run.status = 'running'; run.startedAt = event.at; }
-  else if (event.type === 'stop_requested') run.status = 'stopping';
+  else if (event.type === 'stop_requested') { run.status = 'stopping'; run.stopReason = event.stopReason ?? null; }
   else if (event.type === 'stopped' || event.type === 'exited' || event.type === 'failed') {
     run.status = event.type;
     run.finishedAt = event.at;
@@ -513,6 +560,14 @@ function projectJournalEvent(record) {
     || !UUID_RE.test(record.runId ?? '') || !PROVIDERS.has(record.provider) || !EVENT_TYPES.has(record.eventType)
     || !Number.isSafeInteger(record.at) || record.at < 0) return null;
   const event = { id: record.eventId, runId: record.runId, provider: record.provider, type: record.eventType, at: record.at };
+  if (record.stopReason !== undefined) {
+    if (!STOP_REASONS.has(record.stopReason) || !['stop_requested', 'stop_failed'].includes(record.eventType)) return null;
+    event.stopReason = record.stopReason;
+  }
+  if (record.force !== undefined) {
+    if (typeof record.force !== 'boolean' || record.eventType !== 'stop_requested') return null;
+    event.force = record.force;
+  }
   if (record.code === null || Number.isSafeInteger(record.code)) event.code = record.code;
   if (record.signal === null || (typeof record.signal === 'string' && SIGNALS.has(record.signal))) event.signal = record.signal;
   return event;
@@ -563,8 +618,31 @@ function authenticate(header, credentials, requiredScope) {
   purgeExpiredCredentials(credentials);
   return matched && matched.expiresAt > Date.now() && matched.scopes.has(requiredScope) ? matched : false;
 }
-function safeFailurePhase(error) { return error?.code === 'confirmation_required' ? 'denied' : 'failed'; }
-function safeGatewayCode(error) { return typeof error?.code === 'string' && GATEWAY_ERRORS.has(error.code) ? error.code : 'runtime_error'; }
+function safeFailurePhase(error) { return readOwnDataProperty(error, 'code') === 'confirmation_required' ? 'denied' : 'failed'; }
+function safeGatewayCode(error) {
+  const code = readOwnDataProperty(error, 'code');
+  return typeof code === 'string' && GATEWAY_ERRORS.has(code) ? code : 'runtime_error';
+}
+function projectApiError(error) {
+  try {
+    if (!(error instanceof ApiError)) return null;
+    const status = readOwnDataProperty(error, 'status');
+    const code = readOwnDataProperty(error, 'code');
+    if (!Number.isSafeInteger(status) || typeof code !== 'string' || !/^[a-z0-9_]{1,64}$/.test(code)) return null;
+    return { status, code };
+  } catch {
+    return null;
+  }
+}
+function readOwnDataProperty(value, key) {
+  try {
+    if ((typeof value !== 'object' || value === null) && typeof value !== 'function') return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
 function purgeExpiredCredentials(credentials) {
   const now = Date.now();
   for (const [digest, entry] of credentials) if (entry.expiresAt <= now) credentials.delete(digest);
@@ -579,7 +657,45 @@ function requiredScope(method, pathname) {
   if (method === 'POST' && pathname === '/v1/runs') return 'runs:start';
   if (method === 'POST' && /^\/v1\/runs\/[^/]+\/stop$/.test(pathname)) return 'runs:stop';
   if (method === 'POST' && /^\/v1\/runs\/[^/]+\/input$/.test(pathname)) return 'runs:input';
+  if (method === 'POST' && pathname === '/v1/environments/operations') return 'environments:execute';
+  if (method === 'POST' && /^\/v1\/environments\/operations\/[^/]+\/reconcile$/.test(pathname)) return 'environments:reconcile';
   return null;
+}
+
+function environmentApiError(error) {
+  const allowed = new Set(['unauthorized', 'unknown_operation', 'invalid_request', 'authorization_denied', 'authorization_invalid', 'authorization_expired', 'lease_not_authorized', 'lease_expired', 'stale_generation', 'idempotency_conflict', 'operation_id_conflict', 'provider_mismatch', 'policy_unavailable', 'operation_unavailable']);
+  const candidate = readOwnDataProperty(error, 'code');
+  const code = typeof candidate === 'string' && allowed.has(candidate) ? candidate : 'operation_unavailable';
+  const status = code === 'unauthorized' ? 401
+    : code === 'unknown_operation' ? 404
+      : code === 'invalid_request' ? 400
+        : ['authorization_denied', 'authorization_invalid', 'authorization_expired', 'lease_not_authorized', 'lease_expired'].includes(code) ? 403
+          : ['stale_generation', 'idempotency_conflict', 'operation_id_conflict'].includes(code) ? 409
+            : code === 'provider_mismatch' ? 400 : 503;
+  return new ApiError(status, code);
+}
+function captureApiMethod(target, name) {
+  let current = target;
+  while (current) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, name);
+    if (descriptor) {
+      if (!Object.hasOwn(descriptor, 'value') || typeof descriptor.value !== 'function') throw new TypeError(`environmentControlPlane.${name} must be a data method`);
+      return descriptor.value.bind(target);
+    }
+    current = Object.getPrototypeOf(current);
+  }
+  throw new TypeError(`environmentControlPlane.${name} is required`);
+}
+function projectEnvironmentOperation(operation, sessionId) {
+  const fields = ['operationId', 'subjectId', 'projectId', 'taskId', 'runId', 'computerId', 'leaseId', 'generation', 'action', 'status', 'desiredState', 'observedState', 'observedAt', 'errorCode', 'createdAt', 'updatedAt'];
+  const subject = operation && typeof operation === 'object' ? Object.getOwnPropertyDescriptor(operation, 'subjectId') : undefined;
+  if (!operation || typeof operation !== 'object' || Array.isArray(operation) || !subject || !Object.hasOwn(subject, 'value') || subject.value !== sessionId) throw new ApiError(502, 'runtime_invalid_response');
+  const result = {};
+  for (const key of fields) {
+    const descriptor = Object.getOwnPropertyDescriptor(operation, key);
+    if (descriptor && Object.hasOwn(descriptor, 'value')) result[key] = descriptor.value;
+  }
+  return result;
 }
 function sendJson(res, status, value) {
   if (res.destroyed) return;
@@ -595,10 +711,14 @@ function projectRun(run) {
   result.id = run.id;
   result.provider = run.provider;
   result.status = run.status;
+  if (typeof run.profile === 'string' && PROFILES.has(run.profile)) result.profile = run.profile;
+  if (run.provider === 'claude' && run.profile === 'read-only-streaming'
+    && typeof run.inputMode === 'string' && INPUT_MODES.has(run.inputMode)) result.inputMode = run.inputMode;
   for (const key of ['startedAt', 'finishedAt']) if (run[key] === null || (typeof run[key] === 'number' && Number.isFinite(run[key]))) result[key] = run[key];
   if (run.exitCode === null || (Number.isInteger(run.exitCode) && Number.isSafeInteger(run.exitCode))) result.exitCode = run.exitCode;
   if (run.signal === null || (typeof run.signal === 'string' && SIGNALS.has(run.signal))) result.signal = run.signal;
   if (run.treeStopConfirmed === null || typeof run.treeStopConfirmed === 'boolean') result.treeStopConfirmed = run.treeStopConfirmed;
+  if (run.stopReason === null || STOP_REASONS.has(run.stopReason)) result.stopReason = run.stopReason;
   return result;
 }
 function projectEvent(event) {
@@ -611,6 +731,9 @@ function projectEvent(event) {
   for (const key of ['id', 'runId', 'provider', 'type', 'at']) result[key] = event[key];
   if (event.code === null || (Number.isInteger(event.code) && Number.isSafeInteger(event.code))) result.code = event.code;
   if (event.signal === null || (typeof event.signal === 'string' && SIGNALS.has(event.signal))) result.signal = event.signal;
+  if (event.stopReason !== undefined && STOP_REASONS.has(event.stopReason)
+    && ['stop_requested', 'stop_failed'].includes(event.type)) result.stopReason = event.stopReason;
+  if (typeof event.force === 'boolean' && event.type === 'stop_requested') result.force = event.force;
   return result;
 }
 function queryInteger(value, fallback, max) {

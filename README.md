@@ -1,6 +1,6 @@
 # ALBERA
 
-ALBERA takes its name and spirit from Anni Albers's woven art. Its long-term direction is a development platform where people and multiple AIs weave knowledge, code, and development work together. The current release is only a read-only local dashboard for Claude Desktop / Claude Code sessions: it groups sessions by what needs your answer, may be stuck, finished but unread, working, recent, and ready to archive. It also shows what each session is doing and an estimate of context use, and helps you prepare a hand-off. See sessions as a list or as a canvas with one sheet per project. Chats from the app's other tabs are not shown.
+ALBERA takes its name and spirit from Anni Albers's woven art. Its long-term direction is a development platform where people and multiple AIs weave knowledge, code, and development work together. The regular `albera` command is a read-only local dashboard for Claude Desktop / Claude Code sessions: it groups sessions by what needs your answer, may be stuck, finished but unread, working, recent, and ready to archive. A separate experimental `albera-runtime` command provides an isolated local Runtime approval/control screen that can start a real CLI after explicit approval. Installed CLI compatibility and browser GUI acceptance are unverified. The session dashboard also shows what each session is doing and an estimate of context use, and helps you prepare a hand-off. See sessions as a list or as a canvas with one sheet per project. Chats from the app's other tabs are not shown.
 
 [日本語](README.ja.md)
 
@@ -15,9 +15,43 @@ Demo data. Also: [canvas](docs/screenshot-canvas.png) · [dark theme](docs/scree
 - **Zero dependencies.** Node.js 22 or newer. No build step.
 - **English and Japanese.** The page follows your browser language; the terminal follows your system language.
 
+## Runtime preview (experimental)
+
+`albera-runtime` runs as a separate process from the read-only `albera` server. Until an npm package release, start it from a clone with an absolute allowed project root and an absolute audit journal path:
+
+```sh
+node src/runtime/entry.mjs --root "/absolute/path/to/project" --journal "/absolute/path/to/private/albera-runtime.jsonl"
+```
+
+On Windows PowerShell:
+
+```powershell
+node src/runtime/entry.mjs --root "C:\work\project" --journal "C:\Users\You\AppData\Local\ALBERA\runtime.audit.jsonl"
+```
+
+Enter the one-time code printed by the terminal in the Runtime screen. Start, input, and stop requests each wait for an explicit approval. The journal does not store prompts, argv, environment values, or provider output. A sibling `.session-id` file stores a non-secret random identity so the UI can replay journal history after restart. Only a fixed Claude Code profile is currently constructed; compatibility with an installed CLI has not been verified, and provider output is not collected. The standard profile places the prompt in the process arguments, which may be visible to same-user process inspection. An allowed working root is not an OS sandbox: the CLI runs with the current OS user's privileges. The Runtime screen supports Japanese and English browser languages, but does not identify the provider account or estimate cost.
+
+You can create a manual encrypted journal backup while Runtime is stopped. Backup prompts for the passphrase twice without echoing it; verification and restore prompt once. Every passphrase must contain at least 12 UTF-8 bytes. Backup and restore refuse existing output paths; verification only reads the selected backup and writes nothing:
+
+```sh
+node src/runtime/entry.mjs backup --journal "/absolute/path/to/private/albera-runtime.jsonl" --output "/absolute/path/to/archive.albera"
+node src/runtime/entry.mjs verify-backup --backup "/absolute/path/to/archive.albera"
+node src/runtime/entry.mjs restore --backup "/absolute/path/to/archive.albera" --destination "/absolute/path/to/new-restore-directory"
+```
+
+Backup encryption uses Node.js scrypt and AES-256-GCM. `verify-backup` checks the passphrase, authentication tag, and journal structure offline without writing files. Restore validates the authenticated payload before creating a new directory and never overwrites existing files. Keep the passphrase separately; it cannot be recovered. The backup is encrypted but remains a local file: ALBERA does not upload it or create backups automatically. This manual prototype does not provide key recovery, retention scheduling, or a production backup policy.
+
+If a host crash leaves an incomplete final JSONL record, Runtime refuses to start and preserves the original file. After confirming Runtime is stopped, copy the complete, validated record prefix to a new file in the same private directory while preserving the source and session identity:
+
+```sh
+node src/runtime/entry.mjs recover-tail --journal "/absolute/path/to/private/albera-runtime.jsonl" --output "/absolute/path/to/private/albera-runtime.recovered.jsonl"
+```
+
+Tail recovery refuses an existing writer lock, corrupted complete records, and existing output paths. It does not recover a possibly lost final event or restore active processes; inspect the new journal before using it. The original journal and incomplete bytes remain unchanged.
+
 ## Long-term direction (not implemented)
 
-The following are product plans, not features of this release: running, monitoring, and controlling multiple AI CLIs; orchestration by a Main AI; an infinite canvas and graph views; a Knowledge Graph, Harness Graph, and Comprehension Graph; Git worktree and PR integration; and human intervention, approvals, and development policy enforcement. The current release does not execute or control agents and does not provide those graphs or integrations.
+The following remain product plans beyond the Runtime preview: integrated support for multiple AI CLIs; orchestration by a Main AI; an infinite canvas and graph views; a Knowledge Graph, Harness Graph, and Comprehension Graph; Git worktree and PR integration; and development policy enforcement. The regular `albera` session dashboard does not execute or control agents.
 
 ## Quick start
 

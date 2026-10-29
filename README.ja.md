@@ -1,6 +1,6 @@
 # ALBERA
 
-ALBERA（アルベラ）の名前と着想は、アンニ・アルバースの織物芸術にあります。長期的には、人間と複数の AI が知識・コード・開発タスクを織り合わせる開発プラットフォームを目指しています。現行版で提供するのは Claude Desktop / Claude Code セッションの読み取り専用ローカルダッシュボードのみです。セッションを返事待ち・停止の可能性・未読・作業中・最近・片付けの 6 つに並べ、作業内容とコンテキスト使用量の推定を表示し、次のセッションへの引き継ぎを準備できます。一覧表示と、プロジェクトごとに 1 枚の紙で見るキャンバス表示があります。アプリのほかのタブの会話は表示しません。
+ALBERA（アルベラ）の名前と着想は、アンニ・アルバースの織物芸術にあります。長期的には、人間と複数の AI が知識・コード・開発タスクを織り合わせる開発プラットフォームを目指しています。通常の `albera` コマンドが提供するのは Claude Desktop / Claude Code セッションの読み取り専用ローカルダッシュボードです。別コマンド `albera-runtime` には、Runtime実行・承認の実験的なローカル画面を用意しています。後者は実際の CLI を起動できるため、既定のダッシュボードからは分離し、明示的な承認・作業ルート・監査ジャーナルを必須にしています。CLI互換性やブラウザーGUIの実利用は未検証です。セッション画面は返事待ち・停止の可能性・未読・作業中・最近・片付けの 6 つに並べ、作業内容とコンテキスト使用量の推定を表示し、次のセッションへの引き継ぎを準備できます。一覧表示と、プロジェクトごとに 1 枚の紙で見るキャンバス表示があります。アプリのほかのタブの会話は表示しません。
 
 [English](README.md)
 
@@ -15,9 +15,34 @@ ALBERA（アルベラ）の名前と着想は、アンニ・アルバースの�
 - **依存パッケージ 0 個**: Node.js 22 以上だけで動きます。ビルドも不要です
 - **日本語と英語**: 画面はブラウザの言語、ターミナルの表示は OS の言語に合わせます
 
+## Runtimeプレビュー (実験的)
+
+`albera-runtime` は `albera` の読み取り専用サーバーとは別プロセスです。npm公開前のこのブランチでは次のように起動します:
+
+```sh
+node src/runtime/entry.mjs --root "/absolute/path/to/project" --journal "/absolute/path/to/private/albera-runtime.jsonl"
+```
+
+Windows PowerShell の例:
+
+```powershell
+node src/runtime/entry.mjs --root "C:\work\project" --journal "C:\Users\You\AppData\Local\ALBERA\runtime.audit.jsonl"
+```
+
+起動したターミナルに表示される一回限りのコードを、Runtime画面に入力します。画面では開始・入力・停止の各要求を個別に承認し、許可された作業ルート内で実行します。監査ジャーナルはプロンプト・引数・環境値・出力を保存しません。隣に作る`.session-id`ファイルは秘密でないランダムIDを保持し、再起動後に履歴を戻すために使います。現状はClaude Code用の固定プロファイルのみですが、実際のインストール済CLIとの互換性は未確認です。AIの出力は取り込みません。通常プロファイルはプロンプトをプロセス引数に含めるため、同一OSユーザーのプロセス確認から見える可能性があります。作業ルートの指定はOSサンドボックスではなく、CLIはそのユーザー権限で動きます。Runtime画面は現在英語のみで、プロバイダーのアカウント名や利用料金の見積もりは表示しません。
+
+Runtime停止中に、監査ジャーナルの暗号化バックアップを手動で作成できます。バックアップ作成では確認のためパスフレーズを2回、復元では1回入力します。入力内容は画面に表示せず、UTF-8で12バイト以上を求めます。既存ファイルは上書きしません。
+
+```sh
+node src/runtime/entry.mjs backup --journal "/absolute/path/to/private/albera-runtime.jsonl" --output "/absolute/path/to/archive.albera"
+node src/runtime/entry.mjs restore --backup "/absolute/path/to/archive.albera" --destination "/absolute/path/to/new-restore-directory"
+```
+
+暗号化にはNode.jsのscryptとAES-256-GCMを使います。復元では認証付きデータを検証してから新規ディレクトリを作り、既存ファイルを上書きしません。パスフレーズは別に保管してください。ALBERAから復元できません。バックアップは暗号化されたローカルファイルで、自動作成や外部送信はありません。鍵の回復、保持スケジュール、本番用バックアップ方針は未実装です。
+
 ## 長期構想 (未実装)
 
-以下は将来構想であり、現行版の機能ではありません。複数 AI CLI の実行・監視・操作、Main AI によるオーケストレーション、無限キャンバスとグラフ表示、Knowledge Graph・Harness Graph・Comprehension Graph、Git worktree・PR 連携、人間による介入・承認・開発ポリシーの適用を計画しています。現行版はエージェントを実行・操作せず、これらのグラフや連携機能も提供しません。
+以下は将来構想であり、Runtimeプレビューを除いて未実装です。複数 AI CLI の統合、Main AI によるオーケストレーション、無限キャンバスとグラフ表示、Knowledge Graph・Harness Graph・Comprehension Graph、Git worktree・PR 連携、開発ポリシーの適用を計画しています。通常の `albera` ダッシュボードは引き続きエージェントを実行・操作しません。
 
 ## 使い始める
 

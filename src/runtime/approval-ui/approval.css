@@ -1,0 +1,34 @@
+:root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; --ink:#27231e; --paper:#f4f0e8; --line:#b6aa97; --accent:#315d67; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--paper); color:var(--ink); }
+header, main, footer { width:min(880px, calc(100% - 32px)); margin-inline:auto; }
+.bootstrap { width:min(880px, calc(100% - 32px)); margin:24px auto; }
+header { padding:32px 0 18px; border-bottom:1px solid var(--line); }
+h1, h2, p { margin:0 0 12px; }
+h1 { font-family:Georgia,serif; font-size:clamp(2rem,6vw,3.5rem); font-weight:500; }
+h2 { font-size:1.25rem; }
+.eyebrow { letter-spacing:.14em; font-size:.75rem; }
+.lede { max-width:62ch; }
+#connection { color:var(--accent); }
+main { display:grid; gap:26px; padding:24px 0 40px; }
+main[hidden] { display:none; }
+section { border-top:1px solid var(--line); padding-top:16px; }
+form { display:grid; gap:14px; }
+label { display:grid; gap:5px; font-weight:600; }
+textarea, select { width:100%; border:1px solid var(--line); border-radius:4px; padding:10px; background:Canvas; color:CanvasText; font:inherit; }
+input { border:1px solid var(--line); border-radius:4px; padding:10px; background:Canvas; color:CanvasText; font:inherit; }
+button { width:fit-content; border:0; border-radius:4px; padding:9px 14px; color:white; background:var(--accent); font:inherit; cursor:pointer; }
+button.secondary { color:var(--ink); background:transparent; border:1px solid var(--line); }
+button:focus-visible, select:focus-visible, textarea:focus-visible { outline:3px solid #d18441; outline-offset:2px; }
+.stack { display:grid; gap:12px; }
+.card { border:1px solid var(--line); border-radius:6px; padding:14px; overflow-wrap:anywhere; }
+.card h3 { margin:0 0 8px; }
+.card pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:16rem; overflow:auto; padding:10px; background:color-mix(in srgb, Canvas 90%, var(--accent)); }
+.actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+.muted, .empty { opacity:.75; }
+.notice { border-left:4px solid #a45e1a; padding:10px 12px; background:color-mix(in srgb, Canvas 90%, #d18441); }
+.events { padding-left:1.3rem; }
+.events li { margin:6px 0; }
+footer { border-top:1px solid var(--line); padding:16px 0 28px; font-size:.85rem; }
+@media (prefers-color-scheme: dark) { :root { --ink:#eee7dc; --paper:#211f1b; --line:#5c554a; --accent:#80b7c0; } button { color:#101a1c; } }
+@media (prefers-color-scheme: dark) { .notice { border-color:#d18441; } }
