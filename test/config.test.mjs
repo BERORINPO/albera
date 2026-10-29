@@ -70,11 +70,26 @@ test('端末の言語: --lang → ALBERA_LANG → LC_ALL → LC_MESSAGES → LAN
   assert.equal(pickTerminalLang({ LC_MESSAGES: 'en_US.UTF-8', LANG: 'ja_JP.UTF-8' }, undefined, 'ja-JP'), 'en');
   assert.equal(pickTerminalLang({ LANG: 'C.UTF-8' }, undefined, 'ja-JP'), 'ja', 'C は指定なし扱いで Intl へ');
   assert.equal(pickTerminalLang({ LC_ALL: 'POSIX' }, undefined, 'en-GB'), 'en');
-  assert.equal(pickTerminalLang({ LANG: 'fr_FR.UTF-8' }, undefined, 'ja-JP'), 'en', 'en / ja 以外の LANG は en');
+  assert.equal(pickTerminalLang({ LANG: 'fr_FR.UTF-8' }, undefined, 'ja-JP'), 'en', 'en / ja / zh 以外の LANG は en');
+  assert.equal(pickTerminalLang({ LANG: 'zh_CN.UTF-8' }, undefined, 'en-US'), 'zh');
   assert.equal(pickTerminalLang({}, undefined, 'Japanese_Japan.932'), 'ja');
-  assert.equal(pickTerminalLang({}, undefined, 'zh-CN'), 'en');
+  assert.equal(pickTerminalLang({}, undefined, 'zh-CN'), 'zh');
+  assert.equal(pickTerminalLang({}, undefined, 'fr-FR'), 'en');
   assert.equal(pickTerminalLang({}, undefined, undefined), 'en');
   assert.equal(localeLang({ LANG: 'ja_JP.UTF-8' }, 'en'), 'ja');
+});
+
+test('端末の言語: --lang zh と ALBERA_LANG=zh を受け付ける (フラグが環境変数に勝つ)', () => {
+  assert.equal(pickTerminalLang({}, 'zh', 'en-US'), 'zh');
+  assert.equal(pickTerminalLang({ ALBERA_LANG: 'zh' }, undefined, 'en-US'), 'zh');
+  assert.equal(pickTerminalLang({ ALBERA_LANG: 'zh-CN' }, 'ja', 'en-US'), 'ja');
+  assert.equal(pickTerminalLang({ ALBERA_LANG: 'ja' }, 'zh', 'en-US'), 'zh');
+  const flag = loadConfig({ home: NIX_HOME, cwd: '/cwd', platform: 'linux', argv: ['--demo', '--lang', 'zh'], env: {} });
+  assert.equal(flag.action, 'run');
+  assert.equal(flag.lang, 'zh');
+  const env = loadConfig({ home: NIX_HOME, cwd: '/cwd', platform: 'linux', argv: ['--demo'], env: { ALBERA_LANG: 'zh' } });
+  assert.equal(env.lang, 'zh');
+  assert.equal(loadConfig({ home: NIX_HOME, cwd: '/cwd', platform: 'linux', argv: ['--help', '--lang', 'zh'], env: {} }).lang, 'zh');
 });
 
 test('環境変数の名称変更: ALBERA_* を優先し、未設定なら旧 PIGEONHOLES_* を引き継ぐ', () => {

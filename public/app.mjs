@@ -3,12 +3,13 @@
 // 読み取り専用 (サーバーへは GET しかしない)。片付けと引き継ぎは Claude への指示文をコピーするだけ (actions.mjs)。
 
 import { FILTER_ANNOUNCE_MS, MIN } from '../src/shared/constants.mjs';
+import { normalizeLang } from '../src/shared/i18n.mjs';
 import { copyChunk, copySmall, dueNext, handoffKey, openHandoff, runGuide } from './actions.mjs';
 import { CANVAS_CLICK, initCanvas, runCanvasKey } from './canvas-act.mjs';
 import { isCanvas, openBar, switchView } from './canvas-ctl.mjs';
 import { applyPick, cleanupBodyParts, pickAllSuggested, togglePickRow } from './cleanup.mjs';
 import { titleOf } from './format.mjs';
-import { detectLang, otherLang } from './i18n.mjs';
+import { detectLang } from './i18n.mjs';
 import { bindKeys, escapeStep, openHelp } from './keys.mjs';
 import { poll, schedule } from './poll.mjs';
 import { clearFilters, jumpPile, jumpTo, moveCursor, openSession, render, renderTimes, rowEl, setCursorRow, view } from './render.mjs';
@@ -30,7 +31,7 @@ function applyStaticText() {
   }
 }
 
-/** @param {'en'|'ja'} lang */
+/** @param {'en'|'ja'|'zh'} lang */
 function setLanguage(lang) {
   setLang(lang);
   document.documentElement.lang = lang;
@@ -38,9 +39,10 @@ function setLanguage(lang) {
   render();
 }
 
-/** 見出しの言語ボタン: 保存して、URL の ?lang= を外して切り替える (盤面は取り直さない)。 */
-function switchLanguage() {
-  const next = otherLang(state.t.lang);
+/** 見出しの言語の選び箱: 選んだ言語を保存して、URL の ?lang= を外して切り替える (盤面は取り直さない)。 @param {unknown} value */
+function switchLanguage(value) {
+  const next = normalizeLang(value);
+  if (!next || next === state.t.lang) return;
   state.prefs.lang = next;
   savePrefs();
   try {
@@ -160,7 +162,6 @@ const CLICK = {
   'handoff-copy': (el) => void runGuide(el),
   'handoff-rescue': (el) => void runGuide(el),
   'due-next': () => dueNext(),
-  lang: () => switchLanguage(),
   help: (el) => showHelp(el),
   reload: () => location.reload(),
   'intro-ok': () => {
@@ -316,7 +317,8 @@ function init() {
   applyStaticText();
   document.addEventListener('click', onClick);
   document.addEventListener('change', (ev) => {
-    if (ev.target instanceof HTMLInputElement && applyPick(ev.target, view.visible)) render();
+    if (ev.target instanceof HTMLSelectElement && ev.target.id === 'lang') switchLanguage(ev.target.value);
+    else if (ev.target instanceof HTMLInputElement && applyPick(ev.target, view.visible)) render();
   });
   filterInput.addEventListener('input', () => {
     state.filter = filterInput.value;

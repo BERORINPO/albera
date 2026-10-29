@@ -445,6 +445,17 @@ test('attachFolders: 同じパスは 1 回だけ引き、新しいレコード�
 
 // --- demo data ------------------------------------------------------------------------------
 
+test('demo-data: zh も en と同じ形で、中身は中国語 (仮名を含まない)', () => {
+  const en = buildDemo(NOW, 'en');
+  const zh = buildDemo(NOW, 'zh');
+  assert.deepEqual(zh.raws.map((r) => r.sessionId), en.raws.map((r) => r.sessionId));
+  assert.deepEqual([...zh.transcripts.keys()], [...en.transcripts.keys()]);
+  assert.deepEqual(zh.archivedIds, en.archivedIds);
+  assert.notDeepEqual(zh.raws, en.raws);
+  for (const r of zh.raws) if (typeof r.title === 'string') assert.doesNotMatch(r.title, /[぀-ヿ]/, `zh の題名に仮名: ${r.title}`);
+  assert.ok(zh.raws.every((r) => /[一-鿿]/.test(String(r.title))), 'zh の題名はすべて漢字を含む');
+});
+
 test('demo-data: en と ja は同じ形で、パスは POSIX の ~ 形式、en の中身に日本語は無い', () => {
   const en = buildDemo(NOW, 'en');
   const ja = buildDemo(NOW, 'ja');

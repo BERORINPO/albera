@@ -2,15 +2,18 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SUPPORTED_LANGS, fill, fillParts, normalizeLang, pickForm } from '../src/shared/i18n.mjs';
 
-test('SUPPORTED_LANGS は en と ja (変更できない)', () => {
-  assert.deepEqual([...SUPPORTED_LANGS], ['en', 'ja']);
+test('SUPPORTED_LANGS は en・ja・zh (変更できない)', () => {
+  assert.deepEqual([...SUPPORTED_LANGS], ['en', 'ja', 'zh']);
   assert.ok(Object.isFrozen(SUPPORTED_LANGS));
 });
 
-test('normalizeLang: 先頭の英字で ja / en に寄せる。それ以外は null', () => {
+test('normalizeLang: 先頭の英字で ja / en / zh に寄せる。それ以外は null', () => {
   for (const tag of ['ja', 'JA', 'ja-JP', 'ja_JP.UTF-8', 'Japanese_Japan.932', ' ja-jp ']) assert.equal(normalizeLang(tag), 'ja', tag);
   for (const tag of ['en', 'en-US', 'en_GB.UTF-8', 'English_United States.1252']) assert.equal(normalizeLang(tag), 'en', tag);
-  for (const tag of ['C.UTF-8', 'C', 'POSIX', 'zh-CN', 'fr_FR', 'de', '', '123', '-ja'])
+  for (const tag of ['zh', 'ZH', 'zh-CN', 'zh_CN.UTF-8', 'zh-Hans', 'Chinese (Simplified)_China.936', ' zh-cn ']) assert.equal(normalizeLang(tag), 'zh', tag);
+  // 繁体字の辞書ができるまでは、繁体字の指定も簡体字 (zh) に寄せる
+  for (const tag of ['zh-TW', 'zh_TW.UTF-8', 'zh-HK', 'zh-Hant', 'Chinese (Traditional)_Taiwan.950']) assert.equal(normalizeLang(tag), 'zh', tag);
+  for (const tag of ['C.UTF-8', 'C', 'POSIX', 'fr_FR', 'de', '', '123', '-ja', '-zh', 'z', 'zhx'])
     assert.equal(normalizeLang(tag), null, tag);
   assert.equal(normalizeLang(undefined), null);
   assert.equal(normalizeLang(null), null);

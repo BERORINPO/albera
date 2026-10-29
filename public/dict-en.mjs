@@ -39,7 +39,6 @@ export const EN = Object.freeze({
   'date.mon.11': 'Dec',
   'filter.label': 'Filter by title, project, summary or what it is doing',
   'filter.placeholder': 'Filter',
-  'lang.switchTo': '日本語',
   'lang.toggleAria': 'Switch language',
 
   // 19.2 lede

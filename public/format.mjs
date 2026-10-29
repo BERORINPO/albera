@@ -145,12 +145,15 @@ export function projectLabel(t, project) {
 export const isOtherProject = (project) => project?.label == null;
 
 /**
- * 中身の言語。仮名か漢字があれば ja、それ以外は en。
+ * 中身の言語。仮名があれば ja、仮名が無く漢字 (CJK) があれば zh、それ以外は en。
+ * 漢字だけの短い文は日本語のこともあるが、仮名が無いかぎり区別できないので zh とする (lang 属性と引用符の見た目だけに効く)。
  * @param {unknown} text
- * @returns {'en'|'ja'}
+ * @returns {'en'|'ja'|'zh'}
  */
 export function contentLang(text) {
-  return /[぀-ヿ㐀-鿿]/.test(String(text ?? '')) ? 'ja' : 'en';
+  const s = String(text ?? '');
+  if (/[぀-ヿ]/.test(s)) return 'ja';
+  return /[㐀-鿿]/.test(s) ? 'zh' : 'en';
 }
 
 /**
@@ -246,8 +249,8 @@ export function deepLink(id) {
 /** 無題なら (無題)。 @param {T} t @param {unknown} title */
 export const titleOf = (t, title) => (String(title ?? '').trim() === '' ? t('untitled') : String(title));
 
-/** 文をつなぐ (英語は空白、日本語は「。」の後に空白を入れない)。空の文は省く。 @param {T} t @param {...string} parts */
-export const sentences = (t, ...parts) => parts.filter(Boolean).join(t.lang === 'ja' ? '' : ' ');
+/** 文をつなぐ (英語は空白、日本語と中国語は「。」の後に空白を入れない)。空の文は省く。 @param {T} t @param {...string} parts */
+export const sentences = (t, ...parts) => parts.filter(Boolean).join(t.lang === 'en' ? ' ' : '');
 
 // ---------- v0.2: していること・コンテキストの言葉 (spec/ui.md §8.4・§8.5・§10.3) ----------
 

@@ -137,7 +137,7 @@ FACTS_CACHE_MAX = 2000   // entry が持つ tail 解析結果の memo (§5.3)
 - (v0.2) 2 MB の読み直し: 末尾 200 KB が途中から始まっていて (`truncatedHead`)、`turnEntries` が 0 件、または `hasUsage(entries)` (core/context.mjs) が false のとき、1 回だけ。結果は今までどおり `{path,size,mtimeMs}` でキャッシュする (同じファイルを毎回 2 MB 読まない)。
 - adapter は生の tail 文字列を返す。解釈は core。ファイル全体はどんな場合も読まない。
 
-**demo-data.mjs** — `buildDemo(now, lang)` (`lang` は端末の言語、§11)。英語の一式と日本語の一式。
+**demo-data.mjs** — `buildDemo(now, lang)` (`lang` は端末の言語、§11)。英語・日本語・簡体字中国語の一式。
 - パスは OS に依らない POSIX 文字列 (`~/projects/demo-app` など)。実在の定期実行や人物を思わせる題名は使わない。合成の folder hints の表 (`~/projects/demo-app` → repo `demo-app` など) を一緒に返す。
 - transcript の合成行には `"timestamp"` を付ける (startedAt を出すため)。
 - entry (`src/entry/demo.mjs` の `liveDemoSources`) は `DEMO_REBUILD_MS` (1 分) ごとに今の時刻で `buildDemo` を呼び直す。起動時の 1 回だけだと、作業中の行が 15 分ほどで止まったかもへ移っていく。ID は毎回同じ。
@@ -435,7 +435,7 @@ TimeKind   = waiting | stopped | stalled | ended | updated | ago | latest
 | フラグ | 環境変数 | 既定 / 検証 |
 |---|---|---|
 | `--port <n>` | `ALBERA_PORT` | 8797。1024〜65535 の整数でなければ exit 1 |
-| `--lang en\|ja` | `ALBERA_LANG` | 下の言語の決め方。en / ja 以外は exit 1 |
+| `--lang en\|ja\|zh` | `ALBERA_LANG` | 下の言語の決め方。en / ja / zh 以外は exit 1 |
 | `--demo` | `ALBERA_DEMO=1` | 合成データで動かす (Fake adapter)。デモの中身の言語は端末の言語 |
 | `--sessions-dir <path>` | `ALBERA_SESSIONS_DIR` | 下の候補。相対パスは今のフォルダから解決 |
 | `--projects-dir <path>` | `ALBERA_PROJECTS_DIR` | `$CLAUDE_CONFIG_DIR/projects` (絶対パスのとき) → `~/.claude/projects`。無くても起動する (transcriptsDirMissing) |
@@ -450,7 +450,7 @@ TimeKind   = waiting | stopped | stalled | ended | updated | ago | latest
 - linux: `$XDG_CONFIG_HOME/Claude/claude-code-sessions` (XDG_CONFIG_HOME があるとき) → `~/.config/Claude/claude-code-sessions`
 - 見つからない (デモでないとき) → exit 1。`term.noSessionsDir` の後に、探したパスを 1 行に 1 つ、最後に `term.noSessionsDirHint`。
 
-**端末の言語** (`pickTerminalLang(env, argvLang, intlLocale)`、純粋関数。PORT と ROOTS より先に決める): `--lang` → `ALBERA_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` (`C` / `POSIX` で始まるものは「指定なし」として飛ばす) → `Intl.DateTimeFormat().resolvedOptions().locale` → `en`。`normalizeLang` は先頭の英字が `ja` なら ja、`en` なら en、それ以外は null (LC_* と LANG では en に落とす)。`--lang` / `ALBERA_LANG` が不正なら、それを除いた順で決めた言語でエラーを出す。
+**端末の言語** (`pickTerminalLang(env, argvLang, intlLocale)`、純粋関数。PORT と ROOTS より先に決める): `--lang` → `ALBERA_LANG` → `LC_ALL` → `LC_MESSAGES` → `LANG` (`C` / `POSIX` で始まるものは「指定なし」として飛ばす) → `Intl.DateTimeFormat().resolvedOptions().locale` → `en`。`normalizeLang` は先頭の英字が `ja` なら ja、`en` なら en、`zh` (と Windows の `Chinese (...)`) なら zh (繁体字の `zh-TW` `zh-Hant` も、繁体字の辞書ができるまでは zh)、それ以外は null (LC_* と LANG では en に落とす)。`--lang` / `ALBERA_LANG` が不正なら、それを除いた順で決めた言語でエラーを出す。
 
 **起動の流れ**: 設定 → adapter を選ぶ (実データ / デモ) → 127.0.0.1 だけで待ち受け → 1 行 `term.started` (URL を含む。テストと smoke は `/http:\/\/127\.0\.0\.1:\d+/` で起動完了を判定する) → 初回の全件スキャンを先に済ませる。ログに title や本文は書かない。
 
@@ -477,7 +477,7 @@ TimeKind   = waiting | stopped | stalled | ended | updated | ago | latest
 | `term.badPort` | The port must be a number from 1024 to 65535 (got: {raw}). Use --port <n> or ALBERA_PORT. | ポートは 1024〜65535 の数字にしてください (今: {raw})。--port <n> か ALBERA_PORT で指定します |
 | `term.badRoots` | ALBERA_ROOTS must be absolute paths separated by "{sep}" (invalid: {bad}) | ALBERA_ROOTS は絶対パスを「{sep}」区切りで書いてください (不正: {bad}) |
 | `term.empty` | (empty) | (空) |
-| `term.badLang` | --lang and ALBERA_LANG must be en or ja (got: {raw}) | --lang と ALBERA_LANG は en か ja にしてください (今: {raw}) |
+| `term.badLang` | --lang and ALBERA_LANG must be en, ja or zh (got: {raw}) | --lang と ALBERA_LANG は en・ja・zh のどれかにしてください (今: {raw}) |
 | `term.badFlag` | Unknown option: {flag}. See: {cmd} --help | 知らないオプションです: {flag}。{cmd} --help を見てください |
 | `term.missingValue` | {flag} needs a value. See: {cmd} --help | {flag} には値が必要です。{cmd} --help を見てください |
 | `term.noSessionsDir` | Can't find the Claude desktop app's session folder. Looked in: | Claude デスクトップアプリのセッションフォルダが見つかりません。探した場所: |
@@ -492,7 +492,7 @@ ALBERA {version}: one read-only page for all your Claude desktop app sessions (t
 
 Usage: {cmd} [options]
   --port <n>             port on 127.0.0.1 (default 8797; env ALBERA_PORT)
-  --lang en|ja           language of these messages and the demo (env ALBERA_LANG)
+  --lang en|ja|zh        language of these messages and the demo (env ALBERA_LANG)
   --demo                 show synthetic demo data instead of your sessions (env ALBERA_DEMO=1)
   --sessions-dir <path>  the app's claude-code-sessions folder (env ALBERA_SESSIONS_DIR)
   --projects-dir <path>  Claude Code's projects folder with transcripts (env ALBERA_PROJECTS_DIR)

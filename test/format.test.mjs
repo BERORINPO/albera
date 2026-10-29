@@ -155,9 +155,13 @@ test('prLabel: 2 つ以上の repo にまたがるときだけ repo 名を付け
   assert.equal(prLabel(en, { num: 2, repo: 'o/x', state: 'DRAFT' }, false), 'PR #2 DRAFT');
 });
 
-test('contentLang: 仮名か漢字があれば ja', () => {
+test('contentLang: 仮名があれば ja、仮名が無く漢字だけなら zh、それ以外は en', () => {
   assert.equal(contentLang('ボタンの色'), 'ja');
-  assert.equal(contentLang('漢字'), 'ja');
+  assert.equal(contentLang('ログイン画面の不具合を直す'), 'ja');
+  assert.equal(contentLang('漢字だけど仮名もある'), 'ja');
+  assert.equal(contentLang('修复登录界面的缺陷'), 'zh');
+  assert.equal(contentLang('漢字'), 'zh');
+  assert.equal(contentLang('Fix 登录 bug'), 'zh');
   assert.equal(contentLang('Waiting for approval.'), 'en');
   assert.equal(contentLang(''), 'en');
 });

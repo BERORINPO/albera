@@ -51,7 +51,7 @@ Every file is under 400 lines, `// @ts-check`, vanilla ESM, no dependencies. Onl
 | `public/format.mjs` | **pure** text: every function that makes words takes `t` first (re-exports `times.mjs` and `doing.mjs`) | `reasonLine`, `projectLabel`, `contentLang`, `parseResetTime`, `matches`, `archiveInstruction`, `prLabel`, `childrenText`, `routineHistory`, `tabTitle`, `deepLink`, `tokensText`, `doingSpec`, `doingMainSpec`, `doingText`, `agoWords`, `asOfText`, `shortDoing`, `compactedRecent`, `contextMeta`, `contextValueText`, `waitWordsKey` |
 | `public/doing.mjs` | **pure** doing words (§8.4): the code phrase, the main part, the one-part form of one-line places, `asOfText`, `shortDoing` | `doingSpec`, `doingMainSpec`, `doingText`, `doingOnePart`, `doingOneText`, `agoWords`, `asOfText`, `shortDoing` |
 | `public/times.mjs` | **pure** time and date words | `durationText`, `agoText`, `timeText`, `cardTime`, `hm`, `dayKey`, `dateline`, `absoluteTime`, `createdText` |
-| `public/i18n.mjs` | `makeT(lang)`, `detectLang({search, saved, languages})`, `DICT = {en, ja}` | — |
+| `public/i18n.mjs` | `makeT(lang)`, `detectLang({search, saved, languages})`, `DICT = {en, ja, zh}`, `LANG_NAMES` | — |
 | `public/dict-en.mjs` | English dictionary (§19), one key per line; takes in `dict-en-canvas.mjs` and `dict-en-handoff.mjs` | `EN` |
 | `public/dict-en-canvas.mjs` | English §19.9 (canvas), split out for the 400-line rule | `EN_CANVAS` |
 | `public/dict-en-handoff.mjs` | English §19.13–§19.15 (doing, context, hand-off), split out for the 400-line rule | `EN_HANDOFF` |
@@ -670,8 +670,8 @@ One `keydown` listener on `document` (`keys.mjs`). `keyAction(ev, ctx)` is pure 
 
 ## 17. Language
 
-- `detectLang({search, saved, languages})` (pure): `?lang=en|ja` (not saved) > `prefs.lang` > the first entry of `navigator.languages` whose primary subtag is `en` or `ja` > `en`.
-- The header text button shows the other language in its own words (`lang.switchTo`: 「English」 in the Japanese UI, 「日本語」 in the English UI) in a `span` with `lang` set to that language, followed by a visually hidden ` (lang.toggleAria)` in the UI language. No `aria-label`: the accessible name starts with the visible word (WCAG 2.5.3), and only the visible word is marked as the other language. A click sets `prefs.lang`, saves, removes `lang` from the URL with `history.replaceState`, and calls `setLanguage(lang)`: `state.t = makeT(lang)`, `document.documentElement.lang = lang`, `applyStaticText()`, `render()`.
+- `detectLang({search, saved, languages})` (pure): `?lang=en|ja|zh` (not saved) > `prefs.lang` > the first entry of `navigator.languages` that `normalizeLang` maps to `en`, `ja` or `zh` (`zh-TW` / `zh-Hant` also map to `zh` until a Traditional dictionary exists) > `en`. An unknown saved value is ignored.
+- The header language control is a native `<select id="lang">` with one `<option>` per language, each in its own name (`LANG_NAMES` in `public/i18n.mjs`: English / 日本語 / 简体中文; `lang` set on each option), so arrow keys and Enter work. Its accessible name is `lang.toggleAria` (set as `aria-label`). A change sets `prefs.lang`, saves, removes `lang` from the URL with `history.replaceState`, and calls `setLanguage(lang)`: `state.t = makeT(lang)`, `document.documentElement.lang = lang`, `applyStaticText()`, `render()`.
 - The board JSON is the same for every language; switching never refetches. Demo content follows the terminal language (board.md §11), not the toggle.
 - The copied archive instruction follows the UI language.
 - `?theme=light|dark` (for screenshots) sets `document.documentElement.dataset.theme`; it is not saved and there is no theme button.
@@ -710,7 +710,6 @@ Rules: placeholders are `{name}`; the plural count is always `{n}`; an English c
 | `date.mon.0` … `date.mon.11` | Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec | 1 月, 2 月, 3 月, 4 月, 5 月, 6 月, 7 月, 8 月, 9 月, 10 月, 11 月, 12 月 |
 | `filter.label` | Filter by title, project, summary or what it is doing | タイトル・プロジェクト・要約・していることで絞り込み |
 | `filter.placeholder` | Filter | 絞り込み |
-| `lang.switchTo` | 日本語 | English |
 | `lang.toggleAria` | Switch language | 言語を切り替える |
 
 ### 19.2 Lede
