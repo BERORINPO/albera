@@ -51,7 +51,7 @@ test('board: typed text, key names and unknown fields never appear in the snapsh
   board.record('vm-a', { type: 'step', step: 1, usd: 0, secret: 'sk-ant-xyz' });
   const json = JSON.stringify(board.snapshot());
   for (const leak of ['hunter2', 'ctrl+alt', 'AAAA', 'sk-ant', 'textLength']) assert.ok(!json.includes(leak), leak);
-  assert.deepEqual(Object.keys(board.snapshot()['vm-a']).sort(), ['actions', 'claim', 'cursor', 'lastAction', 'outcome', 'state', 'step', 'usd']);
+  assert.deepEqual(Object.keys(board.snapshot()['vm-a']).sort(), ['actions', 'claim', 'cursor', 'lastAction', 'lastActionAt', 'note', 'outcome', 'state', 'step', 'usd']);
 });
 
 // ---- fleet argument parsing ----

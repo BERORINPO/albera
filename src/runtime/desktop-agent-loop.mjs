@@ -9,7 +9,8 @@ import { mapComputerToolUse } from './computer-use-mapping.mjs';
  *
  * Screen contents are untrusted input (ADR-009). The loop never creates a lease: the caller owns it,
  * and a lease rejection from the driver ends the run at once (the AI is not told to retry).
- * Events (`onEvent`) never carry screen data, key names or typed text (only its length).
+ * Events (`onEvent`) never carry screen data, key names or typed text (only its length). A step event carries
+ * `note`: the AI's own text for that step (what it says it is doing), cut to 160 characters.
  */
 
 export const AGENT_SYSTEM_PROMPT = 'You operate a Windows desktop through the computer tools. '
@@ -29,6 +30,7 @@ export const OUTCOMES = Object.freeze(['claimed_done', 'claimed_failed', 'limit_
 const CACHE_WRITE_RATIO = 1.25;
 const CACHE_READ_RATIO = 0.1;
 const MAX_CLAIM_LENGTH = 200;
+const MAX_NOTE_LENGTH = 160;
 const NOT_EXECUTED = 'Not executed: an earlier computer action in this turn failed.';
 
 export function createDesktopAgentLoop({
@@ -87,7 +89,8 @@ export function createDesktopAgentLoop({
       messages.push({ role: 'assistant', content: response.content });
       const toolUses = response.content.filter((b) => b?.type === 'tool_use');
       const claim = claimOf(response.content);
-      emit({ type: 'step', step: state.steps, usd: roundUsd(state.usd), ms: elapsed(), toolUses: toolUses.length, stopReason: response.stopReason });
+      // note: the AI's own words this step (cut, control characters removed). Shown to the person only, never sent back to a VM.
+      emit({ type: 'step', step: state.steps, usd: roundUsd(state.usd), ms: elapsed(), toolUses: toolUses.length, stopReason: response.stopReason, note: claim.slice(0, MAX_NOTE_LENGTH) });
       if (response.stopReason === 'refusal') return finish('refused', { claim });
       if (stopReason !== null) return finish('stopped', { reason: stopReason });
       if (toolUses.length === 0) {
