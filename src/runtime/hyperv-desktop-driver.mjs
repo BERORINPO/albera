@@ -12,6 +12,8 @@ import { isEnvironmentId } from './environment-provider.mjs';
 const BROKER_METHODS = Object.freeze({ capture: 'captureVmScreen', act: 'sendVmInput' });
 const SAFE_BROKER_ERROR_CODES = new Set([
   'desktop_broker_timeout', 'desktop_input_rejected', 'desktop_unavailable', 'desktop_vm_not_found',
+  // the opt-in guest screen helper (hyperv-guest-capture-prototype.mjs)
+  'desktop_guest_auth_failed', 'desktop_guest_frame_missing', 'desktop_guest_frame_stale', 'desktop_guest_password_unreadable',
 ]);
 export const DEFAULT_DESKTOP_SCREEN = Object.freeze({ width: 1024, height: 768 });
 export const MAX_SCREEN_PNG_BYTES = 8 * 1024 * 1024;
