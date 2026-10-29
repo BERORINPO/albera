@@ -2,16 +2,19 @@
 // shared: 言葉の差し込みと複数形の選び方 (純粋関数)。何も import しない。言葉そのものは持たない。
 // 画面 (public/i18n.mjs) と端末 (src/entry/messages.mjs) の両方が使う。ブラウザにも /src/shared/i18n.mjs として配信する。
 
-/** @typedef {'en'|'ja'} Lang */
+/** @typedef {'en'|'ja'|'zh'} Lang */
 
-export const SUPPORTED_LANGS = Object.freeze(/** @type {const} */ (['en', 'ja']));
+export const SUPPORTED_LANGS = Object.freeze(/** @type {const} */ (['en', 'ja', 'zh']));
 
 const PH = /\{(\w+)\}/g;
 const hasOwn = (/** @type {object} */ o, /** @type {string} */ k) => Object.prototype.hasOwnProperty.call(o, k);
 
 /**
- * 言語タグを en / ja に寄せる。どちらでもなければ null。
- * 'ja' 'ja-JP' 'ja_JP.UTF-8' 'Japanese_Japan.932' → 'ja'、'en-US' → 'en'、'C.UTF-8' 'zh-CN' 'fr' → null。
+ * 言語タグを en / ja / zh に寄せる。どれでもなければ null。
+ * 'ja' 'ja-JP' 'ja_JP.UTF-8' 'Japanese_Japan.932' → 'ja'、'en-US' → 'en'、
+ * 'zh' 'zh-CN' 'zh_CN.UTF-8' 'Chinese (Simplified)_China.936' → 'zh'、'C.UTF-8' 'fr' → null。
+ * 繁体字 (zh-TW 'zh-Hant' 'Chinese (Traditional)_Taiwan.950') も、繁体字の辞書ができるまでは zh (簡体字) に寄せる:
+ * 英語より読める人が多く、言語タグだけでは字体を分けない (地域・スクリプトを見分けるのは繁体字を足すとき)。
  * @param {unknown} tag
  * @returns {Lang|null}
  */
@@ -19,6 +22,7 @@ export function normalizeLang(tag) {
   if (typeof tag !== 'string') return null;
   const lead = tag.trim().toLowerCase().match(/^[a-z]+/)?.[0] ?? '';
   if (lead.startsWith('ja')) return 'ja';
+  if (lead === 'zh' || lead === 'chinese') return 'zh';
   if (lead.startsWith('en')) return 'en';
   return null;
 }
@@ -86,7 +90,7 @@ function pluralRules(lang) {
 }
 
 /**
- * 辞書の項目から、数 n に合う形を選ぶ。項目が文字列ならそのまま (ja はいつも文字列)。
+ * 辞書の項目から、数 n に合う形を選ぶ。項目が文字列ならそのまま (ja と zh はいつも文字列)。
  * 項目が {one, other, ...} なら Intl.PluralRules で分類を決め、無ければ other。
  * @param {string} lang
  * @param {string|Record<string, string>} entry

@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import { test } from 'node:test';
 import { EN } from '../public/dict-en.mjs';
 import { JA } from '../public/dict-ja.mjs';
-import { DICT, detectLang, makeT, otherLang } from '../public/i18n.mjs';
+import { ZH } from '../public/dict-zh.mjs';
+import { DICT, LANG_NAMES, detectLang, makeT } from '../public/i18n.mjs';
 
 const PH = /\{(\w+)\}/g;
 /** @param {unknown} entry */
@@ -20,11 +21,21 @@ test('辞書: en と ja は同じキーを持つ', () => {
   assert.ok(e.length > 300, `キーの数: ${e.length}`);
 });
 
+test('辞書: zh は en と同じキーを持つ', () => {
+  const e = Object.keys(EN).sort();
+  const z = Object.keys(ZH).sort();
+  assert.deepEqual(e.filter((k) => !(k in ZH)), [], 'zh に無いキー');
+  assert.deepEqual(z.filter((k) => !(k in EN)), [], 'en に無いキー');
+  assert.equal(e.length, z.length);
+});
+
 test('辞書: キーごとに placeholder の組が同じ (複数形の全部の形を合わせて)', () => {
   for (const key of Object.keys(EN)) {
     const a = [...placeholders(EN[key])].sort();
     const b = [...placeholders(JA[key])].sort();
     assert.deepEqual(a, b, key);
+    const c = [...placeholders(ZH[key])].sort();
+    assert.deepEqual(a, c, `zh ${key}`);
     // 複数形の各形は、その組の一部しか使わない (one で {n} を省くのは可)
     for (const f of forms(EN[key])) for (const m of f.matchAll(PH)) assert.ok(b.includes(m[1]), `${key}: ${m[1]}`);
   }
@@ -35,7 +46,7 @@ test('辞書: 空の文字列は無い。複数形は en だけで、one と oth
     for (const [key, entry] of Object.entries(dict)) {
       for (const f of forms(entry)) assert.ok(f.length > 0, `${lang} ${key}`);
       if (typeof entry !== 'string') {
-        assert.equal(lang, 'en', `${key}: 複数形は en だけ`);
+        assert.equal(lang, 'en', `${key}: 複数形は en だけ (ja・zh は形が 1 つ)`);
         assert.deepEqual(Object.keys(entry).sort(), ['one', 'other'], key);
         assert.ok(placeholders(entry).has('n'), `${key}: 複数形の数は {n}`);
       }
@@ -54,6 +65,7 @@ test('辞書: 画面の言葉の決まり (感嘆符・絵文字を使わない�
   }
   assert.equal(EN['bucket.needs_you.title'], 'Needs you');
   assert.equal(JA['bucket.cleanup.title'], '片付け');
+  assert.equal(ZH['bucket.needs_you.title'], '需要你');
 });
 
 test('makeT: 複数形を n で選び、無いキーは英語、それも無ければキーそのもの', () => {
@@ -68,6 +80,11 @@ test('makeT: 複数形を n で選び、無いキーは英語、それも無け�
   assert.equal(en.has('pr.state.DRAFT'), false);
   assert.equal(en.lang, 'en');
   assert.equal(makeT('fr').lang, 'en');
+  const zh = makeT('zh');
+  assert.equal(zh.lang, 'zh');
+  assert.equal(zh('sel.moreLines', { n: 1 }), '… 另有 1 行');
+  assert.equal(zh('sel.moreLines', { n: 2 }), '… 另有 2 行');
+  assert.equal(zh('no.such.key'), 'no.such.key');
   assert.equal(en('banner.filter', { q: '{n}', n: 3 }), 'Filtering by “{n}”: 3 matches', '値の中の {n} は展開しない');
 });
 
@@ -78,7 +95,7 @@ test('t.parts: {name} に DOM のノードなどを差し込める', () => {
   assert.equal(ja[1], node);
 });
 
-test('detectLang: ?lang= > 保存した切替 > navigator.languages の最初の en / ja > en', () => {
+test('detectLang: ?lang= > 保存した切替 > navigator.languages の最初の en / ja / zh > en', () => {
   assert.equal(detectLang({ search: '?lang=ja', saved: 'en', languages: ['en-US'] }), 'ja');
   assert.equal(detectLang({ search: '?lang=en', saved: 'ja', languages: ['ja-JP'] }), 'en');
   assert.equal(detectLang({ search: '?lang=xx', saved: 'ja', languages: [] }), 'ja');
@@ -87,8 +104,17 @@ test('detectLang: ?lang= > 保存した切替 > navigator.languages の最初の
   assert.equal(detectLang({ search: '', saved: undefined, languages: ['fr-FR', 'ja'] }), 'ja');
   assert.equal(detectLang({ search: '', saved: 'bogus', languages: ['en-GB'] }), 'en');
   assert.equal(detectLang({}), 'en');
-  assert.equal(otherLang('en'), 'ja');
-  assert.equal(otherLang('ja'), 'en');
+  assert.equal(detectLang({ search: '?lang=zh', saved: 'ja', languages: ['en-US'] }), 'zh');
+  assert.equal(detectLang({ search: '', saved: 'zh', languages: ['ja-JP'] }), 'zh', '保存した切替が navigator より先');
+  assert.equal(detectLang({ search: '', saved: undefined, languages: ['fr-FR', 'zh-CN', 'ja'] }), 'zh');
+  assert.equal(detectLang({ search: '', saved: undefined, languages: ['zh-TW'] }), 'zh');
+  assert.equal(detectLang({ search: '', saved: 'klingon', languages: ['ja-JP'] }), 'ja', '知らない保存値は無いものとして次へ');
+  assert.equal(detectLang({ search: '', saved: 42, languages: [] }), 'en');
+});
+
+test('LANG_NAMES: 切替に並ぶ 3 言語が、それぞれ自分の言語の名前で出る', () => {
+  assert.deepEqual(LANG_NAMES, { en: 'English', ja: '日本語', zh: '简体中文' });
+  assert.deepEqual(Object.keys(LANG_NAMES), Object.keys(DICT), '辞書のある言語と同じ');
 });
 
 test('辞書: 分けたファイル (dict-<lang>-*.mjs) どうしでキーが重ならない (後の方が黙って上書きしない)', async () => {

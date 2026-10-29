@@ -75,7 +75,7 @@
  */
 
 /**
- * @typedef {'en'|'ja'} Lang
+ * @typedef {'en'|'ja'|'zh'} Lang
  * @typedef {'needs_you'|'trouble'|'unread'|'working'|'recent'|'cleanup'} BucketKey
  * @typedef {'waiting'|'stopped'|'stalled'|'ended'|'updated'|'ago'|'latest'} TimeKind
  * @typedef {'asking'|'asks'|'stalled'|'git_startup'|'not_started'|'limit'|'error'|'unread'|'turn'|'background'|'starting'

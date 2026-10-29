@@ -1,12 +1,13 @@
 // @ts-check
 // 画面: 言葉の引き方と言語の決め方 (純粋。DOM・storage・時計は触らない)。
-// 言葉そのものは dict-en.mjs / dict-ja.mjs にだけある。差し込みと複数形は shared の i18n.mjs。
+// 言葉そのものは dict-en.mjs / dict-ja.mjs / dict-zh.mjs にだけある。差し込みと複数形は shared の i18n.mjs。
 
 import { fill, fillParts, normalizeLang, pickForm } from '../src/shared/i18n.mjs';
 import { EN } from './dict-en.mjs';
 import { JA } from './dict-ja.mjs';
+import { ZH } from './dict-zh.mjs';
 
-/** @typedef {'en'|'ja'} Lang */
+/** @typedef {'en'|'ja'|'zh'} Lang */
 /**
  * @typedef {((key: string, params?: Record<string, unknown>) => string) & {
  *   lang: Lang,
@@ -16,7 +17,10 @@ import { JA } from './dict-ja.mjs';
  */
 
 /** @type {Readonly<Record<Lang, Readonly<Record<string, string | {one: string, other: string}>>>>} */
-export const DICT = Object.freeze({ en: EN, ja: JA });
+export const DICT = Object.freeze({ en: EN, ja: JA, zh: ZH });
+
+/** 切替に並べる言語と、その言語自身での名前 (どの画面の言葉でも同じ。辞書ではなくここに置く)。 */
+export const LANG_NAMES = Object.freeze(/** @type {Record<Lang, string>} */ ({ en: 'English', ja: '日本語', zh: '简体中文' }));
 
 /**
  * 言語ごとの t を作る。項目が無ければ英語、それも無ければキーそのもの (目に見えるので気づける)。
@@ -25,7 +29,7 @@ export const DICT = Object.freeze({ en: EN, ja: JA });
  * @returns {T}
  */
 export function makeT(lang) {
-  const l = /** @type {Lang} */ (lang === 'ja' ? 'ja' : 'en');
+  const l = /** @type {Lang} */ (lang === 'ja' || lang === 'zh' ? lang : 'en');
   const dict = DICT[l];
   /** @param {string} key */
   const entryOf = (key) => dict[key] ?? DICT.en[key];
@@ -46,7 +50,7 @@ export function makeT(lang) {
 }
 
 /**
- * 画面の言語を決める: ?lang= (保存しない) > 保存した切替 > navigator.languages の最初の en / ja > en。
+ * 画面の言語を決める: ?lang= (保存しない) > 保存した切替 > navigator.languages の最初の en / ja / zh > en。保存した値が知らない言語なら無いものとして次へ進む。
  * @param {{search?: string, saved?: unknown, languages?: readonly string[]}} input
  * @returns {Lang}
  */
@@ -66,6 +70,3 @@ export function detectLang({ search = '', saved, languages = [] }) {
   }
   return 'en';
 }
-
-/** 反対の言語 (切替ボタンが指す先)。 @param {Lang} lang @returns {Lang} */
-export const otherLang = (lang) => (lang === 'ja' ? 'en' : 'ja');

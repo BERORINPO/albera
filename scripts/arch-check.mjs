@@ -60,7 +60,7 @@ const EXPECTED = {
     'actions.mjs', 'canvas.mjs', 'canvas-slip.mjs', 'canvas-sheet.mjs', 'canvas-fit.mjs', 'canvas-bar.mjs', 'canvas-ctl.mjs', 'canvas-view.mjs', 'canvas-act.mjs',
     'canvas-layout.mjs', 'canvas-desk.mjs', 'canvas-fold.mjs', 'canvas-camera.mjs', 'canvas-input.mjs',
     'keys.mjs', 'notify.mjs', 'favicon.mjs', 'copy.mjs', 'view.mjs', 'format.mjs', 'doing.mjs', 'times.mjs', 'i18n.mjs',
-    'dict-en.mjs', 'dict-ja.mjs', 'dict-en-handoff.mjs', 'dict-ja-handoff.mjs', 'dict-en-canvas.mjs', 'dict-ja-canvas.mjs',
+    'dict-en.mjs', 'dict-ja.mjs', 'dict-zh.mjs', 'dict-en-handoff.mjs', 'dict-ja-handoff.mjs', 'dict-zh-handoff.mjs', 'dict-en-canvas.mjs', 'dict-ja-canvas.mjs', 'dict-zh-canvas.mjs',
   ],
 };
 const DIR_OF = { shared: 'src/shared', core: 'src/core', adapters: 'src/adapters', entry: 'src/entry', public: 'public' };
@@ -147,7 +147,7 @@ const CJK_IN_STRING = new RegExp(`(['"\`])(?:(?!\\1).)*${CJK}(?:(?!\\1).)*\\1`);
 const codePart = (line) => (/^\s*(\/\/|\*|\/\*)/.test(line) ? '' : line.replace(/\s\/\/\s.*$/, ''));
 const DICT_FILES = new Set(['public/i18n.mjs', 'src/entry/messages.mjs', 'src/adapters/demo-data.mjs']);
 // public/dict-<lang>.mjs and its parts public/dict-<lang>-<part>.mjs (a dictionary is split to stay under 400 lines)
-const DICT_RE = /^public\/dict-(en|ja)(-[a-z]+)?\.mjs$/;
+const DICT_RE = /^public\/dict-(en|ja|zh)(-[a-z]+)?\.mjs$/;
 const isDict = (/** @type {string} */ f) => DICT_FILES.has(posix(f)) || DICT_RE.test(posix(f));
 const scripts6 = [...core, ...shared, ...adapters, ...entry, ...pub.filter((f) => f.endsWith('.mjs'))].filter((f) => !isDict(f));
 if (!pub.some((f) => DICT_RE.test(posix(f)))) violations.push('[6 words only in dictionaries] no public/dict-*.mjs (false-safe)');
