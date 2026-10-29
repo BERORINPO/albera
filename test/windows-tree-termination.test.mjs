@@ -9,7 +9,7 @@ function fakeTaskkill(exitCode, error) {
   return child;
 }
 
-test('successful taskkill confirms tree cleanup without direct-child fallback', async () => {
+test('successful taskkill requests cleanup but does not prove all descendants exited', async () => {
   let args;
   let fallbackCalls = 0;
   const result = await terminateWindowsTree(1234, {
@@ -23,7 +23,7 @@ test('successful taskkill confirms tree cleanup without direct-child fallback', 
     killFallback: () => { fallbackCalls++; return true; },
   });
   assert.deepEqual(args, ['/PID', '1234', '/T', '/F']);
-  assert.deepEqual(result, { treeConfirmed: true, fallbackAttempted: false, fallbackAccepted: false });
+  assert.deepEqual(result, { treeConfirmed: false, terminationRequested: true, fallbackAttempted: false, fallbackAccepted: false });
   assert.equal(fallbackCalls, 0);
 });
 
@@ -34,7 +34,7 @@ test('non-zero taskkill exit falls back to terminating the direct child', async 
     spawnImpl: () => fakeTaskkill(5),
     killFallback: () => { fallbackCalls++; return true; },
   });
-  assert.deepEqual(result, { treeConfirmed: false, fallbackAttempted: true, fallbackAccepted: true });
+  assert.deepEqual(result, { treeConfirmed: false, terminationRequested: true, fallbackAttempted: true, fallbackAccepted: true });
   assert.equal(fallbackCalls, 1);
 });
 
@@ -47,8 +47,8 @@ test('taskkill spawn errors and missing SystemRoot use the direct-child fallback
   const missingRoot = await terminateWindowsTree(4567, {
     systemRoot: '', spawnImpl: () => { throw new Error('must_not_spawn'); }, killFallback,
   });
-  assert.deepEqual(spawnFailure, { treeConfirmed: false, fallbackAttempted: true, fallbackAccepted: false });
-  assert.deepEqual(missingRoot, { treeConfirmed: false, fallbackAttempted: true, fallbackAccepted: false });
+  assert.deepEqual(spawnFailure, { treeConfirmed: false, terminationRequested: false, fallbackAttempted: true, fallbackAccepted: false });
+  assert.deepEqual(missingRoot, { treeConfirmed: false, terminationRequested: false, fallbackAttempted: true, fallbackAccepted: false });
   assert.equal(fallbackCalls, 2);
 });
 
@@ -65,5 +65,5 @@ test('taskkill timeout kills the utility and reports only direct-child fallback'
   });
   assert.equal(utilityKillCalled, true);
   assert.equal(fallbackCalls, 1);
-  assert.deepEqual(result, { treeConfirmed: false, fallbackAttempted: true, fallbackAccepted: true });
+  assert.deepEqual(result, { treeConfirmed: false, terminationRequested: true, fallbackAttempted: true, fallbackAccepted: true });
 });

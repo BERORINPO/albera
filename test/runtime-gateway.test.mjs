@@ -16,7 +16,7 @@ async function fixture(options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'albera-runtime-'));
   const cwd = path.join(root, 'project');
   await mkdir(cwd);
-  const executable = path.join(root, `provider${process.platform === 'win32' ? '.exe' : ''}`);
+  const executable = path.join(root, `provider${(options.platform ?? process.platform) === 'win32' ? '.exe' : ''}`);
   await writeFile(executable, 'synthetic provider executable fixture');
   await chmod(executable, 0o700);
   const { buildLaunchImpl = (_provider, profile, prompt) => ({ profile, args: Array.isArray(prompt) ? prompt : [] }), probeVersionImpl = async () => '99.0.0', ...gatewayOptions } = options;
@@ -131,13 +131,8 @@ test('trusted approval broker gates streaming provider launch on an explicit one
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   assert.equal(spawned, true);
   assert.equal(broker.decide(approval.id, true), false);
-  const stopping = f.gateway.stop(run.id);
-  await waitFor(() => broker.listPending().length === 1);
-  const [stopApproval] = broker.listPending();
-  assert.equal(stopApproval.request.action, 'stop');
-  assert.equal(stopApproval.request.runId, run.id);
-  assert.equal(broker.decide(stopApproval.id, true), true);
-  await stopping;
+  await f.gateway.stop(run.id);
+  assert.equal(broker.listPending().length, 0);
   await waitFor(() => f.gateway.get(run.id).status === 'stopped');
 });
 
@@ -208,6 +203,7 @@ test('host authorization receives the exact canonical executable, cwd and argv b
   const executableIdentity = await captureExecutableIdentity(f.executable);
   assert.deepEqual(seen[0], {
     action: 'start', provider: 'claude', profile: 'read-only', executable: await realpath(f.executable), cwd: await realpath(f.cwd), args,
+    cwdIdentity: seen[0].cwdIdentity,
     executableSha256: executableIdentity.sha256,
     minimumCliVersion: '2.1.248', versionCheck: true,
     environment: { providerVariables: [], endpointOverrides: [] },
@@ -304,6 +300,43 @@ test('Gateway keeps the canonical executable when its PATH junction is retargete
   await start;
   assert.equal(spawnedExecutable, await realpath(firstExecutable));
   assert.notEqual(spawnedExecutable, await realpath(secondExecutable));
+});
+
+test('Gateway refuses a cwd symlink retargeted outside the allowed root during approval', async (t) => {
+  let authorized;
+  let approve;
+  let approvalRequest;
+  let spawned = false;
+  const authorizedSignal = new Promise((resolve) => { authorized = resolve; });
+  const approvalGate = new Promise((resolve) => { approve = resolve; });
+  const f = await fixture({
+    authorize: async (request) => { approvalRequest = request; authorized(); await approvalGate; return true; },
+    spawnImpl: () => { spawned = true; return new FakeChild(); },
+  });
+  t.after(f.dispose);
+  const firstTarget = path.join(f.root, 'approved-project');
+  const link = path.join(f.root, 'project-link');
+  await mkdir(firstTarget);
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  try { await symlink(firstTarget, link, linkType); }
+  catch (error) {
+    if (process.platform === 'win32' && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+      t.diagnostic('cwd junction retarget case skipped: junction creation is unavailable in this Windows environment');
+      return;
+    }
+    throw error;
+  }
+
+  const start = f.gateway.start({ provider: 'claude', cwd: link, prompt: 'synthetic' });
+  await authorizedSignal;
+  assert.equal(typeof approvalRequest.cwdIdentity, 'string');
+  assert.ok(!approvalRequest.cwdIdentity.includes(f.root));
+  await unlink(link);
+  await symlink(os.tmpdir(), link, linkType);
+  approve();
+
+  await assert.rejects(start, (error) => error.code === 'cwd_not_allowed');
+  assert.equal(spawned, false);
 });
 
 test('authorization sees a redacted provider environment summary and spawn uses its pre-approval snapshot', async (t) => {
@@ -534,6 +567,7 @@ test('timeout falls back to terminating the direct child if process-tree termina
       return child;
     },
     signalTreeImpl: () => { throw new Error('synthetic signal adapter failure'); },
+    signalTreeFallbackImpl: async () => ({ treeConfirmed: false }),
   });
   t.after(f.dispose);
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
@@ -580,7 +614,7 @@ test('supervised stop records Guardian tree confirmation instead of pipe accepta
   assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
   child.signalCode = 'SIGKILL';
   child.emit('close', null, 'SIGKILL');
-  await waitFor(() => f.gateway.get(run.id).status === 'failed');
+  assert.equal(f.gateway.get(run.id).status, 'failed');
 });
 
 test('supervised stop falls back to the OS process-tree adapter when the Guardian channel fails', async (t) => {
@@ -595,6 +629,7 @@ test('supervised stop falls back to the OS process-tree adapter when the Guardia
       fallbackRequest = { pid, signal, target };
       target.signalCode = signal;
       queueMicrotask(() => target.emit('close', null, signal));
+      return { treeConfirmed: true };
     },
   });
   t.after(f.dispose);
@@ -648,16 +683,43 @@ test('supervised stop avoids OS PID fallback after the Guardian reports provider
   assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
 });
 
-test('manual stop requires separate authorization; denied stop leaves the run active', async (t) => {
+test('Job-managed Guardian failure never falls back to a reusable PID', async (t) => {
+  const child = new FakeChild();
+  child.pid = 424247;
+  child.supervised = true;
+  child.jobObjectManaged = true;
+  child.closed = false;
+  child.stopTree = async () => { throw new Error('job_control_channel_lost'); };
+  let fallbackCalls = 0;
   const f = await fixture({
-    authorize: async ({ action }) => action !== 'stop',
+    spawnImpl: () => { queueMicrotask(() => child.emit('spawn')); return child; },
+    signalTreeFallbackImpl: async () => { fallbackCalls++; return { treeConfirmed: true }; },
+  });
+  t.after(f.dispose);
+  const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
+  await waitFor(() => f.gateway.get(run.id).status === 'running');
+  await f.gateway.stop(run.id);
+  await waitFor(() => f.gateway.get(run.id).status === 'failed');
+  assert.equal(fallbackCalls, 0, 'a PID-based adapter is forbidden for Job-managed ownership');
+  assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
+});
+
+test('manual stop proceeds immediately even when the host would deny stop authorization', async (t) => {
+  let stopAuthorizationCalls = 0;
+  const f = await fixture({
+    platform: 'win32',
+    authorize: async ({ action }) => { if (action === 'stop') stopAuthorizationCalls++; return action !== 'stop'; },
     spawnImpl: () => { const child = new FakeChild(); queueMicrotask(() => child.emit('spawn')); return child; },
   });
   t.after(f.dispose);
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'fixture' });
   await waitFor(() => f.gateway.get(run.id).status === 'running');
-  await assert.rejects(f.gateway.stop(run.id), (error) => error.code === 'confirmation_required');
-  assert.equal(f.gateway.get(run.id).status, 'running');
+  await f.gateway.stop(run.id);
+  await waitFor(() => f.gateway.get(run.id).status === 'stopped');
+  assert.equal(stopAuthorizationCalls, 0);
+  const stopEvent = f.gateway.events().find((event) => event.type === 'stop_requested');
+  assert.equal(stopEvent.stopReason, 'user_cancel');
+  assert.equal(stopEvent.force, true);
 });
 
 test('follow-up input requires exact host approval, serializes requests, and emits no content', async (t) => {
@@ -790,10 +852,9 @@ test('input approval cannot send after Gateway shutdown starts', async (t) => {
 });
 
 test('concurrent stop requests send one termination signal', async (t) => {
-  let stopApprovals = 0;
   let signals = 0;
   const f = await fixture({
-    authorize: async ({ action }) => { if (action === 'stop') stopApprovals++; return true; },
+    authorize: async () => true,
     spawnImpl: () => {
       const child = new FakeChild();
       const kill = child.kill.bind(child);
@@ -807,19 +868,14 @@ test('concurrent stop requests send one termination signal', async (t) => {
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   await Promise.all([f.gateway.stop(run.id), f.gateway.stop(run.id)]);
   await waitFor(() => f.gateway.get(run.id).status === 'stopped');
-  assert.equal(stopApprovals, 2);
   assert.equal(signals, 1);
 });
 
-test('a stop approval that resolves during Gateway shutdown does not repeat the stop action', async (t) => {
-  let releaseApproval;
-  let stopApprovalSeen;
-  const approvalGate = new Promise((resolve) => { releaseApproval = resolve; });
-  const approvalSeen = new Promise((resolve) => { stopApprovalSeen = resolve; });
+test('manual stop does not wait on authorization and shutdown does not repeat its signal', async (t) => {
   let signals = 0;
   const f = await fixture({
     authorize: async ({ action }) => {
-      if (action === 'stop') { stopApprovalSeen(); await approvalGate; }
+      if (action === 'stop') throw new Error('stop must not request authorization');
       return true;
     },
     spawnImpl: () => {
@@ -834,10 +890,8 @@ test('a stop approval that resolves during Gateway shutdown does not repeat the 
   const run = await f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'shutdown stop fixture' });
   await waitFor(() => f.gateway.get(run.id).status === 'running');
   const stopping = f.gateway.stop(run.id);
-  await approvalSeen;
   const closing = f.gateway.close();
-  releaseApproval();
-  await assert.rejects(stopping, (error) => error.code === 'gateway_closed');
+  await stopping;
   assert.deepEqual(await closing, []);
   assert.equal(signals, 1, 'shutdown owns the single process termination request');
 });
@@ -872,7 +926,9 @@ test('local helper process integration: starts, reports lifecycle only, stops, a
   assert.ok(['stopping', 'stopped'].includes(stopped.status));
   await waitFor(() => f.gateway.get(run.id).status === 'stopped');
   assert.equal(f.gateway.get(run.id).stopReason, 'user_cancel');
-  assert.equal(f.gateway.events().find((event) => event.type === 'stop_requested').stopReason, 'user_cancel');
+  const stopEvent = f.gateway.events().find((event) => event.type === 'stop_requested');
+  assert.equal(stopEvent.stopReason, 'user_cancel');
+  assert.equal(stopEvent.force, process.platform === 'win32');
   assert.deepEqual(await f.gateway.close(), []);
 });
 
@@ -887,7 +943,9 @@ test('local helper process integration: abnormal exit is represented without out
   assert.ok(!JSON.stringify(f.gateway.events()).includes('process.exit'));
 });
 
-test('local helper process integration: OS tree fallback stops a child when the Guardian channel fails', async (t) => {
+test('local POSIX process-group fallback remains unconfirmed when Guardian channel fails', {
+  skip: process.platform === 'win32',
+}, async (t) => {
   let child;
   const f = await fixture({
     resolveExecutableImpl: async () => process.execPath,
@@ -909,12 +967,12 @@ test('local helper process integration: OS tree fallback stops a child when the 
   await waitFor(() => f.gateway.get(run.id).status === 'running');
 
   await f.gateway.stop(run.id);
-  await waitFor(() => f.gateway.get(run.id).status === 'stopped');
-  assert.equal(f.gateway.get(run.id).treeStopConfirmed, true);
+  await waitFor(() => f.gateway.get(run.id).status === 'failed');
+  assert.equal(f.gateway.get(run.id).treeStopConfirmed, false);
   assert.ok(child.exitCode !== null || child.signalCode !== null);
 });
 
-test('orderly host close stops active children even when interactive stop approval is denied', async (t) => {
+test('orderly host close stops active children without waiting for a stop approval', async (t) => {
   const f = await fixture({
     authorize: async ({ action }) => action === 'start',
     resolveExecutableImpl: async () => process.execPath,

@@ -33,6 +33,9 @@ jobs:
           dotnet-version: 10.0.x
       - name: Install locked dependencies
         run: npm ci
+      - name: Build Windows Job Guardian
+        if: runner.os == 'Windows'
+        run: npm run build:windows-job-guardian
       - name: Tests
         run: npm test
       - name: Installed package smoke
