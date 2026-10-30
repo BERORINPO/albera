@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, before, describe, test } from 'node:test';
-import { createTestAuthority, rawFencedClaim, rawRequest, GENERATION } from './helpers/windows-broker-harness.mjs';
+import { createTestAuthority, rawFencedClaim, rawRequest, GENERATION, LEASE_ARGS } from './helpers/windows-broker-harness.mjs';
 
 // Failure-injection tests for the Windows Host Broker prototype (ADR-002 Proposed / NOT VERIFIED).
 // Exit codes under test (fixed, see Program.cs): 70 = pipe name already taken, 71 = impersonation revert failed.
@@ -37,11 +37,11 @@ describe('Windows Broker failure injection', { skip: unavailableReason }, () => 
   });
 
   const launch = (dll, args) => { const child = startProcess(dll, args); children.add(child); return child; };
-  const serveFault = (fault, pipe, db, generation = GENERATION) => launch(faultDll, ['serve-fault', fault, pipe, db, authority.serveArgument, sid, String(generation), 'normal']);
-  const serve = (dll, pipe, db) => launch(dll, ['serve', pipe, db, authority.serveArgument, sid, String(GENERATION), 'normal']);
+  const serveFault = (fault, pipe, db, generation = GENERATION) => launch(faultDll, ['serve-fault', fault, pipe, db, authority.serveArgument, sid, String(generation), 'normal', ...LEASE_ARGS]);
+  const serve = (dll, pipe, db) => launch(dll, ['serve', pipe, db, authority.serveArgument, sid, String(GENERATION), 'normal', ...LEASE_ARGS]);
 
   test('the shipped build has no fault-injection seam', async () => {
-    const probe = launch(productionDll, ['serve-fault', 'RevertFails', pipeName(), path.join(root, 'prod.sqlite'), authority.serveArgument, sid, '7', 'normal']);
+    const probe = launch(productionDll, ['serve-fault', 'RevertFails', pipeName(), path.join(root, 'prod.sqlite'), authority.serveArgument, sid, '7', 'normal', ...LEASE_ARGS]);
     assert.equal(await waitForExit(probe), 64);
     assert.deepEqual(probe.lines, []);
     assert.equal(existsSync(path.join(root, 'prod.sqlite')), false);

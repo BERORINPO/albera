@@ -33,7 +33,7 @@ internal static partial class Program
     // connection's I/O failure or deadline.
     internal static async Task<int> RunServiceLoopAsync(ServiceConfig config, CancellationToken stop, Action onReady)
     {
-        BrokerSettings settings = new(config.Database, config.AuthorityKeys, config.ControlPlaneSid, config.Generation, ServiceClaimHold, ImpersonationFault.None);
+        BrokerSettings settings = new(config.Database, config.AuthorityKeys, config.ControlPlaneSid, config.Generation, ServiceClaimHold, ImpersonationFault.None, config.LeaseId, config.PolicyVersion);
         // Held for the whole loop (released by `using` when the loop ends): the journal folder cannot be renamed, deleted or swapped meanwhile.
         using SafeFileHandle? databaseFolder = DatabaseFolderPin.TryPin(config.Database);
         if (databaseFolder is null)

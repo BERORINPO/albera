@@ -30,13 +30,13 @@ internal static partial class Program
     {
         if (args.Length == 2 && args[0] == "restricted-client") return RunRestrictedClient(args[1]);
         if (args.Length == 2 && args[0] == "inspect") return await InspectAsync(args[1]);
-        if (args.Length == 7 && args[0] == "serve") return await ServeAsync(args, ImpersonationFault.None);
+        if (args.Length == 9 && args[0] == "serve") return await ServeAsync(args, ImpersonationFault.None);
         if (args.Length == 2 && args[0] == "service") return ServiceHost.Run(args[1]);
         if (args.Length == 2 && args[0] == "service-check") return CheckServiceConfig(args[1]);
 #if ALBERA_BROKER_TEST_FAULTS
         // Test-only failure injection. Compiled in only when the test builds with -p:AlberaBrokerTestFaults=true;
         // the shipped build (npm run build:windows-broker) has no such subcommand and answers 64.
-        if (args.Length == 8 && args[0] == "serve-fault" &&
+        if (args.Length == 10 && args[0] == "serve-fault" &&
             Enum.TryParse(args[1], ignoreCase: false, out ImpersonationFault fault) && Enum.IsDefined(fault))
             return await ServeAsync(["serve", .. args[2..]], fault);
         if (args.Length is 2 or 3 && args[0] == "serve-loop") return await ServeLoopForTestAsync(args[1], args.Length == 3 ? args[2] : null);
@@ -44,7 +44,7 @@ internal static partial class Program
         return 64;
     }
 
-    // `serve <pipe> <database> <kid=spki[,kid=spki]> <sid> <initialGeneration> <hold|normal>`: a one-shot Broker for the host tests. It answers `fence` requests
+    // `serve <pipe> <database> <kid=spki[,kid=spki]> <sid> <initialGeneration> <hold|normal> <leaseId> <policyVersion>`: a one-shot Broker for the host tests. It answers `fence` requests
     // (at most MaxServeFences, because a claim needs the challenge a fence issues) and exits after the first request that is not a successful fence.
     private const int MaxServeFences = 4;
 
@@ -52,8 +52,9 @@ internal static partial class Program
     {
         string pipeName = args[1];
         IReadOnlyList<AuthorityKey>? keys = AuthorityKey.ParseList(args[3]);
-        if (keys is null || !long.TryParse(args[5], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out long initialGeneration) || initialGeneration < 1) return 64;
-        BrokerSettings settings = new(args[2], keys, args[4], initialGeneration, args[6] == "hold" ? Timeout.InfiniteTimeSpan : null, fault);
+        if (keys is null || !long.TryParse(args[5], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out long initialGeneration) || initialGeneration < 1 ||
+            !AuthorityKey.IsKeyId(args[7]) || !AuthorityKey.IsKeyId(args[8])) return 64;
+        BrokerSettings settings = new(args[2], keys, args[4], initialGeneration, args[6] == "hold" ? Timeout.InfiniteTimeSpan : null, fault, args[7], args[8]);
         if (await RefuseUnusableJournalAsync(settings.Database, initialGeneration)) return ExitJournalRefused;
         NamedPipeServerStream? pipe = CreateBrokerPipe(pipeName, settings.AllowedSid, out int failure);
         if (pipe is null) return failure;
@@ -95,7 +96,7 @@ internal static partial class Program
         }
     }
 
-    private sealed record BrokerSettings(string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string AllowedSid, long InitialGeneration, TimeSpan? Hold, ImpersonationFault Fault, long Epoch = 0);
+    private sealed record BrokerSettings(string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string AllowedSid, long InitialGeneration, TimeSpan? Hold, ImpersonationFault Fault, string LeaseId, string PolicyVersion, long Epoch = 0);
 
     // maxNumberOfServerInstances == 1 makes .NET create the pipe with FILE_FLAG_FIRST_PIPE_INSTANCE, so an
     // existing instance of this name (squatter, or another Broker) fails creation. Keep it at 1.

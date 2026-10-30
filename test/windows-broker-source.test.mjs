@@ -172,7 +172,8 @@ test('service loop creates the first-instance pipe once and reuses that instance
   assert.match(program, /private const int MaxServeFences = 4;/u, 'and fences are bounded');
   assert.equal(/\bwhile\b/u.test(serve), false, '`serve` has no unbounded loop');
   assert.equal([...serve.matchAll(/\bfor \(/gu)].length, 1, 'one bounded for loop');
-  assert.match(program, /args\.Length == 7 && args\[0\] == "serve"/u);
+  assert.match(program, /args\.Length == 9 && args\[0\] == "serve"/u, '`serve` takes <leaseId> <policyVersion> after hold|normal');
+  assert.match(serve, /!AuthorityKey\.IsKeyId\(args\[7\]\) \|\| !AuthorityKey\.IsKeyId\(args\[8\]\)\) return 64;/u, 'and refuses a value that is not a contract id with usage 64');
 });
 
 test('service exit codes are fixed and the dispatcher is called before the config is read', () => {
@@ -214,7 +215,7 @@ test('VM lab tooling runs the real Broker as the service and checks two requests
   assert.match(guest, /function Get-LabSigner \{[\s\S]*?CngKey\]::Import\(\[Convert\]::FromBase64String\(\$Authority\.privateBlob\), \[System\.Security\.Cryptography\.CngKeyBlobFormat\]::EccPrivateBlob\)[\s\S]*?ECDsaCng/u);
   assert.match(guest, /\$script:Signer\.SignData\(\$bytes\)/u);
   assert.match(guest, /\$fence = Invoke-HelperAs \$svc "\$tag-fence" @\{ fence = \$Authority\.computerId \} \$expect/u, 'fence is requested through the helper as the Control Plane account');
-  assert.match(guest, /\$cfg = \[ordered\]@\{ pipeName = \$Pipe; database = \$db; authorityKeys = \$keys; controlPlaneSid = \$controlPlaneSid; generation = 7 \}/u);
+  assert.match(guest, /\$cfg = \[ordered\]@\{ pipeName = \$Pipe; database = \$db; authorityKeys = \$keys; controlPlaneSid = \$controlPlaneSid; generation = 7; leaseId = \$Authority\.leaseId; policyVersion = \$Authority\.policyVersion \}/u, 'the lab pins the same lease and policy its receipts name');
   assert.equal(/publicKey|\$R[1-4][ab]?\b(?!\w)/u.test(guest.replace(/\$R2\b/gu, '')), false, 'no v1 key, no precomputed v1 receipt (r2 is the only one, and it is never sent to a Broker that could accept it)');
   assert.match(guest, /\$res3\.replayed -eq \$true/u, 'the replay says so');
   assert.match(guest, /\(-not \$res\.replayed\)/u, 'and the first claim does not');
@@ -227,8 +228,15 @@ test('VM lab tooling runs the real Broker as the service and checks two requests
   assert.match(inputs, /actionDigest: computeActionDigest\('broker\.operation', \{ action: 'synthetic\.noop'/u);
 });
 
-test('service config accepts exactly five keys, validates every value and never echoes file content', () => {
-  assert.match(serviceConfig, /Keys = \["pipeName", "database", "authorityKeys", "controlPlaneSid", "generation"\];/u);
+test('service config accepts exactly seven keys, validates every value and never echoes file content', () => {
+  assert.match(serviceConfig, /Keys = \["pipeName", "database", "authorityKeys", "controlPlaneSid", "generation", "leaseId", "policyVersion"\];/u);
+  // leaseId and policyVersion come from the file only: both are contract ids, a missing key is `config_keys`, a bad value its own fixed reason, and nothing defaults.
+  assert.match(serviceConfig, /LeaseId = "lease_id", PolicyVersion = "policy_version"/u);
+  assert.match(serviceConfig, /leaseId is null \|\| !AuthorityKey\.IsKeyId\(leaseId\)\) return null;/u);
+  assert.match(serviceConfig, /policyVersion is null \|\| !AuthorityKey\.IsKeyId\(policyVersion\)\) return null;/u);
+  assert.match(serviceConfig, /new ServiceConfig\(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion\);/u);
+  assert.match(serviceLoop, /config\.LeaseId, config\.PolicyVersion\);/u, 'the service loop hands the configured values to the request handlers');
+  assert.equal(/"test-lease"|"test-policy-v1"|Synthetic(?:Lease|Policy)/u.test(brokerCode), false, 'no receipt placeholder is left in the Broker');
   assert.equal(/"publicKey"/u.test(brokerCode), false, 'the v1 single-key shape is gone from the Broker');
   assert.match(serviceConfig, /seen\.SetEquals\(Keys\)/u, 'no unknown and no missing key');
   assert.match(serviceConfig, /!seen\.Add\(property\.Name\)/u, 'a repeated key is refused');
@@ -246,7 +254,7 @@ test('service config accepts exactly five keys, validates every value and never 
   assert.match(serviceConfig, /generation is < 1 or > Albera\.BrokerContract\.StrictJson\.MaxSafeInteger/u, 'a lease generation starts at 1');
   const reasonClass = serviceConfig.slice(serviceConfig.indexOf('internal static class Reason'), serviceConfig.indexOf('public static ServiceConfig? TryLoad'));
   assert.deepEqual([...reasonClass.matchAll(/ = "([a-z_]+)"/gu)].map((m) => m[1]).sort(),
-    ['authority_keys', 'config_keys', 'config_path', 'config_syntax', 'config_too_large', 'config_unreadable', 'config_untrusted', 'control_plane_sid', 'database', 'database_directory', 'database_pin', 'database_untrusted', 'generation', 'pipe_name']);
+    ['authority_keys', 'config_keys', 'config_path', 'config_syntax', 'config_too_large', 'config_unreadable', 'config_untrusted', 'control_plane_sid', 'database', 'database_directory', 'database_pin', 'database_untrusted', 'generation', 'lease_id', 'pipe_name', 'policy_version']);
   // The only interpolated console lines are a reason word, a Win32 error number or a fixed stage word (restricted-client), never a config value.
   const interpolated = [...brokerCode.matchAll(/Console\.WriteLine\((\$"[^"]*")\);/gu)].map((m) => m[1]);
   assert.deepEqual(interpolated, ['$"RESTRICTED_TOKEN_SETUP=BLOCKED_{stage}"', '$"SERVICE_DISPATCHER_ERROR={error}"', '$"SERVICE_CONFIG=invalid:{reason}"', '$"SERVICE_CONFIG=invalid:{reason}"']);
@@ -382,7 +390,7 @@ test('fence: the challenge is 128 random bits from the system generator, stored 
   assert.equal(/\bnew Random\b|Random\.Shared|Guid\.NewGuid/u.test(brokerCode), false, 'no non-cryptographic randomness');
   assert.match(journal, /INSERT INTO challenges\(challenge, epoch, lease_generation, computer_id, state\) VALUES \(\$c, \$e, \$g, \$m, 'issued'\);/u);
   assert.match(journal, /private const int MaxChallenges = 64;/u);
-  assert.match(requests, /string json = string\.Create\(CultureInfo\.InvariantCulture, \$"\{\{\\"ok\\":true,\\"brokerEpoch\\":\{issued\.Epoch\},\\"leaseGeneration\\":\{issued\.LeaseGeneration\},\\"brokerChallenge\\":\\"\{issued\.Challenge\}\\"\}\}"\);/u, 'the fence reply is exactly these four keys');
+  assert.match(requests, /string json = string\.Create\(CultureInfo\.InvariantCulture, \$"\{\{\\"ok\\":true,\\"brokerEpoch\\":\{issued\.Epoch\},\\"leaseGeneration\\":\{issued\.LeaseGeneration\},\\"leaseId\\":\\"\{settings\.LeaseId\}\\",\\"brokerChallenge\\":\\"\{issued\.Challenge\}\\"\}\}"\);/u, 'the fence reply is exactly these five keys; leaseId is the configured one (a contract id: nothing to escape)');
   assert.match(requests, /OnlyId\(body, "computerId"\)/u);
 });
 
@@ -404,8 +412,8 @@ test('receipt v2: the shared contract sources are included, not copied; the Brok
   assert.match(trusted, /\["action"\] = SyntheticAction, \["projectId"\] = r\["projectId"\], \["computerId"\] = r\["computerId"\], \["args"\] = new Dictionary<string, object>\(\),/u, 'the DTO is { action, projectId, computerId, args: {} }; the action is the constant');
   assert.equal(/r\["actionDigest"\]|r\["action"\]/u.test(trusted), false, 'neither the receipt\'s digest nor its action name is an input to the context');
   assert.match(trusted, /\["audience"\] = BrokerAudience, \["purpose"\] = SyntheticPurpose,/u);
-  assert.match(trusted, /\["leaseId"\] = SyntheticLeaseId,/u);
-  assert.match(trusted, /\["policyVersion"\] = SyntheticPolicyVersion,/u);
+  assert.match(trusted, /\["leaseId"\] = settings\.LeaseId,/u, 'the lease is the configured one');
+  assert.match(trusted, /\["policyVersion"\] = settings\.PolicyVersion,/u, 'and so is the policy');
   assert.match(requests, /private const string BrokerAudience = "albera-host-broker";/u, 'the contract\'s audience grammar is lower case');
   // The only digest taken from the receipt is the one stored in the claim row, after Validate recomputed and compared it.
   assert.deepEqual([...requests.matchAll(/r\["actionDigest"\]/gu)].map((m) => m.index > requests.indexOf('ReceiptV2.Validate(')), [true]);

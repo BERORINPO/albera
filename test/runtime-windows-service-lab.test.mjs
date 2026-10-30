@@ -8,7 +8,7 @@ import { captureExecutableIdentity } from '../src/runtime/executable-identity.mj
 import { sendBrokerFence, sendBrokerRequest } from '../src/runtime/windows-broker-client.mjs';
 import {
   brokerSession, buildBroker, buildPipeClient, buildServiceLab, createTestAuthority, currentUserSid, getUnavailableReason, inspectClaimCount, makeTrustedTempDirectory,
-  signedReceipt, startProcess, waitForExit, COMPUTER_ID, GENERATION,
+  signedReceipt, startProcess, waitForExit, COMPUTER_ID, GENERATION, LEASE_ARGS,
 } from './helpers/windows-broker-harness.mjs';
 
 // Windows-only, same-user, unprivileged, no service and no SCM: the issue #23 lab tool (test/windows-service-lab) run through its `run` entry point
@@ -54,7 +54,7 @@ describe('issue #23 lab tool: shim jobs and probes, host side', { skip: getUnava
     }
     assert.fail(`timeout ${pattern}: ${resultLines(name).join('|')}`);
   }
-  const brokerJob = (mode, pipe, db, extra = {}) => ({ mode, program: mode === 'inproc' ? brokerDll : brokerExe, args: ['serve', pipe, db, authority.serveArgument, extra.allowedSid ?? sid, String(GENERATION), 'normal'] });
+  const brokerJob = (mode, pipe, db, extra = {}) => ({ mode, program: mode === 'inproc' ? brokerDll : brokerExe, args: ['serve', pipe, db, authority.serveArgument, extra.allowedSid ?? sid, String(GENERATION), 'normal', ...LEASE_ARGS] });
   /** The Control Plane side of a Broker whose pipe server PID is `pid`: fence, sign, send. */
   const sessionOf = (pipe, pid) => brokerSession({ helper, sid, pipeName: pipe, pid, authority });
   /** A receipt for a server that never issued its challenge: for the pre-send identity refusals, where it is never sent anyway. */

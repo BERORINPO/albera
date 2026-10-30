@@ -6,7 +6,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import {
   brokerSession, buildBroker, buildBrokerWithTestSeams, buildPipeClient, createTestAuthority, currentUserSid, getUnavailableReason, inspectClaimCount,
-  makeTrustedTempDirectory, startBroker, startProcess, stableUuid, waitForExit, waitForLine, GENERATION,
+  makeTrustedTempDirectory, startBroker, startProcess, stableUuid, waitForExit, waitForLine, GENERATION, LEASE_CONFIG,
 } from './helpers/windows-broker-harness.mjs';
 
 // Windows-only, same-user, unprivileged (issue #84, decision-log rows 2026-10-30+broker-journal-parity and 2026-10-30+broker-receipt-v2). The journal of the
@@ -57,7 +57,7 @@ describe('Broker journal: schema version and migration, exact duplicate, inspect
     const database = path.join(dir, 'db', 'journal.sqlite');
     prepare?.(database);
     const configFile = path.join(dir, 'config.json');
-    const config = { pipeName: unique('ALBERA_Journal'), database, authorityKeys: [authority.keyEntry], controlPlaneSid: sid, generation };
+    const config = { pipeName: unique('ALBERA_Journal'), database, authorityKeys: [authority.keyEntry], controlPlaneSid: sid, generation, ...LEASE_CONFIG };
     writeFileSync(configFile, JSON.stringify(config));
     return { ...config, configFile };
   }
