@@ -140,16 +140,14 @@ export function validateBrokerResponse(value) {
 
 /**
  * Validate a parsed reply to `fence`: the epoch, lease generation and lease id the challenge belongs to, and the challenge itself. The Broker always sends
- * `leaseId`; the result carries it when it is present and a contract id. It is OPTIONAL here only because the .NET pipe client helper re-serialises
- * the reply and does not relay the field yet: once it does, make it required (one line) and drop the second shape.
+ * `leaseId` and the pipe client helper relays it, so it is required and must be a contract id.
  */
 export function validateFenceResponse(value) {
   if (!isObject(value)) throw new BrokerClientError('invalid_response');
   const keys = Object.keys(value).sort().join(',');
-  const withLease = keys === 'brokerChallenge,brokerEpoch,leaseGeneration,leaseId,ok';
-  if (value.ok === true && (withLease || keys === 'brokerChallenge,brokerEpoch,leaseGeneration,ok') && isCounter(value.brokerEpoch) && isCounter(value.leaseGeneration)
-    && typeof value.brokerChallenge === 'string' && CHALLENGE_PATTERN.test(value.brokerChallenge) && (!withLease || (typeof value.leaseId === 'string' && ID_PATTERN.test(value.leaseId)))) {
-    return Object.freeze({ ok: true, brokerEpoch: value.brokerEpoch, leaseGeneration: value.leaseGeneration, ...(withLease ? { leaseId: value.leaseId } : {}), brokerChallenge: value.brokerChallenge });
+  if (value.ok === true && keys === 'brokerChallenge,brokerEpoch,leaseGeneration,leaseId,ok' && isCounter(value.brokerEpoch) && isCounter(value.leaseGeneration)
+    && typeof value.brokerChallenge === 'string' && CHALLENGE_PATTERN.test(value.brokerChallenge) && typeof value.leaseId === 'string' && ID_PATTERN.test(value.leaseId)) {
+    return Object.freeze({ ok: true, brokerEpoch: value.brokerEpoch, leaseGeneration: value.leaseGeneration, leaseId: value.leaseId, brokerChallenge: value.brokerChallenge });
   }
   if (value.ok === false && keys === 'code,ok' && value.code === 'denied') return DENIED_RESULT;
   throw new BrokerClientError('invalid_response');
@@ -279,7 +277,7 @@ export function sendBrokerRequest(options = {}) {
 /**
  * Ask the Broker for a single-use challenge for `computerId` (the first step of a v2 flow: fence, sign, send). Same pre-send / post-send rules as
  * `sendBrokerRequest`. A challenge is valid until a receipt consumes it, the Broker restarts, or the lease generation moves; it is not retried or reused.
- * @returns {Promise<{ ok: true, brokerEpoch: number, leaseGeneration: number, leaseId?: string, brokerChallenge: string } | { ok: false, code: string }>}
+ * @returns {Promise<{ ok: true, brokerEpoch: number, leaseGeneration: number, leaseId: string, brokerChallenge: string } | { ok: false, code: string }>}
  */
 export function sendBrokerFence(options = {}) {
   return exchange(options, () => ({ fence: requireId(options.computerId) }), validateFenceResponse);

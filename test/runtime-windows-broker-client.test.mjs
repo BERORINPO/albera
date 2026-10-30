@@ -29,7 +29,7 @@ const b64 = (length) => 'A'.repeat(length);
 const SUCCESS = { ok: true, state: 'UNKNOWN', action: 'synthetic.noop' };
 const REPLAYED = { ...SUCCESS, replayed: true };
 const INSPECTED = { ok: true, state: 'UNKNOWN', action: 'synthetic.inspect' };
-const FENCED = { ok: true, brokerEpoch: 3, leaseGeneration: 7, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' };
+const FENCED = { ok: true, brokerEpoch: 3, leaseGeneration: 7, leaseId: 'lease-2026-10-a', brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' };
 const DENIED = { ok: false, code: 'denied' };
 const SID = 'S-1-5-21-1111111111-2222222222-3333333333-1001';
 const EXPECT = { ownerSid: SID, pid: 4242 };
@@ -265,12 +265,14 @@ test('the client is not imported by the Observer, entry layers, runtime modules 
     return entry.isDirectory() ? (entry.name === 'bin' || entry.name === 'obj' ? [] : walk(full)) : [full];
   });
   const self = path.join(root, 'src', 'runtime', 'windows-broker-client.mjs');
+  const authorityClient = path.join(root, 'src', 'runtime', 'approval-authority-client.mjs');
   const sources = walk(path.join(root, 'src')).filter((file) => /\.(?:mjs|js|html|json|css)$/u.test(file) && file !== self);
   assert.ok(sources.length > 50, 'the scan must cover the source tree');
   for (const file of sources) {
     const text = readFileSync(file, 'utf8');
     assert.equal(/windows-broker-client/u.test(text), false, `${path.relative(root, file)} must not reference the Broker client`);
-    assert.equal(/windows-broker-pipe-client|albera-windows-broker-pipe-client/u.test(text), false, `${path.relative(root, file)} must not name the pipe client helper`);
+    // The Approval Authority client shares this helper (one arch-allow line); its own guard is in runtime-approval-authority-client.test.mjs.
+    if (file !== authorityClient) assert.equal(/windows-broker-pipe-client|albera-windows-broker-pipe-client/u.test(text), false, `${path.relative(root, file)} must not name the pipe client helper`);
   }
   const manifest = readFileSync(path.join(root, 'package.json'), 'utf8');
   assert.equal(/windows-broker-client|windows-broker-pipe-client/u.test(manifest), false);
@@ -292,14 +294,14 @@ test('the claim reply may carry replayed: true (an exact duplicate answered from
   assert.deepEqual(parseHelperResult(line({ ...SUCCESS, replayed: false }), 0), { ok: false, code: 'transport_error' });
 });
 
-test('the fence reply is exactly { ok, brokerEpoch, leaseGeneration, brokerChallenge } with counters >= 1 and a canonical 128-bit challenge', () => {
+test('the fence reply is exactly { ok, brokerEpoch, leaseGeneration, leaseId, brokerChallenge } with counters >= 1 and a canonical 128-bit challenge', () => {
   const fenced = validateFenceResponse(FENCED);
   assert.deepEqual(fenced, FENCED);
   assert.ok(Object.isFrozen(fenced));
   assert.notEqual(fenced, FENCED);
   assert.deepEqual(validateFenceResponse(DENIED), DENIED);
   const bad = [
-    null, 'ok', [], {}, { ok: true }, SUCCESS, INSPECTED, { ...FENCED, extra: 1 }, { ...FENCED, replayed: true }, { ok: true, brokerEpoch: 3, leaseGeneration: 7 },
+    null, 'ok', [], {}, { ok: true }, SUCCESS, INSPECTED, { ...FENCED, extra: 1 }, { ...FENCED, replayed: true }, { ok: true, brokerEpoch: 3, leaseGeneration: 7 }, (({ leaseId, ...rest }) => rest)(FENCED),
     { ...FENCED, brokerEpoch: 0 }, { ...FENCED, brokerEpoch: -1 }, { ...FENCED, brokerEpoch: 1.5 }, { ...FENCED, brokerEpoch: '3' }, { ...FENCED, brokerEpoch: 2 ** 53 },
     { ...FENCED, leaseGeneration: 0 }, { ...FENCED, leaseGeneration: null },
     { ...FENCED, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAB' }, { ...FENCED, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAA' }, { ...FENCED, brokerChallenge: 'A'.repeat(23) },

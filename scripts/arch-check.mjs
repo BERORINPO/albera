@@ -62,6 +62,8 @@ const EXPECTED = {
     'hyperv-guest-capture-prototype.mjs', 'hyperv-guest/capture-io.ps1', 'hyperv-guest/screen-helper.ps1',
     // thin Node client for the Host Broker pipe: the only runtime file allowed to name the Broker (rule 8a arch-allow)
     'windows-broker-client.mjs',
+    // thin Node client for the Approval Authority submit pipe: it reuses the Broker client's pipe client helper (one arch-allow line for the helper path; arch 8a / 10a keep everything else away)
+    'approval-authority-client.mjs',
     // shared receipt v2 / action digest contract for the future Broker and Approval Authority (rule 9; spec/architecture.md decision log 2026-10-30+receipt-v2-contract)
     ...['action-digest.mjs', 'receipt-v2.mjs', 'strict-json.mjs', 'receipt-v2.schema.json', 'test-vectors.json', 'ActionDigest.cs', 'ReceiptV2.cs', 'StrictJson.cs'].map((f) => `broker-contract/${f}`),
     ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
@@ -263,8 +265,9 @@ results.push(`7 runtime UI under ${UI_MAX_LINES} lines: ${runtimeUi.length} file
 
 // 8. The Windows Host Broker prototype (src/runtime/windows-broker, ADR-002 Proposed) is built on demand only. The Observer
 //    layers and every runtime .mjs file may not import, spawn or name it, and package.json may not wire it into `bin`, the
-//    npm lifecycle or `start`/`demo`. The only runtime file that names them is windows-broker-client.mjs, with two explicit
-//    `// arch-allow: <reason>` lines (the Broker wire reference, the pipe client helper path); any future launcher needs its own (counted above).
+//    npm lifecycle or `start`/`demo`. The only runtime files that name them are windows-broker-client.mjs, with two explicit
+//    `// arch-allow: <reason>` lines (the Broker wire reference, the pipe client helper path), and approval-authority-client.mjs, with one
+//    (the same helper path); any future launcher needs its own (counted above).
 const BROKER_REF = /windows-broker|albera-windows-broker|WindowsBroker|windows-service-lab|lab-service-shim/i;
 check('8a Windows Broker is not referenced by Observer layers or runtime modules', [...entry, ...adapters, ...core, ...shared, ...pub, ...runtime], (line) =>
   BROKER_REF.test(line) ? 'the Windows Broker prototype must not be imported, spawned or named here (build-on-demand only)' : null,
@@ -273,10 +276,10 @@ const brokerRoot = 'src/runtime/windows-broker';
 const brokerFiles = ['Albera.WindowsBroker.csproj', 'Program.cs', 'BrokerRequests.cs', 'Journal.cs', 'ServiceConfig.cs', 'ServiceHost.cs', 'ServiceLoop.cs', 'packages.lock.json'];
 for (const f of brokerFiles) if (!fs.existsSync(path.join(ROOT, brokerRoot, f))) violations.push(`[8b Windows Broker source] ${brokerRoot}/${f} does not exist (false-safe)`);
 // The trusted pipe client helper (verifies the pipe server before it writes) is part of the same on-demand set: its 3 files must exist, its
-// Program.cs stays small enough to review (<= 220 lines), and `build:windows-broker` must build it. Its name also matches BROKER_REF, so 8a and 8c cover it.
+// Program.cs stays small enough to review (<= 250 lines), and `build:windows-broker` must build it. Its name also matches BROKER_REF, so 8a and 8c cover it.
 const pipeClientRoot = 'src/runtime/windows-broker-pipe-client';
 const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'packages.lock.json'];
-const PIPE_CLIENT_MAX_LINES = 220; // 200 until the fence and inspect request kinds (receipt v2) were added
+const PIPE_CLIENT_MAX_LINES = 250; // 200 until the fence and inspect request kinds (receipt v2) were added; 220 until the Approval Authority submit request kind (`authority`) was added
 for (const f of pipeClientFiles) if (!fs.existsSync(path.join(ROOT, pipeClientRoot, f))) violations.push(`[8b Windows Broker pipe client source] ${pipeClientRoot}/${f} does not exist (false-safe)`);
 const pipeClientProgram = path.join(ROOT, pipeClientRoot, 'Program.cs');
 if (fs.existsSync(pipeClientProgram)) {
