@@ -95,6 +95,11 @@ try {
     writeFileSync(providerStatePath, JSON.stringify({ state: 'off', generation: operation.expectedGeneration }), { flag: 'wx', mode: 0o600 });
     writeSync(1, `RESULT ${JSON.stringify({ status: 'SIDE_EFFECT', operationId: operation.operationId })}\n`);
     process.exit(25);
+  } else if (mode === 'flow-advance') {
+    // Every contender holds the revision-0 record of the same operation (`operationId` argument); the journal's compare-and-set lets exactly one of them move it.
+    const record = store.flowJournal().advance(operationId, 0, ['INTENT'], { phase: 'FENCED', winner: Number(workerId) });
+    process.stdout.write(`RESULT ${JSON.stringify({ status: 'WON', winner: record.winner, revision: record.revision })}
+`);
   } else if (mode === 'begin-operation') {
     const result = store.beginOperation(startOperation(workerId));
     process.stdout.write(`RESULT ${JSON.stringify({ status: result.created ? 'CREATED' : 'REPLAYED', operationId: result.operation.operationId })}\n`);
