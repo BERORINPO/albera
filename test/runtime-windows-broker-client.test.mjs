@@ -265,12 +265,14 @@ test('the client is not imported by the Observer, entry layers, runtime modules 
     return entry.isDirectory() ? (entry.name === 'bin' || entry.name === 'obj' ? [] : walk(full)) : [full];
   });
   const self = path.join(root, 'src', 'runtime', 'windows-broker-client.mjs');
+  const authorityClient = path.join(root, 'src', 'runtime', 'approval-authority-client.mjs');
   const sources = walk(path.join(root, 'src')).filter((file) => /\.(?:mjs|js|html|json|css)$/u.test(file) && file !== self);
   assert.ok(sources.length > 50, 'the scan must cover the source tree');
   for (const file of sources) {
     const text = readFileSync(file, 'utf8');
     assert.equal(/windows-broker-client/u.test(text), false, `${path.relative(root, file)} must not reference the Broker client`);
-    assert.equal(/windows-broker-pipe-client|albera-windows-broker-pipe-client/u.test(text), false, `${path.relative(root, file)} must not name the pipe client helper`);
+    // The Approval Authority client shares this helper (one arch-allow line); its own guard is in runtime-approval-authority-client.test.mjs.
+    if (file !== authorityClient) assert.equal(/windows-broker-pipe-client|albera-windows-broker-pipe-client/u.test(text), false, `${path.relative(root, file)} must not name the pipe client helper`);
   }
   const manifest = readFileSync(path.join(root, 'package.json'), 'utf8');
   assert.equal(/windows-broker-client|windows-broker-pipe-client/u.test(manifest), false);

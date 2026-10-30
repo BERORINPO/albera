@@ -81,7 +81,7 @@ const pipeClientProject = read('src', 'runtime', 'windows-broker-pipe-client', '
 const pipeClientLock = JSON.parse(read('src', 'runtime', 'windows-broker-pipe-client', 'packages.lock.json'));
 
 test('pipe client helper is small, dependency-free and locked: BCL and P/Invoke only', () => {
-  assert.ok(pipeClientProgram.replace(/\n$/u, '').split('\n').length <= 220, 'Program.cs stays reviewable (220 lines; 200 before the fence and inspect request kinds)');
+  assert.ok(pipeClientProgram.replace(/\n$/u, '').split('\n').length <= 250, 'Program.cs stays reviewable (250 lines; 220 before the Approval Authority submit request kind, 200 before the fence and inspect request kinds)');
   assert.deepEqual([...pipeClientProject.matchAll(/<PackageReference /gu)], [], 'no package reference');
   assert.match(pipeClientProject, /<RuntimeIdentifiers>win-x64<\/RuntimeIdentifiers>/u);
   assert.match(pipeClientProject, /<AssemblyName>albera-windows-broker-pipe-client<\/AssemblyName>/u);
