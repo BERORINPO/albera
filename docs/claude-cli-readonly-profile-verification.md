@@ -37,11 +37,11 @@ Runs 2 and 3 answered normally, so authentication (OAuth) was unaffected and the
 - `--strict-mcp-config` was added (before the variadic `--disallowedTools`). Per `--help`, `--restricted` alone does not skip MCP servers; before this change the MCP block depended on `--safe-mode` alone.
 - Both profiles now require Claude Code `>= 2.1.310`, the only version on which the whole flag set was run. Older or unreadable versions fail closed with `cli_version_unavailable` before the task process starts. This supersedes the 2.1.248 / 2.1.259 floors in ADR 0013 and 0014.
 - The approval summary now names `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` (when set) in addition to `CLAUDE_CONFIG_DIR` and the other provider variables. Names only; values are never in the summary.
-- Opt-in real-CLI contract test: `ALBERA_REAL_CLAUDE_CONTRACT=1 node --test test/runtime-claude-readonly-contract.test.mjs` repeats run 3 against a synthetic repo (one paid one-word call). It is skipped by default.
+- Opt-in real-CLI contract test: `ALBERA_REAL_CLAUDE_CONTRACT=1 node --test test/runtime-claude-readonly-profile.test.mjs` repeats run 3 against a synthetic repo (one paid one-word call). It is skipped by default.
 
 ## Not verified
 
 - The streaming profile (`--input-format stream-json`) was not run; it shares the same safety flags.
 - Managed (admin) settings still apply by design and are outside this check.
-- Behavior of versions other than 2.1.310; they are refused rather than assumed.
+- Behavior of versions other than 2.1.310. Versions below 2.1.310 are refused; newer versions are accepted but not verified. Re-run the opt-in contract test after a CLI upgrade.
 - `--disallowedTools mcp__*` glob semantics were not tested; it is a secondary layer.
