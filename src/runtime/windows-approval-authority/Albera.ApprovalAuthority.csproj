@@ -21,5 +21,12 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../broker-contract/*.cs" />
+    <!-- The test seam file is not even compiled unless the switch is on. -->
+    <Compile Remove="TestSeam.cs" Condition="'$(AlberaAuthorityTestFaults)' != 'true'" />
   </ItemGroup>
+  <!-- The symbol can also arrive from outside (an environment variable named DefineConstants, a Directory.Build.props, -p:DefineConstants=...). Pinning the switch
+       false does not stop that, so a build without the switch that still carries the symbol fails instead of shipping the fakes. -->
+  <Target Name="RefuseInheritedTestSymbol" BeforeTargets="BeforeCompile;CoreCompile" Condition="'$(AlberaAuthorityTestFaults)' != 'true' and $(DefineConstants.Contains('ALBERA_AUTHORITY_TEST_FAULTS'))">
+    <Error Code="ALBERA_SEAM" Text="ALBERA_AUTHORITY_TEST_FAULTS is defined but AlberaAuthorityTestFaults is not true: refusing to build the test seam into a non-test build." />
+  </Target>
 </Project>
