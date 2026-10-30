@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkApproverBuildInputs } from './approver-build-inputs.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ALLOW_RE = /\/\/\s*arch-allow:\s*\S+/;
@@ -378,7 +379,7 @@ check('11a Approver app is not referenced by Observer layers or runtime modules'
 );
 const approverRoot = 'src/runtime/windows-approver';
 const approverSources = ['Program.cs', 'TestSeam.cs', 'CommandLine.cs', 'ApproverCommands.cs', 'PendingView.cs', 'Renderer.cs', 'SafeText.cs', 'Presence.cs', 'Channel.cs', 'PipeChannel.cs',
-  'ServerExpectation.cs', 'ExitCodes.cs'];
+  'ServerExpectation.cs', 'ExitCodes.cs', 'EnrollCommand.cs', 'HelloKeyStore.cs', 'Wiring.cs', 'WindowsHello.cs'];
 for (const f of [...approverSources, 'Albera.Approver.csproj', 'packages.lock.json']) {
   if (!fs.existsSync(path.join(ROOT, approverRoot, f))) violations.push(`[11b Approver source] ${approverRoot}/${f} does not exist (false-safe)`);
 }
@@ -387,6 +388,9 @@ check('11c Approver sources do not name the Broker or Authority projects', appro
 );
 const approverPublish = fs.existsSync(path.join(ROOT, 'scripts/publish-windows-approver.mjs')) ? fs.readFileSync(path.join(ROOT, 'scripts/publish-windows-approver.mjs'), 'utf8') : '';
 if (!approverPublish.includes('-p:AlberaApproverTestFaults=false')) violations.push('[11b Approver source] scripts/publish-windows-approver.mjs does not pin the test fakes off (false-safe)');
+// 11e. Allowlist of every input of the approver build (scripts/approver-build-inputs.mjs): exactly Sdk Microsoft.NET.Sdk, the allowed elements and values, the pinned Windows SDK projection
+// (the only external dependency), and no ambient Directory.Build.* / Directory.Packages.props / global.json / nuget.config from the project directory up to the repository root.
+for (const v of checkApproverBuildInputs(ROOT)) violations.push(v);
 const approverWired = [
   ...Object.entries(pkg.bin ?? {}).filter(([, v]) => APPROVER_REF.test(String(v))).map(([k]) => `bin.${k}`),
   ...LIFECYCLE.filter((k) => APPROVER_REF.test(String(pkg.scripts?.[k] ?? ''))).map((k) => `scripts.${k}`),

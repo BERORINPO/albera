@@ -33,10 +33,10 @@ export function runApproverUnitHarness(workDirectory) {
 /** The PKCS#8 form of the Node Hello key, for --test-fake-key (the fake signer holds it in memory only). */
 export const fakeKeyArgument = (hello) => hello.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64');
 
-/** The `--test-*` options that point the test-faults app at one test Authority (same-user owner SID, the serve-loop's PID) and give it the fake Hello key. */
-export function testOptions(authority, { sid, hello, pipeRoot = authority.config.pipeRoot, ownerSid = sid, pid = authority.child.pid, presence, timeoutMs } = {}) {
+/** The `--test-*` options (stdin counts as a console unless interactive:false) that point the test-faults app at one test Authority (same-user owner SID, the serve-loop's PID) and give it the fake Hello key. */
+export function testOptions(authority, { sid, hello, pipeRoot = authority.config.pipeRoot, ownerSid = sid, pid = authority.child.pid, presence, timeoutMs, interactive = true } = {}) {
   return ['--test-pipe-root', pipeRoot, '--test-owner-sid', ownerSid, '--test-pid', String(pid),
-    ...(hello ? ['--test-fake-key', fakeKeyArgument(hello)] : []), ...(presence ? ['--test-presence', presence] : []), ...(timeoutMs ? ['--test-timeout-ms', String(timeoutMs)] : [])];
+    ...(interactive ? ['--test-interactive', 'yes'] : []), ...(hello ? ['--test-fake-key', fakeKeyArgument(hello)] : []), ...(presence ? ['--test-presence', presence] : []), ...(timeoutMs ? ['--test-timeout-ms', String(timeoutMs)] : [])];
 }
 
 /** Run the app; resolves with { code, stdout, stderr } (never rejects on a non-zero exit). `stdin` is written and closed. */

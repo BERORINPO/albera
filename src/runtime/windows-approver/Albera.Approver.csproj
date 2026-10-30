@@ -1,11 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- Approver app (ADR-002 "Receipt v2" / Approval Authority option B, Proposed / NOT VERIFIED). A console program a human runs to list, approve or deny the Approval
-       Authority's pending requests. Built only on demand by `npm run build:approver` or the approver tests. Nothing installs, registers or starts it. No package:
-       BCL and P/Invoke only. The receipt v2 / action digest contract is source-included from ../broker-contract (no other project is referenced). The real
-       Windows Hello signer is NOT built (it needs the Windows SDK projection from NuGet): see docs/architecture/approver-app.md. -->
+       Authority's pending requests, and to enrol its Windows Hello key. Built only on demand by `npm run build:approver` or the approver tests. Nothing installs, registers
+       or starts it. The ONE external dependency is the Windows SDK projection (the WinRT KeyCredentialManager for Windows Hello): the Windows target framework below makes the
+       SDK restore the targeting pack Microsoft.Windows.SDK.NET.Ref from NuGet (it is not a PackageReference; WindowsSdkPackageVersion pins it). Everything else is BCL and
+       P/Invoke. The receipt v2 / action digest contract is source-included from ../broker-contract (no other project is referenced). See docs/architecture/approver-app.md. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <!-- The pinned SDK projection pack (Microsoft.Windows.SDK.NET.Ref, a ~12 MB Microsoft-signed download). A newer pack is a reviewed change, not a silent restore. -->
+    <WindowsSdkPackageVersion>10.0.19041.57</WindowsSdkPackageVersion>
     <AssemblyName>AlberaApprover</AssemblyName>
     <RootNamespace>Albera.Approver</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -16,7 +19,7 @@
     <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
   </PropertyGroup>
   <PropertyGroup Condition="'$(AlberaApproverTestFaults)' == 'true'">
-    <!-- Test-only: the fake presence signer (in-memory RSA key) and the test options. Only the approver tests pass this property; the publish script pins it
+    <!-- Test-only: the fake presence signer and key store (in-memory RSA key) and the test options. Only the approver tests pass this property; the publish script pins it
          false, so none of it exists in the shipped binary. The symbol is defined here and nowhere else. -->
     <DefineConstants>$(DefineConstants);ALBERA_APPROVER_TEST_FAULTS</DefineConstants>
   </PropertyGroup>
@@ -24,6 +27,8 @@
     <Compile Include="../broker-contract/*.cs" />
     <!-- The test seam file is not even compiled unless the switch is on. -->
     <Compile Remove="TestSeam.cs" Condition="'$(AlberaApproverTestFaults)' != 'true'" />
+    <!-- The Windows Hello code is shipped-only: a test-faults build does not contain it, so no test can reach the real KeyCredentialManager. -->
+    <Compile Remove="WindowsHello.cs" Condition="'$(AlberaApproverTestFaults)' == 'true'" />
   </ItemGroup>
   <!-- The symbol can also arrive from outside (an environment variable named DefineConstants, a Directory.Build.props, -p:DefineConstants=...). Pinning the switch
        false does not stop that, so a build without the switch that still carries the symbol fails instead of shipping the fake signer and the identity overrides. -->
