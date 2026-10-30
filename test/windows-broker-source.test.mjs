@@ -10,17 +10,18 @@ const read = (...parts) => readFileSync(path.join(root, ...parts), 'utf8');
 const program = read('src', 'runtime', 'windows-broker', 'Program.cs');
 const project = read('src', 'runtime', 'windows-broker', 'Albera.WindowsBroker.csproj');
 const publish = read('scripts', 'publish-windows-broker.mjs');
-// The service host lives in four more files of the same project (partial class Program + ServiceConfig + ServiceHost + ServicePathGuard). Code only: comments may name what is NOT used.
+// The SQLite journal is Journal.cs. The service host lives in four more files of the same project (partial class Program + ServiceConfig + ServiceHost + ServicePathGuard). Code only: comments may name what is NOT used.
 const serviceHost = read('src', 'runtime', 'windows-broker', 'ServiceHost.cs');
 const serviceConfig = read('src', 'runtime', 'windows-broker', 'ServiceConfig.cs');
 const serviceLoop = read('src', 'runtime', 'windows-broker', 'ServiceLoop.cs');
 const servicePathGuard = read('src', 'runtime', 'windows-broker', 'ServicePathGuard.cs');
 const databaseFolderPin = read('src', 'runtime', 'windows-broker', 'DatabaseFolderPin.cs');
+const journal = read('src', 'runtime', 'windows-broker', 'Journal.cs');
 const stripComments = (source) => source.replace(/^\s*\/\/.*$/gmu, '').replace(/\s\/\/ .*$/gmu, '');
-const brokerCode = [program, serviceHost, serviceConfig, serviceLoop, servicePathGuard, databaseFolderPin].map(stripComments).join('\n');
+const brokerCode = [program, serviceHost, serviceConfig, serviceLoop, servicePathGuard, databaseFolderPin, journal].map(stripComments).join('\n');
 
 test('Broker source stays a fixed-action prototype with no process launch, installer or Hyper-V code', () => {
-  assert.deepEqual([...program.matchAll(/action != "([^"]+)"/gu)].map((m) => m[1]), ['synthetic.noop']);
+  assert.deepEqual([...program.matchAll(/action != "([^"]+)"/gu)].map((m) => m[1]), ['synthetic.noop', 'synthetic.inspect'], 'the action allowlist is exactly the claim action and the read-only inspect action');
   for (const forbidden of [/Process\.Start/u, /ProcessStartInfo/u, /ServiceBase/u, /ServiceController/u, /\bsc\.exe\b/u, /powershell/iu, /Hyper-?V/iu, /Get-VM/u, /SetAccessControl/u]) {
     assert.equal(forbidden.test(program), false, `Program.cs must not match ${forbidden}`);
     assert.equal(forbidden.test(brokerCode), false, `no Broker source file may match ${forbidden}`);
@@ -47,7 +48,7 @@ test('Broker pipe is ephemeral, owned by the Broker\'s own SID and grants only t
 
 test('Broker fault-injection seam is compiled out of the shipped build and the pipe stays first-instance only', () => {
   // Every reference to the injected faults sits inside #if ALBERA_BROKER_TEST_FAULTS ... #endif (plus the unconditional enum declaration).
-  const outsideSeam = [program, serviceHost, serviceConfig, serviceLoop, servicePathGuard, databaseFolderPin].map((source) => source.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '')).join('\n');
+  const outsideSeam = [program, serviceHost, serviceConfig, serviceLoop, servicePathGuard, databaseFolderPin, journal].map((source) => source.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '')).join('\n');
   assert.equal(/serve-fault|RevertFails|RevertThrows|RevertLies|serve-loop|ServeLoopForTest/u.test(outsideSeam), false, 'fault names and the serve-loop test entry must only appear inside the test-only #if block');
   assert.match(project, /Condition="'\$\(AlberaBrokerTestFaults\)' == 'true'"/u);
   // MSBuild reads environment variables as properties, so the publish pins the switch off as a global property.
@@ -172,7 +173,7 @@ test('service loop creates the first-instance pipe once and reuses that instance
 test('service exit codes are fixed and the dispatcher is called before the config is read', () => {
   assert.deepEqual([...program.matchAll(/const int (Exit\w+) = (\d+);/gu)].map((m) => `${m[1]}=${m[2]}`), [
     'ExitPipeUnavailable=70', 'ExitImpersonationRevertFailed=71', 'ExitPipeOwnerUnavailable=72',
-    'ExitServiceConfigInvalid=73', 'ExitNotStartedByScm=74', 'ExitServiceLoopFailed=75',
+    'ExitServiceConfigInvalid=73', 'ExitNotStartedByScm=74', 'ExitServiceLoopFailed=75', 'ExitJournalRefused=76',
   ]);
   assert.equal(/TryLoad\(/u.test(program), false, 'Main never reads the service config itself');
   assert.match(program, /args\.Length == 2 && args\[0\] == "service"\) return ServiceHost\.Run\(args\[1\]\);/u);
@@ -286,4 +287,57 @@ test('database folder pin: one kernel32 import, no FILE_SHARE_DELETE, taken befo
   assert.ok(pinned > 0, '`using` ties the handle to the loop');
   assert.ok(pinned < serviceLoop.indexOf('CreateBrokerPipe(config.PipeName'), 'pinned before the pipe is created, so RUNNING is never reported without the pin');
   assert.match(serviceLoop, /ServiceConfig\.Reason\.DatabasePin\);\s+return ExitServiceConfigInvalid;/u, 'no pin, no service (73)');
+});
+
+// Journal parity (issue #84, decision-log row 2026-10-30+broker-journal-parity). Source guards; behaviour is in runtime-windows-broker-journal.test.mjs.
+test('journal: SQLite is reached only from Journal.cs (and the read-only count of the inspect subcommand), no P/Invoke', () => {
+  assert.deepEqual(importsOf(journal), [], 'no P/Invoke');
+  const programWithoutCount = stripComments(program)
+    .replace('await using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Mode = SqliteOpenMode.ReadOnly }.ToString());', '')
+    .replace('await db.OpenAsync(); await using var command = db.CreateCommand(); command.CommandText = "SELECT COUNT(*) FROM claims;";', '');
+  assert.equal(/SqliteConnection\b|SqliteCommand\b|CreateCommand/u.test(programWithoutCount), false, 'Program.cs keeps only the read-only count of the inspect subcommand');
+  for (const forbidden of [/DROP\s/iu, /DELETE\s+FROM/iu, /ATTACH/iu, /load_extension/iu, /PRAGMA\s+(?!user_version|journal_mode=WAL|synchronous=FULL)/iu]) {
+    assert.equal(forbidden.test(stripComments(journal)), false, 'Journal.cs must not match ' + forbidden);
+  }
+});
+
+test('journal schema: user_version 2, created fresh, migrated from the unversioned claims table, refused when newer or unknown, before anything is written', () => {
+  assert.match(journal, /internal const long CurrentVersion = 2;/u);
+  assert.match(journal, /PRAGMA user_version = \{CurrentVersion\};/u, 'the version is written from the one constant');
+  assert.match(journal, /ALTER TABLE claims ADD COLUMN request_digest TEXT/u, 'forward migration adds a column and keeps every row');
+  assert.match(journal, /if \(version > CurrentVersion\) throw new RefusedException\("newer"\);/u);
+  assert.match(journal, /if \(version != 0 && version != CurrentVersion\) throw new RefusedException\("unsupported"\);/u);
+  assert.match(journal, /catch \(SqliteException\) \{ throw new RefusedException\("unreadable"\); \}/u);
+  const prepare = journal.slice(journal.indexOf('private static async Task PrepareAsync('));
+  assert.ok(prepare.indexOf('await ShapeAsync(db);') < prepare.indexOf('PRAGMA journal_mode=WAL'), 'classify (and refuse) before journal_mode is switched');
+  assert.ok(prepare.indexOf('BEGIN IMMEDIATE;') < prepare.indexOf('CREATE TABLE claims') && prepare.indexOf('CREATE TABLE claims') < prepare.indexOf('PRAGMA user_version') && prepare.indexOf('PRAGMA user_version') < prepare.indexOf('"COMMIT;"'), 'DDL and version in one transaction');
+  // Wiring: refused before the pipe exists, in serve and in the service loop, with the fixed exit code.
+  const serve = program.slice(program.indexOf('private static async Task<int> ServeAsync('), program.indexOf('// An existing journal is migrated forward or refused'));
+  assert.ok(serve.indexOf('RefuseUnusableJournalAsync(settings.Database)) return ExitJournalRefused;') > 0 && serve.indexOf('RefuseUnusableJournalAsync') < serve.indexOf('CreateBrokerPipe('));
+  assert.ok(serviceLoop.indexOf('RefuseUnusableJournalAsync(config.Database)) return ExitJournalRefused;') > serviceLoop.indexOf('DatabaseFolderPin.TryPin') && serviceLoop.indexOf('RefuseUnusableJournalAsync') < serviceLoop.indexOf('CreateBrokerPipe(config.PipeName'));
+  assert.match(program, /Console\.WriteLine\("BROKER_FATAL=JOURNAL_" \+ ex\.Reason\.ToUpperInvariant\(\)\);/u);
+  assert.match(program, /SqliteException or ArgumentException or Journal\.RefusedException\)/u, 'a refusal on a request is a plain denial');
+});
+
+test('exact duplicate: only the same operationId with the same receipt-and-signature digest gets the recorded state; the reply shape is unchanged', () => {
+  assert.match(journal, /SELECT state FROM claims WHERE operation_id = \$o AND request_digest = \$q;/u, 'both the operation and the digest must match (a NULL digest never matches)');
+  assert.match(journal, /catch \(SqliteException ex\) when \(ex\.SqliteErrorCode == 19\)/u);
+  assert.match(journal, /SHA256\.HashData\(\[\.\. BitConverter\.GetBytes\(receipt\.Length\), \.\. receipt, \.\. signature\]\)/u);
+  assert.match(program, /private static byte\[\] SuccessReply\(string state\) => Encoding\.UTF8\.GetBytes\(\$"\{\{\\"ok\\":true,\\"state\\":\\"\{state\}\\",\\"action\\":\\"synthetic\.noop\\"\}\}"\);/u, 'the same three keys as before');
+  assert.equal([...program.matchAll(/SuccessReply\(/gu)].length, 4, 'definition + inspect + replay + first claim');
+  assert.match(journal, /private static readonly string\[\] RecordedStates = \[UnknownState\];/u, 'a state the client would not accept is never sent');
+});
+
+test('inspect: a second fixed action that opens the journal read-only, never creates it and writes no row', () => {
+  const inspect = journal.slice(journal.indexOf('internal static async Task<string?> RecordedStateAsync('), journal.indexOf('private static SqliteConnection Open('));
+  assert.match(inspect, /if \(!File\.Exists\(database\)\) return null;/u);
+  assert.match(inspect, /Open\(database, SqliteOpenMode\.ReadOnly\)/u);
+  assert.equal(/INSERT|UPDATE|DELETE|ExecuteNonQuery|BeginTransaction|Migrate|Prepare/iu.test(inspect), false, 'no write, no transaction, no migration on the inspect path');
+  assert.match(inspect, /!= CurrentVersion\) throw new RefusedException\("unsupported"\)/u);
+  const dispatch = program.slice(program.indexOf('if (action == "synthetic.inspect")'), program.indexOf('(Journal.ClaimKind kind, string state)'));
+  assert.match(dispatch, /Journal\.RecordedStateAsync\(database, Get\("operationId"\)\)/u);
+  assert.equal(/ClaimAsync|CheckExistingAsync/u.test(dispatch), false);
+  // Same receipt validation for both actions: signature first, one field list (the receipt itself did not change).
+  assert.ok(program.indexOf('VerifyData(receipt, signature') < program.indexOf('if (action == "synthetic.inspect")'));
+  assert.equal([...program.matchAll(/string\[\] fields = /gu)].length, 1, 'the receipt still has exactly one field list');
 });

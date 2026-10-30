@@ -60,9 +60,59 @@ The low-privilege Control Plane and privileged Broker are separate processes wit
 
 `ServicePathGuard` checks the journal folder once, but every request reopens the database by path. The service therefore opens the folder once at start (after the guard passed; `DatabaseFolderPin.cs`) with a data right (`FILE_LIST_DIRECTORY`) and **without `FILE_SHARE_DELETE`**, and holds the handle for the life of the serve loop. While it is held, a rename or delete of the folder fails for every principal, so the folder cannot be swapped for an empty one between requests (the replay that would enable is the reason for the guard). Requests keep using the same path. The guard is run again on the pinned folder. A folder that cannot be pinned ends the start with exit 73 (`database_pin`). The pin lasts only while the service runs: while the service is stopped, or between STOP and the next START, the folder is protected by its ACL and by keeping its parents administrator-only (installer precondition 4 in `issue-23-service-identity-verification-plan.md`). Tested on the host (`runtime-windows-broker-service-hardening.test.mjs`, "accept condition C3"); the VM lab does not repeat it.
 
+## Amendment 2026-10-30: journal schema version, exact duplicate, inspect (issue #84)
+
+This is an amendment to the Accepted Broker/IPC scope; it changes the Broker's journal and adds one fixed action, and **does not change** the receipt fields, the signature scheme, TTL handling, the Lease/generation binding, the frame `{ "receipt", "signature" }`, the 2 KiB bound, the pipe, or either reply shape. Decision-log row `2026-10-30+broker-journal-parity`.
+
+- **Schema version.** The journal carries `PRAGMA user_version` (the Node store's mechanism; the DDL and the number commit in one transaction). Current version: 2. The unversioned journal of #22 / #23 (a six-column `claims` table, version 0) is migrated forward at start-up: `request_digest` is added, every row is kept (digest NULL). A missing or empty file is created at version 2 by the first claim. Anything else is refused **before the pipe exists**, for `serve` and for the service alike: a version above 2 (`BROKER_FATAL=JOURNAL_NEWER`), version 1 / a negative version / a table or column set that is not exactly the known one (`JOURNAL_UNSUPPORTED`), a file SQLite cannot read (`JOURNAL_UNREADABLE`). The fixed exit code is **76** (service-specific exit code 76 under the SCM); nothing is written to a refused file, not even a `journal_mode` switch. There is no downgrade. If the version or shape changes while the service runs, each request is a plain `denied`.
+- **Exact duplicate.** `request_digest` is the SHA-256 of the 4-byte little-endian receipt length, the receipt bytes and the signature bytes. A request whose uniqueness check collides is an exact duplicate only when the **same operationId** is recorded with the **same digest**; the Broker then returns the recorded state in the unchanged success shape `{ "ok": true, "state", "action": "synthetic.noop" }` and writes nothing. It is denied, as before, when the receipt differs (also: same bytes with a different signature), when another operation reuses a receiptId or approvalId, or when the stored row has no digest (a migrated row). The receipt checks (signature, issuer, audience, action, digest, Lease, generation, policy, expiry) still run first, so an exact duplicate of an expired receipt is denied. Consequence for callers: a first claim and its exact replay produce the same reply; the reply to a claim means "this operation is claimed and its outcome is the recorded state", never "execute now" (a Control Plane that gets `UNKNOWN` must reconcile, not retry the effect).
+- **Inspect.** The action allowlist is exactly `synthetic.noop` and `synthetic.inspect`. An inspect request is the same signed twelve-field receipt with `action` `synthetic.inspect` (its `actionDigest` is the SHA-256 of that string) and the `operationId` to look up; it goes through the same pipe, the same peer check, the same frame and the same validation. The Broker opens the journal read-only (never creating it, never migrating it), writes no row, and does not consume the receipt, `receiptId` or `approvalId` (an inspect receipt can be sent again within its lifetime). It answers `{ "ok": true, "state": <recorded>, "action": "synthetic.noop" }` (the action of the inspected operation) or `denied` when there is no record, no journal file, or the journal is not at the current version. The reply carries no new field because the Node client accepts exactly `action,ok,state`; a caller knows it sent an inspect. Only `UNKNOWN` exists as a recorded state today. Moving `UNKNOWN` to a final state (reconcile against a Provider result) is not implemented: it depends on the receipt format of the Approval Authority design that is still open.
+
+## Receipt v2 (Proposed, not yet enforced by the Broker)
+
+**Status.** Contract only. The Broker prototype still checks the v1 receipt above; nothing in `src/runtime/windows-broker/`, the Control Plane or any Approval Authority uses v2 yet. The design (separate Approval Authority; the human co-signs the exact action digest with Windows Hello; the Control Plane can only submit requests) is provisionally adopted and awaits the usual ADR acceptance. The single source for both the Node Control Plane / Authority client and the .NET Broker / Authority is `src/runtime/broker-contract/`: `receipt-v2.schema.json`, Node `action-digest.mjs` / `receipt-v2.mjs` / `strict-json.mjs`, C# `ActionDigest.cs` / `ReceiptV2.cs` / `StrictJson.cs` (BCL only, net10.0, meant to be source-included), and `test-vectors.json` that both languages must reproduce.
+
+**Receipt.** The signed content is the JSON bytes exactly as sent (ECDSA P-256 / SHA-256 as in v1; verify the signature first, then validate those same bytes). Exactly 22 keys, no others, all required, flat, at most 1280 bytes (so base64 plus the 2 KiB frame still fits):
+
+| key | type / format |
+|---|---|
+| `v` | integer, 2 |
+| `kid`, `approverKeyId`, `operationId`, `idempotencyKey`, `projectId`, `computerId`, `leaseId`, `policyVersion` | id: `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` |
+| `issuer` | `albera-approval-authority`; the schema also allows `albera-test-[a-z0-9-]{1,32}`, which production rejects |
+| `audience` | `^[a-z][a-z0-9-]{0,63}$`; the relying party supplies the value it expects |
+| `purpose` | `broker.operation` or `guest.command` |
+| `action` | an action of `purpose`: `environment.create/inspect/start/stop/destroy`, `synthetic.noop` (broker.operation); `task.start/cancel`, `workspace.inspect`, `synthetic.noop` (guest.command) |
+| `approvalId`, `receiptId` | lowercase UUID |
+| `nonce`, `brokerChallenge` | 128 bits as unpadded base64url, canonical form (22 characters, last one in `A Q g w`) |
+| `actionDigest` | `sha256:` + 64 lowercase hex |
+| `leaseGeneration`, `brokerEpoch` | integer >= 1 |
+| `iat`, `exp` | integer Unix seconds >= 1 |
+
+The reader is strict: duplicate keys, `null`, arrays, nested objects, fractions, exponents, `-0`, leading zeros, integers above 2^53-1, lone surrogates, a BOM, comments, trailing commas and trailing data are all `malformed`. Checks run in a fixed order and the first failure is the verdict (a code and, only when useful, a fixed field name or `$extra`; never attacker text): `invalid_context`, `malformed`, `schema`, `version`, `issuer`, `action_pair`, `ttl`, `not_yet_valid`, `expired`, `binding`, `action_digest`.
+
+- **Time.** `exp - iat` must be in 1..300 seconds (the Authority issues 120 by default); `iat <= now + 30`; `now < exp`. The clock is injected (Unix seconds).
+- **Bindings.** The caller supplies, from Broker-trusted state, `audience`, `purpose`, `operationId`, `idempotencyKey`, `leaseId`, `leaseGeneration`, `brokerEpoch`, `brokerChallenge`, `policyVersion`, and the trusted action DTO (which also gives `projectId`, `computerId`, `action`). Any difference is `binding`. A missing or malformed piece of context is `invalid_context` (fail closed).
+- **Digest.** The receipt's `actionDigest` is never trusted. The validator recomputes it from the trusted DTO and the receipt `purpose` and compares. The Authority computes the digest from the DTO it resolved itself; a digest sent by the Control Plane is not an input anywhere.
+
+**Action digest v1.** The DTO is exactly `{action, projectId, computerId, args}`; `args` is a flat map (at most 16 entries, keys `^[a-z][A-Za-z0-9]{0,31}$`) of string (at most 256 UTF-8 bytes, well-formed, no control, line/paragraph separator, bidi or left/right-mark characters), safe integer, or boolean. Strings are never normalized, so NFC and NFD forms hash differently and must be shown to the human as the exact string. The digest is `sha256:` + lowercase hex of SHA-256 over
+
+```
+"albera.action-digest.v1" 0x00  enc(purpose)  enc(dto)
+enc(string) = 0x53 u32be(utf8 length) utf8      enc(int) = 0x49 i64be      enc(bool) = 0x42 0x00|0x01
+enc(map)    = 0x4D u32be(count) then enc(key) enc(value) for each entry, keys sorted by ordinal byte order
+```
+
+The domain prefix and the purpose make the same DTO hash differently per purpose; key order and JSON whitespace/escaping do not matter because the encoding is built from parsed values. A binary encoding was chosen over a canonical JSON text (JCS-style) because number, escape and Unicode handling differ between Node and .NET JSON writers.
+
+**Differences from v1.** `expiresAt` becomes `iat` + `exp`; the digest is now over the DTO (v1 hashed the action name) and is lowercase with a `sha256:` prefix (as in `boundary-protocols.mjs`); `projectId`, `computerId`, `purpose`, `brokerEpoch`, `brokerChallenge`, `nonce`, `kid`, `approverKeyId` are new; ids are at most 64 characters (the boundary validators allow 128, which would not fit 22 fields in the frame).
+
+**Evidence.** `test/runtime-broker-contract.test.mjs` runs `test-vectors.json` through the Node code and checks the schema file equals the validator's field table. `test/runtime-broker-contract-dotnet.test.mjs` builds the C# sources in a temp directory (`test/receipt-v2-dotnet-harness/`, skipped without a .NET 10 SDK) and requires identical digests, preimage bytes, verdict codes and fields for every vector. The preimage encoding was also cross-checked once with an independent Python encoder.
+
+**Not decided here (left to the Broker / Authority work).** How the Broker issues and remembers `brokerChallenge` / `brokerEpoch`; the single-use store keyed on `receiptId` / `approvalId` / `nonce`; the `kid` to public key pinning; how `approverKeyId` is attested; the per-action `args` schemas; and the Authority's own request protocol.
+
 ## Remaining ADR-002 gates
 
-- Select and validate the independent authorization-receipt signer and Broker-protected state.
+- Select and validate the independent authorization-receipt signer and Broker-protected state (the receipt v2 contract above fixes the format and checks, not the signer or the store).
 - Implement and adversarially test native Windows named-pipe DACL, token validation, impersonation/reversion, service SID restriction, remote-client rejection, installer/update trust, and service lifecycle.
 - Establish the exact per-action Hyper-V rights matrix and supported Windows editions without granting broad administrator groups.
 - Validate crash/restart replay persistence, durable request/operation deduplication, multi-session policy, and fixed action argument resolution.

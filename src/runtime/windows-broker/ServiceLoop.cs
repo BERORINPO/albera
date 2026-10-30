@@ -28,7 +28,7 @@ internal static partial class Program
     private static TimeSpan? ServiceClaimHold => null;
 #endif
 
-    // Returns 0 once `stop` is cancelled, 73 when the database folder cannot be pinned, or 70 / 72 when the pipe cannot be created. `onReady` runs
+    // Returns 0 once `stop` is cancelled, 73 when the database folder cannot be pinned, 76 when the journal is refused, or 70 / 72 when the pipe cannot be created. `onReady` runs
     // once, after the folder is pinned and the pipe exists (the service reports RUNNING from there). Nothing is swallowed except a single
     // connection's I/O failure or deadline.
     internal static async Task<int> RunServiceLoopAsync(ServiceConfig config, CancellationToken stop, Action onReady)
@@ -41,6 +41,8 @@ internal static partial class Program
             Console.WriteLine("SERVICE_CONFIG=invalid:" + ServiceConfig.Reason.DatabasePin);
             return ExitServiceConfigInvalid;
         }
+        // An existing journal is migrated forward here, or refused (76) when it is newer, unknown or unreadable: RUNNING is never reported for a journal the Broker cannot use.
+        if (await RefuseUnusableJournalAsync(config.Database)) return ExitJournalRefused;
         // A squatter that already owns the name makes this fail with 70: the service stops (fail closed) instead of serving.
         NamedPipeServerStream? pipe = CreateBrokerPipe(config.PipeName, config.ControlPlaneSid, out int failure);
         if (pipe is null) return failure;
