@@ -5,11 +5,14 @@ import path from 'node:path';
 import process from 'node:process';
 import { DatabaseSync } from 'node:sqlite';
 import { assertPrivatePosixStorage, assertSingleLink } from './audit-journal.mjs';
+import { FlowJournalError } from './approved-operation-journal.mjs';
 import { assertBrokerRequestMatchesAuthorization, validateBrokerRequest, validateGuestEvent } from './boundary-protocols.mjs';
 import { assertPrivateWindowsAcl, RuntimeStorageAclError } from './windows-acl.mjs';
 import { EnvironmentProviderError, validateEnvironmentCapacity, validateEnvironmentOperation, validateEnvironmentQuota, validateEnvironmentSpec, validateObservedEnvironment } from './environment-provider.mjs';
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
+const FLOW_RECORD_SCHEMA = 1; // the version of the JSON in flow_operations.record_json, independent of the database schema
+const FLOW_MAX_FROM_PHASES = 16;
 const DEFAULT_MAX_RECORDS = 20_000;
 const HARD_MAX_RECORDS = 100_000;
 const DEFAULT_GUEST_RECORD_RATIO = 0.25;
@@ -92,6 +95,9 @@ export async function openSqliteEnvironmentStore(databasePath, {
     await verifyAcl(verifyWindowsAcl, databasePath, 'file');
     db.exec('PRAGMA foreign_keys = ON');
     db.exec('PRAGMA busy_timeout = 5000');
+    // Refuse a database written by a newer version before any mutating PRAGMA (journal_mode rewrites the header and creates -wal/-shm).
+    const existingVersion = db.prepare('PRAGMA user_version').get()?.user_version;
+    if (!Number.isSafeInteger(existingVersion) || existingVersion > SCHEMA_VERSION) throw new EnvironmentStoreError('database_schema_newer');
     const mode = db.prepare('PRAGMA journal_mode = WAL').get()?.journal_mode;
     if (String(mode).toLowerCase() !== 'wal') throw new EnvironmentStoreError('wal_mode_unavailable');
     db.exec('PRAGMA synchronous = FULL');
@@ -171,6 +177,7 @@ class SqliteEnvironmentOperationStore {
   #maxGuestRecords;
   #recoveryOwnerLock;
   #closed = false;
+  #flowJournal;
 
   constructor(db, { databasePath, verifyWindowsAcl, now, maxRecords, maxGuestRecords, recoveryOwnerLock }) {
     this.#db = db; this.#databasePath = databasePath; this.#verifyWindowsAcl = verifyWindowsAcl;
@@ -808,6 +815,58 @@ class SqliteEnvironmentOperationStore {
     });
   }
 
+  /**
+   * The durable approved-operation journal (the port in approved-operation-journal.mjs, same semantics as createMemoryFlowJournal). `advance` is one
+   * transaction whose UPDATE is the compare-and-set (`revision = ? AND phase IN (...)`); the store owns `revision` (0 on begin, +1 per advance) and a patch cannot set
+   * `revision` or `operationId`. A rejection (FlowJournalError 'conflict' / 'unknown_operation' / 'invalid_record', or a store error) means nothing was written.
+   */
+  flowJournal() {
+    this.#assertOpen();
+    this.#flowJournal ??= Object.freeze({
+      begin: (record) => this.#flowBegin(record),
+      advance: (operationId, expectedRevision, from, patch) => this.#flowAdvance(operationId, expectedRevision, from, patch),
+      get: (operationId) => this.#flowGet(operationId),
+    });
+    return this.#flowJournal;
+  }
+
+  #flowBegin(record) {
+    const body = flowBody(record, true);
+    return this.#transaction(() => {
+      const stored = this.#db.prepare('SELECT * FROM flow_operations WHERE operation_id = ?').get(record.operationId);
+      if (stored) return Object.freeze({ created: false, record: mapFlowRecord(stored) });
+      this.#assertCapacity(1);
+      this.#db.prepare('INSERT INTO flow_operations (operation_id, revision, phase, record_schema, record_json) VALUES (?, 0, ?, ?, ?)')
+        .run(record.operationId, record.phase, FLOW_RECORD_SCHEMA, body);
+      return Object.freeze({ created: true, record: mapFlowRecord(this.#db.prepare('SELECT * FROM flow_operations WHERE operation_id = ?').get(record.operationId)) });
+    });
+  }
+
+  #flowAdvance(operationId, expectedRevision, from, patch) {
+    if (!isFlowId(operationId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || !Array.isArray(from) || from.length < 1
+      || from.length > FLOW_MAX_FROM_PHASES || !from.every(isFlowId) || !isPlainObject(patch)) throw new FlowJournalError('invalid_record');
+    const changes = Object.fromEntries(Object.entries(patch).filter(([key]) => key !== 'operationId' && key !== 'revision'));
+    if ('phase' in changes && !isFlowId(changes.phase)) throw new FlowJournalError('invalid_record');
+    return this.#transaction(() => {
+      const stored = this.#db.prepare('SELECT * FROM flow_operations WHERE operation_id = ?').get(operationId);
+      if (!stored) throw new FlowJournalError('unknown_operation');
+      const merged = { ...mapFlowRecord(stored), ...changes };
+      for (const key of Object.keys(merged)) if (merged[key] === undefined) delete merged[key]; // JSON has no undefined: a patch value of undefined removes the field
+      const result = this.#db.prepare(`UPDATE flow_operations SET revision = revision + 1, phase = ?, record_json = ?
+        WHERE operation_id = ? AND revision = ? AND phase IN (${from.map(() => '?').join(', ')})`)
+        .run(merged.phase, flowBody(merged, false), operationId, expectedRevision, ...from);
+      if (result.changes !== 1) throw new FlowJournalError('conflict');
+      return mapFlowRecord(this.#db.prepare('SELECT * FROM flow_operations WHERE operation_id = ?').get(operationId));
+    });
+  }
+
+  #flowGet(operationId) {
+    this.#assertOpen();
+    if (!isFlowId(operationId)) throw new FlowJournalError('invalid_record');
+    const stored = this.#db.prepare('SELECT * FROM flow_operations WHERE operation_id = ?').get(operationId);
+    return stored ? mapFlowRecord(stored) : null;
+  }
+
   diagnostics() {
     this.#assertOpen();
     return Object.freeze({
@@ -876,7 +935,7 @@ class SqliteEnvironmentOperationStore {
   }
 
   #assertCapacity(additional) {
-    const count = this.#db.prepare('SELECT (SELECT COUNT(*) FROM computers) + (SELECT COUNT(*) FROM operations) + (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM leases) + (SELECT COUNT(*) FROM guest_event_receipts) + (SELECT COUNT(*) FROM operation_authorizations) AS count').get().count;
+    const count = this.#db.prepare('SELECT (SELECT COUNT(*) FROM computers) + (SELECT COUNT(*) FROM operations) + (SELECT COUNT(*) FROM events) + (SELECT COUNT(*) FROM leases) + (SELECT COUNT(*) FROM guest_event_receipts) + (SELECT COUNT(*) FROM operation_authorizations) + (SELECT COUNT(*) FROM flow_operations) AS count').get().count;
     if (count + additional > this.#maxRecords) throw new EnvironmentStoreError('store_capacity_exceeded');
   }
 
@@ -915,7 +974,7 @@ class SqliteEnvironmentOperationStore {
     this.#assertOpen();
     try { return inTransaction(this.#db, callback); }
     catch (error) {
-      if (error instanceof EnvironmentStoreError || error instanceof EnvironmentProviderError) throw error;
+      if (error instanceof EnvironmentStoreError || error instanceof EnvironmentProviderError || error instanceof FlowJournalError) throw error;
       throw new EnvironmentStoreError('store_transaction_failed');
     }
   }
@@ -927,7 +986,7 @@ function migrate(db) {
   const version = db.prepare('PRAGMA user_version').get()?.user_version;
   if (!Number.isSafeInteger(version) || version > SCHEMA_VERSION) throw new EnvironmentStoreError('database_schema_newer');
   if (version === SCHEMA_VERSION) return;
-  if (![0, 1, 2, 3].includes(version)) throw new EnvironmentStoreError('database_schema_unsupported');
+  if (![0, 1, 2, 3, 4].includes(version)) throw new EnvironmentStoreError('database_schema_unsupported');
   inTransaction(db, () => {
     if (version === 0) db.exec(`
       CREATE TABLE computers (
@@ -969,7 +1028,7 @@ function migrate(db) {
       payload_digest TEXT NOT NULL CHECK(length(payload_digest) = 64), received_at TEXT NOT NULL,
       UNIQUE(computer_id, run_id, generation, sequence)
     ) STRICT;`);
-    db.exec(`CREATE TABLE operation_authorizations (
+    if (version <= 3) db.exec(`CREATE TABLE operation_authorizations (
       approval_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL REFERENCES operations(id),
       purpose TEXT NOT NULL CHECK(purpose IN ('execute','reconcile')),
       operation_idempotency_key TEXT NOT NULL, approver_id TEXT NOT NULL, subject_id TEXT NOT NULL, project_id TEXT NOT NULL,
@@ -978,6 +1037,12 @@ function migrate(db) {
       recorded_at TEXT NOT NULL, consumed_at TEXT
     ) STRICT;
     CREATE INDEX operation_authorizations_operation_idx ON operation_authorizations(operation_id, purpose, recorded_at);`);
+    // v5: the durable approved-operation flow journal (approved-operation-journal.mjs). `revision` and `phase` are columns so the compare-and-set is one UPDATE ... WHERE;
+    // the rest of the record is JSON. `phase` has no CHECK: a corrupt or future phase must be readable so the flow can report it instead of the store refusing to open.
+    db.exec(`CREATE TABLE flow_operations (
+      operation_id TEXT PRIMARY KEY, revision INTEGER NOT NULL CHECK(revision >= 0), phase TEXT NOT NULL CHECK(length(phase) >= 1),
+      record_schema INTEGER NOT NULL, record_json TEXT NOT NULL
+    ) STRICT;`);
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   });
 }
@@ -992,6 +1057,24 @@ function inTransaction(db, callback) {
     try { db.exec('ROLLBACK'); } catch { /* preserve the original transaction failure */ }
     throw error;
   }
+}
+
+function isPlainObject(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+function isFlowId(value) { return typeof value === 'string' && value.length >= 1 && value.length <= 128; }
+
+/** The JSON stored for a flow record: everything except the three columns (`operationId`, `revision`, `phase`), which stay the single source of truth. */
+function flowBody(record, withIdentity) {
+  if (!isPlainObject(record) || (withIdentity && (!isFlowId(record.operationId) || !isFlowId(record.phase)))) throw new FlowJournalError('invalid_record');
+  const { operationId, revision, phase, ...rest } = record;
+  try { return JSON.stringify(rest); } catch { throw new FlowJournalError('invalid_record'); }
+}
+
+function mapFlowRecord(row) {
+  if (row.record_schema !== FLOW_RECORD_SCHEMA) throw new FlowJournalError('record_schema_unsupported');
+  let body;
+  try { body = JSON.parse(row.record_json); } catch { throw new FlowJournalError('record_corrupt'); }
+  if (!isPlainObject(body)) throw new FlowJournalError('record_corrupt');
+  return Object.freeze({ ...body, operationId: row.operation_id, revision: row.revision, phase: row.phase });
 }
 
 function mapComputer(row) {
@@ -1210,6 +1293,7 @@ async function verifyStandaloneSnapshot(snapshotPath) {
     const requiredTables = ['computers', 'leases', 'operations', 'events'];
     if (version >= 2) requiredTables.push('guest_event_receipts');
     if (version >= 4) requiredTables.push('operation_authorizations');
+    if (version >= 5) requiredTables.push('flow_operations');
     if (!requiredTables.every((name) => tables.has(name))) {
       throw new EnvironmentStoreError('snapshot_schema_invalid');
     }
