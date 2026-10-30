@@ -62,6 +62,8 @@ const EXPECTED = {
     'hyperv-guest-capture-prototype.mjs', 'hyperv-guest/capture-io.ps1', 'hyperv-guest/screen-helper.ps1',
     // thin Node client for the Host Broker pipe: the only runtime file allowed to name the Broker (rule 8a arch-allow)
     'windows-broker-client.mjs',
+    // shared receipt v2 / action digest contract for the future Broker and Approval Authority (rule 9; spec/architecture.md decision log 2026-10-30+receipt-v2-contract)
+    ...['action-digest.mjs', 'receipt-v2.mjs', 'strict-json.mjs', 'receipt-v2.schema.json', 'test-vectors.json', 'ActionDigest.cs', 'ReceiptV2.cs', 'StrictJson.cs'].map((f) => `broker-contract/${f}`),
     ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
       'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs'].map((f) => `room-ui/${f}`)],
   public: [
@@ -204,6 +206,7 @@ const providerContracts = [
   'src/runtime/bero-director.mjs',
   'src/runtime/fake-guest-checker.mjs',
   'src/runtime/workspace.mjs',
+  ...['action-digest', 'receipt-v2', 'strict-json'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch.
 check('5e room pure modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs'], (line) => {
@@ -292,6 +295,37 @@ const wired = [
 for (const w of wired) violations.push(`[8c package.json] ${w} wires the Windows Broker into the package or an automatic step`);
 if (typeof pkg.scripts?.['build:windows-broker'] !== 'string') violations.push('[8c package.json] build:windows-broker script is missing (false-safe)');
 results.push(`8 Windows Broker and pipe client are build-on-demand: ${brokerFiles.length + pipeClientFiles.length} source files, ${wired.length} wiring violations`);
+
+// 9. The receipt v2 / action digest contract (src/runtime/broker-contract) is the single source for the Node Control Plane / Approval Authority client and the
+//    .NET Broker / Authority. It stays pure: no clock, env, network or file access (node:crypto for hashing is the only node: import), the .NET sources use
+//    the BCL only and name no other project, and the shared vectors cover enough ground. Pure-by-construction is what lets both languages run the same vectors.
+const contractRoot = 'src/runtime/broker-contract';
+const contractMjs = listFiles(contractRoot, ['.mjs']);
+const contractCs = listFiles(contractRoot, ['.cs']);
+check('9a broker-contract is pure', contractMjs, (line) => {
+  if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null;
+  if (/from\s+['"]node:(?!crypto['"])|import\(\s*['"]node:|\brequire\(|\bprocess\.|\bDate\b|\bperformance\.|\bfetch\(|\bsetTimeout\b|\bMath\.random\b/.test(line)) return 'the contract is pure (clock and I/O are injected, only node:crypto may be imported)';
+  return null;
+});
+check('9b broker-contract C# uses the BCL only', contractCs, (line) => {
+  const m = line.match(/^\s*using\s+(?:static\s+)?([\w.]+)\s*;/);
+  if (m && !m[1].startsWith('System') && m[1] !== 'Albera.BrokerContract') return `using ${m[1]}: the shared sources may use only System.* (BCL)`;
+  return /namespace\s+(?!Albera\.BrokerContract\s*;)/.test(line) ? 'the shared sources live in namespace Albera.BrokerContract' : null;
+});
+const vectorsFile = path.join(ROOT, contractRoot, 'test-vectors.json');
+let vectorCounts = 'missing';
+if (!fs.existsSync(vectorsFile)) violations.push(`[9c vectors] ${contractRoot}/test-vectors.json does not exist (false-safe)`);
+else {
+  const vec = JSON.parse(fs.readFileSync(vectorsFile, 'utf8'));
+  vectorCounts = `${vec.digestVectors?.length ?? 0} digest, ${vec.receiptVectors?.length ?? 0} receipt`;
+  if (!(vec.digestVectors?.length >= 12 && vec.receiptVectors?.length >= 12)) violations.push('[9c vectors] test-vectors.json needs at least 12 digest and 12 receipt vectors');
+}
+const schemaFile = path.join(ROOT, contractRoot, 'receipt-v2.schema.json');
+if (fs.existsSync(schemaFile)) {
+  const sch = JSON.parse(fs.readFileSync(schemaFile, 'utf8'));
+  if (sch.additionalProperties !== false || sch.required?.length !== Object.keys(sch.properties ?? {}).length) violations.push('[9d schema] receipt-v2.schema.json must forbid extra keys and require every property');
+}
+results.push(`9 broker-contract: ${contractMjs.length} .mjs, ${contractCs.length} .cs, vectors ${vectorCounts}`);
 
 for (const r of results) console.log(r);
 console.log(`suppressed (arch-allow): ${suppressed}`);
