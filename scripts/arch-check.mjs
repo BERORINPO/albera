@@ -210,10 +210,11 @@ const providerContracts = [
   'src/runtime/workspace.mjs',
   ...['action-digest', 'receipt-v2', 'strict-json'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
 ];
-// The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch.
-check('5e room pure modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs'], (line) => {
+// The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:
+// the clients, the clock, the sleep and the storage are injected (and the flow must not name the Broker or the Authority: rules 8a / 10a).
+check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs'], (line) => {
   if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null;
-  for (const [re, label] of FORBIDDEN_PURE) if (/** @type {RegExp} */ (re).test(line)) return `${label} is not allowed in a pure room module`;
+  for (const [re, label] of FORBIDDEN_PURE) if (/** @type {RegExp} */ (re).test(line)) return `${label} is not allowed in a pure runtime module`;
   return null;
 });
 check('5d provider contracts have no process execution', providerContracts, (line) =>
