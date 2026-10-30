@@ -29,7 +29,7 @@ const b64 = (length) => 'A'.repeat(length);
 const SUCCESS = { ok: true, state: 'UNKNOWN', action: 'synthetic.noop' };
 const REPLAYED = { ...SUCCESS, replayed: true };
 const INSPECTED = { ok: true, state: 'UNKNOWN', action: 'synthetic.inspect' };
-const FENCED = { ok: true, brokerEpoch: 3, leaseGeneration: 7, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' };
+const FENCED = { ok: true, brokerEpoch: 3, leaseGeneration: 7, leaseId: 'lease-2026-10-a', brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' };
 const DENIED = { ok: false, code: 'denied' };
 const SID = 'S-1-5-21-1111111111-2222222222-3333333333-1001';
 const EXPECT = { ownerSid: SID, pid: 4242 };
@@ -294,14 +294,14 @@ test('the claim reply may carry replayed: true (an exact duplicate answered from
   assert.deepEqual(parseHelperResult(line({ ...SUCCESS, replayed: false }), 0), { ok: false, code: 'transport_error' });
 });
 
-test('the fence reply is exactly { ok, brokerEpoch, leaseGeneration, brokerChallenge } with counters >= 1 and a canonical 128-bit challenge', () => {
+test('the fence reply is exactly { ok, brokerEpoch, leaseGeneration, leaseId, brokerChallenge } with counters >= 1 and a canonical 128-bit challenge', () => {
   const fenced = validateFenceResponse(FENCED);
   assert.deepEqual(fenced, FENCED);
   assert.ok(Object.isFrozen(fenced));
   assert.notEqual(fenced, FENCED);
   assert.deepEqual(validateFenceResponse(DENIED), DENIED);
   const bad = [
-    null, 'ok', [], {}, { ok: true }, SUCCESS, INSPECTED, { ...FENCED, extra: 1 }, { ...FENCED, replayed: true }, { ok: true, brokerEpoch: 3, leaseGeneration: 7 },
+    null, 'ok', [], {}, { ok: true }, SUCCESS, INSPECTED, { ...FENCED, extra: 1 }, { ...FENCED, replayed: true }, { ok: true, brokerEpoch: 3, leaseGeneration: 7 }, (({ leaseId, ...rest }) => rest)(FENCED),
     { ...FENCED, brokerEpoch: 0 }, { ...FENCED, brokerEpoch: -1 }, { ...FENCED, brokerEpoch: 1.5 }, { ...FENCED, brokerEpoch: '3' }, { ...FENCED, brokerEpoch: 2 ** 53 },
     { ...FENCED, leaseGeneration: 0 }, { ...FENCED, leaseGeneration: null },
     { ...FENCED, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAB' }, { ...FENCED, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAA' }, { ...FENCED, brokerChallenge: 'A'.repeat(23) },

@@ -169,9 +169,9 @@ describe('Approval Authority submit client: the Node client, the real helper and
     } finally { await new Promise((resolve) => server.close(resolve)); }
   }
 
-  it('the helper relays a Broker fence reply with or without leaseId, and refuses a leaseId that is not a contract id', async () => {
+  it('the helper relays a Broker fence reply with leaseId, refuses one without it, and refuses a leaseId that is not a contract id', async () => {
     const four = { ok: true, brokerEpoch: 3, leaseGeneration: 7, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' };
-    assert.deepEqual(await fenceThroughHelper(four), four, 'an older Broker four-key reply still passes');
+    assert.deepEqual(await fenceThroughHelper(four), { ok: false, code: 'invalid_response' }, 'a reply without leaseId is refused (the Broker always sends it since #92)');
     const five = { ok: true, brokerEpoch: 3, leaseGeneration: 7, leaseId: 'lease-1.a:b_c', brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' };
     const relayed = await fenceThroughHelper(five);
     assert.deepEqual(relayed, five);

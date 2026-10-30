@@ -103,11 +103,11 @@ describe('Node client against the real .NET Host Broker Named Pipe', { skip: get
     assert.equal(claims(db), 1);
   });
 
-  it('fence through the real helper: the reply has exactly the four keys, and the one-shot Broker is still free for the claim that follows', async () => {
+  it('fence through the real helper: the reply has exactly the five keys, and the one-shot Broker is still free for the claim that follows', async () => {
     const db = freshDb();
     const { value } = await withBroker(db, async (session, child) => {
       const fence = await sendBrokerFence({ pipeName: session.pipeName, computerId: 'computer-1', expect: { ownerSid: sid, pid: child.pid }, helperPath: helper, timeoutMs: 10_000 });
-      assert.deepEqual(Object.keys(fence).sort(), ['brokerChallenge', 'brokerEpoch', 'leaseGeneration', 'ok']);
+      assert.deepEqual(Object.keys(fence).sort(), ['brokerChallenge', 'brokerEpoch', 'leaseGeneration', 'leaseId', 'ok']);
       return (await session.claim('after-fence')).result;
     });
     assert.deepEqual(value, SUCCESS);
