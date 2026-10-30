@@ -45,6 +45,7 @@
     "arch": "node scripts/arch-check.mjs",
     "build:windows-job-guardian": "node scripts/publish-windows-job-guardian.mjs",
     "build:windows-broker": "node scripts/publish-windows-broker.mjs",
+    "build:approval-authority": "node scripts/publish-windows-approval-authority.mjs",
     "build:windows-service-lab": "node scripts/publish-windows-service-lab.mjs",
     "smoke": "node scripts/smoke.mjs",
     "bench:runtime-store": "node scripts/runtime-sqlite-benchmark.mjs",
