@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-
 namespace Albera.Approver;
 
 // `enroll` makes (or shows) the approver's Windows Hello key and prints the three values the Approval Authority config needs. Public values only: the private key never leaves
@@ -7,6 +5,7 @@ namespace Albera.Approver;
 //   enroll            create the key (Hello asks the person once). Refuses if the key already exists (exit 65 already_enrolled).
 //   enroll --show     print the same three values for the existing key. No prompt, no change.
 //   enroll --replace  after the person types `replace`, make a NEW key in place of the existing one. The old key is lost; the Authority rejects approvals until its config is updated.
+// `enroll --check` is not handled here: it is SelfCheckCommand.cs (opens the existing key and signs a self-check message; never creates or replaces).
 // create / replace need an interactive console (stdin not redirected). approverKeyId is a suggestion derived from the key (any id in the Authority's id grammar works).
 internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUserSid, TextWriter output, TextWriter errors, TextReader input, bool interactive)
 {
@@ -55,7 +54,7 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
     {
         string sid = currentUserSid();
         if (sid.Length == 0) return Fail(ExitCodes.Internal, "sid_unavailable");
-        string keyId = "hello-" + Convert.ToHexStringLower(SHA256.HashData(spki).AsSpan(0, 8));
+        string keyId = ApproverKeyId.Of(spki);
         output.Write("Windows Hello approver key (RSA-2048). Put these three values in the Authority config:\n");
         output.Write($"  \"approverPublicKey\": \"{Convert.ToBase64String(spki)}\",\n");
         output.Write($"  \"approverKeyId\": \"{keyId}\",\n");

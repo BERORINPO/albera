@@ -48,7 +48,10 @@ test('the approver never starts a process, registers a service, writes a file, u
     assert.equal(forbidden.test(allCode), false, `no approver source may match ${forbidden}`);
   }
   assert.equal(/KeyCredentialManager|Windows\.Security\.Credentials|Windows\.Security\.Cryptography/u.test(codeWithoutHello), false, 'the WinRT Hello API is used only in WindowsHello.cs');
-  assert.equal(/RSA\.Create\(\)/u.test(outsideSeam(codeWithoutHello)), false, 'an RSA key object is created only in the test seam');
+  // The one exception: PresenceSignature.Verify (Presence.cs) makes an RSA object only to import a PUBLIC key (SPKI) for the self-check's local verify; it never generates a key.
+  const withoutVerifier = outsideSeam(codeWithoutHello).replace(/using RSA rsa = RSA\.Create\(\);\s*rsa\.ImportSubjectPublicKeyInfo\(spki, out _\);/u, '');
+  assert.equal(/RSA\.Create\(\)/u.test(withoutVerifier), false, 'an RSA key object is created only in the test seam (and, public-key import only, in PresenceSignature.Verify)');
+  assert.equal([...code['Presence.cs'].matchAll(/RSA\.Create\(\)/gu)].length, 1, 'exactly one RSA object in Presence.cs');
 });
 
 test('Windows Hello: the shipped build signs with WindowsHelloPresenceSigner through the one IPresenceSigner seam; the WinRT calls are a short fixed list in one file; no private key is touched', () => {
@@ -76,9 +79,46 @@ test('Windows Hello: the shipped build signs with WindowsHelloPresenceSigner thr
   assert.match(helloCode, /Status == KeyCredentialStatus\.NotFound\) return SignResult\.NotReady;/u, 'not enrolled sends nothing');
 });
 
+test('enroll --check (self-check): local only, the existing key only, domain-separated message, console first, verify before OK; nothing is sent, written or created', () => {
+  const check = code['SelfCheckCommand.cs'];
+  assert.ok(check, 'SelfCheckCommand.cs exists');
+  // Local only: its constructor takes the key store, the signer and console writers; no channel, and nothing in the file names a pipe, a network type, a file, the environment or a process.
+  assert.match(check, /internal sealed class SelfCheckCommand\(IHelloKeyStore store, IPresenceSigner signer, Func<string> currentUserSid, Func<byte\[\]> nonce, TextWriter output, TextWriter errors, bool interactive\)/u);
+  for (const forbidden of [/IApproverChannel|PipeChannel|NamedPipe|ServerExpectation|CallAsync/u, /Socket|HttpClient|WebRequest|Dns\b|System\.Net/u, /File\b|Path\.|Directory|FileStream|StreamWriter/u, /Environment\./u, /Console\./u, /Process/u]) {
+    assert.equal(forbidden.test(check), false, `the self-check must not match ${forbidden}`);
+  }
+  // It never creates, replaces or deletes a key: only Open() is called on the store.
+  assert.deepEqual([...check.matchAll(/store\.(\w+)\(/gu)].map((m) => m[1]), ['Open']);
+  assert.equal(/Create\(|ReplaceExisting|RequestCreateAsync|DeleteAsync/u.test(check), false);
+  // Order: console check, open the existing key, (expect check), sign, verify, only then the OK line.
+  const order = ['if (!interactive)', 'store.Open()', 'expectedKeyId is not null', 'signer.Sign(message)', 'PresenceSignature.Verify(', 'self-check: OK'].map((token) => check.indexOf(token));
+  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `console -> open -> expect -> sign -> verify -> OK (${order})`);
+  assert.equal([...check.matchAll(/signer\.Sign\(/gu)].length, 1, 'one signing site');
+  assert.equal([...check.matchAll(/self-check: OK/gu)].length, 1, 'one place prints OK, and it is the verified branch');
+  assert.match(check, /case SignStatus\.Signed when PresenceSignature\.Verify\(lookup\.PublicKey!, message, signed\.Signature!\):\s*output\.Write\(\$"self-check: OK/u);
+  // Domain separation: its own domain word, never the presence one.
+  assert.match(check, /public const string Domain = "albera\.selfcheck\.v1";/u);
+  assert.match(check, /\$"\{Domain\}\\0\{Convert\.ToHexStringLower\(nonce\)\}"/u);
+  assert.equal(/albera\.presence|PresenceMessage/u.test(check), false, 'the self-check never builds or names a presence message');
+  assert.notEqual('albera.selfcheck.v1', /Domain = "([^"]+)"/u.exec(code['Presence.cs'])[1]);
+  assert.equal(code['Presence.cs'].includes('albera.selfcheck'), false, 'the presence file does not know the self-check domain');
+  assert.equal(allCode.split('albera.selfcheck.v1').length - 1, 1, 'the self-check domain word is defined once');
+  // The entry point routes it to the key store and signer only, before any pipe object exists, with a fresh 32-byte nonce.
+  const program = code['Program.cs'];
+  const branch = program.slice(program.indexOf('if (command.Option == "check")'), program.indexOf('if (command.Verb == "enroll")'));
+  assert.match(branch, /new SelfCheckCommand\(wiring\.KeyStore, wiring\.Signer, CurrentUserSid, \(\) => RandomNumberGenerator\.GetBytes\(SelfCheckMessage\.NonceBytes\), Console\.Out, Console\.Error, wiring\.Interactive\)\.Run\(command\.Expect\)/u);
+  assert.equal(/PipeChannel|wiring\.Expectation/u.test(branch), false, 'no pipe on the self-check path');
+  assert.ok(program.indexOf('if (command.Option == "check")') < program.indexOf('new PipeChannel('), 'dispatched before the pipe is constructed');
+  assert.match(check, /public const int NonceBytes = 32;/u);
+  // Grammar and docs: --expect only after --check, the key id in the Authority's id grammar.
+  assert.match(code['CommandLine.cs'], /args is \["enroll", "--check", "--expect", \{ \} expected\] && IsKeyId\(expected\)/u);
+  assert.match(code['CommandLine.cs'], /Regex\.IsMatch\(value, ActionDigest\.IdPattern/u);
+  assert.match(read('docs', 'architecture', 'approver-app.md'), /enroll --check/u);
+});
+
 test('there is no --yes: the typed yes cannot be skipped, approve needs a console before any pipe access, and enroll never prints or stores private material', () => {
   assert.equal(/--yes|AssumeYes|assumeYes/u.test(Object.values(sources).join('\n')), false, 'no --yes anywhere in the sources (comments included)');
-  assert.match(code['CommandLine.cs'], /Usage = "usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace\]"/u);
+  assert.match(code['CommandLine.cs'], /Usage = "usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\]"/u);
   assert.match(code['ApproverCommands.cs'], /if \(!interactive\) throw new Stop\(ExitCodes\.Refused, "not_interactive"/u);
   assert.equal([...code['Program.cs'].matchAll(/!Console\.IsInputRedirected/gu)].length, 2, 'interactive means stdin is not redirected, in both build branches and nowhere else');
   const enroll = code['EnrollCommand.cs'];
