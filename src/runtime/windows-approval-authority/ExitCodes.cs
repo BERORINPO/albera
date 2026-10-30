@@ -11,4 +11,5 @@ internal static class ExitCodes
     public const int NotStartedByScm = 74;           // StartServiceCtrlDispatcher failed: nothing is created
     public const int LoopFailed = 75;                // an unexpected exception ended the serve loop
     public const int SignerUnavailable = 77;         // the machine signing key cannot be opened or is not a P-256 ECDSA key: nothing is served
+    public const int SigningKeyUnprotected = 78;     // the signing key is exportable, or its owner / DACL names a principal other than this service, SYSTEM and Administrators: nothing is served
 }

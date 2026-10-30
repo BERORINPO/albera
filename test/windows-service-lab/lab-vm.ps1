@@ -37,7 +37,8 @@ try {
   if (-not $Build) {
     # Fail before creating a VM when the binaries run-lab.ps1 copies are missing.
     foreach ($p in @('test\windows-service-lab\bin\Release\net10.0-windows\win-x64\publish',
-                     'src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish')) {
+                     'src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish',
+                     'src\runtime\windows-approval-authority\bin\Release\net10.0-windows\win-x64\publish')) {
       if (-not (Test-Path -LiteralPath (Join-Path $repo $p))) { throw "missing build output (run with -Build): $p" }
     }
   }
@@ -90,6 +91,8 @@ try {
       if ($LASTEXITCODE -ne 0) { throw "build:windows-broker failed ($LASTEXITCODE)" }
       & npm run build:windows-service-lab
       if ($LASTEXITCODE -ne 0) { throw "build:windows-service-lab failed ($LASTEXITCODE)" }
+      & npm run build:approval-authority
+      if ($LASTEXITCODE -ne 0) { throw "build:approval-authority failed ($LASTEXITCODE)" }
     }
     & node scripts/windows-service-lab-inputs.mjs $inputsFile
     if ($LASTEXITCODE -ne 0) { throw "input generation failed ($LASTEXITCODE)" }

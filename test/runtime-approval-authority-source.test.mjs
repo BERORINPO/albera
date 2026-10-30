@@ -34,14 +34,14 @@ test('the Authority never starts a process, registers a service, writes a file, 
   for (const forbidden of [/Process\.Start/u, /ProcessStartInfo/u, /ServiceBase/u, /ServiceController/u, /\bsc\.exe\b/u, /powershell/iu, /Hyper-?V/iu, /Get-VM/u, /SetAccessControl/u,
     /OpenSCManager|CreateService|ChangeServiceConfig|ControlService|DeleteService|OpenService|QueryServiceStatus/u, /System\.ServiceProcess|Microsoft\.Extensions\.Hosting/u,
     /File\.(?:Write|Create|Delete|Move|Copy|Append)|FileMode\.(?:Create|CreateNew|Append|Truncate)|FileAccess\.Write/u, /HttpClient|System\.Net\.Sockets|TcpClient|WebRequest/u,
-    /Environment\.GetEnvironmentVariable/u, /CngKey\.(?:Create|Import)|CngKeyCreationParameters|CngKeyBlobFormat|ExportPolicy|\.Delete\(\)|NCryptDeleteKey|NCryptCreate|ExportPkcs8PrivateKey|ExportECPrivateKey|ExportParameters\(true\)/u,
+    /Environment\.GetEnvironmentVariable/u, /CngKey\.(?:Create|Import)|CngKeyCreationParameters|CngKeyBlobFormat|ExportPolicy\s*=[^=]|SetProperty|\.Delete\(\)|NCryptDeleteKey|NCryptCreate|ExportPkcs8PrivateKey|ExportECPrivateKey|ExportParameters\(true\)/u,
     /KeyCredentialManager|Windows\.Security\.Credentials/u]) {
     assert.equal(forbidden.test(allCode), false, `no Authority source may match ${forbidden}`);
   }
 });
 
 test('the test fakes and the serve-loop / request entries exist only inside #if ALBERA_AUTHORITY_TEST_FAULTS and never in the shipped build', () => {
-  assert.equal(/FakeReceiptSigner|FakePresenceVerifier|ProofFor|UnavailableProof|serve-loop|ServeLoopForTest|RequestForTest|AUTHORITY_PUBLIC_KEY|albera-test-approval-authority|albera-fake-presence/u.test(shippedCode), false,
+  assert.equal(/FakeReceiptSigner|FakePresenceVerifier|CheckForTest|ProofFor|UnavailableProof|serve-loop|ServeLoopForTest|RequestForTest|AUTHORITY_PUBLIC_KEY|albera-test-approval-authority|albera-fake-presence/u.test(shippedCode), false,
     'fake names only appear inside the test-only #if blocks');
   assert.match(sources['TestSeam.cs'].trimStart(), /^#if ALBERA_AUTHORITY_TEST_FAULTS/u, 'TestSeam.cs is one #if block');
   assert.match(sources['TestSeam.cs'].trimEnd(), /#endif$/u);
@@ -116,6 +116,25 @@ test('the service host talks to the SCM through three advapi32 P/Invokes only, a
   assert.ok(created > 0 && created < runtime.indexOf('onReady();'), 'both pipes exist before the service is ready');
   assert.ok(runtime.indexOf('CngMachineKeySigner.Open(') < runtime.indexOf('RunAsync(config, core'), 'the signing key is opened before any pipe exists');
   assert.match(runtime, /return ExitCodes\.SignerUnavailable;/u);
+  // The signing key's protection is read off the opened key (SigningKeyGuard, read-only) before any pipe exists; a failure is its own exit code, 78.
+  assert.ok(runtime.indexOf('signer.ProtectionFault()') > runtime.indexOf('CngMachineKeySigner.Open(') && runtime.indexOf('signer.ProtectionFault()') < runtime.indexOf('RunAsync(config, core'), 'the key guard runs after the open and before any pipe');
+  assert.match(runtime, /return ExitCodes\.SigningKeyUnprotected;/u);
+  assert.match(code['ExitCodes.cs'], /SignerUnavailable = 77;/u);
+  assert.match(code['ExitCodes.cs'], /SigningKeyUnprotected = 78;/u);
+  const guard = code['SigningKeyGuard.cs'];
+  assert.match(guard, /"Security Descr"/u, 'NCRYPT_SECURITY_DESCR_PROPERTY');
+  assert.match(guard, /policy != CngExportPolicies\.None\) return Reason\.Exportable;/u, 'export policy must be exactly None');
+  assert.match(guard, /sid\.Equals\(service\) \|\| sid\.Equals\(LocalSystem\) \|\| sid\.Equals\(Administrators\)/u, 'the only principals');
+  assert.equal(/Everyone|WellKnownSidType|BuiltinUsers|AuthenticatedUser/u.test(guard), false, 'a whitelist, never a list of broad SIDs to tolerate');
+  // The trusted SID is the per-service SID of the fixed service name, required in the token's enabled groups, never the token user (LocalService / NetworkService / a user account are shared).
+  assert.match(guard, /ServiceName = "AlberaApprovalAuthority"/u);
+  assert.match(guard, /SHA1\.HashData\(System\.Text\.Encoding\.Unicode\.GetBytes\(serviceName\.ToUpperInvariant\(\)\)\)/u, 'the SCM derivation');
+  assert.match(guard, /new SecurityIdentifier\("S-1-5-80-"/u);
+  assert.match(guard, /principal\.IsInRole/u, 'enabled groups only');
+  assert.equal(/\.User\b/u.test(guard + code['AuthorityRuntime.cs'] + code['Signers.cs']), false, 'the token user is never the trusted SID');
+  assert.match(code['Signers.cs'], /SigningKeyGuard\.CheckCurrentProcess\(key\)/u);
+  assert.match(sources['SigningKeyGuard.cs'], /#if ALBERA_AUTHORITY_TEST_FAULTS\n[^#]*CheckForTest[\s\S]*?#endif/u, 'the explicit-SID check exists only in the test-faults build');
+  assert.match(guard, /private static string\? Check\(CngKey key/u);
 });
 
 test('the wire protocol: exactly four verbs, two per pipe, and exactly the documented error codes', () => {

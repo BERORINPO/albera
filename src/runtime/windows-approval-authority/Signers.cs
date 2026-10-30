@@ -18,7 +18,8 @@ internal interface IReceiptSigner
 // The real signer: a PERSISTED, named ECDSA P-256 key in the machine key store (NCRYPT_MACHINE_KEY_FLAG = CngKeyOpenOptions.MachineKey), in the
 // software KSP or the TPM's Platform Crypto Provider. It only OPENS an existing key. It never creates, exports or imports one: creating the key (and
 // restricting its ACL to the service account) is the installer's job, outside this process. A missing, foreign or wrong-algorithm key is
-// SignerUnavailableException, which the service reports as exit 77 at start-up and as `authority_unavailable` at run time.
+// SignerUnavailableException, which the service reports as exit 77 at start-up and as `authority_unavailable` at run time. A key that opens but is
+// exportable or usable by other accounts is refused at start-up by SigningKeyGuard (exit 78); this class only exposes the opened key to that check.
 internal sealed class CngMachineKeySigner : IReceiptSigner, IDisposable
 {
     private static readonly CngProvider PlatformProvider = new("Microsoft Platform Crypto Provider");
@@ -30,6 +31,9 @@ internal sealed class CngMachineKeySigner : IReceiptSigner, IDisposable
     public string Issuer => ReceiptV2.Issuer;
 
     public byte[] PublicKeySpki => ecdsa.ExportSubjectPublicKeyInfo();
+
+    /// <summary>Null when the opened key is non-exportable, only this service's per-service SID, SYSTEM and Administrators can use it, and that SID is in this process's token; otherwise a fixed reason word (SigningKeyGuard).</summary>
+    public string? ProtectionFault() => SigningKeyGuard.CheckCurrentProcess(key);
 
     public static CngMachineKeySigner Open(string keyName, SigningProvider provider)
     {
