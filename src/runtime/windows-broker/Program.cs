@@ -21,6 +21,7 @@ internal static partial class Program
     internal const int ExitServiceConfigInvalid = 73; // the config file is missing, unreadable, malformed or has a rejected value: nothing is served
     internal const int ExitNotStartedByScm = 74;      // not started by the service control manager (StartServiceCtrlDispatcher failed): nothing is created
     internal const int ExitServiceLoopFailed = 75;    // an unexpected exception ended the serve loop: fail closed, stop the service
+    internal const int ExitJournalRefused = 76;       // the journal is from a newer Broker, has an unknown schema or cannot be read: nothing is served, nothing is changed
     private const int ErrorInvalidOwner = 1307;
 
     private enum ImpersonationFault { None, RevertFails, RevertThrows, RevertLies }
@@ -48,6 +49,7 @@ internal static partial class Program
         string pipeName = args[1];
         BrokerSettings settings = new(args[2], Convert.FromBase64String(args[3]), args[4],
             long.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture), args[6] == "hold" ? Timeout.InfiniteTimeSpan : null, fault);
+        if (await RefuseUnusableJournalAsync(settings.Database)) return ExitJournalRefused;
         NamedPipeServerStream? pipe = CreateBrokerPipe(pipeName, settings.AllowedSid, out int failure);
         if (pipe is null) return failure;
         await using (pipe)
@@ -56,6 +58,17 @@ internal static partial class Program
             await pipe.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(20));
             await HandleConnectionAsync(pipe, settings, CancellationToken.None);
             return 0;
+        }
+    }
+
+    // An existing journal is migrated forward or refused before the pipe exists (see Journal.cs); true = refused, with a fixed line naming the reason.
+    private static async Task<bool> RefuseUnusableJournalAsync(string database)
+    {
+        try { await Journal.CheckExistingAsync(database); return false; }
+        catch (Journal.RefusedException ex)
+        {
+            Console.WriteLine("BROKER_FATAL=JOURNAL_" + ex.Reason.ToUpperInvariant());
+            return true;
         }
     }
 
@@ -110,7 +123,7 @@ internal static partial class Program
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
                                    CryptographicException or FormatException or UnauthorizedAccessException or
-                                   SqliteException or ArgumentException)
+                                   SqliteException or ArgumentException or Journal.RefusedException)
         {
             response = Encoding.UTF8.GetBytes(Denied);
             Console.WriteLine("REQUEST=DENIED");
@@ -245,33 +258,30 @@ internal static partial class Program
         string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(action)));
         long leaseGeneration = RequiredInt64(r, "leaseGeneration");
         if (Get("issuer") != "albera-test-approval-authority" || Get("audience") != "ALBERA-HostBroker" ||
-            action != "synthetic.noop" || Get("actionDigest") != digest || Get("leaseId") != "test-lease" ||
+            (action != "synthetic.noop" && action != "synthetic.inspect") || Get("actionDigest") != digest || Get("leaseId") != "test-lease" ||
             leaseGeneration != currentGeneration || Get("policyVersion") != "test-policy-v1" ||
             RequiredInt64(r, "expiresAt") <= DateTimeOffset.UtcNow.ToUnixTimeSeconds() ||
             fields.Where(x => x is "approvalId" or "receiptId" or "operationId" or "idempotencyKey").Any(x => string.IsNullOrWhiteSpace(Get(x))))
         { Console.WriteLine("DENY=receipt-policy"); return Encoding.UTF8.GetBytes(Denied); }
 
-        await using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Mode = SqliteOpenMode.ReadWriteCreate }.ToString());
-        await db.OpenAsync();
-        await using (var setup = db.CreateCommand())
+        if (action == "synthetic.inspect")
         {
-            setup.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS claims (operation_id TEXT PRIMARY KEY, receipt_id TEXT NOT NULL UNIQUE, approval_id TEXT NOT NULL UNIQUE, digest TEXT NOT NULL, lease_generation INTEGER NOT NULL, state TEXT NOT NULL);";
-            await setup.ExecuteNonQueryAsync();
+            // Read-only, no row written, no receipt consumed: the receipt only has to be a currently valid signed one naming the operation to look up.
+            string? recorded = await Journal.RecordedStateAsync(database, Get("operationId"));
+            if (recorded is null) { Console.WriteLine("DENY=inspect-unknown"); return Encoding.UTF8.GetBytes(Denied); }
+            Console.WriteLine("INSPECT=RECORDED");
+            return SuccessReply(recorded);
         }
-        await using var tx = await db.BeginTransactionAsync();
-        await using var claim = db.CreateCommand();
-        claim.Transaction = (SqliteTransaction)tx;
-        claim.CommandText = "INSERT INTO claims(operation_id, receipt_id, approval_id, digest, lease_generation, state) VALUES ($o,$r,$a,$d,$g,'UNKNOWN');";
-        claim.Parameters.AddWithValue("$o", Get("operationId")); claim.Parameters.AddWithValue("$r", Get("receiptId"));
-        claim.Parameters.AddWithValue("$a", Get("approvalId")); claim.Parameters.AddWithValue("$d", digest);
-        claim.Parameters.AddWithValue("$g", leaseGeneration);
-        try { await claim.ExecuteNonQueryAsync(); }
-        catch (SqliteException ex) when (ex.SqliteErrorCode == 19) { Console.WriteLine("DENY=duplicate"); return Encoding.UTF8.GetBytes(Denied); }
-        await tx.CommitAsync();
+        (Journal.ClaimKind kind, string state) = await Journal.ClaimAsync(database, new Journal.Claim(Get("operationId"), Get("receiptId"), Get("approvalId"), digest, leaseGeneration, Journal.RequestDigest(receipt, signature)));
+        if (kind == Journal.ClaimKind.Rejected) { Console.WriteLine("DENY=duplicate"); return Encoding.UTF8.GetBytes(Denied); }
+        if (kind == Journal.ClaimKind.Replay) { Console.WriteLine("REPLAY=RECORDED_OUTCOME"); return SuccessReply(state); }
         Console.WriteLine("CLAIM=PERSISTED_UNKNOWN");
         if (hold is { } holdFor) await Task.Delay(holdFor); // test hook: `serve ... hold` holds forever, the seam build's loop entry holds for a fixed time
-        return Encoding.UTF8.GetBytes("{\"ok\":true,\"state\":\"UNKNOWN\",\"action\":\"synthetic.noop\"}");
+        return SuccessReply(state);
     }
+
+    // The success shape is unchanged (the Control Plane client accepts exactly these three keys): `state` is always one of Journal's recorded states.
+    private static byte[] SuccessReply(string state) => Encoding.UTF8.GetBytes($"{{\"ok\":true,\"state\":\"{state}\",\"action\":\"synthetic.noop\"}}");
 
     // A signed receipt can still carry the wrong JSON type (GetInt64 on a string throws InvalidOperationException, which nothing above catches and
     // which would stop the service): wrong type or out of range is a JsonException, answered as denied like RequiredString.

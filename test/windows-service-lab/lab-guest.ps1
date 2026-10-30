@@ -317,13 +317,13 @@ Step 'e_session0' 'Broker pipe server runs in session 0; an interactive-session 
 }
 
 # ---- Broker run 4: restart and replay (f)
-Step 'f_restart_replay' 'Restarted Broker service: the same receipt is denied, still one journal claim' {
+Step 'f_restart_replay' 'Restarted Broker service: the same receipt returns the recorded outcome (UNKNOWN), still one journal claim' {
   $pid4 = Start-LabBroker 'run4' $Db1 $R1
   $res = Invoke-HelperAs $C 'helper-cp-replay' $R1 @{ serviceName = $B }
   Stop-LabService $B
   $claims = Get-ClaimCount $Db1
-  $ok = ($res.ok -eq $false) -and ($res.code -eq 'denied') -and ($claims -eq 1) -and ($pid4 -ne $script:Pid2)
-  Verdict $ok @("helper result: $($res | ConvertTo-Json -Compress) (denied = the duplicate claim was refused)", "journal claims=$claims", "service pid run 2=$($script:Pid2) run 4=$pid4")
+  $ok = ($res.ok -eq $true) -and ($res.state -eq 'UNKNOWN') -and ($res.action -eq 'synthetic.noop') -and ($claims -eq 1) -and ($pid4 -ne $script:Pid2)
+  Verdict $ok @("helper result: $($res | ConvertTo-Json -Compress) (ok = the stored outcome of the exact duplicate, no second claim)", "journal claims=$claims", "service pid run 2=$($script:Pid2) run 4=$pid4")
 }
 
 # ---- the real service host: two requests to one running service, STOP, and the fatal exit codes SCM records (g)
@@ -333,7 +333,7 @@ Step 'g_two_requests_one_service_then_stop' 'Real service host: Control Plane he
   $svc1 = Get-Svc $B
   $res2 = Invoke-HelperAs $C 'helper-g2' $R4B @{ serviceName = $B }
   $svc2 = Get-Svc $B
-  $res3 = Invoke-HelperAs $C 'helper-g3' $R4A @{ serviceName = $B }   # replay of the first receipt: still the same process, the journal remembers it
+  $res3 = Invoke-HelperAs $C 'helper-g3' $R4A @{ serviceName = $B }   # replay of the first receipt: still the same process, the journal returns the recorded outcome
   $svc3 = Get-Svc $B
   $claims = Get-ClaimCount $Db3
   $stopWatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -344,7 +344,7 @@ Step 'g_two_requests_one_service_then_stop' 'Real service host: Control Plane he
   Wait-Until { -not (Get-Process -Id $pidG -ErrorAction SilentlyContinue) } 10 'broker process exited'
   $pipeGone = (Invoke-ProbeAdmin @('pipe-open', $Pipe, '00120083')).result
   $samePid = ($svc1.ProcessId -eq $pidG) -and ($svc2.ProcessId -eq $pidG) -and ($svc3.ProcessId -eq $pidG)
-  $ok = ($res1.ok -eq $true) -and ($res2.ok -eq $true) -and ($res3.ok -eq $false) -and ($res3.code -eq 'denied') -and $samePid -and ($svc3.State -eq 'Running') -and ($claims -eq 2) `
+  $ok = ($res1.ok -eq $true) -and ($res2.ok -eq $true) -and ($res3.ok -eq $true) -and ($res3.state -eq 'UNKNOWN') -and $samePid -and ($svc3.State -eq 'Running') -and ($claims -eq 2) `
     -and ($after.State -eq 'Stopped') -and ($after.ExitCode -eq 0) -and ($after.ServiceSpecificExitCode -eq 0) -and ($stopWatch.ElapsedMilliseconds -lt 10000) -and ($pipeGone -eq 'error_2')
   Verdict $ok @("request 1: $($res1 | ConvertTo-Json -Compress)", "request 2: $($res2 | ConvertTo-Json -Compress)", "request 3 (replay of 1): $($res3 | ConvertTo-Json -Compress)",
     "service pid after each request: $($svc1.ProcessId), $($svc2.ProcessId), $($svc3.ProcessId) (started as $pidG); state $($svc3.State)", "journal claims=$claims",

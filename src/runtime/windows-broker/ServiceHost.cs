@@ -8,7 +8,7 @@ using System.Runtime.InteropServices;
 //
 // Lifecycle: START_PENDING -> read config -> create the pipe -> RUNNING (only once the pipe exists) -> serve until SERVICE_CONTROL_STOP ->
 // STOP_PENDING -> cancel the loop (bounded wait) -> STOPPED. A fatal end reports STOPPED with ERROR_SERVICE_SPECIFIC_ERROR and the fixed code as
-// the service-specific exit code: 70 pipe name taken, 71 impersonation revert failed, 72 owner not settable, 73 config rejected, 75 unexpected failure.
+// the service-specific exit code: 70 pipe name taken, 71 impersonation revert failed, 72 owner not settable, 73 config rejected, 75 unexpected failure, 76 journal refused (newer / unknown schema, unreadable).
 // Outside the SCM, StartServiceCtrlDispatcher fails at once (ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) and the process exits 74 before it reads the
 // config, opens the journal or creates a pipe.
 internal static class ServiceHost
