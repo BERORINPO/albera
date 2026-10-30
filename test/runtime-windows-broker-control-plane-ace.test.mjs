@@ -14,9 +14,14 @@ const CONTROL_PLANE_SID = 'S-1-5-80-1111111111-2222222222-3333333333-1444444444-
 const CONTROL_PLANE_MASK = 0x00120083;
 
 /** Splits "O:<owner>D:(A;;<mask>;;;<sid>)..." into the owner SID and [{ type, mask, sid }]. */
-function parseSddl(sddl) {
-  const owner = /^O:([^D]+)D:/u.exec(sddl)?.[1];
-  const aces = [...sddl.matchAll(/\(([A-Z]+);[^;]*;([^;]+);[^;]*;[^;]*;([^)]+)\)/gu)].map((m) => ({ type: m[1], mask: m[2], sid: m[3] }));
+// SDDL writes the built-in local Administrator / Guest of the machine as LA / LG instead of the full SID (CI runs as that Administrator).
+function resolveAlias(sid, self) {
+  const domain = self.slice(0, self.lastIndexOf('-'));
+  return sid === 'LA' ? `${domain}-500` : sid === 'LG' ? `${domain}-501` : sid;
+}
+function parseSddl(sddl, self) {
+  const owner = resolveAlias(/^O:([^D]+)D:/u.exec(sddl)?.[1], self);
+  const aces = [...sddl.matchAll(/\(([A-Z]+);[^;]*;([^;]+);[^;]*;[^;]*;([^)]+)\)/gu)].map((m) => ({ type: m[1], mask: m[2], sid: resolveAlias(m[3], self) }));
   return { owner, aces };
 }
 const maskOf = (ace) => Number(ace.mask); // SDDL prints a non-standard mask as 0x... hex
@@ -41,7 +46,7 @@ describe('Broker pipe DACL in service mode', { skip: getUnavailableReason() }, (
       const sddl = (await waitForLine(reader, /^SDDL=/u)).slice('SDDL='.length);
       await waitForExit(reader);
       await waitForExit(broker); // serves one connection; it hangs up without a request, so the Broker ends by itself (its exit code is not under test here)
-      return parseSddl(sddl);
+      return parseSddl(sddl, self);
     } finally {
       if (broker.closeCode === undefined) { broker.kill(); await waitForExit(broker); }
     }
