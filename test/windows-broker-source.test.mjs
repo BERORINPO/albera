@@ -85,6 +85,10 @@ test('pipe client helper opens with SQOS identification and specific rights, and
     assert.ok(at > 0 && at < firstWrite, `${check} must come before the write`);
   }
   assert.ok(pipeClientCode.indexOf('CreateFileW(') < pipeClientCode.indexOf('GetAccessControl().GetOwner'), 'verification happens on the opened handle');
+  // A watchdog that reads `sent` outside the lock could report a pre-send code after the receipt was written.
+  assert.match(pipeClientCode, /lock \(Gate\) sent = true;/u, 'the send flag is set under Gate');
+  assert.match(pipeClientCode, /new\(_ => \{ lock \(Gate\) Finish\(Failure\(sent \?/u, 'the watchdog reads the send flag under Gate');
+  assert.equal(/sent = true;/u.test(pipeClientCode.replace(/lock \(Gate\) sent = true;/gu, '')), false, 'no unlocked write of the send flag');
 });
 
 test('pipe client helper reports only the documented exit codes and result codes', () => {

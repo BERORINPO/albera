@@ -30,13 +30,14 @@ internal static class Program
     private static int Main()
     {
         try { Run(ReadInput()); }
-        catch (Exception) { Finish(Failure(sent ? "transport_error" : "server_identity_unavailable"), ExitInternal); }
+        catch (Exception) { lock (Gate) Finish(Failure(sent ? "transport_error" : "server_identity_unavailable"), ExitInternal); }
         return ExitInternal; // unreachable: Finish exits the process
     }
 
     private static void Run(Input input)
     {
-        using Timer watchdog = new(_ => Finish(Failure(sent ? "timeout" : "server_identity_unavailable"), ExitOk), null, input.TimeoutMs, Timeout.Infinite);
+        // `sent` is read and written only under Gate, and Finish exits while holding it, so a pre-send code can never follow a write.
+        using Timer watchdog = new(_ => { lock (Gate) Finish(Failure(sent ? "timeout" : "server_identity_unavailable"), ExitOk); }, null, input.TimeoutMs, Timeout.Infinite);
         bool serviceMode = input.ServiceName is not null;
         uint expectedPid = serviceMode ? ServicePid(input.ServiceName!) : input.Pid!.Value;
         SecurityIdentifier expectedOwner = input.OwnerSid is not null ? new SecurityIdentifier(input.OwnerSid)
@@ -57,7 +58,7 @@ internal static class Program
         byte[] body = Encoding.UTF8.GetBytes(input.Body), frame = new byte[4 + body.Length];
         BinaryPrimitives.WriteInt32LittleEndian(frame, body.Length);
         body.CopyTo(frame, 4);
-        sent = true; // from here the outcome is unknown even if the write throws
+        lock (Gate) sent = true; // from here the outcome is unknown even if the write throws; a watchdog that already holds Gate has exited
         pipe.Write(frame);
         pipe.Flush();
 
