@@ -415,6 +415,125 @@ internal static class Harness
         });
     }
 
+    private sealed class Recording(RSA key) : IPresenceSigner
+    {
+        public readonly List<byte[]> Messages = [];
+        public SignResult Sign(byte[] message) { Messages.Add(message); return SignResult.Signed(key.SignData(message, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)); }
+    }
+
+    private sealed class SelfChecking(RSA? storeKey, IPresenceSigner signer, bool interactive = true, bool unavailable = false)
+    {
+        public readonly FakeKeyStore Store = new(storeKey, unavailable);
+        public readonly StringWriter Out = new(), Err = new();
+        public int Calls;
+        public int Run(string? expect = null) =>
+            new SelfCheckCommand(Store, signer, () => "S-1-5-21-1-2-3-1001", () => Enumerable.Range(Calls++, SelfCheckMessage.NonceBytes).Select(i => (byte)i).ToArray(), Out, Err, interactive).Run(expect);
+    }
+
+    private static string KeyIdOf(RSA key) => "hello-" + Convert.ToHexStringLower(SHA256.HashData(key.ExportSubjectPublicKeyInfo()).AsSpan(0, 8));
+
+    private static void SelfCheckChecks()
+    {
+        Check("enroll --check: signs \"albera.selfcheck.v1\" 0x00 hex(32 nonce bytes), verifies locally with the credential's public key, prints exactly the three fixed lines and nothing else", () =>
+        {
+            Recording signer = new(Hello);
+            SelfChecking run = new(Hello, signer);
+            Assert(run.Run() == ExitCodes.Ok && run.Err.ToString() == "", run.Err.ToString());
+            Assert(run.Out.ToString() == $"self-check: OK\napproverKeyId: {KeyIdOf(Hello)}\napproverSid: S-1-5-21-1-2-3-1001\n", run.Out.ToString());
+            string nonceHex = Convert.ToHexStringLower(Enumerable.Range(0, 32).Select(i => (byte)i).ToArray());
+            Assert(signer.Messages.Single().SequenceEqual(Encoding.UTF8.GetBytes("albera.selfcheck.v1\0" + nonceHex)) && nonceHex.Length == 64, "the signed bytes");
+            Assert(Convert.ToBase64String(run.Store.Open().PublicKey!) == Convert.ToBase64String(Hello.ExportSubjectPublicKeyInfo()), "the key is untouched");
+        });
+        Check("self-check message is domain-separated from the presence message: different prefixes, neither starts like the other, and a self-check signature never verifies as a presence signature (nor the reverse)", () =>
+        {
+            byte[] selfMessage = SelfCheckMessage.Build(new byte[32]);
+            byte[] presence = PresenceMessage.Build(Id1, DigestOf(), Challenge);
+            Assert(SelfCheckMessage.Domain != PresenceMessage.Domain, "domains differ");
+            byte[] selfPrefix = Encoding.UTF8.GetBytes(SelfCheckMessage.Domain + "\0"), presencePrefix = Encoding.UTF8.GetBytes(PresenceMessage.Domain + "\0");
+            Assert(!selfPrefix.AsSpan().StartsWith(presencePrefix) && !presencePrefix.AsSpan().StartsWith(selfPrefix), "neither prefix starts the other");
+            Assert(!presence.AsSpan().StartsWith(selfPrefix) && !selfMessage.AsSpan().StartsWith(presencePrefix), "a presence message never starts like a self-check and vice versa");
+            byte[] selfSignature = Sign(selfMessage), presenceSignature = Sign(presence);
+            byte[] spki = Hello.ExportSubjectPublicKeyInfo();
+            Assert(PresenceSignature.Verify(spki, selfMessage, selfSignature) && PresenceSignature.Verify(spki, presence, presenceSignature), "each verifies for its own message");
+            Assert(!PresenceSignature.Verify(spki, presence, selfSignature), "a self-check signature does not verify as a presence signature");
+            Assert(!PresenceSignature.Verify(spki, selfMessage, presenceSignature), "a presence signature does not verify as a self-check signature");
+            foreach (string approvalId in new[] { Id1, Id2, "albera.selfcheck.v1", "" })
+                Assert(!PresenceSignature.Verify(spki, PresenceMessage.Build(approvalId, DigestOf(), Challenge), selfSignature), approvalId);
+        });
+        Check("PresenceSignature.Verify rejects a wrong key, a wrong length, a flipped bit, garbage SPKI and a non-2048-bit key", () =>
+        {
+            byte[] message = SelfCheckMessage.Build(new byte[32]), signature = Sign(message), spki = Hello.ExportSubjectPublicKeyInfo();
+            Assert(PresenceSignature.Verify(spki, message, signature), "control");
+            using RSA other = RSA.Create(2048);
+            Assert(!PresenceSignature.Verify(other.ExportSubjectPublicKeyInfo(), message, signature), "wrong key");
+            Assert(!PresenceSignature.Verify(spki, message, signature[..255]) && !PresenceSignature.Verify(spki, message, [.. signature, 0]) && !PresenceSignature.Verify(spki, message, []), "wrong length");
+            byte[] flipped = [.. signature];
+            flipped[10] ^= 1;
+            Assert(!PresenceSignature.Verify(spki, message, flipped), "flipped bit");
+            Assert(!PresenceSignature.Verify([1, 2, 3], message, signature), "garbage SPKI");
+            using RSA large = RSA.Create(3072);
+            Assert(!PresenceSignature.Verify(large.ExportSubjectPublicKeyInfo(), message, large.SignData(message, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)), "RSA-3072 is not accepted");
+        });
+        Check("enroll --check: Hello signs with a DIFFERENT key (or returns garbage) -> self-check: FAILED on stdout, error: self_check_failed on stderr, exit 70, no OK line", () =>
+        {
+            using RSA other = RSA.Create(2048);
+            foreach (IPresenceSigner signer in new IPresenceSigner[] { new Recording(other), new RecordingSigner(SignResult.Signed(new byte[256])), new RecordingSigner(SignResult.Signed(new byte[10])) })
+            {
+                SelfChecking run = new(Hello, signer);
+                Assert(run.Run() == ExitCodes.Internal && run.Out.ToString() == "self-check: FAILED\n" && run.Err.ToString().StartsWith("error: self_check_failed\n"), run.Out + "|" + run.Err);
+            }
+        });
+        Check("enroll --check never creates, replaces or deletes a key: no key -> 69 not_enrolled with the enroll hint, the signer is not asked, the store is still empty; Hello unusable -> 69 hello_unavailable", () =>
+        {
+            Recording signer = new(Hello);
+            SelfChecking none = new(null, signer);
+            Assert(none.Run() == ExitCodes.SignerUnavailable && none.Err.ToString() == "error: not_enrolled\nhint: run AlberaApprover.exe enroll\n" && none.Out.ToString() == "", none.Err.ToString());
+            Assert(signer.Messages.Count == 0 && none.Store.Open().State == KeyState.Missing, "nothing signed, nothing created");
+            SelfChecking broken = new(null, signer, unavailable: true);
+            Assert(broken.Run() == ExitCodes.SignerUnavailable && broken.Err.ToString().StartsWith("error: hello_unavailable\n") && broken.Out.ToString() == "" && signer.Messages.Count == 0, broken.Err.ToString());
+        });
+        Check("enroll --check needs a console (65 not_interactive) before Hello is asked", () =>
+        {
+            Recording signer = new(Hello);
+            SelfChecking run = new(Hello, signer, interactive: false);
+            Assert(run.Run() == ExitCodes.Refused && run.Err.ToString() == "error: not_interactive\n" && run.Out.ToString() == "" && signer.Messages.Count == 0, run.Err.ToString());
+        });
+        Check("enroll --check: Hello gave no proof -> 69 hello_no_proof; a signer that is not ready -> 69 presence_signer_unavailable; neither prints OK", () =>
+        {
+            SelfChecking cancelled = new(Hello, new FakePresenceSigner(Hello, unavailable: true));
+            Assert(cancelled.Run() == ExitCodes.SignerUnavailable && cancelled.Err.ToString().StartsWith("error: hello_no_proof\n") && cancelled.Out.ToString() == "", cancelled.Err.ToString());
+            SelfChecking notReady = new(Hello, new NotReadyPresenceSigner());
+            Assert(notReady.Run() == ExitCodes.SignerUnavailable && notReady.Err.ToString().StartsWith("error: presence_signer_unavailable\n") && notReady.Out.ToString() == "", notReady.Err.ToString());
+        });
+        Check("enroll --check --expect: the right id passes; a different id prints KEY_MISMATCH, exits 65 and Hello is never asked", () =>
+        {
+            Recording signer = new(Hello);
+            SelfChecking right = new(Hello, signer);
+            Assert(right.Run(KeyIdOf(Hello)) == ExitCodes.Ok && right.Out.ToString().StartsWith("self-check: OK\n") && signer.Messages.Count == 1, right.Err.ToString());
+            SelfChecking wrong = new(Hello, signer);
+            Assert(wrong.Run("hello-0000000000000000") == ExitCodes.Refused && wrong.Out.ToString() == $"self-check: KEY_MISMATCH\napproverKeyId: {KeyIdOf(Hello)}\n" && wrong.Err.ToString().StartsWith("error: key_mismatch\n"), wrong.Out + "|" + wrong.Err);
+            Assert(signer.Messages.Count == 1, "no second prompt for a key that was not expected");
+        });
+        Check("enroll --check uses a fresh nonce every run and prints no key material (only the key id and SID)", () =>
+        {
+            Recording signer = new(Hello);
+            SelfChecking run = new(Hello, signer);
+            run.Run();
+            run.Run();
+            Assert(signer.Messages.Count == 2 && !signer.Messages[0].SequenceEqual(signer.Messages[1]), "two runs, two messages");
+            string all = run.Out.ToString() + run.Err;
+            Assert(!all.Contains(Convert.ToBase64String(Hello.ExportPkcs8PrivateKey())) && !all.Contains("PRIVATE") && !all.Contains(Convert.ToBase64String(Hello.ExportSubjectPublicKeyInfo())), "no key material at all");
+        });
+        Check("command line: enroll --check [--expect <id>] parses; anything else around it is a usage error", () =>
+        {
+            Assert(CommandLine.TryParse(["enroll", "--check"]) == new CommandLine("enroll", null, "check"), "--check");
+            Assert(CommandLine.TryParse(["enroll", "--check", "--expect", "hello-0123456789abcdef"]) == new CommandLine("enroll", null, "check", "hello-0123456789abcdef"), "--check --expect <id>");
+            foreach (string[] bad in new[] { new[] { "enroll", "--expect", "hello-1" }, ["enroll", "--check", "--expect"], ["enroll", "--check", "--expect", "bad id"], ["enroll", "--check", "--expect", ""], ["enroll", "--check", "--expect", "hello-1\n"],
+                ["enroll", "--check", "--show"], ["enroll", "--check", "--check"], ["enroll", "--check", "x"], ["enroll", "--show", "--expect", "hello-1"], ["list", "--check"], ["--check"] })
+                Assert(CommandLine.TryParse(bad) is null, string.Join(' ', bad));
+        });
+    }
+
     private static int Main()
     {
         SafeTextChecks();
@@ -423,6 +542,7 @@ internal static class Harness
         PresenceChecks();
         ApproveChecks();
         EnrollChecks();
+        SelfCheckChecks();
         ListAndDenyChecks();
         Console.Out.Write(JsonSerializer.Serialize(new { checks = Results }));
         return 0;

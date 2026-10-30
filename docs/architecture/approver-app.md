@@ -11,6 +11,7 @@ human ── AlberaApprover.exe ──(approver pipe; server verified first)─�
             list / approve / deny
             │  recompute digest with ActionDigest (broker-contract)
             │  enroll: IHelloKeyStore ──▶ creates / shows the Hello key, prints the Authority config values
+            │  enroll --check: opens the existing key, IPresenceSigner signs a self-check message, verified locally (no pipe)
             └─ IPresenceSigner ──▶ Windows Hello (KeyCredentialManager)   |   fake in-memory RSA key (test-faults build only)
 ```
 
@@ -20,7 +21,7 @@ human ── AlberaApprover.exe ──(approver pipe; server verified first)─�
 AlberaApprover.exe list
 AlberaApprover.exe approve <approvalId>
 AlberaApprover.exe deny <approvalId>
-AlberaApprover.exe enroll [--show | --replace]
+AlberaApprover.exe enroll [--show | --replace | --check [--expect <approverKeyId>]]
 ```
 
 `<approvalId>` is the Authority's lowercase uuid; anything else is a usage error (exit 64). There is no other option, config file or environment variable in the shipped build. **There is no `--yes`**: the typed confirmation cannot be skipped.
@@ -29,6 +30,17 @@ AlberaApprover.exe enroll [--show | --replace]
 - **approve**: needs an interactive console. If stdin is redirected (a pipe, a file, a script) it exits 65 `not_interactive` **before** it reads anything or opens the pipe, even if "yes" is on stdin. Then it fetches a fresh `list` and finds the request. It **refuses** (nothing signed, nothing sent) if the id is not pending, the entry is malformed, or the digest it recomputed from the shown fields differs from the Authority's `actionDigest`. Otherwise it prints the request, asks you to type `yes` (every time), prints a line that Windows Hello is about to ask (the Hello prompt shows only the app name, so the details are already on screen), asks the presence signer for a signature over the presence message, and sends `decide` with it.
 - **deny**: sends `decide` `deny` (no presence proof; a deny can only make a request fail). It does not need to list first and works without a console.
 - **enroll**: makes the approver's Windows Hello key and prints what the Authority config needs (below). `enroll` creates it (Hello asks you once) and **refuses if the key exists** (exit 65 `already_enrolled`). `enroll --show` prints the same values for the existing key (no prompt, no change, no console needed). `enroll --replace` first asks you to type `replace`, then makes a new key in place of the old one (the old key is lost; the Authority rejects approvals until its config has the new values). `enroll` and `enroll --replace` need an interactive console like `approve`.
+- **enroll --check** (self-check): proves on this PC, **without the Approval Authority**, that the enrolled Hello key works. It opens the **existing** key `AlberaApprover.v1` only (never creates, replaces or deletes one), asks Hello once (one prompt) to sign `"albera.selfcheck.v1" 0x00 <64 hex chars = 32 fresh random bytes>`, and verifies the signature **locally** with the public key of the same credential (RSA-2048, PKCS#1 v1.5 / SHA-256, a 256-byte signature, the same parameters the Authority checks presence with; the approver and the Authority share no code, so the parameters are repeated in `PresenceSignature.Verify`). Nothing is sent: no pipe, no network, no file. Needs an interactive console like `approve` (checked first, exit 65 `not_interactive`). `--expect <approverKeyId>` compares the key's id with the one you recorded at `enroll`; on a difference it prints `KEY_MISMATCH` and stops **before** Hello is asked.
+
+  stdout on success is exactly these three lines (public values only):
+
+  ```
+  self-check: OK
+  approverKeyId: hello-0123456789abcdef
+  approverSid: S-1-5-21-...
+  ```
+
+  On `self-check: FAILED` (Hello signed, but the signature does not verify with the credential's public key) or `self-check: KEY_MISMATCH` the line is on stdout and an `error:` line is on stderr. The message is **domain-separated** from the presence message: `albera.selfcheck.v1` versus `albera.presence.v1`, so neither starts like the other and a self-check signature can never verify as a presence signature for any request (a unit check asserts this). A pass shows that the key signs and matches its public key; it does **not** show who created the key (see "Known limits": keep your own `enroll` output and use `--expect`).
 
 ### What `enroll` prints (stdout; public values only)
 
@@ -71,12 +83,12 @@ Every digest input is shown (purpose, action, projectId, computerId, every arg i
 |---|---|---|
 | 0 | done | |
 | 64 | usage | (usage line) |
-| 65 | refused locally; nothing was decided | `digest_mismatch`, `invalid_entry`, `not_pending`, `not_confirmed`, `not_interactive` (stdin redirected), `already_enrolled`, `not_enrolled` (`enroll --show` with no key) |
+| 65 | refused locally; nothing was decided | `digest_mismatch`, `invalid_entry`, `not_pending`, `not_confirmed`, `not_interactive` (stdin redirected), `already_enrolled`, `not_enrolled` (`enroll --show` with no key), `key_mismatch` (`enroll --check --expect`) |
 | 66 | before the first byte was written: the server is not the Authority, or is not there | `server_identity_mismatch`, `server_identity_unavailable`, `authority_unreachable`, `access_denied`, `request_too_large` |
 | 67 | the Authority answered `{"ok":false,"code":...}` | `authority:<code>` with one of its 7 fixed codes |
 | 68 | after the write; the outcome is unknown (run `list` again) | `timeout`, `transport_error`, `invalid_response`, `response_too_large` |
-| 69 | no usable Windows Hello key (Hello not supported / set up, key not enrolled): nothing was sent, the request stays pending. The message adds a `hint:` line (run `enroll`) | `presence_signer_unavailable` (approve); `hello_unavailable`, `hello_cancelled` (enroll) |
-| 70 | internal error | `internal` |
+| 69 | no usable Windows Hello key (Hello not supported / set up, key not enrolled): nothing was sent, the request stays pending. The message adds a `hint:` line (run `enroll`) | `presence_signer_unavailable` (approve, `enroll --check`); `hello_unavailable`, `hello_cancelled` (enroll, `enroll --check`); `not_enrolled` (`enroll --check` with no key; unlike `enroll --show`, which is 65), `hello_no_proof` (`enroll --check`: Hello did not verify you) |
+| 70 | internal error; also `enroll --check` when Hello signed but the signature does not verify with the enrolled public key (the key and its own signature disagree, which a healthy key never does; not a local refusal, so not 65) | `internal`, `self_check_failed` |
 
 ## Server identity (before the first write)
 
@@ -101,7 +113,7 @@ A wrong signature makes the Authority finalise the request as `presence_mismatch
 | `list`, `deny`, rendering, digest recompute and refusal, pipe client with server verification | real | same code |
 | `approve` flow up to the presence step, typed `yes`, console check | real | same code |
 | presence signer | `WindowsHelloPresenceSigner` (Windows Hello). **Written and compiled; never run against a real enrolment** | `FakePresenceSigner`: an in-memory RSA-2048 key (PKCS#1 v1.5 / SHA-256), or "Hello gave no proof"; without a key, a signer that is never ready |
-| `enroll` | `WindowsHelloKeyStore` (`RequestCreateAsync`, `RetrievePublicKey`). **Never run against a real Hello** | `FakeKeyStore` (in-memory RSA key) |
+| `enroll`, `enroll --check` | `WindowsHelloKeyStore` (`RequestCreateAsync`, `RetrievePublicKey`) and, for the check, `WindowsHelloPresenceSigner`. **Never run against a real Hello by any test** | `FakeKeyStore` (in-memory RSA key) and `FakePresenceSigner` |
 | Windows Hello (`KeyCredentialManager`) | used | **not present in the build at all** (`WindowsHello.cs` is removed from it) |
 
 The fakes and the `--test-*` options (`--test-pipe-root`, `--test-owner-sid`, `--test-pid`, `--test-fake-key <base64 pkcs8>`, `--test-key-state missing`, `--test-presence unavailable`, `--test-interactive yes`, `--test-timeout-ms`) are `#if ALBERA_APPROVER_TEST_FAULTS` (`-p:AlberaApproverTestFaults=true`). The publish script pins it `false` as a global MSBuild property (and `ALBERA_SEAM` fails a build that inherits the symbol); tests assert that the shipped DLL has none of those names or strings, that the shipped DLL contains `WindowsHelloPresenceSigner` and the test-faults DLL does not, and that the shipped binary rejects the options with exit 64. So no test can reach the real `KeyCredentialManager`.
@@ -118,17 +130,19 @@ Needs: Windows Hello set up for your account (Settings > Accounts > Sign-in opti
 
 1. `npm run build:approver`
 2. Open a normal console (not elevated, not redirected, same Windows account that will approve) and run `src\runtime\windows-approver\bin\Release\net10.0-windows10.0.19041.0\win-x64\publish\AlberaApprover.exe enroll`. Verify with your Hello PIN when Windows asks. It prints `approverPublicKey`, `approverKeyId` and `approverSid`. (Printed again any time by `enroll --show`.)
-3. Check that the key is yours. If `enroll` answers `already_enrolled`, a key with the fixed name already exists; if you did not make it with this program, another app of your account may have made it, so run `enroll --replace` (type `replace`) and use the output of that run. Keep the output of your own `enroll`: `enroll --show` prints a warning, and its values are trustworthy only if they are identical to what your own run printed.
-4. Put those three values in the Authority config (`approval-authority.md`, "Service entry and config"; `service-check <config.json>` validates it), together with the Control Plane account in `controlPlaneSid` (it must differ from `approverSid`). Restart the Authority service so it reads the config.
-5. Have the Control Plane submit a harmless request, then run `AlberaApprover.exe list` and check the printed fields and `digest check: OK`.
-6. Run `AlberaApprover.exe approve <approvalId>`, read the request, type `yes`, and verify with Hello. Expect `result: approved`.
-7. If it exits 69, read the `hint:` line. If it exits 67 `authority:presence_mismatch`, the config key is not the one `enroll --show` prints; fix the config.
+3. Run the self-check, still before any Authority step: `AlberaApprover.exe enroll --check --expect <approverKeyId from step 2>`. Verify with Hello once. It must print `self-check: OK` and the same `approverKeyId` and `approverSid` as step 2 (exit 0). That proves the enrolled key signs on this PC and matches its public key, without the Authority service. `KEY_MISMATCH` means the enrolled key is not the one step 2 printed; `FAILED` means Hello's signature does not verify with its own public key: do not use the key (`enroll --replace`). If the Hello prompt does not appear, stop: that is the "window handle" open point below, and it now shows up here, before the Authority is involved.
+4. Check that the key is yours. If `enroll` answers `already_enrolled`, a key with the fixed name already exists; if you did not make it with this program, another app of your account may have made it, so run `enroll --replace` (type `replace`) and use the output of that run. Keep the output of your own `enroll`: `enroll --show` prints a warning, and its values are trustworthy only if they are identical to what your own run printed.
+5. Put those three values in the Authority config (`approval-authority.md`, "Service entry and config"; `service-check <config.json>` validates it), together with the Control Plane account in `controlPlaneSid` (it must differ from `approverSid`). Restart the Authority service so it reads the config.
+6. Have the Control Plane submit a harmless request, then run `AlberaApprover.exe list` and check the printed fields and `digest check: OK`.
+7. Run `AlberaApprover.exe approve <approvalId>`, read the request, type `yes`, and verify with Hello. Expect `result: approved`.
+8. If it exits 69, read the `hint:` line. If it exits 67 `authority:presence_mismatch`, the config key is not the one `enroll --show` prints; fix the config.
 
-If the Hello prompt does not appear at step 6, or `approve` reports `presence_signer_unavailable` although `enroll --show` works, stop and tell the developer: that is the "window handle" open point below.
+If the Hello prompt does not appear at step 7, or `approve` reports `presence_signer_unavailable` although `enroll --show` works, stop and tell the developer: that is the "window handle" open point below.
 ## Known limits (v1, unpackaged)
 
 The approver is an unpackaged console exe, so Windows treats everything running as your account as one party. Plainly:
 
+- **The self-check is not provenance.** `enroll --check` proves the key signs and matches its public key; another app of your account could have made that key first. Compare with the `approverKeyId` your own `enroll` printed (`--expect`).
 - **Same-user processes are trusted.** Another app of the same account can create or open the credential `AlberaApprover.v1` before you do (so `enroll` refuses an existing key and `enroll --show` warns), and can call `RequestSignAsync` on it directly, with any message, without this program. The typed `yes` and the check in `approve` are not a boundary against such a process.
 - **Hello's prompt does not show the action.** It names the app only. A process that gets a human to verify at the same moment (a racing presence message for another request, or an agent driving `approve` through a pseudo-console, which still counts as "not redirected") can have a different request approved than the one the person is looking at. The details are printed before the prompt; that only helps a person who reads them.
 - **Planned fix, not built:** package the approver as MSIX so the key is scoped to the package family name (and ideally run it as an AppContainer), so other apps of the same account cannot open or use it. That needs an owner decision (a signing certificate, packaging) and is deliberately not done here.
@@ -145,8 +159,8 @@ The approver is an unpackaged console exe, so Windows treats everything running 
 
 ## Tests
 
-- `test/runtime-approver-unit.test.mjs` (38 in-process checks via `test/approver-harness/`, the real sources except `Program.cs` and `WindowsHello.cs`, plus the fakes): the `enroll` flows (show, create, refuse existing, typed `replace`, console required, cancelled / unusable Hello, public values only, key id grammar), the console rule for `approve` (redirected stdin refused before anything is read or sent), the always-typed `yes`, the exit 69 hint, no `--yes` in the grammar, safe rendering (controls, bidi, zero width, non-ASCII, look-alikes, astral, lone surrogates, NFC/NFD, a literal `\u{41}`), every digest input shown, the digest recomputed with the contract and every tampered field / digest / purpose refused before anything is signed or sent, malformed entries and pages, the exact presence message bytes, the fake signer, approve / deny / `presence_unavailable` / not-built flows against a canned channel, the typed-confirmation rule, Authority code mapping, channel failure exit codes, paging, the command grammar.
-- `test/runtime-approver-integration.test.mjs` (21 tests; Windows, same user, unprivileged; includes an `enroll --show` -> Authority config -> approve round trip with the fake key, and the shipped build refusing redirected stdin for `approve` / `enroll`): the real test-faults Authority (real RSA presence verifier pinned to the fake key) and the real app. Empty and 7-request lists (more than one frame), approve with fake Hello -> `status` returns a receipt that validates with the contract and verifies with the signer key, typed-`yes` rule, deny and a second decision, `presence_unavailable` / `presence_mismatch` / no-signer, non-ASCII text, a tampering proxy (5 kinds of lie, plus smuggled fields / bidi / null) refused with the proxy never receiving `decide`, wrong owner SID and wrong PID refused with the Authority never seeing a request, a squatter receiving 0 bytes (and, as a control, being spoken to when it is the expected identity), no Authority, and the shipped build (no fakes, no test options, stops at the identity check).
+- `test/runtime-approver-unit.test.mjs` (48 in-process checks via `test/approver-harness/`, the real sources except `Program.cs` and `WindowsHello.cs`, plus the fakes): the `enroll` flows (show, create, refuse existing, typed `replace`, console required, cancelled / unusable Hello, public values only, key id grammar), the `enroll --check` self-check (exact signed bytes, three fixed output lines, domain separation from the presence message including cross-verification, a different key or garbage signature -> FAILED, no key -> 69 with nothing created, console first, `--expect` match / KEY_MISMATCH before any prompt, fresh nonce, grammar), the console rule for `approve` (redirected stdin refused before anything is read or sent), the always-typed `yes`, the exit 69 hint, no `--yes` in the grammar, safe rendering (controls, bidi, zero width, non-ASCII, look-alikes, astral, lone surrogates, NFC/NFD, a literal `\u{41}`), every digest input shown, the digest recomputed with the contract and every tampered field / digest / purpose refused before anything is signed or sent, malformed entries and pages, the exact presence message bytes, the fake signer, approve / deny / `presence_unavailable` / not-built flows against a canned channel, the typed-confirmation rule, Authority code mapping, channel failure exit codes, paging, the command grammar.
+- `test/runtime-approver-integration.test.mjs` (24 tests; Windows, same user, unprivileged; includes an `enroll --show` -> Authority config -> approve round trip with the fake key, and the shipped build refusing redirected stdin for `approve` / `enroll`): the real test-faults Authority (real RSA presence verifier pinned to the fake key) and the real app. Empty and 7-request lists (more than one frame), approve with fake Hello -> `status` returns a receipt that validates with the contract and verifies with the signer key, typed-`yes` rule, deny and a second decision, `presence_unavailable` / `presence_mismatch` / no-signer, non-ASCII text, a tampering proxy (5 kinds of lie, plus smuggled fields / bidi / null) refused with the proxy never receiving `decide`, wrong owner SID and wrong PID refused with the Authority never seeing a request, a squatter receiving 0 bytes (and, as a control, being spoken to when it is the expected identity), no Authority, and the shipped build (no fakes, no test options, stops at the identity check).
 - `test/runtime-approver-source.test.mjs` (10 source guards, any OS): separate project, the one pinned dependency and no other, no process / file / network / key / service code, the WinRT Hello calls confined to `WindowsHello.cs` as a fixed member list (no delete, no private export), the shipped wiring uses `WindowsHelloPresenceSigner` and the test-faults wiring does not, no `--yes`, fakes only inside the `#if`, verify-before-write order and the exact P/Invoke set, only `list` / `decide` and only the three decisions, digest refusal before the signer, rendering through `SafeText`, build script and package exclusion.
 - `scripts/arch-check.mjs` rule 11 and `scripts/package-smoke.mjs`: nothing in the Observer or the npm package names or ships the approver.
 
