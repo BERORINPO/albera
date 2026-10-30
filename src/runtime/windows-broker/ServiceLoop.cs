@@ -6,7 +6,8 @@ using Microsoft.Win32.SafeHandles;
 // serving: it creates the pipe ONCE as the first instance (max 1, same owner and DACL) and reuses that one instance for every client. After each
 // connection it waits for the client to read the answer, calls Disconnect() and waits for the next client on the same instance, until the stop token
 // is cancelled or a fatal condition ends the loop with one of the fixed exit codes. The name is never released between two requests, so no local user
-// can take it in a dispose / recreate gap (which used to stop the service with 70).
+// can take it in a dispose / recreate gap (which used to stop the service with 70). The database folder is pinned (DatabaseFolderPin.cs) before the
+// pipe exists and stays pinned until the loop ends, so it cannot be renamed, deleted or swapped between two requests.
 internal static partial class Program
 {
     // One client may hold the Broker's only pipe instance for this long between connect and answer; a client that connects and stalls is dropped,
@@ -27,11 +28,19 @@ internal static partial class Program
     private static TimeSpan? ServiceClaimHold => null;
 #endif
 
-    // Returns 0 once `stop` is cancelled, or 70 / 72 when the pipe cannot be created. `onReady` runs once, after the pipe exists (the service
-    // reports RUNNING from there). Nothing is swallowed except a single connection's I/O failure or deadline.
+    // Returns 0 once `stop` is cancelled, 73 when the database folder cannot be pinned, or 70 / 72 when the pipe cannot be created. `onReady` runs
+    // once, after the folder is pinned and the pipe exists (the service reports RUNNING from there). Nothing is swallowed except a single
+    // connection's I/O failure or deadline.
     internal static async Task<int> RunServiceLoopAsync(ServiceConfig config, CancellationToken stop, Action onReady)
     {
         BrokerSettings settings = new(config.Database, config.PublicKey, config.ControlPlaneSid, config.Generation, ServiceClaimHold, ImpersonationFault.None);
+        // Held for the whole loop (released by `using` when the loop ends): the journal folder cannot be renamed, deleted or swapped meanwhile.
+        using SafeFileHandle? databaseFolder = DatabaseFolderPin.TryPin(config.Database);
+        if (databaseFolder is null)
+        {
+            Console.WriteLine("SERVICE_CONFIG=invalid:" + ServiceConfig.Reason.DatabasePin);
+            return ExitServiceConfigInvalid;
+        }
         // A squatter that already owns the name makes this fail with 70: the service stops (fail closed) instead of serving.
         NamedPipeServerStream? pipe = CreateBrokerPipe(config.PipeName, config.ControlPlaneSid, out int failure);
         if (pipe is null) return failure;

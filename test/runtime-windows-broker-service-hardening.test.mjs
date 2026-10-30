@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -16,7 +16,9 @@ import {
 //  2. the serve loop keeps ONE pipe instance (Disconnect + wait again), so the name is never free between two requests;
 //  3. the Control Plane SID is a real virtual service account or a user, not ALL SERVICES / a group;
 //  4. the answer to a committed claim is written even when STOP arrives while the claim is running;
-//  5. a signed receipt with a wrongly typed number is denied instead of stopping the service.
+//  5. a signed receipt with a wrongly typed number is denied instead of stopping the service;
+//  6. (ADR-002 accept condition C3, decision-log row 2026-10-30+adr002-broker-accept-conditions) the running service holds its database folder open
+//     without FILE_SHARE_DELETE, so the folder cannot be renamed, deleted or swapped between requests.
 // Nothing here registers or starts a service, and no ACL outside folders this file creates is touched (icacls on its own temp folders only).
 const SUCCESS = { ok: true, state: 'UNKNOWN', action: 'synthetic.noop' };
 const DENIED = { ok: false, code: 'denied' };
@@ -261,6 +263,56 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
       assert.equal(child.lines.some((line) => line.startsWith('BROKER_FATAL')), false);
       assert.equal((await stop(child)).code, 0);
       assert.equal(inspectClaimCount(brokerExe, config.database), 1, 'only the valid receipt was claimed');
+    });
+
+    describe('accept condition C3: the database folder is pinned while the loop runs', () => {
+      const SHARING_ERRORS = ['EBUSY', 'EPERM', 'EACCES']; // Windows reports a sharing violation on rename / rmdir as one of these, depending on the Node call
+      const attempt = (action) => { try { action(); return 'succeeded'; } catch (error) { return error.code; } };
+
+      it('rename and delete of the folder fail while the loop runs and succeed after STOP; service-check pins nothing', async () => {
+        const { databaseDir, configFile, dir } = scenario('loop-pin-lifecycle');
+        const moved = path.join(dir, 'db-moved');
+        // Before the service starts (and after a service-check) the folder is free: the pin is the service's, not the check's.
+        assert.equal(check(configFile).code, 0);
+        assert.equal(attempt(() => renameSync(databaseDir, moved)), 'succeeded', 'control: nothing holds the folder before the service runs');
+        renameSync(moved, databaseDir);
+        const child = track(startProcess(loopExe, ['serve-loop', configFile], { stdin: true }));
+        await waitForLine(child, 'BROKER_READY');
+        assert.ok(SHARING_ERRORS.includes(attempt(() => renameSync(databaseDir, moved))), 'rename of the pinned folder');
+        assert.ok(SHARING_ERRORS.includes(attempt(() => rmdirSync(databaseDir))), 'delete of the pinned (empty) folder');
+        assert.equal(existsSync(databaseDir), true);
+        assert.equal(existsSync(moved), false);
+        assert.equal(child.closeCode, undefined, 'the service is still running');
+        assert.equal((await stop(child)).code, 0);
+        assert.equal(attempt(() => renameSync(databaseDir, moved)), 'succeeded', 'after STOP the folder is released');
+        renameSync(moved, databaseDir);
+        assert.equal(attempt(() => rmdirSync(databaseDir)), 'succeeded', 'after STOP the (still empty) folder can be deleted');
+      });
+
+      it('the folder stays pinned across requests, requests keep using the same path, and the journal can still be read', async () => {
+        const { child, config, databaseDir, dir } = startLoop('loop-pin-requests');
+        const moved = path.join(dir, 'db-moved');
+        await waitForLine(child, 'BROKER_READY');
+        for (let i = 0; i < 3; i += 1) {
+          assert.deepEqual(await send(config.pipeName, signedWith(`pinned-${i}`), child.pid), SUCCESS, `request ${i}`);
+          assert.ok(SHARING_ERRORS.includes(attempt(() => renameSync(databaseDir, moved))), `rename after request ${i}`);
+          assert.equal(attempt(() => rmSync(databaseDir, { recursive: true })) === 'succeeded', false, `recursive delete after request ${i} must not remove the folder`);
+          assert.equal(existsSync(config.database), true, 'the journal file is still in the pinned folder');
+        }
+        assert.equal(inspectClaimCount(brokerExe, config.database), 3, 'the pin does not stop a reader from opening the journal');
+        assert.deepEqual(await send(config.pipeName, signedWith('pinned-last'), child.pid), SUCCESS, 'still serving');
+        assert.equal((await stop(child)).code, 0);
+        assert.equal(inspectClaimCount(brokerExe, config.database), 4);
+      });
+
+      it('a parent of the pinned folder cannot be renamed while the loop runs either (recorded behaviour of NTFS, not something the Broker adds)', async () => {
+        const { child, dir } = startLoop('loop-pin-parent');
+        await waitForLine(child, 'BROKER_READY');
+        const result = attempt(() => renameSync(dir, `${dir}-moved`));
+        if (result === 'succeeded') renameSync(`${dir}-moved`, dir); // put it back so the cleanup finds it
+        assert.ok(SHARING_ERRORS.includes(result), `parent rename gave: ${result}`);
+        await stop(child);
+      });
     });
   });
 });
