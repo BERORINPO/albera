@@ -12,7 +12,7 @@ using Microsoft.Win32.SafeHandles;
 //   {pipeName, timeoutMs, expect:{ownerSid, pid | serviceName, imageSha256?}} plus exactly one request: {receipt, signature} | {fence:computerId} | {inspect:operationId}
 //   | {authority:"<the Authority's JSON request text>"} (Node builds and validates it; here only {v:1, verb: submit|status} and the 2 KiB bound are checked, and the
 //   exact bytes are sent). Only the request, the pipe-name grammar and the reply shapes differ between the two servers; the identity checks below are shared.
-// Output: ONE JSON line, {ok:true,state,action[,replayed]} | {ok:true,brokerEpoch,leaseGeneration,brokerChallenge} | {ok:false,code}; for `authority` the
+// Output: ONE JSON line, {ok:true,state,action[,replayed]} | {ok:true,brokerEpoch,leaseGeneration[,leaseId],brokerChallenge} | {ok:false,code}; for `authority` the
 // Authority's own {ok:true,...} object (re-serialised) or {ok:false,code} with a code from its fixed set.
 // Exit: 0 = the line is the result, 64 = bad input, 70 = internal error (line still written).
 // Order: open with SQOS identification -> verify the pipe server on the CONNECTED handle -> only then write the 2 KiB frame.
@@ -89,7 +89,12 @@ internal static class Program
             if (Text(root, "state") is { } state && Text(root, "action") is { } action)
                 return $"{{\"ok\":true,\"state\":{JsonSerializer.Serialize(state)},\"action\":{JsonSerializer.Serialize(action)}{(root.TryGetProperty("replayed", out JsonElement replayed) && replayed.ValueKind == JsonValueKind.True ? ",\"replayed\":true" : "")}}}";
             if (Number(root, "brokerEpoch") is { } epoch && Number(root, "leaseGeneration") is { } generation && Text(root, "brokerChallenge") is { } challenge)
-                return $"{{\"ok\":true,\"brokerEpoch\":{epoch},\"leaseGeneration\":{generation},\"brokerChallenge\":{JsonSerializer.Serialize(challenge)}}}";
+            {
+                // `leaseId` (a contract id) is relayed when the Broker sends it; the four-key reply of an older Broker still passes.
+                bool hasLease = root.TryGetProperty("leaseId", out JsonElement lease);
+                if (hasLease && (lease.ValueKind != JsonValueKind.String || !IsId(lease.GetString()))) return Failure("invalid_response");
+                return $"{{\"ok\":true,\"brokerEpoch\":{epoch},\"leaseGeneration\":{generation}{(hasLease ? $",\"leaseId\":{JsonSerializer.Serialize(lease.GetString())}" : "")},\"brokerChallenge\":{JsonSerializer.Serialize(challenge)}}}";
+            }
         }
         catch (JsonException) { }
         return Failure("invalid_response");
@@ -167,8 +172,8 @@ internal static class Program
         return valid ? text : throw new InvalidDataException();
     }
     private static bool IsPipePath(string value) => value.Length <= 256 && value.Split((char)92).All(segment => IsToken(segment, 128, "_-", false)); // backslash-separated tokens: no empty segment, no dot, so the name cannot leave the pipe namespace
-    private static string Id(JsonElement element) =>
-        element.GetString() is { Length: > 0 } id && char.IsAsciiLetterOrDigit(id[0]) && IsToken(id, 64, "._:-", false) ? id : throw new InvalidDataException();
+    private static bool IsId(string? id) => id is { Length: > 0 } && char.IsAsciiLetterOrDigit(id[0]) && IsToken(id, 64, "._:-", false);
+    private static string Id(JsonElement element) => element.GetString() is { } id && IsId(id) ? id : throw new InvalidDataException();
 
     private static void RequireKeys(JsonElement element, params string[] allowed)
     {

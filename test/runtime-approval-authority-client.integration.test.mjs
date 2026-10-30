@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createPublicKey, verify } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -145,6 +146,39 @@ describe('Approval Authority submit client: the Node client, the real helper and
       } finally { await new Promise((resolve) => server.close(resolve)); }
       assert.deepEqual(await pending(authority), []);
     });
+  });
+
+  /** Run the helper directly (a Broker `fence` request) against a Node pipe server that answers with `reply`; resolves with the helper's output line. */
+  async function fenceThroughHelper(reply) {
+    const pipe = `ALBERA_Fence_${process.pid}_${Math.random().toString(16).slice(2, 10)}`;
+    const server = net.createServer((socket) => {
+      socket.on('data', () => { const body = Buffer.from(JSON.stringify(reply)); const header = Buffer.alloc(4); header.writeInt32LE(body.length); socket.end(Buffer.concat([header, body])); });
+      socket.on('error', () => {});
+    });
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(`\\\\.\\pipe\\${pipe}`, resolve); });
+    try {
+      const child = spawn(helper, [], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+      let out = '';
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => { out += chunk; });
+      const closed = new Promise((resolve) => child.once('close', resolve));
+      child.stdin.end(`${JSON.stringify({ pipeName: pipe, fence: 'computer-1', timeoutMs: 5000, expect: { ownerSid: sid, pid: process.pid } })}
+`);
+      await closed;
+      return JSON.parse(out);
+    } finally { await new Promise((resolve) => server.close(resolve)); }
+  }
+
+  it('the helper relays a Broker fence reply with or without leaseId, and refuses a leaseId that is not a contract id', async () => {
+    const four = { ok: true, brokerEpoch: 3, leaseGeneration: 7, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' };
+    assert.deepEqual(await fenceThroughHelper(four), four, 'an older Broker four-key reply still passes');
+    const five = { ok: true, brokerEpoch: 3, leaseGeneration: 7, leaseId: 'lease-1.a:b_c', brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' };
+    const relayed = await fenceThroughHelper(five);
+    assert.deepEqual(relayed, five);
+    assert.deepEqual(Object.keys(relayed), ['ok', 'brokerEpoch', 'leaseGeneration', 'leaseId', 'brokerChallenge']);
+    for (const leaseId of ['', '-x', 'a b', 'x'.repeat(65), 'C:\\secret', 7, null, ['a']]) {
+      assert.deepEqual(await fenceThroughHelper({ ...five, leaseId }), { ok: false, code: 'invalid_response' }, JSON.stringify(leaseId));
+    }
   });
 
   it('Authority stopped: authority_unreachable, a pre-send code', async () => {
