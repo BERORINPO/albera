@@ -270,13 +270,13 @@ check('8a Windows Broker is not referenced by Observer layers or runtime modules
   BROKER_REF.test(line) ? 'the Windows Broker prototype must not be imported, spawned or named here (build-on-demand only)' : null,
 );
 const brokerRoot = 'src/runtime/windows-broker';
-const brokerFiles = ['Albera.WindowsBroker.csproj', 'Program.cs', 'ServiceConfig.cs', 'ServiceHost.cs', 'ServiceLoop.cs', 'packages.lock.json'];
+const brokerFiles = ['Albera.WindowsBroker.csproj', 'Program.cs', 'BrokerRequests.cs', 'Journal.cs', 'ServiceConfig.cs', 'ServiceHost.cs', 'ServiceLoop.cs', 'packages.lock.json'];
 for (const f of brokerFiles) if (!fs.existsSync(path.join(ROOT, brokerRoot, f))) violations.push(`[8b Windows Broker source] ${brokerRoot}/${f} does not exist (false-safe)`);
 // The trusted pipe client helper (verifies the pipe server before it writes) is part of the same on-demand set: its 3 files must exist, its
-// Program.cs stays small enough to review (<= 200 lines), and `build:windows-broker` must build it. Its name also matches BROKER_REF, so 8a and 8c cover it.
+// Program.cs stays small enough to review (<= 220 lines), and `build:windows-broker` must build it. Its name also matches BROKER_REF, so 8a and 8c cover it.
 const pipeClientRoot = 'src/runtime/windows-broker-pipe-client';
 const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'packages.lock.json'];
-const PIPE_CLIENT_MAX_LINES = 200;
+const PIPE_CLIENT_MAX_LINES = 220; // 200 until the fence and inspect request kinds (receipt v2) were added
 for (const f of pipeClientFiles) if (!fs.existsSync(path.join(ROOT, pipeClientRoot, f))) violations.push(`[8b Windows Broker pipe client source] ${pipeClientRoot}/${f} does not exist (false-safe)`);
 const pipeClientProgram = path.join(ROOT, pipeClientRoot, 'Program.cs');
 if (fs.existsSync(pipeClientProgram)) {
@@ -327,6 +327,12 @@ if (fs.existsSync(schemaFile)) {
 }
 results.push(`9 broker-contract: ${contractMjs.length} .mjs, ${contractCs.length} .cs, vectors ${vectorCounts}`);
 
+// 9e. The Broker enforces receipt v2 with the shared C# sources, included by link and never copied (a copy could drift from the vectors both languages run).
+const brokerProject = fs.readFileSync(path.join(ROOT, brokerRoot, 'Albera.WindowsBroker.csproj'), 'utf8');
+if (!/<Compile Include="\.\.\/broker-contract\/\*\.cs"/.test(brokerProject)) violations.push('[9e Broker uses the contract] Albera.WindowsBroker.csproj must include ../broker-contract/*.cs');
+const copies = listFiles(brokerRoot, ['.cs']).filter((file) => /namespace\s+Albera\.BrokerContract|class\s+(?:ReceiptV2|ActionDigest|StrictJson)\b/.test(fs.readFileSync(file, 'utf8')));
+for (const file of copies) violations.push(`[9e Broker uses the contract] ${posix(file)} declares contract types: the Broker must include src/runtime/broker-contract, not copy it`);
+results.push(`9e Broker includes the contract sources by link: ${copies.length} copies`);
 // 10. The Approval Authority (src/runtime/windows-approval-authority, ADR-002 "Receipt v2", Proposed) is a separate Windows service that is built on demand
 //     only, like the Broker (rule 8). The Observer layers and every runtime .mjs file may not import, spawn or name it, package.json may not wire it into
 //     `bin`, `files` or the npm lifecycle, its sources may not name the Broker project (the two stay separately deployable), and its source set, lock file

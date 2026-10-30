@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { sendBrokerRequest } from '../src/runtime/windows-broker-client.mjs';
 import {
-  buildBroker, buildBrokerWithTestSeams, buildPipeClient, currentUserSid, getUnavailableReason, inspectClaimCount, makeReceipt, makeTrustedTempDirectory,
+  brokerSession, buildBroker, buildBrokerWithTestSeams, buildPipeClient, createTestAuthority, currentUserSid, getUnavailableReason, inspectClaimCount, makeTrustedTempDirectory,
   startProcess, waitForExit, waitForLine, GENERATION,
 } from './helpers/windows-broker-harness.mjs';
 
@@ -17,6 +16,7 @@ import {
 // outside the SCM, which must fail fast and create nothing; (3) the real service serve loop (RunServiceLoopAsync) through the test-only
 // `serve-loop` entry of the seam build, where end of stdin plays SERVICE_CONTROL_STOP. The SCM part (RUNNING / STOP / PID) is lab-only.
 const SUCCESS = { ok: true, state: 'UNKNOWN', action: 'synthetic.noop' };
+const REPLAYED = { ...SUCCESS, replayed: true };
 const DENIED = { ok: false, code: 'denied' };
 const EXIT_PIPE_UNAVAILABLE = 70, EXIT_CONFIG_INVALID = 73, EXIT_CONTROLLER_UNAVAILABLE = 74, EXIT_USAGE = 64;
 const ERROR_FAILED_SERVICE_CONTROLLER_CONNECT = 1063;
@@ -24,7 +24,8 @@ const STOP_BUDGET_MS = 5000;
 const VIRTUAL_SERVICE_SID = 'S-1-5-80-1111111111-2222222222-3333333333-1444444444-2555555555';
 
 describe('Broker service host: config validation, outside-SCM behaviour and the serve loop', { skip: getUnavailableReason() }, () => {
-  let root, brokerExe, loopExe, helper, sid, keys;
+  let root, brokerExe, loopExe, helper, sid;
+  const authority = createTestAuthority(); // at describe time: the table of rejected configs below is built eagerly
   const running = new Set();
   before(async () => {
     // The Broker accepts only a path already in its final form; CI's TEMP is an 8.3 short name (RUNNER~1) that .NET expands, so use the long one.
@@ -34,8 +35,6 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
     loopExe = buildBrokerWithTestSeams(path.join(root, 'broker-seams'));
     helper = await buildPipeClient(path.join(root, 'helper'));
     sid = currentUserSid();
-    const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
-    keys = { privateKey, publicKeyB64: publicKey.export({ type: 'spki', format: 'der' }).toString('base64') };
   });
   after(async () => {
     for (const child of running) { child.kill(); await waitForExit(child); }
@@ -45,16 +44,12 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
   const track = (child) => { running.add(child); child.once('close', () => running.delete(child)); return child; };
   const unique = (prefix) => `${prefix}_${randomBytes(6).toString('hex')}`;
   const pipePath = (pipe) => `\\\\.\\pipe\\${pipe}`;
-  /** Two receipts under one authority key (the config pins one public key). */
-  const signed = (name) => {
-    const receipt = makeReceipt(`${name}-op`, `${name}-approval`, `${name}-receipt`);
-    return { receipt, signature: sign('sha256', Buffer.from(receipt, 'base64'), { key: keys.privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64') };
-  };
-  const send = (pipe, request, brokerPid) => sendBrokerRequest({ pipeName: pipe, receipt: request.receipt, signature: request.signature, expect: { ownerSid: sid, pid: brokerPid }, helperPath: helper, timeoutMs: 10_000 });
+  /** The Control Plane side of one running Broker: fence, sign with the pinned test authority, send. */
+  const sessionOf = (config, child) => brokerSession({ helper, sid, pipeName: config.pipeName, pid: child.pid, authority });
 
   /** A valid config object; `overrides` replace values, `undefined` removes a key. */
   function validConfig(name, overrides = {}) {
-    return { pipeName: unique('ALBERA_SvcHost'), database: path.join(root, `${name}.sqlite`), publicKey: keys.publicKeyB64, controlPlaneSid: sid, generation: GENERATION, ...overrides };
+    return { pipeName: unique('ALBERA_SvcHost'), database: path.join(root, `${name}.sqlite`), authorityKeys: [authority.keyEntry], controlPlaneSid: sid, generation: GENERATION, ...overrides };
   }
   function writeRaw(name, text) {
     const file = path.join(root, `${name}.config.json`);
@@ -74,12 +69,29 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
     socket.once('error', (error) => resolve(error.code));
   });
 
+  /** Values of `authorityKeys` the service must refuse. */
+  function authorityKeyCases() {
+    const good = authority.keyEntry;
+    const p384 = generateKeyPairSync('ec', { namedCurve: 'secp384r1' }).publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+    const other = createTestAuthority({ kid: 'test-authority-2' }).keyEntry;
+    return [
+      ['an empty list', []], ['three keys', [good, other, createTestAuthority({ kid: 'test-authority-3' }).keyEntry]], ['not a list (an object)', good], ['not a list (a string)', 'kid=spki'],
+      ['an entry that is not an object', ['x']], ['an entry with an extra key', [{ ...good, extra: 1 }]], ['an entry without spki', [{ kid: good.kid }]], ['an entry without kid', [{ spki: good.spki }]],
+      ['a kid that is not an id', [{ kid: 'has space', spki: good.spki }]], ['an empty kid', [{ kid: '', spki: good.spki }]], ['a kid of 65 characters', [{ kid: 'k'.repeat(65), spki: good.spki }]],
+      ['a repeated kid', [good, { kid: good.kid, spki: other.spki }]], ['the same key under two kids', [good, { kid: 'test-authority-2', spki: good.spki }]],
+      ['an spki that is not base64', [{ kid: good.kid, spki: '###' }]], ['an empty spki', [{ kid: good.kid, spki: '' }]], ['an spki of garbage', [{ kid: good.kid, spki: 'AAAA' }]],
+      ['a truncated SubjectPublicKeyInfo', [{ kid: good.kid, spki: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE' }]], ['an ECDSA P-384 key (the signature scheme is P-256)', [{ kid: good.kid, spki: p384 }]],
+      ['a spki followed by extra bytes', [{ kid: good.kid, spki: Buffer.concat([Buffer.from(good.spki, 'base64'), Buffer.from([0])]).toString('base64') }]],
+    ];
+  }
+
   describe('config validation (service-check)', () => {
-    it('accepts a complete config with a user SID, a virtual service-account SID, or a UTF-8 BOM', () => {
+    it('accepts a complete config with a user SID, a virtual service-account SID, a UTF-8 BOM, or two pinned authority keys', () => {
       assert.deepEqual(check(writeConfig('ok-user')), { code: 0, lines: ['SERVICE_CONFIG=ok'], stderr: '' });
       assert.equal(check(writeConfig('ok-service', { controlPlaneSid: VIRTUAL_SERVICE_SID })).code, 0);
       assert.equal(check(writeRaw('ok-bom', `\uFEFF${JSON.stringify(validConfig('ok-bom'))}`)).code, 0, 'PowerShell 5.1 Set-Content -Encoding UTF8 writes a BOM');
-      assert.equal(check(writeConfig('ok-zero-generation', { generation: 0 })).code, 0);
+      assert.equal(check(writeConfig('ok-first-generation', { generation: 1 })).code, 0);
+      assert.equal(check(writeConfig('ok-two-keys', { authorityKeys: [authority.keyEntry, createTestAuthority({ kid: 'test-authority-2' }).keyEntry] })).code, 0, 'rotation overlap');
     });
 
     // [label, config overrides, expected reason word]
@@ -94,8 +106,10 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
         ['too long', `C:\\${'a'.repeat(250)}`],
       ].map(([label, value]) => [`database ${label}`, { database: value }, 'database']),
       ['database in a missing directory', { database: path.join(realpathSync.native(os.tmpdir()), 'albera-no-such-directory', 'journal.sqlite') }, 'database_directory'],
-      ...[['not base64', '###'], ['empty', ''], ['base64 of garbage', 'AAAA'], ['truncated SubjectPublicKeyInfo', 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE']].map(([label, value]) => [`public key ${label}`, { publicKey: value }, 'public_key']),
-      ...[['a string', '7'], ['a fraction', 1.5], ['negative', -1], ['null', null], ['beyond int64', 1e19], ['an object', {}]].map(([label, value]) => [`generation ${label}`, { generation: value }, 'generation']),
+      ...authorityKeyCases().map(([label, value]) => [`authority keys: ${label}`, { authorityKeys: value }, 'authority_keys']),
+      ['the v1 shape: a single publicKey instead of authorityKeys', { publicKey: authority.spki, authorityKeys: undefined }, 'config_keys'],
+      ['both shapes at once', { publicKey: authority.spki }, 'config_keys'],
+      ...[['a string', '7'], ['zero (a lease generation starts at 1)', 0], ['a fraction', 1.5], ['negative', -1], ['null', null], ['beyond int64', 1e19], ['an object', {}]].map(([label, value]) => [`generation ${label}`, { generation: value }, 'generation']),
       ['pipe name of the wrong type', { pipeName: 7 }, 'config_keys'],
       ['unknown key', { hold: true }, 'config_keys'],
       ['missing key', { generation: undefined }, 'config_keys'],
@@ -113,7 +127,7 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
         ['repeated key', base.replace(/\}$/u, ',"generation":8}'), 'config_keys'],
         ['array document', '[]', 'config_keys'], ['null document', 'null', 'config_keys'], ['empty file', '', 'config_syntax'],
         ['bad syntax', '{"pipeName":', 'config_syntax'], ['comment', `/*x*/${base}`, 'config_syntax'], ['trailing comma', base.replace(/\}$/u, ',}'), 'config_syntax'],
-        ['nested value', base.replace(/\}$/u, ',"x":{"y":{"z":1}}}'), 'config_syntax'],
+        ['nested value', base.replace(/\}$/u, ',"x":{"y":{"z":{"w":1}}}}'), 'config_syntax'],
         ['oversize file', `${base.slice(0, -1)},"x":"${'a'.repeat(5000)}"}`, 'config_too_large'],
       ];
       for (const [label, text, reason] of cases) {
@@ -133,7 +147,7 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
 
     it('never echoes config content: the output is one fixed line whatever the file says', () => {
       const secret = 'SECRET VALUE 4711';
-      const out = check(writeConfig('echo', { pipeName: secret, database: `C:\\${secret}\\j.sqlite`, publicKey: secret }));
+      const out = check(writeConfig('echo', { pipeName: secret, database: `C:\\${secret}\\j.sqlite`, authorityKeys: secret }));
       assert.deepEqual(out.lines, ['SERVICE_CONFIG=invalid:pipe_name']);
       assert.equal(`${out.lines}${out.stderr}`.includes(secret), false);
     });
@@ -203,10 +217,11 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
     it('serves consecutive requests from one running process (same PID), then stops cleanly on STOP', async () => {
       const { child, config } = startLoop('loop-two');
       await waitForLine(child, 'BROKER_READY');
-      const first = signed('loop-first'), second = signed('loop-second');
-      assert.deepEqual(await send(config.pipeName, first, child.pid), SUCCESS);
-      assert.deepEqual(await send(config.pipeName, second, child.pid), SUCCESS, 'the pipe was created again and the server PID is unchanged');
-      assert.deepEqual(await send(config.pipeName, first, child.pid), SUCCESS, 'the journal survives between requests: an exact replay gets the recorded outcome');
+      const session = sessionOf(config, child);
+      const first = await session.claim('loop-first');
+      assert.deepEqual(first.result, SUCCESS);
+      assert.deepEqual((await session.claim('loop-second')).result, SUCCESS, 'the pipe was created again and the server PID is unchanged');
+      assert.deepEqual(await session.send(first.request), REPLAYED, 'the journal survives between requests: an exact replay gets the recorded outcome');
       assert.equal(child.closeCode, undefined, 'the process kept running after every request');
       assert.equal(child.lines.filter((line) => line === 'BROKER_READY').length, 1, 'READY is announced once, after the first pipe exists');
       const stopped = await stop(child);
@@ -243,7 +258,7 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
       const oversize = Buffer.alloc(4); oversize.writeInt32LE(1 << 20);
       assert.deepEqual(await rawRequest(config.pipeName, oversize), DENIED, 'a frame length above 2 KiB is refused');
       assert.equal(await rawRequest(config.pipeName, undefined), undefined, 'connect and leave: no answer');
-      assert.deepEqual(await send(config.pipeName, signed('loop-after-hostile'), child.pid), SUCCESS);
+      assert.deepEqual((await sessionOf(config, child).claim('loop-after-hostile')).result, SUCCESS);
       assert.equal(child.closeCode, undefined);
       assert.equal((await stop(child)).code, 0);
       assert.equal(inspectClaimCount(brokerExe, config.database), 1);

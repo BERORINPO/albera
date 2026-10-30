@@ -44,27 +44,38 @@ internal static partial class Program
         return 64;
     }
 
+    // `serve <pipe> <database> <kid=spki[,kid=spki]> <sid> <initialGeneration> <hold|normal>`: a one-shot Broker for the host tests. It answers `fence` requests
+    // (at most MaxServeFences, because a claim needs the challenge a fence issues) and exits after the first request that is not a successful fence.
+    private const int MaxServeFences = 4;
+
     private static async Task<int> ServeAsync(string[] args, ImpersonationFault fault)
     {
         string pipeName = args[1];
-        BrokerSettings settings = new(args[2], Convert.FromBase64String(args[3]), args[4],
-            long.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture), args[6] == "hold" ? Timeout.InfiniteTimeSpan : null, fault);
-        if (await RefuseUnusableJournalAsync(settings.Database)) return ExitJournalRefused;
+        IReadOnlyList<AuthorityKey>? keys = AuthorityKey.ParseList(args[3]);
+        if (keys is null || !long.TryParse(args[5], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out long initialGeneration) || initialGeneration < 1) return 64;
+        BrokerSettings settings = new(args[2], keys, args[4], initialGeneration, args[6] == "hold" ? Timeout.InfiniteTimeSpan : null, fault);
+        if (await RefuseUnusableJournalAsync(settings.Database, initialGeneration)) return ExitJournalRefused;
         NamedPipeServerStream? pipe = CreateBrokerPipe(pipeName, settings.AllowedSid, out int failure);
         if (pipe is null) return failure;
         await using (pipe)
         {
+            if (await BeginEpochOrRefuseAsync(settings) is not { } started) return ExitJournalRefused;
             Console.WriteLine("BROKER_READY");
-            await pipe.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(20));
-            await HandleConnectionAsync(pipe, settings, CancellationToken.None);
-            return 0;
+            for (int fences = 0; ; fences += 1)
+            {
+                await pipe.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(20));
+                bool wasFence = await HandleConnectionAsync(pipe, started, CancellationToken.None);
+                if (!wasFence || fences >= MaxServeFences) return 0;
+                await WaitForClientToReadAsync(pipe);
+                DisconnectForNextClient(pipe);
+            }
         }
     }
 
     // An existing journal is migrated forward or refused before the pipe exists (see Journal.cs); true = refused, with a fixed line naming the reason.
-    private static async Task<bool> RefuseUnusableJournalAsync(string database)
+    private static async Task<bool> RefuseUnusableJournalAsync(string database, long initialGeneration)
     {
-        try { await Journal.CheckExistingAsync(database); return false; }
+        try { await Journal.CheckExistingAsync(database, initialGeneration); return false; }
         catch (Journal.RefusedException ex)
         {
             Console.WriteLine("BROKER_FATAL=JOURNAL_" + ex.Reason.ToUpperInvariant());
@@ -72,7 +83,19 @@ internal static partial class Program
         }
     }
 
-    private sealed record BrokerSettings(string Database, byte[] PublicKey, string AllowedSid, long Generation, TimeSpan? Hold, ImpersonationFault Fault);
+    // The new epoch: only after this process owns the pipe name, so a Broker that loses the name race never changes the epoch of the one that is serving.
+    // The journal is created here when it does not exist yet. A journal that turns unusable between the check above and this point is refused the same way.
+    private static async Task<BrokerSettings?> BeginEpochOrRefuseAsync(BrokerSettings settings)
+    {
+        try { return settings with { Epoch = await Journal.BeginEpochAsync(settings.Database, settings.InitialGeneration, NowSeconds()) }; }
+        catch (Journal.RefusedException ex)
+        {
+            Console.WriteLine("BROKER_FATAL=JOURNAL_" + ex.Reason.ToUpperInvariant());
+            return null;
+        }
+    }
+
+    private sealed record BrokerSettings(string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string AllowedSid, long InitialGeneration, TimeSpan? Hold, ImpersonationFault Fault, long Epoch = 0);
 
     // maxNumberOfServerInstances == 1 makes .NET create the pipe with FILE_FLAG_FIRST_PIPE_INSTANCE, so an
     // existing instance of this name (squatter, or another Broker) fails creation. Keep it at 1.
@@ -107,29 +130,38 @@ internal static partial class Program
     // the 5 s the service host grants on STOP.
     private static readonly TimeSpan ReplyWriteTimeout = TimeSpan.FromSeconds(2);
 
+    // The Broker's clock (Unix seconds): the one source for the clock fence, the receipt checks and the high-water mark.
+#if ALBERA_BROKER_TEST_FAULTS
+    // Test-only: ALBERA_BROKER_TEST_CLOCK_OFFSET (seconds, may be negative) moves this process's clock, to rehearse a clock rollback between two runs.
+    private static readonly long ClockOffsetSeconds = long.TryParse(Environment.GetEnvironmentVariable("ALBERA_BROKER_TEST_CLOCK_OFFSET"), System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out long offset) ? offset : 0;
+#else
+    private const long ClockOffsetSeconds = 0;
+#endif
+    private static long NowSeconds() => DateTimeOffset.UtcNow.ToUnixTimeSeconds() + ClockOffsetSeconds;
+
     // One connected client: read one frame, check the peer, answer. `ioToken` bounds the frame read only (the service loop's stop request and
     // per-connection deadline); the claim itself is never cancelled half-way and the answer is written under ReplyWriteTimeout, not under `ioToken`.
-    private static async Task HandleConnectionAsync(NamedPipeServerStream pipe, BrokerSettings settings, CancellationToken ioToken)
+    // True when the answer was a successful fence (the one-shot `serve` waits for the claim that follows it).
+    private static async Task<bool> HandleConnectionAsync(NamedPipeServerStream pipe, BrokerSettings settings, CancellationToken ioToken)
     {
-        byte[] response;
+        BrokerReply reply;
         try
         {
             byte[] frame = await ReadFrameAsync(pipe, ioToken);
             string? peerSid = ReadPeerSid(pipe, settings.Fault);
             Console.WriteLine(peerSid == settings.AllowedSid ? "PEER=authenticated" : "PEER=denied");
-            response = string.Equals(peerSid, settings.AllowedSid, StringComparison.Ordinal)
-                ? await ValidateAndClaimAsync(frame, settings.Database, settings.PublicKey, settings.Generation, settings.Hold)
-                : Encoding.UTF8.GetBytes(Denied);
+            reply = string.Equals(peerSid, settings.AllowedSid, StringComparison.Ordinal) ? await HandleRequestAsync(frame, settings) : BrokerReply.Denied;
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
                                    CryptographicException or FormatException or UnauthorizedAccessException or
                                    SqliteException or ArgumentException or Journal.RefusedException)
         {
-            response = Encoding.UTF8.GetBytes(Denied);
+            reply = BrokerReply.Denied;
             Console.WriteLine("REQUEST=DENIED");
         }
         using CancellationTokenSource replyBudget = new(ReplyWriteTimeout);
-        await WriteFrameAsync(pipe, response, replyBudget.Token);
+        await WriteFrameAsync(pipe, reply.Body, replyBudget.Token);
+        return reply.IsFence;
     }
 
     private static int PipeOwnerUnavailable()
@@ -234,60 +266,6 @@ internal static partial class Program
         return RevertToSelf();
     }
 
-    private static async Task<byte[]> ValidateAndClaimAsync(byte[] frame, string database, byte[] key, long currentGeneration, TimeSpan? hold)
-    {
-        using JsonDocument envelope = JsonDocument.Parse(frame, new JsonDocumentOptions { MaxDepth = 4 });
-        JsonElement root = envelope.RootElement;
-        if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != 2 ||
-            !root.TryGetProperty("receipt", out JsonElement receiptElement) || receiptElement.ValueKind != JsonValueKind.String ||
-            !root.TryGetProperty("signature", out JsonElement signatureElement) || signatureElement.ValueKind != JsonValueKind.String)
-            return Encoding.UTF8.GetBytes(Denied);
-        byte[] receipt = Convert.FromBase64String(receiptElement.GetString()!);
-        byte[] signature = Convert.FromBase64String(signatureElement.GetString()!);
-        using ECDsa authority = ECDsa.Create();
-        authority.ImportSubjectPublicKeyInfo(key, out int used);
-        if (used != key.Length || !authority.VerifyData(receipt, signature, HashAlgorithmName.SHA256,
-                DSASignatureFormat.IeeeP1363FixedFieldConcatenation)) { Console.WriteLine("DENY=signature"); return Encoding.UTF8.GetBytes(Denied); }
-
-        using JsonDocument signed = JsonDocument.Parse(receipt, new JsonDocumentOptions { MaxDepth = 4 });
-        JsonElement r = signed.RootElement;
-        string[] fields = ["issuer", "audience", "approvalId", "receiptId", "operationId", "idempotencyKey", "action", "actionDigest", "leaseId", "leaseGeneration", "policyVersion", "expiresAt"];
-        if (r.ValueKind != JsonValueKind.Object || r.EnumerateObject().Count() != fields.Length || fields.Any(x => !r.TryGetProperty(x, out _))) { Console.WriteLine("DENY=schema"); return Encoding.UTF8.GetBytes(Denied); }
-        string Get(string name) => RequiredString(r, name);
-        string action = Get("action");
-        string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(action)));
-        long leaseGeneration = RequiredInt64(r, "leaseGeneration");
-        if (Get("issuer") != "albera-test-approval-authority" || Get("audience") != "ALBERA-HostBroker" ||
-            (action != "synthetic.noop" && action != "synthetic.inspect") || Get("actionDigest") != digest || Get("leaseId") != "test-lease" ||
-            leaseGeneration != currentGeneration || Get("policyVersion") != "test-policy-v1" ||
-            RequiredInt64(r, "expiresAt") <= DateTimeOffset.UtcNow.ToUnixTimeSeconds() ||
-            fields.Where(x => x is "approvalId" or "receiptId" or "operationId" or "idempotencyKey").Any(x => string.IsNullOrWhiteSpace(Get(x))))
-        { Console.WriteLine("DENY=receipt-policy"); return Encoding.UTF8.GetBytes(Denied); }
-
-        if (action == "synthetic.inspect")
-        {
-            // Read-only, no row written, no receipt consumed: the receipt only has to be a currently valid signed one naming the operation to look up.
-            string? recorded = await Journal.RecordedStateAsync(database, Get("operationId"));
-            if (recorded is null) { Console.WriteLine("DENY=inspect-unknown"); return Encoding.UTF8.GetBytes(Denied); }
-            Console.WriteLine("INSPECT=RECORDED");
-            return SuccessReply(recorded);
-        }
-        (Journal.ClaimKind kind, string state) = await Journal.ClaimAsync(database, new Journal.Claim(Get("operationId"), Get("receiptId"), Get("approvalId"), digest, leaseGeneration, Journal.RequestDigest(receipt, signature)));
-        if (kind == Journal.ClaimKind.Rejected) { Console.WriteLine("DENY=duplicate"); return Encoding.UTF8.GetBytes(Denied); }
-        if (kind == Journal.ClaimKind.Replay) { Console.WriteLine("REPLAY=RECORDED_OUTCOME"); return SuccessReply(state); }
-        Console.WriteLine("CLAIM=PERSISTED_UNKNOWN");
-        if (hold is { } holdFor) await Task.Delay(holdFor); // test hook: `serve ... hold` holds forever, the seam build's loop entry holds for a fixed time
-        return SuccessReply(state);
-    }
-
-    // The success shape is unchanged (the Control Plane client accepts exactly these three keys): `state` is always one of Journal's recorded states.
-    private static byte[] SuccessReply(string state) => Encoding.UTF8.GetBytes($"{{\"ok\":true,\"state\":\"{state}\",\"action\":\"synthetic.noop\"}}");
-
-    // A signed receipt can still carry the wrong JSON type (GetInt64 on a string throws InvalidOperationException, which nothing above catches and
-    // which would stop the service): wrong type or out of range is a JsonException, answered as denied like RequiredString.
-    private static long RequiredInt64(JsonElement element, string name) =>
-        element.GetProperty(name) is { ValueKind: JsonValueKind.Number } number && number.TryGetInt64(out long value) ? value : throw new JsonException();
-    private static string RequiredString(JsonElement element, string name) => element.GetProperty(name).ValueKind == JsonValueKind.String ? element.GetProperty(name).GetString()! : throw new JsonException();
     private static async Task<byte[]> ReadFrameAsync(Stream stream, CancellationToken token)
     {
         byte[] size = new byte[4]; await stream.ReadExactlyAsync(size, token);

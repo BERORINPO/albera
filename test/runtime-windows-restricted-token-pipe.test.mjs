@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +13,7 @@ const whoami = path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'Syst
 const skip = unavailableReason();
 
 test('Windows Named Pipe DACL denies a restricted token without an allowed restricting SID', { skip }, async () => {
-  const temp = mkdtempSync(path.join(os.tmpdir(), 'albera-issue23-restricted-token-'));
+  const temp = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'albera-issue23-restricted-token-'))); // long form: TEMP may be an 8.3 short name
   let broker;
   try {
     const output = path.join(temp, 'out'), intermediate = path.join(temp, 'obj');
@@ -24,7 +24,7 @@ test('Windows Named Pipe DACL denies a restricted token without an allowed restr
     assert.ok(sid);
     const { publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const pipe = `ALBERA_Issue23_${randomBytes(8).toString('hex')}`;
-    broker = spawn('dotnet', [dll, 'serve', pipe, path.join(temp, 'unused.sqlite'), publicKey.export({ type: 'spki', format: 'der' }).toString('base64'), sid, '1', 'normal'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    broker = spawn('dotnet', [dll, 'serve', pipe, path.join(temp, 'unused.sqlite'), `restricted-test=${publicKey.export({ type: 'spki', format: 'der' }).toString('base64')}`, sid, '1', 'normal'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     broker.lines = []; broker.stdout.setEncoding('utf8'); broker.stderr.setEncoding('utf8');
     broker.stdout.on('data', x => broker.lines.push(...x.split(/\r?\n/u).filter(Boolean)));
     broker.stderr.on('data', x => broker.lines.push(...x.split(/\r?\n/u).filter(Boolean)));

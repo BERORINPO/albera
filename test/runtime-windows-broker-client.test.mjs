@@ -15,8 +15,11 @@ import {
   brokerPipePath,
   buildBrokerRequestBody,
   parseHelperResult,
+  sendBrokerFence,
+  sendBrokerInspect,
   sendBrokerRequest,
   validateBrokerResponse,
+  validateFenceResponse,
   validateServerExpectation,
 } from '../src/runtime/windows-broker-client.mjs';
 
@@ -24,6 +27,9 @@ import {
 // runtime-windows-broker-server-identity.test.mjs and runtime-windows-broker-client.integration.test.mjs (Windows only).
 const b64 = (length) => 'A'.repeat(length);
 const SUCCESS = { ok: true, state: 'UNKNOWN', action: 'synthetic.noop' };
+const REPLAYED = { ...SUCCESS, replayed: true };
+const INSPECTED = { ok: true, state: 'UNKNOWN', action: 'synthetic.inspect' };
+const FENCED = { ok: true, brokerEpoch: 3, leaseGeneration: 7, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' };
 const DENIED = { ok: false, code: 'denied' };
 const SID = 'S-1-5-21-1111111111-2222222222-3333333333-1001';
 const EXPECT = { ownerSid: SID, pid: 4242 };
@@ -108,7 +114,7 @@ test('the Broker reply schema is fixed: only the success and denial shapes pass,
   const bad = [
     null, undefined, 'ok', 7, [], [SUCCESS],
     {}, { ok: true }, { ok: false }, { ok: 'true', state: 'UNKNOWN', action: 'synthetic.noop' },
-    { ...SUCCESS, extra: 1 }, { ...SUCCESS, state: 'SUCCEEDED' }, { ...SUCCESS, action: 'shell.exec' }, { ...SUCCESS, state: undefined },
+    { ...SUCCESS, extra: 1 }, { ...SUCCESS, replayed: false }, { ...SUCCESS, replayed: 'true' }, { ...SUCCESS, replayed: 1 }, { ...SUCCESS, replayed: true, extra: 1 }, { ok: true, state: 'UNKNOWN', replayed: true }, { ...SUCCESS, state: 'SUCCEEDED' }, { ...SUCCESS, action: 'shell.exec' }, { ...SUCCESS, state: undefined },
     { ...DENIED, extra: 'C:\\Users\\secret' }, { ok: false, code: 'SYNTHETIC_SECRET_MARKER' }, { ok: false, code: 'timeout' }, { ok: false, code: 'server_identity_mismatch' }, { ok: false, code: 'DENIED' },
     { ok: false, code: 'denied', message: 'x' }, { ok: true, code: 'denied' }, Object.create(SUCCESS),
   ];
@@ -273,4 +279,78 @@ test('the client is not imported by the Observer, entry layers, runtime modules 
   assert.deepEqual(client.match(/^import .*child_process.*$/gmu), ["import { spawn } from 'node:child_process';"]);
   assert.equal([...client.matchAll(/\bspawn\(|spawnImpl\(/gu)].length, 1, 'one launch site');
   assert.match(client, /await verifyHelper\(helperPath,[^\n]*\);\n[^\n]*\n?[^\n]*runHelper\(/u, 'the digest is verified before the helper is launched');
+});
+
+test('the claim reply may carry replayed: true (an exact duplicate answered from the journal) and nothing else new; an inspect reply names the inspect action', () => {
+  const replayed = validateBrokerResponse(REPLAYED);
+  assert.deepEqual(replayed, REPLAYED);
+  assert.ok(Object.isFrozen(replayed));
+  assert.notEqual(replayed, REPLAYED);
+  assert.deepEqual(validateBrokerResponse(INSPECTED), INSPECTED);
+  assert.deepEqual(parseHelperResult(line(REPLAYED), 0), REPLAYED);
+  assert.deepEqual(parseHelperResult(line(INSPECTED), 0), INSPECTED);
+  assert.deepEqual(parseHelperResult(line({ ...SUCCESS, replayed: false }), 0), { ok: false, code: 'transport_error' });
+});
+
+test('the fence reply is exactly { ok, brokerEpoch, leaseGeneration, brokerChallenge } with counters >= 1 and a canonical 128-bit challenge', () => {
+  const fenced = validateFenceResponse(FENCED);
+  assert.deepEqual(fenced, FENCED);
+  assert.ok(Object.isFrozen(fenced));
+  assert.notEqual(fenced, FENCED);
+  assert.deepEqual(validateFenceResponse(DENIED), DENIED);
+  const bad = [
+    null, 'ok', [], {}, { ok: true }, SUCCESS, INSPECTED, { ...FENCED, extra: 1 }, { ...FENCED, replayed: true }, { ok: true, brokerEpoch: 3, leaseGeneration: 7 },
+    { ...FENCED, brokerEpoch: 0 }, { ...FENCED, brokerEpoch: -1 }, { ...FENCED, brokerEpoch: 1.5 }, { ...FENCED, brokerEpoch: '3' }, { ...FENCED, brokerEpoch: 2 ** 53 },
+    { ...FENCED, leaseGeneration: 0 }, { ...FENCED, leaseGeneration: null },
+    { ...FENCED, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAB' }, { ...FENCED, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAA' }, { ...FENCED, brokerChallenge: 'A'.repeat(23) },
+    { ...FENCED, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAA=' }, { ...FENCED, brokerChallenge: 'AAAAAAAAAAAAAAAAAAA+AA' }, { ...FENCED, brokerChallenge: 5 },
+    { ok: false, code: 'timeout' }, { ...DENIED, extra: 1 },
+  ];
+  for (const value of bad) assert.equal(codeOf(() => validateFenceResponse(value)), 'invalid_response', JSON.stringify(value));
+  assert.equal(codeOf(() => validateBrokerResponse(FENCED)), 'invalid_response', 'a fence reply is not a claim reply');
+});
+
+test('fence: one JSON line { pipeName, fence, timeoutMs, expect } to the verified helper, and the validated challenge comes back', async () => {
+  const fake = fakeSpawn({ stdout: line(FENCED) });
+  const helperPath = makeHelper();
+  assert.deepEqual(await sendBrokerFence({ pipeName: goodRequest.pipeName, computerId: 'computer-1', expect: EXPECT, helperPath, spawnImpl: fake.spawnImpl, timeoutMs: 2000 }), FENCED);
+  assert.deepEqual(JSON.parse(fake.calls.input), { pipeName: goodRequest.pipeName, fence: 'computer-1', timeoutMs: 2000, expect: EXPECT });
+  assert.equal(fake.calls.spawns.length, 1);
+  assert.deepEqual(await sendBrokerFence({ pipeName: goodRequest.pipeName, computerId: 'computer-1', expect: EXPECT, helperPath: makeHelper(), spawnImpl: fakeSpawn({ stdout: line(DENIED) }).spawnImpl }), DENIED);
+});
+
+test('a reply of the wrong kind is never accepted: a claim-shaped answer to a fence, a fence-shaped answer to a claim or an inspect, a claim answer to an inspect', async () => {
+  const transport = { ok: false, code: 'transport_error' };
+  const fence = (stdout) => sendBrokerFence({ pipeName: goodRequest.pipeName, computerId: 'computer-1', expect: EXPECT, helperPath: makeHelper(), spawnImpl: fakeSpawn({ stdout: line(stdout) }).spawnImpl });
+  const inspect = (stdout) => sendBrokerInspect({ pipeName: goodRequest.pipeName, operationId: 'op-1', expect: EXPECT, helperPath: makeHelper(), spawnImpl: fakeSpawn({ stdout: line(stdout) }).spawnImpl });
+  assert.deepEqual(await fence(SUCCESS), transport);
+  assert.deepEqual(await fence(INSPECTED), transport);
+  assert.deepEqual(await run({}, fakeSpawn({ stdout: line(FENCED) })), transport);
+  assert.deepEqual(await inspect(FENCED), transport);
+  assert.deepEqual(await inspect(SUCCESS), transport, 'an inspect is answered with the inspect action');
+  assert.deepEqual(await run({}, fakeSpawn({ stdout: line(INSPECTED) })), transport, 'a claim is answered with the claim action');
+  assert.deepEqual(await inspect(INSPECTED), INSPECTED);
+  assert.deepEqual(await run({}, fakeSpawn({ stdout: line(REPLAYED) })), REPLAYED);
+});
+
+test('inspect: one JSON line { pipeName, inspect, timeoutMs, expect } to the helper', async () => {
+  const fake = fakeSpawn({ stdout: line(INSPECTED) });
+  assert.deepEqual(await sendBrokerInspect({ pipeName: goodRequest.pipeName, operationId: 'op-1', expect: EXPECT, helperPath: makeHelper(), spawnImpl: fake.spawnImpl, timeoutMs: 2000 }), INSPECTED);
+  assert.deepEqual(JSON.parse(fake.calls.input), { pipeName: goodRequest.pipeName, inspect: 'op-1', timeoutMs: 2000, expect: EXPECT });
+});
+
+test('a bad fence or inspect request never reaches the helper', async () => {
+  const base = { pipeName: goodRequest.pipeName, expect: EXPECT };
+  const ids = ['', ' ', 'has space', '.starts-with-dot', 'x'.repeat(65), 'a/b', 'a\\b', 'id\n', 5, null, undefined, {}, ['computer-1']];
+  for (const bad of ids) {
+    for (const [send, field] of [[sendBrokerFence, 'computerId'], [sendBrokerInspect, 'operationId']]) {
+      const fake = fakeSpawn({ stdout: line(FENCED) });
+      assert.deepEqual(await send({ ...base, [field]: bad, helperPath: makeHelper(), spawnImpl: fake.spawnImpl }), { ok: false, code: 'invalid_request' }, `${field} ${JSON.stringify(bad)}`);
+      assert.equal(fake.calls.spawns.length, 0);
+    }
+  }
+  assert.deepEqual(await sendBrokerFence({ ...base, pipeName: '..\\x', computerId: 'computer-1' }), { ok: false, code: 'invalid_pipe_name' });
+  assert.deepEqual(await sendBrokerFence({ ...base, expect: undefined, computerId: 'computer-1' }), { ok: false, code: 'invalid_request' });
+  assert.deepEqual(await sendBrokerFence(), { ok: false, code: 'invalid_pipe_name' });
+  assert.deepEqual(await sendBrokerInspect(), { ok: false, code: 'invalid_pipe_name' });
 });

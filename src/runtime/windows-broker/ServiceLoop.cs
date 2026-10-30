@@ -33,7 +33,7 @@ internal static partial class Program
     // connection's I/O failure or deadline.
     internal static async Task<int> RunServiceLoopAsync(ServiceConfig config, CancellationToken stop, Action onReady)
     {
-        BrokerSettings settings = new(config.Database, config.PublicKey, config.ControlPlaneSid, config.Generation, ServiceClaimHold, ImpersonationFault.None);
+        BrokerSettings settings = new(config.Database, config.AuthorityKeys, config.ControlPlaneSid, config.Generation, ServiceClaimHold, ImpersonationFault.None);
         // Held for the whole loop (released by `using` when the loop ends): the journal folder cannot be renamed, deleted or swapped meanwhile.
         using SafeFileHandle? databaseFolder = DatabaseFolderPin.TryPin(config.Database);
         if (databaseFolder is null)
@@ -42,12 +42,15 @@ internal static partial class Program
             return ExitServiceConfigInvalid;
         }
         // An existing journal is migrated forward here, or refused (76) when it is newer, unknown or unreadable: RUNNING is never reported for a journal the Broker cannot use.
-        if (await RefuseUnusableJournalAsync(config.Database)) return ExitJournalRefused;
+        if (await RefuseUnusableJournalAsync(config.Database, config.Generation)) return ExitJournalRefused;
         // A squatter that already owns the name makes this fail with 70: the service stops (fail closed) instead of serving.
         NamedPipeServerStream? pipe = CreateBrokerPipe(config.PipeName, config.ControlPlaneSid, out int failure);
         if (pipe is null) return failure;
         await using (pipe)
         {
+            // The new epoch (and with it the end of every challenge the previous process issued) starts once the pipe is ours and before anything is served.
+            if (await BeginEpochOrRefuseAsync(settings) is not { } started) return ExitJournalRefused;
+            settings = started;
             Console.WriteLine("BROKER_READY");
             onReady();
             while (!stop.IsCancellationRequested)

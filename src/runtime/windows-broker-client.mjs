@@ -15,9 +15,13 @@ import { captureExecutableIdentity } from './executable-identity.mjs';
 // PID and session 0), optionally the server image SHA-256. Only then does it send the one frame and report the Broker's reply.
 //
 // Wire (helper <-> Broker, one request per connection, byte mode): [int32 little-endian length][UTF-8 JSON body] each way.
-//   request body : { "receipt": <base64>, "signature": <base64> }   exactly these two keys; the receipt is signed elsewhere
-//   success body : { "ok": true, "state": "UNKNOWN", "action": "synthetic.noop" }
-//   denial body  : { "ok": false, "code": "denied" }
+//   claim request   : { "receipt": <base64>, "signature": <base64> }   exactly these two keys; the receipt is a v2 receipt signed elsewhere (src/runtime/broker-contract)
+//   claim success   : { "ok": true, "state": "UNKNOWN", "action": "synthetic.noop" }, plus "replayed": true for an exact duplicate (the recorded outcome, no second claim)
+//   fence request   : { "fence": { "computerId": <id> } }               the Broker issues a single-use challenge a receipt must name
+//   fence success   : { "ok": true, "brokerEpoch": n, "leaseGeneration": n, "brokerChallenge": <22 chars> }
+//   inspect request : { "inspect": { "operationId": <id> } }            read-only; no receipt
+//   inspect success : { "ok": true, "state": "UNKNOWN", "action": "synthetic.inspect" }
+//   denial body     : { "ok": false, "code": "denied" }              for all three requests
 // Results never carry exception text, paths, native identifiers or any part of the request. Failures are fixed codes.
 // Pre-send codes (BROKER_CLIENT_PRESEND_CODES): the receipt never left this process pair, so a retry is safe. Any other failure
 // code, and `denied`, comes after the frame was written: the Broker may have durably claimed the receipt.
@@ -68,7 +72,9 @@ export const BROKER_CLIENT_PRESEND_CODES = Object.freeze([
 const HELPER_EXIT_CODES = Object.freeze([0, 64, 70]);
 const HELPER_FAILURE_CODES = Object.freeze(BROKER_CLIENT_ERROR_CODES.filter((code) => !['invalid_pipe_name', 'request_too_large', 'unsupported_platform', 'helper_unavailable'].includes(code)));
 const BROKER_SUCCESS_STATES = Object.freeze(['UNKNOWN']);
-const BROKER_SUCCESS_ACTIONS = Object.freeze(['synthetic.noop']);
+const BROKER_SUCCESS_ACTIONS = Object.freeze(['synthetic.noop', 'synthetic.inspect']);
+const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u; // the contract's id grammar (broker-contract/action-digest.mjs)
+const CHALLENGE_PATTERN = /^[A-Za-z0-9_-]{21}[AQgw]$/u; // 128 bits, unpadded base64url, canonical form
 const PIPE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/u;
 const SID_PATTERN = /^S-1-\d{1,10}(?:-\d{1,10}){1,15}$/u;
@@ -112,14 +118,34 @@ export function buildBrokerRequestBody({ receipt, signature } = {}) {
   return body;
 }
 
-/** Validate a parsed Broker reply against the fixed schema. Returns a fresh frozen result, never the input. */
+const DENIED_RESULT = Object.freeze({ ok: false, code: 'denied' });
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const isCounter = (value) => Number.isSafeInteger(value) && value >= 1;
+
+/**
+ * Validate a parsed reply to a claim or an inspect against the fixed schema. Returns a fresh frozen result, never the input.
+ * `replayed: true` appears (and only then) when the Broker answered an exact duplicate from its journal.
+ */
 export function validateBrokerResponse(value) {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new BrokerClientError('invalid_response');
+  if (!isObject(value)) throw new BrokerClientError('invalid_response');
   const keys = Object.keys(value).sort().join(',');
-  if (value.ok === true && keys === 'action,ok,state' && BROKER_SUCCESS_STATES.includes(value.state) && BROKER_SUCCESS_ACTIONS.includes(value.action)) {
-    return Object.freeze({ ok: true, state: value.state, action: value.action });
+  if (value.ok === true && BROKER_SUCCESS_STATES.includes(value.state) && BROKER_SUCCESS_ACTIONS.includes(value.action)) {
+    if (keys === 'action,ok,state') return Object.freeze({ ok: true, state: value.state, action: value.action });
+    if (keys === 'action,ok,replayed,state' && value.replayed === true) return Object.freeze({ ok: true, state: value.state, action: value.action, replayed: true });
   }
-  if (value.ok === false && keys === 'code,ok' && value.code === 'denied') return Object.freeze({ ok: false, code: 'denied' });
+  if (value.ok === false && keys === 'code,ok' && value.code === 'denied') return DENIED_RESULT;
+  throw new BrokerClientError('invalid_response');
+}
+
+/** Validate a parsed reply to `fence`: the epoch and lease generation the challenge belongs to, and the challenge itself. */
+export function validateFenceResponse(value) {
+  if (!isObject(value)) throw new BrokerClientError('invalid_response');
+  const keys = Object.keys(value).sort().join(',');
+  if (value.ok === true && keys === 'brokerChallenge,brokerEpoch,leaseGeneration,ok' && isCounter(value.brokerEpoch) && isCounter(value.leaseGeneration)
+    && typeof value.brokerChallenge === 'string' && CHALLENGE_PATTERN.test(value.brokerChallenge)) {
+    return Object.freeze({ ok: true, brokerEpoch: value.brokerEpoch, leaseGeneration: value.leaseGeneration, brokerChallenge: value.brokerChallenge });
+  }
+  if (value.ok === false && keys === 'code,ok' && value.code === 'denied') return DENIED_RESULT;
   throw new BrokerClientError('invalid_response');
 }
 
@@ -138,14 +164,14 @@ export function validateServerExpectation(expect) {
 }
 
 /** Parse the helper's single stdout line plus its exit code into a result. Pure; any deviation is a post-send `transport_error`. */
-export function parseHelperResult(stdout, exitCode) {
+export function parseHelperResult(stdout, exitCode, validate = validateBrokerResponse) {
   const fail = () => failure('transport_error');
   if (typeof stdout !== 'string' || !HELPER_EXIT_CODES.includes(exitCode) || !/^[^\r\n]+\r?\n?$/u.test(stdout)) return fail();
   let value;
   try { value = JSON.parse(stdout); } catch { return fail(); }
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return fail();
   if (value.ok === true) {
-    try { return exitCode === 0 ? validateBrokerResponse(value) : fail(); } catch { return fail(); }
+    try { return exitCode === 0 ? validate(value) : fail(); } catch { return fail(); }
   }
   const keys = Object.keys(value).sort().join(',');
   if (value.ok !== false || keys !== 'code,ok' || !HELPER_FAILURE_CODES.includes(value.code)) return fail();
@@ -172,7 +198,7 @@ async function verifyHelper(helperPath, manifestPath) {
 }
 
 /** Run the helper once: one JSON line in, one JSON line out. Resolves with a result, never throws. */
-function runHelper(spawnImpl, helperPath, line, timeoutMs) {
+function runHelper(spawnImpl, helperPath, line, timeoutMs, validate) {
   return new Promise((resolve) => {
     let child;
     let spawned = false;
@@ -198,30 +224,62 @@ function runHelper(spawnImpl, helperPath, line, timeoutMs) {
       stdout += chunk;
       if (Buffer.byteLength(stdout) > HELPER_MAX_STDOUT_BYTES) finish(failure('transport_error'));
     });
-    child.once('close', (code) => finish(parseHelperResult(stdout, code)));
+    child.once('close', (code) => finish(parseHelperResult(stdout, code, validate)));
     child.stdin.end(line);
   });
 }
 
+/** One helper run: validate the pipe name, build the request fields (`prepare` throws BrokerClientError when they are bad), then the expectation and timeout. */
+async function exchange({ pipeName, expect, timeoutMs, helperPath = DEFAULT_HELPER_PATH, spawnImpl } = {}, prepare, validate) {
+  try {
+    brokerPipePath(pipeName);
+    const request = prepare();
+    const server = validateServerExpectation(expect);
+    const timeout = resolveTimeout(timeoutMs);
+    if (spawnImpl === undefined && process.platform !== 'win32') throw new BrokerClientError('unsupported_platform');
+    await verifyHelper(helperPath, `${helperPath}.manifest.json`);
+    const line = `${JSON.stringify({ pipeName, ...request, timeoutMs: timeout, expect: server })}\n`;
+    return await runHelper(spawnImpl ?? spawn, helperPath, line, timeout, validate);
+  } catch (error) {
+    return failure(codeOfError(error));
+  }
+}
+
+/** A claim is answered with the claim action and an inspect with the inspect action: a reply that names the other one is not this request's reply. */
+const expecting = (action) => (value) => {
+  const result = validateBrokerResponse(value);
+  if (result.ok && result.action !== action) throw new BrokerClientError('invalid_response');
+  return result;
+};
+
+function requireId(value) {
+  if (typeof value !== 'string' || !ID_PATTERN.test(value)) throw new BrokerClientError('invalid_request');
+  return value;
+}
+
 /**
- * Send one signed receipt to an already running Broker pipe and return the validated result.
+ * Send one signed v2 receipt to an already running Broker pipe and return the validated result.
  * The helper verifies the pipe server against `expect` before anything is written. Never throws for operational
  * failures; returns `{ ok: false, code }` with an allowlisted code instead (see BROKER_CLIENT_PRESEND_CODES).
  * @param {{ pipeName: string, receipt: string, signature: string, expect: { ownerSid?: string, pid?: number, serviceName?: string, imageSha256?: string }, timeoutMs?: number,
  *   helperPath?: string, spawnImpl?: typeof spawn }} options
  *   `helperPath` and `spawnImpl` are test seams. A custom helper still needs a `<helperPath>.manifest.json` with its SHA-256.
  */
-export async function sendBrokerRequest({ pipeName, receipt, signature, expect, timeoutMs, helperPath = DEFAULT_HELPER_PATH, spawnImpl } = {}) {
-  try {
-    brokerPipePath(pipeName);
-    buildBrokerRequestBody({ receipt, signature });
-    const server = validateServerExpectation(expect);
-    const timeout = resolveTimeout(timeoutMs);
-    if (spawnImpl === undefined && process.platform !== 'win32') throw new BrokerClientError('unsupported_platform');
-    await verifyHelper(helperPath, `${helperPath}.manifest.json`);
-    const line = `${JSON.stringify({ pipeName, receipt, signature, timeoutMs: timeout, expect: server })}\n`;
-    return await runHelper(spawnImpl ?? spawn, helperPath, line, timeout);
-  } catch (error) {
-    return failure(codeOfError(error));
-  }
+export function sendBrokerRequest(options = {}) {
+  const { receipt, signature } = options;
+  return exchange(options, () => { buildBrokerRequestBody({ receipt, signature }); return { receipt, signature }; }, expecting('synthetic.noop'));
+}
+
+/**
+ * Ask the Broker for a single-use challenge for `computerId` (the first step of a v2 flow: fence, sign, send). Same pre-send / post-send rules as
+ * `sendBrokerRequest`. A challenge is valid until a receipt consumes it, the Broker restarts, or the lease generation moves; it is not retried or reused.
+ * @returns {Promise<{ ok: true, brokerEpoch: number, leaseGeneration: number, brokerChallenge: string } | { ok: false, code: string }>}
+ */
+export function sendBrokerFence(options = {}) {
+  return exchange(options, () => ({ fence: requireId(options.computerId) }), validateFenceResponse);
+}
+
+/** Read the recorded state of one operation (read-only, no receipt, nothing consumed). The success action is `synthetic.inspect`. */
+export function sendBrokerInspect(options = {}) {
+  return exchange(options, () => ({ inspect: requireId(options.operationId) }), expecting('synthetic.inspect'));
 }

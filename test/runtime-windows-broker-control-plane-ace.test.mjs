@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import {
-  buildBroker, buildProbe, currentUserSid, getUnavailableReason, startBroker, startProcess, waitForExit, waitForLine, GENERATION,
+  buildBroker, buildProbe, createTestAuthority, currentUserSid, getUnavailableReason, startBroker, startProcess, waitForExit, waitForLine, GENERATION,
 } from './helpers/windows-broker-harness.mjs';
 
 // Windows-only, same-user, unprivileged: the live DACL of the real Broker's pipe. Service mode (issue #23) gives the configured Control Plane SID
@@ -29,7 +29,7 @@ const maskOf = (ace) => Number(ace.mask); // SDDL prints a non-standard mask as 
 describe('Broker pipe DACL in service mode', { skip: getUnavailableReason() }, () => {
   let root, brokerExe, probeExe, self;
   before(() => {
-    root = mkdtempSync(path.join(os.tmpdir(), 'albera-cp-ace-'));
+    root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'albera-cp-ace-'))); // long form: TEMP may be an 8.3 short name
     brokerExe = buildBroker(path.join(root, 'broker'));
     probeExe = buildProbe(path.join(root, 'probe'));
     self = currentUserSid();
@@ -39,7 +39,7 @@ describe('Broker pipe DACL in service mode', { skip: getUnavailableReason() }, (
   /** Start the real Broker for `allowedSid`, read its live pipe security with the probe, let the Broker exit. */
   async function liveSecurity(allowedSid) {
     const pipe = `ALBERA_CpAce_${randomBytes(8).toString('hex')}`;
-    const broker = startBroker(brokerExe, pipe, path.join(root, `${pipe}.sqlite`), 'AAAA', allowedSid, GENERATION);
+    const broker = startBroker(brokerExe, pipe, path.join(root, `${pipe}.sqlite`), createTestAuthority().serveArgument, allowedSid, GENERATION);
     try {
       await waitForLine(broker, 'BROKER_READY');
       const reader = startProcess(probeExe, ['dacl', pipe]);
