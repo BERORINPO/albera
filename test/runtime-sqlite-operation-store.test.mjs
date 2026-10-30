@@ -11,6 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { DurableEnvironmentOperationCoordinator } from '../src/runtime/environment-operations.mjs';
 import { reserveComputerForRun } from '../src/runtime/computer-scheduler.mjs';
+import { FlowJournalError } from '../src/runtime/approved-operation-journal.mjs';
 import { EnvironmentStoreError, openSqliteEnvironmentStore, restoreSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-store.mjs';
 import { LocalEnvironmentHostBroker } from '../src/runtime/environment-host-broker.mjs';
 import { HyperVEnvironmentProvider } from '../src/runtime/hyperv-environment-provider.mjs';
@@ -132,7 +133,7 @@ test('SQLite store uses WAL, FULL synchronous writes, foreign keys, and a versio
   assert.deepEqual(f.store.diagnostics(), {
     journalMode: 'wal', synchronous: 2, foreignKeys: 1, walAutoCheckpointPages: 1000,
     walJournalSizeLimitBytes: WAL_JOURNAL_SIZE_LIMIT_BYTES,
-    maxRecords: 20_000, maxGuestRecords: 5_000, schemaVersion: 4,
+    maxRecords: 20_000, maxGuestRecords: 5_000, schemaVersion: 5,
   });
   assert.equal(f.store.getComputer(f.computerId).generation, 1);
   if (process.platform !== 'win32') assert.equal((await stat(f.databasePath)).mode & 0o777, 0o600);
@@ -240,7 +241,7 @@ test('SQLite snapshot restore verifies the backup, recovers pending work, and fe
   const request = f.operation('start');
   f.store.beginOperation(request);
   const backupPath = path.join(f.root, 'operations-backup.sqlite');
-  assert.deepEqual(await f.store.backupTo(backupPath), { status: 'BACKED_UP', schemaVersion: 4 });
+  assert.deepEqual(await f.store.backupTo(backupPath), { status: 'BACKED_UP', schemaVersion: 5 });
   assert.equal(f.store.getOperation(request.operationId).status, 'REQUESTED', 'snapshot does not mutate the live store');
   if (process.platform !== 'win32') assert.equal((await stat(backupPath)).mode & 0o777, 0o600);
 
@@ -272,14 +273,14 @@ test('SQLite restore migrates a valid schema v3 snapshot without changing source
   const restoredPath = path.join(f.root, 'schema-v3.restored.sqlite');
   await f.store.backupTo(backupPath);
   const legacy = new DatabaseSync(backupPath);
-  legacy.exec('DROP TABLE operation_authorizations; PRAGMA user_version = 3');
+  legacy.exec('DROP TABLE flow_operations; DROP TABLE operation_authorizations; PRAGMA user_version = 3');
   legacy.close();
   const sourceBytes = await readFile(backupPath);
 
   const restored = await restoreSqliteEnvironmentStore(backupPath, restoredPath, {
     now: () => '2026-10-28T00:00:00.000Z', verifyWindowsAcl: async () => {},
   });
-  assert.equal(restored.diagnostics().schemaVersion, 4);
+  assert.equal(restored.diagnostics().schemaVersion, 5);
   const restoredComputer = restored.getComputer(f.computerId);
   assert.equal(restoredComputer.computerId, computer.computerId);
   assert.equal(restoredComputer.projectId, computer.projectId);
@@ -482,7 +483,7 @@ test('schema v1 migration preserves existing Computer and Lease rows', async (t)
   let store;
   try {
     store = await openSqliteEnvironmentStore(databasePath, { verifyWindowsAcl: async () => {} });
-    assert.equal(store.diagnostics().schemaVersion, 4);
+    assert.equal(store.diagnostics().schemaVersion, 5);
     assert.equal(store.getComputer('legacy-computer').projectId, 'legacy-project');
     assert.equal(store.getComputer('legacy-computer').capacity, null);
     assert.equal(store.getLease('legacy-lease').state, 'ACTIVE');
@@ -499,10 +500,10 @@ test('schema v2 migration creates the durable Guest event inbox without deleting
   const lease = f.store.getLease(f.lease.leaseId);
   f.store.close();
   const db = new DatabaseSync(f.databasePath);
-  db.exec('DROP TABLE operation_authorizations; DROP TABLE guest_event_receipts; PRAGMA user_version = 2');
+  db.exec('DROP TABLE flow_operations; DROP TABLE operation_authorizations; DROP TABLE guest_event_receipts; PRAGMA user_version = 2');
   db.close();
   await f.reopen();
-  assert.equal(f.store.diagnostics().schemaVersion, 4);
+  assert.equal(f.store.diagnostics().schemaVersion, 5);
   assert.equal(f.store.getComputer(f.computerId).generation, computer.generation);
   assert.equal(f.store.getLease(f.lease.leaseId).runId, lease.runId);
   assert.deepEqual(f.store.recordGuestEvent({
@@ -520,10 +521,10 @@ test('schema v3 migration adds durable approval records without changing existin
   const before = f.store.getOperation(request.operationId);
   f.store.close();
   const db = new DatabaseSync(f.databasePath);
-  db.exec('DROP TABLE operation_authorizations; PRAGMA user_version = 3');
+  db.exec('DROP TABLE flow_operations; DROP TABLE operation_authorizations; PRAGMA user_version = 3');
   db.close();
   await f.reopen();
-  assert.equal(f.store.diagnostics().schemaVersion, 4);
+  assert.equal(f.store.diagnostics().schemaVersion, 5);
   assert.deepEqual(f.store.getOperation(request.operationId), before);
   assert.deepEqual(f.store.listOperationAuthorizations(request.operationId), []);
 });
@@ -2020,4 +2021,141 @@ test('database open refuses symlink paths and preserves existing corrupt databas
   await assert.rejects(openSqliteEnvironmentStore(linkPath, { verifyWindowsAcl: async () => {} }), (error) => error.code === 'database_file_invalid');
   await assert.rejects(openSqliteEnvironmentStore(targetPath, { verifyWindowsAcl: async () => {} }), (error) => error.code === 'database_open_failed' || error.code === 'database_integrity_failed');
   assert.equal(await readFile(targetPath, 'utf8'), 'user-owned-bytes');
+});
+
+// The durable approved-operation flow journal (schema v5; the port is in approved-operation-journal.mjs, the flow suite in runtime-approved-operation-flow.test.mjs).
+const openPlain = (databasePath) => openSqliteEnvironmentStore(databasePath, { verifyWindowsAcl: async () => {} });
+const FLOW_RECORD = Object.freeze({ operationId: 'flow-op-1', phase: 'INTENT', cycle: 1, action: { name: 'x', args: { n: [1, null, 'a'] } } });
+
+test('schema v4 migration adds the flow journal without touching existing rows; flow records survive a reopen', async (t) => {
+  const f = await fixture(t);
+  const request = f.operation('create');
+  f.store.beginOperation(request);
+  f.store.recordProviderOutcome(request.operationId, { errorCode: 'fixture_failed', outcome: 'not_applied' });
+  const before = f.store.getOperation(request.operationId);
+  f.store.close();
+  const db = new DatabaseSync(f.databasePath);
+  db.exec('DROP TABLE flow_operations; PRAGMA user_version = 4');
+  db.close();
+  await f.reopen();
+  assert.equal(f.store.diagnostics().schemaVersion, 5);
+  assert.deepEqual(f.store.getOperation(request.operationId), before);
+  assert.equal(f.store.flowJournal().get(FLOW_RECORD.operationId), null);
+  f.store.flowJournal().begin(FLOW_RECORD);
+  f.store.flowJournal().advance(FLOW_RECORD.operationId, 0, ['INTENT'], { phase: 'FENCED', fence: { brokerEpoch: 3 } });
+  await f.reopen(); // already at v5: no migration, no data loss
+  assert.deepEqual(f.store.flowJournal().get(FLOW_RECORD.operationId),
+    { operationId: 'flow-op-1', phase: 'FENCED', revision: 1, cycle: 1, action: FLOW_RECORD.action, fence: { brokerEpoch: 3 } });
+  assert.deepEqual(f.store.getOperation(request.operationId), before);
+});
+
+test('a database written by a newer schema version is refused before the journal mode changes, and left byte-for-byte unchanged', async (t) => {
+  const f = await fixture(t);
+  f.store.flowJournal().begin(FLOW_RECORD);
+  f.store.close();
+  const db = new DatabaseSync(f.databasePath);
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE; PRAGMA user_version = 6');
+  assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
+  db.close();
+  const sidecars = [`${f.databasePath}-wal`, `${f.databasePath}-shm`];
+  const exists = (file) => stat(file).then(() => true, () => false);
+  assert.deepEqual(await Promise.all(sidecars.map(exists)), [false, false], 'precondition: a non-WAL database has no sidecars');
+  const bytesBefore = await readFile(f.databasePath);
+  await assert.rejects(f.reopen(), (error) => error instanceof EnvironmentStoreError && error.code === 'database_schema_newer');
+  assert.deepEqual(await Promise.all(sidecars.map(exists)), [false, false], 'no -wal / -shm was created');
+  assert.ok(bytesBefore.equals(await readFile(f.databasePath)), 'the database file bytes are unchanged (still not WAL)');
+  const check = new DatabaseSync(f.databasePath, { readOnly: true });
+  try {
+    assert.equal(check.prepare('PRAGMA user_version').get().user_version, 6);
+    assert.equal(check.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
+    assert.equal(check.prepare('SELECT COUNT(*) AS n FROM flow_operations').get().n, 1);
+  } finally { check.close(); }
+});
+
+test('flow journal rows carry a record schema version; a row from another version is refused, not guessed at', async (t) => {
+  const f = await fixture(t);
+  const journal = f.store.flowJournal();
+  journal.begin(FLOW_RECORD);
+  const raw = new DatabaseSync(f.databasePath);
+  try {
+    const row = raw.prepare('SELECT revision, phase, record_schema, record_json FROM flow_operations').get();
+    assert.deepEqual([row.revision, row.phase, row.record_schema], [0, 'INTENT', 1]);
+    assert.deepEqual(JSON.parse(row.record_json), { cycle: 1, action: FLOW_RECORD.action }, 'identity, revision and phase live in columns only');
+    raw.exec('UPDATE flow_operations SET record_schema = 2');
+  } finally { raw.close(); }
+  assert.throws(() => journal.get(FLOW_RECORD.operationId), { code: 'record_schema_unsupported' });
+  assert.throws(() => journal.advance(FLOW_RECORD.operationId, 0, ['INTENT'], { phase: 'FENCED' }), { code: 'record_schema_unsupported' });
+});
+
+test('flow journal rejects malformed input without writing, and a closed store rejects everything', async (t) => {
+  const f = await fixture(t);
+  const journal = f.store.flowJournal();
+  for (const bad of [null, [], 'x', {}, { operationId: '', phase: 'INTENT' }, { operationId: 'a', phase: 5 }, { operationId: 'a', phase: 'INTENT', big: 10n }]) {
+    assert.throws(() => journal.begin(bad), (error) => error instanceof FlowJournalError && error.code === 'invalid_record');
+  }
+  journal.begin(FLOW_RECORD);
+  const id = FLOW_RECORD.operationId;
+  for (const [revision, from, patch] of [[-1, ['INTENT'], {}], [0.5, ['INTENT'], {}], [0, [], {}], [0, 'INTENT', {}], [0, [''], {}], [0, ['INTENT'], null], [0, ['INTENT'], { phase: '' }], [0, ['INTENT'], { phase: undefined }]]) {
+    assert.throws(() => journal.advance(id, revision, from, patch), { code: 'invalid_record' }, JSON.stringify([revision, from, patch]));
+  }
+  assert.throws(() => journal.advance('nope', 0, ['INTENT'], { phase: 'FENCED' }), { code: 'unknown_operation' });
+  assert.deepEqual([journal.get(id).revision, journal.get(id).phase], [0, 'INTENT'], 'nothing was written');
+  f.store.close();
+  assert.throws(() => journal.get(id), { code: 'store_closed' });
+  assert.throws(() => journal.begin(FLOW_RECORD), { code: 'store_closed' });
+  assert.throws(() => journal.advance(id, 0, ['INTENT'], { phase: 'FENCED' }), { code: 'store_closed' });
+});
+
+test('flow journal records count against the store capacity; an existing record can still advance when the store is full', async (t) => {
+  const f = await fixture(t, { maxRecords: 32, maxGuestRecords: 4 });
+  const journal = f.store.flowJournal();
+  let accepted = 0;
+  for (; accepted < 100; accepted += 1) {
+    try { journal.begin({ operationId: `cap-${accepted}`, phase: 'INTENT' }); } catch (error) {
+      assert.equal(error.code, 'store_capacity_exceeded');
+      break;
+    }
+  }
+  assert.ok(accepted > 0 && accepted < 32, `accepted ${accepted}`);
+  assert.equal(journal.get(`cap-${accepted}`), null, 'the refused record was not written');
+  assert.equal(journal.advance('cap-0', 0, ['INTENT'], { phase: 'FENCED' }).revision, 1);
+});
+
+test('two connections to one database: begin is idempotent, and only the holder of the current revision and phase can advance', async (t) => {
+  const f = await fixture(t);
+  const other = await openPlain(f.databasePath);
+  try {
+    const a = f.store.flowJournal();
+    const b = other.flowJournal();
+    assert.equal(a.begin(FLOW_RECORD).created, true);
+    const second = b.begin({ ...FLOW_RECORD, cycle: 99 });
+    assert.deepEqual([second.created, second.record.cycle], [false, 1], 'the stored record wins');
+    const outcomes = [a, b].map((journal) => { try { return journal.advance(FLOW_RECORD.operationId, 0, ['INTENT'], { phase: 'FENCED' }).revision; } catch (error) { return error.code; } });
+    assert.deepEqual(outcomes, [1, 'conflict'], 'exactly one of two writers holding revision 0 wins');
+    assert.equal(b.get(FLOW_RECORD.operationId).revision, 1, 'the other connection sees the committed record');
+    assert.throws(() => b.advance(FLOW_RECORD.operationId, 1, ['INTENT'], { phase: 'SUBMITTED' }), { code: 'conflict' }, 'right revision, wrong phase');
+    assert.equal(b.advance(FLOW_RECORD.operationId, 1, ['INTENT', 'FENCED'], { phase: 'SUBMITTED' }).revision, 2);
+  } finally { other.close(); }
+});
+
+test('separate processes holding the same revision: exactly one advance wins', { timeout: 60_000 }, async (t) => {
+  const f = await fixture(t);
+  f.store.flowJournal().begin(FLOW_RECORD);
+  const workerPath = fileURLToPath(new URL('../scripts/runtime-scheduler-contender.mjs', import.meta.url));
+  const workers = Array.from({ length: 8 }, (_, index) => spawnSynchronizedStoreWorker(workerPath, f.databasePath, index + 1, 'flow-advance', FLOW_RECORD.operationId));
+  t.after(async () => {
+    for (const worker of workers) if (worker.child.exitCode === null && worker.child.signalCode === null) worker.child.kill();
+    await Promise.all(workers.map((worker) => worker.exited));
+  });
+  const allResults = Promise.all(workers.map((worker) => worker.result));
+  allResults.catch(() => {});
+  await Promise.all(workers.map((worker) => worker.ready));
+  for (const worker of workers) worker.child.stdin.end('go\n');
+  const outcomes = await allResults;
+  await Promise.all(workers.map((worker) => worker.exited));
+  const winners = outcomes.filter((outcome) => outcome.status === 'WON');
+  assert.equal(winners.length, 1, JSON.stringify(outcomes));
+  assert.ok(outcomes.filter((outcome) => outcome.status !== 'WON').every((outcome) => outcome.errorCode === 'conflict'), JSON.stringify(outcomes));
+  const stored = f.store.flowJournal().get(FLOW_RECORD.operationId);
+  assert.deepEqual([stored.phase, stored.revision, stored.winner], ['FENCED', 1, winners[0].winner], "the stored record is the winner's");
 });
