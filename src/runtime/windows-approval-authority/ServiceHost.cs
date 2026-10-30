@@ -8,7 +8,7 @@ namespace Albera.ApprovalAuthority;
 //
 //   albera-approval-authority.exe service <config.json>
 //
-// Lifecycle: START_PENDING -> read config -> open the signing key -> create both pipes -> RUNNING (only once the pipes exist) -> serve until
+// Lifecycle: START_PENDING -> read config -> open the signing key and check its protection (SigningKeyGuard) -> create both pipes -> RUNNING (only once the pipes exist) -> serve until
 // SERVICE_CONTROL_STOP -> STOP_PENDING -> cancel the loops (bounded wait) -> STOPPED. A fatal end reports STOPPED with ERROR_SERVICE_SPECIFIC_ERROR
 // and the fixed code as the service-specific exit code (ExitCodes.cs). Outside the SCM, StartServiceCtrlDispatcher fails at once and the process
 // exits 74 before it reads the config, opens the key or creates a pipe.

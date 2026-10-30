@@ -17,6 +17,10 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $B = 'AlberaHostBroker'; $C = 'AlberaControlPlane'; $O = 'AlberaLabOther'; $All = @($B, $C, $O)
+# The Approval Authority service and its lab signing keys (checks k_*, at the end of the run). Kept apart from $All: $All is what the Broker checks create and use.
+$AuthSvc = 'AlberaApprovalAuthority'; $Everything = @($B, $C, $O, $AuthSvc)
+$AuthKeyNames = @('AlberaLabAuthGood', 'AlberaLabAuthExportable', 'AlberaLabAuthBroadAce')
+$AuthKeyTool = "$LabRoot\tools\new-authority-key.ps1"
 $Pipe = 'ALBERA_Lab23_HostBroker'
 $Shim = "$LabRoot\bin\shim\albera-lab-service-shim.exe"
 $BrokerDll = "$LabRoot\bin\broker\albera-windows-broker.dll"
@@ -44,12 +48,16 @@ function Stop-LabService([string]$name) {
 }
 
 if ($Phase -eq 'rollback') {
-  $report = [ordered]@{ servicesDeleted = @(); servicesAbsent = $true; labRootRemoved = $false; unexpectedDelta = @() }
-  foreach ($n in $All) {
+  $report = [ordered]@{ servicesDeleted = @(); servicesAbsent = $true; keysRemoved = @(); labRootRemoved = $false; unexpectedDelta = @() }
+  foreach ($n in $Everything) {
     if (Get-Svc $n) { Stop-LabService $n; & sc.exe delete $n | Out-Null; $report.servicesDeleted += $n }
   }
   Start-Sleep -Seconds 2
-  foreach ($n in $All) { if (Get-Svc $n) { $report.servicesAbsent = $false } }
+  foreach ($n in $Everything) { if (Get-Svc $n) { $report.servicesAbsent = $false } }
+  # Machine keys the Authority checks created (the tool only touches keys it is named for; one that was never created reports removed=false).
+  if (Test-Path $AuthKeyTool) {
+    foreach ($k in $AuthKeyNames) { if ((& $AuthKeyTool -KeyName $k -Remove | ConvertFrom-Json).removed) { $report.keysRemoved += $k } }
+  }
   $snapshot = "$LabRoot\evidence\preflight-services.txt"
   if (Test-Path $snapshot) {
     $before = @(Get-Content $snapshot); $after = @(Get-Service | ForEach-Object { $_.Name })
@@ -208,7 +216,7 @@ function Set-LabAcl([string]$path, [string[]]$grants) {
 }
 
 # ---- preflight: new names, new roots, snapshot of what exists now (compared again by the rollback phase)
-foreach ($n in $All) { if (Get-Svc $n) { throw "service $n already exists; refusing to touch it" } }
+foreach ($n in $Everything) { if (Get-Svc $n) { throw "service $n already exists; refusing to touch it" } }
 if (Test-Path "$LabRoot\config") { throw 'lab root already prepared; refusing to reuse it' }
 New-Item -ItemType Directory -Force -Path "$LabRoot\evidence" | Out-Null
 @(Get-Service | ForEach-Object { $_.Name }) | Set-Content -Encoding Ascii "$LabRoot\evidence\preflight-services.txt"
@@ -477,6 +485,64 @@ Step 'd3_squatter_service_account' 'Service RUNNING, a third service account squ
   Verdict (($res.code -eq 'server_identity_mismatch') -and ($sq.bytesReceived -eq 0)) @("helper: $($res | ConvertTo-Json -Compress)", "squatter (third virtual account): $($sq | ConvertTo-Json -Compress)")
 }
 Stop-LabService $B
+
+# ---- Approval Authority start-up signing-key guard (docs/architecture/approval-authority.md, "Preconditions before production"; exit 78).
+# The Authority runs as its own service (NT SERVICE\AlberaApprovalAuthority, restricted SID, SeChangeNotifyPrivilege only). Each check provisions a MACHINE key
+# with test\windows-service-lab\new-authority-key.ps1 (the lab copy in $LabRoot\tools), writes the Authority config, starts the service and reads what the SCM recorded.
+# The guard runs after the key is opened and before any pipe exists, so RUNNING means "key accepted and both pipes created"; a refusal ends with 1066 / 78.
+# NOT executed in the VM yet: expect first-run fixes. The guard's decision logic and the key script are host-tested (npm test).
+$SidAuth = $null
+$AuthExe = "$LabRoot\bin\authority\albera-approval-authority.exe"
+$AuthConfig = "$LabRoot\config\$AuthSvc.service.json"
+# A throw-away RSA-2048 PUBLIC key (SPKI): the Authority config needs one pinned approver key; no private half exists, and no check here asks for an approval.
+$AuthApproverKey = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3XSX1Rx6n1/sVaG+opeyv2Qj/+8woifjIQgxqheuZ1LtyB/JUeDgkP6wIc6YSAQzMKbdwZ88ipVJidmpixqr0P4tcE3Ud6VqerYfHnrVlqGKHojUU0r2kmtKib9f3bT0+ljHa54Dux9jcGSncwXpXcRrOkNFRFrWuS99+yXpFWdgYeawOK9SegknG1J4Rw7fjPZurkVWYYLl17T10PSIg0TGY0eJRgRXVw7PQhsLRh4u3ErDSd4dkE4j1aUR0jCGovRZJrrAMib7P1+GPRUOL6bviCkYY9Q2yOIP+OKWevFw80WXdYktQv/3xeloBWYctgzU6aS7J+7logyEYr0zWwIDAQAB'
+function Write-AuthorityConfig([string]$keyName) {
+  $cfg = [ordered]@{
+    pipeRoot = 'ALBERA\Lab23Authority'; controlPlaneSid = $SidC; approverSid = (Get-Sid 'Administrator'); signingKeyName = $keyName; signingKeyProvider = 'software'
+    kid = 'lab-authority-key-1'; approverKeyId = 'lab-approver-1'; approverPublicKey = $AuthApproverKey; audience = 'albera-host-broker'; policyVersion = $Authority.policyVersion
+  }
+  ($cfg | ConvertTo-Json -Compress) | Set-Content -Encoding Ascii -Path $AuthConfig
+}
+function New-AuthorityLabKey([string]$keyName, [string]$variant) { (& $AuthKeyTool -KeyName $keyName -ServiceSid $SidAuth -Variant $variant) | ConvertFrom-Json }
+function Remove-AuthorityLabKey([string]$keyName) { $null = & $AuthKeyTool -KeyName $keyName -Remove }
+# Start the Authority service with the config naming $keyName and wait until it leaves START_PENDING: RUNNING (accepted) or STOPPED (fatal exit).
+function Start-LabAuthority([string]$keyName) {
+  Stop-LabService $AuthSvc
+  Write-AuthorityConfig $keyName
+  & sc.exe start $AuthSvc | Out-Null
+  Wait-Until { (Get-Svc $AuthSvc).State -in @('Running', 'Stopped') } 30 "$AuthSvc left START_PENDING"
+  Get-Svc $AuthSvc
+}
+function Test-AuthorityRefused([string]$title, [string]$id, [string]$variant, [string]$keyName, [int]$expectedExit) {
+  Step $id $title {
+    $key = if ($variant) { New-AuthorityLabKey $keyName $variant } else { $null }
+    try { $svc = Start-LabAuthority $keyName } finally { if ($variant) { Remove-AuthorityLabKey $keyName } }
+    $ok = ($svc.State -eq 'Stopped') -and ($svc.ExitCode -eq 1066) -and ($svc.ServiceSpecificExitCode -eq $expectedExit)
+    Verdict $ok @("key: $(if ($key) { $key | ConvertTo-Json -Compress } else { 'none created' })", "service after start: state=$($svc.State) win32=$($svc.ExitCode) specific=$($svc.ServiceSpecificExitCode) (expected Stopped / 1066 / $expectedExit)")
+  }
+}
+
+& sc.exe create $AuthSvc binPath= "$AuthExe service $AuthConfig" obj= "NT SERVICE\$AuthSvc" start= demand type= own | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "sc create $AuthSvc failed ($LASTEXITCODE)" }
+& sc.exe sidtype $AuthSvc restricted | Out-Null
+& sc.exe privs $AuthSvc SeChangeNotifyPrivilege | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "sc privs $AuthSvc failed ($LASTEXITCODE)" }
+$SidAuth = Get-Sid "NT SERVICE\$AuthSvc"
+& icacls.exe "$LabRoot\bin" /grant "*${SidAuth}:(OI)(CI)RX" | Out-Null      # inherited by bin\authority; the Authority only reads its own files
+& icacls.exe "$LabRoot\config" /grant "*${SidAuth}:(OI)(CI)RX" | Out-Null   # it reads the config (owned and writable only by Administrators / SYSTEM: its own guard checks that)
+if ($LASTEXITCODE -ne 0) { throw "icacls for $AuthSvc failed ($LASTEXITCODE)" }
+Set-LabAcl "$LabRoot\tools" @()
+
+Step 'k_good_key_starts' 'Authority with a non-exportable machine key whose DACL names only its service SID, SYSTEM and Administrators: starts, creates both pipes, reports RUNNING' {
+  $key = New-AuthorityLabKey $AuthKeyNames[0] 'good'
+  try { $svc = Start-LabAuthority $AuthKeyNames[0]; $running = $svc.State -eq 'Running'; $pidA = [int]$svc.ProcessId } finally { Stop-LabService $AuthSvc; Remove-AuthorityLabKey $AuthKeyNames[0] }
+  $after = Get-Svc $AuthSvc
+  $ok = $running -and ($pidA -gt 0) -and ($after.State -eq 'Stopped') -and ($after.ExitCode -eq 0) -and ($after.ServiceSpecificExitCode -eq 0)
+  Verdict $ok @("key: $($key | ConvertTo-Json -Compress)", "service pid=$pidA running=$running; after STOP: $(Get-ServiceExit $AuthSvc) (expected Stopped, exit 0)")
+}
+Test-AuthorityRefused 'Authority refuses an EXPORTABLE machine key (exit 78, before any pipe exists)' 'k_exportable_key_refused' 'exportable' $AuthKeyNames[1] 78
+Test-AuthorityRefused 'Authority refuses a non-exportable machine key whose DACL also grants Everyone (exit 78, before any pipe exists)' 'k_broad_ace_refused' 'broad_ace' $AuthKeyNames[2] 78
+Test-AuthorityRefused 'Authority with no such key still ends with 77 (key unavailable), not 78' 'k_missing_key_77' '' 'AlberaLabAuthMissing' 77
 
 $result = [ordered]@{
   schema = 'albera-issue-23-service-lab/1'
