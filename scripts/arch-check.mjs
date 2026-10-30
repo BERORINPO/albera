@@ -64,6 +64,8 @@ const EXPECTED = {
     'windows-broker-client.mjs',
     // thin Node client for the Approval Authority submit pipe: it reuses the Broker client's pipe client helper (one arch-allow line for the helper path; arch 8a / 10a keep everything else away)
     'approval-authority-client.mjs',
+    // fence -> submit -> approve -> claim flow and its journal port (rule 5e; decision log 2026-10-30+approved-operation-flow)
+    'approved-operation-flow.mjs', 'approved-operation-journal.mjs',
     // shared receipt v2 / action digest contract for the future Broker and Approval Authority (rule 9; spec/architecture.md decision log 2026-10-30+receipt-v2-contract)
     ...['action-digest.mjs', 'receipt-v2.mjs', 'strict-json.mjs', 'receipt-v2.schema.json', 'test-vectors.json', 'ActionDigest.cs', 'ReceiptV2.cs', 'StrictJson.cs'].map((f) => `broker-contract/${f}`),
     ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
