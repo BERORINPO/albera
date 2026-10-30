@@ -1,10 +1,11 @@
 # Issue #23 — Windows service identity isolation plan
 
-- **Status:** preparation and restricted-token IPC proof only; service-isolation acceptance **BLOCKED / NOT VERIFIED**
+- **Status:** service lab executed 2026-10-30 in a disposable VM (13 PASS, 1 BLOCKED); ADR-002 stays Proposed pending threat review
 - **Date:** 2026-10-28
 - **Parent:** PR #25 (`codex/runtime-issue-22-dotnet-broker`)
 - **Scope:** identity / ACL design, reversible lab runbook, non-admin OS-token denial test
 - **Not performed:** service registration or lifecycle operations, account/group changes, persistent ACL changes, elevation, network changes, Hyper-V operations
+- **Update 2026-10-30:** the owner approved running the lab inside a disposable Hyper-V VM only. Lab tooling and host-side proofs were added (see "Lab tooling" below); the in-guest run itself was **not performed** (see "Verification status")
 
 ## Host inventory collected without mutation
 
@@ -50,7 +51,7 @@ The Issue #22 prototype's same-user pipe DACL (one ACE for the Broker's own user
 
 Local Windows evidence: the test passed **1/1**. The restricted token retained the same `TokenUser` as the test harness; only its restricting SID set differed. Therefore this proves restricted-token access checking against a live pipe, **not** cross-account denial, a Control Plane service SID, a restricted service process token, token revert behavior, or a service boundary. True distinct-user and service-SID tests remain **BLOCKED** pending a pre-provisioned non-admin test principal / service identity and explicit approval for the service lifecycle test.
 
-## Reversible service lab runbook — not executed
+## Reversible service lab runbook — executed 2026-10-30 in a disposable VM
 
 ### Preconditions
 
@@ -73,29 +74,45 @@ Local Windows evidence: the test passed **1/1**. The restricted token retained t
    - `OpenProcess` across accounts: the optional image-hash check opens the server with `PROCESS_QUERY_LIMITED_INFORMATION`. Record whether the Control Plane account may do that to the Broker process; if not, the hash check is `server_identity_unavailable` and must stay unconfigured in service mode.
    - Session 0: `GetNamedPipeServerSessionId` is 0 for the service; a Broker-lookalike in an interactive session is refused.
    - Effective access mask: inspect the live pipe DACL and the Control Plane account's effective rights on it. The helper's `0x00120083` open succeeds (including `READ_CONTROL` for the owner read); an open with `GENERIC_WRITE` / `FILE_APPEND_DATA` (pipe-instance creation) is denied.
+   - Which process SCM reports (found while preparing the lab, 2026-10-30; host-tested, not yet service-tested): the helper compares the SCM-reported PID with the **pipe creator's** PID. A launcher that starts the Broker as a child makes SCM report the launcher, so a correct Broker is refused with `server_identity_mismatch` (`test/runtime-windows-service-lab.test.mjs` shows both cases). The Broker therefore has to be the SCM service process itself. The Broker prototype is a plain exe with no `StartServiceCtrlDispatcher`; the lab tool hosts the Broker's assembly in the service process (`mode: inproc`) as a stand-in, and the product Broker needs real service hosting before this check means anything for it.
+   - A stopped service never reaches the owner check: with the Broker service not RUNNING, the SCM lookup fails first and the helper reports `server_identity_unavailable` (pre-send), not `server_identity_mismatch`. To observe the owner mismatch the service must be RUNNING while another principal holds the pipe name (the lab keeps the service RUNNING without a pipe with the tool's `linger` option).
+
 5. As each service identity, attempt bounded read/write probes against the other's state, the Broker DB/WAL/SHM, verification-key file, private signer key, SCM service config, and a synthetic host-protected path. Expected outcome is denial except the matrix grants above. Do not probe arbitrary host paths.
 6. Exercise Broker restart and approval replay only with a temp DB and signed synthetic receipt. Preserve `UNKNOWN`; assert one journal claim and zero provider effects.
 7. Capture Windows Security/System service events and test logs; verify no key bytes, receipts, user secrets or private paths appear.
 
 ### Rollback
 
-1. Stop only the two newly created named services. Confirm their PIDs have exited; do not terminate unrelated processes.
-2. Delete only the two services created for this run. Wait for SCM removal and verify both names are absent.
+1. Stop only the newly created named services (two, or three when the lab's "other principal" service is used). Confirm their PIDs have exited; do not terminate unrelated processes.
+2. Delete only the services created for this run. Wait for SCM removal and verify both names are absent.
 3. Remove only the dedicated temp install/data roots after preserving the test report, journal metadata, ACL/SDDL evidence, and logs. If cleanup is denied, leave the artifacts and report them; do not take ownership or broaden permissions to force deletion.
 4. Compare the service, ACL, user/group, privilege, firewall, and network inventories with the preflight snapshots. Any unexpected delta blocks cleanup completion and requires the approved administrator to restore that exact delta.
 
 These steps require admin rights and persist SCM/ACL state until rollback. They were intentionally **not run**. Windows documents that service-object DACL changes persist until the service is removed, and service configuration updates require explicit SCM rights. [Modifying a service DACL](https://learn.microsoft.com/en-us/windows/win32/services/modifying-the-dacl-for-a-service), [Service configuration](https://learn.microsoft.com/en-us/windows/win32/services/service-configuration)
 
+## Lab tooling (prepared 2026-10-30)
+
+Everything the lab needs is in the repository and builds on the host. The guest is offline, so every program is a self-contained publish pinned by SHA-256 (unsigned: a recorded deviation from "signed binaries only" that the lab approval allows).
+
+| Piece | Where | Role |
+|---|---|---|
+| Service shim + probes | `test/windows-service-lab/` (`npm run build:windows-service-lab`) | One exe, BCL and P/Invoke only. `service <config>` runs as an own-process SCM service (`StartServiceCtrlDispatcher`, STOP only) and runs one configured job: `child` (launch a command, optionally with a stdin file) or `inproc` (host the Broker assembly in the service process). Probes: `token`, `pipe-open`, `scm`, `openproc`, `squat`. |
+| Broker Control Plane ACE | `src/runtime/windows-broker/Program.cs` | When the configured Control Plane SID is not the Broker's own SID, the pipe DACL gets exactly one more allow ACE, `0x00120083`; the owner stays the Broker. Wire protocol unchanged. Host-tested on the live pipe (`test/runtime-windows-broker-control-plane-ace.test.mjs`). |
+| Host-side proof of the tool | `test/runtime-windows-service-lab.test.mjs` | Runs the shim's `run` entry point and the probes without any service (7 tests). |
+| Guest run | `test/windows-service-lab/run-lab.ps1` (host driver), `lab-guest.ps1`, `scripts/windows-service-lab-inputs.mjs` | Three services (`AlberaHostBroker`, `AlberaControlPlane`, and a third `AlberaLabOther` used as the "other principal" and the service-account squatter), restricted service SID, locked ACLs, checks a to f, rollback. Executed 2026-10-30 (run 3 of 3): see the status below. |
+
 ## Verification status
+
+**2026-10-30: run 3 of 3 executed** inside the disposable, network-disconnected VM `albera-clone-04-lab23` (Windows Server 2025 from the golden image), driven from the host over PowerShell Direct after owner approval. Unsigned binaries were SHA-256 pinned instead of signed (recorded deviation). Runs 1-2 found two lab-script defects and a 16 h guest clock skew (receipts looked expired); the guest clock was set to host time before run 3. Guest rollback: all three services deleted, lab root removed, no unexpected service/ACL delta. The VM was deleted afterwards. Per-check results: [benchmarks/issue-23-service-lab-2026-10-30.json](benchmarks/issue-23-service-lab-2026-10-30.json).
 
 | Acceptance item | Status | Evidence / remaining gate |
 |---|---|---|
-| Supported identities, rights and reversible procedure documented | **PARTIAL** | Proposed identities, ACL matrix and no-mutation runbook documented. Needs review and approved deployment artifact. |
-| Cross-principal isolation and service token/DACL enforcement | **BLOCKED** | Restricted-token DACL negative test passed; different-account and actual service-token tests need an approved pre-provisioned identity and service registration. |
-| No privilege inherited by Observer, Guest or Main AI | **DESIGN ONLY / NOT VERIFIED** | No service or Observer/Guest integration was installed. Must inspect actual service tokens and endpoint reachability in lab. |
-| Broker restart/replay under service identity | **BLOCKED** | Issue #22 same-user Broker child replay test passed; service identity and service restart require approved registration. |
-| Control Plane verifies the Broker pipe server (owner SID, SCM PID, session 0, SQOS identification) before sending | **PARTIAL / SERVICE PATH NOT VERIFIED** | Same-user tests pass (matching server accepted; squatter, wrong owner, wrong PID, wrong image refused before any byte is sent). The service-mode checks need lab step 4a. |
-| Threat review and ADR status | **PENDING** | ADR-002 remains Proposed; do not upgrade status from this prototype. |
+| Supported identities, rights and reversible procedure documented | **PASS (lab)** | Own-process services under `NT SERVICE\AlberaHostBroker` / `AlberaControlPlane` with restricted service SID were created, run and removed by the runbook tooling. A signed deployment artifact and installer remain for production. |
+| Cross-principal isolation and service token/DACL enforcement | **PASS (lab)** | Live pipe: owner = Broker service SID; DACL = Broker `0x1f019f` + Control Plane `0x120083` only. Interactive Administrator and a third virtual account are denied; GENERIC_WRITE is denied to the Control Plane. **Observed:** NPFS does not deny `FILE_APPEND_DATA` (0x4) on a client open even though no ACE grants it; a client handle still cannot create a server instance (max instances 1 + first-instance flag). |
+| No privilege inherited by Observer, Guest or Main AI | **PARTIAL** | Service tokens: virtual-account user, restricting SIDs present, no Administrators group, session 0. Observer/Guest/Main AI were not installed in the lab; endpoint reachability from them is not measured. |
+| Broker restart/replay under service identity | **PASS (lab)** | Positive path ok with exactly one journal claim; after a Broker service restart the same receipt is denied and the journal still has one claim. |
+| Control Plane verifies the Broker pipe server (owner SID, SCM PID, session 0, SQOS identification) before sending | **PASS (lab), session-0 negative BLOCKED** | Helper in service mode as the Control Plane account: ok against the real Broker service; Administrator squatter and third-account squatter refused with `server_identity_mismatch` and 0 bytes received; with the Broker stopped the SCM lookup refuses first (`server_identity_unavailable`, still pre-send). SCM PID lookup needs only connect + query-status; cross-account OpenProcess for the image hash works. No honest negative exists for the session-0 branch (a lookalike must already forge owner and PID). The Broker runs in-process inside the service (lab shim) because SCM must report the pipe-creating PID; a real service host for the Broker is a follow-up. |
+| Threat review and ADR status | **PENDING** | ADR-002 remains Proposed; promote only after threat review of these results. |
 
 ## References
 
