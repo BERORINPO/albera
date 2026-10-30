@@ -97,6 +97,10 @@ After the key is opened and **before either pipe exists**, `SigningKeyGuard` rea
 
 The check only reads the key and runs once at start-up (not re-checked while running). The reason is one fixed word, never a SID or a name. The TPM Platform Crypto Provider may not expose the security-descriptor property; if it does not, the guard refuses (fail closed) until that is verified on hardware, so a `tpm` key is **untested** here.
 
+## Build environment
+
+`npm run build:approval-authority` runs dotnet through the hardened helper `scripts/dotnet-build-env.mjs` (trusted dotnet.exe path, `-noAutoResponse`, allowlisted environment, locked restore against `scripts/nuget.publish.config`, SDK version and output SHA-256 printed after the build); the details are in `approver-app.md` (Build and the one dependency).
+
 ## Real versus fake
 
 | piece | real (shipped) | fake (test-faults build only) |
