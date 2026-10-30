@@ -54,7 +54,7 @@ describe('Node client against the real .NET Host Broker Named Pipe', { skip: get
   const freshDb = () => path.join(root, `journal-${randomBytes(6).toString('hex')}.sqlite`);
   const claims = (db) => inspectClaimCount(brokerExe, db);
 
-  it('authorized request succeeds exactly once; a replay of the same request and a second receipt for the same operation are denied', async () => {
+  it('authorized request is claimed exactly once; an exact replay gets the recorded outcome and a second receipt for the same operation is denied', async () => {
     const db = freshDb();
     const signed = signReceipt(makeReceipt('client-op', 'client-approval', 'client-receipt'));
     const first = await withBroker(db, signed, (pipe, child) => send(pipe, signed, child));
@@ -63,8 +63,9 @@ describe('Node client against the real .NET Host Broker Named Pipe', { skip: get
     assert.equal(claims(db), 1);
 
     const replay = await withBroker(db, signed, (pipe, child) => send(pipe, signed, child));
-    assert.deepEqual(replay.value, DENIED);
-    assert.ok(replay.lines.includes('DENY=duplicate'), replay.lines.join('|'));
+    assert.deepEqual(replay.value, SUCCESS, 'exact duplicate: the recorded outcome, not a bare denial');
+    assert.ok(replay.lines.includes('REPLAY=RECORDED_OUTCOME') && !replay.lines.includes('CLAIM=PERSISTED_UNKNOWN'), replay.lines.join('|'));
+    assert.equal(claims(db), 1, 'a replay writes no row');
 
     const sameOperation = signReceipt(makeReceipt('client-op', 'other-approval', 'other-receipt'));
     const duplicate = await withBroker(db, sameOperation, (pipe, child) => send(pipe, sameOperation, child));

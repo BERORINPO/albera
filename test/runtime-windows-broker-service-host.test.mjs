@@ -206,7 +206,7 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
       const first = signed('loop-first'), second = signed('loop-second');
       assert.deepEqual(await send(config.pipeName, first, child.pid), SUCCESS);
       assert.deepEqual(await send(config.pipeName, second, child.pid), SUCCESS, 'the pipe was created again and the server PID is unchanged');
-      assert.deepEqual(await send(config.pipeName, first, child.pid), DENIED, 'the journal survives between requests: a replay is a duplicate');
+      assert.deepEqual(await send(config.pipeName, first, child.pid), SUCCESS, 'the journal survives between requests: an exact replay gets the recorded outcome');
       assert.equal(child.closeCode, undefined, 'the process kept running after every request');
       assert.equal(child.lines.filter((line) => line === 'BROKER_READY').length, 1, 'READY is announced once, after the first pipe exists');
       const stopped = await stop(child);

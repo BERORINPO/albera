@@ -34,7 +34,7 @@ test('Node Control Plane uses an independent .NET Broker over a real Named Pipe 
     pipe = pipeName();
     active = startBroker(dll, pipe, db, accepted.publicKey, sid, 7, false);
     await waitForLine(active, 'BROKER_READY');
-    assert.deepEqual(await request(pipe, accepted.receipt, accepted.signature), { ok: false, code: 'denied' });
+    assert.deepEqual(await request(pipe, accepted.receipt, accepted.signature), { ok: true, state: 'UNKNOWN', action: 'synthetic.noop' }, 'exact duplicate after a restart: the recorded outcome');
     await waitForExit(active); active = null;
     assert.equal(inspectClaimCount(dll, db), 1);
 
@@ -51,7 +51,7 @@ test('Node Control Plane uses an independent .NET Broker over a real Named Pipe 
     const retryPipe = pipeName();
     active = startBroker(dll, retryPipe, crashDb, crashed.publicKey, sid, 7, false);
     await waitForLine(active, 'BROKER_READY');
-    assert.deepEqual(await request(retryPipe, crashed.receipt, crashed.signature), { ok: false, code: 'denied' });
+    assert.deepEqual(await request(retryPipe, crashed.receipt, crashed.signature), { ok: true, state: 'UNKNOWN', action: 'synthetic.noop' }, 'the lost reply is answered from the journal, never claimed twice');
     await waitForExit(active); active = null;
     assert.equal(inspectClaimCount(dll, crashDb), 1);
 
@@ -82,8 +82,8 @@ test('Node Control Plane uses an independent .NET Broker over a real Named Pipe 
     process.stdout.write('BROKER_TRANSPORT=real local Windows Named Pipe; peer SID from OS impersonation token\n');
     process.stdout.write('APPROVAL=separate ephemeral ECDSA signer; tampered, expired, stale-generation receipts denied\n');
     process.stdout.write('ERRORS=fixed denial; synthetic secret marker absent from broker response/logs\n');
-    process.stdout.write('ACCEPT=authorized exact fixed-action receipt stored as UNKNOWN; normal duplicate denied\n');
-    process.stdout.write('RESTART_REPLAY=force-killed after durable claim; restart denied same signed receipt; crash journal rows=1\n');
+    process.stdout.write('ACCEPT=authorized exact fixed-action receipt stored as UNKNOWN; exact duplicate returns the recorded outcome\n');
+    process.stdout.write('RESTART_REPLAY=force-killed after durable claim; restart returned the recorded outcome for the same signed receipt; crash journal rows=1\n');
     process.stdout.write('PROVIDER=synthetic noop; no provider process, Hyper-V or side effect\n');
     process.stdout.write('LIMITS=same-user ephemeral token proof only; service identity and persistent ACL NOT_VERIFIED\n');
   } finally {
