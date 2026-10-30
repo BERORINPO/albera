@@ -6,8 +6,8 @@ using System.Text.Json;
 //   { "pipeName": "ALBERA_HostBroker", "database": "C:\\ProgramData\\Albera\\broker\\journal.sqlite",
 //     "authorityKeys": [ { "kid": "authority-2026-a", "spki": "<base64 SubjectPublicKeyInfo, ECDSA P-256>" }, { "kid": "authority-2026-b", "spki": "..." } ],
 //     "controlPlaneSid": "S-1-5-80-...", "generation": 7 }
-// `authorityKeys` pins one or two Approval Authority keys (two = rotation overlap); a receipt names its key by `kid`. `generation` is only the initial lease
-// generation, used when the journal is first created: afterwards the journal owns it. The v1 shape (`publicKey`) is refused (config_keys).
+// `authorityKeys` pins one or two Approval Authority keys (two = rotation overlap); a receipt names its key by `kid`. `generation` is the lease generation the operator requires: the first value of a new journal, and at every start
+// a higher value advances the journal's generation (this is how generation N is revoked: configure N+1 and restart), a lower one refuses the start (76, JOURNAL_GENERATION_REGRESSED). The v1 shape (`publicKey`) is refused (config_keys).
 // Every rejected value maps to one fixed reason word (never the value itself), so a log line cannot be steered by file content.
 // The config file and the database folder (plus an existing journal / -wal / -shm) must also be owned and writable only by trusted principals and
 // free of reparse points (ServicePathGuard.cs): otherwise a local user could pre-create them, and the service refuses to start. Once the loop runs it

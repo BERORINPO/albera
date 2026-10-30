@@ -70,7 +70,7 @@ internal static partial class Program
     private static async Task<BrokerReply> FenceAsync(JsonElement body, BrokerSettings settings)
     {
         if (OnlyId(body, "computerId") is not { } computerId) return Deny("request");
-        if (await Journal.IssueChallengeAsync(settings.Database, settings.Epoch, computerId) is not { } issued) return Deny("epoch_mismatch");
+        if (await Journal.IssueChallengeAsync(settings.Database, settings.Epoch, computerId, NowSeconds()) is not { } issued) return Deny("epoch_mismatch");
         Console.WriteLine("FENCE=ISSUED");
         string json = string.Create(CultureInfo.InvariantCulture, $"{{\"ok\":true,\"brokerEpoch\":{issued.Epoch},\"leaseGeneration\":{issued.LeaseGeneration},\"brokerChallenge\":\"{issued.Challenge}\"}}");
         return new BrokerReply(Encoding.UTF8.GetBytes(json), IsFence: true);
@@ -102,7 +102,7 @@ internal static partial class Program
         string operationId = (string)r["operationId"], challengeId = (string)r["brokerChallenge"], computerId = (string)r["computerId"];
         string requestDigest = Journal.RequestDigest(receipt, signature);
         Journal.ClaimContext context = await Journal.ReadClaimContextAsync(settings.Database, challengeId, operationId, requestDigest);
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        long now = NowSeconds();
         if (context.State.Epoch != settings.Epoch) return Deny("epoch_mismatch");
         if (now < context.State.ClockHighWater - ReceiptV2.MaxIatSkewSeconds) return Deny("clock_rollback");
 

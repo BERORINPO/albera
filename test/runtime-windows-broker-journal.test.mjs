@@ -92,11 +92,15 @@ describe('Broker journal: schema version and migration, exact duplicate, inspect
     try {
       return {
         tables: db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all().map((row) => row.name),
-        state: { ...db.prepare('SELECT epoch, lease_generation, clock_high_water FROM broker_state').get() },
+        state: { ...db.prepare('SELECT epoch, lease_generation FROM broker_state').get() },
+        clockHighWater: db.prepare('SELECT clock_high_water AS hw FROM broker_state').get().hw,
         challenges: db.prepare('SELECT challenge, epoch, lease_generation, computer_id, state FROM challenges ORDER BY rowid').all().map((row) => ({ ...row })),
       };
     } finally { db.close(); }
   }
+  const nowSeconds = () => Math.floor(Date.now() / 1000);
+  /** fenceRows without the clock mark, which a start and every fence move to the Broker's clock. */
+  const fenceView = (database) => { const { clockHighWater, ...rest } = fenceRows(database); return rest; };
   const setVersion = (database, version) => makeJournal(database, `PRAGMA user_version = ${version};`);
   const fileHash = (database) => createHash('sha256').update(readFileSync(database)).digest('hex');
   const requestDigest = ({ receipt, signature }) => {
@@ -111,7 +115,8 @@ describe('Broker journal: schema version and migration, exact duplicate, inspect
       const child = startLoop(s);
       await waitForLine(child, 'BROKER_READY');
       assert.equal(existsSync(s.database), true, 'the new epoch is written before RUNNING, so the journal exists at start-up');
-      assert.deepEqual(fenceRows(s.database), { tables: CURRENT_TABLES, state: { epoch: 1, lease_generation: GENERATION, clock_high_water: 0 }, challenges: [] });
+      assert.deepEqual(fenceView(s.database), { tables: CURRENT_TABLES, state: { epoch: 1, lease_generation: GENERATION }, challenges: [] });
+      assert.ok(Math.abs(fenceRows(s.database).clockHighWater - nowSeconds()) <= 5, 'the start raised the clock mark to the Broker\'s clock, before any claim');
       assert.equal(snapshot(s.database).rows.length, 0, 'no claim yet');
       const session = sessionOf(s, child);
       const { request, result } = await session.claim('fresh');
@@ -120,7 +125,7 @@ describe('Broker journal: schema version and migration, exact duplicate, inspect
       const { version, columns, rows } = snapshot(s.database);
       assert.deepEqual([version, columns], [3, CURRENT_COLUMNS]);
       assert.deepEqual(rows.map(({ operation_id: op, state, request_digest: digest }) => [op, state, digest]), [['fresh-op', 'UNKNOWN', requestDigest(request)]]);
-      assert.equal(fenceRows(s.database).state.clock_high_water, JSON.parse(Buffer.from(request.receipt, 'base64')).iat, 'the high-water mark is the iat of the accepted claim');
+      assert.equal(fenceRows(s.database).clockHighWater, JSON.parse(Buffer.from(request.receipt, 'base64')).iat, 'the high-water mark is the iat of the accepted claim');
     });
 
     it('an unversioned journal of #22 / #23 is migrated at start-up, before the first request: rows kept, digest NULL, version 3, generation from the config', async () => {
@@ -133,7 +138,7 @@ describe('Broker journal: schema version and migration, exact duplicate, inspect
       assert.deepEqual([migrated.version, migrated.columns], [3, CURRENT_COLUMNS], 'migrated before RUNNING, with no request sent');
       assert.deepEqual(migrated.rows.map((row) => ({ ...row, request_digest: undefined })), before.rows.map((row) => ({ ...row, request_digest: undefined })), 'every old row is unchanged');
       assert.deepEqual(migrated.rows.map((row) => row.request_digest), [null, null]);
-      assert.deepEqual(fenceRows(s.database).state, { epoch: 1, lease_generation: 9, clock_high_water: 0 }, 'the configured generation is the initial value of a journal that had none');
+      assert.deepEqual(fenceRows(s.database).state, { epoch: 1, lease_generation: 9 }, 'the configured generation is the initial value of a journal that had none');
       // The migrated journal keeps working: a new claim lands, and the old operations answer as claimed.
       const session = sessionOf(s, child);
       assert.deepEqual((await session.claim('after-migration')).result, SUCCESS);
@@ -148,7 +153,7 @@ describe('Broker journal: schema version and migration, exact duplicate, inspect
       const child = startLoop(plain);
       await waitForLine(child, 'BROKER_READY');
       assert.deepEqual(snapshot(plain.database).rows.map((row) => [row.operation_id, row.request_digest]), [['v2-op', digest64]]);
-      assert.deepEqual(fenceRows(plain.database), { tables: CURRENT_TABLES, state: { epoch: 1, lease_generation: GENERATION, clock_high_water: 0 }, challenges: [] });
+      assert.deepEqual(fenceView(plain.database), { tables: CURRENT_TABLES, state: { epoch: 1, lease_generation: GENERATION }, challenges: [] });
       assert.equal(snapshot(plain.database).version, 3);
       assert.equal(await stop(child), 0);
 
@@ -182,18 +187,54 @@ describe('Broker journal: schema version and migration, exact duplicate, inspect
       assert.equal(inspectClaimCount(brokerExe, s.database), 2);
     });
 
-    it('the generation in the config is only the initial value: a restart with another configured generation keeps the journal\'s own', async () => {
-      const s = scenario('generation-initial');
+    it('the configured generation is reconciled at every start: higher advances the journal (the old generation is revoked), equal changes nothing', async () => {
+      const s = scenario('generation-advance');
       let child = startLoop(s);
       await waitForLine(child, 'BROKER_READY');
-      assert.equal((await sessionOf(s, child).fence()).leaseGeneration, GENERATION);
+      let session = sessionOf(s, child);
+      const old = await session.prepare('before-advance'); // a receipt for generation 7, signed against a live challenge
+      assert.equal(old.fence.leaseGeneration, GENERATION);
       assert.equal(await stop(child), 0);
-      writeFileSync(s.configFile, JSON.stringify({ ...JSON.parse(readFileSync(s.configFile, 'utf8')), generation: 99 }));
+
+      // Equal: a new epoch and nothing else.
       child = startLoop(s);
       await waitForLine(child, 'BROKER_READY');
-      const fence = await sessionOf(s, child).fence();
-      assert.deepEqual([fence.brokerEpoch, fence.leaseGeneration], [2, GENERATION], 'a new epoch, the same generation');
+      assert.deepEqual(fenceView(s.database).state, { epoch: 2, lease_generation: GENERATION });
       assert.equal(await stop(child), 0);
+
+      // Higher: the operator configures N+1 and restarts.
+      writeFileSync(s.configFile, JSON.stringify({ ...JSON.parse(readFileSync(s.configFile, 'utf8')), generation: GENERATION + 1 }));
+      child = startLoop(s);
+      await waitForLine(child, 'BROKER_READY');
+      assert.deepEqual(fenceView(s.database).state, { epoch: 3, lease_generation: GENERATION + 1 });
+      session = sessionOf(s, child);
+      assert.deepEqual(await session.send(old), DENIED, 'a receipt for generation N is dead');
+      assert.equal(child.lines.includes('DENY=challenge_unknown') || child.lines.includes('DENY=generation_stale'), true, child.lines.join('|'));
+      const fresh = await session.fence();
+      assert.equal(fresh.leaseGeneration, GENERATION + 1);
+      const stale = await session.claim('stale-after-advance', (fence) => ({ leaseGeneration: fence.leaseGeneration - 1 }));
+      assert.deepEqual(stale.result, DENIED);
+      assert.equal(child.lines.filter((line) => line === 'DENY=generation_stale').length, 1, 'a receipt that still says N against a live N+1 challenge is generation_stale');
+      assert.deepEqual((await session.claim('accepted-after-advance')).result, SUCCESS, 'N+1 is accepted');
+      assert.equal(await stop(child), 0);
+    });
+
+    it('a configured generation below the journal\'s refuses the start (76, JOURNAL_GENERATION_REGRESSED) with no pipe and the journal untouched; serve refuses too', async () => {
+      const s = scenario('generation-regress', undefined, GENERATION + 2);
+      let child = startLoop(s);
+      await waitForLine(child, 'BROKER_READY');
+      assert.equal(await stop(child), 0);
+      const hashBefore = fileHash(s.database);
+      writeFileSync(s.configFile, JSON.stringify({ ...JSON.parse(readFileSync(s.configFile, 'utf8')), generation: GENERATION }));
+      child = startLoop(s);
+      assert.equal(await waitForExit(child), EXIT_JOURNAL_REFUSED, child.lines.join('|'));
+      assert.deepEqual(child.lines, ['BROKER_FATAL=JOURNAL_GENERATION_REGRESSED', 'BROKER_STOPPED']);
+      assert.equal(child.lines.includes('BROKER_READY'), false);
+      assert.equal(fileHash(s.database), hashBefore, 'a refused start changes nothing: no epoch bump');
+      const broker = track(startBroker(brokerExe, s.pipeName, s.database, authority.serveArgument, sid, GENERATION));
+      assert.equal(await waitForExit(broker), EXIT_JOURNAL_REFUSED, broker.lines.join('|'));
+      assert.deepEqual(broker.lines, ['BROKER_FATAL=JOURNAL_GENERATION_REGRESSED']);
+      assert.equal(fileHash(s.database), hashBefore);
     });
 
     // [label, how to build the journal, reason word]. Each is refused before the pipe exists, with 76, and the file is not touched.

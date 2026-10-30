@@ -81,8 +81,8 @@ export async function buildPipeClient(dir) {
 }
 
 /** Start a program and collect its output lines (`child.lines`). `{ stdin: true }` keeps stdin open as a pipe (`child.stdin`). */
-export function startProcess(executable, args, { stdin = false } = {}) {
-  const child = spawn(executable, args, { stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true });
+export function startProcess(executable, args, { stdin = false, env } = {}) {
+  const child = spawn(executable, args, { stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true, ...(env ? { env: { ...process.env, ...env } } : {}) });
   child.lines = [];
   child.closeCode = undefined;
   child.stdout.setEncoding('utf8');

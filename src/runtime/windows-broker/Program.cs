@@ -87,7 +87,7 @@ internal static partial class Program
     // The journal is created here when it does not exist yet. A journal that turns unusable between the check above and this point is refused the same way.
     private static async Task<BrokerSettings?> BeginEpochOrRefuseAsync(BrokerSettings settings)
     {
-        try { return settings with { Epoch = await Journal.BeginEpochAsync(settings.Database, settings.InitialGeneration) }; }
+        try { return settings with { Epoch = await Journal.BeginEpochAsync(settings.Database, settings.InitialGeneration, NowSeconds()) }; }
         catch (Journal.RefusedException ex)
         {
             Console.WriteLine("BROKER_FATAL=JOURNAL_" + ex.Reason.ToUpperInvariant());
@@ -129,6 +129,15 @@ internal static partial class Program
     // deadline arrives while the claim is running (the client would otherwise see a failure for a receipt that is already consumed). Kept well below
     // the 5 s the service host grants on STOP.
     private static readonly TimeSpan ReplyWriteTimeout = TimeSpan.FromSeconds(2);
+
+    // The Broker's clock (Unix seconds): the one source for the clock fence, the receipt checks and the high-water mark.
+#if ALBERA_BROKER_TEST_FAULTS
+    // Test-only: ALBERA_BROKER_TEST_CLOCK_OFFSET (seconds, may be negative) moves this process's clock, to rehearse a clock rollback between two runs.
+    private static readonly long ClockOffsetSeconds = long.TryParse(Environment.GetEnvironmentVariable("ALBERA_BROKER_TEST_CLOCK_OFFSET"), System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out long offset) ? offset : 0;
+#else
+    private const long ClockOffsetSeconds = 0;
+#endif
+    private static long NowSeconds() => DateTimeOffset.UtcNow.ToUnixTimeSeconds() + ClockOffsetSeconds;
 
     // One connected client: read one frame, check the peer, answer. `ioToken` bounds the frame read only (the service loop's stop request and
     // per-connection deadline); the claim itself is never cancelled half-way and the answer is written under ReplyWriteTimeout, not under `ioToken`.

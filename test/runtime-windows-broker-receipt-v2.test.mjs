@@ -36,7 +36,7 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
   const track = (child) => { running.add(child); child.once('close', () => running.delete(child)); return child; };
   let scenarios = 0;
   /** A running seam-build Broker on a fresh trusted folder. `keys` are the pinned authorities (default: the one test authority). */
-  async function start({ keys = [authority], generation = GENERATION, folder } = {}) {
+  async function start({ keys = [authority], generation = GENERATION, folder, clockOffset } = {}) {
     const dir = folder ?? path.join(root, `s${(scenarios += 1)}`);
     if (!folder) { mkdirSync(dir); mkdirSync(path.join(dir, 'db')); }
     const database = path.join(dir, 'db', 'journal.sqlite');
@@ -44,7 +44,8 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
     const config = { pipeName: `ALBERA_Receipt_${randomBytes(6).toString('hex')}`, database, authorityKeys: keys.map((key) => key.keyEntry), controlPlaneSid: sid, generation };
     writeFileSync(configFile, JSON.stringify(config));
     const s = { ...config, dir, configFile };
-    s.child = track(startProcess(loopExe, ['serve-loop', configFile], { stdin: true }));
+    // ALBERA_BROKER_TEST_CLOCK_OFFSET exists only in the seam build: it moves this process's clock so a rollback between two runs can be rehearsed.
+    s.child = track(startProcess(loopExe, ['serve-loop', configFile], { stdin: true, ...(clockOffset ? { env: { ALBERA_BROKER_TEST_CLOCK_OFFSET: String(clockOffset) } } : {}) }));
     await waitForLine(s.child, 'BROKER_READY');
     s.session = brokerSession({ helper, sid, pipeName: config.pipeName, pid: s.child.pid, authority });
     s.stop = async () => { s.child.stdin.end(); return waitForExit(s.child); };
@@ -273,6 +274,39 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
       assert.deepEqual(claimsOf(s), ['before-rollback-op']);
       withJournal(s, (db) => db.exec(`UPDATE broker_state SET clock_high_water = ${nowSeconds() + 25}`)); // within the 30 s allowance
       assert.deepEqual(await s.session.claim('inside-allowance').then((x) => x.result), SUCCESS);
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('the mark also follows the Broker\'s own clock: a fence raises it, so a clock that goes back more than 30 seconds after fences (no claim ever accepted) is detected', async () => {
+      let s = await start();
+      await s.session.fence();
+      assert.ok(Math.abs(withJournal(s, (db) => db.prepare('SELECT clock_high_water AS hw FROM broker_state').get().hw) - nowSeconds()) <= 5);
+      assert.equal(await s.stop(), 0);
+      s = await start({ folder: s.dir, clockOffset: -120 }); // the restarted process believes it is two minutes earlier
+      assert.deepEqual(await s.session.claim('after-rollback').then((x) => x.result), DENIED);
+      assert.equal(lastReason(s), 'DENY=clock_rollback', s.child.lines.join('|'));
+      assert.deepEqual(claimsOf(s), []);
+      assert.equal(await s.stop(), 0);
+      s = await start({ folder: s.dir }); // the real clock again: accepted
+      assert.deepEqual(await s.session.claim('clock-back-to-normal').then((x) => x.result), SUCCESS);
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('a start raises the mark too: a Broker that only started once and is restarted with a clock 2 minutes behind refuses claims', async () => {
+      let s = await start();
+      assert.equal(await s.stop(), 0);
+      s = await start({ folder: s.dir, clockOffset: -120 });
+      assert.deepEqual(await s.session.claim('after-rollback-2').then((x) => x.result), DENIED);
+      assert.equal(lastReason(s), 'DENY=clock_rollback');
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('a rollback of 20 seconds is inside the 30-second allowance and is not refused', async () => {
+      let s = await start();
+      await s.session.fence();
+      assert.equal(await s.stop(), 0);
+      s = await start({ folder: s.dir, clockOffset: -20 });
+      assert.deepEqual(await s.session.claim('small-rollback').then((x) => x.result), SUCCESS);
       assert.equal(await s.stop(), 0);
     });
 

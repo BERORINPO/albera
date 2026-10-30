@@ -16,8 +16,8 @@ using Microsoft.Data.Sqlite;
 // A refusal at start-up is a fixed exit code (ExitJournalRefused) before RUNNING; on a request it is a plain denial.
 //
 // The fence state is Broker-owned: `epoch` goes up by one every time a Broker process starts (BeginEpochAsync, in the same transaction that deletes every
-// challenge), so a challenge can never outlive the process that issued it; `lease_generation` starts at the configured value when the journal is first created
-// and is never taken from a request; `clock_high_water` is the largest `iat` of an accepted claim.
+// challenge), so a challenge can never outlive the process that issued it; `lease_generation` is reconciled with the configured generation at every start (higher: the journal advances, which revokes the older generation; lower: the start is refused with JOURNAL_GENERATION_REGRESSED, exit 76; equal: unchanged)
+// and is never taken from a request; `clock_high_water` is the largest of the `iat` of an accepted claim and the Broker's own clock at every start and every fence.
 internal static class Journal
 {
     internal const long CurrentVersion = 3;
@@ -63,15 +63,20 @@ internal static class Journal
             await using SqliteConnection db = Open(database, SqliteOpenMode.ReadWrite);
             await db.OpenAsync();
             await PrepareAsync(db, initialGeneration);
+            // A configured generation below the journal's would un-revoke the generations in between: refuse before the pipe exists (BeginEpochAsync enforces it again, in its transaction).
+            if (initialGeneration < (await ReadStateAsync(db)).LeaseGeneration) throw new RefusedException("generation_regressed");
         }
         catch (SqliteException) { throw new RefusedException("unreadable"); }
     }
 
     /// <summary>
-    /// A Broker process starts a new epoch: create / migrate the journal, add one to the epoch and delete every challenge in one transaction. Called only after this
-    /// process owns the pipe name, so a second Broker that loses the name race never touches the epoch of the one that is serving. Returns the new epoch.
+    /// A Broker process starts a new epoch: create / migrate the journal, add one to the epoch, delete every challenge, reconcile the lease generation with the
+    /// configured one and raise the clock high-water mark to `now`, all in one transaction. Called only after this process owns the pipe name, so a second Broker
+    /// that loses the name race never touches the epoch of the one that is serving. Returns the new epoch.
+    /// The configured generation is a floor the operator controls: higher than the journal's, the journal advances to it (that is how generation N is revoked: configure
+    /// N+1 and restart; the challenges died with the epoch bump); lower, the start is refused ("generation_regressed"); equal, nothing changes.
     /// </summary>
-    internal static async Task<long> BeginEpochAsync(string database, long initialGeneration)
+    internal static async Task<long> BeginEpochAsync(string database, long initialGeneration, long now)
     {
         try
         {
@@ -80,7 +85,11 @@ internal static class Journal
             await PrepareAsync(db, initialGeneration);
             return await InImmediateTransactionAsync(db, async () =>
             {
-                await ExecuteAsync(db, "UPDATE broker_state SET epoch = epoch + 1 WHERE id = 1; DELETE FROM challenges;");
+                if (initialGeneration < (await ReadStateAsync(db)).LeaseGeneration) throw new RefusedException("generation_regressed");
+                await using SqliteCommand begin = db.CreateCommand();
+                begin.CommandText = "UPDATE broker_state SET epoch = epoch + 1, lease_generation = $g, clock_high_water = MAX(clock_high_water, $n) WHERE id = 1; DELETE FROM challenges;";
+                begin.Parameters.AddWithValue("$g", initialGeneration); begin.Parameters.AddWithValue("$n", now);
+                await begin.ExecuteNonQueryAsync();
                 return (await ReadStateAsync(db)).Epoch;
             });
         }
@@ -91,7 +100,7 @@ internal static class Journal
     /// Issue one single-use challenge for `computerId`, bound to the current epoch and lease generation. Null when the journal's epoch is not `expectedEpoch`
     /// (another process changed the epoch, or the file was replaced): this Broker no longer owns the journal it started with.
     /// </summary>
-    internal static async Task<IssuedChallenge?> IssueChallengeAsync(string database, long expectedEpoch, string computerId)
+    internal static async Task<IssuedChallenge?> IssueChallengeAsync(string database, long expectedEpoch, string computerId, long now)
     {
         await using SqliteConnection db = Open(database, SqliteOpenMode.ReadWrite);
         await db.OpenAsync();
@@ -103,9 +112,10 @@ internal static class Journal
             string challenge = NewChallenge();
             await using SqliteCommand insert = db.CreateCommand();
             insert.CommandText = "INSERT INTO challenges(challenge, epoch, lease_generation, computer_id, state) VALUES ($c, $e, $g, $m, 'issued');" +
+                " UPDATE broker_state SET clock_high_water = MAX(clock_high_water, $n) WHERE id = 1;" + // a clock that goes back after fences or a restart is noticed even if no claim was ever accepted
                 " DELETE FROM challenges WHERE challenge IN (SELECT challenge FROM challenges ORDER BY rowid DESC LIMIT -1 OFFSET " + MaxChallenges + ");";
             insert.Parameters.AddWithValue("$c", challenge); insert.Parameters.AddWithValue("$e", state.Epoch);
-            insert.Parameters.AddWithValue("$g", state.LeaseGeneration); insert.Parameters.AddWithValue("$m", computerId);
+            insert.Parameters.AddWithValue("$g", state.LeaseGeneration); insert.Parameters.AddWithValue("$m", computerId); insert.Parameters.AddWithValue("$n", now);
             await insert.ExecuteNonQueryAsync();
             return new IssuedChallenge(state.Epoch, state.LeaseGeneration, challenge);
         });

@@ -52,7 +52,7 @@ test('Broker pipe is ephemeral, owned by the Broker\'s own SID and grants only t
 test('Broker fault-injection seam is compiled out of the shipped build and the pipe stays first-instance only', () => {
   // Every reference to the injected faults sits inside #if ALBERA_BROKER_TEST_FAULTS ... #endif (plus the unconditional enum declaration).
   const outsideSeam = [program, requests, serviceHost, serviceConfig, serviceLoop, servicePathGuard, databaseFolderPin, journal].map((source) => source.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '')).join('\n');
-  assert.equal(/serve-fault|RevertFails|RevertThrows|RevertLies|serve-loop|ServeLoopForTest/u.test(outsideSeam), false, 'fault names and the serve-loop test entry must only appear inside the test-only #if block');
+  assert.equal(/serve-fault|RevertFails|RevertThrows|RevertLies|serve-loop|ServeLoopForTest|ALBERA_BROKER_TEST_CLOCK_OFFSET/u.test(outsideSeam), false, 'fault names and the serve-loop test entry must only appear inside the test-only #if block');
   assert.match(project, /Condition="'\$\(AlberaBrokerTestFaults\)' == 'true'"/u);
   // MSBuild reads environment variables as properties, so the publish pins the switch off as a global property.
   assert.match(publish, /'-p:AlberaBrokerTestFaults=false'/u, 'the publish script must pin the test seam off');
@@ -364,10 +364,16 @@ test('epoch: a Broker process starts a new epoch only after it owns the pipe nam
   assert.ok(serve.indexOf('CreateBrokerPipe(') < serve.indexOf('BeginEpochOrRefuseAsync(settings)') && serve.indexOf('BeginEpochOrRefuseAsync(settings)') < serve.indexOf('Console.WriteLine("BROKER_READY")'), 'serve: pipe, epoch, READY');
   assert.ok(serviceLoop.indexOf('CreateBrokerPipe(config.PipeName') < serviceLoop.indexOf('BeginEpochOrRefuseAsync(settings)') && serviceLoop.indexOf('BeginEpochOrRefuseAsync(settings)') < serviceLoop.indexOf('Console.WriteLine("BROKER_READY")') && serviceLoop.indexOf('Console.WriteLine("BROKER_READY")') < serviceLoop.indexOf('onReady();'), 'service: pipe, epoch, READY, RUNNING');
   const begin = journal.slice(journal.indexOf('internal static async Task<long> BeginEpochAsync('), journal.indexOf('internal static async Task<IssuedChallenge?> IssueChallengeAsync('));
-  assert.match(begin, /UPDATE broker_state SET epoch = epoch \+ 1 WHERE id = 1; DELETE FROM challenges;/u, 'the bump and the end of every challenge are one statement batch in one transaction');
+  assert.match(begin, /UPDATE broker_state SET epoch = epoch \+ 1, lease_generation = \$g, clock_high_water = MAX\(clock_high_water, \$n\) WHERE id = 1; DELETE FROM challenges;/u, 'the bump, the generation, the clock mark and the end of every challenge are one statement batch in one transaction');
+  assert.ok(begin.indexOf('generation_regressed') > 0 && begin.indexOf('generation_regressed') < begin.indexOf('UPDATE broker_state'), 'a configured generation below the journal\'s is refused before anything is written');
+  assert.match(journal, /if \(initialGeneration < \(await ReadStateAsync\(db\)\)\.LeaseGeneration\) throw new RefusedException\("generation_regressed"\);\s+\}\s+catch \(SqliteException\)/u, 'and before the pipe exists (CheckExistingAsync)');
+  assert.match(journal, /UPDATE broker_state SET clock_high_water = MAX\(clock_high_water, \$n\) WHERE id = 1;/u, 'a fence raises the mark too');
+  assert.match(program, /private static long NowSeconds\(\) => DateTimeOffset\.UtcNow\.ToUnixTimeSeconds\(\) \+ ClockOffsetSeconds;/u);
+  assert.match(program, /#else\s+private const long ClockOffsetSeconds = 0;\s+#endif/u, 'the shipped build has no clock offset');
+  assert.equal(/DateTimeOffset\.UtcNow|DateTime\.(?:Utc)?Now/u.test(stripComments(requests) + stripComments(journal)), false, 'one clock: NowSeconds()');
   assert.match(begin, /InImmediateTransactionAsync/u);
   assert.match(requests, /context\.State\.Epoch != settings\.Epoch\) return Deny\("epoch_mismatch"\);/u, 'a claim');
-  assert.match(requests, /IssueChallengeAsync\(settings\.Database, settings\.Epoch, computerId\) is not \{ \} issued\) return Deny\("epoch_mismatch"\);/u, 'a fence');
+  assert.match(requests, /IssueChallengeAsync\(settings\.Database, settings\.Epoch, computerId, NowSeconds\(\)\) is not \{ \} issued\) return Deny\("epoch_mismatch"\);/u, 'a fence');
   assert.match(journal, /if \(state\.Epoch != expectedEpoch\) return null;/u);
 });
 
