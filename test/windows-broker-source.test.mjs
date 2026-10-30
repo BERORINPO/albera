@@ -10,12 +10,13 @@ const read = (...parts) => readFileSync(path.join(root, ...parts), 'utf8');
 const program = read('src', 'runtime', 'windows-broker', 'Program.cs');
 const project = read('src', 'runtime', 'windows-broker', 'Albera.WindowsBroker.csproj');
 const publish = read('scripts', 'publish-windows-broker.mjs');
-// The service host lives in three more files of the same project (partial class Program + ServiceConfig + ServiceHost). Code only: comments may name what is NOT used.
+// The service host lives in four more files of the same project (partial class Program + ServiceConfig + ServiceHost + ServicePathGuard). Code only: comments may name what is NOT used.
 const serviceHost = read('src', 'runtime', 'windows-broker', 'ServiceHost.cs');
 const serviceConfig = read('src', 'runtime', 'windows-broker', 'ServiceConfig.cs');
 const serviceLoop = read('src', 'runtime', 'windows-broker', 'ServiceLoop.cs');
+const servicePathGuard = read('src', 'runtime', 'windows-broker', 'ServicePathGuard.cs');
 const stripComments = (source) => source.replace(/^\s*\/\/.*$/gmu, '').replace(/\s\/\/ .*$/gmu, '');
-const brokerCode = [program, serviceHost, serviceConfig, serviceLoop].map(stripComments).join('\n');
+const brokerCode = [program, serviceHost, serviceConfig, serviceLoop, servicePathGuard].map(stripComments).join('\n');
 
 test('Broker source stays a fixed-action prototype with no process launch, installer or Hyper-V code', () => {
   assert.deepEqual([...program.matchAll(/action != "([^"]+)"/gu)].map((m) => m[1]), ['synthetic.noop']);
@@ -45,7 +46,7 @@ test('Broker pipe is ephemeral, owned by the Broker\'s own SID and grants only t
 
 test('Broker fault-injection seam is compiled out of the shipped build and the pipe stays first-instance only', () => {
   // Every reference to the injected faults sits inside #if ALBERA_BROKER_TEST_FAULTS ... #endif (plus the unconditional enum declaration).
-  const outsideSeam = [program, serviceHost, serviceConfig, serviceLoop].map((source) => source.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '')).join('\n');
+  const outsideSeam = [program, serviceHost, serviceConfig, serviceLoop, servicePathGuard].map((source) => source.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '')).join('\n');
   assert.equal(/serve-fault|RevertFails|RevertThrows|RevertLies|serve-loop|ServeLoopForTest/u.test(outsideSeam), false, 'fault names and the serve-loop test entry must only appear inside the test-only #if block');
   assert.match(project, /Condition="'\$\(AlberaBrokerTestFaults\)' == 'true'"/u);
   // MSBuild reads environment variables as properties, so the publish pins the switch off as a global property.
@@ -150,9 +151,17 @@ test('service host accepts STOP only, reports RUNNING only once the pipe exists,
   assert.match(serviceHost, /if \(stoppedReported \|\| \(state == Running && stopping\)\) return;/u, 'nothing after STOPPED, and RUNNING never overtakes STOP');
 });
 
-test('service loop re-creates the same first-instance pipe, and `serve` still serves exactly one request', () => {
+test('service loop creates the first-instance pipe once and reuses that instance, and `serve` still serves exactly one request', () => {
   assert.equal([...brokerCode.matchAll(/NamedPipeServerStreamAcl\.Create\(/gu)].length, 1, 'one pipe construction site for serve and service: same owner, same DACL, max 1 instance');
-  assert.match(serviceLoop, /while \(!stop\.IsCancellationRequested\)[\s\S]*CreateBrokerPipe\(config\.PipeName, config\.ControlPlaneSid, out int failure\)/u, 'a new pipe per request');
+  // Changed from "a new pipe per request" (hardening finding 2): disposing and re-creating between two requests left a gap in which any local user
+  // could take the name, and the Broker then stopped with 70. The instance is now kept; this pin is stricter about the name, not weaker.
+  const loop = serviceLoop.slice(serviceLoop.indexOf('internal static async Task<int> RunServiceLoopAsync('), serviceLoop.indexOf('private static async Task WaitForClientToReadAsync('));
+  assert.equal([...loop.matchAll(/CreateBrokerPipe\(/gu)].length, 1, 'the loop creates the pipe exactly once');
+  assert.ok(loop.indexOf('CreateBrokerPipe(') < loop.indexOf('while (!stop.IsCancellationRequested)'), '... before the loop, not inside it');
+  assert.equal(/\.Dispose\(\)/u.test(loop), false, 'no dispose of the pipe inside the loop (the `await using` at the end is the only release)');
+  assert.match(loop, /await pipe\.WaitForConnectionAsync\(stop\);[\s\S]*DisconnectForNextClient\(pipe\);/u, 'serve a client, then Disconnect and wait again on the same instance');
+  assert.match(serviceLoop, /try \{ pipe\.Disconnect\(\); \}\s+catch \(InvalidOperationException\)\s+\{\s+if \(!DisconnectNamedPipe\(pipe\.SafePipeHandle\)\) throw/u, 'the instance is reset even when .NET thinks it is not connected');
+  assert.match(serviceLoop, /pipe\.WaitForPipeDrain/u, 'Disconnect throws unread data away: wait (bounded) for the client to read first');
   const serve = program.slice(program.indexOf('private static async Task<int> ServeAsync('), program.indexOf('private sealed record BrokerSettings'));
   assert.match(serve, /await pipe\.WaitForConnectionAsync\(\)\.WaitAsync\(TimeSpan\.FromSeconds\(20\)\);\s+await HandleConnectionAsync\(pipe, settings, CancellationToken\.None\);\s+return 0;/u);
   assert.equal(/\bwhile\b|\bfor\b/u.test(serve), false, '`serve` has no loop');
@@ -207,8 +216,57 @@ test('service config accepts exactly five keys, validates every value and never 
   assert.match(serviceConfig, /ImportSubjectPublicKeyInfo\(key, out int used\);\s+return used == key\.Length/u);
   const reasonClass = serviceConfig.slice(serviceConfig.indexOf('internal static class Reason'), serviceConfig.indexOf('public static ServiceConfig? TryLoad'));
   assert.deepEqual([...reasonClass.matchAll(/ = "([a-z_]+)"/gu)].map((m) => m[1]).sort(),
-    ['config_keys', 'config_path', 'config_syntax', 'config_too_large', 'config_unreadable', 'control_plane_sid', 'database', 'database_directory', 'generation', 'pipe_name', 'public_key']);
+    ['config_keys', 'config_path', 'config_syntax', 'config_too_large', 'config_unreadable', 'config_untrusted', 'control_plane_sid', 'database', 'database_directory', 'database_untrusted', 'generation', 'pipe_name', 'public_key']);
   // The only interpolated console lines are a reason word, a Win32 error number or a fixed stage word (restricted-client), never a config value.
   const interpolated = [...brokerCode.matchAll(/Console\.WriteLine\((\$"[^"]*")\);/gu)].map((m) => m[1]);
   assert.deepEqual(interpolated, ['$"RESTRICTED_TOKEN_SETUP=BLOCKED_{stage}"', '$"SERVICE_DISPATCHER_ERROR={error}"', '$"SERVICE_CONFIG=invalid:{reason}"', '$"SERVICE_CONFIG=invalid:{reason}"']);
+});
+
+// Hardening after the CISO review of the service host (decision-log row 2026-10-30+broker-service-hardening). Source guards; behaviour is in
+// runtime-windows-broker-service-hardening.test.mjs.
+test('service path guard: BCL only, read-only, and TryLoad / TryParse refuse an untrusted config file or database folder with exit 73', () => {
+  assert.deepEqual(importsOf(servicePathGuard), [], 'no P/Invoke: the owner and the DACL come from the BCL');
+  for (const forbidden of [/SetAccessControl/u, /SetOwner/u, /SetAccessRule/u, /AddAccessRule/u, /ModifyAccessRule/u, /Directory\.(CreateDirectory|Delete)/u, /File\.(Delete|Create|Move)/u, /CreateSymbolicLink/u]) {
+    assert.equal(forbidden.test(stripComments(servicePathGuard)), false, `the guard must not match ${forbidden}`);
+  }
+  // Exactly the write-ish rights, by number: write-data, append-data (add file / add subdirectory), delete-child, delete, write-DAC, write-owner, generic write / all.
+  assert.match(servicePathGuard, /WriteData = 0x2, AppendData = 0x4, DeleteChild = 0x40, Delete = 0x10000, WriteDac = 0x40000, WriteOwner = 0x80000,\s+GenericAll = 0x10000000, GenericWrite = 0x40000000;/u);
+  assert.match(servicePathGuard, /WriteRights = WriteData \| AppendData \| DeleteChild \| Delete \| WriteDac \| WriteOwner \| GenericAll \| GenericWrite;/u);
+  assert.match(servicePathGuard, /new\("S-1-5-18"\), Administrators = new\("S-1-5-32-544"\), CreatorOwner = new\("S-1-3-0"\)/u, 'trusted: SYSTEM, Administrators, CREATOR OWNER (and the running SID)');
+  assert.match(servicePathGuard, /sid\.Equals\(self\) \|\| sid\.Equals\(LocalSystem\) \|\| sid\.Equals\(Administrators\) \|\| sid\.Equals\(CreatorOwner\);/u);
+  assert.match(servicePathGuard, /identity\.User is not \{ \} self\) return false;/u, 'the running SID is the process token user; no separate test rule');
+  assert.match(servicePathGuard, /descriptor\.DiscretionaryAcl is not \{ \} dacl\) return false;/u, 'a NULL DACL is untrusted');
+  assert.match(servicePathGuard, /\(known\.AccessMask & WriteRights\) != 0 && !IsTrustedPrincipal\(known\.SecurityIdentifier, self\)\) return false;/u);
+  assert.match(servicePathGuard, /if \(ace is not KnownAce known\) return false;/u, 'an allow ACE the guard cannot read is refused');
+  assert.equal(/InheritOnly|InheritanceFlags|PropagationFlags/u.test(stripComments(servicePathGuard)), false, 'inherit-only ACEs are NOT skipped: they decide who owns the next file');
+  assert.match(servicePathGuard, /for \(string\? current = path; current is not null; current = Path\.GetDirectoryName\(current\)\)\s+if \(\(File\.GetAttributes\(current\) & FileAttributes\.ReparsePoint\) != 0\) return true;/u, 'the path and every parent');
+  assert.match(servicePathGuard, /catch \(Exception ex\) when \(ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or NotSupportedException\) \{ return false; \}/u, 'fail closed');
+  assert.deepEqual([...servicePathGuard.matchAll(/JournalSuffixes = \[([^\]]*)\]/gu)].map((m) => m[1]), ['"", "-wal", "-shm", "-journal"']);
+  // Wiring: the config is checked on the open handle (FileShare.Read), before its length or content is used; the database folder right after it exists.
+  const load = serviceConfig.slice(serviceConfig.indexOf('public static ServiceConfig? TryLoad'), serviceConfig.indexOf('internal static ServiceConfig? TryParse'));
+  assert.ok(load.indexOf('FileShare.Read') < load.indexOf('IsTrustedConfigFile(configPath, file)') && load.indexOf('IsTrustedConfigFile(configPath, file)') < load.indexOf('file.Length'));
+  assert.match(load, /reason = Reason\.ConfigUntrusted; return null;/u);
+  assert.match(serviceConfig, /Directory\.Exists\(Path\.GetDirectoryName\(database\)\)\) return null;\s+reason = Reason\.DatabaseUntrusted;\s+if \(!ServicePathGuard\.IsTrustedDatabaseLocation\(database\)\) return null;/u);
+});
+
+test('Control Plane SID: S-1-5-80 needs exactly five sub-authorities after 80, an S-1-5-21 SID must resolve to a user, a failed lookup is a refusal', () => {
+  const parse = program.slice(program.indexOf('internal static SecurityIdentifier? TryParseSid('), program.indexOf('// Impersonate, read the peer SID'));
+  assert.match(parse, /value\.StartsWith\("S-1-5-80-", StringComparison\.Ordinal\) && parts\.Length == 9 && sid\.BinaryLength == 32/u, 'S-1-5-80-0 (ALL SERVICES) and every other shape fail');
+  assert.match(parse, /value\.StartsWith\("S-1-5-21-", StringComparison\.Ordinal\) && parts\.Length == 8 && sid\.IsAccountSid\(\) && IsUserSid\(sid\)/u);
+  assert.match(parse, /private const int SidTypeUser = 1;/u);
+  assert.match(parse, /LookupAccountSidW\(null, binary, [^;]*\) && use == SidTypeUser;/u, 'false from the lookup (unknown SID, unreachable domain) is false here');
+  assert.equal(/sid\.IsAccountSid\(\) \? sid : null/u.test(program), false, 'IsAccountSid alone (true for any S-1-5-21 group) no longer decides');
+});
+
+test('reply to a committed claim is written under its own budget, below the stop grace, and a wrongly typed receipt number is a denial', () => {
+  assert.match(program, /ReplyWriteTimeout = TimeSpan\.FromSeconds\(2\);/u);
+  assert.match(program, /using CancellationTokenSource replyBudget = new\(ReplyWriteTimeout\);\s+await WriteFrameAsync\(pipe, response, replyBudget\.Token\);/u, 'not ioToken: STOP and the 15 s deadline cannot cancel the answer');
+  const handle = program.slice(program.indexOf('private static async Task HandleConnectionAsync('), program.indexOf('private static int PipeOwnerUnavailable'));
+  assert.equal(/WriteFrameAsync\([^)]*ioToken/u.test(handle), false);
+  const seconds = (source, name) => Number(new RegExp(`${name} = TimeSpan\\.FromSeconds\\((\\d+)\\)`, 'u').exec(source)?.[1]);
+  assert.ok(seconds(program, 'ReplyWriteTimeout') + seconds(serviceLoop, 'ReplyDrainGrace') < seconds(serviceHost, 'StopGrace'), 'reply write + drain stay inside the stop grace');
+  // GetInt64 on a string / object / null throws InvalidOperationException, which nothing catches: only RequiredInt64 may read a number.
+  assert.deepEqual([...brokerCode.matchAll(/\.(GetInt64|GetInt32|GetDouble)\(\)/gu)].map((m) => m[0]), [], 'no direct number getter');
+  assert.match(program, /is \{ ValueKind: JsonValueKind\.Number \} number && number\.TryGetInt64\(out long value\) \? value : throw new JsonException\(\);/u);
+  assert.deepEqual([...program.matchAll(/RequiredInt64\(r, "(\w+)"\)/gu)].map((m) => m[1]), ['leaseGeneration', 'expiresAt']);
 });

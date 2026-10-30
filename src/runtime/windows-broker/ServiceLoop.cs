@@ -1,51 +1,83 @@
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
-// The serve loop of the service entry (ADR-002, Proposed / NOT VERIFIED). `serve` keeps its one-request behaviour (Program.cs); a service
-// keeps serving: after each connection it disposes the pipe, creates it again as the first instance (max 1, same owner and DACL) and waits for the
-// next client, until the stop token is cancelled or a fatal condition ends the loop with one of the fixed exit codes.
+// The serve loop of the service entry (ADR-002, Proposed / NOT VERIFIED). `serve` keeps its one-request behaviour (Program.cs); a service keeps
+// serving: it creates the pipe ONCE as the first instance (max 1, same owner and DACL) and reuses that one instance for every client. After each
+// connection it waits for the client to read the answer, calls Disconnect() and waits for the next client on the same instance, until the stop token
+// is cancelled or a fatal condition ends the loop with one of the fixed exit codes. The name is never released between two requests, so no local user
+// can take it in a dispose / recreate gap (which used to stop the service with 70).
 internal static partial class Program
 {
     // One client may hold the Broker's only pipe instance for this long between connect and answer; a client that connects and stalls is dropped,
     // so it can neither block the next client indefinitely nor delay SERVICE_CONTROL_STOP.
     private static readonly TimeSpan ConnectionDeadline = TimeSpan.FromSeconds(15);
 
+    // Disconnect() throws unread data away, so the loop first waits (bounded) until the client has read the answer. A client that never reads is
+    // disconnected after this long. Reply write (2 s) + this wait stay below the 5 s the service host grants on STOP.
+    private static readonly TimeSpan ReplyDrainGrace = TimeSpan.FromSeconds(1);
+
     // Set by ServiceHost: report STOPPED with the given service-specific exit code. Called, best effort, just before the process is terminated.
     internal static Action<int>? ServiceTerminationNotice;
 
-    // Returns 0 once `stop` is cancelled, or 70 / 72 when the pipe cannot be (re)created. `onReady` runs once, after the first pipe exists
-    // (the service reports RUNNING from there). Nothing is swallowed except a single connection's I/O failure or deadline.
+#if ALBERA_BROKER_TEST_FAULTS
+    private static TimeSpan? serviceClaimHold; // test-only: the seam build's loop entry holds every claim open this long (STOP arriving meanwhile)
+    private static TimeSpan? ServiceClaimHold => serviceClaimHold;
+#else
+    private static TimeSpan? ServiceClaimHold => null;
+#endif
+
+    // Returns 0 once `stop` is cancelled, or 70 / 72 when the pipe cannot be created. `onReady` runs once, after the pipe exists (the service
+    // reports RUNNING from there). Nothing is swallowed except a single connection's I/O failure or deadline.
     internal static async Task<int> RunServiceLoopAsync(ServiceConfig config, CancellationToken stop, Action onReady)
     {
-        BrokerSettings settings = new(config.Database, config.PublicKey, config.ControlPlaneSid, config.Generation, Hold: false, ImpersonationFault.None);
-        bool announced = false;
-        while (!stop.IsCancellationRequested)
+        BrokerSettings settings = new(config.Database, config.PublicKey, config.ControlPlaneSid, config.Generation, ServiceClaimHold, ImpersonationFault.None);
+        // A squatter that already owns the name makes this fail with 70: the service stops (fail closed) instead of serving.
+        NamedPipeServerStream? pipe = CreateBrokerPipe(config.PipeName, config.ControlPlaneSid, out int failure);
+        if (pipe is null) return failure;
+        await using (pipe)
         {
-            // A squatter that takes the name between two requests makes this fail with 70: the service stops (fail closed) instead of serving.
-            NamedPipeServerStream? pipe = CreateBrokerPipe(config.PipeName, config.ControlPlaneSid, out int failure);
-            if (pipe is null) return failure;
-            await using (pipe)
+            Console.WriteLine("BROKER_READY");
+            onReady();
+            while (!stop.IsCancellationRequested)
             {
-                if (!announced)
-                {
-                    announced = true;
-                    Console.WriteLine("BROKER_READY");
-                    onReady();
-                }
                 try
                 {
                     await pipe.WaitForConnectionAsync(stop);
                     using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(stop);
                     deadline.CancelAfter(ConnectionDeadline);
                     await HandleConnectionAsync(pipe, settings, deadline.Token);
+                    await WaitForClientToReadAsync(pipe);
                 }
                 catch (OperationCanceledException) when (stop.IsCancellationRequested) { return 0; }
                 catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
                 {
                     Console.WriteLine("REQUEST=ABORTED"); // client vanished mid-request or hit the deadline; nothing was claimed unless CLAIM= was printed
                 }
+                if (stop.IsCancellationRequested) return 0; // the answer to a claim that was running when STOP arrived has been written above
+                DisconnectForNextClient(pipe);
             }
         }
         return 0;
+    }
+
+    // FlushFileBuffers on a pipe returns once the client has read everything written. A client that does not read, or has already gone, ends the
+    // wait after the grace period / at once; that single connection's failure is the only thing swallowed here.
+    private static async Task WaitForClientToReadAsync(NamedPipeServerStream pipe)
+    {
+        try { await Task.Run(pipe.WaitForPipeDrain).WaitAsync(ReplyDrainGrace); }
+        catch (Exception ex) when (ex is TimeoutException or IOException or ObjectDisposedException or InvalidOperationException) { }
+    }
+
+    // .NET only lets Disconnect() run on a pipe it believes is connected. A client that connected and left before WaitForConnection finished leaves
+    // the instance waiting in .NET's eyes but half-closed in the system's: the system call resets it. Either way the instance (and the name) stays ours.
+    private static void DisconnectForNextClient(NamedPipeServerStream pipe)
+    {
+        try { pipe.Disconnect(); }
+        catch (InvalidOperationException)
+        {
+            if (!DisconnectNamedPipe(pipe.SafePipeHandle)) throw new IOException("DisconnectNamedPipe failed", Marshal.GetLastWin32Error());
+        }
     }
 
     // `service-check <config>`: validate the config exactly as the service would, print one fixed line, change nothing. Usable by an installer
@@ -76,10 +108,14 @@ internal static partial class Program
         _ = reporter.Join(TimeSpan.FromSeconds(2));
     }
 
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool DisconnectNamedPipe(SafePipeHandle pipe);
+
 #if ALBERA_BROKER_TEST_FAULTS
-    // Test-only (not in the shipped build): the real service loop without the SCM. `serve-loop <config>`; end of stdin plays SERVICE_CONTROL_STOP.
-    private static async Task<int> ServeLoopForTestAsync(string configPath)
+    // Test-only (not in the shipped build): the real service loop without the SCM. `serve-loop <config> [holdMs]`; end of stdin plays
+    // SERVICE_CONTROL_STOP. `holdMs` keeps each claim open that many milliseconds after it is committed (the answer is written afterwards).
+    private static async Task<int> ServeLoopForTestAsync(string configPath, string? holdMilliseconds)
     {
+        if (holdMilliseconds is not null) serviceClaimHold = TimeSpan.FromMilliseconds(int.Parse(holdMilliseconds, System.Globalization.CultureInfo.InvariantCulture));
         if (ServiceConfig.TryLoad(configPath, out _) is not { } config) return ExitServiceConfigInvalid;
         using CancellationTokenSource stop = new();
         _ = Task.Run(() => { Console.In.ReadToEnd(); stop.Cancel(); });

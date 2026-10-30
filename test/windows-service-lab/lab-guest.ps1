@@ -148,6 +148,11 @@ function Stop-AdminSquatter($squatter) {
   if (-not $squatter.Process.WaitForExit(15000)) { $squatter.Process.Kill() }
   Get-Json (Get-Content $squatter.Out) | Select-Object -Last 1
 }
+# The Broker service now refuses (exit 73) a config file or database folder that anyone but SYSTEM / Administrators / its own service SID owns or can
+# write, or that sits behind a reparse point (ServicePathGuard.cs). This helper already produces such folders (inheritance removed, SYSTEM and
+# Administrators full, the Broker SID Modify on data\broker only, everyone else read-only), and the config file is created by this script as an
+# Administrator, so no step needs changing. NOT re-run in the VM since the hardening: a first run should confirm that the real service still starts,
+# and an extra check (grant Users write on data\broker, expect 1066 / 73) is the natural next addition.
 function Set-LabAcl([string]$path, [string[]]$grants) {
   New-Item -ItemType Directory -Force -Path $path | Out-Null
   $a = @($path, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '/grant:r', '*S-1-5-32-544:(OI)(CI)F')

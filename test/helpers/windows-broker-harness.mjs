@@ -3,7 +3,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { captureExecutableIdentity } from '../../src/runtime/executable-identity.mjs';
@@ -16,6 +17,26 @@ const sources = {
   serviceLab: path.join(repositoryRoot, 'test', 'windows-service-lab', 'AlberaLabServiceShim.csproj'),
 };
 const whoami = path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'whoami.exe');
+
+const icacls = path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'icacls.exe');
+const LOCAL_SYSTEM_SID = 'S-1-5-18';
+
+/** Run icacls on a folder this process owns (a temp folder it just made): no elevation, never a path outside the caller's own temp tree. */
+export function icaclsOn(directory, ...args) {
+  execFileSync(icacls, [directory, ...args], { stdio: 'pipe', windowsHide: true });
+}
+
+/**
+ * A fresh temp folder in its long form (the Broker refuses 8.3 paths) whose DACL is only this user and SYSTEM, inheritance cut. The service
+ * host refuses a config or journal folder that anyone else can write, and the machine's own temp folder may grant other accounts Modify, so a
+ * test that needs a TRUSTED folder builds it this way. The rule under test is the production rule: the folder is trusted because its owner and
+ * its writers are the process's own user (what the service SID is in production) and SYSTEM.
+ */
+export function makeTrustedTempDirectory(prefix) {
+  const directory = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), prefix)));
+  icaclsOn(directory, '/inheritance:r', '/grant:r', `*${currentUserSid()}:(OI)(CI)F`, `*${LOCAL_SYSTEM_SID}:(OI)(CI)F`);
+  return directory;
+}
 
 /** Why the .NET integration cannot run here, or `false` when it can. */
 export function getUnavailableReason() {
