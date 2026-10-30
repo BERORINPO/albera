@@ -56,6 +56,18 @@ export function currentUserSid() {
   return sid;
 }
 
+/**
+ * Owner SID of a pipe this Node process creates with the default security descriptor: the token's default owner. That is the user SID for a
+ * normal token but BUILTIN\Administrators for an elevated one (CI runners), so tests that expect a Node-made pipe's owner must not assume the user SID.
+ */
+export function nodePipeOwnerSid() {
+  const powershell = path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const sid = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', '[System.Security.Principal.WindowsIdentity]::GetCurrent().Owner.Value'],
+    { encoding: 'utf8', windowsHide: true }).trim();
+  assert.match(sid, /^S-1-[0-9-]+$/u);
+  return sid;
+}
+
 /** Restore (locked when the project has a lock file) and build one program. Returns its `.exe` apphost path. */
 export function buildProgram(kind, outputDirectory, assemblyName, { locked = true, properties: extraProperties = [] } = {}) {
   const project = sources[kind];

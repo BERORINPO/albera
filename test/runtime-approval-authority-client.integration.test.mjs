@@ -10,7 +10,7 @@ import { computeActionDigest } from '../src/runtime/broker-contract/action-diges
 import { validateReceiptV2 } from '../src/runtime/broker-contract/receipt-v2.mjs';
 import { captureExecutableIdentity } from '../src/runtime/executable-identity.mjs';
 import { AUTHORITY_CLIENT_PRESEND_CODES, getApprovalStatus, submitApproval } from '../src/runtime/approval-authority-client.mjs';
-import { buildPipeClient } from './helpers/windows-broker-harness.mjs';
+import { buildPipeClient, nodePipeOwnerSid } from './helpers/windows-broker-harness.mjs';
 import {
   VIRTUAL_ACCOUNT_SID, buildAuthority, currentUserSid, getUnavailableReason, guestSid, helloSignature, makeConfig, makeHelloKey, makeTrustedTempDirectory, presenceMessage,
   startAuthority,
@@ -25,13 +25,14 @@ const FIELDS = { purpose: 'broker.operation', operationId: 'op-1', idempotencyKe
 const MISMATCH = { ok: false, code: 'server_identity_mismatch' };
 
 describe('Approval Authority submit client: the Node client, the real helper and the real Authority', { skip: getUnavailableReason(), timeout: 600_000 }, () => {
-  let root, exe, helper, trusted, sid, authorityImage;
+  let root, exe, helper, trusted, sid, nodeOwner, authorityImage;
   before(async () => {
     root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'albera-authority-client-it-'))); // long form: TEMP may be an 8.3 short name
     exe = buildAuthority(path.join(root, 'faults'), { faults: true });
     helper = await buildPipeClient(path.join(root, 'helper'));
     trusted = makeTrustedTempDirectory('albera-authority-client-cfg-');
     sid = currentUserSid();
+    nodeOwner = nodePipeOwnerSid(); // owner of the Node-made squatter / fake Broker pipes (Administrators when elevated)
     authorityImage = (await captureExecutableIdentity(exe)).sha256;
   });
   after(() => {
@@ -140,7 +141,7 @@ describe('Approval Authority submit client: the Node client, the real helper and
         assert.equal(squatter.bytes, 0, 'nothing was written to the squatter');
 
         // Control: the identity check, not a connection problem, refused it. With the squatter's own PID the helper writes the frame (and then waits for a reply that never comes).
-        const own = await submitApproval({ ...FIELDS, pipeRoot: squatterRoot, expect: { ownerSid: sid, pid: process.pid }, helperPath: helper, timeoutMs: 1000 });
+        const own = await submitApproval({ ...FIELDS, pipeRoot: squatterRoot, expect: { ownerSid: nodeOwner, pid: process.pid }, helperPath: helper, timeoutMs: 1000 });
         assert.deepEqual(own, { ok: false, code: 'timeout' });
         assert.ok(squatter.bytes > 4, 'the control request reached the squatter');
       } finally { await new Promise((resolve) => server.close(resolve)); }
@@ -162,7 +163,7 @@ describe('Approval Authority submit client: the Node client, the real helper and
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk) => { out += chunk; });
       const closed = new Promise((resolve) => child.once('close', resolve));
-      child.stdin.end(`${JSON.stringify({ pipeName: pipe, fence: 'computer-1', timeoutMs: 5000, expect: { ownerSid: sid, pid: process.pid } })}
+      child.stdin.end(`${JSON.stringify({ pipeName: pipe, fence: 'computer-1', timeoutMs: 5000, expect: { ownerSid: nodeOwner, pid: process.pid } })}
 `);
       await closed;
       return JSON.parse(out);
