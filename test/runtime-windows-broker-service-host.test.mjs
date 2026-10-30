@@ -8,7 +8,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import {
   brokerSession, buildBroker, buildBrokerWithTestSeams, buildPipeClient, createTestAuthority, currentUserSid, getUnavailableReason, inspectClaimCount, makeTrustedTempDirectory,
-  startProcess, waitForExit, waitForLine, GENERATION,
+  startProcess, waitForExit, waitForLine, GENERATION, LEASE_CONFIG,
 } from './helpers/windows-broker-harness.mjs';
 
 // Windows-only, same-user, unprivileged. The Broker's `service` entry needs the SCM, which these tests never touch: no service is registered,
@@ -49,7 +49,7 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
 
   /** A valid config object; `overrides` replace values, `undefined` removes a key. */
   function validConfig(name, overrides = {}) {
-    return { pipeName: unique('ALBERA_SvcHost'), database: path.join(root, `${name}.sqlite`), authorityKeys: [authority.keyEntry], controlPlaneSid: sid, generation: GENERATION, ...overrides };
+    return { pipeName: unique('ALBERA_SvcHost'), database: path.join(root, `${name}.sqlite`), authorityKeys: [authority.keyEntry], controlPlaneSid: sid, generation: GENERATION, ...LEASE_CONFIG, ...overrides };
   }
   function writeRaw(name, text) {
     const file = path.join(root, `${name}.config.json`);
@@ -114,6 +114,12 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
       ['unknown key', { hold: true }, 'config_keys'],
       ['missing key', { generation: undefined }, 'config_keys'],
       ['missing SID', { controlPlaneSid: undefined }, 'config_keys'],
+      ['missing leaseId (no placeholder default in production)', { leaseId: undefined }, 'config_keys'],
+      ['missing policyVersion (no placeholder default in production)', { policyVersion: undefined }, 'config_keys'],
+      ...['', ' ', 'has space', '-lead', '.lead', 'a/b', 'a\\b', 'x'.repeat(65), 'lease\u0000', 'lease\n', 5, null, true, ['lease-a'], { id: 'lease-a' }]
+        .map((value) => [`leaseId ${JSON.stringify(value)}`, { leaseId: value }, 'lease_id']),
+      ...['', ' ', 'has space', '-lead', 'a/b', 'x'.repeat(65), 'policy\n', 5, null, ['policy-a']]
+        .map((value) => [`policyVersion ${JSON.stringify(value)}`, { policyVersion: value }, 'policy_version']),
     ];
     for (const [label, overrides, reason] of rejected) {
       it(`rejects ${label} with ${reason}`, () => {

@@ -310,6 +310,16 @@ test('the fence reply is exactly { ok, brokerEpoch, leaseGeneration, brokerChall
   assert.equal(codeOf(() => validateBrokerResponse(FENCED)), 'invalid_response', 'a fence reply is not a claim reply');
 });
 
+test('a fence reply that carries leaseId keeps it, and the leaseId must be a contract id', () => {
+  const withLease = { ...FENCED, leaseId: 'lease-2026-10-a' };
+  assert.deepEqual(validateFenceResponse(withLease), withLease);
+  assert.ok(Object.isFrozen(validateFenceResponse(withLease)));
+  for (const leaseId of ['', 'has space', '-lead', 'x'.repeat(65), 5, null, { id: 'x' }, ['x']]) {
+    assert.equal(codeOf(() => validateFenceResponse({ ...FENCED, leaseId })), 'invalid_response', JSON.stringify(leaseId));
+  }
+  assert.equal(codeOf(() => validateFenceResponse({ ...withLease, extra: 1 })), 'invalid_response');
+});
+
 test('fence: one JSON line { pipeName, fence, timeoutMs, expect } to the verified helper, and the validated challenge comes back', async () => {
   const fake = fakeSpawn({ stdout: line(FENCED) });
   const helperPath = makeHelper();

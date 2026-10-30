@@ -12,7 +12,7 @@ import { validateReceiptV2 } from '../src/runtime/broker-contract/receipt-v2.mjs
 // The VM lab signs receipt v2 inside the guest (Windows PowerShell 5.1, ECDsaCng, a CNG private blob) from scripts/windows-service-lab-inputs.mjs.
 // The lab itself cannot run here; these tests run what can: the inputs file on any OS, and the guest's receipt functions under the host's Windows PowerShell.
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const BROKER_EXPECTED = { audience: 'albera-host-broker', purpose: 'broker.operation', leaseId: 'test-lease', policyVersion: 'test-policy-v1' };
+const BROKER_EXPECTED = { audience: 'albera-host-broker', purpose: 'broker.operation' };
 const FENCE = { ok: true, brokerEpoch: 3, leaseGeneration: 7, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' };
 
 describe('lab inputs for receipt v2', () => {
@@ -29,14 +29,14 @@ describe('lab inputs for receipt v2', () => {
     const receipt = JSON.parse(receiptBytes);
     return {
       clock: () => Math.floor(Date.now() / 1000), environment: 'production',
-      expected: { ...BROKER_EXPECTED, operationId: receipt.operationId, idempotencyKey: receipt.idempotencyKey, leaseGeneration: FENCE.leaseGeneration, brokerEpoch: FENCE.brokerEpoch, brokerChallenge: FENCE.brokerChallenge, ...overrides },
+      expected: { ...BROKER_EXPECTED, leaseId: inputs.authority.leaseId, policyVersion: inputs.authority.policyVersion, operationId: receipt.operationId, idempotencyKey: receipt.idempotencyKey, leaseGeneration: FENCE.leaseGeneration, brokerEpoch: FENCE.brokerEpoch, brokerChallenge: FENCE.brokerChallenge, ...overrides },
       action: { action: 'synthetic.noop', projectId: inputs.authority.projectId, computerId: inputs.authority.computerId, args: {} },
     };
   };
 
   it('carries exactly the authority and one never-sent receipt, and the CNG private blob is the same key as the pinned SPKI', () => {
     assert.deepEqual(Object.keys(inputs).sort(), ['authority', 'r2']);
-    assert.deepEqual(Object.keys(inputs.authority).sort(), ['actionDigest', 'computerId', 'issuer', 'kid', 'privateBlob', 'projectId', 'spki']);
+    assert.deepEqual(Object.keys(inputs.authority).sort(), ['actionDigest', 'computerId', 'issuer', 'kid', 'leaseId', 'policyVersion', 'privateBlob', 'projectId', 'spki']);
     const blob = Buffer.from(inputs.authority.privateBlob, 'base64');
     assert.equal(blob.length, 104);
     assert.equal(blob.readUInt32LE(0), 0x32534345, 'BCRYPT_ECDSA_PRIVATE_P256_MAGIC');
@@ -73,7 +73,7 @@ describe('lab inputs for receipt v2', () => {
       "$plain = New-LabReceipt 'lab-check' $fence",
       "$other = New-LabReceipt 'lab-check-2' $fence @{ issuer = 'albera-test-approval-authority'; leaseGeneration = 6 }",
       '$keys = @([ordered]@{ kid = $Authority.kid; spki = $Authority.spki })',
-      "$cfg = [ordered]@{ pipeName = 'p'; database = 'C:\\x\\j.sqlite'; authorityKeys = $keys; controlPlaneSid = 'S-1-5-80-1'; generation = 7 }",
+      "$cfg = [ordered]@{ pipeName = 'p'; database = 'C:\\x\\j.sqlite'; authorityKeys = $keys; controlPlaneSid = 'S-1-5-80-1'; generation = 7; leaseId = $Authority.leaseId; policyVersion = $Authority.policyVersion }",
       '@{ plain = $plain; other = $other; config = ($cfg | ConvertTo-Json -Compress -Depth 4) } | ConvertTo-Json -Depth 5 | Set-Content -Encoding Ascii -Path $Out',
     ].join('\r\n'));
     const out = path.join(temp, 'sign-check.json');
@@ -91,6 +91,6 @@ describe('lab inputs for receipt v2', () => {
     assert.deepEqual(JSON.parse(JSON.stringify(validateReceiptV2(plain, contextFor(plain)))), { ok: true, receipt: JSON.parse(plain) });
     const other = Buffer.from(result.other.receipt, 'base64');
     assert.deepEqual(JSON.parse(JSON.stringify(validateReceiptV2(other, contextFor(other)))), { ok: false, code: 'issuer', field: 'issuer' }, 'the override reaches the receipt');
-    assert.deepEqual(JSON.parse(result.config), { pipeName: 'p', database: 'C:\\x\\j.sqlite', authorityKeys: [{ kid: inputs.authority.kid, spki: inputs.authority.spki }], controlPlaneSid: 'S-1-5-80-1', generation: 7 }, 'authorityKeys is an array of one object');
+    assert.deepEqual(JSON.parse(result.config), { pipeName: 'p', database: 'C:\\x\\j.sqlite', authorityKeys: [{ kid: inputs.authority.kid, spki: inputs.authority.spki }], controlPlaneSid: 'S-1-5-80-1', generation: 7, leaseId: inputs.authority.leaseId, policyVersion: inputs.authority.policyVersion }, 'authorityKeys is an array of one object; the lease and policy are the ones the receipts name');
   });
 });
