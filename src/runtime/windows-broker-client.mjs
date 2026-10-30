@@ -12,6 +12,9 @@ import net from 'node:net';
 //   denial body  : { "ok": false, "code": "denied" }
 // Results never carry exception text, paths, native identifiers or any part of the request. Failures are fixed codes.
 // A failure after the request was written leaves the outcome unknown: the Broker may have durably claimed the receipt.
+// NOT YET SAFE TO WIRE: the client does not verify who owns the pipe server (no server SID/PID check). A squatter that
+// takes the name after the Broker exits could read a signed receipt and forge a reply. Implement the ADR-002 Control
+// Plane server-identity check (GetNamedPipeServerProcessId + token SID) before any caller uses this client.
 
 /** ADR-002: bounded length-prefixed frame, 2 KiB maximum request message. The response is far smaller. */
 export const BROKER_CLIENT_LIMITS = Object.freeze({
@@ -151,7 +154,7 @@ function exchange(socket, frame, timeoutMs) {
       settle(value);
     };
     timer = setTimeout(() => finish(reject, new BrokerClientError('timeout')), timeoutMs);
-    socket.once('error', (error) => finish(reject, new BrokerClientError(mapBrokerTransportError(error))));
+    socket.on('error', (error) => finish(reject, new BrokerClientError(mapBrokerTransportError(error))));
     socket.once('connect', () => socket.write(frame));
     socket.on('data', (chunk) => {
       chunks.push(chunk);
