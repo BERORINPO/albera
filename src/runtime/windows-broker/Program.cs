@@ -28,6 +28,16 @@ internal static partial class Program
 
     private static async Task<int> Main(string[] args)
     {
+#if ALBERA_BROKER_TEST_FAULTS
+        // Test-only: `--trust-sid <sid> <subcommand> ...` makes ServicePathGuard trust that SID as "the service" (a host test has no per-service SID in its token).
+        // Without it the production rule applies, so a test-faults build also shows the refusal of a folder that only the token user can reach.
+        if (args.Length >= 2 && args[0] == "--trust-sid")
+        {
+            try { ServicePathGuard.ServiceSidForTest = new SecurityIdentifier(args[1]); }
+            catch (ArgumentException) { return 64; }
+            args = args[2..];
+        }
+#endif
         if (args.Length == 2 && args[0] == "restricted-client") return RunRestrictedClient(args[1]);
         if (args.Length == 2 && args[0] == "inspect") return await InspectAsync(args[1]);
         if (args.Length == 9 && args[0] == "serve") return await ServeAsync(args, ImpersonationFault.None);
@@ -40,6 +50,7 @@ internal static partial class Program
             Enum.TryParse(args[1], ignoreCase: false, out ImpersonationFault fault) && Enum.IsDefined(fault))
             return await ServeAsync(["serve", .. args[2..]], fault);
         if (args.Length is 2 or 3 && args[0] == "serve-loop") return await ServeLoopForTestAsync(args[1], args.Length == 3 ? args[2] : null);
+        if (args.Length == 2 && args[0] == "derive-service-sid") { Console.WriteLine(ServicePathGuard.DeriveServiceSid(args[1]).Value); return 0; }
 #endif
         return 64;
     }

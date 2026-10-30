@@ -6,7 +6,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import {
   brokerSession, buildBroker, buildBrokerWithTestSeams, buildPipeClient, buildReceiptFields, createTestAuthority, currentUserSid, getUnavailableReason, makeTrustedTempDirectory,
-  rawFencedClaim, rawRequest, signedReceipt, startBroker, startProcess, stableUuid, waitForExit, waitForLine, COMPUTER_ID, GENERATION, LEASE_CONFIG, LEASE_ID, POLICY_VERSION, PRODUCTION_ISSUER, TEST_ISSUER,
+  rawFencedClaim, rawRequest, signedReceipt, standInService, startBroker, startProcess, stableUuid, waitForExit, waitForLine, COMPUTER_ID, GENERATION, LEASE_CONFIG, LEASE_ID, POLICY_VERSION, PRODUCTION_ISSUER, TEST_ISSUER,
 } from './helpers/windows-broker-harness.mjs';
 
 // Windows-only, same-user, unprivileged (decision-log row 2026-10-30+broker-receipt-v2). The .NET Broker enforces receipt v2 (src/runtime/broker-contract):
@@ -45,7 +45,7 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
     writeFileSync(configFile, JSON.stringify(config));
     const s = { ...config, dir, configFile };
     // ALBERA_BROKER_TEST_CLOCK_OFFSET exists only in the seam build: it moves this process's clock so a rollback between two runs can be rehearsed.
-    s.child = track(startProcess(loopExe, ['serve-loop', configFile], { stdin: true, ...(clockOffset ? { env: { ALBERA_BROKER_TEST_CLOCK_OFFSET: String(clockOffset) } } : {}) }));
+    s.child = track(startProcess(loopExe, standInService('serve-loop', configFile), { stdin: true, ...(clockOffset ? { env: { ALBERA_BROKER_TEST_CLOCK_OFFSET: String(clockOffset) } } : {}) }));
     await waitForLine(s.child, 'BROKER_READY');
     s.session = brokerSession({ helper, sid, pipeName: config.pipeName, pid: s.child.pid, authority });
     s.stop = async () => { s.child.stdin.end(); return waitForExit(s.child); };

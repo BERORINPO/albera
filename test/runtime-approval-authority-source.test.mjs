@@ -41,7 +41,7 @@ test('the Authority never starts a process, registers a service, writes a file, 
 });
 
 test('the test fakes and the serve-loop / request entries exist only inside #if ALBERA_AUTHORITY_TEST_FAULTS and never in the shipped build', () => {
-  assert.equal(/FakeReceiptSigner|FakePresenceVerifier|CheckForTest|ProofFor|UnavailableProof|serve-loop|ServeLoopForTest|RequestForTest|AUTHORITY_PUBLIC_KEY|albera-test-approval-authority|albera-fake-presence/u.test(shippedCode), false,
+  assert.equal(/FakeReceiptSigner|FakePresenceVerifier|CheckForTest|ProofFor|UnavailableProof|serve-loop|ServeLoopForTest|RequestForTest|AUTHORITY_PUBLIC_KEY|albera-test-approval-authority|albera-fake-presence|ServiceSidForTest|trust-sid/u.test(shippedCode), false,
     'fake names only appear inside the test-only #if blocks');
   assert.match(sources['TestSeam.cs'].trimStart(), /^#if ALBERA_AUTHORITY_TEST_FAULTS/u, 'TestSeam.cs is one #if block');
   assert.match(sources['TestSeam.cs'].trimEnd(), /#endif$/u);
@@ -131,7 +131,14 @@ test('the service host talks to the SCM through three advapi32 P/Invokes only, a
   assert.match(guard, /SHA1\.HashData\(System\.Text\.Encoding\.Unicode\.GetBytes\(serviceName\.ToUpperInvariant\(\)\)\)/u, 'the SCM derivation');
   assert.match(guard, /new SecurityIdentifier\("S-1-5-80-"/u);
   assert.match(guard, /principal\.IsInRole/u, 'enabled groups only');
-  assert.equal(/\.User\b/u.test(guard + code['AuthorityRuntime.cs'] + code['Signers.cs']), false, 'the token user is never the trusted SID');
+  assert.equal(/\.User\b/u.test(guard + code['AuthorityRuntime.cs'] + code['Signers.cs'] + code['ServicePathGuard.cs']), false, 'the token user is never the trusted SID');
+  // The config-file guard trusts the same per-service SID (SigningKeyGuard.ServiceName), required as an enabled token group, and nothing when it is absent.
+  const pathGuard = code['ServicePathGuard.cs'];
+  assert.match(pathGuard, /SigningKeyGuard\.ResolveServiceSid\(new WindowsPrincipal\(identity\)\.IsInRole, out SecurityIdentifier sid\) is null \? sid : null;/u, 'enabled groups only');
+  assert.match(pathGuard, /CurrentServiceSid\(\) is \{ \} service && IsTrusted\(file\.GetAccessControl\(\), service\)/u, 'no service SID in the token: the config is not trusted');
+  assert.match(pathGuard, /sid\.Equals\(service\) \|\| sid\.Equals\(LocalSystem\) \|\| sid\.Equals\(Administrators\) \|\| sid\.Equals\(CreatorOwner\);/u);
+  assert.match(sources['ServicePathGuard.cs'], /#if ALBERA_AUTHORITY_TEST_FAULTS\n[^#]*ServiceSidForTest[\s\S]*?#endif/u, 'the stand-in SID exists only in the test-faults build');
+  assert.match(sources['Program.cs'], /#if ALBERA_AUTHORITY_TEST_FAULTS\n[^#]*"--trust-sid"/u, 'and is set only by --trust-sid inside the test-only #if block');
   assert.match(code['Signers.cs'], /SigningKeyGuard\.CheckCurrentProcess\(key\)/u);
   assert.match(sources['SigningKeyGuard.cs'], /#if ALBERA_AUTHORITY_TEST_FAULTS\n[^#]*CheckForTest[\s\S]*?#endif/u, 'the explicit-SID check exists only in the test-faults build');
   assert.match(guard, /private static string\? Check\(CngKey key/u);

@@ -52,7 +52,7 @@ test('Broker pipe is ephemeral, owned by the Broker\'s own SID and grants only t
 test('Broker fault-injection seam is compiled out of the shipped build and the pipe stays first-instance only', () => {
   // Every reference to the injected faults sits inside #if ALBERA_BROKER_TEST_FAULTS ... #endif (plus the unconditional enum declaration).
   const outsideSeam = [program, requests, serviceHost, serviceConfig, serviceLoop, servicePathGuard, databaseFolderPin, journal].map((source) => source.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '')).join('\n');
-  assert.equal(/serve-fault|RevertFails|RevertThrows|RevertLies|serve-loop|ServeLoopForTest|ALBERA_BROKER_TEST_CLOCK_OFFSET/u.test(outsideSeam), false, 'fault names and the serve-loop test entry must only appear inside the test-only #if block');
+  assert.equal(/serve-fault|RevertFails|RevertThrows|RevertLies|serve-loop|ServeLoopForTest|ALBERA_BROKER_TEST_CLOCK_OFFSET|ServiceSidForTest|trust-sid|derive-service-sid/u.test(outsideSeam), false, 'fault names, the serve-loop test entry and the stand-in service SID must only appear inside the test-only #if block');
   assert.match(project, /Condition="'\$\(AlberaBrokerTestFaults\)' == 'true'"/u);
   // MSBuild reads environment variables as properties, so the publish pins the switch off as a global property.
   assert.match(publish, /'-p:AlberaBrokerTestFaults=false'/u, 'the publish script must pin the test seam off');
@@ -273,11 +273,21 @@ test('service path guard: BCL only, read-only, and TryLoad / TryParse refuse an 
   // Exactly the write-ish rights, by number: write-data, append-data (add file / add subdirectory), delete-child, delete, write-DAC, write-owner, generic write / all.
   assert.match(servicePathGuard, /WriteData = 0x2, AppendData = 0x4, DeleteChild = 0x40, Delete = 0x10000, WriteDac = 0x40000, WriteOwner = 0x80000,\s+GenericAll = 0x10000000, GenericWrite = 0x40000000;/u);
   assert.match(servicePathGuard, /WriteRights = WriteData \| AppendData \| DeleteChild \| Delete \| WriteDac \| WriteOwner \| GenericAll \| GenericWrite;/u);
-  assert.match(servicePathGuard, /new\("S-1-5-18"\), Administrators = new\("S-1-5-32-544"\), CreatorOwner = new\("S-1-3-0"\)/u, 'trusted: SYSTEM, Administrators, CREATOR OWNER (and the running SID)');
-  assert.match(servicePathGuard, /sid\.Equals\(self\) \|\| sid\.Equals\(LocalSystem\) \|\| sid\.Equals\(Administrators\) \|\| sid\.Equals\(CreatorOwner\);/u);
-  assert.match(servicePathGuard, /identity\.User is not \{ \} self\) return false;/u, 'the running SID is the process token user; no separate test rule');
+  assert.match(servicePathGuard, /new\("S-1-5-18"\), Administrators = new\("S-1-5-32-544"\), CreatorOwner = new\("S-1-3-0"\)/u, 'trusted: SYSTEM, Administrators, CREATOR OWNER (and the service SID)');
+  assert.match(servicePathGuard, /sid\.Equals\(service\) \|\| sid\.Equals\(LocalSystem\) \|\| sid\.Equals\(Administrators\) \|\| sid\.Equals\(CreatorOwner\);/u);
+  // The service SID is the per-service SID of the fixed service name (the one the lab registers), required as an ENABLED group of the token; the token user is never trusted.
+  assert.match(servicePathGuard, /ServiceName = "AlberaHostBroker"/u);
+  assert.match(read('test', 'windows-service-lab', 'lab-guest.ps1'), /\$B = 'AlberaHostBroker'/u, 'the lab registers the service under the name the guard derives its SID from');
+  assert.match(servicePathGuard, /SHA1\.HashData\(System\.Text\.Encoding\.Unicode\.GetBytes\(serviceName\.ToUpperInvariant\(\)\)\)/u, 'the SCM derivation');
+  assert.match(servicePathGuard, /new SecurityIdentifier\("S-1-5-80-"/u);
+  assert.match(servicePathGuard, /ResolveServiceSid\(new WindowsPrincipal\(identity\)\.IsInRole\)/u, 'enabled groups only');
+  assert.equal(/\.User\b/u.test(stripComments(servicePathGuard)), false, 'the process token user is never the trusted SID');
+  assert.match(servicePathGuard, /CurrentServiceSid\(\) is \{ \} service && IsTrusted\(file\.GetAccessControl\(\), service\)/u, 'no service SID in the token: the config is not trusted');
+  assert.match(servicePathGuard, /if \(CurrentServiceSid\(\) is not \{ \} service\) return false;/u, 'no service SID in the token: the database location is not trusted');
+  assert.match(servicePathGuard, /#if ALBERA_BROKER_TEST_FAULTS\n[^#]*ServiceSidForTest[\s\S]*?#endif/u, 'the stand-in SID exists only in the test-faults build');
+  assert.match(program, /#if ALBERA_BROKER_TEST_FAULTS\n[^#]*"--trust-sid"/u, 'and is set only by --trust-sid inside the test-only #if block');
   assert.match(servicePathGuard, /descriptor\.DiscretionaryAcl is not \{ \} dacl\) return false;/u, 'a NULL DACL is untrusted');
-  assert.match(servicePathGuard, /\(known\.AccessMask & WriteRights\) != 0 && !IsTrustedPrincipal\(known\.SecurityIdentifier, self\)\) return false;/u);
+  assert.match(servicePathGuard, /\(known\.AccessMask & WriteRights\) != 0 && !IsTrustedPrincipal\(known\.SecurityIdentifier, service\)\) return false;/u);
   assert.match(servicePathGuard, /if \(ace is not KnownAce known\) return false;/u, 'an allow ACE the guard cannot read is refused');
   assert.equal(/InheritOnly|InheritanceFlags|PropagationFlags/u.test(stripComments(servicePathGuard)), false, 'inherit-only ACEs are NOT skipped: they decide who owns the next file');
   assert.match(servicePathGuard, /for \(string\? current = path; current is not null; current = Path\.GetDirectoryName\(current\)\)\s+if \(\(File\.GetAttributes\(current\) & FileAttributes\.ReparsePoint\) != 0\) return true;/u, 'the path and every parent');

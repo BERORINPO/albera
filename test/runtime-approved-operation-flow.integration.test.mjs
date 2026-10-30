@@ -10,7 +10,7 @@ import { computeActionDigest } from '../src/runtime/broker-contract/action-diges
 import { getApprovalStatus, submitApproval } from '../src/runtime/approval-authority-client.mjs';
 import { sendBrokerFence, sendBrokerInspect, sendBrokerRequest } from '../src/runtime/windows-broker-client.mjs';
 import {
-  GENERATION, LEASE_CONFIG, POLICY_VERSION, buildBrokerWithTestSeams, buildPipeClient, currentUserSid, getUnavailableReason, makeTrustedTempDirectory, startProcess, waitForExit, waitForLine,
+  GENERATION, LEASE_CONFIG, POLICY_VERSION, buildBrokerWithTestSeams, buildPipeClient, currentUserSid, getUnavailableReason, makeTrustedTempDirectory, standInService, startProcess, waitForExit, waitForLine,
 } from './helpers/windows-broker-harness.mjs';
 import { buildAuthority, makeConfig, presenceMessage, startAuthority } from './helpers/approval-authority-harness.mjs';
 
@@ -75,7 +75,7 @@ describe('approved operation flow: real Approval Authority and real Host Broker 
     writeFileSync(configFile, JSON.stringify(config));
     const stack = { authority, database, broker: null, hooks: {} };
     stack.startBroker = async () => {
-      stack.broker = track(startProcess(brokerExe, ['serve-loop', configFile, ...(hold ? [String(hold)] : [])], { stdin: true }));
+      stack.broker = track(startProcess(brokerExe, standInService('serve-loop', configFile, ...(hold ? [String(hold)] : [])), { stdin: true }));
       await waitForLine(stack.broker, 'BROKER_READY');
     };
     stack.restartBroker = async () => { stack.broker.stdin.end(); await waitForExit(stack.broker); await stack.startBroker(); };

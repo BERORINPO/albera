@@ -10,7 +10,7 @@ import { validateReceiptV2 } from '../src/runtime/broker-contract/receipt-v2.mjs
 import { buildProbe } from './helpers/windows-broker-harness.mjs';
 import {
   CLIENT_MASK, SELF_CONTROL_MASK, VIRTUAL_ACCOUNT_SID, buildAuthority, currentUserSid, getUnavailableReason, guestSid, helloSignature, icaclsOn, makeConfig,
-  makeHelloKey, makeTrustedTempDirectory, presenceMessage, startAuthority, startProcess, waitForExit, waitForLine, writeConfig,
+  makeHelloKey, makeTrustedTempDirectory, presenceMessage, standInService, startAuthority, startProcess, trustSid, waitForExit, waitForLine, writeConfig,
 } from './helpers/approval-authority-harness.mjs';
 
 // Windows-only, same-user, unprivileged: the real Authority pipes and protocol with the test-faults build (in-memory ECDSA signer, test issuer).
@@ -282,7 +282,7 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
 
   it('a second Authority on the same pipe names refuses to start (exit 70) while the first keeps serving', async () => {
     await withAuthority({}, async (first) => {
-      const second = startProcess(exe, ['serve-loop', first.configFile, 'real', '120'], { stdin: true });
+      const second = startProcess(exe, standInService('serve-loop', first.configFile, 'real', '120'), { stdin: true });
       assert.equal(await waitForExit(second), 70);
       assert.ok(second.lines.includes('AUTHORITY_FATAL=PIPE_UNAVAILABLE'), second.lines.join('|'));
       assert.equal((await first.submit(submitRequest())).ok, true);
@@ -297,7 +297,11 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
 
   describe('service entry and config trust', () => {
     const production = (extra = {}) => makeConfig({ controlPlaneSid: VIRTUAL_ACCOUNT_SID, approverSid: guestSid(), ...extra });
-    const check = (file) => { const child = startProcess(plainExe, ['service-check', file]); return waitForExit(child).then((code) => ({ code, lines: child.lines })); };
+    // The shipped build trusts only the Authority's own per-service SID (not in a host test's token), so the validation tests run the test-faults build told to stand in the
+    // signed-in user for it. `checkWith(exe, args)` is the same check with the arguments spelled out (the shipped rule, or another stand-in).
+    const checkWith = (program, args) => { const child = startProcess(program, args); return waitForExit(child).then((code) => ({ code, lines: child.lines })); };
+    const check = (file) => checkWith(exe, standInService('service-check', file));
+    const UNTRUSTED = { code: 73, lines: ['SERVICE_CONFIG=invalid:config_untrusted'] };
 
     it('service-check accepts a production config and refuses one SID for both pipes (73 sids_not_distinct)', async () => {
       assert.deepEqual(await check(writeConfig(trusted, production(), 'ok.json')), { code: 0, lines: ['SERVICE_CONFIG=ok'] });
@@ -318,6 +322,15 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
       assert.deepEqual(await check(writeConfig(trusted, { ...production(), extra: 'x' }, 'extra.json')), { code: 73, lines: ['SERVICE_CONFIG=invalid:config_keys'] });
     });
 
+    it('the token user alone is never trusted: a config only this user and SYSTEM can reach is refused without a stand-in SID (shipped build and test-faults build alike)', async () => {
+      const file = writeConfig(trusted, production(), 'token-user.json');
+      assert.deepEqual(await checkWith(exe, standInService('service-check', file)), { code: 0, lines: ['SERVICE_CONFIG=ok'] }, 'control: with the stand-in the same file is fine');
+      assert.deepEqual(await checkWith(plainExe, ['service-check', file]), UNTRUSTED, 'shipped build: no per-service SID in this token');
+      assert.deepEqual(await checkWith(exe, ['service-check', file]), UNTRUSTED, 'test-faults build without --trust-sid applies the same rule');
+      assert.deepEqual(await checkWith(exe, trustSid(VIRTUAL_ACCOUNT_SID, 'service-check', file)), UNTRUSTED, 'a stand-in other than the owner / writers of the file');
+      assert.equal((await checkWith(exe, trustSid('not-a-sid', 'service-check', file))).code, 64, 'a malformed --trust-sid is a usage error');
+    });
+
     it('`service` outside the service control manager exits 74 and creates no pipe', async () => {
       const config = production();
       const file = writeConfig(trusted, config, 'scm.json');
@@ -335,12 +348,13 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
       for (const type of ['FakeReceiptSigner', 'FakePresenceVerifier', 'TestSeam']) {
         assert.equal(present(plainExe, type, 'utf8'), false, `${type} must not be in the shipped build`);
       }
-      for (const literal of ['albera-test-approval-authority', 'serve-loop', 'albera-fake-presence', 'CLIENT_ERROR=']) {
+      for (const literal of ['albera-test-approval-authority', 'serve-loop', 'albera-fake-presence', 'CLIENT_ERROR=', '--trust-sid']) {
         assert.equal(present(plainExe, literal, 'utf16le'), false, `"${literal}" must not be in the shipped build`);
         assert.equal(present(exe, literal, 'utf16le'), true, `"${literal}" is in the test-faults build (control)`);
       }
       assert.equal(present(exe, 'FakeReceiptSigner', 'utf8'), true, 'the fakes are in the test-faults build (control)');
       assert.equal(spawnSync(plainExe, ['serve-loop', 'x', 'real', '1'], { windowsHide: true }).status, 64, 'serve-loop is an unknown command (64) in the shipped build');
+      assert.equal(spawnSync(plainExe, trustSid(currentUserSid(), 'service-check', 'x'), { windowsHide: true }).status, 64, '--trust-sid is an unknown command (64) in the shipped build');
       assert.equal(spawnSync(plainExe, ['request', 'x', 'e30='], { windowsHide: true }).status, 64, 'request is an unknown command (64) in the shipped build');
     });
   });

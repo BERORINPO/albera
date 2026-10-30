@@ -6,9 +6,9 @@ import { constants, createPublicKey, generateKeyPairSync, randomBytes, sign } fr
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { currentUserSid, makeTrustedTempDirectory, repositoryRoot, startProcess, waitForExit, waitForLine } from './windows-broker-harness.mjs';
+import { currentUserSid, makeTrustedTempDirectory, repositoryRoot, standInService, startProcess, waitForExit, waitForLine } from './windows-broker-harness.mjs';
 
-export { currentUserSid, getUnavailableReason, icaclsOn, makeTrustedTempDirectory, repositoryRoot, startProcess, waitForExit, waitForLine } from './windows-broker-harness.mjs';
+export { currentUserSid, getUnavailableReason, icaclsOn, makeTrustedTempDirectory, repositoryRoot, standInService, startProcess, trustSid, waitForExit, waitForLine } from './windows-broker-harness.mjs';
 
 const execFileAsync = promisify(execFile);
 export const authorityDirectory = path.join(repositoryRoot, 'src', 'runtime', 'windows-approval-authority');
@@ -87,7 +87,7 @@ export async function pipeCall(exe, pipeName, request, { declaredLength, raw } =
  */
 export async function startAuthority(exe, directory, { config = makeConfig(), presence = 'real', ttl = 120 } = {}) {
   const configFile = writeConfig(directory, config, `config-${randomBytes(4).toString('hex')}.json`);
-  const child = startProcess(exe, ['serve-loop', configFile, presence, String(ttl)], { stdin: true });
+  const child = startProcess(exe, standInService('serve-loop', configFile, presence, String(ttl)), { stdin: true });
   await waitForLine(child, 'AUTHORITY_READY');
   const publicKey = (await waitForLine(child, /^AUTHORITY_PUBLIC_KEY=/u)).slice('AUTHORITY_PUBLIC_KEY='.length);
   const submitPipe = `${config.pipeRoot}\\submit\\v1`;

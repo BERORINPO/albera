@@ -31,14 +31,24 @@ export function icaclsOn(directory, ...args) {
 /**
  * A fresh temp folder in its long form (the Broker refuses 8.3 paths) whose DACL is only this user and SYSTEM, inheritance cut. The service
  * host refuses a config or journal folder that anyone else can write, and the machine's own temp folder may grant other accounts Modify, so a
- * test that needs a TRUSTED folder builds it this way. The rule under test is the production rule: the folder is trusted because its owner and
- * its writers are the process's own user (what the service SID is in production) and SYSTEM.
+ * test that needs a TRUSTED folder builds it this way. The production rule trusts the service's own per-service SID (S-1-5-80-..., from the service name)
+ * and SYSTEM / Administrators, never the token user. A host test has no service SID, so the test-faults builds are told to stand in the signed-in user
+ * for it (`standInService`); the folder is trusted because its owner and its writers are that user and SYSTEM.
  */
 export function makeTrustedTempDirectory(prefix) {
   const directory = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), prefix)));
   icaclsOn(directory, '/inheritance:r', '/grant:r', `*${currentUserSid()}:(OI)(CI)F`, `*${LOCAL_SYSTEM_SID}:(OI)(CI)F`);
   return directory;
 }
+
+let signedInUserSid;
+/**
+ * The leading arguments that make a TEST-FAULTS build (Broker or Approval Authority; the shipped build does not have them) trust `sid` as "the service" in its
+ * ServicePathGuard, in place of the per-service SID a host test cannot have in its token. Without them the production rule applies.
+ */
+export const trustSid = (sid, ...args) => ['--trust-sid', sid, ...args];
+/** `trustSid` with the signed-in user as the stand-in: what every host test that needs a running or checked service uses. */
+export const standInService = (...args) => trustSid(signedInUserSid ??= currentUserSid(), ...args);
 
 /** Why the .NET integration cannot run here, or `false` when it can. */
 export function getUnavailableReason() {
