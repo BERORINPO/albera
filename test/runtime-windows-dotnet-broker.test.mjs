@@ -9,9 +9,9 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const directory = path.join(repositoryRoot, 'test', 'windows-broker-prototype');
 const signerFixture = path.join(repositoryRoot, 'scripts', 'issue-22-approval-authority-fixture.mjs');
-const project = path.join(directory, 'Albera.WindowsBrokerProbe.csproj');
+const project = path.join(repositoryRoot, 'src', 'runtime', 'windows-broker', 'Albera.WindowsBroker.csproj');
+const whoami = path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'whoami.exe');
 const unavailableReason = getUnavailableReason();
 
 test('Node Control Plane uses an independent .NET Broker over a real Named Pipe and durable signed claims', { skip: unavailableReason }, async () => {
@@ -19,10 +19,10 @@ test('Node Control Plane uses an independent .NET Broker over a real Named Pipe 
   let active;
   try {
     const output = path.join(root, 'out'), intermediate = path.join(root, 'obj');
-    execFileSync('dotnet', ['restore', project, '--property:RestorePackagesWithLockFile=true', `--property:BaseIntermediateOutputPath=${intermediate}${path.sep}`, `--property:MSBuildProjectExtensionsPath=${intermediate}${path.sep}`], { encoding: 'utf8', stdio: 'pipe', timeout: 120_000, windowsHide: true });
+    execFileSync('dotnet', ['restore', project, '--locked-mode', '--property:RestorePackagesWithLockFile=true', `--property:BaseIntermediateOutputPath=${intermediate}${path.sep}`, `--property:MSBuildProjectExtensionsPath=${intermediate}${path.sep}`], { encoding: 'utf8', stdio: 'pipe', timeout: 120_000, windowsHide: true });
     execFileSync('dotnet', ['build', project, '--configuration', 'Release', '--no-restore', '--output', output, `--property:BaseIntermediateOutputPath=${intermediate}${path.sep}`, `--property:MSBuildProjectExtensionsPath=${intermediate}${path.sep}`], { encoding: 'utf8', stdio: 'pipe', timeout: 120_000, windowsHide: true });
-    const dll = path.join(output, 'Albera.WindowsBrokerProbe.dll');
-    const sid = execFileSync('whoami', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true }).match(/S-1-[0-9-]+/u)?.[0];
+    const dll = path.join(output, 'albera-windows-broker.dll');
+    const sid = execFileSync(whoami, ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true }).match(/S-1-[0-9-]+/u)?.[0];
     assert.ok(sid);
     const db = path.join(root, 'broker-owned-journal.sqlite');
     const accepted = signReceipt(makeReceipt('accepted-op', 'approval-accepted', 'receipt-accepted'));
