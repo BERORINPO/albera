@@ -12,6 +12,7 @@ This release collects the existing RFC and ADR-001 through ADR-007, plus the new
 5. [ADR-008-main-ai-orchestration.md](decisions/ADR-008-main-ai-orchestration.md) — delegation and safe bounded autonomy.
 6. [ADR-009-canvas-computer-use.md](decisions/ADR-009-canvas-computer-use.md) — observability, GUI, human takeover.
 7. [ADR-010-performance-observability-oss.md](decisions/ADR-010-performance-observability-oss.md) — optimization and adoption.
+   - [ADR-011-physical-machine-provider.md](decisions/ADR-011-physical-machine-provider.md) — owner-supplied physical machines over SSH (added 2026-10-30, after v4).
 8. [PoC-001](experiments/PoC-001-hyperv-work-handoff.md), [Benchmark Spec](experiments/benchmark-spec.md) — executable hypotheses.
 9. [Acceptance Criteria](acceptance-criteria.md), [Machine-readable Acceptance Criteria](acceptance-criteria.json), [Implementation Roadmap](implementation-roadmap.md), [OSS Research](oss-research.md) — release and engineering contracts.
 
