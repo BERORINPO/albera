@@ -390,3 +390,14 @@ test('the pipe client helper takes the Authority request as text, bounds it, and
   assert.ok(code.indexOf('SecurityIdentification') < code.indexOf('GetOwner(') && code.indexOf('GetNamedPipeServerProcessId(pipe') < code.indexOf('pipe.Write('));
   assert.equal([...code.matchAll(/pipe\.Write\(/gu)].length, 1, 'one write site');
 });
+
+test('status reads approvalId once: a caller object that changes approvalId during the I/O cannot make the client accept another approval', async () => {
+  const other = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+  const forOther = { ...APPROVED, receipt: receiptFor({ approvalId: other }).toString('base64') };
+  let reads = 0;
+  const fake = fakeSpawn({ stdout: line(forOther) });
+  const options = { ...connection(fake), get approvalId() { reads += 1; return reads === 1 ? APPROVAL_ID : other; } };
+  const result = await getApprovalStatus(options);
+  assert.equal(result.ok, false, 'the receipt for another approval is never accepted');
+  assert.equal(reads, 1, 'approvalId is read exactly once');
+});

@@ -288,8 +288,13 @@ function runHelper(spawnImpl, helperPath, line, timeoutMs, validate) {
 }
 
 /** One helper run: check the keys, the pipe, the request text, the expectation and the timeout, then launch the verified helper. Never throws. */
+function isPlainOptions(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 async function exchange(options, allowedKeys, buildRequestText, validate) {
   try {
+    if (!isPlainOptions(options)) throw bad('invalid_request');
     requireKeys(options, allowedKeys);
     const pipeName = authoritySubmitPipeName(options.pipeRoot);
     const requestText = buildRequestText(options);
@@ -324,5 +329,7 @@ export function submitApproval(options = {}) {
  * @param {{ pipeRoot: string, approvalId: string, expect: object, timeoutMs?: number, helperPath?: string, spawnImpl?: typeof spawn }} options
  */
 export function getApprovalStatus(options = {}) {
-  return exchange(options, STATUS_KEYS, buildStatusRequestText, (value) => validateStatusResponse(value, options.approvalId));
+  // Read the options once: the approvalId that is sent is the one the reply is checked against, even if the caller's object changes during the I/O.
+  const snapshot = isPlainOptions(options) ? { ...options } : options;
+  return exchange(snapshot, STATUS_KEYS, buildStatusRequestText, (value) => validateStatusResponse(value, snapshot.approvalId));
 }
