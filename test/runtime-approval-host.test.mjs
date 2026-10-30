@@ -227,7 +227,8 @@ async function post(f, route, body, headers = f.postHeaders) {
   });
 }
 
-async function waitFor(predicate, timeoutMs = 3000) {
+// Loaded CI runners can take several seconds to start and stop helper processes; success still returns at once.
+async function waitFor(predicate, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;
