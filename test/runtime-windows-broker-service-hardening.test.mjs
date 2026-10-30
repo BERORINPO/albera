@@ -7,7 +7,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import {
   brokerSession, buildBroker, buildBrokerWithTestSeams, buildPipeClient, createTestAuthority, currentUserSid, getUnavailableReason, icaclsOn, inspectClaimCount,
-  makeTrustedTempDirectory, startProcess, waitForExit, waitForLine, GENERATION, LEASE_CONFIG,
+  makeTrustedTempDirectory, standInService, startProcess, trustSid, waitForExit, waitForLine, GENERATION, LEASE_CONFIG,
 } from './helpers/windows-broker-harness.mjs';
 
 // Windows-only, same-user, unprivileged. Hardening of the Broker service host after the CISO review (decision-log row 2026-10-30+broker-service-hardening):
@@ -26,6 +26,9 @@ const STOP_BUDGET_MS = 5000;
 const USERS = '*S-1-5-32-545', EVERYONE = '*S-1-1-0', AUTHENTICATED_USERS = '*S-1-5-11';
 const TRUSTED_INSTALLER = '*S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464';
 const VIRTUAL_SERVICE_SID = 'S-1-5-80-1111111111-2222222222-3333333333-1444444444-2555555555';
+// What Windows gave NT SERVICE\AlberaHostBroker in the VM lab (docs/architecture/benchmarks/issue-23-least-privilege-lab-2026-10-30.json: pipe owner = "Broker SID"), and NT SERVICE\TrustedInstaller.
+const LAB_BROKER_SERVICE_SID = 'S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499';
+const TRUSTED_INSTALLER_SID = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464';
 
 describe('Broker service host hardening', { skip: getUnavailableReason() }, () => {
   let root, brokerExe, loopExe, helper, sid;
@@ -66,7 +69,9 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
     writeFileSync(config, JSON.stringify({ pipeName: unique('ALBERA_Harden'), database, authorityKeys: [authority.keyEntry], controlPlaneSid: sid, generation: GENERATION, ...LEASE_CONFIG, ...overrides }));
     return { dir, databaseDir, configFile: config, database };
   }
-  const check = (file) => run(brokerExe, ['service-check', file]);
+  // The shipped rule trusts the service's own per-service SID, which a host test cannot have in its token, so the checks below run the test-faults build told to stand
+  // in the signed-in user for it (`--trust-sid`); the folders are built for that user. The next describe block runs the same files under the shipped rule.
+  const check = (file) => run(loopExe, standInService('service-check', file));
   const invalid = (reason) => ({ code: EXIT_CONFIG_INVALID, lines: [`SERVICE_CONFIG=invalid:${reason}`], stderr: '' });
 
   describe('finding 1: config file and database folder must be trusted (service-check)', () => {
@@ -140,10 +145,51 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
     it('a service whose database folder is untrusted does not start: exit 73, no pipe, no journal', async () => {
       const s = scenario('loop-untrusted');
       icaclsOn(s.databaseDir, '/grant', `${USERS}:(OI)(CI)M`);
+      const child = track(startProcess(loopExe, standInService('serve-loop', s.configFile), { stdin: true }));
+      assert.equal(await waitForExit(child), EXIT_CONFIG_INVALID);
+      assert.deepEqual(child.lines, []);
+      assert.equal(existsSync(s.database), false);
+    });
+  });
+
+  describe('the trusted principal is the per-service SID of the fixed service name, never the token user (service-check)', () => {
+    const shipped = (file) => run(brokerExe, ['service-check', file]);
+    const withoutStandIn = (file) => run(loopExe, ['service-check', file]);
+    const standIn = (value, file) => run(loopExe, trustSid(value, 'service-check', file));
+
+    it('derives the per-service SID the SCM gave the service AlberaHostBroker in the lab, case-insensitively, and the well-known TrustedInstaller SID', () => {
+      const derive = (name) => run(loopExe, ['derive-service-sid', name]).lines;
+      assert.deepEqual(derive('AlberaHostBroker'), [LAB_BROKER_SERVICE_SID]);
+      assert.deepEqual(derive('ALBERAHOSTBROKER'), [LAB_BROKER_SERVICE_SID]);
+      assert.deepEqual(derive('TrustedInstaller'), [TRUSTED_INSTALLER_SID]);
+    });
+
+    it('refuses a config and database folder that only the token user and SYSTEM can reach when the token has no per-service SID: the shipped build and a test-faults build without --trust-sid (config_untrusted)', () => {
+      const s = scenario('token-user-only');
+      assert.deepEqual(check(s.configFile), { code: 0, lines: ['SERVICE_CONFIG=ok'], stderr: '' }, 'control: with the signed-in user standing in for the service the same files are fine');
+      assert.deepEqual(shipped(s.configFile), invalid('config_untrusted'));
+      assert.deepEqual(withoutStandIn(s.configFile), invalid('config_untrusted'));
+    });
+
+    it('trusts only the SID it is told to: with any other stand-in the signed-in user is no longer a trusted owner or writer (config_untrusted)', () => {
+      const s = scenario('other-stand-in');
+      for (const other of [LAB_BROKER_SERVICE_SID, VIRTUAL_SERVICE_SID, 'S-1-5-19', 'S-1-5-20']) assert.deepEqual(standIn(other, s.configFile), invalid('config_untrusted'), other);
+    });
+
+    it('a service whose token has no per-service SID does not start: exit 73, no pipe, no journal', async () => {
+      const s = scenario('loop-token-user-only');
       const child = track(startProcess(loopExe, ['serve-loop', s.configFile], { stdin: true }));
       assert.equal(await waitForExit(child), EXIT_CONFIG_INVALID);
       assert.deepEqual(child.lines, []);
       assert.equal(existsSync(s.database), false);
+    });
+
+    it('--trust-sid exists only in the test-faults build and needs a well-formed SID (64 otherwise)', () => {
+      const s = scenario('trust-sid-usage');
+      assert.equal(standIn('not-a-sid', s.configFile).code, 64);
+      assert.equal(run(loopExe, ['--trust-sid']).code, 64);
+      assert.deepEqual(run(brokerExe, trustSid(sid, 'service-check', s.configFile)), { code: 64, lines: [], stderr: '' }, 'the shipped build does not know the option');
+      assert.deepEqual(run(brokerExe, ['derive-service-sid', 'AlberaHostBroker']), { code: 64, lines: [], stderr: '' });
     });
   });
 
@@ -181,7 +227,7 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
   describe('serve loop (seam build, stdin EOF = SERVICE_CONTROL_STOP)', () => {
     function startLoop(name, { hold, overrides } = {}) {
       const s = scenario(name, overrides);
-      const child = track(startProcess(loopExe, ['serve-loop', s.configFile, ...(hold ? [String(hold)] : [])], { stdin: true }));
+      const child = track(startProcess(loopExe, standInService('serve-loop', s.configFile, ...(hold ? [String(hold)] : [])), { stdin: true }));
       return { child, config: JSON.parse(readFileSync(s.configFile, 'utf8')), ...s };
     }
     async function stop(child) {
@@ -266,7 +312,7 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
         assert.equal(check(configFile).code, 0);
         assert.equal(attempt(() => renameSync(databaseDir, moved)), 'succeeded', 'control: nothing holds the folder before the service runs');
         renameSync(moved, databaseDir);
-        const child = track(startProcess(loopExe, ['serve-loop', configFile], { stdin: true }));
+        const child = track(startProcess(loopExe, standInService('serve-loop', configFile), { stdin: true }));
         await waitForLine(child, 'BROKER_READY');
         assert.ok(SHARING_ERRORS.includes(attempt(() => renameSync(databaseDir, moved))), 'rename of the pinned folder');
         assert.equal(attempt(() => rmSync(databaseDir, { recursive: true })) === 'succeeded', false, 'delete of the pinned folder');

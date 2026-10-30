@@ -567,6 +567,7 @@ internal static partial class Harness
         ConfigChecks();
         SignerChecks();
         KeyGuardChecks();
+        PathGuardChecks();
         Console.WriteLine(JsonSerializer.Serialize(new { checks = Results, digestProbes = DigestProbes() }));
         return 0;
     }

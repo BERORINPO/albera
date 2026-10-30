@@ -19,6 +19,11 @@
          the shipped build never does, so the seam does not exist in the production binary. -->
     <DefineConstants>$(DefineConstants);ALBERA_BROKER_TEST_FAULTS</DefineConstants>
   </PropertyGroup>
+  <!-- The symbol can also arrive from outside (an environment variable named DefineConstants, a Directory.Build.props, -p:DefineConstants=...). Pinning the switch
+       false does not stop that, so a build without the switch that still carries the symbol fails instead of shipping the seam (which includes the stand-in for the service SID). -->
+  <Target Name="RefuseInheritedTestSymbol" BeforeTargets="BeforeCompile;CoreCompile" Condition="'$(AlberaBrokerTestFaults)' != 'true' and $(DefineConstants.Contains('ALBERA_BROKER_TEST_FAULTS'))">
+    <Error Code="ALBERA_SEAM" Text="ALBERA_BROKER_TEST_FAULTS is defined but AlberaBrokerTestFaults is not true: refusing to build the test seam into a non-test build." />
+  </Target>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
   </ItemGroup>

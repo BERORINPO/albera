@@ -12,6 +12,8 @@ import { getUnavailableReason, repositoryRoot } from './helpers/windows-broker-h
 const projects = [
   { name: 'approver', csproj: ['src', 'runtime', 'windows-approver', 'Albera.Approver.csproj'], switchName: 'AlberaApproverTestFaults', symbol: 'ALBERA_APPROVER_TEST_FAULTS' },
   { name: 'Approval Authority', csproj: ['src', 'runtime', 'windows-approval-authority', 'Albera.ApprovalAuthority.csproj'], switchName: 'AlberaAuthorityTestFaults', symbol: 'ALBERA_AUTHORITY_TEST_FAULTS' },
+  // The Broker's seam (serve-fault, serve-loop and the stand-in service SID of its path guard) sits in its ordinary files, not in a TestSeam.cs that is compiled out.
+  { name: 'Broker', csproj: ['src', 'runtime', 'windows-broker', 'Albera.WindowsBroker.csproj'], switchName: 'AlberaBrokerTestFaults', symbol: 'ALBERA_BROKER_TEST_FAULTS', hasSeamFile: false },
 ];
 
 for (const project of projects) {
@@ -23,7 +25,7 @@ for (const project of projects) {
     assert.equal(defines.length, 1, 'one place defines the symbol');
     assert.equal(defines[0][1], `$(DefineConstants);${project.symbol}`);
     assert.ok(text.indexOf(defines[0][0]) > text.indexOf(`<PropertyGroup Condition="'$(${project.switchName})' == 'true'">`), 'inside the switch condition');
-    assert.match(text, new RegExp(`<Compile Remove="TestSeam\\.cs" Condition="'\\$\\(${project.switchName}\\)' != 'true'" />`, 'u'));
+    if (project.hasSeamFile !== false) assert.match(text, new RegExp(`<Compile Remove="TestSeam\\.cs" Condition="'\\$\\(${project.switchName}\\)' != 'true'" />`, 'u'));
     assert.match(text, new RegExp(`<Target Name="RefuseInheritedTestSymbol" BeforeTargets="BeforeCompile;CoreCompile" Condition="'\\$\\(${project.switchName}\\)' != 'true' and \\$\\(DefineConstants\\.Contains\\('${project.symbol}'\\)\\)">\\s*<Error `, 'u'));
   });
 

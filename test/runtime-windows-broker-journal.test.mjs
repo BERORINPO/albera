@@ -6,7 +6,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import {
   brokerSession, buildBroker, buildBrokerWithTestSeams, buildPipeClient, createTestAuthority, currentUserSid, getUnavailableReason, inspectClaimCount,
-  makeTrustedTempDirectory, startBroker, startProcess, stableUuid, waitForExit, waitForLine, GENERATION, LEASE_CONFIG,
+  makeTrustedTempDirectory, standInService, startBroker, startProcess, stableUuid, waitForExit, waitForLine, GENERATION, LEASE_CONFIG,
 } from './helpers/windows-broker-harness.mjs';
 
 // Windows-only, same-user, unprivileged (issue #84, decision-log rows 2026-10-30+broker-journal-parity and 2026-10-30+broker-receipt-v2). The journal of the
@@ -61,7 +61,7 @@ describe('Broker journal: schema version and migration, exact duplicate, inspect
     writeFileSync(configFile, JSON.stringify(config));
     return { ...config, configFile };
   }
-  const startLoop = (s, hold) => track(startProcess(loopExe, ['serve-loop', s.configFile, ...(hold ? [String(hold)] : [])], { stdin: true }));
+  const startLoop = (s, hold) => track(startProcess(loopExe, standInService('serve-loop', s.configFile, ...(hold ? [String(hold)] : [])), { stdin: true }));
   async function stop(child) { child.stdin.end(); return waitForExit(child); }
 
   /** Create a journal with `statements` (run once, in the default rollback-journal mode), then close it. */

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import {
   brokerSession, buildBroker, buildBrokerWithTestSeams, buildPipeClient, createTestAuthority, currentUserSid, getUnavailableReason, inspectClaimCount, makeTrustedTempDirectory,
-  startProcess, waitForExit, waitForLine, GENERATION, LEASE_CONFIG,
+  standInService, startProcess, waitForExit, waitForLine, GENERATION, LEASE_CONFIG,
 } from './helpers/windows-broker-harness.mjs';
 
 // Windows-only, same-user, unprivileged. The Broker's `service` entry needs the SCM, which these tests never touch: no service is registered,
@@ -61,7 +61,9 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
     const result = spawnSync(exe, args, { encoding: 'utf8', timeout: 20_000, windowsHide: true });
     return { code: result.status, lines: result.stdout.split(/\r?\n/u).filter(Boolean), stderr: result.stderr };
   }
-  const check = (file) => run(brokerExe, ['service-check', file]);
+  // The shipped rule trusts the service's own per-service SID, which a host test cannot have in its token, so the validation tests run the test-faults build told to stand in
+  // the signed-in user for it (`--trust-sid`). The same file under the shipped rule is refused (see 'the shipped build ...' in the hardening test).
+  const check = (file) => run(loopExe, standInService('service-check', file));
   /** 'ENOENT' when no pipe has that name, 'connected' when one does. */
   const connectResult = (pipe) => new Promise((resolve) => {
     const socket = net.createConnection(pipePath(pipe));
@@ -183,13 +185,14 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
       assert.equal(run(brokerExe, ['service', 'a', 'b']).code, EXIT_USAGE);
       const out = run(brokerExe, ['serve-loop', writeConfig('prod-seam')]);
       assert.deepEqual([out.code, out.lines], [EXIT_USAGE, []]);
+      assert.equal(run(brokerExe, standInService('service-check', writeConfig('prod-trust-sid'))).code, EXIT_USAGE, '--trust-sid (the test stand-in for the service SID) is not in the shipped build either');
     });
   });
 
   describe('the service serve loop (seam build, stdin EOF = SERVICE_CONTROL_STOP)', () => {
     function startLoop(name, overrides) {
       const config = validConfig(name, overrides);
-      const child = track(startProcess(loopExe, ['serve-loop', writeRaw(name, JSON.stringify(config))], { stdin: true }));
+      const child = track(startProcess(loopExe, standInService('serve-loop', writeRaw(name, JSON.stringify(config))), { stdin: true }));
       return { child, config };
     }
     /** Ends stdin (the STOP request) and returns how long the process took to exit. */
@@ -286,7 +289,7 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
 
     it('does not start on an invalid config: exit 73, no pipe, no journal', async () => {
       const config = validConfig('loop-bad', { controlPlaneSid: 'S-1-1-0' });
-      const child = track(startProcess(loopExe, ['serve-loop', writeRaw('loop-bad', JSON.stringify(config))], { stdin: true }));
+      const child = track(startProcess(loopExe, standInService('serve-loop', writeRaw('loop-bad', JSON.stringify(config))), { stdin: true }));
       assert.equal(await waitForExit(child), EXIT_CONFIG_INVALID);
       assert.deepEqual(child.lines, []);
       assert.equal(existsSync(config.database), false);

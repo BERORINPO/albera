@@ -3,11 +3,20 @@ namespace Albera.ApprovalAuthority;
 // Entry points (ADR-002 "Receipt v2", Proposed / NOT VERIFIED):
 //   albera-approval-authority.exe service <config.json>        the Windows service process (ServiceHost.cs); started by the SCM only
 //   albera-approval-authority.exe service-check <config.json>  validate the config exactly as the service would, print one fixed line, change nothing
-// The test-faults build (-p:AlberaAuthorityTestFaults=true, never the published one) adds serve-loop and request (TestSeam.cs). Anything else exits 64.
+// The test-faults build (-p:AlberaAuthorityTestFaults=true, never the published one) adds serve-loop and request (TestSeam.cs), and a leading
+// `--trust-sid <sid>` that names the SID ServicePathGuard trusts as "the service" (a host test has no per-service SID in its token). Anything else exits 64.
 internal static partial class Program
 {
     private static async Task<int> Main(string[] args)
     {
+#if ALBERA_AUTHORITY_TEST_FAULTS
+        if (args.Length >= 2 && args[0] == "--trust-sid")
+        {
+            try { ServicePathGuard.ServiceSidForTest = new System.Security.Principal.SecurityIdentifier(args[1]); }
+            catch (ArgumentException) { return ExitCodes.BadUsage; }
+            args = args[2..];
+        }
+#endif
         if (args.Length == 2 && args[0] == "service") return ServiceHost.Run(args[1]);
         if (args.Length == 2 && args[0] == "service-check") return CheckServiceConfig(args[1]);
 #if ALBERA_AUTHORITY_TEST_FAULTS
