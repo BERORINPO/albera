@@ -35,6 +35,9 @@ const PROVIDER_ENV = Object.freeze({
   codex: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'CODEX_HOME'],
   opencode: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_ORG_ID', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'],
 });
+// Variables that decide where the provider CLI looks for its configuration and credentials. They are
+// passed through (BASE_ENV) and so must also be named in the approval summary, never with their values.
+const CONFIG_LOCATION_ENV = Object.freeze(['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']);
 const PROVIDER_ENDPOINT_ENV = Object.freeze({
   claude: ['ANTHROPIC_BASE_URL'],
   codex: ['OPENAI_BASE_URL'],
@@ -478,7 +481,7 @@ function environmentSummary(provider, environment) {
     const key = Object.keys(environment).find((candidate) => candidate.toUpperCase() === name.toUpperCase());
     return key === undefined ? undefined : environment[key];
   };
-  const providerVariables = PROVIDER_ENV[provider]
+  const providerVariables = [...new Set([...PROVIDER_ENV[provider], ...CONFIG_LOCATION_ENV])]
     .filter((name) => findValue(name) !== undefined)
     .sort();
   const endpointOverrides = PROVIDER_ENDPOINT_ENV[provider].flatMap((name) => {

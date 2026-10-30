@@ -65,7 +65,7 @@ test('AgentHarnessAdapter is an explicit seam and Claude adapter only returns fi
 test('read-only provider profile generates fixed Claude argv and refuses unverified providers', async () => {
   assert.deepEqual(buildProviderLaunch('claude', 'fixture prompt'), {
     profile: RUNTIME_PROFILES.readOnly,
-    args: ['--restricted', '--safe-mode', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan', '--print', '--max-turns', '1', '--no-session-persistence', 'ALBERA task:\nfixture prompt'],
+    args: ['--restricted', '--safe-mode', '--strict-mcp-config', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan', '--print', '--max-turns', '1', '--no-session-persistence', 'ALBERA task:\nfixture prompt'],
   });
   assert.equal(Object.isFrozen(buildProviderLaunch('claude', 'fixture prompt')), true);
   assert.equal(Object.isFrozen(buildProviderLaunch('claude', 'fixture prompt').args), true);
@@ -81,7 +81,7 @@ test('read-only provider profile generates fixed Claude argv and refuses unverif
 test('streaming read-only profile fixes stream-json transport and keeps prompts out of argv', () => {
   const launch = buildProviderLaunch('claude', 'initial secret', RUNTIME_PROFILES.readOnlyStreaming);
   assert.deepEqual(launch.args, [
-    '--restricted', '--safe-mode', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan', '--permission-prompts', 'none',
+    '--restricted', '--safe-mode', '--strict-mcp-config', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan', '--permission-prompts', 'none',
     '--print', '--max-turns', '1', '--no-session-persistence', '--input-format', 'stream-json', '--output-format', 'stream-json',
   ]);
   assert.equal(launch.inputMode, 'claude-stream-json');
@@ -205,7 +205,7 @@ test('host authorization receives the exact canonical executable, cwd and argv b
     action: 'start', provider: 'claude', profile: 'read-only', executable: await realpath(f.executable), cwd: await realpath(f.cwd), args,
     cwdIdentity: seen[0].cwdIdentity,
     executableSha256: executableIdentity.sha256,
-    minimumCliVersion: '2.1.248', versionCheck: true,
+    minimumCliVersion: '2.1.310', versionCheck: true,
     environment: { providerVariables: [], endpointOverrides: [] },
     platform: process.platform, maxDurationMs: 15 * 60 * 1000, maxActive: 4,
   });
@@ -220,13 +220,13 @@ test('Gateway checks the approved CLI version before main spawn and fails closed
   let spawned = false;
   const f = await fixture({
     authorize: async (request) => { calls.push(['authorize', request.minimumCliVersion, request.versionCheck]); return true; },
-    probeVersionImpl: async (executable, options) => { calls.push(['probe', executable, options.platform]); return '2.1.247'; },
+    probeVersionImpl: async (executable, options) => { calls.push(['probe', executable, options.platform]); return '2.1.309'; },
     spawnImpl: () => { spawned = true; return new FakeChild(); },
   });
   t.after(f.dispose);
   await assert.rejects(f.gateway.start({ provider: 'claude', cwd: f.cwd, prompt: 'synthetic' }), (error) => error.code === 'cli_version_unavailable');
   assert.deepEqual(calls, [
-    ['authorize', '2.1.248', true],
+    ['authorize', '2.1.310', true],
     ['probe', await realpath(f.executable), process.platform],
   ]);
   assert.equal(spawned, false);
