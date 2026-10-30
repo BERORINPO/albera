@@ -1,0 +1,187 @@
+{
+  "schema": "albera-issue-23-service-lab/1",
+  "date": "2026-10-30",
+  "issue": "#84",
+  "runStatus": "EXECUTED",
+  "reason": "Journal-parity run (PR #85) inside the disposable, network-disconnected VM albera-clone-08-lab84 (Windows Server 2025 from the golden image, guest clock synced), over PowerShell Direct, within the owner's approval to run the Broker lab only inside a disposable VM. Exact duplicates now return the recorded outcome. Guest rollback clean; the VM was deleted afterwards. Machine-specific S-1-5-21 SIDs are redacted.",
+  "checks": [
+    {
+      "id": "setup_services",
+      "title": "Own-process services under virtual accounts with restricted service SID",
+      "status": "PASS",
+      "evidence": [
+        "AlberaHostBroker StartName=NT SERVICE\\AlberaHostBroker ServiceType=Own Process sidtype: [SC] QueryServiceConfig2 SUCCESS SERVICE_NAME: AlberaHostBroker SERVICE_SID_TYPE: RESTRICTED",
+        "AlberaControlPlane StartName=NT SERVICE\\AlberaControlPlane ServiceType=Own Process sidtype: [SC] QueryServiceConfig2 SUCCESS SERVICE_NAME: AlberaControlPlane SERVICE_SID_TYPE: RESTRICTED",
+        "AlberaLabOther StartName=NT SERVICE\\AlberaLabOther ServiceType=Own Process sidtype: [SC] QueryServiceConfig2 SUCCESS SERVICE_NAME: AlberaLabOther SERVICE_SID_TYPE: RESTRICTED",
+        "Broker service SDDL: D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;LC;;;S-1-5-80-1806352987-2732975990-2758030030-4062901166-3669514184)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)"
+      ]
+    },
+    {
+      "id": "run1_broker_ready",
+      "title": "Real Broker service starts, creates its pipe and only then reports RUNNING",
+      "status": "PASS",
+      "evidence": [
+        "service pid=1672 state=Running",
+        "binPath: C:\\albera-lab23\\bin\\broker\\albera-windows-broker.exe service C:\\albera-lab23\\config\\AlberaHostBroker.service.json"
+      ]
+    },
+    {
+      "id": "c_other_principals_denied",
+      "title": "Other principals cannot use the Broker pipe (DACL) or the helper in service mode",
+      "status": "PASS",
+      "evidence": [
+        "interactive Administrator open 0x00120083: denied",
+        "third virtual account open 0x00120083: denied",
+        "helper as Administrator (service mode): {\"ok\":false,\"code\":\"access_denied\"}",
+        "helper as third account (service mode): {\"ok\":false,\"code\":\"server_identity_unavailable\"}"
+      ]
+    },
+    {
+      "id": "a_pipe_acl",
+      "title": "Live Broker pipe: owner = Broker SID, DACL = Broker + one Control Plane ACE 0x00120083, session 0",
+      "status": "PASS",
+      "evidence": [
+        "open as Control Plane: opened",
+        "owner=S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499 (Broker SID S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499)",
+        "sddl=O:S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499D:(A;;0x120083;;;S-1-5-80-1806352987-2732975990-2758030030-4062901166-3669514184)(A;;0x1f019f;;;S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499)",
+        "serverPid=1672 servicePid=1672 serverSession=0"
+      ]
+    },
+    {
+      "id": "a_effective_access",
+      "title": "Control Plane account: 0x00120083 may open, GENERIC_WRITE and FILE_APPEND_DATA may not (same running service)",
+      "status": "PASS",
+      "evidence": [
+        "GENERIC_WRITE (0x40000000) as CP: denied",
+        "FILE_APPEND_DATA (0x4) as CP: opened",
+        "FILE_APPEND_DATA (0x4) as third account (no ACE): denied",
+        "READ_CONTROL|FILE_APPEND_DATA as CP: opened sddl=O:S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499D:(A;;0x120083;;;S-1-5-80-1806352987-2732975990-2758030030-4062901166-3669514184)(A;;0x1f019f;;;S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499)"
+      ]
+    },
+    {
+      "id": "a_token",
+      "title": "Service process tokens: virtual-account user, restricting SIDs, no admin group, session 0, only SeChangeNotifyPrivilege",
+      "status": "PASS",
+      "evidence": [
+        "Broker user=NT SERVICE\\AlberaHostBroker session=0 integrity=high hasRestrictions=True elevated=False",
+        "Broker restrictedSids=NT SERVICE\\AlberaHostBroker, Everyone, S-1-5-5-0-949022, NT AUTHORITY\\WRITE RESTRICTED",
+        "Broker enabledGroups=Everyone, BUILTIN\\Users, NT AUTHORITY\\SERVICE, CONSOLE LOGON, NT AUTHORITY\\Authenticated Users, NT AUTHORITY\\This Organization, S-1-5-5-0-949022, LOCAL, NT AUTHORITY\\WRITE RESTRICTED, NT SERVICE\\ALL SERVICES",
+        "Broker enabledPrivileges=SeChangeNotifyPrivilege",
+        "Broker allPrivileges=SeChangeNotifyPrivilege (C1: expected exactly SeChangeNotifyPrivilege)",
+        "Broker sc qprivs: [SC] QueryServiceConfig2 SUCCESS  SERVICE_NAME: AlberaHostBroker         PRIVILEGES       : SeChangeNotifyPrivilege",
+        "ControlPlane user=NT SERVICE\\AlberaControlPlane session=0 integrity=high hasRestrictions=True elevated=False",
+        "ControlPlane restrictedSids=NT SERVICE\\AlberaControlPlane, Everyone, S-1-5-5-0-1361560, NT AUTHORITY\\WRITE RESTRICTED",
+        "ControlPlane enabledGroups=Everyone, BUILTIN\\Users, NT AUTHORITY\\SERVICE, CONSOLE LOGON, NT AUTHORITY\\Authenticated Users, NT AUTHORITY\\This Organization, S-1-5-5-0-1361560, LOCAL, NT AUTHORITY\\WRITE RESTRICTED, NT SERVICE\\ALL SERVICES",
+        "ControlPlane enabledPrivileges=SeChangeNotifyPrivilege",
+        "ControlPlane allPrivileges=SeChangeNotifyPrivilege (C1: expected exactly SeChangeNotifyPrivilege)",
+        "ControlPlane sc qprivs: [SC] QueryServiceConfig2 SUCCESS  SERVICE_NAME: AlberaControlPlane         PRIVILEGES       : SeChangeNotifyPrivilege"
+      ]
+    },
+    {
+      "id": "b_positive",
+      "title": "Control Plane helper in service mode: ok, exactly one journal claim",
+      "status": "PASS",
+      "evidence": [
+        "helper result: {\"ok\":true,\"state\":\"UNKNOWN\",\"action\":\"synthetic.noop\"}",
+        "journal claims=1",
+        "service still RUNNING after the request: True"
+      ]
+    },
+    {
+      "id": "e_scm_query_status",
+      "title": "SCM PID lookup needs only SC_MANAGER_CONNECT + SERVICE_QUERY_STATUS, and nothing more is granted",
+      "status": "PASS",
+      "evidence": [
+        "Control Plane: connect=opened state=RUNNING pid=3148 (service pid 3148)",
+        "Control Plane OpenService masks: {\"SERVICE_QUERY_STATUS\":\"opened\",\"SERVICE_QUERY_CONFIG\":\"denied\",\"SERVICE_INTERROGATE\":\"denied\",\"SERVICE_START\":\"denied\",\"SERVICE_STOP\":\"denied\",\"SERVICE_PAUSE_CONTINUE\":\"denied\",\"SERVICE_CHANGE_CONFIG\":\"denied\",\"WRITE_DAC\":\"denied\",\"DELETE\":\"denied\",\"SERVICE_ALL_ACCESS\":\"denied\"}",
+        "third account QUERY_STATUS: denied (the helper then fails closed with server_identity_unavailable)"
+      ]
+    },
+    {
+      "id": "e_openprocess_image_hash",
+      "title": "Cross-account OpenProcess for the image hash: record allowed or denied, and that the helper follows it",
+      "status": "PASS",
+      "evidence": [
+        "Control Plane OpenProcess masks on the Broker service process: {\"PROCESS_QUERY_LIMITED_INFORMATION\":\"denied\",\"PROCESS_QUERY_INFORMATION\":\"denied\",\"PROCESS_VM_READ\":\"denied\",\"PROCESS_TERMINATE\":\"denied\",\"PROCESS_ALL_ACCESS\":\"denied\"}",
+        "image sha256 readable by Control Plane: no",
+        "helper with imageSha256: {\"ok\":false,\"code\":\"server_identity_unavailable\"}"
+      ]
+    },
+    {
+      "id": "e_session0",
+      "title": "Broker pipe server runs in session 0; an interactive-session lookalike cannot be built to reach that check",
+      "status": "BLOCKED",
+      "evidence": [
+        "Broker token session and pipe server session are recorded in a_token / a_pipe_acl (both expected 0). A lookalike must first match the owner SID and the SCM PID, which the owner check already refuses (d2); the session-0 branch is reachable only with a forged owner and PID, so no honest negative test exists.",
+        "PowerShell Direct session id of the Administrator probes: 0"
+      ]
+    },
+    {
+      "id": "f_restart_replay",
+      "title": "Restarted Broker service: the same receipt returns the recorded outcome (UNKNOWN), still one journal claim",
+      "status": "PASS",
+      "evidence": [
+        "helper result: {\"ok\":true,\"state\":\"UNKNOWN\",\"action\":\"synthetic.noop\"} (ok = the stored outcome of the exact duplicate, no second claim)",
+        "journal claims=1",
+        "service pid run 2=808 run 4=4012"
+      ]
+    },
+    {
+      "id": "g_two_requests_one_service_then_stop",
+      "title": "Real service host: Control Plane helper (service mode) ok against two consecutive requests to the same RUNNING service (PID unchanged); SERVICE_CONTROL_STOP ends it cleanly",
+      "status": "PASS",
+      "evidence": [
+        "request 1: {\"ok\":true,\"state\":\"UNKNOWN\",\"action\":\"synthetic.noop\"}",
+        "request 2: {\"ok\":true,\"state\":\"UNKNOWN\",\"action\":\"synthetic.noop\"}",
+        "request 3 (replay of 1): {\"ok\":true,\"state\":\"UNKNOWN\",\"action\":\"synthetic.noop\"}",
+        "service pid after each request: 1364, 1364, 1364 (started as 1364); state Running",
+        "journal claims=2",
+        "after STOP: state=Stopped win32=0 specific=0 in 214 ms; process gone; pipe open now: error_2"
+      ]
+    },
+    {
+      "id": "g_fatal_exit_codes",
+      "title": "Real service host: a squatted pipe name and a rejected config end the service with 1066 and the fixed service-specific exit code (70, 73)",
+      "status": "PASS",
+      "evidence": [
+        "pipe name already held by an Administrator process: win32=1066 specific=70 (expected 1066 / 70)",
+        "config with Control Plane SID S-1-1-0: win32=1066 specific=73 (expected 1066 / 73)"
+      ]
+    },
+    {
+      "id": "g_untrusted_db_folder",
+      "title": "Real service host refuses to start when ordinary users can write the journal folder (1066 / 73)",
+      "status": "PASS",
+      "evidence": [
+        "journal folder writable by BUILTIN\\Users: win32=1066 specific=73 (expected 1066 / 73)"
+      ]
+    },
+    {
+      "id": "d1_squatter_broker_stopped",
+      "title": "Broker service stopped, administrator squats the pipe name: helper refuses before sending",
+      "status": "PASS",
+      "evidence": [
+        "helper: {\"ok\":false,\"code\":\"server_identity_unavailable\"} (the plan expected server_identity_mismatch; with the service not RUNNING the SCM lookup fails first, so the code is server_identity_unavailable, still pre-send)",
+        "squatter: {\"probe\":\"squat\",\"state\":\"ready\",\"owner\":\"S-1-5-32-544\",\"pid\":5116}"
+      ]
+    },
+    {
+      "id": "d2_squatter_administrator",
+      "title": "Service RUNNING, administrator squats the name: server_identity_mismatch, squatter receives 0 bytes",
+      "status": "PASS",
+      "evidence": [
+        "helper: {\"ok\":false,\"code\":\"server_identity_mismatch\"}",
+        "squatter (interactive Administrator): {\"probe\":\"squat\",\"state\":\"done\",\"connected\":true,\"bytesReceived\":0}"
+      ]
+    },
+    {
+      "id": "d3_squatter_service_account",
+      "title": "Service RUNNING, a third service account squats the name: server_identity_mismatch, squatter receives 0 bytes",
+      "status": "PASS",
+      "evidence": [
+        "helper: {\"ok\":false,\"code\":\"server_identity_mismatch\"}",
+        "squatter (third virtual account): {\"probe\":\"squat\",\"state\":\"done\",\"connected\":true,\"bytesReceived\":0}"
+      ]
+    }
+  ]
+}
