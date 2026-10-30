@@ -159,5 +159,5 @@ export function sdkVersion(context) {
 /** The two comparison lines: SDK version and SHA-256 of the main output (relative to `root`). */
 export function printBuildIdentity({ sdk, root, file, sha256, log = console.log }) {
   log(`dotnet sdk ${sdk}`);
-  log(`sha256 ${sha256} ${path.relative(root, file).replaceAll('\\', '/')}`);
+  log(`sha256 ${sha256} ${path.win32.relative(root, file).replaceAll('\\', '/')}`);
 }
