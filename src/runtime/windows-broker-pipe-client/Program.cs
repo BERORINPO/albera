@@ -9,8 +9,9 @@ using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
 
 // Trusted pipe client for the Host Broker (ADR-002, Proposed / NOT VERIFIED). Input: ONE JSON line on stdin
-//   {pipeName, receipt, signature, timeoutMs, expect:{ownerSid, pid | serviceName, imageSha256?}}
-// Output: ONE JSON line, {ok:true,state,action} or {ok:false,code}. Exit: 0 = the line is the result, 64 = bad input, 70 = internal error (line still written).
+//   {pipeName, timeoutMs, expect:{ownerSid, pid | serviceName, imageSha256?}} plus exactly one request: {receipt, signature} | {fence:computerId} | {inspect:operationId}
+// Output: ONE JSON line, {ok:true,state,action[,replayed]} | {ok:true,brokerEpoch,leaseGeneration,brokerChallenge} | {ok:false,code}.
+// Exit: 0 = the line is the result, 64 = bad input, 70 = internal error (line still written).
 // Order: open with SQOS identification -> verify the pipe server on the CONNECTED handle -> only then write the 2 KiB frame.
 // Pre-send codes (receipt never left, safe to retry): server_identity_mismatch, server_identity_unavailable, broker_unavailable, access_denied.
 // Post-send codes (outcome unknown): timeout, transport_error, invalid_response, response_too_large.
@@ -71,7 +72,7 @@ internal static class Program
         Finish(Relay(reply), ExitOk);
     }
 
-    // Only the Broker's two reply shapes pass; any other server text becomes invalid_response, so a server can never inject a pre-send code.
+    // Only the Broker's three reply shapes pass (denied, claim / inspect, fence); any other server text becomes invalid_response, so a server can never inject a pre-send code.
     private static string Relay(byte[] reply)
     {
         try
@@ -80,13 +81,17 @@ internal static class Program
             JsonElement root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("ok", out JsonElement ok)) return Failure("invalid_response");
             if (ok.ValueKind == JsonValueKind.False && root.TryGetProperty("code", out JsonElement code) && code.ValueKind == JsonValueKind.String && code.GetString() == "denied") return Failure("denied");
-            if (ok.ValueKind == JsonValueKind.True && root.TryGetProperty("state", out JsonElement state) && state.ValueKind == JsonValueKind.String &&
-                root.TryGetProperty("action", out JsonElement action) && action.ValueKind == JsonValueKind.String)
-                return $"{{\"ok\":true,\"state\":{JsonSerializer.Serialize(state.GetString())},\"action\":{JsonSerializer.Serialize(action.GetString())}}}";
+            if (ok.ValueKind != JsonValueKind.True) return Failure("invalid_response");
+            if (Text(root, "state") is { } state && Text(root, "action") is { } action)
+                return $"{{\"ok\":true,\"state\":{JsonSerializer.Serialize(state)},\"action\":{JsonSerializer.Serialize(action)}{(root.TryGetProperty("replayed", out JsonElement replayed) && replayed.ValueKind == JsonValueKind.True ? ",\"replayed\":true" : "")}}}";
+            if (Number(root, "brokerEpoch") is { } epoch && Number(root, "leaseGeneration") is { } generation && Text(root, "brokerChallenge") is { } challenge)
+                return $"{{\"ok\":true,\"brokerEpoch\":{epoch},\"leaseGeneration\":{generation},\"brokerChallenge\":{JsonSerializer.Serialize(challenge)}}}";
         }
         catch (JsonException) { }
         return Failure("invalid_response");
     }
+    private static string? Text(JsonElement root, string name) => root.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    private static long? Number(JsonElement root, string name) => root.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out long n) ? n : null;
 
     private static Input ReadInput()
     {
@@ -99,11 +104,11 @@ internal static class Program
             if (used > MaxInputBytes) throw new InvalidDataException();
             using JsonDocument document = JsonDocument.Parse(buffer.AsMemory(0, used), new JsonDocumentOptions { MaxDepth = 4 });
             JsonElement root = document.RootElement, expect = root.GetProperty("expect");
-            RequireKeys(root, "pipeName", "receipt", "signature", "timeoutMs", "expect");
+            RequireKeys(root, "pipeName", "receipt", "signature", "fence", "inspect", "timeoutMs", "expect");
             RequireKeys(expect, "ownerSid", "pid", "serviceName", "imageSha256");
-            string pipeName = root.GetProperty("pipeName").GetString() ?? "", receipt = root.GetProperty("receipt").GetString() ?? "", signature = root.GetProperty("signature").GetString() ?? "";
-            if (!IsToken(pipeName, 128, "_-", false) || !IsToken(receipt, 2048, "+/=", true) || !IsToken(signature, 2048, "+/=", true)) throw new InvalidDataException();
-            string requestBody = $"{{\"receipt\":\"{receipt}\",\"signature\":\"{signature}\"}}"; // base64 needs no JSON escaping; same bytes as the Node client's body
+            string pipeName = root.GetProperty("pipeName").GetString() ?? "";
+            if (!IsToken(pipeName, 128, "_-", false)) throw new InvalidDataException();
+            string requestBody = RequestBody(root); // the tokens it embeds need no JSON escaping; same bytes as the Node client's body
             int timeoutMs = root.GetProperty("timeoutMs").GetInt32();
             string? ownerSid = Optional(expect, "ownerSid"), serviceName = Optional(expect, "serviceName"), imageSha256 = Optional(expect, "imageSha256");
             uint? pid = expect.TryGetProperty("pid", out JsonElement p) ? p.GetUInt32() : null;
@@ -118,6 +123,20 @@ internal static class Program
             throw; // unreachable
         }
     }
+
+    // Exactly one request: a claim {receipt, signature} (base64), {fence: computerId} or {inspect: operationId} (contract ids).
+    private static string RequestBody(JsonElement root)
+    {
+        bool hasReceipt = root.TryGetProperty("receipt", out JsonElement receipt), hasSignature = root.TryGetProperty("signature", out JsonElement signature);
+        bool hasFence = root.TryGetProperty("fence", out JsonElement fence), hasInspect = root.TryGetProperty("inspect", out JsonElement inspect);
+        if (hasReceipt != hasSignature || (hasReceipt ? 1 : 0) + (hasFence ? 1 : 0) + (hasInspect ? 1 : 0) != 1) throw new InvalidDataException();
+        if (hasFence) return $"{{\"fence\":{{\"computerId\":\"{Id(fence)}\"}}}}";
+        if (hasInspect) return $"{{\"inspect\":{{\"operationId\":\"{Id(inspect)}\"}}}}";
+        string r = receipt.GetString() ?? "", s = signature.GetString() ?? "";
+        return IsToken(r, 2048, "+/=", true) && IsToken(s, 2048, "+/=", true) ? $"{{\"receipt\":\"{r}\",\"signature\":\"{s}\"}}" : throw new InvalidDataException();
+    }
+    private static string Id(JsonElement element) =>
+        element.GetString() is { Length: > 0 } id && char.IsAsciiLetterOrDigit(id[0]) && IsToken(id, 64, "._:-", false) ? id : throw new InvalidDataException();
 
     private static void RequireKeys(JsonElement element, params string[] allowed)
     {

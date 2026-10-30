@@ -22,4 +22,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The receipt v2 contract (ADR-002 "Receipt v2"): the C# twin is source-included, never copied, so the Broker and the Approval Authority validate with the same code. -->
+    <Compile Include="../broker-contract/*.cs" Link="BrokerContract/%(Filename)%(Extension)" />
+  </ItemGroup>
 </Project>

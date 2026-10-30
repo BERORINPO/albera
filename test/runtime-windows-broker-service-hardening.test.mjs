@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { sendBrokerRequest } from '../src/runtime/windows-broker-client.mjs';
 import {
-  buildBroker, buildBrokerWithTestSeams, buildPipeClient, currentUserSid, getUnavailableReason, icaclsOn, inspectClaimCount, makeReceipt,
+  brokerSession, buildBroker, buildBrokerWithTestSeams, buildPipeClient, createTestAuthority, currentUserSid, getUnavailableReason, icaclsOn, inspectClaimCount,
   makeTrustedTempDirectory, startProcess, waitForExit, waitForLine, GENERATION,
 } from './helpers/windows-broker-harness.mjs';
 
@@ -29,7 +28,8 @@ const TRUSTED_INSTALLER = '*S-1-5-80-956008885-3418522649-1831038044-1853292631-
 const VIRTUAL_SERVICE_SID = 'S-1-5-80-1111111111-2222222222-3333333333-1444444444-2555555555';
 
 describe('Broker service host hardening', { skip: getUnavailableReason() }, () => {
-  let root, brokerExe, loopExe, helper, sid, keys;
+  let root, brokerExe, loopExe, helper, sid;
+  const authority = createTestAuthority();
   const running = new Set();
   before(async () => {
     root = makeTrustedTempDirectory('albera-service-hardening-'); // long form, DACL = this user + SYSTEM only (the trusted baseline)
@@ -37,8 +37,6 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
     loopExe = buildBrokerWithTestSeams(path.join(root, 'broker-seams'));
     helper = await buildPipeClient(path.join(root, 'helper'));
     sid = currentUserSid();
-    const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
-    keys = { privateKey, publicKeyB64: publicKey.export({ type: 'spki', format: 'der' }).toString('base64') };
   });
   after(async () => {
     for (const child of running) { child.kill(); await waitForExit(child); }
@@ -48,18 +46,9 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
   const track = (child) => { running.add(child); child.once('close', () => running.delete(child)); return child; };
   const unique = (prefix) => `${prefix}_${randomBytes(6).toString('hex')}`;
   const pipePath = (pipe) => `\\\\.\\pipe\\${pipe}`;
-  const signedWith = (name, overrides) => {
-    const receipt = makeReceipt(`${name}-op`, `${name}-approval`, `${name}-receipt`, overrides);
-    return { receipt, signature: sign('sha256', Buffer.from(receipt, 'base64'), { key: keys.privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64') };
-  };
-  /** A client that races the moment between two requests gets a pre-send code (the instance is busy): nothing was sent, so retrying is safe. */
-  async function send(pipe, request, brokerPid) {
-    for (let attempt = 0; ; attempt += 1) {
-      const result = await sendBrokerRequest({ pipeName: pipe, receipt: request.receipt, signature: request.signature, expect: { ownerSid: sid, pid: brokerPid }, helperPath: helper, timeoutMs: 10_000 });
-      if (result.code !== 'broker_unavailable' || attempt >= 40) return result;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
+  /** fence -> sign with the pinned test authority -> send, through the real pipe client helper (it retries the pre-send `broker_unavailable` of the moment between two requests). */
+  const claim = async (config, child, name, overrides) =>
+    (await brokerSession({ helper, sid, pipeName: config.pipeName, pid: child.pid, authority }).claim(name, overrides)).result;
   const run = (exe, args) => {
     const result = spawnSync(exe, args, { encoding: 'utf8', timeout: 20_000, windowsHide: true });
     return { code: result.status, lines: result.stdout.split(/\r?\n/u).filter(Boolean), stderr: result.stderr };
@@ -74,7 +63,7 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
     mkdirSync(databaseDir);
     const database = path.join(databaseDir, 'journal.sqlite');
     const config = path.join(dir, 'config.json');
-    writeFileSync(config, JSON.stringify({ pipeName: unique('ALBERA_Harden'), database, publicKey: keys.publicKeyB64, controlPlaneSid: sid, generation: GENERATION, ...overrides }));
+    writeFileSync(config, JSON.stringify({ pipeName: unique('ALBERA_Harden'), database, authorityKeys: [authority.keyEntry], controlPlaneSid: sid, generation: GENERATION, ...overrides }));
     return { dir, databaseDir, configFile: config, database };
   }
   const check = (file) => run(brokerExe, ['service-check', file]);
@@ -214,7 +203,7 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
       const attempts = [];
       const requests = 12;
       for (let i = 0; i < requests; i += 1) {
-        const reply = send(config.pipeName, signedWith(`between-${i}`), child.pid);
+        const reply = claim(config, child, `between-${i}`);
         // hammer the name while the request is served and in the moments right after it (the old dispose / recreate gap)
         for (let k = 0; k < 6; k += 1) attempts.push(await tryToTakeName(config.pipeName));
         assert.deepEqual(await reply, SUCCESS, `request ${i}`);
@@ -225,7 +214,7 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
       assert.equal(child.closeCode, undefined, 'the Broker is still running');
       assert.equal(child.lines.some((line) => line.startsWith('BROKER_FATAL')), false, child.lines.join('|'));
       assert.equal(child.lines.filter((line) => line === 'BROKER_READY').length, 1);
-      assert.deepEqual(await send(config.pipeName, signedWith('between-last'), child.pid), SUCCESS, 'still serving after all attempts');
+      assert.deepEqual(await claim(config, child, 'between-last'), SUCCESS, 'still serving after all attempts');
       const stopped = await stop(child);
       assert.deepEqual([stopped.code, stopped.ms < STOP_BUDGET_MS], [0, true]);
       assert.equal(inspectClaimCount(brokerExe, config.database), requests + 1);
@@ -234,7 +223,7 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
     it('finding 4: STOP arriving while a claim is held still delivers the answer to that client, then the service stops within the grace', async () => {
       const { child, config } = startLoop('loop-stop-during-claim', { hold: 1500 });
       await waitForLine(child, 'BROKER_READY');
-      const reply = send(config.pipeName, signedWith('held'), child.pid);
+      const reply = claim(config, child, 'held');
       await waitForLine(child, 'CLAIM=PERSISTED_UNKNOWN'); // committed; the seam keeps it open for 1.5 s
       const stopping = stop(child);                         // SERVICE_CONTROL_STOP now
       assert.deepEqual(await reply, SUCCESS, 'the reply to a committed claim is not cancelled by STOP');
@@ -245,21 +234,22 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
       assert.equal(inspectClaimCount(brokerExe, config.database), 1);
     });
 
-    // [label, overrides of the signed receipt]. Signed by the real authority key, so only the type check can stop them.
+    // [label, overrides of the signed receipt]. Signed by the real authority key, so only the contract's strict reader and schema can stop them.
     const wrongTypes = [
       ['leaseGeneration as a string', { leaseGeneration: String(GENERATION) }], ['leaseGeneration as null', { leaseGeneration: null }], ['leaseGeneration as an object', { leaseGeneration: {} }],
-      ['leaseGeneration with a fraction', { leaseGeneration: GENERATION + 0.5 }], ['expiresAt as a string', { expiresAt: String(Math.floor(Date.now() / 1000) + 120) }],
-      ['expiresAt as a boolean', { expiresAt: true }], ['expiresAt beyond int64', { expiresAt: 1e30 }],
+      ['leaseGeneration with a fraction', { leaseGeneration: GENERATION + 0.5 }], ['exp as a string', { exp: String(Math.floor(Date.now() / 1000) + 120) }],
+      ['exp as a boolean', { exp: true }], ['exp beyond int64', { exp: 1e30 }], ['brokerEpoch as an array', { brokerEpoch: [1] }], ['iat as null', { iat: null }],
     ];
-    it('finding 5: a signed receipt whose number field has the wrong JSON type is denied and the service keeps serving', async () => {
+    it('finding 5: a signed receipt whose number field has the wrong JSON type is denied (malformed / schema) and the service keeps serving', async () => {
       const { child, config } = startLoop('loop-wrong-types');
       await waitForLine(child, 'BROKER_READY');
       for (const [label, overrides] of wrongTypes) {
-        assert.deepEqual(await send(config.pipeName, signedWith(`wrong-${label.replaceAll(' ', '-')}`, overrides), child.pid), DENIED, label);
+        assert.deepEqual(await claim(config, child, `wrong-${label.replaceAll(' ', '-')}`, overrides), DENIED, label);
         assert.equal(child.closeCode, undefined, `${label}: the process is still running`);
       }
-      assert.deepEqual(await send(config.pipeName, signedWith('after-wrong-types'), child.pid), SUCCESS, 'a valid receipt is still served');
-      assert.equal(child.lines.filter((line) => line === 'REQUEST=DENIED').length, wrongTypes.length);
+      assert.deepEqual(await claim(config, child, 'after-wrong-types'), SUCCESS, 'a valid receipt is still served');
+      assert.equal(child.lines.filter((line) => line === 'DENY=malformed' || line === 'DENY=schema').length, wrongTypes.length);
+      assert.equal(child.lines.includes('REQUEST=DENIED'), false, 'a contract refusal is a plain denial, not an exception');
       assert.equal(child.lines.some((line) => line.startsWith('BROKER_FATAL')), false);
       assert.equal((await stop(child)).code, 0);
       assert.equal(inspectClaimCount(brokerExe, config.database), 1, 'only the valid receipt was claimed');
@@ -270,7 +260,7 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
       const attempt = (action) => { try { action(); return 'succeeded'; } catch (error) { return error.code; } };
 
       it('rename and delete of the folder fail while the loop runs and succeed after STOP; service-check pins nothing', async () => {
-        const { databaseDir, configFile, dir } = scenario('loop-pin-lifecycle');
+        const { databaseDir, configFile, dir, database } = scenario('loop-pin-lifecycle');
         const moved = path.join(dir, 'db-moved');
         // Before the service starts (and after a service-check) the folder is free: the pin is the service's, not the check's.
         assert.equal(check(configFile).code, 0);
@@ -279,14 +269,15 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
         const child = track(startProcess(loopExe, ['serve-loop', configFile], { stdin: true }));
         await waitForLine(child, 'BROKER_READY');
         assert.ok(SHARING_ERRORS.includes(attempt(() => renameSync(databaseDir, moved))), 'rename of the pinned folder');
-        assert.ok(SHARING_ERRORS.includes(attempt(() => rmdirSync(databaseDir))), 'delete of the pinned (empty) folder');
+        assert.equal(attempt(() => rmSync(databaseDir, { recursive: true })) === 'succeeded', false, 'delete of the pinned folder');
         assert.equal(existsSync(databaseDir), true);
+        assert.equal(existsSync(database), true, 'the journal was created when the service started (the new epoch is written before RUNNING)');
         assert.equal(existsSync(moved), false);
         assert.equal(child.closeCode, undefined, 'the service is still running');
         assert.equal((await stop(child)).code, 0);
         assert.equal(attempt(() => renameSync(databaseDir, moved)), 'succeeded', 'after STOP the folder is released');
         renameSync(moved, databaseDir);
-        assert.equal(attempt(() => rmdirSync(databaseDir)), 'succeeded', 'after STOP the (still empty) folder can be deleted');
+        assert.equal(attempt(() => rmSync(databaseDir, { recursive: true })), 'succeeded', 'after STOP the folder (with its journal) can be deleted');
       });
 
       it('the folder stays pinned across requests, requests keep using the same path, and the journal can still be read', async () => {
@@ -294,13 +285,13 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
         const moved = path.join(dir, 'db-moved');
         await waitForLine(child, 'BROKER_READY');
         for (let i = 0; i < 3; i += 1) {
-          assert.deepEqual(await send(config.pipeName, signedWith(`pinned-${i}`), child.pid), SUCCESS, `request ${i}`);
+          assert.deepEqual(await claim(config, child, `pinned-${i}`), SUCCESS, `request ${i}`);
           assert.ok(SHARING_ERRORS.includes(attempt(() => renameSync(databaseDir, moved))), `rename after request ${i}`);
           assert.equal(attempt(() => rmSync(databaseDir, { recursive: true })) === 'succeeded', false, `recursive delete after request ${i} must not remove the folder`);
           assert.equal(existsSync(config.database), true, 'the journal file is still in the pinned folder');
         }
         assert.equal(inspectClaimCount(brokerExe, config.database), 3, 'the pin does not stop a reader from opening the journal');
-        assert.deepEqual(await send(config.pipeName, signedWith('pinned-last'), child.pid), SUCCESS, 'still serving');
+        assert.deepEqual(await claim(config, child, 'pinned-last'), SUCCESS, 'still serving');
         assert.equal((await stop(child)).code, 0);
         assert.equal(inspectClaimCount(brokerExe, config.database), 4);
       });

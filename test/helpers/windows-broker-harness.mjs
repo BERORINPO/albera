@@ -2,12 +2,14 @@
 // read their output. Nothing here installs, registers or elevates anything; pipe names are random and same-user.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import net from 'node:net';
 import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { captureExecutableIdentity } from '../../src/runtime/executable-identity.mjs';
+import { sendBrokerFence, sendBrokerInspect, sendBrokerRequest } from '../../src/runtime/windows-broker-client.mjs';
+import { signedReceipt } from '../../scripts/issue-22-approval-authority-fixture.mjs';
 
 export const repositoryRoot = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 const sources = {
@@ -90,8 +92,9 @@ export function startProcess(executable, args, { stdin = false } = {}) {
   return child;
 }
 
-export function startBroker(brokerExe, pipe, db, publicKey, ownerSid, generation, hold = false) {
-  return startProcess(brokerExe, ['serve', pipe, db, publicKey, ownerSid, String(generation), hold ? 'hold' : 'normal']);
+/** `authorityKeys` is the `kid=spki[,kid=spki]` argument of the one-shot `serve` (createTestAuthority().serveArgument). */
+export function startBroker(brokerExe, pipe, db, authorityKeys, ownerSid, generation, hold = false) {
+  return startProcess(brokerExe, ['serve', pipe, db, authorityKeys, ownerSid, String(generation), hold ? 'hold' : 'normal']);
 }
 
 /** Resolves with the first output line matching `pattern` (string or RegExp), or rejects on exit / timeout. */
@@ -117,17 +120,78 @@ export function inspectClaimCount(brokerExe, db) {
   return Number(execFileSync(brokerExe, ['inspect', db], { encoding: 'utf8', windowsHide: true }).trim());
 }
 
-export const GENERATION = 7;
-export const digest = (value) => createHash('sha256').update(value).digest('hex').toUpperCase();
-const signerFixture = path.join(repositoryRoot, 'scripts', 'issue-22-approval-authority-fixture.mjs');
 
-/** A base64 receipt the Broker prototype accepts (fixed `synthetic.noop` action, generation 7). */
-export function makeReceipt(operationId, approvalId, receiptId, overrides = {}) {
-  const action = overrides.action ?? 'synthetic.noop';
-  return Buffer.from(JSON.stringify({ issuer: 'albera-test-approval-authority', audience: 'ALBERA-HostBroker', approvalId, receiptId, operationId, idempotencyKey: `idem-${operationId}`, action, actionDigest: digest(action), leaseId: 'test-lease', leaseGeneration: GENERATION, policyVersion: 'test-policy-v1', expiresAt: Math.floor(Date.now() / 1000) + 120, ...overrides })).toString('base64');
+// ---- receipt v2: the Broker issues the challenge (fence), the test authority signs, the client sends -------------------------------------------------------
+export const GENERATION = 7;
+export const COMPUTER_ID = 'computer-1';
+export { PRODUCTION_ISSUER, TEST_ISSUER, buildReceiptFields, createTestAuthority, signedReceipt, stableUuid } from '../../scripts/issue-22-approval-authority-fixture.mjs';
+
+/** Between two clients the Broker's single pipe instance is busy: that is a pre-send `broker_unavailable`, safe to retry. */
+export async function whileBusy(call, attempts = 40) {
+  for (let attempt = 0; ; attempt += 1) {
+    const result = await call();
+    if (result.code !== 'broker_unavailable' || attempt >= attempts) return result;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
-/** Sign with the ephemeral test authority; returns { receipt, signature, publicKey }. */
-export function signReceipt(receipt) {
-  return { ...JSON.parse(execFileSync(process.execPath, [signerFixture, receipt], { encoding: 'utf8', timeout: 10_000, windowsHide: true })), receipt };
+/**
+ * The Control Plane side of one running Broker, through the real pipe client helper. `pipeName`, `pid` and `expect` may be reassigned (a restarted Broker
+ * has a new PID). `prepare` is fence + sign without sending; `claim` also sends; `send` / `inspect` / `fence` are the three requests.
+ */
+export function brokerSession({ helper, sid, pipeName, pid, authority, expect }) {
+  const session = {
+    pipeName, pid, expect,
+    common: () => ({ pipeName: session.pipeName, expect: session.expect ?? { ownerSid: sid, pid: session.pid }, helperPath: helper, timeoutMs: 10_000 }),
+    fence: (computerId = COMPUTER_ID) => whileBusy(() => sendBrokerFence({ ...session.common(), computerId })),
+    send: (request) => whileBusy(() => sendBrokerRequest({ ...session.common(), receipt: request.receipt, signature: request.signature })),
+    inspect: (operationId) => whileBusy(() => sendBrokerInspect({ ...session.common(), operationId })),
+    /**
+     * fence -> build -> sign. `overrides` (an object, or a function of the fence reply) replace receipt fields; `computerId` is also what is fenced unless
+     * `fencedComputerId` says otherwise. Returns { receipt, signature, fence }.
+     */
+    async prepare(name, overrides = {}, fencedComputerId) {
+      const fence = await session.fence(fencedComputerId ?? (typeof overrides === 'function' ? undefined : overrides.computerId));
+      assert.equal(fence.ok, true, `fence failed: ${JSON.stringify(fence)}`);
+      return { ...signedReceipt({ authority, fence, name, ...(typeof overrides === 'function' ? overrides(fence) : overrides) }), fence };
+    },
+    async claim(name, overrides, fencedComputerId) {
+      const request = await session.prepare(name, overrides, fencedComputerId);
+      return { request, result: await session.send(request) };
+    },
+  };
+  return session;
+}
+
+/** One framed request over a raw same-user socket (no identity checks): for tests that talk to a Broker directly. Rejects when no reply frame arrives. */
+export function rawRequest(pipe, body) {
+  const socket = net.createConnection(`\\\\.\\pipe\\${pipe}`);
+  const bytes = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    socket.on('connect', () => { const size = Buffer.alloc(4); size.writeInt32LE(bytes.length); socket.write(Buffer.concat([size, bytes])); });
+    // The reply is complete once its length prefix is satisfied. The service loop disconnects the instance after the reply, which Node can report as a
+    // read error (EPIPE) rather than a clean end, so the frame, not the end of the stream, decides.
+    socket.on('data', (x) => {
+      chunks.push(x);
+      const data = Buffer.concat(chunks);
+      if (data.length < 4 || data.length < 4 + data.readInt32LE()) return;
+      socket.destroy();
+      if (data.length !== 4 + data.readInt32LE()) reject(new Error('invalid response frame'));
+      else resolve(JSON.parse(data.subarray(4).toString('utf8')));
+    });
+    socket.on('close', () => reject(new Error('connection closed without a response')));
+    socket.on('error', reject);
+  });
+}
+
+/**
+ * Fence over a raw socket, sign, claim over a raw socket. `overrides` is an object or a function of the fence reply; `mutate(request, fence)` may change the
+ * signed request before it is sent (a tampering test). Returns { fence, request, reply }.
+ */
+export async function rawFencedClaim(pipe, authority, name, overrides = {}, mutate = (request) => request) {
+  const fence = await rawRequest(pipe, { fence: { computerId: (typeof overrides === 'function' ? undefined : overrides.computerId) ?? COMPUTER_ID } });
+  assert.equal(fence.ok, true, `fence failed: ${JSON.stringify(fence)}`);
+  const request = mutate(signedReceipt({ authority, fence, name, ...(typeof overrides === 'function' ? overrides(fence) : overrides) }), fence);
+  return { fence, request, reply: await rawRequest(pipe, request) };
 }

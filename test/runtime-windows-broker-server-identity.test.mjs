@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { captureExecutableIdentity } from '../src/runtime/executable-identity.mjs';
-import { BROKER_CLIENT_PRESEND_CODES, sendBrokerRequest } from '../src/runtime/windows-broker-client.mjs';
+import { BROKER_CLIENT_PRESEND_CODES, sendBrokerFence, sendBrokerRequest } from '../src/runtime/windows-broker-client.mjs';
 import {
-  buildBroker, buildPipeClient, buildProbe, currentUserSid, getUnavailableReason, inspectClaimCount, makeReceipt, signReceipt,
-  startBroker, startProcess, waitForExit, waitForLine, GENERATION,
+  buildBroker, buildPipeClient, buildProbe, createTestAuthority, currentUserSid, getUnavailableReason, inspectClaimCount, signedReceipt,
+  startBroker, startProcess, waitForExit, waitForLine, COMPUTER_ID, GENERATION,
 } from './helpers/windows-broker-harness.mjs';
 
 // Windows-only: the Node client + the trusted .NET pipe client helper + the REAL Broker, plus hostile same-user pipe servers.
@@ -21,10 +21,11 @@ const MISMATCH = { ok: false, code: 'server_identity_mismatch' };
 
 describe('Broker pipe client verifies the pipe server before it writes', { skip: getUnavailableReason() }, () => {
   let root, brokerExe, helper, probeExe, sid, brokerImage;
+  const authority = createTestAuthority();
   const running = new Set();
 
   before(async () => {
-    root = mkdtempSync(path.join(os.tmpdir(), 'albera-server-identity-'));
+    root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'albera-server-identity-'))); // long form: TEMP may be an 8.3 short name
     brokerExe = buildBroker(path.join(root, 'broker'));
     helper = await buildPipeClient(path.join(root, 'helper'));
     probeExe = buildProbe(path.join(root, 'probe'));
@@ -43,13 +44,21 @@ describe('Broker pipe client verifies the pipe server before it writes', { skip:
   const expectBroker = (child, overrides = {}) => ({ ownerSid: sid, pid: child.pid, imageSha256: brokerImage, ...overrides });
   const countingSpawn = (counter) => (...args) => { counter.spawns += 1; return spawn(...args); };
   const send = (pipe, signed, expect, extra = {}) => sendBrokerRequest({ pipeName: pipe, receipt: signed.receipt, signature: signed.signature, expect, helperPath: helper, timeoutMs: 10_000, ...extra });
+  const FAKE_FENCE = { brokerEpoch: 1, leaseGeneration: GENERATION, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' };
+  /** A signed receipt for a server that is not a real Broker: a fake pipe server never issued the challenge. */
+  const fakeSigned = (name) => signedReceipt({ authority, fence: FAKE_FENCE, name });
+  /** fence -> sign -> send through the real helper; `extra` (a spawn counter, a tampered helper) applies to both steps. The first failure is returned as is. */
+  async function fencedClaim(pipe, expect, name, extra = {}) {
+    const fence = await sendBrokerFence({ pipeName: pipe, computerId: COMPUTER_ID, expect, helperPath: helper, timeoutMs: 10_000, ...extra });
+    return fence.ok ? send(pipe, signedReceipt({ authority, fence, name }), expect, extra) : fence;
+  }
   const probe = async (pipe, mode) => { const child = track(startProcess(probeExe, ['serve', pipe, mode])); const ready = await waitForLine(child, /^READY pid=\d+$/u); return { child, pid: Number(ready.split('=')[1]) }; };
   const lineValue = (child, key) => child.lines.find((line) => line.startsWith(`${key}=`))?.slice(key.length + 1);
 
   /** One real Broker (it serves exactly one connection): run `use`, wait for it to exit (unless `hold`, then it is killed), return what it did. */
-  async function withBroker(db, signed, use, { hold = false } = {}) {
+  async function withBroker(db, use, { hold = false } = {}) {
     const pipe = pipeName();
-    const child = track(startBroker(brokerExe, pipe, db, signed.publicKey, sid, GENERATION, hold));
+    const child = track(startBroker(brokerExe, pipe, db, authority.serveArgument, sid, GENERATION, hold));
     try {
       await waitForLine(child, 'BROKER_READY');
       const value = await use(pipe, child);
@@ -60,25 +69,23 @@ describe('Broker pipe client verifies the pipe server before it writes', { skip:
     }
   }
 
-  it('real Broker with matching owner SID, PID and image hash: ok, exactly one claim, one helper spawn', async () => {
+  it('real Broker with matching owner SID, PID and image hash: ok, exactly one claim, one helper spawn per request (fence and claim)', async () => {
     const db = freshDb();
-    const signed = signReceipt(makeReceipt('id-ok-op', 'id-ok-approval', 'id-ok-receipt'));
     const counter = { spawns: 0 };
-    const run = await withBroker(db, signed, (pipe, broker) => send(pipe, signed, expectBroker(broker), { spawnImpl: countingSpawn(counter) }));
+    const run = await withBroker(db, (pipe, broker) => fencedClaim(pipe, expectBroker(broker), 'id-ok', { spawnImpl: countingSpawn(counter) }));
     assert.deepEqual(run.value, SUCCESS);
-    assert.equal(counter.spawns, 1);
+    assert.equal(counter.spawns, 2);
     assert.ok(run.lines.includes('PEER=authenticated') && run.lines.includes('CLAIM=PERSISTED_UNKNOWN'), run.lines.join('|'));
     assert.equal(claims(db), 1);
   });
 
   it('squatter that takes the name after the Broker exited: server_identity_mismatch and the squatter receives 0 bytes (.NET and Node)', async () => {
     const db = freshDb();
-    const first = signReceipt(makeReceipt('squat-op-1', 'squat-approval-1', 'squat-receipt-1'));
-    const served = await withBroker(db, first, (pipe, broker) => send(pipe, first, expectBroker(broker)));
+    const served = await withBroker(db, (pipe, broker) => fencedClaim(pipe, expectBroker(broker), 'squat-1'));
     assert.deepEqual(served.value, SUCCESS);
     assert.equal(claims(db), 1);
     const deadBroker = { ownerSid: sid, pid: served.pid, imageSha256: brokerImage };
-    const second = signReceipt(makeReceipt('squat-op-2', 'squat-approval-2', 'squat-receipt-2'));
+    const second = fakeSigned('squat-2');
 
     const dotnet = await probe(served.pipe, 'reply'); // owned by the same user, so the owner check passes: only the PID can tell it apart
     assert.deepEqual(await send(served.pipe, second, deadBroker), MISMATCH);
@@ -97,7 +104,7 @@ describe('Broker pipe client verifies the pipe server before it writes', { skip:
   });
 
   it('control for the squatter test: the same .NET fake with its own PID is accepted, so the PID check was what refused it', async () => {
-    const signed = signReceipt(makeReceipt('control-op', 'control-approval', 'control-receipt'));
+    const signed = fakeSigned('control');
     const pipe = pipeName();
     const fake = await probe(pipe, 'reply');
     assert.deepEqual(await send(pipe, signed, { ownerSid: sid, pid: fake.pid }), { ok: false, code: 'denied' });
@@ -113,8 +120,7 @@ describe('Broker pipe client verifies the pipe server before it writes', { skip:
     };
     for (const [label, expectation] of Object.entries(wrong)) {
       const db = freshDb();
-      const signed = signReceipt(makeReceipt(`wrong-${label}`, `wrong-approval-${label}`, `wrong-receipt-${label}`));
-      const run = await withBroker(db, signed, (pipe, broker) => send(pipe, signed, expectation(broker)));
+      const run = await withBroker(db, (pipe, broker) => fencedClaim(pipe, expectation(broker), `wrong-${label}`), { hold: true }); // the Broker never sees a connection
       assert.deepEqual(run.value, MISMATCH, label);
       assert.equal(run.lines.includes('CLAIM=PERSISTED_UNKNOWN'), false, label);
       assert.equal(run.lines.includes('PEER=authenticated'), false, label);
@@ -123,7 +129,7 @@ describe('Broker pipe client verifies the pipe server before it writes', { skip:
   });
 
   it('SQOS: a server that impersonates the client gets Identification level, while a plain client would give Impersonation', async () => {
-    const signed = signReceipt(makeReceipt('sqos-op', 'sqos-approval', 'sqos-receipt'));
+    const signed = fakeSigned('sqos');
     const pipe = pipeName();
     const fake = await probe(pipe, 'impersonate');
     assert.deepEqual(await send(pipe, signed, { ownerSid: sid, pid: fake.pid }), { ok: false, code: 'denied' });
@@ -140,7 +146,6 @@ describe('Broker pipe client verifies the pipe server before it writes', { skip:
   });
 
   it('tampered helper or manifest: helper_unavailable, zero spawns, the Broker never sees a connection', async () => {
-    const signed = signReceipt(makeReceipt('tamper-op', 'tamper-approval', 'tamper-receipt'));
     const db = freshDb();
     const cases = {
       'manifest hash changed': (exe) => writeFileSync(`${exe}.manifest.json`, JSON.stringify({ sha256: 'f'.repeat(64) })),
@@ -148,7 +153,7 @@ describe('Broker pipe client verifies the pipe server before it writes', { skip:
       'manifest missing': (exe) => rmSync(`${exe}.manifest.json`),
       'manifest malformed': (exe) => writeFileSync(`${exe}.manifest.json`, '{"sha256": "not-a-digest"}'),
     };
-    const run = await withBroker(db, signed, async (pipe, broker) => {
+    const run = await withBroker(db, async (pipe, broker) => {
       const results = [];
       for (const [label, tamper] of Object.entries(cases)) {
         const directory = path.join(root, `tampered-${randomBytes(4).toString('hex')}`);
@@ -158,7 +163,7 @@ describe('Broker pipe client verifies the pipe server before it writes', { skip:
         copyFileSync(`${helper}.manifest.json`, `${copy}.manifest.json`);
         tamper(copy);
         const counter = { spawns: 0 };
-        results.push([label, await send(pipe, signed, expectBroker(broker), { helperPath: copy, spawnImpl: countingSpawn(counter) }), counter.spawns]);
+        results.push([label, await fencedClaim(pipe, expectBroker(broker), 'tamper', { helperPath: copy, spawnImpl: countingSpawn(counter) }), counter.spawns]);
       }
       return results;
     }, { hold: true });
@@ -171,7 +176,7 @@ describe('Broker pipe client verifies the pipe server before it writes', { skip:
   });
 
   it('a server that hangs up after the frame was sent gives a post-send code, never a pre-send one', async () => {
-    const signed = signReceipt(makeReceipt('drop-op', 'drop-approval', 'drop-receipt'));
+    const signed = fakeSigned('drop');
     const pipe = pipeName();
     const fake = await probe(pipe, 'drop');
     const result = await send(pipe, signed, { ownerSid: sid, pid: fake.pid });
@@ -183,7 +188,7 @@ describe('Broker pipe client verifies the pipe server before it writes', { skip:
   });
 
   it('service mode fails closed before sending: a missing service is unavailable, an unrelated service is not the server', async () => {
-    const signed = signReceipt(makeReceipt('svc-op', 'svc-approval', 'svc-receipt'));
+    const signed = fakeSigned('svc');
     for (const [serviceName, accepted] of [[`AlberaNoSuchService${randomBytes(4).toString('hex')}`, ['server_identity_unavailable']], ['EventLog', ['server_identity_mismatch', 'server_identity_unavailable']]]) {
       const pipe = pipeName();
       const fake = await probe(pipe, 'reply');
