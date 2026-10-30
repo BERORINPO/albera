@@ -12,6 +12,10 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
 {
     public const string ReplaceWord = "replace";
 
+    // The credential name is fixed and another app of the same Windows account could have made or opened it first, so an existing key is never trusted by default.
+    private const string AlreadyEnrolledHint = "hint: a key with this name already exists. If you did not make it yourself with this program, another app may have made it: run enroll --replace to make a new one (the old one is lost). enroll --show prints the existing key.";
+    private const string ShownWarning = "Warning: trust these values only if they equal what your own first enroll printed. If you did not run enroll yourself, run enroll --replace.\n";
+
     public int Run(string? option)
     {
         if (option == "show") return Show();
@@ -20,7 +24,7 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
         switch (existing.State)
         {
             case KeyState.Present when option != "replace":
-                return Fail(ExitCodes.Refused, "already_enrolled", "hint: enroll --show prints its values again; enroll --replace makes a new key (the old one is lost)");
+                return Fail(ExitCodes.Refused, "already_enrolled", AlreadyEnrolledHint);
             case KeyState.Present:
                 output.Write($"This deletes the current approver key. Approvals fail until the Authority config has the new values.\nType {ReplaceWord} to continue: ");
                 output.Flush();
@@ -36,18 +40,18 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
     private int Show()
     {
         KeyLookup lookup = store.Open();
-        return lookup.State == KeyState.Missing ? Fail(ExitCodes.Refused, "not_enrolled", "hint: run AlberaApprover.exe enroll") : Report(lookup);
+        return lookup.State == KeyState.Missing ? Fail(ExitCodes.Refused, "not_enrolled", "hint: run AlberaApprover.exe enroll") : Report(lookup, shown: true);
     }
 
-    private int Report(KeyLookup lookup) => lookup.State switch
+    private int Report(KeyLookup lookup, bool shown = false) => lookup.State switch
     {
-        KeyState.Present => Print(lookup.PublicKey!),
-        KeyState.AlreadyExists => Fail(ExitCodes.Refused, "already_enrolled"),
+        KeyState.Present => Print(lookup.PublicKey!, shown),
+        KeyState.AlreadyExists => Fail(ExitCodes.Refused, "already_enrolled", AlreadyEnrolledHint),
         KeyState.Cancelled => Fail(ExitCodes.SignerUnavailable, "hello_cancelled"),
         _ => Fail(ExitCodes.SignerUnavailable, "hello_unavailable", "hint: Windows Hello must be set up for this account (Settings > Accounts > Sign-in options)"),
     };
 
-    private int Print(byte[] spki)
+    private int Print(byte[] spki, bool shown)
     {
         string sid = currentUserSid();
         if (sid.Length == 0) return Fail(ExitCodes.Internal, "sid_unavailable");
@@ -57,6 +61,7 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
         output.Write($"  \"approverKeyId\": \"{keyId}\",\n");
         output.Write($"  \"approverSid\": \"{sid}\",\n");
         output.Write("Public values only. approverSid is this account: run approve as the same account, on this PC.\n");
+        if (shown) output.Write(ShownWarning);
         return ExitCodes.Ok;
     }
 

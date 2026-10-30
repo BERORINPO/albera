@@ -314,6 +314,7 @@ internal static class Harness
             string id = Field(run.Out.ToString(), "approverKeyId");
             Assert(id == "hello-" + Convert.ToHexStringLower(SHA256.HashData(Hello.ExportSubjectPublicKeyInfo()).AsSpan(0, 8)) && System.Text.RegularExpressions.Regex.IsMatch(id, ActionDigest.IdPattern), id);
             string all = run.Out.ToString();
+            Assert(all.Contains("Warning: trust these values only if they equal what your own first enroll printed") && all.Contains("enroll --replace"), "enroll --show warns that an existing key is not trusted by default");
             Assert(!all.Contains(Convert.ToBase64String(Hello.ExportPkcs8PrivateKey())) && !all.Contains("PRIVATE") && all.Split('\n').Count(l => l.StartsWith("  \"", StringComparison.Ordinal)) == 3, "public values only");
         });
         Check("enroll --show with no key says not_enrolled (65) and does not create one; with Hello unusable it is 69", () =>
@@ -328,11 +329,13 @@ internal static class Harness
             Enrolling run = new(null);
             Assert(run.Run(null) == ExitCodes.Ok && run.Err.ToString() == "", run.Err.ToString());
             Assert(Field(run.Out.ToString(), "approverPublicKey") == Convert.ToBase64String(run.Store.Open().PublicKey!), "the printed key is the created key");
+            Assert(!run.Out.ToString().Contains("Warning:"), "a key you just created needs no warning");
         });
         Check("enroll refuses to touch an existing key (65 already_enrolled) and prints nothing about it", () =>
         {
             Enrolling run = new(Hello);
             Assert(run.Run(null) == ExitCodes.Refused && run.Err.ToString().StartsWith("error: already_enrolled\n") && run.Out.ToString() == "", run.Err.ToString());
+            Assert(run.Err.ToString().Contains("did not make it yourself") && run.Err.ToString().Contains("run enroll --replace"), "the message says a key you did not make must be replaced");
             Assert(Convert.ToBase64String(run.Store.Open().PublicKey!) == Convert.ToBase64String(Hello.ExportSubjectPublicKeyInfo()), "the key is unchanged");
         });
         Check("enroll --replace needs the typed word 'replace'; anything else leaves the key unchanged; the typed word makes a different key", () =>

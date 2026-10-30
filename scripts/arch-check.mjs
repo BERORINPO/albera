@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkApproverBuildInputs } from './approver-build-inputs.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ALLOW_RE = /\/\/\s*arch-allow:\s*\S+/;
@@ -387,12 +388,9 @@ check('11c Approver sources do not name the Broker or Authority projects', appro
 );
 const approverPublish = fs.existsSync(path.join(ROOT, 'scripts/publish-windows-approver.mjs')) ? fs.readFileSync(path.join(ROOT, 'scripts/publish-windows-approver.mjs'), 'utf8') : '';
 if (!approverPublish.includes('-p:AlberaApproverTestFaults=false')) violations.push('[11b Approver source] scripts/publish-windows-approver.mjs does not pin the test fakes off (false-safe)');
-// The one allowed external dependency is the Windows SDK projection (WinRT KeyCredentialManager for Windows Hello), which the Windows target framework restores as a pinned targeting pack.
-// Anything else (a PackageReference, another reference) is a violation, and the Hello code must stay out of the test-faults build.
-const approverProject = fs.existsSync(path.join(ROOT, approverRoot, 'Albera.Approver.csproj')) ? fs.readFileSync(path.join(ROOT, approverRoot, 'Albera.Approver.csproj'), 'utf8').replace(/<!--[\s\S]*?-->/g, '') : '';
-if (/<(?:PackageReference|PackageVersion|FrameworkReference|COMReference|Reference|ProjectReference)\b/.test(approverProject)) violations.push('[11e Approver dependency] the approver csproj has a package or other reference; only the Windows SDK projection (via the Windows target framework) is allowed');
-if (!/<TargetFramework>net10\.0-windows10\.0\.19041\.0<\/TargetFramework>/.test(approverProject) || !/<WindowsSdkPackageVersion>\d+\.\d+\.\d+\.\d+<\/WindowsSdkPackageVersion>/.test(approverProject)) violations.push('[11e Approver dependency] the approver csproj does not pin the Windows SDK projection (TFM net10.0-windows10.0.19041.0 + WindowsSdkPackageVersion) (false-safe)');
-if (!/<Compile Remove="WindowsHello\.cs" Condition="'\$\(AlberaApproverTestFaults\)' == 'true'"/.test(approverProject)) violations.push('[11e Approver dependency] the test-faults build must not compile WindowsHello.cs (tests must never reach the real Hello)');
+// 11e. Allowlist of every input of the approver build (scripts/approver-build-inputs.mjs): exactly Sdk Microsoft.NET.Sdk, the allowed elements and values, the pinned Windows SDK projection
+// (the only external dependency), and no ambient Directory.Build.* / Directory.Packages.props / global.json / nuget.config from the project directory up to the repository root.
+for (const v of checkApproverBuildInputs(ROOT)) violations.push(v);
 const approverWired = [
   ...Object.entries(pkg.bin ?? {}).filter(([, v]) => APPROVER_REF.test(String(v))).map(([k]) => `bin.${k}`),
   ...LIFECYCLE.filter((k) => APPROVER_REF.test(String(pkg.scripts?.[k] ?? ''))).map((k) => `scripts.${k}`),
