@@ -5,6 +5,7 @@ import { createApprovedOperationFlow, FLOW_AUTHORITY_FINAL_CODES, FLOW_PHASES, F
 import { createMemoryFlowJournal, FlowJournalError } from '../src/runtime/approved-operation-journal.mjs';
 import { AUTHORITY_CLIENT_PRESEND_CODES, AUTHORITY_REPLY_CODES } from '../src/runtime/approval-authority-client.mjs';
 import { BROKER_CLIENT_PRESEND_CODES } from '../src/runtime/windows-broker-client.mjs';
+import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
 import { createTestAuthority, signedReceipt, stableUuid } from '../scripts/issue-22-approval-authority-fixture.mjs';
 
 // Unit tests of the approved-operation flow with a fake Broker, a fake Approval Authority, an in-memory journal and a fake clock. Every branch of the
@@ -436,6 +437,22 @@ describe('approved operation flow: epochs are never mixed', () => {
     assert.equal(world.count('claim'), 0);
   });
 
+  it('a receipt with the same ids and fence but another purpose, action, project, computer or digest is refused and never claimed', async () => {
+    const otherArgs = computeActionDigest('broker.operation', { ...ACTION, args: { vmName: 'other' } });
+    const variants = [
+      { purpose: 'guest.command' }, { action: 'environment.inspect' }, { projectId: 'project-2' }, { computerId: 'computer-2' },
+      { actionDigest: otherArgs }, { actionDigest: `sha256:${'0'.repeat(64)}` },
+    ];
+    for (const overrides of variants) {
+      const world = makeWorld();
+      world.script.status.push((w, { approvalId }) => w.receiptFor(approvalId, w.approvals.get(approvalId), overrides));
+      const result = await world.flow.run(REQUEST);
+      assert.deepEqual([result.status, result.code, result.phase], ['failed', 'receipt_mismatch', 'FAILED'], JSON.stringify(overrides));
+      assert.equal(world.count('claim'), 0, JSON.stringify(overrides));
+      assert.equal(world.journal.get('op-1').receipt, undefined, 'never journaled as APPROVED');
+    }
+  });
+
   it('a receipt for another operation, key or challenge is refused', async () => {
     for (const overrides of [{ operationId: 'op-other' }, { idempotencyKey: 'op-1.c9' }, { brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' }, { leaseId: 'lease-2' }]) {
       const world = makeWorld();
@@ -476,7 +493,7 @@ describe('approved operation flow: input, journal, construction', () => {
   it('when the claim intent cannot be persisted, the claim is not written', async () => {
     const world = makeWorld();
     const inner = world.journal;
-    const failing = { ...inner, advance: (id, from, patch) => { if (patch.phase === 'CLAIMING') throw new Error('disk full'); return inner.advance(id, from, patch); } };
+    const failing = { ...inner, advance: (id, revision, from, patch) => { if (patch.phase === 'CLAIMING') throw new Error('disk full'); return inner.advance(id, revision, from, patch); } };
     const result = await world.build({ journal: failing }).run(REQUEST);
     assert.deepEqual([result.status, result.code], ['retryable', 'journal_error']);
     assert.equal(world.count('claim'), 0, 'intent before effect');
@@ -488,7 +505,7 @@ describe('approved operation flow: input, journal, construction', () => {
   it('a compare-and-set conflict (another writer moved the record) stops the flow as journal_conflict', async () => {
     const world = makeWorld();
     const inner = world.journal;
-    const racing = { ...inner, advance: (id, from, patch) => { if (patch.phase === 'FENCED') throw new FlowJournalError('conflict'); return inner.advance(id, from, patch); } };
+    const racing = { ...inner, advance: (id, revision, from, patch) => { if (patch.phase === 'FENCED') throw new FlowJournalError('conflict'); return inner.advance(id, revision, from, patch); } };
     const result = await world.build({ journal: racing }).run(REQUEST);
     assert.deepEqual([result.status, result.code], ['retryable', 'journal_conflict']);
     assert.equal(world.count('submit'), 0);
@@ -507,6 +524,36 @@ describe('approved operation flow: input, journal, construction', () => {
     world.journal.begin({ operationId: 'op-1', purpose: 'broker.operation', action: ACTION, requestDigest: 'x', phase: 'BOGUS', cycle: 1 });
     assert.equal((await world.flow.resume('op-1')).code, 'journal_corrupt');
     assert.deepEqual(world.calls, []);
+  });
+
+  it('the journal revision starts at 0, rises with every advance, and cannot be set by a patch', () => {
+    const journal = createMemoryFlowJournal();
+    const { record } = journal.begin({ operationId: 'op-r', phase: 'INTENT', cycle: 1, revision: 99 });
+    assert.equal(record.revision, 0);
+    const next = journal.advance('op-r', 0, ['INTENT'], { phase: 'FENCED', revision: 50 });
+    assert.deepEqual([next.phase, next.revision], ['FENCED', 1]);
+    assert.equal(journal.begin({ operationId: 'op-r', phase: 'INTENT' }).record.revision, 1, 'a second begin returns the stored record unchanged');
+  });
+
+  it('a stale step holding an old record cannot overwrite a newer cycle even when the phase matches', async () => {
+    const journal = createMemoryFlowJournal();
+    const stale = journal.begin({ operationId: 'op-c', phase: 'INTENT', cycle: 1 }).record; // revision 0, cycle 1, INTENT
+    const fenced = journal.advance('op-c', stale.revision, ['INTENT'], { phase: 'FENCED' });
+    const cycle2 = journal.advance('op-c', fenced.revision, ['FENCED'], { phase: 'INTENT', cycle: 2 }); // phases repeat across cycles
+    assert.equal(cycle2.phase, stale.phase, "same phase as the stale holder's record");
+    assert.throws(() => journal.advance('op-c', stale.revision, ['INTENT'], { phase: 'FENCED', cycle: 1, fence: { brokerEpoch: 1 } }), { code: 'conflict' });
+    assert.deepEqual(journal.get('op-c'), cycle2, 'nothing changed');
+    assert.throws(() => journal.advance('op-c', cycle2.revision, ['FENCED'], { phase: 'SUBMITTED' }), { code: 'conflict' }, 'the right revision with the wrong phase is refused too');
+    assert.equal(journal.advance('op-c', cycle2.revision, ['INTENT'], { phase: 'FENCED' }).revision, cycle2.revision + 1);
+
+    // The same through the flow: after a real second cycle, a holder of the revision-0 record cannot touch the record.
+    const world = makeWorld();
+    world.onApproved = (w) => { if (w.epoch === 1) w.epoch = 2; };
+    const result = await world.flow.run(REQUEST);
+    assert.equal(result.cycle, 2);
+    const final = world.journal.get('op-1');
+    assert.throws(() => world.journal.advance('op-1', 0, ['INTENT', 'CLAIMING', 'UNKNOWN'], { phase: 'FAILED' }), { code: 'conflict' });
+    assert.deepEqual(world.journal.get('op-1'), final);
   });
 
   it('construction rejects missing dependencies and bad options', () => {

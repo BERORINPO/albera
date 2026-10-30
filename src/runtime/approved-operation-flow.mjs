@@ -131,7 +131,7 @@ export function createApprovedOperationFlow({ broker, authority, journal, now, s
   const guard = async (call) => {
     try { return await call(); } catch (error) { throw new JournalFailure(error instanceof FlowJournalError && error.code === 'conflict' ? 'journal_conflict' : 'journal_error'); }
   };
-  const advance = (record, from, patch) => guard(() => journal.advance(record.operationId, from, { ...patch, updatedAt: now() }));
+  const advance = (record, from, patch) => guard(() => journal.advance(record.operationId, record.revision, from, { ...patch, updatedAt: now() }));
   const finalize = async (record, from, phase, code, extra = {}) => terminalResult(await advance(record, from, { phase, outcome: { ...(code ? { code } : {}), ...extra } }), false);
 
   /** Retry an idempotent client call on transient codes only; the last result is returned as is. */
@@ -171,13 +171,16 @@ export function createApprovedOperationFlow({ broker, authority, journal, now, s
     return finalize(record, from, phase, code);
   }
 
-  /** The receipt must name exactly what this record fenced and submitted; a different epoch, challenge or lease is never claimed. */
+  /** The receipt must name exactly what this record fenced and submitted: the same ids, fence, purpose, action (name, project, computer) and the action digest recomputed here
+ * from the submitted DTO (args are bound by the digest). Anything else is never claimed. */
   function receiptMatches(record, receipt) {
     const parsed = parseReceiptV2(Buffer.from(receipt, 'base64'));
     if (!parsed.ok) return null;
     const r = parsed.receipt;
     const { fence } = record;
     const same = r.approvalId === record.approval.approvalId && r.operationId === record.operationId && r.idempotencyKey === record.idempotencyKey
+      && r.purpose === record.purpose && r.action === record.action.action && r.projectId === record.action.projectId && r.computerId === record.action.computerId
+      && r.actionDigest === computeActionDigest(record.purpose, record.action)
       && r.brokerEpoch === fence.brokerEpoch && r.brokerChallenge === fence.brokerChallenge && r.leaseGeneration === fence.leaseGeneration && r.leaseId === fence.leaseId;
     return same ? r : null;
   }
