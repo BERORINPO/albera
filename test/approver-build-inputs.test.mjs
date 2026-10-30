@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +47,9 @@ describe('arch rule 11e: the approver build inputs are an allowlist', () => {
     'a second Target': withElement('<Target Name="Extra" BeforeTargets="Build"><Exec Command="calc.exe" /></Target>'),
     'an extra Compile item': withElement('<ItemGroup><Compile Include="../../elsewhere/*.cs" /></ItemGroup>'),
     'a restore source property': withElement('<PropertyGroup><RestoreSources>https://evil.example/v3/index.json</RestoreSources></PropertyGroup>'),
+    'an attributed duplicate of the pinned property': realProject.replace('</PropertyGroup>', '  <WindowsSdkPackageVersion Condition="\'$(Evil)\' == \'1\'">99.0.0.0</WindowsSdkPackageVersion>\n  </PropertyGroup>'),
+    'a Condition added to an existing property': realProject.replace('<OutputType>', '<OutputType Condition="\'$(Evil)\' == \'1\'">'),
+    'a changed comment': realProject.replace('Approver app (ADR-002', 'Approver app changed (ADR-002'),
     'a different Sdk': realProject.replace('Sdk="Microsoft.NET.Sdk"', 'Sdk="Microsoft.NET.Sdk.Web"'),
     'an Sdk with a version': realProject.replace('Sdk="Microsoft.NET.Sdk"', 'Sdk="Microsoft.NET.Sdk/9.9.9"'),
     'a different pinned SDK projection version': realProject.replace('10.0.19041.57', '10.0.19041.99'),
@@ -83,6 +86,46 @@ describe('arch rule 11e: the approver build inputs are an allowlist', () => {
       assert.ok(checkApproverBuildInputs(root).length > 0);
     });
   }
+
+  it('accepts CRLF line ends and a trailing newline in the project text (only those are normalised)', () => {
+    assert.deepEqual(checkApproverBuildInputs(fakeRepo(`${realProject.replace(/\r?\n$/u, '').replace(/\r?\n/gu, '\r\n')}\r\n\r\n`).root), []);
+  });
+
+  describe('links and junctions are refused', () => {
+    /** Try to make a link; resolves false (and the test is skipped) if the OS refuses without privileges. */
+    function tryLink(target, linkPath, type) {
+      try { symlinkSync(target, linkPath, type); return true; } catch { return false; }
+    }
+
+    it('a linked entry in the project directory (file link, directory junction)', (t) => {
+      const { root, dir } = fakeRepo();
+      writeFileSync(path.join(base, 'outside.cs'), 'class Outside {}');
+      if (!tryLink(path.join(base, 'outside.cs'), path.join(dir, 'Linked.cs'), 'file')) return t.skip('this OS refused to create a file symlink');
+      assert.ok(checkApproverBuildInputs(root).some((v) => v.includes('Linked.cs') && v.includes('symbolic link')));
+    });
+
+    it('a linked directory entry (obj) in the project directory', (t) => {
+      const { root, dir } = fakeRepo();
+      mkdirSync(path.join(base, 'elsewhere'), { recursive: true });
+      if (!tryLink(path.join(base, 'elsewhere'), path.join(dir, 'obj'), 'junction')) return t.skip('this OS refused to create a directory link');
+      assert.ok(checkApproverBuildInputs(root).some((v) => v.includes('obj') && v.includes('symbolic link')));
+    });
+
+    it('a linked directory above the project (src/runtime points somewhere else)', (t) => {
+      const { root } = fakeRepo();
+      const runtime = path.join(root, 'src', 'runtime');
+      renameSync(runtime, path.join(root, 'src', 'runtime-real'));
+      if (!tryLink(path.join(root, 'src', 'runtime-real'), runtime, 'junction')) return t.skip('this OS refused to create a directory link');
+      assert.ok(checkApproverBuildInputs(root).some((v) => v.includes('src/runtime') && /symbolic link|resolves outside/u.test(v)));
+    });
+
+    it('a linked ambient file (Directory.Build.props as a link) is still reported by name', (t) => {
+      const { root } = fakeRepo();
+      writeFileSync(path.join(base, 'evil.props'), '<Project />');
+      if (!tryLink(path.join(base, 'evil.props'), path.join(root, 'Directory.Build.props'), 'file')) return t.skip('this OS refused to create a file symlink');
+      assert.ok(checkApproverBuildInputs(root).some((v) => v.includes('Directory.Build.props')));
+    });
+  });
 
   it('reports a missing project instead of passing (false-safe)', () => {
     const root = path.join(base, 'empty');
