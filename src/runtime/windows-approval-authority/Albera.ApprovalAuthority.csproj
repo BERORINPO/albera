@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Approval Authority (ADR-002 "Receipt v2", Proposed / NOT VERIFIED). Built only on demand by `npm run build:approval-authority` or the
+       Authority tests. Nothing installs, registers or starts it. No package: BCL and P/Invoke only. The receipt v2 contract is source-included
+       from ../broker-contract (the Broker project is NOT referenced: the two services stay separately deployable). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>albera-approval-authority</AssemblyName>
+    <RootNamespace>Albera.ApprovalAuthority</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(AlberaAuthorityTestFaults)' == 'true'">
+    <!-- Test-only fakes (FakeReceiptSigner, FakePresenceVerifier) and the serve-loop / request subcommands. Only the Authority tests pass this
+         property; the publish script pins it false, so none of it exists in the shipped binary. -->
+    <DefineConstants>$(DefineConstants);ALBERA_AUTHORITY_TEST_FAULTS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../broker-contract/*.cs" />
+  </ItemGroup>
+</Project>

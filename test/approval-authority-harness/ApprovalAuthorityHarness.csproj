@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Test-only console: compiles the Approval Authority sources (everything except Program.cs / TestSeam.cs) and the broker-contract sources by
+       source include, WITH the test fakes, and runs the unit checks in Program.cs in-process (pending store, digest recomputation, expiry,
+       queue_full, presence, receipts, protocol, config). Built in a temp dir by test/runtime-approval-authority-unit.test.mjs; nothing ships it.
+       Pass -p:AuthorityDir=<abs path ending in a slash> and -p:ContractDir=<abs path ending in a slash>. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>Albera.ApprovalAuthority</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseAppHost>false</UseAppHost>
+    <DefineConstants>$(DefineConstants);ALBERA_AUTHORITY_TEST_FAULTS</DefineConstants>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(AuthorityDir)*.cs" Exclude="$(AuthorityDir)Program.cs;$(AuthorityDir)TestSeam.cs" />
+    <Compile Include="$(ContractDir)*.cs" />
+  </ItemGroup>
+</Project>

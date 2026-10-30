@@ -327,6 +327,34 @@ if (fs.existsSync(schemaFile)) {
 }
 results.push(`9 broker-contract: ${contractMjs.length} .mjs, ${contractCs.length} .cs, vectors ${vectorCounts}`);
 
+// 10. The Approval Authority (src/runtime/windows-approval-authority, ADR-002 "Receipt v2", Proposed) is a separate Windows service that is built on demand
+//     only, like the Broker (rule 8). The Observer layers and every runtime .mjs file may not import, spawn or name it, package.json may not wire it into
+//     `bin`, `files` or the npm lifecycle, its sources may not name the Broker project (the two stay separately deployable), and its source set, lock file
+//     and publish script must exist (false-safe). The receipt v2 contract is the only thing the two share (rule 9), by source include.
+const AUTHORITY_REF = /windows-approval-authority|Albera\.ApprovalAuthority|AlberaApprovalAuthority|approval-authority\.exe|ALBERA\\{1,2}ApprovalAuthority|build:approval-authority/i;
+check('10a Approval Authority is not referenced by Observer layers or runtime modules', [...entry, ...adapters, ...core, ...shared, ...pub, ...runtime], (line) =>
+  AUTHORITY_REF.test(line) ? 'the Approval Authority must not be imported, spawned or named here (build-on-demand only)' : null,
+);
+const authorityRoot = 'src/runtime/windows-approval-authority';
+const authoritySources = ['Program.cs', 'TestSeam.cs', 'AuthorityCore.cs', 'AuthorityConfig.cs', 'AuthorityRuntime.cs', 'ExitCodes.cs', 'PendingStore.cs', 'PipeHost.cs', 'Presence.cs',
+  'Protocol.cs', 'ReceiptBuilder.cs', 'ServiceHost.cs', 'ServicePathGuard.cs', 'SidRules.cs', 'Signers.cs'];
+for (const f of [...authoritySources, 'Albera.ApprovalAuthority.csproj', 'packages.lock.json']) {
+  if (!fs.existsSync(path.join(ROOT, authorityRoot, f))) violations.push(`[10b Approval Authority source] ${authorityRoot}/${f} does not exist (false-safe)`);
+}
+check('10c Approval Authority sources do not name the Broker project', authoritySources.map((f) => `${authorityRoot}/${f}`).filter((f) => fs.existsSync(path.join(ROOT, f))), (line) =>
+  /windows-broker|WindowsBroker/i.test(line) ? 'the Authority and the Broker are separately deployable: no reference to the Broker project' : null,
+);
+const authorityPublish = fs.existsSync(path.join(ROOT, 'scripts/publish-windows-approval-authority.mjs')) ? fs.readFileSync(path.join(ROOT, 'scripts/publish-windows-approval-authority.mjs'), 'utf8') : '';
+if (!authorityPublish.includes('-p:AlberaAuthorityTestFaults=false')) violations.push('[10b Approval Authority source] scripts/publish-windows-approval-authority.mjs does not pin the test fakes off (false-safe)');
+const authorityWired = [
+  ...Object.entries(pkg.bin ?? {}).filter(([, v]) => AUTHORITY_REF.test(String(v))).map(([k]) => `bin.${k}`),
+  ...LIFECYCLE.filter((k) => AUTHORITY_REF.test(String(pkg.scripts?.[k] ?? ''))).map((k) => `scripts.${k}`),
+  ...(pkg.files ?? []).filter((v) => AUTHORITY_REF.test(String(v))).map((v) => `files[${v}]`),
+];
+for (const w of authorityWired) violations.push(`[10d package.json] ${w} wires the Approval Authority into the package or an automatic step`);
+if (typeof pkg.scripts?.['build:approval-authority'] !== 'string') violations.push('[10d package.json] build:approval-authority script is missing (false-safe)');
+results.push(`10 Approval Authority is build-on-demand: ${authoritySources.length + 2} source files, ${authorityWired.length} wiring violations`);
+
 for (const r of results) console.log(r);
 console.log(`suppressed (arch-allow): ${suppressed}`);
 if (violations.length) {
