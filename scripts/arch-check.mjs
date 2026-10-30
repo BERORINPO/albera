@@ -260,7 +260,8 @@ results.push(`7 runtime UI under ${UI_MAX_LINES} lines: ${runtimeUi.length} file
 
 // 8. The Windows Host Broker prototype (src/runtime/windows-broker, ADR-002 Proposed) is built on demand only. The Observer
 //    layers and every runtime .mjs file may not import, spawn or name it, and package.json may not wire it into `bin`, the
-//    npm lifecycle or `start`/`demo`. A future opt-in launcher must carry an explicit `// arch-allow: <reason>` (counted above).
+//    npm lifecycle or `start`/`demo`. The only runtime file that names them is windows-broker-client.mjs, with two explicit
+//    `// arch-allow: <reason>` lines (the Broker wire reference, the pipe client helper path); any future launcher needs its own (counted above).
 const BROKER_REF = /windows-broker|albera-windows-broker|WindowsBroker/i;
 check('8a Windows Broker is not referenced by Observer layers or runtime modules', [...entry, ...adapters, ...core, ...shared, ...pub, ...runtime], (line) =>
   BROKER_REF.test(line) ? 'the Windows Broker prototype must not be imported, spawned or named here (build-on-demand only)' : null,
@@ -268,6 +269,19 @@ check('8a Windows Broker is not referenced by Observer layers or runtime modules
 const brokerRoot = 'src/runtime/windows-broker';
 const brokerFiles = ['Albera.WindowsBroker.csproj', 'Program.cs', 'packages.lock.json'];
 for (const f of brokerFiles) if (!fs.existsSync(path.join(ROOT, brokerRoot, f))) violations.push(`[8b Windows Broker source] ${brokerRoot}/${f} does not exist (false-safe)`);
+// The trusted pipe client helper (verifies the pipe server before it writes) is part of the same on-demand set: its 3 files must exist, its
+// Program.cs stays small enough to review (<= 200 lines), and `build:windows-broker` must build it. Its name also matches BROKER_REF, so 8a and 8c cover it.
+const pipeClientRoot = 'src/runtime/windows-broker-pipe-client';
+const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'packages.lock.json'];
+const PIPE_CLIENT_MAX_LINES = 200;
+for (const f of pipeClientFiles) if (!fs.existsSync(path.join(ROOT, pipeClientRoot, f))) violations.push(`[8b Windows Broker pipe client source] ${pipeClientRoot}/${f} does not exist (false-safe)`);
+const pipeClientProgram = path.join(ROOT, pipeClientRoot, 'Program.cs');
+if (fs.existsSync(pipeClientProgram)) {
+  const n = fs.readFileSync(pipeClientProgram, 'utf8').replace(/\n$/, '').split('\n').length;
+  if (n > PIPE_CLIENT_MAX_LINES) violations.push(`[8b Windows Broker pipe client source] ${pipeClientRoot}/Program.cs has ${n} lines (max ${PIPE_CLIENT_MAX_LINES})`);
+}
+const publishScript = fs.existsSync(path.join(ROOT, 'scripts/publish-windows-broker.mjs')) ? fs.readFileSync(path.join(ROOT, 'scripts/publish-windows-broker.mjs'), 'utf8') : '';
+if (!publishScript.includes('Albera.WindowsBrokerPipeClient.csproj')) violations.push('[8b Windows Broker pipe client source] scripts/publish-windows-broker.mjs does not build the pipe client (false-safe)');
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const LIFECYCLE = ['preinstall', 'install', 'postinstall', 'prepublish', 'prepublishOnly', 'prepack', 'postpack', 'prepare', 'preversion', 'version', 'postversion', 'start', 'demo', 'prestart', 'poststart'];
 const wired = [
@@ -277,7 +291,7 @@ const wired = [
 ];
 for (const w of wired) violations.push(`[8c package.json] ${w} wires the Windows Broker into the package or an automatic step`);
 if (typeof pkg.scripts?.['build:windows-broker'] !== 'string') violations.push('[8c package.json] build:windows-broker script is missing (false-safe)');
-results.push(`8 Windows Broker is build-on-demand: ${brokerFiles.length} source files, ${wired.length} wiring violations`);
+results.push(`8 Windows Broker and pipe client are build-on-demand: ${brokerFiles.length + pipeClientFiles.length} source files, ${wired.length} wiring violations`);
 
 for (const r of results) console.log(r);
 console.log(`suppressed (arch-allow): ${suppressed}`);

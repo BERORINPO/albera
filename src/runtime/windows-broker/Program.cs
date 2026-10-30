@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Runtime.InteropServices;
@@ -9,12 +10,14 @@ using Microsoft.Win32.SafeHandles;
 
 internal static class Program
 {
-    private const int MaxFrameLength = 4096;
+    private const int MaxFrameLength = 2048; // ADR-002: 2 KiB maximum protocol message
     private const string Denied = "{\"ok\":false,\"code\":\"denied\"}";
 
     // Fixed process exit codes (ADR-002 negative test matrix). 0 = served one request, 64 = bad usage.
     private const int ExitPipeUnavailable = 70;           // pipe name already exists (squatting / second Broker): refuse to start
     private const int ExitImpersonationRevertFailed = 71; // RevertToSelf failed or lied: terminate, never handle another request
+    private const int ExitPipeOwnerUnavailable = 72;      // the pipe owner could not be set to this process's own SID: clients cannot verify us, refuse to start
+    private const int ErrorInvalidOwner = 1307;
 
     private enum ImpersonationFault { None, RevertFails, RevertThrows, RevertLies }
 
@@ -43,14 +46,18 @@ internal static class Program
 
         // maxNumberOfServerInstances == 1 makes .NET create the pipe with FILE_FLAG_FIRST_PIPE_INSTANCE, so an
         // existing instance of this name (squatter, or another Broker) fails creation. Keep it at 1.
+        // The owner is set to this process's own user SID (not the token's default owner, which is Administrators for an
+        // elevated token) so that the Control Plane client can compare GetSecurityInfo(OWNER) with the SID it expects.
         NamedPipeServerStream pipe;
         try
         {
-            pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1,
-                PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            pipe = NamedPipeServerStreamAcl.Create(pipeName, PipeDirection.InOut, 1,
+                PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0, OwnedBySelf(out SecurityIdentifier self));
+            if (!self.Equals(pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier)))) { pipe.Dispose(); return PipeOwnerUnavailable(); }
         }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or InvalidOperationException)
         {
+            if (ex is IOException io && (io.HResult & 0xffff) == ErrorInvalidOwner || ex is InvalidOperationException) return PipeOwnerUnavailable();
             Console.WriteLine("BROKER_FATAL=PIPE_UNAVAILABLE");
             return ExitPipeUnavailable;
         }
@@ -78,6 +85,24 @@ internal static class Program
             await WriteFrameAsync(pipe, response);
             return 0;
         }
+    }
+
+    private static int PipeOwnerUnavailable()
+    {
+        Console.WriteLine("BROKER_FATAL=PIPE_OWNER_UNAVAILABLE");
+        return ExitPipeOwnerUnavailable;
+    }
+
+    // What PipeOptions.CurrentUserOnly would set (this user, full control, nobody else), plus an explicit owner. CurrentUserOnly cannot be combined
+    // with a PipeSecurity. The SID is read from this process's token.
+    private static PipeSecurity OwnedBySelf(out SecurityIdentifier self)
+    {
+        using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+        self = identity.User ?? throw new InvalidOperationException();
+        PipeSecurity security = new();
+        security.SetOwner(self);
+        security.AddAccessRule(new PipeAccessRule(self, PipeAccessRights.FullControl, AccessControlType.Allow));
+        return security;
     }
 
     // Impersonate, read the peer SID and revert on the same thread (no await in between: a continuation could

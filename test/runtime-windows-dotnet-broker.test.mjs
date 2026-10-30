@@ -67,6 +67,18 @@ test('Node Control Plane uses an independent .NET Broker over a real Named Pipe 
     await waitForExit(active); active = null;
     assert.equal(secretBroker.lines.join('|').includes('SYNTHETIC_SECRET_MARKER'), false);
     assert.equal(inspectClaimCount(dll, secretDb), 0);
+    // ADR-002 bounds a protocol message at 2 KiB: a 2049..4096-byte frame is refused while reading, before the peer check.
+    const largeDb = path.join(root, 'oversized-frame.sqlite'), largePipe = pipeName();
+    active = startBroker(dll, largePipe, largeDb, accepted.publicKey, sid, 7, false);
+    const largeBroker = active;
+    await waitForLine(active, 'BROKER_READY');
+    // The Broker may close the pipe before the oversized body is fully written; a refusal or a closed write are both a denial.
+    const large = await request(largePipe, 'A'.repeat(2100), 'A').catch(() => null);
+    assert.ok(large === null || (large.ok === false && large.code === 'denied'));
+    await waitForExit(active); active = null;
+    assert.equal(largeBroker.lines.some(line => line.startsWith('PEER=')), false);
+    assert.ok(largeBroker.lines.includes('REQUEST=DENIED'));
+    assert.equal(inspectClaimCount(dll, largeDb), 0);
     process.stdout.write('BROKER_TRANSPORT=real local Windows Named Pipe; peer SID from OS impersonation token\n');
     process.stdout.write('APPROVAL=separate ephemeral ECDSA signer; tampered, expired, stale-generation receipts denied\n');
     process.stdout.write('ERRORS=fixed denial; synthetic secret marker absent from broker response/logs\n');

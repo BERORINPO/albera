@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Trusted pipe client for the Host Broker (ADR-002, Proposed / NOT VERIFIED). It verifies who owns the pipe server
+       before it writes anything. Built only on demand by `npm run build:windows-broker` or the server-identity test.
+       BCL and P/Invoke only: no package reference. Nothing installs, registers or starts it. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>albera-windows-broker-pipe-client</AssemblyName>
+    <RootNamespace>Albera.WindowsBrokerPipeClient</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>
