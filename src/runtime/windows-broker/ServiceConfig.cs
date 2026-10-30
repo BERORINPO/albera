@@ -6,6 +6,8 @@ using System.Text.Json;
 //   { "pipeName": "ALBERA_HostBroker", "database": "C:\\ProgramData\\Albera\\broker\\journal.sqlite",
 //     "publicKey": "<base64 SubjectPublicKeyInfo of the approval authority>", "controlPlaneSid": "S-1-5-80-...", "generation": 7 }
 // Every rejected value maps to one fixed reason word (never the value itself), so a log line cannot be steered by file content.
+// The config file and the database folder (plus an existing journal / -wal / -shm) must also be owned and writable only by trusted principals and
+// free of reparse points (ServicePathGuard.cs): otherwise a local user could pre-create them, and the service refuses to start.
 internal sealed record ServiceConfig(string PipeName, string Database, byte[] PublicKey, string ControlPlaneSid, long Generation)
 {
     private const int MaxFileBytes = 4096;
@@ -20,7 +22,8 @@ internal sealed record ServiceConfig(string PipeName, string Database, byte[] Pu
     {
         public const string ConfigPath = "config_path", Unreadable = "config_unreadable", TooLarge = "config_too_large", Syntax = "config_syntax",
             Keys = "config_keys", PipeName = "pipe_name", Database = "database", DatabaseDirectory = "database_directory",
-            PublicKey = "public_key", ControlPlaneSid = "control_plane_sid", Generation = "generation";
+            PublicKey = "public_key", ControlPlaneSid = "control_plane_sid", Generation = "generation",
+            ConfigUntrusted = "config_untrusted", DatabaseUntrusted = "database_untrusted";
     }
 
     public static ServiceConfig? TryLoad(string configPath, out string reason)
@@ -31,6 +34,7 @@ internal sealed record ServiceConfig(string PipeName, string Database, byte[] Pu
         try
         {
             using FileStream file = new(configPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (!ServicePathGuard.IsTrustedConfigFile(configPath, file)) { reason = Reason.ConfigUntrusted; return null; }
             if (file.Length > MaxFileBytes) { reason = Reason.TooLarge; return null; }
             bytes = new byte[file.Length];
             file.ReadExactly(bytes);
@@ -69,6 +73,8 @@ internal sealed record ServiceConfig(string PipeName, string Database, byte[] Pu
             if (!IsPlainAbsolutePath(database)) return null;
             reason = Reason.DatabaseDirectory;
             if (!Directory.Exists(Path.GetDirectoryName(database))) return null;
+            reason = Reason.DatabaseUntrusted;
+            if (!ServicePathGuard.IsTrustedDatabaseLocation(database)) return null;
             reason = Reason.PublicKey;
             if (DecodePublicKey(publicKeyText) is not { } publicKey) return null;
             reason = Reason.ControlPlaneSid;

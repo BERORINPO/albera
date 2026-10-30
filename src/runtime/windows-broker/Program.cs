@@ -38,7 +38,7 @@ internal static partial class Program
         if (args.Length == 8 && args[0] == "serve-fault" &&
             Enum.TryParse(args[1], ignoreCase: false, out ImpersonationFault fault) && Enum.IsDefined(fault))
             return await ServeAsync(["serve", .. args[2..]], fault);
-        if (args.Length == 2 && args[0] == "serve-loop") return await ServeLoopForTestAsync(args[1]);
+        if (args.Length is 2 or 3 && args[0] == "serve-loop") return await ServeLoopForTestAsync(args[1], args.Length == 3 ? args[2] : null);
 #endif
         return 64;
     }
@@ -47,7 +47,7 @@ internal static partial class Program
     {
         string pipeName = args[1];
         BrokerSettings settings = new(args[2], Convert.FromBase64String(args[3]), args[4],
-            long.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture), args[6] == "hold", fault);
+            long.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture), args[6] == "hold" ? Timeout.InfiniteTimeSpan : null, fault);
         NamedPipeServerStream? pipe = CreateBrokerPipe(pipeName, settings.AllowedSid, out int failure);
         if (pipe is null) return failure;
         await using (pipe)
@@ -59,7 +59,7 @@ internal static partial class Program
         }
     }
 
-    private sealed record BrokerSettings(string Database, byte[] PublicKey, string AllowedSid, long Generation, bool Hold, ImpersonationFault Fault);
+    private sealed record BrokerSettings(string Database, byte[] PublicKey, string AllowedSid, long Generation, TimeSpan? Hold, ImpersonationFault Fault);
 
     // maxNumberOfServerInstances == 1 makes .NET create the pipe with FILE_FLAG_FIRST_PIPE_INSTANCE, so an
     // existing instance of this name (squatter, or another Broker) fails creation. Keep it at 1.
@@ -89,8 +89,13 @@ internal static partial class Program
         return pipe;
     }
 
-    // One connected client: read one frame, check the peer, answer. `ioToken` bounds the frame read and the answer write only (the service loop's
-    // stop request and per-connection deadline); the claim itself is never cancelled half-way.
+    // The answer is written with its own short budget: a committed claim must reach the client even when SERVICE_CONTROL_STOP or the connection
+    // deadline arrives while the claim is running (the client would otherwise see a failure for a receipt that is already consumed). Kept well below
+    // the 5 s the service host grants on STOP.
+    private static readonly TimeSpan ReplyWriteTimeout = TimeSpan.FromSeconds(2);
+
+    // One connected client: read one frame, check the peer, answer. `ioToken` bounds the frame read only (the service loop's stop request and
+    // per-connection deadline); the claim itself is never cancelled half-way and the answer is written under ReplyWriteTimeout, not under `ioToken`.
     private static async Task HandleConnectionAsync(NamedPipeServerStream pipe, BrokerSettings settings, CancellationToken ioToken)
     {
         byte[] response;
@@ -110,7 +115,8 @@ internal static partial class Program
             response = Encoding.UTF8.GetBytes(Denied);
             Console.WriteLine("REQUEST=DENIED");
         }
-        await WriteFrameAsync(pipe, response, ioToken);
+        using CancellationTokenSource replyBudget = new(ReplyWriteTimeout);
+        await WriteFrameAsync(pipe, response, replyBudget.Token);
     }
 
     private static int PipeOwnerUnavailable()
@@ -138,16 +144,31 @@ internal static partial class Program
     // FILE_CREATE_PIPE_INSTANCE on a pipe, and never a generic right.
     private const PipeAccessRights ControlPlaneAccess = (PipeAccessRights)0x00120083;
 
-    // Only a single principal may get the Control Plane ACE: a virtual service account (S-1-5-80-...) or a user/computer account SID, written
-    // out in full. SDDL aliases (WD, AU, BU, BA) and group SIDs such as S-1-1-0 would let anyone take the Broker's one connection.
+    // Only a single principal may get the Control Plane ACE, written out in full: a virtual service account S-1-5-80-<5 sub-authorities> (so not
+    // S-1-5-80-0, ALL SERVICES), or an S-1-5-21-... SID that the system itself resolves to a USER (not a group, an alias or an unknown SID: the lookup
+    // failing means no). SDDL aliases (WD, AU, BU, BA) and group SIDs such as S-1-1-0 or ...-513 would let anyone take the Broker's one connection.
     internal static SecurityIdentifier? TryParseSid(string value)
     {
         try
         {
             SecurityIdentifier sid = new(value);
-            return sid.Value == value && (sid.Value.StartsWith("S-1-5-80-", StringComparison.Ordinal) || sid.IsAccountSid()) ? sid : null;
+            if (sid.Value != value) return null;
+            string[] parts = value.Split('-');
+            bool virtualAccount = value.StartsWith("S-1-5-80-", StringComparison.Ordinal) && parts.Length == 9 && sid.BinaryLength == 32;
+            bool account = value.StartsWith("S-1-5-21-", StringComparison.Ordinal) && parts.Length == 8 && sid.IsAccountSid() && IsUserSid(sid);
+            return virtualAccount || account ? sid : null;
         }
         catch (ArgumentException) { return null; }
+    }
+
+    private const int SidTypeUser = 1;
+
+    private static bool IsUserSid(SecurityIdentifier sid)
+    {
+        byte[] binary = new byte[sid.BinaryLength];
+        sid.GetBinaryForm(binary, 0);
+        uint nameLength = 256, domainLength = 256;
+        return LookupAccountSidW(null, binary, new StringBuilder((int)nameLength), ref nameLength, new StringBuilder((int)domainLength), ref domainLength, out int use) && use == SidTypeUser;
     }
 
     // Impersonate, read the peer SID and revert on the same thread (no await in between: a continuation could
@@ -200,7 +221,7 @@ internal static partial class Program
         return RevertToSelf();
     }
 
-    private static async Task<byte[]> ValidateAndClaimAsync(byte[] frame, string database, byte[] key, long currentGeneration, bool hold)
+    private static async Task<byte[]> ValidateAndClaimAsync(byte[] frame, string database, byte[] key, long currentGeneration, TimeSpan? hold)
     {
         using JsonDocument envelope = JsonDocument.Parse(frame, new JsonDocumentOptions { MaxDepth = 4 });
         JsonElement root = envelope.RootElement;
@@ -222,11 +243,11 @@ internal static partial class Program
         string Get(string name) => RequiredString(r, name);
         string action = Get("action");
         string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(action)));
-        long leaseGeneration = r.GetProperty("leaseGeneration").GetInt64();
+        long leaseGeneration = RequiredInt64(r, "leaseGeneration");
         if (Get("issuer") != "albera-test-approval-authority" || Get("audience") != "ALBERA-HostBroker" ||
             action != "synthetic.noop" || Get("actionDigest") != digest || Get("leaseId") != "test-lease" ||
             leaseGeneration != currentGeneration || Get("policyVersion") != "test-policy-v1" ||
-            r.GetProperty("expiresAt").GetInt64() <= DateTimeOffset.UtcNow.ToUnixTimeSeconds() ||
+            RequiredInt64(r, "expiresAt") <= DateTimeOffset.UtcNow.ToUnixTimeSeconds() ||
             fields.Where(x => x is "approvalId" or "receiptId" or "operationId" or "idempotencyKey").Any(x => string.IsNullOrWhiteSpace(Get(x))))
         { Console.WriteLine("DENY=receipt-policy"); return Encoding.UTF8.GetBytes(Denied); }
 
@@ -248,10 +269,14 @@ internal static partial class Program
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19) { Console.WriteLine("DENY=duplicate"); return Encoding.UTF8.GetBytes(Denied); }
         await tx.CommitAsync();
         Console.WriteLine("CLAIM=PERSISTED_UNKNOWN");
-        if (hold) await Task.Delay(Timeout.InfiniteTimeSpan);
+        if (hold is { } holdFor) await Task.Delay(holdFor); // test hook: `serve ... hold` holds forever, the seam build's loop entry holds for a fixed time
         return Encoding.UTF8.GetBytes("{\"ok\":true,\"state\":\"UNKNOWN\",\"action\":\"synthetic.noop\"}");
     }
 
+    // A signed receipt can still carry the wrong JSON type (GetInt64 on a string throws InvalidOperationException, which nothing above catches and
+    // which would stop the service): wrong type or out of range is a JsonException, answered as denied like RequiredString.
+    private static long RequiredInt64(JsonElement element, string name) =>
+        element.GetProperty(name) is { ValueKind: JsonValueKind.Number } number && number.TryGetInt64(out long value) ? value : throw new JsonException();
     private static string RequiredString(JsonElement element, string name) => element.GetProperty(name).ValueKind == JsonValueKind.String ? element.GetProperty(name).GetString()! : throw new JsonException();
     private static async Task<byte[]> ReadFrameAsync(Stream stream, CancellationToken token)
     {
@@ -350,4 +375,5 @@ internal static partial class Program
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool CreateRestrictedToken(SafeAccessTokenHandle existingToken, uint flags, uint disableSidCount, IntPtr sidsToDisable, uint deletePrivilegeCount, IntPtr privilegesToDelete, uint restrictedSidCount, ref SidAndAttributes sidsToRestrict, out SafeAccessTokenHandle newToken);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool DuplicateTokenEx(SafeAccessTokenHandle existingToken, uint desiredAccess, IntPtr tokenAttributes, int impersonationLevel, int tokenType, out SafeAccessTokenHandle newToken);
     [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr memory);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool LookupAccountSidW(string? systemName, byte[] sid, StringBuilder name, ref uint nameLength, StringBuilder domain, ref uint domainLength, out int use);
 }

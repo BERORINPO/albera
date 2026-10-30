@@ -148,6 +148,11 @@ function Stop-AdminSquatter($squatter) {
   if (-not $squatter.Process.WaitForExit(15000)) { $squatter.Process.Kill() }
   Get-Json (Get-Content $squatter.Out) | Select-Object -Last 1
 }
+# The Broker service now refuses (exit 73) a config file or database folder that anyone but SYSTEM / Administrators / its own service SID owns or can
+# write, or that sits behind a reparse point (ServicePathGuard.cs). This helper already produces such folders (inheritance removed, SYSTEM and
+# Administrators full, the Broker SID Modify on data\broker only, everyone else read-only), and the config file is created by this script as an
+# Administrator, so no step needs changing. NOT re-run in the VM since the hardening: a first run should confirm that the real service still starts,
+# and an extra check (grant Users write on data\broker, expect 1066 / 73) is the natural next addition.
 function Set-LabAcl([string]$path, [string[]]$grants) {
   New-Item -ItemType Directory -Force -Path $path | Out-Null
   $a = @($path, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', '/grant:r', '*S-1-5-32-544:(OI)(CI)F')
@@ -340,6 +345,14 @@ Step 'g_fatal_exit_codes' 'Real service host: a squatted pipe name and a rejecte
   $ok = ($squat.ExitCode -eq 1066) -and ($squat.ServiceSpecificExitCode -eq 70) -and ($bad.ExitCode -eq 1066) -and ($bad.ServiceSpecificExitCode -eq 73)
   Verdict $ok @("pipe name already held by an Administrator process: win32=$($squat.ExitCode) specific=$($squat.ServiceSpecificExitCode) (expected 1066 / 70)",
     "config with Control Plane SID S-1-1-0: win32=$($bad.ExitCode) specific=$($bad.ServiceSpecificExitCode) (expected 1066 / 73)")
+}
+
+Step 'g_untrusted_db_folder' 'Real service host refuses to start when ordinary users can write the journal folder (1066 / 73)' {
+  & icacls.exe "$LabRoot\data\broker" /grant '*S-1-5-32-545:(OI)(CI)W' | Out-Null
+  try { $untrusted = Start-LabBrokerExpectingFailure $Db3 $R4A $script:SidC }
+  finally { & icacls.exe "$LabRoot\data\broker" /remove:g '*S-1-5-32-545' | Out-Null }
+  $ok = ($untrusted.ExitCode -eq 1066) -and ($untrusted.ServiceSpecificExitCode -eq 73)
+  Verdict $ok @("journal folder writable by BUILTIN\Users: win32=$($untrusted.ExitCode) specific=$($untrusted.ServiceSpecificExitCode) (expected 1066 / 73)")
 }
 
 # ---- squatters (d)

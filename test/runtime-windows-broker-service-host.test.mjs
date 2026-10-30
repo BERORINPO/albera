@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { sendBrokerRequest } from '../src/runtime/windows-broker-client.mjs';
 import {
-  buildBroker, buildBrokerWithTestSeams, buildPipeClient, currentUserSid, getUnavailableReason, inspectClaimCount, makeReceipt,
+  buildBroker, buildBrokerWithTestSeams, buildPipeClient, currentUserSid, getUnavailableReason, inspectClaimCount, makeReceipt, makeTrustedTempDirectory,
   startProcess, waitForExit, waitForLine, GENERATION,
 } from './helpers/windows-broker-harness.mjs';
 
@@ -28,7 +28,8 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
   const running = new Set();
   before(async () => {
     // The Broker accepts only a path already in its final form; CI's TEMP is an 8.3 short name (RUNNER~1) that .NET expands, so use the long one.
-    root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'albera-service-host-')));
+    // It also refuses a config / journal folder that other accounts can write, and the machine's temp folder may grant them Modify: build a trusted one.
+    root = makeTrustedTempDirectory('albera-service-host-'); // long form, DACL = this user + SYSTEM only
     brokerExe = buildBroker(path.join(root, 'broker'));
     loopExe = buildBrokerWithTestSeams(path.join(root, 'broker-seams'));
     helper = await buildPipeClient(path.join(root, 'helper'));
@@ -179,11 +180,12 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
       return { code, ms: Date.now() - asked };
     }
     /** A raw client that writes `bytes` (if any) and resolves with the framed JSON answer, or `undefined` when the server closed without one.
-     *  Between two requests the service disposes the pipe and creates it again, so a connect that races that gap (ENOENT) is retried. */
+     *  The one pipe instance is busy (EBUSY) between a Disconnect and the next wait for a client, so a connect that races that moment is retried.
+     *  A Disconnect() ends the client's read with EPIPE (a close would be EOF): after a complete answer that is the end of the conversation. */
     async function rawRequest(pipe, bytes) {
       for (let attempt = 0; ; attempt += 1) {
         try { return await rawRequestOnce(pipe, bytes); }
-        catch (error) { if (error.code !== 'ENOENT' || attempt >= 40) throw error; await new Promise((resolve) => setTimeout(resolve, 50)); }
+        catch (error) { if (!['ENOENT', 'EBUSY'].includes(error.code) || attempt >= 40) throw error; await new Promise((resolve) => setTimeout(resolve, 50)); }
       }
     }
     const rawRequestOnce = (pipe, bytes) => new Promise((resolve, reject) => {
@@ -191,7 +193,7 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
       const chunks = [];
       socket.once('connect', () => { if (bytes) socket.write(bytes); else socket.destroy(); });
       socket.on('data', (x) => chunks.push(x));
-      socket.once('error', reject);
+      socket.once('error', (error) => { if (!(error.code === 'EPIPE' && chunks.length > 0)) reject(error); });
       socket.once('close', () => {
         const data = Buffer.concat(chunks);
         resolve(data.length >= 4 ? JSON.parse(data.subarray(4).toString('utf8')) : undefined);
