@@ -215,7 +215,8 @@ test('VM lab tooling runs the real Broker as the service and checks two requests
   assert.match(guest, /function Get-LabSigner \{[\s\S]*?CngKey\]::Import\(\[Convert\]::FromBase64String\(\$Authority\.privateBlob\), \[System\.Security\.Cryptography\.CngKeyBlobFormat\]::EccPrivateBlob\)[\s\S]*?ECDsaCng/u);
   assert.match(guest, /\$script:Signer\.SignData\(\$bytes\)/u);
   assert.match(guest, /\$fence = Invoke-HelperAs \$svc "\$tag-fence" @\{ fence = \$Authority\.computerId \} \$expect/u, 'fence is requested through the helper as the Control Plane account');
-  assert.match(guest, /\$cfg = \[ordered\]@\{ pipeName = \$Pipe; database = \$db; authorityKeys = \$keys; controlPlaneSid = \$controlPlaneSid; generation = 7; leaseId = \$Authority\.leaseId; policyVersion = \$Authority\.policyVersion \}/u, 'the lab pins the same lease and policy its receipts name');
+  assert.match(guest, /\$cfg = \[ordered\]@\{ pipeName = \$Pipe; database = \$db; authorityKeys = \$keys; controlPlaneSid = \$controlPlaneSid; generation = \$generation; leaseId = \$Authority\.leaseId; policyVersion = \$Authority\.policyVersion \}/u, 'the lab pins the same lease and policy its receipts name');
+  assert.match(guest, /function Write-BrokerConfig\(\[string\]\$db, \[string\]\$controlPlaneSid, \[int\]\$generation = 7\)/u, 'the generation defaults to the 7 every receipt check was written for; only the issue #84 checks pass another');
   assert.equal(/publicKey|\$R[1-4][ab]?\b(?!\w)/u.test(guest.replace(/\$R2\b/gu, '')), false, 'no v1 key, no precomputed v1 receipt (r2 is the only one, and it is never sent to a Broker that could accept it)');
   assert.match(guest, /\$res3\.replayed -eq \$true/u, 'the replay says so');
   assert.match(guest, /\(-not \$res\.replayed\)/u, 'and the first claim does not');
@@ -226,6 +227,42 @@ test('VM lab tooling runs the real Broker as the service and checks two requests
   assert.equal([...inputs.matchAll(/createTestAuthority\(/gu)].length, 1, 'one authority key for the whole run');
   assert.match(inputs, /ECDSA_PRIVATE_P256_MAGIC = 0x32534345/u);
   assert.match(inputs, /actionDigest: computeActionDigest\('broker\.operation', \{ action: 'synthetic\.noop'/u);
+});
+
+// Issue #84: the lab checks that put the journal contract under the real service identity. The VM run is the lead's; these guards pin what the script must assert.
+test('VM lab issue #84 checks (m1 to m4): generation advance and refusal, v2 migration, side-effect-free inspect, restore replay; clock rollback is an explicit exclusion', () => {
+  const guest = read('test', 'windows-service-lab', 'lab-guest.ps1');
+  const stepBody = (id) => {
+    const start = guest.indexOf(`Step '${id}'`);
+    assert.notEqual(start, -1, `${id} exists`);
+    const next = guest.indexOf('\nStep ', start + 1);
+    const marker = guest.indexOf('\n# ----', start + 1);
+    return guest.slice(start, Math.min(...[next, marker].filter((i) => i !== -1)));
+  };
+  const ids = [...guest.matchAll(/^Step '([^']+)'/gmu)].map((m) => m[1]);
+  assert.deepEqual(ids.filter((id) => /^m\d_/u.test(id)), ['m1_generation_advance_and_regress', 'm2_migrate_v2_journal', 'm3_inspect_recorded_writes_nothing', 'm4_restore_replay']);
+  assert.ok(ids.indexOf('m4_restore_replay') < ids.indexOf('d1_squatter_broker_stopped'), 'the m checks run while the Broker service object still runs the real Broker');
+  const m1 = stepBody('m1_generation_advance_and_regress');
+  assert.match(m1, /Start-LabBroker 'run9b' \$Db6 8/u, 'a higher generation advances the journal');
+  assert.match(m1, /Start-LabBrokerExpectingFailure \$Db6 \$script:SidC 7/u, 'a lower one is refused');
+  assert.match(m1, /\$regressed\.ExitCode -eq 1066\) -and \(\$regressed\.ServiceSpecificExitCode -eq 76\)/u, 'with 1066 / 76');
+  assert.match(m1, /\$fence8\.brokerEpoch -eq 3/u, 'and the refused start did not bump the epoch');
+  assert.match(m1, /\$staleResult\.code -eq 'denied'/u, 'a receipt of the revoked generation is denied');
+  const m2 = stepBody('m2_migrate_v2_journal');
+  assert.match(m2, /WriteAllBytes\(\$Db7, \[Convert\]::FromBase64String\(\$fixture\.base64\)\)/u, 'the version 2 journal is the host-generated fixture');
+  assert.match(m2, /@\{ inspect = \$fixture\.operationId \}/u, 'inspect reads the migrated row, which only a version 3 journal allows');
+  assert.match(m2, /\$claims -eq 2/u, 'and a new claim lands next to it');
+  const m3 = stepBody('m3_inspect_recorded_writes_nothing');
+  assert.match(m3, /\$first\.state -eq 'UNKNOWN'\) -and \(\$first\.action -eq 'synthetic\.inspect'\)/u);
+  assert.match(m3, /\$ghost\.code -eq 'denied'\) -and \(\$before -eq \$after\) -and \(\$claims -eq 1\)/u, 'an unrecorded operation is denied and nothing in the journal changes');
+  const m4 = stepBody('m4_restore_replay');
+  assert.match(m4, /Remove-LabJournal \$Db9\s+Copy-LabJournal \$backup \$Db9/u, 'restore = the stopped service\'s journal replaced by the backup');
+  assert.match(m4, /\$replay\.ok -eq \$false\) -and \(\$replay\.code -eq 'denied'\) -and \(\$preResult\.ok -eq \$false\)/u, 'both the receipt claimed after the backup and the one fenced before it are refused');
+  assert.match(m4, /\$fresh\.result\.ok -eq \$true/u, 'a fresh fence and claim still work');
+  assert.match(m4, /\$duplicate\.replayed -eq \$true/u, 'control: before the restore the exact duplicate is answered from the journal');
+  assert.match(guest, /Explicit exclusion: a CLOCK ROLLBACK is host-tested only/u);
+  assert.match(guest, /ALBERA_BROKER_TEST_CLOCK_OFFSET/u);
+  assert.match(read('scripts', 'windows-service-lab-inputs.mjs'), /journalV2: \{ operationId: JOURNAL_V2_OPERATION_ID, base64: journalV2Base64\(\) \}/u);
 });
 
 test('service config accepts exactly seven keys, validates every value and never echoes file content', () => {

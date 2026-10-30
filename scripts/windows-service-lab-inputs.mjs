@@ -8,8 +8,13 @@
 //              and the lease id and policy version: the guest writes them into the Broker service config AND into every receipt it signs
 //   r2         a receipt that is NEVER sent to a Broker that could accept it (it names a made-up challenge): the checks that must be refused BEFORE a byte is
 //              written (wrong principals, squatters) hand it to the helper, which refuses first
+//   fixtures   journalV2: a version 2 journal (claims with request_digest, no fence tables, one recorded operation) as base64. The guest has no SQLite tool, so the
+//              lab check that migrates an old-version journal under the real service identity writes these bytes to the journal path (issue #84)
 // The private key is a throw-away test key that exists only in this file and in the guest's memory.
-import { writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import os from 'node:os';
+import path from 'node:path';
 import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
 import { createTestAuthority, signedReceipt, PRODUCTION_ISSUER, SYNTHETIC_LEASE_ID, SYNTHETIC_POLICY_VERSION } from './issue-22-approval-authority-fixture.mjs';
 
@@ -28,7 +33,23 @@ header.writeUInt32LE(32, 4); // cbKey
 const privateBlob = Buffer.concat([header, ...['x', 'y', 'd'].map((part) => Buffer.from(jwk[part], 'base64url'))]);
 if (privateBlob.length !== 8 + 96) throw new Error('unexpected P-256 key size');
 
+// The same version 2 shape the host tests use (test/runtime-windows-broker-journal.test.mjs): the CREATE text the Broker's migration accepts, user_version 2, one row.
+const JOURNAL_V2_OPERATION_ID = 'lab84-v2-op';
+function journalV2Base64() {
+  const temp = mkdtempSync(path.join(os.tmpdir(), 'albera-lab-journal-'));
+  try {
+    const file = path.join(temp, 'journal.sqlite');
+    const db = new DatabaseSync(file);
+    db.exec('CREATE TABLE claims (operation_id TEXT PRIMARY KEY, receipt_id TEXT NOT NULL UNIQUE, approval_id TEXT NOT NULL UNIQUE, digest TEXT NOT NULL, lease_generation INTEGER NOT NULL, state TEXT NOT NULL, request_digest TEXT CHECK(request_digest IS NULL OR length(request_digest) = 64));');
+    db.exec('PRAGMA user_version = 2;');
+    db.exec(`INSERT INTO claims VALUES ('${JOURNAL_V2_OPERATION_ID}', '00000000-0000-4000-8000-0000000000a1', '00000000-0000-4000-8000-0000000000a2', 'V2DIGEST', 7, 'UNKNOWN', '${'A'.repeat(64)}');`);
+    db.close();
+    return readFileSync(file).toString('base64');
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+}
+
 const inputs = {
+  fixtures: { journalV2: { operationId: JOURNAL_V2_OPERATION_ID, base64: journalV2Base64() } },
   authority: {
     kid: authority.kid,
     issuer: PRODUCTION_ISSUER,
@@ -43,4 +64,4 @@ const inputs = {
   r2: signedReceipt({ authority, fence: { brokerEpoch: 1, leaseGeneration: 7, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' }, name: 'lab23-r2', projectId: PROJECT_ID, computerId: COMPUTER_ID }),
 };
 writeFileSync(output, `${JSON.stringify(inputs, null, 2)}\n`, 'utf8');
-console.log('wrote the lab authority (kid, SPKI, CNG private blob, lease id, policy version, action digest) and one never-sent receipt');
+console.log('wrote the lab authority (kid, SPKI, CNG private blob, lease id, policy version, action digest), one never-sent receipt and the version 2 journal fixture');
