@@ -127,6 +127,20 @@
       "design": "ADR-010",
       "evidenceRequired": "paired load+fault runs",
       "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "CMP-03",
+      "requirement": "Physical machines are never placed as ephemeral or verification computers, nor across projects",
+      "design": "ADR-005,011",
+      "evidenceRequired": "scheduler property test with physical-ssh candidates",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "id": "SEC-04",
+      "requirement": "Physical machine enrollment pins the host key and installs a restricted, non-forwarding client key",
+      "design": "ADR-002,011",
+      "evidenceRequired": "enrollment negatives: changed host key, missing restrict, forwarding attempt, non-owner enrollment",
+      "status": "NOT_VERIFIED"
     }
   ]
 }

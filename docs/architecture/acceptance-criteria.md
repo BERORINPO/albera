@@ -23,6 +23,8 @@
 | UI-02 | Human/AI desktop input ownership is exclusive | ADR-009 | takeover races and stale inputs |
 | PERF-01 | Baselines reported on fixed reference machine | ADR-010 | benchmark JSON + machine profile |
 | PERF-02 | No regression in security/correctness at higher throughput | ADR-010 | paired load+fault runs |
+| CMP-03 | Physical machines are never placed as ephemeral or verification computers, nor across projects | ADR-005,011 | scheduler property test with physical-ssh candidates |
+| SEC-04 | Physical machine enrollment pins the host key and installs a restricted, non-forwarding client key | ADR-002,011 | enrollment negatives: changed host key, missing restrict, forwarding attempt, non-owner enrollment |
 
 ## Definition of Done per workstream
 1. Code reviewed against accepted ADR (not just draft).
