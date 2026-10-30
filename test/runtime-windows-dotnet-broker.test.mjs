@@ -19,7 +19,7 @@ test('Node Control Plane uses an independent .NET Broker over a real Named Pipe 
   let active;
   try {
     const output = path.join(root, 'out'), intermediate = path.join(root, 'obj');
-    execFileSync('dotnet', ['restore', project, '--property:RestorePackagesWithLockFile=true', `--property:BaseIntermediateOutputPath=${intermediate}${path.sep}`, `--property:MSBuildProjectExtensionsPath=${intermediate}${path.sep}`], { encoding: 'utf8', stdio: 'pipe', timeout: 120_000, windowsHide: true });
+    execFileSync('dotnet', ['restore', project, '--locked-mode', '--property:RestorePackagesWithLockFile=true', `--property:BaseIntermediateOutputPath=${intermediate}${path.sep}`, `--property:MSBuildProjectExtensionsPath=${intermediate}${path.sep}`], { encoding: 'utf8', stdio: 'pipe', timeout: 120_000, windowsHide: true });
     execFileSync('dotnet', ['build', project, '--configuration', 'Release', '--no-restore', '--output', output, `--property:BaseIntermediateOutputPath=${intermediate}${path.sep}`, `--property:MSBuildProjectExtensionsPath=${intermediate}${path.sep}`], { encoding: 'utf8', stdio: 'pipe', timeout: 120_000, windowsHide: true });
     const dll = path.join(output, 'albera-windows-broker.dll');
     const sid = execFileSync(whoami, ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true }).match(/S-1-[0-9-]+/u)?.[0];
