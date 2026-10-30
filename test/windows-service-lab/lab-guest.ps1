@@ -347,6 +347,14 @@ Step 'g_fatal_exit_codes' 'Real service host: a squatted pipe name and a rejecte
     "config with Control Plane SID S-1-1-0: win32=$($bad.ExitCode) specific=$($bad.ServiceSpecificExitCode) (expected 1066 / 73)")
 }
 
+Step 'g_untrusted_db_folder' 'Real service host refuses to start when ordinary users can write the journal folder (1066 / 73)' {
+  & icacls.exe "$LabRoot\data\broker" /grant '*S-1-5-32-545:(OI)(CI)W' | Out-Null
+  try { $untrusted = Start-LabBrokerExpectingFailure $Db3 $R4A $script:SidC }
+  finally { & icacls.exe "$LabRoot\data\broker" /remove:g '*S-1-5-32-545' | Out-Null }
+  $ok = ($untrusted.ExitCode -eq 1066) -and ($untrusted.ServiceSpecificExitCode -eq 73)
+  Verdict $ok @("journal folder writable by BUILTIN\Users: win32=$($untrusted.ExitCode) specific=$($untrusted.ServiceSpecificExitCode) (expected 1066 / 73)")
+}
+
 # ---- squatters (d)
 Step 'd1_squatter_broker_stopped' 'Broker service stopped, administrator squats the pipe name: helper refuses before sending' {
   Stop-LabService $B
