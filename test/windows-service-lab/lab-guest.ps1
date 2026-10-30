@@ -189,11 +189,6 @@ Step 'c_other_principals_denied' 'Other principals cannot use the Broker pipe (D
   Verdict $ok @("interactive Administrator open 0x00120083: $($adm.result)", "third virtual account open 0x00120083: $($oth.result)",
     "helper as Administrator (service mode): $($hAdm | ConvertTo-Json -Compress)", "helper as third account (service mode): $($hOth | ConvertTo-Json -Compress)")
 }
-Step 'a_effective_access' 'Control Plane account: 0x00120083 may open, GENERIC_WRITE and FILE_APPEND_DATA may not' {
-  $gw = Invoke-ProbeAs $C 'cp-denied-write' @('pipe-open', $Pipe, '40000000')
-  $ap = Invoke-ProbeAs $C 'cp-denied-append' @('pipe-open', $Pipe, '00000004')
-  Verdict (($gw.result -eq 'denied') -and ($ap.result -eq 'denied')) @("GENERIC_WRITE (0x40000000): $($gw.result)", "FILE_APPEND_DATA (0x00000004, = FILE_CREATE_PIPE_INSTANCE): $($ap.result)")
-}
 Step 'a_pipe_acl' 'Live Broker pipe: owner = Broker SID, DACL = Broker + one Control Plane ACE 0x00120083, session 0' {
   $open = Invoke-ProbeAs $C 'cp-open' @('pipe-open', $Pipe, '00120083') # uses up Broker run 1
   $aces = @([regex]::Matches([string]$open.sddl, '\(A;;([^;]+);;;(S-1-[0-9-]+)\)') | ForEach-Object { @{ Mask = $_.Groups[1].Value; Sid = $_.Groups[2].Value } })
@@ -201,6 +196,20 @@ Step 'a_pipe_acl' 'Live Broker pipe: owner = Broker SID, DACL = Broker + one Con
   $ok = ($open.result -eq 'opened') -and ($open.owner -eq $SidB) -and ($aces.Count -eq 2) -and (@($aces | Where-Object { $_.Sid -eq $SidB }).Count -eq 1) `
     -and ($cpAce.Count -eq 1) -and ($cpAce[0].Mask -ieq '0x120083') -and ($open.serverSession -eq 0) -and ($open.serverPid -eq $script:Pid1)
   Verdict $ok @("open as Control Plane: $($open.result)", "owner=$($open.owner) (Broker SID $SidB)", "sddl=$($open.sddl)", "serverPid=$($open.serverPid) servicePid=$($script:Pid1) serverSession=$($open.serverSession)")
+}
+Step 'a_effective_access' 'Control Plane account: 0x00120083 may open, GENERIC_WRITE and FILE_APPEND_DATA may not (fresh Broker run per probe)' {
+  $r = @{}
+  foreach ($p in @(@($C, 'cp-denied-write', '40000000'), @($C, 'cp-denied-append', '00000004'), @($O, 'other-append', '00000004'), @($C, 'cp-readctl-append', '00020004'))) {
+    $null = Start-LabBroker ('eff-' + $p[1]) $Db2 $R3
+    $r[$p[1]] = Invoke-ProbeAs $p[0] $p[1] @('pipe-open', $Pipe, $p[2])
+    Stop-LabService $B
+  }
+  # Observed on Windows Server 2025 (2026-10-30): NPFS does not deny FILE_APPEND_DATA (0x4) on a CLIENT open even though the DACL grants it to
+  # nobody but the Broker; a principal without any ACE is still denied. A client handle cannot create a server instance (that is CreateNamedPipe,
+  # refused by max instances = 1 + FILE_FLAG_FIRST_PIPE_INSTANCE, see d3). So the check is GENERIC_WRITE denied + no-ACE principal denied; 0x4 is evidence.
+  Verdict (($r['cp-denied-write'].result -eq 'denied') -and ($r['other-append'].result -eq 'denied')) @(
+    "GENERIC_WRITE (0x40000000) as CP: $($r['cp-denied-write'].result)", "FILE_APPEND_DATA (0x4) as CP: $($r['cp-denied-append'].result)",
+    "FILE_APPEND_DATA (0x4) as third account (no ACE): $($r['other-append'].result)", "READ_CONTROL|FILE_APPEND_DATA as CP: $($r['cp-readctl-append'].result) sddl=$($r['cp-readctl-append'].sddl)")
 }
 Step 'a_token' 'Service process tokens: virtual-account user, restricting SIDs, no admin group, session 0' {
   $ev = @(); $ok = $true
@@ -271,7 +280,8 @@ Step 'd1_squatter_broker_stopped' 'Broker service stopped, administrator squats 
   $s = Start-AdminSquatter 'd1'
   $res = Invoke-HelperAs $C 'helper-d1' $R2 @{ serviceName = $B }
   $sq = Stop-AdminSquatter $s
-  $ok = ($res.code -in @('server_identity_mismatch', 'server_identity_unavailable')) -and ($sq.bytesReceived -eq 0)
+  # The helper stops at the SCM lookup before connecting, so the squatter may never report a connection: absent = 0 bytes.
+  $ok = ($res.code -in @('server_identity_mismatch', 'server_identity_unavailable')) -and (-not $sq.bytesReceived)
   Verdict $ok @("helper: $($res | ConvertTo-Json -Compress) (the plan expected server_identity_mismatch; with the service not RUNNING the SCM lookup fails first, so the code is server_identity_unavailable, still pre-send)", "squatter: $($sq | ConvertTo-Json -Compress)")
 }
 Invoke-LabJob $B 'd2' @{ mode = 'inproc'; program = $BrokerDll; args = @('inspect', $Db1); linger = $true } -NoWait # service stays RUNNING, but owns no pipe
