@@ -6,7 +6,7 @@ using Albera.BrokerContract;
 
 // Runs every unit check in-process and prints one JSON document: { checks: [{ name, ok, detail }], digestProbes: [...] }.
 // The Node test (test/runtime-approval-authority-unit.test.mjs) turns each check into a subtest and re-computes the digest probes with the Node contract.
-internal static class Harness
+internal static partial class Harness
 {
     private const long Start = 1_800_000_000;
     private static readonly List<object> Results = [];
@@ -566,6 +566,7 @@ internal static class Harness
         ProtocolChecks();
         ConfigChecks();
         SignerChecks();
+        KeyGuardChecks();
         Console.WriteLine(JsonSerializer.Serialize(new { checks = Results, digestProbes = DigestProbes() }));
         return 0;
     }

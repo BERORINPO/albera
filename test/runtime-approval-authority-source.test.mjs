@@ -34,7 +34,7 @@ test('the Authority never starts a process, registers a service, writes a file, 
   for (const forbidden of [/Process\.Start/u, /ProcessStartInfo/u, /ServiceBase/u, /ServiceController/u, /\bsc\.exe\b/u, /powershell/iu, /Hyper-?V/iu, /Get-VM/u, /SetAccessControl/u,
     /OpenSCManager|CreateService|ChangeServiceConfig|ControlService|DeleteService|OpenService|QueryServiceStatus/u, /System\.ServiceProcess|Microsoft\.Extensions\.Hosting/u,
     /File\.(?:Write|Create|Delete|Move|Copy|Append)|FileMode\.(?:Create|CreateNew|Append|Truncate)|FileAccess\.Write/u, /HttpClient|System\.Net\.Sockets|TcpClient|WebRequest/u,
-    /Environment\.GetEnvironmentVariable/u, /CngKey\.(?:Create|Import)|CngKeyCreationParameters|CngKeyBlobFormat|ExportPolicy|\.Delete\(\)|NCryptDeleteKey|NCryptCreate|ExportPkcs8PrivateKey|ExportECPrivateKey|ExportParameters\(true\)/u,
+    /Environment\.GetEnvironmentVariable/u, /CngKey\.(?:Create|Import)|CngKeyCreationParameters|CngKeyBlobFormat|ExportPolicy\s*=[^=]|SetProperty|\.Delete\(\)|NCryptDeleteKey|NCryptCreate|ExportPkcs8PrivateKey|ExportECPrivateKey|ExportParameters\(true\)/u,
     /KeyCredentialManager|Windows\.Security\.Credentials/u]) {
     assert.equal(forbidden.test(allCode), false, `no Authority source may match ${forbidden}`);
   }
@@ -116,6 +116,16 @@ test('the service host talks to the SCM through three advapi32 P/Invokes only, a
   assert.ok(created > 0 && created < runtime.indexOf('onReady();'), 'both pipes exist before the service is ready');
   assert.ok(runtime.indexOf('CngMachineKeySigner.Open(') < runtime.indexOf('RunAsync(config, core'), 'the signing key is opened before any pipe exists');
   assert.match(runtime, /return ExitCodes\.SignerUnavailable;/u);
+  // The signing key's protection is read off the opened key (SigningKeyGuard, read-only) before any pipe exists; a failure is its own exit code, 78.
+  assert.ok(runtime.indexOf('KeyProtectionFault(signer)') > runtime.indexOf('CngMachineKeySigner.Open(') && runtime.indexOf('KeyProtectionFault(signer)') < runtime.indexOf('RunAsync(config, core'), 'the key guard runs after the open and before any pipe');
+  assert.match(runtime, /return ExitCodes\.SigningKeyUnprotected;/u);
+  assert.match(code['ExitCodes.cs'], /SignerUnavailable = 77;/u);
+  assert.match(code['ExitCodes.cs'], /SigningKeyUnprotected = 78;/u);
+  const guard = code['SigningKeyGuard.cs'];
+  assert.match(guard, /"Security Descr"/u, 'NCRYPT_SECURITY_DESCR_PROPERTY');
+  assert.match(guard, /policy != CngExportPolicies\.None\) return Reason\.Exportable;/u, 'export policy must be exactly None');
+  assert.match(guard, /sid\.Equals\(service\) \|\| sid\.Equals\(LocalSystem\) \|\| sid\.Equals\(Administrators\)/u, 'the only principals');
+  assert.equal(/Everyone|WellKnownSidType|BuiltinUsers|AuthenticatedUser/u.test(guard), false, 'a whitelist, never a list of broad SIDs to tolerate');
 });
 
 test('the wire protocol: exactly four verbs, two per pipe, and exactly the documented error codes', () => {

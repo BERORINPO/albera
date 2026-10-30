@@ -8,9 +8,9 @@ import { getUnavailableReason, runUnitHarness } from './helpers/approval-authori
 
 // Unit checks of the Approval Authority core, run in-process by test/approval-authority-harness (the real source files plus the test fakes, by
 // source include): pending store (max 32 / TTL 120 s / queue_full / dedupe), digest recomputation, expiry, receipts that validate with the contract
-// and the signer key, presence verification (real RSA-2048 PKCS#1 v1.5 and the fake), protocol framing and verbs per pipe, config rejections, and
-// the CNG signer's refusal to invent a machine key. Windows-only; skipped without the .NET 10 SDK.
-const EXPECTED_AT_LEAST = 37;
+// and the signer key, presence verification (real RSA-2048 PKCS#1 v1.5 and the fake), protocol framing and verbs per pipe, config rejections, the CNG
+// signer's refusal to invent a machine key, and the signing key guard (synthetic descriptors + real per-user software keys). Windows-only; skipped without the .NET 10 SDK.
+const EXPECTED_AT_LEAST = 48;
 
 test('Approval Authority unit checks (pending store, digest, expiry, queue_full, presence, receipts, protocol, config)', { skip: getUnavailableReason(), timeout: 420_000 }, async (t) => {
   const work = mkdtempSync(path.join(os.tmpdir(), 'albera-authority-unit-'));

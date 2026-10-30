@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Security.Principal;
 
 namespace Albera.ApprovalAuthority;
 
@@ -10,7 +11,8 @@ internal static class AuthorityRuntime
 
     public static AuthorityIdentity IdentityOf(AuthorityConfig config) => new(config.Kid, config.Audience, config.PolicyVersion, config.ApproverKeyId);
 
-    /// <summary>The shipped composition: the machine-key signer and the pinned Hello key. 77 when the signing key cannot be opened.</summary>
+    /// <summary>The shipped composition: the machine-key signer and the pinned Hello key. 77 when the signing key cannot be opened, 78 when it is opened
+    /// but not protected as required (SigningKeyGuard). Both are decided before any pipe exists.</summary>
     public static async Task<int> RunProductionAsync(AuthorityConfig config, CancellationToken stop, Action onReady)
     {
         CngMachineKeySigner signer;
@@ -22,10 +24,23 @@ internal static class AuthorityRuntime
         }
         using (signer)
         {
+            if (KeyProtectionFault(signer) is { } fault)
+            {
+                Console.WriteLine($"AUTHORITY_FATAL=SIGNING_KEY_UNPROTECTED:{fault}");
+                Console.WriteLine("AUTHORITY_FIX=recreate the signing key non-exportable with an owner and ACL limited to this service SID, SYSTEM and Administrators (see docs/architecture/approval-authority.md)");
+                return ExitCodes.SigningKeyUnprotected;
+            }
             using RsaPresenceVerifier presence = RsaPresenceVerifier.TryCreate(config.ApproverPublicKey) ?? throw new InvalidOperationException(); // the config already passed this check
             AuthorityCore core = new(new PendingStore(UnixNow), signer, presence, IdentityOf(config), UnixNow);
             return await RunAsync(config, core, stop, onReady);
         }
+    }
+
+    // "This service's SID" is the process token's user SID: the virtual service account under the SCM (the same notion as ServicePathGuard's `self`).
+    private static string? KeyProtectionFault(CngMachineKeySigner signer)
+    {
+        using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+        return identity.User is { } self ? signer.ProtectionFault(self) : SigningKeyGuard.Reason.OwnerUntrusted;
     }
 
     public static async Task<int> RunAsync(AuthorityConfig config, AuthorityCore core, CancellationToken stop, Action onReady)
