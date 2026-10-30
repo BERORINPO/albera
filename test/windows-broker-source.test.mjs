@@ -24,7 +24,9 @@ test('Broker fault-injection seam is compiled out of the shipped build and the p
   const outsideSeam = program.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '');
   assert.equal(/serve-fault|RevertFails|RevertThrows|RevertLies/u.test(outsideSeam), false, 'fault names must only appear inside the test-only #if block');
   assert.match(project, /Condition="'\$\(AlberaBrokerTestFaults\)' == 'true'"/u);
-  assert.equal(/AlberaBrokerTestFaults|ALBERA_BROKER_TEST_FAULTS/u.test(publish), false, 'the publish script must never enable the test seam');
+  // MSBuild reads environment variables as properties, so the publish pins the switch off as a global property.
+  assert.match(publish, /'-p:AlberaBrokerTestFaults=false'/u, 'the publish script must pin the test seam off');
+  assert.equal(/AlberaBrokerTestFaults=(?!false')|ALBERA_BROKER_TEST_FAULTS/u.test(publish), false, 'the publish script must never enable the test seam');
   assert.match(program, /new NamedPipeServerStream\(pipeName, PipeDirection\.InOut, 1,/u, 'maxNumberOfServerInstances == 1 is what makes .NET set FILE_FLAG_FIRST_PIPE_INSTANCE');
 });
 
