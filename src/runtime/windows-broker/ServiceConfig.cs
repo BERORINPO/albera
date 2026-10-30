@@ -7,7 +7,8 @@ using System.Text.Json;
 //     "publicKey": "<base64 SubjectPublicKeyInfo of the approval authority>", "controlPlaneSid": "S-1-5-80-...", "generation": 7 }
 // Every rejected value maps to one fixed reason word (never the value itself), so a log line cannot be steered by file content.
 // The config file and the database folder (plus an existing journal / -wal / -shm) must also be owned and writable only by trusted principals and
-// free of reparse points (ServicePathGuard.cs): otherwise a local user could pre-create them, and the service refuses to start.
+// free of reparse points (ServicePathGuard.cs): otherwise a local user could pre-create them, and the service refuses to start. Once the loop runs it
+// holds the database folder open without FILE_SHARE_DELETE (DatabaseFolderPin.cs); a folder that cannot be pinned ends the start with `database_pin`.
 internal sealed record ServiceConfig(string PipeName, string Database, byte[] PublicKey, string ControlPlaneSid, long Generation)
 {
     private const int MaxFileBytes = 4096;
@@ -23,7 +24,7 @@ internal sealed record ServiceConfig(string PipeName, string Database, byte[] Pu
         public const string ConfigPath = "config_path", Unreadable = "config_unreadable", TooLarge = "config_too_large", Syntax = "config_syntax",
             Keys = "config_keys", PipeName = "pipe_name", Database = "database", DatabaseDirectory = "database_directory",
             PublicKey = "public_key", ControlPlaneSid = "control_plane_sid", Generation = "generation",
-            ConfigUntrusted = "config_untrusted", DatabaseUntrusted = "database_untrusted";
+            ConfigUntrusted = "config_untrusted", DatabaseUntrusted = "database_untrusted", DatabasePin = "database_pin";
     }
 
     public static ServiceConfig? TryLoad(string configPath, out string reason)

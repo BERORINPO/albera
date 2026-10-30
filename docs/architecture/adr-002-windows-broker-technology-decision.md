@@ -1,12 +1,12 @@
 # ADR-002 Supplement — Windows Host Broker Identity and IPC Technology
 
 - **Issue:** [#20](https://github.com/BERORINPO/pigeonholes/issues/20)
-- **Status:** Proposed design decision; implementation and security acceptance remain **NOT VERIFIED**
+- **Status:** Accepted (Broker/IPC scope) once the C1 lab re-run passes (CISO accept conditions C1-C3, decision-log row `2026-10-30+adr002-broker-accept-conditions`). The main ADR-002 file (`decisions/ADR-002-control-guest-trust.md`) remains **Proposed**; Hyper-V rights, the approval authority, the installer and the Guest side stay **NOT VERIFIED**
 - **Date:** 2026-10-28
 - **Scope:** Windows process identity, local Broker IPC, approval receipt boundary, durable replay handling, build/package target, and verification plan
 - **Non-goals:** installing or configuring services, changing persistent ACLs/accounts/privileges, network/firewall changes, Hyper-V operations, or changing the Observer
 
-This supplement selects a technology and makes ADR-002's Broker boundary implementable. It does not promote ADR-002 from Proposed and does not claim that a production security boundary exists. The Runtime implementation remains an in-process adapter; the default Observer remains read-only and disconnected.
+This supplement selects a technology and makes ADR-002's Broker boundary implementable. It does not promote the main ADR-002 from Proposed (only the Broker/IPC scope named in the status line is accepted, conditionally) and does not claim that a production security boundary exists. The Runtime implementation remains an in-process adapter; the default Observer remains read-only and disconnected.
 
 ## Decision
 
@@ -71,7 +71,7 @@ Windows documents that a null/default pipe security descriptor grants broad read
 ### Client token validation and impersonation
 
 1. Read one bounded frame, then inspect the kernel-associated client token; ignore any caller-supplied user, SID, PID, service name, approval, or identity claim.
-2. Use `ImpersonateNamedPipeClient` only to obtain/query the thread token at identification level. Require the exact enabled Control Plane service SID in `TokenGroups`, the service SID in `TokenRestrictedSids`, `TokenSessionId == 0`, and the expected mandatory-integrity level for the installed configuration. Reject a normal interactive-user token, disabled/missing service SID, unexpected restricting SIDs, low integrity, or any token-query error. PID is not substituted for token inspection.
+2. Use `ImpersonateNamedPipeClient` only to obtain/query the thread token at identification level. **Implemented and enforced today (corrected 2026-10-30, accept condition C2 ii):** the token's user SID must equal the configured Control Plane SID (a virtual service account or a user, never a group); any token-query error is a denial. **Target design, NOT implemented** (listed as a gap in `adr-002-host-broker-trust-contract.md`): additionally require the exact enabled Control Plane service SID in `TokenGroups`, the service SID in `TokenRestrictedSids`, `TokenSessionId == 0`, and the expected mandatory-integrity level for the installed configuration, and reject a normal interactive-user token, disabled/missing service SID, unexpected restricting SIDs or low integrity. Until then the pipe DACL (data rights to that one SID only) is what admits the caller. PID is not substituted for token inspection. The query needs no `SeImpersonatePrivilege` (the client opens at `SECURITY_IDENTIFICATION`); see "Least privilege" in the trust contract.
 3. The impersonated section is synchronous, bounded, and contains only token queries. No disk, database, Provider, or Hyper-V work occurs while impersonated. Do not `await`, queue work, call plugins, or invoke callbacks inside it.
 4. Always call `RevertToSelf` from a `finally` path before handling the request. If revert fails, call `Environment.FailFast`/terminate the Broker process; do not continue servicing another connection. Provider dispatch occurs only after successful revert.
 5. Treat `GetNamedPipeClientProcessId` as diagnostic only. On token impersonation or inspection failure, close the connection and return a fixed generic denial; never fall back to message identity.

@@ -182,6 +182,14 @@ foreach ($n in $All) {
   & sc.exe create $n binPath= $bin obj= "NT SERVICE\$n" start= demand type= own | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "sc create $n failed ($LASTEXITCODE)" }
   & sc.exe sidtype $n restricted | Out-Null
+  # ADR-002 accept condition C1 (least privilege): the Broker and the Control Plane need ONLY SeChangeNotifyPrivilege. Without `sc privs` the SCM gives a
+  # virtual-account service SeImpersonatePrivilege and SeCreateGlobalPrivilege as well (potato-class escalation risk at high integrity). The Broker's peer
+  # check opens the client at SECURITY_IDENTIFICATION, which needs no SeImpersonatePrivilege; check a_token asserts the result and every request check
+  # (b, g) proves the service still works without it. The third account (AlberaLabOther) stays as created: it is only a lab stand-in.
+  if ($n -ne $O) {
+    & sc.exe privs $n SeChangeNotifyPrivilege | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc privs $n failed ($LASTEXITCODE)" }
+  }
 }
 $SidB = Get-Sid "NT SERVICE\$B"; $SidC = Get-Sid "NT SERVICE\$C"; $SidO = Get-Sid "NT SERVICE\$O"
 & sc.exe sdset $B "D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;LC;;;${SidC})" | Out-Null
@@ -248,11 +256,11 @@ Step 'a_effective_access' 'Control Plane account: 0x00120083 may open, GENERIC_W
     "GENERIC_WRITE (0x40000000) as CP: $($r['cp-denied-write'].result)", "FILE_APPEND_DATA (0x4) as CP: $($r['cp-denied-append'].result)",
     "FILE_APPEND_DATA (0x4) as third account (no ACE): $($r['other-append'].result)", "READ_CONTROL|FILE_APPEND_DATA as CP: $($r['cp-readctl-append'].result) sddl=$($r['cp-readctl-append'].sddl)")
 }
-Step 'a_token' 'Service process tokens: virtual-account user, restricting SIDs, no admin group, session 0' {
+Step 'a_token' 'Service process tokens: virtual-account user, restricting SIDs, no admin group, session 0, only SeChangeNotifyPrivilege' {
   $ev = @(); $ok = $true; $brokerTokenBlocked = $false
   # The Broker token is read off the real Broker service process (token-of, as the interactive Administrator); the Control Plane token comes from the shim's report.
   $brokerToken = Invoke-ProbeAdmin @('token-of', "$($script:Pid1)")
-  foreach ($t in @(@('Broker', $brokerToken, $SidB), @('ControlPlane', (Get-Content -Raw "$LabRoot\results\$C\cp-open.token.json" | ConvertFrom-Json), $SidC))) {
+  foreach ($t in @(@('Broker', $brokerToken, $SidB, $B), @('ControlPlane', (Get-Content -Raw "$LabRoot\results\$C\cp-open.token.json" | ConvertFrom-Json), $SidC, $C))) {
     $tok = $t[1]
     if ($tok.result) { $ev += "$($t[0]) token not readable as Administrator: $($tok.result)"; $brokerTokenBlocked = $true; continue }
     $restricted = @($tok.restrictedSids | ForEach-Object { $_.sid })
@@ -260,8 +268,13 @@ Step 'a_token' 'Service process tokens: virtual-account user, restricting SIDs, 
     $ev += "$($t[0]) user=$($tok.user.name) session=$($tok.sessionId) integrity=$($tok.integrity) hasRestrictions=$($tok.hasRestrictions) elevated=$($tok.elevated)"
     $ev += "$($t[0]) restrictedSids=$(Names $tok.restrictedSids)"
     $ev += "$($t[0]) enabledGroups=$(Names $enabled)"
+    $privNames = @($tok.privileges | ForEach-Object { $_.name })
     $ev += "$($t[0]) enabledPrivileges=$((@($tok.privileges | Where-Object { $_.enabled } | ForEach-Object { $_.name })) -join ', ')"
+    $ev += "$($t[0]) allPrivileges=$($privNames -join ', ') (C1: expected exactly SeChangeNotifyPrivilege)"
+    $ev += "$($t[0]) sc qprivs: $((& sc.exe qprivs $t[3]) -join ' ')"
     if ($tok.user.sid -ne $t[2] -or $tok.sessionId -ne 0 -or $restricted -notcontains $t[2] -or $restricted -notcontains 'S-1-1-0' -or ($enabled | Where-Object { $_.sid -eq 'S-1-5-32-544' })) { $ok = $false }
+    # C1: no SeImpersonatePrivilege, no SeCreateGlobalPrivilege, nothing but SeChangeNotifyPrivilege (any attribute state; -ne is case-insensitive).
+    if ($privNames.Count -ne 1 -or $privNames[0] -ne 'SeChangeNotifyPrivilege') { $ok = $false }
   }
   if ($ok -and $brokerTokenBlocked) { @{ Status = 'BLOCKED'; Evidence = $ev } } else { Verdict $ok $ev }
 }

@@ -15,8 +15,9 @@ const serviceHost = read('src', 'runtime', 'windows-broker', 'ServiceHost.cs');
 const serviceConfig = read('src', 'runtime', 'windows-broker', 'ServiceConfig.cs');
 const serviceLoop = read('src', 'runtime', 'windows-broker', 'ServiceLoop.cs');
 const servicePathGuard = read('src', 'runtime', 'windows-broker', 'ServicePathGuard.cs');
+const databaseFolderPin = read('src', 'runtime', 'windows-broker', 'DatabaseFolderPin.cs');
 const stripComments = (source) => source.replace(/^\s*\/\/.*$/gmu, '').replace(/\s\/\/ .*$/gmu, '');
-const brokerCode = [program, serviceHost, serviceConfig, serviceLoop, servicePathGuard].map(stripComments).join('\n');
+const brokerCode = [program, serviceHost, serviceConfig, serviceLoop, servicePathGuard, databaseFolderPin].map(stripComments).join('\n');
 
 test('Broker source stays a fixed-action prototype with no process launch, installer or Hyper-V code', () => {
   assert.deepEqual([...program.matchAll(/action != "([^"]+)"/gu)].map((m) => m[1]), ['synthetic.noop']);
@@ -46,7 +47,7 @@ test('Broker pipe is ephemeral, owned by the Broker\'s own SID and grants only t
 
 test('Broker fault-injection seam is compiled out of the shipped build and the pipe stays first-instance only', () => {
   // Every reference to the injected faults sits inside #if ALBERA_BROKER_TEST_FAULTS ... #endif (plus the unconditional enum declaration).
-  const outsideSeam = [program, serviceHost, serviceConfig, serviceLoop, servicePathGuard].map((source) => source.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '')).join('\n');
+  const outsideSeam = [program, serviceHost, serviceConfig, serviceLoop, servicePathGuard, databaseFolderPin].map((source) => source.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '')).join('\n');
   assert.equal(/serve-fault|RevertFails|RevertThrows|RevertLies|serve-loop|ServeLoopForTest/u.test(outsideSeam), false, 'fault names and the serve-loop test entry must only appear inside the test-only #if block');
   assert.match(project, /Condition="'\$\(AlberaBrokerTestFaults\)' == 'true'"/u);
   // MSBuild reads environment variables as properties, so the publish pins the switch off as a global property.
@@ -216,7 +217,7 @@ test('service config accepts exactly five keys, validates every value and never 
   assert.match(serviceConfig, /ImportSubjectPublicKeyInfo\(key, out int used\);\s+return used == key\.Length/u);
   const reasonClass = serviceConfig.slice(serviceConfig.indexOf('internal static class Reason'), serviceConfig.indexOf('public static ServiceConfig? TryLoad'));
   assert.deepEqual([...reasonClass.matchAll(/ = "([a-z_]+)"/gu)].map((m) => m[1]).sort(),
-    ['config_keys', 'config_path', 'config_syntax', 'config_too_large', 'config_unreadable', 'config_untrusted', 'control_plane_sid', 'database', 'database_directory', 'database_untrusted', 'generation', 'pipe_name', 'public_key']);
+    ['config_keys', 'config_path', 'config_syntax', 'config_too_large', 'config_unreadable', 'config_untrusted', 'control_plane_sid', 'database', 'database_directory', 'database_pin', 'database_untrusted', 'generation', 'pipe_name', 'public_key']);
   // The only interpolated console lines are a reason word, a Win32 error number or a fixed stage word (restricted-client), never a config value.
   const interpolated = [...brokerCode.matchAll(/Console\.WriteLine\((\$"[^"]*")\);/gu)].map((m) => m[1]);
   assert.deepEqual(interpolated, ['$"RESTRICTED_TOKEN_SETUP=BLOCKED_{stage}"', '$"SERVICE_DISPATCHER_ERROR={error}"', '$"SERVICE_CONFIG=invalid:{reason}"', '$"SERVICE_CONFIG=invalid:{reason}"']);
@@ -269,4 +270,20 @@ test('reply to a committed claim is written under its own budget, below the stop
   assert.deepEqual([...brokerCode.matchAll(/\.(GetInt64|GetInt32|GetDouble)\(\)/gu)].map((m) => m[0]), [], 'no direct number getter');
   assert.match(program, /is \{ ValueKind: JsonValueKind\.Number \} number && number\.TryGetInt64\(out long value\) \? value : throw new JsonException\(\);/u);
   assert.deepEqual([...program.matchAll(/RequiredInt64\(r, "(\w+)"\)/gu)].map((m) => m[1]), ['leaseGeneration', 'expiresAt']);
+});
+
+// Accept condition C3 (decision-log row 2026-10-30+adr002-broker-accept-conditions). Source guards; behaviour is in runtime-windows-broker-service-hardening.test.mjs.
+test('database folder pin: one kernel32 import, no FILE_SHARE_DELETE, taken before the pipe exists and held until the serve loop ends', () => {
+  assert.deepEqual(importsOf(databaseFolderPin), ['kernel32.dll!CreateFileW']);
+  const pin = stripComments(databaseFolderPin);
+  assert.match(pin, /CreateFileW\(folder, FileListDirectory, FileShareRead/u, 'a data right (FILE_LIST_DIRECTORY): a handle with attribute rights only is ignored by the share-mode check and would pin nothing');
+  assert.match(pin, /FileListDirectory = 0x1, FileShareRead = 0x1, FileShareWrite = 0x2,/u);
+  assert.match(pin, /FileShareRead \| FileShareWrite, IntPtr\.Zero, OpenExisting,/u, 'the share mode is read + write only');
+  assert.equal(/FileShareDelete|FILE_SHARE_DELETE/iu.test(pin), false, 'FILE_SHARE_DELETE is never named; the share mask is exactly read + write');
+  assert.match(pin, /FileFlagBackupSemantics \| FileFlagOpenReparsePoint/u, 'a directory is opened, and a junction is opened as itself');
+  assert.match(pin, /ServicePathGuard\.IsTrustedDatabaseLocation\(database\)/u, 'the guard is run again on the pinned folder');
+  const pinned = serviceLoop.indexOf('using SafeFileHandle? databaseFolder = DatabaseFolderPin.TryPin(config.Database);');
+  assert.ok(pinned > 0, '`using` ties the handle to the loop');
+  assert.ok(pinned < serviceLoop.indexOf('CreateBrokerPipe(config.PipeName'), 'pinned before the pipe is created, so RUNNING is never reported without the pin');
+  assert.match(serviceLoop, /ServiceConfig\.Reason\.DatabasePin\);\s+return ExitServiceConfigInvalid;/u, 'no pin, no service (73)');
 });
