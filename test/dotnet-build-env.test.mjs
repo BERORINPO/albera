@@ -4,49 +4,95 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
-  FIXED_VARIABLES, INHERITED_VARIABLES, NUGET_CONFIG, buildArguments, printBuildIdentity, resolveTrustedDotnet, restoreArguments, sanitisedEnvironment,
+  FIXED_VARIABLES, INHERITED_VARIABLES, NUGET_CONFIG, REG_EXE, USER_IMPORT_SWITCHES, buildArguments, parseRegistryValue, printBuildIdentity, queryRegistry, resolveTrustedDotnet,
+  restoreArguments, sanitisedEnvironment,
 } from '../scripts/dotnet-build-env.mjs';
 
-// Issue #102: the helper's decisions are pure functions of the environment and a file-system view, so none of this runs dotnet.
+// Issue #102: the helper's decisions are pure functions of registry values and a file-system view, so none of this runs dotnet or reg.exe.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DOTNET = 'C:\\Program Files\\dotnet\\dotnet.exe';
+const TRUSTED = { dotnet: DOTNET, programFiles: 'C:\\Program Files' };
 const goodFs = { lstat: () => ({ isFile: () => true, isSymbolicLink: () => false }), realpath: (p) => p };
-const winEnv = { ProgramFiles: 'C:\\Program Files', SystemRoot: 'C:\\WINDOWS' };
+/** An injected HKLM: `values` maps the value name to its data (a missing name is an absent value). */
+const registry = (values) => (key, name) => values[name];
+const goodRegistry = { ProgramW6432Dir: 'C:\\Program Files', ProgramFilesDir: 'C:\\Program Files', InstallLocation: 'C:\\Program Files\\dotnet\\' };
 
-test('dotnet is resolved to <ProgramFiles>\\dotnet\\dotnet.exe, never through PATH', () => {
-  assert.equal(resolveTrustedDotnet({ env: { ...winEnv, PATH: 'D:\\evil' }, platform: 'win32', ...goodFs }), DOTNET);
-  assert.equal(resolveTrustedDotnet({ env: { programw6432: 'C:\\Program Files' }, platform: 'win32', ...goodFs }), DOTNET, 'variable names are case-insensitive, like Windows');
+test('dotnet is resolved from the registry Program Files folder, never through PATH or environment variables', () => {
+  const previous = { ProgramW6432: process.env.ProgramW6432, PATH: process.env.PATH };
+  process.env.ProgramW6432 = 'D:\\Program Files'; // a tampered environment must not matter
+  process.env.PATH = 'D:\\evil';
+  try {
+    assert.deepEqual(resolveTrustedDotnet({ platform: 'win32', query: registry(goodRegistry), ...goodFs }), TRUSTED);
+  } finally {
+    for (const [name, value] of Object.entries(previous)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+  }
+  assert.deepEqual(resolveTrustedDotnet({ platform: 'win32', query: registry({ ProgramFilesDir: 'C:\\Program Files' }), ...goodFs }), TRUSTED, 'ProgramFilesDir is the fallback; InstallLocation is optional');
+  assert.equal(resolveTrustedDotnet({ platform: 'win32', query: registry({ ...goodRegistry, InstallLocation: 'c:\\program files\\dotnet' }), ...goodFs }).dotnet, DOTNET, 'case and a trailing slash do not matter');
 });
 
 test('an untrusted dotnet is refused with a one-line error', () => {
-  const refuse = (options, pattern) => assert.throws(() => resolveTrustedDotnet({ platform: 'win32', ...goodFs, ...options }), (error) => pattern.test(error.message) && !error.message.includes('\n'));
-  refuse({ env: { ProgramFiles: 'D:\\tools\\evil' } }, /^untrusted_dotnet: ProgramFiles is "D:\\tools\\evil"/u);
-  refuse({ env: {} }, /^untrusted_dotnet: ProgramFiles is ""/u);
-  refuse({ env: winEnv, lstat: () => { throw new Error('ENOENT'); } }, /^untrusted_dotnet: .*does not exist.*PATH is refused/u);
-  refuse({ env: winEnv, lstat: () => ({ isFile: () => true, isSymbolicLink: () => true }) }, /not a regular file/u);
-  refuse({ env: winEnv, lstat: () => ({ isFile: () => false, isSymbolicLink: () => false }) }, /not a regular file/u);
-  refuse({ env: winEnv, realpath: () => 'D:\\elsewhere\\dotnet.exe' }, /resolves to D:\\elsewhere/u);
-  refuse({ env: winEnv, platform: 'linux' }, /only build on Windows/u);
+  const refuse = (options, pattern) => assert.throws(() => resolveTrustedDotnet({ platform: 'win32', query: registry(goodRegistry), ...goodFs, ...options }), (error) => pattern.test(error.message) && !error.message.includes('\n'));
+  refuse({ query: registry({}) }, /^untrusted_dotnet: HKLM ProgramFilesDir is ""/u);
+  refuse({ query: registry({ ProgramW6432Dir: 'tools' }) }, /^untrusted_dotnet: HKLM ProgramFilesDir is "tools"/u);
+  refuse({ query: registry({ ...goodRegistry, InstallLocation: 'D:\\tools\\evil\\' }) }, /^untrusted_dotnet: HKLM says dotnet is installed in "D:\\tools\\evil\\"/u);
+  refuse({ query: registry({ ...goodRegistry, InstallLocation: 'C:\\Program Files\\dotnet\\x86' }) }, /HKLM says dotnet is installed/u);
+  refuse({ query: () => { throw new Error('untrusted_dotnet: C:\\Windows\\System32\\reg.exe does not exist'); } }, /reg\.exe does not exist/u);
+  refuse({ lstat: () => { throw new Error('ENOENT'); } }, /^untrusted_dotnet: .*does not exist.*PATH is refused/u);
+  refuse({ lstat: () => ({ isFile: () => true, isSymbolicLink: () => true }) }, /not a regular file/u);
+  refuse({ lstat: () => ({ isFile: () => false, isSymbolicLink: () => false }) }, /not a regular file/u);
+  refuse({ realpath: () => 'D:\\elsewhere\\dotnet.exe' }, /resolves to D:\\elsewhere/u);
+  refuse({ platform: 'linux' }, /only build on Windows/u);
+});
+
+test('reg.exe is used only at its fixed path and its output is parsed strictly', () => {
+  assert.equal(REG_EXE, 'C:\\Windows\\System32\\reg.exe');
+  assert.throws(() => queryRegistry('HKLM\\X', 'Y', { regExists: () => false }), (error) => error.message.startsWith('untrusted_dotnet: C:\\Windows\\System32\\reg.exe does not exist') && !error.message.includes('\n'));
+  const output = '\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\r\n    ProgramW6432Dir    REG_SZ    C:\\Program Files\r\n    Other    REG_SZ    D:\\evil\r\n\r\n';
+  assert.equal(parseRegistryValue(output, 'ProgramW6432Dir'), 'C:\\Program Files');
+  assert.equal(parseRegistryValue(output, 'other'), 'D:\\evil', 'only the asked name is read');
+  assert.equal(parseRegistryValue(output, 'Missing'), undefined);
+  assert.equal(parseRegistryValue('    ProgramW6432Dir    REG_DWORD    0x1', 'ProgramW6432Dir'), undefined, 'only string values count');
 });
 
 test('the child environment keeps only allowlisted variables and drops every override', () => {
   const dirty = {
-    SystemRoot: 'C:\\WINDOWS', Temp: 'C:\\Temp', USERPROFILE: 'C:\\Users\\x', LOCALAPPDATA: 'C:\\Users\\x\\AppData\\Local', Path: 'D:\\evil;C:\\WINDOWS',
+    SystemRoot: 'D:\\evil\\Windows', windir: 'D:\\evil\\Windows', ProgramFiles: 'D:\\evil', ProgramW6432: 'D:\\evil', Temp: 'C:\\Temp', APPDATA: 'D:\\evil\\Roaming', USERPROFILE: 'C:\\Users\\x', LOCALAPPDATA: 'C:\\Users\\x\\AppData\\Local', Path: 'D:\\evil;C:\\WINDOWS',
     MSBUILDENABLEALLPROPERTYFUNCTIONS: '1', MSBuildSDKsPath: 'D:\\evil', MSBUILD_EXE_PATH: 'D:\\evil\\msbuild.dll', NUGET_PACKAGES: 'D:\\evil', NuGetPackageRoot: 'D:\\evil',
     NUGET_HTTP_CACHE_PATH: 'D:\\evil', DOTNET_ROOT: 'D:\\evil', DOTNET_CLI_HOME: 'D:\\evil', DOTNET_MSBUILD_SDK_RESOLVER_SDKS_DIR: 'D:\\evil', DOTNET_NOLOGO: '0',
     DefineConstants: 'ALBERA_BROKER_TEST_FAULTS', AlberaApproverTestFaults: 'true', ALBERA_ANYTHING: '1', Configuration: 'Debug', Platform: 'x86', RuntimeIdentifier: 'win-arm64',
   };
-  const clean = sanitisedEnvironment(dirty, DOTNET);
-  assert.deepEqual(Object.keys(clean).sort(), ['DOTNET_CLI_TELEMETRY_OPTOUT', 'DOTNET_NOLOGO', 'DOTNET_SKIP_FIRST_TIME_EXPERIENCE', 'PATH', 'SystemRoot', 'USERPROFILE', 'LOCALAPPDATA', 'TEMP'].sort());
+  const ownAppData = 'C:\\Temp\\albera-build-appdata-x';
+  const clean = sanitisedEnvironment(dirty, TRUSTED, ownAppData);
+  assert.equal(clean.APPDATA, ownAppData, 'APPDATA is our empty folder, so the user-level NuGet.Config is not read');
+  assert.equal('APPDATA' in sanitisedEnvironment(dirty, TRUSTED), false, 'without a folder of ours APPDATA is dropped, never inherited');
+  assert.deepEqual(Object.keys(clean).sort(), ['APPDATA', 'DOTNET_CLI_TELEMETRY_OPTOUT', 'DOTNET_NOLOGO', 'DOTNET_SKIP_FIRST_TIME_EXPERIENCE', 'PATH', 'ProgramFiles', 'ProgramW6432', 'SystemRoot', 'USERPROFILE', 'LOCALAPPDATA', 'TEMP', 'windir'].sort());
+  assert.deepEqual([clean.SystemRoot, clean.windir, clean.ProgramFiles, clean.ProgramW6432], ['C:\\Windows', 'C:\\Windows', 'C:\\Program Files', 'C:\\Program Files'], 'the Windows and Program Files locations are ours, not the caller\'s');
   assert.equal(clean.TEMP, 'C:\\Temp', 'allowlisted names come back in the canonical spelling');
   assert.deepEqual(Object.fromEntries(Object.entries(clean).filter(([key]) => key.startsWith('DOTNET_'))), FIXED_VARIABLES, 'DOTNET_* is exactly our fixed set (caller DOTNET_NOLOGO=0 is overridden)');
-  assert.equal(clean.PATH, 'C:\\WINDOWS\\System32;C:\\Program Files\\dotnet', 'PATH is System32 + the dotnet folder only');
+  assert.equal(clean.PATH, 'C:\\Windows\\System32;C:\\Program Files\\dotnet', 'PATH is System32 + the dotnet folder only');
   assert.equal(Object.keys(clean).some((key) => /^(?:msbuild|nuget|albera|defineconstants)/iu.test(key)), false);
 });
 
 test('the allowlist itself names no MSBuild, NuGet, DOTNET or Albera variable', () => {
   assert.equal(INHERITED_VARIABLES.some((name) => /^(?:msbuild|nuget|dotnet|albera|defineconstants)/iu.test(name)), false);
-  assert.throws(() => sanitisedEnvironment({}, DOTNET), /SystemRoot is not set/u);
+  assert.equal(INHERITED_VARIABLES.some((name) => /^(?:SystemRoot|windir|ProgramFiles|ProgramW6432|Path)$/iu.test(name)), false, 'those come from the fixed Windows folder and the registry');
+});
+
+const USER_IMPORTS = [
+  'ImportUserLocationsByWildcardBeforeMicrosoftCommonProps', 'ImportUserLocationsByWildcardAfterMicrosoftCommonProps',
+  'ImportUserLocationsByWildcardBeforeMicrosoftCommonTargets', 'ImportUserLocationsByWildcardAfterMicrosoftCommonTargets',
+  'ImportUserLocationsByWildcardBeforeMicrosoftCSharpTargets', 'ImportUserLocationsByWildcardAfterMicrosoftCSharpTargets',
+  'ImportUserLocationsByWildcardBeforeMicrosoftVisualBasicTargets', 'ImportUserLocationsByWildcardAfterMicrosoftVisualBasicTargets',
+  'ImportUserLocationsByWildcardBeforeMicrosoftNetFrameworkProps', 'ImportUserLocationsByWildcardAfterMicrosoftNetFrameworkProps',
+  'ImportUserLocationsByWildcardBeforeMicrosoftNetFrameworkTargets', 'ImportUserLocationsByWildcardAfterMicrosoftNetFrameworkTargets',
+].map((name) => `-p:${name}=false`);
+
+test('restore, publish and build switch off every MSBuild import from the user location (MSBuildUserExtensionsPath)', () => {
+  assert.deepEqual([...USER_IMPORT_SWITCHES].sort(), [...USER_IMPORTS].sort());
+  const restore = restoreArguments({ project: 'a.csproj', runtime: 'win-x64', lockFileExists: () => true });
+  for (const args of [restore, buildArguments({ verb: 'publish', project: 'a.csproj' }), buildArguments({ verb: 'build', project: 'a.csproj' })]) {
+    for (const required of USER_IMPORTS) assert.ok(args.includes(required), `${args[0]} lacks ${required}`);
+  }
 });
 
 const locked = { lockFileExists: () => true };

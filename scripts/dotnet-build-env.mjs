@@ -1,63 +1,106 @@
 // Shared, hardened `dotnet` invocation for every publish script (issue #102). A compromised build machine could otherwise steer the output through
-// the caller's environment: a different `dotnet` found on PATH, MSBuild auto-response files (Directory.Build.rsp), MSBUILD* / NuGet* / DOTNET_* variables,
-// an environment variable named DefineConstants, or a machine / user NuGet.Config. What this helper does about each:
-//   1. dotnet is NOT looked up on PATH: it must be <ProgramFiles>\dotnet\dotnet.exe (a regular file, no link). There is no override variable on purpose: an
-//      override would be one more thing a tampered environment can set. (Tests inject their own file system view instead.)
-//   2. every MSBuild call gets -noAutoResponse (no .rsp files) and -nologo; -nodeReuse:false keeps no build node alive that could outlive the sanitised environment.
+// the caller's environment: a different `dotnet` found on PATH or through ProgramFiles / ProgramW6432, MSBuild auto-response files (Directory.Build.rsp),
+// MSBUILD* / NuGet* / DOTNET_* variables, an environment variable named DefineConstants, user-level MSBuild imports or a machine / user NuGet.Config.
+// What this helper does about each:
+//   1. dotnet is NOT looked up on PATH and NOT located through environment variables. The Program Files folder is read from HKLM (via reg.exe at the fixed path
+//      C:\Windows\System32\reg.exe; HKLM is writable by administrators only) and dotnet.exe must be <ProgramFiles>\dotnet\dotnet.exe, a regular file with no
+//      link in its path. When HKLM\SOFTWARE\dotnet\Setup\InstalledVersions\x64 names an InstallLocation, it must be that same folder. Anything else is refused.
+//      There is no override variable on purpose: an override would be one more thing a tampered environment can set. (Tests inject registry values and a
+//      file-system view instead of running reg.exe.)
+//   2. every MSBuild call gets -noAutoResponse (no .rsp files), -nologo, -nodeReuse:false (no build node outlives the sanitised environment) and switches off
+//      the wildcard imports from the user's MSBuild folder (MSBuildUserExtensionsPath = %LOCALAPPDATA%\Microsoft\MSBuild, importable .props / .targets).
 //   3. the child environment is built from an ALLOWLIST (below), not filtered from the caller's: MSBuild*, NuGet*, DOTNET_*, DefineConstants, Albera* and everything
-//      else simply are not passed on. PATH is rebuilt as System32 + the dotnet folder. Three DOTNET_* values are set by us (no logo, no telemetry, no first-run work).
-//   4. restore is a separate, locked step with the repo's own NuGet config (scripts/nuget.publish.config, --configfile: only nuget.org, nothing else is read);
-//      publish / build then runs --no-restore. A project without packages.lock.json is refused rather than restored unlocked.
+//      else simply are not passed on. SystemRoot / windir / PATH come from the fixed C:\Windows (PATH = System32 + the dotnet folder), ProgramFiles / ProgramW6432
+//      from the registry. USERPROFILE / LOCALAPPDATA are still passed on (the NuGet package cache lives under USERPROFILE); a package taken from a
+//      swapped cache must still match the contentHash in packages.lock.json. Three DOTNET_* values are set by us (no logo, no telemetry, no first-run work).
+//   4. restore is a separate, locked step with the repo's own NuGet config (scripts/nuget.publish.config as --configfile). Checked on SDK 10.0.302: that makes NuGet
+//      ignore the settings of the user-level %APPDATA%\NuGet\NuGet.Config, but the restore task still PARSES that file (an invalid one fails the restore). So the child
+//      gets APPDATA = a fresh empty folder of ours (removed at exit), and the user-level file is not read at all. Publish / build then runs --no-restore. A project without packages.lock.json is refused, not restored unlocked.
 //   5. after the build the caller prints the SDK version and the output SHA-256 (printBuildIdentity), one line each, so two builds can be compared.
-// What it does not do: it does not verify dotnet.exe's signature, and an attacker who can write C:\Program Files already owns the machine.
+// What it does not do: it does not verify dotnet.exe's signature, and an attacker who can write C:\Program Files or HKLM already owns the machine.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const scriptsDirectory = path.dirname(fileURLToPath(import.meta.url));
 export const NUGET_CONFIG = path.join(scriptsDirectory, 'nuget.publish.config');
+export const SYSTEM_ROOT = 'C:\\Windows';
+export const REG_EXE = `${SYSTEM_ROOT}\\System32\\reg.exe`;
+const WINDOWS_KEY = 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion';
+const DOTNET_SETUP_KEY = 'HKLM\\SOFTWARE\\dotnet\\Setup\\InstalledVersions\\x64';
 
-/** The only variables copied from the caller's environment (matched case-insensitively, as Windows does). */
+/** The only variables copied from the caller's environment (matched case-insensitively, as Windows does). SystemRoot / windir / ProgramFiles* are set by us instead. */
 export const INHERITED_VARIABLES = Object.freeze([
-  'SystemRoot', 'SystemDrive', 'windir', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+  'SystemDrive', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'ProgramData', 'ProgramFiles(x86)',
   'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME', 'USERDOMAIN', 'COMPUTERNAME', 'OS', 'PATHEXT', 'ComSpec',
   'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION', 'NUMBER_OF_PROCESSORS',
 ]);
 /** The DOTNET_* values we set ourselves (nothing else with that prefix gets through). */
 export const FIXED_VARIABLES = Object.freeze({ DOTNET_NOLOGO: '1', DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1' });
 
-const PROGRAM_FILES = /^[A-Za-z]:\\Program Files$/iu;
 const lookup = (env, name) => Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
+const DRIVE_FOLDER = /^[A-Za-z]:\\[^\\].*[^\\]$/u;
+const trimSlash = (value) => value.replace(/\\+$/u, '');
 
-/** @returns {string} the trusted absolute path of dotnet.exe; throws `untrusted_dotnet: ...` (one line) when it is missing or is not at the expected place. */
-export function resolveTrustedDotnet({ env = process.env, platform = process.platform, lstat = fs.lstatSync, realpath = fs.realpathSync.native } = {}) {
+/** @returns {string|undefined} the string value of `name` in reg.exe's `query` output (REG_SZ / REG_EXPAND_SZ), or undefined. */
+export function parseRegistryValue(output, name) {
+  for (const line of String(output).split(/\r?\n/u)) {
+    const match = /^\s+(\S+)\s+REG_(?:EXPAND_)?SZ\s+(.*?)\s*$/u.exec(line);
+    if (match && match[1].toLowerCase() === name.toLowerCase()) return match[2];
+  }
+  return undefined;
+}
+
+/** Reads one HKLM value with the fixed C:\Windows\System32\reg.exe (no PATH lookup, a minimal environment). @returns {string|undefined} undefined when the value is absent. */
+export function queryRegistry(key, name, { regExists = () => fs.existsSync(REG_EXE) } = {}) {
+  if (!regExists()) throw new Error(`untrusted_dotnet: ${REG_EXE} does not exist; cannot read the Program Files location from HKLM`);
+  const result = spawnSync(REG_EXE, ['query', key, '/v', name], { env: { SystemRoot: SYSTEM_ROOT, windir: SYSTEM_ROOT }, encoding: 'utf8', shell: false, windowsHide: true });
+  if (result.error) throw new Error(`untrusted_dotnet: ${REG_EXE} could not run (${result.error.message})`);
+  return result.status === 0 ? parseRegistryValue(result.stdout, name) : undefined;
+}
+
+/** @returns {{ dotnet: string, programFiles: string }} the trusted dotnet.exe; throws `untrusted_dotnet: ...` (one line) when anything is missing or disagrees. Registry values and the file system are injectable. */
+export function resolveTrustedDotnet({ platform = process.platform, query = queryRegistry, lstat = fs.lstatSync, realpath = fs.realpathSync.native } = {}) {
   if (platform !== 'win32') throw new Error('untrusted_dotnet: the publish scripts only build on Windows');
-  const base = String(lookup(env, 'ProgramW6432') ?? lookup(env, 'ProgramFiles') ?? '');
-  if (!PROGRAM_FILES.test(base)) throw new Error(`untrusted_dotnet: ProgramFiles is "${base}", expected <drive>:\\Program Files; refusing to look for dotnet anywhere else (PATH is not used)`);
-  const dotnet = path.win32.join(base, 'dotnet', 'dotnet.exe');
+  const programFiles = trimSlash(String(query(WINDOWS_KEY, 'ProgramW6432Dir') ?? query(WINDOWS_KEY, 'ProgramFilesDir') ?? ''));
+  if (!DRIVE_FOLDER.test(programFiles)) throw new Error(`untrusted_dotnet: HKLM ProgramFilesDir is "${programFiles}", not an absolute folder; refusing to look for dotnet anywhere else (PATH is not used)`);
+  const dotnet = path.win32.join(programFiles, 'dotnet', 'dotnet.exe');
+  const installLocation = query(DOTNET_SETUP_KEY, 'InstallLocation');
+  if (installLocation !== undefined && trimSlash(installLocation).toLowerCase() !== path.win32.dirname(dotnet).toLowerCase()) {
+    throw new Error(`untrusted_dotnet: HKLM says dotnet is installed in "${installLocation}", not in ${path.win32.dirname(dotnet)}; refusing`);
+  }
   let stat;
   try { stat = lstat(dotnet); } catch { throw new Error(`untrusted_dotnet: ${dotnet} does not exist; install the .NET 10 SDK there (a dotnet found only via PATH is refused)`); }
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`untrusted_dotnet: ${dotnet} is not a regular file (a link or directory is refused)`);
   if (realpath(dotnet).toLowerCase() !== dotnet.toLowerCase()) throw new Error(`untrusted_dotnet: ${dotnet} resolves to ${realpath(dotnet)} (a link or junction in its path is refused)`);
-  return dotnet;
+  return { dotnet, programFiles };
 }
 
-/** @returns {Record<string,string>} a new environment for the child: allowlisted variables, a rebuilt PATH and our fixed DOTNET_* values. */
-export function sanitisedEnvironment(env, dotnet) {
+/** @returns {Record<string,string>} a new environment for the child (APPDATA = `appData`, an empty folder of ours): allowlisted variables, trusted Windows / Program Files locations, a rebuilt PATH and our fixed DOTNET_* values. */
+export function sanitisedEnvironment(env, { dotnet, programFiles }, appData) {
   const clean = {};
   for (const name of INHERITED_VARIABLES) {
     const value = lookup(env, name);
     if (value !== undefined && value !== '') clean[name] = String(value);
   }
-  const systemRoot = clean.SystemRoot ?? clean.windir;
-  if (!systemRoot) throw new Error('untrusted_environment: SystemRoot is not set');
-  clean.PATH = [path.win32.join(systemRoot, 'System32'), path.win32.dirname(dotnet)].join(';');
-  return { ...clean, ...FIXED_VARIABLES };
+  return {
+    ...clean, SystemRoot: SYSTEM_ROOT, windir: SYSTEM_ROOT, ProgramFiles: programFiles, ProgramW6432: programFiles,
+    ...(appData ? { APPDATA: appData } : {}),
+    PATH: [path.win32.join(SYSTEM_ROOT, 'System32'), path.win32.dirname(dotnet)].join(';'), ...FIXED_VARIABLES,
+  };
 }
 
-const MSBUILD_SWITCHES = Object.freeze(['-noAutoResponse', '-nologo', '-nodeReuse:false']);
+/** Every wildcard import MSBuild would take from the user's MSBuildUserExtensionsPath (SDK 10.0.302 Microsoft.Common.props / .targets, C#, VB, .NET Framework). */
+export const USER_IMPORT_SWITCHES = Object.freeze(
+  ['Common', 'CSharp', 'VisualBasic', 'NetFramework'].flatMap((name) => ['Before', 'After'].flatMap((when) => {
+    const kinds = name === 'Common' || name === 'NetFramework' ? ['Props', 'Targets'] : ['Targets'];
+    return kinds.map((kind) => `-p:ImportUserLocationsByWildcard${when}Microsoft${name}${kind}=false`);
+  })),
+);
+const MSBUILD_SWITCHES = Object.freeze(['-noAutoResponse', '-nologo', '-nodeReuse:false', ...USER_IMPORT_SWITCHES]);
 
 /** `dotnet restore` arguments: locked, with the repo NuGet config, runtime-specific when `runtime` is given. Throws when the project has no packages.lock.json. */
 export function restoreArguments({ project, runtime, properties = [], configFile = NUGET_CONFIG, lockFileExists = (file) => fs.existsSync(file) }) {
@@ -73,8 +116,10 @@ export function buildArguments({ verb, project, args = [], properties = [] }) {
 
 /** @returns {{ dotnet: string, env: Record<string,string>, root: string }} the trusted dotnet and its sanitised environment, for `root` as the working directory. */
 export function createBuildContext(root, options = {}) {
-  const dotnet = resolveTrustedDotnet(options);
-  return { dotnet, env: sanitisedEnvironment(options.env ?? process.env, dotnet), root };
+  const trusted = resolveTrustedDotnet(options);
+  const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-build-appdata-'));
+  process.once('exit', () => { try { fs.rmSync(appData, { recursive: true, force: true }); } catch { /* a leftover empty temp folder is harmless */ } });
+  return { dotnet: trusted.dotnet, env: sanitisedEnvironment(options.env ?? process.env, trusted, appData), root };
 }
 
 /** Same as createBuildContext, but a refusal is one line on stderr and exit 1 (what the publish scripts want). */
