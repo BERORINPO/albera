@@ -5,15 +5,15 @@ namespace Albera.Approver;
 
 // The three commands. Output goes to `output` (stdout), problems to `errors` (stderr) as one `error: <code>` line, and the exit code says which kind (ExitCodes.cs).
 //   list            every pending request, all pages, rendered by Renderer
-//   approve <id>    find the request in a fresh `list`; REFUSE (nothing sent) if the entry is invalid or the digest recomputed from its fields differs from the Authority's;
-//                   show it; ask for "yes" unless --yes; ask the presence signer for a signature over PresenceMessage(approvalId, RECOMPUTED digest, challenge); send `decide`
+//   approve <id>    needs an interactive console (stdin not redirected), else REFUSE before anything is read or sent; find the request in a fresh `list`; REFUSE (nothing sent) if the entry is invalid or the digest recomputed from its fields differs from the Authority's;
+//                   show it; ask for a typed "yes" (there is no way to skip it); ask the presence signer for a signature over PresenceMessage(approvalId, RECOMPUTED digest, challenge); send `decide`
 //   deny <id>       send `decide` deny (a deny needs no presence proof and can only make a request fail)
-internal sealed class ApproverCommands(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, Func<DateTimeOffset> clock)
+internal sealed class ApproverCommands(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, Func<DateTimeOffset> clock, bool interactive)
 {
     private const int MaxPages = 16; // 32 pending requests at most, several per page: a server that keeps saying "more" is not honest
     private static readonly string[] AuthorityCodes = ["authority_unavailable", "request_invalid", "request_expired", "human_denied", "presence_unavailable", "presence_mismatch", "queue_full"];
 
-    private sealed class Stop(int exitCode, string code) : Exception(code) { public int ExitCode { get; } = exitCode; }
+    private sealed class Stop(int exitCode, string code, string? hint = null) : Exception(code) { public int ExitCode { get; } = exitCode; public string? Hint { get; } = hint; }
 
     public Task<int> ListAsync() => GuardAsync(async () =>
     {
@@ -23,21 +23,23 @@ internal sealed class ApproverCommands(IApproverChannel channel, IPresenceSigner
         return ExitCodes.Ok;
     });
 
-    public Task<int> ApproveAsync(string approvalId, bool assumeYes) => GuardAsync(async () =>
+    public Task<int> ApproveAsync(string approvalId) => GuardAsync(async () =>
     {
         RequireApprovalId(approvalId);
-        ListedRequest item = (await FetchAllAsync()).FirstOrDefault(x => x.ApprovalId == approvalId) ?? throw new Stop(ExitCodes.Refused, "not_pending");
+        if (!interactive) throw new Stop(ExitCodes.Refused, "not_interactive", "hint: approve needs a console you type in; stdin is redirected, so nothing was read or sent"); // before any pipe access
+        ListedRequest item =(await FetchAllAsync()).FirstOrDefault(x => x.ApprovalId == approvalId) ?? throw new Stop(ExitCodes.Refused, "not_pending");
         output.Write(Renderer.Render(item, clock()));
         PendingView view = item.View ?? throw new Stop(ExitCodes.Refused, "invalid_entry");
         if (!view.DigestMatches) throw new Stop(ExitCodes.Refused, "digest_mismatch");
-        if (!assumeYes && !Confirmed()) throw new Stop(ExitCodes.Refused, "not_confirmed");
+        if (!Confirmed()) throw new Stop(ExitCodes.Refused, "not_confirmed");
 
+        output.Write("Windows Hello will ask you to verify now. It shows only the app name: the request above is what you approve.\n"); // the Hello prompt itself shows no details
         SignResult signed = signer.Sign(PresenceMessage.Build(view.ApprovalId, view.RecomputedDigest, view.Challenge));
         string decide = signed.Status switch
         {
             SignStatus.Signed => $"{{\"v\":1,\"verb\":\"decide\",\"approvalId\":\"{view.ApprovalId}\",\"decision\":\"approve\",\"presence\":\"{Convert.ToBase64String(signed.Signature!)}\"}}",
             SignStatus.Unavailable => $"{{\"v\":1,\"verb\":\"decide\",\"approvalId\":\"{view.ApprovalId}\",\"decision\":\"presence_unavailable\"}}", // the Authority fails the request
-            _ => throw new Stop(ExitCodes.SignerNotBuilt, "presence_signer_not_built"), // nothing is sent: the request stays pending
+            _ => throw new Stop(ExitCodes.SignerUnavailable, "presence_signer_unavailable", "hint: run AlberaApprover.exe enroll (Windows Hello key missing or Hello not set up); nothing was sent"), // the request stays pending
         };
         return await DecideAsync(decide, "approved");
     });
@@ -109,7 +111,12 @@ internal sealed class ApproverCommands(IApproverChannel channel, IPresenceSigner
     private async Task<int> GuardAsync(Func<Task<int>> body)
     {
         try { return await body(); }
-        catch (Stop stop) { errors.Write($"error: {stop.Message}\n"); return stop.ExitCode; }
+        catch (Stop stop)
+        {
+            errors.Write($"error: {stop.Message}\n");
+            if (stop.Hint is not null) errors.Write(stop.Hint + "\n");
+            return stop.ExitCode;
+        }
         catch (ChannelException ex) { errors.Write($"error: {ex.Code}\n"); return ex.Sent ? ExitCodes.TransportUnknown : ExitCodes.ServerRefused; }
     }
 }

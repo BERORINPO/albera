@@ -9,7 +9,7 @@ import { computeActionDigest } from '../src/runtime/broker-contract/action-diges
 import { validateReceiptV2 } from '../src/runtime/broker-contract/receipt-v2.mjs';
 import { nodePipeOwnerSid } from './helpers/windows-broker-harness.mjs';
 import {
-  VIRTUAL_ACCOUNT_SID, buildApprover, buildAuthority, currentUserSid, getUnavailableReason, makeConfig, makeHelloKey, makeTrustedTempDirectory, runApprover, startAuthority, testOptions,
+  VIRTUAL_ACCOUNT_SID, buildApprover, buildAuthority, currentUserSid, fakeKeyArgument, getUnavailableReason, makeConfig, makeHelloKey, makeTrustedTempDirectory, runApprover, startAuthority, testOptions,
 } from './helpers/approver-harness.mjs';
 
 // Windows-only, same-user, unprivileged: AlberaApprover.exe (test-faults build: fake in-memory RSA "Hello") against the REAL Approval Authority (test-faults build, real RSA
@@ -46,7 +46,8 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
     try { return await body(authority, hello); } finally { await authority.stop(); }
   }
   /** The app, pointed at `authority` with the fake Hello key (omit `hello` for a build with no signer). */
-  const app = (authority, args, { hello, stdin, ...options } = {}) => runApprover(exe, [...args, ...testOptions(authority, { sid, hello, ...options })], { stdin });
+  // approve always needs a typed yes; the fake console (--test-interactive) lets a test pipe it.
+  const app = (authority, args, { hello, stdin = args[0] === 'approve' ? 'yes\n' : '', ...options } = {}) => runApprover(exe, [...args, ...testOptions(authority, { sid, hello, ...options })], { stdin });
   const listed = async (authority) => blocks((await app(authority, ['list'])).stdout);
   const status = (authority, approvalId) => authority.submit({ v: 1, verb: 'status', approvalId });
   const submit = async (authority, overrides = {}) => { const reply = await authority.submit(submitRequest(overrides)); assert.equal(reply.ok, true, JSON.stringify(reply)); return reply.approvalId; };
@@ -82,7 +83,7 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
   it('approve with the fake Hello: the request is approved, its receipt validates with the contract and verifies with the signer key, and it leaves the list', async () => {
     await withAuthority(async (authority, hello) => {
       const approvalId = await submit(authority);
-      const result = await app(authority, ['approve', approvalId, '--yes'], { hello });
+      const result = await app(authority, ['approve', approvalId], { hello });
       assert.deepEqual([result.code, result.stderr], [0, '']);
       assert.ok(result.stdout.includes('digest check: OK') && result.stdout.endsWith('result: approved\n'), result.stdout);
       const approved = await status(authority, approvalId);
@@ -97,7 +98,7 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
     });
   });
 
-  it('without --yes only a typed "yes" approves; anything else decides nothing and the request stays pending', async () => {
+  it('only a typed "yes" approves (there is no --yes); anything else decides nothing and the request stays pending', async () => {
     await withAuthority(async (authority, hello) => {
       const approvalId = await submit(authority);
       for (const answer of ['no\n', '\n', 'y\n']) {
@@ -118,7 +119,7 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
       const denied = await app(authority, ['deny', approvalId]);
       assert.deepEqual([denied.code, denied.stdout, denied.stderr], [0, 'result: denied\n', '']);
       assert.deepEqual(await status(authority, approvalId), { ok: false, code: 'human_denied' });
-      const again = await app(authority, ['approve', approvalId, '--yes'], { hello });
+      const again = await app(authority, ['approve', approvalId], { hello });
       assert.equal(again.code, 65, 'a finalised request is no longer listed, so approve refuses locally');
       assert.equal(again.stderr, 'error: not_pending\n');
       const stale = await app(authority, ['deny', approvalId]);
@@ -126,21 +127,22 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
     });
   });
 
-  it('presence failures: no Hello proof -> presence_unavailable (final), a proof from the wrong key -> presence_mismatch (final), a build without a signer -> exit 69 and nothing sent', async () => {
+  it('presence failures: no Hello proof -> presence_unavailable (final), a proof from the wrong key -> presence_mismatch (final), a build with no usable Hello key -> exit 69 with an enroll hint and nothing sent', async () => {
     await withAuthority(async (authority, hello) => {
       const unavailable = await submit(authority, { operationId: 'op-u', idempotencyKey: 'idem-u' });
-      const noProof = await app(authority, ['approve', unavailable, '--yes'], { hello, presence: 'unavailable' });
+      const noProof = await app(authority, ['approve', unavailable], { hello, presence: 'unavailable' });
       assert.deepEqual([noProof.code, noProof.stderr], [67, 'error: authority:presence_unavailable\n']);
       assert.deepEqual(await status(authority, unavailable), { ok: false, code: 'presence_unavailable' });
 
       const mismatch = await submit(authority, { operationId: 'op-m', idempotencyKey: 'idem-m' });
-      const wrongKey = await app(authority, ['approve', mismatch, '--yes'], { hello: makeHelloKey() });
+      const wrongKey = await app(authority, ['approve', mismatch], { hello: makeHelloKey() });
       assert.deepEqual([wrongKey.code, wrongKey.stderr], [67, 'error: authority:presence_mismatch\n']);
       assert.deepEqual(await status(authority, mismatch), { ok: false, code: 'presence_mismatch' });
 
       const kept = await submit(authority, { operationId: 'op-k', idempotencyKey: 'idem-k' });
-      const noSigner = await app(authority, ['approve', kept, '--yes']); // test-faults build without --test-fake-key = the shipped NotBuilt signer
-      assert.deepEqual([noSigner.code, noSigner.stderr], [69, 'error: presence_signer_not_built\n']);
+      const noSigner = await app(authority, ['approve', kept]); // test-faults build without --test-fake-key = a signer that is never ready
+      assert.deepEqual([noSigner.code, noSigner.stderr.split('\n')[0]], [69, 'error: presence_signer_unavailable']);
+      assert.match(noSigner.stderr, /enroll/u, 'the message tells the person to run enroll');
       assert.equal((await status(authority, kept)).state, 'pending', 'nothing was sent: the request is still pending');
     });
   });
@@ -154,7 +156,7 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
       assert.ok(stdout.includes('"label" = "caf\\u{E9} \\u{3042} \\u{1F600} \\"q\\" \\\\ p\\u{430}ypal" (string)'), stdout);
       assert.ok(stdout.includes('note: 4 character(s) are shown as'), stdout);
       assert.ok(stdout.includes(`actionDigest: ${computeActionDigest('broker.operation', { ...ACTION, args })}`));
-      assert.equal((await app(authority, ['approve', approvalId, '--yes'], { hello })).code, 0, 'and the exact text can be approved');
+      assert.equal((await app(authority, ['approve', approvalId], { hello })).code, 0, 'and the exact text can be approved');
     });
   });
 
@@ -180,7 +182,7 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
       await new Promise((resolve, reject) => { server.once('error', reject); server.listen(`\\\\.\\pipe\\${proxyRoot}\\approver\\v1`, resolve); });
       return { proxyRoot, seen, close: () => new Promise((resolve) => server.close(resolve)) };
     }
-    const viaProxy = (proxy, args, hello) => runApprover(exe, [...args, '--test-pipe-root', proxy.proxyRoot, '--test-owner-sid', nodeOwner, '--test-pid', String(process.pid), '--test-fake-key', hello.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64')]);
+    const viaProxy = (proxy, args, hello) => runApprover(exe, [...args, '--test-pipe-root', proxy.proxyRoot, '--test-owner-sid', nodeOwner, '--test-pid', String(process.pid), '--test-fake-key', hello.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'), '--test-interactive', 'yes'], { stdin: args[0] === 'approve' ? 'yes\n' : '' });
     const withEntry = (change) => (reply) => ({ ...reply, pending: reply.pending.map(change) });
 
     const tampers = {
@@ -196,7 +198,7 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
           const approvalId = await submit(authority);
           const proxy = await startProxy(authority, tamper);
           try {
-            const result = await viaProxy(proxy, ['approve', approvalId, '--yes'], hello);
+            const result = await viaProxy(proxy, ['approve', approvalId], hello);
             assert.deepEqual([result.code, result.stderr], [65, 'error: digest_mismatch\n'], result.stdout);
             assert.ok(result.stdout.includes('digest check: MISMATCH') && result.stdout.includes('DO NOT APPROVE'), result.stdout);
             assert.deepEqual(proxy.seen.map((r) => r.verb), ['list'], 'the proxy never received a decide');
@@ -221,7 +223,7 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
           try {
             const shown = await viaProxy(proxy, ['list'], hello);
             assert.ok(shown.stdout.includes('REFUSED: invalid_entry') && !shown.stdout.includes('proj-alpha'), `${label}\n${shown.stdout}`);
-            const refused = await viaProxy(proxy, ['approve', approvalId, '--yes'], hello);
+            const refused = await viaProxy(proxy, ['approve', approvalId], hello);
             assert.deepEqual([refused.code, refused.stderr], [65, 'error: invalid_entry\n'], label);
             assert.deepEqual(proxy.seen.map((r) => r.verb), ['list', 'list'], label);
           } finally { await proxy.close(); }
@@ -236,7 +238,7 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
         const approvalId = await submit(authority);
         const wrong = { 'owner SID': { ownerSid: VIRTUAL_ACCOUNT_SID }, 'PID': { pid: authority.child.pid + 4 } };
         for (const [label, expectation] of Object.entries(wrong)) {
-          for (const args of [['list'], ['approve', approvalId, '--yes'], ['deny', approvalId]]) {
+          for (const args of [['list'], ['approve', approvalId], ['deny', approvalId]]) {
             const result = await app(authority, args, { hello, ...expectation });
             assert.deepEqual([result.code, result.stdout, result.stderr], [66, '', 'error: server_identity_mismatch\n'], `${label} ${args[0]}`);
           }
@@ -277,31 +279,102 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
     });
   });
 
+  describe('enroll (fake key store; the real Windows Hello is never touched)', () => {
+    const fakeKey = (hello) => ['--test-fake-key', fakeKeyArgument(hello)];
+    const printed = (stdout) => Object.fromEntries([...stdout.matchAll(/^ {2}"(approver\w+)": "([^"]+)",$/gmu)].map((m) => [m[1], m[2]]));
+
+    it('enroll --show prints the three Authority config values; an Authority configured with exactly those values accepts an approval signed by that key', async () => {
+      const hello = makeHelloKey();
+      const shown = await runApprover(exe, ['enroll', '--show', ...fakeKey(hello)]);
+      assert.deepEqual([shown.code, shown.stderr], [0, '']);
+      const values = printed(shown.stdout);
+      assert.deepEqual(Object.keys(values).sort(), ['approverKeyId', 'approverPublicKey', 'approverSid']);
+      assert.equal(values.approverPublicKey, hello.spki, 'the SPKI of the key, base64');
+      assert.equal(values.approverSid, sid, 'the current user SID');
+      assert.match(values.approverKeyId, /^hello-[0-9a-f]{16}$/u);
+      assert.equal(shown.stdout.includes(fakeKeyArgument(hello)), false, 'no private material');
+      const authority = await startAuthority(authorityExe, trusted, { config: makeConfig(values) });
+      try {
+        const approvalId = await submit(authority);
+        const approved = await app(authority, ['approve', approvalId], { hello });
+        assert.deepEqual([approved.code, approved.stderr], [0, '']);
+        assert.equal((await status(authority, approvalId)).state, 'approved');
+      } finally { await authority.stop(); }
+    });
+
+    it('enroll creates a key only when there is none, refuses an existing one, and needs a console; --replace needs the typed word', async () => {
+      const created = await runApprover(exe, ['enroll', '--test-key-state', 'missing', '--test-interactive', 'yes']);
+      assert.equal(created.code, 0, created.stderr);
+      assert.deepEqual(Object.keys(printed(created.stdout)).sort(), ['approverKeyId', 'approverPublicKey', 'approverSid']);
+
+      const hello = makeHelloKey();
+      const exists = await runApprover(exe, ['enroll', '--test-interactive', 'yes', ...fakeKey(hello)]);
+      assert.deepEqual([exists.code, exists.stdout, exists.stderr.split('\n')[0]], [65, '', 'error: already_enrolled']);
+
+      const replaced = await runApprover(exe, ['enroll', '--replace', '--test-interactive', 'yes', ...fakeKey(hello)], { stdin: 'replace\n' });
+      assert.equal(replaced.code, 0, replaced.stderr);
+      assert.notEqual(printed(replaced.stdout).approverPublicKey, hello.spki, 'a new key replaced the old one');
+      const declined = await runApprover(exe, ['enroll', '--replace', '--test-interactive', 'yes', ...fakeKey(hello)], { stdin: 'yes\n' });
+      assert.deepEqual([declined.code, declined.stderr], [65, 'error: not_confirmed\n']);
+
+      const noConsole = await runApprover(exe, ['enroll', '--test-key-state', 'missing']); // stdin is a pipe and the test console flag is absent
+      assert.deepEqual([noConsole.code, noConsole.stdout, noConsole.stderr], [65, '', 'error: not_interactive\n']);
+      const missing = await runApprover(exe, ['enroll', '--show', '--test-key-state', 'missing']);
+      assert.deepEqual([missing.code, missing.stdout, missing.stderr.split('\n')[0]], [65, '', 'error: not_enrolled']);
+    });
+
+    it('approve with redirected stdin is refused with exit 65 before any connection, even with a valid typed yes on the pipe; the same request approves on a console', async () => {
+      await withAuthority(async (authority, hello) => {
+        const approvalId = await submit(authority);
+        const piped = await app(authority, ['approve', approvalId], { hello, interactive: false, stdin: 'yes\n' });
+        assert.deepEqual([piped.code, piped.stdout, piped.stderr.split('\n')[0]], [65, '', 'error: not_interactive']);
+        assert.equal((await status(authority, approvalId)).state, 'pending', 'nothing was sent');
+        assert.equal((await app(authority, ['approve', approvalId], { hello })).code, 0);
+      });
+    });
+  });
+
   describe('the shipped build', () => {
-    it('has no test options, no fake signer and no test seam; every approve ends before any connection', async () => {
+    const utf16 = (text) => Buffer.from(text, 'utf16le');
+
+    it('has no test options, no fake signer and no test seam; it contains the Windows Hello signer, which the test-faults build does not; there is no --yes', async () => {
       const bytes = readFileSync(path.join(root, 'shipped', 'AlberaApprover.dll'));
       const control = readFileSync(path.join(root, 'faults', 'AlberaApprover.dll'));
-      for (const type of ['FakePresenceSigner', 'TestSeam']) {
+      for (const type of ['FakePresenceSigner', 'FakeKeyStore', 'NotReadyPresenceSigner', 'TestSeam']) {
         assert.equal(bytes.includes(Buffer.from(type, 'utf8')), false, `${type} must not be in the shipped build`);
         assert.equal(control.includes(Buffer.from(type, 'utf8')), true, `${type} is in the test-faults build (control)`);
       }
-      for (const literal of ['--test-fake-key', '--test-pid', '--test-owner-sid', '--test-pipe-root']) {
-        assert.equal(bytes.includes(Buffer.from(literal, 'utf16le')), false, `"${literal}" must not be in the shipped build`);
-        assert.equal(control.includes(Buffer.from(literal, 'utf16le')), true, `"${literal}" is in the test-faults build (control)`);
+      for (const type of ['WindowsHelloPresenceSigner', 'WindowsHelloKeyStore', 'KeyCredentialManager']) {
+        assert.equal(bytes.includes(Buffer.from(type, 'utf8')), true, `${type} is in the shipped build`);
+        assert.equal(control.includes(Buffer.from(type, 'utf8')), false, `${type} must not be in the test-faults build (tests never reach the real Hello)`);
       }
-      for (const args of [['--test-pid', '1', 'list'], ['list', '--test-fake-key', 'AA=='], ['list', 'now'], ['approve'], ['approve', 'x'], []]) {
+      for (const literal of ['--test-fake-key', '--test-pid', '--test-owner-sid', '--test-pipe-root', '--test-interactive', '--test-key-state']) {
+        assert.equal(bytes.includes(utf16(literal)), false, `"${literal}" must not be in the shipped build`);
+        assert.equal(control.includes(utf16(literal)), true, `"${literal}" is in the test-faults build (control)`);
+      }
+      for (const build of [bytes, control]) assert.equal(build.includes(utf16('--yes')), false, 'no --yes option in either build');
+      for (const args of [['--test-pid', '1', 'list'], ['list', '--test-fake-key', 'AA=='], ['enroll', '--test-key-state', 'missing'], ['list', '--test-interactive', 'yes'], ['list', 'now'], ['approve'], ['approve', 'x'], ['approve', UNKNOWN_ID, '--yes'], ['enroll', '--yes'], []]) {
         const result = await runApprover(shippedExe, args);
         assert.deepEqual([result.code, result.stdout], [64, ''], args.join(' '));
-        assert.match(result.stderr, /^usage: AlberaApprover list \| approve <approvalId> \[--yes\] \| deny <approvalId>/u);
+        assert.match(result.stderr, /^usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace\]/u);
       }
     });
 
-    it('with no Authority service on this machine, list / approve / deny stop at the identity check with exit 66 (nothing is written to anything)', async () => {
-      for (const args of [['list'], ['approve', UNKNOWN_ID, '--yes'], ['deny', UNKNOWN_ID]]) {
+    it('with no Authority service on this machine, list / deny stop at the identity check with exit 66 (nothing is written to anything)', async () => {
+      for (const args of [['list'], ['deny', UNKNOWN_ID]]) {
         const result = await runApprover(shippedExe, args);
         assert.equal(result.code, 66, `${args[0]}: ${result.stderr}`);
         assert.match(result.stderr, /^error: (authority_unreachable|server_identity_unavailable|server_identity_mismatch)\n$/u);
         assert.equal(result.stdout, '');
+      }
+    });
+
+    it('approve and enroll (create / replace) refuse redirected stdin with exit 65 before touching the pipe or Hello, even with "yes" on stdin', async () => {
+      const approve = await runApprover(shippedExe, ['approve', UNKNOWN_ID], { stdin: 'yes\n' });
+      assert.deepEqual([approve.code, approve.stdout, approve.stderr.split('\n')[0]], [65, '', 'error: not_interactive']);
+      for (const args of [['enroll'], ['enroll', '--replace']]) {
+        const enroll = await runApprover(shippedExe, args, { stdin: 'replace\n' });
+        assert.deepEqual([enroll.code, enroll.stdout, enroll.stderr], [65, '', 'error: not_interactive\n'], args.join(' '));
       }
     });
   });

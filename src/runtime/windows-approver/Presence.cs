@@ -2,19 +2,19 @@ using System.Text;
 
 namespace Albera.Approver;
 
-internal enum SignStatus { Signed, Unavailable, NotBuilt }
+internal enum SignStatus { Signed, Unavailable, NotReady }
 
-/// <summary>Signed: <see cref="Signature"/> is the proof. Unavailable: Hello exists but gave no proof (cancelled, not enrolled, locked). NotBuilt: this build has no signer at all.</summary>
+/// <summary>Signed: <see cref="Signature"/> is the proof. Unavailable: the Hello key exists but gave no proof (cancelled, locked). NotReady: there is no usable Hello key at all (Hello unsupported, not enrolled, or no signer in this build).</summary>
 internal sealed record SignResult(SignStatus Status, byte[]? Signature)
 {
     public static SignResult Signed(byte[] signature) => new(SignStatus.Signed, signature);
     public static SignResult Unavailable { get; } = new(SignStatus.Unavailable, null);
-    public static SignResult NotBuilt { get; } = new(SignStatus.NotBuilt, null);
+    public static SignResult NotReady { get; } = new(SignStatus.NotReady, null);
 }
 
 /// <summary>
-/// The human-presence step. The real implementation (owner-gated, NOT built here) asks Windows Hello (KeyCredentialManager) to sign <paramref name="message"/> with the
-/// approver's RSA-2048 key credential: RSA PKCS#1 v1.5 / SHA-256, a 256-byte signature. The fake (test-faults builds only) signs with an in-memory RSA key.
+/// The human-presence step. The shipped implementation (WindowsHello.cs, WindowsHelloPresenceSigner) asks Windows Hello (KeyCredentialManager) to sign <paramref name="message"/>
+/// with the approver's RSA-2048 key credential: RSA PKCS#1 v1.5 / SHA-256, a 256-byte signature. The fake (test-faults builds only) signs with an in-memory RSA key.
 /// </summary>
 internal interface IPresenceSigner
 {
@@ -31,11 +31,4 @@ internal static class PresenceMessage
 
     public static byte[] Build(string approvalId, string actionDigest, string challenge) =>
         Encoding.UTF8.GetBytes($"{Domain}\0{approvalId}\0{actionDigest}\0{challenge}");
-}
-
-// What every build without a Windows Hello implementation ships: it cannot approve. `approve` then sends nothing to the Authority (the request stays pending for
-// a build that can sign, or expires); `deny` and `list` work.
-internal sealed class NotBuiltPresenceSigner : IPresenceSigner
-{
-    public SignResult Sign(byte[] message) => SignResult.NotBuilt;
 }
