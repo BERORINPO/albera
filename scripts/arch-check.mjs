@@ -365,6 +365,35 @@ for (const w of authorityWired) violations.push(`[10d package.json] ${w} wires t
 if (typeof pkg.scripts?.['build:approval-authority'] !== 'string') violations.push('[10d package.json] build:approval-authority script is missing (false-safe)');
 results.push(`10 Approval Authority is build-on-demand: ${authoritySources.length + 2} source files, ${authorityWired.length} wiring violations`);
 
+// 11. The approver app (src/runtime/windows-approver, AlberaApprover.exe, ADR-002 "Receipt v2" / Approval Authority, Proposed) is a console program a human runs; it is built on demand
+//     only, like the Broker (rule 8) and the Authority (rule 10). The Observer layers and every runtime .mjs file may not import, spawn or name it, package.json may not wire it into
+//     `bin`, `files` or the npm lifecycle, its sources may not name the Broker or Authority projects (it talks to the Authority only over the approver pipe, and shares only the
+//     receipt v2 contract by source include, rule 9), and its source set, lock file and publish script must exist (false-safe). The publish script must pin the test fakes (the
+//     in-memory "Hello" signer and the test options) off.
+const APPROVER_REF = /windows-approver|Albera\.Approver|AlberaApprover|build:approver/i;
+check('11a Approver app is not referenced by Observer layers or runtime modules', [...entry, ...adapters, ...core, ...shared, ...pub, ...runtime], (line) =>
+  APPROVER_REF.test(line) ? 'the approver app must not be imported, spawned or named here (build-on-demand only)' : null,
+);
+const approverRoot = 'src/runtime/windows-approver';
+const approverSources = ['Program.cs', 'TestSeam.cs', 'CommandLine.cs', 'ApproverCommands.cs', 'PendingView.cs', 'Renderer.cs', 'SafeText.cs', 'Presence.cs', 'Channel.cs', 'PipeChannel.cs',
+  'ServerExpectation.cs', 'ExitCodes.cs'];
+for (const f of [...approverSources, 'Albera.Approver.csproj', 'packages.lock.json']) {
+  if (!fs.existsSync(path.join(ROOT, approverRoot, f))) violations.push(`[11b Approver source] ${approverRoot}/${f} does not exist (false-safe)`);
+}
+check('11c Approver sources do not name the Broker or Authority projects', approverSources.map((f) => `${approverRoot}/${f}`).filter((f) => fs.existsSync(path.join(ROOT, f))), (line) =>
+  /windows-broker|WindowsBroker|windows-approval-authority|Albera\.ApprovalAuthority|approval-authority\.exe/i.test(line) ? 'the approver is separately deployable: no reference to the Broker or Authority project' : null,
+);
+const approverPublish = fs.existsSync(path.join(ROOT, 'scripts/publish-windows-approver.mjs')) ? fs.readFileSync(path.join(ROOT, 'scripts/publish-windows-approver.mjs'), 'utf8') : '';
+if (!approverPublish.includes('-p:AlberaApproverTestFaults=false')) violations.push('[11b Approver source] scripts/publish-windows-approver.mjs does not pin the test fakes off (false-safe)');
+const approverWired = [
+  ...Object.entries(pkg.bin ?? {}).filter(([, v]) => APPROVER_REF.test(String(v))).map(([k]) => `bin.${k}`),
+  ...LIFECYCLE.filter((k) => APPROVER_REF.test(String(pkg.scripts?.[k] ?? ''))).map((k) => `scripts.${k}`),
+  ...(pkg.files ?? []).filter((v) => APPROVER_REF.test(String(v))).map((v) => `files[${v}]`),
+];
+for (const w of approverWired) violations.push(`[11d package.json] ${w} wires the approver app into the package or an automatic step`);
+if (typeof pkg.scripts?.['build:approver'] !== 'string') violations.push('[11d package.json] build:approver script is missing (false-safe)');
+results.push(`11 Approver app is build-on-demand: ${approverSources.length + 2} source files, ${approverWired.length} wiring violations`);
+
 for (const r of results) console.log(r);
 console.log(`suppressed (arch-allow): ${suppressed}`);
 if (violations.length) {

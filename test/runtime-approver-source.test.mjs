@@ -1,0 +1,151 @@
+import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { test } from 'node:test';
+
+// Source-level guards for the approver app (AlberaApprover.exe; ADR-002 "Receipt v2" / Approval Authority, Proposed / NOT VERIFIED). They run on every OS and need no .NET SDK.
+const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const directory = path.join(root, 'src', 'runtime', 'windows-approver');
+const read = (...parts) => readFileSync(path.join(root, ...parts), 'utf8');
+const sources = Object.fromEntries(readdirSync(directory).filter((f) => f.endsWith('.cs')).map((f) => [f, readFileSync(path.join(directory, f), 'utf8')]));
+const project = read('src', 'runtime', 'windows-approver', 'Albera.Approver.csproj');
+const lockFile = JSON.parse(read('src', 'runtime', 'windows-approver', 'packages.lock.json'));
+const publish = read('scripts', 'publish-windows-approver.mjs');
+const stripComments = (source) => source.replace(/^\s*\/\/.*$/gmu, '').replace(/\s\/\/ .*$/gmu, '');
+const code = Object.fromEntries(Object.entries(sources).map(([name, text]) => [name, stripComments(text)]));
+const allCode = Object.values(code).join('\n');
+const outsideSeam = (text) => text.replace(/#if ALBERA_APPROVER_TEST_FAULTS[\s\S]*?#endif/gu, '');
+const shippedCode = Object.entries(code).filter(([name]) => name !== 'TestSeam.cs').map(([, text]) => outsideSeam(text)).join('\n');
+const importsOf = (source) => [...source.matchAll(/\[DllImport\("([^"]+)"[^\]]*\)\]\s*(?:private|internal|public) static extern \w+ (\w+)\(/gu)].map((m) => `${m[1]}!${m[2]}`);
+const sliceBetween = (text, from, to) => text.slice(text.indexOf(from), text.indexOf(to, text.indexOf(from)));
+
+test('the approver is a separate project: no package, no other project, the contract by source include only, no elevation', () => {
+  assert.deepEqual([...project.matchAll(/<PackageReference /gu)], [], 'no package reference');
+  assert.equal(/ProjectReference|windows-broker|WindowsBroker|windows-approval-authority|ApprovalAuthority/iu.test(project), false, 'no other project is referenced');
+  assert.deepEqual([...project.matchAll(/<Compile Include="([^"]+)"/gu)].map((m) => m[1]), ['../broker-contract/*.cs']);
+  assert.match(project, /<AssemblyName>AlberaApprover<\/AssemblyName>/u);
+  assert.match(project, /<RuntimeIdentifiers>win-x64<\/RuntimeIdentifiers>/u);
+  assert.equal(/ApplicationManifest|requestedExecutionLevel|WindowsService|UseWindowsServices|UseWindowsForms|UseWPF/iu.test(project), false, 'no elevation, no service wrapper, no UI framework');
+  assert.deepEqual(Object.values(lockFile.dependencies).map((framework) => Object.keys(framework)), [[], []], 'the lock file pins no package');
+  for (const [name, text] of Object.entries(sources)) {
+    assert.equal(/windows-broker|WindowsBroker|windows-approval-authority|Albera\.ApprovalAuthority|approval-authority\.exe/iu.test(text), false, `${name} must not name another project`);
+  }
+});
+
+test('the approver never starts a process, registers a service, writes a file, uses the network, reads the environment, or creates / imports / exports / deletes a key', () => {
+  for (const forbidden of [/Process\.Start/u, /ProcessStartInfo/u, /ServiceBase/u, /ServiceController/u, /\bsc\.exe\b/u, /powershell/iu, /Hyper-?V/iu, /SetAccessControl/u,
+    /CreateService|ChangeServiceConfig|ControlService|DeleteService|StartService/u, /System\.ServiceProcess|Microsoft\.Extensions\.Hosting/u,
+    /File\.(?:Write|Create|Delete|Move|Copy|Append|Open)|FileMode\.|FileAccess\.Write|new FileStream|Directory\./u, /HttpClient|System\.Net\.Sockets|TcpClient|WebRequest/u,
+    /Environment\.GetEnvironmentVariable|Environment\.ExpandEnvironmentVariables/u, /CngKey|NCrypt|ExportPkcs8PrivateKey|ExportRSAPrivateKey|ExportParameters\(true\)|RSA\.Create\(\d/u,
+    /KeyCredentialManager|Windows\.Security\.Credentials/u]) {
+    assert.equal(forbidden.test(allCode), false, `no approver source may match ${forbidden}`);
+  }
+  assert.equal(/RSA\.Create\(\)/u.test(outsideSeam(allCode)), false, 'an RSA key object exists only in the test seam');
+});
+
+test('the real Windows Hello signer is NOT built: the shipped signer reports NotBuilt, and the interface is the only seam', () => {
+  assert.match(code['Presence.cs'], /internal interface IPresenceSigner\s*\{\s*SignResult Sign\(byte\[\] message\);\s*\}/u);
+  assert.match(code['Presence.cs'], /class NotBuiltPresenceSigner : IPresenceSigner\s*\{\s*public SignResult Sign\(byte\[\] message\) => SignResult\.NotBuilt;/u);
+  assert.deepEqual([...allCode.matchAll(/class (\w+) : IPresenceSigner/gu)].map((m) => m[1]).sort(), ['NotBuiltPresenceSigner']);
+  assert.deepEqual([...allCode.matchAll(/class (\w+)\([^)]*\) : IPresenceSigner/gu)].map((m) => m[1]), ['FakePresenceSigner'], 'the only other implementation is the fake');
+  assert.match(code['Program.cs'], /IPresenceSigner signer = new NotBuiltPresenceSigner\(\);/u);
+  assert.equal(/WindowsHello|KeyCredential/u.test(allCode), false, 'no Hello code at all');
+});
+
+test('the fake signer, the test options and the TestSeam exist only inside #if ALBERA_APPROVER_TEST_FAULTS and never in the shipped build', () => {
+  assert.equal(/FakePresenceSigner|TestSeam|--test-|ImportPkcs8PrivateKey|SignData/u.test(shippedCode), false, 'fake names only appear inside the test-only #if blocks');
+  assert.match(sources['TestSeam.cs'].trimStart(), /^#if ALBERA_APPROVER_TEST_FAULTS/u, 'TestSeam.cs is one #if block');
+  assert.match(sources['TestSeam.cs'].trimEnd(), /#endif$/u);
+  assert.match(project, /Condition="'\$\(AlberaApproverTestFaults\)' == 'true'"/u);
+  assert.match(project, /<DefineConstants>\$\(DefineConstants\);ALBERA_APPROVER_TEST_FAULTS<\/DefineConstants>/u);
+  assert.equal([...outsideSeam(sources['Program.cs']).matchAll(/ALBERA_APPROVER_TEST_FAULTS/gu)].length, 0, 'the entry file has no stray reference to the switch outside its #if blocks');
+  assert.match(sources['Program.cs'], /#if ALBERA_APPROVER_TEST_FAULTS\n\s*if \(!TestSeam\.TryApply\(ref args, ref expectation, ref signer, ref timeoutMs\)\) return Usage\(\);\n#endif/u);
+  // MSBuild reads environment variables as properties, so the publish pins the switch off as a global property and never turns it on.
+  assert.match(publish, /'-p:AlberaApproverTestFaults=false'/u);
+  assert.equal(/AlberaApproverTestFaults=(?!false')|ALBERA_APPROVER_TEST_FAULTS/u.test(publish), false, 'the publish script must never enable the test fakes');
+});
+
+test('the server is verified on the connected handle BEFORE the only write: SQOS identification, owner SID, server PID, session 0 in service mode', () => {
+  const pipe = code['PipeChannel.cs'];
+  assert.deepEqual(importsOf(pipe), ['kernel32.dll!CreateFileW', 'kernel32.dll!GetNamedPipeServerProcessId', 'kernel32.dll!GetNamedPipeServerSessionId']);
+  assert.deepEqual(importsOf(code['ServerExpectation.cs']), ['advapi32.dll!OpenSCManagerW', 'advapi32.dll!OpenServiceW', 'advapi32.dll!QueryServiceStatusEx', 'advapi32.dll!CloseServiceHandle']);
+  assert.match(pipe, /SecuritySqosPresent = 0x00100000, SecurityIdentification = 0x00010000/u);
+  assert.match(pipe, /FlagOverlapped \| SecuritySqosPresent \| SecurityIdentification/u);
+  assert.match(code['PipeChannel.cs'].replace(/\/\*[^*]*\*\//gu, '').replace(/ +/gu, ' '), /ClientAccess = 0x1 \| 0x2 \| 0x80 \| 0x20000 \| 0x100000 ?;/u, 'specific rights, never GENERIC_WRITE');
+  const call = sliceBetween(pipe, 'public async Task<string> CallAsync', 'private async Task<NamedPipeClientStream> ConnectAsync');
+  const order = ['ConnectAsync(', 'VerifyServer(pipe)', 'ExchangeAsync('].map((token) => call.indexOf(token));
+  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `connect -> verify -> exchange (${order})`);
+  assert.equal([...pipe.matchAll(/\.WriteAsync\(/gu)].length, 1, 'one write site');
+  assert.ok(pipe.indexOf('VerifyServer(NamedPipeClientStream') < pipe.indexOf('.WriteAsync('), 'the write is after the verification code');
+  const verify = sliceBetween(pipe, 'private void VerifyServer', 'private static ChannelException Mismatch');
+  for (const token of ['expectation.Resolve()', 'GetOwner(typeof(SecurityIdentifier))', 'owner.Equals(expected.Owner)', 'GetNamedPipeServerProcessId(', 'serverPid != expected.Pid', 'expected.RequireSessionZero', 'session != 0']) {
+    assert.ok(verify.includes(token), `VerifyServer checks ${token}`);
+  }
+  assert.match(verify, /catch \(Exception ex\) when \(ex is not ChannelException\)\s*\{\s*throw new ChannelException\(ChannelCodes\.ServerIdentityUnavailable, sent: false\);/u, 'a failed check is a pre-send code');
+  const expectation = code['ServerExpectation.cs'];
+  assert.match(expectation, /ProductionPipeRoot = @"ALBERA\\ApprovalAuthority", ProductionServiceName = "AlberaApprovalAuthority"/u);
+  assert.match(expectation, /new NTAccount\("NT SERVICE", ServiceName\)\.Translate\(typeof\(SecurityIdentifier\)\)/u);
+  assert.match(expectation, /new ResolvedServer\(owner, ServicePid\(ServiceName\), RequireSessionZero: true\)/u);
+  assert.match(expectation, /Production \{ get; \} = new\(ProductionPipeRoot, ProductionServiceName, null, null\)/u);
+  assert.match(expectation, /ApproverPipe => PipeRoot \+ @"\\approver\\v1"/u);
+  assert.equal(/submit/iu.test(allCode), false, 'the approver never names the submit pipe or verb');
+});
+
+test('the wire protocol: only list and decide, only approve / deny / presence_unavailable, frames of 1..2048 bytes, exactly the Authority\'s error codes', () => {
+  const commands = code['ApproverCommands.cs'];
+  assert.deepEqual([...new Set([...commands.matchAll(/\\"verb\\":\\"(\w+)\\"/gu)].map((m) => m[1]))].sort(), ['decide', 'list']);
+  assert.deepEqual([...new Set([...commands.matchAll(/\\"decision\\":\\"(\w+)\\"/gu)].map((m) => m[1]))].sort(), ['approve', 'deny', 'presence_unavailable']);
+  assert.match(commands, /AuthorityCodes = \["authority_unavailable", "request_invalid", "request_expired", "human_denied", "presence_unavailable", "presence_mismatch", "queue_full"\]/u);
+  assert.match(code['PipeChannel.cs'], /MaxFrameBytes = 2048/u);
+  assert.match(code['PipeChannel.cs'], /body\.Length is < 1 or > MaxFrameBytes/u);
+  assert.match(code['PipeChannel.cs'], /length > MaxFrameBytes/u);
+  assert.match(code['PipeChannel.cs'], /length < 1 \|\|/u);
+  assert.match(code['PipeChannel.cs'], /await pipe\.ReadAsync\(new byte\[1\], token\) != 0/u, 'the reply must be followed by end of stream');
+  // The approval id is pasted into request text, so only the Authority's uuid grammar may reach it.
+  assert.match(code['PendingView.cs'], /UuidPattern = "\^\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{12\}\$"/u);
+  assert.equal([...commands.matchAll(/RequireApprovalId\(approvalId\);/gu)].length, 2, 'approve and deny validate the id before building a request');
+  assert.match(code['CommandLine.cs'], /IsApprovalId\(approved\)/u);
+});
+
+test('approve: refuse on a digest mismatch BEFORE the signer is asked; the signed digest is the one this app recomputed, never the Authority\'s; one signing site', () => {
+  const approve = sliceBetween(code['ApproverCommands.cs'], 'public Task<int> ApproveAsync', 'public Task<int> DenyAsync');
+  const order = ['RequireApprovalId(', 'FetchAllAsync()', 'Renderer.Render(', 'view.DigestMatches', 'Confirmed()', 'signer.Sign(', 'DecideAsync('].map((token) => approve.indexOf(token));
+  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `validate -> list -> show -> digest check -> confirm -> sign -> decide (${order})`);
+  assert.equal([...code['ApproverCommands.cs'].matchAll(/signer\.Sign\(/gu)].length, 1, 'one signing site');
+  assert.match(approve, /PresenceMessage\.Build\(view\.ApprovalId, view\.RecomputedDigest, view\.Challenge\)/u);
+  assert.equal(/AuthorityDigest/u.test(code['ApproverCommands.cs']), false, 'the Authority-sent digest is only compared (PendingView), never used by the command');
+  assert.match(code['PendingView.cs'], /DigestMatches => string\.Equals\(AuthorityDigest, RecomputedDigest, StringComparison\.Ordinal\)/u);
+  assert.match(code['PendingView.cs'], /string recomputed = ActionDigest\.Compute\(purpose, dto\);/u, 'the contract\'s own digest code');
+  assert.match(code['PendingView.cs'], /StrictJson\.Parse\(Encoding\.UTF8\.GetBytes\(entry\.GetProperty\("action"\)\.GetRawText\(\)\), 3\)/u, 'the action is re-read with the strict reader');
+  assert.match(approve, /SignStatus\.Signed =>[\s\S]*SignStatus\.Unavailable =>[\s\S]*_ => throw new Stop\(ExitCodes\.SignerNotBuilt/u, 'not built sends nothing');
+});
+
+test('rendering: every string a person is shown goes through SafeText (printable ASCII only), and every digest input is rendered', () => {
+  const renderer = code['Renderer.cs'];
+  assert.match(code['SafeText.cs'], /c is >= ' ' and <= '~'/u, 'only printable ASCII passes');
+  for (const field of ['view.Purpose', 'view.Action.Action', 'view.Action.ProjectId', 'view.Action.ComputerId', 'view.OperationId', 'name', 's)']) {
+    assert.ok(renderer.includes(`Show(${field}`), `${field} is shown through Show()`);
+  }
+  assert.match(renderer, /string Show\(string value\) \{ string quoted = SafeText\.Quote\(value, out int n\);/u);
+  assert.match(renderer, /view\.Action\.Args\.OrderBy\(a => a\.Key, StringComparer\.Ordinal\)/u, 'every arg, in the digest\'s order');
+  assert.equal(/\.Append\(view\.(?:Purpose|OperationId|Action\.(?:Action|ProjectId|ComputerId)|Challenge)\b/u.test(renderer), false, 'no unquoted string from the request');
+  assert.equal(/(?:output|errors)\.Write\([^;]*\b(?:text|reply|root)\b/u.test(code['ApproverCommands.cs']), false, 'a reply text is never printed raw');
+});
+
+test('build:approver builds and records a SHA-256; it does not install, register or start anything, and the package never contains it', () => {
+  assert.match(publish, /RestoreLockedMode=true/u);
+  assert.match(publish, /\.manifest\.json/u);
+  assert.match(publish, /captureExecutableIdentity/u);
+  assert.match(publish, /--self-contained/u);
+  assert.match(publish, /const executableName = 'AlberaApprover\.exe';/u);
+  assert.equal(/spawn(?:Sync)?\(\s*(?:executable|output)\b/u.test(publish), false);
+  assert.equal(/\bsc(?:\.exe)?\b|New-Service|Start-Process|runas|schtasks|icacls|Set-Acl|certutil|tpmtool|New-SelfSignedCertificate|signtool|Add-AppxPackage/iu.test(publish), false);
+  const pkg = JSON.parse(read('package.json'));
+  assert.equal(pkg.scripts['build:approver'], 'node scripts/publish-windows-approver.mjs');
+  const { 'build:approver': _build, ...otherScripts } = pkg.scripts;
+  assert.equal(JSON.stringify({ ...pkg, scripts: otherScripts }).includes('approver'), false, 'package.json names the approver only in its build script');
+  for (const lifecycle of ['preinstall', 'install', 'postinstall', 'prepare', 'prepack', 'start', 'demo', 'test']) assert.equal(String(pkg.scripts[lifecycle] ?? '').includes('approver'), false, lifecycle);
+  assert.match(read('scripts', 'package-smoke.mjs'), /windows-approver\|AlberaApprover/u);
+  assert.match(read('scripts', 'arch-check.mjs'), /^const APPROVER_REF = /mu, 'arch rule 11 exists');
+});
