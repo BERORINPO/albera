@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const project = path.join(rootDir, 'test', 'windows-broker-prototype', 'Albera.WindowsBrokerProbe.csproj');
+const project = path.join(rootDir, 'src', 'runtime', 'windows-broker', 'Albera.WindowsBroker.csproj');
+const whoami = path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'whoami.exe');
 const skip = unavailableReason();
 
 test('Windows Named Pipe DACL denies a restricted token without an allowed restricting SID', { skip }, async () => {
@@ -18,8 +19,8 @@ test('Windows Named Pipe DACL denies a restricted token without an allowed restr
     const output = path.join(temp, 'out'), intermediate = path.join(temp, 'obj');
     execFileSync('dotnet', ['restore', project, '--property:RestorePackagesWithLockFile=true', `--property:BaseIntermediateOutputPath=${intermediate}${path.sep}`, `--property:MSBuildProjectExtensionsPath=${intermediate}${path.sep}`], { stdio: 'pipe', timeout: 120_000, windowsHide: true });
     execFileSync('dotnet', ['build', project, '--configuration', 'Release', '--no-restore', '--output', output, `--property:BaseIntermediateOutputPath=${intermediate}${path.sep}`, `--property:MSBuildProjectExtensionsPath=${intermediate}${path.sep}`], { stdio: 'pipe', timeout: 120_000, windowsHide: true });
-    const dll = path.join(output, 'Albera.WindowsBrokerProbe.dll');
-    const sid = execFileSync('whoami', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true }).match(/S-1-[0-9-]+/u)?.[0];
+    const dll = path.join(output, 'albera-windows-broker.dll');
+    const sid = execFileSync(whoami, ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true }).match(/S-1-[0-9-]+/u)?.[0];
     assert.ok(sid);
     const { publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const pipe = `ALBERA_Issue23_${randomBytes(8).toString('hex')}`;

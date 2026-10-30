@@ -256,6 +256,27 @@ for (const f of runtimeUi) {
 }
 results.push(`7 runtime UI under ${UI_MAX_LINES} lines: ${runtimeUi.length} files`);
 
+// 8. The Windows Host Broker prototype (src/runtime/windows-broker, ADR-002 Proposed) is built on demand only. The Observer
+//    layers and every runtime .mjs file may not import, spawn or name it, and package.json may not wire it into `bin`, the
+//    npm lifecycle or `start`/`demo`. A future opt-in launcher must carry an explicit `// arch-allow: <reason>` (counted above).
+const BROKER_REF = /windows-broker|albera-windows-broker|WindowsBroker/i;
+check('8a Windows Broker is not referenced by Observer layers or runtime modules', [...entry, ...adapters, ...core, ...shared, ...pub, ...runtime], (line) =>
+  BROKER_REF.test(line) ? 'the Windows Broker prototype must not be imported, spawned or named here (build-on-demand only)' : null,
+);
+const brokerRoot = 'src/runtime/windows-broker';
+const brokerFiles = ['Albera.WindowsBroker.csproj', 'Program.cs', 'packages.lock.json'];
+for (const f of brokerFiles) if (!fs.existsSync(path.join(ROOT, brokerRoot, f))) violations.push(`[8b Windows Broker source] ${brokerRoot}/${f} does not exist (false-safe)`);
+const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+const LIFECYCLE = ['preinstall', 'install', 'postinstall', 'prepublish', 'prepublishOnly', 'prepack', 'postpack', 'prepare', 'preversion', 'version', 'postversion', 'start', 'demo', 'prestart', 'poststart'];
+const wired = [
+  ...Object.entries(pkg.bin ?? {}).filter(([, v]) => BROKER_REF.test(String(v))).map(([k]) => `bin.${k}`),
+  ...LIFECYCLE.filter((k) => BROKER_REF.test(String(pkg.scripts?.[k] ?? '')) || /build:windows-broker/.test(String(pkg.scripts?.[k] ?? ''))).map((k) => `scripts.${k}`),
+  ...(pkg.files ?? []).filter((v) => BROKER_REF.test(String(v)) || String(v).replace(/\\/g, '/').replace(/\/$/, '') === 'src/runtime').map((v) => `files[${v}]`),
+];
+for (const w of wired) violations.push(`[8c package.json] ${w} wires the Windows Broker into the package or an automatic step`);
+if (typeof pkg.scripts?.['build:windows-broker'] !== 'string') violations.push('[8c package.json] build:windows-broker script is missing (false-safe)');
+results.push(`8 Windows Broker is build-on-demand: ${brokerFiles.length} source files, ${wired.length} wiring violations`);
+
 for (const r of results) console.log(r);
 console.log(`suppressed (arch-allow): ${suppressed}`);
 if (violations.length) {

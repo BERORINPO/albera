@@ -44,6 +44,7 @@
     "test": "node --test",
     "arch": "node scripts/arch-check.mjs",
     "build:windows-job-guardian": "node scripts/publish-windows-job-guardian.mjs",
+    "build:windows-broker": "node scripts/publish-windows-broker.mjs",
     "smoke": "node scripts/smoke.mjs",
     "bench:runtime-store": "node scripts/runtime-sqlite-benchmark.mjs",
     "package:smoke": "node scripts/package-smoke.mjs"

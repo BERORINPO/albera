@@ -36,6 +36,9 @@ jobs:
       - name: Build Windows Job Guardian
         if: runner.os == 'Windows'
         run: npm run build:windows-job-guardian
+      - name: Build Windows Broker prototype (build only; never installed or started)
+        if: runner.os == 'Windows'
+        run: npm run build:windows-broker
       - name: Tests
         run: npm test
       - name: Installed package smoke
