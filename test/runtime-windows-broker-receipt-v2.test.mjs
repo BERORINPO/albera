@@ -6,7 +6,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import {
   brokerSession, buildBroker, buildBrokerWithTestSeams, buildPipeClient, buildReceiptFields, createTestAuthority, currentUserSid, getUnavailableReason, makeTrustedTempDirectory,
-  rawRequest, signedReceipt, startBroker, startProcess, stableUuid, waitForExit, waitForLine, COMPUTER_ID, GENERATION, PRODUCTION_ISSUER, TEST_ISSUER,
+  rawFencedClaim, rawRequest, signedReceipt, startBroker, startProcess, stableUuid, waitForExit, waitForLine, COMPUTER_ID, GENERATION, LEASE_CONFIG, LEASE_ID, POLICY_VERSION, PRODUCTION_ISSUER, TEST_ISSUER,
 } from './helpers/windows-broker-harness.mjs';
 
 // Windows-only, same-user, unprivileged (decision-log row 2026-10-30+broker-receipt-v2). The .NET Broker enforces receipt v2 (src/runtime/broker-contract):
@@ -36,12 +36,12 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
   const track = (child) => { running.add(child); child.once('close', () => running.delete(child)); return child; };
   let scenarios = 0;
   /** A running seam-build Broker on a fresh trusted folder. `keys` are the pinned authorities (default: the one test authority). */
-  async function start({ keys = [authority], generation = GENERATION, folder, clockOffset } = {}) {
+  async function start({ keys = [authority], generation = GENERATION, folder, clockOffset, lease = LEASE_CONFIG } = {}) {
     const dir = folder ?? path.join(root, `s${(scenarios += 1)}`);
     if (!folder) { mkdirSync(dir); mkdirSync(path.join(dir, 'db')); }
     const database = path.join(dir, 'db', 'journal.sqlite');
     const configFile = path.join(dir, 'config.json');
-    const config = { pipeName: `ALBERA_Receipt_${randomBytes(6).toString('hex')}`, database, authorityKeys: keys.map((key) => key.keyEntry), controlPlaneSid: sid, generation };
+    const config = { pipeName: `ALBERA_Receipt_${randomBytes(6).toString('hex')}`, database, authorityKeys: keys.map((key) => key.keyEntry), controlPlaneSid: sid, generation, ...lease };
     writeFileSync(configFile, JSON.stringify(config));
     const s = { ...config, dir, configFile };
     // ALBERA_BROKER_TEST_CLOCK_OFFSET exists only in the seam build: it moves this process's clock so a rollback between two runs can be rehearsed.
@@ -51,7 +51,7 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
     s.stop = async () => { s.child.stdin.end(); return waitForExit(s.child); };
     s.restart = async () => {
       assert.equal(await s.stop(), 0);
-      return start({ keys, generation, folder: dir });
+      return start({ keys, generation, folder: dir, lease });
     };
     return s;
   }
@@ -64,7 +64,8 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
     it('answers { ok, brokerEpoch, leaseGeneration, brokerChallenge } and stores a single-use 128-bit challenge for the computer in the journal', async () => {
       const s = await start();
       const first = await s.session.fence();
-      assert.deepEqual(Object.keys(first).sort(), ['brokerChallenge', 'brokerEpoch', 'leaseGeneration', 'ok']);
+      // The pipe client helper does not relay `leaseId` yet (the raw reply is checked in the next test), so it is left out of this comparison.
+      assert.deepEqual(Object.keys(first).filter((key) => key !== 'leaseId').sort(), ['brokerChallenge', 'brokerEpoch', 'leaseGeneration', 'ok']);
       assert.deepEqual([first.ok, first.brokerEpoch, first.leaseGeneration], [true, 1, GENERATION]);
       assert.match(first.brokerChallenge, CHALLENGE);
       assert.equal(Buffer.from(first.brokerChallenge, 'base64url').length, 16, '128 bits');
@@ -76,6 +77,44 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
       ]);
       assert.equal(s.child.lines.filter((line) => line === 'FENCE=ISSUED').length, 2);
       assert.equal(await s.stop(), 0);
+    });
+
+    it('names the lease the Broker is configured for (raw reply: exactly five keys), and a receipt must name that lease and policy, not a placeholder', async () => {
+      const lease = { leaseId: 'lease-configured-a', policyVersion: 'policy-configured-a' };
+      const s = await start({ lease });
+      const fence = await rawRequest(s.pipeName, { fence: { computerId: COMPUTER_ID } });
+      assert.deepEqual(Object.keys(fence), ['ok', 'brokerEpoch', 'leaseGeneration', 'leaseId', 'brokerChallenge']);
+      assert.equal(fence.leaseId, lease.leaseId);
+      // The receipt takes leaseId from the fence reply, as the Control Plane does; the policy is the one the Authority would sign (the same config value).
+      const accepted = await rawFencedClaim(s.pipeName, authority, 'configured', { policyVersion: lease.policyVersion });
+      assert.deepEqual(accepted.reply, SUCCESS);
+      assert.equal(accepted.fence.leaseId, lease.leaseId);
+      const placeholders = [
+        ['the former placeholder lease', { leaseId: LEASE_ID, policyVersion: lease.policyVersion }],
+        ['the former placeholder policy', { policyVersion: POLICY_VERSION }],
+        ['another policy version', { policyVersion: 'policy-configured-b' }],
+      ];
+      for (const [index, [label, overrides]] of placeholders.entries()) {
+        const { reply } = await rawFencedClaim(s.pipeName, authority, `configured-refused-${index}`, overrides);
+        assert.deepEqual(reply, DENIED, label);
+        assert.equal(lastReason(s), 'DENY=binding', label);
+      }
+      assert.deepEqual(claimsOf(s), ['configured-op']);
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('a Broker restarted with another leaseId serves the new one: a receipt for the old lease is refused, and so is a replay of a claim made under it', async () => {
+      const old = { leaseId: 'lease-old', policyVersion: POLICY_VERSION };
+      const first = await start({ lease: old });
+      const { fence, request, reply } = await rawFencedClaim(first.pipeName, authority, 'lease-change');
+      assert.deepEqual(reply, SUCCESS);
+      assert.equal(fence.leaseId, 'lease-old');
+      assert.equal(await first.stop(), 0);
+      const second = await start({ lease: { ...old, leaseId: 'lease-new' }, folder: first.dir });
+      assert.equal((await rawRequest(second.pipeName, { fence: { computerId: COMPUTER_ID } })).leaseId, 'lease-new');
+      assert.deepEqual(await rawRequest(second.pipeName, request), DENIED, 'the exact duplicate names a lease this Broker no longer serves');
+      assert.equal(lastReason(second), 'DENY=binding');
+      assert.equal(await second.stop(), 0);
     });
 
     it('is a request of its own: nothing but { fence: { computerId } } with a contract id is a fence, and every other shape is denied', async () => {

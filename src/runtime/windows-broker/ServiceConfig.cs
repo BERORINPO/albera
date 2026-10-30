@@ -5,14 +5,18 @@ using System.Text.Json;
 // service starts. The installer controls who can write the file; the Broker never writes it. Exactly these keys, nothing else:
 //   { "pipeName": "ALBERA_HostBroker", "database": "C:\\ProgramData\\Albera\\broker\\journal.sqlite",
 //     "authorityKeys": [ { "kid": "authority-2026-a", "spki": "<base64 SubjectPublicKeyInfo, ECDSA P-256>" }, { "kid": "authority-2026-b", "spki": "..." } ],
-//     "controlPlaneSid": "S-1-5-80-...", "generation": 7 }
+//     "controlPlaneSid": "S-1-5-80-...", "generation": 7, "leaseId": "lease-2026-10-a", "policyVersion": "policy-2026-10" }
 // `authorityKeys` pins one or two Approval Authority keys (two = rotation overlap); a receipt names its key by `kid`. `generation` is the lease generation the operator requires: the first value of a new journal, and at every start
 // a higher value advances the journal's generation (this is how generation N is revoked: configure N+1 and restart), a lower one refuses the start (76, JOURNAL_GENERATION_REGRESSED). The v1 shape (`publicKey`) is refused (config_keys).
+// `leaseId` and `policyVersion` are what every receipt must name (ReceiptV2 `leaseId` / `policyVersion`): both are contract ids, and the installer sets `policyVersion` to the
+// same value as the Approval Authority's config (the Authority signs it into every receipt; a receipt that names another policy is refused). This Broker serves ONE
+// lease, so `leaseId` is a single value (not a map by computer): the fence reply returns it, the Control Plane puts it into the Authority submit request, and a receipt for any
+// other lease is refused (`binding`). The first multi-computer Broker turns it into a map computerId -> leaseId.
 // Every rejected value maps to one fixed reason word (never the value itself), so a log line cannot be steered by file content.
 // The config file and the database folder (plus an existing journal / -wal / -shm) must also be owned and writable only by trusted principals and
 // free of reparse points (ServicePathGuard.cs): otherwise a local user could pre-create them, and the service refuses to start. Once the loop runs it
 // holds the database folder open without FILE_SHARE_DELETE (DatabaseFolderPin.cs); a folder that cannot be pinned ends the start with `database_pin`.
-internal sealed record ServiceConfig(string PipeName, string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string ControlPlaneSid, long Generation)
+internal sealed record ServiceConfig(string PipeName, string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string ControlPlaneSid, long Generation, string LeaseId, string PolicyVersion)
 {
     private const int MaxFileBytes = 4096;
     private const int MaxPipeNameLength = 128;
@@ -20,7 +24,7 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
     private const int MaxPublicKeyBytes = 512;
     private const int MaxAuthorityKeys = 2;
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
-    private static readonly string[] Keys = ["pipeName", "database", "authorityKeys", "controlPlaneSid", "generation"];
+    private static readonly string[] Keys = ["pipeName", "database", "authorityKeys", "controlPlaneSid", "generation", "leaseId", "policyVersion"];
     private static readonly string[] AuthorityKeyFields = ["kid", "spki"];
 
     // The only reason words ever printed (SERVICE_CONFIG=invalid:<reason>).
@@ -28,7 +32,7 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
     {
         public const string ConfigPath = "config_path", Unreadable = "config_unreadable", TooLarge = "config_too_large", Syntax = "config_syntax",
             Keys = "config_keys", PipeName = "pipe_name", Database = "database", DatabaseDirectory = "database_directory",
-            AuthorityKeys = "authority_keys", ControlPlaneSid = "control_plane_sid", Generation = "generation",
+            AuthorityKeys = "authority_keys", ControlPlaneSid = "control_plane_sid", Generation = "generation", LeaseId = "lease_id", PolicyVersion = "policy_version",
             ConfigUntrusted = "config_untrusted", DatabaseUntrusted = "database_untrusted", DatabasePin = "database_pin";
     }
 
@@ -89,8 +93,14 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
             JsonElement generationElement = root.GetProperty("generation");
             if (generationElement.ValueKind != JsonValueKind.Number || !generationElement.TryGetInt64(out long generation) || generation is < 1 or > Albera.BrokerContract.StrictJson.MaxSafeInteger) return null;
 
+            string? leaseId = AsString(root, "leaseId"), policyVersion = AsString(root, "policyVersion");
+            reason = Reason.LeaseId;
+            if (leaseId is null || !AuthorityKey.IsKeyId(leaseId)) return null;
+            reason = Reason.PolicyVersion;
+            if (policyVersion is null || !AuthorityKey.IsKeyId(policyVersion)) return null;
+
             reason = "";
-            return new ServiceConfig(pipeName, database, authorityKeys, sid, generation);
+            return new ServiceConfig(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion);
         }
     }
 

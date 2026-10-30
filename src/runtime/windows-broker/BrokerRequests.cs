@@ -7,7 +7,7 @@ using Albera.BrokerContract;
 // The three requests of the Broker's pipe (ADR-002 "Receipt v2", Proposed / NOT VERIFIED). One frame per connection, at most 2 KiB, after the peer SID check:
 //   claim    { "receipt": <base64>, "signature": <base64> }   exactly these two keys. The receipt is v2 (src/runtime/broker-contract) and names a challenge
 //                                                              that THIS Broker issued with `fence`.
-//   fence    { "fence": { "computerId": "<id>" } }             -> { "ok": true, "brokerEpoch": n, "leaseGeneration": n, "brokerChallenge": "<22 chars>" }
+//   fence    { "fence": { "computerId": "<id>" } }             -> { "ok": true, "brokerEpoch": n, "leaseGeneration": n, "leaseId": "<id>", "brokerChallenge": "<22 chars>" }
 //   inspect  { "inspect": { "operationId": "<id>" } }          -> { "ok": true, "state": "UNKNOWN", "action": "synthetic.inspect" }; read-only
 // The three shapes cannot be confused: they differ in their key set. Every refusal is the one fixed `denied` reply; the reason is a fixed word on stdout only
 // (DENY=<reason>), never request text.
@@ -25,8 +25,6 @@ internal static partial class Program
     private const string BrokerAudience = "albera-host-broker";
     private const string SyntheticAction = "synthetic.noop";
     private const string SyntheticPurpose = "broker.operation";
-    private const string SyntheticLeaseId = "test-lease";            // placeholders until a real Lease / policy source exists (unchanged from v1)
-    private const string SyntheticPolicyVersion = "test-policy-v1";
 
 #if ALBERA_BROKER_TEST_FAULTS
     private const string ReceiptEnvironment = "test"; // the test-faults build also accepts `albera-test-*` issuers
@@ -72,7 +70,7 @@ internal static partial class Program
         if (OnlyId(body, "computerId") is not { } computerId) return Deny("request");
         if (await Journal.IssueChallengeAsync(settings.Database, settings.Epoch, computerId, NowSeconds()) is not { } issued) return Deny("epoch_mismatch");
         Console.WriteLine("FENCE=ISSUED");
-        string json = string.Create(CultureInfo.InvariantCulture, $"{{\"ok\":true,\"brokerEpoch\":{issued.Epoch},\"leaseGeneration\":{issued.LeaseGeneration},\"brokerChallenge\":\"{issued.Challenge}\"}}");
+        string json = string.Create(CultureInfo.InvariantCulture, $"{{\"ok\":true,\"brokerEpoch\":{issued.Epoch},\"leaseGeneration\":{issued.LeaseGeneration},\"leaseId\":\"{settings.LeaseId}\",\"brokerChallenge\":\"{issued.Challenge}\"}}");
         return new BrokerReply(Encoding.UTF8.GetBytes(json), IsFence: true);
     }
 
@@ -112,7 +110,7 @@ internal static partial class Program
         // Expected comes from Broker-trusted state. For a replay the fence values are the receipt's own: they were checked when it was first claimed, and a
         // restart has since wiped the challenge, so there is nothing current left to compare them with.
         long epoch = replay ? (long)r["brokerEpoch"] : context.State.Epoch, generation = replay ? (long)r["leaseGeneration"] : context.State.LeaseGeneration;
-        ReceiptVerdict verdict = ReceiptV2.Validate(receipt, TrustedContext(r, now, epoch, generation));
+        ReceiptVerdict verdict = ReceiptV2.Validate(receipt, TrustedContext(r, now, epoch, generation, settings));
         if (!verdict.Ok) return Deny(ReasonOf(verdict, (string)r["issuer"]));
 
         if (replay)
@@ -140,7 +138,7 @@ internal static partial class Program
 
     // The synthetic actions have a fixed DTO ({action, projectId, computerId, args:{}}); only the two ids come from the (signed) receipt, and the digest in the
     // receipt is compared with the one computed here from this DTO.
-    private static ReceiptContext TrustedContext(IReadOnlyDictionary<string, object> r, long now, long epoch, long generation)
+    private static ReceiptContext TrustedContext(IReadOnlyDictionary<string, object> r, long now, long epoch, long generation, BrokerSettings settings)
     {
         Dictionary<string, object> action = new()
         {
@@ -149,8 +147,8 @@ internal static partial class Program
         Dictionary<string, object> expected = new()
         {
             ["audience"] = BrokerAudience, ["purpose"] = SyntheticPurpose, ["operationId"] = r["operationId"], ["idempotencyKey"] = r["idempotencyKey"],
-            ["leaseId"] = SyntheticLeaseId, ["leaseGeneration"] = generation, ["brokerEpoch"] = epoch, ["brokerChallenge"] = r["brokerChallenge"],
-            ["policyVersion"] = SyntheticPolicyVersion,
+            ["leaseId"] = settings.LeaseId, ["leaseGeneration"] = generation, ["brokerEpoch"] = epoch, ["brokerChallenge"] = r["brokerChallenge"],
+            ["policyVersion"] = settings.PolicyVersion,
         };
         return new ReceiptContext(() => now, ReceiptEnvironment, expected, action);
     }

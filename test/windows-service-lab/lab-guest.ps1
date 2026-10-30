@@ -21,7 +21,7 @@ $Pipe = 'ALBERA_Lab23_HostBroker'
 $Shim = "$LabRoot\bin\shim\albera-lab-service-shim.exe"
 $BrokerDll = "$LabRoot\bin\broker\albera-windows-broker.dll"
 $BrokerExe = "$LabRoot\bin\broker\albera-windows-broker.exe"
-$BrokerConfig = "$LabRoot\config\$B.service.json"   # read by the real Broker service (JSON keys: pipeName, database, authorityKeys [{kid, spki}], controlPlaneSid, generation)
+$BrokerConfig = "$LabRoot\config\$B.service.json"   # read by the real Broker service (JSON keys: pipeName, database, authorityKeys [{kid, spki}], controlPlaneSid, generation, leaseId, policyVersion)
 $BinPathBroker = "$BrokerExe service $BrokerConfig"
 $BinPathShim = "$Shim service $LabRoot\config\$B.json"
 $Helper = "$LabRoot\bin\helper\albera-windows-broker-pipe-client.exe"
@@ -121,7 +121,7 @@ function Set-BrokerServiceHost([string]$which) {
 }
 function Write-BrokerConfig([string]$db, [string]$controlPlaneSid) {
   $keys = @([ordered]@{ kid = $Authority.kid; spki = $Authority.spki })
-  $cfg = [ordered]@{ pipeName = $Pipe; database = $db; authorityKeys = $keys; controlPlaneSid = $controlPlaneSid; generation = 7 }
+  $cfg = [ordered]@{ pipeName = $Pipe; database = $db; authorityKeys = $keys; controlPlaneSid = $controlPlaneSid; generation = 7; leaseId = $Authority.leaseId; policyVersion = $Authority.policyVersion }
   ($cfg | ConvertTo-Json -Compress -Depth 4) | Set-Content -Encoding Ascii -Path $BrokerConfig
 }
 function Get-ServiceExit([string]$name) { $s = Get-Svc $name; "state=$($s.State) win32=$($s.ExitCode) specific=$($s.ServiceSpecificExitCode)" }
@@ -166,9 +166,9 @@ function New-LabReceipt([string]$name, $fence, [hashtable]$override = @{}) {
     v = 2; kid = $Authority.kid; issuer = $Authority.issuer; audience = 'albera-host-broker'; purpose = 'broker.operation'
     approvalId = [guid]::NewGuid().ToString(); receiptId = [guid]::NewGuid().ToString(); nonce = (New-LabNonce)
     operationId = "$name-op"; idempotencyKey = "idem-$name"; action = 'synthetic.noop'; actionDigest = $Authority.actionDigest
-    projectId = $Authority.projectId; computerId = $Authority.computerId; leaseId = 'test-lease'
+    projectId = $Authority.projectId; computerId = $Authority.computerId; leaseId = $Authority.leaseId
     leaseGeneration = [int64]$fence.leaseGeneration; brokerEpoch = [int64]$fence.brokerEpoch; brokerChallenge = [string]$fence.brokerChallenge
-    policyVersion = 'test-policy-v1'; approverKeyId = 'lab-approver-1'; iat = [int64]$now; exp = [int64]($now + 240)
+    policyVersion = $Authority.policyVersion; approverKeyId = 'lab-approver-1'; iat = [int64]$now; exp = [int64]($now + 240)
   }
   foreach ($k in $override.Keys) { $fields[$k] = $override[$k] }
   $bytes = [System.Text.Encoding]::UTF8.GetBytes(($fields | ConvertTo-Json -Compress))

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import {
   brokerSession, buildBroker, buildBrokerWithTestSeams, buildPipeClient, createTestAuthority, currentUserSid, getUnavailableReason, icaclsOn, inspectClaimCount,
-  makeTrustedTempDirectory, startProcess, waitForExit, waitForLine, GENERATION,
+  makeTrustedTempDirectory, startProcess, waitForExit, waitForLine, GENERATION, LEASE_CONFIG,
 } from './helpers/windows-broker-harness.mjs';
 
 // Windows-only, same-user, unprivileged. Hardening of the Broker service host after the CISO review (decision-log row 2026-10-30+broker-service-hardening):
@@ -63,7 +63,7 @@ describe('Broker service host hardening', { skip: getUnavailableReason() }, () =
     mkdirSync(databaseDir);
     const database = path.join(databaseDir, 'journal.sqlite');
     const config = path.join(dir, 'config.json');
-    writeFileSync(config, JSON.stringify({ pipeName: unique('ALBERA_Harden'), database, authorityKeys: [authority.keyEntry], controlPlaneSid: sid, generation: GENERATION, ...overrides }));
+    writeFileSync(config, JSON.stringify({ pipeName: unique('ALBERA_Harden'), database, authorityKeys: [authority.keyEntry], controlPlaneSid: sid, generation: GENERATION, ...LEASE_CONFIG, ...overrides }));
     return { dir, databaseDir, configFile: config, database };
   }
   const check = (file) => run(brokerExe, ['service-check', file]);

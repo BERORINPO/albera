@@ -24,7 +24,7 @@ test('Windows Named Pipe DACL denies a restricted token without an allowed restr
     assert.ok(sid);
     const { publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const pipe = `ALBERA_Issue23_${randomBytes(8).toString('hex')}`;
-    broker = spawn('dotnet', [dll, 'serve', pipe, path.join(temp, 'unused.sqlite'), `restricted-test=${publicKey.export({ type: 'spki', format: 'der' }).toString('base64')}`, sid, '1', 'normal'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    broker = spawn('dotnet', [dll, 'serve', pipe, path.join(temp, 'unused.sqlite'), `restricted-test=${publicKey.export({ type: 'spki', format: 'der' }).toString('base64')}`, sid, '1', 'normal', 'restricted-lease', 'restricted-policy'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     broker.lines = []; broker.stdout.setEncoding('utf8'); broker.stderr.setEncoding('utf8');
     broker.stdout.on('data', x => broker.lines.push(...x.split(/\r?\n/u).filter(Boolean)));
     broker.stderr.on('data', x => broker.lines.push(...x.split(/\r?\n/u).filter(Boolean)));

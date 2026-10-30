@@ -10,6 +10,7 @@ import { computeActionDigest } from '../src/runtime/broker-contract/action-diges
 export const PRODUCTION_ISSUER = 'albera-approval-authority';
 export const TEST_ISSUER = 'albera-test-approval-authority';
 export const BROKER_AUDIENCE = 'albera-host-broker';
+/** What the tests configure the Broker with (`leaseId` / `policyVersion` of its service config). A receipt takes `leaseId` from the fence reply, as the Control Plane does. */
 export const SYNTHETIC_LEASE_ID = 'test-lease';
 export const SYNTHETIC_POLICY_VERSION = 'test-policy-v1';
 
@@ -64,7 +65,7 @@ export function buildReceiptFields({
     actionDigest: '',
     projectId,
     computerId,
-    leaseId: SYNTHETIC_LEASE_ID,
+    leaseId: fence.leaseId ?? SYNTHETIC_LEASE_ID,
     leaseGeneration: fence.leaseGeneration,
     brokerEpoch: fence.brokerEpoch,
     brokerChallenge: fence.brokerChallenge,

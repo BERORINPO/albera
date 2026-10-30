@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { captureExecutableIdentity } from '../../src/runtime/executable-identity.mjs';
 import { sendBrokerFence, sendBrokerInspect, sendBrokerRequest } from '../../src/runtime/windows-broker-client.mjs';
-import { signedReceipt } from '../../scripts/issue-22-approval-authority-fixture.mjs';
+import { signedReceipt, SYNTHETIC_LEASE_ID, SYNTHETIC_POLICY_VERSION } from '../../scripts/issue-22-approval-authority-fixture.mjs';
 
 export const repositoryRoot = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 const sources = {
@@ -92,9 +92,9 @@ export function startProcess(executable, args, { stdin = false, env } = {}) {
   return child;
 }
 
-/** `authorityKeys` is the `kid=spki[,kid=spki]` argument of the one-shot `serve` (createTestAuthority().serveArgument). */
+/** `authorityKeys` is the `kid=spki[,kid=spki]` argument of the one-shot `serve` (createTestAuthority().serveArgument); it serves LEASE_ID under POLICY_VERSION. */
 export function startBroker(brokerExe, pipe, db, authorityKeys, ownerSid, generation, hold = false) {
-  return startProcess(brokerExe, ['serve', pipe, db, authorityKeys, ownerSid, String(generation), hold ? 'hold' : 'normal']);
+  return startProcess(brokerExe, ['serve', pipe, db, authorityKeys, ownerSid, String(generation), hold ? 'hold' : 'normal', ...LEASE_ARGS]);
 }
 
 /** Resolves with the first output line matching `pattern` (string or RegExp), or rejects on exit / timeout. */
@@ -124,6 +124,12 @@ export function inspectClaimCount(brokerExe, db) {
 // ---- receipt v2: the Broker issues the challenge (fence), the test authority signs, the client sends -------------------------------------------------------
 export const GENERATION = 7;
 export const COMPUTER_ID = 'computer-1';
+export const LEASE_ID = SYNTHETIC_LEASE_ID;
+export const POLICY_VERSION = SYNTHETIC_POLICY_VERSION;
+/** The `leaseId` / `policyVersion` keys of a Broker service config. */
+export const LEASE_CONFIG = Object.freeze({ leaseId: LEASE_ID, policyVersion: POLICY_VERSION });
+/** The trailing `<leaseId> <policyVersion>` arguments of the one-shot `serve` / `serve-fault`. */
+export const LEASE_ARGS = Object.freeze([LEASE_ID, POLICY_VERSION]);
 export { PRODUCTION_ISSUER, TEST_ISSUER, buildReceiptFields, createTestAuthority, signedReceipt, stableUuid } from '../../scripts/issue-22-approval-authority-fixture.mjs';
 
 /** Between two clients the Broker's single pipe instance is busy: that is a pre-send `broker_unavailable`, safe to retry. */

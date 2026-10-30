@@ -18,7 +18,8 @@ import { captureExecutableIdentity } from './executable-identity.mjs';
 //   claim request   : { "receipt": <base64>, "signature": <base64> }   exactly these two keys; the receipt is a v2 receipt signed elsewhere (src/runtime/broker-contract)
 //   claim success   : { "ok": true, "state": "UNKNOWN", "action": "synthetic.noop" }, plus "replayed": true for an exact duplicate (the recorded outcome, no second claim)
 //   fence request   : { "fence": { "computerId": <id> } }               the Broker issues a single-use challenge a receipt must name
-//   fence success   : { "ok": true, "brokerEpoch": n, "leaseGeneration": n, "brokerChallenge": <22 chars> }
+//   fence success   : { "ok": true, "brokerEpoch": n, "leaseGeneration": n, "leaseId": <id>, "brokerChallenge": <22 chars> }   `leaseId` is the lease the Broker is configured for: the Control
+//                     Plane puts it into the Authority submit request. (Until the pipe client helper relays it the field is absent from the result; see validateFenceResponse.)
 //   inspect request : { "inspect": { "operationId": <id> } }            read-only; no receipt
 //   inspect success : { "ok": true, "state": "UNKNOWN", "action": "synthetic.inspect" }
 //   denial body     : { "ok": false, "code": "denied" }              for all three requests
@@ -137,13 +138,18 @@ export function validateBrokerResponse(value) {
   throw new BrokerClientError('invalid_response');
 }
 
-/** Validate a parsed reply to `fence`: the epoch and lease generation the challenge belongs to, and the challenge itself. */
+/**
+ * Validate a parsed reply to `fence`: the epoch, lease generation and lease id the challenge belongs to, and the challenge itself. The Broker always sends
+ * `leaseId`; the result carries it when it is present and a contract id. It is OPTIONAL here only because the .NET pipe client helper re-serialises
+ * the reply and does not relay the field yet: once it does, make it required (one line) and drop the second shape.
+ */
 export function validateFenceResponse(value) {
   if (!isObject(value)) throw new BrokerClientError('invalid_response');
   const keys = Object.keys(value).sort().join(',');
-  if (value.ok === true && keys === 'brokerChallenge,brokerEpoch,leaseGeneration,ok' && isCounter(value.brokerEpoch) && isCounter(value.leaseGeneration)
-    && typeof value.brokerChallenge === 'string' && CHALLENGE_PATTERN.test(value.brokerChallenge)) {
-    return Object.freeze({ ok: true, brokerEpoch: value.brokerEpoch, leaseGeneration: value.leaseGeneration, brokerChallenge: value.brokerChallenge });
+  const withLease = keys === 'brokerChallenge,brokerEpoch,leaseGeneration,leaseId,ok';
+  if (value.ok === true && (withLease || keys === 'brokerChallenge,brokerEpoch,leaseGeneration,ok') && isCounter(value.brokerEpoch) && isCounter(value.leaseGeneration)
+    && typeof value.brokerChallenge === 'string' && CHALLENGE_PATTERN.test(value.brokerChallenge) && (!withLease || (typeof value.leaseId === 'string' && ID_PATTERN.test(value.leaseId)))) {
+    return Object.freeze({ ok: true, brokerEpoch: value.brokerEpoch, leaseGeneration: value.leaseGeneration, ...(withLease ? { leaseId: value.leaseId } : {}), brokerChallenge: value.brokerChallenge });
   }
   if (value.ok === false && keys === 'code,ok' && value.code === 'denied') return DENIED_RESULT;
   throw new BrokerClientError('invalid_response');
@@ -273,7 +279,7 @@ export function sendBrokerRequest(options = {}) {
 /**
  * Ask the Broker for a single-use challenge for `computerId` (the first step of a v2 flow: fence, sign, send). Same pre-send / post-send rules as
  * `sendBrokerRequest`. A challenge is valid until a receipt consumes it, the Broker restarts, or the lease generation moves; it is not retried or reused.
- * @returns {Promise<{ ok: true, brokerEpoch: number, leaseGeneration: number, brokerChallenge: string } | { ok: false, code: string }>}
+ * @returns {Promise<{ ok: true, brokerEpoch: number, leaseGeneration: number, leaseId?: string, brokerChallenge: string } | { ok: false, code: string }>}
  */
 export function sendBrokerFence(options = {}) {
   return exchange(options, () => ({ fence: requireId(options.computerId) }), validateFenceResponse);
