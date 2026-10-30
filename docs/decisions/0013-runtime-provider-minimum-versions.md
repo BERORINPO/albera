@@ -4,6 +4,8 @@
 
 Implemented as static Runtime provider metadata; installed-provider compatibility remains unverified.
 
+Update 2026-10-30 (Issue #35): the advertised floors are now `2.1.310` for both profiles, the only version verified against real repo-supplied hooks/MCP/apiKeyHelper; see `docs/claude-cli-readonly-profile-verification.md`. The 2.1.248 / 2.1.259 figures below are historical.
+
 ## Decision
 
 - The read-only Claude profile advertises minimum Claude Code version `2.1.248`, required for `--restricted`.

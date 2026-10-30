@@ -5,7 +5,7 @@ import { createRuntimeApprovalBroker } from '../src/runtime/approval-broker.mjs'
 test('approval broker exposes a frozen allowlist projection and resolves exactly once', async () => {
   const broker = createRuntimeApprovalBroker({ makeId: () => 'approval-request-0001' });
   const request = {
-    action: 'start', provider: 'claude', profile: 'read-only-streaming', executable: '/opt/claude', executableSha256: 'a'.repeat(64), cwd: '/work/project', minimumCliVersion: '2.1.259', versionCheck: true,
+    action: 'start', provider: 'claude', profile: 'read-only-streaming', executable: '/opt/claude', executableSha256: 'a'.repeat(64), cwd: '/work/project', minimumCliVersion: '2.1.310', versionCheck: true,
     args: ['--print', '--input-format', 'stream-json'], initialInput: 'ALBERA task:\nsynthetic prompt',
     environment: { providerVariables: ['ANTHROPIC_API_KEY'], endpointOverrides: [{ variable: 'ANTHROPIC_BASE_URL', protocol: 'https', host: 'api.example.test' }], secretValue: 'must not escape' },
     platform: 'linux', maxDurationMs: 60_000, maxActive: 4, unexpectedSecret: 'must not escape',
@@ -16,7 +16,7 @@ test('approval broker exposes a frozen allowlist projection and resolves exactly
   const [item] = broker.listPending();
   assert.equal(item.id, 'approval-request-0001');
   assert.equal(item.request.initialInput, 'ALBERA task:\nsynthetic prompt');
-  assert.equal(item.request.minimumCliVersion, '2.1.259');
+  assert.equal(item.request.minimumCliVersion, '2.1.310');
   assert.equal(item.request.versionCheck, true);
   assert.equal(item.request.executableSha256, 'a'.repeat(64));
   assert.deepEqual(item.request.args, ['--print', '--input-format', 'stream-json']);
@@ -42,7 +42,7 @@ test('approval broker denies invalid requests, invalid decisions, and queue over
   assert.equal(await broker.authorize({
     action: 'start', provider: 'claude', profile: 'read-only', executable: '/opt/claude', executableSha256: 'not-a-sha256',
     cwd: '/work', args: [], environment: { providerVariables: [], endpointOverrides: [] }, platform: 'linux',
-    minimumCliVersion: '2.1.248', versionCheck: true, maxDurationMs: 60_000, maxActive: 1,
+    minimumCliVersion: '2.1.310', versionCheck: true, maxDurationMs: 60_000, maxActive: 1,
   }), false);
   assert.equal(await broker.authorize({ action: 'stop', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', force: false }), false);
   const pending = Array.from({ length: 32 }, () => broker.authorize({ action: 'input', provider: 'claude', runId: '12345678-1234-4234-8234-123456789abc', text: 'synthetic input' }));
