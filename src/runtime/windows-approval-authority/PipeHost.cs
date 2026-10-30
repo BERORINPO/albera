@@ -141,6 +141,8 @@ internal static class PipeHost
             using WindowsIdentity identity = WindowsIdentity.GetCurrent(ifImpersonating: true) ?? throw new UnauthorizedAccessException();
             return identity.User?.Value;
         }
+        // An anonymous-level client token makes GetCurrent throw SecurityException; treat it as an unknown peer, not a crash.
+        catch (System.Security.SecurityException) { throw new UnauthorizedAccessException(); }
         finally { RevertOrTerminate(); }
     }
 

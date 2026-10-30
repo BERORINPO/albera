@@ -56,7 +56,7 @@ test('the test fakes and the serve-loop / request entries exist only inside #if 
 });
 
 test('the Authority only builds and only reports; the real signer opens an existing machine key and the real verifier pins one RSA-2048 key', () => {
-  assert.match(code['Signers.cs'], /CngKey\.Open\(keyName, [^;]*CngKeyOpenOptions\.MachineKey\)/u, 'NCRYPT_MACHINE_KEY_FLAG');
+  assert.match(code['Signers.cs'], /CngKey\.Open\(keyName, [^;]*CngKeyOpenOptions\.MachineKey \| CngKeyOpenOptions\.Silent\)/u, 'NCRYPT_MACHINE_KEY_FLAG');
   assert.match(code['Signers.cs'], /CngAlgorithm\.ECDsaP256/u);
   assert.match(code['Signers.cs'], /DSASignatureFormat\.IeeeP1363FixedFieldConcatenation/u);
   assert.match(code['Signers.cs'], /public string Issuer => ReceiptV2\.Issuer;/u, 'the real signer signs as the production issuer');

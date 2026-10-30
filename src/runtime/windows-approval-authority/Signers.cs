@@ -36,7 +36,7 @@ internal sealed class CngMachineKeySigner : IReceiptSigner, IDisposable
         CngKey? opened = null;
         try
         {
-            opened = CngKey.Open(keyName, provider == SigningProvider.Tpm ? PlatformProvider : CngProvider.MicrosoftSoftwareKeyStorageProvider, CngKeyOpenOptions.MachineKey);
+            opened = CngKey.Open(keyName, provider == SigningProvider.Tpm ? PlatformProvider : CngProvider.MicrosoftSoftwareKeyStorageProvider, CngKeyOpenOptions.MachineKey | CngKeyOpenOptions.Silent); // Silent: a session-0 service must never wait on a KSP prompt
             if (opened.Algorithm != CngAlgorithm.ECDsaP256 || opened.KeySize != 256) throw new SignerUnavailableException("signing key is not ECDSA P-256");
             return new CngMachineKeySigner(opened);
         }
