@@ -2,8 +2,11 @@
 # started by run-lab.ps1 over PowerShell Direct. ASCII only.
 #   lab-guest.ps1 <LabRoot> run        create three services + ACLs, run checks a-f, write <LabRoot>\evidence\results.json
 #   lab-guest.ps1 <LabRoot> rollback   stop and delete the three services, remove <LabRoot>, compare against the pre-run snapshot
-# STATUS: this script was written by an agent whose harness refused to run any PowerShell, so it has NEVER been executed or even
-# parse-checked. Expect first-run fixes; the C# tool and the Broker ACE it drives are tested (npm test).
+# STATUS: run 3 of 3 (2026-10-30) used the lab shim as the Broker's service host (the Broker assembly loaded in-process).
+# This revision (broker-service-host) runs the REAL Broker as the service (`albera-windows-broker.exe service <config>`). It has NOT been
+# executed yet and was not even parse-checked (the preparing agent's harness refused to run any PowerShell; reviewed by reading only).
+# The shim still hosts the Control Plane and the third account, and the Broker service object briefly (check d2, which needs a RUNNING
+# Broker service that owns no pipe). Expect first-run fixes; the C# tools, config validation and the serve loop are host-tested (npm test).
 param(
   [Parameter(Mandatory = $true)][string]$LabRoot,
   [Parameter(Mandatory = $true)][ValidateSet('run', 'rollback')][string]$Phase
@@ -14,6 +17,10 @@ $B = 'AlberaHostBroker'; $C = 'AlberaControlPlane'; $O = 'AlberaLabOther'; $All 
 $Pipe = 'ALBERA_Lab23_HostBroker'
 $Shim = "$LabRoot\bin\shim\albera-lab-service-shim.exe"
 $BrokerDll = "$LabRoot\bin\broker\albera-windows-broker.dll"
+$BrokerExe = "$LabRoot\bin\broker\albera-windows-broker.exe"
+$BrokerConfig = "$LabRoot\config\$B.service.json"   # read by the real Broker service (JSON keys: pipeName, database, publicKey, controlPlaneSid, generation)
+$BinPathBroker = "$BrokerExe service $BrokerConfig"
+$BinPathShim = "$Shim service $LabRoot\config\$B.json"
 $Helper = "$LabRoot\bin\helper\albera-windows-broker-pipe-client.exe"
 $Db1 = "$LabRoot\data\broker\journal-1.sqlite"
 $Db2 = "$LabRoot\data\broker\journal-2.sqlite"
@@ -98,16 +105,39 @@ function Invoke-HelperAs([string]$svc, [string]$tag, $signed, [hashtable]$expect
 function Invoke-HelperAdmin([string]$tag, $signed, [hashtable]$expect) {
   (Get-Content -Raw (New-HelperInput $tag $signed $expect) | & $Helper) | ConvertFrom-Json
 }
-# The Broker runs IN the shim process (mode inproc), so the PID SCM reports is the PID that creates the pipe.
+# Which program the Broker service object runs: the REAL Broker (service host) or, for check d2 only, the shim.
+function Set-BrokerServiceHost([string]$which) {
+  Stop-LabService $B
+  $bin = if ($which -eq 'broker') { $BinPathBroker } else { $BinPathShim }
+  & sc.exe config $B binPath= $bin | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "sc config $B failed ($LASTEXITCODE)" }
+}
+function Write-BrokerConfig([string]$db, $signed, [string]$controlPlaneSid) {
+  $cfg = [ordered]@{ pipeName = $Pipe; database = $db; publicKey = $signed.publicKey; controlPlaneSid = $controlPlaneSid; generation = 7 }
+  ($cfg | ConvertTo-Json -Compress) | Set-Content -Encoding Ascii -Path $BrokerConfig
+}
+function Get-ServiceExit([string]$name) { $s = Get-Svc $name; "state=$($s.State) win32=$($s.ExitCode) specific=$($s.ServiceSpecificExitCode)" }
+# The Broker IS the service process (it calls StartServiceCtrlDispatcher itself), so the PID SCM reports is the PID that creates the pipe.
+# The service reports RUNNING only after its pipe exists: waiting for RUNNING is the BROKER_READY wait.
 function Start-LabBroker([string]$tag, [string]$db, $signed) {
-  Invoke-LabJob $B $tag @{ mode = 'inproc'; program = $BrokerDll; args = @('serve', $Pipe, $db, $signed.publicKey, $script:SidC, '7', 'normal') } -NoWait
-  Wait-Line $B $tag '^BROKER_READY$' 30
+  Set-BrokerServiceHost 'broker'
+  Write-BrokerConfig $db $signed $script:SidC
+  & sc.exe start $B | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "sc start $B ($tag) failed ($LASTEXITCODE): $(Get-ServiceExit $B)" }
+  try { Wait-Until { (Get-Svc $B).State -eq 'Running' } 30 "$B running ($tag)" }
+  catch { throw "$($_.Exception.Message): $(Get-ServiceExit $B)" }
   [int](Get-Svc $B).ProcessId
 }
-function Get-ClaimCount([string]$db, [string]$tag) {
-  Invoke-LabJob $B $tag @{ mode = 'inproc'; program = $BrokerDll; args = @('inspect', $db) }
-  [int](@(Read-Result $B $tag | Where-Object { $_ -match '^\d+$' })[0])
+# Start the Broker service expecting it to FAIL: returns what SCM recorded (the fatal exit code is the service-specific exit code).
+function Start-LabBrokerExpectingFailure([string]$db, $signed, [string]$controlPlaneSid) {
+  Set-BrokerServiceHost 'broker'
+  Write-BrokerConfig $db $signed $controlPlaneSid
+  & sc.exe start $B | Out-Null
+  Wait-Until { (Get-Svc $B).State -eq 'Stopped' } 30 "$B stopped after a failed start"
+  Get-Svc $B
 }
+# Claims in a journal, read with the `inspect` verb as the interactive Administrator (the data folder's ACL lets Administrators read it).
+function Get-ClaimCount([string]$db) { [int]((& $BrokerExe inspect $db) | Select-Object -First 1) }
 function Start-AdminSquatter([string]$tag) {
   $out = "$LabRoot\evidence\$tag.squat.txt"
   $p = Start-Process -FilePath $Shim -ArgumentList @('squat', $Pipe, '60') -RedirectStandardOutput $out -NoNewWindow -PassThru
@@ -142,7 +172,9 @@ $hashes = [ordered]@{
 
 # ---- services: own process, virtual accounts, restricted service SID; the Broker service object grants the Control Plane exactly SERVICE_QUERY_STATUS
 foreach ($n in $All) {
-  & sc.exe create $n binPath= "$Shim service $LabRoot\config\$n.json" obj= "NT SERVICE\$n" start= demand type= own | Out-Null
+  # The Broker service runs the real Broker (`service <config>`); the Control Plane and the third account run the shim.
+  $bin = if ($n -eq $B) { $BinPathBroker } else { "$Shim service $LabRoot\config\$n.json" }
+  & sc.exe create $n binPath= $bin obj= "NT SERVICE\$n" start= demand type= own | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "sc create $n failed ($LASTEXITCODE)" }
   & sc.exe sidtype $n restricted | Out-Null
 }
@@ -172,13 +204,15 @@ Step 'setup_services' 'Own-process services under virtual accounts with restrict
   Verdict $ok $ev
 }
 
-$R1 = $inputs.r1; $R2 = $inputs.r2; $R3 = $inputs.r3
+$R1 = $inputs.r1; $R2 = $inputs.r2; $R3 = $inputs.r3; $R4A = $inputs.r4a; $R4B = $inputs.r4b
+$Db3 = "$LabRoot\data\broker\journal-3.sqlite"
 
-# ---- Broker run 1: an unconsumed pipe. Everything that must NOT connect goes first; the single allowed open (it uses the Broker's one connection) goes last.
+# ---- Broker run 1: the real Broker service, started once; the probes below connect to its pipe without sending a request (the service keeps serving).
 $script:Pid1 = $null
-Step 'run1_broker_ready' 'Broker service starts, creates its pipe and prints BROKER_READY' {
+Step 'run1_broker_ready' 'Real Broker service starts, creates its pipe and only then reports RUNNING' {
   $script:Pid1 = Start-LabBroker 'run1' $Db1 $R1
-  Verdict ($script:Pid1 -gt 0) @("service pid=$($script:Pid1)", ((Read-Result $B 'run1') -join ' | '))
+  $svc = Get-Svc $B
+  Verdict (($script:Pid1 -gt 0) -and ($svc.State -eq 'Running') -and ($svc.PathName -like "*albera-windows-broker.exe*service*")) @("service pid=$($script:Pid1) state=$($svc.State)", "binPath: $($svc.PathName)")
 }
 Step 'c_other_principals_denied' 'Other principals cannot use the Broker pipe (DACL) or the helper in service mode' {
   $adm = Invoke-ProbeAdmin @('pipe-open', $Pipe, '00120083')
@@ -190,19 +224,17 @@ Step 'c_other_principals_denied' 'Other principals cannot use the Broker pipe (D
     "helper as Administrator (service mode): $($hAdm | ConvertTo-Json -Compress)", "helper as third account (service mode): $($hOth | ConvertTo-Json -Compress)")
 }
 Step 'a_pipe_acl' 'Live Broker pipe: owner = Broker SID, DACL = Broker + one Control Plane ACE 0x00120083, session 0' {
-  $open = Invoke-ProbeAs $C 'cp-open' @('pipe-open', $Pipe, '00120083') # uses up Broker run 1
+  $open = Invoke-ProbeAs $C 'cp-open' @('pipe-open', $Pipe, '00120083') # connects and leaves without a request; the service drops it and serves on
   $aces = @([regex]::Matches([string]$open.sddl, '\(A;;([^;]+);;;(S-1-[0-9-]+)\)') | ForEach-Object { @{ Mask = $_.Groups[1].Value; Sid = $_.Groups[2].Value } })
   $cpAce = @($aces | Where-Object { $_.Sid -eq $SidC })
   $ok = ($open.result -eq 'opened') -and ($open.owner -eq $SidB) -and ($aces.Count -eq 2) -and (@($aces | Where-Object { $_.Sid -eq $SidB }).Count -eq 1) `
     -and ($cpAce.Count -eq 1) -and ($cpAce[0].Mask -ieq '0x120083') -and ($open.serverSession -eq 0) -and ($open.serverPid -eq $script:Pid1)
   Verdict $ok @("open as Control Plane: $($open.result)", "owner=$($open.owner) (Broker SID $SidB)", "sddl=$($open.sddl)", "serverPid=$($open.serverPid) servicePid=$($script:Pid1) serverSession=$($open.serverSession)")
 }
-Step 'a_effective_access' 'Control Plane account: 0x00120083 may open, GENERIC_WRITE and FILE_APPEND_DATA may not (fresh Broker run per probe)' {
+Step 'a_effective_access' 'Control Plane account: 0x00120083 may open, GENERIC_WRITE and FILE_APPEND_DATA may not (same running service)' {
   $r = @{}
   foreach ($p in @(@($C, 'cp-denied-write', '40000000'), @($C, 'cp-denied-append', '00000004'), @($O, 'other-append', '00000004'), @($C, 'cp-readctl-append', '00020004'))) {
-    $null = Start-LabBroker ('eff-' + $p[1]) $Db2 $R3
     $r[$p[1]] = Invoke-ProbeAs $p[0] $p[1] @('pipe-open', $Pipe, $p[2])
-    Stop-LabService $B
   }
   # Observed on Windows Server 2025 (2026-10-30): NPFS does not deny FILE_APPEND_DATA (0x4) on a CLIENT open even though the DACL grants it to
   # nobody but the Broker; a principal without any ACE is still denied. A client handle cannot create a server instance (that is CreateNamedPipe,
@@ -212,9 +244,12 @@ Step 'a_effective_access' 'Control Plane account: 0x00120083 may open, GENERIC_W
     "FILE_APPEND_DATA (0x4) as third account (no ACE): $($r['other-append'].result)", "READ_CONTROL|FILE_APPEND_DATA as CP: $($r['cp-readctl-append'].result) sddl=$($r['cp-readctl-append'].sddl)")
 }
 Step 'a_token' 'Service process tokens: virtual-account user, restricting SIDs, no admin group, session 0' {
-  $ev = @(); $ok = $true
-  foreach ($t in @(@('Broker', "$LabRoot\results\$B\run1.token.json", $SidB), @('ControlPlane', "$LabRoot\results\$C\cp-open.token.json", $SidC))) {
-    $tok = Get-Content -Raw $t[1] | ConvertFrom-Json
+  $ev = @(); $ok = $true; $brokerTokenBlocked = $false
+  # The Broker token is read off the real Broker service process (token-of, as the interactive Administrator); the Control Plane token comes from the shim's report.
+  $brokerToken = Invoke-ProbeAdmin @('token-of', "$($script:Pid1)")
+  foreach ($t in @(@('Broker', $brokerToken, $SidB), @('ControlPlane', (Get-Content -Raw "$LabRoot\results\$C\cp-open.token.json" | ConvertFrom-Json), $SidC))) {
+    $tok = $t[1]
+    if ($tok.result) { $ev += "$($t[0]) token not readable as Administrator: $($tok.result)"; $brokerTokenBlocked = $true; continue }
     $restricted = @($tok.restrictedSids | ForEach-Object { $_.sid })
     $enabled = @($tok.groups | Where-Object { $_.attributes -contains 'enabled' })
     $ev += "$($t[0]) user=$($tok.user.name) session=$($tok.sessionId) integrity=$($tok.integrity) hasRestrictions=$($tok.hasRestrictions) elevated=$($tok.elevated)"
@@ -223,7 +258,7 @@ Step 'a_token' 'Service process tokens: virtual-account user, restricting SIDs, 
     $ev += "$($t[0]) enabledPrivileges=$((@($tok.privileges | Where-Object { $_.enabled } | ForEach-Object { $_.name })) -join ', ')"
     if ($tok.user.sid -ne $t[2] -or $tok.sessionId -ne 0 -or $restricted -notcontains $t[2] -or $restricted -notcontains 'S-1-1-0' -or ($enabled | Where-Object { $_.sid -eq 'S-1-5-32-544' })) { $ok = $false }
   }
-  Verdict $ok $ev
+  if ($ok -and $brokerTokenBlocked) { @{ Status = 'BLOCKED'; Evidence = $ev } } else { Verdict $ok $ev }
 }
 
 # ---- Broker run 2: the positive path (b) on journal 1
@@ -231,11 +266,11 @@ $script:Pid2 = $null
 Step 'b_positive' 'Control Plane helper in service mode: ok, exactly one journal claim' {
   $script:Pid2 = Start-LabBroker 'run2' $Db1 $R1
   $res = Invoke-HelperAs $C 'helper-cp-ok' $R1 @{ serviceName = $B }
-  Wait-Until { (Get-Svc $B).State -eq 'Stopped' } 30 'broker run 2 ends'
-  $claims = Get-ClaimCount $Db1 'inspect1'
-  $log = Read-Result $B 'run2'
-  $ok = ($res.ok -eq $true) -and ($res.state -eq 'UNKNOWN') -and ($claims -eq 1) -and ($log -contains 'PEER=authenticated') -and ($log -contains 'CLAIM=PERSISTED_UNKNOWN')
-  Verdict $ok @("helper result: $($res | ConvertTo-Json -Compress)", "journal claims=$claims", "broker log: $($log -join ' | ')")
+  $stillRunning = (Get-Svc $B).State -eq 'Running' # the real service keeps serving after a request
+  Stop-LabService $B
+  $claims = Get-ClaimCount $Db1
+  $ok = ($res.ok -eq $true) -and ($res.state -eq 'UNKNOWN') -and ($claims -eq 1) -and $stillRunning
+  Verdict $ok @("helper result: $($res | ConvertTo-Json -Compress)", "journal claims=$claims", "service still RUNNING after the request: $stillRunning")
 }
 
 # ---- Broker run 3: SCM query rights, OpenProcess across accounts and the image-hash variant (e) on journal 2
@@ -253,7 +288,7 @@ Step 'e_scm_query_status' 'SCM PID lookup needs only SC_MANAGER_CONNECT + SERVIC
 Step 'e_openprocess_image_hash' 'Cross-account OpenProcess for the image hash: record allowed or denied, and that the helper follows it' {
   $opC = Invoke-ProbeAs $C 'cp-openproc' @('openproc', "$($script:Pid3)")
   $allowed = $opC.openProcess.PROCESS_QUERY_LIMITED_INFORMATION -eq 'opened'
-  $res = Invoke-HelperAs $C 'helper-cp-hash' $R3 @{ serviceName = $B; imageSha256 = $hashes.shimExe } # the SCM process image is the shim (Broker hosted in process)
+  $res = Invoke-HelperAs $C 'helper-cp-hash' $R3 @{ serviceName = $B; imageSha256 = $hashes.brokerExe } # the SCM process image is the Broker executable itself
   $consistent = if ($allowed) { $res.ok -eq $true } else { $res.code -eq 'server_identity_unavailable' }
   Stop-LabService $B
   Verdict $consistent @("Control Plane OpenProcess masks on the Broker service process: $($opC.openProcess | ConvertTo-Json -Compress)", "image sha256 readable by Control Plane: $(if ($allowed) { 'yes' } else { 'no' })",
@@ -267,11 +302,44 @@ Step 'e_session0' 'Broker pipe server runs in session 0; an interactive-session 
 Step 'f_restart_replay' 'Restarted Broker service: the same receipt is denied, still one journal claim' {
   $pid4 = Start-LabBroker 'run4' $Db1 $R1
   $res = Invoke-HelperAs $C 'helper-cp-replay' $R1 @{ serviceName = $B }
-  Wait-Until { (Get-Svc $B).State -eq 'Stopped' } 30 'broker run 4 ends'
-  $claims = Get-ClaimCount $Db1 'inspect2'
-  $log = Read-Result $B 'run4'
-  $ok = ($res.ok -eq $false) -and ($res.code -eq 'denied') -and ($log -contains 'DENY=duplicate') -and ($claims -eq 1) -and ($pid4 -ne $script:Pid2)
-  Verdict $ok @("helper result: $($res | ConvertTo-Json -Compress)", "broker log: $($log -join ' | ')", "journal claims=$claims", "service pid run 2=$($script:Pid2) run 4=$pid4")
+  Stop-LabService $B
+  $claims = Get-ClaimCount $Db1
+  $ok = ($res.ok -eq $false) -and ($res.code -eq 'denied') -and ($claims -eq 1) -and ($pid4 -ne $script:Pid2)
+  Verdict $ok @("helper result: $($res | ConvertTo-Json -Compress) (denied = the duplicate claim was refused)", "journal claims=$claims", "service pid run 2=$($script:Pid2) run 4=$pid4")
+}
+
+# ---- the real service host: two requests to one running service, STOP, and the fatal exit codes SCM records (g)
+Step 'g_two_requests_one_service_then_stop' 'Real service host: Control Plane helper (service mode) ok against two consecutive requests to the same RUNNING service (PID unchanged); SERVICE_CONTROL_STOP ends it cleanly' {
+  $pidG = Start-LabBroker 'run5' $Db3 $R4A
+  $res1 = Invoke-HelperAs $C 'helper-g1' $R4A @{ serviceName = $B }
+  $svc1 = Get-Svc $B
+  $res2 = Invoke-HelperAs $C 'helper-g2' $R4B @{ serviceName = $B }
+  $svc2 = Get-Svc $B
+  $res3 = Invoke-HelperAs $C 'helper-g3' $R4A @{ serviceName = $B }   # replay of the first receipt: still the same process, the journal remembers it
+  $svc3 = Get-Svc $B
+  $claims = Get-ClaimCount $Db3
+  $stopWatch = [System.Diagnostics.Stopwatch]::StartNew()
+  & sc.exe stop $B | Out-Null                                          # SERVICE_CONTROL_STOP
+  Wait-Until { (Get-Svc $B).State -eq 'Stopped' } 30 'broker service stopped by STOP'
+  $stopWatch.Stop()
+  $after = Get-Svc $B
+  Wait-Until { -not (Get-Process -Id $pidG -ErrorAction SilentlyContinue) } 10 'broker process exited'
+  $pipeGone = (Invoke-ProbeAdmin @('pipe-open', $Pipe, '00120083')).result
+  $samePid = ($svc1.ProcessId -eq $pidG) -and ($svc2.ProcessId -eq $pidG) -and ($svc3.ProcessId -eq $pidG)
+  $ok = ($res1.ok -eq $true) -and ($res2.ok -eq $true) -and ($res3.ok -eq $false) -and ($res3.code -eq 'denied') -and $samePid -and ($svc3.State -eq 'Running') -and ($claims -eq 2) `
+    -and ($after.State -eq 'Stopped') -and ($after.ExitCode -eq 0) -and ($after.ServiceSpecificExitCode -eq 0) -and ($stopWatch.ElapsedMilliseconds -lt 10000) -and ($pipeGone -eq 'error_2')
+  Verdict $ok @("request 1: $($res1 | ConvertTo-Json -Compress)", "request 2: $($res2 | ConvertTo-Json -Compress)", "request 3 (replay of 1): $($res3 | ConvertTo-Json -Compress)",
+    "service pid after each request: $($svc1.ProcessId), $($svc2.ProcessId), $($svc3.ProcessId) (started as $pidG); state $($svc3.State)", "journal claims=$claims",
+    "after STOP: $(Get-ServiceExit $B) in $($stopWatch.ElapsedMilliseconds) ms; process gone; pipe open now: $pipeGone")
+}
+Step 'g_fatal_exit_codes' 'Real service host: a squatted pipe name and a rejected config end the service with 1066 and the fixed service-specific exit code (70, 73)' {
+  $squatter = Start-AdminSquatter 'g-fatal'
+  $squat = Start-LabBrokerExpectingFailure $Db3 $R4A $script:SidC
+  $null = Stop-AdminSquatter $squatter
+  $bad = Start-LabBrokerExpectingFailure $Db3 $R4A 'S-1-1-0'          # a broad Control Plane SID is refused
+  $ok = ($squat.ExitCode -eq 1066) -and ($squat.ServiceSpecificExitCode -eq 70) -and ($bad.ExitCode -eq 1066) -and ($bad.ServiceSpecificExitCode -eq 73)
+  Verdict $ok @("pipe name already held by an Administrator process: win32=$($squat.ExitCode) specific=$($squat.ServiceSpecificExitCode) (expected 1066 / 70)",
+    "config with Control Plane SID S-1-1-0: win32=$($bad.ExitCode) specific=$($bad.ServiceSpecificExitCode) (expected 1066 / 73)")
 }
 
 # ---- squatters (d)
@@ -284,6 +352,8 @@ Step 'd1_squatter_broker_stopped' 'Broker service stopped, administrator squats 
   $ok = ($res.code -in @('server_identity_mismatch', 'server_identity_unavailable')) -and (-not $sq.bytesReceived)
   Verdict $ok @("helper: $($res | ConvertTo-Json -Compress) (the plan expected server_identity_mismatch; with the service not RUNNING the SCM lookup fails first, so the code is server_identity_unavailable, still pre-send)", "squatter: $($sq | ConvertTo-Json -Compress)")
 }
+# d2 needs a Broker service object that is RUNNING but owns no pipe, which the real Broker cannot be: point the object at the shim for this one check.
+Set-BrokerServiceHost 'shim'
 Invoke-LabJob $B 'd2' @{ mode = 'inproc'; program = $BrokerDll; args = @('inspect', $Db1); linger = $true } -NoWait # service stays RUNNING, but owns no pipe
 Wait-Line $B 'd2' 'staying RUNNING'
 Step 'd2_squatter_administrator' 'Service RUNNING, administrator squats the name: server_identity_mismatch, squatter receives 0 bytes' {

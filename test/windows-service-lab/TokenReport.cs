@@ -6,7 +6,8 @@ using System.Text;
 namespace Albera.Lab;
 
 // What the process token looks like from the inside: user, enabled / deny-only groups, restricting SIDs, privileges, integrity level, session.
-// This is the evidence for lab step 3 (service token shape). It reads only this process's own token.
+// This is the evidence for lab step 3 (service token shape). It reads this process's own token, or (token-of) the token of another process
+// the caller can open with PROCESS_QUERY_LIMITED_INFORMATION + TOKEN_QUERY, e.g. the real Broker service process.
 internal static class TokenReport
 {
     private const int TokenUser = 1, TokenGroups = 2, TokenPrivileges = 3, TokenOwner = 4, TokenRestrictedSids = 11, TokenSessionId = 12,
@@ -15,15 +16,23 @@ internal static class TokenReport
     private static readonly (uint Bit, string Name)[] GroupFlags =
         [(0x1, "mandatory"), (0x2, "enabled_by_default"), (0x4, "enabled"), (0x8, "owner"), (0x10, "deny_only"), (0x20, "integrity")];
 
-    public static Dictionary<string, object?> Capture()
+    public static Dictionary<string, object?> Capture(uint? processId = null)
     {
-        if (!Native.OpenProcessToken(Native.GetCurrentProcess(), 0x8 /*TOKEN_QUERY*/, out IntPtr token)) throw new Win32Exception();
+        IntPtr process = processId is { } other ? Native.OpenProcess(0x1000 /*PROCESS_QUERY_LIMITED_INFORMATION*/, false, other) : Native.GetCurrentProcess();
+        if (process == IntPtr.Zero) throw new Win32Exception();
+        try { return CaptureToken(process, processId ?? (uint)Environment.ProcessId); }
+        finally { if (processId is not null) _ = Native.CloseHandle(process); }
+    }
+
+    private static Dictionary<string, object?> CaptureToken(IntPtr process, uint processId)
+    {
+        if (!Native.OpenProcessToken(process, 0x8 /*TOKEN_QUERY*/, out IntPtr token)) throw new Win32Exception();
         try
         {
             string integrity = Query(token, TokenIntegrityLevel, buffer => SidString(Marshal.ReadIntPtr(buffer)));
             return new Dictionary<string, object?>
             {
-                ["pid"] = Environment.ProcessId,
+                ["pid"] = processId,
                 ["user"] = Query(token, TokenUser, buffer => Describe(Marshal.ReadIntPtr(buffer))),
                 ["owner"] = Query(token, TokenOwner, buffer => Describe(Marshal.ReadIntPtr(buffer))),
                 ["sessionId"] = Query(token, TokenSessionId, buffer => (uint)Marshal.ReadInt32(buffer)),

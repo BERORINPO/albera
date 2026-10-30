@@ -12,6 +12,7 @@ namespace Albera.Lab;
 // Single-purpose probes, each printing ONE JSON line (squat prints two). They run as whichever account launches them: the interactive
 // Administrator, or a service account through the shim's child mode. They only open, read and report; none changes system state.
 //   token                          this process's own token (TokenReport)
+//   token-of <pid>                 the token of another process this account may open (e.g. the Broker service), or its Win32 error
 //   pipe-open <pipe> <hexMask>     CreateFile on an existing pipe with exactly that access (SQOS identification), then owner / DACL / server pid / session.
 //                                  A successful open uses up the single connection a Broker serves.
 //   scm <service>                  which access masks OpenService grants this account, and the service status + PID
@@ -35,6 +36,7 @@ internal static class Probes
         switch (args)
         {
             case ["token"]: Emit(TokenReport.Capture()); return 0;
+            case ["token-of", var pid]: return TokenOf(uint.Parse(pid, System.Globalization.CultureInfo.InvariantCulture));
             case ["pipe-open", var pipe, var mask]: return PipeOpen(pipe, Convert.ToUInt32(mask, 16));
             case ["scm", var service]: return Scm(service);
             case ["openproc", var pid]: return OpenProc(uint.Parse(pid, System.Globalization.CultureInfo.InvariantCulture));
@@ -45,6 +47,14 @@ internal static class Probes
 
     private static void Emit(object value) { Console.WriteLine(JsonSerializer.Serialize(value)); Console.Out.Flush(); }
     private static string Outcome(bool ok, int error) => ok ? "opened" : error == 5 ? "denied" : $"error_{error}";
+
+    // The token of another process (the real Broker service), when this account may open it. Reports the Win32 error instead of throwing.
+    private static int TokenOf(uint pid)
+    {
+        try { Emit(TokenReport.Capture(pid)); }
+        catch (System.ComponentModel.Win32Exception ex) { Emit(new { probe = "token-of", pid, result = ex.NativeErrorCode == 5 ? "denied" : $"error_{ex.NativeErrorCode}" }); }
+        return 0;
+    }
 
     private static int PipeOpen(string pipe, uint mask)
     {
