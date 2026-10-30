@@ -44,6 +44,10 @@ try {
     packedFiles.every(({ path: filePath }) => !/windows-broker/iu.test(filePath)),
     'packed files must exclude the Windows Broker and its pipe client (source and build output)',
   );
+  assert.ok(
+    packedFiles.every(({ path: filePath }) => !/windows-approval-authority|albera-approval-authority/iu.test(filePath)),
+    'packed files must exclude the Approval Authority (source and build output)',
+  );
   const sourceManifest =JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
   assert.equal(sourceManifest.bin?.albera, 'src/entry/server.mjs');
   assert.equal(Object.hasOwn(sourceManifest.bin ?? {}, 'albera-runtime'), false, 'published manifest must not define albera-runtime');
@@ -62,6 +66,7 @@ try {
   await access(path.join(installedRoot, manifest.bin.albera));
   await assert.rejects(access(path.join(installedRoot, 'src', 'runtime', 'windows-broker')), 'installed package must not contain the Windows Broker');
   await assert.rejects(access(path.join(installedRoot, 'src', 'runtime', 'windows-broker-pipe-client')), 'installed package must not contain the Windows Broker pipe client');
+  await assert.rejects(access(path.join(installedRoot, 'src', 'runtime', 'windows-approval-authority')), 'installed package must not contain the Approval Authority');
   const child = spawnSync(process.execPath, [path.join(installedRoot, manifest.bin.albera), '--help'], {
     cwd: root, encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, shell: false, windowsHide: true,
   });
