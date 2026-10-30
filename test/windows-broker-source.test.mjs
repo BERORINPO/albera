@@ -10,11 +10,18 @@ const read = (...parts) => readFileSync(path.join(root, ...parts), 'utf8');
 const program = read('src', 'runtime', 'windows-broker', 'Program.cs');
 const project = read('src', 'runtime', 'windows-broker', 'Albera.WindowsBroker.csproj');
 const publish = read('scripts', 'publish-windows-broker.mjs');
+// The service host lives in three more files of the same project (partial class Program + ServiceConfig + ServiceHost). Code only: comments may name what is NOT used.
+const serviceHost = read('src', 'runtime', 'windows-broker', 'ServiceHost.cs');
+const serviceConfig = read('src', 'runtime', 'windows-broker', 'ServiceConfig.cs');
+const serviceLoop = read('src', 'runtime', 'windows-broker', 'ServiceLoop.cs');
+const stripComments = (source) => source.replace(/^\s*\/\/.*$/gmu, '').replace(/\s\/\/ .*$/gmu, '');
+const brokerCode = [program, serviceHost, serviceConfig, serviceLoop].map(stripComments).join('\n');
 
-test('Broker source stays a fixed-action prototype with no process launch, service or Hyper-V code', () => {
+test('Broker source stays a fixed-action prototype with no process launch, installer or Hyper-V code', () => {
   assert.deepEqual([...program.matchAll(/action != "([^"]+)"/gu)].map((m) => m[1]), ['synthetic.noop']);
   for (const forbidden of [/Process\.Start/u, /ProcessStartInfo/u, /ServiceBase/u, /ServiceController/u, /\bsc\.exe\b/u, /powershell/iu, /Hyper-?V/iu, /Get-VM/u, /SetAccessControl/u]) {
     assert.equal(forbidden.test(program), false, `Program.cs must not match ${forbidden}`);
+    assert.equal(forbidden.test(brokerCode), false, `no Broker source file may match ${forbidden}`);
   }
 });
 
@@ -38,8 +45,8 @@ test('Broker pipe is ephemeral, owned by the Broker\'s own SID and grants only t
 
 test('Broker fault-injection seam is compiled out of the shipped build and the pipe stays first-instance only', () => {
   // Every reference to the injected faults sits inside #if ALBERA_BROKER_TEST_FAULTS ... #endif (plus the unconditional enum declaration).
-  const outsideSeam = program.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '');
-  assert.equal(/serve-fault|RevertFails|RevertThrows|RevertLies/u.test(outsideSeam), false, 'fault names must only appear inside the test-only #if block');
+  const outsideSeam = [program, serviceHost, serviceConfig, serviceLoop].map((source) => source.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '')).join('\n');
+  assert.equal(/serve-fault|RevertFails|RevertThrows|RevertLies|serve-loop|ServeLoopForTest/u.test(outsideSeam), false, 'fault names and the serve-loop test entry must only appear inside the test-only #if block');
   assert.match(project, /Condition="'\$\(AlberaBrokerTestFaults\)' == 'true'"/u);
   // MSBuild reads environment variables as properties, so the publish pins the switch off as a global property.
   assert.match(publish, /'-p:AlberaBrokerTestFaults=false'/u, 'the publish script must pin the test seam off');
@@ -108,4 +115,100 @@ test('build:windows-broker also builds the pipe client and neither is wired into
   assert.match(publish, /Albera\.WindowsBrokerPipeClient\.csproj/u);
   assert.match(publish, /RestoreLockedMode=true/u);
   assert.equal(JSON.stringify(JSON.parse(read('package.json'))).includes('pipe-client'), false);
+});
+
+// The service host (`service <config>`): the Broker is itself the SCM service process. Source guards only (any OS, no .NET SDK); the behaviour is
+// covered by runtime-windows-broker-service-host.test.mjs (host) and the VM lab (SCM).
+const importsOf = (source) => [...source.matchAll(/\[DllImport\("([^"]+)"[^\]]*\)\]\s*(?:private|internal|public) static extern \w+ (\w+)\(/gu)].map((m) => `${m[1]}!${m[2]}`);
+
+test('service host talks to the SCM through three advapi32 P/Invokes only and never creates, changes, starts or stops a service', () => {
+  assert.deepEqual(importsOf(serviceHost), ['advapi32.dll!StartServiceCtrlDispatcherW', 'advapi32.dll!RegisterServiceCtrlHandlerExW', 'advapi32.dll!SetServiceStatus']);
+  for (const forbidden of [/OpenSCManager/u, /CreateService/u, /ChangeServiceConfig/u, /ControlService/u, /DeleteService/u, /\bStartService[AW]?\(/u, /OpenService/u, /QueryServiceStatus/u, /System\.ServiceProcess/u, /Microsoft\.Extensions\.Hosting/u]) {
+    assert.equal(forbidden.test(brokerCode), false, `the Broker must not match ${forbidden}`);
+  }
+  assert.match(serviceHost, /ServiceWin32OwnProcess = 0x10/u, 'own-process service');
+});
+
+test('service host accepts STOP only, reports RUNNING only once the pipe exists, and bounds the stop path', () => {
+  assert.match(serviceHost, /AcceptStop = 0x1;/u);
+  assert.match(serviceHost, /ControlsAccepted = state == Running \? AcceptStop : 0,/u, 'STOP is the only accepted control');
+  assert.deepEqual([...serviceHost.matchAll(/case (Control\w+)/gu)].map((m) => m[1]), ['ControlStop', 'ControlInterrogate']);
+  assert.equal([...serviceHost.matchAll(/Report\(Running\)/gu)].length, 1, 'RUNNING is reported from exactly one place');
+  assert.match(serviceHost, /RunServiceLoopAsync\(config, stop, \(\) => Report\(Running\)\)/u, '... the loop\'s on-ready callback');
+  // In the loop the callback runs after the first pipe exists and before the first wait for a client.
+  const created = serviceLoop.indexOf('CreateBrokerPipe(config.PipeName');
+  const announced = serviceLoop.indexOf('onReady();');
+  const waited = serviceLoop.indexOf('WaitForConnectionAsync(stop)');
+  assert.ok(created > 0 && created < announced && announced < waited, 'pipe created -> onReady -> wait for a client');
+  assert.match(serviceLoop, /if \(pipe is null\) return failure;/u, 'a pipe that cannot be (re)created ends the service with its fixed code');
+  // Bounded stop: the idle wait and the frame read honour the stop token, a stalled client has a deadline, the host waits a fixed grace.
+  assert.match(serviceLoop, /CreateLinkedTokenSource\(stop\)/u);
+  assert.match(serviceLoop, /deadline\.CancelAfter\(ConnectionDeadline\)/u);
+  assert.match(serviceLoop, /HandleConnectionAsync\(pipe, settings, deadline\.Token\)/u);
+  assert.match(serviceHost, /loop\.Wait\(StopGrace\)/u);
+  assert.equal(/\.Wait\(\)|Timeout\.Infinite|Task\.Delay\(/u.test(stripComments(serviceHost + serviceLoop)), false, 'no unbounded wait in the service host or loop');
+  assert.match(serviceHost, /if \(stoppedReported \|\| \(state == Running && stopping\)\) return;/u, 'nothing after STOPPED, and RUNNING never overtakes STOP');
+});
+
+test('service loop re-creates the same first-instance pipe, and `serve` still serves exactly one request', () => {
+  assert.equal([...brokerCode.matchAll(/NamedPipeServerStreamAcl\.Create\(/gu)].length, 1, 'one pipe construction site for serve and service: same owner, same DACL, max 1 instance');
+  assert.match(serviceLoop, /while \(!stop\.IsCancellationRequested\)[\s\S]*CreateBrokerPipe\(config\.PipeName, config\.ControlPlaneSid, out int failure\)/u, 'a new pipe per request');
+  const serve = program.slice(program.indexOf('private static async Task<int> ServeAsync('), program.indexOf('private sealed record BrokerSettings'));
+  assert.match(serve, /await pipe\.WaitForConnectionAsync\(\)\.WaitAsync\(TimeSpan\.FromSeconds\(20\)\);\s+await HandleConnectionAsync\(pipe, settings, CancellationToken\.None\);\s+return 0;/u);
+  assert.equal(/\bwhile\b|\bfor\b/u.test(serve), false, '`serve` has no loop');
+  assert.match(program, /args\.Length == 7 && args\[0\] == "serve"/u);
+});
+
+test('service exit codes are fixed and the dispatcher is called before the config is read', () => {
+  assert.deepEqual([...program.matchAll(/const int (Exit\w+) = (\d+);/gu)].map((m) => `${m[1]}=${m[2]}`), [
+    'ExitPipeUnavailable=70', 'ExitImpersonationRevertFailed=71', 'ExitPipeOwnerUnavailable=72',
+    'ExitServiceConfigInvalid=73', 'ExitNotStartedByScm=74', 'ExitServiceLoopFailed=75',
+  ]);
+  assert.equal(/TryLoad\(/u.test(program), false, 'Main never reads the service config itself');
+  assert.match(program, /args\.Length == 2 && args\[0\] == "service"\) return ServiceHost\.Run\(args\[1\]\);/u);
+  const run = serviceHost.slice(serviceHost.indexOf('public static int Run('), serviceHost.indexOf('private static void ServiceMain('));
+  assert.equal(/TryLoad\(|Directory|File\.|SqliteConnection|NamedPipe/u.test(run), false, 'outside the SCM nothing is read, opened or created before the dispatcher fails');
+  assert.equal([...serviceHost.matchAll(/TryLoad\(/gu)].length, 1, 'the config is read in ServiceMain only');
+  assert.match(run, /StartServiceCtrlDispatcherW\(table\)\) return exitCode;/u);
+  assert.match(serviceHost, /Report\(Stopped, code == 0 \? 0 : ErrorServiceSpecificError, \(uint\)code\)/u, 'fatal: STOPPED with the fixed code as the service-specific exit code');
+  // The revert-failure kill reports STOPPED(71) from a fresh thread (this one may still carry the client token) before TerminateProcess.
+  assert.ok(program.indexOf('NotifyServiceTermination(ExitImpersonationRevertFailed)') < program.indexOf('_ = TerminateProcess('));
+  assert.match(serviceLoop, /Thread reporter = new\(/u);
+});
+
+test('VM lab tooling runs the real Broker as the service and checks two requests, STOP and the fatal exit codes (script not executed here)', () => {
+  const guest = read('test', 'windows-service-lab', 'lab-guest.ps1');
+  const inputs = read('scripts', 'windows-service-lab-inputs.mjs');
+  assert.equal(/[^\t\n -~]/u.test(guest), false, 'lab-guest.ps1 stays ASCII only (Windows PowerShell 5.1 reads it)');
+  assert.match(guest, /\$BinPathBroker = "\$BrokerExe service \$BrokerConfig"/u);
+  assert.match(guest, /\$bin = if \(\$n -eq \$B\) \{ \$BinPathBroker \} else/u, 'the Broker service object is created with the real Broker as its binPath');
+  assert.match(guest, /Start-LabBroker[\s\S]*?\(Get-Svc \$B\)\.State -eq 'Running'/u, 'READY is the service reaching RUNNING');
+  const ids = [...guest.matchAll(/^Step '([^']+)'/gmu)].map((m) => m[1]);
+  assert.ok(ids.includes('g_two_requests_one_service_then_stop') && ids.includes('g_fatal_exit_codes'), ids.join(','));
+  const two = guest.slice(guest.indexOf("Step 'g_two_requests_one_service_then_stop'"), guest.indexOf("Step 'g_fatal_exit_codes'"));
+  assert.match(two, /Invoke-HelperAs \$C 'helper-g1' \$R4A/u);
+  assert.match(two, /Invoke-HelperAs \$C 'helper-g2' \$R4B/u);
+  assert.match(two, /& sc\.exe stop \$B/u, 'SERVICE_CONTROL_STOP');
+  assert.match(two, /\$after\.ExitCode -eq 0\) -and \(\$after\.ServiceSpecificExitCode -eq 0\)/u, 'a clean stop');
+  assert.match(two, /\$svc3\.ProcessId -eq \$pidG/u, 'the service PID is unchanged across requests');
+  assert.match(guest, /\$squat\.ServiceSpecificExitCode -eq 70\) -and \(\$bad\.ExitCode -eq 1066\) -and \(\$bad\.ServiceSpecificExitCode -eq 73/u);
+  assert.match(inputs, /r4a', 'r4b'/u);
+  assert.equal([...inputs.matchAll(/generateKeyPairSync\(/gu)].length, 1, 'r4a and r4b are signed by one authority key');
+});
+
+test('service config accepts exactly five keys, validates every value and never echoes file content', () => {
+  assert.match(serviceConfig, /Keys = \["pipeName", "database", "publicKey", "controlPlaneSid", "generation"\];/u);
+  assert.match(serviceConfig, /seen\.SetEquals\(Keys\)/u, 'no unknown and no missing key');
+  assert.match(serviceConfig, /!seen\.Add\(property\.Name\)/u, 'a repeated key is refused');
+  assert.match(serviceConfig, /Program\.TryParseSid\(sid\) is null\) return null;/u, 'the Control Plane SID passes the same single-principal rule as `serve`');
+  assert.match(serviceConfig, /MaxDepth = 2/u);
+  assert.match(serviceConfig, /MaxFileBytes = 4096/u);
+  assert.match(serviceConfig, /Path\.GetFullPath\(path\), path, StringComparison\.Ordinal/u, 'only a path that is already in its canonical absolute form');
+  assert.match(serviceConfig, /ImportSubjectPublicKeyInfo\(key, out int used\);\s+return used == key\.Length/u);
+  const reasonClass = serviceConfig.slice(serviceConfig.indexOf('internal static class Reason'), serviceConfig.indexOf('public static ServiceConfig? TryLoad'));
+  assert.deepEqual([...reasonClass.matchAll(/ = "([a-z_]+)"/gu)].map((m) => m[1]).sort(),
+    ['config_keys', 'config_path', 'config_syntax', 'config_too_large', 'config_unreadable', 'control_plane_sid', 'database', 'database_directory', 'generation', 'pipe_name', 'public_key']);
+  // The only interpolated console lines are a reason word, a Win32 error number or a fixed stage word (restricted-client), never a config value.
+  const interpolated = [...brokerCode.matchAll(/Console\.WriteLine\((\$"[^"]*")\);/gu)].map((m) => m[1]);
+  assert.deepEqual(interpolated, ['$"RESTRICTED_TOKEN_SETUP=BLOCKED_{stage}"', '$"SERVICE_DISPATCHER_ERROR={error}"', '$"SERVICE_CONFIG=invalid:{reason}"', '$"SERVICE_CONFIG=invalid:{reason}"']);
 });

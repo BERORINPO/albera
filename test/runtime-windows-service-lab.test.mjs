@@ -143,4 +143,12 @@ describe('issue #23 lab tool: shim jobs and probes, host side', { skip: getUnava
     assert.equal(proc.openProcess.PROCESS_QUERY_LIMITED_INFORMATION, 'opened');
     assert.equal(proc.imageSha256, (await captureExecutableIdentity(process.execPath)).sha256);
   });
+
+  it('token-of probe reports another process\'s token (the lab reads the real Broker service this way) or the Win32 error', () => {
+    const own = probe('token-of', String(process.pid));
+    assert.equal(own.pid, process.pid);
+    assert.equal(own.user.sid, sid);
+    assert.deepEqual(own.restrictedSids, []);
+    assert.deepEqual(probe('token-of', '999999999'), { probe: 'token-of', pid: 999999999, result: 'error_87' });
+  });
 });

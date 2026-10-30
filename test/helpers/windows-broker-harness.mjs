@@ -34,18 +34,20 @@ export function currentUserSid() {
 }
 
 /** Restore (locked when the project has a lock file) and build one program. Returns its `.exe` apphost path. */
-export function buildProgram(kind, outputDirectory, assemblyName, { locked = true } = {}) {
+export function buildProgram(kind, outputDirectory, assemblyName, { locked = true, properties: extraProperties = [] } = {}) {
   const project = sources[kind];
   const intermediate = `${outputDirectory}-obj`;
   const properties = [`--property:BaseIntermediateOutputPath=${intermediate}${path.sep}`, `--property:MSBuildProjectExtensionsPath=${intermediate}${path.sep}`];
   const restore = locked ? ['--locked-mode', '--property:RestorePackagesWithLockFile=true'] : [];
   execFileSync('dotnet', ['restore', project, ...restore, ...properties], { encoding: 'utf8', stdio: 'pipe', timeout: 120_000, windowsHide: true });
-  execFileSync('dotnet', ['build', project, '--configuration', 'Release', '--no-restore', '--output', outputDirectory, ...properties], { encoding: 'utf8', stdio: 'pipe', timeout: 180_000, windowsHide: true });
+  execFileSync('dotnet', ['build', project, '--configuration', 'Release', '--no-restore', '--output', outputDirectory, ...extraProperties, ...properties], { encoding: 'utf8', stdio: 'pipe', timeout: 180_000, windowsHide: true });
   return path.join(outputDirectory, `${assemblyName}.exe`);
 }
 
 export const buildBroker = (dir) => buildProgram('broker', dir, 'albera-windows-broker');
-export const buildProbe = (dir) => buildProgram('probe', dir, 'albera-windows-pipe-server-probe', { locked: false });
+/** The Broker with the test-only seams (`serve-fault`, `serve-loop`). Never the shipped build. */
+export const buildBrokerWithTestSeams = (dir) => buildProgram('broker', dir, 'albera-windows-broker', { properties: ['--property:AlberaBrokerTestFaults=true'] });
+export const buildProbe =(dir) => buildProgram('probe', dir, 'albera-windows-pipe-server-probe', { locked: false });
 export const buildServiceLab = (dir) => buildProgram('serviceLab', dir, 'albera-lab-service-shim', { locked: false });
 
 /** Build the pipe client helper and record its SHA-256 next to it, as `npm run build:windows-broker` does. */
@@ -55,9 +57,9 @@ export async function buildPipeClient(dir) {
   return helper;
 }
 
-/** Start a program and collect its output lines (`child.lines`). */
-export function startProcess(executable, args) {
-  const child = spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+/** Start a program and collect its output lines (`child.lines`). `{ stdin: true }` keeps stdin open as a pipe (`child.stdin`). */
+export function startProcess(executable, args, { stdin = false } = {}) {
+  const child = spawn(executable, args, { stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true });
   child.lines = [];
   child.closeCode = undefined;
   child.stdout.setEncoding('utf8');

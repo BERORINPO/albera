@@ -8,7 +8,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Win32.SafeHandles;
 
-internal static class Program
+internal static partial class Program
 {
     private const int MaxFrameLength = 2048; // ADR-002: 2 KiB maximum protocol message
     private const string Denied = "{\"ok\":false,\"code\":\"denied\"}";
@@ -17,6 +17,10 @@ internal static class Program
     private const int ExitPipeUnavailable = 70;           // pipe name already exists (squatting / second Broker): refuse to start
     private const int ExitImpersonationRevertFailed = 71; // RevertToSelf failed or lied: terminate, never handle another request
     private const int ExitPipeOwnerUnavailable = 72;      // the pipe owner could not be set to this process's own SID: clients cannot verify us, refuse to start
+    // Service mode (the `service` entry; see ServiceHost.cs). Used as the service-specific exit code and as the process exit code.
+    internal const int ExitServiceConfigInvalid = 73; // the config file is missing, unreadable, malformed or has a rejected value: nothing is served
+    internal const int ExitNotStartedByScm = 74;      // not started by the service control manager (StartServiceCtrlDispatcher failed): nothing is created
+    internal const int ExitServiceLoopFailed = 75;    // an unexpected exception ended the serve loop: fail closed, stop the service
     private const int ErrorInvalidOwner = 1307;
 
     private enum ImpersonationFault { None, RevertFails, RevertThrows, RevertLies }
@@ -26,65 +30,87 @@ internal static class Program
         if (args.Length == 2 && args[0] == "restricted-client") return RunRestrictedClient(args[1]);
         if (args.Length == 2 && args[0] == "inspect") return await InspectAsync(args[1]);
         if (args.Length == 7 && args[0] == "serve") return await ServeAsync(args, ImpersonationFault.None);
+        if (args.Length == 2 && args[0] == "service") return ServiceHost.Run(args[1]);
+        if (args.Length == 2 && args[0] == "service-check") return CheckServiceConfig(args[1]);
 #if ALBERA_BROKER_TEST_FAULTS
         // Test-only failure injection. Compiled in only when the test builds with -p:AlberaBrokerTestFaults=true;
         // the shipped build (npm run build:windows-broker) has no such subcommand and answers 64.
         if (args.Length == 8 && args[0] == "serve-fault" &&
             Enum.TryParse(args[1], ignoreCase: false, out ImpersonationFault fault) && Enum.IsDefined(fault))
             return await ServeAsync(["serve", .. args[2..]], fault);
+        if (args.Length == 2 && args[0] == "serve-loop") return await ServeLoopForTestAsync(args[1]);
 #endif
         return 64;
     }
 
     private static async Task<int> ServeAsync(string[] args, ImpersonationFault fault)
     {
-        string pipeName = args[1], database = args[2];
-        byte[] publicKey = Convert.FromBase64String(args[3]);
-        string allowedSid = args[4];
-        long generation = long.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture);
-        bool hold = args[6] == "hold";
+        string pipeName = args[1];
+        BrokerSettings settings = new(args[2], Convert.FromBase64String(args[3]), args[4],
+            long.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture), args[6] == "hold", fault);
+        NamedPipeServerStream? pipe = CreateBrokerPipe(pipeName, settings.AllowedSid, out int failure);
+        if (pipe is null) return failure;
+        await using (pipe)
+        {
+            Console.WriteLine("BROKER_READY");
+            await pipe.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(20));
+            await HandleConnectionAsync(pipe, settings, CancellationToken.None);
+            return 0;
+        }
+    }
 
-        // maxNumberOfServerInstances == 1 makes .NET create the pipe with FILE_FLAG_FIRST_PIPE_INSTANCE, so an
-        // existing instance of this name (squatter, or another Broker) fails creation. Keep it at 1.
-        // The owner is set to this process's own user SID (not the token's default owner, which is Administrators for an
-        // elevated token) so that the Control Plane client can compare GetSecurityInfo(OWNER) with the SID it expects.
+    private sealed record BrokerSettings(string Database, byte[] PublicKey, string AllowedSid, long Generation, bool Hold, ImpersonationFault Fault);
+
+    // maxNumberOfServerInstances == 1 makes .NET create the pipe with FILE_FLAG_FIRST_PIPE_INSTANCE, so an
+    // existing instance of this name (squatter, or another Broker) fails creation. Keep it at 1.
+    // The owner is set to this process's own user SID (not the token's default owner, which is Administrators for an
+    // elevated token) so that the Control Plane client can compare GetSecurityInfo(OWNER) with the SID it expects.
+    // Returns null with a fixed exit code (70 pipe name taken, 72 owner could not be set) when the pipe cannot be served.
+    private static NamedPipeServerStream? CreateBrokerPipe(string pipeName, string allowedSid, out int failure)
+    {
+        failure = 0;
         NamedPipeServerStream pipe;
         try
         {
             pipe = NamedPipeServerStreamAcl.Create(pipeName, PipeDirection.InOut, 1,
                 PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0, OwnedBySelf(out SecurityIdentifier self, allowedSid));
-            if (!self.Equals(pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier)))) { pipe.Dispose(); return PipeOwnerUnavailable(); }
+            if (!self.Equals(pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier)))) { pipe.Dispose(); failure = PipeOwnerUnavailable(); return null; }
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or InvalidOperationException)
         {
-            if (ex is IOException io && (io.HResult & 0xffff) == ErrorInvalidOwner || ex is InvalidOperationException) return PipeOwnerUnavailable();
-            Console.WriteLine("BROKER_FATAL=PIPE_UNAVAILABLE");
-            return ExitPipeUnavailable;
+            if (ex is IOException io && (io.HResult & 0xffff) == ErrorInvalidOwner || ex is InvalidOperationException) failure = PipeOwnerUnavailable();
+            else
+            {
+                Console.WriteLine("BROKER_FATAL=PIPE_UNAVAILABLE");
+                failure = ExitPipeUnavailable;
+            }
+            return null;
         }
-        await using (pipe)
+        return pipe;
+    }
+
+    // One connected client: read one frame, check the peer, answer. `ioToken` bounds the frame read and the answer write only (the service loop's
+    // stop request and per-connection deadline); the claim itself is never cancelled half-way.
+    private static async Task HandleConnectionAsync(NamedPipeServerStream pipe, BrokerSettings settings, CancellationToken ioToken)
+    {
+        byte[] response;
+        try
         {
-            Console.WriteLine("BROKER_READY");
-            await pipe.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(20));
-            byte[] response;
-            try
-            {
-                byte[] frame = await ReadFrameAsync(pipe);
-                string? peerSid = ReadPeerSid(pipe, fault);
-                Console.WriteLine(peerSid == allowedSid ? "PEER=authenticated" : "PEER=denied");
-                response = string.Equals(peerSid, allowedSid, StringComparison.Ordinal)
-                    ? await ValidateAndClaimAsync(frame, database, publicKey, generation, hold)
-                    : Encoding.UTF8.GetBytes(Denied);
-            }
-            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
-                                       CryptographicException or FormatException or UnauthorizedAccessException or
-                                       SqliteException or ArgumentException)
-            {
-                response = Encoding.UTF8.GetBytes(Denied);
-                Console.WriteLine("REQUEST=DENIED");
-            }
-            await WriteFrameAsync(pipe, response);
-            return 0;
+            byte[] frame = await ReadFrameAsync(pipe, ioToken);
+            string? peerSid = ReadPeerSid(pipe, settings.Fault);
+            Console.WriteLine(peerSid == settings.AllowedSid ? "PEER=authenticated" : "PEER=denied");
+            response = string.Equals(peerSid, settings.AllowedSid, StringComparison.Ordinal)
+                ? await ValidateAndClaimAsync(frame, settings.Database, settings.PublicKey, settings.Generation, settings.Hold)
+                : Encoding.UTF8.GetBytes(Denied);
         }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                   CryptographicException or FormatException or UnauthorizedAccessException or
+                                   SqliteException or ArgumentException)
+        {
+            response = Encoding.UTF8.GetBytes(Denied);
+            Console.WriteLine("REQUEST=DENIED");
+        }
+        await WriteFrameAsync(pipe, response, ioToken);
     }
 
     private static int PipeOwnerUnavailable()
@@ -114,7 +140,7 @@ internal static class Program
 
     // Only a single principal may get the Control Plane ACE: a virtual service account (S-1-5-80-...) or a user/computer account SID, written
     // out in full. SDDL aliases (WD, AU, BU, BA) and group SIDs such as S-1-1-0 would let anyone take the Broker's one connection.
-    private static SecurityIdentifier? TryParseSid(string value)
+    internal static SecurityIdentifier? TryParseSid(string value)
     {
         try
         {
@@ -155,6 +181,7 @@ internal static class Program
         catch (Exception) { reverted = false; }
         if (reverted) return;
         Console.WriteLine("BROKER_FATAL=IMPERSONATION_REVERT_FAILED");
+        NotifyServiceTermination(ExitImpersonationRevertFailed);
         _ = TerminateProcess(GetCurrentProcess(), ExitImpersonationRevertFailed);
         Environment.Exit(ExitImpersonationRevertFailed); // only reached if TerminateProcess itself failed
     }
@@ -226,15 +253,15 @@ internal static class Program
     }
 
     private static string RequiredString(JsonElement element, string name) => element.GetProperty(name).ValueKind == JsonValueKind.String ? element.GetProperty(name).GetString()! : throw new JsonException();
-    private static async Task<byte[]> ReadFrameAsync(Stream stream)
+    private static async Task<byte[]> ReadFrameAsync(Stream stream, CancellationToken token)
     {
-        byte[] size = new byte[4]; await stream.ReadExactlyAsync(size);
+        byte[] size = new byte[4]; await stream.ReadExactlyAsync(size, token);
         int length = BitConverter.ToInt32(size); if (length < 1 || length > MaxFrameLength) throw new InvalidDataException();
-        byte[] frame = new byte[length]; await stream.ReadExactlyAsync(frame); return frame;
+        byte[] frame = new byte[length]; await stream.ReadExactlyAsync(frame, token); return frame;
     }
-    private static async Task WriteFrameAsync(Stream stream, byte[] frame)
+    private static async Task WriteFrameAsync(Stream stream, byte[] frame, CancellationToken token)
     {
-        await stream.WriteAsync(BitConverter.GetBytes(frame.Length)); await stream.WriteAsync(frame); await stream.FlushAsync();
+        await stream.WriteAsync(BitConverter.GetBytes(frame.Length), token); await stream.WriteAsync(frame, token); await stream.FlushAsync(token);
     }
     private static async Task<int> InspectAsync(string database)
     {

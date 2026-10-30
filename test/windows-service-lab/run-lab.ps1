@@ -4,7 +4,9 @@
 #   2. node scripts/windows-service-lab-inputs.mjs <inputs.json>
 #   3. pwsh/powershell -File test/windows-service-lab/run-lab.ps1 -InputsFile <inputs.json> -EvidenceDir <empty folder>
 # The guest password is read into a SecureString in memory only; it is never printed, logged or put on a command line.
-# STATUS: executed 2026-10-30 (run 3 of 3: 13 PASS, 1 BLOCKED). Set the guest clock to host time first (golden image starts 16 h ahead).
+# STATUS: executed 2026-10-30 (run 3 of 3: 13 PASS, 1 BLOCKED) with the Broker hosted in-process by the shim. This revision runs the REAL Broker
+# service host (`albera-windows-broker.exe service <config>`, checks g_*): executed 2026-10-30, 15 PASS / 1 BLOCKED. Set the guest clock to host time first (golden image starts 16 h ahead).
+# The Broker publish folder is copied whole (exe + dll + runtime); nothing else changes in this driver.
 param(
   [string]$VmName = 'albera-clone-04-lab23',
   [string]$PasswordFile = 'U:\dev\hyperv\albera-poc-01\local-secrets\admin-password.txt',

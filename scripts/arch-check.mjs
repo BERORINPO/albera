@@ -267,7 +267,7 @@ check('8a Windows Broker is not referenced by Observer layers or runtime modules
   BROKER_REF.test(line) ? 'the Windows Broker prototype must not be imported, spawned or named here (build-on-demand only)' : null,
 );
 const brokerRoot = 'src/runtime/windows-broker';
-const brokerFiles = ['Albera.WindowsBroker.csproj', 'Program.cs', 'packages.lock.json'];
+const brokerFiles = ['Albera.WindowsBroker.csproj', 'Program.cs', 'ServiceConfig.cs', 'ServiceHost.cs', 'ServiceLoop.cs', 'packages.lock.json'];
 for (const f of brokerFiles) if (!fs.existsSync(path.join(ROOT, brokerRoot, f))) violations.push(`[8b Windows Broker source] ${brokerRoot}/${f} does not exist (false-safe)`);
 // The trusted pipe client helper (verifies the pipe server before it writes) is part of the same on-demand set: its 3 files must exist, its
 // Program.cs stays small enough to review (<= 200 lines), and `build:windows-broker` must build it. Its name also matches BROKER_REF, so 8a and 8c cover it.
