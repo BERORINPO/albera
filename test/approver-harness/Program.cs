@@ -36,11 +36,11 @@ internal static class Harness
         public SignResult Sign(byte[] message) { Messages.Add(message); return result; }
     }
 
-    private sealed class Run(FakeChannel channel, IPresenceSigner signer, string stdin = "")
+    private sealed class Run(FakeChannel channel, IPresenceSigner signer, string stdin = "yes\n", bool interactive = true)
     {
         public readonly StringWriter Out = new(), Err = new();
         public int Exit;
-        public ApproverCommands Commands => new(channel, signer, Out, Err, new StringReader(stdin), () => DateTimeOffset.FromUnixTimeSeconds(Now));
+        public ApproverCommands Commands => new(channel, signer, Out, Err, new StringReader(stdin), () => DateTimeOffset.FromUnixTimeSeconds(Now), interactive);
     }
 
     private static string DigestOf(string dto = Dto) => ActionDigest.Compute("broker.operation", StrictJson.Parse(Encoding.UTF8.GetBytes(dto), 3));
@@ -61,7 +61,7 @@ internal static class Harness
         return PendingParser.TryParsePage(page.RootElement)!.Items.Single();
     }
 
-    private static int RunApprove(Run run, string id = Id1, bool yes = true) { run.Exit = run.Commands.ApproveAsync(id, yes).GetAwaiter().GetResult(); return run.Exit; }
+    private static int RunApprove(Run run, string id = Id1) { run.Exit = run.Commands.ApproveAsync(id).GetAwaiter().GetResult(); return run.Exit; }
 
     private static string Printable(string text) => new([.. text.Where(c => c is '\n' or (>= ' ' and <= '~'))]);
 
@@ -154,11 +154,13 @@ internal static class Harness
                 Assert(PendingParser.TryParsePage(document.RootElement) is null, reply);
             }
         });
-        Check("CommandLine: only list, approve <uuid> [--yes] and deny <uuid>", () =>
+        Check("CommandLine: only list, approve <uuid>, deny <uuid> and enroll [--show|--replace]; there is no --yes", () =>
         {
-            Assert(CommandLine.TryParse(["list"]) is { Verb: "list" } && CommandLine.TryParse(["deny", Id1]) is { Verb: "deny", ApprovalId: Id1 } && CommandLine.TryParse(["approve", Id1]) is { AssumeYes: false }
-                && CommandLine.TryParse(["approve", Id1, "--yes"]) is { AssumeYes: true }, "accepted forms");
-            string[][] rejected = [[], ["list", "x"], ["approve"], ["approve", "x"], ["approve", Id1, "--no"], ["deny", Id1, "--yes"], ["approve", Id1.ToUpperInvariant()], ["decide", Id1], ["approve", Id1 + "\",\"x"]];
+            Assert(CommandLine.TryParse(["list"]) is { Verb: "list" } && CommandLine.TryParse(["deny", Id1]) is { Verb: "deny", ApprovalId: Id1 } && CommandLine.TryParse(["approve", Id1]) is { Verb: "approve", Option: null }
+                && CommandLine.TryParse(["enroll"]) is { Verb: "enroll", Option: null } && CommandLine.TryParse(["enroll", "--show"]) is { Option: "show" }
+                && CommandLine.TryParse(["enroll", "--replace"]) is { Option: "replace" }, "accepted forms");
+            string[][] rejected = [[], ["list", "x"], ["approve"], ["approve", "x"], ["approve", Id1, "--yes"], ["approve", Id1, "--no"], ["deny", Id1, "--yes"], ["approve", Id1.ToUpperInvariant()], ["decide", Id1],
+                ["approve", Id1 + "\",\"x"], ["enroll", "--yes"], ["enroll", "--show", "--replace"], ["enroll", "x"], ["--yes"], ["list", "--yes"]];
             foreach (string[] bad in rejected) Assert(CommandLine.TryParse(bad) is null, string.Join(' ', bad));
         });
     }
@@ -178,7 +180,7 @@ internal static class Harness
             byte[] message = PresenceMessage.Build(Id1, DigestOf(), Challenge);
             SignResult result = signer.Sign(message);
             Assert(result.Status == SignStatus.Signed && result.Signature!.Length == 256 && Hello.VerifyData(message, result.Signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1), "signature");
-            Assert(new FakePresenceSigner(Hello, unavailable: true).Sign(message).Status == SignStatus.Unavailable && new NotBuiltPresenceSigner().Sign(message).Status == SignStatus.NotBuilt, "statuses");
+            Assert(new FakePresenceSigner(Hello, unavailable: true).Sign(message).Status == SignStatus.Unavailable && new NotReadyPresenceSigner().Sign(message).Status == SignStatus.NotReady, "statuses");
         });
     }
 
@@ -221,23 +223,43 @@ internal static class Harness
             Run malformed = new(none, Signing());
             Assert(RunApprove(malformed, "x\",\"decision\":\"deny") == ExitCodes.BadUsage && none.Requests.Count == 0, "a malformed id sends nothing");
         });
-        Check("approve: without --yes the human must type exactly 'yes'; anything else declines and nothing is signed", () =>
+        Check("approve: the human must always type exactly 'yes'; anything else (including nothing) declines and nothing is signed", () =>
         {
             foreach (string answer in new[] { "", "no", "y", "YES", "yes please" })
             {
                 RecordingSigner signer = Signing();
                 FakeChannel channel = Listing(Entry());
                 Run run = new(channel, signer, answer + "\n");
-                Assert(RunApprove(run, yes: false) == ExitCodes.Refused && run.Err.ToString().Trim() == "error: not_confirmed" && signer.Messages.Count == 0 && channel.Decides == 0, $"answer '{answer}'");
+                Assert(RunApprove(run) == ExitCodes.Refused && run.Err.ToString().Trim() == "error: not_confirmed" && signer.Messages.Count == 0 && channel.Decides == 0, $"answer '{answer}'");
             }
             Run accepted = new(Listing(Entry()), Signing(), "yes\n");
-            Assert(RunApprove(accepted, yes: false) == ExitCodes.Ok && accepted.Out.ToString().Contains("Type yes to approve"), accepted.Err.ToString());
+            Assert(RunApprove(accepted) == ExitCodes.Ok && accepted.Out.ToString().Contains("Type yes to approve"), accepted.Err.ToString());
         });
-        Check("approve: a build without a Hello signer sends nothing and exits 69 (the request stays pending)", () =>
+        Check("approve: no usable Hello key (not enrolled / unsupported / no signer) sends nothing, exits 69 and tells the person to run enroll (the request stays pending)", () =>
         {
             FakeChannel channel = Listing(Entry());
-            Run run = new(channel, new NotBuiltPresenceSigner());
-            Assert(RunApprove(run) == ExitCodes.SignerNotBuilt && run.Err.ToString().Trim() == "error: presence_signer_not_built" && channel.Decides == 0, run.Err.ToString());
+            Run run = new(channel, new NotReadyPresenceSigner());
+            Assert(RunApprove(run) == ExitCodes.SignerUnavailable && channel.Decides == 0, run.Err.ToString());
+            string[] lines = run.Err.ToString().TrimEnd().Split('\n');
+            Assert(lines[0] == "error: presence_signer_unavailable" && lines.Length == 2 && lines[1].Contains("enroll"), run.Err.ToString());
+        });
+        Check("approve: when stdin is not a console (redirected) it is refused with 65 before anything is read, listed, signed or sent; list and deny are unaffected", () =>
+        {
+            FakeChannel channel = Listing(Entry());
+            RecordingSigner signer = Signing();
+            Run run = new(channel, signer, "yes\n", interactive: false);
+            Assert(RunApprove(run) == ExitCodes.Refused && run.Err.ToString().StartsWith("error: not_interactive\n"), run.Err.ToString());
+            Assert(channel.Requests.Count == 0 && signer.Messages.Count == 0 && run.Out.ToString() == "", "no pipe call, no signature, nothing shown");
+            Run list = new(Listing(Entry()), signer, "", interactive: false);
+            Assert(list.Commands.ListAsync().GetAwaiter().GetResult() == ExitCodes.Ok, "list works without a console");
+        });
+        Check("approve: the person is told that Hello shows only the app name, after the request and the typed yes and before signing", () =>
+        {
+            Run run = new(Listing(Entry()), Signing());
+            Assert(RunApprove(run) == ExitCodes.Ok, run.Err.ToString());
+            string text = run.Out.ToString();
+            int request = text.IndexOf("digest check: OK", StringComparison.Ordinal), typed = text.IndexOf("Type yes to approve", StringComparison.Ordinal), notice = text.IndexOf("Windows Hello will ask you", StringComparison.Ordinal);
+            Assert(request >= 0 && request < typed && typed < notice, text);
         });
         Check("approve: Hello gave no proof -> decide presence_unavailable is sent (no presence field) and the Authority's code maps to exit 67", () =>
         {
@@ -261,6 +283,86 @@ internal static class Harness
                 Run run = new(new FakeChannel(r => r.Contains("\"verb\":\"list\"") ? Page([Entry()]) : reply), Signing());
                 Assert(RunApprove(run) == ExitCodes.TransportUnknown && !run.Out.ToString().Contains("result:"), reply);
             }
+        });
+    }
+
+    private sealed class Enrolling(RSA? key, bool unavailable = false, bool cancel = false)
+    {
+        public readonly FakeKeyStore Store = new(key, unavailable);
+        public readonly StringWriter Out = new(), Err = new();
+        public int Exit;
+        public int Run(string? option, string stdin = "", bool interactive = true) =>
+            Exit = new EnrollCommand(cancel ? new CancellingStore() : Store, () => "S-1-5-21-1-2-3-1001", Out, Err, new StringReader(stdin), interactive).Run(option);
+    }
+
+    private sealed class CancellingStore : IHelloKeyStore
+    {
+        public KeyLookup Open() => KeyLookup.Of(KeyState.Missing);
+        public KeyLookup Create(bool replace) => KeyLookup.Of(KeyState.Cancelled);
+    }
+
+    private static string Field(string output, string name) => output.Split('\n').Single(l => l.StartsWith($"  \"{name}\": \"", StringComparison.Ordinal)).Split('"')[3];
+
+    private static void EnrollChecks()
+    {
+        Check("enroll --show: prints exactly approverPublicKey (the SPKI), approverKeyId (a valid id in the Authority's grammar, derived from the key) and approverSid; no private material", () =>
+        {
+            Enrolling run = new(Hello);
+            Assert(run.Run("show", interactive: false) == ExitCodes.Ok && run.Err.ToString() == "", run.Err.ToString());
+            string spki = Convert.ToBase64String(Hello.ExportSubjectPublicKeyInfo());
+            Assert(Field(run.Out.ToString(), "approverPublicKey") == spki && Field(run.Out.ToString(), "approverSid") == "S-1-5-21-1-2-3-1001", run.Out.ToString());
+            string id = Field(run.Out.ToString(), "approverKeyId");
+            Assert(id == "hello-" + Convert.ToHexStringLower(SHA256.HashData(Hello.ExportSubjectPublicKeyInfo()).AsSpan(0, 8)) && System.Text.RegularExpressions.Regex.IsMatch(id, ActionDigest.IdPattern), id);
+            string all = run.Out.ToString();
+            Assert(!all.Contains(Convert.ToBase64String(Hello.ExportPkcs8PrivateKey())) && !all.Contains("PRIVATE") && all.Split('\n').Count(l => l.StartsWith("  \"", StringComparison.Ordinal)) == 3, "public values only");
+        });
+        Check("enroll --show with no key says not_enrolled (65) and does not create one; with Hello unusable it is 69", () =>
+        {
+            Enrolling none = new(null);
+            Assert(none.Run("show") == ExitCodes.Refused && none.Err.ToString().StartsWith("error: not_enrolled\n") && none.Out.ToString() == "" && none.Store.Open().State == KeyState.Missing, none.Err.ToString());
+            Enrolling broken = new(null, unavailable: true);
+            Assert(broken.Run("show") == ExitCodes.SignerUnavailable && broken.Err.ToString().StartsWith("error: hello_unavailable\n"), broken.Err.ToString());
+        });
+        Check("enroll creates the key when there is none and prints the three values of the NEW key", () =>
+        {
+            Enrolling run = new(null);
+            Assert(run.Run(null) == ExitCodes.Ok && run.Err.ToString() == "", run.Err.ToString());
+            Assert(Field(run.Out.ToString(), "approverPublicKey") == Convert.ToBase64String(run.Store.Open().PublicKey!), "the printed key is the created key");
+        });
+        Check("enroll refuses to touch an existing key (65 already_enrolled) and prints nothing about it", () =>
+        {
+            Enrolling run = new(Hello);
+            Assert(run.Run(null) == ExitCodes.Refused && run.Err.ToString().StartsWith("error: already_enrolled\n") && run.Out.ToString() == "", run.Err.ToString());
+            Assert(Convert.ToBase64String(run.Store.Open().PublicKey!) == Convert.ToBase64String(Hello.ExportSubjectPublicKeyInfo()), "the key is unchanged");
+        });
+        Check("enroll --replace needs the typed word 'replace'; anything else leaves the key unchanged; the typed word makes a different key", () =>
+        {
+            foreach (string answer in new[] { "", "yes", "REPLACE", "replace please" })
+            {
+                Enrolling declined = new(Hello);
+                Assert(declined.Run("replace", answer + "\n") == ExitCodes.Refused && declined.Err.ToString() == "error: not_confirmed\n", $"answer '{answer}'");
+                Assert(Convert.ToBase64String(declined.Store.Open().PublicKey!) == Convert.ToBase64String(Hello.ExportSubjectPublicKeyInfo()), "unchanged");
+            }
+            Enrolling accepted = new(Hello);
+            Assert(accepted.Run("replace", "replace\n") == ExitCodes.Ok && accepted.Out.ToString().Contains("Type replace to continue"), accepted.Err.ToString());
+            Assert(Field(accepted.Out.ToString(), "approverPublicKey") != Convert.ToBase64String(Hello.ExportSubjectPublicKeyInfo()), "a new key");
+        });
+        Check("enroll / enroll --replace need a console (65 not_interactive, nothing created or replaced); --show does not", () =>
+        {
+            foreach (string? option in new string?[] { null, "replace" })
+            {
+                Enrolling run = new(option is null ? null : Hello);
+                KeyState before = run.Store.Open().State;
+                Assert(run.Run(option, "replace\n", interactive: false) == ExitCodes.Refused && run.Err.ToString() == "error: not_interactive\n" && run.Store.Open().State == before, option ?? "create");
+            }
+            Assert(new Enrolling(Hello).Run("show", interactive: false) == ExitCodes.Ok, "show works without a console");
+        });
+        Check("enroll: cancelled Hello is 69 hello_cancelled, an unusable Hello is 69 hello_unavailable; nothing is printed on stdout", () =>
+        {
+            Enrolling cancelled = new(null, cancel: true);
+            Assert(cancelled.Run(null) == ExitCodes.SignerUnavailable && cancelled.Err.ToString() == "error: hello_cancelled\n" && cancelled.Out.ToString() == "", cancelled.Err.ToString());
+            Enrolling unavailable = new(null, unavailable: true);
+            Assert(unavailable.Run(null) == ExitCodes.SignerUnavailable && unavailable.Err.ToString().StartsWith("error: hello_unavailable\n") && unavailable.Out.ToString() == "", unavailable.Err.ToString());
         });
     }
 
@@ -293,11 +395,11 @@ internal static class Harness
         Check("deny: sends exactly decide deny (no presence), prints the result; a malformed id sends nothing", () =>
         {
             FakeChannel channel = new(r => "{\"ok\":true,\"state\":\"denied\"}");
-            Run run = new(channel, new NotBuiltPresenceSigner());
+            Run run = new(channel, new NotReadyPresenceSigner());
             run.Exit = run.Commands.DenyAsync(Id1).GetAwaiter().GetResult();
             Assert(run.Exit == ExitCodes.Ok && run.Out.ToString().Trim() == "result: denied" && channel.Requests.Single() == $"{{\"v\":1,\"verb\":\"decide\",\"approvalId\":\"{Id1}\",\"decision\":\"deny\"}}", channel.Requests.Single());
             FakeChannel never = new(r => "{\"ok\":true,\"state\":\"denied\"}");
-            Run bad = new(never, new NotBuiltPresenceSigner());
+            Run bad = new(never, new NotReadyPresenceSigner());
             Assert(bad.Commands.DenyAsync("x\"}").GetAwaiter().GetResult() == ExitCodes.BadUsage && never.Requests.Count == 0, "malformed id");
         });
         Check("channel failures: before the write exits 66 with the code, after the write exits 68 with the code", () =>
@@ -317,6 +419,7 @@ internal static class Harness
         ParserChecks();
         PresenceChecks();
         ApproveChecks();
+        EnrollChecks();
         ListAndDenyChecks();
         Console.Out.Write(JsonSerializer.Serialize(new { checks = Results }));
         return 0;

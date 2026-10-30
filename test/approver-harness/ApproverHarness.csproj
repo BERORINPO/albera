@@ -16,7 +16,8 @@
     <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="$(ApproverDir)*.cs" Exclude="$(ApproverDir)Program.cs" />
+    <!-- Program.cs is the real entry point; WindowsHello.cs is the shipped Windows Hello code (needs the Windows SDK projection, and must never run in a test). -->
+    <Compile Include="$(ApproverDir)*.cs" Exclude="$(ApproverDir)Program.cs;$(ApproverDir)WindowsHello.cs" />
     <Compile Include="$(ContractDir)*.cs" />
   </ItemGroup>
 </Project>
