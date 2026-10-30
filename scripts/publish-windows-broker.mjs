@@ -17,7 +17,7 @@ if (process.arch !== 'x64') throw new Error('windows_broker_requires_x64');
 
 const project = path.join(root, 'src', 'runtime', 'windows-broker', 'Albera.WindowsBroker.csproj');
 const output = path.join(root, 'src', 'runtime', 'windows-broker', 'bin', 'Release', 'net10.0-windows', 'win-x64', 'publish');
-const result = spawnSync('dotnet', ['publish', project, '--configuration', 'Release', '--runtime', 'win-x64', '--self-contained', 'true', '--output', output, '-p:EnableWindowsTargeting=true', '-p:RestorePackagesWithLockFile=true', '-p:RestoreLockedMode=true'], {
+const result = spawnSync('dotnet', ['publish', project, '--configuration', 'Release', '--runtime', 'win-x64', '--self-contained', 'true', '--output', output, '-p:EnableWindowsTargeting=true', '-p:RestorePackagesWithLockFile=true', '-p:RestoreLockedMode=true', '-p:AlberaBrokerTestFaults=false'], {
   cwd: root, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, shell: false, windowsHide: true,
 });
 if (result.error || result.status !== 0) {
