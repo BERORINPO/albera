@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Test-only console: compiles the approver sources (everything except Program.cs) and the broker-contract sources by source include, WITH the test fakes, and
+       runs the unit checks in Program.cs in-process (rendering, digest recompute and refusal, presence message bytes, command flows against a canned channel).
+       Built in a temp dir by test/runtime-approver-unit.test.mjs; nothing ships it. Pass -p:ApproverDir=<abs path ending in a slash> and
+       -p:ContractDir=<abs path ending in a slash>. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>Albera.Approver</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseAppHost>false</UseAppHost>
+    <DefineConstants>$(DefineConstants);ALBERA_APPROVER_TEST_FAULTS</DefineConstants>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(ApproverDir)*.cs" Exclude="$(ApproverDir)Program.cs" />
+    <Compile Include="$(ContractDir)*.cs" />
+  </ItemGroup>
+</Project>

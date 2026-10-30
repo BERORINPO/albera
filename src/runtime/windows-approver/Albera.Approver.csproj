@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Approver app (ADR-002 "Receipt v2" / Approval Authority option B, Proposed / NOT VERIFIED). A console program a human runs to list, approve or deny the Approval
+       Authority's pending requests. Built only on demand by `npm run build:approver` or the approver tests. Nothing installs, registers or starts it. No package:
+       BCL and P/Invoke only. The receipt v2 / action digest contract is source-included from ../broker-contract (no other project is referenced). The real
+       Windows Hello signer is NOT built (it needs the Windows SDK projection from NuGet): see docs/architecture/approver-app.md. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>AlberaApprover</AssemblyName>
+    <RootNamespace>Albera.Approver</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(AlberaApproverTestFaults)' == 'true'">
+    <!-- Test-only: the fake presence signer (in-memory RSA key) and the test options. Only the approver tests pass this property; the publish script pins it
+         false, so none of it exists in the shipped binary. -->
+    <DefineConstants>$(DefineConstants);ALBERA_APPROVER_TEST_FAULTS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../broker-contract/*.cs" />
+  </ItemGroup>
+</Project>
