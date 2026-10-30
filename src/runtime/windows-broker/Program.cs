@@ -12,46 +12,121 @@ internal static class Program
     private const int MaxFrameLength = 4096;
     private const string Denied = "{\"ok\":false,\"code\":\"denied\"}";
 
+    // Fixed process exit codes (ADR-002 negative test matrix). 0 = served one request, 64 = bad usage.
+    private const int ExitPipeUnavailable = 70;           // pipe name already exists (squatting / second Broker): refuse to start
+    private const int ExitImpersonationRevertFailed = 71; // RevertToSelf failed or lied: terminate, never handle another request
+
+    private enum ImpersonationFault { None, RevertFails, RevertThrows, RevertLies }
+
     private static async Task<int> Main(string[] args)
     {
         if (args.Length == 2 && args[0] == "restricted-client") return RunRestrictedClient(args[1]);
         if (args.Length == 2 && args[0] == "inspect") return await InspectAsync(args[1]);
-        if (args.Length != 7 || args[0] != "serve") return 64;
+        if (args.Length == 7 && args[0] == "serve") return await ServeAsync(args, ImpersonationFault.None);
+#if ALBERA_BROKER_TEST_FAULTS
+        // Test-only failure injection. Compiled in only when the test builds with -p:AlberaBrokerTestFaults=true;
+        // the shipped build (npm run build:windows-broker) has no such subcommand and answers 64.
+        if (args.Length == 8 && args[0] == "serve-fault" &&
+            Enum.TryParse(args[1], ignoreCase: false, out ImpersonationFault fault) && Enum.IsDefined(fault))
+            return await ServeAsync(["serve", .. args[2..]], fault);
+#endif
+        return 64;
+    }
+
+    private static async Task<int> ServeAsync(string[] args, ImpersonationFault fault)
+    {
         string pipeName = args[1], database = args[2];
         byte[] publicKey = Convert.FromBase64String(args[3]);
         string allowedSid = args[4];
         long generation = long.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture);
         bool hold = args[6] == "hold";
 
-        await using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1,
-            PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-        Console.WriteLine("BROKER_READY");
-        await pipe.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(20));
-        byte[] response;
+        // maxNumberOfServerInstances == 1 makes .NET create the pipe with FILE_FLAG_FIRST_PIPE_INSTANCE, so an
+        // existing instance of this name (squatter, or another Broker) fails creation. Keep it at 1.
+        NamedPipeServerStream pipe;
         try
         {
-            byte[] frame = await ReadFrameAsync(pipe);
-            string? peerSid = null;
-            pipe.RunAsClient(() =>
-            {
-                using WindowsIdentity identity = WindowsIdentity.GetCurrent(ifImpersonating: true)
-                    ?? throw new UnauthorizedAccessException();
-                peerSid = identity.User?.Value;
-            });
-            Console.WriteLine(peerSid == allowedSid ? "PEER=authenticated" : "PEER=denied");
-            response = string.Equals(peerSid, allowedSid, StringComparison.Ordinal)
-                ? await ValidateAndClaimAsync(frame, database, publicKey, generation, hold)
-                : Encoding.UTF8.GetBytes(Denied);
+            pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1,
+                PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         }
-        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
-                                   CryptographicException or FormatException or UnauthorizedAccessException or
-                                   SqliteException or ArgumentException)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
         {
-            response = Encoding.UTF8.GetBytes(Denied);
-            Console.WriteLine("REQUEST=DENIED");
+            Console.WriteLine("BROKER_FATAL=PIPE_UNAVAILABLE");
+            return ExitPipeUnavailable;
         }
-        await WriteFrameAsync(pipe, response);
-        return 0;
+        await using (pipe)
+        {
+            Console.WriteLine("BROKER_READY");
+            await pipe.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(20));
+            byte[] response;
+            try
+            {
+                byte[] frame = await ReadFrameAsync(pipe);
+                string? peerSid = ReadPeerSid(pipe, fault);
+                Console.WriteLine(peerSid == allowedSid ? "PEER=authenticated" : "PEER=denied");
+                response = string.Equals(peerSid, allowedSid, StringComparison.Ordinal)
+                    ? await ValidateAndClaimAsync(frame, database, publicKey, generation, hold)
+                    : Encoding.UTF8.GetBytes(Denied);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or
+                                       CryptographicException or FormatException or UnauthorizedAccessException or
+                                       SqliteException or ArgumentException)
+            {
+                response = Encoding.UTF8.GetBytes(Denied);
+                Console.WriteLine("REQUEST=DENIED");
+            }
+            await WriteFrameAsync(pipe, response);
+            return 0;
+        }
+    }
+
+    // Impersonate, read the peer SID and revert on the same thread (no await in between: a continuation could
+    // resume on another thread and leave this one carrying the client token).
+    private static string? ReadPeerSid(NamedPipeServerStream pipe, ImpersonationFault fault)
+    {
+        if (!ImpersonateNamedPipeClient(pipe.SafePipeHandle)) throw new UnauthorizedAccessException();
+        try
+        {
+            using WindowsIdentity identity = WindowsIdentity.GetCurrent(ifImpersonating: true)
+                ?? throw new UnauthorizedAccessException();
+            return identity.User?.Value;
+        }
+        finally { RevertOrTerminate(fault); }
+    }
+
+    // Fail closed: if the revert fails, throws, or the thread still carries a token afterwards, the process dies
+    // here with a fixed code. The caller never sees a return, so no response is written and no claim is made.
+    private static void RevertOrTerminate(ImpersonationFault fault)
+    {
+        bool reverted;
+        try
+        {
+            reverted = RevertImpersonation(fault);
+            if (reverted)
+            {
+                using WindowsIdentity? leaked = WindowsIdentity.GetCurrent(ifImpersonating: true);
+                reverted = leaked is null;
+            }
+        }
+        catch (Exception) { reverted = false; }
+        if (reverted) return;
+        Console.WriteLine("BROKER_FATAL=IMPERSONATION_REVERT_FAILED");
+        _ = TerminateProcess(GetCurrentProcess(), ExitImpersonationRevertFailed);
+        Environment.Exit(ExitImpersonationRevertFailed); // only reached if TerminateProcess itself failed
+    }
+
+    private static bool RevertImpersonation(ImpersonationFault fault)
+    {
+#if ALBERA_BROKER_TEST_FAULTS
+        // Each injected fault skips the real RevertToSelf, so the thread genuinely stays impersonated.
+        switch (fault)
+        {
+            case ImpersonationFault.RevertFails: return false;
+            case ImpersonationFault.RevertThrows: throw new InvalidOperationException();
+            case ImpersonationFault.RevertLies: return true;
+        }
+#endif
+        return RevertToSelf();
     }
 
     private static async Task<byte[]> ValidateAndClaimAsync(byte[] frame, string database, byte[] key, long currentGeneration, bool hold)
@@ -135,6 +210,10 @@ internal static class Program
         const int TokenImpersonation = 2;
         const string SyntheticRestrictingSid = "S-1-5-21-111111111-222222222-333333333-4444";
 
+        // Load System.IO.Pipes now: under the restricted token below the runtime could not read the assembly file
+        // lazily. (It used to be loaded as a side effect of JIT-compiling the old Main that held the server code.)
+        _ = typeof(NamedPipeClientStream).Assembly;
+
         if (!OpenProcessToken(GetCurrentProcess(), TokenDuplicate | TokenQuery, out SafeAccessTokenHandle processToken))
             return ReportRestrictedTokenSetupFailure("open_token");
         using (processToken)
@@ -192,6 +271,9 @@ internal static class Program
     private struct SidAndAttributes { public IntPtr Sid; public uint Attributes; }
 
     [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool ImpersonateNamedPipeClient(SafePipeHandle pipe);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool RevertToSelf();
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(IntPtr process, uint desiredAccess, out SafeAccessTokenHandle token);
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool ConvertStringSidToSid(string stringSid, out IntPtr sid);
     [DllImport("advapi32.dll", SetLastError = true)] private static extern bool CreateRestrictedToken(SafeAccessTokenHandle existingToken, uint flags, uint disableSidCount, IntPtr sidsToDisable, uint deletePrivilegeCount, IntPtr privilegesToDelete, uint restrictedSidCount, ref SidAndAttributes sidsToRestrict, out SafeAccessTokenHandle newToken);
