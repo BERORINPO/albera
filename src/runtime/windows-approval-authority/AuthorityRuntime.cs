@@ -1,5 +1,4 @@
 using System.IO.Pipes;
-using System.Security.Principal;
 
 namespace Albera.ApprovalAuthority;
 
@@ -24,23 +23,18 @@ internal static class AuthorityRuntime
         }
         using (signer)
         {
-            if (KeyProtectionFault(signer) is { } fault)
+            if (signer.ProtectionFault() is { } fault)
             {
                 Console.WriteLine($"AUTHORITY_FATAL=SIGNING_KEY_UNPROTECTED:{fault}");
-                Console.WriteLine("AUTHORITY_FIX=recreate the signing key non-exportable with an owner and ACL limited to this service SID, SYSTEM and Administrators (see docs/architecture/approval-authority.md)");
+                Console.WriteLine(fault == SigningKeyGuard.Reason.ServiceSidMissing
+                    ? "AUTHORITY_FIX=run the Authority as the service NT SERVICE\\AlberaApprovalAuthority (its per-service SID must be in the process token), not as LocalService, NetworkService or a user"
+                    : "AUTHORITY_FIX=recreate the signing key non-exportable with an owner and ACL limited to NT SERVICE\\AlberaApprovalAuthority, SYSTEM and Administrators (see docs/architecture/approval-authority.md)");
                 return ExitCodes.SigningKeyUnprotected;
             }
             using RsaPresenceVerifier presence = RsaPresenceVerifier.TryCreate(config.ApproverPublicKey) ?? throw new InvalidOperationException(); // the config already passed this check
             AuthorityCore core = new(new PendingStore(UnixNow), signer, presence, IdentityOf(config), UnixNow);
             return await RunAsync(config, core, stop, onReady);
         }
-    }
-
-    // "This service's SID" is the process token's user SID: the virtual service account under the SCM (the same notion as ServicePathGuard's `self`).
-    private static string? KeyProtectionFault(CngMachineKeySigner signer)
-    {
-        using WindowsIdentity identity = WindowsIdentity.GetCurrent();
-        return identity.User is { } self ? signer.ProtectionFault(self) : SigningKeyGuard.Reason.OwnerUntrusted;
     }
 
     public static async Task<int> RunAsync(AuthorityConfig config, AuthorityCore core, CancellationToken stop, Action onReady)

@@ -73,19 +73,50 @@ internal static partial class Harness
         });
         Check("key guard: the reason words are distinct fixed lowercase words (never a SID or a name)", () =>
         {
-            string[] words = [SigningKeyGuard.Reason.Exportable, SigningKeyGuard.Reason.ExportPolicyUnreadable, SigningKeyGuard.Reason.DescriptorUnreadable, SigningKeyGuard.Reason.DaclMissing, SigningKeyGuard.Reason.OwnerUntrusted, SigningKeyGuard.Reason.AceUntrusted];
+            string[] words = [SigningKeyGuard.Reason.Exportable, SigningKeyGuard.Reason.ExportPolicyUnreadable, SigningKeyGuard.Reason.DescriptorUnreadable, SigningKeyGuard.Reason.DaclMissing, SigningKeyGuard.Reason.OwnerUntrusted, SigningKeyGuard.Reason.AceUntrusted, SigningKeyGuard.Reason.ServiceSidMissing];
             Assert(words.All(w => w.All(c => char.IsAsciiLetterLower(c) || c == '_')) && words.Distinct().Count() == words.Length, string.Join(",", words));
         });
 
-        // "The service" is the signed-in user in the real-key checks.
+        Check("key guard: the service SID is the derived per-service SID (SCM algorithm, checked against the well-known NT SERVICE TrustedInstaller SID), never the token user", () =>
+        {
+            Assert(SigningKeyGuard.DeriveServiceSid("TrustedInstaller").Value == "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464", SigningKeyGuard.DeriveServiceSid("TrustedInstaller").Value);
+            SecurityIdentifier derived = SigningKeyGuard.DeriveServiceSid(SigningKeyGuard.ServiceName);
+            Assert(derived.Value.StartsWith("S-1-5-80-", StringComparison.Ordinal) && derived.Value.Split('-').Length == 9, derived.Value);
+            Assert(derived.Equals(SigningKeyGuard.DeriveServiceSid("ALBERAAPPROVALAUTHORITY")), "the name is case-insensitive, as the SCM's is");
+            Assert(!derived.Equals(WindowsIdentity.GetCurrent().User!), "the derived SID is not the token user");
+        });
+        Check("key guard: a token without the service SID as an enabled group is service_sid_missing; with it, the derived SID is the one asked for", () =>
+        {
+            SecurityIdentifier derived = SigningKeyGuard.DeriveServiceSid(SigningKeyGuard.ServiceName);
+            SecurityIdentifier? asked = null;
+            Assert(SigningKeyGuard.ResolveServiceSid(sid => { asked = sid; return false; }, out _) == SigningKeyGuard.Reason.ServiceSidMissing && derived.Equals(asked!), "absent group accepted");
+            Assert(SigningKeyGuard.ResolveServiceSid(_ => true, out SecurityIdentifier granted) is null && derived.Equals(granted), "present group refused");
+            // The user SID of LocalService / NetworkService / an ordinary user is never what is asked for, so having that account does not satisfy the test.
+            SecurityIdentifier[] accounts = [new("S-1-5-19"), new("S-1-5-20"), WindowsIdentity.GetCurrent().User!];
+            Assert(SigningKeyGuard.ResolveServiceSid(sid => accounts.Contains(sid), out _) == SigningKeyGuard.Reason.ServiceSidMissing, "a shared account passed as the service");
+        });
+        Check("key guard: this test process's real token has no service SID, so the production entry point refuses even a perfect key", () =>
+            WithUserKey(CngExportPolicies.None, null, (key, _) => Assert(SigningKeyGuard.CheckCurrentProcess(key) == SigningKeyGuard.Reason.ServiceSidMissing, SigningKeyGuard.CheckCurrentProcess(key) ?? "accepted")));
+        Check("key guard: an allow ACE (or the owner) being LocalService, NetworkService or an ordinary user is refused against the derived service SID", () =>
+        {
+            SecurityIdentifier derived = SigningKeyGuard.DeriveServiceSid(SigningKeyGuard.ServiceName);
+            foreach (SecurityIdentifier account in new[] { new SecurityIdentifier("S-1-5-19"), new SecurityIdentifier("S-1-5-20"), WindowsIdentity.GetCurrent().User! })
+            {
+                Assert(SigningKeyGuard.Evaluate(CngExportPolicies.None, Descriptor(AdminsSid, [SystemSid, AdminsSid, derived, account]), derived) == SigningKeyGuard.Reason.AceUntrusted, $"ACE {account.Value} accepted");
+                Assert(SigningKeyGuard.Evaluate(CngExportPolicies.None, Descriptor(account, [SystemSid, AdminsSid, derived]), derived) == SigningKeyGuard.Reason.OwnerUntrusted, $"owner {account.Value} accepted");
+            }
+            Assert(SigningKeyGuard.Evaluate(CngExportPolicies.None, Descriptor(AdminsSid, [SystemSid, AdminsSid, derived]), derived) is null, "the derived SID itself was refused");
+        });
+
+        // "The service" is the signed-in user in the real-key checks below (the explicit-SID Check; production only reaches it through CheckCurrentProcess).
         Check("key guard (real per-user software key): non-exportable, DACL {user, SYSTEM, Administrators}: accepted", () =>
-            WithUserKey(CngExportPolicies.None, null, (key, self) => Assert(SigningKeyGuard.Check(key, self) is null, $"refused: {SigningKeyGuard.Check(key, self)}")));
+            WithUserKey(CngExportPolicies.None, null, (key, self) => Assert(SigningKeyGuard.CheckForTest(key, self) is null, $"refused: {SigningKeyGuard.CheckForTest(key, self)}")));
         Check("key guard (real per-user software key): an exportable key is key_exportable", () =>
-            WithUserKey(CngExportPolicies.AllowExport, null, (key, self) => Assert(SigningKeyGuard.Check(key, self) == SigningKeyGuard.Reason.Exportable, SigningKeyGuard.Check(key, self) ?? "accepted")));
+            WithUserKey(CngExportPolicies.AllowExport, null, (key, self) => Assert(SigningKeyGuard.CheckForTest(key, self) == SigningKeyGuard.Reason.Exportable, SigningKeyGuard.CheckForTest(key, self) ?? "accepted")));
         Check("key guard (real per-user software key): a non-exportable key with an extra BUILTIN\\Users ACE is ace_untrusted", () =>
-            WithUserKey(CngExportPolicies.None, UsersSid, (key, self) => Assert(SigningKeyGuard.Check(key, self) == SigningKeyGuard.Reason.AceUntrusted, SigningKeyGuard.Check(key, self) ?? "accepted")));
+            WithUserKey(CngExportPolicies.None, UsersSid, (key, self) => Assert(SigningKeyGuard.CheckForTest(key, self) == SigningKeyGuard.Reason.AceUntrusted, SigningKeyGuard.CheckForTest(key, self) ?? "accepted")));
         Check("key guard (real per-user software key): the same good key is refused when the Authority is somebody else (the signed-in user is not on the list)", () =>
-            WithUserKey(CngExportPolicies.None, null, (key, _) => Assert(SigningKeyGuard.Check(key, ServiceSid) is SigningKeyGuard.Reason.AceUntrusted or SigningKeyGuard.Reason.OwnerUntrusted, SigningKeyGuard.Check(key, ServiceSid) ?? "accepted")));
+            WithUserKey(CngExportPolicies.None, null, (key, _) => Assert(SigningKeyGuard.CheckForTest(key, ServiceSid) is SigningKeyGuard.Reason.AceUntrusted or SigningKeyGuard.Reason.OwnerUntrusted, SigningKeyGuard.CheckForTest(key, ServiceSid) ?? "accepted")));
     }
 
     // Creates a persisted per-user software-KSP ECDSA P-256 key, sets its DACL to {user, SYSTEM, Administrators} (+ `extra`), runs `body`, deletes the key.

@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Security.Principal;
 using Albera.BrokerContract;
 
 namespace Albera.ApprovalAuthority;
@@ -33,8 +32,8 @@ internal sealed class CngMachineKeySigner : IReceiptSigner, IDisposable
 
     public byte[] PublicKeySpki => ecdsa.ExportSubjectPublicKeyInfo();
 
-    /// <summary>Null when the opened key is non-exportable and only `service`, SYSTEM and Administrators can use it; otherwise a fixed reason word (SigningKeyGuard).</summary>
-    public string? ProtectionFault(SecurityIdentifier service) => SigningKeyGuard.Check(key, service);
+    /// <summary>Null when the opened key is non-exportable, only this service's per-service SID, SYSTEM and Administrators can use it, and that SID is in this process's token; otherwise a fixed reason word (SigningKeyGuard).</summary>
+    public string? ProtectionFault() => SigningKeyGuard.CheckCurrentProcess(key);
 
     public static CngMachineKeySigner Open(string keyName, SigningProvider provider)
     {

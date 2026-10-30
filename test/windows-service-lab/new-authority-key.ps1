@@ -36,7 +36,10 @@ if (-not $ServiceSid) {
   if ($Scope -ne 'user') { throw '-ServiceSid is required for a machine key' }
   $ServiceSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 }
-if ($ServiceSid -notmatch '^S-1-5-(80-[0-9-]+|21-[0-9-]+)$') { throw 'ServiceSid must be a service SID (S-1-5-80-...) or an account SID (S-1-5-21-...)' }
+# A machine key may only be granted to a per-service SID (S-1-5-80-<5 numbers>): a logon account (LocalService, NetworkService, a user) is shared with every other
+# process of that account. The host tests (-Scope user) may use any S-1-5-21 account SID, which is the signed-in user.
+if ($Scope -eq 'machine' -and $ServiceSid -notmatch '^S-1-5-80(-[0-9]+){5}$') { throw 'ServiceSid must be a per-service SID (S-1-5-80-...) for a machine key' }
+if ($Scope -eq 'user' -and $ServiceSid -notmatch '^S-1-5-(80(-[0-9]+){5}|21(-[0-9]+)+)$') { throw 'ServiceSid must be a service SID (S-1-5-80-...) or an account SID (S-1-5-21-...)' }
 
 $parameters = New-Object System.Security.Cryptography.CngKeyCreationParameters
 $parameters.Provider = $provider

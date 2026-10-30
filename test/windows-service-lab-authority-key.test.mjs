@@ -57,6 +57,10 @@ test('new-authority-key.ps1 variants create the key the lab needs (per-user scop
       assert.throws(() => run('-KeyName', 'bad name!', '-ServiceSid', SERVICE_SID, '-Scope', 'user'), /KeyName must match/u);
       assert.throws(() => run('-KeyName', `AlberaTestLabKey-${randomBytes(6).toString('hex')}`, '-Scope', 'machine'), /ServiceSid is required/u);
       assert.throws(() => run('-KeyName', `AlberaTestLabKey-${randomBytes(6).toString('hex')}`, '-ServiceSid', 'S-1-1-0', '-Scope', 'user'), /ServiceSid must be/u);
+      // A machine key is only ever granted to a per-service SID: LocalService, NetworkService, SYSTEM, a user and a short service SID all throw before anything is created.
+      for (const sid of ['S-1-5-19', 'S-1-5-20', 'S-1-5-18', ME, 'S-1-5-80-1-2-3']) {
+        assert.throws(() => run('-KeyName', `AlberaTestLabKey-${randomBytes(6).toString('hex')}`, '-ServiceSid', sid, '-Scope', 'machine'), /per-service SID/u, sid);
+      }
     });
   } finally {
     for (const keyName of names) {
