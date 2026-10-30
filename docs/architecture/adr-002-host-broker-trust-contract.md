@@ -1,6 +1,6 @@
 # ADR-002 implementation slice: Windows Host Broker trust contract
 
-- **Status:** Accepted (Broker/IPC scope) once the C1 lab re-run passes (CISO accept conditions C1-C3, decision-log row `2026-10-30+adr002-broker-accept-conditions`). The main ADR-002 file (`decisions/ADR-002-control-guest-trust.md`) remains **Proposed**; Hyper-V rights, the approval authority, the installer and the Guest side are outside this scope and stay NOT VERIFIED
+- **Status:** Accepted (Broker/IPC scope) on 2026-10-30 after the C1 lab re-run passed (16 PASS / 1 BLOCKED, [evidence](benchmarks/issue-23-least-privilege-lab-2026-10-30.json)) (CISO accept conditions C1-C3, decision-log row `2026-10-30+adr002-broker-accept-conditions`). The main ADR-002 file (`decisions/ADR-002-control-guest-trust.md`) remains **Proposed**; Hyper-V rights, the approval authority, the installer and the Guest side are outside this scope and stay NOT VERIFIED
 - **Scope:** Windows service identity, local IPC, request authorization, and a Mock IPC conformance test
 - **Non-goals:** installing a service, changing ACLs or privileges, implementing a Windows named pipe, enabling Hyper-V, or changing the read-only Observer
 

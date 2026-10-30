@@ -1,7 +1,7 @@
 # ADR-002 Supplement — Windows Host Broker Identity and IPC Technology
 
 - **Issue:** [#20](https://github.com/BERORINPO/pigeonholes/issues/20)
-- **Status:** Accepted (Broker/IPC scope) once the C1 lab re-run passes (CISO accept conditions C1-C3, decision-log row `2026-10-30+adr002-broker-accept-conditions`). The main ADR-002 file (`decisions/ADR-002-control-guest-trust.md`) remains **Proposed**; Hyper-V rights, the approval authority, the installer and the Guest side stay **NOT VERIFIED**
+- **Status:** Accepted (Broker/IPC scope) on 2026-10-30 after the C1 lab re-run passed (16 PASS / 1 BLOCKED, [evidence](benchmarks/issue-23-least-privilege-lab-2026-10-30.json)) (CISO accept conditions C1-C3, decision-log row `2026-10-30+adr002-broker-accept-conditions`). The main ADR-002 file (`decisions/ADR-002-control-guest-trust.md`) remains **Proposed**; Hyper-V rights, the approval authority, the installer and the Guest side stay **NOT VERIFIED**
 - **Date:** 2026-10-28
 - **Scope:** Windows process identity, local Broker IPC, approval receipt boundary, durable replay handling, build/package target, and verification plan
 - **Non-goals:** installing or configuring services, changing persistent ACLs/accounts/privileges, network/firewall changes, Hyper-V operations, or changing the Observer
