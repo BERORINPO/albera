@@ -13,6 +13,11 @@
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(AlberaBrokerTestFaults)' == 'true'">
+    <!-- Test-only failure injection (serve-fault subcommand). Only the fault-injection tests pass this property;
+         the shipped build never does, so the seam does not exist in the production binary. -->
+    <DefineConstants>$(DefineConstants);ALBERA_BROKER_TEST_FAULTS</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
   </ItemGroup>
