@@ -23,7 +23,13 @@ test('Broker pipe is ephemeral, owned by the Broker\'s own SID and grants only t
   assert.equal(/PipeOptions\.CurrentUserOnly\s*[,)]/u.test(program), false, 'CurrentUserOnly is rejected together with a PipeSecurity; the DACL is explicit');
   assert.match(program, /NamedPipeServerStreamAcl\.Create\(pipeName, PipeDirection\.InOut, 1,/u);
   assert.match(program, /security\.SetOwner\(self\);/u);
-  assert.deepEqual([...program.matchAll(/\.AddAccessRule\(([^;]+)\);/gu)].map((m) => m[1]), ['new PipeAccessRule(self, PipeAccessRights.FullControl, AccessControlType.Allow)']);
+  // Exactly two grants ever: the Broker itself, and (service mode only) the one configured Control Plane SID with the exact 0x00120083 mask.
+  assert.deepEqual([...program.matchAll(/\.AddAccessRule\(([^;]+)\);/gu)].map((m) => m[1]), [
+    'new PipeAccessRule(self, PipeAccessRights.FullControl, AccessControlType.Allow)',
+    'new PipeAccessRule(controlPlane, ControlPlaneAccess, AccessControlType.Allow)',
+  ]);
+  assert.match(program, /const PipeAccessRights ControlPlaneAccess = \(PipeAccessRights\)0x00120083;/u, 'the Control Plane ACE is exactly 0x00120083');
+  assert.match(program, /!controlPlane\.Equals\(self\)/u, 'no second ACE for the Broker\'s own SID');
   assert.match(program, /self = identity\.User \?\? throw/u, 'the owner comes from the process token user SID');
   assert.equal(/WellKnownSidType|\bEveryone\b|AuthenticatedUser|BuiltinUsers|NetworkSid|AnonymousSid/u.test(program), false, 'no broad principal is ever granted');
   assert.match(program, /BROKER_FATAL=PIPE_OWNER_UNAVAILABLE/u);

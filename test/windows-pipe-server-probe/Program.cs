@@ -11,6 +11,7 @@ using Microsoft.Win32.SafeHandles;
 //                                          reply: answers with a Broker-shaped denial / impersonate: also tries ImpersonateNamedPipeClient and
 //                                          prints "IMPERSONATION=<level>" / drop: closes without answering.
 //   client <pipe>                          a plain client that asks for full impersonation (the control for the SQOS test).
+//   dacl <pipe>                            opens an existing pipe and prints "SDDL=<owner + DACL>" (the Control Plane ACE test).
 internal static class Program
 {
     private static readonly byte[] Denied = Frame("{\"ok\":false,\"code\":\"denied\"}");
@@ -19,7 +20,18 @@ internal static class Program
     {
         if (args.Length == 3 && args[0] == "serve" && args[2] is "reply" or "impersonate" or "drop") return await ServeAsync(args[1], args[2]);
         if (args.Length == 2 && args[0] == "client") return await ClientAsync(args[1]);
+        if (args.Length == 2 && args[0] == "dacl") return Dacl(args[1]);
         return 64;
+    }
+
+    // Opens an existing pipe as this user and prints its owner and DACL as SDDL ("SDDL=..."), then hangs up without sending a byte.
+    // The open uses up the single connection a Broker serves, so the Broker then exits on its own.
+    private static int Dacl(string pipeName)
+    {
+        using NamedPipeClientStream client = new(".", pipeName, PipeDirection.InOut, PipeOptions.None, TokenImpersonationLevel.Identification);
+        client.Connect(5000);
+        Console.WriteLine($"SDDL={client.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Owner | AccessControlSections.Access)}");
+        return 0;
     }
 
     private static async Task<int> ServeAsync(string pipeName, string mode)

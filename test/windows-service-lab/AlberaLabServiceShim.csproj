@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Issue #23 lab tooling (test-only, never shipped, never wired into an npm lifecycle step): a Windows service shim plus the probes that
+       run inside the disposable lab VM. BCL and P/Invoke only (no package reference), so a self-contained publish can be copied to an
+       offline guest. Built on demand by scripts/publish-windows-service-lab.mjs. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>albera-lab-service-shim</AssemblyName>
+    <RootNamespace>Albera.Lab</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>

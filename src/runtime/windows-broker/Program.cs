@@ -52,7 +52,7 @@ internal static class Program
         try
         {
             pipe = NamedPipeServerStreamAcl.Create(pipeName, PipeDirection.InOut, 1,
-                PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0, OwnedBySelf(out SecurityIdentifier self));
+                PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0, OwnedBySelf(out SecurityIdentifier self, allowedSid));
             if (!self.Equals(pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier)))) { pipe.Dispose(); return PipeOwnerUnavailable(); }
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or InvalidOperationException)
@@ -94,15 +94,28 @@ internal static class Program
     }
 
     // What PipeOptions.CurrentUserOnly would set (this user, full control, nobody else), plus an explicit owner. CurrentUserOnly cannot be combined
-    // with a PipeSecurity. The SID is read from this process's token.
-    private static PipeSecurity OwnedBySelf(out SecurityIdentifier self)
+    // with a PipeSecurity. The SID is read from this process's token. When the configured Control Plane SID is a different principal (service mode)
+    // it gets exactly one more ACE, ControlPlaneAccess; a malformed SID adds nothing (the peer check below denies everyone anyway).
+    private static PipeSecurity OwnedBySelf(out SecurityIdentifier self, string controlPlaneSid)
     {
         using WindowsIdentity identity = WindowsIdentity.GetCurrent();
         self = identity.User ?? throw new InvalidOperationException();
         PipeSecurity security = new();
         security.SetOwner(self);
         security.AddAccessRule(new PipeAccessRule(self, PipeAccessRights.FullControl, AccessControlType.Allow));
+        if (TryParseSid(controlPlaneSid) is { } controlPlane && !controlPlane.Equals(self))
+            security.AddAccessRule(new PipeAccessRule(controlPlane, ControlPlaneAccess, AccessControlType.Allow));
         return security;
+    }
+
+    // FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE = 0x00120083 (ADR-002). Never FILE_APPEND_DATA, which is
+    // FILE_CREATE_PIPE_INSTANCE on a pipe, and never a generic right.
+    private const PipeAccessRights ControlPlaneAccess = (PipeAccessRights)0x00120083;
+
+    private static SecurityIdentifier? TryParseSid(string value)
+    {
+        try { return new SecurityIdentifier(value); }
+        catch (ArgumentException) { return null; }
     }
 
     // Impersonate, read the peer SID and revert on the same thread (no await in between: a continuation could

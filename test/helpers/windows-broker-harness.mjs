@@ -13,6 +13,7 @@ const sources = {
   broker: path.join(repositoryRoot, 'src', 'runtime', 'windows-broker', 'Albera.WindowsBroker.csproj'),
   pipeClient: path.join(repositoryRoot, 'src', 'runtime', 'windows-broker-pipe-client', 'Albera.WindowsBrokerPipeClient.csproj'),
   probe: path.join(repositoryRoot, 'test', 'windows-pipe-server-probe', 'WindowsPipeServerProbe.csproj'),
+  serviceLab: path.join(repositoryRoot, 'test', 'windows-service-lab', 'AlberaLabServiceShim.csproj'),
 };
 const whoami = path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'whoami.exe');
 
@@ -45,6 +46,7 @@ export function buildProgram(kind, outputDirectory, assemblyName, { locked = tru
 
 export const buildBroker = (dir) => buildProgram('broker', dir, 'albera-windows-broker');
 export const buildProbe = (dir) => buildProgram('probe', dir, 'albera-windows-pipe-server-probe', { locked: false });
+export const buildServiceLab = (dir) => buildProgram('serviceLab', dir, 'albera-lab-service-shim', { locked: false });
 
 /** Build the pipe client helper and record its SHA-256 next to it, as `npm run build:windows-broker` does. */
 export async function buildPipeClient(dir) {

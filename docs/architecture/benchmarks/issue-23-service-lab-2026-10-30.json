@@ -1,0 +1,61 @@
+{
+  "schema": "albera-issue-23-service-lab/1",
+  "date": "2026-10-30",
+  "issue": "#23",
+  "runStatus": "NOT_EXECUTED",
+  "reason": "The in-guest run needs PowerShell Direct (Invoke-Command / New-PSSession / Copy-Item -ToSession). The agent that prepared this lab ran in a worktree-isolated harness that refused every PowerShell invocation, so nothing was created, started or measured in the lab VM and nothing on the host was changed. Every in-guest check below is BLOCKED, not PASS or FAIL.",
+  "guest": {
+    "vm": "albera-clone-04-lab23",
+    "os": "not collected (the guest was never entered)",
+    "approvalScope": "administrator actions inside the disposable guest only; unsigned self-contained binaries pinned by SHA-256 (recorded deviation from signed-only); no network, no downloads"
+  },
+  "tooling": {
+    "shimAndProbes": "test/windows-service-lab/ (npm run build:windows-service-lab)",
+    "hostDriver": "test/windows-service-lab/run-lab.ps1",
+    "guestScript": "test/windows-service-lab/lab-guest.ps1",
+    "inputs": "scripts/windows-service-lab-inputs.mjs",
+    "hostSideProof": ["test/runtime-windows-service-lab.test.mjs", "test/runtime-windows-broker-control-plane-ace.test.mjs"],
+    "psScriptsExecuted": false
+  },
+  "hostSideEvidence": [
+    "Broker pipe DACL (live, same user): owner = Broker SID; Broker allow ACE (PipeAccessRights.FullControl 0x1f019f); for a Control Plane SID that is a different principal, exactly one more allow ACE with mask 0x00120083 (no FILE_APPEND_DATA, no generic right). With the Control Plane SID equal to the Broker's own SID, or malformed, no extra ACE (test/runtime-windows-broker-control-plane-ace.test.mjs, 3/3).",
+    "Shim 'inproc' mode hosts the real Broker assembly: the pipe server PID equals the host process PID and the pipe client helper accepts it with owner + PID, one journal claim (test/runtime-windows-service-lab.test.mjs).",
+    "Shim 'child' mode launches the Broker as a child: the pipe server PID is the child, not the shim, so the helper expecting the launcher PID (what SCM would report for a launcher service) gets server_identity_mismatch and no claim; expecting the child PID succeeds.",
+    "Squatter probe: the helper refuses an owner mismatch before sending and the squatter receives 0 bytes (same-user host test, FOREIGN owner SID expected).",
+    "Shim child mode: stdout, exit code and own token captured to a result file; stdin file fed to the helper; a command that does not end is killed on timeout (exit -2).",
+    "Not host-testable: StartServiceCtrlDispatcher / RegisterServiceCtrlHandlerEx path (needs the SCM), virtual accounts, restricted service SID, cross-account access."
+  ],
+  "findings": [
+    {
+      "id": "scm-pid-is-pipe-creator-pid",
+      "severity": "design",
+      "text": "The pipe client helper compares the SCM-reported service PID with GetNamedPipeServerProcessId. A launcher service that starts the Broker as a child reports the launcher's PID, so a correct Broker is refused with server_identity_mismatch. The Broker must be the SCM service process itself. The Broker prototype is a plain exe (no StartServiceCtrlDispatcher); the lab tool hosts its assembly in-process as a stand-in. Host-tested, not service-tested."
+    },
+    {
+      "id": "stopped-service-fails-before-owner-check",
+      "severity": "documentation",
+      "text": "With the Broker service not RUNNING the helper's SCM lookup fails first and reports server_identity_unavailable (pre-send), not server_identity_mismatch as lab step 4a first bullet expected. The owner mismatch is observable only while the service is RUNNING and another principal holds the pipe name; the lab script covers both. Derived from reading the helper source (ServicePid runs before CreateFile); not measured in a service."
+    },
+    {
+      "id": "broker-crashes-on-client-hangup",
+      "severity": "low",
+      "text": "A client that connects and hangs up without sending a frame makes the Broker write its denial to a closed pipe and end with an unhandled IOException (exit code 0xE0434352 as a child process). Fail-closed (no claim), but not the clean exit the code comments suggest. Observed on the host while writing the DACL test; not changed here."
+    }
+  ],
+  "checks": [
+    { "id": "setup_services", "title": "Own-process services under virtual accounts NT SERVICE\\AlberaHostBroker / AlberaControlPlane (+ AlberaLabOther), restricted service SID", "status": "BLOCKED", "evidence": ["not executed: needs PowerShell Direct into the guest"] },
+    { "id": "a_token", "title": "Broker and Control Plane process tokens: TokenUser, enabled groups, restricting SIDs, integrity, session 0", "status": "BLOCKED", "evidence": ["not executed", "the shim writes its own token (TokenReport) to a file at every service start; lab-guest.ps1 asserts user SID, session 0, restricting SIDs incl. own SID and World, no enabled BUILTIN\\Administrators"] },
+    { "id": "a_pipe_acl", "title": "Live pipe owner SID and DACL SDDL with exact masks", "status": "BLOCKED", "evidence": ["not executed", "host-side same-user equivalent passes (see hostSideEvidence)"] },
+    { "id": "a_effective_access", "title": "Control Plane account: 0x00120083 opens; GENERIC_WRITE and FILE_APPEND_DATA are denied", "status": "BLOCKED", "evidence": ["not executed"] },
+    { "id": "b_positive", "title": "Control Plane helper in service mode: ok, 1 claim (synthetic.noop, signed receipt)", "status": "BLOCKED", "evidence": ["not executed", "same-user equivalent passes in test/runtime-windows-broker-server-identity.test.mjs"] },
+    { "id": "c_other_principals_denied", "title": "Interactive Administrator and a third virtual account are denied by the pipe DACL", "status": "BLOCKED", "evidence": ["not executed"] },
+    { "id": "d1_squatter_broker_stopped", "title": "Broker stopped, interactive Administrator squats the name: pre-send refusal, 0 bytes", "status": "BLOCKED", "evidence": ["not executed", "expected code per the helper source: server_identity_unavailable (see findings)"] },
+    { "id": "d2_squatter_administrator", "title": "Service RUNNING, interactive Administrator squats the name: server_identity_mismatch, 0 bytes", "status": "BLOCKED", "evidence": ["not executed"] },
+    { "id": "d3_squatter_service_account", "title": "Service RUNNING, third service account squats the name: server_identity_mismatch, 0 bytes", "status": "BLOCKED", "evidence": ["not executed"] },
+    { "id": "e_scm_query_status", "title": "SCM PID lookup with only SC_MANAGER_CONNECT + SERVICE_QUERY_STATUS from the Control Plane account", "status": "BLOCKED", "evidence": ["not executed"] },
+    { "id": "e_openprocess_image_hash", "title": "Cross-account OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) for the image hash: allowed or denied", "status": "BLOCKED", "evidence": ["not executed"] },
+    { "id": "e_session0", "title": "Session 0 check; an interactive-session lookalike is refused", "status": "BLOCKED", "evidence": ["not executed", "an honest negative test for the lookalike is not constructible: it must first match the owner SID and the SCM PID, which refuse it earlier"] },
+    { "id": "f_restart_replay", "title": "Restart the Broker service: same receipt denied, 1 journal claim", "status": "BLOCKED", "evidence": ["not executed", "same-user equivalent passes in test/runtime-windows-dotnet-broker.test.mjs"] },
+    { "id": "rollback", "title": "Stop and delete the services, remove the lab root, verify names absent", "status": "BLOCKED", "evidence": ["nothing was created, so nothing needed rolling back"] }
+  ]
+}
