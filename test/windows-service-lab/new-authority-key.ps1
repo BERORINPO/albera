@@ -77,6 +77,7 @@ try {
     keyName = $KeyName; scope = $Scope; variant = $Variant; serviceSid = $ServiceSid
     exportPolicy = [int]$stored.ExportPolicy; algorithm = $stored.Algorithm.Algorithm; keySize = $stored.KeySize
     owner = $readBack.Owner.Value; sddl = $readBack.GetSddlForm($sections)
+    allowSids = @($readBack.DiscretionaryAcl | Where-Object { $_.AceType -eq 'AccessAllowed' } | ForEach-Object { $_.SecurityIdentifier.Value })   # SIDs, not SDDL aliases (SY, BA, LA, WD)
   }
 }
 finally { $stored.Dispose() }

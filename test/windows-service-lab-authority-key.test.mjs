@@ -15,8 +15,11 @@ const script = path.join(root, 'test', 'windows-service-lab', 'new-authority-key
 const run = (...args) => execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, ...args], { encoding: 'utf8', stdio: 'pipe', timeout: 60_000, windowsHide: true });
 const json = (output) => JSON.parse(output.trim().split(/\r?\n/u).at(-1));
 const SERVICE_SID = 'S-1-5-80-1111111111-2222222222-3333333333-1444444444-2555555555';
-const ME = currentUserSid(); // user scope adds the signed-in user to the DACL so the test can read the key back and delete it
-const principals = (sddl) => [...sddl.matchAll(/\(A;;([^;]+);;;([^)]+)\)/gu)].map((m) => m[2]).sort();
+// User scope adds the signed-in user to the DACL so the test can read the key back and delete it. Looked up lazily (whoami.exe exists only on Windows).
+// The script reports allow-ACE SIDs, not SDDL text: an elevated built-in Administrator shows up as the alias LA there, SY / BA / WD for the others.
+const me = () => currentUserSid();
+const SYSTEM_SID = 'S-1-5-18', ADMINISTRATORS_SID = 'S-1-5-32-544', EVERYONE_SID = 'S-1-1-0';
+const principals = (report) => [...report.allowSids].sort();
 
 test('new-authority-key.ps1 is ASCII only (Windows PowerShell 5.1 reads it without a BOM) and never creates a key unless asked', () => {
   const text = readFileSync(script, 'utf8');
@@ -39,18 +42,18 @@ test('new-authority-key.ps1 variants create the key the lab needs (per-user scop
       assert.equal(good.exportPolicy, 0);
       assert.equal(good.keySize, 256);
       assert.match(good.algorithm, /^ECDSA_P256$/u);
-      assert.deepEqual(principals(good.sddl), ['BA', 'SY', SERVICE_SID, ME].sort(), good.sddl);
+      assert.deepEqual(principals(good), [ADMINISTRATORS_SID, SYSTEM_SID, SERVICE_SID, me()].sort(), good.sddl);
       assert.match(good.sddl, /D:P/u, 'protected DACL');
     });
     await t.test('exportable: Export Policy allows export, same DACL', () => {
       const exportable = create('exportable');
       assert.equal(exportable.exportPolicy, 1);
-      assert.deepEqual(principals(exportable.sddl), ['BA', 'SY', SERVICE_SID, ME].sort());
+      assert.deepEqual(principals(exportable), [ADMINISTRATORS_SID, SYSTEM_SID, SERVICE_SID, me()].sort());
     });
     await t.test('broad_ace: non-exportable, same DACL plus Everyone', () => {
       const broad = create('broad_ace');
       assert.equal(broad.exportPolicy, 0);
-      assert.deepEqual(principals(broad.sddl), ['BA', 'SY', 'WD', SERVICE_SID, ME].sort());
+      assert.deepEqual(principals(broad), [ADMINISTRATORS_SID, SYSTEM_SID, EVERYONE_SID, SERVICE_SID, me()].sort());
     });
     await t.test('an existing key is refused, a bad name and a machine key without a service SID throw before anything is created', () => {
       assert.throws(() => run('-KeyName', names[0], '-ServiceSid', SERVICE_SID, '-Scope', 'user'), /already exists/u);
@@ -58,7 +61,7 @@ test('new-authority-key.ps1 variants create the key the lab needs (per-user scop
       assert.throws(() => run('-KeyName', `AlberaTestLabKey-${randomBytes(6).toString('hex')}`, '-Scope', 'machine'), /ServiceSid is required/u);
       assert.throws(() => run('-KeyName', `AlberaTestLabKey-${randomBytes(6).toString('hex')}`, '-ServiceSid', 'S-1-1-0', '-Scope', 'user'), /ServiceSid must be/u);
       // A machine key is only ever granted to a per-service SID: LocalService, NetworkService, SYSTEM, a user and a short service SID all throw before anything is created.
-      for (const sid of ['S-1-5-19', 'S-1-5-20', 'S-1-5-18', ME, 'S-1-5-80-1-2-3']) {
+      for (const sid of ['S-1-5-19', 'S-1-5-20', 'S-1-5-18', me(), 'S-1-5-80-1-2-3']) {
         assert.throws(() => run('-KeyName', `AlberaTestLabKey-${randomBytes(6).toString('hex')}`, '-ServiceSid', sid, '-Scope', 'machine'), /per-service SID/u, sid);
       }
     });
