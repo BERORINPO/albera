@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,7 +27,8 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
   let root, brokerExe, loopExe, helper, sid, keys;
   const running = new Set();
   before(async () => {
-    root = mkdtempSync(path.join(os.tmpdir(), 'albera-service-host-'));
+    // The Broker accepts only a path already in its final form; CI's TEMP is an 8.3 short name (RUNNER~1) that .NET expands, so use the long one.
+    root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'albera-service-host-')));
     brokerExe = buildBroker(path.join(root, 'broker'));
     loopExe = buildBrokerWithTestSeams(path.join(root, 'broker-seams'));
     helper = await buildPipeClient(path.join(root, 'helper'));
@@ -91,7 +92,7 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
         ['alternate data stream', String.raw`C:\temp\journal.sqlite:stream`], ['wildcard', String.raw`C:\temp\journal*.sqlite`], ['trailing dot', String.raw`C:\temp\journal.`],
         ['too long', `C:\\${'a'.repeat(250)}`],
       ].map(([label, value]) => [`database ${label}`, { database: value }, 'database']),
-      ['database in a missing directory', { database: path.join(os.tmpdir(), 'albera-no-such-directory', 'journal.sqlite') }, 'database_directory'],
+      ['database in a missing directory', { database: path.join(realpathSync.native(os.tmpdir()), 'albera-no-such-directory', 'journal.sqlite') }, 'database_directory'],
       ...[['not base64', '###'], ['empty', ''], ['base64 of garbage', 'AAAA'], ['truncated SubjectPublicKeyInfo', 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE']].map(([label, value]) => [`public key ${label}`, { publicKey: value }, 'public_key']),
       ...[['a string', '7'], ['a fraction', 1.5], ['negative', -1], ['null', null], ['beyond int64', 1e19], ['an object', {}]].map(([label, value]) => [`generation ${label}`, { generation: value }, 'generation']),
       ['pipe name of the wrong type', { pipeName: 7 }, 'config_keys'],
