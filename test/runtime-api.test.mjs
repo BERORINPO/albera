@@ -238,7 +238,7 @@ test('provider catalog is read-only, scope-protected, and reports profile verifi
   assert.deepEqual(body.providers.map(({ id, status, profiles, profileMinimumVersions, runtimeValidation, inputTransport, eventTransport, unavailableReason }) => ({
     id, status, profiles, profileMinimumVersions, runtimeValidation, inputTransport, eventTransport, unavailableReason,
   })), [
-    { id: 'claude', status: 'profile-only', profiles: ['read-only', 'read-only-streaming'], profileMinimumVersions: { 'read-only': '2.1.248', 'read-only-streaming': '2.1.259' }, runtimeValidation: 'approved-version-preflight-and-synthetic-transport', inputTransport: true, eventTransport: 'lifecycle-only', unavailableReason: null },
+    { id: 'claude', status: 'profile-only', profiles: ['read-only', 'read-only-streaming'], profileMinimumVersions: { 'read-only': '2.1.310', 'read-only-streaming': '2.1.310' }, runtimeValidation: 'approved-version-preflight-and-synthetic-transport', inputTransport: true, eventTransport: 'lifecycle-only', unavailableReason: null },
     { id: 'codex', status: 'unavailable', profiles: [], profileMinimumVersions: {}, runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
     { id: 'opencode', status: 'unavailable', profiles: [], profileMinimumVersions: {}, runtimeValidation: 'not-tested', inputTransport: false, eventTransport: 'none', unavailableReason: 'profile_unavailable' },
   ]);
@@ -253,7 +253,7 @@ test('provider catalog is read-only, scope-protected, and reports profile verifi
   body.providers[0].profileMinimumVersions['read-only'] = '0.0.0';
   const fresh = JSON.parse((await request(f.address, f.api, { route: '/v1/providers' })).text);
   assert.deepEqual(fresh.providers[0].profiles, ['read-only', 'read-only-streaming']);
-  assert.deepEqual(fresh.providers[0].profileMinimumVersions, { 'read-only': '2.1.248', 'read-only-streaming': '2.1.259' });
+  assert.deepEqual(fresh.providers[0].profileMinimumVersions, { 'read-only': '2.1.310', 'read-only-streaming': '2.1.310' });
   assert.equal(f.calls.length, 0);
 });
 

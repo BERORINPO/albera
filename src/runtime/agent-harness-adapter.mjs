@@ -25,9 +25,12 @@ export class ClaudeReadOnlyHarnessAdapter extends AgentHarnessAdapter {
     if (typeof prompt !== 'string' || prompt.includes('\0') || Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) throw new GatewayError('invalid_args');
     // Keep user text clearly labeled so leading CLI-looking text is not interpreted as an option.
     const taskPrompt = `ALBERA task:\n${prompt}`;
-    // Restricted/safe modes constrain built-in tools and customizations; explicit MCP denial
-    // keeps configured MCP tools outside the host process boundary.
-    const safeFlags = ['--restricted', '--safe-mode', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan'];
+    // Print mode skips the workspace trust dialog, so repo-supplied .claude/settings*.json (hooks,
+    // apiKeyHelper) and .mcp.json would otherwise run code (docs/claude-cli-readonly-profile-verification.md).
+    // --restricted ignores user/project/local settings, --safe-mode disables hooks/MCP/plugins, and
+    // --strict-mcp-config (kept before the variadic --disallowedTools) loads MCP servers only from
+    // --mcp-config, which is never passed. Each layer is independent; none relies on the cwd being clean.
+    const safeFlags = ['--restricted', '--safe-mode', '--strict-mcp-config', '--disallowedTools', 'mcp__*', '--permission-mode', 'plan'];
     const args = profile === RUNTIME_PROFILES.readOnlyStreaming
       ? [...safeFlags, '--permission-prompts', 'none', '--print', '--max-turns', '1', '--no-session-persistence', '--input-format', 'stream-json', '--output-format', 'stream-json']
       : [...safeFlags, '--print', '--max-turns', '1', '--no-session-persistence', taskPrompt];
