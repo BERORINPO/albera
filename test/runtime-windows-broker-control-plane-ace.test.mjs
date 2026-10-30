@@ -65,4 +65,11 @@ describe('Broker pipe DACL in service mode', { skip: getUnavailableReason() }, (
     const { aces } = await liveSecurity('not-a-sid');
     assert.deepEqual(aces.map((ace) => ace.sid), [self]);
   });
+
+  for (const broad of ['S-1-1-0', 'WD', 'AU', 'BU', 'S-1-5-32-544']) {
+    it(`a group or SDDL-alias Control Plane SID (${broad}) adds nothing`, async () => {
+      const { aces } = await liveSecurity(broad);
+      assert.deepEqual(aces.map((ace) => ace.sid), [self]);
+    });
+  }
 });

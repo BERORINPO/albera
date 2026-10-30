@@ -95,7 +95,7 @@ internal static class Program
 
     // What PipeOptions.CurrentUserOnly would set (this user, full control, nobody else), plus an explicit owner. CurrentUserOnly cannot be combined
     // with a PipeSecurity. The SID is read from this process's token. When the configured Control Plane SID is a different principal (service mode)
-    // it gets exactly one more ACE, ControlPlaneAccess; a malformed SID adds nothing (the peer check below denies everyone anyway).
+    // it gets exactly one more ACE, ControlPlaneAccess; a malformed, aliased or group SID adds nothing (the peer check below denies everyone anyway).
     private static PipeSecurity OwnedBySelf(out SecurityIdentifier self, string controlPlaneSid)
     {
         using WindowsIdentity identity = WindowsIdentity.GetCurrent();
@@ -112,9 +112,15 @@ internal static class Program
     // FILE_CREATE_PIPE_INSTANCE on a pipe, and never a generic right.
     private const PipeAccessRights ControlPlaneAccess = (PipeAccessRights)0x00120083;
 
+    // Only a single principal may get the Control Plane ACE: a virtual service account (S-1-5-80-...) or a user/computer account SID, written
+    // out in full. SDDL aliases (WD, AU, BU, BA) and group SIDs such as S-1-1-0 would let anyone take the Broker's one connection.
     private static SecurityIdentifier? TryParseSid(string value)
     {
-        try { return new SecurityIdentifier(value); }
+        try
+        {
+            SecurityIdentifier sid = new(value);
+            return sid.Value == value && (sid.Value.StartsWith("S-1-5-80-", StringComparison.Ordinal) || sid.IsAccountSid()) ? sid : null;
+        }
         catch (ArgumentException) { return null; }
     }
 

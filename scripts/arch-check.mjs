@@ -262,7 +262,7 @@ results.push(`7 runtime UI under ${UI_MAX_LINES} lines: ${runtimeUi.length} file
 //    layers and every runtime .mjs file may not import, spawn or name it, and package.json may not wire it into `bin`, the
 //    npm lifecycle or `start`/`demo`. The only runtime file that names them is windows-broker-client.mjs, with two explicit
 //    `// arch-allow: <reason>` lines (the Broker wire reference, the pipe client helper path); any future launcher needs its own (counted above).
-const BROKER_REF = /windows-broker|albera-windows-broker|WindowsBroker/i;
+const BROKER_REF = /windows-broker|albera-windows-broker|WindowsBroker|windows-service-lab|lab-service-shim/i;
 check('8a Windows Broker is not referenced by Observer layers or runtime modules', [...entry, ...adapters, ...core, ...shared, ...pub, ...runtime], (line) =>
   BROKER_REF.test(line) ? 'the Windows Broker prototype must not be imported, spawned or named here (build-on-demand only)' : null,
 );
