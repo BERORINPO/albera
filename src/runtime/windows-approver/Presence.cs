@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Albera.Approver;
@@ -31,4 +32,24 @@ internal static class PresenceMessage
 
     public static byte[] Build(string approvalId, string actionDigest, string challenge) =>
         Encoding.UTF8.GetBytes($"{Domain}\0{approvalId}\0{actionDigest}\0{challenge}");
+}
+
+// Local check of a Hello signature against the credential's own public key (SPKI, DER): RSA-2048, PKCS#1 v1.5, SHA-256, a 256-byte signature. These are the same parameters the
+// Authority verifies presence with (its own code: the approver shares no project with it); only the self-check uses this, since `approve` leaves verification to the Authority.
+// The only RSA object here holds a PUBLIC key imported from SPKI; no key is created.
+internal static class PresenceSignature
+{
+    public const int Bytes = 256;
+
+    public static bool Verify(byte[] spki, byte[] message, byte[] signature)
+    {
+        if (signature.Length != Bytes) return false;
+        try
+        {
+            using RSA rsa = RSA.Create();
+            rsa.ImportSubjectPublicKeyInfo(spki, out _);
+            return rsa.KeySize == 2048 && rsa.VerifyData(message, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        }
+        catch (CryptographicException) { return false; }
+    }
 }

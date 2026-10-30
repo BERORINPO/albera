@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+
 namespace Albera.Approver;
 
 internal enum KeyState { Present, Missing, AlreadyExists, Cancelled, Unavailable }
@@ -17,4 +19,10 @@ internal interface IHelloKeyStore
 {
     KeyLookup Open();
     KeyLookup Create(bool replace);
+}
+
+/// <summary>The suggested approverKeyId: "hello-" + the first 8 bytes of SHA-256 over the SPKI, lower-case hex (a valid id in the Authority's grammar). Shared by `enroll` and `enroll --check`.</summary>
+internal static class ApproverKeyId
+{
+    public static string Of(byte[] spki) => "hello-" + Convert.ToHexStringLower(SHA256.HashData(spki).AsSpan(0, 8));
 }
