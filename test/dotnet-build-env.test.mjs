@@ -87,6 +87,13 @@ const USER_IMPORTS = [
   'ImportUserLocationsByWildcardBeforeMicrosoftNetFrameworkTargets', 'ImportUserLocationsByWildcardAfterMicrosoftNetFrameworkTargets',
 ].map((name) => `-p:${name}=false`);
 
+test('restore, publish and build switch off Directory.Build.props / .targets / Directory.Packages.props found in an ancestor directory', () => {
+  const required = ['-p:ImportDirectoryBuildProps=false', '-p:ImportDirectoryBuildTargets=false', '-p:ImportDirectoryPackagesProps=false'];
+  for (const args of [restoreArguments({ project: 'a.csproj', lockFileExists: () => true }), buildArguments({ verb: 'publish', project: 'a.csproj' }), buildArguments({ verb: 'build', project: 'a.csproj' })]) {
+    for (const switchName of required) assert.ok(args.includes(switchName), `${args[0]} lacks ${switchName}`);
+  }
+});
+
 test('restore, publish and build switch off every MSBuild import from the user location (MSBuildUserExtensionsPath)', () => {
   assert.deepEqual([...USER_IMPORT_SWITCHES].sort(), [...USER_IMPORTS].sort());
   const restore = restoreArguments({ project: 'a.csproj', runtime: 'win-x64', lockFileExists: () => true });

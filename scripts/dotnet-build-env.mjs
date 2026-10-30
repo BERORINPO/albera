@@ -8,7 +8,8 @@
 //      There is no override variable on purpose: an override would be one more thing a tampered environment can set. (Tests inject registry values and a
 //      file-system view instead of running reg.exe.)
 //   2. every MSBuild call gets -noAutoResponse (no .rsp files), -nologo, -nodeReuse:false (no build node outlives the sanitised environment) and switches off
-//      the wildcard imports from the user's MSBuild folder (MSBuildUserExtensionsPath = %LOCALAPPDATA%\Microsoft\MSBuild, importable .props / .targets).
+//      the wildcard imports from the user's MSBuild folder (MSBuildUserExtensionsPath = %LOCALAPPDATA%\Microsoft\MSBuild, importable .props / .targets)
+//      and the ancestor-directory files Directory.Build.props, Directory.Build.targets and Directory.Packages.props.
 //   3. the child environment is built from an ALLOWLIST (below), not filtered from the caller's: MSBuild*, NuGet*, DOTNET_*, DefineConstants, Albera* and everything
 //      else simply are not passed on. SystemRoot / windir / PATH come from the fixed C:\Windows (PATH = System32 + the dotnet folder), ProgramFiles / ProgramW6432
 //      from the registry. USERPROFILE / LOCALAPPDATA are still passed on (the NuGet package cache lives under USERPROFILE); a package taken from a
@@ -100,7 +101,10 @@ export const USER_IMPORT_SWITCHES = Object.freeze(
     return kinds.map((kind) => `-p:ImportUserLocationsByWildcard${when}Microsoft${name}${kind}=false`);
   })),
 );
-const MSBUILD_SWITCHES = Object.freeze(['-noAutoResponse', '-nologo', '-nodeReuse:false', ...USER_IMPORT_SWITCHES]);
+/** The files MSBuild / NuGet would find by walking UP from the project directory (e.g. C:\dev\Directory.Build.props). No project in this repo relies on any of them (the approver's
+ *  exact-pin check, arch rule 11e, refuses them too). Directory.Solution.props / .targets only apply to solution builds; no solution is built, so there is no switch to set. */
+export const DIRECTORY_IMPORT_SWITCHES = Object.freeze(['-p:ImportDirectoryBuildProps=false', '-p:ImportDirectoryBuildTargets=false', '-p:ImportDirectoryPackagesProps=false']);
+const MSBUILD_SWITCHES = Object.freeze(['-noAutoResponse', '-nologo', '-nodeReuse:false', ...USER_IMPORT_SWITCHES, ...DIRECTORY_IMPORT_SWITCHES]);
 
 /** `dotnet restore` arguments: locked, with the repo NuGet config, runtime-specific when `runtime` is given. Throws when the project has no packages.lock.json. */
 export function restoreArguments({ project, runtime, properties = [], configFile = NUGET_CONFIG, lockFileExists = (file) => fs.existsSync(file) }) {
