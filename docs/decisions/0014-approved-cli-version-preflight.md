@@ -6,6 +6,8 @@ Date: 2026-10-27
 
 Implemented; synthetic tests only. No real provider CLI has been run by this change.
 
+Update 2026-10-30 (Issue #35): the floors in this ADR are superseded; both profiles now require `2.1.310` (`docs/claude-cli-readonly-profile-verification.md`).
+
 ## Context
 
 The fixed Claude profiles use flags whose documented minimum versions differ. A static catalog helps clients explain these prerequisites but cannot stop an older installed CLI from starting.
