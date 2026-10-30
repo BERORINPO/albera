@@ -95,6 +95,9 @@ export async function openSqliteEnvironmentStore(databasePath, {
     await verifyAcl(verifyWindowsAcl, databasePath, 'file');
     db.exec('PRAGMA foreign_keys = ON');
     db.exec('PRAGMA busy_timeout = 5000');
+    // Refuse a database written by a newer version before any mutating PRAGMA (journal_mode rewrites the header and creates -wal/-shm).
+    const existingVersion = db.prepare('PRAGMA user_version').get()?.user_version;
+    if (!Number.isSafeInteger(existingVersion) || existingVersion > SCHEMA_VERSION) throw new EnvironmentStoreError('database_schema_newer');
     const mode = db.prepare('PRAGMA journal_mode = WAL').get()?.journal_mode;
     if (String(mode).toLowerCase() !== 'wal') throw new EnvironmentStoreError('wal_mode_unavailable');
     db.exec('PRAGMA synchronous = FULL');

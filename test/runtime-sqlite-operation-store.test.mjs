@@ -2049,17 +2049,25 @@ test('schema v4 migration adds the flow journal without touching existing rows; 
   assert.deepEqual(f.store.getOperation(request.operationId), before);
 });
 
-test('a database written by a newer schema version is refused and left unchanged', async (t) => {
+test('a database written by a newer schema version is refused before the journal mode changes, and left byte-for-byte unchanged', async (t) => {
   const f = await fixture(t);
   f.store.flowJournal().begin(FLOW_RECORD);
   f.store.close();
   const db = new DatabaseSync(f.databasePath);
-  db.exec('PRAGMA user_version = 6');
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE; PRAGMA user_version = 6');
+  assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
   db.close();
+  const sidecars = [`${f.databasePath}-wal`, `${f.databasePath}-shm`];
+  const exists = (file) => stat(file).then(() => true, () => false);
+  assert.deepEqual(await Promise.all(sidecars.map(exists)), [false, false], 'precondition: a non-WAL database has no sidecars');
+  const bytesBefore = await readFile(f.databasePath);
   await assert.rejects(f.reopen(), (error) => error instanceof EnvironmentStoreError && error.code === 'database_schema_newer');
+  assert.deepEqual(await Promise.all(sidecars.map(exists)), [false, false], 'no -wal / -shm was created');
+  assert.ok(bytesBefore.equals(await readFile(f.databasePath)), 'the database file bytes are unchanged (still not WAL)');
   const check = new DatabaseSync(f.databasePath, { readOnly: true });
   try {
     assert.equal(check.prepare('PRAGMA user_version').get().user_version, 6);
+    assert.equal(check.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
     assert.equal(check.prepare('SELECT COUNT(*) AS n FROM flow_operations').get().n, 1);
   } finally { check.close(); }
 });
