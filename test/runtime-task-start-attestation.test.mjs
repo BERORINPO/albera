@@ -9,12 +9,12 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { DIGEST_DOMAIN, encMap } from '../src/runtime/broker-contract/action-digest.mjs';
+import { DIGEST_DOMAIN, computeActionDigest, encMap } from '../src/runtime/broker-contract/action-digest.mjs';
 import {
   ATTESTATION_DOMAIN, createNetworkAttestation, readSignedNetworkAttestation, signNetworkAttestation, verifyNetworkAttestation,
 } from '../src/runtime/broker-contract/network-attestation.mjs';
 import {
-  CHECKPOINT_TYPES, TASK_START_ATTESTATION_DOMAIN, TaskStartAttestationError, canonicalizeTaskStartAttestation, computeTaskStartAttestationDigest, createTaskStartAttestation,
+  CHECKPOINT_TYPES, TASK_START_ATTESTATION_DOMAIN, TASK_START_ATTESTATION_VERSION, TaskStartAttestationError, canonicalizeTaskStartAttestation, computeTaskStartAttestationDigest, createTaskStartAttestation,
   provesCheckpointedNoNetwork, readSignedTaskStartAttestation, signTaskStartAttestation, validateTaskStartAttestation, verifyTaskStartAttestation,
 } from '../src/runtime/broker-contract/task-start-attestation.mjs';
 import { createEcdsaAttestationSigner, createEcdsaAttestationVerifier } from '../src/runtime/ecdsa-attestation-signer.mjs';
@@ -29,11 +29,16 @@ const scriptText = fs.readFileSync(path.join(path.dirname(contractDir), 'hyperv-
 const VM = '11111111-2222-4333-8444-555555555555';
 const CKPT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const T0 = 1793404800;
+// The action digests of {action: task.start, projectId: proj-alpha, computerId: pc-01, args: {expectedGeneration: 3, task, vmId}} for two different tasks (computed, not typed in).
+const dtoOf = (task) => ({ action: 'task.start', projectId: 'proj-alpha', computerId: 'pc-01', args: { expectedGeneration: 3, task, vmId: VM } });
+const ACT = computeActionDigest('guest.command', dtoOf('build the project'));
+const ACT2 = computeActionDigest('guest.command', dtoOf('delete everything'));
 const BODY = Object.freeze({
-  v: 1, network: 'none', computerId: 'pc-01', vmId: VM, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, operationId: 'op-0001',
+  v: 2, network: 'none', computerId: 'pc-01', vmId: VM, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, operationId: 'op-0001', actionDigest: ACT,
   checkpointId: CKPT, checkpointType: 'production', observedAt: T0, expiresAt: T0 + 60,
 });
-const EXPECTED = Object.freeze({ computerId: 'pc-01', vmId: VM, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, operationId: 'op-0001' });
+const EXPECTED = Object.freeze({ computerId: 'pc-01', vmId: VM, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, operationId: 'op-0001', actionDigest: ACT });
+const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const codeOf = (fn) => { try { fn(); } catch (error) { assert.ok(error instanceof TaskStartAttestationError, String(error)); return `${error.code}${error.field ? `:${error.field}` : ''}`; } return 'ok'; };
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
@@ -41,7 +46,8 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 
 test('vectors: every digest vector reproduces its digest and exact preimage, or its refusal', () => {
   assert.equal(vectors.contract, 'albera.task-start-attestation.vectors');
-  assert.ok(vectors.digestVectors.length >= 40 && vectors.verifyVectors.cases.length >= 50);
+  assert.equal(vectors.version, 2);
+  assert.ok(vectors.digestVectors.length >= 50 && vectors.verifyVectors.cases.length >= 75);
   const names = vectors.digestVectors.map((v) => v.name);
   assert.equal(new Set(names).size, names.length, 'vector names are unique');
   for (const v of vectors.digestVectors) {
@@ -58,12 +64,12 @@ test('vectors: the pinned digest of the base body, and its preimage built by han
   assert.deepEqual(pinned.body, BODY);
   const s = (text) => { const b = Buffer.from(text, 'utf8'); const head = Buffer.alloc(5); head[0] = 0x53; head.writeUInt32BE(b.length, 1); return Buffer.concat([head, b]); };
   const i = (n) => { const b = Buffer.alloc(9); b[0] = 0x49; b.writeBigInt64BE(BigInt(n), 1); return b; };
-  const head = Buffer.alloc(5); head[0] = 0x4d; head.writeUInt32BE(13, 1);
+  const head = Buffer.alloc(5); head[0] = 0x4d; head.writeUInt32BE(14, 1);
   const fields = [
-    ['checkpointId', s(CKPT)], ['checkpointType', s('production')], ['computerId', s('pc-01')], ['expiresAt', i(T0 + 60)], ['generation', i(3)], ['leaseGeneration', i(7)], ['leaseId', s('lease-1')],
-    ['network', s('none')], ['observedAt', i(T0)], ['operationId', s('op-0001')], ['projectId', s('proj-alpha')], ['v', i(1)], ['vmId', s(VM)],
+    ['actionDigest', s(ACT)], ['checkpointId', s(CKPT)], ['checkpointType', s('production')], ['computerId', s('pc-01')], ['expiresAt', i(T0 + 60)], ['generation', i(3)], ['leaseGeneration', i(7)], ['leaseId', s('lease-1')],
+    ['network', s('none')], ['observedAt', i(T0)], ['operationId', s('op-0001')], ['projectId', s('proj-alpha')], ['v', i(2)], ['vmId', s(VM)],
   ];
-  const preimage = Buffer.concat([Buffer.from('albera.task-start-attestation.v1', 'utf8'), Buffer.from([0]), head, ...fields.flatMap(([k, v]) => [s(k), v])]);
+  const preimage = Buffer.concat([Buffer.from('albera.task-start-attestation.v2', 'utf8'), Buffer.from([0]), head, ...fields.flatMap(([k, v]) => [s(k), v])]);
   assert.equal(preimage.toString('hex'), pinned.expected.preimageHex);
   assert.equal(`sha256:${createHash('sha256').update(preimage).digest('hex')}`, pinned.expected.digest);
 });
@@ -84,14 +90,15 @@ test('vectors: every signed case gives its verdict through the production ECDSA 
 
 // ---- contract: domain separation, the body, sign and verify ----
 
-test('domain: its own string, distinct from the network attestation and the action digest, and every field (also operationId, checkpointId, checkpointType) changes the digest', () => {
-  assert.equal(TASK_START_ATTESTATION_DOMAIN, 'albera.task-start-attestation.v1');
+test('domain: its own string, distinct from the network attestation and the action digest, and every field (also operationId, actionDigest, checkpointId, checkpointType) changes the digest', () => {
+  assert.equal(TASK_START_ATTESTATION_DOMAIN, 'albera.task-start-attestation.v2', 'the body gained actionDigest (#133), so the domain and the version moved together');
+  assert.equal(BODY.v, TASK_START_ATTESTATION_VERSION);
   assert.notEqual(TASK_START_ATTESTATION_DOMAIN, ATTESTATION_DOMAIN);
   assert.notEqual(TASK_START_ATTESTATION_DOMAIN, DIGEST_DOMAIN);
   assert.equal(canonicalizeTaskStartAttestation(BODY).subarray(0, TASK_START_ATTESTATION_DOMAIN.length + 1).toString('latin1'), `${TASK_START_ATTESTATION_DOMAIN}\0`);
   const base = computeTaskStartAttestationDigest(BODY);
   const other = {
-    network: 'present', computerId: 'pc-02', vmId: '99999999-8888-4777-8666-555555555555', generation: 4, projectId: 'proj-beta', leaseId: 'lease-2', leaseGeneration: 8, operationId: 'op-0002',
+    network: 'present', computerId: 'pc-02', vmId: '99999999-8888-4777-8666-555555555555', generation: 4, projectId: 'proj-beta', leaseId: 'lease-2', leaseGeneration: 8, operationId: 'op-0002', actionDigest: ACT2,
     checkpointId: '99999999-8888-4777-8666-555555555555', checkpointType: 'standard', observedAt: T0 + 1, expiresAt: T0 + 61,
   };
   const digests = new Set([base]);
@@ -122,13 +129,56 @@ test('sign / verify round trip with the ECDSA signer; the envelope has exactly f
   assert.deepEqual(Object.keys(envelope).sort(), ['attestation', 'digest', 'keyId', 'signature']);
   assert.equal(envelope.digest, computeTaskStartAttestationDigest(BODY));
   assert.deepEqual(verifyTaskStartAttestation(envelope, ctx(signer)), BODY);
-  const wrong = { computerId: 'pc-02', vmId: '99999999-8888-4777-8666-555555555555', generation: 4, projectId: 'proj-beta', leaseId: 'lease-2', leaseGeneration: 8, operationId: 'op-0002' };
+  const wrong = { computerId: 'pc-02', vmId: '99999999-8888-4777-8666-555555555555', generation: 4, projectId: 'proj-beta', leaseId: 'lease-2', leaseGeneration: 8, operationId: 'op-0002', actionDigest: ACT2 };
   for (const [field, value] of Object.entries(wrong)) assert.equal(codeOf(() => verifyTaskStartAttestation(envelope, ctx(signer, T0 + 10, { ...EXPECTED, [field]: value }))), `binding:${field}`, field);
   assert.equal(codeOf(() => verifyTaskStartAttestation(envelope, ctx(signer, T0 + 60))), 'expired:expiresAt');
   assert.equal(codeOf(() => verifyTaskStartAttestation(envelope, ctx(signer, T0 - 31))), 'not_yet_valid:observedAt');
   const { operationId: _omit, ...partial } = EXPECTED;
   assert.equal(codeOf(() => verifyTaskStartAttestation(envelope, ctx(signer, T0 + 10, partial))), 'invalid_expected:$extra');
   assert.equal(codeOf(() => verifyTaskStartAttestation(envelope, ctx(signer, T0 + 10, { ...EXPECTED, operationId: 'has space' }))), 'invalid_expected:operationId');
+});
+
+test('ONE statement backs ONE action (#133): the same operation with another task is a binding mismatch on actionDigest, and the digest is the Authority-style digest of the DTO', async () => {
+  const signer = ecdsa();
+  const first = plain(await signTaskStartAttestation(BODY, signer));
+  assert.deepEqual(verifyTaskStartAttestation(first, ctx(signer)), BODY);
+  assert.notEqual(ACT, ACT2, 'the two tasks have two action digests');
+  // Same computer, project, lease, lease generation, VM, generation and operationId; only the task differs.
+  assert.equal(codeOf(() => verifyTaskStartAttestation(first, ctx(signer, T0 + 10, { ...EXPECTED, actionDigest: ACT2 }))), 'binding:actionDigest');
+  // ... and a second statement for the second task does not verify for the first.
+  const second = plain(await signTaskStartAttestation({ ...BODY, actionDigest: ACT2 }, signer));
+  assert.deepEqual(verifyTaskStartAttestation(second, ctx(signer, T0 + 10, { ...EXPECTED, actionDigest: ACT2 })).actionDigest, ACT2);
+  assert.equal(codeOf(() => verifyTaskStartAttestation(second, ctx(signer))), 'binding:actionDigest');
+  assert.notEqual(first.digest, second.digest);
+  // The digest covers the whole DTO (a different task text), not only the action name or the VM.
+  assert.equal(ACT, computeActionDigest('guest.command', dtoOf('build the project')));
+  assert.notEqual(ACT, computeActionDigest('guest.command', { ...dtoOf('build the project'), args: { expectedGeneration: 4, task: 'build the project', vmId: VM } }));
+  // actionDigest is a "sha256:" digest and nothing else; editing it after signing breaks the digest check, and re-signing a malformed one is refused at signing time.
+  for (const bad of [undefined, null, 7, '', 'sha256:abc', `sha256:${'A'.repeat(64)}`, `sha512:${'a'.repeat(64)}`, ` ${ACT}`, `${ACT}\n`]) {
+    assert.equal(codeOf(() => validateTaskStartAttestation({ ...BODY, actionDigest: bad })), 'malformed:actionDigest', String(bad));
+  }
+  assert.equal(codeOf(() => validateTaskStartAttestation((({ actionDigest, ...rest }) => rest)(BODY))), 'malformed:$extra', 'a previous-version body (no actionDigest) is not accepted');
+  assert.equal(codeOf(() => validateTaskStartAttestation({ ...BODY, v: 1 })), 'malformed:v', 'nor is version 1');
+  assert.equal(codeOf(() => verifyTaskStartAttestation({ ...first, attestation: { ...first.attestation, actionDigest: ACT2 } }, ctx(signer))), 'digest:digest');
+});
+
+test('invalid_expected names the field for every caller value (also the ids and counters) in a fixed order, and counters are safe integers (#133, the C# twin does the same)', async () => {
+  const signer = ecdsa();
+  const envelope = plain(await signTaskStartAttestation(BODY, signer));
+  const run = (patch) => codeOf(() => verifyTaskStartAttestation(envelope, ctx(signer, T0 + 10, { ...EXPECTED, ...patch })));
+  for (const [field, value] of [
+    ['computerId', 'has space'], ['projectId', ''], ['leaseId', 'lease/1'], ['operationId', 'x'.repeat(65)], ['vmId', 'AAAAAAAA-2222-4333-8444-555555555555'], ['actionDigest', 'sha256:abc'], ['actionDigest', ACT.toUpperCase()],
+    ['generation', 0], ['generation', -1], ['generation', 1.5], ['generation', '3'], ['generation', MAX_SAFE + 1], ['generation', Number.POSITIVE_INFINITY], ['generation', Number.NaN],
+    ['leaseGeneration', 0], ['leaseGeneration', MAX_SAFE + 1], ['leaseGeneration', null],
+  ]) assert.equal(run({ [field]: value }), `invalid_expected:${field}`, `${field}=${String(value)}`);
+  assert.equal(run({ generation: MAX_SAFE }), 'binding:generation', 'the largest safe integer is a valid expectation (a plain mismatch)');
+  assert.equal(run({ computerId: 'has space', vmId: 'nope', generation: 0 }), 'invalid_expected:computerId');
+  assert.equal(run({ vmId: 'nope', actionDigest: 'nope' }), 'invalid_expected:vmId');
+  assert.equal(run({ actionDigest: 'nope', generation: 0 }), 'invalid_expected:actionDigest');
+  assert.equal(run({ generation: 0, leaseGeneration: 0 }), 'invalid_expected:generation');
+  assert.equal(codeOf(() => verifyTaskStartAttestation({ ...envelope, signature: 'AA' }, ctx(signer, T0 + 10, { ...EXPECTED, generation: 0 }))), 'invalid_expected:generation', 'checked before the statement is read');
+  const { actionDigest: _omit, ...partial } = EXPECTED;
+  assert.equal(codeOf(() => verifyTaskStartAttestation(envelope, ctx(signer, T0 + 10, partial))), 'invalid_expected:$extra');
 });
 
 test('DOMAIN SEPARATION: a network attestation is never a task-start attestation, and a task-start attestation is never a network attestation (shape, digest and signature all differ)', async () => {
@@ -173,7 +223,7 @@ test('verify refuses a forged, other-key, wrong-key-id, tampered or malformed en
 
 const DIGEST = `sha256:${'a'.repeat(64)}`;
 const notesFor = (extra = {}) => JSON.stringify({ albera: 1, computerId: 'pc-01', generation: 3, imageDigest: DIGEST, projectId: 'proj-alpha', ...extra });
-const INPUT = Object.freeze({ computerId: 'pc-01', projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, generation: 3, vmId: VM, operationId: 'op-0001' });
+const INPUT = Object.freeze({ computerId: 'pc-01', projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, generation: 3, vmId: VM, operationId: 'op-0001', actionDigest: ACT });
 const tmpRoot = path.join(os.tmpdir(), 'albera-task-start-attest-never-created');
 
 /**
@@ -240,6 +290,18 @@ test('attestTaskStart: the checkpoint name comes from the operationId alone and 
   assert.equal(names.size, 4, 'another operation, another name');
 });
 
+test('attestTaskStart: the statement carries the action digest it was asked for (one statement per action, #133) and the digest never reaches PowerShell', async () => {
+  const { broker, script, signer } = hvBroker();
+  const first = await broker.attestTaskStart({ ...INPUT });
+  const second = await broker.attestTaskStart({ ...INPUT, actionDigest: ACT2 });
+  assert.equal(first.attestation.actionDigest, ACT);
+  assert.equal(second.attestation.actionDigest, ACT2);
+  assert.notEqual(first.digest, second.digest);
+  assert.equal(codeOf(() => verifyTaskStartAttestation(plain(first), ctx(signer, T0 + 10, { ...EXPECTED, actionDigest: ACT2 }))), 'binding:actionDigest', 'the first statement does not back the second task');
+  assert.equal(verifyTaskStartAttestation(plain(second), ctx(signer, T0 + 10, { ...EXPECTED, actionDigest: ACT2 })).actionDigest, ACT2);
+  for (const call of script.calls) assert.equal(JSON.stringify(call).includes('sha256'), false, 'no digest in any request to the script');
+});
+
 test('attestTaskStart: never an error to the caller: every failure is null, and nothing is taken when the VM is not attestable before the checkpoint', async () => {
   const before = [
     ['the network is present', { vm: { adapters: [{ connected: false, switchType: null }] } }],
@@ -302,6 +364,8 @@ test('attestTaskStart: bad input, no signer, a failing signer and a retired comp
     ['generation as text', { ...INPUT, generation: '3' }], ['leaseGeneration 1.5', { ...INPUT, leaseGeneration: 1.5 }], ['a computerId outside the VM-name alphabet', { ...INPUT, computerId: 'pc_01' }],
     ['a computerId with a path', { ...INPUT, computerId: '..\\pc' }], ['an empty projectId', { ...INPUT, projectId: '' }], ['a leaseId with a space', { ...INPUT, leaseId: 'lease 1' }],
     ['an operationId with a quote', { ...INPUT, operationId: 'op"x' }], ['an operationId of 65 characters', { ...INPUT, operationId: 'o'.repeat(65) }],
+    ['no actionDigest (#133)', (({ actionDigest, ...r }) => r)(INPUT)], ['an actionDigest that is not a digest', { ...INPUT, actionDigest: 'sha256:abc' }],
+    ['an uppercase actionDigest', { ...INPUT, actionDigest: ACT.toUpperCase().replace('SHA256', 'sha256') }], ['an actionDigest as a number', { ...INPUT, actionDigest: 7 }],
   ]) {
     const { broker, script } = hvBroker();
     assert.equal(await broker.attestTaskStart(input), null, label);
@@ -343,13 +407,16 @@ const functionBody = (name) => {
 test('env-io.ps1 checkpoint op: the exact cmdlets and arguments it may use, a fixed name shape, the VM id mandatory, ASCII only', () => {
   const body = functionBody('Invoke-Checkpoint');
   const lines = body.split('\n').map((l) => l.trim()).filter((l) => l !== '' && !l.startsWith('#'));
-  // The only commands: our own helpers, and exactly three Hyper-V cmdlets with exactly these arguments.
-  assert.ok(lines.includes('if ([string]$vm.CheckpointType -ne \'ProductionOnly\') { Set-VM -VM $vm -CheckpointType ProductionOnly }'), 'Set-VM only ever sets ProductionOnly');
+  // The only commands: our own helpers, and exactly three Hyper-V cmdlets with exactly these arguments (Set-VM twice: borrow ProductionOnly, then put the previous value back).
+  assert.ok(lines.includes('if ($previousType -ne \'ProductionOnly\') { Set-VM -VM $vm -CheckpointType ProductionOnly; $changedType = $true }'), 'Set-VM only ever sets ProductionOnly going in');
+  assert.ok(lines.includes('if ($changedType) { try { Set-VM -VM $vm -CheckpointType $previousType } catch { $restoreFailed = $true } }'), 'and puts back only the value it read, and only if it changed it');
   assert.ok(lines.includes('$snapshots = @(Checkpoint-VM -VM $vm -SnapshotName $Req.checkpointName -Passthru)'), 'Checkpoint-VM with the validated name');
   assert.ok(lines.includes('$after = Get-VM -Name $Req.vmName'), 'Get-VM re-reads the VM id');
   const cmdlets = [...body.slice(body.indexOf('\n')).matchAll(/\b([A-Z][a-z]+-[A-Za-z]+)\b/gu)].map((m) => m[1]); // the function's own header is not a command
   assert.deepEqual([...new Set(cmdlets)].sort(), ['Checkpoint-VM', 'Get-VM', 'Require-Vm', 'Set-VM']);
-  assert.deepEqual(cmdlets.filter((c) => c === 'Set-VM' || c === 'Checkpoint-VM'), ['Set-VM', 'Checkpoint-VM'], 'one of each');
+  assert.deepEqual(cmdlets.filter((c) => c === 'Set-VM' || c === 'Checkpoint-VM'), ['Set-VM', 'Checkpoint-VM', 'Set-VM'], 'borrow, checkpoint, put back');
+  assert.equal(body.match(/Set-VM -VM \$vm -CheckpointType (\S+)/gu).length, 2);
+  assert.equal(/Set-VM(?![^\n]*-CheckpointType)/u.test(body), false, 'Set-VM is never used for anything but CheckpointType');
   // The name is the fixed shape or nothing, and the identity is mandatory before any VM is touched.
   assert.match(scriptText, /\$CheckpointNameRe = '\^albera-task-\[0-9a-f\]\{24\}\$'/u);
   assert.ok(body.indexOf('$Req.checkpointName -cnotmatch $CheckpointNameRe') < body.indexOf('Require-Vm'));
@@ -364,6 +431,22 @@ test('env-io.ps1 checkpoint op: the exact cmdlets and arguments it may use, a fi
   assert.equal(anywhere.filter((c) => c === 'Checkpoint-VM').length, 1, 'Checkpoint-VM appears once, in Invoke-Checkpoint');
   assert.equal(/Invoke-Expression|\biex\b|Start-Process|-Command|\$Req\.(?:notes|cloneRoot|vmDir|parentPath|childPath)/iu.test(body), false, 'no string-built command and no path input');
   assert.equal([...Buffer.from(scriptText, 'utf8')].every((b) => b < 128), true, 'ASCII only');
+});
+
+test('env-io.ps1 checkpoint op leaves the VM\'s CheckpointType as it found it (#133): read first, borrowed only when different, put back in finally, a failed put-back is an unknown outcome', () => {
+  const body = functionBody('Invoke-Checkpoint');
+  const at = (needle) => { const n = body.indexOf(needle); assert.ok(n >= 0, needle); return n; };
+  assert.ok(at('$previousType = [string]$vm.CheckpointType') < at('Set-VM -VM $vm -CheckpointType ProductionOnly'), 'the previous value is read before anything is changed');
+  assert.ok(at('$changedType = $false') < at('Set-VM -VM $vm -CheckpointType ProductionOnly'), 'nothing is put back unless this call changed it');
+  assert.match(body, /try \{\s+if \(\$previousType -ne 'ProductionOnly'\)[^\n]*\n\s+\$snapshots = @\(Checkpoint-VM[^\n]*\n\s+\} catch \{ Abort 'provider_unavailable' \}\s+finally \{\s+if \(\$changedType\) \{ try \{ Set-VM -VM \$vm -CheckpointType \$previousType \} catch \{ \$restoreFailed = \$true \} \}\s+\}/u,
+    'the put-back is the finally of the very try that borrows and checkpoints, so it runs when the checkpoint fails too');
+  assert.ok(at('finally') > at('Checkpoint-VM'), 'after the checkpoint');
+  assert.ok(at('if ($restoreFailed) { Abort \'provider_state_unknown\' }') > at('finally'), 'a put-back that failed is judged right after it ...');
+  assert.ok(at('if ($restoreFailed)') < at('$snapshots.Count -ne 1') && at('$snapshots.Count -ne 1') < at('$after = Get-VM'), '... before any success is reported');
+  assert.equal((body.match(/\$restoreFailed = \$true/gu) ?? []).length, 1, 'only the put-back sets it');
+  // The comment that explains what is NOT observed must stay with the op (a reader of the script must see it), and the script still never lists snapshots.
+  assert.match(scriptText, /the checkpoint TYPE is not read back from the snapshot/u);
+  assert.match(scriptText, /SnapshotType Standard for a ProductionOnly checkpoint/u);
 });
 
 test('env-io.ps1 checkpoint op: the reply carries the lowercase snapshot id and the VM id, and every failure is a fixed code', () => {

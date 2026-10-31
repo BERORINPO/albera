@@ -14,11 +14,16 @@ internal static partial class Harness
     private const string TaskArgs = "{\"expectedGeneration\":3,\"task\":\"build the project\",\"vmId\":\"" + AttestVm + "\"}";
 
     private static Dictionary<string, object> TaskBody(string network = "none", string checkpointType = "production", string computerId = "pc-01", long generation = 3, string projectId = "proj-alpha",
-        string leaseId = "lease-1", long leaseGeneration = 7, string operationId = "op-1", long observedAt = Start - 5, long expiresAt = Start + 55, string vmId = AttestVm, string checkpointId = Checkpoint) => new()
+        string leaseId = "lease-1", long leaseGeneration = 7, string operationId = "op-1", long observedAt = Start - 5, long expiresAt = Start + 55, string vmId = AttestVm, string checkpointId = Checkpoint,
+        string? actionDigest = null) => new()
     {
-        ["v"] = 1L, ["network"] = network, ["computerId"] = computerId, ["vmId"] = vmId, ["generation"] = generation, ["projectId"] = projectId, ["leaseId"] = leaseId,
-        ["leaseGeneration"] = leaseGeneration, ["operationId"] = operationId, ["checkpointId"] = checkpointId, ["checkpointType"] = checkpointType, ["observedAt"] = observedAt, ["expiresAt"] = expiresAt,
+        ["v"] = 2L, ["network"] = network, ["computerId"] = computerId, ["vmId"] = vmId, ["generation"] = generation, ["projectId"] = projectId, ["leaseId"] = leaseId,
+        ["leaseGeneration"] = leaseGeneration, ["operationId"] = operationId, ["actionDigest"] = actionDigest ?? TaskDigest(), ["checkpointId"] = checkpointId, ["checkpointType"] = checkpointType, ["observedAt"] = observedAt, ["expiresAt"] = expiresAt,
     };
+
+    /// <summary>The action digest the Authority computes for a task.start guest.command DTO with these args (the statement is bound to it, issue #133).</summary>
+    private static string TaskDigest(string args = TaskArgs) =>
+        ActionDigest.ComputeFromJson("guest.command", Encoding.UTF8.GetBytes($"{{\"action\":\"task.start\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"args\":{args}}}"));
 
     /// <summary>The envelope JSON for a task-start body, signed by <paramref name="key"/>, plus its digest. <paramref name="signedBytes"/> replaces the bytes that are signed (a wrong-domain forgery).</summary>
     private static (string Json, string Digest) TaskEnvelope(Dictionary<string, object> body, AttestKey key, string? keyId = null, bool flipSignature = false, byte[]? signedBytes = null)
@@ -38,6 +43,7 @@ internal static partial class Harness
     {
         TaskStartAcceptChecks();
         TaskStartRefuseChecks();
+        TaskStartActionBindingChecks();
         TaskStartDomainChecks();
     }
 
@@ -175,6 +181,69 @@ internal static partial class Harness
         });
     }
 
+    private static void TaskStartActionBindingChecks()
+    {
+        Check("task-start: ONE statement backs ONE action (issue #133): the same operation with another task is a binding refusal on actionDigest (a person is asked), the statement made for that task is approved, and a statement that names a digest the Authority did not compute is refused", () =>
+        {
+            using AttestKey key = new();
+            List<string> audit = [];
+            Fixture fx = StandardWith(key, audit);
+            string otherTask = "{\"expectedGeneration\":3,\"task\":\"delete everything\",\"vmId\":\"" + AttestVm + "\"}";
+            Assert(TaskDigest() != TaskDigest(otherTask), "control: the two tasks have two action digests");
+            string forBuild = TaskEnvelope(TaskBody(), key).Json;
+            Assert(StateOf(fx.Submit(TaskSubmit(forBuild))) == "approved" && audit.Count == 1 && audit[0].StartsWith("POLICY_SIGNED=", StringComparison.Ordinal), $"control: its own task: {string.Join("|", audit)}");
+            // Same computer, project, lease, lease generation, VM, generation AND operationId; only the task differs, under another idempotency key (a resubmit with other content).
+            audit.Clear();
+            JsonElement second = fx.Submit(SubmitJson(op: "op-1", idem: "op-1.c2", action: "task.start", args: otherTask, purpose: "guest.command", extra: $",\"attestation\":{forBuild}"));
+            Assert(Code(second) != "ok" || StateOf(second) != "approved", $"the first statement did not back a second receipt: {second}");
+            Assert(!audit.Any(line => line.StartsWith("POLICY_SIGNED=", StringComparison.Ordinal)), $"no second receipt was signed without a person: {string.Join("|", audit)}");
+            // The same on a clean Authority (nothing known about op-1): the verdict is the binding on actionDigest, and only that.
+            audit.Clear();
+            Fixture clean = StandardWith(key, audit);
+            Assert(IsPending(clean, clean.Submit(TaskSubmit(forBuild, args: otherTask))) && audit.SequenceEqual(["ATTESTATION_REFUSED=binding:actionDigest"]), $"another task: {string.Join("|", audit)}");
+            audit.Clear();
+            Assert(StateOf(clean.Submit(TaskSubmit(TaskEnvelope(TaskBody(operationId: "op-2", actionDigest: TaskDigest(otherTask)), key).Json, op: "op-2", args: otherTask))) == "approved", "the statement made for that task backs that task");
+            // A digest the Authority did not compute (the Control Plane's own expectedDigest never feeds it) is refused, whatever its shape.
+            audit.Clear();
+            string foreign = TaskEnvelope(TaskBody(operationId: "op-3", actionDigest: "sha256:" + new string('0', 64)), key).Json;
+            Assert(IsPending(clean, clean.Submit(TaskSubmit(foreign, op: "op-3"))) && audit.SequenceEqual(["ATTESTATION_REFUSED=binding:actionDigest"]), $"foreign digest: {string.Join("|", audit)}");
+            // A body without actionDigest (the previous version's shape), or one with a malformed digest, is malformed.
+            Dictionary<string, object> noDigest = TaskBody();
+            noDigest.Remove("actionDigest");
+            Assert(TaskStartAttestation.ValidateBody(noDigest) is { Ok: false, Code: "malformed", Field: "$extra" }, "13 keys: malformed $extra");
+            Dictionary<string, object> badDigest = TaskBody();
+            badDigest["actionDigest"] = "sha256:" + new string('A', 64);
+            Assert(TaskStartAttestation.ValidateBody(badDigest) is { Ok: false, Code: "malformed", Field: "actionDigest" }, "uppercase digest: malformed actionDigest");
+        });
+        Check("task-start: the caller's own expected values are validated and NAMED, and counters are safe integers (issue #133)", () =>
+        {
+            using AttestKey key = new();
+            (string json, _) = TaskEnvelope(TaskBody(), key);
+            using JsonDocument document = JsonDocument.Parse(json);
+            object signed = VectorValue(document.RootElement);
+            using PinnedAttestationKey pinned = key.Pinned();
+            string digest = TaskDigest();
+            TaskStartExpected Good(string? computerId = null, string? projectId = null, string? leaseId = null, string? operationId = null, string? vmId = null, string? actionDigest = null, long generation = 3, long leaseGeneration = 7) =>
+                new(computerId ?? "pc-01", vmId ?? AttestVm, generation, projectId ?? "proj-alpha", leaseId ?? "lease-1", leaseGeneration, operationId ?? "op-1", actionDigest ?? digest);
+            (string Want, TaskStartExpected Expected)[] cases =
+            [
+                ("computerId", Good(computerId: "has space")), ("projectId", Good(projectId: "")), ("leaseId", Good(leaseId: "lease/1")), ("operationId", Good(operationId: new string('x', 65))),
+                ("vmId", Good(vmId: "AAAAAAAA-2222-4333-8444-555555555555")), ("actionDigest", Good(actionDigest: "sha256:abc")), ("generation", Good(generation: 0)), ("generation", Good(generation: -1)),
+                ("generation", Good(generation: StrictJson.MaxSafeInteger + 1)), ("leaseGeneration", Good(leaseGeneration: 0)), ("leaseGeneration", Good(leaseGeneration: StrictJson.MaxSafeInteger + 1)),
+                ("computerId", Good(computerId: "has space", vmId: "nope", generation: 0)), ("vmId", Good(vmId: "nope", actionDigest: "nope")), ("actionDigest", Good(actionDigest: "nope", generation: 0)),
+                ("generation", Good(generation: 0, leaseGeneration: 0)),
+            ];
+            foreach ((string want, TaskStartExpected expected) in cases)
+            {
+                TaskStartVerdict verdict = TaskStartAttestation.Verify(signed, () => Start, pinned.Verify, expected);
+                Assert(verdict is { Ok: false, Code: "invalid_expected" } && verdict.Field == want, $"{want}: got {verdict.Code}/{verdict.Field}");
+            }
+            TaskStartVerdict atMax = TaskStartAttestation.Verify(signed, () => Start, pinned.Verify, Good(generation: StrictJson.MaxSafeInteger));
+            Assert(atMax is { Ok: false, Code: "binding", Field: "generation" }, $"the largest safe integer is a plain mismatch: {atMax.Code}/{atMax.Field}");
+            Assert(TaskStartAttestation.Verify(signed, () => Start, pinned.Verify, Good()).Ok, "control: the real expectation verifies");
+        });
+    }
+
     private static void TaskStartDomainChecks()
     {
         Check("task-start: DOMAIN SEPARATION: a genuine network attestation (signed by the pinned key) does not count for task.start, and a task-start attestation does not count for environment.start", () =>
@@ -221,7 +290,7 @@ internal static partial class Harness
             {
                 JsonElement e = c.GetProperty("expected");
                 TaskStartExpected expected = new(e.GetProperty("computerId").GetString()!, e.GetProperty("vmId").GetString()!, e.GetProperty("generation").GetInt64(), e.GetProperty("projectId").GetString()!,
-                    e.GetProperty("leaseId").GetString()!, e.GetProperty("leaseGeneration").GetInt64(), e.GetProperty("operationId").GetString()!);
+                    e.GetProperty("leaseId").GetString()!, e.GetProperty("leaseGeneration").GetInt64(), e.GetProperty("operationId").GetString()!, e.GetProperty("actionDigest").GetString()!);
                 long now = c.GetProperty("now").GetInt64();
                 TaskStartVerdict verdict = TaskStartAttestation.Verify(VectorValue(c.GetProperty("signed")), () => now, pinned.Verify, expected);
                 JsonElement want = c.GetProperty("result");
@@ -230,7 +299,7 @@ internal static partial class Harness
                 Assert((verdict.Ok ? "ok" : verdict.Code) == wantCode && (verdict.Field ?? "") == wantField, $"{c.GetProperty("name").GetString()}: got {verdict.Code}/{verdict.Field}, want {wantCode}/{wantField}");
                 count++;
             }
-            Assert(count >= 50, $"only {count} cases");
+            Assert(count >= 75, $"only {count} cases");
         });
         Check("task-start policy: dropping the override on task.start needs the Hello signature (the rule is by effect), adding it back needs none", () =>
         {

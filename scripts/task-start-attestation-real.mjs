@@ -9,6 +9,7 @@ import { freemem } from 'node:os';
 import { createEcdsaAttestationSigner, createEcdsaAttestationVerifier } from '../../src/runtime/ecdsa-attestation-signer.mjs';
 import { createHyperVEnvironmentBrokerPrototype } from '../../src/runtime/hyperv-environment-broker-prototype.mjs';
 import { firstExisting, pwshCandidates } from '../../src/runtime/hyperv-guest-check-prototype.mjs';
+import { computeActionDigest } from '../../src/runtime/broker-contract/action-digest.mjs';
 import { provesCheckpointedNoNetwork, verifyTaskStartAttestation } from '../../src/runtime/broker-contract/task-start-attestation.mjs';
 
 const GOLDEN = 'U:\\dev\\hyperv\\golden\\ws2025-desktop-golden.vhdx';
@@ -61,7 +62,11 @@ try {
   log(`started; waiting ${BOOT_WAIT_MS / 1000} s for the guest`);
   await sleep(BOOT_WAIT_MS);
 
-  const input = { computerId, projectId, leaseId: 'lease-tsa', leaseGeneration: 1, generation: 1, vmId, operationId: 'tsa-task-0001' };
+  // The statement is bound to the action digest of the guest.command DTO the Authority would sign (issue #133); two different tasks give two digests.
+  const dtoOf = (task) => ({ action: 'task.start', projectId, computerId, args: { expectedGeneration: 1, task, vmId } });
+  const actionDigest = computeActionDigest('guest.command', dtoOf('tsa task one'));
+  const input = { computerId, projectId, leaseId: 'lease-tsa', leaseGeneration: 1, generation: 1, vmId, operationId: 'tsa-task-0001', actionDigest };
+  const typeBefore = ps(`(Get-VM -Name '${vmName}').CheckpointType`); // issue #133 (c): the checkpoint op must leave the VM's own setting as it found it
   let envelope = null;
   for (let attempt = 1; attempt <= ATTEMPTS && !envelope; attempt++) {
     const began = Date.now();
@@ -73,16 +78,25 @@ try {
   if (envelope) {
     const verified = verifyTaskStartAttestation(JSON.parse(JSON.stringify(envelope)), {
       clock: () => Math.floor(Date.now() / 1000), verify: verifier.verify,
-      expected: { computerId, vmId, generation: 1, projectId, leaseId: 'lease-tsa', leaseGeneration: 1, operationId: 'tsa-task-0001' },
+      expected: { computerId, vmId, generation: 1, projectId, leaseId: 'lease-tsa', leaseGeneration: 1, operationId: 'tsa-task-0001', actionDigest },
     });
     results.verified = true;
+    results.boundToTheAction = verified.actionDigest === actionDigest;
     results.provesCheckpointedNoNetwork = provesCheckpointedNoNetwork(verified);
     results.network = verified.network;
     results.checkpointType = verified.checkpointType;
     const snapshots = JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { [pscustomobject]@{ name = $_.Name; id = $_.Id.Guid; type = [string]$_.SnapshotType } }) | ConvertTo-Json -Compress -AsArray`));
     results.snapshots = snapshots.map((s) => ({ name: s.name, type: s.type, matchesAttestation: s.id.toLowerCase() === verified.checkpointId }));
-    results.again = Boolean(await broker.attestTaskStart({ ...input, operationId: 'tsa-task-0002' })); // a second operation gets its own checkpoint
+    results.again = Boolean(await broker.attestTaskStart({ ...input, operationId: 'tsa-task-0002', actionDigest: computeActionDigest('guest.command', dtoOf('tsa task two')) })); // a second operation gets its own checkpoint
     results.snapshotCount = Number(ps(`@(Get-VMSnapshot -VMName '${vmName}').Count`));
+    results.checkpointTypeBefore = typeBefore;
+    results.checkpointTypeRestored = ps(`(Get-VM -Name '${vmName}').CheckpointType`) === typeBefore;
+    // Issue #133 (b), INFORMATIONAL ONLY: is there a read-only property that tells a production checkpoint from a standard one? SnapshotType is known not to (Standard for ProductionOnly).
+    // Nothing below is trusted or part of the verdict; the lead reads it to decide whether env-io.ps1 can verify the snapshot itself. No host path is printed.
+    try {
+      results.snapshotProbe = JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { $s = $_; $c = @(Get-CimInstance -Namespace root/virtualization/v2 -ClassName Msvm_VirtualSystemSettingData | Where-Object { $_.InstanceID -like ('*' + $s.Id.Guid + '*') }) | Select-Object -First 1; [pscustomobject]@{ name = $s.Name; snapshotType = [string]$s.SnapshotType; vmStateAtSnapshot = [string]$s.State; consistencyLevel = $c.ConsistencyLevel; virtualSystemType = $c.VirtualSystemType } }) | ConvertTo-Json -Compress -AsArray`));
+    }
+    catch { results.snapshotProbe = 'unavailable'; }
   }
 }
 catch (error) {
@@ -101,7 +115,7 @@ finally {
   results.goldenReadOnly = ps(`(Get-Item -LiteralPath '${GOLDEN}').IsReadOnly`) === 'True';
   console.log(JSON.stringify(results));
 }
-const ok = results.verified && results.provesCheckpointedNoNetwork && results.again && results.snapshotCount === 2 && results.vmDeleted && results.goldenReadOnly
+const ok = results.verified && results.boundToTheAction && results.provesCheckpointedNoNetwork && results.again && results.checkpointTypeRestored === true && results.snapshotCount === 2 && results.vmDeleted && results.goldenReadOnly
   && results.snapshots.length === 1 && results.snapshots[0].matchesAttestation && /^albera-task-[0-9a-f]{24}$/.test(results.snapshots[0].name);
 console.log(ok ? 'TSA: PASS' : 'TSA: FAIL');
 process.exit(ok ? 0 : 1);

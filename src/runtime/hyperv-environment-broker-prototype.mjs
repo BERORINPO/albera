@@ -26,7 +26,7 @@ const COMPUTER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,56}$/; // "albera-" + id stay
 const DIGEST_KEY_RE = /^sha256:[a-f0-9]{64}$/;
 const ID_RE = new RegExp(ID_PATTERN);
 const CHECKPOINT_NAME_PREFIX = 'albera-task-'; // + 24 hex characters of SHA-256(operationId): env-io.ps1 accepts exactly this shape and nothing else
-const TASK_START_FIELDS = Object.freeze(['computerId', 'generation', 'leaseGeneration', 'leaseId', 'operationId', 'projectId', 'vmId']);
+const TASK_START_FIELDS = Object.freeze(['actionDigest', 'computerId', 'generation', 'leaseGeneration', 'leaseId', 'operationId', 'projectId', 'vmId']);
 const ISOLATED_NETWORK = 'isolated-none';
 const PS_CODES = new Set(['invalid_provider_state', 'operation_conflict', 'provider_timeout', 'provider_unavailable', 'provider_state_unknown']);
 const HYPERV_STATES = Object.freeze({ Running: 'running', Off: 'off', Paused: 'paused', Saved: 'paused' });
@@ -193,7 +193,8 @@ export function createHyperVEnvironmentBrokerPrototype({
      * Task-start attestation (#115 step 4, contract: broker-contract/task-start-attestation.mjs). Before a task.start is submitted for approval the Broker takes a Production checkpoint of
      * the VM itself and signs one statement that says "no network" and "this checkpoint was taken", bound to the computer, the VM's own id, generation, project, lease, lease generation and
      * operation. The fields come from the caller's own state (the Control Plane's inspect and the fenced lease) and are checked here against the VM's own Notes and id; nothing else from a
-     * request reaches PowerShell: the checkpoint name is derived from the validated operationId alone. Order: read the network (must be "none") -> checkpoint through the fixed
+     * request reaches PowerShell: the checkpoint name is derived from the validated operationId alone. `actionDigest` (the digest of the guest.command DTO the Authority will sign) is only
+     * echoed into the signed statement so that it backs that one action (issue #133); it never reaches PowerShell. Order: read the network (must be "none") -> checkpoint through the fixed
      * `checkpoint` op (the VM id is mandatory there) -> read the network again (still "none", same VM id) -> sign at this Broker's clock.
      * ANY failure (bad input, no signer, a retired or unknown VM, network present or unreadable, the checkpoint failing or reporting another VM, a signer failure) is `null`: no attestation, never
      * an error to the caller, and a person is asked. A checkpoint taken before a later failure is left where it is (cleaning up older checkpoints is not done here).
@@ -346,7 +347,7 @@ export function createHyperVEnvironmentBrokerPrototype({
     if (!await taskStartObservation(f, vmName)) return null; // the network and the VM are checked again AFTER the checkpoint: the statement is made about what is true now
     const body = createTaskStartAttestation({
       network: 'none', computerId: f.computerId, vmId: f.vmId, generation: f.generation, projectId: f.projectId, leaseId: f.leaseId, leaseGeneration: f.leaseGeneration, operationId: f.operationId,
-      checkpointId, checkpointType: 'production', observedAt: Math.floor(now().getTime() / 1000), ttlSeconds: attestationTtlSeconds,
+      actionDigest: f.actionDigest, checkpointId, checkpointType: 'production', observedAt: Math.floor(now().getTime() / 1000), ttlSeconds: attestationTtlSeconds,
     });
     return await signTaskStartAttestation(body, attestationSigner);
   }
@@ -371,14 +372,15 @@ export function createHyperVEnvironmentBrokerPrototype({
   }
 }
 
-// The seven fields of attestTaskStart and nothing else. Throws (the caller turns that into "no attestation") for anything that is not exactly that.
+// The eight fields of attestTaskStart and nothing else. Throws (the caller turns that into "no attestation") for anything that is not exactly that.
 function checkedTaskStart(input) {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('invalid_task_start_attestation_input');
   const keys = Object.keys(input).sort();
   if (keys.length !== TASK_START_FIELDS.length || keys.some((key, n) => key !== TASK_START_FIELDS[n])) throw new TypeError('invalid_task_start_attestation_input');
   const f = Object.fromEntries(TASK_START_FIELDS.map((key) => [key, input[key]]));
   const ok = COMPUTER_ID_RE.test(String(f.computerId)) && typeof f.computerId === 'string' && ['projectId', 'leaseId', 'operationId'].every((key) => typeof f[key] === 'string' && ID_RE.test(f[key]))
-    && [f.generation, f.leaseGeneration].every((n) => Number.isSafeInteger(n) && n >= 1) && isVmId(f.vmId);
+    && [f.generation, f.leaseGeneration].every((n) => Number.isSafeInteger(n) && n >= 1) && isVmId(f.vmId)
+    && typeof f.actionDigest === 'string' && DIGEST_KEY_RE.test(f.actionDigest);
   if (!ok) throw new TypeError('invalid_task_start_attestation_input');
   return Object.freeze(f);
 }

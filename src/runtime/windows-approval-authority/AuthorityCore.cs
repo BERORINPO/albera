@@ -18,7 +18,8 @@ internal readonly record struct Outcome(string? Code, PendingEntry? Entry);
 // leaseGeneration of THIS submit and to the VM and generation the action names (the `vmId` and `expectedGeneration` args: shown to the human, covered by the digest, filled in by the Control
 // Plane from its own inspect), and (4) has not expired, the clock being read after the signature check. The kinds are separate (own domain, own body keys), so neither is ever read as the other:
 //   environment.start  a NETWORK attestation (NetworkAttestation.cs) that says network "none";
-//   task.start         a TASK-START attestation (TaskStartAttestation.cs) that says network "none" AND a Production checkpoint was taken, and is also bound to this submit's operationId.
+//   task.start         a TASK-START attestation (TaskStartAttestation.cs) that says network "none" AND a Production checkpoint was taken, and is also bound to this submit's operationId and
+//                      to the action digest this Authority computed itself, so one statement backs exactly one action (not a second task under the same operationId, issue #133).
 // An action without a well-formed `vmId` arg is never attested. The Broker refuses to act on a VM whose own Hyper-V id differs from that arg, so an attestation for VM A cannot
 // start VM B. environment.create is not attested at all (no VM exists to observe before it): it always needs a person.
 // The receipt is v3 basis policy with the attestation's digest, and ends no later than the attestation does. Anything else (no key pinned, no attestation, a forged, stale, mismatched or
@@ -56,7 +57,7 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
         SubmitResult result = policy.With(current =>
         {
             if (!current.NeedsPerson(request.Dto.Action)) return store.Submit(request, digest, (entry, now) => SignByPolicy(entry, current.Hash(), now));
-            if (current.CanSkipWithAttestation(request.Dto.Action) && ProvenBy(request, attestation) is { } proven)
+            if (current.CanSkipWithAttestation(request.Dto.Action) && ProvenBy(request, attestation, digest) is { } proven)
                 return store.Submit(request, digest, (entry, now) => proven.ExpiresAt - now >= MinAttestedReceiptSeconds ? SignAttested(entry, current.Hash(), now, proven) : entry);
             return store.Submit(request, digest);
         });
@@ -72,13 +73,13 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
     private sealed record Proven(string Digest, long ExpiresAt);
 
     /// <summary>The digest and expiry of the attestation when it proves what this action needs for exactly this request; otherwise null (and a fixed-word audit line saying why, unless none was sent).</summary>
-    private Proven? ProvenBy(PendingRequest request, object? attestation)
+    private Proven? ProvenBy(PendingRequest request, object? attestation, string actionDigest)
     {
         if (attestation is null) return null;
         if (attestationKey is null) return Refused("no_key_pinned");
         if (request.Dto.Args.GetValueOrDefault("expectedGeneration") is not long generation || generation < 1) return Refused("generation_missing");
         if (request.Dto.Args.GetValueOrDefault("vmId") is not string vmId || !NetworkAttestation.IsVmId(vmId)) return Refused("vm_id_missing");
-        return request.Dto.Action == TaskStartAction ? ProvenTaskStart(request, attestation, vmId, generation) : ProvenNone(request, attestation, vmId, generation);
+        return request.Dto.Action == TaskStartAction ? ProvenTaskStart(request, attestation, vmId, generation, actionDigest) : ProvenNone(request, attestation, vmId, generation);
     }
 
     private const string TaskStartAction = "task.start";
@@ -92,9 +93,10 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
         return new Proven(verdict.Digest!, verdict.Value.ExpiresAt);
     }
 
-    private Proven? ProvenTaskStart(PendingRequest request, object attestation, string vmId, long generation)
+    private Proven? ProvenTaskStart(PendingRequest request, object attestation, string vmId, long generation, string actionDigest)
     {
-        TaskStartExpected expected = new(request.Dto.ComputerId, vmId, generation, request.Dto.ProjectId, request.LeaseId, request.LeaseGeneration, request.OperationId);
+        // actionDigest is the one this Authority computed itself from the DTO it would sign (Submit): one statement backs exactly one action (issue #133).
+        TaskStartExpected expected = new(request.Dto.ComputerId, vmId, generation, request.Dto.ProjectId, request.LeaseId, request.LeaseGeneration, request.OperationId, actionDigest);
         TaskStartVerdict verdict = TaskStartAttestation.Verify(attestation, clock, attestationKey!.Verify, expected);
         if (!verdict.Ok) return Refused(verdict.Field is null ? verdict.Code! : $"{verdict.Code}:{verdict.Field}");
         if (verdict.Value!.Network != TaskStartAttestation.None) return Refused($"network_{verdict.Value.Network}");
