@@ -10,7 +10,7 @@ using Albera.BrokerContract;
 internal static partial class Harness
 {
     private static readonly string[] Skippable = ["environment.inspect", "environment.stop", "workspace.inspect", "task.cancel"];
-    private static readonly string[] NeverSkipped = ["environment.create", "environment.start", "environment.destroy", "environment.retire", "environment.purge", "task.start", "synthetic.noop"];
+    private static readonly string[] NeverSkipped = ["environment.create", "environment.start", "environment.destroy", "environment.retire", "environment.purge", "environment.restore_checkpoint", "task.start", "synthetic.noop"];
 
     private static string PurposeOf(string action) => action is "task.start" or "task.cancel" or "workspace.inspect" ? "guest.command" : "broker.operation";
 
@@ -127,6 +127,35 @@ internal static partial class Harness
             string id = ApprovalIdOf(SubmitAction(fx, "environment.destroy", "destroy-2"));
             Assert(Code(fx.ApproveSigned(id)) == "ok", "approve");
             Assert(ReceiptOf(fx.Status(id)).Receipt is { } bytes && ReceiptV2.Parse(bytes).Ok && !ReceiptV3.Parse(bytes).Ok, "approved by a person: receipt v2");
+            string restoreId = ApprovalIdOf(SubmitAction(fx, "environment.restore_checkpoint", "restore-2"));
+            Assert(Code(fx.ApproveSigned(restoreId)) == "ok", "a person approves the restore");
+            Assert(ReceiptOf(fx.Status(restoreId)).Receipt is { } restoreBytes && ReceiptV2.Parse(restoreBytes).Ok && !ReceiptV3.Parse(restoreBytes).Ok, "environment.restore_checkpoint: only a person's approval gives a receipt (v2, never basis policy)");
+        });
+        Check("policy: the decision is an ALLOW-list: every known action outside the two contract lists needs a person under every tier and override, and environment.restore_checkpoint is one of them (issue #133)", () =>
+        {
+            string[] allowed = [.. ReceiptV3.PolicyBasisActions, .. ReceiptV3.AttestedPolicyBasisActions];
+            string[] known = [.. ActionDigest.Purposes.SelectMany(ActionDigest.ActionsFor).Distinct()];
+            string[] outside = [.. known.Where(a => !allowed.Contains(a))];
+            Assert(outside.Contains("environment.restore_checkpoint") && !allowed.Contains("environment.restore_checkpoint"), "the new action is outside both lists");
+            Assert(new[] { "environment.create", "environment.destroy", "environment.retire", "environment.purge", "synthetic.noop" }.All(a => outside.Contains(a)), "the actions that never skip a person are outside (start and task.start are attested, not outside)");
+            foreach (string json in new[] { PolicyJson(1, "careful"), PolicyJson(1, "standard"), PolicyJson(2, "standard", [.. outside]), PolicyJson(3, "careful", [.. outside]) })
+            {
+                TierPolicy policy = PolicyOf(json);
+                foreach (string action in outside)
+                    Assert(policy.NeedsPerson(action) && !policy.CanSkipWithAttestation(action) && !policy.SkippableActions().Contains(action), $"{action} needs a person under {json}");
+            }
+        });
+        Check("policy: no override and no tier can make environment.restore_checkpoint skip a person (undo throws a task's work away, issue #133); an override that names it is accepted and changes nothing", () =>
+        {
+            foreach (string json in new[] { PolicyJson(1, "careful"), PolicyJson(1, "standard"), PolicyJson(2, "standard", "environment.restore_checkpoint"), PolicyJson(3, "careful", "environment.restore_checkpoint"), PolicyJson(4, "standard", "environment.start", "task.start") })
+            {
+                TierPolicy policy = PolicyOf(json);
+                Assert(policy.NeedsPerson("environment.restore_checkpoint") && !policy.CanSkipWithAttestation("environment.restore_checkpoint"), $"needs a person under {json}");
+                Assert(!policy.SkippableActions().Contains("environment.restore_checkpoint"), $"never skippable under {json}");
+                Fixture fx = Under(json);
+                Assert(StateOf(SubmitAction(fx, "environment.restore_checkpoint", "r1")) == "pending", $"waits for a person under {json}");
+            }
+            Assert(!PolicyOf(PolicyJson(5, "standard", "environment.restore_checkpoint")).Loosens(PolicyOf(PolicyJson(4, "standard"))), "naming it in an override loosens nothing");
         });
         Check("policy: standard with overrides asks for exactly the overridden actions; every other skippable action is still signed at once", () =>
         {

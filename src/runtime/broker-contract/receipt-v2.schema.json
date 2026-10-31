@@ -101,6 +101,7 @@
         "environment.destroy",
         "environment.retire",
         "environment.purge",
+        "environment.restore_checkpoint",
         "synthetic.noop",
         "task.start",
         "task.cancel",

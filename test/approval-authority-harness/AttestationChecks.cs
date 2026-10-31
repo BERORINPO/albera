@@ -220,7 +220,7 @@ internal static partial class Harness
             {
                 Fixture fx = new(policy: PolicyStore.InMemory(PolicyOf(PolicyJson(1, tier))), attestation: key.Pinned());
                 int n = 0;
-                foreach (string action in new[] { "environment.create", "environment.destroy", "environment.retire", "environment.purge", "synthetic.noop" })
+                foreach (string action in new[] { "environment.create", "environment.destroy", "environment.retire", "environment.purge", "environment.restore_checkpoint", "synthetic.noop" })
                     Assert(IsPending(fx, fx.Submit(AttestedSubmit(envelope, action, op: $"x{n++}"))), $"{tier} {action}");
                 Assert(IsPending(fx, fx.Submit(SubmitJson(op: "noop-g", idem: "noop-g", action: "synthetic.noop", purpose: "guest.command", args: GoodArgs, extra: $",\"attestation\":{envelope}"))), $"{tier} guest synthetic.noop");
             }

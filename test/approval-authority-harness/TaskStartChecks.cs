@@ -273,7 +273,7 @@ internal static partial class Harness
             {
                 Fixture fx = new(policy: PolicyStore.InMemory(PolicyOf(PolicyJson(1, tier))), attestation: key.Pinned());
                 int n = 0;
-                foreach (string action in new[] { "environment.create", "environment.destroy", "environment.retire", "environment.purge", "environment.start", "synthetic.noop" })
+                foreach (string action in new[] { "environment.create", "environment.destroy", "environment.retire", "environment.purge", "environment.restore_checkpoint", "environment.start", "synthetic.noop" })
                     Assert(IsPending(fx, fx.Submit(AttestedSubmit(task, action, op: $"x{n++}"))), $"{tier} {action}");
                 Assert(IsPending(fx, fx.Submit(SubmitJson(op: "noop-g", idem: "noop-g", action: "synthetic.noop", purpose: "guest.command", args: TaskArgs, extra: $",\"attestation\":{task}"))), $"{tier} guest synthetic.noop");
                 Assert(IsPending(fx, fx.Submit(TaskSubmit(TaskEnvelope(TaskBody(operationId: "ts-t"), key).Json, op: "ts-t"))) == (tier == "careful"), $"{tier}: task.start is attested at standard only");

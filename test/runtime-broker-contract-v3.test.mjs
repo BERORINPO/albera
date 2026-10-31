@@ -98,10 +98,10 @@ test('policy basis: the contract caps what a policy can skip to reads and risk-r
   assert.deepEqual([...POLICY_BASIS_ACTIONS].sort(), ['environment.inspect', 'environment.stop', 'task.cancel', 'workspace.inspect']);
   assert.deepEqual([...ATTESTED_POLICY_BASIS_ACTIONS], ['environment.start', 'task.start'], 'create is never attested: no VM exists before it');
   for (const action of [...POLICY_BASIS_ACTIONS, ...ATTESTED_POLICY_BASIS_ACTIONS]) assert.ok(KNOWN_ACTIONS.has(action));
-  for (const never of ['environment.create', 'environment.start', 'environment.destroy', 'environment.retire', 'environment.purge', 'task.start', 'synthetic.noop']) {
+  for (const never of ['environment.create', 'environment.start', 'environment.destroy', 'environment.retire', 'environment.purge', 'environment.restore_checkpoint', 'task.start', 'synthetic.noop']) {
     assert.equal(POLICY_BASIS_ACTIONS.includes(never), false, never);
   }
-  for (const never of ['environment.create', 'environment.destroy', 'environment.retire', 'environment.purge', 'synthetic.noop', ...POLICY_BASIS_ACTIONS]) {
+  for (const never of ['environment.create', 'environment.destroy', 'environment.retire', 'environment.purge', 'environment.restore_checkpoint', 'synthetic.noop', ...POLICY_BASIS_ACTIONS]) {
     assert.equal(ATTESTED_POLICY_BASIS_ACTIONS.includes(never), false, `${never} needs no attestation or can never skip a person`);
     assert.equal(isPolicyBasisAction(never), POLICY_BASIS_ACTIONS.includes(never), never);
   }
@@ -160,7 +160,7 @@ test('attestationDigest: present exactly for basis policy on environment.start /
   for (const name of ['v3-attestation-digest-on-policy-task-start', 'v3-attested-task-start-vmId-arg-missing', 'v3-attested-task-start-vmId-arg-uppercase', 'v3-attested-task-start-vmId-arg-not-a-guid']) {
     assert.deepEqual(verdictFor(name), { ok: false, code: 'attestation', field: 'vmId' }, name);
   }
-  for (const name of ['v3-policy-basis-refused-for-environment-create', 'v3-attestation-digest-on-policy-environment-create', 'v3-attestation-digest-on-policy-environment-destroy', 'v3-attestation-digest-on-policy-environment-purge']) {
+  for (const name of ['v3-policy-basis-refused-for-environment-create', 'v3-attestation-digest-on-policy-environment-create', 'v3-attestation-digest-on-policy-environment-destroy', 'v3-attestation-digest-on-policy-environment-purge', 'v3-policy-basis-refused-for-environment-restore_checkpoint', 'v3-attestation-digest-on-policy-environment-restore_checkpoint']) {
     assert.deepEqual(verdictFor(name), { ok: false, code: 'basis_action', field: 'basis' }, `${name}: the action can never carry basis policy, whatever else the receipt says`);
   }
   for (const name of ['uppercase-hex', 'without-prefix', 'short', 'too-long', 'empty', 'number', 'true', 'v2-style-label']) {
@@ -247,4 +247,27 @@ test('the policy message is domain separated, bound to one Authority by kid and 
 test('arch: receipt-v3.mjs is pure like the rest of the contract folder (no clock, env, network or file access)', () => {
   const source = fs.readFileSync(path.join(contractDir, 'receipt-v3.mjs'), 'utf8').split('\n').filter((line) => !/^\s*\/\//.test(line)).join('\n');
   for (const re of [/\bDate\b/, /\bprocess\./, /\bfetch\(/, /node:/, /\brequire\(/, /\bperformance\./]) assert.ok(!re.test(source), `receipt-v3.mjs matches ${re}`);
+});
+
+test('environment.restore_checkpoint can NEVER carry basis policy, with or without an attestation digest, and no policy can make it skippable (issue #133: undo throws a task\'s work away, so a person always decides)', () => {
+  const NEW = 'environment.restore_checkpoint';
+  assert.ok(KNOWN_ACTIONS.has(NEW));
+  assert.equal(POLICY_BASIS_ACTIONS.includes(NEW), false);
+  assert.equal(ATTESTED_POLICY_BASIS_ACTIONS.includes(NEW), false, 'not even with an attestation');
+  assert.equal(isPolicyBasisAction(NEW), false);
+  const verdictFor = (name) => vectors.receiptVectors.find((v) => v.name === name).expected;
+  for (const name of ['v3-policy-basis-refused-for-environment-restore_checkpoint', 'v3-attestation-digest-on-policy-environment-restore_checkpoint']) {
+    assert.deepEqual(verdictFor(name), { ok: false, code: 'basis_action', field: 'basis' }, name);
+  }
+  // At every tier, with every override a policy file can carry, the action stays out of both skippable sets.
+  for (const tier of ['careful', 'standard']) {
+    for (const prompts of [[], [NEW], ['environment.start', 'task.start']]) {
+      assert.equal(skippableSet(tier, prompts).includes(NEW), false, `${tier} ${prompts.join(',')}`);
+    }
+  }
+  // An override that names it is a known action and is accepted, and it changes nothing about what may skip a person.
+  const vector = vectors.policyVectors.find((v) => v.name === 'standard-rev11-override-on-restore-checkpoint');
+  assert.deepEqual(referencePolicy(vector.json).prompts, [NEW]);
+  assert.deepEqual(vector.expected.noPrompt, ['environment.inspect', 'environment.stop', 'task.cancel', 'workspace.inspect']);
+  assert.deepEqual(vector.expected.attestedNoPrompt, ['environment.start', 'task.start']);
 });

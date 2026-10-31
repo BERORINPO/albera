@@ -179,3 +179,19 @@ test('retire and purge are new broker.operation actions with their own digests; 
     assert.deepEqual(verdict(swapped), { ok: false, code: 'binding', field: 'action' }, 'a receipt for one action never authorizes another');
   }
 });
+
+test('environment.restore_checkpoint is a new broker.operation action with its own digest; existing actions keep their meaning (issue #133)', () => {
+  const NEW = 'environment.restore_checkpoint';
+  assert.equal(ACTIONS_BY_PURPOSE['broker.operation'].filter((a) => a === NEW).length, 1);
+  assert.equal(ACTIONS_BY_PURPOSE['guest.command'].includes(NEW), false, 'it is a Broker operation on the VM, never a guest command');
+  assert.equal(schema.properties.action.enum.filter((a) => a === NEW).length, 1, 'the published schema lists it');
+  const digest = (name) => vectors.digestVectors.find((v) => v.name === name).expected.digest;
+  const others = ['retire-empty-args', 'purge-empty-args', 'destroy-empty-args', 'noop-empty-args'].map(digest);
+  assert.equal(new Set([digest('restore-checkpoint-empty-args'), ...others]).size, others.length + 1, 'its own digest, not the digest of any existing action');
+  const dto = { action: NEW, projectId: 'proj-alpha', computerId: 'pc-01', args: {} };
+  assert.equal(digest('restore-checkpoint-empty-args'), computeActionDigest('broker.operation', dto));
+  assert.throws(() => computeActionDigest('guest.command', dto), (e) => e.code === 'invalid_action' && e.field === 'action');
+  const verdict = (name) => vectors.receiptVectors.find((v) => v.name === name).expected;
+  assert.deepEqual(verdict('valid-restore-checkpoint-operation'), { ok: true }, 'a person-approved (v2, presence) receipt for it is valid');
+  assert.deepEqual(verdict('restore-checkpoint-receipt-for-destroy-action'), { ok: false, code: 'binding', field: 'action' }, 'its receipt never authorizes another action');
+});
