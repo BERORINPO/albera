@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createPrivateKey, createPublicKey, sign, verify } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,8 +35,23 @@ describe('lab inputs for receipt v2', () => {
     };
   };
 
-  it('carries exactly the authority and one never-sent receipt, and the CNG private blob is the same key as the pinned SPKI', () => {
-    assert.deepEqual(Object.keys(inputs).sort(), ['authority', 'r2']);
+  it('carries a version 2 journal fixture (issue #84) that the Broker\'s migration accepts: user_version 2, the exact claims CREATE text, one recorded operation', () => {
+    const { operationId, base64 } = inputs.fixtures.journalV2;
+    const file = path.join(temp, 'fixture-journal.sqlite');
+    writeFileSync(file, Buffer.from(base64, 'base64'));
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2);
+      assert.deepEqual(db.prepare("SELECT type, name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name").all().map((row) => ({ ...row })), [
+        { type: 'table', name: 'claims', sql: 'CREATE TABLE claims (operation_id TEXT PRIMARY KEY, receipt_id TEXT NOT NULL UNIQUE, approval_id TEXT NOT NULL UNIQUE, digest TEXT NOT NULL, lease_generation INTEGER NOT NULL, state TEXT NOT NULL, request_digest TEXT CHECK(request_digest IS NULL OR length(request_digest) = 64))' },
+      ], 'no other object, and the text src/runtime/windows-broker/Journal.cs compares against');
+      assert.deepEqual(db.prepare('SELECT operation_id, state, length(request_digest) AS digest_length FROM claims').all().map((row) => ({ ...row })), [{ operation_id: operationId, state: 'UNKNOWN', digest_length: 64 }]);
+    } finally { db.close(); }
+    assert.equal(operationId, 'lab84-v2-op');
+  });
+
+  it('carries exactly the fixtures, the authority and one never-sent receipt, and the CNG private blob is the same key as the pinned SPKI', () => {
+    assert.deepEqual(Object.keys(inputs).sort(), ['authority', 'fixtures', 'r2']);
     assert.deepEqual(Object.keys(inputs.authority).sort(), ['actionDigest', 'computerId', 'issuer', 'kid', 'leaseId', 'policyVersion', 'privateBlob', 'projectId', 'spki']);
     const blob = Buffer.from(inputs.authority.privateBlob, 'base64');
     assert.equal(blob.length, 104);
@@ -54,6 +70,19 @@ describe('lab inputs for receipt v2', () => {
     const receipt = JSON.parse(bytes);
     assert.equal(receipt.kid, inputs.authority.kid);
     assert.equal(validateReceiptV2(bytes, contextFor(bytes, { brokerEpoch: 1 })).ok, true, 'r2 names epoch 1 and a made-up challenge');
+  });
+
+  it('lab-guest.ps1 parses under Windows PowerShell 5.1 with no syntax error (the VM run is the lead\'s, so this is the only check of the script text here)', { skip: process.platform !== 'win32' && 'Windows PowerShell only' }, () => {
+    const script = path.join(temp, 'parse-check.ps1');
+    writeFileSync(script, [
+      'param([string]$File)',
+      '$errors = $null; $tokens = $null',
+      '[void][System.Management.Automation.Language.Parser]::ParseFile($File, [ref]$tokens, [ref]$errors)',
+      "if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }",
+      '[scriptblock]::Create((Get-Content -Raw $File)) | Out-Null',
+    ].join('\r\n'));
+    const guest = path.join(root, 'test', 'windows-service-lab', 'lab-guest.ps1');
+    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-File', guest], { stdio: 'pipe', timeout: 60_000, windowsHide: true });
   });
 
   it('the guest\'s signing functions run under Windows PowerShell 5.1: the receipt they build passes the contract and the signature verifies against the pinned SPKI', { skip: process.platform !== 'win32' && 'Windows PowerShell only' }, () => {
