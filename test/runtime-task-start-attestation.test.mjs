@@ -408,10 +408,12 @@ test('env-io.ps1 checkpoint op: the exact cmdlets and arguments it may use, a fi
   const body = functionBody('Invoke-Checkpoint');
   const lines = body.split('\n').map((l) => l.trim()).filter((l) => l !== '' && !l.startsWith('#'));
   // The only commands: our own helpers, and exactly three Hyper-V cmdlets with exactly these arguments (Set-VM twice: borrow ProductionOnly, then put the previous value back).
-  assert.ok(lines.includes('if ($previousType -ne \'ProductionOnly\') { Set-VM -VM $vm -CheckpointType ProductionOnly; $changedType = $true }'), 'Set-VM only ever sets ProductionOnly going in');
-  assert.ok(lines.includes('if ($changedType) { try { Set-VM -VM $vm -CheckpointType $previousType } catch { $restoreFailed = $true } }'), 'and puts back only the value it read, and only if it changed it');
-  assert.ok(lines.includes('$snapshots = @(Checkpoint-VM -VM $vm -SnapshotName $Req.checkpointName -Passthru)'), 'Checkpoint-VM with the validated name');
-  assert.ok(lines.includes('$after = Get-VM -Name $Req.vmName'), 'Get-VM re-reads the VM id');
+  assert.ok(lines.includes('if ($previousType -ne \'ProductionOnly\') { Set-VM -VM $vm -CheckpointType ProductionOnly -ErrorAction Stop; $changedType = $true }'), 'Set-VM only ever sets ProductionOnly going in');
+  assert.ok(lines.includes('if ($changedType) { try { Set-VM -VM $vm -CheckpointType $previousType -ErrorAction Stop } catch { $restoreFailed = $true } }'), 'and puts back only the value it read, and only if it changed it');
+  assert.ok(lines.includes('else { $snapshots = @(Checkpoint-VM -VM $vm -SnapshotName $Req.checkpointName -Passthru -ErrorAction Stop) }'), 'Checkpoint-VM with the validated name, only in the branch where the type was read back');
+  assert.ok(lines.includes('if ([string](Get-VM -Id $vm.Id -ErrorAction Stop).CheckpointType -ne \'ProductionOnly\') { $typeNotSet = $true }'), 'the type is read back, by VM id');
+  assert.ok(lines.includes('$after = Get-VM -Name $Req.vmName -ErrorAction Stop'), 'Get-VM re-reads the VM id');
+  for (const line of lines.filter((l) => /\b(?:Set-VM|Get-VM|Checkpoint-VM)\b/u.test(l))) assert.match(line, /-ErrorAction Stop/u, `every Hyper-V call fails loudly, even if the preference were not inherited: ${line}`);
   const cmdlets = [...body.slice(body.indexOf('\n')).matchAll(/\b([A-Z][a-z]+-[A-Za-z]+)\b/gu)].map((m) => m[1]); // the function's own header is not a command
   assert.deepEqual([...new Set(cmdlets)].sort(), ['Checkpoint-VM', 'Get-VM', 'Require-Vm', 'Set-VM']);
   assert.deepEqual(cmdlets.filter((c) => c === 'Set-VM' || c === 'Checkpoint-VM'), ['Set-VM', 'Checkpoint-VM', 'Set-VM'], 'borrow, checkpoint, put back');
@@ -438,12 +440,17 @@ test('env-io.ps1 checkpoint op leaves the VM\'s CheckpointType as it found it (#
   const at = (needle) => { const n = body.indexOf(needle); assert.ok(n >= 0, needle); return n; };
   assert.ok(at('$previousType = [string]$vm.CheckpointType') < at('Set-VM -VM $vm -CheckpointType ProductionOnly'), 'the previous value is read before anything is changed');
   assert.ok(at('$changedType = $false') < at('Set-VM -VM $vm -CheckpointType ProductionOnly'), 'nothing is put back unless this call changed it');
-  assert.match(body, /try \{\s+if \(\$previousType -ne 'ProductionOnly'\)[^\n]*\n\s+\$snapshots = @\(Checkpoint-VM[^\n]*\n\s+\} catch \{ Abort 'provider_unavailable' \}\s+finally \{\s+if \(\$changedType\) \{ try \{ Set-VM -VM \$vm -CheckpointType \$previousType \} catch \{ \$restoreFailed = \$true \} \}\s+\}/u,
+  assert.match(body, /try \{\s+if \(\$previousType -ne 'ProductionOnly'\)[^\n]*\n(?:\s+#[^\n]*\n)*\s+if \(\[string\]\(Get-VM[^\n]*\n\s+else \{ \$snapshots = @\(Checkpoint-VM[^\n]*\n\s+\} catch \{ Abort 'provider_unavailable' \}\s+finally \{\s+if \(\$changedType\) \{ try \{ Set-VM -VM \$vm -CheckpointType \$previousType -ErrorAction Stop \} catch \{ \$restoreFailed = \$true \} \}\s+\}/u,
     'the put-back is the finally of the very try that borrows and checkpoints, so it runs when the checkpoint fails too');
   assert.ok(at('finally') > at('Checkpoint-VM'), 'after the checkpoint');
   assert.ok(at('if ($restoreFailed) { Abort \'provider_state_unknown\' }') > at('finally'), 'a put-back that failed is judged right after it ...');
   assert.ok(at('if ($restoreFailed)') < at('$snapshots.Count -ne 1') && at('$snapshots.Count -ne 1') < at('$after = Get-VM'), '... before any success is reported');
   assert.equal((body.match(/\$restoreFailed = \$true/gu) ?? []).length, 1, 'only the put-back sets it');
+  // #133 review: the type is observed, not assumed. Read back after the borrow and before the checkpoint; if it is not ProductionOnly there is no checkpoint and no attestation.
+  assert.ok(at("(Get-VM -Id $vm.Id -ErrorAction Stop).CheckpointType -ne 'ProductionOnly'") > at('Set-VM -VM $vm -CheckpointType ProductionOnly') && at('(Get-VM -Id $vm.Id') < at('Checkpoint-VM'), 'read back between the borrow and the checkpoint');
+  assert.ok(at('$typeNotSet = $false') < at('try {'), 'starts false');
+  assert.equal((body.match(/\$typeNotSet = \$true/gu) ?? []).length, 1, 'only the read-back sets it');
+  assert.ok(at("if ($typeNotSet) { Abort 'provider_unavailable' }") > at('finally') && at('if ($typeNotSet)') < at('$snapshots.Count -ne 1'), 'a type that did not take is a failure, judged after the put-back and before any success');
   // The comment that explains what is NOT observed must stay with the op (a reader of the script must see it), and the script still never lists snapshots.
   assert.match(scriptText, /the checkpoint TYPE is not read back from the snapshot/u);
   assert.match(scriptText, /SnapshotType Standard for a ProductionOnly checkpoint/u);
