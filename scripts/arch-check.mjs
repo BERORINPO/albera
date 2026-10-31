@@ -56,6 +56,8 @@ const EXPECTED = {
   ],
   entry: ['server.mjs', 'config.mjs', 'messages.mjs', 'service.mjs', 'http.mjs', 'probe.mjs'],
     runtime: ['gateway.mjs', 'api.mjs', 'approval-broker.mjs', 'approval-host.mjs', 'audit-journal.mjs', 'journal-backup.mjs', 'entry.mjs', 'host.mjs', 'session-identity.mjs', 'supervisor.mjs', 'guardian.mjs', 'environment-provider.mjs', 'environment-host-broker.mjs', 'environment-control-plane.mjs', 'hyperv-environment-provider.mjs', 'environment-operations.mjs', 'computer-scheduler.mjs', 'mock-environment-provider.mjs', 'agent-harness-adapter.mjs', 'sqlite-operation-store.mjs', 'boundary-protocols.mjs', 'guest-event-intake.mjs', 'errors.mjs', 'desktop-control.mjs', 'hyperv-desktop-driver.mjs', 'mock-desktop-broker.mjs', 'hyperv-desktop-broker-prototype.mjs', 'hyperv-desktop/desktop-io.ps1', 'desktop-wall-host.mjs', 'computer-use-mapping.mjs', 'anthropic-computer-use-client.mjs', 'fake-computer-use-client.mjs', 'desktop-agent-loop.mjs', 'agent-status-board.mjs', 'agent-fleet.mjs', 'desktop-planner.mjs', 'anthropic-planner-client.mjs', 'fake-planner-client.mjs', 'planned-agent-loop.mjs', 'wall-ui/index.html', 'wall-ui/wall.mjs', 'wall-ui/wall.css', 'hyperv-environment-broker-prototype.mjs', 'hyperv-env/env-io.ps1', 'environment-retirement-journal.mjs',
+    // Broker network attestation (#115 step 2): the contract lives in broker-contract/, the Fake signer is test-only
+    'fake-attestation-signer.mjs',
     // control room (spec/room.md §3)
     'room-contract.mjs', 'room-host.mjs', 'room-demo.mjs', 'room-journal.mjs', 'room-figures.mjs', 'bero-director.mjs',
     'fake-guest-checker.mjs', 'hyperv-guest-check-prototype.mjs', 'hyperv-guest/check-io.ps1', 'workspace.mjs',
@@ -68,7 +70,7 @@ const EXPECTED = {
     // fence -> submit -> approve -> claim flow and its journal port (rule 5e; decision log 2026-10-30+approved-operation-flow)
     'approved-operation-flow.mjs', 'approved-operation-journal.mjs',
     // shared receipt v2 / action digest contract for the future Broker and Approval Authority (rule 9; spec/architecture.md decision log 2026-10-30+receipt-v2-contract)
-    ...['action-digest.mjs', 'receipt-v2.mjs', 'strict-json.mjs', 'receipt-v2.schema.json', 'test-vectors.json', 'ActionDigest.cs', 'ReceiptV2.cs', 'StrictJson.cs'].map((f) => `broker-contract/${f}`),
+    ...['action-digest.mjs', 'receipt-v2.mjs', 'strict-json.mjs', 'network-attestation.mjs', 'network-attestation-vectors.json', 'receipt-v2.schema.json', 'test-vectors.json', 'ActionDigest.cs', 'ReceiptV2.cs', 'StrictJson.cs'].map((f) => `broker-contract/${f}`),
     ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
       'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs'].map((f) => `room-ui/${f}`)],
   public: [
@@ -211,7 +213,8 @@ const providerContracts = [
   'src/runtime/bero-director.mjs',
   'src/runtime/fake-guest-checker.mjs',
   'src/runtime/workspace.mjs',
-  ...['action-digest', 'receipt-v2', 'strict-json'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
+  ...['action-digest', 'receipt-v2', 'strict-json', 'network-attestation'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
+  'src/runtime/fake-attestation-signer.mjs',
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:
 // the clients, the clock, the sleep and the storage are injected (and the flow must not name the Broker or the Authority: rules 8a / 10a).

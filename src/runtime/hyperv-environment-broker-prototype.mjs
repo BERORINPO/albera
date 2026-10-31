@@ -2,7 +2,7 @@
 // that ADR-002 requires. It is not imported from any entry point, API route or host composition.
 // Reaching Hyper-V needs membership in the local "Hyper-V Administrators" group.
 // It implements the fixed Broker methods HyperVEnvironmentProvider calls (createVm / inspectVm /
-// startVm / stopVm / removeVm, plus retireVm / purgeVm for #115 step 1): a VM is a differencing-disk clone of a golden image (ADR-004,
+// startVm / stopVm / removeVm, plus retireVm / purgeVm for #115 step 1 and attestNetwork for step 2): a VM is a differencing-disk clone of a golden image (ADR-004,
 // provisioning sequence 3). The golden image is named only by the host-registered ledger below;
 // no operation can supply a path. Transport: a fixed `pwsh -File <fixed path>` process; the request
 // travels as JSON on stdin. No command line is ever assembled from data.
@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateEnvironmentOperation } from './environment-provider.mjs';
 import { isVmId, purgeExpired } from './environment-retirement-journal.mjs';
+import { DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, classifyNetworkAdapters, createNetworkAttestation, signNetworkAttestation } from './broker-contract/network-attestation.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./hyperv-env/env-io.ps1', import.meta.url));
 const PWSH_ARGS = Object.freeze(['-NoProfile', '-NonInteractive', '-File', SCRIPT_PATH]);
@@ -31,11 +32,16 @@ const STOP_WAIT_FRACTION = 0.8;
 
 export function createHyperVEnvironmentBrokerPrototype({
   goldenImages, cloneRoot, pwsh = 'pwsh', timeoutMs = DEFAULT_TIMEOUT_MS,
-  hashFile = sha256OfFile, runPowerShell, now = () => new Date(), retirements,
+  hashFile = sha256OfFile, runPowerShell, now = () => new Date(), retirements, attestationSigner, attestationTtlSeconds = DEFAULT_TTL_SECONDS,
 } = {}) {
   // `retirements` is the Broker-owned retirement journal (environment-retirement-journal.mjs): host configuration, never operation input. Without it retire / purge are refused.
   if (retirements !== undefined && (retirements === null || typeof retirements.retire !== 'function' || typeof retirements.get !== 'function'
     || typeof retirements.remove !== 'function' || typeof retirements.expired !== 'function')) {
+    throw new TypeError('invalid_hyperv_environment_prototype_options');
+  }
+  // `attestationSigner` is the signer PORT ({ keyId, sign(bytes) }) for network attestations (#115 step 2): host configuration, never operation input. Without it attestNetwork is refused.
+  if ((attestationSigner !== undefined && (attestationSigner === null || typeof attestationSigner.sign !== 'function' || typeof attestationSigner.keyId !== 'string'))
+    || !Number.isSafeInteger(attestationTtlSeconds) || attestationTtlSeconds < 1 || attestationTtlSeconds > MAX_TTL_SECONDS) {
     throw new TypeError('invalid_hyperv_environment_prototype_options');
   }
   if (typeof pwsh !== 'string' || pwsh.length === 0 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1000
@@ -65,17 +71,18 @@ export function createHyperVEnvironmentBrokerPrototype({
     throw brokerError(safeCode(result?.code), result?.notApplied === true ? 'not_applied' : 'unknown');
   }
 
-  async function lookup(vmName) {
-    const result = await call({ method: 'inspect', vmName });
+  // `method` is 'inspect', or 'network' for the same fields plus the adapter facts, read in one call so the VM id and the adapters are one observation.
+  async function lookup(vmName, method = 'inspect') {
+    const result = await call({ method, vmName });
     if (result.exists !== true) return null;
     // vmId is the VM's own Hyper-V id (not editable, not copied by a restore); null when the script did not report a well-formed one.
     const vmId = typeof result.vmId === 'string' && isVmId(result.vmId.toLowerCase()) ? result.vmId.toLowerCase() : null;
-    return { state: mapState(result.state), meta: parseNotes(result.notes), vmId };
+    return { state: mapState(result.state), meta: parseNotes(result.notes), vmId, adapters: result.adapters };
   }
 
   // A VM we may act on: ours (Notes identity) and at the generation the caller expects.
-  async function managed(operation, vmName) {
-    const vm = await lookup(vmName);
+  async function managed(operation, vmName, method = 'inspect') {
+    const vm = await lookup(vmName, method);
     if (!vm) return null;
     if (!vm.meta || vm.meta.computerId !== operation.computerId) throw brokerError('invalid_provider_state', 'not_applied');
     if (vm.meta.generation !== operation.expectedGeneration) throw brokerError('stale_generation', 'not_applied');
@@ -123,7 +130,7 @@ export function createHyperVEnvironmentBrokerPrototype({
         // Idempotent re-create: identical identity returns the current state, anything else conflicts.
         const m = existing.meta;
         if (!m || m.computerId !== operation.computerId || m.imageDigest !== spec.imageDigest
-          || m.generation !== operation.expectedGeneration) throw brokerError('operation_conflict', 'not_applied');
+          || m.generation !== operation.expectedGeneration || (m.projectId !== null && m.projectId !== operation.projectId)) throw brokerError('operation_conflict', 'not_applied');
         return observed(operation.computerId, existing.state, operation.expectedGeneration);
       }
       await verifyGolden(golden.path, spec.imageDigest);
@@ -148,6 +155,33 @@ export function createHyperVEnvironmentBrokerPrototype({
       if (!vm) return observed(operation.computerId, record ? 'unknown' : 'missing', operation.expectedGeneration);
       if (!vm.meta || vm.meta.computerId !== operation.computerId) throw brokerError('invalid_provider_state', 'not_applied');
       return observed(operation.computerId, vm.state === 'off' && matchesRecord(record, vm) ? 'retired' : vm.state, vm.meta.generation);
+    },
+
+    /**
+     * Network attestation (#115 step 2, contract: broker-contract/network-attestation.mjs). Read-only: it reads the VM's adapters, classifies them itself (the operation takes no part),
+     * and signs the result through the signer port, bound to computerId, the VM's own id, generation, projectId, `leaseGeneration` and the operation's leaseId (both claims of the caller,
+     * checked by the verifier) and this Broker's clock. `input` is an inspect operation. Nothing consumes the result yet, and it is evidence at observedAt only: the consumer must re-check at execution time.
+     * The project comes from the VM's own Notes, which create wrote from the authorized create operation; the request's projectId is only compared with it. A VM whose Notes carry no
+     * projectId (created before this change) or another one is refused (`project_unknown` / `project_mismatch`, not applied): such a VM cannot be attested until it is re-created.
+     * A VM that does not exist, is not ours or is at another generation is refused (not applied); adapters that cannot be read are "unknown", not an error.
+     */
+    async attestNetwork(input, { leaseGeneration } = {}) {
+      const { operation, vmName } = checkedOperation(input, 'inspect');
+      if (!attestationSigner || !Number.isSafeInteger(leaseGeneration) || leaseGeneration < 1) throw brokerError('invalid_provider_state', 'not_applied');
+      const vm = await managed(operation, vmName, 'network');
+      if (!vm || !vm.vmId) throw brokerError('invalid_provider_state', 'not_applied');
+      if (vm.meta.projectId === null) throw brokerError('project_unknown', 'not_applied');
+      if (vm.meta.projectId !== operation.projectId) throw brokerError('project_mismatch', 'not_applied');
+      try {
+        const body = createNetworkAttestation({
+          network: classifyNetworkAdapters(vm.adapters), computerId: operation.computerId, vmId: vm.vmId, generation: vm.meta.generation, projectId: vm.meta.projectId,
+          leaseId: operation.leaseId, leaseGeneration, observedAt: Math.floor(now().getTime() / 1000), ttlSeconds: attestationTtlSeconds,
+        });
+        return await signNetworkAttestation(body, attestationSigner);
+      }
+      catch {
+        throw brokerError('provider_unavailable', 'not_applied'); // a signer failure or an unusable clock: nothing was changed
+      }
     },
 
     async startVm(input) { return changeState(input, 'start'); },
@@ -191,6 +225,7 @@ export function createHyperVEnvironmentBrokerPrototype({
       if (existing && (existing.projectId !== operation.projectId || existing.generation !== operation.expectedGeneration || !belongsToRecord(existing, vm))) {
         throw brokerError('operation_conflict', 'not_applied');
       }
+      if (vm.meta.projectId !== null && vm.meta.projectId !== operation.projectId) throw brokerError('operation_conflict', 'not_applied'); // the Notes' project is the VM's own
       const vmExpect = { ...expectOf(operation), vmId: vm.vmId, identity: 'vm' };
       if (vm.state !== 'off') await call({ method: 'stop', vmName, expect: vmExpect, waitSeconds });
       let record;
@@ -311,8 +346,9 @@ const belongsToRecord = (record, vm) => Boolean(record && vm && vm.meta && vm.vm
   && vm.meta.generation === record.generation && (vm.meta.projectId === null || vm.meta.projectId === record.projectId)
   && (vm.meta.incarnationId === null || vm.meta.incarnationId === record.incarnationId));
 
+// projectId is the Broker's own record of the project (written from the create operation that was authorized); network attestations read it from here, never from a request.
 const notesFor = (operation, imageDigest) => JSON.stringify({
-  albera: 1, computerId: operation.computerId, generation: operation.expectedGeneration, imageDigest,
+  albera: 1, computerId: operation.computerId, generation: operation.expectedGeneration, imageDigest, projectId: operation.projectId,
 });
 
 function parseNotes(text) {
@@ -326,12 +362,13 @@ function parseNotes(text) {
   }
   if (value === null || typeof value !== 'object' || value.albera !== 1 || typeof value.computerId !== 'string'
     || !Number.isSafeInteger(value.generation) || value.generation < 1 || typeof value.imageDigest !== 'string') return null;
-  // projectId and incarnationId exist only after a retire wrote them; a malformed value makes the whole Notes untrusted.
-  const hasIdentity = Object.hasOwn(value, 'incarnationId') || Object.hasOwn(value, 'projectId');
-  if (hasIdentity && (typeof value.projectId !== 'string' || !/^[a-f0-9]{32}$/.test(String(value.incarnationId)))) return null;
+  // projectId is written by create (VMs made before #115 step 2 have none); incarnationId only by a retire, together with the project. A malformed value makes the whole Notes untrusted.
+  const hasProject = Object.hasOwn(value, 'projectId');
+  const hasIncarnation = Object.hasOwn(value, 'incarnationId');
+  if ((hasProject && typeof value.projectId !== 'string') || (hasIncarnation && (!hasProject || !/^[a-f0-9]{32}$/.test(String(value.incarnationId))))) return null;
   return {
     computerId: value.computerId, generation: value.generation, imageDigest: value.imageDigest,
-    projectId: hasIdentity ? value.projectId : null, incarnationId: hasIdentity ? value.incarnationId : null,
+    projectId: hasProject ? value.projectId : null, incarnationId: hasIncarnation ? value.incarnationId : null,
   };
 }
 

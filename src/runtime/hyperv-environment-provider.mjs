@@ -4,6 +4,7 @@ import {
   validateEnvironmentOperation,
   validateObservedEnvironment,
 } from './environment-provider.mjs';
+import { readSignedNetworkAttestation } from './broker-contract/network-attestation.mjs';
 
 // Keep the privileged boundary narrow: no operation can name a command, script,
 // host path, PowerShell expression, or arbitrary Broker method.
@@ -18,10 +19,11 @@ const BROKER_METHODS = Object.freeze({
 const OPTIONAL_BROKER_METHODS = Object.freeze({
   retire: 'retireVm',
   purge: 'purgeVm',
+  attestNetwork: 'attestNetwork', // read-only, not an action: see attestNetwork() below
 });
 const SAFE_BROKER_ERROR_CODES = new Set([
   'authorization_denied', 'broker_timeout', 'environment_not_retired', 'environment_retired', 'generation_mismatch', 'invalid_provider_state',
-  'operation_conflict', 'operation_unknown', 'provider_outcome_unknown', 'provider_state_unknown',
+  'operation_conflict', 'operation_unknown', 'project_mismatch', 'project_unknown', 'provider_outcome_unknown', 'provider_state_unknown',
   'provider_timeout', 'provider_unavailable', 'stale_generation',
 ]);
 
@@ -60,7 +62,35 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
   retire(input) { return this.#invoke('retire', input); }
   purge(input) { return this.#invoke('purge', input); }
 
-  async #invoke(action, input) {
+  /**
+   * Read-only network attestation (#115 step 2). `input` is an inspect operation; `leaseGeneration` is the caller's claim, bound into the statement and checked by the verifier.
+   * The Broker's answer is untrusted boundary data: it must be a well-formed signed attestation bound to this very operation. The signature is NOT checked here (the verifier,
+   * which holds the key, does that, and re-checks the binding and the time); nothing here decides what "none" allows.
+   */
+  async attestNetwork(input, { leaseGeneration } = {}) {
+    const operation = this.#checkedOperation(input, 'inspect');
+    if (!Number.isSafeInteger(leaseGeneration) || leaseGeneration < 1) throw new EnvironmentProviderError('invalid_environment_operation', { outcome: 'not_applied' });
+    if (!this.#brokerMethods.attestNetwork) throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' });
+    let signed;
+    try {
+      signed = await this.#brokerMethods.attestNetwork(operation, { leaseGeneration });
+    }
+    catch (error) {
+      const codeCandidate = dataProperty(error, 'code');
+      throw new EnvironmentProviderError(typeof codeCandidate === 'string' && SAFE_BROKER_ERROR_CODES.has(codeCandidate) ? codeCandidate : 'provider_outcome_unknown', { outcome: 'not_applied' });
+    }
+    try {
+      const { attestation, digest, keyId, signatureBytes } = readSignedNetworkAttestation(signed);
+      if (attestation.computerId !== operation.computerId || attestation.projectId !== operation.projectId
+        || attestation.leaseId !== operation.leaseId || attestation.generation !== operation.expectedGeneration || attestation.leaseGeneration !== leaseGeneration) throw new TypeError('attestation_binding');
+      return Object.freeze({ attestation, digest, keyId, signature: signatureBytes.toString('base64url') });
+    }
+    catch {
+      throw new EnvironmentProviderError('invalid_provider_observation', { outcome: 'not_applied' });
+    }
+  }
+
+  #checkedOperation(input, action) {
     let operation;
     try {
       operation = validateEnvironmentOperation(input);
@@ -71,6 +101,11 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
     if (operation.providerId !== this.providerId || operation.action !== action) {
       throw new EnvironmentProviderError('provider_operation_mismatch', { outcome: 'not_applied' });
     }
+    return operation;
+  }
+
+  async #invoke(action, input) {
+    const operation = this.#checkedOperation(input, action);
 
     if (!this.#brokerMethods[action]) throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' });
 

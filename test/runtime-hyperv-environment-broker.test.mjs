@@ -117,10 +117,10 @@ async function rejects(promise, code, outcome) {
   });
 }
 
-test('the broker is a plain object with exactly the fixed methods as own data properties (five lifecycle, retire / purge, scheduled purge)', () => {
+test('the broker is a plain object with exactly the fixed methods as own data properties (five lifecycle, retire / purge, scheduled purge, attestNetwork)', () => {
   const { broker } = makeBroker();
   assert.equal(Object.getPrototypeOf(broker), Object.prototype);
-  assert.deepEqual(Object.keys(broker).sort(), ['createVm', 'inspectVm', 'purgeExpiredRetirements', 'purgeVm', 'removeVm', 'retireVm', 'startVm', 'stopVm']);
+  assert.deepEqual(Object.keys(broker).sort(), ['attestNetwork', 'createVm', 'inspectVm', 'purgeExpiredRetirements', 'purgeVm', 'removeVm', 'retireVm', 'startVm', 'stopVm']);
   for (const d of Object.values(Object.getOwnPropertyDescriptors(broker))) assert.equal(typeof d.value, 'function');
   assert.doesNotThrow(() => new HyperVEnvironmentProvider({ broker }));
 });
@@ -202,7 +202,7 @@ test('create sends fixed paths from trusted config, tags the VM, and ignores dis
   assert.equal(request.vcpu, 2);
   assert.equal(request.memoryMiB, 2048);
   assert.equal(Object.hasOwn(request, 'diskGiB'), false);
-  assert.deepEqual(JSON.parse(request.notes), { albera: 1, computerId: 'pc-01', generation: 3, imageDigest: DIGEST });
+  assert.deepEqual(JSON.parse(request.notes), { albera: 1, computerId: 'pc-01', generation: 3, imageDigest: DIGEST, projectId: 'proj-1' });
 });
 
 test('create is idempotent for the same identity and conflicts otherwise', async () => {

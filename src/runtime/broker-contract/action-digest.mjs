@@ -75,7 +75,8 @@ export function validateActionDto(purpose, dto) {
   return Object.freeze({ action: d.action, projectId: d.projectId, computerId: d.computerId, args: Object.freeze({ ...args }) });
 }
 
-function encString(s) {
+/** Canonical string / map encoders, shared with network-attestation.mjs (same encoding, own domain prefix). */
+export function encString(s) {
   const bytes = Buffer.from(s, 'utf8');
   const head = Buffer.alloc(5);
   head[0] = 0x53;
@@ -93,7 +94,7 @@ function encValue(v) {
   }
   return encMap(v);
 }
-function encMap(map) {
+export function encMap(map) {
   const names = Object.keys(map).sort(); // keys are ASCII, so UTF-16 order equals ordinal byte order
   const head = Buffer.alloc(5);
   head[0] = 0x4d;
