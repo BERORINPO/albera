@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { promisify } from 'node:util';
+import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
 import { createMemoryFlowJournal } from '../src/runtime/approved-operation-journal.mjs';
 import { createTaskStartAttestation, signTaskStartAttestation } from '../src/runtime/broker-contract/task-start-attestation.mjs';
 import { RUNTIME_HELP, parseRuntimeArgs } from '../src/runtime/entry.mjs';
@@ -413,10 +414,11 @@ test('attestation configured: the Hyper-V prototype gets the signer and clone ro
   assert.deepEqual(await approval.gate.startApproved({ vmId: 'albera-computer-a', task: 'open notepad' }), { ok: true });
   assert.deepEqual(world.calls.map(([name]) => name), ['fence', 'submit', 'status', 'claim'], 'the prototype is asked inside the flow, between fence and submit');
   assert.equal(world.asked.length, 1);
+  const submit = world.submissions[0];
   assert.deepEqual(world.asked[0], {
     computerId: 'computer-a', projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7, generation: 3, vmId: VM_A_GUID, operationId: 'room-start-1',
+    actionDigest: computeActionDigest('guest.command', submit.action), // #133: the attestation is bound to the action the Authority signs
   });
-  const submit = world.submissions[0];
   assert.deepEqual(submit.action.args, { task: 'open notepad', vmId: VM_A_GUID, expectedGeneration: 3 });
   assert.equal(submit.attestation.attestation.operationId, 'room-start-1');
   assert.equal(submit.attestation.attestation.checkpointType, 'production');
