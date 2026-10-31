@@ -71,8 +71,8 @@ The order is chosen so that no step can make a destructive action promptless on 
 
 1. `environment.retire` + the Broker's retirement journal and scheduled purge; `environment.purge` (always prompts). No tier yet: every action still prompts. **Done in PR #118 (2026-10-31)**, see "Step 1 as built" below.
 2. Network attestation from the Broker (adapters and switches, bound to incarnation and lease generation). **Done in PR #120 (2026-10-31)**, see "Step 2 as built".
-3. Receipt v3 with `basis`, the policy file, the Hello-signed policy change, the careful and standard tiers. `environment.destroy` keeps prompting. **3a done in PR #123 (2026-10-31)**: the tiers and the four actions that need no attestation; see "Step 3a as built". 3b (start / create with a `none` attestation) is next.
-4. Checkpoint before `task.start` (measure the cost in the VM lab first).
+3. Receipt v3 with `basis`, the policy file, the Hello-signed policy change, the careful and standard tiers. `environment.destroy` keeps prompting. **3a done in PR #123 (2026-10-31)**: the tiers and the four actions that need no attestation; see "Step 3a as built". **3b done in PR #126 (2026-10-31)**: `environment.start` with a `none` attestation; `environment.create` stays with a person (no VM exists to attest); see "Step 3b as built".
+4. Checkpoint before `task.start` (measure the cost in the VM lab first). **Measured 2026-10-31**, see "Step 4: checkpoint cost"; the Production checkpoint type is chosen (provisional).
 5. Scoped grants (delegated tier) and the approval-screen text for them.
 
 Each step ships on its own and keeps today's behaviour until the owner picks a tier.
@@ -107,6 +107,32 @@ Each step ships on its own and keeps today's behaviour until the owner picks a t
 - Built differently from the first design: `careful` prompts for inspects too (it is exactly today's behaviour); `synthetic.noop` is not in the no-prompt set (a Broker claim writes a journal row); a `rev` counter was added so a captured signature cannot be applied twice.
 - Known limits: the real .NET Broker still claims only `synthetic.noop`, so a policy receipt for a real action cannot be claimed end to end yet; the Broker cannot compare `policyVersion` for v3 (the Authority's signature covers it); rollback of the file by a trusted writer is out of scope. The real service writing and reloading `policy.json` under the SCM passed in the VM lab (PR #125); a correctly signed loosening can only be made with a real Hello key, so that direction is host-tested only.
 - Reviews: Codex, two rounds (2 HIGH: the policy was adopted at start without a signature, and a user could squat `policy.json` in an untrusted folder; both fixed). VM service lab on the branch: 25 pass, 0 fail, 1 blocked (as before).
+
+## Step 3b as built (PR #126)
+
+- At the standard tier the Authority signs `environment.start` without a person only when the submit carries a Broker network attestation that verifies against the key pinned in the Authority's config, says `none`, matches the submit's computer, project, lease, lease generation, generation and Hyper-V VM id, and has at least 10 s left. The receipt (v3, `basis: policy`) carries `attestationDigest` and ends no later than the attestation. Anything else queues for a person.
+- `environment.create` is not attested (no VM exists before it) and always needs a person. The policy hash domain moved to `albera.policy-hash.v2`, so a standard policy signed earlier has to be signed again with Hello.
+- Reviews: Codex (one HIGH: an attestation for one VM could start another VM with the same ids; fixed by binding the VM id), CISO (no CRITICAL or HIGH; the remaining MEDIUM and three LOWs are #128). VM service lab: 31 pass, 0 fail, 1 blocked (session 0, as before).
+- Known limits: the Windows Broker has no `attest` verb yet; the Broker does not re-observe the network at execution (#128).
+
+## Step 4: checkpoint cost (measured 2026-10-31)
+
+`test/windows-service-lab/checkpoint-cost.ps1` takes a checkpoint of a disposable offline 4 GB / 2 CPU VM, writes random data in the guest, restores, checks the data is gone, and discards the checkpoint. Raw numbers: `benchmarks/task-start-checkpoint-cost-2026-10-31.json` (one host, few samples).
+
+| | Production (VSS in the guest) | Standard (saves guest RAM) |
+|---|---|---|
+| Create | 16 to 51 s, typically about 20 s (4 runs) | 32 and 48 s; **1 of 3 failed** (timed out saving RAM) |
+| Restore until the guest answers | about 2.2 min (restores to Off, then boots) | 31 and 46 s (keeps running) |
+| Discard (merge) | about 29 s | about 14 s |
+| Extra host disk | the written data plus 0.1 to 0.2 GB | the same, plus about 1 GB of guest RAM |
+| Restore undid the write | yes, every time | yes, every time |
+
+Choice (provisional, decision log `2026-10-31+task-checkpoint`): **Production**. It never failed, and it does not copy the guest's memory (which may hold secrets) to the host disk. Plan for the build:
+
+- The Broker takes the checkpoint itself as the first part of `task.start`. If it fails, there is no checkpoint attestation, so the start needs a person (unknown means prompt).
+- One checkpoint per environment incarnation: the one before the latest task. Taking the next one discards the previous one (the merge runs in the background, about 30 s).
+- Cost: about 20 s more per task start. Undo costs about 2 minutes and is rare.
+- Undo (going back to the checkpoint) throws away the task's work, so it starts as an action that always needs a person; whether it may become promptless is decided later.
 
 ## Review of the first draft (Codex, 2026-10-31)
 
