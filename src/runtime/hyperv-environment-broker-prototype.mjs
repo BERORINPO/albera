@@ -2,7 +2,7 @@
 // that ADR-002 requires. It is not imported from any entry point, API route or host composition.
 // Reaching Hyper-V needs membership in the local "Hyper-V Administrators" group.
 // It implements the fixed Broker methods HyperVEnvironmentProvider calls (createVm / inspectVm /
-// startVm / stopVm / removeVm, plus retireVm / purgeVm for #115 step 1, attestNetwork for step 2 and attestTaskStart for step 4): a VM is a differencing-disk clone of a golden image (ADR-004,
+// startVm / stopVm / removeVm, plus retireVm / purgeVm for #115 step 1, attestNetwork for step 2, attestTaskStart for step 4 and restoreTaskCheckpoint for #133): a VM is a differencing-disk clone of a golden image (ADR-004,
 // provisioning sequence 3). The golden image is named only by the host-registered ledger below;
 // no operation can supply a path. Transport: a fixed `pwsh -File <fixed path>` process; the request
 // travels as JSON on stdin. No command line is ever assembled from data.
@@ -27,6 +27,8 @@ const DIGEST_KEY_RE = /^sha256:[a-f0-9]{64}$/;
 const ID_RE = new RegExp(ID_PATTERN);
 const CHECKPOINT_NAME_PREFIX = 'albera-task-'; // + 24 hex characters of SHA-256(operationId): env-io.ps1 accepts exactly this shape and nothing else
 const TASK_START_FIELDS = Object.freeze(['actionDigest', 'computerId', 'generation', 'leaseGeneration', 'leaseId', 'operationId', 'projectId', 'vmId']);
+// restoreTaskCheckpoint: the args of the approved environment.restore_checkpoint action (the VM and the generation the person saw), plus the computer and project of its DTO.
+const RESTORE_FIELDS = Object.freeze(['computerId', 'expectedGeneration', 'projectId', 'vmId']);
 const ISOLATED_NETWORK = 'isolated-none';
 const PS_CODES = new Set(['invalid_provider_state', 'operation_conflict', 'provider_timeout', 'provider_unavailable', 'provider_state_unknown']);
 const HYPERV_STATES = Object.freeze({ Running: 'running', Off: 'off', Paused: 'paused', Saved: 'paused' });
@@ -37,8 +39,11 @@ const STOP_WAIT_FRACTION = 0.8;
 
 export function createHyperVEnvironmentBrokerPrototype({
   goldenImages, cloneRoot, pwsh = 'pwsh', timeoutMs = DEFAULT_TIMEOUT_MS,
-  hashFile = sha256OfFile, runPowerShell, now = () => new Date(), retirements, attestationSigner, attestationTtlSeconds = DEFAULT_TTL_SECONDS,
+  hashFile = sha256OfFile, runPowerShell, now = () => new Date(), retirements, attestationSigner, attestationTtlSeconds = DEFAULT_TTL_SECONDS, onCheckpointPrune,
 } = {}) {
+  // `onCheckpointPrune` (optional) hears, after each task checkpoint, how many older ALBERA checkpoints were removed and how many could not be ({ computerId, pruned, pruneFailed }, numbers only).
+  // A prune failure never blocks the attestation (it only costs disk), so this is how it is not hidden. A throwing hook is ignored.
+  if (onCheckpointPrune !== undefined && typeof onCheckpointPrune !== 'function') throw new TypeError('invalid_hyperv_environment_prototype_options');
   // `retirements` is the Broker-owned retirement journal (environment-retirement-journal.mjs): host configuration, never operation input. Without it retire / purge are refused.
   if (retirements !== undefined && (retirements === null || typeof retirements.retire !== 'function' || typeof retirements.get !== 'function'
     || typeof retirements.remove !== 'function' || typeof retirements.expired !== 'function')) {
@@ -197,12 +202,45 @@ export function createHyperVEnvironmentBrokerPrototype({
      * echoed into the signed statement so that it backs that one action (issue #133); it never reaches PowerShell. Order: read the network (must be "none") -> checkpoint through the fixed
      * `checkpoint` op (the VM id is mandatory there) -> read the network again (still "none", same VM id) -> sign at this Broker's clock.
      * ANY failure (bad input, no signer, a retired or unknown VM, network present or unreadable, the checkpoint failing or reporting another VM, a signer failure) is `null`: no attestation, never
-     * an error to the caller, and a person is asked. A checkpoint taken before a later failure is left where it is (cleaning up older checkpoints is not done here).
+     * an error to the caller, and a person is asked. A checkpoint taken before a later failure is left where it is. The `checkpoint` op itself removes the OTHER ALBERA task checkpoints of the VM once the new one is verified (#133: one per environment incarnation); that prune never blocks the statement, see `onCheckpointPrune`.
      * @returns {Promise<object|null>} the signed envelope, or null
      */
     async attestTaskStart(input) {
       try { return await takeTaskStartCheckpoint(input); }
       catch { return null; }
+    },
+
+    /**
+     * Restore (undo, issue #133; the action is `environment.restore_checkpoint`, which a person ALWAYS approves: undo throws the task's work away, see approval-tiers.md "Step 4").
+     * The caller passes what the approved action names: the DTO's computerId and projectId and its args `vmId` and `expectedGeneration`. This prototype does not verify receipts (like every
+     * method here); whoever calls it must hold a person's approval for exactly that action. The VM must be ours, at that generation, in that project, with that VM id, and not retired.
+     * The fixed `restore` op then applies the NEWEST `albera-task-*` checkpoint of that VM (none = refused, nothing changed) and leaves the VM Off.
+     * GENERATION: for this Broker the generation of a VM is the `generation` in its own Notes (create writes it, every other method compares it with the operation's expectedGeneration).
+     * A restore reissues it: the Notes are rewritten with generation + 1, built here from the VM's own Notes (never from the restored ones, which date from the checkpoint), and the reply and
+     * a fresh read must both show it. From then on a start, stop, destroy, attestation or task-start statement made for the old generation is `stale_generation` / null (ADR-004 acceptance 5).
+     * NOT done here: the Control Plane's own record (`computers.generation` in the SQLite store) is moved by `revokeLease(..., { reason: 'restore' })`, and no journaled `restore` action
+     * connects the two yet; until it does, the store keeps the old number and every operation it sends is refused here (stale_generation), which fails closed.
+     * Returns the observed environment at the NEW generation. Errors are broker errors; after any `unknown` outcome the caller inspects before it retries.
+     */
+    async restoreTaskCheckpoint(input) {
+      const f = checkedRestore(input);
+      if (readRecord(f.computerId)) throw brokerError('environment_retired', 'not_applied');
+      const vmName = `${VM_PREFIX}${f.computerId}`;
+      const vm = await lookup(vmName);
+      if (!vm || !vm.vmId || !vm.meta || vm.meta.computerId !== f.computerId) throw brokerError('invalid_provider_state', 'not_applied');
+      if (vm.meta.generation !== f.expectedGeneration) throw brokerError('stale_generation', 'not_applied');
+      if (vm.vmId !== f.vmId) throw brokerError('operation_conflict', 'not_applied');
+      if (vm.meta.projectId === null) throw brokerError('project_unknown', 'not_applied');
+      if (vm.meta.projectId !== f.projectId) throw brokerError('project_mismatch', 'not_applied');
+      if (vm.meta.incarnationId !== null) throw brokerError('operation_conflict', 'not_applied'); // a retirement has begun on this VM
+      const next = f.expectedGeneration + 1;
+      const notes = JSON.stringify({ albera: 1, computerId: f.computerId, generation: next, imageDigest: vm.meta.imageDigest, projectId: vm.meta.projectId });
+      const result = await call({ method: 'restore', vmName, expect: { computerId: f.computerId, generation: f.expectedGeneration, vmId: f.vmId, identity: 'vm' }, notes });
+      const reportedId = typeof result.vmId === 'string' ? result.vmId.toLowerCase() : null;
+      if (reportedId !== f.vmId || result.generation !== next || mapState(result.state) !== 'off') throw brokerError('provider_state_unknown');
+      const after = await lookup(vmName); // the new generation is what the VM itself says now, not only what the script reported
+      if (!after || after.vmId !== f.vmId || after.state !== 'off' || after.meta?.computerId !== f.computerId || after.meta.generation !== next) throw brokerError('provider_state_unknown');
+      return observed(f.computerId, 'off', next);
     },
 
     async startVm(input) { return changeState(input, 'start'); },
@@ -342,6 +380,7 @@ export function createHyperVEnvironmentBrokerPrototype({
     if (!await taskStartObservation(f, vmName)) return null;
     const name = `${CHECKPOINT_NAME_PREFIX}${createHash('sha256').update(f.operationId, 'utf8').digest('hex').slice(0, 24)}`;
     const result = await call({ method: 'checkpoint', vmName, expect: { computerId: f.computerId, generation: f.generation, vmId: f.vmId, identity: 'vm' }, checkpointName: name });
+    reportPrune(f.computerId, result); // the older ALBERA checkpoints of this VM are gone (or the failure is on record) by the time the new one is reported; either way the statement below is about the NEW checkpoint
     const checkpointId = typeof result.checkpointId === 'string' ? result.checkpointId.toLowerCase() : null;
     if (!isVmId(checkpointId) || typeof result.vmId !== 'string' || result.vmId.toLowerCase() !== f.vmId) return null;
     if (!await taskStartObservation(f, vmName)) return null; // the network and the VM are checked again AFTER the checkpoint: the statement is made about what is true now
@@ -350,6 +389,13 @@ export function createHyperVEnvironmentBrokerPrototype({
       actionDigest: f.actionDigest, checkpointId, checkpointType: 'production', observedAt: Math.floor(now().getTime() / 1000), ttlSeconds: attestationTtlSeconds,
     });
     return await signTaskStartAttestation(body, attestationSigner);
+  }
+
+  function reportPrune(computerId, result) {
+    if (!onCheckpointPrune) return;
+    const count = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null); // null = the script did not say
+    try { onCheckpointPrune({ computerId, pruned: count(result.pruned), pruneFailed: count(result.pruneFailed) }); }
+    catch { /* a hook must not change the outcome */ }
   }
 
   async function changeState(input, method) {
@@ -382,6 +428,19 @@ function checkedTaskStart(input) {
     && [f.generation, f.leaseGeneration].every((n) => Number.isSafeInteger(n) && n >= 1) && isVmId(f.vmId)
     && typeof f.actionDigest === 'string' && DIGEST_KEY_RE.test(f.actionDigest);
   if (!ok) throw new TypeError('invalid_task_start_attestation_input');
+  return Object.freeze(f);
+}
+
+// The four fields of restoreTaskCheckpoint and nothing else. Unlike attestTaskStart this throws (a restore is never silently skipped): the caller learns the request was not applied.
+function checkedRestore(input) {
+  const refuse = () => brokerError('invalid_provider_state', 'not_applied');
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) throw refuse();
+  const keys = Object.keys(input).sort();
+  if (keys.length !== RESTORE_FIELDS.length || keys.some((key, n) => key !== RESTORE_FIELDS[n])) throw refuse();
+  const f = Object.fromEntries(RESTORE_FIELDS.map((key) => [key, input[key]]));
+  const ok = typeof f.computerId === 'string' && COMPUTER_ID_RE.test(f.computerId) && typeof f.projectId === 'string' && ID_RE.test(f.projectId)
+    && Number.isSafeInteger(f.expectedGeneration) && f.expectedGeneration >= 1 && f.expectedGeneration < Number.MAX_SAFE_INTEGER && isVmId(f.vmId);
+  if (!ok) throw refuse();
   return Object.freeze(f);
 }
 

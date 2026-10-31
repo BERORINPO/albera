@@ -413,9 +413,10 @@ test('env-io.ps1 checkpoint op: the exact cmdlets and arguments it may use, a fi
   assert.ok(lines.includes('else { $snapshots = @(Checkpoint-VM -VM $vm -SnapshotName $Req.checkpointName -Passthru -ErrorAction Stop) }'), 'Checkpoint-VM with the validated name, only in the branch where the type was read back');
   assert.ok(lines.includes('if ([string](Get-VM -Id $vm.Id -ErrorAction Stop).CheckpointType -ne \'ProductionOnly\') { $typeNotSet = $true }'), 'the type is read back, by VM id');
   assert.ok(lines.includes('$after = Get-VM -Name $Req.vmName -ErrorAction Stop'), 'Get-VM re-reads the VM id');
-  for (const line of lines.filter((l) => /\b(?:Set-VM|Get-VM|Checkpoint-VM)\b/u.test(l))) assert.match(line, /-ErrorAction Stop/u, `every Hyper-V call fails loudly, even if the preference were not inherited: ${line}`);
-  const cmdlets = [...body.slice(body.indexOf('\n')).matchAll(/\b([A-Z][a-z]+-[A-Za-z]+)\b/gu)].map((m) => m[1]); // the function's own header is not a command
-  assert.deepEqual([...new Set(cmdlets)].sort(), ['Checkpoint-VM', 'Get-VM', 'Require-Vm', 'Set-VM']);
+  for (const line of lines.filter((l) => /\b(?:Set-VM|Get-VM|Get-VMSnapshot|Checkpoint-VM|Remove-VMSnapshot)\b/u.test(l))) assert.match(line, /-ErrorAction Stop/u, `every Hyper-V call fails loudly, even if the preference were not inherited: ${line}`);
+  const cmdlets = [...lines.slice(1).join('\n').matchAll(/\b([A-Z][a-z]+-[A-Za-z]+)\b/gu)].map((m) => m[1]); // the function's own header is not a command, and comments (the restore op's comment block follows this function) are not code
+  // #133: after the checkpoint is verified the prune lists this VM's snapshots and removes some (Where-Object is the filter); nothing else was added.
+  assert.deepEqual([...new Set(cmdlets)].sort(), ['Checkpoint-VM', 'Get-VM', 'Get-VMSnapshot', 'Remove-VMSnapshot', 'Require-Vm', 'Set-VM', 'Where-Object']);
   assert.deepEqual(cmdlets.filter((c) => c === 'Set-VM' || c === 'Checkpoint-VM'), ['Set-VM', 'Checkpoint-VM', 'Set-VM'], 'borrow, checkpoint, put back');
   assert.equal(body.match(/Set-VM -VM \$vm -CheckpointType (\S+)/gu).length, 2);
   assert.equal(/Set-VM(?![^\n]*-CheckpointType)/u.test(body), false, 'Set-VM is never used for anything but CheckpointType');
@@ -425,9 +426,10 @@ test('env-io.ps1 checkpoint op: the exact cmdlets and arguments it may use, a fi
   assert.ok(body.indexOf("[string]$Req.expect.identity -ne 'vm' -or $null -eq $Req.expect.vmId") < body.indexOf('Require-Vm'), 'the VM id is mandatory, checked before the VM is looked up');
   assert.ok(body.indexOf('Require-Vm') < body.indexOf('Checkpoint-VM'), 'ownership (Notes + VM id) is checked before the checkpoint');
   assert.match(scriptText, /'checkpoint' \{ Invoke-Checkpoint \$req \}/u);
-  // Not one other checkpoint verb anywhere in the script: nothing is restored, removed, merged, exported or listed.
+  // Not one other checkpoint verb anywhere in the script: nothing is merged, exported, renamed or reconfigured. Since #133 exactly one Remove-VMSnapshot (the prune), one Restore-VMSnapshot (the restore op)
+  // and two Get-VMSnapshot (one in each) exist; test/runtime-task-checkpoint-lifecycle.test.mjs pins each of them.
   const anywhere = [...scriptText.matchAll(/\b([A-Z][a-z]+-VM[A-Za-z]*)\b/gu)].map((m) => m[1]);
-  for (const forbidden of ['Restore-VMSnapshot', 'Remove-VMSnapshot', 'Remove-VMCheckpoint', 'Get-VMSnapshot', 'Get-VMCheckpoint', 'Export-VMSnapshot', 'Rename-VMSnapshot', 'Set-VMSnapshot', 'Merge-VHD', 'Convert-VHD']) {
+  for (const forbidden of ['Remove-VMCheckpoint', 'Get-VMCheckpoint', 'Export-VMSnapshot', 'Rename-VMSnapshot', 'Set-VMSnapshot', 'Merge-VHD', 'Convert-VHD']) {
     assert.ok(!anywhere.includes(forbidden), forbidden);
   }
   assert.equal(anywhere.filter((c) => c === 'Checkpoint-VM').length, 1, 'Checkpoint-VM appears once, in Invoke-Checkpoint');
@@ -468,7 +470,7 @@ test('env-io.ps1 checkpoint op observes that the new checkpoint holds no saved m
 
 test('env-io.ps1 checkpoint op: the reply carries the lowercase snapshot id and the VM id, and every failure is a fixed code', () => {
   const body = functionBody('Invoke-Checkpoint');
-  assert.match(body, /@\{ ok = \$true; checkpointId = \$checkpointId; vmId = \(\[string\]\$after\.Id\)\.ToLowerInvariant\(\); state = \[string\]\$after\.State \}/u);
+  assert.match(body, /@\{ ok = \$true; checkpointId = \$checkpointId; vmId = \(\[string\]\$after\.Id\)\.ToLowerInvariant\(\); state = \[string\]\$after\.State; pruned = \$pruned; pruneFailed = \$pruneFailed \}/u);
   assert.match(body, /\$checkpointId -cnotmatch \$GuidRe/u);
   assert.match(body, /if \(\$snapshots\.Count -ne 1\) \{ Abort 'provider_state_unknown' \}/u, 'exactly one snapshot came back');
   assert.match(body, /catch \{ Abort 'provider_unavailable' \}/u);

@@ -5,6 +5,7 @@
 #   {"method":"create","vmName":..,"cloneRoot":..,"vmDir":..,"parentPath":..,"childPath":..,"vcpu":2,"memoryMiB":2048,"notes":".."}
 #   {"method":"network","vmName":"albera-x"}   (read-only: inspect's fields plus the adapter facts the Broker classifies, in one read; see broker-contract/network-attestation.mjs)
 #   {"method":"checkpoint","vmName":..,"expect":{"computerId":..,"generation":1,"vmId":..,"identity":"vm"},"checkpointName":"albera-task-<24 hex>"}   (task.start, #115 step 4; see Invoke-Checkpoint)
+#   {"method":"restore","vmName":..,"expect":{"computerId":..,"generation":1,"vmId":..,"identity":"vm"},"notes":".."}   (environment.restore_checkpoint, #133; "notes" = the VM's Notes at generation + 1; see Invoke-Restore)
 #   {"method":"start"|"stop"|"remove","vmName":..,"expect":{"computerId":..,"generation":1}, ...}   (start may add "requireNoAdapters":true, see Invoke-Start)
 #   {"method":"annotate","vmName":..,"expect":{..},"notes":"..","incarnationId":".."}   (rewrites Notes of an owned VM; used to write the retirement identity)
 # "expect" may also carry vmId (the Hyper-V VM GUID), projectId and incarnationId: when present they must equal the VM's own id / Notes values.
@@ -123,7 +124,11 @@ function Invoke-Create($Req) {
 # Task-start checkpoint (#115 step 4): ONE checkpoint of an owned VM, nothing else. The name is the fixed shape the Node side derives from a validated operationId (anything else is refused here
 # too), and the VM id is mandatory, so the checkpoint is taken of exactly the VM the approval names. ProductionOnly (not Production): a Production checkpoint falls back to a Standard one when the
 # guest cannot freeze its disk (VSS), and a Standard checkpoint saves the guest's memory, which may hold secrets, to the host disk; ProductionOnly fails instead, and a failure means no attestation.
-# No checkpoint is restored, removed or merged anywhere in this script. Reports the new snapshot's id (a lowercase GUID) and the VM's own id.
+# Reports the new snapshot's id (a lowercase GUID), the VM's own id and the prune result.
+# PRUNE (#133): once the new checkpoint is verified (one snapshot, State Off, GUID id), the OTHER checkpoints of this very VM whose name has the fixed shape are removed, so a VM keeps one ALBERA
+# task checkpoint (the one before the latest task) and the host disk does not grow with every task. Never any other checkpoint (a name outside the shape is not touched), never the new one (by id),
+# and never -IncludeAllChildSnapshots (the new checkpoint is a child of the old one). Each removal is a snapshot object read from this VM, not a name typed in. A prune that fails or cannot list
+# only costs disk, so it does NOT block the attestation (the checkpoint is real and verified): the reply says "pruned" (removed) and "pruneFailed" (a failed list counts 1, each failed removal 1).
 # WHAT IS OBSERVED (#133): the snapshot's SnapshotType is NOT used: the listing cmdlet reports SnapshotType Standard for a ProductionOnly checkpoint (real host, 2026-10-31), so
 # that field proves nothing. What is used is the VM state the snapshot recorded: with the VM running, a Standard checkpoint (guest memory saved) records snapshot State Saved and a
 # ProductionOnly one records State Off (real host, 2026-11-01, control taken on a disposable VM). So the op attests only when the new snapshot's State is Off, on top of setting
@@ -155,7 +160,48 @@ function Invoke-Checkpoint($Req) {
   $checkpointId = ([string]$snapshots[0].Id).ToLowerInvariant()
   if ($checkpointId -cnotmatch $GuidRe) { Abort 'provider_state_unknown' }
   $after = Get-VM -Name $Req.vmName -ErrorAction Stop
-  @{ ok = $true; checkpointId = $checkpointId; vmId = ([string]$after.Id).ToLowerInvariant(); state = [string]$after.State }
+  $pruned = 0
+  $pruneFailed = 0
+  try {
+    $old = @(Get-VMSnapshot -VM $after -ErrorAction Stop | Where-Object { $_.Name -cmatch $CheckpointNameRe -and ([string]$_.Id).ToLowerInvariant() -ne $checkpointId })
+    foreach ($s in $old) {
+      try { Remove-VMSnapshot -VMSnapshot $s -ErrorAction Stop; $pruned++ } catch { $pruneFailed++ }
+    }
+  } catch { $pruneFailed++ }
+  @{ ok = $true; checkpointId = $checkpointId; vmId = ([string]$after.Id).ToLowerInvariant(); state = [string]$after.State; pruned = $pruned; pruneFailed = $pruneFailed }
+}
+
+# Restore (#133, environment.restore_checkpoint; undo): put an owned VM back to its NEWEST ALBERA task checkpoint, the one taken before the latest task. The task's work is thrown away, which is
+# why this is a separate action that a person always approves (docs/architecture/approval-tiers.md); nothing here decides that. The VM id is mandatory (the checkpoint is restored on exactly the VM
+# the approval names), and only a checkpoint with the fixed name shape and a recorded State of Off (no saved memory, see the checkpoint op above) is ever applied, so the VM ends Off, never Running with
+# the old guest memory. No ALBERA checkpoint, or two newest with the same creation time, is a refusal and changes nothing. A restore brings back the Notes of the moment of the checkpoint, so the
+# NEW generation is written afterwards from the request ("notes": the Notes of the VM as it is NOW, with generation + 1, built by the Node side from the VM's own Notes), never derived from the
+# restored ones, and read back: until that is done the outcome is unknown. Old-generation operations, attestations and receipts then fail the generation check of the Broker (stale_generation).
+# Nothing outside the VM is undone (pushes, API calls): that is the caller's rule. No checkpoint is removed here, and the VM is not started.
+function Invoke-Restore($Req) {
+  if ([string]$Req.expect.identity -ne 'vm' -or $null -eq $Req.expect.vmId) { Reject 'invalid_provider_state' }
+  if ($Req.notes -isnot [string]) { Reject 'invalid_provider_state' }
+  $vm = Require-Vm $Req.vmName $Req.expect
+  try { $have = $vm.Notes | ConvertFrom-Json; $want = $Req.notes | ConvertFrom-Json } catch { Reject 'invalid_provider_state' }
+  if ($null -ne $have.incarnationId -or $null -ne $want.incarnationId) { Reject 'invalid_provider_state' }
+  if ($want.albera -ne 1 -or $want.computerId -cne [string]$Req.expect.computerId -or ($want.generation -isnot [int] -and $want.generation -isnot [long]) -or $want.generation -ne ([int]$Req.expect.generation + 1)) { Reject 'invalid_provider_state' }
+  if (@($want.PSObject.Properties).Count -ne 5) { Reject 'invalid_provider_state' }
+  if ([string]$want.imageDigest -cne [string]$have.imageDigest -or [string]$want.projectId -cne [string]$have.projectId) { Reject 'invalid_provider_state' }
+  try { $found = @(Get-VMSnapshot -VM $vm -ErrorAction Stop | Where-Object { $_.Name -cmatch $CheckpointNameRe } | Sort-Object -Property CreationTime -Descending) } catch { Reject 'provider_unavailable' }
+  if ($found.Count -eq 0) { Reject 'invalid_provider_state' }
+  if ($found.Count -gt 1 -and $found[0].CreationTime -eq $found[1].CreationTime) { Reject 'invalid_provider_state' }
+  $newest = $found[0]
+  if ([string]$newest.State -ne 'Off') { Reject 'invalid_provider_state' }
+  $checkpointId = ([string]$newest.Id).ToLowerInvariant()
+  if ($checkpointId -cnotmatch $GuidRe) { Reject 'invalid_provider_state' }
+  try {
+    Restore-VMSnapshot -VMSnapshot $newest -Confirm:$false -ErrorAction Stop
+    Set-VM -VM (Get-VM -Id $vm.Id -ErrorAction Stop) -Notes $Req.notes -ErrorAction Stop
+  } catch { Abort 'provider_state_unknown' }
+  $after = Get-VM -Id $vm.Id -ErrorAction Stop
+  try { $now = $after.Notes | ConvertFrom-Json } catch { Abort 'provider_state_unknown' }
+  if ([string]$after.State -ne 'Off' -or $now.generation -ne $want.generation -or $now.computerId -cne $want.computerId) { Abort 'provider_state_unknown' }
+  @{ ok = $true; checkpointId = $checkpointId; vmId = ([string]$after.Id).ToLowerInvariant(); state = [string]$after.State; generation = [int]$now.generation }
 }
 
 # "requireNoAdapters": true (an attested-policy start, #128): the VM must have no network adapter at all, read here, in the same call, right before it starts.
@@ -225,6 +271,7 @@ try {
     'network' { Invoke-Network $req }
     'create'  { Invoke-Create $req }
     'checkpoint' { Invoke-Checkpoint $req }
+    'restore' { Invoke-Restore $req }
     'start'   { Invoke-Start $req }
     'stop'    { Invoke-Stop $req }
     'annotate' { Invoke-Annotate $req }

@@ -3,8 +3,10 @@
 // Creates ONE disposable VM (albera-tsa<time>, 2 GiB, no network adapter) from the read-only golden image through the Hyper-V Broker prototype, starts it,
 // asks the prototype for a task-start attestation (network, ProductionOnly checkpoint, network again, sign), verifies it with the contract, lists the VM's
 // checkpoints, then destroys the VM. Signs with a key generated in memory for this run only. Prints no password and no host path beyond the VM name.
+// Issue #133 (prune): a SECOND attestation must leave exactly ONE albera-task checkpoint, the newer one (the older is removed by the checkpoint op once the new one is verified); the script
+// polls up to PRUNE_WAIT_MS for the merge-behind removal to show and prints the prune reports the prototype gave (pruned / pruneFailed, counts only).
 import { execFileSync } from 'node:child_process';
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { freemem } from 'node:os';
 import { createEcdsaAttestationSigner, createEcdsaAttestationVerifier } from '../src/runtime/ecdsa-attestation-signer.mjs';
 import { createHyperVEnvironmentBrokerPrototype } from '../src/runtime/hyperv-environment-broker-prototype.mjs';
@@ -19,6 +21,8 @@ const HOST_HEADROOM_GIB = 4; // a 4 GB VM on a full host froze the PC (2026-10-3
 const BOOT_WAIT_MS = 90_000;
 const ATTEMPTS = 6;
 const RETRY_MS = 30_000;
+const PRUNE_WAIT_MS = 120_000;
+const PRUNE_POLL_MS = 3_000;
 
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 const log = (line) => console.log(`[tsa] ${line}`);
@@ -37,11 +41,12 @@ const projectId = 'proj-tsa';
 const signer = createEcdsaAttestationSigner({ keyId: 'albera-lab-broker-tsa', privateKey: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey });
 const verifier = createEcdsaAttestationVerifier({ keyId: signer.keyId, publicKey: signer.publicKeySpki });
 
+const pruneReports = [];
 log('hashing the golden image (read only) ...');
 const digest = `sha256:${ps(`(Get-FileHash -Algorithm SHA256 -LiteralPath '${GOLDEN}').Hash`).toLowerCase()}`;
 const broker = createHyperVEnvironmentBrokerPrototype({
   goldenImages: { [digest]: { path: GOLDEN, os: 'windows', architecture: 'x64' } },
-  cloneRoot: CLONE_ROOT, pwsh, timeoutMs: 300_000, attestationSigner: signer,
+  cloneRoot: CLONE_ROOT, pwsh, timeoutMs: 300_000, attestationSigner: signer, onCheckpointPrune: (report) => pruneReports.push({ pruned: report.pruned, pruneFailed: report.pruneFailed }),
 });
 const op = (action, extra = {}) => ({
   operationId: `tsa-${action}`, idempotencyKey: `tsa-key-${action}`, subjectId: 'velo-lab', projectId, taskId: 'task-tsa', runId: 'run-tsa',
@@ -88,7 +93,15 @@ try {
     const snapshots = JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { [pscustomobject]@{ name = $_.Name; id = $_.Id.Guid; type = [string]$_.SnapshotType; state = [string]$_.State } }) | ConvertTo-Json -Compress -AsArray`));
     results.snapshots = snapshots.map((s) => ({ name: s.name, type: s.type, state: s.state, matchesAttestation: s.id.toLowerCase() === verified.checkpointId }));
     results.again = Boolean(await broker.attestTaskStart({ ...input, operationId: 'tsa-task-0002', actionDigest: computeActionDigest('guest.command', dtoOf('tsa task two')) })); // a second operation gets its own checkpoint
-    results.snapshotCount = Number(ps(`@(Get-VMSnapshot -VMName '${vmName}').Count`));
+    // Issue #133: the second checkpoint op removed the first one. The removal starts a background merge, so poll until exactly one remains (or the wait is over).
+    const listSnapshots = () => JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { [pscustomobject]@{ name = $_.Name; id = $_.Id.Guid } }) | ConvertTo-Json -Compress -AsArray`));
+    const pruneDeadline = Date.now() + PRUNE_WAIT_MS;
+    let remaining = listSnapshots();
+    while (remaining.length !== 1 && Date.now() < pruneDeadline) { await sleep(PRUNE_POLL_MS); remaining = listSnapshots(); }
+    results.snapshotCount = remaining.length;
+    const secondName = `albera-task-${createHash('sha256').update('tsa-task-0002', 'utf8').digest('hex').slice(0, 24)}`;
+    results.onlyTheNewerRemains = remaining.length === 1 && remaining[0].name === secondName && remaining[0].name !== results.snapshots[0].name;
+    results.pruneReports = pruneReports;
     results.checkpointTypeBefore = typeBefore;
     results.checkpointTypeRestored = ps(`(Get-VM -Name '${vmName}').CheckpointType`) === typeBefore;
     // Issue #133 (b), INFORMATIONAL ONLY (the verdict uses the snapshot State Off, see env-io.ps1): is there a read-only property that tells a production checkpoint from a standard one? SnapshotType is known not to (Standard for ProductionOnly).
@@ -115,7 +128,8 @@ finally {
   results.goldenReadOnly = ps(`(Get-Item -LiteralPath '${GOLDEN}').IsReadOnly`) === 'True';
   console.log(JSON.stringify(results));
 }
-const ok = results.verified && results.boundToTheAction && results.provesCheckpointedNoNetwork && results.again && results.checkpointTypeRestored === true && results.snapshotCount === 2 && results.vmDeleted && results.goldenReadOnly
+const ok = results.verified && results.boundToTheAction && results.provesCheckpointedNoNetwork && results.again && results.checkpointTypeRestored === true && results.snapshotCount === 1 && results.onlyTheNewerRemains
+  && results.pruneReports.length >= 2 && results.pruneReports.at(-1).pruned === 1 && results.pruneReports.every((r) => r.pruneFailed === 0) && results.vmDeleted && results.goldenReadOnly
   && results.snapshots.length === 1 && results.snapshots[0].matchesAttestation && results.snapshots[0].state === 'Off' && /^albera-task-[0-9a-f]{24}$/.test(results.snapshots[0].name);
 console.log(ok ? 'TSA: PASS' : 'TSA: FAIL');
 process.exit(ok ? 0 : 1);
