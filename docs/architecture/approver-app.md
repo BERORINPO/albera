@@ -90,6 +90,11 @@ Every digest input is shown (purpose, action, projectId, computerId, every arg i
 | 69 | no usable Windows Hello key (Hello not supported / set up, key not enrolled): nothing was sent, the request stays pending. The message adds a `hint:` line (run `enroll`) | `presence_signer_unavailable` (approve, `enroll --check`); `hello_unavailable`, `hello_cancelled` (enroll, `enroll --check`); `not_enrolled` (`enroll --check` with no key; unlike `enroll --show`, which is 65), `hello_no_proof` (`enroll --check`: Hello did not verify you) |
 | 70 | internal error; also `enroll --check` when Hello signed but the signature does not verify with the enrolled public key (the key and its own signature disagree, which a healthy key never does; not a local refusal, so not 65) | `internal`, `self_check_failed` |
 
+### Tier policy (step 3a of #115)
+
+- `policy [show]` prints the Authority's policy and its hash (the app recomputes the hash and refuses a reply that disagrees, or one without `kid` / `audience`).
+- `policy set <careful|standard> [--prompt <action>]...` sends a complete new policy with `rev + 1`. It prints which actions "will no longer ask you" and "will start asking you". A change that lets more actions skip a person needs a console, a typed `yes` and one Windows Hello signature over `UTF8("albera.policy.v1") 0x00 kid 0x00 audience 0x00 <hash>`; a change that only adds prompts is sent as it is.
+
 ## Server identity (before the first write)
 
 Same order and checks as `windows-broker-pipe-client` (copied; that project is not referenced): open with SQOS **identification** (the server learns who we are but cannot act as us) and specific rights `0x00120083` (never `GENERIC_WRITE`) -> on the connected handle read the pipe **owner SID**, the **server PID** and (service mode) the **session id** -> only then write the frame. Production expects the owner `NT SERVICE\AlberaApprovalAuthority`, the PID the SCM reports as RUNNING for service `AlberaApprovalAuthority`, and session 0. Any failed check is a pre-send code (66); a server that squats the pipe name receives 0 bytes. The expected pipe root, service name and owner are constants of the shipped build. The server image hash is not pinned (the Node client can; the approver has no place to get the hash from).

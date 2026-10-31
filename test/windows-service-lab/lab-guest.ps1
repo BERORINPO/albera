@@ -10,6 +10,9 @@
 # below has run in the VM. Expect first-run fixes; the C# tools, config validation and the serve loop are host-tested (npm test).
 # This revision also adds the issue #84 checks m1 to m4 (journal parity with the Node contract, under the real service identity): generation advance and
 # refusal, migration of a version 2 journal, a side-effect-free inspect, and a restore replay. NOT executed in the VM yet: expect first-run fixes.
+# This revision also adds the issue #115 step 3a checks p1 to p6 (the Authority's tier policy file, policy.json): no file starts as careful, an untrusted config folder is refused (73),
+# an unsigned standard file is refused (79), the running service writes the file itself through policy_set and a restart reads it back. NOT executed in the VM yet: expect first-run fixes.
+# The Authority now has its own config folder ($LabRoot\authority) that its service SID may write (it writes policy.json there); the k_* checks use it too.
 # Explicit exclusion: a CLOCK ROLLBACK is host-tested only (test/runtime-windows-broker-receipt-v2.test.mjs). The offset is the test seam
 # ALBERA_BROKER_TEST_CLOCK_OFFSET, compiled out of the published Broker the lab runs, and moving the guest clock backwards would break every receipt window.
 # The shim still hosts the Control Plane and the third account, and the Broker service object briefly (check d2, which needs a RUNNING
@@ -23,7 +26,7 @@ $ErrorActionPreference = 'Stop'
 $B = 'AlberaHostBroker'; $C = 'AlberaControlPlane'; $O = 'AlberaLabOther'; $All = @($B, $C, $O)
 # The Approval Authority service and its lab signing keys (checks k_*, at the end of the run). Kept apart from $All: $All is what the Broker checks create and use.
 $AuthSvc = 'AlberaApprovalAuthority'; $Everything = @($B, $C, $O, $AuthSvc)
-$AuthKeyNames = @('AlberaLabAuthGood', 'AlberaLabAuthExportable', 'AlberaLabAuthBroadAce')
+$AuthKeyNames = @('AlberaLabAuthGood', 'AlberaLabAuthExportable', 'AlberaLabAuthBroadAce', 'AlberaLabAuthPolicy')
 $AuthKeyTool = "$LabRoot\tools\new-authority-key.ps1"
 $Pipe = 'ALBERA_Lab23_HostBroker'
 $Shim = "$LabRoot\bin\shim\albera-lab-service-shim.exe"
@@ -614,12 +617,16 @@ Stop-LabService $B
 # NOT executed in the VM yet: expect first-run fixes. The guard's decision logic and the key script are host-tested (npm test).
 $SidAuth = $null
 $AuthExe = "$LabRoot\bin\authority\albera-approval-authority.exe"
-$AuthConfig = "$LabRoot\config\$AuthSvc.service.json"
+# The Authority has a config folder of its own: its service SID may write there, because policy.json lives next to the config and the Authority writes it. The Broker keeps $LabRoot\config.
+$AuthDir = "$LabRoot\authority"
+$AuthConfig = "$AuthDir\$AuthSvc.service.json"
+$AuthPolicyFile = "$AuthDir\policy.json"
+$AuthPipeRoot = 'ALBERA\Lab23Authority'
 # A throw-away RSA-2048 PUBLIC key (SPKI): the Authority config needs one pinned approver key; no private half exists, and no check here asks for an approval.
 $AuthApproverKey = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3XSX1Rx6n1/sVaG+opeyv2Qj/+8woifjIQgxqheuZ1LtyB/JUeDgkP6wIc6YSAQzMKbdwZ88ipVJidmpixqr0P4tcE3Ud6VqerYfHnrVlqGKHojUU0r2kmtKib9f3bT0+ljHa54Dux9jcGSncwXpXcRrOkNFRFrWuS99+yXpFWdgYeawOK9SegknG1J4Rw7fjPZurkVWYYLl17T10PSIg0TGY0eJRgRXVw7PQhsLRh4u3ErDSd4dkE4j1aUR0jCGovRZJrrAMib7P1+GPRUOL6bviCkYY9Q2yOIP+OKWevFw80WXdYktQv/3xeloBWYctgzU6aS7J+7logyEYr0zWwIDAQAB'
 function Write-AuthorityConfig([string]$keyName) {
   $cfg = [ordered]@{
-    pipeRoot = 'ALBERA\Lab23Authority'; controlPlaneSid = $SidC; approverSid = (Get-Sid 'Administrator'); signingKeyName = $keyName; signingKeyProvider = 'software'
+    pipeRoot = $AuthPipeRoot; controlPlaneSid = $SidC; approverSid = (Get-Sid 'Administrator'); signingKeyName = $keyName; signingKeyProvider = 'software'
     kid = 'lab-authority-key-1'; approverKeyId = 'lab-approver-1'; approverPublicKey = $AuthApproverKey; audience = 'albera-host-broker'; policyVersion = $Authority.policyVersion
   }
   ($cfg | ConvertTo-Json -Compress) | Set-Content -Encoding Ascii -Path $AuthConfig
@@ -650,8 +657,10 @@ if ($LASTEXITCODE -ne 0) { throw "sc create $AuthSvc failed ($LASTEXITCODE)" }
 if ($LASTEXITCODE -ne 0) { throw "sc privs $AuthSvc failed ($LASTEXITCODE)" }
 $SidAuth = Get-Sid "NT SERVICE\$AuthSvc"
 & icacls.exe "$LabRoot\bin" /grant "*${SidAuth}:(OI)(CI)RX" | Out-Null      # inherited by bin\authority; the Authority only reads its own files
-& icacls.exe "$LabRoot\config" /grant "*${SidAuth}:(OI)(CI)RX" | Out-Null   # it reads the config (owned and writable only by Administrators / SYSTEM: its own guard checks that)
 if ($LASTEXITCODE -ne 0) { throw "icacls for $AuthSvc failed ($LASTEXITCODE)" }
+# SYSTEM and Administrators full, the Authority's service SID Modify (it reads the config and writes policy.json and its temp file here), nobody else, inheritance removed. The Authority's own
+# guard accepts exactly this (owner and writers limited to SYSTEM, Administrators and the service SID), so the config file this script writes here is trusted too.
+Set-LabAcl $AuthDir @("*${SidAuth}:(OI)(CI)M")
 Set-LabAcl "$LabRoot\tools" @()
 
 Step 'k_good_key_starts' 'Authority with a non-exportable machine key whose DACL names only its service SID, SYSTEM and Administrators: starts, creates both pipes, reports RUNNING' {
@@ -664,6 +673,210 @@ Step 'k_good_key_starts' 'Authority with a non-exportable machine key whose DACL
 Test-AuthorityRefused 'Authority refuses an EXPORTABLE machine key (exit 78, before any pipe exists)' 'k_exportable_key_refused' 'exportable' $AuthKeyNames[1] 78
 Test-AuthorityRefused 'Authority refuses a non-exportable machine key whose DACL also grants Everyone (exit 78, before any pipe exists)' 'k_broad_ace_refused' 'broad_ace' $AuthKeyNames[2] 78
 Test-AuthorityRefused 'Authority with no such key still ends with 77 (key unavailable), not 78' 'k_missing_key_77' '' 'AlberaLabAuthMissing' 77
+
+# ---- Approval Authority tier policy file (docs/architecture/approval-tiers.md, PolicyStore.cs; issue #115 step 3a; exit 79).
+# policy.json sits next to the Authority's config file in $AuthDir. No file = careful and the service starts. A file that is not exactly what the Authority wrote or a person signed ends in
+# exit 79. A config FOLDER that anyone else can write ends in exit 73 (decided at the config load, before the policy is looked at). The Authority writes the file itself when the approver
+# pipe sends it a `policy_set` change, and a change that only adds questions needs NO signature, so this lab needs no Hello key, no test seam and no private half of the approver key (the
+# config pins a throw-away public key, see $AuthApproverKey): careful rev 0 -> careful rev 1 with a prompt override is such a change, and it is the one p4 sends. The other direction cannot
+# be exercised here: a change that lets an action skip a person (any `standard` policy) needs a real Windows Hello signature over PolicyChange.Message, which a VM has none of. p6 checks
+# that the running service refuses it, and p3 that an unsigned standard FILE is refused at start; a correctly signed standard policy is host-tested only (npm test).
+# The lab talks to the approver pipe as the interactive Administrator (the config's approverSid) with a small framed-JSON client (the wire of PipeChannel.cs, without its server checks).
+# NOT executed in the VM yet: expect first-run fixes. The client was run once on the host against a pipe with the Authority's approver ACE (0x00120083).
+$PolicyOverrideAction = 'task.start'
+$PolicyKeyName = $AuthKeyNames[3]
+$WriteRightsMask = 0x500D0046   # WriteData | AppendData | DeleteChild | Delete | WriteDac | WriteOwner | GenericAll | GenericWrite (ServicePathGuard.cs)
+
+function Hide-Sids([string]$text) { $text -replace 'S-1-5-21(-[0-9]+)+', 'S-1-5-21-<redacted>' }   # no machine-specific account SID in committed evidence
+function Get-SidLabel([string]$sid) {
+  if ($sid -eq $SidAuth) { return 'service(AlberaApprovalAuthority)' }
+  switch ($sid) {
+    'S-1-5-18' { 'SYSTEM' } 'S-1-5-32-544' { 'Administrators' } 'S-1-5-32-545' { 'Users' } 'S-1-3-0' { 'CREATOR OWNER' } 'S-1-1-0' { 'Everyone' }
+    default { Hide-Sids $sid }
+  }
+}
+# Owner and allow-ACEs of a file or folder as text, and whether the Authority's guard would accept it (owner and every ACE with a write-ish right limited to SYSTEM, Administrators,
+# CREATOR OWNER and the service SID; ServicePathGuard.IsTrustedDescriptor). That decision is a mirror for the evidence: the authoritative test is the next service start.
+function Get-AclReport([string]$path) {
+  $acl = Get-Acl -LiteralPath $path
+  $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-3-0', $SidAuth)
+  $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+  $ok = $trusted -contains $owner
+  $lines = @()
+  foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+    if ($rule.AccessControlType -ne 'Allow') { continue }
+    $sid = $rule.IdentityReference.Value
+    $rights = [int]$rule.FileSystemRights
+    if ((($rights -band $WriteRightsMask) -ne 0) -and ($trusted -notcontains $sid)) { $ok = $false }
+    $lines += ('{0}:0x{1:x}{2}' -f (Get-SidLabel $sid), $rights, $(if ($rule.IsInherited) { ' (inherited)' } else { '' }))
+  }
+  @{ Trusted = $ok; Text = ('{0}: owner={1}; allow: {2}; guard mirror trusted={3}' -f (Split-Path -Leaf $path), (Get-SidLabel $owner), ($lines -join ', '), $ok) }
+}
+# "sha256:" + hex of SHA-256 over  albera.policy-hash.v1 NUL rev NUL tier { NUL action }  (TierPolicy.Hash; $prompts must already be sorted, ordinal). Computed here, never read from the service.
+function Get-PolicyHash([long]$rev, [string]$tier, [string[]]$prompts) {
+  $nul = [string][char]0
+  $text = 'albera.policy-hash.v1' + $nul + $rev + $nul + $tier
+  foreach ($p in $prompts) { $text += $nul + $p }
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($text)); $sha.Dispose()
+  'sha256:' + (($hash | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+function Read-PipeExactly($stream, [byte[]]$buffer) {
+  $used = 0
+  while ($used -lt $buffer.Length) {
+    $n = $stream.Read($buffer, $used, $buffer.Length - $used)
+    if ($n -le 0) { return $false }
+    $used += $n
+  }
+  $true
+}
+# One request on the approver pipe: open with specific rights (the pipe's ACE for the approver is 0x00120083; GENERIC_WRITE would ask for FILE_CREATE_PIPE_INSTANCE and be denied) and
+# identification-level impersonation, write one frame (4-byte little-endian length, UTF-8 JSON), read one frame, return the parsed reply. One request, one reply, then the connection ends.
+function Invoke-AuthorityApprover([string]$requestJson) {
+  $rights = [System.IO.Pipes.PipeAccessRights]([System.IO.Pipes.PipeAccessRights]::ReadData -bor [System.IO.Pipes.PipeAccessRights]::WriteData -bor [System.IO.Pipes.PipeAccessRights]::Synchronize)
+  $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', "$AuthPipeRoot\approver\v1", $rights, [System.IO.Pipes.PipeOptions]::None, [System.Security.Principal.TokenImpersonationLevel]::Identification, [System.IO.HandleInheritability]::None)
+  try {
+    $pipe.Connect(10000)
+    $body = [System.Text.Encoding]::UTF8.GetBytes($requestJson)
+    $frame = [System.BitConverter]::GetBytes([int]$body.Length) + $body
+    $pipe.Write($frame, 0, $frame.Length); $pipe.Flush()
+    $header = New-Object byte[] 4
+    if (-not (Read-PipeExactly $pipe $header)) { throw 'approver pipe: no reply header' }
+    $length = [System.BitConverter]::ToInt32($header, 0)
+    if ($length -lt 1 -or $length -gt 2048) { throw "approver pipe: reply length $length" }
+    $reply = New-Object byte[] $length
+    if (-not (Read-PipeExactly $pipe $reply)) { throw 'approver pipe: short reply' }
+    [System.Text.Encoding]::UTF8.GetString($reply) | ConvertFrom-Json
+  }
+  finally { $pipe.Dispose() }
+}
+function Remove-PolicyFiles {
+  Remove-Item -LiteralPath $AuthPolicyFile -Force -ErrorAction SilentlyContinue
+  Get-ChildItem -LiteralPath $AuthDir -Filter 'policy.*.tmp' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+}
+function Get-PolicyTempCount { @(Get-ChildItem -LiteralPath $AuthDir -Filter 'policy.*.tmp' -ErrorAction SilentlyContinue).Count }
+function Write-PolicyFileAsAdministrator([string]$json) {
+  Set-Content -Encoding Ascii -NoNewline -Path $AuthPolicyFile -Value $json
+  & icacls.exe $AuthPolicyFile /setowner '*S-1-5-32-544' | Out-Null   # owner = Administrators, so the 79 in p3 cannot be an owner refusal; no throw here: p3 reads the owner back (Get-AclReport) and fails if it is not trusted
+}
+function Test-SameBytes([byte[]]$a, [byte[]]$b) { [Convert]::ToBase64String($a) -eq [Convert]::ToBase64String($b) }
+# The reply of the `policy` verb is exactly this policy: version 1, revision, tier, the sorted overrides, and the hash computed above.
+function Test-PolicyShape($reply, [long]$rev, [string]$tier, [string[]]$prompts) {
+  if ($null -eq $reply) { return $false }
+  $names = @($reply.policy.overrides.PSObject.Properties | ForEach-Object { $_.Name })
+  ($reply.ok -eq $true) -and ($reply.policy.v -eq 1) -and ($reply.policy.rev -eq $rev) -and ($reply.policy.tier -eq $tier) -and (($names -join ',') -eq ($prompts -join ',')) -and ($reply.policyVersion -eq (Get-PolicyHash $rev $tier $prompts))
+}
+function Get-ServiceLine([string]$what, $svc) { "${what}: state=$($svc.State) win32=$($svc.ExitCode) specific=$($svc.ServiceSpecificExitCode)" }
+
+# One good key for all policy checks (the policy is read before the key, but p1, p4, p5 and p6 must reach RUNNING). A failure here shows in p1's evidence.
+$policyKeyNote = 'created'
+try { $null = New-AuthorityLabKey $PolicyKeyName 'good' } catch { $policyKeyNote = "creation FAILED: $($_.Exception.Message)" }
+
+Step 'p1_no_policy_starts_careful' 'Authority with NO policy.json starts (RUNNING), the approver pipe reports careful rev 0 with no overrides, and start-up writes no file' {
+  Remove-PolicyFiles
+  $reply = $null
+  try {
+    $svc = Start-LabAuthority $PolicyKeyName
+    if ($svc.State -eq 'Running') { $reply = Invoke-AuthorityApprover '{"v":1,"verb":"policy"}' }
+    $created = Test-Path -LiteralPath $AuthPolicyFile
+  }
+  finally { Stop-LabService $AuthSvc }
+  $after = Get-Svc $AuthSvc
+  $ok = ($svc.State -eq 'Running') -and (Test-PolicyShape $reply 0 'careful' @()) -and (-not $created) -and ($after.State -eq 'Stopped') -and ($after.ExitCode -eq 0) -and ($after.ServiceSpecificExitCode -eq 0)
+  Verdict $ok @("signing key: $policyKeyNote", (Get-ServiceLine 'service after start (expected Running)' $svc), "policy reply: $(Hide-Sids ($reply | ConvertTo-Json -Compress -Depth 5))", "policy.json created by start-up: $created", (Get-ServiceLine 'after STOP (expected Stopped, 0, 0)' $after))
+}
+
+Step 'p2_untrusted_config_folder_73' 'Authority whose config FOLDER BUILTIN\Users can write is refused (1066 / 73); with that ACE removed the same config starts' {
+  Remove-PolicyFiles
+  & icacls.exe $AuthDir /grant '*S-1-5-32-545:W' | Out-Null   # the folder only (no inheritance flags): the config FILE keeps its trusted ACL, so this isolates the folder check
+  if ($LASTEXITCODE -ne 0) { throw "icacls grant on $AuthDir failed ($LASTEXITCODE)" }
+  try {
+    $bad = Start-LabAuthority $PolicyKeyName
+    $folderReport = Get-AclReport $AuthDir
+    $fileReport = Get-AclReport $AuthConfig
+  }
+  finally {
+    Stop-LabService $AuthSvc
+    & icacls.exe $AuthDir /remove:g '*S-1-5-32-545' | Out-Null
+  }
+  if ($LASTEXITCODE -ne 0) { throw "icacls remove on $AuthDir failed ($LASTEXITCODE)" }
+  try { $good = Start-LabAuthority $PolicyKeyName; $folderAfter = Get-AclReport $AuthDir } finally { Stop-LabService $AuthSvc }
+  $refused = ($bad.State -eq 'Stopped') -and ($bad.ExitCode -eq 1066) -and ($bad.ServiceSpecificExitCode -eq 73)
+  $ok = $refused -and (-not $folderReport.Trusted) -and $fileReport.Trusted -and ($good.State -eq 'Running') -and $folderAfter.Trusted
+  Verdict $ok @((Get-ServiceLine 'with Users write on the folder (expected Stopped / 1066 / 73)' $bad), "folder: $($folderReport.Text)", "config file (unchanged, still trusted): $($fileReport.Text)", (Get-ServiceLine 'after the ACE is removed (expected Running)' $good), "folder after: $($folderAfter.Text)")
+}
+
+Step 'p3_unsigned_standard_79' 'Authority refuses an UNSIGNED standard policy.json (1066 / 79) that an Administrator wrote in the trusted folder; the same file as careful starts' {
+  Remove-PolicyFiles
+  try {
+    Write-PolicyFileAsAdministrator '{"v":1,"rev":1,"tier":"careful","overrides":{}}'
+    $controlReport = Get-AclReport $AuthPolicyFile
+    $control = Start-LabAuthority $PolicyKeyName
+    Stop-LabService $AuthSvc
+    Write-PolicyFileAsAdministrator '{"v":1,"rev":1,"tier":"standard","overrides":{}}'
+    $badReport = Get-AclReport $AuthPolicyFile
+    $bad = Start-LabAuthority $PolicyKeyName
+  }
+  finally { Stop-LabService $AuthSvc; Remove-PolicyFiles }
+  $ok = ($control.State -eq 'Running') -and $controlReport.Trusted -and $badReport.Trusted -and ($bad.State -eq 'Stopped') -and ($bad.ExitCode -eq 1066) -and ($bad.ServiceSpecificExitCode -eq 79)
+  Verdict $ok @("control file (careful rev 1, written by Administrator): $($controlReport.Text)", (Get-ServiceLine 'control start (expected Running)' $control), "unsigned standard file: $($badReport.Text)", (Get-ServiceLine 'start with the unsigned standard file (expected Stopped / 1066 / 79)' $bad))
+}
+
+Step 'p4_service_writes_policy' 'Through policy_set (careful rev 1 plus a prompt override: it only adds a question, so no signature) the RUNNING service writes policy.json itself, and that file passes the guard check' {
+  Remove-PolicyFiles
+  try {
+    $svc = Start-LabAuthority $PolicyKeyName
+    $script:PolicyPid = [int]$svc.ProcessId
+    $before = Invoke-AuthorityApprover '{"v":1,"verb":"policy"}'
+    $set = Invoke-AuthorityApprover ('{"v":1,"verb":"policy_set","policy":{"v":1,"rev":1,"tier":"careful","overrides":{"' + $PolicyOverrideAction + '":"prompt"}}}')
+    $read = Invoke-AuthorityApprover '{"v":1,"verb":"policy"}'
+    $exists = Test-Path -LiteralPath $AuthPolicyFile
+    $file = if ($exists) { [System.IO.File]::ReadAllText($AuthPolicyFile) } else { '' }
+    $report = if ($exists) { Get-AclReport $AuthPolicyFile } else { @{ Trusted = $false; Text = 'policy.json does not exist' } }
+    $leftovers = Get-PolicyTempCount
+  }
+  finally { Stop-LabService $AuthSvc }
+  $after = Get-Svc $AuthSvc
+  $expectedHash = Get-PolicyHash 1 'careful' @($PolicyOverrideAction)
+  $parsed = if ($file) { $file | ConvertFrom-Json } else { $null }
+  $shape = ($null -ne $parsed) -and ((@($parsed.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') -eq 'v,rev,tier,overrides') -and ($parsed.rev -eq 1) -and ($parsed.tier -eq 'careful') -and ($parsed.overrides.$PolicyOverrideAction -eq 'prompt')
+  $ok = ($svc.State -eq 'Running') -and (Test-PolicyShape $before 0 'careful' @()) -and ($set.ok -eq $true) -and ($set.policyVersion -eq $expectedHash) -and (Test-PolicyShape $read 1 'careful' @($PolicyOverrideAction)) -and $shape -and $report.Trusted -and ($leftovers -eq 0) -and ($after.ExitCode -eq 0) -and ($after.ServiceSpecificExitCode -eq 0)
+  Verdict $ok @((Get-ServiceLine 'service after start (expected Running)' $svc), "before: $(Hide-Sids ($before | ConvertTo-Json -Compress -Depth 5))", "policy_set reply: $($set | ConvertTo-Json -Compress) (expected policyVersion $expectedHash, computed here)", "after: $(Hide-Sids ($read | ConvertTo-Json -Compress -Depth 5))", "policy.json as written by the service: $file", $report.Text, "temp files left behind: $leftovers", (Get-ServiceLine 'after STOP (expected Stopped, 0, 0)' $after))
+}
+
+Step 'p5_restart_with_written_policy' 'A restart reads the policy.json the service wrote itself (owner and ACL accepted by the guard, file not rewritten) and reports the same revision and hash' {
+  if (-not (Test-Path -LiteralPath $AuthPolicyFile)) { return (Verdict $false @('policy.json is missing: p4 did not leave the file the service wrote')) }
+  $bytesBefore = [System.IO.File]::ReadAllBytes($AuthPolicyFile)
+  $read = $null
+  try {
+    $svc = Start-LabAuthority $PolicyKeyName
+    if ($svc.State -eq 'Running') { $read = Invoke-AuthorityApprover '{"v":1,"verb":"policy"}' }
+  }
+  finally { Stop-LabService $AuthSvc }
+  $after = Get-Svc $AuthSvc
+  $unchanged = Test-SameBytes $bytesBefore ([System.IO.File]::ReadAllBytes($AuthPolicyFile))
+  $newProcess = ([int]$svc.ProcessId -ne 0) -and ([int]$svc.ProcessId -ne $script:PolicyPid)
+  $ok = ($svc.State -eq 'Running') -and $newProcess -and (Test-PolicyShape $read 1 'careful' @($PolicyOverrideAction)) -and $unchanged -and ($after.ExitCode -eq 0) -and ($after.ServiceSpecificExitCode -eq 0)
+  Verdict $ok @((Get-ServiceLine 'service after restart (expected Running)' $svc), "new process (pid differs from the p4 service): $newProcess", "policy reply: $(Hide-Sids ($read | ConvertTo-Json -Compress -Depth 5))", "file bytes unchanged by the start: $unchanged", (Get-ServiceLine 'after STOP (expected Stopped, 0, 0)' $after))
+}
+
+Step 'p6_unsigned_loosening_refused' 'The running service refuses a policy_set that would let actions skip a person without a signature (presence_mismatch), keeps the policy and leaves policy.json untouched' {
+  if (-not (Test-Path -LiteralPath $AuthPolicyFile)) { return (Verdict $false @('policy.json is missing: p4 did not leave the file the service wrote')) }
+  $bytesBefore = [System.IO.File]::ReadAllBytes($AuthPolicyFile)
+  try {
+    $svc = Start-LabAuthority $PolicyKeyName
+    $refused = Invoke-AuthorityApprover '{"v":1,"verb":"policy_set","policy":{"v":1,"rev":2,"tier":"standard","overrides":{}}}'
+    $read = Invoke-AuthorityApprover '{"v":1,"verb":"policy"}'
+  }
+  finally { Stop-LabService $AuthSvc }
+  $unchanged = Test-SameBytes $bytesBefore ([System.IO.File]::ReadAllBytes($AuthPolicyFile))
+  $leftovers = Get-PolicyTempCount
+  $ok = ($svc.State -eq 'Running') -and ($refused.ok -eq $false) -and ($refused.code -eq 'presence_mismatch') -and (Test-PolicyShape $read 1 'careful' @($PolicyOverrideAction)) -and $unchanged -and ($leftovers -eq 0)
+  Verdict $ok @((Get-ServiceLine 'service (expected Running)' $svc), "policy_set standard rev 2 without presence: $($refused | ConvertTo-Json -Compress) (expected ok=false, presence_mismatch)", "policy after: $(Hide-Sids ($read | ConvertTo-Json -Compress -Depth 5))", "policy.json bytes unchanged: $unchanged; temp files left: $leftovers")
+}
+
+Remove-PolicyFiles
+Remove-AuthorityLabKey $PolicyKeyName
 
 $result = [ordered]@{
   schema = 'albera-issue-23-service-lab/1'
