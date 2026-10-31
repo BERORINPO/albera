@@ -9,6 +9,8 @@
 # The Broker publish folder is copied whole (exe + dll + runtime); nothing else changes in this driver.
 # The Approval Authority publish folder is copied the same way (bin\authority), together with new-authority-key.ps1 (tools\), which lab-guest.ps1 runs to create the
 # Authority's lab signing keys (checks k_*: good key starts; exportable key and broad ACE refused with exit 78). Not executed in the VM yet.
+# Checks m1 to m4 (issue #84, journal parity) need nothing new here: the version 2 journal fixture travels inside lab-inputs.json (fixtures.journalV2) and the
+# backup folder is made by the guest script under the lab root, so the rollback removes everything with the lab root.
 param(
   [string]$VmName = 'albera-clone-04-lab23',
   [string]$PasswordFile = 'U:\dev\hyperv\albera-poc-01\local-secrets\admin-password.txt',

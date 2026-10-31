@@ -8,6 +8,10 @@
 # receipt that names it with the lab authority key from lab-inputs.json (ECDsaCng, an ECCPRIVATE blob), and the helper sends it. It has NOT been executed
 # yet: the signing and receipt functions were run once on the host under Windows PowerShell 5.1 and checked with the Node contract validator, but no step
 # below has run in the VM. Expect first-run fixes; the C# tools, config validation and the serve loop are host-tested (npm test).
+# This revision also adds the issue #84 checks m1 to m4 (journal parity with the Node contract, under the real service identity): generation advance and
+# refusal, migration of a version 2 journal, a side-effect-free inspect, and a restore replay. NOT executed in the VM yet: expect first-run fixes.
+# Explicit exclusion: a CLOCK ROLLBACK is host-tested only (test/runtime-windows-broker-receipt-v2.test.mjs). The offset is the test seam
+# ALBERA_BROKER_TEST_CLOCK_OFFSET, compiled out of the published Broker the lab runs, and moving the guest clock backwards would break every receipt window.
 # The shim still hosts the Control Plane and the third account, and the Broker service object briefly (check d2, which needs a RUNNING
 # Broker service that owns no pipe).
 param(
@@ -104,11 +108,11 @@ function Invoke-ProbeAs([string]$svc, [string]$tag, [string[]]$probeArgs) {
   Get-LastJson $svc $tag
 }
 function Invoke-ProbeAdmin([string[]]$probeArgs) { (& $Shim @probeArgs) | ConvertFrom-Json }
-# $request is a claim (an object with receipt and signature) or a fence ({ fence = <computerId> }); the helper takes exactly one of the two.
+# $request is a claim (an object with receipt and signature), a fence ({ fence = <computerId> }) or an inspect ({ inspect = <operationId> }); the helper takes exactly one.
 function New-HelperInput([string]$tag, $request, [hashtable]$expect) {
   $path = "$LabRoot\inputs\$tag.stdin.json"
   $body = [ordered]@{ pipeName = $Pipe }
-  if ($request.fence) { $body.fence = [string]$request.fence } else { $body.receipt = $request.receipt; $body.signature = $request.signature }
+  if ($request.fence) { $body.fence = [string]$request.fence } elseif ($request.inspect) { $body.inspect = [string]$request.inspect } else { $body.receipt = $request.receipt; $body.signature = $request.signature }
   $body.timeoutMs = 10000; $body.expect = $expect
   ($body | ConvertTo-Json -Depth 4 -Compress) | Set-Content -Encoding Ascii -Path $path
   $path
@@ -127,17 +131,17 @@ function Set-BrokerServiceHost([string]$which) {
   & sc.exe config $B binPath= $bin | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "sc config $B failed ($LASTEXITCODE)" }
 }
-function Write-BrokerConfig([string]$db, [string]$controlPlaneSid) {
+function Write-BrokerConfig([string]$db, [string]$controlPlaneSid, [int]$generation = 7) {
   $keys = @([ordered]@{ kid = $Authority.kid; spki = $Authority.spki })
-  $cfg = [ordered]@{ pipeName = $Pipe; database = $db; authorityKeys = $keys; controlPlaneSid = $controlPlaneSid; generation = 7; leaseId = $Authority.leaseId; policyVersion = $Authority.policyVersion }
+  $cfg = [ordered]@{ pipeName = $Pipe; database = $db; authorityKeys = $keys; controlPlaneSid = $controlPlaneSid; generation = $generation; leaseId = $Authority.leaseId; policyVersion = $Authority.policyVersion }
   ($cfg | ConvertTo-Json -Compress -Depth 4) | Set-Content -Encoding Ascii -Path $BrokerConfig
 }
 function Get-ServiceExit([string]$name) { $s = Get-Svc $name; "state=$($s.State) win32=$($s.ExitCode) specific=$($s.ServiceSpecificExitCode)" }
 # The Broker IS the service process (it calls StartServiceCtrlDispatcher itself), so the PID SCM reports is the PID that creates the pipe.
 # The service reports RUNNING only after its pipe exists: waiting for RUNNING is the BROKER_READY wait.
-function Start-LabBroker([string]$tag, [string]$db) {
+function Start-LabBroker([string]$tag, [string]$db, [int]$generation = 7) {
   Set-BrokerServiceHost 'broker'
-  Write-BrokerConfig $db $script:SidC
+  Write-BrokerConfig $db $script:SidC $generation
   & sc.exe start $B | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "sc start $B ($tag) failed ($LASTEXITCODE): $(Get-ServiceExit $B)" }
   try { Wait-Until { (Get-Svc $B).State -eq 'Running' } 30 "$B running ($tag)" }
@@ -145,9 +149,9 @@ function Start-LabBroker([string]$tag, [string]$db) {
   [int](Get-Svc $B).ProcessId
 }
 # Start the Broker service expecting it to FAIL: returns what SCM recorded (the fatal exit code is the service-specific exit code).
-function Start-LabBrokerExpectingFailure([string]$db, [string]$controlPlaneSid) {
+function Start-LabBrokerExpectingFailure([string]$db, [string]$controlPlaneSid, [int]$generation = 7) {
   Set-BrokerServiceHost 'broker'
-  Write-BrokerConfig $db $controlPlaneSid
+  Write-BrokerConfig $db $controlPlaneSid $generation
   & sc.exe start $B | Out-Null
   Wait-Until { (Get-Svc $B).State -eq 'Stopped' } 30 "$B stopped after a failed start"
   Get-Svc $B
@@ -277,6 +281,11 @@ $R2 = $inputs.r2   # never sent to a Broker that could accept it (the pre-send r
 $Db3 = "$LabRoot\data\broker\journal-3.sqlite"
 $Db4 = "$LabRoot\data\broker\journal-4.sqlite"
 $Db5 = "$LabRoot\data\broker\journal-5.sqlite"
+$Db6 = "$LabRoot\data\broker\journal-6.sqlite"   # m1: generation advance and refusal
+$Db7 = "$LabRoot\data\broker\journal-7.sqlite"   # m2: the version 2 fixture, written by this script
+$Db8 = "$LabRoot\data\broker\journal-8.sqlite"   # m3: inspect
+$Db9 = "$LabRoot\data\broker\journal-9.sqlite"   # m4: restore replay
+$BackupDir = "$LabRoot\data\backup"             # Administrators / SYSTEM only (inherited from data); the Broker never reads it
 
 # ---- Broker run 1: the real Broker service, started once; the probes below connect to its pipe without sending a request (the service keeps serving).
 $script:Pid1 = $null
@@ -454,6 +463,118 @@ Step 'h_v2_refusals' 'Real service: a test issuer, a spent challenge and a chall
   $ok = ($f1.ok -eq $true) -and ($testIssuer.code -eq 'denied') -and ($accepted.ok -eq $true) -and ($spent.code -eq 'denied') -and ($stale.code -eq 'denied') -and ($f2.ok -eq $true) -and ($ahead.code -eq 'denied') -and ($claims -eq 1)
   Verdict $ok @("test issuer on the production Broker: $($testIssuer | ConvertTo-Json -Compress)", "production issuer, same challenge: $($accepted | ConvertTo-Json -Compress)", "the same challenge again: $($spent | ConvertTo-Json -Compress)",
     "stale lease generation: $($stale | ConvertTo-Json -Compress)", "TTL above 300 s: $($ahead | ConvertTo-Json -Compress)", "journal claims=$claims (expected 1)")
+}
+
+# ---- issue #84, journal parity with the Node contract under the real service identity (m1 to m4). Each check runs the REAL Broker service on a journal of its own
+# in data\broker (writable by the Broker SID); Administrator may write there too, which is how the fixture and the restore are put in place. A restore is a file
+# copy of a STOPPED service's journal (database plus -wal / -shm if they exist). Reason words (challenge_unknown, generation_regressed) go to the service's stdout,
+# which the SCM discards, so the evidence is the reply, the SCM exit codes and the claim count; the reason words are asserted by the host tests
+# (test/runtime-windows-broker-journal.test.mjs, which also covers the restore fence and the clock rollback this lab cannot rehearse).
+# NOT executed in the VM yet: expect first-run fixes. The restore needs no mechanism of its own: every start adds one to the epoch and deletes all challenges.
+function Copy-LabJournal([string]$from, [string]$to) {
+  foreach ($suffix in @('', '-wal', '-shm')) { if (Test-Path -LiteralPath "$from$suffix") { Copy-Item -LiteralPath "$from$suffix" -Destination "$to$suffix" -Force } }
+}
+function Remove-LabJournal([string]$db) {
+  foreach ($suffix in @('', '-wal', '-shm')) { Remove-Item -LiteralPath "$db$suffix" -Force -ErrorAction SilentlyContinue }
+}
+# Length and SHA-256 of the database and its -wal, read without taking a lock the running service could notice (the -shm is skipped: even a reader updates it).
+function Get-JournalFingerprint([string]$db) {
+  $parts = @()
+  foreach ($suffix in @('', '-wal')) {
+    $path = "$db$suffix"
+    if (-not (Test-Path -LiteralPath $path)) { $parts += "'$suffix' absent"; continue }
+    $stream = New-Object System.IO.FileStream($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+    try { $parts += ("'$suffix' len=$($stream.Length) sha256=" + [BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($stream)).Replace('-', '')) }
+    finally { $stream.Dispose() }
+  }
+  $parts -join '; '
+}
+
+Step 'm1_generation_advance_and_regress' 'Real service: a higher configured generation advances the journal and revokes the older one; a lower one ends the start with 1066 / 76 and changes nothing' {
+  $expect = @{ serviceName = $B }
+  $null = Start-LabBroker 'run9' $Db6
+  $fence7 = Invoke-HelperAs $C 'helper-m1-fence7' @{ fence = $Authority.computerId } $expect
+  $stale = New-LabReceipt 'lab84-m1-stale' $fence7                    # signed against a generation 7 challenge and held back
+  Stop-LabService $B
+  $null = Start-LabBroker 'run9b' $Db6 8                                # the operator configures generation 8
+  $staleResult = Invoke-HelperAs $C 'helper-m1-stale' $stale $expect
+  $claim8 = Invoke-FencedClaim $C 'helper-m1-g8' 'lab84-m1-g8' $expect
+  Stop-LabService $B
+  $regressed = Start-LabBrokerExpectingFailure $Db6 $script:SidC 7      # and then, by mistake, 7 again
+  $null = Start-LabBroker 'run9c' $Db6 8
+  $fence8 = Invoke-HelperAs $C 'helper-m1-fence8' @{ fence = $Authority.computerId } $expect
+  Stop-LabService $B
+  $claims = Get-ClaimCount $Db6
+  $ok = ($fence7.ok -eq $true) -and ($fence7.leaseGeneration -eq 7) -and ($staleResult.ok -eq $false) -and ($staleResult.code -eq 'denied') `
+    -and ($claim8.fence.leaseGeneration -eq 8) -and ($claim8.fence.brokerEpoch -eq 2) -and ($claim8.result.ok -eq $true) `
+    -and ($regressed.ExitCode -eq 1066) -and ($regressed.ServiceSpecificExitCode -eq 76) -and ($fence8.leaseGeneration -eq 8) -and ($fence8.brokerEpoch -eq 3) -and ($claims -eq 1)
+  Verdict $ok @("fence at generation 7: $($fence7 | ConvertTo-Json -Compress)", "generation-7 receipt sent after the advance to 8: $($staleResult | ConvertTo-Json -Compress)",
+    "fence + claim at generation 8: epoch $($claim8.fence.brokerEpoch) generation $($claim8.fence.leaseGeneration) result $($claim8.result | ConvertTo-Json -Compress)",
+    "start with generation 7 against a journal at 8: win32=$($regressed.ExitCode) specific=$($regressed.ServiceSpecificExitCode) (expected 1066 / 76)",
+    "start with 8 after the refusal: epoch $($fence8.brokerEpoch) (expected 3: the refused start did not bump it), generation $($fence8.leaseGeneration)", "journal claims=$claims (expected 1)")
+}
+
+Step 'm2_migrate_v2_journal' 'Real service: a version 2 journal (host-generated fixture) is migrated to version 3 before RUNNING, its operation can be inspected and a new claim lands' {
+  $expect = @{ serviceName = $B }
+  $fixture = $inputs.fixtures.journalV2
+  [System.IO.File]::WriteAllBytes($Db7, [Convert]::FromBase64String($fixture.base64))
+  $owner = (Get-Acl -LiteralPath $Db7).Owner                              # the service refuses (73) a journal file owned by anyone but SYSTEM / Administrators / its own SID
+  $null = Start-LabBroker 'run10' $Db7
+  $migrated = Invoke-HelperAs $C 'helper-m2-inspect' @{ inspect = $fixture.operationId } $expect   # inspect refuses any journal that is not at the current version
+  $flow = Invoke-FencedClaim $C 'helper-m2-claim' 'lab84-m2' $expect
+  Stop-LabService $B
+  $claims = Get-ClaimCount $Db7
+  $ok = ($migrated.ok -eq $true) -and ($migrated.state -eq 'UNKNOWN') -and ($migrated.action -eq 'synthetic.inspect') -and ($flow.fence.brokerEpoch -eq 1) -and ($flow.fence.leaseGeneration -eq 7) `
+    -and ($flow.result.ok -eq $true) -and ($claims -eq 2)
+  Verdict $ok @("fixture: $($fixture.operationId), $([Convert]::FromBase64String($fixture.base64).Length) bytes, owner $owner", "inspect of the fixture's operation after the start: $($migrated | ConvertTo-Json -Compress)",
+    "fence on the migrated journal: epoch $($flow.fence.brokerEpoch) generation $($flow.fence.leaseGeneration); new claim: $($flow.result | ConvertTo-Json -Compress)", "journal claims=$claims (expected 2: the fixture row and the new claim)")
+}
+
+Step 'm3_inspect_recorded_writes_nothing' 'Real service: inspect of a recorded UNKNOWN operation returns the recorded state, an unrecorded one is denied, and the journal files do not change' {
+  $expect = @{ serviceName = $B }
+  $null = Start-LabBroker 'run11' $Db8
+  $claim = Invoke-FencedClaim $C 'helper-m3-claim' 'lab84-m3' $expect
+  $before = Get-JournalFingerprint $Db8
+  $first = Invoke-HelperAs $C 'helper-m3-inspect1' @{ inspect = 'lab84-m3-op' } $expect
+  $second = Invoke-HelperAs $C 'helper-m3-inspect2' @{ inspect = 'lab84-m3-op' } $expect
+  $ghost = Invoke-HelperAs $C 'helper-m3-ghost' @{ inspect = 'lab84-m3-ghost-op' } $expect
+  $after = Get-JournalFingerprint $Db8
+  Stop-LabService $B
+  $claims = Get-ClaimCount $Db8
+  $ok = ($claim.result.ok -eq $true) -and ($first.ok -eq $true) -and ($first.state -eq 'UNKNOWN') -and ($first.action -eq 'synthetic.inspect') -and (-not $first.replayed) -and ($second.state -eq 'UNKNOWN') `
+    -and ($ghost.ok -eq $false) -and ($ghost.code -eq 'denied') -and ($before -eq $after) -and ($claims -eq 1)
+  Verdict $ok @("claim: $($claim.result | ConvertTo-Json -Compress)", "inspect (twice): $($first | ConvertTo-Json -Compress) / $($second | ConvertTo-Json -Compress)", "inspect of an operation never recorded: $($ghost | ConvertTo-Json -Compress)",
+    "journal before: $before", "journal after:  $after", "journal claims=$claims (expected 1: no row was created for the unrecorded operation)")
+}
+
+Step 'm4_restore_replay' 'Real service: after a backup of the stopped service is restored, a receipt fenced before the backup and one claimed after it are both refused, and a fresh fence and claim still work' {
+  $expect = @{ serviceName = $B }
+  New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
+  $backup = "$BackupDir\journal-9.sqlite"
+  $null = Start-LabBroker 'run12' $Db9
+  $fencePre = Invoke-HelperAs $C 'helper-m4-fence' @{ fence = $Authority.computerId } $expect
+  $pre = New-LabReceipt 'lab84-m4-pre' $fencePre                          # fenced before the backup, never sent
+  Stop-LabService $B
+  Copy-LabJournal $Db9 $backup                                             # the backup: a stopped service's journal, with the challenge in it
+  $null = Start-LabBroker 'run12b' $Db9
+  $claimed = Invoke-FencedClaim $C 'helper-m4-claim' 'lab84-m4' $expect    # the claim the backup does not know about
+  $duplicate = Invoke-HelperAs $C 'helper-m4-dup' $claimed.request $expect # control: before the restore the exact duplicate is answered from the journal
+  Stop-LabService $B
+  $claimsBeforeRestore = Get-ClaimCount $Db9
+  Remove-LabJournal $Db9
+  Copy-LabJournal $backup $Db9
+  $null = Start-LabBroker 'run12c' $Db9
+  $replay = Invoke-HelperAs $C 'helper-m4-replay' $claimed.request $expect
+  $preResult = Invoke-HelperAs $C 'helper-m4-pre' $pre $expect
+  $fresh = Invoke-FencedClaim $C 'helper-m4-fresh' 'lab84-m4-fresh' $expect
+  Stop-LabService $B
+  $claimsEnd = Get-ClaimCount $Db9
+  $ok = ($claimed.result.ok -eq $true) -and ($duplicate.ok -eq $true) -and ($duplicate.replayed -eq $true) -and ($claimsBeforeRestore -eq 1) `
+    -and ($replay.ok -eq $false) -and ($replay.code -eq 'denied') -and ($preResult.ok -eq $false) -and ($preResult.code -eq 'denied') `
+    -and ($fresh.result.ok -eq $true) -and ($fresh.fence.brokerEpoch -eq $claimed.fence.brokerEpoch) -and ($claimsEnd -eq 1)
+  Verdict $ok @("claim after the backup: $($claimed.result | ConvertTo-Json -Compress) in epoch $($claimed.fence.brokerEpoch); exact duplicate before the restore: $($duplicate | ConvertTo-Json -Compress); journal claims=$claimsBeforeRestore",
+    "after the restore, the same receipt: $($replay | ConvertTo-Json -Compress) (a denial, not a replayed outcome and not a second claim)", "after the restore, the receipt fenced before the backup: $($preResult | ConvertTo-Json -Compress)",
+    "fresh fence + claim: epoch $($fresh.fence.brokerEpoch) (the backup's epoch plus 1, the same number as before the restore) result $($fresh.result | ConvertTo-Json -Compress)", "journal claims=$claimsEnd (expected 1: only the fresh claim; the claim made after the backup was lost with the restore)")
 }
 
 # ---- squatters (d)

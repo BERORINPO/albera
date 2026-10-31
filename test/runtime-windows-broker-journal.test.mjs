@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -14,7 +14,8 @@ import {
 //   1. schema version (PRAGMA user_version = 3), the exact CREATE statements, and the forward migration from the unversioned journal of #22 / #23 and
 //      from version 2; a newer or unknown journal is refused;
 //   2. an exact duplicate (same receipt bytes and signature) gets the recorded outcome (`replayed: true`), anything else that collides stays denied;
-//   3. the read-only `inspect` request reads the recorded state and writes nothing.
+//   3. the read-only `inspect` request reads the recorded state and writes nothing;
+//   4. restoring a backup of the journal: there is no restore-specific mechanism, the start-up epoch bump that deletes every challenge IS the restore fence.
 // Nothing here registers or starts a service. The serve loop is the seam build's `serve-loop` (end of stdin plays STOP); `serve` is the shipped one-shot.
 const SUCCESS = { ok: true, state: 'UNKNOWN', action: 'synthetic.noop' };
 const REPLAYED = { ...SUCCESS, replayed: true };
@@ -98,6 +99,12 @@ describe('Broker journal: schema version and migration, exact duplicate, inspect
       };
     } finally { db.close(); }
   }
+  const JOURNAL_SUFFIXES = ['', '-wal', '-shm'];
+  /** Copy a STOPPED Broker's journal (the database plus its -wal / -shm if they exist) to `to`. */
+  const copyJournal = (from, to) => { for (const suffix of JOURNAL_SUFFIXES) if (existsSync(from + suffix)) copyFileSync(from + suffix, to + suffix); };
+  /** Put a backup back in place of the journal: the current files go first, so no stale -wal / -shm survives the restore. */
+  const restoreJournal = (backup, database) => { for (const suffix of JOURNAL_SUFFIXES) rmSync(database + suffix, { force: true }); copyJournal(backup, database); };
+  const writeConfig = (s, changes) => writeFileSync(s.configFile, JSON.stringify({ ...JSON.parse(readFileSync(s.configFile, 'utf8')), ...changes }));
   const nowSeconds = () => Math.floor(Date.now() / 1000);
   /** fenceRows without the clock mark, which a start and every fence move to the Broker's clock. */
   const fenceView = (database) => { const { clockHighWater, ...rest } = fenceRows(database); return rest; };
@@ -426,6 +433,87 @@ describe('Broker journal: schema version and migration, exact duplicate, inspect
       assert.equal(child.lines.filter((line) => line === 'DENY=inspect-unknown').length, 2);
       assert.equal(await stop(child), 0);
       assert.deepEqual(snapshot(s.database).rows.map((row) => row.operation_id), ['real-op']);
+    });
+  });
+
+  describe('restoring a backup of the journal (issue #84)', () => {
+    // A backup is a file copy of a stopped Broker's journal; restoring it puts back an older epoch, older claims and challenges that were live when it was
+    // taken. The fence is the start itself: every start adds one to the journal's epoch and deletes every challenge in the same transaction, so nothing
+    // a receipt names can survive a restore, and the receipt TTL (300 s) bounds anything else. The cost, by design: claims made after the backup are gone.
+    it('a receipt fenced before the backup and one claimed after it are both refused after the restore (challenge_unknown), nothing is written, and a fresh fence and claim still work', async () => {
+      const s = scenario('restore');
+      const backup = path.join(path.dirname(path.dirname(s.database)), 'backup.sqlite');
+
+      let child = startLoop(s); // epoch 1: a receipt is fenced and signed but never sent, then the journal is backed up with its challenge still in it
+      await waitForLine(child, 'BROKER_READY');
+      const fencedBeforeBackup = await sessionOf(s, child).prepare('before-backup');
+      assert.equal(await stop(child), 0);
+      copyJournal(s.database, backup);
+      assert.deepEqual(fenceRows(backup).challenges.map((row) => [row.epoch, row.state]), [[1, 'issued']], 'the backup holds a live challenge');
+
+      child = startLoop(s); // epoch 2: the claim the backup does not know about
+      await waitForLine(child, 'BROKER_READY');
+      const session = sessionOf(s, child);
+      const { request: claimedAfterBackup, result } = await session.claim('after-backup');
+      assert.deepEqual(result, SUCCESS);
+      assert.deepEqual(await session.send(claimedAfterBackup), REPLAYED, 'control: before the restore this exact duplicate is answered from the journal');
+      assert.equal(await stop(child), 0);
+      assert.deepEqual(snapshot(s.database).rows.map((row) => row.operation_id), ['after-backup-op']);
+
+      restoreJournal(backup, s.database);
+      assert.deepEqual([snapshot(s.database).rows.length, fenceRows(s.database).state.epoch], [0, 1], 'the restored file is the backup: epoch 1, no claim');
+
+      child = startLoop(s);
+      await waitForLine(child, 'BROKER_READY');
+      assert.deepEqual(fenceView(s.database), { tables: CURRENT_TABLES, state: { epoch: 2, lease_generation: GENERATION }, challenges: [] }, 'the start made epoch 2 again (the backup\'s 1 plus 1) and deleted the challenge the backup held');
+      const restored = sessionOf(s, child);
+      assert.deepEqual(await restored.send(claimedAfterBackup), DENIED, 'same epoch number as before the restore, but its challenge is gone: not claimed again, not answered as a replay');
+      assert.deepEqual(await restored.send(fencedBeforeBackup), DENIED, 'fenced before the backup, so its challenge was IN the restored file: the start deleted it');
+      assert.equal(child.lines.filter((line) => line === 'DENY=challenge_unknown').length, 2, child.lines.join('|'));
+      assert.equal(child.lines.includes('CLAIM=PERSISTED_UNKNOWN') || child.lines.includes('REPLAY=RECORDED_OUTCOME'), false);
+      assert.equal(snapshot(s.database).rows.length, 0, 'the refusals wrote no claim');
+      assert.deepEqual((await restored.claim('after-restore')).result, SUCCESS, 'a fresh fence and claim work on the restored journal');
+      assert.equal(await stop(child), 0);
+      assert.deepEqual(snapshot(s.database).rows.map((row) => row.operation_id), ['after-restore-op']);
+    });
+
+    it('a restored journal of a LOWER generation than the config is advanced to the config\'s (its old receipts are dead); one of a HIGHER generation refuses the start (76) and is left untouched', async () => {
+      const s = scenario('restore-generation');
+      const backupLow = path.join(path.dirname(path.dirname(s.database)), 'backup-low.sqlite');
+      const backupHigh = path.join(path.dirname(path.dirname(s.database)), 'backup-high.sqlite');
+
+      let child = startLoop(s); // generation 7, a receipt fenced and never sent
+      await waitForLine(child, 'BROKER_READY');
+      const oldReceipt = await sessionOf(s, child).prepare('gen-low');
+      assert.equal(await stop(child), 0);
+      copyJournal(s.database, backupLow);
+      assert.equal(fenceRows(backupLow).state.lease_generation, GENERATION);
+
+      writeConfig(s, { generation: GENERATION + 2 }); // the operator raised the generation twice since: 9
+      child = startLoop(s);
+      await waitForLine(child, 'BROKER_READY');
+      assert.equal(await stop(child), 0);
+      copyJournal(s.database, backupHigh);
+      assert.equal(fenceRows(backupHigh).state.lease_generation, GENERATION + 2);
+
+      writeConfig(s, { generation: GENERATION + 1 }); // the config now says 8: the backup of 7 is below it
+      restoreJournal(backupLow, s.database);
+      child = startLoop(s);
+      await waitForLine(child, 'BROKER_READY');
+      assert.deepEqual(fenceView(s.database).state, { epoch: 2, lease_generation: GENERATION + 1 }, 'advanced to the config floor, epoch = the backup\'s 1 plus 1');
+      const session = sessionOf(s, child);
+      assert.deepEqual(await session.send(oldReceipt), DENIED, 'a receipt for generation 7 is dead');
+      assert.equal((await session.fence()).leaseGeneration, GENERATION + 1);
+      assert.deepEqual((await session.claim('gen-advanced')).result, SUCCESS);
+      assert.equal(await stop(child), 0);
+
+      restoreJournal(backupHigh, s.database); // a backup of generation 9 under a config of 8 would un-revoke generations 8 and 9
+      const hashBefore = fileHash(s.database);
+      child = startLoop(s);
+      assert.equal(await waitForExit(child), EXIT_JOURNAL_REFUSED, child.lines.join('|'));
+      assert.deepEqual(child.lines, ['BROKER_FATAL=JOURNAL_GENERATION_REGRESSED', 'BROKER_STOPPED']);
+      assert.equal(fileHash(s.database), hashBefore, 'a refused start changes nothing: no epoch bump');
+      assert.equal(existsSync(`${s.database}-wal`), false);
     });
   });
 });
