@@ -221,6 +221,13 @@ describe('the host-changing script is one separate file, dry by default, and nev
     const sign = functions[0][2];
     assert.match(sign, /finally \{ Remove-SigningCertificate \$created\.Thumbprint \}/u, 'the signing key is deleted even when packing fails');
     assert.match(sign, /-KeyExportPolicy NonExportable/u);
+    // Codex MEDIUM (#141): a key left behind by a killed run could sign another package with the same identity (and so get the same Hello key).
+    assert.match(installScript, /\$_\.Subject -eq \$identity\.publisher -and \$_\.HasPrivateKey/u, 'a leftover is any key of this publisher in the user store');
+    assert.ok(sign.indexOf('foreach ($leftover in Get-LeftoverSigningKeys) { Remove-SigningCertificate $leftover.Thumbprint }') > sign.search(/if \(-not \$Apply\) \{ return \}/u)
+      && sign.indexOf('Get-LeftoverSigningKeys') < sign.indexOf('New-SelfSignedCertificate'), 'Sign removes leftovers first, only when applying');
+    const install = functions.find((m) => m[1] === 'Invoke-Install')[2];
+    assert.ok(install.indexOf('if (@(Get-LeftoverSigningKeys).Count -ne 0) { throw') > install.search(/if \(-not \$Apply\) \{ return \}/u)
+      && install.indexOf('Get-LeftoverSigningKeys') < install.indexOf('Add-AppxPackage -Path'), 'Install refuses while a signing key is left');
     assert.match(installScript, /Remove-Item -LiteralPath \$path -DeleteKey -Force/u, 'removes the private key together with the certificate');
     assert.match(sign, /--sign-thumbprint \$created\.Thumbprint/u);
     assert.match(installScript, /Import-Certificate -FilePath \$cer -CertStoreLocation \$trustStore/u);

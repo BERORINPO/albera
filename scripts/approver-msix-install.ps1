@@ -85,6 +85,12 @@ function Remove-SigningCertificate([string]$Print) {
   }
 }
 
+# A signing key left in Cert:\CurrentUser\My (for example when this script was killed before its finally ran) would let any process of this user sign ANOTHER package with
+# the same identity, which Windows would then trust and which would get the same Hello key. So Sign removes leftovers first and Install refuses while one exists.
+function Get-LeftoverSigningKeys {
+  return @(Get-ChildItem -LiteralPath 'Cert:\CurrentUser\My' | Where-Object { $_.Subject -eq $identity.publisher -and $_.HasPrivateKey })
+}
+
 function Invoke-Sign {
   Write-Plan @(
     "makes a self-signed code-signing certificate '$($identity.publisher)' (RSA 3072, non-exportable key, $($identity.certificateYears) years) in Cert:\CurrentUser\My",
@@ -95,6 +101,7 @@ function Invoke-Sign {
     "delete $msix and $cer",
     "if this stopped half way: Get-ChildItem Cert:\CurrentUser\My | Where-Object Subject -eq '$($identity.publisher)' | Remove-Item -DeleteKey")
   if (-not $Apply) { return }
+  foreach ($leftover in Get-LeftoverSigningKeys) { Remove-SigningCertificate $leftover.Thumbprint }
   $node = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
   $created = New-SelfSignedCertificate -Type Custom -Subject $identity.publisher -KeyUsage DigitalSignature -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 `
     -KeyExportPolicy NonExportable -FriendlyName 'ALBERA Local Approver (self-signed, local use only)' -NotAfter (Get-Date).AddYears([int]$identity.certificateYears) `
@@ -135,6 +142,7 @@ function Invoke-Install {
     "$msix signed (-Step Sign) and the certificate $print trusted (-Step Trust)") @(
     "powershell -File scripts\approver-msix-install.ps1 -Step Uninstall -Apply   (or Get-AppxPackage -Name $($identity.packageName) | Remove-AppxPackage)")
   if (-not $Apply) { return }
+  if (@(Get-LeftoverSigningKeys).Count -ne 0) { throw "a signing key for $($identity.publisher) is still in Cert:\CurrentUser\My (a Sign step was interrupted): run -Step Sign -Apply again, which removes it first" }
   if (-not (Test-Path -LiteralPath $msix)) { throw "missing $msix : run -Step Sign first" }
   if (-not (Test-Path -LiteralPath "$trustStore\$print")) { throw "the certificate $print is not in $trustStore : run -Step Trust as administrator first" }
   Add-AppxPackage -Path $msix
