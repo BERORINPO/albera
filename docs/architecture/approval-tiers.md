@@ -69,13 +69,26 @@ Two pipes, one principal each; the Authority computes the digest; receipts expir
 
 The order is chosen so that no step can make a destructive action promptless on its own.
 
-1. `environment.retire` + the Broker's retirement journal and scheduled purge; `environment.purge` (always prompts). No tier yet: every action still prompts.
+1. `environment.retire` + the Broker's retirement journal and scheduled purge; `environment.purge` (always prompts). No tier yet: every action still prompts. **Done in PR #118 (2026-10-31)**, see "Step 1 as built" below.
 2. Network attestation from the Broker (adapters and switches, bound to incarnation and lease generation).
 3. Receipt v3 with `basis`, the policy file, the Hello-signed policy change, the careful and standard tiers. `environment.destroy` keeps prompting.
 4. Checkpoint before `task.start` (measure the cost in the VM lab first).
 5. Scoped grants (delegated tier) and the approval-screen text for them.
 
 Each step ships on its own and keeps today's behaviour until the owner picks a tier.
+
+## Step 1 as built (PR #118)
+
+- The retirement record lives in `src/runtime/environment-retirement-journal.mjs`: a SQLite file (WAL, `synchronous=FULL`, every change one `BEGIN IMMEDIATE` transaction) handed only to Broker-side code. Each record holds computerId, generation, projectId, the VM's own Hyper-V id, a random 128-bit incarnation id, the retirement time and the deadline. The time and the deadline come from the journal's clock; a repeated retire returns the existing record, so the deadline cannot be extended.
+- Retire writes the record, then the incarnation and project into the VM's Notes. Retire retry, requested purge, scheduled purge (`purgeExpiredRetirements`, not yet on a timer) and destroy of a recorded VM all require the VM id, project, generation and incarnation to match. A mismatch is not applied and the record is kept; a failure to drop a record is an unknown outcome, never success.
+- `environment.destroy` without a record behaves exactly as before. With a record, it refuses a VM that does not match it.
+- Operation store schema v5 to v6 (the action CHECK constraint now includes retire and purge).
+- Known limits:
+  - The real `env-io.ps1` identity checks are covered only by the in-memory stand-in and a text check; no real Hyper-V run yet.
+  - A record that matches no surviving VM (for example a restored copy with another VM id) stays until an operator removes it, and it blocks create and start of that id.
+  - Restoring a backup of the retired VM in place with the same Hyper-V VM id is treated as the same VM (it would be retired and later purged). The Broker cannot tell the two apart; destroy still prompts, and purge only runs after the retention period.
+  - No retention disk budget yet; the Control Plane store does not release the lease after retire.
+- Reviews: Codex, three rounds (5 HIGH, then 2 HIGH, all fixed; the last finding is the in-place restore limit above).
 
 ## Review of the first draft (Codex, 2026-10-31)
 
