@@ -54,7 +54,7 @@ Ledger (`LEDGER_CODES`, words: C):
 | `bero_figure` | bero | `kind` (FIGURE_KINDS) |
 | `bero_card` | bero | `cardCode` |
 | `human_choice` | human | `cardCode`, `choiceCode`, `effect` |
-| `start_approved` | bero | none. A card job on this VM was approved (only with a start gate); the job starts next |
+| `start_approved` | bero | none. A job on this VM (a card's, or an initial job of a gated room) was approved (only with a start gate); the job starts next |
 | `start_refused` | bero | `code`: a fixed code of task-start-gate.mjs, or the fleet's own (`vm_busy`, `over_budget`, ...). No job was started |
 
 Say (`SAY_CODES`, words: D). Params: `cam` (camera label), `seconds`, `claim`, `usd`, `count`, `steps`.
@@ -202,3 +202,23 @@ the same table as the CLI (`LIMIT_RULES`), per-VM not above total; errors are fi
 | 2026-10-30 workspace-no-secrets | the workspace file never holds secrets or machine paths; the guest password file stays a CLI option | the file is meant to be shared and committed | unknown fields refused (tests) |
 | 2026-10-30 workspace-exclusive | `--workspace` takes no other room options | one place to read what a room does. Rejected: CLI overrides on top of the file | tests |
 | 2026-10-30 labels-any-script | camera labels may be Japanese (no control characters, 1-32 chars) | labels are shown with textContent only | `isLabel` tests |
+
+## 9. Start approval (A3 of #115 follow-up)
+
+Without the option the room starts hands as before and says so (`Warning: ... NOT approved`). With `room --require-start-approval --approval <albera.approval.json>` (both or neither; `--job` and `--workspace` rooms, not `--demo`) every start goes through the gate:
+
+```
+entry: load the settings file -> check every VM is in "computers" and every task fits a task.start -> open the SQLite flow journal
+       -> bind the pipe clients (Host Broker, Approval Authority) -> approved-operation flow -> task-start gate   (room-approval-wiring.mjs)
+fleet: created with jobs: [] and keepAlive: true (the room host requires initialJobCount 0 when it has a gate)
+room:  listen -> fleet.run() -> host.requestStart(vm, task) for each initial job -> 'pending_approval' at once
+       -> ledger start_approved and the job starts, or start_refused {code} and nothing starts
+```
+
+Settings file (parser `parseApprovalSettings`, pure; unknown keys refused; paths and names only, never a secret; errors are fixed `runtime_room_approval_*` codes that never print the content or a path):
+`{ "version": 1, "projectId", "broker": { "pipeName", "expect": { "serviceName" } }, "authority": { "pipeRoot", "expect": { "serviceName" } }, "journal": "<absolute SQLite path>", "computers": { "<vm>": "<computerId>" | { "computerId", "vmId", "expectedGeneration" } }, "attestation": null | { "keyFile", "keyId", "cloneRoot" } }`.
+Example: `examples/albera.approval.example.json`. Operator steps: `docs/architecture/approval-tiers.md`, "Room start approval".
+
+| date+topic | decision | why / rejected | lint |
+|---|---|---|---|
+| 2026-10-31 room-approval-wiring | the gated room is wired from one reviewable settings file, composed in `room-approval-wiring.mjs`; initial jobs are requested through the host's start path after the room listens | one place to read what a room may ask; no second start path. Rejected: settings on the command line, a gate that starts jobs by itself | tests + arch (role table) |

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "projectId": "my-project",
+  "broker": {
+    "pipeName": "ALBERA_HostBroker",
+    "expect": { "serviceName": "AlberaHostBroker" }
+  },
+  "authority": {
+    "pipeRoot": "ALBERA\\ApprovalAuthority",
+    "expect": { "serviceName": "AlberaApprovalAuthority" }
+  },
+  "journal": "C:\\ProgramData\\Albera\\control-plane\\operations.sqlite",
+  "computers": {
+    "albera-clone-01": "clone-01",
+    "albera-clone-02": {
+      "computerId": "clone-02",
+      "vmId": "00000000-0000-0000-0000-000000000000",
+      "expectedGeneration": 1
+    }
+  },
+  "attestation": {
+    "keyFile": "C:\\ProgramData\\Albera\\control-plane\\broker-attestation-key.pem",
+    "keyId": "albera-broker-1",
+    "cloneRoot": "C:\\ProgramData\\Albera\\clones"
+  }
+}
