@@ -41,7 +41,7 @@ const isPlain = (value) => value !== null && typeof value === 'object' && !Array
 const hasOnly = (value, keys) => isPlain(value) && Object.keys(value).every((key) => keys.includes(key));
 const hasExactly = (value, keys) => hasOnly(value, keys) && Object.keys(value).length === keys.length;
 // Absolute, already normalized (no "..", no drive-relative "\x"), and not a UNC share: the same file whatever directory the room was started in.
-const isAbsolutePath = (value) => typeof value === 'string' && value.length > 0 && path.isAbsolute(value) && path.resolve(value) === value && !/^[\/]{2}/u.test(value);
+const isAbsolutePath = (value) => typeof value === 'string' && value.length > 0 && path.isAbsolute(value) && path.resolve(value) === value && !/^[\\/]{2}/u.test(value);
 
 /**
  * Take `--approval <file>` out of the room's arguments. `--require-start-approval` and `--approval` come as a pair: either one alone is a fixed error.

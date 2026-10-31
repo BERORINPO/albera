@@ -109,7 +109,7 @@ test('settings: every bad field is refused with its own fixed code, and the erro
     ['attestation key file relative', wrongAttestation({ keyFile: 'broker.pem' }), 'runtime_room_approval_attestation'],
     ['attestation clone root relative', wrongAttestation({ cloneRoot: 'clones' }), 'runtime_room_approval_attestation'],
     ['attestation key file not normalized', wrongAttestation({ keyFile: `${ABS('x')}${path.sep}..${path.sep}broker.pem` }), 'runtime_room_approval_attestation'],
-    ['attestation key file on a UNC share', wrongAttestation({ keyFile: '\\server\share\broker.pem' }), 'runtime_room_approval_attestation'],
+    ['attestation key file on a UNC share', wrongAttestation({ keyFile: '\\\\server\\share\\broker.pem' }), 'runtime_room_approval_attestation'],
     ['attestation clone root not normalized', wrongAttestation({ cloneRoot: `${ABS('x')}${path.sep}..${path.sep}clones` }), 'runtime_room_approval_attestation'],
     ['attestation key id with a space', wrongAttestation({ keyId: 'my key' }), 'runtime_room_approval_attestation'],
     ['attestation key id missing', wrongAttestation({ keyId: undefined }), 'runtime_room_approval_attestation'],
