@@ -178,7 +178,7 @@ test('a task.start carries a TASK-START attestation and nothing else: the other 
   const vmId = '11111111-2222-4333-8444-555555555555';
   const network = JSON.parse(JSON.stringify(await signNetworkAttestation(createNetworkAttestation({ network: 'none', computerId: 'pc-01', vmId, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, observedAt: 1800000000 }), signer)));
   const task = JSON.parse(JSON.stringify(await signTaskStartAttestation(createTaskStartAttestation({
-    network: 'none', computerId: 'pc-01', vmId, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, operationId: 'op-1', checkpointId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', observedAt: 1800000000,
+    network: 'none', computerId: 'pc-01', vmId, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, operationId: 'op-1', actionDigest: `sha256:${'a'.repeat(64)}`, checkpointId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', observedAt: 1800000000,
   }), signer)));
   const TASK_FIELDS = { ...FIELDS, purpose: 'guest.command', action: { action: 'task.start', projectId: 'proj-alpha', computerId: 'pc-01', args: { task: 'build the project', vmId, expectedGeneration: 3 } } };
   const wire = JSON.parse(buildSubmitRequestText({ ...TASK_FIELDS, attestation: task }));

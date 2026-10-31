@@ -55,7 +55,10 @@ describe('approved operation flow: real Approval Authority and real Host Broker 
             if (decided.some((d) => d.approvalId === entry.approvalId)) continue;
             const decision = decide(entry, decided.length);
             const request = { v: 1, verb: 'decide', approvalId: entry.approvalId, decision, ...(decision === 'approve' ? { presence: fakeProof(entry) } : {}) };
-            decided.push({ approvalId: entry.approvalId, decision, action: entry.action, actionDigest: entry.actionDigest, answer: await authority.approver(request) });
+            // Recorded before the answer: the flow may see the decision and finish before the approver's reply reaches this loop.
+            const record = { approvalId: entry.approvalId, decision, action: entry.action, actionDigest: entry.actionDigest, answer: undefined };
+            decided.push(record);
+            record.answer = await authority.approver(request);
           }
         } catch (error) { errors.push(String(error)); }
         await sleep(150);

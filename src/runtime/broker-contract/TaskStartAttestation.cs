@@ -1,19 +1,20 @@
-// Task-start attestation v1. C# twin of task-start-attestation.mjs (digest, canonical bytes, envelope check, verify); task-start-attestation-vectors.json pins both. BCL only, net10.0.
+// Task-start attestation v2 (issue #133 added actionDigest). C# twin of task-start-attestation.mjs (digest, canonical bytes, envelope check, verify); task-start-attestation-vectors.json pins both. BCL only, net10.0.
 // Before a guest.command / task.start is submitted for approval, the Hyper-V Broker side takes a Production checkpoint of the VM and signs ONE statement that says "this environment has no
 // network" and "this checkpoint was taken" for one environment incarnation, lease and operation. At the standard tier the Approval Authority signs task.start without a person only when it
 // verifies this statement (docs/architecture/approval-tiers.md, "Step 4 as built"; issue #115 step 4).
 //
-// It is its own kind next to NetworkAttestation: its own domain and its own 13 body keys, so a network attestation is never read as this one (the keys differ, the signature covers another
+// It is its own kind next to NetworkAttestation: its own domain and its own 14 body keys, so a network attestation is never read as this one (the keys differ, the signature covers another
 // domain) and this one is never read as a network attestation. Same key, same signature scheme (ECDSA P-256 / SHA-256, r || s, checked by the injected verify), same TTL rule.
 //
-//   body     13 keys: v (1), network ("none" | "present" | "unknown"), computerId, vmId (the VM's own Hyper-V id), generation, projectId, leaseId, leaseGeneration, operationId,
+//   body     14 keys: v (2), network ("none" | "present" | "unknown"), computerId, vmId (the VM's own Hyper-V id), generation, projectId, leaseId, leaseGeneration, operationId,
+//            actionDigest ("sha256:" + 64 lowercase hex: the action digest of the guest.command DTO the Authority will sign; one statement backs exactly one action),
 //            checkpointId (the Hyper-V snapshot id, a lowercase GUID), checkpointType ("production" | "standard"), observedAt, expiresAt (Unix seconds from the BROKER's clock; at most 300 s apart)
-//   preimage UTF8("albera.task-start-attestation.v1") 0x00 enc(map)   (enc as in ActionDigest.cs)
+//   preimage UTF8("albera.task-start-attestation.v2") 0x00 enc(map)   (enc as in ActionDigest.cs)
 //   digest   "sha256:" + lowercase hex of SHA-256(preimage); the signature covers the preimage bytes; keyId and signature are not part of the digest
 //   signed   { attestation, digest, keyId, signature }  signature = unpadded base64url of the signer's bytes
 //
 // Verify checks, in this order: shape, TTL and digest, signature, not yet valid, expired (the clock is read AFTER the signature check), then every binding in the caller's own trusted state
-// (computerId, generation, leaseGeneration, leaseId, operationId, projectId, vmId). It says nothing about whether the statement is ENOUGH: that is ProvesCheckpointedNoNetwork (network none AND
+// (actionDigest, computerId, generation, leaseGeneration, leaseId, operationId, projectId, vmId). It says nothing about whether the statement is ENOUGH: that is ProvesCheckpointedNoNetwork (network none AND
 // checkpointType production), decided by the caller. A statement is evidence at observedAt only.
 using System;
 using System.Buffers.Text;
@@ -27,24 +28,24 @@ using System.Text.RegularExpressions;
 namespace Albera.BrokerContract;
 
 public sealed record TaskStartAttestationBody(long V, string Network, string ComputerId, string VmId, long Generation, string ProjectId, string LeaseId, long LeaseGeneration, string OperationId,
-    string CheckpointId, string CheckpointType, long ObservedAt, long ExpiresAt);
+    string ActionDigest, string CheckpointId, string CheckpointType, long ObservedAt, long ExpiresAt);
 
-/// <summary>What the caller itself knows about the task start it is deciding. Every part is required.</summary>
-public sealed record TaskStartExpected(string ComputerId, string VmId, long Generation, string ProjectId, string LeaseId, long LeaseGeneration, string OperationId);
+/// <summary>What the caller itself knows about the task start it is deciding. Every part is required. ActionDigest is the digest the caller computed itself from the DTO it will sign.</summary>
+public sealed record TaskStartExpected(string ComputerId, string VmId, long Generation, string ProjectId, string LeaseId, long LeaseGeneration, string OperationId, string ActionDigest);
 
 /// <summary>Code null = ok. Codes: invalid_context invalid_expected malformed ttl digest signature not_yet_valid expired binding; Field is only ever a fixed field name or "$extra".</summary>
 public sealed record TaskStartVerdict(bool Ok, string? Code = null, string? Field = null, TaskStartAttestationBody? Value = null, string? Digest = null, string? KeyId = null);
 
 public static class TaskStartAttestation
 {
-    public const long Version = 1;
-    public const string Domain = "albera.task-start-attestation.v1";
+    public const long Version = 2;
+    public const string Domain = "albera.task-start-attestation.v2";
     public const string None = "none", Production = "production";
     private const int MaxSignatureBytes = 128;
 
     private static readonly string[] Networks = ["none", "present", "unknown"];
     private static readonly string[] CheckpointTypes = ["production", "standard"];
-    private static readonly string[] BodyKeys = ["checkpointId", "checkpointType", "computerId", "expiresAt", "generation", "leaseGeneration", "leaseId", "network", "observedAt", "operationId", "projectId", "v", "vmId"];
+    private static readonly string[] BodyKeys = ["actionDigest", "checkpointId", "checkpointType", "computerId", "expiresAt", "generation", "leaseGeneration", "leaseId", "network", "observedAt", "operationId", "projectId", "v", "vmId"];
     private static readonly string[] SignedKeys = ["attestation", "digest", "keyId", "signature"];
     private static readonly Regex IdRegex = ActionDigest.FromEcma(ActionDigest.IdPattern);
     private static readonly Regex DigestRegex = ActionDigest.FromEcma("^sha256:[0-9a-f]{64}$");
@@ -53,6 +54,7 @@ public static class TaskStartAttestation
     private static TaskStartVerdict Fail(string code, string? field = null) => new(false, code, field);
     private static bool IsCounter(object? v) => v is long n && n >= 1 && n <= StrictJson.MaxSafeInteger;
     private static bool IsId(object? v) => v is string s && IdRegex.IsMatch(s);
+    private static bool IsDigest(object? v) => v is string s && DigestRegex.IsMatch(s);
     private static bool IsGuid(object? v) => v is string s && NetworkAttestation.IsVmId(s);
     private static bool SameKeys(IReadOnlyDictionary<string, object> map, string[] keys) => map.Count == keys.Length && keys.All(map.ContainsKey);
 
@@ -75,6 +77,7 @@ public static class TaskStartAttestation
             ("leaseId", IsId(b["leaseId"])),
             ("leaseGeneration", IsCounter(b["leaseGeneration"])),
             ("operationId", IsId(b["operationId"])),
+            ("actionDigest", IsDigest(b["actionDigest"])),
             ("checkpointId", IsGuid(b["checkpointId"])),
             ("checkpointType", b["checkpointType"] is string type && CheckpointTypes.Contains(type)),
             ("observedAt", IsCounter(b["observedAt"])),
@@ -84,7 +87,7 @@ public static class TaskStartAttestation
         long observedAt = (long)b["observedAt"], expiresAt = (long)b["expiresAt"];
         if (expiresAt <= observedAt || expiresAt - observedAt > NetworkAttestation.MaxTtlSeconds) return Fail("ttl", "expiresAt");
         TaskStartAttestationBody value = new((long)b["v"], (string)b["network"], (string)b["computerId"], (string)b["vmId"], (long)b["generation"], (string)b["projectId"], (string)b["leaseId"],
-            (long)b["leaseGeneration"], (string)b["operationId"], (string)b["checkpointId"], (string)b["checkpointType"], observedAt, expiresAt);
+            (long)b["leaseGeneration"], (string)b["operationId"], (string)b["actionDigest"], (string)b["checkpointId"], (string)b["checkpointType"], observedAt, expiresAt);
         return new TaskStartVerdict(true, Value: value);
     }
 
@@ -94,7 +97,7 @@ public static class TaskStartAttestation
         Dictionary<string, object> map = new(StringComparer.Ordinal)
         {
             ["v"] = body.V, ["network"] = body.Network, ["computerId"] = body.ComputerId, ["vmId"] = body.VmId, ["generation"] = body.Generation, ["projectId"] = body.ProjectId,
-            ["leaseId"] = body.LeaseId, ["leaseGeneration"] = body.LeaseGeneration, ["operationId"] = body.OperationId, ["checkpointId"] = body.CheckpointId,
+            ["leaseId"] = body.LeaseId, ["leaseGeneration"] = body.LeaseGeneration, ["operationId"] = body.OperationId, ["actionDigest"] = body.ActionDigest, ["checkpointId"] = body.CheckpointId,
             ["checkpointType"] = body.CheckpointType, ["observedAt"] = body.ObservedAt, ["expiresAt"] = body.ExpiresAt,
         };
         using MemoryStream buffer = new();
@@ -143,9 +146,15 @@ public static class TaskStartAttestation
     public static TaskStartVerdict Verify(object? signed, Func<long> clock, Func<string, byte[], byte[], bool> verify, TaskStartExpected expected)
     {
         if (clock is null || verify is null) return Fail("invalid_context");
-        if (!IsId(expected.ComputerId) || !IsId(expected.ProjectId) || !IsId(expected.LeaseId) || !IsId(expected.OperationId)) return Fail("invalid_expected");
-        if (!NetworkAttestation.IsVmId(expected.VmId)) return Fail("invalid_expected", "vmId");
-        if (expected.Generation < 1 || expected.LeaseGeneration < 1) return Fail("invalid_expected");
+        // Every expected value is checked, and named, in the Node twin's order (issue #133): the ids, the VM id, the action digest, then the two counters, which must be safe integers.
+        if (!IsId(expected.ComputerId)) return Fail("invalid_expected", "computerId");
+        if (!IsId(expected.ProjectId)) return Fail("invalid_expected", "projectId");
+        if (!IsId(expected.LeaseId)) return Fail("invalid_expected", "leaseId");
+        if (!IsId(expected.OperationId)) return Fail("invalid_expected", "operationId");
+        if (!IsGuid(expected.VmId)) return Fail("invalid_expected", "vmId");
+        if (!IsDigest(expected.ActionDigest)) return Fail("invalid_expected", "actionDigest");
+        if (!IsCounter(expected.Generation)) return Fail("invalid_expected", "generation");
+        if (!IsCounter(expected.LeaseGeneration)) return Fail("invalid_expected", "leaseGeneration");
         (TaskStartVerdict read, byte[] preimage, byte[] signature) = ReadSigned(signed);
         if (!read.Ok) return read;
         bool genuine;
@@ -159,7 +168,8 @@ public static class TaskStartAttestation
         TaskStartAttestationBody a = read.Value!;
         if (a.ObservedAt > now + NetworkAttestation.MaxObservedSkewSeconds) return Fail("not_yet_valid", "observedAt");
         if (now >= a.ExpiresAt) return Fail("expired", "expiresAt");
-        // Same order as the Node twin: computerId, generation, leaseGeneration, leaseId, operationId, projectId, vmId.
+        // Same order as the Node twin: actionDigest, computerId, generation, leaseGeneration, leaseId, operationId, projectId, vmId.
+        if (a.ActionDigest != expected.ActionDigest) return Fail("binding", "actionDigest");
         if (a.ComputerId != expected.ComputerId) return Fail("binding", "computerId");
         if (a.Generation != expected.Generation) return Fail("binding", "generation");
         if (a.LeaseGeneration != expected.LeaseGeneration) return Fail("binding", "leaseGeneration");

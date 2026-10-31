@@ -124,18 +124,37 @@ function Invoke-Create($Req) {
 # too), and the VM id is mandatory, so the checkpoint is taken of exactly the VM the approval names. ProductionOnly (not Production): a Production checkpoint falls back to a Standard one when the
 # guest cannot freeze its disk (VSS), and a Standard checkpoint saves the guest's memory, which may hold secrets, to the host disk; ProductionOnly fails instead, and a failure means no attestation.
 # No checkpoint is restored, removed or merged anywhere in this script. Reports the new snapshot's id (a lowercase GUID) and the VM's own id.
+# WHAT IS OBSERVED (#133): the snapshot's SnapshotType is NOT used: the listing cmdlet reports SnapshotType Standard for a ProductionOnly checkpoint (real host, 2026-10-31), so
+# that field proves nothing. What is used is the VM state the snapshot recorded: with the VM running, a Standard checkpoint (guest memory saved) records snapshot State Saved and a
+# ProductionOnly one records State Off (real host, 2026-11-01, control taken on a disposable VM). So the op attests only when the new snapshot's State is Off, on top of setting
+# ProductionOnly and reading the VM's setting back before the checkpoint; anything else is an unknown outcome, i.e. no attestation.
+# The VM's own CheckpointType is borrowed for this one call and put back in finally, so this op leaves no lasting change to the VM's configuration. If the put-back itself fails the
+# VM stays ProductionOnly (the safe direction: no later checkpoint can silently save the guest's memory) and the op reports an unknown outcome, i.e. no attestation.
 function Invoke-Checkpoint($Req) {
   if ($Req.checkpointName -isnot [string] -or $Req.checkpointName -cnotmatch $CheckpointNameRe) { Reject 'invalid_provider_state' }
   if ([string]$Req.expect.identity -ne 'vm' -or $null -eq $Req.expect.vmId) { Reject 'invalid_provider_state' }
   $vm = Require-Vm $Req.vmName $Req.expect
+  $previousType = [string]$vm.CheckpointType
+  $changedType = $false
+  $restoreFailed = $false
+  $typeNotSet = $false
+  $snapshots = @()
   try {
-    if ([string]$vm.CheckpointType -ne 'ProductionOnly') { Set-VM -VM $vm -CheckpointType ProductionOnly }
-    $snapshots = @(Checkpoint-VM -VM $vm -SnapshotName $Req.checkpointName -Passthru)
+    if ($previousType -ne 'ProductionOnly') { Set-VM -VM $vm -CheckpointType ProductionOnly -ErrorAction Stop; $changedType = $true }
+    # Read back, not assumed: the checkpoint below is taken only while the VM is observed to be ProductionOnly.
+    if ([string](Get-VM -Id $vm.Id -ErrorAction Stop).CheckpointType -ne 'ProductionOnly') { $typeNotSet = $true }
+    else { $snapshots = @(Checkpoint-VM -VM $vm -SnapshotName $Req.checkpointName -Passthru -ErrorAction Stop) }
   } catch { Abort 'provider_unavailable' }
+  finally {
+    if ($changedType) { try { Set-VM -VM $vm -CheckpointType $previousType -ErrorAction Stop } catch { $restoreFailed = $true } }
+  }
+  if ($typeNotSet) { Abort 'provider_unavailable' }
+  if ($restoreFailed) { Abort 'provider_state_unknown' }
   if ($snapshots.Count -ne 1) { Abort 'provider_state_unknown' }
+  if ([string]$snapshots[0].State -ne 'Off') { Abort 'provider_state_unknown' }
   $checkpointId = ([string]$snapshots[0].Id).ToLowerInvariant()
   if ($checkpointId -cnotmatch $GuidRe) { Abort 'provider_state_unknown' }
-  $after = Get-VM -Name $Req.vmName
+  $after = Get-VM -Name $Req.vmName -ErrorAction Stop
   @{ ok = $true; checkpointId = $checkpointId; vmId = ([string]$after.Id).ToLowerInvariant(); state = [string]$after.State }
 }
 

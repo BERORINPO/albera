@@ -204,7 +204,7 @@ if (args.Length >= 5)
         {
             JsonElement e = c.GetProperty("expected");
             TaskStartExpected expected = new(e.GetProperty("computerId").GetString()!, e.GetProperty("vmId").GetString()!, e.GetProperty("generation").GetInt64(), e.GetProperty("projectId").GetString()!,
-                e.GetProperty("leaseId").GetString()!, e.GetProperty("leaseGeneration").GetInt64(), e.GetProperty("operationId").GetString()!);
+                e.GetProperty("leaseId").GetString()!, e.GetProperty("leaseGeneration").GetInt64(), e.GetProperty("operationId").GetString()!, e.GetProperty("actionDigest").GetString()!);
             long now = c.GetProperty("now").GetInt64();
             TaskStartVerdict verdict = TaskStartAttestation.Verify(ToValue(c.GetProperty("signed")), () => now, VerifyTask, expected);
             var result = new Dictionary<string, object?> { ["name"] = c.GetProperty("name").GetString(), ["ok"] = verdict.Ok };

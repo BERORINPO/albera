@@ -408,7 +408,8 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
       const TASK = { action: 'task.start', projectId: 'proj-alpha', computerId: 'pc-01', args: { expectedGeneration: 3, task: 'build the project', vmId: VM_A } };
       const taskRequest = (operationId, extra = {}) => submitRequest({ purpose: 'guest.command', operationId, idempotencyKey: operationId, action: TASK, ...extra });
       const taskStatement = async (operationId, overrides = {}, by = signer) => JSON.parse(JSON.stringify(await signTaskStartAttestation(createTaskStartAttestation({
-        network: 'none', computerId: 'pc-01', vmId: VM_A, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, operationId, checkpointId: CHECKPOINT, observedAt: NOW() - 5, ...overrides,
+        network: 'none', computerId: 'pc-01', vmId: VM_A, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, operationId, actionDigest: computeActionDigest('guest.command', TASK),
+        checkpointId: CHECKPOINT, observedAt: NOW() - 5, ...overrides,
       }), by)));
       await withPinnedAuthority(signer, async (authority, raise) => {
         assert.equal((await authority.submit(taskRequest('t-careful', { attestation: await taskStatement('t-careful') }))).state, 'pending', 'careful tier: a valid attestation is worth nothing');
@@ -433,6 +434,8 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
           ['t-standard-checkpoint', await taskStatement('t-standard-checkpoint', { checkpointType: 'standard' }), 'checkpoint_standard'],
           ['t-network-present', await taskStatement('t-network-present', { network: 'present' }), 'network_present'],
           ['t-other-operation', await taskStatement('t-somebody-else'), 'binding:operationId'],
+          // issue #133: a statement made for one task does not back another task under the same operation (the Authority compares the digest it computed itself)
+          ['t-other-task', await taskStatement('t-other-task', { actionDigest: computeActionDigest('guest.command', { ...TASK, args: { ...TASK.args, task: 'delete everything' } }) }), 'binding:actionDigest'],
           ['t-other-key', await taskStatement('t-other-key', {}, newSigner()), 'signature:signature'],
           ['t-expired', await taskStatement('t-expired', { observedAt: NOW() - 100 }), 'expired:expiresAt'],
           ['t-other-vm', await taskStatement('t-other-vm', { vmId: VM_B }), 'binding:vmId'],
