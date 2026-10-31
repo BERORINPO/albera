@@ -482,8 +482,9 @@ function defineFlowSuite(label, newJournal) {
         action: { action: 'task.start', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3, task: 'build the project', vmId: VM_A } },
       });
       const signer = createEcdsaAttestationSigner({ keyId: 'albera-test-broker-1', privateKey: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey });
+      const ACTION_DIGEST = computeActionDigest(TASK_START.purpose, TASK_START.action);
       const taskAttestation = async (overrides = {}) => JSON.parse(JSON.stringify(await signTaskStartAttestation(createTaskStartAttestation({
-        network: 'none', computerId: 'computer-1', vmId: VM_A, generation: 3, projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7, operationId: 'op-1',
+        network: 'none', computerId: 'computer-1', vmId: VM_A, generation: 3, projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7, operationId: 'op-1', actionDigest: ACTION_DIGEST,
         checkpointId: CHECKPOINT, checkpointType: 'production', observedAt: Math.floor(START_MS / 1000), ...overrides,
       }), signer)));
       /** The Broker side answers `attestTaskStart` with a ready envelope (or a scripted result); every call is recorded in world.calls and world.taskAttests. */
@@ -518,7 +519,8 @@ function defineFlowSuite(label, newJournal) {
         const result = await world.flow.run(TASK_START);
         assert.deepEqual([result.status, result.phase], ['claimed', 'CLAIMED']);
         assert.deepEqual(world.calls, ['fence', 'attestTaskStart', 'submit', 'status', 'claim']);
-        assert.deepEqual(world.taskAttests, [{ computerId: 'computer-1', projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7, generation: 3, vmId: VM_A, operationId: 'op-1' }]);
+        assert.deepEqual(world.taskAttests, [{ computerId: 'computer-1', projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7, generation: 3, vmId: VM_A, operationId: 'op-1', actionDigest: ACTION_DIGEST }]);
+        assert.equal(world.taskAttests[0].actionDigest, computeActionDigest('guest.command', world.submissions[0].action), 'the digest it is asked to bind is the digest of the DTO that is submitted');
         assert.deepEqual(world.submissions[0].attestation, envelope);
         assert.equal(world.journal.get('op-1').approval.attestationDigest, envelope.digest);
         assert.deepEqual(world.sleeps, []);
@@ -538,7 +540,7 @@ function defineFlowSuite(label, newJournal) {
         assert.equal(start.taskAttests.length, 0, 'environment.start never calls attestTaskStart');
       });
 
-      it('only an answer that says no network AND a Production checkpoint for this VM and this operation is attached; a network attestation, another VM, another operation, a Standard checkpoint, present / unknown are not', async () => {
+      it('only an answer that says no network AND a Production checkpoint for this VM, this operation and this action is attached; a network attestation, another VM, another operation, another task (issue #133), a Standard checkpoint, present / unknown are not', async () => {
         const net = JSON.parse(JSON.stringify(await signNetworkAttestation(createNetworkAttestation({
           network: 'none', computerId: 'computer-1', vmId: VM_A, generation: 3, projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7, observedAt: Math.floor(START_MS / 1000),
         }), signer)));
@@ -546,6 +548,7 @@ function defineFlowSuite(label, newJournal) {
           'a network attestation': net,
           'another VM': await taskAttestation({ vmId: VM_B }),
           'another operation': await taskAttestation({ operationId: 'op-2' }),
+          'another task under the same operation': await taskAttestation({ actionDigest: computeActionDigest('guest.command', { ...TASK_START.action, args: { ...TASK_START.action.args, task: 'delete everything' } }) }),
           'a Standard checkpoint': await taskAttestation({ checkpointType: 'standard' }),
           'network present': await taskAttestation({ network: 'present' }),
           'network unknown': await taskAttestation({ network: 'unknown' }),

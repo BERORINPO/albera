@@ -35,8 +35,8 @@ import { FlowJournalError } from './approved-operation-journal.mjs';
 //    without it and, at worst, a person is asked. The flow decides nothing from it: the Authority verifies it and signs without a person or queues. The digest of what was presented is recorded
 //    with the approval, and a receipt that names an attestation digest is only claimed when it is that one (an attested policy receipt without a presented attestation is receipt_mismatch).
 //  - Task-start attestation (#115 step 4). The same for task.start (purpose guest.command), through the OPTIONAL `broker.attestTaskStart({ computerId, projectId, leaseId, leaseGeneration, generation,
-//    vmId, operationId })`: the Broker side takes a Production checkpoint of that VM and signs one statement that says no network and that checkpoint was taken (for this operation). Only an answer
-//    that says exactly that for this VM and this operation is attached; everything else (no such function, a refusal, an exception, a malformed answer, a network attestation) means the
+//    vmId, operationId, actionDigest })`: the Broker side takes a Production checkpoint of that VM and signs one statement that says no network and that checkpoint was taken (for this operation
+//    and this one action: actionDigest is the digest of the DTO this flow submits, issue #133). Only an answer that says exactly that for this VM, operation and action is attached; everything else (no such function, a refusal, an exception, a malformed answer, a network attestation) means the
 //    submit goes without it and a person is asked. Same recording rule: the receipt must name the presented digest, and an attested policy receipt without one is receipt_mismatch.
 //  - Polling is bounded by the request's own expiry (the Authority's `expiresAt`) and by `maxPolls`, with exponential backoff.
 //  - `human_denied`, `request_expired` and the presence errors are final and recorded. So are `request_invalid`, `queue_full`, `authority_unavailable`.
@@ -182,10 +182,12 @@ export function createApprovedOperationFlow({ broker, authority, journal, now, s
     const ask = { computerId: action.computerId, projectId: action.projectId, leaseId: record.fence.leaseId, leaseGeneration: record.fence.leaseGeneration, generation, vmId };
     try {
       if (taskStart) {
-        const reply = await broker.attestTaskStart({ ...ask, operationId: record.operationId });
+        const actionDigest = computeActionDigest(record.purpose, action); // the digest the Authority will compute for the DTO submitted below
+        const reply = await broker.attestTaskStart({ ...ask, operationId: record.operationId, actionDigest });
         if (reply?.ok !== true) return null;
         const read = readSignedTaskStartAttestation(reply.attestation);
-        return provesCheckpointedNoNetwork(read.attestation) && read.attestation.vmId === vmId && read.attestation.operationId === record.operationId ? { envelope: reply.attestation, digest: read.digest } : null;
+        const a = read.attestation;
+        return provesCheckpointedNoNetwork(a) && a.vmId === vmId && a.operationId === record.operationId && a.actionDigest === actionDigest ? { envelope: reply.attestation, digest: read.digest } : null;
       }
       const reply = await broker.attest(ask);
       if (reply?.ok !== true) return null;

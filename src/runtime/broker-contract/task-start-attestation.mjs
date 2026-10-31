@@ -1,14 +1,16 @@
-// Task-start attestation v1 (docs/architecture/approval-tiers.md, "Step 4 as built"; issue #115 step 4).
+// Task-start attestation v2 (docs/architecture/approval-tiers.md, "Step 4 as built"; issue #115 step 4; v2 = issue #133).
 // Before a guest.command / task.start is submitted for approval, the Hyper-V Broker side takes a Production checkpoint of the VM and signs ONE statement that says both "this
 // environment has no network" and "this checkpoint was taken" for one environment incarnation, lease and operation. At the standard tier the Approval Authority may sign task.start
 // without a person only when it verifies this statement (the C# twin is TaskStartAttestation.cs, pinned by the same vectors file). Anything missing or wrong means a person is asked.
 //
 // It is the network attestation (network-attestation.mjs) plus the checkpoint, as its own kind: its own domain string and its own body keys, so a network attestation can never be
-// read as a task-start one (the body has 13 keys, not 10, and the signature covers another domain) and a task-start attestation can never be read as a network one. Same signature
+// read as a task-start one (the body has 14 keys, not 10, and the signature covers another domain) and a task-start attestation can never be read as a network one. Same signature
 // scheme and the same Broker key (ECDSA P-256 / SHA-256 over the canonical bytes, signer port `{ keyId, sign(bytes) }`), same TTL rule (60 s by default, at most 300 s, Broker clock).
 //
 // WHAT IT SAYS, bound to computerId, vmId (the VM's own Hyper-V id), generation, projectId, leaseId, leaseGeneration (claims echoed into the statement and checked by the verifier
-// against its own state) and operationId (the checkpoint is the one taken for THAT task start: a statement made for one operation cannot be reused for another):
+// against its own state), operationId (the checkpoint is the one taken for THAT task start: a statement made for one operation cannot be reused for another) and actionDigest (the
+// "sha256:" action digest of the guest.command DTO the Authority will sign for that start: one statement backs exactly one action, so it cannot back a second policy receipt for the
+// same operation with another task. The Authority computes the digest itself and the verifier compares it; v2 added this key, so a v1 statement is malformed, issue #133):
 //   network         "none" | "present" | "unknown", read by the Broker (a task-start attestation is only worth anything when it is "none")
 //   checkpointId    the Hyper-V snapshot id the Broker got back from Checkpoint-VM (a lowercase GUID)
 //   checkpointType  "production" | "standard"; only "production" counts (it does not copy the guest's memory, which may hold secrets, to the host disk)
@@ -16,22 +18,22 @@
 //
 // STALENESS is the network attestation's: evidence at observedAt only; the verifier refuses an expired or not-yet-valid statement and any binding that differs from what the caller expects.
 //
-//   preimage = UTF8("albera.task-start-attestation.v1") 0x00 enc(map)          enc(map) / enc(string) / enc(int) as in action-digest.mjs
+//   preimage = UTF8("albera.task-start-attestation.v2") 0x00 enc(map)          enc(map) / enc(string) / enc(int) as in action-digest.mjs
 //   digest   = "sha256:" lowercase-hex(SHA-256(preimage))                      the signature covers the preimage bytes; keyId and signature are not part of the digest
 //   signed   = { attestation, digest, keyId, signature }                       signature = unpadded base64url of the signer's bytes
 import { createHash } from 'node:crypto';
 import { ID_PATTERN, encMap } from './action-digest.mjs';
 import { DEFAULT_TTL_SECONDS, MAX_OBSERVED_SKEW_SECONDS, MAX_TTL_SECONDS, NETWORK_VALUES, isVmId, readPlain } from './network-attestation.mjs';
 
-export const TASK_START_ATTESTATION_VERSION = 1;
-export const TASK_START_ATTESTATION_DOMAIN = 'albera.task-start-attestation.v1';
+export const TASK_START_ATTESTATION_VERSION = 2;
+export const TASK_START_ATTESTATION_DOMAIN = 'albera.task-start-attestation.v2';
 export const CHECKPOINT_TYPES = Object.freeze(['production', 'standard']);
 /** The one checkpoint type that lets the Authority skip a person. */
 export const REQUIRED_CHECKPOINT_TYPE = 'production';
 const MAX_SIGNATURE_BYTES = 128;
-const BODY_KEYS = Object.freeze(['checkpointId', 'checkpointType', 'computerId', 'expiresAt', 'generation', 'leaseGeneration', 'leaseId', 'network', 'observedAt', 'operationId', 'projectId', 'v', 'vmId']);
+const BODY_KEYS = Object.freeze(['actionDigest', 'checkpointId', 'checkpointType', 'computerId', 'expiresAt', 'generation', 'leaseGeneration', 'leaseId', 'network', 'observedAt', 'operationId', 'projectId', 'v', 'vmId']);
 const SIGNED_KEYS = Object.freeze(['attestation', 'digest', 'keyId', 'signature']);
-const EXPECTED_KEYS = Object.freeze(['computerId', 'generation', 'leaseGeneration', 'leaseId', 'operationId', 'projectId', 'vmId']); // sorted: also the order bindings are checked in
+const EXPECTED_KEYS = Object.freeze(['actionDigest', 'computerId', 'generation', 'leaseGeneration', 'leaseId', 'operationId', 'projectId', 'vmId']); // sorted: also the order bindings are checked in
 const ID_RE = new RegExp(ID_PATTERN);
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
@@ -43,6 +45,7 @@ export class TaskStartAttestationError extends Error {
 const fail = (code, field) => new TaskStartAttestationError(code, field);
 const isCounter = (v) => Number.isSafeInteger(v) && v >= 1;
 const isId = (v) => typeof v === 'string' && ID_RE.test(v);
+const isDigest = (v) => typeof v === 'string' && DIGEST_RE.test(v);
 
 /** Validate the attestation body and return a frozen normalized copy. @throws {TaskStartAttestationError} code malformed | ttl (field names the rule) */
 export function validateTaskStartAttestation(body) {
@@ -57,6 +60,7 @@ export function validateTaskStartAttestation(body) {
     leaseId: isId(b.leaseId),
     leaseGeneration: isCounter(b.leaseGeneration),
     operationId: isId(b.operationId),
+    actionDigest: isDigest(b.actionDigest),
     checkpointId: isVmId(b.checkpointId), // a Hyper-V snapshot id has the same lowercase GUID form as a VM id
     checkpointType: CHECKPOINT_TYPES.includes(b.checkpointType),
     observedAt: isCounter(b.observedAt),
@@ -72,11 +76,11 @@ export const provesCheckpointedNoNetwork = (attestation) => attestation?.network
 
 /** Build the body from what the Broker itself observed and got back from Hyper-V. observedAt is the Broker clock in Unix seconds; the TTL is Broker configuration. */
 export function createTaskStartAttestation({
-  network, computerId, vmId, generation, projectId, leaseId, leaseGeneration, operationId, checkpointId, checkpointType = REQUIRED_CHECKPOINT_TYPE, observedAt, ttlSeconds = DEFAULT_TTL_SECONDS,
+  network, computerId, vmId, generation, projectId, leaseId, leaseGeneration, operationId, actionDigest, checkpointId, checkpointType = REQUIRED_CHECKPOINT_TYPE, observedAt, ttlSeconds = DEFAULT_TTL_SECONDS,
 }) {
   if (!Number.isSafeInteger(observedAt) || !Number.isSafeInteger(ttlSeconds)) throw fail('malformed', 'observedAt');
   return validateTaskStartAttestation({
-    v: TASK_START_ATTESTATION_VERSION, network, computerId, vmId, generation, projectId, leaseId, leaseGeneration, operationId, checkpointId, checkpointType, observedAt, expiresAt: observedAt + ttlSeconds,
+    v: TASK_START_ATTESTATION_VERSION, network, computerId, vmId, generation, projectId, leaseId, leaseGeneration, operationId, actionDigest, checkpointId, checkpointType, observedAt, expiresAt: observedAt + ttlSeconds,
   });
 }
 
@@ -124,13 +128,15 @@ function readExpected(expected) {
   const e = readPlain(expected, EXPECTED_KEYS, 'invalid_expected', fail);
   for (const field of ['computerId', 'projectId', 'leaseId', 'operationId']) if (!isId(e[field])) throw fail('invalid_expected', field);
   if (!isVmId(e.vmId)) throw fail('invalid_expected', 'vmId');
-  for (const field of ['generation', 'leaseGeneration']) if (!isCounter(e[field])) throw fail('invalid_expected', field);
+  if (!isDigest(e.actionDigest)) throw fail('invalid_expected', 'actionDigest');
+  for (const field of ['generation', 'leaseGeneration']) if (!isCounter(e[field])) throw fail('invalid_expected', field); // safe integers only (the C# twin bounds them the same way)
   return e;
 }
 
 /**
  * Full check, in this order: shape, TTL and digest, signature (the injected `verify(keyId, bytes, signatureBytes)` must return exactly true), not yet valid, expired, then every binding
- * in `expected` (computerId, generation, leaseGeneration, leaseId, operationId, projectId, vmId), all of which come from the caller's own trusted state. Returns the attestation; whether
+ * in `expected` (actionDigest, computerId, generation, leaseGeneration, leaseId, operationId, projectId, vmId), all of which come from the caller's own trusted state (actionDigest: the
+ * digest the Authority computed itself from the DTO it will sign). Returns the attestation; whether
  * it is ENOUGH (network none, Production checkpoint) is `provesCheckpointedNoNetwork`, decided by the caller.
  * @param {object} signed
  * @param {{clock: () => number, verify: (keyId: string, bytes: Buffer, signature: Buffer) => boolean, expected: object}} ctx clock returns Unix seconds
