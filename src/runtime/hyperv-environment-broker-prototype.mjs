@@ -364,9 +364,9 @@ export function createHyperVEnvironmentBrokerPrototype({
       if (vm.vmId !== operation.vmId) throw brokerError('operation_conflict', 'not_applied');
       expect = { ...expect, vmId: operation.vmId, identity: 'vm' };
     }
-    // Same observation as the VM id above. "present" and "unknown" (unreadable) both refuse. What remains is the gap between this read and the script's start; the script checks the VM id only.
+    // Same observation as the VM id above. "present" and "unknown" (unreadable) both refuse. The script then counts the adapters again in the start call itself (requireNoAdapters).
     if (attested && classifyNetworkAdapters(vm.adapters) !== 'none') throw brokerError('network_not_isolated', 'not_applied');
-    const result = await call({ method, vmName, expect, waitSeconds });
+    const result = await call({ method, vmName, expect, waitSeconds, ...(attested ? { requireNoAdapters: true } : {}) });
     return observed(operation.computerId, mapState(result.state), operation.expectedGeneration);
   }
 }

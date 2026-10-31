@@ -61,6 +61,7 @@ function fakePowerShell() {
         return { ok: true, state: 'Off' };
       case 'start':
         if (!owned()) return { ok: false, code: 'invalid_provider_state', notApplied: true };
+        if (request.requireNoAdapters === true && (vm.adapters ?? []).length !== 0) return { ok: false, code: 'invalid_provider_state', notApplied: true };
         vm.state = 'Running';
         return { ok: true, state: vm.state };
       case 'stop':
@@ -342,6 +343,33 @@ test('item 2 (#128): the adapters are read again right before an attested start:
   assert.equal((await broker.startVm(attested)).state, 'running');
   const methods = ps.calls.map((c) => c.method);
   assert.ok(methods.lastIndexOf('network') < methods.indexOf('start'), 'the network was read before the start');
+  assert.equal(ps.calls.find((c) => c.method === 'start').requireNoAdapters, true, 'and the script is told to count the adapters again in the start call');
+});
+
+test('item 2 (#128): an adapter added after the Node-side read is still refused by the start call itself; a start that is not attested does not ask for it', async () => {
+  const inner = fakePowerShell();
+  let attachOnStart = true;
+  const ps = { ...inner, run: async (request) => {
+    // attached between the Node-side network read and the start call
+    if (request.method === 'start' && attachOnStart) inner.vms.get('albera-pc-01').adapters = [{ connected: true, switchType: 'External' }];
+    return inner.run(request);
+  } };
+  const { broker } = makeBroker({ ps });
+  await broker.createVm(op('create'));
+  const vm = inner.vms.get('albera-pc-01');
+  await rejects(broker.startVm(op('start', { attestedPolicy: true, vmId: vm.id })), 'invalid_provider_state', 'not_applied');
+  assert.equal(vm.state, 'Off');
+  vm.adapters = [];
+  attachOnStart = false;
+  await broker.startVm(op('start'));
+  assert.equal(inner.calls.filter((c) => c.method === 'start').at(-1).requireNoAdapters, undefined);
+});
+
+test('env-io.ps1: Invoke-Start counts the adapters before Start-VM when requireNoAdapters is set', () => {
+  const text = fs.readFileSync(new URL('../src/runtime/hyperv-env/env-io.ps1', import.meta.url), 'utf8');
+  const start = text.slice(text.indexOf('function Invoke-Start'), text.indexOf('function Invoke-Stop'));
+  const guard = start.indexOf("if ($Req.requireNoAdapters -eq $true -and @(Get-VMNetworkAdapter -VM $vm).Count -ne 0) { Reject 'invalid_provider_state' }");
+  assert.ok(guard > 0 && guard < start.indexOf('Start-VM') && guard < start.indexOf('Resume-VM'));
 });
 
 test('item 2 (#128): the network rule is for attested starts only: a start a person approved (with or without a vmId) behaves as before and reads with inspect', async () => {

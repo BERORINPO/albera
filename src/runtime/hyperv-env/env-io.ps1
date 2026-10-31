@@ -5,7 +5,7 @@
 #   {"method":"create","vmName":..,"cloneRoot":..,"vmDir":..,"parentPath":..,"childPath":..,"vcpu":2,"memoryMiB":2048,"notes":".."}
 #   {"method":"network","vmName":"albera-x"}   (read-only: inspect's fields plus the adapter facts the Broker classifies, in one read; see broker-contract/network-attestation.mjs)
 #   {"method":"checkpoint","vmName":..,"expect":{"computerId":..,"generation":1,"vmId":..,"identity":"vm"},"checkpointName":"albera-task-<24 hex>"}   (task.start, #115 step 4; see Invoke-Checkpoint)
-#   {"method":"start"|"stop"|"remove","vmName":..,"expect":{"computerId":..,"generation":1}, ...}
+#   {"method":"start"|"stop"|"remove","vmName":..,"expect":{"computerId":..,"generation":1}, ...}   (start may add "requireNoAdapters":true, see Invoke-Start)
 #   {"method":"annotate","vmName":..,"expect":{..},"notes":"..","incarnationId":".."}   (rewrites Notes of an owned VM; used to write the retirement identity)
 # "expect" may also carry vmId (the Hyper-V VM GUID), projectId and incarnationId: when present they must equal the VM's own id / Notes values.
 # "expect.identity" makes them mandatory: "vm" = vmId must be given, "full" = vmId, projectId and incarnationId must all be given.
@@ -139,8 +139,11 @@ function Invoke-Checkpoint($Req) {
   @{ ok = $true; checkpointId = $checkpointId; vmId = ([string]$after.Id).ToLowerInvariant(); state = [string]$after.State }
 }
 
+# "requireNoAdapters": true (an attested-policy start, #128): the VM must have no network adapter at all, read here, in the same call, right before it starts.
+# The Node side has already refused any adapter; this closes most of the gap between that read and the start (an adapter added after this line still remains a host-admin race).
 function Invoke-Start($Req) {
   $vm = Require-Vm $Req.vmName $Req.expect
+  if ($Req.requireNoAdapters -eq $true -and @(Get-VMNetworkAdapter -VM $vm).Count -ne 0) { Reject 'invalid_provider_state' }
   if ($vm.State -eq 'Paused') { Resume-VM -VM $vm }
   elseif ($vm.State -ne 'Running') { Start-VM -VM $vm }
   @{ ok = $true; state = [string](Get-VM -Name $Req.vmName).State }
