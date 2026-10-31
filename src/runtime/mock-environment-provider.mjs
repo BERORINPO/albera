@@ -13,7 +13,7 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     if (typeof now !== 'function') throw new TypeError('invalid_clock');
     this.#now = now;
     this.#retirements = retirements ?? createRetirementJournal({ nowMs: () => Date.parse(now()) });
-    if (typeof this.#retirements.retire !== 'function' || typeof this.#retirements.get !== 'function') throw new TypeError('invalid_retirement_journal');
+    if (['retire', 'get', 'remove', 'expired'].some((method) => typeof this.#retirements[method] !== 'function')) throw new TypeError('invalid_retirement_journal');
   }
 
   failNext(action, { timing = 'before', code = 'mock_provider_failure' } = {}) {
@@ -29,6 +29,8 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     if (this.#computers.has(operation.computerId)) {
       throw new EnvironmentProviderError('computer_already_exists', { outcome: 'not_applied' });
     }
+    // A retirement record means this id still has a retired incarnation: never create a new one over it.
+    if (this.#record(operation.computerId)) throw new EnvironmentProviderError('operation_conflict', { outcome: 'not_applied' });
     const computer = { projectId: operation.projectId, generation: operation.expectedGeneration, state: 'off' };
     this.#computers.set(operation.computerId, computer);
     const observed = this.#observation(operation.computerId, computer);
@@ -40,7 +42,8 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     const operation = validateEnvironmentOperation({ ...input, action: 'inspect' });
     this.#maybeFail('inspect', 'before');
     const computer = this.#computers.get(operation.computerId);
-    if (!computer) return this.#observation(operation.computerId, { generation: operation.expectedGeneration, state: 'missing' });
+    // A record with no environment behind it is an unfinished clean-up: never report that as plain "missing".
+    if (!computer) return this.#observation(operation.computerId, { generation: operation.expectedGeneration, state: this.#record(operation.computerId) ? 'unknown' : 'missing' });
     this.#assertOwnership(operation, computer, { allowOldGenerationForInspection: true });
     const observed = this.#observation(operation.computerId, computer);
     this.#maybeFail('inspect', 'after');
@@ -54,16 +57,20 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     const operation = validateEnvironmentOperation({ ...input, action: 'destroy' });
     this.#maybeFail('destroy', 'before');
     const computer = this.#computers.get(operation.computerId);
-    if (!computer) return this.#observation(operation.computerId, { generation: operation.expectedGeneration, state: 'missing' });
-    this.#assertOwnership(operation, computer);
-    this.#computers.delete(operation.computerId);
-    this.#retirements.remove(operation.computerId); // a destroyed environment leaves no retirement record behind
+    if (computer) {
+      this.#assertOwnership(operation, computer);
+      this.#computers.delete(operation.computerId);
+    }
+    // Clean up the retirement record of THIS environment, also when an earlier attempt already removed it and died before this point.
+    // A record of another project, generation or incarnation is left alone. A failed clean-up is an error (unknown outcome), never success.
+    const record = this.#record(operation.computerId, 'unknown');
+    if (record && (computer ? this.#matches(record, computer) : record.generation === operation.expectedGeneration && record.projectId === operation.projectId)) this.#drop(record);
     const observed = this.#observation(operation.computerId, { generation: operation.expectedGeneration, state: 'missing' });
     this.#maybeFail('destroy', 'after');
     return observed;
   }
 
-  /** Stop, detach from the project and keep the disks; the Broker records the retirement time itself. Idempotent: a retired environment keeps its deadline. */
+  /** Stop, detach from the project and keep the disks; the Broker records the retirement time and a new incarnation id itself. Idempotent: a retired environment keeps its record. */
   async retire(input) {
     const operation = validateEnvironmentOperation({ ...input, action: 'retire' });
     this.#maybeFail('retire', 'before');
@@ -71,26 +78,31 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     if (!computer) throw new EnvironmentProviderError('computer_missing', { outcome: 'not_applied' });
     this.#assertOwnership(operation, computer);
     computer.state = 'off';
-    try { this.#retirements.retire({ computerId: operation.computerId, projectId: computer.projectId, generation: computer.generation }); }
+    let record;
+    try { record = this.#retirements.retire({ computerId: operation.computerId, projectId: computer.projectId, generation: computer.generation }); }
     catch (error) { throw journalFailure(error); }
+    computer.incarnationId = record.incarnationId; // what the Hyper-V Broker writes into the VM Notes
     const observed = this.#observation(operation.computerId, computer);
     this.#maybeFail('retire', 'after');
     return observed;
   }
 
-  /** Delete a RETIRED environment. A requested purge needs approval like any action; it does not wait for the deadline. */
+  /** Delete a RETIRED environment. A requested purge needs approval like any action; it does not wait for the deadline. The record must be this request's own. */
   async purge(input) {
     const operation = validateEnvironmentOperation({ ...input, action: 'purge' });
     this.#maybeFail('purge', 'before');
     const computer = this.#computers.get(operation.computerId);
+    const record = this.#record(operation.computerId);
     if (!computer) {
-      this.#retirements.remove(operation.computerId);
+      if (!record) return this.#observation(operation.computerId, { generation: operation.expectedGeneration, state: 'missing' });
+      if (record.generation !== operation.expectedGeneration || record.projectId !== operation.projectId) throw new EnvironmentProviderError('environment_not_retired', { outcome: 'not_applied' });
+      this.#drop(record);
       return this.#observation(operation.computerId, { generation: operation.expectedGeneration, state: 'missing' });
     }
     this.#assertOwnership(operation, computer);
-    if (!this.#retirements.get(operation.computerId)) throw new EnvironmentProviderError('environment_not_retired', { outcome: 'not_applied' });
+    if (!record || !this.#matches(record, computer)) throw new EnvironmentProviderError('environment_not_retired', { outcome: 'not_applied' });
     this.#computers.delete(operation.computerId);
-    this.#retirements.remove(operation.computerId);
+    this.#drop(record);
     const observed = this.#observation(operation.computerId, { generation: operation.expectedGeneration, state: 'missing' });
     this.#maybeFail('purge', 'after');
     return observed;
@@ -98,7 +110,7 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
 
   /**
    * The scheduled purge: removes only environments whose own retirement record has passed its deadline. `now` is the Broker's clock (a timer or a test), never operation input;
-   * omitted, the journal's own clock is used.
+   * omitted, the journal's own clock is used. An environment that is not exactly the recorded incarnation is 'skipped': nothing is deleted and the record is kept.
    */
   purgeExpiredRetirements({ now } = {}) {
     return purgeExpired({
@@ -107,7 +119,7 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
       purgeRecord: (record) => {
         const computer = this.#computers.get(record.computerId);
         if (!computer) return 'already_missing';
-        if (computer.generation !== record.generation || computer.projectId !== record.projectId) return 'skipped';
+        if (!this.#matches(record, computer)) return 'skipped';
         this.#computers.delete(record.computerId);
         return 'purged';
       },
@@ -123,13 +135,21 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     computer.generation = generation;
   }
 
+  /** Simulate another incarnation under the same id (a restored backup, a re-created environment): same project and generation, but no retirement identity. */
+  restoreComputer(computerId, { projectId, generation }) {
+    if (!this.#computers.has(computerId) || typeof projectId !== 'string' || !Number.isSafeInteger(generation) || generation < 1) {
+      throw new EnvironmentProviderError('invalid_restore', { outcome: 'not_applied' });
+    }
+    this.#computers.set(computerId, { projectId, generation, state: 'off' });
+  }
+
   async #transition(input, action, state) {
     const operation = validateEnvironmentOperation({ ...input, action });
     this.#maybeFail(action, 'before');
     const computer = this.#computers.get(operation.computerId);
     if (!computer) throw new EnvironmentProviderError('computer_missing', { outcome: 'not_applied' });
     this.#assertOwnership(operation, computer);
-    if (action === 'start' && this.#retirements.get(operation.computerId)) throw new EnvironmentProviderError('environment_retired', { outcome: 'not_applied' });
+    if (action === 'start' && this.#record(operation.computerId)) throw new EnvironmentProviderError('environment_retired', { outcome: 'not_applied' });
     computer.state = state;
     const observed = this.#observation(operation.computerId, computer);
     this.#maybeFail(action, 'after');
@@ -144,8 +164,24 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     }
   }
 
+  #matches(record, computer) {
+    return Boolean(record) && computer.generation === record.generation && computer.projectId === record.projectId
+      && computer.incarnationId === record.incarnationId;
+  }
+
+  // Journal access. A read that fails is not applied by default; the destroy clean-up asks for 'unknown' because the environment may already be gone.
+  #record(computerId, outcome = 'not_applied') {
+    try { return this.#retirements.get(computerId); }
+    catch { throw new EnvironmentProviderError('provider_state_unknown', { outcome }); }
+  }
+
+  #drop(record) {
+    try { this.#retirements.remove(record.computerId, record.incarnationId); }
+    catch { throw new EnvironmentProviderError('provider_state_unknown', { outcome: 'unknown' }); }
+  }
+
   #observation(computerId, computer) {
-    const retired = computer.state !== 'missing' && this.#retirements.get(computerId) !== null;
+    const retired = computer.state !== 'missing' && computer.state !== 'unknown' && this.#matches(this.#record(computerId), computer);
     return Object.freeze({ computerId, providerId: 'mock', state: retired ? 'retired' : computer.state, generation: computer.generation, observedAt: this.#now() });
   }
 

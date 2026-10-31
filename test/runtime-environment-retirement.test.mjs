@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { ENVIRONMENT_ACTIONS, validateEnvironmentOperation } from '../src/runtime/environment-provider.mjs';
 import { DEFAULT_RETENTION_MS, RetirementJournalError, createRetirementJournal, purgeExpired } from '../src/runtime/environment-retirement-journal.mjs';
@@ -13,7 +14,13 @@ const T0 = Date.parse('2026-10-31T00:00:00.000Z');
 const DAY = 24 * 60 * 60 * 1000;
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-retirement-'));
-test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+const journals = [];
+/** Every journal a test opens is closed afterwards (an open SQLite file cannot be deleted on Windows). */
+const makeJournal = (options) => { const journal = createRetirementJournal(options); journals.push(journal); return journal; };
+test.after(() => {
+  for (const journal of journals) journal.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
 
 function clock(start = T0) {
   const state = { ms: start };
@@ -33,7 +40,7 @@ const rejectsWith = (promise, code, outcome = 'not_applied') => assert.rejects(p
 
 function setup(options = {}) {
   const c = clock();
-  const journal = createRetirementJournal({ nowMs: c.now, ...options });
+  const journal = makeJournal({ nowMs: c.now, ...options });
   const provider = new MockEnvironmentProvider({ now: c.iso, retirements: journal });
   return { c, journal, provider };
 }
@@ -46,84 +53,133 @@ test('retire and purge are new action names; destroy keeps its name and every pr
   assert.equal(typeof provider.purge, 'function');
 });
 
-test('journal: the Broker stamps the time itself; deadline is retirement time + retention (default 7 days)', () => {
+const INCARNATION = /^[a-f0-9]{32}$/;
+/** A record with its random incarnation id checked for shape and removed, so the rest can be compared exactly. */
+const withoutIncarnation = (record) => {
+  assert.match(record.incarnationId, INCARNATION);
+  const { incarnationId: _id, ...rest } = record;
+  return rest;
+};
+
+test('journal: the Broker stamps the time itself; deadline is retirement time + retention (default 7 days); the incarnation id is random and 128 bits', () => {
   const c = clock();
-  const journal = createRetirementJournal({ nowMs: c.now });
+  const journal = makeJournal({ nowMs: c.now });
   const record = journal.retire({ computerId: 'pc-01', projectId: 'project-a', generation: 1 });
-  assert.deepEqual(record, { computerId: 'pc-01', projectId: 'project-a', generation: 1, retiredAtMs: T0, deadlineMs: T0 + 7 * DAY });
+  assert.deepEqual(withoutIncarnation(record), { computerId: 'pc-01', projectId: 'project-a', generation: 1, retiredAtMs: T0, deadlineMs: T0 + 7 * DAY });
   assert.equal(DEFAULT_RETENTION_MS, 7 * DAY);
   assert.ok(Object.isFrozen(record));
-  assert.equal(createRetirementJournal({ nowMs: c.now, retentionMs: 1000 }).retire({ computerId: 'pc-02', projectId: 'project-a', generation: 1 }).deadlineMs, T0 + 1000);
+  const other = makeJournal({ nowMs: c.now, retentionMs: 1000 }).retire({ computerId: 'pc-02', projectId: 'project-a', generation: 1 });
+  assert.equal(other.deadlineMs, T0 + 1000);
+  assert.notEqual(other.incarnationId, record.incarnationId);
+  const ids = new Set(Array.from({ length: 50 }, (_, n) => makeJournal({ nowMs: c.now }).retire({ computerId: `pc-${n}`, projectId: 'project-a', generation: 1 }).incarnationId));
+  assert.equal(ids.size, 50, 'no two retirements share an incarnation id');
 });
 
-test('journal: caller-supplied times are ignored, and a second retire cannot move or extend the deadline', () => {
+test('journal: caller-supplied times and ids are ignored, and a second retire cannot move or extend the deadline or change the id', () => {
   const c = clock();
-  const journal = createRetirementJournal({ nowMs: c.now });
-  const forged = journal.retire({ computerId: 'pc-01', projectId: 'project-a', generation: 1, retiredAtMs: 1, deadlineMs: 2, scheduled: true });
+  const journal = makeJournal({ nowMs: c.now });
+  const forged = journal.retire({ computerId: 'pc-01', projectId: 'project-a', generation: 1, retiredAtMs: 1, deadlineMs: 2, scheduled: true, incarnationId: 'a'.repeat(32) });
   assert.equal(forged.retiredAtMs, T0);
   assert.equal(forged.deadlineMs, T0 + 7 * DAY);
+  assert.notEqual(forged.incarnationId, 'a'.repeat(32));
   c.advance(3 * DAY);
   const again = journal.retire({ computerId: 'pc-01', projectId: 'project-a', generation: 1, retiredAtMs: c.now() });
-  assert.deepEqual(again, forged, 'the original record, deadline included');
+  assert.deepEqual(again, forged, 'the original record, deadline and incarnation included');
   assert.throws(() => journal.retire({ computerId: 'pc-01', projectId: 'project-b', generation: 1 }), (e) => e instanceof RetirementJournalError && e.code === 'retirement_conflict');
   assert.throws(() => journal.retire({ computerId: 'pc-01', projectId: 'project-a', generation: 2 }), (e) => e.code === 'retirement_conflict');
   assert.deepEqual(journal.get('pc-01'), forged);
 });
 
 test('journal: invalid identities and a broken clock are refused before anything is recorded', () => {
-  const journal = createRetirementJournal({ nowMs: () => T0 });
+  const journal = makeJournal({ nowMs: () => T0 });
   for (const bad of [{}, { computerId: 'pc 01', projectId: 'p', generation: 1 }, { computerId: 'pc', projectId: 'p', generation: 0 }, { computerId: 'pc', projectId: 'p', generation: 1.5 }]) {
     assert.throws(() => journal.retire(bad), (e) => e.code === 'retirement_invalid');
   }
-  const broken = createRetirementJournal({ nowMs: () => -1 });
+  const broken = makeJournal({ nowMs: () => -1 });
   assert.throws(() => broken.retire({ computerId: 'pc', projectId: 'p', generation: 1 }), (e) => e.code === 'retirement_clock_invalid');
   assert.deepEqual(broken.list(), []);
   assert.throws(() => createRetirementJournal({ retentionMs: 0 }), TypeError);
   assert.throws(() => createRetirementJournal({ filePath: '' }), TypeError);
 });
 
+test('journal: remove deletes only the record of the named incarnation', () => {
+  const journal = makeJournal({ nowMs: () => T0 });
+  const record = journal.retire({ computerId: 'pc-01', projectId: 'project-a', generation: 1 });
+  assert.equal(journal.remove('pc-01', 'b'.repeat(32)), false, 'another incarnation under the same id is not touched');
+  assert.deepEqual(journal.get('pc-01'), record);
+  assert.throws(() => journal.remove('pc-01', 'short'), (e) => e.code === 'retirement_invalid');
+  assert.equal(journal.remove('pc-01', record.incarnationId), true);
+  assert.equal(journal.remove('pc-01', record.incarnationId), false);
+  assert.equal(journal.get('pc-01'), null);
+});
+
 test('journal: a record survives a restart (new journal over the same file) and removal is durable too', () => {
-  const filePath = path.join(tmp, 'restart.json');
+  const filePath = path.join(tmp, 'restart.sqlite');
   const c = clock();
-  const first = createRetirementJournal({ filePath, nowMs: c.now });
+  const first = makeJournal({ filePath, nowMs: c.now });
   const record = first.retire({ computerId: 'pc-01', projectId: 'project-a', generation: 1 });
   first.retire({ computerId: 'pc-02', projectId: 'project-a', generation: 3 });
+  first.close();
   c.advance(DAY);
-  const second = createRetirementJournal({ filePath, nowMs: c.now });
-  assert.deepEqual(second.get('pc-01'), record, 'same retirement time and deadline after the restart');
+  const second = makeJournal({ filePath, nowMs: c.now });
+  assert.deepEqual(second.get('pc-01'), record, 'same retirement time, deadline and incarnation after the restart');
   assert.deepEqual(second.list().map((r) => r.computerId), ['pc-01', 'pc-02']);
   assert.equal(second.retire({ computerId: 'pc-01', projectId: 'project-a', generation: 1 }).retiredAtMs, T0, 'the restart did not reset the clock on the record');
-  assert.equal(second.remove('pc-01'), true);
-  assert.equal(second.remove('pc-01'), false);
-  assert.deepEqual(createRetirementJournal({ filePath, nowMs: c.now }).list().map((r) => r.computerId), ['pc-02']);
-  assert.equal(fs.existsSync(`${filePath}.tmp`), false, 'no temp file is left behind');
+  assert.equal(second.remove('pc-01', record.incarnationId), true);
+  second.close();
+  assert.deepEqual(makeJournal({ filePath, nowMs: c.now }).list().map((r) => r.computerId), ['pc-02']);
 });
 
-test('journal: a file that does not match the record shape makes the journal refuse to open (fail closed)', () => {
-  const good = { computerId: 'pc-01', projectId: 'project-a', generation: 1, retiredAtMs: T0, deadlineMs: T0 + DAY };
-  const cases = {
-    'not json': '{nope',
-    'wrong version': JSON.stringify({ v: 2, records: [] }),
-    'records not an array': JSON.stringify({ v: 1, records: {} }),
-    'extra field': JSON.stringify({ v: 1, records: [{ ...good, scheduled: true }] }),
-    'missing field': JSON.stringify({ v: 1, records: [{ ...good, deadlineMs: undefined }] }),
-    'deadline before retirement': JSON.stringify({ v: 1, records: [{ ...good, deadlineMs: T0 - 1 }] }),
-    'negative time': JSON.stringify({ v: 1, records: [{ ...good, retiredAtMs: -5 }] }),
-    'duplicate computer': JSON.stringify({ v: 1, records: [good, good] }),
-  };
-  for (const [name, text] of Object.entries(cases)) {
-    const filePath = path.join(tmp, `bad-${name.replaceAll(' ', '-')}.json`);
-    fs.writeFileSync(filePath, text);
-    assert.throws(() => createRetirementJournal({ filePath }), (e) => e.code === 'retirement_journal_corrupt', name);
-  }
-  assert.deepEqual(createRetirementJournal({ filePath: path.join(tmp, 'absent.json') }).list(), [], 'no file yet is an empty journal, not an error');
+test('journal: two journal objects over the same store keep both records (no lost update from a stale snapshot)', () => {
+  const filePath = path.join(tmp, 'two-writers.sqlite');
+  const c = clock();
+  const a = makeJournal({ filePath, nowMs: c.now });
+  const b = makeJournal({ filePath, nowMs: c.now }); // opened before either retired anything
+  const recordA = a.retire({ computerId: 'pc-a', projectId: 'project-a', generation: 1 });
+  const recordB = b.retire({ computerId: 'pc-b', projectId: 'project-a', generation: 1 });
+  assert.deepEqual(a.list().map((r) => r.computerId), ['pc-a', 'pc-b'], 'A sees what B wrote');
+  assert.deepEqual(b.list().map((r) => r.computerId), ['pc-a', 'pc-b'], 'B did not overwrite what A wrote');
+  assert.deepEqual(makeJournal({ filePath }).list(), [recordA, recordB]);
+  // The same environment retired through both gets one record, one deadline and one incarnation.
+  c.advance(DAY);
+  assert.deepEqual(b.retire({ computerId: 'pc-a', projectId: 'project-a', generation: 1 }), recordA);
+  // And a removal by one is seen by the other at once.
+  assert.equal(a.remove('pc-b', recordB.incarnationId), true);
+  assert.equal(b.get('pc-b'), null);
 });
 
-test('journal: a write that fails records nothing in memory, so the caller never reports a retirement that is not durable', () => {
-  const journal = createRetirementJournal({ filePath: path.join(tmp, 'no-such-dir', 'r.json'), nowMs: () => T0 });
-  assert.throws(() => journal.retire({ computerId: 'pc-01', projectId: 'project-a', generation: 1 }), (e) => e.code === 'retirement_journal_write_failed');
-  assert.equal(journal.get('pc-01'), null);
-  assert.deepEqual(journal.list(), []);
+test('journal: a file that is not this schema makes the journal refuse to open (fail closed)', () => {
+  const garbage = path.join(tmp, 'garbage.sqlite');
+  fs.writeFileSync(garbage, 'this is not a database, not even close to one');
+  assert.throws(() => createRetirementJournal({ filePath: garbage }), (e) => e.code === 'retirement_journal_corrupt');
+
+  const newer = path.join(tmp, 'newer.sqlite');
+  const newerDb = new DatabaseSync(newer);
+  newerDb.prepare('CREATE TABLE retirements (x TEXT)').run();
+  newerDb.prepare('PRAGMA user_version = 2').run();
+  newerDb.close();
+  assert.throws(() => createRetirementJournal({ filePath: newer }), (e) => e.code === 'retirement_journal_corrupt');
+
+  const foreign = path.join(tmp, 'foreign.sqlite');
+  const foreignDb = new DatabaseSync(foreign);
+  foreignDb.prepare('CREATE TABLE something_else (x TEXT)').run();
+  foreignDb.close();
+  assert.throws(() => createRetirementJournal({ filePath: foreign }), (e) => e.code === 'retirement_journal_corrupt', 'a database that is not ours is not adopted');
+
+  const tampered = path.join(tmp, 'tampered.sqlite');
+  const tamperedDb = new DatabaseSync(tampered);
+  tamperedDb.prepare('CREATE TABLE retirements (computer_id TEXT, project_id TEXT, generation INTEGER, incarnation_id TEXT, retired_at_ms INTEGER, deadline_ms INTEGER)').run();
+  tamperedDb.prepare('INSERT INTO retirements VALUES (?, ?, ?, ?, ?, ?)').run('pc-01', 'project-a', 1, 'not-an-incarnation-id', T0, T0 + DAY);
+  tamperedDb.prepare('PRAGMA user_version = 1').run();
+  tamperedDb.close();
+  const journal = makeJournal({ filePath: tampered });
+  assert.throws(() => journal.get('pc-01'), (e) => e.code === 'retirement_journal_corrupt', 'a row that does not match the record shape is never used');
+  assert.throws(() => journal.list(), (e) => e.code === 'retirement_journal_corrupt');
+  assert.deepEqual(makeJournal({ filePath: path.join(tmp, 'absent.sqlite') }).list(), [], 'no file yet is an empty journal, not an error');
+});
+
+test('journal: a store that cannot be opened is reported, and nothing is recorded', () => {
+  assert.throws(() => createRetirementJournal({ filePath: path.join(tmp, 'no-such-dir', 'r.sqlite') }), (e) => e instanceof RetirementJournalError && e.code === 'retirement_journal_unavailable');
 });
 
 test('retire stops the environment, keeps it, reports retired, and writes the Broker record', async () => {
@@ -134,7 +190,7 @@ test('retire stops the environment, keeps it, reports retired, and writes the Br
   const observed = await provider.retire(op('retire'));
   assert.equal(observed.state, 'retired');
   assert.equal(observed.generation, 1);
-  assert.deepEqual(journal.get('pc-01'), { computerId: 'pc-01', projectId: 'project-a', generation: 1, retiredAtMs: c.now(), deadlineMs: c.now() + 7 * DAY });
+  assert.deepEqual(withoutIncarnation(journal.get('pc-01')), { computerId: 'pc-01', projectId: 'project-a', generation: 1, retiredAtMs: c.now(), deadlineMs: c.now() + 7 * DAY });
   assert.equal((await provider.inspect(op('inspect'))).state, 'retired', 'still there, now reported as retired');
   await rejectsWith(provider.start(op('start')), 'environment_retired');
   assert.equal((await provider.stop(op('stop'))).state, 'retired', 'stop of a retired environment is harmless and keeps it retired');
@@ -249,7 +305,7 @@ test('scheduled purge uses the Broker clock when no time is given, and accepts a
 
 test('scheduled purge skips a record that no longer matches its environment and keeps the record; one failure does not stop the others', async () => {
   const c = clock();
-  const journal = createRetirementJournal({ nowMs: c.now, retentionMs: 1000 });
+  const journal = makeJournal({ nowMs: c.now, retentionMs: 1000 });
   journal.retire({ computerId: 'a', projectId: 'project-a', generation: 1 });
   journal.retire({ computerId: 'b', projectId: 'project-a', generation: 1 });
   journal.retire({ computerId: 'c', projectId: 'project-a', generation: 1 });
@@ -280,24 +336,25 @@ test('scheduled purge on the mock leaves an environment alone when its generatio
   provider.restoreGeneration('pc-01', 2);
   const deadline = journal.get('pc-01').deadlineMs;
   assert.deepEqual(await provider.purgeExpiredRetirements({ now: deadline }), [{ computerId: 'pc-01', outcome: 'skipped' }]);
-  assert.equal((await provider.inspect(op('inspect', { expectedGeneration: 2 }))).state, 'retired');
+  assert.equal((await provider.inspect(op('inspect', { expectedGeneration: 2 }))).state, 'off', 'a record of generation 1 does not make generation 2 retired');
+  assert.notEqual(journal.get('pc-01'), null, 'record kept');
 });
 
 test('scheduled purge survives a restart: a new Broker over the same file purges from the stored deadline', async () => {
-  const filePath = path.join(tmp, 'scheduled.json');
+  const filePath = path.join(tmp, 'scheduled.sqlite');
   const c = clock();
-  const journal1 = createRetirementJournal({ filePath, nowMs: c.now });
+  const journal1 = makeJournal({ filePath, nowMs: c.now });
   const provider1 = new MockEnvironmentProvider({ now: c.iso, retirements: journal1 });
   await provider1.create(op('create'));
   await provider1.retire(op('retire'));
   const deadline = journal1.get('pc-01').deadlineMs;
 
   // Same file, new journal object and a clock far in the future: the stored deadline (not a new one) decides.
-  const journal2 = createRetirementJournal({ filePath, nowMs: () => deadline + 1 });
+  const journal2 = makeJournal({ filePath, nowMs: () => deadline + 1 });
   assert.equal(journal2.get('pc-01').deadlineMs, deadline);
   const provider2 = new MockEnvironmentProvider({ now: c.iso, retirements: journal2 });
   assert.deepEqual(await provider2.purgeExpiredRetirements(), [{ computerId: 'pc-01', outcome: 'already_missing' }], 'the new mock process has no such environment: the record is reaped');
-  assert.deepEqual(createRetirementJournal({ filePath }).list(), []);
+  assert.deepEqual(makeJournal({ filePath }).list(), []);
 });
 
 test('mock provider rejects a journal that is not one, and failNext accepts the new actions only', async () => {
@@ -309,4 +366,79 @@ test('mock provider rejects a journal that is not one, and failNext accepts the 
   provider.failNext('purge', { timing: 'before' });
   await rejectsWith(provider.purge(op('purge')), 'mock_provider_failure');
   assert.throws(() => provider.failNext('reboot'), TypeError);
+});
+
+test('requested purge of a missing environment checks the record against the request first: another project cannot erase the record (finding 2)', async () => {
+  const c = clock();
+  const journal = makeJournal({ nowMs: c.now });
+  const owner = new MockEnvironmentProvider({ now: c.iso, retirements: journal });
+  await owner.create(op('create'));
+  await owner.retire(op('retire'));
+  const record = journal.get('pc-01');
+  // The environment is gone from this Broker's hypervisor (for example removed by hand) but the record is still the retirement of project-a, generation 1.
+  const gone = new MockEnvironmentProvider({ now: c.iso, retirements: journal });
+  await rejectsWith(gone.purge(op('purge', { projectId: 'project-b' })), 'environment_not_retired');
+  await rejectsWith(gone.purge(op('purge', { expectedGeneration: 2 })), 'environment_not_retired');
+  assert.deepEqual(journal.get('pc-01'), record, 'the record of project-a is untouched');
+  assert.equal((await gone.inspect(op('inspect'))).state, 'unknown', 'a record with no environment is an unfinished clean-up, not plain "missing"');
+  assert.equal((await gone.purge(op('purge'))).state, 'missing', 'the owner of the record may finish it');
+  assert.equal(journal.get('pc-01'), null);
+  assert.equal((await gone.inspect(op('inspect'))).state, 'missing');
+  assert.equal((await gone.purge(op('purge', { projectId: 'project-b' }))).state, 'missing', 'with no record there is nothing to protect');
+});
+
+test('destroy: a crash between removing the environment and dropping its record is completed by the retry, and create works afterwards (finding 5)', async () => {
+  const c = clock();
+  const journal = makeJournal({ nowMs: c.now });
+  let failDrop = true;
+  const flaky = { ...journal, remove: (...args) => { if (failDrop) throw new RetirementJournalError('retirement_journal_write_failed'); return journal.remove(...args); } };
+  const provider = new MockEnvironmentProvider({ now: c.iso, retirements: flaky });
+  await provider.create(op('create'));
+  await provider.retire(op('retire'));
+  const destroy = op('destroy', { operationId: 'op-destroy-1', idempotencyKey: 'key-destroy-1' });
+
+  // The environment is removed, the record cannot be dropped: that is an unfinished destroy, never success.
+  await assert.rejects(provider.destroy(destroy), (e) => e.code === 'provider_state_unknown' && e.outcome === 'unknown');
+  assert.notEqual(journal.get('pc-01'), null);
+  assert.equal((await provider.inspect(op('inspect'))).state, 'unknown', 'reconciliation cannot call this a finished destroy');
+  await rejectsWith(provider.create(op('create')), 'operation_conflict');
+
+  // The retry finds the environment already gone and still drops the matching record.
+  await assert.rejects(provider.destroy(destroy), (e) => e.outcome === 'unknown', 'a failing drop is still reported on the retry');
+  failDrop = false;
+  assert.equal((await provider.destroy(destroy)).state, 'missing');
+  assert.equal(journal.get('pc-01'), null);
+  assert.equal((await provider.inspect(op('inspect'))).state, 'missing');
+  assert.equal((await provider.create(op('create'))).state, 'off', 'the id can be created again');
+  assert.equal((await provider.start(op('start'))).state, 'running', 'and the new environment is not retired');
+});
+
+test('destroy of an environment whose record belongs to another project or generation leaves that record alone', async () => {
+  const c = clock();
+  const journal = makeJournal({ nowMs: c.now });
+  const a = new MockEnvironmentProvider({ now: c.iso, retirements: journal });
+  await a.create(op('create'));
+  await a.retire(op('retire'));
+  const record = journal.get('pc-01');
+  const other = new MockEnvironmentProvider({ now: c.iso, retirements: journal });
+  assert.equal((await other.destroy(op('destroy', { projectId: 'project-b' }))).state, 'missing');
+  assert.deepEqual(journal.get('pc-01'), record);
+  assert.equal((await other.destroy(op('destroy', { expectedGeneration: 5 }))).state, 'missing');
+  assert.deepEqual(journal.get('pc-01'), record);
+});
+
+test('scheduled purge never deletes a restored or re-created environment that is not the recorded incarnation (finding 1)', async () => {
+  const c = clock();
+  const journal = makeJournal({ nowMs: c.now });
+  const provider = new MockEnvironmentProvider({ now: c.iso, retirements: journal });
+  await provider.create(op('create'));
+  await provider.retire(op('retire'));
+  const record = journal.get('pc-01');
+  // Another incarnation under the same id, project and generation (what a restored backup looks like): same fields, no retirement identity.
+  provider.restoreComputer('pc-01', { projectId: 'project-a', generation: 1 });
+  assert.deepEqual(await provider.purgeExpiredRetirements({ now: record.deadlineMs }), [{ computerId: 'pc-01', outcome: 'skipped' }]);
+  assert.deepEqual(journal.get('pc-01'), record, 'record kept');
+  assert.equal((await provider.inspect(op('inspect'))).state, 'off', 'the restored environment is alive and not reported as retired');
+  await rejectsWith(provider.purge(op('purge')), 'environment_not_retired');
+  assert.equal((await provider.inspect(op('inspect'))).state, 'off');
 });

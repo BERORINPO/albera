@@ -4,6 +4,8 @@
 #   {"method":"inspect","vmName":"albera-x"}
 #   {"method":"create","vmName":..,"cloneRoot":..,"vmDir":..,"parentPath":..,"childPath":..,"vcpu":2,"memoryMiB":2048,"notes":".."}
 #   {"method":"start"|"stop"|"remove","vmName":..,"expect":{"computerId":..,"generation":1}, ...}
+#   {"method":"annotate","vmName":..,"expect":{..},"notes":".."}   (rewrites Notes of an owned VM; used to write the retirement identity)
+# "expect" may also carry projectId and incarnationId: when present the Notes must carry the same values (retire / purge identity).
 # Every path comes from the trusted Node-side configuration, never from an operation.
 # Errors are reported as {"ok":false,"code":"...","notApplied":bool} with a fixed code; messages are never printed.
 $ErrorActionPreference = 'Stop'
@@ -34,6 +36,9 @@ function Assert-Owned($Vm, $Expect) {
   if ($n.albera -ne 1 -or $n.computerId -cne [string]$Expect.computerId -or $n.generation -ne [int]$Expect.generation) {
     Reject 'invalid_provider_state'
   }
+  # Retirement identity: when the caller names a project or an incarnation, the Notes must carry exactly that.
+  if ($null -ne $Expect.projectId -and $n.projectId -cne [string]$Expect.projectId) { Reject 'invalid_provider_state' }
+  if ($null -ne $Expect.incarnationId -and $n.incarnationId -cne [string]$Expect.incarnationId) { Reject 'invalid_provider_state' }
 }
 
 function Require-Vm([string]$Name, $Expect) {
@@ -101,6 +106,12 @@ function Invoke-Stop($Req) {
   @{ ok = $true; state = [string](Get-VM -Name $Req.vmName).State }
 }
 
+function Invoke-Annotate($Req) {
+  $vm = Require-Vm $Req.vmName $Req.expect
+  Set-VM -VM $vm -Notes ([string]$Req.notes)
+  @{ ok = $true; state = [string](Get-VM -Name $Req.vmName).State }
+}
+
 function Invoke-Remove($Req) {
   $vmDir = [string]$Req.vmDir
   $cloneRoot = [string]$Req.cloneRoot
@@ -133,6 +144,7 @@ try {
     'create'  { Invoke-Create $req }
     'start'   { Invoke-Start $req }
     'stop'    { Invoke-Stop $req }
+    'annotate' { Invoke-Annotate $req }
     'remove'  { Invoke-Remove $req }
     default   { Reject 'invalid_provider_state' }
   }
