@@ -1,6 +1,6 @@
 // Network attestation v1. C# twin of network-attestation.mjs (digest, canonical bytes, envelope check, verify); network-attestation-vectors.json pins both. BCL only, net10.0.
 // The Broker reads an environment's effective network configuration and signs a short statement about it; the Approval Authority checks the statement before it signs a no-person
-// receipt for environment.start / environment.create (docs/architecture/approval-tiers.md, "Egress is decided by the Broker, not the request"; issue #115 step 3b).
+// receipt for environment.start (docs/architecture/approval-tiers.md, "Egress is decided by the Broker, not the request"; issue #115 step 3b).
 //
 //   body     10 keys: v (1), network ("none" | "present" | "unknown"), computerId, vmId (the VM's own Hyper-V id), generation, projectId, leaseId, leaseGeneration, observedAt, expiresAt
 //            (Unix seconds from the BROKER's clock; at most 300 s apart). Classification happens Broker-side and is not part of this twin.
@@ -10,7 +10,7 @@
 //
 // Verify checks, in this order: shape, TTL and digest, signature (the injected `verify(keyId, bytes, signature)` must return exactly true), not yet valid, expired (the clock is read
 // AFTER the signature check), then every binding in the caller's own trusted state. It says nothing about whether "none" is enough for an action; and a statement is evidence at
-// observedAt only. A null expected VmId means the caller has no VM id to compare (the Authority's action DTO does not carry one).
+// observedAt only. All six expected values are required, the VM id included.
 using System;
 using System.Buffers.Text;
 using System.Collections.Generic;
@@ -24,8 +24,8 @@ namespace Albera.BrokerContract;
 
 public sealed record NetworkAttestationBody(long V, string Network, string ComputerId, string VmId, long Generation, string ProjectId, string LeaseId, long LeaseGeneration, long ObservedAt, long ExpiresAt);
 
-/// <summary>What the caller itself knows about the environment it is acting on. <see cref="VmId"/> may be null (nothing to compare).</summary>
-public sealed record AttestationExpected(string ComputerId, string? VmId, long Generation, string ProjectId, string LeaseId, long LeaseGeneration);
+/// <summary>What the caller itself knows about the environment it is acting on. Every part is required: the VM id is what tells one VM from another under the same computer, project, lease and generation.</summary>
+public sealed record AttestationExpected(string ComputerId, string VmId, long Generation, string ProjectId, string LeaseId, long LeaseGeneration);
 
 /// <summary>Code null = ok. Codes: invalid_context invalid_expected malformed digest signature ttl not_yet_valid expired binding; Field is only ever a fixed field name or "$extra".</summary>
 public sealed record AttestationVerdict(bool Ok, string? Code = null, string? Field = null, NetworkAttestationBody? Value = null, string? Digest = null, string? KeyId = null);
@@ -45,6 +45,8 @@ public static class NetworkAttestation
     private static readonly Regex VmIdRegex = ActionDigest.FromEcma("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
     private static readonly Regex DigestRegex = ActionDigest.FromEcma("^sha256:[0-9a-f]{64}$");
     private static readonly Regex Base64UrlRegex = ActionDigest.FromEcma("^[A-Za-z0-9_-]+$");
+
+    public static bool IsVmId(string value) => VmIdRegex.IsMatch(value);
 
     private static AttestationVerdict Fail(string code, string? field = null) => new(false, code, field);
     private static bool IsCounter(object? v) => v is long n && n >= 1 && n <= StrictJson.MaxSafeInteger;
@@ -133,7 +135,7 @@ public static class NetworkAttestation
     {
         if (clock is null || verify is null) return Fail("invalid_context");
         if (!IsId(expected.ComputerId) || !IsId(expected.ProjectId) || !IsId(expected.LeaseId)) return Fail("invalid_expected");
-        if (expected.VmId is not null && !VmIdRegex.IsMatch(expected.VmId)) return Fail("invalid_expected", "vmId");
+        if (!VmIdRegex.IsMatch(expected.VmId)) return Fail("invalid_expected", "vmId");
         if (expected.Generation < 1 || expected.LeaseGeneration < 1) return Fail("invalid_expected");
         (AttestationVerdict read, byte[] preimage, byte[] signature) = ReadSigned(signed);
         if (!read.Ok) return read;
@@ -154,7 +156,7 @@ public static class NetworkAttestation
         if (a.LeaseGeneration != expected.LeaseGeneration) return Fail("binding", "leaseGeneration");
         if (a.LeaseId != expected.LeaseId) return Fail("binding", "leaseId");
         if (a.ProjectId != expected.ProjectId) return Fail("binding", "projectId");
-        if (expected.VmId is not null && a.VmId != expected.VmId) return Fail("binding", "vmId");
+        if (a.VmId != expected.VmId) return Fail("binding", "vmId");
         return read;
     }
 }

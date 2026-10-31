@@ -10,8 +10,10 @@
 //   (a `grant:<id>` basis is reserved for a later step; today it is a schema failure on `basis`)
 //
 // attestationDigest (optional, step 3b): the digest of the Broker's network attestation (network-attestation.mjs) that the Authority's rule relied on. Present exactly when
-// basis is `policy` and the action is in ATTESTED_POLICY_BASIS_ACTIONS (environment.start / environment.create: a no-person receipt that is only valid with a Broker statement
-// that the environment has no network); absent for every other receipt. The Broker has no attestation to compare it with here, so like policyVersion it is checked for its shape and
+// basis is `policy` and the action is in ATTESTED_POLICY_BASIS_ACTIONS (environment.start: a no-person receipt that is only valid with a Broker statement that the VM has no
+// network); absent for every other receipt. Such a receipt is also only valid for an action whose args name the VM: `args.vmId`, the Hyper-V VM id the attestation was made for
+// (code `attestation`, field `vmId`, when it is missing or malformed). The Broker must refuse to start any VM whose own id differs from it.
+// environment.create is NOT attested: no VM exists before create, so nothing could be bound; it always needs a person. The Broker has no attestation to compare it with here, so like policyVersion it is checked for its shape and
 // for being present or absent as the rule requires; the Authority's signature is what covers it.
 //
 // policyVersion is checked for its shape only. The Broker has no copy of the Authority's policy to compare it with, so it is an audit field: the Authority's
@@ -20,6 +22,7 @@ import { ACTIONS_BY_PURPOSE, ActionDigestError, computeActionDigest, validateAct
 import {
   ISSUER, MAX_IAT_SKEW_SECONDS, MAX_RECEIPT_BYTES, MAX_TTL_SECONDS, RECEIPT_V2_FIELDS, parseReceiptV2, validateReceiptV2,
 } from './receipt-v2.mjs';
+import { isVmId } from './network-attestation.mjs';
 import { StrictJsonError, parseStrictJson } from './strict-json.mjs';
 
 export const RECEIPT_V3_VERSION = 3;
@@ -27,7 +30,7 @@ export const RECEIPT_BASES = Object.freeze(['presence', 'policy']);
 /** What a tier policy may let the Authority sign without a person and without any attestation: reads and risk-reducing actions only. */
 export const POLICY_BASIS_ACTIONS = Object.freeze(['environment.inspect', 'environment.stop', 'workspace.inspect', 'task.cancel']);
 /** What a tier policy may let the Authority sign without a person ONLY with a Broker network attestation that says "none" (the receipt then carries its digest). */
-export const ATTESTED_POLICY_BASIS_ACTIONS = Object.freeze(['environment.create', 'environment.start']);
+export const ATTESTED_POLICY_BASIS_ACTIONS = Object.freeze(['environment.start']);
 /** True for an action that can carry basis policy at all (with or without an attestation). Nothing else can, whatever the Authority signed. */
 export const isPolicyBasisAction = (action) => POLICY_BASIS_ACTIONS.includes(action) || ATTESTED_POLICY_BASIS_ACTIONS.includes(action);
 
@@ -121,6 +124,7 @@ export function validateReceiptV3(bytes, ctx) {
   if (r.basis === 'policy' && !isPolicyBasisAction(r.action)) return fail('basis_action', 'basis');
   // The digest is there exactly when a no-person receipt for an attested action needs it: never for a person's approval, never for an action that needs no attestation.
   if (Object.hasOwn(r, 'attestationDigest') !== (r.basis === 'policy' && ATTESTED_POLICY_BASIS_ACTIONS.includes(r.action))) return fail('attestation', 'attestationDigest');
+  if (r.basis === 'policy' && ATTESTED_POLICY_BASIS_ACTIONS.includes(r.action) && !isVmId(context.dto.args.vmId)) return fail('attestation', 'vmId');
   if (r.exp <= r.iat || r.exp - r.iat > MAX_TTL_SECONDS) return fail('ttl', 'exp');
   if (r.iat > context.now + MAX_IAT_SKEW_SECONDS) return fail('not_yet_valid', 'iat');
   if (context.now >= r.exp) return fail('expired', 'exp');

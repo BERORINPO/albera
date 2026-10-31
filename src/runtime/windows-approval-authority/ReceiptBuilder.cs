@@ -25,7 +25,7 @@ internal static class ReceiptBuilder
         Write(ReceiptV2.Fields, Values(entry, identity, issuer, receiptId, nonce, iat, ReceiptV2.Version, identity.PolicyVersion));
 
     /// <summary>A v3 receipt with basis policy: no person signed this action, the Authority's tier policy (named by its hash) said none was needed. approverKeyId names the approver key that owns the policy.
-    /// <paramref name="attestationDigest"/> is set exactly when the rule relied on a Broker network attestation (environment.start / environment.create); <paramref name="ttlSeconds"/> then ends
+    /// <paramref name="attestationDigest"/> is set exactly when the rule relied on a Broker network attestation (environment.start); <paramref name="ttlSeconds"/> then ends
     /// no later than that attestation does.</summary>
     public static byte[] BuildPolicy(PendingEntry entry, AuthorityIdentity identity, string issuer, string receiptId, string nonce, long iat, string policyHash,
         string? attestationDigest = null, long ttlSeconds = ReceiptV2.DefaultTtlSeconds)

@@ -40,6 +40,16 @@ function hypervOperation(action, overrides = {}) {
   return operation(action, { providerId: 'hyperv', ...overrides });
 }
 
+test('an operation may name the VM (start only): a lowercase Hyper-V GUID, never on another action, never malformed', () => {
+  const vmId = '11111111-2222-4333-8444-555555555555';
+  assert.equal(validateEnvironmentOperation(operation('start', { vmId })).vmId, vmId);
+  assert.equal(Object.hasOwn(validateEnvironmentOperation(operation('start')), 'vmId'), false);
+  for (const action of ['inspect', 'stop', 'destroy', 'retire', 'purge']) assert.throws(() => validateEnvironmentOperation(operation(action, { vmId })), /invalid_environment_operation/, action);
+  assert.throws(() => validateEnvironmentOperation(operation('create', { vmId, spec })), /invalid_environment_operation/);
+  for (const bad of ['vm-1', '', 7, null, true, vmId.toUpperCase().replace(/[0-9]/gu, 'A'), `{${vmId}}`, `${vmId}
+`]) assert.throws(() => validateEnvironmentOperation(operation('start', { vmId: bad })), /invalid_environment_operation/, String(bad));
+});
+
 test('environment contract rejects malformed IDs, generations, paths and arbitrary executable fields', () => {
   assert.throws(() => validateEnvironmentSpec({ ...spec, imageDigest: '/tmp/image.vhdx' }), /invalid_environment_spec/);
   assert.throws(() => validateEnvironmentSpec({ ...spec, networkProfileId: '../switch' }), /invalid_environment_spec/);

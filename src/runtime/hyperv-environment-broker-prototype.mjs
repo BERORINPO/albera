@@ -308,9 +308,16 @@ export function createHyperVEnvironmentBrokerPrototype({
 
   async function changeState(input, method) {
     const { operation, vmName } = checkedOperation(input, method);
-    if (!await managed(operation, vmName)) throw brokerError('invalid_provider_state', 'not_applied');
+    const vm = await managed(operation, vmName);
+    if (!vm) throw brokerError('invalid_provider_state', 'not_applied');
     if (method === 'start' && readRecord(operation.computerId)) throw brokerError('environment_retired', 'not_applied');
-    const result = await call({ method, vmName, expect: expectOf(operation), waitSeconds });
+    // The approval named a VM (start only): the VM's own Hyper-V id must be it. Checked here and again by the script (identity "vm" makes the id mandatory there).
+    let expect = expectOf(operation);
+    if (operation.vmId !== undefined) {
+      if (vm.vmId !== operation.vmId) throw brokerError('operation_conflict', 'not_applied');
+      expect = { ...expect, vmId: operation.vmId, identity: 'vm' };
+    }
+    const result = await call({ method, vmName, expect, waitSeconds });
     return observed(operation.computerId, mapState(result.state), operation.expectedGeneration);
   }
 }

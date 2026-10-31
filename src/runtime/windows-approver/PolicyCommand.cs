@@ -93,7 +93,7 @@ internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner si
 
     private static string Change(TierPolicy current, TierPolicy next, bool loosens)
     {
-        // Two lists, because "no longer asks you" means two different things: always, or only when the Broker attests the environment has no network (start / create).
+        // Two lists, because "no longer asks you" means two different things: always, or only when the Broker attests the environment has no network (start).
         string[] Gained(IReadOnlySet<string> before, IReadOnlySet<string> after) => [.. after.Where(a => !before.Contains(a)).Order(StringComparer.Ordinal)];
         string[] newlySkipped = Gained(current.NoPromptActions(), next.NoPromptActions());
         string[] newlySkippedWithAttestation = Gained(current.AttestedNoPromptActions(), next.AttestedNoPromptActions());

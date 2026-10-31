@@ -194,7 +194,9 @@ test('the attested path (#115 step 3b): only for an action the policy in force c
   const proven = core.slice(core.indexOf('private Proven? ProvenNone'), core.indexOf('private Proven? Refused'));
   assert.match(proven, /attestationKey is null\) return Refused\("no_key_pinned"\)/u, 'no pinned key: never accepted');
   assert.match(proven, /request\.Dto\.Args\.GetValueOrDefault\("expectedGeneration"\) is not long generation \|\| generation < 1\) return Refused\("generation_missing"\)/u, 'the generation comes from the action the human sees (digest-bound args)');
-  assert.match(proven, /new\(request\.Dto\.ComputerId, null, generation, request\.Dto\.ProjectId, request\.LeaseId, request\.LeaseGeneration\)/u, 'every binding comes from the submit\'s own validated fields; no VM id is in the DTO');
+  assert.match(proven, /Args\.GetValueOrDefault\("vmId"\) is not string vmId \|\| !NetworkAttestation\.IsVmId\(vmId\)\) return Refused\("vm_id_missing"\)/u, 'a start that names no well-formed VM is never attested');
+  assert.match(proven, /new\(request\.Dto\.ComputerId, vmId, generation, request\.Dto\.ProjectId, request\.LeaseId, request\.LeaseGeneration\)/u, 'every binding comes from the submit\'s own validated fields, the VM included (there is no way to leave it out)');
+  assert.equal(/AttestationExpected\([^)]*\bnull\b/u.test(core), false, 'no null escape for the VM id');
   assert.match(proven, /NetworkAttestation\.Verify\(attestation, clock, attestationKey\.Verify, expected\)/u, 'verified with the pinned key and the Authority\'s own clock (read after the signature check inside Verify)');
   assert.match(proven, /Network != NetworkAttestation\.None\) return Refused/u, 'only "none" counts');
   assert.equal(/attestation\.(?:Tier|Basis|Network)|Policy\(\)\s*=\s*attestation/u.test(core), false, 'the claim feeds nothing but the proof');

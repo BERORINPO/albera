@@ -14,8 +14,8 @@ internal enum SigningProvider { Software, Tpm }
 //     "kid": "authority-key-2026-10", "approverKeyId": "hello-key-yosuke-01", "approverPublicKey": "<base64 SPKI, RSA-2048>",
 //     "audience": "albera-host-broker", "policyVersion": "policy-2026-10",
 //     "attestationKeyId": "broker-attest-2026-10", "attestationPublicKey": "<base64 SPKI, ECDSA P-256>" }   (the last two are optional, and only together)
-// attestationKeyId + attestationPublicKey pin the Broker's network attestation key (issue #115 step 3b). Without them no attestation is ever accepted and environment.start /
-// environment.create always need a person (unknown means prompt), so an existing config keeps working and loosens nothing. One without the other, or a key that is not a named
+// attestationKeyId + attestationPublicKey pin the Broker's network attestation key (issue #115 step 3b). Without them no attestation is ever accepted and environment.start still
+// needs a person (unknown means prompt), so an existing config keeps working and loosens nothing. One without the other, or a key that is not a named
 // ECDSA P-256 public key, is `config_keys` / `attestation_key_id` / `attestation_public_key`: never a silent fallback.
 // The pipes are <pipeRoot>\submit\v1 (Control Plane only) and <pipeRoot>\approver\v1 (the approver only). audience and policyVersion are what the
 // Broker validates a receipt against (policyVersion: a v2 receipt, i.e. one a person approved; a v3 policy receipt carries the hash of the tier policy in force instead, see PolicyStore.cs), so the

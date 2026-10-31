@@ -234,12 +234,14 @@ function defineFlowSuite(label, newJournal) {
       });
     });
 
-    describe('approved operation flow: Broker network attestation for start / create (issue #115 step 3b)', () => {
+    describe('approved operation flow: Broker network attestation for start (issue #115 step 3b)', () => {
       const POLICY_HASH = `sha256:${'cd'.repeat(32)}`;
-      const START = Object.freeze({ operationId: 'op-1', action: { action: 'environment.start', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3, vmName: 'alpha' } } });
+      const VM_A = '11111111-2222-4333-8444-555555555555';
+      const VM_B = '99999999-8888-4777-8666-555555555555';
+      const START = Object.freeze({ operationId: 'op-1', action: { action: 'environment.start', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3, vmId: VM_A, vmName: 'alpha' } } });
       const signer = createEcdsaAttestationSigner({ keyId: 'albera-test-broker-1', privateKey: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey });
       const attestationFor = async (network = 'none', overrides = {}) => JSON.parse(JSON.stringify(await signNetworkAttestation(createNetworkAttestation({
-        network, computerId: 'computer-1', vmId: '11111111-2222-4333-8444-555555555555', generation: 3, projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7,
+        network, computerId: 'computer-1', vmId: VM_A, generation: 3, projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7,
         observedAt: Math.floor(START_MS / 1000), ...overrides,
       }), signer)));
       /** The Broker side answers `attest` with a ready envelope (or a scripted result); every call is recorded in world.calls and world.attests. */
@@ -275,21 +277,42 @@ function defineFlowSuite(label, newJournal) {
         const result = await world.flow.run(START);
         assert.deepEqual([result.status, result.phase], ['claimed', 'CLAIMED']);
         assert.deepEqual(world.calls, ['fence', 'attest', 'submit', 'status', 'claim']);
-        assert.deepEqual(world.attests, [{ computerId: 'computer-1', projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7, generation: 3 }]);
+        assert.deepEqual(world.attests, [{ computerId: 'computer-1', projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7, generation: 3, vmId: VM_A }]);
         assert.deepEqual(world.submissions[0].attestation, envelope, 'the Broker side envelope goes to the Authority as it is');
         assert.equal(world.journal.get('op-1').approval.attestationDigest, envelope.digest);
         assert.deepEqual(world.sleeps, [], 'nobody was waited for');
         assert.equal(JSON.parse(Buffer.from(world.claims[0].receipt, 'base64').toString('utf8')).attestationDigest, envelope.digest);
       });
 
-      it('works for environment.create the same way', async () => {
+      it('never asks for an attestation for environment.create (no VM exists before it) and never claims an attested policy receipt for it', async () => {
         const world = makeWorld();
         const create = { operationId: 'op-1', action: { ...START.action, action: 'environment.create' } };
         const envelope = await attestationFor();
         withAttest(world, { ok: true, attestation: envelope });
         approveAtOnce(world, attestedReceipt(envelope.digest, { action: 'environment.create', actionDigest: computeActionDigest('broker.operation', create.action) }));
-        assert.equal((await world.flow.run(create)).status, 'claimed');
-        assert.equal(world.attests.length, 1);
+        const result = await world.flow.run(create);
+        assert.deepEqual([result.status, result.code], ['failed', 'receipt_mismatch']);
+        assert.equal(world.attests.length, 0);
+        assert.equal(Object.hasOwn(world.submissions[0], 'attestation'), false);
+        assert.equal(world.count('claim'), 0);
+      });
+
+      it('an attestation for another VM than the one the action names is not sent, and a start that names no well-formed VM is never attested', async () => {
+        const other = await attestationFor('none', { vmId: VM_B });
+        const world = makeWorld();
+        personApproves(world);
+        withAttest(world, { ok: true, attestation: other });
+        await world.flow.run(START);
+        assert.equal(world.attests.length, 1, 'asked for VM A');
+        assert.equal(Object.hasOwn(world.submissions[0], 'attestation'), false, 'the answer is for VM B: not attached');
+        for (const args of [{ expectedGeneration: 3 }, { expectedGeneration: 3, vmId: VM_A.toUpperCase().replace(/[0-9]/gu, 'A') }, { expectedGeneration: 3, vmId: 'vm-1' }, { expectedGeneration: 3, vmId: 7 }, { expectedGeneration: 3, vmId: '' }]) {
+          const w = makeWorld();
+          personApproves(w);
+          withAttest(w, { ok: true, attestation: await attestationFor() });
+          await w.flow.run({ operationId: 'op-1', action: { ...START.action, args } });
+          assert.equal(w.attests.length, 0, JSON.stringify(args));
+          assert.equal(Object.hasOwn(w.submissions[0], 'attestation'), false, JSON.stringify(args));
+        }
       });
 
       it('no attestation is not an error: without broker.attest, on a refusal, an exception, a malformed answer or an answer other than "none", the submit goes without it and a person is asked as before', async () => {
@@ -318,15 +341,17 @@ function defineFlowSuite(label, newJournal) {
         }
       });
 
-      it('is asked only for start / create that carry an integer expectedGeneration to bind', async () => {
+      it('is asked only for start that carries an integer expectedGeneration and a well-formed vmId to bind', async () => {
         for (const action of [
           { action: 'environment.stop', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3 } },
           { action: 'environment.destroy', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3 } },
           { action: 'environment.inspect', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3 } },
           { action: 'environment.start', projectId: 'project-1', computerId: 'computer-1', args: {} },
+          { action: 'environment.start', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3 } },
           { action: 'environment.start', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: '3' } },
           { action: 'environment.start', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 0 } },
-          { action: 'environment.create', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: true } },
+          { action: 'environment.create', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: true, vmId: VM_A } },
+          { action: 'environment.create', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3, vmId: VM_A } },
           { action: 'synthetic.noop', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3 } },
         ]) {
           const world = makeWorld();

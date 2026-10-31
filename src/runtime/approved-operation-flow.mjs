@@ -1,5 +1,5 @@
 import { ActionDigestError, ID_PATTERN, PURPOSES, computeActionDigest, validateActionDto } from './broker-contract/action-digest.mjs';
-import { readSignedNetworkAttestation } from './broker-contract/network-attestation.mjs';
+import { isVmId, readSignedNetworkAttestation } from './broker-contract/network-attestation.mjs';
 import { ATTESTED_POLICY_BASIS_ACTIONS, isPolicyBasisAction, parseReceipt } from './broker-contract/receipt-v3.mjs';
 import { FlowJournalError } from './approved-operation-journal.mjs';
 
@@ -27,8 +27,9 @@ import { FlowJournalError } from './approved-operation-journal.mjs';
 //  - An immediate approval needs no special path: when the Authority's tier policy needs no person for the action, submit answers `approved` and the first status poll returns a v3
 //    receipt with basis "policy". The record still goes INTENT, FENCED, SUBMITTED, APPROVED, CLAIMING, CLAIMED, and no sleep happens between submit and claim. A policy receipt for an
 //    action outside POLICY_BASIS_ACTIONS / ATTESTED_POLICY_BASIS_ACTIONS is never claimed (receipt_mismatch), whatever the Authority signed.
-//  - Network attestation (#115 step 3b). Before it submits environment.start / environment.create (and only when the action carries an integer `expectedGeneration` arg to bind), the flow asks the
-//    Broker side for an attestation through the OPTIONAL `broker.attest({ computerId, projectId, leaseId, leaseGeneration, generation })` (the lease is the one just fenced) and passes the answer to
+//  - Network attestation (#115 step 3b). Before it submits environment.start (and only when the action carries an integer `expectedGeneration` arg and a well-formed Hyper-V `vmId` arg to
+//    bind: the Control Plane's own inspect fills them in), the flow asks the Broker side for an attestation through the OPTIONAL
+//    `broker.attest({ computerId, projectId, leaseId, leaseGeneration, generation, vmId })` (the lease is the one just fenced) and passes the answer to
 //    the Authority as-is. Not getting one is never an error: no `attest` function, a refusal, an exception, a malformed answer or one that says anything but "none" just means the submit goes
 //    without it and, at worst, a person is asked. The flow decides nothing from it: the Authority verifies it and signs without a person or queues. The digest of what was presented is recorded
 //    with the approval, and a receipt that names an attestation digest is only claimed when it is that one (an attested policy receipt without a presented attestation is receipt_mismatch).
@@ -167,12 +168,13 @@ export function createApprovedOperationFlow({ broker, authority, journal, now, s
   async function attestationFor(record) {
     const { action } = record;
     const generation = action.args?.expectedGeneration;
-    if (typeof broker.attest !== 'function' || !ATTESTED_POLICY_BASIS_ACTIONS.includes(action.action) || !isCount(generation)) return null;
+    const { vmId } = action.args ?? {};
+    if (typeof broker.attest !== 'function' || !ATTESTED_POLICY_BASIS_ACTIONS.includes(action.action) || !isCount(generation) || !isVmId(vmId)) return null;
     try {
-      const reply = await broker.attest({ computerId: action.computerId, projectId: action.projectId, leaseId: record.fence.leaseId, leaseGeneration: record.fence.leaseGeneration, generation });
+      const reply = await broker.attest({ computerId: action.computerId, projectId: action.projectId, leaseId: record.fence.leaseId, leaseGeneration: record.fence.leaseGeneration, generation, vmId });
       if (reply?.ok !== true) return null;
       const read = readSignedNetworkAttestation(reply.attestation);
-      return read.attestation.network === 'none' ? { envelope: reply.attestation, digest: read.digest } : null;
+      return read.attestation.network === 'none' && read.attestation.vmId === vmId ? { envelope: reply.attestation, digest: read.digest } : null;
     } catch { return null; }
   }
 

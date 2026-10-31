@@ -6,7 +6,8 @@
     "classificationVectors: adapters is the list of adapter facts the Broker read ([{connected, switchType}]); adaptersOmitted = the value was missing. expected is none | present | unknown.",
     "The C# twin is NetworkAttestation.cs (digest vectors and verifyVectors; classification is Broker-side and has no twin). It reproduces every expected value here in the dotnet contract test.",
     "The C# twin is NetworkAttestation.cs (digest vectors and verifyVectors; classification is Broker-side and has no twin). It reproduces every expected value here in the dotnet contract test.",
-    "verifyVectors: the public half of an EPHEMERAL ECDSA P-256 test key (publicKeySpki, base64 DER; the private key was discarded after signing, nothing secret is in this file) and signed envelopes made with it. For each case, verifyNetworkAttestation(signed, { clock: now, verify: the pinned key under keyId, expected }) must give result: ok, or the code and field of the refusal. expected.vmId null means the caller has no VM id to compare. The signature is ECDSA P-256 / SHA-256 over the canonical bytes, IEEE P1363 (64 bytes), unpadded base64url. Both the Node and C# implementations must reproduce every result."
+    "The C# twin is NetworkAttestation.cs (digest vectors and verifyVectors; classification is Broker-side and has no twin). It reproduces every expected value here in the dotnet contract test.",
+    "verifyVectors: the public half of an EPHEMERAL ECDSA P-256 test key (publicKeySpki, base64 DER; the private key was discarded after signing, nothing secret is in this file) and signed envelopes made with it. For each case, verifyNetworkAttestation(signed, { clock: now, verify: the pinned key under keyId, expected }) must give result: ok, or the code and field of the refusal. The signature is ECDSA P-256 / SHA-256 over the canonical bytes, IEEE P1363 (64 bytes), unpadded base64url. Both the Node and C# implementations must reproduce every result."
   ],
   "digestVectors": [
     {
@@ -1385,7 +1386,7 @@
   ],
   "verifyVectors": {
     "keyId": "albera-test-broker-2026",
-    "publicKeySpki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPhipirZQwsbTn6u3KnzT/2hkXCMzGtRIkQ48iLp7MR9YSSs8q96nzUFqZaX/jrlwJGzxKlv6NNhMw9NIEhDEyQ==",
+    "publicKeySpki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECETc3xjKE2UKgVUL3+8RZWYhOu6YLGIipEJZ9JnwrSh8WYt7FfB4P1NQfyA+R/RO4WvBR+Mhc76RRBel9m+7uw==",
     "cases": [
       {
         "name": "valid-none",
@@ -1413,7 +1414,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "QiM0Nt27PwKAsAQsbuGc2MH9AgYDqEdqlRMBcmNKm4_P1XhltAW7Lypxsa7Tu5V1k5Tu0vVj2Y_8lnDQgk30eA"
+          "signature": "DU06jaFkD-LfDs1ZZKa_MJEhUgUJE0lffqZ4Gv-I926kQu0Wc6jMLHN33PDfin_7JoP_ZAx4Rv46P--d1wfkEQ"
         },
         "result": {
           "ok": true
@@ -1445,7 +1446,7 @@
           },
           "digest": "sha256:1d671e42beda59548fed9a92346eedb9608905b224914828333e78436b8f8375",
           "keyId": "albera-test-broker-2026",
-          "signature": "wtGDeNV8hW4Z1-UEpqAxyt5r_RiUGa0v3sxFGLvQ8xkuVjg1kxUxblWd-OmDndr2NCBVb5HuqHp0feVbhVYzNw"
+          "signature": "kSzBRGx51MeC2pW9iTesXW86prJ5WwF_XOt3P4W-QPQXgrUhZrePjHEOWyTR6QHfJShDqf5gEeFJSOLUY4mazg"
         },
         "result": {
           "ok": true
@@ -1477,7 +1478,7 @@
           },
           "digest": "sha256:a4de73a4dd20f0b01f8cc2373673c66ddc0c3db68221bfc20e9b2c5fdcface81",
           "keyId": "albera-test-broker-2026",
-          "signature": "o67sRFE7BqLEZE8k0Wvm1rhiR_VMGrRJaBWXfAp95mMd9PKFMxcSZz0U-RlNv3ZpyA_l8ODnnfcpNaeLGBLzww"
+          "signature": "hGzdNNQf1CsQXpLh0jh0bU7acgf3bJ9wyQW9vbZ01qmrHZy3qPPgDFSj-_fb10gWnb0nIuYklpXfcJ98u_efCQ"
         },
         "result": {
           "ok": true
@@ -1509,7 +1510,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "MuI6Vcy44W6lTZNabRV9oFSRfH_QHtSbv5x5Q5lysoLzTDRxAXNHpPBd-6HbzuHqUb600DJWEViEuC0NGaopCg"
+          "signature": "_4NR-dUV1ihf-Bscp27liuz4nhFk48P6OInXwEbCk6ZEAMKELJctB64j6kikVjW531V69srrrjfIv_nVVa2AXw"
         },
         "result": {
           "ok": true
@@ -1541,39 +1542,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "3TgqpwWc9yPL_K4kEPwSmKNmifUBiPQ0UHXCHP-3Zn4C7s_plsCdHXMS_xyKkbTRRZSiqkC3X_LiCNaW6cxuww"
-        },
-        "result": {
-          "ok": true
-        }
-      },
-      {
-        "name": "valid-expected-vmId-null-does-not-compare-the-vm",
-        "now": 1793404830,
-        "expected": {
-          "computerId": "pc-01",
-          "vmId": null,
-          "generation": 3,
-          "projectId": "proj-alpha",
-          "leaseId": "lease-1",
-          "leaseGeneration": 7
-        },
-        "signed": {
-          "attestation": {
-            "v": 1,
-            "network": "none",
-            "computerId": "pc-01",
-            "vmId": "99999999-8888-4777-8666-555555555555",
-            "generation": 3,
-            "projectId": "proj-alpha",
-            "leaseId": "lease-1",
-            "leaseGeneration": 7,
-            "observedAt": 1793404820,
-            "expiresAt": 1793404880
-          },
-          "digest": "sha256:1cc0fc29f4f06c499a77d832462df9edb021d84d1c41a70b99030ef88f74d3d5",
-          "keyId": "albera-test-broker-2026",
-          "signature": "SWS-JNohbROpPoWWJcd0gYD36W9TlcMz35BsSazvtx9kZG0SuLSFnwRGATGIuOni_Iq3-CcT2en_laVhbkca7w"
+          "signature": "disMQcPLqgAwwuY63MJKzHzKhX8AECmyfGS-bxyGY1h3bB6ogApUz44g5WCoVWGMZW4I0zRFuIJwPAMFZwICFA"
         },
         "result": {
           "ok": true
@@ -1605,7 +1574,7 @@
           },
           "digest": "sha256:60bc0e6b68785ade87ae2cbce98bfe496c132b07e31c0ca205901ca605a82813",
           "keyId": "albera-test-broker-2026",
-          "signature": "We6pDprmfiurfi1qbOljRJ7Moo4N8-p0vJgLZwqffG8f_w6O-yUhJmoLp2y0mGqYKxNc_EBPr4V8yG_nx-LByw"
+          "signature": "PtqicD42YB2W7Ijm4q-c-0Yk9dByPIg6bJevrOkdFPrTN5m3_fJ2ZtkvqxU0JJO1wJQBZrQ3h_FWgtvDt2q_yA"
         },
         "result": {
           "ok": true
@@ -1637,7 +1606,7 @@
           },
           "digest": "sha256:189abbafd635d15b6f500a98c3762891a1f20c7e9fbe285d283a6a84e3a7747c",
           "keyId": "albera-test-broker-2026",
-          "signature": "0iP0jBxvgRsWYkjDJvblGSTnO3p30rTq0VOqj309BwHaeSnNI4UEKWsaI4CTwtDlri4Fwl_s4NeC2Qr3h5edBg"
+          "signature": "jiJYedwsMXOxAGB9aSF4hyQbga65M-ZZWvoQW9lkIhgXfBeMf9m6rpe7jtXCnRl5N0Xai1jVh6DXZV0GojtYvg"
         },
         "result": {
           "ok": true
@@ -1669,7 +1638,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "y3skmqNuVa-s57RnU7xtMBzhNrqxKPCUJNdEkTbIfW1oKVjbrvOjdAZaNaxTvsCVGHLsNCo35yMkF9N5kDzr-g"
+          "signature": "k3YHVbDk8wygzs1Um8Jn8xsxJZOUWNQVeslJRlIthWcJIuXBFsfD7hkxNpl0c6K5Gmxp3ynTp2qSs6lospqcBw"
         },
         "result": {
           "ok": false,
@@ -1873,7 +1842,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "uQtTg-6N7BZf863qpNl7Z2Hh-Ok4vnsBRVIe0x_bIs1e0zdHs9dtjWFFebwwKNN7367CPz6irjtfcgpOeAde0A="
+          "signature": "8Zdh9oz65A5mXz5Az82vIWkOnInLvFMW-ouBkfB0UNZYf9hP9gvTn0oKQQ4-xNDz7vHZ6bRxhr5mF1mwnvRr-A="
         },
         "result": {
           "ok": false,
@@ -1907,7 +1876,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "NndZSFFn9x7SVpnCPvFG010sM0mqZ1_pTrNHQvSADQ3g7VOUzqRWOEd0O_Sy69AR89IEUHHotRoq-qAw_YLrKw+/"
+          "signature": "q5tWqZaJh3gdJSUutHcy-Y_X06y_xDLoDhOCFcLTH5B94WyL1az62A-3H_9v4z40Fxwud7QuW2E7alvabe-Tbg+/"
         },
         "result": {
           "ok": false,
@@ -1941,7 +1910,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "o1n8ekEW2eHABBwQSs7g7_8nx49tYH0v5P8KCqhQLt0OhFP7vr33gHsIl1MQMjuvTJl8duGSzokm5xwGxPWrhw"
+          "signature": "K0beuOITFsTBlD1Uo3JvqfliRVQacCCjXvL9Vu6PDIEOyBHpS-PSwxDLztH3MThxTI4flXE9AZhEwsqN4z6NMw"
         },
         "result": {
           "ok": false,
@@ -1975,7 +1944,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2027",
-          "signature": "9FEp3EORRWkqsZ9kImtaTYpb6MdlHa9eB8OTwdB_r1nWgWS-OdaLkk12pZkzEV1lykXZpfgDpNkZTIIWqwjGUg"
+          "signature": "lWap36g-ie9vVHJzo1vdlyMg3rBfqbnw8UzsI0tIuEyasIgBN2GuZupTfYPUOHR-DUe2y6q3khmIRf5rOG24oA"
         },
         "result": {
           "ok": false,
@@ -2009,7 +1978,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "ALBERA-TEST-BROKER-2026",
-          "signature": "Tm_v6-lsrSczLm0m2fIIRfuFOyObp32SAYhYRbDcWV2AkHNLUgpWmsDbIUPkp8oLeydSih6SML58CGSAE2mgnw"
+          "signature": "9dVSV-IDLvFBhNL3fxxu3KM-vK4TiLuiaYXH0t8tIsmUjXD4uD8jZi0kFzQMEyYUGlZMH0ehiNTfxSKiGFc8Sg"
         },
         "result": {
           "ok": false,
@@ -2043,7 +2012,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "-bad",
-          "signature": "NQlldTDeV3_ZcP2_fDKwPqAyUe0H6AiqkZiS-WX_OIKssUph9mLqemgciySh8OKTENrWU4ESDGzrRz274Ibipg"
+          "signature": "jsHUbEdl7y1UXtErSUmstg2aMLo_pKt6BZEjIjJQJkuswzuOEZ_gcnWL5YolezsV03jHG2JOkGeQWb7kqulbuQ"
         },
         "result": {
           "ok": false,
@@ -2077,7 +2046,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "ljh-DNwko1s2CcDM6-Wh2iq1zCwnmy73WhsluhIeajsQa5OJ3oWhOTXNP2G_OXnTjI4U8-Ka3Xz7avKCpQueBw"
+          "signature": "Z8aJCo3FUee-B0Ry389UclX6UZu-_PyiB3nEpvSnEOD4SjFAugvwsGilPN58EmGvZ52hbXgh1QOcu_gw0-IwSw"
         },
         "result": {
           "ok": false,
@@ -2111,7 +2080,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "GN3g65X9KwVflXyZJlV2Ubaehhaq4yWux6tm9hljfbFL8WWNO5efrd11k9PF7On9PYjUeKj-LA2cramrv8FSMg"
+          "signature": "mGSFkC1oIWR2HnNOdEKiB74GhMHblQ-SbFd0rAAxvJwjgVSu0j4CBjzqP2a2AtPhA523sGZxim97XJgb6J8P2w"
         },
         "result": {
           "ok": false,
@@ -2145,7 +2114,7 @@
           },
           "digest": "sha256:89D1A6F1953AB8957C85955E8136ED56269DDFBE7D4E7A49110C3D19963A50B7",
           "keyId": "albera-test-broker-2026",
-          "signature": "M6SkyJ6QdeXIRAaX17W4BizhNJUY2fJgD1nO-I4Fumxa5yWajy6D5lG_oV9-7DmpWP4Ffr8zcw50glDpB4LO8g"
+          "signature": "Aem-5lfTvbl5XEBro54brOd4l7XSBdJHoVUnlvJRGIOL-HAfrCBNdmZna8lXev7QjuXOuGZIrEC9oVUlLlNSWA"
         },
         "result": {
           "ok": false,
@@ -2179,7 +2148,7 @@
           },
           "digest": "sha256:0bc412c0fdaab0fe0b2804952d854989c00b77b6912e0b7b61a3fdef35bfea1c",
           "keyId": "albera-test-broker-2026",
-          "signature": "HSU9xKWdjQNB8Bl_jTNz5asittSWYGXGf9QSPcj-o7ITLokbKdYkr3ATTnHtRdLE7Lyn2VLfhf_3-d3wMTz86g"
+          "signature": "4yNXdz_DjnVxJZsWPXHDqPwrFnNs--zb3FdL-ryKwNKXLu4AIDpZVtL5CU2jDs0D3Z6mFS2eoY6gwA8F7p4DBw"
         },
         "result": {
           "ok": false,
@@ -2213,7 +2182,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "aSYKET_n7vcsEy0xXG3WMarQwGKwhOHflV4--ZNfIc3LepQv0SiHyyu3ZrY6ixezUbs0nhCtXtai6DQ3Z6Ib2Q",
+          "signature": "1ojLIzLd4JItHyxL7Vn5I61C7_gfh_cLTWPZFFYmbdCAezqLfhndnKogtZoOpPj_vyGOFsgcp2r54Y2KIZzMVQ",
           "extra": "x"
         },
         "result": {
@@ -2247,7 +2216,7 @@
             "expiresAt": 1793404880
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
-          "signature": "LI_w9NFe-jm8W51LuqzWzLOfKSbOvn4HS0Qyo5ES2tIDnuHVJ29rly2nGf3NyQ_y6p1BcVse3WRejFpUWkplOQ"
+          "signature": "4W-o8T3B12IqZU8WajAHHMtAkzPzaSiRwq39CE97tzQp13WoGgEamlKem6e4mRON_58mBRgj_k6jnSbZWNfMDA"
         },
         "result": {
           "ok": false,
@@ -2282,7 +2251,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "z0nkfPUGoYFlX9clQO0dFYAYGvW-xFahjE8BTkHz1RoXnxneeo2J2M23qRAyJsgF1w3hLDEwOY3wXTyQ4rl1Gw"
+          "signature": "YohzwAcAtLD8X1-zdUIG8BfHWjsdMJqHala5iva-DJnIyTsQTVW6qdAkRm396PgGbw_S5EUMR0Mjn2QLpdTwAQ"
         },
         "result": {
           "ok": false,
@@ -2315,7 +2284,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "JU8baPh2qMl0rV5ij129g-14w9VocunV9DdPE_IYtd3uXTVb2MYR4MlB93Sc5QTGA3FshcS1mMa6wxPiggmx2g"
+          "signature": "Ty21OmOVVXUC4lcMQld67lmerqxVBQt1ZEziao_iYDKuPFEOPXkalztYqJo5aq1HJWiGhmGhPG8oeIBa0FDkzQ"
         },
         "result": {
           "ok": false,
@@ -2349,7 +2318,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "L8DbQ0Hxbn31ItFuBowPWVkeupHSj7PA8rvANiMZSQhF7l8d-lov3VB1K7gMk31e6rwQidQRfw0MBv7aPZ-rzw"
+          "signature": "ICk1ttjTvUAj-054BcZLKuCTzEmN-99txw9cXqyN27JW1XdTE1YhbtEfOlL0-XW2_NVXEiCqTdROhOgLuh_SCA"
         },
         "result": {
           "ok": false,
@@ -2383,7 +2352,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "RPpex9HIZTqtbS6u0N7kl1Y3ECJKJ2ovdyGzC1r7Kik3-qPHVsdXAqTieKKMSiSQVBMxAklsP8Canr9iVozJFQ"
+          "signature": "X3Sa4uCae-nt-SbJZPpe8JQ44MnjCoh2bIu8yJpuH5_77274RPSChZtQ8Rn7c3UZSDBWX_RcZE_gyxTVn2QyRw"
         },
         "result": {
           "ok": false,
@@ -2417,7 +2386,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "jZpZUsnJ-zSEl9e4rISzZdYSITnn_JPCs0pfJTUrJMgX97asLnwzZX3IO-WGg-Zwga2a9u5CY96RCcjOstQtnQ"
+          "signature": "JxJLHtxiPpm4EGKoKW1LkkmNYU5jYg0CIC5zqKWhJIDT4WcgLPfTSKTiZVjKyP2FvFDx9oTsZ4ismN6FN_uZmA"
         },
         "result": {
           "ok": false,
@@ -2451,7 +2420,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "ObmcrgQMKqQMGTVjx-1BE_WDhApgA_nX8znuGIF7ZqedwSX-Aeah74FgC9kLCd79wb9--yUUSQOBb6RYLGg6PA"
+          "signature": "sWFR565Gg4xseh17pKzQPV_WmgrabV82ykOUMfbZpzS9S3IkPRrd4E20vnwQwETc6DYSeI7ctg28Ht7P6Wl2fw"
         },
         "result": {
           "ok": false,
@@ -2485,7 +2454,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "FiCArPgewxFqtIKB-M6JizQuFvxXRrLeihCi9wCluvN5IQ7xCmchbcDKiVKInYrvFwdSg54trIiQ7vQmnseA3Q"
+          "signature": "ZiNa47fFo_oD9oBmHcPguDY1Ku4tYT9YRniy0xOA21sNrwsVh_WxwQn4p8eOXI_4RSh9A_8gAYidHozSq6LUPA"
         },
         "result": {
           "ok": false,
@@ -2519,7 +2488,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "IdP7USEYAHTdllwMt8Pq5GvFj21qLX_xdTT3Zeodeq-Brd4r0_9NDbOMZq6-MZwnfeTZwb6x6EhH-ay3wbKnAw"
+          "signature": "r52-caYMEZsW_EHmoEoGhJg9AXBpCLArjvBJQqcU0AKWGi0ewLMPZLrpICFvfTIB5EqXg-TNmv_ZKRq7var0RQ"
         },
         "result": {
           "ok": false,
@@ -2553,7 +2522,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "7_PJ9HdmE82nv0_UjzvUyUCJTUZ-gXabYvw1V-qtZOyzec0GY4Ih8ZarkSLwhLv4bojHkCAbZfbaRHpBFpYrrw"
+          "signature": "HG69t9sE7xe9JEgs7y3iawSYRpgi_Bwk6cMev-LNzJx898L5fc5sTiR3pI-FOL1GJey2f8vsPaBigtfgP0_cEA"
         },
         "result": {
           "ok": false,
@@ -2576,7 +2545,7 @@
           "attestation": "none",
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "FOZqmxLWoBatxxUpLsP_pzMUUPkMmTEMFgGMCLR8I03Uzln12Qi8sFYus9LwWNfIiFVqp_9kOkWc7Q2XPsGqNg"
+          "signature": "-uS2FCG1Otk1NQwXxaqS9HBwzRw6ougxazIr95J60p1wpdgH_GOrsRgWD-UtsRF-6yjH7_oQK480VvwRqkQXUQ"
         },
         "result": {
           "ok": false,
@@ -2609,7 +2578,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "rxx2DkhJOlXDrxT_WnbVlgM1w1uwqW8dPum_RwXkYte_imJ9uuUns5fNdEWj11LI6clF8N-skf415sljKTBgKA"
+          "signature": "nmSnFR-s8Redl9jBBAWh_qeppr_y8Fbs9Xvx7sTe_dTrbp1-eC41RApUHzc5dAibFwMX_Jmu9_4mtAVD75SNRg"
         },
         "result": {
           "ok": false,
@@ -2643,7 +2612,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "vMeIVU59_zW_VL0dAYdmvaY9DGYI3NYLLVxcylanSasVhHL-bfoZd_lvBSPn-NPw-v6A6S0Y1bYT72fdyQiWBw"
+          "signature": "qePRD3Hh1j7wv8AHYfNq_Sw_fBm9aOaZvAo_vWtPRBWXuO7RVsnv7g1_p6rsamfoXQxXTuGW4gUncij9y6JPpQ"
         },
         "result": {
           "ok": false,
@@ -2677,7 +2646,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "z0yJMi88rc20p5zqYYSotAeiWpvRVqA0Bfc11YbLMWzGrhGfH9oAwhf9vmrDnDbHg5OngAvHW4T84-yE6rUFNg"
+          "signature": "6kQOLG6Tsxj_16WovN3HeZBKT-EPWsdLPwv2Ww-Oj94hu-3fkpjCYX_KSwJhg1HBpe3llNA_p5MQ0GuPSkBe-g"
         },
         "result": {
           "ok": false,
@@ -2711,7 +2680,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "9mD4IK8AWqdCS7X-Zo-mLpvGuq9iqDfTUb8O9M5u_fUmUG2c843fx8Lu80vE9ms6mNLXuwqeSZE-VaBHy1xSDg"
+          "signature": "axfFL4fSSdyCPRoVujqMReiD9naoUbmghOCk_8LHWmdCHgRQpvx0QxuNi5YCNHnMi0tqdoGLJ5dTGyMy5Wd_pQ"
         },
         "result": {
           "ok": false,
@@ -2745,7 +2714,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "ObrKn_f7CObagg1X8DZzpS_U1XBfK72EcuW38R4uCTp1V-0LQduJW9XIzE7vq7bgOYYjRpDd2e3EVLZSIZbHoA"
+          "signature": "hvxp_MNQbnR6hWU3B9MkuYWBQRSv-fbJ1Na8thEDK37rgbRymHfHXAWk00baEHQq3AeFcEuaYyF6nwik90p_cw"
         },
         "result": {
           "ok": false,
@@ -2779,7 +2748,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "o6Tgskqh_e_8RT0BR_xQ5NM8utXClOrHHAKixkuX8VQi4ewfAZB9jUcZwtxnmhELS4aoj2CchJ4lPzsAmlhQ-A"
+          "signature": "ulnSNz7a7u0xlRu_YFeyVB3PasaRTO7O1LZlaT1PitPB3MLpO_TnTdWf0TIcyTSb5snNu5kPQPodf6yFTIwO1Q"
         },
         "result": {
           "ok": false,
@@ -2813,7 +2782,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "uCGcY8qJm2seaS2LctENJeKk73GZg-NUgVT3y3LI15Np3LS_nNWsIt1qABhTVJi-bbtTPuc1hw0Bt3ACd2L2gw"
+          "signature": "FajlUGS6myfHGXxeAInqzSlcfirCIY0UsnG-3r7gSIHpCnLhdz8E2KJdiyyOw4UdcWC4af6Nkktj-aS8hjD10g"
         },
         "result": {
           "ok": false,
@@ -2847,7 +2816,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "AXVltupt_1Q9WIWwGdE1DY_ihXKXi5mD61mzOp6nMvtU94gBZXLvDUGV8w5PqaGilAQ8QXCK5yB8K6H0J2dk1Q"
+          "signature": "dBtrdcY-N4KKgWiI2ZlfYgBI-Fa4gR3IDfz_5-_0p5oPwhS9Sfrq_JlwvTN7tbTFYMKr93EyyQxyx8yn33oNuA"
         },
         "result": {
           "ok": false,
@@ -2881,7 +2850,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "534iNEyAxh_aXDGRa__Uq6HIQRuphgrLHfHDH8NHX7oWU-U23YZnB9QOwxSE5m6ddhM-OwNr72Ct-XUpwVZc8g"
+          "signature": "oEJ1cMGdBHw9uduVHCoR7o-74ngflxZqtPyjWad60ZVap-m__qw2S9Gz_8cgRCbhMnbpaf0HMfQvrlu6EVZdOw"
         },
         "result": {
           "ok": false,
@@ -2915,7 +2884,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "8q4DPa071ugNZ17JJKE_9ZX4Ro9a8lSMj4pPY7918WpJBCZMdmx9fA3jl4xAJ5iD9OhoMoi5NLN4DDEyxr3ZIw"
+          "signature": "lj85GE-v7TMFNfsWuP4MFG8WV34xXJbYMyoCS4ufKzW3hakM7AFg6-2PAKqBg4KEHNTBNtv3Am1vuxTBsYrhwg"
         },
         "result": {
           "ok": false,
@@ -2949,7 +2918,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "U8diUrrbYV2RYAbsXxspHFmkF1mFqI4cuEqIwYyBo_Vnak50spM190tLZu0bIxHjbtlLMxYJY5uya9q1o9z9dQ"
+          "signature": "yjM4_mJKMHabLuKety7fM_nZjMSWoqCwpVpu0_PWKaYpsEVvlyioNJn8oPwO6eRj0Lcp6clV-jHir715gBdtTg"
         },
         "result": {
           "ok": false,
@@ -2983,7 +2952,7 @@
           },
           "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
           "keyId": "albera-test-broker-2026",
-          "signature": "dMbDsKhBbmOrJgpKgnVMcZQ34HGKmVNF6p0Awy2B8kOAHnGn1H8epmPmCMHEfbfEEXgiGn0wCDcvejWGUdromA"
+          "signature": "G7HTzv6pTCVKFlMht4FVmrW8GvtZcE1qIHAMjc0QYIx7Ef3a04bLXdM6xCoynS5Wzv60ZudPZERzZTtxaitg0Q"
         },
         "result": {
           "ok": false,

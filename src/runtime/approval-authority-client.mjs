@@ -20,7 +20,7 @@ import { captureExecutableIdentity } from './executable-identity.mjs';
 // Wire (helper <-> Authority, one request per connection): [int32 little-endian length][UTF-8 JSON] each way, at most 2048 bytes. `v` is always 1.
 //   submit : { v, verb: "submit", purpose, operationId, idempotencyKey, leaseId, leaseGeneration, brokerEpoch, brokerChallenge, action: { action, projectId, computerId, args }, expectedDigest?, attestation? }
 //            `attestation` is a Broker network attestation envelope { attestation, digest, keyId, signature } (network-attestation.mjs). The Authority alone decides what it is worth: only a valid one
-//            that says "none" for this very environment lets environment.start / environment.create skip a person at the standard tier; omitted, forged or stale simply means a prompt.
+//            that says "none" for this very environment lets environment.start skip a person at the standard tier; omitted, forged or stale simply means a prompt.
 //            -> { ok: true, approvalId, state: "pending" | "approved", expiresAt }
 //   status : { v, verb: "status", approvalId }
 //            -> { ok: true, state: "pending", expiresAt } | { ok: true, state: "approved", receipt: <base64 receipt v2 or v3>, signature: <base64 64-byte ECDSA P-256 r||s> }

@@ -56,7 +56,7 @@ test('C# ActionDigest, ReceiptV2, ReceiptV3, TierPolicy and NetworkAttestation g
     const v3 = JSON.parse(fs.readFileSync(vectorsV3Path, 'utf8'));
     assert.deepEqual(result.v3SchemaMismatches, [], 'ReceiptV3.Fields equals receipt-v3.schema.json');
     assert.deepEqual(result.policyBasisActions, ['environment.inspect', 'environment.stop', 'workspace.inspect', 'task.cancel']);
-    assert.deepEqual(result.attestedPolicyBasisActions, ['environment.create', 'environment.start']);
+    assert.deepEqual(result.attestedPolicyBasisActions, ['environment.start']);
     const check = (actual, expectedVectors, label) => {
       assert.equal(actual.length, expectedVectors.length, label);
       expectedVectors.forEach((vector, i) => {

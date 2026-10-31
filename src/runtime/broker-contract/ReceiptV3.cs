@@ -7,8 +7,10 @@
 //                     skip, so a receipt for any other action with this basis is refused even if the Authority signed it.
 //   a "grant:<id>" basis is reserved for a later step; today it is a schema failure on `basis`.
 // attestationDigest (optional, step 3b): the digest of the Broker's network attestation (NetworkAttestation.cs) that the Authority's rule relied on. Present exactly when basis is
-//   "policy" and the action is in AttestedPolicyBasisActions (environment.start / environment.create: a no-person receipt that is only valid with a Broker statement that the environment
-//   has no network); absent for every other receipt. Like policyVersion it is checked for its shape and for being there or not as the rule requires; the Authority's signature covers it.
+//   "policy" and the action is in AttestedPolicyBasisActions (environment.start: a no-person receipt that is only valid with a Broker statement that the VM has no network); absent
+//   for every other receipt. Such a receipt is also only valid for an action whose args name the VM: `args.vmId`, the Hyper-V VM id the attestation was made for (code `attestation`,
+//   field `vmId`, when missing or malformed); the Broker must refuse to start any VM whose own id differs. environment.create is NOT attested: no VM exists before create, so nothing
+//   could be bound; it always needs a person. Like policyVersion it is checked for its shape and for being there or not as the rule requires; the Authority's signature covers it.
 // policyVersion is checked for its shape only (the Broker has no copy of the policy to compare it with); a `policyVersion` in ReceiptContext.Expected is ignored.
 using System;
 using System.Collections.Generic;
@@ -27,7 +29,7 @@ public static class ReceiptV3
     public static IReadOnlyList<string> PolicyBasisActions { get; } = ["environment.inspect", "environment.stop", "workspace.inspect", "task.cancel"];
 
     /// <summary>What a tier policy may let the Authority sign without a person ONLY with a Broker network attestation that says "none" (the receipt then carries its digest).</summary>
-    public static IReadOnlyList<string> AttestedPolicyBasisActions { get; } = ["environment.create", "environment.start"];
+    public static IReadOnlyList<string> AttestedPolicyBasisActions { get; } = ["environment.start"];
 
     /// <summary>True for an action that can carry basis policy at all (with or without an attestation). Nothing else can, whatever the Authority signed.</summary>
     public static bool IsPolicyBasisAction(string action) => PolicyBasisActions.Contains(action) || AttestedPolicyBasisActions.Contains(action);
@@ -105,6 +107,7 @@ public static class ReceiptV3
         if (basis == BasisPolicy && !IsPolicyBasisAction(action)) return Fail("basis_action", "basis");
         // The digest is there exactly when a no-person receipt for an attested action needs it: never for a person's approval, never for an action that needs no attestation.
         if (r.ContainsKey(AttestationDigestField) != (basis == BasisPolicy && AttestedPolicyBasisActions.Contains(action))) return Fail("attestation", AttestationDigestField);
+        if (basis == BasisPolicy && AttestedPolicyBasisActions.Contains(action) && !(ctx!.Action is not null && ActionVmId(ctx.Action) is { } vmId && NetworkAttestation.IsVmId(vmId))) return Fail("attestation", "vmId");
         if (exp <= iat || exp - iat > ReceiptV2.MaxTtlSeconds) return Fail("ttl", "exp");
         if (iat > now + ReceiptV2.MaxIatSkewSeconds) return Fail("not_yet_valid", "iat");
         if (now >= exp) return Fail("expired", "exp");
@@ -116,6 +119,9 @@ public static class ReceiptV3
         if ((string)r["actionDigest"] != ActionDigest.Compute(purpose, ctx!.Action)) return Fail("action_digest", "actionDigest");
         return parsed;
     }
+
+    private static string? ActionVmId(IReadOnlyDictionary<string, object> dto) =>
+        dto.TryGetValue("args", out object? args) && args is IReadOnlyDictionary<string, object> map && map.TryGetValue("vmId", out object? id) ? id as string : null;
 
     private static bool TryReadContext(ReceiptContext? ctx, out long now, out ValidatedAction? dto)
     {

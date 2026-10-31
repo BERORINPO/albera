@@ -3,7 +3,7 @@
 //
 //   file      { "v": 1, "rev": <integer >= 0>, "tier": "careful" | "standard", "overrides": { "<action>": "prompt", ... } }   exactly these keys, strict JSON
 //   careful   every action needs a person (today's behaviour, and the default when there is no file)
-//   standard  the actions in ReceiptV3.PolicyBasisActions need no person; environment.start and environment.create (ReceiptV3.AttestedPolicyBasisActions) need none ONLY when the
+//   standard  the actions in ReceiptV3.PolicyBasisActions need no person; environment.start (ReceiptV3.AttestedPolicyBasisActions; never create) needs none ONLY when the
 //             Authority holds a valid Broker network attestation that says "none" (step 3b); everything else needs a person
 //   overrides can only ADD prompts: the one allowed value is "prompt", and it names an action that must then be approved by a person at any tier
 //   rev       counts policy changes (the default has rev 0). A change must carry rev + 1, so a signature for one change can never be applied twice or onto another policy

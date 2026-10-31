@@ -49,9 +49,19 @@ test('verify vectors: every signed case gives its pinned result with the public 
   assert.deepEqual(result('signed-by-another-key-same-key-id'), REFUSED_AS_SIGNATURE);
   assert.deepEqual(result('wrong-key-id'), REFUSED_AS_SIGNATURE);
   assert.deepEqual(result('expired-exactly-at-expiresAt'), { ok: false, code: 'expired', field: 'expiresAt' });
-  assert.deepEqual(result('valid-expected-vmId-null-does-not-compare-the-vm'), { ok: true });
   assert.deepEqual(result('bad-signature-is-reported-before-expiry'), REFUSED_AS_SIGNATURE);
   for (const field of ['computerId', 'generation', 'leaseGeneration', 'leaseId', 'projectId', 'vmId']) assert.deepEqual(result(`binding-${field}`), { ok: false, code: 'binding', field }, field);
+});
+
+test('the VM id cannot be left out of the expectation: null, missing or malformed is invalid_expected, and a statement for another VM is refused as a binding', async () => {
+  const signer = createEcdsaAttestationSigner({ keyId: KEY_ID, privateKey: generate().privateKey });
+  const verifier = createEcdsaAttestationVerifier({ keyId: KEY_ID, publicKey: signer.publicKeySpki });
+  const signed = await signNetworkAttestation(BODY, signer);
+  const { vmId: _omitted, ...withoutVm } = EXPECTED;
+  for (const expected of [{ ...EXPECTED, vmId: null }, { ...EXPECTED, vmId: undefined }, withoutVm, { ...EXPECTED, vmId: 'ABCDEF12-2222-4333-8444-555555555555' }, { ...EXPECTED, vmId: 'vm-1' }, { ...EXPECTED, vmId: 7 }]) {
+    assert.equal(verdict(signed, verifier, T0 + 1, expected).code, 'invalid_expected', JSON.stringify(expected));
+  }
+  assert.deepEqual(verdict(signed, verifier, T0 + 1, { ...EXPECTED, vmId: '99999999-8888-4777-8666-555555555555' }), { ok: false, code: 'binding', field: 'vmId' }, 'VM B is not VM A');
 });
 
 test('the vector file holds a public key and signatures only: no private key material, and the key is a named P-256 SPKI', () => {

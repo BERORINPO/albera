@@ -56,10 +56,10 @@ test('v3 vectors: file shape and coverage of the basis, shape and binding bounda
   for (const required of [
     'valid-v3-presence-start', 'valid-v3-policy-environment-inspect', 'valid-v3-policy-environment-stop', 'valid-v3-policy-task-cancel', 'valid-v3-policy-workspace-inspect',
     'valid-v3-policy-version-expected-is-ignored', 'valid-v3-all-ids-at-64-chars', 'v3-policy-basis-refused-for-environment-destroy', 'v3-policy-basis-refused-for-environment-purge',
-    'v3-policy-basis-needs-attestation-for-environment-create', 'v3-policy-basis-needs-attestation-for-environment-start', 'v3-policy-basis-refused-for-task-start-guest',
+    'v3-policy-basis-refused-for-environment-create', 'v3-policy-basis-needs-attestation-for-environment-start', 'v3-policy-basis-refused-for-task-start-guest',
     'v3-policy-basis-refused-for-synthetic-noop', 'v3-basis-unknown-word', 'v3-basis-grant-reserved', 'v3-basis-missing', 'v3-policy-version-v2-style-label',
     'v3-duplicate-key-basis-later-wins-attack', 'v3-binding-leaseId', 'v3-digest-tampered',
-    'valid-v3-policy-attested-environment-start', 'valid-v3-policy-attested-environment-create', 'valid-v3-policy-attested-all-ids-at-64-chars', 'v3-attestation-digest-on-presence-start',
+    'valid-v3-policy-attested-environment-start', 'v3-attestation-digest-on-policy-environment-create', 'v3-attested-start-vmId-arg-missing', 'valid-v3-policy-attested-all-ids-at-64-chars', 'v3-attestation-digest-on-presence-start',
     'v3-attestation-digest-on-policy-environment-stop', 'v3-attestation-digest-on-policy-environment-destroy', 'v3-attestation-digest-duplicate-key', 'v3-attestation-digest-null',
   ]) assert.ok(names.includes(required), `vector ${required} exists`);
 });
@@ -96,12 +96,12 @@ test('basis: only presence and policy exist; a grant basis and every other word 
 
 test('policy basis: the contract caps what a policy can skip to reads and risk-reducing actions, plus start / create only with an attestation; nothing that deletes or runs work', () => {
   assert.deepEqual([...POLICY_BASIS_ACTIONS].sort(), ['environment.inspect', 'environment.stop', 'task.cancel', 'workspace.inspect']);
-  assert.deepEqual([...ATTESTED_POLICY_BASIS_ACTIONS].sort(), ['environment.create', 'environment.start']);
+  assert.deepEqual([...ATTESTED_POLICY_BASIS_ACTIONS], ['environment.start'], 'create is never attested: no VM exists before it');
   for (const action of [...POLICY_BASIS_ACTIONS, ...ATTESTED_POLICY_BASIS_ACTIONS]) assert.ok(KNOWN_ACTIONS.has(action));
   for (const never of ['environment.create', 'environment.start', 'environment.destroy', 'environment.retire', 'environment.purge', 'task.start', 'synthetic.noop']) {
     assert.equal(POLICY_BASIS_ACTIONS.includes(never), false, never);
   }
-  for (const never of ['environment.destroy', 'environment.retire', 'environment.purge', 'task.start', 'synthetic.noop', ...POLICY_BASIS_ACTIONS]) {
+  for (const never of ['environment.create', 'environment.destroy', 'environment.retire', 'environment.purge', 'task.start', 'synthetic.noop', ...POLICY_BASIS_ACTIONS]) {
     assert.equal(ATTESTED_POLICY_BASIS_ACTIONS.includes(never), false, `${never} needs no attestation or can never skip a person`);
     assert.equal(isPolicyBasisAction(never), POLICY_BASIS_ACTIONS.includes(never), never);
   }
@@ -147,20 +147,23 @@ test('the widest v3 receipt fits the same limits as v2 (1280 bytes, the 2 KiB Br
 
 test('attestationDigest: present exactly for basis policy on environment.start / environment.create, absent everywhere else, and always a hash-shaped string', () => {
   const verdictFor = (name) => vectors.receiptVectors.find((v) => v.name === name).expected;
-  for (const name of ['valid-v3-policy-attested-environment-start', 'valid-v3-policy-attested-environment-create', 'valid-v3-policy-attested-all-ids-at-64-chars']) assert.deepEqual(verdictFor(name), { ok: true }, name);
+  for (const name of ['valid-v3-policy-attested-environment-start', 'valid-v3-policy-attested-environment-start-with-more-args', 'valid-v3-policy-attested-all-ids-at-64-chars', 'valid-v3-presence-start-needs-no-vmId-arg']) assert.deepEqual(verdictFor(name), { ok: true }, name);
   const needs = { ok: false, code: 'attestation', field: 'attestationDigest' };
   for (const name of [
-    'v3-policy-basis-needs-attestation-for-environment-start', 'v3-policy-basis-needs-attestation-for-environment-create', 'v3-attestation-digest-on-presence-start',
+    'v3-policy-basis-needs-attestation-for-environment-start', 'v3-attestation-digest-on-presence-start',
     'v3-attestation-digest-on-presence-destroy', 'v3-attestation-digest-on-policy-environment-stop', 'v3-attestation-digest-on-policy-environment-inspect',
     'v3-attestation-digest-on-policy-task-cancel', 'v3-attestation-digest-on-policy-workspace-inspect',
   ]) assert.deepEqual(verdictFor(name), needs, name);
-  for (const name of ['v3-attestation-digest-on-policy-environment-destroy', 'v3-attestation-digest-on-policy-environment-purge', 'v3-attestation-digest-on-policy-task-start']) {
+  for (const name of ['v3-policy-basis-refused-for-environment-create', 'v3-attestation-digest-on-policy-environment-create', 'v3-attestation-digest-on-policy-environment-destroy', 'v3-attestation-digest-on-policy-environment-purge', 'v3-attestation-digest-on-policy-task-start']) {
     assert.deepEqual(verdictFor(name), { ok: false, code: 'basis_action', field: 'basis' }, `${name}: the action can never carry basis policy, whatever else the receipt says`);
   }
   for (const name of ['uppercase-hex', 'without-prefix', 'short', 'too-long', 'empty', 'number', 'true', 'v2-style-label']) {
     assert.deepEqual(verdictFor(`v3-attestation-digest-${name}`), { ok: false, code: 'schema', field: 'attestationDigest' }, name);
   }
   for (const name of ['null', 'array', 'nested-object', 'duplicate-key', 'duplicate-key-absent-then-present-attack']) assert.deepEqual(verdictFor(`v3-attestation-digest-${name}`), { ok: false, code: 'malformed' }, name);
+  // An attested start must name the VM it was attested for, as a lowercase GUID in args.vmId.
+  for (const label of ['missing', 'only-other-args', 'uppercase', 'not-a-guid', 'empty', 'a-number', 'a-boolean', 'braced']) assert.deepEqual(verdictFor(`v3-attested-start-vmId-arg-${label}`), { ok: false, code: 'attestation', field: 'vmId' }, label);
+  assert.deepEqual(verdictFor('v3-policy-attested-environment-start-vmId-in-the-action-differs-from-the-receipt-digest'), { ok: false, code: 'action_digest', field: 'actionDigest' }, 'the VM id is part of the action digest: another VM is another digest');
   assert.deepEqual(verdictFor('v3-attestation-digest-key-case-variant'), { ok: false, code: 'schema', field: '$extra' });
   assert.deepEqual(verdictFor('v3-attestation-digest-with-version-2'), { ok: false, code: 'schema', field: '$extra' }, 'v2 knows no such field');
   // Every other rule still applies to an attested receipt.
@@ -191,8 +194,8 @@ test('policy vectors: the hash, the compact form and the no-prompt set follow th
   const careful = vectors.policyVectors.find((v) => v.name === 'careful-rev0-empty').expected;
   assert.deepEqual([careful.noPrompt, careful.attestedNoPrompt, careful.hash], [[], [], policyHash(0, 'careful', [])], 'the default (no file) skips nobody, attested or not');
   const named = (name) => vectors.policyVectors.find((v) => v.name === name).expected;
-  assert.deepEqual(named('standard-rev1-empty').attestedNoPrompt, ['environment.create', 'environment.start']);
-  assert.deepEqual(named('standard-rev6-override-on-start').attestedNoPrompt, ['environment.create'], 'an override on start forces a prompt even with an attestation');
+  assert.deepEqual(named('standard-rev1-empty').attestedNoPrompt, ['environment.start'], 'only start; create is never skipped');
+  assert.deepEqual(named('standard-rev6-override-on-start').attestedNoPrompt, [], 'an override on start forces a prompt even with an attestation');
   assert.deepEqual(named('standard-rev7-override-on-start-and-create').attestedNoPrompt, []);
   assert.deepEqual(named('careful-rev8-override-on-create').attestedNoPrompt, [], 'careful skips nobody');
   // Same policy, different bytes: the hash is of the meaning.
@@ -216,6 +219,7 @@ test('a policy change needs a presence signature exactly when it lets an action 
   assert.equal(effect('standard-drop-the-start-override-loosens-by-effect'), true, 'an attested action that starts skipping a person (with an attestation) counts');
   assert.equal(effect('standard-add-a-start-override-only-adds-prompts'), false);
   assert.equal(effect('careful-with-create-override-to-standard'), true);
+  assert.equal(effect('standard-drop-the-create-override-changes-nothing-create-is-never-skipped'), false, 'create is not a skippable action');
 });
 
 test('the policy message is domain separated, bound to one Authority by kid and audience, and covers the hash of the complete new policy', () => {

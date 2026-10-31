@@ -18,8 +18,8 @@
 //
 // STALENESS: the statement is evidence at observedAt ONLY. A consumer must re-check at execution time (step 3: re-attest, or compare the VM's state again, immediately
 // before it acts); "not expired" means "was true recently", never "is true now". `verifyNetworkAttestation` refuses an expired statement and one bound to a different
-// computerId / vmId / generation / projectId / leaseId / leaseGeneration than the caller expects (an expected vmId of `null` means the caller has no VM id of its own to compare:
-// the Authority's action DTO does not carry one; the statement's vmId is then only covered by the signature and the digest); it does not decide what "none" or "present" allows.
+// computerId / vmId / generation / projectId / leaseId / leaseGeneration than the caller expects (all six are required: the VM id is what tells one VM from another under the same
+// computer id, project, lease and generation, so there is no way to leave it out); it does not decide what "none" or "present" allows.
 //
 //   preimage = UTF8("albera.network-attestation.v1") 0x00 enc(map)            enc(map) / enc(string) / enc(int) as in action-digest.mjs
 //   digest   = "sha256:" lowercase-hex(SHA-256(preimage))                      the signature covers the preimage bytes; keyId and signature are not part of the digest
@@ -41,6 +41,8 @@ const SIGNED_KEYS = Object.freeze(['attestation', 'digest', 'keyId', 'signature'
 const EXPECTED_KEYS = Object.freeze(['computerId', 'generation', 'leaseGeneration', 'leaseId', 'projectId', 'vmId']); // sorted, like the other key lists
 const ID_RE = new RegExp(ID_PATTERN);
 const VM_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** A Hyper-V VM id as the Broker reports it: a lowercase GUID. */
+export const isVmId = (value) => typeof value === 'string' && VM_ID_RE.test(value);
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 
@@ -154,7 +156,7 @@ export function readSignedNetworkAttestation(signed) {
 function readExpected(expected) {
   const e = readPlain(expected, EXPECTED_KEYS, 'invalid_expected');
   for (const field of ['computerId', 'projectId', 'leaseId']) if (typeof e[field] !== 'string' || !ID_RE.test(e[field])) throw fail('invalid_expected', field);
-  if (e.vmId !== null && (typeof e.vmId !== 'string' || !VM_ID_RE.test(e.vmId))) throw fail('invalid_expected', 'vmId');
+  if (!isVmId(e.vmId)) throw fail('invalid_expected', 'vmId');
   for (const field of ['generation', 'leaseGeneration']) if (!isCounter(e[field])) throw fail('invalid_expected', field);
   return e;
 }
@@ -180,6 +182,6 @@ export function verifyNetworkAttestation(signed, ctx) {
   if (!Number.isSafeInteger(now) || now < 0) throw fail('invalid_context', 'clock');
   if (attestation.observedAt > now + MAX_OBSERVED_SKEW_SECONDS) throw fail('not_yet_valid', 'observedAt');
   if (now >= attestation.expiresAt) throw fail('expired', 'expiresAt');
-  for (const field of EXPECTED_KEYS) if (trusted[field] !== null && attestation[field] !== trusted[field]) throw fail('binding', field);
+  for (const field of EXPECTED_KEYS) if (attestation[field] !== trusted[field]) throw fail('binding', field);
   return attestation;
 }

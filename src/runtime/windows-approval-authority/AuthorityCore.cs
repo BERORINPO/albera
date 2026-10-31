@@ -13,9 +13,11 @@ internal readonly record struct Outcome(string? Code, PendingEntry? Entry);
 //   - Submit, when the tier policy in force (PolicyStore, set only through SetPolicy from the approver pipe) says THIS action needs no person (basis policy, receipt v3).
 // Whether a person is needed is decided from the action the Authority validated and hashed itself and from its own policy. Nothing in a submit request (it has no field for
 // it, and an unknown field is request_invalid) names, lowers or chooses a tier. With no policy file the policy is careful: every action needs a person.
-// The one attested exception (issue #115 step 3b): at the standard tier environment.start and environment.create need no person when the submit carries a Broker network attestation that
-// (1) verifies against the key pinned in the Authority's own config, (2) says network "none", (3) is bound to exactly the computerId, projectId, generation (the `expectedGeneration` arg
-// of the action, which the human would see and the digest covers), leaseId and leaseGeneration of THIS submit, and (4) has not expired, the clock being read after the signature check.
+// The one attested exception (issue #115 step 3b): at the standard tier environment.start needs no person when the submit carries a Broker network attestation that
+// (1) verifies against the key pinned in the Authority's own config, (2) says network "none", (3) is bound to exactly the computerId, projectId, leaseId and leaseGeneration of THIS submit
+// and to the VM and generation the action names (the `vmId` and `expectedGeneration` args: shown to the human, covered by the digest, filled in by the Control Plane from its own inspect),
+// and (4) has not expired, the clock being read after the signature check. A start without a well-formed `vmId` arg is never attested. The Broker refuses to start a VM whose own Hyper-V id
+// differs from that arg, so an attestation for VM A cannot start VM B. environment.create is not attested at all (no VM exists to observe before it): it always needs a person.
 // The receipt is v3 basis policy with the attestation's digest, and ends no later than the attestation does. Anything else (no key pinned, no attestation, a forged, stale, mismatched or
 // "present" / "unknown" one) is not an error: the request queues for a person exactly as without it. An override on the action forces a prompt as ever, and nothing in the attestation
 // names or lowers a tier.
@@ -72,7 +74,8 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
         if (attestation is null) return null;
         if (attestationKey is null) return Refused("no_key_pinned");
         if (request.Dto.Args.GetValueOrDefault("expectedGeneration") is not long generation || generation < 1) return Refused("generation_missing");
-        AttestationExpected expected = new(request.Dto.ComputerId, null, generation, request.Dto.ProjectId, request.LeaseId, request.LeaseGeneration); // the DTO carries no VM id: not compared
+        if (request.Dto.Args.GetValueOrDefault("vmId") is not string vmId || !NetworkAttestation.IsVmId(vmId)) return Refused("vm_id_missing");
+        AttestationExpected expected = new(request.Dto.ComputerId, vmId, generation, request.Dto.ProjectId, request.LeaseId, request.LeaseGeneration);
         AttestationVerdict verdict = NetworkAttestation.Verify(attestation, clock, attestationKey.Verify, expected);
         if (!verdict.Ok) return Refused(verdict.Field is null ? verdict.Code! : $"{verdict.Code}:{verdict.Field}");
         if (verdict.Value!.Network != NetworkAttestation.None) return Refused($"network_{verdict.Value.Network}");

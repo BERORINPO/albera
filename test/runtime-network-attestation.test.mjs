@@ -229,6 +229,17 @@ async function mockWorld({ ttl } = {}) {
 }
 const expectedFor = (vmId, overrides = {}) => ({ computerId: 'pc-01', vmId, generation: 1, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 5, ...overrides });
 
+test('mock: start with a vmId starts only that VM; a VM that took its computer id, project, lease and generation (another vmId) is refused, not applied', async () => {
+  const { provider } = await mockWorld();
+  const { attestation } = await provider.attestNetwork(op('inspect'), { leaseGeneration: 5 });
+  await rejectsWith(provider.start(op('start', { vmId: '99999999-8888-4777-8666-555555555555' })), 'operation_conflict');
+  assert.equal((await provider.inspect(op('inspect'))).state, 'off', 'nothing was started');
+  assert.equal((await provider.start(op('start', { vmId: attestation.vmId }))).state, 'running');
+  provider.setNetworkAdapters('pc-01', []);
+  assert.equal((await provider.stop(op('stop'))).state, 'off');
+  assert.equal((await provider.start(op('start'))).state, 'running', 'a start that names no VM is as before');
+});
+
 test('mock: a freshly created environment is "none" (create removes the default adapter); once an adapter is attached it is "present"', async () => {
   const { provider, signer } = await mockWorld();
   const first = await provider.attestNetwork(op('inspect'), { leaseGeneration: 5 });

@@ -2,6 +2,7 @@
  * Provider-neutral contracts for future project computers.
  * These validators do not authorize operations or connect a provider to the Runtime API.
  */
+import { isVmId } from './broker-contract/network-attestation.mjs';
 
 // destroy keeps its meaning (delete now). retire (undoable: stop, detach, keep the disks) and purge (delete the disks of a RETIRED environment) are separate names, see docs/architecture/approval-tiers.md.
 export const ENVIRONMENT_ACTIONS = Object.freeze(['create', 'inspect', 'start', 'stop', 'destroy', 'retire', 'purge']);
@@ -18,7 +19,7 @@ const CAPABILITY_SET = new Set(ENVIRONMENT_CAPABILITIES);
 const SPEC_KEYS = new Set(['projectId', 'kind', 'os', 'architecture', 'imageDigest', 'capabilities', 'networkProfileId', 'securityProfileId', 'resources']);
 const CAPACITY_KEYS = new Set(['os', 'architecture', 'capabilities', 'networkProfileIds', 'securityProfileIds', 'resources']);
 const QUOTA_KEYS = new Set(['maxComputers', 'vcpu', 'memoryMiB', 'diskGiB']);
-const OPERATION_KEYS = new Set(['operationId', 'idempotencyKey', 'subjectId', 'projectId', 'taskId', 'runId', 'computerId', 'providerId', 'leaseId', 'expectedGeneration', 'policyVersion', 'action', 'spec']);
+const OPERATION_KEYS = new Set(['operationId', 'idempotencyKey', 'subjectId', 'projectId', 'taskId', 'runId', 'computerId', 'providerId', 'leaseId', 'expectedGeneration', 'policyVersion', 'action', 'spec', 'vmId']);
 
 export class EnvironmentProviderError extends Error {
   constructor(code, { outcome = 'unknown' } = {}) {
@@ -134,6 +135,9 @@ export function validateEnvironmentOperation(operation) {
     if (normalized.spec.projectId !== operation.projectId) throw new TypeError('environment_project_mismatch');
   }
   else if (Object.hasOwn(operation, 'spec')) throw new TypeError('unexpected_environment_spec');
+  // `vmId` (start only): the Hyper-V VM id the approval named (the `vmId` arg of the approved action). The Broker refuses to start any VM whose own id differs, so an approval
+  // given for VM A (or a network attestation made for it) can never start VM B that took its computer id, project, lease and generation. Optional: a start approved without one is as before.
+  if (Object.hasOwn(operation, 'vmId') && (operation.action !== 'start' || !isVmId(operation.vmId))) throw new TypeError('invalid_environment_operation');
   return Object.freeze(normalized);
 }
 

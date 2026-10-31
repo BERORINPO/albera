@@ -168,7 +168,7 @@ if (args.Length >= 5)
     foreach (JsonElement c in verify.GetProperty("cases").EnumerateArray())
     {
         JsonElement e = c.GetProperty("expected");
-        AttestationExpected expected = new(e.GetProperty("computerId").GetString()!, e.GetProperty("vmId").ValueKind == JsonValueKind.Null ? null : e.GetProperty("vmId").GetString(), e.GetProperty("generation").GetInt64(),
+        AttestationExpected expected = new(e.GetProperty("computerId").GetString()!, e.GetProperty("vmId").GetString()!, e.GetProperty("generation").GetInt64(),
             e.GetProperty("projectId").GetString()!, e.GetProperty("leaseId").GetString()!, e.GetProperty("leaseGeneration").GetInt64());
         long now = c.GetProperty("now").GetInt64();
         AttestationVerdict verdict = NetworkAttestation.Verify(ToValue(c.GetProperty("signed")), () => now, VerifySignature, expected);

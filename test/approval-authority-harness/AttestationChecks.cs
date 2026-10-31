@@ -12,7 +12,10 @@ internal static partial class Harness
 {
     private const string AttestKeyId = "broker-attest-test-1";
     private const string AttestVm = "11111111-2222-4333-8444-555555555555";
-    private static readonly string[] Attested = ["environment.start", "environment.create"];
+    private const string OtherVm = "99999999-8888-4777-8666-555555555555";
+    private static readonly string[] Attested = ["environment.start"];
+    /// <summary>The args of an attested start as the Control Plane fills them in from its own inspect: the generation and the VM the approval is for.</summary>
+    private const string GoodArgs = "{\"expectedGeneration\":3,\"vmId\":\"" + AttestVm + "\",\"vmName\":\"alpha\"}";
 
     private sealed class AttestKey : IDisposable
     {
@@ -25,9 +28,9 @@ internal static partial class Harness
     }
 
     private static Dictionary<string, object> AttestBody(string network = "none", string computerId = "pc-01", long generation = 3, string projectId = "proj-alpha", string leaseId = "lease-1",
-        long leaseGeneration = 7, long observedAt = Start - 5, long expiresAt = Start + 55) => new()
+        long leaseGeneration = 7, long observedAt = Start - 5, long expiresAt = Start + 55, string vmId = AttestVm) => new()
     {
-        ["v"] = 1L, ["network"] = network, ["computerId"] = computerId, ["vmId"] = AttestVm, ["generation"] = generation, ["projectId"] = projectId, ["leaseId"] = leaseId,
+        ["v"] = 1L, ["network"] = network, ["computerId"] = computerId, ["vmId"] = vmId, ["generation"] = generation, ["projectId"] = projectId, ["leaseId"] = leaseId,
         ["leaseGeneration"] = leaseGeneration, ["observedAt"] = observedAt, ["expiresAt"] = expiresAt,
     };
 
@@ -42,7 +45,7 @@ internal static partial class Harness
         return (json, digest!);
     }
 
-    private static string AttestedSubmit(string envelope, string action = "environment.start", string op = "op-1", string args = "{\"expectedGeneration\":3,\"vmName\":\"alpha\"}") =>
+    private static string AttestedSubmit(string envelope, string action = "environment.start", string op = "op-1", string args = GoodArgs) =>
         SubmitJson(op: op, idem: op, action: action, args: args, purpose: PurposeOf(action), extra: $",\"attestation\":{envelope}");
 
     private static Fixture StandardWith(AttestKey? key, List<string> audit, string policyJson = "") =>
@@ -66,7 +69,7 @@ internal static partial class Harness
 
     private static void AttestationAcceptChecks()
     {
-        Check("attestation: standard + a valid 'none' attestation signs start and create at once (v3, basis policy, the attestation digest bound in) and nobody is asked", () =>
+        Check("attestation: standard + a valid 'none' attestation signs start at once (v3, basis policy, the attestation digest bound in) and nobody is asked", () =>
         {
             using AttestKey key = new();
             foreach (string action in Attested)
@@ -87,7 +90,7 @@ internal static partial class Harness
                 Assert(fx.List().GetProperty("pending").GetArrayLength() == 0, $"{action}: nothing reached the approver's list");
                 Assert(audit.Contains($"POLICY_SIGNED={action} {id} ATTESTED={digest}"), $"{action}: audit line: {string.Join(" | ", audit)}");
                 // ... and it is exactly what the Broker's validator takes.
-                ValidatedAction dto = ActionDigest.Validate(PurposeOf(action), StrictJson.Parse(Encoding.UTF8.GetBytes($"{{\"action\":\"{action}\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"args\":{{\"expectedGeneration\":3,\"vmName\":\"alpha\"}}}}"), 3));
+                ValidatedAction dto = ActionDigest.Validate(PurposeOf(action), StrictJson.Parse(Encoding.UTF8.GetBytes($"{{\"action\":\"{action}\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"args\":{GoodArgs}}}"), 3));
                 PendingRequest request = new(PurposeOf(action), "op-1", "op-1", "lease-1", 7, 3, "_-7dzLuqmYh3ZlVEMyIRAA", dto);
                 Assert(ReceiptBuilder.Check(receipt, request, fx.Identity, fx.Signer.Issuer, fx.Now).Ok, $"{action}: contract verdict");
             }
@@ -110,11 +113,11 @@ internal static partial class Harness
             using AttestKey key = new();
             Fixture fx = StandardWith(key, []);
             string envelope = AttestEnvelope(AttestBody(), key).Json;
-            string queued = ApprovalIdOf(fx.Submit(SubmitJson(op: "q", idem: "q", args: "{\"expectedGeneration\":3}")));
-            JsonElement again = fx.Submit(AttestedSubmit(envelope, op: "q", args: "{\"expectedGeneration\":3}"));
+            string queued = ApprovalIdOf(fx.Submit(SubmitJson(op: "q", idem: "q", args: GoodArgs)));
+            JsonElement again = fx.Submit(AttestedSubmit(envelope, op: "q", args: GoodArgs));
             Assert(ApprovalIdOf(again) == queued && StateOf(again) == "pending", "the request that already waits for a person is not turned into a receipt by a later attestation");
-            string signedFirst = ApprovalIdOf(fx.Submit(AttestedSubmit(envelope, op: "s", args: "{\"expectedGeneration\":3}")));
-            JsonElement plain = fx.Submit(SubmitJson(op: "s", idem: "s", args: "{\"expectedGeneration\":3}"));
+            string signedFirst = ApprovalIdOf(fx.Submit(AttestedSubmit(envelope, op: "s", args: GoodArgs)));
+            JsonElement plain = fx.Submit(SubmitJson(op: "s", idem: "s", args: GoodArgs));
             Assert(ApprovalIdOf(plain) == signedFirst && StateOf(plain) == "approved", "a resubmit without the attestation returns the first, approved request");
             Assert(fx.Store.Count == 2, "two entries, not four");
         });
@@ -122,7 +125,7 @@ internal static partial class Harness
 
     private static void AttestationRefuseChecks()
     {
-        Check("attestation: no attestation, no pinned key, careful tier, an override or a missing expectedGeneration arg: start and create wait for a person", () =>
+        Check("attestation: no attestation, no pinned key, careful tier, an override or a missing expectedGeneration arg: start waits for a person", () =>
         {
             using AttestKey key = new();
             string envelope = AttestEnvelope(AttestBody(), key).Json;
@@ -130,7 +133,7 @@ internal static partial class Harness
             {
                 List<string> audit = [];
                 Fixture omitted = StandardWith(key, audit);
-                Assert(IsPending(omitted, omitted.Submit(SubmitJson(action: action, args: "{\"expectedGeneration\":3}", purpose: PurposeOf(action)))), $"{action}: no attestation");
+                Assert(IsPending(omitted, omitted.Submit(SubmitJson(action: action, args: GoodArgs, purpose: PurposeOf(action)))), $"{action}: no attestation");
                 Assert(audit.Count == 0, $"{action}: omitting an attestation is silent: {string.Join("|", audit)}");
                 Fixture none = StandardWith(null, audit);
                 Assert(IsPending(none, none.Submit(AttestedSubmit(envelope, action))), $"{action}: the Authority pins no key");
@@ -148,8 +151,9 @@ internal static partial class Harness
                     Assert(IsPending(noGeneration, noGeneration.Submit(AttestedSubmit(envelope, action, op: $"g{n++}", args: args))), $"{action}: {args}");
             }
             Fixture oneOverride = StandardWith(key, [], PolicyJson(3, "standard", "environment.start"));
-            Assert(IsPending(oneOverride, oneOverride.Submit(AttestedSubmit(envelope, "environment.start"))) && StateOf(oneOverride.Submit(AttestedSubmit(envelope, "environment.create", op: "op-2"))) == "approved",
-                "an override on start leaves create alone");
+            Assert(IsPending(oneOverride, oneOverride.Submit(AttestedSubmit(envelope, "environment.start"))), "an override on start forces a prompt");
+            Fixture noOverride = StandardWith(key, []);
+            Assert(StateOf(noOverride.Submit(AttestedSubmit(envelope, "environment.start"))) == "approved" && IsPending(noOverride, noOverride.Submit(AttestedSubmit(envelope, "environment.create", op: "op-2"))), "control: start is attested, create never is");
         });
         Check("attestation: a forged, stale, mismatched or 'present' / 'unknown' attestation is not an error: the request just waits for a person (with a fixed-word audit reason)", () =>
         {
@@ -193,7 +197,7 @@ internal static partial class Harness
         {
             using AttestKey key = new();
             Fixture fx = StandardWith(key, []);
-            string Submit(string extra, string op) => Code(fx.Submit(SubmitJson(op: op, idem: op, args: "{\"expectedGeneration\":3}", extra: extra)));
+            string Submit(string extra, string op) => Code(fx.Submit(SubmitJson(op: op, idem: op, args: GoodArgs, extra: extra)));
             Assert(Submit(",\"attestation\":null", "n") == "request_invalid", "null is not JSON the strict reader takes");
             Assert(Submit(",\"attestations\":{}", "u") == "request_invalid", "an unknown key is invalid as ever");
             Assert(Submit(",\"attestation\":{},\"attestation\":{}", "d") == "request_invalid", "a duplicate key is invalid as ever");
@@ -206,7 +210,7 @@ internal static partial class Harness
 
     private static void AttestationScopeChecks()
     {
-        Check("attestation: it never lets an action skip a person that cannot (destroy, retire, purge, task.start, synthetic.noop), at any tier", () =>
+        Check("attestation: it never lets an action skip a person that cannot (create, destroy, retire, purge, task.start, synthetic.noop), at any tier", () =>
         {
             using AttestKey key = new();
             string envelope = AttestEnvelope(AttestBody(), key).Json;
@@ -214,9 +218,9 @@ internal static partial class Harness
             {
                 Fixture fx = new(policy: PolicyStore.InMemory(PolicyOf(PolicyJson(1, tier))), attestation: key.Pinned());
                 int n = 0;
-                foreach (string action in new[] { "environment.destroy", "environment.retire", "environment.purge", "task.start", "synthetic.noop" })
+                foreach (string action in new[] { "environment.create", "environment.destroy", "environment.retire", "environment.purge", "task.start", "synthetic.noop" })
                     Assert(IsPending(fx, fx.Submit(AttestedSubmit(envelope, action, op: $"x{n++}"))), $"{tier} {action}");
-                Assert(IsPending(fx, fx.Submit(SubmitJson(op: "noop-g", idem: "noop-g", action: "synthetic.noop", purpose: "guest.command", args: "{\"expectedGeneration\":3}", extra: $",\"attestation\":{envelope}"))), $"{tier} guest synthetic.noop");
+                Assert(IsPending(fx, fx.Submit(SubmitJson(op: "noop-g", idem: "noop-g", action: "synthetic.noop", purpose: "guest.command", args: GoodArgs, extra: $",\"attestation\":{envelope}"))), $"{tier} guest synthetic.noop");
             }
         });
         Check("attestation: the four unattested actions are signed as before and their receipts carry no attestation digest, whatever the request claims", () =>
@@ -242,7 +246,7 @@ internal static partial class Harness
             Assert(json.Contains(digest, StringComparison.Ordinal), "the receipt names the digest");
             string withoutDigest = json.Replace($",\"attestationDigest\":\"{digest}\"", "", StringComparison.Ordinal);
             Assert(withoutDigest != json && ReceiptV3.Parse(Encoding.UTF8.GetBytes(withoutDigest)).Ok, "the stripped receipt is still well formed ...");
-            ValidatedAction dto = ActionDigest.Validate("broker.operation", StrictJson.Parse(Encoding.UTF8.GetBytes("{\"action\":\"environment.start\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"args\":{\"expectedGeneration\":3,\"vmName\":\"alpha\"}}"), 3));
+            ValidatedAction dto = ActionDigest.Validate("broker.operation", StrictJson.Parse(Encoding.UTF8.GetBytes($"{{\"action\":\"environment.start\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"args\":{GoodArgs}}}"), 3));
             PendingRequest request = new("broker.operation", "op-1", "op-1", "lease-1", 7, 3, "_-7dzLuqmYh3ZlVEMyIRAA", dto);
             ReceiptVerdict refused = ReceiptBuilder.Check(Encoding.UTF8.GetBytes(withoutDigest), request, fx.Identity, fx.Signer.Issuer, fx.Now);
             Assert(refused is { Ok: false, Code: "attestation", Field: "attestationDigest" }, $"... but the contract says {refused.Code}/{refused.Field}");
@@ -292,6 +296,49 @@ internal static partial class Harness
             string raised = PolicyJson(5, "standard");
             Assert(Code(fx.PolicySet(raised)) == "presence_mismatch" && Code(fx.PolicySet(raised, PolicyProof(raised))) == "ok", "careful to standard needs the signature");
         });
+        Check("attestation: a VM swap does not work: an attestation for VM A never gives a receipt for a start that names VM B (same computer, project, lease and generation), and a start that names no well-formed VM is never attested", () =>
+        {
+            using AttestKey key = new();
+            List<string> audit = [];
+            Fixture fx = StandardWith(key, audit);
+            string forVmA = AttestEnvelope(AttestBody(), key).Json, forVmB = AttestEnvelope(AttestBody(vmId: OtherVm), key).Json;
+            string argsFor(string vm) => "{\"expectedGeneration\":3,\"vmId\":\"" + vm + "\",\"vmName\":\"alpha\"}";
+            JsonElement swapped = fx.Submit(AttestedSubmit(forVmA, op: "swap", args: argsFor(OtherVm)));
+            Assert(IsPending(fx, swapped), "the old attestation (VM A) for a start of VM B waits for a person");
+            Assert(audit.SequenceEqual(["ATTESTATION_REFUSED=binding:vmId"]), string.Join("|", audit));
+            Assert(IsPending(fx, fx.Submit(AttestedSubmit(forVmB, op: "swap-2", args: argsFor(AttestVm)))), "and the other way round");
+            audit.Clear();
+            JsonElement matching = fx.Submit(AttestedSubmit(forVmB, op: "match", args: argsFor(OtherVm)));
+            Assert(StateOf(matching) == "approved", "an attestation for VM B starts VM B");
+            Assert(Encoding.UTF8.GetString(ReceiptOf(fx.Status(ApprovalIdOf(matching))).Receipt).Contains("\"attestationDigest\"", StringComparison.Ordinal), "with its digest");
+            Assert(StateOf(fx.Submit(AttestedSubmit(forVmA, op: "match-a", args: argsFor(AttestVm)))) == "approved", "and VM A is still VM A");
+            audit.Clear();
+            int n = 0;
+            foreach (string args in new[] { "{\"expectedGeneration\":3}", "{\"expectedGeneration\":3,\"vmId\":\"\"}", "{\"expectedGeneration\":3,\"vmId\":7}", "{\"expectedGeneration\":3,\"vmId\":true}",
+                "{\"expectedGeneration\":3,\"vmId\":\"vm-1\"}", "{\"expectedGeneration\":3,\"vmId\":\"ABCDEF12-2222-4333-8444-555555555555\"}", "{\"expectedGeneration\":3,\"vmId\":\"{" + AttestVm + "}\"}" })
+                Assert(IsPending(fx, fx.Submit(AttestedSubmit(forVmA, op: $"nov{n++}", args: args))), args);
+            Assert(audit.Count == n && audit.All(line => line == "ATTESTATION_REFUSED=vm_id_missing"), string.Join("|", audit));
+        });
+        Check("attestation: environment.create is never attested: a valid statement gives no receipt, with the create's own args or not (nothing to observe before the VM exists)", () =>
+        {
+            using AttestKey key = new();
+            List<string> audit = [];
+            Fixture fx = StandardWith(key, audit);
+            string envelope = AttestEnvelope(AttestBody(), key).Json;
+            Assert(IsPending(fx, fx.Submit(AttestedSubmit(envelope, "environment.create", op: "c1"))) && IsPending(fx, fx.Submit(AttestedSubmit(envelope, "environment.create", op: "c2", args: "{}"))), "pending");
+            Assert(audit.Count == 0, "the attestation is not even looked at: " + string.Join("|", audit));
+            Assert(fx.Core.Policy()!.NoPromptActions().Contains("environment.create") == false && fx.Core.Policy()!.SkippableActions().Contains("environment.create") == false, "not a skippable action at any tier");
+        });
+        Check("attestation: the Authority's receipt contract refuses an attested start whose action names no VM (the Broker would have nothing to compare with)", () =>
+        {
+            using AttestKey key = new();
+            Fixture fx = StandardWith(key, []);
+            string id = ApprovalIdOf(fx.Submit(AttestedSubmit(AttestEnvelope(AttestBody(), key).Json)));
+            byte[] receipt = ReceiptOf(fx.Status(id)).Receipt;
+            ValidatedAction withoutVm = ActionDigest.Validate("broker.operation", StrictJson.Parse(Encoding.UTF8.GetBytes("{\"action\":\"environment.start\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"args\":{\"expectedGeneration\":3}}"), 3));
+            ReceiptVerdict refused = ReceiptBuilder.Check(receipt, new PendingRequest("broker.operation", "op-1", "op-1", "lease-1", 7, 3, "_-7dzLuqmYh3ZlVEMyIRAA", withoutVm), fx.Identity, fx.Signer.Issuer, fx.Now);
+            Assert(refused is { Ok: false, Code: "attestation", Field: "vmId" }, $"{refused.Code}/{refused.Field}");
+        });
         Check("attestation: the pinned key verifies only its own key id and 64-byte signatures, and never throws", () =>
         {
             using AttestKey key = new();
@@ -316,7 +363,7 @@ internal static partial class Harness
             foreach (JsonElement c in verify.GetProperty("cases").EnumerateArray())
             {
                 JsonElement e = c.GetProperty("expected");
-                AttestationExpected expected = new(e.GetProperty("computerId").GetString()!, e.GetProperty("vmId").ValueKind == JsonValueKind.Null ? null : e.GetProperty("vmId").GetString(), e.GetProperty("generation").GetInt64(),
+                AttestationExpected expected = new(e.GetProperty("computerId").GetString()!, e.GetProperty("vmId").GetString()!, e.GetProperty("generation").GetInt64(),
                     e.GetProperty("projectId").GetString()!, e.GetProperty("leaseId").GetString()!, e.GetProperty("leaseGeneration").GetInt64());
                 long now = c.GetProperty("now").GetInt64();
                 AttestationVerdict verdict = NetworkAttestation.Verify(VectorValue(c.GetProperty("signed")), () => now, pinned.Verify, expected);

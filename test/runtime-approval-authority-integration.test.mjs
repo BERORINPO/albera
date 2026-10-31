@@ -308,11 +308,13 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
     const policyHash = (rev, tier) => `sha256:${createHash('sha256').update(['albera.policy-hash.v2', String(rev), tier].join('\0')).digest('hex')}`;
     const policyMessage = (rev, tier) => Buffer.from(`albera.policy.v1\0${KID}\0${AUDIENCE}\0${policyHash(rev, tier)}`, 'utf8');
     const newSigner = (keyId = KEY_ID) => createEcdsaAttestationSigner({ keyId, privateKey: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey });
-    const START = { action: 'environment.start', projectId: 'proj-alpha', computerId: 'pc-01', args: { expectedGeneration: 3, vmName: 'alpha' } };
+    const VM_A = '11111111-2222-4333-8444-555555555555';
+    const VM_B = '99999999-8888-4777-8666-555555555555';
+    const START = { action: 'environment.start', projectId: 'proj-alpha', computerId: 'pc-01', args: { expectedGeneration: 3, vmId: VM_A, vmName: 'alpha' } };
     const startRequest = (operationId, extra = {}) => submitRequest({ operationId, idempotencyKey: operationId, action: START, ...extra });
     /** A statement as the Broker would make it for the request above, observed 5 s ago, valid for 60 s unless overridden. */
     const statement = async (signer, overrides = {}) => JSON.parse(JSON.stringify(await signNetworkAttestation(createNetworkAttestation({
-      network: 'none', computerId: 'pc-01', vmId: '11111111-2222-4333-8444-555555555555', generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, observedAt: NOW() - 5, ...overrides,
+      network: 'none', computerId: 'pc-01', vmId: VM_A, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, observedAt: NOW() - 5, ...overrides,
     }), signer)));
 
     const refusals = (authority) => authority.child.lines.filter((line) => line.startsWith('ATTESTATION_REFUSED='));
@@ -366,6 +368,7 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
           ['another lease', { attestation: await statement(signer, { leaseId: 'lease-2' }) }, 'binding:leaseId'],
           ['another lease generation', { attestation: await statement(signer, { leaseGeneration: 8 }) }, 'binding:leaseGeneration'],
           ['another generation', { attestation: await statement(signer, { generation: 4 }) }, 'binding:generation'],
+          ['another VM (VM B took the computer id, project, lease and generation)', { attestation: await statement(signer, { vmId: VM_B }) }, 'binding:vmId'],
           ['another computer', { attestation: await statement(signer, { computerId: 'pc-02' }) }, 'binding:computerId'],
           ['another project', { attestation: await statement(signer, { projectId: 'proj-beta' }) }, 'binding:projectId'],
           ['a body changed after signing', { attestation: { ...valid, attestation: { ...valid.attestation, network: 'present' } } }, 'digest:digest'],
@@ -384,7 +387,15 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
         const otherGeneration = await authority.submit(startRequest('op-gen', { action: { ...START, args: { expectedGeneration: 4 } }, attestation: valid }));
         assert.equal(otherGeneration.state, 'pending', 'the statement is for generation 3');
         const create = await authority.submit(startRequest('op-create', { action: { ...START, action: 'environment.create' }, attestation: valid }));
-        assert.equal(create.state, 'approved', 'create is covered the same way');
+        assert.equal(create.state, 'pending', 'create is never attested: no VM exists to observe before it');
+        // The VM swap: the start names VM B, the statement is for VM A. The old statement gets nobody a receipt; one for VM B does.
+        const swapped = await authority.submit(startRequest('op-swap', { action: { ...START, args: { ...START.args, vmId: VM_B } }, attestation: valid }));
+        assert.equal(swapped.state, 'pending', 'an attestation for VM A does not start VM B');
+        for (const [label, args] of [['no vmId', { expectedGeneration: 3 }], ['a malformed vmId', { expectedGeneration: 3, vmId: 'vm-1' }]]) {
+          assert.equal((await authority.submit(startRequest(`op-${label.length}`, { action: { ...START, args }, attestation: valid }))).state, 'pending', label);
+        }
+        const forVmB = await authority.submit(startRequest('op-vm-b', { action: { ...START, args: { ...START.args, vmId: VM_B } }, attestation: await statement(signer, { vmId: VM_B }) }));
+        assert.equal(forVmB.state, 'approved', 'the matching VM id passes');
       });
     });
 
