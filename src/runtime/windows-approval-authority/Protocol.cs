@@ -10,7 +10,7 @@ internal enum PipeRole { Submit, Approver }
 // then the connection ends. Requests are read with the contract's strict JSON reader (objects, strings, booleans and safe integers only; no null,
 // arrays, duplicate keys or extra keys at any level the verb does not name). The verb set depends on the pipe, not on the caller's claim:
 //   submit pipe   (ACE: the Control Plane SID only)  submit | status
-//   approver pipe (ACE: the approver SID only)       list | decide
+//   approver pipe (ACE: the approver SID only)       list | decide | policy | policy_set
 // Any other verb on a pipe, any malformed or unknown-key request and any peer that is not the configured SID gets {"ok":false,"code":"request_invalid"}.
 // Replies are {"ok":true,...} or {"ok":false,"code":<one of AuthorityCodes>}; nothing the caller sent is ever echoed. The exact shapes are in
 // docs/architecture/approval-authority.md.
@@ -32,6 +32,8 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
                 (PipeRole.Submit, "status") => Status(request),
                 (PipeRole.Approver, "list") => List(request),
                 (PipeRole.Approver, "decide") => Decide(request),
+                (PipeRole.Approver, "policy") => Policy(request),
+                (PipeRole.Approver, "policy_set") => PolicySet(request),
                 _ => Error(AuthorityCodes.RequestInvalid),
             };
         }
@@ -128,6 +130,33 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
         Outcome outcome = core.Decide(approvalId, decision, proof);
         if (outcome.Code is not null) return Error(outcome.Code);
         return Write(w => { w.WriteBoolean("ok", true); w.WriteString("state", decision == Decision.Deny ? "denied" : "approved"); });
+    }
+
+    // The tier policy in force: { "ok": true, "policy": { v, rev, tier, overrides }, "policyVersion": "sha256:..." }. Read only. A faulted store (PolicyStore) says authority_unavailable.
+    private byte[] Policy(Dictionary<string, object> r)
+    {
+        if (!HasKeys(r, ["v", "verb"])) return Error(AuthorityCodes.RequestInvalid);
+        if (core.Policy() is not { } policy) return Error(AuthorityCodes.AuthorityUnavailable);
+        return Write(w =>
+        {
+            w.WriteBoolean("ok", true);
+            w.WritePropertyName("policy");
+            w.WriteRawValue(policy.ToJson());
+            w.WriteString("policyVersion", policy.Hash());
+        });
+    }
+
+    // Replace the policy with the COMPLETE new one: { v, verb: "policy_set", policy: { v, rev, tier, overrides }, presence?: <base64 signature> }. presence is the approver's signature over
+    // PolicyChange.Message(policy) (albera.policy.v1 + the hash of this policy); it is required exactly when the change lets an action skip a person (the core decides, by effect).
+    // Replies { "ok": true, "policyVersion": "sha256:..." } or an error code (a wrong revision, a malformed policy: request_invalid; no / wrong signature: presence_mismatch).
+    private byte[] PolicySet(Dictionary<string, object> r)
+    {
+        if (!HasKeys(r, ["v", "verb", "policy"], optional: "presence") || r["policy"] is not IReadOnlyDictionary<string, object> values || TierPolicy.TryFromValues(values) is not { } next) return Error(AuthorityCodes.RequestInvalid);
+        byte[]? proof = null;
+        if (r.TryGetValue("presence", out object? presenceValue) && (presenceValue is not string presenceText || presenceText.Length > 512 || !TryFromBase64(presenceText, out proof))) return Error(AuthorityCodes.RequestInvalid);
+        Outcome outcome = core.SetPolicy(next, proof);
+        if (outcome.Code is not null) return Error(outcome.Code);
+        return Write(w => { w.WriteBoolean("ok", true); w.WriteString("policyVersion", next.Hash()); });
     }
 
     /// <summary>One list entry: everything a human needs to see the exact action, plus what must be signed. Also used to size-check a submit.</summary>

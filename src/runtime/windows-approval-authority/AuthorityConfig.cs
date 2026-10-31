@@ -14,7 +14,8 @@ internal enum SigningProvider { Software, Tpm }
 //     "kid": "authority-key-2026-10", "approverKeyId": "hello-key-yosuke-01", "approverPublicKey": "<base64 SPKI, RSA-2048>",
 //     "audience": "albera-host-broker", "policyVersion": "policy-2026-10" }
 // The pipes are <pipeRoot>\submit\v1 (Control Plane only) and <pipeRoot>\approver\v1 (the approver only). audience and policyVersion are what the
-// Broker validates a receipt against, so the Authority takes them from trusted config and never from a request. Every rejected value maps to one
+// Broker validates a receipt against (policyVersion: a v2 receipt, i.e. one a person approved; a v3 policy receipt carries the hash of the tier policy in force instead, see PolicyStore.cs), so the
+// Authority takes them from trusted config and never from a request. Every rejected value maps to one
 // fixed reason word (never the value itself). Production (strictSeparation) also refuses a Control Plane SID that equals the approver SID or the
 // service's own SID: the two pipes must belong to different principals. The config file must be owned and writable only by trusted principals.
 internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, string ApproverSid, string SigningKeyName, SigningProvider SigningProvider,

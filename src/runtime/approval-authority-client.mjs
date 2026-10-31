@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { ID_PATTERN, PURPOSES, ActionDigestError, computeActionDigest, validateActionDto } from './broker-contract/action-digest.mjs';
-import { MAX_RECEIPT_BYTES, parseReceiptV2 } from './broker-contract/receipt-v2.mjs';
+import { MAX_RECEIPT_BYTES } from './broker-contract/receipt-v2.mjs';
+import { parseReceipt } from './broker-contract/receipt-v3.mjs';
 import { captureExecutableIdentity } from './executable-identity.mjs';
 
 // Thin Node client for the Approval Authority's SUBMIT pipe (ADR-002 "Receipt v2", Proposed / NOT VERIFIED). Wire: docs/architecture/approval-authority.md.
@@ -19,7 +20,8 @@ import { captureExecutableIdentity } from './executable-identity.mjs';
 //   submit : { v, verb: "submit", purpose, operationId, idempotencyKey, leaseId, leaseGeneration, brokerEpoch, brokerChallenge, action: { action, projectId, computerId, args }, expectedDigest? }
 //            -> { ok: true, approvalId, state: "pending" | "approved", expiresAt }
 //   status : { v, verb: "status", approvalId }
-//            -> { ok: true, state: "pending", expiresAt } | { ok: true, state: "approved", receipt: <base64 receipt v2>, signature: <base64 64-byte ECDSA P-256 r||s> }
+//            -> { ok: true, state: "pending", expiresAt } | { ok: true, state: "approved", receipt: <base64 receipt v2 or v3>, signature: <base64 64-byte ECDSA P-256 r||s> }
+//            A v3 receipt with basis "policy" is what an action gets when the Authority's own tier policy needs no person for it: submit already answers state "approved", the first status call returns it.
 //   error  : { ok: false, code } with one of AUTHORITY_REPLY_CODES (denied, expired, queue full, ... all final for that request)
 // Results never carry exception text, paths, native identifiers or any part of the request. Failures are fixed codes.
 // Pre-send codes (AUTHORITY_CLIENT_PRESEND_CODES): nothing reached any server, a retry is safe. Every other failure code comes after the frame was written:
@@ -189,7 +191,7 @@ function validateFailure(value, keys) {
 const canonicalBase64 = (value) => typeof value === 'string' && value.length > 0 && value.length % 4 === 0 && BASE64_PATTERN.test(value) && Buffer.from(value, 'base64').toString('base64') === value;
 
 /**
- * Validate a parsed reply to `status` for `approvalId`. An approved reply must carry a canonical base64 receipt that parses as receipt v2 (structure only),
+ * Validate a parsed reply to `status` for `approvalId`. An approved reply must carry a canonical base64 receipt that parses as receipt v2 or v3 (structure only),
  * names this very approval, and a canonical base64 signature of 64 bytes. The signature itself is the Broker's to verify.
  */
 export function validateStatusResponse(value, approvalId) {
@@ -200,7 +202,7 @@ export function validateStatusResponse(value, approvalId) {
   }
   if (value.ok === true && keys === 'ok,receipt,signature,state' && value.state === 'approved' && canonicalBase64(value.receipt) && canonicalBase64(value.signature)) {
     const receiptBytes = Buffer.from(value.receipt, 'base64');
-    const parsed = receiptBytes.length <= MAX_RECEIPT_BYTES ? parseReceiptV2(receiptBytes) : { ok: false };
+    const parsed = receiptBytes.length <= MAX_RECEIPT_BYTES ? parseReceipt(receiptBytes) : { ok: false };
     if (parsed.ok && parsed.receipt.approvalId === approvalId && Buffer.from(value.signature, 'base64').length === SIGNATURE_BYTES) {
       return Object.freeze({ ok: true, state: 'approved', receipt: value.receipt, signature: value.signature });
     }

@@ -218,7 +218,8 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
       ['an action digest the Broker does not compute from the trusted DTO', { actionDigest: `sha256:${'0'.repeat(64)}` }, undefined, 'action_digest'],
       ['an action that does not belong to the purpose', { action: 'task.start', actionDigest: `sha256:${'1'.repeat(64)}` }, undefined, 'action_pair'],
       ['the former read-only action as a receipt action (the contract does not know it)', { action: 'synthetic.inspect', actionDigest: `sha256:${'2'.repeat(64)}` }, undefined, 'schema'],
-      ['a version other than 2', { v: 3 }, undefined, 'version'],
+      ['a version other than 2', { v: 4 }, undefined, 'version'],
+      ['a v2 body that claims version 3 (it has no basis and a label as policyVersion)', { v: 3 }, undefined, 'schema'],
       ['an unknown extra key', { extraKey: 'x' }, undefined, 'schema'],
     ];
     for (const [label, overrides, fenced, reason] of unspent) {
@@ -382,6 +383,78 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
       const acceptedSession = brokerSession({ helper, sid, pipeName, pid: accepted.pid, authority });
       assert.deepEqual((await acceptedSession.claim('shipped-production', { issuer: PRODUCTION_ISSUER })).result, SUCCESS);
       assert.equal(await waitForExit(accepted), 0);
+    });
+  });
+
+  // Receipt v3 (issue #115 step 3): v2 + `basis`, with the policy hash as `policyVersion`. The Broker claims only the fixed synthetic.noop action today, so a v3 receipt can
+  // only be claimed for that action: basis `policy` is capped to the actions a policy may skip (none of which is synthetic.noop), hence refused here with basis_action.
+  describe('receipt v3: basis', () => {
+    const POLICY_HASH = `sha256:${'ab'.repeat(32)}`;
+    const v3 = (basis, extra = {}) => ({ v: 3, basis, policyVersion: POLICY_HASH, ...extra });
+
+    it('accepts a v2 receipt and a v3 receipt with basis presence in the same Broker; v3 policyVersion is a hash the Broker does not compare with its own label', async () => {
+      const s = await start();
+      assert.deepEqual(await s.session.claim('v2-control').then((x) => x.result), SUCCESS);
+      assert.deepEqual(await s.session.claim('v3-presence', v3('presence')).then((x) => x.result), SUCCESS);
+      assert.deepEqual(claimsOf(s), ['v2-control-op', 'v3-presence-op']);
+      assert.equal(s.child.lines.filter((line) => line === 'CLAIM=PERSISTED_UNKNOWN').length, 2);
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('an exact duplicate of a v3 receipt returns the recorded outcome and writes no second row', async () => {
+      const s = await start();
+      const first = await s.session.claim('v3-dup', v3('presence'));
+      assert.deepEqual(first.result, SUCCESS);
+      assert.deepEqual(await s.session.send(first.request).then((r) => ({ ok: r.ok, state: r.state })), { ok: true, state: 'UNKNOWN' });
+      assert.deepEqual(claimsOf(s), ['v3-dup-op']);
+      assert.equal(s.child.lines.includes('REPLAY=RECORDED_OUTCOME'), true);
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('refuses a v3 receipt whose basis is not presence or policy: an unknown word, a grant (reserved), a case variant, an empty string and a missing basis (schema)', async () => {
+      const s = await start();
+      const cases = [['unknown word', v3('approved')], ['grant', v3('grant:g-0001')], ['case variant', v3('Policy')], ['empty', v3('')], ['missing', { v: 3, policyVersion: POLICY_HASH }]];
+      for (const [index, [label, overrides]] of cases.entries()) {
+        const { reply } = await rawFencedClaim(s.pipeName, authority, `v3-bad-basis-${index}`, overrides);
+        assert.deepEqual(reply, DENIED, label);
+        assert.equal(lastReason(s), 'DENY=schema', label);
+      }
+      assert.deepEqual(claimsOf(s), []);
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('refuses basis policy for any action outside the policy-skippable set (basis_action), and a v3 receipt that still carries a v2 policy label (schema)', async () => {
+      const s = await start();
+      assert.deepEqual((await rawFencedClaim(s.pipeName, authority, 'v3-policy-noop', v3('policy'))).reply, DENIED);
+      assert.equal(lastReason(s), 'DENY=basis_action', 'synthetic.noop is not something a policy may skip');
+      assert.deepEqual((await rawFencedClaim(s.pipeName, authority, 'v3-label', v3('presence', { policyVersion: POLICY_VERSION }))).reply, DENIED);
+      assert.equal(lastReason(s), 'DENY=schema');
+      assert.deepEqual(claimsOf(s), []);
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('a policy receipt for a skippable action is not claimable here: this Broker binds the fixed synthetic.noop action (binding)', async () => {
+      const s = await start();
+      const { reply } = await rawFencedClaim(s.pipeName, authority, 'v3-policy-stop', v3('policy', { action: 'environment.stop' }));
+      assert.deepEqual(reply, DENIED);
+      assert.equal(lastReason(s), 'DENY=binding');
+      assert.deepEqual(claimsOf(s), []);
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('basis is covered by the signature: changing presence to policy after signing is refused (signature), and so is a v3 body signed by an unpinned key', async () => {
+      const s = await start();
+      const flipped = await rawFencedClaim(s.pipeName, authority, 'v3-flip', v3('presence'), (request) => {
+        const body = JSON.parse(Buffer.from(request.receipt, 'base64').toString('utf8'));
+        return { ...request, receipt: Buffer.from(JSON.stringify({ ...body, basis: 'policy' }), 'utf8').toString('base64') };
+      });
+      assert.deepEqual(flipped.reply, DENIED);
+      assert.equal(lastReason(s), 'DENY=signature');
+      const stranger = createTestAuthority({ kid: authority.kid });
+      assert.deepEqual((await rawFencedClaim(s.pipeName, stranger, 'v3-stranger', v3('presence'))).reply, DENIED);
+      assert.equal(lastReason(s), 'DENY=signature');
+      assert.deepEqual(claimsOf(s), []);
+      assert.equal(await s.stop(), 0);
     });
   });
 

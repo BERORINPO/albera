@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://albera.invalid/schemas/receipt-v3.schema.json",
+  "title": "ALBERA approval receipt v3",
+  "description": "Receipt v2 plus basis, with policyVersion as a policy hash. Signed content is the JSON bytes exactly as sent. Duplicate keys, nested values, null, arrays, fractions and exponents are rejected by the strict reader before this schema applies. Cross-field rules (basis/action, TTL, iat skew, bindings, digest) are enforced by receipt-v3.mjs / ReceiptV3.cs; see docs/architecture/approval-tiers.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "v",
+    "kid",
+    "issuer",
+    "audience",
+    "purpose",
+    "approvalId",
+    "receiptId",
+    "nonce",
+    "operationId",
+    "idempotencyKey",
+    "action",
+    "actionDigest",
+    "projectId",
+    "computerId",
+    "leaseId",
+    "leaseGeneration",
+    "brokerEpoch",
+    "brokerChallenge",
+    "policyVersion",
+    "basis",
+    "approverKeyId",
+    "iat",
+    "exp"
+  ],
+  "properties": {
+    "v": {
+      "type": "integer",
+      "const": 3,
+      "description": "Receipt format version. Any other integer is rejected with code \"version\" (a v2 receipt is read by receipt-v2.mjs)."
+    },
+    "kid": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "maxLength": 64,
+      "description": "Authority signing key id; the Broker maps it to a pinned public key."
+    },
+    "issuer": {
+      "type": "string",
+      "pattern": "^albera-(approval-authority|test-[a-z0-9-]{1,32})$",
+      "maxLength": 44,
+      "description": "Production accepts only \"albera-approval-authority\"; \"albera-test-*\" is valid in the schema but rejected when environment is production."
+    },
+    "audience": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$",
+      "maxLength": 64,
+      "description": "The relying party this receipt is for (the Host Broker supplies its own expected value)."
+    },
+    "purpose": {
+      "type": "string",
+      "enum": [
+        "broker.operation",
+        "guest.command"
+      ],
+      "description": "Domain of the action digest; selects which actions are legal."
+    },
+    "approvalId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "maxLength": 36,
+      "description": "Single-use approval identifier (lowercase UUID)."
+    },
+    "receiptId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "maxLength": 36,
+      "description": "Single-use receipt identifier (lowercase UUID)."
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{21}[AQgw]$",
+      "maxLength": 22,
+      "description": "128-bit random value, unpadded base64url in canonical form."
+    },
+    "operationId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "maxLength": 64,
+      "description": "Journaled operation this receipt authorizes."
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "maxLength": 64,
+      "description": "Idempotency key of that operation."
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "environment.create",
+        "environment.inspect",
+        "environment.start",
+        "environment.stop",
+        "environment.destroy",
+        "environment.retire",
+        "environment.purge",
+        "synthetic.noop",
+        "task.start",
+        "task.cancel",
+        "workspace.inspect"
+      ],
+      "description": "Must be an action of `purpose` and equal the trusted action DTO action."
+    },
+    "actionDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "maxLength": 71,
+      "description": "Recomputed by the verifier from the trusted action DTO; never trusted as supplied."
+    },
+    "projectId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "maxLength": 64,
+      "description": "Must equal the trusted action DTO projectId."
+    },
+    "computerId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "maxLength": 64,
+      "description": "Must equal the trusted action DTO computerId."
+    },
+    "leaseId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "maxLength": 64,
+      "description": "Lease the receipt is bound to."
+    },
+    "leaseGeneration": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "Lease generation at approval time; stale generations are rejected."
+    },
+    "brokerEpoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "Broker epoch (restart counter) from the challenge the Broker issued."
+    },
+    "brokerChallenge": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{21}[AQgw]$",
+      "maxLength": 22,
+      "description": "128-bit Broker-issued challenge, unpadded base64url in canonical form."
+    },
+    "policyVersion": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "maxLength": 71,
+      "description": "Hash of the tier policy in force when the Authority signed (sha256 of the policy preimage, see TierPolicy.cs). Checked for shape only: the Broker has no copy of the policy to compare with."
+    },
+    "basis": {
+      "type": "string",
+      "enum": [
+        "presence",
+        "policy"
+      ],
+      "description": "Why no further proof was needed. \"presence\": a person approved this action. \"policy\": the Authority's tier policy needs no person for it, allowed only for the actions in POLICY_BASIS_ACTIONS (code \"basis_action\" otherwise). A \"grant:<id>\" basis is reserved and rejected."
+    },
+    "approverKeyId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "maxLength": 64,
+      "description": "Id of the Windows Hello key that co-signed the action digest (basis \"presence\"), or of the pinned approver key that owns the policy (basis \"policy\", where no one signed this action)."
+    },
+    "iat": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "Issued-at, Unix seconds. Must satisfy iat <= now + 30."
+    },
+    "exp": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "Expiry, Unix seconds. Must satisfy iat < exp, exp - iat <= 300 and now < exp."
+    }
+  }
+}

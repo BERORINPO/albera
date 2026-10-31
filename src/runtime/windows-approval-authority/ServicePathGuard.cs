@@ -4,7 +4,8 @@ using System.Security.Principal;
 namespace Albera.ApprovalAuthority;
 
 // Who may change the config file the service trusts (the config-file part of the Broker's ServicePathGuard: the Authority keeps no database, so there
-// is no journal folder to check or pin). The config file names the pinned approver key and the two SIDs that may use the pipes.
+// is no journal folder to check or pin). The same check is applied to the tier policy file next to it (policy.json, PolicyStore.cs), when it is read at start and again on the
+// new file the Authority writes before that file replaces the old one. The config file names the pinned approver key and the two SIDs that may use the pipes.
 // Under the usual inherited C:\ProgramData ACL, BUILTIN\Users can create files in a new sub-folder, so they could pre-create the config. The
 // service therefore refuses to start (exit 73) unless the config file:
 //   - is owned by LocalSystem, BUILTIN\Administrators or the service's own per-service SID (below),

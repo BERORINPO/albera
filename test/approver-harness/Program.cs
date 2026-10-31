@@ -6,7 +6,7 @@ using Albera.BrokerContract;
 
 // Runs every unit check in-process and prints one JSON document: { checks: [{ name, ok, detail }] }.
 // The Node test (test/runtime-approver-unit.test.mjs) turns each check into a subtest.
-internal static class Harness
+internal static partial class Harness
 {
     private const long Now = 1_800_000_000;
     private const string Id1 = "3f2b8c1e-5d4a-4b6f-9a7e-0c1d2e3f4a5b", Id2 = "9a8b7c6d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", Challenge = "_-7dzLuqmYh3ZlVEMyIRAA";
@@ -544,6 +544,7 @@ internal static class Harness
         EnrollChecks();
         SelfCheckChecks();
         ListAndDenyChecks();
+        PolicyChecks();
         Console.Out.Write(JsonSerializer.Serialize(new { checks = Results }));
         return 0;
     }

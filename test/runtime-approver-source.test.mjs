@@ -118,7 +118,7 @@ test('enroll --check (self-check): local only, the existing key only, domain-sep
 
 test('there is no --yes: the typed yes cannot be skipped, approve needs a console before any pipe access, and enroll never prints or stores private material', () => {
   assert.equal(/--yes|AssumeYes|assumeYes/u.test(Object.values(sources).join('\n')), false, 'no --yes anywhere in the sources (comments included)');
-  assert.match(code['CommandLine.cs'], /Usage = "usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\]"/u);
+  assert.match(code['CommandLine.cs'], /Usage = "usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\] \| policy \[show\] \| policy set <careful\|standard> \[--prompt <action>\]\.\.\."/u);
   assert.match(code['ApproverCommands.cs'], /if \(!interactive\) throw new Stop\(ExitCodes\.Refused, "not_interactive"/u);
   assert.equal([...code['Program.cs'].matchAll(/!Console\.IsInputRedirected/gu)].length, 2, 'interactive means stdin is not redirected, in both build branches and nowhere else');
   const enroll = code['EnrollCommand.cs'];
@@ -182,6 +182,28 @@ test('the wire protocol: only list and decide, only approve / deny / presence_un
   assert.match(code['PendingView.cs'], /UuidPattern = "\^\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{12\}\$"/u);
   assert.equal([...commands.matchAll(/RequireApprovalId\(approvalId\);/gu)].length, 2, 'approve and deny validate the id before building a request');
   assert.match(code['CommandLine.cs'], /IsApprovalId\(approved\)/u);
+});
+
+test('policy set: the tier change is described first, Hello is asked only when the change loosens the policy, after a console check and a typed yes, over the policy message of the hash computed here', () => {
+  const policy = code['PolicyCommand.cs'];
+  assert.ok(policy, 'PolicyCommand.cs exists');
+  assert.match(policy, /internal sealed class PolicyCommand\(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, bool interactive\)/u);
+  // The verbs and the words that go into a request: only these two verbs, and the policy comes from the contract's own TierPolicy (known tier, known actions, revision + 1).
+  assert.deepEqual([...new Set([...policy.matchAll(/\\"verb\\":\\"(\w+)\\"/gu)].map((m) => m[1]))].sort(), ['policy', 'policy_set']);
+  assert.match(policy, /TierPolicy\.TryCreate\(current\.Revision \+ 1, tier, prompts\) \?\? throw new Stop\(ExitCodes\.BadUsage, "bad_policy"\)/u);
+  assert.match(code['CommandLine.cs'], /TierPolicy\.TryCreate\(0, tier, prompts\) is \{ \} policy \? new CommandLine\("policy", null, "set", null, policy\.Tier, policy\.Prompts\) : null/u, 'unknown tiers and actions are not commands');
+  const set = policy.slice(policy.indexOf('public Task<int> SetAsync'), policy.indexOf('// The policy in force, read from the Authority'));
+  const order = ['ReadCurrentAsync()', 'next.Loosens(current)', 'Describe(current)', 'Change(current, next, loosens)', 'if (loosens && !interactive)', 'if (!Confirmed())', 'signer.Sign(PolicyChange.Message(next))', 'CallAsync(request)'].map((token) => set.indexOf(token));
+  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `read -> effect -> show -> console -> yes -> sign -> send (${order})`);
+  assert.equal([...policy.matchAll(/signer\.Sign\(/gu)].length, 1, 'one signing site');
+  assert.ok(set.indexOf('signer.Sign(') > set.indexOf('if (loosens)'), 'the signer is reached only inside the loosening branch');
+  assert.equal(/PresenceMessage|SelfCheckMessage|albera\.presence|albera\.selfcheck/u.test(policy), false, 'the policy command never builds a presence or self-check message');
+  // The current policy is read with the contract's strict reader and hashed here; the Authority's hash must agree.
+  assert.match(policy, /TierPolicy\.TryParse\(Encoding\.UTF8\.GetBytes\(policy\.GetRawText\(\)\)\) is \{ \} parsed && version\.GetString\(\) == parsed\.Hash\(\)/u);
+  assert.equal(/submit/iu.test(policy), false);
+  // The entry point dispatches it after the self-check and enroll branches, with the same channel and signer as approve.
+  assert.match(code['Program.cs'], /if \(command\.Verb == "policy"\)\s*\{\s*PolicyCommand policy = new\(new PipeChannel\(wiring\.Expectation, wiring\.TimeoutMs\), wiring\.Signer, Console\.Out, Console\.Error, Console\.In, wiring\.Interactive\);/u);
+  assert.ok(code['Program.cs'].indexOf('if (command.Verb == "enroll")') < code['Program.cs'].indexOf('if (command.Verb == "policy")'));
 });
 
 test('approve: refuse on a digest mismatch BEFORE the signer is asked; the signed digest is the one this app recomputed, never the Authority\'s; one signing site', () => {

@@ -8,7 +8,7 @@ namespace Albera.ApprovalAuthority;
 //
 //   albera-approval-authority.exe service <config.json>
 //
-// Lifecycle: START_PENDING -> read config -> open the signing key and check its protection (SigningKeyGuard) -> create both pipes -> RUNNING (only once the pipes exist) -> serve until
+// Lifecycle: START_PENDING -> read config -> read the tier policy file if there is one (policy.json next to the config; untrusted or malformed = exit 79) -> open the signing key and check its protection (SigningKeyGuard) -> create both pipes -> RUNNING (only once the pipes exist) -> serve until
 // SERVICE_CONTROL_STOP -> STOP_PENDING -> cancel the loops (bounded wait) -> STOPPED. A fatal end reports STOPPED with ERROR_SERVICE_SPECIFIC_ERROR
 // and the fixed code as the service-specific exit code (ExitCodes.cs). Outside the SCM, StartServiceCtrlDispatcher fails at once and the process
 // exits 74 before it reads the config, opens the key or creates a pipe.
@@ -70,8 +70,14 @@ internal static class ServiceHost
             ReportStopped(ExitCodes.ConfigInvalid);
             return;
         }
+        if (PolicyStore.TryLoad(configPath, out string policyReason, out _) is not { } policy)
+        {
+            Console.WriteLine($"SERVICE_POLICY=invalid:{policyReason}");
+            ReportStopped(ExitCodes.PolicyInvalid);
+            return;
+        }
         using CancellationTokenSource stop = new();
-        Task<int> loop = Task.Run(() => RunLoopAsync(config, stop.Token));
+        Task<int> loop = Task.Run(() => RunLoopAsync(config, policy, stop.Token));
         int code;
         if (Task.WaitAny(loop, StopRequested.Task) == 1)
         {
@@ -83,9 +89,9 @@ internal static class ServiceHost
         ReportStopped(code);
     }
 
-    private static async Task<int> RunLoopAsync(AuthorityConfig config, CancellationToken stop)
+    private static async Task<int> RunLoopAsync(AuthorityConfig config, PolicyStore policy, CancellationToken stop)
     {
-        try { return await AuthorityRuntime.RunProductionAsync(config, stop, () => Report(Running)); }
+        try { return await AuthorityRuntime.RunProductionAsync(config, policy, stop, () => Report(Running)); }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { return 0; }
         catch (Exception)
         {

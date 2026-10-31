@@ -10,9 +10,9 @@ internal static class AuthorityRuntime
 
     public static AuthorityIdentity IdentityOf(AuthorityConfig config) => new(config.Kid, config.Audience, config.PolicyVersion, config.ApproverKeyId);
 
-    /// <summary>The shipped composition: the machine-key signer and the pinned Hello key. 77 when the signing key cannot be opened, 78 when it is opened
-    /// but not protected as required (SigningKeyGuard). Both are decided before any pipe exists.</summary>
-    public static async Task<int> RunProductionAsync(AuthorityConfig config, CancellationToken stop, Action onReady)
+    /// <summary>The shipped composition: the machine-key signer, the pinned Hello key and the tier policy already loaded from its file (79 is decided by the caller before this runs).
+    /// 77 when the signing key cannot be opened, 78 when it is opened but not protected as required (SigningKeyGuard). Both are decided before any pipe exists.</summary>
+    public static async Task<int> RunProductionAsync(AuthorityConfig config, PolicyStore policy, CancellationToken stop, Action onReady)
     {
         CngMachineKeySigner signer;
         try { signer = CngMachineKeySigner.Open(config.SigningKeyName, config.SigningProvider); }
@@ -32,7 +32,7 @@ internal static class AuthorityRuntime
                 return ExitCodes.SigningKeyUnprotected;
             }
             using RsaPresenceVerifier presence = RsaPresenceVerifier.TryCreate(config.ApproverPublicKey) ?? throw new InvalidOperationException(); // the config already passed this check
-            AuthorityCore core = new(new PendingStore(UnixNow), signer, presence, IdentityOf(config), UnixNow);
+            AuthorityCore core = new(new PendingStore(UnixNow), signer, presence, IdentityOf(config), UnixNow, policy, Console.WriteLine);
             return await RunAsync(config, core, stop, onReady);
         }
     }

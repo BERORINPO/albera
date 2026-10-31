@@ -7,10 +7,18 @@ internal enum Decision { Approve, Deny, PresenceUnavailable }
 /// <summary>Code null = success; Entry is the entry as it is now (null only for an unknown approvalId).</summary>
 internal readonly record struct Outcome(string? Code, PendingEntry? Entry);
 
-// The Authority's decisions, independent of any transport. The Control Plane side (Submit, Status) can only create a pending request and read
-// an outcome; only Decide can turn a request into a receipt, and it does so only when a human presence proof verifies over the Authority's own message.
-internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, IHumanPresenceVerifier presence, AuthorityIdentity identity, Func<long> clock)
+// The Authority's decisions, independent of any transport. The Control Plane side (Submit, Status) can only create a request and read an outcome. A receipt comes
+// from exactly two places:
+//   - Decide, when a human presence proof verifies over the Authority's own message (basis presence, receipt v2), and
+//   - Submit, when the tier policy in force (PolicyStore, set only through SetPolicy from the approver pipe) says THIS action needs no person (basis policy, receipt v3).
+// Whether a person is needed is decided from the action the Authority validated and hashed itself and from its own policy. Nothing in a submit request (it has no field for
+// it, and an unknown field is request_invalid) names, lowers or chooses a tier. With no policy file the policy is careful: every action needs a person.
+// The Authority keeps no persistent log. Every receipt signed without a person and every policy change is reported to `audit` as one line made of fixed words, a fixed action name
+// and ids (the service prints it to its console like the PEER lines); the entry itself stays readable through status until its receipt is over.
+internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, IHumanPresenceVerifier presence, AuthorityIdentity identity, Func<long> clock, PolicyStore? policyStore = null, Action<string>? audit = null)
 {
+    private readonly PolicyStore policy = policyStore ?? PolicyStore.InMemory();
+
     /// <summary>A list entry (see Protocol) must fit a 2 KiB frame together with the reply envelope; checked when the request is accepted.</summary>
     public const int MaxListEntryBytes = 1700;
 
@@ -29,13 +37,35 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
         if (!ReceiptBuilder.Check(sample, request, identity, signer.Issuer, now).Ok) return new(AuthorityCodes.RequestInvalid, null);
         if (AuthorityProtocol.ListEntry(probe).Length > MaxListEntryBytes) return new(AuthorityCodes.RequestInvalid, null);
 
-        SubmitResult result = store.Submit(request, digest);
+        // The policy cannot change between the decision and the signature: both happen under its lock.
+        SubmitResult result = policy.With(current => current.NeedsPerson(request.Dto.Action)
+            ? store.Submit(request, digest)
+            : store.Submit(request, digest, (entry, now) => SignByPolicy(entry, current.Hash(), now)));
         return result.Status switch
         {
             SubmitStatus.Created or SubmitStatus.Reused => new(null, result.Entry),
             SubmitStatus.QueueFull => new(AuthorityCodes.QueueFull, null),
+            SubmitStatus.Failed => new(AuthorityCodes.AuthorityUnavailable, null),
             _ => new(AuthorityCodes.RequestInvalid, null),
         };
+    }
+
+    /// <summary>The policy in force, or null when the store is faulted (see PolicyStore).</summary>
+    public TierPolicy? Policy() => policy.IsFaulted ? null : policy.Current;
+
+    /// <summary>Replace the policy. <paramref name="proof"/> is the approver's signature over PolicyChange.Message(next); it is only looked at when the change lets an action skip a person.</summary>
+    public Outcome SetPolicy(TierPolicy next, byte[]? proof)
+    {
+        string? code = policy.Change(next, () => VerifyPolicyChange(next, proof));
+        if (code is null) audit?.Invoke($"POLICY_CHANGED={next.Revision} {next.Tier} {next.Hash()}");
+        return new(code, null);
+    }
+
+    private PresenceResult VerifyPolicyChange(TierPolicy next, byte[]? proof)
+    {
+        if (proof is null) return PresenceResult.Mismatch;
+        try { return presence.Verify(PolicyChange.Message(next), proof); }
+        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or InvalidOperationException) { return PresenceResult.Unavailable; }
     }
 
     public Outcome Status(string approvalId)
@@ -76,6 +106,19 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
     }
 
     private static PendingEntry Finish(PendingEntry entry, EntryState state, long now) => entry with { State = state, RetainUntil = now + PendingStore.DecidedRetentionSeconds };
+
+    // The second signing site: only reached from Submit, only for an action the policy in force lets through without a person. The receipt is v3 with basis policy and the
+    // policy's hash; the contract's validator (which also caps what a policy may skip) must accept it before it is signed. null = could not be signed (authority_unavailable).
+    private PendingEntry? SignByPolicy(PendingEntry entry, string policyHash, long now)
+    {
+        byte[] receipt = ReceiptBuilder.BuildPolicy(entry, identity, signer.Issuer, Ids.NewUuid(), Ids.NewBits128(), now, policyHash);
+        if (!ReceiptBuilder.Check(receipt, entry.Request, identity, signer.Issuer, now).Ok) return null;
+        byte[] signature;
+        try { signature = signer.Sign(receipt); }
+        catch (SignerUnavailableException) { return null; }
+        audit?.Invoke($"POLICY_SIGNED={entry.Request.Dto.Action} {entry.ApprovalId}");
+        return entry with { State = EntryState.Approved, Receipt = receipt, Signature = signature, ExpiresAt = now + ReceiptV2.DefaultTtlSeconds, RetainUntil = now + PendingStore.DecidedRetentionSeconds };
+    }
 
     private static string? CodeFor(EntryState state) => state switch
     {

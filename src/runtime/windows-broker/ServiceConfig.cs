@@ -9,7 +9,8 @@ using System.Text.Json;
 // `authorityKeys` pins one or two Approval Authority keys (two = rotation overlap); a receipt names its key by `kid`. `generation` is the lease generation the operator requires: the first value of a new journal, and at every start
 // a higher value advances the journal's generation (this is how generation N is revoked: configure N+1 and restart), a lower one refuses the start (76, JOURNAL_GENERATION_REGRESSED). The v1 shape (`publicKey`) is refused (config_keys).
 // `leaseId` and `policyVersion` are what every receipt must name (ReceiptV2 `leaseId` / `policyVersion`): both are contract ids, and the installer sets `policyVersion` to the
-// same value as the Approval Authority's config (the Authority signs it into every receipt; a receipt that names another policy is refused). This Broker serves ONE
+// same value as the Approval Authority's config (the Authority signs it into every v2 receipt; a v2 receipt that names another policy is refused; a v3 receipt names the hash of
+// the Authority's tier policy instead, which the Broker cannot compare with anything, so it only checks its shape). This Broker serves ONE
 // lease, so `leaseId` is a single value (not a map by computer): the fence reply returns it, the Control Plane puts it into the Authority submit request, and a receipt for any
 // other lease is refused (`binding`). The first multi-computer Broker turns it into a map computerId -> leaseId.
 // Every rejected value maps to one fixed reason word (never the value itself), so a log line cannot be steered by file content.

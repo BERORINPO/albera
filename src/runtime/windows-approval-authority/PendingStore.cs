@@ -11,7 +11,7 @@ internal sealed record PendingRequest(string Purpose, string OperationId, string
 internal sealed record PendingEntry(long Seq, string ApprovalId, PendingRequest Request, string ActionDigest, string Challenge, long CreatedAt, long ExpiresAt, long RetainUntil,
     EntryState State, byte[]? Receipt = null, byte[]? Signature = null);
 
-internal enum SubmitStatus { Created, Reused, QueueFull, Conflict }
+internal enum SubmitStatus { Created, Reused, QueueFull, Conflict, Failed }
 
 internal readonly record struct SubmitResult(SubmitStatus Status, PendingEntry? Entry);
 
@@ -40,7 +40,14 @@ internal sealed class PendingStore
         this.ttlSeconds = ttlSeconds;
     }
 
-    public SubmitResult Submit(PendingRequest request, string actionDigest)
+    public SubmitResult Submit(PendingRequest request, string actionDigest) => Submit(request, actionDigest, null);
+
+    /// <summary>
+    /// As <see cref="Submit(PendingRequest, string)"/>, but when a NEW entry has to be made <paramref name="decideNow"/> may turn it into its final state in the same step (the tier
+    /// policy needs no person for it): it gets the new Pending entry and the time and returns the entry to store, or null when it cannot (nothing is stored then, Failed).
+    /// The same dedupe and limits apply; a request that is already pending or approved is returned as it is.
+    /// </summary>
+    public SubmitResult Submit(PendingRequest request, string actionDigest, Func<PendingEntry, long, PendingEntry?>? decideNow)
     {
         lock (gate)
         {
@@ -50,6 +57,12 @@ internal sealed class PendingStore
             if (same is not null) return IsSameRequest(same, request, actionDigest) ? new(SubmitStatus.Reused, same) : new(SubmitStatus.Conflict, null);
             if (entries.Values.Count(e => e.State == EntryState.Pending) >= MaxPending || entries.Count >= MaxEntries) return new(SubmitStatus.QueueFull, null);
             PendingEntry created = new(nextSeq++, Ids.NewUuid(), request, actionDigest, Ids.NewBits128(), now, now + ttlSeconds, now + ttlSeconds + ExpiredVisibleSeconds, EntryState.Pending);
+            if (decideNow is not null)
+            {
+                PendingEntry? decided = decideNow(created, now);
+                if (decided is null) return new(SubmitStatus.Failed, null);
+                created = decided;
+            }
             entries[created.ApprovalId] = created;
             return new(SubmitStatus.Created, created);
         }
