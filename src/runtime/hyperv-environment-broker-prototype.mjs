@@ -2,7 +2,7 @@
 // that ADR-002 requires. It is not imported from any entry point, API route or host composition.
 // Reaching Hyper-V needs membership in the local "Hyper-V Administrators" group.
 // It implements the fixed Broker methods HyperVEnvironmentProvider calls (createVm / inspectVm /
-// startVm / stopVm / removeVm): a VM is a differencing-disk clone of a golden image (ADR-004,
+// startVm / stopVm / removeVm, plus retireVm / purgeVm for #115 step 1): a VM is a differencing-disk clone of a golden image (ADR-004,
 // provisioning sequence 3). The golden image is named only by the host-registered ledger below;
 // no operation can supply a path. Transport: a fixed `pwsh -File <fixed path>` process; the request
 // travels as JSON on stdin. No command line is ever assembled from data.
@@ -13,6 +13,7 @@ import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateEnvironmentOperation } from './environment-provider.mjs';
+import { isVmId, purgeExpired } from './environment-retirement-journal.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./hyperv-env/env-io.ps1', import.meta.url));
 const PWSH_ARGS = Object.freeze(['-NoProfile', '-NonInteractive', '-File', SCRIPT_PATH]);
@@ -30,8 +31,13 @@ const STOP_WAIT_FRACTION = 0.8;
 
 export function createHyperVEnvironmentBrokerPrototype({
   goldenImages, cloneRoot, pwsh = 'pwsh', timeoutMs = DEFAULT_TIMEOUT_MS,
-  hashFile = sha256OfFile, runPowerShell, now = () => new Date(),
+  hashFile = sha256OfFile, runPowerShell, now = () => new Date(), retirements,
 } = {}) {
+  // `retirements` is the Broker-owned retirement journal (environment-retirement-journal.mjs): host configuration, never operation input. Without it retire / purge are refused.
+  if (retirements !== undefined && (retirements === null || typeof retirements.retire !== 'function' || typeof retirements.get !== 'function'
+    || typeof retirements.remove !== 'function' || typeof retirements.expired !== 'function')) {
+    throw new TypeError('invalid_hyperv_environment_prototype_options');
+  }
   if (typeof pwsh !== 'string' || pwsh.length === 0 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1000
     || typeof hashFile !== 'function' || typeof now !== 'function'
     || (runPowerShell !== undefined && typeof runPowerShell !== 'function')) {
@@ -41,6 +47,7 @@ export function createHyperVEnvironmentBrokerPrototype({
   const ledger = checkedLedger(goldenImages, root);
   const run = runPowerShell ?? ((request) => spawnScript(pwsh, timeoutMs, request));
   const hashCache = new Map(); // path|size|mtimeMs -> hex; valid for this broker instance only
+  const waitSeconds = Math.max(1, Math.floor((timeoutMs * STOP_WAIT_FRACTION) / 1000));
 
   const observed = (computerId, state, generation) => ({
     computerId, providerId: PROVIDER_ID, state, generation, observedAt: now().toISOString(),
@@ -61,7 +68,9 @@ export function createHyperVEnvironmentBrokerPrototype({
   async function lookup(vmName) {
     const result = await call({ method: 'inspect', vmName });
     if (result.exists !== true) return null;
-    return { state: mapState(result.state), meta: parseNotes(result.notes) };
+    // vmId is the VM's own Hyper-V id (not editable, not copied by a restore); null when the script did not report a well-formed one.
+    const vmId = typeof result.vmId === 'string' && isVmId(result.vmId.toLowerCase()) ? result.vmId.toLowerCase() : null;
+    return { state: mapState(result.state), meta: parseNotes(result.notes), vmId };
   }
 
   // A VM we may act on: ours (Notes identity) and at the generation the caller expects.
@@ -100,6 +109,8 @@ export function createHyperVEnvironmentBrokerPrototype({
   return {
     async createVm(input) {
       const { operation, vmName } = checkedOperation(input, 'create');
+      // A retirement record means this computer id still has a retired incarnation: never create a new one over it.
+      if (readRecord(operation.computerId)) throw brokerError('operation_conflict', 'not_applied');
       const { spec } = operation;
       const golden = Object.hasOwn(ledger, spec.imageDigest) ? ledger[spec.imageDigest] : null;
       if (!golden || golden.os !== spec.os || golden.architecture !== spec.architecture
@@ -132,9 +143,11 @@ export function createHyperVEnvironmentBrokerPrototype({
       const vm = await lookup(vmName);
       // Nothing exists to carry a generation, so echo the caller's expected one (the observation
       // validator requires an integer >= 1). For an existing VM the Notes generation is the truth.
-      if (!vm) return observed(operation.computerId, 'missing', operation.expectedGeneration);
+      const record = readRecord(operation.computerId);
+      // A record with no VM behind it is an unfinished clean-up (a destroy that died before dropping it): never report that as plain "missing".
+      if (!vm) return observed(operation.computerId, record ? 'unknown' : 'missing', operation.expectedGeneration);
       if (!vm.meta || vm.meta.computerId !== operation.computerId) throw brokerError('invalid_provider_state', 'not_applied');
-      return observed(operation.computerId, vm.state, vm.meta.generation);
+      return observed(operation.computerId, vm.state === 'off' && matchesRecord(record, vm) ? 'retired' : vm.state, vm.meta.generation);
     },
 
     async startVm(input) { return changeState(input, 'start'); },
@@ -143,19 +156,126 @@ export function createHyperVEnvironmentBrokerPrototype({
 
     async removeVm(input) {
       const { operation, vmName } = checkedOperation(input, 'destroy');
-      if (!await managed(operation, vmName)) return observed(operation.computerId, 'missing', operation.expectedGeneration);
-      // The VM folder is always cloneRoot/<vmName>; the script deletes only disks inside it.
-      await call({ method: 'remove', vmName, cloneRoot: root, vmDir: path.join(root, vmName), expect: expectOf(operation) });
+      const vm = await managed(operation, vmName);
+      // Read the record before anything is deleted: an unreadable journal means nothing was done.
+      const record = readRecord(operation.computerId, vm ? 'not_applied' : 'unknown');
+      if (!record) {
+        // No retirement record for this id: destroy is exactly what it always was.
+        if (vm) await deleteVm(expectOf(operation), vmName);
+      }
+      else if (vm) {
+        // A retirement record exists: delete only the VM it describes (same VM id, project, generation, and the incarnation once the Notes carry it).
+        // Anything else is not this VM: nothing is deleted and the record stays.
+        if (record.projectId !== operation.projectId || !belongsToRecord(record, vm)) throw brokerError('operation_conflict', 'not_applied');
+        await deleteVm(recordExpect(record, vm), vmName);
+        dropRecord(record);
+      }
+      else if (record.generation === operation.expectedGeneration && record.projectId === operation.projectId) {
+        // An earlier attempt already removed the VM and died before dropping the record: finish that clean-up.
+        dropRecord(record);
+      }
       return observed(operation.computerId, 'missing', operation.expectedGeneration);
     },
+
+    // Retire: stop, detach (a retired computer id is refused by start and by create), keep every disk, write the retirement record at this Broker's own time with a new
+    // incarnation id bound to the VM's own Hyper-V id, then write the incarnation id and the project into the VM's Notes. Each step is safe to repeat: a crash after the stop
+    // or after the record is finished by a retry, and until the Notes carry the id nothing (purge, scheduled purge) will match the VM.
+    // If a record already exists, only the very VM it was made for (same VM id; Notes blank or carrying the same identity) may be retired again; any other VM with that id and
+    // generation (a restored backup, a copy) is refused before it is stopped or relabelled. A retired VM keeps its original record and deadline.
+    async retireVm(input) {
+      const { operation, vmName } = checkedOperation(input, 'retire');
+      if (!retirements) throw brokerError('invalid_provider_state', 'not_applied');
+      const vm = await managed(operation, vmName);
+      if (!vm || !vm.vmId) throw brokerError('invalid_provider_state', 'not_applied');
+      const existing = readRecord(operation.computerId);
+      if (existing && (existing.projectId !== operation.projectId || existing.generation !== operation.expectedGeneration || !belongsToRecord(existing, vm))) {
+        throw brokerError('operation_conflict', 'not_applied');
+      }
+      const vmExpect = { ...expectOf(operation), vmId: vm.vmId, identity: 'vm' };
+      if (vm.state !== 'off') await call({ method: 'stop', vmName, expect: vmExpect, waitSeconds });
+      let record;
+      try {
+        record = retirements.retire({ computerId: operation.computerId, projectId: operation.projectId, generation: operation.expectedGeneration, vmId: vm.vmId });
+      }
+      catch (error) {
+        throw error?.code === 'retirement_conflict' ? brokerError('operation_conflict', 'not_applied') : brokerError('provider_state_unknown');
+      }
+      if (!matchesRecord(record, vm)) {
+        const notes = JSON.stringify({
+          albera: 1, computerId: operation.computerId, generation: operation.expectedGeneration, imageDigest: vm.meta.imageDigest,
+          projectId: record.projectId, incarnationId: record.incarnationId,
+        });
+        await call({ method: 'annotate', vmName, expect: vmExpect, notes, incarnationId: record.incarnationId });
+      }
+      return observed(operation.computerId, 'retired', operation.expectedGeneration);
+    },
+
+    // Purge: delete the disks of a RETIRED environment only. This is the requested (approved) purge; it does not wait for the deadline.
+    // The record must be this request's own (project, generation) and, when the VM exists, this VM's own (incarnation in its Notes). Otherwise: not applied, record kept.
+    async purgeVm(input) {
+      const { operation, vmName } = checkedOperation(input, 'purge');
+      if (!retirements) throw brokerError('invalid_provider_state', 'not_applied');
+      const vm = await managed(operation, vmName);
+      const record = readRecord(operation.computerId);
+      if (!vm) {
+        if (!record) return observed(operation.computerId, 'missing', operation.expectedGeneration);
+        if (record.generation !== operation.expectedGeneration || record.projectId !== operation.projectId) throw brokerError('environment_not_retired', 'not_applied');
+        dropRecord(record);
+        return observed(operation.computerId, 'missing', operation.expectedGeneration);
+      }
+      if (!record || record.generation !== operation.expectedGeneration || record.projectId !== operation.projectId || !matchesRecord(record, vm)) {
+        throw brokerError('environment_not_retired', 'not_applied');
+      }
+      await deleteVm(identityOf(record), vmName);
+      dropRecord(record);
+      return observed(operation.computerId, 'missing', operation.expectedGeneration);
+    },
+
+    /**
+     * The scheduled purge: removes only environments whose own retirement record has passed its deadline. It reads this Broker's journal and a clock and nothing the Control Plane sends;
+     * `now` (epoch ms or Date) is for the Broker's timer and tests, omitted it is the journal's own clock. Not wired to a timer yet. Returns one result per expired record.
+     * A VM that is not exactly the recorded one (VM id, computer id, generation, and project and incarnation id in its Notes) is 'skipped': nothing is deleted and the record is kept.
+     */
+    async purgeExpiredRetirements({ now: at } = {}) {
+      if (!retirements) throw brokerError('invalid_provider_state', 'not_applied');
+      return purgeExpired({
+        journal: retirements,
+        atMs: at,
+        purgeRecord: async (record) => {
+          if (!COMPUTER_ID_RE.test(record.computerId)) return 'skipped';
+          const vmName = `${VM_PREFIX}${record.computerId}`;
+          const vm = await lookup(vmName);
+          if (!vm) return 'already_missing';
+          if (!matchesRecord(record, vm)) return 'skipped';
+          await deleteVm(identityOf(record), vmName);
+          return 'purged';
+        },
+      });
+    },
   };
+
+  // The VM folder is always cloneRoot/<vmName>; the script deletes only disks inside it, and only for a VM whose Notes carry every field of `expect`.
+  function deleteVm(expect, vmName) {
+    return call({ method: 'remove', vmName, cloneRoot: root, vmDir: path.join(root, vmName), expect });
+  }
+
+  // Journal access. A read that fails before any change is not applied by default; the destroy clean-up asks for 'unknown' because the VM may already be gone.
+  function readRecord(computerId, outcome = 'not_applied') {
+    if (!retirements) return null;
+    try { return retirements.get(computerId); }
+    catch { throw brokerError('provider_state_unknown', outcome); }
+  }
+
+  function dropRecord(record) {
+    try { retirements.remove(record.computerId, record.incarnationId); }
+    catch { throw brokerError('provider_state_unknown'); }
+  }
 
   async function changeState(input, method) {
     const { operation, vmName } = checkedOperation(input, method);
     if (!await managed(operation, vmName)) throw brokerError('invalid_provider_state', 'not_applied');
-    const result = await call({
-      method, vmName, expect: expectOf(operation), waitSeconds: Math.max(1, Math.floor((timeoutMs * STOP_WAIT_FRACTION) / 1000)),
-    });
+    if (method === 'start' && readRecord(operation.computerId)) throw brokerError('environment_retired', 'not_applied');
+    const result = await call({ method, vmName, expect: expectOf(operation), waitSeconds });
     return observed(operation.computerId, mapState(result.state), operation.expectedGeneration);
   }
 }
@@ -176,6 +296,21 @@ function checkedOperation(input, action) {
 }
 
 const expectOf = (operation) => ({ computerId: operation.computerId, generation: operation.expectedGeneration });
+// The full retirement identity; the script refuses (identity: 'full') a request that leaves any part out and a VM that differs in any part.
+const identityOf = (record) => ({
+  computerId: record.computerId, generation: record.generation, vmId: record.vmId, projectId: record.projectId, incarnationId: record.incarnationId, identity: 'full',
+});
+// For destroy of a recorded VM: always the VM id; project and incarnation only once the Notes carry them (a half-finished retire has blank Notes).
+const recordExpect = (record, vm) => (vm.meta.incarnationId !== null && vm.meta.projectId !== null ? identityOf(record)
+  : { computerId: record.computerId, generation: record.generation, vmId: record.vmId, identity: 'vm' });
+// Fully retired: the VM is the recorded one and its Notes carry the recorded project and incarnation.
+const matchesRecord = (record, vm) => Boolean(record && vm && vm.meta && vm.vmId && vm.vmId === record.vmId && vm.meta.computerId === record.computerId
+  && vm.meta.generation === record.generation && vm.meta.projectId === record.projectId && vm.meta.incarnationId === record.incarnationId);
+// The recorded VM, possibly mid-retire: same VM id and generation; Notes identity blank or the recorded one.
+const belongsToRecord = (record, vm) => Boolean(record && vm && vm.meta && vm.vmId && vm.vmId === record.vmId && vm.meta.computerId === record.computerId
+  && vm.meta.generation === record.generation && (vm.meta.projectId === null || vm.meta.projectId === record.projectId)
+  && (vm.meta.incarnationId === null || vm.meta.incarnationId === record.incarnationId));
+
 const notesFor = (operation, imageDigest) => JSON.stringify({
   albera: 1, computerId: operation.computerId, generation: operation.expectedGeneration, imageDigest,
 });
@@ -191,7 +326,13 @@ function parseNotes(text) {
   }
   if (value === null || typeof value !== 'object' || value.albera !== 1 || typeof value.computerId !== 'string'
     || !Number.isSafeInteger(value.generation) || value.generation < 1 || typeof value.imageDigest !== 'string') return null;
-  return { computerId: value.computerId, generation: value.generation, imageDigest: value.imageDigest };
+  // projectId and incarnationId exist only after a retire wrote them; a malformed value makes the whole Notes untrusted.
+  const hasIdentity = Object.hasOwn(value, 'incarnationId') || Object.hasOwn(value, 'projectId');
+  if (hasIdentity && (typeof value.projectId !== 'string' || !/^[a-f0-9]{32}$/.test(String(value.incarnationId)))) return null;
+  return {
+    computerId: value.computerId, generation: value.generation, imageDigest: value.imageDigest,
+    projectId: hasIdentity ? value.projectId : null, incarnationId: hasIdentity ? value.incarnationId : null,
+  };
 }
 
 const mapState = (state) => (Object.hasOwn(HYPERV_STATES, state) ? HYPERV_STATES[state] : state === 'Missing' ? 'missing' : 'unknown');

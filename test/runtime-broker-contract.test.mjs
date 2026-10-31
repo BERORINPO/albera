@@ -165,3 +165,17 @@ test('arch: the contract folder stays pure (no clock, env, network or file acces
     for (const re of forbidden) assert.ok(!re.test(source), `${file} matches ${re}`);
   }
 });
+
+test('retire and purge are new broker.operation actions with their own digests; destroy keeps its meaning and its name (issue #115 step 1)', () => {
+  assert.deepEqual(ACTIONS_BY_PURPOSE['broker.operation'].filter((a) => /retire|purge|destroy/.test(a)), ['environment.destroy', 'environment.retire', 'environment.purge']);
+  assert.deepEqual(schema.properties.action.enum.filter((a) => /retire|purge|destroy/.test(a)), ['environment.destroy', 'environment.retire', 'environment.purge']);
+  assert.equal(ACTIONS_BY_PURPOSE['guest.command'].some((a) => /retire|purge/.test(a)), false);
+  const digest = (name) => vectors.digestVectors.find((v) => v.name === name).expected.digest;
+  assert.equal(new Set([digest('retire-empty-args'), digest('purge-empty-args'), digest('destroy-empty-args')]).size, 3);
+  const verdict = (name) => vectors.receiptVectors.find((v) => v.name === name).expected;
+  assert.deepEqual(verdict('valid-retire-operation'), { ok: true });
+  assert.deepEqual(verdict('valid-purge-operation'), { ok: true });
+  for (const swapped of ['purge-receipt-for-retire-action', 'retire-receipt-for-destroy-action', 'destroy-receipt-for-purge-action']) {
+    assert.deepEqual(verdict(swapped), { ok: false, code: 'binding', field: 'action' }, 'a receipt for one action never authorizes another');
+  }
+});

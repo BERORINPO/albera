@@ -23,6 +23,11 @@ export class LocalEnvironmentHostBroker {
     if (typeof providerId !== 'string' || Object.values(providerMethods).some((method) => !method)) {
       throw new TypeError('invalid_environment_provider');
     }
+    // retire / purge are optional for a Provider: without them the journaled action ends as not_applied instead of reaching anything.
+    for (const method of ['retire', 'purge']) {
+      const captured = captureMethod(provider, method);
+      if (captured) providerMethods[method] = captured;
+    }
     this.#resolveDispatch = resolveDispatch;
     this.#resolveInspection = resolveInspection;
     this.#providerMethods = Object.freeze(providerMethods);
@@ -42,6 +47,7 @@ export class LocalEnvironmentHostBroker {
     const operation = claim && typeof claim === 'object' ? this.#claims.get(claim) : undefined;
     if (!operation) throw new EnvironmentProviderError('broker_claim_invalid', { outcome: 'not_applied' });
     this.#claims.delete(claim);
+    if (!this.#providerMethods[operation.action]) throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' });
     return this.#providerMethods[operation.action](operation);
   }
 

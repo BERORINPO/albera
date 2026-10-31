@@ -14,8 +14,13 @@ const BROKER_METHODS = Object.freeze({
   stop: 'stopVm',
   destroy: 'removeVm',
 });
+// retire / purge are optional: a Broker client without them leaves the action unimplemented (not_applied), so an older Broker never runs them.
+const OPTIONAL_BROKER_METHODS = Object.freeze({
+  retire: 'retireVm',
+  purge: 'purgeVm',
+});
 const SAFE_BROKER_ERROR_CODES = new Set([
-  'authorization_denied', 'broker_timeout', 'generation_mismatch', 'invalid_provider_state',
+  'authorization_denied', 'broker_timeout', 'environment_not_retired', 'environment_retired', 'generation_mismatch', 'invalid_provider_state',
   'operation_conflict', 'operation_unknown', 'provider_outcome_unknown', 'provider_state_unknown',
   'provider_timeout', 'provider_unavailable', 'stale_generation',
 ]);
@@ -40,6 +45,10 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
       }
       methods[action] = descriptor.value.bind(broker);
     }
+    for (const [action, name] of Object.entries(OPTIONAL_BROKER_METHODS)) {
+      const descriptor = descriptors[name];
+      if (descriptor && Object.hasOwn(descriptor, 'value') && typeof descriptor.value === 'function') methods[action] = descriptor.value.bind(broker);
+    }
     this.#brokerMethods = Object.freeze(methods);
   }
 
@@ -48,6 +57,8 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
   start(input) { return this.#invoke('start', input); }
   stop(input) { return this.#invoke('stop', input); }
   destroy(input) { return this.#invoke('destroy', input); }
+  retire(input) { return this.#invoke('retire', input); }
+  purge(input) { return this.#invoke('purge', input); }
 
   async #invoke(action, input) {
     let operation;
@@ -60,6 +71,8 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
     if (operation.providerId !== this.providerId || operation.action !== action) {
       throw new EnvironmentProviderError('provider_operation_mismatch', { outcome: 'not_applied' });
     }
+
+    if (!this.#brokerMethods[action]) throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' });
 
     // Invoke only a fixed typed lifecycle method. Keep only an allowlisted error
     // code and the definitive/not-applied bit; Broker fields may contain paths

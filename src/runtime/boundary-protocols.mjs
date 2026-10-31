@@ -11,7 +11,7 @@ const BROKER_ERROR_CODES = new Set([
 ]);
 const GUEST_ACTIONS = new Set(['task.start', 'task.cancel', 'workspace.inspect']);
 const GUEST_EVENT_TYPES = new Set(['heartbeat', 'operation.accepted', 'operation.completed', 'artifact.proposed']);
-const OBSERVED_STATES = new Set(['missing', 'off', 'running', 'paused', 'failed', 'unknown']);
+const OBSERVED_STATES = new Set(['missing', 'off', 'running', 'paused', 'retired', 'failed', 'unknown']);
 
 export class BoundaryProtocolError extends Error {
   constructor(code) { super(code); this.name = 'BoundaryProtocolError'; this.code = code; }
