@@ -1,6 +1,7 @@
 // Shared, hardened `dotnet` invocation for every publish script (issue #102). A compromised build machine could otherwise steer the output through
 // the caller's environment: a different `dotnet` found on PATH or through ProgramFiles / ProgramW6432, MSBuild auto-response files (Directory.Build.rsp),
-// MSBUILD* / NuGet* / DOTNET_* variables, an environment variable named DefineConstants, user-level MSBuild imports or a machine / user NuGet.Config.
+// MSBUILD* / NuGet* / DOTNET_* variables, an environment variable named DefineConstants, user-level MSBuild imports, a machine / user NuGet.Config, the user-wide NuGet package
+// cache or a NuGet credential-provider plugin under the user profile.
 // What this helper does about each:
 //   1. dotnet is NOT looked up on PATH and NOT located through environment variables. The Program Files folder is read from HKLM (via reg.exe at the fixed path
 //      C:\Windows\System32\reg.exe; HKLM is writable by administrators only) and dotnet.exe must be <ProgramFiles>\dotnet\dotnet.exe, a regular file with no
@@ -12,13 +13,20 @@
 //      and the ancestor-directory files Directory.Build.props, Directory.Build.targets and Directory.Packages.props.
 //   3. the child environment is built from an ALLOWLIST (below), not filtered from the caller's: MSBuild*, NuGet*, DOTNET_*, DefineConstants, Albera* and everything
 //      else simply are not passed on. SystemRoot / windir / PATH come from the fixed C:\Windows (PATH = System32 + the dotnet folder), ProgramFiles / ProgramW6432
-//      from the registry. USERPROFILE / LOCALAPPDATA are still passed on (the NuGet package cache lives under USERPROFILE); a package taken from a
-//      swapped cache must still match the contentHash in packages.lock.json. Three DOTNET_* values are set by us (no logo, no telemetry, no first-run work).
+//      from the registry. USERPROFILE / LOCALAPPDATA are still passed on (other tools need them). Three DOTNET_* values are set by us (no logo, no telemetry, no first-run work).
+//      The two NuGet* variables the child does get are ours (issue #111, see 7).
 //   4. restore is a separate, locked step with the repo's own NuGet config (scripts/nuget.publish.config as --configfile). Checked on SDK 10.0.302: that makes NuGet
 //      ignore the settings of the user-level %APPDATA%\NuGet\NuGet.Config, but the restore task still PARSES that file (an invalid one fails the restore). So the child
 //      gets APPDATA = a fresh empty folder of ours (removed at exit), and the user-level file is not read at all. Publish / build then runs --no-restore. A project without packages.lock.json is refused, not restored unlocked.
 //   5. every publish / build output is a function of the source files alone, not of the checkout path or the git commit (issue #108): see reproducibilityProperties.
 //   6. after the build the caller prints the SDK version and the output SHA-256 (printBuildIdentity), one line each, so two builds can be compared.
+//   7. a release build trusts only what it restored itself (issue #111). The child gets NUGET_PACKAGES = a fresh, empty folder of ours (mkdtemp under the temp folder, removed at exit, one per
+//      build context), so restore downloads every .nupkg again and extracts it there; the user-wide cache (%USERPROFILE%\.nuget\packages), where another process of the same user could have
+//      planted extracted files plus a matching .nupkg.metadata, is neither read nor written. The locked restore checks what it downloaded against the contentHash (SHA-512) in packages.lock.json.
+//      NuGet credential-provider plugins should not load: NUGET_PLUGIN_PATHS names one file inside our folder that does not exist, and NuGet documents that an explicit value replaces the default search of
+//      %USERPROFILE%\.nuget\plugins (the NETCORE / NETFX specific variables, which would outrank it, are not passed on). Checked on SDK 10.0.302: a decoy plugin named in NUGET_PLUGIN_PATHS is started by restore (so plugins are exercised); the real default folder was not tested (that needs a file in the user profile). The repo config has one https source without credentials, so no plugin is needed.
+//      Not covered: the packages lock files list libraries only, not the runtime packs / targeting packs the SDK restores for a self-contained build (Microsoft.NETCore.App.Runtime.*, Microsoft.Windows.SDK.NET.Ref);
+//      those are downloaded from nuget.org over https each time and are not compared with a hash of ours.
 // What it does not do: it does not verify dotnet.exe's signature, and an attacker who can write C:\Program Files or HKLM already owns the machine.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -81,8 +89,12 @@ export function resolveTrustedDotnet({ platform = process.platform, query = quer
   return { dotnet, programFiles };
 }
 
-/** @returns {Record<string,string>} a new environment for the child (APPDATA = `appData`, an empty folder of ours): allowlisted variables, trusted Windows / Program Files locations, a rebuilt PATH and our fixed DOTNET_* values. */
-export function sanitisedEnvironment(env, { dotnet, programFiles }, appData) {
+/** A file name inside the packages folder that is never created: NUGET_PLUGIN_PATHS points here so that no plugin is found, here or in the default location. */
+export const NO_PLUGIN_FILE = 'no-credential-provider-plugin.dll';
+
+/** @returns {Record<string,string>} a new environment for the child (APPDATA = `appData`, an empty folder of ours; NUGET_PACKAGES = `packages`, a fresh empty folder of ours, and NUGET_PLUGIN_PATHS = a plugin file that
+ *  does not exist, when `packages` is given): allowlisted variables, trusted Windows / Program Files locations, a rebuilt PATH and our fixed DOTNET_* values. */
+export function sanitisedEnvironment(env, { dotnet, programFiles }, appData, packages) {
   const clean = {};
   for (const name of INHERITED_VARIABLES) {
     const value = lookup(env, name);
@@ -91,6 +103,7 @@ export function sanitisedEnvironment(env, { dotnet, programFiles }, appData) {
   return {
     ...clean, SystemRoot: SYSTEM_ROOT, windir: SYSTEM_ROOT, ProgramFiles: programFiles, ProgramW6432: programFiles,
     ...(appData ? { APPDATA: appData } : {}),
+    ...(packages ? { NUGET_PACKAGES: packages, NUGET_PLUGIN_PATHS: path.win32.join(packages, NO_PLUGIN_FILE) } : {}),
     PATH: [path.win32.join(SYSTEM_ROOT, 'System32'), path.win32.dirname(dotnet)].join(';'), ...FIXED_VARIABLES,
   };
 }
@@ -135,12 +148,19 @@ export function buildArguments({ verb, project, root, args = [], properties = []
   return [verb, project, '--no-restore', ...MSBUILD_SWITCHES, ...args, ...properties, ...reproducibilityProperties(root)];
 }
 
-/** @returns {{ dotnet: string, env: Record<string,string>, root: string }} the trusted dotnet and its sanitised environment, for `root` as the working directory. */
+/** Creates a fresh empty folder under the temp folder and removes it when the process exits. */
+function ownedTempFolder(prefix) {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  process.once('exit', () => { try { fs.rmSync(folder, { recursive: true, force: true }); } catch { /* a leftover temp folder is harmless: the next build makes its own */ } });
+  return folder;
+}
+
+/** @returns {{ dotnet: string, env: Record<string,string>, root: string }} the trusted dotnet and its sanitised environment, for `root` as the working directory. Each call makes its own empty APPDATA and packages folder. */
 export function createBuildContext(root, options = {}) {
   const trusted = resolveTrustedDotnet(options);
-  const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-build-appdata-'));
-  process.once('exit', () => { try { fs.rmSync(appData, { recursive: true, force: true }); } catch { /* a leftover empty temp folder is harmless */ } });
-  return { dotnet: trusted.dotnet, env: sanitisedEnvironment(options.env ?? process.env, trusted, appData), root };
+  const appData = ownedTempFolder('albera-build-appdata-');
+  const packages = ownedTempFolder('albera-build-packages-');
+  return { dotnet: trusted.dotnet, env: sanitisedEnvironment(options.env ?? process.env, trusted, appData, packages), root };
 }
 
 /** Same as createBuildContext, but a refusal is one line on stderr and exit 1 (what the publish scripts want). */
