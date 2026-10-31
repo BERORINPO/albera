@@ -418,9 +418,10 @@ test('the client opens no pipe or socket itself, has one launch site after the d
 test('the pipe client helper takes the Authority request as text, bounds it, and relays only the Authority\'s fixed codes (source guard, any OS)', () => {
   const helper = readFileSync(path.join(root, 'src', 'runtime', 'windows-broker-pipe-client', 'Program.cs'), 'utf8');
   const code = helper.replace(/^\s*\/\/.*$/gmu, '');
-  assert.match(code, /"pipeName", "receipt", "signature", "fence", "inspect", "authority", "timeoutMs", "expect"/u, 'one more optional request key, nothing else');
+  assert.match(code, /"pipeName", "receipt", "signature", "action", "fence", "inspect", "authority", "timeoutMs", "expect"/u, 'the request keys: `action` belongs to a Broker claim (a guest.command receipt), `authority` to this client, nothing else');
   assert.match(code, /Text\(root, "verb"\) is "submit" or "status"/u, 'only the submit pipe verbs');
-  assert.match(code, /Encoding\.UTF8\.GetByteCount\(requestBody\) > MaxRequestBytes/u, 'the 2 KiB bound is in bytes');
+  assert.match(code, /Encoding\.UTF8\.GetByteCount\(requestBody\) > \(authority \? MaxAuthorityRequestBytes : MaxRequestBytes\)/u, 'the bound is in bytes');
+  assert.match(code, /MaxRequestBytes = 4096, MaxAuthorityRequestBytes = 2048,/u, 'an Authority request keeps its 2 KiB frame; only a Broker claim (receipt, signature, action DTO) may use 4 KiB');
   assert.match(code, /input\.Authority \? MaxAuthorityResponseBytes : MaxResponseBytes/u);
   assert.match(code, /value\.Split\(\(char\)92\)\.All\(segment => IsToken\(segment, 128, "_-", false\)\)/u, 'pipe path: tokens only, no empty segment, no dot');
   // Same order as before: SQOS open, owner, PID, session, image, and only then the write. The Authority request kind added no earlier write.

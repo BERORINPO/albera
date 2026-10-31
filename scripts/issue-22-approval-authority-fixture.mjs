@@ -43,12 +43,12 @@ export function stableUuid(name) {
 export const randomNonce = () => randomBytes(16).toString('base64url');
 
 /**
- * The 22 fields of a v2 receipt for the Broker's fixed `synthetic.noop` action. `fence` is the Broker's fence reply
+ * The 22 fields of a v2 receipt (by default for the Broker's fixed `synthetic.noop` action; `args` is the DTO's args map for any other). `fence` is the Broker's fence reply
  * ({ brokerEpoch, leaseGeneration, brokerChallenge }); `name` makes the ids (approvalId, receiptId, operationId, idempotencyKey) readable and repeatable.
  * `overrides` replace any field after the defaults, and `actionDigest` is recomputed from the final action / project / computer unless it is overridden.
  */
 export function buildReceiptFields({
-  authority, fence, name, now = Math.floor(Date.now() / 1000), ttlSeconds = 120, issuer = PRODUCTION_ISSUER, computerId = 'computer-1', projectId = 'project-1', ...overrides
+  authority, fence, name, now = Math.floor(Date.now() / 1000), ttlSeconds = 120, issuer = PRODUCTION_ISSUER, computerId = 'computer-1', projectId = 'project-1', args = {}, ...overrides
 }) {
   const fields = {
     v: 2,
@@ -76,7 +76,7 @@ export function buildReceiptFields({
     ...overrides,
   };
   if (overrides.actionDigest === undefined) {
-    fields.actionDigest = computeActionDigest(fields.purpose, { action: fields.action, projectId: fields.projectId, computerId: fields.computerId, args: {} });
+    fields.actionDigest = computeActionDigest(fields.purpose, { action: fields.action, projectId: fields.projectId, computerId: fields.computerId, args });
   }
   return fields;
 }

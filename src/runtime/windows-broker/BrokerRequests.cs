@@ -4,28 +4,34 @@ using System.Text;
 using System.Text.Json;
 using Albera.BrokerContract;
 
-// The three requests of the Broker's pipe (ADR-002 "Receipt v2", Proposed / NOT VERIFIED). One frame per connection, at most 2 KiB, after the peer SID check:
-//   claim    { "receipt": <base64>, "signature": <base64> }   exactly these two keys. The receipt is v2 or v3 (src/runtime/broker-contract; v3 adds `basis`, see
-//                                                              ReceiptV3.cs) and names a challenge that THIS Broker issued with `fence`.
+// The three requests of the Broker's pipe (ADR-002 "Receipt v2", Proposed / NOT VERIFIED). One frame per connection, at most 4 KiB, after the peer SID check:
+//   claim    { "receipt": <base64>, "signature": <base64> }   exactly these two keys: a broker.operation / synthetic.noop receipt (the DTO is fixed here). The receipt is v2 or v3
+//                                                              (src/runtime/broker-contract; v3 adds `basis`, see ReceiptV3.cs) and names a challenge that THIS Broker issued with `fence`.
+//            { "receipt", "signature", "action": <base64 of the UTF-8 JSON action DTO> }   a guest.command / task.start receipt. The DTO is not trusted by itself: it must be a valid
+//                                                              guest.command DTO for task.start with exactly { task: <non-empty string> } and the receipt's own projectId and computerId, and
+//                                                              Receipts.Validate recomputes its digest and compares it with the one the Authority signed.
 //   fence    { "fence": { "computerId": "<id>" } }             -> { "ok": true, "brokerEpoch": n, "leaseGeneration": n, "leaseId": "<id>", "brokerChallenge": "<22 chars>" }
 //   inspect  { "inspect": { "operationId": "<id>" } }          -> { "ok": true, "state": "UNKNOWN", "action": "synthetic.inspect" }; read-only
 // The three shapes cannot be confused: they differ in their key set. Every refusal is the one fixed `denied` reply; the reason is a fixed word on stdout only
 // (DENY=<reason>), never request text.
 //
 // What a claim must pass, in this order (the first failure is the logged reason):
-//   structure (Receipts.Parse: v3 when the bytes claim "v":3, otherwise v2) -> kid is a pinned key -> ECDSA signature over the exact receipt bytes -> the journal's epoch is the one this process started
-//   -> the clock fence (now >= clock_high_water - 30 s) -> the challenge is known, unconsumed, from this epoch and lease generation, and was issued for the
+//   structure (Receipts.Parse: v3 when the bytes claim "v":3, otherwise v2) -> kid is a pinned key -> ECDSA signature over the exact receipt bytes -> (three-key form) the action DTO
+//   is valid and is task.start for this receipt's project and computer -> the journal's epoch is the one this process started -> the clock fence (now >= clock_high_water - 30 s) -> the challenge is known, unconsumed, from this epoch and lease generation, and was issued for the
 //   receipt's computerId -> Receipts.Validate (TTL <= 300 s, iat <= now + 30, now < exp, issuer, bindings, and the action digest RECOMPUTED from the trusted DTO; for v3 also: basis
 //   "policy" only for the few actions a policy may ever skip)
 //   -> one transaction: consume the challenge, insert the claim, raise the clock high-water mark.
 // An exact duplicate (same operationId, same receipt bytes and signature as a recorded claim) skips the challenge checks, because its challenge was spent (or
 // wiped by a restart) when it was first claimed; it still passes the signature, the clock fence and every time / issuer / digest check, and answers with the
-// recorded outcome plus `"replayed": true`.
+// recorded outcome plus `"replayed": true`. A claim reply names the action that was claimed (the receipt's own, which Validate has bound to the DTO), on a replay too.
 internal static partial class Program
 {
     private const string BrokerAudience = "albera-host-broker";
     private const string SyntheticAction = "synthetic.noop";
     private const string SyntheticPurpose = "broker.operation";
+    private const string TaskStartAction = "task.start";
+    private const string GuestPurpose = "guest.command";
+    private const string TaskArgument = "task";
 
 #if ALBERA_BROKER_TEST_FAULTS
     private const string ReceiptEnvironment = "test"; // the test-faults build also accepts `albera-test-*` issuers
@@ -52,9 +58,10 @@ internal static partial class Program
         JsonProperty[] properties = [.. root.EnumerateObject()];
         if (properties.Length == 1 && properties[0].NameEquals("fence")) return await FenceAsync(properties[0].Value, settings);
         if (properties.Length == 1 && properties[0].NameEquals("inspect")) return await InspectAsync(properties[0].Value, settings);
-        if (properties.Length == 2 && root.TryGetProperty("receipt", out JsonElement receipt) && receipt.ValueKind == JsonValueKind.String &&
-            root.TryGetProperty("signature", out JsonElement signature) && signature.ValueKind == JsonValueKind.String)
-            return await ClaimAsync(Convert.FromBase64String(receipt.GetString()!), Convert.FromBase64String(signature.GetString()!), settings);
+        // A claim has the keys receipt and signature, plus action for a guest.command receipt: the key count must be exactly that, so no other key can ride along.
+        string? encodedAction = StringOf(root, "action");
+        if (properties.Length == (encodedAction is null ? 2 : 3) && StringOf(root, "receipt") is { } receipt && StringOf(root, "signature") is { } signature)
+            return await ClaimAsync(Convert.FromBase64String(receipt), Convert.FromBase64String(signature), encodedAction, settings);
         return Deny("request");
     }
 
@@ -65,6 +72,9 @@ internal static partial class Program
         return properties.Length == 1 && properties[0].NameEquals(name) && properties[0].Value.ValueKind == JsonValueKind.String &&
             properties[0].Value.GetString() is { } value && AuthorityKey.IsKeyId(value) ? value : null;
     }
+
+    // The string value of an envelope key, or null when the key is absent or is not a string.
+    private static string? StringOf(JsonElement root, string name) => root.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
     private static async Task<BrokerReply> FenceAsync(JsonElement body, BrokerSettings settings)
     {
@@ -85,7 +95,7 @@ internal static partial class Program
         return Success(recorded, "synthetic.inspect", replayed: false);
     }
 
-    private static async Task<BrokerReply> ClaimAsync(byte[] receipt, byte[] signature, BrokerSettings settings)
+    private static async Task<BrokerReply> ClaimAsync(byte[] receipt, byte[] signature, string? encodedAction, BrokerSettings settings)
     {
         ReceiptVerdict parsed = Receipts.Parse(receipt);
         if (!parsed.Ok) return Deny(parsed.Code!);
@@ -97,6 +107,8 @@ internal static partial class Program
             authority.ImportSubjectPublicKeyInfo(authorityKey.Spki, out _);
             if (!authority.VerifyData(receipt, signature, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)) return Deny("signature");
         }
+        (string purpose, IReadOnlyDictionary<string, object>? dto, string? actionRefusal) = ActionOf(encodedAction, r);
+        if (actionRefusal is not null) return Deny(actionRefusal);
 
         string operationId = (string)r["operationId"], challengeId = (string)r["brokerChallenge"], computerId = (string)r["computerId"];
         string requestDigest = Journal.RequestDigest(receipt, signature);
@@ -111,20 +123,21 @@ internal static partial class Program
         // Expected comes from Broker-trusted state. For a replay the fence values are the receipt's own: they were checked when it was first claimed, and a
         // restart has since wiped the challenge, so there is nothing current left to compare them with.
         long epoch = replay ? (long)r["brokerEpoch"] : context.State.Epoch, generation = replay ? (long)r["leaseGeneration"] : context.State.LeaseGeneration;
-        ReceiptVerdict verdict = Receipts.Validate(receipt, TrustedContext(r, now, epoch, generation, settings));
+        ReceiptVerdict verdict = Receipts.Validate(receipt, TrustedContext(r, now, epoch, generation, settings, purpose, dto));
         if (!verdict.Ok) return Deny(ReasonOf(verdict, (string)r["issuer"]));
+        string claimed = (string)r["action"]; // Validate has bound it to the DTO's action (task.start, or the fixed synthetic one)
 
         if (replay)
         {
             Console.WriteLine("REPLAY=RECORDED_OUTCOME");
-            return Success(context.RecordedState!, SyntheticAction, replayed: true);
+            return Success(context.RecordedState!, claimed, replayed: true);
         }
         (Journal.ClaimKind kind, string reason) = await Journal.ClaimAsync(settings.Database, new Journal.Claim(operationId, (string)r["receiptId"], (string)r["approvalId"],
             (string)r["actionDigest"], generation, requestDigest, challengeId, epoch, computerId, (long)r["iat"]));
         if (kind == Journal.ClaimKind.Rejected) return Deny(reason);
         Console.WriteLine("CLAIM=PERSISTED_UNKNOWN");
         if (settings.Hold is { } holdFor) await Task.Delay(holdFor); // test hook: `serve ... hold` holds forever, the seam build's loop entry holds for a fixed time
-        return Success(Journal.UnknownState, SyntheticAction, replayed: false);
+        return Success(Journal.UnknownState, claimed, replayed: false);
     }
 
     private static string? ChallengeRefusal(Journal.ClaimContext context, string computerId) => context.Challenge switch
@@ -137,17 +150,38 @@ internal static partial class Program
         _ => null,
     };
 
-    // The synthetic actions have a fixed DTO ({action, projectId, computerId, args:{}}); only the two ids come from the (signed) receipt, and the digest in the
+    // The synthetic action has a fixed DTO ({action, projectId, computerId, args:{}}); only the two ids come from the (signed) receipt, and the digest in the
     // receipt is compared with the one computed here from this DTO.
-    private static ReceiptContext TrustedContext(IReadOnlyDictionary<string, object> r, long now, long epoch, long generation, BrokerSettings settings)
+    private static Dictionary<string, object> SyntheticDto(IReadOnlyDictionary<string, object> r) => new()
     {
-        Dictionary<string, object> action = new()
+        ["action"] = SyntheticAction, ["projectId"] = r["projectId"], ["computerId"] = r["computerId"], ["args"] = new Dictionary<string, object>(),
+    };
+
+    private static (string Purpose, IReadOnlyDictionary<string, object>? Dto, string? Refusal) ActionOf(string? encodedAction, IReadOnlyDictionary<string, object> r) =>
+        encodedAction is null ? (SyntheticPurpose, SyntheticDto(r), null) : TaskStartDto(encodedAction, r);
+
+    // The DTO of the three-key claim. It came from the request, so nothing in it is believed: it must parse with the strict reader, be a valid guest.command DTO, name
+    // task.start and this receipt's own project and computer, and carry exactly { task: <non-empty string> } (the contract already bounds it to 256 bytes of safe text).
+    // Even then it is only the input of the digest the Broker recomputes: the Authority's signature over that digest is what authenticates it. Returns the refusal word, never text.
+    private static (string Purpose, IReadOnlyDictionary<string, object>? Dto, string? Refusal) TaskStartDto(string encoded, IReadOnlyDictionary<string, object> r)
+    {
+        Dictionary<string, object> dto;
+        try
         {
-            ["action"] = SyntheticAction, ["projectId"] = r["projectId"], ["computerId"] = r["computerId"], ["args"] = new Dictionary<string, object>(),
-        };
+            dto = StrictJson.Parse(Convert.FromBase64String(encoded), 3);
+            ActionDigest.Validate(GuestPurpose, dto);
+        }
+        catch (Exception ex) when (ex is FormatException or StrictJsonException or ActionDigestException) { return (GuestPurpose, null, "action_invalid"); }
+        if (!TaskStartAction.Equals(dto["action"]) || !r["projectId"].Equals(dto["projectId"]) || !r["computerId"].Equals(dto["computerId"])) return (GuestPurpose, null, "action_mismatch");
+        bool onlyTask = dto["args"] is IReadOnlyDictionary<string, object> args && args.Count == 1 && args.TryGetValue(TaskArgument, out object? task) && task is string { Length: > 0 };
+        return onlyTask ? (GuestPurpose, dto, null) : (GuestPurpose, null, "action_invalid");
+    }
+
+    private static ReceiptContext TrustedContext(IReadOnlyDictionary<string, object> r, long now, long epoch, long generation, BrokerSettings settings, string purpose, IReadOnlyDictionary<string, object>? action)
+    {
         Dictionary<string, object> expected = new()
         {
-            ["audience"] = BrokerAudience, ["purpose"] = SyntheticPurpose, ["operationId"] = r["operationId"], ["idempotencyKey"] = r["idempotencyKey"],
+            ["audience"] = BrokerAudience, ["purpose"] = purpose, ["operationId"] = r["operationId"], ["idempotencyKey"] = r["idempotencyKey"],
             ["leaseId"] = settings.LeaseId, ["leaseGeneration"] = generation, ["brokerEpoch"] = epoch, ["brokerChallenge"] = r["brokerChallenge"],
             ["policyVersion"] = settings.PolicyVersion,
         };

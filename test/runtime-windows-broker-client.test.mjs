@@ -94,15 +94,71 @@ test('request fields must be canonical non-empty base64 strings', () => {
   assert.equal(codeOf(() => buildBrokerRequestBody()), 'invalid_request');
 });
 
-test('request size limit is the 2 KiB ADR bound, measured on the JSON body', () => {
+test('request size limit is the 4 KiB ADR bound (2 KiB before a claim could carry an action DTO), measured on the JSON body', () => {
   const overhead = Buffer.byteLength(JSON.stringify({ receipt: '', signature: '' }));
-  assert.equal(BROKER_CLIENT_LIMITS.maxRequestBytes, 2048);
-  const atLimit = buildBrokerRequestBody({ receipt: b64(2016 - 88), signature: b64(88) });
-  assert.equal(atLimit.length, overhead + 2016);
-  assert.ok(atLimit.length <= 2048);
-  const over = { receipt: b64(2020 - 88), signature: b64(88) };
-  assert.equal(overhead + 2020 > 2048, true);
+  assert.equal(BROKER_CLIENT_LIMITS.maxRequestBytes, 4096);
+  const atLimit = buildBrokerRequestBody({ receipt: b64(4064 - 88), signature: b64(88) });
+  assert.equal(atLimit.length, overhead + 4064);
+  assert.ok(atLimit.length <= 4096);
+  const over = { receipt: b64(4068 - 88), signature: b64(88) };
+  assert.equal(overhead + 4068 > 4096, true);
   assert.equal(codeOf(() => buildBrokerRequestBody(over)), 'request_too_large');
+  assert.equal(BROKER_CLIENT_LIMITS.maxResponseBytes, 256, 'the response limit is unchanged');
+});
+
+const TASK_DTO = Object.freeze({ action: 'task.start', projectId: 'project-1', computerId: 'computer-1', args: Object.freeze({ task: 'build the project' }) });
+const TASK_SUCCESS = { ok: true, state: 'UNKNOWN', action: 'task.start' };
+const actionOf = (body) => JSON.parse(Buffer.from(JSON.parse(body.toString('utf8')).action, 'base64').toString('utf8'));
+
+test('a claim with an action DTO has the keys receipt, signature, action: the action is base64 of the canonical JSON of the validated DTO (sorted keys)', () => {
+  const body = buildBrokerRequestBody({ ...goodRequest, action: { projectId: 'project-1', args: { task: 'build the project' }, computerId: 'computer-1', action: 'task.start' } });
+  assert.deepEqual(Object.keys(JSON.parse(body.toString('utf8'))), ['receipt', 'signature', 'action']);
+  const encoded = JSON.parse(body.toString('utf8')).action;
+  assert.equal(Buffer.from(encoded, 'base64').toString('utf8'), '{"action":"task.start","args":{"task":"build the project"},"computerId":"computer-1","projectId":"project-1"}');
+  assert.deepEqual(actionOf(body), TASK_DTO);
+  assert.equal(Object.hasOwn(JSON.parse(buildBrokerRequestBody(goodRequest).toString('utf8')), 'action'), false, 'no action key when there is no DTO');
+});
+
+test('the action DTO is validated with the contract before anything is sent (invalid_request), and a body over 4096 bytes is request_too_large', () => {
+  const bad = [
+    null, 'task.start', [], 7, {}, { ...TASK_DTO, extra: 1 }, { ...TASK_DTO, args: undefined }, { ...TASK_DTO, action: 'environment.create' }, { ...TASK_DTO, projectId: 'has space' },
+    { ...TASK_DTO, args: { task: 'a'.repeat(257) } }, { ...TASK_DTO, args: { task: 'a\nb' } }, { ...TASK_DTO, args: { task: 'a‮b' } }, { ...TASK_DTO, args: { Task: 'x' } },
+    { ...TASK_DTO, args: { task: null } }, { ...TASK_DTO, args: { task: 1.5 } }, Object.create(TASK_DTO),
+  ];
+  for (const action of bad) assert.equal(codeOf(() => buildBrokerRequestBody({ ...goodRequest, action })), 'invalid_request', JSON.stringify(action));
+  // A valid DTO still has to fit: the receipt and signature fill most of the frame.
+  const long = { ...TASK_DTO, args: { task: 'é'.repeat(128) } }; // 256 bytes
+  assert.ok(buildBrokerRequestBody({ receipt: b64(1708), signature: b64(88), action: long }).length <= 4096);
+  assert.equal(codeOf(() => buildBrokerRequestBody({ receipt: b64(3600), signature: b64(88), action: long })), 'request_too_large');
+});
+
+test('the reply names the claimed action: task.start for a DTO claim, synthetic.noop for a two-key claim, and a reply naming the other action is not this request\'s reply', async () => {
+  assert.deepEqual(validateBrokerResponse(TASK_SUCCESS), TASK_SUCCESS);
+  assert.deepEqual(validateBrokerResponse({ ...TASK_SUCCESS, replayed: true }), { ...TASK_SUCCESS, replayed: true });
+  assert.equal(codeOf(() => validateBrokerResponse({ ...TASK_SUCCESS, action: 'task.cancel' })), 'invalid_response');
+  const withAction = { ...goodRequest, action: TASK_DTO };
+  assert.deepEqual(await run(withAction, fakeSpawn({ stdout: line(TASK_SUCCESS) })), TASK_SUCCESS);
+  assert.deepEqual(await run(withAction, fakeSpawn({ stdout: line({ ...TASK_SUCCESS, replayed: true }) })), { ...TASK_SUCCESS, replayed: true });
+  assert.deepEqual(await run(withAction, fakeSpawn({ stdout: line(DENIED) })), DENIED);
+  for (const reply of [SUCCESS, INSPECTED]) assert.deepEqual(await run(withAction, fakeSpawn({ stdout: line(reply) })), { ok: false, code: 'transport_error' }, `a DTO claim answered with ${reply.action}`);
+  assert.deepEqual(await run({}, fakeSpawn({ stdout: line(SUCCESS) })), SUCCESS);
+  assert.deepEqual(await run({}, fakeSpawn({ stdout: line(TASK_SUCCESS) })), { ok: false, code: 'transport_error' }, 'a two-key claim answered with task.start');
+});
+
+test('the helper receives the action as one more request key, only when there is a DTO; a bad or oversized DTO never reaches it', async () => {
+  const withAction = fakeSpawn({ stdout: line(TASK_SUCCESS) });
+  await run({ action: TASK_DTO }, withAction);
+  const sent = JSON.parse(withAction.calls.input);
+  assert.deepEqual(Object.keys(sent), ['pipeName', 'receipt', 'signature', 'action', 'timeoutMs', 'expect']);
+  assert.deepEqual(actionOf(Buffer.from(JSON.stringify({ action: sent.action }))), TASK_DTO);
+  const plain = fakeSpawn({ stdout: line(SUCCESS) });
+  await run({}, plain);
+  assert.deepEqual(Object.keys(JSON.parse(plain.calls.input)), ['pipeName', 'receipt', 'signature', 'timeoutMs', 'expect']);
+  for (const [input, code] of [[{ action: { ...TASK_DTO, args: { task: 'a'.repeat(257) } } }, 'invalid_request'], [{ receipt: b64(3600), action: { ...TASK_DTO, args: { task: 'é'.repeat(128) } } }, 'request_too_large']]) {
+    const fake = fakeSpawn({ stdout: line(TASK_SUCCESS) });
+    assert.deepEqual(await run(input, fake), { ok: false, code }, code);
+    assert.equal(fake.calls.spawns.length, 0, code);
+  }
 });
 
 test('the Broker reply schema is fixed: only the success and denial shapes pass, as fresh frozen objects', () => {
@@ -237,7 +293,7 @@ test('a bad request never reaches the helper', async () => {
   const cases = [
     [{ pipeName: '..\\x' }, 'invalid_pipe_name'],
     [{ receipt: 'SYNTHETIC_SECRET_MARKER' }, 'invalid_request'],
-    [{ receipt: b64(2100) }, 'request_too_large'],
+    [{ receipt: b64(4100) }, 'request_too_large'],
     [{ expect: undefined }, 'invalid_request'],
     [{ expect: { pid: 4242 } }, 'invalid_request'],
     [{ expect: { ownerSid: SID, pid: 4242, serviceName: 'AlberaHostBroker' } }, 'invalid_request'],

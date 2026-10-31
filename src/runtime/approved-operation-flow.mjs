@@ -123,7 +123,7 @@ const stop = (result) => ({ result });
 /**
  * @param {{ broker: { fence: Function, claim: Function, inspect: Function }, authority: { submit: Function, status: Function },
  *   journal: object, now: () => number, sleep: (ms: number) => Promise<void>, options?: Partial<typeof FLOW_DEFAULTS> }} deps
- *   `broker.fence({ computerId })`, `broker.claim({ receipt, signature })`, `broker.inspect({ operationId })`, `authority.submit({ purpose, operationId, idempotencyKey,
+ *   `broker.fence({ computerId })`, `broker.claim({ receipt, signature[, action] })` (`action` is the submitted DTO, passed for purpose guest.command), `broker.inspect({ operationId })`, `authority.submit({ purpose, operationId, idempotencyKey,
  *   leaseId, leaseGeneration, brokerEpoch, brokerChallenge, action })` and `authority.status({ approvalId })` return the clients' result objects (`{ ok: true, ... }` or
  *   `{ ok: false, code }`) and never throw. `now()` is Unix milliseconds. `journal` is the port in approved-operation-journal.mjs.
  * @returns {{ run(request: { operationId: string, purpose?: string, action: object }): Promise<object>, resume(operationId: string): Promise<object> }}
@@ -258,7 +258,8 @@ export function createApprovedOperationFlow({ broker, authority, journal, now, s
   async function sendClaim(record, from) {
     const attempts = (record.claim?.attempts ?? 0) + 1;
     const claiming = await advance(record, [from], { phase: 'CLAIMING', claim: { ...record.claim, attempts } });
-    const reply = await broker.claim({ receipt: record.receipt.receipt, signature: record.receipt.signature });
+    // A guest.command receipt is claimed together with the DTO that was submitted (the Broker recomputes its digest); a broker.operation one is just { receipt, signature }.
+    const reply = await broker.claim({ receipt: record.receipt.receipt, signature: record.receipt.signature, ...(record.purpose === 'guest.command' ? { action: record.action } : {}) });
     if (reply?.ok === true) {
       return { kind: 'ok', result: await finalize(claiming, ['CLAIMING'], 'CLAIMED', undefined, { brokerState: reply.state, replayed: reply.replayed === true, reconciled: false }) };
     }

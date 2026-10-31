@@ -50,8 +50,8 @@ describe('lab inputs for receipt v2', () => {
     assert.equal(operationId, 'lab84-v2-op');
   });
 
-  it('carries exactly the fixtures, the authority and one never-sent receipt, and the CNG private blob is the same key as the pinned SPKI', () => {
-    assert.deepEqual(Object.keys(inputs).sort(), ['authority', 'fixtures', 'r2']);
+  it('carries exactly the fixtures, the authority, the task.start DTOs and one never-sent receipt, and the CNG private blob is the same key as the pinned SPKI', () => {
+    assert.deepEqual(Object.keys(inputs).sort(), ['authority', 'fixtures', 'r2', 'taskStart']);
     assert.deepEqual(Object.keys(inputs.authority).sort(), ['actionDigest', 'computerId', 'issuer', 'kid', 'leaseId', 'policyVersion', 'privateBlob', 'projectId', 'spki']);
     const blob = Buffer.from(inputs.authority.privateBlob, 'base64');
     assert.equal(blob.length, 104);
@@ -70,6 +70,18 @@ describe('lab inputs for receipt v2', () => {
     const receipt = JSON.parse(bytes);
     assert.equal(receipt.kid, inputs.authority.kid);
     assert.equal(validateReceiptV2(bytes, contextFor(bytes, { brokerEpoch: 1 })).ok, true, 'r2 names epoch 1 and a made-up challenge');
+  });
+
+  it('taskStart: the digest is the contract digest of the decoded guest.command DTO, and the tampered DTO is one character off with a different digest', () => {
+    assert.deepEqual(Object.keys(inputs.taskStart).sort(), ['action', 'actionDigest', 'tamperedAction']);
+    const dto = JSON.parse(Buffer.from(inputs.taskStart.action, 'base64').toString('utf8'));
+    const tampered = JSON.parse(Buffer.from(inputs.taskStart.tamperedAction, 'base64').toString('utf8'));
+    assert.deepEqual(Object.keys(dto.args), ['task']);
+    assert.equal(dto.action, 'task.start');
+    assert.equal(dto.computerId, inputs.authority.computerId);
+    assert.equal(inputs.taskStart.actionDigest, computeActionDigest('guest.command', dto));
+    assert.notEqual(computeActionDigest('guest.command', tampered), inputs.taskStart.actionDigest);
+    assert.equal([...dto.args.task].filter((ch, i) => ch !== tampered.args.task[i]).length, 1);
   });
 
   it('lab-guest.ps1 parses under Windows PowerShell 5.1 with no syntax error (the VM run is the lead\'s, so this is the only check of the script text here)', { skip: process.platform !== 'win32' && 'Windows PowerShell only' }, () => {

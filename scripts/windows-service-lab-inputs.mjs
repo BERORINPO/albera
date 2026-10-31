@@ -48,6 +48,13 @@ function journalV2Base64() {
   } finally { rmSync(temp, { recursive: true, force: true }); }
 }
 
+function taskStartInputs() {
+  const dto = { action: 'task.start', projectId: PROJECT_ID, computerId: COMPUTER_ID, args: { task: 'Open Notepad and type hello' } };
+  const tampered = { ...dto, args: { task: 'Open Notepad and type hellO' } };
+  const encode = (value) => Buffer.from(JSON.stringify(value), 'utf8').toString('base64');
+  return { actionDigest: computeActionDigest('guest.command', dto), action: encode(dto), tamperedAction: encode(tampered) };
+}
+
 const inputs = {
   fixtures: { journalV2: { operationId: JOURNAL_V2_OPERATION_ID, base64: journalV2Base64() } },
   authority: {
@@ -61,6 +68,8 @@ const inputs = {
     policyVersion: SYNTHETIC_POLICY_VERSION,
     actionDigest: computeActionDigest('broker.operation', { action: 'synthetic.noop', projectId: PROJECT_ID, computerId: COMPUTER_ID, args: {} }),
   },
+  // A1 (#115 follow-up): a task.start claim carries its action DTO (base64 JSON); the Broker recomputes the digest from it. `tamperedAction` differs by one character.
+  taskStart: taskStartInputs(),
   r2: signedReceipt({ authority, fence: { brokerEpoch: 1, leaseGeneration: 7, brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' }, name: 'lab23-r2', projectId: PROJECT_ID, computerId: COMPUTER_ID }),
 };
 writeFileSync(output, `${JSON.stringify(inputs, null, 2)}\n`, 'utf8');

@@ -386,8 +386,8 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
     });
   });
 
-  // Receipt v3 (issue #115 step 3): v2 + `basis`, with the policy hash as `policyVersion`. The Broker claims only the fixed synthetic.noop action today, so a v3 receipt can
-  // only be claimed for that action: basis `policy` is capped to the actions a policy may skip (none of which is synthetic.noop), hence refused here with basis_action.
+  // Receipt v3 (issue #115 step 3): v2 + `basis`, with the policy hash as `policyVersion`. The two-key claim is for the fixed synthetic.noop action only (task.start has its own
+  // three-key form, tested below): basis `policy` is capped to the actions a policy may skip (none of which is synthetic.noop or task.start), hence refused here with basis_action.
   describe('receipt v3: basis', () => {
     const POLICY_HASH = `sha256:${'ab'.repeat(32)}`;
     const v3 = (basis, extra = {}) => ({ v: 3, basis, policyVersion: POLICY_HASH, ...extra });
@@ -454,6 +454,129 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
       assert.deepEqual((await rawFencedClaim(s.pipeName, stranger, 'v3-stranger', v3('presence'))).reply, DENIED);
       assert.equal(lastReason(s), 'DENY=signature');
       assert.deepEqual(claimsOf(s), []);
+      assert.equal(await s.stop(), 0);
+    });
+  });
+
+  // guest.command / task.start (issue #115 follow-up, step A1; decision-log row 2026-10-31+broker-task-start). A claim with a third key, `action` (base64 of the UTF-8 JSON
+  // DTO), claims an approved guest.command receipt for task.start. The DTO is never trusted by itself: the Broker validates it, requires task.start with exactly { task },
+  // requires the receipt's own projectId / computerId, and lets Receipts.Validate compare the digest it recomputes with the one the Authority signed.
+  describe('claim: guest.command task.start (three-key frame)', () => {
+    const POLICY_HASH = `sha256:${'ab'.repeat(32)}`;
+    const TASK = 'build the project';
+    const TASK_SUCCESS = { ok: true, state: 'UNKNOWN', action: 'task.start' };
+    const dtoOf = (overrides = {}) => ({ action: 'task.start', projectId: 'project-1', computerId: COMPUTER_ID, args: { task: TASK }, ...overrides });
+    const frameOf = (prepared, dto) => ({ receipt: prepared.receipt, signature: prepared.signature, action: Buffer.from(typeof dto === 'string' ? dto : JSON.stringify(dto)).toString('base64') });
+    const taskReceipt = (s, name, overrides = {}) => s.session.prepare(name, { purpose: 'guest.command', action: 'task.start', args: { task: TASK }, ...overrides });
+    const denials = (s) => s.child.lines.filter((line) => line.startsWith('DENY='));
+    const sha = (digit) => `sha256:${digit.repeat(64)}`;
+
+    it('accepts an approved task.start receipt with its DTO, names task.start in the reply, records it as UNKNOWN and consumes the challenge (v2 and v3 presence)', async () => {
+      const s = await start();
+      assert.deepEqual(await s.session.send({ ...(await taskReceipt(s, 'ts-v2')), action: dtoOf() }), TASK_SUCCESS);
+      assert.deepEqual(await s.session.send({ ...(await taskReceipt(s, 'ts-v3', { v: 3, basis: 'presence', policyVersion: POLICY_HASH })), action: dtoOf() }), TASK_SUCCESS);
+      assert.deepEqual(claimsOf(s), ['ts-v2-op', 'ts-v3-op']);
+      assert.deepEqual(challengesOf(s).map((row) => row.state), ['consumed', 'consumed']);
+      assert.equal(s.child.lines.filter((line) => line === 'CLAIM=PERSISTED_UNKNOWN').length, 2);
+      assert.equal(withJournal(s, (db) => db.prepare('PRAGMA user_version').get().user_version), 3, 'no journal migration: the claim row does not record the action (the receipt does)');
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('an exact replay answers the recorded outcome and names task.start; the DTO is checked again, and a restart (which wipes the challenge) does not change that', async () => {
+      let s = await start();
+      const prepared = await taskReceipt(s, 'ts-replay');
+      assert.deepEqual(await s.session.send({ ...prepared, action: dtoOf() }), TASK_SUCCESS);
+      assert.deepEqual(await s.session.send({ ...prepared, action: dtoOf() }), { ...TASK_SUCCESS, replayed: true });
+      assert.deepEqual(await rawRequest(s.pipeName, frameOf(prepared, dtoOf({ args: { task: `${TASK}!` } }))), DENIED, 'a replay with another DTO is not exempt from the digest');
+      assert.equal(lastReason(s), 'DENY=action_digest');
+      assert.deepEqual(claimsOf(s), ['ts-replay-op']);
+      s = await s.restart();
+      assert.deepEqual(await s.session.send({ ...prepared, action: dtoOf() }), { ...TASK_SUCCESS, replayed: true });
+      assert.deepEqual(claimsOf(s), ['ts-replay-op']);
+      assert.equal(await s.stop(), 0);
+    });
+
+    // [label, receipt overrides, the whole request as a function of the prepared receipt, the reason word]. Every receipt below is signed by the pinned key and is
+    // consistent with its own DTO where it can be, so the refusal is the Broker's rule and not just a digest that happens to differ.
+    const NOT_A_JSON_OBJECT = ['[]', '"x"', 'null', 'true', '7'];
+    const UNSAFE_TASKS = [['a line break', 'a\nb'], ['a right-to-left override', 'a‮b'], ['a NUL', 'a\u0000b'], ['a bidi isolate', 'a⁦b']];
+    const refused = [
+      ['a task one byte different from the one the Authority signed', {}, (p) => frameOf(p, dtoOf({ args: { task: `${TASK}!` } })), 'action_digest'],
+      ['a DTO that names another project than the receipt', {}, (p) => frameOf(p, dtoOf({ projectId: 'project-2' })), 'action_mismatch'],
+      ['a DTO that names another computer than the receipt', {}, (p) => frameOf(p, dtoOf({ computerId: 'computer-2' })), 'action_mismatch'],
+      ['a DTO whose action is task.cancel while the receipt says task.start', {}, (p) => frameOf(p, dtoOf({ action: 'task.cancel' })), 'action_mismatch'],
+      ['task.cancel with a consistent receipt (a valid guest.command action this Broker does not claim)', { action: 'task.cancel', args: {} }, (p) => frameOf(p, dtoOf({ action: 'task.cancel', args: {} })), 'action_mismatch'],
+      ['workspace.inspect with a consistent receipt', { action: 'workspace.inspect', args: {} }, (p) => frameOf(p, dtoOf({ action: 'workspace.inspect', args: {} })), 'action_mismatch'],
+      ['synthetic.noop under guest.command with a consistent receipt', { action: 'synthetic.noop', args: {} }, (p) => frameOf(p, dtoOf({ action: 'synthetic.noop', args: {} })), 'action_mismatch'],
+      ['an extra arg next to task (receipt and DTO agree)', { args: { task: TASK, extra: 'x' } }, (p) => frameOf(p, dtoOf({ args: { task: TASK, extra: 'x' } })), 'action_invalid'],
+      ['a missing task (receipt and DTO agree)', { args: {} }, (p) => frameOf(p, dtoOf({ args: {} })), 'action_invalid'],
+      ['an arg that is not called task (receipt and DTO agree)', { args: { command: TASK } }, (p) => frameOf(p, dtoOf({ args: { command: TASK } })), 'action_invalid'],
+      ['a task that is a number (receipt and DTO agree)', { args: { task: 5 } }, (p) => frameOf(p, dtoOf({ args: { task: 5 } })), 'action_invalid'],
+      ['an empty task (receipt and DTO agree)', { args: { task: '' } }, (p) => frameOf(p, dtoOf({ args: { task: '' } })), 'action_invalid'],
+      ['a task of 257 bytes', { actionDigest: sha('1') }, (p) => frameOf(p, dtoOf({ args: { task: 'a'.repeat(257) } })), 'action_invalid'],
+      ...UNSAFE_TASKS.map(([label, task]) => [`a task with ${label}`, { actionDigest: sha('2') }, (p) => frameOf(p, dtoOf({ args: { task } })), 'action_invalid']),
+      ['a DTO with an unknown key', {}, (p) => frameOf(p, { ...dtoOf(), extra: 1 }), 'action_invalid'],
+      ['a DTO without args', {}, (p) => frameOf(p, { action: 'task.start', projectId: 'project-1', computerId: COMPUTER_ID }), 'action_invalid'],
+      ['a DTO with a duplicate key', {}, (p) => frameOf(p, `{"action":"task.start","action":"task.start","args":{"task":"${TASK}"},"computerId":"${COMPUTER_ID}","projectId":"project-1"}`), 'action_invalid'],
+      ['a DTO with an id outside the contract grammar', {}, (p) => frameOf(p, dtoOf({ projectId: 'has space' })), 'action_invalid'],
+      ...NOT_A_JSON_OBJECT.map((text) => [`a DTO that is ${text}`, {}, (p) => frameOf(p, text), 'action_invalid']),
+      ['a DTO that is not JSON', {}, (p) => frameOf(p, '{"action":'), 'action_invalid'],
+      ['an empty DTO', {}, (p) => frameOf(p, ''), 'action_invalid'],
+      ['an action that is not base64', {}, (p) => ({ ...frameOf(p, ''), action: 'not base64!' }), 'action_invalid'],
+      ['a broker.operation receipt in a three-key frame', { purpose: 'broker.operation', action: 'synthetic.noop', args: {} }, (p) => frameOf(p, dtoOf()), 'binding'],
+      ['a guest.command receipt in a two-key frame', {}, (p) => ({ receipt: p.receipt, signature: p.signature }), 'binding'],
+      ['a policy-basis task.start receipt (a policy may never skip task.start)', { v: 3, basis: 'policy', policyVersion: POLICY_HASH }, (p) => frameOf(p, dtoOf()), 'basis_action'],
+      ['a fourth key', {}, (p) => ({ ...frameOf(p, dtoOf()), extra: 1 }), 'request'],
+      ['an action without a signature', {}, (p) => ({ receipt: p.receipt, action: frameOf(p, dtoOf()).action }), 'request'],
+      ['an action that is not a string', {}, (p) => ({ ...frameOf(p, dtoOf()), action: dtoOf() }), 'request'],
+    ];
+
+    it('refuses every hostile or inconsistent form with a fixed reason, without a claim and without spending the challenge', async () => {
+      const s = await start();
+      for (const [index, [label, overrides, build, reason]] of refused.entries()) {
+        const prepared = await taskReceipt(s, `ts-refused-${index}`, overrides);
+        const before = denials(s).length;
+        assert.deepEqual(await rawRequest(s.pipeName, build(prepared)), DENIED, label);
+        assert.deepEqual(denials(s).slice(before), [`DENY=${reason}`], label);
+      }
+      assert.deepEqual(claimsOf(s), []);
+      assert.deepEqual(challengesOf(s).map((row) => row.state), refused.map(() => 'issued'));
+      assert.equal(s.child.lines.some((line) => line.includes(TASK)), false, 'no request text reaches the log');
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('a signature from another key, or a receipt edited after signing, is refused before the DTO is read (signature)', async () => {
+      const s = await start();
+      const prepared = await taskReceipt(s, 'ts-signature');
+      const stranger = createTestAuthority({ kid: authority.kid });
+      const bytes = Buffer.from(prepared.receipt, 'base64');
+      assert.deepEqual(await rawRequest(s.pipeName, { ...frameOf(prepared, dtoOf()), signature: stranger.sign(bytes) }), DENIED);
+      assert.equal(lastReason(s), 'DENY=signature');
+      assert.deepEqual(await rawRequest(s.pipeName, { ...frameOf(prepared, dtoOf()), receipt: Buffer.from(bytes.toString('utf8').replace('ts-signature-op', 'ts-signature-ox')).toString('base64') }), DENIED);
+      assert.equal(lastReason(s), 'DENY=signature');
+      assert.deepEqual(claimsOf(s), []);
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('the request frame limit is 4096 bytes: a task.start claim above 2 KiB is served, a body of exactly 4096 bytes is read, one more byte is refused before the peer check', async () => {
+      const s = await start();
+      const id = (letter) => letter.repeat(64);
+      const task = 'a'.repeat(256);
+      const widest = { v: 3, basis: 'presence', policyVersion: POLICY_HASH, operationId: id('o'), idempotencyKey: id('i'), projectId: id('p'), computerId: id('c'), approverKeyId: id('a') };
+      const prepared = await s.session.prepare('ts-long', { purpose: 'guest.command', action: 'task.start', args: { task }, ...widest });
+      const frame = frameOf(prepared, { action: 'task.start', projectId: id('p'), computerId: id('c'), args: { task } });
+      const size = Buffer.byteLength(JSON.stringify(frame));
+      assert.ok(size > 2048 && size <= 4096, `a ${size}-byte frame`);
+      assert.deepEqual(await rawRequest(s.pipeName, frame), TASK_SUCCESS);
+
+      const padded = (bytes) => JSON.stringify({ pad: 'A'.repeat(bytes - Buffer.byteLength(JSON.stringify({ pad: '' }))) });
+      const peers = () => s.child.lines.filter((line) => line.startsWith('PEER=')).length;
+      const beforeExact = peers();
+      assert.deepEqual(await rawRequest(s.pipeName, padded(4096)), DENIED, 'read in full, then refused as a request');
+      assert.equal(peers(), beforeExact + 1, 'a 4096-byte body reaches the peer check');
+      await rawRequest(s.pipeName, padded(4097)).catch(() => null); // the Broker may close the pipe before the body is fully written: a denial or a closed write
+      assert.equal(peers(), beforeExact + 1, 'a 4097-byte body is refused while it is read');
+      assert.deepEqual((await s.session.claim('after-oversize')).result, SUCCESS, 'the Broker still serves');
       assert.equal(await s.stop(), 0);
     });
   });

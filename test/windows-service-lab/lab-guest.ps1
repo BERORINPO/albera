@@ -115,7 +115,7 @@ function Invoke-ProbeAdmin([string[]]$probeArgs) { (& $Shim @probeArgs) | Conver
 function New-HelperInput([string]$tag, $request, [hashtable]$expect) {
   $path = "$LabRoot\inputs\$tag.stdin.json"
   $body = [ordered]@{ pipeName = $Pipe }
-  if ($request.fence) { $body.fence = [string]$request.fence } elseif ($request.inspect) { $body.inspect = [string]$request.inspect } else { $body.receipt = $request.receipt; $body.signature = $request.signature }
+  if ($request.fence) { $body.fence = [string]$request.fence } elseif ($request.inspect) { $body.inspect = [string]$request.inspect } else { $body.receipt = $request.receipt; $body.signature = $request.signature; if ($request.action) { $body.action = $request.action } }
   $body.timeoutMs = 10000; $body.expect = $expect
   ($body | ConvertTo-Json -Depth 4 -Compress) | Set-Content -Encoding Ascii -Path $path
   $path
@@ -360,6 +360,24 @@ Step 'b_positive' 'Control Plane helper in service mode: fence, signed v2 receip
   $claims = Get-ClaimCount $Db1
   $ok = ($flow.fence.ok -eq $true) -and ($flow.fence.brokerEpoch -ge 1) -and ($flow.fence.leaseGeneration -eq 7) -and ($res.ok -eq $true) -and ($res.state -eq 'UNKNOWN') -and ($res.action -eq 'synthetic.noop') -and (-not $res.replayed) -and ($claims -eq 1) -and $stillRunning
   Verdict $ok @("fence: $($flow.fence | ConvertTo-Json -Compress)", "helper result: $($res | ConvertTo-Json -Compress)", "journal claims=$claims", "service still RUNNING after the request: $stillRunning")
+}
+
+# ---- Broker run 2b: a guest.command task.start claim (A1 of the #115 follow-up) on journal 1, after b_positive's one claim
+Step 'b2_task_start' 'Real service: a task.start receipt with its action DTO is claimed (action task.start); the same digest with a DTO one character off is denied; one more journal claim' {
+  Start-LabBroker 'run2b' $Db1 | Out-Null
+  $override = @{ purpose = 'guest.command'; action = 'task.start'; actionDigest = $inputs.taskStart.actionDigest }
+  $f1 = Invoke-HelperAs $C 'helper-ts-fence1' @{ fence = $Authority.computerId } @{ serviceName = $B }
+  $good = New-LabReceipt 'lab-ts-ok' $f1 $override
+  $good.action = $inputs.taskStart.action
+  $res = Invoke-HelperAs $C 'helper-ts-ok' $good @{ serviceName = $B }
+  $f2 = Invoke-HelperAs $C 'helper-ts-fence2' @{ fence = $Authority.computerId } @{ serviceName = $B }
+  $bad = New-LabReceipt 'lab-ts-bad' $f2 $override
+  $bad.action = $inputs.taskStart.tamperedAction
+  $tampered = Invoke-HelperAs $C 'helper-ts-bad' $bad @{ serviceName = $B }
+  Stop-LabService $B
+  $claims = Get-ClaimCount $Db1
+  $ok = ($res.ok -eq $true) -and ($res.state -eq 'UNKNOWN') -and ($res.action -eq 'task.start') -and (-not $res.replayed) -and ($tampered.ok -eq $false) -and ($tampered.code -eq 'denied') -and ($claims -eq 2)
+  Verdict $ok @("task.start claim: $($res | ConvertTo-Json -Compress)", "DTO one character off: $($tampered | ConvertTo-Json -Compress)", "journal claims=$claims (expected 2: b_positive + this one)")
 }
 
 # ---- Broker run 3: SCM query rights, OpenProcess across accounts and the image-hash variant (e) on journal 2

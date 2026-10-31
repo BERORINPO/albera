@@ -58,7 +58,7 @@ function makeWorldOn({ options, journal, approveAfterPolls = 2, receiptTtl = 120
       const parsed = JSON.parse(Buffer.from(args.receipt, 'base64').toString('utf8'));
       if (parsed.brokerEpoch !== world.epoch) return DENIED;
       const replayed = record(args);
-      return { ok: true, state: 'UNKNOWN', action: 'synthetic.noop', ...(replayed ? { replayed: true } : {}) };
+      return { ok: true, state: 'UNKNOWN', action: args.action?.action ?? 'synthetic.noop', ...(replayed ? { replayed: true } : {}) };
     },
     async inspect(args) {
       world.calls.push('inspect');
@@ -162,6 +162,43 @@ function defineFlowSuite(label, newJournal) {
         assert.equal(world.claims[0].receipt, world.claims[1].receipt, 'the exact same receipt bytes');
         assert.equal(world.claims[0].signature, world.claims[1].signature);
         assert.equal(world.count('submit'), 1, 'no new approval');
+      });
+    });
+
+    describe('approved operation flow: guest.command task.start (issue #115 follow-up, step A1)', () => {
+      const TASK = Object.freeze({ operationId: 'op-1', purpose: 'guest.command', action: { action: 'task.start', projectId: 'project-1', computerId: 'computer-1', args: { task: 'build the project' } } });
+      /** The Authority signs the guest.command receipt for the submitted DTO (the fixture's default is the synthetic broker.operation one). */
+      const signTaskReceipts = (world) => {
+        const original = world.receiptFor;
+        world.receiptFor = (approvalId, fields, overrides) => original(approvalId, fields, { purpose: fields.purpose, action: fields.action.action, args: fields.action.args, ...overrides });
+      };
+
+      it('claims with the DTO that was submitted next to the receipt and the signature, and the claim names task.start', async () => {
+        const world = makeWorld();
+        signTaskReceipts(world);
+        const result = await world.flow.run(TASK);
+        assert.deepEqual([result.status, result.phase, result.brokerState], ['claimed', 'CLAIMED', 'UNKNOWN']);
+        assert.deepEqual(world.calls, ['fence', 'submit', 'status', 'status', 'claim']);
+        assert.deepEqual(Object.keys(world.claims[0]).sort(), ['action', 'receipt', 'signature']);
+        assert.deepEqual(world.claims[0].action, TASK.action);
+        assert.equal(world.submissions[0].purpose, 'guest.command');
+      });
+
+      it('a claim whose reply was lost is sent again with the same DTO, receipt and signature (an exact duplicate for the Broker)', async () => {
+        const world = makeWorld();
+        signTaskReceipts(world);
+        world.script.claim.push((w, args) => { w.record(args); return TIMEOUT; });
+        world.script.inspect.push(DENIED);
+        const result = await world.flow.run(TASK);
+        assert.deepEqual([result.status, result.replayed], ['claimed', true]);
+        assert.equal(world.claims.length, 2);
+        assert.deepEqual(world.claims[1], world.claims[0]);
+      });
+
+      it('a broker.operation claim is still exactly { receipt, signature }: no action key', async () => {
+        const world = makeWorld();
+        assert.equal((await world.flow.run(REQUEST)).status, 'claimed');
+        assert.deepEqual(Object.keys(world.claims[0]).sort(), ['receipt', 'signature']);
       });
     });
 

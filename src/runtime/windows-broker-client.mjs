@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { captureExecutableIdentity } from './executable-identity.mjs';
+import { ActionDigestError, validateActionDto } from './broker-contract/action-digest.mjs';
 
 // Thin Node client for the Windows Host Broker Named Pipe (ADR-002, Proposed / NOT VERIFIED).
 // Wire source (read-only reference): src/runtime/windows-broker/Program.cs. // arch-allow: the single intended Broker reference; this file is the only client
@@ -15,8 +16,11 @@ import { captureExecutableIdentity } from './executable-identity.mjs';
 // PID and session 0), optionally the server image SHA-256. Only then does it send the one frame and report the Broker's reply.
 //
 // Wire (helper <-> Broker, one request per connection, byte mode): [int32 little-endian length][UTF-8 JSON body] each way.
-//   claim request   : { "receipt": <base64>, "signature": <base64> }   exactly these two keys; the receipt is a v2 receipt signed elsewhere (src/runtime/broker-contract)
-//   claim success   : { "ok": true, "state": "UNKNOWN", "action": "synthetic.noop" }, plus "replayed": true for an exact duplicate (the recorded outcome, no second claim)
+//   claim request   : { "receipt": <base64>, "signature": <base64> }   exactly these two keys for a broker.operation / synthetic.noop receipt signed elsewhere (src/runtime/broker-contract)
+//                     { "receipt", "signature", "action": <base64> }   for a guest.command / task.start receipt: `action` is the UTF-8 JSON of the action DTO (canonical form, sorted keys). The
+//                     Broker does not trust it; it recomputes the digest from it and compares it with the digest the Authority signed.
+//   claim success   : { "ok": true, "state": "UNKNOWN", "action": "synthetic.noop" | "task.start" }, plus "replayed": true for an exact duplicate (the recorded outcome, no second claim).
+//                     The reply names the action that was claimed; the client checks it is the one it sent.
 //   fence request   : { "fence": { "computerId": <id> } }               the Broker issues a single-use challenge a receipt must name
 //   fence success   : { "ok": true, "brokerEpoch": n, "leaseGeneration": n, "leaseId": <id>, "brokerChallenge": <22 chars> }   `leaseId` is the lease the Broker is configured for: the Control
 //                     Plane puts it into the Authority submit request. (Until the pipe client helper relays it the field is absent from the result; see validateFenceResponse.)
@@ -30,9 +34,9 @@ import { captureExecutableIdentity } from './executable-identity.mjs';
 // SERVICE IDENTITY NOT VERIFIED: the SCM PID, `NT SERVICE\AlberaHostBroker` owner and session 0 path exists but has only run
 // against test servers; it needs the approved lab (#23) before any caller relies on it. Do not wire this client until then.
 
-/** ADR-002: bounded length-prefixed frame, 2 KiB maximum request message. The response is far smaller. */
+/** ADR-002: bounded length-prefixed frame, 4 KiB maximum request message (2 KiB until a claim could carry an action DTO). The response is far smaller. */
 export const BROKER_CLIENT_LIMITS = Object.freeze({
-  maxRequestBytes: 2048,
+  maxRequestBytes: 4096,
   maxResponseBytes: 256,
   defaultTimeoutMs: 5000,
   minTimeoutMs: 100,
@@ -73,7 +77,7 @@ export const BROKER_CLIENT_PRESEND_CODES = Object.freeze([
 const HELPER_EXIT_CODES = Object.freeze([0, 64, 70]);
 const HELPER_FAILURE_CODES = Object.freeze(BROKER_CLIENT_ERROR_CODES.filter((code) => !['invalid_pipe_name', 'request_too_large', 'unsupported_platform', 'helper_unavailable'].includes(code)));
 const BROKER_SUCCESS_STATES = Object.freeze(['UNKNOWN']);
-const BROKER_SUCCESS_ACTIONS = Object.freeze(['synthetic.noop', 'synthetic.inspect']);
+const BROKER_SUCCESS_ACTIONS = Object.freeze(['synthetic.noop', 'task.start', 'synthetic.inspect']);
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u; // the contract's id grammar (broker-contract/action-digest.mjs)
 const CHALLENGE_PATTERN = /^[A-Za-z0-9_-]{21}[AQgw]$/u; // 128 bits, unpadded base64url, canonical form
 const PIPE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
@@ -112,9 +116,21 @@ function requireBase64(value) {
   return value;
 }
 
-/** The JSON request body: exactly `receipt` and `signature`, size-bounded. Pure. @returns {Buffer} */
-export function buildBrokerRequestBody({ receipt, signature } = {}) {
-  const body = Buffer.from(JSON.stringify({ receipt: requireBase64(receipt), signature: requireBase64(signature) }), 'utf8');
+/**
+ * The action DTO of a guest.command claim as the wire carries it: base64 of the canonical JSON (sorted keys) of the DTO the contract validates. A DTO the contract refuses never
+ * leaves this process. The Broker applies its own, narrower rules (task.start with exactly { task }); this is not a second copy of them.
+ */
+function encodeActionDto(action) {
+  let dto;
+  try { dto = validateActionDto('guest.command', action); } catch (error) { throw error instanceof ActionDigestError ? new BrokerClientError('invalid_request') : error; }
+  const args = Object.fromEntries(Object.keys(dto.args).sort().map((name) => [name, dto.args[name]]));
+  return Buffer.from(JSON.stringify({ action: dto.action, args, computerId: dto.computerId, projectId: dto.projectId }), 'utf8').toString('base64');
+}
+
+/** The JSON request body: `receipt` and `signature`, plus `action` for a guest.command receipt; size-bounded. Pure. @returns {Buffer} */
+export function buildBrokerRequestBody({ receipt, signature, action } = {}) {
+  const fields = { receipt: requireBase64(receipt), signature: requireBase64(signature), ...(action === undefined ? {} : { action: encodeActionDto(action) }) };
+  const body = Buffer.from(JSON.stringify(fields), 'utf8');
   if (body.length > BROKER_CLIENT_LIMITS.maxRequestBytes) throw new BrokerClientError('request_too_large');
   return body;
 }
@@ -262,16 +278,23 @@ function requireId(value) {
 }
 
 /**
- * Send one signed v2 receipt to an already running Broker pipe and return the validated result.
+ * Send one signed receipt (v2 or v3) to an already running Broker pipe and return the validated result.
  * The helper verifies the pipe server against `expect` before anything is written. Never throws for operational
  * failures; returns `{ ok: false, code }` with an allowlisted code instead (see BROKER_CLIENT_PRESEND_CODES).
- * @param {{ pipeName: string, receipt: string, signature: string, expect: { ownerSid?: string, pid?: number, serviceName?: string, imageSha256?: string }, timeoutMs?: number,
+ * @param {{ pipeName: string, receipt: string, signature: string, action?: object, expect: { ownerSid?: string, pid?: number, serviceName?: string, imageSha256?: string }, timeoutMs?: number,
  *   helperPath?: string, spawnImpl?: typeof spawn }} options
- *   `helperPath` and `spawnImpl` are test seams. A custom helper still needs a `<helperPath>.manifest.json` with its SHA-256.
+ *   `action` is the action DTO `{ action, projectId, computerId, args }` of a guest.command receipt (task.start); without it the claim is the broker.operation / synthetic.noop one.
+ *   The reply must name the action that was sent. `helperPath` and `spawnImpl` are test seams. A custom helper still needs a `<helperPath>.manifest.json` with its SHA-256.
  */
 export function sendBrokerRequest(options = {}) {
-  const { receipt, signature } = options;
-  return exchange(options, () => { buildBrokerRequestBody({ receipt, signature }); return { receipt, signature }; }, expecting('synthetic.noop'));
+  const { receipt, signature, action } = options; // each read once: what is validated is what is sent, and what the reply must name
+  let claimed = 'synthetic.noop';
+  const prepare = () => {
+    const fields = JSON.parse(buildBrokerRequestBody({ receipt, signature, action }).toString('utf8'));
+    if (fields.action !== undefined) claimed = JSON.parse(Buffer.from(fields.action, 'base64').toString('utf8')).action;
+    return fields;
+  };
+  return exchange(options, prepare, (value) => expecting(claimed)(value));
 }
 
 /**

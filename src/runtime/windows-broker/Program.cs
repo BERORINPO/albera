@@ -10,7 +10,7 @@ using Microsoft.Win32.SafeHandles;
 
 internal static partial class Program
 {
-    private const int MaxFrameLength = 2048; // ADR-002: 2 KiB maximum protocol message
+    private const int MaxFrameLength = 4096; // ADR-002: 4 KiB maximum request message (2 KiB until a task.start claim carried its action DTO)
     private const string Denied = "{\"ok\":false,\"code\":\"denied\"}";
 
     // Fixed process exit codes (ADR-002 negative test matrix). 0 = served one request, 64 = bad usage.
