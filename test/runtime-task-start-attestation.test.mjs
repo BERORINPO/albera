@@ -452,8 +452,18 @@ test('env-io.ps1 checkpoint op leaves the VM\'s CheckpointType as it found it (#
   assert.equal((body.match(/\$typeNotSet = \$true/gu) ?? []).length, 1, 'only the read-back sets it');
   assert.ok(at("if ($typeNotSet) { Abort 'provider_unavailable' }") > at('finally') && at('if ($typeNotSet)') < at('$snapshots.Count -ne 1'), 'a type that did not take is a failure, judged after the put-back and before any success');
   // The comment that explains what is NOT observed must stay with the op (a reader of the script must see it), and the script still never lists snapshots.
-  assert.match(scriptText, /the checkpoint TYPE is not read back from the snapshot/u);
+  assert.match(scriptText, /the snapshot's SnapshotType is NOT used/u);
   assert.match(scriptText, /SnapshotType Standard for a ProductionOnly checkpoint/u);
+});
+
+test('env-io.ps1 checkpoint op observes that the new checkpoint holds no saved memory (#133 b): the snapshot State is Off, else no attestation', () => {
+  const body = functionBody('Invoke-Checkpoint');
+  const at = (needle) => { const n = body.indexOf(needle); assert.ok(n >= 0, needle); return n; };
+  // Real host 2026-11-01, VM running: a Standard checkpoint records State Saved, a ProductionOnly one State Off (SnapshotType is Standard for both).
+  assert.ok(at("if ([string]$snapshots[0].State -ne 'Off') { Abort 'provider_state_unknown' }") > at('$snapshots.Count -ne 1'), 'judged on the one snapshot that came back ...');
+  assert.ok(at("[string]$snapshots[0].State -ne 'Off'") < at('$after = Get-VM'), '... before any success is reported');
+  assert.equal((body.match(/\$snapshots\[0\]\.State/gu) ?? []).length, 1);
+  assert.match(scriptText, /snapshot State Saved/u, 'the comment says what the signal is and where it was observed');
 });
 
 test('env-io.ps1 checkpoint op: the reply carries the lowercase snapshot id and the VM id, and every failure is a fixed code', () => {
