@@ -1,11 +1,21 @@
 # Runtime Architecture Implementation Progress
 
-**Updated:** 2026-10-28
-**Working branch:** `codex/runtime-architecture-alignment`
-**Runtime source/test HEAD audited:** `9b8174759421fe1d176dadd9c70471487ea241fc` (adds the ADR-002 Mock IPC contract tests; runtime production code is unchanged); PR #19 is stacked on PR #17 head `8a829d116e39ca10f273594f409f38315f20570f`. Analysis is in `runtime-gap-analysis.md`.
+**Updated:** 2026-10-31 (newest entries are at the end of this file)
+**Working branch:** one branch per item from `origin/main` (`albera-goal` skill). Until 2026-10-28 the work was stacked on `codex/runtime-architecture-alignment`.
+**Runtime source/test HEAD audited (2026-10-28):** `9b8174759421fe1d176dadd9c70471487ea241fc` (adds the ADR-002 Mock IPC contract tests; runtime production code is unchanged); PR #19 is stacked on PR #17 head `8a829d116e39ca10f273594f409f38315f20570f`. Analysis is in `runtime-gap-analysis.md`.
 **Architecture source:** PR #18 head `b7684740322bda5a4e2d1233299bca251d95ed6c` (Proposed, independent branch; its absence from the Runtime branch is intentional).
 
 This file is the continuation ledger. `VERIFIED` refers only to the stated evidence and scope; it does not imply that a Proposed ADR has been accepted.
+
+## Waiting on Yosuke
+
+Cards use the format in the `albera-goal` skill. Delete a card once it is done.
+
+### 承認役サービスの導入と初回の本物の承認 (2026-10-30 に株主判断で見送り中)
+- やること: `docs/architecture/approver-app.md` の「Enrol and first approval」手順 4〜7。手順 2 の `enroll` と手順 3 の `enroll --check` (`self-check: OK`) は 2026-10-31 に済んでいる
+- 所要: 未見積もり (承認役サービスをホストに入れるので管理者権限が要る)
+- これで進むもの: 初回の本物の承認 (ledger 末尾の 2026-10-31 の項 "Still open")
+- 取り消し: できる (サービスを止めて削除する)
 
 ## Checkpoints
 
