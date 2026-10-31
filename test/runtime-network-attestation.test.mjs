@@ -230,10 +230,12 @@ async function mockWorld({ ttl } = {}) {
 }
 const expectedFor = (vmId, overrides = {}) => ({ computerId: 'pc-01', vmId, generation: 1, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 5, ...overrides });
 
-test('mock: a freshly created environment is "present" (create leaves a disconnected default adapter); set to no adapters it is "none"', async () => {
+test('mock: a freshly created environment is "none" (create removes the default adapter); once an adapter is attached it is "present"', async () => {
   const { provider, signer } = await mockWorld();
   const first = await provider.attestNetwork(op('inspect'), { leaseGeneration: 5 });
-  assert.equal(first.attestation.network, 'present');
+  assert.equal(first.attestation.network, 'none');
+  provider.setNetworkAdapters('pc-01', [A(false, null)]);
+  assert.equal((await provider.attestNetwork(op('inspect'), { leaseGeneration: 5 })).attestation.network, 'present');
   provider.setNetworkAdapters('pc-01', []);
   const second = await provider.attestNetwork(op('inspect'), { leaseGeneration: 5 });
   assert.equal(second.attestation.network, 'none');
@@ -486,6 +488,17 @@ test('env-io.ps1: a fixed read-only "network" method, ASCII only, with no cmdlet
   assert.match(body, /Get-VMNetworkAdapter -VM \$vm/);
   assert.match(body, /catch \{ \$adapters = \$null \}/, 'an unreadable adapter list is null, never an empty list');
   assert.match(body, /switchType = \$type/);
+});
+
+test('env-io.ps1 create: removes every default network adapter, re-reads and fails the create if one remains; a disconnected adapter is no longer left behind', () => {
+  const body = scriptText.slice(scriptText.indexOf('function Invoke-Create'), scriptText.indexOf('\nfunction Invoke-Start'));
+  assert.match(body, /Get-VMNetworkAdapter -VM \$vm \| Remove-VMNetworkAdapter/);
+  assert.match(body, /if \(@\(Get-VMNetworkAdapter -VM \(Get-VM -Name \$Req\.vmName\)\)\.Count -ne 0\) \{ throw /, 'the adapters are re-read and a remaining one throws');
+  assert.ok(body.indexOf('Remove-VMNetworkAdapter') < body.indexOf('Set-VMProcessor'), 'removed before the rest of the setup');
+  assert.ok(!/Disconnect-VMNetworkAdapter/.test(scriptText), 'no adapter is merely disconnected');
+  const afterThrow = body.slice(body.indexOf('throw '));
+  assert.ok(afterThrow.indexOf('catch') > 0 && /Remove-VM -VM \$left/.test(afterThrow), 'the throw lands in the catch that rolls the half-made VM back');
+  assert.ok(!/Invoke-Expression|\biex\b|Start-Process|&\s*\$|\[scriptblock\]/i.test(body), 'no dynamic command');
 });
 
 // ---- review fixes: project from the Broker's own record, leaseId binding, clock after the signature check ----
