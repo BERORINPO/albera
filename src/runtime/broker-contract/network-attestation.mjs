@@ -1,6 +1,6 @@
 // Network attestation v1 (docs/architecture/approval-tiers.md, "Egress is decided by the Broker, not the request"; issue #115 step 2).
 // The Broker reads an environment's effective network configuration and signs a short statement about it. The consumer is the Approval Authority (step 3b): before it signs a
-// no-person receipt for environment.start / environment.create it checks this statement (the C# twin is NetworkAttestation.cs, pinned by the same vectors). Signing goes through a
+// no-person receipt for environment.start (only start is attested; environment.create never is) it checks this statement (the C# twin is NetworkAttestation.cs, pinned by the same vectors). Signing goes through a
 // signer PORT (`{ keyId, sign(bytes) }`): the production scheme is ECDSA P-256 / SHA-256 over the canonical bytes (ecdsa-attestation-signer.mjs, key from host configuration);
 // tests also use a Fake. Pure: no I/O, no ambient clock (node:crypto is used for hashing only).
 //

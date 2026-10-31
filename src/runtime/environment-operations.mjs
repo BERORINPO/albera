@@ -1,7 +1,35 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { computeActionDigest, validateActionDto } from './broker-contract/action-digest.mjs';
+import { isVmId } from './broker-contract/network-attestation.mjs';
 import { EnvironmentProviderError, validateEnvironmentOperation, validateObservedEnvironment } from './environment-provider.mjs';
 
 const TARGET_STATE = Object.freeze({ create: 'off', start: 'running', stop: 'off', destroy: 'missing', retire: 'retired', purge: 'missing' });
+
+/**
+ * The start operation an approval receipt allows (#128). `verified` is what the Broker already checked: `receipt` as validateReceipt returned it (signature and binding verified outside this
+ * module) and `dto`, the action the receipt names (its digest is recomputed here). The VM id is taken from that action (`args.vmId`), never from the Control Plane's operation:
+ *  - a receipt with basis policy for environment.start is an ATTESTED start (a Broker attestation named a VM and nobody was asked): the action MUST name a well-formed VM, otherwise
+ *    `attested_start_requires_vm_id`; the operation then carries that `vmId` and `attestedPolicy: true`, so a provider refuses it without the VM id and re-reads the network before it starts;
+ *  - a start a person approved (basis presence) carries the VM id only when its action names one, and is otherwise unchanged;
+ *  - a `vmId` or `attestedPolicy` that the Control Plane put on `operation` is only compared (a different vmId is `operation_conflict`) or dropped: it is never the source.
+ * Anything else that is not this receipt's own start (another action, computer, project, DTO or digest) is `operation_conflict`. Not applied in every refusal.
+ * Nothing calls this on a real Broker yet (the Windows Broker only records claims); it is the binding the executing side must go through when receipts drive real starts.
+ */
+export function bindStartToReceipt(operation, verified) {
+  const refuse = (code = 'operation_conflict') => new EnvironmentProviderError(code, { outcome: 'not_applied' });
+  const { receipt, dto: submitted } = verified ?? {};
+  let dto;
+  try { dto = validateActionDto(receipt?.purpose, submitted); } catch { throw refuse(); }
+  if (operation === null || typeof operation !== 'object' || operation.action !== 'start' || receipt.action !== 'environment.start' || dto.action !== 'environment.start'
+    || receipt.actionDigest !== computeActionDigest(receipt.purpose, dto) || receipt.projectId !== dto.projectId || receipt.computerId !== dto.computerId
+    || operation.projectId !== dto.projectId || operation.computerId !== dto.computerId) throw refuse();
+  const named = dto.args.vmId;
+  const attestedPolicy = receipt.basis === 'policy';
+  if (attestedPolicy && !isVmId(named)) throw refuse('attested_start_requires_vm_id');
+  if (operation.vmId !== undefined && operation.vmId !== named) throw refuse();
+  const { vmId: _fromControlPlane, attestedPolicy: _marker, ...rest } = operation;
+  return validateEnvironmentOperation({ ...rest, ...(named === undefined ? {} : { vmId: named }), ...(attestedPolicy ? { attestedPolicy: true } : {}) });
+}
 
 /**
  * In-memory operation coordinator for deterministic contract tests.

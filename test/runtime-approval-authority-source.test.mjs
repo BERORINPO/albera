@@ -190,7 +190,12 @@ test('the attested path (#115 step 3b): only for an action the policy in force c
   const core = code['AuthorityCore.cs'];
   const submit = core.slice(core.indexOf('policy.With(current =>'), core.indexOf('return result.Status switch'));
   assert.match(submit, /if \(current\.CanSkipWithAttestation\(request\.Dto\.Action\) && ProvenBy\(request, attestation\) is \{ \} proven\)/u, 'the policy decides first; the attestation is only looked at for an attested action');
-  assert.match(submit, /proven\.ExpiresAt - now >= MinAttestedReceiptSeconds \? SignByPolicy\(entry, current\.Hash\(\), now, proven\) : entry/u, 'too little left of the attestation means the entry stays pending');
+  assert.match(submit, /proven\.ExpiresAt - now >= MinAttestedReceiptSeconds \? SignAttested\(entry, current\.Hash\(\), now, proven\) : entry/u, 'too little left of the attestation means the entry stays pending');
+  // #128: an attested request that cannot be signed stays the pending entry (a person is asked); only the plain policy site above may answer authority_unavailable.
+  const attested = core.slice(core.indexOf('private PendingEntry SignAttested'), core.indexOf('private static string? CodeFor'));
+  assert.match(attested, /PendingEntry\? signed = SignByPolicy\(entry, policyHash, now, proven\);\s*if \(signed is not null\) return signed;[^]*return entry;/u, 'SignAttested returns the signed entry, or the pending one it was given');
+  assert.equal(/return null/u.test(attested), false, 'the attested path never returns null (null is authority_unavailable)');
+  assert.equal(/SignByPolicy\(entry, current\.Hash\(\), now, proven\)/u.test(submit), false, 'the attested site goes through SignAttested only');
   const proven = core.slice(core.indexOf('private Proven? ProvenBy'), core.indexOf('private Proven? Refused'));
   assert.match(proven, /request\.Dto\.Action == TaskStartAction \? ProvenTaskStart\(request, attestation, vmId, generation\) : ProvenNone\(request, attestation, vmId, generation\)/u, 'task.start is judged by the task-start kind, every other attested action by the network kind: never the other way round');
   assert.match(proven, /attestationKey is null\) return Refused\("no_key_pinned"\)/u, 'no pinned key: never accepted');

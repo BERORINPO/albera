@@ -187,7 +187,7 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$",
       "maxLength": 71,
-      "description": "OPTIONAL. Digest of the Broker network attestation (network-attestation.mjs) a no-person rule relied on. Present exactly when basis is \"policy\" and the action is environment.start or environment.create (code \"attestation\" otherwise); absent in every other receipt. Checked for shape and presence only."
+      "description": "OPTIONAL. Digest of the Broker attestation a no-person rule relied on (network-attestation.mjs for environment.start, task-start-attestation.mjs for task.start). Present exactly when basis is \"policy\" and the action is environment.start or task.start; never for environment.create (code \"attestation\" otherwise); absent in every other receipt. Checked for shape and presence only."
     }
   }
 }

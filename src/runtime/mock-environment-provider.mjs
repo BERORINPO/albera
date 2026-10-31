@@ -190,6 +190,8 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     if (action === 'start' && this.#record(operation.computerId)) throw new EnvironmentProviderError('environment_retired', { outcome: 'not_applied' });
     // The approval named a VM (start only): it is that very VM, or nothing is started.
     if (operation.vmId !== undefined && operation.vmId !== computer.vmId) throw new EnvironmentProviderError('operation_conflict', { outcome: 'not_applied' });
+    // An attested-policy start (nobody was asked because a Broker attestation said "no network"): the adapters are read again right now. Anything but "none" refuses it (#128).
+    if (action === 'start' && operation.attestedPolicy === true && classifyNetworkAdapters(computer.adapters) !== 'none') throw new EnvironmentProviderError('network_not_isolated', { outcome: 'not_applied' });
     computer.state = state;
     const observed = this.#observation(operation.computerId, computer);
     this.#maybeFail(action, 'after');

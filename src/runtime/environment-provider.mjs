@@ -19,7 +19,7 @@ const CAPABILITY_SET = new Set(ENVIRONMENT_CAPABILITIES);
 const SPEC_KEYS = new Set(['projectId', 'kind', 'os', 'architecture', 'imageDigest', 'capabilities', 'networkProfileId', 'securityProfileId', 'resources']);
 const CAPACITY_KEYS = new Set(['os', 'architecture', 'capabilities', 'networkProfileIds', 'securityProfileIds', 'resources']);
 const QUOTA_KEYS = new Set(['maxComputers', 'vcpu', 'memoryMiB', 'diskGiB']);
-const OPERATION_KEYS = new Set(['operationId', 'idempotencyKey', 'subjectId', 'projectId', 'taskId', 'runId', 'computerId', 'providerId', 'leaseId', 'expectedGeneration', 'policyVersion', 'action', 'spec', 'vmId']);
+const OPERATION_KEYS = new Set(['operationId', 'idempotencyKey', 'subjectId', 'projectId', 'taskId', 'runId', 'computerId', 'providerId', 'leaseId', 'expectedGeneration', 'policyVersion', 'action', 'spec', 'vmId', 'attestedPolicy']);
 
 export class EnvironmentProviderError extends Error {
   constructor(code, { outcome = 'unknown' } = {}) {
@@ -138,6 +138,10 @@ export function validateEnvironmentOperation(operation) {
   // `vmId` (start only): the Hyper-V VM id the approval named (the `vmId` arg of the approved action). The Broker refuses to start any VM whose own id differs, so an approval
   // given for VM A (or a network attestation made for it) can never start VM B that took its computer id, project, lease and generation. Optional: a start approved without one is as before.
   if (Object.hasOwn(operation, 'vmId') && (operation.action !== 'start' || !isVmId(operation.vmId))) throw new TypeError('invalid_environment_operation');
+  // `attestedPolicy` (start only, #128): this start runs under a receipt with basis policy, that is, nobody was asked because a Broker attestation named a VM. Exactly `true`, and then the
+  // operation MUST name the VM (`vmId`, checked just above): an attested start without one is not an operation. bindStartToReceipt (environment-operations.mjs) is what sets both from the
+  // verified receipt; a provider that sees the marker also re-reads the network right before it starts.
+  if (Object.hasOwn(operation, 'attestedPolicy') && (operation.attestedPolicy !== true || operation.action !== 'start' || !Object.hasOwn(operation, 'vmId'))) throw new TypeError('invalid_environment_operation');
   return Object.freeze(normalized);
 }
 
