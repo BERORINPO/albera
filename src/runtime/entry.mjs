@@ -194,8 +194,19 @@ function parseFleetArgs(args) {
   return Object.freeze({ ...options, jobs: Object.freeze(options.jobs) });
 }
 
-// room: the fleet's options, or --demo (with --port only) for the scripted room with fake VMs.
+// room --require-start-approval: refuse to run unless hands start only after an approved task.start. The Broker / Authority settings for that do not exist yet
+// (the room host takes the gate by injection, see room-starts.mjs), so the room says so and exits instead of silently starting hands without approval.
 function parseRoomArgs(args) {
+  const asked = args.filter((arg) => arg === '--require-start-approval').length;
+  if (asked > 1) throw new Error('runtime_option_must_be_unique');
+  const options = parseRoomBaseArgs(args.filter((arg) => arg !== '--require-start-approval'));
+  if (asked === 0) return options;
+  if (options.demo) throw new Error('invalid_runtime_option');
+  return Object.freeze({ ...options, requireStartApproval: true });
+}
+
+// room: the fleet's options, or --demo (with --port only) for the scripted room with fake VMs.
+function parseRoomBaseArgs(args) {
   const demo = args.filter((arg) => arg === '--demo').length;
   if (demo > 1) throw new Error('runtime_option_must_be_unique');
   const rest = args.filter((arg) => arg !== '--demo');
@@ -395,6 +406,7 @@ Usage:
   albera-runtime room --job <vm>=<task> [--job ...] [--model claude-haiku-5-5] [--planner claude-sonnet-5-5] [--max-steps 40] [--max-usd-per-vm 0.50] [--max-usd-total 2] [--max-minutes 15] [--port <0-65535>]
                       [--checks <checks.json> --guest-password-file <file>]
   albera-runtime room --workspace <albera.workspace.json> [--guest-password-file <file>] [--port <0-65535>]
+  (room --job and room --workspace also take [--require-start-approval]; not available yet, see below)
   albera-runtime room --demo [--port <0-65535>]
   albera-runtime guest-capture install|remove --vm <hyper-v-vm-name> --guest-password-file <file>
   (wall, agent, fleet and room --job also take [--guest-capture <vm> ...] --guest-password-file <file>)
@@ -411,6 +423,7 @@ agent lets an AI operate one Hyper-V VM desktop through screenshots, mouse and k
 --planner <model> (agent, fleet, room) adds a planner: that model sees the task and the screen, writes 1 to 8 short sub-goals, gives the hands one at a time (at most 15 steps each), looks at the screen after each and decides next, replan (at most 2), done or failed. Its calls count toward the same USD limits; its DONE is a claim too.
 fleet runs up to 8 agents at once (one per VM, each with its own lease) and shows the desktop wall with each AI's pointer and status drawn over its screen. Cost grows with the number of VMs: every loop stops at --max-usd-per-vm and all stop together at --max-usd-total (each may finish the response already paid for, so the total can pass the limit slightly). Ctrl+C stops all agents and keeps the wall open; press it again to exit. The wall shows what each AI claims, not whether it succeeded: check every VM yourself. Same API key, privacy and Broker notes as agent.
 room is the control room: the fleet's VMs as cameras on a canvas, with Bero (a rule-based main AI, no LLM) pointing out stalls, DONE claims and limits and opening decision cards. A card choice can stop the hands on a VM or start a short fixed job there (close a blocking dialog, or look again whether the original task is done); the browser cannot type a task. Jobs started from cards share the same per-VM and total USD limits. Ctrl+C stops all agents and keeps the room open; press it again to exit. --demo runs 3 fake VMs with a scripted AI: no VM, no API key, no network. Same API key, privacy and Broker notes as fleet.
+room does NOT ask for approval before it starts a hand (the initial jobs and the jobs a card starts): it says so on start. --require-start-approval is the fail-closed form: hands would start only after the Broker claimed the task.start operation, but the Broker / Approval Authority settings that needs do not exist yet, so with this option the room refuses to start (exit 2) instead of running without approval.
 room --checks checks the VM itself when its AI claims DONE, and asks you only when a check fails or cannot run. The file maps VM names to at most 8 read-only checks each: {"<vm>": [{"kind": "file_exists", "path": "C:\\\\x.txt"}, {"kind": "file_text", "path": "C:\\\\x.txt", "text": "expected"}, {"kind": "dir_has", "path": "C:\\\\dir", "name": "entry"}]}. file_text compares the file's trimmed text (first 64 KiB) inside the VM; only ok / missing / differs / error comes back, never file contents. Checks run over PowerShell Direct as the guest user Administrator, with the password read from --guest-password-file at each check (never from the command line or the environment, never printed). Both options are needed together. It uses a same-user prototype and needs Hyper-V Administrators membership.
 room --workspace starts the room from one JSON file you can keep in a repository and review: {"version": 1, "name": "booking-site", "vms": [{"vm": "<hyper-v-vm-name>", "label": "<camera label>", "task": "<task>", "checks": [...]}], "limits": {"model": "claude-haiku-5-5", "planner": "claude-sonnet-5-5", "maxSteps": 40, "maxUsdPerVm": 0.5, "maxUsdTotal": 2, "maxMinutes": 15}}. No other room option may be given with it, so the file is the one place to read. Secrets never go in the file: if any VM has checks or "capture": "guest", give --guest-password-file on the command line. See examples/albera.workspace.example.json.
 guest-capture is OPT-IN, for VMs whose host thumbnail does not work (a GPU-partitioned VM keeps showing its boot logo there). install puts a small PowerShell helper into that VM over PowerShell Direct, as the guest user Administrator with the password from --guest-password-file (never from the command line or the environment, never printed): a scheduled task starts it at each logon of Administrator, without a window, and it saves the screen under C:\\ProgramData\\Albera about once a second (only the newest frame). remove stops it and deletes the task and the files. Then --guest-capture <vm> (or "capture": "guest" on that VM in a workspace file) takes that VM's screen from the helper; input still comes from the host. The frame is guest data and is checked like any screen. The first frame after a logon can take a minute or two (the helper compiles a little C# with the guest's built-in compiler). It uses a same-user prototype and needs Hyper-V Administrators membership.
@@ -624,6 +637,7 @@ async function runRoom(given) {
     try { options = loadRoomWorkspace(given); }
     catch (error) { console.error(`ALBERA Runtime room: ${error.message}`); process.exitCode = 2; return; }
   }
+  if (given.requireStartApproval) { console.error('ALBERA Runtime room: runtime_room_start_approval_unavailable'); process.exitCode = 2; return; }
   const labelOf = (vmId) => options.labels?.[vmId] ?? vmId.slice(0, 32);
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) { console.error('ALBERA Runtime room: set the ANTHROPIC_API_KEY environment variable first.'); process.exitCode = 1; return; }
@@ -662,6 +676,7 @@ async function runRoom(given) {
     });
     const address = await room.listen(options.port);
     console.log(`ALBERA control room${options.workspaceName ? ` (workspace ${options.workspaceName})` : ''} listening at ${address.url}`);
+    console.log('Warning: starting a hand (the initial jobs and the jobs a decision card starts) is NOT approved: no approval gate is wired.');
     const checked = Object.keys(checks);
     if (checked.length) console.log(`Automatic checks after a DONE claim on: ${checked.join(', ')}.`);
     console.log(`One-time UI bootstrap code: ${address.bootstrapCode}`);

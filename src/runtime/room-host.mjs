@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { isEnvironmentId } from './environment-provider.mjs';
 import { isLabel } from './workspace.mjs';
 import { cleanText, isCode, isId, validAct, validCheck, validCheckReport, validLedgerEntry, EFFECTS, LEDGER_CODES, MAX_CHECKS_PER_VM, MAX_TEXT } from './room-contract.mjs';
+import { createStartRunner, gatedRecheckTask, GATED_NUDGE_TASK } from './room-starts.mjs';
 
 export const ROOM_DESKTOP_SESSION_ID = 'room-view';
 export const ROOM_OWNER_ID = 'room-viewer';
@@ -25,7 +26,6 @@ const MAX_SESSIONS = 8;
 const MAX_SESSION_BODY = 1024;
 const MAX_DECIDE_BODY = 256;
 const BODY_TIMEOUT_MS = 5_000;
-const STOP_WAIT_MS = 5_000;
 const SESSION_TTL_MS = 20 * 60 * 1000;
 const SESSION_MAX_AGE_MS = 8 * 60 * 60 * 1000;
 const LEASE_TTL_MS = 60_000;
@@ -65,9 +65,12 @@ export function recheckTask(task) {
  * Automatic checks (spec/room.md §7): `checks` = { vmId: Check[] } and `checker.run(vmId, checks)`. When a VM with
  * checks ends with `claimed_done`, `check_started` is recorded before `hands_ended`, the checker runs (one at a time
  * per VM) and `check_done` records the verdict. VMs without checks behave as before.
+ * Start approval (`startGate`, task-start-gate.mjs): when given, a card's nudge / recheck starts a job only after `startGate.startApproved({vmId, task})` says ok.
+ * That is slow, so the decide route answers `pending_approval` at once and the outcome is a later ledger entry (`start_approved` / `start_refused`; room-starts.mjs).
+ * Without a gate the room starts jobs as before (local demo): the CLI says so when it starts.
  */
 export function createRoomHost({
-  vms, driver, board, journal, director, fleet, checker = null, checks = {}, checkTimeoutMs = CHECK_TIMEOUT_MS,
+  vms, driver, board, journal, director, fleet, checker = null, checks = {}, startGate = null, checkTimeoutMs = CHECK_TIMEOUT_MS,
   captureIntervalMs = 1000, staleAfterMs = 10_000, tickMs = 1000, now = Date.now,
 } = {}) {
   const tiles = normalizeVms(vms);
@@ -91,6 +94,7 @@ export function createRoomHost({
   const viewDriver = typeof driver === 'function' ? driver(async () => currentLease()) : driver;
   if (!viewDriver || typeof viewDriver.capture !== 'function') throw new TypeError('room host requires a driver with capture()');
 
+  const starts = createStartRunner({ fleet, gate: startGate, journal, isClosed: () => closed });
   const byId = new Map(tiles.map((tile) => [tile.vmId, tile]));
   const frames = new Map(tiles.map((tile) => [tile.vmId, { png: null, capturedAt: null, error: null }]));
   const pinned = new Map(); // frameId -> png (oldest first)
@@ -280,12 +284,9 @@ export function createRoomHost({
     if (effect !== 'nudge' && effect !== 'recheck') return 'none';
     const original = byId.get(vmId).task;
     if (effect === 'recheck' && !original) return 'no_task';
-    const task = effect === 'nudge' ? NUDGE_TASK : recheckTask(original);
-    if (fleet.stopVm(vmId) && typeof fleet.idle === 'function') {
-      await Promise.race([fleet.idle(vmId), new Promise((resolve) => { setTimeout(resolve, STOP_WAIT_MS).unref?.(); })]);
-    }
-    const started = fleet.startJob(vmId, task);
-    return started?.ok ? 'started' : (typeof started?.code === 'string' && isCode(started.code) ? started.code : 'not_started');
+    const gated = starts.gated; // a gate needs texts that fit a task.start action (256 bytes)
+    const task = effect === 'nudge' ? (gated ? GATED_NUDGE_TASK : NUDGE_TASK) : (gated ? gatedRecheckTask(original) : recheckTask(original));
+    return starts.start(vmId, task);
   }
 
   async function decide(req, res, expectedOrigin) {
