@@ -1,16 +1,16 @@
 // Issue #115 step 4, real-host check of the task-start attestation (the lead runs it; CI never does). Usage, as a member of Hyper-V Administrators:
-//   node test/windows-service-lab/task-start-attestation-real.mjs
+//   node scripts/task-start-attestation-real.mjs
 // Creates ONE disposable VM (albera-tsa<time>, 2 GiB, no network adapter) from the read-only golden image through the Hyper-V Broker prototype, starts it,
 // asks the prototype for a task-start attestation (network, ProductionOnly checkpoint, network again, sign), verifies it with the contract, lists the VM's
 // checkpoints, then destroys the VM. Signs with a key generated in memory for this run only. Prints no password and no host path beyond the VM name.
 import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
 import { freemem } from 'node:os';
-import { createEcdsaAttestationSigner, createEcdsaAttestationVerifier } from '../../src/runtime/ecdsa-attestation-signer.mjs';
-import { createHyperVEnvironmentBrokerPrototype } from '../../src/runtime/hyperv-environment-broker-prototype.mjs';
-import { firstExisting, pwshCandidates } from '../../src/runtime/hyperv-guest-check-prototype.mjs';
-import { computeActionDigest } from '../../src/runtime/broker-contract/action-digest.mjs';
-import { provesCheckpointedNoNetwork, verifyTaskStartAttestation } from '../../src/runtime/broker-contract/task-start-attestation.mjs';
+import { createEcdsaAttestationSigner, createEcdsaAttestationVerifier } from '../src/runtime/ecdsa-attestation-signer.mjs';
+import { createHyperVEnvironmentBrokerPrototype } from '../src/runtime/hyperv-environment-broker-prototype.mjs';
+import { firstExisting, pwshCandidates } from '../src/runtime/hyperv-guest-check-prototype.mjs';
+import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
+import { provesCheckpointedNoNetwork, verifyTaskStartAttestation } from '../src/runtime/broker-contract/task-start-attestation.mjs';
 
 const GOLDEN = 'U:\\dev\\hyperv\\golden\\ws2025-desktop-golden.vhdx';
 const CLONE_ROOT = 'U:\\dev\\hyperv\\clones';
