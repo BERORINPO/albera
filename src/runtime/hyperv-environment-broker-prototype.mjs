@@ -7,7 +7,7 @@
 // no operation can supply a path. Transport: a fixed `pwsh -File <fixed path>` process; the request
 // travels as JSON on stdin. No command line is ever assembled from data.
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -97,10 +97,10 @@ export function createHyperVEnvironmentBrokerPrototype({
     return { state: mapState(result.state), meta, vmId, adapters: result.adapters, floor: floorOf(meta, vmId) };
   }
 
-  async function withdrawIfUntouched(f, vmName, next) {
+  async function withdrawIfUntouched(f, vmName, next, raiseToken) {
     try {
       const again = await lookup(vmName);
-      if (again && again.vmId === f.vmId && again.meta?.computerId === f.computerId && again.meta.generation === f.expectedGeneration) generationFloor.withdraw(f.computerId, f.vmId, next);
+      if (again && again.vmId === f.vmId && again.meta?.computerId === f.computerId && again.meta.generation === f.expectedGeneration) generationFloor.withdraw(f.computerId, f.vmId, next, raiseToken);
     }
     catch { /* could not prove the VM untouched: it stays fenced until a restore finishes */ }
   }
@@ -277,16 +277,18 @@ export function createHyperVEnvironmentBrokerPrototype({
       if (vm.meta.incarnationId !== null) throw brokerError('operation_conflict', 'not_applied'); // a retirement has begun on this VM
       const next = f.expectedGeneration + 1;
       const notes = JSON.stringify({ albera: 1, computerId: f.computerId, generation: next, imageDigest: vm.meta.imageDigest, projectId: vm.meta.projectId });
-      try { generationFloor.raise(f.computerId, f.vmId, next); } // durable before the restore is asked for; a failure here means nothing was changed
+      const raiseToken = randomUUID(); // this attempt's own hold on the pending raise
+      try { generationFloor.raise(f.computerId, f.vmId, next, raiseToken); } // durable before the restore is asked for; a failure here means nothing was changed
       catch { throw brokerError('provider_unavailable', 'not_applied'); }
       // `expect.generation` is what the Notes say NOW (the script compares it with them); `notes` carries the new number, which the script only insists is higher.
       let result;
       try { result = await call({ method: 'restore', vmName, expect: { computerId: f.computerId, generation: vm.meta.generation, vmId: f.vmId, identity: 'vm' }, notes }); }
       catch (error) {
         // A DEFINITE "not applied" (the op refused before changing anything: no checkpoint, wrong VM ...) must not leave the VM fenced by a raise nothing came of. Withdraw exactly this attempt's
-        // pending raise, and only when it was this attempt's own (not a resume of an earlier unknown one) and a fresh read still shows the VM untouched at the approved generation.
+        // hold on the pending raise (a per-attempt token): the raise goes away only when EVERY attempt that asked for it has given up (a concurrent restore, or an earlier one that crashed or whose
+        // outcome was unknown, may yet restore), and only when a fresh read still shows the VM untouched at the approved generation.
         // Anything else (unknown outcome, a failed read or withdraw) leaves the raise pending: fenced, resumable.
-        if (error?.outcome === 'not_applied' && !resuming) await withdrawIfUntouched(f, vmName, next);
+        if (error?.outcome === 'not_applied') await withdrawIfUntouched(f, vmName, next, raiseToken);
         throw error;
       }
       const reportedId = typeof result.vmId === 'string' ? result.vmId.toLowerCase() : null;

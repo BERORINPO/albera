@@ -605,6 +605,8 @@ test('the process dies after the restore and before the Notes write: a NEW Broke
 
 // ---- 4b. a refused restore must not brick the VM (real host 2026-11-01: a restore with no checkpoint raised the floor, then even destroy was refused) ----
 
+const T1 = 'attempt-0001-aaaa';
+const T2 = 'attempt-0002-bbbb';
 const NO_CHECKPOINT = Object.freeze({ ok: false, code: 'invalid_provider_state', notApplied: true });
 
 test('a restore the op refuses definitely (no checkpoint: not applied) withdraws exactly its own raise: the VM is not fenced, and the old generation works for start, stop, destroy and inspect', async () => {
@@ -712,7 +714,7 @@ test('generation floor: no floor configured = no restore; a floor that cannot be
   assert.equal(unreadable.methods().some((m) => ['start', 'restore', 'checkpoint'].includes(m)), false);
   // a floor recorded for a different VM (a replaced VM under the same computer id) does not fence this one
   const other = createGenerationFloor();
-  other.raise('pc-01', OTHER_VM, 9);
+  other.raise('pc-01', OTHER_VM, 9, T1);
   const script = stateful();
   assert.equal((await rebuild(script, other).startVm(op('start'))).generation, 3);
 });
@@ -723,33 +725,148 @@ test('generation floor module: a raise is pending (fences at once, survives a re
   let floor;
   try {
     floor = createGenerationFloor({ filePath: file });
-    floor.raise('pc-01', VM, 4);
+    floor.raise('pc-01', VM, 4, T1);
     floor.close();
     floor = createGenerationFloor({ filePath: file });
     assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'pending fences, and it is durable');
-    floor.withdraw('pc-01', VM, 3);
-    floor.withdraw('pc-01', OTHER_VM, 4);
+    floor.withdraw('pc-01', VM, 3, T1);
+    floor.withdraw('pc-01', OTHER_VM, 4, T1);
     assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'a withdraw of another generation or another VM changes nothing');
-    floor.withdraw('pc-01', VM, 4);
+    floor.withdraw('pc-01', VM, 4, T1);
     assert.equal(floor.get('pc-01'), null, 'exactly the pending raise is withdrawn; no committed floor was behind it');
-    floor.raise('pc-01', VM, 4);
+    floor.raise('pc-01', VM, 4, T1);
     floor.commit('pc-01', VM, 5);
     assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 });
     floor.commit('pc-01', VM, 4);
-    floor.withdraw('pc-01', VM, 4);
+    floor.withdraw('pc-01', VM, 4, T1);
     assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'a committed floor cannot be withdrawn');
-    floor.raise('pc-01', VM, 6);
-    floor.raise('pc-01', VM, 5);
+    floor.raise('pc-01', VM, 6, T1);
+    floor.raise('pc-01', VM, 5, T1);
     assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 6 }, 'a lower raise never replaces a higher pending one');
-    floor.withdraw('pc-01', VM, 6);
+    floor.withdraw('pc-01', VM, 6, T1);
     assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'a withdraw falls back to the committed floor');
-    floor.raise('pc-01', VM, 6);
-    floor.raise('pc-01', VM, 8); // the 6 is below the new pending, so it is folded into the committed floor
-    floor.withdraw('pc-01', VM, 8);
+    floor.raise('pc-01', VM, 6, T1);
+    floor.raise('pc-01', VM, 8, T2); // the 6 is below the new pending, so it is folded into the committed floor
+    floor.withdraw('pc-01', VM, 8, T2);
     assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 6 });
-    for (const method of ['commit', 'withdraw']) assert.throws(() => floor[method]('pc-01', 'not-a-vm', 3), (e) => e.code === 'generation_floor_invalid');
+    for (const method of ['raise', 'withdraw']) for (const token of [undefined, 'short', 'has space in it', 7]) assert.throws(() => floor[method]('pc-01', VM, 3, token), (e) => e.code === 'generation_floor_invalid', method + String(token));
+    for (const method of ['commit', 'withdraw', 'raise']) assert.throws(() => floor[method]('pc-01', 'not-a-vm', 3, T1), (e) => e.code === 'generation_floor_invalid');
   } finally { floor?.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('generation floor module: attempts for the same generation share the pending raise, a withdraw with a wrong token does nothing, and it goes away only when the LAST holder has withdrawn', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-floor-holders-'));
+  const file = path.join(dir, 'floor.sqlite');
+  let one;
+  let two;
+  try {
+    one = createGenerationFloor({ filePath: file });
+    two = createGenerationFloor({ filePath: file }); // a second Broker object on the same file
+    one.raise('pc-01', VM, 4, T1);
+    two.raise('pc-01', VM, 4, T2);
+    one.withdraw('pc-01', VM, 4, 'attempt-9999-zzzz');
+    assert.deepEqual(two.get('pc-01'), { vmId: VM, generation: 4 }, 'a wrong token withdraws nothing');
+    one.withdraw('pc-01', VM, 4, T1);
+    one.withdraw('pc-01', VM, 4, T1); // twice is no second release
+    assert.deepEqual(two.get('pc-01'), { vmId: VM, generation: 4 }, 'the other holder keeps it pending');
+    two.withdraw('pc-01', VM, 4, T2);
+    assert.equal(one.get('pc-01'), null, 'the last holder gone: no pending raise, nothing committed behind it');
+    // a raise of a higher generation takes the pending slot; the old holder\'s token no longer releases anything
+    one.raise('pc-01', VM, 4, T1);
+    two.raise('pc-01', VM, 5, T2);
+    one.withdraw('pc-01', VM, 4, T1);
+    assert.deepEqual(two.get('pc-01'), { vmId: VM, generation: 5 });
+    two.withdraw('pc-01', VM, 5, T2);
+    assert.deepEqual(one.get('pc-01'), { vmId: VM, generation: 4 }, 'the folded 4 is committed');
+  } finally { one?.close(); two?.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---- 4c. two restores of the same VM at once (Codex review of #140): a "not applied" must never withdraw the raise the other, still running, restore depends on ----
+
+/** A restore op the test controls: every call waits until the test answers it. */
+function controlledRestores() {
+  const waiting = [];
+  const restore = (request) => new Promise((resolve) => { waiting.push({ request, resolve }); });
+  const arrived = async (count) => { while (waiting.length < count) await new Promise((resolve) => setImmediate(resolve)); };
+  return { restore, waiting, arrived };
+}
+
+for (const sharedFloorObject of [true, false]) {
+  const how = sharedFloorObject ? 'one Broker floor object' : 'two Broker objects on one floor file';
+  test(`two restores of the same VM at once (${how}): one refused "not applied" while the other has restored and not written the Notes yet: the old generations stay refused, and the other finishes`, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-floor-concurrent-'));
+    const file = path.join(dir, 'floor.sqlite');
+    const floors = [];
+    try {
+      const control = controlledRestores();
+      const script = stateful({ restore: control.restore, usable: true });
+      const floorA = createGenerationFloor({ filePath: file });
+      floors.push(floorA);
+      const floorB = sharedFloorObject ? floorA : createGenerationFloor({ filePath: file });
+      if (!sharedFloorObject) floors.push(floorB);
+      const brokerA = rebuild(script, floorA);
+      const brokerB = rebuild(script, floorB);
+      const runA = brokerA.restoreTaskCheckpoint({ ...RESTORE_INPUT }).then(() => 'ok', (error) => `${error.code}/${error.outcome}`);
+      const runB = brokerB.restoreTaskCheckpoint({ ...RESTORE_INPUT }).then(() => 'ok', (error) => `${error.code}/${error.outcome}`);
+      await control.arrived(2);
+      // A is refused definitely (it changed nothing) and re-reads the VM: untouched so far, because B has not restored yet
+      control.waiting[0].resolve(NO_CHECKPOINT);
+      assert.equal(await runA, 'invalid_provider_state/not_applied');
+      assert.deepEqual(floorB.get('pc-01'), { vmId: VM, generation: 4 }, "A's withdraw did not take B's raise with it");
+      // B's op now restores the checkpoint's OLD Notes and dies before writing the new ones
+      script.state.notes = notes({ generation: 2 });
+      script.state.state = 'Off';
+      control.waiting[1].resolve({ ok: false, code: 'provider_state_unknown', notApplied: false });
+      assert.equal(await runB, 'provider_state_unknown/unknown');
+      await assertOldGenerationsRefused(rebuild(script, floorB), script, `concurrent-${how}`);
+    } finally { for (const floor of floors) floor.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test(`two restores of the same VM at once (${how}): when the other one SUCCEEDS the VM is at the new generation and the old one stays refused; when BOTH are refused nothing is left fencing`, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-floor-concurrent-'));
+    const file = path.join(dir, 'floor.sqlite');
+    const floors = [];
+    try {
+      const control = controlledRestores();
+      const script = stateful({ restore: control.restore, usable: true });
+      const floorA = createGenerationFloor({ filePath: file });
+      floors.push(floorA);
+      const floorB = sharedFloorObject ? floorA : createGenerationFloor({ filePath: file });
+      if (!sharedFloorObject) floors.push(floorB);
+      const brokerA = rebuild(script, floorA);
+      const brokerB = rebuild(script, floorB);
+      const runA = brokerA.restoreTaskCheckpoint({ ...RESTORE_INPUT }).then(() => 'ok', (error) => `${error.code}/${error.outcome}`);
+      const runB = brokerB.restoreTaskCheckpoint({ ...RESTORE_INPUT }).then(() => 'ok', (error) => `${error.code}/${error.outcome}`);
+      await control.arrived(2);
+      control.waiting[0].resolve(NO_CHECKPOINT);
+      assert.equal(await runA, 'invalid_provider_state/not_applied');
+      script.state.notes = control.waiting[1].request.notes; // B's op restores and writes the new Notes
+      script.state.state = 'Off';
+      control.waiting[1].resolve({ ok: true, checkpointId: CKPT, vmId: VM, state: 'Off', generation: 4 });
+      assert.equal(await runB, 'ok');
+      await refusal(brokerA.startVm(op('start', { expectedGeneration: 3 })), 'stale_generation', 'not_applied');
+      assert.equal((await brokerA.startVm(op('start', { expectedGeneration: 4 }))).generation, 4);
+      assert.deepEqual(floorA.get('pc-01'), { vmId: VM, generation: 4 });
+
+      // both refused definitely: the last holder to withdraw releases the VM
+      const control2 = controlledRestores();
+      const script2 = stateful({ restore: control2.restore, usable: true });
+      const dir2 = path.join(dir, 'second');
+      fs.mkdirSync(dir2);
+      const floor2 = createGenerationFloor({ filePath: path.join(dir2, 'floor.sqlite') });
+      floors.push(floor2);
+      const runs = [rebuild(script2, floor2), rebuild(script2, floor2)].map((b) => b.restoreTaskCheckpoint({ ...RESTORE_INPUT }).then(() => 'ok', (error) => `${error.code}/${error.outcome}`));
+      await control2.arrived(2);
+      control2.waiting[0].resolve(NO_CHECKPOINT);
+      await runs[0];
+      assert.deepEqual(floor2.get('pc-01'), { vmId: VM, generation: 4 }, 'the second attempt is still running: still fenced');
+      control2.waiting[1].resolve(NO_CHECKPOINT);
+      await runs[1];
+      assert.equal(floor2.get('pc-01'), null);
+      assert.equal((await rebuild(script2, floor2).stopVm(op('stop', { expectedGeneration: 3 }))).generation, 3);
+    } finally { for (const floor of floors) floor.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+}
 
 test('generation floor module: only ever rises, is bound to the VM id, validates its input, survives a reopen and refuses a file that is not its own', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-floor-unit-'));
@@ -758,18 +875,18 @@ test('generation floor module: only ever rises, is bound to the VM id, validates
   try {
     floor = createGenerationFloor({ filePath: file });
     assert.equal(floor.get('pc-01'), null);
-    floor.raise('pc-01', VM, 4);
-    floor.raise('pc-01', VM, 2);
+    floor.raise('pc-01', VM, 4, T1);
+    floor.raise('pc-01', VM, 2, T1);
     assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'a lower value is ignored');
-    floor.raise('pc-01', VM, 6);
-    floor.raise('pc-01', OTHER_VM, 1);
+    floor.raise('pc-01', VM, 6, T1);
+    floor.raise('pc-01', OTHER_VM, 1, T1);
     assert.deepEqual(floor.get('pc-01'), { vmId: OTHER_VM, generation: 1 }, 'another VM id replaces the record');
-    floor.raise('pc-01', VM, 5);
+    floor.raise('pc-01', VM, 5, T1);
     floor.close();
     floor = createGenerationFloor({ filePath: file });
     assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 5 });
     for (const bad of [['pc-01', 'not-a-vm', 3], ['pc-01', VM, 0], ['pc-01', VM, 1.5], ['pc-01', VM.toUpperCase().replace(/[0-9]/g, 'A'), 3], ['', VM, 3], [7, VM, 3]]) {
-      assert.throws(() => floor.raise(...bad), (e) => e.code === 'generation_floor_invalid', JSON.stringify(bad));
+      assert.throws(() => floor.raise(...bad, T1), (e) => e.code === 'generation_floor_invalid', JSON.stringify(bad));
     }
     assert.throws(() => floor.get('bad id'), (e) => e.code === 'generation_floor_invalid');
     assert.throws(() => createGenerationFloor({ filePath: '' }), TypeError);
