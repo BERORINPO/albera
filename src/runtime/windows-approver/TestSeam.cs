@@ -14,7 +14,6 @@ namespace Albera.Approver;
 //   --test-presence unavailable    the fake reports that Hello gave no proof
 //   --test-interactive yes         treat stdin as a console a person types in (a test pipes stdin)
 //   --test-timeout-ms <n>          per-call timeout
-//   --test-package <p>             the package the fake process runs from (issue #101): approver (the default) | none (unpackaged) | wrong-name | wrong-publisher | development
 //   --test-attestation <status>    what the fake Windows reports for a key `enroll` just made: Success (default) | NotSupported | TemporaryFailure | UnknownError | Empty (Success, empty buffers)
 // A fake signer is installed only together with --test-fake-key; without it a test-faults build has a signer that is never ready (approve exits 69).
 internal sealed class FakePresenceSigner(RSA key, bool unavailable) : IPresenceSigner
@@ -52,12 +51,6 @@ internal sealed class FakeKeyStore(RSA? initialKey, bool unavailable = false, st
     }
 }
 
-/// <summary>The package identity a test says the process runs from (null = unpackaged).</summary>
-internal sealed class FakePackageIdentity(PackageIdentity? identity) : IPackageIdentitySource
-{
-    public PackageIdentity? Current() => identity;
-}
-
 internal static class TestSeam
 {
     public static bool TryApply(ref string[] args, ref Wiring wiring)
@@ -71,7 +64,7 @@ internal static class TestSeam
             i++;
         }
         args = [.. rest];
-        string[] known = ["--test-pipe-root", "--test-owner-sid", "--test-pid", "--test-fake-key", "--test-key-state", "--test-presence", "--test-interactive", "--test-timeout-ms", "--test-package", "--test-attestation"];
+        string[] known = ["--test-pipe-root", "--test-owner-sid", "--test-pid", "--test-fake-key", "--test-key-state", "--test-presence", "--test-interactive", "--test-timeout-ms", "--test-attestation"];
         if (options.Keys.Any(k => !known.Contains(k))) return false;
 
         ServerExpectation expectation = wiring.Expectation;
@@ -86,21 +79,6 @@ internal static class TestSeam
         if (options.TryGetValue("--test-interactive", out string? yes)) { if (yes != "yes") return false; interactive = true; }
         if (options.TryGetValue("--test-key-state", out string? state) && state != "missing") return false;
 
-        // Default: the fake process runs from the approver's own package, so the existing flows reach the fake signer. A test says otherwise with --test-package.
-        HelloGate gate = wiring.Gate;
-        if (options.TryGetValue("--test-package", out string? package))
-        {
-            if (package is not ("none" or "approver" or "wrong-name" or "wrong-publisher" or "development")) return false;
-            PackageIdentity? identity = package switch
-            {
-                "none" => null,
-                "wrong-name" => PackageIdentity.Expected with { Name = "Other.App" },
-                "wrong-publisher" => PackageIdentity.Expected with { Publisher = "CN=Someone Else" },
-                "development" => PackageIdentity.Expected with { IsDevelopmentMode = true },
-                _ => PackageIdentity.Expected,
-            };
-            gate = new HelloGate(new FakePackageIdentity(identity));
-        }
         string attestation = options.GetValueOrDefault("--test-attestation", "Success");
 
         IPresenceSigner signer = wiring.Signer;
@@ -113,7 +91,7 @@ internal static class TestSeam
             keyStore = new FakeKeyStore(key, attestation: attestation);
         }
         else if (state == "missing") keyStore = new FakeKeyStore(null, attestation: attestation);
-        wiring = wiring with { Expectation = expectation, Signer = signer, KeyStore = keyStore, TimeoutMs = timeoutMs, Interactive = interactive, Gate = gate };
+        wiring = wiring with { Expectation = expectation, Signer = signer, KeyStore = keyStore, TimeoutMs = timeoutMs, Interactive = interactive };
         return true;
     }
 }

@@ -10,8 +10,7 @@ namespace Albera.Approver;
 //   - one fixed credential name; the key is an RSA-2048 key that Windows Hello (TPM or software) holds. This code never sees, exports, copies or stores the private key.
 //   - Sign = KeyCredential.RequestSignAsync(message): Hello shows its prompt (PIN / face / fingerprint) and returns RSA PKCS#1 v1.5 / SHA-256 over exactly the message bytes.
 //   - the plain API is used (no window handle). If Windows shows no prompt for a console process, the follow-up is IKeyCredentialManagerInterop with the console window; see the doc.
-//   - issue #101: the credential is scoped to the package family of the app that makes it, so Program refuses to reach Hello unless it runs from the approver's MSIX (PackageIdentity.cs).
-//     `enroll` attests the key it just made (GetAttestationAsync; AttestationPolicy accepts only Success) and removes it again (DeleteAsync, this one call) when the attestation is not accepted.
+//   - issue #101: `enroll` attests the key it just made (GetAttestationAsync; AttestationPolicy accepts only Success) and removes it again (DeleteAsync, this one call) when the attestation is not accepted.
 //   - any API failure maps to NotReady / Unavailable / Missing; no exception text is ever printed.
 internal static class HelloCredential
 {
@@ -115,23 +114,6 @@ internal sealed class WindowsHelloPresenceSigner : IPresenceSigner
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             return SignResult.NotReady; // the Hello API itself is not usable here: nothing is sent
-        }
-    }
-}
-
-/// <summary>The package this process was started from (Windows.ApplicationModel.Package), or null when it is unpackaged (the API throws then). Read-only; shipped build only, like the rest of this file.</summary>
-internal sealed class WindowsPackageIdentity : IPackageIdentitySource
-{
-    public PackageIdentity? Current()
-    {
-        try
-        {
-            Windows.ApplicationModel.Package package = Windows.ApplicationModel.Package.Current;
-            return new PackageIdentity(package.Id.Name, package.Id.Publisher, package.IsDevelopmentMode);
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            return null; // not packaged
         }
     }
 }

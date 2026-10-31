@@ -76,12 +76,6 @@ test('Windows Hello: the shipped build signs with WindowsHelloPresenceSigner thr
   const used = [...new Set([...helloCode.matchAll(/\b(KeyCredentialManager\.\w+|RetrievePublicKey|RequestSignAsync|GetAttestationAsync|CryptographicBuffer\.\w+)\b/gu)].map((m) => m[1]))].sort();
   assert.deepEqual(used, ['CryptographicBuffer.CopyToByteArray', 'CryptographicBuffer.CreateFromByteArray', 'GetAttestationAsync', 'KeyCredentialManager.DeleteAsync', 'KeyCredentialManager.IsSupportedAsync',
     'KeyCredentialManager.OpenAsync', 'KeyCredentialManager.RequestCreateAsync', 'RequestSignAsync', 'RetrievePublicKey']);
-  // ... and the one package-identity read, also confined to this file (the shipped-only one).
-  assert.equal(/Windows\.ApplicationModel/u.test(codeWithoutHello), false, 'the package API is used only in WindowsHello.cs');
-  assert.deepEqual([...helloCode.matchAll(/Windows\.ApplicationModel\.\w+(?:\.\w+)*/gu)].map((m) => m[0]), ['Windows.ApplicationModel.Package', 'Windows.ApplicationModel.Package.Current'], 'read-only: only the current package');
-  assert.deepEqual([...allCode.matchAll(/class (\w+)(?:\([^)]*\))? : IPackageIdentitySource/gu)].map((m) => m[1]).sort(), ['FakePackageIdentity', 'WindowsPackageIdentity']);
-  assert.match(wiring[2], /new HelloGate\(new WindowsPackageIdentity\(\)\)/u, 'the shipped build reads the real package identity');
-  assert.match(wiring[1], /new HelloGate\(new FakePackageIdentity\(PackageIdentity\.Expected\)\)/u, 'a test build never calls the package API');
   assert.deepEqual([...helloCode.matchAll(/^using ([\w.]+);/gmu)].map((m) => m[1]), ['System.Security.Cryptography', 'Windows.Security.Credentials', 'Windows.Security.Cryptography', 'Windows.Security.Cryptography.Core']);
   assert.match(helloCode, /CryptographicPublicKeyBlobType\.X509SubjectPublicKeyInfo/u, 'only the public half, as SPKI');
   assert.match(helloCode, /public const string Name = "AlberaApprover\.v1";/u, 'one fixed credential name');
@@ -95,7 +89,7 @@ test('enroll --check (self-check): local only, the existing key only, domain-sep
   const check = code['SelfCheckCommand.cs'];
   assert.ok(check, 'SelfCheckCommand.cs exists');
   // Local only: its constructor takes the key store, the signer and console writers; no channel, and nothing in the file names a pipe, a network type, a file, the environment or a process.
-  assert.match(check, /internal sealed class SelfCheckCommand\(IHelloKeyStore store, IPresenceSigner signer, Func<string> currentUserSid, Func<byte\[\]> nonce, TextWriter output, TextWriter errors, bool interactive, HelloGate gate\)/u);
+  assert.match(check, /internal sealed class SelfCheckCommand\(IHelloKeyStore store, IPresenceSigner signer, Func<string> currentUserSid, Func<byte\[\]> nonce, TextWriter output, TextWriter errors, bool interactive\)/u);
   for (const forbidden of [/IApproverChannel|PipeChannel|NamedPipe|ServerExpectation|CallAsync/u, /Socket|HttpClient|WebRequest|Dns\b|System\.Net/u, /File\b|Path\.|Directory|FileStream|StreamWriter/u, /Environment\./u, /Console\./u, /Process/u]) {
     assert.equal(forbidden.test(check), false, `the self-check must not match ${forbidden}`);
   }
@@ -103,8 +97,8 @@ test('enroll --check (self-check): local only, the existing key only, domain-sep
   assert.deepEqual([...check.matchAll(/store\.(\w+)\(/gu)].map((m) => m[1]), ['Open']);
   assert.equal(/Create\(|ReplaceExisting|RequestCreateAsync|DeleteAsync/u.test(check), false);
   // Order: console check, open the existing key, (expect check), sign, verify, only then the OK line.
-  const order = ['if (!interactive)', 'gate.Check()', 'store.Open()', 'expectedKeyId is not null', 'signer.Sign(message)', 'PresenceSignature.Verify(', 'self-check: OK'].map((token) => check.indexOf(token));
-  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `console -> package gate -> open -> expect -> sign -> verify -> OK (${order})`);
+  const order = ['if (!interactive)', 'store.Open()', 'expectedKeyId is not null', 'signer.Sign(message)', 'PresenceSignature.Verify(', 'self-check: OK'].map((token) => check.indexOf(token));
+  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `console -> open -> expect -> sign -> verify -> OK (${order})`);
   assert.equal([...check.matchAll(/signer\.Sign\(/gu)].length, 1, 'one signing site');
   assert.equal([...check.matchAll(/self-check: OK/gu)].length, 1, 'one place prints OK, and it is the verified branch');
   assert.match(check, /case SignStatus\.Signed when PresenceSignature\.Verify\(lookup\.PublicKey!, message, signed\.Signature!\):\s*output\.Write\(\$"self-check: OK/u);
@@ -118,7 +112,7 @@ test('enroll --check (self-check): local only, the existing key only, domain-sep
   // The entry point routes it to the key store and signer only, before any pipe object exists, with a fresh 32-byte nonce.
   const program = code['Program.cs'];
   const branch = program.slice(program.indexOf('if (command.Option == "check")'), program.indexOf('if (command.Verb == "enroll")'));
-  assert.match(branch, /new SelfCheckCommand\(wiring\.KeyStore, wiring\.Signer, CurrentUserSid, \(\) => RandomNumberGenerator\.GetBytes\(SelfCheckMessage\.NonceBytes\), Console\.Out, Console\.Error, wiring\.Interactive, wiring\.Gate\)\.Run\(command\.Expect\)/u);
+  assert.match(branch, /new SelfCheckCommand\(wiring\.KeyStore, wiring\.Signer, CurrentUserSid, \(\) => RandomNumberGenerator\.GetBytes\(SelfCheckMessage\.NonceBytes\), Console\.Out, Console\.Error, wiring\.Interactive\)\.Run\(command\.Expect\)/u);
   assert.equal(/PipeChannel|wiring\.Expectation/u.test(branch), false, 'no pipe on the self-check path');
   assert.ok(program.indexOf('if (command.Option == "check")') < program.indexOf('new PipeChannel('), 'dispatched before the pipe is constructed');
   assert.match(check, /public const int NonceBytes = 32;/u);
@@ -134,8 +128,7 @@ test('there is no --yes: the typed yes cannot be skipped, approve needs a consol
   assert.match(code['ApproverCommands.cs'], /if \(!interactive\) throw new Stop\(ExitCodes\.Refused, "not_interactive"/u);
   assert.equal([...code['Program.cs'].matchAll(/!Console\.IsInputRedirected/gu)].length, 2, 'interactive means stdin is not redirected, in both build branches and nowhere else');
   const enroll = code['EnrollCommand.cs'];
-  assert.match(enroll, /if \(option == "show"\) return Gated\(\) \?\? Show\(\);\s*if \(!interactive\) return Fail\(ExitCodes\.Refused, "not_interactive"\);\s*if \(Gated\(\) is \{ \} refused\) return refused;\s*KeyLookup existing = store\.Open\(\);/u,
-    'create / replace need a console, then the package, then the key store; show needs the package but not a console');
+  assert.match(enroll, /if \(option == "show"\) return Show\(\);\s*if \(!interactive\) return Fail\(ExitCodes\.Refused, "not_interactive"\);/u, 'create / replace need a console; show does not');
   assert.match(enroll, /input\.ReadLine\(\) != ReplaceWord\) return Fail\(ExitCodes\.Refused, "not_confirmed"\)/u);
   assert.deepEqual([...enroll.matchAll(/\\"(approver\w+)\\"/gu)].map((m) => m[1]).sort(), ['approverKeyId', 'approverPublicKey', 'approverSid'], 'enroll prints exactly the three config values');
   assert.equal(/PrivateKey|Pkcs8|Export(?!SubjectPublicKeyInfo)/u.test(enroll + code['HelloKeyStore.cs'] + helloCode), false, 'no private material in enroll or the Hello code');
@@ -200,7 +193,7 @@ test('the wire protocol: only list and decide, only approve / deny / presence_un
 test('policy set: the tier change is described first, Hello is asked only when the change loosens the policy, after a console check and a typed yes, over the policy message of the hash computed here', () => {
   const policy = code['PolicyCommand.cs'];
   assert.ok(policy, 'PolicyCommand.cs exists');
-  assert.match(policy, /internal sealed class PolicyCommand\(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, bool interactive, HelloGate gate\)/u);
+  assert.match(policy, /internal sealed class PolicyCommand\(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, bool interactive\)/u);
   // The verbs and the words that go into a request: only these two verbs, and the policy comes from the contract's own TierPolicy (known tier, known actions, revision + 1).
   assert.deepEqual([...new Set([...policy.matchAll(/\\"verb\\":\\"(\w+)\\"/gu)].map((m) => m[1]))].sort(), ['policy', 'policy_set']);
   assert.match(policy, /TierPolicy\.TryCreate\(current\.Revision \+ 1, tier, prompts\) \?\? throw new Stop\(ExitCodes\.BadUsage, "bad_policy"\)/u);
@@ -215,7 +208,7 @@ test('policy set: the tier change is described first, Hello is asked only when t
   assert.match(policy, /TierPolicy\.TryParse\(Encoding\.UTF8\.GetBytes\(policy\.GetRawText\(\)\)\) is \{ \} parsed && version\.GetString\(\) == parsed\.Hash\(\)/u);
   assert.equal(/submit/iu.test(policy), false);
   // The entry point dispatches it after the self-check and enroll branches, with the same channel and signer as approve.
-  assert.match(code['Program.cs'], /if \(command\.Verb == "policy"\)\s*\{\s*PolicyCommand policy = new\(new PipeChannel\(wiring\.Expectation, wiring\.TimeoutMs\), wiring\.Signer, Console\.Out, Console\.Error, Console\.In, wiring\.Interactive, wiring\.Gate\);/u);
+  assert.match(code['Program.cs'], /if \(command\.Verb == "policy"\)\s*\{\s*PolicyCommand policy = new\(new PipeChannel\(wiring\.Expectation, wiring\.TimeoutMs\), wiring\.Signer, Console\.Out, Console\.Error, Console\.In, wiring\.Interactive\);/u);
   assert.ok(code['Program.cs'].indexOf('if (command.Verb == "enroll")') < code['Program.cs'].indexOf('if (command.Verb == "policy")'));
 });
 
@@ -254,41 +247,11 @@ test('build:approver builds and records a SHA-256; it does not install, register
   assert.equal(/\bsc(?:\.exe)?\b|New-Service|Start-Process|runas|schtasks|icacls|Set-Acl|certutil|tpmtool|New-SelfSignedCertificate|signtool|Add-AppxPackage/iu.test(publish), false);
   const pkg = JSON.parse(read('package.json'));
   assert.equal(pkg.scripts['build:approver'], 'node scripts/publish-windows-approver.mjs');
-  assert.equal(pkg.scripts['package:approver-msix'], 'node scripts/package-windows-approver-msix.mjs', 'issue #101: the on-demand MSIX packaging script');
-  const { 'build:approver': _build, 'package:approver-msix': _package, ...otherScripts } = pkg.scripts;
-  assert.equal(JSON.stringify({ ...pkg, scripts: otherScripts }).includes('approver'), false, 'package.json names the approver only in its build and packaging scripts');
+  const { 'build:approver': _build, ...otherScripts } = pkg.scripts;
+  assert.equal(JSON.stringify({ ...pkg, scripts: otherScripts }).includes('approver'), false, 'package.json names the approver only in its build script');
   for (const lifecycle of ['preinstall', 'install', 'postinstall', 'prepare', 'prepack', 'start', 'demo', 'test']) assert.equal(String(pkg.scripts[lifecycle] ?? '').includes('approver'), false, lifecycle);
   assert.match(read('scripts', 'package-smoke.mjs'), /windows-approver\|AlberaApprover/u);
   assert.match(read('scripts', 'arch-check.mjs'), /^const APPROVER_REF = /mu, 'arch rule 11 exists');
-});
-
-test('issue #101: every command that reaches Hello checks the package first (after its console check, before the pipe, the typed word, the key store and the signer), and the entry point hands the gate to all four', () => {
-  const at = (text, token, from = 0) => { const index = text.indexOf(token, from); assert.ok(index >= 0, `"${token}" is in the source`); return index; };
-  const approve = code['ApproverCommands.cs'];
-  const approveBody = approve.slice(at(approve, 'public Task<int> ApproveAsync'), at(approve, 'public Task<int> DenyAsync'));
-  const approveOrder = ['if (!interactive)', 'gate.Check()', 'FetchAllAsync()', 'Confirmed()', 'signer.Sign('].map((token) => at(approveBody, token));
-  assert.ok(approveOrder.every((index, i) => i === 0 || index > approveOrder[i - 1]), `approve: console -> package -> pipe -> typed yes -> Hello (${approveOrder})`);
-  assert.equal(/gate\.Check\(\)/u.test(approve.slice(at(approve, 'public Task<int> DenyAsync'), at(approve, 'private static void RequireApprovalId'))), false, 'deny never reaches Hello and is not gated');
-  const policy = code['PolicyCommand.cs'];
-  const setBody = policy.slice(at(policy, 'public Task<int> SetAsync'), at(policy, 'private async Task<(TierPolicy Policy'));
-  const policyOrder = ['!interactive', 'loosens && gate.Check()', 'Confirmed()', 'signer.Sign('].map((token) => at(setBody, token));
-  assert.ok(policyOrder.every((index, i) => i === 0 || index > policyOrder[i - 1]), `policy set: console -> package -> typed yes -> Hello (${policyOrder})`);
-  assert.equal(/gate\.Check\(\)/u.test(policy.slice(at(policy, 'public Task<int> ShowAsync'), at(policy, 'public Task<int> SetAsync'))), false, 'policy show never reaches Hello');
-  // enroll is pinned by its own regex above (Show() only as `Gated() ?? Show()`, then the console, then the second gate, then the first store.Open()).
-  const check = code['SelfCheckCommand.cs'];
-  const checkGate = at(check, 'gate.Check()');
-  assert.deepEqual([...check.matchAll(/store\.Open\(|signer\.Sign\(/gu)].filter((m) => m.index < checkGate).length, 0, 'nothing in the self-check reaches Hello above its gate');
-  const program = code['Program.cs'];
-  assert.equal([...program.matchAll(/wiring\.Gate/gu)].length, 4, 'the self-check, enroll, policy and approver commands all get the gate');
-  assert.deepEqual([...sources['Wiring.cs'].matchAll(/HelloGate Gate\)/gu)].length, 1);
-  // The gate's refusals are fixed codes with one-line hints, and the identity it expects mirrors the single registry.
-  const gate = code['PackageIdentity.cs'];
-  for (const refusal of ['not_packaged', 'wrong_package', 'development_mode_package']) assert.match(gate, new RegExp(`GateRefusal\\("${refusal}"`, 'u'));
-  const registry = JSON.parse(read('scripts', 'approver-msix-identity.json'));
-  assert.match(gate, new RegExp(`public const string PackageName = "${registry.packageName.replaceAll('.', '\\.')}";`, 'u'), 'C# package name mirrors the registry');
-  assert.match(gate, new RegExp(`public const string Publisher = "${registry.publisher}";`, 'u'), 'C# publisher mirrors the registry');
-  assert.match(gate, /current\.Name != ApproverIdentity\.PackageName \|\| current\.Publisher != ApproverIdentity\.Publisher/u, 'ordinal, case-sensitive comparison');
-  assert.match(gate, /if \(current\.IsDevelopmentMode\)/u, 'a loose-file registration is refused');
 });
 
 test('issue #101: the attestation rule accepts exactly one status and the Hello file applies it to the key it just made, removing the key otherwise', () => {

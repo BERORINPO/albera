@@ -7,9 +7,8 @@ namespace Albera.Approver;
 //   enroll --replace  after the person types `replace`, make a NEW key in place of the existing one. The old key is lost; the Authority rejects approvals until its config is updated.
 // `enroll --check` is not handled here: it is SelfCheckCommand.cs (opens the existing key and signs a self-check message; never creates or replaces).
 // create / replace need an interactive console (stdin not redirected). approverKeyId is a suggestion derived from the key (any id in the Authority's id grammar works).
-// Issue #101: every form first needs the approver's own MSIX package (HelloGate; the Hello key is scoped to the package family), and a key that create / replace just made is attested:
-// Windows must report KeyCredentialAttestationStatus Success (AttestationPolicy), else the key is removed and nothing is printed for the Authority config (exit 69 attestation_refused).
-internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUserSid, TextWriter output, TextWriter errors, TextReader input, bool interactive, HelloGate gate)
+// Issue #101: a key that create / replace just made is attested: Windows must report KeyCredentialAttestationStatus Success (AttestationPolicy), else the key is removed and nothing is printed for the Authority config (exit 69 attestation_refused).
+internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUserSid, TextWriter output, TextWriter errors, TextReader input, bool interactive)
 {
     public const string ReplaceWord = "replace";
 
@@ -19,9 +18,8 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
 
     public int Run(string? option)
     {
-        if (option == "show") return Gated() ?? Show();
+        if (option == "show") return Show();
         if (!interactive) return Fail(ExitCodes.Refused, "not_interactive");
-        if (Gated() is { } refused) return refused;
         KeyLookup existing = store.Open();
         switch (existing.State)
         {
@@ -38,8 +36,6 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
                 return Report(existing);
         }
     }
-
-    private int? Gated() => gate.Check() is { } refusal ? Fail(ExitCodes.Refused, refusal.Code, refusal.Hint) : null;
 
     private int Show()
     {

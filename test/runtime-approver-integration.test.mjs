@@ -369,37 +369,8 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
     });
   });
 
-  // Issue #101: Hello is reached only from the approver's own MSIX package, and `enroll` keeps only an attested key. The fake process says which package it runs from
-  // (--test-package) and what Windows says about the attestation of a key it just made (--test-attestation); the real package and attestation APIs are covered by the shipped build below.
-  describe('issue #101: packaged-only and attestation (fake package identity and key store)', () => {
-    const refusedPackages = [['none', 'not_packaged'], ['wrong-name', 'wrong_package'], ['wrong-publisher', 'wrong_package'], ['development', 'development_mode_package']];
-
-    for (const [identity, code] of refusedPackages) {
-      it(`approve from "${identity}" is refused (65 ${code}) before the pipe or Hello is touched; the request stays pending and the same request approves from the package`, async () => {
-        await withAuthority(async (authority, hello) => {
-          const approvalId = await submit(authority);
-          const refused = await app(authority, ['approve', approvalId, '--test-package', identity], { hello });
-          assert.deepEqual([refused.code, refused.stdout, refused.stderr.split('\n')[0]], [65, '', `error: ${code}`]);
-          assert.equal((await status(authority, approvalId)).state, 'pending', 'nothing was decided');
-          assert.equal((await app(authority, ['approve', approvalId, '--test-package', 'approver'], { hello })).code, 0);
-        });
-      });
-    }
-
-    it('list and deny work from any process (no Hello); enroll --show, create, --replace and --check refuse from an unpackaged one and print nothing', async () => {
-      await withAuthority(async (authority, hello) => {
-        const approvalId = await submit(authority);
-        const listing = await app(authority, ['list', '--test-package', 'none'], { hello });
-        assert.ok(listing.code === 0 && listing.stdout.startsWith('pending: 1\n'), listing.stderr);
-        for (const args of [['enroll', '--show'], ['enroll'], ['enroll', '--replace'], ['enroll', '--check']]) {
-          const result = await runApprover(exe, [...args, '--test-package', 'none', '--test-interactive', 'yes', ...['--test-fake-key', fakeKeyArgument(hello)]], { stdin: 'replace\n' });
-          assert.deepEqual([result.code, result.stdout, result.stderr.split('\n')[0]], [65, '', 'error: not_packaged'], args.join(' '));
-        }
-        const denied = await app(authority, ['deny', approvalId, '--test-package', 'none'], { hello });
-        assert.deepEqual([denied.code, denied.stdout], [0, 'result: denied\n']);
-      });
-    });
-
+  // Issue #101: `enroll` keeps only an attested key. The fake store says what Windows reports for the attestation of a key it just made (--test-attestation); the real attestation API is covered by the shipped build below.
+  describe('issue #101: attestation at enroll (fake key store)', () => {
     it('enroll with an attestation Windows does not give (NotSupported, TemporaryFailure, UnknownError, empty buffers) exits 69 attestation_refused, keeps no key and prints no config value; Success keeps it', async () => {
       for (const attestation of ['NotSupported', 'TemporaryFailure', 'UnknownError', 'Empty']) {
         const refused = await runApprover(exe, ['enroll', '--test-key-state', 'missing', '--test-interactive', 'yes', '--test-attestation', attestation]);
@@ -500,7 +471,7 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
     it('has no test options, no fake signer and no test seam; it contains the Windows Hello signer, which the test-faults build does not; there is no --yes', async () => {
       const bytes = readFileSync(path.join(root, 'shipped', 'AlberaApprover.dll'));
       const control = readFileSync(path.join(root, 'faults', 'AlberaApprover.dll'));
-      for (const type of ['FakePresenceSigner', 'FakeKeyStore', 'NotReadyPresenceSigner', 'TestSeam', 'FakePackageIdentity']) {
+      for (const type of ['FakePresenceSigner', 'FakeKeyStore', 'NotReadyPresenceSigner', 'TestSeam']) {
         assert.equal(bytes.includes(Buffer.from(type, 'utf8')), false, `${type} must not be in the shipped build`);
         assert.equal(control.includes(Buffer.from(type, 'utf8')), true, `${type} is in the test-faults build (control)`);
       }
@@ -508,12 +479,12 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
         assert.equal(bytes.includes(Buffer.from(type, 'utf8')), true, `${type} is in the shipped build`);
         assert.equal(control.includes(Buffer.from(type, 'utf8')), false, `${type} must not be in the test-faults build (tests never reach the real Hello)`);
       }
-      for (const literal of ['--test-fake-key', '--test-pid', '--test-owner-sid', '--test-pipe-root', '--test-interactive', '--test-key-state', '--test-package', '--test-attestation']) {
+      for (const literal of ['--test-fake-key', '--test-pid', '--test-owner-sid', '--test-pipe-root', '--test-interactive', '--test-key-state', '--test-attestation']) {
         assert.equal(bytes.includes(utf16(literal)), false, `"${literal}" must not be in the shipped build`);
         assert.equal(control.includes(utf16(literal)), true, `"${literal}" is in the test-faults build (control)`);
       }
       for (const build of [bytes, control]) assert.equal(build.includes(utf16('--yes')), false, 'no --yes option in either build');
-      for (const args of [['--test-pid', '1', 'list'], ['list', '--test-fake-key', 'AA=='], ['enroll', '--test-key-state', 'missing'], ['list', '--test-interactive', 'yes'], ['list', '--test-package', 'none'], ['enroll', '--test-attestation', 'Success'], ['list', 'now'], ['approve'], ['approve', 'x'], ['approve', UNKNOWN_ID, '--yes'], ['enroll', '--yes'], ['enroll', '--check', '--yes'], ['enroll', '--check', '--expect'], ['enroll', '--expect', 'hello-1'], ['enroll', '--check', '--test-fake-key', 'AA=='], []]) {
+      for (const args of [['--test-pid', '1', 'list'], ['list', '--test-fake-key', 'AA=='], ['enroll', '--test-key-state', 'missing'], ['list', '--test-interactive', 'yes'], ['enroll', '--test-attestation', 'Success'], ['list', 'now'], ['approve'], ['approve', 'x'], ['approve', UNKNOWN_ID, '--yes'], ['enroll', '--yes'], ['enroll', '--check', '--yes'], ['enroll', '--check', '--expect'], ['enroll', '--expect', 'hello-1'], ['enroll', '--check', '--test-fake-key', 'AA=='], []]) {
         const result = await runApprover(shippedExe, args);
         assert.deepEqual([result.code, result.stdout], [64, ''], args.join(' '));
         assert.match(result.stderr, /^usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\]/u);
@@ -527,16 +498,6 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
         assert.match(result.stderr, /^error: (authority_unreachable|server_identity_unavailable|server_identity_mismatch)\n$/u);
         assert.equal(result.stdout, '');
       }
-    });
-
-    it('started from a build folder (no package) the shipped build refuses every Hello command with 65 not_packaged: the real package API reports "not packaged" and Hello is never called', async () => {
-      for (const [name, build, expected] of [['WindowsPackageIdentity', 'shipped', true], ['WindowsPackageIdentity', 'faults', false], ['FakePackageIdentity', 'shipped', false], ['FakePackageIdentity', 'faults', true]]) {
-        const text = readFileSync(path.join(root, build, 'AlberaApprover.dll'));
-        assert.equal(text.includes(Buffer.from(name, 'utf8')), expected, `${name} in the ${build} build`);
-      }
-      const shown = await runApprover(shippedExe, ['enroll', '--show']);
-      assert.deepEqual([shown.code, shown.stdout, shown.stderr.split('\n')[0]], [65, '', 'error: not_packaged']);
-      assert.match(shown.stderr.split('\n')[1], /^hint: this copy is not running from the ALBERA approver package/u);
     });
 
     it('approve and enroll (create / replace) refuse redirected stdin with exit 65 before touching the pipe or Hello, even with "yes" on stdin', async () => {

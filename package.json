@@ -47,7 +47,6 @@
     "build:windows-broker": "node scripts/publish-windows-broker.mjs",
     "build:approval-authority": "node scripts/publish-windows-approval-authority.mjs",
     "build:approver": "node scripts/publish-windows-approver.mjs",
-    "package:approver-msix": "node scripts/package-windows-approver-msix.mjs",
     "build:windows-service-lab": "node scripts/publish-windows-service-lab.mjs",
     "check:reproducible": "node scripts/check-reproducible-build.mjs",
     "smoke": "node scripts/smoke.mjs",
