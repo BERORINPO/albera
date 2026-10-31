@@ -70,7 +70,9 @@ const EXPECTED = {
     // fence -> submit -> approve -> claim flow and its journal port (rule 5e; decision log 2026-10-30+approved-operation-flow)
     'approved-operation-flow.mjs', 'approved-operation-journal.mjs',
     // shared receipt v2 / action digest contract for the future Broker and Approval Authority (rule 9; spec/architecture.md decision log 2026-10-30+receipt-v2-contract)
-    ...['action-digest.mjs', 'receipt-v2.mjs', 'strict-json.mjs', 'network-attestation.mjs', 'network-attestation-vectors.json', 'receipt-v2.schema.json', 'test-vectors.json', 'ActionDigest.cs', 'ReceiptV2.cs', 'StrictJson.cs'].map((f) => `broker-contract/${f}`),
+    ...['action-digest.mjs', 'receipt-v2.mjs', 'strict-json.mjs', 'network-attestation.mjs', 'network-attestation-vectors.json', 'receipt-v2.schema.json', 'test-vectors.json', 'ActionDigest.cs', 'ReceiptV2.cs', 'StrictJson.cs',
+      // receipt v3 (basis + policy hash) and the tier policy, issue #115 step 3
+      'receipt-v3.mjs', 'receipt-v3.schema.json', 'test-vectors-v3.json', 'ReceiptV3.cs', 'TierPolicy.cs'].map((f) => `broker-contract/${f}`),
     ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
       'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs'].map((f) => `room-ui/${f}`)],
   public: [
@@ -213,7 +215,7 @@ const providerContracts = [
   'src/runtime/bero-director.mjs',
   'src/runtime/fake-guest-checker.mjs',
   'src/runtime/workspace.mjs',
-  ...['action-digest', 'receipt-v2', 'strict-json', 'network-attestation'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
+  ...['action-digest', 'receipt-v2', 'receipt-v3', 'strict-json', 'network-attestation'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
   'src/runtime/fake-attestation-signer.mjs',
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:
@@ -335,12 +337,23 @@ if (fs.existsSync(schemaFile)) {
   const sch = JSON.parse(fs.readFileSync(schemaFile, 'utf8'));
   if (sch.additionalProperties !== false || sch.required?.length !== Object.keys(sch.properties ?? {}).length) violations.push('[9d schema] receipt-v2.schema.json must forbid extra keys and require every property');
 }
+// 9c / 9d for receipt v3 (issue #115 step 3): its own vectors (receipts, tier policies, loosening cases) and a schema that forbids extra keys and requires every property.
+const vectorsV3File = path.join(ROOT, contractRoot, 'test-vectors-v3.json');
+const schemaV3File = path.join(ROOT, contractRoot, 'receipt-v3.schema.json');
+if (!fs.existsSync(vectorsV3File) || !fs.existsSync(schemaV3File)) violations.push(`[9c vectors] ${contractRoot}/test-vectors-v3.json or receipt-v3.schema.json does not exist (false-safe)`);
+else {
+  const vec3 = JSON.parse(fs.readFileSync(vectorsV3File, 'utf8'));
+  vectorCounts += `; v3: ${vec3.receiptVectors?.length ?? 0} receipt, ${vec3.policyVectors?.length ?? 0} policy, ${vec3.loosenVectors?.length ?? 0} loosen`;
+  if (!(vec3.receiptVectors?.length >= 12 && vec3.policyVectors?.length >= 12 && vec3.loosenVectors?.length >= 4)) violations.push('[9c vectors] test-vectors-v3.json needs at least 12 receipt, 12 policy and 4 loosen vectors');
+  const sch3 = JSON.parse(fs.readFileSync(schemaV3File, 'utf8'));
+  if (sch3.additionalProperties !== false || sch3.required?.length !== Object.keys(sch3.properties ?? {}).length) violations.push('[9d schema] receipt-v3.schema.json must forbid extra keys and require every property');
+}
 results.push(`9 broker-contract: ${contractMjs.length} .mjs, ${contractCs.length} .cs, vectors ${vectorCounts}`);
 
 // 9e. The Broker enforces receipt v2 with the shared C# sources, included by link and never copied (a copy could drift from the vectors both languages run).
 const brokerProject = fs.readFileSync(path.join(ROOT, brokerRoot, 'Albera.WindowsBroker.csproj'), 'utf8');
 if (!/<Compile Include="\.\.\/broker-contract\/\*\.cs"/.test(brokerProject)) violations.push('[9e Broker uses the contract] Albera.WindowsBroker.csproj must include ../broker-contract/*.cs');
-const copies = listFiles(brokerRoot, ['.cs']).filter((file) => /namespace\s+Albera\.BrokerContract|class\s+(?:ReceiptV2|ActionDigest|StrictJson)\b/.test(fs.readFileSync(file, 'utf8')));
+const copies = listFiles(brokerRoot, ['.cs']).filter((file) => /namespace\s+Albera\.BrokerContract|class\s+(?:ReceiptV2|ReceiptV3|Receipts|TierPolicy|PolicyChange|ActionDigest|StrictJson)\b/.test(fs.readFileSync(file, 'utf8')));
 for (const file of copies) violations.push(`[9e Broker uses the contract] ${posix(file)} declares contract types: the Broker must include src/runtime/broker-contract, not copy it`);
 results.push(`9e Broker includes the contract sources by link: ${copies.length} copies`);
 // 10. The Approval Authority (src/runtime/windows-approval-authority, ADR-002 "Receipt v2", Proposed) is a separate Windows service that is built on demand
@@ -353,7 +366,7 @@ check('10a Approval Authority is not referenced by Observer layers or runtime mo
 );
 const authorityRoot = 'src/runtime/windows-approval-authority';
 const authoritySources = ['Program.cs', 'TestSeam.cs', 'AuthorityCore.cs', 'AuthorityConfig.cs', 'AuthorityRuntime.cs', 'ExitCodes.cs', 'PendingStore.cs', 'PipeHost.cs', 'Presence.cs',
-  'Protocol.cs', 'ReceiptBuilder.cs', 'ServiceHost.cs', 'ServicePathGuard.cs', 'SidRules.cs', 'Signers.cs'];
+  'Protocol.cs', 'ReceiptBuilder.cs', 'ServiceHost.cs', 'ServicePathGuard.cs', 'SidRules.cs', 'Signers.cs', 'PolicyStore.cs'];
 for (const f of [...authoritySources, 'Albera.ApprovalAuthority.csproj', 'packages.lock.json']) {
   if (!fs.existsSync(path.join(ROOT, authorityRoot, f))) violations.push(`[10b Approval Authority source] ${authorityRoot}/${f} does not exist (false-safe)`);
 }
@@ -382,7 +395,7 @@ check('11a Approver app is not referenced by Observer layers or runtime modules'
 );
 const approverRoot = 'src/runtime/windows-approver';
 const approverSources = ['Program.cs', 'TestSeam.cs', 'CommandLine.cs', 'ApproverCommands.cs', 'PendingView.cs', 'Renderer.cs', 'SafeText.cs', 'Presence.cs', 'Channel.cs', 'PipeChannel.cs',
-  'ServerExpectation.cs', 'ExitCodes.cs', 'EnrollCommand.cs', 'SelfCheckCommand.cs', 'HelloKeyStore.cs', 'Wiring.cs', 'WindowsHello.cs'];
+  'ServerExpectation.cs', 'ExitCodes.cs', 'EnrollCommand.cs', 'SelfCheckCommand.cs', 'HelloKeyStore.cs', 'Wiring.cs', 'WindowsHello.cs', 'PolicyCommand.cs'];
 for (const f of [...approverSources, 'Albera.Approver.csproj', 'packages.lock.json']) {
   if (!fs.existsSync(path.join(ROOT, approverRoot, f))) violations.push(`[11b Approver source] ${approverRoot}/${f} does not exist (false-safe)`);
 }

@@ -32,16 +32,19 @@ internal static partial class Harness
         public readonly AuthorityCore Core;
         public readonly AuthorityProtocol Protocol;
 
-        public Fixture(int ttl = PendingStore.DefaultTtlSeconds, IHumanPresenceVerifier? presence = null, AuthorityIdentity? identity = null)
+        public Fixture(int ttl = PendingStore.DefaultTtlSeconds, IHumanPresenceVerifier? presence = null, AuthorityIdentity? identity = null, PolicyStore? policy = null, Action<string>? audit = null)
         {
             Identity = identity ?? new AuthorityIdentity("authority-key-2026-10", "albera-host-broker", "policy-2026-10", "hello-key-yosuke-01");
             Store = new PendingStore(() => Now, ttl);
-            Core = new AuthorityCore(Store, Signer, presence ?? RsaPresenceVerifier.TryCreate(Hello.ExportSubjectPublicKeyInfo())!, Identity, () => Now);
+            Core = new AuthorityCore(Store, Signer, presence ?? RsaPresenceVerifier.TryCreate(Hello.ExportSubjectPublicKeyInfo())!, Identity, () => Now, policy, audit);
             Protocol = new AuthorityProtocol(Core);
         }
 
         public JsonElement Call(PipeRole role, string json) => Parse(Protocol.Handle(role, Encoding.UTF8.GetBytes(json)));
         public JsonElement Submit(string json) => Call(PipeRole.Submit, json);
+        public JsonElement PolicyGet() => Call(PipeRole.Approver, "{\"v\":1,\"verb\":\"policy\"}");
+        public JsonElement PolicySet(string policyJson, byte[]? presence = null) =>
+            Call(PipeRole.Approver, $"{{\"v\":1,\"verb\":\"policy_set\",\"policy\":{policyJson}{(presence is null ? "" : $",\"presence\":\"{Convert.ToBase64String(presence)}\"")}}}");
         public JsonElement Status(string approvalId) => Call(PipeRole.Submit, $"{{\"v\":1,\"verb\":\"status\",\"approvalId\":\"{approvalId}\"}}");
         public JsonElement List(long after = 0) => Call(PipeRole.Approver, $"{{\"v\":1,\"verb\":\"list\",\"afterSeq\":{after}}}");
         public JsonElement Deny(string approvalId) => Call(PipeRole.Approver, $"{{\"v\":1,\"verb\":\"decide\",\"approvalId\":\"{approvalId}\",\"decision\":\"deny\"}}");
@@ -568,6 +571,7 @@ internal static partial class Harness
         SignerChecks();
         KeyGuardChecks();
         PathGuardChecks();
+        PolicyChecks();
         Console.WriteLine(JsonSerializer.Serialize(new { checks = Results, digestProbes = DigestProbes() }));
         return 0;
     }

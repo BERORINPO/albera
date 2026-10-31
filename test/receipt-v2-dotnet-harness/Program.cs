@@ -1,5 +1,7 @@
-// Usage: dotnet ReceiptV2Harness.dll <test-vectors.json> <receipt-v2.schema.json>
+// Usage: dotnet ReceiptV2Harness.dll <test-vectors.json> <receipt-v2.schema.json> [<test-vectors-v3.json> <receipt-v3.schema.json>]
 // Prints one JSON document: the C# verdict for every digest and receipt vector, plus any difference between ReceiptV2.Fields and the schema file.
+// With the two v3 files it also prints "v2ViaDispatcher" (the v2 receipt vectors through Receipts.Validate), "v3" (the v3 receipt vectors through Receipts.Validate and, for
+// bytes that claim v3, ReceiptV3.Validate), "v3SchemaMismatches", "policy" (every tier policy vector), "loosen" and "policyMessageHex".
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -29,41 +31,99 @@ foreach (JsonElement v in vectors.RootElement.GetProperty("digestVectors").Enume
     digestResults.Add(result);
 }
 
-var receiptResults = new List<Dictionary<string, object?>>();
-foreach (JsonElement v in vectors.RootElement.GetProperty("receiptVectors").EnumerateArray())
+List<Dictionary<string, object?>> RunReceiptVectors(JsonElement receiptVectors, Func<byte[], ReceiptContext, ReceiptVerdict> validate)
 {
-    byte[] bytes = v.TryGetProperty("receiptBase64", out JsonElement b64) ? Convert.FromBase64String(b64.GetString()!) : Encoding.UTF8.GetBytes(v.GetProperty("receiptJson").GetString()!);
-    JsonElement c = v.GetProperty("context");
-    long now = c.GetProperty("now").GetInt64();
-    var expected = new Dictionary<string, object>();
-    foreach (JsonProperty p in c.GetProperty("expected").EnumerateObject())
-        expected[p.Name] = p.Value.ValueKind == JsonValueKind.Number ? p.Value.GetInt64() : p.Value.GetString()!;
-    Dictionary<string, object>? action = null;
-    try { action = StrictJson.Parse(Encoding.UTF8.GetBytes(c.GetProperty("actionJson").GetString()!), 3); }
-    catch (StrictJsonException) { /* the context then carries no usable action DTO: invalid_context */ }
-    ReceiptVerdict verdict = ReceiptV2.Validate(bytes, new ReceiptContext(() => now, c.GetProperty("environment").GetString()!, expected, action));
-    var result = new Dictionary<string, object?> { ["name"] = v.GetProperty("name").GetString(), ["ok"] = verdict.Ok };
-    if (!verdict.Ok) { result["code"] = verdict.Code; if (verdict.Field is not null) result["field"] = verdict.Field; }
-    receiptResults.Add(result);
+    var results = new List<Dictionary<string, object?>>();
+    foreach (JsonElement v in receiptVectors.EnumerateArray())
+    {
+        byte[] bytes = v.TryGetProperty("receiptBase64", out JsonElement b64) ? Convert.FromBase64String(b64.GetString()!) : Encoding.UTF8.GetBytes(v.GetProperty("receiptJson").GetString()!);
+        JsonElement c = v.GetProperty("context");
+        long now = c.GetProperty("now").GetInt64();
+        var expected = new Dictionary<string, object>();
+        foreach (JsonProperty p in c.GetProperty("expected").EnumerateObject())
+            expected[p.Name] = p.Value.ValueKind == JsonValueKind.Number ? p.Value.GetInt64() : p.Value.GetString()!;
+        Dictionary<string, object>? action = null;
+        try { action = StrictJson.Parse(Encoding.UTF8.GetBytes(c.GetProperty("actionJson").GetString()!), 3); }
+        catch (StrictJsonException) { /* the context then carries no usable action DTO: invalid_context */ }
+        ReceiptVerdict verdict = validate(bytes, new ReceiptContext(() => now, c.GetProperty("environment").GetString()!, expected, action));
+        var result = new Dictionary<string, object?> { ["name"] = v.GetProperty("name").GetString(), ["ok"] = verdict.Ok };
+        if (!verdict.Ok) { result["code"] = verdict.Code; if (verdict.Field is not null) result["field"] = verdict.Field; }
+        results.Add(result);
+    }
+    return results;
 }
 
-var mismatches = new List<string>();
-JsonElement root = schema.RootElement, props = root.GetProperty("properties");
-if (!root.GetProperty("required").EnumerateArray().Select(x => x.GetString()).SequenceEqual(ReceiptV2.Fields.Select(f => f.Name))) mismatches.Add("required");
-if (root.GetProperty("additionalProperties").ValueKind != JsonValueKind.False) mismatches.Add("additionalProperties");
-if (props.EnumerateObject().Count() != ReceiptV2.Fields.Count) mismatches.Add("property count");
-foreach (FieldSpec f in ReceiptV2.Fields)
+List<string> SchemaMismatches(JsonDocument schemaDocument, IReadOnlyList<FieldSpec> fields)
 {
-    if (!props.TryGetProperty(f.Name, out JsonElement p)) { mismatches.Add($"{f.Name}: missing"); continue; }
-    string? Str(string k) => p.TryGetProperty(k, out JsonElement e) ? e.GetString() : null;
-    long? Num(string k) => p.TryGetProperty(k, out JsonElement e) ? e.GetInt64() : null;
-    if (Str("type") != (f.IsInteger ? "integer" : "string")) mismatches.Add($"{f.Name}: type");
-    if (Str("pattern") != f.Pattern) mismatches.Add($"{f.Name}: pattern");
-    if (Num("maxLength") != f.MaxLength) mismatches.Add($"{f.Name}: maxLength");
-    if (Num("minimum") != f.Minimum) mismatches.Add($"{f.Name}: minimum");
-    if (Num("const") != f.Const) mismatches.Add($"{f.Name}: const");
-    string[]? schemaEnum = p.TryGetProperty("enum", out JsonElement en) ? en.EnumerateArray().Select(x => x.GetString()!).ToArray() : null;
-    if (!(schemaEnum is null ? f.Enum is null : f.Enum is not null && schemaEnum.SequenceEqual(f.Enum))) mismatches.Add($"{f.Name}: enum");
+    var mismatches = new List<string>();
+    JsonElement root = schemaDocument.RootElement, props = root.GetProperty("properties");
+    if (!root.GetProperty("required").EnumerateArray().Select(x => x.GetString()).SequenceEqual(fields.Select(f => f.Name))) mismatches.Add("required");
+    if (root.GetProperty("additionalProperties").ValueKind != JsonValueKind.False) mismatches.Add("additionalProperties");
+    if (props.EnumerateObject().Count() != fields.Count) mismatches.Add("property count");
+    foreach (FieldSpec f in fields)
+    {
+        if (!props.TryGetProperty(f.Name, out JsonElement p)) { mismatches.Add($"{f.Name}: missing"); continue; }
+        string? Str(string k) => p.TryGetProperty(k, out JsonElement e) ? e.GetString() : null;
+        long? Num(string k) => p.TryGetProperty(k, out JsonElement e) ? e.GetInt64() : null;
+        if (Str("type") != (f.IsInteger ? "integer" : "string")) mismatches.Add($"{f.Name}: type");
+        if (Str("pattern") != f.Pattern) mismatches.Add($"{f.Name}: pattern");
+        if (Num("maxLength") != f.MaxLength) mismatches.Add($"{f.Name}: maxLength");
+        if (Num("minimum") != f.Minimum) mismatches.Add($"{f.Name}: minimum");
+        if (Num("const") != f.Const) mismatches.Add($"{f.Name}: const");
+        string[]? schemaEnum = p.TryGetProperty("enum", out JsonElement en) ? en.EnumerateArray().Select(x => x.GetString()!).ToArray() : null;
+        if (!(schemaEnum is null ? f.Enum is null : f.Enum is not null && schemaEnum.SequenceEqual(f.Enum))) mismatches.Add($"{f.Name}: enum");
+    }
+    return mismatches;
 }
 
-Console.Out.Write(JsonSerializer.Serialize(new Dictionary<string, object> { ["digest"] = digestResults, ["receipt"] = receiptResults, ["schemaMismatches"] = mismatches }));
+JsonElement v2Receipts = vectors.RootElement.GetProperty("receiptVectors");
+var output = new Dictionary<string, object>
+{
+    ["digest"] = digestResults,
+    ["receipt"] = RunReceiptVectors(v2Receipts, (b, c) => ReceiptV2.Validate(b, c)),
+    ["schemaMismatches"] = SchemaMismatches(schema, ReceiptV2.Fields),
+};
+
+if (args.Length >= 4)
+{
+    using JsonDocument v3Vectors = JsonDocument.Parse(File.ReadAllText(args[2]));
+    using JsonDocument v3Schema = JsonDocument.Parse(File.ReadAllText(args[3]));
+    JsonElement v3Root = v3Vectors.RootElement;
+    output["v2ViaDispatcher"] = RunReceiptVectors(v2Receipts, (b, c) => Receipts.Validate(b, c));
+    output["v3"] = RunReceiptVectors(v3Root.GetProperty("receiptVectors"), (b, c) => Receipts.Validate(b, c));
+    // The same bytes straight through ReceiptV3 (only those that claim v3: anything else is a v2 question).
+    output["v3Direct"] = RunReceiptVectors(v3Root.GetProperty("receiptVectors"), (b, c) => Encoding.UTF8.GetString(b).Contains("\"v\":3", StringComparison.Ordinal) ? ReceiptV3.Validate(b, c) : Receipts.Validate(b, c));
+    output["v3SchemaMismatches"] = SchemaMismatches(v3Schema, ReceiptV3.Fields);
+    output["policyBasisActions"] = ReceiptV3.PolicyBasisActions;
+
+    TierPolicy? Read(string json) => TierPolicy.TryParse(Encoding.UTF8.GetBytes(json));
+    var policyResults = new List<Dictionary<string, object?>>();
+    foreach (JsonElement v in v3Root.GetProperty("policyVectors").EnumerateArray())
+    {
+        TierPolicy? policy = Read(v.GetProperty("json").GetString()!);
+        var result = new Dictionary<string, object?> { ["name"] = v.GetProperty("name").GetString(), ["ok"] = policy is not null };
+        if (policy is not null)
+        {
+            string canonical = Encoding.UTF8.GetString(policy.ToJson());
+            result["revision"] = policy.Revision;
+            result["tier"] = policy.Tier;
+            result["prompts"] = policy.Prompts;
+            result["noPrompt"] = policy.NoPromptActions().Order(StringComparer.Ordinal).ToArray();
+            result["hash"] = policy.Hash();
+            result["canonicalJson"] = canonical;
+            result["canonicalRoundTrips"] = Read(canonical)?.Hash() == policy.Hash();
+        }
+        policyResults.Add(result);
+    }
+    output["policy"] = policyResults;
+    output["loosen"] = v3Root.GetProperty("loosenVectors").EnumerateArray().Select(v => new Dictionary<string, object?>
+    {
+        ["name"] = v.GetProperty("name").GetString(),
+        ["loosens"] = Read(v.GetProperty("to").GetString()!)!.Loosens(Read(v.GetProperty("from").GetString()!)!),
+    }).ToList();
+    TierPolicy messagePolicy = Read(v3Root.GetProperty("policyMessage").GetProperty("policyJson").GetString()!)!;
+    output["policyMessageHex"] = v3Root.GetProperty("policyMessage").GetProperty("cases").EnumerateArray()
+        .Select(c => Convert.ToHexStringLower(PolicyChange.Message(messagePolicy, c.GetProperty("kid").GetString()!, c.GetProperty("audience").GetString()!))).ToList();
+}
+
+Console.Out.Write(JsonSerializer.Serialize(output));

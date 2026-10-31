@@ -357,7 +357,7 @@ test('reply to a committed claim is written under its own budget, below the stop
   // contract's strict reader (a wrong type is a verdict, not an exception) and only typed values are read out of its result.
   assert.deepEqual([...brokerCode.matchAll(/\.(GetInt64|GetInt32|GetDouble)\(\)/gu)].map((m) => m[0]), [], 'no direct number getter');
   const claim = requests.slice(requests.indexOf('private static async Task<BrokerReply> ClaimAsync('));
-  assert.ok(claim.indexOf('ReceiptV2.Parse(receipt)') < claim.indexOf('VerifyData(') && claim.indexOf('VerifyData(') < claim.indexOf('ReceiptV2.Validate('), 'structure, then the signature, then the validation');
+  assert.ok(claim.indexOf('Receipts.Parse(receipt)') < claim.indexOf('VerifyData(') && claim.indexOf('VerifyData(') < claim.indexOf('Receipts.Validate('), 'structure, then the signature, then the validation');
   assert.match(claim, /if \(!parsed\.Ok\) return Deny\(parsed\.Code!\);/u);
 });
 
@@ -463,7 +463,7 @@ test('receipt v2: the shared contract sources are included, not copied; the Brok
   assert.match(trusted, /\["policyVersion"\] = settings\.PolicyVersion,/u, 'and so is the policy');
   assert.match(requests, /private const string BrokerAudience = "albera-host-broker";/u, 'the contract\'s audience grammar is lower case');
   // The only digest taken from the receipt is the one stored in the claim row, after Validate recomputed and compared it.
-  assert.deepEqual([...requests.matchAll(/r\["actionDigest"\]/gu)].map((m) => m.index > requests.indexOf('ReceiptV2.Validate(')), [true]);
+  assert.deepEqual([...requests.matchAll(/r\["actionDigest"\]/gu)].map((m) => m.index > requests.indexOf('Receipts.Validate(')), [true]);
   // The key is found by the receipt's kid among the pinned keys, then the signature is verified over the exact bytes.
   assert.match(requests, /settings\.AuthorityKeys\.FirstOrDefault\(key => key\.Kid == kid\) is not \{ \} authorityKey\) return Deny\("kid_unknown"\);/u);
   assert.match(requests, /authority\.VerifyData\(receipt, signature, HashAlgorithmName\.SHA256, DSASignatureFormat\.IeeeP1363FixedFieldConcatenation\)\) return Deny\("signature"\);/u);
@@ -488,7 +488,7 @@ test('exact duplicate: only the same operationId with the same receipt-and-signa
   // A replay skips the challenge checks only (its challenge was spent or wiped by a restart); signature, clock fence and Validate still run.
   const claim = requests.slice(requests.indexOf('private static async Task<BrokerReply> ClaimAsync('));
   assert.match(claim, /if \(!replay && ChallengeRefusal\(context, computerId\) is \{ \} refusal\) return Deny\(refusal\);/u);
-  assert.ok(claim.indexOf('VerifyData(') < claim.indexOf('ReadClaimContextAsync(') && claim.indexOf('clock_rollback') < claim.indexOf('ReceiptV2.Validate(') && claim.indexOf('ReceiptV2.Validate(') < claim.indexOf('if (replay)'));
+  assert.ok(claim.indexOf('VerifyData(') < claim.indexOf('ReadClaimContextAsync(') && claim.indexOf('clock_rollback') < claim.indexOf('Receipts.Validate(') && claim.indexOf('Receipts.Validate(') < claim.indexOf('if (replay)'));
 });
 
 test('inspect: a request of its own that opens the journal read-only, never creates it and writes no row', () => {
@@ -499,7 +499,7 @@ test('inspect: a request of its own that opens the journal read-only, never crea
   assert.match(inspect, /RequireCurrentVersionAsync\(db\)/u);
   const handler = requests.slice(requests.indexOf('private static async Task<BrokerReply> InspectAsync('), requests.indexOf('private static async Task<BrokerReply> ClaimAsync('));
   assert.match(handler, /Journal\.RecordedStateAsync\(settings\.Database, operationId\)/u);
-  assert.equal(/ClaimAsync|CheckExistingAsync|BeginEpochAsync|IssueChallengeAsync|ReceiptV2/u.test(handler), false, 'inspect involves no receipt, no claim and no challenge');
+  assert.equal(/ClaimAsync|CheckExistingAsync|BeginEpochAsync|IssueChallengeAsync|ReceiptV2|Receipts\./u.test(handler), false, 'inspect involves no receipt, no claim and no challenge');
   // The three request shapes differ in their key sets and nothing else is accepted.
   const dispatch = requests.slice(requests.indexOf('private static async Task<BrokerReply> HandleRequestAsync('), requests.indexOf('// The value of a one-key object'));
   assert.match(dispatch, /properties\.Length == 1 && properties\[0\]\.NameEquals\("fence"\)/u);

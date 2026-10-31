@@ -9,6 +9,8 @@ namespace Albera.Approver;
 //   AlberaApprover.exe deny <approvalId>
 //   AlberaApprover.exe enroll [--show|--replace]   make / show the Windows Hello key and print the Authority config values
 //   AlberaApprover.exe enroll --check [--expect <approverKeyId>]   sign a fresh self-check message with the EXISTING Hello key and verify it locally (no Authority, nothing sent)
+//   AlberaApprover.exe policy [show]           show the Authority's tier policy
+//   AlberaApprover.exe policy set <careful|standard> [--prompt <action>]...   ask the Authority for a new tier policy; a change that lets an action skip a person needs a typed yes and Hello
 // The pipe, the service and the expected owner are fixed (ServerExpectation.Production); the shipped build has no option, file or environment variable that changes
 // them. The shipped build signs with Windows Hello (WindowsHello.cs). The test-faults build (-p:AlberaApproverTestFaults=true, never the published one) does NOT contain the
 // Hello code: it adds --test-* options and the fake signer / key store (TestSeam.cs). Exit codes: ExitCodes.cs.
@@ -37,6 +39,11 @@ internal static class Program
             return new SelfCheckCommand(wiring.KeyStore, wiring.Signer, CurrentUserSid, () => RandomNumberGenerator.GetBytes(SelfCheckMessage.NonceBytes), Console.Out, Console.Error, wiring.Interactive).Run(command.Expect);
         if (command.Verb == "enroll")
             return new EnrollCommand(wiring.KeyStore, CurrentUserSid, Console.Out, Console.Error, Console.In, wiring.Interactive).Run(command.Option);
+        if (command.Verb == "policy")
+        {
+            PolicyCommand policy = new(new PipeChannel(wiring.Expectation, wiring.TimeoutMs), wiring.Signer, Console.Out, Console.Error, Console.In, wiring.Interactive);
+            return command.Option == "show" ? await policy.ShowAsync() : await policy.SetAsync(command.Tier!, command.Prompts!);
+        }
         ApproverCommands commands = new(new PipeChannel(wiring.Expectation, wiring.TimeoutMs), wiring.Signer, Console.Out, Console.Error, Console.In, () => DateTimeOffset.UtcNow, wiring.Interactive);
         return command.Verb switch
         {

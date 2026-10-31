@@ -191,6 +191,17 @@ test('the status reply schema: pending, or approved with a canonical base64 rece
   for (const value of bad) assert.equal(codeOf(() => validateStatusResponse(value, APPROVAL_ID)), 'invalid_response', JSON.stringify(value).slice(0, 120));
 });
 
+test('the status reply also takes a receipt v3 (basis presence or policy, policy hash) for this approval, and nothing with another basis or a v2-style label', () => {
+  const POLICY_HASH = `sha256:${'ef'.repeat(32)}`;
+  const v3 = (overrides = {}) => ({ ...APPROVED, receipt: receiptFor({ v: 3, policyVersion: POLICY_HASH, basis: 'policy', action: 'environment.stop', actionDigest: computeActionDigest('broker.operation', { ...ACTION, action: 'environment.stop' }), ...overrides }).toString('base64') });
+  assert.deepEqual(validateStatusResponse(v3(), APPROVAL_ID), v3());
+  assert.deepEqual(validateStatusResponse(v3({ basis: 'presence' }), APPROVAL_ID), v3({ basis: 'presence' }));
+  for (const overrides of [{ basis: 'grant:g-1' }, { basis: 'approved' }, { basis: undefined }, { policyVersion: 'policy-test' }, { extra: 1 }, { approvalId: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d' }]) {
+    assert.equal(codeOf(() => validateStatusResponse(v3(overrides), APPROVAL_ID)), 'invalid_response', JSON.stringify(overrides));
+  }
+  assert.equal(codeOf(() => validateStatusResponse({ ...APPROVED, receipt: receiptFor({ basis: 'policy' }).toString('base64') }, APPROVAL_ID)), 'invalid_response', 'a v2 body with a basis is neither v2 nor v3');
+});
+
 test('the error code lists agree: pre-send codes are a subset, and no post-send or Authority code can look retry-safe', () => {
   assert.ok(AUTHORITY_CLIENT_ERROR_CODES.every((code) => /^[a-z_]+$/u.test(code)));
   assert.equal(new Set(AUTHORITY_CLIENT_ERROR_CODES).size, AUTHORITY_CLIENT_ERROR_CODES.length, 'no code listed twice');

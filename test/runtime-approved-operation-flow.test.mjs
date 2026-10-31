@@ -163,6 +163,75 @@ function defineFlowSuite(label, newJournal) {
       });
     });
 
+    describe('approved operation flow: receipt v3 and immediate approval by policy (issue #115 step 3)', () => {
+      const POLICY_HASH = `sha256:${'cd'.repeat(32)}`;
+      const STOP = Object.freeze({ operationId: 'op-1', action: { action: 'environment.stop', projectId: 'project-1', computerId: 'computer-1', args: {} } });
+      const v3 = (basis, extra = {}) => ({ v: 3, basis, policyVersion: POLICY_HASH, action: 'environment.stop', ...extra });
+      /** The Authority answers `approved` to the submit itself and returns the receipt at the first status call. */
+      const approveAtOnce = (world, overrides) => {
+        world.script.submit.push((w, fields) => {
+          const approvalId = stableUuid(`${fields.operationId}/${fields.idempotencyKey}`);
+          w.approvals.set(approvalId, fields);
+          return { ok: true, approvalId, state: 'approved', expiresAt: Math.floor(w.clock / 1000) + 120 };
+        });
+        world.script.status.push((w, { approvalId }) => w.receiptFor(approvalId, w.approvals.get(approvalId), overrides));
+      };
+      const claimedReceipt = (world) => JSON.parse(Buffer.from(world.claims[0].receipt, 'base64').toString('utf8'));
+
+      it('a policy receipt is claimed without waiting for a person: no sleep, no second poll, and the journal still goes through every phase in order', async () => {
+        const world = makeWorld();
+        approveAtOnce(world, v3('policy'));
+        const result = await world.flow.run(STOP);
+        assert.deepEqual([result.status, result.phase, result.brokerState], ['claimed', 'CLAIMED', 'UNKNOWN']);
+        assert.deepEqual(world.calls, ['fence', 'submit', 'status', 'claim']);
+        assert.deepEqual(world.sleeps, [], 'nothing waited for a human');
+        assert.deepEqual(world.phases(), ['INTENT', 'FENCED', 'SUBMITTED', 'APPROVED', 'CLAIMING', 'CLAIMED']);
+        assert.deepEqual(world.phaseAtClaim, ['CLAIMING']);
+        assert.deepEqual([claimedReceipt(world).v, claimedReceipt(world).basis, claimedReceipt(world).action], [3, 'policy', 'environment.stop']);
+        assert.equal(world.journal.get('op-1').receipt.receipt, world.claims[0].receipt);
+      });
+
+      it('a v3 receipt with basis presence goes through the normal human path (polling and backoff) exactly like a v2 one', async () => {
+        const world = makeWorld();
+        const original = world.receiptFor;
+        world.receiptFor = (approvalId, fields, overrides) => original(approvalId, fields, { ...v3('presence'), ...overrides });
+        const result = await world.flow.run(STOP);
+        assert.equal(result.status, 'claimed');
+        assert.deepEqual(world.calls, ['fence', 'submit', 'status', 'status', 'claim']);
+        assert.deepEqual(world.sleeps, [500]);
+        assert.equal(claimedReceipt(world).basis, 'presence');
+      });
+
+      it('a policy receipt for an action a policy can never skip is not claimed, whatever the Authority signed (receipt_mismatch, nothing sent to the Broker)', async () => {
+        for (const action of ['environment.destroy', 'environment.start', 'environment.create', 'environment.purge', 'synthetic.noop']) {
+          const world = makeWorld();
+          approveAtOnce(world, v3('policy', { action }));
+          const result = await world.flow.run({ operationId: 'op-1', action: { action, projectId: 'project-1', computerId: 'computer-1', args: {} } });
+          assert.deepEqual([result.status, result.code, result.phase], ['failed', 'receipt_mismatch', 'FAILED'], action);
+          assert.equal(world.count('claim'), 0, action);
+        }
+      });
+
+      it('a receipt with a reserved or unknown basis, or a v3 body without the hash, is never claimed (receipt_mismatch)', async () => {
+        for (const overrides of [v3('grant:g-0001'), v3('approved'), v3('policy', { policyVersion: 'policy-2026-10' }), v3('policy', { action: 'environment.inspect' })]) {
+          const world = makeWorld();
+          approveAtOnce(world, overrides);
+          const result = await world.flow.run(STOP);
+          assert.deepEqual([result.status, result.code], ['failed', 'receipt_mismatch'], JSON.stringify(overrides));
+          assert.equal(world.count('claim'), 0);
+        }
+      });
+
+      it('an immediate approval is idempotent across a restart: a second run reports the recorded outcome and does not ask again', async () => {
+        const world = makeWorld();
+        approveAtOnce(world, v3('policy'));
+        const first = await world.flow.run(STOP);
+        const again = await world.build().run(STOP);
+        assert.deepEqual(again, { ...first, replayed: true });
+        assert.equal(world.count('submit'), 1);
+      });
+    });
+
     describe('approved operation flow: deny, expire, other final answers', () => {
       for (const [code, status, phase] of [
         ['human_denied', 'denied', 'DENIED'], ['presence_unavailable', 'denied', 'DENIED'], ['presence_mismatch', 'denied', 'DENIED'],

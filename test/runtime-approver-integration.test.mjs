@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { createPublicKey, randomBytes, verify } from 'node:crypto';
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { constants, createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -365,6 +365,84 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
         assert.deepEqual([piped.code, piped.stdout, piped.stderr.split('\n')[0]], [65, '', 'error: not_interactive']);
         assert.equal((await status(authority, approvalId)).state, 'pending', 'nothing was sent');
         assert.equal((await app(authority, ['approve', approvalId], { hello })).code, 0);
+      });
+    });
+  });
+
+  // The tier policy commands (issue #115 step 3) against the real Authority: the fake Hello key signs, the Authority verifies it with the pinned RSA key, and policy.json is written
+  // in a folder of its own (a policy written here would otherwise be read by every later Authority started from the shared folder).
+  describe('policy and policy set', () => {
+    const policyFile = (folder) => path.join(folder, 'policy.json');
+    async function withPolicyAuthority(body) {
+      const folder = makeTrustedTempDirectory('albera-approver-policy-');
+      const hello = makeHelloKey();
+      const authority = await startAuthority(authorityExe, folder, { config: makeConfig({ approverPublicKey: hello.spki }) });
+      try { return await body(authority, hello, folder); } finally { await authority.stop(); rmSync(folder, { recursive: true, force: true }); }
+    }
+    const policyApp = (authority, args, { hello, stdin = 'yes\n', ...options } = {}) => runApprover(exe, [...args, ...testOptions(authority, { sid, hello, ...options })], { stdin });
+
+    it('policy shows the careful default (revision 0, nobody skipped) and sends nothing but the read', async () => {
+      await withPolicyAuthority(async (authority) => {
+        const shown = await policyApp(authority, ['policy']);
+        assert.deepEqual([shown.code, shown.stderr], [0, '']);
+        assert.ok(shown.stdout.includes('policy in force (revision 0)') && shown.stdout.includes('tier: careful') && shown.stdout.includes('nothing; every action needs a person'), shown.stdout);
+        assert.equal((await policyApp(authority, ['policy', 'show'])).stdout, shown.stdout);
+      });
+    });
+
+    it('policy set standard: needs a typed yes and the fake Hello signature, the Authority verifies it and writes policy.json, and the next skippable action is signed at once with a policy receipt', async () => {
+      await withPolicyAuthority(async (authority, hello, folder) => {
+        const result = await policyApp(authority, ['policy', 'set', 'standard', '--prompt', 'task.cancel'], { hello });
+        assert.deepEqual([result.code, result.stderr], [0, '']);
+        assert.ok(result.stdout.includes('will no longer ask you: environment.inspect, environment.stop, workspace.inspect') && result.stdout.includes('windows hello: needed') && result.stdout.endsWith('result: policy applied (revision 1)\n'), result.stdout);
+        const written = JSON.parse(readFileSync(policyFile(folder), 'utf8'));
+        const { authorized, ...policy } = written;
+        assert.deepEqual(policy, { v: 1, rev: 1, tier: 'standard', overrides: { 'task.cancel': 'prompt' } });
+        const { presence, ...signed } = authorized;
+        assert.deepEqual(signed, policy, 'the policy the signature authorized');
+        // The signature the approver made with the fake Hello key binds this Authority (kid and audience from its reply) and the hash of the policy.
+        const hash = `sha256:${createHash('sha256').update(['albera.policy-hash.v1', '1', 'standard', 'task.cancel'].join('\0')).digest('hex')}`;
+        assert.equal(verify('sha256', Buffer.from(`albera.policy.v1\0authority-key-test\0albera-host-broker\0${hash}`), { key: createPublicKey({ key: Buffer.from(hello.spki, 'base64'), format: 'der', type: 'spki' }), padding: constants.RSA_PKCS1_PADDING }, Buffer.from(presence, 'base64')), true);
+        const stop = await authority.submit(submitRequest({ operationId: 'op-stop', idempotencyKey: 'idem-stop', action: { action: 'environment.stop', projectId: 'proj-alpha', computerId: 'pc-01', args: {} } }));
+        assert.equal(stop.state, 'approved', 'signed at once');
+        const cancel = await authority.submit(submitRequest({ operationId: 'op-cancel', purpose: 'guest.command', idempotencyKey: 'idem-cancel', action: { action: 'task.cancel', projectId: 'proj-alpha', computerId: 'pc-01', args: {} } }));
+        assert.equal(cancel.state, 'pending', 'the prompt override applies');
+        const shown = await policyApp(authority, ['policy']);
+        assert.ok(shown.stdout.includes('tier: standard') && shown.stdout.includes('always asks you: task.cancel'), shown.stdout);
+      });
+    });
+
+    it('policy set standard refuses before anything is signed or sent when there is no console, the answer is not yes, or Hello has no key or gives no proof', async () => {
+      await withPolicyAuthority(async (authority, hello, folder) => {
+        const notInteractive = await policyApp(authority, ['policy', 'set', 'standard'], { hello, interactive: false });
+        assert.deepEqual([notInteractive.code, notInteractive.stderr.split('\n')[0]], [65, 'error: not_interactive']);
+        for (const answer of ['no\n', '\n']) assert.deepEqual([(await policyApp(authority, ['policy', 'set', 'standard'], { hello, stdin: answer })).code], [65]);
+        const noKey = await policyApp(authority, ['policy', 'set', 'standard']);
+        assert.deepEqual([noKey.code, noKey.stderr.split('\n')[0]], [69, 'error: presence_signer_unavailable']);
+        const noProof = await policyApp(authority, ['policy', 'set', 'standard'], { hello, presence: 'unavailable' });
+        assert.deepEqual([noProof.code, noProof.stderr.split('\n')[0]], [69, 'error: hello_no_proof']);
+        assert.equal(existsSync(policyFile(folder)), false, 'nothing was written');
+        assert.equal((await authority.approver({ v: 1, verb: 'policy' })).policy.tier, 'careful');
+      });
+    });
+
+    it('a signature from a Hello key the Authority does not pin is refused by the Authority (exit 67 presence_mismatch) and changes nothing; lowering needs no Hello at all', async () => {
+      await withPolicyAuthority(async (authority, hello, folder) => {
+        const stranger = await policyApp(authority, ['policy', 'set', 'standard'], { hello: makeHelloKey() });
+        assert.deepEqual([stranger.code, stranger.stderr.split('\n')[0]], [67, 'error: authority:presence_mismatch']);
+        assert.equal(existsSync(policyFile(folder)), false);
+        assert.equal((await policyApp(authority, ['policy', 'set', 'standard'], { hello })).code, 0);
+        const lower = await policyApp(authority, ['policy', 'set', 'careful'], { stdin: '', interactive: false }); // no key, no console: not needed to add prompts
+        assert.deepEqual([lower.code, lower.stderr, lower.stdout.endsWith('result: policy applied (revision 2)\n')], [0, '', true]);
+        assert.equal(JSON.parse(readFileSync(policyFile(folder), 'utf8')).tier, 'careful');
+        assert.equal((await authority.submit(submitRequest({ operationId: 'op-s', idempotencyKey: 'idem-s', action: { action: 'environment.stop', projectId: 'proj-alpha', computerId: 'pc-01', args: {} } }))).state, 'pending');
+      });
+    });
+
+    it('policy set with the policy that is already in force says so and sends nothing', async () => {
+      await withPolicyAuthority(async (authority, hello) => {
+        const same = await policyApp(authority, ['policy', 'set', 'careful'], { hello });
+        assert.deepEqual([same.code, same.stdout.endsWith('no change; this is already the policy in force\n')], [0, true]);
       });
     });
   });

@@ -4,7 +4,8 @@ using System.Security.Principal;
 namespace Albera.ApprovalAuthority;
 
 // Who may change the config file the service trusts (the config-file part of the Broker's ServicePathGuard: the Authority keeps no database, so there
-// is no journal folder to check or pin). The config file names the pinned approver key and the two SIDs that may use the pipes.
+// is no journal folder to check or pin). The same check is applied to the tier policy file next to it (policy.json, PolicyStore.cs), when it is read at start and again on the
+// new file the Authority writes before that file replaces the old one. The config file names the pinned approver key and the two SIDs that may use the pipes.
 // Under the usual inherited C:\ProgramData ACL, BUILTIN\Users can create files in a new sub-folder, so they could pre-create the config. The
 // service therefore refuses to start (exit 73) unless the config file:
 //   - is owned by LocalSystem, BUILTIN\Administrators or the service's own per-service SID (below),
@@ -46,6 +47,14 @@ internal static class ServicePathGuard
     // The config file, already open (FileShare.Read, so it cannot be replaced or written while it is read): the ACL is read from that handle.
     public static bool IsTrustedConfigFile(string path, FileStream file) =>
         Guarded(() => !HasReparsePoint(path) && CurrentServiceSid() is { } service && IsTrusted(file.GetAccessControl(), service));
+
+    // The folder the config (and policy.json) lives in. A file can only be pre-created by someone who can create files in its folder, so the folder gets the same rules as the file:
+    // owner and every ACE that grants create-file / write-data / append / delete-child / delete / write-DAC / write-owner / generic write or all (inherit-only ACEs included, as for the
+    // file) limited to the service, SYSTEM and Administrators; CREATOR OWNER counts as trusted exactly as above (it only resolves to whoever creates an object); no NULL DACL; no reparse
+    // point on the path. Under the usual inherited C:ProgramData ACL, BUILTINUsers can create files in a new sub-folder, so the service refuses to start (exit 73) until the installer
+    // has set a protected ACL on it.
+    public static bool IsTrustedConfigFolder(string folder) =>
+        Guarded(() => !HasReparsePoint(folder) && CurrentServiceSid() is { } service && IsTrustedDescriptor(new DirectoryInfo(folder).GetAccessControl().GetSecurityDescriptorBinaryForm(), service));
 
     // Anything that stops the check from finishing (access denied, file vanished, odd path) means "not trusted": fail closed.
     private static bool Guarded(Func<bool> check)

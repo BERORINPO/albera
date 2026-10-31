@@ -23,7 +23,12 @@ internal static partial class Program
         using FakeReceiptSigner signer = new();
         using RsaPresenceVerifier? real = RsaPresenceVerifier.TryCreate(config.ApproverPublicKey);
         IHumanPresenceVerifier presence = presenceMode == "fake" ? new FakePresenceVerifier() : real!;
-        AuthorityCore core = new(new PendingStore(AuthorityRuntime.UnixNow, int.Parse(ttlSeconds, System.Globalization.CultureInfo.InvariantCulture)), signer, presence, AuthorityRuntime.IdentityOf(config), AuthorityRuntime.UnixNow);
+        if (PolicyStore.TryLoad(configPath, AuthorityRuntime.IdentityOf(config), presence, out string policyReason, out _) is not { } policy)
+        {
+            Console.WriteLine($"SERVICE_POLICY=invalid:{policyReason}");
+            return ExitCodes.PolicyInvalid;
+        }
+        AuthorityCore core = new(new PendingStore(AuthorityRuntime.UnixNow, int.Parse(ttlSeconds, System.Globalization.CultureInfo.InvariantCulture)), signer, presence, AuthorityRuntime.IdentityOf(config), AuthorityRuntime.UnixNow, policy, Console.WriteLine);
         Console.WriteLine("AUTHORITY_PUBLIC_KEY=" + Convert.ToBase64String(signer.PublicKeySpki));
         using CancellationTokenSource stop = new();
         _ = Task.Run(() => { Console.In.ReadToEnd(); stop.Cancel(); });

@@ -5,17 +5,18 @@ using System.Text.Json;
 using Albera.BrokerContract;
 
 // The three requests of the Broker's pipe (ADR-002 "Receipt v2", Proposed / NOT VERIFIED). One frame per connection, at most 2 KiB, after the peer SID check:
-//   claim    { "receipt": <base64>, "signature": <base64> }   exactly these two keys. The receipt is v2 (src/runtime/broker-contract) and names a challenge
-//                                                              that THIS Broker issued with `fence`.
+//   claim    { "receipt": <base64>, "signature": <base64> }   exactly these two keys. The receipt is v2 or v3 (src/runtime/broker-contract; v3 adds `basis`, see
+//                                                              ReceiptV3.cs) and names a challenge that THIS Broker issued with `fence`.
 //   fence    { "fence": { "computerId": "<id>" } }             -> { "ok": true, "brokerEpoch": n, "leaseGeneration": n, "leaseId": "<id>", "brokerChallenge": "<22 chars>" }
 //   inspect  { "inspect": { "operationId": "<id>" } }          -> { "ok": true, "state": "UNKNOWN", "action": "synthetic.inspect" }; read-only
 // The three shapes cannot be confused: they differ in their key set. Every refusal is the one fixed `denied` reply; the reason is a fixed word on stdout only
 // (DENY=<reason>), never request text.
 //
 // What a claim must pass, in this order (the first failure is the logged reason):
-//   structure (ReceiptV2.Parse) -> kid is a pinned key -> ECDSA signature over the exact receipt bytes -> the journal's epoch is the one this process started
+//   structure (Receipts.Parse: v3 when the bytes claim "v":3, otherwise v2) -> kid is a pinned key -> ECDSA signature over the exact receipt bytes -> the journal's epoch is the one this process started
 //   -> the clock fence (now >= clock_high_water - 30 s) -> the challenge is known, unconsumed, from this epoch and lease generation, and was issued for the
-//   receipt's computerId -> ReceiptV2.Validate (TTL <= 300 s, iat <= now + 30, now < exp, issuer, bindings, and the action digest RECOMPUTED from the trusted DTO)
+//   receipt's computerId -> Receipts.Validate (TTL <= 300 s, iat <= now + 30, now < exp, issuer, bindings, and the action digest RECOMPUTED from the trusted DTO; for v3 also: basis
+//   "policy" only for the few actions a policy may ever skip)
 //   -> one transaction: consume the challenge, insert the claim, raise the clock high-water mark.
 // An exact duplicate (same operationId, same receipt bytes and signature as a recorded claim) skips the challenge checks, because its challenge was spent (or
 // wiped by a restart) when it was first claimed; it still passes the signature, the clock fence and every time / issuer / digest check, and answers with the
@@ -86,7 +87,7 @@ internal static partial class Program
 
     private static async Task<BrokerReply> ClaimAsync(byte[] receipt, byte[] signature, BrokerSettings settings)
     {
-        ReceiptVerdict parsed = ReceiptV2.Parse(receipt);
+        ReceiptVerdict parsed = Receipts.Parse(receipt);
         if (!parsed.Ok) return Deny(parsed.Code!);
         IReadOnlyDictionary<string, object> r = parsed.Receipt!;
         string kid = (string)r["kid"];
@@ -110,7 +111,7 @@ internal static partial class Program
         // Expected comes from Broker-trusted state. For a replay the fence values are the receipt's own: they were checked when it was first claimed, and a
         // restart has since wiped the challenge, so there is nothing current left to compare them with.
         long epoch = replay ? (long)r["brokerEpoch"] : context.State.Epoch, generation = replay ? (long)r["leaseGeneration"] : context.State.LeaseGeneration;
-        ReceiptVerdict verdict = ReceiptV2.Validate(receipt, TrustedContext(r, now, epoch, generation, settings));
+        ReceiptVerdict verdict = Receipts.Validate(receipt, TrustedContext(r, now, epoch, generation, settings));
         if (!verdict.Ok) return Deny(ReasonOf(verdict, (string)r["issuer"]));
 
         if (replay)

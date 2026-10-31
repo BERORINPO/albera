@@ -1,5 +1,5 @@
 import { ActionDigestError, ID_PATTERN, PURPOSES, computeActionDigest, validateActionDto } from './broker-contract/action-digest.mjs';
-import { parseReceiptV2 } from './broker-contract/receipt-v2.mjs';
+import { POLICY_BASIS_ACTIONS, parseReceipt } from './broker-contract/receipt-v3.mjs';
 import { FlowJournalError } from './approved-operation-journal.mjs';
 
 // Control Plane orchestration of ONE operation through human approval (ADR-002 "Receipt v2", Proposed / NOT VERIFIED; ADR-003 intent-before-effect):
@@ -23,6 +23,9 @@ import { FlowJournalError } from './approved-operation-journal.mjs';
 //    reply, a crash in CLAIMING) the flow asks the Broker (`inspect`). Only when nothing is recorded and the SAME receipt is still valid is that same
 //    receipt (exact bytes) sent again; the Broker answers an exact duplicate with the recorded outcome (`replayed`).
 //  - Pre-send failures (the client says nothing left the process) are retried with backoff and then reported as `retryable`; the record keeps its phase.
+//  - An immediate approval needs no special path: when the Authority's tier policy needs no person for the action, submit answers `approved` and the first status poll returns a v3
+//    receipt with basis "policy". The record still goes INTENT, FENCED, SUBMITTED, APPROVED, CLAIMING, CLAIMED, and no sleep happens between submit and claim. A policy receipt for an
+//    action outside POLICY_BASIS_ACTIONS is never claimed (receipt_mismatch), whatever the Authority signed.
 //  - Polling is bounded by the request's own expiry (the Authority's `expiresAt`) and by `maxPolls`, with exponential backoff.
 //  - `human_denied`, `request_expired` and the presence errors are final and recorded. So are `request_invalid`, `queue_full`, `authority_unavailable`.
 //  - A fence from a different broker epoch (or lease generation) than the one a receipt names is never mixed: the receipt is dead (the Broker wiped the
@@ -174,9 +177,10 @@ export function createApprovedOperationFlow({ broker, authority, journal, now, s
   /** The receipt must name exactly what this record fenced and submitted: the same ids, fence, purpose, action (name, project, computer) and the action digest recomputed here
  * from the submitted DTO (args are bound by the digest). Anything else is never claimed. */
   function receiptMatches(record, receipt) {
-    const parsed = parseReceiptV2(Buffer.from(receipt, 'base64'));
+    const parsed = parseReceipt(Buffer.from(receipt, 'base64'));
     if (!parsed.ok) return null;
     const r = parsed.receipt;
+    if (r.basis === 'policy' && !POLICY_BASIS_ACTIONS.includes(r.action)) return null;
     const { fence } = record;
     const same = r.approvalId === record.approval.approvalId && r.operationId === record.operationId && r.idempotencyKey === record.idempotencyKey
       && r.purpose === record.purpose && r.action === record.action.action && r.projectId === record.action.projectId && r.computerId === record.action.computerId

@@ -12,4 +12,5 @@ internal static class ExitCodes
     public const int LoopFailed = 75;                // an unexpected exception ended the serve loop
     public const int SignerUnavailable = 77;         // the machine signing key cannot be opened or is not a P-256 ECDSA key: nothing is served
     public const int SigningKeyUnprotected = 78;     // the signing key is exportable, or its owner / DACL names a principal other than this service, SYSTEM and Administrators: nothing is served
+    public const int PolicyInvalid = 79;             // the tier policy file (policy.json next to the config) exists but is untrusted, unreadable, too large or not exactly the documented shape: nothing is served, never a looser tier. No file = careful, which starts fine
 }

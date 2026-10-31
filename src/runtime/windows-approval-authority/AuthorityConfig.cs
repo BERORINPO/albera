@@ -14,7 +14,8 @@ internal enum SigningProvider { Software, Tpm }
 //     "kid": "authority-key-2026-10", "approverKeyId": "hello-key-yosuke-01", "approverPublicKey": "<base64 SPKI, RSA-2048>",
 //     "audience": "albera-host-broker", "policyVersion": "policy-2026-10" }
 // The pipes are <pipeRoot>\submit\v1 (Control Plane only) and <pipeRoot>\approver\v1 (the approver only). audience and policyVersion are what the
-// Broker validates a receipt against, so the Authority takes them from trusted config and never from a request. Every rejected value maps to one
+// Broker validates a receipt against (policyVersion: a v2 receipt, i.e. one a person approved; a v3 policy receipt carries the hash of the tier policy in force instead, see PolicyStore.cs), so the
+// Authority takes them from trusted config and never from a request. Every rejected value maps to one
 // fixed reason word (never the value itself). Production (strictSeparation) also refuses a Control Plane SID that equals the approver SID or the
 // service's own SID: the two pipes must belong to different principals. The config file must be owned and writable only by trusted principals.
 internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, string ApproverSid, string SigningKeyName, SigningProvider SigningProvider,
@@ -37,7 +38,7 @@ internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, 
         public const string ConfigPath = "config_path", Unreadable = "config_unreadable", TooLarge = "config_too_large", Syntax = "config_syntax",
             Keys = "config_keys", PipeRoot = "pipe_root", ControlPlaneSid = "control_plane_sid", ApproverSid = "approver_sid", SidsNotDistinct = "sids_not_distinct",
             SigningKey = "signing_key", SigningProvider = "signing_provider", Kid = "kid", ApproverKeyId = "approver_key_id", ApproverPublicKey = "approver_public_key",
-            Audience = "audience", PolicyVersion = "policy_version", ConfigUntrusted = "config_untrusted";
+            Audience = "audience", PolicyVersion = "policy_version", ConfigUntrusted = "config_untrusted", ConfigFolderUntrusted = "config_folder_untrusted";
     }
 
     public static AuthorityConfig? TryLoad(string configPath, bool strictSeparation, out string reason)
@@ -49,6 +50,8 @@ internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, 
         {
             using FileStream file = new(configPath, FileMode.Open, FileAccess.Read, FileShare.Read);
             if (!ServicePathGuard.IsTrustedConfigFile(configPath, file)) { reason = Reason.ConfigUntrusted; return null; }
+            // Whoever can create files in this folder could have pre-created policy.json (or the config) before the service ever ran: the folder is trusted before anything else here is read.
+            if (!ServicePathGuard.IsTrustedConfigFolder(Path.GetDirectoryName(configPath)!)) { reason = Reason.ConfigFolderUntrusted; return null; }
             if (file.Length > MaxFileBytes) { reason = Reason.TooLarge; return null; }
             bytes = new byte[file.Length];
             file.ReadExactly(bytes);

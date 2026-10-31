@@ -2,7 +2,7 @@ namespace Albera.ApprovalAuthority;
 
 // Entry points (ADR-002 "Receipt v2", Proposed / NOT VERIFIED):
 //   albera-approval-authority.exe service <config.json>        the Windows service process (ServiceHost.cs); started by the SCM only
-//   albera-approval-authority.exe service-check <config.json>  validate the config exactly as the service would, print one fixed line, change nothing
+//   albera-approval-authority.exe service-check <config.json>  validate the config (and policy.json next to it, if there is one) exactly as the service would, print fixed lines, change nothing
 // The test-faults build (-p:AlberaAuthorityTestFaults=true, never the published one) adds serve-loop and request (TestSeam.cs), and a leading
 // `--trust-sid <sid>` that names the SID ServicePathGuard trusts as "the service" (a host test has no per-service SID in its token). Anything else exits 64.
 internal static partial class Program
@@ -29,12 +29,19 @@ internal static partial class Program
 
     private static int CheckServiceConfig(string configPath)
     {
-        if (AuthorityConfig.TryLoad(configPath, strictSeparation: true, out string reason) is null)
+        if (AuthorityConfig.TryLoad(configPath, strictSeparation: true, out string reason) is not { } config)
         {
             Console.WriteLine($"SERVICE_CONFIG=invalid:{reason}");
             return ExitCodes.ConfigInvalid;
         }
         Console.WriteLine("SERVICE_CONFIG=ok");
+        using RsaPresenceVerifier approverKey = RsaPresenceVerifier.TryCreate(config.ApproverPublicKey) ?? throw new InvalidOperationException();
+        if (PolicyStore.TryLoad(configPath, AuthorityRuntime.IdentityOf(config), approverKey, out string policyReason, out bool fromFile) is not { } policy)
+        {
+            Console.WriteLine($"SERVICE_POLICY=invalid:{policyReason}");
+            return ExitCodes.PolicyInvalid;
+        }
+        if (fromFile) Console.WriteLine($"SERVICE_POLICY=ok:{policy.Current.Tier}"); // no file = careful, and nothing extra is printed
         return 0;
     }
 }

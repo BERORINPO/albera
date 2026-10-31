@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, createPublicKey, verify } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
 import { validateReceiptV2 } from '../src/runtime/broker-contract/receipt-v2.mjs';
+import { validateReceipt } from '../src/runtime/broker-contract/receipt-v3.mjs';
 import { buildProbe } from './helpers/windows-broker-harness.mjs';
 import {
   CLIENT_MASK, SELF_CONTROL_MASK, VIRTUAL_ACCOUNT_SID, buildAuthority, currentUserSid, getUnavailableReason, guestSid, helloSignature, icaclsOn, makeConfig,
@@ -293,6 +294,201 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
     const authority = await startAuthority(exe, trusted);
     assert.equal(await authority.stop(), 0);
     assert.ok(authority.child.lines.includes('AUTHORITY_STOPPED'));
+  });
+
+  // Tier policy (issue #115 step 3) through the real pipes: the policy file next to the config, the careful default, the standard tier, and the Hello-signed change.
+  // A policy that skips a person is only loaded with the approver's signature (bound to this Authority's kid and audience) stored in the file; the config folder must be trusted first.
+  describe('tier policy', () => {
+    const KID = 'authority-key-test'; // makeConfig's kid and audience
+    const AUDIENCE = 'albera-host-broker';
+    const policyObj = (rev, tier, ...prompts) => ({ v: 1, rev, tier, overrides: Object.fromEntries(prompts.map((a) => [a, 'prompt'])) });
+    const policyJson = (rev, tier, ...prompts) => JSON.stringify(policyObj(rev, tier, ...prompts));
+    const policyHash = (rev, tier, prompts) => `sha256:${createHash('sha256').update(['albera.policy-hash.v1', String(rev), tier, ...[...prompts].sort()].join('\0')).digest('hex')}`;
+    const policyMessage = (rev, tier, prompts = [], kid = KID, audience = AUDIENCE) => Buffer.from(`albera.policy.v1\0${kid}\0${audience}\0${policyHash(rev, tier, prompts)}`, 'utf8');
+    /** policy.json as the Authority writes it: the policy, and the policy the signature authorized with that signature. */
+    const signedFile = (policy, authorized, presence) => JSON.stringify({ ...policy, authorized: { ...authorized, presence } });
+    const STOP = { action: 'environment.stop', projectId: 'proj-alpha', computerId: 'pc-01', args: {} };
+    const DESTROY = { ...STOP, action: 'environment.destroy' };
+    const stopRequest = (overrides = {}) => submitRequest({ operationId: 'op-stop', idempotencyKey: 'idem-stop', action: STOP, ...overrides });
+    /** A fresh trusted folder (config and policy.json share it); removed afterwards. */
+    async function inFolder(body) {
+      const folder = makeTrustedTempDirectory('albera-authority-policy-');
+      try { return await body(folder); } finally { rmSync(folder, { recursive: true, force: true }); }
+    }
+    /** A fresh Authority whose config and policy.json live in `folder`; always stopped. */
+    const run = async (folder, options, body) => {
+      const authority = await startAuthority(exe, folder, options);
+      try { return await body(authority); } finally { await authority.stop(); }
+    };
+    const standardFile = (hello) => signedFile(policyObj(1, 'standard'), policyObj(1, 'standard'), helloSignature(hello.privateKey, policyMessage(1, 'standard')));
+
+    it('with no policy file the Authority is careful: every action, the skippable ones included, waits for a person, and nothing is signed', async () => {
+      await inFolder((folder) => run(folder, {}, async (authority) => {
+        for (const [index, action] of [STOP, { ...STOP, action: 'environment.inspect' }].entries()) {
+          const reply = await authority.submit(stopRequest({ operationId: `op-${index}`, idempotencyKey: `idem-${index}`, action }));
+          assert.equal(reply.state, 'pending', action.action);
+        }
+        assert.equal((await authority.approver({ v: 1, verb: 'list' })).pending.length, 2);
+        assert.deepEqual(await authority.approver({ v: 1, verb: 'policy' }), {
+          ok: true, policy: { v: 1, rev: 0, tier: 'careful', overrides: {} }, policyVersion: policyHash(0, 'careful', []), kid: KID, audience: AUDIENCE,
+        });
+      }));
+    });
+
+    it('a signed standard policy file is applied from the first request: a skippable action is signed at once with a v3 policy receipt that validates and verifies; the others still wait', async () => {
+      const hello = makeHelloKey();
+      await inFolder(async (folder) => {
+        writeFileSync(path.join(folder, 'policy.json'), standardFile(hello));
+        await run(folder, { config: makeConfig({ approverPublicKey: hello.spki }) }, async (authority) => {
+          const request = stopRequest();
+          const reply = await authority.submit(request);
+          assert.equal(reply.state, 'approved');
+          const status = await authority.submit({ v: 1, verb: 'status', approvalId: reply.approvalId });
+          const receiptBytes = Buffer.from(status.receipt, 'base64');
+          assert.equal(verifyEcdsa(authority.publicKey, receiptBytes, Buffer.from(status.signature, 'base64')), true);
+          const verdict = validateReceipt(receiptBytes, contextFor(request));
+          assert.equal(verdict.ok, true, JSON.stringify(verdict));
+          assert.deepEqual([verdict.receipt.v, verdict.receipt.basis, verdict.receipt.policyVersion], [3, 'policy', policyHash(1, 'standard', [])]);
+          assert.equal(validateReceipt(receiptBytes, contextFor(request, { environment: 'production' })).code, 'issuer', 'a fake-signed policy receipt fails production validation too');
+          assert.equal(validateReceipt(receiptBytes, contextFor({ ...request, action: { ...STOP, computerId: 'pc-02' } })).ok, false, 'not for another computer');
+          assert.deepEqual((await authority.approver({ v: 1, verb: 'list' })).pending, [], 'nobody is asked');
+          assert.ok(authority.child.lines.includes(`POLICY_SIGNED=environment.stop ${reply.approvalId}`), `the signature without a person is reported: ${authority.child.lines.join('|')}`);
+          const destroy = await authority.submit(stopRequest({ operationId: 'op-destroy', idempotencyKey: 'idem-destroy', action: DESTROY }));
+          assert.equal(destroy.state, 'pending', 'destroy still needs a person at standard');
+          assert.equal((await authority.approver({ v: 1, verb: 'list' })).pending.length, 1);
+        });
+      });
+    });
+
+    it('Control Plane input cannot change the decision: tier, basis, policy and presence fields in a submit are request_invalid, and the same destroy is pending under both tiers', async () => {
+      const hello = makeHelloKey();
+      await inFolder(async (folder) => {
+        writeFileSync(path.join(folder, 'policy.json'), standardFile(hello));
+        await run(folder, { config: makeConfig({ approverPublicKey: hello.spki }) }, async (authority) => {
+          for (const extra of [{ tier: 'standard' }, { basis: 'policy' }, { policy: policyObj(9, 'standard') }, { policyVersion: policyHash(9, 'standard', []) }, { presence: 'AAAA' }]) {
+            isFailure(await authority.submit(submitRequest({ action: DESTROY, ...extra })), 'request_invalid');
+          }
+          isFailure(await authority.submit({ v: 1, verb: 'policy' }), 'request_invalid');
+          isFailure(await authority.submit({ v: 1, verb: 'policy_set', policy: policyObj(2, 'careful') }), 'request_invalid');
+          assert.equal((await authority.approver({ v: 1, verb: 'policy' })).policy.tier, 'standard', 'the Control Plane pipe changed nothing');
+          assert.equal((await authority.submit(submitRequest({ action: DESTROY }))).state, 'pending');
+        });
+      });
+    });
+
+    it('the Hello-signed change over the pipes: raising needs the signature for THIS Authority and THIS policy (none, wrong domain, wrong hash, another kid or audience: presence_mismatch), a valid one is applied and written with it, lowering needs none, and a restart keeps it', async () => {
+      const hello = makeHelloKey();
+      await inFolder(async (folder) => {
+        const config = makeConfig({ approverPublicKey: hello.spki });
+        const sign = (message) => helloSignature(hello.privateKey, message);
+        await run(folder, { config }, async (authority) => {
+          const set = (rev, tier, presence, ...prompts) => authority.approver({ v: 1, verb: 'policy_set', policy: policyObj(rev, tier, ...prompts), ...(presence === undefined ? {} : { presence }) });
+          isFailure(await set(1, 'standard'), 'presence_mismatch');
+          isFailure(await set(1, 'standard', sign(Buffer.from(`albera.presence.v1\0${policyHash(1, 'standard', [])}`))), 'presence_mismatch');
+          isFailure(await set(1, 'standard', sign(Buffer.from(`albera.selfcheck.v1\0${policyHash(1, 'standard', [])}`))), 'presence_mismatch');
+          isFailure(await set(1, 'standard', sign(Buffer.from(`albera.policy.v1\0${policyHash(1, 'standard', [])}`))), 'presence_mismatch'); // the old message without kid and audience
+          isFailure(await set(1, 'standard', sign(policyMessage(1, 'standard', ['task.cancel']))), 'presence_mismatch');
+          isFailure(await set(1, 'standard', sign(policyMessage(2, 'standard'))), 'presence_mismatch');
+          isFailure(await set(1, 'standard', sign(policyMessage(1, 'standard', [], 'authority-key-other'))), 'presence_mismatch');
+          isFailure(await set(1, 'standard', sign(policyMessage(1, 'standard', [], KID, 'albera-other-broker'))), 'presence_mismatch');
+          assert.equal((await authority.submit(stopRequest())).state, 'pending', 'still careful');
+          assert.equal(existsSync(path.join(folder, 'policy.json')), false, 'a refused change writes nothing');
+
+          const valid = sign(policyMessage(1, 'standard'));
+          assert.deepEqual(await set(1, 'standard', valid), { ok: true, policyVersion: policyHash(1, 'standard', []) });
+          assert.equal(readFileSync(path.join(folder, 'policy.json'), 'utf8'), signedFile(policyObj(1, 'standard'), policyObj(1, 'standard'), valid), 'written next to the config with the signature that authorized it');
+          assert.ok(authority.child.lines.includes(`POLICY_CHANGED=1 standard ${policyHash(1, 'standard', [])}`), 'the applied change is reported');
+          assert.equal(authority.child.lines.filter((line) => line.startsWith('POLICY_CHANGED=')).length, 1, 'refused changes are not');
+          isFailure(await set(1, 'standard', valid), 'request_invalid');
+          assert.equal((await authority.submit(stopRequest({ operationId: 'op-2', idempotencyKey: 'idem-2' }))).state, 'approved', 'applied at once');
+
+          assert.deepEqual(await set(2, 'standard', undefined, 'environment.stop'), { ok: true, policyVersion: policyHash(2, 'standard', ['environment.stop']) }, 'adding a prompt needs no signature');
+          assert.equal(readFileSync(path.join(folder, 'policy.json'), 'utf8'), signedFile(policyObj(2, 'standard', 'environment.stop'), policyObj(1, 'standard'), valid), 'and keeps the signature that authorized the ceiling');
+          assert.equal((await authority.submit(stopRequest({ operationId: 'op-3', idempotencyKey: 'idem-3' }))).state, 'pending', 'and applies at once');
+          isFailure(await set(3, 'standard', undefined), 'presence_mismatch');
+        });
+        await run(folder, { config }, async (authority) => {
+          const policy = await authority.approver({ v: 1, verb: 'policy' });
+          assert.deepEqual([policy.policy.rev, policy.policy.tier, Object.keys(policy.policy.overrides)], [2, 'standard', ['environment.stop']], 'a restart reads what was written');
+        });
+        // The same signed file under another Authority (another kid, or another audience) is not loaded.
+        for (const other of [{ kid: 'authority-key-other' }, { audience: 'albera-other-broker' }]) {
+          const child = startProcess(exe, standInService('serve-loop', writeConfig(folder, makeConfig({ approverPublicKey: hello.spki, ...other }), 'other.json'), 'real', '120'), { stdin: true });
+          assert.equal(await waitForExit(child), 79, JSON.stringify(other));
+          assert.ok(child.lines.includes('SERVICE_POLICY=invalid:policy_unsigned'), child.lines.join('|'));
+        }
+      });
+    });
+
+    it('the file is read once at start: a file written or changed while the Authority runs changes nothing until it restarts', async () => {
+      const hello = makeHelloKey();
+      await inFolder(async (folder) => {
+        await run(folder, { config: makeConfig({ approverPublicKey: hello.spki }) }, async (authority) => {
+          writeFileSync(path.join(folder, 'policy.json'), standardFile(hello));
+          assert.equal((await authority.submit(stopRequest())).state, 'pending');
+          assert.equal((await authority.approver({ v: 1, verb: 'policy' })).policy.tier, 'careful');
+        });
+      });
+    });
+
+    it('an invalid, unsigned, wrongly signed, untrusted or unreadable policy file stops the start with exit 79 and a fixed word (service-check and the serve loop agree); a missing file is a normal start', async () => {
+      const hello = makeHelloKey();
+      const stranger = makeHelloKey();
+      await inFolder(async (folder) => {
+        const file = path.join(folder, 'policy.json');
+        const config = writeConfig(folder, makeConfig({ controlPlaneSid: VIRTUAL_ACCOUNT_SID, approverSid: guestSid(), approverPublicKey: hello.spki }), 'config.json');
+        const check = () => { const child = startProcess(exe, standInService('service-check', config)); return waitForExit(child).then((code) => ({ code, lines: child.lines })); };
+        const sign = (message, key = hello) => helloSignature(key.privateKey, message);
+        assert.deepEqual(await check(), { code: 0, lines: ['SERVICE_CONFIG=ok'] }, 'no file: nothing extra is printed');
+        for (const [label, content, reason] of [
+          ['not json', 'standard', 'policy_invalid'], ['an extra key', JSON.stringify({ ...policyObj(1, 'careful'), grants: {} }), 'policy_invalid'],
+          ['a missing revision', JSON.stringify({ v: 1, tier: 'careful', overrides: {} }), 'policy_invalid'], ['an unknown tier', policyJson(1, 'delegated'), 'policy_invalid'],
+          ['an override that is not a prompt', JSON.stringify({ v: 1, rev: 1, tier: 'careful', overrides: { 'environment.stop': 'allow' } }), 'policy_invalid'],
+          ['a BOM', `﻿${policyJson(1, 'careful')}`, 'policy_invalid'], ['too large', `${policyJson(1, 'careful')}${' '.repeat(2100)}`, 'policy_too_large'],
+          ['a standard policy nobody signed', policyJson(1, 'standard'), 'policy_unsigned'],
+          ['a standard policy with a signature over another policy', signedFile(policyObj(1, 'standard'), policyObj(1, 'standard'), sign(policyMessage(1, 'standard', ['task.cancel']))), 'policy_unsigned'],
+          ['a signature made for another kid', signedFile(policyObj(1, 'standard'), policyObj(1, 'standard'), sign(policyMessage(1, 'standard', [], 'authority-key-other'))), 'policy_unsigned'],
+          ['a signature made for another audience', signedFile(policyObj(1, 'standard'), policyObj(1, 'standard'), sign(policyMessage(1, 'standard', [], KID, 'albera-other-broker'))), 'policy_unsigned'],
+          ['a signature from a key the Authority does not pin', signedFile(policyObj(1, 'standard'), policyObj(1, 'standard'), sign(policyMessage(1, 'standard'), stranger)), 'policy_unsigned'],
+          ['a policy that skips more than the signed one', signedFile(policyObj(1, 'standard'), policyObj(1, 'standard', 'task.cancel'), sign(policyMessage(1, 'standard', ['task.cancel']))), 'policy_unsigned'],
+          ['a signature block that is not base64', signedFile(policyObj(1, 'standard'), policyObj(1, 'standard'), '!!!'), 'policy_invalid'],
+        ]) {
+          writeFileSync(file, content);
+          assert.deepEqual(await check(), { code: 79, lines: ['SERVICE_CONFIG=ok', `SERVICE_POLICY=invalid:${reason}`] }, label);
+          const loop = startProcess(exe, standInService('serve-loop', config, 'real', '120'), { stdin: true });
+          assert.equal(await waitForExit(loop), 79, `${label}: the serve loop refuses too`);
+          assert.equal(loop.lines.includes('AUTHORITY_READY'), false, `${label}: no pipe was created`);
+        }
+        writeFileSync(file, standardFile(hello));
+        assert.deepEqual(await check(), { code: 0, lines: ['SERVICE_CONFIG=ok', 'SERVICE_POLICY=ok:standard'] }, 'a validly signed file');
+        const noStandIn = startProcess(exe, ['service-check', config]);
+        assert.equal(await waitForExit(noStandIn), 73, 'the token user alone is not the service: the config is refused first (the same rule guards the policy)');
+      });
+      const writable = makeTrustedTempDirectory('albera-authority-policy-writable-');
+      try {
+        const config = writeConfig(writable, makeConfig({ controlPlaneSid: VIRTUAL_ACCOUNT_SID, approverSid: guestSid(), approverPublicKey: hello.spki }), 'config.json');
+        writeFileSync(path.join(writable, 'policy.json'), standardFile(hello));
+        icaclsOn(path.join(writable, 'policy.json'), '/grant', '*S-1-5-32-545:M'); // BUILTIN\Users may now write the policy file only, not the config or the folder
+        const child = startProcess(exe, standInService('service-check', config));
+        assert.equal(await waitForExit(child), 79);
+        assert.deepEqual(child.lines, ['SERVICE_CONFIG=ok', 'SERVICE_POLICY=invalid:policy_untrusted'], 'a policy file other users can write is never read');
+      } finally { rmSync(writable, { recursive: true, force: true }); }
+    });
+
+    it('a folder where other users can create files is refused at the config load (73 config_folder_untrusted) BEFORE policy.json is looked at: a squatted policy.json cannot turn into an exit 79 lock-out', async () => {
+      const hello = makeHelloKey();
+      await inFolder(async (folder) => {
+        const config = writeConfig(folder, makeConfig({ controlPlaneSid: VIRTUAL_ACCOUNT_SID, approverSid: guestSid(), approverPublicKey: hello.spki }), 'config.json');
+        const check = () => { const child = startProcess(exe, standInService('service-check', config)); return waitForExit(child).then((code) => ({ code, lines: child.lines })); };
+        assert.deepEqual(await check(), { code: 0, lines: ['SERVICE_CONFIG=ok'] }, 'control: a protected folder is fine');
+        icaclsOn(folder, '/grant', '*S-1-5-32-545:(WD)'); // BUILTIN\Users may create files here (this folder only: the config file itself stays trusted)
+        writeFileSync(path.join(folder, 'policy.json'), 'squatted');
+        assert.deepEqual(await check(), { code: 73, lines: ['SERVICE_CONFIG=invalid:config_folder_untrusted'] }, 'the folder is refused before the file is read');
+        const loop = startProcess(exe, standInService('serve-loop', config, 'real', '120'), { stdin: true });
+        assert.equal(await waitForExit(loop), 73);
+        assert.equal(loop.lines.some((line) => line.startsWith('SERVICE_POLICY=')), false, 'policy.json was never looked at');
+      });
+    });
   });
 
   describe('service entry and config trust', () => {
