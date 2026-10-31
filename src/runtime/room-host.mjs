@@ -462,6 +462,14 @@ export function createRoomHost({
     captureOnce,
     tickOnce,
     recordFleetEvent,
+    /**
+     * Ask to start a job on a room VM by the same path a card uses (with a gate: approval first, then `start_approved` / `start_refused` in the ledger; room-starts.mjs).
+     * This is how a gated room starts its initial jobs. Resolves with the runner's answer ('pending_approval', 'started', a fleet code), or 'vm_unknown' / 'host_closing'.
+     */
+    requestStart(vmId, task) {
+      if (closed) return Promise.resolve('host_closing');
+      return byId.has(vmId) && typeof task === 'string' && task.length > 0 ? starts.start(vmId, task) : Promise.resolve('vm_unknown');
+    },
     /** Resolves when every queued automatic check has recorded its `check_done`. */
     async checksSettled() { while (checkChains.size > 0) await Promise.allSettled([...checkChains.values()]); },
     /** The session cookie name of this host (unique per host instance). */

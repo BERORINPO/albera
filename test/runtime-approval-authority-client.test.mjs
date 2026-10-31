@@ -431,9 +431,14 @@ test('the client opens no pipe or socket itself, has one launch site after the d
   assert.equal(/approver\\\\v1|verb: '(?:list|decide)'|'(?:list|decide)'/u.test(client.replace(/^\s*\/\/.*$/gmu, '')), false, 'the client has no way to reach the approver pipe or to decide');
   assert.deepEqual(client.match(/^.*windows-broker-pipe-client.*$/gmu).map((l) => /\/\/ arch-allow: \S/u.test(l)), [true], 'the helper path is named once, with an arch-allow reason');
   assert.equal(/windows-broker-client/u.test(client), false, 'it does not import the Broker client (the two stay independent)');
+  // The one deliberate importer is the room's composition point (room-approval-wiring.mjs, A3 of #115 follow-up); everything else stays away.
+  const wiring = path.join(root, 'src', 'runtime', 'room-approval-wiring.mjs');
   const sources = walk(path.join(root, 'src')).filter((file) => /\.(?:mjs|js|html|json|css)$/u.test(file) && file !== self);
   assert.ok(sources.length > 50, 'the scan must cover the source tree');
-  for (const file of sources) assert.equal(/approval-authority-client/u.test(readFileSync(file, 'utf8')), false, `${path.relative(root, file)} must not reference the Authority client`);
+  for (const file of sources.filter((f) => f !== wiring)) assert.equal(/approval-authority-client/u.test(readFileSync(file, 'utf8')), false, `${path.relative(root, file)} must not reference the Authority client`);
+  const wiringText = readFileSync(wiring, 'utf8');
+  assert.deepEqual(wiringText.match(/^.*approval-authority-client.*$/gmu)?.map((line) => /^import /u.test(line)), [true], 'the wiring names the Authority client on exactly one line, its static import (no second or dynamic import)');
+  assert.equal(/windows-broker-pipe-client|node:child_process|node:net/u.test(wiringText), false, 'the wiring launches nothing and names no helper: the client does');
   assert.equal(/approval-authority-client|build:approval-authority/u.test(readFileSync(path.join(root, 'package.json'), 'utf8').replace(/"build:approval-authority":[^\n]*/u, '')), false);
 });
 
