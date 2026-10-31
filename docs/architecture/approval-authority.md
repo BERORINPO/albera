@@ -97,6 +97,17 @@ After the key is opened and **before either pipe exists**, `SigningKeyGuard` rea
 
 The check only reads the key and runs once at start-up (not re-checked while running). The reason is one fixed word, never a SID or a name. The TPM Platform Crypto Provider may not expose the security-descriptor property; if it does not, the guard refuses (fail closed) until that is verified on hardware, so a `tpm` key is **untested** here.
 
+### Tier policy (exit 79, step 3a of #115)
+
+- `policy.json` sits in the folder of the Authority's config file (fixed name). No file = tier `careful`: every action needs a person, exactly as before.
+- Shape (strict JSON, at most 2048 bytes): `{"v":1,"rev":N,"tier":"careful"|"standard","overrides":{"<action>":"prompt"},"authorized":{...the policy that was signed..., "presence":"<base64 RSA signature>"}}`. Overrides can only add prompts. `authorized` is absent when the policy skips nobody.
+- Every load checks, in this order: the config folder is trusted for creation (owner and every write/create/delete ACE limited to the service SID, SYSTEM and Administrators; otherwise exit 73 `config_folder_untrusted`, before the policy is looked at), the file's own trust, the strict shape, then the signature in `authorized` against the pinned approver key, `authorized.rev <= rev`, and that the policy skips no more than the signed one. Any failure refuses to start with exit 79 (`SERVICE_POLICY=invalid:<policy_invalid|policy_untrusted|policy_unreadable|policy_too_large|policy_unsigned>`). `service-check` prints `SERVICE_POLICY=ok:<tier>` for a valid file.
+- The signed message is `UTF8("albera.policy.v1") 0x00 kid 0x00 audience 0x00 <policy hash>`, so a signature cannot be used on another Authority. The policy hash covers the meaning (`rev`, tier, sorted overrides), not the file bytes.
+- Approver-pipe verbs `policy` (returns the policy, its hash, `kid` and `audience`) and `policy_set` (the complete new policy with `rev + 1`; a change that lets more actions skip a person needs the presence signature, a change that only adds prompts does not). One lock covers the decision, the check, the write (temp file, write-through, trust check, `MoveFileExW`), the read-back and the swap. A failed read-back puts the store in a faulted state: everyone prompts until a restart.
+- At `standard`, only `environment.inspect`, `environment.stop`, `workspace.inspect` and `task.cancel` are signed without a person, as receipt v3 with `basis: policy` (the Broker refuses a policy receipt for any other action). Console audit lines: `POLICY_SIGNED=<action> <approvalId>`, `POLICY_CHANGED=<rev> <tier> <hash>`. Policy-signed entries are not shown by the approver's `list` and share the 64-entry cap for 120 s.
+- Out of scope: rollback of the whole file by Administrators, SYSTEM or the service (they can already replace the config and keys). A tightening does not revoke receipts already issued (at most 120 s).
+- The service needs Modify on its config folder to write `policy.json`; whether a file written by the real service passes the guard on the next start is checked in the VM lab (pending).
+
 ## Build environment
 
 `npm run build:approval-authority` runs dotnet through the hardened helper `scripts/dotnet-build-env.mjs` (trusted dotnet.exe path, `-noAutoResponse`, allowlisted environment, locked restore against `scripts/nuget.publish.config`, SDK version and output SHA-256 printed after the build); the details are in `approver-app.md` (Build and the one dependency).
