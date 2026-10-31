@@ -54,6 +54,8 @@ function fakePowerShell() {
     };
     switch (request.method) {
       case 'inspect': return vm ? { ok: true, exists: true, state: vm.state, notes: vm.notes, vmId: vm.id } : { ok: true, exists: false };
+      // 'network' is 'inspect' plus the adapter facts (`adapters`, [] unless a test sets them): read in one call so the VM id and the adapters are one observation.
+      case 'network': return vm ? { ok: true, exists: true, state: vm.state, notes: vm.notes, vmId: vm.id, adapters: Object.hasOwn(vm, 'adapters') ? vm.adapters : [] } : { ok: true, exists: false };
       case 'create':
         vms.set(request.vmName, { state: 'Off', notes: request.notes, id: randomUUID() });
         return { ok: true, state: 'Off' };
@@ -298,6 +300,59 @@ test('start without a vmId behaves as before (no identity is added), and a malfo
   assert.equal(ps.calls.find((c) => c.method === 'start').expect.identity, undefined);
   for (const vmId of ['vm-1', '', 7, 'ABCDEF12-2222-4333-8444-555555555555', null]) await rejects(broker.startVm(op('start', { vmId })), 'invalid_provider_state', 'not_applied');
   await rejects(broker.stopVm(op('stop', { vmId: ps.vms.get('albera-pc-01').id })), 'invalid_provider_state', 'not_applied');
+});
+
+// ---- #128: an attested-policy start names the VM and re-reads the network right before it starts ----
+
+test('item 1 (#128): an attested start without a vmId is refused before the script, a start with one runs with the VM id as a mandatory identity', async () => {
+  const { broker, ps } = makeBroker();
+  await broker.createVm(op('create'));
+  const vmId = ps.vms.get('albera-pc-01').id;
+  const callsBefore = ps.calls.length;
+  await rejects(broker.startVm(op('start', { attestedPolicy: true })), 'invalid_provider_state', 'not_applied');
+  await rejects(broker.startVm(op('start', { attestedPolicy: true, vmId: 'vm-1' })), 'invalid_provider_state', 'not_applied');
+  assert.equal(ps.calls.length, callsBefore, 'nothing reached the script');
+  assert.equal(ps.vms.get('albera-pc-01').state, 'Off');
+  assert.equal((await broker.startVm(op('start', { attestedPolicy: true, vmId }))).state, 'running');
+  const call = ps.calls.find((c) => c.method === 'start');
+  assert.deepEqual([call.expect.vmId, call.expect.identity], [vmId, 'vm']);
+});
+
+test('item 1 (#128): an attested start for a VM that is not the one under the computer id is refused, with the network read first and no start', async () => {
+  const { broker, ps } = makeBroker();
+  await broker.createVm(op('create'));
+  const vmA = ps.vms.get('albera-pc-01').id;
+  ps.vms.set('albera-pc-01', { state: 'Off', notes: ps.vms.get('albera-pc-01').notes, id: randomUUID() });
+  await rejects(broker.startVm(op('start', { attestedPolicy: true, vmId: vmA })), 'operation_conflict', 'not_applied');
+  assert.equal(ps.count('start'), 0);
+});
+
+test('item 2 (#128): the adapters are read again right before an attested start: none starts the VM, an adapter added after the attestation (or unreadable ones) refuses it before the script starts anything', async () => {
+  const { broker, ps } = makeBroker();
+  await broker.createVm(op('create'));
+  const vm = ps.vms.get('albera-pc-01');
+  const attested = op('start', { attestedPolicy: true, vmId: vm.id });
+  for (const adapters of [[{ connected: false, switchType: null }], [{ connected: true, switchType: 'External' }], [{ connected: true, switchType: 'Private' }], null, 'none', [{ connected: true }], {}]) {
+    vm.adapters = adapters; // added between the attestation and this start
+    await rejects(broker.startVm(attested), 'network_not_isolated', 'not_applied');
+    assert.equal(ps.count('start'), 0, `${JSON.stringify(adapters)}: the script never started anything`);
+    assert.equal(vm.state, 'Off');
+  }
+  vm.adapters = []; // back to no adapter at all
+  assert.equal((await broker.startVm(attested)).state, 'running');
+  const methods = ps.calls.map((c) => c.method);
+  assert.ok(methods.lastIndexOf('network') < methods.indexOf('start'), 'the network was read before the start');
+});
+
+test('item 2 (#128): the network rule is for attested starts only: a start a person approved (with or without a vmId) behaves as before and reads with inspect', async () => {
+  const { broker, ps } = makeBroker();
+  await broker.createVm(op('create'));
+  const vm = ps.vms.get('albera-pc-01');
+  vm.adapters = [{ connected: true, switchType: 'External' }];
+  assert.equal((await broker.startVm(op('start', { vmId: vm.id }))).state, 'running');
+  await broker.stopVm(op('stop'));
+  assert.equal((await broker.startVm(op('start'))).state, 'running');
+  assert.equal(ps.count('network'), 0, 'no network read for a start that is not attested');
 });
 
 test('start of a VM that does not exist, or is not ours, is refused', async () => {

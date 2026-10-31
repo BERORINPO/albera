@@ -22,7 +22,7 @@ internal readonly record struct Outcome(string? Code, PendingEntry? Entry);
 // An action without a well-formed `vmId` arg is never attested. The Broker refuses to act on a VM whose own Hyper-V id differs from that arg, so an attestation for VM A cannot
 // start VM B. environment.create is not attested at all (no VM exists to observe before it): it always needs a person.
 // The receipt is v3 basis policy with the attestation's digest, and ends no later than the attestation does. Anything else (no key pinned, no attestation, a forged, stale, mismatched or
-// "present" / "unknown" one) is not an error: the request queues for a person exactly as without it. An override on the action forces a prompt as ever, and nothing in the attestation
+// "present" / "unknown" one, or a valid one whose receipt could not be signed because the signer is down) is not an error: the request queues for a person exactly as without it. An override on the action forces a prompt as ever, and nothing in the attestation
 // names or lowers a tier.
 // The Authority keeps no persistent log. Every receipt signed without a person and every policy change is reported to `audit` as one line made of fixed words, a fixed action name
 // and ids (the service prints it to its console like the PEER lines); the entry itself stays readable through status until its receipt is over.
@@ -57,7 +57,7 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
         {
             if (!current.NeedsPerson(request.Dto.Action)) return store.Submit(request, digest, (entry, now) => SignByPolicy(entry, current.Hash(), now));
             if (current.CanSkipWithAttestation(request.Dto.Action) && ProvenBy(request, attestation) is { } proven)
-                return store.Submit(request, digest, (entry, now) => proven.ExpiresAt - now >= MinAttestedReceiptSeconds ? SignByPolicy(entry, current.Hash(), now, proven) : entry);
+                return store.Submit(request, digest, (entry, now) => proven.ExpiresAt - now >= MinAttestedReceiptSeconds ? SignAttested(entry, current.Hash(), now, proven) : entry);
             return store.Submit(request, digest);
         });
         return result.Status switch
@@ -179,6 +179,16 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
         catch (SignerUnavailableException) { return null; }
         audit?.Invoke($"POLICY_SIGNED={entry.Request.Dto.Action} {entry.ApprovalId}" + (proven is null ? "" : $" ATTESTED={proven.Digest}"));
         return entry with { State = EntryState.Approved, Receipt = receipt, Signature = signature, ExpiresAt = now + ttl, RetainUntil = now + PendingStore.DecidedRetentionSeconds };
+    }
+
+    // An attested request that could not be signed (the contract refused the receipt, or the signer is down) is not an Authority failure: every refusal of the attested shortcut queues for a
+    // person, as with a bad attestation. The entry stays Pending, no receipt exists, and the reason goes to the audit line in fixed words.
+    private PendingEntry SignAttested(PendingEntry entry, string policyHash, long now, Proven proven)
+    {
+        PendingEntry? signed = SignByPolicy(entry, policyHash, now, proven);
+        if (signed is not null) return signed;
+        audit?.Invoke("ATTESTATION_REFUSED=sign_failed");
+        return entry;
     }
 
     private static string? CodeFor(EntryState state) => state switch
