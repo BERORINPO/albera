@@ -70,7 +70,7 @@ Two pipes, one principal each; the Authority computes the digest; receipts expir
 The order is chosen so that no step can make a destructive action promptless on its own.
 
 1. `environment.retire` + the Broker's retirement journal and scheduled purge; `environment.purge` (always prompts). No tier yet: every action still prompts. **Done in PR #118 (2026-10-31)**, see "Step 1 as built" below.
-2. Network attestation from the Broker (adapters and switches, bound to incarnation and lease generation).
+2. Network attestation from the Broker (adapters and switches, bound to incarnation and lease generation). **Done in PR #120 (2026-10-31)**, see "Step 2 as built".
 3. Receipt v3 with `basis`, the policy file, the Hello-signed policy change, the careful and standard tiers. `environment.destroy` keeps prompting.
 4. Checkpoint before `task.start` (measure the cost in the VM lab first).
 5. Scoped grants (delegated tier) and the approval-screen text for them.
@@ -84,11 +84,21 @@ Each step ships on its own and keeps today's behaviour until the owner picks a t
 - `environment.destroy` without a record behaves exactly as before. With a record, it refuses a VM that does not match it.
 - Operation store schema v5 to v6 (the action CHECK constraint now includes retire and purge).
 - Known limits:
-  - The real `env-io.ps1` identity checks are covered only by the in-memory stand-in and a text check; no real Hyper-V run yet.
+  - The real `env-io.ps1` identity checks were first run on real Hyper-V with PR #122 (see Step 2 as built).
   - A record that matches no surviving VM (for example a restored copy with another VM id) stays until an operator removes it, and it blocks create and start of that id.
   - Restoring a backup of the retired VM in place with the same Hyper-V VM id is treated as the same VM (it would be retired and later purged). The Broker cannot tell the two apart; destroy still prompts, and purge only runs after the retention period.
   - No retention disk budget yet; the Control Plane store does not release the lease after retire.
 - Reviews: Codex, three rounds (5 HIGH, then 2 HIGH, all fixed; the last finding is the in-place restore limit above).
+
+## Step 2 as built (PR #120)
+
+- Contract `src/runtime/broker-contract/network-attestation.mjs` (pure, pinned by `network-attestation-vectors.json`): a 10-key body (v, network, computerId, vmId, generation, projectId, leaseId, leaseGeneration, observedAt, expiresAt; TTL 60 s by default, at most 300 s), a domain-separated canonical digest (`albera.network-attestation.v1`), a signed envelope `{attestation, digest, keyId, signature}`, and `verifyNetworkAttestation`, which checks the signature first and reads the clock after it, then refuses an expired or not-yet-valid statement and any binding that differs from what the caller expects.
+- Classification: no adapters = `none`; any well-formed adapter, connected or not = `present`; anything unreadable or malformed = `unknown`.
+- Produced Broker-side only: a read-only `network` method in `env-io.ps1` returns the VM id and its adapters in one observation; `attestNetwork` on the Hyper-V Broker prototype signs through a signer port (a fake HMAC signer in tests; no real key yet). The project comes only from the VM's Notes, which `create` now writes; a VM without a project in its Notes is refused, so VMs created before this change cannot be attested until re-created.
+- Nothing consumes the attestation yet (step 3b will, with a C# twin and a real signature).
+- Known limits: pass-through physical NICs (DDA / SR-IOV) are not read.
+- Since PR #122, `create` removes every network adapter and fails (rolled back) if one remains, so a new VM attests `none`. Real Hyper-V run on the host (2026-10-31, Windows Server 2025 golden image, 5/5 pass in about 18 minutes): create with 0 adapters and a `none` attestation; retire stops the VM, refuses start, keeps the disk and writes project + incarnation into the Notes; requested purge removes VM, disk, folder and record; scheduled purge does nothing 1 ms before the deadline and purges at it; destroy without a record is unchanged; the golden image hash is unchanged.
+- Reviews: Codex, two rounds (3 HIGH, all fixed).
 
 ## Review of the first draft (Codex, 2026-10-31)
 
