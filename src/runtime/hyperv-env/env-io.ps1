@@ -129,6 +129,8 @@ function Invoke-Create($Req) {
 # task checkpoint (the one before the latest task) and the host disk does not grow with every task. Never any other checkpoint (a name outside the shape is not touched), never the new one (by id),
 # and never -IncludeAllChildSnapshots (the new checkpoint is a child of the old one). Each removal is a snapshot object read from this VM, not a name typed in. A prune that fails or cannot list
 # only costs disk, so it does NOT block the attestation (the checkpoint is real and verified): the reply says "pruned" (removed) and "pruneFailed" (a failed list counts 1, each failed removal 1).
+# DOCUMENTED LIMIT: the prune removes ANY checkpoint of this VM whose name has the fixed shape, whoever made it. Only a host administrator can create a checkpoint with such a name (the shape is
+# derived from an operation id by the Broker), and a host administrator can already delete the VM; no other principal can make the prune remove something it should keep.
 # WHAT IS OBSERVED (#133): the snapshot's SnapshotType is NOT used: the listing cmdlet reports SnapshotType Standard for a ProductionOnly checkpoint (real host, 2026-10-31), so
 # that field proves nothing. What is used is the VM state the snapshot recorded: with the VM running, a Standard checkpoint (guest memory saved) records snapshot State Saved and a
 # ProductionOnly one records State Off (real host, 2026-11-01, control taken on a disposable VM). So the op attests only when the new snapshot's State is Off, on top of setting
@@ -175,8 +177,11 @@ function Invoke-Checkpoint($Req) {
 # why this is a separate action that a person always approves (docs/architecture/approval-tiers.md); nothing here decides that. The VM id is mandatory (the checkpoint is restored on exactly the VM
 # the approval names), and only a checkpoint with the fixed name shape and a recorded State of Off (no saved memory, see the checkpoint op above) is ever applied, so the VM ends Off, never Running with
 # the old guest memory. No ALBERA checkpoint, or two newest with the same creation time, is a refusal and changes nothing. A restore brings back the Notes of the moment of the checkpoint, so the
-# NEW generation is written afterwards from the request ("notes": the Notes of the VM as it is NOW, with generation + 1, built by the Node side from the VM's own Notes), never derived from the
+# NEW generation is written afterwards from the request ("notes": the Notes of the VM as it is NOW, with a higher generation, built by the Node side from the VM's own Notes), never derived from the
 # restored ones, and read back: until that is done the outcome is unknown. Old-generation operations, attestations and receipts then fail the generation check of the Broker (stale_generation).
+# If the Notes write fails (or this process dies) after the restore, the VM carries the checkpoint's OLD Notes: that is made harmless by the Node side, which records the new generation in its durable
+# generation floor BEFORE it calls this op and refuses every operation on a VM whose Notes are below the floor (hyperv-environment-broker-prototype.mjs, restoreTaskCheckpoint). This script cannot
+# do that itself, so it only insists that the new number is higher than the Notes' current one (the Node side may resume an unfinished restore with the number it already recorded).
 # Nothing outside the VM is undone (pushes, API calls): that is the caller's rule. No checkpoint is removed here, and the VM is not started.
 function Invoke-Restore($Req) {
   if ([string]$Req.expect.identity -ne 'vm' -or $null -eq $Req.expect.vmId) { Reject 'invalid_provider_state' }
@@ -184,7 +189,7 @@ function Invoke-Restore($Req) {
   $vm = Require-Vm $Req.vmName $Req.expect
   try { $have = $vm.Notes | ConvertFrom-Json; $want = $Req.notes | ConvertFrom-Json } catch { Reject 'invalid_provider_state' }
   if ($null -ne $have.incarnationId -or $null -ne $want.incarnationId) { Reject 'invalid_provider_state' }
-  if ($want.albera -ne 1 -or $want.computerId -cne [string]$Req.expect.computerId -or ($want.generation -isnot [int] -and $want.generation -isnot [long]) -or $want.generation -ne ([int]$Req.expect.generation + 1)) { Reject 'invalid_provider_state' }
+  if ($want.albera -ne 1 -or $want.computerId -cne [string]$Req.expect.computerId -or ($want.generation -isnot [int] -and $want.generation -isnot [long]) -or $want.generation -le [int]$Req.expect.generation) { Reject 'invalid_provider_state' }
   if (@($want.PSObject.Properties).Count -ne 5) { Reject 'invalid_provider_state' }
   if ([string]$want.imageDigest -cne [string]$have.imageDigest -or [string]$want.projectId -cne [string]$have.projectId) { Reject 'invalid_provider_state' }
   try { $found = @(Get-VMSnapshot -VM $vm -ErrorAction Stop | Where-Object { $_.Name -cmatch $CheckpointNameRe } | Sort-Object -Property CreationTime -Descending) } catch { Reject 'provider_unavailable' }

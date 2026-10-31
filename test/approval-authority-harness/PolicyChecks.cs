@@ -131,6 +131,20 @@ internal static partial class Harness
             Assert(Code(fx.ApproveSigned(restoreId)) == "ok", "a person approves the restore");
             Assert(ReceiptOf(fx.Status(restoreId)).Receipt is { } restoreBytes && ReceiptV2.Parse(restoreBytes).Ok && !ReceiptV3.Parse(restoreBytes).Ok, "environment.restore_checkpoint: only a person's approval gives a receipt (v2, never basis policy)");
         });
+        Check("policy: the decision is an ALLOW-list: every known action outside the two contract lists needs a person under every tier and override, and environment.restore_checkpoint is one of them (issue #133)", () =>
+        {
+            string[] allowed = [.. ReceiptV3.PolicyBasisActions, .. ReceiptV3.AttestedPolicyBasisActions];
+            string[] known = [.. ActionDigest.Purposes.SelectMany(ActionDigest.ActionsFor).Distinct()];
+            string[] outside = [.. known.Where(a => !allowed.Contains(a))];
+            Assert(outside.Contains("environment.restore_checkpoint") && !allowed.Contains("environment.restore_checkpoint"), "the new action is outside both lists");
+            Assert(new[] { "environment.create", "environment.destroy", "environment.retire", "environment.purge", "synthetic.noop" }.All(a => outside.Contains(a)), "the actions that never skip a person are outside (start and task.start are attested, not outside)");
+            foreach (string json in new[] { PolicyJson(1, "careful"), PolicyJson(1, "standard"), PolicyJson(2, "standard", [.. outside]), PolicyJson(3, "careful", [.. outside]) })
+            {
+                TierPolicy policy = PolicyOf(json);
+                foreach (string action in outside)
+                    Assert(policy.NeedsPerson(action) && !policy.CanSkipWithAttestation(action) && !policy.SkippableActions().Contains(action), $"{action} needs a person under {json}");
+            }
+        });
         Check("policy: no override and no tier can make environment.restore_checkpoint skip a person (undo throws a task's work away, issue #133); an override that names it is accepted and changes nothing", () =>
         {
             foreach (string json in new[] { PolicyJson(1, "careful"), PolicyJson(1, "standard"), PolicyJson(2, "standard", "environment.restore_checkpoint"), PolicyJson(3, "careful", "environment.restore_checkpoint"), PolicyJson(4, "standard", "environment.start", "task.start") })

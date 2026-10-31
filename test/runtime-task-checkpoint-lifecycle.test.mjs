@@ -14,8 +14,10 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
+import { ATTESTED_POLICY_BASIS_ACTIONS, POLICY_BASIS_ACTIONS, isPolicyBasisAction } from '../src/runtime/broker-contract/receipt-v3.mjs';
 import { verifyTaskStartAttestation } from '../src/runtime/broker-contract/task-start-attestation.mjs';
 import { createEcdsaAttestationSigner, createEcdsaAttestationVerifier } from '../src/runtime/ecdsa-attestation-signer.mjs';
+import { createGenerationFloor } from '../src/runtime/environment-generation-floor.mjs';
 import { createRetirementJournal } from '../src/runtime/environment-retirement-journal.mjs';
 import { createHyperVEnvironmentBrokerPrototype } from '../src/runtime/hyperv-environment-broker-prototype.mjs';
 import { firstExisting, pwshCandidates } from '../src/runtime/hyperv-guest-check-prototype.mjs';
@@ -94,7 +96,7 @@ test('restore op (#133): the VM id is mandatory, ownership before anything else,
   assert.ok(at("[string]$Req.expect.identity -ne 'vm' -or $null -eq $Req.expect.vmId") < at('Require-Vm'), 'the VM id is mandatory, checked before the VM is looked up');
   assert.ok(at('Require-Vm') < at('Get-VMSnapshot') && at('Get-VMSnapshot') < apply, 'ownership (Notes + VM id), then the list, then the restore');
   assert.ok(lines.includes('try { $found = @(Get-VMSnapshot -VM $vm -ErrorAction Stop | Where-Object { $_.Name -cmatch $CheckpointNameRe } | Sort-Object -Property CreationTime -Descending) } catch { Reject \'provider_unavailable\' }'), 'this VM only, fixed name shape, newest first');
-  for (const refusal of ['if ($found.Count -eq 0) { Reject', "$found.Count -gt 1 -and $found[0].CreationTime -eq $found[1].CreationTime", "[string]$newest.State -ne 'Off'", '$checkpointId -cnotmatch $GuidRe', '$want.generation -ne ([int]$Req.expect.generation + 1)',
+  for (const refusal of ['if ($found.Count -eq 0) { Reject', "$found.Count -gt 1 -and $found[0].CreationTime -eq $found[1].CreationTime", "[string]$newest.State -ne 'Off'", '$checkpointId -cnotmatch $GuidRe', '$want.generation -le [int]$Req.expect.generation',
     '$want.computerId -cne [string]$Req.expect.computerId', '[string]$want.imageDigest -cne [string]$have.imageDigest', '[string]$want.projectId -cne [string]$have.projectId', '$null -ne $have.incarnationId -or $null -ne $want.incarnationId',
     '$Req.notes -isnot [string]', '@($want.PSObject.Properties).Count -ne 5']) {
     assert.ok(at(refusal) < apply, `${refusal} is judged before anything is restored`);
@@ -111,6 +113,30 @@ test('restore op (#133): the VM id is mandatory, ownership before anything else,
   assert.match(scriptText, /'restore' \{ Invoke-Restore \$req \}/u);
   assert.match(scriptText, /derived from the\s*#?\s*restored ones/u, 'the comment says the generation is never taken from the restored Notes');
   assert.equal([...Buffer.from(scriptText, 'utf8')].every((b) => b < 128), true, 'ASCII only');
+});
+
+test('where a person is decided (issue #133 review): an ALLOW-list in both languages, the Authority consults only it, and environment.restore_checkpoint is in neither list', () => {
+  const read = (...parts) => fs.readFileSync(path.join(path.dirname(here), 'src', 'runtime', ...parts), 'utf8');
+  const listIn = (source, name) => [...source.match(new RegExp(`${name} \\{ get; \\} = \\[([^\\]]*)\\]`, 'u'))[1].matchAll(/"([^"]+)"/gu)].map((m) => m[1]);
+  const receiptCs = read('broker-contract', 'ReceiptV3.cs');
+  // the C# lists equal the JS lists (so the JS twin and the Authority cannot drift apart), and neither names the new action
+  assert.deepEqual(listIn(receiptCs, 'PolicyBasisActions'), [...POLICY_BASIS_ACTIONS]);
+  assert.deepEqual(listIn(receiptCs, 'AttestedPolicyBasisActions'), [...ATTESTED_POLICY_BASIS_ACTIONS]);
+  assert.equal(receiptCs.includes('restore_checkpoint'), false);
+  // TierPolicy decides by membership in those lists only: a person is needed unless the action is in NoPromptActions(); an attestation skips only for AttestedNoPromptActions()
+  const tier = read('broker-contract', 'TierPolicy.cs');
+  assert.match(tier, /public bool NeedsPerson\(string action\) => !NoPromptActions\(\)\.Contains\(action\);/u);
+  assert.match(tier, /public bool CanSkipWithAttestation\(string action\) => AttestedNoPromptActions\(\)\.Contains\(action\);/u);
+  assert.match(tier, /NoPromptActions\(\) => Skippable\(ReceiptV3\.PolicyBasisActions\)/u);
+  assert.match(tier, /AttestedNoPromptActions\(\) => Skippable\(ReceiptV3\.AttestedPolicyBasisActions\)/u);
+  assert.equal(tier.includes('restore_checkpoint'), false, 'no special case: it needs a person for the same reason create and destroy do');
+  // the Authority signs without a person at exactly two places, both behind those predicates
+  const core = read('windows-approval-authority', 'AuthorityCore.cs');
+  assert.equal([...core.matchAll(/SignByPolicy\(|SignAttested\(/gu)].length, 5, 'the two signing helpers: their definitions and the three call sites');
+  assert.match(core, /if \(!current\.NeedsPerson\(request\.Dto\.Action\)\) return store\.Submit\(request, digest, \(entry, now\) => SignByPolicy\(/u);
+  assert.match(core, /if \(current\.CanSkipWithAttestation\(request\.Dto\.Action\) && ProvenBy\(/u);
+  // and the Node contract refuses a policy receipt for any action outside them
+  assert.equal(isPolicyBasisAction('environment.restore_checkpoint'), false);
 });
 
 // ---- 2. the real env-io.ps1 against synthetic Hyper-V cmdlets ----
@@ -253,7 +279,6 @@ test('restore (synthetic cmdlets): refused before anything is touched for a wron
     'another computer': restoreRequest({ expect: { ...EXPECT, computerId: 'pc-02' } }),
     'a VM name that is not ours': { ...restoreRequest(), vmName: 'albera-pc-09' },
     'Notes at the same generation': restoreRequest({ notes: notes({ generation: 3 }) }),
-    'Notes two generations ahead': restoreRequest({ notes: notes({ generation: 5 }) }),
     'Notes at a lower generation': restoreRequest({ notes: notes({ generation: 2 }) }),
     'Notes of another computer': restoreRequest({ notes: notes({ generation: 4, computerId: 'pc-02' }) }),
     'Notes with another image': restoreRequest({ notes: otherDigest }),
@@ -338,7 +363,7 @@ function hv(scriptOptions = {}, options = {}) {
   const signer = ecdsa();
   const broker = createHyperVEnvironmentBrokerPrototype({
     goldenImages: { [DIGEST]: { path: path.join(os.tmpdir(), 'albera-checkpoint-lifecycle-golden', 'base.vhdx'), os: 'windows', architecture: 'x64' } },
-    cloneRoot: tmpRoot, runPowerShell: script.run, now: () => new Date((T0 + 5) * 1000), attestationSigner: signer, ...options,
+    cloneRoot: tmpRoot, runPowerShell: script.run, now: () => new Date((T0 + 5) * 1000), attestationSigner: signer, generationFloor: createGenerationFloor(), ...options,
   });
   return { broker, script, signer };
 }
@@ -410,7 +435,7 @@ test('restoreTaskCheckpoint refusals: not applied, and the script is never asked
   }
   const none = createHyperVEnvironmentBrokerPrototype({
     goldenImages: { [DIGEST]: { path: path.join(os.tmpdir(), 'g', 'base.vhdx'), os: 'windows', architecture: 'x64' } }, cloneRoot: tmpRoot,
-    runPowerShell: async () => ({ ok: true, exists: false }),
+    runPowerShell: async () => ({ ok: true, exists: false }), generationFloor: createGenerationFloor(),
   });
   await refusal(none.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'invalid_provider_state', 'not_applied');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-restore-retire-'));
@@ -492,4 +517,139 @@ test('onCheckpointPrune: the counts of the checkpoint op reach the hook; a prune
   const late = hv({ checkpoint: { ok: true, checkpointId: CKPT, vmId: OTHER_VM, pruned: 1, pruneFailed: 0 } }, { onCheckpointPrune: (report) => heard.push(report) });
   assert.equal(await late.broker.attestTaskStart({ ...input }), null);
   assert.equal(heard.length, 5);
+});
+
+// ---- 4. the generation floor: a restore whose Notes write did not happen must not make the old generation valid again (Codex review of #140) ----
+
+const rebuild = (script, floor) => createHyperVEnvironmentBrokerPrototype({
+  goldenImages: { [DIGEST]: { path: path.join(os.tmpdir(), 'albera-checkpoint-lifecycle-golden', 'base.vhdx'), os: 'windows', architecture: 'x64' } },
+  cloneRoot: tmpRoot, runPowerShell: script.run, now: () => new Date((T0 + 5) * 1000), attestationSigner: ecdsa(), generationFloor: floor,
+});
+const taskInput = (generation, operationId) => ({
+  computerId: 'pc-01', projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, generation, vmId: VM, operationId,
+  actionDigest: computeActionDigest('guest.command', { action: 'task.start', projectId: 'proj-alpha', computerId: 'pc-01', args: { expectedGeneration: generation, task: 'build', vmId: VM } }),
+});
+/** The restore happens (the VM is Off with the CHECKPOINT's older Notes), the Notes write does not: either the script says so, or the process dies. Later calls work. */
+const interruptedOnce = (mode) => {
+  let first = true;
+  return (request, state) => {
+    if (first) {
+      first = false;
+      state.notes = notes({ generation: 2 }); // the checkpoint's Notes: OLDER than the VM's current generation 3
+      state.state = 'Off';
+      if (mode === 'died') throw Object.assign(new Error('the process died'), { code: 'provider_timeout' });
+      return { ok: false, code: 'provider_state_unknown', notApplied: false };
+    }
+    state.notes = request.notes;
+    state.state = 'Off';
+    return { ok: true, checkpointId: CKPT, vmId: VM, state: 'Off', generation: JSON.parse(request.notes).generation };
+  };
+};
+async function assertOldGenerationsRefused(broker, script, label) {
+  const before = script.calls.filter((c) => ['start', 'stop', 'remove', 'checkpoint'].includes(c.method)).length;
+  for (const generation of [3, 2]) {
+    await refusal(broker.startVm(op('start', { expectedGeneration: generation })), 'stale_generation', 'not_applied');
+    await refusal(broker.stopVm(op('stop', { expectedGeneration: generation })), 'stale_generation', 'not_applied');
+    await refusal(broker.removeVm(op('destroy', { expectedGeneration: generation })), 'stale_generation', 'not_applied');
+    await refusal(broker.attestNetwork(op('inspect', { expectedGeneration: generation }), { leaseGeneration: 7 }), 'stale_generation', 'not_applied');
+    assert.equal(await broker.attestTaskStart(taskInput(generation, `op-${label}-${generation}`)), null, `${label}: no statement for generation ${generation}`);
+  }
+  const seen = await broker.inspectVm(op('inspect', { expectedGeneration: 3 }));
+  assert.deepEqual([seen.state, seen.generation], ['unknown', 4], `${label}: an unfinished restore is "unknown" at the floor's generation, not a usable VM`);
+  assert.equal(script.calls.filter((c) => ['start', 'stop', 'remove', 'checkpoint'].includes(c.method)).length, before, `${label}: the script never saw an old-generation start, stop, remove or checkpoint`);
+}
+
+test('Notes write fails after the restore (the script says so): the floor is already recorded, so the old generation (the VM\'s and the checkpoint\'s) is refused everywhere; the same approval resumes and finishes', async () => {
+  const floor = createGenerationFloor();
+  const script = stateful({ restore: interruptedOnce('script') });
+  const broker = rebuild(script, floor);
+  await refusal(broker.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'provider_state_unknown', 'unknown');
+  assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'recorded BEFORE the restore op was called');
+  assert.equal(JSON.parse(script.state.notes).generation, 2, 'and the VM really does carry the old checkpoint Notes');
+  await assertOldGenerationsRefused(broker, script, 'script');
+  // a stale approval (it names a generation the VM is not at and the floor does not follow) cannot resume
+  await refusal(broker.restoreTaskCheckpoint({ ...RESTORE_INPUT, expectedGeneration: 2 }), 'stale_generation', 'not_applied');
+  await refusal(broker.restoreTaskCheckpoint({ ...RESTORE_INPUT, expectedGeneration: 4 }), 'stale_generation', 'not_applied');
+  // the retry of the approval the person gave finishes it, with the number already recorded, and the VM is usable at generation 4 only
+  const done = await broker.restoreTaskCheckpoint({ ...RESTORE_INPUT });
+  assert.equal(done.generation, 4);
+  const retry = script.calls.filter((c) => c.method === 'restore').at(-1);
+  assert.deepEqual([retry.expect.generation, JSON.parse(retry.notes).generation], [2, 4], 'the script is told what the Notes say now and the recorded new number');
+  assert.equal(JSON.parse(script.state.notes).generation, 4);
+  await refusal(broker.startVm(op('start', { expectedGeneration: 3 })), 'stale_generation', 'not_applied');
+  assert.equal((await broker.startVm(op('start', { expectedGeneration: 4 }))).generation, 4);
+  assert.ok(await broker.attestTaskStart(taskInput(4, 'op-after')), 'a statement for the new generation can be made again');
+  assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'the floor never went down');
+});
+
+test('the process dies after the restore and before the Notes write: a NEW Broker over the same durable floor file still refuses the old generation, and the retry finishes', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-floor-'));
+  const file = path.join(dir, 'floor.sqlite');
+  const script = stateful({ restore: interruptedOnce('died') });
+  let first;
+  let second;
+  try {
+    first = createGenerationFloor({ filePath: file });
+    await rebuild(script, first).restoreTaskCheckpoint({ ...RESTORE_INPUT }).then(() => assert.fail('the restore reported success'), () => {});
+    first.close(); // the process is gone
+    second = createGenerationFloor({ filePath: file });
+    assert.deepEqual(second.get('pc-01'), { vmId: VM, generation: 4 }, 'the floor survived');
+    const restarted = rebuild(script, second);
+    await assertOldGenerationsRefused(restarted, script, 'died');
+    assert.equal((await restarted.restoreTaskCheckpoint({ ...RESTORE_INPUT })).generation, 4);
+    assert.equal((await restarted.startVm(op('start', { expectedGeneration: 4 }))).generation, 4);
+  } finally { first?.close(); second?.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('generation floor: no floor configured = no restore; a floor that cannot be raised = nothing changed; one that cannot be read = every operation refuses; another VM id is not fenced', async () => {
+  const bare = createHyperVEnvironmentBrokerPrototype({
+    goldenImages: { [DIGEST]: { path: path.join(os.tmpdir(), 'g', 'base.vhdx'), os: 'windows', architecture: 'x64' } }, cloneRoot: tmpRoot, runPowerShell: stateful().run,
+  });
+  await refusal(bare.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'invalid_provider_state', 'not_applied');
+  const noRaise = stateful();
+  const broken = rebuild(noRaise, { get: () => null, raise: () => { throw new Error('disk full'); } });
+  await refusal(broken.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'provider_unavailable', 'not_applied');
+  assert.equal(noRaise.methods().includes('restore'), false, 'the restore op is not asked for unless the floor is durable first');
+  const unreadable = stateful();
+  const blind = rebuild(unreadable, { get: () => { throw new Error('locked'); }, raise: () => {} });
+  await refusal(blind.startVm(op('start')), 'provider_state_unknown', 'not_applied');
+  assert.equal(await blind.attestTaskStart(taskInput(3, 'op-blind')), null);
+  await refusal(blind.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'provider_state_unknown', 'not_applied');
+  assert.equal(unreadable.methods().some((m) => ['start', 'restore', 'checkpoint'].includes(m)), false);
+  // a floor recorded for a different VM (a replaced VM under the same computer id) does not fence this one
+  const other = createGenerationFloor();
+  other.raise('pc-01', OTHER_VM, 9);
+  const script = stateful();
+  assert.equal((await rebuild(script, other).startVm(op('start'))).generation, 3);
+});
+
+test('generation floor module: only ever rises, is bound to the VM id, validates its input, survives a reopen and refuses a file that is not its own', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-floor-unit-'));
+  const file = path.join(dir, 'floor.sqlite');
+  let floor;
+  try {
+    floor = createGenerationFloor({ filePath: file });
+    assert.equal(floor.get('pc-01'), null);
+    floor.raise('pc-01', VM, 4);
+    floor.raise('pc-01', VM, 2);
+    assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'a lower value is ignored');
+    floor.raise('pc-01', VM, 6);
+    floor.raise('pc-01', OTHER_VM, 1);
+    assert.deepEqual(floor.get('pc-01'), { vmId: OTHER_VM, generation: 1 }, 'another VM id replaces the record');
+    floor.raise('pc-01', VM, 5);
+    floor.close();
+    floor = createGenerationFloor({ filePath: file });
+    assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 5 });
+    for (const bad of [['pc-01', 'not-a-vm', 3], ['pc-01', VM, 0], ['pc-01', VM, 1.5], ['pc-01', VM.toUpperCase().replace(/[0-9]/g, 'A'), 3], ['', VM, 3], [7, VM, 3]]) {
+      assert.throws(() => floor.raise(...bad), (e) => e.code === 'generation_floor_invalid', JSON.stringify(bad));
+    }
+    assert.throws(() => floor.get('bad id'), (e) => e.code === 'generation_floor_invalid');
+    assert.throws(() => createGenerationFloor({ filePath: '' }), TypeError);
+    floor.close();
+    floor = undefined;
+    const foreign = path.join(dir, 'foreign.sqlite');
+    const db = createRetirementJournal({ filePath: foreign });
+    db.close();
+    assert.throws(() => createGenerationFloor({ filePath: foreign }), (e) => e.code === 'generation_floor_corrupt', 'another schema is not trusted');
+  } finally { floor?.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

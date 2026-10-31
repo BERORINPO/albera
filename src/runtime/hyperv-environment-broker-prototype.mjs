@@ -39,8 +39,13 @@ const STOP_WAIT_FRACTION = 0.8;
 
 export function createHyperVEnvironmentBrokerPrototype({
   goldenImages, cloneRoot, pwsh = 'pwsh', timeoutMs = DEFAULT_TIMEOUT_MS,
-  hashFile = sha256OfFile, runPowerShell, now = () => new Date(), retirements, attestationSigner, attestationTtlSeconds = DEFAULT_TTL_SECONDS, onCheckpointPrune,
+  hashFile = sha256OfFile, runPowerShell, now = () => new Date(), retirements, attestationSigner, attestationTtlSeconds = DEFAULT_TTL_SECONDS, onCheckpointPrune, generationFloor,
 } = {}) {
+  // `generationFloor` is the Broker-owned durable high-water mark of generations (environment-generation-floor.mjs): host configuration, never operation input. Without it restoreTaskCheckpoint
+  // is refused: a restore may only be asked for after the generation it will issue is recorded somewhere that survives a failed Notes write and a crash (issue #133).
+  if (generationFloor !== undefined && (generationFloor === null || typeof generationFloor.get !== 'function' || typeof generationFloor.raise !== 'function')) {
+    throw new TypeError('invalid_hyperv_environment_prototype_options');
+  }
   // `onCheckpointPrune` (optional) hears, after each task checkpoint, how many older ALBERA checkpoints were removed and how many could not be ({ computerId, pruned, pruneFailed }, numbers only).
   // A prune failure never blocks the attestation (it only costs disk), so this is how it is not hidden. A throwing hook is ignored.
   if (onCheckpointPrune !== undefined && typeof onCheckpointPrune !== 'function') throw new TypeError('invalid_hyperv_environment_prototype_options');
@@ -87,14 +92,29 @@ export function createHyperVEnvironmentBrokerPrototype({
     if (result.exists !== true) return null;
     // vmId is the VM's own Hyper-V id (not editable, not copied by a restore); null when the script did not report a well-formed one.
     const vmId = typeof result.vmId === 'string' && isVmId(result.vmId.toLowerCase()) ? result.vmId.toLowerCase() : null;
-    return { state: mapState(result.state), meta: parseNotes(result.notes), vmId, adapters: result.adapters };
+    const meta = parseNotes(result.notes);
+    return { state: mapState(result.state), meta, vmId, adapters: result.adapters, floor: floorOf(meta, vmId) };
   }
+
+  // The durable generation floor of THIS VM (null = none). A floor that cannot be read is a refusal, never "no floor"; the VM id keeps a floor from fencing another VM under the same computer id.
+  function floorOf(meta, vmId) {
+    if (!generationFloor || !meta || !vmId) return null;
+    let record;
+    try { record = generationFloor.get(meta.computerId); }
+    catch { throw brokerError('provider_state_unknown', 'not_applied'); }
+    return record && record.vmId === vmId && Number.isSafeInteger(record.generation) ? record.generation : null;
+  }
+
+  // Fenced: the Notes are below the floor, i.e. a restore was asked for and the Notes still carry an older generation (a failed or interrupted Notes write). Nothing may use such a VM
+  // until a successful restore brings its Notes up to the floor.
+  const isFenced = (vm) => Boolean(vm.meta) && vm.floor !== null && vm.meta.generation < vm.floor;
 
   // A VM we may act on: ours (Notes identity) and at the generation the caller expects.
   async function managed(operation, vmName, method = 'inspect') {
     const vm = await lookup(vmName, method);
     if (!vm) return null;
     if (!vm.meta || vm.meta.computerId !== operation.computerId) throw brokerError('invalid_provider_state', 'not_applied');
+    if (isFenced(vm)) throw brokerError('stale_generation', 'not_applied');
     if (vm.meta.generation !== operation.expectedGeneration) throw brokerError('stale_generation', 'not_applied');
     return vm;
   }
@@ -139,6 +159,7 @@ export function createHyperVEnvironmentBrokerPrototype({
       if (existing) {
         // Idempotent re-create: identical identity returns the current state, anything else conflicts.
         const m = existing.meta;
+        if (isFenced(existing)) throw brokerError('operation_conflict', 'not_applied');
         if (!m || m.computerId !== operation.computerId || m.imageDigest !== spec.imageDigest
           || m.generation !== operation.expectedGeneration || (m.projectId !== null && m.projectId !== operation.projectId)) throw brokerError('operation_conflict', 'not_applied');
         return observed(operation.computerId, existing.state, operation.expectedGeneration);
@@ -164,6 +185,8 @@ export function createHyperVEnvironmentBrokerPrototype({
       // A record with no VM behind it is an unfinished clean-up (a destroy that died before dropping it): never report that as plain "missing".
       if (!vm) return observed(operation.computerId, record ? 'unknown' : 'missing', operation.expectedGeneration);
       if (!vm.meta || vm.meta.computerId !== operation.computerId) throw brokerError('invalid_provider_state', 'not_applied');
+      // A fenced VM (a restore was asked for but its Notes were not brought up to the new generation) is reported as unknown at the floor's generation, so a reconcile sees an unfinished restore, not a usable VM.
+      if (isFenced(vm)) return observed(operation.computerId, 'unknown', vm.floor);
       return observed(operation.computerId, vm.state === 'off' && matchesRecord(record, vm) ? 'retired' : vm.state, vm.meta.generation);
     },
 
@@ -218,24 +241,36 @@ export function createHyperVEnvironmentBrokerPrototype({
      * GENERATION: for this Broker the generation of a VM is the `generation` in its own Notes (create writes it, every other method compares it with the operation's expectedGeneration).
      * A restore reissues it: the Notes are rewritten with generation + 1, built here from the VM's own Notes (never from the restored ones, which date from the checkpoint), and the reply and
      * a fresh read must both show it. From then on a start, stop, destroy, attestation or task-start statement made for the old generation is `stale_generation` / null (ADR-004 acceptance 5).
+     * FAIL-CLOSED ORDER: a restore brings back the checkpoint's OLD Notes, so if the Notes write after it failed (or the process died between the two) the old generation would be valid again.
+     * Therefore, BEFORE the restore op is called, the new generation is raised in the durable `generationFloor` (host configuration; without it the restore is refused, not applied). Every
+     * operation refuses a VM whose Notes are below the floor of its own VM id (`stale_generation`, attestation null, inspect "unknown"), and nothing clears that except a successful restore,
+     * which brings the Notes up to the floor. A restore that did not finish is retried with the same approval's generation: while the floor is exactly expectedGeneration + 1 and the Notes are
+     * at or below expectedGeneration, the retry restores again and writes that same number.
      * NOT done here: the Control Plane's own record (`computers.generation` in the SQLite store) is moved by `revokeLease(..., { reason: 'restore' })`, and no journaled `restore` action
      * connects the two yet; until it does, the store keeps the old number and every operation it sends is refused here (stale_generation), which fails closed.
      * Returns the observed environment at the NEW generation. Errors are broker errors; after any `unknown` outcome the caller inspects before it retries.
      */
     async restoreTaskCheckpoint(input) {
       const f = checkedRestore(input);
+      if (!generationFloor) throw brokerError('invalid_provider_state', 'not_applied');
       if (readRecord(f.computerId)) throw brokerError('environment_retired', 'not_applied');
       const vmName = `${VM_PREFIX}${f.computerId}`;
       const vm = await lookup(vmName);
       if (!vm || !vm.vmId || !vm.meta || vm.meta.computerId !== f.computerId) throw brokerError('invalid_provider_state', 'not_applied');
-      if (vm.meta.generation !== f.expectedGeneration) throw brokerError('stale_generation', 'not_applied');
+      // Normal: the Notes are at the generation the approval names. Resume: an earlier restore of exactly this generation recorded its floor (expectedGeneration + 1) and did not finish,
+      // so the Notes are still at or below it. Any other floor means the VM has moved on (or past) this approval.
+      const resuming = vm.floor === f.expectedGeneration + 1 && vm.meta.generation <= f.expectedGeneration;
+      if (!resuming && (vm.meta.generation !== f.expectedGeneration || isFenced(vm) || (vm.floor !== null && vm.floor > f.expectedGeneration + 1))) throw brokerError('stale_generation', 'not_applied');
       if (vm.vmId !== f.vmId) throw brokerError('operation_conflict', 'not_applied');
       if (vm.meta.projectId === null) throw brokerError('project_unknown', 'not_applied');
       if (vm.meta.projectId !== f.projectId) throw brokerError('project_mismatch', 'not_applied');
       if (vm.meta.incarnationId !== null) throw brokerError('operation_conflict', 'not_applied'); // a retirement has begun on this VM
       const next = f.expectedGeneration + 1;
       const notes = JSON.stringify({ albera: 1, computerId: f.computerId, generation: next, imageDigest: vm.meta.imageDigest, projectId: vm.meta.projectId });
-      const result = await call({ method: 'restore', vmName, expect: { computerId: f.computerId, generation: f.expectedGeneration, vmId: f.vmId, identity: 'vm' }, notes });
+      try { generationFloor.raise(f.computerId, f.vmId, next); } // durable before the restore is asked for; a failure here means nothing was changed
+      catch { throw brokerError('provider_unavailable', 'not_applied'); }
+      // `expect.generation` is what the Notes say NOW (the script compares it with them); `notes` carries the new number, which the script only insists is higher.
+      const result = await call({ method: 'restore', vmName, expect: { computerId: f.computerId, generation: vm.meta.generation, vmId: f.vmId, identity: 'vm' }, notes });
       const reportedId = typeof result.vmId === 'string' ? result.vmId.toLowerCase() : null;
       if (reportedId !== f.vmId || result.generation !== next || mapState(result.state) !== 'off') throw brokerError('provider_state_unknown');
       const after = await lookup(vmName); // the new generation is what the VM itself says now, not only what the script reported
@@ -368,7 +403,7 @@ export function createHyperVEnvironmentBrokerPrototype({
   // The VM exactly as the Broker sees it now, or null: ours, at the generation and project the caller named, the VM id it named, not retired, and with no network adapter at all.
   async function taskStartObservation(f, vmName) {
     const vm = await lookup(vmName, 'network');
-    if (!vm || !vm.vmId || vm.vmId !== f.vmId || !vm.meta || vm.meta.computerId !== f.computerId || vm.meta.generation !== f.generation) return null;
+    if (!vm || !vm.vmId || vm.vmId !== f.vmId || !vm.meta || vm.meta.computerId !== f.computerId || vm.meta.generation !== f.generation || isFenced(vm)) return null;
     if (vm.meta.projectId === null || vm.meta.projectId !== f.projectId) return null;
     return classifyNetworkAdapters(vm.adapters) === 'none' ? vm : null;
   }
