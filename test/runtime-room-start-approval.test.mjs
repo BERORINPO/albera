@@ -361,14 +361,70 @@ test('real gate + real flow: a denied approval starts nothing', async (t) => {
 
 // ---- the CLI option ----
 
-test('room --require-start-approval: parsed for --job and --workspace rooms, not for the demo, only once; help says it is not available yet', () => {
+test('room --require-start-approval needs --approval (the pair is covered in runtime-room-approval-wiring.test.mjs); help still says an ungated room does not ask', () => {
   const base = ['room', '--job', 'vm-a=do the thing'];
   assert.equal(parseRuntimeArgs(base).requireStartApproval, undefined);
-  assert.equal(parseRuntimeArgs([...base, '--require-start-approval']).requireStartApproval, true);
-  assert.equal(parseRuntimeArgs(['room', '--require-start-approval', '--job', 'vm-a=do the thing']).jobs.length, 1);
-  assert.equal(parseRuntimeArgs(['room', '--workspace', 'w.json', '--require-start-approval']).requireStartApproval, true);
-  assert.throws(() => parseRuntimeArgs([...base, '--require-start-approval', '--require-start-approval']), /runtime_option_must_be_unique/);
-  assert.throws(() => parseRuntimeArgs(['room', '--demo', '--require-start-approval']), /invalid_runtime_option/);
+  assert.equal(parseRuntimeArgs([...base, '--require-start-approval', '--approval', 'a.json']).requireStartApproval, true);
+  assert.throws(() => parseRuntimeArgs([...base, '--require-start-approval']), /runtime_room_start_approval_needs_settings/);
+  assert.throws(() => parseRuntimeArgs([...base, '--require-start-approval', '--require-start-approval', '--approval', 'a.json']), /runtime_option_must_be_unique/);
+  assert.throws(() => parseRuntimeArgs(['room', '--demo', '--require-start-approval', '--approval', 'a.json']), /invalid_runtime_option/);
   assert.match(RUNTIME_HELP, /--require-start-approval/);
   assert.match(RUNTIME_HELP, /room does NOT ask for approval before it starts a hand/);
+});
+
+// ---- the initial jobs of a gated room (A3): the fleet has none; each is requested through the host's start path ----
+
+test('requestStart (the gated room\'s initial jobs): each job is asked of the gate once, nothing starts before the answer, and the job gets exactly the approved task', async (t) => {
+  const gate = deferredGate();
+  const r = await start(t, { startGate: gate });
+  const answers = await Promise.all(VMS.map((vm) => r.host.requestStart(vm.vmId, vm.task)));
+  assert.deepEqual(answers, ['pending_approval', 'pending_approval']);
+  await until(() => gate.asked.length === 2, 'both approval requests');
+  assert.deepEqual(gate.asked.map(({ vmId, task }) => [vmId, task]), VMS.map((vm) => [vm.vmId, vm.task]));
+  await settle();
+  assert.deepEqual(r.fleet.calls, [], 'nothing starts while the approvals are pending');
+  gate.asked[1].answer({ ok: true });
+  await until(() => r.fleet.calls.some(([name]) => name === 'startJob'), 'the second start');
+  assert.deepEqual(r.fleet.calls, [['stopVm', 'vm-b'], ['startJob', 'vm-b', VMS[1].task]]);
+  gate.asked[0].answer({ ok: false, code: 'start_denied' });
+  await until(() => r.ledger().length === 2, 'the ledger');
+  assert.deepEqual(r.ledger(), [['vm-b', 'bero', 'start_approved', {}], ['vm-a', 'bero', 'start_refused', { code: 'start_denied' }]]);
+  assert.deepEqual(r.fleet.calls.filter(([name]) => name === 'startJob').map(([, vmId]) => vmId), ['vm-b'], 'the refused VM never started');
+});
+
+test('requestStart: a refusal of every kind starts nothing; an unknown VM, an empty task and a closed host are answered without asking the gate', async (t) => {
+  for (const code of ['start_denied', 'start_expired', 'start_failed', 'start_retryable', 'start_unknown', 'vm_unknown', 'task_invalid']) {
+    const gate = { async startApproved() { return { ok: false, code }; } };
+    const r = await start(t, { startGate: gate });
+    assert.equal(await r.host.requestStart('vm-a', 'do it'), 'pending_approval');
+    await until(() => r.ledger().length === 1, `the refusal ${code}`);
+    assert.deepEqual(r.fleet.calls, []);
+    assert.deepEqual(r.ledger(), [['vm-a', 'bero', 'start_refused', { code }]]);
+  }
+  const gate = deferredGate();
+  const r = await start(t, { startGate: gate });
+  assert.equal(await r.host.requestStart('vm-zzz', 'do it'), 'vm_unknown');
+  assert.equal(await r.host.requestStart('vm-a', ''), 'vm_unknown');
+  assert.equal(await r.host.requestStart('vm-a', 42), 'vm_unknown');
+  await r.host.close();
+  assert.equal(await r.host.requestStart('vm-a', 'do it'), 'host_closing');
+  assert.equal(gate.asked.length, 0);
+});
+
+test('a gated room built the way the CLI builds it: a fleet with no initial jobs but known VMs, the real gate from the wiring, and every initial job goes through the gate', async (t) => {
+  const stub = { async startApproved() { return { ok: true }; } };
+  // The wiring's own gate over fake clients (see runtime-room-approval-wiring.test.mjs for the binding); here only the shape of the room matters.
+  const fleet = createAgentFleet({
+    jobs: [], keepAlive: true, vmIds: VMS.map((vm) => vm.vmId), createDriver: () => ({ capture() {}, act() {} }), createClient: () => ({ send() {} }),
+    limits: { maxSteps: 1, maxUsd: 1, maxMs: 1000 }, prices: { input: 1, output: 1 }, totalMaxUsd: 1,
+  });
+  assert.equal(fleet.initialJobCount, 0);
+  const started = [];
+  const spy = { ...fleet, startJob: (vmId, task) => { started.push([vmId, task]); return { ok: true }; } };
+  const gate = { asked: [], async startApproved(request) { this.asked.push(request); return stub.startApproved(); } };
+  const r = await start(t, { startGate: gate, fleet: { ...spy, idle: async () => {} } });
+  await Promise.all(VMS.map((vm) => r.host.requestStart(vm.vmId, vm.task)));
+  await until(() => started.length === 2, 'both starts');
+  assert.deepEqual(gate.asked.map(({ vmId, task }) => [vmId, task]), VMS.map((vm) => [vm.vmId, vm.task]), 'the gate was asked once per job');
+  assert.deepEqual(started, VMS.map((vm) => [vm.vmId, vm.task]));
 });

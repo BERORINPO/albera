@@ -61,7 +61,7 @@ const EXPECTED = {
     // the production signature scheme of that attestation (ECDSA P-256; the key object comes from host configuration, step 3b)
     'ecdsa-attestation-signer.mjs',
     // control room (spec/room.md §3)
-    'room-contract.mjs', 'room-host.mjs', 'room-demo.mjs', 'room-journal.mjs', 'room-figures.mjs', 'bero-director.mjs', 'room-starts.mjs', 'task-start-gate.mjs',
+    'room-contract.mjs', 'room-host.mjs', 'room-demo.mjs', 'room-journal.mjs', 'room-figures.mjs', 'bero-director.mjs', 'room-starts.mjs', 'task-start-gate.mjs', 'room-approval-wiring.mjs',
     'fake-guest-checker.mjs', 'hyperv-guest-check-prototype.mjs', 'hyperv-guest/check-io.ps1', 'workspace.mjs',
     // opt-in in-guest screen capture (spec/architecture.md decision log 2026-10-30+guest-capture)
     'hyperv-guest-capture-prototype.mjs', 'hyperv-guest/capture-io.ps1', 'hyperv-guest/screen-helper.ps1',

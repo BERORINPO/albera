@@ -1,4 +1,5 @@
 import { ID_PATTERN, MAX_ARG_STRING_BYTES, isSafeText, validateActionDto } from './broker-contract/action-digest.mjs';
+import { isVmId } from './broker-contract/network-attestation.mjs';
 
 // Control Plane gate for starting a hand (#115 follow-up, step A2): a desktop agent loop may start a task on a VM only after the approval flow says
 // the guest.command / task.start operation was CLAIMED. The flow, the project id, the VM -> computer mapping and the operation ids are injected; this module
@@ -11,6 +12,9 @@ import { ID_PATTERN, MAX_ARG_STRING_BYTES, isSafeText, validateActionDto } from 
 // Everything else is a refusal with a fixed code: denied, expired, failed, retryable and unknown flow statuses (an unknown outcome never starts a job),
 // a flow that throws, a claimed result that only replays an earlier operation (each start needs its own approval), and a task the contract could not carry.
 // A task that is empty, longer than 256 UTF-8 bytes or has an unsafe character is refused BEFORE the flow runs: no approval is requested for it.
+// Optional `attestationFor(vmId) -> { vmId, expectedGeneration } | undefined` (the VM's own Hyper-V id and generation, from the host's settings): when it answers, those two
+// names join `args` (nothing else can), because the approved-operation flow asks the Broker for a task-start attestation only for an action that names them. Without it, or when
+// it answers undefined, the args are exactly { task } and a person is always asked. An answer the contract cannot carry makes the VM unknown (refused before any request).
 
 export const TASK_START_MAX_BYTES = MAX_ARG_STRING_BYTES;
 export const TASK_START_REFUSALS = Object.freeze([
@@ -30,18 +34,23 @@ export function isStartableTask(task) {
 }
 
 /**
- * @param {{ flow: { run: Function }, projectId: string, computerIdFor: (vmId: string) => string|undefined, newOperationId: () => string }} deps
+ * @param {{ flow: { run: Function }, projectId: string, computerIdFor: (vmId: string) => string|undefined, newOperationId: () => string,
+ *   attestationFor?: (vmId: string) => { vmId: string, expectedGeneration: number }|undefined }} deps
  *   `computerIdFor(vmId)` is the host's own mapping (a VM it does not know gives undefined). `newOperationId()` must give a new id every call.
  */
-export function createTaskStartGate({ flow, projectId, computerIdFor, newOperationId } = {}) {
+export function createTaskStartGate({ flow, projectId, computerIdFor, newOperationId, attestationFor } = {}) {
   if (typeof flow?.run !== 'function' || typeof computerIdFor !== 'function' || typeof newOperationId !== 'function') throw new TypeError('invalid_task_start_gate_dependencies');
+  if (attestationFor !== undefined && typeof attestationFor !== 'function') throw new TypeError('invalid_task_start_gate_dependencies');
   if (typeof projectId !== 'string' || !ID_RE.test(projectId)) throw new TypeError('invalid_task_start_gate_project');
 
   /** The DTO for this VM and task, or null when the host has no valid computer for the VM. */
   function dtoFor(vmId, task) {
     let computerId;
-    try { computerId = computerIdFor(vmId); } catch { return null; }
-    try { return validateActionDto('guest.command', { action: 'task.start', projectId, computerId, args: { task } }); } catch { return null; }
+    let named;
+    try { computerId = computerIdFor(vmId); named = attestationFor?.(vmId); } catch { return null; }
+    if (named !== undefined && !(named !== null && typeof named === 'object' && isVmId(named.vmId) && Number.isSafeInteger(named.expectedGeneration) && named.expectedGeneration >= 1)) return null;
+    const args = named === undefined ? { task } : { task, vmId: named.vmId, expectedGeneration: named.expectedGeneration };
+    try { return validateActionDto('guest.command', { action: 'task.start', projectId, computerId, args }); } catch { return null; }
   }
 
   async function startApproved({ vmId, task } = {}) {

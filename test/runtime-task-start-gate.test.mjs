@@ -169,3 +169,33 @@ test('real flow: an invalid task never reaches the Authority', async () => {
   assert.deepEqual(await gate.startApproved({ vmId: 'vm-a', task: 'bidi ‮' }), { ok: false, code: 'task_invalid' });
   assert.equal(world.submissions.length, 0);
 });
+
+// ---- attestationFor (A3): the VM's Hyper-V id and generation join the args, so the flow can ask the Broker side for a task-start attestation ----
+
+const VM_GUID = '11111111-2222-4333-8444-555555555555';
+const attestable = (vmId) => (vmId === 'vm-a' ? { vmId: VM_GUID, expectedGeneration: 3 } : undefined);
+
+test('gate: with attestationFor the args are { task, vmId, expectedGeneration } for a VM it knows and { task } alone for one it does not', async () => {
+  const flow = fakeFlow(claimed);
+  const gate = makeGate(flow, { attestationFor: attestable });
+  await gate.startApproved({ vmId: 'vm-a', task: 'one' });
+  await gate.startApproved({ vmId: 'vm-b', task: 'two' });
+  assert.deepEqual(flow.requests.map((r) => r.action.args), [{ task: 'one', vmId: VM_GUID, expectedGeneration: 3 }, { task: 'two' }]);
+  const plain = fakeFlow(claimed);
+  await makeGate(plain).startApproved({ vmId: 'vm-a', task: 'one' });
+  assert.deepEqual(plain.requests[0].action.args, { task: 'one' }, 'without attestationFor nothing changes');
+});
+
+test('gate: only vmId and expectedGeneration can come from attestationFor; an answer the contract cannot carry refuses the VM before any request', async () => {
+  const flow = fakeFlow(claimed);
+  const smuggle = makeGate(flow, { attestationFor: () => ({ vmId: VM_GUID, expectedGeneration: 3, shell: 'calc.exe', task: 'overwritten' }) });
+  assert.deepEqual(await smuggle.startApproved({ vmId: 'vm-a', task: 'real' }), { ok: true });
+  assert.deepEqual(flow.requests[0].action.args, { task: 'real', vmId: VM_GUID, expectedGeneration: 3 });
+  const refusing = fakeFlow(claimed);
+  for (const answer of [null, 'text', { vmId: VM_GUID }, { expectedGeneration: 3 }, { vmId: 7, expectedGeneration: 3 }, { vmId: VM_GUID, expectedGeneration: { n: 1 } }, 5]) {
+    assert.deepEqual(await makeGate(refusing, { attestationFor: () => answer }).startApproved({ vmId: 'vm-a', task: 'x' }), { ok: false, code: 'vm_unknown' }, JSON.stringify(answer));
+  }
+  assert.deepEqual(await makeGate(refusing, { attestationFor: () => { throw new Error('boom'); } }).startApproved({ vmId: 'vm-a', task: 'x' }), { ok: false, code: 'vm_unknown' });
+  assert.equal(refusing.requests.length, 0);
+  assert.throws(() => createTaskStartGate({ flow: refusing, projectId: PROJECT, computerIdFor, newOperationId: idCounter(), attestationFor: 'yes' }), TypeError);
+});

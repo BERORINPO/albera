@@ -149,6 +149,32 @@ Before a `guest.command` / `task.start` is submitted, the Hyper-V Broker side ta
 - **Policy hash domain `albera.policy-hash.v3`.** "standard" now also means attested `task.start`, so a standard policy signed under v2 no longer verifies and needs a new Hello signature (the same reason as step 3b's v2). The Windows Broker accepts a `task.start` DTO whose args are `{ task }` alone or `{ task, vmId, expectedGeneration }` (it only records the claim; it does not start anything yet).
 - **Known limits.** (1) Nothing starts a process in the VM yet, so nothing yet compares the attested VM id with the VM that runs the task. (2) Older ALBERA checkpoints are never deleted: every attested `task.start` leaves one (about the data the task writes plus 0.1 to 0.2 GB, as measured), so host disk grows until a clean-up exists; "one checkpoint per incarnation" is not enforced. (3) Restore (undo) does not exist. (4) The Windows Broker has no `attestTaskStart` verb yet; only the Hyper-V prototype (same user, not the privileged Broker) makes the statement. (5) The `checkpoint` op was not run on real Hyper-V by the change's author: `ProductionOnly` (not `Production`, which falls back to a Standard checkpoint, saving guest memory to the host disk, when the guest cannot freeze its disk) is untested until the host check. (6) A typical `task.start` with its statement is about 1.2 KB of the Authority's 2 KB frame; if one does not fit, the flow submits without the statement and a person is asked.
 
+## Room start approval (A3: `room --require-start-approval --approval <file>`)
+
+The control room can start a hand only after a `guest.command` / `task.start` operation was claimed by the Host Broker. `src/runtime/room-approval-wiring.mjs` builds that path from one settings file: it opens the durable flow journal (`flowJournal()` of the SQLite operation store), binds the real Broker and Approval Authority pipe clients, builds the gate (`task-start-gate.mjs`) over the approved-operation flow, and hands the gate to the room host. The room's fleet is created with no jobs; each initial job (and each job a decision card starts) is requested through the gate and appears as `start_approved` or `start_refused {code}` in the ledger. Nothing starts on a denial, an expiry, a failure or an unknown outcome.
+
+Settings file (`examples/albera.approval.example.json`; strict, unknown keys refused; names and paths only, no secret; a bad file is exit 2 with a fixed `runtime_room_approval_*` code and prints neither the content nor a path):
+
+| Field | Meaning |
+|---|---|
+| `projectId` | the project the operations belong to (the Authority's policy and the approver's screen show it) |
+| `broker.pipeName`, `broker.expect` | the Host Broker's pipe and what the pipe client must find on the server before it writes (`serviceName`, optionally `ownerSid` / `imageSha256`) |
+| `authority.pipeRoot`, `authority.expect` | the Approval Authority's pipe root (`<root>\submit\v1` is used) and the same server expectation |
+| `journal` | absolute path of the SQLite operation store that holds the flow's records (private folder; the store checks its own ACL) |
+| `computers` | Hyper-V VM name of the room -> `computerId`. A VM that is not listed is refused, and so is a task that cannot be a `task.start` argument (empty, over 256 UTF-8 bytes, control characters), before any request. An entry may also name the VM's Hyper-V id and generation (`vmId`, `expectedGeneration`) |
+| `attestation` | `null`, or `keyFile` (PKCS#8 PEM P-256 private key), `keyId`, `cloneRoot`: the Hyper-V Broker prototype's `attestTaskStart` is given to the flow |
+
+How the person is skipped: with `attestation` set and a computer that names `vmId` + `expectedGeneration`, the gate adds those two args to the `task.start` action (the Broker accepts `{ task }` or `{ task, vmId, expectedGeneration }`), the flow asks the prototype for a checkpoint attestation, and a `standard`-tier policy may then sign without a person. Everything else (no `attestation`, a computer without `vmId`, any failure of the checkpoint) asks the person, exactly as before. The prototype looks the VM up as `albera-<computerId>`, so only VMs made by the environment Broker can be attested.
+
+First real run on the host (none of this was run by the author; see "not verified"):
+
+1. Install and start the Host Broker and the Approval Authority services, `AlberaApprover.exe enroll` + `enroll --check`, and sign a policy (`approver-app.md`, `approval-authority.md`).
+2. Make a private folder for the journal, write `albera.approval.json` from the example (real pipe names, service names, `projectId`, VM -> computer map; leave `attestation` `null` for the first run).
+3. `albera-runtime room --job <vm>=<task> --require-start-approval --approval albera.approval.json` (with `ANTHROPIC_API_KEY` set). Approve the `task.start` in the approver app; the ledger shows `start_approved` and the hand starts.
+4. Only after step 3 works: create the attestation key (a person, outside this repository), pin its public key and key id in the Authority's config, set the standard tier, add `attestation` and the VM ids to the file.
+
+Not verified: no real Broker, Authority, Hello approval, Hyper-V checkpoint or SQLite store was involved in any test (fakes only). Known limits: the journal keeps unfinished operations of an earlier run but a new room run never resumes them (each start is a new operation id); the prototype is same-user, not the privileged Broker; the Windows Broker still only records the claim and does not start a process, so "approved" does not yet mean the hand is bound to the approved task by the Broker.
+
 ## Review of the first draft (Codex, 2026-10-31)
 
 | Severity | Finding | Change above |
