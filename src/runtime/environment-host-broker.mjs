@@ -1,4 +1,4 @@
-import { EnvironmentProviderError, isEnvironmentId } from './environment-provider.mjs';
+import { EnvironmentProviderError, isEnvironmentId, validateEnvironmentOperation } from './environment-provider.mjs';
 
 /**
  * Local contract adapter for the future Host Broker boundary.
@@ -28,6 +28,9 @@ export class LocalEnvironmentHostBroker {
       const captured = captureMethod(provider, method);
       if (captured) providerMethods[method] = captured;
     }
+    // attestNetwork is optional too (#115 step 2): a Provider without it ends as not_applied.
+    const attestNetwork = captureMethod(provider, 'attestNetwork');
+    if (attestNetwork) providerMethods.attestNetwork = attestNetwork;
     this.#resolveDispatch = resolveDispatch;
     this.#resolveInspection = resolveInspection;
     this.#providerMethods = Object.freeze(providerMethods);
@@ -58,6 +61,20 @@ export class LocalEnvironmentHostBroker {
     }
     const operation = this.#resolveInspection({ operationId, approvalId });
     return this.#providerMethods.inspect(operation);
+  }
+
+  /**
+   * Read-only network attestation for one environment (#115 step 2): no journal entry, no claim, no state change. `operation` must be an inspect operation of this Provider;
+   * it only names the environment (the Provider reads the network itself, so nothing here can influence the result), and `leaseGeneration` is bound into the statement as the
+   * caller's claim for the verifier to check. Returns the Broker-signed attestation; nothing consumes it yet.
+   */
+  attestNetwork({ operation, leaseGeneration } = {}) {
+    let checked;
+    try { checked = validateEnvironmentOperation(operation); }
+    catch { throw new EnvironmentProviderError('invalid_environment_operation', { outcome: 'not_applied' }); }
+    if (checked.action !== 'inspect' || checked.providerId !== this.providerId) throw new EnvironmentProviderError('provider_operation_mismatch', { outcome: 'not_applied' });
+    if (!this.#providerMethods.attestNetwork) throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' });
+    return this.#providerMethods.attestNetwork(checked, { leaseGeneration });
   }
 }
 

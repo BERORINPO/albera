@@ -1,0 +1,1238 @@
+{
+  "contract": "albera.network-attestation.vectors",
+  "version": 1,
+  "notes": [
+    "digestVectors: body is the attestation body (v1). expected.ok = digest and the exact preimage bytes (UTF8 domain, 0x00, canonical map as in action-digest.mjs); otherwise expected.code (malformed | ttl) and field.",
+    "classificationVectors: adapters is the list of adapter facts the Broker read ([{connected, switchType}]); adaptersOmitted = the value was missing. expected is none | present | unknown.",
+    "There is no C# twin yet (step 3 of issue 115 adds it where the Authority consumes the attestation); when it does, it must reproduce every expected value here."
+  ],
+  "digestVectors": [
+    {
+      "name": "none-ttl-60",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:a5faf3097a944b38a085bd2d051b4b8ab8bd28a540655c44da223a32a0b41dff",
+        "preimageHex": "616c626572612e6e6574776f726b2d6174746573746174696f6e2e7631004d00000009530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "present-ttl-60",
+      "body": {
+        "v": 1,
+        "network": "present",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:8f2160c3b52c59c9588e6f9c1cf19d00d2173b28c0c9696f7fe28cf10da8a5ee",
+        "preimageHex": "616c626572612e6e6574776f726b2d6174746573746174696f6e2e7631004d00000009530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076e6574776f726b530000000770726573656e74530000000a6f62736572766564417449000000006ae52f80530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "unknown-ttl-60",
+      "body": {
+        "v": 1,
+        "network": "unknown",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:4d8000c984556e82ec7284bfe18bdcf8ffab74481e66da9548817759c00215f1",
+        "preimageHex": "616c626572612e6e6574776f726b2d6174746573746174696f6e2e7631004d00000009530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076e6574776f726b5300000007756e6b6e6f776e530000000a6f62736572766564417449000000006ae52f80530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-ttl-exactly-300",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793405100
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:71c297f2f23dc2a50f18c7abd728d31fc7d6891266c7b8d690ad4c37e558e122",
+        "preimageHex": "616c626572612e6e6574776f726b2d6174746573746174696f6e2e7631004d00000009530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae530ac530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-ttl-1",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404801
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:b0bcab359e0ffd330d34a1e8c6ca761bdbe2a7722c7ff8dc7876c8c411bc181c",
+        "preimageHex": "616c626572612e6e6574776f726b2d6174746573746174696f6e2e7631004d00000009530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52f81530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-ids-at-64-chars",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:d1f92ae25fff1eea6a52b0c889efc0dccf3de951fb0dbac0934942785b00f4ee",
+        "preimageHex": "616c626572612e6e6574776f726b2d6174746573746174696f6e2e7631004d00000009530000000a636f6d70757465724964530000004061626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000970726f6a65637449645300000040616262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262625300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-computer",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-02",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:de50ad36ca2fe5c5e3981970a321ee1c14e9d076f7fddafc68c1b9516bf2943e",
+        "preimageHex": "616c626572612e6e6574776f726b2d6174746573746174696f6e2e7631004d00000009530000000a636f6d70757465724964530000000570632d3032530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-vm",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "99999999-8888-4777-8666-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:3e78f0f746700ce67f35f3970837de0821b85b55db03f3a12512da95cc186412",
+        "preimageHex": "616c626572612e6e6574776f726b2d6174746573746174696f6e2e7631004d00000009530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002439393939393939392d383838382d343737372d383636362d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-generation",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 4,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:2bfb68c20fbefac6dabe8ad275e4d61cdb835f5e101b645e6e480d5d05d2e4d4",
+        "preimageHex": "616c626572612e6e6574776f726b2d6174746573746174696f6e2e7631004d00000009530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000004530000000f6c6561736547656e65726174696f6e49000000000000000753000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-project",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-beta",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:6c6dacc5a67cca9ae8e943d316919bb45941bc927ca5c97fcb7c008a1f57a591",
+        "preimageHex": "616c626572612e6e6574776f726b2d6174746573746174696f6e2e7631004d00000009530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000970726f6a6563744964530000000970726f6a2d626574615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-lease-generation",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 8,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:f85e402e45486342ce80f0d1aa1e4232afecb760471d58836c8eaae6a9e105ae",
+        "preimageHex": "616c626572612e6e6574776f726b2d6174746573746174696f6e2e7631004d00000009530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000853000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-observed-at",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404801,
+        "expiresAt": 1793404861
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:da1a508fc97674962d240ed4cc2d7ab74f74402c796b9cfcae1524c614778649",
+        "preimageHex": "616c626572612e6e6574776f726b2d6174746573746174696f6e2e7631004d00000009530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbd530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f81530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "ttl-301",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793405101
+      },
+      "expected": {
+        "ok": false,
+        "code": "ttl",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "ttl-0",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404800
+      },
+      "expected": {
+        "ok": false,
+        "code": "ttl",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "ttl-negative",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404799
+      },
+      "expected": {
+        "ok": false,
+        "code": "ttl",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "extra-key",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860,
+        "extra": 1
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-leaseGeneration",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "network-other-case",
+      "body": {
+        "v": 1,
+        "network": "None",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "network"
+      }
+    },
+    {
+      "name": "network-unlisted",
+      "body": {
+        "v": 1,
+        "network": "isolated",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "network"
+      }
+    },
+    {
+      "name": "version-2",
+      "body": {
+        "v": 2,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "v"
+      }
+    },
+    {
+      "name": "vmId-uppercase",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "ABCDEFAB-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "vmId"
+      }
+    },
+    {
+      "name": "vmId-not-a-guid",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "vm-1",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "vmId"
+      }
+    },
+    {
+      "name": "generation-zero",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 0,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "generation"
+      }
+    },
+    {
+      "name": "generation-string",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": "3",
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "generation"
+      }
+    },
+    {
+      "name": "leaseGeneration-fraction",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 1.5,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "leaseGeneration"
+      }
+    },
+    {
+      "name": "computerId-non-ascii",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-é",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "computerId"
+      }
+    },
+    {
+      "name": "projectId-empty",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "projectId"
+      }
+    }
+  ],
+  "classificationVectors": [
+    {
+      "name": "no-adapters",
+      "adapters": [],
+      "expected": "none"
+    },
+    {
+      "name": "one-disconnected",
+      "adapters": [
+        {
+          "connected": false,
+          "switchType": null
+        }
+      ],
+      "expected": "present"
+    },
+    {
+      "name": "one-connected-private",
+      "adapters": [
+        {
+          "connected": true,
+          "switchType": "Private"
+        }
+      ],
+      "expected": "present"
+    },
+    {
+      "name": "one-connected-internal",
+      "adapters": [
+        {
+          "connected": true,
+          "switchType": "Internal"
+        }
+      ],
+      "expected": "present"
+    },
+    {
+      "name": "one-connected-external",
+      "adapters": [
+        {
+          "connected": true,
+          "switchType": "External"
+        }
+      ],
+      "expected": "present"
+    },
+    {
+      "name": "one-connected-switch-type-unreadable",
+      "adapters": [
+        {
+          "connected": true,
+          "switchType": "unknown"
+        }
+      ],
+      "expected": "present"
+    },
+    {
+      "name": "two-disconnected",
+      "adapters": [
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        }
+      ],
+      "expected": "present"
+    },
+    {
+      "name": "disconnected-and-connected",
+      "adapters": [
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": true,
+          "switchType": "Private"
+        }
+      ],
+      "expected": "present"
+    },
+    {
+      "name": "unreadable-null",
+      "adapters": null,
+      "expected": "unknown"
+    },
+    {
+      "name": "unreadable-missing",
+      "adaptersOmitted": true,
+      "expected": "unknown"
+    },
+    {
+      "name": "not-an-array-object",
+      "adapters": {
+        "connected": false,
+        "switchType": null
+      },
+      "expected": "unknown"
+    },
+    {
+      "name": "not-an-array-string",
+      "adapters": "none",
+      "expected": "unknown"
+    },
+    {
+      "name": "empty-object-entry",
+      "adapters": [
+        {}
+      ],
+      "expected": "unknown"
+    },
+    {
+      "name": "entry-null",
+      "adapters": [
+        null
+      ],
+      "expected": "unknown"
+    },
+    {
+      "name": "entry-extra-key",
+      "adapters": [
+        {
+          "connected": false,
+          "switchType": null,
+          "mac": "x"
+        }
+      ],
+      "expected": "unknown"
+    },
+    {
+      "name": "entry-connected-as-string",
+      "adapters": [
+        {
+          "connected": "true",
+          "switchType": "Private"
+        }
+      ],
+      "expected": "unknown"
+    },
+    {
+      "name": "entry-disconnected-with-switch",
+      "adapters": [
+        {
+          "connected": false,
+          "switchType": "Private"
+        }
+      ],
+      "expected": "unknown"
+    },
+    {
+      "name": "entry-connected-without-switch",
+      "adapters": [
+        {
+          "connected": true,
+          "switchType": null
+        }
+      ],
+      "expected": "unknown"
+    },
+    {
+      "name": "entry-connected-unlisted-switch",
+      "adapters": [
+        {
+          "connected": true,
+          "switchType": "Bridge"
+        }
+      ],
+      "expected": "unknown"
+    },
+    {
+      "name": "one-good-one-malformed",
+      "adapters": [
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": 1
+        }
+      ],
+      "expected": "unknown"
+    },
+    {
+      "name": "65-adapters",
+      "adapters": [
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        }
+      ],
+      "expected": "unknown"
+    },
+    {
+      "name": "64-adapters",
+      "adapters": [
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        },
+        {
+          "connected": false,
+          "switchType": null
+        }
+      ],
+      "expected": "present"
+    }
+  ]
+}

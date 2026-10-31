@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { EnvironmentProvider, EnvironmentProviderError, ENVIRONMENT_ACTIONS, validateEnvironmentOperation } from './environment-provider.mjs';
 import { RetirementJournalError, createRetirementJournal, purgeExpired } from './environment-retirement-journal.mjs';
+import { DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, classifyNetworkAdapters, createNetworkAttestation, signNetworkAttestation } from './broker-contract/network-attestation.mjs';
+
+// What env-io.ps1 create leaves behind: the default adapter, disconnected from any switch. By the attestation rule that is still "present".
+const DEFAULT_ADAPTERS = Object.freeze([Object.freeze({ connected: false, switchType: null })]);
 
 /** Deterministic, in-memory provider for contract and fault-injection tests only. It plays the Broker side: `retirements` is the Broker-owned journal (host configuration, never operation input). */
 export class MockEnvironmentProvider extends EnvironmentProvider {
@@ -8,10 +12,17 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
   #failures = [];
   #now;
   #retirements;
+  #signer;
+  #ttlSeconds;
 
-  constructor({ now = () => new Date().toISOString(), retirements } = {}) {
+  /** `attestationSigner` is the Broker-side signer port (host configuration, never operation input); without it attestNetwork is refused. */
+  constructor({ now = () => new Date().toISOString(), retirements, attestationSigner, attestationTtlSeconds = DEFAULT_TTL_SECONDS } = {}) {
     super('mock');
     if (typeof now !== 'function') throw new TypeError('invalid_clock');
+    if ((attestationSigner !== undefined && (attestationSigner === null || typeof attestationSigner.sign !== 'function'))
+      || !Number.isSafeInteger(attestationTtlSeconds) || attestationTtlSeconds < 1 || attestationTtlSeconds > MAX_TTL_SECONDS) throw new TypeError('invalid_attestation_options');
+    this.#signer = attestationSigner;
+    this.#ttlSeconds = attestationTtlSeconds;
     this.#now = now;
     this.#retirements = retirements ?? createRetirementJournal({ nowMs: () => Date.parse(now()) });
     if (['retire', 'get', 'remove', 'expired'].some((method) => typeof this.#retirements[method] !== 'function')) throw new TypeError('invalid_retirement_journal');
@@ -32,7 +43,7 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     }
     // A retirement record means this id still has a retired incarnation: never create a new one over it.
     if (this.#record(operation.computerId)) throw new EnvironmentProviderError('operation_conflict', { outcome: 'not_applied' });
-    const computer = { projectId: operation.projectId, generation: operation.expectedGeneration, state: 'off', vmId: randomUUID() }; // vmId: the stand-in for the hypervisor's own VM id
+    const computer = { projectId: operation.projectId, generation: operation.expectedGeneration, state: 'off', vmId: randomUUID(), adapters: DEFAULT_ADAPTERS }; // vmId: the stand-in for the hypervisor's own VM id
     this.#computers.set(operation.computerId, computer);
     const observed = this.#observation(operation.computerId, computer);
     this.#maybeFail('create', 'after');
@@ -143,7 +154,31 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     if (!this.#computers.has(computerId) || typeof projectId !== 'string' || !Number.isSafeInteger(generation) || generation < 1) {
       throw new EnvironmentProviderError('invalid_restore', { outcome: 'not_applied' });
     }
-    this.#computers.set(computerId, { projectId, generation, state: 'off', vmId: randomUUID() });
+    this.#computers.set(computerId, { projectId, generation, state: 'off', vmId: randomUUID(), adapters: DEFAULT_ADAPTERS });
+  }
+
+  /** Test setup: the adapter facts the "hypervisor" reports for an environment ([{ connected, switchType }]; anything else, for example null, reads as unreadable). */
+  setNetworkAdapters(computerId, adapters) {
+    const computer = this.#computers.get(computerId);
+    if (!computer) throw new EnvironmentProviderError('computer_missing', { outcome: 'not_applied' });
+    computer.adapters = adapters;
+  }
+
+  /** The Broker-side counterpart of HyperVEnvironmentBrokerPrototype.attestNetwork: classify what is attached (the operation takes no part) and sign it, bound to this environment and the caller's lease generation. */
+  async attestNetwork(input, { leaseGeneration } = {}) {
+    const operation = validateEnvironmentOperation({ ...input, action: 'inspect' });
+    if (!this.#signer || !Number.isSafeInteger(leaseGeneration) || leaseGeneration < 1) throw new EnvironmentProviderError('invalid_provider_state', { outcome: 'not_applied' });
+    const computer = this.#computers.get(operation.computerId);
+    if (!computer) throw new EnvironmentProviderError('computer_missing', { outcome: 'not_applied' });
+    this.#assertOwnership(operation, computer);
+    try {
+      const body = createNetworkAttestation({
+        network: classifyNetworkAdapters(computer.adapters), computerId: operation.computerId, vmId: computer.vmId, generation: computer.generation,
+        projectId: computer.projectId, leaseGeneration, observedAt: Math.floor(Date.parse(this.#now()) / 1000), ttlSeconds: this.#ttlSeconds,
+      });
+      return await signNetworkAttestation(body, this.#signer);
+    }
+    catch { throw new EnvironmentProviderError('provider_unavailable', { outcome: 'not_applied' }); }
   }
 
   async #transition(input, action, state) {

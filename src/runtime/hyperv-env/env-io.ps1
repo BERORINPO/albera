@@ -3,6 +3,7 @@
 # Reads ONE JSON request from stdin and prints ONE JSON result to stdout.
 #   {"method":"inspect","vmName":"albera-x"}
 #   {"method":"create","vmName":..,"cloneRoot":..,"vmDir":..,"parentPath":..,"childPath":..,"vcpu":2,"memoryMiB":2048,"notes":".."}
+#   {"method":"network","vmName":"albera-x"}   (read-only: inspect's fields plus the adapter facts the Broker classifies, in one read; see broker-contract/network-attestation.mjs)
 #   {"method":"start"|"stop"|"remove","vmName":..,"expect":{"computerId":..,"generation":1}, ...}
 #   {"method":"annotate","vmName":..,"expect":{..},"notes":"..","incarnationId":".."}   (rewrites Notes of an owned VM; used to write the retirement identity)
 # "expect" may also carry vmId (the Hyper-V VM GUID), projectId and incarnationId: when present they must equal the VM's own id / Notes values.
@@ -59,6 +60,30 @@ function Invoke-Inspect($Req) {
   $vm = Get-OneVm $Req.vmName
   if (-not $vm) { return @{ ok = $true; exists = $false } }
   @{ ok = $true; exists = $true; state = [string]$vm.State; notes = [string]$vm.Notes; vmId = [string]$vm.Id }
+}
+
+# The facts only, never a verdict: one entry per VM network adapter. A connected adapter carries its switch type, a disconnected one carries null.
+# If the adapters cannot be read, "adapters" is null (the Node side classifies that as "unknown"), never an empty list (which would mean "none").
+function Invoke-Network($Req) {
+  $vm = Get-OneVm $Req.vmName
+  if (-not $vm) { return @{ ok = $true; exists = $false } }
+  try {
+    $facts = @()
+    foreach ($a in @(Get-VMNetworkAdapter -VM $vm)) {
+      $connected = ([bool]$a.Connected) -or (-not [string]::IsNullOrEmpty([string]$a.SwitchName))
+      $type = $null
+      if ($connected) {
+        $type = 'unknown'
+        try {
+          $switches = @(Get-VMSwitch -Name ([string]$a.SwitchName) -ErrorAction Stop)
+          if ($switches.Count -eq 1 -and @('External', 'Internal', 'Private') -ccontains [string]$switches[0].SwitchType) { $type = [string]$switches[0].SwitchType }
+        } catch { $type = 'unknown' }
+      }
+      $facts += @{ connected = $connected; switchType = $type }
+    }
+    $adapters = $facts
+  } catch { $adapters = $null }
+  @{ ok = $true; exists = $true; state = [string]$vm.State; notes = [string]$vm.Notes; vmId = [string]$vm.Id; adapters = $adapters }
 }
 
 function Invoke-Create($Req) {
@@ -151,6 +176,7 @@ try {
   try { Import-Module Hyper-V -ErrorAction Stop } catch { Reject 'provider_unavailable' }
   $result = switch ($req.method) {
     'inspect' { Invoke-Inspect $req }
+    'network' { Invoke-Network $req }
     'create'  { Invoke-Create $req }
     'start'   { Invoke-Start $req }
     'stop'    { Invoke-Stop $req }

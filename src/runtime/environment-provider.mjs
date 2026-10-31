@@ -43,6 +43,8 @@ export class EnvironmentProvider {
   async destroy(_operation) { throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' }); }
   async retire(_operation) { throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' }); }
   async purge(_operation) { throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' }); }
+  /** Read-only, not a journaled action: a Broker-signed network attestation for one environment (#115 step 2, broker-contract/network-attestation.mjs). `operation` is an inspect operation; `leaseGeneration` is the caller's claim. */
+  async attestNetwork(_operation, _options) { throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' }); }
 }
 
 export function validateEnvironmentSpec(spec) {
