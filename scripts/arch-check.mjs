@@ -61,7 +61,7 @@ const EXPECTED = {
     // the production signature scheme of that attestation (ECDSA P-256; the key object comes from host configuration, step 3b)
     'ecdsa-attestation-signer.mjs',
     // control room (spec/room.md §3)
-    'room-contract.mjs', 'room-host.mjs', 'room-demo.mjs', 'room-journal.mjs', 'room-figures.mjs', 'bero-director.mjs',
+    'room-contract.mjs', 'room-host.mjs', 'room-demo.mjs', 'room-journal.mjs', 'room-figures.mjs', 'bero-director.mjs', 'room-starts.mjs', 'task-start-gate.mjs',
     'fake-guest-checker.mjs', 'hyperv-guest-check-prototype.mjs', 'hyperv-guest/check-io.ps1', 'workspace.mjs',
     // opt-in in-guest screen capture (spec/architecture.md decision log 2026-10-30+guest-capture)
     'hyperv-guest-capture-prototype.mjs', 'hyperv-guest/capture-io.ps1', 'hyperv-guest/screen-helper.ps1',
@@ -217,6 +217,8 @@ const providerContracts = [
   'src/runtime/room-host.mjs',
   'src/runtime/room-demo.mjs',
   'src/runtime/room-journal.mjs',
+  'src/runtime/room-starts.mjs',
+  'src/runtime/task-start-gate.mjs',
   'src/runtime/room-figures.mjs',
   'src/runtime/bero-director.mjs',
   'src/runtime/fake-guest-checker.mjs',
@@ -226,7 +228,7 @@ const providerContracts = [
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:
 // the clients, the clock, the sleep and the storage are injected (and the flow must not name the Broker or the Authority: rules 8a / 10a).
-check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs'], (line) => {
+check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs'], (line) => {
   if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null;
   for (const [re, label] of FORBIDDEN_PURE) if (/** @type {RegExp} */ (re).test(line)) return `${label} is not allowed in a pure runtime module`;
   return null;

@@ -16,6 +16,7 @@ export const LEDGER_CODES = Object.freeze([
   'bero_noticed', 'bero_figure', 'bero_card',
   'human_choice',
   'check_started', 'check_done',
+  'start_approved', 'start_refused',
 ]);
 
 /**
