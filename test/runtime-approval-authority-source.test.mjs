@@ -168,21 +168,53 @@ test('a receipt is only made after presence verified, is checked with the contra
   assert.equal([...core.matchAll(/signer\.Sign\(/gu)].length, 2, 'two signing sites');
   const policySite = core.slice(core.indexOf('private PendingEntry? SignByPolicy'));
   assert.ok(policySite.indexOf('ReceiptBuilder.BuildPolicy(') > 0 && policySite.indexOf('ReceiptBuilder.BuildPolicy(') < policySite.indexOf('ReceiptBuilder.Check(') && policySite.indexOf('ReceiptBuilder.Check(') < policySite.indexOf('signer.Sign('), 'build -> check -> sign');
-  assert.equal([...core.matchAll(/SignByPolicy\(/gu)].length, 2, 'declared once, called once');
-  assert.match(core, /current\.NeedsPerson\(request\.Dto\.Action\)\s*\? store\.Submit\(request, digest\)\s*: store\.Submit\(request, digest, \(entry, now\) => SignByPolicy\(entry, current\.Hash\(\), now\)\)/u, 'the decision is made from the action the Authority validated and the policy in force, under the policy lock');
+  assert.equal([...core.matchAll(/SignByPolicy\(/gu)].length, 3, 'declared once, called twice (without an attestation, and with a proven one)');
+  assert.match(core, /if \(!current\.NeedsPerson\(request\.Dto\.Action\)\) return store\.Submit\(request, digest, \(entry, now\) => SignByPolicy\(entry, current\.Hash\(\), now\)\);/u, 'the decision is made from the action the Authority validated and the policy in force, under the policy lock');
+  assert.match(core, /return store\.Submit\(request, digest\);\s*\}\);/u, 'everything else queues for a person');
   assert.match(core, /policy\.With\(current =>/u);
   assert.equal(/request\.(?:Tier|Basis|Policy)|expectedDigest[^;]*NeedsPerson/u.test(core), false, 'nothing in the request feeds the decision');
   assert.match(core, /PresenceResult\.Verified\) return/u, 'anything but Verified stops before signing');
   assert.match(core, /string digest;\s*try \{ digest = ActionDigest\.Compute\(request\.Purpose, ReceiptBuilder\.DtoOf\(request\.Dto\)\); \}/u, 'the Authority computes the digest');
   assert.equal(/expectedDigest\s*(?:!=|==)\s*null\s*\?|digest\s*=\s*expectedDigest/u.test(core), false, 'the supplied digest is never the digest');
   assert.match(code['ReceiptBuilder.cs'], /\["actionDigest"\] = entry\.ActionDigest/u);
-  assert.match(code['ReceiptBuilder.cs'], /foreach \(FieldSpec field in fields\)/u, 'the field order is the contract\'s');
+  assert.match(code['ReceiptBuilder.cs'], /foreach \(FieldSpec field in fields\.Concat\(optional\.Where\(o => values\.ContainsKey\(o\.Name\)\)\)\)/u, 'the field order is the contract\'s, then the optional fields that are present');
   assert.match(code['ReceiptBuilder.cs'], /Write\(ReceiptV2\.Fields, /u);
   assert.match(code['ReceiptBuilder.cs'], /Write\(ReceiptV3\.Fields, /u);
   assert.match(code['PendingStore.cs'], /MaxPending = 32, MaxEntries = 64, DefaultTtlSeconds = 120/u);
   const protocol = code['Protocol.cs'];
   assert.match(protocol, /"brokerChallenge"/u);
   assert.equal(/brokerEpoch|leaseGeneration/u.test(code['AuthorityCore.cs'].replace(/request\.|r\.|Request\./gu, '')), false, 'epoch and generation travel only inside the request record');
+});
+
+test('the attested path (#115 step 3b): only for an action the policy in force can skip with an attestation, checked under the policy lock with the pinned key against the submit\'s own fields, the clock read after the signature, nothing else feeds it', () => {
+  const core = code['AuthorityCore.cs'];
+  const submit = core.slice(core.indexOf('policy.With(current =>'), core.indexOf('return result.Status switch'));
+  assert.match(submit, /if \(current\.CanSkipWithAttestation\(request\.Dto\.Action\) && ProvenNone\(request, attestation\) is \{ \} proven\)/u, 'the policy decides first; the attestation is only looked at for an attested action');
+  assert.match(submit, /proven\.ExpiresAt - now >= MinAttestedReceiptSeconds \? SignByPolicy\(entry, current\.Hash\(\), now, proven\) : entry/u, 'too little left of the attestation means the entry stays pending');
+  const proven = core.slice(core.indexOf('private Proven? ProvenNone'), core.indexOf('private Proven? Refused'));
+  assert.match(proven, /attestationKey is null\) return Refused\("no_key_pinned"\)/u, 'no pinned key: never accepted');
+  assert.match(proven, /request\.Dto\.Args\.GetValueOrDefault\("expectedGeneration"\) is not long generation \|\| generation < 1\) return Refused\("generation_missing"\)/u, 'the generation comes from the action the human sees (digest-bound args)');
+  assert.match(proven, /Args\.GetValueOrDefault\("vmId"\) is not string vmId \|\| !NetworkAttestation\.IsVmId\(vmId\)\) return Refused\("vm_id_missing"\)/u, 'a start that names no well-formed VM is never attested');
+  assert.match(proven, /new\(request\.Dto\.ComputerId, vmId, generation, request\.Dto\.ProjectId, request\.LeaseId, request\.LeaseGeneration\)/u, 'every binding comes from the submit\'s own validated fields, the VM included (there is no way to leave it out)');
+  assert.equal(/AttestationExpected\([^)]*\bnull\b/u.test(core), false, 'no null escape for the VM id');
+  assert.match(proven, /NetworkAttestation\.Verify\(attestation, clock, attestationKey\.Verify, expected\)/u, 'verified with the pinned key and the Authority\'s own clock (read after the signature check inside Verify)');
+  assert.match(proven, /Network != NetworkAttestation\.None\) return Refused/u, 'only "none" counts');
+  assert.equal(/attestation\.(?:Tier|Basis|Network)|Policy\(\)\s*=\s*attestation/u.test(core), false, 'the claim feeds nothing but the proof');
+  // The receipt carries the digest and ends no later than the evidence does.
+  const site = core.slice(core.indexOf('private PendingEntry? SignByPolicy'));
+  assert.match(site, /Math\.Min\(ReceiptV2\.DefaultTtlSeconds, proven\.ExpiresAt - now\)/u);
+  assert.match(site, /ReceiptBuilder\.BuildPolicy\(entry, identity, signer\.Issuer, Ids\.NewUuid\(\), Ids\.NewBits128\(\), now, policyHash, proven\?\.Digest, ttl\)/u);
+  // The pinned key is config only: both keys or neither, verified at load, never created, imported from a request or written.
+  const config = code['AuthorityConfig.cs'];
+  assert.match(config, /pinned is not \(0 or 2\)/u, 'both keys or neither');
+  assert.match(config, /DecodeAttestationKey\(Get\("attestationKeyId"\), Get\("attestationPublicKey"\)\)/u);
+  assert.match(code['AuthorityRuntime.cs'], /AttestationKeyOf\(config\)/u);
+  assert.match(code['PinnedAttestationKey.cs'], /curve\.IsNamed && curve\.Oid\.Value == NistP256Oid/u, 'a named P-256 key only');
+  assert.match(code['PinnedAttestationKey.cs'], /signature\.Length != SignatureBytes\) return false/u);
+  assert.equal(/ECDsa\.Create\([^)]*\)[^;]*ImportECPrivateKey|ImportPkcs8PrivateKey|Sign(?:Data|Hash)\(/u.test(code['PinnedAttestationKey.cs']), false, 'the Authority holds only the public half');
+  // The wire: `attestation` is one more optional submit key and nothing else is read from it by the protocol layer.
+  assert.match(code['Protocol.cs'], /HasKeys\(r, SubmitKeys, optional: \["expectedDigest", "attestation"\]\)/u);
+  assert.match(code['Protocol.cs'], /r\.GetValueOrDefault\("attestation"\)\)/u);
 });
 
 test('the tier policy: one file, written only by PolicyStore.cs (create-new temp, flushed, trust-checked, moved with write-through, read back), read at start before the key is opened, and an invalid one is exit 79', () => {
@@ -209,8 +241,8 @@ test('the tier policy: one file, written only by PolicyStore.cs (create-new temp
   const readOrder = ['IsTrustedConfigFile(path, stream)', 'Parse(bytes)', 'IsAuthorized(loaded, identity, verifier)', 'return loaded;'].map((token) => read.indexOf(token));
   assert.ok(readOrder.every((at) => at > 0) && readOrder.every((at, i) => i === 0 || at > readOrder[i - 1]), `trust -> shape -> signature -> use (${readOrder})`);
   assert.match(store, /verifier\.Verify\(PolicyChange\.Message\(loaded\.Authorized, identity\.Kid, identity\.Audience\), loaded\.Presence!\)/u);
-  assert.match(store, /loaded\.Policy\.NoPromptActions\(\)\.IsSubsetOf\(loaded\.Authorized\.NoPromptActions\(\)\)/u, 'a policy never skips more than what was signed');
-  assert.match(store, /if \(loaded\.Authorized is null\) return loaded\.Policy\.NoPromptActions\(\)\.Count == 0;/u, 'no signature is only fine for a policy that skips nobody');
+  assert.match(store, /loaded\.Policy\.SkippableActions\(\)\.IsSubsetOf\(loaded\.Authorized\.SkippableActions\(\)\)/u, 'a policy never skips more than what was signed (with or without an attestation)');
+  assert.match(store, /if \(loaded\.Authorized is null\) return loaded\.Policy\.SkippableActions\(\)\.Count == 0;/u, 'no signature is only fine for a policy that skips nobody, attested or not');
   assert.match(store, /Reason\.Unsigned|Unsigned = "policy_unsigned"/u);
   assert.match(sources['PolicyStore.cs'], /Out of scope, on purpose: putting an OLDER file back/u, 'rollback by a trusted writer is documented as out of scope');
   // The folder is trusted at the config load (exit 73), after the config file's own check and before anything is read from the folder, so a squatted policy.json never reaches the policy loader.
@@ -226,7 +258,7 @@ test('the tier policy: one file, written only by PolicyStore.cs (create-new temp
   assert.match(code['ExitCodes.cs'], /PolicyInvalid = 79;/u);
   assert.match(code['Program.cs'], /return ExitCodes\.PolicyInvalid;/u, 'service-check refuses the same file');
   assert.match(code['AuthorityRuntime.cs'], /RunProductionAsync\(AuthorityConfig config, PolicyStore policy, CancellationToken stop, Action onReady\)/u);
-  assert.match(code['AuthorityRuntime.cs'], /IdentityOf\(config\), UnixNow, policy, Console\.WriteLine\);/u, 'the loaded policy is what the core uses');
+  assert.match(code['AuthorityRuntime.cs'], /IdentityOf\(config\), UnixNow, policy, Console\.WriteLine, attestation\);/u, 'the loaded policy is what the core uses');
   assert.equal(/SERVICE_POLICY=[^"]*\{(?!policyReason|policy\.Current\.Tier)/u.test(code['ServiceHost.cs'] + code['Program.cs'] + sources['TestSeam.cs']), false, 'only reason words and the tier are printed');
   // The policy is never lowered by a fallback: no catch in the loader turns a failure into the default policy.
   assert.equal(/TierPolicy\.Default/u.test(store.slice(store.indexOf('public static PolicyStore? TryLoad'), store.indexOf('private static TierPolicy? ReadFile'))), true, 'only "no file" gives the default');

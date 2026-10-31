@@ -125,6 +125,8 @@ export class DurableEnvironmentOperationCoordinator {
 
   async execute(input) {
     const operation = validateEnvironmentOperation(input);
+    // The durable store does not keep a VM id yet, so the claim that is dispatched later would not carry it: refuse rather than run a start that silently lost its identity check.
+    if (Object.hasOwn(operation, 'vmId')) throw new EnvironmentProviderError('invalid_environment_operation', { outcome: 'not_applied' });
     if (operation.providerId !== this.#broker.providerId) throw new EnvironmentProviderError('provider_mismatch', { outcome: 'not_applied' });
     const actionDigest = `sha256:${digest(operation)}`;
     const grant = await this.#authorize(operation, actionDigest, 'execute');

@@ -8,7 +8,7 @@ namespace Albera.ApprovalAuthority;
 //   no file          careful, revision 0 (today's behaviour: every action needs a person). The service starts.
 //   a file           { "v":1, "rev":N, "tier":..., "overrides":{...}, "authorized": { "v":1, "rev":M, "tier":..., "overrides":{...}, "presence":"<base64 signature>" } }
 //                    `authorized` is the policy the approver's Hello key signed (PolicyChange.Message: albera.policy.v1 + kid + audience + hash of THAT policy, kid and audience being this
-//                    Authority's trusted config). It is required whenever the policy lets any action skip a person, and the policy must not skip more than it does (no-prompt set of the
+//                    Authority's trusted config). It is required whenever the policy lets any action skip a person, and the policy must not skip more than it does (the skippable set of the
 //                    policy is a subset of the authorized one; the policy is the authorized one itself, or a later change that only added prompts). A careful-equivalent policy needs none.
 //                    At start the file must pass the config's trust check (ServicePathGuard: owner and writers limited to the service, SYSTEM and Administrators, no reparse point), the
 //                    strict shape, and the signature check against the pinned approver key. Anything else (untrusted, unreadable, too large, malformed, unsigned or wrongly signed) is a
@@ -121,11 +121,11 @@ internal sealed class PolicyStore
     // A policy that lets an action skip a person must carry the signature that authorized it; a signature must verify for THIS Authority and never cover less than the policy skips.
     private static bool IsAuthorized(Loaded loaded, AuthorityIdentity identity, IHumanPresenceVerifier verifier)
     {
-        if (loaded.Authorized is null) return loaded.Policy.NoPromptActions().Count == 0;
+        if (loaded.Authorized is null) return loaded.Policy.SkippableActions().Count == 0;
         PresenceResult result;
         try { result = verifier.Verify(PolicyChange.Message(loaded.Authorized, identity.Kid, identity.Audience), loaded.Presence!); }
         catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or InvalidOperationException) { return false; }
-        return result == PresenceResult.Verified && loaded.Authorized.Revision <= loaded.Policy.Revision && loaded.Policy.NoPromptActions().IsSubsetOf(loaded.Authorized.NoPromptActions());
+        return result == PresenceResult.Verified && loaded.Authorized.Revision <= loaded.Policy.Revision && loaded.Policy.SkippableActions().IsSubsetOf(loaded.Authorized.SkippableActions());
     }
 
     /// <summary>True after a policy file that was just written could not be read back: nothing is signed without a person until the Authority restarts.</summary>
@@ -166,7 +166,7 @@ internal sealed class PolicyStore
                 if (presence != PresenceResult.Verified) return AuthorityCodes.PresenceMismatch;
                 (nextAuthorized, nextProof) = (next, proof);
             }
-            if (next.NoPromptActions().Count == 0) (nextAuthorized, nextProof) = (null, null);
+            if (next.SkippableActions().Count == 0) (nextAuthorized, nextProof) = (null, null);
             if (file is not null && !Persist(next, nextAuthorized, nextProof)) return AuthorityCodes.AuthorityUnavailable;
             (current, authorized, authorizedProof) = (next, nextAuthorized, nextProof);
             return null;
@@ -195,7 +195,7 @@ internal sealed class PolicyStore
     // Called under the lock.
     private bool Persist(TierPolicy next, TierPolicy? signed, byte[]? presence)
     {
-        if (signed is null && next.NoPromptActions().Count > 0) return false; // never write a file that skips a person without the signature that allows it
+        if (signed is null && next.SkippableActions().Count > 0) return false; // never write a file that skips a person without the signature that allows it
         string temp = Path.Combine(Path.GetDirectoryName(file)!, $"policy.{Guid.NewGuid():N}.tmp");
         try
         {

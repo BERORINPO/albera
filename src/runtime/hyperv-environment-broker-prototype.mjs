@@ -160,7 +160,7 @@ export function createHyperVEnvironmentBrokerPrototype({
     /**
      * Network attestation (#115 step 2, contract: broker-contract/network-attestation.mjs). Read-only: it reads the VM's adapters, classifies them itself (the operation takes no part),
      * and signs the result through the signer port, bound to computerId, the VM's own id, generation, projectId, `leaseGeneration` and the operation's leaseId (both claims of the caller,
-     * checked by the verifier) and this Broker's clock. `input` is an inspect operation. Nothing consumes the result yet, and it is evidence at observedAt only: the consumer must re-check at execution time.
+     * checked by the verifier) and this Broker's clock. `input` is an inspect operation. The Approval Authority consumes it (#115 step 3b); it is evidence at observedAt only: an executor must re-check at execution time.
      * The project comes from the VM's own Notes, which create wrote from the authorized create operation; the request's projectId is only compared with it. A VM whose Notes carry no
      * projectId (created before this change) or another one is refused (`project_unknown` / `project_mismatch`, not applied): such a VM cannot be attested until it is re-created.
      * A VM that does not exist, is not ours or is at another generation is refused (not applied); adapters that cannot be read are "unknown", not an error.
@@ -308,9 +308,16 @@ export function createHyperVEnvironmentBrokerPrototype({
 
   async function changeState(input, method) {
     const { operation, vmName } = checkedOperation(input, method);
-    if (!await managed(operation, vmName)) throw brokerError('invalid_provider_state', 'not_applied');
+    const vm = await managed(operation, vmName);
+    if (!vm) throw brokerError('invalid_provider_state', 'not_applied');
     if (method === 'start' && readRecord(operation.computerId)) throw brokerError('environment_retired', 'not_applied');
-    const result = await call({ method, vmName, expect: expectOf(operation), waitSeconds });
+    // The approval named a VM (start only): the VM's own Hyper-V id must be it. Checked here and again by the script (identity "vm" makes the id mandatory there).
+    let expect = expectOf(operation);
+    if (operation.vmId !== undefined) {
+      if (vm.vmId !== operation.vmId) throw brokerError('operation_conflict', 'not_applied');
+      expect = { ...expect, vmId: operation.vmId, identity: 'vm' };
+    }
+    const result = await call({ method, vmName, expect, waitSeconds });
     return observed(operation.computerId, mapState(result.state), operation.expectedGeneration);
   }
 }
