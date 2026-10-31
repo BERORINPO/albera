@@ -1,0 +1,107 @@
+// Issue #115 step 4, real-host check of the task-start attestation (the lead runs it; CI never does). Usage, as a member of Hyper-V Administrators:
+//   node test/windows-service-lab/task-start-attestation-real.mjs
+// Creates ONE disposable VM (albera-tsa<time>, 2 GiB, no network adapter) from the read-only golden image through the Hyper-V Broker prototype, starts it,
+// asks the prototype for a task-start attestation (network, ProductionOnly checkpoint, network again, sign), verifies it with the contract, lists the VM's
+// checkpoints, then destroys the VM. Signs with a key generated in memory for this run only. Prints no password and no host path beyond the VM name.
+import { execFileSync } from 'node:child_process';
+import { generateKeyPairSync } from 'node:crypto';
+import { freemem } from 'node:os';
+import { createEcdsaAttestationSigner, createEcdsaAttestationVerifier } from '../../src/runtime/ecdsa-attestation-signer.mjs';
+import { createHyperVEnvironmentBrokerPrototype } from '../../src/runtime/hyperv-environment-broker-prototype.mjs';
+import { firstExisting, pwshCandidates } from '../../src/runtime/hyperv-guest-check-prototype.mjs';
+import { provesCheckpointedNoNetwork, verifyTaskStartAttestation } from '../../src/runtime/broker-contract/task-start-attestation.mjs';
+
+const GOLDEN = 'U:\\dev\\hyperv\\golden\\ws2025-desktop-golden.vhdx';
+const CLONE_ROOT = 'U:\\dev\\hyperv\\clones';
+const VM_MEMORY_GIB = 2;
+const HOST_HEADROOM_GIB = 4; // a 4 GB VM on a full host froze the PC (2026-10-31)
+const BOOT_WAIT_MS = 90_000;
+const ATTEMPTS = 6;
+const RETRY_MS = 30_000;
+
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+const log = (line) => console.log(`[tsa] ${line}`);
+
+if (freemem() / 2 ** 30 < VM_MEMORY_GIB + HOST_HEADROOM_GIB) {
+  console.error(`[tsa] host has ${(freemem() / 2 ** 30).toFixed(1)} GiB free; need ${VM_MEMORY_GIB + HOST_HEADROOM_GIB}. Stop other VMs and retry.`);
+  process.exit(2);
+}
+const pwsh = await firstExisting(pwshCandidates());
+if (!pwsh) { console.error('[tsa] PowerShell 7 not found'); process.exit(2); }
+const ps = (command) => execFileSync(pwsh, ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8', windowsHide: true }).trim();
+
+const computerId = `tsa${Date.now().toString(36)}`;
+const vmName = `albera-${computerId}`;
+const projectId = 'proj-tsa';
+const signer = createEcdsaAttestationSigner({ keyId: 'albera-lab-broker-tsa', privateKey: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey });
+const verifier = createEcdsaAttestationVerifier({ keyId: signer.keyId, publicKey: signer.publicKeySpki });
+
+log('hashing the golden image (read only) ...');
+const digest = `sha256:${ps(`(Get-FileHash -Algorithm SHA256 -LiteralPath '${GOLDEN}').Hash`).toLowerCase()}`;
+const broker = createHyperVEnvironmentBrokerPrototype({
+  goldenImages: { [digest]: { path: GOLDEN, os: 'windows', architecture: 'x64' } },
+  cloneRoot: CLONE_ROOT, pwsh, timeoutMs: 300_000, attestationSigner: signer,
+});
+const op = (action, extra = {}) => ({
+  operationId: `tsa-${action}`, idempotencyKey: `tsa-key-${action}`, subjectId: 'velo-lab', projectId, taskId: 'task-tsa', runId: 'run-tsa',
+  computerId, providerId: 'hyperv', leaseId: 'lease-tsa', expectedGeneration: 1, policyVersion: 1, action, ...extra,
+});
+
+const results = {};
+let created = false;
+try {
+  await broker.createVm(op('create', { spec: {
+    projectId, kind: 'ephemeral', os: 'windows', architecture: 'x64', imageDigest: digest, capabilities: ['desktop'],
+    networkProfileId: 'isolated-none', securityProfileId: 'sec-1', resources: { vcpu: 2, memoryMiB: VM_MEMORY_GIB * 1024, diskGiB: 40 },
+  } }));
+  created = true;
+  const vmId = ps(`(Get-VM -Name '${vmName}').Id.Guid`).toLowerCase();
+  log(`created ${vmName}; adapters: ${ps(`@(Get-VMNetworkAdapter -VMName '${vmName}').Count`)}`);
+  await broker.startVm(op('start'));
+  log(`started; waiting ${BOOT_WAIT_MS / 1000} s for the guest`);
+  await sleep(BOOT_WAIT_MS);
+
+  const input = { computerId, projectId, leaseId: 'lease-tsa', leaseGeneration: 1, generation: 1, vmId, operationId: 'tsa-task-0001' };
+  let envelope = null;
+  for (let attempt = 1; attempt <= ATTEMPTS && !envelope; attempt++) {
+    const began = Date.now();
+    envelope = await broker.attestTaskStart(input);
+    log(`attempt ${attempt}: ${envelope ? 'attestation' : 'none'} in ${((Date.now() - began) / 1000).toFixed(1)} s`);
+    if (!envelope && attempt < ATTEMPTS) await sleep(RETRY_MS);
+  }
+  results.attested = Boolean(envelope);
+  if (envelope) {
+    const verified = verifyTaskStartAttestation(JSON.parse(JSON.stringify(envelope)), {
+      clock: () => Math.floor(Date.now() / 1000), verify: verifier.verify,
+      expected: { computerId, vmId, generation: 1, projectId, leaseId: 'lease-tsa', leaseGeneration: 1, operationId: 'tsa-task-0001' },
+    });
+    results.verified = true;
+    results.provesCheckpointedNoNetwork = provesCheckpointedNoNetwork(verified);
+    results.network = verified.network;
+    results.checkpointType = verified.checkpointType;
+    const snapshots = JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { [pscustomobject]@{ name = $_.Name; id = $_.Id.Guid; type = [string]$_.SnapshotType } }) | ConvertTo-Json -Compress -AsArray`));
+    results.snapshots = snapshots.map((s) => ({ name: s.name, type: s.type, matchesAttestation: s.id.toLowerCase() === verified.checkpointId }));
+    results.again = Boolean(await broker.attestTaskStart({ ...input, operationId: 'tsa-task-0002' })); // a second operation gets its own checkpoint
+    results.snapshotCount = Number(ps(`@(Get-VMSnapshot -VMName '${vmName}').Count`));
+  }
+}
+catch (error) {
+  results.error = typeof error?.code === 'string' ? error.code : 'unexpected';
+}
+finally {
+  if (created) {
+    try {
+      await broker.stopVm(op('stop')).catch(() => {});
+      ps(`Get-VMSnapshot -VMName '${vmName}' -ErrorAction SilentlyContinue | Remove-VMSnapshot`);
+      await broker.removeVm(op('destroy'));
+      results.vmDeleted = ps(`[bool](Get-VM -Name '${vmName}' -ErrorAction SilentlyContinue)`) === 'False';
+    }
+    catch (error) { results.cleanup = typeof error?.code === 'string' ? error.code : 'unexpected'; }
+  }
+  results.goldenReadOnly = ps(`(Get-Item -LiteralPath '${GOLDEN}').IsReadOnly`) === 'True';
+  console.log(JSON.stringify(results));
+}
+const ok = results.verified && results.provesCheckpointedNoNetwork && results.again && results.snapshotCount === 2 && results.vmDeleted && results.goldenReadOnly
+  && results.snapshots.length === 1 && results.snapshots[0].matchesAttestation && /^albera-task-[0-9a-f]{24}$/.test(results.snapshots[0].name);
+console.log(ok ? 'TSA: PASS' : 'TSA: FAIL');
+process.exit(ok ? 0 : 1);
