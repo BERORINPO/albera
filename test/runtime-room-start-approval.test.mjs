@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import test from 'node:test';
 import { createApprovedOperationFlow } from '../src/runtime/approved-operation-flow.mjs';
 import { createMemoryFlowJournal } from '../src/runtime/approved-operation-journal.mjs';
+import { createAgentFleet } from '../src/runtime/agent-fleet.mjs';
 import { createAgentStatusBoard } from '../src/runtime/agent-status-board.mjs';
 import { HyperVDesktopDriver } from '../src/runtime/hyperv-desktop-driver.mjs';
 import { createMockDesktopBroker } from '../src/runtime/mock-desktop-broker.mjs';
@@ -60,13 +61,13 @@ function fakeDirector() {
   };
 }
 
-function fakeFleet({ busy = new Set(), refuse = null } = {}) {
+function fakeFleet({ busy = new Set(), refuse = null, initialJobCount = 0, idle = async () => {} } = {}) {
   const calls = [];
   return {
-    calls,
+    calls, initialJobCount,
     startJob(vmId, task) { calls.push(['startJob', vmId, task]); return refuse ? { ok: false, code: refuse } : { ok: true }; },
     stopVm(vmId) { calls.push(['stopVm', vmId]); return busy.delete(vmId); },
-    async idle() {},
+    idle,
   };
 }
 
@@ -251,6 +252,49 @@ test('the host refuses a start gate that cannot approve; the ledger codes for st
     assert.ok(LEDGER_CODES.includes(code));
     assert.ok(validLedgerEntry({ seq: 1, at: 0, vmId: 'vm-a', actor: 'bero', code, params: code === 'start_refused' ? { code: 'start_denied' } : {} }));
   }
+});
+
+test('with a gate the host refuses a fleet that would start initial jobs without it (or does not say how many it has); without a gate any fleet is accepted', () => {
+  const base = { vms: VMS, board: createAgentStatusBoard(), journal: fakeJournal(Date.now), director: fakeDirector(), driver: { capture() {} } };
+  const gate = { async startApproved() { return { ok: true }; } };
+  const silent = fakeFleet();
+  delete silent.initialJobCount; // a fleet that does not say
+  for (const fleet of [fakeFleet({ initialJobCount: 1 }), fakeFleet({ initialJobCount: '0' }), silent]) {
+    assert.throws(() => createRoomHost({ ...base, fleet, startGate: gate }), /without initial jobs/);
+    assert.doesNotThrow(() => createRoomHost({ ...base, fleet }));
+  }
+  assert.doesNotThrow(() => createRoomHost({ ...base, fleet: fakeFleet(), startGate: gate }));
+  const fleet = (jobs) => createAgentFleet({ jobs, keepAlive: true, vmIds: ['vm-a'], createDriver: () => ({ capture() {}, act() {} }), createClient: () => ({ send() {} }), limits: { maxSteps: 1, maxUsd: 1, maxMs: 1000 }, prices: { input: 1, output: 1 }, totalMaxUsd: 1 });
+  assert.equal(fleet([]).initialJobCount, 0);
+  assert.equal(fleet([{ vmId: 'vm-a', task: 'x' }]).initialJobCount, 1);
+});
+
+test('gated: a person choosing stop on the VM while its approval is pending cancels it, so a later ok starts nothing', async (t) => {
+  const gate = deferredGate();
+  const r = await start(t, { startGate: gate, fleet: fakeFleet({ busy: new Set(['vm-a']) }) });
+  r.openCards(card('c1', 'vm-a'));
+  assert.equal((await r.decide('c1', 'c1-c1')).body.result, 'pending_approval');
+  await until(() => gate.asked.length === 1, 'the approval request');
+  r.openCards(card('c2', 'vm-a'));
+  assert.equal((await r.decide('c2', 'c2-c0')).body.effect, 'stop');
+  gate.asked[0].answer({ ok: true });
+  await until(() => r.ledger().length === 1, 'the cancellation');
+  assert.deepEqual(r.fleet.calls, [['stopVm', 'vm-a']], 'only the stop the person chose');
+  assert.deepEqual(r.ledger(), [['vm-a', 'bero', 'start_refused', { code: 'start_cancelled' }]]);
+});
+
+test('gated: the host closing while the old loop is being stopped means the approved job is not started', async (t) => {
+  const gate = { async startApproved() { return { ok: true }; } };
+  let release;
+  const idle = () => new Promise((resolve) => { release = resolve; });
+  const r = await start(t, { startGate: gate, fleet: fakeFleet({ busy: new Set(['vm-a']), idle }) });
+  r.openCards(card('c1', 'vm-a'));
+  await r.decide('c1', 'c1-c1');
+  await until(() => typeof release === 'function', 'the wait for the old loop');
+  await r.host.close();
+  release();
+  await settle();
+  assert.deepEqual(r.fleet.calls, [['stopVm', 'vm-a']]);
 });
 
 // ---- the real gate on the real flow ----

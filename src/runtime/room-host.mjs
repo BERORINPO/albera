@@ -94,6 +94,8 @@ export function createRoomHost({
   const viewDriver = typeof driver === 'function' ? driver(async () => currentLease()) : driver;
   if (!viewDriver || typeof viewDriver.capture !== 'function') throw new TypeError('room host requires a driver with capture()');
 
+  // With a gate every start goes through it, so a fleet that would start initial jobs by itself in run() is refused (it must report 0 of them).
+  if (startGate !== null && fleet.initialJobCount !== 0) throw new TypeError('room host with a start gate requires a fleet without initial jobs');
   const starts = createStartRunner({ fleet, gate: startGate, journal, isClosed: () => closed });
   const byId = new Map(tiles.map((tile) => [tile.vmId, tile]));
   const frames = new Map(tiles.map((tile) => [tile.vmId, { png: null, capturedAt: null, error: null }]));
@@ -280,7 +282,7 @@ export function createRoomHost({
   // ---- decide ----
 
   async function runEffect(effect, vmId) {
-    if (effect === 'stop') return fleet.stopVm(vmId) ? 'stopped' : 'not_running';
+    if (effect === 'stop') { starts.cancel(vmId); return fleet.stopVm(vmId) ? 'stopped' : 'not_running'; }
     if (effect !== 'nudge' && effect !== 'recheck') return 'none';
     const original = byId.get(vmId).task;
     if (effect === 'recheck' && !original) return 'no_task';

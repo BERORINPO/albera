@@ -7,6 +7,8 @@ import { TASK_START_MAX_BYTES, TASK_START_REFUSALS } from './task-start-gate.mjs
 //  - with a gate (task-start-gate.mjs): ask for approval of exactly this task on this VM first. The answer is slow (a person may be asked), so `start` returns
 //    'pending_approval' at once and the outcome arrives later as a ledger entry: `start_approved` (then the loop is stopped and the job started) or
 //    `start_refused` with a fixed code. Nothing is stopped and nothing is started unless the gate said ok. At most one approval per VM is pending.
+//    A human `stop` on that VM while its approval is pending cancels it: a later ok does not start anything (`start_cancelled`). The host closing does too,
+//    including while the old loop is being stopped.
 
 export const STOP_WAIT_MS = 5_000;
 const GATED_NUDGE = 'A dialog or message box may be blocking the screen. Close or answer it in the safest way (delete or discard nothing), '
@@ -39,27 +41,30 @@ export function gatedRecheckTask(task) {
  */
 export function createStartRunner({ fleet, gate = null, journal, isClosed, stopWaitMs = STOP_WAIT_MS }) {
   if (gate !== null && typeof gate?.startApproved !== 'function') throw new TypeError('room host requires a start gate with startApproved()');
-  const pending = new Set(); // vmIds with an approval in flight
+  const pending = new Map(); // vmId -> { cancelled } for an approval in flight
 
   const note = (vmId, code, params = {}) => {
     try { journal.record({ vmId, actor: 'bero', code, params }); } catch { /* a journal failure must not stop the room */ }
   };
 
-  async function startNow(vmId, task) {
+  async function startNow(vmId, task, ticket = null) {
     if (fleet.stopVm(vmId) && typeof fleet.idle === 'function') {
       await Promise.race([fleet.idle(vmId), new Promise((resolve) => { setTimeout(resolve, stopWaitMs).unref?.(); })]);
     }
+    // Checked again after the wait: the host may have closed, or a person may have chosen stop, while the old loop was stopping.
+    if (ticket && (isClosed() || ticket.cancelled)) return 'start_cancelled';
     const started = fleet.startJob(vmId, task);
     return started?.ok ? 'started' : (typeof started?.code === 'string' && isCode(started.code) ? started.code : 'not_started');
   }
 
-  async function approveThenStart(vmId, task) {
+  async function approveThenStart(vmId, task, ticket) {
     try {
       const approval = await gate.startApproved({ vmId, task });
       if (isClosed()) return;
       if (approval?.ok !== true) { note(vmId, 'start_refused', { code: isCode(approval?.code, TASK_START_REFUSALS) ? approval.code : 'start_error' }); return; }
+      if (ticket.cancelled) { note(vmId, 'start_refused', { code: 'start_cancelled' }); return; }
       note(vmId, 'start_approved');
-      const result = await startNow(vmId, task);
+      const result = await startNow(vmId, task, ticket);
       if (result !== 'started') note(vmId, 'start_refused', { code: result });
     } catch { note(vmId, 'start_refused', { code: 'start_error' }); } finally { pending.delete(vmId); }
   }
@@ -67,10 +72,17 @@ export function createStartRunner({ fleet, gate = null, journal, isClosed, stopW
   function start(vmId, task) {
     if (!gate) return startNow(vmId, task);
     if (pending.has(vmId)) return Promise.resolve('approval_in_progress');
-    pending.add(vmId);
-    void approveThenStart(vmId, task);
+    const ticket = { cancelled: false };
+    pending.set(vmId, ticket);
+    void approveThenStart(vmId, task, ticket);
     return Promise.resolve('pending_approval');
   }
 
-  return Object.freeze({ gated: gate !== null, start });
+  /** A person chose stop on this VM: an approval still in flight must not start a job afterwards. */
+  function cancel(vmId) {
+    const ticket = pending.get(vmId);
+    if (ticket) ticket.cancelled = true;
+  }
+
+  return Object.freeze({ gated: gate !== null, start, cancel });
 }
