@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -37,14 +38,20 @@ function fakePowerShell() {
     const vm = vms.get(request.vmName);
     const owned = () => {
       const n = vm && JSON.parse(vm.notes);
-      return Boolean(n) && n.computerId === request.expect.computerId && n.generation === request.expect.generation
-        && (request.expect.projectId === undefined || n.projectId === request.expect.projectId)
-        && (request.expect.incarnationId === undefined || n.incarnationId === request.expect.incarnationId);
+      const e = request.expect;
+      const level = e.identity ?? '';
+      if (level !== '' && !['vm', 'full'].includes(level)) return false;
+      if (level !== '' && e.vmId === undefined) return false; // identity: "vm" / "full" makes the VM id mandatory
+      if (level === 'full' && (e.projectId === undefined || e.incarnationId === undefined)) return false;
+      return Boolean(n) && n.computerId === e.computerId && n.generation === e.generation
+        && (e.vmId === undefined || vm.id === e.vmId)
+        && (e.projectId === undefined || n.projectId === e.projectId)
+        && (e.incarnationId === undefined || n.incarnationId === e.incarnationId);
     };
     switch (request.method) {
-      case 'inspect': return vm ? { ok: true, exists: true, state: vm.state, notes: vm.notes } : { ok: true, exists: false };
+      case 'inspect': return vm ? { ok: true, exists: true, state: vm.state, notes: vm.notes, vmId: vm.id } : { ok: true, exists: false };
       case 'create':
-        vms.set(request.vmName, { state: 'Off', notes: request.notes });
+        vms.set(request.vmName, { state: 'Off', notes: request.notes, id: randomUUID() });
         return { ok: true, state: 'Off' };
       case 'start':
         if (!owned()) return { ok: false, code: 'invalid_provider_state', notApplied: true };
@@ -54,10 +61,13 @@ function fakePowerShell() {
         if (!owned()) return { ok: false, code: 'invalid_provider_state', notApplied: true };
         vm.state = 'Off';
         return { ok: true, state: vm.state };
-      case 'annotate':
+      case 'annotate': {
         if (!owned()) return { ok: false, code: 'invalid_provider_state', notApplied: true };
+        const have = JSON.parse(vm.notes).incarnationId; // like the script: blank, or the very one being written
+        if (have !== undefined && have !== request.incarnationId) return { ok: false, code: 'invalid_provider_state', notApplied: true };
         vm.notes = request.notes;
         return { ok: true, state: vm.state };
+      }
       case 'remove':
         if (vm && !owned()) return { ok: false, code: 'invalid_provider_state', notApplied: true };
         vms.delete(request.vmName);
@@ -379,8 +389,9 @@ test('retire stops a running VM, keeps its disks, records the retirement, and la
   assert.equal(observed.state, 'retired');
   assert.equal(ps.vms.get('albera-pc-01').state, 'Off');
   assert.equal(ps.count('remove'), 0, 'retire keeps every disk');
-  const { incarnationId, ...rest } = journal.get('pc-01');
+  const { incarnationId, vmId, ...rest } = journal.get('pc-01');
   assert.match(incarnationId, /^[a-f0-9]{32}$/);
+  assert.equal(vmId, ps.vms.get('albera-pc-01').id, 'bound to the VM own hypervisor id');
   assert.deepEqual(rest, { computerId: 'pc-01', projectId: 'proj-1', generation: 1, retiredAtMs: T0, deadlineMs: T0 + 7 * DAY });
   assert.equal((await broker.inspectVm(op('inspect'))).state, 'retired');
   await rejects(broker.startVm(op('start')), 'environment_retired', 'not_applied');
@@ -451,7 +462,8 @@ test('purge sends the script the same request shape as destroy, plus the full re
   const request = ps.calls.find((c) => c.method === 'remove');
   assert.equal(path.dirname(request.vmDir), cloneRoot);
   assert.equal(path.basename(request.vmDir), 'albera-pc-01');
-  assert.deepEqual({ ...request.expect, incarnationId: undefined }, { computerId: 'pc-01', generation: 1, projectId: 'proj-1', incarnationId: undefined });
+  assert.deepEqual({ ...request.expect, incarnationId: undefined, vmId: undefined }, { computerId: 'pc-01', generation: 1, projectId: 'proj-1', incarnationId: undefined, vmId: undefined, identity: 'full' });
+  assert.equal(request.expect.vmId, ps.vms.size === 0 ? request.expect.vmId : ps.vms.get('albera-pc-01').id);
   assert.match(request.expect.incarnationId, /^[a-f0-9]{32}$/);
   for (const value of Object.values(request).filter((v) => typeof v === 'string')) assert.notEqual(value, golden);
 });
@@ -611,7 +623,7 @@ test('a VM that is not the recorded incarnation is never purged: reused id in an
   ps.vms.get('albera-pc-01').notes = original;
   await broker.purgeExpiredRetirements({ now: record.deadlineMs });
   const request = ps.calls.find((c) => c.method === 'remove');
-  assert.deepEqual(request.expect, { computerId: 'pc-01', generation: 1, projectId: 'proj-1', incarnationId: record.incarnationId });
+  assert.deepEqual(request.expect, { computerId: 'pc-01', generation: 1, vmId: record.vmId, projectId: 'proj-1', incarnationId: record.incarnationId, identity: 'full' });
   assert.equal(ps.vms.has('albera-pc-01'), false);
 });
 
@@ -687,13 +699,155 @@ test('a journal that cannot be read stops start and create before anything chang
   assert.equal(ps.count('create'), 0);
 });
 
-test('destroy of a VM whose record is another incarnation leaves that record alone (the VM is still destroyed, as before)', async () => {
+// ---- round 2: the record is bound to the VM's own hypervisor id (Notes alone cannot tell a restored VM from the retired one) ----
+const GUID = /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+const restoredCopy = (ps, notes) => { ps.vms.get('albera-pc-01').id = randomUUID(); ps.vms.get('albera-pc-01').notes = notes; };
+const blankNotes = () => JSON.stringify({ albera: 1, computerId: 'pc-01', generation: 1, imageDigest: DIGEST });
+
+test('a restored VM with blank Notes and another VM id is never relabelled, stopped, purged or destroyed (round 2, findings 1 and 2)', async () => {
+  const { broker, ps, journal } = retiringBroker({ retentionMs: 1000 });
+  await broker.createVm(op('create'));
+  await broker.retireVm(op('retire'));
+  const record = journal.get('pc-01');
+  assert.match(record.vmId, GUID);
+  // A backup of the VM is restored: same name, same generation, blank retirement identity, a new hypervisor id. It is running.
+  restoredCopy(ps, blankNotes());
+  ps.vms.get('albera-pc-01').state = 'Running';
+  const notesBefore = ps.vms.get('albera-pc-01').notes;
+  const callsBefore = ps.calls.length;
+
+  await rejects(broker.retireVm(op('retire')), 'operation_conflict', 'not_applied');
+  await rejects(broker.purgeVm(op('purge')), 'environment_not_retired', 'not_applied');
+  await rejects(broker.removeVm(op('destroy')), 'operation_conflict', 'not_applied');
+  await rejects(broker.startVm(op('start')), 'environment_retired', 'not_applied');
+  assert.deepEqual(await broker.purgeExpiredRetirements({ now: record.deadlineMs }), [{ computerId: 'pc-01', outcome: 'skipped' }]);
+  assert.equal((await broker.inspectVm(op('inspect'))).state, 'running', 'not reported as retired');
+
+  assert.deepEqual(ps.calls.slice(callsBefore).filter((c) => c.method !== 'inspect'), [], 'the script was asked to stop, annotate or remove nothing');
+  assert.equal(ps.vms.get('albera-pc-01').notes, notesBefore, 'the Notes were not relabelled');
+  assert.equal(ps.vms.get('albera-pc-01').state, 'Running');
+  assert.deepEqual(journal.get('pc-01'), record, 'record kept');
+});
+
+test('Notes text copied onto another VM does not make it the retired one (same fields, other VM id)', async () => {
+  const { broker, ps, journal } = retiringBroker({ retentionMs: 1000 });
+  await broker.createVm(op('create'));
+  await broker.retireVm(op('retire'));
+  const record = journal.get('pc-01');
+  restoredCopy(ps, ps.vms.get('albera-pc-01').notes); // identical Notes, a different VM
+  assert.deepEqual(await broker.purgeExpiredRetirements({ now: record.deadlineMs }), [{ computerId: 'pc-01', outcome: 'skipped' }]);
+  await rejects(broker.purgeVm(op('purge')), 'environment_not_retired', 'not_applied');
+  await rejects(broker.removeVm(op('destroy')), 'operation_conflict', 'not_applied');
+  await rejects(broker.retireVm(op('retire')), 'operation_conflict', 'not_applied');
+  assert.equal(ps.count('remove'), 0);
+  assert.equal(ps.vms.has('albera-pc-01'), true);
+});
+
+test('destroy with a record that does not match the VM deletes nothing and keeps the record; with no record it is exactly the old destroy (round 2, finding 2)', async () => {
   const { broker, ps, journal } = retiringBroker();
   await broker.createVm(op('create'));
   await broker.retireVm(op('retire'));
   const record = journal.get('pc-01');
-  ps.vms.get('albera-pc-01').notes = JSON.stringify({ albera: 1, computerId: 'pc-01', generation: 1, imageDigest: DIGEST });
+  const original = ps.vms.get('albera-pc-01').notes;
+  const mismatches = {
+    'another VM id': () => { ps.vms.get('albera-pc-01').id = randomUUID(); },
+    'another incarnation in the Notes': () => { ps.vms.get('albera-pc-01').notes = JSON.stringify({ ...JSON.parse(original), incarnationId: FOREIGN_INCARNATION }); },
+    'another project in the Notes': () => { ps.vms.get('albera-pc-01').notes = JSON.stringify({ ...JSON.parse(original), projectId: 'proj-2' }); },
+  };
+  const vmId = ps.vms.get('albera-pc-01').id;
+  for (const [name, apply] of Object.entries(mismatches)) {
+    ps.vms.get('albera-pc-01').id = vmId;
+    ps.vms.get('albera-pc-01').notes = original;
+    apply();
+    await rejects(broker.removeVm(op('destroy')), 'operation_conflict', 'not_applied');
+    assert.equal(ps.count('remove'), 0, name);
+    assert.equal(ps.vms.has('albera-pc-01'), true, name);
+    assert.deepEqual(journal.get('pc-01'), record, name);
+  }
+  ps.vms.get('albera-pc-01').id = vmId;
+  ps.vms.get('albera-pc-01').notes = original;
+  await rejects(broker.removeVm(op('destroy', { projectId: 'proj-2' })), 'operation_conflict', 'not_applied');
+  assert.equal(ps.count('remove'), 0, 'a request from another project does not destroy the retired VM');
+  assert.equal((await broker.removeVm(op('destroy'))).state, 'missing', 'the matching destroy works');
+  assert.equal(journal.get('pc-01'), null);
+  const sent = ps.calls.find((c) => c.method === 'remove');
+  assert.deepEqual(sent.expect, { computerId: 'pc-01', generation: 1, vmId, projectId: 'proj-1', incarnationId: record.incarnationId, identity: 'full' });
+
+  // No record: the old behaviour, byte for byte (the request names only the computer and the generation).
+  const plain = retiringBroker();
+  await plain.broker.createVm(op('create'));
+  await plain.broker.removeVm(op('destroy'));
+  assert.deepEqual(plain.ps.calls.find((c) => c.method === 'remove').expect, { computerId: 'pc-01', generation: 1 });
+});
+
+test('retire retry after a half-finished retire completes only for the same VM id; the same VM then destroys and purges normally (round 2)', async () => {
+  const { broker, ps, journal } = retiringBroker({ retentionMs: 1000 });
+  await broker.createVm(op('create'));
+  const failing = makeBroker({
+    ps, options: { retirements: journal, runPowerShell: async (request) => (request.method === 'annotate' ? { ok: false, code: 'provider_timeout' } : ps.run(request)) },
+  });
+  await rejects(failing.broker.retireVm(op('retire')), 'provider_timeout', 'unknown');
+  const record = journal.get('pc-01');
+  assert.equal(record.vmId, ps.vms.get('albera-pc-01').id);
+  assert.equal(JSON.parse(ps.vms.get('albera-pc-01').notes).incarnationId, undefined);
+
+  // The same VM, blank Notes: the retry completes and writes the recorded incarnation.
+  assert.equal((await broker.retireVm(op('retire'))).state, 'retired');
+  assert.deepEqual(journal.get('pc-01'), record, 'same record, same deadline');
+  assert.equal(JSON.parse(ps.vms.get('albera-pc-01').notes).incarnationId, record.incarnationId);
+  const annotate = ps.calls.filter((c) => c.method === 'annotate').at(-1);
+  assert.deepEqual(annotate.expect, { computerId: 'pc-01', generation: 1, vmId: record.vmId, identity: 'vm' });
+  assert.equal(annotate.incarnationId, record.incarnationId);
+  assert.equal((await broker.inspectVm(op('inspect'))).state, 'retired');
+});
+
+test('a half-finished retire (blank Notes, same VM id) can be destroyed, and the record goes with it', async () => {
+  const { broker, ps, journal } = retiringBroker();
+  await broker.createVm(op('create'));
+  const failing = makeBroker({
+    ps, options: { retirements: journal, runPowerShell: async (request) => (request.method === 'annotate' ? { ok: false, code: 'provider_timeout' } : ps.run(request)) },
+  });
+  await rejects(failing.broker.retireVm(op('retire')), 'provider_timeout', 'unknown');
+  const record = journal.get('pc-01');
   assert.equal((await broker.removeVm(op('destroy'))).state, 'missing');
-  assert.equal(ps.vms.size, 0);
-  assert.deepEqual(journal.get('pc-01'), record);
+  assert.deepEqual(ps.calls.find((c) => c.method === 'remove').expect, { computerId: 'pc-01', generation: 1, vmId: record.vmId, identity: 'vm' });
+  assert.equal(journal.get('pc-01'), null);
+  assert.equal((await broker.createVm(op('create'))).state, 'off');
+});
+
+test('the identity is mandatory on every path that has a record: the script gets the VM id (and, for purge, the full identity) every time', async () => {
+  const { broker, ps, journal } = retiringBroker({ retentionMs: 1000 });
+  await broker.createVm(op('create'));
+  await broker.startVm(op('start'));
+  await broker.retireVm(op('retire'));
+  const { vmId } = journal.get('pc-01');
+  for (const call of ps.calls.filter((c) => ['stop', 'annotate'].includes(c.method) && c.expect.vmId !== undefined)) assert.deepEqual([call.expect.vmId, call.expect.identity], [vmId, 'vm']);
+  assert.equal(ps.calls.filter((c) => c.method === 'stop').length, 1);
+  assert.equal(ps.calls.find((c) => c.method === 'stop').expect.identity, 'vm', 'the stop inside retire names the VM');
+  await broker.purgeVm(op('purge'));
+  const remove = ps.calls.find((c) => c.method === 'remove');
+  assert.equal(remove.expect.identity, 'full');
+  assert.deepEqual([remove.expect.vmId, typeof remove.expect.projectId, typeof remove.expect.incarnationId], [vmId, 'string', 'string']);
+  // And the script (here its stand-in) refuses a request that names an identity level but leaves the VM id out.
+  await broker.createVm(op('create', { computerId: 'pc-02' }));
+  const refused = await ps.run({ method: 'remove', vmName: 'albera-pc-02', cloneRoot, vmDir: path.join(cloneRoot, 'albera-pc-02'), expect: { computerId: 'pc-02', generation: 1, identity: 'vm' } });
+  assert.deepEqual([refused.ok, refused.code], [false, 'invalid_provider_state']);
+  assert.equal(ps.vms.has('albera-pc-02'), true);
+});
+
+test('a retire needs the VM id: a script reply without one is refused before anything changes', async () => {
+  const { ps, journal } = retiringBroker();
+  const noId = makeBroker({
+    ps, options: { retirements: journal, runPowerShell: async (request) => { const r = await ps.run(request); return request.method === 'inspect' && r.exists ? { ...r, vmId: undefined } : r; } },
+  });
+  await noId.broker.createVm(op('create'));
+  await rejects(noId.broker.retireVm(op('retire')), 'invalid_provider_state', 'not_applied');
+  assert.equal(ps.count('stop'), 0);
+  assert.equal(journal.list().length, 0);
+});
+
+test('env-io.ps1 makes the identity mandatory and stays free of string-built commands', () => {
+  const text = fs.readFileSync(new URL('../src/runtime/hyperv-env/env-io.ps1', import.meta.url), 'utf8');
+  for (const needle of ["$Expect.identity", "$level -eq 'full'", '([string]$Vm.Id) -ine [string]$Expect.vmId', 'vmId = [string]$vm.Id', 'Invoke-Annotate']) assert.ok(text.includes(needle), needle);
+  assert.equal(/Invoke-Expression|\biex\b|Start-Process|-Command/i.test(text), false, 'no command is built from a string');
 });

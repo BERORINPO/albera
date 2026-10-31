@@ -105,7 +105,8 @@ function spawnSynchronizedStoreWorker(workerPath, databasePath, workerId, mode, 
   let resultSettled = false;
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; child.once('error', reject); });
   const result = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
-  const exited = new Promise((resolve) => child.once('exit', (code, signal) => {
+  // 'close', not 'exit': 'exit' can fire before the last stdout line (the RESULT) has been read, which failed a run with store_worker_exited_0 although the worker had answered.
+  const exited = new Promise((resolve) => child.once('close', (code, signal) => {
     lines.close();
     if (!readySettled) { readySettled = true; rejectReady(new Error(`store_worker_exited_before_ready_${code ?? signal ?? 'unknown'}`)); }
     if (!resultSettled) {
@@ -125,7 +126,7 @@ function spawnSynchronizedStoreWorker(workerPath, databasePath, workerId, mode, 
   child.stderr.setEncoding('utf8');
   let stderr = '';
   child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-1024); });
-  child.on('exit', () => { if (!resultSettled && stderr) rejectResult(new Error(`store_worker_failed: ${stderr}`)); });
+  child.on('close', () => { if (!resultSettled && stderr) rejectResult(new Error(`store_worker_failed: ${stderr}`)); });
   return { child, ready, result, exited };
 }
 

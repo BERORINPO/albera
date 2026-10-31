@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { EnvironmentProvider, EnvironmentProviderError, ENVIRONMENT_ACTIONS, validateEnvironmentOperation } from './environment-provider.mjs';
 import { RetirementJournalError, createRetirementJournal, purgeExpired } from './environment-retirement-journal.mjs';
 
@@ -31,7 +32,7 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     }
     // A retirement record means this id still has a retired incarnation: never create a new one over it.
     if (this.#record(operation.computerId)) throw new EnvironmentProviderError('operation_conflict', { outcome: 'not_applied' });
-    const computer = { projectId: operation.projectId, generation: operation.expectedGeneration, state: 'off' };
+    const computer = { projectId: operation.projectId, generation: operation.expectedGeneration, state: 'off', vmId: randomUUID() }; // vmId: the stand-in for the hypervisor's own VM id
     this.#computers.set(operation.computerId, computer);
     const observed = this.#observation(operation.computerId, computer);
     this.#maybeFail('create', 'after');
@@ -57,29 +58,31 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     const operation = validateEnvironmentOperation({ ...input, action: 'destroy' });
     this.#maybeFail('destroy', 'before');
     const computer = this.#computers.get(operation.computerId);
-    if (computer) {
-      this.#assertOwnership(operation, computer);
-      this.#computers.delete(operation.computerId);
-    }
-    // Clean up the retirement record of THIS environment, also when an earlier attempt already removed it and died before this point.
-    // A record of another project, generation or incarnation is left alone. A failed clean-up is an error (unknown outcome), never success.
-    const record = this.#record(operation.computerId, 'unknown');
-    if (record && (computer ? this.#matches(record, computer) : record.generation === operation.expectedGeneration && record.projectId === operation.projectId)) this.#drop(record);
+    if (computer) this.#assertOwnership(operation, computer);
+    const record = this.#record(operation.computerId, computer ? 'not_applied' : 'unknown');
+    // A retirement record exists: only the environment it describes may be destroyed (same VM id and project, generation, incarnation once present).
+    // Anything else is not that environment: nothing is deleted and the record stays. With no record destroy is exactly what it always was.
+    if (computer && record && !this.#belongs(record, computer)) throw new EnvironmentProviderError('operation_conflict', { outcome: 'not_applied' });
+    if (computer) this.#computers.delete(operation.computerId);
+    // Clean up the record of THIS environment, also when an earlier attempt already removed it and died before this point; a failed drop is an unknown-outcome error.
+    if (record && (computer || (record.generation === operation.expectedGeneration && record.projectId === operation.projectId))) this.#drop(record);
     const observed = this.#observation(operation.computerId, { generation: operation.expectedGeneration, state: 'missing' });
     this.#maybeFail('destroy', 'after');
     return observed;
   }
 
-  /** Stop, detach from the project and keep the disks; the Broker records the retirement time and a new incarnation id itself. Idempotent: a retired environment keeps its record. */
+  /** Stop, detach from the project and keep the disks; the Broker records the retirement time and a new incarnation id itself. Idempotent for the very environment that was retired; any other one under that id is refused. */
   async retire(input) {
     const operation = validateEnvironmentOperation({ ...input, action: 'retire' });
     this.#maybeFail('retire', 'before');
     const computer = this.#computers.get(operation.computerId);
     if (!computer) throw new EnvironmentProviderError('computer_missing', { outcome: 'not_applied' });
     this.#assertOwnership(operation, computer);
+    const existing = this.#record(operation.computerId);
+    if (existing && !this.#belongs(existing, computer)) throw new EnvironmentProviderError('operation_conflict', { outcome: 'not_applied' });
     computer.state = 'off';
     let record;
-    try { record = this.#retirements.retire({ computerId: operation.computerId, projectId: computer.projectId, generation: computer.generation }); }
+    try { record = this.#retirements.retire({ computerId: operation.computerId, projectId: computer.projectId, generation: computer.generation, vmId: computer.vmId }); }
     catch (error) { throw journalFailure(error); }
     computer.incarnationId = record.incarnationId; // what the Hyper-V Broker writes into the VM Notes
     const observed = this.#observation(operation.computerId, computer);
@@ -140,7 +143,7 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     if (!this.#computers.has(computerId) || typeof projectId !== 'string' || !Number.isSafeInteger(generation) || generation < 1) {
       throw new EnvironmentProviderError('invalid_restore', { outcome: 'not_applied' });
     }
-    this.#computers.set(computerId, { projectId, generation, state: 'off' });
+    this.#computers.set(computerId, { projectId, generation, state: 'off', vmId: randomUUID() });
   }
 
   async #transition(input, action, state) {
@@ -164,9 +167,16 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     }
   }
 
+  // Fully retired: the very environment (same VM id) with the recorded project, generation and incarnation.
   #matches(record, computer) {
-    return Boolean(record) && computer.generation === record.generation && computer.projectId === record.projectId
+    return Boolean(record) && computer.vmId === record.vmId && computer.generation === record.generation && computer.projectId === record.projectId
       && computer.incarnationId === record.incarnationId;
+  }
+
+  // The recorded environment, possibly mid-retire: same VM id, project and generation; incarnation not yet written or the recorded one.
+  #belongs(record, computer) {
+    return Boolean(record) && computer.vmId === record.vmId && computer.generation === record.generation && computer.projectId === record.projectId
+      && (computer.incarnationId === undefined || computer.incarnationId === record.incarnationId);
   }
 
   // Journal access. A read that fails is not applied by default; the destroy clean-up asks for 'unknown' because the environment may already be gone.

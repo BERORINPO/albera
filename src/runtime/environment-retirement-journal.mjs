@@ -5,9 +5,11 @@
 // clock this journal was built with, and the deadline is that time + the retention this journal was built with (host configuration, default 7 days).
 // So a Control Plane cannot create, edit, extend or back-date a record. A second retire of the same environment returns the stored record unchanged.
 //
-// IDENTITY: every record carries a random 128-bit `incarnationId` made here, at retire time, plus the project and the generation. The Broker also writes that id
-// (and the project) into the VM's own Notes. Every later action on the record (requested purge, scheduled purge, destroy's clean-up) must find the same
-// computerId + generation + projectId + incarnationId on the VM and in the record; a restored backup or a reused id carries another incarnation and is never matched.
+// IDENTITY: every record carries a random 128-bit `incarnationId` made here, at retire time, plus the project, the generation and the VM's own hypervisor id
+// (`vmId`, the Hyper-V VM GUID the Broker read from the VM before writing the record; Notes can be edited or copied, the VM id cannot). The Broker also writes the
+// incarnation id and the project into the VM's Notes. Every later action on the record (retire retry, requested purge, scheduled purge, destroy) must find the same
+// computerId + generation + vmId (+ projectId + incarnationId once the Notes carry them) on the VM and in the record; a restored backup, a copied Notes text or a
+// reused id is another VM and is never matched.
 //
 // STORAGE: a SQLite database (node:sqlite, as the operation store). Every change is one BEGIN IMMEDIATE transaction that reads and then writes, so two journal
 // objects (or two Broker processes) over the same file serialize and neither can overwrite the other's record from a stale snapshot. WAL + synchronous=FULL makes a
@@ -23,6 +25,7 @@ const SCHEMA_VERSION = 1;
 const BUSY_TIMEOUT_MS = 5000;
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const INCARNATION_RE = /^[a-f0-9]{32}$/;
+const VM_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const UNREACHABLE_CODES = new Set([5, 6, 8, 10, 13, 14]);
 
 export class RetirementJournalError extends Error {
@@ -32,14 +35,15 @@ export class RetirementJournalError extends Error {
 const isId = (value) => typeof value === 'string' && ID_RE.test(value);
 const isMs = (value) => Number.isSafeInteger(value) && value >= 0;
 const isIncarnation = (value) => typeof value === 'string' && INCARNATION_RE.test(value);
+export const isVmId = (value) => typeof value === 'string' && VM_ID_RE.test(value);
 
 function toRecord(row) {
   const record = Object.freeze({
     computerId: row.computer_id, projectId: row.project_id, generation: row.generation,
-    incarnationId: row.incarnation_id, retiredAtMs: row.retired_at_ms, deadlineMs: row.deadline_ms,
+    vmId: row.vm_id, incarnationId: row.incarnation_id, retiredAtMs: row.retired_at_ms, deadlineMs: row.deadline_ms,
   });
   if (!isId(record.computerId) || !isId(record.projectId) || !Number.isSafeInteger(record.generation) || record.generation < 1
-    || !isIncarnation(record.incarnationId) || !isMs(record.retiredAtMs) || !isMs(record.deadlineMs) || record.deadlineMs <= record.retiredAtMs) {
+    || !isVmId(record.vmId) || !isIncarnation(record.incarnationId) || !isMs(record.retiredAtMs) || !isMs(record.deadlineMs) || record.deadlineMs <= record.retiredAtMs) {
     throw new RetirementJournalError('retirement_journal_corrupt');
   }
   return record;
@@ -63,7 +67,7 @@ function openDatabase(filePath) {
         const tables = db.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE type = 'table'").get().n;
         if (tables !== 0) throw new RetirementJournalError('retirement_journal_corrupt'); // some other database
         db.prepare(`CREATE TABLE retirements (
-          computer_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation >= 1),
+          computer_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation >= 1), vm_id TEXT NOT NULL CHECK(length(vm_id) = 36),
           incarnation_id TEXT NOT NULL CHECK(length(incarnation_id) = 32), retired_at_ms INTEGER NOT NULL CHECK(retired_at_ms >= 0),
           deadline_ms INTEGER NOT NULL CHECK(deadline_ms > retired_at_ms)
         ) STRICT`).run();
@@ -89,7 +93,7 @@ function openDatabase(filePath) {
 
 /**
  * @param {{ filePath?: string, nowMs?: () => number, retentionMs?: number }} [options] host configuration, never operation input
- * @returns {{ nowMs(): number, retire(identity: { computerId: string, projectId: string, generation: number }): object, get(computerId: string): object | null,
+ * @returns {{ nowMs(): number, retire(identity: { computerId: string, projectId: string, generation: number, vmId: string }): object, get(computerId: string): object | null,
  *   list(): object[], expired(atMs: number): object[], remove(computerId: string, incarnationId: string): boolean, close(): void }}
  */
 export function createRetirementJournal({ filePath, nowMs = Date.now, retentionMs = DEFAULT_RETENTION_MS } = {}) {
@@ -126,19 +130,19 @@ export function createRetirementJournal({ filePath, nowMs = Date.now, retentionM
     nowMs: clock,
 
     /** Record a retirement at the journal's own time with a new incarnation id. An already retired environment keeps its original record (deadline and id included). */
-    retire({ computerId, projectId, generation } = {}) {
-      if (!isId(computerId) || !isId(projectId) || !Number.isSafeInteger(generation) || generation < 1) throw new RetirementJournalError('retirement_invalid');
+    retire({ computerId, projectId, generation, vmId } = {}) {
+      if (!isId(computerId) || !isId(projectId) || !Number.isSafeInteger(generation) || generation < 1 || !isVmId(vmId)) throw new RetirementJournalError('retirement_invalid');
       return transaction(() => {
         const row = db.prepare('SELECT * FROM retirements WHERE computer_id = ?').get(computerId);
         if (row) {
           const existing = toRecord(row);
-          if (existing.projectId !== projectId || existing.generation !== generation) throw new RetirementJournalError('retirement_conflict');
+          if (existing.projectId !== projectId || existing.generation !== generation || existing.vmId !== vmId) throw new RetirementJournalError('retirement_conflict');
           return existing;
         }
         const retiredAtMs = clock();
-        const record = Object.freeze({ computerId, projectId, generation, incarnationId: randomBytes(16).toString('hex'), retiredAtMs, deadlineMs: retiredAtMs + retentionMs });
-        db.prepare('INSERT INTO retirements (computer_id, project_id, generation, incarnation_id, retired_at_ms, deadline_ms) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(record.computerId, record.projectId, record.generation, record.incarnationId, record.retiredAtMs, record.deadlineMs);
+        const record = Object.freeze({ computerId, projectId, generation, vmId, incarnationId: randomBytes(16).toString('hex'), retiredAtMs, deadlineMs: retiredAtMs + retentionMs });
+        db.prepare('INSERT INTO retirements (computer_id, project_id, generation, vm_id, incarnation_id, retired_at_ms, deadline_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .run(record.computerId, record.projectId, record.generation, record.vmId, record.incarnationId, record.retiredAtMs, record.deadlineMs);
         return record;
       });
     },
