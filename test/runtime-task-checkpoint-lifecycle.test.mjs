@@ -336,7 +336,7 @@ const tmpRoot = path.join(os.tmpdir(), 'albera-checkpoint-lifecycle-never-create
 const RESTORE_INPUT = Object.freeze({ computerId: 'pc-01', projectId: 'proj-alpha', expectedGeneration: 3, vmId: VM });
 
 /** Stateful stand-in for env-io.ps1 'inspect' / 'network' / 'checkpoint' / 'restore' / 'start': one VM whose Notes (and so generation) a restore rewrites. */
-function stateful({ restore, checkpoint, vm = {} } = {}) {
+function stateful({ restore, checkpoint, vm = {}, usable = false } = {}) {
   const state = { notes: notes(), state: 'Running', vmId: VM, ...vm };
   const calls = [];
   const run = async (request) => {
@@ -352,6 +352,8 @@ function stateful({ restore, checkpoint, vm = {} } = {}) {
       return { ok: true, checkpointId: CKPT, vmId: VM, state: 'Off', generation: JSON.parse(request.notes).generation };
     }
     if (request.method === 'start') { state.state = 'Running'; return { ok: true, state: 'Running' }; }
+    if (usable && request.method === 'stop') { state.state = 'Off'; return { ok: true, state: 'Off' }; }
+    if (usable && request.method === 'remove') return { ok: true };
     return { ok: false, code: 'invalid_provider_state', notApplied: true };
   };
   return { run, calls, state, methods: () => calls.map((c) => c.method) };
@@ -485,7 +487,7 @@ test('restoreTaskCheckpoint: an op that fails, or reports anything but "this VM,
   // the op's own refusals keep their meaning (no checkpoint = not applied; a failed restore / Notes write = unknown)
   const none = hv({ restore: { ok: false, code: 'invalid_provider_state', notApplied: true } });
   await refusal(none.broker.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'invalid_provider_state', 'not_applied');
-  assert.equal(none.script.methods().filter((m) => m === 'inspect').length, 1, 'no second read after a refusal');
+  assert.equal(none.script.methods().filter((m) => m === 'inspect').length, 2, 'one read before, and one after the refusal to prove the VM untouched before the raise is withdrawn');
   const failed = hv({ restore: { ok: false, code: 'provider_state_unknown', notApplied: false } });
   await refusal(failed.broker.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'provider_state_unknown', 'unknown');
   const thrown = hv({ restore: () => { throw Object.assign(new Error('provider_timeout'), { code: 'provider_timeout' }); } });
@@ -601,17 +603,109 @@ test('the process dies after the restore and before the Notes write: a NEW Broke
   } finally { first?.close(); second?.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// ---- 4b. a refused restore must not brick the VM (real host 2026-11-01: a restore with no checkpoint raised the floor, then even destroy was refused) ----
+
+const NO_CHECKPOINT = Object.freeze({ ok: false, code: 'invalid_provider_state', notApplied: true });
+
+test('a restore the op refuses definitely (no checkpoint: not applied) withdraws exactly its own raise: the VM is not fenced, and the old generation works for start, stop, destroy and inspect', async () => {
+  const floor = createGenerationFloor();
+  const script = stateful({ restore: NO_CHECKPOINT, usable: true });
+  const broker = rebuild(script, floor);
+  await refusal(broker.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'invalid_provider_state', 'not_applied');
+  assert.equal(floor.get('pc-01'), null, 'nothing is left behind by a restore that changed nothing');
+  await refusal(broker.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'invalid_provider_state', 'not_applied'); // and it can be asked again
+  assert.equal((await broker.inspectVm(op('inspect', { expectedGeneration: 3 }))).state, 'running');
+  assert.equal((await broker.startVm(op('start', { expectedGeneration: 3 }))).generation, 3);
+  assert.equal((await broker.stopVm(op('stop', { expectedGeneration: 3 }))).generation, 3);
+  assert.ok(await broker.attestTaskStart(taskInput(3, 'op-after-refusal')), 'a statement for the unchanged generation can still be made');
+  assert.equal((await broker.removeVm(op('destroy', { expectedGeneration: 3 }))).state, 'missing');
+});
+
+test('a withdrawn raise leaves an earlier committed floor alone, and a later restore still works', async () => {
+  const floor = createGenerationFloor();
+  let refuse = false;
+  const script = stateful({
+    usable: true,
+    restore: (request, state) => {
+      if (refuse) return NO_CHECKPOINT;
+      state.notes = request.notes;
+      state.state = 'Off';
+      return { ok: true, checkpointId: CKPT, vmId: VM, state: 'Off', generation: JSON.parse(request.notes).generation };
+    },
+  });
+  const broker = rebuild(script, floor);
+  assert.equal((await broker.restoreTaskCheckpoint({ ...RESTORE_INPUT })).generation, 4);
+  refuse = true;
+  await refusal(broker.restoreTaskCheckpoint({ ...RESTORE_INPUT, expectedGeneration: 4 }), 'invalid_provider_state', 'not_applied');
+  assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'the committed floor of the successful restore stays');
+  await refusal(broker.startVm(op('start', { expectedGeneration: 3 })), 'stale_generation', 'not_applied');
+  assert.equal((await broker.startVm(op('start', { expectedGeneration: 4 }))).generation, 4);
+  refuse = false;
+  assert.equal((await broker.restoreTaskCheckpoint({ ...RESTORE_INPUT, expectedGeneration: 4 })).generation, 5);
+});
+
+test('an UNKNOWN outcome keeps the raise pending (fenced); so does a "not applied" claim when the VM is not shown untouched, a resume that is then refused, and a withdraw that fails', async () => {
+  // unknown outcome: the op may have restored
+  const unknown = createGenerationFloor();
+  const failed = stateful({ restore: { ok: false, code: 'provider_state_unknown', notApplied: false } });
+  await refusal(rebuild(failed, unknown).restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'provider_state_unknown', 'unknown');
+  assert.deepEqual(unknown.get('pc-01'), { vmId: VM, generation: 4 });
+  // the reply says "not applied" but the Notes are no longer at the approved generation: not proven untouched
+  const lying = createGenerationFloor();
+  const changed = stateful({ restore: (request, state) => { state.notes = notes({ generation: 2 }); state.state = 'Off'; return NO_CHECKPOINT; } });
+  await refusal(rebuild(changed, lying).restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'invalid_provider_state', 'not_applied');
+  assert.deepEqual(lying.get('pc-01'), { vmId: VM, generation: 4 }, 'fenced');
+  await assertOldGenerationsRefused(rebuild(changed, lying), changed, 'lying');
+  // an earlier unknown attempt (the Notes now carry the checkpoint's older ones), then the resume is refused definitely: its raise is the EARLIER attempt's, so it is not withdrawn
+  const resumed = createGenerationFloor();
+  let attempt = 0;
+  const flaky = stateful({
+    restore: (request, state) => {
+      attempt += 1;
+      if (attempt === 1) { state.notes = notes({ generation: 2 }); state.state = 'Off'; return { ok: false, code: 'provider_state_unknown', notApplied: false }; }
+      return NO_CHECKPOINT;
+    },
+  });
+  const broker = rebuild(flaky, resumed);
+  await refusal(broker.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'provider_state_unknown', 'unknown');
+  await refusal(broker.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'invalid_provider_state', 'not_applied');
+  assert.deepEqual(resumed.get('pc-01'), { vmId: VM, generation: 4 }, 'still fenced');
+  await assertOldGenerationsRefused(broker, flaky, 'resume-refused');
+  // a withdraw that fails: the original error comes out, the raise stays
+  const real = createGenerationFloor();
+  const stuck = rebuild(stateful({ restore: NO_CHECKPOINT }), { get: (c) => real.get(c), raise: (...a) => real.raise(...a), commit: (...a) => real.commit(...a), withdraw: () => { throw new Error('disk full'); } });
+  await refusal(stuck.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'invalid_provider_state', 'not_applied');
+  assert.deepEqual(real.get('pc-01'), { vmId: VM, generation: 4 }, 'a withdraw that could not be written leaves it fenced (fail closed)');
+});
+
+test('crash between the raise and the reply: the pending raise survives in the file and a new Broker still fences the old generations', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-floor-pending-'));
+  const file = path.join(dir, 'floor.sqlite');
+  let first;
+  let second;
+  try {
+    first = createGenerationFloor({ filePath: file });
+    const script = stateful({ restore: () => { throw Object.assign(new Error('the process died'), { code: 'provider_timeout' }); } });
+    await rebuild(script, first).restoreTaskCheckpoint({ ...RESTORE_INPUT }).then(() => assert.fail('the restore reported success'), () => {});
+    first.close();
+    second = createGenerationFloor({ filePath: file });
+    assert.deepEqual(second.get('pc-01'), { vmId: VM, generation: 4 }, 'pending survives a restart');
+    const restarted = rebuild(stateful(), second);
+    await refusal(restarted.startVm(op('start', { expectedGeneration: 3 })), 'stale_generation', 'not_applied');
+  } finally { first?.close(); second?.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('generation floor: no floor configured = no restore; a floor that cannot be raised = nothing changed; one that cannot be read = every operation refuses; another VM id is not fenced', async () => {
   const bare = createHyperVEnvironmentBrokerPrototype({
     goldenImages: { [DIGEST]: { path: path.join(os.tmpdir(), 'g', 'base.vhdx'), os: 'windows', architecture: 'x64' } }, cloneRoot: tmpRoot, runPowerShell: stateful().run,
   });
   await refusal(bare.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'invalid_provider_state', 'not_applied');
   const noRaise = stateful();
-  const broken = rebuild(noRaise, { get: () => null, raise: () => { throw new Error('disk full'); } });
+  const broken = rebuild(noRaise, { get: () => null, raise: () => { throw new Error('disk full'); }, commit: () => {}, withdraw: () => {} });
   await refusal(broken.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'provider_unavailable', 'not_applied');
   assert.equal(noRaise.methods().includes('restore'), false, 'the restore op is not asked for unless the floor is durable first');
   const unreadable = stateful();
-  const blind = rebuild(unreadable, { get: () => { throw new Error('locked'); }, raise: () => {} });
+  const blind = rebuild(unreadable, { get: () => { throw new Error('locked'); }, raise: () => {}, commit: () => {}, withdraw: () => {} });
   await refusal(blind.startVm(op('start')), 'provider_state_unknown', 'not_applied');
   assert.equal(await blind.attestTaskStart(taskInput(3, 'op-blind')), null);
   await refusal(blind.restoreTaskCheckpoint({ ...RESTORE_INPUT }), 'provider_state_unknown', 'not_applied');
@@ -621,6 +715,40 @@ test('generation floor: no floor configured = no restore; a floor that cannot be
   other.raise('pc-01', OTHER_VM, 9);
   const script = stateful();
   assert.equal((await rebuild(script, other).startVm(op('start'))).generation, 3);
+});
+
+test('generation floor module: a raise is pending (fences at once, survives a reopen) until commit makes it permanent or withdraw removes exactly it', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-floor-pending-unit-'));
+  const file = path.join(dir, 'floor.sqlite');
+  let floor;
+  try {
+    floor = createGenerationFloor({ filePath: file });
+    floor.raise('pc-01', VM, 4);
+    floor.close();
+    floor = createGenerationFloor({ filePath: file });
+    assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'pending fences, and it is durable');
+    floor.withdraw('pc-01', VM, 3);
+    floor.withdraw('pc-01', OTHER_VM, 4);
+    assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'a withdraw of another generation or another VM changes nothing');
+    floor.withdraw('pc-01', VM, 4);
+    assert.equal(floor.get('pc-01'), null, 'exactly the pending raise is withdrawn; no committed floor was behind it');
+    floor.raise('pc-01', VM, 4);
+    floor.commit('pc-01', VM, 5);
+    assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 });
+    floor.commit('pc-01', VM, 4);
+    floor.withdraw('pc-01', VM, 4);
+    assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'a committed floor cannot be withdrawn');
+    floor.raise('pc-01', VM, 6);
+    floor.raise('pc-01', VM, 5);
+    assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 6 }, 'a lower raise never replaces a higher pending one');
+    floor.withdraw('pc-01', VM, 6);
+    assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 4 }, 'a withdraw falls back to the committed floor');
+    floor.raise('pc-01', VM, 6);
+    floor.raise('pc-01', VM, 8); // the 6 is below the new pending, so it is folded into the committed floor
+    floor.withdraw('pc-01', VM, 8);
+    assert.deepEqual(floor.get('pc-01'), { vmId: VM, generation: 6 });
+    for (const method of ['commit', 'withdraw']) assert.throws(() => floor[method]('pc-01', 'not-a-vm', 3), (e) => e.code === 'generation_floor_invalid');
+  } finally { floor?.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('generation floor module: only ever rises, is bound to the VM id, validates its input, survives a reopen and refuses a file that is not its own', () => {

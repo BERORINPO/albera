@@ -90,11 +90,11 @@ try {
     results.provesCheckpointedNoNetwork = provesCheckpointedNoNetwork(verified);
     results.network = verified.network;
     results.checkpointType = verified.checkpointType;
-    const snapshots = JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { [pscustomobject]@{ name = $_.Name; id = $_.Id.Guid; type = [string]$_.SnapshotType; state = [string]$_.State } }) | ConvertTo-Json -Compress -AsArray`));
+    const snapshots = JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { [pscustomobject]@{ name = $_.Name; id = $_.Id.Guid; type = [string]$_.SnapshotType; state = [string]$_.State } }) | ConvertTo-Json -Compress -AsArray`) || '[]'); // no item prints nothing, not []
     results.snapshots = snapshots.map((s) => ({ name: s.name, type: s.type, state: s.state, matchesAttestation: s.id.toLowerCase() === verified.checkpointId }));
     results.again = Boolean(await broker.attestTaskStart({ ...input, operationId: 'tsa-task-0002', actionDigest: computeActionDigest('guest.command', dtoOf('tsa task two')) })); // a second operation gets its own checkpoint
     // Issue #133: the second checkpoint op removed the first one. The removal starts a background merge, so poll until exactly one remains (or the wait is over).
-    const listSnapshots = () => JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { [pscustomobject]@{ name = $_.Name; id = $_.Id.Guid } }) | ConvertTo-Json -Compress -AsArray`));
+    const listSnapshots = () => JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { [pscustomobject]@{ name = $_.Name; id = $_.Id.Guid } }) | ConvertTo-Json -Compress -AsArray`) || '[]'); // no item prints nothing, not []
     const pruneDeadline = Date.now() + PRUNE_WAIT_MS;
     let remaining = listSnapshots();
     while (remaining.length !== 1 && Date.now() < pruneDeadline) { await sleep(PRUNE_POLL_MS); remaining = listSnapshots(); }
@@ -107,7 +107,7 @@ try {
     // Issue #133 (b), INFORMATIONAL ONLY (the verdict uses the snapshot State Off, see env-io.ps1): is there a read-only property that tells a production checkpoint from a standard one? SnapshotType is known not to (Standard for ProductionOnly).
     // Nothing below is trusted or part of the verdict; the lead reads it to decide whether env-io.ps1 can verify the snapshot itself. No host path is printed.
     try {
-      results.snapshotProbe = JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { $s = $_; $c = @(Get-CimInstance -Namespace root/virtualization/v2 -ClassName Msvm_VirtualSystemSettingData | Where-Object { $_.InstanceID -like ('*' + $s.Id.Guid + '*') }) | Select-Object -First 1; [pscustomobject]@{ name = $s.Name; snapshotType = [string]$s.SnapshotType; vmStateAtSnapshot = [string]$s.State; consistencyLevel = $c.ConsistencyLevel; virtualSystemType = $c.VirtualSystemType } }) | ConvertTo-Json -Compress -AsArray`));
+      results.snapshotProbe = JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { $s = $_; $c = @(Get-CimInstance -Namespace root/virtualization/v2 -ClassName Msvm_VirtualSystemSettingData | Where-Object { $_.InstanceID -like ('*' + $s.Id.Guid + '*') }) | Select-Object -First 1; [pscustomobject]@{ name = $s.Name; snapshotType = [string]$s.SnapshotType; vmStateAtSnapshot = [string]$s.State; consistencyLevel = $c.ConsistencyLevel; virtualSystemType = $c.VirtualSystemType } }) | ConvertTo-Json -Compress -AsArray`) || '[]'); // no item prints nothing, not []
     }
     catch { results.snapshotProbe = 'unavailable'; }
   }
@@ -119,7 +119,11 @@ finally {
   if (created) {
     try {
       await broker.stopVm(op('stop')).catch(() => {});
-      ps(`Get-VMSnapshot -VMName '${vmName}' -ErrorAction SilentlyContinue | Remove-VMSnapshot`);
+      // A prune just before may still be merging in the background; removing a checkpoint then fails, so retry for a while (real host 2026-11-01).
+      for (let tries = 1; ; tries++) {
+        try { ps(`Get-VMSnapshot -VMName '${vmName}' -ErrorAction SilentlyContinue | Remove-VMSnapshot -ErrorAction Stop`); break; }
+        catch (error) { if (tries >= 12) throw error; await sleep(10_000); }
+      }
       await broker.removeVm(op('destroy'));
       results.vmDeleted = ps(`[bool](Get-VM -Name '${vmName}' -ErrorAction SilentlyContinue)`) === 'False';
     }

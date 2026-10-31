@@ -43,7 +43,8 @@ export function createHyperVEnvironmentBrokerPrototype({
 } = {}) {
   // `generationFloor` is the Broker-owned durable high-water mark of generations (environment-generation-floor.mjs): host configuration, never operation input. Without it restoreTaskCheckpoint
   // is refused: a restore may only be asked for after the generation it will issue is recorded somewhere that survives a failed Notes write and a crash (issue #133).
-  if (generationFloor !== undefined && (generationFloor === null || typeof generationFloor.get !== 'function' || typeof generationFloor.raise !== 'function')) {
+  if (generationFloor !== undefined && (generationFloor === null || typeof generationFloor.get !== 'function' || typeof generationFloor.raise !== 'function'
+    || typeof generationFloor.commit !== 'function' || typeof generationFloor.withdraw !== 'function')) {
     throw new TypeError('invalid_hyperv_environment_prototype_options');
   }
   // `onCheckpointPrune` (optional) hears, after each task checkpoint, how many older ALBERA checkpoints were removed and how many could not be ({ computerId, pruned, pruneFailed }, numbers only).
@@ -94,6 +95,14 @@ export function createHyperVEnvironmentBrokerPrototype({
     const vmId = typeof result.vmId === 'string' && isVmId(result.vmId.toLowerCase()) ? result.vmId.toLowerCase() : null;
     const meta = parseNotes(result.notes);
     return { state: mapState(result.state), meta, vmId, adapters: result.adapters, floor: floorOf(meta, vmId) };
+  }
+
+  async function withdrawIfUntouched(f, vmName, next) {
+    try {
+      const again = await lookup(vmName);
+      if (again && again.vmId === f.vmId && again.meta?.computerId === f.computerId && again.meta.generation === f.expectedGeneration) generationFloor.withdraw(f.computerId, f.vmId, next);
+    }
+    catch { /* could not prove the VM untouched: it stays fenced until a restore finishes */ }
   }
 
   // The durable generation floor of THIS VM (null = none). A floor that cannot be read is a refusal, never "no floor"; the VM id keeps a floor from fencing another VM under the same computer id.
@@ -244,7 +253,8 @@ export function createHyperVEnvironmentBrokerPrototype({
      * FAIL-CLOSED ORDER: a restore brings back the checkpoint's OLD Notes, so if the Notes write after it failed (or the process died between the two) the old generation would be valid again.
      * Therefore, BEFORE the restore op is called, the new generation is raised in the durable `generationFloor` (host configuration; without it the restore is refused, not applied). Every
      * operation refuses a VM whose Notes are below the floor of its own VM id (`stale_generation`, attestation null, inspect "unknown"), and nothing clears that except a successful restore,
-     * which brings the Notes up to the floor. A restore that did not finish is retried with the same approval's generation: while the floor is exactly expectedGeneration + 1 and the Notes are
+     * which brings the Notes up to the floor. The raise is PENDING until the restore succeeds (then it is committed); if the restore op answers definitely "not applied" (it refused before changing
+     * anything, e.g. there is no task checkpoint) and a fresh read shows the VM untouched, exactly that pending raise is withdrawn, so a refused restore never fences the VM. A restore that did not finish is retried with the same approval's generation: while the floor is exactly expectedGeneration + 1 and the Notes are
      * at or below expectedGeneration, the retry restores again and writes that same number.
      * NOT done here: the Control Plane's own record (`computers.generation` in the SQLite store) is moved by `revokeLease(..., { reason: 'restore' })`, and no journaled `restore` action
      * connects the two yet; until it does, the store keeps the old number and every operation it sends is refused here (stale_generation), which fails closed.
@@ -270,11 +280,21 @@ export function createHyperVEnvironmentBrokerPrototype({
       try { generationFloor.raise(f.computerId, f.vmId, next); } // durable before the restore is asked for; a failure here means nothing was changed
       catch { throw brokerError('provider_unavailable', 'not_applied'); }
       // `expect.generation` is what the Notes say NOW (the script compares it with them); `notes` carries the new number, which the script only insists is higher.
-      const result = await call({ method: 'restore', vmName, expect: { computerId: f.computerId, generation: vm.meta.generation, vmId: f.vmId, identity: 'vm' }, notes });
+      let result;
+      try { result = await call({ method: 'restore', vmName, expect: { computerId: f.computerId, generation: vm.meta.generation, vmId: f.vmId, identity: 'vm' }, notes }); }
+      catch (error) {
+        // A DEFINITE "not applied" (the op refused before changing anything: no checkpoint, wrong VM ...) must not leave the VM fenced by a raise nothing came of. Withdraw exactly this attempt's
+        // pending raise, and only when it was this attempt's own (not a resume of an earlier unknown one) and a fresh read still shows the VM untouched at the approved generation.
+        // Anything else (unknown outcome, a failed read or withdraw) leaves the raise pending: fenced, resumable.
+        if (error?.outcome === 'not_applied' && !resuming) await withdrawIfUntouched(f, vmName, next);
+        throw error;
+      }
       const reportedId = typeof result.vmId === 'string' ? result.vmId.toLowerCase() : null;
       if (reportedId !== f.vmId || result.generation !== next || mapState(result.state) !== 'off') throw brokerError('provider_state_unknown');
       const after = await lookup(vmName); // the new generation is what the VM itself says now, not only what the script reported
       if (!after || after.vmId !== f.vmId || after.state !== 'off' || after.meta?.computerId !== f.computerId || after.meta.generation !== next) throw brokerError('provider_state_unknown');
+      // The Notes carry the new generation, so the pending raise is now simply the floor. If this write fails nothing is lost: a pending raise equal to the Notes fences exactly as a committed one does.
+      try { generationFloor.commit(f.computerId, f.vmId, next); } catch { /* harmless, see above */ }
       return observed(f.computerId, 'off', next);
     },
 

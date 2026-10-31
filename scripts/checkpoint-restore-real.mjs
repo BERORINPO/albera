@@ -14,9 +14,12 @@
 // A 4 GB VM on a full host froze the PC (2026-10-31): the host memory guard refuses to start. Signs with a key generated in memory for this run only. Prints no password and no host path.
 import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { freemem } from 'node:os';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { freemem, tmpdir } from 'node:os';
+import path from 'node:path';
 import { createEcdsaAttestationSigner } from '../src/runtime/ecdsa-attestation-signer.mjs';
 import { createHyperVEnvironmentBrokerPrototype } from '../src/runtime/hyperv-environment-broker-prototype.mjs';
+import { createGenerationFloor } from '../src/runtime/environment-generation-floor.mjs';
 import { firstExisting, pwshCandidates } from '../src/runtime/hyperv-guest-check-prototype.mjs';
 import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
 
@@ -48,7 +51,12 @@ const pruneReports = [];
 
 log('hashing the golden image (read only) ...');
 const digest = `sha256:${ps(`(Get-FileHash -Algorithm SHA256 -LiteralPath '${GOLDEN}').Hash`).toLowerCase()}`;
+// The restore op needs the Broker-owned generation floor (#140): a throwaway one for this run, removed at exit.
+const floorDir = mkdtempSync(path.join(tmpdir(), 'albera-rst-floor-'));
+process.once('exit', () => { try { rmSync(floorDir, { recursive: true, force: true }); } catch { /* a leftover temp folder is harmless */ } });
+const generationFloor = createGenerationFloor({ filePath: path.join(floorDir, 'generation-floor.sqlite') });
 const broker = createHyperVEnvironmentBrokerPrototype({
+  generationFloor,
   goldenImages: { [digest]: { path: GOLDEN, os: 'windows', architecture: 'x64' } },
   cloneRoot: CLONE_ROOT, pwsh, timeoutMs: 300_000, attestationSigner: signer, onCheckpointPrune: (report) => pruneReports.push({ pruned: report.pruned, pruneFailed: report.pruneFailed }),
 });
@@ -57,7 +65,7 @@ const op = (action, generation, extra = {}) => ({
   computerId, providerId: 'hyperv', leaseId: 'lease-rst', expectedGeneration: generation, policyVersion: 1, action, ...extra,
 });
 const refused = async (promise) => { try { await promise; return 'NOT REFUSED'; } catch (error) { return `${error.code}/${error.outcome}`; } };
-const snapshotsOf = () => JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { [pscustomobject]@{ name = $_.Name; id = $_.Id.Guid } }) | ConvertTo-Json -Compress -AsArray`));
+const snapshotsOf = () => JSON.parse(ps(`@(Get-VMSnapshot -VMName '${vmName}' | ForEach-Object { [pscustomobject]@{ name = $_.Name; id = $_.Id.Guid } }) | ConvertTo-Json -Compress -AsArray`) || '[]'); // no item prints nothing, not []
 const vmFacts = () => JSON.parse(ps(`$v = Get-VM -Name '${vmName}'; [pscustomobject]@{ state = [string]$v.State; id = $v.Id.Guid; generation = ($v.Notes | ConvertFrom-Json).generation; startupMemoryGiB = [math]::Round((Get-VMMemory -VMName '${vmName}').Startup / 1GB, 2) } | ConvertTo-Json -Compress`));
 
 const results = { checks: {} };
@@ -119,13 +127,20 @@ try {
   check('generationNeverReused', afterSecond.generation > afterFirst.generation);
 
   // 4. no ALBERA checkpoint: refused, nothing changes
-  ps(`Get-VMSnapshot -VMName '${vmName}' | Remove-VMSnapshot`);
+  for (let tries = 1; ; tries++) { // right after a restore Hyper-V can still be busy with the VM; the removal then fails for a while
+    try { ps(`Get-VMSnapshot -VMName '${vmName}' | Remove-VMSnapshot -ErrorAction Stop`); break; }
+    catch (error) { if (tries >= 12) throw error; await sleep(10_000); }
+  }
   const removeDeadline = Date.now() + 120_000;
   while (snapshotsOf().length !== 0 && Date.now() < removeDeadline) await sleep(3_000);
   const beforeNone = vmFacts();
   results.noCheckpoint = await refused(broker.restoreTaskCheckpoint({ computerId, projectId, expectedGeneration: 3, vmId }));
   check('noCheckpointRefused', results.noCheckpoint === 'invalid_provider_state/not_applied');
   check('noCheckpointChangedNothing', JSON.stringify(vmFacts()) === JSON.stringify(beforeNone));
+  // A restore the op refused definitely must not fence the VM (real host 2026-11-01: the raise stayed and even destroy was refused). stop at generation 3 works; destroy at 3 is the clean-up below,
+  // whose success is the vmDeleted verdict.
+  const afterRefusal = await refused(broker.stopVm(op('stop', 3)));
+  check('refusedRestoreDidNotFence', afterRefusal === 'NOT REFUSED' && (await broker.inspectVm(op('inspect', 3))).generation === 3 && (await broker.inspectVm(op('inspect', 3))).state === 'off');
   results.pruneReports = pruneReports;
 }
 catch (error) {
@@ -136,7 +151,10 @@ finally {
     try {
       const generation = (() => { try { return vmFacts().generation; } catch { return 1; } })(); // wherever the run stopped, the VM's own Notes say which generation it is at
       await broker.stopVm(op('stop', generation)).catch(() => {});
-      ps(`Get-VMSnapshot -VMName '${vmName}' -ErrorAction SilentlyContinue | Remove-VMSnapshot`);
+      for (let tries = 1; ; tries++) { // a background merge can make the removal fail for a while
+        try { ps(`Get-VMSnapshot -VMName '${vmName}' -ErrorAction SilentlyContinue | Remove-VMSnapshot -ErrorAction Stop`); break; }
+        catch (error) { if (tries >= 12) throw error; await sleep(10_000); }
+      }
       await broker.removeVm(op('destroy', generation));
       results.vmDeleted = ps(`[bool](Get-VM -Name '${vmName}' -ErrorAction SilentlyContinue)`) === 'False';
     }
