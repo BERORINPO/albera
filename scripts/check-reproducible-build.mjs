@@ -4,7 +4,7 @@
 // the generated obj/ and bin/ folders of the projects it builds (git-ignored build output, rebuilt right away), so every run is a clean build. After each run it hashes every file
 // of every output folder and compares run 1 with run 2.
 //   --relocate   also build a copy of the repository at another path and compare it with run 1 (proves the output does not depend on where the repository is checked out).
-// Files that may differ are listed with a reason in EXPECTED_EXCLUSIONS (scripts/reproducible-compare.mjs) and are reported, never skipped silently. Exit 0 = reproducible, 1 = a difference or a failed build.
+// Files that may differ are listed with a reason in EXPECTED_EXCLUSIONS (scripts/reproducible-compare.mjs) and are reported, never skipped silently. Exit 0 = reproducible, 1 = a difference or a failed build, 2 = not run (non-Windows host: nothing was checked, so it must not read as a pass).
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -52,8 +52,8 @@ function relocatedCopy() {
 
 function main() {
   if (process.platform !== 'win32') {
-    console.log('Reproducible-build check skipped on non-Windows host');
-    return 0;
+    console.error('Reproducible-build check NOT RUN: it needs a Windows host (nothing was checked)');
+    return 2;
   }
   const relocate = process.argv.includes('--relocate');
   const moved = relocate ? relocatedCopy() : undefined;
