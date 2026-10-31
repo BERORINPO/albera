@@ -174,7 +174,7 @@ export class MockEnvironmentProvider extends EnvironmentProvider {
     try {
       const body = createNetworkAttestation({
         network: classifyNetworkAdapters(computer.adapters), computerId: operation.computerId, vmId: computer.vmId, generation: computer.generation,
-        projectId: computer.projectId, leaseGeneration, observedAt: Math.floor(Date.parse(this.#now()) / 1000), ttlSeconds: this.#ttlSeconds,
+        projectId: computer.projectId, leaseId: operation.leaseId, leaseGeneration, observedAt: Math.floor(Date.parse(this.#now()) / 1000), ttlSeconds: this.#ttlSeconds,
       });
       return await signNetworkAttestation(body, this.#signer);
     }

@@ -202,7 +202,7 @@ test('create sends fixed paths from trusted config, tags the VM, and ignores dis
   assert.equal(request.vcpu, 2);
   assert.equal(request.memoryMiB, 2048);
   assert.equal(Object.hasOwn(request, 'diskGiB'), false);
-  assert.deepEqual(JSON.parse(request.notes), { albera: 1, computerId: 'pc-01', generation: 3, imageDigest: DIGEST });
+  assert.deepEqual(JSON.parse(request.notes), { albera: 1, computerId: 'pc-01', generation: 3, imageDigest: DIGEST, projectId: 'proj-1' });
 });
 
 test('create is idempotent for the same identity and conflicts otherwise', async () => {

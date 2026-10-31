@@ -27,8 +27,8 @@ const scriptText = fs.readFileSync(path.join(path.dirname(contractDir), 'hyperv-
 const VM = '11111111-2222-4333-8444-555555555555';
 const T0 = 1793404800; // Unix seconds
 const iso = (seconds) => new Date(seconds * 1000).toISOString();
-const BODY = Object.freeze({ v: 1, network: 'none', computerId: 'pc-01', vmId: VM, generation: 3, projectId: 'proj-alpha', leaseGeneration: 7, observedAt: T0, expiresAt: T0 + 60 });
-const EXPECTED = Object.freeze({ computerId: 'pc-01', vmId: VM, generation: 3, projectId: 'proj-alpha', leaseGeneration: 7 });
+const BODY = Object.freeze({ v: 1, network: 'none', computerId: 'pc-01', vmId: VM, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, observedAt: T0, expiresAt: T0 + 60 });
+const EXPECTED = Object.freeze({ computerId: 'pc-01', vmId: VM, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7 });
 const A = (connected, switchType) => ({ connected, switchType });
 
 const codeOf = (fn) => { try { fn(); } catch (error) { assert.ok(error instanceof NetworkAttestationError, String(error)); return `${error.code}${error.field ? `:${error.field}` : ''}`; } return 'ok'; };
@@ -52,11 +52,11 @@ test('vectors: every digest vector reproduces its digest and exact preimage, or 
 test('vectors: the pinned digest of the base body, and its preimage built by hand', () => {
   const pinned = vectors.digestVectors.find((v) => v.name === 'none-ttl-60');
   assert.deepEqual(pinned.body, BODY);
-  assert.equal(pinned.expected.digest, 'sha256:a5faf3097a944b38a085bd2d051b4b8ab8bd28a540655c44da223a32a0b41dff');
+  assert.equal(pinned.expected.digest, 'sha256:6e81fd3a7a5d7bc45bf126dac1c8072fa15f8fd26a1d1421e25eed873d5b620b');
   const s = (text) => { const b = Buffer.from(text, 'utf8'); const head = Buffer.alloc(5); head[0] = 0x53; head.writeUInt32BE(b.length, 1); return Buffer.concat([head, b]); };
   const i = (n) => { const b = Buffer.alloc(9); b[0] = 0x49; b.writeBigInt64BE(BigInt(n), 1); return b; };
-  const head = Buffer.alloc(5); head[0] = 0x4d; head.writeUInt32BE(9, 1);
-  const fields = [['computerId', s('pc-01')], ['expiresAt', i(T0 + 60)], ['generation', i(3)], ['leaseGeneration', i(7)], ['network', s('none')], ['observedAt', i(T0)], ['projectId', s('proj-alpha')], ['v', i(1)], ['vmId', s(VM)]];
+  const head = Buffer.alloc(5); head[0] = 0x4d; head.writeUInt32BE(10, 1);
+  const fields = [['computerId', s('pc-01')], ['expiresAt', i(T0 + 60)], ['generation', i(3)], ['leaseGeneration', i(7)], ['leaseId', s('lease-1')], ['network', s('none')], ['observedAt', i(T0)], ['projectId', s('proj-alpha')], ['v', i(1)], ['vmId', s(VM)]];
   const preimage = Buffer.concat([Buffer.from('albera.network-attestation.v1', 'utf8'), Buffer.from([0]), head, ...fields.flatMap(([k, v]) => [s(k), v])]);
   assert.equal(preimage.toString('hex'), pinned.expected.preimageHex);
   assert.equal(`sha256:${createHash('sha256').update(preimage).digest('hex')}`, pinned.expected.digest);
@@ -67,7 +67,7 @@ test('digest: domain-separated from the action digest, and every bound field and
   assert.notEqual(ATTESTATION_DOMAIN, DIGEST_DOMAIN);
   assert.equal(canonicalizeNetworkAttestation(BODY).subarray(0, ATTESTATION_DOMAIN.length + 1).toString('latin1'), `${ATTESTATION_DOMAIN}\0`);
   const base = computeNetworkAttestationDigest(BODY);
-  const other = { network: 'present', computerId: 'pc-02', vmId: '99999999-8888-4777-8666-555555555555', generation: 4, projectId: 'proj-beta', leaseGeneration: 8, observedAt: T0 + 1, expiresAt: T0 + 61 };
+  const other = { network: 'present', computerId: 'pc-02', vmId: '99999999-8888-4777-8666-555555555555', generation: 4, projectId: 'proj-beta', leaseId: 'lease-2', leaseGeneration: 8, observedAt: T0 + 1, expiresAt: T0 + 61 };
   const digests = new Set([base]);
   for (const [field, value] of Object.entries(other)) digests.add(computeNetworkAttestationDigest({ ...BODY, [field]: value }));
   assert.equal(digests.size, 1 + Object.keys(other).length, 'each change gives its own digest');
@@ -145,9 +145,9 @@ test('verify refuses an expired attestation (at expiresAt and after), and one no
   assert.equal(codeOf(() => verifyNetworkAttestation(envelope, ctx(signer, T0 - MAX_OBSERVED_SKEW_SECONDS - 1))), 'not_yet_valid:observedAt');
 });
 
-test('verify refuses each mismatched binding: computerId, vmId, generation, projectId, leaseGeneration', async () => {
+test('verify refuses each mismatched binding: computerId, vmId, generation, projectId, leaseId, leaseGeneration', async () => {
   const { signer, envelope } = await signed();
-  const wrong = { computerId: 'pc-02', vmId: '99999999-8888-4777-8666-555555555555', generation: 4, projectId: 'proj-beta', leaseGeneration: 8 };
+  const wrong = { computerId: 'pc-02', vmId: '99999999-8888-4777-8666-555555555555', generation: 4, projectId: 'proj-beta', leaseId: 'lease-2', leaseGeneration: 8 };
   for (const [field, value] of Object.entries(wrong)) {
     assert.equal(codeOf(() => verifyNetworkAttestation(envelope, ctx(signer, T0 + 10, { ...EXPECTED, [field]: value }))), `binding:${field}`, field);
   }
@@ -228,7 +228,7 @@ async function mockWorld({ ttl } = {}) {
   await provider.create(op('create'));
   return { provider, signer, clock };
 }
-const expectedFor = (vmId, overrides = {}) => ({ computerId: 'pc-01', vmId, generation: 1, projectId: 'proj-alpha', leaseGeneration: 5, ...overrides });
+const expectedFor = (vmId, overrides = {}) => ({ computerId: 'pc-01', vmId, generation: 1, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 5, ...overrides });
 
 test('mock: a freshly created environment is "present" (create leaves a disconnected default adapter); set to no adapters it is "none"', async () => {
   const { provider, signer } = await mockWorld();
@@ -258,7 +258,7 @@ test('mock: the statement is bound to computerId, the VM id, generation, project
   provider.setNetworkAdapters('pc-01', []);
   const result = await provider.attestNetwork(op('inspect'), { leaseGeneration: 5 });
   const { vmId, ...rest } = result.attestation;
-  assert.deepEqual(rest, { v: 1, network: 'none', computerId: 'pc-01', generation: 1, projectId: 'proj-alpha', leaseGeneration: 5, observedAt: T0, expiresAt: T0 + 60 });
+  assert.deepEqual(rest, { v: 1, network: 'none', computerId: 'pc-01', generation: 1, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 5, observedAt: T0, expiresAt: T0 + 60 });
   clock.s = T0 + 1000;
   const later = await provider.attestNetwork(op('inspect'), { leaseGeneration: 6 });
   assert.equal(later.attestation.vmId, vmId, 'same VM, same id');
@@ -281,7 +281,7 @@ test('mock: nothing a Control Plane sends changes the result; operation fields o
   const reference = await provider.attestNetwork(op('inspect'), { leaseGeneration: 5 });
   assert.equal(reference.attestation.network, 'present');
   const variants = [
-    op('inspect', { operationId: 'op-other', idempotencyKey: 'other', subjectId: 'other', taskId: 'other', runId: 'other', leaseId: 'other', policyVersion: 99 }),
+    op('inspect', { operationId: 'op-other', idempotencyKey: 'other', subjectId: 'other', taskId: 'other', runId: 'other', policyVersion: 99 }),
     op('inspect', { action: 'inspect' }),
   ];
   for (const variant of variants) {
@@ -333,7 +333,7 @@ test('the base provider has the stub, and does not make attestNetwork an environ
 // ---- Hyper-V Broker prototype with a stand-in for env-io.ps1 ----
 
 const DIGEST = `sha256:${'a'.repeat(64)}`;
-const notesFor = (extra = {}) => JSON.stringify({ albera: 1, computerId: 'pc-01', generation: 1, imageDigest: DIGEST, ...extra });
+const notesFor = (extra = {}) => JSON.stringify({ albera: 1, computerId: 'pc-01', generation: 1, imageDigest: DIGEST, projectId: 'proj-alpha', ...extra });
 const hvOp = (action = 'inspect', overrides = {}) => op(action, { providerId: 'hyperv', ...overrides });
 
 /** Stand-in for env-io.ps1 'network': one VM, returned the way the script emits it. */
@@ -386,7 +386,10 @@ test('hyper-v broker: refused, not applied, when there is nothing trustworthy to
     ['Notes unreadable', { notes: 'not json' }, {}, 'invalid_provider_state'],
     ['another computer in the Notes', { notes: JSON.stringify({ albera: 1, computerId: 'pc-02', generation: 1, imageDigest: DIGEST }) }, {}, 'invalid_provider_state'],
     ['stale generation', {}, { expectedGeneration: 2 }, 'stale_generation'],
-    ['Notes carry another project', { notes: notesFor({ projectId: 'proj-other', incarnationId: 'a'.repeat(32) }) }, {}, 'invalid_provider_state'],
+    ['Notes carry another project', { notes: notesFor({ projectId: 'proj-other', incarnationId: 'a'.repeat(32) }) }, {}, 'project_mismatch'],
+    ['project B asks about project A\'s VM', {}, { projectId: 'proj-beta' }, 'project_mismatch'],
+    ['Notes carry no projectId (a VM made before this change)', { notes: JSON.stringify({ albera: 1, computerId: 'pc-01', generation: 1, imageDigest: DIGEST }) }, {}, 'project_unknown'],
+    ['Notes carry an incarnation but no project', { notes: JSON.stringify({ albera: 1, computerId: 'pc-01', generation: 1, imageDigest: DIGEST, incarnationId: 'a'.repeat(32) }) }, {}, 'invalid_provider_state'],
     ['a non-inspect operation', {}, { action: 'start' }, 'invalid_provider_state'],
     ['another provider', {}, { providerId: 'mock' }, 'invalid_provider_state'],
   ]) {
@@ -450,7 +453,7 @@ test('HyperVEnvironmentProvider.attestNetwork: an answer that is malformed or bo
   };
   const answers = [
     null, 'x', [], { ...good, extra: 1 }, { ...good, digest: `sha256:${'0'.repeat(64)}` }, { ...good, signature: '' },
-    await other({ computerId: 'pc-02' }), await other({ projectId: 'proj-other' }), await other({ generation: 2 }), await other({ leaseGeneration: 5 }), { ...good, attestation: { ...good.attestation, network: 'maybe' } },
+    await other({ computerId: 'pc-02' }), await other({ projectId: 'proj-other' }), await other({ generation: 2 }), await other({ leaseGeneration: 5 }), await other({ leaseId: 'lease-9' }), { ...good, attestation: { ...good.attestation, network: 'maybe' } },
   ];
   for (const answer of answers) await rejectsWith(answering(answer).attestNetwork(hvOp(), { leaseGeneration: 4 }), 'invalid_provider_observation');
   assert.deepEqual((await answering(good).attestNetwork(hvOp(), { leaseGeneration: 4 })).attestation, good.attestation);
@@ -483,4 +486,92 @@ test('env-io.ps1: a fixed read-only "network" method, ASCII only, with no cmdlet
   assert.match(body, /Get-VMNetworkAdapter -VM \$vm/);
   assert.match(body, /catch \{ \$adapters = \$null \}/, 'an unreadable adapter list is null, never an empty list');
   assert.match(body, /switchType = \$type/);
+});
+
+// ---- review fixes: project from the Broker's own record, leaseId binding, clock after the signature check ----
+
+test('verify reads the clock AFTER the signature check: a slow verifier cannot let an attestation that expired meanwhile pass', async () => {
+  const { signer, envelope } = await signed();
+  const clock = { s: T0 + 10 };
+  const slow = (keyId, bytes, signature) => { const ok = signer.verify(keyId, bytes, signature); clock.s = T0 + 60; return ok; }; // verification "takes" until expiresAt
+  assert.equal(codeOf(() => verifyNetworkAttestation(envelope, { clock: () => clock.s, verify: slow, expected: EXPECTED })), 'expired:expiresAt');
+  clock.s = T0 + 10;
+  const reads = [];
+  const counting = { clock: () => { reads.push('clock'); return T0 + 10; }, verify: (...args) => { reads.push('verify'); return signer.verify(...args); }, expected: EXPECTED };
+  verifyNetworkAttestation(envelope, counting);
+  assert.deepEqual(reads, ['verify', 'clock'], 'the clock is read once, after verify');
+  const early = { s: T0 + 10 };
+  const fast = (keyId, bytes, signature) => { early.s = T0 - MAX_OBSERVED_SKEW_SECONDS - 1; return signer.verify(keyId, bytes, signature); };
+  assert.equal(codeOf(() => verifyNetworkAttestation(envelope, { clock: () => early.s, verify: fast, expected: EXPECTED })), 'not_yet_valid:observedAt', 'the same later reading is used for not-yet-valid');
+});
+
+test('leaseId is bound: an attestation made under lease A is refused for lease B even at the same generation numbers', async () => {
+  const { signer, envelope } = await signed();
+  assert.equal(codeOf(() => verifyNetworkAttestation(envelope, ctx(signer, T0 + 10, { ...EXPECTED, leaseId: 'lease-2' }))), 'binding:leaseId');
+  assert.equal(codeOf(() => verifyNetworkAttestation(envelope, ctx(signer, T0 + 10, { ...EXPECTED, leaseId: 'bad id' }))), 'invalid_expected:leaseId');
+  const { leaseId: _omit, ...partial } = EXPECTED;
+  assert.equal(codeOf(() => verifyNetworkAttestation(envelope, ctx(signer, T0 + 10, partial))), 'invalid_expected:$extra');
+  const { provider, signer: mockSigner } = await mockWorld();
+  const underA = await provider.attestNetwork(op('inspect', { leaseId: 'lease-A' }), { leaseGeneration: 5 });
+  const underB = await provider.attestNetwork(op('inspect', { leaseId: 'lease-B' }), { leaseGeneration: 5 });
+  assert.equal(underA.attestation.leaseId, 'lease-A');
+  assert.notEqual(underA.digest, underB.digest);
+  assert.equal(codeOf(() => verifyNetworkAttestation(underA, ctx(mockSigner, T0 + 1, expectedFor(underA.attestation.vmId, { leaseId: 'lease-B' })))), 'binding:leaseId');
+});
+
+// An end-to-end stand-in: create writes the Notes, 'network' reads them back, like the real script.
+async function createdWorld() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-attest-'));
+  const golden = path.join(dir, 'base.vhdx');
+  fs.writeFileSync(golden, 'not a real disk');
+  fs.chmodSync(golden, 0o444);
+  const vms = new Map();
+  const run = async (request) => {
+    const vm = vms.get(request.vmName);
+    if (request.method === 'create') { vms.set(request.vmName, { notes: request.notes }); return { ok: true, state: 'Off' }; }
+    if (request.method === 'inspect') return vm ? { ok: true, exists: true, state: 'Off', notes: vm.notes, vmId: VM } : { ok: true, exists: false };
+    if (request.method === 'network') return vm ? { ok: true, exists: true, state: 'Off', notes: vm.notes, vmId: VM, adapters: [] } : { ok: true, exists: false };
+    return { ok: false, code: 'invalid_provider_state', notApplied: true };
+  };
+  const signer = createFakeAttestationSigner();
+  const broker = createHyperVEnvironmentBrokerPrototype({
+    goldenImages: { [DIGEST]: { path: golden, os: 'windows', architecture: 'x64' } }, cloneRoot: path.join(dir, 'clones'), runPowerShell: run,
+    hashFile: async () => 'a'.repeat(64), now: () => new Date(T0 * 1000), attestationSigner: signer,
+  });
+  const cleanup = () => { fs.chmodSync(golden, 0o666); fs.rmSync(dir, { recursive: true, force: true }); };
+  return { broker, vms, signer, cleanup };
+}
+const hvCreate = (overrides = {}) => hvOp('create', { spec: { ...spec, imageDigest: DIGEST, os: 'windows', capabilities: ['desktop'] }, ...overrides });
+
+test('hyper-v broker: create records the authorized project in the Notes (additively); the attestation takes the project from there, so project B cannot get one for project A\'s VM', async () => {
+  const { broker, vms, signer, cleanup } = await createdWorld();
+  try {
+    await broker.createVm(hvCreate());
+    const notes = JSON.parse(vms.get('albera-pc-01').notes);
+    assert.deepEqual(notes, { albera: 1, computerId: 'pc-01', generation: 1, imageDigest: DIGEST, projectId: 'proj-alpha' });
+    const ok = await broker.attestNetwork(hvOp(), { leaseGeneration: 4 });
+    assert.equal(ok.attestation.projectId, 'proj-alpha');
+    assert.equal(verifyNetworkAttestation(ok, ctx(signer, T0 + 1, { ...EXPECTED, generation: 1, leaseGeneration: 4 })).network, 'none');
+    await assert.rejects(broker.attestNetwork(hvOp('inspect', { projectId: 'proj-beta' }), { leaseGeneration: 4 }), (e) => e.code === 'project_mismatch' && e.outcome === 'not_applied');
+    // a second create under another project does not take the VM over, and an identical one is still idempotent
+    await assert.rejects(broker.createVm(hvCreate({ projectId: 'proj-beta', spec: { ...hvCreate().spec, projectId: 'proj-beta' } })), (e) => e.code === 'operation_conflict');
+    assert.equal((await broker.createVm(hvCreate())).state, 'off');
+  }
+  finally { cleanup(); }
+});
+
+test('hyper-v broker: retire refuses another project when the Notes carry one (the Notes\' project is the VM\'s own)', async () => {
+  const retirements = { retire() { throw new Error('must not be reached'); }, get: () => null, remove() {}, expired: () => [] };
+  const script = networkScript({ state: 'Off' });
+  const ps = async (request) => (request.method === 'inspect' ? script.run({ ...request, method: 'network' }) : script.run(request));
+  const broker = createHyperVEnvironmentBrokerPrototype({ goldenImages: {}, cloneRoot: tmpRoot, runPowerShell: ps, retirements });
+  await assert.rejects(broker.retireVm(hvOp('retire', { projectId: 'proj-beta' })), (e) => e.code === 'operation_conflict' && e.outcome === 'not_applied');
+});
+
+test('HyperVEnvironmentProvider.attestNetwork passes the new project codes through (allowlisted)', async () => {
+  const noMethod = { createVm() {}, inspectVm() {}, startVm() {}, stopVm() {}, removeVm() {} };
+  for (const code of ['project_unknown', 'project_mismatch']) {
+    const broker = { ...noMethod, attestNetwork: async () => { throw Object.assign(new Error(code), { code, outcome: 'not_applied' }); } };
+    await rejectsWith(new HyperVEnvironmentProvider({ broker }).attestNetwork(hvOp(), { leaseGeneration: 4 }), code);
+  }
 });

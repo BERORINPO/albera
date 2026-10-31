@@ -23,7 +23,7 @@ const OPTIONAL_BROKER_METHODS = Object.freeze({
 });
 const SAFE_BROKER_ERROR_CODES = new Set([
   'authorization_denied', 'broker_timeout', 'environment_not_retired', 'environment_retired', 'generation_mismatch', 'invalid_provider_state',
-  'operation_conflict', 'operation_unknown', 'provider_outcome_unknown', 'provider_state_unknown',
+  'operation_conflict', 'operation_unknown', 'project_mismatch', 'project_unknown', 'provider_outcome_unknown', 'provider_state_unknown',
   'provider_timeout', 'provider_unavailable', 'stale_generation',
 ]);
 
@@ -82,7 +82,7 @@ export class HyperVEnvironmentProvider extends EnvironmentProvider {
     try {
       const { attestation, digest, keyId, signatureBytes } = readSignedNetworkAttestation(signed);
       if (attestation.computerId !== operation.computerId || attestation.projectId !== operation.projectId
-        || attestation.generation !== operation.expectedGeneration || attestation.leaseGeneration !== leaseGeneration) throw new TypeError('attestation_binding');
+        || attestation.leaseId !== operation.leaseId || attestation.generation !== operation.expectedGeneration || attestation.leaseGeneration !== leaseGeneration) throw new TypeError('attestation_binding');
       return Object.freeze({ attestation, digest, keyId, signature: signatureBytes.toString('base64url') });
     }
     catch {

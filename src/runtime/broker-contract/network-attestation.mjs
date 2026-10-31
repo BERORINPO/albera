@@ -4,15 +4,20 @@
 // signing goes through a signer PORT (`{ keyId, sign(bytes) }`) and the tests use a Fake. Pure: no I/O, no ambient clock (node:crypto is used for hashing only).
 //
 // WHAT IT SAYS: for one environment, `network` is "none" | "present" | "unknown", bound to computerId, the VM's own hypervisor id (vmId), generation, projectId,
-// leaseGeneration (the lease the Control Plane acts under; a claim echoed into the statement, checked by the verifier against its own state), and observedAt / expiresAt
+// leaseId and leaseGeneration (the lease the Control Plane acts under; claims echoed into the statement, each checked by the verifier against its own state, so a VM moved
+// to another lease cannot reuse an attestation made under the old one), and observedAt / expiresAt
 // (Unix seconds from the BROKER's clock, TTL 60 s by default, at most 300 s). Nothing in a Control Plane request influences `network`: only the adapter facts the Broker reads.
+//
+// The projectId is the Broker's own record (the VM's Notes, written by create
+// from the authorized create operation), not the request's: a VM created before that change has none and cannot be attested until it is re-created.
+// The wire format is still v1: no attestation has been issued outside tests, so adding leaseId to the body (10 keys) needed no version bump.
 //
 // CLASSIFICATION (conservative): no adapters at all = "none"; ANY adapter, connected or not = "present" (a disconnected adapter can be reconnected); anything that could
 // not be read or parsed = "unknown". The switch type of a connected adapter is recorded in the facts but never lowers the result.
 //
 // STALENESS: the statement is evidence at observedAt ONLY. A consumer must re-check at execution time (step 3: re-attest, or compare the VM's state again, immediately
 // before it acts); "not expired" means "was true recently", never "is true now". `verifyNetworkAttestation` refuses an expired statement and one bound to a different
-// computerId / vmId / generation / projectId / leaseGeneration than the caller expects; it does not decide what "none" or "present" allows.
+// computerId / vmId / generation / projectId / leaseId / leaseGeneration than the caller expects; it does not decide what "none" or "present" allows.
 //
 //   preimage = UTF8("albera.network-attestation.v1") 0x00 enc(map)            enc(map) / enc(string) / enc(int) as in action-digest.mjs
 //   digest   = "sha256:" lowercase-hex(SHA-256(preimage))                      the signature covers the preimage bytes; keyId and signature are not part of the digest
@@ -29,9 +34,9 @@ export const MAX_OBSERVED_SKEW_SECONDS = 30;
 export const MAX_ADAPTERS = 64;
 export const SWITCH_TYPES = Object.freeze(['External', 'Internal', 'Private', 'unknown']);
 const MAX_SIGNATURE_BYTES = 128;
-const BODY_KEYS = Object.freeze(['computerId', 'expiresAt', 'generation', 'leaseGeneration', 'network', 'observedAt', 'projectId', 'v', 'vmId']);
+const BODY_KEYS = Object.freeze(['computerId', 'expiresAt', 'generation', 'leaseGeneration', 'leaseId', 'network', 'observedAt', 'projectId', 'v', 'vmId']);
 const SIGNED_KEYS = Object.freeze(['attestation', 'digest', 'keyId', 'signature']);
-const EXPECTED_KEYS = Object.freeze(['computerId', 'generation', 'leaseGeneration', 'projectId', 'vmId']); // sorted, like the other key lists
+const EXPECTED_KEYS = Object.freeze(['computerId', 'generation', 'leaseGeneration', 'leaseId', 'projectId', 'vmId']); // sorted, like the other key lists
 const ID_RE = new RegExp(ID_PATTERN);
 const VM_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
@@ -86,6 +91,7 @@ export function validateNetworkAttestation(body) {
     vmId: typeof b.vmId === 'string' && VM_ID_RE.test(b.vmId),
     generation: isCounter(b.generation),
     projectId: typeof b.projectId === 'string' && ID_RE.test(b.projectId),
+    leaseId: typeof b.leaseId === 'string' && ID_RE.test(b.leaseId),
     leaseGeneration: isCounter(b.leaseGeneration),
     observedAt: isCounter(b.observedAt),
     expiresAt: isCounter(b.expiresAt),
@@ -96,9 +102,9 @@ export function validateNetworkAttestation(body) {
 }
 
 /** Build the body from what the Broker itself observed. observedAt is the Broker clock in Unix seconds; the TTL is Broker configuration. */
-export function createNetworkAttestation({ network, computerId, vmId, generation, projectId, leaseGeneration, observedAt, ttlSeconds = DEFAULT_TTL_SECONDS }) {
+export function createNetworkAttestation({ network, computerId, vmId, generation, projectId, leaseId, leaseGeneration, observedAt, ttlSeconds = DEFAULT_TTL_SECONDS }) {
   if (!Number.isSafeInteger(observedAt) || !Number.isSafeInteger(ttlSeconds)) throw fail('malformed', 'observedAt');
-  return validateNetworkAttestation({ v: ATTESTATION_VERSION, network, computerId, vmId, generation, projectId, leaseGeneration, observedAt, expiresAt: observedAt + ttlSeconds });
+  return validateNetworkAttestation({ v: ATTESTATION_VERSION, network, computerId, vmId, generation, projectId, leaseId, leaseGeneration, observedAt, expiresAt: observedAt + ttlSeconds });
 }
 
 /** The exact bytes that are hashed and signed. @returns {Buffer} */
@@ -145,7 +151,7 @@ export function readSignedNetworkAttestation(signed) {
 
 function readExpected(expected) {
   const e = readPlain(expected, EXPECTED_KEYS, 'invalid_expected');
-  for (const field of ['computerId', 'projectId']) if (typeof e[field] !== 'string' || !ID_RE.test(e[field])) throw fail('invalid_expected', field);
+  for (const field of ['computerId', 'projectId', 'leaseId']) if (typeof e[field] !== 'string' || !ID_RE.test(e[field])) throw fail('invalid_expected', field);
   if (typeof e.vmId !== 'string' || !VM_ID_RE.test(e.vmId)) throw fail('invalid_expected', 'vmId');
   for (const field of ['generation', 'leaseGeneration']) if (!isCounter(e[field])) throw fail('invalid_expected', field);
   return e;
@@ -153,7 +159,7 @@ function readExpected(expected) {
 
 /**
  * Full check, in this order: shape, TTL and digest, signature (the injected `verify(keyId, bytes, signatureBytes)` must return exactly true), not yet valid, expired,
- * then every binding in `expected` (computerId, vmId, generation, projectId, leaseGeneration), all of which come from the caller's own trusted state. Returns the
+ * then every binding in `expected` (computerId, vmId, generation, projectId, leaseId, leaseGeneration), all of which come from the caller's own trusted state. Returns the
  * attestation; it says nothing about whether "none" is enough for an action.
  * @param {object} signed
  * @param {{clock: () => number, verify: (keyId: string, bytes: Buffer, signature: Buffer) => boolean, expected: object}} ctx clock returns Unix seconds
@@ -163,12 +169,13 @@ export function verifyNetworkAttestation(signed, ctx) {
   const { clock, verify, expected } = ctx ?? {};
   if (typeof clock !== 'function' || typeof verify !== 'function') throw fail('invalid_context');
   const trusted = readExpected(expected);
-  const now = clock();
-  if (!Number.isSafeInteger(now) || now < 0) throw fail('invalid_context', 'clock');
   const { attestation, keyId, bytes, signatureBytes } = readSignedNetworkAttestation(signed);
   let genuine = false;
   try { genuine = verify(keyId, bytes, signatureBytes) === true; } catch { genuine = false; }
   if (!genuine) throw fail('signature', 'signature');
+  // The clock is read AFTER the signature check: a slow verifier must not let an attestation that expired meanwhile pass.
+  const now = clock();
+  if (!Number.isSafeInteger(now) || now < 0) throw fail('invalid_context', 'clock');
   if (attestation.observedAt > now + MAX_OBSERVED_SKEW_SECONDS) throw fail('not_yet_valid', 'observedAt');
   if (now >= attestation.expiresAt) throw fail('expired', 'expiresAt');
   for (const field of EXPECTED_KEYS) if (attestation[field] !== trusted[field]) throw fail('binding', field);
