@@ -3,8 +3,8 @@ import { EnvironmentProvider, EnvironmentProviderError, ENVIRONMENT_ACTIONS, val
 import { RetirementJournalError, createRetirementJournal, purgeExpired } from './environment-retirement-journal.mjs';
 import { DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS, classifyNetworkAdapters, createNetworkAttestation, signNetworkAttestation } from './broker-contract/network-attestation.mjs';
 
-// What env-io.ps1 create leaves behind: the default adapter, disconnected from any switch. By the attestation rule that is still "present".
-const DEFAULT_ADAPTERS = Object.freeze([Object.freeze({ connected: false, switchType: null })]);
+// What env-io.ps1 create leaves behind: no network adapter at all (create removes the default one), so a fresh environment attests "none".
+const DEFAULT_ADAPTERS = Object.freeze([]);
 
 /** Deterministic, in-memory provider for contract and fault-injection tests only. It plays the Broker side: `retirements` is the Broker-owned journal (host configuration, never operation input). */
 export class MockEnvironmentProvider extends EnvironmentProvider {

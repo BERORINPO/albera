@@ -1,12 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHyperVEnvironmentBrokerPrototype } from '../src/runtime/hyperv-environment-broker-prototype.mjs';
 import { HyperVEnvironmentProvider } from '../src/runtime/hyperv-environment-provider.mjs';
 import { createRetirementJournal } from '../src/runtime/environment-retirement-journal.mjs';
+import { createFakeAttestationSigner } from '../src/runtime/fake-attestation-signer.mjs';
+import { verifyNetworkAttestation } from '../src/runtime/broker-contract/network-attestation.mjs';
 
 const HEX = 'a'.repeat(64);
 const DIGEST = `sha256:${HEX}`;
@@ -339,16 +343,16 @@ test('HyperVEnvironmentProvider drives create, inspect, start, stop, destroy thr
 // Real-machine test: opt in with ALBERA_HYPERV_GOLDEN_VHDX and ALBERA_HYPERV_CLONE_ROOT. Skipped (e.g. in CI) otherwise.
 const realGolden = process.env.ALBERA_HYPERV_GOLDEN_VHDX;
 const realRoot = process.env.ALBERA_HYPERV_CLONE_ROOT;
+async function sha256HexOf(file) {
+  const hash = createHash('sha256');
+  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
+}
 test('real Hyper-V: create, start, stop and destroy a clone without touching the golden image', {
   skip: realGolden && realRoot ? false : 'ALBERA_HYPERV_GOLDEN_VHDX and ALBERA_HYPERV_CLONE_ROOT are not set',
   timeout: 20 * 60 * 1000,
 }, async () => {
-  const { createHash } = await import('node:crypto');
-  const digestOf = async () => {
-    const hash = createHash('sha256');
-    for await (const chunk of fs.createReadStream(realGolden)) hash.update(chunk);
-    return hash.digest('hex');
-  };
+  const digestOf = () => sha256HexOf(realGolden);
   const before = await digestOf();
   const key = `sha256:${before}`;
   const broker = createHyperVEnvironmentBrokerPrototype({
@@ -368,6 +372,154 @@ test('real Hyper-V: create, start, stop and destroy a clone without touching the
   }
   assert.equal((await broker.inspectVm(real('inspect'))).state, 'missing');
   assert.equal(await digestOf(), before, 'the golden image is unchanged');
+});
+
+// ---- #115, real machine (same opt-in): no adapter at create, the network attestation, retire, requested purge, scheduled purge ----
+// Disposable clones only: every computer id carries this run's id, the golden image is never written (its digest is checked at the end), and each clone is removed in `finally`
+// only when its Notes identify it as this run's. The journal file lives under the clone root and is deleted afterwards; the attestation signer is the in-memory fake.
+const REAL_SKIP = realGolden && realRoot ? false : 'ALBERA_HYPERV_GOLDEN_VHDX and ALBERA_HYPERV_CLONE_ROOT are not set';
+const REAL_OPTIONS = { skip: REAL_SKIP, timeout: 20 * 60 * 1000 };
+const ENV_IO_PATH = fileURLToPath(new URL('../src/runtime/hyperv-env/env-io.ps1', import.meta.url));
+const REAL_PROJECT = 'proj-1';
+
+/** One direct, read-only look at a VM through the same script, independent of what the Broker makes of it. */
+function probeVm(method, vmName) {
+  const run = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-File', ENV_IO_PATH], { input: JSON.stringify({ method, vmName }), encoding: 'utf8', windowsHide: true, timeout: 120_000 });
+  return JSON.parse(run.stdout);
+}
+
+let realFixtureMemo;
+async function realFixture() {
+  if (realFixtureMemo) return realFixtureMemo;
+  const goldenHex = await sha256HexOf(realGolden);
+  const key = `sha256:${goldenHex}`;
+  const runId = Date.now().toString(36);
+  const journalPath = path.join(realRoot, `.albera-test-journal-${runId}.sqlite`);
+  const journal = createRetirementJournal({ filePath: journalPath });
+  const signer = createFakeAttestationSigner();
+  const broker = createHyperVEnvironmentBrokerPrototype({
+    goldenImages: { [key]: { path: realGolden, os: 'windows', architecture: 'x64' } },
+    cloneRoot: realRoot, retirements: journal, attestationSigner: signer,
+  });
+  const ids = [];
+  realFixtureMemo = {
+    goldenHex, journal, journalPath, signer, broker, ids,
+    newId(suffix) { const id = `smoke115-${runId}-${suffix}`; ids.push(id); return id; },
+    op: (computerId, action, overrides = {}) => op(action, { computerId, ...(action === 'create' ? { spec: { ...baseSpec(), imageDigest: key } } : {}), ...overrides }),
+  };
+  return realFixtureMemo;
+}
+const vmNameOf = (computerId) => `albera-${computerId}`;
+const folderOf = (computerId) => path.join(realRoot, vmNameOf(computerId));
+const diskOf = (computerId) => path.join(folderOf(computerId), `${vmNameOf(computerId)}.vhdx`);
+
+test.after(() => {
+  if (!realFixtureMemo) return;
+  realFixtureMemo.journal.close();
+  for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${realFixtureMemo.journalPath}${suffix}`, { force: true });
+});
+
+/** Remove a clone of this run, and only that: the Notes must name this run's computer id. Never throws (it runs in `finally`); a failure is printed with what to remove by hand. */
+async function removeOwnClone(fx, computerId, t) {
+  try {
+    const seen = probeVm('inspect', vmNameOf(computerId));
+    if (seen.ok !== true || seen.exists !== true) return;
+    let notes = null;
+    try { notes = JSON.parse(seen.notes); } catch { /* not ours */ }
+    if (notes?.albera !== 1 || notes.computerId !== computerId) { t.diagnostic(`cleanup: ${vmNameOf(computerId)} is not this run's clone, left alone`); return; }
+    await fx.broker.removeVm(fx.op(computerId, 'destroy'));
+  }
+  catch (error) {
+    t.diagnostic(`CLEANUP FAILED for ${vmNameOf(computerId)} (${error?.code ?? 'error'}): remove the VM and the folder ${folderOf(computerId)} by hand`);
+  }
+}
+
+const noVmLeft = (computerId) => {
+  assert.equal(probeVm('inspect', vmNameOf(computerId)).exists, false, 'the VM is gone');
+  assert.equal(fs.existsSync(folderOf(computerId)), false, 'the clone folder is gone');
+};
+
+test('real Hyper-V (#115): create leaves no network adapter and attests none; retire keeps the VM; a requested purge deletes it', REAL_OPTIONS, async (t) => {
+  const fx = await realFixture();
+  const id = fx.newId('a');
+  const o = (action, overrides) => fx.op(id, action, overrides);
+  try {
+    assert.equal((await fx.broker.createVm(o('create'))).state, 'off');
+    const facts = probeVm('network', vmNameOf(id));
+    assert.deepEqual([facts.ok, facts.exists, facts.adapters], [true, true, []], 'the VM has zero network adapters');
+    const created = JSON.parse(facts.notes);
+    assert.deepEqual([created.albera, created.computerId, created.generation, created.projectId], [1, id, 1, REAL_PROJECT], 'create wrote the identity and the project into the Notes');
+    const vmId = facts.vmId.toLowerCase();
+    const attest = async () => {
+      const result = await fx.broker.attestNetwork(o('inspect'), { leaseGeneration: 1 });
+      const expected = { computerId: id, vmId, generation: 1, projectId: REAL_PROJECT, leaseId: 'lease-1', leaseGeneration: 1 };
+      return verifyNetworkAttestation(result, { clock: () => Math.floor(Date.now() / 1000), verify: fx.signer.verify, expected }).network;
+    };
+    assert.equal(await attest(), 'none');
+    t.diagnostic(`create: ${vmNameOf(id)} has 0 adapters, attestation = none, Notes carry project ${REAL_PROJECT}`);
+
+    assert.equal((await fx.broker.startVm(o('start'))).state, 'running');
+    const retired = await fx.broker.retireVm(o('retire'));
+    assert.equal(retired.state, 'retired');
+    assert.equal((await fx.broker.inspectVm(o('inspect'))).state, 'retired');
+    assert.equal(probeVm('inspect', vmNameOf(id)).state, 'Off', 'retire stopped the running VM');
+    await rejects(fx.broker.startVm(o('start')), 'environment_retired', 'not_applied');
+    assert.equal(fs.existsSync(diskOf(id)), true, 'the clone disk is still there');
+    const record = fx.journal.get(id);
+    const afterRetire = JSON.parse(probeVm('inspect', vmNameOf(id)).notes);
+    assert.deepEqual([afterRetire.projectId, afterRetire.incarnationId], [REAL_PROJECT, record.incarnationId], 'the Notes carry the project and the incarnation id');
+    assert.equal(record.vmId, vmId, 'the record is bound to the VM own id');
+    assert.equal(await attest(), 'none', 'a retired VM still attests none');
+    t.diagnostic(`retire: state retired, VM Off, start refused (environment_retired), disk kept, Notes carry project + incarnation ${record.incarnationId}`);
+
+    assert.equal((await fx.broker.purgeVm(o('purge'))).state, 'missing');
+    noVmLeft(id);
+    assert.equal(fx.journal.get(id), null, 'the retirement record was dropped');
+    t.diagnostic('requested purge: VM, disk and clone folder gone, record dropped');
+  }
+  finally { await removeOwnClone(fx, id, t); }
+});
+
+test('real Hyper-V (#115): scheduled purge with an injected clock deletes a retired clone only at its deadline', REAL_OPTIONS, async (t) => {
+  const fx = await realFixture();
+  const id = fx.newId('b');
+  const o = (action, overrides) => fx.op(id, action, overrides);
+  try {
+    assert.equal((await fx.broker.createVm(o('create'))).state, 'off');
+    assert.equal((await fx.broker.retireVm(o('retire'))).state, 'retired');
+    const record = fx.journal.get(id);
+    assert.deepEqual(await fx.broker.purgeExpiredRetirements({ now: record.deadlineMs - 1 }), [], 'nothing is due before the deadline');
+    assert.equal(probeVm('inspect', vmNameOf(id)).exists, true);
+    assert.equal(fs.existsSync(diskOf(id)), true);
+    assert.deepEqual(await fx.broker.purgeExpiredRetirements({ now: record.deadlineMs }), [{ computerId: id, outcome: 'purged' }]);
+    noVmLeft(id);
+    assert.equal(fx.journal.get(id), null);
+    t.diagnostic(`scheduled purge: nothing at deadline-1ms, purged at the deadline (${new Date(record.deadlineMs).toISOString()}); VM, folder and record gone`);
+  }
+  finally { await removeOwnClone(fx, id, t); }
+});
+
+test('real Hyper-V (#115): destroy of a normal (never retired) clone is unchanged', REAL_OPTIONS, async (t) => {
+  const fx = await realFixture();
+  const id = fx.newId('c');
+  const o = (action, overrides) => fx.op(id, action, overrides);
+  try {
+    assert.equal((await fx.broker.createVm(o('create'))).state, 'off');
+    assert.equal(fx.journal.get(id), null, 'no retirement record');
+    assert.equal((await fx.broker.removeVm(o('destroy'))).state, 'missing');
+    noVmLeft(id);
+    assert.equal((await fx.broker.removeVm(o('destroy'))).state, 'missing', 'destroying it again is still fine');
+    t.diagnostic('destroy: VM and folder gone, no record involved, a repeat is a no-op');
+  }
+  finally { await removeOwnClone(fx, id, t); }
+});
+
+test('real Hyper-V (#115): nothing of this run is left and the golden image is unchanged', REAL_OPTIONS, async (t) => {
+  const fx = await realFixture();
+  for (const id of fx.ids) noVmLeft(id);
+  assert.deepEqual(fx.journal.list(), [], 'the journal is empty');
+  assert.equal(await sha256HexOf(realGolden), fx.goldenHex, 'the golden image is unchanged');
+  t.diagnostic(`clean: ${fx.ids.length} clones removed, journal empty, golden sha256 ${fx.goldenHex.slice(0, 12)}... unchanged`);
 });
 
 // ---- #115 step 1: retire / purge / scheduled purge (the retirement record is the Broker's own) ----

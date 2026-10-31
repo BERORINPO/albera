@@ -100,8 +100,10 @@ function Invoke-Create($Req) {
     $made = $true
     New-VHD -Differencing -ParentPath $Req.parentPath -Path $childPath | Out-Null
     $vm = New-VM -Name $Req.vmName -Generation 2 -MemoryStartupBytes ([int64]$Req.memoryMiB * 1MB) -VHDPath $childPath -Path $cloneRoot
-    # isolated-none: keep the NIC but leave it unconnected to any switch
-    Get-VMNetworkAdapter -VM $vm | Disconnect-VMNetworkAdapter
+    # isolated-none: remove every network adapter (a Gen 2 VM runs without one; PowerShell Direct and VMBus need none), so the VM attests "none".
+    # An adapter that is only disconnected could be reconnected. Re-read afterwards: if any adapter remains the create fails and the catch below rolls it back.
+    Get-VMNetworkAdapter -VM $vm | Remove-VMNetworkAdapter
+    if (@(Get-VMNetworkAdapter -VM (Get-VM -Name $Req.vmName)).Count -ne 0) { throw 'network adapter remains' }
     Set-VMProcessor -VM $vm -Count ([int]$Req.vcpu)
     Set-VM -VM $vm -Notes ([string]$Req.notes) -AutomaticCheckpointsEnabled $false
     @{ ok = $true; state = [string](Get-VM -Name $Req.vmName).State }
