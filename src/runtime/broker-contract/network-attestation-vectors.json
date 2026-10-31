@@ -4,7 +4,9 @@
   "notes": [
     "digestVectors: body is the attestation body (v1). expected.ok = digest and the exact preimage bytes (UTF8 domain, 0x00, canonical map as in action-digest.mjs); otherwise expected.code (malformed | ttl) and field.",
     "classificationVectors: adapters is the list of adapter facts the Broker read ([{connected, switchType}]); adaptersOmitted = the value was missing. expected is none | present | unknown.",
-    "There is no C# twin yet (step 3 of issue 115 adds it where the Authority consumes the attestation); when it does, it must reproduce every expected value here."
+    "The C# twin is NetworkAttestation.cs (digest vectors and verifyVectors; classification is Broker-side and has no twin). It reproduces every expected value here in the dotnet contract test.",
+    "The C# twin is NetworkAttestation.cs (digest vectors and verifyVectors; classification is Broker-side and has no twin). It reproduces every expected value here in the dotnet contract test.",
+    "verifyVectors: the public half of an EPHEMERAL ECDSA P-256 test key (publicKeySpki, base64 DER; the private key was discarded after signing, nothing secret is in this file) and signed envelopes made with it. For each case, verifyNetworkAttestation(signed, { clock: now, verify: the pinned key under keyId, expected }) must give result: ok, or the code and field of the refusal. expected.vmId null means the caller has no VM id to compare. The signature is ECDSA P-256 / SHA-256 over the canonical bytes, IEEE P1363 (64 bytes), unpadded base64url. Both the Node and C# implementations must reproduce every result."
   ],
   "digestVectors": [
     {
@@ -1380,5 +1382,1615 @@
       ],
       "expected": "present"
     }
-  ]
+  ],
+  "verifyVectors": {
+    "keyId": "albera-test-broker-2026",
+    "publicKeySpki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPhipirZQwsbTn6u3KnzT/2hkXCMzGtRIkQ48iLp7MR9YSSs8q96nzUFqZaX/jrlwJGzxKlv6NNhMw9NIEhDEyQ==",
+    "cases": [
+      {
+        "name": "valid-none",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "QiM0Nt27PwKAsAQsbuGc2MH9AgYDqEdqlRMBcmNKm4_P1XhltAW7Lypxsa7Tu5V1k5Tu0vVj2Y_8lnDQgk30eA"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-network-present-is-not-judged-here",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "present",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:1d671e42beda59548fed9a92346eedb9608905b224914828333e78436b8f8375",
+          "keyId": "albera-test-broker-2026",
+          "signature": "wtGDeNV8hW4Z1-UEpqAxyt5r_RiUGa0v3sxFGLvQ8xkuVjg1kxUxblWd-OmDndr2NCBVb5HuqHp0feVbhVYzNw"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-network-unknown-is-not-judged-here",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "unknown",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:a4de73a4dd20f0b01f8cc2373673c66ddc0c3db68221bfc20e9b2c5fdcface81",
+          "keyId": "albera-test-broker-2026",
+          "signature": "o67sRFE7BqLEZE8k0Wvm1rhiR_VMGrRJaBWXfAp95mMd9PKFMxcSZz0U-RlNv3ZpyA_l8ODnnfcpNaeLGBLzww"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-one-second-before-expiry",
+        "now": 1793404879,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "MuI6Vcy44W6lTZNabRV9oFSRfH_QHtSbv5x5Q5lysoLzTDRxAXNHpPBd-6HbzuHqUb600DJWEViEuC0NGaopCg"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-observed-30-seconds-ahead-of-the-clock",
+        "now": 1793404790,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "3TgqpwWc9yPL_K4kEPwSmKNmifUBiPQ0UHXCHP-3Zn4C7s_plsCdHXMS_xyKkbTRRZSiqkC3X_LiCNaW6cxuww"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-expected-vmId-null-does-not-compare-the-vm",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": null,
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "99999999-8888-4777-8666-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:1cc0fc29f4f06c499a77d832462df9edb021d84d1c41a70b99030ef88f74d3d5",
+          "keyId": "albera-test-broker-2026",
+          "signature": "SWS-JNohbROpPoWWJcd0gYD36W9TlcMz35BsSazvtx9kZG0SuLSFnwRGATGIuOni_Iq3-CcT2en_laVhbkca7w"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-max-ttl-300",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793405120
+          },
+          "digest": "sha256:60bc0e6b68785ade87ae2cbce98bfe496c132b07e31c0ca205901ca605a82813",
+          "keyId": "albera-test-broker-2026",
+          "signature": "We6pDprmfiurfi1qbOljRJ7Moo4N8-p0vJgLZwqffG8f_w6O-yUhJmoLp2y0mGqYKxNc_EBPr4V8yG_nx-LByw"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-ids-at-64-chars",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "leaseId": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "leaseId": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:189abbafd635d15b6f500a98c3762891a1f20c7e9fbe285d283a6a84e3a7747c",
+          "keyId": "albera-test-broker-2026",
+          "signature": "0iP0jBxvgRsWYkjDJvblGSTnO3p30rTq0VOqj309BwHaeSnNI4UEKWsaI4CTwtDlri4Fwl_s4NeC2Qr3h5edBg"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "signature-one-bit-flipped",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "y3skmqNuVa-s57RnU7xtMBzhNrqxKPCUJNdEkTbIfW1oKVjbrvOjdAZaNaxTvsCVGHLsNCo35yMkF9N5kDzr-g"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-all-0x5a-64-bytes",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWg"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-63-bytes",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpa"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-65-bytes",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-129-bytes-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpa"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-empty-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": ""
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-with-padding-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "uQtTg-6N7BZf863qpNl7Z2Hh-Ok4vnsBRVIe0x_bIs1e0zdHs9dtjWFFebwwKNN7367CPz6irjtfcgpOeAde0A="
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-standard-base64-alphabet-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "NndZSFFn9x7SVpnCPvFG010sM0mqZ1_pTrNHQvSADQ3g7VOUzqRWOEd0O_Sy69AR89IEUHHotRoq-qAw_YLrKw+/"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signed-by-another-key-same-key-id",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "o1n8ekEW2eHABBwQSs7g7_8nx49tYH0v5P8KCqhQLt0OhFP7vr33gHsIl1MQMjuvTJl8duGSzokm5xwGxPWrhw"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "wrong-key-id",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2027",
+          "signature": "9FEp3EORRWkqsZ9kImtaTYpb6MdlHa9eB8OTwdB_r1nWgWS-OdaLkk12pZkzEV1lykXZpfgDpNkZTIIWqwjGUg"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "key-id-case-changed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "ALBERA-TEST-BROKER-2026",
+          "signature": "Tm_v6-lsrSczLm0m2fIIRfuFOyObp32SAYhYRbDcWV2AkHNLUgpWmsDbIUPkp8oLeydSih6SML58CGSAE2mgnw"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "key-id-not-an-id-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "-bad",
+          "signature": "NQlldTDeV3_ZcP2_fDKwPqAyUe0H6AiqkZiS-WX_OIKssUph9mLqemgciySh8OKTENrWU4ESDGzrRz274Ibipg"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "keyId"
+        }
+      },
+      {
+        "name": "body-changed-after-signing-digest-no-longer-matches",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "present",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "ljh-DNwko1s2CcDM6-Wh2iq1zCwnmy73WhsluhIeajsQa5OJ3oWhOTXNP2G_OXnTjI4U8-Ka3Xz7avKCpQueBw"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "body-changed-and-digest-recomputed-signature-no-longer-matches",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "GN3g65X9KwVflXyZJlV2Ubaehhaq4yWux6tm9hljfbFL8WWNO5efrd11k9PF7On9PYjUeKj-LA2cramrv8FSMg"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "digest-uppercase-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89D1A6F1953AB8957C85955E8136ED56269DDFBE7D4E7A49110C3D19963A50B7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "M6SkyJ6QdeXIRAaX17W4BizhNJUY2fJgD1nO-I4Fumxa5yWajy6D5lG_oV9-7DmpWP4Ffr8zcw50glDpB4LO8g"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "digest-of-another-body",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:0bc412c0fdaab0fe0b2804952d854989c00b77b6912e0b7b61a3fdef35bfea1c",
+          "keyId": "albera-test-broker-2026",
+          "signature": "HSU9xKWdjQNB8Bl_jTNz5asittSWYGXGf9QSPcj-o7ITLokbKdYkr3ATTnHtRdLE7Lyn2VLfhf_3-d3wMTz86g"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "envelope-extra-key-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "aSYKET_n7vcsEy0xXG3WMarQwGKwhOHflV4--ZNfIc3LepQv0SiHyyu3ZrY6ixezUbs0nhCtXtai6DQ3Z6Ib2Q",
+          "extra": "x"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "envelope-missing-keyId-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "signature": "LI_w9NFe-jm8W51LuqzWzLOfKSbOvn4HS0Qyo5ES2tIDnuHVJ29rly2nGf3NyQ_y6p1BcVse3WRejFpUWkplOQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "body-extra-key-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880,
+            "extra": 1
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "z0nkfPUGoYFlX9clQO0dFYAYGvW-xFahjE8BTkHz1RoXnxneeo2J2M23qRAyJsgF1w3hLDEwOY3wXTyQ4rl1Gw"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "body-missing-leaseId-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "JU8baPh2qMl0rV5ij129g-14w9VocunV9DdPE_IYtd3uXTVb2MYR4MlB93Sc5QTGA3FshcS1mMa6wxPiggmx2g"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "body-version-2-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 2,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "L8DbQ0Hxbn31ItFuBowPWVkeupHSj7PA8rvANiMZSQhF7l8d-lov3VB1K7gMk31e6rwQidQRfw0MBv7aPZ-rzw"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "v"
+        }
+      },
+      {
+        "name": "body-network-unknown-word-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "maybe",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "RPpex9HIZTqtbS6u0N7kl1Y3ECJKJ2ovdyGzC1r7Kik3-qPHVsdXAqTieKKMSiSQVBMxAklsP8Canr9iVozJFQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "network"
+        }
+      },
+      {
+        "name": "body-vmId-uppercase-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "ABCDEF12-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "jZpZUsnJ-zSEl9e4rISzZdYSITnn_JPCs0pfJTUrJMgX97asLnwzZX3IO-WGg-Zwga2a9u5CY96RCcjOstQtnQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "vmId"
+        }
+      },
+      {
+        "name": "body-generation-zero-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 0,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "ObmcrgQMKqQMGTVjx-1BE_WDhApgA_nX8znuGIF7ZqedwSX-Aeah74FgC9kLCd79wb9--yUUSQOBb6RYLGg6PA"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "generation"
+        }
+      },
+      {
+        "name": "body-generation-as-string-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": "3",
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "FiCArPgewxFqtIKB-M6JizQuFvxXRrLeihCi9wCluvN5IQ7xCmchbcDKiVKInYrvFwdSg54trIiQ7vQmnseA3Q"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "generation"
+        }
+      },
+      {
+        "name": "body-ttl-301-is-refused",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793405121
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "IdP7USEYAHTdllwMt8Pq5GvFj21qLX_xdTT3Zeodeq-Brd4r0_9NDbOMZq6-MZwnfeTZwb6x6EhH-ay3wbKnAw"
+        },
+        "result": {
+          "ok": false,
+          "code": "ttl",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "body-expiresAt-not-after-observedAt-is-refused",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404820
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "7_PJ9HdmE82nv0_UjzvUyUCJTUZ-gXabYvw1V-qtZOyzec0GY4Ih8ZarkSLwhLv4bojHkCAbZfbaRHpBFpYrrw"
+        },
+        "result": {
+          "ok": false,
+          "code": "ttl",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "attestation-is-not-an-object-is-malformed",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": "none",
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "FOZqmxLWoBatxxUpLsP_pzMUUPkMmTEMFgGMCLR8I03Uzln12Qi8sFYus9LwWNfIiFVqp_9kOkWc7Q2XPsGqNg"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed"
+        }
+      },
+      {
+        "name": "expired-exactly-at-expiresAt",
+        "now": 1793404880,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "rxx2DkhJOlXDrxT_WnbVlgM1w1uwqW8dPum_RwXkYte_imJ9uuUns5fNdEWj11LI6clF8N-skf415sljKTBgKA"
+        },
+        "result": {
+          "ok": false,
+          "code": "expired",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "expired-one-second-after",
+        "now": 1793404881,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "vMeIVU59_zW_VL0dAYdmvaY9DGYI3NYLLVxcylanSasVhHL-bfoZd_lvBSPn-NPw-v6A6S0Y1bYT72fdyQiWBw"
+        },
+        "result": {
+          "ok": false,
+          "code": "expired",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "not-yet-valid-31-seconds-ahead",
+        "now": 1793404789,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "z0yJMi88rc20p5zqYYSotAeiWpvRVqA0Bfc11YbLMWzGrhGfH9oAwhf9vmrDnDbHg5OngAvHW4T84-yE6rUFNg"
+        },
+        "result": {
+          "ok": false,
+          "code": "not_yet_valid",
+          "field": "observedAt"
+        }
+      },
+      {
+        "name": "binding-computerId",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-02",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "9mD4IK8AWqdCS7X-Zo-mLpvGuq9iqDfTUb8O9M5u_fUmUG2c843fx8Lu80vE9ms6mNLXuwqeSZE-VaBHy1xSDg"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "computerId"
+        }
+      },
+      {
+        "name": "binding-generation",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 4,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "ObrKn_f7CObagg1X8DZzpS_U1XBfK72EcuW38R4uCTp1V-0LQduJW9XIzE7vq7bgOYYjRpDd2e3EVLZSIZbHoA"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "generation"
+        }
+      },
+      {
+        "name": "binding-leaseGeneration",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 8
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "o6Tgskqh_e_8RT0BR_xQ5NM8utXClOrHHAKixkuX8VQi4ewfAZB9jUcZwtxnmhELS4aoj2CchJ4lPzsAmlhQ-A"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "leaseGeneration"
+        }
+      },
+      {
+        "name": "binding-leaseId",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-2",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "uCGcY8qJm2seaS2LctENJeKk73GZg-NUgVT3y3LI15Np3LS_nNWsIt1qABhTVJi-bbtTPuc1hw0Bt3ACd2L2gw"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "leaseId"
+        }
+      },
+      {
+        "name": "binding-projectId",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-beta",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "AXVltupt_1Q9WIWwGdE1DY_ihXKXi5mD61mzOp6nMvtU94gBZXLvDUGV8w5PqaGilAQ8QXCK5yB8K6H0J2dk1Q"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "projectId"
+        }
+      },
+      {
+        "name": "binding-vmId",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "99999999-8888-4777-8666-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "534iNEyAxh_aXDGRa__Uq6HIQRuphgrLHfHDH8NHX7oWU-U23YZnB9QOwxSE5m6ddhM-OwNr72Ct-XUpwVZc8g"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "vmId"
+        }
+      },
+      {
+        "name": "binding-computerId-reported-before-vmId",
+        "now": 1793404830,
+        "expected": {
+          "computerId": "pc-02",
+          "vmId": "99999999-8888-4777-8666-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "8q4DPa071ugNZ17JJKE_9ZX4Ro9a8lSMj4pPY7918WpJBCZMdmx9fA3jl4xAJ5iD9OhoMoi5NLN4DDEyxr3ZIw"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "computerId"
+        }
+      },
+      {
+        "name": "expired-is-reported-before-a-binding-mismatch",
+        "now": 1793404880,
+        "expected": {
+          "computerId": "pc-02",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "U8diUrrbYV2RYAbsXxspHFmkF1mFqI4cuEqIwYyBo_Vnak50spM190tLZu0bIxHjbtlLMxYJY5uya9q1o9z9dQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "expired",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "bad-signature-is-reported-before-expiry",
+        "now": 1793404980,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404820,
+            "expiresAt": 1793404880
+          },
+          "digest": "sha256:89d1a6f1953ab8957c85955e8136ed56269ddfbe7d4e7a49110c3d19963a50b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dMbDsKhBbmOrJgpKgnVMcZQ34HGKmVNF6p0Awy2B8kOAHnGn1H8epmPmCMHEfbfEEXgiGn0wCDcvejWGUdromA"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      }
+    ]
+  }
 }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,8 @@ import { openSqliteEnvironmentStore } from '../src/runtime/sqlite-operation-stor
 import { AUTHORITY_CLIENT_PRESEND_CODES, AUTHORITY_REPLY_CODES } from '../src/runtime/approval-authority-client.mjs';
 import { BROKER_CLIENT_PRESEND_CODES } from '../src/runtime/windows-broker-client.mjs';
 import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
+import { createNetworkAttestation, signNetworkAttestation } from '../src/runtime/broker-contract/network-attestation.mjs';
+import { createEcdsaAttestationSigner } from '../src/runtime/ecdsa-attestation-signer.mjs';
 import { createTestAuthority, signedReceipt, stableUuid } from '../scripts/issue-22-approval-authority-fixture.mjs';
 
 // Unit tests of the approved-operation flow with a fake Broker, a fake Approval Authority, a journal (the in-memory one and the SQLite one, same suite) and a fake clock. Every branch of the
@@ -229,6 +231,181 @@ function defineFlowSuite(label, newJournal) {
         const again = await world.build().run(STOP);
         assert.deepEqual(again, { ...first, replayed: true });
         assert.equal(world.count('submit'), 1);
+      });
+    });
+
+    describe('approved operation flow: Broker network attestation for start / create (issue #115 step 3b)', () => {
+      const POLICY_HASH = `sha256:${'cd'.repeat(32)}`;
+      const START = Object.freeze({ operationId: 'op-1', action: { action: 'environment.start', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3, vmName: 'alpha' } } });
+      const signer = createEcdsaAttestationSigner({ keyId: 'albera-test-broker-1', privateKey: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey });
+      const attestationFor = async (network = 'none', overrides = {}) => JSON.parse(JSON.stringify(await signNetworkAttestation(createNetworkAttestation({
+        network, computerId: 'computer-1', vmId: '11111111-2222-4333-8444-555555555555', generation: 3, projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7,
+        observedAt: Math.floor(START_MS / 1000), ...overrides,
+      }), signer)));
+      /** The Broker side answers `attest` with a ready envelope (or a scripted result); every call is recorded in world.calls and world.attests. */
+      const withAttest = (world, answer) => {
+        world.attests = [];
+        world.broker.attest = async (args) => {
+          world.calls.push('attest');
+          world.attests.push(args);
+          return typeof answer === 'function' ? answer(args) : answer;
+        };
+      };
+      const attestedReceipt = (digest, extra = {}) => ({ v: 3, basis: 'policy', policyVersion: POLICY_HASH, action: 'environment.start', actionDigest: computeActionDigest('broker.operation', START.action), attestationDigest: digest, ...extra });
+      /** A person approves a start after the normal wait: the receipt is for the action that was submitted (the fixture's default is the synthetic one). */
+      const personApproves = (world) => {
+        const original = world.receiptFor;
+        world.receiptFor = (approvalId, fields, overrides) => original(approvalId, fields, { actionDigest: computeActionDigest('broker.operation', fields.action), action: fields.action.action, ...overrides });
+      };
+      /** The Authority, which holds a valid attestation, signs at once: submit says approved and the first status call returns the receipt. */
+      const approveAtOnce = (world, overrides) => {
+        world.script.submit.push((w, fields) => {
+          const approvalId = stableUuid(`${fields.operationId}/${fields.idempotencyKey}`);
+          w.approvals.set(approvalId, fields);
+          return { ok: true, approvalId, state: 'approved', expiresAt: Math.floor(w.clock / 1000) + 120 };
+        });
+        world.script.status.push((w, { approvalId }) => w.receiptFor(approvalId, w.approvals.get(approvalId), typeof overrides === 'function' ? overrides(w) : overrides));
+      };
+
+      it('asks the Broker side for an attestation after the fence, bound to the fenced lease, passes the envelope on unchanged and records its digest; the receipt that names that digest is claimed with no sleep', async () => {
+        const world = makeWorld();
+        const envelope = await attestationFor();
+        withAttest(world, { ok: true, attestation: envelope });
+        approveAtOnce(world, attestedReceipt(envelope.digest));
+        const result = await world.flow.run(START);
+        assert.deepEqual([result.status, result.phase], ['claimed', 'CLAIMED']);
+        assert.deepEqual(world.calls, ['fence', 'attest', 'submit', 'status', 'claim']);
+        assert.deepEqual(world.attests, [{ computerId: 'computer-1', projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7, generation: 3 }]);
+        assert.deepEqual(world.submissions[0].attestation, envelope, 'the Broker side envelope goes to the Authority as it is');
+        assert.equal(world.journal.get('op-1').approval.attestationDigest, envelope.digest);
+        assert.deepEqual(world.sleeps, [], 'nobody was waited for');
+        assert.equal(JSON.parse(Buffer.from(world.claims[0].receipt, 'base64').toString('utf8')).attestationDigest, envelope.digest);
+      });
+
+      it('works for environment.create the same way', async () => {
+        const world = makeWorld();
+        const create = { operationId: 'op-1', action: { ...START.action, action: 'environment.create' } };
+        const envelope = await attestationFor();
+        withAttest(world, { ok: true, attestation: envelope });
+        approveAtOnce(world, attestedReceipt(envelope.digest, { action: 'environment.create', actionDigest: computeActionDigest('broker.operation', create.action) }));
+        assert.equal((await world.flow.run(create)).status, 'claimed');
+        assert.equal(world.attests.length, 1);
+      });
+
+      it('no attestation is not an error: without broker.attest, on a refusal, an exception, a malformed answer or an answer other than "none", the submit goes without it and a person is asked as before', async () => {
+        const wrong = await attestationFor('present');
+        const cases = {
+          'no attest function': null,
+          'refusal': { ok: false, code: 'denied' },
+          'exception': () => { throw new Error('broker down'); },
+          'rejected promise': () => Promise.reject(new Error('broker down')),
+          'nothing': undefined,
+          'ok without an attestation': { ok: true },
+          'a string': { ok: true, attestation: 'none' },
+          'a body that is not an attestation': { ok: true, attestation: { attestation: {}, digest: 'x', keyId: 'k', signature: 's' } },
+          'present': { ok: true, attestation: wrong },
+          'unknown': { ok: true, attestation: await attestationFor('unknown') },
+        };
+        for (const [label, answer] of Object.entries(cases)) {
+          const world = makeWorld();
+          personApproves(world);
+          if (answer !== null) withAttest(world, answer);
+          const result = await world.flow.run(START);
+          assert.deepEqual([result.status, result.phase], ['claimed', 'CLAIMED'], label);
+          assert.equal(Object.hasOwn(world.submissions[0], 'attestation'), false, `${label}: nothing is attached`);
+          assert.equal(world.journal.get('op-1').approval.attestationDigest, undefined, label);
+          assert.deepEqual(world.sleeps, [500], `${label}: it waited for a person as ever`);
+        }
+      });
+
+      it('is asked only for start / create that carry an integer expectedGeneration to bind', async () => {
+        for (const action of [
+          { action: 'environment.stop', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3 } },
+          { action: 'environment.destroy', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3 } },
+          { action: 'environment.inspect', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3 } },
+          { action: 'environment.start', projectId: 'project-1', computerId: 'computer-1', args: {} },
+          { action: 'environment.start', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: '3' } },
+          { action: 'environment.start', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 0 } },
+          { action: 'environment.create', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: true } },
+          { action: 'synthetic.noop', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3 } },
+        ]) {
+          const world = makeWorld();
+          withAttest(world, { ok: true, attestation: await attestationFor() });
+          await world.flow.run({ operationId: 'op-1', action });
+          assert.equal(world.attests.length, 0, JSON.stringify(action));
+          assert.equal(Object.hasOwn(world.submissions[0], 'attestation'), false, JSON.stringify(action));
+        }
+      });
+
+      it('an attested policy receipt is only claimed when it names the attestation this flow presented (otherwise receipt_mismatch, nothing sent to the Broker)', async () => {
+        const envelope = await attestationFor();
+        const other = `sha256:${'ab'.repeat(32)}`;
+        const cases = [
+          ['another digest', true, attestedReceipt(other)],
+          ['no digest', true, attestedReceipt(undefined)],
+          ['a digest but nothing was presented', false, attestedReceipt(envelope.digest)],
+          ['no digest and nothing presented', false, attestedReceipt(undefined)],
+        ];
+        for (const [label, presented, overrides] of cases) {
+          const world = makeWorld();
+          if (presented) withAttest(world, { ok: true, attestation: envelope });
+          approveAtOnce(world, overrides);
+          const result = await world.flow.run(START);
+          assert.deepEqual([result.status, result.code, result.phase], ['failed', 'receipt_mismatch', 'FAILED'], label);
+          assert.equal(world.count('claim'), 0, label);
+        }
+      });
+
+      it('a receipt that is not an attested policy receipt must not carry a digest: a person\'s approval with one, and an unattested policy receipt with one, are receipt_mismatch', async () => {
+        const envelope = await attestationFor();
+        const STOP = { operationId: 'op-1', action: { action: 'environment.stop', projectId: 'project-1', computerId: 'computer-1', args: {} } };
+        for (const [label, request, overrides] of [
+          ['presence start with a digest', START, attestedReceipt(envelope.digest, { basis: 'presence' })],
+          ['policy stop with a digest', STOP, { v: 3, basis: 'policy', policyVersion: POLICY_HASH, action: 'environment.stop', attestationDigest: envelope.digest }],
+        ]) {
+          const world = makeWorld();
+          withAttest(world, { ok: true, attestation: envelope });
+          approveAtOnce(world, overrides);
+          const result = await world.flow.run(request);
+          assert.deepEqual([result.status, result.code], ['failed', 'receipt_mismatch'], label);
+          assert.equal(world.count('claim'), 0, label);
+        }
+      });
+
+      it('when a person approves anyway (the attestation was not enough), a receipt without a digest is claimed after the normal wait', async () => {
+        const world = makeWorld();
+        withAttest(world, { ok: true, attestation: await attestationFor() });
+        personApproves(world);
+        const result = await world.flow.run(START);
+        assert.equal(result.status, 'claimed');
+        assert.deepEqual(world.sleeps, [500]);
+        assert.equal(Object.hasOwn(JSON.parse(Buffer.from(world.claims[0].receipt, 'base64').toString('utf8')), 'attestationDigest'), false);
+      });
+
+      it('a request that does not fit one frame with the attestation is submitted again without it (request_too_large is a pre-send code), under the same key', async () => {
+        const world = makeWorld();
+        personApproves(world);
+        withAttest(world, { ok: true, attestation: await attestationFor() });
+        world.script.submit.push({ ok: false, code: 'request_too_large' });
+        const result = await world.flow.run(START);
+        assert.equal(result.status, 'claimed');
+        assert.equal(world.count('submit'), 2);
+        assert.equal(Object.hasOwn(world.submissions[0], 'attestation'), true);
+        assert.equal(Object.hasOwn(world.submissions[1], 'attestation'), false);
+        assert.equal(world.submissions[0].idempotencyKey, world.submissions[1].idempotencyKey);
+        assert.equal(world.journal.get('op-1').approval.attestationDigest, undefined, 'the record says nothing was presented');
+      });
+
+      it('an immediate approval with an attestation is idempotent across a restart: the recorded outcome comes back and nobody is asked again', async () => {
+        const world = makeWorld();
+        const envelope = await attestationFor();
+        withAttest(world, { ok: true, attestation: envelope });
+        approveAtOnce(world, attestedReceipt(envelope.digest));
+        const first = await world.flow.run(START);
+        const again = await world.build().run(START);
+        assert.deepEqual(again, { ...first, replayed: true });
+        assert.equal(world.count('submit'), 1);
+        assert.equal(world.attests.length, 1, 'no second attestation either');
       });
     });
 

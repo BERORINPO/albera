@@ -9,6 +9,11 @@
 //                     what a policy may ever skip, so a receipt for any other action with this basis is refused even if the Authority signed it.
 //   (a `grant:<id>` basis is reserved for a later step; today it is a schema failure on `basis`)
 //
+// attestationDigest (optional, step 3b): the digest of the Broker's network attestation (network-attestation.mjs) that the Authority's rule relied on. Present exactly when
+// basis is `policy` and the action is in ATTESTED_POLICY_BASIS_ACTIONS (environment.start / environment.create: a no-person receipt that is only valid with a Broker statement
+// that the environment has no network); absent for every other receipt. The Broker has no attestation to compare it with here, so like policyVersion it is checked for its shape and
+// for being present or absent as the rule requires; the Authority's signature is what covers it.
+//
 // policyVersion is checked for its shape only. The Broker has no copy of the Authority's policy to compare it with, so it is an audit field: the Authority's
 // signature is what covers it. (In v2 the Broker compares policyVersion with its own configured value; v3 drops that binding.)
 import { ACTIONS_BY_PURPOSE, ActionDigestError, computeActionDigest, validateActionDto } from './action-digest.mjs';
@@ -19,8 +24,12 @@ import { StrictJsonError, parseStrictJson } from './strict-json.mjs';
 
 export const RECEIPT_V3_VERSION = 3;
 export const RECEIPT_BASES = Object.freeze(['presence', 'policy']);
-/** The most a tier policy can ever let the Authority sign without a person (step 3: no network attestation needed). Reads and risk-reducing actions only. */
+/** What a tier policy may let the Authority sign without a person and without any attestation: reads and risk-reducing actions only. */
 export const POLICY_BASIS_ACTIONS = Object.freeze(['environment.inspect', 'environment.stop', 'workspace.inspect', 'task.cancel']);
+/** What a tier policy may let the Authority sign without a person ONLY with a Broker network attestation that says "none" (the receipt then carries its digest). */
+export const ATTESTED_POLICY_BASIS_ACTIONS = Object.freeze(['environment.create', 'environment.start']);
+/** True for an action that can carry basis policy at all (with or without an attestation). Nothing else can, whatever the Authority signed. */
+export const isPolicyBasisAction = (action) => POLICY_BASIS_ACTIONS.includes(action) || ATTESTED_POLICY_BASIS_ACTIONS.includes(action);
 
 /** Field name to JSON Schema fragment: the v2 table with `v` = 3, a hash-shaped `policyVersion` and `basis` right after it. */
 export const RECEIPT_V3_FIELDS = Object.freeze(RECEIPT_V2_FIELDS.flatMap(([name, spec]) => {
@@ -29,13 +38,17 @@ export const RECEIPT_V3_FIELDS = Object.freeze(RECEIPT_V2_FIELDS.flatMap(([name,
   return [[name, spec]];
 }));
 
+/** Fields a receipt MAY carry (all others are required): the digest of the network attestation a no-person rule relied on. Not part of the schema's `required`. */
+export const RECEIPT_V3_OPTIONAL_FIELDS = Object.freeze([['attestationDigest', { type: 'string', pattern: '^sha256:[0-9a-f]{64}$', maxLength: 71 }]]);
+
 /** Receipt fields that Broker-trusted state must supply. Unlike v2 there is no policyVersion (see the header). projectId, computerId and action come from ctx.action. */
 const EXPECTED_FIELDS = Object.freeze(['audience', 'purpose', 'operationId', 'idempotencyKey', 'leaseId', 'leaseGeneration', 'brokerEpoch', 'brokerChallenge']);
 const BINDING_ORDER = Object.freeze([...EXPECTED_FIELDS, 'projectId', 'computerId', 'action']);
 
-const FIELD_NAMES = new Set(RECEIPT_V3_FIELDS.map(([name]) => name));
-const PATTERNS = new Map(RECEIPT_V3_FIELDS.filter(([, s]) => s.pattern).map(([name, s]) => [name, new RegExp(s.pattern)]));
-const SPEC = new Map(RECEIPT_V3_FIELDS);
+const ALL_FIELDS = [...RECEIPT_V3_FIELDS, ...RECEIPT_V3_OPTIONAL_FIELDS];
+const FIELD_NAMES = new Set(ALL_FIELDS.map(([name]) => name));
+const PATTERNS = new Map(ALL_FIELDS.filter(([, s]) => s.pattern).map(([name, s]) => [name, new RegExp(s.pattern)]));
+const SPEC = new Map(ALL_FIELDS);
 
 function fits(name, value) {
   const spec = SPEC.get(name);
@@ -62,6 +75,7 @@ export function parseReceiptV3(bytes) {
     if (!Object.hasOwn(data, name)) return fail('schema', name);
     if (name !== 'v' ? !fits(name, data[name]) : !Number.isSafeInteger(data.v)) return fail('schema', name);
   }
+  for (const [name] of RECEIPT_V3_OPTIONAL_FIELDS) if (Object.hasOwn(data, name) && !fits(name, data[name])) return fail('schema', name);
   if (data.v !== RECEIPT_V3_VERSION) return fail('version', 'v');
   return Object.freeze({ ok: true, receipt: Object.freeze(data) });
 }
@@ -93,7 +107,7 @@ function readContext(ctx) {
 
 /**
  * Full verdict for receipt v3 bytes whose signature has already been verified. Same context as validateReceiptV2 (a `policyVersion` in `expected` is ignored).
- * @returns {{ok:true, receipt:object}|{ok:false, code:string, field?:string}} codes: invalid_context malformed schema version issuer action_pair basis_action ttl
+ * @returns {{ok:true, receipt:object}|{ok:false, code:string, field?:string}} codes: invalid_context malformed schema version issuer action_pair basis_action attestation ttl
  *   not_yet_valid expired binding action_digest. Checks run in that order; `field` is only ever a fixed field name or "$extra".
  */
 export function validateReceiptV3(bytes, ctx) {
@@ -104,7 +118,9 @@ export function validateReceiptV3(bytes, ctx) {
   const r = parsed.receipt;
   if (r.issuer !== ISSUER && !(context.environment === 'test' && r.issuer.startsWith('albera-test-'))) return fail('issuer', 'issuer');
   if (!ACTIONS_BY_PURPOSE[r.purpose].includes(r.action)) return fail('action_pair', 'action');
-  if (r.basis === 'policy' && !POLICY_BASIS_ACTIONS.includes(r.action)) return fail('basis_action', 'basis');
+  if (r.basis === 'policy' && !isPolicyBasisAction(r.action)) return fail('basis_action', 'basis');
+  // The digest is there exactly when a no-person receipt for an attested action needs it: never for a person's approval, never for an action that needs no attestation.
+  if (Object.hasOwn(r, 'attestationDigest') !== (r.basis === 'policy' && ATTESTED_POLICY_BASIS_ACTIONS.includes(r.action))) return fail('attestation', 'attestationDigest');
   if (r.exp <= r.iat || r.exp - r.iat > MAX_TTL_SECONDS) return fail('ttl', 'exp');
   if (r.iat > context.now + MAX_IAT_SKEW_SECONDS) return fail('not_yet_valid', 'iat');
   if (context.now >= r.exp) return fail('expired', 'exp');

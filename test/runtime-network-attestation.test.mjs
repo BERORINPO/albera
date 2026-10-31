@@ -1,5 +1,4 @@
-// Issue #115 step 2: the Broker-produced network attestation (contract, Broker side, provider seams). Nothing consumes the attestation yet and no tier, policy or
-// no-prompt path exists: these tests pin what the statement says, how it is bound, and that nothing a Control Plane sends can change it.
+// Issue #115 step 2: the Broker-produced network attestation (contract, Broker side, provider seams). The consumer (the Approval Authority, step 3b) has its own tests; these pin what the statement says, how it is bound, and that nothing a Control Plane sends can change it.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';

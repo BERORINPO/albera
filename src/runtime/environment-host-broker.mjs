@@ -66,7 +66,7 @@ export class LocalEnvironmentHostBroker {
   /**
    * Read-only network attestation for one environment (#115 step 2): no journal entry, no claim, no state change. `operation` must be an inspect operation of this Provider;
    * it only names the environment (the Provider reads the network itself, so nothing here can influence the result), and `leaseGeneration` is bound into the statement as the
-   * caller's claim for the verifier to check. Returns the Broker-signed attestation; nothing consumes it yet.
+   * caller's claim for the verifier to check. Returns the Broker-signed attestation; the Approval Authority is its consumer (#115 step 3b), reached through the flow's optional `broker.attest`.
    */
   attestNetwork({ operation, leaseGeneration } = {}) {
     let checked;

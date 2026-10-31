@@ -32,11 +32,11 @@ internal static partial class Harness
         public readonly AuthorityCore Core;
         public readonly AuthorityProtocol Protocol;
 
-        public Fixture(int ttl = PendingStore.DefaultTtlSeconds, IHumanPresenceVerifier? presence = null, AuthorityIdentity? identity = null, PolicyStore? policy = null, Action<string>? audit = null)
+        public Fixture(int ttl = PendingStore.DefaultTtlSeconds, IHumanPresenceVerifier? presence = null, AuthorityIdentity? identity = null, PolicyStore? policy = null, Action<string>? audit = null, PinnedAttestationKey? attestation = null)
         {
             Identity = identity ?? new AuthorityIdentity("authority-key-2026-10", "albera-host-broker", "policy-2026-10", "hello-key-yosuke-01");
             Store = new PendingStore(() => Now, ttl);
-            Core = new AuthorityCore(Store, Signer, presence ?? RsaPresenceVerifier.TryCreate(Hello.ExportSubjectPublicKeyInfo())!, Identity, () => Now, policy, audit);
+            Core = new AuthorityCore(Store, Signer, presence ?? RsaPresenceVerifier.TryCreate(Hello.ExportSubjectPublicKeyInfo())!, Identity, () => Now, policy, audit, attestation);
             Protocol = new AuthorityProtocol(Core);
         }
 
@@ -572,6 +572,7 @@ internal static partial class Harness
         KeyGuardChecks();
         PathGuardChecks();
         PolicyChecks();
+        AttestationChecks();
         Console.WriteLine(JsonSerializer.Serialize(new { checks = Results, digestProbes = DigestProbes() }));
         return 0;
     }

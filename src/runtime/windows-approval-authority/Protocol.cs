@@ -47,7 +47,7 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
 
     private byte[] Submit(Dictionary<string, object> r)
     {
-        if (!HasKeys(r, SubmitKeys, optional: "expectedDigest")) return Error(AuthorityCodes.RequestInvalid);
+        if (!HasKeys(r, SubmitKeys, optional: ["expectedDigest", "attestation"])) return Error(AuthorityCodes.RequestInvalid);
         if (r["purpose"] is not string purpose || r["operationId"] is not string operationId || r["idempotencyKey"] is not string idempotencyKey ||
             r["leaseId"] is not string leaseId || r["leaseGeneration"] is not long generation || r["brokerEpoch"] is not long epoch ||
             r["brokerChallenge"] is not string challenge || r["action"] is not IReadOnlyDictionary<string, object> action ||
@@ -55,7 +55,8 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
         ValidatedAction dto;
         try { dto = ActionDigest.Validate(purpose, action); }
         catch (ActionDigestException) { return Error(AuthorityCodes.RequestInvalid); }
-        Outcome outcome = core.Submit(new PendingRequest(purpose, operationId, idempotencyKey, leaseId, generation, epoch, challenge, dto), supplied as string);
+        // `attestation` is optional and never makes the request invalid by itself: whatever it holds is checked by the core, and anything wrong with it means "ask a person".
+        Outcome outcome = core.Submit(new PendingRequest(purpose, operationId, idempotencyKey, leaseId, generation, epoch, challenge, dto), supplied as string, r.GetValueOrDefault("attestation"));
         if (outcome.Code is not null) return Error(outcome.Code);
         return Write(w =>
         {
@@ -89,7 +90,7 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
     // Oldest first, as many entries as fit one frame. `more` says there are further entries; ask again with afterSeq = lastSeq.
     private byte[] List(Dictionary<string, object> r)
     {
-        if (!HasKeys(r, ["v", "verb"], optional: "afterSeq") || (r.TryGetValue("afterSeq", out object? after) && after is not long)) return Error(AuthorityCodes.RequestInvalid);
+        if (!HasKeys(r, ["v", "verb"], optional: ["afterSeq"]) || (r.TryGetValue("afterSeq", out object? after) && after is not long)) return Error(AuthorityCodes.RequestInvalid);
         long afterSeq = after as long? ?? 0;
         if (afterSeq < 0) return Error(AuthorityCodes.RequestInvalid);
         List<byte[]> fitted = [];
@@ -153,7 +154,7 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
     // Replies { "ok": true, "policyVersion": "sha256:..." } or an error code (a wrong revision, a malformed policy: request_invalid; no / wrong signature: presence_mismatch).
     private byte[] PolicySet(Dictionary<string, object> r)
     {
-        if (!HasKeys(r, ["v", "verb", "policy"], optional: "presence") || r["policy"] is not IReadOnlyDictionary<string, object> values || TierPolicy.TryFromValues(values) is not { } next) return Error(AuthorityCodes.RequestInvalid);
+        if (!HasKeys(r, ["v", "verb", "policy"], optional: ["presence"]) || r["policy"] is not IReadOnlyDictionary<string, object> values || TierPolicy.TryFromValues(values) is not { } next) return Error(AuthorityCodes.RequestInvalid);
         byte[]? proof = null;
         if (r.TryGetValue("presence", out object? presenceValue) && (presenceValue is not string presenceText || presenceText.Length > 512 || !TryFromBase64(presenceText, out proof))) return Error(AuthorityCodes.RequestInvalid);
         Outcome outcome = core.SetPolicy(next, proof);
@@ -203,9 +204,9 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
         return buffer.ToArray();
     }
 
-    // Exactly the required keys plus (at most) one optional key.
-    private static bool HasKeys(Dictionary<string, object> request, IReadOnlyCollection<string> required, string? optional = null) =>
-        required.All(request.ContainsKey) && request.Count == required.Count + (optional is not null && request.ContainsKey(optional) ? 1 : 0);
+    // Exactly the required keys plus any of the optional ones (and no other key).
+    private static bool HasKeys(Dictionary<string, object> request, IReadOnlyCollection<string> required, IReadOnlyCollection<string>? optional = null) =>
+        required.All(request.ContainsKey) && request.Count == required.Count + (optional?.Count(request.ContainsKey) ?? 0);
 
     private static bool TryFromBase64(string text, out byte[] bytes)
     {

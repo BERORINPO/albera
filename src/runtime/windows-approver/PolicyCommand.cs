@@ -84,6 +84,8 @@ internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner si
         text.Append("policy in force (revision ").Append(policy.Revision).Append(")\n");
         text.Append("  tier: ").Append(policy.Tier).Append('\n');
         text.Append("  needs no person: ").Append(skipped.Count == 0 ? "(nothing; every action needs a person)" : string.Join(", ", skipped.Order(StringComparer.Ordinal))).Append('\n');
+        if (policy.AttestedNoPromptActions().Count > 0)
+            text.Append("  needs no person only when the Broker attests the environment has no network: ").Append(string.Join(", ", policy.AttestedNoPromptActions().Order(StringComparer.Ordinal))).Append('\n');
         if (policy.Prompts.Count > 0) text.Append("  always asks you: ").Append(string.Join(", ", policy.Prompts)).Append('\n');
         text.Append("  policyVersion: ").Append(policy.Hash()).Append('\n');
         return text.ToString();
@@ -91,12 +93,16 @@ internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner si
 
     private static string Change(TierPolicy current, TierPolicy next, bool loosens)
     {
-        IReadOnlySet<string> before = current.NoPromptActions(), after = next.NoPromptActions();
-        string[] newlySkipped = [.. after.Where(a => !before.Contains(a)).Order(StringComparer.Ordinal)];
-        string[] newlyAsked = [.. before.Where(a => !after.Contains(a)).Order(StringComparer.Ordinal)];
+        // Two lists, because "no longer asks you" means two different things: always, or only when the Broker attests the environment has no network (start / create).
+        string[] Gained(IReadOnlySet<string> before, IReadOnlySet<string> after) => [.. after.Where(a => !before.Contains(a)).Order(StringComparer.Ordinal)];
+        string[] newlySkipped = Gained(current.NoPromptActions(), next.NoPromptActions());
+        string[] newlySkippedWithAttestation = Gained(current.AttestedNoPromptActions(), next.AttestedNoPromptActions());
+        string[] newlyAsked = [.. Gained(next.SkippableActions(), current.SkippableActions()).Select(a => ReceiptV3.AttestedPolicyBasisActions.Contains(a) ? a + " (only when the Broker attests no network)" : a)];
         StringBuilder text = new();
         text.Append("change to revision ").Append(next.Revision).Append(": tier ").Append(current.Tier).Append(" -> ").Append(next.Tier).Append('\n');
         text.Append("  will no longer ask you: ").Append(newlySkipped.Length == 0 ? "(none)" : string.Join(", ", newlySkipped)).Append('\n');
+        if (newlySkippedWithAttestation.Length > 0)
+            text.Append("  will no longer ask you, only when the Broker attests the environment has no network: ").Append(string.Join(", ", newlySkippedWithAttestation)).Append('\n');
         text.Append("  will start asking you: ").Append(newlyAsked.Length == 0 ? "(none)" : string.Join(", ", newlyAsked)).Append('\n');
         text.Append("  new policyVersion: ").Append(next.Hash()).Append('\n');
         text.Append(loosens ? "  windows hello: needed (this lets actions run without asking you)\n" : "  windows hello: not needed (this only adds questions)\n");

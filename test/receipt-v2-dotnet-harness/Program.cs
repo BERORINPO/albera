@@ -1,7 +1,10 @@
-// Usage: dotnet ReceiptV2Harness.dll <test-vectors.json> <receipt-v2.schema.json> [<test-vectors-v3.json> <receipt-v3.schema.json>]
+// Usage: dotnet ReceiptV2Harness.dll <test-vectors.json> <receipt-v2.schema.json> [<test-vectors-v3.json> <receipt-v3.schema.json> [<network-attestation-vectors.json>]]
 // Prints one JSON document: the C# verdict for every digest and receipt vector, plus any difference between ReceiptV2.Fields and the schema file.
 // With the two v3 files it also prints "v2ViaDispatcher" (the v2 receipt vectors through Receipts.Validate), "v3" (the v3 receipt vectors through Receipts.Validate and, for
 // bytes that claim v3, ReceiptV3.Validate), "v3SchemaMismatches", "policy" (every tier policy vector), "loosen" and "policyMessageHex".
+// With the fifth file it also prints "attestationDigest" (every digest vector of the network attestation) and "attestationVerify" (every signed verify vector, checked with the
+// vector file's ephemeral public key). The harness reads a vector body with System.Text.Json, so a number that is not a safe integer reaches the contract as a double and is
+// refused by its field (the Node twin's behaviour); the Authority's own wire reader is stricter and refuses the whole frame.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -53,11 +56,12 @@ List<Dictionary<string, object?>> RunReceiptVectors(JsonElement receiptVectors, 
     return results;
 }
 
-List<string> SchemaMismatches(JsonDocument schemaDocument, IReadOnlyList<FieldSpec> fields)
+List<string> SchemaMismatches(JsonDocument schemaDocument, IReadOnlyList<FieldSpec> required, IReadOnlyList<FieldSpec>? optional = null)
 {
+    IReadOnlyList<FieldSpec> fields = [.. required, .. optional ?? []];
     var mismatches = new List<string>();
     JsonElement root = schemaDocument.RootElement, props = root.GetProperty("properties");
-    if (!root.GetProperty("required").EnumerateArray().Select(x => x.GetString()).SequenceEqual(fields.Select(f => f.Name))) mismatches.Add("required");
+    if (!root.GetProperty("required").EnumerateArray().Select(x => x.GetString()).SequenceEqual(required.Select(f => f.Name))) mismatches.Add("required");
     if (root.GetProperty("additionalProperties").ValueKind != JsonValueKind.False) mismatches.Add("additionalProperties");
     if (props.EnumerateObject().Count() != fields.Count) mismatches.Add("property count");
     foreach (FieldSpec f in fields)
@@ -93,8 +97,9 @@ if (args.Length >= 4)
     output["v3"] = RunReceiptVectors(v3Root.GetProperty("receiptVectors"), (b, c) => Receipts.Validate(b, c));
     // The same bytes straight through ReceiptV3 (only those that claim v3: anything else is a v2 question).
     output["v3Direct"] = RunReceiptVectors(v3Root.GetProperty("receiptVectors"), (b, c) => Encoding.UTF8.GetString(b).Contains("\"v\":3", StringComparison.Ordinal) ? ReceiptV3.Validate(b, c) : Receipts.Validate(b, c));
-    output["v3SchemaMismatches"] = SchemaMismatches(v3Schema, ReceiptV3.Fields);
+    output["v3SchemaMismatches"] = SchemaMismatches(v3Schema, ReceiptV3.Fields, ReceiptV3.OptionalFields);
     output["policyBasisActions"] = ReceiptV3.PolicyBasisActions;
+    output["attestedPolicyBasisActions"] = ReceiptV3.AttestedPolicyBasisActions;
 
     TierPolicy? Read(string json) => TierPolicy.TryParse(Encoding.UTF8.GetBytes(json));
     var policyResults = new List<Dictionary<string, object?>>();
@@ -109,6 +114,7 @@ if (args.Length >= 4)
             result["tier"] = policy.Tier;
             result["prompts"] = policy.Prompts;
             result["noPrompt"] = policy.NoPromptActions().Order(StringComparer.Ordinal).ToArray();
+            result["attestedNoPrompt"] = policy.AttestedNoPromptActions().Order(StringComparer.Ordinal).ToArray();
             result["hash"] = policy.Hash();
             result["canonicalJson"] = canonical;
             result["canonicalRoundTrips"] = Read(canonical)?.Hash() == policy.Hash();
@@ -124,6 +130,53 @@ if (args.Length >= 4)
     TierPolicy messagePolicy = Read(v3Root.GetProperty("policyMessage").GetProperty("policyJson").GetString()!)!;
     output["policyMessageHex"] = v3Root.GetProperty("policyMessage").GetProperty("cases").EnumerateArray()
         .Select(c => Convert.ToHexStringLower(PolicyChange.Message(messagePolicy, c.GetProperty("kid").GetString()!, c.GetProperty("audience").GetString()!))).ToList();
+}
+
+if (args.Length >= 5)
+{
+    using JsonDocument attestationVectors = JsonDocument.Parse(File.ReadAllText(args[4]));
+    JsonElement attestationRoot = attestationVectors.RootElement;
+
+    object ToValue(JsonElement e) => e.ValueKind switch
+    {
+        JsonValueKind.String => e.GetString()!,
+        JsonValueKind.Number => e.TryGetInt64(out long n) ? (object)n : e.GetDouble(),
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        JsonValueKind.Object => e.EnumerateObject().ToDictionary(p => p.Name, p => ToValue(p.Value), StringComparer.Ordinal),
+        _ => throw new InvalidOperationException("vector value not supported by this harness"),
+    };
+
+    var attestationDigests = new List<Dictionary<string, object?>>();
+    foreach (JsonElement v in attestationRoot.GetProperty("digestVectors").EnumerateArray())
+    {
+        var (verdict, digest, preimage) = NetworkAttestation.Compute(ToValue(v.GetProperty("body")));
+        var result = new Dictionary<string, object?> { ["name"] = v.GetProperty("name").GetString(), ["ok"] = verdict.Ok };
+        if (verdict.Ok) { result["digest"] = digest; result["preimageHex"] = Convert.ToHexStringLower(preimage!); }
+        else { result["code"] = verdict.Code; result["field"] = verdict.Field; }
+        attestationDigests.Add(result);
+    }
+    output["attestationDigest"] = attestationDigests;
+
+    JsonElement verify = attestationRoot.GetProperty("verifyVectors");
+    string pinnedKeyId = verify.GetProperty("keyId").GetString()!;
+    using System.Security.Cryptography.ECDsa pinned = System.Security.Cryptography.ECDsa.Create();
+    pinned.ImportSubjectPublicKeyInfo(Convert.FromBase64String(verify.GetProperty("publicKeySpki").GetString()!), out _);
+    bool VerifySignature(string keyId, byte[] bytes, byte[] signature) =>
+        keyId == pinnedKeyId && signature.Length == 64 && pinned.VerifyData(bytes, signature, System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+    var attestationVerdicts = new List<Dictionary<string, object?>>();
+    foreach (JsonElement c in verify.GetProperty("cases").EnumerateArray())
+    {
+        JsonElement e = c.GetProperty("expected");
+        AttestationExpected expected = new(e.GetProperty("computerId").GetString()!, e.GetProperty("vmId").ValueKind == JsonValueKind.Null ? null : e.GetProperty("vmId").GetString(), e.GetProperty("generation").GetInt64(),
+            e.GetProperty("projectId").GetString()!, e.GetProperty("leaseId").GetString()!, e.GetProperty("leaseGeneration").GetInt64());
+        long now = c.GetProperty("now").GetInt64();
+        AttestationVerdict verdict = NetworkAttestation.Verify(ToValue(c.GetProperty("signed")), () => now, VerifySignature, expected);
+        var result = new Dictionary<string, object?> { ["name"] = c.GetProperty("name").GetString(), ["ok"] = verdict.Ok };
+        if (!verdict.Ok) { result["code"] = verdict.Code; if (verdict.Field is not null) result["field"] = verdict.Field; }
+        attestationVerdicts.Add(result);
+    }
+    output["attestationVerify"] = attestationVerdicts;
 }
 
 Console.Out.Write(JsonSerializer.Serialize(output));

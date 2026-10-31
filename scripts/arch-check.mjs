@@ -58,6 +58,8 @@ const EXPECTED = {
     runtime: ['gateway.mjs', 'api.mjs', 'approval-broker.mjs', 'approval-host.mjs', 'audit-journal.mjs', 'journal-backup.mjs', 'entry.mjs', 'host.mjs', 'session-identity.mjs', 'supervisor.mjs', 'guardian.mjs', 'environment-provider.mjs', 'environment-host-broker.mjs', 'environment-control-plane.mjs', 'hyperv-environment-provider.mjs', 'environment-operations.mjs', 'computer-scheduler.mjs', 'mock-environment-provider.mjs', 'agent-harness-adapter.mjs', 'sqlite-operation-store.mjs', 'boundary-protocols.mjs', 'guest-event-intake.mjs', 'errors.mjs', 'desktop-control.mjs', 'hyperv-desktop-driver.mjs', 'mock-desktop-broker.mjs', 'hyperv-desktop-broker-prototype.mjs', 'hyperv-desktop/desktop-io.ps1', 'desktop-wall-host.mjs', 'computer-use-mapping.mjs', 'anthropic-computer-use-client.mjs', 'fake-computer-use-client.mjs', 'desktop-agent-loop.mjs', 'agent-status-board.mjs', 'agent-fleet.mjs', 'desktop-planner.mjs', 'anthropic-planner-client.mjs', 'fake-planner-client.mjs', 'planned-agent-loop.mjs', 'wall-ui/index.html', 'wall-ui/wall.mjs', 'wall-ui/wall.css', 'hyperv-environment-broker-prototype.mjs', 'hyperv-env/env-io.ps1', 'environment-retirement-journal.mjs',
     // Broker network attestation (#115 step 2): the contract lives in broker-contract/, the Fake signer is test-only
     'fake-attestation-signer.mjs',
+    // the production signature scheme of that attestation (ECDSA P-256; the key object comes from host configuration, step 3b)
+    'ecdsa-attestation-signer.mjs',
     // control room (spec/room.md §3)
     'room-contract.mjs', 'room-host.mjs', 'room-demo.mjs', 'room-journal.mjs', 'room-figures.mjs', 'bero-director.mjs',
     'fake-guest-checker.mjs', 'hyperv-guest-check-prototype.mjs', 'hyperv-guest/check-io.ps1', 'workspace.mjs',
@@ -72,7 +74,9 @@ const EXPECTED = {
     // shared receipt v2 / action digest contract for the future Broker and Approval Authority (rule 9; spec/architecture.md decision log 2026-10-30+receipt-v2-contract)
     ...['action-digest.mjs', 'receipt-v2.mjs', 'strict-json.mjs', 'network-attestation.mjs', 'network-attestation-vectors.json', 'receipt-v2.schema.json', 'test-vectors.json', 'ActionDigest.cs', 'ReceiptV2.cs', 'StrictJson.cs',
       // receipt v3 (basis + policy hash) and the tier policy, issue #115 step 3
-      'receipt-v3.mjs', 'receipt-v3.schema.json', 'test-vectors-v3.json', 'ReceiptV3.cs', 'TierPolicy.cs'].map((f) => `broker-contract/${f}`),
+      'receipt-v3.mjs', 'receipt-v3.schema.json', 'test-vectors-v3.json', 'ReceiptV3.cs', 'TierPolicy.cs',
+      // the C# twin of the network attestation (step 3b)
+      'NetworkAttestation.cs'].map((f) => `broker-contract/${f}`),
     ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
       'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs'].map((f) => `room-ui/${f}`)],
   public: [
@@ -346,7 +350,11 @@ else {
   vectorCounts += `; v3: ${vec3.receiptVectors?.length ?? 0} receipt, ${vec3.policyVectors?.length ?? 0} policy, ${vec3.loosenVectors?.length ?? 0} loosen`;
   if (!(vec3.receiptVectors?.length >= 12 && vec3.policyVectors?.length >= 12 && vec3.loosenVectors?.length >= 4)) violations.push('[9c vectors] test-vectors-v3.json needs at least 12 receipt, 12 policy and 4 loosen vectors');
   const sch3 = JSON.parse(fs.readFileSync(schemaV3File, 'utf8'));
-  if (sch3.additionalProperties !== false || sch3.required?.length !== Object.keys(sch3.properties ?? {}).length) violations.push('[9d schema] receipt-v3.schema.json must forbid extra keys and require every property');
+  // Every property is required except the one optional field of step 3b (the attestation digest a no-person start / create receipt carries).
+  const optionalV3 = Object.keys(sch3.properties ?? {}).filter((name) => !(sch3.required ?? []).includes(name));
+  if (sch3.additionalProperties !== false || (sch3.required ?? []).some((name) => !(name in (sch3.properties ?? {}))) || JSON.stringify(optionalV3) !== JSON.stringify(['attestationDigest'])) {
+    violations.push('[9d schema] receipt-v3.schema.json must forbid extra keys and require every property except the optional attestationDigest');
+  }
 }
 results.push(`9 broker-contract: ${contractMjs.length} .mjs, ${contractCs.length} .cs, vectors ${vectorCounts}`);
 

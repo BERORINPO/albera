@@ -24,15 +24,20 @@ internal static class ReceiptBuilder
     public static byte[] Build(PendingEntry entry, AuthorityIdentity identity, string issuer, string receiptId, string nonce, long iat) =>
         Write(ReceiptV2.Fields, Values(entry, identity, issuer, receiptId, nonce, iat, ReceiptV2.Version, identity.PolicyVersion));
 
-    /// <summary>A v3 receipt with basis policy: no person signed this action, the Authority's tier policy (named by its hash) said none was needed. approverKeyId names the approver key that owns the policy.</summary>
-    public static byte[] BuildPolicy(PendingEntry entry, AuthorityIdentity identity, string issuer, string receiptId, string nonce, long iat, string policyHash)
+    /// <summary>A v3 receipt with basis policy: no person signed this action, the Authority's tier policy (named by its hash) said none was needed. approverKeyId names the approver key that owns the policy.
+    /// <paramref name="attestationDigest"/> is set exactly when the rule relied on a Broker network attestation (environment.start / environment.create); <paramref name="ttlSeconds"/> then ends
+    /// no later than that attestation does.</summary>
+    public static byte[] BuildPolicy(PendingEntry entry, AuthorityIdentity identity, string issuer, string receiptId, string nonce, long iat, string policyHash,
+        string? attestationDigest = null, long ttlSeconds = ReceiptV2.DefaultTtlSeconds)
     {
-        Dictionary<string, object> values = Values(entry, identity, issuer, receiptId, nonce, iat, ReceiptV3.Version, policyHash);
+        Dictionary<string, object> values = Values(entry, identity, issuer, receiptId, nonce, iat, ReceiptV3.Version, policyHash, ttlSeconds);
         values["basis"] = ReceiptV3.BasisPolicy;
-        return Write(ReceiptV3.Fields, values);
+        if (attestationDigest is not null) values[ReceiptV3.AttestationDigestField] = attestationDigest;
+        return Write(ReceiptV3.Fields, ReceiptV3.OptionalFields, values);
     }
 
-    private static Dictionary<string, object> Values(PendingEntry entry, AuthorityIdentity identity, string issuer, string receiptId, string nonce, long iat, int version, string policyVersion)
+    private static Dictionary<string, object> Values(PendingEntry entry, AuthorityIdentity identity, string issuer, string receiptId, string nonce, long iat, int version, string policyVersion,
+        long ttlSeconds = ReceiptV2.DefaultTtlSeconds)
     {
         PendingRequest r = entry.Request;
         return new(StringComparer.Ordinal)
@@ -41,17 +46,20 @@ internal static class ReceiptBuilder
             ["approvalId"] = entry.ApprovalId, ["receiptId"] = receiptId, ["nonce"] = nonce, ["operationId"] = r.OperationId, ["idempotencyKey"] = r.IdempotencyKey,
             ["action"] = r.Dto.Action, ["actionDigest"] = entry.ActionDigest, ["projectId"] = r.Dto.ProjectId, ["computerId"] = r.Dto.ComputerId, ["leaseId"] = r.LeaseId,
             ["leaseGeneration"] = r.LeaseGeneration, ["brokerEpoch"] = r.BrokerEpoch, ["brokerChallenge"] = r.BrokerChallenge, ["policyVersion"] = policyVersion,
-            ["approverKeyId"] = identity.ApproverKeyId, ["iat"] = iat, ["exp"] = iat + ReceiptV2.DefaultTtlSeconds,
+            ["approverKeyId"] = identity.ApproverKeyId, ["iat"] = iat, ["exp"] = iat + ttlSeconds,
         };
     }
 
-    private static byte[] Write(IReadOnlyList<FieldSpec> fields, Dictionary<string, object> values)
+    private static byte[] Write(IReadOnlyList<FieldSpec> fields, Dictionary<string, object> values) => Write(fields, [], values);
+
+    // The required fields in the contract's order, then the optional ones that are present.
+    private static byte[] Write(IReadOnlyList<FieldSpec> fields, IReadOnlyList<FieldSpec> optional, Dictionary<string, object> values)
     {
         using MemoryStream buffer = new();
         using (Utf8JsonWriter writer = new(buffer))
         {
             writer.WriteStartObject();
-            foreach (FieldSpec field in fields)
+            foreach (FieldSpec field in fields.Concat(optional.Where(o => values.ContainsKey(o.Name))))
             {
                 if (values[field.Name] is long number) writer.WriteNumber(field.Name, number);
                 else writer.WriteString(field.Name, (string)values[field.Name]);

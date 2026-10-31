@@ -28,7 +28,8 @@ internal static partial class Program
             Console.WriteLine($"SERVICE_POLICY=invalid:{policyReason}");
             return ExitCodes.PolicyInvalid;
         }
-        AuthorityCore core = new(new PendingStore(AuthorityRuntime.UnixNow, int.Parse(ttlSeconds, System.Globalization.CultureInfo.InvariantCulture)), signer, presence, AuthorityRuntime.IdentityOf(config), AuthorityRuntime.UnixNow, policy, Console.WriteLine);
+        using PinnedAttestationKey? attestation = AuthorityRuntime.AttestationKeyOf(config);
+        AuthorityCore core = new(new PendingStore(AuthorityRuntime.UnixNow, int.Parse(ttlSeconds, System.Globalization.CultureInfo.InvariantCulture)), signer, presence, AuthorityRuntime.IdentityOf(config), AuthorityRuntime.UnixNow, policy, Console.WriteLine, attestation);
         Console.WriteLine("AUTHORITY_PUBLIC_KEY=" + Convert.ToBase64String(signer.PublicKeySpki));
         using CancellationTokenSource stop = new();
         _ = Task.Run(() => { Console.In.ReadToEnd(); stop.Cancel(); });

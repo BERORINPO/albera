@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 
 // The C# twin (src/runtime/broker-contract/*.cs) is compiled by source include into a throwaway console in a temp dir and must reproduce
-// every shared vector: digest, preimage bytes, verdict code and field; and the receipt v3 / tier policy vectors (test-vectors-v3.json). Skipped without a .NET 10 SDK.
+// every shared vector: digest, preimage bytes, verdict code and field; the receipt v3 / tier policy vectors (test-vectors-v3.json); and the network attestation vectors
+// (network-attestation-vectors.json: canonical digest, and the signature / expiry / binding verdicts of NetworkAttestation.Verify). Skipped without a .NET 10 SDK.
 // No Broker or Authority code is involved.
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const contractDir = path.join(repositoryRoot, 'src', 'runtime', 'broker-contract');
@@ -17,6 +18,7 @@ const vectorsPath = path.join(contractDir, 'test-vectors.json');
 const schemaPath = path.join(contractDir, 'receipt-v2.schema.json');
 const vectorsV3Path = path.join(contractDir, 'test-vectors-v3.json');
 const schemaV3Path = path.join(contractDir, 'receipt-v3.schema.json');
+const attestationVectorsPath = path.join(contractDir, 'network-attestation-vectors.json');
 
 function unavailableReason() {
   try {
@@ -25,7 +27,7 @@ function unavailableReason() {
   } catch { return 'dotnet unavailable'; }
 }
 
-test('C# ActionDigest, ReceiptV2, ReceiptV3 and TierPolicy give the same digests, verdicts and policy hashes as the Node contract for every vector', { skip: unavailableReason(), timeout: 240_000 }, () => {
+test('C# ActionDigest, ReceiptV2, ReceiptV3, TierPolicy and NetworkAttestation give the same digests, verdicts and policy hashes as the Node contract for every vector', { skip: unavailableReason(), timeout: 240_000 }, () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'albera-receipt-v2-'));
   try {
     const output = path.join(root, 'out');
@@ -33,7 +35,7 @@ test('C# ActionDigest, ReceiptV2, ReceiptV3 and TierPolicy give the same digests
     const run = (args) => execFileSync('dotnet', args, { encoding: 'utf8', stdio: 'pipe', timeout: 180_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
     run(['build', harnessProject, '--configuration', 'Release', '--output', output, `--property:ContractDir=${contractDir}${path.sep}`,
       `--property:BaseIntermediateOutputPath=${intermediate}`, `--property:MSBuildProjectExtensionsPath=${intermediate}`, '--nologo']);
-    const result = JSON.parse(run([path.join(output, 'ReceiptV2Harness.dll'), vectorsPath, schemaPath, vectorsV3Path, schemaV3Path]));
+    const result = JSON.parse(run([path.join(output, 'ReceiptV2Harness.dll'), vectorsPath, schemaPath, vectorsV3Path, schemaV3Path, attestationVectorsPath]));
     const vectors = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
 
     assert.deepEqual(result.schemaMismatches, [], 'ReceiptV2.Fields equals receipt-v2.schema.json');
@@ -54,6 +56,7 @@ test('C# ActionDigest, ReceiptV2, ReceiptV3 and TierPolicy give the same digests
     const v3 = JSON.parse(fs.readFileSync(vectorsV3Path, 'utf8'));
     assert.deepEqual(result.v3SchemaMismatches, [], 'ReceiptV3.Fields equals receipt-v3.schema.json');
     assert.deepEqual(result.policyBasisActions, ['environment.inspect', 'environment.stop', 'workspace.inspect', 'task.cancel']);
+    assert.deepEqual(result.attestedPolicyBasisActions, ['environment.create', 'environment.start']);
     const check = (actual, expectedVectors, label) => {
       assert.equal(actual.length, expectedVectors.length, label);
       expectedVectors.forEach((vector, i) => {
@@ -75,6 +78,12 @@ test('C# ActionDigest, ReceiptV2, ReceiptV3 and TierPolicy give the same digests
     });
     assert.deepEqual(result.loosen, v3.loosenVectors.map(({ name, loosens }) => ({ name, loosens })));
     assert.deepEqual(result.policyMessageHex, v3.policyMessage.cases.map((c) => c.messageHex));
+
+    // Network attestation: the digest vectors (the exact preimage bytes) and the signed verify vectors, with the vector file's ephemeral public key.
+    const attestation = JSON.parse(fs.readFileSync(attestationVectorsPath, 'utf8'));
+    check(result.attestationDigest, attestation.digestVectors.map(({ name, expected }) => ({ name, expected })), 'attestation digest vector');
+    assert.ok(attestation.verifyVectors.cases.length >= 40 && result.attestationVerify.length === attestation.verifyVectors.cases.length);
+    check(result.attestationVerify, attestation.verifyVectors.cases.map(({ name, result: expected }) => ({ name, expected })), 'attestation verify vector');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
