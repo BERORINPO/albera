@@ -70,7 +70,7 @@ Two pipes, one principal each; the Authority computes the digest; receipts expir
 The order is chosen so that no step can make a destructive action promptless on its own.
 
 1. `environment.retire` + the Broker's retirement journal and scheduled purge; `environment.purge` (always prompts). No tier yet: every action still prompts. **Done in PR #118 (2026-10-31)**, see "Step 1 as built" below.
-2. Network attestation from the Broker (adapters and switches, bound to incarnation and lease generation).
+2. Network attestation from the Broker (adapters and switches, bound to incarnation and lease generation). **Done in PR #120 (2026-10-31)**, see "Step 2 as built".
 3. Receipt v3 with `basis`, the policy file, the Hello-signed policy change, the careful and standard tiers. `environment.destroy` keeps prompting.
 4. Checkpoint before `task.start` (measure the cost in the VM lab first).
 5. Scoped grants (delegated tier) and the approval-screen text for them.
@@ -89,6 +89,15 @@ Each step ships on its own and keeps today's behaviour until the owner picks a t
   - Restoring a backup of the retired VM in place with the same Hyper-V VM id is treated as the same VM (it would be retired and later purged). The Broker cannot tell the two apart; destroy still prompts, and purge only runs after the retention period.
   - No retention disk budget yet; the Control Plane store does not release the lease after retire.
 - Reviews: Codex, three rounds (5 HIGH, then 2 HIGH, all fixed; the last finding is the in-place restore limit above).
+
+## Step 2 as built (PR #120)
+
+- Contract `src/runtime/broker-contract/network-attestation.mjs` (pure, pinned by `network-attestation-vectors.json`): a 10-key body (v, network, computerId, vmId, generation, projectId, leaseId, leaseGeneration, observedAt, expiresAt; TTL 60 s by default, at most 300 s), a domain-separated canonical digest (`albera.network-attestation.v1`), a signed envelope `{attestation, digest, keyId, signature}`, and `verifyNetworkAttestation`, which checks the signature first and reads the clock after it, then refuses an expired or not-yet-valid statement and any binding that differs from what the caller expects.
+- Classification: no adapters = `none`; any well-formed adapter, connected or not = `present`; anything unreadable or malformed = `unknown`.
+- Produced Broker-side only: a read-only `network` method in `env-io.ps1` returns the VM id and its adapters in one observation; `attestNetwork` on the Hyper-V Broker prototype signs through a signer port (a fake HMAC signer in tests; no real key yet). The project comes only from the VM's Notes, which `create` now writes; a VM without a project in its Notes is refused, so VMs created before this change cannot be attested until re-created.
+- Nothing consumes the attestation yet (step 3b will, with a C# twin and a real signature).
+- Known limits: the new PowerShell function has not run on real Hyper-V; pass-through physical NICs (DDA / SR-IOV) are not read; `create` disconnects the default adapter but does not remove it, so every VM attests `present` until `create` removes it (checked in the VM lab first).
+- Reviews: Codex, two rounds (3 HIGH, all fixed).
 
 ## Review of the first draft (Codex, 2026-10-31)
 
