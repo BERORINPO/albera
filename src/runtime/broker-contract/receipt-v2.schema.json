@@ -99,6 +99,8 @@
         "environment.start",
         "environment.stop",
         "environment.destroy",
+        "environment.retire",
+        "environment.purge",
         "synthetic.noop",
         "task.start",
         "task.cancel",

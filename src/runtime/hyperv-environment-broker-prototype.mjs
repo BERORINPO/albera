@@ -2,7 +2,7 @@
 // that ADR-002 requires. It is not imported from any entry point, API route or host composition.
 // Reaching Hyper-V needs membership in the local "Hyper-V Administrators" group.
 // It implements the fixed Broker methods HyperVEnvironmentProvider calls (createVm / inspectVm /
-// startVm / stopVm / removeVm): a VM is a differencing-disk clone of a golden image (ADR-004,
+// startVm / stopVm / removeVm, plus retireVm / purgeVm for #115 step 1): a VM is a differencing-disk clone of a golden image (ADR-004,
 // provisioning sequence 3). The golden image is named only by the host-registered ledger below;
 // no operation can supply a path. Transport: a fixed `pwsh -File <fixed path>` process; the request
 // travels as JSON on stdin. No command line is ever assembled from data.
@@ -13,6 +13,7 @@ import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateEnvironmentOperation } from './environment-provider.mjs';
+import { purgeExpired } from './environment-retirement-journal.mjs';
 
 const SCRIPT_PATH = fileURLToPath(new URL('./hyperv-env/env-io.ps1', import.meta.url));
 const PWSH_ARGS = Object.freeze(['-NoProfile', '-NonInteractive', '-File', SCRIPT_PATH]);
@@ -30,8 +31,13 @@ const STOP_WAIT_FRACTION = 0.8;
 
 export function createHyperVEnvironmentBrokerPrototype({
   goldenImages, cloneRoot, pwsh = 'pwsh', timeoutMs = DEFAULT_TIMEOUT_MS,
-  hashFile = sha256OfFile, runPowerShell, now = () => new Date(),
+  hashFile = sha256OfFile, runPowerShell, now = () => new Date(), retirements,
 } = {}) {
+  // `retirements` is the Broker-owned retirement journal (environment-retirement-journal.mjs): host configuration, never operation input. Without it retire / purge are refused.
+  if (retirements !== undefined && (retirements === null || typeof retirements.retire !== 'function' || typeof retirements.get !== 'function'
+    || typeof retirements.remove !== 'function' || typeof retirements.expired !== 'function')) {
+    throw new TypeError('invalid_hyperv_environment_prototype_options');
+  }
   if (typeof pwsh !== 'string' || pwsh.length === 0 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1000
     || typeof hashFile !== 'function' || typeof now !== 'function'
     || (runPowerShell !== undefined && typeof runPowerShell !== 'function')) {
@@ -41,6 +47,7 @@ export function createHyperVEnvironmentBrokerPrototype({
   const ledger = checkedLedger(goldenImages, root);
   const run = runPowerShell ?? ((request) => spawnScript(pwsh, timeoutMs, request));
   const hashCache = new Map(); // path|size|mtimeMs -> hex; valid for this broker instance only
+  const waitSeconds = Math.max(1, Math.floor((timeoutMs * STOP_WAIT_FRACTION) / 1000));
 
   const observed = (computerId, state, generation) => ({
     computerId, providerId: PROVIDER_ID, state, generation, observedAt: now().toISOString(),
@@ -100,6 +107,8 @@ export function createHyperVEnvironmentBrokerPrototype({
   return {
     async createVm(input) {
       const { operation, vmName } = checkedOperation(input, 'create');
+      // A retirement record means this computer id still has a retired incarnation: never create a new one over it.
+      if (retirements?.get(operation.computerId)) throw brokerError('operation_conflict', 'not_applied');
       const { spec } = operation;
       const golden = Object.hasOwn(ledger, spec.imageDigest) ? ledger[spec.imageDigest] : null;
       if (!golden || golden.os !== spec.os || golden.architecture !== spec.architecture
@@ -134,7 +143,7 @@ export function createHyperVEnvironmentBrokerPrototype({
       // validator requires an integer >= 1). For an existing VM the Notes generation is the truth.
       if (!vm) return observed(operation.computerId, 'missing', operation.expectedGeneration);
       if (!vm.meta || vm.meta.computerId !== operation.computerId) throw brokerError('invalid_provider_state', 'not_applied');
-      return observed(operation.computerId, vm.state, vm.meta.generation);
+      return observed(operation.computerId, retirements?.get(operation.computerId) && vm.state === 'off' ? 'retired' : vm.state, vm.meta.generation);
     },
 
     async startVm(input) { return changeState(input, 'start'); },
@@ -144,18 +153,81 @@ export function createHyperVEnvironmentBrokerPrototype({
     async removeVm(input) {
       const { operation, vmName } = checkedOperation(input, 'destroy');
       if (!await managed(operation, vmName)) return observed(operation.computerId, 'missing', operation.expectedGeneration);
-      // The VM folder is always cloneRoot/<vmName>; the script deletes only disks inside it.
-      await call({ method: 'remove', vmName, cloneRoot: root, vmDir: path.join(root, vmName), expect: expectOf(operation) });
+      await deleteVm(operation, vmName);
+      dropRetirement(operation.computerId); // a destroyed environment leaves no retirement record behind
       return observed(operation.computerId, 'missing', operation.expectedGeneration);
     },
+
+    // Retire: stop, detach (a retired computer id is refused by start and by create), keep every disk, and write the retirement record at this Broker's own time.
+    // Stop first, record second: a crash in between leaves a stopped, not-yet-retired VM and a retry finishes the job. A retired VM keeps its original deadline.
+    async retireVm(input) {
+      const { operation, vmName } = checkedOperation(input, 'retire');
+      if (!retirements) throw brokerError('invalid_provider_state', 'not_applied');
+      const vm = await managed(operation, vmName);
+      if (!vm) throw brokerError('invalid_provider_state', 'not_applied');
+      if (vm.state !== 'off') await call({ method: 'stop', vmName, expect: expectOf(operation), waitSeconds });
+      try {
+        retirements.retire({ computerId: operation.computerId, projectId: operation.projectId, generation: operation.expectedGeneration });
+      }
+      catch (error) {
+        throw error?.code === 'retirement_conflict' ? brokerError('operation_conflict', 'not_applied') : brokerError('provider_state_unknown');
+      }
+      return observed(operation.computerId, 'retired', operation.expectedGeneration);
+    },
+
+    // Purge: delete the disks of a RETIRED environment only. This is the requested (approved) purge; it does not wait for the deadline.
+    async purgeVm(input) {
+      const { operation, vmName } = checkedOperation(input, 'purge');
+      if (!retirements) throw brokerError('invalid_provider_state', 'not_applied');
+      if (!await managed(operation, vmName)) {
+        dropRetirement(operation.computerId);
+        return observed(operation.computerId, 'missing', operation.expectedGeneration);
+      }
+      const record = retirements.get(operation.computerId);
+      if (!record || record.generation !== operation.expectedGeneration || record.projectId !== operation.projectId) throw brokerError('environment_not_retired', 'not_applied');
+      await deleteVm(operation, vmName);
+      dropRetirement(operation.computerId);
+      return observed(operation.computerId, 'missing', operation.expectedGeneration);
+    },
+
+    /**
+     * The scheduled purge: removes only environments whose own retirement record has passed its deadline. It reads this Broker's journal and a clock and nothing the Control Plane sends;
+     * `now` (epoch ms or Date) is for the Broker's timer and tests, omitted it is the journal's own clock. Not wired to a timer yet. Returns one result per expired record.
+     */
+    async purgeExpiredRetirements({ now: at } = {}) {
+      if (!retirements) throw brokerError('invalid_provider_state', 'not_applied');
+      return purgeExpired({
+        journal: retirements,
+        atMs: at,
+        purgeRecord: async (record) => {
+          if (!COMPUTER_ID_RE.test(record.computerId)) return 'skipped';
+          const vmName = `${VM_PREFIX}${record.computerId}`;
+          const vm = await lookup(vmName);
+          if (!vm) return 'already_missing';
+          if (!vm.meta || vm.meta.computerId !== record.computerId || vm.meta.generation !== record.generation) return 'skipped';
+          await deleteVm({ computerId: record.computerId, expectedGeneration: record.generation }, vmName);
+          return 'purged';
+        },
+      });
+    },
   };
+
+  // The VM folder is always cloneRoot/<vmName>; the script deletes only disks inside it.
+  function deleteVm(operation, vmName) {
+    return call({ method: 'remove', vmName, cloneRoot: root, vmDir: path.join(root, vmName), expect: expectOf(operation) });
+  }
+
+  // A stale record would block a re-create of the same id until its deadline; the scheduled purge reaps it then, so a failed drop is not an error here.
+  function dropRetirement(computerId) {
+    try { retirements?.remove(computerId); }
+    catch { /* see above */ }
+  }
 
   async function changeState(input, method) {
     const { operation, vmName } = checkedOperation(input, method);
     if (!await managed(operation, vmName)) throw brokerError('invalid_provider_state', 'not_applied');
-    const result = await call({
-      method, vmName, expect: expectOf(operation), waitSeconds: Math.max(1, Math.floor((timeoutMs * STOP_WAIT_FRACTION) / 1000)),
-    });
+    if (method === 'start' && retirements?.get(operation.computerId)) throw brokerError('environment_retired', 'not_applied');
+    const result = await call({ method, vmName, expect: expectOf(operation), waitSeconds });
     return observed(operation.computerId, mapState(result.state), operation.expectedGeneration);
   }
 }

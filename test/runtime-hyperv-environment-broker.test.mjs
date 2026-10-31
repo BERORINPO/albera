@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHyperVEnvironmentBrokerPrototype } from '../src/runtime/hyperv-environment-broker-prototype.mjs';
 import { HyperVEnvironmentProvider } from '../src/runtime/hyperv-environment-provider.mjs';
+import { createRetirementJournal } from '../src/runtime/environment-retirement-journal.mjs';
 
 const HEX = 'a'.repeat(64);
 const DIGEST = `sha256:${HEX}`;
@@ -96,10 +97,10 @@ async function rejects(promise, code, outcome) {
   });
 }
 
-test('the broker is a plain object with exactly the five fixed methods as own data properties', () => {
+test('the broker is a plain object with exactly the fixed methods as own data properties (five lifecycle, retire / purge, scheduled purge)', () => {
   const { broker } = makeBroker();
   assert.equal(Object.getPrototypeOf(broker), Object.prototype);
-  assert.deepEqual(Object.keys(broker).sort(), ['createVm', 'inspectVm', 'removeVm', 'startVm', 'stopVm']);
+  assert.deepEqual(Object.keys(broker).sort(), ['createVm', 'inspectVm', 'purgeExpiredRetirements', 'purgeVm', 'removeVm', 'retireVm', 'startVm', 'stopVm']);
   for (const d of Object.values(Object.getOwnPropertyDescriptors(broker))) assert.equal(typeof d.value, 'function');
   assert.doesNotThrow(() => new HyperVEnvironmentProvider({ broker }));
 });
@@ -347,4 +348,189 @@ test('real Hyper-V: create, start, stop and destroy a clone without touching the
   }
   assert.equal((await broker.inspectVm(real('inspect'))).state, 'missing');
   assert.equal(await digestOf(), before, 'the golden image is unchanged');
+});
+
+// ---- #115 step 1: retire / purge / scheduled purge (the retirement record is the Broker's own) ----
+const T0 = Date.parse('2026-10-31T00:00:00.000Z');
+const DAY = 24 * 60 * 60 * 1000;
+
+function retiringBroker({ filePath, retentionMs } = {}) {
+  const state = { ms: T0 };
+  const journal = createRetirementJournal({ filePath, nowMs: () => state.ms, retentionMs });
+  const made = makeBroker({ options: { retirements: journal } });
+  return { ...made, journal, state };
+}
+
+test('retire stops a running VM, keeps its disks, records the retirement, and later start / create are refused', async () => {
+  const { broker, ps, journal } = retiringBroker();
+  await broker.createVm(op('create'));
+  await broker.startVm(op('start'));
+  const observed = await broker.retireVm(op('retire'));
+  assert.equal(observed.state, 'retired');
+  assert.equal(ps.vms.get('albera-pc-01').state, 'Off');
+  assert.equal(ps.count('remove'), 0, 'retire keeps every disk');
+  assert.deepEqual(journal.get('pc-01'), { computerId: 'pc-01', projectId: 'proj-1', generation: 1, retiredAtMs: T0, deadlineMs: T0 + 7 * DAY });
+  assert.equal((await broker.inspectVm(op('inspect'))).state, 'retired');
+  await rejects(broker.startVm(op('start')), 'environment_retired', 'not_applied');
+  await rejects(broker.createVm(op('create')), 'operation_conflict', 'not_applied');
+  assert.equal(ps.count('start'), 1);
+  assert.equal(ps.count('create'), 1);
+});
+
+test('retire is idempotent (the first deadline stands) and refuses a missing VM, a stale generation, another project, or a Broker without a journal', async () => {
+  const { broker, ps, journal, state } = retiringBroker();
+  await rejects(broker.retireVm(op('retire')), 'invalid_provider_state', 'not_applied');
+  await broker.createVm(op('create'));
+  await rejects(broker.retireVm(op('retire', { expectedGeneration: 2 })), 'stale_generation', 'not_applied');
+  await broker.retireVm(op('retire'));
+  const first = journal.get('pc-01');
+  state.ms += 3 * DAY;
+  assert.equal((await broker.retireVm(op('retire'))).state, 'retired');
+  assert.deepEqual(journal.get('pc-01'), first);
+  await rejects(broker.retireVm(op('retire', { projectId: 'proj-2' })), 'operation_conflict', 'not_applied');
+
+  const bare = makeBroker();
+  await bare.broker.createVm(op('create'));
+  await rejects(bare.broker.retireVm(op('retire')), 'invalid_provider_state', 'not_applied');
+  await rejects(bare.broker.purgeVm(op('purge')), 'invalid_provider_state', 'not_applied');
+  assert.equal(bare.ps.vms.get('albera-pc-01').state, 'Off');
+  assert.equal(ps.count('remove'), 0);
+});
+
+test('purge refuses a VM that is not retired and deletes a retired one; destroy still deletes at once', async () => {
+  const { broker, ps, journal } = retiringBroker();
+  await broker.createVm(op('create'));
+  await broker.startVm(op('start'));
+  await rejects(broker.purgeVm(op('purge')), 'environment_not_retired', 'not_applied');
+  assert.equal(ps.count('remove'), 0);
+  assert.equal(ps.vms.get('albera-pc-01').state, 'Running');
+
+  await broker.retireVm(op('retire'));
+  await rejects(broker.purgeVm(op('purge', { projectId: 'proj-2' })), 'environment_not_retired', 'not_applied');
+  await rejects(broker.purgeVm(op('purge', { expectedGeneration: 2 })), 'stale_generation', 'not_applied');
+  assert.equal(ps.count('remove'), 0);
+  const purged = await broker.purgeVm(op('purge'));
+  assert.equal(purged.state, 'missing');
+  assert.equal(ps.count('remove'), 1);
+  assert.equal(ps.vms.has('albera-pc-01'), false);
+  assert.deepEqual(journal.list(), []);
+  assert.equal((await broker.purgeVm(op('purge'))).state, 'missing', 'repeat is already gone');
+
+  await broker.createVm(op('create'));
+  assert.equal((await broker.removeVm(op('destroy'))).state, 'missing', 'destroy needs no retirement');
+  assert.equal(ps.count('remove'), 2);
+});
+
+test('destroy of a retired VM leaves no record, so the id can be created again and is not retired', async () => {
+  const { broker, journal } = retiringBroker();
+  await broker.createVm(op('create'));
+  await broker.retireVm(op('retire'));
+  assert.equal((await broker.removeVm(op('destroy'))).state, 'missing');
+  assert.deepEqual(journal.list(), []);
+  await broker.createVm(op('create'));
+  assert.equal((await broker.startVm(op('start'))).state, 'running');
+});
+
+test('purge sends the script the same request shape as destroy: only the fixed folder under cloneRoot, never the golden image', async () => {
+  const { broker, ps } = retiringBroker();
+  await broker.createVm(op('create'));
+  await broker.retireVm(op('retire'));
+  await broker.purgeVm(op('purge'));
+  const request = ps.calls.find((c) => c.method === 'remove');
+  assert.equal(path.dirname(request.vmDir), cloneRoot);
+  assert.equal(path.basename(request.vmDir), 'albera-pc-01');
+  assert.deepEqual(request.expect, { computerId: 'pc-01', generation: 1 });
+  for (const value of Object.values(request).filter((v) => typeof v === 'string')) assert.notEqual(value, golden);
+});
+
+test('scheduled purge removes only VMs whose own record has passed its deadline (clock injected); nothing else is touched', async () => {
+  const { broker, ps, journal, state } = retiringBroker();
+  for (const id of ['old-one', 'young-one', 'plain-one']) await broker.createVm(op('create', { computerId: id }));
+  await broker.startVm(op('start', { computerId: 'plain-one' }));
+  await broker.retireVm(op('retire', { computerId: 'old-one' }));
+  state.ms += 5 * DAY;
+  await broker.retireVm(op('retire', { computerId: 'young-one' }));
+  const oldDeadline = journal.get('old-one').deadlineMs;
+
+  assert.deepEqual(await broker.purgeExpiredRetirements({ now: oldDeadline - 1 }), []);
+  assert.equal(ps.count('remove'), 0);
+  assert.deepEqual(await broker.purgeExpiredRetirements({ now: oldDeadline }), [{ computerId: 'old-one', outcome: 'purged' }]);
+  assert.deepEqual([...ps.vms.keys()].sort(), ['albera-plain-one', 'albera-young-one']);
+  assert.equal(ps.vms.get('albera-plain-one').state, 'Running', 'a VM with no retirement record is never purged');
+  assert.deepEqual(journal.list().map((r) => r.computerId), ['young-one']);
+  assert.equal(ps.count('remove'), 1);
+
+  state.ms = oldDeadline + 100 * DAY;
+  assert.deepEqual(await broker.purgeExpiredRetirements(), [{ computerId: 'young-one', outcome: 'purged' }], 'without an argument the Broker clock decides');
+  assert.deepEqual([...ps.vms.keys()], ['albera-plain-one']);
+});
+
+test('scheduled purge reaps a record whose VM is already gone, skips a VM that is not the recorded incarnation, and reports a failed removal', async () => {
+  const { broker, ps, journal } = retiringBroker({ retentionMs: 1000 });
+  for (const id of ['gone', 'moved', 'broken']) {
+    await broker.createVm(op('create', { computerId: id }));
+    await broker.retireVm(op('retire', { computerId: id }));
+  }
+  ps.vms.delete('albera-gone');
+  ps.vms.get('albera-moved').notes = JSON.stringify({ albera: 1, computerId: 'moved', generation: 9, imageDigest: DIGEST });
+  const failing = makeBroker({
+    ps,
+    options: {
+      retirements: journal,
+      runPowerShell: async (request) => (request.method === 'remove' && request.vmName === 'albera-broken' ? { ok: false, code: 'provider_timeout' } : ps.run(request)),
+    },
+  });
+  const results = await failing.broker.purgeExpiredRetirements({ now: T0 + 1000 });
+  assert.deepEqual(results, [
+    { computerId: 'broken', outcome: 'failed', code: 'provider_timeout' },
+    { computerId: 'gone', outcome: 'already_missing' },
+    { computerId: 'moved', outcome: 'skipped' },
+  ]);
+  assert.deepEqual(journal.list().map((r) => r.computerId), ['broken', 'moved'], 'only finished purges drop their record');
+  assert.equal(ps.vms.has('albera-moved'), true);
+  assert.equal(ps.vms.has('albera-broken'), true);
+});
+
+test('a retirement survives a Broker restart: a new Broker over the same file purges from the stored deadline', async () => {
+  const filePath = path.join(tmp, 'hv-retirements.json');
+  const first = retiringBroker({ filePath });
+  await first.broker.createVm(op('create'));
+  await first.broker.retireVm(op('retire'));
+  const recorded = first.journal.get('pc-01');
+
+  // Restart: new journal object over the same file, the same (fake) hypervisor, a clock one millisecond short of the stored deadline.
+  const later = { ms: recorded.deadlineMs - 1 };
+  const journal2 = createRetirementJournal({ filePath, nowMs: () => later.ms });
+  assert.deepEqual(journal2.get('pc-01'), recorded);
+  const second = makeBroker({ ps: first.ps, options: { retirements: journal2 } });
+  assert.equal((await second.broker.inspectVm(op('inspect'))).state, 'retired');
+  await rejects(second.broker.startVm(op('start')), 'environment_retired', 'not_applied');
+  assert.deepEqual(await second.broker.purgeExpiredRetirements(), []);
+  later.ms += 1;
+  assert.deepEqual(await second.broker.purgeExpiredRetirements(), [{ computerId: 'pc-01', outcome: 'purged' }]);
+  assert.equal(first.ps.vms.size, 0);
+  assert.deepEqual(createRetirementJournal({ filePath }).list(), []);
+});
+
+test('the retirement journal is host configuration: a malformed one is refused when the Broker is built', () => {
+  for (const retirements of [null, {}, { retire() {}, get() {}, remove() {} }]) {
+    assert.throws(() => makeBroker({ options: { retirements } }), TypeError);
+  }
+});
+
+test('HyperVEnvironmentProvider drives retire then purge, maps the new safe codes, and leaves them unimplemented on a Broker without the methods', async () => {
+  const { broker, ps } = retiringBroker();
+  const provider = new HyperVEnvironmentProvider({ broker });
+  await provider.create(op('create'));
+  await provider.start(op('start'));
+  await assert.rejects(provider.purge(op('purge')), (e) => e.code === 'environment_not_retired' && e.outcome === 'not_applied');
+  assert.equal((await provider.retire(op('retire'))).state, 'retired');
+  await assert.rejects(provider.start(op('start')), (e) => e.code === 'environment_retired' && e.outcome === 'not_applied');
+  assert.equal((await provider.purge(op('purge'))).state, 'missing');
+  assert.equal(ps.vms.size, 0);
+
+  const { createVm, inspectVm, startVm, stopVm, removeVm } = broker;
+  const old = new HyperVEnvironmentProvider({ broker: { createVm, inspectVm, startVm, stopVm, removeVm } });
+  await assert.rejects(old.retire(op('retire')), (e) => e.code === 'provider_not_implemented' && e.outcome === 'not_applied');
+  await assert.rejects(old.purge(op('purge')), (e) => e.code === 'provider_not_implemented' && e.outcome === 'not_applied');
 });

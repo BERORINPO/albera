@@ -3,8 +3,10 @@
  * These validators do not authorize operations or connect a provider to the Runtime API.
  */
 
-export const ENVIRONMENT_ACTIONS = Object.freeze(['create', 'inspect', 'start', 'stop', 'destroy']);
-export const ENVIRONMENT_STATES = Object.freeze(['missing', 'off', 'running', 'paused', 'failed', 'unknown']);
+// destroy keeps its meaning (delete now). retire (undoable: stop, detach, keep the disks) and purge (delete the disks of a RETIRED environment) are separate names, see docs/architecture/approval-tiers.md.
+export const ENVIRONMENT_ACTIONS = Object.freeze(['create', 'inspect', 'start', 'stop', 'destroy', 'retire', 'purge']);
+// 'retired' is reported only by a provider whose own Broker-side retirement record says so; nothing a Control Plane sends can produce it.
+export const ENVIRONMENT_STATES = Object.freeze(['missing', 'off', 'running', 'paused', 'retired', 'failed', 'unknown']);
 export const ENVIRONMENT_KINDS = Object.freeze(['persistent', 'ephemeral', 'verification']);
 export const ENVIRONMENT_CAPABILITIES = Object.freeze(['terminal', 'browser', 'desktop']);
 
@@ -39,6 +41,8 @@ export class EnvironmentProvider {
   async start(_operation) { throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' }); }
   async stop(_operation) { throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' }); }
   async destroy(_operation) { throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' }); }
+  async retire(_operation) { throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' }); }
+  async purge(_operation) { throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' }); }
 }
 
 export function validateEnvironmentSpec(spec) {

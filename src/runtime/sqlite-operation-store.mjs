@@ -10,7 +10,7 @@ import { assertBrokerRequestMatchesAuthorization, validateBrokerRequest, validat
 import { assertPrivateWindowsAcl, RuntimeStorageAclError } from './windows-acl.mjs';
 import { EnvironmentProviderError, validateEnvironmentCapacity, validateEnvironmentOperation, validateEnvironmentQuota, validateEnvironmentSpec, validateObservedEnvironment } from './environment-provider.mjs';
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const FLOW_RECORD_SCHEMA = 1; // the version of the JSON in flow_operations.record_json, independent of the database schema
 const FLOW_MAX_FROM_PHASES = 16;
 const DEFAULT_MAX_RECORDS = 20_000;
@@ -22,7 +22,7 @@ const WAL_JOURNAL_SIZE_LIMIT_BYTES = 4 * 1024 * 1024;
 const RECOVERY_OWNER_MAGIC = 'ALBERA_SQLITE_RECOVERY_OWNER_V1';
 const RESTORE_INVALIDATE = Symbol('restoreInvalidate');
 const RESTORE_MODE = Symbol('restoreMode');
-const DESIRED_STATES = Object.freeze({ create: 'off', inspect: null, start: 'running', stop: 'off', destroy: 'missing' });
+const DESIRED_STATES = Object.freeze({ create: 'off', inspect: null, start: 'running', stop: 'off', destroy: 'missing', retire: 'retired', purge: 'missing' });
 
 export class EnvironmentStoreError extends Error {
   constructor(code) { super(code); this.name = 'EnvironmentStoreError'; this.code = code; }
@@ -982,11 +982,39 @@ class SqliteEnvironmentOperationStore {
   #assertOpen() { if (this.#closed) throw new EnvironmentStoreError('store_closed'); }
 }
 
+// The CHECK on `action` is part of the table, so a new action name needs a table rebuild (v6: 'retire', 'purge', issue #115). One definition serves the first create and the rebuild.
+function operationsTableSql(name) {
+  return `CREATE TABLE ${name} (
+        id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL, subject_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        task_id TEXT NOT NULL, run_id TEXT NOT NULL, computer_id TEXT NOT NULL REFERENCES computers(id),
+        provider_id TEXT NOT NULL, lease_id TEXT NOT NULL REFERENCES leases(id), generation INTEGER NOT NULL CHECK(generation >= 1),
+        action TEXT NOT NULL CHECK(action IN ('create','inspect','start','stop','destroy','retire','purge')),
+        action_digest TEXT NOT NULL, request_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('REQUESTED','UNKNOWN','SUCCEEDED','FAILED')),
+        desired_state TEXT, observed_state TEXT NOT NULL, observed_at TEXT, error_code TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(subject_id, project_id, idempotency_key)
+      ) STRICT;`;
+}
+
+const OPERATION_COLUMNS = 'id, idempotency_key, subject_id, project_id, task_id, run_id, computer_id, provider_id, lease_id, generation, action, action_digest, request_json, status, desired_state, observed_state, observed_at, error_code, created_at, updated_at';
+
 function migrate(db) {
   const version = db.prepare('PRAGMA user_version').get()?.user_version;
   if (!Number.isSafeInteger(version) || version > SCHEMA_VERSION) throw new EnvironmentStoreError('database_schema_newer');
   if (version === SCHEMA_VERSION) return;
-  if (![0, 1, 2, 3, 4].includes(version)) throw new EnvironmentStoreError('database_schema_unsupported');
+  if (![0, 1, 2, 3, 4, 5].includes(version)) throw new EnvironmentStoreError('database_schema_unsupported');
+  // The rebuild drops a table other tables point at, so foreign keys must be off while it runs (PRAGMA foreign_keys cannot change inside a transaction); they are checked and switched back on after.
+  const rebuildsOperations = version >= 1;
+  if (rebuildsOperations) db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    migrateInTransaction(db, version, rebuildsOperations);
+  } finally {
+    if (rebuildsOperations) db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
+function migrateInTransaction(db, version, rebuildsOperations) {
   inTransaction(db, () => {
     if (version === 0) db.exec(`
       CREATE TABLE computers (
@@ -1001,17 +1029,7 @@ function migrate(db) {
         created_at TEXT NOT NULL, reservation_json TEXT, quota_json TEXT
       ) STRICT;
       CREATE UNIQUE INDEX one_unreleased_lease_per_computer ON leases(computer_id) WHERE state <> 'RELEASED';
-      CREATE TABLE operations (
-        id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL, subject_id TEXT NOT NULL, project_id TEXT NOT NULL,
-        task_id TEXT NOT NULL, run_id TEXT NOT NULL, computer_id TEXT NOT NULL REFERENCES computers(id),
-        provider_id TEXT NOT NULL, lease_id TEXT NOT NULL REFERENCES leases(id), generation INTEGER NOT NULL CHECK(generation >= 1),
-        action TEXT NOT NULL CHECK(action IN ('create','inspect','start','stop','destroy')),
-        action_digest TEXT NOT NULL, request_json TEXT NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ('REQUESTED','UNKNOWN','SUCCEEDED','FAILED')),
-        desired_state TEXT, observed_state TEXT NOT NULL, observed_at TEXT, error_code TEXT,
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        UNIQUE(subject_id, project_id, idempotency_key)
-      ) STRICT;
+      ${operationsTableSql('operations')}
       CREATE TABLE events (
         id TEXT PRIMARY KEY, aggregate_id TEXT NOT NULL, aggregate_seq INTEGER NOT NULL,
         operation_id TEXT REFERENCES operations(id), event_type TEXT NOT NULL, schema_version INTEGER NOT NULL CHECK(schema_version = 1),
@@ -1039,10 +1057,19 @@ function migrate(db) {
     CREATE INDEX operation_authorizations_operation_idx ON operation_authorizations(operation_id, purpose, recorded_at);`);
     // v5: the durable approved-operation flow journal (approved-operation-journal.mjs). `revision` and `phase` are columns so the compare-and-set is one UPDATE ... WHERE;
     // the rest of the record is JSON. `phase` has no CHECK: a corrupt or future phase must be readable so the flow can report it instead of the store refusing to open.
-    db.exec(`CREATE TABLE flow_operations (
+    if (version <= 4) db.exec(`CREATE TABLE flow_operations (
       operation_id TEXT PRIMARY KEY, revision INTEGER NOT NULL CHECK(revision >= 0), phase TEXT NOT NULL CHECK(length(phase) >= 1),
       record_schema INTEGER NOT NULL, record_json TEXT NOT NULL
     ) STRICT;`);
+    // v6: 'retire' and 'purge' are accepted actions. A database created at v6 already has them; an older one gets its operations table rebuilt with the same rows.
+    if (rebuildsOperations) {
+      db.exec(`${operationsTableSql('operations_v6')}
+        INSERT INTO operations_v6 (${OPERATION_COLUMNS}) SELECT ${OPERATION_COLUMNS} FROM operations;
+        DROP TABLE operations;
+        ALTER TABLE operations_v6 RENAME TO operations;
+        CREATE INDEX operations_computer_idx ON operations(computer_id, created_at);`);
+      if (db.prepare('PRAGMA foreign_key_check').all().length !== 0) throw new EnvironmentStoreError('database_schema_unsupported');
+    }
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   });
 }
@@ -1172,7 +1199,7 @@ function isWindowsUncPath(value) { return /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+/.te
 function hasUnresolvedProviderMutation(db, computerId, generation) {
   return Boolean(db.prepare(`SELECT id FROM operations
     WHERE computer_id = ? AND generation = ?
-      AND action IN ('create', 'start', 'stop', 'destroy')
+      AND action IN ('create', 'start', 'stop', 'destroy', 'retire', 'purge')
       AND status IN ('REQUESTED', 'UNKNOWN')
     LIMIT 1`).get(computerId, generation));
 }

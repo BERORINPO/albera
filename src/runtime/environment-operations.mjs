@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { EnvironmentProviderError, validateEnvironmentOperation, validateObservedEnvironment } from './environment-provider.mjs';
 
-const TARGET_STATE = Object.freeze({ create: 'off', start: 'running', stop: 'off', destroy: 'missing' });
+const TARGET_STATE = Object.freeze({ create: 'off', start: 'running', stop: 'off', destroy: 'missing', retire: 'retired', purge: 'missing' });
 
 /**
  * In-memory operation coordinator for deterministic contract tests.
@@ -87,6 +87,7 @@ export class EnvironmentOperationCoordinator {
   }
 
   #invoke(operation) {
+    if (typeof this.#provider[operation.action] !== 'function') throw new EnvironmentProviderError('provider_not_implemented', { outcome: 'not_applied' });
     return this.#provider[operation.action](operation);
   }
 

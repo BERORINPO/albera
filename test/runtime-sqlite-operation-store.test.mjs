@@ -16,6 +16,7 @@ import { EnvironmentStoreError, openSqliteEnvironmentStore, restoreSqliteEnviron
 import { LocalEnvironmentHostBroker } from '../src/runtime/environment-host-broker.mjs';
 import { HyperVEnvironmentProvider } from '../src/runtime/hyperv-environment-provider.mjs';
 import { MockEnvironmentProvider } from '../src/runtime/mock-environment-provider.mjs';
+import { createRetirementJournal } from '../src/runtime/environment-retirement-journal.mjs';
 import { createGuestEventIntake } from '../src/runtime/guest-event-intake.mjs';
 import { createGuestSessionCapabilityService } from '../src/runtime/guest-session-capability.mjs';
 
@@ -133,7 +134,7 @@ test('SQLite store uses WAL, FULL synchronous writes, foreign keys, and a versio
   assert.deepEqual(f.store.diagnostics(), {
     journalMode: 'wal', synchronous: 2, foreignKeys: 1, walAutoCheckpointPages: 1000,
     walJournalSizeLimitBytes: WAL_JOURNAL_SIZE_LIMIT_BYTES,
-    maxRecords: 20_000, maxGuestRecords: 5_000, schemaVersion: 5,
+    maxRecords: 20_000, maxGuestRecords: 5_000, schemaVersion: 6,
   });
   assert.equal(f.store.getComputer(f.computerId).generation, 1);
   if (process.platform !== 'win32') assert.equal((await stat(f.databasePath)).mode & 0o777, 0o600);
@@ -241,7 +242,7 @@ test('SQLite snapshot restore verifies the backup, recovers pending work, and fe
   const request = f.operation('start');
   f.store.beginOperation(request);
   const backupPath = path.join(f.root, 'operations-backup.sqlite');
-  assert.deepEqual(await f.store.backupTo(backupPath), { status: 'BACKED_UP', schemaVersion: 5 });
+  assert.deepEqual(await f.store.backupTo(backupPath), { status: 'BACKED_UP', schemaVersion: 6 });
   assert.equal(f.store.getOperation(request.operationId).status, 'REQUESTED', 'snapshot does not mutate the live store');
   if (process.platform !== 'win32') assert.equal((await stat(backupPath)).mode & 0o777, 0o600);
 
@@ -280,7 +281,7 @@ test('SQLite restore migrates a valid schema v3 snapshot without changing source
   const restored = await restoreSqliteEnvironmentStore(backupPath, restoredPath, {
     now: () => '2026-10-28T00:00:00.000Z', verifyWindowsAcl: async () => {},
   });
-  assert.equal(restored.diagnostics().schemaVersion, 5);
+  assert.equal(restored.diagnostics().schemaVersion, 6);
   const restoredComputer = restored.getComputer(f.computerId);
   assert.equal(restoredComputer.computerId, computer.computerId);
   assert.equal(restoredComputer.projectId, computer.projectId);
@@ -483,7 +484,7 @@ test('schema v1 migration preserves existing Computer and Lease rows', async (t)
   let store;
   try {
     store = await openSqliteEnvironmentStore(databasePath, { verifyWindowsAcl: async () => {} });
-    assert.equal(store.diagnostics().schemaVersion, 5);
+    assert.equal(store.diagnostics().schemaVersion, 6);
     assert.equal(store.getComputer('legacy-computer').projectId, 'legacy-project');
     assert.equal(store.getComputer('legacy-computer').capacity, null);
     assert.equal(store.getLease('legacy-lease').state, 'ACTIVE');
@@ -503,7 +504,7 @@ test('schema v2 migration creates the durable Guest event inbox without deleting
   db.exec('DROP TABLE flow_operations; DROP TABLE operation_authorizations; DROP TABLE guest_event_receipts; PRAGMA user_version = 2');
   db.close();
   await f.reopen();
-  assert.equal(f.store.diagnostics().schemaVersion, 5);
+  assert.equal(f.store.diagnostics().schemaVersion, 6);
   assert.equal(f.store.getComputer(f.computerId).generation, computer.generation);
   assert.equal(f.store.getLease(f.lease.leaseId).runId, lease.runId);
   assert.deepEqual(f.store.recordGuestEvent({
@@ -524,7 +525,7 @@ test('schema v3 migration adds durable approval records without changing existin
   db.exec('DROP TABLE flow_operations; DROP TABLE operation_authorizations; PRAGMA user_version = 3');
   db.close();
   await f.reopen();
-  assert.equal(f.store.diagnostics().schemaVersion, 5);
+  assert.equal(f.store.diagnostics().schemaVersion, 6);
   assert.deepEqual(f.store.getOperation(request.operationId), before);
   assert.deepEqual(f.store.listOperationAuthorizations(request.operationId), []);
 });
@@ -2038,12 +2039,12 @@ test('schema v4 migration adds the flow journal without touching existing rows; 
   db.exec('DROP TABLE flow_operations; PRAGMA user_version = 4');
   db.close();
   await f.reopen();
-  assert.equal(f.store.diagnostics().schemaVersion, 5);
+  assert.equal(f.store.diagnostics().schemaVersion, 6);
   assert.deepEqual(f.store.getOperation(request.operationId), before);
   assert.equal(f.store.flowJournal().get(FLOW_RECORD.operationId), null);
   f.store.flowJournal().begin(FLOW_RECORD);
   f.store.flowJournal().advance(FLOW_RECORD.operationId, 0, ['INTENT'], { phase: 'FENCED', fence: { brokerEpoch: 3 } });
-  await f.reopen(); // already at v5: no migration, no data loss
+  await f.reopen(); // already at v6: no migration, no data loss
   assert.deepEqual(f.store.flowJournal().get(FLOW_RECORD.operationId),
     { operationId: 'flow-op-1', phase: 'FENCED', revision: 1, cycle: 1, action: FLOW_RECORD.action, fence: { brokerEpoch: 3 } });
   assert.deepEqual(f.store.getOperation(request.operationId), before);
@@ -2054,7 +2055,7 @@ test('a database written by a newer schema version is refused before the journal
   f.store.flowJournal().begin(FLOW_RECORD);
   f.store.close();
   const db = new DatabaseSync(f.databasePath);
-  db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE; PRAGMA user_version = 6');
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE; PRAGMA user_version = 7');
   assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
   db.close();
   const sidecars = [`${f.databasePath}-wal`, `${f.databasePath}-shm`];
@@ -2066,7 +2067,7 @@ test('a database written by a newer schema version is refused before the journal
   assert.ok(bytesBefore.equals(await readFile(f.databasePath)), 'the database file bytes are unchanged (still not WAL)');
   const check = new DatabaseSync(f.databasePath, { readOnly: true });
   try {
-    assert.equal(check.prepare('PRAGMA user_version').get().user_version, 6);
+    assert.equal(check.prepare('PRAGMA user_version').get().user_version, 7);
     assert.equal(check.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
     assert.equal(check.prepare('SELECT COUNT(*) AS n FROM flow_operations').get().n, 1);
   } finally { check.close(); }
@@ -2158,4 +2159,107 @@ test('separate processes holding the same revision: exactly one advance wins', {
   assert.ok(outcomes.filter((outcome) => outcome.status !== 'WON').every((outcome) => outcome.errorCode === 'conflict'), JSON.stringify(outcomes));
   const stored = f.store.flowJournal().get(FLOW_RECORD.operationId);
   assert.deepEqual([stored.phase, stored.revision, stored.winner], ['FENCED', 1, winners[0].winner], "the stored record is the winner's");
+});
+
+// ---- #115 step 1: retire / purge are journaled and authorized like every other action ----
+
+test('schema v5 migration rebuilds the operations table to accept retire and purge, keeping every row, key and index', async (t) => {
+  const f = await fixture(t);
+  const request = f.operation('create');
+  const begun = f.store.beginOperation(request);
+  await recordExecutionApproval(f, request, begun);
+  f.store.recordProviderOutcome(request.operationId, { errorCode: 'fixture_failed', outcome: 'not_applied' });
+  const before = f.store.getOperation(request.operationId);
+  const authorizations = f.store.listOperationAuthorizations(request.operationId);
+  f.store.close();
+  // Put the v5 shape back: the same table with the old CHECK (no retire / purge) and user_version 5.
+  const db = new DatabaseSync(f.databasePath);
+  const { sql } = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'operations'").get();
+  const oldSql = sql.replace(',\'retire\',\'purge\'', '').replace('CREATE TABLE operations (', 'CREATE TABLE operations_old (');
+  assert.ok(!oldSql.includes('retire') && oldSql.includes('operations_old'), 'precondition: the rebuilt table is the v5 shape');
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec(`BEGIN; ${oldSql}; INSERT INTO operations_old SELECT * FROM operations; DROP TABLE operations; ALTER TABLE operations_old RENAME TO operations;
+    CREATE INDEX operations_computer_idx ON operations(computer_id, created_at); PRAGMA user_version = 5; COMMIT;`);
+  assert.throws(() => db.exec("UPDATE operations SET action = 'retire'"), /CHECK/, 'precondition: the v5 table refuses the new action');
+  db.close();
+  await f.reopen();
+  assert.equal(f.store.diagnostics().schemaVersion, 6);
+  assert.equal(f.store.diagnostics().foreignKeys, 1, 'foreign keys are back on after the rebuild');
+  assert.deepEqual(f.store.getOperation(request.operationId), before);
+  assert.deepEqual(f.store.listOperationAuthorizations(request.operationId), authorizations);
+  const retire = f.operation('retire');
+  assert.equal(f.store.beginOperation(retire).created, true);
+  assert.equal(f.store.getOperation(retire.operationId).desiredState, 'retired');
+  assert.deepEqual(f.store.beginOperation({ ...request }).created, false, 'the idempotency key of the old row still works after the rebuild');
+  f.store.close();
+  const check = new DatabaseSync(f.databasePath, { readOnly: true });
+  try {
+    assert.equal(check.prepare('PRAGMA foreign_key_check').all().length, 0);
+    assert.equal(check.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name = 'operations_computer_idx'").get().n, 1);
+    assert.equal(check.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name = 'operations_old' OR name = 'operations_v6'").get().n, 0);
+  } finally { check.close(); }
+});
+
+test('retire and purge need the same human authorization as destroy, with their own action digests, and a denial reaches no provider', async (t) => {
+  const seen = [];
+  let deny = false;
+  const retirements = createRetirementJournal();
+  const provider = new MockEnvironmentProvider({ retirements });
+  const calls = { retire: 0, purge: 0 };
+  for (const action of Object.keys(calls)) {
+    const method = provider[action].bind(provider);
+    provider[action] = async (operation) => { calls[action]++; return method(operation); };
+  }
+  const f = await fixture(t, {
+    provider,
+    authorizeOperation: ({ operation, actionDigest, purpose }) => {
+      seen.push({ action: operation.action, actionDigest, purpose });
+      if (deny) throw new Error('private denial detail');
+      return {
+        decision: 'approved', approvalId: randomUUID(), approverId: 'human-approver', operationId: operation.operationId, idempotencyKey: operation.idempotencyKey,
+        subjectId: operation.subjectId, projectId: operation.projectId, policyVersion: operation.policyVersion, actionDigest, purpose,
+        expiresAt: new Date(Date.parse(f.now()) + 60_000).toISOString(),
+      };
+    },
+  });
+  const step = (action, n) => f.operation(action, { operationId: `operation-${action}-${n}`, idempotencyKey: `idem-${action}-${n}` });
+
+  assert.equal((await f.coordinator.execute(f.operation('create'))).observedState, 'off');
+  const purgeEarly = await f.coordinator.execute(step('purge', 1));
+  assert.deepEqual([purgeEarly.status, purgeEarly.errorCode], ['FAILED', 'environment_not_retired'], 'a purge of an environment that is not retired is refused');
+
+  deny = true;
+  await assert.rejects(f.coordinator.execute(step('retire', 1)), (e) => e.code === 'authorization_denied');
+  assert.equal(calls.retire, 0, 'a denied retire never reaches the provider');
+  assert.equal(f.store.getOperation('operation-retire-1'), null, 'and leaves no journal row');
+  assert.equal(retirements.list().length, 0);
+  deny = false;
+
+  const retired = await f.coordinator.execute(step('retire', 2));
+  assert.deepEqual([retired.status, retired.desiredState, retired.observedState], ['SUCCEEDED', 'retired', 'retired']);
+  assert.equal(retirements.get('computer-a').generation, f.lease.generation);
+  const purged = await f.coordinator.execute(step('purge', 2));
+  assert.deepEqual([purged.status, purged.desiredState, purged.observedState], ['SUCCEEDED', 'missing', 'missing']);
+  assert.equal(retirements.list().length, 0);
+
+  const actions = seen.map((entry) => entry.action);
+  assert.deepEqual(actions, ['create', 'purge', 'retire', 'retire', 'purge'], 'every action was put to the authorizer, none was waved through');
+  const digestOf = (action) => seen.find((entry) => entry.action === action).actionDigest;
+  assert.notEqual(digestOf('retire'), digestOf('purge'));
+  const destroy = f.operation('destroy', { operationId: 'operation-destroy-x', idempotencyKey: 'idem-destroy-x' });
+  await f.coordinator.execute(destroy);
+  assert.notEqual(seen.at(-1).actionDigest, digestOf('retire'));
+  assert.notEqual(seen.at(-1).actionDigest, digestOf('purge'));
+  assert.equal(seen.at(-1).action, 'destroy');
+});
+
+test('a retire or purge left UNKNOWN blocks the next mutation of that computer generation until it is reconciled', async (t) => {
+  const f = await fixture(t);
+  await f.coordinator.execute(f.operation('create'));
+  f.provider.failNext('retire', { timing: 'after', code: 'reply_lost' });
+  const unknown = await f.coordinator.execute(f.operation('retire'));
+  assert.equal(unknown.status, 'UNKNOWN');
+  assert.throws(() => f.store.beginOperation(f.operation('purge')), (e) => e.code === 'computer_operation_unresolved');
+  const reconciled = await f.coordinator.reconcile(unknown.operationId);
+  assert.deepEqual([reconciled.status, reconciled.observedState], ['SUCCEEDED', 'retired']);
 });

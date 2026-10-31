@@ -38,7 +38,7 @@ public static class ActionDigest
 
     private static readonly Dictionary<string, string[]> ActionsByPurpose = new(StringComparer.Ordinal)
     {
-        ["broker.operation"] = ["environment.create", "environment.inspect", "environment.start", "environment.stop", "environment.destroy", "synthetic.noop"],
+        ["broker.operation"] = ["environment.create", "environment.inspect", "environment.start", "environment.stop", "environment.destroy", "environment.retire", "environment.purge", "synthetic.noop"],
         ["guest.command"] = ["task.start", "task.cancel", "workspace.inspect", "synthetic.noop"],
     };
     private static readonly string[] DtoKeys = ["action", "args", "computerId", "projectId"];

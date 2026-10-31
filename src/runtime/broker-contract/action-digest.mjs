@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto';
 export const DIGEST_DOMAIN = 'albera.action-digest.v1';
 export const PURPOSES = Object.freeze(['broker.operation', 'guest.command']);
 export const ACTIONS_BY_PURPOSE = Object.freeze({
-  'broker.operation': Object.freeze(['environment.create', 'environment.inspect', 'environment.start', 'environment.stop', 'environment.destroy', 'synthetic.noop']),
+  'broker.operation': Object.freeze(['environment.create', 'environment.inspect', 'environment.start', 'environment.stop', 'environment.destroy', 'environment.retire', 'environment.purge', 'synthetic.noop']),
   'guest.command': Object.freeze(['task.start', 'task.cancel', 'workspace.inspect', 'synthetic.noop']),
 });
 export const ID_PATTERN = '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$';
