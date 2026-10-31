@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -8,6 +8,8 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
+import { createNetworkAttestation, signNetworkAttestation } from '../src/runtime/broker-contract/network-attestation.mjs';
+import { createEcdsaAttestationSigner } from '../src/runtime/ecdsa-attestation-signer.mjs';
 import {
   AUTHORITY_CLIENT_ERROR_CODES,
   AUTHORITY_CLIENT_LIMITS,
@@ -144,6 +146,30 @@ test('the submit request is strict: every field, the DTO, unknown options and th
   assert.equal(codeOf(() => buildSubmitRequestText({ ...FIELDS, action: { ...ACTION, args: many } })), 'request_too_large');
   const wire = buildSubmitRequestText({ ...FIELDS, action: { ...ACTION, args: { a: 'é'.repeat(100) } } });
   assert.ok(Buffer.byteLength(wire) > wire.length, 'the bound is measured in UTF-8 bytes');
+});
+
+test('an attestation travels as one more optional key: the four envelope keys, shape and digest checked, a malformed one is invalid_request before anything is sent', async () => {
+  const signer = createEcdsaAttestationSigner({ keyId: 'albera-test-broker-1', privateKey: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey });
+  const body = createNetworkAttestation({ network: 'none', computerId: 'pc-01', vmId: '11111111-2222-4333-8444-555555555555', generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, observedAt: 1800000000 });
+  const envelope = JSON.parse(JSON.stringify(await signNetworkAttestation(body, signer)));
+  const wire = JSON.parse(buildSubmitRequestText({ ...FIELDS, attestation: envelope }));
+  assert.deepEqual(Object.keys(wire), ['v', 'verb', 'purpose', 'operationId', 'idempotencyKey', 'leaseId', 'leaseGeneration', 'brokerEpoch', 'brokerChallenge', 'action', 'attestation']);
+  assert.deepEqual(wire.attestation, envelope, 'exactly the envelope, nothing added');
+  assert.deepEqual(Object.keys(wire.attestation).sort(), ['attestation', 'digest', 'keyId', 'signature']);
+  assert.ok(Buffer.byteLength(buildSubmitRequestText({ ...FIELDS, attestation: envelope })) < AUTHORITY_CLIENT_LIMITS.maxRequestBytes, 'a normal request with an attestation fits one frame');
+  assert.deepEqual(Object.keys(JSON.parse(buildSubmitRequestText({ ...FIELDS, includeDigest: true, attestation: envelope }))).slice(-3), ['action', 'expectedDigest', 'attestation']);
+  assert.equal('attestation' in JSON.parse(buildSubmitRequestText(FIELDS)), false, 'omitted means omitted');
+  const bad = {
+    'null': null, 'a string': 'none', 'an array': [envelope], 'empty': {}, 'extra key': { ...envelope, extra: 1 }, 'no signature': { ...envelope, signature: undefined },
+    'digest of another body': { ...envelope, digest: `sha256:${'0'.repeat(64)}` }, 'body changed': { ...envelope, attestation: { ...envelope.attestation, network: 'present' } },
+    'body with an extra key': { ...envelope, attestation: { ...envelope.attestation, extra: 1 } }, 'key id with a space': { ...envelope, keyId: 'bad id' },
+    'padded signature': { ...envelope, signature: `${envelope.signature}=` }, 'signature of another alphabet': { ...envelope, signature: `${envelope.signature.slice(0, -1)}+` },
+  };
+  for (const [label, attestation] of Object.entries(bad)) assert.equal(codeOf(() => buildSubmitRequestText({ ...FIELDS, attestation })), 'invalid_request', label);
+  // An attestation that pushes the request past one frame is refused here, before the pipe: the flow then submits without it.
+  const many = Object.fromEntries(Array.from({ length: 16 }, (_, n) => [`k${n}`, 'x'.repeat(90)]));
+  assert.ok(Buffer.byteLength(buildSubmitRequestText({ ...FIELDS, action: { ...ACTION, args: many } })) < AUTHORITY_CLIENT_LIMITS.maxRequestBytes, 'control: it fits without');
+  assert.equal(codeOf(() => buildSubmitRequestText({ ...FIELDS, action: { ...ACTION, args: many }, attestation: envelope })), 'request_too_large');
 });
 
 test('the status request carries only a uuid approval id', () => {

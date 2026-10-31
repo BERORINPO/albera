@@ -58,6 +58,8 @@ internal static partial class Harness
             Assert(exit == 0 && stderr == "", $"{exit} {stderr}");
             Assert(stdout.Contains("revision 4") && stdout.Contains("tier: standard") && stdout.Contains("needs no person: environment.inspect, environment.stop, workspace.inspect") && stdout.Contains("always asks you: task.cancel")
                 && stdout.Contains(PolicyOf(PolicyJson(4, "standard", "task.cancel")).Hash()), stdout);
+            Assert(stdout.Contains("needs no person only when the Broker attests the environment has no network: environment.start"), "the attested action is named apart: " + stdout);
+            Assert(RunPolicy(PolicyChannel(PolicyJson(5, "standard", "environment.start")), Signing(), c => c.ShowAsync(), out string overridden, out _) == 0 && !overridden.Contains("Broker attests"), "an override on start leaves nothing attested: " + overridden);
             Assert(channel.Requests.SequenceEqual(["{\"v\":1,\"verb\":\"policy\"}"]), "one read request");
             Assert(RunPolicy(PolicyChannel(PolicyJson(0, "careful")), Signing(), c => c.ShowAsync(), out string careful, out _) == 0 && careful.Contains("nothing; every action needs a person"), careful);
         });
@@ -88,6 +90,7 @@ internal static partial class Harness
             Assert(exit == 0 && stderr == "" && stdout.EndsWith("result: policy applied (revision 1)\n"), $"{exit} {stderr}\n{stdout}");
             Assert(stdout.Contains("will no longer ask you: environment.inspect, environment.stop, workspace.inspect") && stdout.Contains("will start asking you: (none)") && stdout.Contains("windows hello: needed")
                 && stdout.Contains("Type yes to apply exactly this change"), stdout);
+            Assert(stdout.Contains("will no longer ask you, only when the Broker attests the environment has no network: environment.start"), "start is named as conditional: " + stdout);
             Assert(signer.Messages.Count == 1 && signer.Messages[0].SequenceEqual(Encoding.UTF8.GetBytes($"albera.policy.v1\0{Kid}\0{Audience}\0{PolicyOf(next).Hash()}")), "one signature over the policy message of the hash this app computed");
             Assert(channel.Requests.Count == 2 && SentPolicy(channel.Requests[1]).Hash() == PolicyOf(next).Hash(), "the complete new policy was sent");
             Assert(channel.Requests[1].Contains($"\"presence\":\"{Convert.ToBase64String(Sign(PolicyChange.Message(PolicyOf(next), Kid, Audience)))}\""), "with the signature");

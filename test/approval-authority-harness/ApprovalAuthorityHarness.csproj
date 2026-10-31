@@ -18,5 +18,7 @@
   <ItemGroup>
     <Compile Include="$(AuthorityDir)*.cs" Exclude="$(AuthorityDir)Program.cs;$(AuthorityDir)TestSeam.cs" />
     <Compile Include="$(ContractDir)*.cs" />
+    <!-- The signed network attestation vectors (public key + signatures only) run against the production PinnedAttestationKey. -->
+    <EmbeddedResource Include="$(ContractDir)network-attestation-vectors.json" LogicalName="attestation-vectors.json" />
   </ItemGroup>
 </Project>

@@ -109,7 +109,7 @@ public static class ActionDigest
     /// <summary>Parse the DTO with the strict reader (depth 3), then compute. Throws StrictJsonException or ActionDigestException.</summary>
     public static string ComputeFromJson(string purpose, ReadOnlySpan<byte> dtoJson) => Compute(purpose, StrictJson.Parse(dtoJson, 3));
 
-    private static void Write(Stream output, object value)
+    internal static void Write(Stream output, object value)
     {
         Span<byte> number = stackalloc byte[8];
         switch (value)

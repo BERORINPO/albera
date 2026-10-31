@@ -1,5 +1,4 @@
-// Issue #115 step 2: the Broker-produced network attestation (contract, Broker side, provider seams). Nothing consumes the attestation yet and no tier, policy or
-// no-prompt path exists: these tests pin what the statement says, how it is bound, and that nothing a Control Plane sends can change it.
+// Issue #115 step 2: the Broker-produced network attestation (contract, Broker side, provider seams). The consumer (the Approval Authority, step 3b) has its own tests; these pin what the statement says, how it is bound, and that nothing a Control Plane sends can change it.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -229,6 +228,17 @@ async function mockWorld({ ttl } = {}) {
   return { provider, signer, clock };
 }
 const expectedFor = (vmId, overrides = {}) => ({ computerId: 'pc-01', vmId, generation: 1, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 5, ...overrides });
+
+test('mock: start with a vmId starts only that VM; a VM that took its computer id, project, lease and generation (another vmId) is refused, not applied', async () => {
+  const { provider } = await mockWorld();
+  const { attestation } = await provider.attestNetwork(op('inspect'), { leaseGeneration: 5 });
+  await rejectsWith(provider.start(op('start', { vmId: '99999999-8888-4777-8666-555555555555' })), 'operation_conflict');
+  assert.equal((await provider.inspect(op('inspect'))).state, 'off', 'nothing was started');
+  assert.equal((await provider.start(op('start', { vmId: attestation.vmId }))).state, 'running');
+  provider.setNetworkAdapters('pc-01', []);
+  assert.equal((await provider.stop(op('stop'))).state, 'off');
+  assert.equal((await provider.start(op('start'))).state, 'running', 'a start that names no VM is as before');
+});
 
 test('mock: a freshly created environment is "none" (create removes the default adapter); once an adapter is attached it is "present"', async () => {
   const { provider, signer } = await mockWorld();

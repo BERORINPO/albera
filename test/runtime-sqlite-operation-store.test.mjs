@@ -1207,6 +1207,12 @@ test('process crash after a durable Provider side effect reconciles by inspect w
   assert.equal(createCalls, 0, 'idempotent replay after reconciliation does not dispatch create');
 });
 
+test('the durable coordinator refuses an operation that names a VM (vmId): the store keeps no VM id yet, so the dispatched claim would silently lose the identity check', async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(f.coordinator.execute(f.operation('start', { vmId: '11111111-2222-4333-8444-555555555555' })), (error) => error.code === 'invalid_environment_operation' && error.outcome === 'not_applied');
+  assert.equal(f.store.getOperation('operation-start-a'), null, 'nothing was begun');
+});
+
 test('startup recovery marks only an interrupted pre-dispatch request UNKNOWN', async (t) => {
   const f = await fixture(t);
   const request = f.operation('create');

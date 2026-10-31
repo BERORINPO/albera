@@ -10,6 +10,10 @@ internal static class AuthorityRuntime
 
     public static AuthorityIdentity IdentityOf(AuthorityConfig config) => new(config.Kid, config.Audience, config.PolicyVersion, config.ApproverKeyId);
 
+    /// <summary>The pinned Broker attestation key, or null when the config pins none (then no attestation is ever accepted). The config load already checked it.</summary>
+    public static PinnedAttestationKey? AttestationKeyOf(AuthorityConfig config) =>
+        config.AttestationKeyId is null || config.AttestationPublicKey is null ? null : PinnedAttestationKey.TryCreate(config.AttestationKeyId, config.AttestationPublicKey) ?? throw new InvalidOperationException();
+
     /// <summary>The shipped composition: the machine-key signer, the pinned Hello key and the tier policy already loaded from its file (79 is decided by the caller before this runs).
     /// 77 when the signing key cannot be opened, 78 when it is opened but not protected as required (SigningKeyGuard). Both are decided before any pipe exists.</summary>
     public static async Task<int> RunProductionAsync(AuthorityConfig config, PolicyStore policy, CancellationToken stop, Action onReady)
@@ -32,7 +36,8 @@ internal static class AuthorityRuntime
                 return ExitCodes.SigningKeyUnprotected;
             }
             using RsaPresenceVerifier presence = RsaPresenceVerifier.TryCreate(config.ApproverPublicKey) ?? throw new InvalidOperationException(); // the config already passed this check
-            AuthorityCore core = new(new PendingStore(UnixNow), signer, presence, IdentityOf(config), UnixNow, policy, Console.WriteLine);
+            using PinnedAttestationKey? attestation = AttestationKeyOf(config);
+            AuthorityCore core = new(new PendingStore(UnixNow), signer, presence, IdentityOf(config), UnixNow, policy, Console.WriteLine, attestation);
             return await RunAsync(config, core, stop, onReady);
         }
     }

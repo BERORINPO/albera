@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash, createPublicKey, verify } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
+import { createNetworkAttestation, signNetworkAttestation } from '../src/runtime/broker-contract/network-attestation.mjs';
+import { createEcdsaAttestationSigner } from '../src/runtime/ecdsa-attestation-signer.mjs';
 import { validateReceiptV2 } from '../src/runtime/broker-contract/receipt-v2.mjs';
 import { validateReceipt } from '../src/runtime/broker-contract/receipt-v3.mjs';
 import { buildProbe } from './helpers/windows-broker-harness.mjs';
@@ -296,6 +298,133 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
     assert.ok(authority.child.lines.includes('AUTHORITY_STOPPED'));
   });
 
+  // Network attestation (issue #115 step 3b) through the real pipes, signed in Node (ECDSA P-256) and checked by the C# Authority against the key pinned in its config:
+  // at the standard tier, start / create are signed without a person only for a valid 'none' attestation bound to this very request; everything else waits for a person.
+  describe('network attestation', () => {
+    const KID = 'authority-key-test';
+    const AUDIENCE = 'albera-host-broker';
+    const KEY_ID = 'broker-attest-it-1';
+    const policyObj = (rev, tier) => ({ v: 1, rev, tier, overrides: {} });
+    const policyHash = (rev, tier) => `sha256:${createHash('sha256').update(['albera.policy-hash.v2', String(rev), tier].join('\0')).digest('hex')}`;
+    const policyMessage = (rev, tier) => Buffer.from(`albera.policy.v1\0${KID}\0${AUDIENCE}\0${policyHash(rev, tier)}`, 'utf8');
+    const newSigner = (keyId = KEY_ID) => createEcdsaAttestationSigner({ keyId, privateKey: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey });
+    const VM_A = '11111111-2222-4333-8444-555555555555';
+    const VM_B = '99999999-8888-4777-8666-555555555555';
+    const START = { action: 'environment.start', projectId: 'proj-alpha', computerId: 'pc-01', args: { expectedGeneration: 3, vmId: VM_A, vmName: 'alpha' } };
+    const startRequest = (operationId, extra = {}) => submitRequest({ operationId, idempotencyKey: operationId, action: START, ...extra });
+    /** A statement as the Broker would make it for the request above, observed 5 s ago, valid for 60 s unless overridden. */
+    const statement = async (signer, overrides = {}) => JSON.parse(JSON.stringify(await signNetworkAttestation(createNetworkAttestation({
+      network: 'none', computerId: 'pc-01', vmId: VM_A, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, observedAt: NOW() - 5, ...overrides,
+    }), signer)));
+
+    const refusals = (authority) => authority.child.lines.filter((line) => line.startsWith('ATTESTATION_REFUSED='));
+    /** The refusal lines the Authority printed after the first `before` ones (stdout reaches the test a moment after the reply): waits for at least one, or 300 ms when none is expected. */
+    async function refusalsAfter(authority, before, expectNone) {
+      for (let waited = 0; waited < (expectNone ? 300 : 5000); waited += 50) {
+        if (!expectNone && refusals(authority).length > before) break;
+        await new Promise((resolve) => { setTimeout(resolve, 50); });
+      }
+      return refusals(authority).slice(before);
+    }
+
+    /** An Authority that pins `signer`'s public key, with Hello available to raise the tier. */
+    async function withPinnedAuthority(signer, body, { pin = true } = {}) {
+      const hello = makeHelloKey();
+      const folder = makeTrustedTempDirectory('albera-authority-attest-');
+      try {
+        const config = makeConfig({ approverPublicKey: hello.spki, ...(pin ? { attestationKeyId: signer.keyId, attestationPublicKey: signer.publicKeySpki } : {}) });
+        const authority = await startAuthority(exe, folder, { config });
+        try { return await body(authority, (rev, tier) => authority.approver({ v: 1, verb: 'policy_set', policy: policyObj(rev, tier), presence: helloSignature(hello.privateKey, policyMessage(rev, tier)) })); } finally { await authority.stop(); }
+      } finally { rmSync(folder, { recursive: true, force: true }); }
+    }
+
+    it('a valid attestation signed in Node by the pinned key gets a v3 policy receipt at once; careful, no / forged / stale / mismatched / present attestations and an other action wait for a person', async () => {
+      const signer = newSigner();
+      await withPinnedAuthority(signer, async (authority, raise) => {
+        const valid = await statement(signer);
+        assert.equal((await authority.submit(startRequest('op-careful', { attestation: valid }))).state, 'pending', 'careful tier: a valid attestation is worth nothing');
+        assert.deepEqual(await raise(1, 'standard'), { ok: true, policyVersion: policyHash(1, 'standard') });
+
+        const reply = await authority.submit(startRequest('op-ok', { attestation: valid }));
+        assert.equal(reply.state, 'approved');
+        const status = await authority.submit({ v: 1, verb: 'status', approvalId: reply.approvalId });
+        const receiptBytes = Buffer.from(status.receipt, 'base64');
+        assert.equal(verifyEcdsa(authority.publicKey, receiptBytes, Buffer.from(status.signature, 'base64')), true, 'signed by the Authority');
+        const request = startRequest('op-ok');
+        const verdict = validateReceipt(receiptBytes, contextFor(request));
+        assert.equal(verdict.ok, true, JSON.stringify(verdict));
+        assert.deepEqual([verdict.receipt.v, verdict.receipt.basis, verdict.receipt.attestationDigest, verdict.receipt.policyVersion], [3, 'policy', valid.digest, policyHash(1, 'standard')]);
+        assert.ok(verdict.receipt.exp <= valid.attestation.expiresAt, 'never outlives the attestation');
+        assert.equal(validateReceipt(receiptBytes, contextFor(request, { environment: 'production' })).code, 'issuer', 'a test-signed receipt is not a production one');
+        await waitForLine(authority.child, `POLICY_SIGNED=environment.start ${reply.approvalId} ATTESTED=${valid.digest}`);
+        assert.deepEqual((await authority.approver({ v: 1, verb: 'list' })).pending.map((e) => e.operationId), ['op-careful'], 'only the careful-tier request waits');
+
+        const refused = [
+          ['no attestation', {}, null],
+          ['signed by another key', { attestation: await statement(newSigner()) }, 'signature:signature'],
+          ['signed under another key id', { attestation: await statement(newSigner('broker-attest-it-2')) }, 'signature:signature'],
+          ['expired', { attestation: await statement(signer, { observedAt: NOW() - 100 }) }, 'expired:expiresAt'],
+          ['network present', { attestation: await statement(signer, { network: 'present' }) }, 'network_present'],
+          ['another lease', { attestation: await statement(signer, { leaseId: 'lease-2' }) }, 'binding:leaseId'],
+          ['another lease generation', { attestation: await statement(signer, { leaseGeneration: 8 }) }, 'binding:leaseGeneration'],
+          ['another generation', { attestation: await statement(signer, { generation: 4 }) }, 'binding:generation'],
+          ['another VM (VM B took the computer id, project, lease and generation)', { attestation: await statement(signer, { vmId: VM_B }) }, 'binding:vmId'],
+          ['another computer', { attestation: await statement(signer, { computerId: 'pc-02' }) }, 'binding:computerId'],
+          ['another project', { attestation: await statement(signer, { projectId: 'proj-beta' }) }, 'binding:projectId'],
+          ['a body changed after signing', { attestation: { ...valid, attestation: { ...valid.attestation, network: 'present' } } }, 'digest:digest'],
+          ['not an envelope', { attestation: 5 }, 'malformed'],
+        ];
+        let n = 0;
+        for (const [label, extra, reason] of refused) {
+          const before = refusals(authority).length;
+          const answer = await authority.submit(startRequest(`op-refused-${n++}`, extra));
+          assert.equal(answer.state, 'pending', label);
+          assert.deepEqual(await refusalsAfter(authority, before, reason === null), reason === null ? [] : [`ATTESTATION_REFUSED=${reason}`], label);
+        }
+        // The same valid statement does nothing for an action that cannot skip a person, nor for start with another generation arg.
+        const destroy = await authority.submit(startRequest('op-destroy', { action: { ...START, action: 'environment.destroy' }, attestation: valid }));
+        assert.equal(destroy.state, 'pending');
+        const otherGeneration = await authority.submit(startRequest('op-gen', { action: { ...START, args: { expectedGeneration: 4 } }, attestation: valid }));
+        assert.equal(otherGeneration.state, 'pending', 'the statement is for generation 3');
+        const create = await authority.submit(startRequest('op-create', { action: { ...START, action: 'environment.create' }, attestation: valid }));
+        assert.equal(create.state, 'pending', 'create is never attested: no VM exists to observe before it');
+        // The VM swap: the start names VM B, the statement is for VM A. The old statement gets nobody a receipt; one for VM B does.
+        const swapped = await authority.submit(startRequest('op-swap', { action: { ...START, args: { ...START.args, vmId: VM_B } }, attestation: valid }));
+        assert.equal(swapped.state, 'pending', 'an attestation for VM A does not start VM B');
+        for (const [label, args] of [['no vmId', { expectedGeneration: 3 }], ['a malformed vmId', { expectedGeneration: 3, vmId: 'vm-1' }]]) {
+          assert.equal((await authority.submit(startRequest(`op-${label.length}`, { action: { ...START, args }, attestation: valid }))).state, 'pending', label);
+        }
+        const forVmB = await authority.submit(startRequest('op-vm-b', { action: { ...START, args: { ...START.args, vmId: VM_B } }, attestation: await statement(signer, { vmId: VM_B }) }));
+        assert.equal(forVmB.state, 'approved', 'the matching VM id passes');
+      });
+    });
+
+    it('a malformed attestation key in the config stops the start (config_keys / attestation_public_key / attestation_key_id) and an existing config without it still starts', async () => {
+      const signer = newSigner();
+      const folder = makeTrustedTempDirectory('albera-authority-attest-cfg-');
+      try {
+        const attempt = async (name, config) => {
+          const child = startProcess(exe, standInService('serve-loop', writeConfig(folder, config, name), 'real', '120'), { stdin: true });
+          const code = await waitForExit(child);
+          return { code, lines: child.lines.filter((line) => line.startsWith('SERVICE_CONFIG=')) };
+        };
+        const bad = (reason) => ({ code: 73, lines: [`SERVICE_CONFIG=invalid:${reason}`] });
+        assert.deepEqual(await attempt('id-only.json', makeConfig({ attestationKeyId: KEY_ID })), bad('config_keys'));
+        assert.deepEqual(await attempt('key-only.json', makeConfig({ attestationPublicKey: signer.publicKeySpki })), bad('config_keys'));
+        assert.deepEqual(await attempt('bad-id.json', makeConfig({ attestationKeyId: 'bad id', attestationPublicKey: signer.publicKeySpki })), bad('attestation_key_id'));
+        assert.deepEqual(await attempt('rsa.json', makeConfig({ attestationKeyId: KEY_ID, attestationPublicKey: makeHelloKey().spki })), bad('attestation_public_key'));
+        assert.deepEqual(await attempt('p384.json', makeConfig({ attestationKeyId: KEY_ID, attestationPublicKey: generateKeyPairSync('ec', { namedCurve: 'secp384r1' }).publicKey.export({ type: 'spki', format: 'der' }).toString('base64') })), bad('attestation_public_key'));
+        assert.deepEqual(await attempt('junk.json', makeConfig({ attestationKeyId: KEY_ID, attestationPublicKey: 'AAAA' })), bad('attestation_public_key'));
+      } finally { rmSync(folder, { recursive: true, force: true }); }
+      // No key pinned (an existing config): it starts, and at the standard tier an attestation is ignored: the request waits for a person, and the reason is on the audit line.
+      await withPinnedAuthority(signer, async (authority, raise) => {
+        await raise(1, 'standard');
+        assert.equal((await authority.submit(startRequest('op-nokey', { attestation: await statement(signer) }))).state, 'pending');
+        await waitForLine(authority.child, 'ATTESTATION_REFUSED=no_key_pinned');
+      }, { pin: false });
+    });
+  });
+
   // Tier policy (issue #115 step 3) through the real pipes: the policy file next to the config, the careful default, the standard tier, and the Hello-signed change.
   // A policy that skips a person is only loaded with the approver's signature (bound to this Authority's kid and audience) stored in the file; the config folder must be trusted first.
   describe('tier policy', () => {
@@ -303,7 +432,7 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
     const AUDIENCE = 'albera-host-broker';
     const policyObj = (rev, tier, ...prompts) => ({ v: 1, rev, tier, overrides: Object.fromEntries(prompts.map((a) => [a, 'prompt'])) });
     const policyJson = (rev, tier, ...prompts) => JSON.stringify(policyObj(rev, tier, ...prompts));
-    const policyHash = (rev, tier, prompts) => `sha256:${createHash('sha256').update(['albera.policy-hash.v1', String(rev), tier, ...[...prompts].sort()].join('\0')).digest('hex')}`;
+    const policyHash = (rev, tier, prompts) => `sha256:${createHash('sha256').update(['albera.policy-hash.v2', String(rev), tier, ...[...prompts].sort()].join('\0')).digest('hex')}`;
     const policyMessage = (rev, tier, prompts = [], kid = KID, audience = AUDIENCE) => Buffer.from(`albera.policy.v1\0${kid}\0${audience}\0${policyHash(rev, tier, prompts)}`, 'utf8');
     /** policy.json as the Authority writes it: the policy, and the policy the signature authorized with that signature. */
     const signedFile = (policy, authorized, presence) => JSON.stringify({ ...policy, authorized: { ...authorized, presence } });

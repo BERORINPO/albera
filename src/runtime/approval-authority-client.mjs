@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { ID_PATTERN, PURPOSES, ActionDigestError, computeActionDigest, validateActionDto } from './broker-contract/action-digest.mjs';
 import { MAX_RECEIPT_BYTES } from './broker-contract/receipt-v2.mjs';
+import { readSignedNetworkAttestation } from './broker-contract/network-attestation.mjs';
 import { parseReceipt } from './broker-contract/receipt-v3.mjs';
 import { captureExecutableIdentity } from './executable-identity.mjs';
 
@@ -17,7 +18,9 @@ import { captureExecutableIdentity } from './executable-identity.mjs';
 // (the helper derives the owner SID from it), in tests an owner SID plus the PID of the test server.
 //
 // Wire (helper <-> Authority, one request per connection): [int32 little-endian length][UTF-8 JSON] each way, at most 2048 bytes. `v` is always 1.
-//   submit : { v, verb: "submit", purpose, operationId, idempotencyKey, leaseId, leaseGeneration, brokerEpoch, brokerChallenge, action: { action, projectId, computerId, args }, expectedDigest? }
+//   submit : { v, verb: "submit", purpose, operationId, idempotencyKey, leaseId, leaseGeneration, brokerEpoch, brokerChallenge, action: { action, projectId, computerId, args }, expectedDigest?, attestation? }
+//            `attestation` is a Broker network attestation envelope { attestation, digest, keyId, signature } (network-attestation.mjs). The Authority alone decides what it is worth: only a valid one
+//            that says "none" for this very environment lets environment.start skip a person at the standard tier; omitted, forged or stale simply means a prompt.
 //            -> { ok: true, approvalId, state: "pending" | "approved", expiresAt }
 //   status : { v, verb: "status", approvalId }
 //            -> { ok: true, state: "pending", expiresAt } | { ok: true, state: "approved", receipt: <base64 receipt v2 or v3>, signature: <base64 64-byte ECDSA P-256 r||s> }
@@ -88,7 +91,7 @@ const HELPER_MAX_STDOUT_BYTES = 16 * 1024; // a 2 KiB reply whose base64 '+' the
 const DEFAULT_HELPER_PATH = fileURLToPath(new URL('./windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker-pipe-client.exe', import.meta.url)); // arch-allow: the one trusted pipe client helper (shared with the Broker client); its SHA-256 manifest is verified before every launch
 
 const CONNECTION_KEYS = ['pipeRoot', 'expect', 'timeoutMs', 'helperPath', 'spawnImpl'];
-const SUBMIT_KEYS = ['purpose', 'operationId', 'idempotencyKey', 'leaseId', 'leaseGeneration', 'brokerEpoch', 'brokerChallenge', 'action', 'includeDigest', ...CONNECTION_KEYS];
+const SUBMIT_KEYS = ['purpose', 'operationId', 'idempotencyKey', 'leaseId', 'leaseGeneration', 'brokerEpoch', 'brokerChallenge', 'action', 'includeDigest', 'attestation', ...CONNECTION_KEYS];
 const STATUS_KEYS = ['approvalId', ...CONNECTION_KEYS];
 
 /** Carries only an allowlisted code; the message is the code itself, never raw text. */
@@ -135,6 +138,14 @@ function requireApprovalId(value) {
   return value;
 }
 
+/** The attestation envelope as it goes on the wire: shape and digest checked (not the signature: that is the Authority's), exactly the four envelope keys. */
+function attestationWire(value) {
+  try {
+    const { attestation, digest, keyId, signatureBytes } = readSignedNetworkAttestation(value); // one read of the caller's object; everything below comes from this copy
+    return { attestation: { ...attestation }, digest, keyId, signature: signatureBytes.toString('base64url') };
+  } catch { throw bad(); }
+}
+
 function sizedText(request) {
   const text = JSON.stringify(request);
   if (Buffer.byteLength(text, 'utf8') > AUTHORITY_CLIENT_LIMITS.maxRequestBytes) throw bad('request_too_large');
@@ -144,7 +155,8 @@ function sizedText(request) {
 /**
  * The submit request text: exactly the Authority's keys in a fixed order, the action DTO validated and normalised by the shared contract, size-bounded.
  * `includeDigest: true` also sends `expectedDigest` = this client's own computation of the action digest; the Authority recomputes it and answers
- * `request_invalid` on a difference, which catches a Node / .NET divergence before a human sees the request. Pure. @returns {string}
+ * `request_invalid` on a difference, which catches a Node / .NET divergence before a human sees the request. `attestation` (optional) is a signed Broker network attestation
+ * envelope, checked here for shape and digest only; a malformed one is `invalid_request` before anything is sent. Pure. @returns {string}
  */
 export function buildSubmitRequestText(fields) {
   requireKeys(fields, SUBMIT_KEYS);
@@ -164,6 +176,7 @@ export function buildSubmitRequestText(fields) {
     brokerChallenge: fields.brokerChallenge,
     action: { action: dto.action, projectId: dto.projectId, computerId: dto.computerId, args: dto.args },
     ...(fields.includeDigest === true ? { expectedDigest: computeActionDigest(fields.purpose, dto) } : {}),
+    ...(fields.attestation === undefined ? {} : { attestation: attestationWire(fields.attestation) }),
   });
 }
 
@@ -317,7 +330,7 @@ async function exchange(options, allowedKeys, buildRequestText, validate) {
  * The helper verifies the pipe server against `expect` before anything is written. Never throws for operational failures; returns an allowlisted code (see
  * AUTHORITY_CLIENT_PRESEND_CODES). The Authority returns the first request for the same operationId + idempotencyKey, so resubmitting after an unknown outcome is safe.
  * @param {{ pipeRoot: string, purpose: string, operationId: string, idempotencyKey: string, leaseId: string, leaseGeneration: number, brokerEpoch: number,
- *   brokerChallenge: string, action: { action: string, projectId: string, computerId: string, args: object }, includeDigest?: boolean,
+ *   brokerChallenge: string, action: { action: string, projectId: string, computerId: string, args: object }, includeDigest?: boolean, attestation?: object,
  *   expect: { ownerSid?: string, pid?: number, serviceName?: string, imageSha256?: string }, timeoutMs?: number, helperPath?: string, spawnImpl?: typeof spawn }} options
  *   `helperPath` and `spawnImpl` are test seams. A custom helper still needs a `<helperPath>.manifest.json` with its SHA-256.
  */

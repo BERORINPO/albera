@@ -93,7 +93,10 @@ test('the pipe client opens with the approver ACE rights (not GENERIC_WRITE), id
   assert.match(guest, /\$length -lt 1 -or \$length -gt 2048/u);
 });
 
-test('Get-PolicyHash in the lab script agrees with the contract hash (albera.policy-hash.v1)', { skip: process.platform !== 'win32' }, () => {
+// The domain is read from TierPolicy.cs, so a change of the contract's hash domain fails here instead of only in the VM.
+const hashDomain = /HashDomain = "([^"]+)"/u.exec(readFileSync(path.join(labDir, '..', '..', 'src', 'runtime', 'broker-contract', 'TierPolicy.cs'), 'utf8'))[1];
+
+test('Get-PolicyHash in the lab script agrees with the contract hash (TierPolicy.HashDomain)', { skip: process.platform !== 'win32' }, () => {
   const script = [
     "$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:LAB_GUEST, [ref]$null, [ref]$null)",
     "$f = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-PolicyHash' }, $true)",
@@ -103,6 +106,6 @@ test('Get-PolicyHash in the lab script agrees with the contract hash (albera.pol
     "Get-PolicyHash 3 'careful' @('environment.destroy', 'task.start')",
   ].join('\n');
   const output = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { encoding: 'utf8', env: { ...process.env, LAB_GUEST: guestPath }, timeout: 60_000, windowsHide: true });
-  const hash = (rev, tier, prompts) => `sha256:${createHash('sha256').update(['albera.policy-hash.v1', String(rev), tier, ...[...prompts].sort()].join('\0')).digest('hex')}`;
+  const hash = (rev, tier, prompts) => `sha256:${createHash('sha256').update([hashDomain, String(rev), tier, ...[...prompts].sort()].join('\0')).digest('hex')}`;
   assert.deepEqual(output.trim().split(/\r?\n/u), [hash(0, 'careful', []), hash(1, 'careful', ['task.start']), hash(3, 'careful', ['environment.destroy', 'task.start'])]);
 });

@@ -273,6 +273,33 @@ test('start and stop refuse a stale generation without calling the mutating scri
   assert.ok(stop.waitSeconds >= 1, 'the shutdown wait is bounded');
 });
 
+test('start with a vmId (the VM the approval named) starts only that very Hyper-V VM: the VM that took its computer id, project, lease and generation is refused without touching the script', async () => {
+  const { broker, ps } = makeBroker();
+  await broker.createVm(op('create'));
+  const vmA = ps.vms.get('albera-pc-01').id;
+  // Swap: another VM (another Hyper-V id) now sits under the same name, with the same Notes identity (computer, generation, project).
+  const notes = ps.vms.get('albera-pc-01').notes;
+  ps.vms.set('albera-pc-01', { state: 'Off', notes, id: randomUUID() });
+  const vmB = ps.vms.get('albera-pc-01').id;
+  assert.notEqual(vmA, vmB);
+  await rejects(broker.startVm(op('start', { vmId: vmA })), 'operation_conflict', 'not_applied');
+  assert.equal(ps.count('start'), 0, 'refused before the mutating script');
+  assert.equal(ps.vms.get('albera-pc-01').state, 'Off');
+  const started = await broker.startVm(op('start', { vmId: vmB }));
+  assert.equal(started.state, 'running');
+  const call = ps.calls.find((c) => c.method === 'start');
+  assert.deepEqual([call.expect.vmId, call.expect.identity], [vmB, 'vm'], 'the script gets the VM id as a mandatory identity too');
+});
+
+test('start without a vmId behaves as before (no identity is added), and a malformed vmId or a vmId on another action is not an operation', async () => {
+  const { broker, ps } = makeBroker();
+  await broker.createVm(op('create'));
+  assert.equal((await broker.startVm(op('start'))).state, 'running');
+  assert.equal(ps.calls.find((c) => c.method === 'start').expect.identity, undefined);
+  for (const vmId of ['vm-1', '', 7, 'ABCDEF12-2222-4333-8444-555555555555', null]) await rejects(broker.startVm(op('start', { vmId })), 'invalid_provider_state', 'not_applied');
+  await rejects(broker.stopVm(op('stop', { vmId: ps.vms.get('albera-pc-01').id })), 'invalid_provider_state', 'not_applied');
+});
+
 test('start of a VM that does not exist, or is not ours, is refused', async () => {
   const { broker, ps } = makeBroker();
   await rejects(broker.startVm(op('start')), 'invalid_provider_state', 'not_applied');

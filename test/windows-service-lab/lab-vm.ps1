@@ -43,9 +43,17 @@ try {
     }
   }
 
+  # Refuse to start when the host is short on memory: a 4 GB VM on a full host froze the PC (2026-10-31).
+  $vmMemoryGB = 4
+  $hostHeadroomGB = 4
+  $freeGB = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
+  if ($freeGB -lt ($vmMemoryGB + $hostHeadroomGB)) {
+    throw ("host has {0:N1} GB free; need {1} GB ({2} GB VM + {3} GB headroom). Stop other VMs and retry." -f $freeGB, ($vmMemoryGB + $hostHeadroomGB), $vmMemoryGB, $hostHeadroomGB)
+  }
+
   New-Item -ItemType Directory -Force -Path $root, $EvidenceDir | Out-Null
   New-VHD -Differencing -ParentPath $golden -Path $childVhd | Out-Null
-  $vm = New-VM -Name $VmName -Generation 2 -MemoryStartupBytes 4GB -VHDPath $childVhd -Path $root
+  $vm = New-VM -Name $VmName -Generation 2 -MemoryStartupBytes ($vmMemoryGB * 1GB) -VHDPath $childVhd -Path $root
   $vmCreated = $true
   $vmId = $vm.Id
   Set-VM -VM $vm -Notes $labNote

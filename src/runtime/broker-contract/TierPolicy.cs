@@ -3,14 +3,17 @@
 //
 //   file      { "v": 1, "rev": <integer >= 0>, "tier": "careful" | "standard", "overrides": { "<action>": "prompt", ... } }   exactly these keys, strict JSON
 //   careful   every action needs a person (today's behaviour, and the default when there is no file)
-//   standard  the actions in ReceiptV3.PolicyBasisActions need no person, everything else does
+//   standard  the actions in ReceiptV3.PolicyBasisActions need no person; environment.start (ReceiptV3.AttestedPolicyBasisActions; never create) needs none ONLY when the
+//             Authority holds a valid Broker network attestation that says "none" (step 3b); everything else needs a person
 //   overrides can only ADD prompts: the one allowed value is "prompt", and it names an action that must then be approved by a person at any tier
 //   rev       counts policy changes (the default has rev 0). A change must carry rev + 1, so a signature for one change can never be applied twice or onto another policy
-//   hash      "sha256:" + hex SHA-256 of  UTF8("albera.policy-hash.v1") 0x00 decimal(rev) 0x00 tier { 0x00 override-action }  with the overrides sorted, ordinal
+//   hash      "sha256:" + hex SHA-256 of  UTF8("albera.policy-hash.v2") 0x00 decimal(rev) 0x00 tier { 0x00 override-action }  with the overrides sorted, ordinal
 //   change    UTF8("albera.policy.v1") 0x00 kid 0x00 audience 0x00 hash-of-the-complete-new-policy, signed by the approver's Windows Hello key. kid and audience are the
 //             Authority's own trusted config values. Distinct from "albera.presence.v1" and "albera.selfcheck.v1", so no signature made for one purpose is valid for another.
 //   The Authority's policy.json wraps a policy with the signature that authorized it (PolicyStore.cs); this file defines only the policy itself.
-// Whether a change needs that signature is decided by its effect (TierPolicy.Loosens), never by the tier names.
+// Whether a change needs that signature is decided by its effect (TierPolicy.Loosens), never by the tier names. The effect counts every action a policy could skip a person for, with
+// or without an attestation (SkippableActions). The hash domain is v2 since step 3b made "standard" mean more (attested start / create): a standard policy signed under v1 does not
+// verify, so the larger set is never taken from an older signature.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -25,7 +28,7 @@ public sealed class TierPolicy
 {
     public const int FormatVersion = 1;
     public const string Careful = "careful", Standard = "standard", PromptWord = "prompt";
-    public const string HashDomain = "albera.policy-hash.v1";
+    public const string HashDomain = "albera.policy-hash.v2";
     public const int MaxFileBytes = 1024;
 
     public static IReadOnlyList<string> Tiers { get; } = [Careful, Standard];
@@ -108,15 +111,28 @@ public sealed class TierPolicy
         return "sha256:" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(preimage.ToString())));
     }
 
-    /// <summary>The actions this policy lets the Authority sign without a person. Always a subset of <see cref="ReceiptV3.PolicyBasisActions"/>.</summary>
-    public IReadOnlySet<string> NoPromptActions() =>
-        Tier == Standard ? ReceiptV3.PolicyBasisActions.Where(a => !Prompts.Contains(a)).ToHashSet(StringComparer.Ordinal) : new HashSet<string>(StringComparer.Ordinal);
+    private IReadOnlySet<string> Skippable(IReadOnlyList<string> candidates) =>
+        Tier == Standard ? candidates.Where(a => !Prompts.Contains(a)).ToHashSet(StringComparer.Ordinal) : new HashSet<string>(StringComparer.Ordinal);
 
+    /// <summary>The actions this policy lets the Authority sign without a person and without anything else. Always a subset of <see cref="ReceiptV3.PolicyBasisActions"/>.</summary>
+    public IReadOnlySet<string> NoPromptActions() => Skippable(ReceiptV3.PolicyBasisActions);
+
+    /// <summary>The actions this policy lets the Authority sign without a person only when it holds a valid Broker attestation that the environment has no network. Always a subset of
+    /// <see cref="ReceiptV3.AttestedPolicyBasisActions"/>.</summary>
+    public IReadOnlySet<string> AttestedNoPromptActions() => Skippable(ReceiptV3.AttestedPolicyBasisActions);
+
+    /// <summary>Every action this policy could ever sign without a person (with or without an attestation): the set a change is judged by.</summary>
+    public IReadOnlySet<string> SkippableActions() => NoPromptActions().Union(AttestedNoPromptActions()).ToHashSet(StringComparer.Ordinal);
+
+    /// <summary>True when a person is needed whatever the Authority holds: the action is not in <see cref="NoPromptActions"/>. An attested action is still true here; see <see cref="CanSkipWithAttestation"/>.</summary>
     public bool NeedsPerson(string action) => !NoPromptActions().Contains(action);
 
-    /// <summary>True when switching from <paramref name="current"/> to this policy lets at least one action skip the person that could not before. This (never the
-    /// tier names) is what makes a change need a presence signature.</summary>
-    public bool Loosens(TierPolicy current) => !NoPromptActions().IsSubsetOf(current.NoPromptActions());
+    /// <summary>True when a valid Broker attestation of "no network" is enough to sign this action without a person.</summary>
+    public bool CanSkipWithAttestation(string action) => AttestedNoPromptActions().Contains(action);
+
+    /// <summary>True when switching from <paramref name="current"/> to this policy lets at least one action skip the person that could not before (with or without an attestation).
+    /// This (never the tier names) is what makes a change need a presence signature.</summary>
+    public bool Loosens(TierPolicy current) => !SkippableActions().IsSubsetOf(current.SkippableActions());
 }
 
 /// <summary>The bytes the approver's Hello key signs to loosen the policy, bound to ONE Authority by its signing key id and audience (its trusted config), so a signature made for

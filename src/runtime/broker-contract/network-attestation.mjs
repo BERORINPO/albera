@@ -1,7 +1,8 @@
 // Network attestation v1 (docs/architecture/approval-tiers.md, "Egress is decided by the Broker, not the request"; issue #115 step 2).
-// The Broker reads an environment's effective network configuration and signs a short statement about it. Nothing consumes the statement yet: step 3 (the Approval Authority
-// checking it before applying a no-prompt rule) does, and the C# twin of this file is added there, where the Authority needs it. No real key material exists in this PR:
-// signing goes through a signer PORT (`{ keyId, sign(bytes) }`) and the tests use a Fake. Pure: no I/O, no ambient clock (node:crypto is used for hashing only).
+// The Broker reads an environment's effective network configuration and signs a short statement about it. The consumer is the Approval Authority (step 3b): before it signs a
+// no-person receipt for environment.start / environment.create it checks this statement (the C# twin is NetworkAttestation.cs, pinned by the same vectors). Signing goes through a
+// signer PORT (`{ keyId, sign(bytes) }`): the production scheme is ECDSA P-256 / SHA-256 over the canonical bytes (ecdsa-attestation-signer.mjs, key from host configuration);
+// tests also use a Fake. Pure: no I/O, no ambient clock (node:crypto is used for hashing only).
 //
 // WHAT IT SAYS: for one environment, `network` is "none" | "present" | "unknown", bound to computerId, the VM's own hypervisor id (vmId), generation, projectId,
 // leaseId and leaseGeneration (the lease the Control Plane acts under; claims echoed into the statement, each checked by the verifier against its own state, so a VM moved
@@ -17,7 +18,8 @@
 //
 // STALENESS: the statement is evidence at observedAt ONLY. A consumer must re-check at execution time (step 3: re-attest, or compare the VM's state again, immediately
 // before it acts); "not expired" means "was true recently", never "is true now". `verifyNetworkAttestation` refuses an expired statement and one bound to a different
-// computerId / vmId / generation / projectId / leaseId / leaseGeneration than the caller expects; it does not decide what "none" or "present" allows.
+// computerId / vmId / generation / projectId / leaseId / leaseGeneration than the caller expects (all six are required: the VM id is what tells one VM from another under the same
+// computer id, project, lease and generation, so there is no way to leave it out); it does not decide what "none" or "present" allows.
 //
 //   preimage = UTF8("albera.network-attestation.v1") 0x00 enc(map)            enc(map) / enc(string) / enc(int) as in action-digest.mjs
 //   digest   = "sha256:" lowercase-hex(SHA-256(preimage))                      the signature covers the preimage bytes; keyId and signature are not part of the digest
@@ -39,6 +41,8 @@ const SIGNED_KEYS = Object.freeze(['attestation', 'digest', 'keyId', 'signature'
 const EXPECTED_KEYS = Object.freeze(['computerId', 'generation', 'leaseGeneration', 'leaseId', 'projectId', 'vmId']); // sorted, like the other key lists
 const ID_RE = new RegExp(ID_PATTERN);
 const VM_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** A Hyper-V VM id as the Broker reports it: a lowercase GUID. */
+export const isVmId = (value) => typeof value === 'string' && VM_ID_RE.test(value);
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 
@@ -152,7 +156,7 @@ export function readSignedNetworkAttestation(signed) {
 function readExpected(expected) {
   const e = readPlain(expected, EXPECTED_KEYS, 'invalid_expected');
   for (const field of ['computerId', 'projectId', 'leaseId']) if (typeof e[field] !== 'string' || !ID_RE.test(e[field])) throw fail('invalid_expected', field);
-  if (typeof e.vmId !== 'string' || !VM_ID_RE.test(e.vmId)) throw fail('invalid_expected', 'vmId');
+  if (!isVmId(e.vmId)) throw fail('invalid_expected', 'vmId');
   for (const field of ['generation', 'leaseGeneration']) if (!isCounter(e[field])) throw fail('invalid_expected', field);
   return e;
 }

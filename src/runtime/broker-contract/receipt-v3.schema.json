@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://albera.invalid/schemas/receipt-v3.schema.json",
   "title": "ALBERA approval receipt v3",
-  "description": "Receipt v2 plus basis, with policyVersion as a policy hash. Signed content is the JSON bytes exactly as sent. Duplicate keys, nested values, null, arrays, fractions and exponents are rejected by the strict reader before this schema applies. Cross-field rules (basis/action, TTL, iat skew, bindings, digest) are enforced by receipt-v3.mjs / ReceiptV3.cs; see docs/architecture/approval-tiers.md.",
+  "description": "Receipt v2 plus basis, with policyVersion as a policy hash. Signed content is the JSON bytes exactly as sent. Duplicate keys, nested values, null, arrays, fractions and exponents are rejected by the strict reader before this schema applies. The one optional property is attestationDigest; all others are required. Cross-field rules (basis/action, attestationDigest present exactly for basis policy on an attested action, TTL, iat skew, bindings, digest) are enforced by receipt-v3.mjs / ReceiptV3.cs; see docs/architecture/approval-tiers.md.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -163,7 +163,7 @@
         "presence",
         "policy"
       ],
-      "description": "Why no further proof was needed. \"presence\": a person approved this action. \"policy\": the Authority's tier policy needs no person for it, allowed only for the actions in POLICY_BASIS_ACTIONS (code \"basis_action\" otherwise). A \"grant:<id>\" basis is reserved and rejected."
+      "description": "Why no further proof was needed. \"presence\": a person approved this action. \"policy\": the Authority's tier policy needs no person for it, allowed only for the actions in POLICY_BASIS_ACTIONS (no attestation) and ATTESTED_POLICY_BASIS_ACTIONS (with attestationDigest); code \"basis_action\" otherwise. A \"grant:<id>\" basis is reserved and rejected."
     },
     "approverKeyId": {
       "type": "string",
@@ -182,6 +182,12 @@
       "minimum": 1,
       "maximum": 9007199254740991,
       "description": "Expiry, Unix seconds. Must satisfy iat < exp, exp - iat <= 300 and now < exp."
+    },
+    "attestationDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "maxLength": 71,
+      "description": "OPTIONAL. Digest of the Broker network attestation (network-attestation.mjs) a no-person rule relied on. Present exactly when basis is \"policy\" and the action is environment.start or environment.create (code \"attestation\" otherwise); absent in every other receipt. Checked for shape and presence only."
     }
   }
 }
