@@ -10,6 +10,7 @@ import {
 
 // Issue #102: the helper's decisions are pure functions of registry values and a file-system view, so none of this runs dotnet or reg.exe.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = 'C:\\repo';
 const DOTNET = 'C:\\Program Files\\dotnet\\dotnet.exe';
 const TRUSTED = { dotnet: DOTNET, programFiles: 'C:\\Program Files' };
 const goodFs = { lstat: () => ({ isFile: () => true, isSymbolicLink: () => false }), realpath: (p) => p };
@@ -89,7 +90,7 @@ const USER_IMPORTS = [
 
 test('restore, publish and build switch off Directory.Build.props / .targets / Directory.Packages.props found in an ancestor directory', () => {
   const required = ['-p:ImportDirectoryBuildProps=false', '-p:ImportDirectoryBuildTargets=false', '-p:ImportDirectoryPackagesProps=false'];
-  for (const args of [restoreArguments({ project: 'a.csproj', lockFileExists: () => true }), buildArguments({ verb: 'publish', project: 'a.csproj' }), buildArguments({ verb: 'build', project: 'a.csproj' })]) {
+  for (const args of [restoreArguments({ project: 'a.csproj', lockFileExists: () => true }), buildArguments({ verb: 'publish', project: 'a.csproj', root: ROOT }), buildArguments({ verb: 'build', project: 'a.csproj', root: ROOT })]) {
     for (const switchName of required) assert.ok(args.includes(switchName), `${args[0]} lacks ${switchName}`);
   }
 });
@@ -97,7 +98,7 @@ test('restore, publish and build switch off Directory.Build.props / .targets / D
 test('restore, publish and build switch off every MSBuild import from the user location (MSBuildUserExtensionsPath)', () => {
   assert.deepEqual([...USER_IMPORT_SWITCHES].sort(), [...USER_IMPORTS].sort());
   const restore = restoreArguments({ project: 'a.csproj', runtime: 'win-x64', lockFileExists: () => true });
-  for (const args of [restore, buildArguments({ verb: 'publish', project: 'a.csproj' }), buildArguments({ verb: 'build', project: 'a.csproj' })]) {
+  for (const args of [restore, buildArguments({ verb: 'publish', project: 'a.csproj', root: ROOT }), buildArguments({ verb: 'build', project: 'a.csproj', root: ROOT })]) {
     for (const required of USER_IMPORTS) assert.ok(args.includes(required), `${args[0]} lacks ${required}`);
   }
 });
@@ -118,12 +119,12 @@ test('restore of a project without packages.lock.json is refused', () => {
 });
 
 test('publish and build never restore on their own and carry -noAutoResponse', () => {
-  const publish = buildArguments({ verb: 'publish', project: 'p.csproj', args: ['--output', 'o'], properties: ['-p:X=1'] });
+  const publish = buildArguments({ verb: 'publish', project: 'p.csproj', root: ROOT, args: ['--output', 'o'], properties: ['-p:X=1'] });
   assert.deepEqual(publish.slice(0, 3), ['publish', 'p.csproj', '--no-restore']);
   for (const required of ['-noAutoResponse', '-nologo', '--output', '-p:X=1']) assert.ok(publish.includes(required), required);
   assert.equal(publish.includes('--configfile'), false);
-  assert.ok(buildArguments({ verb: 'build', project: 'p.csproj' }).includes('-noAutoResponse'));
-  assert.throws(() => buildArguments({ verb: 'pack', project: 'p.csproj' }), /unsupported_verb/u);
+  assert.ok(buildArguments({ verb: 'build', project: 'p.csproj', root: ROOT }).includes('-noAutoResponse'));
+  assert.throws(() => buildArguments({ verb: 'pack', project: 'p.csproj', root: ROOT }), /unsupported_verb/u);
 });
 
 test('the repo NuGet config clears every inherited source and allows only nuget.org over https', () => {
