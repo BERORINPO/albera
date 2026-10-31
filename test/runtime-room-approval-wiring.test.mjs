@@ -27,14 +27,14 @@ const settingsObject = (patch = {}) => ({
   broker: { pipeName: 'ALBERA_HostBroker', expect: { serviceName: 'AlberaHostBroker' } },
   authority: { pipeRoot: 'ALBERA\\ApprovalAuthority', expect: { serviceName: 'AlberaApprovalAuthority' } },
   journal: ABS('operations.sqlite'),
-  computers: { 'vm-a': 'computer-a', 'vm-b': 'computer-b' },
+  computers: { 'albera-computer-a': 'computer-a', 'vm-b': 'computer-b' },
   attestation: null,
   ...patch,
 });
 const attestationObject = (patch = {}) => ({ keyFile: ABS('broker-attestation.pem'), keyId: 'albera-broker-1', cloneRoot: ABS('clones'), ...patch });
 const text = (patch) => JSON.stringify(settingsObject(patch));
 const codeOf = (fn) => { try { fn(); } catch (error) { return error.message; } return 'no error'; };
-const JOBS = [{ vmId: 'vm-a', task: 'open notepad and write hello' }, { vmId: 'vm-b', task: 'rename the report' }];
+const JOBS = [{ vmId: 'albera-computer-a', task: 'open notepad and write hello' }, { vmId: 'vm-b', task: 'rename the report' }];
 
 // ---- the settings file ----
 
@@ -45,14 +45,14 @@ test('settings: a valid file parses to a frozen shape; attestation may be null o
   assert.deepEqual(plain.broker, { pipeName: 'ALBERA_HostBroker', expect: { serviceName: 'AlberaHostBroker' } });
   assert.deepEqual(plain.authority, { pipeRoot: 'ALBERA\\ApprovalAuthority', expect: { serviceName: 'AlberaApprovalAuthority' } });
   assert.equal(plain.attestation, null);
-  assert.deepEqual([...plain.computers], [['vm-a', { computerId: 'computer-a' }], ['vm-b', { computerId: 'computer-b' }]]);
+  assert.deepEqual([...plain.computers], [['albera-computer-a', { computerId: 'computer-a' }], ['vm-b', { computerId: 'computer-b' }]]);
   assert.ok(Object.isFrozen(plain));
   const { attestation, ...withoutKey } = settingsObject();
   assert.equal(attestation, null);
   assert.equal(parseApprovalSettings(JSON.stringify(withoutKey)).attestation, null);
-  const full = parseApprovalSettings(text({ attestation: attestationObject(), computers: { 'vm-a': { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 3 }, 'vm-b': 'computer-b' } }));
+  const full = parseApprovalSettings(text({ attestation: attestationObject(), computers: { 'albera-computer-a': { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 3 }, 'vm-b': 'computer-b' } }));
   assert.deepEqual(full.attestation, attestationObject());
-  assert.deepEqual(full.computers.get('vm-a'), { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 3 });
+  assert.deepEqual(full.computers.get('albera-computer-a'), { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 3 });
   assert.deepEqual(full.computers.get('vm-b'), { computerId: 'computer-b' });
   assert.equal(parseApprovalSettings(`﻿${text()}`).projectId, 'project-1', 'a BOM is tolerated');
 });
@@ -88,24 +88,29 @@ test('settings: every bad field is refused with its own fixed code, and the erro
     ['journal not a string', bad({ journal: 7 }), 'runtime_room_approval_journal'],
     ['computers empty', bad({ computers: {} }), 'runtime_room_approval_computers'],
     ['computers missing', bad({ computers: undefined }), 'runtime_room_approval_computers'],
-    ['computers an array', bad({ computers: ['vm-a'] }), 'runtime_room_approval_computers'],
+    ['computers an array', bad({ computers: ['albera-computer-a'] }), 'runtime_room_approval_computers'],
     ['computers nine', bad({ computers: Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`vm-${i}`, `computer-${i}`])) }), 'runtime_room_approval_computers'],
     ['computers bad vm name', bad({ computers: { 'vm a': 'computer-a' } }), 'runtime_room_approval_computers'],
     ['computers vm name starts with an underscore', bad({ computers: { _hidden: 'computer-a' } }), 'runtime_room_approval_computers'],
-    ['computers bad computer id', bad({ computers: { 'vm-a': 'computer a' } }), 'runtime_room_approval_computers'],
-    ['computers computer id not a string', bad({ computers: { 'vm-a': 5 } }), 'runtime_room_approval_computers'],
-    ['computers object without computerId', bad({ computers: { 'vm-a': { vmId: VM_A_GUID, expectedGeneration: 1 } } }), 'runtime_room_approval_computers'],
-    ['computers object unknown key', bad({ computers: { 'vm-a': { computerId: 'computer-a', note: 'x' } } }), 'runtime_room_approval_computers'],
-    ['vmId without a generation', bad({ attestation: attestationObject(), computers: { 'vm-a': { computerId: 'computer-a', vmId: VM_A_GUID } } }), 'runtime_room_approval_computers'],
-    ['generation without a vmId', bad({ attestation: attestationObject(), computers: { 'vm-a': { computerId: 'computer-a', expectedGeneration: 1 } } }), 'runtime_room_approval_computers'],
-    ['vmId in capitals', bad({ attestation: attestationObject(), computers: { 'vm-a': { computerId: 'computer-a', vmId: 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE', expectedGeneration: 1 } } }), 'runtime_room_approval_computers'],
-    ['generation zero', bad({ attestation: attestationObject(), computers: { 'vm-a': { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 0 } } }), 'runtime_room_approval_computers'],
-    ['generation a fraction', bad({ attestation: attestationObject(), computers: { 'vm-a': { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 1.5 } } }), 'runtime_room_approval_computers'],
-    ['a vmId without attestation', bad({ computers: { 'vm-a': { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 1 } } }), 'runtime_room_approval_computers'],
+    ['computers bad computer id', bad({ computers: { 'albera-computer-a': 'computer a' } }), 'runtime_room_approval_computers'],
+    ['computers computer id not a string', bad({ computers: { 'albera-computer-a': 5 } }), 'runtime_room_approval_computers'],
+    ['computers object without computerId', bad({ computers: { 'albera-computer-a': { vmId: VM_A_GUID, expectedGeneration: 1 } } }), 'runtime_room_approval_computers'],
+    ['computers object unknown key', bad({ computers: { 'albera-computer-a': { computerId: 'computer-a', note: 'x' } } }), 'runtime_room_approval_computers'],
+    ['vmId without a generation', bad({ attestation: attestationObject(), computers: { 'albera-computer-a': { computerId: 'computer-a', vmId: VM_A_GUID } } }), 'runtime_room_approval_computers'],
+    ['generation without a vmId', bad({ attestation: attestationObject(), computers: { 'albera-computer-a': { computerId: 'computer-a', expectedGeneration: 1 } } }), 'runtime_room_approval_computers'],
+    ['vmId in capitals', bad({ attestation: attestationObject(), computers: { 'albera-computer-a': { computerId: 'computer-a', vmId: 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE', expectedGeneration: 1 } } }), 'runtime_room_approval_computers'],
+    ['generation zero', bad({ attestation: attestationObject(), computers: { 'albera-computer-a': { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 0 } } }), 'runtime_room_approval_computers'],
+    ['generation a fraction', bad({ attestation: attestationObject(), computers: { 'albera-computer-a': { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 1.5 } } }), 'runtime_room_approval_computers'],
+    ['an attested VM whose name is not albera-<computerId> (its checkpoint would be of another VM)', bad({ attestation: attestationObject(), computers: { 'vm-x': { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 1 } } }), 'runtime_room_approval_computers'],
+    ['two VM names for one computer id', bad({ computers: { 'albera-computer-a': 'computer-a', 'vm-b': 'computer-a' } }), 'runtime_room_approval_computers'],
+    ['a vmId without attestation', bad({ computers: { 'albera-computer-a': { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 1 } } }), 'runtime_room_approval_computers'],
     ['attestation a string', bad({ attestation: 'on' }), 'runtime_room_approval_attestation'],
     ['attestation an array', bad({ attestation: [] }), 'runtime_room_approval_attestation'],
     ['attestation key file relative', wrongAttestation({ keyFile: 'broker.pem' }), 'runtime_room_approval_attestation'],
     ['attestation clone root relative', wrongAttestation({ cloneRoot: 'clones' }), 'runtime_room_approval_attestation'],
+    ['attestation key file not normalized', wrongAttestation({ keyFile: `${ABS('x')}${path.sep}..${path.sep}broker.pem` }), 'runtime_room_approval_attestation'],
+    ['attestation key file on a UNC share', wrongAttestation({ keyFile: '\\server\share\broker.pem' }), 'runtime_room_approval_attestation'],
+    ['attestation clone root not normalized', wrongAttestation({ cloneRoot: `${ABS('x')}${path.sep}..${path.sep}clones` }), 'runtime_room_approval_attestation'],
     ['attestation key id with a space', wrongAttestation({ keyId: 'my key' }), 'runtime_room_approval_attestation'],
     ['attestation key id missing', wrongAttestation({ keyId: undefined }), 'runtime_room_approval_attestation'],
     ['attestation key file missing', wrongAttestation({ keyFile: undefined }), 'runtime_room_approval_attestation'],
@@ -159,9 +164,9 @@ test('jobs against the settings: a VM that is not in "computers" and a task that
   assert.doesNotThrow(() => checkJobsAgainstSettings(settings, JOBS));
   assert.equal(codeOf(() => checkJobsAgainstSettings(settings, [...JOBS, { vmId: 'vm-c', task: 'x' }])), 'runtime_room_approval_vm_unmapped');
   for (const task of ['', 'x'.repeat(257), 'bad\u0007text', 'あ'.repeat(86)]) {
-    assert.equal(codeOf(() => checkJobsAgainstSettings(settings, [{ vmId: 'vm-a', task }])), 'runtime_room_approval_task_not_startable', JSON.stringify(task.slice(0, 8)));
+    assert.equal(codeOf(() => checkJobsAgainstSettings(settings, [{ vmId: 'albera-computer-a', task }])), 'runtime_room_approval_task_not_startable', JSON.stringify(task.slice(0, 8)));
   }
-  assert.doesNotThrow(() => checkJobsAgainstSettings(settings, [{ vmId: 'vm-a', task: 'あ'.repeat(85) }]), '85 x 3 bytes = 255');
+  assert.doesNotThrow(() => checkJobsAgainstSettings(settings, [{ vmId: 'albera-computer-a', task: 'あ'.repeat(85) }]), '85 x 3 bytes = 255');
 });
 
 // ---- the command line ----
@@ -292,7 +297,7 @@ test('no attestation: the gate asks a person for exactly { task }; the real clie
   assert.equal(world.prototypes.length, 0, 'no prototype is built without "attestation"');
   assert.match(approval.notice, /Hands start only after approval/);
   assert.doesNotMatch(approval.notice, /checkpoint/);
-  assert.deepEqual(await approval.gate.startApproved({ vmId: 'vm-a', task: 'open notepad and write hello' }), { ok: true });
+  assert.deepEqual(await approval.gate.startApproved({ vmId: 'albera-computer-a', task: 'open notepad and write hello' }), { ok: true });
   const [fence, submit, status, claim] = world.calls;
   const broker = { pipeName: 'ALBERA_HostBroker', expect: { serviceName: 'AlberaHostBroker' } };
   const authority = { pipeRoot: 'ALBERA\\ApprovalAuthority', expect: { serviceName: 'AlberaApprovalAuthority' } };
@@ -317,7 +322,7 @@ test('no attestation: the gate asks a person for exactly { task }; the real clie
 test('each start is a fresh operation with its own computer', async () => {
   const world = makeWorld();
   const approval = await open(world);
-  assert.deepEqual(await approval.gate.startApproved({ vmId: 'vm-a', task: 'one' }), { ok: true });
+  assert.deepEqual(await approval.gate.startApproved({ vmId: 'albera-computer-a', task: 'one' }), { ok: true });
   assert.deepEqual(await approval.gate.startApproved({ vmId: 'vm-b', task: 'two' }), { ok: true });
   assert.deepEqual(world.submissions.map((s) => [s.operationId, s.action.computerId]), [['room-start-1', 'computer-a'], ['room-start-2', 'computer-b']]);
 });
@@ -328,7 +333,7 @@ test('the default operation ids are random, valid and new each time (real defaul
     const world = makeWorld();
     delete world.deps.newOperationId; // the wiring's own default
     const approval = await open(world);
-    await approval.gate.startApproved({ vmId: 'vm-a', task: 'x' });
+    await approval.gate.startApproved({ vmId: 'albera-computer-a', task: 'x' });
     const id = world.submissions[0].operationId;
     assert.match(id, /^start-[0-9a-f]{16}$/);
     seen.add(id);
@@ -339,14 +344,14 @@ test('the default operation ids are random, valid and new each time (real defaul
 test('a denied approval is start_denied and nothing is claimed', async () => {
   const world = makeWorld({ approval: 'deny' });
   const approval = await open(world);
-  assert.deepEqual(await approval.gate.startApproved({ vmId: 'vm-a', task: 'x' }), { ok: false, code: 'start_denied' });
+  assert.deepEqual(await approval.gate.startApproved({ vmId: 'albera-computer-a', task: 'x' }), { ok: false, code: 'start_denied' });
   assert.equal(world.claims.length, 0);
 });
 
 test('a VM that is not in "computers" is refused before ANY request and before the store is opened; so is a task that cannot be a task.start', async () => {
   const world = makeWorld();
   await assert.rejects(open(world, { jobs: [...JOBS, { vmId: 'vm-unknown', task: 'x' }] }), { message: 'runtime_room_approval_vm_unmapped' });
-  await assert.rejects(open(world, { jobs: [{ vmId: 'vm-a', task: 'x'.repeat(300) }] }), { message: 'runtime_room_approval_task_not_startable' });
+  await assert.rejects(open(world, { jobs: [{ vmId: 'albera-computer-a', task: 'x'.repeat(300) }] }), { message: 'runtime_room_approval_task_not_startable' });
   assert.deepEqual([world.opened, world.calls, world.prototypes], [[], [], []]);
   // and the gate itself refuses a VM later on (a card on a VM the map does not know) without a single request
   const approval = await open(world);
@@ -387,7 +392,7 @@ test('initial jobs: every job is requested through the room host start path, wit
 const KEY_FILE = ABS('broker-attestation.pem');
 const attestedPatch = (extra = {}) => ({
   attestation: attestationObject(),
-  computers: { 'vm-a': { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 3 }, 'vm-b': 'computer-b', ...extra },
+  computers: { 'albera-computer-a': { computerId: 'computer-a', vmId: VM_A_GUID, expectedGeneration: 3 }, 'vm-b': 'computer-b', ...extra },
 });
 const attestedFiles = (patch = attestedPatch()) => ({ [SETTINGS_FILE]: text(patch), [KEY_FILE]: '-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n' });
 
@@ -405,7 +410,7 @@ test('attestation configured: the Hyper-V prototype gets the signer and clone ro
   assert.equal(options.attestationSigner.keyId, 'albera-broker-1');
   assert.equal(typeof options.attestationSigner.sign, 'function');
 
-  assert.deepEqual(await approval.gate.startApproved({ vmId: 'vm-a', task: 'open notepad' }), { ok: true });
+  assert.deepEqual(await approval.gate.startApproved({ vmId: 'albera-computer-a', task: 'open notepad' }), { ok: true });
   assert.deepEqual(world.calls.map(([name]) => name), ['fence', 'submit', 'status', 'claim'], 'the prototype is asked inside the flow, between fence and submit');
   assert.equal(world.asked.length, 1);
   assert.deepEqual(world.asked[0], {
@@ -430,7 +435,7 @@ test('attestation configured but this VM names no Hyper-V VM: a person is asked,
 test('attestation configured but the prototype gives none (returns null): the submit goes without it and a person is asked', async () => {
   const world = makeWorld({ prototypeNull: true });
   const approval = await open(world, { files: attestedFiles() });
-  assert.deepEqual(await approval.gate.startApproved({ vmId: 'vm-a', task: 'open notepad' }), { ok: true });
+  assert.deepEqual(await approval.gate.startApproved({ vmId: 'albera-computer-a', task: 'open notepad' }), { ok: true });
   assert.equal(world.asked.length, 1);
   assert.equal(world.submissions[0].attestation, undefined);
   assert.deepEqual(world.submissions[0].action.args, { task: 'open notepad', vmId: VM_A_GUID, expectedGeneration: 3 }, 'the person sees which VM is meant');

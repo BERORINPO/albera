@@ -40,7 +40,8 @@ const fail = (what) => new Error(`runtime_room_approval_${what}`);
 const isPlain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const hasOnly = (value, keys) => isPlain(value) && Object.keys(value).every((key) => keys.includes(key));
 const hasExactly = (value, keys) => hasOnly(value, keys) && Object.keys(value).length === keys.length;
-const isAbsolutePath = (value) => typeof value === 'string' && value.length > 0 && path.isAbsolute(value);
+// Absolute, already normalized (no "..", no drive-relative "\x"), and not a UNC share: the same file whatever directory the room was started in.
+const isAbsolutePath = (value) => typeof value === 'string' && value.length > 0 && path.isAbsolute(value) && path.resolve(value) === value && !/^[\/]{2}/u.test(value);
 
 /**
  * Take `--approval <file>` out of the room's arguments. `--require-start-approval` and `--approval` come as a pair: either one alone is a fixed error.
@@ -75,9 +76,14 @@ function parseComputers(raw) {
   const names = isPlain(raw) ? Object.keys(raw) : [];
   if (names.length < 1 || names.length > MAX_COMPUTERS || !names.every((name) => VM_RE.test(name))) throw fail('computers');
   const out = new Map();
+  const ids = new Set();
   for (const name of names) {
     const computer = parseComputer(raw[name]);
-    if (!computer) throw fail('computers');
+    // One computer id per VM: the approval names the computer, the hands run on the VM name, so two names for one id would let one approval start another VM.
+    if (!computer || ids.has(computer.computerId)) throw fail('computers');
+    // An attested computer must be the VM the Hyper-V Broker checkpoints (albera-<computerId>); otherwise the checkpoint and the attestation would be of another VM than the hands.
+    if (computer.vmId !== undefined && name !== `albera-${computer.computerId}`) throw fail('computers');
+    ids.add(computer.computerId);
     out.set(name, computer);
   }
   return out;
