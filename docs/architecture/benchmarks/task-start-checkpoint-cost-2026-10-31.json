@@ -1,0 +1,104 @@
+{
+  "measuredAt": "2026-10-31T10:23:06Z",
+  "source": "test/windows-service-lab/checkpoint-cost.ps1 -SizesMB 256,256,256,1024 (run stopped at the third Standard sample; samples copied from its output)",
+  "host": {
+    "os": "10.0.26300",
+    "memoryGB": 32,
+    "cpu": "AMD Ryzen 7 5800X3D"
+  },
+  "vm": {
+    "memoryGB": 4,
+    "cpus": 2,
+    "disk": "differencing child of the golden WS2025 image",
+    "network": "none"
+  },
+  "units": {
+    "createS": "Checkpoint-VM, s",
+    "guestWriteS": "guest writes and flushes writtenMB of random data after the checkpoint, s",
+    "differencingDiskMB": "size of the checkpoint differencing disk after the write",
+    "savedStateMB": "state files the checkpoint added on the host (guest RAM for Standard)",
+    "restoreS": "Restore-VMSnapshot, s",
+    "readyAfterRestoreS": "until PowerShell Direct answers again (Production restores to Off and boots), s",
+    "restoreUndidWrite": "the written file is gone after restore",
+    "discardMergeS": "Remove-VMSnapshot until the merge finished, s"
+  },
+  "samples": [
+    {
+      "type": "Production",
+      "writtenMB": 256,
+      "createS": 50.69,
+      "guestWriteS": 18.11,
+      "differencingDiskMB": 452,
+      "savedStateMB": 0,
+      "restoreS": 16.67,
+      "readyAfterRestoreS": 111.18,
+      "restoreUndidWrite": true,
+      "discardMergeS": 29.2
+    },
+    {
+      "type": "Production",
+      "writtenMB": 256,
+      "createS": 16.48,
+      "guestWriteS": 10.91,
+      "differencingDiskMB": 324,
+      "savedStateMB": 0,
+      "restoreS": 19.03,
+      "readyAfterRestoreS": 114.2,
+      "restoreUndidWrite": true,
+      "discardMergeS": 29.1
+    },
+    {
+      "type": "Production",
+      "writtenMB": 256,
+      "createS": 18.78,
+      "guestWriteS": 9.87,
+      "differencingDiskMB": 388,
+      "savedStateMB": 0,
+      "restoreS": 15.73,
+      "readyAfterRestoreS": 113.68,
+      "restoreUndidWrite": true,
+      "discardMergeS": 29.3
+    },
+    {
+      "type": "Production",
+      "writtenMB": 1024,
+      "createS": 21.47,
+      "guestWriteS": 36.37,
+      "differencingDiskMB": 1284,
+      "savedStateMB": 0,
+      "restoreS": 24.17,
+      "readyAfterRestoreS": 114.2,
+      "restoreUndidWrite": true,
+      "discardMergeS": 29.35
+    },
+    {
+      "type": "Standard",
+      "writtenMB": 256,
+      "createS": 31.81,
+      "guestWriteS": 18.24,
+      "differencingDiskMB": 548,
+      "savedStateMB": 957,
+      "restoreS": 28.7,
+      "readyAfterRestoreS": 16.9,
+      "restoreUndidWrite": true,
+      "discardMergeS": 13.43
+    },
+    {
+      "type": "Standard",
+      "writtenMB": 256,
+      "createS": 48.04,
+      "guestWriteS": 10.42,
+      "differencingDiskMB": 548,
+      "savedStateMB": 1047,
+      "restoreS": 30.26,
+      "readyAfterRestoreS": 0.9,
+      "restoreUndidWrite": true,
+      "discardMergeS": 14.36
+    },
+    {
+      "type": "Standard",
+      "writtenMB": 256,
+      "failed": "Checkpoint-VM timed out saving the RAM contents (0x800705B4); the run stopped here"
+    }
+  ]
+}
