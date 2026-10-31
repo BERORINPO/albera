@@ -36,11 +36,15 @@ internal static partial class Harness
         public SignResult Sign(byte[] message) { Messages.Add(message); return result; }
     }
 
-    private sealed class Run(FakeChannel channel, IPresenceSigner signer, string stdin = "yes\n", bool interactive = true)
+    // The process runs from the approver's own package (issue #101); GateChecks covers every other identity.
+    private static HelloGate Packaged() => GateFor(PackageIdentity.Expected);
+    private static HelloGate GateFor(PackageIdentity? identity) => new(new FakePackageIdentity(identity));
+
+    private sealed class Run(FakeChannel channel, IPresenceSigner signer, string stdin = "yes\n", bool interactive = true, HelloGate? gate = null)
     {
         public readonly StringWriter Out = new(), Err = new();
         public int Exit;
-        public ApproverCommands Commands => new(channel, signer, Out, Err, new StringReader(stdin), () => DateTimeOffset.FromUnixTimeSeconds(Now), interactive);
+        public ApproverCommands Commands => new(channel, signer, Out, Err, new StringReader(stdin), () => DateTimeOffset.FromUnixTimeSeconds(Now), interactive, gate ?? Packaged());
     }
 
     private static string DigestOf(string dto = Dto) => ActionDigest.Compute("broker.operation", StrictJson.Parse(Encoding.UTF8.GetBytes(dto), 3));
@@ -286,13 +290,13 @@ internal static partial class Harness
         });
     }
 
-    private sealed class Enrolling(RSA? key, bool unavailable = false, bool cancel = false)
+    private sealed class Enrolling(RSA? key, bool unavailable = false, bool cancel = false, string attestation = "Success", HelloGate? gate = null)
     {
-        public readonly FakeKeyStore Store = new(key, unavailable);
+        public readonly FakeKeyStore Store = new(key, unavailable, attestation);
         public readonly StringWriter Out = new(), Err = new();
         public int Exit;
         public int Run(string? option, string stdin = "", bool interactive = true) =>
-            Exit = new EnrollCommand(cancel ? new CancellingStore() : Store, () => "S-1-5-21-1-2-3-1001", Out, Err, new StringReader(stdin), interactive).Run(option);
+            Exit = new EnrollCommand(cancel ? new CancellingStore() : Store, () => "S-1-5-21-1-2-3-1001", Out, Err, new StringReader(stdin), interactive, gate ?? Packaged()).Run(option);
     }
 
     private sealed class CancellingStore : IHelloKeyStore
@@ -421,13 +425,13 @@ internal static partial class Harness
         public SignResult Sign(byte[] message) { Messages.Add(message); return SignResult.Signed(key.SignData(message, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)); }
     }
 
-    private sealed class SelfChecking(RSA? storeKey, IPresenceSigner signer, bool interactive = true, bool unavailable = false)
+    private sealed class SelfChecking(RSA? storeKey, IPresenceSigner signer, bool interactive = true, bool unavailable = false, HelloGate? gate = null)
     {
         public readonly FakeKeyStore Store = new(storeKey, unavailable);
         public readonly StringWriter Out = new(), Err = new();
         public int Calls;
         public int Run(string? expect = null) =>
-            new SelfCheckCommand(Store, signer, () => "S-1-5-21-1-2-3-1001", () => Enumerable.Range(Calls++, SelfCheckMessage.NonceBytes).Select(i => (byte)i).ToArray(), Out, Err, interactive).Run(expect);
+            new SelfCheckCommand(Store, signer, () => "S-1-5-21-1-2-3-1001", () => Enumerable.Range(Calls++, SelfCheckMessage.NonceBytes).Select(i => (byte)i).ToArray(), Out, Err, interactive, gate ?? Packaged()).Run(expect);
     }
 
     private static string KeyIdOf(RSA key) => "hello-" + Convert.ToHexStringLower(SHA256.HashData(key.ExportSubjectPublicKeyInfo()).AsSpan(0, 8));
@@ -543,6 +547,8 @@ internal static partial class Harness
         ApproveChecks();
         EnrollChecks();
         SelfCheckChecks();
+        GateChecks();
+        AttestationChecks();
         ListAndDenyChecks();
         PolicyChecks();
         Console.Out.Write(JsonSerializer.Serialize(new { checks = Results }));

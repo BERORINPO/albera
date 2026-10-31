@@ -12,7 +12,7 @@ namespace Albera.Approver;
 // one Hello signature over PolicyChange.Message(new policy, kid, audience) (albera.policy.v1 + the Authority's kid and audience from its reply + the hash this app computed itself from the policy it showed). A change that only adds prompts is
 // sent as it is. The Authority decides again on its own; this app's description is for the person, not a promise to the Authority.
 // The policy and its hash are read from the Authority's reply with the contract's strict reader and hashed here; a reply whose hash differs from the policy it carries is refused.
-internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, bool interactive)
+internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, bool interactive, HelloGate gate)
 {
     private static readonly string[] AuthorityCodes = ["authority_unavailable", "request_invalid", "request_expired", "human_denied", "presence_unavailable", "presence_mismatch", "queue_full"];
 
@@ -38,6 +38,7 @@ internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner si
         output.Write(Describe(current));
         output.Write(Change(current, next, loosens));
         if (loosens && !interactive) throw new Stop(ExitCodes.Refused, "not_interactive", "hint: this change needs a console you type in and Windows Hello; stdin is redirected, so nothing was read or sent");
+        if (loosens && gate.Check() is { } refusal) throw new Stop(ExitCodes.Refused, refusal.Code, refusal.Hint); // issue #101: Hello is reached only from the approver's own package; a change that only adds prompts never reaches Hello
         string request = $"{{\"v\":1,\"verb\":\"policy_set\",\"policy\":{Encoding.UTF8.GetString(next.ToJson())}}}";
         if (loosens)
         {

@@ -14,6 +14,8 @@ namespace Albera.Approver;
 //   --test-presence unavailable    the fake reports that Hello gave no proof
 //   --test-interactive yes         treat stdin as a console a person types in (a test pipes stdin)
 //   --test-timeout-ms <n>          per-call timeout
+//   --test-package <p>             the package the fake process runs from (issue #101): approver (the default) | none (unpackaged) | wrong-name | wrong-publisher | development
+//   --test-attestation <status>    what the fake Windows reports for a key `enroll` just made: Success (default) | NotSupported | TemporaryFailure | UnknownError | Empty (Success, empty buffers)
 // A fake signer is installed only together with --test-fake-key; without it a test-faults build has a signer that is never ready (approve exits 69).
 internal sealed class FakePresenceSigner(RSA key, bool unavailable) : IPresenceSigner
 {
@@ -26,7 +28,9 @@ internal sealed class NotReadyPresenceSigner : IPresenceSigner
     public SignResult Sign(byte[] message) => SignResult.NotReady;
 }
 
-internal sealed class FakeKeyStore(RSA? initialKey, bool unavailable = false) : IHelloKeyStore
+// `attestation` is the status the fake "Windows" reports for a key that Create just made; "Empty" is Success with empty buffers. Like the real store, a key whose attestation is
+// not accepted by AttestationPolicy is removed again (a replaced key stays lost) and Create returns NotAttested.
+internal sealed class FakeKeyStore(RSA? initialKey, bool unavailable = false, string attestation = "Success") : IHelloKeyStore
 {
     private RSA? key = initialKey;
 
@@ -36,9 +40,22 @@ internal sealed class FakeKeyStore(RSA? initialKey, bool unavailable = false) : 
     {
         if (unavailable) return KeyLookup.Of(KeyState.Unavailable);
         if (key is not null && !replace) return KeyLookup.Of(KeyState.AlreadyExists);
+        string status = attestation == "Empty" ? "Success" : attestation;
+        (int chain, int statement) = attestation == "Empty" ? (0, 0) : (1234, 567);
+        if (!AttestationPolicy.Accepts(status, chain, statement))
+        {
+            key = null;
+            return KeyLookup.NotAttested($"{AttestationPolicy.Summary(status, chain, statement)}; the key was removed");
+        }
         key = RSA.Create();
-        return KeyLookup.Present(key.ExportSubjectPublicKeyInfo());
+        return KeyLookup.Present(key.ExportSubjectPublicKeyInfo(), AttestationPolicy.Summary(status, chain, statement));
     }
+}
+
+/// <summary>The package identity a test says the process runs from (null = unpackaged).</summary>
+internal sealed class FakePackageIdentity(PackageIdentity? identity) : IPackageIdentitySource
+{
+    public PackageIdentity? Current() => identity;
 }
 
 internal static class TestSeam
@@ -54,7 +71,7 @@ internal static class TestSeam
             i++;
         }
         args = [.. rest];
-        string[] known = ["--test-pipe-root", "--test-owner-sid", "--test-pid", "--test-fake-key", "--test-key-state", "--test-presence", "--test-interactive", "--test-timeout-ms"];
+        string[] known = ["--test-pipe-root", "--test-owner-sid", "--test-pid", "--test-fake-key", "--test-key-state", "--test-presence", "--test-interactive", "--test-timeout-ms", "--test-package", "--test-attestation"];
         if (options.Keys.Any(k => !known.Contains(k))) return false;
 
         ServerExpectation expectation = wiring.Expectation;
@@ -69,6 +86,23 @@ internal static class TestSeam
         if (options.TryGetValue("--test-interactive", out string? yes)) { if (yes != "yes") return false; interactive = true; }
         if (options.TryGetValue("--test-key-state", out string? state) && state != "missing") return false;
 
+        // Default: the fake process runs from the approver's own package, so the existing flows reach the fake signer. A test says otherwise with --test-package.
+        HelloGate gate = wiring.Gate;
+        if (options.TryGetValue("--test-package", out string? package))
+        {
+            if (package is not ("none" or "approver" or "wrong-name" or "wrong-publisher" or "development")) return false;
+            PackageIdentity? identity = package switch
+            {
+                "none" => null,
+                "wrong-name" => PackageIdentity.Expected with { Name = "Other.App" },
+                "wrong-publisher" => PackageIdentity.Expected with { Publisher = "CN=Someone Else" },
+                "development" => PackageIdentity.Expected with { IsDevelopmentMode = true },
+                _ => PackageIdentity.Expected,
+            };
+            gate = new HelloGate(new FakePackageIdentity(identity));
+        }
+        string attestation = options.GetValueOrDefault("--test-attestation", "Success");
+
         IPresenceSigner signer = wiring.Signer;
         IHelloKeyStore keyStore = wiring.KeyStore;
         if (options.TryGetValue("--test-fake-key", out string? pkcs8))
@@ -76,10 +110,10 @@ internal static class TestSeam
             RSA key = RSA.Create();
             key.ImportPkcs8PrivateKey(Convert.FromBase64String(pkcs8), out _);
             signer = new FakePresenceSigner(key, options.GetValueOrDefault("--test-presence") == "unavailable");
-            keyStore = new FakeKeyStore(key);
+            keyStore = new FakeKeyStore(key, attestation: attestation);
         }
-        else if (state == "missing") keyStore = new FakeKeyStore(null);
-        wiring = wiring with { Expectation = expectation, Signer = signer, KeyStore = keyStore, TimeoutMs = timeoutMs, Interactive = interactive };
+        else if (state == "missing") keyStore = new FakeKeyStore(null, attestation: attestation);
+        wiring = wiring with { Expectation = expectation, Signer = signer, KeyStore = keyStore, TimeoutMs = timeoutMs, Interactive = interactive, Gate = gate };
         return true;
     }
 }

@@ -26,10 +26,10 @@ internal static partial class Harness
         return PolicyOf(document.RootElement.GetProperty("policy").GetRawText());
     }
 
-    private static int RunPolicy(FakeChannel channel, IPresenceSigner signer, Func<PolicyCommand, Task<int>> body, out string stdout, out string stderr, string stdin = "yes\n", bool interactive = true)
+    private static int RunPolicy(FakeChannel channel, IPresenceSigner signer, Func<PolicyCommand, Task<int>> body, out string stdout, out string stderr, string stdin = "yes\n", bool interactive = true, HelloGate? gate = null)
     {
         StringWriter output = new(), errors = new();
-        int exit = body(new PolicyCommand(channel, signer, output, errors, new StringReader(stdin), interactive)).GetAwaiter().GetResult();
+        int exit = body(new PolicyCommand(channel, signer, output, errors, new StringReader(stdin), interactive, gate ?? Packaged())).GetAwaiter().GetResult();
         stdout = output.ToString();
         stderr = errors.ToString();
         return exit;

@@ -9,7 +9,7 @@ import { getUnavailableReason, runApproverUnitHarness } from './helpers/approver
 // bidi, non-ASCII, look-alike characters), every digest input shown, the digest recomputed with the contract and a mismatch refused before anything is signed or
 // sent, the exact presence message bytes, the approve / deny / presence_unavailable flows against a canned channel, exit codes, and the fixed command grammar.
 // Windows-only; skipped without the .NET 10 SDK.
-const EXPECTED_AT_LEAST = 58;
+const EXPECTED_AT_LEAST = 71;
 
 test('Approver unit checks (rendering, digest recompute and refusal, presence message bytes, command flows)', { skip: getUnavailableReason(), timeout: 420_000 }, async (t) => {
   const work = mkdtempSync(path.join(os.tmpdir(), 'albera-approver-unit-'));

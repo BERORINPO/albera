@@ -21,11 +21,12 @@ internal static class SelfCheckMessage
 //   4. asks Hello (one prompt) to sign SelfCheckMessage, then verifies the signature locally with the public key of the same credential (PresenceSignature, RSA-2048 PKCS#1 v1.5 / SHA-256)
 // stdout on success is exactly three lines (`self-check: OK`, `approverKeyId: ...`, `approverSid: ...`). Nothing is sent anywhere: no pipe, no network, no file; the only I/O is the console.
 // A passing check shows the key signs and matches its public key. It does NOT show who made the key (same limit as `enroll --show`; docs/architecture/approver-app.md "Known limits").
-internal sealed class SelfCheckCommand(IHelloKeyStore store, IPresenceSigner signer, Func<string> currentUserSid, Func<byte[]> nonce, TextWriter output, TextWriter errors, bool interactive)
+internal sealed class SelfCheckCommand(IHelloKeyStore store, IPresenceSigner signer, Func<string> currentUserSid, Func<byte[]> nonce, TextWriter output, TextWriter errors, bool interactive, HelloGate gate)
 {
     public int Run(string? expectedKeyId)
     {
         if (!interactive) return Fail(ExitCodes.Refused, "not_interactive");
+        if (gate.Check() is { } refusal) return Fail(ExitCodes.Refused, refusal.Code, refusal.Hint); // issue #101: only from the approver's own package, before Hello is opened
         KeyLookup lookup = store.Open(); // never shows a Hello prompt
         if (lookup.State != KeyState.Present) return NotUsable(lookup.State);
         string keyId = ApproverKeyId.Of(lookup.PublicKey!);

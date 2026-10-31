@@ -7,7 +7,9 @@ namespace Albera.Approver;
 //   enroll --replace  after the person types `replace`, make a NEW key in place of the existing one. The old key is lost; the Authority rejects approvals until its config is updated.
 // `enroll --check` is not handled here: it is SelfCheckCommand.cs (opens the existing key and signs a self-check message; never creates or replaces).
 // create / replace need an interactive console (stdin not redirected). approverKeyId is a suggestion derived from the key (any id in the Authority's id grammar works).
-internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUserSid, TextWriter output, TextWriter errors, TextReader input, bool interactive)
+// Issue #101: every form first needs the approver's own MSIX package (HelloGate; the Hello key is scoped to the package family), and a key that create / replace just made is attested:
+// Windows must report KeyCredentialAttestationStatus Success (AttestationPolicy), else the key is removed and nothing is printed for the Authority config (exit 69 attestation_refused).
+internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUserSid, TextWriter output, TextWriter errors, TextReader input, bool interactive, HelloGate gate)
 {
     public const string ReplaceWord = "replace";
 
@@ -17,8 +19,9 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
 
     public int Run(string? option)
     {
-        if (option == "show") return Show();
+        if (option == "show") return Gated() ?? Show();
         if (!interactive) return Fail(ExitCodes.Refused, "not_interactive");
+        if (Gated() is { } refused) return refused;
         KeyLookup existing = store.Open();
         switch (existing.State)
         {
@@ -36,6 +39,8 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
         }
     }
 
+    private int? Gated() => gate.Check() is { } refusal ? Fail(ExitCodes.Refused, refusal.Code, refusal.Hint) : null;
+
     private int Show()
     {
         KeyLookup lookup = store.Open();
@@ -44,13 +49,14 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
 
     private int Report(KeyLookup lookup, bool shown = false) => lookup.State switch
     {
-        KeyState.Present => Print(lookup.PublicKey!, shown),
+        KeyState.Present => Print(lookup.PublicKey!, shown, lookup.Detail),
+        KeyState.NotAttested => Fail(ExitCodes.SignerUnavailable, "attestation_refused", $"hint: Windows Hello did not attest the new key (attestation status {lookup.Detail}). Only status Success is accepted, so no key was kept and nothing is printed for the Authority config. A PC without hardware key attestation (TPM) cannot enrol an approver key"),
         KeyState.AlreadyExists => Fail(ExitCodes.Refused, "already_enrolled", AlreadyEnrolledHint),
         KeyState.Cancelled => Fail(ExitCodes.SignerUnavailable, "hello_cancelled"),
         _ => Fail(ExitCodes.SignerUnavailable, "hello_unavailable", "hint: Windows Hello must be set up for this account (Settings > Accounts > Sign-in options)"),
     };
 
-    private int Print(byte[] spki, bool shown)
+    private int Print(byte[] spki, bool shown, string? attestation)
     {
         string sid = currentUserSid();
         if (sid.Length == 0) return Fail(ExitCodes.Internal, "sid_unavailable");
@@ -60,6 +66,7 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
         output.Write($"  \"approverKeyId\": \"{keyId}\",\n");
         output.Write($"  \"approverSid\": \"{sid}\",\n");
         output.Write("Public values only. approverSid is this account: run approve as the same account, on this PC.\n");
+        if (attestation is not null) output.Write($"attestation: {attestation}\n");
         if (shown) output.Write(ShownWarning);
         return ExitCodes.Ok;
     }

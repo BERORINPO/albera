@@ -5,10 +5,10 @@ namespace Albera.Approver;
 
 // The three commands. Output goes to `output` (stdout), problems to `errors` (stderr) as one `error: <code>` line, and the exit code says which kind (ExitCodes.cs).
 //   list            every pending request, all pages, rendered by Renderer
-//   approve <id>    needs an interactive console (stdin not redirected), else REFUSE before anything is read or sent; find the request in a fresh `list`; REFUSE (nothing sent) if the entry is invalid or the digest recomputed from its fields differs from the Authority's;
+//   approve <id>    needs an interactive console (stdin not redirected), else REFUSE before anything is read or sent; then needs the approver's own MSIX package (HelloGate, issue #101); find the request in a fresh `list`; REFUSE (nothing sent) if the entry is invalid or the digest recomputed from its fields differs from the Authority's;
 //                   show it; ask for a typed "yes" (there is no way to skip it); ask the presence signer for a signature over PresenceMessage(approvalId, RECOMPUTED digest, challenge); send `decide`
 //   deny <id>       send `decide` deny (a deny needs no presence proof and can only make a request fail)
-internal sealed class ApproverCommands(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, Func<DateTimeOffset> clock, bool interactive)
+internal sealed class ApproverCommands(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, Func<DateTimeOffset> clock, bool interactive, HelloGate gate)
 {
     private const int MaxPages = 16; // 32 pending requests at most, several per page: a server that keeps saying "more" is not honest
     private static readonly string[] AuthorityCodes = ["authority_unavailable", "request_invalid", "request_expired", "human_denied", "presence_unavailable", "presence_mismatch", "queue_full"];
@@ -27,7 +27,8 @@ internal sealed class ApproverCommands(IApproverChannel channel, IPresenceSigner
     {
         RequireApprovalId(approvalId);
         if (!interactive) throw new Stop(ExitCodes.Refused, "not_interactive", "hint: approve needs a console you type in; stdin is redirected, so nothing was read or sent"); // before any pipe access
-        ListedRequest item =(await FetchAllAsync()).FirstOrDefault(x => x.ApprovalId == approvalId) ?? throw new Stop(ExitCodes.Refused, "not_pending");
+        if (gate.Check() is { } refusal) throw new Stop(ExitCodes.Refused, refusal.Code, refusal.Hint); // issue #101: only from the approver's own package, before the pipe is touched
+        ListedRequest item = (await FetchAllAsync()).FirstOrDefault(x => x.ApprovalId == approvalId) ?? throw new Stop(ExitCodes.Refused, "not_pending");
         output.Write(Renderer.Render(item, clock()));
         PendingView view = item.View ?? throw new Stop(ExitCodes.Refused, "invalid_entry");
         if (!view.DigestMatches) throw new Stop(ExitCodes.Refused, "digest_mismatch");
