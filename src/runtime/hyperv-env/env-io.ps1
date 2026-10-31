@@ -124,10 +124,10 @@ function Invoke-Create($Req) {
 # too), and the VM id is mandatory, so the checkpoint is taken of exactly the VM the approval names. ProductionOnly (not Production): a Production checkpoint falls back to a Standard one when the
 # guest cannot freeze its disk (VSS), and a Standard checkpoint saves the guest's memory, which may hold secrets, to the host disk; ProductionOnly fails instead, and a failure means no attestation.
 # No checkpoint is restored, removed or merged anywhere in this script. Reports the new snapshot's id (a lowercase GUID) and the VM's own id.
-# WHAT IS AND IS NOT OBSERVED (#133): the checkpoint TYPE is not read back from the snapshot. The snapshot listing cmdlet reports SnapshotType Standard for a ProductionOnly checkpoint (real
-# host, 2026-10-31), so that field proves nothing, and no other read-only property of the Hyper-V module is known to tell a production checkpoint from a standard one (a saved-memory file
-# is not a documented, reliable signal). The Node side attests "production" because this op sets ProductionOnly and reads the VM's setting back before the checkpoint, under which the checkpoint cmdlet fails instead of falling back to
-# Standard, and because a failure here means no attestation. If a reliable signal is found (the real-host check prints candidates), verify it here and fail when it cannot be confirmed.
+# WHAT IS OBSERVED (#133): the snapshot's SnapshotType is NOT used: the listing cmdlet reports SnapshotType Standard for a ProductionOnly checkpoint (real host, 2026-10-31), so
+# that field proves nothing. What is used is the VM state the snapshot recorded: with the VM running, a Standard checkpoint (guest memory saved) records snapshot State Saved and a
+# ProductionOnly one records State Off (real host, 2026-11-01, control taken on a disposable VM). So the op attests only when the new snapshot's State is Off, on top of setting
+# ProductionOnly and reading the VM's setting back before the checkpoint; anything else is an unknown outcome, i.e. no attestation.
 # The VM's own CheckpointType is borrowed for this one call and put back in finally, so this op leaves no lasting change to the VM's configuration. If the put-back itself fails the
 # VM stays ProductionOnly (the safe direction: no later checkpoint can silently save the guest's memory) and the op reports an unknown outcome, i.e. no attestation.
 function Invoke-Checkpoint($Req) {
@@ -151,6 +151,7 @@ function Invoke-Checkpoint($Req) {
   if ($typeNotSet) { Abort 'provider_unavailable' }
   if ($restoreFailed) { Abort 'provider_state_unknown' }
   if ($snapshots.Count -ne 1) { Abort 'provider_state_unknown' }
+  if ([string]$snapshots[0].State -ne 'Off') { Abort 'provider_state_unknown' }
   $checkpointId = ([string]$snapshots[0].Id).ToLowerInvariant()
   if ($checkpointId -cnotmatch $GuidRe) { Abort 'provider_state_unknown' }
   $after = Get-VM -Name $Req.vmName -ErrorAction Stop
