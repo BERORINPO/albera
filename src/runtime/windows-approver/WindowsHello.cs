@@ -10,7 +10,7 @@ namespace Albera.Approver;
 //   - one fixed credential name; the key is an RSA-2048 key that Windows Hello (TPM or software) holds. This code never sees, exports, copies or stores the private key.
 //   - Sign = KeyCredential.RequestSignAsync(message): Hello shows its prompt (PIN / face / fingerprint) and returns RSA PKCS#1 v1.5 / SHA-256 over exactly the message bytes.
 //   - the plain API is used (no window handle). If Windows shows no prompt for a console process, the follow-up is IKeyCredentialManagerInterop with the console window; see the doc.
-//   - issue #101: `enroll` attests the key it just made (GetAttestationAsync; AttestationPolicy accepts only Success) and removes it again (DeleteAsync, this one call) when the attestation is not accepted.
+//   - issue #101: `enroll` attests the key it just made (GetAttestationAsync; AttestationPolicy accepts Success, and NotSupported only with --accept-unattested) and removes it again (DeleteAsync, this one call) when the attestation is not accepted.
 //   - any API failure maps to NotReady / Unavailable / Missing; no exception text is ever printed.
 internal static class HelloCredential
 {
@@ -46,22 +46,22 @@ internal sealed class WindowsHelloKeyStore : IHelloKeyStore
         };
     });
 
-    public KeyLookup Create(bool replace) => Guard(() =>
+    public KeyLookup Create(bool replace, bool acceptUnattested) => Guard(() =>
     {
         KeyCredentialRetrievalResult created = KeyCredentialManager.RequestCreateAsync(HelloCredential.Name,
             replace ? KeyCredentialCreationOption.ReplaceExisting : KeyCredentialCreationOption.FailIfExists).GetAwaiter().GetResult();
         return created.Status switch
         {
-            KeyCredentialStatus.Success => Attested(created.Credential),
+            KeyCredentialStatus.Success => Attested(created.Credential, acceptUnattested),
             KeyCredentialStatus.CredentialAlreadyExists => KeyLookup.Of(KeyState.AlreadyExists),
             KeyCredentialStatus.UserCanceled => KeyLookup.Of(KeyState.Cancelled),
             _ => KeyLookup.Of(KeyState.Unavailable),
         };
     });
 
-    // Issue #101: a key that was just made is attested, and only AttestationPolicy's one accepted result keeps it. Anything else (including an exception from the API) removes the key
-    // we just made, so an unattested key is never left under the fixed name for `enroll --show` or `approve` to find.
-    private static KeyLookup Attested(KeyCredential credential)
+    // Issue #101: a key that was just made is attested, and only what AttestationPolicy accepts keeps it (Success; NotSupported only with the person's --accept-unattested). Anything else
+    // (including an exception from the API) removes the key we just made, so an unaccepted key is never left under the fixed name for `enroll --show` or `approve` to find.
+    private static KeyLookup Attested(KeyCredential credential, bool acceptUnattested)
     {
         string status;
         int chainBytes = 0, statementBytes = 0;
@@ -76,9 +76,10 @@ internal sealed class WindowsHelloKeyStore : IHelloKeyStore
         {
             status = "Exception"; // the text is fixed: the exception message is never printed
         }
-        if (AttestationPolicy.Accepts(status, chainBytes, statementBytes))
-            return HelloCredential.PublicKey(credential) is { } spki ? KeyLookup.Present(spki, AttestationPolicy.Summary(status, chainBytes, statementBytes)) : KeyLookup.Of(KeyState.Unavailable);
-        return KeyLookup.NotAttested($"{AttestationPolicy.Summary(status, chainBytes, statementBytes)}; {(RemoveCreatedKey() ? "the key was removed" : "the key could NOT be removed: run enroll --replace once Hello can attest")}");
+        if (AttestationPolicy.Accepts(status, chainBytes, statementBytes, acceptUnattested))
+            return HelloCredential.PublicKey(credential) is { } spki ? KeyLookup.Present(spki, AttestationPolicy.Summary(status, chainBytes, statementBytes, acceptUnattested)) : KeyLookup.Of(KeyState.Unavailable);
+        return KeyLookup.NotAttested($"{AttestationPolicy.Summary(status, chainBytes, statementBytes, acceptUnattested)}; {(RemoveCreatedKey() ? "the key was removed" : "the key could NOT be removed: run enroll --replace once Hello can attest")}",
+            AttestationPolicy.IsOptInResult(status, chainBytes, statementBytes));
     }
 
     private static bool RemoveCreatedKey()

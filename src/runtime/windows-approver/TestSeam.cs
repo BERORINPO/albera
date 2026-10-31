@@ -27,7 +27,7 @@ internal sealed class NotReadyPresenceSigner : IPresenceSigner
     public SignResult Sign(byte[] message) => SignResult.NotReady;
 }
 
-// `attestation` is the status the fake "Windows" reports for a key that Create just made; "Empty" is Success with empty buffers. Like the real store, a key whose attestation is
+// `attestation` is the status the fake "Windows" reports for a key that Create just made; "Empty" is Success with empty buffers; NotSupported has empty buffers. Like the real store, a key whose attestation is
 // not accepted by AttestationPolicy is removed again (a replaced key stays lost) and Create returns NotAttested.
 internal sealed class FakeKeyStore(RSA? initialKey, bool unavailable = false, string attestation = "Success") : IHelloKeyStore
 {
@@ -35,19 +35,19 @@ internal sealed class FakeKeyStore(RSA? initialKey, bool unavailable = false, st
 
     public KeyLookup Open() => unavailable ? KeyLookup.Of(KeyState.Unavailable) : key is null ? KeyLookup.Of(KeyState.Missing) : KeyLookup.Present(key.ExportSubjectPublicKeyInfo());
 
-    public KeyLookup Create(bool replace)
+    public KeyLookup Create(bool replace, bool acceptUnattested)
     {
         if (unavailable) return KeyLookup.Of(KeyState.Unavailable);
         if (key is not null && !replace) return KeyLookup.Of(KeyState.AlreadyExists);
         string status = attestation == "Empty" ? "Success" : attestation;
-        (int chain, int statement) = attestation == "Empty" ? (0, 0) : (1234, 567);
-        if (!AttestationPolicy.Accepts(status, chain, statement))
+        (int chain, int statement) = attestation is "Empty" or "NotSupported" ? (0, 0) : (1234, 567); // like this PC: NotSupported comes with empty buffers
+        if (!AttestationPolicy.Accepts(status, chain, statement, acceptUnattested))
         {
             key = null;
-            return KeyLookup.NotAttested($"{AttestationPolicy.Summary(status, chain, statement)}; the key was removed");
+            return KeyLookup.NotAttested($"{AttestationPolicy.Summary(status, chain, statement, acceptUnattested)}; the key was removed", AttestationPolicy.IsOptInResult(status, chain, statement));
         }
         key = RSA.Create();
-        return KeyLookup.Present(key.ExportSubjectPublicKeyInfo(), AttestationPolicy.Summary(status, chain, statement));
+        return KeyLookup.Present(key.ExportSubjectPublicKeyInfo(), AttestationPolicy.Summary(status, chain, statement, acceptUnattested));
     }
 }
 

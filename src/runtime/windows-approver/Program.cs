@@ -38,7 +38,7 @@ internal static class Program
         if (command.Option == "check")
             return new SelfCheckCommand(wiring.KeyStore, wiring.Signer, CurrentUserSid, () => RandomNumberGenerator.GetBytes(SelfCheckMessage.NonceBytes), Console.Out, Console.Error, wiring.Interactive).Run(command.Expect);
         if (command.Verb == "enroll")
-            return new EnrollCommand(wiring.KeyStore, CurrentUserSid, Console.Out, Console.Error, Console.In, wiring.Interactive).Run(command.Option);
+            return new EnrollCommand(wiring.KeyStore, CurrentUserSid, Console.Out, Console.Error, Console.In, wiring.Interactive).Run(command.Option, command.AcceptUnattested);
         if (command.Verb == "policy")
         {
             PolicyCommand policy = new(new PipeChannel(wiring.Expectation, wiring.TimeoutMs), wiring.Signer, Console.Out, Console.Error, Console.In, wiring.Interactive);

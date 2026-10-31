@@ -124,7 +124,7 @@ test('enroll --check (self-check): local only, the existing key only, domain-sep
 
 test('there is no --yes: the typed yes cannot be skipped, approve needs a console before any pipe access, and enroll never prints or stores private material', () => {
   assert.equal(/--yes|AssumeYes|assumeYes/u.test(Object.values(sources).join('\n')), false, 'no --yes anywhere in the sources (comments included)');
-  assert.match(code['CommandLine.cs'], /Usage = "usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\] \| policy \[show\] \| policy set <careful\|standard> \[--prompt <action>\]\.\.\."/u);
+  assert.match(code['CommandLine.cs'], /Usage = "usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\] \| enroll \[--replace\] --accept-unattested \| policy \[show\] \| policy set <careful\|standard> \[--prompt <action>\]\.\.\."/u);
   assert.match(code['ApproverCommands.cs'], /if \(!interactive\) throw new Stop\(ExitCodes\.Refused, "not_interactive"/u);
   assert.equal([...code['Program.cs'].matchAll(/!Console\.IsInputRedirected/gu)].length, 2, 'interactive means stdin is not redirected, in both build branches and nowhere else');
   const enroll = code['EnrollCommand.cs'];
@@ -254,16 +254,25 @@ test('build:approver builds and records a SHA-256; it does not install, register
   assert.match(read('scripts', 'arch-check.mjs'), /^const APPROVER_REF = /mu, 'arch rule 11 exists');
 });
 
-test('issue #101: the attestation rule accepts exactly one status and the Hello file applies it to the key it just made, removing the key otherwise', () => {
+test('issue #101: the attestation rule accepts Success, plus NotSupported (empty buffers) only on the explicit flag, and the Hello file applies it to the key it just made, removing the key otherwise', () => {
   const store = code['HelloKeyStore.cs'];
   assert.match(store, /public const string AcceptedStatus = "Success";/u);
-  assert.match(store, /public static bool Accepts\(string status, int chainBytes, int statementBytes\) => status == AcceptedStatus && chainBytes > 0 && statementBytes > 0;/u);
+  assert.match(store, /public const string OptInStatus = "NotSupported";/u);
+  assert.match(store, /public const string OptInFlag = "--accept-unattested";/u);
+  assert.match(store, /public static bool Accepts\(string status, int chainBytes, int statementBytes, bool acceptUnattested\) =>\s*\(status == AcceptedStatus && chainBytes > 0 && statementBytes > 0\) \|\| \(acceptUnattested && IsOptInResult\(status, chainBytes, statementBytes\)\);/u, 'Success, or the opt-in result when the flag is on: no third way');
+  assert.match(store, /public static bool IsOptInResult\(string status, int chainBytes, int statementBytes\) => status == OptInStatus && chainBytes == 0 && statementBytes == 0;/u);
   assert.equal([...allCode.matchAll(/AttestationPolicy\.Accepts\(/gu)].length, 2, 'the real store and the fake store call the policy; nothing else has an opinion on what is attested');
   assert.equal([...store.matchAll(/\bAccepts\(/gu)].length, 2, 'inside the policy file: the definition and the summary that uses it');
-  assert.match(helloCode, /KeyCredentialStatus\.Success => Attested\(created\.Credential\)/u, 'a created key is attested before it is reported');
+  assert.match(helloCode, /KeyCredentialStatus\.Success => Attested\(created\.Credential, acceptUnattested\)/u, 'a created key is attested before it is reported');
   assert.equal(/KeyCredentialStatus\.Success => Present\(created\.Credential\)/u.test(helloCode), false, 'the create path never reports an unattested key');
   const attested = sliceBetween(helloCode, 'private static KeyLookup Attested(', 'private static bool RemoveCreatedKey');
   assert.match(attested, /status = attestation\.Status\.ToString\(\);/u, 'the status is compared as text; an unknown value cannot match');
   assert.match(attested, /catch \(Exception ex\) when \(ex is not OutOfMemoryException\)\s*\{\s*status = "Exception";/u, 'an exception from the API is a refusal, not a pass');
-  assert.match(attested, /if \(AttestationPolicy\.Accepts\(status, chainBytes, statementBytes\)\)[\s\S]*return KeyLookup\.NotAttested\(/u);
+  assert.match(attested, /if \(AttestationPolicy\.Accepts\(status, chainBytes, statementBytes, acceptUnattested\)\)[\s\S]*return KeyLookup\.NotAttested\(/u);
+  // The flag has one reader and one consumer: the parser makes it only for `enroll` / `enroll --replace`, Program hands it to EnrollCommand alone, and the only literal is the policy constant.
+  assert.deepEqual([...code['CommandLine.cs'].matchAll(/args is \[([^\]]*--accept-unattested[^\]]*)\]/gu)].map((m) => m[1]), ['"enroll", "--accept-unattested"', '"enroll", "--replace", "--accept-unattested"'], 'only these two argument lists carry the flag');
+  assert.deepEqual([...allCode.matchAll(/command\.AcceptUnattested/gu)].length, 1, 'one place reads the parsed flag');
+  assert.match(code['Program.cs'], /new EnrollCommand\([^;]*\)\.Run\(command\.Option, command\.AcceptUnattested\);/u, 'and it hands it to enroll');
+  assert.equal(/AcceptUnattested|acceptUnattested/u.test(code['ApproverCommands.cs'] + code['PolicyCommand.cs'] + code['SelfCheckCommand.cs']), false, 'approve, policy and the self-check cannot see the flag');
+  assert.deepEqual([...code['EnrollCommand.cs'].matchAll(/store\.Create\(replace: (true|false), acceptUnattested\)/gu)].map((m) => m[1]), ['true', 'false'], 'create and replace pass the flag; nothing else creates a key');
 });

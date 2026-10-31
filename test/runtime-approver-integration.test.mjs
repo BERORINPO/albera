@@ -385,6 +385,44 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
         assert.equal(result.stdout.includes('approverPublicKey'), false, `"${bad}" prints no config value`);
       }
     });
+
+    // This PC returns NotSupported with empty buffers for the Hello key (measured 2026-11-01), so the owner can enrol only with the explicit flag.
+    const optInLine = 'attestation: NotSupported (accepted with --accept-unattested: this key is NOT proven to be hardware-backed)';
+    const enrollWith = (attestation, extra = []) => runApprover(exe, ['enroll', ...extra, '--test-key-state', 'missing', '--test-interactive', 'yes', '--test-attestation', attestation]);
+
+    it('--accept-unattested keeps a NotSupported key and says so on screen; without it NotSupported is refused with a hint that names the flag', async () => {
+      const refused = await enrollWith('NotSupported');
+      assert.deepEqual([refused.code, refused.stdout, refused.stderr.split('\n')[0]], [69, '', 'error: attestation_refused']);
+      assert.match(refused.stderr, /--accept-unattested/u);
+      const kept = await enrollWith('NotSupported', ['--accept-unattested']);
+      assert.equal(kept.code, 0, kept.stderr);
+      assert.equal(kept.stdout.split('\n').filter((line) => line.startsWith('attestation: ')).join('|'), optInLine);
+      assert.equal(kept.stdout.split('\n').filter((line) => line.startsWith('  "')).length, 3, 'still exactly the three Authority config values (the Authority rejects a fourth key)');
+      assert.equal(kept.stdout.includes('approverAttestation'), false);
+    });
+
+    it('the flag opens nothing else: TemporaryFailure, UnknownError, empty buffers and any unknown or oddly spelled status are refused with it too, and print no config value', async () => {
+      for (const attestation of ['TemporaryFailure', 'UnknownError', 'Empty', 'success', 'notsupported', 'NOTSUPPORTED', '', 'Nope']) {
+        for (const extra of [['--accept-unattested'], ['--replace', '--accept-unattested']]) {
+          const result = await enrollWith(attestation, extra);
+          assert.notEqual(result.code, 0, `"${attestation}" ${extra.join(' ')} must not pass`);
+          assert.equal(result.stdout.includes('approverPublicKey'), false, `"${attestation}" prints no config value`);
+          assert.equal(result.stderr.includes('--accept-unattested'), false, `"${attestation}": a refusal the flag cannot cure does not offer the flag`);
+        }
+      }
+      const success = await enrollWith('Success', ['--accept-unattested']);
+      assert.ok(success.code === 0 && /^attestation: Success \(/mu.test(success.stdout) && !success.stdout.includes('accepted with'), 'with Success the flag changes nothing');
+    });
+
+    it('the flag belongs to enroll (create / replace) alone: with --show, --check, --expect, approve, deny, list or policy the app answers with the usage line (64) and does nothing', async () => {
+      for (const args of [['enroll', '--show', '--accept-unattested'], ['enroll', '--check', '--accept-unattested'], ['enroll', '--accept-unattested', '--check'], ['enroll', '--check', '--expect', 'hello-0123456789abcdef', '--accept-unattested'],
+        ['enroll', '--accept-unattested', '--replace'], ['enroll', '--accept-unattested', '--accept-unattested'], ['list', '--accept-unattested'], ['approve', UNKNOWN_ID, '--accept-unattested'], ['deny', UNKNOWN_ID, '--accept-unattested'],
+        ['policy', 'show', '--accept-unattested'], ['--accept-unattested']]) {
+        const result = await runApprover(exe, [...args, '--test-key-state', 'missing', '--test-interactive', 'yes'], { stdin: 'yes\nreplace\n' });
+        assert.deepEqual([result.code, result.stdout], [64, ''], args.join(' '));
+        assert.match(result.stderr, /^usage: AlberaApprover /u);
+      }
+    });
   });
 
   // The tier policy commands (issue #115 step 3) against the real Authority: the fake Hello key signs, the Authority verifies it with the pinned RSA key, and policy.json is written
@@ -484,7 +522,7 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
         assert.equal(control.includes(utf16(literal)), true, `"${literal}" is in the test-faults build (control)`);
       }
       for (const build of [bytes, control]) assert.equal(build.includes(utf16('--yes')), false, 'no --yes option in either build');
-      for (const args of [['--test-pid', '1', 'list'], ['list', '--test-fake-key', 'AA=='], ['enroll', '--test-key-state', 'missing'], ['list', '--test-interactive', 'yes'], ['enroll', '--test-attestation', 'Success'], ['list', 'now'], ['approve'], ['approve', 'x'], ['approve', UNKNOWN_ID, '--yes'], ['enroll', '--yes'], ['enroll', '--check', '--yes'], ['enroll', '--check', '--expect'], ['enroll', '--expect', 'hello-1'], ['enroll', '--check', '--test-fake-key', 'AA=='], []]) {
+      for (const args of [['--test-pid', '1', 'list'], ['list', '--test-fake-key', 'AA=='], ['enroll', '--test-key-state', 'missing'], ['list', '--test-interactive', 'yes'], ['enroll', '--test-attestation', 'Success'], ['enroll', '--check', '--accept-unattested'], ['approve', UNKNOWN_ID, '--accept-unattested'], ['list', '--accept-unattested'], ['list', 'now'], ['approve'], ['approve', 'x'], ['approve', UNKNOWN_ID, '--yes'], ['enroll', '--yes'], ['enroll', '--check', '--yes'], ['enroll', '--check', '--expect'], ['enroll', '--expect', 'hello-1'], ['enroll', '--check', '--test-fake-key', 'AA=='], []]) {
         const result = await runApprover(shippedExe, args);
         assert.deepEqual([result.code, result.stdout], [64, ''], args.join(' '));
         assert.match(result.stderr, /^usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\]/u);
