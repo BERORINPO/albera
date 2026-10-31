@@ -50,6 +50,8 @@ Open points for A: the retention disk budget (when full, refuse new creates and 
 
 ### Scoped grants (delegated tier)
 
+> **Not built (provisional, 2026-11-01).** After step 4 (#132) every action a grant may cover (an attested `environment.start` or `task.start`) already needs no person at the standard tier, and a grant may never cover `environment.destroy`, `environment.purge`, `environment.create` (no attestation is possible before the VM exists) or anything with a network. So a grant would remove no prompt today. Build it only when a prompt appears that a grant could legitimately cover; the rules below stay the design for that day.
+
 - One Hello over `{ actions, projectId, environmentIncarnationIds, leaseGeneration, policyHash, maxCount, expiresAt }`, at most 8 hours, shown on the approval screen in plain words.
 - Bound to environment **incarnations**, not to reusable computer ids: retiring an environment and reusing its name for a new VM does not carry the grant over. A lease generation change or a policy change ends the grant.
 - Never covers `environment.destroy`, `environment.purge`, or an action without a no-network attestation.
@@ -73,7 +75,7 @@ The order is chosen so that no step can make a destructive action promptless on 
 2. Network attestation from the Broker (adapters and switches, bound to incarnation and lease generation). **Done in PR #120 (2026-10-31)**, see "Step 2 as built".
 3. Receipt v3 with `basis`, the policy file, the Hello-signed policy change, the careful and standard tiers. `environment.destroy` keeps prompting. **3a done in PR #123 (2026-10-31)**: the tiers and the four actions that need no attestation; see "Step 3a as built". **3b done in PR #126 (2026-10-31)**: `environment.start` with a `none` attestation; `environment.create` stays with a person (no VM exists to attest); see "Step 3b as built".
 4. Checkpoint before `task.start` (measure the cost in the VM lab first). **Measured 2026-10-31**, see "Step 4: checkpoint cost"; the Production checkpoint type is chosen (provisional). **Built (this PR, 2026-10-31)**: `task.start` is signed without a person at the standard tier for one Broker task-start attestation; see "Step 4 as built". Restore (undo) is not built.
-5. Scoped grants (delegated tier) and the approval-screen text for them.
+5. Scoped grants (delegated tier) and the approval-screen text for them. **Not built (provisional, 2026-11-01)**: after step 4 a grant would remove no prompt; see "Scoped grants".
 
 Each step ships on its own and keeps today's behaviour until the owner picks a tier.
 
