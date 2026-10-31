@@ -19,6 +19,7 @@ const schemaPath = path.join(contractDir, 'receipt-v2.schema.json');
 const vectorsV3Path = path.join(contractDir, 'test-vectors-v3.json');
 const schemaV3Path = path.join(contractDir, 'receipt-v3.schema.json');
 const attestationVectorsPath = path.join(contractDir, 'network-attestation-vectors.json');
+const taskStartVectorsPath = path.join(contractDir, 'task-start-attestation-vectors.json');
 
 function unavailableReason() {
   try {
@@ -27,7 +28,7 @@ function unavailableReason() {
   } catch { return 'dotnet unavailable'; }
 }
 
-test('C# ActionDigest, ReceiptV2, ReceiptV3, TierPolicy and NetworkAttestation give the same digests, verdicts and policy hashes as the Node contract for every vector', { skip: unavailableReason(), timeout: 240_000 }, () => {
+test('C# ActionDigest, ReceiptV2, ReceiptV3, TierPolicy, NetworkAttestation and TaskStartAttestation give the same digests, verdicts and policy hashes as the Node contract for every vector', { skip: unavailableReason(), timeout: 240_000 }, () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'albera-receipt-v2-'));
   try {
     const output = path.join(root, 'out');
@@ -35,7 +36,7 @@ test('C# ActionDigest, ReceiptV2, ReceiptV3, TierPolicy and NetworkAttestation g
     const run = (args) => execFileSync('dotnet', args, { encoding: 'utf8', stdio: 'pipe', timeout: 180_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
     run(['build', harnessProject, '--configuration', 'Release', '--output', output, `--property:ContractDir=${contractDir}${path.sep}`,
       `--property:BaseIntermediateOutputPath=${intermediate}`, `--property:MSBuildProjectExtensionsPath=${intermediate}`, '--nologo']);
-    const result = JSON.parse(run([path.join(output, 'ReceiptV2Harness.dll'), vectorsPath, schemaPath, vectorsV3Path, schemaV3Path, attestationVectorsPath]));
+    const result = JSON.parse(run([path.join(output, 'ReceiptV2Harness.dll'), vectorsPath, schemaPath, vectorsV3Path, schemaV3Path, attestationVectorsPath, taskStartVectorsPath]));
     const vectors = JSON.parse(fs.readFileSync(vectorsPath, 'utf8'));
 
     assert.deepEqual(result.schemaMismatches, [], 'ReceiptV2.Fields equals receipt-v2.schema.json');
@@ -56,7 +57,7 @@ test('C# ActionDigest, ReceiptV2, ReceiptV3, TierPolicy and NetworkAttestation g
     const v3 = JSON.parse(fs.readFileSync(vectorsV3Path, 'utf8'));
     assert.deepEqual(result.v3SchemaMismatches, [], 'ReceiptV3.Fields equals receipt-v3.schema.json');
     assert.deepEqual(result.policyBasisActions, ['environment.inspect', 'environment.stop', 'workspace.inspect', 'task.cancel']);
-    assert.deepEqual(result.attestedPolicyBasisActions, ['environment.start']);
+    assert.deepEqual(result.attestedPolicyBasisActions, ['environment.start', 'task.start']);
     const check = (actual, expectedVectors, label) => {
       assert.equal(actual.length, expectedVectors.length, label);
       expectedVectors.forEach((vector, i) => {
@@ -84,6 +85,12 @@ test('C# ActionDigest, ReceiptV2, ReceiptV3, TierPolicy and NetworkAttestation g
     check(result.attestationDigest, attestation.digestVectors.map(({ name, expected }) => ({ name, expected })), 'attestation digest vector');
     assert.ok(attestation.verifyVectors.cases.length >= 40 && result.attestationVerify.length === attestation.verifyVectors.cases.length);
     check(result.attestationVerify, attestation.verifyVectors.cases.map(({ name, result: expected }) => ({ name, expected })), 'attestation verify vector');
+
+    // Task-start attestation (step 4): the same two kinds of vector, with its own ephemeral public key.
+    const taskStart = JSON.parse(fs.readFileSync(taskStartVectorsPath, 'utf8'));
+    check(result.taskStartDigest, taskStart.digestVectors.map(({ name, expected }) => ({ name, expected })), 'task-start digest vector');
+    assert.ok(taskStart.verifyVectors.cases.length >= 50 && result.taskStartVerify.length === taskStart.verifyVectors.cases.length);
+    check(result.taskStartVerify, taskStart.verifyVectors.cases.map(({ name, result: expected }) => ({ name, expected })), 'task-start verify vector');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

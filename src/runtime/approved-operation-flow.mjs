@@ -1,5 +1,6 @@
 import { ActionDigestError, ID_PATTERN, PURPOSES, computeActionDigest, validateActionDto } from './broker-contract/action-digest.mjs';
 import { isVmId, readSignedNetworkAttestation } from './broker-contract/network-attestation.mjs';
+import { provesCheckpointedNoNetwork, readSignedTaskStartAttestation } from './broker-contract/task-start-attestation.mjs';
 import { ATTESTED_POLICY_BASIS_ACTIONS, isPolicyBasisAction, parseReceipt } from './broker-contract/receipt-v3.mjs';
 import { FlowJournalError } from './approved-operation-journal.mjs';
 
@@ -33,6 +34,10 @@ import { FlowJournalError } from './approved-operation-journal.mjs';
 //    the Authority as-is. Not getting one is never an error: no `attest` function, a refusal, an exception, a malformed answer or one that says anything but "none" just means the submit goes
 //    without it and, at worst, a person is asked. The flow decides nothing from it: the Authority verifies it and signs without a person or queues. The digest of what was presented is recorded
 //    with the approval, and a receipt that names an attestation digest is only claimed when it is that one (an attested policy receipt without a presented attestation is receipt_mismatch).
+//  - Task-start attestation (#115 step 4). The same for task.start (purpose guest.command), through the OPTIONAL `broker.attestTaskStart({ computerId, projectId, leaseId, leaseGeneration, generation,
+//    vmId, operationId })`: the Broker side takes a Production checkpoint of that VM and signs one statement that says no network and that checkpoint was taken (for this operation). Only an answer
+//    that says exactly that for this VM and this operation is attached; everything else (no such function, a refusal, an exception, a malformed answer, a network attestation) means the
+//    submit goes without it and a person is asked. Same recording rule: the receipt must name the presented digest, and an attested policy receipt without one is receipt_mismatch.
 //  - Polling is bounded by the request's own expiry (the Authority's `expiresAt`) and by `maxPolls`, with exponential backoff.
 //  - `human_denied`, `request_expired` and the presence errors are final and recorded. So are `request_invalid`, `queue_full`, `authority_unavailable`.
 //  - A fence from a different broker epoch (or lease generation) than the one a receipt names is never mixed: the receipt is dead (the Broker wiped the
@@ -164,14 +169,25 @@ export function createApprovedOperationFlow({ broker, authority, journal, now, s
     return stop(codeOf(result) === 'denied' ? await finalize(record, ['INTENT'], 'FAILED', 'fence_denied') : openResult(record, 'retryable', codeOf(result)));
   }
 
-  /** The Broker's network attestation for this environment, or null. Never throws and never fails the flow: whatever goes wrong here means "no attestation". */
+  /**
+   * The Broker's attestation for this environment, or null: a network attestation for environment.start, a task-start attestation (network none + a Production checkpoint, taken for
+   * this operation) for task.start. Never throws and never fails the flow: whatever goes wrong here means "no attestation".
+   */
   async function attestationFor(record) {
     const { action } = record;
     const generation = action.args?.expectedGeneration;
     const { vmId } = action.args ?? {};
-    if (typeof broker.attest !== 'function' || !ATTESTED_POLICY_BASIS_ACTIONS.includes(action.action) || !isCount(generation) || !isVmId(vmId)) return null;
+    const taskStart = action.action === 'task.start';
+    if (typeof (taskStart ? broker.attestTaskStart : broker.attest) !== 'function' || !ATTESTED_POLICY_BASIS_ACTIONS.includes(action.action) || !isCount(generation) || !isVmId(vmId)) return null;
+    const ask = { computerId: action.computerId, projectId: action.projectId, leaseId: record.fence.leaseId, leaseGeneration: record.fence.leaseGeneration, generation, vmId };
     try {
-      const reply = await broker.attest({ computerId: action.computerId, projectId: action.projectId, leaseId: record.fence.leaseId, leaseGeneration: record.fence.leaseGeneration, generation, vmId });
+      if (taskStart) {
+        const reply = await broker.attestTaskStart({ ...ask, operationId: record.operationId });
+        if (reply?.ok !== true) return null;
+        const read = readSignedTaskStartAttestation(reply.attestation);
+        return provesCheckpointedNoNetwork(read.attestation) && read.attestation.vmId === vmId && read.attestation.operationId === record.operationId ? { envelope: reply.attestation, digest: read.digest } : null;
+      }
+      const reply = await broker.attest(ask);
       if (reply?.ok !== true) return null;
       const read = readSignedNetworkAttestation(reply.attestation);
       return read.attestation.network === 'none' && read.attestation.vmId === vmId ? { envelope: reply.attestation, digest: read.digest } : null;

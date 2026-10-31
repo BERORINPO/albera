@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { ID_PATTERN, PURPOSES, ActionDigestError, computeActionDigest, validateActionDto } from './broker-contract/action-digest.mjs';
 import { MAX_RECEIPT_BYTES } from './broker-contract/receipt-v2.mjs';
 import { readSignedNetworkAttestation } from './broker-contract/network-attestation.mjs';
+import { readSignedTaskStartAttestation } from './broker-contract/task-start-attestation.mjs';
 import { parseReceipt } from './broker-contract/receipt-v3.mjs';
 import { captureExecutableIdentity } from './executable-identity.mjs';
 
@@ -19,8 +20,9 @@ import { captureExecutableIdentity } from './executable-identity.mjs';
 //
 // Wire (helper <-> Authority, one request per connection): [int32 little-endian length][UTF-8 JSON] each way, at most 2048 bytes. `v` is always 1.
 //   submit : { v, verb: "submit", purpose, operationId, idempotencyKey, leaseId, leaseGeneration, brokerEpoch, brokerChallenge, action: { action, projectId, computerId, args }, expectedDigest?, attestation? }
-//            `attestation` is a Broker network attestation envelope { attestation, digest, keyId, signature } (network-attestation.mjs). The Authority alone decides what it is worth: only a valid one
-//            that says "none" for this very environment lets environment.start skip a person at the standard tier; omitted, forged or stale simply means a prompt.
+//            `attestation` is a Broker attestation envelope { attestation, digest, keyId, signature }: a network attestation (network-attestation.mjs) for environment.start, a task-start attestation
+//            (task-start-attestation.mjs: no network AND a Production checkpoint) for task.start. The Authority alone decides what it is worth: only a valid one of the right kind for this very
+//            environment lets the action skip a person at the standard tier; omitted, forged, stale or of the other kind simply means a prompt.
 //            -> { ok: true, approvalId, state: "pending" | "approved", expiresAt }
 //   status : { v, verb: "status", approvalId }
 //            -> { ok: true, state: "pending", expiresAt } | { ok: true, state: "approved", receipt: <base64 receipt v2 or v3>, signature: <base64 64-byte ECDSA P-256 r||s> }
@@ -138,10 +140,12 @@ function requireApprovalId(value) {
   return value;
 }
 
-/** The attestation envelope as it goes on the wire: shape and digest checked (not the signature: that is the Authority's), exactly the four envelope keys. */
-function attestationWire(value) {
+/** The attestation envelope as it goes on the wire: shape and digest checked (not the signature: that is the Authority's), exactly the four envelope keys. A task.start carries a
+ *  task-start attestation, every other action a network attestation; the other kind is not a valid envelope for it (its body has other keys). */
+function attestationWire(value, action) {
   try {
-    const { attestation, digest, keyId, signatureBytes } = readSignedNetworkAttestation(value); // one read of the caller's object; everything below comes from this copy
+    const read = action === 'task.start' ? readSignedTaskStartAttestation : readSignedNetworkAttestation;
+    const { attestation, digest, keyId, signatureBytes } = read(value); // one read of the caller's object; everything below comes from this copy
     return { attestation: { ...attestation }, digest, keyId, signature: signatureBytes.toString('base64url') };
   } catch { throw bad(); }
 }
@@ -155,8 +159,8 @@ function sizedText(request) {
 /**
  * The submit request text: exactly the Authority's keys in a fixed order, the action DTO validated and normalised by the shared contract, size-bounded.
  * `includeDigest: true` also sends `expectedDigest` = this client's own computation of the action digest; the Authority recomputes it and answers
- * `request_invalid` on a difference, which catches a Node / .NET divergence before a human sees the request. `attestation` (optional) is a signed Broker network attestation
- * envelope, checked here for shape and digest only; a malformed one is `invalid_request` before anything is sent. Pure. @returns {string}
+ * `request_invalid` on a difference, which catches a Node / .NET divergence before a human sees the request. `attestation` (optional) is a signed Broker attestation
+ * envelope (a task-start attestation for task.start, a network attestation otherwise), checked here for shape and digest only; a malformed one is `invalid_request` before anything is sent. Pure. @returns {string}
  */
 export function buildSubmitRequestText(fields) {
   requireKeys(fields, SUBMIT_KEYS);
@@ -176,7 +180,7 @@ export function buildSubmitRequestText(fields) {
     brokerChallenge: fields.brokerChallenge,
     action: { action: dto.action, projectId: dto.projectId, computerId: dto.computerId, args: dto.args },
     ...(fields.includeDigest === true ? { expectedDigest: computeActionDigest(fields.purpose, dto) } : {}),
-    ...(fields.attestation === undefined ? {} : { attestation: attestationWire(fields.attestation) }),
+    ...(fields.attestation === undefined ? {} : { attestation: attestationWire(fields.attestation, dto.action) }),
   });
 }
 

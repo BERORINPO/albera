@@ -470,6 +470,7 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
     const taskReceipt = (s, name, overrides = {}) => s.session.prepare(name, { purpose: 'guest.command', action: 'task.start', args: { task: TASK }, ...overrides });
     const denials = (s) => s.child.lines.filter((line) => line.startsWith('DENY='));
     const sha = (digit) => `sha256:${digit.repeat(64)}`;
+    const VM_ID = 'aaaaaaa1-2222-4333-8444-555555555555';
 
     it('accepts an approved task.start receipt with its DTO, names task.start in the reply, records it as UNKNOWN and consumes the challenge (v2 and v3 presence)', async () => {
       const s = await start();
@@ -479,6 +480,18 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
       assert.deepEqual(challengesOf(s).map((row) => row.state), ['consumed', 'consumed']);
       assert.equal(s.child.lines.filter((line) => line === 'CLAIM=PERSISTED_UNKNOWN').length, 2);
       assert.equal(withJournal(s, (db) => db.prepare('PRAGMA user_version').get().user_version), 3, 'no journal migration: the claim row does not record the action (the receipt does)');
+      assert.equal(await s.stop(), 0);
+    });
+
+    it('accepts an attested policy-basis task.start receipt (step 4 of #115): the DTO names task, the VM and the generation, the receipt carries the attestation digest', async () => {
+      const s = await start();
+      const args = { task: TASK, vmId: VM_ID, expectedGeneration: 3 };
+      const prepared = await taskReceipt(s, 'ts-attested', { v: 3, basis: 'policy', policyVersion: POLICY_HASH, attestationDigest: sha('3'), args });
+      assert.deepEqual(await s.session.send({ ...prepared, action: dtoOf({ args }) }), TASK_SUCCESS);
+      assert.deepEqual(claimsOf(s), ['ts-attested-op']);
+      assert.deepEqual(await s.session.send({ ...prepared, action: dtoOf({ args }) }), { ...TASK_SUCCESS, replayed: true });
+      // A presence receipt may carry the same args too (a person was asked, and was shown the VM).
+      assert.deepEqual(await s.session.send({ ...(await taskReceipt(s, 'ts-vm-presence', { v: 3, basis: 'presence', policyVersion: POLICY_HASH, args })), action: dtoOf({ args }) }), TASK_SUCCESS);
       assert.equal(await s.stop(), 0);
     });
 
@@ -525,7 +538,14 @@ describe('Broker receipt v2 and the fence request', { skip: getUnavailableReason
       ['an action that is not base64', {}, (p) => ({ ...frameOf(p, ''), action: 'not base64!' }), 'action_invalid'],
       ['a broker.operation receipt in a three-key frame', { purpose: 'broker.operation', action: 'synthetic.noop', args: {} }, (p) => frameOf(p, dtoOf()), 'binding'],
       ['a guest.command receipt in a two-key frame', {}, (p) => ({ receipt: p.receipt, signature: p.signature }), 'binding'],
-      ['a policy-basis task.start receipt (a policy may never skip task.start)', { v: 3, basis: 'policy', policyVersion: POLICY_HASH }, (p) => frameOf(p, dtoOf()), 'basis_action'],
+      ['a policy-basis task.start receipt without the attestation digest (step 4: task.start is attested, never unattested)', { v: 3, basis: 'policy', policyVersion: POLICY_HASH }, (p) => frameOf(p, dtoOf()), 'attestation'],
+      ['an attested policy-basis task.start receipt whose action names no VM', { v: 3, basis: 'policy', policyVersion: POLICY_HASH, attestationDigest: sha('3') }, (p) => frameOf(p, dtoOf()), 'attestation'],
+      ['a presence task.start receipt that carries an attestation digest', { v: 3, basis: 'presence', policyVersion: POLICY_HASH, attestationDigest: sha('3') }, (p) => frameOf(p, dtoOf()), 'attestation'],
+      ['task and a VM id without the generation', { args: { task: TASK, vmId: VM_ID } }, (p) => frameOf(p, dtoOf({ args: { task: TASK, vmId: VM_ID } })), 'action_invalid'],
+      ['task and a generation without the VM id', { args: { task: TASK, expectedGeneration: 3 } }, (p) => frameOf(p, dtoOf({ args: { task: TASK, expectedGeneration: 3 } })), 'action_invalid'],
+      ['an uppercase VM id next to task and the generation', { args: { task: TASK, vmId: VM_ID.toUpperCase(), expectedGeneration: 3 } }, (p) => frameOf(p, dtoOf({ args: { task: TASK, vmId: VM_ID.toUpperCase(), expectedGeneration: 3 } })), 'action_invalid'],
+      ['a generation of 0 next to task and the VM id', { args: { task: TASK, vmId: VM_ID, expectedGeneration: 0 } }, (p) => frameOf(p, dtoOf({ args: { task: TASK, vmId: VM_ID, expectedGeneration: 0 } })), 'action_invalid'],
+      ['a fourth arg next to task, the VM id and the generation', { args: { task: TASK, vmId: VM_ID, expectedGeneration: 3, extra: 'x' } }, (p) => frameOf(p, dtoOf({ args: { task: TASK, vmId: VM_ID, expectedGeneration: 3, extra: 'x' } })), 'action_invalid'],
       ['a fourth key', {}, (p) => ({ ...frameOf(p, dtoOf()), extra: 1 }), 'request'],
       ['an action without a signature', {}, (p) => ({ receipt: p.receipt, action: frameOf(p, dtoOf()).action }), 'request'],
       ['an action that is not a string', {}, (p) => ({ ...frameOf(p, dtoOf()), action: dtoOf() }), 'request'],

@@ -76,7 +76,9 @@ const EXPECTED = {
       // receipt v3 (basis + policy hash) and the tier policy, issue #115 step 3
       'receipt-v3.mjs', 'receipt-v3.schema.json', 'test-vectors-v3.json', 'ReceiptV3.cs', 'TierPolicy.cs',
       // the C# twin of the network attestation (step 3b)
-      'NetworkAttestation.cs'].map((f) => `broker-contract/${f}`),
+      'NetworkAttestation.cs',
+      // the task-start attestation (network none + a Production checkpoint, step 4) and its C# twin
+      'task-start-attestation.mjs', 'task-start-attestation-vectors.json', 'TaskStartAttestation.cs'].map((f) => `broker-contract/${f}`),
     ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
       'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs'].map((f) => `room-ui/${f}`)],
   public: [
@@ -219,7 +221,7 @@ const providerContracts = [
   'src/runtime/bero-director.mjs',
   'src/runtime/fake-guest-checker.mjs',
   'src/runtime/workspace.mjs',
-  ...['action-digest', 'receipt-v2', 'receipt-v3', 'strict-json', 'network-attestation'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
+  ...['action-digest', 'receipt-v2', 'receipt-v3', 'strict-json', 'network-attestation', 'task-start-attestation'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
   'src/runtime/fake-attestation-signer.mjs',
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:

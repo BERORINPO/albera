@@ -9,10 +9,12 @@
 //                     what a policy may ever skip, so a receipt for any other action with this basis is refused even if the Authority signed it.
 //   (a `grant:<id>` basis is reserved for a later step; today it is a schema failure on `basis`)
 //
-// attestationDigest (optional, step 3b): the digest of the Broker's network attestation (network-attestation.mjs) that the Authority's rule relied on. Present exactly when
-// basis is `policy` and the action is in ATTESTED_POLICY_BASIS_ACTIONS (environment.start: a no-person receipt that is only valid with a Broker statement that the VM has no
-// network); absent for every other receipt. Such a receipt is also only valid for an action whose args name the VM: `args.vmId`, the Hyper-V VM id the attestation was made for
-// (code `attestation`, field `vmId`, when it is missing or malformed). The Broker must refuse to start any VM whose own id differs from it.
+// attestationDigest (optional, step 3b): the digest of the Broker's attestation that the Authority's rule relied on. Present exactly when basis is `policy` and the action is in
+// ATTESTED_POLICY_BASIS_ACTIONS; absent for every other receipt. environment.start: a no-person receipt that is only valid with a Broker NETWORK attestation (network-attestation.mjs)
+// saying the VM has no network. task.start (step 4): only valid with a Broker TASK-START attestation (task-start-attestation.mjs) saying no network AND a Production checkpoint was
+// taken; it travels in this same field (no new receipt field), and the two kinds cannot be mistaken for each other because their domains differ. Such a receipt is also only valid for an
+// action whose args name the VM: `args.vmId`, the Hyper-V VM id the attestation was made for (code `attestation`, field `vmId`, when it is missing or malformed). The Broker must refuse
+// to start any VM whose own id differs from it.
 // environment.create is NOT attested: no VM exists before create, so nothing could be bound; it always needs a person. The Broker has no attestation to compare it with here, so like policyVersion it is checked for its shape and
 // for being present or absent as the rule requires; the Authority's signature is what covers it.
 //
@@ -29,8 +31,9 @@ export const RECEIPT_V3_VERSION = 3;
 export const RECEIPT_BASES = Object.freeze(['presence', 'policy']);
 /** What a tier policy may let the Authority sign without a person and without any attestation: reads and risk-reducing actions only. */
 export const POLICY_BASIS_ACTIONS = Object.freeze(['environment.inspect', 'environment.stop', 'workspace.inspect', 'task.cancel']);
-/** What a tier policy may let the Authority sign without a person ONLY with a Broker network attestation that says "none" (the receipt then carries its digest). */
-export const ATTESTED_POLICY_BASIS_ACTIONS = Object.freeze(['environment.start']);
+/** What a tier policy may let the Authority sign without a person ONLY with a Broker attestation (the receipt then carries its digest): a network attestation that says "none" for
+ *  environment.start, a task-start attestation (network none + a Production checkpoint) for task.start. Which kind goes with which action is the Authority's rule, not this list's. */
+export const ATTESTED_POLICY_BASIS_ACTIONS = Object.freeze(['environment.start', 'task.start']);
 /** True for an action that can carry basis policy at all (with or without an attestation). Nothing else can, whatever the Authority signed. */
 export const isPolicyBasisAction = (action) => POLICY_BASIS_ACTIONS.includes(action) || ATTESTED_POLICY_BASIS_ACTIONS.includes(action);
 
@@ -41,7 +44,7 @@ export const RECEIPT_V3_FIELDS = Object.freeze(RECEIPT_V2_FIELDS.flatMap(([name,
   return [[name, spec]];
 }));
 
-/** Fields a receipt MAY carry (all others are required): the digest of the network attestation a no-person rule relied on. Not part of the schema's `required`. */
+/** Fields a receipt MAY carry (all others are required): the digest of the attestation a no-person rule relied on. Not part of the schema's `required`. */
 export const RECEIPT_V3_OPTIONAL_FIELDS = Object.freeze([['attestationDigest', { type: 'string', pattern: '^sha256:[0-9a-f]{64}$', maxLength: 71 }]]);
 
 /** Receipt fields that Broker-trusted state must supply. Unlike v2 there is no policyVersion (see the header). projectId, computerId and action come from ctx.action. */

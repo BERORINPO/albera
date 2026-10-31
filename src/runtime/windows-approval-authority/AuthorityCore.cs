@@ -13,11 +13,14 @@ internal readonly record struct Outcome(string? Code, PendingEntry? Entry);
 //   - Submit, when the tier policy in force (PolicyStore, set only through SetPolicy from the approver pipe) says THIS action needs no person (basis policy, receipt v3).
 // Whether a person is needed is decided from the action the Authority validated and hashed itself and from its own policy. Nothing in a submit request (it has no field for
 // it, and an unknown field is request_invalid) names, lowers or chooses a tier. With no policy file the policy is careful: every action needs a person.
-// The one attested exception (issue #115 step 3b): at the standard tier environment.start needs no person when the submit carries a Broker network attestation that
-// (1) verifies against the key pinned in the Authority's own config, (2) says network "none", (3) is bound to exactly the computerId, projectId, leaseId and leaseGeneration of THIS submit
-// and to the VM and generation the action names (the `vmId` and `expectedGeneration` args: shown to the human, covered by the digest, filled in by the Control Plane from its own inspect),
-// and (4) has not expired, the clock being read after the signature check. A start without a well-formed `vmId` arg is never attested. The Broker refuses to start a VM whose own Hyper-V id
-// differs from that arg, so an attestation for VM A cannot start VM B. environment.create is not attested at all (no VM exists to observe before it): it always needs a person.
+// The attested exceptions (issue #115 steps 3b and 4): at the standard tier environment.start and task.start need no person when the submit carries a Broker attestation of the kind that
+// action needs, which (1) verifies against the key pinned in the Authority's own config, (2) says what the kind must say, (3) is bound to exactly the computerId, projectId, leaseId and
+// leaseGeneration of THIS submit and to the VM and generation the action names (the `vmId` and `expectedGeneration` args: shown to the human, covered by the digest, filled in by the Control
+// Plane from its own inspect), and (4) has not expired, the clock being read after the signature check. The kinds are separate (own domain, own body keys), so neither is ever read as the other:
+//   environment.start  a NETWORK attestation (NetworkAttestation.cs) that says network "none";
+//   task.start         a TASK-START attestation (TaskStartAttestation.cs) that says network "none" AND a Production checkpoint was taken, and is also bound to this submit's operationId.
+// An action without a well-formed `vmId` arg is never attested. The Broker refuses to act on a VM whose own Hyper-V id differs from that arg, so an attestation for VM A cannot
+// start VM B. environment.create is not attested at all (no VM exists to observe before it): it always needs a person.
 // The receipt is v3 basis policy with the attestation's digest, and ends no later than the attestation does. Anything else (no key pinned, no attestation, a forged, stale, mismatched or
 // "present" / "unknown" one) is not an error: the request queues for a person exactly as without it. An override on the action forces a prompt as ever, and nothing in the attestation
 // names or lowers a tier.
@@ -34,7 +37,7 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
     public const int MaxListEntryBytes = 1700;
 
     /// <param name="expectedDigest">Optional cross-check from the Control Plane. It is never used as the digest: only compared with the Authority's own.</param>
-    /// <param name="attestation">Optional Broker network attestation envelope as the strict reader parsed it (unchecked). Only ever used to skip a person at the standard tier; see the header.</param>
+    /// <param name="attestation">Optional Broker attestation envelope as the strict reader parsed it (unchecked; the kind the action needs, see the header). Only ever used to skip a person at the standard tier.</param>
     public Outcome Submit(PendingRequest request, string? expectedDigest, object? attestation = null)
     {
         string digest;
@@ -53,7 +56,7 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
         SubmitResult result = policy.With(current =>
         {
             if (!current.NeedsPerson(request.Dto.Action)) return store.Submit(request, digest, (entry, now) => SignByPolicy(entry, current.Hash(), now));
-            if (current.CanSkipWithAttestation(request.Dto.Action) && ProvenNone(request, attestation) is { } proven)
+            if (current.CanSkipWithAttestation(request.Dto.Action) && ProvenBy(request, attestation) is { } proven)
                 return store.Submit(request, digest, (entry, now) => proven.ExpiresAt - now >= MinAttestedReceiptSeconds ? SignByPolicy(entry, current.Hash(), now, proven) : entry);
             return store.Submit(request, digest);
         });
@@ -68,17 +71,34 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
 
     private sealed record Proven(string Digest, long ExpiresAt);
 
-    /// <summary>The digest and expiry of the attestation when it proves "no network" for exactly this request; otherwise null (and a fixed-word audit line saying why, unless none was sent).</summary>
-    private Proven? ProvenNone(PendingRequest request, object? attestation)
+    /// <summary>The digest and expiry of the attestation when it proves what this action needs for exactly this request; otherwise null (and a fixed-word audit line saying why, unless none was sent).</summary>
+    private Proven? ProvenBy(PendingRequest request, object? attestation)
     {
         if (attestation is null) return null;
         if (attestationKey is null) return Refused("no_key_pinned");
         if (request.Dto.Args.GetValueOrDefault("expectedGeneration") is not long generation || generation < 1) return Refused("generation_missing");
         if (request.Dto.Args.GetValueOrDefault("vmId") is not string vmId || !NetworkAttestation.IsVmId(vmId)) return Refused("vm_id_missing");
+        return request.Dto.Action == TaskStartAction ? ProvenTaskStart(request, attestation, vmId, generation) : ProvenNone(request, attestation, vmId, generation);
+    }
+
+    private const string TaskStartAction = "task.start";
+
+    private Proven? ProvenNone(PendingRequest request, object attestation, string vmId, long generation)
+    {
         AttestationExpected expected = new(request.Dto.ComputerId, vmId, generation, request.Dto.ProjectId, request.LeaseId, request.LeaseGeneration);
-        AttestationVerdict verdict = NetworkAttestation.Verify(attestation, clock, attestationKey.Verify, expected);
+        AttestationVerdict verdict = NetworkAttestation.Verify(attestation, clock, attestationKey!.Verify, expected);
         if (!verdict.Ok) return Refused(verdict.Field is null ? verdict.Code! : $"{verdict.Code}:{verdict.Field}");
         if (verdict.Value!.Network != NetworkAttestation.None) return Refused($"network_{verdict.Value.Network}");
+        return new Proven(verdict.Digest!, verdict.Value.ExpiresAt);
+    }
+
+    private Proven? ProvenTaskStart(PendingRequest request, object attestation, string vmId, long generation)
+    {
+        TaskStartExpected expected = new(request.Dto.ComputerId, vmId, generation, request.Dto.ProjectId, request.LeaseId, request.LeaseGeneration, request.OperationId);
+        TaskStartVerdict verdict = TaskStartAttestation.Verify(attestation, clock, attestationKey!.Verify, expected);
+        if (!verdict.Ok) return Refused(verdict.Field is null ? verdict.Code! : $"{verdict.Code}:{verdict.Field}");
+        if (verdict.Value!.Network != TaskStartAttestation.None) return Refused($"network_{verdict.Value.Network}");
+        if (!TaskStartAttestation.ProvesCheckpointedNoNetwork(verdict.Value)) return Refused($"checkpoint_{verdict.Value.CheckpointType}");
         return new Proven(verdict.Digest!, verdict.Value.ExpiresAt);
     }
 

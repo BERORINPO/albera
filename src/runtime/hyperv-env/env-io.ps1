@@ -4,6 +4,7 @@
 #   {"method":"inspect","vmName":"albera-x"}
 #   {"method":"create","vmName":..,"cloneRoot":..,"vmDir":..,"parentPath":..,"childPath":..,"vcpu":2,"memoryMiB":2048,"notes":".."}
 #   {"method":"network","vmName":"albera-x"}   (read-only: inspect's fields plus the adapter facts the Broker classifies, in one read; see broker-contract/network-attestation.mjs)
+#   {"method":"checkpoint","vmName":..,"expect":{"computerId":..,"generation":1,"vmId":..,"identity":"vm"},"checkpointName":"albera-task-<24 hex>"}   (task.start, #115 step 4; see Invoke-Checkpoint)
 #   {"method":"start"|"stop"|"remove","vmName":..,"expect":{"computerId":..,"generation":1}, ...}
 #   {"method":"annotate","vmName":..,"expect":{..},"notes":"..","incarnationId":".."}   (rewrites Notes of an owned VM; used to write the retirement identity)
 # "expect" may also carry vmId (the Hyper-V VM GUID), projectId and incarnationId: when present they must equal the VM's own id / Notes values.
@@ -13,6 +14,8 @@
 # Errors are reported as {"ok":false,"code":"...","notApplied":bool} with a fixed code; messages are never printed.
 $ErrorActionPreference = 'Stop'
 $VmNameRe = '^albera-[A-Za-z0-9][A-Za-z0-9-]{0,56}$'
+$CheckpointNameRe = '^albera-task-[0-9a-f]{24}$'
+$GuidRe = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 $SafeCodes = @('invalid_provider_state', 'operation_conflict', 'provider_timeout', 'provider_unavailable', 'provider_state_unknown')
 
 function Emit($obj) { $obj | ConvertTo-Json -Compress -Depth 4 }
@@ -117,6 +120,25 @@ function Invoke-Create($Req) {
   }
 }
 
+# Task-start checkpoint (#115 step 4): ONE checkpoint of an owned VM, nothing else. The name is the fixed shape the Node side derives from a validated operationId (anything else is refused here
+# too), and the VM id is mandatory, so the checkpoint is taken of exactly the VM the approval names. ProductionOnly (not Production): a Production checkpoint falls back to a Standard one when the
+# guest cannot freeze its disk (VSS), and a Standard checkpoint saves the guest's memory, which may hold secrets, to the host disk; ProductionOnly fails instead, and a failure means no attestation.
+# No checkpoint is restored, removed or merged anywhere in this script. Reports the new snapshot's id (a lowercase GUID) and the VM's own id.
+function Invoke-Checkpoint($Req) {
+  if ($Req.checkpointName -isnot [string] -or $Req.checkpointName -cnotmatch $CheckpointNameRe) { Reject 'invalid_provider_state' }
+  if ([string]$Req.expect.identity -ne 'vm' -or $null -eq $Req.expect.vmId) { Reject 'invalid_provider_state' }
+  $vm = Require-Vm $Req.vmName $Req.expect
+  try {
+    if ([string]$vm.CheckpointType -ne 'ProductionOnly') { Set-VM -VM $vm -CheckpointType ProductionOnly }
+    $snapshots = @(Checkpoint-VM -VM $vm -SnapshotName $Req.checkpointName -Passthru)
+  } catch { Abort 'provider_unavailable' }
+  if ($snapshots.Count -ne 1) { Abort 'provider_state_unknown' }
+  $checkpointId = ([string]$snapshots[0].Id).ToLowerInvariant()
+  if ($checkpointId -cnotmatch $GuidRe) { Abort 'provider_state_unknown' }
+  $after = Get-VM -Name $Req.vmName
+  @{ ok = $true; checkpointId = $checkpointId; vmId = ([string]$after.Id).ToLowerInvariant(); state = [string]$after.State }
+}
+
 function Invoke-Start($Req) {
   $vm = Require-Vm $Req.vmName $Req.expect
   if ($vm.State -eq 'Paused') { Resume-VM -VM $vm }
@@ -180,6 +202,7 @@ try {
     'inspect' { Invoke-Inspect $req }
     'network' { Invoke-Network $req }
     'create'  { Invoke-Create $req }
+    'checkpoint' { Invoke-Checkpoint $req }
     'start'   { Invoke-Start $req }
     'stop'    { Invoke-Stop $req }
     'annotate' { Invoke-Annotate $req }

@@ -31,7 +31,7 @@ function verdictOf(validate, vector) {
 
 // ---- the tier policy, written out from the rules in TierPolicy.cs (an independent second implementation) ---------------------------------------------------------------------
 const KNOWN_ACTIONS = new Set(PURPOSES.flatMap((p) => ACTIONS_BY_PURPOSE[p]));
-const policyHash = (rev, tier, prompts) => `sha256:${createHash('sha256').update(['albera.policy-hash.v2', String(rev), tier, ...[...prompts].sort()].join('\0')).digest('hex')}`;
+const policyHash = (rev, tier, prompts) => `sha256:${createHash('sha256').update(['albera.policy-hash.v3', String(rev), tier, ...[...prompts].sort()].join('\0')).digest('hex')}`;
 const skippable = (tier, prompts, list) => (tier === 'standard' ? list.filter((a) => !prompts.includes(a)) : []);
 const noPromptSet = (tier, prompts) => skippable(tier, prompts, POLICY_BASIS_ACTIONS);
 const attestedSet = (tier, prompts) => skippable(tier, prompts, ATTESTED_POLICY_BASIS_ACTIONS);
@@ -56,7 +56,7 @@ test('v3 vectors: file shape and coverage of the basis, shape and binding bounda
   for (const required of [
     'valid-v3-presence-start', 'valid-v3-policy-environment-inspect', 'valid-v3-policy-environment-stop', 'valid-v3-policy-task-cancel', 'valid-v3-policy-workspace-inspect',
     'valid-v3-policy-version-expected-is-ignored', 'valid-v3-all-ids-at-64-chars', 'v3-policy-basis-refused-for-environment-destroy', 'v3-policy-basis-refused-for-environment-purge',
-    'v3-policy-basis-refused-for-environment-create', 'v3-policy-basis-needs-attestation-for-environment-start', 'v3-policy-basis-refused-for-task-start-guest',
+    'v3-policy-basis-refused-for-environment-create', 'v3-policy-basis-needs-attestation-for-environment-start', 'v3-policy-basis-needs-attestation-for-task-start-guest',
     'v3-policy-basis-refused-for-synthetic-noop', 'v3-basis-unknown-word', 'v3-basis-grant-reserved', 'v3-basis-missing', 'v3-policy-version-v2-style-label',
     'v3-duplicate-key-basis-later-wins-attack', 'v3-binding-leaseId', 'v3-digest-tampered',
     'valid-v3-policy-attested-environment-start', 'v3-attestation-digest-on-policy-environment-create', 'v3-attested-start-vmId-arg-missing', 'valid-v3-policy-attested-all-ids-at-64-chars', 'v3-attestation-digest-on-presence-start',
@@ -94,14 +94,14 @@ test('basis: only presence and policy exist; a grant basis and every other word 
   assert.equal(parseReceiptV3(Buffer.from(v2.receiptJson)).code, 'schema', 'the v3 parser does not accept a v2 receipt');
 });
 
-test('policy basis: the contract caps what a policy can skip to reads and risk-reducing actions, plus start / create only with an attestation; nothing that deletes or runs work', () => {
+test('policy basis: the contract caps what a policy can skip to reads and risk-reducing actions, plus start / task.start only with an attestation (create never); nothing that deletes', () => {
   assert.deepEqual([...POLICY_BASIS_ACTIONS].sort(), ['environment.inspect', 'environment.stop', 'task.cancel', 'workspace.inspect']);
-  assert.deepEqual([...ATTESTED_POLICY_BASIS_ACTIONS], ['environment.start'], 'create is never attested: no VM exists before it');
+  assert.deepEqual([...ATTESTED_POLICY_BASIS_ACTIONS], ['environment.start', 'task.start'], 'create is never attested: no VM exists before it');
   for (const action of [...POLICY_BASIS_ACTIONS, ...ATTESTED_POLICY_BASIS_ACTIONS]) assert.ok(KNOWN_ACTIONS.has(action));
   for (const never of ['environment.create', 'environment.start', 'environment.destroy', 'environment.retire', 'environment.purge', 'task.start', 'synthetic.noop']) {
     assert.equal(POLICY_BASIS_ACTIONS.includes(never), false, never);
   }
-  for (const never of ['environment.create', 'environment.destroy', 'environment.retire', 'environment.purge', 'task.start', 'synthetic.noop', ...POLICY_BASIS_ACTIONS]) {
+  for (const never of ['environment.create', 'environment.destroy', 'environment.retire', 'environment.purge', 'synthetic.noop', ...POLICY_BASIS_ACTIONS]) {
     assert.equal(ATTESTED_POLICY_BASIS_ACTIONS.includes(never), false, `${never} needs no attestation or can never skip a person`);
     assert.equal(isPolicyBasisAction(never), POLICY_BASIS_ACTIONS.includes(never), never);
   }
@@ -153,8 +153,14 @@ test('attestationDigest: present exactly for basis policy on environment.start /
     'v3-policy-basis-needs-attestation-for-environment-start', 'v3-attestation-digest-on-presence-start',
     'v3-attestation-digest-on-presence-destroy', 'v3-attestation-digest-on-policy-environment-stop', 'v3-attestation-digest-on-policy-environment-inspect',
     'v3-attestation-digest-on-policy-task-cancel', 'v3-attestation-digest-on-policy-workspace-inspect',
+    'v3-policy-basis-needs-attestation-for-task-start-guest', 'v3-policy-task-start-without-the-attestation-digest-and-with-a-vmId', 'v3-attestation-digest-on-presence-task-start',
   ]) assert.deepEqual(verdictFor(name), needs, name);
-  for (const name of ['v3-policy-basis-refused-for-environment-create', 'v3-attestation-digest-on-policy-environment-create', 'v3-attestation-digest-on-policy-environment-destroy', 'v3-attestation-digest-on-policy-environment-purge', 'v3-attestation-digest-on-policy-task-start']) {
+  // task.start (step 4) is attested like start: a Broker task-start attestation digest, and the VM in its args.
+  for (const name of ['valid-v3-policy-attested-task-start', 'valid-v3-policy-attested-task-start-with-more-args', 'valid-v3-presence-task-start-needs-no-vmId-arg']) assert.deepEqual(verdictFor(name), { ok: true }, name);
+  for (const name of ['v3-attestation-digest-on-policy-task-start', 'v3-attested-task-start-vmId-arg-missing', 'v3-attested-task-start-vmId-arg-uppercase', 'v3-attested-task-start-vmId-arg-not-a-guid']) {
+    assert.deepEqual(verdictFor(name), { ok: false, code: 'attestation', field: 'vmId' }, name);
+  }
+  for (const name of ['v3-policy-basis-refused-for-environment-create', 'v3-attestation-digest-on-policy-environment-create', 'v3-attestation-digest-on-policy-environment-destroy', 'v3-attestation-digest-on-policy-environment-purge']) {
     assert.deepEqual(verdictFor(name), { ok: false, code: 'basis_action', field: 'basis' }, `${name}: the action can never carry basis policy, whatever else the receipt says`);
   }
   for (const name of ['uppercase-hex', 'without-prefix', 'short', 'too-long', 'empty', 'number', 'true', 'v2-style-label']) {
@@ -194,9 +200,11 @@ test('policy vectors: the hash, the compact form and the no-prompt set follow th
   const careful = vectors.policyVectors.find((v) => v.name === 'careful-rev0-empty').expected;
   assert.deepEqual([careful.noPrompt, careful.attestedNoPrompt, careful.hash], [[], [], policyHash(0, 'careful', [])], 'the default (no file) skips nobody, attested or not');
   const named = (name) => vectors.policyVectors.find((v) => v.name === name).expected;
-  assert.deepEqual(named('standard-rev1-empty').attestedNoPrompt, ['environment.start'], 'only start; create is never skipped');
-  assert.deepEqual(named('standard-rev6-override-on-start').attestedNoPrompt, [], 'an override on start forces a prompt even with an attestation');
-  assert.deepEqual(named('standard-rev7-override-on-start-and-create').attestedNoPrompt, []);
+  assert.deepEqual(named('standard-rev1-empty').attestedNoPrompt, ['environment.start', 'task.start'], 'start and task.start; create is never skipped');
+  assert.deepEqual(named('standard-rev9-override-on-task-start').attestedNoPrompt, ['environment.start'], 'an override on task.start forces a prompt even with an attestation');
+  assert.deepEqual(named('standard-rev10-override-on-start-and-task-start').attestedNoPrompt, []);
+  assert.deepEqual(named('standard-rev6-override-on-start').attestedNoPrompt, ['task.start'], 'an override on start forces a prompt for start only');
+  assert.deepEqual(named('standard-rev7-override-on-start-and-create').attestedNoPrompt, ['task.start']);
   assert.deepEqual(named('careful-rev8-override-on-create').attestedNoPrompt, [], 'careful skips nobody');
   // Same policy, different bytes: the hash is of the meaning.
   const byName = (name) => vectors.policyVectors.find((v) => v.name === name).expected.hash;
