@@ -153,6 +153,7 @@ export function createAgentFleet({
 
   return Object.freeze({
     run, stop, board, startJob, stopVm, idle, close,
+    initialJobCount: jobs.length, // a room host with a start gate refuses a fleet that starts jobs in run() without it
     isBusy: (vmId) => Boolean(vms.get(vmId)?.loop),
     spentUsd: () => Math.round(total() * 1e6) / 1e6,
   });

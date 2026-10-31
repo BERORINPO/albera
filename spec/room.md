@@ -54,6 +54,8 @@ Ledger (`LEDGER_CODES`, words: C):
 | `bero_figure` | bero | `kind` (FIGURE_KINDS) |
 | `bero_card` | bero | `cardCode` |
 | `human_choice` | human | `cardCode`, `choiceCode`, `effect` |
+| `start_approved` | bero | none. A card job on this VM was approved (only with a start gate); the job starts next |
+| `start_refused` | bero | `code`: a fixed code of task-start-gate.mjs, or the fleet's own (`vm_busy`, `over_budget`, ...). No job was started |
 
 Say (`SAY_CODES`, words: D). Params: `cam` (camera label), `seconds`, `claim`, `usd`, `count`, `steps`.
 Card (`CARD_CODES`, words: D). Choice codes are D's own (for example `close_it`, `check_again`, `mark_done`, `stop_it`, `later`).
