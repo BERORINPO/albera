@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ALBERA main AI live (mock)</title>
+<style>
+  /* ALBERA v0.8b mock: plan B, animated. The main AI (Bero) glides across the canvas, points, writes stickies, draws, asks. Look only, scripted loop. */
+  :root {
+    color-scheme: dark;
+    --paper: oklch(21% 0.004 75); --paper-2: oklch(26.5% 0.004 75); --rule: oklch(40% 0.004 75); --rule-strong: oklch(62% 0.004 75);
+    --muted: oklch(68% 0.004 75); --ink-2: oklch(86% 0.003 75); --ink: oklch(91% 0.003 75);
+    --accent-fill: oklch(82% 0.085 262); --on-accent: oklch(21% 0.03 262);
+    --desk: oklch(15% 0.004 75); --dot: oklch(27% 0.004 75); --sheet: oklch(23% 0.004 75);
+    --work: oklch(80% 0.095 47); --wait: oklch(84% 0.075 262); --stuck: oklch(82.5% 0.105 85); --done: oklch(82.5% 0.09 142);
+    --rec: oklch(70% 0.19 25); --screen: oklch(42% 0.09 250); --me: oklch(82% 0.09 300);
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
+    --font: "BIZ UDPGothic", "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", Meiryo, sans-serif;
+    --mono: "Cascadia Mono", "BIZ UDGothic", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: var(--desk); color: var(--ink); font-family: var(--font); font-size: 15px; line-height: 1.55; overflow: hidden; }
+  button { font: inherit; color: inherit; background: none; border: 1px solid var(--rule-strong); border-radius: 4px; padding: 2px 10px; cursor: pointer; }
+  button.primary { background: var(--accent-fill); color: var(--on-accent); border-color: transparent; font-weight: 700; }
+  .top { display: flex; align-items: center; gap: 14px; padding: 0 18px; min-height: 50px; background: var(--paper); border-bottom: 1px solid var(--rule); flex: none; z-index: 10; }
+  .brand { font-weight: 700; font-size: 18px; letter-spacing: 0.04em; }
+  .sub { color: var(--muted); } .sm { font-size: 13px; } .grow { flex: 1; }
+  .vp { position: relative; flex: 1; overflow: hidden; }
+  .world { position: absolute; left: 0; top: 0; width: 1700px; height: 1000px; transform-origin: 0 0; transition: transform 1.6s var(--ease);
+    background-image: radial-gradient(var(--dot) 1.2px, transparent 1.4px); background-size: 22px 22px; }
+  .cam { position: absolute; width: 300px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; font-size: 13px; transition: box-shadow 0.6s var(--ease), transform 0.6s var(--ease); }
+  .cam .hd { display: flex; justify-content: space-between; padding: 6px 10px; background: var(--paper-2); font-weight: 700; }
+  .cam .scr { height: 160px; margin: 7px; border-radius: 5px; background: var(--screen); position: relative; overflow: hidden; }
+  .cam .win { position: absolute; left: 16px; top: 14px; right: 16px; bottom: 20px; background: oklch(92% 0.003 75); border-radius: 3px; }
+  .cam .win::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 12px; background: oklch(82% 0.01 250); border-radius: 3px 3px 0 0; }
+  .cam .ft { padding: 0 10px 8px; color: var(--ink-2); font-family: var(--mono); font-size: 12px; }
+  .cam.focus { box-shadow: 0 0 0 3px var(--me), 0 0 40px 4px color-mix(in oklch, var(--me) 45%, transparent); transform: scale(1.03); }
+  .cam.dim .scr { filter: grayscale(0.7) brightness(0.7); }
+  .cur { position: absolute; width: 12px; height: 12px; margin: -6px; border-radius: 50%; background: var(--rec); box-shadow: 0 0 0 2px #fff; z-index: 3; }
+  .rip { position: absolute; width: 12px; height: 12px; margin: -6px; border-radius: 50%; border: 2px solid var(--rec); animation: rip 0.7s ease-out forwards; z-index: 2; pointer-events: none; }
+  @keyframes rip { to { transform: scale(4.5); opacity: 0; } }
+  .dialog { position: absolute; left: 70px; top: 50px; width: 150px; height: 70px; background: oklch(96% 0 0); border: 1px solid oklch(60% 0 0); border-radius: 4px; color: oklch(30% 0 0); font-size: 11px; padding: 6px; transition: opacity 0.5s, transform 0.5s var(--ease); }
+  .dialog.gone { opacity: 0; transform: scale(0.8); }
+  .st-work { color: var(--work); } .st-wait { color: var(--wait); } .st-stuck { color: var(--stuck); } .st-done { color: var(--done); }
+  .rec { color: var(--rec); font-family: var(--mono); font-size: 11.5px; }
+
+  .wires { position: absolute; inset: 0; width: 1700px; height: 1000px; pointer-events: none; overflow: visible; }
+  .wires path { fill: none; stroke: var(--me); stroke-width: 2; stroke-linecap: round; transition: stroke-dashoffset 0.9s var(--ease), opacity 0.6s; }
+
+  /* Bero */
+  .bero { position: absolute; left: 0; top: 0; z-index: 8; display: flex; align-items: flex-start; gap: 10px; transition: transform 1.4s var(--ease); will-change: transform; }
+  .orb { width: 46px; height: 46px; border-radius: 50%; flex: none; position: relative; background: radial-gradient(circle at 35% 30%, oklch(95% 0.04 300), var(--me) 55%, oklch(52% 0.13 300)); animation: bob 3.2s ease-in-out infinite; }
+  .orb::after { content: ""; position: absolute; inset: -7px; border-radius: 50%; border: 2px solid var(--me); opacity: 0; }
+  .bero.talk .orb::after { animation: ring 1.3s ease-out infinite; }
+  @keyframes ring { from { transform: scale(0.8); opacity: 1; } to { transform: scale(1.5); opacity: 0; } }
+  @keyframes bob { 0%,100% { translate: 0 0; } 50% { translate: 0 -5px; } }
+  .eyes { position: absolute; left: 12px; top: 17px; width: 22px; display: flex; justify-content: space-between; transition: transform 0.6s var(--ease); }
+  .eyes i { width: 5px; height: 8px; border-radius: 3px; background: oklch(25% 0.06 300); animation: blinkeye 4s infinite; }
+  @keyframes blinkeye { 0%,92%,100% { transform: scaleY(1); } 95% { transform: scaleY(0.1); } }
+  .bubble { max-width: 290px; background: var(--paper); border: 1px solid var(--me); border-radius: 12px; padding: 9px 12px; font-size: 14.5px; line-height: 1.55; transform-origin: 0 0; transition: opacity 0.35s, transform 0.45s var(--ease); }
+  .bubble.hide { opacity: 0; transform: scale(0.85); }
+  .bubble .nm { font-size: 12px; color: var(--me); font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .wave { display: inline-flex; gap: 2px; align-items: center; height: 14px; }
+  .wave i { width: 3px; border-radius: 2px; background: var(--me); animation: w 0.9s ease-in-out infinite; }
+  .wave i:nth-child(2) { animation-delay: 0.15s; } .wave i:nth-child(3) { animation-delay: 0.3s; } .wave i:nth-child(4) { animation-delay: 0.45s; }
+  @keyframes w { 0%,100% { height: 3px; } 50% { height: 13px; } }
+  .chips { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--me); color: var(--me); border-radius: 12px; padding: 0 9px; font-size: 12.5px; transition: background 0.3s, color 0.3s; }
+  .chip.on { background: var(--me); color: oklch(22% 0.05 300); }
+  .typing::after { content: "▍"; color: var(--me); animation: caret 0.8s steps(2) infinite; }
+  @keyframes caret { 50% { opacity: 0; } }
+
+  .sticky { position: absolute; width: 220px; background: var(--sheet); border: 1px dashed var(--me); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; transform: scale(0.6) rotate(-4deg); opacity: 0; transition: transform 0.7s var(--ease), opacity 0.4s; transform-origin: 20% 0; }
+  .sticky.in { transform: scale(1) rotate(-1deg); opacity: 1; }
+  .sticky b { color: var(--me); font-size: 12px; }
+  .sketch svg { width: 100%; height: auto; display: block; margin-top: 4px; }
+  .sketch .draw { stroke-dasharray: 400; stroke-dashoffset: 400; transition: stroke-dashoffset 1.6s var(--ease); }
+  .sketch.in .draw { stroke-dashoffset: 0; }
+  .sketch text { opacity: 0; transition: opacity 0.6s 0.8s; } .sketch.in text { opacity: 1; }
+  .fig .d { stroke-dasharray: 600; stroke-dashoffset: 600; animation: dr 1.2s ease-out forwards; }
+  .fig .f { opacity: 0; animation: fi 0.5s ease-out forwards; }
+  @keyframes dr { to { stroke-dashoffset: 0; } }
+  @keyframes fi { to { opacity: 1; } }
+  .fig svg { width: 100%; height: auto; display: block; margin: 4px 0; }
+  .src { font-family: var(--mono); font-size: 11px; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 4px; margin-top: 4px; line-height: 1.6; }
+  .src::before { content: "元にした記録"; display: block; font-family: var(--font); font-size: 10.5px; }
+  .card { position: absolute; width: 260px; background: var(--paper); border: 1px solid var(--wait); border-radius: 10px; padding: 10px 12px; transform: translateY(16px) scale(0.92); opacity: 0; transition: transform 0.7s var(--ease), opacity 0.4s; z-index: 7; }
+  .card.in { transform: none; opacity: 1; }
+  .ba { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 6px 0 8px; }
+  .ba div { height: 50px; border-radius: 4px; background: var(--screen); font-size: 11px; color: #fff; padding: 3px 5px; }
+  .ledger { position: absolute; right: 16px; bottom: 16px; width: 330px; background: color-mix(in oklch, var(--paper) 92%, transparent); border: 1px solid var(--rule); border-radius: 10px; padding: 8px 12px; font-size: 13px; z-index: 9; }
+  .ledger .t { font-size: 12px; color: var(--muted); font-weight: 700; margin-bottom: 2px; }
+  .ledger .row { display: grid; grid-template-columns: 44px 1fr; gap: 6px; padding: 3px 0; animation: slide 0.6s var(--ease); }
+  @keyframes slide { from { opacity: 0; transform: translateY(8px); } }
+  .ai-k { color: var(--work); font-weight: 700; } .me-k { color: var(--me); font-weight: 700; }
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="brand">ALBERA</span><span class="sm sub">VM 4 · AI 5 動作中</span>
+  <span class="grow"></span>
+  <span class="sm sub" id="phase">ベロが全カメラを見回っています</span>
+  <button id="pause">一時停止</button>
+</header>
+<div class="vp" id="vp">
+  <div class="world" id="world">
+    <svg class="wires" id="wires"></svg>
+    <div class="cam" id="c1" style="left:60px;top:60px"><div class="hd">CAM 01 · 動画編集 <span class="rec">● REC</span></div><div class="scr"><div class="win"></div><div class="cur" id="u1"></div></div><div class="ft"><span class="st-work">作業中</span> · <span id="f1">step 18 · $0.034</span></div></div>
+    <div class="cam" id="c2" style="left:420px;top:60px"><div class="hd">CAM 02 · 予約フォーム <span class="rec">● REC</span></div><div class="scr"><div class="win"></div><div class="cur" id="u2"></div></div><div class="ft"><span class="st-wait">あなた待ち</span> · 申告 DONE</div></div>
+    <div class="cam dim" id="c3" style="left:60px;top:330px"><div class="hd">CAM 03 · テスト <span class="rec" id="r3" style="color:var(--muted)">● 停止</span></div><div class="scr"><div class="win"></div><div class="dialog" id="dlg">エラー<br>保存されていない変更があります<br>[ OK ]</div><div class="cur" id="u3" style="left:150px;top:120px"></div></div><div class="ft" id="f3"><span class="st-stuck">止まったかも</span> · 4 分</div></div>
+    <div class="cam" id="c4" style="left:420px;top:330px"><div class="hd">CAM 04 · 絵を描く <span class="rec">● REC</span></div><div class="scr"><div class="win"></div><svg id="paint" style="position:absolute;left:16px;top:26px;width:236px;height:110px"><path id="stroke" d="" fill="none" stroke="oklch(60% 0.15 300)" stroke-width="3" stroke-linecap="round"/></svg><div class="cur" id="u4"></div></div><div class="ft"><span class="st-work">作業中</span> · step 6 · $0.011</div></div>
+
+    <div class="sticky" id="s1" style="left:820px;top:380px"><b>ベロの付箋</b><br>CAM 03 は保存確認のダイアログで止まっていた。テストは手で起動し直す必要なし</div>
+    <div class="sticky fig" id="s2" style="left:820px;top:60px;width:330px"><b>ベロの図 · 動画の進み</b><div id="g2"></div><div class="src">09:02 素材 6 本を読込<br>09:05 無音 9 か所を検出<br>09:11 クリップ 3 を切った</div></div>
+    <div class="card fig" id="card" style="left:1190px;top:60px;width:330px"><div class="sm sub">CAM 01 · あなたが決めること</div><b>クリップを 2 つ消してよい?</b><div id="g3"></div><div class="sm sub" style="margin-bottom:8px">元の素材は残るので戻せる</div><div style="display:flex;gap:8px"><button class="primary" id="go">進めて</button><button>別案</button></div></div>
+    <div class="sticky fig" id="s3" style="left:820px;top:520px;width:420px"><b>ベロの図 · さっきの 5 分、誰が何をした</b><div id="g4"></div><div class="src">09:14 CAM03 停止 / 09:15 あなた: 閉じさせて / 09:18 あなた: 2 つ消してよい</div></div>
+
+    <div class="bero" id="bero"><div class="orb"><div class="eyes" id="eyes"><i></i><i></i></div></div>
+      <div class="bubble hide" id="bub"><div class="nm">ベロ <span class="wave"><i></i><i></i><i></i><i></i></span></div><div id="txt"></div><div class="chips" id="chips"></div></div></div>
+  </div>
+  <div class="ledger" id="ledger"><div class="t">今日の台帳 · AI がしたこと / あなたが決めたこと</div></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const world = $('world'), bero = $('bero'), bub = $('bub'), txt = $('txt'), chips = $('chips'), wires = $('wires');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let paused = false; $('pause').onclick = () => { paused = !paused; $('pause').textContent = paused ? '再開' : '一時停止'; };
+async function wait(ms) { const end = Date.now() + ms; while (Date.now() < end || paused) await sleep(50); }
+
+/* camera: pan/zoom the world so a point sits in view */
+function look(x, y, z = 1) { const vp = $('vp').getBoundingClientRect(); world.style.transform = `translate(${vp.width / 2 - x * z}px, ${vp.height / 2 - y * z}px) scale(${z})`; }
+function center(id) { const e = $(id); return [e.offsetLeft + e.offsetWidth / 2, e.offsetTop + e.offsetHeight / 2]; }
+function moveBero(x, y) { bero.style.transform = `translate(${x}px, ${y}px)`; }
+function eyes(dx, dy) { $('eyes').style.transform = `translate(${dx}px, ${dy}px)`; }
+async function say(t, ch = []) { bero.classList.add('talk'); bub.classList.remove('hide'); txt.textContent = ''; txt.className = 'typing'; chips.innerHTML = '';
+  for (const c of t) { txt.textContent += c; await wait(38); } txt.className = '';
+  ch.forEach((c) => { const s = document.createElement('span'); s.className = 'chip'; s.textContent = c; chips.appendChild(s); }); bero.classList.remove('talk'); }
+function hush() { bub.classList.add('hide'); }
+function focusCam(id, on) { $(id).classList.toggle('focus', on); }
+function wire(fromId, toId) { const [ax, ay] = fromId, [bx, by] = center(toId); const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  const mx = (ax + bx) / 2; p.setAttribute('d', `M${ax} ${ay} C${mx} ${ay}, ${mx} ${by}, ${bx} ${by}`); wires.appendChild(p); const L = p.getTotalLength();
+  p.style.strokeDasharray = L; p.style.strokeDashoffset = L; requestAnimationFrame(() => requestAnimationFrame(() => { p.style.strokeDashoffset = 0; })); return p; }
+function log(who, t) { const r = document.createElement('div'); r.className = 'row'; r.innerHTML = `<span class="${who === 'AI' ? 'ai-k' : 'me-k'}">${who === 'AI' ? 'AI' : 'あなた'}</span><span></span>`; r.lastChild.textContent = t; $('ledger').appendChild(r); while ($('ledger').children.length > 6) $('ledger').children[1].remove(); }
+function ripple(cur) { const r = document.createElement('div'); r.className = 'rip'; r.style.left = cur.style.left; r.style.top = cur.style.top; cur.parentElement.appendChild(r); setTimeout(() => r.remove(), 700); }
+
+/* the hands keep working on their own: smooth cursors */
+const curs = { u1: [[60, 120], [180, 130], [120, 60], [220, 110]], u2: [[200, 90], [210, 95]], u4: [] };
+function glideCursor(id, x, y, ms = 900) { const c = $(id); const sx = parseFloat(c.style.left) || x, sy = parseFloat(c.style.top) || y; const t0 = performance.now();
+  return new Promise((res) => { function f(t) { const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3); c.style.left = sx + (x - sx) * e + 'px'; c.style.top = sy + (y - sy) * e + 'px'; k < 1 ? requestAnimationFrame(f) : res(); } requestAnimationFrame(f); }); }
+(async function hands1() { let i = 0, step = 18; for (;;) { const [x, y] = curs.u1[i++ % curs.u1.length]; await glideCursor('u1', x, y); ripple($('u1')); step++; $('f1').textContent = `step ${step} · $${(0.034 + (step - 18) * 0.0019).toFixed(3)}`; await wait(500); } })();
+(async function hands2() { for (;;) { await glideCursor('u2', 180 + Math.random() * 60, 70 + Math.random() * 40, 1400); await wait(900); } })();
+(async function painter() { let d = 'M20 80'; const s = $('stroke'); let t = 0; for (;;) { t += 1; const x = 20 + (t * 7) % 200, y = 55 + Math.sin(t / 3) * 30; d += ` L${x} ${y}`; if (x < 30) d = `M${x} ${y}`; s.setAttribute('d', d); $('u4').style.left = 16 + x + 'px'; $('u4').style.top = 26 + y + 'px'; await wait(120); } })();
+
+/* diagrams Bero draws (built from the log, drawn stroke by stroke) */
+const FIG = {
+  flow() { const s = [['素材', 45, 'var(--done)', '済'], ['無音を探す', 125, 'var(--done)', '済'], ['切る', 205, 'var(--work)', 'いまここ'], ['BGM', 285, 'var(--muted)', 'これから']]; let o = '';
+    s.forEach(([t, x, c, st], i) => { o += `<rect class="d" style="animation-delay:${i * .35}s" x="${x - 36}" y="40" width="72" height="36" rx="7" fill="none" stroke="${c}" stroke-width="${st === 'いまここ' ? 2.5 : 1.5}"/><text class="f" style="animation-delay:${i * .35 + .5}s" x="${x}" y="63" text-anchor="middle" font-size="12" fill="var(--ink)">${t}</text><text class="f" style="animation-delay:${i * .35 + .6}s" x="${x}" y="94" text-anchor="middle" font-size="11" fill="${c}">${st}</text>`;
+      if (i < 3) o += `<path class="d" style="animation-delay:${i * .35 + .3}s" d="M${x + 36} 58 L${x + 44} 58" stroke="var(--muted)" stroke-width="1.5"/>`; });
+    return `<svg viewBox="0 0 330 104">${o}<text class="f" style="animation-delay:1.6s" x="205" y="24" text-anchor="middle" font-size="11" fill="var(--work)">残り約 8 分</text><path class="d" style="animation-delay:1.5s" d="M205 28 L205 38" stroke="var(--work)"/></svg>`; },
+  ba() { let o = `<text class="f" x="2" y="14" font-size="11" fill="var(--muted)">今 · 6 本 · 84 秒</text><text class="f" style="animation-delay:1.2s" x="2" y="72" font-size="11" fill="var(--muted)">実行後 · 4 本 · 58 秒</text>`;
+    ['A', 'B', 'C', 'D', 'E', 'F'].forEach((t, i) => { const x = 2 + i * 38, cut = t === 'B' || t === 'E'; o += `<rect class="f" style="animation-delay:${i * .08}s" x="${x}" y="20" width="34" height="28" rx="4" fill="${cut ? 'oklch(35% 0.08 30)' : 'oklch(35% 0.06 250)'}" stroke="${cut ? 'var(--rec)' : 'oklch(65% 0.1 250)'}"/><text class="f" style="animation-delay:${i * .08}s" x="${x + 17}" y="39" text-anchor="middle" font-size="12" fill="var(--ink)">${t}</text>`;
+      if (cut) o += `<path class="d" style="animation-delay:${.7 + i * .08}s" d="M${x + 4} 24 L${x + 30} 44 M${x + 30} 24 L${x + 4} 44" stroke="var(--rec)" stroke-width="2"/>`; });
+    ['A', 'C', 'D', 'F'].forEach((t, i) => { const x = 2 + i * 38; o += `<rect class="f" style="animation-delay:${1.3 + i * .1}s" x="${x}" y="78" width="34" height="28" rx="4" fill="oklch(35% 0.06 250)" stroke="oklch(65% 0.1 250)"/><text class="f" style="animation-delay:${1.3 + i * .1}s" x="${x + 17}" y="97" text-anchor="middle" font-size="12" fill="var(--ink)">${t}</text>`; });
+    return `<svg viewBox="0 0 330 112">${o}<text class="f" style="animation-delay:1.9s" x="236" y="31" font-size="11" fill="var(--muted)">B 無音 14 秒</text><text class="f" style="animation-delay:2s" x="236" y="46" font-size="11" fill="var(--muted)">E 重複 12 秒</text><rect class="d" style="animation-delay:1.8s" x="170" y="80" width="100" height="24" rx="6" fill="none" stroke="var(--done)"/><text class="f" style="animation-delay:2.1s" x="220" y="96" text-anchor="middle" font-size="11" fill="var(--done)">60 秒に収まる</text></svg>`; },
+  who() { let o = `<text class="f" x="60" y="16" text-anchor="middle" font-size="12" fill="var(--me)">あなた</text><text class="f" x="210" y="16" text-anchor="middle" font-size="12" fill="var(--muted)">ベロ</text><text class="f" x="360" y="16" text-anchor="middle" font-size="12" fill="var(--work)">手</text>`;
+    [60, 210, 360].forEach((x) => o += `<path class="d" d="M${x} 24 L${x} 178" stroke="var(--rule-strong)" stroke-dasharray="3 4"/>`);
+    [[360, 210, 44, 'CAM03 止まった', 'var(--work)'], [210, 60, 70, '閉じさせる?', 'var(--muted)'], [60, 210, 96, '閉じさせて', 'var(--me)'], [210, 360, 120, 'OK を押す', 'var(--muted)'], [210, 60, 146, '2 つ消してよい?', 'var(--muted)'], [60, 210, 170, '進めて', 'var(--me)']].forEach(([a, b, y, t, c], i) => {
+      const dl = .4 + i * .35, dir = b > a ? -1 : 1; o += `<path class="d" style="animation-delay:${dl}s" d="M${a} ${y} L${b} ${y}" stroke="${c}" stroke-width="1.5"/><path class="f" style="animation-delay:${dl + .4}s" d="M${b} ${y} l${dir * 7} -4 l0 8z" fill="${c}"/><text class="f" style="animation-delay:${dl + .3}s" x="${(a + b) / 2}" y="${y - 5}" text-anchor="middle" font-size="11" fill="var(--ink)">${t}</text>`;
+      if (c === 'var(--me)') o += `<circle class="f" style="animation-delay:${dl + .2}s" cx="60" cy="${y}" r="5" fill="var(--me)"/>`; });
+    return `<svg viewBox="0 0 420 184">${o}</svg>`; },
+};
+function draw(slot, kind) { $(slot).innerHTML = ''; requestAnimationFrame(() => { $(slot).innerHTML = FIG[kind](); }); }
+
+/* Bero's scripted rounds */
+async function round() {
+  wires.innerHTML = ''; ['s1', 's2', 's3', 'card'].forEach((id) => $(id).classList.remove('in')); $('dlg').classList.remove('gone'); $('c3').classList.add('dim'); $('r3').style.color = 'var(--muted)'; $('r3').textContent = '● 停止';
+  $('f3').innerHTML = '<span class="st-stuck">止まったかも</span> · 4 分';
+  $('phase').textContent = 'ベロが全カメラを見回っています';
+  look(560, 330, 0.95); moveBero(780, 40); hush(); await wait(1600);
+  for (const id of ['c1', 'c2', 'c4']) { const [x, y] = center(id); eyes(x > 780 ? 3 : -3, y > 300 ? 3 : -2); focusCam(id, true); await wait(700); focusCam(id, false); }
+
+  $('phase').textContent = '気づいた: CAM 03 が止まっている';
+  const [x3, y3] = center('c3'); moveBero(x3 + 170, y3 - 60); look(x3 + 220, y3, 1.15); eyes(-3, 2); await wait(1500);
+  focusCam('c3', true); wire([x3 + 175, y3 - 35], 'c3'); await say('CAM 03 が 4 分止まっています。保存の確認ダイアログで詰まっているみたい。閉じさせますか?', ['閉じさせて', '見せて', '後で']);
+  await wait(1400); chips.children[0].classList.add('on'); log('あなた', 'CAM 03 のダイアログを閉じさせた'); await wait(700);
+  await say('了解。手に「OK を押して」と渡しました。'); await glideCursor('u3', 120, 110, 1000); ripple($('u3')); await wait(300);
+  $('dlg').classList.add('gone'); $('c3').classList.remove('dim'); $('r3').style.color = ''; $('r3').textContent = '● REC'; $('f3').innerHTML = '<span class="st-work">作業中</span> · テスト再開';
+  log('AI', 'CAM 03 のダイアログを閉じ、テストを再開した'); focusCam('c3', false); await wait(900);
+  moveBero(x3 + 520, y3 - 10); look(x3 + 560, y3 + 20, 1.05); hush(); await wait(1300); $('s1').classList.add('in'); await wait(1800);
+
+  $('phase').textContent = '動画の進みを図にしている';
+  const [x1, y1] = center('c1'); moveBero(x1 + 560, y1 - 120); look(x1 + 560, y1, 1.0); eyes(-3, 0); await wait(1500);
+  wire([x1 + 560, y1 - 95], 'c1'); await say('動画は「切る」の途中。流れを図にします。'); $('s2').classList.add('in'); draw('g2', 'flow'); log('AI', '動画の進みを図にした (サブ AI)'); await wait(3200);
+
+  $('phase').textContent = 'あなたの判断を待っている';
+  moveBero(1190, 330); look(1170, 200, 1.0); await say('ひとつ決めてほしいこと。消すのは 2 つだけ、元は残ります。', []); await wait(300); $('card').classList.add('in'); draw('g3', 'ba'); focusCam('c1', true); await wait(3600);
+  $('go').animate([{ transform: 'scale(1)' }, { transform: 'scale(0.94)' }, { transform: 'scale(1)' }], { duration: 300 }); log('あなた', 'クリップ 2 つの削除を許可した'); await wait(500);
+  $('card').classList.remove('in'); focusCam('c1', false); await say('進めます。'); await wait(1000);
+
+  $('phase').textContent = 'さっきの 5 分をまとめている';
+  moveBero(1250, 520); look(1030, 620, 1.0); await say('さっきの 5 分で、あなたが決めたのは 2 つでした。'); $('s3').classList.add('in'); draw('g4', 'who'); await wait(5500); hush();
+  $('phase').textContent = 'ひと回り終了 · 全体を見渡す'; look(820, 400, 0.72); moveBero(780, 10); await wait(4500);
+}
+(async () => { await sleep(300); for (;;) await round(); })();
+addEventListener('resize', () => look(560, 330, 0.95));
+</script>
+</body>
+</html>
