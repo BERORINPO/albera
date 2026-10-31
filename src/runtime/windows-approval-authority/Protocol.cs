@@ -132,7 +132,7 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
         return Write(w => { w.WriteBoolean("ok", true); w.WriteString("state", decision == Decision.Deny ? "denied" : "approved"); });
     }
 
-    // The tier policy in force: { "ok": true, "policy": { v, rev, tier, overrides }, "policyVersion": "sha256:..." }. Read only. A faulted store (PolicyStore) says authority_unavailable.
+    // The tier policy in force: { "ok": true, "policy": { v, rev, tier, overrides }, "policyVersion": "sha256:...", "kid": ..., "audience": ... }. Read only; kid and audience are what a policy signature is bound to. A faulted store (PolicyStore) says authority_unavailable.
     private byte[] Policy(Dictionary<string, object> r)
     {
         if (!HasKeys(r, ["v", "verb"])) return Error(AuthorityCodes.RequestInvalid);
@@ -143,11 +143,13 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
             w.WritePropertyName("policy");
             w.WriteRawValue(policy.ToJson());
             w.WriteString("policyVersion", policy.Hash());
+            w.WriteString("kid", core.Identity.Kid);
+            w.WriteString("audience", core.Identity.Audience);
         });
     }
 
     // Replace the policy with the COMPLETE new one: { v, verb: "policy_set", policy: { v, rev, tier, overrides }, presence?: <base64 signature> }. presence is the approver's signature over
-    // PolicyChange.Message(policy) (albera.policy.v1 + the hash of this policy); it is required exactly when the change lets an action skip a person (the core decides, by effect).
+    // PolicyChange.Message(policy, kid, audience) (albera.policy.v1 + this Authority's kid and audience + the hash of this policy); it is required exactly when the change lets an action skip a person (the core decides, by effect).
     // Replies { "ok": true, "policyVersion": "sha256:..." } or an error code (a wrong revision, a malformed policy: request_invalid; no / wrong signature: presence_mismatch).
     private byte[] PolicySet(Dictionary<string, object> r)
     {

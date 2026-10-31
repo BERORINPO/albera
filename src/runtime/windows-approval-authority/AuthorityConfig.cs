@@ -38,7 +38,7 @@ internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, 
         public const string ConfigPath = "config_path", Unreadable = "config_unreadable", TooLarge = "config_too_large", Syntax = "config_syntax",
             Keys = "config_keys", PipeRoot = "pipe_root", ControlPlaneSid = "control_plane_sid", ApproverSid = "approver_sid", SidsNotDistinct = "sids_not_distinct",
             SigningKey = "signing_key", SigningProvider = "signing_provider", Kid = "kid", ApproverKeyId = "approver_key_id", ApproverPublicKey = "approver_public_key",
-            Audience = "audience", PolicyVersion = "policy_version", ConfigUntrusted = "config_untrusted";
+            Audience = "audience", PolicyVersion = "policy_version", ConfigUntrusted = "config_untrusted", ConfigFolderUntrusted = "config_folder_untrusted";
     }
 
     public static AuthorityConfig? TryLoad(string configPath, bool strictSeparation, out string reason)
@@ -50,6 +50,8 @@ internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, 
         {
             using FileStream file = new(configPath, FileMode.Open, FileAccess.Read, FileShare.Read);
             if (!ServicePathGuard.IsTrustedConfigFile(configPath, file)) { reason = Reason.ConfigUntrusted; return null; }
+            // Whoever can create files in this folder could have pre-created policy.json (or the config) before the service ever ran: the folder is trusted before anything else here is read.
+            if (!ServicePathGuard.IsTrustedConfigFolder(Path.GetDirectoryName(configPath)!)) { reason = Reason.ConfigFolderUntrusted; return null; }
             if (file.Length > MaxFileBytes) { reason = Reason.TooLarge; return null; }
             bytes = new byte[file.Length];
             file.ReadExactly(bytes);

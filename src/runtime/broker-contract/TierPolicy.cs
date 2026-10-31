@@ -7,8 +7,9 @@
 //   overrides can only ADD prompts: the one allowed value is "prompt", and it names an action that must then be approved by a person at any tier
 //   rev       counts policy changes (the default has rev 0). A change must carry rev + 1, so a signature for one change can never be applied twice or onto another policy
 //   hash      "sha256:" + hex SHA-256 of  UTF8("albera.policy-hash.v1") 0x00 decimal(rev) 0x00 tier { 0x00 override-action }  with the overrides sorted, ordinal
-//   change    UTF8("albera.policy.v1") 0x00 hash-of-the-complete-new-policy, signed by the approver's Windows Hello key. Distinct from "albera.presence.v1" and
-//             "albera.selfcheck.v1", so no signature made for one purpose is valid for another.
+//   change    UTF8("albera.policy.v1") 0x00 kid 0x00 audience 0x00 hash-of-the-complete-new-policy, signed by the approver's Windows Hello key. kid and audience are the
+//             Authority's own trusted config values. Distinct from "albera.presence.v1" and "albera.selfcheck.v1", so no signature made for one purpose is valid for another.
+//   The Authority's policy.json wraps a policy with the signature that authorized it (PolicyStore.cs); this file defines only the policy itself.
 // Whether a change needs that signature is decided by its effect (TierPolicy.Loosens), never by the tier names.
 using System;
 using System.Collections.Generic;
@@ -81,15 +82,21 @@ public sealed class TierPolicy
         using (Utf8JsonWriter writer = new(buffer))
         {
             writer.WriteStartObject();
-            writer.WriteNumber("v", FormatVersion);
-            writer.WriteNumber("rev", Revision);
-            writer.WriteString("tier", Tier);
-            writer.WriteStartObject("overrides");
-            foreach (string action in Prompts) writer.WriteString(action, PromptWord);
-            writer.WriteEndObject();
+            WriteFields(writer);
             writer.WriteEndObject();
         }
         return buffer.ToArray();
+    }
+
+    /// <summary>Writes the four properties (v, rev, tier, overrides) into an object the caller has started, so a file can wrap a policy with more keys.</summary>
+    public void WriteFields(Utf8JsonWriter writer)
+    {
+        writer.WriteNumber("v", FormatVersion);
+        writer.WriteNumber("rev", Revision);
+        writer.WriteString("tier", Tier);
+        writer.WriteStartObject("overrides");
+        foreach (string action in Prompts) writer.WriteString(action, PromptWord);
+        writer.WriteEndObject();
     }
 
     /// <returns>"sha256:" + 64 lowercase hex characters; the receipt v3 `policyVersion`</returns>
@@ -112,10 +119,11 @@ public sealed class TierPolicy
     public bool Loosens(TierPolicy current) => !NoPromptActions().IsSubsetOf(current.NoPromptActions());
 }
 
-/// <summary>The bytes the approver's Hello key signs to loosen the policy.</summary>
+/// <summary>The bytes the approver's Hello key signs to loosen the policy, bound to ONE Authority by its signing key id and audience (its trusted config), so a signature made for
+/// one Authority is no good on another that pins the same approver key.</summary>
 public static class PolicyChange
 {
     public const string Domain = "albera.policy.v1";
 
-    public static byte[] Message(TierPolicy newPolicy) => Encoding.UTF8.GetBytes($"{Domain}\0{newPolicy.Hash()}");
+    public static byte[] Message(TierPolicy newPolicy, string kid, string audience) => Encoding.UTF8.GetBytes($"{Domain}\0{kid}\0{audience}\0{newPolicy.Hash()}");
 }

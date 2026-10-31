@@ -193,7 +193,7 @@ test('policy set: the tier change is described first, Hello is asked only when t
   assert.match(policy, /TierPolicy\.TryCreate\(current\.Revision \+ 1, tier, prompts\) \?\? throw new Stop\(ExitCodes\.BadUsage, "bad_policy"\)/u);
   assert.match(code['CommandLine.cs'], /TierPolicy\.TryCreate\(0, tier, prompts\) is \{ \} policy \? new CommandLine\("policy", null, "set", null, policy\.Tier, policy\.Prompts\) : null/u, 'unknown tiers and actions are not commands');
   const set = policy.slice(policy.indexOf('public Task<int> SetAsync'), policy.indexOf('// The policy in force, read from the Authority'));
-  const order = ['ReadCurrentAsync()', 'next.Loosens(current)', 'Describe(current)', 'Change(current, next, loosens)', 'if (loosens && !interactive)', 'if (!Confirmed())', 'signer.Sign(PolicyChange.Message(next))', 'CallAsync(request)'].map((token) => set.indexOf(token));
+  const order = ['ReadCurrentAsync()', 'next.Loosens(current)', 'Describe(current)', 'Change(current, next, loosens)', 'if (loosens && !interactive)', 'if (!Confirmed())', 'signer.Sign(PolicyChange.Message(next, kid, audience))', 'CallAsync(request)'].map((token) => set.indexOf(token));
   assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `read -> effect -> show -> console -> yes -> sign -> send (${order})`);
   assert.equal([...policy.matchAll(/signer\.Sign\(/gu)].length, 1, 'one signing site');
   assert.ok(set.indexOf('signer.Sign(') > set.indexOf('if (loosens)'), 'the signer is reached only inside the loosening branch');

@@ -11,7 +11,10 @@ internal static partial class Harness
 
     private static TierPolicy PolicyOf(string json) => TierPolicy.TryParse(Encoding.UTF8.GetBytes(json))!;
 
-    private static string PolicyReply(string policyJson, string? reportedHash = null) => $"{{\"ok\":true,\"policy\":{policyJson},\"policyVersion\":\"{reportedHash ?? PolicyOf(policyJson).Hash()}\"}}";
+    private const string Kid = "authority-key-test", Audience = "albera-host-broker";
+
+    private static string PolicyReply(string policyJson, string? reportedHash = null, string? kid = Kid, string? audience = Audience) =>
+        $"{{\"ok\":true,\"policy\":{policyJson},\"policyVersion\":\"{reportedHash ?? PolicyOf(policyJson).Hash()}\"{(kid is null ? "" : $",\"kid\":\"{kid}\"")}{(audience is null ? "" : $",\"audience\":\"{audience}\"")}}}";
 
     /// <summary>A channel that answers `policy` with the policy in force and `policy_set` with <paramref name="setReply"/> (default: success naming the hash of the policy it was sent).</summary>
     private static FakeChannel PolicyChannel(string inForce, Func<string, string>? setReply = null) => new(request =>
@@ -32,7 +35,7 @@ internal static partial class Harness
         return exit;
     }
 
-    private static RecordingSigner SigningPolicy(string policyJson) => new(SignResult.Signed(Sign(PolicyChange.Message(PolicyOf(policyJson)))));
+    private static RecordingSigner SigningPolicy(string policyJson) => new(SignResult.Signed(Sign(PolicyChange.Message(PolicyOf(policyJson), Kid, Audience))));
 
     private static bool SentSetRequest(FakeChannel channel) => channel.Requests.Any(r => r.Contains("\"verb\":\"policy_set\""));
 
@@ -65,7 +68,8 @@ internal static partial class Harness
             [
                 PolicyReply(good, "sha256:" + new string('0', 64)), PolicyReply(good.Replace("\"overrides\":{}", "\"overrides\":{},\"extra\":1"), "sha256:" + new string('1', 64)),
                 PolicyReply(good.Replace("standard", "delegated"), "sha256:" + new string('2', 64)),
-                $"{{\"ok\":true,\"policy\":{good}}}", $"{{\"ok\":true,\"policy\":\"x\",\"policyVersion\":\"{PolicyOf(good).Hash()}\"}}", "{\"ok\":true}", "not json",
+                PolicyReply(good, kid: null, audience: null), PolicyReply(good, kid: null), PolicyReply(good, audience: null), PolicyReply(good, kid: "bad kid"), PolicyReply(good, audience: "Not Valid"), PolicyReply(good, kid: ""),
+                $"{{\"ok\":true,\"policy\":{good}}}",$"{{\"ok\":true,\"policy\":\"x\",\"policyVersion\":\"{PolicyOf(good).Hash()}\"}}", "{\"ok\":true}", "not json",
             ];
             foreach (string reply in replies)
             {
@@ -84,9 +88,9 @@ internal static partial class Harness
             Assert(exit == 0 && stderr == "" && stdout.EndsWith("result: policy applied (revision 1)\n"), $"{exit} {stderr}\n{stdout}");
             Assert(stdout.Contains("will no longer ask you: environment.inspect, environment.stop, workspace.inspect") && stdout.Contains("will start asking you: (none)") && stdout.Contains("windows hello: needed")
                 && stdout.Contains("Type yes to apply exactly this change"), stdout);
-            Assert(signer.Messages.Count == 1 && signer.Messages[0].SequenceEqual(Encoding.UTF8.GetBytes($"albera.policy.v1\0{PolicyOf(next).Hash()}")), "one signature over the policy message of the hash this app computed");
+            Assert(signer.Messages.Count == 1 && signer.Messages[0].SequenceEqual(Encoding.UTF8.GetBytes($"albera.policy.v1\0{Kid}\0{Audience}\0{PolicyOf(next).Hash()}")), "one signature over the policy message of the hash this app computed");
             Assert(channel.Requests.Count == 2 && SentPolicy(channel.Requests[1]).Hash() == PolicyOf(next).Hash(), "the complete new policy was sent");
-            Assert(channel.Requests[1].Contains($"\"presence\":\"{Convert.ToBase64String(Sign(PolicyChange.Message(PolicyOf(next))))}\""), "with the signature");
+            Assert(channel.Requests[1].Contains($"\"presence\":\"{Convert.ToBase64String(Sign(PolicyChange.Message(PolicyOf(next), Kid, Audience)))}\""), "with the signature");
         });
         Check("policy set: a change that lets an action skip a person needs a console and a typed yes BEFORE anything is signed or sent (not interactive: 65; no / empty: 65)", () =>
         {

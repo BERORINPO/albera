@@ -74,7 +74,7 @@ test('C# ActionDigest, ReceiptV2, ReceiptV3 and TierPolicy give the same digests
       if (vector.expected.ok) assert.equal(canonicalRoundTrips, true, `${vector.name}: the compact form parses back to the same hash`);
     });
     assert.deepEqual(result.loosen, v3.loosenVectors.map(({ name, loosens }) => ({ name, loosens })));
-    assert.equal(result.policyMessageHex, v3.policyMessage.messageHex);
+    assert.deepEqual(result.policyMessageHex, v3.policyMessage.cases.map((c) => c.messageHex));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

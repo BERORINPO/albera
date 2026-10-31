@@ -29,13 +29,14 @@ internal static partial class Program
 
     private static int CheckServiceConfig(string configPath)
     {
-        if (AuthorityConfig.TryLoad(configPath, strictSeparation: true, out string reason) is null)
+        if (AuthorityConfig.TryLoad(configPath, strictSeparation: true, out string reason) is not { } config)
         {
             Console.WriteLine($"SERVICE_CONFIG=invalid:{reason}");
             return ExitCodes.ConfigInvalid;
         }
         Console.WriteLine("SERVICE_CONFIG=ok");
-        if (PolicyStore.TryLoad(configPath, out string policyReason, out bool fromFile) is not { } policy)
+        using RsaPresenceVerifier approverKey = RsaPresenceVerifier.TryCreate(config.ApproverPublicKey) ?? throw new InvalidOperationException();
+        if (PolicyStore.TryLoad(configPath, AuthorityRuntime.IdentityOf(config), approverKey, out string policyReason, out bool fromFile) is not { } policy)
         {
             Console.WriteLine($"SERVICE_POLICY=invalid:{policyReason}");
             return ExitCodes.PolicyInvalid;

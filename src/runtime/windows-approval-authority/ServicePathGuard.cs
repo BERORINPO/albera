@@ -48,6 +48,14 @@ internal static class ServicePathGuard
     public static bool IsTrustedConfigFile(string path, FileStream file) =>
         Guarded(() => !HasReparsePoint(path) && CurrentServiceSid() is { } service && IsTrusted(file.GetAccessControl(), service));
 
+    // The folder the config (and policy.json) lives in. A file can only be pre-created by someone who can create files in its folder, so the folder gets the same rules as the file:
+    // owner and every ACE that grants create-file / write-data / append / delete-child / delete / write-DAC / write-owner / generic write or all (inherit-only ACEs included, as for the
+    // file) limited to the service, SYSTEM and Administrators; CREATOR OWNER counts as trusted exactly as above (it only resolves to whoever creates an object); no NULL DACL; no reparse
+    // point on the path. Under the usual inherited C:ProgramData ACL, BUILTINUsers can create files in a new sub-folder, so the service refuses to start (exit 73) until the installer
+    // has set a protected ACL on it.
+    public static bool IsTrustedConfigFolder(string folder) =>
+        Guarded(() => !HasReparsePoint(folder) && CurrentServiceSid() is { } service && IsTrustedDescriptor(new DirectoryInfo(folder).GetAccessControl().GetSecurityDescriptorBinaryForm(), service));
+
     // Anything that stops the check from finishing (access denied, file vanished, odd path) means "not trusted": fail closed.
     private static bool Guarded(Func<bool> check)
     {

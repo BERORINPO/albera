@@ -11,7 +11,7 @@ import { getUnavailableReason, runUnitHarness } from './helpers/approval-authori
 // and the signer key, presence verification (real RSA-2048 PKCS#1 v1.5 and the fake), protocol framing and verbs per pipe, config rejections, the CNG
 // signer's refusal to invent a machine key, the signing key guard (synthetic descriptors + real per-user software keys), and the tier policy (careful default, the standard tier,
 // overrides, the Hello-signed policy change by effect, the policy file). Windows-only; skipped without the .NET 10 SDK.
-const EXPECTED_AT_LEAST = 80;
+const EXPECTED_AT_LEAST = 87;
 
 test('Approval Authority unit checks (pending store, digest, expiry, queue_full, presence, receipts, protocol, config)', { skip: getUnavailableReason(), timeout: 420_000 }, async (t) => {
   const work = mkdtempSync(path.join(os.tmpdir(), 'albera-authority-unit-'));

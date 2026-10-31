@@ -190,7 +190,7 @@ test('the tier policy: one file, written only by PolicyStore.cs (create-new temp
   assert.match(store, /public const string FileName = "policy\.json";/u);
   assert.match(store, /Path\.Combine\(Path\.GetDirectoryName\(configPath\)!, FileName\)/u, 'the policy lives next to the config file');
   const persist = store.slice(store.indexOf('private bool Persist('), store.indexOf('private static void Remove('));
-  const order = ['FileMode.CreateNew', 'stream.Write(next.ToJson())', 'stream.Flush(flushToDisk: true)', 'ServicePathGuard.IsTrustedConfigFile(temp, stream)', 'MoveFileExW(temp, file!', 'ReadFile(file!', 'faulted = true'].map((token) => persist.indexOf(token));
+  const order = ['FileMode.CreateNew', 'stream.Write(Envelope(next, signed, presence))', 'stream.Flush(flushToDisk: true)', 'ServicePathGuard.IsTrustedConfigFile(temp, stream)', 'MoveFileExW(temp, file!', 'ReadFile(file!', 'faulted = true'].map((token) => persist.indexOf(token));
   assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `temp -> write -> flush -> trust check -> move -> read back -> fault (${order})`);
   assert.match(persist, /FileOptions\.WriteThrough/u);
   assert.match(store, /MoveReplaceExisting = 0x1, MoveWriteThrough = 0x8/u);
@@ -199,11 +199,26 @@ test('the tier policy: one file, written only by PolicyStore.cs (create-new temp
   assert.equal([...store.matchAll(/\[DllImport/gu)].length, 1, 'one P/Invoke, for the move');
   // The change is decided and stored inside one lock, in this order: revision, presence only for a loosening change, then the file, then memory.
   const change = store.slice(store.indexOf('public string? Change('), store.indexOf('// Called under the lock.'));
-  const steps = ['faulted) return', 'next.Revision != current.Revision + 1', 'next.Loosens(current)', 'verify()', 'Persist(next)', 'current = next;'].map((token) => change.indexOf(token));
+  const steps = ['faulted) return', 'next.Revision != current.Revision + 1', 'next.Loosens(current)', 'verify(next, proof)', 'Persist(next, nextAuthorized, nextProof)', '(current, authorized, authorizedProof) = (next'].map((token) => change.indexOf(token));
   assert.ok(steps.every((at) => at > 0) && steps.every((at, i) => i === 0 || at > steps[i - 1]), `fault -> revision -> loosens -> verify -> persist -> memory (${steps})`);
   assert.match(change, /lock \(gate\)/u);
-  assert.match(code['AuthorityCore.cs'], /PolicyChange\.Message\(next\), proof\)/u, 'the presence check is over the policy message');
+  assert.match(code['AuthorityCore.cs'], /PolicyChange\.Message\(next, identity\.Kid, identity\.Audience\), proof\)/u, 'the presence check is over the policy message, bound to this Authority');
   assert.equal(/PresenceMessage\.Build/u.test(change + code['AuthorityCore.cs'].slice(code['AuthorityCore.cs'].indexOf('VerifyPolicyChange'), code['AuthorityCore.cs'].indexOf('SignByPolicy'))), false, 'a policy change is never checked against a presence message');
+  // Authorization is stored with the policy and checked on every load: trust check, strict shape, then the signature (bound to kid and audience) before the policy is used.
+  const read = store.slice(store.indexOf('private static Loaded? ReadFile('), store.indexOf('// The strict shape'));
+  const readOrder = ['IsTrustedConfigFile(path, stream)', 'Parse(bytes)', 'IsAuthorized(loaded, identity, verifier)', 'return loaded;'].map((token) => read.indexOf(token));
+  assert.ok(readOrder.every((at) => at > 0) && readOrder.every((at, i) => i === 0 || at > readOrder[i - 1]), `trust -> shape -> signature -> use (${readOrder})`);
+  assert.match(store, /verifier\.Verify\(PolicyChange\.Message\(loaded\.Authorized, identity\.Kid, identity\.Audience\), loaded\.Presence!\)/u);
+  assert.match(store, /loaded\.Policy\.NoPromptActions\(\)\.IsSubsetOf\(loaded\.Authorized\.NoPromptActions\(\)\)/u, 'a policy never skips more than what was signed');
+  assert.match(store, /if \(loaded\.Authorized is null\) return loaded\.Policy\.NoPromptActions\(\)\.Count == 0;/u, 'no signature is only fine for a policy that skips nobody');
+  assert.match(store, /Reason\.Unsigned|Unsigned = "policy_unsigned"/u);
+  assert.match(sources['PolicyStore.cs'], /Out of scope, on purpose: putting an OLDER file back/u, 'rollback by a trusted writer is documented as out of scope');
+  // The folder is trusted at the config load (exit 73), after the config file's own check and before anything is read from the folder, so a squatted policy.json never reaches the policy loader.
+  const config = code['AuthorityConfig.cs'];
+  assert.ok(config.indexOf('IsTrustedConfigFile(configPath, file)') > 0 && config.indexOf('IsTrustedConfigFile(configPath, file)') < config.indexOf('IsTrustedConfigFolder(Path.GetDirectoryName(configPath)!)') && config.indexOf('IsTrustedConfigFolder(') < config.indexOf('file.Length > MaxFileBytes'), 'file -> folder -> read');
+  assert.match(config, /reason = Reason\.ConfigFolderUntrusted; return null;/u);
+  assert.match(code['ServicePathGuard.cs'], /public static bool IsTrustedConfigFolder\(string folder\) =>/u);
+  assert.match(code['ServicePathGuard.cs'], /IsTrustedDescriptor\(new DirectoryInfo\(folder\)\.GetAccessControl\(\)\.GetSecurityDescriptorBinaryForm\(\), service\)/u, 'the folder gets the same rules as the file');
   // Start-up: config, then policy, then the signing key; an invalid file is 79 and is reported with a fixed word, never the file content.
   const host = code['ServiceHost.cs'];
   assert.ok(host.indexOf('AuthorityConfig.TryLoad(configPath') < host.indexOf('PolicyStore.TryLoad(configPath') && host.indexOf('PolicyStore.TryLoad(configPath') < host.indexOf('RunLoopAsync(config, policy'), 'config -> policy -> run');

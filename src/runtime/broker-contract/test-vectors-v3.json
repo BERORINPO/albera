@@ -6,7 +6,7 @@
     "The v3 validator does not compare policyVersion with anything (expected.policyVersion is ignored); basis \"policy\" is refused for every action outside the policy-skippable set with code basis_action.",
     "policyVectors: parse json with the strict reader (depth 2) as a tier policy. ok:false means rejected; otherwise canonicalJson is the compact file form, hash the policy hash (a receipt v3 policyVersion), noPrompt the actions that need no person.",
     "loosenVectors: loosens is true when moving from one policy to the other lets an action skip a person that could not skip before (that is what needs a presence signature).",
-    "Both the Node and C# implementations must reproduce every expected value. The policy hash and message are defined in TierPolicy.cs."
+    "Both the Node and C# implementations must reproduce every expected value. The policy hash is defined in TierPolicy.cs; the signed policy message is albera.policy.v1 0x00 kid 0x00 audience 0x00 hash (policyMessage.cases), bound to one Authority by its kid and audience."
   ],
   "receiptVectors": [
     {
@@ -1857,6 +1857,22 @@
   ],
   "policyMessage": {
     "policyJson": "{\"v\":1,\"rev\":1,\"tier\":\"standard\",\"overrides\":{}}",
-    "messageHex": "616c626572612e706f6c6963792e7631007368613235363a33336431323934656138393331616135326564393363363430356133626164343961366135343562393663656632653237346462336162666237373062383234"
+    "cases": [
+      {
+        "kid": "authority-key-2026-10",
+        "audience": "albera-host-broker",
+        "messageHex": "616c626572612e706f6c6963792e763100617574686f726974792d6b65792d323032362d313000616c626572612d686f73742d62726f6b6572007368613235363a33336431323934656138393331616135326564393363363430356133626164343961366135343562393663656632653237346462336162666237373062383234"
+      },
+      {
+        "kid": "authority-key-2026-11",
+        "audience": "albera-host-broker",
+        "messageHex": "616c626572612e706f6c6963792e763100617574686f726974792d6b65792d323032362d313100616c626572612d686f73742d62726f6b6572007368613235363a33336431323934656138393331616135326564393363363430356133626164343961366135343562393663656632653237346462336162666237373062383234"
+      },
+      {
+        "kid": "authority-key-2026-10",
+        "audience": "albera-other-broker",
+        "messageHex": "616c626572612e706f6c6963792e763100617574686f726974792d6b65792d323032362d313000616c626572612d6f746865722d62726f6b6572007368613235363a33336431323934656138393331616135326564393363363430356133626164343961366135343562393663656632653237346462336162666237373062383234"
+      }
+    ]
   }
 }

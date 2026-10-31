@@ -121,7 +121,9 @@ if (args.Length >= 4)
         ["name"] = v.GetProperty("name").GetString(),
         ["loosens"] = Read(v.GetProperty("to").GetString()!)!.Loosens(Read(v.GetProperty("from").GetString()!)!),
     }).ToList();
-    output["policyMessageHex"] = Convert.ToHexStringLower(PolicyChange.Message(Read(v3Root.GetProperty("policyMessage").GetProperty("policyJson").GetString()!)!));
+    TierPolicy messagePolicy = Read(v3Root.GetProperty("policyMessage").GetProperty("policyJson").GetString()!)!;
+    output["policyMessageHex"] = v3Root.GetProperty("policyMessage").GetProperty("cases").EnumerateArray()
+        .Select(c => Convert.ToHexStringLower(PolicyChange.Message(messagePolicy, c.GetProperty("kid").GetString()!, c.GetProperty("audience").GetString()!))).ToList();
 }
 
 Console.Out.Write(JsonSerializer.Serialize(output));

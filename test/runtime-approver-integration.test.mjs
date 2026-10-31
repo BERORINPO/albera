@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createPublicKey, randomBytes, verify } from 'node:crypto';
+import { constants, createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -395,7 +395,14 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
         const result = await policyApp(authority, ['policy', 'set', 'standard', '--prompt', 'task.cancel'], { hello });
         assert.deepEqual([result.code, result.stderr], [0, '']);
         assert.ok(result.stdout.includes('will no longer ask you: environment.inspect, environment.stop, workspace.inspect') && result.stdout.includes('windows hello: needed') && result.stdout.endsWith('result: policy applied (revision 1)\n'), result.stdout);
-        assert.equal(readFileSync(policyFile(folder), 'utf8'), '{"v":1,"rev":1,"tier":"standard","overrides":{"task.cancel":"prompt"}}');
+        const written = JSON.parse(readFileSync(policyFile(folder), 'utf8'));
+        const { authorized, ...policy } = written;
+        assert.deepEqual(policy, { v: 1, rev: 1, tier: 'standard', overrides: { 'task.cancel': 'prompt' } });
+        const { presence, ...signed } = authorized;
+        assert.deepEqual(signed, policy, 'the policy the signature authorized');
+        // The signature the approver made with the fake Hello key binds this Authority (kid and audience from its reply) and the hash of the policy.
+        const hash = `sha256:${createHash('sha256').update(['albera.policy-hash.v1', '1', 'standard', 'task.cancel'].join('\0')).digest('hex')}`;
+        assert.equal(verify('sha256', Buffer.from(`albera.policy.v1\0authority-key-test\0albera-host-broker\0${hash}`), { key: createPublicKey({ key: Buffer.from(hello.spki, 'base64'), format: 'der', type: 'spki' }), padding: constants.RSA_PKCS1_PADDING }, Buffer.from(presence, 'base64')), true);
         const stop = await authority.submit(submitRequest({ operationId: 'op-stop', idempotencyKey: 'idem-stop', action: { action: 'environment.stop', projectId: 'proj-alpha', computerId: 'pc-01', args: {} } }));
         assert.equal(stop.state, 'approved', 'signed at once');
         const cancel = await authority.submit(submitRequest({ operationId: 'op-cancel', purpose: 'guest.command', idempotencyKey: 'idem-cancel', action: { action: 'task.cancel', projectId: 'proj-alpha', computerId: 'pc-01', args: {} } }));

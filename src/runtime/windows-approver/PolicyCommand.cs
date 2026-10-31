@@ -9,7 +9,7 @@ namespace Albera.Approver;
 //   policy set <careful|standard> [--prompt <action>]...   ask the Authority for this COMPLETE new policy (revision + 1)
 // A change is described before anything is sent: which actions will no longer need a person, which will start needing one. Whether Windows Hello is needed is decided by the
 // effect, never by the tier names: if the new policy lets any action skip a person that could not before (TierPolicy.Loosens), this app needs a console, a typed "yes" and
-// one Hello signature over PolicyChange.Message(new policy) (albera.policy.v1 + the hash this app computed itself from the policy it showed). A change that only adds prompts is
+// one Hello signature over PolicyChange.Message(new policy, kid, audience) (albera.policy.v1 + the Authority's kid and audience from its reply + the hash this app computed itself from the policy it showed). A change that only adds prompts is
 // sent as it is. The Authority decides again on its own; this app's description is for the person, not a promise to the Authority.
 // The policy and its hash are read from the Authority's reply with the contract's strict reader and hashed here; a reply whose hash differs from the policy it carries is refused.
 internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, bool interactive)
@@ -20,14 +20,14 @@ internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner si
 
     public Task<int> ShowAsync() => GuardAsync(async () =>
     {
-        TierPolicy current = await ReadCurrentAsync();
+        TierPolicy current = (await ReadCurrentAsync()).Policy;
         output.Write(Describe(current));
         return ExitCodes.Ok;
     });
 
     public Task<int> SetAsync(string tier, IReadOnlyList<string> prompts) => GuardAsync(async () =>
     {
-        TierPolicy current = await ReadCurrentAsync();
+        (TierPolicy current, string kid, string audience) = await ReadCurrentAsync();
         TierPolicy next = TierPolicy.TryCreate(current.Revision + 1, tier, prompts) ?? throw new Stop(ExitCodes.BadUsage, "bad_policy");
         if (next.Tier == current.Tier && next.Prompts.SequenceEqual(current.Prompts))
         {
@@ -43,7 +43,7 @@ internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner si
         {
             if (!Confirmed()) throw new Stop(ExitCodes.Refused, "not_confirmed");
             output.Write("Windows Hello will ask you to verify now. It shows only the app name: the change above is what you approve.\n");
-            SignResult signed = signer.Sign(PolicyChange.Message(next));
+            SignResult signed = signer.Sign(PolicyChange.Message(next, kid, audience));
             request = signed.Status switch
             {
                 SignStatus.Signed => $"{{\"v\":1,\"verb\":\"policy_set\",\"policy\":{Encoding.UTF8.GetString(next.ToJson())},\"presence\":\"{Convert.ToBase64String(signed.Signature!)}\"}}",
@@ -60,15 +60,22 @@ internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner si
         throw new Stop(ExitCodes.TransportUnknown, ChannelCodes.InvalidResponse);
     });
 
-    // The policy in force, read from the Authority and checked: the strict reader, the contract's own hash, and the hash the Authority reported.
-    private async Task<TierPolicy> ReadCurrentAsync()
+    // The policy in force, read from the Authority and checked: the strict reader, the contract's own hash, and the hash the Authority reported. The reply must also name the
+    // Authority's kid and audience (in the contract's grammar): the signature is bound to them, so a reply without them is refused.
+    private async Task<(TierPolicy Policy, string Kid, string Audience)> ReadCurrentAsync()
     {
         JsonElement reply = await CallAsync("{\"v\":1,\"verb\":\"policy\"}");
-        if (reply.EnumerateObject().Count() == 3 && reply.TryGetProperty("policy", out JsonElement policy) && policy.ValueKind == JsonValueKind.Object
+        if (reply.EnumerateObject().Count() == 5 && reply.TryGetProperty("policy", out JsonElement policy) && policy.ValueKind == JsonValueKind.Object
             && reply.TryGetProperty("policyVersion", out JsonElement version) && version.ValueKind == JsonValueKind.String
-            && TierPolicy.TryParse(Encoding.UTF8.GetBytes(policy.GetRawText())) is { } parsed && version.GetString() == parsed.Hash()) return parsed;
+            && TierPolicy.TryParse(Encoding.UTF8.GetBytes(policy.GetRawText())) is { } parsed && version.GetString() == parsed.Hash()
+            && Grammar(reply, "kid", ActionDigest.IdPattern) is { } kid && Grammar(reply, "audience", "^[a-z][a-z0-9-]{0,63}$") is { } audience) return (parsed, kid, audience);
         throw new Stop(ExitCodes.TransportUnknown, ChannelCodes.InvalidResponse);
     }
+
+    // A string property of the reply that fits the contract's grammar (the trailing-newline case of .NET's `$` is excluded by hand), or null.
+    private static string? Grammar(JsonElement reply, string name, string pattern) =>
+        reply.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String && value.GetString() is { } text && !text.Contains('\n')
+            && System.Text.RegularExpressions.Regex.IsMatch(text, pattern, System.Text.RegularExpressions.RegexOptions.CultureInvariant) ? text : null;
 
     private static string Describe(TierPolicy policy)
     {

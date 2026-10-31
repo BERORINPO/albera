@@ -163,14 +163,17 @@ test('a policy change needs a presence signature exactly when it lets an action 
   assert.equal(effect('standard-prompt-set-swapped-is-loosening-by-effect'), true, 'a smaller prompt set is not the test: a newly skipped action is');
 });
 
-test('the policy message is domain separated from the presence and self-check messages and covers the hash of the complete new policy', () => {
-  const { messageHex, policyJson } = vectors.policyMessage;
+test('the policy message is domain separated, bound to one Authority by kid and audience, and covers the hash of the complete new policy', () => {
+  const { cases, policyJson } = vectors.policyMessage;
   const { rev, tier, prompts } = referencePolicy(policyJson);
-  const message = Buffer.from(messageHex, 'hex');
-  assert.equal(message.toString('utf8'), `albera.policy.v1\0${policyHash(rev, tier, prompts)}`);
-  for (const other of ['albera.presence.v1\0', 'albera.selfcheck.v1\0']) {
-    assert.equal(message.subarray(0, other.length).equals(Buffer.from(other)), false);
-    assert.equal(Buffer.from(other).subarray(0, 'albera.policy.v1\0'.length).equals(Buffer.from('albera.policy.v1\0')), false);
+  assert.equal(new Set(cases.map((c) => c.messageHex)).size, cases.length, 'another kid or another audience is another message');
+  for (const { kid, audience, messageHex } of cases) {
+    const message = Buffer.from(messageHex, 'hex');
+    assert.equal(message.toString('utf8'), `albera.policy.v1\0${kid}\0${audience}\0${policyHash(rev, tier, prompts)}`);
+    for (const other of ['albera.presence.v1\0', 'albera.selfcheck.v1\0']) {
+      assert.equal(message.subarray(0, other.length).equals(Buffer.from(other)), false);
+      assert.equal(Buffer.from(other).subarray(0, 'albera.policy.v1\0'.length).equals(Buffer.from('albera.policy.v1\0')), false);
+    }
   }
 });
 

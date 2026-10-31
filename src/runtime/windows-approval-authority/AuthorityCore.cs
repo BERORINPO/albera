@@ -53,18 +53,20 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
     /// <summary>The policy in force, or null when the store is faulted (see PolicyStore).</summary>
     public TierPolicy? Policy() => policy.IsFaulted ? null : policy.Current;
 
-    /// <summary>Replace the policy. <paramref name="proof"/> is the approver's signature over PolicyChange.Message(next); it is only looked at when the change lets an action skip a person.</summary>
+    /// <summary>The Authority's own trusted values (kid, audience, ...): what a policy signature must be bound to.</summary>
+    public AuthorityIdentity Identity => identity;
+
+    /// <summary>Replace the policy. <paramref name="proof"/> is the approver's signature over PolicyChange.Message(next, kid, audience); it is only looked at when the change lets an action skip a person.</summary>
     public Outcome SetPolicy(TierPolicy next, byte[]? proof)
     {
-        string? code = policy.Change(next, () => VerifyPolicyChange(next, proof));
+        string? code = policy.Change(next, proof, VerifyPolicyChange);
         if (code is null) audit?.Invoke($"POLICY_CHANGED={next.Revision} {next.Tier} {next.Hash()}");
         return new(code, null);
     }
 
-    private PresenceResult VerifyPolicyChange(TierPolicy next, byte[]? proof)
+    private PresenceResult VerifyPolicyChange(TierPolicy next, byte[] proof)
     {
-        if (proof is null) return PresenceResult.Mismatch;
-        try { return presence.Verify(PolicyChange.Message(next), proof); }
+        try { return presence.Verify(PolicyChange.Message(next, identity.Kid, identity.Audience), proof); }
         catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or InvalidOperationException) { return PresenceResult.Unavailable; }
     }
 
