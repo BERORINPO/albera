@@ -44,10 +44,16 @@ test('the approver never starts a process, registers a service, writes a file, u
     /CreateService|ChangeServiceConfig|ControlService|DeleteService|StartService/u, /System\.ServiceProcess|Microsoft\.Extensions\.Hosting/u,
     /File\.(?:Write|Create|Delete|Move|Copy|Append|Open)|FileMode\.|FileAccess\.Write|new FileStream|Directory\./u, /HttpClient|System\.Net\.Sockets|TcpClient|WebRequest/u,
     /Environment\.GetEnvironmentVariable|Environment\.ExpandEnvironmentVariables/u, /CngKey|NCrypt|ExportPkcs8PrivateKey|ExportRSAPrivateKey|ExportParameters\(true\)|RSA\.Create\(\d/u,
-    /DeleteAsync|RenewAttestationAsync|GetAttestationAsync/u]) {
+    /RenewAttestationAsync/u]) {
     assert.equal(forbidden.test(allCode), false, `no approver source may match ${forbidden}`);
   }
   assert.equal(/KeyCredentialManager|Windows\.Security\.Credentials|Windows\.Security\.Cryptography/u.test(codeWithoutHello), false, 'the WinRT Hello API is used only in WindowsHello.cs');
+  // Issue #101: the two calls that used to be forbidden are allowed in exactly one place each, in the Hello file: attest the key `enroll` just made, and remove that key when the attestation is refused.
+  assert.equal(/DeleteAsync|GetAttestationAsync/u.test(codeWithoutHello), false, 'attest / delete live only in WindowsHello.cs');
+  assert.equal([...helloCode.matchAll(/GetAttestationAsync/gu)].length, 1, 'one attestation call');
+  assert.equal([...helloCode.matchAll(/DeleteAsync/gu)].length, 1, 'one delete call');
+  assert.match(helloCode, /private static bool RemoveCreatedKey\(\)\s*\{\s*try \{ KeyCredentialManager\.DeleteAsync\(HelloCredential\.Name\)/u, 'the delete is the removal of the key enroll just made, by the fixed name');
+  assert.equal([...helloCode.matchAll(/RemoveCreatedKey\(\)/gu)].length, 2, 'defined once and called once (the refused-attestation path)');
   // The one exception: PresenceSignature.Verify (Presence.cs) makes an RSA object only to import a PUBLIC key (SPKI) for the self-check's local verify; it never generates a key.
   const withoutVerifier = outsideSeam(codeWithoutHello).replace(/using RSA rsa = RSA\.Create\(\);\s*rsa\.ImportSubjectPublicKeyInfo\(spki, out _\);/u, '');
   assert.equal(/RSA\.Create\(\)/u.test(withoutVerifier), false, 'an RSA key object is created only in the test seam (and, public-key import only, in PresenceSignature.Verify)');
@@ -66,10 +72,10 @@ test('Windows Hello: the shipped build signs with WindowsHelloPresenceSigner thr
   assert.equal(/Fake|NotReady|TestSeam/u.test(wiring[2]), false, 'the shipped branch has no fake');
   assert.match(wiring[1], /new NotReadyPresenceSigner\(\), new FakeKeyStore\(null, unavailable: true\)/u, 'a test build never reaches the real Hello');
   assert.match(project, /<Compile Remove="WindowsHello\.cs" Condition="'\$\(AlberaApproverTestFaults\)' == 'true'" \/>/u, 'the test-faults build does not contain the Hello file');
-  // The WinRT surface: exactly these members, nothing that deletes, exports or attests.
-  const used = [...new Set([...helloCode.matchAll(/\b(KeyCredentialManager\.\w+|RetrievePublicKey|RequestSignAsync|CryptographicBuffer\.\w+)\b/gu)].map((m) => m[1]))].sort();
-  assert.deepEqual(used, ['CryptographicBuffer.CopyToByteArray', 'CryptographicBuffer.CreateFromByteArray', 'KeyCredentialManager.IsSupportedAsync', 'KeyCredentialManager.OpenAsync',
-    'KeyCredentialManager.RequestCreateAsync', 'RequestSignAsync', 'RetrievePublicKey']);
+  // The WinRT surface: exactly these members, nothing that exports a private key or renews an attestation. (Issue #101 added GetAttestationAsync and DeleteAsync.)
+  const used = [...new Set([...helloCode.matchAll(/\b(KeyCredentialManager\.\w+|RetrievePublicKey|RequestSignAsync|GetAttestationAsync|CryptographicBuffer\.\w+)\b/gu)].map((m) => m[1]))].sort();
+  assert.deepEqual(used, ['CryptographicBuffer.CopyToByteArray', 'CryptographicBuffer.CreateFromByteArray', 'GetAttestationAsync', 'KeyCredentialManager.DeleteAsync', 'KeyCredentialManager.IsSupportedAsync',
+    'KeyCredentialManager.OpenAsync', 'KeyCredentialManager.RequestCreateAsync', 'RequestSignAsync', 'RetrievePublicKey']);
   assert.deepEqual([...helloCode.matchAll(/^using ([\w.]+);/gmu)].map((m) => m[1]), ['System.Security.Cryptography', 'Windows.Security.Credentials', 'Windows.Security.Cryptography', 'Windows.Security.Cryptography.Core']);
   assert.match(helloCode, /CryptographicPublicKeyBlobType\.X509SubjectPublicKeyInfo/u, 'only the public half, as SPKI');
   assert.match(helloCode, /public const string Name = "AlberaApprover\.v1";/u, 'one fixed credential name');
@@ -118,7 +124,7 @@ test('enroll --check (self-check): local only, the existing key only, domain-sep
 
 test('there is no --yes: the typed yes cannot be skipped, approve needs a console before any pipe access, and enroll never prints or stores private material', () => {
   assert.equal(/--yes|AssumeYes|assumeYes/u.test(Object.values(sources).join('\n')), false, 'no --yes anywhere in the sources (comments included)');
-  assert.match(code['CommandLine.cs'], /Usage = "usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\] \| policy \[show\] \| policy set <careful\|standard> \[--prompt <action>\]\.\.\."/u);
+  assert.match(code['CommandLine.cs'], /Usage = "usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\] \| enroll \[--replace\] --accept-unattested \| policy \[show\] \| policy set <careful\|standard> \[--prompt <action>\]\.\.\."/u);
   assert.match(code['ApproverCommands.cs'], /if \(!interactive\) throw new Stop\(ExitCodes\.Refused, "not_interactive"/u);
   assert.equal([...code['Program.cs'].matchAll(/!Console\.IsInputRedirected/gu)].length, 2, 'interactive means stdin is not redirected, in both build branches and nowhere else');
   const enroll = code['EnrollCommand.cs'];
@@ -246,4 +252,27 @@ test('build:approver builds and records a SHA-256; it does not install, register
   for (const lifecycle of ['preinstall', 'install', 'postinstall', 'prepare', 'prepack', 'start', 'demo', 'test']) assert.equal(String(pkg.scripts[lifecycle] ?? '').includes('approver'), false, lifecycle);
   assert.match(read('scripts', 'package-smoke.mjs'), /windows-approver\|AlberaApprover/u);
   assert.match(read('scripts', 'arch-check.mjs'), /^const APPROVER_REF = /mu, 'arch rule 11 exists');
+});
+
+test('issue #101: the attestation rule accepts Success, plus NotSupported (empty buffers) only on the explicit flag, and the Hello file applies it to the key it just made, removing the key otherwise', () => {
+  const store = code['HelloKeyStore.cs'];
+  assert.match(store, /public const string AcceptedStatus = "Success";/u);
+  assert.match(store, /public const string OptInStatus = "NotSupported";/u);
+  assert.match(store, /public const string OptInFlag = "--accept-unattested";/u);
+  assert.match(store, /public static bool Accepts\(string status, int chainBytes, int statementBytes, bool acceptUnattested\) =>\s*\(status == AcceptedStatus && chainBytes > 0 && statementBytes > 0\) \|\| \(acceptUnattested && IsOptInResult\(status, chainBytes, statementBytes\)\);/u, 'Success, or the opt-in result when the flag is on: no third way');
+  assert.match(store, /public static bool IsOptInResult\(string status, int chainBytes, int statementBytes\) => status == OptInStatus && chainBytes == 0 && statementBytes == 0;/u);
+  assert.equal([...allCode.matchAll(/AttestationPolicy\.Accepts\(/gu)].length, 2, 'the real store and the fake store call the policy; nothing else has an opinion on what is attested');
+  assert.equal([...store.matchAll(/\bAccepts\(/gu)].length, 2, 'inside the policy file: the definition and the summary that uses it');
+  assert.match(helloCode, /KeyCredentialStatus\.Success => Attested\(created\.Credential, acceptUnattested\)/u, 'a created key is attested before it is reported');
+  assert.equal(/KeyCredentialStatus\.Success => Present\(created\.Credential\)/u.test(helloCode), false, 'the create path never reports an unattested key');
+  const attested = sliceBetween(helloCode, 'private static KeyLookup Attested(', 'private static bool RemoveCreatedKey');
+  assert.match(attested, /status = attestation\.Status\.ToString\(\);/u, 'the status is compared as text; an unknown value cannot match');
+  assert.match(attested, /catch \(Exception ex\) when \(ex is not OutOfMemoryException\)\s*\{\s*status = "Exception";/u, 'an exception from the API is a refusal, not a pass');
+  assert.match(attested, /if \(AttestationPolicy\.Accepts\(status, chainBytes, statementBytes, acceptUnattested\)\)[\s\S]*return KeyLookup\.NotAttested\(/u);
+  // The flag has one reader and one consumer: the parser makes it only for `enroll` / `enroll --replace`, Program hands it to EnrollCommand alone, and the only literal is the policy constant.
+  assert.deepEqual([...code['CommandLine.cs'].matchAll(/args is \[([^\]]*--accept-unattested[^\]]*)\]/gu)].map((m) => m[1]), ['"enroll", "--accept-unattested"', '"enroll", "--replace", "--accept-unattested"'], 'only these two argument lists carry the flag');
+  assert.deepEqual([...allCode.matchAll(/command\.AcceptUnattested/gu)].length, 1, 'one place reads the parsed flag');
+  assert.match(code['Program.cs'], /new EnrollCommand\([^;]*\)\.Run\(command\.Option, command\.AcceptUnattested\);/u, 'and it hands it to enroll');
+  assert.equal(/AcceptUnattested|acceptUnattested/u.test(code['ApproverCommands.cs'] + code['PolicyCommand.cs'] + code['SelfCheckCommand.cs']), false, 'approve, policy and the self-check cannot see the flag');
+  assert.deepEqual([...code['EnrollCommand.cs'].matchAll(/store\.Create\(replace: (true|false), acceptUnattested\)/gu)].map((m) => m[1]), ['true', 'false'], 'create and replace pass the flag; nothing else creates a key');
 });

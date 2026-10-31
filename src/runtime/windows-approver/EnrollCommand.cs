@@ -7,6 +7,9 @@ namespace Albera.Approver;
 //   enroll --replace  after the person types `replace`, make a NEW key in place of the existing one. The old key is lost; the Authority rejects approvals until its config is updated.
 // `enroll --check` is not handled here: it is SelfCheckCommand.cs (opens the existing key and signs a self-check message; never creates or replaces).
 // create / replace need an interactive console (stdin not redirected). approverKeyId is a suggestion derived from the key (any id in the Authority's id grammar works).
+//   enroll --accept-unattested  /  enroll --replace --accept-unattested   the same, but a key that Windows says it cannot attest (status NotSupported, empty buffers; this PC) is kept, and the output says so.
+// Issue #101: a key that create / replace just made is attested: Windows must report KeyCredentialAttestationStatus Success (AttestationPolicy), else the key is removed and nothing is printed for the Authority config (exit 69 attestation_refused).
+// Only NotSupported can be accepted, and only with the flag; every other result is refused with or without it. The flag is a parameter of Run and reaches nothing but store.Create.
 internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUserSid, TextWriter output, TextWriter errors, TextReader input, bool interactive)
 {
     public const string ReplaceWord = "replace";
@@ -15,7 +18,7 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
     private const string AlreadyEnrolledHint = "hint: a key with this name already exists. If you did not make it yourself with this program, another app may have made it: run enroll --replace to make a new one (the old one is lost). enroll --show prints the existing key.";
     private const string ShownWarning = "Warning: trust these values only if they equal what your own first enroll printed. If you did not run enroll yourself, run enroll --replace.\n";
 
-    public int Run(string? option)
+    public int Run(string? option, bool acceptUnattested = false)
     {
         if (option == "show") return Show();
         if (!interactive) return Fail(ExitCodes.Refused, "not_interactive");
@@ -28,9 +31,9 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
                 output.Write($"This deletes the current approver key. Approvals fail until the Authority config has the new values.\nType {ReplaceWord} to continue: ");
                 output.Flush();
                 if (input.ReadLine() != ReplaceWord) return Fail(ExitCodes.Refused, "not_confirmed");
-                return Report(store.Create(replace: true));
+                return Report(store.Create(replace: true, acceptUnattested));
             case KeyState.Missing:
-                return Report(store.Create(replace: false));
+                return Report(store.Create(replace: false, acceptUnattested));
             default:
                 return Report(existing);
         }
@@ -44,13 +47,15 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
 
     private int Report(KeyLookup lookup, bool shown = false) => lookup.State switch
     {
-        KeyState.Present => Print(lookup.PublicKey!, shown),
+        KeyState.Present => Print(lookup.PublicKey!, shown, lookup.Detail),
+        KeyState.NotAttested => Fail(ExitCodes.SignerUnavailable, "attestation_refused", $"hint: Windows Hello did not attest the new key (attestation status {lookup.Detail}). Only status Success is accepted by default, so no key was kept and nothing is printed for the Authority config."
+            + (lookup.CouldOptIn ? $" This PC cannot attest keys (NotSupported): if you accept a key that is NOT proven to be hardware-backed, run enroll again with {AttestationPolicy.OptInFlag}" : " Retrying with the same PC will not help unless the status was TemporaryFailure; no flag overrides this result")),
         KeyState.AlreadyExists => Fail(ExitCodes.Refused, "already_enrolled", AlreadyEnrolledHint),
         KeyState.Cancelled => Fail(ExitCodes.SignerUnavailable, "hello_cancelled"),
         _ => Fail(ExitCodes.SignerUnavailable, "hello_unavailable", "hint: Windows Hello must be set up for this account (Settings > Accounts > Sign-in options)"),
     };
 
-    private int Print(byte[] spki, bool shown)
+    private int Print(byte[] spki, bool shown, string? attestation)
     {
         string sid = currentUserSid();
         if (sid.Length == 0) return Fail(ExitCodes.Internal, "sid_unavailable");
@@ -60,6 +65,7 @@ internal sealed class EnrollCommand(IHelloKeyStore store, Func<string> currentUs
         output.Write($"  \"approverKeyId\": \"{keyId}\",\n");
         output.Write($"  \"approverSid\": \"{sid}\",\n");
         output.Write("Public values only. approverSid is this account: run approve as the same account, on this PC.\n");
+        if (attestation is not null) output.Write($"attestation: {attestation}\n");
         if (shown) output.Write(ShownWarning);
         return ExitCodes.Ok;
     }
