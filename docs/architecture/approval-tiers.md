@@ -40,7 +40,7 @@ Open points for A: the retention disk budget (when full, refuse new creates and 
 
 | Tier | Prompts for | Use |
 |---|---|---|
-| careful | every action that is not read-only (today's behaviour, minus inspects) | first use, important work |
+| careful | every action, including inspects (today's behaviour; the default when no policy file exists) | first use, important work |
 | standard (default) | `environment.destroy`, `environment.purge`, anything with network or without an attestation, anything over quota | everyday |
 | delegated | as standard, but one prompt can approve a **scoped grant** that covers later matching actions | long unattended runs |
 
@@ -71,7 +71,7 @@ The order is chosen so that no step can make a destructive action promptless on 
 
 1. `environment.retire` + the Broker's retirement journal and scheduled purge; `environment.purge` (always prompts). No tier yet: every action still prompts. **Done in PR #118 (2026-10-31)**, see "Step 1 as built" below.
 2. Network attestation from the Broker (adapters and switches, bound to incarnation and lease generation). **Done in PR #120 (2026-10-31)**, see "Step 2 as built".
-3. Receipt v3 with `basis`, the policy file, the Hello-signed policy change, the careful and standard tiers. `environment.destroy` keeps prompting.
+3. Receipt v3 with `basis`, the policy file, the Hello-signed policy change, the careful and standard tiers. `environment.destroy` keeps prompting. **3a done in PR #123 (2026-10-31)**: the tiers and the four actions that need no attestation; see "Step 3a as built". 3b (start / create with a `none` attestation) is next.
 4. Checkpoint before `task.start` (measure the cost in the VM lab first).
 5. Scoped grants (delegated tier) and the approval-screen text for them.
 
@@ -99,6 +99,14 @@ Each step ships on its own and keeps today's behaviour until the owner picks a t
 - Known limits: pass-through physical NICs (DDA / SR-IOV) are not read.
 - Since PR #122, `create` removes every network adapter and fails (rolled back) if one remains, so a new VM attests `none`. Real Hyper-V run on the host (2026-10-31, Windows Server 2025 golden image, 5/5 pass in about 18 minutes): create with 0 adapters and a `none` attestation; retire stops the VM, refuses start, keeps the disk and writes project + incarnation into the Notes; requested purge removes VM, disk, folder and record; scheduled purge does nothing 1 ms before the deadline and purges at it; destroy without a record is unchanged; the golden image hash is unchanged.
 - Reviews: Codex, two rounds (3 HIGH, all fixed).
+
+## Step 3a as built (PR #123)
+
+- Receipt v3 (`receipt-v3.mjs`, `ReceiptV3.cs`, `test-vectors-v3.json`): the v2 fields plus `basis` (`presence` | `policy`; `grant:` is refused); `policyVersion` is the hash of the policy in force. Presence receipts stay v2, byte-identical to before; only policy-signed receipts are v3. The contract itself refuses `basis: policy` for anything outside `environment.inspect`, `environment.stop`, `workspace.inspect`, `task.cancel`.
+- Policy file, signature and folder rules: approval-authority.md, "Tier policy (exit 79)". Approver commands: approver-app.md, "Tier policy".
+- Built differently from the first design: `careful` prompts for inspects too (it is exactly today's behaviour); `synthetic.noop` is not in the no-prompt set (a Broker claim writes a journal row); a `rev` counter was added so a captured signature cannot be applied twice.
+- Known limits: the real .NET Broker still claims only `synthetic.noop`, so a policy receipt for a real action cannot be claimed end to end yet; the Broker cannot compare `policyVersion` for v3 (the Authority's signature covers it); rollback of the file by a trusted writer is out of scope; whether the real service can write `policy.json` under the SCM is not yet run in the VM lab.
+- Reviews: Codex, two rounds (2 HIGH: the policy was adopted at start without a signature, and a user could squat `policy.json` in an untrusted folder; both fixed). VM service lab on the branch: 25 pass, 0 fail, 1 blocked (as before).
 
 ## Review of the first draft (Codex, 2026-10-31)
 
