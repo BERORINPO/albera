@@ -165,14 +165,14 @@ export async function whileBusy(call, attempts = 40) {
 
 /**
  * The Control Plane side of one running Broker, through the real pipe client helper. `pipeName`, `pid` and `expect` may be reassigned (a restarted Broker
- * has a new PID). `prepare` is fence + sign without sending; `claim` also sends; `send` / `inspect` / `fence` are the three requests.
+ * has a new PID). `prepare` is fence + sign without sending; `claim` also sends; `send` / `inspect` / `fence` are the three requests (`send` adds the action DTO, `request.action`, when there is one: a guest.command claim).
  */
 export function brokerSession({ helper, sid, pipeName, pid, authority, expect }) {
   const session = {
     pipeName, pid, expect,
     common: () => ({ pipeName: session.pipeName, expect: session.expect ?? { ownerSid: sid, pid: session.pid }, helperPath: helper, timeoutMs: 10_000 }),
     fence: (computerId = COMPUTER_ID) => whileBusy(() => sendBrokerFence({ ...session.common(), computerId })),
-    send: (request) => whileBusy(() => sendBrokerRequest({ ...session.common(), receipt: request.receipt, signature: request.signature })),
+    send: (request) => whileBusy(() => sendBrokerRequest({ ...session.common(), receipt: request.receipt, signature: request.signature, ...(request.action === undefined ? {} : { action: request.action }) })),
     inspect: (operationId) => whileBusy(() => sendBrokerInspect({ ...session.common(), operationId })),
     /**
      * fence -> build -> sign. `overrides` (an object, or a function of the fence reply) replace receipt fields; `computerId` is also what is fenced unless

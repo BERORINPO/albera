@@ -79,12 +79,12 @@ test('Node Control Plane uses an independent .NET Broker over a real Named Pipe 
     await waitForExit(secretBroker); active = null;
     assert.equal(secretBroker.lines.join('|').includes('SYNTHETIC_SECRET_MARKER'), false);
     assert.equal(inspectClaimCount(brokerExe, secretDb), 0);
-    // ADR-002 bounds a protocol message at 2 KiB: a 2049..4096-byte frame is refused while reading, before the peer check.
+    // ADR-002 bounds a request message at 4 KiB (2 KiB before the task.start claim carried its DTO): a frame above 4096 bytes is refused while reading, before the peer check.
     const largeDb = path.join(root, 'oversized-frame.sqlite'), largePipe = pipeName();
     const largeBroker = start(largePipe, largeDb);
     await waitForLine(largeBroker, 'BROKER_READY');
     // The Broker may close the pipe before the oversized body is fully written; a refusal or a closed write are both a denial.
-    const large = await rawRequest(largePipe, { receipt: 'A'.repeat(2100), signature: 'A' }).catch(() => null);
+    const large = await rawRequest(largePipe, { receipt: 'A'.repeat(4200), signature: 'A' }).catch(() => null);
     assert.ok(large === null || (large.ok === false && large.code === 'denied'));
     await waitForExit(largeBroker); active = null;
     assert.equal(largeBroker.lines.some((line) => line.startsWith('PEER=')), false);

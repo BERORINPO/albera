@@ -133,6 +133,25 @@ describe('approved operation flow: real Approval Authority and real Host Broker 
     });
   });
 
+  it('task.start: the human approves the exact guest.command DTO, the Broker claims it from the DTO sent next to the receipt and names task.start, a duplicate is replayed, and without the DTO it is refused', async () => {
+    const task = Object.freeze({ action: 'task.start', projectId: 'project-1', computerId: 'computer-1', args: Object.freeze({ task: 'build the project' }) });
+    await withStack(async (stack) => {
+      const first = await stack.flow.run({ operationId: 'flow-task', purpose: 'guest.command', action: task });
+      assert.equal(first.status, 'claimed', JSON.stringify(first));
+      assert.deepEqual([first.phase, first.brokerState, first.reconciled, first.replayed], ['CLAIMED', 'UNKNOWN', false, false]);
+      assert.deepEqual(brokerClaims(stack.database), [{ operation_id: 'flow-task', state: 'UNKNOWN', lease_generation: GENERATION }]);
+      assert.deepEqual(stack.human.decided.map((d) => d.action), [task], 'the human saw the exact DTO, including the task');
+      assert.equal(stack.human.decided[0].actionDigest, computeActionDigest('guest.command', task));
+
+      const stored = stack.journal.get('flow-task');
+      const resent = await stack.clients.broker.claim({ receipt: stored.receipt.receipt, signature: stored.receipt.signature, action: task });
+      assert.deepEqual(resent, { ok: true, state: 'UNKNOWN', action: 'task.start', replayed: true });
+      assert.deepEqual(await stack.clients.broker.claim({ receipt: stored.receipt.receipt, signature: stored.receipt.signature }), { ok: false, code: 'denied' }, 'the two-key form is for broker.operation receipts');
+      assert.deepEqual(await stack.clients.broker.claim({ receipt: stored.receipt.receipt, signature: stored.receipt.signature, action: { ...task, args: { task: 'build the project!' } } }), { ok: false, code: 'denied' }, 'another task is not the signed one');
+      assert.equal(brokerClaims(stack.database).length, 1);
+    });
+  });
+
   it('deny: the human denies; the result is denied/human_denied, recorded, and the Broker journal has no claim', async () => {
     await withStack(async (stack) => {
       const result = await stack.flow.run({ operationId: 'flow-deny', action: ACTION });

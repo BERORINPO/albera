@@ -265,7 +265,7 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
       const garbage = Buffer.concat([Buffer.from([5, 0, 0, 0]), Buffer.from('xxxxx')]);
       assert.deepEqual(await rawRequest(config.pipeName, garbage), DENIED);
       const oversize = Buffer.alloc(4); oversize.writeInt32LE(1 << 20);
-      assert.deepEqual(await rawRequest(config.pipeName, oversize), DENIED, 'a frame length above 2 KiB is refused');
+      assert.deepEqual(await rawRequest(config.pipeName, oversize), DENIED, 'a frame length above 4 KiB is refused');
       assert.equal(await rawRequest(config.pipeName, undefined), undefined, 'connect and leave: no answer');
       assert.deepEqual((await sessionOf(config, child).claim('loop-after-hostile')).result, SUCCESS);
       assert.equal(child.closeCode, undefined);

@@ -455,10 +455,23 @@ test('claim: the challenge is consumed in the same transaction as the claim inse
 test('receipt v2: the shared contract sources are included, not copied; the Broker validates with a context built from trusted state and a DTO it fixes itself', () => {
   assert.match(project, /<Compile Include="\.\.\/broker-contract\/\*\.cs"/u);
   assert.equal(/namespace Albera\.BrokerContract|class (?:ReceiptV2|ActionDigest|StrictJson)\b/u.test([program, requests, journal, serviceConfig].join('\n')), false, 'no copy of the contract in the Broker sources');
+  const synthetic = requests.slice(requests.indexOf('private static Dictionary<string, object> SyntheticDto('), requests.indexOf('private static (string Purpose'));
+  assert.match(synthetic, /\["action"\] = SyntheticAction, \["projectId"\] = r\["projectId"\], \["computerId"\] = r\["computerId"\], \["args"\] = new Dictionary<string, object>\(\),/u, 'the synthetic DTO is { action, projectId, computerId, args: {} }; the action is the constant');
   const trusted = requests.slice(requests.indexOf('private static ReceiptContext TrustedContext('), requests.indexOf('// The contract\'s verdict codes'));
-  assert.match(trusted, /\["action"\] = SyntheticAction, \["projectId"\] = r\["projectId"\], \["computerId"\] = r\["computerId"\], \["args"\] = new Dictionary<string, object>\(\),/u, 'the DTO is { action, projectId, computerId, args: {} }; the action is the constant');
   assert.equal(/r\["actionDigest"\]|r\["action"\]/u.test(trusted), false, 'neither the receipt\'s digest nor its action name is an input to the context');
-  assert.match(trusted, /\["audience"\] = BrokerAudience, \["purpose"\] = SyntheticPurpose,/u);
+  assert.match(trusted, /\["audience"\] = BrokerAudience, \["purpose"\] = purpose,/u, 'the purpose comes from the claim form (the fixed synthetic one, or guest.command for the three-key form), never from the receipt');
+  assert.match(trusted, /return new ReceiptContext\(\(\) => now, ReceiptEnvironment, expected, action\);/u);
+  // The three-key form: the DTO comes from the request, so it is validated with the contract, must be task.start for the receipt's own project and computer with exactly { task },
+  // and is checked before the journal is read; Receipts.Validate then recomputes its digest (the only digest compared is the signed one, after Validate).
+  const taskStart = requests.slice(requests.indexOf('private static (string Purpose, IReadOnlyDictionary<string, object>? Dto, string? Refusal) TaskStartDto('), requests.indexOf('private static ReceiptContext TrustedContext('));
+  assert.match(taskStart, /StrictJson\.Parse\(Convert\.FromBase64String\(encoded\), 3\);\s+ActionDigest\.Validate\(GuestPurpose, dto\);/u);
+  assert.match(taskStart, /ex is FormatException or StrictJsonException or ActionDigestException\) \{ return \(GuestPurpose, null, "action_invalid"\); \}/u);
+  assert.match(taskStart, /!TaskStartAction\.Equals\(dto\["action"\]\) \|\| !r\["projectId"\]\.Equals\(dto\["projectId"\]\) \|\| !r\["computerId"\]\.Equals\(dto\["computerId"\]\)\) return \(GuestPurpose, null, "action_mismatch"\);/u);
+  assert.match(taskStart, /args\.Count == 1 && args\.TryGetValue\(TaskArgument, out object\? task\) && task is string \{ Length: > 0 \}/u, 'exactly { task: <non-empty string> }');
+  assert.match(requests, /private const string TaskStartAction = "task\.start";\s+private const string GuestPurpose = "guest\.command";\s+private const string TaskArgument = "task";/u);
+  const claim = requests.slice(requests.indexOf('private static async Task<BrokerReply> ClaimAsync('));
+  assert.ok(claim.indexOf('VerifyData(') < claim.indexOf('ActionOf(encodedAction, r)') && claim.indexOf('ActionOf(encodedAction, r)') < claim.indexOf('ReadClaimContextAsync(') && claim.indexOf('ReadClaimContextAsync(') < claim.indexOf('Receipts.Validate('), 'the signature, then the DTO, then the journal, then the validation');
+  assert.match(claim, /Receipts\.Validate\(receipt, TrustedContext\(r, now, epoch, generation, settings, purpose, dto\)\)/u, 'Validate gets the DTO this file checked');
   assert.match(trusted, /\["leaseId"\] = settings\.LeaseId,/u, 'the lease is the configured one');
   assert.match(trusted, /\["policyVersion"\] = settings\.PolicyVersion,/u, 'and so is the policy');
   assert.match(requests, /private const string BrokerAudience = "albera-host-broker";/u, 'the contract\'s audience grammar is lower case');
@@ -475,7 +488,7 @@ test('receipt v2: the shared contract sources are included, not copied; the Brok
   for (const word of ['kid_unknown', 'signature', 'epoch_mismatch', 'clock_rollback', 'challenge_unknown', 'challenge_consumed', 'generation_stale', 'computer_mismatch', 'request', 'inspect-unknown']) {
     assert.ok([...words, ...[...requests.matchAll(/=> "([a-z_]+)"/gu)].map((m) => m[1])].includes(word), word);
   }
-  for (const word of ['issuer_test', 'ttl_exceeded']) assert.match(requests, new RegExp(`"${word}"`, 'u'));
+  for (const word of ['issuer_test', 'ttl_exceeded', 'action_invalid', 'action_mismatch']) assert.match(requests, new RegExp(`"${word}"`, 'u'));
 });
 
 test('exact duplicate: only the same operationId with the same receipt-and-signature digest gets the recorded state, as replayed: true', () => {
@@ -483,7 +496,9 @@ test('exact duplicate: only the same operationId with the same receipt-and-signa
   assert.match(journal, /catch \(SqliteException ex\) when \(ex\.SqliteErrorCode == 19\) \{ throw new CollisionException\(\); \}/u);
   assert.match(journal, /SHA256\.HashData\(\[\.\. BitConverter\.GetBytes\(receipt\.Length\), \.\. receipt, \.\. signature\]\)/u);
   assert.match(requests, /private static BrokerReply Success\(string state, string action, bool replayed\) =>\s+new\(Encoding\.UTF8\.GetBytes\(\$"\{\{\\"ok\\":true,\\"state\\":\\"\{state\}\\",\\"action\\":\\"\{action\}\\"\{\(replayed \? ",\\"replayed\\":true" : ""\)\}\}\}"\)\);/u, '`replayed` exists only as true, only for a replay');
-  assert.deepEqual([...requests.matchAll(/return Success\(([^;]*)\);/gu)].map((m) => m[1].replace(/\s+/gu, ' ')), ['recorded, "synthetic.inspect", replayed: false', 'context.RecordedState!, SyntheticAction, replayed: true', 'Journal.UnknownState, SyntheticAction, replayed: false']);
+  assert.deepEqual([...requests.matchAll(/return Success\(([^;]*)\);/gu)].map((m) => m[1].replace(/\s+/gu, ' ')), ['recorded, "synthetic.inspect", replayed: false', 'context.RecordedState!, claimed, replayed: true', 'Journal.UnknownState, claimed, replayed: false']);
+  assert.match(requests, /string claimed = \(string\)r\["action"\]; \/\/ Validate has bound it to the DTO's action/u, 'the reply names the receipt\'s action, which Validate has bound to the DTO\'s');
+  assert.ok(requests.indexOf('string claimed = ') > requests.indexOf('Receipts.Validate('), 'only after Validate');
   assert.match(journal, /private static readonly string\[\] RecordedStates = \[UnknownState\];/u, 'a state the client would not accept is never sent');
   // A replay skips the challenge checks only (its challenge was spent or wiped by a restart); signature, clock fence and Validate still run.
   const claim = requests.slice(requests.indexOf('private static async Task<BrokerReply> ClaimAsync('));
@@ -504,6 +519,8 @@ test('inspect: a request of its own that opens the journal read-only, never crea
   const dispatch = requests.slice(requests.indexOf('private static async Task<BrokerReply> HandleRequestAsync('), requests.indexOf('// The value of a one-key object'));
   assert.match(dispatch, /properties\.Length == 1 && properties\[0\]\.NameEquals\("fence"\)/u);
   assert.match(dispatch, /properties\.Length == 1 && properties\[0\]\.NameEquals\("inspect"\)/u);
-  assert.match(dispatch, /properties\.Length == 2 && root\.TryGetProperty\("receipt", out JsonElement receipt\)/u);
+  // A claim: receipt + signature, plus a string `action` for a guest.command receipt; the key count is exactly that (a fourth key, or a non-string action, is `request`).
+  assert.match(dispatch, /string\? encodedAction = StringOf\(root, "action"\);/u);
+  assert.match(dispatch, /properties\.Length == \(encodedAction is null \? 2 : 3\) && StringOf\(root, "receipt"\) is \{ \} receipt && StringOf\(root, "signature"\) is \{ \} signature\)/u);
   assert.match(dispatch, /return Deny\("request"\);\s+\}\s*$/u);
 });
