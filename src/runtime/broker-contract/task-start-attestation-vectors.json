@@ -1,0 +1,3021 @@
+{
+  "contract": "albera.task-start-attestation.vectors",
+  "version": 1,
+  "notes": [
+    "digestVectors: body is the task-start attestation body (v1, 13 keys). expected.ok = digest and the exact preimage bytes (UTF8 domain albera.task-start-attestation.v1, 0x00, canonical map as in action-digest.mjs); otherwise expected.code (malformed | ttl) and field.",
+    "The C# twin is TaskStartAttestation.cs (digest vectors and verifyVectors). It reproduces every expected value here in the dotnet contract test.",
+    "verifyVectors: the public half of an EPHEMERAL ECDSA P-256 test key (publicKeySpki, base64 DER; the private key was discarded after signing, nothing secret is in this file) and signed envelopes made with it. For each case, verifyTaskStartAttestation(signed, { clock: now, verify: the pinned key under keyId, expected }) must give result: ok, or the code and field of the refusal. The signature is ECDSA P-256 / SHA-256 over the canonical bytes, IEEE P1363 (64 bytes), unpadded base64url. Both the Node and C# implementations must reproduce every result.",
+    "A statement with network \"present\" / \"unknown\" or checkpointType \"standard\" verifies here (ok): whether it is ENOUGH is the Authority's rule (network none AND checkpointType production), not the verifier's.",
+    "The last three cases pin domain separation: a genuine network attestation (10-key body, network domain) is malformed here, and a task-start body signed or digested under the network domain does not verify."
+  ],
+  "digestVectors": [
+    {
+      "name": "none-production-ttl-60",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-standard-checkpoint-ttl-60",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "standard",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:a80ac80c664d70f372d61ab1816ae1734e6fb2efd349c00c86d77852c5906bdc",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e745479706553000000087374616e64617264530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "present-production-ttl-60",
+      "body": {
+        "v": 1,
+        "network": "present",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:a89cfca85eb5a508d1adcae940a9dc03605c81e3cb6109fcfa8362e0e38a2bb6",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b530000000770726573656e74530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "unknown-production-ttl-60",
+      "body": {
+        "v": 1,
+        "network": "unknown",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:94f6b15f475120fdecd583170ce63e2b7a2f668601680406d87e42b2662be49b",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b5300000007756e6b6e6f776e530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-ttl-exactly-300",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793405100
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:e3cf5beb2a6a6846b7d7dfb862f6fe49c5aedbed6be3585f542c6ce6f95c639b",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae530ac530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-ttl-1",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404801
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:1f1fcc50bb1114d202bfb582d6c6708d28aa1460635b197b8c2cb31b1daff204",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52f81530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-ids-at-64-chars",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+        "leaseId": "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+        "leaseGeneration": 7,
+        "operationId": "oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:fd2de3bb2cd20472c133850502b92cd5c82fe9048b418db8d3a500aac200c8b7",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000004063636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000406c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c53000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000406f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f530000000970726f6a65637449645300000040707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070705300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-computer",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-02",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:e998a283080a00a4c5966bf7e02f52595d33d3acc00ed1a84fa091e1dac23f16",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3032530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-vm",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "99999999-8888-4777-8666-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:145a7f355603dd44fc02d5d459c84b1bf674ab8779abf0b435e14a47d1474803",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002439393939393939392d383838382d343737372d383636362d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-generation",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 4,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:be441ae4e2b6cd166f2f2ae8de3cc5af84d0370221bdf2b3a8b1921ad7cc4997",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000004530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-project",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-beta",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:4972f14ae22261cb200fc35d0112ccd6941e4066610c6efa089dad67d840e38f",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000970726f6a2d626574615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-lease-id",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-2",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:148cac6510e398ae894754c78f89a986abce2774ff09b9e0002a9e929b2739f9",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3253000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-lease-generation",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 8,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:6166d67852b97cee89adf3d176b91e5530533607fc68dbd44bca22c430967ca4",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000853000000076c65617365496453000000076c656173652d3153000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-operation",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0002",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:dd10360d4913e24ed1e13fc86f41e5fdef80f5765d82d9b788e60278b989ee69",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303032530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-checkpoint",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "99999999-8888-4777-8666-555555555555",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:9677930f58e9ca7867a49a92e6112188c1de9a8d2601b11be748c02a8a5c6970",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002439393939393939392d383838382d343737372d383636362d353535353535353535353535530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbc530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f80530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "none-other-observed-at",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404801,
+        "expiresAt": 1793404861
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:79609302d91657f9aff2114eabb02e846328aca40b0970b399639b4b8b6710c9",
+        "preimageHex": "616c626572612e7461736b2d73746172742d6174746573746174696f6e2e7631004d0000000d530000000c636865636b706f696e744964530000002461616161616161612d626262622d346363632d386464642d656565656565656565656565530000000e636865636b706f696e7454797065530000000a70726f64756374696f6e530000000a636f6d70757465724964530000000570632d3031530000000965787069726573417449000000006ae52fbd530000000a67656e65726174696f6e490000000000000003530000000f6c6561736547656e65726174696f6e49000000000000000753000000076c65617365496453000000076c656173652d3153000000076e6574776f726b53000000046e6f6e65530000000a6f62736572766564417449000000006ae52f81530000000b6f7065726174696f6e496453000000076f702d30303031530000000970726f6a6563744964530000000a70726f6a2d616c7068615300000001764900000000000000015300000004766d4964530000002431313131313131312d323232322d343333332d383434342d353535353535353535353535"
+      }
+    },
+    {
+      "name": "ttl-301",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793405101
+      },
+      "expected": {
+        "ok": false,
+        "code": "ttl",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "ttl-0",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404800
+      },
+      "expected": {
+        "ok": false,
+        "code": "ttl",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "ttl-negative",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404799
+      },
+      "expected": {
+        "ok": false,
+        "code": "ttl",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "version-2",
+      "body": {
+        "v": 2,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "v"
+      }
+    },
+    {
+      "name": "network-unlisted",
+      "body": {
+        "v": 1,
+        "network": "maybe",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "network"
+      }
+    },
+    {
+      "name": "network-other-case",
+      "body": {
+        "v": 1,
+        "network": "None",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "network"
+      }
+    },
+    {
+      "name": "checkpointType-unlisted",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "recovery",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "checkpointType"
+      }
+    },
+    {
+      "name": "checkpointType-other-case",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "Production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "checkpointType"
+      }
+    },
+    {
+      "name": "checkpointType-productionOnly-is-not-a-type",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "productionOnly",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "checkpointType"
+      }
+    },
+    {
+      "name": "checkpointId-uppercase",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "checkpointId"
+      }
+    },
+    {
+      "name": "checkpointId-not-a-guid",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "snapshot-1",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "checkpointId"
+      }
+    },
+    {
+      "name": "checkpointId-braced",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "{aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee}",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "checkpointId"
+      }
+    },
+    {
+      "name": "checkpointId-empty",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "checkpointId"
+      }
+    },
+    {
+      "name": "vmId-uppercase",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "AAAAAAAA-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "vmId"
+      }
+    },
+    {
+      "name": "vmId-not-a-guid",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "vm-1",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "vmId"
+      }
+    },
+    {
+      "name": "generation-zero",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 0,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "generation"
+      }
+    },
+    {
+      "name": "generation-string",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": "3",
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "generation"
+      }
+    },
+    {
+      "name": "operationId-empty",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "operationId"
+      }
+    },
+    {
+      "name": "operationId-non-ascii",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-é",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "operationId"
+      }
+    },
+    {
+      "name": "operationId-number",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": 7,
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "operationId"
+      }
+    },
+    {
+      "name": "leaseId-empty",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "leaseId"
+      }
+    },
+    {
+      "name": "projectId-empty",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "projectId"
+      }
+    },
+    {
+      "name": "extra-key",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860,
+        "extra": 1
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-operationId",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-checkpointId",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointType": "production",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-checkpointType",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "operationId": "op-0001",
+        "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "network-attestation-body-has-no-checkpoint",
+      "body": {
+        "v": 1,
+        "network": "none",
+        "computerId": "pc-01",
+        "vmId": "11111111-2222-4333-8444-555555555555",
+        "generation": 3,
+        "projectId": "proj-alpha",
+        "leaseId": "lease-1",
+        "leaseGeneration": 7,
+        "observedAt": 1793404800,
+        "expiresAt": 1793404860
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    }
+  ],
+  "verifyVectors": {
+    "keyId": "albera-test-broker-2026",
+    "publicKeySpki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEe4i2FLN6HDIx3yuCreRGFq/MD/q8q/UMCyluxiCDxFruUkSpvmm5yZNihhBkEvpZmcTspurppVT00WsbTAZIyw==",
+    "cases": [
+      {
+        "name": "valid-none-production",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-checkpoint-type-standard-is-not-judged-here",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "standard",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:a80ac80c664d70f372d61ab1816ae1734e6fb2efd349c00c86d77852c5906bdc",
+          "keyId": "albera-test-broker-2026",
+          "signature": "_1dmsq_Ri41fcSQXdIYsHQf03bGlb5MLucfnHVctKURwMWFG2IusfpWTSAfjUwEyzTh2eEy8chT-3TUVhO-09A"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-network-present-is-not-judged-here",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "present",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:a89cfca85eb5a508d1adcae940a9dc03605c81e3cb6109fcfa8362e0e38a2bb6",
+          "keyId": "albera-test-broker-2026",
+          "signature": "YyKPRi0GDwkoAar6PgRzDGqpSZYaeMq1U0agUOyE7NersZ7FTIAWH4nj01ONc4TzjI3MlYZd8xONKCO0hX7vMA"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-network-unknown-is-not-judged-here",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "unknown",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:94f6b15f475120fdecd583170ce63e2b7a2f668601680406d87e42b2662be49b",
+          "keyId": "albera-test-broker-2026",
+          "signature": "Tco3fUHpwKvYbzv4ssUw0K_wesN_SsYhStOEHbiX1dWMoaN7ORvBBHRclsftELC0YzI_dU9081kgFI0bV4dg-A"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-one-second-before-expiry",
+        "now": 1793404859,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-observed-30-seconds-ahead-of-the-clock",
+        "now": 1793404770,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-max-ttl-300",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793405100
+          },
+          "digest": "sha256:e3cf5beb2a6a6846b7d7dfb862f6fe49c5aedbed6be3585f542c6ce6f95c639b",
+          "keyId": "albera-test-broker-2026",
+          "signature": "5SKPehiXyDwkqZTNsrreyw1NvTTgK4Z9K6aqB7LdXNYTqWuwXjRicGHCTeFia9hDLCXT0xX41v8eKRWrdvFXKg"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-ids-at-64-chars",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+          "leaseId": "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+          "leaseGeneration": 7,
+          "operationId": "oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+            "leaseId": "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+            "leaseGeneration": 7,
+            "operationId": "oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:fd2de3bb2cd20472c133850502b92cd5c82fe9048b418db8d3a500aac200c8b7",
+          "keyId": "albera-test-broker-2026",
+          "signature": "r0pI_U3sIlK62KCmL-SOAWKILq6hSg1mVtIafYi9Q-NLgnJbkS22qzY6v55oOtO_LstEl5AKlmr3puslslPsnQ"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "signature-one-bit-flipped",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4JtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-all-0x5a-64-bytes",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWg"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-63-bytes",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8y"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-65-bytes",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQA"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-129-bytes-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-empty-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": ""
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-with-padding-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ="
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-standard-base64-alphabet-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd+NsesNbyb4NtM9SK5+rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG+HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ+"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signed-by-another-key-same-key-id",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "EYtX0zSzWUYGYg_PPRgX3u0qzXvFBHSfZL8tz4np1eyxCvCs9tgKPo-WvWIsRYbQhunORnq2LTK8vXvfdkt88Q"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "wrong-key-id",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2027",
+          "signature": "5fXyauVaxFTW6RSguh-pOmaIlmEy_xgBmM4OJFf97ATtjr4c3H7RXU2cM7JBe0KGmmHNCImLJ0uuL3WydsTiYw"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "key-id-case-changed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "ALBERA-TEST-BROKER-2026",
+          "signature": "xvup3dz3epGq4edGTIsse-1e3u-LYcJmDmvQkFRQgJcWgngA_LyYcomg9cH0-Jzq_qTkDzj_ZCLZAEhSLrtH7w"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "key-id-not-an-id-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "bad id",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "keyId"
+        }
+      },
+      {
+        "name": "body-changed-after-signing-digest-no-longer-matches",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "99999999-8888-4777-8666-555555555555",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "body-changed-and-digest-recomputed-signature-no-longer-matches",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "standard",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:a80ac80c664d70f372d61ab1816ae1734e6fb2efd349c00c86d77852c5906bdc",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "digest-uppercase-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:B160DE251FD7BB7914CBC6824E8F9702E62C6A34E1FE4FA7D1698022592C160D",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "digest-of-another-body",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:dd10360d4913e24ed1e13fc86f41e5fdef80f5765d82d9b788e60278b989ee69",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "envelope-extra-key-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ",
+          "extra": "x"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "envelope-missing-keyId-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "body-extra-key-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860,
+            "extra": 1
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "body-missing-checkpointId-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "body-version-2-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 2,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "v"
+        }
+      },
+      {
+        "name": "body-network-unknown-word-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "maybe",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "network"
+        }
+      },
+      {
+        "name": "body-checkpointType-unknown-word-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "recovery",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "checkpointType"
+        }
+      },
+      {
+        "name": "body-checkpointId-uppercase-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "checkpointId"
+        }
+      },
+      {
+        "name": "body-vmId-uppercase-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "AAAAAAAA-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "vmId"
+        }
+      },
+      {
+        "name": "body-generation-zero-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 0,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "generation"
+        }
+      },
+      {
+        "name": "body-ttl-301-is-refused",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793405101
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "ttl",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "body-expiresAt-not-after-observedAt-is-refused",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404800
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "ttl",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "attestation-is-not-an-object-is-malformed",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": 5,
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed"
+        }
+      },
+      {
+        "name": "expired-exactly-at-expiresAt",
+        "now": 1793404860,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "expired",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "expired-one-second-after",
+        "now": 1793404861,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "expired",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "not-yet-valid-31-seconds-ahead",
+        "now": 1793404769,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "not_yet_valid",
+          "field": "observedAt"
+        }
+      },
+      {
+        "name": "binding-computerId",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-02",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "computerId"
+        }
+      },
+      {
+        "name": "binding-generation",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 4,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "generation"
+        }
+      },
+      {
+        "name": "binding-leaseGeneration",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 8,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "leaseGeneration"
+        }
+      },
+      {
+        "name": "binding-leaseId",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-2",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "leaseId"
+        }
+      },
+      {
+        "name": "binding-operationId",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0002"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "operationId"
+        }
+      },
+      {
+        "name": "binding-projectId",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-beta",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "projectId"
+        }
+      },
+      {
+        "name": "binding-vmId",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "99999999-8888-4777-8666-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "vmId"
+        }
+      },
+      {
+        "name": "binding-computerId-reported-before-vmId",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-02",
+          "vmId": "99999999-8888-4777-8666-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "computerId"
+        }
+      },
+      {
+        "name": "binding-leaseId-reported-before-operationId",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-2",
+          "leaseGeneration": 7,
+          "operationId": "op-0002"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "leaseId"
+        }
+      },
+      {
+        "name": "expired-is-reported-before-a-binding-mismatch",
+        "now": 1793404860,
+        "expected": {
+          "computerId": "pc-02",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4NtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "expired",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "bad-signature-is-reported-before-expiry",
+        "now": 1793405400,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "dAxd-NsesNbyb4JtM9SK5-rwkZfv6HgEFCnZ83ljPnCPVDQCg3CG-HBUzryk8syc5JD3BFSoSENVIRr8cR8yuQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "a-genuine-network-attestation-is-not-a-task-start-attestation",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:6e81fd3a7a5d7bc45bf126dac1c8072fa15f8fd26a1d1421e25eed873d5b620b",
+          "keyId": "albera-test-broker-2026",
+          "signature": "Re4DX5yCk66EN7oXzbHqCp3M2TEuhjVTsTA3GE1q4c9zMgVGJpioej5jHnY6WB0-F4Yxd2uMhlQ8KDYTXExwlQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "task-start-body-signed-under-the-network-domain-fails-the-signature",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:b160de251fd7bb7914cbc6824e8f9702e62c6a34e1fe4fa7d1698022592c160d",
+          "keyId": "albera-test-broker-2026",
+          "signature": "5XNDzxNwGD6oHClhBnUOSfmNw3IEaCQ8sfRfa5lElvolQawgtRRWQnzuZOaXgJjpbKDcw6SY7TPQBDpD0P0PCw"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "task-start-body-with-the-network-domain-digest-fails-the-digest",
+        "now": 1793404810,
+        "expected": {
+          "computerId": "pc-01",
+          "vmId": "11111111-2222-4333-8444-555555555555",
+          "generation": 3,
+          "projectId": "proj-alpha",
+          "leaseId": "lease-1",
+          "leaseGeneration": 7,
+          "operationId": "op-0001"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-01",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "operationId": "op-0001",
+            "checkpointId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+            "checkpointType": "production",
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:53fe8e6dbe7719456b79edfcb780e0984df21b3df74e4157bfa58c0c55e84bea",
+          "keyId": "albera-test-broker-2026",
+          "signature": "y0OFxXBxP-Vd8ZosFVnym5dEpif22MR-kCqdV8OewMPcLbQSMkLEm8P8AMmS70TQt_izdC1b9qmuJhOIRLJ9-A"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      }
+    ]
+  }
+}

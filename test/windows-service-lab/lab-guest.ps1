@@ -730,10 +730,10 @@ function Get-AclReport([string]$path) {
   }
   @{ Trusted = $ok; Text = ('{0}: owner={1}; allow: {2}; guard mirror trusted={3}' -f (Split-Path -Leaf $path), (Get-SidLabel $owner), ($lines -join ', '), $ok) }
 }
-# "sha256:" + hex of SHA-256 over  albera.policy-hash.v2 NUL rev NUL tier { NUL action }  (TierPolicy.Hash; $prompts must already be sorted, ordinal). Computed here, never read from the service.
+# "sha256:" + hex of SHA-256 over  albera.policy-hash.v3 NUL rev NUL tier { NUL action }  (TierPolicy.Hash; $prompts must already be sorted, ordinal). Computed here, never read from the service.
 function Get-PolicyHash([long]$rev, [string]$tier, [string[]]$prompts) {
   $nul = [string][char]0
-  $text = 'albera.policy-hash.v2' + $nul + $rev + $nul + $tier
+  $text = 'albera.policy-hash.v3' + $nul + $rev + $nul + $tier
   foreach ($p in $prompts) { $text += $nul + $p }
   $sha = [System.Security.Cryptography.SHA256]::Create()
   $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($text)); $sha.Dispose()

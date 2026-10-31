@@ -112,7 +112,7 @@ internal static partial class Harness
             }, ReceiptBuilder.DtoOf(ActionDigest.Validate("broker.operation", StrictJson.Parse(Encoding.UTF8.GetBytes("{\"action\":\"environment.destroy\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"args\":{}}"), 3)))));
             Assert(refused is { Ok: false, Code: "basis_action" }, $"basis policy for destroy: {refused.Code}");
         });
-        Check("policy: standard still needs a person for create / start / destroy / retire / purge / task.start / synthetic.noop, and a person's approval gives a plain v2 receipt", () =>
+        Check("policy: standard, with no attestation, still needs a person for create / start / destroy / retire / purge / task.start / synthetic.noop, and a person's approval gives a plain v2 receipt", () =>
         {
             Fixture fx = Under(PolicyJson(1, "standard"));
             int n = 0;

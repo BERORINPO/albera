@@ -1,9 +1,9 @@
-// Usage: dotnet ReceiptV2Harness.dll <test-vectors.json> <receipt-v2.schema.json> [<test-vectors-v3.json> <receipt-v3.schema.json> [<network-attestation-vectors.json>]]
+// Usage: dotnet ReceiptV2Harness.dll <test-vectors.json> <receipt-v2.schema.json> [<test-vectors-v3.json> <receipt-v3.schema.json> [<network-attestation-vectors.json> [<task-start-attestation-vectors.json>]]]
 // Prints one JSON document: the C# verdict for every digest and receipt vector, plus any difference between ReceiptV2.Fields and the schema file.
 // With the two v3 files it also prints "v2ViaDispatcher" (the v2 receipt vectors through Receipts.Validate), "v3" (the v3 receipt vectors through Receipts.Validate and, for
 // bytes that claim v3, ReceiptV3.Validate), "v3SchemaMismatches", "policy" (every tier policy vector), "loosen" and "policyMessageHex".
 // With the fifth file it also prints "attestationDigest" (every digest vector of the network attestation) and "attestationVerify" (every signed verify vector, checked with the
-// vector file's ephemeral public key). The harness reads a vector body with System.Text.Json, so a number that is not a safe integer reaches the contract as a double and is
+// vector file's ephemeral public key). With the sixth file it prints "taskStartDigest" and "taskStartVerify" the same way for the task-start attestation. The harness reads a vector body with System.Text.Json, so a number that is not a safe integer reaches the contract as a double and is
 // refused by its field (the Node twin's behaviour); the Authority's own wire reader is stricter and refuses the whole frame.
 using System;
 using System.Collections.Generic;
@@ -177,6 +177,42 @@ if (args.Length >= 5)
         attestationVerdicts.Add(result);
     }
     output["attestationVerify"] = attestationVerdicts;
+
+    if (args.Length >= 6)
+    {
+        using JsonDocument taskVectors = JsonDocument.Parse(File.ReadAllText(args[5]));
+        JsonElement taskRoot = taskVectors.RootElement;
+        var taskDigests = new List<Dictionary<string, object?>>();
+        foreach (JsonElement v in taskRoot.GetProperty("digestVectors").EnumerateArray())
+        {
+            var (verdict, digest, preimage) = TaskStartAttestation.Compute(ToValue(v.GetProperty("body")));
+            var result = new Dictionary<string, object?> { ["name"] = v.GetProperty("name").GetString(), ["ok"] = verdict.Ok };
+            if (verdict.Ok) { result["digest"] = digest; result["preimageHex"] = Convert.ToHexStringLower(preimage!); }
+            else { result["code"] = verdict.Code; result["field"] = verdict.Field; }
+            taskDigests.Add(result);
+        }
+        output["taskStartDigest"] = taskDigests;
+
+        JsonElement taskVerify = taskRoot.GetProperty("verifyVectors");
+        string taskKeyId = taskVerify.GetProperty("keyId").GetString()!;
+        using System.Security.Cryptography.ECDsa taskKey = System.Security.Cryptography.ECDsa.Create();
+        taskKey.ImportSubjectPublicKeyInfo(Convert.FromBase64String(taskVerify.GetProperty("publicKeySpki").GetString()!), out _);
+        bool VerifyTask(string keyId, byte[] bytes, byte[] signature) =>
+            keyId == taskKeyId && signature.Length == 64 && taskKey.VerifyData(bytes, signature, System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+        var taskVerdicts = new List<Dictionary<string, object?>>();
+        foreach (JsonElement c in taskVerify.GetProperty("cases").EnumerateArray())
+        {
+            JsonElement e = c.GetProperty("expected");
+            TaskStartExpected expected = new(e.GetProperty("computerId").GetString()!, e.GetProperty("vmId").GetString()!, e.GetProperty("generation").GetInt64(), e.GetProperty("projectId").GetString()!,
+                e.GetProperty("leaseId").GetString()!, e.GetProperty("leaseGeneration").GetInt64(), e.GetProperty("operationId").GetString()!);
+            long now = c.GetProperty("now").GetInt64();
+            TaskStartVerdict verdict = TaskStartAttestation.Verify(ToValue(c.GetProperty("signed")), () => now, VerifyTask, expected);
+            var result = new Dictionary<string, object?> { ["name"] = c.GetProperty("name").GetString(), ["ok"] = verdict.Ok };
+            if (!verdict.Ok) { result["code"] = verdict.Code; if (verdict.Field is not null) result["field"] = verdict.Field; }
+            taskVerdicts.Add(result);
+        }
+        output["taskStartVerify"] = taskVerdicts;
+    }
 }
 
 Console.Out.Write(JsonSerializer.Serialize(output));

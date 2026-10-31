@@ -6,9 +6,10 @@
 //   basis "policy"    the Authority's own tier policy said this action needs no person. Only PolicyBasisActions can carry it: the contract caps what a policy may ever
 //                     skip, so a receipt for any other action with this basis is refused even if the Authority signed it.
 //   a "grant:<id>" basis is reserved for a later step; today it is a schema failure on `basis`.
-// attestationDigest (optional, step 3b): the digest of the Broker's network attestation (NetworkAttestation.cs) that the Authority's rule relied on. Present exactly when basis is
-//   "policy" and the action is in AttestedPolicyBasisActions (environment.start: a no-person receipt that is only valid with a Broker statement that the VM has no network); absent
-//   for every other receipt. Such a receipt is also only valid for an action whose args name the VM: `args.vmId`, the Hyper-V VM id the attestation was made for (code `attestation`,
+// attestationDigest (optional, step 3b): the digest of the Broker's attestation that the Authority's rule relied on. Present exactly when basis is "policy" and the action is in
+//   AttestedPolicyBasisActions; absent for every other receipt. environment.start: a no-person receipt that is only valid with a Broker NETWORK attestation (NetworkAttestation.cs) saying the
+//   VM has no network. task.start (step 4): only valid with a Broker TASK-START attestation (TaskStartAttestation.cs) saying no network AND a Production checkpoint was taken; it travels in
+//   this same field, and the two kinds cannot be mistaken for each other (their domains differ). Such a receipt is also only valid for an action whose args name the VM: `args.vmId`, the Hyper-V VM id the attestation was made for (code `attestation`,
 //   field `vmId`, when missing or malformed); the Broker must refuse to start any VM whose own id differs. environment.create is NOT attested: no VM exists before create, so nothing
 //   could be bound; it always needs a person. Like policyVersion it is checked for its shape and for being there or not as the rule requires; the Authority's signature covers it.
 // policyVersion is checked for its shape only (the Broker has no copy of the policy to compare it with); a `policyVersion` in ReceiptContext.Expected is ignored.
@@ -28,15 +29,16 @@ public static class ReceiptV3
     /// <summary>What a tier policy may let the Authority sign without a person and without any attestation: reads and risk-reducing actions only.</summary>
     public static IReadOnlyList<string> PolicyBasisActions { get; } = ["environment.inspect", "environment.stop", "workspace.inspect", "task.cancel"];
 
-    /// <summary>What a tier policy may let the Authority sign without a person ONLY with a Broker network attestation that says "none" (the receipt then carries its digest).</summary>
-    public static IReadOnlyList<string> AttestedPolicyBasisActions { get; } = ["environment.start"];
+    /// <summary>What a tier policy may let the Authority sign without a person ONLY with a Broker attestation (the receipt then carries its digest): a network attestation that says "none" for
+    /// environment.start, a task-start attestation (network none + a Production checkpoint) for task.start. Which kind goes with which action is the Authority's rule, not this list's.</summary>
+    public static IReadOnlyList<string> AttestedPolicyBasisActions { get; } = ["environment.start", "task.start"];
 
     /// <summary>True for an action that can carry basis policy at all (with or without an attestation). Nothing else can, whatever the Authority signed.</summary>
     public static bool IsPolicyBasisAction(string action) => PolicyBasisActions.Contains(action) || AttestedPolicyBasisActions.Contains(action);
 
     public const string AttestationDigestField = "attestationDigest";
 
-    /// <summary>Fields a receipt MAY carry (all of <see cref="Fields"/> are required): the digest of the network attestation a no-person rule relied on.</summary>
+    /// <summary>Fields a receipt MAY carry (all of <see cref="Fields"/> are required): the digest of the attestation a no-person rule relied on.</summary>
     public static IReadOnlyList<FieldSpec> OptionalFields { get; } = [new FieldSpec(AttestationDigestField, false, PolicyHashPattern, 71)];
 
     /// <summary>Same order and content as RECEIPT_V3_FIELDS in receipt-v3.mjs: the v2 table with `v` = 3 and `basis` right after a hash-shaped `policyVersion`.</summary>

@@ -20,5 +20,7 @@
     <Compile Include="$(ContractDir)*.cs" />
     <!-- The signed network attestation vectors (public key + signatures only) run against the production PinnedAttestationKey. -->
     <EmbeddedResource Include="$(ContractDir)network-attestation-vectors.json" LogicalName="attestation-vectors.json" />
+    <!-- The same for the task-start attestation (step 4 of #115). -->
+    <EmbeddedResource Include="$(ContractDir)task-start-attestation-vectors.json" LogicalName="task-start-attestation-vectors.json" />
   </ItemGroup>
 </Project>

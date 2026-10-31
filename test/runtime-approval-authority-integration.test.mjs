@@ -7,6 +7,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
 import { createNetworkAttestation, signNetworkAttestation } from '../src/runtime/broker-contract/network-attestation.mjs';
+import { createTaskStartAttestation, signTaskStartAttestation } from '../src/runtime/broker-contract/task-start-attestation.mjs';
 import { createEcdsaAttestationSigner } from '../src/runtime/ecdsa-attestation-signer.mjs';
 import { validateReceiptV2 } from '../src/runtime/broker-contract/receipt-v2.mjs';
 import { validateReceipt } from '../src/runtime/broker-contract/receipt-v3.mjs';
@@ -305,7 +306,7 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
     const AUDIENCE = 'albera-host-broker';
     const KEY_ID = 'broker-attest-it-1';
     const policyObj = (rev, tier) => ({ v: 1, rev, tier, overrides: {} });
-    const policyHash = (rev, tier) => `sha256:${createHash('sha256').update(['albera.policy-hash.v2', String(rev), tier].join('\0')).digest('hex')}`;
+    const policyHash = (rev, tier) => `sha256:${createHash('sha256').update(['albera.policy-hash.v3', String(rev), tier].join('\0')).digest('hex')}`;
     const policyMessage = (rev, tier) => Buffer.from(`albera.policy.v1\0${KID}\0${AUDIENCE}\0${policyHash(rev, tier)}`, 'utf8');
     const newSigner = (keyId = KEY_ID) => createEcdsaAttestationSigner({ keyId, privateKey: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey });
     const VM_A = '11111111-2222-4333-8444-555555555555';
@@ -399,6 +400,65 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
       });
     });
 
+    // Task-start attestation (issue #115 step 4) through the real pipes: task.start is signed without a person only for a Node-signed task-start statement (no network AND a Production
+    // checkpoint) bound to this very request including its operation; a network statement for the same VM, and a task-start statement for start, do nothing.
+    it('task.start: a valid task-start attestation gets a v3 policy receipt at once; a network attestation, a Standard checkpoint, another operation, careful tier and an other action wait for a person', async () => {
+      const signer = newSigner();
+      const CHECKPOINT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+      const TASK = { action: 'task.start', projectId: 'proj-alpha', computerId: 'pc-01', args: { expectedGeneration: 3, task: 'build the project', vmId: VM_A } };
+      const taskRequest = (operationId, extra = {}) => submitRequest({ purpose: 'guest.command', operationId, idempotencyKey: operationId, action: TASK, ...extra });
+      const taskStatement = async (operationId, overrides = {}, by = signer) => JSON.parse(JSON.stringify(await signTaskStartAttestation(createTaskStartAttestation({
+        network: 'none', computerId: 'pc-01', vmId: VM_A, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, operationId, checkpointId: CHECKPOINT, observedAt: NOW() - 5, ...overrides,
+      }), by)));
+      await withPinnedAuthority(signer, async (authority, raise) => {
+        assert.equal((await authority.submit(taskRequest('t-careful', { attestation: await taskStatement('t-careful') }))).state, 'pending', 'careful tier: a valid attestation is worth nothing');
+        await raise(1, 'standard');
+
+        const valid = await taskStatement('t-ok');
+        const reply = await authority.submit(taskRequest('t-ok', { attestation: valid }));
+        assert.equal(reply.state, 'approved');
+        const status = await authority.submit({ v: 1, verb: 'status', approvalId: reply.approvalId });
+        const receiptBytes = Buffer.from(status.receipt, 'base64');
+        assert.equal(verifyEcdsa(authority.publicKey, receiptBytes, Buffer.from(status.signature, 'base64')), true, 'signed by the Authority');
+        const verdict = validateReceipt(receiptBytes, contextFor(taskRequest('t-ok')));
+        assert.equal(verdict.ok, true, JSON.stringify(verdict));
+        assert.deepEqual([verdict.receipt.v, verdict.receipt.basis, verdict.receipt.action, verdict.receipt.purpose, verdict.receipt.attestationDigest, verdict.receipt.policyVersion],
+          [3, 'policy', 'task.start', 'guest.command', valid.digest, policyHash(1, 'standard')]);
+        assert.ok(verdict.receipt.exp <= valid.attestation.expiresAt, 'never outlives the attestation');
+        await waitForLine(authority.child, `POLICY_SIGNED=task.start ${reply.approvalId} ATTESTED=${valid.digest}`);
+
+        const refused = [
+          ['t-none', null, null],
+          ['t-network-kind', await statement(signer), 'malformed:$extra'],
+          ['t-standard-checkpoint', await taskStatement('t-standard-checkpoint', { checkpointType: 'standard' }), 'checkpoint_standard'],
+          ['t-network-present', await taskStatement('t-network-present', { network: 'present' }), 'network_present'],
+          ['t-other-operation', await taskStatement('t-somebody-else'), 'binding:operationId'],
+          ['t-other-key', await taskStatement('t-other-key', {}, newSigner()), 'signature:signature'],
+          ['t-expired', await taskStatement('t-expired', { observedAt: NOW() - 100 }), 'expired:expiresAt'],
+          ['t-other-vm', await taskStatement('t-other-vm', { vmId: VM_B }), 'binding:vmId'],
+          ['t-other-lease-generation', await taskStatement('t-other-lease-generation', { leaseGeneration: 8 }), 'binding:leaseGeneration'],
+        ];
+        for (const [operationId, attestation, reason] of refused) {
+          const before = refusals(authority).length;
+          const answer = await authority.submit(taskRequest(operationId, attestation === null ? {} : { attestation }));
+          assert.equal(answer.state, 'pending', operationId);
+          assert.deepEqual(await refusalsAfter(authority, before, reason === null), reason === null ? [] : [`ATTESTATION_REFUSED=${reason}`], operationId);
+        }
+        // The other direction: a task-start statement does nothing for environment.start (it needs a network statement), nor for any action that cannot skip a person.
+        const before = refusals(authority).length;
+        assert.equal((await authority.submit(startRequest('op-start-with-task-kind', { attestation: await taskStatement('op-start-with-task-kind') }))).state, 'pending');
+        assert.deepEqual(await refusalsAfter(authority, before, false), ['ATTESTATION_REFUSED=malformed:$extra']);
+        assert.equal((await authority.submit(startRequest('op-start-ok', { attestation: await statement(signer) }))).state, 'approved', 'control: a network statement still starts a VM');
+        for (const action of ['environment.destroy', 'environment.create', 'synthetic.noop']) {
+          assert.equal((await authority.submit(startRequest(`op-${action}`, { action: { ...START, action }, attestation: await taskStatement(`op-${action}`) }))).state, 'pending', action);
+        }
+        // An override on task.start (a change that only adds a prompt needs no signature) makes a valid statement worthless again.
+        const hash = `sha256:${createHash('sha256').update(['albera.policy-hash.v3', '2', 'standard', 'task.start'].join('\0')).digest('hex')}`;
+        assert.deepEqual(await authority.approver({ v: 1, verb: 'policy_set', policy: { v: 1, rev: 2, tier: 'standard', overrides: { 'task.start': 'prompt' } } }), { ok: true, policyVersion: hash });
+        assert.equal((await authority.submit(taskRequest('t-override', { attestation: await taskStatement('t-override') }))).state, 'pending', 'an override forces a prompt');
+      });
+    });
+
     it('a malformed attestation key in the config stops the start (config_keys / attestation_public_key / attestation_key_id) and an existing config without it still starts', async () => {
       const signer = newSigner();
       const folder = makeTrustedTempDirectory('albera-authority-attest-cfg-');
@@ -432,7 +492,7 @@ describe('Approval Authority pipes (test-faults build, fake signer)', { skip: ge
     const AUDIENCE = 'albera-host-broker';
     const policyObj = (rev, tier, ...prompts) => ({ v: 1, rev, tier, overrides: Object.fromEntries(prompts.map((a) => [a, 'prompt'])) });
     const policyJson = (rev, tier, ...prompts) => JSON.stringify(policyObj(rev, tier, ...prompts));
-    const policyHash = (rev, tier, prompts) => `sha256:${createHash('sha256').update(['albera.policy-hash.v2', String(rev), tier, ...[...prompts].sort()].join('\0')).digest('hex')}`;
+    const policyHash = (rev, tier, prompts) => `sha256:${createHash('sha256').update(['albera.policy-hash.v3', String(rev), tier, ...[...prompts].sort()].join('\0')).digest('hex')}`;
     const policyMessage = (rev, tier, prompts = [], kid = KID, audience = AUDIENCE) => Buffer.from(`albera.policy.v1\0${kid}\0${audience}\0${policyHash(rev, tier, prompts)}`, 'utf8');
     /** policy.json as the Authority writes it: the policy, and the policy the signature authorized with that signature. */
     const signedFile = (policy, authorized, presence) => JSON.stringify({ ...policy, authorized: { ...authorized, presence } });

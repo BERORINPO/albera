@@ -65,6 +65,7 @@ internal static partial class Harness
         AttestationRefuseChecks();
         AttestationScopeChecks();
         AttestationConfigAndVectorChecks();
+        TaskStartAttestationChecks();
     }
 
     private static void AttestationAcceptChecks()
@@ -210,7 +211,7 @@ internal static partial class Harness
 
     private static void AttestationScopeChecks()
     {
-        Check("attestation: it never lets an action skip a person that cannot (create, destroy, retire, purge, task.start, synthetic.noop), at any tier", () =>
+        Check("attestation: a network attestation never lets an action skip a person that cannot (create, destroy, retire, purge, synthetic.noop), at any tier; task.start is attested by its own kind (TaskStartChecks.cs)", () =>
         {
             using AttestKey key = new();
             string envelope = AttestEnvelope(AttestBody(), key).Json;
@@ -218,7 +219,7 @@ internal static partial class Harness
             {
                 Fixture fx = new(policy: PolicyStore.InMemory(PolicyOf(PolicyJson(1, tier))), attestation: key.Pinned());
                 int n = 0;
-                foreach (string action in new[] { "environment.create", "environment.destroy", "environment.retire", "environment.purge", "task.start", "synthetic.noop" })
+                foreach (string action in new[] { "environment.create", "environment.destroy", "environment.retire", "environment.purge", "synthetic.noop" })
                     Assert(IsPending(fx, fx.Submit(AttestedSubmit(envelope, action, op: $"x{n++}"))), $"{tier} {action}");
                 Assert(IsPending(fx, fx.Submit(SubmitJson(op: "noop-g", idem: "noop-g", action: "synthetic.noop", purpose: "guest.command", args: GoodArgs, extra: $",\"attestation\":{envelope}"))), $"{tier} guest synthetic.noop");
             }
@@ -375,12 +376,12 @@ internal static partial class Harness
             }
             Assert(count >= 40, $"only {count} cases");
         });
-        Check("policy: the hash domain moved to v2, so a standard policy signed under the old one (which did not mean attested start / create) is refused at load", () =>
+        Check("policy: the hash domain moved to v3, so a standard policy signed under the old one (which did not mean attested task.start) is refused at load", () =>
         {
             InFolder(config =>
             {
                 string json = PolicyJson(1, "standard");
-                string oldHash = "sha256:" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("albera.policy-hash.v1\01\0standard")));
+                string oldHash = "sha256:" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("albera.policy-hash.v2\01\0standard")));
                 Assert(oldHash != PolicyOf(json).Hash(), "the hash changed with the meaning");
                 byte[] oldProof = HelloSign(Encoding.UTF8.GetBytes($"albera.policy.v1\0authority-key-2026-10\0albera-host-broker\0{oldHash}"));
                 File.WriteAllText(PolicyStore.PathFor(config), SignedFile(json, json, oldProof));

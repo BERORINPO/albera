@@ -12,6 +12,7 @@ import { AUTHORITY_CLIENT_PRESEND_CODES, AUTHORITY_REPLY_CODES } from '../src/ru
 import { BROKER_CLIENT_PRESEND_CODES } from '../src/runtime/windows-broker-client.mjs';
 import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
 import { createNetworkAttestation, signNetworkAttestation } from '../src/runtime/broker-contract/network-attestation.mjs';
+import { createTaskStartAttestation, signTaskStartAttestation } from '../src/runtime/broker-contract/task-start-attestation.mjs';
 import { createEcdsaAttestationSigner } from '../src/runtime/ecdsa-attestation-signer.mjs';
 import { createTestAuthority, signedReceipt, stableUuid } from '../scripts/issue-22-approval-authority-fixture.mjs';
 
@@ -468,6 +469,178 @@ function defineFlowSuite(label, newJournal) {
         assert.deepEqual(again, { ...first, replayed: true });
         assert.equal(world.count('submit'), 1);
         assert.equal(world.attests.length, 1, 'no second attestation either');
+      });
+    });
+
+    describe('approved operation flow: Broker task-start attestation for task.start (issue #115 step 4)', () => {
+      const POLICY_HASH = `sha256:${'cd'.repeat(32)}`;
+      const VM_A = '11111111-2222-4333-8444-555555555555';
+      const VM_B = '99999999-8888-4777-8666-555555555555';
+      const CHECKPOINT = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+      const TASK_START = Object.freeze({
+        operationId: 'op-1', purpose: 'guest.command',
+        action: { action: 'task.start', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3, task: 'build the project', vmId: VM_A } },
+      });
+      const signer = createEcdsaAttestationSigner({ keyId: 'albera-test-broker-1', privateKey: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey });
+      const taskAttestation = async (overrides = {}) => JSON.parse(JSON.stringify(await signTaskStartAttestation(createTaskStartAttestation({
+        network: 'none', computerId: 'computer-1', vmId: VM_A, generation: 3, projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7, operationId: 'op-1',
+        checkpointId: CHECKPOINT, checkpointType: 'production', observedAt: Math.floor(START_MS / 1000), ...overrides,
+      }), signer)));
+      /** The Broker side answers `attestTaskStart` with a ready envelope (or a scripted result); every call is recorded in world.calls and world.taskAttests. */
+      const withTaskAttest = (world, answer) => {
+        world.taskAttests = [];
+        world.broker.attestTaskStart = async (args) => {
+          world.calls.push('attestTaskStart');
+          world.taskAttests.push(args);
+          return typeof answer === 'function' ? answer(args) : answer;
+        };
+      };
+      const signTaskReceipts = (world) => {
+        const original = world.receiptFor;
+        world.receiptFor = (approvalId, fields, overrides) => original(approvalId, fields, { purpose: fields.purpose, action: fields.action.action, args: fields.action.args, ...overrides });
+      };
+      const attestedReceipt = (digest, extra = {}) => ({ v: 3, basis: 'policy', policyVersion: POLICY_HASH, ...(digest === undefined ? {} : { attestationDigest: digest }), ...extra });
+      const approveAtOnce = (world, overrides) => {
+        world.script.submit.push((w, fields) => {
+          const approvalId = stableUuid(`${fields.operationId}/${fields.idempotencyKey}`);
+          w.approvals.set(approvalId, fields);
+          return { ok: true, approvalId, state: 'approved', expiresAt: Math.floor(w.clock / 1000) + 120 };
+        });
+        world.script.status.push((w, { approvalId }) => w.receiptFor(approvalId, w.approvals.get(approvalId), overrides));
+      };
+
+      it('asks the Broker side for a task-start attestation after the fence, for this operation and lease, passes it on unchanged and records its digest; the receipt that names it is claimed with no sleep', async () => {
+        const world = makeWorld();
+        signTaskReceipts(world);
+        const envelope = await taskAttestation();
+        withTaskAttest(world, { ok: true, attestation: envelope });
+        approveAtOnce(world, attestedReceipt(envelope.digest));
+        const result = await world.flow.run(TASK_START);
+        assert.deepEqual([result.status, result.phase], ['claimed', 'CLAIMED']);
+        assert.deepEqual(world.calls, ['fence', 'attestTaskStart', 'submit', 'status', 'claim']);
+        assert.deepEqual(world.taskAttests, [{ computerId: 'computer-1', projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7, generation: 3, vmId: VM_A, operationId: 'op-1' }]);
+        assert.deepEqual(world.submissions[0].attestation, envelope);
+        assert.equal(world.journal.get('op-1').approval.attestationDigest, envelope.digest);
+        assert.deepEqual(world.sleeps, []);
+        assert.deepEqual(world.claims[0].action, TASK_START.action, 'the claim still carries the DTO');
+      });
+
+      it('a start is not asked for a task-start attestation and a task.start is not asked for a network one', async () => {
+        const world = makeWorld();
+        signTaskReceipts(world);
+        withTaskAttest(world, { ok: true, attestation: await taskAttestation() });
+        world.broker.attest = async () => { world.calls.push('attest'); return { ok: true, attestation: await taskAttestation() }; };
+        await world.flow.run(TASK_START);
+        assert.equal(world.count('attest'), 0, 'task.start never calls attest');
+        const start = makeWorld();
+        withTaskAttest(start, { ok: true, attestation: await taskAttestation() });
+        await start.flow.run({ operationId: 'op-1', action: { action: 'environment.start', projectId: 'project-1', computerId: 'computer-1', args: { expectedGeneration: 3, vmId: VM_A } } });
+        assert.equal(start.taskAttests.length, 0, 'environment.start never calls attestTaskStart');
+      });
+
+      it('only an answer that says no network AND a Production checkpoint for this VM and this operation is attached; a network attestation, another VM, another operation, a Standard checkpoint, present / unknown are not', async () => {
+        const net = JSON.parse(JSON.stringify(await signNetworkAttestation(createNetworkAttestation({
+          network: 'none', computerId: 'computer-1', vmId: VM_A, generation: 3, projectId: 'project-1', leaseId: 'lease-1', leaseGeneration: 7, observedAt: Math.floor(START_MS / 1000),
+        }), signer)));
+        const cases = {
+          'a network attestation': net,
+          'another VM': await taskAttestation({ vmId: VM_B }),
+          'another operation': await taskAttestation({ operationId: 'op-2' }),
+          'a Standard checkpoint': await taskAttestation({ checkpointType: 'standard' }),
+          'network present': await taskAttestation({ network: 'present' }),
+          'network unknown': await taskAttestation({ network: 'unknown' }),
+        };
+        for (const [label, attestation] of Object.entries(cases)) {
+          const world = makeWorld();
+          signTaskReceipts(world);
+          withTaskAttest(world, { ok: true, attestation });
+          const result = await world.flow.run(TASK_START);
+          assert.equal(result.status, 'claimed', label);
+          assert.equal(Object.hasOwn(world.submissions[0], 'attestation'), false, `${label}: not attached`);
+          assert.equal(world.journal.get('op-1').approval.attestationDigest, undefined, label);
+          assert.deepEqual(world.sleeps, [500], `${label}: a person is asked as before`);
+        }
+      });
+
+      it('no attestation is not an error: without attestTaskStart, on a refusal, an exception, a rejected promise or a malformed answer, the submit goes without it', async () => {
+        const cases = {
+          'no function': null, 'refusal': { ok: false, code: 'denied' }, 'exception': () => { throw new Error('broker down'); }, 'rejected promise': () => Promise.reject(new Error('down')),
+          'nothing': undefined, 'ok without an attestation': { ok: true }, 'a string': { ok: true, attestation: 'checkpoint' },
+          'a body that is not an attestation': { ok: true, attestation: { attestation: {}, digest: 'x', keyId: 'k', signature: 's' } },
+        };
+        for (const [label, answer] of Object.entries(cases)) {
+          const world = makeWorld();
+          signTaskReceipts(world);
+          if (answer !== null) withTaskAttest(world, answer);
+          const result = await world.flow.run(TASK_START);
+          assert.deepEqual([result.status, result.phase], ['claimed', 'CLAIMED'], label);
+          assert.equal(Object.hasOwn(world.submissions[0], 'attestation'), false, label);
+          assert.deepEqual(world.sleeps, [500], label);
+        }
+      });
+
+      it('is asked only for a task.start that carries an integer expectedGeneration and a well-formed vmId to bind', async () => {
+        for (const args of [{ task: 'x' }, { task: 'x', expectedGeneration: 3 }, { task: 'x', vmId: VM_A }, { task: 'x', expectedGeneration: '3', vmId: VM_A }, { task: 'x', expectedGeneration: 0, vmId: VM_A },
+          { task: 'x', expectedGeneration: 3, vmId: 'vm-1' }, { task: 'x', expectedGeneration: 3, vmId: VM_A.toUpperCase().replace(/[0-9]/gu, 'A') }]) {
+          const world = makeWorld();
+          signTaskReceipts(world);
+          withTaskAttest(world, { ok: true, attestation: await taskAttestation() });
+          await world.flow.run({ ...TASK_START, action: { ...TASK_START.action, args } });
+          assert.equal(world.taskAttests.length, 0, JSON.stringify(args));
+          assert.equal(Object.hasOwn(world.submissions[0], 'attestation'), false, JSON.stringify(args));
+        }
+        for (const action of ['task.cancel', 'workspace.inspect']) {
+          const world = makeWorld();
+          withTaskAttest(world, { ok: true, attestation: await taskAttestation() });
+          await world.flow.run({ ...TASK_START, action: { ...TASK_START.action, action, args: { expectedGeneration: 3, vmId: VM_A } } });
+          assert.equal(world.taskAttests.length, 0, action);
+        }
+      });
+
+      it('an attested policy receipt for task.start is only claimed when it names the attestation this flow presented (otherwise receipt_mismatch, nothing sent to the Broker)', async () => {
+        const envelope = await taskAttestation();
+        for (const [label, presented, overrides] of [
+          ['another digest', true, attestedReceipt(`sha256:${'ab'.repeat(32)}`)],
+          ['no digest', true, attestedReceipt(undefined)],
+          ['a digest but nothing was presented', false, attestedReceipt(envelope.digest)],
+          ['no digest and nothing presented (a policy may never skip task.start without one)', false, attestedReceipt(undefined)],
+        ]) {
+          const world = makeWorld();
+          signTaskReceipts(world);
+          if (presented) withTaskAttest(world, { ok: true, attestation: envelope });
+          approveAtOnce(world, overrides);
+          const result = await world.flow.run(TASK_START);
+          assert.deepEqual([result.status, result.code, result.phase], ['failed', 'receipt_mismatch', 'FAILED'], label);
+          assert.equal(world.count('claim'), 0, label);
+        }
+      });
+
+      it('a person\'s approval of task.start must not carry a digest, and a person\'s approval after the attestation was not enough is claimed after the normal wait', async () => {
+        const envelope = await taskAttestation();
+        const withDigest = makeWorld();
+        signTaskReceipts(withDigest);
+        withTaskAttest(withDigest, { ok: true, attestation: envelope });
+        approveAtOnce(withDigest, attestedReceipt(envelope.digest, { basis: 'presence' }));
+        const refused = await withDigest.flow.run(TASK_START);
+        assert.deepEqual([refused.status, refused.code], ['failed', 'receipt_mismatch']);
+        const person = makeWorld();
+        signTaskReceipts(person);
+        withTaskAttest(person, { ok: true, attestation: envelope });
+        const result = await person.flow.run(TASK_START);
+        assert.equal(result.status, 'claimed');
+        assert.deepEqual(person.sleeps, [500]);
+        assert.equal(Object.hasOwn(JSON.parse(Buffer.from(person.claims[0].receipt, 'base64').toString('utf8')), 'attestationDigest'), false);
+      });
+
+      it('a request that does not fit one frame with the attestation is submitted again without it', async () => {
+        const world = makeWorld();
+        signTaskReceipts(world);
+        withTaskAttest(world, { ok: true, attestation: await taskAttestation() });
+        world.script.submit.push({ ok: false, code: 'request_too_large' });
+        const result = await world.flow.run(TASK_START);
+        assert.equal(result.status, 'claimed');
+        assert.deepEqual([Object.hasOwn(world.submissions[0], 'attestation'), Object.hasOwn(world.submissions[1], 'attestation')], [true, false]);
+        assert.equal(world.journal.get('op-1').approval.attestationDigest, undefined);
       });
     });
 

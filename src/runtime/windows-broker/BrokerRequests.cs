@@ -8,7 +8,7 @@ using Albera.BrokerContract;
 //   claim    { "receipt": <base64>, "signature": <base64> }   exactly these two keys: a broker.operation / synthetic.noop receipt (the DTO is fixed here). The receipt is v2 or v3
 //                                                              (src/runtime/broker-contract; v3 adds `basis`, see ReceiptV3.cs) and names a challenge that THIS Broker issued with `fence`.
 //            { "receipt", "signature", "action": <base64 of the UTF-8 JSON action DTO> }   a guest.command / task.start receipt. The DTO is not trusted by itself: it must be a valid
-//                                                              guest.command DTO for task.start with exactly { task: <non-empty string> } and the receipt's own projectId and computerId, and
+//                                                              guest.command DTO for task.start with { task: <non-empty string> } (alone, or with the VM it was attested for: vmId + expectedGeneration) and the receipt's own projectId and computerId, and
 //                                                              Receipts.Validate recomputes its digest and compares it with the one the Authority signed.
 //   fence    { "fence": { "computerId": "<id>" } }             -> { "ok": true, "brokerEpoch": n, "leaseGeneration": n, "leaseId": "<id>", "brokerChallenge": "<22 chars>" }
 //   inspect  { "inspect": { "operationId": "<id>" } }          -> { "ok": true, "state": "UNKNOWN", "action": "synthetic.inspect" }; read-only
@@ -31,7 +31,7 @@ internal static partial class Program
     private const string SyntheticPurpose = "broker.operation";
     private const string TaskStartAction = "task.start";
     private const string GuestPurpose = "guest.command";
-    private const string TaskArgument = "task";
+    private const string TaskArgument = "task", VmIdArgument = "vmId", GenerationArgument = "expectedGeneration";
 
 #if ALBERA_BROKER_TEST_FAULTS
     private const string ReceiptEnvironment = "test"; // the test-faults build also accepts `albera-test-*` issuers
@@ -161,7 +161,9 @@ internal static partial class Program
         encodedAction is null ? (SyntheticPurpose, SyntheticDto(r), null) : TaskStartDto(encodedAction, r);
 
     // The DTO of the three-key claim. It came from the request, so nothing in it is believed: it must parse with the strict reader, be a valid guest.command DTO, name
-    // task.start and this receipt's own project and computer, and carry exactly { task: <non-empty string> } (the contract already bounds it to 256 bytes of safe text).
+    // task.start and this receipt's own project and computer, and carry { task: <non-empty string> } alone, or together with exactly the two args an attested task.start names its VM by
+    // (vmId: a lowercase GUID, expectedGeneration: an integer >= 1; step 4 of #115: the contract's receipt validator requires args.vmId on a policy-basis task.start). The contract already bounds
+    // every string to 256 bytes of safe text.
     // Even then it is only the input of the digest the Broker recomputes: the Authority's signature over that digest is what authenticates it. Returns the refusal word, never text.
     private static (string Purpose, IReadOnlyDictionary<string, object>? Dto, string? Refusal) TaskStartDto(string encoded, IReadOnlyDictionary<string, object> r)
     {
@@ -173,8 +175,10 @@ internal static partial class Program
         }
         catch (Exception ex) when (ex is FormatException or StrictJsonException or ActionDigestException) { return (GuestPurpose, null, "action_invalid"); }
         if (!TaskStartAction.Equals(dto["action"]) || !r["projectId"].Equals(dto["projectId"]) || !r["computerId"].Equals(dto["computerId"])) return (GuestPurpose, null, "action_mismatch");
-        bool onlyTask = dto["args"] is IReadOnlyDictionary<string, object> args && args.Count == 1 && args.TryGetValue(TaskArgument, out object? task) && task is string { Length: > 0 };
-        return onlyTask ? (GuestPurpose, dto, null) : (GuestPurpose, null, "action_invalid");
+        bool taskArgs = dto["args"] is IReadOnlyDictionary<string, object> args && args.TryGetValue(TaskArgument, out object? task) && task is string { Length: > 0 }
+            && (args.Count == 1 || (args.Count == 3 && args.TryGetValue(VmIdArgument, out object? vmId) && vmId is string vm && NetworkAttestation.IsVmId(vm)
+                && args.TryGetValue(GenerationArgument, out object? generation) && generation is long and >= 1));
+        return taskArgs ? (GuestPurpose, dto, null) : (GuestPurpose, null, "action_invalid");
     }
 
     private static ReceiptContext TrustedContext(IReadOnlyDictionary<string, object> r, long now, long epoch, long generation, BrokerSettings settings, string purpose, IReadOnlyDictionary<string, object>? action)

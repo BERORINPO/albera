@@ -189,16 +189,21 @@ test('a receipt is only made after presence verified, is checked with the contra
 test('the attested path (#115 step 3b): only for an action the policy in force can skip with an attestation, checked under the policy lock with the pinned key against the submit\'s own fields, the clock read after the signature, nothing else feeds it', () => {
   const core = code['AuthorityCore.cs'];
   const submit = core.slice(core.indexOf('policy.With(current =>'), core.indexOf('return result.Status switch'));
-  assert.match(submit, /if \(current\.CanSkipWithAttestation\(request\.Dto\.Action\) && ProvenNone\(request, attestation\) is \{ \} proven\)/u, 'the policy decides first; the attestation is only looked at for an attested action');
+  assert.match(submit, /if \(current\.CanSkipWithAttestation\(request\.Dto\.Action\) && ProvenBy\(request, attestation\) is \{ \} proven\)/u, 'the policy decides first; the attestation is only looked at for an attested action');
   assert.match(submit, /proven\.ExpiresAt - now >= MinAttestedReceiptSeconds \? SignByPolicy\(entry, current\.Hash\(\), now, proven\) : entry/u, 'too little left of the attestation means the entry stays pending');
-  const proven = core.slice(core.indexOf('private Proven? ProvenNone'), core.indexOf('private Proven? Refused'));
+  const proven = core.slice(core.indexOf('private Proven? ProvenBy'), core.indexOf('private Proven? Refused'));
+  assert.match(proven, /request\.Dto\.Action == TaskStartAction \? ProvenTaskStart\(request, attestation, vmId, generation\) : ProvenNone\(request, attestation, vmId, generation\)/u, 'task.start is judged by the task-start kind, every other attested action by the network kind: never the other way round');
   assert.match(proven, /attestationKey is null\) return Refused\("no_key_pinned"\)/u, 'no pinned key: never accepted');
   assert.match(proven, /request\.Dto\.Args\.GetValueOrDefault\("expectedGeneration"\) is not long generation \|\| generation < 1\) return Refused\("generation_missing"\)/u, 'the generation comes from the action the human sees (digest-bound args)');
   assert.match(proven, /Args\.GetValueOrDefault\("vmId"\) is not string vmId \|\| !NetworkAttestation\.IsVmId\(vmId\)\) return Refused\("vm_id_missing"\)/u, 'a start that names no well-formed VM is never attested');
+  assert.match(proven, /AttestationExpected expected = new\(request\.Dto\.ComputerId, vmId, generation, request\.Dto\.ProjectId, request\.LeaseId, request\.LeaseGeneration\)/u, 'the network bindings come from the submit\'s own fields too');
+  assert.match(proven, /TaskStartExpected expected = new\(request\.Dto\.ComputerId, vmId, generation, request\.Dto\.ProjectId, request\.LeaseId, request\.LeaseGeneration, request\.OperationId\)/u, 'and so do the task-start bindings, the operation included');
   assert.match(proven, /new\(request\.Dto\.ComputerId, vmId, generation, request\.Dto\.ProjectId, request\.LeaseId, request\.LeaseGeneration\)/u, 'every binding comes from the submit\'s own validated fields, the VM included (there is no way to leave it out)');
   assert.equal(/AttestationExpected\([^)]*\bnull\b/u.test(core), false, 'no null escape for the VM id');
-  assert.match(proven, /NetworkAttestation\.Verify\(attestation, clock, attestationKey\.Verify, expected\)/u, 'verified with the pinned key and the Authority\'s own clock (read after the signature check inside Verify)');
+  assert.match(proven, /NetworkAttestation\.Verify\(attestation, clock, attestationKey!\.Verify, expected\)/u, 'verified with the pinned key and the Authority\'s own clock (read after the signature check inside Verify)');
+  assert.match(proven, /TaskStartAttestation\.Verify\(attestation, clock, attestationKey!\.Verify, expected\)/u, 'the task-start kind is verified the same way');
   assert.match(proven, /Network != NetworkAttestation\.None\) return Refused/u, 'only "none" counts');
+  assert.match(proven, /Network != TaskStartAttestation\.None\) return Refused[^\n]*\n\s+if \(!TaskStartAttestation\.ProvesCheckpointedNoNetwork\(verdict\.Value\)\) return Refused/u, 'task.start needs "none" AND a Production checkpoint');
   assert.equal(/attestation\.(?:Tier|Basis|Network)|Policy\(\)\s*=\s*attestation/u.test(core), false, 'the claim feeds nothing but the proof');
   // The receipt carries the digest and ends no later than the evidence does.
   const site = core.slice(core.indexOf('private PendingEntry? SignByPolicy'));

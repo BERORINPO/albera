@@ -53,17 +53,18 @@ export class NetworkAttestationError extends Error {
 const fail = (code, field) => new NetworkAttestationError(code, field);
 const isCounter = (v) => Number.isSafeInteger(v) && v >= 1;
 
-function readPlain(input, keys, code) {
-  if (input === null || typeof input !== 'object' || Array.isArray(input)) throw fail(code);
+/** Strict reader for an untrusted plain object with exactly `keys` (shared with task-start-attestation.mjs, which passes its own error factory). */
+export function readPlain(input, keys, code, makeError = fail) {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) throw makeError(code);
   const proto = Object.getPrototypeOf(input);
-  if ((proto !== Object.prototype && proto !== null) || Object.getOwnPropertySymbols(input).length > 0) throw fail(code);
+  if ((proto !== Object.prototype && proto !== null) || Object.getOwnPropertySymbols(input).length > 0) throw makeError(code);
   const out = Object.create(null);
   for (const [key, d] of Object.entries(Object.getOwnPropertyDescriptors(input))) {
-    if (!d.enumerable || !Object.hasOwn(d, 'value')) throw fail(code);
+    if (!d.enumerable || !Object.hasOwn(d, 'value')) throw makeError(code);
     out[key] = d.value;
   }
   const names = Object.keys(out).sort();
-  if (names.length !== keys.length || names.some((k, n) => k !== keys[n])) throw fail(code, '$extra');
+  if (names.length !== keys.length || names.some((k, n) => k !== keys[n])) throw makeError(code, '$extra');
   return out;
 }
 

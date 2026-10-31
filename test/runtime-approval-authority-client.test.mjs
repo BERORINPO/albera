@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import { computeActionDigest } from '../src/runtime/broker-contract/action-digest.mjs';
 import { createNetworkAttestation, signNetworkAttestation } from '../src/runtime/broker-contract/network-attestation.mjs';
+import { createTaskStartAttestation, signTaskStartAttestation } from '../src/runtime/broker-contract/task-start-attestation.mjs';
 import { createEcdsaAttestationSigner } from '../src/runtime/ecdsa-attestation-signer.mjs';
 import {
   AUTHORITY_CLIENT_ERROR_CODES,
@@ -170,6 +171,27 @@ test('an attestation travels as one more optional key: the four envelope keys, s
   const many = Object.fromEntries(Array.from({ length: 16 }, (_, n) => [`k${n}`, 'x'.repeat(90)]));
   assert.ok(Buffer.byteLength(buildSubmitRequestText({ ...FIELDS, action: { ...ACTION, args: many } })) < AUTHORITY_CLIENT_LIMITS.maxRequestBytes, 'control: it fits without');
   assert.equal(codeOf(() => buildSubmitRequestText({ ...FIELDS, action: { ...ACTION, args: many }, attestation: envelope })), 'request_too_large');
+});
+
+test('a task.start carries a TASK-START attestation and nothing else: the other kind is invalid_request for it, and the task-start kind is invalid_request for every other action', async () => {
+  const signer = createEcdsaAttestationSigner({ keyId: 'albera-test-broker-1', privateKey: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey });
+  const vmId = '11111111-2222-4333-8444-555555555555';
+  const network = JSON.parse(JSON.stringify(await signNetworkAttestation(createNetworkAttestation({ network: 'none', computerId: 'pc-01', vmId, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, observedAt: 1800000000 }), signer)));
+  const task = JSON.parse(JSON.stringify(await signTaskStartAttestation(createTaskStartAttestation({
+    network: 'none', computerId: 'pc-01', vmId, generation: 3, projectId: 'proj-alpha', leaseId: 'lease-1', leaseGeneration: 7, operationId: 'op-1', checkpointId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', observedAt: 1800000000,
+  }), signer)));
+  const TASK_FIELDS = { ...FIELDS, purpose: 'guest.command', action: { action: 'task.start', projectId: 'proj-alpha', computerId: 'pc-01', args: { task: 'build the project', vmId, expectedGeneration: 3 } } };
+  const wire = JSON.parse(buildSubmitRequestText({ ...TASK_FIELDS, attestation: task }));
+  assert.deepEqual(wire.attestation, task, 'exactly the envelope, nothing added');
+  assert.deepEqual(Object.keys(wire.attestation).sort(), ['attestation', 'digest', 'keyId', 'signature']);
+  assert.ok(Buffer.byteLength(buildSubmitRequestText({ ...TASK_FIELDS, attestation: task })) < AUTHORITY_CLIENT_LIMITS.maxRequestBytes, 'a typical task.start with its attestation fits one frame');
+  assert.equal(codeOf(() => buildSubmitRequestText({ ...TASK_FIELDS, attestation: network })), 'invalid_request', 'a network attestation for task.start');
+  assert.equal(codeOf(() => buildSubmitRequestText({ ...FIELDS, attestation: task })), 'invalid_request', 'a task-start attestation for environment.start');
+  assert.equal(codeOf(() => buildSubmitRequestText({ ...TASK_FIELDS, attestation: { ...task, attestation: { ...task.attestation, checkpointType: 'standard' } } })), 'invalid_request', 'body changed');
+  assert.equal(codeOf(() => buildSubmitRequestText({ ...TASK_FIELDS, attestation: { ...task, digest: `sha256:${'0'.repeat(64)}` } })), 'invalid_request', 'digest of another body');
+  // The largest task string still fits or is refused cleanly: the flow then submits without the attestation and a person is asked.
+  const widest = { ...TASK_FIELDS, action: { ...TASK_FIELDS.action, args: { ...TASK_FIELDS.action.args, task: 'x'.repeat(256) } }, attestation: task };
+  assert.ok([null, 'request_too_large'].includes(codeOf(() => buildSubmitRequestText(widest))));
 });
 
 test('the status request carries only a uuid approval id', () => {
