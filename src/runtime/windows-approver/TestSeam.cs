@@ -14,6 +14,7 @@ namespace Albera.Approver;
 //   --test-presence unavailable    the fake reports that Hello gave no proof
 //   --test-interactive yes         treat stdin as a console a person types in (a test pipes stdin)
 //   --test-timeout-ms <n>          per-call timeout
+//   --test-attestation <status>    what the fake Windows reports for a key `enroll` just made: Success (default) | NotSupported | TemporaryFailure | UnknownError | Empty (Success, empty buffers)
 // A fake signer is installed only together with --test-fake-key; without it a test-faults build has a signer that is never ready (approve exits 69).
 internal sealed class FakePresenceSigner(RSA key, bool unavailable) : IPresenceSigner
 {
@@ -26,18 +27,27 @@ internal sealed class NotReadyPresenceSigner : IPresenceSigner
     public SignResult Sign(byte[] message) => SignResult.NotReady;
 }
 
-internal sealed class FakeKeyStore(RSA? initialKey, bool unavailable = false) : IHelloKeyStore
+// `attestation` is the status the fake "Windows" reports for a key that Create just made; "Empty" is Success with empty buffers; NotSupported has empty buffers. Like the real store, a key whose attestation is
+// not accepted by AttestationPolicy is removed again (a replaced key stays lost) and Create returns NotAttested.
+internal sealed class FakeKeyStore(RSA? initialKey, bool unavailable = false, string attestation = "Success") : IHelloKeyStore
 {
     private RSA? key = initialKey;
 
     public KeyLookup Open() => unavailable ? KeyLookup.Of(KeyState.Unavailable) : key is null ? KeyLookup.Of(KeyState.Missing) : KeyLookup.Present(key.ExportSubjectPublicKeyInfo());
 
-    public KeyLookup Create(bool replace)
+    public KeyLookup Create(bool replace, bool acceptUnattested)
     {
         if (unavailable) return KeyLookup.Of(KeyState.Unavailable);
         if (key is not null && !replace) return KeyLookup.Of(KeyState.AlreadyExists);
+        string status = attestation == "Empty" ? "Success" : attestation;
+        (int chain, int statement) = attestation is "Empty" or "NotSupported" ? (0, 0) : (1234, 567); // like this PC: NotSupported comes with empty buffers
+        if (!AttestationPolicy.Accepts(status, chain, statement, acceptUnattested))
+        {
+            key = null;
+            return KeyLookup.NotAttested($"{AttestationPolicy.Summary(status, chain, statement, acceptUnattested)}; the key was removed", AttestationPolicy.IsOptInResult(status, chain, statement));
+        }
         key = RSA.Create();
-        return KeyLookup.Present(key.ExportSubjectPublicKeyInfo());
+        return KeyLookup.Present(key.ExportSubjectPublicKeyInfo(), AttestationPolicy.Summary(status, chain, statement, acceptUnattested));
     }
 }
 
@@ -54,7 +64,7 @@ internal static class TestSeam
             i++;
         }
         args = [.. rest];
-        string[] known = ["--test-pipe-root", "--test-owner-sid", "--test-pid", "--test-fake-key", "--test-key-state", "--test-presence", "--test-interactive", "--test-timeout-ms"];
+        string[] known = ["--test-pipe-root", "--test-owner-sid", "--test-pid", "--test-fake-key", "--test-key-state", "--test-presence", "--test-interactive", "--test-timeout-ms", "--test-attestation"];
         if (options.Keys.Any(k => !known.Contains(k))) return false;
 
         ServerExpectation expectation = wiring.Expectation;
@@ -69,6 +79,8 @@ internal static class TestSeam
         if (options.TryGetValue("--test-interactive", out string? yes)) { if (yes != "yes") return false; interactive = true; }
         if (options.TryGetValue("--test-key-state", out string? state) && state != "missing") return false;
 
+        string attestation = options.GetValueOrDefault("--test-attestation", "Success");
+
         IPresenceSigner signer = wiring.Signer;
         IHelloKeyStore keyStore = wiring.KeyStore;
         if (options.TryGetValue("--test-fake-key", out string? pkcs8))
@@ -76,9 +88,9 @@ internal static class TestSeam
             RSA key = RSA.Create();
             key.ImportPkcs8PrivateKey(Convert.FromBase64String(pkcs8), out _);
             signer = new FakePresenceSigner(key, options.GetValueOrDefault("--test-presence") == "unavailable");
-            keyStore = new FakeKeyStore(key);
+            keyStore = new FakeKeyStore(key, attestation: attestation);
         }
-        else if (state == "missing") keyStore = new FakeKeyStore(null);
+        else if (state == "missing") keyStore = new FakeKeyStore(null, attestation: attestation);
         wiring = wiring with { Expectation = expectation, Signer = signer, KeyStore = keyStore, TimeoutMs = timeoutMs, Interactive = interactive };
         return true;
     }

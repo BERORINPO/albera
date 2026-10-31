@@ -3,10 +3,10 @@ using Albera.BrokerContract;
 
 namespace Albera.Approver;
 
-/// <summary>The whole command-line grammar: `list` | `approve &lt;approvalId&gt;` | `deny &lt;approvalId&gt;` | `enroll [--show|--replace|--check [--expect &lt;approverKeyId&gt;]]` | `policy [show]` | `policy set &lt;tier&gt; [--prompt &lt;action&gt;]...`. Anything else is not a command.</summary>
-internal sealed record CommandLine(string Verb, string? ApprovalId, string? Option, string? Expect = null, string? Tier = null, IReadOnlyList<string>? Prompts = null)
+/// <summary>The whole command-line grammar: `list` | `approve &lt;approvalId&gt;` | `deny &lt;approvalId&gt;` | `enroll [--show|--replace|--check [--expect &lt;approverKeyId&gt;]]` | `enroll [--replace] --accept-unattested` | `policy [show]` | `policy set &lt;tier&gt; [--prompt &lt;action&gt;]...`. Anything else is not a command.</summary>
+internal sealed record CommandLine(string Verb, string? ApprovalId, string? Option, string? Expect = null, string? Tier = null, IReadOnlyList<string>? Prompts = null, bool AcceptUnattested = false)
 {
-    public const string Usage = "usage: AlberaApprover list | approve <approvalId> | deny <approvalId> | enroll [--show | --replace | --check [--expect <approverKeyId>]] | policy [show] | policy set <careful|standard> [--prompt <action>]...";
+    public const string Usage = "usage: AlberaApprover list | approve <approvalId> | deny <approvalId> | enroll [--show | --replace | --check [--expect <approverKeyId>]] | enroll [--replace] --accept-unattested | policy [show] | policy set <careful|standard> [--prompt <action>]...";
 
     public static CommandLine? TryParse(string[] args)
     {
@@ -16,6 +16,8 @@ internal sealed record CommandLine(string Verb, string? ApprovalId, string? Opti
         if (args is ["enroll"]) return new CommandLine("enroll", null, null);
         if (args is ["enroll", "--show"]) return new CommandLine("enroll", null, "show");
         if (args is ["enroll", "--replace"]) return new CommandLine("enroll", null, "replace");
+        if (args is ["enroll", "--accept-unattested"]) return new CommandLine("enroll", null, null, AcceptUnattested: true);
+        if (args is ["enroll", "--replace", "--accept-unattested"]) return new CommandLine("enroll", null, "replace", AcceptUnattested: true);
         if (args is ["enroll", "--check"]) return new CommandLine("enroll", null, "check");
         if (args is ["enroll", "--check", "--expect", { } expected] && IsKeyId(expected)) return new CommandLine("enroll", null, "check", expected);
         if (args is ["policy"] or ["policy", "show"]) return new CommandLine("policy", null, "show");

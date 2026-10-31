@@ -286,19 +286,19 @@ internal static partial class Harness
         });
     }
 
-    private sealed class Enrolling(RSA? key, bool unavailable = false, bool cancel = false)
+    private sealed class Enrolling(RSA? key, bool unavailable = false, bool cancel = false, string attestation = "Success")
     {
-        public readonly FakeKeyStore Store = new(key, unavailable);
+        public readonly FakeKeyStore Store = new(key, unavailable, attestation);
         public readonly StringWriter Out = new(), Err = new();
         public int Exit;
-        public int Run(string? option, string stdin = "", bool interactive = true) =>
-            Exit = new EnrollCommand(cancel ? new CancellingStore() : Store, () => "S-1-5-21-1-2-3-1001", Out, Err, new StringReader(stdin), interactive).Run(option);
+        public int Run(string? option, string stdin = "", bool interactive = true, bool acceptUnattested = false) =>
+            Exit = new EnrollCommand(cancel ? new CancellingStore() : Store, () => "S-1-5-21-1-2-3-1001", Out, Err, new StringReader(stdin), interactive).Run(option, acceptUnattested);
     }
 
     private sealed class CancellingStore : IHelloKeyStore
     {
         public KeyLookup Open() => KeyLookup.Of(KeyState.Missing);
-        public KeyLookup Create(bool replace) => KeyLookup.Of(KeyState.Cancelled);
+        public KeyLookup Create(bool replace, bool acceptUnattested) => KeyLookup.Of(KeyState.Cancelled);
     }
 
     private static string Field(string output, string name) => output.Split('\n').Single(l => l.StartsWith($"  \"{name}\": \"", StringComparison.Ordinal)).Split('"')[3];
@@ -543,6 +543,8 @@ internal static partial class Harness
         ApproveChecks();
         EnrollChecks();
         SelfCheckChecks();
+        OrderChecks();
+        AttestationChecks();
         ListAndDenyChecks();
         PolicyChecks();
         Console.Out.Write(JsonSerializer.Serialize(new { checks = Results }));
