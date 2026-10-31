@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
-  FIXED_VARIABLES, INHERITED_VARIABLES, NUGET_CONFIG, REG_EXE, USER_IMPORT_SWITCHES, buildArguments, parseRegistryValue, printBuildIdentity, queryRegistry, resolveTrustedDotnet,
-  restoreArguments, sanitisedEnvironment,
+  FIXED_VARIABLES, INHERITED_VARIABLES, NUGET_CONFIG, REG_EXE, USER_IMPORT_SWITCHES, buildArguments, createBuildContext, parseRegistryValue, printBuildIdentity, queryRegistry,
+  resolveTrustedDotnet, restoreArguments, sanitisedEnvironment,
 } from '../scripts/dotnet-build-env.mjs';
 
 // Issue #102: the helper's decisions are pure functions of registry values and a file-system view, so none of this runs dotnet or reg.exe.
@@ -77,6 +78,36 @@ test('the child environment keeps only allowlisted variables and drops every ove
 test('the allowlist itself names no MSBuild, NuGet, DOTNET or Albera variable', () => {
   assert.equal(INHERITED_VARIABLES.some((name) => /^(?:msbuild|nuget|dotnet|albera|defineconstants)/iu.test(name)), false);
   assert.equal(INHERITED_VARIABLES.some((name) => /^(?:SystemRoot|windir|ProgramFiles|ProgramW6432|Path)$/iu.test(name)), false, 'those come from the fixed Windows folder and the registry');
+});
+
+// Issue #111: a release build trusts only what it restored itself.
+test('the child environment names a build-owned packages folder and an unusable credential-provider plugin path, whatever the caller set', () => {
+  const dirty = { USERPROFILE: 'C:\\Users\\x', NUGET_PACKAGES: 'D:\\evil\\cache', NUGET_PLUGIN_PATHS: 'D:\\evil\\plugin.exe', NUGET_NETCORE_PLUGIN_PATHS: 'D:\\evil\\plugin.dll', NUGET_NETFX_PLUGIN_PATHS: 'D:\\evil\\plugin.exe', NUGET_HTTP_CACHE_PATH: 'D:\\evil' };
+  const packages = 'C:\\Temp\\albera-build-packages-x';
+  const clean = sanitisedEnvironment(dirty, TRUSTED, 'C:\\Temp\\albera-build-appdata-x', packages);
+  assert.equal(clean.NUGET_PACKAGES, packages, 'restore writes to, and the build reads from, our folder only (the user-wide ~/.nuget/packages is not used)');
+  assert.ok(path.win32.isAbsolute(clean.NUGET_PLUGIN_PATHS) && clean.NUGET_PLUGIN_PATHS.toLowerCase().startsWith(`${packages.toLowerCase()}\\`), 'a path inside our folder that never holds a plugin: NuGet then does not search %USERPROFILE%\\.nuget\\plugins');
+  assert.equal(Object.keys(clean).filter((key) => /^nuget/iu.test(key)).sort().join(), 'NUGET_PACKAGES,NUGET_PLUGIN_PATHS', 'no other NuGet variable gets through (a specific NETCORE / NETFX plugin variable would outrank NUGET_PLUGIN_PATHS)');
+  assert.equal(Object.keys(sanitisedEnvironment(dirty, TRUSTED, 'C:\\Temp\\a')).some((key) => /^nuget/iu.test(key)), false, 'without a folder of ours nothing NuGet-related is set, never inherited');
+});
+
+/** A trusted dotnet found without touching the registry or the disk, so createBuildContext runs on any host. */
+const fakeTrust = { platform: 'win32', query: registry(goodRegistry), ...goodFs };
+
+test('every build context gets its own fresh, empty packages folder outside the repository and the user profile, removed when the process exits', () => {
+  const dirty = { USERPROFILE: 'C:\\Users\\x', NUGET_PACKAGES: 'D:\\evil\\cache' };
+  const first = createBuildContext('C:\\repo', { ...fakeTrust, env: dirty });
+  const second = createBuildContext('C:\\repo', { ...fakeTrust, env: dirty });
+  for (const context of [first, second]) {
+    const folder = context.env.NUGET_PACKAGES;
+    assert.ok(fs.statSync(folder).isDirectory() && fs.readdirSync(folder).length === 0, 'created by us and empty: nothing in it was put there by anyone else');
+    assert.equal(path.dirname(folder).toLowerCase(), path.resolve(os.tmpdir()).toLowerCase(), 'a direct child of the temp folder');
+    assert.match(path.basename(folder), /^albera-build-packages-/u);
+    assert.notEqual(folder.toLowerCase(), 'd:\\evil\\cache');
+    assert.equal(fs.existsSync(context.env.NUGET_PLUGIN_PATHS), false, 'the plugin path points at nothing');
+  }
+  assert.notEqual(first.env.NUGET_PACKAGES, second.env.NUGET_PACKAGES, 'fresh per build context, never reused');
+  for (const context of [first, second]) fs.rmSync(context.env.NUGET_PACKAGES, { recursive: true, force: true });
 });
 
 const USER_IMPORTS = [
