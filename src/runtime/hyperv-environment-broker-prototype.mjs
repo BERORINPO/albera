@@ -353,7 +353,9 @@ export function createHyperVEnvironmentBrokerPrototype({
 
   async function changeState(input, method) {
     const { operation, vmName } = checkedOperation(input, method);
-    const vm = await managed(operation, vmName);
+    // An attested-policy start (checkedOperation has already refused one without a vmId) reads the adapters with the VM in the same call, right now: the attestation it rests on is older.
+    const attested = method === 'start' && operation.attestedPolicy === true;
+    const vm = await managed(operation, vmName, attested ? 'network' : 'inspect');
     if (!vm) throw brokerError('invalid_provider_state', 'not_applied');
     if (method === 'start' && readRecord(operation.computerId)) throw brokerError('environment_retired', 'not_applied');
     // The approval named a VM (start only): the VM's own Hyper-V id must be it. Checked here and again by the script (identity "vm" makes the id mandatory there).
@@ -362,7 +364,9 @@ export function createHyperVEnvironmentBrokerPrototype({
       if (vm.vmId !== operation.vmId) throw brokerError('operation_conflict', 'not_applied');
       expect = { ...expect, vmId: operation.vmId, identity: 'vm' };
     }
-    const result = await call({ method, vmName, expect, waitSeconds });
+    // Same observation as the VM id above. "present" and "unknown" (unreadable) both refuse. The script then counts the adapters again in the start call itself (requireNoAdapters).
+    if (attested && classifyNetworkAdapters(vm.adapters) !== 'none') throw brokerError('network_not_isolated', 'not_applied');
+    const result = await call({ method, vmName, expect, waitSeconds, ...(attested ? { requireNoAdapters: true } : {}) });
     return observed(operation.computerId, mapState(result.state), operation.expectedGeneration);
   }
 }

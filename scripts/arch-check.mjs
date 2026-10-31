@@ -354,7 +354,7 @@ else {
   vectorCounts += `; v3: ${vec3.receiptVectors?.length ?? 0} receipt, ${vec3.policyVectors?.length ?? 0} policy, ${vec3.loosenVectors?.length ?? 0} loosen`;
   if (!(vec3.receiptVectors?.length >= 12 && vec3.policyVectors?.length >= 12 && vec3.loosenVectors?.length >= 4)) violations.push('[9c vectors] test-vectors-v3.json needs at least 12 receipt, 12 policy and 4 loosen vectors');
   const sch3 = JSON.parse(fs.readFileSync(schemaV3File, 'utf8'));
-  // Every property is required except the one optional field of step 3b (the attestation digest a no-person start / create receipt carries).
+  // Every property is required except the one optional field of step 3b (the attestation digest a no-person environment.start or task.start receipt carries).
   const optionalV3 = Object.keys(sch3.properties ?? {}).filter((name) => !(sch3.required ?? []).includes(name));
   if (sch3.additionalProperties !== false || (sch3.required ?? []).some((name) => !(name in (sch3.properties ?? {}))) || JSON.stringify(optionalV3) !== JSON.stringify(['attestationDigest'])) {
     violations.push('[9d schema] receipt-v3.schema.json must forbid extra keys and require every property except the optional attestationDigest');

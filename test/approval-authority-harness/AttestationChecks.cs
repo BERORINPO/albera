@@ -64,6 +64,7 @@ internal static partial class Harness
         AttestationAcceptChecks();
         AttestationRefuseChecks();
         AttestationScopeChecks();
+        AttestationSigningFailureChecks();
         AttestationConfigAndVectorChecks();
         TaskStartAttestationChecks();
     }
@@ -251,6 +252,38 @@ internal static partial class Harness
             PendingRequest request = new("broker.operation", "op-1", "op-1", "lease-1", 7, 3, "_-7dzLuqmYh3ZlVEMyIRAA", dto);
             ReceiptVerdict refused = ReceiptBuilder.Check(Encoding.UTF8.GetBytes(withoutDigest), request, fx.Identity, fx.Signer.Issuer, fx.Now);
             Assert(refused is { Ok: false, Code: "attestation", Field: "attestationDigest" }, $"... but the contract says {refused.Code}/{refused.Field}");
+        });
+    }
+
+    private static void AttestationSigningFailureChecks()
+    {
+        Check("attestation: a VALID attestation whose receipt cannot be signed (signer down) queues the request for a person for start and task.start: a pending entry, no receipt, never authority_unavailable", () =>
+        {
+            using AttestKey key = new();
+            List<string> audit = [];
+            Fixture fx = StandardWith(key, audit);
+            fx.Signer.Failing = true;
+            JsonElement start = fx.Submit(AttestedSubmit(AttestEnvelope(AttestBody(), key).Json, op: "sign-start"));
+            JsonElement task = fx.Submit(TaskSubmit(TaskEnvelope(TaskBody(operationId: "sign-task"), key).Json, op: "sign-task"));
+            Assert(IsPending(fx, start), $"environment.start: {start}");
+            Assert(IsPending(fx, task), $"task.start: {task}");
+            Assert(fx.List().GetProperty("pending").GetArrayLength() == 2, "both reached the approver's list");
+            Assert(fx.Store.Count == 2, "stored, nothing else");
+            Assert(!audit.Any(line => line.StartsWith("POLICY_SIGNED", StringComparison.Ordinal)), $"nothing was signed: {string.Join(" | ", audit)}");
+            Assert(audit.Count(line => line == "ATTESTATION_REFUSED=sign_failed") == 2, $"each downgrade is reported in fixed words: {string.Join(" | ", audit)}");
+            // The same submit again is the same request (no second entry), and once the signer works a PERSON's approval gives the normal presence receipt.
+            Assert(ApprovalIdOf(fx.Submit(AttestedSubmit(AttestEnvelope(AttestBody(), key).Json, op: "sign-start"))) == ApprovalIdOf(start) && fx.Store.Count == 2, "resubmit reuses the pending entry");
+            fx.Signer.Failing = false;
+            string id = ApprovalIdOf(start);
+            Assert(Code(fx.ApproveSigned(id)) == "ok" && ReceiptOf(fx.Status(id)).Receipt is { } bytes && ReceiptV2.Parse(bytes).Ok && !ReceiptV3.Parse(bytes).Ok, "a person's approval gives the plain v2 (presence) receipt");
+        });
+        Check("attestation: a signer that fails for a plain no-person action (no attestation involved) is still authority_unavailable; only the attested path falls back to a person", () =>
+        {
+            using AttestKey key = new();
+            Fixture fx = StandardWith(key, []);
+            fx.Signer.Failing = true;
+            Assert(Code(fx.Submit(SubmitJson(action: "environment.inspect", args: "{}"))) == "authority_unavailable", "inspect: unchanged");
+            Assert(fx.Store.Count == 0, "nothing stored");
         });
     }
 
