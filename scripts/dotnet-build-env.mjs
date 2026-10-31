@@ -17,7 +17,8 @@
 //   4. restore is a separate, locked step with the repo's own NuGet config (scripts/nuget.publish.config as --configfile). Checked on SDK 10.0.302: that makes NuGet
 //      ignore the settings of the user-level %APPDATA%\NuGet\NuGet.Config, but the restore task still PARSES that file (an invalid one fails the restore). So the child
 //      gets APPDATA = a fresh empty folder of ours (removed at exit), and the user-level file is not read at all. Publish / build then runs --no-restore. A project without packages.lock.json is refused, not restored unlocked.
-//   5. after the build the caller prints the SDK version and the output SHA-256 (printBuildIdentity), one line each, so two builds can be compared.
+//   5. every publish / build output is a function of the source files alone, not of the checkout path or the git commit (issue #108): see reproducibilityProperties.
+//   6. after the build the caller prints the SDK version and the output SHA-256 (printBuildIdentity), one line each, so two builds can be compared.
 // What it does not do: it does not verify dotnet.exe's signature, and an attacker who can write C:\Program Files or HKLM already owns the machine.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -106,6 +107,22 @@ export const USER_IMPORT_SWITCHES = Object.freeze(
 export const DIRECTORY_IMPORT_SWITCHES = Object.freeze(['-p:ImportDirectoryBuildProps=false', '-p:ImportDirectoryBuildTargets=false', '-p:ImportDirectoryPackagesProps=false']);
 const MSBUILD_SWITCHES = Object.freeze(['-noAutoResponse', '-nologo', '-nodeReuse:false', ...USER_IMPORT_SWITCHES, ...DIRECTORY_IMPORT_SWITCHES]);
 
+/** MSBuild properties that make the output a function of the source files alone (issue #108). Two things differed between builds of the same source:
+ *  - the absolute checkout path: the compiler wrote it into the PE debug directory (the PDB path under obj\) and into the PDB, and the PDB id (also stored in the dll) is hashed from it.
+ *    PathMap rewrites <root>\ to /_/ in all of them. ContinuousIntegrationBuild marks the build as non-local (the SDK keys DeterministicSourcePaths on it); Deterministic is the compiler default, pinned.
+ *  - git metadata: the SDK queries git and (1) appends "+<commit sha>" to InformationalVersion (the version resource of the exe and the dll) and (2) embeds a Source Link JSON
+ *    (commit sha + the origin URL) in the PDB. So the same files built before and after a commit, or from an archive without .git, gave different bytes. EnableSourceControlManagerQueries=false
+ *    stops the git queries; EnableSourceLink=false and IncludeSourceRevisionInInformationalVersion=false pin the two consumers off. The commit is not part of the artifact; the printed SHA-256 identifies it.
+ *  These are global properties, so a csproj cannot override them. They go to every build / publish, not to restore. `root` is the repository folder; a ; , or " in it is refused (PathMap's own separators). */
+export function reproducibilityProperties(root) {
+  const folder = trimSlash(String(root));
+  if (!DRIVE_FOLDER.test(folder) || /[;,"]/u.test(folder)) throw new Error(`unsupported_root: "${root}" (PathMap needs an absolute folder without ; , or ")`);
+  return [
+    '-p:Deterministic=true', '-p:ContinuousIntegrationBuild=true', '-p:EnableSourceControlManagerQueries=false', '-p:EnableSourceLink=false', '-p:IncludeSourceRevisionInInformationalVersion=false',
+    `-p:PathMap=${folder}\\=/_/`,
+  ];
+}
+
 /** `dotnet restore` arguments: locked, with the repo NuGet config, runtime-specific when `runtime` is given. Throws when the project has no packages.lock.json. */
 export function restoreArguments({ project, runtime, properties = [], configFile = NUGET_CONFIG, lockFileExists = (file) => fs.existsSync(file) }) {
   if (!lockFileExists(path.join(path.dirname(project), 'packages.lock.json'))) throw new Error(`missing_lock_file: ${path.join(path.dirname(project), 'packages.lock.json')} (a restore without a lock file is refused)`);
@@ -113,9 +130,9 @@ export function restoreArguments({ project, runtime, properties = [], configFile
 }
 
 /** `dotnet publish` / `dotnet build` arguments: never restores (the locked restore ran before). */
-export function buildArguments({ verb, project, args = [], properties = [] }) {
+export function buildArguments({ verb, project, root, args = [], properties = [] }) {
   if (verb !== 'publish' && verb !== 'build') throw new Error(`unsupported_verb: ${verb}`);
-  return [verb, project, '--no-restore', ...MSBUILD_SWITCHES, ...args, ...properties];
+  return [verb, project, '--no-restore', ...MSBUILD_SWITCHES, ...args, ...properties, ...reproducibilityProperties(root)];
 }
 
 /** @returns {{ dotnet: string, env: Record<string,string>, root: string }} the trusted dotnet and its sanitised environment, for `root` as the working directory. */
@@ -148,7 +165,7 @@ export function restoreAndBuild(context, { label, verb = 'publish', project, run
   let restore;
   try { restore = restoreArguments({ project, runtime, properties }); } catch (error) { process.stderr.write(`${label}: ${error.message}\n`); process.exit(1); }
   run(context, `${label} restore`, restore);
-  run(context, `${label} ${verb}`, buildArguments({ verb, project, args, properties }));
+  run(context, `${label} ${verb}`, buildArguments({ verb, project, root: context.root, args, properties }));
 }
 
 /** @returns {string} `dotnet --version` of the trusted dotnet, in the sanitised environment. */

@@ -48,6 +48,7 @@
     "build:approval-authority": "node scripts/publish-windows-approval-authority.mjs",
     "build:approver": "node scripts/publish-windows-approver.mjs",
     "build:windows-service-lab": "node scripts/publish-windows-service-lab.mjs",
+    "check:reproducible": "node scripts/check-reproducible-build.mjs",
     "smoke": "node scripts/smoke.mjs",
     "bench:runtime-store": "node scripts/runtime-sqlite-benchmark.mjs",
     "package:smoke": "node scripts/package-smoke.mjs"
