@@ -456,6 +456,91 @@ function defineSuite(name, makeJournal) {
       });
     });
 
+    describe('a journal record edited on disk is not believed', () => {
+      /** Rewrites fields of the stored record the way somebody with write access to the journal would (the store owns the revision). */
+      const tamper = (w, change) => { const rec = w.record(); w.journal.advance(rec.operationId, rec.revision, [rec.phase], change(rec)); };
+      /** An integration waiting for a person (REVIEW_REQUIRED); `w.approve = true` lets the next service instance see an approval. */
+      const waiting = (over = {}, request = REQUEST) => {
+        const w = world({ options: { maxPolls: 1 }, approvals: { status: (r, s) => (w.approve ? { ok: true, state: 'decided', approval: fakeHumanApproval(s) } : { ok: true, state: 'pending' }) }, ...over });
+        return w.service.submit(request).then((r) => { assert.equal(r.phase, 'REVIEW_REQUIRED'); return w; });
+      };
+      const resumeApproved = async (w) => { w.approve = true; return w.build().resume('int-1'); };
+      const refused = (r) => assert.deepEqual([r.status, r.code], ['failed', 'record_mismatch']);
+
+      it('a lowered risk on the candidate: record_mismatch, no comprehension check is skipped and nothing is pushed', async () => {
+        const w = await waiting({}, { ...REQUEST, risk: 'medium' });
+        tamper(w, (rec) => ({ candidate: { ...rec.candidate, risk: 'low' } }));
+        refused(await resumeApproved(w));
+        assert.equal(w.pushes(), 0);
+        assert.equal(w.record().phase, 'FAILED');
+      });
+      it('a lowered risk on the request has the same result', async () => {
+        const w = await waiting({}, { ...REQUEST, risk: 'medium' });
+        tamper(w, (rec) => ({ request: { ...rec.request, risk: 'low' } }));
+        refused(await resumeApproved(w));
+        assert.equal(w.pushes(), 0);
+      });
+      it('removed required gates: record_mismatch, nothing is pushed', async () => {
+        const w = await waiting({}, { ...REQUEST, requiredGates: ['unit', 'lint'] });
+        tamper(w, (rec) => ({ candidate: { ...rec.candidate, requiredGates: ['unit'] } }));
+        refused(await resumeApproved(w));
+        assert.equal(w.pushes(), 0);
+      });
+      it('another digest, a request that is no request, and a candidate in a state its phase cannot have', async () => {
+        const digestTampered = await waiting();
+        tamper(digestTampered, (rec) => ({ candidate: { ...rec.candidate, imageDigest: digest('9') } }));
+        refused(await resumeApproved(digestTampered));
+        const notARequest = await waiting();
+        tamper(notARequest, (rec) => ({ request: { ...rec.request, risk: 'none' } }));
+        refused(await resumeApproved(notARequest));
+        assert.equal(notARequest.record().phase, 'REVIEW_REQUIRED', 'nothing valid to record against: the record is left as found');
+        const wrongState = await waiting();
+        tamper(wrongState, (rec) => ({ candidate: { ...rec.candidate, state: 'PREPARED' } }));
+        refused(await resumeApproved(wrongState));
+        assert.equal(digestTampered.pushes() + notARequest.pushes() + wrongState.pushes(), 0);
+      });
+      it('evidence planted before the verifier ran (another commit, an unregistered runner) does not count: the verifier is still asked and nobody is approached', async () => {
+        for (const planted of [{ subjectCommitOid: OTHER }, { runnerId: 'rogue-runner' }]) {
+          const w = world({ options: { maxPolls: 1 }, verifier: { collect: { state: 'running' } } });
+          assert.equal((await w.service.submit(REQUEST)).phase, 'VERIFYING');
+          tamper(w, (rec) => ({ verification: { ...rec.verification, evidence: fakeVerifierEvidence(rec.candidate, planted) } }));
+          const r = await w.build().resume('int-1');
+          assert.deepEqual([r.status, r.phase], ['pending', 'VERIFYING'], JSON.stringify(planted));
+          assert.deepEqual({ approvals: w.approvals.calls().length, pushes: w.pushes(), starts: w.runIds().length }, { approvals: 0, pushes: 0, starts: 2 });
+        }
+      });
+      it('stored evidence swapped for evidence of another commit while a person is deciding: not_verified, nothing is pushed', async () => {
+        const w = await waiting();
+        tamper(w, (rec) => ({ verification: { ...rec.verification, evidence: fakeVerifierEvidence(rec.candidate, { subjectCommitOid: OTHER }) } }));
+        const r = await resumeApproved(w);
+        assert.deepEqual([r.status, r.code], ['failed', 'not_verified']);
+        assert.equal(w.pushes(), 0);
+      });
+      it('a changed authorization while PROMOTING is recorded: the resume refuses it and pushes nothing', async () => {
+        const w = world({ promotion: { push: died } });
+        await assert.rejects(() => w.service.submit(REQUEST), /process died/u);
+        tamper(w, (rec) => ({ authorization: { ...rec.authorization, update: { ...rec.authorization.update, newOid: OTHER } } }));
+        refused(await w.build().resume('int-1'));
+        assert.deepEqual({ pushes: w.pushes(), sleeps: w.sleeps }, { pushes: 0, sleeps: [] });
+      });
+    });
+
+    describe('how long an approval may last', () => {
+      const lasting = (seconds, options) => world({ options, approvals: { status: (r, s) => ({ ok: true, state: 'decided', approval: fakeHumanApproval(s, { expiresAt: NOW_SEC + seconds }) }) } });
+      it('15 minutes from now is the default limit: exactly 15 minutes merges, one second more is approval_lifetime_exceeded and nothing is pushed', async () => {
+        assert.equal(INTEGRATION_DEFAULTS.maxApprovalLifetimeMs, 15 * 60 * 1000);
+        assert.equal((await lasting(900).service.submit(REQUEST)).status, 'merged');
+        const w = lasting(901);
+        assert.deepEqual(brief(await w.service.submit(REQUEST)), { status: 'failed', phase: 'FAILED', code: 'approval_lifetime_exceeded' });
+        assert.deepEqual({ pushes: w.pushes(), decision: w.record().approval.decision.expiresAt }, { pushes: 0, decision: NOW_SEC + 901 });
+      });
+      it('the limit is an option, and a port that answers with an enormous expiry cannot stretch it', async () => {
+        assert.equal((await lasting(61, { maxApprovalLifetimeMs: 60_000 }).service.submit(REQUEST)).code, 'approval_lifetime_exceeded');
+        assert.equal((await lasting(60, { maxApprovalLifetimeMs: 60_000 }).service.submit(REQUEST)).status, 'merged');
+        assert.equal((await lasting(4_000_000_000).service.submit(REQUEST)).code, 'approval_lifetime_exceeded');
+      });
+    });
+
     describe('requests and construction', () => {
       it('a malformed request is refused before anything is recorded', async () => {
         const w = world();

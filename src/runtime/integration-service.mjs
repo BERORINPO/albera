@@ -40,6 +40,7 @@ const TERMINAL = Object.freeze(INTEGRATION_PHASES.slice(7));
 export const INTEGRATION_STATUSES = Object.freeze([...TERMINAL.map((p) => p.toLowerCase()), 'pending', 'retryable', 'unknown']);
 export const INTEGRATION_DEFAULTS = Object.freeze({
   pollInitialMs: 500, pollMaxMs: 5000, pollFactor: 2, maxPolls: 1000, maxVerifierReruns: 1, maxApprovalRounds: 2, maxEvidence: 64,
+  maxApprovalLifetimeMs: 15 * 60 * 1000,   // an approval that stays valid longer than this from now is refused (ADR-007 sets no limit; integration-candidate only needs it unexpired)
   settleMs: 65_000,   // git-process TIMEOUT_MS (60 s) + 5 s; test/runtime-integration-service.test.mjs pins it (this module may not import the process runner)
 });
 
@@ -54,6 +55,10 @@ const APPROVAL_FIELDS = ['decision', 'candidateId', 'candidateVersion', 'candida
 const COMPREHENSION_FIELDS = ['reviewerId', 'basis', 'candidateCommitOid'];
 const PERMANENT_TIP_CODES = new Set(['request_invalid', 'remote_unknown', 'ref_not_promotable', 'target_missing']);   // configuration, not a passing outage
 const REFUSAL_PHASE = Object.freeze({ approval_denied: 'DENIED', approval_expired: 'EXPIRED' });
+const CANDIDATE_FIELDS = ['candidateId', 'projectId', 'repositoryId', 'targetRef', 'targetTipOid', 'candidateCommitOid', 'candidateTreeOid', 'testPlanDigest', 'imageDigest', 'lockfileDigest',
+  'policyVersion', 'algorithmVersion', 'risk', 'requiredGates'];
+// The candidate state integration-candidate holds in each recorded phase (REVIEW_REQUIRED is a VERIFYING candidate waiting for a person).
+const CANDIDATE_STATE_OF = Object.freeze({ PREPARED: 'PREPARED', VERIFYING: 'VERIFYING', REVIEW_REQUIRED: 'VERIFYING', PROMOTING: 'PROMOTING', UNKNOWN_PROMOTION: 'UNKNOWN_PROMOTION' });
 const MAX_TIPS = 16;
 const OPERATION_PREFIX = 'integration/';   // '/' is outside the approved-operation-flow id grammar, so the two kinds of record cannot collide in one journal
 
@@ -71,7 +76,7 @@ const noApproval = { requestId: null, rounds: 0, expiresAt: null, decision: null
 
 function resolveOptions(options = {}) {
   const merged = { ...INTEGRATION_DEFAULTS, ...options };
-  const ok = ['pollInitialMs', 'pollMaxMs', 'maxPolls', 'maxApprovalRounds', 'maxEvidence', 'settleMs'].every((n) => isCount(merged[n])) && isCount(merged.maxVerifierReruns, 0)
+  const ok = ['pollInitialMs', 'pollMaxMs', 'maxPolls', 'maxApprovalRounds', 'maxEvidence', 'settleMs', 'maxApprovalLifetimeMs'].every((n) => isCount(merged[n])) && isCount(merged.maxVerifierReruns, 0)
     && Number.isFinite(merged.pollFactor) && merged.pollFactor >= 1 && Object.keys(options).every((n) => n in INTEGRATION_DEFAULTS);
   if (!ok) throw new TypeError('invalid_integration_options');
   return Object.freeze(merged);
@@ -120,7 +125,7 @@ export function createIntegrationService({ quarantine, promotion, verifier, appr
   const advance = (record, from, patch) => guard(() => journal.advance(record.operationId, record.revision, from, { ...patch, updatedAt: now() }));
 
   const terminalResult = (record, replayed) => Object.freeze({
-    status: record.phase.toLowerCase(), integrationId: record.request.integrationId, phase: record.phase, ...(record.outcome?.code ? { code: record.outcome.code } : {}),
+    status: record.phase.toLowerCase(), integrationId: record.request?.integrationId, phase: record.phase, ...(record.outcome?.code ? { code: record.outcome.code } : {}),
     ...(record.candidate ? { candidateCommitOid: record.candidate.candidateCommitOid, candidateVersion: record.candidate.version } : {}), replayed,
   });
   const openResult = (record, status, code) => Object.freeze({ status, integrationId: record.request.integrationId, phase: record.phase, code, replayed: false });
@@ -140,6 +145,34 @@ export function createIntegrationService({ quarantine, promotion, verifier, appr
   async function tipFailure(record, from, code) {
     return PERMANENT_TIP_CODES.has(code) ? finalize(record, from, 'FAILED', code) : openResult(record, 'retryable', code);
   }
+
+  /**
+   * The journal is not trusted on load. null when the record is what this service would have written for its own request; otherwise 'request' (the request is not a
+   * valid request, or not this record's) or 'record' (the candidate is not the one this request freezes, is in a state the phase cannot have, or the authorization is
+   * not exactly the candidate's own compare-and-swap). Commit, tree and tip are taken from the record (they come from git and cannot be re-derived here); everything
+   * the request decides (risk, gates, digests, policy, submissions) is rebuilt with freezeCandidate and must be equal.
+   */
+  function recordProblem(record) {
+    let request;
+    try { request = normalizeRequest(record.request); } catch { return 'request'; }
+    if (JSON.stringify(request) !== JSON.stringify(record.request) || record.operationId !== `${OPERATION_PREFIX}${request.integrationId}`) return 'request';
+    if (record.phase === 'SUBMITTED' || record.phase === 'VALIDATING') return null;   // no candidate yet
+    const c = record.candidate;
+    try {
+      const shape = (x) => JSON.stringify([CANDIDATE_FIELDS.map((f) => x[f]), x.submissions.map((m) => [m.submissionId, m.baseCommitOid, m.resultCommitOid])]);
+      const expected = freezeCandidate({ ...request, candidateId: request.integrationId, targetTipOid: c.targetTipOid, candidateCommitOid: c.candidateCommitOid, candidateTreeOid: c.candidateTreeOid });
+      if (shape(expected) !== shape(c) || c.state !== CANDIDATE_STATE_OF[record.phase] || !Number.isSafeInteger(c.version) || c.version < 1) return 'record';
+    } catch { return 'record'; }
+    if (record.phase !== 'PREPARED' && typeof record.quarantine?.repo !== 'string') return 'record';
+    if (record.phase === 'PROMOTING' || record.phase === 'UNKNOWN_PROMOTION') {
+      const u = record.authorization?.update;
+      if (u?.ref !== c.targetRef || u.expectedOldOid !== c.targetTipOid || u.newOid !== c.candidateCommitOid) return 'record';
+    }
+    return null;
+  }
+
+  /** Stored evidence is data, not a verdict: only items acceptEvidence takes for THIS candidate and the CURRENT trusted runners count. */
+  const countedEvidence = (record) => (Array.isArray(record.verification?.evidence) ? record.verification.evidence : []).filter((e) => acceptEvidence(record.candidate, e, trust).ok);
 
   // SUBMITTED / VALIDATING: a new quarantine repository every time, import + inspect each submission, read the target tip, build and freeze the candidate.
   async function validateStep(record) {
@@ -186,7 +219,7 @@ export function createIntegrationService({ quarantine, promotion, verifier, appr
   // VERIFYING: evidence already recorded as verified (the loop above came back from a failed promotion) goes straight to review; otherwise run and collect.
   async function verifyStep(record) {
     const { candidate, verification } = record;
-    if (verificationStatus(candidate, verification.evidence, trust) === 'verified') return enterReview(record);
+    if (verificationStatus(candidate, countedEvidence(record), trust) === 'verified') return enterReview(record);
     const subject = { integrationId: record.request.integrationId, repositoryId: record.request.repositoryId, sourceRepo: record.quarantine.repo, ...pickCandidate(candidate) };
     const started = await verifier.start({ runId: verification.runId, subject });
     if (started?.ok !== true) return stop(openResult(record, 'retryable', safeCode(started?.code, 'verifier_unavailable')));
@@ -240,7 +273,7 @@ export function createIntegrationService({ quarantine, promotion, verifier, appr
     const { requestId } = record.approval;
     let reply = await approvals.status({ requestId });
     if (reply?.ok === false && reply.code === 'unknown_request') {
-      const sent = await approvals.request({ requestId, subject: { integrationId: record.request.integrationId, candidate: record.candidate, evidence: record.verification.evidence, claims: record.verification.claims } });
+      const sent = await approvals.request({ requestId, subject: { integrationId: record.request.integrationId, candidate: record.candidate, evidence: countedEvidence(record), claims: record.verification.claims, requestedAt: nowSec() } });
       if (sent?.ok !== true) return stop(openResult(record, 'retryable', safeCode(sent?.code, 'approvals_unavailable')));
       reply = await approvals.status({ requestId });
     }
@@ -270,7 +303,10 @@ export function createIntegrationService({ quarantine, promotion, verifier, appr
     const tip = await tipOf(record);
     if (tip.code) return stop(await tipFailure(record, ['REVIEW_REQUIRED'], tip.code));
     const at = nowSec();
-    const auth = authorizePromotion(record.candidate, { currentTipOid: tip.oid, evidence: record.verification.evidence, trustedRunners: trust.trustedRunners, approval, now: at });
+    if (Number.isSafeInteger(approval?.expiresAt) && approval.expiresAt > at + Math.floor(opt.maxApprovalLifetimeMs / 1000)) {
+      return stop(await finalize(record, ['REVIEW_REQUIRED'], 'FAILED', 'approval_lifetime_exceeded', { approval: decided }));   // a person's approval is short-lived; the port does not get to choose
+    }
+    const auth = authorizePromotion(record.candidate, { currentTipOid: tip.oid, evidence: countedEvidence(record), trustedRunners: trust.trustedRunners, approval, now: at });
     if (!auth.ok && auth.code === 'target_moved') {
       return stop(await finalize(record, ['REVIEW_REQUIRED'], 'STALE', 'target_moved', { candidate: observeTarget(record.candidate, tip.oid), approval: decided, promotion: withTip(record.promotion, tip.oid) }));
     }
@@ -336,8 +372,11 @@ export function createIntegrationService({ quarantine, promotion, verifier, appr
     for (;;) {
       if (record.kind !== 'integration') return Object.freeze({ status: 'failed', code: 'journal_corrupt', replayed: false });
       const step = STEPS[record.phase];
-      if (!step && !TERMINAL.includes(record.phase)) return Object.freeze({ status: 'failed', integrationId: record.request.integrationId, code: 'journal_corrupt', replayed: false });
+      if (!step && !TERMINAL.includes(record.phase)) return Object.freeze({ status: 'failed', integrationId: record.request?.integrationId, code: 'journal_corrupt', replayed: false });
       if (!step) return terminalResult(record, true);   // already final: report the recorded outcome, do nothing
+      const problem = recordProblem(record);
+      if (problem === 'request') return Object.freeze({ status: 'failed', code: 'record_mismatch', replayed: false });   // not even a valid request: nothing to record against
+      if (problem) return finalize(record, [record.phase], 'FAILED', 'record_mismatch');
       const out = await step(record);
       if (out.result) return out.result;
       record = out.record;

@@ -4,14 +4,14 @@
 // Defaults: request -> { ok: true }; status -> { ok: false, code: 'unknown_request' } until the request was made, then decided with a human approval of exactly
 // the candidate in the subject. Idempotent per requestId, like the real port. Synthetic: nobody approved anything.
 
-const FAR_FUTURE = 4_102_444_800;   // 2100-01-01 in Unix seconds, so the default approval never expires inside a test
+const LIFETIME = 300;   // seconds a default approval stays valid, counted from the `requestedAt` the service put in the subject
 
 /** A person's approval of exactly the candidate in `subject` (override any field). */
 export function fakeHumanApproval(subject, over = {}) {
   const c = subject.candidate;
   return {
     decidedBy: { kind: 'human', id: 'yosuke' }, decision: 'approve', candidateId: c.candidateId, candidateVersion: c.version, candidateCommitOid: c.candidateCommitOid,
-    targetRef: c.targetRef, targetTipOid: c.targetTipOid, policyVersion: c.policyVersion, expiresAt: FAR_FUTURE, ...over,
+    targetRef: c.targetRef, targetTipOid: c.targetTipOid, policyVersion: c.policyVersion, expiresAt: (subject.requestedAt ?? 0) + LIFETIME, ...over,
   };
 }
 
