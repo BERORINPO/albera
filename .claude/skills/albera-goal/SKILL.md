@@ -55,7 +55,7 @@ Never get around a stop by rephrasing, splitting, encoding or switching tools. R
 |---|---|
 | Harness denial (Codex fence, Claude Code auto-mode classifier, agm-guard hook) | Treat that action as blocked. If it is within your authority and only an allow rule is missing, put the exact rule in a card for Yosuke. Move on. |
 | Needs admin or UAC (service install, ACL, Hyper-V, firewall) | Never self-elevate (no RunAs, no `-Verb RunAs`). Write an idempotent script with a dry run, test its logic with fakes, and run the real part in the disposable VM lab: `powershell -File test/windows-service-lab/lab-vm.ps1 -Build`. It creates and deletes only its own offline VM and may read its own guest password file; never print that password. Changes to the host itself need a card. |
-| Needs a person (Windows Hello PIN, approver app, physical presence) | Card. This is a designed control, not a defect: never simulate or skip it outside test-fault builds. |
+| Needs a person (Windows Hello PIN, approver app, physical presence) | Card. This is a designed control, not a defect: never simulate or skip it outside test-fault builds. Then, in the same run, build and test everything up to the person's step (installer or script with a dry run and an uninstall, a disposable-VM run, the command that produces the request to approve), so the card's action is one prepared command. Until that is done the card says what is not ready yet. |
 | Spec gap | Reversible choice: take the recommended option, add a decision line marked `provisional`, continue. Irreversible, or under a hard limit below: card and `BLOCKED`. |
 | Same failure 3 times, or a flaky test | Record the cause and the three results, mark the item `BLOCKED` (or `IN_PROGRESS` with a note) and pick an independent item. Never weaken, skip or delete a test to pass. |
 | GUI check tool refuses | Record the GUI step as unverified with the reason, keep the synthetic check, do not claim the GUI works. |
@@ -67,6 +67,8 @@ Never get around a stop by rephrasing, splitting, encoding or switching tools. R
 ## Card for Yosuke
 
 Write cards in plain Japanese. Add each to "Waiting on Yosuke" in the ledger and repeat open cards at the top of the final report.
+
+A card is not a place to park an item. While it waits, the preparation for the person's step is your next item, and independent items continue beside it (owner instruction, 2026-11-02: a card shelved since 2026-10-30 turned out, when approved, to have no host installer behind it).
 
 ```
 ### <短い件名>
