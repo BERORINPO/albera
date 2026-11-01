@@ -109,8 +109,8 @@ internal static partial class Program
 
     private sealed record BrokerSettings(string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string AllowedSid, long InitialGeneration, TimeSpan? Hold, ImpersonationFault Fault, string LeaseId, string PolicyVersion, long Epoch = 0);
 
-    // maxNumberOfServerInstances == 1 makes .NET create the pipe with FILE_FLAG_FIRST_PIPE_INSTANCE, so an
-    // existing instance of this name (squatter, or another Broker) fails creation. Keep it at 1.
+    // LocalPipe.Create makes the first and only instance (FILE_FLAG_FIRST_PIPE_INSTANCE, max 1), so an existing instance of this name (squatter,
+    // or another Broker) fails creation, and sets PIPE_REJECT_REMOTE_CLIENTS (NamedPipeServerStreamAcl.Create cannot; lab check u6, issue #23).
     // The owner is set to this process's own user SID (not the token's default owner, which is Administrators for an
     // elevated token) so that the Control Plane client can compare GetSecurityInfo(OWNER) with the SID it expects.
     // Returns null with a fixed exit code (70 pipe name taken, 72 owner could not be set) when the pipe cannot be served.
@@ -120,8 +120,7 @@ internal static partial class Program
         NamedPipeServerStream pipe;
         try
         {
-            pipe = NamedPipeServerStreamAcl.Create(pipeName, PipeDirection.InOut, 1,
-                PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0, OwnedBySelf(out SecurityIdentifier self, allowedSid));
+            pipe = LocalPipe.Create(pipeName, OwnedBySelf(out SecurityIdentifier self, allowedSid));   // first instance, max 1, PIPE_REJECT_REMOTE_CLIENTS
             if (!self.Equals(pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier)))) { pipe.Dispose(); failure = PipeOwnerUnavailable(); return null; }
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or InvalidOperationException)

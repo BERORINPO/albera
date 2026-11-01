@@ -14,6 +14,7 @@ namespace Albera.Lab;
 //   token                          this process's own token (TokenReport)
 //   token-of <pid>                 the token of another process this account may open (e.g. the Broker service), or its Win32 error
 //   pipe-open <pipe> <hexMask>     CreateFile on an existing pipe with exactly that access (SQOS identification), then owner / DACL / server pid / session.
+//                                  <pipe> is a local pipe name, or a full \\<server>\pipe\<name> path (check u6 opens a local pipe through SMB).
 //                                  A successful open uses up the single connection a Broker serves.
 //   scm <service>                  which access masks OpenService grants this account, and the service status + PID
 //   openproc <pid>                 which access masks OpenProcess grants this account, and the image SHA-256 when it may be read
@@ -59,7 +60,8 @@ internal static class Probes
     private static int PipeOpen(string pipe, uint mask)
     {
         Dictionary<string, object?> result = new() { ["probe"] = "pipe-open", ["pipe"] = pipe, ["mask"] = $"0x{mask:X8}" };
-        IntPtr raw = Native.CreateFileW(@"\\.\pipe\" + pipe, mask, 0, IntPtr.Zero, OpenExisting, SecuritySqosPresent | SecurityIdentification, IntPtr.Zero);
+        string path = pipe.StartsWith(@"\\", StringComparison.Ordinal) ? pipe : @"\\.\pipe\" + pipe;
+        IntPtr raw = Native.CreateFileW(path, mask, 0, IntPtr.Zero, OpenExisting, SecuritySqosPresent | SecurityIdentification, IntPtr.Zero);
         int error = Marshal.GetLastWin32Error();
         result["result"] = Outcome(raw != new IntPtr(-1), error);
         if (raw != new IntPtr(-1))
@@ -71,6 +73,7 @@ internal static class Probes
                 result["sddl"] = stream.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Owner | AccessControlSections.Access);
             }
             catch (UnauthorizedAccessException) { result["sddl"] = "unreadable_without_READ_CONTROL"; }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException) { result["sddl"] = "unreadable:" + ex.GetType().Name; }   // a pipe opened through SMB
             if (Native.GetNamedPipeServerProcessId(stream.SafePipeHandle, out uint serverPid)) result["serverPid"] = serverPid;
             if (Native.GetNamedPipeServerSessionId(stream.SafePipeHandle, out uint session)) result["serverSession"] = session;
         }

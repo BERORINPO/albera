@@ -90,6 +90,6 @@ test('the VM lab driver provisions the key, starts the real Authority service an
   assert.match(guest, /signingKeyProvider = 'software'/u);
   assert.match(guest, /& \$AuthKeyTool -KeyName \$keyName -ServiceSid \$SidAuth -Variant \$variant/u, 'the key is created for the Authority service SID');
   assert.match(driver, /authority = Join-Path \$repo 'src\\runtime\\windows-approval-authority\\bin\\Release\\net10\.0-windows\\win-x64\\publish'/u);
-  assert.match(driver, /Join-Path \$PSScriptRoot 'new-authority-key\.ps1'\) -Destination "\$LabRoot\\tools\\new-authority-key\.ps1"/u);
+  assert.match(driver, /foreach \(\$tool in @\('new-authority-key\.ps1'[^)]*\)\) \{ Copy-Item -ToSession \$session -Path \(Join-Path \$PSScriptRoot \$tool\) -Destination "\$LabRoot\\tools\\\$tool"/u);
   assert.match(read('lab-vm.ps1'), /npm run build:approval-authority/u);
 });

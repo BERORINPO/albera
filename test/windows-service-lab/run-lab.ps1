@@ -11,6 +11,8 @@
 # Authority's lab signing keys (checks k_*: good key starts; exportable key and broad ACE refused with exit 78). Not executed in the VM yet.
 # Checks m1 to m4 (issue #84, journal parity) need nothing new here: the version 2 journal fixture travels inside lab-inputs.json (fixtures.journalV2) and the
 # backup folder is made by the guest script under the lab root, so the rollback removes everything with the lab root.
+# Checks u1 to u6 (issue #23, "no privilege inherited by Observer, Guest or Main AI") use lab-person.ps1 and person-probe.ps1 (tools\): a local Users account in the
+# guest stands in for the person; the guest rollback removes it with its logon right and profile. Not executed in the VM yet.
 param(
   [string]$VmName = 'albera-clone-04-lab23',
   [string]$PasswordFile = 'U:\dev\hyperv\albera-poc-01\local-secrets\admin-password.txt',
@@ -34,7 +36,7 @@ $session = New-PSSession -VMName $VmName -Credential (New-Object System.Manageme
 try {
   Invoke-Command -Session $session -ScriptBlock { param($root) New-Item -ItemType Directory -Force -Path "$root\bin\shim", "$root\bin\broker", "$root\bin\helper", "$root\bin\authority", "$root\tools", "$root\inputs" | Out-Null } -ArgumentList $LabRoot
   foreach ($name in $publish.Keys) { Copy-Item -ToSession $session -Path (Join-Path $publish[$name] '*') -Destination "$LabRoot\bin\$name" -Recurse -Force }
-  Copy-Item -ToSession $session -Path (Join-Path $PSScriptRoot 'new-authority-key.ps1') -Destination "$LabRoot\tools\new-authority-key.ps1" -Force
+  foreach ($tool in @('new-authority-key.ps1', 'lab-person.ps1', 'person-probe.ps1')) { Copy-Item -ToSession $session -Path (Join-Path $PSScriptRoot $tool) -Destination "$LabRoot\tools\$tool" -Force }
   Copy-Item -ToSession $session -Path $InputsFile -Destination "$LabRoot\inputs\lab-inputs.json" -Force
   try {
     Invoke-Command -Session $session -FilePath (Join-Path $PSScriptRoot 'lab-guest.ps1') -ArgumentList $LabRoot, 'run' | Tee-Object -FilePath (Join-Path $EvidenceDir 'guest-run.txt')
