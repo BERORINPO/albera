@@ -13,7 +13,7 @@ jobs:
     # Keep these job names aligned with main's required status-check contexts.
     name: ${{ matrix.os }} / Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 20   # Windows jobs ranged 6-10+ minutes on hosted runners (2026-11-01): the ACL integration alone took 4 minutes once
     strategy:
       fail-fast: false
       matrix:
