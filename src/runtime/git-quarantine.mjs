@@ -1,12 +1,12 @@
-import { spawn } from 'node:child_process';
 import { lstat, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { gitEnv, hardening, isOid, runGitProcess } from './git-process.mjs';
 
 // Host-side quarantine for agent submissions (ADR-007 §2 and §4 steps 2-4; acceptance INT-01). The adapter between the pure
 // integration-candidate.mjs and real git. A submission arrives as a git BUNDLE FILE, never as a repository to fetch from: reading a bundle runs
 // nothing of the sender's (no upload-pack in their repository, no config of theirs), so the guest's .git/config, hooks and attributes never reach
 // the host. Everything happens in fresh BARE repositories under `root` (no working tree is ever checked out), with git run as
-//   git -c <hardening> ...   (argv only, no shell, a fixed environment without the user's global or system config, bounded time and output)
+//   git -c <hardening> ...   (git-process.mjs: argv only, no shell, a fixed environment without the user's global or system config, bounded time and output)
 //
 //   const q = createGitQuarantine({ git, root })
 //   const repo = await q.create()                                     -> absolute path of a new bare repository
@@ -29,24 +29,12 @@ export const QUARANTINE_REFUSALS = Object.freeze([
 ]);
 export const DEFAULT_LIMITS = Object.freeze({ maxBlobBytes: 50 * 1024 * 1024, maxChangedPaths: 10_000, maxCommits: 1_000 });
 
-const OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const REF_RE = /^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/u;
 const EMAIL_RE = /^[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{1,190}$/u;
-const TIMEOUT_MS = 60_000;
-const MAX_OUTPUT = 32 * 1024 * 1024;
-// Hardening on every call: no hooks (and `init --template=` copies no sample hooks), no fsmonitor, no transport but `file` (git reads a bundle through it;
-// importBundle only passes a path that lstat shows is a regular file, so a repository folder is never fetched from), objects fsck'd
-// on the way in, no automatic gc or maintenance, no replace refs, no credential helper, no pager.
-const hardening = (root) => [
-  '-c', `core.hooksPath=${path.join(root, 'no-hooks')}`, '-c', 'core.fsmonitor=false', '-c', 'protocol.allow=never', '-c', 'protocol.file.allow=always', '-c', 'transfer.fsckObjects=true',
-  '-c', 'fetch.fsckObjects=true', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'core.useReplaceRefs=false',
-  '-c', 'credential.helper=', '-c', 'core.pager=cat', '-c', 'advice.detachedHead=false',
-];   // core.hooksPath names a folder that is never created, so no hook can exist
 
 const ok = Object.freeze({ ok: true });
 const refuse = (code) => Object.freeze({ ok: false, code });
-const isOid = (v) => typeof v === 'string' && OID_RE.test(v);
 
 /** A path the submission may add or change: relative, forward slashes, no .git / .gitmodules / dot-dot component, printable, not a drive path. */
 export function isAllowedPath(p) {
@@ -76,7 +64,7 @@ export function parseRawDiff(text) {
  */
 export function createGitQuarantine({ git, root, run } = {}) {
   if (typeof git !== 'string' || !path.isAbsolute(git) || typeof root !== 'string' || !path.isAbsolute(root)) throw new TypeError('invalid_git_quarantine_dependencies');
-  const runGit = run ?? defaultRun;
+  const runGit = run ?? runGitProcess;
   let fetched = 0;
 
   const gitIn = (repo, args, opts = {}) => runGit(git, [...hardening(root), '--git-dir', repo, ...args], { env: gitEnv(root), ...opts });
@@ -162,17 +150,6 @@ export function createGitQuarantine({ git, root, run } = {}) {
   return Object.freeze({ create, importBundle, inspect, buildCandidate });
 }
 
-// A fixed environment: the system and global config files are not read (a host user's aliases, credential helpers or hooks must not apply), no
-// prompts, no editor, no pager, English messages. Only PATH-free essentials are kept (SYSTEMROOT is needed by Windows for sockets and crypto).
-function gitEnv(root) {
-  const env = {
-    GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(root, 'empty.gitconfig'), GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '',
-    GIT_EDITOR: ':', GIT_PAGER: 'cat', LC_ALL: 'C', LANG: 'C', HOME: root, GIT_OPTIONAL_LOCKS: '0',
-  };
-  for (const key of ['SYSTEMROOT', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP']) if (process.env[key]) env[key] = process.env[key];
-  return env;
-}
-
 /** The first refusal code for a set of diff entries, or null. Deleting a forbidden path is refused too. */
 function checkEntries(entries) {
   for (const e of entries) {
@@ -187,26 +164,4 @@ function checkEntries(entries) {
 
 async function isRegularFile(p) {
   try { return (await lstat(p)).isFile(); } catch { return false; }
-}
-
-// argv only (shell: false), a fixed environment, a deadline and an output cap; stdout and stderr are collected as UTF-8 and never logged.
-function defaultRun(file, args, { env, input, allowFailure = false } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { env, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    const out = []; const err = []; let size = 0; let failed = null;
-    const stop = (why) => { if (!failed) { failed = why; child.kill(); } };
-    const timer = setTimeout(() => stop('timeout'), TIMEOUT_MS);
-    const take = (chunks) => (chunk) => { size += chunk.length; if (size > MAX_OUTPUT) stop('output_limit'); else chunks.push(chunk); };
-    child.stdout.on('data', take(out));
-    child.stderr.on('data', take(err));
-    child.on('error', () => stop('spawn_failed'));
-    child.on('close', (exitCode) => {
-      clearTimeout(timer);
-      const code = failed ? -1 : exitCode ?? -1;
-      if (code !== 0 && !allowFailure) return reject(Object.assign(new Error('git_failed'), { code: 'git_failed', exitCode: code }));
-      resolve({ code, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') });
-    });
-    child.stdin.on('error', () => {});
-    child.stdin.end(input ?? '');
-  });
 }
