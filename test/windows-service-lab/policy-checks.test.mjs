@@ -15,7 +15,7 @@ const stepBody = (id) => {
   const start = guest.indexOf(`Step '${id}'`);
   assert.notEqual(start, -1, `${id} exists`);
   const next = guest.indexOf('\nStep ', start + 1);
-  const end = guest.indexOf('\nRemove-PolicyFiles\nRemove-AuthorityLabKey', start + 1);
+  const end = guest.indexOf('\n# ---- Issue #23 acceptance item', start + 1);   // the person checks (u1 to u6) follow p6
   return guest.slice(start, Math.min(...[next, end].filter((i) => i !== -1)));
 };
 

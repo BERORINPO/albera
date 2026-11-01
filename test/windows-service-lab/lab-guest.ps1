@@ -12,6 +12,8 @@
 # refusal, migration of a version 2 journal, a side-effect-free inspect, and a restore replay. NOT executed in the VM yet: expect first-run fixes.
 # This revision also adds the issue #115 step 3a checks p1 to p6 (the Authority's tier policy file, policy.json): no file starts as careful, an untrusted config folder is refused (73),
 # an unsigned standard file is refused (79), the running service writes the file itself through policy_set and a restart reads it back. NOT executed in the VM yet: expect first-run fixes.
+# This revision also adds the issue #23 checks u1 to u6 (no privilege inherited by Observer, Guest or Main AI): a local BUILTIN\Users account (lab-person.ps1)
+# stands in for the person's account and probes the running Broker and Authority; u6 opens the Broker pipe through SMB. NOT executed in the VM yet.
 # The Authority now has its own config folder ($LabRoot\authority) that its service SID may write (it writes policy.json there); the k_* checks use it too.
 # Explicit exclusion: a CLOCK ROLLBACK is host-tested only (test/runtime-windows-broker-receipt-v2.test.mjs). The offset is the test seam
 # ALBERA_BROKER_TEST_CLOCK_OFFSET, compiled out of the published Broker the lab runs, and moving the guest clock backwards would break every receipt window.
@@ -25,7 +27,10 @@ $ErrorActionPreference = 'Stop'
 
 $B = 'AlberaHostBroker'; $C = 'AlberaControlPlane'; $O = 'AlberaLabOther'; $All = @($B, $C, $O)
 # The Approval Authority service and its lab signing keys (checks k_*, at the end of the run). Kept apart from $All: $All is what the Broker checks create and use.
-$AuthSvc = 'AlberaApprovalAuthority'; $Everything = @($B, $C, $O, $AuthSvc)
+$AuthSvc = 'AlberaApprovalAuthority'
+# The person stand-in (checks u1 to u6, at the very end): a BUILTIN\Users account and a shim service that runs as it (lab-person.ps1).
+$PersonUser = 'AlberaLabPerson'; $PersonSvc = 'AlberaLabPersonSvc'; $PersonTool = "$LabRoot\tools\lab-person.ps1"
+$Everything = @($B, $C, $O, $AuthSvc, $PersonSvc)
 $AuthKeyNames = @('AlberaLabAuthGood', 'AlberaLabAuthExportable', 'AlberaLabAuthBroadAce', 'AlberaLabAuthPolicy')
 $AuthKeyTool = "$LabRoot\tools\new-authority-key.ps1"
 $Pipe = 'ALBERA_Lab23_HostBroker'
@@ -61,6 +66,8 @@ if ($Phase -eq 'rollback') {
   }
   Start-Sleep -Seconds 2
   foreach ($n in $Everything) { if (Get-Svc $n) { $report.servicesAbsent = $false } }
+  # The person stand-in: its logon right, profile and account (after its service is gone).
+  if (Test-Path $PersonTool) { $report.person = (& $PersonTool -Remove -UserName $PersonUser) | ConvertFrom-Json }
   # Machine keys the Authority checks created (the tool only touches keys it is named for; one that was never created reports removed=false).
   if (Test-Path $AuthKeyTool) {
     foreach ($k in $AuthKeyNames) { if ((& $AuthKeyTool -KeyName $k -Remove | ConvertFrom-Json).removed) { $report.keysRemoved += $k } }
@@ -142,9 +149,9 @@ function Write-BrokerConfig([string]$db, [string]$controlPlaneSid, [int]$generat
 function Get-ServiceExit([string]$name) { $s = Get-Svc $name; "state=$($s.State) win32=$($s.ExitCode) specific=$($s.ServiceSpecificExitCode)" }
 # The Broker IS the service process (it calls StartServiceCtrlDispatcher itself), so the PID SCM reports is the PID that creates the pipe.
 # The service reports RUNNING only after its pipe exists: waiting for RUNNING is the BROKER_READY wait.
-function Start-LabBroker([string]$tag, [string]$db, [int]$generation = 7) {
+function Start-LabBroker([string]$tag, [string]$db, [int]$generation = 7, [string]$controlPlaneSid = $script:SidC) {
   Set-BrokerServiceHost 'broker'
-  Write-BrokerConfig $db $script:SidC $generation
+  Write-BrokerConfig $db $controlPlaneSid $generation
   & sc.exe start $B | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "sc start $B ($tag) failed ($LASTEXITCODE): $(Get-ServiceExit $B)" }
   try { Wait-Until { (Get-Svc $B).State -eq 'Running' } 30 "$B running ($tag)" }
@@ -224,6 +231,7 @@ function Set-LabAcl([string]$path, [string[]]$grants) {
 
 # ---- preflight: new names, new roots, snapshot of what exists now (compared again by the rollback phase)
 foreach ($n in $Everything) { if (Get-Svc $n) { throw "service $n already exists; refusing to touch it" } }
+if (Get-LocalUser -Name $PersonUser -ErrorAction SilentlyContinue) { throw "local user $PersonUser already exists; refusing to touch it" }
 if (Test-Path "$LabRoot\config") { throw 'lab root already prepared; refusing to reuse it' }
 New-Item -ItemType Directory -Force -Path "$LabRoot\evidence" | Out-Null
 @(Get-Service | ForEach-Object { $_.Name }) | Set-Content -Encoding Ascii "$LabRoot\evidence\preflight-services.txt"
@@ -892,6 +900,140 @@ Step 'p6_unsigned_loosening_refused' 'The running service refuses a policy_set t
   $ok = ($svc.State -eq 'Running') -and ($refused.ok -eq $false) -and ($refused.code -eq 'presence_mismatch') -and (Test-PolicyShape $read 1 'careful' @($PolicyOverrideAction)) -and $unchanged -and ($leftovers -eq 0)
   Verdict $ok @((Get-ServiceLine 'service (expected Running)' $svc), "policy_set standard rev 2 without presence: $($refused | ConvertTo-Json -Compress) (expected ok=false, presence_mismatch)", "policy after: $(Hide-Sids ($read | ConvertTo-Json -Compress -Depth 5))", "policy.json bytes unchanged: $unchanged; temp files left: $leftovers")
 }
+
+# ---- Issue #23 acceptance item "No privilege inherited by Observer, Guest or Main AI" (checks u1 to u6).
+# Main AI and the Observer run as the PERSON's own Windows account, a member of BUILTIN\Users. The lab stands in for it with a local user in Users only
+# (lab-person.ps1) and a shim service that runs probes as that user, while the real Broker and the real Authority are RUNNING. u1 to u4 are live
+# probes as that user; u5 reads every protected object's DACL for the broad principals an interactive token would add (INTERACTIVE, Users,
+# Authenticated Users, Everyone); u6 is the Guest: a Guest has no local logon on the host, so its only route to a host pipe is the network, and the
+# pipe must refuse a client that comes through SMB even when its account IS on the DACL (here the person stand-in, configured as the Control Plane SID
+# of a third Broker run). The Authority's approver pipe is not probed as the approver: the person is the approver in production, and p6 (plus the
+# host tests) shows that the approver pipe changes nothing that loosens approval without a Windows Hello signature.
+# NOT executed in the VM yet: expect first-run fixes. person-probe.ps1 is host-tested (npm test).
+$Db10 = "$LabRoot\data\broker\journal-10.sqlite"   # u1 to u5: the Broker serves the Control Plane as everywhere else
+$Db11 = "$LabRoot\data\broker\journal-11.sqlite"   # u6: the Broker's Control Plane SID is the person stand-in
+$PowerShellExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+$SidP = $null
+$personNote = ''
+try {
+  if (-not (Test-Path -LiteralPath $PersonTool)) { throw "missing $PersonTool (run-lab.ps1 copies it)" }
+  $person = (& $PersonTool -Create -UserName $PersonUser -ServiceName $PersonSvc -BinPath "$Shim service $LabRoot\config\$PersonSvc.json") | ConvertFrom-Json
+  $SidP = [string]$person.userSid
+  $personNote = "person stand-in: $(Hide-Sids ($person | ConvertTo-Json -Compress))"
+  # What the stand-in needs to run probes and nothing else: the shim binaries, its own job file, its own result folder, the probe script. Traversal of the
+  # folders above comes from SeChangeNotifyPrivilege (bypass traverse checking), which every token has.
+  & icacls.exe "$LabRoot\bin\shim" /grant "*${SidP}:(OI)(CI)RX" | Out-Null
+  '{}' | Set-Content -Encoding Ascii -Path "$LabRoot\config\$PersonSvc.json"
+  & icacls.exe "$LabRoot\config\$PersonSvc.json" /grant "*${SidP}:R" | Out-Null
+  Set-LabAcl "$LabRoot\results\$PersonSvc" @("*${SidP}:(OI)(CI)M")
+  Set-LabAcl "$LabRoot\person" @("*${SidP}:(OI)(CI)RX")
+  Copy-Item -LiteralPath "$LabRoot\tools\person-probe.ps1" -Destination "$LabRoot\person\person-probe.ps1"
+}
+catch { $personNote = "person stand-in setup FAILED: $($_.Exception.Message)"; $SidP = $null }
+function Invoke-PersonProbe([string]$tag, [string[]]$probeArgs) { Invoke-ProbeAs $PersonSvc $tag $probeArgs }
+$BroadSids = @{ 'S-1-1-0' = 'Everyone'; 'S-1-5-4' = 'INTERACTIVE'; 'S-1-5-11' = 'Authenticated Users'; 'S-1-5-32-545' = 'Users' }
+$ProtectedPaths = [ordered]@{
+  journalFolder = "$LabRoot\data\broker"; journal = $Db10; brokerConfig = $BrokerConfig; brokerBin = "$LabRoot\bin\broker"
+  authorityFolder = $AuthDir; authorityConfig = $AuthConfig; policyFile = $AuthPolicyFile; authorityBin = "$LabRoot\bin\authority"
+}
+
+if (-not $SidP) {
+  Add-Check 'u_person_setup' 'Person stand-in (BUILTIN\Users account) for Main AI and the Observer' 'FAIL' @($personNote)
+}
+else {
+  $authU = $null
+  try {
+    $script:PidU = Start-LabBroker 'person' $Db10
+    $authU = Start-LabAuthority $PolicyKeyName
+
+    Step 'u1_person_token' 'Person stand-in token: a Users member with no Administrators group (enabled or deny-only) and no SID of a lab service' {
+      $t = Invoke-PersonProbe 'u1-token' @('token')
+      $sids = @($t.groups | ForEach-Object { [string]$_.sid })
+      $serviceSids = @($SidB, $SidC, $SidO, $SidAuth)
+      # Not asserted: integrity and TokenElevation. A service logon is never UAC-filtered, so even a Users-only account reads high / elevated=True
+      # here (first VM run, 2026-11-01); the person's interactive token is medium. What would make it privileged is a group, and none is there.
+      $ok = ([string]$t.user.sid -eq $SidP) -and ($sids -contains 'S-1-5-32-545') -and ($sids -notcontains 'S-1-5-32-544') -and (@($sids | Where-Object { $serviceSids -contains $_ }).Count -eq 0)
+      Verdict $ok @($personNote, "user=$(Hide-Sids ([string]$t.user.sid)) integrity=$($t.integrity) elevated=$($t.elevated) session=$($t.sessionId)",
+        "groups: $(Hide-Sids (($t.groups | ForEach-Object { "$($_.name)=$($_.sid)[$(@($_.attributes) -join '|')]" }) -join ', '))",
+        "privileges: $((@($t.privileges | ForEach-Object { $_.name })) -join ', ') (a service logon adds SERVICE and the privileges Windows gives it; an interactive logon would not)")
+    }
+    Step 'u2_person_pipes_denied' 'Person stand-in cannot open the Broker pipe or either Authority pipe (0x00120083)' {
+      $r = [ordered]@{}
+      foreach ($p in @(@('broker', $Pipe), @('submit', "$AuthPipeRoot\submit\v1"), @('approver', "$AuthPipeRoot\approver\v1"))) { $r[$p[0]] = (Invoke-PersonProbe "u2-$($p[0])" @('pipe-open', $p[1], '00120083')).result }
+      $running = ((Get-Svc $B).State -eq 'Running') -and ((Get-Svc $AuthSvc).State -eq 'Running')
+      Verdict ($running -and (@($r.Values | Where-Object { $_ -ne 'denied' }).Count -eq 0)) (@($r.Keys | ForEach-Object { "${_}: $($r[$_])" }) + @("Broker and Authority RUNNING during the probes: $running"))
+    }
+    Step 'u3_person_scm_no_control' 'Person stand-in can start, stop, pause, reconfigure, re-ACL or delete none of the Broker, Control Plane and Authority services' {
+      $control = @('SERVICE_START', 'SERVICE_STOP', 'SERVICE_PAUSE_CONTINUE', 'SERVICE_CHANGE_CONFIG', 'WRITE_DAC', 'DELETE', 'SERVICE_ALL_ACCESS')
+      $ev = @(); $ok = $true
+      foreach ($n in @($B, $C, $AuthSvc)) {
+        $s = Invoke-PersonProbe "u3-$n" @('scm', $n)
+        $granted = @($control | Where-Object { $s.openService.$_ -ne 'denied' })
+        if ($granted.Count -gt 0) { $ok = $false }
+        $ev += "${n}: control rights granted: $(if ($granted) { $granted -join ', ' } else { 'none' }); all: $($s.openService | ConvertTo-Json -Compress)"
+      }
+      Verdict $ok $ev
+    }
+    Step 'u4_person_files_denied' 'Person stand-in can read or write none of the journal, the configs, the policy file, the binaries or the Authority signing key' {
+      $targets = @(
+        @{ id = 'journal-folder-list'; kind = 'dir-list'; path = $ProtectedPaths.journalFolder }, @{ id = 'journal-folder-create'; kind = 'dir-create'; path = $ProtectedPaths.journalFolder },
+        @{ id = 'journal-read'; kind = 'file-read'; path = $Db10 }, @{ id = 'journal-write'; kind = 'file-write'; path = $Db10 },
+        @{ id = 'broker-config-read'; kind = 'file-read'; path = $BrokerConfig }, @{ id = 'broker-bin-create'; kind = 'dir-create'; path = $ProtectedPaths.brokerBin },
+        @{ id = 'authority-folder-list'; kind = 'dir-list'; path = $AuthDir }, @{ id = 'authority-folder-create'; kind = 'dir-create'; path = $AuthDir },
+        @{ id = 'authority-config-read'; kind = 'file-read'; path = $AuthConfig }, @{ id = 'authority-config-write'; kind = 'file-write'; path = $AuthConfig },
+        @{ id = 'policy-read'; kind = 'file-read'; path = $AuthPolicyFile }, @{ id = 'policy-write'; kind = 'file-write'; path = $AuthPolicyFile },
+        @{ id = 'authority-bin-create'; kind = 'dir-create'; path = $ProtectedPaths.authorityBin }, @{ id = 'signing-key-open'; kind = 'cng-key'; path = $PolicyKeyName }
+      )
+      ($targets | ConvertTo-Json -Compress) | Set-Content -Encoding Ascii -Path "$LabRoot\person\targets.json"
+      $present = @($targets | Where-Object { $_.kind -ne 'cng-key' -and -not (Test-Path -LiteralPath $_.path) } | ForEach-Object { $_.id })
+      Invoke-LabJob $PersonSvc 'u4-files' @{ mode = 'child'; program = $PowerShellExe; args = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "$LabRoot\person\person-probe.ps1", "$LabRoot\person\targets.json") }
+      $out = Get-LastJson $PersonSvc 'u4-files'
+      # CNG answers NTE_BAD_KEYSET ("missing"), not NTE_PERM, to an account that may not open a machine key's file (first VM run, 2026-11-01). So for
+      # the key, "missing" counts as refused only while the Administrator sees the same key exist (the running Authority is signing with it).
+      $keyExists = [System.Security.Cryptography.CngKey]::Exists($PolicyKeyName, [System.Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider, [System.Security.Cryptography.CngKeyOpenOptions]::MachineKey)
+      $notDenied = @($out.results | Where-Object { -not ($_.outcome -eq 'denied' -or ($_.kind -eq 'cng-key' -and $_.outcome -eq 'missing' -and $keyExists)) })
+      Verdict (($null -ne $out) -and (@($out.results).Count -eq $targets.Count) -and ($notDenied.Count -eq 0) -and ($present.Count -eq 0) -and $keyExists) (
+        @(@($out.results) | ForEach-Object { "$($_.id): $($_.outcome)" }) + @("signing key exists for the Administrator at the same time: $keyExists", "targets missing before the probe (must be none): $(if ($present) { $present -join ', ' } else { 'none' })"))
+    }
+    Step 'u5_no_broad_ace' 'No protected file, folder or service object grants INTERACTIVE, Users, Authenticated Users, Everyone or the person anything that writes or controls' {
+      $ev = @(); $ok = $true
+      foreach ($k in $ProtectedPaths.Keys) {
+        $path = $ProtectedPaths[$k]
+        if (-not (Test-Path -LiteralPath $path)) { $ok = $false; $ev += "${k}: MISSING"; continue }
+        $rules = @((Get-Acl -LiteralPath $path).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.AccessControlType -eq 'Allow' -and ($BroadSids.ContainsKey($_.IdentityReference.Value) -or $_.IdentityReference.Value -eq $SidP) })
+        if ($rules.Count -gt 0) { $ok = $false }
+        $ev += "${k}: broad or person allow ACEs: $(if ($rules) { ($rules | ForEach-Object { "$($BroadSids[$_.IdentityReference.Value])$($_.IdentityReference.Value)=$($_.FileSystemRights)" }) -join ', ' } else { 'none' })"
+      }
+      # Service objects: broad principals may query (the SCM default for IU / SU / AU); nothing that starts, stops, pauses, reconfigures, deletes or re-ACLs.
+      foreach ($n in @($B, $C, $AuthSvc)) {
+        $sddl = ((& sc.exe sdshow $n) -join '').Trim()
+        $bad = @([regex]::Matches($sddl, '\(A;[^;]*;([A-Z]*);;;(WD|IU|AU|BU|SU|' + [regex]::Escape($SidP) + ')\)') | Where-Object { $_.Groups[1].Value -match '(RP|WP|DT|DC|SD|WD|WO|GA|GW)' } | ForEach-Object { $_.Value })
+        if ($bad.Count -gt 0) { $ok = $false }
+        $ev += "${n} service SDDL: $(Hide-Sids $sddl); control ACEs for broad principals: $(if ($bad) { $bad -join ' ' } else { 'none' })"
+      }
+      $ev += 'Authority signing key: the running Authority itself refuses a key that grants anyone but its SID, SYSTEM and Administrators (k_broad_ace_refused), so RUNNING is the proof'
+      Verdict $ok @($ev | ForEach-Object { Hide-Sids $_ })
+    }
+  }
+  finally { Stop-LabService $B; Stop-LabService $AuthSvc }
+
+  Step 'u6_remote_client_refused' 'Guest route: a client that reaches the Broker pipe through SMB is refused even when its account is the configured Control Plane SID' {
+    $lanman = Get-Service -Name LanmanServer -ErrorAction SilentlyContinue
+    try {
+      $pidR = Start-LabBroker 'remote' $Db11 7 $SidP
+      $local = Invoke-PersonProbe 'u6-local' @('pipe-open', $Pipe, '00120083')                         # the positive control: the same account, locally
+      Start-Sleep -Seconds 2                                                                            # the serve loop re-creates the pipe after that connection
+      $remote = Invoke-PersonProbe 'u6-smb' @('pipe-open', "\\127.0.0.1\pipe\$Pipe", '00120083')
+      $control = Invoke-PersonProbe 'u6-smb-control' @('pipe-open', '\\127.0.0.1\pipe\srvsvc', '00120083')  # SMB itself works for this account
+    }
+    finally { Stop-LabService $B }
+    $ev = @("LanmanServer: $($lanman.Status)", "local open as the configured Control Plane account: $($local.result) serverPid=$($local.serverPid) (service pid $pidR)",
+      "open through \\127.0.0.1 (SMB): $($remote.result)", "control: \\127.0.0.1\pipe\srvsvc through SMB: $($control.result)")
+    if (($null -eq $lanman) -or ($lanman.Status -ne 'Running') -or ($control.result -ne 'opened')) { return @{ Status = 'BLOCKED'; Evidence = $ev + 'SMB loopback is not usable for this account, so the remote-client refusal cannot be told apart from an SMB failure' } }
+    Verdict (($local.result -eq 'opened') -and ($remote.result -ne 'opened')) $ev
+  }
+}
+Stop-LabService $PersonSvc
 
 Remove-PolicyFiles
 Remove-AuthorityLabKey $PolicyKeyName

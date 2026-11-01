@@ -31,7 +31,7 @@ internal static class PipeHost
         NamedPipeServerStream pipe;
         try
         {
-            pipe = NamedPipeServerStreamAcl.Create(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0, OwnedBySelf(out SecurityIdentifier self, allowedSid));
+            pipe = LocalPipe.Create(pipeName, OwnedBySelf(out SecurityIdentifier self, allowedSid));   // first instance, max 1, PIPE_REJECT_REMOTE_CLIENTS
             if (!self.Equals(pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier)))) { pipe.Dispose(); failure = OwnerUnavailable(); return null; }
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or InvalidOperationException)

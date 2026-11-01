@@ -34,7 +34,7 @@ test('Broker source stays a fixed-action prototype with no process launch, insta
 test('Broker pipe is ephemeral, owned by the Broker\'s own SID and grants only that SID; start-up fails if the owner cannot be set', () => {
   // PipeOptions.CurrentUserOnly cannot be combined with a PipeSecurity, so the same DACL is written out: one ACE, this process's own user SID.
   assert.equal(/PipeOptions\.CurrentUserOnly\s*[,)]/u.test(program), false, 'CurrentUserOnly is rejected together with a PipeSecurity; the DACL is explicit');
-  assert.match(program, /NamedPipeServerStreamAcl\.Create\(pipeName, PipeDirection\.InOut, 1,/u);
+  assert.match(program, /LocalPipe\.Create\(pipeName, OwnedBySelf\(/u);
   assert.match(program, /security\.SetOwner\(self\);/u);
   // Exactly two grants ever: the Broker itself, and (service mode only) the one configured Control Plane SID with the exact 0x00120083 mask.
   assert.deepEqual([...program.matchAll(/\.AddAccessRule\(([^;]+)\);/gu)].map((m) => m[1]), [
@@ -57,7 +57,7 @@ test('Broker fault-injection seam is compiled out of the shipped build and the p
   // MSBuild reads environment variables as properties, so the publish pins the switch off as a global property.
   assert.match(publish, /'-p:AlberaBrokerTestFaults=false'/u, 'the publish script must pin the test seam off');
   assert.equal(/AlberaBrokerTestFaults=(?!false')|ALBERA_BROKER_TEST_FAULTS/u.test(publish), false, 'the publish script must never enable the test seam');
-  assert.match(program, /NamedPipeServerStreamAcl\.Create\(pipeName, PipeDirection\.InOut, 1,/u, 'maxNumberOfServerInstances == 1 is what makes .NET set FILE_FLAG_FIRST_PIPE_INSTANCE');
+  assert.match(program, /LocalPipe\.Create\(pipeName, OwnedBySelf\(/u, 'LocalPipe sets FILE_FLAG_FIRST_PIPE_INSTANCE with max 1 instance (test/local-pipe-copies.test.mjs)');
 });
 
 test('Broker project asks for no elevation, no service wrapper and no extra package', () => {
@@ -157,7 +157,8 @@ test('service host accepts STOP only, reports RUNNING only once the pipe exists,
 });
 
 test('service loop creates the first-instance pipe once and reuses that instance, and `serve` answers fences but exits after the first other request', () => {
-  assert.equal([...brokerCode.matchAll(/NamedPipeServerStreamAcl\.Create\(/gu)].length, 1, 'one pipe construction site for serve and service: same owner, same DACL, max 1 instance');
+  assert.equal([...brokerCode.matchAll(/LocalPipe\.Create\(/gu)].length, 1, 'one pipe construction site for serve and service: same owner, same DACL, max 1 instance');
+  assert.equal([...brokerCode.matchAll(/NamedPipeServerStreamAcl\.Create\(/gu)].length, 0, 'never the .NET call, which cannot reject remote clients');
   // Changed from "a new pipe per request" (hardening finding 2): disposing and re-creating between two requests left a gap in which any local user
   // could take the name, and the Broker then stopped with 70. The instance is now kept; this pin is stricter about the name, not weaker.
   const loop = serviceLoop.slice(serviceLoop.indexOf('internal static async Task<int> RunServiceLoopAsync('), serviceLoop.indexOf('private static async Task WaitForClientToReadAsync('));

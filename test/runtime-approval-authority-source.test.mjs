@@ -72,7 +72,8 @@ test('the Authority only builds and only reports; the real signer opens an exist
 
 test('each pipe: first instance only, owner = own SID, DACL = own SID plus ONE configured principal with 0x00120083, never a broad principal', () => {
   const pipeHost = code['PipeHost.cs'];
-  assert.match(pipeHost, /NamedPipeServerStreamAcl\.Create\(pipeName, PipeDirection\.InOut, 1,/u, 'max instances 1 = FILE_FLAG_FIRST_PIPE_INSTANCE');
+  assert.match(pipeHost, /LocalPipe\.Create\(pipeName, OwnedBySelf\(/u, 'LocalPipe: first instance, max 1, PIPE_REJECT_REMOTE_CLIENTS (test/local-pipe-copies.test.mjs)');
+  assert.equal(/NamedPipeServerStreamAcl/u.test(pipeHost), false, '.NET cannot set PIPE_REJECT_REMOTE_CLIENTS');
   assert.match(pipeHost, /security\.SetOwner\(self\);/u);
   assert.match(pipeHost, /self = identity\.User \?\? throw/u);
   assert.deepEqual([...pipeHost.matchAll(/\.AddAccessRule\(([^;]+)\);/gu)].map((m) => m[1]), [
