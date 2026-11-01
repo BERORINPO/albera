@@ -7,9 +7,11 @@
 //   observeTarget(candidate, tipOid)               -> candidate (STALE when the target branch moved; unchanged otherwise)
 //   acceptEvidence(candidate, evidence, opts)      -> { ok: true } | { ok: false, code }   (INT-01)
 //   verificationStatus(candidate, evidence, opts)  -> 'verified' | 'failed' | 'pending'
-//   authorizePromotion(candidate, request)         -> { ok: true, update } | { ok: false, code }   (INT-02)
+//   authorizePromotion(candidate, request)         -> { ok: true, update, candidateId, version, approvedUntil } | { ok: false, code }   (INT-02)
+//   markApproved(candidate, authorization)         -> candidate (APPROVED; only with an ok authorization for exactly this version)
+//   beginPromotion(candidate, now)                 -> candidate (PROMOTING; only while the approval is unexpired)
 //   recordPromotion(candidate, outcome)            -> candidate (MERGED, UNKNOWN_PROMOTION or BLOCKED)
-//   reconcilePromotion(candidate, remoteTipOid)    -> candidate (MERGED, back to APPROVED for a retry, or STALE)
+//   reconcilePromotion(candidate, remoteTipOid)    -> candidate (MERGED, back to VERIFYING for a fresh approval, or STALE)
 //
 // `update` is the only ref change the promotion adapter may make: a compare-and-swap of `ref` from `expectedOldOid` to `newOid`. There is no force
 // form. An ambiguous push (timeout after send) is UNKNOWN_PROMOTION, and the only way out is reconcilePromotion with the observed remote tip: never a
@@ -18,7 +20,7 @@
 export const CANDIDATE_STATES = Object.freeze(['PREPARED', 'VERIFYING', 'APPROVED', 'PROMOTING', 'MERGED', 'STALE', 'UNKNOWN_PROMOTION', 'BLOCKED']);
 export const EVIDENCE_REFUSALS = Object.freeze([
   'evidence_invalid', 'evidence_agent_reported', 'evidence_untrusted_runner', 'evidence_commit_mismatch', 'evidence_tree_mismatch',
-  'evidence_plan_mismatch', 'evidence_image_mismatch', 'evidence_policy_mismatch', 'evidence_gate_unknown',
+  'evidence_plan_mismatch', 'evidence_image_mismatch', 'evidence_lockfile_mismatch', 'evidence_policy_mismatch', 'evidence_gate_unknown',
 ]);
 export const PROMOTION_REFUSALS = Object.freeze([
   'request_invalid', 'candidate_not_promotable', 'target_moved', 'not_verified', 'approval_missing', 'approval_not_human', 'approval_denied',
@@ -30,7 +32,8 @@ const DIGEST_RE = /^sha256:[0-9a-f]{64}$/u;
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const REF_RE = /^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
 const RISKS = Object.freeze(['low', 'medium', 'high']);
-const COMPREHENSION_BASES = Object.freeze(['explanation', 'demonstration']);   // never 'ai_summary': a model's explanation is a study aid (ADR-007 §6)
+// Never 'ai_summary': a model's explanation is a study aid (ADR-007 §6). High risk needs a code-grounded demonstration; medium also takes an explanation.
+const COMPREHENSION_BASES = Object.freeze({ medium: Object.freeze(['explanation', 'demonstration']), high: Object.freeze(['demonstration']) });
 
 const ok = Object.freeze({ ok: true });
 const refuse = (code) => Object.freeze({ ok: false, code });
@@ -50,7 +53,7 @@ export function freezeCandidate(input = {}) {
   for (const f of ['candidateId', 'projectId', 'repositoryId']) if (!isId(c[f])) throw new TypeError(`invalid_candidate_${f}`);
   if (typeof c.targetRef !== 'string' || !REF_RE.test(c.targetRef) || c.targetRef.includes('..') || c.targetRef.endsWith('/') || c.targetRef.endsWith('.lock')) throw new TypeError('invalid_candidate_targetRef');
   for (const f of ['targetTipOid', 'candidateCommitOid', 'candidateTreeOid']) if (!isOid(c[f])) throw new TypeError(`invalid_candidate_${f}`);
-  for (const f of ['testPlanDigest', 'imageDigest']) if (!isDigest(c[f])) throw new TypeError(`invalid_candidate_${f}`);
+  for (const f of ['testPlanDigest', 'imageDigest', 'lockfileDigest']) if (!isDigest(c[f])) throw new TypeError(`invalid_candidate_${f}`);
   if (!isVersion(c.policyVersion)) throw new TypeError('invalid_candidate_policyVersion');
   if (!isVersion(c.algorithmVersion)) throw new TypeError('invalid_candidate_algorithmVersion');
   if (!RISKS.includes(c.risk)) throw new TypeError('invalid_candidate_risk');
@@ -61,7 +64,7 @@ export function freezeCandidate(input = {}) {
   if (c.candidateCommitOid === c.targetTipOid) throw new TypeError('invalid_candidate_candidateCommitOid');   // nothing to promote
   return Object.freeze({
     candidateId: c.candidateId, projectId: c.projectId, repositoryId: c.repositoryId, targetRef: c.targetRef, targetTipOid: c.targetTipOid,
-    candidateCommitOid: c.candidateCommitOid, candidateTreeOid: c.candidateTreeOid, testPlanDigest: c.testPlanDigest, imageDigest: c.imageDigest,
+    candidateCommitOid: c.candidateCommitOid, candidateTreeOid: c.candidateTreeOid, testPlanDigest: c.testPlanDigest, imageDigest: c.imageDigest, lockfileDigest: c.lockfileDigest,
     policyVersion: c.policyVersion, algorithmVersion: c.algorithmVersion, risk: c.risk, requiredGates: Object.freeze([...c.requiredGates]),
     submissions, state: 'PREPARED', version: 1,
   });
@@ -85,7 +88,7 @@ export function startVerification(candidate) {
 
 /**
  * INT-01: may this evidence count for this candidate? Only host-generated evidence (`provenance: 'trusted_verified'`) from a runner the host
- * registered, about exactly this commit, tree, test plan, image and policy, for one of the candidate's required gates. Agent-reported results are
+ * registered, about exactly this commit, tree, test plan, image, lockfile and policy, for one of the candidate's required gates. Agent-reported results are
  * kept by the caller as claims but never count.
  * @param {{ trustedRunners: readonly string[] }} opts
  */
@@ -99,6 +102,7 @@ export function acceptEvidence(candidate, evidence, { trustedRunners } = {}) {
   if (e.subjectTreeOid !== candidate.candidateTreeOid) return refuse('evidence_tree_mismatch');
   if (e.testPlanDigest !== candidate.testPlanDigest) return refuse('evidence_plan_mismatch');
   if (e.imageDigest !== candidate.imageDigest) return refuse('evidence_image_mismatch');
+  if (e.lockfileDigest !== candidate.lockfileDigest) return refuse('evidence_lockfile_mismatch');
   if (e.policyVersion !== candidate.policyVersion) return refuse('evidence_policy_mismatch');
   if (!candidate.requiredGates.includes(e.gate)) return refuse('evidence_gate_unknown');
   return ok;
@@ -123,39 +127,45 @@ function checkApproval(candidate, approval, now) {
   if (!Number.isSafeInteger(a.expiresAt) || !Number.isSafeInteger(now) || now >= a.expiresAt) return 'approval_expired';
   if (candidate.risk !== 'low') {
     const u = a.comprehension;
-    const grounded = u && u.reviewerId === a.decidedBy.id && COMPREHENSION_BASES.includes(u.basis) && u.candidateCommitOid === candidate.candidateCommitOid;
+    const grounded = u && u.reviewerId === a.decidedBy.id && COMPREHENSION_BASES[candidate.risk].includes(u.basis) && u.candidateCommitOid === candidate.candidateCommitOid;
     if (!grounded) return 'comprehension_required';
   }
   return null;
 }
 
 /**
- * INT-02: may the target ref move to this candidate now? Needs: the candidate is VERIFYING or APPROVED (not stale, not final), the target tip
+ * INT-02: may the target ref move to this candidate now? Needs: the candidate is VERIFYING (not stale, not final, not already approved), the target tip
  * observed right now equals the frozen one, every required gate verified on this exact commit, and a person's approval bound to this candidate's
- * id, version, commit, ref, tip and policy, unexpired at `now` (host clock, injected). Medium and high risk also need that person's comprehension
- * record grounded in an explanation or a demonstration of this commit (CMPH-01), not an AI summary.
+ * id, version, commit, ref, tip and policy, unexpired at `now` (host clock, injected). Medium risk also needs that person's comprehension record
+ * grounded in an explanation or a demonstration of this commit, high risk a demonstration (CMPH-01); never an AI summary.
  * @param {{ currentTipOid: string, evidence: object[], trustedRunners: readonly string[], approval: object, now: number }} request
  */
 export function authorizePromotion(candidate, request = {}) {
   const r = request ?? {};
   if (!isOid(r.currentTipOid)) return refuse('request_invalid');
-  if (candidate.state !== 'VERIFYING' && candidate.state !== 'APPROVED') return refuse('candidate_not_promotable');
+  if (candidate.state !== 'VERIFYING') return refuse('candidate_not_promotable');
   if (r.currentTipOid !== candidate.targetTipOid) return refuse('target_moved');
   if (verificationStatus(candidate, r.evidence, { trustedRunners: r.trustedRunners }) !== 'verified') return refuse('not_verified');
   const problem = checkApproval(candidate, r.approval, r.now);
   if (problem) return refuse(problem);
-  return Object.freeze({ ok: true, update: Object.freeze({ ref: candidate.targetRef, expectedOldOid: candidate.targetTipOid, newOid: candidate.candidateCommitOid }) });
+  return Object.freeze({
+    ok: true, candidateId: candidate.candidateId, version: candidate.version, approvedUntil: r.approval.expiresAt,
+    update: Object.freeze({ ref: candidate.targetRef, expectedOldOid: candidate.targetTipOid, newOid: candidate.candidateCommitOid }),
+  });
 }
 
-/** APPROVED after authorizePromotion said yes for this version (the caller then calls beginPromotion right before the adapter runs). */
-export function markApproved(candidate) {
-  if (candidate.state !== 'VERIFYING' && candidate.state !== 'APPROVED') throw new TypeError('candidate_not_promotable');
-  return next(candidate, 'APPROVED');
+/** APPROVED, only with what authorizePromotion returned for exactly this candidate and version (no authorization, no approved state). */
+export function markApproved(candidate, authorization) {
+  if (candidate.state !== 'VERIFYING') throw new TypeError('candidate_not_promotable');
+  const a = authorization;
+  if (a?.ok !== true || a.candidateId !== candidate.candidateId || a.version !== candidate.version || !Number.isSafeInteger(a.approvedUntil)) throw new TypeError('authorization_invalid');
+  return Object.freeze({ ...next(candidate, 'APPROVED'), approvedUntil: a.approvedUntil });
 }
 
-/** PROMOTING: recorded BEFORE the adapter touches the remote (intent before effect). */
-export function beginPromotion(candidate) {
+/** PROMOTING: recorded BEFORE the adapter touches the remote (intent before effect), and only while the person's approval is still unexpired. */
+export function beginPromotion(candidate, now) {
   if (candidate.state !== 'APPROVED') throw new TypeError('candidate_not_approved');
+  if (!Number.isSafeInteger(now) || now >= candidate.approvedUntil) throw new TypeError('approval_expired');
   return next(candidate, 'PROMOTING');
 }
 
@@ -170,12 +180,13 @@ export function recordPromotion(candidate, outcome) {
 
 /**
  * The only exit from UNKNOWN_PROMOTION: the remote tip as read back. Equal to the candidate commit -> MERGED (the push did land); equal to the old
- * tip -> APPROVED again (it did not; a retry needs a fresh authorizePromotion against the new version); anything else -> STALE (someone moved it).
+ * tip -> VERIFYING again (it did not land; a retry needs a fresh authorizePromotion and markApproved, so a fresh approval for the new version);
+ * anything else -> STALE (someone moved it).
  */
 export function reconcilePromotion(candidate, remoteTipOid) {
   if (candidate.state !== 'UNKNOWN_PROMOTION') throw new TypeError('candidate_not_unknown');
   if (!isOid(remoteTipOid)) throw new TypeError('invalid_target_tip');
   if (remoteTipOid === candidate.candidateCommitOid) return next(candidate, 'MERGED');
-  if (remoteTipOid === candidate.targetTipOid) return next(candidate, 'APPROVED');
+  if (remoteTipOid === candidate.targetTipOid) return next(candidate, 'VERIFYING');
   return next(candidate, 'STALE');
 }

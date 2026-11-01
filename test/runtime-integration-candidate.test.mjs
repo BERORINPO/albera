@@ -14,13 +14,13 @@ const NOW = 1_800_000_000;
 
 const base = (over = {}) => ({
   candidateId: 'cand_7', projectId: 'proj_001', repositoryId: 'repo_001', targetRef: 'refs/heads/main', targetTipOid: oid('a'),
-  candidateCommitOid: oid('c'), candidateTreeOid: oid('d'), testPlanDigest: digest('1'), imageDigest: digest('2'), policyVersion: 3, algorithmVersion: 1,
+  candidateCommitOid: oid('c'), candidateTreeOid: oid('d'), testPlanDigest: digest('1'), imageDigest: digest('2'), lockfileDigest: digest('3'), policyVersion: 3, algorithmVersion: 1,
   risk: 'low', requiredGates: ['unit', 'integration'],
   submissions: [{ submissionId: 'sub_101', baseCommitOid: oid('a'), resultCommitOid: oid('b') }], ...over,
 });
 const evidence = (gate, over = {}) => ({
   evidenceId: `ev_${gate}`, gate, result: 'passed', provenance: 'trusted_verified', runnerId: 'trusted-verifier-01',
-  subjectCommitOid: oid('c'), subjectTreeOid: oid('d'), testPlanDigest: digest('1'), imageDigest: digest('2'), policyVersion: 3, ...over,
+  subjectCommitOid: oid('c'), subjectTreeOid: oid('d'), testPlanDigest: digest('1'), imageDigest: digest('2'), lockfileDigest: digest('3'), policyVersion: 3, ...over,
 });
 const passing = () => [evidence('unit'), evidence('integration')];
 const approvalFor = (cand, over = {}) => ({
@@ -47,7 +47,7 @@ describe('freezeCandidate', () => {
     assert.equal(c.submissions[0].resultCommitOid, oid('b'));
   });
   for (const [field, value] of [
-    ['targetTipOid', 'abc'], ['candidateCommitOid', oid('A')], ['candidateTreeOid', `${oid('d')}0`], ['testPlanDigest', 'sha256:xyz'], ['imageDigest', digest('2').toUpperCase()],
+    ['targetTipOid', 'abc'], ['candidateCommitOid', oid('A')], ['candidateTreeOid', `${oid('d')}0`], ['testPlanDigest', 'sha256:xyz'], ['imageDigest', digest('2').toUpperCase()], ['lockfileDigest', undefined],
     ['policyVersion', 0], ['algorithmVersion', 1.5], ['risk', 'none'], ['requiredGates', []], ['requiredGates', ['unit', 'unit']], ['submissions', []],
     ['targetRef', 'main'], ['targetRef', 'refs/heads/a..b'], ['targetRef', 'refs/heads/x.lock'], ['targetRef', 'refs/tags/v1'], ['candidateId', '../x'],
   ]) {
@@ -78,6 +78,7 @@ describe('INT-01: evidence counts only for the exact candidate', () => {
     ['the same commit id with another tree', { subjectTreeOid: oid('f') }, 'evidence_tree_mismatch'],
     ['another test plan', { testPlanDigest: digest('9') }, 'evidence_plan_mismatch'],
     ['another verification image', { imageDigest: digest('8') }, 'evidence_image_mismatch'],
+    ['other dependencies (lockfile)', { lockfileDigest: digest('7') }, 'evidence_lockfile_mismatch'],
     ['another policy version', { policyVersion: 2 }, 'evidence_policy_mismatch'],
     ['a gate the plan does not require', { gate: 'lint' }, 'evidence_gate_unknown'],
     ['a malformed result', { result: 'ok' }, 'evidence_invalid'],
@@ -121,7 +122,7 @@ describe('INT-02: promotion needs a verified candidate and a person approving ex
   it('everything bound -> a compare-and-swap of the target ref, never anything else', () => {
     const cand = verifying();
     const r = authorizePromotion(cand, request(cand));
-    assert.deepEqual(r, { ok: true, update: { ref: 'refs/heads/main', expectedOldOid: oid('a'), newOid: oid('c') } });
+    assert.deepEqual(r, { ok: true, candidateId: 'cand_7', version: cand.version, approvedUntil: NOW + 300, update: { ref: 'refs/heads/main', expectedOldOid: oid('a'), newOid: oid('c') } });
     assert.deepEqual(Object.keys(r.update).sort(), ['expectedOldOid', 'newOid', 'ref'], 'no force flag exists');
   });
   for (const [label, over, code] of [
@@ -151,6 +152,13 @@ describe('INT-02: promotion needs a verified candidate and a person approving ex
     const cand = freezeCandidate(base());
     assert.equal(authorizePromotion(cand, request(cand)).code, 'candidate_not_promotable');
   });
+  it('high risk takes only a demonstration; an explanation is enough for medium', () => {
+    const high = verifying({ risk: 'high' });
+    const explained = approvalFor(high, { comprehension: { reviewerId: 'yosuke', basis: 'explanation', candidateCommitOid: oid('c') } });
+    assert.equal(authorizePromotion(high, request(high, { approval: explained })).code, 'comprehension_required');
+    const medium = verifying({ risk: 'medium' });
+    assert.equal(authorizePromotion(medium, request(medium, { approval: approvalFor(medium, { comprehension: explained.comprehension }) })).ok, true);
+  });
   it('medium and high risk need the approver\'s own comprehension of this commit, not an AI summary (CMPH-01)', () => {
     for (const risk of ['medium', 'high']) {
       const cand = verifying({ risk });
@@ -161,7 +169,7 @@ describe('INT-02: promotion needs a verified candidate and a person approving ex
       assert.equal(authorizePromotion(cand, request(cand, { approval: someoneElse })).code, 'comprehension_required');
       const oldCommit = approvalFor(cand, { comprehension: { reviewerId: 'yosuke', basis: 'demonstration', candidateCommitOid: oid('e') } });
       assert.equal(authorizePromotion(cand, request(cand, { approval: oldCommit })).code, 'comprehension_required');
-      const grounded = approvalFor(cand, { comprehension: { reviewerId: 'yosuke', basis: 'explanation', candidateCommitOid: oid('c') } });
+      const grounded = approvalFor(cand, { comprehension: { reviewerId: 'yosuke', basis: 'demonstration', candidateCommitOid: oid('c') } });
       assert.equal(authorizePromotion(cand, request(cand, { approval: grounded })).ok, true);
     }
   });
@@ -170,8 +178,9 @@ describe('INT-02: promotion needs a verified candidate and a person approving ex
 describe('promotion: intent before effect, and an ambiguous push is reconciled, never re-pushed blindly', () => {
   const promoting = () => {
     const cand = verifying();
-    assert.equal(authorizePromotion(cand, request(cand)).ok, true);
-    return beginPromotion(markApproved(cand));
+    const auth = authorizePromotion(cand, request(cand));
+    assert.equal(auth.ok, true);
+    return beginPromotion(markApproved(cand, auth), NOW);
   };
   it('the CAS landed -> MERGED; the remote refused the CAS -> STALE; anything unexpected -> BLOCKED', () => {
     assert.equal(recordPromotion(promoting(), 'updated').state, 'MERGED');
@@ -185,7 +194,8 @@ describe('promotion: intent before effect, and an ambiguous push is reconciled, 
     assert.equal(reconcilePromotion(unknown, oid('c')).state, 'MERGED');
     assert.equal(reconcilePromotion(unknown, oid('9')).state, 'STALE');
     const back = reconcilePromotion(unknown, oid('a'));
-    assert.equal(back.state, 'APPROVED');
+    assert.equal(back.state, 'VERIFYING');
+    assert.throws(() => beginPromotion(back, NOW), /candidate_not_approved/u, 'no re-push without a new approval');
     assert.equal(authorizePromotion(back, request(back, { approval: approvalFor(unknown) })).code, 'approval_stale', 'the earlier approval does not cover the retry');
     assert.equal(authorizePromotion(back, request(back)).ok, true, 'a fresh approval for the new version does');
   });
@@ -197,9 +207,23 @@ describe('promotion: intent before effect, and an ambiguous push is reconciled, 
     assert.throws(() => startVerification(cand), /candidate_not_prepared/u);
     assert.throws(() => markApproved(freezeCandidate(base())), /candidate_not_promotable/u);
   });
+  it('APPROVED needs an ok authorization for exactly this candidate and version; PROMOTING needs it unexpired', () => {
+    const cand = verifying();
+    const auth = authorizePromotion(cand, request(cand));
+    assert.throws(() => markApproved(cand), /authorization_invalid/u, 'no authorization: no shortcut to MERGED');
+    assert.throws(() => markApproved(cand, { ok: false, code: 'not_verified' }), /authorization_invalid/u);
+    assert.throws(() => markApproved(cand, { ...auth, version: cand.version + 1 }), /authorization_invalid/u);
+    assert.throws(() => markApproved(cand, { ...auth, candidateId: 'cand_8' }), /authorization_invalid/u);
+    const approved = markApproved(cand, auth);
+    assert.throws(() => markApproved(approved, auth), /candidate_not_promotable/u, 'one authorization, one approved state');
+    assert.equal(authorizePromotion(approved, request(approved)).code, 'candidate_not_promotable');
+    assert.throws(() => beginPromotion(approved, NOW + 300), /approval_expired/u);
+    assert.throws(() => beginPromotion(approved), /approval_expired/u);
+    assert.equal(beginPromotion(approved, NOW + 299).state, 'PROMOTING');
+  });
   it('every change is a new frozen record; the old one is untouched', () => {
     const cand = verifying();
-    const approved = markApproved(cand);
+    const approved = markApproved(cand, authorizePromotion(cand, request(cand)));
     assert.equal(cand.state, 'VERIFYING');
     assert.equal(approved.version, cand.version + 1);
     assert.ok(Object.isFrozen(approved));
