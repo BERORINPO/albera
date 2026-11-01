@@ -73,6 +73,8 @@ const EXPECTED = {
     'approved-operation-flow.mjs', 'approved-operation-journal.mjs',
     // verified-integration candidate: exact-commit evidence and person-approved compare-and-swap promotion (rule 5e; ADR-007, INT-01 / INT-02)
     'integration-candidate.mjs',
+    // host-side git quarantine for submissions (bundles only, bare repositories, hardened git; ADR-007 §2 / §4) and its test double
+    'git-quarantine.mjs', 'fake-git-quarantine.mjs',
     // shared receipt v2 / action digest contract for the future Broker and Approval Authority (rule 9; spec/architecture.md decision log 2026-10-30+receipt-v2-contract)
     ...['action-digest.mjs', 'receipt-v2.mjs', 'strict-json.mjs', 'network-attestation.mjs', 'network-attestation-vectors.json', 'receipt-v2.schema.json', 'test-vectors.json', 'ActionDigest.cs', 'ReceiptV2.cs', 'StrictJson.cs',
       // receipt v3 (basis + policy hash) and the tier policy, issue #115 step 3
