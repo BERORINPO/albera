@@ -32,9 +32,9 @@ export function gitEnv(root) {
 
 // argv only (shell: false), a fixed environment, a deadline and an output cap; stdout and stderr are collected as UTF-8 and never logged.
 // A timeout, a spawn failure or the output cap gives code -1 with `failure` set, so a caller can tell "git said no" from "no answer".
-export function runGitProcess(file, args, { env, input, allowFailure = false } = {}) {
+export function runGitProcess(file, args, { env, cwd, input, allowFailure = false } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { env, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(file, args, { env, cwd, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const out = []; const err = []; let size = 0; let failed = null;
     const stop = (why) => { if (!failed) { failed = why; child.kill(); } };
     const timer = setTimeout(() => stop('timeout'), TIMEOUT_MS);

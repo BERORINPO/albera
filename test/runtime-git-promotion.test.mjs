@@ -75,6 +75,22 @@ describe('readTip', () => {
       assert.deepEqual(await p.readTip({ repositoryId: 'repo_001', ref }), { ok: false, code: 'request_invalid' }, String(ref));
     }
   });
+  it("does not read the config of a repository around the host process (an insteadOf there cannot redirect the read)", async () => {
+    const url = freshRemote();
+    const decoy = freshRemote(other);
+    const around = path.join(work, 'around');
+    execFileSync('git', ['init', '-q', around], { env });
+    execFileSync('git', ['-C', around, 'config', `url.${decoy.replaceAll('\\', '/')}.insteadOf`, url.replaceAll('\\', '/')], { env });
+    execFileSync('git', ['-C', around, 'config', `url.${decoy}.insteadOf`, url], { env });
+    const before = process.cwd();
+    process.chdir(around);   // the host process started inside a repository it does not own
+    try {
+      assert.equal(execFileSync('git', ['ls-remote', '--refs', url, MAIN], { env, encoding: 'utf8' }).split('\t')[0], other, 'plain git here is redirected');
+      assert.deepEqual(await promotion(url).readTip({ repositoryId: 'repo_001', ref: MAIN }), { ok: true, oid: base });
+    } finally {
+      process.chdir(before);
+    }
+  });
   it('a remote that cannot be read is git_failed, not an empty ref', async () => {
     const p = promotion(path.join(work, 'missing.git'));
     assert.deepEqual(await p.readTip({ repositoryId: 'repo_001', ref: MAIN }), { ok: false, code: 'git_failed' });
@@ -160,7 +176,7 @@ describe('pushOutcome: only a fast-forward status line counts as updated', () =>
     ['stale lease', { code: 1, stdout: line('!', '[rejected] (stale info)') }, ['rejected', 'stale']],
     ['not a fast-forward', { code: 1, stdout: line('!', '[rejected] (non-fast-forward)') }, ['rejected', 'not_fast_forward']],
     ['remote rejected', { code: 1, stdout: line('!', '[remote rejected] (pre-receive hook declined)') }, ['blocked', 'remote_rule']],
-    ['remote failure', { code: 1, stdout: line('!', '[remote failure] (remote failed to report status)') }, ['blocked', 'remote_rule']],
+    ['remote failure (sent, no report: the ref may have moved)', { code: 1, stdout: line('!', '[remote failure] (remote failed to report status)') }, ['unknown', 'no_report']],
     ['a forced update', { code: 0, stdout: line('+', 'a...b (forced update)') }, ['unknown', 'no_status']],
     ['a new ref', { code: 0, stdout: line('*', '[new branch]') }, ['unknown', 'no_status']],
     ['up to date', { code: 0, stdout: line('=', '[up to date]') }, ['unknown', 'no_status']],

@@ -14,8 +14,8 @@ import { gitEnv, hardening, isOid, runGitProcess } from './git-process.mjs';
 // compare-and-swap and nothing else: newOid must descend from expectedOldOid in `repo` (checked here before anything is sent), and the remote updates
 // the ref only if it still is expectedOldOid (`--force-with-lease=<ref>:<expected>`; receive-pack checks the old value under its ref lock), atomically,
 // one ref, no hooks of ours, no tags. Outcomes map onto recordPromotion: 'updated' -> MERGED, 'rejected' (the tip moved, or not a fast-forward
-// any more) -> STALE, 'blocked' (the remote's own rules refused, e.g. its pre-receive hook) -> BLOCKED, 'unknown' (no answer, a timeout, output that
-// does not say) -> UNKNOWN_PROMOTION, whose only exit is readTip + reconcilePromotion: an ambiguous push is never re-sent blindly (ADR-007 §8).
+// any more) -> STALE, 'blocked' (the remote's own rules refused, e.g. its pre-receive hook) -> BLOCKED, 'unknown' (no answer, a timeout, a
+// `[remote failure]`, output that does not say) -> UNKNOWN_PROMOTION, whose only exit is readTip + reconcilePromotion: an ambiguous push is never re-sent blindly (ADR-007 §8).
 
 export const PROMOTION_REFUSALS = Object.freeze(['request_invalid', 'remote_unknown', 'ref_not_promotable', 'not_fast_forward', 'git_failed']);
 
@@ -34,9 +34,16 @@ export function createGitPromotion({ git, root, remotes, run } = {}) {
   if (typeof git !== 'string' || !path.isAbsolute(git) || typeof root !== 'string' || !path.isAbsolute(root)) throw new TypeError('invalid_git_promotion_dependencies');
   const registry = freezeRemotes(remotes);
   const runGit = run ?? runGitProcess;
+  // readTip runs inside an empty bare repository the host made under root, so git never discovers a repository from the host process's current
+  // folder (whose .git/config could rewrite the remote URL with insteadOf or name an upload-pack command). Every call also runs with cwd = root.
+  const reader = path.join(root, 'tip-reader.git');
   let prepared = null;
-  const prepare = () => (prepared ??= mkdir(root, { recursive: true }).then(() => writeFile(path.join(root, 'empty.gitconfig'), '', { flag: 'a' })));
-  const gitRun = async (args, opts = {}) => { await prepare(); return runGit(git, [...hardening(root), ...args], { env: gitEnv(root), allowFailure: true, ...opts }); };
+  const prepare = () => (prepared ??= (async () => {
+    await mkdir(root, { recursive: true });
+    await writeFile(path.join(root, 'empty.gitconfig'), '', { flag: 'a' });
+    await runGit(git, [...hardening(root), 'init', '--bare', '--quiet', '--template=', '--', reader], { env: gitEnv(root), cwd: root });
+  })());
+  const gitRun = async (args, opts = {}) => { await prepare(); return runGit(git, [...hardening(root), ...args], { env: gitEnv(root), cwd: root, allowFailure: true, ...opts }); };
   const target = (repositoryId, ref) => {
     const remote = Object.hasOwn(registry, repositoryId) ? registry[repositoryId] : null;
     if (!remote) return { code: 'remote_unknown' };
@@ -48,7 +55,7 @@ export function createGitPromotion({ git, root, remotes, run } = {}) {
     if (typeof repositoryId !== 'string' || !isRef(ref)) return refuse('request_invalid');
     const t = target(repositoryId, ref);
     if (t.code) return refuse(t.code);
-    const listed = await gitRun(['ls-remote', '--refs', '--', t.url, ref]);
+    const listed = await gitRun(['--git-dir', reader, 'ls-remote', '--refs', '--', t.url, ref]);
     if (listed.code !== 0) return refuse('git_failed');
     const lines = listed.stdout.split('\n').filter(Boolean).map((l) => l.split('\t'));
     const exact = lines.filter(([, name]) => name === ref);
@@ -86,7 +93,8 @@ export function pushOutcome(result, ref) {
   const [flag, , summary = ''] = lines[0].split('\t');
   if (flag === ' ' && result.code === 0) return outcome('updated', 'fast_forward');
   if (flag === '!') {
-    if (summary.startsWith('[remote rejected]') || summary.startsWith('[remote failure]')) return outcome('blocked', 'remote_rule');
+    if (summary.startsWith('[remote rejected]')) return outcome('blocked', 'remote_rule');
+    if (summary.startsWith('[remote failure]')) return outcome('unknown', 'no_report');   // the pack was sent and the answer lost: the ref may have moved
     if (summary.includes('stale info')) return outcome('rejected', 'stale');
     if (summary.startsWith('[rejected]')) return outcome('rejected', 'not_fast_forward');
   }
