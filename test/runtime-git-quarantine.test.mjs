@@ -51,7 +51,7 @@ function branch(name, build) {
 
 describe('path policy (pure)', () => {
   for (const p of ['a.txt', 'src/x/y.mjs', 'docs/.github/ok.md', 'a..b.txt']) it(`allows ${p}`, () => assert.equal(isAllowedPath(p), true));
-  for (const p of ['.git/config', 'x/.git/hooks/post-checkout', '.gitmodules', 'x/.GIT/config', '.git./config', 'git~1/config', '../x', 'x/../../y', '/etc/passwd', 'C:/x', 'a\\b', 'a\u0001b', '', 'x//y', './x']) {
+  for (const p of ['.git/config', 'x/.git/hooks/post-checkout', '.gitmodules', 'x/.GIT/config', '.git./config', 'git~1/config', 'GITMOD~1', 'x/gitmod~2', '.gitmodules:x', 'a:b', 'con?x', 'a|b', '../x', 'x/../../y', '/etc/passwd', 'C:/x', 'a\\b', 'a\u0001b', '', 'x//y', './x']) {
     it(`refuses ${JSON.stringify(p)}`, () => assert.equal(isAllowedPath(p), false));
   }
   it('parses NUL-separated raw diff output, including paths with spaces and newlines', () => {
@@ -88,7 +88,7 @@ describe('importBundle: the guest\'s word is checked against the bundle', () => 
     writeFileSync(path.join(hooks, 'post-checkout'), `#!/bin/sh\necho ran > "${marker.replace(/\\/gu, '/')}"\n`, { mode: 0o755 });
     const { q, repo } = await imported('task');
     assert.equal(existsSync(path.join(repo, 'hooks')), false, 'init --template= copies no sample hooks');
-    assert.ok((await q.buildCandidate(repo, { targetOid: base, resultOids: [task], identity: IDENTITY })).ok);
+    assert.ok((await q.buildCandidate(repo, { targetOid: base, submissions: [{ baseOid: base, resultOid: task }], identity: IDENTITY })).ok);
     assert.equal(existsSync(marker), false);
     assert.deepEqual(readdirSync(repo).filter((n) => n === 'index'), [], 'bare: no index, no working tree');
   });
@@ -97,7 +97,7 @@ describe('importBundle: the guest\'s word is checked against the bundle', () => 
 describe('inspect: what the submission adds or changes', () => {
   it('a normal change passes and reports its size', async () => {
     const { q, repo } = await imported('task');
-    assert.deepEqual(await q.inspect(repo, { baseOid: base, resultOid: task }), { ok: true, changed: 1 });
+    assert.deepEqual(await q.inspect(repo, { baseOid: base, resultOid: task }), { ok: true, changed: 1, commits: 1 });
   });
   it('refuses a result that does not descend from the base', async () => {
     const { q, repo } = await imported('task', 'other');
@@ -134,19 +134,35 @@ describe('inspect: what the submission adds or changes', () => {
     const { q, repo } = await imported('bad-gitmodules');
     assert.deepEqual(await q.inspect(repo, { baseOid: base, resultOid: oid }), { ok: false, code: 'path_forbidden' });
   });
+  it('a forbidden path in an EARLIER commit is refused even when the last commit removes it (every commit lands in the history)', async () => {
+    g('checkout', '-q', '-b', 'hide', base);
+    file('.gitmodules', '[submodule "x"]\n\turl = https://example.invalid/x\n'); commitAll('add');
+    g('rm', '-q', '.gitmodules'); const hidden = commitAll('remove');
+    g('checkout', '-q', 'main');
+    const { q, repo } = await imported('hide');
+    assert.deepEqual(await q.inspect(repo, { baseOid: base, resultOid: hidden }), { ok: false, code: 'path_forbidden' });
+  });
+  it('an oversized blob in an earlier commit is refused, and too many commits is refused', async () => {
+    g('checkout', '-q', '-b', 'bigthenshrink', base);
+    file('big.txt', 'x'.repeat(5000)); commitAll('big'); file('big.txt', 'x'); const shrunk = commitAll('shrink');
+    g('checkout', '-q', 'main');
+    const { q, repo } = await imported('bigthenshrink');
+    assert.deepEqual(await q.inspect(repo, { baseOid: base, resultOid: shrunk, limits: { maxBlobBytes: 1000, maxChangedPaths: 100, maxCommits: 10 } }), { ok: false, code: 'blob_too_large' });
+    assert.deepEqual(await q.inspect(repo, { baseOid: base, resultOid: shrunk, limits: { maxBlobBytes: 10_000, maxChangedPaths: 100, maxCommits: 1 } }), { ok: false, code: 'too_many_commits' });
+  });
   it('refuses a blob over the size limit and too many changed paths', async () => {
     const { q, repo } = await imported('task');
-    assert.deepEqual(await q.inspect(repo, { baseOid: base, resultOid: task, limits: { maxBlobBytes: 4, maxChangedPaths: 10 } }), { ok: false, code: 'blob_too_large' });
-    assert.deepEqual(await q.inspect(repo, { baseOid: base, resultOid: task, limits: { maxBlobBytes: 1000, maxChangedPaths: 0 } }), { ok: false, code: 'too_many_paths' });
+    assert.deepEqual(await q.inspect(repo, { baseOid: base, resultOid: task, limits: { maxBlobBytes: 4, maxChangedPaths: 10, maxCommits: 10 } }), { ok: false, code: 'blob_too_large' });
+    assert.deepEqual(await q.inspect(repo, { baseOid: base, resultOid: task, limits: { maxBlobBytes: 1000, maxChangedPaths: 0, maxCommits: 10 } }), { ok: false, code: 'too_many_paths' });
   });
 });
 
 describe('buildCandidate: merge-tree without a working tree, deterministic', () => {
   it('merges two clean submissions into a commit whose parents are the target then each result', async () => {
     const { q, repo } = await imported('task', 'other');
-    const one = await q.buildCandidate(repo, { targetOid: base, resultOids: [task, other], identity: IDENTITY });
+    const one = await q.buildCandidate(repo, { targetOid: base, submissions: [{ baseOid: base, resultOid: task }, { baseOid: base, resultOid: other }], identity: IDENTITY });
     assert.equal(one.ok, true);
-    const again = await q.buildCandidate(repo, { targetOid: base, resultOids: [task, other], identity: IDENTITY });
+    const again = await q.buildCandidate(repo, { targetOid: base, submissions: [{ baseOid: base, resultOid: task }, { baseOid: base, resultOid: other }], identity: IDENTITY });
     assert.deepEqual(again, one, 'same inputs, same candidate commit');
     const show = execFileSync(gitPath, ['--git-dir', repo, 'cat-file', '-p', one.candidateCommitOid], { encoding: 'utf8' });
     const parents = [...show.matchAll(/^parent ([0-9a-f]+)$/gmu)].map((m) => m[1]);
@@ -156,13 +172,22 @@ describe('buildCandidate: merge-tree without a working tree, deterministic', () 
     const files = execFileSync(gitPath, ['--git-dir', repo, 'ls-tree', '--name-only', one.candidateTreeOid], { encoding: 'utf8' }).trim().split('\n');
     assert.deepEqual(files, ['a.txt', 'b.txt', 'c.txt']);
   });
+  it('refuses a submission whose inspected base is not the merge base with the target (else the merge would use a base nobody inspected)', async () => {
+    // The host target has moved on to `newer`; the guest built on `newer` but names the older `base` as its base.
+    g('checkout', '-q', '-b', 'newer', base); file('n.txt', 'n\n'); const newer = commitAll('newer host commit');
+    g('checkout', '-q', '-b', 'on-newer'); file('a.txt', 'one\nguest\n'); const onNewer = commitAll('guest work on newer');
+    g('checkout', '-q', 'main');
+    const { q, repo } = await imported('newer', 'on-newer');
+    assert.deepEqual(await q.buildCandidate(repo, { targetOid: newer, submissions: [{ baseOid: base, resultOid: onNewer }], identity: IDENTITY }), { ok: false, code: 'base_mismatch' });
+    assert.equal((await q.buildCandidate(repo, { targetOid: newer, submissions: [{ baseOid: newer, resultOid: onNewer }], identity: IDENTITY })).ok, true, 'the true base is accepted');
+  });
   it('a conflicting submission is CONFLICTED and no candidate is written', async () => {
     const { q, repo } = await imported('task', 'clash');
-    assert.deepEqual(await q.buildCandidate(repo, { targetOid: base, resultOids: [task, conflict], identity: IDENTITY }), { ok: false, code: 'conflicted' });
+    assert.deepEqual(await q.buildCandidate(repo, { targetOid: base, submissions: [{ baseOid: base, resultOid: task }, { baseOid: base, resultOid: conflict }], identity: IDENTITY }), { ok: false, code: 'conflicted' });
   });
   it('refuses a malformed identity or object id', async () => {
     const { q, repo } = await imported('task');
-    for (const req of [{ targetOid: base, resultOids: [task], identity: { ...IDENTITY, email: 'x' } }, { targetOid: base, resultOids: [], identity: IDENTITY }, { targetOid: 'main', resultOids: [task], identity: IDENTITY }]) {
+    for (const req of [{ targetOid: base, submissions: [{ baseOid: base, resultOid: task }], identity: { ...IDENTITY, email: 'x' } }, { targetOid: base, submissions: [], identity: IDENTITY }, { targetOid: 'main', submissions: [{ baseOid: base, resultOid: task }], identity: IDENTITY }]) {
       assert.deepEqual(await q.buildCandidate(repo, req), { ok: false, code: 'request_invalid' });
     }
   });

@@ -12,20 +12,22 @@ import path from 'node:path';
 //   const repo = await q.create()                                     -> absolute path of a new bare repository
 //   await q.importBundle(repo, { bundlePath, ref, expectedOid })        -> { ok: true } | { ok: false, code }
 //   await q.inspect(repo, { baseOid, resultOid, limits })               -> { ok: true, changed } | { ok: false, code }
-//   await q.buildCandidate(repo, { targetOid, resultOids, identity })   -> { ok: true, candidateCommitOid, candidateTreeOid } | { ok: false, code }
+//   await q.buildCandidate(repo, { targetOid, submissions, identity })  -> { ok: true, candidateCommitOid, candidateTreeOid } | { ok: false, code }
 //
 // importBundle verifies the bundle, fetches exactly `ref` into refs/albera/quarantine/<n> and checks the fetched commit IS `expectedOid` (the
-// guest's word is checked, not trusted). inspect checks ancestry (base is an ancestor of result) and every path the submission adds or changes:
-// no symlink, no submodule (gitlink), no .git / .gitmodules component, no absolute, drive-letter, backslash, dot-dot or control-character path, no
-// blob over the size limit, at most `maxChangedPaths` changes. buildCandidate merges each result into the target with `git merge-tree --write-tree`
+// guest's word is checked, not trusted). inspect checks ancestry (base is an ancestor of result) and every path that ANY commit in base..result adds
+// or changes (every commit lands in the candidate's history, not only the last tree): no symlink, no submodule (gitlink), no .git / .gitmodules
+// component (any case, trailing dots or spaces, NTFS short names), no absolute, drive-letter, backslash, colon (NTFS stream), Windows-reserved or
+// control-character path, no blob over the size limit, bounded commits and paths. buildCandidate requires each submission's inspected base to be the
+// merge base with the head it merges into (else a guest holding newer host commits could revert them silently), merges with `git merge-tree --write-tree`
 // (a conflict probe that touches no working tree; a clean text merge is NOT semantic compatibility, ADR-007 §4 step 3) and writes the merge commit
 // with `git commit-tree` under a fixed identity and timestamp, so the same inputs give the same candidate commit.
 
 export const QUARANTINE_REFUSALS = Object.freeze([
   'bundle_invalid', 'ref_missing', 'oid_mismatch', 'not_descendant', 'symlink', 'submodule', 'path_forbidden', 'blob_too_large',
-  'too_many_paths', 'conflicted', 'git_failed', 'request_invalid',
+  'too_many_paths', 'too_many_commits', 'base_mismatch', 'conflicted', 'git_failed', 'request_invalid',
 ]);
-export const DEFAULT_LIMITS = Object.freeze({ maxBlobBytes: 50 * 1024 * 1024, maxChangedPaths: 10_000 });
+export const DEFAULT_LIMITS = Object.freeze({ maxBlobBytes: 50 * 1024 * 1024, maxChangedPaths: 10_000, maxCommits: 1_000 });
 
 const OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const REF_RE = /^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
@@ -49,10 +51,10 @@ const isOid = (v) => typeof v === 'string' && OID_RE.test(v);
 /** A path the submission may add or change: relative, forward slashes, no .git / .gitmodules / dot-dot component, printable, not a drive path. */
 export function isAllowedPath(p) {
   if (typeof p !== 'string' || p.length === 0 || p.length > 4096) return false;
-  if (/[\u0000-\u001f\u007f\\]/u.test(p) || p.startsWith('/') || /^[A-Za-z]:/u.test(p)) return false;
+  if (/[\u0000-\u001f\u007f\\:<>"|?*]/u.test(p) || p.startsWith('/')) return false;   // ':' also covers drive letters and NTFS streams (.gitmodules:x)
   return p.split('/').every((part) => {
     const lower = part.toLowerCase().replace(/[. ]+$/u, '');   // Windows ignores trailing dots and spaces: ".git." is ".git"
-    return part.length > 0 && part !== '.' && part !== '..' && lower !== '.git' && lower !== '.gitmodules' && !/^git~\d+$/u.test(lower);
+    return part.length > 0 && part !== '.' && part !== '..' && lower !== '.git' && lower !== '.gitmodules' && !/^(?:git|gitmod)~\d+$/u.test(lower);   // NTFS short names
   });
 }
 
@@ -110,33 +112,41 @@ export function createGitQuarantine({ git, root, run } = {}) {
     const ancestor = await gitIn(repo, ['merge-base', '--is-ancestor', baseOid, resultOid], { allowFailure: true });
     if (ancestor.code === 1) return refuse('not_descendant');
     if (ancestor.code !== 0) return refuse('git_failed');
-    const diff = await gitIn(repo, ['diff-tree', '-r', '-z', '--raw', '--no-renames', '--no-ext-diff', '--no-textconv', baseOid, resultOid]);
-    const entries = parseRawDiff(diff.stdout);
-    if (entries.length > limits.maxChangedPaths) return refuse('too_many_paths');
-    const written = entries.filter((e) => e.status !== 'D');
-    for (const e of written) {
-      if (!isAllowedPath(e.path)) return refuse('path_forbidden');
-      if (e.dstMode === '120000') return refuse('symlink');
-      if (e.dstMode === '160000') return refuse('submodule');
-      if (e.dstMode !== '100644' && e.dstMode !== '100755') return refuse('path_forbidden');
+    const commits = (await gitIn(repo, ['rev-list', '--end-of-options', resultOid, `^${baseOid}`])).stdout.split('\n').filter(Boolean);
+    if (commits.length > limits.maxCommits) return refuse('too_many_commits');
+    const blobs = new Set();
+    let paths = 0;
+    for (const commit of commits) {
+      // Every commit against each of its parents (-m), so a path added in one commit and removed in the next is still seen.
+      const diff = await gitIn(repo, ['diff-tree', '-r', '-z', '--raw', '--no-renames', '--no-ext-diff', '--no-textconv', '--no-commit-id', '-m', '--root', commit]);
+      const entries = parseRawDiff(diff.stdout);
+      paths += entries.length;
+      if (paths > limits.maxChangedPaths) return refuse('too_many_paths');
+      const problem = checkEntries(entries);
+      if (problem) return refuse(problem);
+      for (const e of entries) if (e.status !== 'D') blobs.add(e.dstOid);
     }
-    if (entries.some((e) => !isAllowedPath(e.path))) return refuse('path_forbidden');   // deleting .git* paths is refused too
-    if (written.length > 0) {
-      const sizes = await gitIn(repo, ['cat-file', '--batch-check=%(objectsize)'], { input: `${written.map((e) => e.dstOid).join('\n')}\n` });
+    if (blobs.size > 0) {
+      const sizes = await gitIn(repo, ['cat-file', '--batch-check=%(objectsize)'], { input: `${[...blobs].join('\n')}\n` });
       if (sizes.stdout.trim().split('\n').some((n) => !/^\d+$/u.test(n) || Number(n) > limits.maxBlobBytes)) return refuse('blob_too_large');
     }
-    return Object.freeze({ ok: true, changed: written.length });
+    const final = parseRawDiff((await gitIn(repo, ['diff-tree', '-r', '-z', '--raw', '--no-renames', '--no-ext-diff', '--no-textconv', baseOid, resultOid])).stdout);
+    return Object.freeze({ ok: true, changed: final.filter((e) => e.status !== 'D').length, commits: commits.length });
   }
 
-  async function buildCandidate(repo, { targetOid, resultOids, identity } = {}) {
-    if (!isOid(targetOid) || !Array.isArray(resultOids) || resultOids.length === 0 || !resultOids.every(isOid)) return refuse('request_invalid');
+  async function buildCandidate(repo, { targetOid, submissions, identity } = {}) {
+    if (!isOid(targetOid) || !Array.isArray(submissions) || submissions.length === 0 || !submissions.every((x) => isOid(x?.baseOid) && isOid(x?.resultOid))) return refuse('request_invalid');
     const id = identity ?? {};
     if (!NAME_RE.test(id.name ?? '') || !EMAIL_RE.test(id.email ?? '') || !Number.isSafeInteger(id.timestamp) || id.timestamp < 0) return refuse('request_invalid');
     const commitEnv = { GIT_AUTHOR_NAME: id.name, GIT_AUTHOR_EMAIL: id.email, GIT_COMMITTER_NAME: id.name, GIT_COMMITTER_EMAIL: id.email,
       GIT_AUTHOR_DATE: `${id.timestamp} +0000`, GIT_COMMITTER_DATE: `${id.timestamp} +0000` };
     let head = targetOid;
     let tree = null;
-    for (const result of resultOids) {
+    for (const { baseOid, resultOid: result } of submissions) {
+      // The merge base must be the base inspect() checked: otherwise the three-way merge would use an older base, and changes between it and the
+      // inspected one would be reverted or merged unseen.
+      const bases = await gitIn(repo, ['merge-base', '--all', head, result], { allowFailure: true });
+      if (bases.code !== 0 || bases.stdout.trim() !== baseOid) return refuse('base_mismatch');
       const merged = await gitIn(repo, ['merge-tree', '--write-tree', '--no-messages', '-z', head, result], { allowFailure: true });
       if (merged.code === 1) return refuse('conflicted');
       if (merged.code !== 0) return refuse('git_failed');
@@ -161,6 +171,18 @@ function gitEnv(root) {
   };
   for (const key of ['SYSTEMROOT', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP']) if (process.env[key]) env[key] = process.env[key];
   return env;
+}
+
+/** The first refusal code for a set of diff entries, or null. Deleting a forbidden path is refused too. */
+function checkEntries(entries) {
+  for (const e of entries) {
+    if (!isAllowedPath(e.path)) return 'path_forbidden';
+    if (e.status === 'D') continue;
+    if (e.dstMode === '120000') return 'symlink';
+    if (e.dstMode === '160000') return 'submodule';
+    if (e.dstMode !== '100644' && e.dstMode !== '100755') return 'path_forbidden';
+  }
+  return null;
 }
 
 async function isRegularFile(p) {
