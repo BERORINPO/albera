@@ -5,8 +5,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
-  FIXED_VARIABLES, INHERITED_VARIABLES, NUGET_CONFIG, REG_EXE, USER_IMPORT_SWITCHES, buildArguments, createBuildContext, parseRegistryValue, printBuildIdentity, queryRegistry,
-  resolveTrustedDotnet, restoreArguments, sanitisedEnvironment,
+  FIXED_VARIABLES, HOST_BUILD_SDK, INHERITED_VARIABLES, NUGET_CONFIG, REG_EXE, USER_IMPORT_SWITCHES, buildArguments, createBuildContext, parseRegistryValue, printBuildIdentity, queryRegistry,
+  resolveTrustedDotnet, restoreArguments, sanitisedEnvironment, sdkMismatch,
 } from '../scripts/dotnet-build-env.mjs';
 
 // Issue #102: the helper's decisions are pure functions of registry values and a file-system view, so none of this runs dotnet or reg.exe.
@@ -185,5 +185,24 @@ test('every publish script goes through the helper and none calls dotnet itself'
 test('every project a publish script builds has a packages.lock.json (locked restore needs one)', () => {
   for (const project of ['src/runtime/windows-job-guardian', 'test/windows-job-probe', 'src/runtime/windows-broker', 'src/runtime/windows-broker-pipe-client', 'src/runtime/windows-approval-authority', 'src/runtime/windows-approver', 'test/windows-service-lab']) {
     assert.ok(fs.existsSync(path.join(root, project, 'packages.lock.json')), project);
+  }
+});
+
+test('the host builds refuse any SDK but the pinned one, and both workflows install that same one', () => {
+  assert.match(HOST_BUILD_SDK, /^10\.0\.\d+$/u);
+  assert.equal(sdkMismatch(HOST_BUILD_SDK), null);
+  for (const other of ['10.0.302', '10.0.404', '', `${HOST_BUILD_SDK}\n`]) {
+    const refusal = sdkMismatch(other);
+    assert.match(refusal, /^sdk_mismatch: /u, other);
+    assert.ok(refusal.includes(`--version ${HOST_BUILD_SDK}`) && !refusal.includes('\n'), 'one line, with the install command');
+  }
+  for (const workflow of ['host-build-hashes.yml', 'test.yml']) {
+    const text = fs.readFileSync(path.join(root, '.github', 'workflows', workflow), 'utf8');
+    const pins = [...text.matchAll(/dotnet-version:\s*(\S+)/gu)].map((m) => m[1]);
+    assert.deepEqual(pins, [HOST_BUILD_SDK], `${workflow} installs exactly HOST_BUILD_SDK`);
+  }
+  for (const script of ['publish-windows-broker.mjs', 'publish-windows-approval-authority.mjs']) {
+    const text = fs.readFileSync(path.join(root, 'scripts', script), 'utf8');
+    assert.ok(text.indexOf('requireHostBuildSdk(context)') > 0 && text.indexOf('requireHostBuildSdk(context)') < text.indexOf('restoreAndBuild(context'), `${script} checks the SDK before restore`);
   }
 });

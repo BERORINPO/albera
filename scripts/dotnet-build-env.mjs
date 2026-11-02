@@ -193,6 +193,25 @@ export function sdkVersion(context) {
   return run(context, 'dotnet --version', ['--version']).trim();
 }
 
+/** The one .NET SDK the host builds (Broker, pipe client, Authority) are made with. The builds are self-contained, so the SDK decides the runtime
+ *  files, the apphost and the compiler: another SDK gives another tree hash (measured 2026-11-02: 10.0.302 here, 10.0.403 on the runner, every
+ *  exe differed). Pinned here and in both workflows; no global.json (an ambient file the build refuses). Change all three together. */
+export const HOST_BUILD_SDK = '10.0.403';
+
+/** @returns {string | null} a one-line refusal when `found` is not `expected`, otherwise null. */
+export function sdkMismatch(found, expected = HOST_BUILD_SDK) {
+  if (found === expected) return null;
+  return `sdk_mismatch: the host builds need .NET SDK ${expected}, this dotnet is ${JSON.stringify(found)} (a newer SDK installed next to it is picked first). Install exactly ${expected} (winget install --id Microsoft.DotNet.SDK.10 --version ${expected}) or the tree hash cannot match the CI build`;
+}
+
+/** Exits before any restore when the trusted dotnet is not HOST_BUILD_SDK. @returns {string} the SDK version. */
+export function requireHostBuildSdk(context) {
+  const found = sdkVersion(context);
+  const refusal = sdkMismatch(found);
+  if (refusal) { process.stderr.write(`${refusal}\n`); process.exit(1); }
+  return found;
+}
+
 /** The two comparison lines: SDK version and SHA-256 of the main output (relative to `root`). */
 export function printBuildIdentity({ sdk, root, file, sha256, log = console.log }) {
   log(`dotnet sdk ${sdk}`);

@@ -11,12 +11,19 @@ This file is the continuation ledger. `VERIFIED` refers only to the stated evide
 
 Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 
-### 承認役サービスの導入と初回の本物の承認 (2026-10-30 に株主判断で見送り中)
-- やること: まず `docs/architecture/host-install.md` の導入手順 (`scripts/host/albera-host.ps1` を plan で確認 → 管理者の console で `-Mode install -ApproverKeyId <hello-...>` → サービス起動 → `albera-runtime approval-check`)。その後 `docs/architecture/approver-app.md` の「Enrol and first approval」手順 4〜7。手順 2 の `enroll` と手順 3 の `enroll --check` (`self-check: OK`) は 2026-10-31 に済んでいる。そのあと `docs/architecture/approval-tiers.md` の room の初回実行手順 (PR #135) で `albera-runtime room --job <vm>=<task> --require-start-approval --approval albera.approval.json` を動かし、承認アプリで `task.start` を承認する
-- 所要: 未見積もり (承認役サービスと Broker をホストに入れるので管理者権限が要る)
-- これで進むもの: 初回の本物の承認と、承認つきの作業開始の通し確認 (ledger 末尾 "Task start through approval" の Still open)
-- 取り消し: できる (サービスを止めて削除する)
-- 注意: standard 段階を使う場合、policy の hash が v3 に変わったので `policy.json` を Hello で署名し直す (PR #132)
+### 承認役サービスの導入と初回の本物の承認 (2026-11-02 に株主が承認、準備済み)
+- 前提 (済): SDK 10.0.403 を導入済み。`main` 86ade4c の build はこの PC と CI (Host build hashes) でツリーハッシュ `80b6fc2652a69c323ff0437504f4bbeb7ef6665c9c3f07ce27af0241d1fad9c0` が一致。`AlberaApprover.exe` も build 済み
+- やること (理由は `docs/architecture/host-install.md`。`<repo>` は build 済みの checkout、`<approver>` はその `src\runtime\windows-approver\bin\Release\net10.0-windows10.0.19041.0\win-x64\publish`):
+  1. Win+R で `cmd /d` と打ち、Ctrl+Shift+Enter (管理者で開く)。4 までこの窓で
+  2. `set COR_`・`set COMPLUS_`・`set CORECLR_` がどれも「定義されていません」、`C:\Windows\System32\reg.exe query "HKCU\Software\Microsoft\Command Processor" /v AutoRun` がエラー (見つからない) になることを確かめる。値が出たら止める
+  3. `mkdir "C:\Program Files\AlberaSetup"`、`copy /Y <repo>\scripts\host\albera-host.ps1 "C:\Program Files\AlberaSetup\"`、`copy /Y <repo>\scripts\host\albera-host-lib.ps1 "C:\Program Files\AlberaSetup\"`。`C:\Windows\System32\certutil.exe -hashfile` で 2 つのコピーが `c00236a35137f365f7e0e5193de334e3f19c54ed5e9d862a51c1a028cb28308d` / `da312c17eac0197537fd652cd671aee61104dbc30dcd3404ae91525b4c1d7772` と一致することを確かめる
+  4. `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\AlberaSetup\albera-host.ps1" -RepoRoot <repo> -Mode install -StartCheck -ExpectedTreeHash 80b6fc2652a69c323ff0437504f4bbeb7ef6665c9c3f07ce27af0241d1fad9c0 -ApproverKeyId hello-951a135537287eae -ApproverPublicKey <enroll の公開鍵> -ApproverSid <enroll の SID>` (途中で `albera-cp` のパスワードを 2 回打つ。保存されない)。終わったら `C:\Windows\System32\sc.exe start AlberaApprovalAuthority`、`C:\Windows\System32\sc.exe start AlberaHostBroker`、`rmdir /S /Q "C:\Program Files\AlberaSetup"`
+  5. 普通の console で `runas /user:.\albera-cp cmd` を開き、その窓で `"C:\Program Files\nodejs\node.exe" <repo>\src\runtime\entry.mjs approval-check --approval C:\ProgramData\Albera\control-plane\albera.approval.json --helper "C:\Program Files\Albera\bin\pipe-client\albera-windows-broker-pipe-client.exe"` (approvalId が出て 120 秒待つ)
+  6. 自分の普通の console で `<approver>\AlberaApprover.exe list` (`digest check: OK` を確認) → `<approver>\AlberaApprover.exe approve <approvalId>` → `yes` → Hello。5 の窓が `status: claimed` で終われば完了
+- 所要: 約 15 分 (Yosuke の作業時間)
+- これで進むもの: 初回の本物の承認 (ledger 末尾 "Task start through approval" の Still open)。その後 room の初回実行 (`docs/architecture/approval-tiers.md`、PR #135)
+- 取り消し: できる (同じ 1〜3 のあと `-Mode uninstall`)
+- 注意: standard 段階を使う場合、policy の hash が v3 に変わったので `policy.json` を Hello で署名し直す (PR #132)。room は `albera-cp` では動かない (Hyper-V Administrators の件、host-install.md)
 
 ## Checkpoints
 
