@@ -511,6 +511,10 @@ test('ACL plan: inheritance is removed everywhere, each service SID can write on
   assert.deepEqual(writers(r.layout.BrokerDbDir), [sids.broker]);
   assert.deepEqual(writers(r.layout.AuthorityDir), [sids.authority], 'the Authority writes policy.json next to its config');
   assert.deepEqual(writers(r.layout.ControlPlaneDir), [cp]);
+  // the Control Plane journal (assertPrivateWindowsAcl) requires full control for its own user: Modify made the first real approval-check fail with journal_unavailable (2026-11-02)
+  assert.equal(rights(r.layout.ControlPlaneDir)[cp], '(OI)(CI)F');
+  const aclCheck = readFileSync(path.join(root, 'src', 'runtime', 'windows-acl.mjs'), 'utf8');
+  assert.match(aclCheck, /\(rule\.rights & 0x001f01ff\) === 0x001f01ff\) currentUserHasFullControl = true/u, 'the journal still demands full control; if this changes, revisit the grant');
   assert.equal(rights(r.layout.DataRoot)[cp], 'RX', 'this-folder-only read: the control plane account can reach its folder and nothing else');
   assert.equal(r.aclGood, 0);
   assert.deepEqual(r.aclInherited, ['inheritance_not_removed']);
