@@ -144,10 +144,27 @@ function Test-HasReparsePoint([string]$Dir) {
   $bad = @(Get-ChildItem -LiteralPath $Dir -Recurse -Force -ErrorAction Stop | Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReparsePoint })
   $bad.Count -gt 0
 }
+# Every entry under a folder with its path relative to that folder. The relative path is built while walking, never by cutting the folder's
+# length off FullName: a short 8.3 name (C:\Users\RUNNER~1\...) and its long form differ in length (found on the CI runner). Links are listed, not entered.
+function Get-TreeEntries([string]$Dir, [switch]$FilesOnly) {
+  $out = New-Object 'System.Collections.Generic.List[object]'
+  $stack = New-Object 'System.Collections.Generic.Stack[object]'
+  $stack.Push([pscustomobject]@{ Info = (New-Object System.IO.DirectoryInfo($Dir)); Prefix = '' })
+  while ($stack.Count -gt 0) {
+    $item = $stack.Pop()
+    foreach ($e in $item.Info.GetFileSystemInfos()) {
+      $rel = if ($item.Prefix) { $item.Prefix + '\' + $e.Name } else { $e.Name }
+      $isDir = ($e.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0
+      if (-not ($isDir -and $FilesOnly)) { $out.Add([pscustomobject]@{ Rel = $rel; Full = $e.FullName; IsDir = $isDir }) }
+      if ($isDir -and (($e.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)) { $stack.Push([pscustomobject]@{ Info = $e; Prefix = $rel }) }
+    }
+  }
+  , $out.ToArray()
+}
 # Relative path and SHA-256 of every file under a folder (sorted, ordinal); the tree hash is the SHA-256 of those lines.
 function Get-TreeHashes([string]$Dir) {
-  $root = (Resolve-Path -LiteralPath $Dir).Path.TrimEnd('\')
-  $entries = foreach ($f in (Get-ChildItem -LiteralPath $Dir -Recurse -Force -File)) { [pscustomobject]@{ Rel = $f.FullName.Substring($root.Length + 1); Sha = (Get-Sha256File $f.FullName) } }
+  $files = Get-TreeEntries $Dir -FilesOnly
+  $entries = foreach ($f in $files) { [pscustomobject]@{ Rel = $f.Rel; Sha = (Get-Sha256File $f.Full) } }
   $list = New-Object 'System.Collections.Generic.List[object]'
   foreach ($e in $entries) { $list.Add($e) }
   $list.Sort([Comparison[object]]{ param($a, $b) [string]::CompareOrdinal($a.Rel, $b.Rel) })
@@ -271,8 +288,8 @@ function Get-ComponentHashes($Dirs) {
 # Source files, listed without following anything: a link or junction in the publish folder is refused.
 function Get-SourceFiles([string]$Dir) {
   if (Test-HasReparsePoint $Dir) { throw "$Dir contains a link or junction" }
-  $root = (Resolve-Path -LiteralPath $Dir).Path.TrimEnd('\')
-  @(Get-ChildItem -LiteralPath $Dir -Recurse -Force -File | ForEach-Object { [pscustomobject]@{ Rel = $_.FullName.Substring($root.Length + 1); Full = $_.FullName } })
+  $files = Get-TreeEntries $Dir -FilesOnly
+  @($files | ForEach-Object { [pscustomobject]@{ Rel = $_.Rel; Full = $_.Full } })
 }
 
 # ---------------------------------------------------------------------------------------------- service facts
@@ -745,8 +762,8 @@ function Remove-HostServices {
 # Delete a folder this script made, after proving it holds only what it should: no link/junction (the folder itself included), no file outside the known list (data) or the expected folders (install).
 function Remove-HostTree([string]$Dir, [string[]]$AllowedTop, [string[]]$AllowedFolders, [bool]$InstallTree) {
   if (Test-HasReparsePoint $Dir) { throw "$Dir is or contains a link or junction; refusing to delete it" }
-  $root = (Resolve-Path -LiteralPath $Dir).Path.TrimEnd('\')
-  $rel = @(Get-ChildItem -LiteralPath $Dir -Recurse -Force | ForEach-Object { $_.FullName.Substring($root.Length + 1) })
+  $all = Get-TreeEntries $Dir
+  $rel = @($all | ForEach-Object { $_.Rel })
   if ($InstallTree) {
     $unknown = @($rel | Where-Object { $p = $_; -not (@('bin', 'bin\broker', 'bin\authority', 'bin\pipe-client') -contains $p) -and -not (@('bin\broker\', 'bin\authority\', 'bin\pipe-client\') | Where-Object { $p.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) }) })
   }

@@ -13,7 +13,7 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'scripts\host\albera-host.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count -gt 0) { throw 'albera-host.ps1 does not parse' }
-$wanted = @('Say', 'Get-Sha256File', 'Test-HasReparsePoint', 'Get-TreeHashes', 'Get-BuildSources', 'Get-SourceFiles', 'Get-ExpectedTreeHashState', 'Get-ComponentHashes', 'Set-BinaryRecord', 'Copy-HostBinaries', 'Remove-HostTree', 'New-TrustedDirectory',
+$wanted = @('Say', 'Get-Sha256File', 'Test-HasReparsePoint', 'Get-TreeEntries', 'Get-TreeHashes', 'Get-BuildSources', 'Get-SourceFiles', 'Get-ExpectedTreeHashState', 'Get-ComponentHashes', 'Set-BinaryRecord', 'Copy-HostBinaries', 'Remove-HostTree', 'New-TrustedDirectory',
   'Test-ManifestHas', 'New-Manifest', 'Save-Manifest', 'Read-Manifest', 'Initialize-Manifest', 'Assert-PlannedPathTrusted', 'Test-SecureStringEqual')
 $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $false))
 if ($found.Count -ne $wanted.Count) { throw ('expected ' + $wanted.Count + ' functions, found ' + $found.Count) }
@@ -58,7 +58,7 @@ switch ($Case) {
     $result.expected = Set-Expected
     $result.firstRunError = Try-Run { Copy-HostBinaries }
     $result.recorded = @($script:Manifest['created']['binaries'].Keys | Sort-Object)
-    $result.destFiles = @(Get-ChildItem -LiteralPath $L.BinRoot -Recurse -File | ForEach-Object { $_.FullName.Substring($L.BinRoot.Length + 1) } | Sort-Object)
+    $result.destFiles = @(Get-TreeEntries $L.BinRoot -FilesOnly | ForEach-Object { $_.Rel } | Sort-Object)   # built while walking: the temp path may be an 8.3 short name
     $result.noPartialLeft = (@(Get-ChildItem -LiteralPath $L.BinRoot -Directory | Where-Object { $_.Name -like '*.partial' }).Count -eq 0)
     $src = Get-BuildSources | Select-Object -First 1
     $copiedDirs = @{}; foreach ($b in (Get-BuildSources)) { $copiedDirs[$b.Name] = $b.Dest }
