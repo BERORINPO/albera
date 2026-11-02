@@ -74,6 +74,23 @@ An agent in your session can prepare the elevated console before the script's fi
 
 The `script albera-host.ps1 sha256 ...` lines that install and uninstall print are information only: a replaced script can print anything, so they detect nothing. **Residual limit, stated plainly:** the comparisons are by you and by eye; `cmd.exe`, `certutil.exe`, `reg.exe` and the Run dialog are trusted as part of Windows; an attacker who is already an administrator is out of scope. The CI hashes cover the line endings the repository checks out (`.gitattributes`: `eol=lf`).
 
+### Checking a build with `gh attestation verify` (extra check; install does not use it)
+
+Each Host build hashes run on `main` also signs a GitHub artifact attestation (SLSA build provenance, `actions/attest-build-provenance`) for six files: the three exe files, `albera-host.ps1`, `albera-host-lib.ps1` and `build-hashes.json`. It says "a file with exactly these bytes was produced by `.github/workflows/host-build-hashes.yml` in BERORINPO/albera at commit X on ref Y", signed with a short-lived Sigstore certificate. Check a file with:
+
+```
+gh attestation verify <file> --repo BERORINPO/albera --signer-workflow BERORINPO/albera/.github/workflows/host-build-hashes.yml --deny-self-hosted-runners
+```
+
+It must say `Verification succeeded`, and the commit and ref it prints must be the reviewed merge commit and `refs/heads/main` (`--signer-workflow` pins the workflow, not the branch; `--cert-identity https://github.com/BERORINPO/albera/.github/workflows/host-build-hashes.yml@refs/heads/main` in its place pins both). Check the script copies in `C:\Program Files\AlberaSetup` and `build-hashes.json` from the run's `build-hashes` artifact: its `treeHash` is the value for `-ExpectedTreeHash`, and its per-file list covers the DLLs. An exe alone proves little, because the builds are self-contained and not single-file: the exe is the .NET apphost launcher and the code is in the DLLs next to it.
+
+What it does **not** do, stated plainly:
+
+- **It is not Windows code signing.** The files carry no Authenticode signature, so UAC and SmartScreen still show an unknown publisher, and Windows itself checks nothing.
+- **It does not replace `-ExpectedTreeHash` yet.** The installer does not read attestations; it trusts only the value you type and the script hashes you compare by eye. Making the installer consume attestations is a separate security change (Zaku review and a VM run first).
+- **It does not make `gh` trusted.** `gh.exe` and its configuration live in your profile, which an agent in your session can change, so a `Verification succeeded` printed there is a second opinion, not the control. The control is still your check of branch and SHA on the run page.
+- **It says where a file came from, not that the code is safe.** A reviewed-but-wrong commit on `main` gets a valid attestation too.
+
 ## First approval (`approver-app.md` steps 6 and 7)
 
 `albera-runtime approval-check` sends ONE `broker.operation` / `synthetic.noop` (the Broker only records the claim; nothing moves) through fence, submit, wait, claim, and prints the approval id. Only the Control Plane account can reach the two submit pipes, so run it as `albera-cp`:
