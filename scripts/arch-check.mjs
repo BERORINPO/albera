@@ -71,6 +71,8 @@ const EXPECTED = {
     'approval-authority-client.mjs',
     // fence -> submit -> approve -> claim flow and its journal port (rule 5e; decision log 2026-10-30+approved-operation-flow)
     'approved-operation-flow.mjs', 'approved-operation-journal.mjs',
+    // `albera-runtime approval-check`: one synthetic.noop through that flow with the room's wiring (entry role: wiring and a printout, no decision; decision log 2026-11-02+host-install)
+    'approval-check.mjs',
     // verified-integration candidate: exact-commit evidence and person-approved compare-and-swap promotion (rule 5e; ADR-007, INT-01 / INT-02)
     'integration-candidate.mjs',
     // host-side git quarantine for submissions (bundles only, bare repositories, hardened git; ADR-007 §2 / §4) and its test double
