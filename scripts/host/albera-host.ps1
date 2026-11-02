@@ -3,6 +3,8 @@
 #
 # Start it ALWAYS as   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\host\albera-host.ps1 <arguments>
 # (the full path: cmd.exe looks in the current folder before PATH. -NoProfile skips profiles ONLY; user modules are handled by the script itself, see the first statements below.)
+# install / uninstall: ONLY from an elevated `cmd /d` whose environment has no COR_* / COMPLUS_* / CORECLR_* variable (they load a DLL into powershell.exe before line 1),
+# running a COPY of the two script files in C:\Program Files\AlberaSetup whose hashes you checked with certutil (host-install.md, "The elevated console").
 #
 #   albera-host.ps1                                           plan (default): numbered list of everything install would do; changes nothing, needs no admin
 #   albera-host.ps1 -Mode plan -PlanFor uninstall             the same for uninstall

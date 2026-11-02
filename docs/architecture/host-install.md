@@ -40,20 +40,39 @@ The builds live in the working tree, which a non-admin process (an agent running
 
 **The format** (one function, `Get-CanonicalTreeHash`, used by `-Mode hashes` and by install): for each component in the fixed order `broker`, `authority`, `pipe-client`, and inside it for each published file sorted by ordinal comparison of its relative path (written with `/`), one line `<component>/<relative path> TAB <SHA-256 of the file, 64 lowercase hex> LF` (TAB 0x09, LF 0x0A, no BOM, no other whitespace). The tree hash is the lowercase hex SHA-256 of the UTF-8 bytes of all lines concatenated. A file renamed, moved to another component, added, dropped or changed gives another value. Install computes it over the **copies** in the administrator-only `bin` folder and refuses (deleting the copies) unless it equals the typed value.
 
-**Limit, stated plainly:** the value only matches if the build is reproducible across machines (the runner's .NET SDK, the NuGet restore and the paths must give byte-identical output). `scripts/check-reproducible-build.mjs` checks two builds on one machine; **a build on the runner and a build on this PC being identical is not proven yet.** Until it is, a mismatch is the expected safe outcome (nothing is installed) and not evidence of tampering; the per-file JSON artifact against `-Mode hashes` on this PC shows which files differ. Running `-Mode hashes` on your own PC and typing its value defeats the check (the lab hook does exactly that, labelled lab-only). Run the script itself from a reviewed checkout, not from a tree an agent edits.
+**Limit, stated plainly:** the value only matches if the build is reproducible across machines (the runner's .NET SDK, the NuGet restore and the paths must give byte-identical output). `scripts/check-reproducible-build.mjs` checks two builds on one machine; **a build on the runner and a build on this PC being identical is not proven yet.** Until it is, a mismatch is the expected safe outcome (nothing is installed) and not evidence of tampering; the per-file JSON artifact against `-Mode hashes` on this PC shows which files differ. Running `-Mode hashes` on your own PC and typing its value defeats the check (the lab hook does exactly that, labelled lab-only). The script itself is run only as a hashed copy in an administrator-only folder (next section).
 
-### Check the script itself before you run it
+### The elevated console: clean environment, copied script (required)
 
-The script is read from the repository tree, which an agent can edit. The workflow therefore also prints one line per script file: `ALBERA_HOST_SCRIPT_SHA256=<hex> albera-host.ps1` and `ALBERA_HOST_SCRIPT_SHA256=<hex> albera-host-lib.ps1`. In the **elevated** console, before running anything:
+An agent in your session can prepare the elevated console before the script's first line runs: `HKCU\Environment` values reach every new process, elevated or not (`COR_ENABLE_PROFILING` + `COR_PROFILER` + `COR_PROFILER_PATH` load any DLL into `powershell.exe` as it starts), and `HKCU\Software\Microsoft\Command Processor` `AutoRun` runs a command in every `cmd.exe` that starts without `/d`. And the script files sit in a tree it can rewrite, also between a hash check and the moment PowerShell reads them. So install and uninstall are run only like this (every step, in this order):
 
-```
-C:\Windows\System32\certutil.exe -hashfile scripts\host\albera-host.ps1 SHA256
-C:\Windows\System32\certutil.exe -hashfile scripts\host\albera-host-lib.ps1 SHA256
-```
+1. Open the console: Win+R, type `cmd /d`, press **Ctrl+Shift+Enter** (elevated, AutoRun skipped). Run everything below in that window.
+2. The environment must be clean. Each of these must print `Environment variable ... not defined`; if one prints a value, stop (do not install) and remove it from `HKCU\Environment` first:
+   ```
+   set COR_
+   set COMPLUS_
+   set CORECLR_
+   ```
+   and this must print `ERROR: The system was unable to find the specified registry key or value`:
+   ```
+   C:\Windows\System32\reg.exe query "HKCU\Software\Microsoft\Command Processor" /v AutoRun
+   ```
+3. Copy the two script files into a folder only administrators can write, then check the COPIES:
+   ```
+   mkdir "C:\Program Files\AlberaSetup"
+   copy /Y <repo>\scripts\host\albera-host.ps1 "C:\Program Files\AlberaSetup\"
+   copy /Y <repo>\scripts\host\albera-host-lib.ps1 "C:\Program Files\AlberaSetup\"
+   C:\Windows\System32\certutil.exe -hashfile "C:\Program Files\AlberaSetup\albera-host.ps1" SHA256
+   C:\Windows\System32\certutil.exe -hashfile "C:\Program Files\AlberaSetup\albera-host-lib.ps1" SHA256
+   ```
+   Both values must equal the lines `ALBERA_HOST_SCRIPT_SHA256=<hex> albera-host.ps1` / `... albera-host-lib.ps1` in the log of the Host build hashes run on `main` for the reviewed commit (the same two checks on the run page as for the tree hash). A new folder under `C:\Program Files` inherits Users: read and execute only, so nobody but an administrator can change the copies after you hashed them. (`mkdir` fails if the folder already exists: then delete it first, it is not yours.)
+4. Run the copy, naming the repository for the builds:
+   ```
+   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\AlberaSetup\albera-host.ps1" -RepoRoot <repo> -Mode install -ExpectedTreeHash <64 hex> -ApproverKeyId hello-... -ApproverPublicKey <spki> -ApproverSid S-1-5-21-...
+   ```
+5. Afterwards: `rmdir /S /Q "C:\Program Files\AlberaSetup"` (uninstall later: the same steps 1 to 4 with `-Mode uninstall`).
 
-and compare both with the lines in the log of the run on `main` for the reviewed commit (same two checks on the run page as above). `install` and `uninstall` also print the hash of the two files as they read them (`script albera-host.ps1 sha256 ...`) so you can compare afterwards.
-
-**Residual limit, stated plainly:** (1) the check is by you and by eye; (2) the files can change between the `certutil` call and the moment PowerShell reads them (an agent that can write the tree and is fast enough), and the printed hash only detects that afterwards; (3) `certutil.exe` and the console are trusted as part of Windows. Safer, if you want it: copy the two files to a folder you made as administrator (inherited ACLs of a new folder under `C:\ProgramData` let Users create files in it, so check its ACL) and run from there. The CI hashes cover the line endings the repository checks out (`.gitattributes`: `eol=lf`).
+The `script albera-host.ps1 sha256 ...` lines that install and uninstall print are information only: a replaced script can print anything, so they detect nothing. **Residual limit, stated plainly:** the comparisons are by you and by eye; `cmd.exe`, `certutil.exe`, `reg.exe` and the Run dialog are trusted as part of Windows; an attacker who is already an administrator is out of scope. The CI hashes cover the line endings the repository checks out (`.gitattributes`: `eol=lf`).
 
 ## First approval (`approver-app.md` steps 6 and 7)
 
