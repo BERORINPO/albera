@@ -162,6 +162,11 @@ static object[] InputRejected()
     Case("empty op", "room-1", new DesktopStep(""));
     Case("op in another case", "room-1", new DesktopStep("Move", X: 1, Y: 1));
     Case("null op", "room-1", new DesktopStep(null!, X: 1, Y: 1));
+    Case("a null step", "room-1", Tap(65), null!);
+    {
+        var (desktop, fake, sleeps) = Make();
+        cases.Add(new { report = Report("a null step list", desktop.Input("room-1", null!), fake), sleeps = sleeps.ToArray() });
+    }
     Case("a bad step after good ones", "room-1", Tap(65), Move(1, 1), Tap(0));
     Case("virtual key 0", "room-1", Tap(0));
     Case("virtual key 255", "room-1", new DesktopStep("press", Vk: 255));

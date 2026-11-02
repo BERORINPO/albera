@@ -82,11 +82,11 @@ internal static class DesktopLimits
 
     internal static bool AreValidSteps(IReadOnlyList<DesktopStep> steps)
     {
-        if (steps.Count is < 1 or > MaxSteps) return false;
+        if (steps is null || steps.Count is < 1 or > MaxSteps) return false; // null comes from a caller's JSON, not from this code: refuse it, never throw
         long sleepTotal = 0;
         foreach (DesktopStep step in steps)
         {
-            if (!IsValidStep(step)) return false;
+            if (step is null || !IsValidStep(step)) return false;
             sleepTotal += step.Ms ?? 0;
         }
         return sleepTotal <= MaxSleepTotalMs;

@@ -175,7 +175,7 @@ describe('Broker Hyper-V desktop adapter against a fake WMI connection', { skip:
 
     it('input: an unknown computer is computer_unknown; every unknown op, out-of-range value, stray or missing field and every over-limit total is input_steps', () => {
       const cases = report.inputRejected;
-      assert.equal(cases.length, 37);
+      assert.equal(cases.length, 39);
       for (const [i, c] of cases.entries()) {
         untouched(c);
         assert.equal(c.report.reason, i < 2 ? 'computer_unknown' : 'input_steps', c.report.name);
