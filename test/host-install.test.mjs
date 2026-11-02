@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { createPublicKey, generateKeyPairSync, randomBytes, verify } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { createHash, createPublicKey, generateKeyPairSync, randomBytes, verify } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,7 +48,7 @@ test('the host scripts and test drivers are ASCII only (Windows PowerShell 5.1 r
   for (const file of files) assert.equal(/[^\t\r\n -~]/u.test(readFileSync(file, 'utf8')), false, `${path.relative(root, file)} has a non-ASCII character`);
 });
 
-test('source guards: install and uninstall check elevation first and never elevate; no secret is stored; the password is a SecureString', () => {
+test('source guards: elevation is checked first and never requested; nothing from the repository is ever executed; no secret is stored; the password is a SecureString', () => {
   const script = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
   const lib = readFileSync(path.join(hostDir, 'albera-host-lib.ps1'), 'utf8');
   assert.match(script, /\$Mode -in @\('install', 'uninstall'\) -and -not \(Test-Elevated\)\) \{ Stop-Refused/u);
@@ -60,7 +60,17 @@ test('source guards: install and uninstall check elevation first and never eleva
   assert.match(script, /-AsSecureString/u);
   assert.match(script, /ALBERA_LAB_VM/u);
   assert.doesNotMatch(script, /-Password\s+['"]/u, 'no literal password');
+  // The only programs ever started: sc.exe and icacls.exe by their full System32 path. No call can start anything from the repository tree while elevated.
+  const calls = [...script.matchAll(/Invoke-Native\s+(\S+)/gu)].map((m) => m[1]).filter((first) => !first.startsWith('('));
+  assert.ok(calls.length >= 6);
+  for (const first of calls) assert.ok(first === '$ScExe' || first === '$IcaclsExe', `Invoke-Native is only called with sc.exe or icacls.exe, saw ${first}`);
   for (const tool of ['sc.exe', 'icacls.exe']) assert.match(script, new RegExp(`System32\\\\${tool}`, 'u'), `${tool} is started by its full path`);
+  for (const gone of [/service-check ['"]\s*\+/u, /Test-BuiltExe/u, /LabApproverValues/u, /\$ApproverExe/u, /Get-ApproverExePath/u]) assert.doesNotMatch(script, gone, `removed: ${gone}`);
+  assert.doesNotMatch(script, /Invoke-Native \$Exe|& \$Exe|& \$exe|\.manifest\.json/u, 'no sidecar manifest is trusted and no build is started');
+  // Every icacls that changes something acts on the link itself, never its target.
+  for (const line of script.split('\n').filter((l) => /Invoke-Native \$IcaclsExe/u.test(l))) assert.match(line, /\/L'?\)?/u, `icacls without /L: ${line.trim()}`);
+  assert.match(script, /New-SecuredDirectory \$L\.DataRoot/u, 'the data root is born with its ACL');
+  assert.doesNotMatch(script, /New-Item -ItemType Directory -Path \$(?:L\.DataRoot|L\.InstallRoot|entry\.Path)/u, 'no planned folder is created with New-Item and fixed afterwards');
 });
 
 // ---- the real script: plan, status, refusals ----
@@ -86,23 +96,34 @@ test('plan is the default: numbered steps, every object named, nothing changed',
   assert.deepEqual(numbered, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 'ten numbered steps, in order');
   for (const needle of [
     'AlberaHostBroker', 'AlberaApprovalAuthority', 'albera-cp', 'restricted SID', 'SeChangeNotifyPrivilege', 'start=demand', 'SERVICE_QUERY_STATUS',
-    'AlberaApprovalAuthority-host-1', 'Export Policy none', 'install-manifest.json', 'albera.approval.json', 'enroll --show', 'SHA-256', 'inheritance removed', 'no policy.json',
-    'C:\\Program Files\\Albera', 'C:\\ProgramData\\Albera',
+    'AlberaApprovalAuthority-host-1', 'Export Policy none', 'install-manifest.json', 'albera.approval.json', '-ExpectedHashes', 'born with', 'SHA-256', 'inheritance removed', 'no policy.json',
+    '-ApproverPublicKey', 'service-check is not run', 'C:\\Program Files\\Albera', 'C:\\ProgramData\\Albera',
   ]) assert.ok(output.includes(needle), `the plan names ${needle}`);
   assert.match(output, /you start them/u, 'the plan says the owner starts the services');
   assert.doesNotMatch(output, /password\s*[:=]\s*\S/iu);
+  assert.match(output, /\[blocked\] Load -ExpectedHashes/u, 'without -ExpectedHashes the plan says install is blocked');
 });
 
-test('plan against a repo without builds is blocked with the build command, and without -ApproverKeyId the approver step is blocked', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+test('plan: blocked without a hashes file from outside the repository, without publish folders and without the approver values; todo once they are given', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
   const empty = scratch(t);
-  const output = host(['-Mode', 'plan', '-RepoRoot', empty, '-ApproverKeyId', 'hello-0123456789abcdef']).stdout;
-  assert.match(output, /\[blocked\] Verify the published builds/u);
-  assert.match(output, /npm run build:windows-broker/u);
-  assert.match(output, /npm run build:approval-authority/u);
-  assert.match(output, /\[blocked\] Read the approver key/u);
-  assert.match(output, /npm run build:approver/u);
-  const noKeyId = host(['-Mode', 'plan', '-RepoRoot', empty]).stdout;
-  assert.match(noKeyId, /-ApproverKeyId <hello-\.\.\.> is required for install/u);
+  const outside = scratch(t);
+  const hashesFile = path.join(outside, 'hashes.json');
+  writeFileSync(hashesFile, JSON.stringify({ version: 1, components: Object.fromEntries(['broker', 'authority', 'pipe-client'].map((n) => [n, { files: { 'a.exe': 'a'.repeat(64) } }])) }));
+  const noBuilds = host(['-Mode', 'plan', '-RepoRoot', empty, '-ExpectedHashes', hashesFile, '-ApproverKeyId', 'hello-0123456789abcdef']).stdout;
+  assert.match(noBuilds, /\[blocked\] Load -ExpectedHashes/u);
+  assert.match(noBuilds, /broker: publish folder missing \(run npm run build:windows-broker\)/u);
+  assert.match(noBuilds, /\[blocked\] Check the approver values/u);
+  assert.match(noBuilds, /-ApproverKeyId, -ApproverPublicKey and -ApproverSid are all required/u);
+  const noHashes = host(['-Mode', 'plan', '-RepoRoot', empty]).stdout;
+  assert.match(noHashes, /-ExpectedHashes <file> is required/u);
+  assert.match(noHashes, /OUTSIDE this repository/u);
+  // A hashes file inside the repository tree proves nothing (a non-admin can rewrite it): refused.
+  const inside = path.join(empty, 'hashes.json');
+  writeFileSync(inside, readFileSync(hashesFile));
+  assert.match(host(['-Mode', 'plan', '-RepoRoot', empty, '-ExpectedHashes', inside]).stdout, /-ExpectedHashes is inside the repository tree/u);
+  assert.match(host(['-Mode', 'plan', '-RepoRoot', empty, '-ExpectedHashes', path.join(outside, 'missing.json')]).stdout, /-ExpectedHashes file not found/u);
+  writeFileSync(path.join(outside, 'bad.json'), '{"version":1}');
+  assert.match(host(['-Mode', 'plan', '-RepoRoot', empty, '-ExpectedHashes', path.join(outside, 'bad.json')]).stdout, /hashes_shape/u);
 });
 
 test('plan for uninstall lists the six removal steps and says what it refuses to delete', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
@@ -135,17 +156,43 @@ test('install and uninstall refuse unless elevated (the seam can only make the s
   assert.deepEqual(snapshot(), before);
 });
 
-test('lab-only parameters are refused outside the lab VM (exit 2), in every mode, and bad ids are refused', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
-  const labValues = JSON.stringify({ approverPublicKey: 'x', approverKeyId: 'hello-x', approverSid: 'S-1-5-21-1-2-3-4' });
-  const outside = host(['-Mode', 'plan', '-LabApproverValues', labValues], { allowFail: true });
-  assert.equal(outside.code, 2);
-  assert.match(outside.stdout, /lab-only/u);
-  const inLabButPlan = host(['-Mode', 'plan', '-LabApproverValues', labValues], { env: { ALBERA_LAB_VM: '1' }, allowFail: true });
-  assert.equal(inLabButPlan.code, 2, 'even in the lab the parameter only applies to install');
-  const wrongValue = host(['-Mode', 'plan', '-LabApproverValues', labValues], { env: { ALBERA_LAB_VM: 'true' }, allowFail: true });
-  assert.equal(wrongValue.code, 2);
+test('bad approver values and ids are refused with exit 2 before anything is looked at; the lab password parameter is not reachable from outside', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
   assert.equal(host(['-Mode', 'plan', '-ApproverKeyId', 'not valid!'], { allowFail: true }).code, 2);
+  assert.equal(host(['-Mode', 'plan', '-ApproverSid', 'S-1-5-32-544'], { allowFail: true }).code, 2, 'a group SID is not an approver');
+  assert.equal(host(['-Mode', 'plan', '-ApproverSid', 'S-1-5-80-1-2-3-4-5'], { allowFail: true }).code, 2, 'a service SID is not an approver');
+  const badKey = host(['-Mode', 'plan', '-ApproverPublicKey', 'bm90IGEga2V5'], { allowFail: true });
+  assert.equal(badKey.code, 2);
+  assert.match(badKey.stdout, /not a base64 RSA-2048/u);
   assert.equal(host(['-Mode', 'plan', '-ProjectId', '../x'], { allowFail: true }).code, 2);
+  assert.equal(host(['-Mode', 'bogus'], { allowFail: true }).code === 0, false);
+  assert.equal(host(['-Mode', 'plan', '-LabApproverValues', '{}'], { allowFail: true }).code === 0, false, 'the old lab-only approver parameter is gone');
+  assert.equal(host(['-Mode', 'plan', '-ApproverExe', 'C:\\x\\AlberaApprover.exe'], { allowFail: true }).code === 0, false, 'the script no longer takes a program to run');
+});
+
+test('-Mode hashes prints the SHA-256 of every file of the three publish folders (a tool for the CI run), and refuses links and missing folders', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+  const repo = scratch(t);
+  const folders = {
+    broker: 'src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish',
+    authority: 'src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish',
+    'pipe-client': 'src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish',
+  };
+  assert.match(host(['-Mode', 'hashes', '-RepoRoot', repo], { allowFail: true }).stdout, /REFUSED: broker: publish folder missing/u);
+  const contents = {};
+  for (const [name, rel] of Object.entries(folders)) {
+    mkdirSync(path.join(repo, rel, 'sub'), { recursive: true });
+    contents[name] = { [`${name}.exe`]: `exe ${name}`, 'sub/data.json': `{"n":"${name}"}`, 'lib.dll': randomBytes(32).toString('hex') };
+    for (const [file, text] of Object.entries(contents[name])) writeFileSync(path.join(repo, rel, file), text);
+  }
+  const printed = JSON.parse(host(['-Mode', 'hashes', '-RepoRoot', repo]).stdout.trim());
+  assert.equal(printed.version, 1);
+  for (const name of Object.keys(folders)) {
+    const expected = Object.fromEntries(Object.entries(contents[name]).map(([file, text]) => [file, createHash('sha256').update(text).digest('hex')]));
+    assert.deepEqual(printed.components[name].files, expected, `${name}: every file, forward slashes, lowercase hex`);
+  }
+  // the printed file is exactly what -ExpectedHashes reads: the first plan step turns to todo
+  const outside = scratch(t);
+  writeFileSync(path.join(outside, 'h.json'), JSON.stringify(printed));
+  assert.match(host(['-Mode', 'plan', '-RepoRoot', repo, '-ExpectedHashes', path.join(outside, 'h.json')]).stdout, /\[todo\] Load -ExpectedHashes/u);
 });
 
 // ---- the pure helpers ----
@@ -203,11 +250,9 @@ test('SPKI: built from a P-256 public blob it equals Node\'s own export; wrong s
   assert.doesNotThrow(() => createPublicKey({ key: Buffer.from(r.spkiBuilt, 'base64'), format: 'der', type: 'spki' }));
 });
 
-test('approver values: parsed from the three public lines; a different key id, a non-user or equal SID, and a non-RSA-2048 key are each refused with a reason', needsWindows, () => {
+test('approver values (given as parameters): a different key id, a non-user or equal SID, and a non-RSA-2048 key are each refused with a reason', needsWindows, () => {
   const { r, inputs } = lib();
   assert.deepEqual({ ...r.shown }, { approverPublicKey: inputs.rsa2048, approverKeyId: 'hello-0123456789abcdef', approverSid: 'S-1-5-21-1111111111-2222222222-3333333333-1001' });
-  assert.match(r.shownMissing, /approver_output_missing_approverSid/u);
-  assert.match(r.shownRepeated, /approver_output_repeated_value/u);
   assert.equal(r.approverOk, 0);
   assert.deepEqual(r.approverWrongId, ['approver_key_id_differs_from_expected']);
   assert.deepEqual(r.approverSameSid, ['approver_sid_equals_control_plane_sid']);
@@ -362,6 +407,62 @@ test('removal safety, path rules, the lab gate and id grammar', needsWindows, ()
   assert.deepEqual(r.ids, [true, true, false, false, false]);
 });
 
+test('trust summary: a planted owner, a non-admin writer, an inherited ACL on a folder, and a service writing outside its own folder are each refused', needsWindows, () => {
+  const { r } = lib();
+  const attacker = 'S-1-5-21-1111111111-2222222222-3333333333-1002';
+  assert.equal(r.trustOk, 0);
+  assert.deepEqual(r.trustPlantedOwner, ['owner_untrusted']);
+  assert.deepEqual(r.trustUserWriter, [`writer_untrusted:${attacker}`]);
+  assert.deepEqual(r.trustInherited, ['inheritance_not_removed']);
+  assert.equal(r.trustInheritedFileOk, 0, 'a file inherits its ACL from a trusted folder: only owner and writers are checked');
+  assert.equal(r.trustServiceWriterOnItsOwn, 0);
+  assert.deepEqual(r.trustServiceWriterElsewhere, [`writer_untrusted:${r.sidBroker}`]);
+  assert.deepEqual(r.plannedWriters.dataRoot, ['S-1-5-18', 'S-1-5-32-544'], 'nobody but the administrators may write the data root');
+  assert.deepEqual(r.plannedWriters.brokerConfig, ['S-1-5-18', 'S-1-5-32-544'], 'the Broker cannot write its own config');
+  assert.deepEqual(r.plannedWriters.brokerDb, ['S-1-5-18', 'S-1-5-32-544', r.sidBroker].sort());
+  assert.deepEqual(r.plannedWriters.controlPlane, ['S-1-5-18', 'S-1-5-21-1111111111-2222222222-3333333333-1500', 'S-1-5-32-544']);
+  assert.match(r.refusalText, /cannot be trusted \(owner_untrusted\).*delete it yourself as an administrator/u);
+  // the descriptor a folder is born with: Full for SYSTEM / Administrators, Modify for its own account, all inheritable, allow only
+  const rights = Object.fromEntries(r.rules.map((rule) => [rule.sid, rule]));
+  assert.equal(rights['S-1-5-18'].rights, 0x1f01ff);
+  assert.equal(rights[r.sidBroker].rights, 0x1301bf, 'Modify');
+  assert.ok(r.rules.every((rule) => rule.inherit === 3 && rule.type === 'Allow'));
+  assert.equal(r.badGrant, 'grant_not_understood');
+});
+
+test('expected hashes: strict shape (three components, relative paths, 64 lowercase hex), every difference by name, and a file inside the repository is refused', needsWindows, () => {
+  const { r } = lib();
+  assert.deepEqual(r.hashesOk, { ok: true, broker: ['albera-windows-broker.exe', 'sub/x.dll'] });
+  const expected = { empty: 'hashes_file_size', notJson: 'hashes_not_json', version2: 'hashes_shape', extraComponent: 'hashes_components', missingComponent: 'hashes_components', upperHex: 'hashes_entry:broker',
+    shortHex: 'hashes_entry:broker', dotdot: 'hashes_entry:broker', absolute: 'hashes_entry:broker', noFiles: 'hashes_empty:authority' };
+  assert.deepEqual(r.hashesBad, expected);
+  assert.equal(r.cmpEqual, 0, 'either slash is accepted for the copied files');
+  assert.deepEqual(r.cmpDiffs, ['mismatch:albera-windows-broker.exe', 'missing:sub/x.dll', 'unexpected:extra.dll']);
+  assert.deepEqual(r.insideRepo, [true, false, false, true], 'a sibling folder with the same prefix is not inside; case does not matter');
+});
+
+test('manifest shape and ownership: a forged manifest cannot name another account, another service, another key or an unknown entry; only the exact account install made may be removed', needsWindows, () => {
+  const { r } = lib();
+  assert.equal(r.shapeOk, 0);
+  assert.deepEqual(r.shapeBad.userName, ['user_record'], 'created.user = Yosuke is not a manifest this script wrote');
+  assert.deepEqual(r.shapeBad.userSidGroup, ['user_record']);
+  assert.deepEqual(r.shapeBad.serviceName, ['service_name_not_fixed']);
+  assert.deepEqual(r.shapeBad.keyName, ['key_record']);
+  assert.deepEqual(r.shapeBad.binaryName, ['binary_name:evil']);
+  assert.deepEqual(r.shapeBad.unknownCreated, ['created_key:folders'], 'no other folder can be listed');
+  assert.deepEqual(r.shapeBad.unknownValue, ['values_key:x']);
+  assert.deepEqual(r.shapeBad.badSpki, ['authority_spki']);
+  for (const key of ['badState', 'notDict', 'nullManifest']) assert.deepEqual(r.shapeBad[key], ['manifest_header']);
+  assert.equal(r.ownedOk, 0);
+  assert.deepEqual(r.owned.forgedName, ['recorded_name_not_fixed', 'live_name_not_fixed'], 'the owner\'s own account, named in a forged manifest, is not removed (even with the installer\'s description copied)');
+  assert.ok(r.owned.forgedNameLiveOwner.includes('description_differs'));
+  assert.deepEqual(r.owned.otherSid, ['sid_differs']);
+  assert.deepEqual(r.owned.otherDescription, ['description_differs']);
+  assert.deepEqual(r.owned.caseName, ['recorded_name_not_fixed', 'live_name_not_fixed'], 'the name is compared case-sensitively');
+  assert.deepEqual(r.owned.gone, ['account_missing']);
+  assert.deepEqual(r.owned.unrecorded, ['not_recorded']);
+});
+
 // ---- the signing key function, in user scope ----
 
 test('New-AuthoritySigningKey (user scope, no admin): non-exportable ECDSA P-256, read back, and the SPKI it returns verifies a signature made with the key (checked by Node)', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
@@ -389,28 +490,73 @@ test('New-AuthoritySigningKey (user scope, no admin): non-exportable ECDSA P-256
 
 const harness = (t, kind) => lastJson(ps(['-File', path.join(driverDir, 'function-harness.ps1'), '-Case', kind, '-Work', scratch(t)]).stdout);
 
-test('copy: three builds are copied with every file hashed, recorded in the manifest, re-run changes nothing, a tampered or stale copy is refused, a leftover .partial is replaced', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+test('copy: the COPIES are hashed against the expected hashes; a replaced build, an extra or a missing file, a link in the source and no hashes file are refused and leave nothing behind', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
   const r = harness(t, 'copy');
   assert.equal(r.firstRunError, null);
   assert.deepEqual(r.recorded, ['authority', 'broker', 'pipe-client']);
-  assert.equal(r.destFiles.length, 12);
+  assert.equal(r.destFiles.length, 9);
   assert.ok(r.destFiles.includes('broker\\sub\\data.json'));
   assert.equal(r.noPartialLeft, true);
   assert.equal(r.treeEqual, true);
   assert.equal(r.exeShaRecorded, true);
   assert.equal(r.secondRunError, null);
   assert.equal(r.secondRunUntouched, true, 'a second run leaves the copied files alone');
-  assert.match(r.tamperedError, /already exists and differs from the build/u);
+  assert.match(r.tamperedError, /already exists and does not match -ExpectedHashes \(mismatch:runtime\.dll\)/u);
+  // hash mismatch -> refuse, and the copies are deleted
+  assert.match(r.replacedBuildError, /does not match -ExpectedHashes \(mismatch:runtime\.dll\); the copies were deleted/u);
+  assert.equal(r.replacedBuildNothingLeft, true, 'neither the destination nor the .partial folder is left');
+  assert.equal(r.replacedBuildNotRecorded, true);
+  assert.match(r.extraFileError, /unexpected:planted\.dll/u);
+  assert.match(r.missingFileError, /missing:sub\/data\.json/u);
+  assert.match(r.junctionInSourceError, /contains a link or junction/u);
+  assert.equal(r.junctionTargetIntact, true);
+  assert.equal(r.cleanAgainError, null, 'the reviewed build copies once the working tree is clean again');
+  assert.deepEqual(r.recordedAgain, ['authority', 'broker', 'pipe-client']);
   assert.equal(r.afterPartialError, null);
   assert.equal(r.staleGone, true);
   assert.equal(r.secondCopied, true);
   assert.deepEqual(r.manifestReread, ['authority', 'broker', 'pipe-client'], 'the manifest on disk round-trips');
-  assert.equal(r.manifestState, 'partial');
+  assert.match(r.noHashesError, /-ExpectedHashes <file> is required/u);
+  assert.equal(r.noHashesNothingCopied, true, 'without hashes from outside nothing is copied at all');
+  assert.match(r.hashesInRepo, /inside the repository tree/u);
+  assert.equal(r.hashesBadShape, 'hashes_shape');
 });
 
-test('build manifest check: ok, missing, no manifest, changed exe, malformed manifest', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
-  const r = harness(t, 'exe');
-  assert.deepEqual({ ...r, case: undefined }, { case: undefined, ok: 'ok', missing: 'missing', noManifest: 'manifest_missing', changed: 'sha256_differs_from_manifest', badManifest: 'manifest_invalid' });
+test('trust: a planted manifest owned by a non-admin, a junction as the data root or a planned folder, and a planted child are refused before any ACL is changed or read through the link', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+  const r = harness(t, 'trust');
+  // the planted folder and manifest belong to the current non-admin user: exactly what an agent would leave
+  assert.ok(r.plantedReasons.includes('owner_untrusted') && r.plantedReasons.includes('inheritance_not_removed'));
+  assert.ok(r.plantedReasons.some((reason) => reason.startsWith('writer_untrusted:')));
+  assert.ok(r.plantedManifestReasons.includes('owner_untrusted'));
+  assert.match(r.plantedInstall, /^REFUSED: .*install-manifest\.json cannot be trusted \(owner_untrusted/u);
+  assert.match(r.plantedInstall, /delete it yourself as an administrator/u);
+  assert.match(r.plantedUninstall, /^REFUSED: .*cannot be trusted/u);
+  assert.equal(r.plantedPlanError, null, 'plan / status never fail on it');
+  assert.equal(r.plantedPlanManifestIgnored, true, 'but they do not use it');
+  assert.match(r.plantedPlanNote, /NOT trusted or cannot be verified without admin rights \(owner_untrusted/u);
+  // the data root is a junction to another vendor's service folder
+  assert.equal(r.junctionRootReasons.length, 1);
+  assert.match(r.junctionRootReasons[0], /^reparse_point:/u);
+  assert.match(r.junctionRootInstall, /^REFUSED: .*cannot be trusted \(reparse_point:/u);
+  // a planned sub-folder is a junction: the folder step stops before icacls; nothing in the target changes
+  assert.match(r.junctionChildError, /control-plane cannot be trusted \(reparse_point:/u);
+  assert.equal(r.vendorUntouched, true);
+  assert.match(r.plantedChildError, /broker cannot be trusted \(owner_untrusted, inheritance_not_removed/u);
+  assert.equal(r.missingChildError, null, 'a folder that does not exist yet is simply created');
+  // a link anywhere on the way is found
+  assert.deepEqual(r.parentChain, ['link-parent']);
+  assert.equal(r.plainChain, r.baseChain, 'a plain folder adds no link to the chain');
+});
+
+test('a folder is born with its final descriptor (owner, protected DACL, inheritable rules); an existing path or an unknown grant creates nothing', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+  const r = harness(t, 'secured');
+  assert.equal(r.owner, true);
+  assert.equal(r.protected, true, 'no inherited ACE, ever');
+  assert.deepEqual(r.allow, r.expectedAllow);
+  assert.equal(r.childInherits, true);
+  assert.equal(r.existingRefused, 'directory_already_exists');
+  assert.equal(r.badGrantRefused, 'grant_not_understood');
+  assert.equal(r.badGrantCreatedNothing, true);
 });
 
 test('removal: only known files are deleted; an unknown file, a sub-folder or a junction stops the removal and nothing is deleted there', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
@@ -427,6 +573,8 @@ test('removal: only known files are deleted; an unknown file, a sub-folder or a 
   assert.equal(r.installUnknownKept, true);
   assert.match(r.junctionRefused, /contains a link or junction/u);
   assert.equal(r.outsideIntact, true, 'the junction target was not followed or deleted');
+  assert.match(r.selfJunctionRefused, /is or contains a link or junction/u, 'a folder that is itself a junction is refused too');
+  assert.equal(r.selfJunctionTargetIntact, true);
 });
 
 test('the password comparison is exact and the SecureStrings are only compared, never shown', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {

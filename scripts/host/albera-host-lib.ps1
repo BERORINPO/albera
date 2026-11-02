@@ -8,6 +8,7 @@ function Get-HostConstants {
     BrokerService = 'AlberaHostBroker'
     AuthorityService = 'AlberaApprovalAuthority'
     ControlPlaneUser = 'albera-cp'
+    ControlPlaneUserDescription = 'ALBERA Control Plane account (created by albera-host.ps1)'
     BrokerPipeName = 'ALBERA_HostBroker'
     AuthorityPipeRoot = 'ALBERA\ApprovalAuthority'
     AuthorityKid = 'albera-authority-1'
@@ -133,18 +134,7 @@ function Get-DerivedServiceSid([string]$ServiceName) {
 }
 
 # ---------------------------------------------------------------------------------------------- approver values
-# `AlberaApprover.exe enroll --show` prints three public lines: "approverPublicKey": "...", "approverKeyId": "...", "approverSid": "...".
-function Read-ApproverShown([string[]]$Lines) {
-  $found = @{}
-  foreach ($line in $Lines) {
-    if ($line -match '^\s*"(approverPublicKey|approverKeyId|approverSid)":\s*"([^"]*)",?\s*$') {
-      if ($found.ContainsKey($Matches[1])) { throw 'approver_output_repeated_value' }
-      $found[$Matches[1]] = $Matches[2]
-    }
-  }
-  foreach ($name in @('approverPublicKey', 'approverKeyId', 'approverSid')) { if (-not $found.ContainsKey($name)) { throw "approver_output_missing_$name" } }
-  [pscustomobject]@{ approverPublicKey = $found['approverPublicKey']; approverKeyId = $found['approverKeyId']; approverSid = $found['approverSid'] }
-}
+# The owner runs `AlberaApprover.exe enroll --show` in a NORMAL console and passes the three public values as parameters (the installer never runs that exe: it is elevated).
 # The checks the installer owes before it writes the Authority config. Returns the reasons (an empty list means all hold).
 function Test-ApproverValues($Shown, [string]$ExpectedKeyId, [string]$ControlPlaneSid) {
   $reasons = New-Object System.Collections.Generic.List[string]
@@ -428,6 +418,163 @@ function Test-AuthoritySigningKeyExists([string]$KeyName, [string]$Scope = 'mach
 function Get-UnknownEntries([string[]]$RelativePaths, [string[]]$KnownFiles, [string[]]$KnownFolders) {
   $known = @($KnownFiles | ForEach-Object { $_.ToLowerInvariant() }) + @($KnownFolders | ForEach-Object { $_.ToLowerInvariant() })
   , @($RelativePaths | Where-Object { $known -notcontains $_.ToLowerInvariant() })
+}
+
+# ---------------------------------------------------------------------------------------------- trust: who may have written what the installer is about to rely on
+# An attacker model for this section: an AI agent running as the owner's NON-admin session. It can create C:\ProgramData\Albera (Users may create folders there), make it or a
+# child a junction, plant files in it, and rewrite files in the repository working tree. So nothing that already exists is trusted until it passes these checks.
+$script:WriteRightsMask = 0x2 -bor 0x4 -bor 0x40 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000   # WriteData AppendData DeleteChild Delete WriteDac WriteOwner GenericAll GenericWrite (as ServicePathGuard.cs)
+$script:AdminSids = @('S-1-5-18', 'S-1-5-32-544')
+function Get-AdminSids { , $script:AdminSids }
+
+# $Summary = @{ Owner; Protected; WriteSids } (Get-AclSummary). Returns the reasons it is not trustworthy (empty = trusted).
+function Test-TrustSummary($Summary, [string[]]$AllowedWriters, [bool]$RequireProtected) {
+  $reasons = New-Object System.Collections.Generic.List[string]
+  if ($script:AdminSids -notcontains $Summary.Owner) { $reasons.Add('owner_untrusted') }
+  if ($RequireProtected -and -not $Summary.Protected) { $reasons.Add('inheritance_not_removed') }
+  $writers = @($script:AdminSids) + @($AllowedWriters)
+  foreach ($sid in @($Summary.WriteSids)) { if ($writers -notcontains $sid) { $reasons.Add('writer_untrusted:' + $sid) } }
+  , @($reasons)
+}
+# Who may hold write rights on a planned folder: SYSTEM, Administrators and the plan's own Modify / Full-control accounts.
+function Get-PlannedWriters($Entry) {
+  $own = @($Entry.Grants | ForEach-Object { if ($_ -match '^\*(S-[0-9-]+):(?:\(OI\)\(CI\))?(?:M|F)$') { $Matches[1] } })
+  , @($script:AdminSids + $own | Sort-Object -Unique)
+}
+function Get-AclSummary([string]$Path) {
+  $acl = Get-Acl -LiteralPath $Path
+  $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.AccessControlType -eq 'Allow' })
+  [pscustomobject]@{
+    Owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+    Protected = $acl.AreAccessRulesProtected
+    AllowSids = @($rules | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+    WriteSids = @($rules | Where-Object { ([int]$_.FileSystemRights -band $script:WriteRightsMask) -ne 0 } | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+  }
+}
+# The path itself and every parent up to the volume root that is a reparse point (junction, symlink, mount point). Attributes only; nothing is followed.
+function Get-ReparseChain([string]$Path) {
+  $found = New-Object System.Collections.Generic.List[string]
+  $p = $Path
+  while ($p) {
+    if ([System.IO.File]::Exists($p) -or [System.IO.Directory]::Exists($p)) {
+      if (([System.IO.File]::GetAttributes($p) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { $found.Add($p) }
+    }
+    $parent = [System.IO.Path]::GetDirectoryName($p)
+    if ([string]::IsNullOrEmpty($parent) -or $parent -eq $p) { break }
+    $p = $parent
+  }
+  , @($found)
+}
+# Existing path -> reasons it cannot be trusted (empty list = it can). A link anywhere on the way stops the check before any ACL is read (reading it would follow the link).
+function Get-PathTrustReasons([string]$Path, [string[]]$AllowedWriters, [bool]$RequireProtected) {
+  $chain = Get-ReparseChain $Path
+  if ($chain.Count -gt 0) { return , @($chain | ForEach-Object { 'reparse_point:' + $_ }) }
+  try { $summary = Get-AclSummary $Path } catch { return , @('acl_unreadable') }
+  Test-TrustSummary $summary $AllowedWriters $RequireProtected
+}
+function Format-TrustRefusal([string]$Path, [string[]]$Reasons) {
+  "$Path cannot be trusted ($($Reasons -join ', ')). Something other than this script made or changed it. Inspect it, then delete it yourself as an administrator and run this script again."
+}
+
+# File system rules for a planned folder: the icacls-style grants of Get-AclPlan, as .NET rules (so the folder can be CREATED with its final ACL, with no window in between).
+function ConvertTo-FileSystemRules([string[]]$Grants) {
+  $rules = foreach ($g in $Grants) {
+    if ($g -cnotmatch '^\*(S-[0-9-]+):(\(OI\)\(CI\))?(F|RX|M)$') { throw 'grant_not_understood' }
+    $rights = switch ($Matches[3]) { 'F' { [System.Security.AccessControl.FileSystemRights]::FullControl } 'RX' { [System.Security.AccessControl.FileSystemRights]::ReadAndExecute } 'M' { [System.Security.AccessControl.FileSystemRights]::Modify } }
+    $inherit = if ($Matches[2]) { [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit } else { [System.Security.AccessControl.InheritanceFlags]::None }
+    New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier($Matches[1])), $rights, $inherit, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow)
+  }
+  , @($rules)
+}
+# Create a folder that is born with its final security descriptor (owner, protected DACL): there is no moment at which it carries an inherited ACL. Refuses an existing path.
+function New-SecuredDirectory([string]$Path, [string[]]$Grants, [string]$OwnerSid = 'S-1-5-32-544') {
+  if ([System.IO.File]::Exists($Path) -or [System.IO.Directory]::Exists($Path)) { throw 'directory_already_exists' }
+  $security = New-Object System.Security.AccessControl.DirectorySecurity
+  $security.SetAccessRuleProtection($true, $false)
+  $security.SetOwner((New-Object System.Security.Principal.SecurityIdentifier($OwnerSid)))
+  foreach ($rule in (ConvertTo-FileSystemRules $Grants)) { $security.AddAccessRule($rule) }
+  (New-Object System.IO.DirectoryInfo($Path)).Create($security)
+}
+
+# ---------------------------------------------------------------------------------------------- what the owner recorded as expected: SHA-256 of every published file
+# JSON: { "version": 1, "components": { "broker": { "files": { "<relative/path>": "<64 lowercase hex>" } }, "authority": {...}, "pipe-client": {...} } }. It comes from OUTSIDE the repository tree
+# (the CI run's printed hashes / a reviewed build): the tree can be rewritten by a non-admin, so a hash taken from it proves nothing. Returns @{ Ok; Reason; Map } (Map: component -> relative path -> sha).
+$script:HashComponents = @('broker', 'authority', 'pipe-client')
+function Read-ExpectedHashes([string]$Json) {
+  $fail = { param($why) [pscustomobject]@{ Ok = $false; Reason = $why; Map = $null } }
+  if ($null -eq $Json -or $Json.Length -eq 0 -or $Json.Length -gt 4MB) { return (& $fail 'hashes_file_size') }
+  try { $o = $Json | ConvertFrom-Json } catch { return (& $fail 'hashes_not_json') }
+  if (-not (Test-SameKeySet $o @('version', 'components')) -or $o.version -ne 1) { return (& $fail 'hashes_shape') }
+  if (-not (Test-SameKeySet $o.components $script:HashComponents)) { return (& $fail 'hashes_components') }
+  $map = @{}
+  foreach ($name in $script:HashComponents) {
+    $c = $o.components.$name
+    if (-not (Test-SameKeySet $c @('files'))) { return (& $fail "hashes_shape:$name") }
+    $files = @{}
+    foreach ($prop in $c.files.PSObject.Properties) {
+      $rel = $prop.Name
+      if ($rel -cnotmatch '^[A-Za-z0-9._+@ -]+(/[A-Za-z0-9._+@ -]+)*$' -or $rel.Contains('..') -or ($prop.Value -isnot [string]) -or ($prop.Value -cnotmatch '^[0-9a-f]{64}$')) { return (& $fail "hashes_entry:$name") }
+      $files[$rel] = $prop.Value
+    }
+    if ($files.Count -eq 0) { return (& $fail "hashes_empty:$name") }
+    $map[$name] = $files
+  }
+  [pscustomobject]@{ Ok = $true; Reason = ''; Map = $map }
+}
+# $Actual: relative path (either slash) -> sha of the files that were COPIED. Differences, by name only (never contents); empty = identical.
+function Compare-FileHashSets($Expected, $Actual) {
+  $diffs = New-Object System.Collections.Generic.List[string]
+  $have = @{}
+  foreach ($k in $Actual.Keys) { $have[([string]$k).Replace('\', '/')] = $Actual[$k] }
+  foreach ($k in $Expected.Keys) {
+    if (-not $have.ContainsKey($k)) { $diffs.Add('missing:' + $k) } elseif ($have[$k] -cne $Expected[$k]) { $diffs.Add('mismatch:' + $k) }
+  }
+  foreach ($k in $have.Keys) { if (-not $Expected.ContainsKey($k)) { $diffs.Add('unexpected:' + $k) } }
+  , @($diffs | Sort-Object)
+}
+# The hashes file must not sit in the repository tree (a non-admin can rewrite it there).
+function Test-PathInside([string]$Path, [string]$Root) {
+  $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\') + '\'
+  $base = [System.IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+  $full.StartsWith($base, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# ---------------------------------------------------------------------------------------------- the manifest and the account: what uninstall may touch
+# The manifest is only read after its folder and file passed the trust checks above; even then, uninstall acts on FIXED names only, so a forged entry can name nothing else.
+function Test-HasKey($Dict, [string]$Key) { @($Dict.Keys) -ccontains $Key }
+function Test-ManifestShape($M) {
+  $c = Get-HostConstants
+  $reasons = New-Object System.Collections.Generic.List[string]
+  if ($M -isnot [System.Collections.IDictionary] -or $M['schema'] -ne 1 -or $M['tool'] -cne 'albera-host.ps1' -or @('partial', 'complete') -cnotcontains $M['state']) { $reasons.Add('manifest_header'); return , @($reasons) }
+  $created = $M['created']; $values = $M['values']
+  if ($created -isnot [System.Collections.IDictionary] -or $values -isnot [System.Collections.IDictionary]) { $reasons.Add('manifest_sections'); return , @($reasons) }
+  foreach ($k in $created.Keys) { if (@('dataRoot', 'installRoot', 'services', 'binaries', 'user', 'key') -cnotcontains $k) { $reasons.Add('created_key:' + $k) } }
+  foreach ($k in $values.Keys) { if (@('authoritySpki', 'controlPlaneSid', 'approverSid', 'approverKeyId', 'brokerServiceSid', 'authorityServiceSid') -cnotcontains $k) { $reasons.Add('values_key:' + $k) } }
+  if ((Test-HasKey $created 'services')) { foreach ($n in @($created['services'])) { if (@($c.BrokerService, $c.AuthorityService) -cnotcontains $n) { $reasons.Add('service_name_not_fixed') } } }
+  if ((Test-HasKey $created 'user') -and $null -ne $created['user']) {
+    $u = $created['user']
+    if ($u -isnot [System.Collections.IDictionary] -or $u['name'] -cne $c.ControlPlaneUser -or -not (Test-AccountSidShape $u['sid'])) { $reasons.Add('user_record') }
+  }
+  if ((Test-HasKey $created 'key') -and $null -ne $created['key']) {
+    if ($created['key'] -isnot [System.Collections.IDictionary] -or $created['key']['name'] -cne $c.SigningKeyName) { $reasons.Add('key_record') }
+  }
+  if ((Test-HasKey $created 'binaries') -and $created['binaries'] -is [System.Collections.IDictionary]) {
+    foreach ($k in $created['binaries'].Keys) { if ($script:HashComponents -cnotcontains $k) { $reasons.Add('binary_name:' + $k) } }
+  }
+  if ((Test-HasKey $values 'authoritySpki') -and -not (Test-P256Spki $values['authoritySpki'])) { $reasons.Add('authority_spki') }
+  , @($reasons | Select-Object -Unique)
+}
+# $Recorded: the manifest's created.user (name, sid) or $null. $Live: @{ Name; Sid; Description } read from the machine or $null. Returns why this account must NOT be removed.
+function Test-OwnedUser($Recorded, $Live) {
+  $c = Get-HostConstants
+  $reasons = New-Object System.Collections.Generic.List[string]
+  if ($null -eq $Recorded) { $reasons.Add('not_recorded'); return , @($reasons) }
+  if ($Recorded['name'] -cne $c.ControlPlaneUser) { $reasons.Add('recorded_name_not_fixed') }
+  if ($null -eq $Live) { $reasons.Add('account_missing'); return , @($reasons) }
+  if ($Live.Name -cne $c.ControlPlaneUser) { $reasons.Add('live_name_not_fixed') }
+  if ($Live.Sid -cne $Recorded['sid']) { $reasons.Add('sid_differs') }
+  if ($Live.Description -cne $c.ControlPlaneUserDescription) { $reasons.Add('description_differs') }
+  , @($reasons)
 }
 
 # ---------------------------------------------------------------------------------------------- the lab-only password gate

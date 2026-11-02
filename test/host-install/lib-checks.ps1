@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 function FromB64Url([string]$s) { $s = $s.Replace('-', '+').Replace('_', '/'); while ($s.Length % 4) { $s += '=' }; , [Convert]::FromBase64String($s) }
 function Count($x) { @($x).Count }
 
+Add-Type -AssemblyName System.Web.Extensions
 $r = [ordered]@{}
 $K = Get-HostConstants
 $L = Get-HostLayout 'C:\Program Files' 'C:\ProgramData'
@@ -38,16 +39,9 @@ $r.badBlobRefused = try { ConvertTo-P256Spki $bad | Out-Null; $false } catch { $
 $r.rsaAccepts = Test-Rsa2048Spki $Rsa2048Spki
 $r.rsaRejects = @((Test-Rsa2048Spki $Rsa3072Spki), (Test-Rsa2048Spki $EcSpki), (Test-Rsa2048Spki ''))
 
-# ---- approver output
-$sample = @(
-  'Windows Hello approver key (RSA-2048). Put these three values in the Authority config:',
-  ('  "approverPublicKey": "' + $Rsa2048Spki + '",'), '  "approverKeyId": "hello-0123456789abcdef",', '  "approverSid": "S-1-5-21-1111111111-2222222222-3333333333-1001",',
-  'Public values only. approverSid is this account: run approve as the same account, on this PC.', 'attestation: NotSupported (accepted with --accept-unattested: this key is NOT proven to be hardware-backed)',
-  'Warning: trust these values only if they equal what your own first enroll printed. If you did not run enroll yourself, run enroll --replace.')
-$shown = Read-ApproverShown $sample
+# ---- approver values (passed as parameters by the owner)
+$shown = [pscustomobject]@{ approverPublicKey = $Rsa2048Spki; approverKeyId = 'hello-0123456789abcdef'; approverSid = 'S-1-5-21-1111111111-2222222222-3333333333-1001' }
 $r.shown = $shown
-$r.shownMissing = try { Read-ApproverShown ($sample | Where-Object { $_ -notlike '*approverSid*' }) | Out-Null; 'no error' } catch { $_.Exception.Message }
-$r.shownRepeated = try { Read-ApproverShown ($sample + $sample[3]) | Out-Null; 'no error' } catch { $_.Exception.Message }
 $cp = 'S-1-5-21-1111111111-2222222222-3333333333-1500'
 $r.approverOk = Count (Test-ApproverValues $shown 'hello-0123456789abcdef' $cp)
 $r.approverWrongId = Test-ApproverValues $shown 'hello-other' $cp
@@ -147,4 +141,84 @@ $r.pathsOk = @((Test-PlainAbsolutePath 'C:\ProgramData\Albera\broker\journal.sql
 $r.pathsBad = @((Test-PlainAbsolutePath 'broker\journal.sqlite'), (Test-PlainAbsolutePath 'C:/a/b'), (Test-PlainAbsolutePath 'C:\a\..\b'), (Test-PlainAbsolutePath '\\server\share\x'), (Test-PlainAbsolutePath 'C:\a\b\'), (Test-PlainAbsolutePath 'C:\a\b:stream'), (Test-PlainAbsolutePath 'C:\a\\b'), (Test-PlainAbsolutePath ('C:\' + ('x' * 250))))
 $r.gate = [ordered]@{ labSupplied = $null -eq (Test-LabPasswordGate $true '1'); notLab = Test-LabPasswordGate $true ''; labWrongValue = Test-LabPasswordGate $true 'true'; noPassword = $null -eq (Test-LabPasswordGate $false '') }
 $r.ids = @((Test-HostId 'albera-host'), (Test-HostId 'hello-951a135537287eae'), (Test-HostId '-x'), (Test-HostId ''), (Test-HostId 'a b'))
+# ---- trust: who may have written what the installer relies on
+$admins = Get-AdminSids
+$attackerSid = 'S-1-5-21-1111111111-2222222222-3333333333-1002'
+$ok = [pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $true; WriteSids = @('S-1-5-18', 'S-1-5-32-544') }
+$r.trustOk = Count (Test-TrustSummary $ok $admins $true)
+$r.trustPlantedOwner = Test-TrustSummary ([pscustomobject]@{ Owner = $attackerSid; Protected = $true; WriteSids = @('S-1-5-32-544') }) $admins $true
+$r.trustUserWriter = Test-TrustSummary ([pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $true; WriteSids = @('S-1-5-32-544', $attackerSid) }) $admins $true
+$r.trustInherited = Test-TrustSummary ([pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $false; WriteSids = @('S-1-5-32-544') }) $admins $true
+$r.trustInheritedFileOk = Count (Test-TrustSummary ([pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $false; WriteSids = @('S-1-5-32-544') }) $admins $false)
+$r.trustServiceWriterOnItsOwn = Count (Test-TrustSummary ([pscustomobject]@{ Owner = 'S-1-5-18'; Protected = $true; WriteSids = @('S-1-5-18', $sids.Broker) }) (@($admins) + $sids.Broker) $true)
+$r.trustServiceWriterElsewhere = Test-TrustSummary ([pscustomobject]@{ Owner = 'S-1-5-18'; Protected = $true; WriteSids = @('S-1-5-18', $sids.Broker) }) $admins $true
+$r.plannedWriters = [ordered]@{
+  dataRoot = Get-PlannedWriters ($plan | Where-Object { $_.Path -eq $L.DataRoot })
+  brokerDb = Get-PlannedWriters ($plan | Where-Object { $_.Path -eq $L.BrokerDbDir })
+  brokerConfig = Get-PlannedWriters ($plan | Where-Object { $_.Path -eq $L.BrokerConfigDir })
+  controlPlane = Get-PlannedWriters ($plan | Where-Object { $_.Path -eq $L.ControlPlaneDir })
+}
+$r.refusalText = Format-TrustRefusal 'C:\ProgramData\Albera' @('owner_untrusted')
+$rules = ConvertTo-FileSystemRules $plan[3].Grants
+$r.rules = @($rules | ForEach-Object { [ordered]@{ sid = $_.IdentityReference.Value; rights = [int]$_.FileSystemRights; inherit = [int]$_.InheritanceFlags; type = [string]$_.AccessControlType } })
+$r.badGrant = try { ConvertTo-FileSystemRules @('*S-1-1-0:(OI)(CI)W') | Out-Null; 'no error' } catch { $_.Exception.Message }
+
+# ---- expected hashes (from outside the repository)
+$sha = '0' * 63
+$goodHashes = @{ version = 1; components = [ordered]@{
+    broker = @{ files = [ordered]@{ 'albera-windows-broker.exe' = ($sha + 'a'); 'sub/x.dll' = ($sha + 'b') } }
+    authority = @{ files = @{ 'albera-approval-authority.exe' = ($sha + 'c') } }
+    'pipe-client' = @{ files = @{ 'albera-windows-broker-pipe-client.exe' = ($sha + 'd') } } } }
+$goodJson = ConvertTo-Json -InputObject $goodHashes -Depth 6 -Compress
+$parsed = Read-ExpectedHashes $goodJson
+$r.hashesOk = [ordered]@{ ok = $parsed.Ok; broker = @($parsed.Map['broker'].Keys | Sort-Object) }
+function BadHashes($mutate) { $o = $goodJson | ConvertFrom-Json; & $mutate $o; $x = Read-ExpectedHashes (ConvertTo-Json -InputObject $o -Depth 8 -Compress); $x.Reason }
+$r.hashesBad = [ordered]@{
+  empty = (Read-ExpectedHashes '').Reason
+  notJson = (Read-ExpectedHashes 'nope').Reason
+  version2 = BadHashes { param($o) $o.version = 2 }
+  extraComponent = BadHashes { param($o) $o.components | Add-Member -NotePropertyName evil -NotePropertyValue @{ files = @{} } }
+  missingComponent = BadHashes { param($o) $o.components.PSObject.Properties.Remove('authority') }
+  upperHex = BadHashes { param($o) $o.components.broker.files.'sub/x.dll' = ('A' * 64) }
+  shortHex = BadHashes { param($o) $o.components.broker.files.'sub/x.dll' = 'abc' }
+  dotdot = BadHashes { param($o) $o.components.broker.files | Add-Member -NotePropertyName '../evil.dll' -NotePropertyValue ('1' * 64) }
+  absolute = BadHashes { param($o) $o.components.broker.files | Add-Member -NotePropertyName 'C:/evil.dll' -NotePropertyValue ('1' * 64) }
+  noFiles = BadHashes { param($o) $o.components.authority.files = [pscustomobject]@{} }
+}
+$exp = $parsed.Map['broker']
+$r.cmpEqual = Count (Compare-FileHashSets $exp @{ 'albera-windows-broker.exe' = ($sha + 'a'); 'sub\x.dll' = ($sha + 'b') })
+$r.cmpDiffs = Compare-FileHashSets $exp @{ 'albera-windows-broker.exe' = ($sha + 'f'); 'extra.dll' = ($sha + '1') }
+$r.insideRepo = @((Test-PathInside 'C:\repo\build\hashes.json' 'C:\repo'), (Test-PathInside 'C:\repo2\hashes.json' 'C:\repo'), (Test-PathInside 'C:\other\hashes.json' 'C:\repo'), (Test-PathInside 'C:\REPO\x.json' 'c:\repo\'))
+
+# ---- manifest shape and the account that may be removed
+function NewManifest { [ordered]@{ schema = 1; tool = 'albera-host.ps1'; state = 'partial'; created = [ordered]@{ dataRoot = $true; installRoot = $true; services = @('AlberaHostBroker', 'AlberaApprovalAuthority'); binaries = @{ broker = @{ exeSha256 = ('1' * 64) } }; user = @{ name = 'albera-cp'; sid = $cp }; key = @{ name = 'AlberaApprovalAuthority-host-1' } }; values = @{ authoritySpki = $EcSpki; controlPlaneSid = $cp } } }
+$serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+function Shape($mutate) { $m = $serializer.DeserializeObject((ConvertTo-Json -InputObject (NewManifest) -Depth 8 -Compress)); & $mutate $m; Test-ManifestShape $m }
+$r.shapeOk = Count (Shape { param($m) })
+$r.shapeBad = [ordered]@{
+  userName = Shape { param($m) $m['created']['user']['name'] = 'Yosuke' }
+  userSidGroup = Shape { param($m) $m['created']['user']['sid'] = 'S-1-5-32-544' }
+  serviceName = Shape { param($m) $m['created']['services'] = @('AlberaHostBroker', 'Spooler') }
+  keyName = Shape { param($m) $m['created']['key']['name'] = 'SomeoneElsesKey' }
+  binaryName = Shape { param($m) $m['created']['binaries']['evil'] = @{} }
+  unknownCreated = Shape { param($m) $m['created']['folders'] = @('C:\Windows') }
+  unknownValue = Shape { param($m) $m['values']['x'] = 'y' }
+  badSpki = Shape { param($m) $m['values']['authoritySpki'] = 'AAAA' }
+  badState = Shape { param($m) $m['state'] = 'owned' }
+  notDict = Test-ManifestShape 'text'
+  nullManifest = Test-ManifestShape $null
+}
+$c = Get-HostConstants
+$recorded = @{ name = 'albera-cp'; sid = $cp }
+$live = [pscustomobject]@{ Name = 'albera-cp'; Sid = $cp; Description = $c.ControlPlaneUserDescription }
+$r.ownedOk = Count (Test-OwnedUser $recorded $live)
+$r.owned = [ordered]@{
+  forgedName = Test-OwnedUser @{ name = 'Yosuke'; sid = 'S-1-5-21-1111111111-2222222222-3333333333-1002' } ([pscustomobject]@{ Name = 'Yosuke'; Sid = 'S-1-5-21-1111111111-2222222222-3333333333-1002'; Description = $c.ControlPlaneUserDescription })
+  forgedNameLiveOwner = Test-OwnedUser @{ name = 'Yosuke'; sid = 'S-1-5-21-1111111111-2222222222-3333333333-1002' } ([pscustomobject]@{ Name = 'Yosuke'; Sid = 'S-1-5-21-1111111111-2222222222-3333333333-1002'; Description = '' })
+  otherSid = Test-OwnedUser $recorded ([pscustomobject]@{ Name = 'albera-cp'; Sid = 'S-1-5-21-1111111111-2222222222-3333333333-1999'; Description = $c.ControlPlaneUserDescription })
+  otherDescription = Test-OwnedUser $recorded ([pscustomobject]@{ Name = 'albera-cp'; Sid = $cp; Description = 'my own account' })
+  caseName = Test-OwnedUser @{ name = 'Albera-CP'; sid = $cp } ([pscustomobject]@{ Name = 'Albera-CP'; Sid = $cp; Description = $c.ControlPlaneUserDescription })
+  gone = Test-OwnedUser $recorded $null
+  unrecorded = Test-OwnedUser $null $live
+}
 ConvertTo-Json -InputObject $r -Depth 8 -Compress
