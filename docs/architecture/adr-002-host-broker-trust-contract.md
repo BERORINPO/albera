@@ -18,7 +18,7 @@ This document makes the first Host Broker boundary reviewable without claiming t
 
 Why the Broker does not need `SeImpersonatePrivilege`: the peer check calls `ImpersonateNamedPipeClient` and reads only the thread token's user SID; it never acts as the client. The Control Plane's pipe client opens the pipe with `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`. The impersonation level a server gets is capped by the client's SQOS, and the client allows identification only, so the privilege (which matters only for levels above identification) cannot change the outcome; a server without it may still impersonate at identification level and query the token. Evidence so far: the host tests run the Broker under a non-elevated token that holds no `SeImpersonatePrivilege` and the peer check passes, but that is same-user (the kernel would allow it anyway), so it is weak; the cross-account proof is the VM lab re-run with `sc privs` applied (every request check passes only if the peer check still works). If that re-run shows the peer check failing without the privilege, keep `SeImpersonatePrivilege` for the Broker only, record exactly which call failed and why, and re-open this section. The earlier lab note that the Broker holds `SeImpersonatePrivilege` "needed for the peer check" was wrong: it was only the default.
 
-Neither service is to be placed in a broad administrator group. The minimum Windows rights needed for each eventual Hyper-V API call have not been established. Until a reviewed per-action rights matrix is proven on supported Windows versions, the Broker must not be installed with Hyper-V mutation capability. The service-account selection also depends on a signed, administrator-controlled installer and update chain; that chain is not implemented here.
+Neither service is to be placed in a broad administrator group. **Superseded for the Broker by "Amendment 2026-11-03" below:** the owner approved putting the Broker's service SID (only the Broker's, never the Control Plane's) into Hyper-V Administrators, because Windows offers no narrower grant; the operation-layer allowlist there is what keeps the Broker from using the mutation capability that group carries. The minimum Windows rights needed for each eventual Hyper-V API call have not been established. Until a reviewed per-action rights matrix is proven on supported Windows versions, the Broker must not be installed with Hyper-V mutation capability. The service-account selection also depends on a signed, administrator-controlled installer and update chain; that chain is not implemented here.
 
 ## Named-pipe candidate
 
@@ -127,11 +127,69 @@ Until now a claim could only name `broker.operation` / `synthetic.noop`: the Bro
 - **Journal.** No migration (user_version stays 3). The claim row does not record the action; the receipt's `action` field, which `Validate` has bound to the DTO, names it in the reply, including on a replay.
 - **Not decided here.** Other `guest.command` actions (`task.cancel`, `workspace.inspect`) and `task.start` args other than those above are refused by this Broker; nothing starts a process yet (the Broker records the claim as `UNKNOWN`).
 
+## Amendment 2026-11-03: the Broker performs the room's desktop operations (option C; owner-approved, design only)
+
+The gated room (`room --require-start-approval`) needs to see and drive the screens of VMs that already exist and run. Until now it did that from the calling user (`src/runtime/hyperv-desktop/desktop-io.ps1`), which on the owner's PC is the Control Plane account `albera-cp`, and `albera-cp` has no Hyper-V rights (`host-install.md`, "known consequence"). The owner chose option C on 2026-11-03: **the Broker performs these operations, and the Control Plane gets no Hyper-V rights.** Decision-log row `2026-11-03+broker-desktop-option-c`. Nothing below is implemented yet; this section is the contract the implementation PRs are reviewed against.
+
+### Why Hyper-V Administrators, and what that costs
+
+- **No narrower OS grant exists.** Hyper-V's own role-based authorization (Authorization Manager, AzMan) is deprecated, and membership in `BUILTIN\Hyper-V Administrators` (`S-1-5-32-578`) is the supported way to give a non-administrator access to the virtualization WMI provider. That membership is all-or-nothing: it grants every Hyper-V operation on every VM (define, modify, destroy, state change, checkpoints, device settings), not only the two this amendment uses.
+- **It is effectively host-administrator.** A public technique (2020) escalates a Hyper-V Administrators member to SYSTEM through the Virtual Machine Management Service. The design therefore treats the Broker, once it holds the group, as a host-administrator-equivalent process. Its own code, not the OS, is what limits it to the operations below.
+- **Why this is still better than giving it to the Control Plane (option A, rejected).** The Control Plane runs the AI-driven room (Node, external model API, guest-derived screen content). The Broker is a small C# service with no network listener, no child processes, a fixed request schema and a tree-hashed build, reviewed under the security merge tier. Concentrating the unavoidable host-admin-equivalent right in the smaller, audited process is the ADR-002 split this contract already requires.
+- **The Control Plane stays where it is.** Its "Must not have" row above is unchanged: no Hyper-V Administrators membership, ever.
+
+### Two-layer rights matrix
+
+The ADR-002 gate "the Broker must not be installed with Hyper-V mutation capability until a reviewed per-action rights matrix is proven" is met in two layers, and **both** must be proven before the installer grants the group on a real host:
+
+| Layer | What enforces it | What it allows | Proof |
+|---|---|---|---|
+| OS | Membership of the Broker's service SID in `S-1-5-32-578`, added and removed only by the installer (`-GrantHyperVToBroker`) and recorded in the install record | Everything Hyper-V offers (see above) | Nested-Hyper-V lab measurement (below): not a member is refused, a member succeeds, separately for a restricted and an unrestricted service SID |
+| Operation | The Broker's code: a fixed allowlist of WMI namespace, classes and methods, reached only through the typed desktop pipe; VMs resolved only from Broker config | Exactly the rows below | A unit test pins the allowlist (any new class or method fails it); a disposable-VM run drives both operations through the real service |
+
+Operation-layer allowlist (namespace `root\virtualization\v2` only; WMI is called in-process through COM, never through PowerShell or a child process):
+
+| Desktop operation | Class / method | Bounds | Needs |
+|---|---|---|---|
+| `desktop.capture` | `Msvm_ComputerSystem` read where `Name` equals the configured VM GUID; its realized `Msvm_VirtualSystemSettingData`; `Msvm_VirtualSystemManagementService.GetVirtualSystemThumbnailImage` | width and height 64..1920; at most one capture per 200 ms per session; PNG reply at most 8 MiB | a `view` or `act` session |
+| `desktop.input` | `Msvm_Keyboard.PressKey`, `ReleaseKey`, `TypeKey`, `TypeText`; `Msvm_SyntheticMouse.SetAbsolutePosition`, `SetButtonState`, `SetScrollPosition` | the step bounds of `desktop-io.ps1` today: at most 256 steps, virtual-key 1..254, button 1..3, position 0..4095, wheel -1200..1200, printable-ASCII text at most 512 characters, `sleep` 0..10000 ms per step and 12000 ms per request; keys and buttons pressed in a failed request are released | an `act` session with the current lease generation |
+
+Everything else is refused before WMI is touched, in particular: every other `Msvm_VirtualSystemManagementService` method (`DefineSystem`, `ModifySystemSettings`, `DestroySystem`, and the rest), `RequestStateChange`, `Msvm_Keyboard.TypeCtrlAltDel`, every snapshot / checkpoint class, any other namespace, a VM that is not in the Broker config, and any VM name or GUID sent by the caller.
+
+**VM identity.** The Broker config gains `computers: [{ computerId, vmId }]` (contract id grammar; `vmId` is a lowercase GUID). The caller names only a `computerId`; the Broker resolves the GUID and queries by `Name`, never by `ElementName` (a display name another member of the group could reuse). The installer converts the owner's `-VmName` to the GUID once, at install time.
+
+**Out of scope for the first gated run** (the gated room refuses them): guest capture, done checks and the guest helper (they need guest credentials, which no Broker config holds), and `task.start` checkpoint attestation (it changes VM settings and creates checkpoints, which is mutation). Each needs its own amendment.
+
+### Desktop pipe
+
+A second endpoint, so that high-frequency capture never queues behind the single serial claim pipe:
+
+- **Endpoint** `\\.\pipe\ALBERA\HostBroker\desktop\v1`. The same protected DACL (Broker service SID and SYSTEM full control; the Control Plane SID only `0x00120083`), explicit owner, first-instance and remote-client-rejection rules and the same per-connection peer check (thread token user SID equals the configured Control Plane SID) as the claim pipe. Up to 16 concurrent instances.
+- **Session.** The first frame of a connection is `{ "open": { "computerId", "mode" } }` with `mode` `view` or `act` (and, for `act`, `"operationId"` and `"leaseGeneration"`). After an accepted open, each frame is one request: `{ "capture": { "width", "height" } }` or `{ "input": { "steps": [...] } }` (steps exactly as in the table above). A connection idle for 60 s is closed. `view` sessions accept only `capture`.
+- **Frames.** 4-byte little-endian length plus UTF-8 JSON, request at most 16 KiB. A capture reply is a JSON header frame `{ "ok": true, "width", "height", "bytes" }` followed by one binary frame of exactly `bytes` PNG bytes (at most 8 MiB); every other reply is at most 256 bytes; a refusal is the fixed `{ "ok": false, "code": "denied" }` and closes the connection. The reason goes to the Broker's own log only.
+
+### Desktop lease (held by the Broker)
+
+ADR-009's desktop-control lease moves from Node into the Broker for the gated room:
+
+- An `act` lease exists only for an `operationId` whose `task.start` claim the Broker has recorded. The claim creates it: `desktopSessionId` = that `operationId`, `computerId` from the claimed DTO, `generation` = previous generation for that computer + 1, expiry = claim time + at most 60 minutes. A newer claim for the same computer revokes the older lease (its `act` sessions are closed).
+- The lease lives in Broker memory only. A Broker restart loses every lease, which fails closed: input stops until a new `task.start` is approved.
+- `view` needs no lease. The authenticated Control Plane may watch any configured computer, as the room does today with its read-only HUMAN lease. Recorded as a known exposure: whoever controls the Control Plane can see those screens; it already can.
+- Not decided here (provisional default in brackets): per-input human approval [no; the `task.start` approval covers the lease's input], and human takeover in the gated room [the existing Node-side HUMAN lease stops the AI driver, but the Broker does not yet know about it].
+
+### Open risk to measure first
+
+The Broker runs with a **restricted** service SID. Whether a restricted token can call DCOM / the WMI provider and the Virtual Machine Management Service is unknown. The nested-Hyper-V lab measures it before any Broker code depends on it. If the restricted SID fails, the fallback is `sidtype unrestricted` for the Broker only, which weakens a recorded accept condition and so needs the owner's decision; nothing proceeds on that branch without it.
+
+### Implementation order (each its own PR)
+
+1. This amendment. 2. Nested-Hyper-V lab rights measurement (`lab-vm.ps1 -HyperV`). 3. Broker Hyper-V adapter with the pinned allowlist and the `computers` config (security tier). 4. Desktop pipe, `view` (security tier). 5. `act` sessions and the Broker-held lease (security tier). 6. Pipe-client helper desktop mode and the Node client (security tier). 7. Room wiring for the gated room, refusing the out-of-scope features (normal tier). 8. Installer `-GrantHyperVToBroker` and `-VmName` to GUID, removed again on uninstall (security tier). 9. Operations docs. The owner's steps (re-install with the grant, API key, the approval itself) come last, in one sitting.
+
 ## Remaining ADR-002 gates
 
 - Select and validate the independent authorization-receipt signer and Broker-protected state (the receipt v2 contract above fixes the format and checks, not the signer or the store).
 - Implement and adversarially test native Windows named-pipe DACL, token validation, impersonation/reversion, service SID restriction, remote-client rejection, installer/update trust, and service lifecycle.
-- Establish the exact per-action Hyper-V rights matrix and supported Windows editions without granting broad administrator groups.
+- Prove the two-layer Hyper-V rights matrix of "Amendment 2026-11-03" (nested-lab measurement, pinned allowlist, disposable-VM run) on the supported Windows editions before the installer grants Hyper-V Administrators to the Broker on a real host. The Control Plane never receives it.
 - Validate crash/restart replay persistence, durable request/operation deduplication, multi-session policy, and fixed action argument resolution.
 - Keep real VM, network, firewall, and credential operations disabled until their separate ADR acceptance gates pass.
 
