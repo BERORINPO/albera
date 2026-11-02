@@ -103,13 +103,13 @@ function normalizeRequest(request) {
 /**
  * @param {{ quarantine: object, promotion: object, verifier: object, approvals: object, journal: object, now: () => number, sleep: (ms: number) => Promise<void>,
  *   trustedRunners: readonly string[], identity: { name: string, email: string }, options?: Partial<typeof INTEGRATION_DEFAULTS> }} deps
- *   quarantine: create / importBundle / inspect / buildCandidate (git-quarantine.mjs); promotion: readTip / push (git-promotion.mjs); verifier:
+ *   quarantine: create / importBundle / inspect / buildCandidate (git-quarantine.mjs); promotion: readTip / fetchTip / push (git-promotion.mjs); verifier:
  *   `start({ runId, subject })` -> { ok } and `collect({ runId })` -> { state: 'running' | 'done' | 'lost', evidence }; approvals: `request({ requestId, subject })` -> { ok } and
  *   `status({ requestId })` -> { ok: true, state: 'pending' | 'decided' | 'expired', approval } or { ok: false, code: 'unknown_request' }; journal: the flow journal port
  *   (approved-operation-journal.mjs). Both ports are idempotent per id. `trustedRunners` and `identity` come from host configuration.
  */
 export function createIntegrationService({ quarantine, promotion, verifier, approvals, journal, now, sleep, trustedRunners, identity, options } = {}) {
-  const portsOk = [quarantine?.create, quarantine?.importBundle, quarantine?.inspect, quarantine?.buildCandidate, promotion?.readTip, promotion?.push, verifier?.start, verifier?.collect,
+  const portsOk = [quarantine?.create, quarantine?.importBundle, quarantine?.inspect, quarantine?.buildCandidate, promotion?.readTip, promotion?.fetchTip, promotion?.push, verifier?.start, verifier?.collect,
     approvals?.request, approvals?.status, journal?.begin, journal?.advance, journal?.get, now, sleep].every((fn) => typeof fn === 'function');
   if (!portsOk || !Array.isArray(trustedRunners) || trustedRunners.length === 0 || identity === null || typeof identity !== 'object') throw new TypeError('invalid_integration_dependencies');
   const opt = resolveOptions(options);
@@ -140,6 +140,12 @@ export function createIntegrationService({ quarantine, promotion, verifier, appr
     if (tip?.ok === true && isOid(tip.oid)) return { oid: tip.oid };
     if (tip?.ok === true && tip.oid === null) return { code: 'target_missing' };
     return { code: safeCode(tip?.code, 'tip_unreadable') };
+  }
+  /** The target tip fetched into the quarantine repository `repo`: { oid } (its objects are there now) or { code }. The port's oid is only taken in the shape of an oid. */
+  async function fetchedTip(record, repo) {
+    const fetched = await promotion.fetchTip(repo, { repositoryId: record.request.repositoryId, ref: record.request.targetRef });
+    if (fetched?.ok === true && isOid(fetched.oid)) return { oid: fetched.oid };
+    return { code: safeCode(fetched?.code, 'tip_unreadable') };
   }
   /** A tip that could not be read: a configuration problem is final, anything else leaves the record where it is. */
   async function tipFailure(record, from, code) {
@@ -174,20 +180,23 @@ export function createIntegrationService({ quarantine, promotion, verifier, appr
   /** Stored evidence is data, not a verdict: only items acceptEvidence takes for THIS candidate and the CURRENT trusted runners count. */
   const countedEvidence = (record) => (Array.isArray(record.verification?.evidence) ? record.verification.evidence : []).filter((e) => acceptEvidence(record.candidate, e, trust).ok);
 
-  // SUBMITTED / VALIDATING: a new quarantine repository every time, import + inspect each submission, read the target tip, build and freeze the candidate.
+  // SUBMITTED / VALIDATING: a new quarantine repository every time, fetch the target tip into it, import + inspect each submission, build and freeze the candidate on that tip.
+// A crash anywhere here repeats all of it in a new repository (the fetched oid is only recorded with the candidate); a target that moves later is STALE as usual.
   async function validateStep(record) {
     const repo = await quarantine.create();
     if (typeof repo !== 'string' || repo.length === 0) return stop(openResult(record, 'retryable', 'quarantine_unavailable'));
     const abandoned = record.quarantine.repo ? [...record.quarantine.abandoned, record.quarantine.repo] : record.quarantine.abandoned;
     const current = await advance(record, ['SUBMITTED', 'VALIDATING'], { phase: 'VALIDATING', quarantine: { repo, abandoned } });
+    // The target tip's objects come from the registered remote, never from a bundle, and BEFORE the bundles: a guest bundle carries only its own commits on top of its
+    // base (the base is a prerequisite that has to exist here). The tip frozen into the candidate is the one fetched; it is recorded with the candidate (PREPARED).
+    const tip = await fetchedTip(current, repo);
+    if (tip.code) return stop(await tipFailure(current, ['VALIDATING'], tip.code));
     for (const s of current.request.submissions) {
       const imported = await quarantine.importBundle(repo, { bundlePath: s.bundlePath, ref: s.ref, expectedOid: s.resultCommitOid });
       if (imported?.ok !== true) return stop(await quarantineFailure(current, imported));
       const inspected = await quarantine.inspect(repo, { baseOid: s.baseCommitOid, resultOid: s.resultCommitOid });
       if (inspected?.ok !== true) return stop(await quarantineFailure(current, inspected));
     }
-    const tip = await tipOf(current);
-    if (tip.code) return stop(await tipFailure(current, ['VALIDATING'], tip.code));
     const built = await quarantine.buildCandidate(repo, {
       targetOid: tip.oid, submissions: current.request.submissions.map((s) => ({ baseOid: s.baseCommitOid, resultOid: s.resultCommitOid })),
       identity: { ...identity, timestamp: current.identityTimestamp },
