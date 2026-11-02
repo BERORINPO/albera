@@ -21,10 +21,16 @@ const driverDir = path.join(root, 'test', 'host-install');
 const labRunner = path.join(root, 'test', 'windows-service-lab', 'lab-host-install-check.ps1');
 const windows = process.platform === 'win32';
 const POWERSHELL = windows ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : 'powershell';
+// The child is Windows PowerShell 5.1: an inherited PSModulePath (on the CI runner it names PowerShell 7's module folders first) makes 5.1 auto-load
+// PowerShell 7's Microsoft.PowerShell.Security and fail ("Get-Acl ... the module could not be loaded"). Drop it unless a test sets it on purpose.
+const childEnv = (env) => {
+  const base = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath'));
+  return { ...base, ...env };
+};
 const ps = (args, { env = {}, allowFail = false } = {}) => {
   try {
     const stdout = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', ...args], {
-      encoding: 'utf8', timeout: 180_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env },
+      encoding: 'utf8', timeout: 180_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv(env),
     });
     return { code: 0, stdout };
   } catch (error) {
