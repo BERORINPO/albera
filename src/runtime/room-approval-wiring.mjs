@@ -222,3 +222,6 @@ export async function openRoomApproval({ approvalFile, jobs, io = { statSync, re
     throw fail('wiring_failed');
   }
 }
+
+// Shared with approval-check.mjs (the single-operation check composes the same two ports and the same real clients).
+export { authorityPort, brokerPort, REAL as REAL_APPROVAL_DEPS };
