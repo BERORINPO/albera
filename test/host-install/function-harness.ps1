@@ -162,11 +162,19 @@ switch ($Case) {
     Remove-Junction $L.BrokerConfigDir
   }
   'trust' {
+    function Set-OwnedByMe([string]$Path) {
+      $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+      $null = & (Join-Path ([Environment]::SystemDirectory) 'icacls.exe') $Path /setowner "*$me" /L /Q
+      if ($LASTEXITCODE -ne 0) { throw "icacls /setowner failed for $Path" }
+    }
     $sids = @{ Broker = (Get-DerivedServiceSid $K.BrokerService); Authority = (Get-DerivedServiceSid $K.AuthorityService); ControlPlane = 'S-1-5-21-1111111111-2222222222-3333333333-1500' }
     $plan = @(Get-AclPlan $L $sids)
     # 1. an attacker (the current non-admin user) plants C:\ProgramData\Albera with a well-formed manifest. install / uninstall refuse it; plan / status ignore it and say why.
+    # The owner is set to this user's own SID explicitly: an elevated process (the CI runner) would otherwise create them owned by Administrators.
     New-Item -ItemType Directory -Force -Path $L.DataRoot | Out-Null
     [System.IO.File]::WriteAllText($L.ManifestPath, ((New-Manifest) | ConvertTo-Json -Depth 8 -Compress))
+    Set-OwnedByMe $L.DataRoot
+    Set-OwnedByMe $L.ManifestPath
     $result.plantedReasons = Get-PathTrustReasons $L.DataRoot (Get-AdminSids) $true
     $result.plantedManifestReasons = Get-PathTrustReasons $L.ManifestPath (Get-AdminSids) $false
     $Mode = 'install'; $result.plantedInstall = Try-Run { Initialize-Manifest }
@@ -193,6 +201,7 @@ switch ($Case) {
     Remove-Junction $L.ControlPlaneDir
     # 4. a planted plain folder owned by the user is refused; a missing one is fine (it will be created)
     New-Item -ItemType Directory -Force -Path $L.BrokerDbDir | Out-Null
+    Set-OwnedByMe $L.BrokerDbDir
     $result.plantedChildError = Try-Run { Assert-PlannedPathTrusted ($plan | Where-Object { $_.Path -ceq $L.BrokerDbDir }) }
     $result.missingChildError = Try-Run { Assert-PlannedPathTrusted ($plan | Where-Object { $_.Path -ceq $L.AuthorityDir }) }
     # 5. a parent that is a link: the chain check finds it even when the folder itself is a plain one
