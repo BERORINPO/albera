@@ -77,6 +77,8 @@ const EXPECTED = {
     'git-quarantine.mjs', 'fake-git-quarantine.mjs',
     // how the host runs git for both (argv only, fixed environment, hardening flags), and promotion of an approved candidate (fast-forward CAS push; ADR-007 §5 / §8, INT-02) and its test double
     'git-process.mjs', 'git-promotion.mjs', 'fake-git-promotion.mjs',
+    // the Integration Service that drives quarantine -> verifier -> approvals -> promotion through a durable journal (rule 5e; ADR-007 §3) and the two test doubles of its ports
+    'integration-service.mjs', 'fake-integration-verifier.mjs', 'fake-integration-approvals.mjs',
     // shared receipt v2 / action digest contract for the future Broker and Approval Authority (rule 9; spec/architecture.md decision log 2026-10-30+receipt-v2-contract)
     ...['action-digest.mjs', 'receipt-v2.mjs', 'strict-json.mjs', 'network-attestation.mjs', 'network-attestation-vectors.json', 'receipt-v2.schema.json', 'test-vectors.json', 'ActionDigest.cs', 'ReceiptV2.cs', 'StrictJson.cs',
       // receipt v3 (basis + policy hash) and the tier policy, issue #115 step 3
@@ -234,7 +236,7 @@ const providerContracts = [
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:
 // the clients, the clock, the sleep and the storage are injected (and the flow must not name the Broker or the Authority: rules 8a / 10a).
-check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs', 'src/runtime/integration-candidate.mjs'], (line) => {
+check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs', 'src/runtime/integration-candidate.mjs', 'src/runtime/integration-service.mjs'], (line) => {
   if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null;
   for (const [re, label] of FORBIDDEN_PURE) if (/** @type {RegExp} */ (re).test(line)) return `${label} is not allowed in a pure runtime module`;
   return null;
