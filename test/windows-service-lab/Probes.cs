@@ -19,6 +19,7 @@ namespace Albera.Lab;
 //   scm <service>                  which access masks OpenService grants this account, and the service status + PID
 //   openproc <pid>                 which access masks OpenProcess grants this account, and the image SHA-256 when it may be read
 //   squat <pipe> <seconds>         a hostile first-instance pipe server that grants Everyone, reports its owner, counts the bytes a client sends
+//   hyperv <vmGuid>                what this token may do to one running Hyper-V VM through WMI (HyperVProbe.cs; one JSON line per check; one TypeKey and one mouse move)
 internal static class Probes
 {
     private const uint OpenExisting = 3, SecuritySqosPresent = 0x00100000, SecurityIdentification = 0x00010000;
@@ -42,6 +43,7 @@ internal static class Probes
             case ["scm", var service]: return Scm(service);
             case ["openproc", var pid]: return OpenProc(uint.Parse(pid, System.Globalization.CultureInfo.InvariantCulture));
             case ["squat", var pipe, var seconds]: return Squat(pipe, int.Parse(seconds, System.Globalization.CultureInfo.InvariantCulture));
+            case ["hyperv", var vm]: return HyperVProbe.Run(vm);
             default: return 64;
         }
     }
