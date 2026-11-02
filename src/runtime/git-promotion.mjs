@@ -7,7 +7,13 @@ import { gitEnv, hardening, isOid, runGitProcess } from './git-process.mjs';
 //
 //   const p = createGitPromotion({ git, root, remotes })
 //   await p.readTip({ repositoryId, ref })                                      -> { ok: true, oid } (oid null: no such ref) | { ok: false, code }
+//   await p.fetchTip(repo, { repositoryId, ref })                               -> { ok: true, oid } | { ok: false, code }   (the tip's objects are now in `repo`)
 //   await p.push(repo, { repositoryId, ref, expectedOldOid, newOid })           -> { outcome: 'updated' | 'rejected' | 'blocked' | 'unknown', code }
+//
+// fetchTip brings the target tip's commit and history into a quarantine repository (a candidate's first parent must exist there, and a bundle cannot carry it): it
+// reads the tip (readTip), fetches exactly that one registered ref into the host-owned ref refs/albera/target-tip of `repo`, reads that ref back, and answers ok only
+// when the fetched commit IS the tip it read first (a tip that moved in between is `target_moved`: nothing was frozen on it, the caller starts again). No tags, no
+// submodules, no FETCH_HEAD, objects fsck'd. `repo` is only written to; the only configuration git reads is the host's own (the empty global file and the flags below).
 //
 // Only host-registered remotes and refs: `remotes` maps a repositoryId to { url, refs }, where url is an absolute local path for now (no network
 // remote, no UNC share and no credential is used by this adapter yet) and refs lists the refs a candidate may be promoted to. A push is a fast-forward
@@ -17,7 +23,8 @@ import { gitEnv, hardening, isOid, runGitProcess } from './git-process.mjs';
 // any more) -> STALE, 'blocked' (the remote's own rules refused, e.g. its pre-receive hook) -> BLOCKED, 'unknown' (no answer, a timeout, a
 // `[remote failure]`, output that does not say) -> UNKNOWN_PROMOTION, whose only exit is readTip + reconcilePromotion: an ambiguous push is never re-sent blindly (ADR-007 §8).
 
-export const PROMOTION_REFUSALS = Object.freeze(['request_invalid', 'remote_unknown', 'ref_not_promotable', 'not_fast_forward', 'git_failed']);
+export const PROMOTION_REFUSALS = Object.freeze(['request_invalid', 'remote_unknown', 'ref_not_promotable', 'not_fast_forward', 'git_failed', 'target_missing', 'target_moved']);
+export const TARGET_TIP_REF = 'refs/albera/target-tip';
 
 const REF_RE = /^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
@@ -63,6 +70,21 @@ export function createGitPromotion({ git, root, remotes, run } = {}) {
     return Object.freeze({ ok: true, oid: exact.length === 1 ? exact[0][0] : null });
   }
 
+  async function fetchTip(repo, { repositoryId, ref } = {}) {
+    if (typeof repo !== 'string' || !path.isAbsolute(repo)) return refuse('request_invalid');
+    const read = await readTip({ repositoryId, ref });
+    if (!read.ok) return read;
+    if (read.oid === null) return refuse('target_missing');
+    const { url } = target(repositoryId, ref);   // readTip answered ok, so the target is registered
+    // `+`: the ref is host-owned and moves to whatever the remote has now (a second fetch into the same repository is not an error).
+    const fetched = await gitRun(['--git-dir', repo, 'fetch', '--quiet', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--', url, `+${ref}:${TARGET_TIP_REF}`]);
+    if (fetched.code !== 0) return refuse('git_failed');
+    const back = await gitRun(['--git-dir', repo, 'rev-parse', '--verify', '--end-of-options', `${TARGET_TIP_REF}^{commit}`]);
+    const oid = back.stdout.trim();
+    if (back.code !== 0 || !isOid(oid)) return refuse('git_failed');
+    return oid === read.oid ? Object.freeze({ ok: true, oid }) : refuse('target_moved');
+  }
+
   async function push(repo, { repositoryId, ref, expectedOldOid, newOid } = {}) {
     if (typeof repo !== 'string' || !path.isAbsolute(repo) || typeof repositoryId !== 'string' || !isRef(ref) || !isOid(expectedOldOid) || !isOid(newOid) || expectedOldOid === newOid) {
       return Object.freeze({ ...refuse('request_invalid'), outcome: null });
@@ -78,7 +100,7 @@ export function createGitPromotion({ git, root, remotes, run } = {}) {
     return pushOutcome(sent, ref);
   }
 
-  return Object.freeze({ readTip, push });
+  return Object.freeze({ readTip, fetchTip, push });
 }
 
 /**

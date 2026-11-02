@@ -73,7 +73,7 @@ function makeWorld(journal, over = {}) {
     const tick = () => { events += 1; if (events === crashAt) died(); };
     const hook = (port, names) => Object.fromEntries(names.map((n) => [n, async (...args) => { const r = await port[n](...args); tick(); return r; }]));
     return createIntegrationService({
-      quarantine: hook(w.quarantine, ['create', 'importBundle', 'inspect', 'buildCandidate']), promotion: hook(w.promotion, ['readTip', 'push']),
+      quarantine: hook(w.quarantine, ['create', 'importBundle', 'inspect', 'buildCandidate']), promotion: hook(w.promotion, ['readTip', 'fetchTip', 'push']),
       verifier: hook(w.verifier, ['start', 'collect']), approvals: hook(w.approvals, ['request', 'status']), journal: instrument(j, w.history, tick),
       now: () => w.clock.ms, sleep: async (ms) => { w.sleeps.push(ms); }, trustedRunners: w.trusted, identity: IDENTITY, options: w.options,
     });
@@ -449,6 +449,42 @@ function defineSuite(name, makeJournal) {
         const w = world({ quarantine: { buildCandidate: { ok: true, candidateCommitOid: TIP, candidateTreeOid: TREE } } });
         assert.deepEqual(brief(await w.service.submit(REQUEST)), { status: 'failed', phase: 'FAILED', code: 'invalid_candidate_candidateCommitOid' });
       });
+      it('fetches the registered target tip into the new quarantine repository before any bundle is imported, and freezes the candidate on the tip it fetched', async () => {
+        const order = [];
+        const w = world({
+          quarantine: { importBundle: () => { order.push('importBundle'); return { ok: true }; }, buildCandidate: () => { order.push('buildCandidate'); return { ok: true, candidateCommitOid: CAND, candidateTreeOid: TREE }; } },
+          promotion: { fetchTip: () => { order.push('fetchTip'); return { ok: true, oid: TIP }; } },
+        });
+        const r = await w.service.submit(REQUEST);
+        assert.equal(r.status, 'merged');
+        assert.deepEqual(order, ['fetchTip', 'importBundle', 'buildCandidate']);
+        assert.deepEqual(w.promotion.calls().find((c) => c.method === 'fetchTip').args, ['/fake/quarantine/q-1', { repositoryId: 'repo_001', ref: MAIN }]);
+        assert.equal(w.record().candidate.targetTipOid, TIP);
+      });
+      it('a fetch that fails: a configuration problem is FAILED, a tip that moved or a git failure is retryable, and no bundle is imported either way', async () => {
+        for (const [code, expected] of [['remote_unknown', ['failed', 'FAILED']], ['ref_not_promotable', ['failed', 'FAILED']], ['target_missing', ['failed', 'FAILED']],
+          ['target_moved', ['retryable', 'VALIDATING']], ['git_failed', ['retryable', 'VALIDATING']]]) {
+          const w = world({ promotion: { fetchTip: { ok: false, code } } });
+          const r = await w.service.submit(REQUEST);
+          assert.deepEqual([r.status, r.phase, r.code], [...expected, code], code);
+          assert.deepEqual({ imports: w.quarantine.calls().filter((c) => c.method === 'importBundle').length, verifier: w.verifier.calls().length, pushes: w.pushes() }, { imports: 0, verifier: 0, pushes: 0 });
+        }
+      });
+      it('an answer that is not an oid is not used: retryable, nothing is built', async () => {
+        for (const reply of [{ ok: true, oid: 'main' }, { ok: true, oid: null }, { ok: true }, undefined, { ok: false, code: 'not a code!' }]) {
+          const w = world({ promotion: { fetchTip: reply } });
+          const r = await w.service.submit(REQUEST);
+          assert.deepEqual([r.status, r.code], ['retryable', 'tip_unreadable'], JSON.stringify(reply));
+          assert.equal(w.quarantine.calls().some((c) => c.method === 'buildCandidate'), false);
+        }
+      });
+      it('a target that moves after the fetch is STALE as always: the candidate was frozen on the fetched tip, the live tip is checked again before anybody is asked', async () => {
+        const w = world({ promotion: { fetchTip: () => { const fetched = { ok: true, oid: w.remote.tip }; w.remote.tip = OTHER; return fetched; } } });
+        const r = await w.service.submit(REQUEST);
+        assert.deepEqual(brief(r), { status: 'stale', phase: 'STALE', code: 'target_moved' });
+        assert.equal(w.record().candidate.targetTipOid, TIP);
+        assert.deepEqual({ approvals: w.approvals.calls().length, pushes: w.pushes() }, { approvals: 0, pushes: 0 });
+      });
       it('a target ref that does not exist or is not registered is FAILED; an unreadable tip is retryable', async () => {
         assert.deepEqual(brief(await world({ promotion: { readTip: { ok: true, oid: null } } }).service.submit(REQUEST)), { status: 'failed', phase: 'FAILED', code: 'target_missing' });
         assert.equal((await world({ promotion: { readTip: { ok: false, code: 'remote_unknown' } } }).service.submit(REQUEST)).code, 'remote_unknown');
@@ -614,25 +650,27 @@ describe('real git quarantine and promotion adapters (local bare repositories; s
   const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(work, 'none.gitconfig'), GIT_AUTHOR_NAME: 'g', GIT_AUTHOR_EMAIL: 'g@x.invalid', GIT_COMMITTER_NAME: 'g', GIT_COMMITTER_EMAIL: 'g@x.invalid' };
   const g = (...args) => execFileSync('git', ['-C', guest, ...args], { env, encoding: 'utf8' }).trim();
   const remoteGit = (url, ...args) => execFileSync('git', ['--git-dir', url, ...args], { env, encoding: 'utf8' }).trim();
-  let base; let task; let bundle; let remotes = 0;
+  let base; let task; let ahead; let bundle; let remotes = 0;
   before(() => {
     writeFileSync(path.join(work, 'none.gitconfig'), '');
     execFileSync('git', ['init', '-q', '-b', 'main', guest], { env });
     writeFileSync(path.join(guest, 'a.txt'), 'one\n'); g('add', '-A'); g('commit', '-q', '-m', 'base'); base = g('rev-parse', 'HEAD');
     g('checkout', '-q', '-b', 'task'); mkdirSync(path.join(guest, 'src')); writeFileSync(path.join(guest, 'src', 'b.txt'), 'two\n'); g('add', '-A'); g('commit', '-q', '-m', 'task'); task = g('rev-parse', 'HEAD');
+    g('checkout', '-q', '-b', 'ahead', base); writeFileSync(path.join(guest, 'c.txt'), 'host\n'); g('add', '-A'); g('commit', '-q', '-m', 'host moved on'); ahead = g('rev-parse', 'HEAD');
+    // What a real guest hands over: ONLY its own commits on top of its base (`base` is a prerequisite, not part of the bundle). The target tip is never in it.
     bundle = path.join(work, 'guest.bundle');
-    g('bundle', 'create', '-q', bundle, 'task');
+    g('bundle', 'create', '-q', bundle, 'task', `^${base}`);
   });
   after(() => rmSync(work, { recursive: true, force: true }));
 
-  /** A fresh protected remote at `base`, and a service whose ports are the real adapters (verifier and approvals stay fakes). */
-  function realWorld(quarantineWrap = (q) => q) {
+  /** A fresh protected remote at `tip` (the guest's base unless said), and a service whose ports are the real adapters (verifier and approvals stay fakes). */
+  function realWorld(quarantineWrap = (q) => q, promotionWrap = (p) => p, tip = base) {
     const url = path.join(work, `remote-${(remotes += 1)}.git`);
     execFileSync('git', ['init', '-q', '--bare', '-b', 'main', url], { env });
-    g('push', '-q', url, `${base}:${MAIN}`);
+    g('push', '-q', url, `${tip}:${MAIN}`);
     const clock = { ms: NOW_MS };
     const quarantine = quarantineWrap(createGitQuarantine({ git: gitPath, root: path.join(work, `q-${remotes}`) }));
-    const promotion = createGitPromotion({ git: gitPath, root: path.join(work, `p-${remotes}`), remotes: { repo_001: { url, refs: [MAIN] } } });
+    const promotion = promotionWrap(createGitPromotion({ git: gitPath, root: path.join(work, `p-${remotes}`), remotes: { repo_001: { url, refs: [MAIN] } } }));
     const verifier = createFakeIntegrationVerifier();
     const approvals = createFakeIntegrationApprovals();
     const journal = createMemoryFlowJournal();
@@ -649,6 +687,44 @@ describe('real git quarantine and promotion adapters (local bare repositories; s
     assert.equal(remoteGit(x.url, 'rev-list', '--parents', '-n', '1', MAIN), `${r.candidateCommitOid} ${base} ${task}`);
     assert.equal((await x.build().submit(x.request)).replayed, true);
     assert.equal(remoteGit(x.url, 'rev-list', '--count', MAIN), '3');
+  });
+  it('the guest bundle carries only the guest commits: it does not verify in an empty repository, so the tip and the base can only come from the host', () => {
+    const empty = path.join(work, 'empty.git');
+    execFileSync('git', ['init', '-q', '--bare', empty], { env });
+    assert.throws(() => execFileSync('git', ['--git-dir', empty, 'bundle', 'verify', bundle], { env, stdio: 'pipe' }));
+    assert.equal(g('rev-list', '--count', `${base}..${task}`), '1');
+  });
+  it('merges onto a target tip that is ahead of the guest base: the tip is fetched from the registered remote, the candidate is a merge of it and the submission', async () => {
+    const x = realWorld(undefined, undefined, ahead);
+    const r = await x.build().submit(x.request);
+    assert.deepEqual(brief(r), { ...merged, code: 'fast_forward' });
+    assert.equal(remoteGit(x.url, 'rev-parse', MAIN), r.candidateCommitOid);
+    assert.equal(remoteGit(x.url, 'rev-list', '--parents', '-n', '1', MAIN), `${r.candidateCommitOid} ${ahead} ${task}`);
+    assert.equal(remoteGit(x.url, 'rev-list', '--count', MAIN), '4');
+    assert.equal(x.journal.get('integration/int-1').candidate.targetTipOid, ahead);
+  });
+  it('a crash between the fetch of the tip and the record of the candidate: the resume fetches again into a NEW repository and merges once', async () => {
+    const fetched = [];
+    let first = true;
+    const x = realWorld(undefined, (p) => ({ ...p, fetchTip: async (...args) => { const r = await p.fetchTip(...args); fetched.push({ repo: args[0], oid: r.oid }); if (first) { first = false; died(); } return r; } }), ahead);
+    await assert.rejects(() => x.build().submit(x.request), /process died/u);
+    assert.equal(x.journal.get('integration/int-1').phase, 'VALIDATING');
+    assert.equal(remoteGit(x.url, 'rev-parse', MAIN), ahead);
+    const r = await x.build().resume('int-1');
+    assert.equal(r.status, 'merged');
+    assert.equal(fetched.length, 2);
+    assert.notEqual(fetched[0].repo, fetched[1].repo);
+    assert.deepEqual([fetched[0].oid, fetched[1].oid], [ahead, ahead]);
+    assert.deepEqual(x.journal.get('integration/int-1').quarantine.abandoned, [fetched[0].repo]);
+    assert.equal(remoteGit(x.url, 'rev-list', '--parents', '-n', '1', MAIN), `${r.candidateCommitOid} ${ahead} ${task}`);
+    assert.equal(remoteGit(x.url, 'rev-list', '--count', MAIN), '4');
+  });
+  it('a target that cannot be read while fetching is retryable and nothing is imported; the resume goes on', async () => {
+    let down = true;
+    const x = realWorld(undefined, (p) => ({ ...p, fetchTip: async (...args) => (down ? { ok: false, code: 'git_failed' } : p.fetchTip(...args)) }));
+    assert.deepEqual(brief(await x.build().submit(x.request)), { status: 'retryable', phase: 'VALIDATING', code: 'git_failed' });
+    down = false;
+    assert.equal((await x.build().resume('int-1')).status, 'merged');
   });
   it('a crash after the candidate was built: the resume rebuilds in a NEW repository, an hour later, and gets the very same commit', async () => {
     const built = [];

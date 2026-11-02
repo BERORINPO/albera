@@ -97,6 +97,105 @@ describe('readTip', () => {
   });
 });
 
+describe('fetchTip: the target tip comes into the quarantine repository from the registered remote', () => {
+  const emptyRepo = () => createGitQuarantine({ git: gitPath, root: path.join(work, 'q') }).create();
+  const inRepo = (r, ...args) => execFileSync('git', ['--git-dir', r, ...args], { env, encoding: 'utf8' }).trim();
+  const has = (r, oid) => { try { inRepo(r, 'cat-file', '-e', `${oid}^{commit}`); return true; } catch { return false; } };
+  const TIP_REF = 'refs/albera/target-tip';
+
+  it('brings the tip commit and its history into a repository that had none of it, under a host-owned ref', async () => {
+    const url = freshRemote(task);
+    const r = await emptyRepo();
+    assert.equal(has(r, task), false);
+    assert.deepEqual(await promotion(url).fetchTip(r, { repositoryId: 'repo_001', ref: MAIN }), { ok: true, oid: task });
+    assert.equal(has(r, task), true);
+    assert.equal(has(r, base), true, 'the history comes with it');
+    assert.equal(inRepo(r, 'rev-parse', TIP_REF), task);
+    assert.equal(inRepo(r, 'for-each-ref', '--format=%(refname)'), TIP_REF, 'no other ref, no tag');
+    assert.equal(existsSync(path.join(r, 'FETCH_HEAD')), false);
+  });
+  it('a later fetch into the same repository follows the remote (the host-owned ref is forced)', async () => {
+    const url = freshRemote(task);
+    const r = await emptyRepo();
+    const p = promotion(url);
+    assert.equal((await p.fetchTip(r, { repositoryId: 'repo_001', ref: MAIN })).oid, task);
+    g('push', '-q', '-f', url, `${other}:${MAIN}`);   // main moved sideways: `other` does not descend from `task`
+    assert.deepEqual(await p.fetchTip(r, { repositoryId: 'repo_001', ref: MAIN }), { ok: true, oid: other });
+    assert.equal(inRepo(r, 'rev-parse', TIP_REF), other);
+  });
+  it('does not fetch tags or other refs of the remote', async () => {
+    const url = freshRemote(task);
+    g('push', '-q', url, `${other}:refs/heads/side`);
+    execFileSync('git', ['--git-dir', url, 'tag', 'v1', task], { env });
+    const r = await emptyRepo();
+    assert.equal((await promotion(url).fetchTip(r, { repositoryId: 'repo_001', ref: MAIN })).ok, true);
+    assert.equal(inRepo(r, 'for-each-ref', '--format=%(refname)'), TIP_REF);
+    assert.equal(has(r, other), false, 'a commit only the other branch has is not brought');
+  });
+  it("is not redirected by an insteadOf in the repository around the host process", async () => {
+    const url = freshRemote();
+    const decoy = freshRemote(other);
+    const around = path.join(work, 'around-fetch');
+    execFileSync('git', ['init', '-q', around], { env });
+    execFileSync('git', ['-C', around, 'config', `url.${decoy.replaceAll('\\', '/')}.insteadOf`, url.replaceAll('\\', '/')], { env });
+    execFileSync('git', ['-C', around, 'config', `url.${decoy}.insteadOf`, url], { env });
+    const r = await emptyRepo();
+    const before = process.cwd();
+    process.chdir(around);
+    try {
+      assert.deepEqual(await promotion(url).fetchTip(r, { repositoryId: 'repo_001', ref: MAIN }), { ok: true, oid: base });
+    } finally {
+      process.chdir(before);
+    }
+    assert.equal(inRepo(r, 'rev-parse', TIP_REF), base);
+    assert.equal(has(r, other), false, 'nothing came from the decoy');
+  });
+  it('refuses a repository or ref the host did not register, and malformed requests, without touching the repository', async () => {
+    const p = promotion(freshRemote());
+    const r = await emptyRepo();
+    assert.deepEqual(await p.fetchTip(r, { repositoryId: 'repo_999', ref: MAIN }), { ok: false, code: 'remote_unknown' });
+    assert.deepEqual(await p.fetchTip(r, { repositoryId: 'repo_001', ref: 'refs/heads/dev' }), { ok: false, code: 'ref_not_promotable' });
+    for (const args of [[r, { repositoryId: 'repo_001', ref: 'refs/tags/v1' }], ['q/repo', { repositoryId: 'repo_001', ref: MAIN }], [undefined, { repositoryId: 'repo_001', ref: MAIN }], [r]]) {
+      assert.deepEqual(await p.fetchTip(...args), { ok: false, code: 'request_invalid' });
+    }
+    assert.equal(inRepo(r, 'for-each-ref'), '');
+  });
+  it('a ref that does not exist on the remote is target_missing; a remote that cannot be read is git_failed; neither leaves a ref behind', async () => {
+    const r = await emptyRepo();
+    assert.deepEqual(await promotion(freshRemote()).fetchTip(r, { repositoryId: 'repo_001', ref: 'refs/heads/absent' }), { ok: false, code: 'target_missing' });
+    assert.deepEqual(await promotion(path.join(work, 'missing.git')).fetchTip(r, { repositoryId: 'repo_001', ref: MAIN }), { ok: false, code: 'git_failed' });
+    assert.equal(inRepo(r, 'for-each-ref'), '');
+  });
+  it('a repository that git cannot fetch into (not a repository) is git_failed', async () => {
+    const p = promotion(freshRemote());
+    assert.deepEqual(await p.fetchTip(path.join(work, 'not-a-repo'), { repositoryId: 'repo_001', ref: MAIN }), { ok: false, code: 'git_failed' });
+  });
+  it('a tip that moves between the read and the fetch is target_moved, never ok with the wrong commit', async () => {
+    const url = freshRemote(base);
+    const r = await emptyRepo();
+    let moved = false;
+    const run = async (file, args, opts) => {
+      const result = await runGitProcess(file, args, opts);
+      if (args.includes('ls-remote') && !moved) { moved = true; g('push', '-q', '-f', url, `${task}:${MAIN}`); }   // after the read, before the fetch
+      return result;
+    };
+    assert.deepEqual(await promotion(url, { run }).fetchTip(r, { repositoryId: 'repo_001', ref: MAIN }), { ok: false, code: 'target_moved' });
+  });
+  it('passes one exact refspec and the hardening to git, and never a hook or a tag', async () => {
+    const seen = [];
+    const url = path.join(work, 'shape-fetch.git');
+    const run = async (file, args) => {
+      seen.push(args);
+      return args.includes('ls-remote') ? { code: 0, stdout: `${base}\t${MAIN}\n`, stderr: '' } : { code: 0, stdout: `${base}\n`, stderr: '' };
+    };
+    const r = path.join(work, 'shape-repo.git');
+    assert.deepEqual(await promotion(url, { run }).fetchTip(r, { repositoryId: 'repo_001', ref: MAIN }), { ok: true, oid: base });
+    const fetched = seen.find((a) => a.includes('fetch'));
+    assert.deepEqual(fetched.slice(fetched.indexOf('--git-dir')), ['--git-dir', r, 'fetch', '--quiet', '--no-tags', '--no-recurse-submodules', '--no-write-fetch-head', '--', url, `+${MAIN}:${TIP_REF}`]);
+    for (const flag of ['protocol.allow=never', 'transfer.fsckObjects=true', 'fetch.fsckObjects=true', 'credential.helper=', 'core.fsmonitor=false']) assert.ok(fetched.includes(flag), flag);
+  });
+});
+
 describe('push: a fast-forward compare-and-swap only', () => {
   it('moves the ref from the approved old tip to the candidate', async () => {
     const url = freshRemote();
@@ -302,10 +401,20 @@ describe('construction', () => {
 });
 
 describe('fake pair', () => {
-  it('answers the same two methods, defaults to success and records calls', async () => {
+  it('answers the same three methods, defaults to success and records calls', async () => {
     const f = createFakeGitPromotion({ push: () => ({ outcome: 'unknown', code: 'no_answer' }) });
     assert.deepEqual(await f.readTip({ repositoryId: 'r', ref: MAIN }), { ok: true, oid: 'a'.repeat(40) });
+    assert.deepEqual(await f.fetchTip('/q', { repositoryId: 'r', ref: MAIN }), { ok: true, oid: 'a'.repeat(40) });
     assert.deepEqual(await f.push('/q', { ref: MAIN }), { outcome: 'unknown', code: 'no_answer' });
-    assert.deepEqual(f.calls().map((c) => c.method), ['readTip', 'push']);
+    assert.deepEqual(f.calls().map((c) => c.method), ['readTip', 'fetchTip', 'push']);
+    assert.deepEqual(Object.keys(f).filter((k) => k !== 'calls').sort(), Object.keys(createGitPromotion({ git: gitPath, root: path.join(work, 'p'), remotes: { repo_001: { url: path.join(work, 'x.git'), refs: [MAIN] } } })).sort());
+  });
+  it('fetchTip follows what readTip is told unless it is told otherwise; a missing ref is target_missing as with the real adapter', async () => {
+    const tip = 'c'.repeat(40);
+    const following = createFakeGitPromotion({ readTip: { ok: true, oid: tip } });
+    assert.deepEqual(await following.fetchTip('/q', {}), { ok: true, oid: tip });
+    assert.deepEqual(await createFakeGitPromotion({ readTip: { ok: true, oid: null } }).fetchTip('/q', {}), { ok: false, code: 'target_missing' });
+    assert.deepEqual(await createFakeGitPromotion({ readTip: { ok: false, code: 'git_failed' } }).fetchTip('/q', {}), { ok: false, code: 'git_failed' });
+    assert.deepEqual(await createFakeGitPromotion({ fetchTip: (repo) => ({ ok: true, oid: repo.length > 1 ? tip : null }) }).fetchTip('/q', {}), { ok: true, oid: tip });
   });
 });
