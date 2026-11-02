@@ -163,32 +163,50 @@ $rules = ConvertTo-FileSystemRules $plan[3].Grants
 $r.rules = @($rules | ForEach-Object { [ordered]@{ sid = $_.IdentityReference.Value; rights = [int]$_.FileSystemRights; inherit = [int]$_.InheritanceFlags; type = [string]$_.AccessControlType } })
 $r.badGrant = try { ConvertTo-FileSystemRules @('*S-1-1-0:(OI)(CI)W') | Out-Null; 'no error' } catch { $_.Exception.Message }
 
-# ---- expected hashes (from outside the repository)
-$sha = '0' * 63
-$goodHashes = @{ version = 1; components = [ordered]@{
-    broker = @{ files = [ordered]@{ 'albera-windows-broker.exe' = ($sha + 'a'); 'sub/x.dll' = ($sha + 'b') } }
-    authority = @{ files = @{ 'albera-approval-authority.exe' = ($sha + 'c') } }
-    'pipe-client' = @{ files = @{ 'albera-windows-broker-pipe-client.exe' = ($sha + 'd') } } } }
-$goodJson = ConvertTo-Json -InputObject $goodHashes -Depth 6 -Compress
-$parsed = Read-ExpectedHashes $goodJson
-$r.hashesOk = [ordered]@{ ok = $parsed.Ok; broker = @($parsed.Map['broker'].Keys | Sort-Object) }
-function BadHashes($mutate) { $o = $goodJson | ConvertFrom-Json; & $mutate $o; $x = Read-ExpectedHashes (ConvertTo-Json -InputObject $o -Depth 8 -Compress); $x.Reason }
-$r.hashesBad = [ordered]@{
-  empty = (Read-ExpectedHashes '').Reason
-  notJson = (Read-ExpectedHashes 'nope').Reason
-  version2 = BadHashes { param($o) $o.version = 2 }
-  extraComponent = BadHashes { param($o) $o.components | Add-Member -NotePropertyName evil -NotePropertyValue @{ files = @{} } }
-  missingComponent = BadHashes { param($o) $o.components.PSObject.Properties.Remove('authority') }
-  upperHex = BadHashes { param($o) $o.components.broker.files.'sub/x.dll' = ('A' * 64) }
-  shortHex = BadHashes { param($o) $o.components.broker.files.'sub/x.dll' = 'abc' }
-  dotdot = BadHashes { param($o) $o.components.broker.files | Add-Member -NotePropertyName '../evil.dll' -NotePropertyValue ('1' * 64) }
-  absolute = BadHashes { param($o) $o.components.broker.files | Add-Member -NotePropertyName 'C:/evil.dll' -NotePropertyValue ('1' * 64) }
-  noFiles = BadHashes { param($o) $o.components.authority.files = [pscustomobject]@{} }
+# ---- the tree hash the owner types, and the fixed system folders
+$a = '1' * 64; $b = '2' * 64; $c2 = '3' * 64; $d = '4' * 64
+function Components($brokerFiles) { @{ broker = $brokerFiles; authority = @{ 'albera-approval-authority.exe' = $c2 }; 'pipe-client' = @{ 'albera-windows-broker-pipe-client.exe' = $d } } }
+$base = Components @{ 'albera-windows-broker.exe' = $a; 'sub/x.dll' = $b }
+$r.tree = Get-CanonicalTreeHash $base
+$r.treeBackslashAndOrder = Get-CanonicalTreeHash (Components ([ordered]@{ 'sub\x.dll' = $b; 'albera-windows-broker.exe' = $a }))
+$r.treeOther = [ordered]@{
+  changedFile = Get-CanonicalTreeHash (Components @{ 'albera-windows-broker.exe' = $a; 'sub/x.dll' = $c2 })
+  renamedFile = Get-CanonicalTreeHash (Components @{ 'albera-windows-broker.exe' = $a; 'sub/y.dll' = $b })
+  extraFile = Get-CanonicalTreeHash (Components @{ 'albera-windows-broker.exe' = $a; 'sub/x.dll' = $b; 'planted.dll' = $d })
+  missingFile = Get-CanonicalTreeHash (Components @{ 'albera-windows-broker.exe' = $a })
+  movedToAuthority = Get-CanonicalTreeHash @{ broker = @{ 'albera-windows-broker.exe' = $a }; authority = @{ 'albera-approval-authority.exe' = $c2; 'sub/x.dll' = $b }; 'pipe-client' = @{ 'albera-windows-broker-pipe-client.exe' = $d } }
 }
-$exp = $parsed.Map['broker']
-$r.cmpEqual = Count (Compare-FileHashSets $exp @{ 'albera-windows-broker.exe' = ($sha + 'a'); 'sub\x.dll' = ($sha + 'b') })
-$r.cmpDiffs = Compare-FileHashSets $exp @{ 'albera-windows-broker.exe' = ($sha + 'f'); 'extra.dll' = ($sha + '1') }
-$r.insideRepo = @((Test-PathInside 'C:\repo\build\hashes.json' 'C:\repo'), (Test-PathInside 'C:\repo2\hashes.json' 'C:\repo'), (Test-PathInside 'C:\other\hashes.json' 'C:\repo'), (Test-PathInside 'C:\REPO\x.json' 'c:\repo\'))
+# the documented format, built by hand: <component>/<path> TAB <sha> LF, components in the fixed order, paths ordinal-sorted, SHA-256 of the UTF-8 bytes
+$text = "broker/albera-windows-broker.exe`t$a`nbroker/sub/x.dll`t$b`nauthority/albera-approval-authority.exe`t$c2`npipe-client/albera-windows-broker-pipe-client.exe`t$d`n"
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$r.treeByHand = ([BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($text))) -replace '-', '').ToLowerInvariant()
+function Msg([scriptblock]$Block) { try { & $Block | Out-Null; 'no error' } catch { $_.Exception.Message } }
+$r.treeBad = [ordered]@{
+  missingComponent = Msg { Get-CanonicalTreeHash @{ broker = @{ 'a.exe' = $a }; authority = @{ 'b.exe' = $b } } }
+  extraComponent = Msg { Get-CanonicalTreeHash ($base + @{ evil = @{ 'x' = $a } }) }
+  emptyComponent = Msg { Get-CanonicalTreeHash (Components @{}) }
+  dotdot = Msg { Get-CanonicalTreeHash (Components @{ '../evil.dll' = $a }) }
+  absolute = Msg { Get-CanonicalTreeHash (Components @{ '/evil.dll' = $a }) }
+  drive = Msg { Get-CanonicalTreeHash (Components @{ 'C:/evil.dll' = $a }) }
+  upperHex = Msg { Get-CanonicalTreeHash (Components @{ 'a.exe' = ('A' * 64) }) }
+  duplicate = Msg { Get-CanonicalTreeHash (Components ([ordered]@{ 'sub/x.dll' = $a; 'sub\x.dll' = $b })) }
+}
+$r.treeValue = @((Test-TreeHashValue ('a' * 64)), (Test-TreeHashValue ('A' * 64)), (Test-TreeHashValue ('a' * 63)), (Test-TreeHashValue ''), (Test-TreeHashValue ('g' * 64)))
+$r.fixedOk = @((Count (Test-FixedFolders 'C:\Windows\System32' 'C:\Program Files' 'C:\ProgramData')), (Count (Test-FixedFolders 'c:\windows\system32\' 'c:\program files' 'C:\PROGRAMDATA')))
+$r.fixedBad = [ordered]@{
+  system = Test-FixedFolders 'D:\Users\evil\bin' 'C:\Program Files' 'C:\ProgramData'
+  programFiles = Test-FixedFolders 'C:\Windows\System32' 'C:\Users\evil\Program Files' 'C:\ProgramData'
+  programData = Test-FixedFolders 'C:\Windows\System32' 'C:\Program Files' 'C:\Users\evil\ProgramData'
+  x86 = Test-FixedFolders 'C:\Windows\System32' 'C:\Program Files (x86)' 'C:\ProgramData'
+  empty = Test-FixedFolders '' '' ''
+  all = Test-FixedFolders 'E:\w' 'E:\p' 'E:\d'
+}
+# what the script really gets from Windows on this PC, with a hostile user environment: the answer does not move
+$saved = @{ SystemRoot = $env:SystemRoot; ProgramFiles = $env:ProgramFiles; ProgramData = $env:ProgramData; windir = $env:windir }
+$env:SystemRoot = 'D:\evil'; $env:ProgramFiles = 'D:\evil\pf'; $env:ProgramData = 'D:\evil\pd'; $env:windir = 'D:\evil'
+$r.hostileEnv = [ordered]@{ system = [Environment]::SystemDirectory; programFiles = [Environment]::GetFolderPath('ProgramFiles'); programData = [Environment]::GetFolderPath('CommonApplicationData') }
+$r.hostileEnvReasons = Count (Test-FixedFolders $r.hostileEnv.system $r.hostileEnv.programFiles $r.hostileEnv.programData)
+foreach ($k in $saved.Keys) { Set-Item -Path "Env:$k" -Value $saved[$k] }
 
 # ---- manifest shape and the account that may be removed
 function NewManifest { [ordered]@{ schema = 1; tool = 'albera-host.ps1'; state = 'partial'; created = [ordered]@{ dataRoot = $true; installRoot = $true; services = @('AlberaHostBroker', 'AlberaApprovalAuthority'); binaries = @{ broker = @{ exeSha256 = ('1' * 64) } }; user = @{ name = 'albera-cp'; sid = $cp }; key = @{ name = 'AlberaApprovalAuthority-host-1' } }; values = @{ authoritySpki = $EcSpki; controlPlaneSid = $cp } } }

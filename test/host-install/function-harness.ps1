@@ -13,7 +13,7 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'scripts\host\albera-host.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count -gt 0) { throw 'albera-host.ps1 does not parse' }
-$wanted = @('Say', 'Get-Sha256File', 'Test-HasReparsePoint', 'Get-TreeHashes', 'ConvertTo-HashMap', 'Get-BuildSources', 'Get-SourceFiles', 'Get-ExpectedHashesState', 'Copy-HostBinaries', 'Remove-HostTree',
+$wanted = @('Say', 'Get-Sha256File', 'Test-HasReparsePoint', 'Get-TreeHashes', 'Get-BuildSources', 'Get-SourceFiles', 'Get-ExpectedTreeHashState', 'Get-ComponentHashes', 'Set-BinaryRecord', 'Copy-HostBinaries', 'Remove-HostTree', 'New-TrustedDirectory',
   'Test-ManifestHas', 'New-Manifest', 'Save-Manifest', 'Read-Manifest', 'Initialize-Manifest', 'Assert-PlannedPathTrusted', 'Test-SecureStringEqual')
 $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $false))
 if ($found.Count -ne $wanted.Count) { throw ('expected ' + $wanted.Count + ' functions, found ' + $found.Count) }
@@ -28,7 +28,7 @@ $RepoRoot = Join-Path $Work 'repo'
 $L = Get-HostLayout (Join-Path $Work 'pf') (Join-Path $Work 'pd')
 $Mode = 'install'
 $script:ManifestNote = $null
-$script:ExpectedState = $null
+$ExpectedTreeHash = $null
 $script:Manifest = $null
 $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 
@@ -40,9 +40,9 @@ function Write-Fixture([string]$Dir, [string]$Exe) {
 }
 function Try-Run([scriptblock]$Block) { try { & $Block | Out-Null; $null } catch { $_.Exception.Message } }
 function Set-Expected {
-  $map = @{}
-  foreach ($s in (Get-BuildSources)) { $h = @{}; foreach ($f in (Get-TreeHashes $s.Dir).Files) { $h[$f.Rel.Replace('\', '/')] = $f.Sha }; $map[$s.Name] = $h }
-  $script:ExpectedState = [pscustomobject]@{ Ok = $true; Reason = ''; Map = $map }
+  $dirs = @{}; foreach ($b in (Get-BuildSources)) { $dirs[$b.Name] = $b.Dir }
+  $script:ExpectedTreeHash = Get-CanonicalTreeHash (Get-ComponentHashes $dirs)
+  $script:ExpectedTreeHash
 }
 function New-Junction([string]$Link, [string]$Target) { New-Item -ItemType Directory -Force -Path $Target | Out-Null; $null = & cmd.exe /c mklink /J ('"' + $Link + '"') ('"' + $Target + '"') }
 function Remove-Junction([string]$Link) { $null = & cmd.exe /c rmdir ('"' + $Link + '"') }
@@ -55,13 +55,14 @@ switch ($Case) {
     New-Item -ItemType Directory -Force -Path $L.DataRoot, $L.InstallRoot | Out-Null
     $script:Manifest = New-Manifest
     foreach ($s in (Get-BuildSources)) { Write-Fixture $s.Dir $s.Exe }
-    Set-Expected
+    $result.expected = Set-Expected
     $result.firstRunError = Try-Run { Copy-HostBinaries }
     $result.recorded = @($script:Manifest['created']['binaries'].Keys | Sort-Object)
     $result.destFiles = @(Get-ChildItem -LiteralPath $L.BinRoot -Recurse -File | ForEach-Object { $_.FullName.Substring($L.BinRoot.Length + 1) } | Sort-Object)
     $result.noPartialLeft = (@(Get-ChildItem -LiteralPath $L.BinRoot -Directory | Where-Object { $_.Name -like '*.partial' }).Count -eq 0)
     $src = Get-BuildSources | Select-Object -First 1
-    $result.treeEqual = ((Get-TreeHashes $src.Dir).Tree -eq (Get-TreeHashes $src.Dest).Tree) -and ((Get-TreeHashes $src.Dest).Tree -eq $script:Manifest['created']['binaries'][$src.Name]['treeSha256'])
+    $copiedDirs = @{}; foreach ($b in (Get-BuildSources)) { $copiedDirs[$b.Name] = $b.Dest }
+    $result.copiesTreeEqualsExpected = ((Get-CanonicalTreeHash (Get-ComponentHashes $copiedDirs)) -eq $result.expected)
     $result.exeShaRecorded = ($script:Manifest['created']['binaries'][$src.Name]['exeSha256'] -eq (Get-Sha256File (Join-Path $src.Dest $src.Exe)))
     $before = (Get-Item -LiteralPath (Join-Path $src.Dest $src.Exe)).LastWriteTimeUtc.Ticks
     $result.secondRunError = Try-Run { Copy-HostBinaries }
@@ -69,53 +70,57 @@ switch ($Case) {
     # a changed installed copy is refused
     [System.IO.File]::WriteAllText((Join-Path $src.Dest 'runtime.dll'), 'tampered')
     $result.tamperedError = Try-Run { Copy-HostBinaries }
-    # --- the build in the working tree is replaced after the owner got the reviewed hashes: the copy must be refused and deleted
+    # --- the build in the working tree is replaced after the owner typed the reviewed tree hash: ALL copies are refused and deleted
     Remove-Item -LiteralPath $L.BinRoot -Recurse -Force
     $script:Manifest['created']['binaries'].Clear()
     [System.IO.File]::WriteAllText((Join-Path $src.Dir 'runtime.dll'), 'a different dll, written by an agent')
     $result.replacedBuildError = Try-Run { Copy-HostBinaries }
-    $result.replacedBuildNothingLeft = -not (Test-Path -LiteralPath $src.Dest) -and -not (Test-Path -LiteralPath ($src.Dest + '.partial'))
-    $result.replacedBuildNotRecorded = -not $script:Manifest['created']['binaries'].ContainsKey($src.Name)
-    # an extra file and a missing file are refused too
+    $result.replacedBuildNothingLeft = (@(Get-ChildItem -LiteralPath $L.BinRoot -Force -ErrorAction SilentlyContinue).Count -eq 0)
+    $result.replacedBuildNotRecorded = ($script:Manifest['created']['binaries'].Count -eq 0)
+    # an extra file, a missing file and a file moved to another component each change the tree hash
     [System.IO.File]::WriteAllText((Join-Path $src.Dir 'runtime.dll'), 'dll bytes')
     [System.IO.File]::WriteAllText((Join-Path $src.Dir 'planted.dll'), 'extra')
     $result.extraFileError = Try-Run { Copy-HostBinaries }
     Remove-Item -LiteralPath (Join-Path $src.Dir 'planted.dll')
     Remove-Item -LiteralPath (Join-Path $src.Dir 'sub\data.json')
     $result.missingFileError = Try-Run { Copy-HostBinaries }
-    [System.IO.File]::WriteAllText((Join-Path $src.Dir 'sub\data.json'), '{"a":1}')
+    $other = Get-BuildSources | Select-Object -Skip 1 -First 1
+    Move-Item -LiteralPath (Join-Path $other.Dir 'sub\data.json') -Destination (Join-Path $src.Dir 'sub\data.json')
+    $result.movedFileError = Try-Run { Copy-HostBinaries }
+    Move-Item -LiteralPath (Join-Path $src.Dir 'sub\data.json') -Destination (Join-Path $other.Dir 'sub\data.json')
+    [System.IO.File]::WriteAllText((Join-Path $src.Dir 'sub\data.json'), '{"a":1}')   # the file the missing-file case deleted
     # a link inside the publish folder is refused before anything is copied
     $linkTarget = Join-Path $Work 'elsewhere'; [System.IO.File]::WriteAllText((Join-Path (New-Item -ItemType Directory -Force -Path $linkTarget).FullName 'secret.txt'), 'x')
     New-Junction (Join-Path $src.Dir 'link') $linkTarget
     $result.junctionInSourceError = Try-Run { Copy-HostBinaries }
     Remove-Junction (Join-Path $src.Dir 'link')
     $result.junctionTargetIntact = Test-Path -LiteralPath (Join-Path $linkTarget 'secret.txt')
-    # the clean build copies again, a leftover .partial from a failed run is replaced, and the manifest on disk round-trips
-    $result.cleanAgainError = Try-Run { Copy-HostBinaries }
-    $result.recordedAgain = @($script:Manifest['created']['binaries'].Keys | Sort-Object)
+    # a half-copied bin folder is refused; a stale .partial from a failed run is replaced; the clean build then copies
+    New-Item -ItemType Directory -Force -Path $src.Dest | Out-Null
+    $result.halfCopiedError = Try-Run { Copy-HostBinaries }
+    Remove-Item -LiteralPath $L.BinRoot -Recurse -Force
     $second = Get-BuildSources | Select-Object -Skip 1 -First 1
-    Remove-Item -LiteralPath $second.Dest -Recurse -Force
-    $script:Manifest['created']['binaries'].Remove($second.Name) | Out-Null
     New-Item -ItemType Directory -Force -Path ($second.Dest + '.partial') | Out-Null
     [System.IO.File]::WriteAllText((Join-Path ($second.Dest + '.partial') 'stale.txt'), 'stale')
-    $result.afterPartialError = Try-Run { Copy-HostBinaries }
+    $result.cleanAgainError = Try-Run { Copy-HostBinaries }
+    $result.recordedAgain = @($script:Manifest['created']['binaries'].Keys | Sort-Object)
     $result.staleGone = -not (Test-Path -LiteralPath (Join-Path $second.Dest 'stale.txt'))
-    $result.secondCopied = Test-Path -LiteralPath (Join-Path $second.Dest $second.Exe)
     $reread = Read-Manifest
     $result.manifestReread = @($reread['created']['binaries'].Keys | Sort-Object)
-    # without a usable -ExpectedHashes nothing is copied
-    $script:ExpectedState = $null; $ExpectedHashes = $null
+    # without a usable -ExpectedTreeHash nothing is copied
+    $expected = $script:ExpectedTreeHash
     Remove-Item -LiteralPath $L.BinRoot -Recurse -Force
     $script:Manifest['created']['binaries'].Clear()
-    $result.noHashesError = Try-Run { Copy-HostBinaries }
-    $result.noHashesNothingCopied = -not (Test-Path -LiteralPath $L.BinRoot)
-    # the hashes file inside the repository tree is refused, one outside is read
-    $inside = Join-Path $RepoRoot 'hashes.json'; [System.IO.File]::WriteAllText($inside, '{}')
-    $ExpectedHashes = $inside; $script:ExpectedState = $null
-    $result.hashesInRepo = (Get-ExpectedHashesState).Reason
-    $outside = Join-Path $Work 'hashes-outside.json'; [System.IO.File]::WriteAllText($outside, '{"version":1}')
-    $ExpectedHashes = $outside; $script:ExpectedState = $null
-    $result.hashesBadShape = (Get-ExpectedHashesState).Reason
+    $script:ExpectedTreeHash = $null
+    $result.noHashError = Try-Run { Copy-HostBinaries }
+    $result.noHashNothingCopied = -not (Test-Path -LiteralPath $L.BinRoot)
+    $script:ExpectedTreeHash = 'ABC'
+    $result.badFormat = (Get-ExpectedTreeHashState).Reason
+    $script:ExpectedTreeHash = $expected.ToUpperInvariant()
+    $result.upperCaseRefused = -not (Get-ExpectedTreeHashState).Ok
+    $script:ExpectedTreeHash = ('0' * 64)
+    $result.wrongHashError = Try-Run { Copy-HostBinaries }
+    $result.wrongHashNothingLeft = (@(Get-ChildItem -LiteralPath $L.BinRoot -Force -ErrorAction SilentlyContinue).Count -eq 0)
   }
   'remove' {
     New-Item -ItemType Directory -Force -Path $L.DataRoot, $L.InstallRoot | Out-Null
@@ -214,6 +219,17 @@ switch ($Case) {
     $result.existingRefused = Try-Run { New-SecuredDirectory $dir $grants $me }
     $result.badGrantRefused = Try-Run { New-SecuredDirectory (Join-Path $Work 'secured2') @('*S-1-1-0:(OI)(CI)W') $me }
     $result.badGrantCreatedNothing = -not (Test-Path -LiteralPath (Join-Path $Work 'secured2'))
+    # DirectoryInfo.Create succeeds silently on an existing folder: a folder someone made a moment earlier (plain, inherited ACL) is caught by the read-back
+    $planted = Join-Path $Work 'planted'; New-Item -ItemType Directory -Path $planted | Out-Null
+    $result.createOnExistingError = Try-Run { Invoke-SecuredCreate $planted $grants $me }
+    $result.createOnExistingKept = Test-Path -LiteralPath $planted
+    # ... and so is a link
+    $vendor = Join-Path $Work 'vendor'; New-Item -ItemType Directory -Path $vendor | Out-Null
+    $link = Join-Path $Work 'linked'; New-Junction $link $vendor
+    $result.createOnJunctionError = Try-Run { Invoke-SecuredCreate $link $grants $me }
+    Remove-Junction $link
+    # a folder created exactly as asked is still refused when it fails the installer's trust test (owner is not SYSTEM/Administrators): no later step may run
+    $result.trustedCreateError = Try-Run { New-TrustedDirectory (Join-Path $Work 'trusted') $grants $me }
   }
   'secure' {
     $a = ConvertTo-SecureString 'Correct-Horse-1' -AsPlainText -Force

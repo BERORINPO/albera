@@ -1,20 +1,25 @@
 # ALBERA host installer: puts the Host Broker and the Approval Authority on THIS Windows PC so the first real Windows Hello approval can happen.
 # Windows PowerShell 5.1, ASCII only. Written for the owner to run in an elevated console (never self-elevating). Design notes: docs/architecture/host-install.md.
 #
+# Start it ALWAYS as   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\host\albera-host.ps1 <arguments>
+# (-NoProfile: profiles and user modules would otherwise load even in an elevated console).
+#
 #   albera-host.ps1                                           plan (default): numbered list of everything install would do; changes nothing, needs no admin
 #   albera-host.ps1 -Mode plan -PlanFor uninstall             the same for uninstall
-#   albera-host.ps1 -Mode hashes                              prints the SHA-256 of every published file as JSON (for a CI run to record; NOT a proof by itself, see below)
-#   albera-host.ps1 -Mode install -ExpectedHashes <file> -ApproverKeyId <hello-...> -ApproverPublicKey <spki> -ApproverSid <S-1-5-21-...>
+#   albera-host.ps1 -Mode hashes                              prints the per-file SHA-256 JSON and the line ALBERA_HOST_TREE_HASH=<hex> (for a CI run; NOT a proof by itself, see below)
+#   albera-host.ps1 -Mode install -ExpectedTreeHash <64 hex> -ApproverKeyId <hello-...> -ApproverPublicKey <spki> -ApproverSid <S-1-5-21-...>
 #                                                             install (elevated). Asks for the password of the new local account albera-cp.
 #   albera-host.ps1 -Mode status                              read-only report of what is installed and whether it still matches (exit 1 on any difference)
 #   albera-host.ps1 -Mode uninstall                           remove only what the install manifest says this script created (elevated)
 #
-# Attacker model: an AI agent running as the owner's NON-admin session. It can pre-create C:\ProgramData\Albera, plant a manifest or a junction there, and rewrite every file
-# in the repository working tree (the builds, their sidecar manifests, this script's own folder). Therefore:
+# Attacker model: an AI agent running as the owner's NON-admin session. It can pre-create C:\ProgramData\Albera, plant a manifest or a junction there, rewrite every file
+# in the repository working tree (the builds, their sidecar manifests, this script's own folder), and set user environment variables that an elevated console inherits. Therefore:
 #   - nothing that already exists is trusted until it is owned by SYSTEM / Administrators, has no write right for anyone else, and is no link anywhere on its path;
+#   - no environment variable decides a path: sc.exe, icacls.exe and the install roots come from [Environment]::SystemDirectory / GetFolderPath and are refused unless they are
+#     C:\Windows\System32, C:\Program Files and C:\ProgramData; no executable is found through PATH;
 #   - the three approver values come from the owner (who ran `AlberaApprover.exe enroll --show` in a NORMAL console); no program from the repository is ever started by this script;
-#   - the builds are accepted only when every COPIED file (copied into an administrator-only folder first) matches -ExpectedHashes, a file the owner got from outside the repository
-#     (the CI run's printed hashes of the reviewed build). Run this script itself from a reviewed checkout, not from a tree an agent can edit.
+#   - the builds are accepted only when the tree hash of the COPIES (copied into an administrator-only folder first) equals -ExpectedTreeHash, a value the owner TYPES from the CI log
+#     of the reviewed commit (a parameter, not a file: a file in Downloads can be rewritten together with the builds). Run this script itself from a reviewed checkout.
 # install and uninstall refuse unless the console is elevated; they never elevate. A completed install re-run says so and changes nothing. A partial install is finished
 # from where it stopped, or refused with the reason. Nothing secret is printed or stored: only public values (SIDs, public keys, hashes, paths).
 # -ControlPlanePassword is for the disposable lab VM only and is refused unless the environment variable ALBERA_LAB_VM is 1.
@@ -25,7 +30,7 @@ param(
   [string]$ApproverKeyId,
   [string]$ApproverPublicKey,
   [string]$ApproverSid,
-  [string]$ExpectedHashes,
+  [string]$ExpectedTreeHash,
   [string]$RepoRoot,
   [string]$ProjectId,
   [string]$VmName,
@@ -37,14 +42,10 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'albera-host-lib.ps1')
 
 $K = Get-HostConstants
-$SystemRoot = if ($env:SystemRoot) { $env:SystemRoot } else { 'C:\Windows' }
-$ScExe = Join-Path $SystemRoot 'System32\sc.exe'
-$IcaclsExe = Join-Path $SystemRoot 'System32\icacls.exe'
 $script:Manifest = $null
 $script:ManifestNote = $null
 $script:Approver = $null
 $script:Sids = $null
-$script:ExpectedState = $null
 
 function Say([string]$Text) { Write-Host $Text }
 function Stop-Refused([string]$Why, [int]$Code = 3) { Write-Host "REFUSED: $Why"; exit $Code }
@@ -59,20 +60,28 @@ if ([string]::IsNullOrEmpty($RepoRoot)) { $RepoRoot = (Resolve-Path (Join-Path $
 if ([string]::IsNullOrEmpty($ProjectId)) { $ProjectId = $K.DefaultProjectId }
 if ([string]::IsNullOrEmpty($VmName)) { $VmName = $K.DefaultVmName }
 if ([string]::IsNullOrEmpty($ComputerId)) { $ComputerId = $K.DefaultComputerId }
+# Paths come from Windows, never from environment variables (HKCU\Environment can set them for a user's processes, and an elevated console started from that session inherits them).
+$SystemDirectory = [Environment]::SystemDirectory
+$ProgramFilesDir = [Environment]::GetFolderPath('ProgramFiles')
+$ProgramDataDir = [Environment]::GetFolderPath('CommonApplicationData')
+$ScExe = Join-Path $SystemDirectory 'sc.exe'
+$IcaclsExe = Join-Path $SystemDirectory 'icacls.exe'
 if ($Mode -in @('install', 'uninstall') -and -not (Test-Elevated)) { Stop-Refused "$Mode needs an elevated console (Run as administrator). This script never elevates itself." }
 if ($ControlPlanePassword) {
   $gate = Test-LabPasswordGate $true $env:ALBERA_LAB_VM
   if ($gate) { Stop-Refused '-ControlPlanePassword is lab-only (disposable VM with ALBERA_LAB_VM=1)' 2 }
   if ($Mode -ne 'install') { Stop-Refused '-ControlPlanePassword only applies to -Mode install' 2 }
 }
+if ($ExpectedTreeHash -and -not (Test-TreeHashValue $ExpectedTreeHash)) { Stop-Refused '-ExpectedTreeHash must be 64 lowercase hex characters (the ALBERA_HOST_TREE_HASH value of the CI run)' 2 }
 if ($ApproverKeyId -and -not (Test-HostId $ApproverKeyId)) { Stop-Refused '-ApproverKeyId is not a valid key id' 2 }
 if ($ApproverPublicKey -and -not (Test-Rsa2048Spki $ApproverPublicKey)) { Stop-Refused '-ApproverPublicKey is not a base64 RSA-2048 SubjectPublicKeyInfo' 2 }
 if ($ApproverSid -and -not (Test-AccountSidShape $ApproverSid)) { Stop-Refused '-ApproverSid is not an S-1-5-21-... user SID' 2 }
 if (-not (Test-HostId $ProjectId) -or -not (Test-HostId $ComputerId) -or $VmName -notmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') { Stop-Refused '-ProjectId, -VmName or -ComputerId is not a valid id' 2 }
 if ($PSVersionTable.PSVersion.Major -ne 5) { Stop-Refused 'Windows PowerShell 5.1 is required' }
 if (-not [Environment]::Is64BitProcess) { Stop-Refused 'a 64-bit PowerShell is required' }
-if ([string]::IsNullOrEmpty($env:ProgramFiles) -or [string]::IsNullOrEmpty($env:ProgramData)) { Stop-Refused 'ProgramFiles / ProgramData are not set' }
-$L = Get-HostLayout $env:ProgramFiles $env:ProgramData
+$folderReasons = Test-FixedFolders $SystemDirectory $ProgramFilesDir $ProgramDataDir
+if ($folderReasons.Count -gt 0) { Stop-Refused ("Windows reports a non-standard system folder ($($folderReasons -join ', ')); this script only works with C:\Windows\System32, C:\Program Files and C:\ProgramData") }
+$L = Get-HostLayout $ProgramFilesDir $ProgramDataDir
 foreach ($p in @($L.BrokerExe, $L.AuthorityExe, $L.PipeClientExe, $L.BrokerConfig, $L.AuthorityConfig, $L.ApprovalSettings, $L.BrokerDb, $L.ControlPlaneJournal)) {
   if (-not (Test-PlainAbsolutePath $p)) { Stop-Refused 'an install path is not a plain absolute path (the services refuse such paths)' }
 }
@@ -118,7 +127,6 @@ function Get-TreeHashes([string]$Dir) {
   try { $tree = ([BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($text))) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() }
   [pscustomobject]@{ Files = $sorted; Tree = $tree }
 }
-function ConvertTo-HashMap($Files) { $m = @{}; foreach ($f in $Files) { $m[$f.Rel] = $f.Sha }; $m }
 # icacls on an EXISTING folder that already passed the trust checks. /L: act on a link itself, never on its target.
 function Set-HostAcl($Entry) {
   $args1 = (Quote-NativeArg $Entry.Path) + ' /inheritance:r'
@@ -218,20 +226,17 @@ function Get-BuildSources {
     [pscustomobject]@{ Name = 'pipe-client'; Dir = Join-Path $r 'src\runtime\windows-broker-pipe-client\bin\Release\net10.0-windows\win-x64\publish'; Exe = 'albera-windows-broker-pipe-client.exe'; Dest = $L.PipeClientBinDir; Build = 'npm run build:windows-broker' }
   )
 }
-# -ExpectedHashes: read ONCE into memory, from a file that is not inside the repository tree and is no link. Cached as @{ Ok; Reason; Map }.
-function Get-ExpectedHashesState {
-  if ($script:ExpectedState) { return $script:ExpectedState }
-  $no = { param($why) [pscustomobject]@{ Ok = $false; Reason = $why; Map = $null } }
-  if (-not $ExpectedHashes) { $script:ExpectedState = & $no '-ExpectedHashes <file> is required: the SHA-256 of every published file, from a source OUTSIDE this repository (the CI run of the reviewed build). A hash taken from this working tree proves nothing: a non-admin can rewrite it.'; return $script:ExpectedState }
-  try {
-    $full = [System.IO.Path]::GetFullPath($ExpectedHashes)
-    if (-not [System.IO.File]::Exists($full)) { $script:ExpectedState = & $no '-ExpectedHashes file not found'; return $script:ExpectedState }
-    if ($RepoRoot -and (Test-PathInside $full $RepoRoot)) { $script:ExpectedState = & $no '-ExpectedHashes is inside the repository tree, which a non-admin can rewrite; use the file from the CI run, stored outside it'; return $script:ExpectedState }
-    if ((Get-ReparseChain $full).Count -gt 0) { $script:ExpectedState = & $no '-ExpectedHashes is reached through a link'; return $script:ExpectedState }
-    $script:ExpectedState = Read-ExpectedHashes ([System.IO.File]::ReadAllText($full))
-  }
-  catch { $script:ExpectedState = & $no '-ExpectedHashes could not be read' }
-  $script:ExpectedState
+# -ExpectedTreeHash: typed by the owner from the CI log. @{ Ok; Reason; Value }
+function Get-ExpectedTreeHashState {
+  if (-not $ExpectedTreeHash) { return [pscustomobject]@{ Ok = $false; Reason = '-ExpectedTreeHash <64 hex> is required: type the ALBERA_HOST_TREE_HASH value from the CI log of the reviewed commit. A hash computed from this working tree proves nothing: a non-admin can rewrite the builds.'; Value = $null } }
+  if (-not (Test-TreeHashValue $ExpectedTreeHash)) { return [pscustomobject]@{ Ok = $false; Reason = '-ExpectedTreeHash must be 64 lowercase hex characters'; Value = $null } }
+  [pscustomobject]@{ Ok = $true; Reason = ''; Value = $ExpectedTreeHash }
+}
+# component name -> relative path -> SHA-256, for the three folders given (publish folders or installed copies); the canonical tree hash is made from this by ONE function (Get-CanonicalTreeHash).
+function Get-ComponentHashes($Dirs) {
+  $components = @{}
+  foreach ($name in $script:HashComponents) { $h = @{}; foreach ($f in (Get-TreeHashes $Dirs[$name]).Files) { $h[$f.Rel] = $f.Sha }; $components[$name] = $h }
+  $components
 }
 # Source files, listed without following anything: a link or junction in the publish folder is refused.
 function Get-SourceFiles([string]$Dir) {
@@ -296,23 +301,23 @@ function Assert-PlannedPathTrusted($Entry) {
 # ---------------------------------------------------------------------------------------------- install steps: each has a read-only Test (-> done / todo / blocked:<why> / unknown:<why>) and a Do
 function Get-InstallSteps {
   @(
-    [pscustomobject]@{ Id = 'sources'; Title = 'Load -ExpectedHashes (SHA-256 of every published file, from outside this repository) and list the three publish folders; nothing in the repository is executed'
-      Detail = @("publish folders are read from $RepoRoot\src\runtime\...\publish (npm run build:windows-broker, npm run build:approval-authority); the COPIES are hashed later and must match", 'a link or junction in a publish folder is refused')
+    [pscustomobject]@{ Id = 'sources'; Title = 'Check -ExpectedTreeHash (the tree hash of the reviewed build, typed from the CI log) and list the three publish folders; nothing in the repository is executed'
+      Detail = @("publish folders are read from $RepoRoot\src\runtime\...\publish (npm run build:windows-broker, npm run build:approval-authority); the COPIES are hashed later and their tree hash must equal the value you typed", 'a link or junction in a publish folder is refused')
       Test = {
-        $st = Get-ExpectedHashesState; if (-not $st.Ok) { return 'blocked:' + $st.Reason }
+        $st = Get-ExpectedTreeHashState; if (-not $st.Ok) { return 'blocked:' + $st.Reason }
         foreach ($s in (Get-BuildSources)) {
           if (-not [System.IO.Directory]::Exists($s.Dir)) { return "blocked:$($s.Name): publish folder missing (run $($s.Build))" }
           if (Test-HasReparsePoint $s.Dir) { return "blocked:$($s.Name): the publish folder contains a link or junction" }
         }
         'todo' }
-      Do = { Say '    -ExpectedHashes loaded; the three publish folders exist and hold no links' } }
+      Do = { Say '    -ExpectedTreeHash given; the three publish folders exist and hold no links' } }
     [pscustomobject]@{ Id = 'approver'; Title = 'Check the approver values you pass (-ApproverKeyId, -ApproverPublicKey, -ApproverSid, from your own "AlberaApprover.exe enroll --show" in a normal console)'
       Detail = @('the key id must be a valid id; the public key an RSA-2048 SPKI; the SID an S-1-5-21 user SID that differs from albera-cp', 'this script does not run the approver program: it would run elevated')
       Test = {
         if (-not $ApproverKeyId -or -not $ApproverPublicKey -or -not $ApproverSid) { return 'blocked:-ApproverKeyId, -ApproverPublicKey and -ApproverSid are all required for install' }
         'todo' }
       Do = { Set-ApproverValues } }
-    [pscustomobject]@{ Id = 'dataroot'; Title = "Create $($L.DataRoot) (SYSTEM and Administrators only, born with that ACL) and the install manifest"
+    [pscustomobject]@{ Id = 'dataroot'; Title = "Create $($L.DataRoot) (SYSTEM and Administrators only, born with that ACL and read back before anything else) and the install manifest"
       Detail = @("manifest: $($L.ManifestPath) lists exactly what this script creates; uninstall removes only that", 'an existing folder of that name is never adopted')
       Test = {
         if ($script:Manifest) { return 'done' }
@@ -320,7 +325,7 @@ function Get-InstallSteps {
         if (Test-Path -LiteralPath $L.DataRoot) { return 'blocked:' + $L.DataRoot + ' exists but was not created by this script (Users can create folders there, so anyone may have made it); inspect it, delete it as an administrator, run again' }
         'todo' }
       Do = {
-        New-SecuredDirectory $L.DataRoot @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
+        New-TrustedDirectory $L.DataRoot @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
         $script:Manifest = New-Manifest; Save-Manifest; Say "    created $($L.DataRoot)" } }
     [pscustomobject]@{ Id = 'user'; Title = "Create the local standard user $($K.ControlPlaneUser) (BUILTIN\Users only, not Administrators); you type its password"
       Detail = @('PROVISIONAL Control Plane identity: the Authority refuses one SID for both pipes and the approver SID is your own account', 'the password is read as a SecureString, used once for New-LocalUser, never stored, printed or logged')
@@ -341,7 +346,7 @@ function Get-InstallSteps {
         $b = @($states | Where-Object { $_ -like 'blocked:*' }); if ($b.Count) { return $b[0] }
         if (@($states | Where-Object { $_ -ne 'done' }).Count -eq 0) { 'done' } else { 'todo' } }
       Do = { New-HostServices } }
-    [pscustomobject]@{ Id = 'folders'; Title = "Create the folders, each born with its final ACL (inheritance removed): $($L.InstallRoot); $($L.DataRoot)\{broker-config,broker,authority,control-plane}"
+    [pscustomobject]@{ Id = 'folders'; Title = "Create the folders, each born with its final ACL (inheritance removed) and read back: $($L.InstallRoot); $($L.DataRoot)\{broker-config,broker,authority,control-plane}"
       Detail = @('SYSTEM and Administrators full everywhere; Broker SID Modify on broker\ only; Authority SID Modify on authority\ only; albera-cp Modify on control-plane\ only', 'an existing folder is used only if it is owned by SYSTEM/Administrators, has no other writer and is reached through no link; otherwise the run stops')
       Test = {
         if (-not (Test-ManifestHas 'user') -or -not (Test-ManifestHas 'services')) { return 'todo' }
@@ -355,8 +360,8 @@ function Get-InstallSteps {
         }
         'done' }
       Do = { New-HostFolders } }
-    [pscustomobject]@{ Id = 'binaries'; Title = "Copy the three builds into $($L.BinRoot)\{broker,authority,pipe-client} (already administrator-only), then hash the COPIES and require every file to match -ExpectedHashes"
-      Detail = @('copied to a .partial folder, hashed there, compared with -ExpectedHashes (missing, extra and changed files all refuse; the copies are deleted); then renamed', 'an existing copy that does not match is refused (update = uninstall + install)')
+    [pscustomobject]@{ Id = 'binaries'; Title = "Copy the three builds into $($L.BinRoot)\{broker,authority,pipe-client} (already administrator-only), then hash the COPIES and require their tree hash to equal -ExpectedTreeHash"
+      Detail = @('copied to .partial folders, hashed there; any difference from -ExpectedTreeHash (a missing, extra, moved or changed file) deletes all three copies and stops; only then are they renamed', 'an existing copy that does not match, or a half-copied bin folder, is refused (update = uninstall + install)')
       Test = {
         if (-not (Test-ManifestHas 'installRoot')) { return 'todo' }
         foreach ($s in (Get-BuildSources)) { if (-not (Test-Path -LiteralPath $s.Dest)) { return 'todo' }; if (-not $script:Manifest['created']['binaries'].ContainsKey($s.Name)) { return 'todo' } }
@@ -435,6 +440,13 @@ function New-HostServices {
   Say "    services created; Broker SID $($script:Sids.Broker), Authority SID $($script:Sids.Authority)"
 }
 
+# A folder born with its final descriptor (New-SecuredDirectory reads back owner, protected DACL and accounts) and then re-checked with the SAME trust test used for existing folders (owner SYSTEM/Administrators,
+# no other writer, no link on the way). Throws before any later step - user, services, Save-Manifest - can run on a folder that is not what was asked for.
+function New-TrustedDirectory([string]$Path, [string[]]$Grants, [string]$OwnerSid = 'S-1-5-32-544') {
+  New-SecuredDirectory $Path $Grants $OwnerSid
+  $reasons = Get-PathTrustReasons $Path (Get-PlannedWriters ([pscustomobject]@{ Grants = $Grants })) $true
+  if ($reasons.Count -gt 0) { throw (Format-TrustRefusal $Path $reasons) }
+}
 # Every folder is created WITH its final security descriptor (owner Administrators, protected DACL), so there is no moment with an inherited ACL. A folder that already exists is used only after
 # it passed the trust checks (owner, writers, no link on the way); only then is its ACL brought to the plan, with icacls /L.
 function New-HostFolders {
@@ -444,7 +456,7 @@ function New-HostFolders {
   foreach ($entry in $plan) { Assert-PlannedPathTrusted $entry }
   foreach ($entry in $plan) {
     if (Test-Path -LiteralPath $entry.Path) { Set-HostAcl $entry; continue }
-    New-SecuredDirectory $entry.Path $entry.Grants
+    New-TrustedDirectory $entry.Path $entry.Grants
     if ($entry.Path -ceq $L.InstallRoot) { $script:Manifest['created']['installRoot'] = $true; Save-Manifest }
   }
   foreach ($entry in $plan) {
@@ -454,42 +466,64 @@ function New-HostFolders {
   Say '    folders created with their final ACL; every ACL read back and matches the plan'
 }
 
-# The copies are made INSIDE the already administrator-only bin folder and only the COPIES are hashed and compared with -ExpectedHashes (a hash of the source would prove nothing: it can change
-# between hashing and copying, and the tree is writable by a non-admin). On any difference the copies are deleted and the run stops.
+# The copies are made INSIDE the already administrator-only bin folder and only the COPIES are hashed: all three components are copied to .partial folders, the canonical tree hash of the copies must equal
+# -ExpectedTreeHash, and only then are they renamed. On any difference all copies are deleted and the run stops. (A hash of the source would prove nothing: it can change between hashing and copying, and the
+# tree is writable by a non-admin.) Existing copies: all three must be there and hash to the same value; a half-copied bin folder is refused.
 function Copy-HostBinaries {
-  $state = Get-ExpectedHashesState
+  $state = Get-ExpectedTreeHashState
   if (-not $state.Ok) { throw $state.Reason }
-  foreach ($s in (Get-BuildSources)) {
-    $expected = $state.Map[$s.Name]
-    $record = $script:Manifest['created']['binaries']
-    if (Test-Path -LiteralPath $s.Dest) {
+  $sources = @(Get-BuildSources)
+  $record = $script:Manifest['created']['binaries']
+  $present = @($sources | Where-Object { Test-Path -LiteralPath $_.Dest })
+  if ($present.Count -eq $sources.Count) {
+    foreach ($s in $sources) {
       $untrusted = Get-PathTrustReasons $s.Dest (Get-AdminSids) $false
       if ($untrusted.Count -gt 0) { throw (Format-TrustRefusal $s.Dest $untrusted) }
-      $have = Get-TreeHashes $s.Dest
-      $diff = Compare-FileHashSets $expected (ConvertTo-HashMap $have.Files)
-      if ($diff.Count -eq 0 -and $record.ContainsKey($s.Name)) { continue }
-      throw "$($s.Dest) already exists and does not match -ExpectedHashes ($(@($diff | Select-Object -First 5) -join ', ')); update means uninstall, then install"
     }
-    $sourceFiles = Get-SourceFiles $s.Dir
+    $dirs = @{}; foreach ($s in $sources) { $dirs[$s.Name] = $s.Dest }
+    $have = Get-ComponentHashes $dirs
+    $tree = Get-CanonicalTreeHash $have
+    if ($tree -cne $state.Value) { throw "the installed copies hash to $tree, not to -ExpectedTreeHash; update means uninstall, then install" }
+    foreach ($s in $sources) { if (-not $record.ContainsKey($s.Name)) { Set-BinaryRecord $s (Get-TreeHashes $s.Dest) } }
+    return
+  }
+  if ($present.Count -gt 0) { throw "$($L.BinRoot) holds only part of the builds; uninstall, then install again" }
+  $listings = @{}
+  foreach ($s in $sources) { $listings[$s.Name] = Get-SourceFiles $s.Dir }   # refuses a link or junction in a publish folder
+  foreach ($s in $sources) {
     $partial = $s.Dest + '.partial'
     if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Recurse -Force }   # left by a failed run of this script, inside the administrator-only bin folder
-    foreach ($f in $sourceFiles) {
-      $target = Join-Path $partial $f.Rel
-      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
-      [System.IO.File]::Copy($f.Full, $target, $false)
-    }
-    $copied = Get-TreeHashes $partial
-    $diff = Compare-FileHashSets $expected (ConvertTo-HashMap $copied.Files)
-    if ($diff.Count -gt 0) {
-      Remove-Item -LiteralPath $partial -Recurse -Force
-      throw "the copy of $($s.Name) does not match -ExpectedHashes ($(@($diff | Select-Object -First 5) -join ', ')); the copies were deleted. The build in the working tree is not the reviewed one."
-    }
-    Move-Item -LiteralPath $partial -Destination $s.Dest
-    $exeSha = ($copied.Files | Where-Object { $_.Rel -eq $s.Exe }).Sha
-    $rec = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $rec['exeSha256'] = $exeSha; $rec['treeSha256'] = $copied.Tree; $rec['files'] = $copied.Files.Count
-    $record[$s.Name] = $rec; Save-Manifest
-    Say "    $($s.Name): $($copied.Files.Count) files match -ExpectedHashes; exe sha256 $exeSha; folder hash $($copied.Tree)"
   }
+  $partials = @{}
+  try {
+    foreach ($s in $sources) {
+      $partial = $s.Dest + '.partial'
+      foreach ($f in $listings[$s.Name]) {
+        $target = Join-Path $partial $f.Rel
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+        [System.IO.File]::Copy($f.Full, $target, $false)
+      }
+      $partials[$s.Name] = $partial
+    }
+    $copied = Get-ComponentHashes $partials
+    $tree = Get-CanonicalTreeHash $copied
+    if ($tree -cne $state.Value) {
+      throw "the copies of the builds hash to $tree, not to -ExpectedTreeHash; the copies were deleted. The build in the working tree is not the reviewed one (or it is not reproducible on this PC)."
+    }
+  }
+  catch {
+    foreach ($s in $sources) { if (Test-Path -LiteralPath ($s.Dest + '.partial')) { Remove-Item -LiteralPath ($s.Dest + '.partial') -Recurse -Force } }
+    throw
+  }
+  foreach ($s in $sources) { Move-Item -LiteralPath ($s.Dest + '.partial') -Destination $s.Dest }
+  foreach ($s in $sources) { Set-BinaryRecord $s (Get-TreeHashes $s.Dest) }
+  Say "    all three builds match -ExpectedTreeHash $tree"
+}
+function Set-BinaryRecord($Source, $Hashes) {
+  $exeSha = ($Hashes.Files | Where-Object { $_.Rel -eq $Source.Exe }).Sha
+  $rec = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $rec['exeSha256'] = $exeSha; $rec['treeSha256'] = $Hashes.Tree; $rec['files'] = $Hashes.Files.Count
+  $script:Manifest['created']['binaries'][$Source.Name] = $rec; Save-Manifest
+  Say "    $($Source.Name): $($Hashes.Files.Count) files; exe sha256 $exeSha"
 }
 
 function New-HostSigningKey {
@@ -548,15 +582,22 @@ function Invoke-StartCheck {
 
 # ---------------------------------------------------------------------------------------------- hashes (a tool for the CI run, not a proof)
 function Show-Hashes {
-  $components = [ordered]@{}
+  $dirs = @{}
   foreach ($s in (Get-BuildSources)) {
     if (-not [System.IO.Directory]::Exists($s.Dir)) { Stop-Refused "$($s.Name): publish folder missing (run $($s.Build))" }
     if (Test-HasReparsePoint $s.Dir) { Stop-Refused "$($s.Name): the publish folder contains a link or junction" }
-    $files = [ordered]@{}
-    foreach ($f in (Get-TreeHashes $s.Dir).Files) { $files[$f.Rel.Replace('\', '/')] = $f.Sha }
-    $components[$s.Name] = [ordered]@{ files = $files }
+    $dirs[$s.Name] = $s.Dir
   }
-  Write-Output (ConvertTo-Json -InputObject ([ordered]@{ version = 1; components = $components }) -Depth 6 -Compress)
+  $hashes = Get-ComponentHashes $dirs
+  $tree = Get-CanonicalTreeHash $hashes
+  $components = [ordered]@{}
+  foreach ($name in $script:HashComponents) {
+    $files = [ordered]@{}
+    foreach ($rel in ($hashes[$name].Keys | Sort-Object { $_.Replace('\', '/') } )) { $files[$rel.Replace('\', '/')] = $hashes[$name][$rel] }
+    $components[$name] = [ordered]@{ files = $files }
+  }
+  Write-Output (ConvertTo-Json -InputObject ([ordered]@{ version = 1; treeHash = $tree; components = $components }) -Depth 6 -Compress)
+  Write-Output "ALBERA_HOST_TREE_HASH=$tree"
 }
 
 # ---------------------------------------------------------------------------------------------- status
@@ -696,7 +737,7 @@ function Remove-TrustedTree([string]$Dir, [string[]]$AllowedTop, [string[]]$Allo
 # ---------------------------------------------------------------------------------------------- run
 function Show-Plan([object[]]$Steps, [string]$Title) {
   Say "ALBERA host $Title - PLAN ONLY. Nothing is changed by this mode, and it needs no admin rights."
-  Say "Computer: $env:COMPUTERNAME   elevated: $(if (Test-Elevated) { 'yes' } else { 'no (install and uninstall will refuse)' })   repo: $RepoRoot"
+  Say "Computer: $([Environment]::MachineName)   elevated: $(if (Test-Elevated) { 'yes' } else { 'no (install and uninstall will refuse)' })   repo: $RepoRoot"
   Say "Install folder: $($L.InstallRoot)   data folder: $($L.DataRoot)   manifest: $(if ($script:Manifest) { "present (state $($script:Manifest['state']))" } elseif ($script:ManifestNote) { 'present but ignored (see below)' } else { 'none' })"
   if ($script:ManifestNote) { Say "NOTE: $($script:ManifestNote)" }
   $n = 0

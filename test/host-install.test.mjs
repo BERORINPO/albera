@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, createPublicKey, generateKeyPairSync, randomBytes, verify } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -64,12 +64,29 @@ test('source guards: elevation is checked first and never requested; nothing fro
   const calls = [...script.matchAll(/Invoke-Native\s+(\S+)/gu)].map((m) => m[1]).filter((first) => !first.startsWith('('));
   assert.ok(calls.length >= 6);
   for (const first of calls) assert.ok(first === '$ScExe' || first === '$IcaclsExe', `Invoke-Native is only called with sc.exe or icacls.exe, saw ${first}`);
-  for (const tool of ['sc.exe', 'icacls.exe']) assert.match(script, new RegExp(`System32\\\\${tool}`, 'u'), `${tool} is started by its full path`);
-  for (const gone of [/service-check ['"]\s*\+/u, /Test-BuiltExe/u, /LabApproverValues/u, /\$ApproverExe/u, /Get-ApproverExePath/u]) assert.doesNotMatch(script, gone, `removed: ${gone}`);
+  for (const tool of ['sc.exe', 'icacls.exe']) assert.match(script, new RegExp(`Join-Path \\$SystemDirectory '${tool.replace('.', '\\.')}'`, 'u'), `${tool} is started by its full path under the system directory Windows reports`);
+  for (const gone of [/service-check ['"]\s*\+/u, /Test-BuiltExe/u, /LabApproverValues/u, /\$ApproverExe/u, /Get-ApproverExePath/u, /ExpectedHashes/u, /Read-ExpectedHashes|Compare-FileHashSets|Test-PathInside/u]) assert.doesNotMatch(script + lib, gone, `removed: ${gone}`);
+  // No environment variable decides a path (HKCU\Environment can set them and an elevated console inherits them); only the ALBERA_* switches are read, never as paths.
+  for (const text of [script, lib]) {
+    const reads = [...text.matchAll(/\$env:([A-Za-z_]+)/gu)].map((m) => m[1]);
+    assert.deepEqual([...new Set(reads)].sort(), text === script ? ['ALBERA_HOST_ASSUME_NOT_ELEVATED', 'ALBERA_LAB_VM'] : []);
+    assert.doesNotMatch(text, /Get-Command|\[Environment\]::GetEnvironmentVariable|\$env:PATH|Set-Item Env:/iu);
+  }
+  assert.match(script, /\$SystemDirectory = \[Environment\]::SystemDirectory/u);
+  assert.match(script, /GetFolderPath\('ProgramFiles'\)/u);
+  assert.match(script, /GetFolderPath\('CommonApplicationData'\)/u);
+  assert.match(script, /\$ScExe = Join-Path \$SystemDirectory 'sc\.exe'/u);
+  assert.ok(script.indexOf('Test-FixedFolders') < script.indexOf('$L = Get-HostLayout'), 'the standard-folder refusal comes before the layout is built');
+  // every command example and the header use the same start line
+  for (const file of ['albera-host.ps1']) assert.match(readFileSync(path.join(hostDir, file), 'utf8'), /powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\host\\albera-host\.ps1/u);
+  const doc = readFileSync(path.join(root, 'docs', 'architecture', 'host-install.md'), 'utf8');
+  for (const line of doc.split('\n').filter((l) => /^powershell /u.test(l))) assert.match(line, /^powershell -NoProfile -ExecutionPolicy Bypass -File /u, `doc example: ${line}`);
+  assert.equal(/^powershell -File/mu.test(doc), false);
   assert.doesNotMatch(script, /Invoke-Native \$Exe|& \$Exe|& \$exe|\.manifest\.json/u, 'no sidecar manifest is trusted and no build is started');
   // Every icacls that changes something acts on the link itself, never its target.
   for (const line of script.split('\n').filter((l) => /Invoke-Native \$IcaclsExe/u.test(l))) assert.match(line, /\/L'?\)?/u, `icacls without /L: ${line.trim()}`);
-  assert.match(script, /New-SecuredDirectory \$L\.DataRoot/u, 'the data root is born with its ACL');
+  assert.match(script, /New-TrustedDirectory \$L\.DataRoot/u, 'the data root is born with its ACL and read back');
+  assert.equal((script.match(/^\s*New-SecuredDirectory /gmu) ?? []).length, 1, 'only New-TrustedDirectory creates a folder (create, read back, trust test)');
   assert.doesNotMatch(script, /New-Item -ItemType Directory -Path \$(?:L\.DataRoot|L\.InstallRoot|entry\.Path)/u, 'no planned folder is created with New-Item and fixed afterwards');
 });
 
@@ -96,34 +113,30 @@ test('plan is the default: numbered steps, every object named, nothing changed',
   assert.deepEqual(numbered, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 'ten numbered steps, in order');
   for (const needle of [
     'AlberaHostBroker', 'AlberaApprovalAuthority', 'albera-cp', 'restricted SID', 'SeChangeNotifyPrivilege', 'start=demand', 'SERVICE_QUERY_STATUS',
-    'AlberaApprovalAuthority-host-1', 'Export Policy none', 'install-manifest.json', 'albera.approval.json', '-ExpectedHashes', 'born with', 'SHA-256', 'inheritance removed', 'no policy.json',
+    'AlberaApprovalAuthority-host-1', 'Export Policy none', 'install-manifest.json', 'albera.approval.json', '-ExpectedTreeHash', 'born with', 'tree hash', 'inheritance removed', 'no policy.json',
     '-ApproverPublicKey', 'service-check is not run', 'C:\\Program Files\\Albera', 'C:\\ProgramData\\Albera',
   ]) assert.ok(output.includes(needle), `the plan names ${needle}`);
   assert.match(output, /you start them/u, 'the plan says the owner starts the services');
   assert.doesNotMatch(output, /password\s*[:=]\s*\S/iu);
-  assert.match(output, /\[blocked\] Load -ExpectedHashes/u, 'without -ExpectedHashes the plan says install is blocked');
+  assert.match(output, /\[blocked\] Check -ExpectedTreeHash/u, 'without -ExpectedTreeHash the plan says install is blocked');
 });
 
-test('plan: blocked without a hashes file from outside the repository, without publish folders and without the approver values; todo once they are given', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+test('plan: blocked without the tree hash typed from the CI log and without publish folders; the approver values are required; a malformed tree hash is refused with exit 2', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
   const empty = scratch(t);
-  const outside = scratch(t);
-  const hashesFile = path.join(outside, 'hashes.json');
-  writeFileSync(hashesFile, JSON.stringify({ version: 1, components: Object.fromEntries(['broker', 'authority', 'pipe-client'].map((n) => [n, { files: { 'a.exe': 'a'.repeat(64) } }])) }));
-  const noBuilds = host(['-Mode', 'plan', '-RepoRoot', empty, '-ExpectedHashes', hashesFile, '-ApproverKeyId', 'hello-0123456789abcdef']).stdout;
-  assert.match(noBuilds, /\[blocked\] Load -ExpectedHashes/u);
+  const noBuilds = host(['-Mode', 'plan', '-RepoRoot', empty, '-ExpectedTreeHash', 'a'.repeat(64), '-ApproverKeyId', 'hello-0123456789abcdef']).stdout;
+  assert.match(noBuilds, /\[blocked\] Check -ExpectedTreeHash/u);
   assert.match(noBuilds, /broker: publish folder missing \(run npm run build:windows-broker\)/u);
   assert.match(noBuilds, /\[blocked\] Check the approver values/u);
   assert.match(noBuilds, /-ApproverKeyId, -ApproverPublicKey and -ApproverSid are all required/u);
-  const noHashes = host(['-Mode', 'plan', '-RepoRoot', empty]).stdout;
-  assert.match(noHashes, /-ExpectedHashes <file> is required/u);
-  assert.match(noHashes, /OUTSIDE this repository/u);
-  // A hashes file inside the repository tree proves nothing (a non-admin can rewrite it): refused.
-  const inside = path.join(empty, 'hashes.json');
-  writeFileSync(inside, readFileSync(hashesFile));
-  assert.match(host(['-Mode', 'plan', '-RepoRoot', empty, '-ExpectedHashes', inside]).stdout, /-ExpectedHashes is inside the repository tree/u);
-  assert.match(host(['-Mode', 'plan', '-RepoRoot', empty, '-ExpectedHashes', path.join(outside, 'missing.json')]).stdout, /-ExpectedHashes file not found/u);
-  writeFileSync(path.join(outside, 'bad.json'), '{"version":1}');
-  assert.match(host(['-Mode', 'plan', '-RepoRoot', empty, '-ExpectedHashes', path.join(outside, 'bad.json')]).stdout, /hashes_shape/u);
+  const noHash = host(['-Mode', 'plan', '-RepoRoot', empty]).stdout;
+  assert.match(noHash, /-ExpectedTreeHash <64 hex> is required/u);
+  assert.match(noHash, /CI log/u);
+  for (const bad of ['abc', 'A'.repeat(64), 'a'.repeat(63), `${'a'.repeat(63)}g`]) {
+    const result = host(['-Mode', 'plan', '-ExpectedTreeHash', bad], { allowFail: true });
+    assert.equal(result.code, 2, bad);
+    assert.match(result.stdout, /64 lowercase hex/u);
+  }
+  assert.equal(host(['-Mode', 'plan', '-ExpectedHashes', 'C:\\x\\h.json'], { allowFail: true }).code === 0, false, 'the file parameter is gone: no file input anymore');
 });
 
 test('plan for uninstall lists the six removal steps and says what it refuses to delete', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
@@ -169,7 +182,7 @@ test('bad approver values and ids are refused with exit 2 before anything is loo
   assert.equal(host(['-Mode', 'plan', '-ApproverExe', 'C:\\x\\AlberaApprover.exe'], { allowFail: true }).code === 0, false, 'the script no longer takes a program to run');
 });
 
-test('-Mode hashes prints the SHA-256 of every file of the three publish folders (a tool for the CI run), and refuses links and missing folders', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+test('-Mode hashes prints the per-file JSON and the tree hash line (for the CI run); the tree hash follows the documented format; links and missing folders are refused', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
   const repo = scratch(t);
   const folders = {
     broker: 'src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish',
@@ -183,16 +196,29 @@ test('-Mode hashes prints the SHA-256 of every file of the three publish folders
     contents[name] = { [`${name}.exe`]: `exe ${name}`, 'sub/data.json': `{"n":"${name}"}`, 'lib.dll': randomBytes(32).toString('hex') };
     for (const [file, text] of Object.entries(contents[name])) writeFileSync(path.join(repo, rel, file), text);
   }
-  const printed = JSON.parse(host(['-Mode', 'hashes', '-RepoRoot', repo]).stdout.trim());
+  const lines = host(['-Mode', 'hashes', '-RepoRoot', repo]).stdout.trim().split(/\r?\n/u);
+  assert.equal(lines.length, 2, 'one JSON line, one tree hash line');
+  const printed = JSON.parse(lines[0]);
   assert.equal(printed.version, 1);
-  for (const name of Object.keys(folders)) {
+  // the documented canonical listing, built here independently: <component>/<path> TAB <sha> LF, components broker, authority, pipe-client, paths ordinal-sorted
+  let listing = '';
+  for (const name of ['broker', 'authority', 'pipe-client']) {
     const expected = Object.fromEntries(Object.entries(contents[name]).map(([file, text]) => [file, createHash('sha256').update(text).digest('hex')]));
     assert.deepEqual(printed.components[name].files, expected, `${name}: every file, forward slashes, lowercase hex`);
+    for (const rel of Object.keys(expected).sort((x, y) => (x < y ? -1 : x > y ? 1 : 0))) listing += `${name}/${rel}\t${expected[rel]}\n`;
   }
-  // the printed file is exactly what -ExpectedHashes reads: the first plan step turns to todo
-  const outside = scratch(t);
-  writeFileSync(path.join(outside, 'h.json'), JSON.stringify(printed));
-  assert.match(host(['-Mode', 'plan', '-RepoRoot', repo, '-ExpectedHashes', path.join(outside, 'h.json')]).stdout, /\[todo\] Load -ExpectedHashes/u);
+  const tree = createHash('sha256').update(listing, 'utf8').digest('hex');
+  assert.equal(printed.treeHash, tree);
+  assert.equal(lines[1], `ALBERA_HOST_TREE_HASH=${tree}`);
+  // the printed value is exactly what -ExpectedTreeHash takes: the first plan step turns to todo; any other value stays blocked? (the copies are compared at install time, the plan only checks the format)
+  assert.match(host(['-Mode', 'plan', '-RepoRoot', repo, '-ExpectedTreeHash', tree]).stdout, /\[todo\] Check -ExpectedTreeHash/u);
+  // a link inside a publish folder is refused
+  const target = scratch(t);
+  const link = path.join(repo, folders.broker, 'link');
+  const made = spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/c', 'mklink', '/J', link, target], { encoding: 'utf8', windowsHide: true });
+  assert.equal(made.status, 0);
+  assert.match(host(['-Mode', 'hashes', '-RepoRoot', repo], { allowFail: true }).stdout, /REFUSED: broker: the publish folder contains a link or junction/u);
+  spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/c', 'rmdir', link], { windowsHide: true });
 });
 
 // ---- the pure helpers ----
@@ -430,15 +456,33 @@ test('trust summary: a planted owner, a non-admin writer, an inherited ACL on a 
   assert.equal(r.badGrant, 'grant_not_understood');
 });
 
-test('expected hashes: strict shape (three components, relative paths, 64 lowercase hex), every difference by name, and a file inside the repository is refused', needsWindows, () => {
+test('tree hash: one canonical listing for CI and install; a changed, renamed, added, dropped or moved file, or a malformed input, never gives the same value', needsWindows, () => {
   const { r } = lib();
-  assert.deepEqual(r.hashesOk, { ok: true, broker: ['albera-windows-broker.exe', 'sub/x.dll'] });
-  const expected = { empty: 'hashes_file_size', notJson: 'hashes_not_json', version2: 'hashes_shape', extraComponent: 'hashes_components', missingComponent: 'hashes_components', upperHex: 'hashes_entry:broker',
-    shortHex: 'hashes_entry:broker', dotdot: 'hashes_entry:broker', absolute: 'hashes_entry:broker', noFiles: 'hashes_empty:authority' };
-  assert.deepEqual(r.hashesBad, expected);
-  assert.equal(r.cmpEqual, 0, 'either slash is accepted for the copied files');
-  assert.deepEqual(r.cmpDiffs, ['mismatch:albera-windows-broker.exe', 'missing:sub/x.dll', 'unexpected:extra.dll']);
-  assert.deepEqual(r.insideRepo, [true, false, false, true], 'a sibling folder with the same prefix is not inside; case does not matter');
+  assert.equal(r.tree, r.treeByHand, 'the documented format (component/path TAB sha LF, SHA-256 of the UTF-8 bytes) is what the function computes');
+  assert.equal(r.treeBackslashAndOrder, r.tree, 'either slash and any input order give the same value');
+  const others = Object.values(r.treeOther);
+  assert.equal(new Set([r.tree, ...others]).size, others.length + 1, 'every change gives a different value');
+  assert.deepEqual(r.treeBad, {
+    missingComponent: 'tree_hash_components', extraComponent: 'tree_hash_components', emptyComponent: 'tree_hash_empty:broker', dotdot: 'tree_hash_path:broker', absolute: 'tree_hash_path:broker',
+    drive: 'tree_hash_path:broker', upperHex: 'tree_hash_value:broker', duplicate: 'tree_hash_path:broker',
+  });
+  assert.deepEqual(r.treeValue, [true, false, false, false, false], 'the typed value must be 64 lowercase hex');
+});
+
+test('system folders come from Windows, never from environment variables: anything but the standard places is refused, and a hostile user environment does not move the answer', needsWindows, () => {
+  const { r } = lib();
+  assert.deepEqual(r.fixedOk, [0, 0], 'the standard places, any case, with or without a trailing slash');
+  assert.deepEqual(r.fixedBad.system, ['system_directory_not_C:\\Windows\\System32']);
+  assert.deepEqual(r.fixedBad.programFiles, ['program_files_not_C:\\Program Files']);
+  assert.deepEqual(r.fixedBad.programData, ['program_data_not_C:\\ProgramData']);
+  assert.deepEqual(r.fixedBad.x86, ['program_files_not_C:\\Program Files'], 'a 32-bit PowerShell would see Program Files (x86)');
+  assert.equal(r.fixedBad.empty.length, 3);
+  assert.equal(r.fixedBad.all.length, 3);
+  // SystemRoot / ProgramFiles / ProgramData / windir were set to D:\evil inside that run; Windows still answers with the real folders
+  assert.match(r.hostileEnv.system, /^C:\\windows\\system32$/iu);
+  assert.equal(r.hostileEnv.programFiles, 'C:\\Program Files');
+  assert.equal(r.hostileEnv.programData, 'C:\\ProgramData');
+  assert.equal(r.hostileEnvReasons, 0);
 });
 
 test('manifest shape and ownership: a forged manifest cannot name another account, another service, another key or an unknown entry; only the exact account install made may be removed', needsWindows, () => {
@@ -490,36 +534,37 @@ test('New-AuthoritySigningKey (user scope, no admin): non-exportable ECDSA P-256
 
 const harness = (t, kind) => lastJson(ps(['-File', path.join(driverDir, 'function-harness.ps1'), '-Case', kind, '-Work', scratch(t)]).stdout);
 
-test('copy: the COPIES are hashed against the expected hashes; a replaced build, an extra or a missing file, a link in the source and no hashes file are refused and leave nothing behind', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+test('copy: the COPIES must hash to the typed tree hash; a replaced build, an extra, missing or moved file, a link in the source, a half-copied bin and a wrong or missing value are refused and leave nothing behind', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
   const r = harness(t, 'copy');
+  assert.match(r.expected, /^[0-9a-f]{64}$/u);
   assert.equal(r.firstRunError, null);
   assert.deepEqual(r.recorded, ['authority', 'broker', 'pipe-client']);
   assert.equal(r.destFiles.length, 9);
   assert.ok(r.destFiles.includes('broker\\sub\\data.json'));
   assert.equal(r.noPartialLeft, true);
-  assert.equal(r.treeEqual, true);
+  assert.equal(r.copiesTreeEqualsExpected, true, 'the installed copies hash to the typed value');
   assert.equal(r.exeShaRecorded, true);
   assert.equal(r.secondRunError, null);
   assert.equal(r.secondRunUntouched, true, 'a second run leaves the copied files alone');
-  assert.match(r.tamperedError, /already exists and does not match -ExpectedHashes \(mismatch:runtime\.dll\)/u);
-  // hash mismatch -> refuse, and the copies are deleted
-  assert.match(r.replacedBuildError, /does not match -ExpectedHashes \(mismatch:runtime\.dll\); the copies were deleted/u);
-  assert.equal(r.replacedBuildNothingLeft, true, 'neither the destination nor the .partial folder is left');
+  assert.match(r.tamperedError, /the installed copies hash to [0-9a-f]{64}, not to -ExpectedTreeHash/u);
+  // tree hash mismatch -> refuse, and ALL copies are deleted
+  for (const key of ['replacedBuildError', 'extraFileError', 'missingFileError', 'movedFileError', 'wrongHashError']) {
+    assert.match(r[key], /the copies of the builds hash to [0-9a-f]{64}, not to -ExpectedTreeHash; the copies were deleted/u, key);
+  }
+  assert.equal(r.replacedBuildNothingLeft, true, 'neither a destination nor a .partial folder is left');
   assert.equal(r.replacedBuildNotRecorded, true);
-  assert.match(r.extraFileError, /unexpected:planted\.dll/u);
-  assert.match(r.missingFileError, /missing:sub\/data\.json/u);
+  assert.equal(r.wrongHashNothingLeft, true);
   assert.match(r.junctionInSourceError, /contains a link or junction/u);
   assert.equal(r.junctionTargetIntact, true);
+  assert.match(r.halfCopiedError, /holds only part of the builds/u);
   assert.equal(r.cleanAgainError, null, 'the reviewed build copies once the working tree is clean again');
   assert.deepEqual(r.recordedAgain, ['authority', 'broker', 'pipe-client']);
-  assert.equal(r.afterPartialError, null);
   assert.equal(r.staleGone, true);
-  assert.equal(r.secondCopied, true);
   assert.deepEqual(r.manifestReread, ['authority', 'broker', 'pipe-client'], 'the manifest on disk round-trips');
-  assert.match(r.noHashesError, /-ExpectedHashes <file> is required/u);
-  assert.equal(r.noHashesNothingCopied, true, 'without hashes from outside nothing is copied at all');
-  assert.match(r.hashesInRepo, /inside the repository tree/u);
-  assert.equal(r.hashesBadShape, 'hashes_shape');
+  assert.match(r.noHashError, /-ExpectedTreeHash <64 hex> is required/u);
+  assert.equal(r.noHashNothingCopied, true, 'without the typed value nothing is copied at all');
+  assert.match(r.badFormat, /64 lowercase hex/u);
+  assert.equal(r.upperCaseRefused, true);
 });
 
 test('trust: a planted manifest owned by a non-admin, a junction as the data root or a planned folder, and a planted child are refused before any ACL is changed or read through the link', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
@@ -557,6 +602,12 @@ test('a folder is born with its final descriptor (owner, protected DACL, inherit
   assert.equal(r.existingRefused, 'directory_already_exists');
   assert.equal(r.badGrantRefused, 'grant_not_understood');
   assert.equal(r.badGrantCreatedNothing, true);
+  // DirectoryInfo.Create succeeds silently on an existing folder: the read-back refuses it (not protected, wrong accounts), and a link
+  assert.match(r.createOnExistingError, /^created_directory_not_as_requested:.*not_protected/u);
+  assert.equal(r.createOnExistingKept, true, 'the foreign folder is left for the administrator to inspect');
+  assert.equal(r.createOnJunctionError, 'created_directory_not_as_requested:reparse_point');
+  // a folder created exactly as asked still has to pass the installer's trust test before any later step runs
+  assert.match(r.trustedCreateError, /trusted cannot be trusted \(owner_untrusted\)/u);
 });
 
 test('removal: only known files are deleted; an unknown file, a sub-folder or a junction stops the removal and nothing is deleted there', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {

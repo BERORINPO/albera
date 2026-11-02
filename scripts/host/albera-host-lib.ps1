@@ -487,56 +487,71 @@ function ConvertTo-FileSystemRules([string[]]$Grants) {
   , @($rules)
 }
 # Create a folder that is born with its final security descriptor (owner, protected DACL): there is no moment at which it carries an inherited ACL. Refuses an existing path.
+# DirectoryInfo.Create succeeds silently on .NET Framework when the folder already exists (made by someone between the check and the call), keeping ITS owner and ACL: so what was created is always read back
+# (owner, protected, exactly the requested accounts, no link) and anything else throws. Invoke-SecuredCreate is the part after the existence check, so the race can be tested.
 function New-SecuredDirectory([string]$Path, [string[]]$Grants, [string]$OwnerSid = 'S-1-5-32-544') {
   if ([System.IO.File]::Exists($Path) -or [System.IO.Directory]::Exists($Path)) { throw 'directory_already_exists' }
+  Invoke-SecuredCreate $Path $Grants $OwnerSid
+}
+function Invoke-SecuredCreate([string]$Path, [string[]]$Grants, [string]$OwnerSid = 'S-1-5-32-544') {
   $security = New-Object System.Security.AccessControl.DirectorySecurity
   $security.SetAccessRuleProtection($true, $false)
   $security.SetOwner((New-Object System.Security.Principal.SecurityIdentifier($OwnerSid)))
   foreach ($rule in (ConvertTo-FileSystemRules $Grants)) { $security.AddAccessRule($rule) }
   (New-Object System.IO.DirectoryInfo($Path)).Create($security)
+  $wrong = New-Object System.Collections.Generic.List[string]
+  if ((Get-ReparseChain $Path).Count -gt 0) { $wrong.Add('reparse_point') }
+  else {
+    $summary = Get-AclSummary $Path
+    if ($summary.Owner -ne $OwnerSid) { $wrong.Add('owner') }
+    if (-not $summary.Protected) { $wrong.Add('not_protected') }
+    $want = @(Get-GrantedSids ([pscustomobject]@{ Grants = $Grants }) | Sort-Object -Unique)
+    if ((@($summary.AllowSids | Sort-Object -Unique) -join ',') -ne ($want -join ',')) { $wrong.Add('accounts') }
+  }
+  if ($wrong.Count -gt 0) { throw ('created_directory_not_as_requested:' + ($wrong -join ',')) }
 }
 
-# ---------------------------------------------------------------------------------------------- what the owner recorded as expected: SHA-256 of every published file
-# JSON: { "version": 1, "components": { "broker": { "files": { "<relative/path>": "<64 lowercase hex>" } }, "authority": {...}, "pipe-client": {...} } }. It comes from OUTSIDE the repository tree
-# (the CI run's printed hashes / a reviewed build): the tree can be rewritten by a non-admin, so a hash taken from it proves nothing. Returns @{ Ok; Reason; Map } (Map: component -> relative path -> sha).
+# ---------------------------------------------------------------------------------------------- the one value the owner types: the tree hash of the three builds
+# -ExpectedTreeHash is ONE SHA-256 that the owner copies from the CI log of the reviewed commit (the line ALBERA_HOST_TREE_HASH=<hex> of `albera-host.ps1 -Mode hashes`). It is a parameter, not a file: a file
+# in Downloads can be rewritten together with the builds by a non-admin. The same function makes the value for -Mode hashes (CI) and for install (the COPIES in the administrator-only bin folder), so the
+# two cannot drift.
+# Canonical listing: for each component in the fixed order broker, authority, pipe-client, and inside it for each published file sorted by ordinal comparison of its relative path (written with '/'),
+# one line   <component>/<relative path> TAB <SHA-256 of the file, 64 lowercase hex> LF   (LF = 0x0A, TAB = 0x09, no other whitespace, no BOM). The tree hash is the lowercase-hex SHA-256 of the UTF-8
+# bytes of all lines concatenated. A file moved to another component, renamed, added, dropped or changed changes it.
 $script:HashComponents = @('broker', 'authority', 'pipe-client')
-function Read-ExpectedHashes([string]$Json) {
-  $fail = { param($why) [pscustomobject]@{ Ok = $false; Reason = $why; Map = $null } }
-  if ($null -eq $Json -or $Json.Length -eq 0 -or $Json.Length -gt 4MB) { return (& $fail 'hashes_file_size') }
-  try { $o = $Json | ConvertFrom-Json } catch { return (& $fail 'hashes_not_json') }
-  if (-not (Test-SameKeySet $o @('version', 'components')) -or $o.version -ne 1) { return (& $fail 'hashes_shape') }
-  if (-not (Test-SameKeySet $o.components $script:HashComponents)) { return (& $fail 'hashes_components') }
-  $map = @{}
+function Test-TreeHashValue([string]$Value) { ($null -ne $Value) -and ($Value -cmatch '^[0-9a-f]{64}$') }
+function Get-CanonicalTreeHash($Components) {
+  $builder = New-Object System.Text.StringBuilder
+  if (@($Components.Keys).Count -ne $script:HashComponents.Count) { throw 'tree_hash_components' }
   foreach ($name in $script:HashComponents) {
-    $c = $o.components.$name
-    if (-not (Test-SameKeySet $c @('files'))) { return (& $fail "hashes_shape:$name") }
-    $files = @{}
-    foreach ($prop in $c.files.PSObject.Properties) {
-      $rel = $prop.Name
-      if ($rel -cnotmatch '^[A-Za-z0-9._+@ -]+(/[A-Za-z0-9._+@ -]+)*$' -or $rel.Contains('..') -or ($prop.Value -isnot [string]) -or ($prop.Value -cnotmatch '^[0-9a-f]{64}$')) { return (& $fail "hashes_entry:$name") }
-      $files[$rel] = $prop.Value
+    if (@($Components.Keys) -cnotcontains $name) { throw 'tree_hash_components' }
+    $files = $Components[$name]
+    if (@($files.Keys).Count -eq 0) { throw "tree_hash_empty:$name" }
+    $byRel = @{}
+    foreach ($k in $files.Keys) {
+      $rel = ([string]$k).Replace('\', '/')
+      if ($rel.Length -eq 0 -or $rel.StartsWith('/') -or $rel.Contains('..') -or $rel.Contains(':') -or $rel.Contains("`t") -or $rel.Contains("`n") -or $byRel.ContainsKey($rel)) { throw "tree_hash_path:$name" }
+      if (-not (Test-TreeHashValue $files[$k])) { throw "tree_hash_value:$name" }
+      $byRel[$rel] = $files[$k]
     }
-    if ($files.Count -eq 0) { return (& $fail "hashes_empty:$name") }
-    $map[$name] = $files
+    $rels = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($rel in $byRel.Keys) { $rels.Add($rel) }
+    $rels.Sort([System.StringComparer]::Ordinal)
+    foreach ($rel in $rels) { [void]$builder.Append($name).Append('/').Append($rel).Append("`t").Append($byRel[$rel]).Append("`n") }
   }
-  [pscustomobject]@{ Ok = $true; Reason = ''; Map = $map }
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try { ([BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($builder.ToString()))) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() }
 }
-# $Actual: relative path (either slash) -> sha of the files that were COPIED. Differences, by name only (never contents); empty = identical.
-function Compare-FileHashSets($Expected, $Actual) {
-  $diffs = New-Object System.Collections.Generic.List[string]
-  $have = @{}
-  foreach ($k in $Actual.Keys) { $have[([string]$k).Replace('\', '/')] = $Actual[$k] }
-  foreach ($k in $Expected.Keys) {
-    if (-not $have.ContainsKey($k)) { $diffs.Add('missing:' + $k) } elseif ($have[$k] -cne $Expected[$k]) { $diffs.Add('mismatch:' + $k) }
-  }
-  foreach ($k in $have.Keys) { if (-not $Expected.ContainsKey($k)) { $diffs.Add('unexpected:' + $k) } }
-  , @($diffs | Sort-Object)
-}
-# The hashes file must not sit in the repository tree (a non-admin can rewrite it there).
-function Test-PathInside([string]$Path, [string]$Root) {
-  $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\') + '\'
-  $base = [System.IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
-  $full.StartsWith($base, [System.StringComparison]::OrdinalIgnoreCase)
+
+# ---------------------------------------------------------------------------------------------- the fixed system folders (no environment variable decides a path)
+# HKCU\Environment can set SystemRoot / ProgramFiles / ProgramData for a user's processes, and an elevated console started from that session inherits them. So the script never reads those variables:
+# it asks Windows ([Environment]::SystemDirectory / GetFolderPath) and refuses anything but the standard places. Returns the differences (empty = standard).
+function Test-FixedFolders([string]$SystemDirectory, [string]$ProgramFiles, [string]$ProgramData) {
+  $reasons = New-Object System.Collections.Generic.List[string]
+  if ([string]::IsNullOrEmpty($SystemDirectory) -or -not [string]::Equals($SystemDirectory.TrimEnd('\'), 'C:\Windows\System32', [System.StringComparison]::OrdinalIgnoreCase)) { $reasons.Add('system_directory_not_C:\Windows\System32') }
+  if ([string]::IsNullOrEmpty($ProgramFiles) -or -not [string]::Equals($ProgramFiles.TrimEnd('\'), 'C:\Program Files', [System.StringComparison]::OrdinalIgnoreCase)) { $reasons.Add('program_files_not_C:\Program Files') }
+  if ([string]::IsNullOrEmpty($ProgramData) -or -not [string]::Equals($ProgramData.TrimEnd('\'), 'C:\ProgramData', [System.StringComparison]::OrdinalIgnoreCase)) { $reasons.Add('program_data_not_C:\ProgramData') }
+  , @($reasons)
 }
 
 # ---------------------------------------------------------------------------------------------- the manifest and the account: what uninstall may touch

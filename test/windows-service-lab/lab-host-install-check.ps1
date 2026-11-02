@@ -3,8 +3,8 @@
 # It runs install (with -StartCheck: each service is started once and stopped again), status, a second install (must change nothing), uninstall and a final status, all NON-interactively,
 # and prints one JSON evidence object. It never prints the account password (a random one is made here and handed over as a SecureString, which is accepted only because the lab
 # driver sets ALBERA_LAB_VM=1 in the VM). The Hello key is replaced by a throw-away public key passed as the normal parameters (no private half exists): the lab has no Windows Hello, and no check here asks for an approval.
-# LAB ONLY, and it proves nothing about provenance: the -ExpectedHashes file is computed HERE from the very folders that were copied into the guest (`albera-host.ps1 -Mode hashes`). On the owner's PC that file must come from
-# outside the repository (the CI run of the reviewed build); this hook only exercises the code path (copy, hash the copies, compare, record).
+# LAB ONLY, and it proves nothing about provenance: the -ExpectedTreeHash is computed HERE from the very folders that were copied into the guest (`albera-host.ps1 -Mode hashes`, its ALBERA_HOST_TREE_HASH= line).
+# On the owner's PC that value must be typed from the CI log of the reviewed commit (workflow host-build-hashes); this hook only exercises the code path (copy, hash the copies, compare, record).
 # Refuses to run unless ALBERA_LAB_VM=1 and the two Albera folders do not exist yet. NOT executed yet (the lab VM run is the lead's): expect first-run fixes.
 param(
   [Parameter(Mandatory = $true)][string]$HostScriptDir,
@@ -44,19 +44,19 @@ function Get-Remnants {
 }
 
 $evidence = [ordered]@{ approverSid = $approverSid }
-# Lab-only hashes of the copied publish folders, written OUTSIDE the repository root (the installer refuses a hashes file inside it).
-$hashesFile = Join-Path $env:TEMP 'albera-lab-expected-hashes.json'
+# Lab-only tree hash of the copied publish folders (the installer takes it as a parameter, not a file).
 $hashes = Invoke-Host @{ Mode = 'hashes' }
 if ($hashes.Exit -ne 0) { throw 'could not compute the lab hashes' }
-[System.IO.File]::WriteAllText($hashesFile, $hashes.Output.Trim(), (New-Object System.Text.UTF8Encoding($false)))
-$evidence.hashesFile = [ordered]@{ computedInGuest = $true; bytes = (Get-Item -LiteralPath $hashesFile).Length }
-$install = Invoke-Host (@{ Mode = 'install'; ExpectedHashes = $hashesFile; StartCheck = $true; ControlPlanePassword = $password } + $approverParams)
+$treeHash = ([regex]::Match($hashes.Output, '(?m)^ALBERA_HOST_TREE_HASH=([0-9a-f]{64})\s*$')).Groups[1].Value
+if (-not $treeHash) { throw 'no tree hash line in the -Mode hashes output' }
+$evidence.treeHash = [ordered]@{ computedInGuest = $true; value = $treeHash }
+$install = Invoke-Host (@{ Mode = 'install'; ExpectedTreeHash = $treeHash; StartCheck = $true; ControlPlanePassword = $password } + $approverParams)
 $evidence.install = [ordered]@{ exit = $install.Exit; output = $install.Output }
 $status = Invoke-Host @{ Mode = 'status' }
 $evidence.status = [ordered]@{ exit = $status.Exit; output = $status.Output }
 $manifest = Join-Path $programData 'install-manifest.json'
 $hashBefore = if (Test-Path -LiteralPath $manifest) { (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash } else { '' }
-$again = Invoke-Host (@{ Mode = 'install'; ExpectedHashes = $hashesFile; ControlPlanePassword = $password } + $approverParams)
+$again = Invoke-Host (@{ Mode = 'install'; ExpectedTreeHash = $treeHash; ControlPlanePassword = $password } + $approverParams)
 $hashAfter = if (Test-Path -LiteralPath $manifest) { (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash } else { '' }
 $evidence.reinstall = [ordered]@{ exit = $again.Exit; manifestUnchanged = ($hashBefore -ne '' -and $hashBefore -eq $hashAfter); saysAlreadyComplete = ($again.Output -match 'already complete') }
 $evidence.afterInstall = Get-Remnants
