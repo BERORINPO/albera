@@ -7,7 +7,9 @@ param(
   [string]$PasswordFile = 'U:\dev\hyperv\albera-poc-01\local-secrets\admin-password.txt',
   [string]$EvidenceDir,
   [switch]$Build,
-  [switch]$KeepVm
+  [switch]$KeepVm,
+  # Run the HOST installer check (scripts/host/albera-host.ps1 through lab-host-install-check.ps1) in the VM instead of the service-identity lab.
+  [switch]$HostInstall
 )
 $ErrorActionPreference = 'Stop'
 
@@ -102,11 +104,41 @@ try {
       & npm run build:approval-authority
       if ($LASTEXITCODE -ne 0) { throw "build:approval-authority failed ($LASTEXITCODE)" }
     }
-    & node scripts/windows-service-lab-inputs.mjs $inputsFile
-    if ($LASTEXITCODE -ne 0) { throw "input generation failed ($LASTEXITCODE)" }
+    if (-not $HostInstall) {
+      & node scripts/windows-service-lab-inputs.mjs $inputsFile
+      if ($LASTEXITCODE -ne 0) { throw "input generation failed ($LASTEXITCODE)" }
+    }
   }
   finally { Pop-Location }
 
+  if ($HostInstall) {
+    # The guest gets the host scripts and the three publish folders at the same relative paths under a stand-in repository root, then runs the hook
+    # with ALBERA_LAB_VM=1 set in this session only (the installer accepts its lab-only parameters only then).
+    $guestRepo = 'C:\albera-host-lab'
+    $rels = @('src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish',
+              'src\runtime\windows-approval-authority\bin\Release\net10.0-windows\win-x64\publish',
+              'src\runtime\windows-broker-pipe-client\bin\Release\net10.0-windows\win-x64\publish')
+    foreach ($rel in $rels) { if (-not (Test-Path -LiteralPath (Join-Path $repo $rel))) { throw "missing build output (run with -Build): $rel" } }
+    $session = New-PSSession -VMName $VmName -Credential $credential
+    try {
+      Invoke-Command -Session $session -ScriptBlock { param($r, $rels) foreach ($x in @('scripts\host', 'tools') + $rels) { New-Item -ItemType Directory -Force -Path (Join-Path $r $x) | Out-Null } } -ArgumentList $guestRepo, $rels
+      Copy-Item -ToSession $session -Path (Join-Path $repo 'scripts\host\*') -Destination "$guestRepo\scripts\host" -Recurse -Force
+      foreach ($rel in $rels) { Copy-Item -ToSession $session -Path (Join-Path (Join-Path $repo $rel) '*') -Destination (Join-Path $guestRepo $rel) -Recurse -Force }
+      Copy-Item -ToSession $session -Path (Join-Path $PSScriptRoot 'lab-host-install-check.ps1') -Destination "$guestRepo\tools\lab-host-install-check.ps1" -Force
+      $hookOutput = Invoke-Command -Session $session -ScriptBlock {
+        param($r)
+        $env:ALBERA_LAB_VM = '1'
+        $text = (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$r\tools\lab-host-install-check.ps1" -HostScriptDir "$r\scripts\host" -RepoRoot $r *>&1 | Out-String)
+        [pscustomobject]@{ Exit = $LASTEXITCODE; Text = $text }
+      } -ArgumentList $guestRepo
+    }
+    finally { Remove-PSSession $session }
+    $hookOutput.Text | Set-Content -Encoding UTF8 -LiteralPath $outputFile
+    $hookOutput.Text | Out-Host
+    Write-Host "host-install hook exit: $($hookOutput.Exit)"
+    $exitCode = if ($hookOutput.Exit -eq 0) { 0 } else { 1 }
+  }
+  else {
   & (Join-Path $PSScriptRoot 'run-lab.ps1') -VmName $VmName -PasswordFile $PasswordFile `
     -InputsFile $inputsFile -EvidenceDir $runDir *>&1 | Tee-Object -FilePath $outputFile
 
@@ -122,6 +154,7 @@ try {
   $rollback = Get-Content -LiteralPath $rollbackPath -Raw | ConvertFrom-Json
   Write-Host ('Rollback: ' + ($rollback | ConvertTo-Json -Depth 4 -Compress))
   $exitCode = if ($failCount -gt 0) { 1 } else { 0 }
+  }
 }
 catch {
   Write-Error "setup error: $($_.Exception.Message)" -ErrorAction Continue
