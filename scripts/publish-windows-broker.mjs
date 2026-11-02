@@ -7,7 +7,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { captureExecutableIdentity } from '../src/runtime/executable-identity.mjs';
-import { createBuildContextOrExit, printBuildIdentity, restoreAndBuild, sdkVersion } from './dotnet-build-env.mjs';
+import { createBuildContextOrExit, printBuildIdentity, requireHostBuildSdk, restoreAndBuild } from './dotnet-build-env.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 if (process.platform !== 'win32') {
@@ -21,6 +21,7 @@ const targets = [
   { label: 'Broker pipe client', directory: 'windows-broker-pipe-client', project: 'Albera.WindowsBrokerPipeClient.csproj', executable: 'albera-windows-broker-pipe-client.exe' },
 ];
 const context = createBuildContextOrExit(root);
+const sdk = requireHostBuildSdk(context);   // before restore: a wrong SDK fails here, not as a tree hash mismatch at install
 for (const target of targets) {
   const project = path.join(root, 'src', 'runtime', target.directory, target.project);
   const output = path.join(root, 'src', 'runtime', target.directory, 'bin', 'Release', 'net10.0-windows', 'win-x64', 'publish');
@@ -32,6 +33,6 @@ for (const target of targets) {
   const executable = path.join(output, target.executable);
   const identity = await captureExecutableIdentity(executable);
   await writeFile(`${executable}.manifest.json`, `${JSON.stringify({ sha256: identity.sha256 }, null, 2)}\n`, 'utf8');
-  printBuildIdentity({ sdk: sdkVersion(context), root, file: executable, sha256: identity.sha256 });
+  printBuildIdentity({ sdk, root, file: executable, sha256: identity.sha256 });
 }
 console.log('Windows Broker and its pipe client published for win-x64 (build output is ignored by Git; not installed, not started)');

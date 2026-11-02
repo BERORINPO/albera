@@ -30,7 +30,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.403   # HOST_BUILD_SDK in scripts/dotnet-build-env.mjs: change both together
       - name: Install locked dependencies
         run: npm ci
       - name: Build Windows Job Guardian
