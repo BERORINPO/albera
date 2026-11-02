@@ -3,6 +3,7 @@ name: Host build hashes
 # Run by hand (Actions > Host build hashes > Run workflow) on the reviewed commit. Windows minutes cost money, so there is no push or pull_request trigger.
 # It builds the Broker, the Approval Authority and the pipe client on a clean runner and prints ONE tree hash of the published files: the owner types that value
 # as -ExpectedTreeHash into scripts/host/albera-host.ps1 (docs/architecture/host-install.md). It installs and starts nothing.
+# It also signs a build provenance attestation for the published exe files, the two host scripts and build-hashes.json (gh attestation verify; the installer does not read it).
 on:
   workflow_dispatch:
 
@@ -16,6 +17,12 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
     timeout-minutes: 20
+    # Only what the attestation step needs (job-level permissions replace the workflow-level block, so contents: read is repeated): an OIDC token for the Sigstore certificate and the
+    # attestations API. Nothing here can push, release or write packages.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -56,6 +63,19 @@ jobs:
             Write-Host $line
             $line | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           }
+      # Build provenance (docs/architecture/host-install.md "Checking a build with gh attestation verify"): signs "these bytes came from this workflow on this commit of this repository".
+      # The exe files are only the self-contained apphost launchers (the code is in the DLLs next to them), so build-hashes.json, which lists the hash of every published file and the
+      # tree hash, is attested too. The installer does not read attestations: it still trusts only -ExpectedTreeHash.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker.exe
+            src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish/albera-approval-authority.exe
+            src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker-pipe-client.exe
+            scripts/host/albera-host.ps1
+            scripts/host/albera-host-lib.ps1
+            build-hashes.json
       - name: Upload the per-file hashes
         uses: actions/upload-artifact@v4
         with:
