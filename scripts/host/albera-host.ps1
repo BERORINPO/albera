@@ -650,7 +650,11 @@ function Get-StatusLines {
     foreach ($spec in (Get-ServiceSpecs)) {
       $facts = Get-ServiceFactsFor $spec.Name
       $bad = Test-ServiceFacts $facts $spec.Name (Get-ServiceCommandLine $spec.Exe $spec.Config)
-      if ($spec.Name -eq $K.BrokerService -and $facts.Exists) { $bad = @($bad) + @(Test-ServiceSdMatches (Invoke-Native $ScExe "sdshow $($spec.Name)").Out.Trim() $script:Sids.ControlPlane) }
+      if ($spec.Name -eq $K.BrokerService -and $facts.Exists) {
+        # Assign first: the test functions return , @(list), and @(call) would keep the outer array, so an empty result would count as one item.
+        $badSd = Test-ServiceSdMatches (Invoke-Native $ScExe "sdshow $($spec.Name)").Out.Trim() $script:Sids.ControlPlane
+        $bad = @($bad) + @($badSd)
+      }
       Add-Line $(if ($bad.Count -eq 0) { 'ok' } else { 'FAIL' }) ("service $($spec.Name): " + $(if ($bad.Count -eq 0) { "as installed (state $($facts.State))" } else { $bad -join ', ' }))
     }
     foreach ($entry in (Get-AclPlan $L $script:Sids)) {
