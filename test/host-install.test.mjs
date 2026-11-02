@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash, createPublicKey, generateKeyPairSync, randomBytes, verify } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, verify } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -69,7 +69,7 @@ test('source guards: elevation is checked first and never requested; nothing fro
   // No environment variable decides a path (HKCU\Environment can set them and an elevated console inherits them); only the ALBERA_* switches are read, never as paths.
   for (const text of [script, lib]) {
     const reads = [...text.matchAll(/\$env:([A-Za-z_]+)/gu)].map((m) => m[1]);
-    assert.deepEqual([...new Set(reads)].sort(), text === script ? ['ALBERA_HOST_ASSUME_NOT_ELEVATED', 'ALBERA_LAB_VM'] : []);
+    assert.deepEqual([...new Set(reads)].sort(), text === script ? ['ALBERA_HOST_ASSUME_NOT_ELEVATED', 'ALBERA_LAB_VM', 'PSModulePath'] : []);   // PSModulePath is only ever SET (to the system module folder), never read
     assert.doesNotMatch(text, /Get-Command|\[Environment\]::GetEnvironmentVariable|\$env:PATH|Set-Item Env:/iu);
   }
   assert.match(script, /\$SystemDirectory = \[Environment\]::SystemDirectory/u);
@@ -77,11 +77,29 @@ test('source guards: elevation is checked first and never requested; nothing fro
   assert.match(script, /GetFolderPath\('CommonApplicationData'\)/u);
   assert.match(script, /\$ScExe = Join-Path \$SystemDirectory 'sc\.exe'/u);
   assert.ok(script.indexOf('Test-FixedFolders') < script.indexOf('$L = Get-HostLayout'), 'the standard-folder refusal comes before the layout is built');
-  // every command example and the header use the same start line
-  for (const file of ['albera-host.ps1']) assert.match(readFileSync(path.join(hostDir, file), 'utf8'), /powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\host\\albera-host\.ps1/u);
+  // every command example and the header use the same start line: the full path of powershell.exe (cmd.exe prefers a powershell.exe in the current folder)
+  const START = String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `;
+  assert.ok(script.includes(`# Start it ALWAYS as   ${START}scripts\\host\\albera-host.ps1`));
   const doc = readFileSync(path.join(root, 'docs', 'architecture', 'host-install.md'), 'utf8');
-  for (const line of doc.split('\n').filter((l) => /^powershell /u.test(l))) assert.match(line, /^powershell -NoProfile -ExecutionPolicy Bypass -File /u, `doc example: ${line}`);
-  assert.equal(/^powershell -File/mu.test(doc), false);
+  const examples = doc.split('\n').filter((l) => /powershell(?:\.exe)? +-(?:NoProfile|File)/u.test(l.replace(/`/gu, '')));
+  assert.ok(examples.length >= 4);
+  for (const line of examples) assert.ok(line.replace(/^`/u, '').startsWith(START), `doc example without the full path: ${line.slice(0, 90)}`);
+  assert.equal(/^powershell\b/mu.test(doc), false);
+  // the old false claim (-NoProfile keeps user modules out) is gone from the doc and the header; the true statement is there
+  for (const text of [doc, script]) assert.doesNotMatch(text, /profiles and user modules (?:would otherwise )?load even in an elevated console/u);
+  assert.match(doc, /`-NoProfile` skips profiles only; it does \*\*not\*\* keep user modules out/u);
+  assert.match(script, /-NoProfile skips profiles ONLY/u);
+  // the module guard comes first: nothing but .NET and Import-Module runs before the five system modules are imported by manifest path, and nothing is dot-sourced before that
+  const guardStart = script.indexOf("$PSModuleAutoLoadingPreference = 'None'");
+  const importAt = script.indexOf('Import-Module -Name $manifestPath');
+  assert.ok(script.indexOf('param(') < guardStart && guardStart < script.indexOf('$env:PSModulePath = [System.IO.Path]::Combine($PSHOME') && script.indexOf('$env:PSModulePath') < importAt);
+  assert.ok(importAt < script.indexOf('$ErrorActionPreference'));
+  assert.ok(importAt < script.indexOf("albera-host-lib.ps1')"), 'the lib is dot-sourced only after the imports');
+  const guard = script.slice(guardStart, importAt);
+  assert.doesNotMatch(guard, /\b(?:Write-Host|Join-Path|Test-Path|Get-ChildItem|Split-Path|Sort-Object|Select-Object|New-Object|Get-Item|Resolve-Path|Get-Date|Write-Output)\b/u, 'only .NET before the imports');
+  for (const name of ['Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security', 'CimCmdlets', 'Microsoft.PowerShell.LocalAccounts']) assert.ok(guard.includes(`'${name}'`), `${name} is imported by path`);
+  assert.match(guard, /C:\\Windows\\System32\\WindowsPowerShell\\v1\.0/u);
+  assert.doesNotMatch(script + lib, /Import-Module\s+(?!-Name \$manifestPath)/u, 'no other Import-Module');
   assert.doesNotMatch(script, /Invoke-Native \$Exe|& \$Exe|& \$exe|\.manifest\.json/u, 'no sidecar manifest is trusted and no build is started');
   // Every icacls that changes something acts on the link itself, never its target.
   for (const line of script.split('\n').filter((l) => /Invoke-Native \$IcaclsExe/u.test(l))) assert.match(line, /\/L'?\)?/u, `icacls without /L: ${line.trim()}`);
@@ -221,6 +239,70 @@ test('-Mode hashes prints the per-file JSON and the tree hash line (for the CI r
   spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/c', 'rmdir', link], { windowsHide: true });
 });
 
+test('a fake CimCmdlets / LocalAccounts / Utility first in PSModulePath for the child process is never loaded: the script resets the module path and imports the system modules by path', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+  const fakes = scratch(t);
+  const marker = path.join(fakes, 'marker.txt');
+  const modules = path.join(fakes, 'Modules');
+  const names = ['CimCmdlets', 'Microsoft.PowerShell.LocalAccounts', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Security'];
+  for (const name of names) {
+    mkdirSync(path.join(modules, name), { recursive: true });
+    writeFileSync(path.join(modules, name, `${name}.psd1`), `@{ RootModule = '${name}.psm1'; ModuleVersion = '9.9.9'; GUID = '${randomUUID()}'; FunctionsToExport = '*'; CmdletsToExport = @(); AliasesToExport = @() }\n`);
+    // loading marks the file; the function a script would call returns HIJACKED
+    writeFileSync(path.join(modules, name, `${name}.psm1`), `[System.IO.File]::AppendAllText($env:ALBERA_TEST_MARKER, 'loaded ${name}' + [Environment]::NewLine)\nfunction Get-CimInstance { 'HIJACKED' }\nfunction Get-LocalUser { 'HIJACKED' }\nfunction Get-Acl { 'HIJACKED' }\n`);
+  }
+  const env = { PSModulePath: modules, ALBERA_TEST_MARKER: marker };
+  // control: an unprotected child with that PSModulePath DOES pick the fake up, so the test can fail
+  const control = ps(['-Command', "Get-CimInstance Win32_OperatingSystem"], { env });
+  assert.match(control.stdout, /HIJACKED/u, 'control: the fake module is found first by an ordinary session');
+  assert.equal(existsSync(marker), true, 'control: the marker was written');
+  rmSync(marker);
+  // the real script, plan mode, same hostile environment
+  const output = host([], { env }).stdout;
+  assert.equal(existsSync(marker), false, 'no fake module was loaded by albera-host.ps1');
+  assert.doesNotMatch(output, /HIJACKED/u);
+  assert.match(output, /\[todo\] Create services AlberaHostBroker/u, 'the plan still ran, with the real CIM answers');
+  assert.match(output, /PLAN ONLY: nothing was changed\./u);
+  // status and uninstall plan go through the same guard
+  host(['-Mode', 'status'], { env });
+  host(['-Mode', 'plan', '-PlanFor', 'uninstall'], { env });
+  assert.equal(existsSync(marker), false);
+});
+
+test('a PowerShell that is not the one in System32 (here the 32-bit one) is refused before anything else runs', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
+  const wow = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'SysWOW64', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  if (!existsSync(wow)) return;
+  const result = spawnSync(wow, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(hostDir, 'albera-host.ps1')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(result.status, 3);
+  assert.match(result.stdout, /REFUSED: this is not the Windows PowerShell 5\.1 in C:\\Windows\\System32\\WindowsPowerShell\\v1\.0/u);
+  assert.doesNotMatch(result.stdout, /PLAN ONLY/u);
+});
+
+test('the hash workflow: manual only, main only, prints the tree hash and one script hash per host script, and the doc tells the owner what to check', () => {
+  const yml = readFileSync(path.join(root, '.github', 'workflows', 'host-build-hashes.yml'), 'utf8');
+  assert.match(yml, /^on:\s*\n\s+workflow_dispatch:\s*$/mu);
+  assert.doesNotMatch(yml, /^\s+(?:push|pull_request|schedule):/mu, 'no automatic trigger: Windows minutes cost money');
+  assert.match(yml, /^\s+if: github\.ref == 'refs\/heads\/main'\s*$/mu);
+  assert.match(yml, /timeout-minutes: 20/u);
+  assert.match(yml, /runs-on: windows-latest/u);
+  assert.match(yml, /node-version: 24/u);
+  assert.match(yml, /C:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe -NoProfile -File scripts\/host\/albera-host\.ps1 -Mode hashes/u);
+  assert.match(yml, /ALBERA_HOST_SCRIPT_SHA256=\$h \$f/u);
+  assert.match(yml, /'albera-host\.ps1', 'albera-host-lib\.ps1'/u);
+  assert.match(yml, /Write-Host "commit=\$env:GITHUB_SHA"/u);
+  assert.match(yml, /Write-Host "ref=\$env:GITHUB_REF"/u);
+  assert.match(yml, /upload-artifact@v4/u);
+  const doc = readFileSync(path.join(root, 'docs', 'architecture', 'host-install.md'), 'utf8');
+  assert.match(doc, /branch badge under the run title says `main`/u);
+  assert.match(doc, /merge commit of PR #148/u);
+  assert.match(doc, /A branch can edit the workflow file it runs from/u);
+  assert.match(doc, /C:\\Windows\\System32\\certutil\.exe -hashfile scripts\\host\\albera-host\.ps1 SHA256/u);
+  assert.match(doc, /C:\\Windows\\System32\\certutil\.exe -hashfile scripts\\host\\albera-host-lib\.ps1 SHA256/u);
+  assert.match(doc, /ALBERA_HOST_SCRIPT_SHA256=<hex> albera-host\.ps1/u);
+  assert.match(doc, /Residual limit, stated plainly/u);
+  // certutil and the workflow agree on the bytes: the repository pins LF
+  assert.match(readFileSync(path.join(root, '.gitattributes'), 'utf8'), /eol=lf/u);
+});
+
 // ---- the pure helpers ----
 
 const lib = (() => {
@@ -252,6 +334,14 @@ test('layout: every path is a plain absolute path under the two roots, the data 
   // the broker database folder and config folder are different folders: the config is read-only for the service, the database folder is its own
   assert.notEqual(path.win32.dirname(r.layout.BrokerConfig), path.win32.dirname(r.layout.BrokerDb));
   assert.equal(r.constants.ControlPlaneUser, 'albera-cp');
+  // New-LocalUser -Description accepts at most 48 characters (the first VM run failed at 57); uninstall matches the very same constant
+  const description = r.constants.ControlPlaneUserDescription;
+  assert.ok(description.length > 0 && description.length <= 48, `description is ${description.length} characters`);
+  assert.match(description, /^[ -~]+$/u);
+  const script = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
+  assert.match(script, /-Description \$K\.ControlPlaneUserDescription/u, 'install sets the constant');
+  assert.match(readFileSync(path.join(hostDir, 'albera-host-lib.ps1'), 'utf8'), /\$Live\.Description -cne \$c\.ControlPlaneUserDescription/u, 'uninstall compares the same constant');
+  assert.ok('ALBERA Control Plane'.length <= 48, 'FullName');
 });
 
 test('derived service SIDs equal the C# derivation (the TrustedInstaller vector pinned by the C# harness)', needsWindows, () => {

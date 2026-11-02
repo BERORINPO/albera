@@ -8,7 +8,7 @@ function Get-HostConstants {
     BrokerService = 'AlberaHostBroker'
     AuthorityService = 'AlberaApprovalAuthority'
     ControlPlaneUser = 'albera-cp'
-    ControlPlaneUserDescription = 'ALBERA Control Plane account (created by albera-host.ps1)'
+    ControlPlaneUserDescription = 'ALBERA Control Plane (made by albera-host.ps1)'   # New-LocalUser -Description allows at most 48 characters (a test pins it)
     BrokerPipeName = 'ALBERA_HostBroker'
     AuthorityPipeRoot = 'ALBERA\ApprovalAuthority'
     AuthorityKid = 'albera-authority-1'

@@ -1,8 +1,8 @@
 # ALBERA host installer: puts the Host Broker and the Approval Authority on THIS Windows PC so the first real Windows Hello approval can happen.
 # Windows PowerShell 5.1, ASCII only. Written for the owner to run in an elevated console (never self-elevating). Design notes: docs/architecture/host-install.md.
 #
-# Start it ALWAYS as   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\host\albera-host.ps1 <arguments>
-# (-NoProfile: profiles and user modules would otherwise load even in an elevated console).
+# Start it ALWAYS as   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\host\albera-host.ps1 <arguments>
+# (the full path: cmd.exe looks in the current folder before PATH. -NoProfile skips profiles ONLY; user modules are handled by the script itself, see the first statements below.)
 #
 #   albera-host.ps1                                           plan (default): numbered list of everything install would do; changes nothing, needs no admin
 #   albera-host.ps1 -Mode plan -PlanFor uninstall             the same for uninstall
@@ -18,6 +18,8 @@
 #   - no environment variable decides a path: sc.exe, icacls.exe and the install roots come from [Environment]::SystemDirectory / GetFolderPath and are refused unless they are
 #     C:\Windows\System32, C:\Program Files and C:\ProgramData; no executable is found through PATH;
 #   - the three approver values come from the owner (who ran `AlberaApprover.exe enroll --show` in a NORMAL console); no program from the repository is ever started by this script;
+#   - no user module can run in the elevated session: Windows PowerShell 5.1 searches ~\Documents\WindowsPowerShell\Modules and HKCU PSModulePath before its own folder, even with -NoProfile, and loads
+#     CimCmdlets, LocalAccounts, Security, Utility and Management lazily. So the first statements switch auto-loading off, reset PSModulePath to $PSHOME\Modules and import the five modules by full path;
 #   - the builds are accepted only when the tree hash of the COPIES (copied into an administrator-only folder first) equals -ExpectedTreeHash, a value the owner TYPES from the CI log
 #     of the reviewed commit (a parameter, not a file: a file in Downloads can be rewritten together with the builds). Run this script itself from a reviewed checkout.
 # install and uninstall refuse unless the console is elevated; they never elevate. A completed install re-run says so and changes nothing. A partial install is finished
@@ -38,6 +40,27 @@ param(
   [switch]$StartCheck,
   [securestring]$ControlPlanePassword
 )
+# ---------------------------------------------------------------------------------------------- module hijack guard: these are the first statements, before anything can auto-load a module
+# At this point only Microsoft.PowerShell.Core exists (Import-Module, Get-Module, Where-Object, ForEach-Object, Out-Null) and .NET: Write-Host, Join-Path, Test-Path, Get-Acl, ConvertTo-Json and the rest
+# are auto-loaded from PSModulePath on first use, and that path begins with the user's own Documents\WindowsPowerShell\Modules (and whatever HKCU\Environment sets). So: no auto-loading, a module path that is
+# only the system folder, and every module the script uses imported from its manifest under $PSHOME\Modules. Only .NET is used until the imports are done.
+$PSModuleAutoLoadingPreference = 'None'
+if (-not [string]::Equals($PSHOME.TrimEnd('\'), 'C:\Windows\System32\WindowsPowerShell\v1.0', [System.StringComparison]::OrdinalIgnoreCase)) {
+  [Console]::WriteLine('REFUSED: this is not the Windows PowerShell 5.1 in C:\Windows\System32\WindowsPowerShell\v1.0 (' + $PSHOME + '); start it with that powershell.exe by its full path')
+  exit 3
+}
+$env:PSModulePath = [System.IO.Path]::Combine($PSHOME, 'Modules')
+foreach ($moduleName in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security', 'CimCmdlets', 'Microsoft.PowerShell.LocalAccounts')) {
+  $moduleDir = [System.IO.Path]::Combine($PSHOME, 'Modules', $moduleName)
+  $manifestPath = [System.IO.Path]::Combine($moduleDir, $moduleName + '.psd1')
+  if (-not [System.IO.File]::Exists($manifestPath)) {   # some modules sit in a version folder (LocalAccounts\1.0.0.0)
+    $versionDirs = [System.IO.Directory]::GetDirectories($moduleDir)
+    [System.Array]::Sort($versionDirs, [System.StringComparer]::Ordinal)
+    $manifestPath = if ($versionDirs.Length -gt 0) { [System.IO.Path]::Combine($versionDirs[$versionDirs.Length - 1], $moduleName + '.psd1') } else { $manifestPath }
+  }
+  if (-not [System.IO.File]::Exists($manifestPath)) { [Console]::WriteLine('REFUSED: the system module ' + $moduleName + ' was not found under ' + $PSHOME); exit 3 }
+  Import-Module -Name $manifestPath -DisableNameChecking -ErrorAction Stop
+}
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'albera-host-lib.ps1')
 
@@ -60,6 +83,13 @@ if ([string]::IsNullOrEmpty($RepoRoot)) { $RepoRoot = (Resolve-Path (Join-Path $
 if ([string]::IsNullOrEmpty($ProjectId)) { $ProjectId = $K.DefaultProjectId }
 if ([string]::IsNullOrEmpty($VmName)) { $VmName = $K.DefaultVmName }
 if ([string]::IsNullOrEmpty($ComputerId)) { $ComputerId = $K.DefaultComputerId }
+# The script files as they are on disk now: compare with the ALBERA_HOST_SCRIPT_SHA256 lines of the CI run on main (docs/architecture/host-install.md). This detects a swap after the fact, it cannot prevent one.
+function Get-ScriptFileHashes {
+  foreach ($f in @($PSCommandPath, (Join-Path $PSScriptRoot 'albera-host-lib.ps1'))) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $stream = [System.IO.File]::OpenRead($f); try { Write-Host ('script ' + [System.IO.Path]::GetFileName($f) + ' sha256 ' + (([BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant())) } finally { $stream.Dispose() } } finally { $sha.Dispose() }
+  }
+}
 # Paths come from Windows, never from environment variables (HKCU\Environment can set them for a user's processes, and an elevated console started from that session inherits them).
 $SystemDirectory = [Environment]::SystemDirectory
 $ProgramFilesDir = [Environment]::GetFolderPath('ProgramFiles')
@@ -753,6 +783,7 @@ function Show-Plan([object[]]$Steps, [string]$Title) {
 }
 
 try {
+  if ($Mode -in @('install', 'uninstall')) { Get-ScriptFileHashes }
   if ($Mode -ne 'hashes') { Initialize-Manifest }
   switch ($Mode) {
     'hashes' { Show-Hashes; exit 0 }

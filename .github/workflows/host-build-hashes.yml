@@ -12,6 +12,8 @@ permissions:
 jobs:
   hashes:
     name: Tree hash of the Windows host builds
+    # Guard against a mistaken dispatch. A branch can edit this very file, so this is NOT the control: the owner reads hashes only from a run whose branch is main and whose commit is the reviewed merge commit.
+    if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -35,16 +37,25 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $lines = @(& powershell -NoProfile -File scripts/host/albera-host.ps1 -Mode hashes)
+          $lines = @(& C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -File scripts/host/albera-host.ps1 -Mode hashes)
           if ($LASTEXITCODE -ne 0) { throw "albera-host.ps1 -Mode hashes failed ($LASTEXITCODE)" }
           $json = @($lines | Where-Object { $_ -like '{*' })
           $tree = @($lines | Where-Object { $_ -like 'ALBERA_HOST_TREE_HASH=*' })
           if ($json.Count -ne 1 -or $tree.Count -ne 1) { throw 'expected one JSON line and one ALBERA_HOST_TREE_HASH= line' }
           [System.IO.File]::WriteAllText("$PWD\build-hashes.json", $json[0], (New-Object System.Text.UTF8Encoding($false)))
           Write-Host "commit=$env:GITHUB_SHA"
+          Write-Host "ref=$env:GITHUB_REF"
           Write-Host $tree[0]
           "commit $env:GITHUB_SHA" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           $tree[0] | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "ref $env:GITHUB_REF" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          # The two script files the owner runs as administrator: compare with certutil -hashfile (docs/architecture/host-install.md). .gitattributes pins eol=lf, so the bytes match a checkout on any OS.
+          foreach ($f in @('albera-host.ps1', 'albera-host-lib.ps1')) {
+            $h = (Get-FileHash -Algorithm SHA256 -LiteralPath "scripts/host/$f").Hash.ToLowerInvariant()
+            $line = "ALBERA_HOST_SCRIPT_SHA256=$h $f"
+            Write-Host $line
+            $line | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
       - name: Upload the per-file hashes
         uses: actions/upload-artifact@v4
         with:
