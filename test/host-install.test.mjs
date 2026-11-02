@@ -89,7 +89,7 @@ test('source guards: elevation is checked first and never requested; nothing fro
   const doc = readFileSync(path.join(root, 'docs', 'architecture', 'host-install.md'), 'utf8');
   const examples = doc.split('\n').filter((l) => /powershell(?:\.exe)? +-(?:NoProfile|File)/u.test(l.replace(/`/gu, '')));
   assert.ok(examples.length >= 4);
-  for (const line of examples) assert.ok(line.replace(/^`/u, '').startsWith(START), `doc example without the full path: ${line.slice(0, 90)}`);
+  for (const line of examples) assert.ok(line.trimStart().replace(/^`/u, '').startsWith(START), `doc example without the full path: ${line.slice(0, 90)}`);   // list items indent their code blocks
   assert.equal(/^powershell\b/mu.test(doc), false);
   // the old false claim (-NoProfile keeps user modules out) is gone from the doc and the header; the true statement is there
   for (const text of [doc, script]) assert.doesNotMatch(text, /profiles and user modules (?:would otherwise )?load even in an elevated console/u);
@@ -301,8 +301,14 @@ test('the hash workflow: manual only, main only, prints the tree hash and one sc
   assert.match(doc, /branch badge under the run title says `main`/u);
   assert.match(doc, /merge commit of PR #148/u);
   assert.match(doc, /A branch can edit the workflow file it runs from/u);
-  assert.match(doc, /C:\\Windows\\System32\\certutil\.exe -hashfile scripts\\host\\albera-host\.ps1 SHA256/u);
-  assert.match(doc, /C:\\Windows\\System32\\certutil\.exe -hashfile scripts\\host\\albera-host-lib\.ps1 SHA256/u);
+  // the script is hashed and run as a COPY in an administrator-only folder, from a clean elevated cmd /d (Zaku: COR_PROFILER and cmd AutoRun act before line 1)
+  assert.match(doc, /C:\\Windows\\System32\\certutil\.exe -hashfile "C:\\Program Files\\AlberaSetup\\albera-host\.ps1" SHA256/u);
+  assert.match(doc, /C:\\Windows\\System32\\certutil\.exe -hashfile "C:\\Program Files\\AlberaSetup\\albera-host-lib\.ps1" SHA256/u);
+  assert.match(doc, /-File "C:\\Program Files\\AlberaSetup\\albera-host\.ps1" -RepoRoot <repo> -Mode install/u);
+  assert.match(doc, /type `cmd \/d`, press \*\*Ctrl\+Shift\+Enter\*\*/u);
+  for (const v of ['set COR_', 'set COMPLUS_', 'set CORECLR_']) assert.ok(doc.includes(v), v);
+  assert.match(doc, /reg\.exe query "HKCU\\Software\\Microsoft\\Command Processor" \/v AutoRun/u);
+  assert.match(doc, /they detect nothing/u);
   assert.match(doc, /ALBERA_HOST_SCRIPT_SHA256=<hex> albera-host\.ps1/u);
   assert.match(doc, /Residual limit, stated plainly/u);
   // certutil and the workflow agree on the bytes: the repository pins LF
