@@ -396,7 +396,7 @@ function Get-InstallSteps {
         if (@($states | Where-Object { $_ -ne 'done' }).Count -eq 0) { 'done' } else { 'todo' } }
       Do = { New-HostServices } }
     [pscustomobject]@{ Id = 'folders'; Title = "Create the folders, each born with its final ACL (inheritance removed) and read back: $($L.InstallRoot); $($L.DataRoot)\{broker-config,broker,authority,control-plane}"
-      Detail = @('SYSTEM and Administrators full everywhere; Broker SID Modify on broker\ only; Authority SID Modify on authority\ only; albera-cp Modify on control-plane\ only', 'an existing folder is used only if it is owned by SYSTEM/Administrators, has no other writer and is reached through no link; otherwise the run stops')
+      Detail = @('SYSTEM and Administrators full everywhere; Broker SID Modify on broker\ only; Authority SID Modify on authority\ only; albera-cp full control on control-plane\ only (its journal requires it)', 'an existing folder is used only if it is owned by SYSTEM/Administrators, has no other writer and is reached through no link; otherwise the run stops')
       Test = {
         if (-not (Test-ManifestHas 'user') -or -not (Test-ManifestHas 'services')) { return 'todo' }
         if ((Test-Path -LiteralPath $L.InstallRoot) -and -not (Test-ManifestHas 'installRoot')) { return 'blocked:' + $L.InstallRoot + ' exists but was not created by this script; inspect it, delete it as an administrator, run again' }
