@@ -54,6 +54,9 @@ function announcingAuthority(port, onSubmitted) {
 }
 
 const defaultOperationId = () => `check-${randomBytes(6).toString('hex')}`;
+// The gated room's sleep is unref'd (its server keeps the process alive). This command has nothing else running while it waits for the person, so an unref'd
+// timer let Node exit silently in the middle of the wait (seen on the first real approval, 2026-11-02: approved, then no status line and no error).
+export const keepAliveSleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 /**
  * Run one synthetic.noop operation through the approval flow.
@@ -63,7 +66,7 @@ const defaultOperationId = () => `check-${randomBytes(6).toString('hex')}`;
  */
 export async function runApprovalCheck({ approvalFile, helperPath = null }, { io, deps = {}, out = console.log } = {}) {
   const settings = loadApprovalSettings(approvalFile, io);
-  const d = { ...REAL_APPROVAL_DEPS, newCheckOperationId: defaultOperationId, ...deps };
+  const d = { ...REAL_APPROVAL_DEPS, newCheckOperationId: defaultOperationId, sleep: keepAliveSleep, ...deps };
   const clients = helperPath ? withHelper(d, helperPath) : d;
   const computerId = [...settings.computers.values()][0].computerId;
   let store;

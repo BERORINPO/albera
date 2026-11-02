@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { createMemoryFlowJournal } from '../src/runtime/approved-operation-journal.mjs';
-import { CHECK_ACTION, CHECK_PURPOSE, parseApprovalCheckArgs, runApprovalCheck, runApprovalCheckCommand } from '../src/runtime/approval-check.mjs';
+import { CHECK_ACTION, CHECK_PURPOSE, keepAliveSleep, parseApprovalCheckArgs, runApprovalCheck, runApprovalCheckCommand } from '../src/runtime/approval-check.mjs';
 import { RUNTIME_HELP, parseRuntimeArgs } from '../src/runtime/entry.mjs';
 import { createTestAuthority, signedReceipt, stableUuid } from '../scripts/issue-22-approval-authority-fixture.mjs';
 
@@ -240,4 +242,17 @@ test('the command module takes no secrets and starts no process of its own (sour
   const source = readFileSync(new URL('../src/runtime/approval-check.mjs', import.meta.url), 'utf8');
   assert.equal(/child_process|process\.env|readFileSync|writeFile|apiKey|password/iu.test(source), false);
   assert.equal(/'--(?:yes|approve|decision)'/u.test(source), false, 'there is no flag that approves anything');
+});
+
+test('the wait keeps Node alive: a process whose only work is the sleep still wakes up (an unref-ed timer exited silently mid-approval)', () => {
+  const moduleUrl = new URL('../src/runtime/approval-check.mjs', import.meta.url).href;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `const { keepAliveSleep } = await import(${JSON.stringify(moduleUrl)}); await keepAliveSleep(50); console.log('woke');`], { encoding: 'utf8', timeout: 20_000 });
+  assert.equal(child.stdout.trim(), 'woke');
+  assert.equal(child.status, 0);
+  assert.equal(typeof keepAliveSleep, 'function');
+});
+
+test('the command uses the keep-alive sleep unless a test replaces it (source guard)', () => {
+  const source = readFileSync(new URL('../src/runtime/approval-check.mjs', import.meta.url), 'utf8');
+  assert.match(source, /\{ \.\.\.REAL_APPROVAL_DEPS, newCheckOperationId: defaultOperationId, sleep: keepAliveSleep, \.\.\.deps \}/u);
 });
