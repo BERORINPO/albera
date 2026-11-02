@@ -13,20 +13,26 @@ using System.Text.Json;
 // the Authority's tier policy instead, which the Broker cannot compare with anything, so it only checks its shape). This Broker serves ONE
 // lease, so `leaseId` is a single value (not a map by computer): the fence reply returns it, the Control Plane puts it into the Authority submit request, and a receipt for any
 // other lease is refused (`binding`). The first multi-computer Broker turns it into a map computerId -> leaseId.
+// The optional `computers` key lists the room's VMs for the desktop operations (ADR-002 Amendment 2026-11-03): at most 8 entries { "computerId": <contract id>,
+// "vmId": <lowercase GUID of the VM> }, each id and each GUID at most once. The caller only ever names a computerId; the GUID is what the Broker queries by. A config without the
+// key is valid and has no desktop computers.
 // Every rejected value maps to one fixed reason word (never the value itself), so a log line cannot be steered by file content.
 // The config file and the database folder (plus an existing journal / -wal / -shm) must also be owned and writable only by trusted principals and
 // free of reparse points (ServicePathGuard.cs): otherwise a local user could pre-create them, and the service refuses to start. Once the loop runs it
 // holds the database folder open without FILE_SHARE_DELETE (DatabaseFolderPin.cs); a folder that cannot be pinned ends the start with `database_pin`.
-internal sealed record ServiceConfig(string PipeName, string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string ControlPlaneSid, long Generation, string LeaseId, string PolicyVersion)
+internal sealed record ServiceConfig(string PipeName, string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string ControlPlaneSid, long Generation, string LeaseId, string PolicyVersion, IReadOnlyList<ComputerBinding> Computers)
 {
     private const int MaxFileBytes = 4096;
     private const int MaxPipeNameLength = 128;
     private const int MaxPathLength = 240; // well below MAX_PATH: the journal also needs its -wal and -shm names
     private const int MaxPublicKeyBytes = 512;
     private const int MaxAuthorityKeys = 2;
+    private const int MaxComputers = 8;
+    private const string ComputersKey = "computers";
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
     private static readonly string[] Keys = ["pipeName", "database", "authorityKeys", "controlPlaneSid", "generation", "leaseId", "policyVersion"];
     private static readonly string[] AuthorityKeyFields = ["kid", "spki"];
+    private static readonly string[] ComputerFields = ["computerId", "vmId"];
 
     // The only reason words ever printed (SERVICE_CONFIG=invalid:<reason>).
     internal static class Reason
@@ -34,7 +40,8 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
         public const string ConfigPath = "config_path", Unreadable = "config_unreadable", TooLarge = "config_too_large", Syntax = "config_syntax",
             Keys = "config_keys", PipeName = "pipe_name", Database = "database", DatabaseDirectory = "database_directory",
             AuthorityKeys = "authority_keys", ControlPlaneSid = "control_plane_sid", Generation = "generation", LeaseId = "lease_id", PolicyVersion = "policy_version",
-            ConfigUntrusted = "config_untrusted", DatabaseUntrusted = "database_untrusted", DatabasePin = "database_pin";
+            ConfigUntrusted = "config_untrusted", DatabaseUntrusted = "database_untrusted", DatabasePin = "database_pin",
+            Computers = "computers";
     }
 
     public static ServiceConfig? TryLoad(string configPath, out string reason)
@@ -73,6 +80,7 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
             HashSet<string> seen = new(StringComparer.Ordinal);
             foreach (JsonProperty property in root.EnumerateObject())
                 if (!seen.Add(property.Name)) return null; // a repeated key is ambiguous: refuse rather than pick one
+            bool hasComputers = seen.Remove(ComputersKey); // the one optional key
             if (!seen.SetEquals(Keys)) return null;
 
             string? pipeName = AsString(root, "pipeName"), database = AsString(root, "database"), sid = AsString(root, "controlPlaneSid");
@@ -100,8 +108,12 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
             reason = Reason.PolicyVersion;
             if (policyVersion is null || !AuthorityKey.IsKeyId(policyVersion)) return null;
 
+            reason = Reason.Computers;
+            IReadOnlyList<ComputerBinding>? computers = hasComputers ? ReadComputers(root.GetProperty(ComputersKey)) : [];
+            if (computers is null) return null;
+
             reason = "";
-            return new ServiceConfig(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion);
+            return new ServiceConfig(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers);
         }
     }
 
@@ -144,6 +156,28 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
         bool distinct = keys.Select(k => k.Kid).Distinct(StringComparer.Ordinal).Count() == keys.Count &&
             keys.Select(k => Convert.ToBase64String(k.Spki)).Distinct(StringComparer.Ordinal).Count() == keys.Count;
         return distinct ? keys : null;
+    }
+
+    // 0..8 entries, each exactly { computerId, vmId }: a contract id and a lowercase GUID. Every computerId and every vmId may appear once (two names for one VM, or
+    // one name for two VMs, would let a caller reach a VM through the wrong id).
+    private static IReadOnlyList<ComputerBinding>? ReadComputers(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Array || element.GetArrayLength() > MaxComputers) return null;
+        List<ComputerBinding> computers = [];
+        foreach (JsonElement entry in element.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object) return null;
+            HashSet<string> seen = new(StringComparer.Ordinal);
+            foreach (JsonProperty property in entry.EnumerateObject())
+                if (!seen.Add(property.Name)) return null;
+            if (!seen.SetEquals(ComputerFields)) return null;
+            string? computerId = AsString(entry, "computerId"), vmId = AsString(entry, "vmId");
+            if (computerId is null || vmId is null || !AuthorityKey.IsKeyId(computerId) || !ComputerBinding.IsVmId(vmId)) return null;
+            computers.Add(new ComputerBinding(computerId, vmId));
+        }
+        bool distinct = computers.Select(c => c.ComputerId).Distinct(StringComparer.Ordinal).Count() == computers.Count &&
+            computers.Select(c => c.VmId).Distinct(StringComparer.Ordinal).Count() == computers.Count;
+        return distinct ? computers : null;
     }
 
     private static byte[]? DecodePublicKey(string text)
