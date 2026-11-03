@@ -59,6 +59,7 @@ function Get-HostLayout([string]$ProgramFiles, [string]$ProgramData) {
     ClaudeExe = Join-Path $install 'bin\claude\claude.exe'
     LauncherDir = Join-Path $install 'bin\launcher'
     OpenScript = Join-Path $install 'bin\launcher\open-albera.ps1'   # what the Start menu "Open ALBERA" shortcut runs (text: Get-OpenAlberaScriptText)
+    SetupBinDir = Join-Path $install 'bin\setup'
     SetupExe = Join-Path $install 'bin\setup\albera-setup.exe'   # put there by the owner (setup refuses to install from anywhere else); only the "ALBERA update" shortcut points at it
     DataRoot = $data
     ManifestPath = Join-Path $data 'install-manifest.json'
@@ -375,9 +376,9 @@ function Get-AclPlan($Layout, $Sids) {
   $full = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
   $b = $Sids.Broker; $a = $Sids.Authority; $cp = $Sids.ControlPlane
   $plan = @(
-    # BUILTIN\Users read and execute, as under Program Files by default (control-plane-service.md section 3): the owner's own session runs the approver tray from bin\approver (HKLM Run) and the launcher
-    # from bin\launcher. Read and execute is not write: nobody but SYSTEM and Administrators can change what the services run.
-    [pscustomobject]@{ Path = $Layout.InstallRoot; Grants = @($full + @("*${b}:(OI)(CI)RX", "*${a}:(OI)(CI)RX", "*${cp}:(OI)(CI)RX", '*S-1-5-32-545:(OI)(CI)RX')) }
+    # The install folder carries SYSTEM, Administrators and the three service SIDs ONLY - not BUILTIN\Users. Users get read and execute on three sub-folders and nothing else (Grant-UsersReadExecute in
+    # albera-host.ps1: bin\approver, bin\launcher, bin\setup, which the owner's own session runs), so bin\claude, bin\control-plane (node included) and the .partial folders cannot be read or run by the owner's session.
+    [pscustomobject]@{ Path = $Layout.InstallRoot; Grants = @($full + @("*${b}:(OI)(CI)RX", "*${a}:(OI)(CI)RX", "*${cp}:(OI)(CI)RX")) }
     [pscustomobject]@{ Path = $Layout.DataRoot; Grants = @($full + @("*${b}:RX", "*${a}:RX", "*${cp}:RX")) }
     [pscustomobject]@{ Path = $Layout.BrokerConfigDir; Grants = @($full + @("*${b}:(OI)(CI)RX")) }
     [pscustomobject]@{ Path = $Layout.BrokerDbDir; Grants = @($full + @("*${b}:(OI)(CI)M")) }
@@ -428,14 +429,30 @@ function Get-ScFailureArguments([string]$Name) {
   $ms = $c.FailureRestartMilliseconds
   'failure ' + $Name + ' reset= ' + $c.FailureResetSeconds + ' actions= restart/' + $ms + '/restart/' + $ms + '//0'
 }
-# The text of `sc qfailure` (English or localized: only the action word RESTART and the numbers are read). Returns the reasons it is not "restart after 5 s, twice, then nothing".
-function Test-ServiceFailureText([string]$Text) {
+# SERVICE_FAILURE_ACTIONS as the SCM stores it in HKLM\SYSTEM\CurrentControlSet\Services\<name>\FailureActions (REG_BINARY): DWORD reset period (seconds), DWORD reboot-message offset, DWORD command offset,
+# DWORD cActions, DWORD offset of the action array, then cActions x { DWORD type (0 none, 1 restart, 2 reboot, 3 run command), DWORD delay (ms) }. Read from the registry instead of `sc qfailure`, whose text
+# is localized (a Japanese or German Windows prints other words). $null when the bytes are not that structure.
+function ConvertFrom-FailureActionsBytes([byte[]]$Bytes) {
+  if ($null -eq $Bytes -or $Bytes.Length -lt 20) { return $null }
+  [long]$count = [BitConverter]::ToUInt32($Bytes, 12)
+  [long]$offset = [BitConverter]::ToUInt32($Bytes, 16)
+  if ($count -gt 16 -or $offset -lt 20 -or ($offset + 8 * $count) -gt $Bytes.Length) { return $null }
+  $actions = New-Object System.Collections.Generic.List[object]
+  for ($i = 0; $i -lt $count; $i++) { $actions.Add([pscustomobject]@{ Type = [int][BitConverter]::ToUInt32($Bytes, [int]($offset + 8 * $i)); DelayMs = [int64][BitConverter]::ToUInt32($Bytes, [int]($offset + 8 * $i + 4)) }) }
+  [pscustomobject]@{ ResetSeconds = [int64][BitConverter]::ToUInt32($Bytes, 0); Actions = $actions.ToArray() }
+}
+# The reasons the stored failure actions are not "restart after 5 s, twice, then nothing, counter reset after a day" (empty = they are). The first two actions are restarts of 5000 ms; any further one is "none".
+function Test-ServiceFailureBytes([byte[]]$Bytes) {
   $c = Get-HostConstants
   $reasons = New-Object System.Collections.Generic.List[string]
-  $restarts = @([regex]::Matches([string]$Text, 'RESTART\s*--[^0-9\r\n]*([0-9]+)') | ForEach-Object { [int]$_.Groups[1].Value })
-  if ($restarts.Count -ne 2) { $reasons.Add('failure_actions_not_two_restarts') }
-  elseif (@($restarts | Where-Object { $_ -ne $c.FailureRestartMilliseconds }).Count -gt 0) { $reasons.Add('failure_restart_delay_differs') }
-  if ([string]$Text -cmatch '(REBOOT|RUN_COMMAND|RUN PROCESS|RUN)\s*--') { $reasons.Add('failure_action_not_restart') }   # an action line reads "<ACTION> -- Delay = ..."; the label REBOOT_MESSAGE is not one
+  $parsed = ConvertFrom-FailureActionsBytes $Bytes
+  if ($null -eq $parsed) { $reasons.Add('failure_actions_unreadable'); return , @($reasons) }
+  $actions = @($parsed.Actions)
+  if ($actions.Count -lt 2 -or $actions[0].Type -ne 1 -or $actions[1].Type -ne 1) { $reasons.Add('failure_actions_not_two_restarts') }
+  elseif ($actions[0].DelayMs -ne $c.FailureRestartMilliseconds -or $actions[1].DelayMs -ne $c.FailureRestartMilliseconds) { $reasons.Add('failure_restart_delay_differs') }
+  if (@($actions | Select-Object -Skip 2 | Where-Object { $_.Type -ne 0 }).Count -gt 0) { $reasons.Add('failure_action_not_restart') }   # a third restart, a reboot or a command
+  if (@($actions | Where-Object { $_.Type -eq 2 -or $_.Type -eq 3 }).Count -gt 0 -and -not ($reasons -contains 'failure_action_not_restart')) { $reasons.Add('failure_action_not_restart') }
+  if ($parsed.ResetSeconds -ne $c.FailureResetSeconds) { $reasons.Add('failure_reset_period_differs') }
   , @($reasons)
 }
 
@@ -457,7 +474,7 @@ function Test-ServiceFacts($Facts, [string]$Name, [string]$ExpectedPathName, [Va
   # start= delayed-auto: Win32_Service says StartMode Auto and DelayedAutoStart true
   if ($Facts.StartMode -ne 'Auto') { $reasons.Add('start_mode_not_auto') }
   elseif ($Facts.DelayedAutoStart -ne $true) { $reasons.Add('start_not_delayed') }
-  if ($ExpectRestartOnFailure) { foreach ($r in (Test-ServiceFailureText ([string]$Facts.FailureText))) { $reasons.Add($r) } }
+  if ($ExpectRestartOnFailure) { foreach ($r in (Test-ServiceFailureBytes $Facts.FailureActions)) { $reasons.Add($r) } }
   if ($Facts.ServiceType -ne 'Own Process') { $reasons.Add('not_own_process') }
   # RESTRICTED but not UNRESTRICTED, which contains the word
   if ($ExpectedSidType -ceq 'unrestricted') {
@@ -607,13 +624,18 @@ function Get-UnknownEntries([string[]]$RelativePaths, [string[]]$KnownFiles, [st
 $script:WriteRightsMask = 0x2 -bor 0x4 -bor 0x40 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000   # WriteData AppendData DeleteChild Delete WriteDac WriteOwner GenericAll GenericWrite (as ServicePathGuard.cs)
 $script:AdminSids = @('S-1-5-18', 'S-1-5-32-544')
 function Get-AdminSids { , $script:AdminSids }
+# Who may OWN a trusted object or hold a write right on it: SYSTEM, Administrators and NT SERVICE\TrustedInstaller (the owner of Program Files and of most of what Windows ships). The same set as
+# FileSystemChecks.cs in setup. CREATOR OWNER (S-1-3-0) is not in it: an inherit-only ACE for it is a placeholder that turns into the creator's own rule and is skipped by Get-AclSummary; any other one counts.
+$script:TrustedInstallerSid = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+$script:TrustedSids = @('S-1-5-18', 'S-1-5-32-544', $script:TrustedInstallerSid)
+function Get-TrustedSids { , $script:TrustedSids }
 
 # $Summary = @{ Owner; Protected; WriteSids } (Get-AclSummary). Returns the reasons it is not trustworthy (empty = trusted).
 function Test-TrustSummary($Summary, [string[]]$AllowedWriters, [bool]$RequireProtected) {
   $reasons = New-Object System.Collections.Generic.List[string]
-  if ($script:AdminSids -notcontains $Summary.Owner) { $reasons.Add('owner_untrusted') }
+  if ($script:TrustedSids -notcontains $Summary.Owner) { $reasons.Add('owner_untrusted') }
   if ($RequireProtected -and -not $Summary.Protected) { $reasons.Add('inheritance_not_removed') }
-  $writers = @($script:AdminSids) + @($AllowedWriters)
+  $writers = @($script:TrustedSids) + @($AllowedWriters)
   foreach ($sid in @($Summary.WriteSids)) { if ($writers -notcontains $sid) { $reasons.Add('writer_untrusted:' + $sid) } }
   , @($reasons)
 }
@@ -622,14 +644,17 @@ function Get-PlannedWriters($Entry) {
   $own = @($Entry.Grants | ForEach-Object { if ($_ -match '^\*(S-[0-9-]+):(?:\(OI\)\(CI\))?(?:M|F)$') { $Matches[1] } })
   , @($script:AdminSids + $own | Sort-Object -Unique)
 }
+# Read with .NET (a file or a folder, nothing followed by this call): the cmdlet Get-Acl costs several milliseconds per path and the adoption check reads every entry below bin\setup and setup-work.
 function Get-AclSummary([string]$Path) {
-  $acl = Get-Acl -LiteralPath $Path
+  $acl = if ([System.IO.Directory]::Exists($Path)) { [System.IO.Directory]::GetAccessControl($Path) } else { [System.IO.File]::GetAccessControl($Path) }
   $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.AccessControlType -eq 'Allow' })
+  # CREATOR OWNER (S-1-3-0) as an inherit-only rule is the placeholder every Program Files folder carries; it is not a principal that can write THIS object
+  $isPlaceholder = { param($rule) ($rule.IdentityReference.Value -eq 'S-1-3-0') -and (([int]$rule.PropagationFlags -band [int][System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) }
   [pscustomobject]@{
     Owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
     Protected = $acl.AreAccessRulesProtected
     AllowSids = @($rules | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
-    WriteSids = @($rules | Where-Object { ([int]$_.FileSystemRights -band $script:WriteRightsMask) -ne 0 } | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+    WriteSids = @($rules | Where-Object { (([int]$_.FileSystemRights -band $script:WriteRightsMask) -ne 0) -and -not (& $isPlaceholder $_) } | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
   }
 }
 # The path itself and every parent up to the volume root that is a reparse point (junction, symlink, mount point). Attributes only; nothing is followed.
@@ -857,14 +882,18 @@ function ConvertTo-SetupRunId($Value) {
   if (-not [uint64]::TryParse($text, [System.Globalization.NumberStyles]::None, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$id)) { return $null }
   $id
 }
-# Anti-rollback: an older run than the one the install record holds is refused; the same run is fine (a half-finished install is finished by the same build). Returns the refusal word or $null.
-function Get-SetupRunIdRefusal($Recorded, $Supplied) {
+# Anti-rollback: an older run than the larger of the install record's `setupRunId` and the FLOOR is refused; the same run is fine (a half-finished install is finished by the same build). Returns the refusal word
+# or $null. The floor lives outside everything uninstall removes (HKLM\SOFTWARE\Albera\SetupRunIdFloor, REG_SZ, decimal), so uninstalling and installing an old build again does not get past it.
+function Get-SetupRunIdRefusal($Recorded, $Supplied, $Floor = $null) {
   $r = ConvertTo-SetupRunId $Recorded
+  $f = ConvertTo-SetupRunId $Floor
   $s = ConvertTo-SetupRunId $Supplied
   if ($null -eq $Supplied -or $Supplied -eq '') { return $null }
   if ($null -eq $s) { return 'setup_run_id_invalid' }
   if ($null -ne $Recorded -and $null -eq $r) { return 'recorded_setup_run_id_invalid' }
+  if ($null -ne $Floor -and $null -eq $f) { return 'setup_run_id_floor_invalid' }   # an empty value is not "no floor" (setup refuses it as well)
   if ($null -ne $r -and $s -lt $r) { return 'setup_run_id_older_than_installed' }
+  if ($null -ne $f -and $s -lt $f) { return 'setup_run_id_older_than_floor' }
   $null
 }
 

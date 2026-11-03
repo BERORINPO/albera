@@ -154,6 +154,11 @@ $r.trustInherited = Test-TrustSummary ([pscustomobject]@{ Owner = 'S-1-5-32-544'
 $r.trustInheritedFileOk = Count (Test-TrustSummary ([pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $false; WriteSids = @('S-1-5-32-544') }) $admins $false)
 $r.trustServiceWriterOnItsOwn = Count (Test-TrustSummary ([pscustomobject]@{ Owner = 'S-1-5-18'; Protected = $true; WriteSids = @('S-1-5-18', $sids.Broker) }) (@($admins) + $sids.Broker) $true)
 $r.trustServiceWriterElsewhere = Test-TrustSummary ([pscustomobject]@{ Owner = 'S-1-5-18'; Protected = $true; WriteSids = @('S-1-5-18', $sids.Broker) }) $admins $true
+$ti = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+$r.trustTrustedInstaller = Count (Test-TrustSummary ([pscustomobject]@{ Owner = $ti; Protected = $false; WriteSids = @('S-1-5-18', $ti) }) $admins $false)
+$r.trustCreatorOwnerWriter = Test-TrustSummary ([pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $false; WriteSids = @('S-1-3-0') }) $admins $false
+$r.trustCreatorOwnerOwner = Test-TrustSummary ([pscustomobject]@{ Owner = 'S-1-3-0'; Protected = $false; WriteSids = @() }) $admins $false
+$r.trustedSids = Get-TrustedSids
 $r.plannedWriters = [ordered]@{
   dataRoot = Get-PlannedWriters ($plan | Where-Object { $_.Path -eq $L.DataRoot })
   brokerDb = Get-PlannedWriters ($plan | Where-Object { $_.Path -eq $L.BrokerDbDir })
@@ -434,20 +439,38 @@ $r.readRules = @(ConvertTo-FileSystemRules @("*${approverSid2}:(OI)(CI)R") | For
 # services: delayed start, the failure actions, the Broker's service ACL for a service SID
 $r.scCreateCp = Get-ScCreateArguments $hvK.ControlPlaneService $L.ControlPlaneExe $L.ControlPlaneConfig
 $r.scFailure = Get-ScFailureArguments $hvK.ControlPlaneService
-$failEn = "[SC] QueryServiceConfig2 SUCCESS`r`n`r`nSERVICE_NAME: AlberaControlPlane`r`n        RESET_PERIOD (in seconds)    : 86400`r`n        REBOOT_MESSAGE               : `r`n        COMMAND_LINE                 : `r`n        FAILURE_ACTIONS              : RESTART -- Delay = 5000 milliseconds.`r`n                                       RESTART -- Delay = 5000 milliseconds."
-$failJa = "SERVICE_NAME: AlberaControlPlane`r`n        FAILURE_ACTIONS              : RESTART -- " + [string][char]0x9045 + [char]0x5EF6 + " = 5000 " + "`r`n                                       RESTART -- " + [string][char]0x9045 + [char]0x5EF6 + " = 5000"
-$r.failureText = [ordered]@{
-  ok = Count (Test-ServiceFailureText $failEn)
-  japanese = Count (Test-ServiceFailureText $failJa)
-  none = Test-ServiceFailureText 'FAILURE_ACTIONS :'
-  one = Test-ServiceFailureText 'FAILURE_ACTIONS : RESTART -- Delay = 5000 milliseconds.'
-  three = Test-ServiceFailureText ($failEn + "`r`n RESTART -- Delay = 5000 milliseconds.")
-  otherDelay = Test-ServiceFailureText ($failEn -replace '5000', '60000')
-  reboot = Test-ServiceFailureText ($failEn + "`r`n REBOOT -- Delay = 5000 milliseconds.")
-  runCommand = Test-ServiceFailureText ($failEn + "`r`n RUN PROCESS -- Delay = 5000 milliseconds.")
+# The failure actions as the SCM stores them (HKLM\SYSTEM\CurrentControlSet\Services\<name>\FailureActions, REG_BINARY): reset period, reboot-message offset, command offset, cActions, offset of the array, then
+# {type, delay in ms} per action (0 none, 1 restart, 2 reboot, 3 run command). Not `sc qfailure`: that text is localized.
+function New-FailureBytes([uint32]$Reset, [object[]]$Actions) {
+  $stream = New-Object System.IO.MemoryStream
+  $writer = New-Object System.IO.BinaryWriter($stream)
+  $writer.Write([uint32]$Reset); $writer.Write([uint32]0); $writer.Write([uint32]0); $writer.Write([uint32]$Actions.Count); $writer.Write([uint32]20)
+  foreach ($a in $Actions) { $writer.Write([uint32]$a[0]); $writer.Write([uint32]$a[1]) }
+  $writer.Flush()
+  , $stream.ToArray()
 }
-$cpFacts = [pscustomobject]@{ Exists = $true; StartName = 'NT SERVICE\AlberaControlPlane'; PathName = (Get-ServiceCommandLine $L.ControlPlaneExe $L.ControlPlaneConfig); StartMode = 'Auto'; DelayedAutoStart = $true; ServiceType = 'Own Process'; SidTypeText = 'SERVICE_SID_TYPE:  RESTRICTED'; PrivilegesText = 'PRIVILEGES : SeChangeNotifyPrivilege'; FailureText = $failEn }
-$cpNoFailure = $cpFacts | Select-Object *; $cpNoFailure.FailureText = 'FAILURE_ACTIONS :'
+$restart = @(1, 5000); $none = @(0, 0)
+$failOk = New-FailureBytes 86400 @($restart, $restart)
+$spoolerBytes = [byte[]]@(0x10, 0x0e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0x14, 0, 0, 0, 1, 0, 0, 0, 0x88, 0x13, 0, 0, 1, 0, 0, 0, 0x88, 0x13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)   # as Windows wrote it for the Spooler on the PC this was written on (reset 3600 s)
+$r.failureBytes = [ordered]@{
+  ok = Count (Test-ServiceFailureBytes $failOk)
+  okWithThirdNone = Count (Test-ServiceFailureBytes (New-FailureBytes 86400 @($restart, $restart, $none)))
+  none = Test-ServiceFailureBytes (New-FailureBytes 86400 @())
+  one = Test-ServiceFailureBytes (New-FailureBytes 86400 @(,$restart))
+  three = Test-ServiceFailureBytes (New-FailureBytes 86400 @($restart, $restart, $restart))
+  otherDelay = Test-ServiceFailureBytes (New-FailureBytes 86400 @(@(1, 60000), @(1, 60000)))
+  reboot = Test-ServiceFailureBytes (New-FailureBytes 86400 @($restart, $restart, @(2, 5000)))
+  rebootSecond = Test-ServiceFailureBytes (New-FailureBytes 86400 @($restart, @(2, 5000)))
+  runCommand = Test-ServiceFailureBytes (New-FailureBytes 86400 @($restart, $restart, @(3, 5000)))
+  otherReset = Test-ServiceFailureBytes (New-FailureBytes 3600 @($restart, $restart))
+  noBytes = Test-ServiceFailureBytes $null
+  tooShort = Test-ServiceFailureBytes ([byte[]]@(1, 2, 3, 4))
+  countTooBig = Test-ServiceFailureBytes ([byte[]]@(0x80, 0x51, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0, 0, 0, 0x14, 0, 0, 0))
+  arrayPastTheEnd = Test-ServiceFailureBytes ([byte[]]@(0x80, 0x51, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0x14, 0, 0, 0, 1, 0, 0, 0, 0x88, 0x13, 0, 0))
+  realSpooler = Test-ServiceFailureBytes $spoolerBytes
+}
+$cpFacts = [pscustomobject]@{ Exists = $true; StartName = 'NT SERVICE\AlberaControlPlane'; PathName = (Get-ServiceCommandLine $L.ControlPlaneExe $L.ControlPlaneConfig); StartMode = 'Auto'; DelayedAutoStart = $true; ServiceType = 'Own Process'; SidTypeText = 'SERVICE_SID_TYPE:  RESTRICTED'; PrivilegesText = 'PRIVILEGES : SeChangeNotifyPrivilege'; FailureActions = $failOk }
+$cpNoFailure = $cpFacts | Select-Object *; $cpNoFailure.FailureActions = (New-FailureBytes 86400 @())
 $r.cpFacts = [ordered]@{
   ok = Count (Test-ServiceFacts $cpFacts $hvK.ControlPlaneService $cpFacts.PathName 'restricted' $true)
   noFailureActions = Test-ServiceFacts $cpNoFailure $hvK.ControlPlaneService $cpFacts.PathName 'restricted' $true
@@ -494,6 +517,23 @@ $r.runId = [ordered]@{
     biggestSame = Get-SetupRunIdRefusal '18446744073709551615' '18446744073709551615'
     suppliedJunk = Get-SetupRunIdRefusal '100' 'x'
     recordedJunk = Get-SetupRunIdRefusal 'x' '100'
+  }
+  # the floor (HKLM\SOFTWARE\Albera\SetupRunIdFloor): the third argument; the LARGER of the record and the floor decides
+  floor = [ordered]@{
+    older = Get-SetupRunIdRefusal $null '99' '100'
+    same = Get-SetupRunIdRefusal $null '100' '100'
+    newer = Get-SetupRunIdRefusal $null '101' '100'
+    floorBeatsRecord = Get-SetupRunIdRefusal '50' '99' '100'
+    recordBeatsFloor = Get-SetupRunIdRefusal '100' '99' '50'
+    numericNotText = Get-SetupRunIdRefusal $null '9' '10'
+    biggest = Get-SetupRunIdRefusal $null '18446744073709551614' '18446744073709551615'
+    noFloor = Get-SetupRunIdRefusal $null '1' $null
+    nothingSupplied = Get-SetupRunIdRefusal '5' $null '100'
+    junk = Get-SetupRunIdRefusal $null '100' 'x'
+    empty = Get-SetupRunIdRefusal $null '100' ''
+    notAString = Get-SetupRunIdRefusal $null '100' 'not-a-string'
+    negative = Get-SetupRunIdRefusal $null '100' '-1'
+    tooBig = Get-SetupRunIdRefusal $null '100' '18446744073709551616'
   }
 }
 # the pins and the claude account rule

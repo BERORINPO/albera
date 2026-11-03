@@ -95,13 +95,17 @@ internal static partial class Harness
             finally { Directory.Delete(folder); }
         });
 
-        Check("administrator-only rules: an allow rule that only applies to children (InheritOnly) still counts as write access; CREATOR OWNER and read-only rules do not", () =>
+        Check("administrator-only rules: an allow rule that only applies to children (InheritOnly) still counts as write access; an inherit-only CREATOR OWNER placeholder and read-only rules do not; CREATOR OWNER on the folder itself does", () =>
         {
             const string Users = "S-1-5-32-545";
             var admins = FileSystemChecks.AdministratorsSid;
             Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(Users, true, System.Security.AccessControl.FileSystemRights.Modify, InheritOnly: true)]).Count == 1, "an InheritOnly Modify rule for Users was not counted");
             Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(Users, true, System.Security.AccessControl.FileSystemRights.WriteData, InheritOnly: false)]).Count == 1, "a plain write rule was not counted");
-            Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo("S-1-3-0", true, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: true)]).Count == 0, "CREATOR OWNER must not count");
+            Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo("S-1-3-0", true, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: true)]).Count == 0, "the inherit-only CREATOR OWNER placeholder must not count");
+            Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo("S-1-3-0", true, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: false)]).Count == 1, "CREATOR OWNER that applies to the folder itself was not counted");
+            const string TrustedInstaller = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+            Assert(FileSystemChecks.EvaluateRules(TrustedInstaller, [new AceInfo(TrustedInstaller, true, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: false)]).Count == 0, "TrustedInstaller as owner and writer (Program Files) was refused");
+            Assert(FileSystemChecks.EvaluateRules("S-1-3-0", []).Count == 1, "CREATOR OWNER as the OWNER of a folder was accepted");
             Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(Users, true, System.Security.AccessControl.FileSystemRights.ReadAndExecute, InheritOnly: true)]).Count == 0, "a read-only InheritOnly rule must not count");
             Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(Users, false, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: false)]).Count == 0, "a deny rule must not count");
             Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(FileSystemChecks.LocalSystemSid, true, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: true)]).Count == 0, "SYSTEM must not count");

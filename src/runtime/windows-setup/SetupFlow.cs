@@ -25,6 +25,8 @@ internal sealed class SetupDeps
     public required Func<string, bool> PathHasReparsePoint { get; init; }
     /// <summary>Where the install record is (real: <see cref="SetupLayout.InstallRecordFile"/>); its `setupRunId` is the anti-rollback bound.</summary>
     public required string InstallRecordPath { get; init; }
+    /// <summary>The run-id floor of this PC (real: <see cref="FileSystemChecks.ReadSetupRunIdFloor"/>): null when there is none, a refusal when it is there and not a number. Uninstall never removes it.</summary>
+    public required Func<ulong?> ReadRunIdFloor { get; init; }
     public required TextWriter Out { get; init; }
 }
 
@@ -198,16 +200,18 @@ internal static class SetupFlow
     }
 
     /// <summary>
-    /// Anti-rollback (control-plane-service.md section 8): a validly attested build is still refused when its workflow run id is smaller than the one the install record holds, so an old build cannot be replayed over a
-    /// newer one. The same run id is allowed (finishing or repairing an install with the build that started it); a higher one is the normal update. No record, or a record without the property, bounds nothing.
-    /// The numbers are compared as unsigned 64-bit integers. The installer script checks the same against the same record (-SetupRunId).
+    /// Anti-rollback (control-plane-service.md section 8): a validly attested build is still refused when its workflow run id is smaller than the largest of three numbers, so an old build cannot be replayed over a
+    /// newer one - not even after an uninstall, which removes the install record: (1) the install record's setupRunId, (2) the floor in HKLM\SOFTWARE\Albera\SetupRunIdFloor (written by the installer script, never removed
+    /// by uninstall) and (3) the run id of the build that made THIS setup.exe. The same run id is allowed (finishing or repairing an install with the build that started it); a higher one is the normal update.
+    /// Nothing recorded and no floor bounds nothing. The numbers are compared as unsigned 64-bit integers. The installer script checks the same two stored numbers (-SetupRunId).
     /// </summary>
     private static void CheckNotOlderThanInstalled(SetupDeps deps, Verified verified)
     {
         Step(deps, "6/7", "checking that this build is not older than the installed one");
         var recorded = InstallRecord.ReadSetupRunId(deps.InstallRecordPath, deps.AdministratorOnlyProblems, deps.PathHasReparsePoint);
-        if (recorded is { } installed && verified.RunId < installed)
-            throw new SetupRefusal("rollback_refused", $"this update was built by workflow run {verified.RunId}, but the install record holds run {installed}; an older build is never installed over a newer one");
+        var floor = deps.ReadRunIdFloor();
+        var refusal = InstallRecord.RollbackRefusal(verified.RunId, recorded, floor, PinnedTools.BuildRunId);
+        if (refusal is not null) throw new SetupRefusal("rollback_refused", refusal);
     }
 
     private static int StartEngine(SetupOptions options, SetupDeps deps, string work, Verified verified)

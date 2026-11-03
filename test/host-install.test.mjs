@@ -599,13 +599,14 @@ test('ACL plan: inheritance is removed everywhere, each service SID can write on
     const g = Object.fromEntries(grants.map((grant) => { const m = grant.match(/^\*(S-[0-9-]+):(.+)$/u); return [m[1], m[2]]; }));
     assert.equal(g['S-1-5-18'], '(OI)(CI)F');
     assert.equal(g['S-1-5-32-544'], '(OI)(CI)F');
-    assert.equal(Object.keys(g).every((sid) => sid === 'S-1-5-18' || sid === 'S-1-5-32-544' || [sids.broker, sids.authority, cp].includes(sid) || sid === 'S-1-5-32-545'), true, 'only the three accounts are named (and Users, below)');
+    assert.equal(Object.keys(g).every((sid) => sid === 'S-1-5-18' || sid === 'S-1-5-32-544' || [sids.broker, sids.authority, cp].includes(sid)), true, 'only SYSTEM, Administrators and the service SIDs are named');
   }
-  // BUILTIN\Users: read and execute on the install folder ONLY (the owner's session runs bin\approver and bin\launcher; Program Files' own default), never anywhere else, never more
+  // BUILTIN\Users are in NO planned folder, the install folder included: they get read and execute on bin\approver, bin\launcher and bin\setup only (Grant-UsersReadExecute), so bin\claude, bin\control-plane
+  // (node.exe with it) and the .partial folders are not readable or runnable by the owner's session
   for (const [dir, grants] of byPath) {
-    const users = grants.filter((grant) => grant.startsWith('*S-1-5-32-545:'));
-    assert.deepEqual(users, dir === r.layout.InstallRoot ? ['*S-1-5-32-545:(OI)(CI)RX'] : [], dir);
+    assert.deepEqual(grants.filter((grant) => grant.includes('S-1-5-32-545')), [], dir);
   }
+  for (const entry of r.aclPlan2) assert.deepEqual(entry.grants.filter((grant) => grant.includes('S-1-5-32-545')), [], entry.path);
   const writers = (dir) => Object.entries(rights(dir)).filter(([sid, right]) => ![ 'S-1-5-18', 'S-1-5-32-544'].includes(sid) && /M$|F$/u.test(right)).map(([sid]) => sid);
   assert.deepEqual(writers(r.layout.InstallRoot), [], 'the binaries are read/execute only');
   assert.deepEqual(writers(r.layout.DataRoot), []);
@@ -722,6 +723,10 @@ test('trust summary: a planted owner, a non-admin writer, an inherited ACL on a 
   assert.deepEqual(r.trustUserWriter, [`writer_untrusted:${attacker}`]);
   assert.deepEqual(r.trustInherited, ['inheritance_not_removed']);
   assert.equal(r.trustInheritedFileOk, 0, 'a file inherits its ACL from a trusted folder: only owner and writers are checked');
+  assert.equal(r.trustTrustedInstaller, 0, 'TrustedInstaller owns and writes Program Files: trusted, as in FileSystemChecks.cs of setup');
+  assert.deepEqual(r.trustCreatorOwnerWriter, ['writer_untrusted:S-1-3-0'], 'CREATOR OWNER is no trusted writer (only its inherit-only placeholder is skipped, in Get-AclSummary)');
+  assert.deepEqual(r.trustCreatorOwnerOwner, ['owner_untrusted']);
+  assert.deepEqual(r.trustedSids, ['S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464']);
   assert.equal(r.trustServiceWriterOnItsOwn, 0);
   assert.deepEqual(r.trustServiceWriterElsewhere, [`writer_untrusted:${r.sidBroker}`]);
   assert.deepEqual(r.plannedWriters.dataRoot, ['S-1-5-18', 'S-1-5-32-544'], 'nobody but the administrators may write the data root');
@@ -819,6 +824,7 @@ test('copy: the COPIES must hash to the typed tree hash; a replaced build, an ex
   const r = harness(t, 'copy');
   assert.match(r.expected, /^[0-9a-f]{64}$/u);
   assert.equal(r.firstRunError, null);
+  assert.deepEqual(r.usersGrants, [r.approverBinDir], 'BUILTIN\\Users get read and execute on bin\\approver (the owner runs the tray) and on no other copy: not claude, not control-plane, not the .partial folders');
   assert.deepEqual(r.recorded, ['approver', 'authority', 'broker', 'control-plane', 'pipe-client']);
   assert.equal(r.destFiles.length, 15);
   assert.ok(r.destFiles.includes('broker\\sub\\data.json'));
@@ -896,6 +902,9 @@ test('a folder is born with its final descriptor (owner, protected DACL, inherit
   assert.equal(r.createOnJunctionError, 'created_directory_not_as_requested:reparse_point');
   // a folder created exactly as asked still has to pass the installer's trust test before any later step runs
   assert.match(r.trustedCreateError, /trusted cannot be trusted \(owner_untrusted\)/u);
+  // CREATOR OWNER: the inherit-only placeholder of Program Files folders is listed but is no writer of that folder (the same rule as FileSystemChecks.cs in setup); Test-TrustSummary counts it elsewhere
+  assert.deepEqual({ ...r.creatorOwnerPlaceholder }, { listed: true, writer: false });
+  assert.equal(r.creatorOwnerPlaceholderRule, 'InheritOnly');
 });
 
 test('removal: only known files are deleted; an unknown file, a sub-folder or a junction stops the removal and nothing is deleted there', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
@@ -921,6 +930,22 @@ test('removal: only known files are deleted; an unknown file, a sub-folder or a 
   assert.equal(r.outsideIntact, true, 'the junction target was not followed or deleted');
   assert.match(r.selfJunctionRefused, /is or contains a link or junction/u, 'a folder that is itself a junction is refused too');
   assert.equal(r.selfJunctionTargetIntact, true);
+  // deletion never follows a link, even one that appears after the checks: the link goes, its target is neither entered nor touched
+  assert.equal(r.noFollowError, null);
+  assert.equal(r.noFollowTreeGone, true, 'a read-only file and a nested folder go too');
+  assert.equal(r.noFollowTargetIntact, true, 'the junction inside the tree was removed as a link; what it pointed to is intact');
+  assert.equal(r.noFollowSelfError, null);
+  assert.equal(r.noFollowSelfGone, true);
+  assert.equal(r.noFollowSelfTargetIntact, true);
+  // the scan the migration preflight makes before anything is touched
+  assert.equal(r.scanClean, 0);
+  assert.equal(r.scanUnknownInData.length, 1);
+  assert.match(r.scanUnknownInData[0], /\\authority holds files this script did not create \(authority\\evil\.txt\); move or delete them first$/u);
+  assert.equal(r.scanLinkInData.length, 1);
+  assert.match(r.scanLinkInData[0], /is or contains a link or junction$/u);
+  assert.equal(r.scanUnknownInInstall.length, 1);
+  assert.match(r.scanUnknownInInstall[0], /holds files this script did not create \(bin\\evil[^)]*\); move or delete them first$/u);
+  assert.equal(r.scanTargetIntact, true);
 });
 
 // ---- -GrantHyperVToBroker (ADR-002 Amendment 2026-11-03): the Broker's service SID, and only it, in Hyper-V Administrators; the Broker unrestricted exactly then ----
@@ -1361,13 +1386,20 @@ test('Control Plane service: AlberaControlPlane has a derived service SID, no lo
   assert.deepEqual({ ...r.cfgInputsRefused }, { shortNode: 'node_sha256_invalid', accountAsCp: 'control_plane_sid_invalid', serviceAsApprover: 'approver_sid_invalid' });
 });
 
-test('services: all three start delayed; the Control Plane restarts twice after 5 s and then stays stopped; the failure text is read from any language; the Broker ACL names the Control Plane SERVICE SID', needsWindows, () => {
+test('services: all three start delayed; the Control Plane restarts twice after 5 s and then stays stopped; the failure actions are read from the registry bytes, not from localized sc.exe text; the Broker ACL names the Control Plane SERVICE SID', needsWindows, () => {
   const { r } = lib();
-  assert.deepEqual({ ...r.failureText }, {
-    ok: 0, japanese: 0,
-    none: ['failure_actions_not_two_restarts'], one: ['failure_actions_not_two_restarts'], three: ['failure_actions_not_two_restarts'],
-    otherDelay: ['failure_restart_delay_differs'], reboot: ['failure_action_not_restart'], runCommand: ['failure_action_not_restart'],
+  assert.deepEqual({ ...r.failureBytes }, {
+    ok: 0, okWithThirdNone: 0,
+    none: ['failure_actions_not_two_restarts'], one: ['failure_actions_not_two_restarts'], three: ['failure_action_not_restart'],
+    otherDelay: ['failure_restart_delay_differs'], reboot: ['failure_action_not_restart'], rebootSecond: ['failure_actions_not_two_restarts', 'failure_action_not_restart'], runCommand: ['failure_action_not_restart'],
+    otherReset: ['failure_reset_period_differs'],
+    noBytes: ['failure_actions_unreadable'], tooShort: ['failure_actions_unreadable'], countTooBig: ['failure_actions_unreadable'], arrayPastTheEnd: ['failure_actions_unreadable'],
+    realSpooler: ['failure_reset_period_differs'],
   });
+  const lib_ = readFileSync(path.join(hostDir, 'albera-host-lib.ps1'), 'utf8');
+  const hostScript = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
+  assert.equal(/qfailure/u.test(lib_.replace(/#.*$/gmu, '')) || /qfailure/u.test(hostScript.replace(/#.*$/gmu, '')), false, 'no English or localized text of sc qfailure is parsed');
+  assert.match(hostScript, /OpenSubKey\('SYSTEM\\CurrentControlSet\\Services\\' \+ \$Name\)/u, 'the failure actions are read from the service key');
   assert.equal(r.cpFacts.ok, 0);
   assert.deepEqual(r.cpFacts.noFailureActions, ['failure_actions_not_two_restarts'], 'the Control Plane\'s own facts check the failure actions');
   assert.equal(r.cpFacts.brokerNeedsNoFailureActions, 0, 'the Broker and the Authority are not asked for any');
@@ -1398,6 +1430,12 @@ test('anti-rollback in the script: the run id is an unsigned 64-bit number compa
   assert.deepEqual({ ...r.runId.refusal }, {
     nothingSupplied: null, emptySupplied: null, noRecord: null, older: 'setup_run_id_older_than_installed', same: null, newer: null, numericNotText: 'setup_run_id_older_than_installed',
     textOrderWouldSayNewer: null, biggest: 'setup_run_id_older_than_installed', biggestSame: null, suppliedJunk: 'setup_run_id_invalid', recordedJunk: 'recorded_setup_run_id_invalid',
+  });
+  // the floor in the registry (kept by uninstall) is compared as well: the larger of it and the record decides, and a floor that is there but is not a decimal number refuses
+  assert.deepEqual({ ...r.runId.floor }, {
+    older: 'setup_run_id_older_than_floor', same: null, newer: null, floorBeatsRecord: 'setup_run_id_older_than_floor', recordBeatsFloor: 'setup_run_id_older_than_installed',
+    numericNotText: 'setup_run_id_older_than_floor', biggest: 'setup_run_id_older_than_floor', noFloor: null, nothingSupplied: null,
+    junk: 'setup_run_id_floor_invalid', empty: 'setup_run_id_floor_invalid', notAString: 'setup_run_id_floor_invalid', negative: 'setup_run_id_floor_invalid', tooBig: 'setup_run_id_floor_invalid',
   });
 });
 
@@ -1513,7 +1551,9 @@ test('Control Plane install steps against a temp layout (fakes for the machine):
   assert.equal(r.cpRecorded, true);
   assert.equal(r.cpRecordedOnDisk, true);
   assert.equal(r.cpAfter, 'done');
-  assert.deepEqual({ ...r.cpState }, { auto: true, delayed: true, sid: 'restricted', privs: 'SeChangeNotifyPrivilege', failure: 'RESTART -- Delay = 5000 milliseconds. RESTART -- Delay = 5000 milliseconds.' });
+  // what the SCM stores for `sc failure ... actions= restart/5000/restart/5000//0` (REG_BINARY FailureActions: reset 86400, 3 actions at offset 20: restart 5000, restart 5000, none)
+  const le = (...numbers) => numbers.flatMap((n) => [n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >>> 24) & 255]);
+  assert.deepEqual({ ...r.cpState }, { auto: true, delayed: true, sid: 'restricted', privs: 'SeChangeNotifyPrivilege', failure: le(86400, 0, 0, 3, 20, 1, 5000, 1, 5000, 0, 0) });
   assert.match(r.cpForeign, /^blocked:service AlberaControlPlane already exists and was not created by this script/u);
   assert.equal(r.cpNotDelayed, 'todo'); assert.equal(r.cpNoFailureActions, 'todo'); assert.equal(r.cpExtraPrivilege, 'todo');
   assert.equal(r.cpDriftFixed, 'done');
@@ -1526,6 +1566,7 @@ test('Control Plane install steps against a temp layout (fakes for the machine):
   assert.deepEqual(r.shLinks, ['Open ALBERA.lnk']);
   assert.deepEqual({ ...r.shRunRecord }, { name: 'AlberaApprover', command: r.shRunValue });
   assert.match(r.shRunValue, /\\bin\\approver\\AlberaApprover\.exe" --tray$/u);
+  assert.deepEqual(r.shUsersGrants, [r.launcherDir], 'BUILTIN\\Users get read and execute on bin\\launcher (the owner\'s session runs it)');
   assert.equal(r.shTrustedDirs.length, 1);
   assert.match(r.shTrustedDirs[0], /\\Start Menu\\Programs\\ALBERA \| \*S-1-5-18:\(OI\)\(CI\)F \*S-1-5-32-544:\(OI\)\(CI\)F \*S-1-5-32-545:\(OI\)\(CI\)RX$/u, 'the shortcut folder is born with its final ACL: everyone reads, administrators write');
   assert.equal(r.shAfter, 'done');
@@ -1534,6 +1575,16 @@ test('Control Plane install steps against a temp layout (fakes for the machine):
   assert.equal(r.shWithSetupError, null);
   assert.deepEqual(r.shWithSetupRecord, ['Open ALBERA.lnk', 'ALBERA update.lnk']);
   assert.equal(r.shWithSetupAfter, 'done');
+  // the update shortcut starts setup.exe elevated: only a file and folder that pass the trust test, and - when setup left the copy it verified - exactly that copy
+  assert.match(r.setupFileUntrusted.problem, /^albera-setup\.exe cannot be trusted: .*albera-setup\.exe cannot be trusted \(owner_untrusted\)/u);
+  assert.deepEqual(r.setupFileUntrusted.links, ['Open ALBERA.lnk']);
+  assert.match(r.setupFolderUntrusted.problem, /^albera-setup\.exe cannot be trusted: .*bin\\setup cannot be trusted \(writer_untrusted:S-1-5-32-545\)/u);
+  assert.deepEqual(r.setupFolderUntrusted.links, ['Open ALBERA.lnk']);
+  assert.match(r.setupNotTheVerifiedCopy.problem, /is not the copy setup verified in this update \(the SHA-256 differs\)/u);
+  assert.deepEqual(r.setupNotTheVerifiedCopy.links, ['Open ALBERA.lnk']);
+  assert.equal(r.setupIsTheVerifiedCopy.problem, null);
+  assert.deepEqual(r.setupIsTheVerifiedCopy.links, ['Open ALBERA.lnk', 'ALBERA update.lnk']);
+  assert.deepEqual(r.setupLinksNow, ['Open ALBERA.lnk', 'ALBERA update.lnk']);
   assert.equal(r.shRunChanged, 'todo'); assert.equal(r.shLauncherChanged, 'todo'); assert.equal(r.shLinkChanged, 'todo');
   assert.equal(r.shRestoredError, null); assert.equal(r.shRestored, 'done');
   assert.match(r.shReadBackWrongError, /is not as intended: shortcut_target_differs/u, 'a shortcut that reads back wrong is an error');
@@ -1545,11 +1596,20 @@ test('Control Plane install steps against a temp layout (fakes for the machine):
   assert.match(r.adoptReadmeFoldersTest, /^blocked:.* exists but was not created by this script and is not only albera-setup\.exe's own folders \(unknown_entry:readme\.txt\)/u);
   assert.deepEqual(r.adoptOurFolder, ['unknown_entry:bin\\broker', 'unknown_entry:bin\\broker\\x.exe'], 'a leftover of ours that the record does not know is not adopted');
   assert.deepEqual(r.adoptJunction, ['link_or_junction_inside']);
+  // everything below bin\setup and setup-work is read, files included: owner SYSTEM / Administrators / TrustedInstaller and no other writer
+  assert.deepEqual(r.adoptSetupExeUserOwned, ['bin\\setup\\albera-setup.exe:owner_untrusted', 'bin\\setup\\albera-setup.exe:writer_untrusted:S-1-5-21-1111111111-2222222222-3333333333-1001']);
+  assert.deepEqual(r.adoptDeepFileUsersWrite, ['setup-work\\abc123\\copy\\repo\\x.txt:writer_untrusted:S-1-5-32-545'], 'a file deep inside setup-work that Users can write');
+  assert.deepEqual(r.adoptDeepFolderUserOwned, ['setup-work\\abc123\\copy\\repo:owner_untrusted', 'setup-work\\abc123\\copy\\repo:writer_untrusted:S-1-5-21-1111111111-2222222222-3333333333-1001'], 'a sub-folder owned by the owner\'s account');
+  assert.deepEqual(r.adoptCreatorOwnerOnTheFolder, ['bin:writer_untrusted:S-1-3-0'], 'CREATOR OWNER that applies to the folder itself is a writer');
+  assert.deepEqual(r.adoptUnreadable, ['bin\\setup\\albera-setup.exe:acl_unreadable'], 'an ACL that cannot be read refuses');
+  assert.equal(r.adoptTrustedInstaller, 0, 'TrustedInstaller as owner and writer is accepted (the same set as FileSystemChecks.cs)');
   assert.deepEqual(r.adoptUntrusted, ['owner_untrusted']);
   assert.match(r.adoptUntrustedFoldersTest, /^blocked:/u);
   assert.equal(r.adoptDoError, null);
   assert.equal(r.adoptRecorded, true);
   assert.equal(r.adoptRecordedOnDisk, true);
+  assert.ok(r.adoptUsersGrants.includes(r.setupBinDir), 'the setup folder gets its Users read-and-execute rule back after the root lost the inherited one');
+  assert.deepEqual(r.adoptUsersGrants.filter((p) => p !== r.setupBinDir), [], 'and no other folder of the install gets one here');
   assert.match(r.adoptAclFirst, /^acl .*\\pf\\Albera$/u, 'the adopted root gets the plan\'s ACL like any other folder');
   assert.equal(r.adoptSetupKept, true);
   assert.match(r.foreignRootDoError, /exists but was not created by this script and is not only albera-setup\.exe's own folders \(unknown_entry:someone-elses\.txt\)/u);
@@ -1558,7 +1618,7 @@ test('Control Plane install steps against a temp layout (fakes for the machine):
     id99: { refusal: 'setup_run_id_older_than_installed', blocked: true }, id100: { refusal: null, blocked: false }, id101: { refusal: null, blocked: false },
     id18446744073709551615: { refusal: null, blocked: false }, id: { refusal: null, blocked: false }, none: { refusal: null },
   });
-  assert.match(r.rollbackMessage, /^blocked:setup_run_id_older_than_installed: the install record holds setupRunId 100 and this run is 99\. An older \(validly attested\) build is never installed over a newer one$/u);
+  assert.match(r.rollbackMessage, /^blocked:setup_run_id_older_than_installed: this run is 99; the install record holds setupRunId 100 and the floor of this PC \(HKLM\\SOFTWARE\\Albera\\SetupRunIdFloor\) is none\. An older \(validly attested\) build is never installed over a newer one$/u);
   assert.deepEqual({ ...r.ratchetUp }, { memory: '101', disk: '101' });
   assert.deepEqual({ ...r.ratchetNotDown }, { memory: '101', disk: '101' }, 'the recorded run id never goes down');
   assert.equal(r.ratchetMax, '18446744073709551615');
@@ -1566,6 +1626,39 @@ test('Control Plane install steps against a temp layout (fakes for the machine):
   assert.match(r.legacyGuard, /^blocked:the install record is from the first layout \(the local account albera-cp\)\. Run -Mode migrate/u);
   assert.deepEqual({ legacy: r.legacyLayout.legacy, cp: r.legacyLayout.sids.cp, flag: r.legacyLayout.sids.legacyFlag }, { legacy: true, cp: 'S-1-5-21-1111111111-2222222222-3333333333-1500', flag: true }, 'a first-layout record keeps its account SID as the Control Plane for uninstall and migrate');
   assert.deepEqual({ ...r.newLayout }, { legacy: false, cpIsServiceSid: true, approver: 'S-1-5-21-1111111111-2222222222-3333333333-1001' });
+  // 7. the floor: the install record goes away with uninstall, the floor in the registry does not
+  assert.deepEqual({ ...r.floorRefusal }, {
+    floorOlder: 'setup_run_id_older_than_floor', recordOlder: 'setup_run_id_older_than_installed', floorOnlyOlder: 'setup_run_id_older_than_floor', floorOnlySame: null, floorOnlyNewer: null,
+    noFloorNoRecord: null, junk: 'setup_run_id_floor_invalid', empty: 'setup_run_id_floor_invalid', notAString: 'setup_run_id_floor_invalid', biggest: 'setup_run_id_older_than_floor',
+  }, 'the LARGER of the record and the floor decides; a floor that is there and is not a decimal number is a refusal, never "no floor"');
+  assert.equal(r.floorRatchet.nothingSupplied, null, 'a run without -SetupRunId writes nothing');
+  assert.deepEqual(r.floorRatchet.steps, ['150', '150', '200', '200', '18446744073709551615', '18446744073709551615'], 'the floor only ever goes up');
+  assert.match(r.floorJunkNotOverwritten.error, /is not a decimal number; an administrator must correct or delete that one value\. It was not changed/u);
+  assert.equal(r.floorJunkNotOverwritten.value, 'abc', 'a floor that cannot be read is never overwritten by the script');
+  assert.equal(r.floorWithoutManifest, '300', 'it is written even when there is no install record (yet)');
+  assert.equal(r.floorDoError, null);
+  assert.equal(r.floorAfterInstall, '500', 'the sources step of an install with run 500 raises the floor to 500');
+  assert.ok(r.floorUninstallIds.includes('manifest'));
+  assert.equal(r.floorUninstallError, null);
+  assert.equal(r.floorRecordGone, true, 'uninstall removed the install record and the data root');
+  assert.equal(r.floorAfterUninstall, '500', 'and left the floor');
+  assert.equal(r.floorOlderAfterUninstall.refusal, 'setup_run_id_older_than_floor', 'an older, validly attested build is refused after uninstall');
+  assert.match(r.floorOlderAfterUninstall.test, /^blocked:setup_run_id_older_than_floor: this run is 400; the install record holds setupRunId none and the floor of this PC .* is 500\./u);
+  assert.equal(r.floorSameAfterUninstall, null);
+  assert.equal(r.floorNewerAfterUninstall, null);
+  // 8. the real Grant-UsersReadExecute and Get-UsersAceProblems
+  assert.equal(r.usersGrantError, null);
+  assert.deepEqual(r.usersNativeCalls, [`C:\\fake\\icacls.exe | "${r.usersDir}" /grant:r *S-1-5-32-545:(OI)(CI)RX /L`], 'one icacls call, this folder only (/L, no /T): read and execute, inherited by what is inside');
+  assert.match(r.usersReadBackMissing, /is not as intended after the change: users_ace_missing/u);
+  assert.match(r.usersReadBackWrite, /is not as intended after the change: users_can_write/u);
+  assert.match(r.usersIcaclsFails, /^icacls failed for /u);
+  assert.match(r.usersLinkError, /is reached through a link; refusing to change its ACL/u);
+  assert.equal(r.usersLinkNativeCalls, 0, 'no icacls call for a path behind a link');
+  assert.deepEqual(JSON.parse(JSON.stringify(r.usersProblems)), {
+    rx: { shouldHave: [], shouldNot: ['users_ace_unexpected'] },
+    none: { shouldHave: ['users_ace_missing'], shouldNot: [] },
+    write: { shouldHave: ['users_can_write'], shouldNot: ['users_ace_unexpected'] },
+  });
 });
 
 test('-Mode migrate against a temp layout (fakes for the machine): nothing is removed unless the new install can be made; the account\'s processes stop by PID first; the Hello values, VM GUID and grant come back; setup\'s own folders stay', { skip: !windows && 'Windows PowerShell only', timeout: 480_000 }, (t) => {
@@ -1587,19 +1680,21 @@ test('-Mode migrate against a temp layout (fakes for the machine): nothing is re
   assert.match(r.badConfig.error, /^REFUSED: authority_config:audience/u);
   assert.equal(r.badConfig.orderIsEmpty, true);
   // B. without the grant
-  assert.deepEqual(r.leadIds, ['legacy', 'preflight', 'stop']);
-  assert.deepEqual(r.planBefore, ['todo', 'todo', 'todo']);
+  assert.deepEqual(r.leadIds, ['legacy', 'preflight', 'disable', 'stop']);
+  assert.deepEqual(r.planBefore, ['todo', 'todo', 'todo', 'todo']);
   assert.equal(r.runError, null);
   assert.equal(r.exit, 0);
   assert.deepEqual({ ...r.after }, {
     layoutLegacy: false, state: 'complete', services: ['AlberaApprovalAuthority', 'AlberaControlPlane', 'AlberaHostBroker'], user: false, profile: false, key: true, pids: [], members: [],
     binaries: ['approver', 'authority', 'broker', 'control-plane', 'pipe-client'], createdKeys: ['binaries', 'claude', 'controlPlane', 'dataRoot', 'installRoot', 'key', 'launcher', 'runEntry', 'services', 'shortcuts'],
   });
-  const verb = (line) => line.replace(/^(sc \w+|stop pid \d+|group (?:add|remove)|Remove-LocalUser|remove profile|delete key|create key|launch-check).*$/u, '$1');
+  const verb = (line) => line.replace(/^(sc \w+|stop pid \d+|group (?:add|remove)|Disable-LocalUser|Remove-LocalUser|remove profile|delete key|create key|launch-check).*$/u, '$1');
   const steps = r.order.map(verb);
   const at = (what) => steps.indexOf(what);
   assert.equal(r.stopBeforeUninstall, true, 'the account\'s processes stop first, by PID');
-  assert.deepEqual(steps.slice(0, 7), ['stop pid 4101', 'stop pid 4102', 'sc delete', 'sc delete', 'delete key', 'Remove-LocalUser', 'remove profile'], 'processes, services (the Control Plane\'s client last), key, then the account and its profile');
+  assert.deepEqual(steps.slice(0, 8), ['Disable-LocalUser', 'stop pid 4101', 'stop pid 4102', 'sc delete', 'sc delete', 'delete key', 'Remove-LocalUser', 'remove profile'], 'the account is disabled first, then its processes stop (by PID), then services (the Control Plane\'s client last), key, then the account and its profile');
+  assert.match(r.order[0], /^Disable-LocalUser S-1-5-21-1111111111-2222222222-3333333333-1500$/u, 'disabled by SID');
+  assert.deepEqual([...new Set(r.order.filter((line) => line.startsWith('users-rx ')))].sort(), ['users-rx approver', 'users-rx launcher', 'users-rx setup'], 'BUILTIN\\Users get read and execute on three folders of the new install and no other');
   assert.ok(at('remove profile') < at('sc create'), 'the new install comes after the removal');
   assert.ok(at('create key') > at('sc create') && at('launch-check') > at('create key'), 'a new Authority key; the Control Plane service last, after launch-check');
   assert.equal(r.order.filter((line) => /taskkill|Stop-Process|\/IM/iu.test(line)).length, 0);
@@ -1641,6 +1736,28 @@ test('-Mode migrate against a temp layout (fakes for the machine): nothing is re
   assert.match(r.stuck.error, /processes of albera-cp are still running \(PID 4101, 4102\); nothing was uninstalled/u);
   assert.equal(r.stuck.removedNothing, true);
   assert.deepEqual(r.stuck.pids, [4101, 4102]);
+  // D. the account is checked once more and disabled BEFORE any process is stopped; a failure leaves everything as it was (nothing stopped, nothing removed)
+  assert.match(r.disableRefusals.sidDiffers.error, /is not the one the old install made \(sid_differs\); nothing was changed/u);
+  assert.match(r.disableRefusals.descriptionDiffers.error, /is not the one the old install made \(description_differs\); nothing was changed/u);
+  assert.match(r.disableRefusals.nameDiffers.error, /is not the one the old install made \(live_name_not_fixed\); nothing was changed/u);
+  assert.match(r.disableRefusals.stillEnabled.error, /is still enabled after Disable-LocalUser; no process was stopped/u);
+  for (const [name, refusal] of Object.entries(r.disableRefusals)) {
+    assert.equal(refusal.stopped, false, `${name}: no process was stopped`);
+    assert.equal(refusal.sc, false, `${name}: no service was touched`);
+    assert.equal(refusal.userKept, true, `${name}: the account was not removed`);
+    assert.deepEqual(refusal.pids, [4101, 4102], `${name}: both processes still run`);
+    assert.equal(refusal.disableCalled, name === 'stillEnabled', `${name}: Disable-LocalUser is only called after the second ownership check passed`);
+  }
+  // E. unknown files, links and unknown install entries are found by the preflight, before the account is touched
+  assert.match(r.preflightUnknown.dataFile.error, /holds files this script did not create \(authority\\my-notes\.txt\); move or delete them first/u);
+  assert.match(r.preflightUnknown.dataLink.error, /is or contains a link or junction/u);
+  assert.match(r.preflightUnknown.installEntry.error, /holds files this script did not create \(bin\\evil[^)]*\); move or delete them first/u);
+  for (const [name, refusal] of Object.entries(r.preflightUnknown)) {
+    assert.equal(refusal.orderIsEmpty, true, `${name}: not one sc.exe call, process stop, key or account change happened`);
+    assert.equal(refusal.userEnabled, true, `${name}: the account was not disabled`);
+    assert.deepEqual(refusal.pidsKept, [4101, 4102], `${name}: the processes were not stopped`);
+    assert.equal(refusal.targetIntact, true, `${name}: a link target was never touched`);
+  }
 });
 
 test('migrate and install: the command line (the new parameters are validated, the lab ones are gated, migrate takes no approver values and accepts a typed hash or the explicit local-builds switch, never both)', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
@@ -1684,8 +1801,29 @@ test('the Control Plane install, source guards: no repository file is executed, 
   // the install steps: the configs step comes after the pins and before the service
   const ids = [...scriptCode.matchAll(/\[pscustomobject\]@\{ Id = '(\w+)'; Title = /gu)].map((m) => m[1]);
   assert.deepEqual(ids.slice(0, 13), ['sources', 'approver', 'dataroot', 'services', 'folders', 'binaries', 'key', 'node', 'claude', 'configs', 'cpservice', 'shortcuts', 'finish']);
-  // the pins are made by one copy function: copy, hash the COPY, rename, trust-check
-  assert.match(scriptCode, /function Copy-PinnedFile[\s\S]*?\[System\.IO\.File\]::Copy\(\$Source, \$partial, \$false\)[\s\S]*?\$sha = Get-Sha256File \$partial[\s\S]*?Move-Item -LiteralPath \$partial -Destination \$Destination/u);
+  // the pins are made by one copy function: open the source ONCE (nobody else may write it meanwhile), check the final path of that handle, copy from the handle, hash the COPY, rename, trust-check
+  assert.match(scriptCode, /function Copy-PinnedFile[\s\S]*?New-Object System\.IO\.FileStream\(\$Source, \[System\.IO\.FileMode\]::Open, \[System\.IO\.FileAccess\]::Read, \[System\.IO\.FileShare\]::Read\)[\s\S]*?Get-FinalPathOfStream \$in[\s\S]*?\[string\]::Equals\(\$final, \$expected, \[System\.StringComparison\]::OrdinalIgnoreCase\)[\s\S]*?\$in\.CopyTo\(\$out\)[\s\S]*?\$sha = Get-Sha256File \$partial[\s\S]*?Move-Item -LiteralPath \$partial -Destination \$Destination/u);
+  const pinnedBody = scriptCode.slice(scriptCode.indexOf('function Copy-PinnedFile'), scriptCode.indexOf('function ', scriptCode.indexOf('function Copy-PinnedFile') + 10));
+  assert.equal(/\[System\.IO\.File\]::Copy\(|Copy-Item/u.test(pinnedBody), false, 'the pins are not copied by path (a link swapped in after the check would be followed)');
+  assert.match(scriptCode, /DefinePInvokeMethod\('GetFinalPathNameByHandleW'/u, 'GetFinalPathNameByHandle through System.Reflection.Emit');
+  assert.equal(/Add-Type(?! -AssemblyName System\.Web\.Extensions)/u.test(scriptCode), false, 'no Add-Type (it would start the C# compiler from an elevated session)');
+  // node.exe (file and folder) passes the trust test before it is copied; claude.exe lives in the owner's own profile and has no such test by design
+  assert.match(scriptCode, /function Get-NodePinProblem \{[\s\S]*?Get-PathTrustReasons \$p \(Get-AdminSids\) \$false/u);
+  // M1: BUILTIN\Users get read and execute on exactly three folders of the install; nothing else under it
+  assert.deepEqual([...new Set([...scriptCode.matchAll(/Grant-UsersReadExecute \$L\.(\w+)/gu)].map((m) => m[1]))].sort(), ['ApproverBinDir', 'LauncherDir', 'SetupBinDir']);
+  assert.equal(code(lib).includes('S-1-5-32-545'), false, 'the ACL plan of the install folder names no BUILTIN\\Users');
+  // H1: the floor is written and read in the 64-bit registry view, and nothing ever removes it (the one registry delete is the Run entry)
+  assert.match(scriptCode, /OpenBaseKey\(\[Microsoft\.Win32\.RegistryHive\]::LocalMachine, \[Microsoft\.Win32\.RegistryView\]::Registry64\)/u);
+  assert.deepEqual([...scriptCode.matchAll(/DeleteValue|DeleteSubKey\w*|Remove-ItemProperty|Remove-Item\s+(?:-Path\s+)?'?(?:HKLM|Registry)/gu)].map((m) => m[0]), ['DeleteValue'], 'one registry delete in the whole script');
+  const runDelete = scriptCode.slice(scriptCode.indexOf('function Remove-RunEntryValue'), scriptCode.indexOf('function ', scriptCode.indexOf('function Remove-RunEntryValue') + 10));
+  assert.match(runDelete, /DeleteValue\(\$e\.Name, \$false\)/u);
+  const floorLines = [...(scriptCode + code(lib)).matchAll(/^.*(?:Remove|Delete)[^\n]*SetupRunIdFloor.*$/gmu)].map((m) => m[0].trim());
+  assert.equal(floorLines.length, 1, 'only the manifest step\'s own text names the floor next to the word Remove');
+  assert.match(floorLines[0], /^\[pscustomobject\]@\{ Id = 'manifest'; .*SetupRunIdFloor is NOT removed/u, 'and it says the floor is NOT removed');
+  // deleting a tree never follows a link: Remove-TreeNoFollow is the only deleter of a folder tree
+  assert.equal(/Remove-Item[^\n]*-Recurse/u.test(scriptCode), false, 'no recursive Remove-Item');
+  // the failure actions are read from the service key (REG_BINARY), not from localized sc.exe text
+  assert.equal(/qfailure/u.test(scriptCode + code(lib)), false);
   assert.doesNotMatch(scriptCode, /Invoke-Native[^\n]*\$(?:NodeSource|ClaudeSource|nodeSource|claudeSource)|& \$(?:NodeSource|ClaudeSource)/u, 'neither pinned program is ever started');
   assert.match(scriptCode, /FileVersionInfo\]::GetVersionInfo\(\$L\.ClaudeExe\)\.FileVersion/u, 'the version comes from the file\'s resource');
   assert.doesNotMatch(scriptCode + code(lib), /claude(?:\.exe)? --version|--version/u, 'claude --version is never run while elevated');
@@ -1699,6 +1837,7 @@ test('the Control Plane install, source guards: no repository file is executed, 
   assert.match(scriptCode, /\$bad = Test-ShortcutMatches \$spec \(Read-ShellLink \$spec\.Path\)/u, 'every shortcut is read back');
   // anti-rollback: the number is compared as a number, in the library; the script only asks
   assert.match(lib, /\$s -lt \$r\) \{ return 'setup_run_id_older_than_installed' \}/u);
+  assert.match(lib, /\$s -lt \$f\) \{ return 'setup_run_id_older_than_floor' \}/u);
   assert.match(lib, /\[uint64\]::TryParse\(\$text, \[System\.Globalization\.NumberStyles\]::None/u);
   // the migration removes processes by PID of an owner SID and the profile only when it is C:\Users\albera-cp exactly
   assert.match(scriptCode, /\$expected = Join-Path 'C:\\Users' \$K\.ControlPlaneUser/u);

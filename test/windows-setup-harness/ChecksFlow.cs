@@ -131,6 +131,60 @@ internal static partial class Harness
             Assert(Throws<SetupRefusal>(() => InstallRecord.ReadSetupRunId(w.InstallRecordPath, _ => [], _ => true)), "a link on the path of the record was accepted");
         });
 
+        Check("rollback after an uninstall: the install record is gone, but the floor of this PC (HKLM\SOFTWARE\Albera\SetupRunIdFloor, kept by uninstall) still refuses an older validly attested build; an equal or smaller floor lets it through", () =>
+        {
+            using var s = new Scenario();   // no install record at all: this is the state right after an uninstall
+            s.ReadFloor = () => ulong.Parse(Newer);
+            s.Runner.Engine = _ => throw new InvalidOperationException("the installer must not start");
+            Equal(SetupFlow.Refused, SetupFlow.Run(s.Options(), s.Deps()), "an older build after uninstall: " + s.Out);
+            Assert(s.Out.ToString().Contains("REFUSED rollback_refused") && s.Out.ToString().Contains("floor of this PC") && s.Out.ToString().Contains("uninstall keeps"), s.Out.ToString());
+            Equal(0, s.Runner.EngineCalls.Count(), "installer started");
+            foreach (var floor in new ulong[] { 0, 99, ulong.Parse(Older), ulong.Parse(Same) })
+            {
+                using var ok = new Scenario();
+                ok.ReadFloor = () => floor;
+                ok.Runner.Engine = _ => new ProcessResult(0, "", "", false, false);
+                Equal(SetupFlow.Done, SetupFlow.Run(ok.Options(), ok.Deps()), $"floor {floor}: " + ok.Out);
+            }
+        });
+
+        Check("rollback: the bound is the LARGEST of the install record, the floor and the run id of this setup's own build (and each one alone refuses)", () =>
+        {
+            Assert(InstallRecord.RollbackRefusal(10, null, null, 0) is null, "nothing bounds");
+            Assert(InstallRecord.RollbackRefusal(10, 10, 10, 10) is null, "the same run is fine");
+            Assert(InstallRecord.RollbackRefusal(10, 11, null, 0)!.Contains("the install record holds run 11"), "record alone");
+            Assert(InstallRecord.RollbackRefusal(10, null, 11, 0)!.Contains("floor of this PC"), "floor alone");
+            Assert(InstallRecord.RollbackRefusal(10, null, null, 11)!.Contains("build of this setup.exe holds run 11"), "build alone");
+            Assert(InstallRecord.RollbackRefusal(10, 5, 50, 20)!.Contains("holds run 50"), "the largest wins (floor)");
+            Assert(InstallRecord.RollbackRefusal(10, 50, 5, 20)!.Contains("the install record holds run 50"), "the largest wins (record)");
+            Assert(InstallRecord.RollbackRefusal(10, 5, 6, ulong.MaxValue)!.Contains("build of this setup.exe"), "the largest wins (build), as an unsigned number");
+            using var s = new Scenario();
+            PinnedTools.BuildRunId = Scenario.DefaultRun + 1;   // set after the Scenario resets it
+            s.Runner.Engine = _ => throw new InvalidOperationException("the installer must not start");
+            Equal(SetupFlow.Refused, SetupFlow.Run(s.Options(), s.Deps()), "a build older than this setup: " + s.Out);
+            Assert(s.Out.ToString().Contains("REFUSED rollback_refused") && s.Out.ToString().Contains("build of this setup.exe"), s.Out.ToString());
+            using var same = new Scenario();
+            PinnedTools.BuildRunId = Scenario.DefaultRun;
+            same.Runner.Engine = _ => new ProcessResult(0, "", "", false, false);
+            Equal(SetupFlow.Done, SetupFlow.Run(same.Options(), same.Deps()), "the run that built this setup is fine: " + same.Out);
+            PinnedTools.BuildRunId = 0;
+        });
+
+        Check("rollback: a floor that is there but is not a decimal number is a refusal (run_id_floor_invalid), never 'no floor'; the installer is never started", () =>
+        {
+            foreach (var text in new[] { "abc", "-1", "", " 5", "18446744073709551616", "1.5", "0x10" })
+            {
+                Assert(Throws<SetupRefusal>(() => InstallRecord.ParseFloor(text)), $"floor text '{text}' was accepted");
+                using var s = new Scenario();
+                s.ReadFloor = () => InstallRecord.ParseFloor(text);
+                s.Runner.Engine = _ => throw new InvalidOperationException("the installer must not start");
+                Equal(SetupFlow.Refused, SetupFlow.Run(s.Options(), s.Deps()), $"floor '{text}': " + s.Out);
+                Assert(s.Out.ToString().Contains("REFUSED run_id_floor_invalid"), s.Out.ToString());
+            }
+            Equal(18446744073709551615UL, InstallRecord.ParseFloor("18446744073709551615"), "ulong maximum");
+            Equal(7UL, InstallRecord.ParseFloor("7"), "a plain number");
+        });
+
         Check("rollback: the check runs after the attestation is verified and before the installer is started, and the run id it compares is the attested one", () =>
         {
             using var s = new Scenario();
@@ -292,12 +346,12 @@ internal static partial class Harness
         {
             using var s = new Scenario();
             var deps = s.Deps();
-            var writable = new SetupDeps { Runner = deps.Runner, Folders = deps.Folders, IsElevated = deps.IsElevated, SetupDirectory = deps.SetupDirectory, InstalledSetupDirectory = deps.InstalledSetupDirectory, WorkRoot = deps.WorkRoot, NewWorkName = deps.NewWorkName, PathHasReparsePoint = deps.PathHasReparsePoint, InstallRecordPath = deps.InstallRecordPath, Out = deps.Out, CreateWorkDirectory = deps.CreateWorkDirectory, AdministratorOnlyProblems = p => p == s.SetupDirectory ? ["S-1-5-32-545 may WriteData"] : [] };
+            var writable = new SetupDeps { Runner = deps.Runner, Folders = deps.Folders, IsElevated = deps.IsElevated, SetupDirectory = deps.SetupDirectory, InstalledSetupDirectory = deps.InstalledSetupDirectory, WorkRoot = deps.WorkRoot, NewWorkName = deps.NewWorkName, PathHasReparsePoint = deps.PathHasReparsePoint, InstallRecordPath = deps.InstallRecordPath, ReadRunIdFloor = deps.ReadRunIdFloor, Out = deps.Out, CreateWorkDirectory = deps.CreateWorkDirectory, AdministratorOnlyProblems = p => p == s.SetupDirectory ? ["S-1-5-32-545 may WriteData"] : [] };
             Equal(SetupFlow.Refused, SetupFlow.Run(s.Options(), writable), "writable setup folder");
             Assert(s.Out.ToString().Contains("setup_location") && s.Out.ToString().Contains("writable by others"), s.Out.ToString());
             using var t = new Scenario();
             var d = t.Deps();
-            var linked = new SetupDeps { Runner = d.Runner, Folders = d.Folders, IsElevated = d.IsElevated, SetupDirectory = d.SetupDirectory, InstalledSetupDirectory = d.InstalledSetupDirectory, WorkRoot = d.WorkRoot, NewWorkName = d.NewWorkName, CreateWorkDirectory = d.CreateWorkDirectory, AdministratorOnlyProblems = d.AdministratorOnlyProblems, InstallRecordPath = d.InstallRecordPath, Out = d.Out, PathHasReparsePoint = _ => true };
+            var linked = new SetupDeps { Runner = d.Runner, Folders = d.Folders, IsElevated = d.IsElevated, SetupDirectory = d.SetupDirectory, InstalledSetupDirectory = d.InstalledSetupDirectory, WorkRoot = d.WorkRoot, NewWorkName = d.NewWorkName, CreateWorkDirectory = d.CreateWorkDirectory, AdministratorOnlyProblems = d.AdministratorOnlyProblems, InstallRecordPath = d.InstallRecordPath, ReadRunIdFloor = d.ReadRunIdFloor, Out = d.Out, PathHasReparsePoint = _ => true };
             Equal(SetupFlow.Refused, SetupFlow.Run(t.Options(), linked), "link on the path");
             Assert(t.Out.ToString().Contains("link or junction"), t.Out.ToString());
             Equal(0, t.Runner.Calls.Count, "nothing may be started");

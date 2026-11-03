@@ -8,6 +8,8 @@ internal static class PinnedTools
 {
     public static string GhSha256 { get; set; } = FileSystemChecks.Sha256(Scenario.GhBytes);
     public static string TrustedRootSha256 { get; set; } = FileSystemChecks.Sha256(Scenario.RootBytes);
+    /// <summary>The run id of the build that made this setup (generated as a constant in the real file; 0 = a local compile check, bounds nothing).</summary>
+    public static ulong BuildRunId { get; set; }
 }
 
 /// <summary>Stands in for gh.exe and the installer: records every call, answers from the delegates.</summary>
@@ -61,6 +63,8 @@ internal sealed class Scenario : IDisposable
     public Func<string, IReadOnlyList<Attested>> Attestations { get; set; } = _ => [new Attested(DefaultRun, DefaultCommit)];
     public Action<string, Dictionary<string, string?>>? CertificateTweak { get; set; }
     public Action? OnFirstGh { get; set; }
+    /// <summary>Stands in for FileSystemChecks.ReadSetupRunIdFloor (HKLM\SOFTWARE\Albera\SetupRunIdFloor): null = no floor; it may throw the refusal for a value that is not a number.</summary>
+    public Func<ulong?> ReadFloor { get; set; } = () => null;
     private bool _firstGh = true;
 
     public Scenario()
@@ -70,6 +74,7 @@ internal sealed class Scenario : IDisposable
         File.WriteAllBytes(Path.Combine(SetupDirectory, "trusted_root.jsonl"), RootBytes);
         PinnedTools.GhSha256 = FileSystemChecks.Sha256(GhBytes);
         PinnedTools.TrustedRootSha256 = FileSystemChecks.Sha256(RootBytes);
+        PinnedTools.BuildRunId = 0;
         var hashes = new FileHashes();
         foreach (var component in SetupLayout.Components)
         {
@@ -132,6 +137,7 @@ internal sealed class Scenario : IDisposable
             AdministratorOnlyProblems = path => AdminProblems(path),
             PathHasReparsePoint = _ => false,
             InstallRecordPath = InstallRecordPath,
+            ReadRunIdFloor = () => ReadFloor(),
             Out = Out,
         };
     }

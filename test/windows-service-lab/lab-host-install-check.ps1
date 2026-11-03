@@ -80,7 +80,7 @@ $hashBefore = if (Test-Path -LiteralPath $manifest) { (Get-FileHash -LiteralPath
 $again = Invoke-Host (@{ Mode = 'install'; ExpectedTreeHash = $treeHash; SetupRunId = $setupRunId } + $labSources + $approverParams)
 $hashAfter = if (Test-Path -LiteralPath $manifest) { (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash } else { '' }
 $evidence.reinstall = [ordered]@{ exit = $again.Exit; manifestUnchanged = ($hashBefore -ne '' -and $hashBefore -eq $hashAfter); saysAlreadyComplete = ($again.Output -match 'already complete') }
-# anti-rollback: an OLDER attested run id is refused (exit 3), and the record does not change
+# anti-rollback: an OLDER attested run id is refused (exit 3), and the record does not change (and, below, after the uninstall: the floor in the registry still refuses it)
 $older = Invoke-Host (@{ Mode = 'install'; ExpectedTreeHash = $treeHash; SetupRunId = '999' } + $labSources + $approverParams)
 $hashOlder = if (Test-Path -LiteralPath $manifest) { (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash } else { '' }
 $evidence.rollback = [ordered]@{ exit = $older.Exit; refused = ($older.Exit -eq 3 -and $older.Output -match 'setup_run_id_older_than_installed'); manifestUnchanged = ($hashBefore -eq $hashOlder) }
@@ -100,9 +100,18 @@ if (Get-CimInstance Win32_Service -Filter "Name='AlberaControlPlane'") {
   $cpChecks.Add((New-CpCheck 'cp_sidtype_restricted' (($cpType -cmatch '(?<![A-Za-z])RESTRICTED') -and ($cpType -cnotmatch 'UNRESTRICTED')) $cpType))
   $cpPrivs = @([regex]::Matches(((& sc.exe qprivs AlberaControlPlane 2>&1) -join ' '), 'Se[A-Za-z]+Privilege') | ForEach-Object { $_.Value })
   $cpChecks.Add((New-CpCheck 'cp_privileges_minimal' (($cpPrivs -join ',') -eq 'SeChangeNotifyPrivilege') ($cpPrivs -join ',')))
-  $cpFail = ((& sc.exe qfailure AlberaControlPlane 2>&1) -join ' ')
-  $restarts = @([regex]::Matches($cpFail, 'RESTART\s*--[^0-9]*([0-9]+)') | ForEach-Object { [int]$_.Groups[1].Value })
-  $cpChecks.Add((New-CpCheck 'cp_restarts_twice_after_5s' (($restarts.Count -eq 2) -and (@($restarts | Where-Object { $_ -ne 5000 }).Count -eq 0) -and ($cpFail -cnotmatch 'REBOOT\s*--|RUN')) ($restarts -join ',')))
+  # the stored failure actions (REG_BINARY FailureActions: reset, two offsets, cActions @12, array offset @16, then {type, delay ms} per action), read here on its own: `sc qfailure` prints localized text
+  $failKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Services\AlberaControlPlane')
+  $failBytes = $null; if ($failKey) { try { $failBytes = $failKey.GetValue('FailureActions', $null) } finally { $failKey.Dispose() } }
+  $restarts = @(); $otherActions = 0
+  if ($failBytes -is [byte[]] -and $failBytes.Length -ge 20) {
+    $actionCount = [BitConverter]::ToUInt32($failBytes, 12); $actionOffset = [BitConverter]::ToUInt32($failBytes, 16)
+    for ($i = 0; $i -lt $actionCount -and ($actionOffset + 8 * ($i + 1)) -le $failBytes.Length; $i++) {
+      $actionType = [BitConverter]::ToUInt32($failBytes, [int]($actionOffset + 8 * $i)); $actionDelay = [BitConverter]::ToUInt32($failBytes, [int]($actionOffset + 8 * $i + 4))
+      if ($actionType -eq 1) { $restarts += [int]$actionDelay } elseif ($actionType -ne 0) { $otherActions++ }
+    }
+  }
+  $cpChecks.Add((New-CpCheck 'cp_restarts_twice_after_5s' (($restarts.Count -eq 2) -and (@($restarts | Where-Object { $_ -ne 5000 }).Count -eq 0) -and ($otherActions -eq 0)) ($restarts -join ',')))
   $brokerSd = ((& sc.exe sdshow AlberaHostBroker 2>&1) -join '')
   $cpChecks.Add((New-CpCheck 'broker_service_acl_names_the_cp_service_sid_with_lc_only' (($brokerSd -like "*(A;;LC;;;$cpSid)*") -and ($brokerSd -notmatch 'S-1-5-21')) $brokerSd))
   $cfgDir = Join-Path $programData 'control-plane-config'
@@ -132,6 +141,14 @@ if (-not $KeepInstalled) {
   $evidence.remnants = Get-Remnants
   $final = Invoke-Host @{ Mode = 'status' }
   $evidence.finalStatus = [ordered]@{ exit = $final.Exit; saysNotInstalled = ($final.Output -match 'not installed') }
+  # the install record is gone, but the floor (HKLM\SOFTWARE\Albera\SetupRunIdFloor) is not: an OLDER, validly attested build is refused after an uninstall too, and nothing is installed by that attempt
+  $floorValue = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Albera' -Name 'SetupRunIdFloor' -ErrorAction SilentlyContinue
+  $olderAfter = Invoke-Host (@{ Mode = 'install'; ExpectedTreeHash = $treeHash; SetupRunId = '999' } + $labSources + $approverParams)
+  $afterOlder = Get-Remnants
+  $evidence.rollbackAfterUninstall = [ordered]@{
+    floor = $(if ($floorValue) { [string]$floorValue.SetupRunIdFloor } else { $null }); exit = $olderAfter.Exit
+    refused = ($olderAfter.Exit -eq 3 -and $olderAfter.Output -match 'setup_run_id_older_than_floor'); nothingInstalled = (-not $afterOlder.programData -and -not $afterOlder.programFiles -and @($afterOlder.services).Count -eq 0)
+  }
 }
 # ---- second pass: the same install WITH -GrantHyperVToBroker
 $hvAdminsSid = 'S-1-5-32-578'
@@ -209,7 +226,7 @@ else {
   $grant.status = if (@($checks | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { 'FAIL' } else { 'PASS' }
 }
 $evidence.grant = $grant
-$evidence.pass = ($evidence.grant.status -ne 'FAIL') -and ($evidence.controlPlane.status -eq 'PASS') -and $evidence.rollback.refused -and $evidence.rollback.manifestUnchanged -and $evidence.defaultSettingsHasNoDesktop -and ($install.Exit -eq 0) -and ($status.Exit -eq 0) -and ($again.Exit -eq 0) -and $evidence.reinstall.manifestUnchanged -and $evidence.reinstall.saysAlreadyComplete -and
+$evidence.pass = ($evidence.grant.status -ne 'FAIL') -and ($evidence.controlPlane.status -eq 'PASS') -and $evidence.rollback.refused -and $evidence.rollback.manifestUnchanged -and ($KeepInstalled -or ($evidence.rollbackAfterUninstall.refused -and $evidence.rollbackAfterUninstall.nothingInstalled -and ($evidence.rollbackAfterUninstall.floor -eq $setupRunId))) -and $evidence.defaultSettingsHasNoDesktop -and ($install.Exit -eq 0) -and ($status.Exit -eq 0) -and ($again.Exit -eq 0) -and $evidence.reinstall.manifestUnchanged -and $evidence.reinstall.saysAlreadyComplete -and
   ($KeepInstalled -or (($evidence.uninstall.exit -eq 0) -and -not $evidence.remnants.user -and -not $evidence.remnants.startMenu -and -not $evidence.remnants.runValue -and -not $evidence.remnants.key -and -not $evidence.remnants.programData -and -not $evidence.remnants.programFiles -and @($evidence.remnants.services).Count -eq 0 -and $evidence.finalStatus.saysNotInstalled))
 $evidence | ConvertTo-Json -Depth 6
 if (-not $evidence.pass) { exit 1 }

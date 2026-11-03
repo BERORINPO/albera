@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { parseArguments, pinnedToolsSource } from '../scripts/publish-windows-setup.mjs';
+import { parseArguments, parseBuildRunId, pinnedToolsSource } from '../scripts/publish-windows-setup.mjs';
 
 // Source-level guards for the setup program (albera-setup.exe, PR6), its publish script, its fixtures and the workflow that builds, attests and self-verifies it. They run on every
 // OS and need no .NET SDK. What they cannot show (the NativeAOT bytes, the real attestations) is listed in docs/architecture/control-plane-service.md and in the PR.
@@ -95,6 +95,12 @@ test('gh is run offline with the exact identity: bundle, trusted root, repositor
   assert.match(code['FileSystemChecks.cs'], /new DirectoryInfo\(path\)\.Create\(security\)/u, 'the DACL is given at creation');
   assert.match(code['FileSystemChecks.cs'], /0x40000000[\s\S]*0x10000000/u, 'generic write and generic all count as write access');
   assert.equal(/InheritOnly\) != 0\)\) continue|rule\.InheritOnly\)? continue/u.test(code['FileSystemChecks.cs']), false, 'InheritOnly rules are not skipped');
+  // CREATOR OWNER is a trusted writer ONLY as an inherit-only placeholder (the PowerShell side has the same rule in Get-AclSummary); it is not in the trusted set, and TrustedInstaller is
+  const trustedSet = code['FileSystemChecks.cs'].match(/TrustedWriters = new\(StringComparer\.Ordinal\)\s*\{([\s\S]*?)\};/u);
+  assert.ok(trustedSet, 'the trusted writer set is there');
+  assert.equal(trustedSet[1].includes('S-1-3-0'), false, 'CREATOR OWNER is not a trusted writer by itself');
+  assert.match(trustedSet[1], /S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464/u);
+  assert.match(code['FileSystemChecks.cs'], /IsCreatorOwnerPlaceholder\(AceInfo rule\) => rule\.Sid == CreatorOwnerSid && rule\.InheritOnly;/u);
   assert.match(code['SetupEnvironment.cs'], /\["PSModulePath"\] = PowerShellModulePath/u);
   assert.match(code['SetupEnvironment.cs'], /PowerShellModulePath = @"C:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\Modules"/u);
   assert.equal(csharpString('RepositoryId'), '1424608761');
@@ -267,6 +273,35 @@ test('the publish script reads its two inputs as files, compiles their SHA-256 i
   assert.equal(/fetch\(|https?\.get|download/iu.test(script.replace(/\/\/.*$/gmu, '')), false, 'the script downloads nothing');
   const pkg = JSON.parse(read('package.json'));
   assert.equal(pkg.scripts['build:windows-setup'], 'node scripts/publish-windows-setup.mjs');
+});
+
+test('the run id of the build that made setup is compiled in as a floor (a constant from GITHUB_RUN_ID); a compile check bounds nothing; a release build without a run id is refused', () => {
+  assert.match(pinnedToolsSource('a'.repeat(64), 'b'.repeat(64), '123456789'), /public const ulong BuildRunId = 123456789UL;/u);
+  assert.match(pinnedToolsSource('a'.repeat(64), 'b'.repeat(64)), /public const ulong BuildRunId = 0UL;/u, 'the default (a local compile check) is 0');
+  assert.match(pinnedToolsSource('a'.repeat(64), 'b'.repeat(64), '18446744073709551615'), /BuildRunId = 18446744073709551615UL;/u, 'the largest unsigned 64-bit number');
+  for (const bad of ['', '-1', '01', ' 5', '5 ', '1e3', 'abc', '18446744073709551616', '1"; evil', undefined, null]) {
+    assert.throws(() => parseBuildRunId(bad), /not a run id/u, String(bad));
+  }
+  assert.throws(() => pinnedToolsSource('a'.repeat(64), 'b'.repeat(64), '9; evil'), /not a run id/u, 'nothing but a number reaches the generated C#');
+  const script = read('scripts', 'publish-windows-setup.mjs');
+  assert.match(script, /buildRunId = parseBuildRunId\(process\.env\.GITHUB_RUN_ID\)/u, 'the release build reads the run id the workflow runs under');
+  assert.match(script, /if \(!parsed\.compileCheck\) \{\s*try \{ buildRunId = parseBuildRunId/u, 'and only the release build: the compile check keeps 0');
+  assert.match(script, /pinnedToolsSource\(ghSha256, trustedRootSha256, buildRunId\)/u);
+  assert.match(workflow, /node scripts\/publish-windows-setup\.mjs --gh/u);
+});
+
+test('anti-rollback in setup: the bound is the largest of the install record, the floor in the 64-bit registry and the run id of setup\'s own build; setup only reads the floor and nothing removes it', () => {
+  assert.match(code['SetupFlow.cs'], /InstallRecord\.RollbackRefusal\(verified\.RunId, recorded, floor, PinnedTools\.BuildRunId\)/u);
+  assert.match(code['SetupFlow.cs'], /var floor = deps\.ReadRunIdFloor\(\)/u);
+  assert.match(code['Program.cs'], /ReadRunIdFloor = FileSystemChecks\.ReadSetupRunIdFloor/u);
+  assert.match(code['FileSystemChecks.cs'], /RegistryKey\.OpenBaseKey\(RegistryHive\.LocalMachine, RegistryView\.Registry64\)/u);
+  assert.match(code['FileSystemChecks.cs'], /GetValueKind\(InstallRecord\.FloorValueName\) != RegistryValueKind\.String/u, 'a value of another type refuses; it is not "no floor"');
+  assert.equal(/DeleteValue|DeleteSubKey|\.SetValue\(|CreateSubKey|OpenSubKey\([^)]*,\s*true\)|writable:\s*true/u.test(allCode), false, 'setup reads the registry and never writes it');
+  assert.match(code['InstallRecord.cs'], /FloorKeyPath = @"SOFTWARE\\Albera"/u);
+  assert.match(code['InstallRecord.cs'], /FloorValueName = "SetupRunIdFloor"/u);
+  const ps = read('scripts', 'host', 'albera-host.ps1');
+  assert.match(ps, /OpenSubKey\('SOFTWARE\\Albera'\)/u, 'the installer script reads and writes the same key and value');
+  assert.match(ps, /SetValue\('SetupRunIdFloor', \$Text, \[Microsoft\.Win32\.RegistryValueKind\]::String\)/u);
 });
 
 test('fixtures: synthetic files are labelled, parse as what they claim to be, and no real bundle is claimed', () => {

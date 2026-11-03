@@ -42,6 +42,24 @@ function Write-Fixture([string]$Dir, [string]$Exe) {
   [System.IO.File]::WriteAllText((Join-Path $Dir 'sub\data.json'), '{"a":1}')
 }
 function Try-Run([scriptblock]$Block) { try { & $Block | Out-Null; $null } catch { $_.Exception.Message } }
+# The failure actions as the SCM stores them (REG_BINARY FailureActions): reset, reboot-message offset, command offset, cActions, offset of the array, then {type, delay ms} per action.
+function New-FailureBytes([uint32]$Reset, [object[]]$Actions) {
+  $stream = New-Object System.IO.MemoryStream
+  $writer = New-Object System.IO.BinaryWriter($stream)
+  $writer.Write([uint32]$Reset); $writer.Write([uint32]0); $writer.Write([uint32]0); $writer.Write([uint32]$Actions.Count); $writer.Write([uint32]20)
+  foreach ($a in $Actions) { $writer.Write([uint32]$a[0]); $writer.Write([uint32]$a[1]) }
+  $writer.Flush()
+  , $stream.ToArray()
+}
+$script:GoodFailure = New-FailureBytes 86400 @(@(1, 5000), @(1, 5000), @(0, 0))
+# what the fake SCM stores for an `sc failure <name> reset= ... actions= restart/5000/restart/5000//0` line
+function ConvertTo-FailureFake([string]$Arguments) {
+  $n = ([regex]::Matches($Arguments, 'restart/5000')).Count
+  $list = New-Object System.Collections.Generic.List[object]
+  for ($i = 0; $i -lt $n; $i++) { $list.Add(@(1, 5000)) }
+  $list.Add(@(0, 0))
+  , (New-FailureBytes 86400 ($list.ToArray()))
+}
 function Set-Expected {
   $dirs = @{}; foreach ($b in (Get-BuildSources)) { $dirs[$b.Name] = $b.Dir }
   $script:ExpectedTreeHash = Get-CanonicalTreeHash (Get-ComponentHashes $dirs)
@@ -55,11 +73,17 @@ switch ($Case) {
   'copy' {
     # The temp folders belong to the current user, so the real trust check would (rightly) refuse the existing copies; it has its own case below. Stubbed here to test the copy and hash logic alone.
     function Get-PathTrustReasons { , @() }
+    # BUILTIN\Users get read and execute on bin\approver and on nothing else of the copies: icacls is replaced by a recorder (the real function has its own checks in the cp case)
+    $script:UsersGrants = New-Object 'System.Collections.Generic.List[string]'
+    function Grant-UsersReadExecute([string]$Path) { $script:UsersGrants.Add($Path) }
     New-Item -ItemType Directory -Force -Path $L.DataRoot, $L.InstallRoot | Out-Null
     $script:Manifest = New-Manifest
     foreach ($s in (Get-BuildSources)) { Write-Fixture $s.Dir $s.Exe }
     $result.expected = Set-Expected
     $result.firstRunError = Try-Run { Copy-HostBinaries }
+    $result.approverBinDir = $L.ApproverBinDir
+    $result.usersGrants = @($script:UsersGrants.ToArray())
+    $script:UsersGrants.Clear()
     $result.recorded = @($script:Manifest['created']['binaries'].Keys | Sort-Object)
     $result.destFiles = @(Get-TreeEntries $L.BinRoot -FilesOnly | ForEach-Object { $_.Rel } | Sort-Object)   # built while walking: the temp path may be an 8.3 short name
     $result.noPartialLeft = (@(Get-ChildItem -LiteralPath $L.BinRoot -Directory | Where-Object { $_.Name -like '*.partial' }).Count -eq 0)
@@ -198,6 +222,36 @@ switch ($Case) {
     $result.configUnknownRefused = Try-Run { Remove-HostTree $L.ControlPlaneConfigDir @() @() $false }
     Remove-Item -LiteralPath (Join-Path $L.ControlPlaneConfigDir 'extra.json'); [System.IO.File]::WriteAllText($L.ApprovalSettings, '{}')
     $result.configKnownRemoved = Try-Run { Remove-HostTree $L.ControlPlaneConfigDir @() @() $false }
+    # 8. Remove-TreeNoFollow: a junction INSIDE the tree is removed as a link (its target is neither entered nor touched), a read-only file goes, the tree is gone
+    $nf = Join-Path $Work 'nofollow'; New-Item -ItemType Directory -Force -Path (Join-Path $nf 'sub\deep') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $nf 'sub\deep\a.txt'), 'a')
+    [System.IO.File]::WriteAllText((Join-Path $nf 'ro.txt'), 'ro'); (Get-Item -LiteralPath (Join-Path $nf 'ro.txt')).IsReadOnly = $true
+    $nfTarget = Join-Path $Work 'nofollow-target'; New-Item -ItemType Directory -Force -Path (Join-Path $nfTarget 'inner') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $nfTarget 'precious.txt'), 'keep'); [System.IO.File]::WriteAllText((Join-Path $nfTarget 'inner\precious2.txt'), 'keep')
+    New-Junction (Join-Path $nf 'sub\link') $nfTarget
+    $result.noFollowError = Try-Run { Remove-TreeNoFollow $nf }
+    $result.noFollowTreeGone = -not (Test-Path -LiteralPath $nf)
+    $result.noFollowTargetIntact = (Test-Path -LiteralPath (Join-Path $nfTarget 'precious.txt')) -and (Test-Path -LiteralPath (Join-Path $nfTarget 'inner\precious2.txt'))
+    $nfSelf = Join-Path $Work 'nofollow-self'; New-Junction $nfSelf $nfTarget   # the folder that is passed in IS a link: removed as a link, the target stays
+    $result.noFollowSelfError = Try-Run { Remove-TreeNoFollow $nfSelf }
+    $result.noFollowSelfGone = -not (Test-Path -LiteralPath $nfSelf)
+    $result.noFollowSelfTargetIntact = (Test-Path -LiteralPath (Join-Path $nfTarget 'precious.txt'))
+    # 9. the scan the migration preflight makes (Get-LegacyUnknownProblems), on a fresh data root and install folder
+    foreach ($p in @($L.DataRoot, $L.InstallRoot)) { if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force } }
+    foreach ($d in (Get-DataFolders)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+    [System.IO.File]::WriteAllText((Join-Path $L.BrokerDbDir 'journal.sqlite'), 'x'); [System.IO.File]::WriteAllText((Join-Path $L.AuthorityDir 'policy.json'), '{}')
+    New-Item -ItemType Directory -Force -Path (Join-Path $L.InstallRoot 'bin\setup'), (Join-Path $L.InstallRoot 'bin\broker'), (Join-Path $L.InstallRoot 'setup-work\run1') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $L.InstallRoot 'bin\broker\a.dll'), 'x'); [System.IO.File]::WriteAllText((Join-Path $L.InstallRoot 'bin\setup\albera-setup.exe'), 'x')
+    $scan = Get-LegacyUnknownProblems; $result.scanClean = @($scan).Count
+    [System.IO.File]::WriteAllText((Join-Path $L.AuthorityDir 'evil.txt'), 'not ours')
+    $scan = Get-LegacyUnknownProblems; $result.scanUnknownInData = @($scan)
+    Remove-Item -LiteralPath (Join-Path $L.AuthorityDir 'evil.txt')
+    New-Junction (Join-Path $L.BrokerDbDir 'link') $nfTarget
+    $scan = Get-LegacyUnknownProblems; $result.scanLinkInData = @($scan)
+    Remove-Junction (Join-Path $L.BrokerDbDir 'link')
+    New-Item -ItemType Directory -Force -Path (Join-Path $L.InstallRoot 'bin\evil') | Out-Null; [System.IO.File]::WriteAllText((Join-Path $L.InstallRoot 'bin\evil\x.dll'), 'x')
+    $scan = Get-LegacyUnknownProblems; $result.scanUnknownInInstall = @($scan)
+    $result.scanTargetIntact = (Test-Path -LiteralPath (Join-Path $nfTarget 'precious.txt'))
   }
   'trust' {
     function Set-OwnedByMe([string]$Path) {
@@ -277,6 +331,18 @@ switch ($Case) {
     Remove-Junction $link
     # a folder created exactly as asked is still refused when it fails the installer's trust test (owner is not SYSTEM/Administrators): no later step may run
     $result.trustedCreateError = Try-Run { New-TrustedDirectory (Join-Path $Work 'trusted') $grants $me }
+    # CREATOR OWNER (S-1-3-0): an INHERIT-ONLY rule is the placeholder every Program Files folder carries - it is listed, but it is not a writer of THIS folder. (Windows stores every CREATOR OWNER rule as
+    # inherit-only - one that is not is dropped or converted when it is set - so a rule that applies to the folder itself cannot be made here; Test-TrustSummary and the pure C# EvaluateRules count it as a writer.)
+    $creatorOwner = New-Object System.Security.Principal.SecurityIdentifier('S-1-3-0')
+    $both = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
+    $fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
+    $placeholder = Join-Path $Work 'co-placeholder'; New-Item -ItemType Directory -Path $placeholder | Out-Null
+    $acl = [System.IO.Directory]::GetAccessControl($placeholder)
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($creatorOwner, $fullControl, $both, [System.Security.AccessControl.PropagationFlags]::InheritOnly, [System.Security.AccessControl.AccessControlType]::Allow)))
+    [System.IO.Directory]::SetAccessControl($placeholder, $acl)
+    $placeholderSummary = Get-AclSummary $placeholder
+    $result.creatorOwnerPlaceholder = [ordered]@{ listed = (@($placeholderSummary.AllowSids) -contains 'S-1-3-0'); writer = (@($placeholderSummary.WriteSids) -contains 'S-1-3-0') }
+    $result.creatorOwnerPlaceholderRule = (([System.IO.Directory]::GetAccessControl($placeholder).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq 'S-1-3-0' } | Select-Object -First 1).PropagationFlags).ToString()
   }
   'hyperv' {
     # -GrantHyperVToBroker: the shipped step list, VM lookup, group change and its undo, run against FAKES of the machine (Get-CimInstance, Get-LocalGroup, Add-/Remove-LocalGroupMember,
@@ -304,7 +370,7 @@ switch ($Case) {
       if (-not $script:Svc.ContainsKey($Name)) { return [pscustomobject]@{ Exists = $false } }
       $spec = Get-ServiceSpecs | Where-Object { $_.Name -eq $Name }
       [pscustomobject]@{ Exists = $true; StartName = "NT SERVICE\$Name"; PathName = (Get-ServiceCommandLine $spec.Exe $spec.Config); StartMode = $script:FakeStartMode; DelayedAutoStart = $script:FakeDelayed; ServiceType = 'Own Process'
-        SidTypeText = ('SERVICE_SID_TYPE:  ' + $script:Svc[$Name].ToUpperInvariant()); PrivilegesText = 'SeChangeNotifyPrivilege'; FailureText = 'FAILURE_ACTIONS : RESTART -- Delay = 5000 milliseconds. RESTART -- Delay = 5000 milliseconds.'; State = 'Stopped' }
+        SidTypeText = ('SERVICE_SID_TYPE:  ' + $script:Svc[$Name].ToUpperInvariant()); PrivilegesText = 'SeChangeNotifyPrivilege'; FailureActions = $script:GoodFailure; State = 'Stopped' }
     }
     function Invoke-Sc([string]$Arguments) {
       $script:ScCalls.Add($Arguments)
@@ -653,6 +719,20 @@ switch ($Case) {
     $origChain = ${function:Get-ReparseChain}
     function Get-ReparseChain([string]$Path) { $c = & $origChain $Path; , @($c | Where-Object { $_.Length -ge $Work.Length -and $_.StartsWith($Work, [System.StringComparison]::OrdinalIgnoreCase) }) }   # only links INSIDE the temp folder count (the temp path itself may sit behind one)
     $origResolveHostSids = ${function:Resolve-HostSids}
+    # the registry value HKLM\SOFTWARE\Albera\SetupRunIdFloor, in memory
+    $script:FloorValue = $null
+    function Get-SetupRunIdFloor { $script:FloorValue }
+    function Write-SetupRunIdFloorRaw([string]$Text) { $script:FloorValue = $Text }
+    # BUILTIN\Users read and execute: icacls is replaced by a recorder that also answers the read-back (the real functions are tested in section 8)
+    $realGrantUsers = ${function:Grant-UsersReadExecute}; $realUsersProblems = ${function:Get-UsersAceProblems}
+    $script:UsersAce = @{}; $script:UsersGrants = New-Object 'System.Collections.Generic.List[string]'
+    function Grant-UsersReadExecute([string]$Path) { $script:UsersGrants.Add($Path); $script:UsersAce[$Path.ToLowerInvariant()] = $true }
+    function Get-UsersAceProblems([string]$Path, [bool]$ShouldHave) {
+      $has = $script:UsersAce.ContainsKey($Path.ToLowerInvariant())
+      if ($ShouldHave -and -not $has) { return , @('users_ace_missing') }
+      if (-not $ShouldHave -and $has) { return , @('users_ace_unexpected') }
+      , @()
+    }
     $approverSid = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
     $VmName = 'albera-clone-01'; $ComputerId = 'clone-01'; $ProjectId = 'albera-host'; $GrantHyperVToBroker = $false
     $ApproverKeyId = 'hello-0123456789abcdef'; $ApproverPublicKey = 'x'; $ApproverSid = $approverSid
@@ -737,11 +817,11 @@ switch ($Case) {
       $script:Order.Add('sc ' + $Arguments)
       $t = $Arguments -split ' '; $name = $t[1]
       switch ($t[0]) {
-        'create' { $script:Svc[$name] = [ordered]@{ auto = ($Arguments -like '*start= delayed-auto*'); delayed = ($Arguments -like '*start= delayed-auto*'); sid = 'none'; privs = 'all'; failure = '' } }
+        'create' { $script:Svc[$name] = [ordered]@{ auto = ($Arguments -like '*start= delayed-auto*'); delayed = ($Arguments -like '*start= delayed-auto*'); sid = 'none'; privs = 'all'; failure = $null } }
         'config' { if ($Arguments -like '*start= delayed-auto*') { $script:Svc[$name].auto = $true; $script:Svc[$name].delayed = $true } }
         'sidtype' { $script:Svc[$name].sid = $t[2] }
         'privs' { $script:Svc[$name].privs = $t[2] }
-        'failure' { $n = ([regex]::Matches($Arguments, 'restart/5000')).Count; $script:Svc[$name].failure = ((1..$n | ForEach-Object { 'RESTART -- Delay = 5000 milliseconds.' }) -join ' ') }
+        'failure' { $script:Svc[$name].failure = ConvertTo-FailureFake $Arguments }
       }
       [pscustomobject]@{ Exit = 0; Out = ''; Err = '' }
     }
@@ -749,7 +829,7 @@ switch ($Case) {
       if (-not $script:Svc.ContainsKey($Name)) { return [pscustomobject]@{ Exists = $false } }
       $s = $script:Svc[$Name]; $spec = Get-ServiceSpecs | Where-Object { $_.Name -eq $Name }
       [pscustomobject]@{ Exists = $true; StartName = "NT SERVICE\$Name"; PathName = (Get-ServiceCommandLine $spec.Exe $spec.Config); StartMode = $(if ($s.auto) { 'Auto' } else { 'Manual' }); DelayedAutoStart = $s.delayed; ServiceType = 'Own Process'
-        SidTypeText = ('SERVICE_SID_TYPE:  ' + $s.sid.ToUpperInvariant()); PrivilegesText = $(if ($s.privs -eq 'SeChangeNotifyPrivilege') { 'PRIVILEGES : SeChangeNotifyPrivilege' } else { 'PRIVILEGES : SeImpersonatePrivilege SeChangeNotifyPrivilege SeCreateGlobalPrivilege' }); FailureText = $s.failure; State = 'Stopped' }
+        SidTypeText = ('SERVICE_SID_TYPE:  ' + $s.sid.ToUpperInvariant()); PrivilegesText = $(if ($s.privs -eq 'SeChangeNotifyPrivilege') { 'PRIVILEGES : SeChangeNotifyPrivilege' } else { 'PRIVILEGES : SeImpersonatePrivilege SeChangeNotifyPrivilege SeCreateGlobalPrivilege' }); FailureActions = $s.failure; State = 'Stopped' }
     }
     $script:LaunchExit = 0
     function Invoke-LaunchCheck { $script:Order.Add('launch-check'); [pscustomobject]@{ Exit = $script:LaunchExit; Out = 'SERVICE_CONFIG=ok CPHOST_LAUNCH=ok' } }
@@ -773,7 +853,7 @@ switch ($Case) {
     $script:Manifest['created']['services'] = @($K.BrokerService, $K.AuthorityService, $K.ControlPlaneService)
     # drift is seen: not delayed, no failure actions, an extra privilege
     $script:Svc[$K.ControlPlaneService].delayed = $false; $result.cpNotDelayed = & $cpStep.Test; $script:Svc[$K.ControlPlaneService].delayed = $true
-    $script:Svc[$K.ControlPlaneService].failure = ''; $result.cpNoFailureActions = & $cpStep.Test; $script:Svc[$K.ControlPlaneService].failure = 'RESTART -- Delay = 5000 milliseconds. RESTART -- Delay = 5000 milliseconds.'
+    $script:Svc[$K.ControlPlaneService].failure = (New-FailureBytes 86400 @()); $result.cpNoFailureActions = & $cpStep.Test; $script:Svc[$K.ControlPlaneService].failure = $script:GoodFailure
     $script:Svc[$K.ControlPlaneService].privs = 'all'; $result.cpExtraPrivilege = & $cpStep.Test; $script:Svc[$K.ControlPlaneService].privs = 'SeChangeNotifyPrivilege'
     $result.cpDriftFixed = & $cpStep.Test
 
@@ -791,6 +871,8 @@ switch ($Case) {
     $result.shBefore = & $shStep.Test
     $result.shError = Try-Run { & $shStep.Do }
     $result.shLauncherIsShipped = ([System.IO.File]::ReadAllText($L.OpenScript) -ceq (Get-OpenAlberaScriptText $L))
+    $result.launcherDir = $L.LauncherDir
+    $result.shUsersGrants = @($script:UsersGrants.ToArray())
     $result.shLauncherRecord = $script:Manifest['created']['launcher']
     $result.shLauncherSha = Get-Sha256File $L.OpenScript
     $result.shShortcutsRecord = @($script:Manifest['created']['shortcuts'])
@@ -806,6 +888,20 @@ switch ($Case) {
     $result.shWithSetupError = Try-Run { & $shStep.Do }
     $result.shWithSetupRecord = @($script:Manifest['created']['shortcuts'])
     $result.shWithSetupAfter = & $shStep.Test
+    # ... but only for a setup.exe that passes the trust test (file AND folder) and, when setup left the copy it verified beside repo\, is that copy
+    $trustStub = ${function:Get-PathTrustReasons}
+    function Get-PathTrustReasons([string]$Path, [string[]]$AllowedWriters, [bool]$RequireProtected) { if ($Path -ceq $L.SetupExe) { , @('owner_untrusted') } else { , @() } }
+    $result.setupFileUntrusted = [ordered]@{ problem = (Get-SetupExeProblem); links = @(Get-CurrentShortcutSpecs | ForEach-Object { Split-Path -Leaf $_.Path }); test = (& $shStep.Test) }
+    function Get-PathTrustReasons([string]$Path, [string[]]$AllowedWriters, [bool]$RequireProtected) { if ($Path -ceq $L.SetupBinDir) { , @('writer_untrusted:S-1-5-32-545') } else { , @() } }
+    $result.setupFolderUntrusted = [ordered]@{ problem = (Get-SetupExeProblem); links = @(Get-CurrentShortcutSpecs | ForEach-Object { Split-Path -Leaf $_.Path }) }
+    Set-Item -Path Function:\Get-PathTrustReasons -Value $trustStub
+    $verifiedSetup = Join-Path $Work 'setup\albera-setup.exe'
+    Write-Bytes $verifiedSetup 'another setup'
+    $result.setupNotTheVerifiedCopy = [ordered]@{ problem = (Get-SetupExeProblem); links = @(Get-CurrentShortcutSpecs | ForEach-Object { Split-Path -Leaf $_.Path }) }
+    Write-Bytes $verifiedSetup 'setup'
+    $result.setupIsTheVerifiedCopy = [ordered]@{ problem = (Get-SetupExeProblem); links = @(Get-CurrentShortcutSpecs | ForEach-Object { Split-Path -Leaf $_.Path }) }
+    Remove-Item -LiteralPath $verifiedSetup -Force
+    $result.setupLinksNow = @(Get-CurrentShortcutSpecs | ForEach-Object { Split-Path -Leaf $_.Path })
     # drift is seen: the Run value, the launcher, a shortcut target
     $script:RunValue = '"C:\evil.exe"'; $result.shRunChanged = & $shStep.Test; Set-RunEntryValue
     [System.IO.File]::WriteAllText($L.OpenScript, 'changed'); $result.shLauncherChanged = & $shStep.Test; [System.IO.File]::WriteAllText($L.OpenScript, (Get-OpenAlberaScriptText $L))
@@ -819,9 +915,38 @@ switch ($Case) {
     # ---- 5. the install root made by albera-setup.exe (bin\setup, setup-work) is adopted; anything else in it is not
     if (Test-Path -LiteralPath $L.DataRoot) { Remove-Item -LiteralPath $L.DataRoot -Recurse -Force }
     if (Test-Path -LiteralPath $L.InstallRoot) { Remove-Item -LiteralPath $L.InstallRoot -Recurse -Force }
+    $script:AclFake = @{}
+    $trustedAcl = [pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $false; AllowSids = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-32-545'); WriteSids = @('S-1-5-18', 'S-1-5-32-544') }
+    function Get-AclSummary([string]$Path) {
+      $k = $Path.ToLowerInvariant()
+      if (-not $script:AclFake.ContainsKey($k)) { return $trustedAcl }
+      if ($script:AclFake[$k] -eq 'unreadable') { throw 'access denied (fake)' }
+      $script:AclFake[$k]
+    }
     $why = Get-InstallRootAdoptionReasons; $result.adoptAbsent = $why.Count
     Write-Bytes (Join-Path $L.InstallRoot 'bin\setup\albera-setup.exe') 'setup'; Write-Bytes (Join-Path $L.InstallRoot 'setup-work\abc123\copy\repo\x.txt') 'x'
     $why = Get-InstallRootAdoptionReasons; $result.adoptSetupOnly = $why.Count
+    # every entry below bin\setup and setup-work is read, files included: owner SYSTEM / Administrators / TrustedInstaller, no other writer
+    $tiSid = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+    function Reasons { $w = Get-InstallRootAdoptionReasons; foreach ($i in @($w)) { $i } }   # the function returns one array object (, @()): assigned first, then handed on item by item
+    function Set-FakeAcl([string]$Rel, $Summary) { $script:AclFake[(Join-Path $L.InstallRoot $Rel).ToLowerInvariant()] = $Summary }
+    $userOwned = [pscustomobject]@{ Owner = $approverSid; Protected = $false; AllowSids = @($approverSid); WriteSids = @($approverSid) }
+    $usersWrite = [pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $false; AllowSids = @('S-1-5-32-545'); WriteSids = @('S-1-5-32-544', 'S-1-5-32-545') }
+    $tiOwned = [pscustomobject]@{ Owner = $tiSid; Protected = $false; AllowSids = @($tiSid); WriteSids = @($tiSid, 'S-1-5-18') }
+    $creatorOwnerWrite = [pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $false; AllowSids = @('S-1-3-0'); WriteSids = @('S-1-3-0') }
+    Set-FakeAcl 'bin\setup\albera-setup.exe' $userOwned
+    $result.adoptSetupExeUserOwned = @(Reasons)
+    $script:AclFake.Clear(); Set-FakeAcl 'setup-work\abc123\copy\repo\x.txt' $usersWrite
+    $result.adoptDeepFileUsersWrite = @(Reasons)
+    $script:AclFake.Clear(); Set-FakeAcl 'setup-work\abc123\copy\repo' $userOwned
+    $result.adoptDeepFolderUserOwned = @(Reasons)
+    $script:AclFake.Clear(); Set-FakeAcl 'bin' $creatorOwnerWrite
+    $result.adoptCreatorOwnerOnTheFolder = @(Reasons)
+    $script:AclFake.Clear(); Set-FakeAcl 'bin\setup\albera-setup.exe' 'unreadable'
+    $result.adoptUnreadable = @(Reasons)
+    $script:AclFake.Clear(); Set-FakeAcl 'bin' $tiOwned; Set-FakeAcl 'bin\setup' $tiOwned
+    $result.adoptTrustedInstaller = (Get-InstallRootAdoptionReasons).Count
+    $script:AclFake.Clear()
     New-CpManifest; $script:Manifest['created']['installRoot'] = $false
     $foldersStep = Get-Step 'folders'
     $result.adoptFoldersTest = & $foldersStep.Test
@@ -846,7 +971,10 @@ switch ($Case) {
     function Get-AclSummary([string]$Path) { [pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $true; AllowSids = @(); WriteSids = @() } }
     function Test-AclMatchesPlan($Entry, $Summary) { , @() }
     function Resolve-HostSids { $script:Sids = @{ Broker = (Get-DerivedServiceSid $K.BrokerService); Authority = (Get-DerivedServiceSid $K.AuthorityService); ControlPlane = $cpSvcSid; Approver = $approverSid; Legacy = $false } }
+    $script:UsersGrants.Clear()
     $result.adoptDoError = Try-Run { & $foldersStep.Do }
+    $result.adoptUsersGrants = @($script:UsersGrants.ToArray())
+    $result.setupBinDir = $L.SetupBinDir
     $result.adoptRecorded = [bool]$script:Manifest['created']['installRoot']
     $result.adoptRecordedOnDisk = [bool](Read-Manifest)['created']['installRoot']
     $result.adoptAclFirst = @($script:Calls)[0]
@@ -876,6 +1004,89 @@ switch ($Case) {
     $result.legacyLayout = [ordered]@{ legacy = (Test-LegacyLayout); sids = $(Resolve-HostSids; [ordered]@{ cp = $script:Sids.ControlPlane; legacyFlag = $script:Sids.Legacy }) }
     New-CpManifest; Resolve-HostSids
     $result.newLayout = [ordered]@{ legacy = (Test-LegacyLayout); cpIsServiceSid = ($script:Sids.ControlPlane -ceq $cpSvcSid); approver = $script:Sids.Approver }
+
+    # ---- 7. the floor (HKLM\SOFTWARE\Albera\SetupRunIdFloor): written by every run that has a run id, only ever raised, compared WITH the record, and not removed by uninstall
+    function Get-Refusal($Floor, $Record, [string]$Run) {
+      $script:FloorValue = $Floor
+      New-CpManifest
+      if ($null -ne $Record) { $script:Manifest['setupRunId'] = $Record }
+      $script:SetupRunId = $Run
+      Get-RollbackRefusal
+    }
+    $result.floorRefusal = [ordered]@{
+      floorOlder = Get-Refusal '200' '100' '150'
+      recordOlder = Get-Refusal '100' '200' '150'
+      floorOnlyOlder = Get-Refusal '200' $null '199'
+      floorOnlySame = Get-Refusal '200' $null '200'
+      floorOnlyNewer = Get-Refusal '200' $null '201'
+      noFloorNoRecord = Get-Refusal $null $null '1'
+      junk = Get-Refusal 'abc' $null '5'
+      empty = Get-Refusal '' $null '5'
+      notAString = Get-Refusal 'not-a-string' $null '5'
+      biggest = Get-Refusal '18446744073709551615' $null '18446744073709551614'
+    }
+    $script:FloorValue = $null; $SetupRunId = $null; Set-SetupRunIdFloorValue; $f0 = $script:FloorValue
+    $ratchet = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($id in @('150', '100', '200', '200', '18446744073709551615', '5')) { $SetupRunId = $id; Set-SetupRunIdFloorValue; $ratchet.Add($script:FloorValue) }
+    $SetupRunId = $null
+    $result.floorRatchet = [ordered]@{ nothingSupplied = $f0; steps = $ratchet.ToArray() }
+    $script:FloorValue = 'abc'; $SetupRunId = '5'
+    $result.floorJunkNotOverwritten = [ordered]@{ error = (Try-Run { Set-SetupRunIdFloorValue }); value = $script:FloorValue }
+    $SetupRunId = $null
+    $script:FloorValue = $null; $script:Manifest = $null; $SetupRunId = '300'; Set-ManifestSetupRunId; $SetupRunId = $null
+    $result.floorWithoutManifest = $script:FloorValue
+    # an install of run 500 writes the floor ('sources' step), then uninstall removes the record and the data root - and not the floor - and an install of run 400 is refused
+    if (Test-Path -LiteralPath $L.DataRoot) { Remove-Item -LiteralPath $L.DataRoot -Recurse -Force }   # only the record may be left in it, as after a complete uninstall
+    New-CpManifest; $script:FloorValue = $null; $SetupRunId = '500'
+    $sourcesStep = Get-Step 'sources'
+    $result.floorDoError = Try-Run { & $sourcesStep.Do }
+    $result.floorAfterInstall = $script:FloorValue
+    $result.floorUninstallIds = @(Get-UninstallSteps | ForEach-Object { $_.Id })
+    $manifestStep = Get-UninstallSteps | Where-Object { $_.Id -eq 'manifest' }
+    $result.floorUninstallError = Try-Run { & $manifestStep.Do }
+    $result.floorRecordGone = -not (Test-Path -LiteralPath $L.ManifestPath)
+    $result.floorAfterUninstall = $script:FloorValue
+    $SetupRunId = '400'
+    $result.floorOlderAfterUninstall = [ordered]@{ refusal = (Get-RollbackRefusal); test = ([string](& $sourcesStep.Test)) }
+    $SetupRunId = '500'; $result.floorSameAfterUninstall = (Get-RollbackRefusal)
+    $SetupRunId = '501'; $result.floorNewerAfterUninstall = (Get-RollbackRefusal)
+    $SetupRunId = $null
+
+    # ---- 8. the REAL Grant-UsersReadExecute / Get-UsersAceProblems, with icacls and the ACL reader replaced
+    Set-Item -Path Function:\Grant-UsersReadExecute -Value $realGrantUsers
+    Set-Item -Path Function:\Get-UsersAceProblems -Value $realUsersProblems
+    $IcaclsExe = 'C:\fake\icacls.exe'
+    $script:NativeCalls = New-Object 'System.Collections.Generic.List[string]'; $script:NativeExit = 0
+    function Invoke-Native([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000, [switch]$MinimalEnvironment) { $script:NativeCalls.Add($Exe + ' | ' + $Arguments); [pscustomobject]@{ Exit = $script:NativeExit; Out = ''; Err = '' } }
+    $script:AclUsers = 'rx'
+    function Get-AclSummary([string]$Path) {
+      $allow = @('S-1-5-18', 'S-1-5-32-544'); $write = @('S-1-5-18', 'S-1-5-32-544')
+      if ($script:AclUsers -ne 'none') { $allow += 'S-1-5-32-545' }
+      if ($script:AclUsers -eq 'write') { $write += 'S-1-5-32-545' }
+      [pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $true; AllowSids = $allow; WriteSids = $write }
+    }
+    $usersDir = Join-Path $Work 'users-dir'; New-Item -ItemType Directory -Force -Path $usersDir | Out-Null
+    $result.usersDir = $usersDir
+    $script:AclUsers = 'rx'
+    $result.usersGrantError = Try-Run { Grant-UsersReadExecute $usersDir }
+    $result.usersNativeCalls = @($script:NativeCalls.ToArray())
+    $script:NativeCalls.Clear(); $script:AclUsers = 'none'
+    $result.usersReadBackMissing = Try-Run { Grant-UsersReadExecute $usersDir }
+    $script:AclUsers = 'write'
+    $result.usersReadBackWrite = Try-Run { Grant-UsersReadExecute $usersDir }
+    $script:AclUsers = 'rx'; $script:NativeExit = 5
+    $result.usersIcaclsFails = Try-Run { Grant-UsersReadExecute $usersDir }
+    $script:NativeExit = 0; $script:NativeCalls.Clear()
+    $usersLink = Join-Path $Work 'users-link'; New-Junction $usersLink $usersDir
+    $result.usersLinkError = Try-Run { Grant-UsersReadExecute $usersLink }
+    $result.usersLinkNativeCalls = $script:NativeCalls.Count
+    Remove-Junction $usersLink
+    $problems = [ordered]@{}
+    foreach ($mode in @('rx', 'none', 'write')) {
+      $script:AclUsers = $mode
+      $problems[$mode] = [ordered]@{ shouldHave = (Get-UsersAceProblems $usersDir $true); shouldNot = (Get-UsersAceProblems $usersDir $false) }
+    }
+    $result.usersProblems = $problems
   }
   'migrate' {
     # -Mode migrate end to end against a TEMP layout with FAKES for the machine (services, the account and its profile, processes, the Hyper-V group, the machine key, the shell, the registry,
@@ -907,11 +1118,11 @@ switch ($Case) {
       $script:Order.Add('sc ' + $Arguments)
       $t = $Arguments -split ' '; $name = $t[1]
       switch ($t[0]) {
-        'create' { $script:Svc[$name] = [ordered]@{ auto = ($Arguments -like '*start= delayed-auto*'); delayed = ($Arguments -like '*start= delayed-auto*'); sid = 'none'; privs = 'all'; failure = '' } }
+        'create' { $script:Svc[$name] = [ordered]@{ auto = ($Arguments -like '*start= delayed-auto*'); delayed = ($Arguments -like '*start= delayed-auto*'); sid = 'none'; privs = 'all'; failure = $null } }
         'config' { if ($Arguments -like '*start= delayed-auto*') { $script:Svc[$name].auto = $true; $script:Svc[$name].delayed = $true } }
         'sidtype' { $script:Svc[$name].sid = $t[2] }
         'privs' { $script:Svc[$name].privs = $t[2] }
-        'failure' { $n = ([regex]::Matches($Arguments, 'restart/5000')).Count; $script:Svc[$name].failure = ((1..$n | ForEach-Object { 'RESTART -- Delay = 5000 milliseconds.' }) -join ' ') }
+        'failure' { $script:Svc[$name].failure = ConvertTo-FailureFake $Arguments }
         'delete' { $script:Svc.Remove($name) }
         'sdshow' { return [pscustomobject]@{ Exit = 0; Out = (Get-BrokerServiceSddl $script:Sids.ControlPlane); Err = '' } }
       }
@@ -921,12 +1132,24 @@ switch ($Case) {
       if (-not $script:Svc.ContainsKey($Name)) { return [pscustomobject]@{ Exists = $false } }
       $s = $script:Svc[$Name]; $spec = Get-ServiceSpecs | Where-Object { $_.Name -eq $Name }
       [pscustomobject]@{ Exists = $true; StartName = "NT SERVICE\$Name"; PathName = (Get-ServiceCommandLine $spec.Exe $spec.Config); StartMode = $(if ($s.auto) { 'Auto' } else { 'Manual' }); DelayedAutoStart = $s.delayed; ServiceType = 'Own Process'
-        SidTypeText = ('SERVICE_SID_TYPE:  ' + $s.sid.ToUpperInvariant()); PrivilegesText = $(if ($s.privs -eq 'SeChangeNotifyPrivilege') { 'PRIVILEGES : SeChangeNotifyPrivilege' } else { 'PRIVILEGES : SeImpersonatePrivilege SeChangeNotifyPrivilege' }); FailureText = $s.failure; State = 'Stopped' }
+        SidTypeText = ('SERVICE_SID_TYPE:  ' + $s.sid.ToUpperInvariant()); PrivilegesText = $(if ($s.privs -eq 'SeChangeNotifyPrivilege') { 'PRIVILEGES : SeChangeNotifyPrivilege' } else { 'PRIVILEGES : SeImpersonatePrivilege SeChangeNotifyPrivilege' }); FailureActions = $s.failure; State = 'Stopped' }
     }
     function Wait-ServiceState([string]$Name, [string[]]$States, [int]$Seconds) { $true }
     function Invoke-Native([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000, [switch]$MinimalEnvironment) { $script:Order.Add('native ' + $Arguments); $out = if ($Arguments -like 'sdshow*') { Get-BrokerServiceSddl $script:Sids.ControlPlane } else { '' }; [pscustomobject]@{ Exit = 0; Out = $out; Err = '' } }
     function Read-AuthoritySigningKey([string]$KeyName, [string]$Scope = 'machine') { [pscustomobject]@{ report = [pscustomobject]@{ keyName = $KeyName; exportPolicy = 0; algorithm = 'ECDSA_P256'; keySize = 256; owner = 'S-1-5-32-544'; allowSids = @('S-1-5-18', 'S-1-5-32-544', (Get-DerivedServiceSid $K.AuthorityService)) }; spki = $spki } }
-    function Get-LiveControlPlaneUser { if ($script:UserExists) { [pscustomobject]@{ Name = $K.ControlPlaneUser; Sid = $legacySid; Description = $K.ControlPlaneUserDescription; Enabled = $true } } else { $null } }
+    function Get-LiveControlPlaneUser { if ($script:UserExists) { [pscustomobject]@{ Name = $script:LiveName; Sid = $script:LiveSid; Description = $script:LiveDescription; Enabled = $script:UserEnabled } } else { $null } }
+    function Disable-LocalUser { param($SID) $script:Order.Add('Disable-LocalUser ' + $SID.Value); if (-not $script:DisableIsNoOp) { $script:UserEnabled = $false } }
+    $script:FloorValue = $null
+    function Get-SetupRunIdFloor { $script:FloorValue }
+    function Write-SetupRunIdFloorRaw([string]$Text) { $script:FloorValue = $Text }
+    $script:UsersAce = @{}
+    function Grant-UsersReadExecute([string]$Path) { $script:Order.Add('users-rx ' + (Split-Path -Leaf $Path)); $script:UsersAce[$Path.ToLowerInvariant()] = $true }
+    function Get-UsersAceProblems([string]$Path, [bool]$ShouldHave) {
+      $has = $script:UsersAce.ContainsKey($Path.ToLowerInvariant())
+      if ($ShouldHave -and -not $has) { return , @('users_ace_missing') }
+      if (-not $ShouldHave -and $has) { return , @('users_ace_unexpected') }
+      , @()
+    }
     function Remove-LocalUser { param($SID) $script:Order.Add('Remove-LocalUser ' + $SID.Value); $script:UserExists = $false }
     function Get-ProcessIdsOwnedBy([string]$Sid) { , @($script:Pids.ToArray()) }
     function End-ProcessById([int]$Id) { $script:Order.Add("stop pid $Id"); [void]$script:Pids.Remove($Id) }
@@ -955,6 +1178,7 @@ switch ($Case) {
     function New-LegacyInstall([bool]$Grant) {
       foreach ($p in @($L.DataRoot, $L.InstallRoot, $RepoRoot, (Join-Path $Work 'profile'))) { if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force } }
       $script:Svc = @{}; $script:Order.Clear(); $script:UserExists = $true; $script:ProfileExists = $true; $script:KeyExists = $true; $script:RunValue = $null
+      $script:UsersAce = @{}; $script:UserEnabled = $true; $script:DisableIsNoOp = $false; $script:LiveName = $K.ControlPlaneUser; $script:LiveSid = $legacySid; $script:LiveDescription = $K.ControlPlaneUserDescription
       $script:Pids = New-Object 'System.Collections.Generic.List[int]'; foreach ($i in @(4101, 4102)) { $script:Pids.Add($i) }
       $script:Members = New-Object 'System.Collections.Generic.List[string]'
       $script:Sids = $null; $script:ResolvedVm = $null; $script:LegacyValues = $null; $script:Approver = $null; $script:LocalTreeHash = $null
@@ -979,7 +1203,7 @@ switch ($Case) {
       foreach ($d in @($L.BrokerBinDir, $L.AuthorityBinDir, $L.PipeClientBinDir)) { Write-Bytes (Join-Path $d 'old.dll') 'old' }
       Write-Bytes $L.SetupExe 'albera-setup.exe, put there by the owner'; Write-Bytes (Join-Path $L.InstallRoot 'setup-work\run1\x.txt') 'x'
       $script:Manifest['values']['authoritySpki'] = $spki; $script:Manifest['values']['approverSid'] = $ownerSid; $script:Manifest['values']['controlPlaneSid'] = $legacySid
-      foreach ($n in @($K.BrokerService, $K.AuthorityService)) { $script:Svc[$n] = [ordered]@{ auto = $false; delayed = $false; sid = $(if ($Grant -and $n -eq $K.BrokerService) { 'unrestricted' } else { 'restricted' }); privs = 'SeChangeNotifyPrivilege'; failure = '' } }
+      foreach ($n in @($K.BrokerService, $K.AuthorityService)) { $script:Svc[$n] = [ordered]@{ auto = $false; delayed = $false; sid = $(if ($Grant -and $n -eq $K.BrokerService) { 'unrestricted' } else { 'restricted' }); privs = 'SeChangeNotifyPrivilege'; failure = $null } }
       if ($Grant) {
         $g = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $g['group'] = 'S-1-5-32-578'; $g['sid'] = $brokerSid; $g['computerId'] = 'clone-01'; $g['vmId'] = $guidA
         $script:Manifest['created']['hyperVGrant'] = $g; $script:Members.Add($brokerSid)
@@ -1075,6 +1299,35 @@ switch ($Case) {
     New-LegacyInstall $false
     function End-ProcessById([int]$Id) { throw 'access denied (fake)' }
     $result.stuck = [ordered]@{ error = (Try-Run { Invoke-Migrate }); removedNothing = ((Index-Of 'sc ') -eq -1) -and $script:UserExists -and ((Index-Of 'Remove-LocalUser') -eq -1); pids = @($script:Pids) }
+
+    # ---- D. the account is checked ONCE MORE and DISABLED before any process is stopped; each failure stops the run with nothing stopped or removed
+    function End-ProcessById([int]$Id) { $script:Order.Add("stop pid $Id"); [void]$script:Pids.Remove($Id) }
+    $refusals = [ordered]@{}
+    foreach ($scenario in @('sidDiffers', 'descriptionDiffers', 'nameDiffers', 'stillEnabled')) {   # not $case: variable names are case-insensitive and -Case is a validated parameter
+      New-LegacyInstall $false
+      switch ($scenario) {
+        'sidDiffers' { $script:LiveSid = 'S-1-5-21-1111111111-2222222222-3333333333-1777' }
+        'descriptionDiffers' { $script:LiveDescription = 'somebody else made this one' }
+        'nameDiffers' { $script:LiveName = 'albera-cp-other' }
+        'stillEnabled' { $script:DisableIsNoOp = $true }
+      }
+      $refusals[$scenario] = [ordered]@{ error = (Try-Run { Invoke-Migrate }); disableCalled = ((Index-Of 'Disable-LocalUser') -ge 0); stopped = ((Index-Of 'stop pid') -ge 0); sc = ((Index-Of 'sc ') -ge 0); userKept = $script:UserExists; pids = @($script:Pids) }
+    }
+    $result.disableRefusals = $refusals
+    # ---- E. an unknown file in a data folder, a link in one, or an unknown entry in the install folder stops the migration in the preflight: nothing is disabled, stopped or removed
+    $unknown = [ordered]@{}
+    foreach ($scenario in @('dataFile', 'dataLink', 'installEntry')) {
+      New-LegacyInstall $false
+      $linkTarget = Join-Path $Work 'link-target'; New-Item -ItemType Directory -Force -Path $linkTarget | Out-Null; Write-Bytes (Join-Path $linkTarget 'precious.txt') 'keep'
+      switch ($scenario) {
+        'dataFile' { Write-Bytes (Join-Path $L.AuthorityDir 'my-notes.txt') 'not ours' }
+        'dataLink' { New-Junction (Join-Path $L.BrokerDbDir 'link') $linkTarget }
+        'installEntry' { Write-Bytes (Join-Path $L.InstallRoot 'bin\evil\x.dll') 'x' }
+      }
+      $unknown[$scenario] = [ordered]@{ error = (Try-Run { Invoke-Migrate }); orderIsEmpty = ($script:Order.Count -eq 0); userEnabled = $script:UserEnabled; pidsKept = @($script:Pids); targetIntact = (Test-Path -LiteralPath (Join-Path $linkTarget 'precious.txt')) }
+      if ($scenario -eq 'dataLink') { Remove-Junction (Join-Path $L.BrokerDbDir 'link') }
+    }
+    $result.preflightUnknown = $unknown
   }
 }
 ($result | ConvertTo-Json -Compress -Depth 6)

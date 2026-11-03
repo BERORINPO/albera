@@ -1,6 +1,7 @@
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using Microsoft.Win32;
 
 namespace Albera.Setup;
 
@@ -18,8 +19,10 @@ internal static class FileSystemChecks
         LocalSystemSid,
         AdministratorsSid,
         "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",   // NT SERVICE\TrustedInstaller
-        "S-1-3-0",   // CREATOR OWNER (a placeholder that is replaced by the creator when a child is made)
     };
+
+    /// <summary>CREATOR OWNER: an INHERIT-ONLY rule for it is the placeholder every Program Files folder carries (it turns into the creator's own rule on a child). Any other rule for it - one that applies to the folder itself - is a writer like any other.</summary>
+    public const string CreatorOwnerSid = "S-1-3-0";
 
     /// <summary>Everything beyond read and execute. The generic bits are listed too: a rule written with GENERIC_WRITE or GENERIC_ALL is not translated by every writer of ACLs.</summary>
     private const FileSystemRights WriteLike =
@@ -34,6 +37,21 @@ internal static class FileSystemChecks
     }
 
     public static string Sha256(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+    /// <summary>
+    /// The run-id floor of this PC: HKLM\SOFTWARE\Albera\SetupRunIdFloor, a REG_SZ with a decimal number (64-bit view, as the installer script's 64-bit PowerShell writes it). null = no key or no value; a value of any other
+    /// type, or one that is not a decimal number, is a refusal. Administrators write it; Users cannot create or change anything under HKLM\SOFTWARE.
+    /// </summary>
+    public static ulong? ReadSetupRunIdFloor()
+    {
+        using var machine = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+        using var key = machine.OpenSubKey(InstallRecord.FloorKeyPath);
+        if (key is null) return null;
+        var value = key.GetValue(InstallRecord.FloorValueName, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+        if (value is null) return null;
+        if (key.GetValueKind(InstallRecord.FloorValueName) != RegistryValueKind.String) throw new SetupRefusal("run_id_floor_invalid", $"{InstallRecord.FloorKeyPath}\\{InstallRecord.FloorValueName} is not a string value");
+        return InstallRecord.ParseFloor((string)value);
+    }
 
     public static bool IsReparsePoint(string path) => (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
 
@@ -51,8 +69,8 @@ internal static class FileSystemChecks
 
     /// <summary>
     /// What is wrong with a folder that setup would trust: its owner is not SYSTEM, Administrators or TrustedInstaller, or an allow rule lets anyone else write, delete, change permissions or
-    /// take ownership. Rules that only apply to children (InheritOnly) count too: a child made later would carry them, and a rule for CREATOR OWNER is the one exception because it
-    /// turns into the creator's own rule. Empty = only administrators can change it.
+    /// take ownership. Rules that only apply to children (InheritOnly) count too: a child made later would carry them; the one exception is an inherit-only rule for CREATOR OWNER, which turns into the
+    /// creator's own rule (without the exception no ordinary Program Files folder would pass). A CREATOR OWNER rule that is not inherit-only counts. Empty = only administrators can change it.
     /// </summary>
     public static IReadOnlyList<string> AdministratorOnlyProblems(string folder)
     {
@@ -64,6 +82,8 @@ internal static class FileSystemChecks
         return EvaluateRules(owner, rules);
     }
 
+    private static bool IsCreatorOwnerPlaceholder(AceInfo rule) => rule.Sid == CreatorOwnerSid && rule.InheritOnly;
+
     /// <summary>The pure part of <see cref="AdministratorOnlyProblems"/> (tests feed it rules directly).</summary>
     public static IReadOnlyList<string> EvaluateRules(string ownerSid, IEnumerable<AceInfo> rules)
     {
@@ -72,6 +92,7 @@ internal static class FileSystemChecks
         foreach (var rule in rules)
         {
             if (!rule.Allow || TrustedWriters.Contains(rule.Sid)) continue;
+            if (IsCreatorOwnerPlaceholder(rule)) continue;
             var rights = rule.Rights & WriteLike;
             if (rights != 0) problems.Add($"{rule.Sid} may {rights}{(rule.InheritOnly ? " (inherited by children)" : "")}");
         }

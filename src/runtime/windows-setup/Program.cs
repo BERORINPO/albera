@@ -33,6 +33,7 @@ var deps = new SetupDeps
     AdministratorOnlyProblems = FileSystemChecks.AdministratorOnlyProblems,
     PathHasReparsePoint = FileSystemChecks.PathHasReparsePoint,
     InstallRecordPath = SetupLayout.InstallRecordFile,
+    ReadRunIdFloor = FileSystemChecks.ReadSetupRunIdFloor,
     Out = Console.Out,
 };
 

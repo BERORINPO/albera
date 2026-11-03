@@ -33,7 +33,8 @@
 #   - nothing that already exists is trusted until it is owned by SYSTEM / Administrators, has no write right for anyone else, and is no link anywhere on its path;
 #   - no environment variable decides a path: sc.exe, icacls.exe and the install roots come from [Environment]::SystemDirectory / GetFolderPath and are refused unless they are
 #     C:\Windows\System32, C:\Program Files and C:\ProgramData; no executable is found through PATH;
-#   - the three approver values come from the owner (who ran `AlberaApprover.exe enroll --show` in a NORMAL console); no program from the repository is ever started by this script;
+#   - the three approver values come from the owner (who ran `AlberaApprover.exe enroll --show` in a NORMAL console); no program from the repository is ever started by this script (the one exception is
+#     -Mode migrate -TrustLocalBuilds: see the paragraph on launch-check below);
 #   - no user module can run in the elevated session: Windows PowerShell 5.1 searches ~\Documents\WindowsPowerShell\Modules and HKCU PSModulePath before its own folder, even with -NoProfile, and loads
 #     CimCmdlets, LocalAccounts, Security, Utility and Management lazily. So the first statements switch auto-loading off, reset PSModulePath to $PSHOME\Modules and import the five modules by full path;
 #   - the builds are accepted only when the tree hash of the COPIES (copied into an administrator-only folder first) equals -ExpectedTreeHash, a value the owner TYPES from the CI log
@@ -41,7 +42,9 @@
 # install and uninstall refuse unless the console is elevated; they never elevate. A completed install re-run says so and changes nothing. A partial install is finished
 # from where it stopped, or refused with the reason. Nothing secret is printed or stored: only public values (SIDs, public keys, hashes, paths).
 # The only programs this script starts are sc.exe and icacls.exe by their full System32 paths, and ONE exception: `launch-check` of the INSTALLED Control Plane host (the hash-verified copy in the
-# administrator-only bin folder, with a minimal environment), which must answer 0 before the service is registered. Nothing from the repository working tree is ever executed.
+# administrator-only bin folder, with a minimal environment), which must answer 0 before the service is registered. Nothing from the repository working tree is executed - EXCEPT with -Mode migrate -TrustLocalBuilds
+# (decision D7, the one first migration): there the installed copy IS a copy of a build in the working tree whose tree hash this same run computed, so it has no provenance, and launch-check runs that program elevated. Every
+# other run takes the tree hash from the attested build-hashes.json (setup) or from the CI log, and runs only a copy that matches it.
 # -VmId (a fixed VM GUID instead of the lookup), -NodeSource and -ClaudeSource (a node.exe / claude.exe from elsewhere) are for the disposable lab VM only and are refused unless the environment variable ALBERA_LAB_VM is 1.
 [CmdletBinding()]
 param(
@@ -288,12 +291,59 @@ function New-Manifest {
   $m['schema'] = 1; $m['tool'] = 'albera-host.ps1'; $m['state'] = 'partial'; $m['startedAt'] = $now; $m['updatedAt'] = $now; $m['created'] = $created; $m['values'] = $values
   $m
 }
-# The run id of the attested run (-SetupRunId), kept in the manifest as a decimal STRING. It only ever goes up. Get-RollbackRefusal is the anti-rollback check (an older run than the record is refused, the same one is fine).
+# The run id of the attested run (-SetupRunId), kept in the manifest as a decimal STRING. It only ever goes up. Get-RollbackRefusal is the anti-rollback check: an older run than the LARGER of the manifest's
+# record and the floor is refused, the same one is fine. The manifest goes away with uninstall; the FLOOR does not: HKLM\SOFTWARE\Albera\SetupRunIdFloor (REG_SZ, decimal) is written by every run that
+# has a -SetupRunId, only ever raised, and NO step of uninstall removes it (a test pins that), so uninstall followed by an install of an old, validly attested build is refused too.
+# An administrator who really wants an older build deletes that one value by hand.
+# The 64-bit registry view, whatever the bitness of this PowerShell: albera-setup.exe (x64) reads the same one.
+function Open-FloorBaseKey { [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64) }
+function Get-SetupRunIdFloor {
+  $machine = Open-FloorBaseKey
+  try {
+    $key = $machine.OpenSubKey('SOFTWARE\Albera')
+    if (-not $key) { return $null }
+    try {
+      $value = $key.GetValue('SetupRunIdFloor', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+      $kind = if ($null -ne $value) { $key.GetValueKind('SetupRunIdFloor') } else { $null }
+    }
+    finally { $key.Dispose() }
+  }
+  finally { $machine.Dispose() }
+  if ($null -eq $value) { return $null }
+  if ($kind -ne [Microsoft.Win32.RegistryValueKind]::String) { return 'not-a-string' }   # refused as an invalid floor, never read as "no floor"
+  [string]$value
+}
+function Write-SetupRunIdFloorRaw([string]$Text) {
+  $machine = Open-FloorBaseKey
+  try {
+    $key = $machine.CreateSubKey('SOFTWARE\Albera')
+    try { $key.SetValue('SetupRunIdFloor', $Text, [Microsoft.Win32.RegistryValueKind]::String) } finally { $key.Dispose() }
+  }
+  finally { $machine.Dispose() }
+}
+function Set-SetupRunIdFloorValue {
+  if (-not $SetupRunId) { return }
+  $new = ConvertTo-SetupRunId $SetupRunId
+  if ($null -eq $new) { return }
+  $text = $new.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+  $stored = Get-SetupRunIdFloor
+  $current = ConvertTo-SetupRunId $stored
+  if ($null -ne $stored -and $null -eq $current) { throw 'the run-id floor (HKLM\SOFTWARE\Albera\SetupRunIdFloor) is not a decimal number; an administrator must correct or delete that one value. It was not changed' }
+  if ($null -ne $current -and $new -le $current) { return }
+  Write-SetupRunIdFloorRaw $text
+  if ((Get-SetupRunIdFloor) -cne $text) { throw 'the run-id floor was written but does not read back' }
+}
 function Get-RollbackRefusal {
   $recorded = if ($script:Manifest -and $script:Manifest.ContainsKey('setupRunId')) { $script:Manifest['setupRunId'] } else { $null }
-  Get-SetupRunIdRefusal $recorded $SetupRunId
+  Get-SetupRunIdRefusal $recorded $SetupRunId (Get-SetupRunIdFloor)
+}
+function Get-RollbackMessage([string]$Word) {
+  $recorded = if ($script:Manifest -and $script:Manifest.ContainsKey('setupRunId')) { $script:Manifest['setupRunId'] } else { 'none' }
+  $floor = Get-SetupRunIdFloor; if ($null -eq $floor) { $floor = 'none' }
+  "${Word}: this run is $SetupRunId; the install record holds setupRunId $recorded and the floor of this PC (HKLM\SOFTWARE\Albera\SetupRunIdFloor) is $floor. An older (validly attested) build is never installed over a newer one"
 }
 function Set-ManifestSetupRunId {
+  Set-SetupRunIdFloorValue   # the floor is written even when there is no manifest (yet)
   if (-not $SetupRunId -or -not $script:Manifest) { return }
   $new = ConvertTo-SetupRunId $SetupRunId
   $old = if ($script:Manifest.ContainsKey('setupRunId')) { ConvertTo-SetupRunId $script:Manifest['setupRunId'] } else { $null }
@@ -362,11 +412,18 @@ function Get-ServiceFactsFor([string]$Name) {
   if (-not $svc) { return [pscustomobject]@{ Exists = $false } }
   $sid = Invoke-Native $ScExe "qsidtype $Name"
   $privs = Invoke-Native $ScExe "qprivs $Name"
-  $failure = Invoke-Native $ScExe "qfailure $Name"
   [pscustomobject]@{
     Exists = $true; StartName = $svc.StartName; PathName = $svc.PathName; StartMode = $svc.StartMode; DelayedAutoStart = [bool]$svc.DelayedAutoStart; ServiceType = $svc.ServiceType
-    SidTypeText = $sid.Out; PrivilegesText = $privs.Out; FailureText = $failure.Out; State = $svc.State; ExitCode = $svc.ExitCode; SpecificExitCode = $svc.ServiceSpecificExitCode
+    SidTypeText = $sid.Out; PrivilegesText = $privs.Out; FailureActions = (Read-ServiceFailureActions $Name); State = $svc.State; ExitCode = $svc.ExitCode; SpecificExitCode = $svc.ServiceSpecificExitCode
   }
+}
+# The failure actions the SCM stored (REG_BINARY, see ConvertFrom-FailureActionsBytes), or $null when there are none. Not `sc qfailure`: its text is localized. The name is one of the three fixed service names.
+function Read-ServiceFailureActions([string]$Name) {
+  $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Services\' + $Name)
+  if (-not $key) { return $null }
+  try { $value = $key.GetValue('FailureActions', $null) } finally { $key.Dispose() }
+  if ($value -is [byte[]]) { return , $value }
+  $null
 }
 # The three services. `Phase`: the Broker and the Authority are made first (the folders' ACLs need their SIDs and the Broker's service ACL needs the Control Plane's, all derived from the names); the Control Plane
 # service is made last, after its files exist and the installed host has said `launch-check` is fine. `RestartOnFailure`: only the Control Plane restarts itself (control-plane-service.md section 2).
@@ -435,7 +492,52 @@ function Get-InstallRootAdoptionReasons {
       -not ($lower -eq 'bin' -or $lower -eq 'bin\setup' -or $lower.StartsWith('bin\setup\') -or $lower -eq 'setup-work' -or $lower.StartsWith('setup-work\'))
     })
   if ($unknown.Count -gt 0) { return , @($unknown | ForEach-Object { 'unknown_entry:' + $_ } | Select-Object -First 5) }
+  # Every entry that is left - bin, bin\setup and setup-work with EVERYTHING below them, files included - must be owned by SYSTEM, Administrators or TrustedInstaller and be writable by no one else
+  # (Test-TrustSummary on Get-AclSummary: a CREATOR OWNER rule that is inherit-only is the ordinary placeholder and is skipped). One planted file or a user-owned sub-folder refuses the adoption.
+  $bad = New-Object System.Collections.Generic.List[string]
+  foreach ($e in $entries) {
+    try { $summary = Get-AclSummary $e.Full } catch { $bad.Add($e.Rel + ':acl_unreadable'); if ($bad.Count -ge 5) { break }; continue }
+    foreach ($why in (Test-TrustSummary $summary (Get-AdminSids) $false)) { $bad.Add($e.Rel + ':' + $why) }
+    if ($bad.Count -ge 5) { break }
+  }
+  if ($bad.Count -gt 0) { return , @($bad.ToArray() | Select-Object -First 5) }
   , @()
+}
+# BUILTIN\Users get read and execute on exactly three folders of the install (bin\approver, bin\launcher, bin\setup: the owner's own session runs the approver tray, the launcher and - through UAC - setup) and on
+# nothing else: the install folder itself, bin, bin\claude, bin\control-plane (with node\) and the .partial folders carry SYSTEM, Administrators and the three service SIDs only. $ShouldHave says which kind
+# of folder this is. Returns the problems (empty = as intended); a Users rule that can write is one.
+function Get-UsersAceProblems([string]$Path, [bool]$ShouldHave) {
+  $problems = New-Object System.Collections.Generic.List[string]
+  $summary = Get-AclSummary $Path
+  $has = @($summary.AllowSids) -contains 'S-1-5-32-545'
+  if ($ShouldHave) {
+    if (-not $has) { $problems.Add('users_ace_missing') }
+    elseif (@($summary.WriteSids) -contains 'S-1-5-32-545') { $problems.Add('users_can_write') }
+  }
+  elseif ($has) { $problems.Add('users_ace_unexpected') }
+  , @($problems)
+}
+function Grant-UsersReadExecute([string]$Path) {
+  if ((Get-ReparseChain $Path).Count -gt 0) { throw "$Path is reached through a link; refusing to change its ACL" }
+  $r = Invoke-Native $IcaclsExe ((Quote-NativeArg $Path) + ' /grant:r *S-1-5-32-545:(OI)(CI)RX /L')
+  if ($r.Exit -ne 0) { throw "icacls failed for $Path" }
+  $bad = Get-UsersAceProblems $Path $true
+  if ($bad.Count -gt 0) { throw "the ACL of $Path is not as intended after the change: $($bad -join ', ')" }
+}
+# The albera-setup.exe in bin\setup is what the "ALBERA update" shortcut starts (elevated, through its manifest). Before that shortcut is made the file and its folder must pass the trust test, and - when this
+# run was started by setup, which keeps the copy it verified beside the repo folder - the file must be that copy (same SHA-256). $null = nothing wrong or not installed.
+function Get-SetupExeProblem {
+  if (-not (Test-Path -LiteralPath $L.SetupExe -PathType Leaf)) { return $null }
+  if ((Get-ReparseChain $L.SetupExe).Count -gt 0) { return 'albera-setup.exe is reached through a link' }
+  foreach ($p in @($L.SetupExe, $L.SetupBinDir)) {
+    $r = Get-PathTrustReasons $p (Get-AdminSids) $false
+    if ($r.Count -gt 0) { return 'albera-setup.exe cannot be trusted: ' + (Format-TrustRefusal $p $r) }
+  }
+  $verified = Join-Path (Split-Path -Parent $RepoRoot) 'setup\albera-setup.exe'
+  if ((Split-Path -Leaf $RepoRoot) -ceq 'repo' -and (Test-Path -LiteralPath $verified -PathType Leaf)) {
+    if ((Get-Sha256File $verified) -cne (Get-Sha256File $L.SetupExe)) { return 'the albera-setup.exe in bin\setup is not the copy setup verified in this update (the SHA-256 differs)' }
+  }
+  $null
 }
 
 # ---------------------------------------------------------------------------------------------- install steps: each has a read-only Test (-> done / todo / blocked:<why> / unknown:<why>) and a Do
@@ -447,18 +549,18 @@ function Get-ApproverInput {
 function Get-InstallSteps {
   $steps = @(
     [pscustomobject]@{ Id = 'sources'; Title = 'Check -ExpectedTreeHash (the tree hash of the reviewed build: from the attested build-hashes.json when setup runs this, otherwise typed from the CI log) and list the five publish folders; nothing in the repository is executed'
-      Detail = @("publish folders are read from $RepoRoot\src\runtime\...\publish (npm run build:windows-broker, build:approval-authority, build:control-plane, build:approver); the COPIES are hashed later and their tree hash must equal the value you gave", 'a link or junction in a publish folder is refused', 'a -SetupRunId older than the one in the install record is refused (anti-rollback); the same one is fine')
+      Detail = @("publish folders are read from $RepoRoot\src\runtime\...\publish (npm run build:windows-broker, build:approval-authority, build:control-plane, build:approver); the COPIES are hashed later and their tree hash must equal the value you gave", 'a link or junction in a publish folder is refused', 'a -SetupRunId older than the larger of the install record''s setupRunId and the floor HKLM\SOFTWARE\Albera\SetupRunIdFloor (which uninstall keeps) is refused (anti-rollback); the same one is fine')
       Test = {
         if (Test-ManifestHas 'user') { return 'blocked:the install record is from the first layout (the local account albera-cp). Run -Mode migrate to move it to the new layout, or -Mode uninstall first' }
         if (-not $GrantHyperVToBroker -and (Test-ManifestHas 'hyperVGrant')) { return 'blocked:the install record says the Hyper-V grant was made; run again WITH -GrantHyperVToBroker to finish it, or uninstall first' }
-        $rollback = Get-RollbackRefusal; if ($rollback) { return "blocked:${rollback}: the install record holds setupRunId $($script:Manifest['setupRunId']) and this run is $SetupRunId. An older (validly attested) build is never installed over a newer one" }
+        $rollback = Get-RollbackRefusal; if ($rollback) { return 'blocked:' + (Get-RollbackMessage $rollback) }
         $st = Get-ExpectedTreeHashState; if (-not $st.Ok) { return 'blocked:' + $st.Reason }
         foreach ($s in (Get-BuildSources)) {
           if (-not [System.IO.Directory]::Exists($s.Dir)) { return "blocked:$($s.Name): publish folder missing (run $($s.Build))" }
           if (Test-HasReparsePoint $s.Dir) { return "blocked:$($s.Name): the publish folder contains a link or junction" }
         }
         'todo' }
-      Do = { Say '    the tree hash is given; the five publish folders exist and hold no links'; if ($SetupRunId) { Say "    setup run id $SetupRunId" } } }
+      Do = { Say '    the tree hash is given; the five publish folders exist and hold no links'; if ($SetupRunId) { Set-SetupRunIdFloorValue; Say "    setup run id $SetupRunId (the floor of this PC is at least that now)" } } }
     [pscustomobject]@{ Id = 'approver'; Title = 'Check the approver values (-ApproverKeyId, -ApproverPublicKey, -ApproverSid, from your own "AlberaApprover.exe enroll --show" in a normal console; migrate carries them over)'
       Detail = @('the key id must be a valid id; the public key an RSA-2048 SPKI; the SID an S-1-5-21 user SID', 'this script does not run the approver program: it would run elevated')
       Test = {
@@ -514,6 +616,7 @@ function Get-InstallSteps {
           if ($r.Count -gt 0) { return 'blocked:' + (Format-TrustRefusal $e.Path $r) }
           if ((Test-AclMatchesPlan $e (Get-AclSummary $e.Path)).Count -gt 0) { return 'todo' }
         }
+        if ((Test-Path -LiteralPath $L.SetupBinDir) -and (Get-UsersAceProblems $L.SetupBinDir $true).Count -gt 0) { return 'todo' }
         'done' }
       Do = { New-HostFolders } }
     [pscustomobject]@{ Id = 'binaries'; Title = "Copy the five builds into $($L.BinRoot)\{broker,authority,pipe-client,control-plane,approver} (already administrator-only), then hash the COPIES and require their tree hash to equal the tree hash given"
@@ -521,6 +624,7 @@ function Get-InstallSteps {
       Test = {
         if (-not (Test-ManifestHas 'installRoot')) { return 'todo' }
         foreach ($s in (Get-BuildSources)) { if (-not (Test-Path -LiteralPath $s.Dest)) { return 'todo' }; if (-not $script:Manifest['created']['binaries'].ContainsKey($s.Name)) { return 'todo' } }
+        if ((Test-Path -LiteralPath $L.ApproverBinDir) -and (Get-UsersAceProblems $L.ApproverBinDir $true).Count -gt 0) { return 'todo' }
         'done' }
       Do = { Copy-HostBinaries } }
     [pscustomobject]@{ Id = 'key'; Title = "Create the Authority machine signing key $($K.SigningKeyName) (ECDSA P-256, Software KSP, machine scope, Export Policy none, DACL SYSTEM/Administrators/Authority service SID only)"
@@ -689,7 +793,20 @@ function Get-PinSourceProblem($Path, [string]$What) {
   if ((Get-ReparseChain $Path).Count -gt 0) { return "$What is reached through a link ($Path)" }
   $null
 }
-function Get-NodePinProblem { Get-PinSourceProblem (Get-NodeSourceFile) 'node.exe' }
+# node.exe is looked for in Program Files, so its file AND its folder must pass the trust test (owner SYSTEM / Administrators / TrustedInstaller, nobody else may write, no link). The lab-only -NodeSource is a file
+# in a disposable VM and is not judged. claude.exe is the other way round: it lives in the owner's own profile, where the owner (and anything running as the owner) can write by design, so it has no such test;
+# the handle the copy is made from is what is checked (Copy-PinnedFile).
+function Get-NodePinProblem {
+  $path = Get-NodeSourceFile
+  $problem = Get-PinSourceProblem $path 'node.exe'
+  if ($problem) { return $problem }
+  if ($NodeSource) { return $null }
+  foreach ($p in @($path, (Split-Path -Parent $path))) {
+    $reasons = Get-PathTrustReasons $p (Get-AdminSids) $false
+    if ($reasons.Count -gt 0) { return 'the node.exe source cannot be trusted: ' + (Format-TrustRefusal $p $reasons) }
+  }
+  $null
+}
 function Get-ClaudePinProblem {
   $in = Get-ApproverInput
   if (-not $in.Sid) { return 'the approver SID is not given yet, so claude.exe cannot be located' }
@@ -697,7 +814,29 @@ function Get-ClaudePinProblem {
   if ($refusal) { return "${refusal}: run this as the account that owns the Claude Code you want to pin (the approver account)" }
   Get-PinSourceProblem (Get-ClaudeSourceFile) 'claude.exe'
 }
-# Copy a file into an administrator-only folder under a .partial name, hash the COPY, rename it, check the result with the same trust test as every other file. Returns the SHA-256 of the copy.
+# GetFinalPathNameByHandleW, declared with System.Reflection.Emit (no Add-Type: that would start the C# compiler from an elevated session and load a DLL from a temp folder). Returns the path the OPEN handle
+# really points at, without the \\?\ prefix; a UNC path is refused.
+$script:FinalPathMethod = $null
+function Get-FinalPathOfStream([System.IO.FileStream]$Stream) {
+  if (-not $script:FinalPathMethod) {
+    $assembly = [System.AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object System.Reflection.AssemblyName('AlberaFinalPath')), [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $type = $assembly.DefineDynamicModule('AlberaFinalPath').DefineType('Native', [System.Reflection.TypeAttributes]'Public, Class')
+    $method = $type.DefinePInvokeMethod('GetFinalPathNameByHandleW', 'kernel32.dll', [System.Reflection.MethodAttributes]'Public, Static, PinvokeImpl', [System.Reflection.CallingConventions]::Standard,
+      [uint32], [Type[]]@([IntPtr], [System.Text.StringBuilder], [uint32], [uint32]), [System.Runtime.InteropServices.CallingConvention]::Winapi, [System.Runtime.InteropServices.CharSet]::Unicode)
+    $method.SetImplementationFlags([System.Reflection.MethodImplAttributes]::PreserveSig)
+    $script:FinalPathMethod = $type.CreateType().GetMethod('GetFinalPathNameByHandleW')
+  }
+  $builder = New-Object System.Text.StringBuilder 2048
+  $arguments = New-Object 'object[]' 4   # filled one by one: an array literal would wrap the StringBuilder in a PSObject, which reflection cannot pass on
+  $arguments[0] = $Stream.SafeFileHandle.DangerousGetHandle(); $arguments[1] = $builder.PSObject.BaseObject; $arguments[2] = [uint32]$builder.Capacity; $arguments[3] = [uint32]0
+  $length = [uint32]$script:FinalPathMethod.Invoke($null, $arguments)
+  if ($length -eq 0 -or $length -ge $builder.Capacity) { throw 'the final path of the opened file could not be read' }
+  $path = $builder.ToString()
+  if ($path.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) { throw 'the opened file is on a network share; refused' }
+  if ($path.StartsWith('\\?\', [System.StringComparison]::Ordinal)) { $path = $path.Substring(4) }
+  $path
+}
+# Copy a file into an administrator-only folder under a .partial name, from ONE handle opened on the source (final path checked), hash the COPY, rename it, check the result with the same trust test as every other file. Returns the SHA-256 of the copy.
 function Copy-PinnedFile([string]$Source, [string]$Destination) {
   $dir = Split-Path -Parent $Destination
   if (-not (Test-Path -LiteralPath $dir)) { [void][System.IO.Directory]::CreateDirectory($dir) }
@@ -706,12 +845,24 @@ function Copy-PinnedFile([string]$Source, [string]$Destination) {
   if (Test-Path -LiteralPath $Destination) { throw "$Destination already exists" }
   $partial = $Destination + '.partial'
   if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
+  # The source is opened ONCE (nobody else may write it while it is open) and the bytes are copied from that handle. After the open the handle is asked for its final path: it must be exactly the path
+  # that was asked for, so a link anywhere on the way (put there after the earlier checks) is caught on the thing that is actually read. The hash is that of the COPY.
+  $in = $null; $out = $null
   try {
-    [System.IO.File]::Copy($Source, $partial, $false)
+    $in = New-Object System.IO.FileStream($Source, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    $final = Get-FinalPathOfStream $in
+    $expected = [System.IO.Path]::GetFullPath($Source)
+    if (-not [string]::Equals($final, $expected, [System.StringComparison]::OrdinalIgnoreCase)) { throw "the file that was opened is at ${final}, not at ${expected}: a link is on the path; nothing was copied" }
+    $out = New-Object System.IO.FileStream($partial, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    $in.CopyTo($out)
+    $out.Flush()
+    $out.Dispose(); $out = $null
+    $in.Dispose(); $in = $null
     $sha = Get-Sha256File $partial
     Move-Item -LiteralPath $partial -Destination $Destination
   }
-  catch { if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }; throw }
+  catch { if ($out) { $out.Dispose() }; if ($in) { $in.Dispose() }; if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }; throw }
+  finally { if ($out) { $out.Dispose() }; if ($in) { $in.Dispose() } }
   $after = Get-PathTrustReasons $Destination (Get-AdminSids) $false
   if ($after.Count -gt 0) { Remove-Item -LiteralPath $Destination -Force; throw (Format-TrustRefusal $Destination $after) }
   $sha
@@ -769,7 +920,10 @@ function Read-ShellLink([string]$Path) {
   try { $link = $shell.CreateShortcut($Path); [pscustomobject]@{ TargetPath = [string]$link.TargetPath; Arguments = [string]$link.Arguments; WorkingDirectory = [string]$link.WorkingDirectory } }
   finally { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
 }
-function Get-CurrentShortcutSpecs { Get-ShortcutSpecs $L $SystemDirectory ([bool](Test-Path -LiteralPath $L.SetupExe -PathType Leaf)) }
+function Get-CurrentShortcutSpecs {
+  $usable = (Test-Path -LiteralPath $L.SetupExe -PathType Leaf) -and -not (Get-SetupExeProblem)   # the update shortcut only for a setup that passed the trust test
+  Get-ShortcutSpecs $L $SystemDirectory ([bool]$usable)
+}
 # True when the launcher is the file install wrote, every shortcut matches its spec and the Run value is the recorded command (the live state, read back).
 function Test-ShortcutsInPlace {
   $M = $script:Manifest['created']
@@ -786,6 +940,7 @@ function New-HostShortcuts {
   if (-not (Test-Path -LiteralPath $L.LauncherDir)) { [void][System.IO.Directory]::CreateDirectory($L.LauncherDir) }
   $untrusted = Get-PathTrustReasons $L.LauncherDir (Get-AdminSids) $false
   if ($untrusted.Count -gt 0) { throw (Format-TrustRefusal $L.LauncherDir $untrusted) }
+  Grant-UsersReadExecute $L.LauncherDir   # the owner's session runs the launcher
   Write-OneConfig $L.OpenScript (Get-OpenAlberaScriptText $L) (Get-AdminSids)
   $launcher = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $launcher['sha256'] = Get-Sha256File $L.OpenScript
   $M['launcher'] = $launcher; Save-Manifest
@@ -796,6 +951,8 @@ function New-HostShortcuts {
   }
   else { New-TrustedDirectory $L.StartMenuDir @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-32-545:(OI)(CI)RX') }
   $made = @()
+  $setupProblem = Get-SetupExeProblem
+  if ($setupProblem) { Say "    the 'ALBERA update' shortcut is NOT made: $setupProblem" }
   foreach ($spec in (Get-CurrentShortcutSpecs)) {
     if (Test-Path -LiteralPath $spec.Path) { Remove-Item -LiteralPath $spec.Path -Force }
     New-ShellLink $spec
@@ -933,7 +1090,8 @@ function New-HostFolders {
     $diffs = Test-AclMatchesPlan $entry (Get-AclSummary $entry.Path)
     if ($diffs.Count -gt 0) { throw "ACL of $($entry.Path) is not as planned: $($diffs -join ', ')" }
   }
-  Say '    folders created with their final ACL; every ACL read back and matches the plan'
+  if (Test-Path -LiteralPath $L.SetupBinDir) { Grant-UsersReadExecute $L.SetupBinDir }   # the owner's setup folder lost the Users rule it inherited from Program Files when the root's inheritance was removed
+  Say '    folders created with their final ACL; every ACL read back and matches the plan; Users may read and execute bin\approver, bin\launcher and bin\setup only'
 }
 
 # The copies are made INSIDE the already administrator-only bin folder and only the COPIES are hashed: all five components are copied to .partial folders, the canonical tree hash of the copies must equal
@@ -955,6 +1113,7 @@ function Copy-HostBinaries {
     $tree = Get-CanonicalTreeHash $have
     if ($tree -cne $state.Value) { throw "the installed copies hash to $tree, not to -ExpectedTreeHash; update means uninstall, then install" }
     foreach ($s in $sources) { if (-not $record.ContainsKey($s.Name)) { Set-BinaryRecord $s (Get-TreeHashes $s.Dest $(if ($s.Name -eq 'control-plane') { @('node') } else { @() })) } }
+    Grant-UsersReadExecute $L.ApproverBinDir   # a run that was cut off between the move and this line is finished here
     return
   }
   if ($present.Count -gt 0) { throw "$($L.BinRoot) holds only part of the builds; uninstall, then install again" }
@@ -964,7 +1123,7 @@ function Copy-HostBinaries {
   if (@($listings['control-plane'] | Where-Object { $_.Rel.StartsWith('node\', [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { throw 'the control-plane build has a node\ folder; that folder is reserved for the pinned node.exe' }
   foreach ($s in $sources) {
     $partial = $s.Dest + '.partial'
-    if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Recurse -Force }   # left by a failed run of this script, inside the administrator-only bin folder
+    if (Test-Path -LiteralPath $partial) { Remove-TreeNoFollow $partial }   # left by a failed run of this script, inside the administrator-only bin folder
   }
   $partials = @{}
   try {
@@ -984,11 +1143,12 @@ function Copy-HostBinaries {
     }
   }
   catch {
-    foreach ($s in $sources) { if (Test-Path -LiteralPath ($s.Dest + '.partial')) { Remove-Item -LiteralPath ($s.Dest + '.partial') -Recurse -Force } }
+    foreach ($s in $sources) { if (Test-Path -LiteralPath ($s.Dest + '.partial')) { Remove-TreeNoFollow ($s.Dest + '.partial') } }
     throw
   }
   foreach ($s in $sources) { Move-Item -LiteralPath ($s.Dest + '.partial') -Destination $s.Dest }
   foreach ($s in $sources) { Set-BinaryRecord $s (Get-TreeHashes $s.Dest) }
+  Grant-UsersReadExecute $L.ApproverBinDir   # only the approver (the owner's session runs it), and only now: the .partial folder it was copied into had no Users rule
   Say "    all five builds match the tree hash $tree"
 }
 function Set-BinaryRecord($Source, $Hashes) {
@@ -1186,6 +1346,15 @@ function Get-ControlPlaneStatusLines {
   function Add-Cp([string]$State, [string]$Text) { $out.Add([pscustomobject]@{ State = $State; Text = $Text }) }
   if (Test-LegacyLayout) { return , $out.ToArray() }   # a first-layout record has none of these
   if ($M.ContainsKey('setupRunId')) { Add-Cp 'ok' "setup run id: $($M['setupRunId']) (a smaller one is refused)" }
+  $floor = Get-SetupRunIdFloor
+  if ($null -ne $floor) { Add-Cp $(if ($null -ne (ConvertTo-SetupRunId $floor)) { 'ok' } else { 'FAIL' }) "run-id floor of this PC (HKLM\SOFTWARE\Albera\SetupRunIdFloor, kept by uninstall): $floor" }
+  foreach ($users in @(
+      @{ Path = $L.ApproverBinDir; Has = $true }, @{ Path = $L.LauncherDir; Has = $true }, @{ Path = $L.SetupBinDir; Has = $true },
+      @{ Path = $L.InstallRoot; Has = $false }, @{ Path = $L.BinRoot; Has = $false }, @{ Path = $L.ClaudeBinDir; Has = $false }, @{ Path = $L.ControlPlaneBinDir; Has = $false })) {
+    if (-not (Test-Path -LiteralPath $users.Path)) { continue }
+    try { $problems = Get-UsersAceProblems $users.Path $users.Has } catch { $problems = @('acl_unreadable') }
+    Add-Cp $(if ($problems.Count -eq 0) { 'ok' } else { 'FAIL' }) ("BUILTIN\Users on $($users.Path): " + $(if ($problems.Count -eq 0) { $(if ($users.Has) { 'read and execute only' } else { 'no rule (as intended)' }) } else { $problems -join ', ' }))
+  }
   if (-not (Test-ManifestHas 'controlPlane')) { Add-Cp 'FAIL' 'node.exe pin: not recorded' }
   else {
     $same = (Test-Path -LiteralPath $L.ControlPlaneNodeExe) -and ((Get-Sha256File $L.ControlPlaneNodeExe) -ceq $M['created']['controlPlane']['nodeSha256'])
@@ -1253,7 +1422,7 @@ function Get-UninstallSteps {
         if ($why.Count -eq 0) { Remove-LocalUser -SID (New-Object System.Security.Principal.SecurityIdentifier($rec['sid'])); Say "    removed $($K.ControlPlaneUser)"; Remove-LegacyProfile $rec['sid'] }
         else { Say "    WARNING: the account is NOT removed ($($why -join ', ')); remove it yourself if it is yours" }
         $script:Manifest['created'].Remove('user') | Out-Null; Save-Manifest } }
-    [pscustomobject]@{ Id = 'manifest'; Title = "Remove the manifest and $($L.DataRoot) itself"; Detail = @('only when nothing else is left in it')
+    [pscustomobject]@{ Id = 'manifest'; Title = "Remove the manifest and $($L.DataRoot) itself"; Detail = @('only when nothing else is left in it', 'HKLM\SOFTWARE\Albera\SetupRunIdFloor is NOT removed: it is what refuses an older build after an uninstall')
       Test = { if (Test-Path -LiteralPath $L.DataRoot) { 'todo' } else { 'done' } }
       Do = {
         $left = @(Get-ChildItem -LiteralPath $L.DataRoot -Force | Where-Object { $_.Name -ne 'install-manifest.json' })
@@ -1324,7 +1493,7 @@ function Remove-HostInstallTree {
   if ($unknown.Count -gt 0) { throw "$($L.InstallRoot) holds files this script did not create ($($unknown -join ', ')); nothing was deleted there" }
   foreach ($d in (Get-OurInstallFolders)) {
     $p = Join-Path $L.InstallRoot $d
-    if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force; Say "    removed $p" }
+    if (Test-Path -LiteralPath $p) { Remove-TreeNoFollow $p; Say "    removed $p" }
   }
   $bin = Join-Path $L.InstallRoot 'bin'
   if ((Test-Path -LiteralPath $bin) -and @(Get-ChildItem -LiteralPath $bin -Force).Count -eq 0) { Remove-Item -LiteralPath $bin -Force }
@@ -1335,18 +1504,37 @@ function Remove-HostInstallTree {
 # (Get-KnownDataWorkFolders) are known as a whole. $InstallTree is the old whole-install-folder mode, kept for the callers that still pass it (Remove-HostInstallTree replaced it for the real run).
 function Remove-HostTree([string]$Dir, [string[]]$AllowedTop, [string[]]$AllowedFolders, [bool]$InstallTree) {
   if (Test-HasReparsePoint $Dir) { throw "$Dir is or contains a link or junction; refusing to delete it" }
+  if ($InstallTree) {
+    $all = Get-TreeEntries $Dir
+    $unknown = @($all | ForEach-Object { $_.Rel } | Where-Object { -not (Test-OurInstallEntry $_) })
+  }
+  else { $unknown = @((Get-DataUnknownEntries $Dir)) }
+  if ($unknown.Count -gt 0) { throw "$Dir holds files this script did not create ($($unknown -join ', ')); nothing was deleted there" }
+  Remove-TreeNoFollow $Dir
+  Say "    removed $Dir"
+}
+# The entries of a data folder (as paths relative to the data root) that are not on the known lists; the folders the service fills itself count as known as a whole.
+function Get-DataUnknownEntries([string]$Dir) {
   $all = Get-TreeEntries $Dir
   $rel = @($all | ForEach-Object { $_.Rel })
-  if ($InstallTree) {
-    $unknown = @($rel | Where-Object { -not (Test-OurInstallEntry $_) })
+  $prefix = $Dir.Substring($L.DataRoot.Length + 1)
+  @((Get-UnknownEntries ($rel | ForEach-Object { $prefix + '\' + $_ }) (Get-KnownDataFiles) (Get-KnownDataFolders) (Get-KnownDataWorkFolders)))
+}
+# Deletes a folder tree WITHOUT following links. Every entry is judged at the moment it is deleted: a link (junction, symbolic link, mount point) is removed as a link - its target is neither entered nor touched -
+# a plain folder is emptied first, a file goes. (Remove-Item -Recurse is not used: between a check and the delete a link can be put in place, and the Control Plane's own folders are written by a service.)
+function Remove-TreeNoFollow([string]$Path) {
+  $info = New-Object System.IO.DirectoryInfo($Path)
+  $reparse = [System.IO.FileAttributes]::ReparsePoint
+  if (($info.Attributes -band $reparse) -ne 0) { $info.Delete(); return }
+  foreach ($entry in $info.GetFileSystemInfos()) {
+    $isDirectory = ($entry.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0
+    $isLink = ($entry.Attributes -band $reparse) -ne 0
+    if ($isDirectory -and -not $isLink) { Remove-TreeNoFollow $entry.FullName }
+    elseif ($isDirectory) { $entry.Delete() }
+    else { if (($entry.Attributes -band [System.IO.FileAttributes]::ReadOnly) -ne 0) { $entry.Attributes = [System.IO.FileAttributes]::Normal }; $entry.Delete() }
   }
-  else {
-    $prefix = $Dir.Substring($L.DataRoot.Length + 1)
-    $unknown = @((Get-UnknownEntries ($rel | ForEach-Object { $prefix + '\' + $_ }) (Get-KnownDataFiles) (Get-KnownDataFolders) (Get-KnownDataWorkFolders)))
-  }
-  if ($unknown.Count -gt 0) { throw "$Dir holds files this script did not create ($($unknown -join ', ')); nothing was deleted there" }
-  Remove-Item -LiteralPath $Dir -Recurse -Force
-  Say "    removed $Dir"
+  if (($info.Attributes -band [System.IO.FileAttributes]::ReadOnly) -ne 0) { $info.Attributes = [System.IO.FileAttributes]::Directory }
+  $info.Delete()
 }
 # Only the fixed roots and their planned sub-folders, and only when they still pass the trust checks (owner, writers, no link on the way).
 function Remove-TrustedTree([string]$Dir, [string[]]$AllowedTop, [string[]]$AllowedFolders, [bool]$InstallTree) {
@@ -1400,6 +1588,27 @@ function Get-MigratePreflightProblems {
   }
   $node = Get-NodePinProblem; if ($node) { $problems.Add($node) }
   $claude = Get-ClaudePinProblem; if ($claude) { $problems.Add($claude) }
+  foreach ($unknown in (Get-LegacyUnknownProblems)) { $problems.Add($unknown) }
+  , $problems.ToArray()
+}
+# The uninstall that migrate runs refuses a folder with a file it does not know, a link, or an unknown entry in the install folder - and by then the services would be gone. So the same scan is made BEFORE anything
+# is touched, and the first unknown file stops the migration.
+function Get-LegacyUnknownProblems {
+  $problems = New-Object System.Collections.Generic.List[string]
+  foreach ($d in (Get-DataFolders)) {
+    if (-not (Test-Path -LiteralPath $d)) { continue }
+    if (Test-HasReparsePoint $d) { $problems.Add("$d is or contains a link or junction"); continue }
+    $unknown = @((Get-DataUnknownEntries $d))
+    if ($unknown.Count -gt 0) { $problems.Add("$d holds files this script did not create ($(@($unknown | Select-Object -First 3) -join ', ')); move or delete them first") }
+  }
+  if (Test-Path -LiteralPath $L.InstallRoot) {
+    if (Test-HasReparsePoint $L.InstallRoot) { $problems.Add("$($L.InstallRoot) is or contains a link or junction") }
+    else {
+      $all = Get-TreeEntries $L.InstallRoot
+      $unknown = @($all | ForEach-Object { $_.Rel } | Where-Object { -not (Test-OurInstallEntry $_) })
+      if ($unknown.Count -gt 0) { $problems.Add("$($L.InstallRoot) holds files this script did not create ($(@($unknown | Select-Object -First 3) -join ', ')); move or delete them first") }
+    }
+  }
   , $problems.ToArray()
 }
 # Process IDs whose owner SID is this one (Win32_Process has no owner property; GetOwnerSid answers per process). Never a lookup by image name.
@@ -1417,6 +1626,16 @@ function End-ProcessById([int]$Id) {
   $process = [System.Diagnostics.Process]::GetProcessById($Id)
   $process.Kill()
   [void]$process.WaitForExit(10000)
+}
+# 1. the same ownership test uninstall makes (recorded name, live name, SID, description), 2. Disable-LocalUser by SID, 3. read back. Only then are processes stopped.
+function Disable-LegacyAccount {
+  $record = $script:Manifest['created']['user']
+  $why = Test-OwnedUser $record (Get-LiveControlPlaneUser)
+  if ($why.Count -gt 0) { throw "the account $($K.ControlPlaneUser) is not the one the old install made ($($why -join ', ')); nothing was changed" }
+  Disable-LocalUser -SID (New-Object System.Security.Principal.SecurityIdentifier($record['sid']))
+  $after = Get-LiveControlPlaneUser
+  if ($after -and $after.Enabled) { throw "the account $($K.ControlPlaneUser) is still enabled after Disable-LocalUser; no process was stopped" }
+  Say "    $($K.ControlPlaneUser) is disabled"
 }
 function Stop-LegacyProcesses {
   $sid = $script:LegacyValues.LegacySid
@@ -1442,6 +1661,10 @@ function Get-MigrateLeadSteps {
       Detail = @('with -TrustLocalBuilds the tree hash is the hash of the builds in this working tree (it proves nothing about who built them); with -ExpectedTreeHash it is the one you typed from the CI log')
       Test = { if (-not $script:LegacyValues) { return 'unknown:the legacy install has not been read yet' }; $p = Get-MigratePreflightProblems; if ($p.Count -gt 0) { 'blocked:' + ($p -join '; ') } else { 'todo' } }
       Do = { $p = Get-MigratePreflightProblems; if ($p.Count -gt 0) { throw ('the new install cannot be made yet, so nothing was removed: ' + ($p -join '; ')) }; Say '    the new install can be made; going on' } }
+    [pscustomobject]@{ Id = 'disable'; Title = "Check once more that $($K.ControlPlaneUser) is the account the old install made (name, description and SID), then DISABLE it, so nothing can be started under it while its processes are stopped"
+      Detail = @('an account that is not exactly that one stops the run and nothing is changed', 'the account is removed later, in the uninstall that follows')
+      Test = { if ($script:LegacyValues) { 'todo' } else { 'unknown:the legacy install has not been read yet' } }
+      Do = { Disable-LegacyAccount } }
     [pscustomobject]@{ Id = 'stop'; Title = "Stop the processes of the account $($K.ControlPlaneUser) by PID (found by owner SID, never by image name); the services are stopped by the uninstall that follows"
       Detail = @('a process of that account that cannot be stopped stops the run before anything is uninstalled')
       Test = { if ($script:LegacyValues) { 'todo' } else { 'unknown:the legacy install has not been read yet' } }
@@ -1512,7 +1735,7 @@ function Show-InstalledMessage {
 function Invoke-CompleteInstallCheck {
   if (Test-LegacyLayout) { Stop-Refused 'This install is from the first layout (the local account albera-cp). Run -Mode migrate once to move it to the Control Plane service.' }
   $rollback = Get-RollbackRefusal
-  if ($rollback) { Stop-Refused "${rollback}: the install record holds setupRunId $($script:Manifest['setupRunId']) and this run is $SetupRunId. An older (validly attested) build is never installed over a newer one" }
+  if ($rollback) { Stop-Refused (Get-RollbackMessage $rollback) }
   Say 'The install is already complete; checking it (nothing will be changed).'
   if ($GrantHyperVToBroker -and -not (Test-ManifestHas 'hyperVGrant')) { Say 'NOTE: -GrantHyperVToBroker was given, but this install was made without it, so NOTHING was granted. To add the grant: uninstall, then install again with the option.' }
   $given = Get-ExpectedTreeHashState

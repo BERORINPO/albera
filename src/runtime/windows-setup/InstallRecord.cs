@@ -7,10 +7,14 @@ namespace Albera.Setup;
 /// The one thing setup reads from the install record that scripts/host/albera-host.ps1 keeps (<see cref="SetupLayout.InstallRecordFile"/>): the run id of the attested workflow run that built what was installed
 /// (<c>setupRunId</c>, kept as a decimal string; a JSON number is accepted too). It is compared as an unsigned 64-bit number, never as text. Setup reads the record only when its folder and the file
 /// pass the same "only administrators can write here" test as every other folder setup trusts: a record anyone could rewrite would let them lower the number and replay an old build, or raise it to stop updates.
+/// The record goes away with an uninstall, so the bound does not live only there: HKLM\SOFTWARE\Albera\SetupRunIdFloor (a REG_SZ with a decimal number, only ever raised, never removed by uninstall) and the
+/// run id of the build that made THIS setup.exe (<c>PinnedTools.BuildRunId</c>, compiled in) are floors too. <see cref="RollbackRefusal"/> compares a build with the largest of the three.
 /// </summary>
 internal static class InstallRecord
 {
     public const string RunIdProperty = "setupRunId";
+    public const string FloorKeyPath = @"SOFTWARE\Albera";
+    public const string FloorValueName = "SetupRunIdFloor";
     private const int MaxBytes = 256 * 1024;
 
     /// <summary>
@@ -57,13 +61,36 @@ internal static class InstallRecord
                 JsonValueKind.Number => value.GetRawText(),
                 _ => null,
             };
-            if (text is null || text.Length is 0 or > 20 || !text.All(char.IsAsciiDigit) || !ulong.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var id))
-                throw new SetupRefusal("install_record_invalid", $"{RunIdProperty} in the install record is not a decimal number");
-            return id;
+            return ParseDecimal(text) ?? throw new SetupRefusal("install_record_invalid", $"{RunIdProperty} in the install record is not a decimal number");
         }
         catch (JsonException)
         {
             throw new SetupRefusal("install_record_invalid", "the install record is not valid JSON");
         }
+    }
+
+    /// <summary>The floor as the registry holds it (a REG_SZ with a decimal number). A value that is there but is not one is a refusal: "could not read" never reads as "no floor".</summary>
+    public static ulong ParseFloor(string? text) =>
+        ParseDecimal(text) ?? throw new SetupRefusal("run_id_floor_invalid", $"{FloorKeyPath}\\{FloorValueName} is not a decimal number; an administrator must correct or delete that one value");
+
+    private static ulong? ParseDecimal(string? text)
+    {
+        if (text is null || text.Length is 0 or > 20 || !text.All(char.IsAsciiDigit)) return null;
+        return ulong.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var id) ? id : null;
+    }
+
+    /// <summary>
+    /// Anti-rollback: null when `runId` may be installed, otherwise the refusal text. The bound is the LARGEST of the install record's run id, the registry floor and the run id of the build that made this setup
+    /// (0 for a local compile check: it bounds nothing). The same number is fine, a smaller one is refused. Pure: the flow reads the three values and the tests feed them in.
+    /// </summary>
+    public static string? RollbackRefusal(ulong runId, ulong? recorded, ulong? floor, ulong builtBy)
+    {
+        var bound = 0UL;
+        var source = "none";
+        if (recorded is { } r && r > bound) { bound = r; source = "the install record"; }
+        if (floor is { } f && f > bound) { bound = f; source = $"the floor of this PC ({FloorKeyPath}\\{FloorValueName}, which uninstall keeps)"; }
+        if (builtBy > bound) { bound = builtBy; source = "the build of this setup.exe"; }
+        if (runId >= bound) return null;
+        return $"this update was built by workflow run {runId}, but {source} holds run {bound}; an older build is never installed over a newer one";
     }
 }
