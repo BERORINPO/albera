@@ -112,7 +112,7 @@ test('input releases held buttons then keys in reverse on failure, and records a
   const cancelled = String.raw`if \(cancel\.IsCancellationRequested\) throw new DesktopRefusal\(DesktopReason\.InputCancelled\);`;
   assert.match(send, new RegExp(String.raw`foreach \(DesktopStep step in steps\)[\s\S]*?${cancelled}[\s\S]*?Apply\(gate, keyboard, mouse, step, heldKeys, heldButtons, cancel\);[\s\S]*?${cancelled}[\s\S]*?return new\(null\);`, 'u'),
     'a lease that ended is seen before every step and after the last one, inside the try: the held keys are released and the original path reports it (Zaku MEDIUM 2 of #166)');
-  assert.match(desktop, /public DesktopResult Input\(string computerId, IReadOnlyList<DesktopStep> steps, CancellationToken cancel\)[\s\S]{0,400}if \(cancel\.IsCancellationRequested\) return new\(DesktopReason\.InputCancelled\);[\s\S]{0,80}return Run\(/u, 'and before WMI is touched');
+  assert.match(desktop, /public DesktopResult Input\(string computerId, IReadOnlyList<DesktopStep> steps, CancellationToken cancel = default\)[\s\S]{0,400}if \(cancel\.IsCancellationRequested\) return new\(DesktopReason\.InputCancelled\);[\s\S]{0,80}return Run\(/u, 'and before WMI is touched');
   assert.match(desktop, /_sleep = sleep \?\? \(\(ms, cancel\) => cancel\.WaitHandle\.WaitOne\(ms\)\);/u, 'a sleep step ends when the token is cancelled');
   assert.equal(/Thread\.Sleep/u.test(desktop), false);
   const retry = desktop.slice(desktop.indexOf('private void ReleaseOnNewConnection('), desktop.indexOf('private void Apply('));

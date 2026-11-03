@@ -193,8 +193,9 @@ internal sealed class HyperVDesktop
     /// <summary>
     /// `cancel` is the end of the caller's right to send (its lease): it is looked at before WMI is touched and before every step, and a `sleep` step ends early on it. When it is cancelled
     /// half-way, what is still held is released (the same path as after a failed step) and the result is `input_cancelled`. A step already inside WMI is not interrupted.
+    /// The default (never cancelled) is for the VM-lab probe, which has no lease; the desktop pipe always passes its session's token (pinned in windows-broker-desktop-pipe-source.test.mjs).
     /// </summary>
-    public DesktopResult Input(string computerId, IReadOnlyList<DesktopStep> steps, CancellationToken cancel)
+    public DesktopResult Input(string computerId, IReadOnlyList<DesktopStep> steps, CancellationToken cancel = default)
     {
         if (Resolve(computerId) is not { } computer) return new(DesktopReason.ComputerUnknown);
         if (!DesktopLimits.AreValidSteps(steps)) return new(DesktopReason.InputSteps);
