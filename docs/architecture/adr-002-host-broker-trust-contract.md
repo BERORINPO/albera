@@ -226,8 +226,243 @@ What this changes in this document:
 - **The hands** become Claude Code run headless, started by the Control Plane with only ALBERA's six desktop tools. They reach the Broker through the same desktop pipe, the same helper and the same `task.start` lease as above; the Broker, its allowlist and its lease rules do not change. The Control Plane's restricted identity may start `claude.exe` and an MCP server child; whether it can is NOT VERIFIED and is the first measurement of the contract (M4).
 - **Not changed:** the Control Plane never receives Hyper-V Administrators, never controls the Broker or the Authority services, and cannot write the Broker's or the Authority's binaries, configs or state.
 
+## Amendment 2026-11-04: reversible approval on the production Broker (the Broker makes the checkpoint, signs the proof and performs the restore; **Proposed**, design only)
+
+**Status: Proposed. Waiting for the owner.** Two owner decisions are open, and nothing below may be built before they are made: **AGM-1** (widen the WmiGate allowlist by the rows in "WmiGate rows added", and let the installer set the VM's checkpoint type to ProductionOnly) and **AGM-2** (issue the Broker's attestation key and register its public half with the Approval Authority). This is design only. PR1 is this text, `src/runtime/broker-contract/broker-vm-wire-vectors.json` and the test that pins them (`test/docs-reversible-approval-contract.test.mjs`); it changes no runtime line. Proposed decision-log row: `2026-11-04+reversible-approval-broker` (its text is in the PR description; the lead adds it to `spec/architecture.md`).
+
+**Why.** [approval-tiers.md](approval-tiers.md) decides that a prompt is needed only for what cannot be undone, and the Approval Authority already applies that: it checks Broker-signed facts and always asks a person for `environment.restore_checkpoint`. What the production Broker lacks is the part that makes the facts. It has no checkpoint (`DesktopAllowlist` refuses every snapshot class), no signature (no key, and no request that asks for one), no restore, and no recorded outcome other than `UNKNOWN` (`Journal.RecordedStates`). The checkpoint, the attestation and the restore exist only in the same-user Hyper-V prototype (`env-io.ps1`), and the gated room refuses an attestation setting (`runtime_room_gated_out_of_scope`). This amendment gives the Broker those parts. The Approval Authority's code does not change.
+
+| Part | Does | Does not |
+|---|---|---|
+| Broker | makes the facts and signs them (a checkpoint exists, there is no network, this generation); performs restore and power-on; owns the generation | decide whether a person is needed |
+| Approval Authority | decides from policy and the signed facts whether a person is needed | touch a VM |
+| Control Plane and room | sequence the steps, show the match code and the result | make or sign a fact; hold a key |
+
+### The `_vm` pipe
+
+A third endpoint, for the requests that take long (a checkpoint is about 20 s) or that only read the Broker's own record. Neither fits the claim pipe (one serial connection; its client waits 5 s by default and at most 30 s, `BROKER_CLIENT_LIMITS`) or the desktop pipe (screen and input only).
+
+- **Endpoint** `<pipeName>_vm` (logical name `\\.\pipe\ALBERA\HostBroker\vm\v1`), created only when the config has `computers`, like `_desktop`. The name must stay a plain pipe name of at most 128 characters.
+- **Same pipe rules as the claim pipe:** protected DACL (Broker service SID and SYSTEM full control; the Control Plane service SID only `0x00120083`), explicit owner = the Broker service SID, first-instance, remote clients rejected, the per-connection peer check (thread token user SID equals the configured Control Plane SID), identification-level impersonation only, one request per connection. The pipe is created with `LocalPipe.cs` (`CreateNamedPipeW`), **not** with .NET's `NamedPipeServerStreamAcl`, which cannot set `PIPE_REJECT_REMOTE_CLIENTS`: an account on the DACL could then reach it over SMB (measured 2026-11-01, #142).
+- **Frames.** 4-byte little-endian length plus UTF-8 JSON, read with the contract's strict reader (`StrictJson`: depth 2 for a request, depth 3 for a reply that carries an attestation). A request over the limit is refused while it is read, before the peer check, as on the claim pipe.
+- **Instances and order.** 4 instances, created at start. Requests for the same `computerId` run one at a time in arrival order; different computers run in parallel. The restore and power-on workers take the same per-computer turn, so a worker never overlaps an attest.
+- **Time.** The client gives up after 180 s. The Broker's own deadline for one request is 150 s from the moment it read the frame (waiting for its turn counts). At the deadline the Broker answers `denied`, stops waiting for WMI, and does not cancel a job that is already running (`Msvm_ConcreteJob` is read-only, below); what that job leaves behind is an orphan or an UNKNOWN outcome (C7).
+- **Refusal.** Every refusal is `{"ok":false,"code":"denied"}`. The reason is a fixed word in the Broker's log and never on the wire. For `attestTaskStart` a refusal means "no statement": the Control Plane takes the person path (approval-tiers.md: unknown means prompt) and does not retry in a loop.
+
+Limits (every row is pinned to `broker-vm-wire-vectors.json` by the test; proposed values are the lead's to change together with this table):
+
+| Key | Value | Meaning |
+|---|---|---|
+| `vmPipeSuffix` | `_vm` | appended to `pipeName` |
+| `pipeInstances` | `4` | instances of the `_vm` pipe |
+| `maxRequestBytes` | `4096` | largest request frame (the claim pipe's bound) |
+| `maxVmReplyBytes` | `2048` | largest `_vm` reply frame (the widest signed task-start reply, with 64-character ids and the largest counters, is 973 bytes) |
+| `maxClaimReplyBytes` | `256` | largest claim or inspect reply (unchanged) |
+| `maxIdLength` | `64` | contract id grammar `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$` |
+| `counterMin` | `1` | generation and lease generation start at 1 |
+| `counterMax` | `9007199254740991` | 2^53 - 1, the strict reader's integer bound |
+| `attestationTtlSeconds` | `60` | the statement's TTL (the contract's default; at most 300) |
+| `clientTimeoutSeconds` | `180` | the Control Plane's wait for one `_vm` reply |
+| `brokerDeadlineSeconds` | `150` | the Broker's own budget for one `_vm` request |
+| `restoreWaitSeconds` | `300` | how long the Control Plane polls `inspect` for a restore |
+
+Requests and replies (one top-level key names the request; the body has exactly the keys listed, no others):
+
+| Request | Exact keys of the body | Reply on success |
+|---|---|---|
+| `vmState` | `computerId` | `{"ok":true,"generation":3,"restorable":true,"state":"ready"}`: `generation` an integer >= 1, `restorable` a boolean (true means a restore claim would be accepted now), `state` one of `ready`, `restoring`, `fenced`; `restorable` is never true while `restoring` |
+| `attestTaskStart` | `actionDigest`, `computerId`, `generation`, `leaseGeneration`, `leaseId`, `operationId`, `projectId`, `vmId` (the 8 items) | `{"ok":true,"attestation":<envelope>}` |
+| `attestNetwork` | `computerId`, `generation`, `leaseGeneration`, `leaseId`, `projectId`, `vmId` (the 6 items) | `{"ok":true,"attestation":<envelope>}` |
+
+Value rules: ids follow the contract id grammar; `vmId` is a lowercase GUID (a trailing newline is not one); `generation` and `leaseGeneration` are integers 1 to 2^53 - 1; `actionDigest` is `sha256:` plus 64 lowercase hex characters. A key the Broker owns (`network`, `checkpointId`, `checkpointType`, `observedAt`, `expiresAt`) is refused like any other extra key: the Control Plane has no way to say what the Broker observed.
+
+The envelope is the existing one, unchanged: `{attestation, digest, keyId, signature}` with the body of `task-start-attestation.mjs` (domain `albera.task-start-attestation.v2`, 14 keys) for `attestTaskStart` and of `network-attestation.mjs` (domain `albera.network-attestation.v1`, 10 keys) for `attestNetwork`. The reply's own key `attestation` holds the whole envelope. The body echoes the request's bindings; the Control Plane and the Authority verify it with the existing verifiers.
+
+**`attestTaskStart`, in this order; the first failing step answers `denied` and nothing after it runs.**
+
+1. The computer is in `computers`, `vmId` is its configured VM, and the Broker's attestation key is configured and can be opened.
+2. Fences: `leaseId` is the config's, `leaseGeneration` is `broker_state.lease_generation`, `generation` is `vm_state.generation`, and `vm_state.state` is `ready`.
+3. A row for this `operationId` already exists: take the re-sign path below.
+4. Free space on the snapshot volume is at least the floor (K2).
+5. Revoke the computer's desktop lease (see "Lease revocation").
+6. Read the VM's checkpoint type: it must be ProductionOnly.
+7. Read the network: it must be `none`.
+8. `CreateSnapshot`; wait for the job within the deadline; the new snapshot must read back as a Production checkpoint (how the Broker tells is NOT VERIFIED, N2).
+9. In one transaction, insert the `checkpoints` row (`attested`, `statement_digest` NULL) only if `vm_state.generation` and `state` are still what step 2 saw. Otherwise no row and no statement; the snapshot is an orphan (K3).
+10. Read the network again: `none`.
+11. Sign with the Broker's key. `observedAt` is the Broker's clock at this step, the TTL is 60 s, `checkpointType` is `production`, `network` is `none`. Store the statement's digest in the row's `statement_digest`, then reply.
+
+**Re-sign (the same `operationId` again).** The row must be `attested` for the same computer, VM, generation and `actionDigest`; any other row is `denied`. The Broker does not take another checkpoint: it revokes the lease, re-reads the checkpoint type, the network and that the snapshot still exists, reads the network again, signs a new statement and replaces `statement_digest`. Only the newest statement of an operation can be claimed.
+
+**`attestNetwork`.** Steps 1 and 2 (with `state` `ready` required, so it is refused while `restoring` or `fenced`), then read the VM's network once and sign what was observed: `none`, `present` or `unknown`. It takes no checkpoint, writes no row and revokes nothing. The Authority judges the value.
+
+**`vmState`.** Reads the journal only (no WMI), so it answers at once. The room shows what it says.
+
+**What a statement is.** `attestTaskStart` signs only `network: none` with `checkpointType: production`; any other observation is `denied`, never a weaker statement. The key is a CNG machine key, non-exportable, usable only by the Broker's service SID (N7, C6); its public half and `keyId` are what AGM-2 registers with the Authority (`PinnedAttestationKey.cs`).
+
+**Config additions (provisional; the lead decides the shape).** One optional key, `attestation: { "keyName": <CNG key name>, "keyId": <contract id> }`, both fields required when the key is present; `keyName` is 1 to 64 letters, digits, dots, underscores and hyphens. Without it the `_vm` pipe answers `vmState` and refuses both attest requests, which is the safe fallback. The installer creates the key (AGM-2) and writes the name; the Broker never creates one.
+
+### Claim pipe: two more actions, wider states
+
+- **Three-key claim.** `{receipt, signature, action}` now accepts three actions, and the purpose follows from the action: `task.start` is `guest.command`; `environment.start` and `environment.restore_checkpoint` are `broker.operation`. This replaces the sentence of Amendment 2026-10-31 that a `broker.operation` receipt in a three-key frame is `DENY=binding`; a receipt whose purpose is not the one the action implies is still `binding`. Any other action in this form is `DENY=action_mismatch`.
+- **DTO.** For the two new actions `args` is exactly `{vmId, expectedGeneration}`: `vmId` a lowercase GUID that is the configured VM of the DTO's computer, `expectedGeneration` an integer >= 1. Any other shape is `DENY=action_invalid`. `task.start` keeps its `{task}` or `{task, vmId, expectedGeneration}` form.
+- **Extra checks, after the existing ones and inside the claim's transaction.** The computer is configured (`DENY=vm_unknown`). Where the DTO names a VM (always for the two new actions, optionally for `task.start`): `vmId` is the computer's configured VM (`vm_mismatch`) and `expectedGeneration` equals `vm_state.generation` (`vm_generation`). For `task.start` this tightens Amendment 2026-11-03: a claim naming another VM used to be recorded and only made no lease; it is now denied, because the claim also moves `vm_state`. Then per action:
+  - `task.start`: `state` is `ready` (`vm_state`). For a receipt with `basis` `policy` the `checkpoints` row of the receipt's `operationId` must exist, be `attested`, and have this `vmId` and generation, `action_digest` equal to the receipt's `actionDigest` and `statement_digest` equal to its `attestationDigest` (`attestation`). A receipt with `basis` `presence` (a person approved it) needs no row. When a row matches, it becomes `claimed` and `restorable` becomes 1; when none matches, `restorable` becomes 0, because the latest task then has no checkpoint. (A presence receipt matches on operation, VM, generation and `action_digest`; it has no `attestationDigest` to compare.) The desktop lease is granted as before, then the prune of K4 runs after the reply.
+  - `environment.restore_checkpoint`: `state` is `ready` or `fenced` and `restorable` is 1 (`no_checkpoint`). The transition is S3 below.
+  - `environment.start`: `state` is `ready`. The worker powers the VM on; for a receipt with `basis` `policy` it first reads the network again and powers on only if it is `none` (the Broker does not remember network statements, so it does not compare `attestationDigest`; the execution-time read is the check, see L5).
+- **Reply.** The claim's reply names the action and, for a first claim, always says `UNKNOWN`: it means "recorded", never "done". The wire stays `{"ok":true,"state":...,"action":...}` (plus `"replayed":true` for an exact duplicate).
+- **States.** `Journal.RecordedStates` becomes `UNKNOWN`, `APPLIED`, `NOT_APPLIED`. Only the Broker's worker moves a claim, once, from `UNKNOWN` to `APPLIED` or `NOT_APPLIED`, in the same transaction as the change it describes; a final state never changes again. `task.start` and `synthetic.noop` claims stay `UNKNOWN`: nothing executes for them. An exact replay answers the recorded state. The receipt-less `inspect` answers any of the three and still names `synthetic.inspect`; the Node client (PR5) must accept the two new words.
+- **Not changed:** the claim pipe's frame, bounds, key sets, signature and receipt checks, single-use challenges, the clock fence and the exact-duplicate rule.
+
+### Journal v4
+
+Forward-only migration, like v3: `PRAGMA user_version` goes 3 to 4 in the same transaction as the two new tables. A v4 journal opened by an older Broker is "newer" and refused (exit 76); a journal whose version or table text is not exactly one the Broker knows is refused with exit 76 before the pipe exists, as now. There is no downgrade.
+
+```sql
+CREATE TABLE vm_state (computer_id TEXT PRIMARY KEY, vm_id TEXT NOT NULL CHECK(length(vm_id) = 36), generation INTEGER NOT NULL CHECK(generation >= 1), state TEXT NOT NULL CHECK(state IN ('ready', 'restoring', 'fenced')), restorable INTEGER NOT NULL CHECK(restorable IN (0, 1)), CHECK(NOT (state = 'restoring' AND restorable = 1)))
+CREATE TABLE checkpoints (snapshot_id TEXT PRIMARY KEY CHECK(length(snapshot_id) = 36), computer_id TEXT NOT NULL, vm_id TEXT NOT NULL CHECK(length(vm_id) = 36), generation INTEGER NOT NULL CHECK(generation >= 1), operation_id TEXT NOT NULL UNIQUE, action_digest TEXT NOT NULL CHECK(length(action_digest) = 71), statement_digest TEXT CHECK(statement_digest IS NULL OR length(statement_digest) = 71), created_at INTEGER NOT NULL CHECK(created_at >= 0), state TEXT NOT NULL CHECK(state IN ('attested', 'claimed', 'applied', 'destroyed')))
+```
+
+| Table / column | Meaning |
+|---|---|
+| `vm_state` | one row per configured computer: the VM it is bound to, its generation, its state, and whether a restore would be accepted now (`restorable`). `restorable` is stored, not derived, because "the latest task has no checkpoint" is not visible in the ledger alone. |
+| `checkpoints` | the ledger of snapshots the Broker made (K3). `snapshot_id` is the Hyper-V snapshot id (a lowercase GUID). `generation` is the VM generation when it was taken. `operation_id` is the task start it was taken for (one checkpoint per operation). `action_digest` is the action digest it is bound to; `statement_digest` is the digest of the newest statement signed for it (NULL until one is signed, so a row nobody can claim). `state`: `attested` (taken, not claimed), `claimed` (its task start was claimed), `applied` (a restore went back to it), `destroyed` (the snapshot is gone). |
+| `claims.state` | the table text of `claims` does not change (it has no CHECK, and SQLite cannot add one without rebuilding the table). The code accepts `APPLIED` and `NOT_APPLIED` besides `UNKNOWN`; a row with any other value still reads as no record. |
+
+At every start, in the same transaction as the epoch bump (`BeginEpochAsync`): for each configured computer, a missing `vm_state` row is inserted (generation 1, `ready`, `restorable` 0); a row whose `vm_id` differs from the configured `vmId` gets the new `vm_id`, generation + 1, `ready`, `restorable` 0 (the old ledger rows keep their old `vm_id`, so no restore can select them); a row in `restoring` becomes `fenced` with `restorable` 1 (S6). Rows of computers no longer in the config are left alone. A configured `generation` (the lease generation floor) is a different thing and is unaffected.
+
+### Generation: who owns it
+
+The VM generation is owned by the Broker's journal (`vm_state.generation`) and by nothing else. It says which incarnation of the VM's content a request is about. It only goes up, by one, in exactly two cases: the configured `vmId` of a computer changed (found at start), and a restore claim is accepted (S3, in the same transaction as `restoring` and the lease revocation). It is never taken from a request: `generation` and `expectedGeneration` in a request are only compared, and any difference is refused. The Control Plane keeps no copy it trusts: it asks `vmState` before each flow, and the room's settings stop carrying a fixed `expectedGeneration` (PR5).
+
+Five counters share the word; they are different things:
+
+| Counter | Owner | Meaning |
+|---|---|---|
+| `vm_state.generation` (new) | Broker journal | the VM's content incarnation: `expectedGeneration` in `task.start` / `environment.start` / `environment.restore_checkpoint` args, `generation` in both attestations |
+| `broker_state.lease_generation` | Broker journal | the claim fence of "Receipt v2": revoked by configuring N+1 and restarting; `leaseGeneration` in receipts and attestations |
+| desktop lease generation | Broker memory (`DesktopLeases`) | a per-computer counter of desktop leases; lost at every restart |
+| Notes generation | Hyper-V prototype (`env-io.ps1`, same user) | the prototype's own; the production Broker has no Notes (it never calls `ModifySystemSettings`) |
+| `computers.generation` | Control Plane SQLite store | the Control Plane's bookkeeping; not trusted by the Broker |
+
+### Lease revocation
+
+The Broker's desktop lease (Amendment 2026-11-03, "Desktop lease") ends, besides its 60-minute expiry and a newer claim for the same computer, in these cases:
+
+| Event | Effect | Why |
+|---|---|---|
+| `attestTaskStart` for the computer, step 5 (before any read, before `CreateSnapshot`) | revoke the computer's lease; its `act` sessions are closed | no input may reach the VM while the checkpoint is taken or while an older task's hands still hold the lease |
+| a restore claim accepted | revoke, **before** the transaction commits | if the commit then fails the lease is gone (fail closed); the next `task.start` claim makes a new one |
+| a Broker start | every lease is gone (memory only, as now) | unchanged |
+| a `task.start` claim | granted only if `vm_state.state` is `ready` and the claim's `expectedGeneration` (when it names one) equals `vm_state.generation` | a lease never outlives the generation it was granted for |
+
+The desktop pipe still names no VM generation: the hands compare `vmId` only, and the lease is the gate (L7).
+
+### WmiGate rows added (AGM-1)
+
+Everything stays in one table (`DesktopAllowlist.Classes`), reached only through `WmiGate`, in process through COM, namespace `root\virtualization\v2`, never through PowerShell or a child process. The VM and every snapshot are resolved by the Broker (the VM from the config, a snapshot from the ledger); a caller never names one. The argument values below are the design; each enum number is recalled from the Hyper-V WMI v2 reference and is **NOT VERIFIED until C1 reads the live class** (N1). If the live class differs, this table changes before PR3.
+
+| Use | Class | Method or read | Argument values |
+|---|---|---|---|
+| checkpoint | `Msvm_VirtualSystemSnapshotService` (its one instance) | `CreateSnapshot` | `AffectedSystem` = the `Msvm_ComputerSystem` whose `Name` equals the configured `vmId`; `SnapshotSettings` = one embedded `Msvm_VirtualSystemSnapshotSettingData` with `ConsistencyLevel = 1` (application consistent) and no other property set; `SnapshotType = 2` (full snapshot). Outputs read: `ResultingSnapshot`, `Job` |
+| remove an old checkpoint | `Msvm_VirtualSystemSnapshotService` | `DestroySnapshot` | `AffectedSnapshot` = the snapshot whose id is a `checkpoints` row of this computer and VM and that has no child (K4). Output read: `Job` |
+| restore | `Msvm_VirtualSystemSnapshotService` | `ApplySnapshot` | `Snapshot` = the snapshot of the newest `claimed` row of this computer and VM. Output read: `Job` |
+| snapshot settings | `Msvm_VirtualSystemSnapshotSettingData` | read only (no method) | the class itself (to build the embedded settings), one snapshot's own settings, and its `Parent` link (N4) |
+| power | `Msvm_ComputerSystem` | `RequestStateChange` | `RequestedState = 2` (Enabled) only for `environment.start`; `RequestedState = 3` (Disabled, power off) only inside a restore and only if C3 shows that `ApplySnapshot` refuses a running VM; no other value; `TimeoutPeriod` is not passed |
+| wait for a job | `Msvm_ConcreteJob` | read only: `JobState`, `ErrorCode` | no method (no cancel, no state change) |
+| network | `Msvm_SyntheticEthernetPortSettingData`, `Msvm_EmulatedEthernetPortSettingData` | read only | the ports of the VM's realized settings |
+| checkpoint type | `Msvm_VirtualSystemSettingData` (already allowed) | read, new properties | the VM's checkpoint-type setting (`UserSnapshotType`; the value that means ProductionOnly is recorded by C1) and the VM's snapshot list |
+
+Outside WMI the Broker reads the free space of the volume that holds the VM's snapshot files through the operating system (which path names that volume is NOT VERIFIED, C8). The installer sets ProductionOnly on the VM once, as an administrator (AGM-1); the Broker only reads it before every checkpoint and never changes it.
+
+**Still refused:** `ModifySystemSettings`, `DefineSystem`, `DestroySystem`, `DestroySnapshotTree` (it destroys the children too), every other `RequestedState` (shut down, quiesce, reboot, paused, saved, ...), `TypeCtrlAltDel`, every other method of `Msvm_VirtualSystemSnapshotService`, any method of `Msvm_ConcreteJob`, and any other namespace. PR3 extends `CONTRACT_ALLOWLIST` in `test/windows-broker-hyperv-desktop-source.test.mjs` with exactly these rows and pins the argument values; a class, method or value not in this table fails that test.
+
+### Checkpoint and prune rules
+
+- **K1 One checkpoint per attested task start,** taken by `CreateSnapshot` with the arguments above, in no other path.
+- **K2 Free space.** At least 20 GiB (21474836480 bytes; Lin's proposal, the lead decides) free on the snapshot volume; below it, no statement.
+- **K3 The ledger is the registry.** A snapshot is the Broker's only if it is a `checkpoints` row. Names play no role. A snapshot that has no row (a crash between `CreateSnapshot` and the ledger write, one made by hand) is an **orphan**: it is written to the log, never destroyed and never applied.
+- **K4 Prune.** The Broker destroys a snapshot only when all of these hold: (a) it is in the claim path of a `task.start` receipt, after the claim's reply has been written (never in `vmState`, attest or restore); (b) the snapshot is a row of the same computer and VM, older than the row just claimed; (c) **it has no child**, read from the snapshot tree immediately before each call (the parent link is read from `Parent` of `Msvm_VirtualSystemSnapshotSettingData`; whether that is the right property or an association is NOT VERIFIED, N4); (d) one at a time, waiting for the job, and the row becomes `destroyed` only after the job ended with `ErrorCode` 0 and a re-read finds the snapshot gone; (e) never `DestroySnapshotTree`. Reason for (c): the Japanese Microsoft Learn page of `Msvm_VirtualSystemSnapshotService` says `DestroySnapshot` may, as a side effect, also destroy other snapshots that depend on it (as reported by the 2.5th-round external research of 2026-11-04, not yet re-read by the author of this text: <https://learn.microsoft.com/ja-jp/windows/win32/hyperv_v2/msvm-virtualsystemsnapshotservice>). C4 measures what it really does.
+- **K5 Consequence, and a precondition for PR3.** In a linear history the previous checkpoint is the parent of the new one, so under (c) it is **not** destroyed while its successor exists: in the ordinary case nothing is pruned, the checkpoint count and the disk grow by one per task, and only K2 stops it. That is the safe direction (nothing is lost) and it contradicts the approved "keep one checkpoint". PR3 does not merge until C4 decides: **(i)** if destroying a parent provably leaves its child intact and restorable, (c) is relaxed to "its only children are checkpoints this ledger made" and this paragraph is rewritten; **(ii)** if not, either the Broker destroys the previous checkpoint at the start of attest (before `CreateSnapshot`, when it is a leaf; this lets the Control Plane trigger the deletion without an Authority receipt, which worsens L1) or growth is accepted and bounded. The choice is the lead's (disk budget).
+
+### Restore: state transitions
+
+`vm_state.state` and the claim state move only as below; each row is one transaction.
+
+| # | From | Event | To | Effects in the same transaction |
+|---|---|---|---|---|
+| S1 | `ready` | `attestTaskStart` succeeded (step 9) | `ready` | insert the `checkpoints` row `attested`, only if generation and state are unchanged |
+| S2 | `ready` | `task.start` claim recorded | `ready` | the matching row becomes `claimed` and `restorable` 1, or `restorable` 0 when no row matches; the lease is granted; K4 runs after the reply |
+| S3 | `ready` or `fenced` | `environment.restore_checkpoint` claim accepted (`restorable` 1) | `restoring` | generation g becomes g + 1; `restorable` 0; the lease is revoked first; the claim is inserted `UNKNOWN` |
+| S4 | `restoring` | the worker's `ApplySnapshot` job completed and the VM reads back Off | `ready` | the claim becomes `APPLIED`; the newest `claimed` row becomes `applied`; `restorable` 0 |
+| S5 | `restoring` | the worker's call was refused before any job started (the call returned neither 0 nor 4096), or the snapshot is gone | `ready` | the claim becomes `NOT_APPLIED`; `restorable` stays 1, or becomes 0 and the row `destroyed` when the snapshot is gone |
+| S6 | `restoring` | the job failed or passed its deadline, the VM did not read back Off, or the Broker restarted | `fenced` | the claim stays `UNKNOWN` (it is never resolved: the outcome is not knowable); `restorable` 1 |
+| S7 | `ready` | `environment.start` claim accepted | `ready` | the claim is inserted `UNKNOWN`; the worker then sets it `APPLIED` when the VM reads back Running and `NOT_APPLIED` when its own pre-check refused before the call, and leaves it `UNKNOWN` otherwise; the Broker never retries a start |
+| S8 | any | a Broker start finds a different configured `vmId` | `ready` | generation + 1, `restorable` 0, the new `vm_id` |
+
+**The restore worker** (after S3, in the per-computer turn, deadline 240 s from its start, proposed): (1) the VM is the configured VM and the newest `claimed` row's snapshot exists among its snapshots (else S5); (2) if the VM is not Off, depending on C3: *branch X*, `ApplySnapshot` refuses a running VM, so `RequestStateChange(3)` and wait until Off; *branch Y*, `ApplySnapshot` works on a running VM, so nothing (and the row for value 3 is not added to the allowlist); (3) `ApplySnapshot` and wait for the job; (4) read the VM back: Off (S4), otherwise S6. A Production checkpoint is expected to restore to Off and stay Off (the prototype's measurement, 2026-10-31); through WMI it is NOT VERIFIED (N3, C3).
+
+**Afterwards** the Control Plane polls `inspect` for the restore claim for up to 300 s. On `APPLIED` it sends `environment.start {vmId, expectedGeneration: g + 1}` and `attestNetwork` at generation g + 1; at the standard tier that start needs no person when the statement says `none` (D3: the restore never starts the VM by itself). On `NOT_APPLIED` the restore did not happen (`restorable` says whether it can be asked again). On `UNKNOWN` after 300 s the Control Plane reads `vmState`: `fenced` means a new person-approved restore is the repair.
+
+### Known limits
+
+- **L1 The Control Plane can move the restore point forward (second round, finding 1).** A compromised Control Plane can repeat attest, submit and claim; at the standard tier the Authority signs `task.start` without a person for each valid statement, so each claim makes the checkpoint of the *current* state the one `environment.restore_checkpoint` returns to, and a good state is no longer offered. What this amendment does about it: prune only in the claim path, only ledger ids, only snapshots without a child (K4), so the earlier good checkpoints stay in Hyper-V for an administrator to apply by hand, although the Broker's own restore offers only the newest; the `careful` tier and a per-action override on `task.start` make a person approve every task start, which closes it for an owner who wants that. What remains: **"restorable" is a convenience, not a safety boundary.** `environment.destroy` and `environment.purge` still ask a person at every tier and the Control Plane cannot create a statement.
+- **L2 The prune is stricter than the approved "keep one checkpoint"** until C4 decides (K5).
+- **L3 `projectId` in a statement is the caller's claim.** The prototype took it from the VM's Notes; the production Broker never writes Notes (no `ModifySystemSettings`), and the config binds a computer to a VM but not to a project. The Authority binds it to the action it signs; nothing at the Broker checks it. If that is not acceptable, a `projectId` in the `computers` entry is the smallest fix (the lead decides).
+- **L4 Outside the VM nothing is undone.** A restore discards the latest task's changes to the VM's disks. A push, a PR, an API call or a file on another machine is not repeated or reverted (ADR-004).
+- **L5 Network statements are not remembered.** `attestNetwork` has no operation to key a ledger row on, so a start receipt's `attestationDigest` is not compared with anything. For `basis` `policy` the Broker reads the network again right before power-on and refuses unless it is `none`; a gap remains between that read and the power-on, and a person-approved start is not held to it.
+- **L6 Time-of-check gaps for a host administrator.** The checkpoint type is read before `CreateSnapshot`, and the network between two reads; a member of Hyper-V Administrators or a host administrator can change either in between. They can also create, merge or delete snapshots behind the ledger (the Broker re-reads before each use and treats a missing snapshot as S5, but cannot detect a revert done by hand) and sign with the Broker's own account. All of that is outside the threat model, as for the Broker's other rights.
+- **L7 The hands compare `vmId` only.** After PR5 the room's fixed generation is gone; the lease (revoked at attest and at restore) and the claim carry the generation, and the desktop pipe does not name one.
+- **L8 A restore interrupted by a stop or a crash leaves `fenced`** and an `UNKNOWN` claim that is never resolved; the repair is a new person-approved restore (S3 from `fenced`). A start that was interrupted stays `UNKNOWN` and is never retried by the Broker (the Control Plane asks again with a new receipt). Orphan snapshots from an interrupted attest stay until an operator removes them (K3).
+- **L9 CNG machine key ACL.** No Microsoft document was found for letting only a virtual service account (`NT SERVICE\AlberaHostBroker`) use a CNG machine key. The mechanism assumed is the usual one: the key's file under `%ProgramData%\Microsoft\Crypto` and its ACL (which subfolder holds a Microsoft Software Key Storage Provider machine key is recorded by C6). NOT VERIFIED (N7). From the 2026-11-01 measurements (#142): an account without access gets `NTE_BAD_KEYSET` ("no such key"), not `NTE_PERM`, so the Broker cannot tell a missing key from a denied one and reports both as one fixed start failure word (`signing_key_unavailable`), and every "denied" test must also show from the administrator side that the key exists; a service token of a virtual account is high integrity and elevated, so neither the elevation flag nor the integrity level separates the Broker from the Control Plane, and only the SID in the ACL does; a process running as the Broker's SID, SYSTEM or an administrator can sign.
+- **L10 The lab cannot sign with Windows Hello.** The lab cannot make an Authority receipt at the standard tier for a loosening policy; whether a lab-only software key tool is needed is decided in PR6, not measured here.
+- **L11 No VM-lab run of the services yet.** Everything here is design; the first run is PR2's probe and PR6's integration.
+
+### NOT VERIFIED items and where each is measured
+
+Each row names the measurement that closes it. A row stays NOT VERIFIED until that measurement's result is written back into this amendment.
+
+| # | Not verified | Measured by |
+|---|---|---|
+| N1 | The enum numbers and argument shapes of `CreateSnapshot` (`SnapshotType` 2, `ConsistencyLevel` 1), `ApplySnapshot`, `DestroySnapshot`, `RequestStateChange` (2 and 3), the method return values (0 for done, 4096 for a job started), the job states, the form of a snapshot's `InstanceID`, and the value of the VM checkpoint-type setting that means ProductionOnly | C1 |
+| N2 | `CreateSnapshot` honors ProductionOnly (no fallback to a Standard checkpoint, which saves guest memory to the host disk), and WMI can tell a Production checkpoint from a Standard one | C2 |
+| N3 | `ApplySnapshot` on a running VM (branch Y) or only on an Off VM (branch X, then value 3); what state the VM ends in; what a failed job leaves | C3 |
+| N4 | `DestroySnapshot` may destroy dependent snapshots (Microsoft Learn, ja-jp); how a parent and its children are read (`Msvm_VirtualSystemSnapshotSettingData` `Parent`: a property or an association) | C4 |
+| N5 | Whether destroying a parent leaves its child intact and restorable (decides the relaxation in K5) | C4 |
+| N6 | The network read through `Msvm_SyntheticEthernetPortSettingData` and `Msvm_EmulatedEthernetPortSettingData` classifies as the prototype does, and `RequestStateChange(2)` from Off works after a restore | C5 |
+| N7 | A CNG machine key usable only by `NT SERVICE\AlberaHostBroker`: how the ACL is set, that the Control Plane and another virtual account cannot use it, that it cannot be exported, and what error each failure returns | C6 |
+| N8 | What a stop or a crash in the middle of `CreateSnapshot` or `ApplySnapshot` leaves; that SCM STOP answers within 5 s with a job in flight; that a start turns `restoring` into `fenced` | C7 |
+| N9 | The 150 s budget and the 240 s restore deadline hold; the 20 GiB floor and which path names the snapshot volume; the real frame sizes; the per-task growth under K4 | C8 |
+| N10 | Membership of Hyper-V Administrators with an unrestricted service SID is enough for the snapshot service (the 2026-11-03 lab measured the thumbnail and input calls only) | C1 (read), C2 and C3 (calls) |
+
+Not measurements, and so not in this table: the lab signing tool (L10, PR6), whether `projectId` belongs in the config (L3), and the first run of the services (L11).
+
+### Measurements C1 to C8
+
+One probe, `broker-checkpoint-probe.ps1` (PR2), run in the nested-Hyper-V lab under the real service identity: a virtual account holding only `SeChangeNotifyPrivilege`, an unrestricted service SID, member of Hyper-V Administrators, as in the 2026-11-03 lab. Nothing is downloaded; the VMs are the lab's own disposable ones.
+
+| # | What is measured | How | Decides |
+|---|---|---|---|
+| C1 | The WMI surface, read only | List the methods and parameters of `Msvm_VirtualSystemSnapshotService`, the value maps of `SnapshotType`, `ConsistencyLevel`, `RequestedState` and `JobState`, the form of a snapshot's `InstanceID`, the VM checkpoint-type property and its ProductionOnly value; connect as the service identity and reach the snapshot service object | N1, N10 (read); fixes every number in "WmiGate rows added" |
+| C2 | A checkpoint made by the Broker's own call | `CreateSnapshot` with the table's arguments on a ProductionOnly VM whose guest can run VSS and on one whose guest cannot (expected: the second fails and no Standard checkpoint appears); dump all properties of the new snapshot's settings and diff a Production against a Standard one to find a property that tells them apart; 10 or more runs for the duration; the returned id equals the `InstanceID` form | N2, N10 (call); the check of step 8 |
+| C3 | `ApplySnapshot` | On a running VM and on an Off VM: does it refuse, what state does the VM end in, how long (5 or more runs); does data written after the checkpoint disappear; a refused call (another VM's snapshot) and a failed job: which return value, what state is left | N3, N10 (call); branch X or Y of the restore worker and whether value 3 enters the allowlist |
+| C4 | `DestroySnapshot` and the tree | Build A then B (B a child of A); read each snapshot's parent (property or association, its name); `DestroySnapshot(A)`: does B remain, is B restorable with B's data, was anything else destroyed (list the dependents before and after); `DestroySnapshot` on a leaf; time and disk effect; after `ApplySnapshot(A)` then a new snapshot C, the shape of the tree | N4, N5; K5 (i) or (ii) |
+| C5 | Network read and power-on | Ports read from the two setting-data classes against the prototype's classification for a VM with no adapter, one connected, one disconnected and one legacy; `RequestStateChange(2)` from Off right after a restore: result and time until the guest answers | N6 |
+| C6 | The CNG attestation key | Create an ECDSA P-256 machine key in the Microsoft Software Key Storage Provider, non-exportable; record where its file is; set the ACL to the Broker's service SID, SYSTEM and Administrators; sign as the Broker identity (works), as the Control Plane identity (must not) and as another virtual account (must not), recording each error code and checking the key's presence from the administrator side in the same run; try to export; repeat after the service restarts and after a reboot; verify the signature against the public key an Authority would pin (64-byte IEEE P1363) | N7; whether AGM-2's installer step is as designed |
+| C7 | Failure and stop | Kill the Broker during `CreateSnapshot` and during `ApplySnapshot`: what the VM and the snapshots look like, whether the ledger is consistent, whether the orphan is detected, whether the restart turns `restoring` into `fenced`; send SCM STOP with a job in flight and time it; exercise the 150 s and 240 s deadline paths | N8 |
+| C8 | Capacity and size | `CreateSnapshot` near the 20 GiB floor (does it fail cleanly); which setting property names the snapshot volume; attest time (p50, p95, max over 20 or more runs) against 150 s; the byte size of the real `_vm` frames against 4096 and 2048; the number of snapshots and the disk used after 10 tasks under K4 | N9; K2's value; the K5 choice |
+
+### Approvals and order
+
+The lead already decides: how the work is split into PRs, the `_vm` pipe as the way, the shape of journal v4, one checkpoint, the free-space floor, the config shape, the wording, the lab runs and D3. The owner decides AGM-1 and AGM-2. PR3 (the Broker's checkpoint, attest, claim checks, prune and lease rules) needs this amendment's results from C1 to C4 written back, and AGM-1 and AGM-2 decided, before it merges; PR4 (restore and start) needs AGM-1; PR5 (the Control Plane and room side, against the Fake) can run beside them; PR6 (installer, integration, runbook) needs AGM-2 and one run on the owner's machine.
+
+### Evidence in this amendment
+
+`src/runtime/broker-contract/broker-vm-wire-vectors.json` holds, for every `_vm` request, the three-key claim DTOs, the claim and inspect replies, valid and refused examples, with real signed statements made by a throwaway key. `test/docs-reversible-approval-contract.test.mjs` pins the file's keys, limits and value ranges with a reference checker, pins the limits table above to the file, and checks that this amendment says Proposed, names AGM-1 and AGM-2, carries every section above, maps every NOT VERIFIED row to a measurement, and lists the WmiGate classes, methods and argument values. It does not run a Broker, a VM or WMI; none of the behaviour above is evidence yet.
+
 ## Remaining ADR-002 gates
 
+- Run the measurements C1 to C8 of "Amendment 2026-11-04" and write their results back before the Broker gains a checkpoint, an attestation key or a restore; the two owner decisions it names (AGM-1, AGM-2) come first.
 - Select and validate the independent authorization-receipt signer and Broker-protected state (the receipt v2 contract above fixes the format and checks, not the signer or the store).
 - Implement and adversarially test native Windows named-pipe DACL, token validation, impersonation/reversion, service SID restriction, remote-client rejection, installer/update trust, and service lifecycle.
 - Prove the two-layer Hyper-V rights matrix of "Amendment 2026-11-03" (nested-lab measurement, pinned allowlist, disposable-VM run) on the supported Windows editions before the installer grants Hyper-V Administrators to the Broker on a real host. The Control Plane never receives it.
