@@ -12,6 +12,8 @@ import { planDesktopInput } from '../src/runtime/desktop-control.mjs';
 import { createFakeDesktopBrokerClient } from '../src/runtime/fake-desktop-broker-client.mjs';
 import { syntheticPng } from '../src/runtime/mock-desktop-broker.mjs';
 import { createWindowsDesktopBrokerClient } from '../src/runtime/windows-desktop-broker-client.mjs';
+import { buildDesktopMcpArgs } from '../src/runtime/albera-desktop-mcp-args.mjs';
+import { runDesktopMcpEntry } from '../src/runtime/albera-desktop-mcp.mjs';
 
 // Pure and scripted-helper tests: every OS, no .NET, no pipe. The scripted helper plays the helper side of the frames documented in DesktopSession.cs. The real helper against the real Broker
 // (and against hostile same-user pipe servers) is runtime-windows-desktop-broker-client.integration.test.mjs.
@@ -537,6 +539,42 @@ describe('windows desktop broker client over a scripted helper', () => {
   it('on a non-Windows host with the default spawn it refuses at once: nothing is started', { skip: process.platform === 'win32' }, async () => {
     const client = createWindowsDesktopBrokerClient({ pipeName: 'ALBERA_Test_abc', expect: EXPECT, helperPath: makeHelper() });
     assert.deepEqual(shapeOf(await failure(client.captureVmScreen(ROOM))), { code: 'desktop_unavailable', outcome: 'not_applied', brokerCode: 'unsupported_platform' });
+  });
+
+  it('the helper\'s environment is four system variables: a token or API key of the calling process never reaches it, with or without the MCP entry\'s own scrub', async () => {
+    const TOKEN_ENV = { CLAUDE_CODE_OAUTH_TOKEN: 'sk-test-oauth-token-value', ANTHROPIC_API_KEY: 'sk-test-api-key', ANTHROPIC_BASE_URL: 'https://example.invalid', ALBERA_SECRET_LIKE: 'x' };
+    const saved = Object.fromEntries(Object.keys(TOKEN_ENV).map((key) => [key, process.env[key]]));
+    Object.assign(process.env, TOKEN_ENV);
+    try {
+      const allowed = new Set(['systemroot', 'windir', 'temp', 'tmp']);
+      // the client alone, with the token still in the calling process
+      const direct = scriptedHelper();
+      await clientOver(direct).captureVmScreen(ROOM);
+      const directEnv = direct.log.spawns[0].options.env;
+      assert.ok(directEnv && Object.keys(directEnv).every((key) => allowed.has(key.toLowerCase())), JSON.stringify(Object.keys(directEnv ?? {})));
+      assert.doesNotMatch(JSON.stringify(directEnv), /sk-test|example\.invalid/u);
+
+      // the MCP entry: it removes the token and ANTHROPIC_* from its own environment first, then serves a screenshot through the same client
+      const viaEntry = scriptedHelper();
+      const helperPath = makeHelper('entry helper');
+      const argv = buildDesktopMcpArgs({ entryPath: 'ignored', computerId: 'room-1', operationId: 'op-1', screen: { width: 128, height: 96 }, maxCalls: 3, expiresAtMs: Date.now() + 60_000,
+        broker: { pipeName: 'ALBERA_Test_abc', serviceName: 'AlberaBroker', helperPath, helperSha256: createHash('sha256').update('entry helper').digest('hex') } }).slice(1);
+      const stdin = new PassThrough();
+      const stdout = new PassThrough();
+      const out = [];
+      stdout.on('data', (chunk) => out.push(chunk.toString('utf8')));
+      const done = runDesktopMcpEntry({ argv, stdin, stdout, stderr: { write() {} }, createClient: (options) => createWindowsDesktopBrokerClient({ ...options, spawnImpl: viaEntry.spawnImpl }) });
+      stdin.write('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screenshot","arguments":{}}}\n');
+      stdin.end();
+      assert.equal(await done, 0);
+      assert.equal(JSON.parse(out.join('')).result.content[0].type, 'image');
+      for (const key of Object.keys(TOKEN_ENV).filter((k) => k !== 'ALBERA_SECRET_LIKE')) assert.equal(key in process.env, false, `${key} was removed from the entry's environment`);
+      assert.equal(process.env.ALBERA_SECRET_LIKE, 'x', 'only the token and ANTHROPIC_* are removed');
+      const entryEnv = viaEntry.log.spawns[0].options.env;
+      assert.ok(Object.keys(entryEnv).every((key) => allowed.has(key.toLowerCase())));
+    } finally {
+      for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    }
   });
 
   it('source guard: one launch site, after the helper was verified, in desktop mode only, with no shell and no pipe of its own; the Fake and the contract start nothing', () => {

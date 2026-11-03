@@ -189,6 +189,13 @@ The driver turns Claude Code's stream into the **same event shape** `desktop-age
 
 The numbers are Provisional. What the subscription's own usage limits do to a headless run is NOT VERIFIED (M5); the driver maps any authentication or rate-limit end to a fixed code and never retries in a loop.
 
+### 6.6a Known limit: what a screen can make the hands do (Provisional)
+
+Text on a screen is untrusted input, and the six tools include `key` and `type`, so a page the model reads can talk it into opening a shell inside the VM; the tools do not refuse key combinations, because the VM is a disposable sandbox and later work runs CLIs inside it.
+- The damage stays inside the VM the lease names: the hands have no other computer, no file tool and no host command.
+- How large the damage can be is set by what the VM can reach outside itself (network) and by the credentials it holds.
+- So a VM given to the hands has its outbound network restricted and holds no credentials.
+
 ### 6.7 API-key option
 
 Same driver, same flags, same folders; the child environment carries `ANTHROPIC_API_KEY` from the secret `anthropic-api-key` instead of the token, and `--max-budget-usd` from the room's existing per-VM cap is added. This is the path the existing `ANTHROPIC_API_KEY` room uses without Claude Code; it is kept as an option and not changed by this contract.
