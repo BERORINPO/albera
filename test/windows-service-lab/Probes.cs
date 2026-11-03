@@ -24,6 +24,7 @@ namespace Albera.Lab;
 //                                  a client of the Broker's desktop pipe (DesktopClient.cs): checks who the server is, then open / capture / input / claim / end steps; one JSON line per step
 //   desktop-helper <helperExe> <pipe> <identity> <step>... [image=<sha256>] [save=<path>]
 //                                  the same steps, but through the REAL pipe client helper in desktop mode (DesktopHelperClient.cs): the helper checks who the server is, this probe plays the Node client
+//   cp <sub> ...                   what a Control Plane that runs as NT SERVICE\AlberaControlPlane needs from its identity (ControlPlaneProbe.cs): dpapi-protect, dpapi-unprotect, tcp-listen, tcp-connect, acl-file, file-access, https
 internal static class Probes
 {
     private const uint OpenExisting = 3, SecuritySqosPresent = 0x00100000, SecurityIdentification = 0x00010000;
@@ -50,6 +51,7 @@ internal static class Probes
             case ["hyperv", var vm]: return HyperVProbe.Run(vm);
             case ["desktop", var pipe, var identity, .. var steps]: return DesktopClient.Run(pipe, identity, steps);
             case ["desktop-helper", var helper, var pipe, var identity, .. var steps]: return DesktopHelperClient.Run(helper, pipe, identity, steps);
+            case ["cp", .. var rest]: return ControlPlaneProbe.Run(rest);
             default: return 64;
         }
     }
