@@ -871,6 +871,10 @@ function Get-StatusLines {
       $same = Test-ControlPlaneDesktop ([System.IO.File]::ReadAllText($L.ApprovalSettings)) $L.PipeClientExe $recordedHelper
       Add-Line $(if ($same) { 'ok' } else { 'FAIL' }) ('Control Plane settings desktop: ' + $(if ($same) { 'the installed pipe client helper and its recorded SHA-256, as written by install' } else { 'not the helper path and SHA-256 the install recorded' }))
     }
+    # an install without the grant writes no desktop block: one found anyway was not written by this install (a clean install has no such line)
+    if (-not $grantRecorded -and (Test-Path -LiteralPath $L.ApprovalSettings) -and (Test-ControlPlaneHasDesktopKey ([System.IO.File]::ReadAllText($L.ApprovalSettings)))) {
+      Add-Line 'FAIL' 'Control Plane settings desktop: a desktop block is present but the install record has no Hyper-V grant (install without -GrantHyperVToBroker writes none)'
+    }
   }
   catch { Add-Line 'unknown' ('status check could not finish (is this console elevated?): ' + $_.Exception.Message) }
   , $lines.ToArray()

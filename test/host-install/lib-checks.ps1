@@ -378,6 +378,7 @@ $r.desktopPlainSame = [ordered]@{
 }
 $r.desktopKeys = @((Get-ControlPlaneSettings $L 'albera-host' 'albera-clone-01' 'clone-01' $helperSha).Keys)
 $r.desktopBadSha = [ordered]@{ short = Msg { Get-ControlPlaneSettings $L 'p' 'v' 'c' ('ab' * 31) }; upper = Msg { Get-ControlPlaneSettings $L 'p' 'v' 'c' ('AB' * 32) }; notHex = Msg { Get-ControlPlaneSettings $L 'p' 'v' 'c' ('zz' * 32) } }
+$r.desktopHasKey = [ordered]@{ plain = Test-ControlPlaneHasDesktopKey $r.settingsJson; withBlock = Test-ControlPlaneHasDesktopKey $desktopJson; nullBlock = Test-ControlPlaneHasDesktopKey '{"desktop":null}'; notJson = Test-ControlPlaneHasDesktopKey 'nope' }
 $r.desktopCheck = [ordered]@{
   same = Test-ControlPlaneDesktop $desktopJson $helperPath $helperSha
   plainFile = Test-ControlPlaneDesktop $r.settingsJson $helperPath $helperSha

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { parseApprovalSettings } from '../src/runtime/room-approval-wiring.mjs';
+import { openRoomApproval, parseApprovalSettings } from '../src/runtime/room-approval-wiring.mjs';
 
 // scripts/host/albera-host.ps1 installs the Host Broker and the Approval Authority on THIS PC and needs an elevated console, a real account, real services and a machine key.
 // None of that runs here. What runs here, on any Windows PC without admin rights:
@@ -516,20 +516,30 @@ test('the Control Plane settings of an install WITH the grant carry the desktop 
   assert.equal(withDesktop.attestation, null);
   assert.equal(/secret|password|token/iu.test(r.desktopSettingsJson), false, 'a path and a public hash only');
   for (const [name, message] of Object.entries(r.desktopBadSha)) assert.equal(message, 'helper_sha256_invalid', `${name}: only 64 lowercase hex characters`);
+  assert.deepEqual({ ...r.desktopHasKey }, { plain: false, withBlock: true, nullBlock: true, notJson: false });
   assert.deepEqual({ ...r.desktopCheck }, {
     same: true, plainFile: false, otherSha: false, upperSha: false, otherPath: false, extraKey: false, missingKey: false, desktopIsString: false, shaIsNumber: false, notJson: false, empty: false,
   });
 });
 
-test('the desktop block the installer writes is accepted by the Control Plane\'s own parser once that parser reads the block (the gated room desktop path; skipped until it does)', needsWindows, (t) => {
+test('the settings the installer writes with the grant are accepted by the Control Plane\'s own parser AND by the gated room (the desktop client gets the pinned helper and a service-name expectation); without the grant the room refuses them', needsWindows, async () => {
   const { r } = lib();
-  const wiring = readFileSync(path.join(root, 'src', 'runtime', 'room-approval-wiring.mjs'), 'utf8');
-  if (!/const DESKTOP_KEYS = \['helperPath', 'helperSha256'\]/u.test(wiring)) { t.skip('room-approval-wiring.mjs does not read a desktop block yet'); return; }
   const settings = parseApprovalSettings(r.desktopSettingsJson);
   assert.deepEqual({ ...settings.desktop }, { helperPath: r.layout.PipeClientExe, helperSha256: r.desktopHelperSha });
   assert.equal(settings.attestation, null);
   assert.deepEqual(settings.broker.expect, { serviceName: 'AlberaHostBroker' }, 'a service name only: the room refuses a PID or an image hash');
   assert.deepEqual([...settings.computers.keys()], ['albera-clone-01']);
+  // the room itself: nothing is opened (fake store, fake desktop client)
+  const openRoom = (text, seen) => openRoomApproval({
+    approvalFile: 'C:\\settings.json', jobs: [{ vmId: 'albera-clone-01', task: 'open the page' }],
+    io: { statSync: () => ({ isFile: () => true, size: text.length }), readFileSync: () => text },
+    deps: { createDesktopClient: (options) => { seen.options = options; return { close: async () => {} }; }, openStore: async () => ({ flowJournal: () => ({ begin: async () => {}, advance: async () => {}, get: async () => null }), close() {} }) },
+  });
+  const seen = {};
+  const room = await openRoom(r.desktopSettingsJson, seen);
+  room.close();
+  assert.deepEqual(seen.options, { pipeName: 'ALBERA_HostBroker', expect: { serviceName: 'AlberaHostBroker' }, helperPath: r.layout.PipeClientExe, helperSha256: r.desktopHelperSha });
+  await assert.rejects(openRoom(r.settingsJson, {}), /runtime_room_approval_desktop/u, 'a plain install (no grant) has no desktop block: the room refuses it');
 });
 
 test('ACL plan: inheritance is removed everywhere, each service SID can write only its own folder, the Control Plane account only its own, nobody else gets write', needsWindows, () => {
@@ -1096,6 +1106,7 @@ test('Hyper-V grant, the group is read every time and an undo never guesses (fak
   assert.deepEqual(r.statusDesktop.asRecorded, desktopLine('ok', 'the installed pipe client helper and its recorded SHA-256, as written by install'));
   for (const name of ['otherHash', 'noBlock', 'noHelperRecord']) assert.deepEqual(r.statusDesktop[name], desktopLine('FAIL', 'not the helper path and SHA-256 the install recorded'), name);
   assert.deepEqual(r.statusDesktop.installWithoutGrant, [], 'an install without the grant has no such line: its status is unchanged');
+  assert.deepEqual(r.statusDesktop.desktopWithoutGrantRecord, ['FAIL Control Plane settings desktop: a desktop block is present but the install record has no Hyper-V grant (install without -GrantHyperVToBroker writes none)'], 'a desktop block without a grant record was not written by this install');
 });
 
 test('Hyper-V grant, Control Plane settings (fakes for the machine): install with the option writes the desktop block from the installed helper and nothing else changes; without it the settings are the plain ones; a helper that is not the recorded one writes nothing', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
@@ -1201,6 +1212,9 @@ test('Hyper-V grant, docs: the option, the owner decision, the undo and what is 
   assert.match(section, /\*\*Writes the gated room's `desktop` block into the Control Plane settings\*\*.*so nobody edits that file by hand/u);
   for (const needle of ['helperPath', 'helperSha256', 'albera-windows-broker-pipe-client.exe', 'between `computers` and `attestation`', 'no `desktop` key']) assert.ok(section.includes(needle), `the section names ${needle}`);
   assert.ok(!/edit it as an administrator/u.test(doc), 'no step tells the owner to edit the settings by hand');
+  assert.match(doc, /\*\*An install with `-GrantHyperVToBroker` writes this block itself\*\*/u, 'the gated room section says the installer writes the block');
+  assert.match(section, /\*\*Known limit of the `desktop` pin\.\*\*.*not against a hijacked `albera-cp`.*no Broker lease/u);
+  assert.match(readFileSync(path.join(root, 'docs', 'architecture', 'adr-002-host-broker-trust-contract.md'), 'utf8'), /### Known limit: the helper pin in the Control Plane settings.*2026-11-03\+cp-settings-pin-scope/u);
   const adr = readFileSync(path.join(root, 'docs', 'architecture', 'adr-002-host-broker-trust-contract.md'), 'utf8');
   assert.match(adr, /Owner decision \(2026-11-03\): option A, the Broker as a whole runs with an unrestricted service SID/u);
 });

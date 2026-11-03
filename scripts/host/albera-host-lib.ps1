@@ -236,6 +236,11 @@ function Test-BrokerConfigComputers([string]$Json, [string]$ComputerId, [string]
   $items = @($o.computers)
   ($items.Count -eq 1) -and ($items[0].computerId -ceq $ComputerId) -and ($items[0].vmId -ceq $VmId)
 }
+# True when the Control Plane settings text has a `desktop` key at all (any value). An install without -GrantHyperVToBroker writes none, so status reports one found without the grant record.
+function Test-ControlPlaneHasDesktopKey([string]$Json) {
+  try { $o = $Json | ConvertFrom-Json } catch { return $false }
+  ($null -ne $o) -and ($null -ne $o.PSObject.Properties['desktop'])
+}
 # True when the Control Plane settings hold exactly the `desktop` block the install intends (the installed helper path and its SHA-256). False for a file written before
 # -GrantHyperVToBroker (no block), for extra or missing keys, and for any other value. Compared case-sensitively, like the settings parser.
 function Test-ControlPlaneDesktop([string]$Json, [string]$HelperPath, [string]$HelperSha256) {

@@ -459,6 +459,8 @@ switch ($Case) {
     Write-SettingsFile $helperSha; $script:Manifest['created']['binaries'].Remove('pipe-client') | Out-Null; $result.statusDesktop.noHelperRecord = @(Get-DesktopLines)
     Reset-Fakes; New-InstalledManifest; Write-SettingsFile $null
     $result.statusDesktop.installWithoutGrant = @(Get-DesktopLines)
+    Write-SettingsFile $helperSha
+    $result.statusDesktop.desktopWithoutGrantRecord = @(Get-DesktopLines)
 
     # 7. the services step: the Broker's SID type has to match the option of THIS run, in both directions
     $svcStep = { Get-InstallSteps | Where-Object { $_.Id -eq 'services' } }
