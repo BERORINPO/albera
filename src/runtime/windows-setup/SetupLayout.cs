@@ -38,13 +38,20 @@ internal static class SetupLayout
         new("broker", "src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish", "albera-windows-broker.exe"),
         new("authority", "src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish", "albera-approval-authority.exe"),
         new("pipe-client", "src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish", "albera-windows-broker-pipe-client.exe"),
+        // PR7: the Control Plane service host with its app tree (the `app` folder is inside the publish folder) and the approver app (the tray). The order is the tree hash's order (Get-CanonicalTreeHash).
+        new("control-plane", "src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/publish", "albera-control-plane-host.exe"),
+        new("approver", "src/runtime/windows-approver/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish", "AlberaApprover.exe"),
     ];
+
+    /// <summary>The per-file hash list of the Control Plane app tree (scripts/build-control-plane-app.mjs writes it BESIDE the publish folder, not inside it), relative to the update folder's repo folder.</summary>
+    public const string ControlPlaneAppHashes = "src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/control-plane-app-hashes.json";
 
     /// <summary>The files that must each have a verified attestation (relative to the update folder). The DLLs next to the exe files are covered by the attested build-hashes.json and the tree hash.</summary>
     public static IReadOnlyList<string> AttestedFiles { get; } =
     [
         BuildHashesFile, HostScript, HostLibrary,
         .. Components.Select(c => $"{RepoDirectory}/{c.PublishDirectory}/{c.Executable}"),
+        $"{RepoDirectory}/{ControlPlaneAppHashes}",
         SetupExecutable, GhExecutable, TrustedRoot,
     ];
 
@@ -56,4 +63,6 @@ internal static class SetupLayout
     public const string InstalledSetupDirectory = @"C:\Program Files\Albera\bin\setup";
     public const string WorkRoot = @"C:\Program Files\Albera\setup-work";
     public const string PowerShellExecutable = @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+    /// <summary>The install record scripts/host/albera-host.ps1 keeps; its `setupRunId` is what the anti-rollback check reads.</summary>
+    public const string InstallRecordFile = @"C:\ProgramData\Albera\install-manifest.json";
 }

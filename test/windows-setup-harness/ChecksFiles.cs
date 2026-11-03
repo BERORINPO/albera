@@ -4,7 +4,7 @@ using Albera.Setup;
 internal static partial class Harness
 {
     /// <summary>Known answer made by Get-CanonicalTreeHash (scripts/host/albera-host-lib.ps1) for <see cref="VectorInput"/>; test/runtime-windows-setup-source.test.mjs recomputes it with PowerShell so the two cannot drift.</summary>
-    private const string VectorHash = "c462338c2a16abc0b5a6bd4a8d9362e5f8e333f97367303351f3451577676b70";
+    private const string VectorHash = "1ba6645ee1d18b2d131716d863439771bb9f1dff437bd104d0b01b982ff4828f";
 
     private static FileHashes VectorInput()
     {
@@ -14,6 +14,8 @@ internal static partial class Harness
             ["broker"] = new() { ["a.dll"] = a, ["B.dll"] = b, ["z/b.dll"] = c, ["\u00e9.dll"] = d },
             ["authority"] = new() { ["x.exe"] = c },
             ["pipe-client"] = new() { ["p.exe"] = d, ["sub/q.dll"] = a },
+            ["control-plane"] = new() { ["h.exe"] = c, ["app/src/runtime/entry.mjs"] = b },
+            ["approver"] = new() { ["Z.exe"] = d },
         };
     }
 
@@ -62,7 +64,7 @@ internal static partial class Harness
             var good = Scenario.BuildHashesJson(files, VectorHash);
             var parsed = BuildHashes.Parse(Encoding.UTF8.GetBytes(good));
             Equal(VectorHash, parsed.TreeHash, "tree hash");
-            Equal(7, parsed.Files.Sum(c => c.Value.Count), "file count");
+            Equal(10, parsed.Files.Sum(c => c.Value.Count), "file count");
             foreach (var broken in new[]
             {
                 good.Replace("\"version\":1", "\"version\":2"),
@@ -93,13 +95,17 @@ internal static partial class Harness
             finally { Directory.Delete(folder); }
         });
 
-        Check("administrator-only rules: an allow rule that only applies to children (InheritOnly) still counts as write access; CREATOR OWNER and read-only rules do not", () =>
+        Check("administrator-only rules: an allow rule that only applies to children (InheritOnly) still counts as write access; an inherit-only CREATOR OWNER placeholder and read-only rules do not; CREATOR OWNER on the folder itself does", () =>
         {
             const string Users = "S-1-5-32-545";
             var admins = FileSystemChecks.AdministratorsSid;
             Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(Users, true, System.Security.AccessControl.FileSystemRights.Modify, InheritOnly: true)]).Count == 1, "an InheritOnly Modify rule for Users was not counted");
             Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(Users, true, System.Security.AccessControl.FileSystemRights.WriteData, InheritOnly: false)]).Count == 1, "a plain write rule was not counted");
-            Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo("S-1-3-0", true, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: true)]).Count == 0, "CREATOR OWNER must not count");
+            Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo("S-1-3-0", true, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: true)]).Count == 0, "the inherit-only CREATOR OWNER placeholder must not count");
+            Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo("S-1-3-0", true, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: false)]).Count == 1, "CREATOR OWNER that applies to the folder itself was not counted");
+            const string TrustedInstaller = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+            Assert(FileSystemChecks.EvaluateRules(TrustedInstaller, [new AceInfo(TrustedInstaller, true, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: false)]).Count == 0, "TrustedInstaller as owner and writer (Program Files) was refused");
+            Assert(FileSystemChecks.EvaluateRules("S-1-3-0", []).Count == 1, "CREATOR OWNER as the OWNER of a folder was accepted");
             Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(Users, true, System.Security.AccessControl.FileSystemRights.ReadAndExecute, InheritOnly: true)]).Count == 0, "a read-only InheritOnly rule must not count");
             Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(Users, false, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: false)]).Count == 0, "a deny rule must not count");
             Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(FileSystemChecks.LocalSystemSid, true, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: true)]).Count == 0, "SYSTEM must not count");

@@ -23,6 +23,10 @@ internal sealed class SetupDeps
     /// <summary>Reads a folder's DACL back: what, if anything, lets someone other than administrators write to it.</summary>
     public required Func<string, IReadOnlyList<string>> AdministratorOnlyProblems { get; init; }
     public required Func<string, bool> PathHasReparsePoint { get; init; }
+    /// <summary>Where the install record is (real: <see cref="SetupLayout.InstallRecordFile"/>); its `setupRunId` is the anti-rollback bound.</summary>
+    public required string InstallRecordPath { get; init; }
+    /// <summary>The run-id floor of this PC (real: <see cref="FileSystemChecks.ReadSetupRunIdFloor"/>): null when there is none, a refusal when it is there and not a number. Uninstall never removes it.</summary>
+    public required Func<ulong?> ReadRunIdFloor { get; init; }
     public required TextWriter Out { get; init; }
 }
 
@@ -43,6 +47,7 @@ internal static class SetupFlow
             var verified = VerifyUpdate(options, deps, work, tools);
             deps.Out.WriteLine($"ALBERA_SETUP_VERIFIED commit={verified.Commit} run={verified.RunId} treeHash={verified.TreeHash}");
             if (options.Mode == SetupMode.Verify) return Done;
+            CheckNotOlderThanInstalled(deps, verified);
             return StartEngine(options, deps, work, verified);
         }
         catch (SetupRefusal refusal)
@@ -66,7 +71,7 @@ internal static class SetupFlow
 
     private static void Preflight(SetupOptions options, SetupDeps deps)
     {
-        Step(deps, "1/6", "checking this run: elevated, standard Windows folders, pinned tools, protected work folder");
+        Step(deps, "1/7", "checking this run: elevated, standard Windows folders, pinned tools, protected work folder");
         if (!deps.IsElevated()) throw new SetupRefusal("not_elevated", "setup must run elevated (UAC); it never elevates itself");
         SetupEnvironment.RequireStandardFolders(deps.Folders);
         if (!PinnedToolsCheck.IsConfigured) throw new SetupRefusal("pins_not_configured", "this build has no pinned gh.exe / trusted root hash (a CI build has)");
@@ -128,18 +133,18 @@ internal static class SetupFlow
     private static Verified VerifyUpdate(SetupOptions options, SetupDeps deps, string work, Tools tools)
     {
         var copyRoot = Path.Combine(work, "copy");
-        Step(deps, "2/6", "copying the update folder into the administrator-only work folder");
+        Step(deps, "2/7", "copying the update folder into the administrator-only work folder");
         CopyUpdate(options.UpdateFolder, copyRoot);
 
-        Step(deps, "3/6", $"verifying {SetupLayout.AttestedFiles.Count} attested files offline with the bundled gh.exe");
+        Step(deps, "3/7", $"verifying {SetupLayout.AttestedFiles.Count} attested files offline with the bundled gh.exe");
         var ghEnvironment = SetupEnvironment.ForGh(Path.Combine(work, "tmp"), Path.Combine(work, "gh"));
         var gh = new GhVerifier(deps.Runner, tools.Gh, tools.TrustedRoot, ghEnvironment, work);
         var perFile = SetupLayout.AttestedFiles.Select(file => (file, facts: VerifyFile(gh, copyRoot, file))).ToList();
 
-        Step(deps, "4/6", "checking that one run built all of them");
+        Step(deps, "4/7", "checking that one run built all of them");
         var run = CommonRun(perFile);
 
-        Step(deps, "5/6", "checking the attested tree hash against the copies");
+        Step(deps, "5/7", "checking the attested tree hash against the copies");
         var treeHash = CheckTreeHash(copyRoot);
         return new Verified(run.Commit, run.RunId, treeHash);
     }
@@ -194,9 +199,24 @@ internal static class SetupFlow
         return computed;
     }
 
+    /// <summary>
+    /// Anti-rollback (control-plane-service.md section 8): a validly attested build is still refused when its workflow run id is smaller than the largest of three numbers, so an old build cannot be replayed over a
+    /// newer one - not even after an uninstall, which removes the install record: (1) the install record's setupRunId, (2) the floor in HKLM\SOFTWARE\Albera\SetupRunIdFloor (written by the installer script, never removed
+    /// by uninstall) and (3) the run id of the build that made THIS setup.exe. The same run id is allowed (finishing or repairing an install with the build that started it); a higher one is the normal update.
+    /// Nothing recorded and no floor bounds nothing. The numbers are compared as unsigned 64-bit integers. The installer script checks the same two stored numbers (-SetupRunId).
+    /// </summary>
+    private static void CheckNotOlderThanInstalled(SetupDeps deps, Verified verified)
+    {
+        Step(deps, "6/7", "checking that this build is not older than the installed one");
+        var recorded = InstallRecord.ReadSetupRunId(deps.InstallRecordPath, deps.AdministratorOnlyProblems, deps.PathHasReparsePoint);
+        var floor = deps.ReadRunIdFloor();
+        var refusal = InstallRecord.RollbackRefusal(verified.RunId, recorded, floor, PinnedTools.BuildRunId);
+        if (refusal is not null) throw new SetupRefusal("rollback_refused", refusal);
+    }
+
     private static int StartEngine(SetupOptions options, SetupDeps deps, string work, Verified verified)
     {
-        Step(deps, "6/6", "starting the installer script from the verified copy");
+        Step(deps, "7/7", "starting the installer script from the verified copy");
         var environment = SetupEnvironment.ForEngine(Path.Combine(work, "tmp"));
         var spec = EngineLaunch.Build(Path.Combine(work, "copy"), verified.TreeHash, verified.RunId, options.Engine, environment);
         var result = deps.Runner.Run(spec);

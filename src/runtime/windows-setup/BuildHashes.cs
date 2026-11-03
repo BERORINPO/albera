@@ -10,7 +10,7 @@ internal sealed class FileHashes : Dictionary<string, Dictionary<string, string>
     public FileHashes() : base(StringComparer.Ordinal) { }
 }
 
-/// <summary>The attested build-hashes.json (scripts/host/albera-host.ps1 -Mode hashes): a tree hash and the SHA-256 of every published file of the three components.</summary>
+/// <summary>The attested build-hashes.json (scripts/host/albera-host.ps1 -Mode hashes): a tree hash and the SHA-256 of every published file of the components of <see cref="SetupLayout.Components"/>.</summary>
 internal sealed record BuildHashesDocument(string TreeHash, FileHashes Files);
 
 internal static class BuildHashes
@@ -62,7 +62,7 @@ internal static class BuildHashes
     /// </summary>
     public static string CanonicalTreeHash(FileHashes files)
     {
-        if (files.Count != SetupLayout.Components.Count) throw Bad("tree hash needs exactly the three components");
+        if (files.Count != SetupLayout.Components.Count) throw Bad($"tree hash needs exactly the {SetupLayout.Components.Count} components");
         var text = new StringBuilder();
         foreach (var component in SetupLayout.Components)
         {
@@ -79,7 +79,7 @@ internal static class BuildHashes
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString()))).ToLowerInvariant();
     }
 
-    /// <summary>The SHA-256 of every file under the three publish folders of `repoRoot` (the copies), keyed like build-hashes.json.</summary>
+    /// <summary>The SHA-256 of every file under the publish folders of `repoRoot` (the copies), keyed like build-hashes.json.</summary>
     public static FileHashes HashPublishFolders(string repoRoot)
     {
         var files = new FileHashes();

@@ -8,6 +8,8 @@ internal static class PinnedTools
 {
     public static string GhSha256 { get; set; } = FileSystemChecks.Sha256(Scenario.GhBytes);
     public static string TrustedRootSha256 { get; set; } = FileSystemChecks.Sha256(Scenario.RootBytes);
+    /// <summary>The run id of the build that made this setup (generated as a constant in the real file; 0 = a local compile check, bounds nothing).</summary>
+    public static ulong BuildRunId { get; set; }
 }
 
 /// <summary>Stands in for gh.exe and the installer: records every call, answers from the delegates.</summary>
@@ -49,6 +51,8 @@ internal sealed class Scenario : IDisposable
     public string Update => Path.Combine(Root, "update");
     public string SetupDirectory => Path.Combine(Root, "installed", "bin", "setup");
     public string WorkRoot => Path.Combine(Root, "setup-work");
+    /// <summary>Where this scenario's install record would be (the real one is C:\ProgramData\Albera\install-manifest.json). No file exists until a check writes one.</summary>
+    public string InstallRecordPath => Path.Combine(Root, "ProgramData", "Albera", "install-manifest.json");
     public string TreeHash { get; private set; } = "";
     public bool Elevated { get; set; } = true;
     public Func<string, IReadOnlyList<string>> AdminProblems { get; set; } = _ => [];
@@ -59,6 +63,8 @@ internal sealed class Scenario : IDisposable
     public Func<string, IReadOnlyList<Attested>> Attestations { get; set; } = _ => [new Attested(DefaultRun, DefaultCommit)];
     public Action<string, Dictionary<string, string?>>? CertificateTweak { get; set; }
     public Action? OnFirstGh { get; set; }
+    /// <summary>Stands in for FileSystemChecks.ReadSetupRunIdFloor (HKLM\SOFTWARE\Albera\SetupRunIdFloor): null = no floor; it may throw the refusal for a value that is not a number.</summary>
+    public Func<ulong?> ReadFloor { get; set; } = () => null;
     private bool _firstGh = true;
 
     public Scenario()
@@ -68,6 +74,7 @@ internal sealed class Scenario : IDisposable
         File.WriteAllBytes(Path.Combine(SetupDirectory, "trusted_root.jsonl"), RootBytes);
         PinnedTools.GhSha256 = FileSystemChecks.Sha256(GhBytes);
         PinnedTools.TrustedRootSha256 = FileSystemChecks.Sha256(RootBytes);
+        PinnedTools.BuildRunId = 0;
         var hashes = new FileHashes();
         foreach (var component in SetupLayout.Components)
         {
@@ -78,12 +85,20 @@ internal sealed class Scenario : IDisposable
         TreeHash = BuildHashes.CanonicalTreeHash(hashes);
         Write(SetupLayout.BuildHashesFile, BuildHashesJson(hashes, TreeHash));
         foreach (var rel in new[] { SetupLayout.HostScript, SetupLayout.HostLibrary, SetupLayout.SetupExecutable }) Write(rel, "synthetic " + rel);
+        Write($"{SetupLayout.RepoDirectory}/{SetupLayout.ControlPlaneAppHashes}", "{\"component\":\"control-plane\",\"files\":{}}\n");
         File.WriteAllBytes(Path.Combine(Update, "setup", "gh.exe"), GhBytes);
         File.WriteAllBytes(Path.Combine(Update, "setup", "trusted_root.jsonl"), RootBytes);
         WriteBundles();
     }
 
     public string Path_(string relative) => Path.Combine(Update, relative.Replace('/', '\\'));
+
+    /// <summary>Writes the install record with this text (a test makes it as the installer script would, or as someone else would).</summary>
+    public void WriteInstallRecord(string json)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(InstallRecordPath)!);
+        File.WriteAllText(InstallRecordPath, json, new UTF8Encoding(false));
+    }
 
     public string Write(string relative, string text)
     {
@@ -121,6 +136,8 @@ internal sealed class Scenario : IDisposable
             CreateWorkDirectory = path => CreateWorkDirectory(path),
             AdministratorOnlyProblems = path => AdminProblems(path),
             PathHasReparsePoint = _ => false,
+            InstallRecordPath = InstallRecordPath,
+            ReadRunIdFloor = () => ReadFloor(),
             Out = Out,
         };
     }

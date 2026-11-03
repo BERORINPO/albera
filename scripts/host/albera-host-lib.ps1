@@ -7,8 +7,9 @@ function Get-HostConstants {
   [ordered]@{
     BrokerService = 'AlberaHostBroker'
     AuthorityService = 'AlberaApprovalAuthority'
-    ControlPlaneUser = 'albera-cp'
-    ControlPlaneUserDescription = 'ALBERA Control Plane (made by albera-host.ps1)'   # New-LocalUser -Description allows at most 48 characters (a test pins it)
+    ControlPlaneService = 'AlberaControlPlane'   # the Control Plane is NT SERVICE\AlberaControlPlane (control-plane-service.md section 1); there is no ordinary account any more
+    ControlPlaneUser = 'albera-cp'   # LEGACY: the local account of the first install layout. Nothing creates it now; -Mode migrate and uninstall remove it
+    ControlPlaneUserDescription = 'ALBERA Control Plane (made by albera-host.ps1)'   # the description the legacy install set (Remove-LocalUser checks it); at most 48 characters (a test pins it)
     BrokerPipeName = 'ALBERA_HostBroker'
     AuthorityPipeRoot = 'ALBERA\ApprovalAuthority'
     AuthorityKid = 'albera-authority-1'
@@ -22,6 +23,13 @@ function Get-HostConstants {
     DefaultVmName = 'albera-clone-01'
     DefaultComputerId = 'clone-01'
     HyperVAdminsSid = 'S-1-5-32-578'   # BUILTIN\Hyper-V Administrators: only -GrantHyperVToBroker puts anything in it, and only the Broker's service SID (ADR-002 Amendment 2026-11-03)
+    StartMenuFolder = 'ALBERA'   # under the All Users Start Menu\Programs (administrator-writable)
+    OpenShortcut = 'Open ALBERA.lnk'
+    UpdateShortcut = 'ALBERA update.lnk'
+    RunKeyPath = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Run'   # HKLM: the tray of the approver starts in the owner's session (control-plane-service.md section 7)
+    RunValueName = 'AlberaApprover'
+    FailureResetSeconds = 86400
+    FailureRestartMilliseconds = 5000   # sc failure: restart after 5 s, twice, then leave stopped (control-plane-service.md section 2)
   }
 }
 
@@ -39,6 +47,20 @@ function Get-HostLayout([string]$ProgramFiles, [string]$ProgramData) {
     BrokerExe = Join-Path $install 'bin\broker\albera-windows-broker.exe'
     AuthorityExe = Join-Path $install 'bin\authority\albera-approval-authority.exe'
     PipeClientExe = Join-Path $install 'bin\pipe-client\albera-windows-broker-pipe-client.exe'
+    # the Control Plane service host and its app tree (one published component; the pinned node sits in node\ beside them and is NOT part of the component's hash)
+    ControlPlaneBinDir = Join-Path $install 'bin\control-plane'
+    ControlPlaneExe = Join-Path $install 'bin\control-plane\albera-control-plane-host.exe'
+    ControlPlaneAppDir = Join-Path $install 'bin\control-plane\app'
+    ControlPlaneNodeDir = Join-Path $install 'bin\control-plane\node'
+    ControlPlaneNodeExe = Join-Path $install 'bin\control-plane\node\node.exe'
+    ApproverBinDir = Join-Path $install 'bin\approver'
+    ApproverExe = Join-Path $install 'bin\approver\AlberaApprover.exe'
+    ClaudeBinDir = Join-Path $install 'bin\claude'   # the pinned copy of the owner's Claude Code (administrator-only; ALBERA never downloads or ships it)
+    ClaudeExe = Join-Path $install 'bin\claude\claude.exe'
+    LauncherDir = Join-Path $install 'bin\launcher'
+    OpenScript = Join-Path $install 'bin\launcher\open-albera.ps1'   # what the Start menu "Open ALBERA" shortcut runs (text: Get-OpenAlberaScriptText)
+    SetupBinDir = Join-Path $install 'bin\setup'
+    SetupExe = Join-Path $install 'bin\setup\albera-setup.exe'   # put there by the owner (setup refuses to install from anywhere else); only the "ALBERA update" shortcut points at it
     DataRoot = $data
     ManifestPath = Join-Path $data 'install-manifest.json'
     BrokerConfigDir = Join-Path $data 'broker-config'
@@ -47,9 +69,19 @@ function Get-HostLayout([string]$ProgramFiles, [string]$ProgramData) {
     BrokerDb = Join-Path $data 'broker\journal.sqlite'
     AuthorityDir = Join-Path $data 'authority'
     AuthorityConfig = Join-Path $data ('authority\' + $c.AuthorityService + '.service.json')
-    ControlPlaneDir = Join-Path $data 'control-plane'
-    ApprovalSettings = Join-Path $data 'control-plane\albera.approval.json'
+    ControlPlaneDir = Join-Path $data 'control-plane'   # the Control Plane's own working data: full control for its service SID
+    ControlPlaneLogDir = Join-Path $data 'control-plane\logs'
     ControlPlaneJournal = Join-Path $data 'control-plane\operations.sqlite'
+    # the Control Plane's settings, moved out of control-plane\ so that the service can only READ them (closes the known limit 2026-11-03+cp-settings-pin-scope)
+    ControlPlaneConfigDir = Join-Path $data 'control-plane-config'
+    ControlPlaneConfig = Join-Path $data ('control-plane-config\' + $c.ControlPlaneService + '.service.json')
+    ApprovalSettings = Join-Path $data 'control-plane-config\albera.approval.json'
+    LegacyApprovalSettings = Join-Path $data 'control-plane\albera.approval.json'   # where the first install layout put it (migration reads it, uninstall removes it)
+    SecretsDir = Join-Path $data 'secrets'   # DPAPI blobs of the credential the owner types into the room
+    UiDir = Join-Path $data 'ui'   # ui\room.json: the one-time code the "Open ALBERA" shortcut reads
+    StartMenuDir = Join-Path $ProgramData ('Microsoft\Windows\Start Menu\Programs\' + $c.StartMenuFolder)
+    OpenShortcut = Join-Path $ProgramData ('Microsoft\Windows\Start Menu\Programs\' + $c.StartMenuFolder + '\' + $c.OpenShortcut)
+    UpdateShortcut = Join-Path $ProgramData ('Microsoft\Windows\Start Menu\Programs\' + $c.StartMenuFolder + '\' + $c.UpdateShortcut)
   }
 }
 
@@ -60,10 +92,14 @@ function Get-KnownDataFiles {
     'broker-config\AlberaHostBroker.service.json',
     'broker\journal.sqlite', 'broker\journal.sqlite-wal', 'broker\journal.sqlite-shm', 'broker\journal.sqlite-journal',
     'authority\AlberaApprovalAuthority.service.json', 'authority\policy.json',
-    'control-plane\albera.approval.json', 'control-plane\operations.sqlite', 'control-plane\operations.sqlite-wal', 'control-plane\operations.sqlite-shm'
+    'control-plane\albera.approval.json', 'control-plane\operations.sqlite', 'control-plane\operations.sqlite-wal', 'control-plane\operations.sqlite-shm',
+    'control-plane-config\AlberaControlPlane.service.json', 'control-plane-config\albera.approval.json'
   )
 }
-function Get-KnownDataFolders { @('broker-config', 'broker', 'authority', 'control-plane') }
+function Get-KnownDataFolders { @('broker-config', 'broker', 'authority', 'control-plane', 'control-plane-config', 'secrets', 'ui') }
+# Folders the Control Plane SERVICE itself fills while it runs (host logs, one folder per Claude Code run, DPAPI blobs and their .meta files, ui\room.json). What is in them is not listed by name:
+# uninstall removes them as a whole after the link check, and they are the only places where an unlisted file is allowed.
+function Get-KnownDataWorkFolders { @('control-plane\logs', 'control-plane\claude-run', 'secrets', 'ui') }
 
 # ---------------------------------------------------------------------------------------------- validators (mirror the C# rules)
 $script:IdRegex = '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'   # ActionDigest.IdPattern
@@ -187,9 +223,11 @@ function Get-AuthorityConfig([string]$ControlPlaneSid, $Approver) {
     policyVersion = $c.PolicyVersion
   }
 }
-# examples/albera.approval.example.json without the attestation (null: the first run asks a person). The settings parser needs at least one computer; approval-check uses the first.
-# $HelperSha256 is $null for an install without -GrantHyperVToBroker: the settings are then exactly the keys they always had. With it the `desktop` block that the gated room requires
-# (room-approval-wiring.mjs: exactly { helperPath, helperSha256 }, placed between `computers` and `attestation`) is added: the installed pipe client helper and the SHA-256 of that exe. Both are public values.
+# The settings of the approval flow (room-approval-wiring.mjs). The settings parser needs at least one computer; approval-check uses the first. There is NO attestation key (the Control Plane service
+# flow does not use one, PR #185 hand-over item 4); the parser reads a missing key as null, so approval-check is unaffected. The file sits in control-plane-config\ (the service can only READ it);
+# the journal it names is in control-plane\ (the one place the service can write).
+# $HelperSha256 is $null for an install without -GrantHyperVToBroker: the settings are then without a desktop block. With it the `desktop` block that the gated room requires
+# (room-approval-wiring.mjs: exactly { helperPath, helperSha256 }, placed after `computers`) is added: the installed pipe client helper and the SHA-256 of that exe. Both are public values.
 function Get-ControlPlaneSettings($Layout, [string]$ProjectId, [string]$VmName, [string]$ComputerId, [string]$HelperSha256 = $null) {
   $c = Get-HostConstants
   $settings = [ordered]@{
@@ -204,10 +242,46 @@ function Get-ControlPlaneSettings($Layout, [string]$ProjectId, [string]$VmName, 
     if (-not (Test-TreeHashValue $HelperSha256)) { throw 'helper_sha256_invalid' }
     $settings['desktop'] = [ordered]@{ helperPath = $Layout.PipeClientExe; helperSha256 = $HelperSha256 }
   }
-  $settings['attestation'] = $null
   $settings
 }
 function ConvertTo-HostJson($Object) { $Object | ConvertTo-Json -Depth 6 -Compress }
+
+# AlberaControlPlane.service.json, read by two programs: the .NET host reads ONLY its top-level key `host` (HostConfig.cs: exactly these nine keys), and room-service reads ONLY `claude` and `ui`
+# (PR #185: any other top-level key, or any other key inside claude / ui, is refused). The values are public: paths, hashes, two SIDs. maxMinutes / maxToolCalls are the contract's section 6.6 defaults.
+$script:CpHostDefaults = [ordered]@{ logMaxBytes = 1048576; maxRestarts = 5; restartDelayMs = 5000; stableRunMs = 60000 }
+$script:CpClaudeDefaults = [ordered]@{ maxMinutes = 15; maxToolCalls = 120 }
+function Get-ControlPlaneServiceConfig($Layout, [string]$NodeSha256, [string]$ClaudeSha256, [string]$ControlPlaneSid, [string]$ApproverSid) {
+  if (-not (Test-TreeHashValue $NodeSha256)) { throw 'node_sha256_invalid' }
+  if (-not (Test-TreeHashValue $ClaudeSha256)) { throw 'claude_sha256_invalid' }
+  if (-not (Test-ServiceSidShape $ControlPlaneSid)) { throw 'control_plane_sid_invalid' }
+  if (-not (Test-AccountSidShape $ApproverSid)) { throw 'approver_sid_invalid' }
+  [ordered]@{
+    host = [ordered]@{
+      nodePath = $Layout.ControlPlaneNodeExe; nodeSha256 = $NodeSha256; appPath = $Layout.ControlPlaneAppDir; dataRoot = $Layout.DataRoot; logDirectory = $Layout.ControlPlaneLogDir
+      logMaxBytes = $script:CpHostDefaults.logMaxBytes; maxRestarts = $script:CpHostDefaults.maxRestarts; restartDelayMs = $script:CpHostDefaults.restartDelayMs; stableRunMs = $script:CpHostDefaults.stableRunMs
+    }
+    claude = [ordered]@{ executable = $Layout.ClaudeExe; executableSha256 = $ClaudeSha256; maxMinutes = $script:CpClaudeDefaults.maxMinutes; maxToolCalls = $script:CpClaudeDefaults.maxToolCalls }
+    ui = [ordered]@{ controlPlaneSid = $ControlPlaneSid; approverSid = $ApproverSid }
+  }
+}
+# The reasons a service config text is not exactly the one install writes for these values (empty = it is). Compared case-sensitively, key set by key set (a stray key is how a file the installer did not write shows up).
+function Test-ControlPlaneServiceConfigText([string]$Json, $Layout, [string]$NodeSha256, [string]$ClaudeSha256, [string]$ControlPlaneSid, [string]$ApproverSid) {
+  $reasons = New-Object System.Collections.Generic.List[string]
+  if ((Get-ByteLength $Json) -gt 16384) { $reasons.Add('config_too_large'); return , @($reasons) }
+  try { $o = $Json | ConvertFrom-Json } catch { $reasons.Add('config_syntax'); return , @($reasons) }
+  if (-not (Test-SameKeySet $o @('host', 'claude', 'ui'))) { $reasons.Add('config_keys'); return , @($reasons) }
+  try { $want = (ConvertTo-HostJson (Get-ControlPlaneServiceConfig $Layout $NodeSha256 $ClaudeSha256 $ControlPlaneSid $ApproverSid)) | ConvertFrom-Json } catch { $reasons.Add('expected_values_invalid'); return , @($reasons) }
+  foreach ($section in @('host', 'claude', 'ui')) {
+    $have = $o.$section; $expect = $want.$section
+    if ($have -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $have (Get-ObjectKeys $expect))) { $reasons.Add($section + '_keys'); continue }
+    foreach ($key in (Get-ObjectKeys $expect)) {
+      $a = $have.$key; $b = $expect.$key
+      $same = if ($b -is [string]) { ($a -is [string]) -and ($a -ceq $b) } else { ($a -isnot [string]) -and ($a -eq $b) }
+      if (-not $same) { $reasons.Add($section + '_' + $key) }
+    }
+  }
+  , @($reasons)
+}
 
 function Get-ObjectKeys($Object) { @($Object.PSObject.Properties | ForEach-Object { $_.Name }) }
 function Test-SameKeySet($Object, [string[]]$Expected) {
@@ -301,7 +375,9 @@ function Test-AuthorityConfigText([string]$Json) {
 function Get-AclPlan($Layout, $Sids) {
   $full = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F')
   $b = $Sids.Broker; $a = $Sids.Authority; $cp = $Sids.ControlPlane
-  @(
+  $plan = @(
+    # The install folder carries SYSTEM, Administrators and the three service SIDs ONLY - not BUILTIN\Users. Users get read and execute on three sub-folders and nothing else (Grant-UsersReadExecute in
+    # albera-host.ps1: bin\approver, bin\launcher, bin\setup, which the owner's own session runs), so bin\claude, bin\control-plane (node included) and the .partial folders cannot be read or run by the owner's session.
     [pscustomobject]@{ Path = $Layout.InstallRoot; Grants = @($full + @("*${b}:(OI)(CI)RX", "*${a}:(OI)(CI)RX", "*${cp}:(OI)(CI)RX")) }
     [pscustomobject]@{ Path = $Layout.DataRoot; Grants = @($full + @("*${b}:RX", "*${a}:RX", "*${cp}:RX")) }
     [pscustomobject]@{ Path = $Layout.BrokerConfigDir; Grants = @($full + @("*${b}:(OI)(CI)RX")) }
@@ -309,7 +385,17 @@ function Get-AclPlan($Layout, $Sids) {
     [pscustomobject]@{ Path = $Layout.AuthorityDir; Grants = @($full + @("*${a}:(OI)(CI)M")) }
     # Full, not Modify: the Control Plane journal (src/runtime/sqlite-operation-store.mjs, assertPrivateWindowsAcl) refuses a folder or file where its own user lacks full control
     [pscustomobject]@{ Path = $Layout.ControlPlaneDir; Grants = @($full + @("*${cp}:(OI)(CI)F")) }
+    # The host's log folder must exist before the service starts (HostConfig.cs checks it) and the service writes in it: its own entry, so that it is born with its final ACL.
+    [pscustomobject]@{ Path = $Layout.ControlPlaneLogDir; Grants = @($full + @("*${cp}:(OI)(CI)F")) }
+    # The settings the service READS (host block, claude and ui blocks, the approval settings): it can read them and not change them.
+    [pscustomobject]@{ Path = $Layout.ControlPlaneConfigDir; Grants = @($full + @("*${cp}:(OI)(CI)R")) }
+    # DPAPI blobs: the service reads and writes them; nobody else, the owner included (control-plane-service.md section 3).
+    [pscustomobject]@{ Path = $Layout.SecretsDir; Grants = @($full + @("*${cp}:(OI)(CI)M")) }
   )
+  # ui\: the service writes room.json and replaces it; the owner (approverSid) may read it, and nothing else of the owner's. Without an approver SID (a status of a record that has none) the folder is planned without it.
+  $ui = @($full + @("*${cp}:(OI)(CI)M"))
+  if ($Sids.Approver) { $ui += "*$($Sids.Approver):(OI)(CI)R" }
+  $plan + @([pscustomobject]@{ Path = $Layout.UiDir; Grants = $ui })
 }
 function Get-GrantedSids($Entry) { @($Entry.Grants | ForEach-Object { if ($_ -match '^\*(S-[0-9-]+):') { $Matches[1] } }) }
 # $Summary = @{ Owner; Protected; AllowSids } read from a real folder; returns the differences from the plan (empty = as planned).
@@ -334,7 +420,40 @@ function Quote-NativeArg([string]$Value) { '"' + ($Value -replace '"', '\"') + '
 # The argument string for `sc.exe create`: binPath= takes one argument that itself holds quotes (the path under Program Files has a space).
 function Get-ScCreateArguments([string]$Name, [string]$Exe, [string]$Config) {
   $bin = (Get-ServiceCommandLine $Exe $Config) -replace '"', '\"'
-  'create ' + $Name + ' binPath= "' + $bin + '" obj= "NT SERVICE\' + $Name + '" start= demand type= own'
+  # all three services start by themselves, delayed (control-plane-service.md D5): the services are not an on-demand tool any more, the room must be there after a reboot
+  'create ' + $Name + ' binPath= "' + $bin + '" obj= "NT SERVICE\' + $Name + '" start= delayed-auto type= own'
+}
+# `sc failure`: restart after 5 s, twice, and nothing the third time ("restart after 5 s, twice, then leave stopped"). The third action is an empty one (sc.exe's "none"). The counter resets after a day.
+function Get-ScFailureArguments([string]$Name) {
+  $c = Get-HostConstants
+  $ms = $c.FailureRestartMilliseconds
+  'failure ' + $Name + ' reset= ' + $c.FailureResetSeconds + ' actions= restart/' + $ms + '/restart/' + $ms + '//0'
+}
+# SERVICE_FAILURE_ACTIONS as the SCM stores it in HKLM\SYSTEM\CurrentControlSet\Services\<name>\FailureActions (REG_BINARY): DWORD reset period (seconds), DWORD reboot-message offset, DWORD command offset,
+# DWORD cActions, DWORD offset of the action array, then cActions x { DWORD type (0 none, 1 restart, 2 reboot, 3 run command), DWORD delay (ms) }. Read from the registry instead of `sc qfailure`, whose text
+# is localized (a Japanese or German Windows prints other words). $null when the bytes are not that structure.
+function ConvertFrom-FailureActionsBytes([byte[]]$Bytes) {
+  if ($null -eq $Bytes -or $Bytes.Length -lt 20) { return $null }
+  [long]$count = [BitConverter]::ToUInt32($Bytes, 12)
+  [long]$offset = [BitConverter]::ToUInt32($Bytes, 16)
+  if ($count -gt 16 -or $offset -lt 20 -or ($offset + 8 * $count) -gt $Bytes.Length) { return $null }
+  $actions = New-Object System.Collections.Generic.List[object]
+  for ($i = 0; $i -lt $count; $i++) { $actions.Add([pscustomobject]@{ Type = [int][BitConverter]::ToUInt32($Bytes, [int]($offset + 8 * $i)); DelayMs = [int64][BitConverter]::ToUInt32($Bytes, [int]($offset + 8 * $i + 4)) }) }
+  [pscustomobject]@{ ResetSeconds = [int64][BitConverter]::ToUInt32($Bytes, 0); Actions = $actions.ToArray() }
+}
+# The reasons the stored failure actions are not "restart after 5 s, twice, then nothing, counter reset after a day" (empty = they are). The first two actions are restarts of 5000 ms; any further one is "none".
+function Test-ServiceFailureBytes([byte[]]$Bytes) {
+  $c = Get-HostConstants
+  $reasons = New-Object System.Collections.Generic.List[string]
+  $parsed = ConvertFrom-FailureActionsBytes $Bytes
+  if ($null -eq $parsed) { $reasons.Add('failure_actions_unreadable'); return , @($reasons) }
+  $actions = @($parsed.Actions)
+  if ($actions.Count -lt 2 -or $actions[0].Type -ne 1 -or $actions[1].Type -ne 1) { $reasons.Add('failure_actions_not_two_restarts') }
+  elseif ($actions[0].DelayMs -ne $c.FailureRestartMilliseconds -or $actions[1].DelayMs -ne $c.FailureRestartMilliseconds) { $reasons.Add('failure_restart_delay_differs') }
+  if (@($actions | Select-Object -Skip 2 | Where-Object { $_.Type -ne 0 }).Count -gt 0) { $reasons.Add('failure_action_not_restart') }   # a third restart, a reboot or a command
+  if (@($actions | Where-Object { $_.Type -eq 2 -or $_.Type -eq 3 }).Count -gt 0 -and -not ($reasons -contains 'failure_action_not_restart')) { $reasons.Add('failure_action_not_restart') }
+  if ($parsed.ResetSeconds -ne $c.FailureResetSeconds) { $reasons.Add('failure_reset_period_differs') }
+  , @($reasons)
 }
 
 # Which SID type install gives a service: restricted for both, EXCEPT the Broker of an install whose record says the Hyper-V grant was made (ADR-002 Amendment 2026-11-03: Hyper-V refuses a restricted
@@ -347,12 +466,15 @@ function Get-ExpectedSidType([string]$ServiceName, [bool]$HyperVGrantRecorded) {
 
 # Facts read from the machine: @{ Exists; StartName; PathName; StartMode; ServiceType; SidTypeText (sc qsidtype); PrivilegesText (sc qprivs) }. Returns the differences from what install makes.
 # $ExpectedSidType comes from Get-ExpectedSidType; the default is the install without the grant.
-function Test-ServiceFacts($Facts, [string]$Name, [string]$ExpectedPathName, [ValidateSet('restricted', 'unrestricted')][string]$ExpectedSidType = 'restricted') {
+function Test-ServiceFacts($Facts, [string]$Name, [string]$ExpectedPathName, [ValidateSet('restricted', 'unrestricted')][string]$ExpectedSidType = 'restricted', [bool]$ExpectRestartOnFailure = $false) {
   $reasons = New-Object System.Collections.Generic.List[string]
   if (-not $Facts.Exists) { $reasons.Add('service_missing'); return , @($reasons) }
   if ($Facts.StartName -ne ('NT SERVICE\' + $Name)) { $reasons.Add('start_name_differs') }
   if ($Facts.PathName -cne $ExpectedPathName) { $reasons.Add('path_differs') }
-  if ($Facts.StartMode -ne 'Manual') { $reasons.Add('start_mode_not_demand') }
+  # start= delayed-auto: Win32_Service says StartMode Auto and DelayedAutoStart true
+  if ($Facts.StartMode -ne 'Auto') { $reasons.Add('start_mode_not_auto') }
+  elseif ($Facts.DelayedAutoStart -ne $true) { $reasons.Add('start_not_delayed') }
+  if ($ExpectRestartOnFailure) { foreach ($r in (Test-ServiceFailureBytes $Facts.FailureActions)) { $reasons.Add($r) } }
   if ($Facts.ServiceType -ne 'Own Process') { $reasons.Add('not_own_process') }
   # RESTRICTED but not UNRESTRICTED, which contains the word
   if ($ExpectedSidType -ceq 'unrestricted') {
@@ -482,10 +604,18 @@ function Test-AuthoritySigningKeyExists([string]$KeyName, [string]$Scope = 'mach
 
 # ---------------------------------------------------------------------------------------------- removal safety
 # Relative paths (under the data root) that are not on the known list. Uninstall refuses to delete a folder that holds any.
-function Get-UnknownEntries([string[]]$RelativePaths, [string[]]$KnownFiles, [string[]]$KnownFolders) {
+function Get-UnknownEntries([string[]]$RelativePaths, [string[]]$KnownFiles, [string[]]$KnownFolders, [string[]]$WorkFolders = @()) {
   $known = @($KnownFiles | ForEach-Object { $_.ToLowerInvariant() }) + @($KnownFolders | ForEach-Object { $_.ToLowerInvariant() })
+  $work = @($WorkFolders | ForEach-Object { $_.ToLowerInvariant() })
   # An EMPTY folder (a service that was never started has written nothing yet) gives $null here, and piping $null runs the filter once with $_ = $null: skip it, there is nothing to judge.
-  , @(@($RelativePaths) | Where-Object { $null -ne $_ -and $known -notcontains $_.ToLowerInvariant() })
+  # A work folder (Get-KnownDataWorkFolders) is known as a whole: the folder itself and anything below it.
+  , @(@($RelativePaths) | Where-Object {
+      if ($null -eq $_) { return $false }
+      $lower = $_.ToLowerInvariant()
+      if ($known -contains $lower) { return $false }
+      foreach ($w in $work) { if ($lower -eq $w -or $lower.StartsWith($w + '\')) { return $false } }
+      $true
+    })
 }
 
 # ---------------------------------------------------------------------------------------------- trust: who may have written what the installer is about to rely on
@@ -494,13 +624,18 @@ function Get-UnknownEntries([string[]]$RelativePaths, [string[]]$KnownFiles, [st
 $script:WriteRightsMask = 0x2 -bor 0x4 -bor 0x40 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000   # WriteData AppendData DeleteChild Delete WriteDac WriteOwner GenericAll GenericWrite (as ServicePathGuard.cs)
 $script:AdminSids = @('S-1-5-18', 'S-1-5-32-544')
 function Get-AdminSids { , $script:AdminSids }
+# Who may OWN a trusted object or hold a write right on it: SYSTEM, Administrators and NT SERVICE\TrustedInstaller (the owner of Program Files and of most of what Windows ships). The same set as
+# FileSystemChecks.cs in setup. CREATOR OWNER (S-1-3-0) is not in it: an inherit-only ACE for it is a placeholder that turns into the creator's own rule and is skipped by Get-AclSummary; any other one counts.
+$script:TrustedInstallerSid = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+$script:TrustedSids = @('S-1-5-18', 'S-1-5-32-544', $script:TrustedInstallerSid)
+function Get-TrustedSids { , $script:TrustedSids }
 
 # $Summary = @{ Owner; Protected; WriteSids } (Get-AclSummary). Returns the reasons it is not trustworthy (empty = trusted).
 function Test-TrustSummary($Summary, [string[]]$AllowedWriters, [bool]$RequireProtected) {
   $reasons = New-Object System.Collections.Generic.List[string]
-  if ($script:AdminSids -notcontains $Summary.Owner) { $reasons.Add('owner_untrusted') }
+  if ($script:TrustedSids -notcontains $Summary.Owner) { $reasons.Add('owner_untrusted') }
   if ($RequireProtected -and -not $Summary.Protected) { $reasons.Add('inheritance_not_removed') }
-  $writers = @($script:AdminSids) + @($AllowedWriters)
+  $writers = @($script:TrustedSids) + @($AllowedWriters)
   foreach ($sid in @($Summary.WriteSids)) { if ($writers -notcontains $sid) { $reasons.Add('writer_untrusted:' + $sid) } }
   , @($reasons)
 }
@@ -509,14 +644,17 @@ function Get-PlannedWriters($Entry) {
   $own = @($Entry.Grants | ForEach-Object { if ($_ -match '^\*(S-[0-9-]+):(?:\(OI\)\(CI\))?(?:M|F)$') { $Matches[1] } })
   , @($script:AdminSids + $own | Sort-Object -Unique)
 }
+# Read with .NET (a file or a folder, nothing followed by this call): the cmdlet Get-Acl costs several milliseconds per path and the adoption check reads every entry below bin\setup and setup-work.
 function Get-AclSummary([string]$Path) {
-  $acl = Get-Acl -LiteralPath $Path
+  $acl = if ([System.IO.Directory]::Exists($Path)) { [System.IO.Directory]::GetAccessControl($Path) } else { [System.IO.File]::GetAccessControl($Path) }
   $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.AccessControlType -eq 'Allow' })
+  # CREATOR OWNER (S-1-3-0) as an inherit-only rule is the placeholder every Program Files folder carries; it is not a principal that can write THIS object
+  $isPlaceholder = { param($rule) ($rule.IdentityReference.Value -eq 'S-1-3-0') -and (([int]$rule.PropagationFlags -band [int][System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) }
   [pscustomobject]@{
     Owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
     Protected = $acl.AreAccessRulesProtected
     AllowSids = @($rules | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
-    WriteSids = @($rules | Where-Object { ([int]$_.FileSystemRights -band $script:WriteRightsMask) -ne 0 } | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+    WriteSids = @($rules | Where-Object { (([int]$_.FileSystemRights -band $script:WriteRightsMask) -ne 0) -and -not (& $isPlaceholder $_) } | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
   }
 }
 # The path itself and every parent up to the volume root that is a reparse point (junction, symlink, mount point). Attributes only; nothing is followed.
@@ -547,8 +685,8 @@ function Format-TrustRefusal([string]$Path, [string[]]$Reasons) {
 # File system rules for a planned folder: the icacls-style grants of Get-AclPlan, as .NET rules (so the folder can be CREATED with its final ACL, with no window in between).
 function ConvertTo-FileSystemRules([string[]]$Grants) {
   $rules = foreach ($g in $Grants) {
-    if ($g -cnotmatch '^\*(S-[0-9-]+):(\(OI\)\(CI\))?(F|RX|M)$') { throw 'grant_not_understood' }
-    $rights = switch ($Matches[3]) { 'F' { [System.Security.AccessControl.FileSystemRights]::FullControl } 'RX' { [System.Security.AccessControl.FileSystemRights]::ReadAndExecute } 'M' { [System.Security.AccessControl.FileSystemRights]::Modify } }
+    if ($g -cnotmatch '^\*(S-[0-9-]+):(\(OI\)\(CI\))?(F|RX|R|M)$') { throw 'grant_not_understood' }
+    $rights = switch ($Matches[3]) { 'F' { [System.Security.AccessControl.FileSystemRights]::FullControl } 'RX' { [System.Security.AccessControl.FileSystemRights]::ReadAndExecute } 'R' { [System.Security.AccessControl.FileSystemRights]::Read } 'M' { [System.Security.AccessControl.FileSystemRights]::Modify } }
     $inherit = if ($Matches[2]) { [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit } else { [System.Security.AccessControl.InheritanceFlags]::None }
     New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier($Matches[1])), $rights, $inherit, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow)
   }
@@ -579,14 +717,15 @@ function Invoke-SecuredCreate([string]$Path, [string[]]$Grants, [string]$OwnerSi
   if ($wrong.Count -gt 0) { throw ('created_directory_not_as_requested:' + ($wrong -join ',')) }
 }
 
-# ---------------------------------------------------------------------------------------------- the one value the owner types: the tree hash of the three builds
+# ---------------------------------------------------------------------------------------------- the one value the owner types (or setup passes): the tree hash of the five builds
 # -ExpectedTreeHash is ONE SHA-256 that the owner copies from the CI log of the reviewed commit (the line ALBERA_HOST_TREE_HASH=<hex> of `albera-host.ps1 -Mode hashes`). It is a parameter, not a file: a file
 # in Downloads can be rewritten together with the builds by a non-admin. The same function makes the value for -Mode hashes (CI) and for install (the COPIES in the administrator-only bin folder), so the
 # two cannot drift.
-# Canonical listing: for each component in the fixed order broker, authority, pipe-client, and inside it for each published file sorted by ordinal comparison of its relative path (written with '/'),
+# Canonical listing: for each component in the fixed order broker, authority, pipe-client, control-plane, approver, and inside it for each published file sorted by ordinal comparison of its relative path (written with '/'),
 # one line   <component>/<relative path> TAB <SHA-256 of the file, 64 lowercase hex> LF   (LF = 0x0A, TAB = 0x09, no other whitespace, no BOM). The tree hash is the lowercase-hex SHA-256 of the UTF-8
-# bytes of all lines concatenated. A file moved to another component, renamed, added, dropped or changed changes it.
-$script:HashComponents = @('broker', 'authority', 'pipe-client')
+# bytes of all lines concatenated. A file moved to another component, renamed, added, dropped or changed changes it. (control-plane is the host publish folder WITH its app\ tree; the pinned node\ that
+# install adds beside them is not part of it. The order is the one of SetupLayout.Components in src/runtime/windows-setup, which a test compares.)
+$script:HashComponents = @('broker', 'authority', 'pipe-client', 'control-plane', 'approver')
 function Test-TreeHashValue([string]$Value) { ($null -ne $Value) -and ($Value -cmatch '^[0-9a-f]{64}$') }
 function Get-CanonicalTreeHash($Components) {
   $builder = New-Object System.Text.StringBuilder
@@ -631,9 +770,17 @@ function Test-ManifestShape($M) {
   if ($M -isnot [System.Collections.IDictionary] -or $M['schema'] -ne 1 -or $M['tool'] -cne 'albera-host.ps1' -or @('partial', 'complete') -cnotcontains $M['state']) { $reasons.Add('manifest_header'); return , @($reasons) }
   $created = $M['created']; $values = $M['values']
   if ($created -isnot [System.Collections.IDictionary] -or $values -isnot [System.Collections.IDictionary]) { $reasons.Add('manifest_sections'); return , @($reasons) }
-  foreach ($k in $created.Keys) { if (@('dataRoot', 'installRoot', 'services', 'binaries', 'user', 'key', 'hyperVGrant') -cnotcontains $k) { $reasons.Add('created_key:' + $k) } }
+  foreach ($k in $created.Keys) { if (@('dataRoot', 'installRoot', 'services', 'binaries', 'user', 'key', 'hyperVGrant', 'controlPlane', 'claude', 'launcher', 'shortcuts', 'runEntry') -cnotcontains $k) { $reasons.Add('created_key:' + $k) } }
   foreach ($k in $values.Keys) { if (@('authoritySpki', 'controlPlaneSid', 'approverSid', 'approverKeyId', 'brokerServiceSid', 'authorityServiceSid') -cnotcontains $k) { $reasons.Add('values_key:' + $k) } }
-  if ((Test-HasKey $created 'services')) { foreach ($n in @($created['services'])) { if (@($c.BrokerService, $c.AuthorityService) -cnotcontains $n) { $reasons.Add('service_name_not_fixed') } } }
+  foreach ($k in $M.Keys) { if (@('schema', 'tool', 'state', 'startedAt', 'updatedAt', 'created', 'values', 'setupRunId') -cnotcontains $k) { $reasons.Add('manifest_key:' + $k) } }
+  if ((Test-HasKey $M 'setupRunId') -and $null -eq (ConvertTo-SetupRunId $M['setupRunId'])) { $reasons.Add('setup_run_id') }
+  if ((Test-HasKey $created 'services')) { foreach ($n in @($created['services'])) { if (@($c.BrokerService, $c.AuthorityService, $c.ControlPlaneService) -cnotcontains $n) { $reasons.Add('service_name_not_fixed') } } }
+  # The records of the Control Plane install can name nothing but the fixed service SID, a hash and the fixed shortcut / Run names: a forged one cannot make uninstall delete another file or value.
+  if ((Test-HasKey $created 'controlPlane') -and (-not (Test-ControlPlaneRecord $created['controlPlane']))) { $reasons.Add('control_plane_record') }
+  if ((Test-HasKey $created 'claude') -and (-not (Test-ClaudeRecord $created['claude']))) { $reasons.Add('claude_record') }
+  if ((Test-HasKey $created 'launcher') -and (-not (Test-LauncherRecord $created['launcher']))) { $reasons.Add('launcher_record') }
+  if ((Test-HasKey $created 'shortcuts')) { foreach ($n in @($created['shortcuts'])) { if (@($c.OpenShortcut, $c.UpdateShortcut) -cnotcontains $n) { $reasons.Add('shortcut_name_not_fixed') } } }
+  if ((Test-HasKey $created 'runEntry') -and (-not (Test-RunEntryRecord $created['runEntry']))) { $reasons.Add('run_entry_record') }
   if ((Test-HasKey $created 'user') -and $null -ne $created['user']) {
     $u = $created['user']
     if ($u -isnot [System.Collections.IDictionary] -or $u['name'] -cne $c.ControlPlaneUser -or -not (Test-AccountSidShape $u['sid'])) { $reasons.Add('user_record') }
@@ -710,15 +857,172 @@ function Select-VmByName($Candidates, [string]$VmName) {
   if (-not (Test-VmGuid $id)) { return [pscustomobject]@{ Ok = $false; VmId = $null; Reason = 'vm_not_found' } }
   [pscustomobject]@{ Ok = $true; VmId = $id; Reason = '' }
 }
-# -VmId (a fixed GUID instead of the lookup) exists for the disposable lab VM only, like -ControlPlanePassword. Returns the refusal word, or $null when allowed.
+# -VmId (a fixed GUID instead of the lookup) exists for the disposable lab VM only, like -NodeSource and -ClaudeSource. Returns the refusal word, or $null when allowed.
 function Test-LabVmIdGate([bool]$VmIdSupplied, [string]$LabEnvironment) {
   if ($VmIdSupplied -and $LabEnvironment -ne '1') { return 'vm_id_parameter_is_lab_only' }
   $null
 }
 
-# ---------------------------------------------------------------------------------------------- the lab-only password gate
-# -ControlPlanePassword (non-interactive) is accepted ONLY in the disposable lab VM, which announces itself with ALBERA_LAB_VM=1. Returns the refusal word, or $null when allowed.
-function Test-LabPasswordGate([bool]$PasswordSupplied, [string]$LabEnvironment) {
-  if ($PasswordSupplied -and $LabEnvironment -ne '1') { return 'control_plane_password_parameter_is_lab_only' }
+# ---------------------------------------------------------------------------------------------- the lab-only source gate
+# -NodeSource and -ClaudeSource (a node.exe / claude.exe somewhere else than the places install looks in) are accepted ONLY in the disposable lab VM, which announces itself with ALBERA_LAB_VM=1.
+# The lab guest has no Claude Code of the owner's. Returns the refusal word, or $null when allowed.
+function Test-LabSourceGate([bool]$SourceSupplied, [string]$LabEnvironment) {
+  if ($SourceSupplied -and $LabEnvironment -ne '1') { return 'binary_source_parameter_is_lab_only' }
   $null
+}
+
+# ---------------------------------------------------------------------------------------------- the Control Plane install records and the setup run id
+# The run id of the attested workflow run that built what setup verified (setup passes it as -SetupRunId; the C# side compares it with the record before it starts this script). It is a decimal ulong,
+# kept in the manifest as a STRING (a JSON number would lose digits in a parser that reads doubles). $null for anything else.
+function ConvertTo-SetupRunId($Value) {
+  if ($null -eq $Value) { return $null }
+  $text = [string]$Value
+  if ($text -cnotmatch '^[0-9]{1,20}$') { return $null }
+  $id = [uint64]0
+  if (-not [uint64]::TryParse($text, [System.Globalization.NumberStyles]::None, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$id)) { return $null }
+  $id
+}
+# Anti-rollback: an older run than the larger of the install record's `setupRunId` and the FLOOR is refused; the same run is fine (a half-finished install is finished by the same build). Returns the refusal word
+# or $null. The floor lives outside everything uninstall removes (HKLM\SOFTWARE\Albera\SetupRunIdFloor, REG_SZ, decimal), so uninstalling and installing an old build again does not get past it.
+function Get-SetupRunIdRefusal($Recorded, $Supplied, $Floor = $null) {
+  $r = ConvertTo-SetupRunId $Recorded
+  $f = ConvertTo-SetupRunId $Floor
+  $s = ConvertTo-SetupRunId $Supplied
+  if ($null -eq $Supplied -or $Supplied -eq '') { return $null }
+  if ($null -eq $s) { return 'setup_run_id_invalid' }
+  if ($null -ne $Recorded -and $null -eq $r) { return 'recorded_setup_run_id_invalid' }
+  if ($null -ne $Floor -and $null -eq $f) { return 'setup_run_id_floor_invalid' }   # an empty value is not "no floor" (setup refuses it as well)
+  if ($null -ne $r -and $s -lt $r) { return 'setup_run_id_older_than_installed' }
+  if ($null -ne $f -and $s -lt $f) { return 'setup_run_id_older_than_floor' }
+  $null
+}
+
+function Test-ControlPlaneRecord($Record) {
+  $c = Get-HostConstants
+  if ($Record -isnot [System.Collections.IDictionary]) { return $false }
+  $keys = @($Record.Keys)
+  if ($keys.Count -ne 3 -or @(@('serviceSid', 'nodeSha256', 'nodeSource') | Where-Object { $keys -ccontains $_ }).Count -ne 3) { return $false }
+  ($Record['serviceSid'] -ceq (Get-DerivedServiceSid $c.ControlPlaneService)) -and (Test-TreeHashValue $Record['nodeSha256']) -and ($Record['nodeSource'] -is [string]) -and ($Record['nodeSource'].Length -le 260)
+}
+function Test-ClaudeRecord($Record) {
+  if ($Record -isnot [System.Collections.IDictionary]) { return $false }
+  $keys = @($Record.Keys)
+  if ($keys.Count -ne 3 -or @(@('sha256', 'fileVersion', 'source') | Where-Object { $keys -ccontains $_ }).Count -ne 3) { return $false }
+  (Test-TreeHashValue $Record['sha256']) -and ($Record['fileVersion'] -is [string]) -and ($Record['fileVersion'].Length -le 64) -and ($Record['source'] -is [string]) -and ($Record['source'].Length -le 260)
+}
+function Test-LauncherRecord($Record) {
+  if ($Record -isnot [System.Collections.IDictionary]) { return $false }
+  $keys = @($Record.Keys)
+  ($keys.Count -eq 1) -and ($keys -ccontains 'sha256') -and (Test-TreeHashValue $Record['sha256'])
+}
+function Test-RunEntryRecord($Record) {
+  $c = Get-HostConstants
+  if ($Record -isnot [System.Collections.IDictionary]) { return $false }
+  $keys = @($Record.Keys)
+  ($keys.Count -eq 2) -and ($keys -ccontains 'name') -and ($keys -ccontains 'command') -and ($Record['name'] -ceq $c.RunValueName) -and ($Record['command'] -is [string]) -and ($Record['command'].Length -le 300)
+}
+
+# ---------------------------------------------------------------------------------------------- the pinned programs, the launcher, the shortcuts and the tray entry
+# node.exe comes from the one place the Node installer puts it (no environment variable and no PATH lookup decide it). Claude Code comes from the owner's own profile, found from the owner's SID (the record
+# of the profile list), never from an environment variable: `<profile>\.local\bin\claude.exe` (the place Claude Code's own installer uses). $ProfileImagePath is what Windows records for that SID.
+function Get-NodeSourcePath([string]$ProgramFiles) { Join-Path $ProgramFiles 'nodejs\node.exe' }
+function Get-ClaudeSourcePath([string]$ProfileImagePath) {
+  if (-not (Test-PlainAbsolutePath $ProfileImagePath)) { return $null }
+  Join-Path $ProfileImagePath '.local\bin\claude.exe'
+}
+# The elevated token must be the owner's: the copy of the owner's claude.exe is made only when the account that said yes to UAC is the account whose profile holds it (control-plane-service.md section 8).
+function Get-ClaudePinRefusal([string]$ElevatedSid, [string]$ApproverSid) {
+  if (-not (Test-AccountSidShape $ElevatedSid)) { return 'elevated_sid_is_not_a_user_account' }
+  if ($ElevatedSid -cne $ApproverSid) { return 'elevated_account_is_not_the_approver' }
+  $null
+}
+
+# What the Start menu "Open ALBERA" shortcut runs, as the owner (a normal, non-elevated session). It reads ui\room.json, requires the service to be RUNNING and the port to be held by the process the file names,
+# then opens the browser at http://127.0.0.1:<port>/room/#b=<code> (the fragment is never sent to the server). Every value it reads is checked against a fixed grammar before it is used. ASCII only.
+# The text is made here, written by install into the administrator-only bin\launcher folder and hashed into the install record: it is never taken from anywhere else.
+function Get-OpenAlberaScriptText($Layout) {
+  $c = Get-HostConstants
+  $room = Join-Path $Layout.UiDir 'room.json'
+  $text = @'
+# open-albera.ps1 - made by albera-host.ps1 for the Start menu shortcut "Open ALBERA"; do not edit (the install record holds its hash). ASCII only.
+$ErrorActionPreference = 'Stop'
+function Stop-Here([string]$Why) { Write-Host ('ALBERA: ' + $Why); [void](Read-Host 'Press Enter to close'); exit 1 }
+$serviceName = '@@SERVICE@@'
+$roomFile = '@@ROOM@@'
+try {
+  $service = Get-Service -Name $serviceName
+  if ($service.Status -ne 'Running') { Stop-Here ('the service ' + $serviceName + ' is ' + $service.Status + '. Start it (or restart the PC; it starts by itself) and try again.') }
+  $room = [System.IO.File]::ReadAllText($roomFile) | ConvertFrom-Json
+  $portOk = ($room.port -is [int]) -and ($room.port -ge 1024) -and ($room.port -le 65535)
+  $pidOk = ($room.pid -is [int]) -and ($room.pid -gt 0)
+  $codeOk = ($room.code -is [string]) -and ($room.code -cmatch '^[A-Za-z0-9_-]{16,128}$')
+  if (-not ($portOk -and $pidOk -and $codeOk)) { Stop-Here 'ui\room.json is not in the expected form.' }
+  $held = @(Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 -LocalPort $room.port | Where-Object { $_.OwningProcess -eq $room.pid })
+  if ($held.Count -eq 0) { Stop-Here 'the port named in ui\room.json is not held by the ALBERA process. Wait a few seconds and try again.' }
+  Start-Process ('http://127.0.0.1:' + $room.port + '/room/#b=' + $room.code)
+}
+catch { Stop-Here ('could not open the room: ' + $_.Exception.Message) }
+'@
+  ($text.Replace('@@SERVICE@@', $c.ControlPlaneService).Replace('@@ROOM@@', $room) -replace "`r?`n", "`r`n")
+}
+# The two shortcuts. "Open ALBERA" runs Windows PowerShell by its full path on the launcher script; "ALBERA update" runs albera-setup.exe (its manifest asks for UAC). The update shortcut is made only when
+# setup is installed where setup demands (the owner put it there; this script never copies setup). Each spec: Path, Target, Arguments, WorkingDirectory, Description.
+function Get-ShortcutSpecs($Layout, [string]$SystemDirectory, [bool]$SetupInstalled) {
+  $specs = New-Object System.Collections.Generic.List[object]
+  $specs.Add([pscustomobject]@{ Path = $Layout.OpenShortcut; Target = (Join-Path $SystemDirectory 'WindowsPowerShell\v1.0\powershell.exe'); Arguments = ('-NoProfile -ExecutionPolicy Bypass -File "' + $Layout.OpenScript + '"'); WorkingDirectory = $Layout.LauncherDir; Description = 'Open the ALBERA room in your browser' })
+  if ($SetupInstalled) { $specs.Add([pscustomobject]@{ Path = $Layout.UpdateShortcut; Target = $Layout.SetupExe; Arguments = ''; WorkingDirectory = (Split-Path -Parent $Layout.SetupExe); Description = 'Update ALBERA (asks for administrator rights)' }) }
+  , $specs.ToArray()
+}
+# $Read = what the shell link says now (TargetPath, Arguments, WorkingDirectory). Returns the differences from the spec (empty = as intended); compared case-insensitively for paths (Windows), exactly for arguments.
+function Test-ShortcutMatches($Spec, $Read) {
+  $reasons = New-Object System.Collections.Generic.List[string]
+  if ($null -eq $Read) { $reasons.Add('shortcut_missing'); return , @($reasons) }
+  if (-not [string]::Equals([string]$Read.TargetPath, [string]$Spec.Target, [System.StringComparison]::OrdinalIgnoreCase)) { $reasons.Add('shortcut_target_differs') }
+  if ([string]$Read.Arguments -cne [string]$Spec.Arguments) { $reasons.Add('shortcut_arguments_differ') }
+  if (-not [string]::Equals([string]$Read.WorkingDirectory, [string]$Spec.WorkingDirectory, [System.StringComparison]::OrdinalIgnoreCase)) { $reasons.Add('shortcut_working_directory_differs') }
+  , @($reasons)
+}
+# The tray of the approver, started in the owner's session at sign-in from HKLM Run (control-plane-service.md section 7). The tray itself exits quietly for any account that is not approverSid.
+function Get-RunEntry($Layout) {
+  $c = Get-HostConstants
+  [pscustomobject]@{ KeyPath = $c.RunKeyPath; Name = $c.RunValueName; Command = ('"' + $Layout.ApproverExe + '" --tray') }
+}
+
+# ---------------------------------------------------------------------------------------------- migration from the first layout (-Mode migrate; control-plane-service.md section 9)
+# Pure: the legacy manifest (parsed), the Broker config text, the Authority config text and the old Control Plane settings text in; the values the new install carries over, or the reasons it cannot. Nothing is read from
+# the machine here. A legacy install is one whose record has the local account `albera-cp`. What is carried over: the Hello public values (the key id, the SPKI and the SID are in the Authority config), the VM GUID and
+# the computer id (the record of the Hyper-V grant), the project id and the VM name (the old settings). A record that is not complete, or configs that do not agree with it, are refused.
+function ConvertFrom-LegacyInstall($Manifest, [string]$BrokerJson, [string]$AuthorityJson, [string]$SettingsJson) {
+  $reasons = New-Object System.Collections.Generic.List[string]
+  $fail = { param($w) $reasons.Add($w); [pscustomobject]@{ Ok = $false; Reasons = @($reasons); Values = $null } }
+  if ($Manifest -isnot [System.Collections.IDictionary] -or $Manifest['state'] -cne 'complete') { return (& $fail 'legacy_install_not_complete') }
+  $created = $Manifest['created']
+  if (-not (Test-HasKey $created 'user') -or $null -eq $created['user']) { return (& $fail 'not_a_legacy_install') }
+  if ((Test-HasKey $created 'controlPlane') -and $null -ne $created['controlPlane']) { return (& $fail 'already_the_new_layout') }
+  if ($reasons.Count -eq 0) { foreach ($w in (Test-AuthorityConfigText $AuthorityJson)) { $reasons.Add('authority_config:' + $w) } }
+  if ($reasons.Count -eq 0) { foreach ($w in (Test-BrokerConfigText $BrokerJson)) { $reasons.Add('broker_config:' + $w) } }
+  if ($reasons.Count -gt 0) { return [pscustomobject]@{ Ok = $false; Reasons = @($reasons); Values = $null } }
+  $authority = $AuthorityJson | ConvertFrom-Json
+  try { $settings = $SettingsJson | ConvertFrom-Json } catch { return (& $fail 'settings_syntax') }
+  $names = @(if ($null -ne $settings -and $settings.computers -is [System.Management.Automation.PSCustomObject]) { Get-ObjectKeys $settings.computers })   # @( ) around the whole if: a one-name result would otherwise be a string, and $names[0] its first character
+  if ($names.Count -ne 1 -or -not (Test-HostId ([string]$settings.projectId))) { return (& $fail 'settings_not_one_computer') }
+  $vmName = $names[0]
+  $computerId = [string]$settings.computers.$vmName
+  if ($vmName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' -or -not (Test-HostId $computerId)) { return (& $fail 'settings_computer_invalid') }
+  $grant = $null
+  if ((Test-HasKey $created 'hyperVGrant') -and $null -ne $created['hyperVGrant']) {
+    $g = $created['hyperVGrant']
+    if (-not (Test-HyperVGrantRecord $g)) { return (& $fail 'grant_record_invalid') }
+    if (-not (Test-BrokerConfigComputers $BrokerJson $g['computerId'] $g['vmId'])) { return (& $fail 'broker_config_disagrees_with_grant_record') }
+    if ($g['computerId'] -cne $computerId) { return (& $fail 'grant_computer_differs_from_settings') }
+    $grant = [pscustomobject]@{ ComputerId = $g['computerId']; VmId = $g['vmId'] }
+  }
+  [pscustomobject]@{
+    Ok = $true; Reasons = @()
+    Values = [pscustomobject]@{
+      ApproverKeyId = [string]$authority.approverKeyId; ApproverPublicKey = [string]$authority.approverPublicKey; ApproverSid = [string]$authority.approverSid
+      ProjectId = [string]$settings.projectId; VmName = $vmName; ComputerId = $computerId; Grant = $grant
+      LegacySid = [string]$created['user']['sid']
+    }
+  }
 }
