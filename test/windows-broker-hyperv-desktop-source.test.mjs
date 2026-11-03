@@ -113,14 +113,20 @@ test('input releases held buttons then keys in reverse on failure, and records a
   assert.equal([...releasing.matchAll(/for \(int i = \w+\.Count - 1; i >= 0; i--\)/gu)].length, 2, 'newest first');
 });
 
-test('nothing calls the adapter yet: no other Broker source names it, and the only link is the config type', () => {
-  for (const [name, code] of others.filter(([file]) => file !== 'PngEncoder.cs')) {
+test('only the desktop pipe calls the adapter, and only for capture: nothing in the Broker can send input yet, and the claim path never sees the adapter or the computers', () => {
+  const desktopPipe = ['DesktopPipe.cs', 'DesktopProtocol.cs'];
+  for (const [name, code] of others.filter(([file]) => file !== 'PngEncoder.cs' && !desktopPipe.includes(file))) {
     assert.equal(/HyperVDesktop|ComWmi|WmiGate|DesktopAllowlist|DesktopLimits|PngEncoder|IWmi/u.test(code), false, `${name} does not reference the adapter`);
   }
   assert.equal(/Hyper-?V/iu.test(sources['ServiceConfig.cs']), false);
   assert.match(sources['ServiceConfig.cs'], /ComputerBinding/u);
-  const program = [sources['Program.cs'], sources['ServiceHost.cs'], sources['ServiceLoop.cs'], sources['BrokerRequests.cs']].join('\n');
-  assert.equal(/\bComputers\b|ComputerBinding/u.test(program), false, 'the pipe and the request handlers do not read the computers yet');
+  const claimPath = [sources['Program.cs'], sources['ServiceHost.cs'], sources['ServiceLoop.cs'], sources['BrokerRequests.cs']].join('\n');
+  assert.equal(/\bComputers\b|ComputerBinding/u.test(claimPath), false, 'the claim pipe and its request handlers do not read the computers');
+  // The desktop pipe: one construction of the adapter, one call (Capture), no Input and no input step type. `act` is a later change.
+  assert.equal([...sources['DesktopPipe.cs'].matchAll(/new HyperVDesktop\(config\.Computers, ComWmiConnection\.TryConnect\)/gu)].length, 1, 'the real WMI connection, no seam');
+  assert.deepEqual([...sources['DesktopPipe.cs'].matchAll(/_desktop\.(\w+)\(/gu)].map((m) => m[1]), ['Capture']);
+  assert.equal(allCode.match(/\.Input\(/gu), null, 'no caller of the adapter\'s Input in the Broker');
+  assert.equal(/DesktopStep|AreValidSteps/u.test(Object.entries(sources).filter(([name]) => name !== 'HyperVDesktop.cs').map(([, code]) => code).join('\n')), false, 'no input step type outside the adapter');
 });
 
 test('service config: optional computers key, at most 8 entries of exactly { computerId, vmId }, ids and GUIDs distinct, one fixed reason word', () => {

@@ -20,14 +20,20 @@ internal static class LocalPipe
 
     /// <summary>Creates the first and only instance of \\.\pipe\<paramref name="pipeName"/>. Throws UnauthorizedAccessException when the name is
     /// taken (or creation is otherwise denied) and IOException carrying the Win32 error in its HResult for every other failure, like the .NET call.</summary>
-    internal static NamedPipeServerStream Create(string pipeName, PipeSecurity security)
+    internal static NamedPipeServerStream Create(string pipeName, PipeSecurity security) => Create(pipeName, security, 1, firstInstance: true);
+
+    /// <summary>The same, for a pipe with up to <paramref name="maxInstances"/> instances (every instance of a name must give the same number). The caller creates
+    /// the first instance with <paramref name="firstInstance"/> true (an existing pipe of the name fails creation) and the others with false: those are created without
+    /// FILE_FLAG_FIRST_PIPE_INSTANCE, and the system lets only a principal that the first instance's DACL grants FILE_CREATE_PIPE_INSTANCE do so (the owner, never the client).</summary>
+    internal static NamedPipeServerStream Create(string pipeName, PipeSecurity security, uint maxInstances, bool firstInstance)
     {
         byte[] descriptor = security.GetSecurityDescriptorBinaryForm();
         GCHandle pinned = GCHandle.Alloc(descriptor, GCHandleType.Pinned);
         try
         {
             SecurityAttributes attributes = new() { Length = Marshal.SizeOf<SecurityAttributes>(), SecurityDescriptor = pinned.AddrOfPinnedObject(), InheritHandle = 0 };
-            SafePipeHandle handle = CreateNamedPipeW(@"\\.\pipe\" + pipeName, PipeAccessDuplex | FileFlagFirstPipeInstance | FileFlagOverlapped, PipeMode, 1, 0, 0, 0, ref attributes);
+            uint openMode = PipeAccessDuplex | FileFlagOverlapped | (firstInstance ? FileFlagFirstPipeInstance : 0);
+            SafePipeHandle handle = CreateNamedPipeW(@"\\.\pipe\" + pipeName, openMode, PipeMode, maxInstances, 0, 0, 0, ref attributes);
             if (handle.IsInvalid)
             {
                 int error = Marshal.GetLastPInvokeError();

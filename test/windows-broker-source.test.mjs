@@ -18,6 +18,8 @@ const servicePathGuard = read('src', 'runtime', 'windows-broker', 'ServicePathGu
 const databaseFolderPin = read('src', 'runtime', 'windows-broker', 'DatabaseFolderPin.cs');
 const journal = read('src', 'runtime', 'windows-broker', 'Journal.cs');
 const requests = read('src', 'runtime', 'windows-broker', 'BrokerRequests.cs');
+const desktopPipe = read('src', 'runtime', 'windows-broker', 'DesktopPipe.cs'); // the desktop pipe is guarded by windows-broker-desktop-pipe-source.test.mjs; here it only has to keep the test seam out of the shipped build
+const desktopProtocol = read('src', 'runtime', 'windows-broker', 'DesktopProtocol.cs');
 const stripComments = (source) => source.replace(/^\s*\/\/.*$/gmu, '').replace(/\s\/\/ .*$/gmu, '');
 // HyperVDesktop.cs and PngEncoder.cs (the Hyper-V desktop adapter, which by design names Hyper-V) are guarded by windows-broker-hyperv-desktop-source.test.mjs, not listed here.
 const brokerCode = [program, requests, serviceHost, serviceConfig, serviceLoop, servicePathGuard, databaseFolderPin, journal].map(stripComments).join('\n');
@@ -52,8 +54,8 @@ test('Broker pipe is ephemeral, owned by the Broker\'s own SID and grants only t
 
 test('Broker fault-injection seam is compiled out of the shipped build and the pipe stays first-instance only', () => {
   // Every reference to the injected faults sits inside #if ALBERA_BROKER_TEST_FAULTS ... #endif (plus the unconditional enum declaration).
-  const outsideSeam = [program, requests, serviceHost, serviceConfig, serviceLoop, servicePathGuard, databaseFolderPin, journal].map((source) => source.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '')).join('\n');
-  assert.equal(/serve-fault|RevertFails|RevertThrows|RevertLies|serve-loop|ServeLoopForTest|ALBERA_BROKER_TEST_CLOCK_OFFSET|ServiceSidForTest|trust-sid|derive-service-sid/u.test(outsideSeam), false, 'fault names, the serve-loop test entry and the stand-in service SID must only appear inside the test-only #if block');
+  const outsideSeam = [program, requests, serviceHost, serviceConfig, serviceLoop, servicePathGuard, databaseFolderPin, journal, desktopPipe, desktopProtocol].map((source) => source.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').replace(/enum ImpersonationFault[^\n]*/u, '')).join('\n');
+  assert.equal(/serve-fault|RevertFails|RevertThrows|RevertLies|serve-loop|ServeLoopForTest|ALBERA_BROKER_TEST_CLOCK_OFFSET|ServiceSidForTest|trust-sid|derive-service-sid|ALBERA_BROKER_TEST_DESKTOP|DESKTOP_TEST|DesktopCaptureHold/u.test(outsideSeam), false, 'fault names, the serve-loop test entry, the stand-in service SID and the desktop pipe\'s two time knobs must only appear inside the test-only #if block');
   assert.match(project, /Condition="'\$\(AlberaBrokerTestFaults\)' == 'true'"/u);
   // MSBuild reads environment variables as properties, so the publish pins the switch off as a global property.
   assert.match(publish, /'-p:AlberaBrokerTestFaults=false'/u, 'the publish script must pin the test seam off');
