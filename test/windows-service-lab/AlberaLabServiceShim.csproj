@@ -14,4 +14,10 @@
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- The `hyperv` probe (HyperVProbe.cs) runs the Broker's REAL Hyper-V desktop adapter, so the lab measures the code that will ship, not a copy of its calls. Source-included
+         (never copied), the same two files that test/hyperv-desktop-dotnet-harness compiles; still BCL only. -->
+    <Compile Include="../../src/runtime/windows-broker/HyperVDesktop.cs" Link="BrokerAdapter/HyperVDesktop.cs" />
+    <Compile Include="../../src/runtime/windows-broker/PngEncoder.cs" Link="BrokerAdapter/PngEncoder.cs" />
+  </ItemGroup>
 </Project>

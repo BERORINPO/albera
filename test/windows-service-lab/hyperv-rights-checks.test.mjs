@@ -39,11 +39,12 @@ test('the guest script refuses to run outside the lab VM, before it touches anyt
   assert.match(`${out.stdout}${out.stderr}`, /refusing to run/u);
 });
 
-test('the guest script measures the four identities and the six operations, with the ADR-002 service shape', () => {
+test('the guest script measures the four identities and the eight operations, with the ADR-002 service shape', () => {
   assert.deepEqual([...guest.matchAll(/Code = '([a-z_]+)';\s+Svc = '([A-Za-z]+)'; SidType = '([a-z]+)';\s+Member = \$(true|false)/gu)].map((m) => m.slice(1, 5).join(' ')), [
     'r_member AlberaLabHvRM restricted true', 'r_nonmember AlberaLabHvRN restricted false', 'u_member AlberaLabHvUM unrestricted true', 'u_nonmember AlberaLabHvUN unrestricted false']);
   assert.deepEqual([...guest.matchAll(/@\{ Id = '([a-z_]+)';\s+Kind = '([a-z]+)'/gu)].map((m) => `${m[1]}:${m[2]}`), [
-    'wmi_connect:gate', 'vm_lookup:gate', 'mgmt_read:reference', 'thumbnail:sensitive', 'keyboard_typekey:sensitive', 'mouse_setabsoluteposition:sensitive']);
+    'wmi_connect:gate', 'vm_lookup:gate', 'mgmt_read:reference', 'thumbnail:sensitive', 'keyboard_typekey:sensitive', 'mouse_setabsoluteposition:sensitive',
+    'adapter_capture:sensitive', 'adapter_input:sensitive']);
   assert.match(guest, /& sc\.exe privs \$svc SeChangeNotifyPrivilege/u, 'only SeChangeNotifyPrivilege, as the Broker will have');
   assert.match(guest, /obj= "NT SERVICE\\\$svc"/u, 'a virtual account');
   assert.match(guest, /Hyper-V Administrators|S-1-5-32-578/u);
@@ -81,7 +82,7 @@ test('lab-vm.ps1 -HyperV: nested virtualization, 5 GB with the same memory guard
   assert.match(driver, /Stop-VM -VM \$ownedVm -TurnOff -Force\s+Remove-VM -VM \$ownedVm -Force/u);
 });
 
-test('the probe calls WMI by COM late binding, in process, and changes nothing but one key and one mouse move', () => {
+test('the probe calls WMI by COM late binding, in process, and sends only a Shift key, a mouse move and a button 1 press', () => {
   assert.match(probe, /Type\.GetTypeFromProgID\("WbemScripting\.SWbemLocator"\)/u);
   assert.match(probe, /root\\virtualization\\v2/u);
   const code = probe.replace(/\/\/[^\n]*/gu, '');
@@ -89,6 +90,33 @@ test('the probe calls WMI by COM late binding, in process, and changes nothing b
   const methods = [...probe.matchAll(/(?:DeviceCall\(wmi, vmPath, "[A-Za-z_]+", "|Call\(service, ")([A-Za-z]+)"/gu)].map((m) => m[1]);
   assert.deepEqual(methods, ['TypeKey', 'SetAbsolutePosition', 'GetVirtualSystemThumbnailImage']);
   assert.match(read('Probes.cs'), /case \["hyperv", var vm\]: return HyperVProbe\.Run\(vm\);/u);
+});
+
+test('the probe reads every WMI result through Properties_.Item, never by property name (a by-name read breaks every later call in the process with E_FAIL)', () => {
+  const code = probe.replace(/\/\/[^\n]*/gu, '');
+  assert.match(code, /\(\(dynamic\)wmiObject\)\.Properties_\.Item\(name\)\.Value/u);
+  assert.doesNotMatch(code, /\.(ReturnValue|ImageData|EnabledState|VirtualSystemType)\b/u, 'no WMI property is read by its own name');
+  for (const name of ['ReturnValue', 'ImageData', 'EnabledState', 'VirtualSystemType']) assert.match(code, new RegExp(`Property\\([^\\n]*"${name}"\\)`, 'u'), name);
+});
+
+test('the probe runs the Broker adapter itself: the shim compiles HyperVDesktop.cs and PngEncoder.cs by source include, and adapter_capture / adapter_input use only the adapter', () => {
+  const project = read('AlberaLabServiceShim.csproj');
+  assert.deepEqual([...project.matchAll(/<Compile Include="([^"]+)"/gu)].map((m) => m[1]), ['../../src/runtime/windows-broker/HyperVDesktop.cs', '../../src/runtime/windows-broker/PngEncoder.cs']);
+  assert.doesNotMatch(project, /PackageReference|Reference Include/u, 'still BCL only');
+  const code = probe.replace(/\/\/[^\n]*/gu, '');
+  assert.match(code, /new\(\[new ComputerBinding\(AdapterComputerId, vmId\.ToString\("D"\)\.ToLowerInvariant\(\)\)\], ComWmiConnection\.TryConnect\)/u, 'the production connection, one configured VM, a lowercase GUID');
+  assert.match(code, /Check\("adapter_capture", \(\) => AdapterCapture\(desktop\)\)/u);
+  assert.match(code, /Check\("adapter_input", \(\) => AdapterInput\(desktop\)\)/u);
+  assert.match(code, /desktop\.Capture\(AdapterComputerId, ThumbnailWidth, ThumbnailHeight\)/u);
+  // One move, one tap of Shift (0x10), one press and release of button 1: the step kinds, in this order, nothing more.
+  const steps = code.slice(code.indexOf('DesktopStep[] steps'), code.indexOf('DesktopResult result = desktop.Input'));
+  assert.deepEqual([...steps.matchAll(/new\("([a-z]+)"/gu)].map((m) => m[1]), ['move', 'tap', 'down', 'up']);
+  assert.match(code, /ShiftKeyCode = 0x10/u);
+  // The capture must be a PNG: signature, IHDR of the asked size, 8-bit truecolour, IEND.
+  assert.match(code, /0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A/u);
+  assert.match(code, /"IHDR"u8/u);
+  // When the connection is refused the adapter checks are skipped with the others.
+  assert.match(code, /"mouse_setabsoluteposition", "adapter_capture", "adapter_input"\]\) Skipped\(id, "wmi_connect"\)/u);
 });
 
 // ---- the verdict logic, loaded by itself out of the guest script
@@ -134,6 +162,20 @@ test('the verdict logic: refusals pass for non-members, success passes for unres
     { lines: [line('wmi_connect', denied), line('thumbnail', { ok: false, skipped: true, because: 'wmi_connect' })], target: 'thumbnail', expect: 'denied' },
     { lines: [line('thumbnail', { ok: false, skipped: true, because: 'wmi_connect' })], target: 'thumbnail', expect: 'missing' },
     { lines: [], target: 'mouse_setabsoluteposition', expect: 'missing' },
+    // the Broker adapter lines carry a reason word only; a failure reads as refused when the raw check of the same operation was refused
+    { lines: [line('adapter_capture', { ok: true, bytes: 900, pngCheck: 'signature_ihdr_iend_ok' })], target: 'adapter_capture', expect: 'allowed' },
+    { lines: [line('thumbnail', denied), line('adapter_capture', { ok: false, reason: 'capture_failed' })], target: 'adapter_capture', expect: 'denied' },
+    { lines: [line('thumbnail', { ok: false, hresult: '0x80041002' }), line('adapter_capture', { ok: false, reason: 'desktop_unavailable' })], target: 'adapter_capture', expect: 'not_visible' },
+    { lines: [line('thumbnail', { ok: true, returnValue: 0 }), line('adapter_capture', { ok: false, reason: 'capture_failed' })], target: 'adapter_capture', expect: 'error' },
+    { lines: [line('adapter_capture', { ok: false, reason: 'capture_failed' })], target: 'adapter_capture', expect: 'error' },
+    { lines: [line('thumbnail', denied), line('adapter_capture', { ok: false, reason: 'png_invalid', pngCheck: 'bad_size' })], target: 'adapter_capture', expect: 'error' },
+    { lines: [line('thumbnail', denied), line('adapter_capture', { ok: false, reason: 'allowlist' })], target: 'adapter_capture', expect: 'error' },
+    { lines: [line('keyboard_typekey', { ok: true, returnValue: 0 }), line('mouse_setabsoluteposition', denied), line('adapter_input', { ok: false, reason: 'input_failed' })], target: 'adapter_input', expect: 'denied' },
+    { lines: [line('keyboard_typekey', { ok: false, hresult: '0x80004005' }), line('mouse_setabsoluteposition', { ok: false, hresult: '0x80004005' }), line('adapter_input', { ok: false, reason: 'input_failed' })], target: 'adapter_input', expect: 'error' },
+    { lines: [line('wmi_connect', denied), line('adapter_input', { ok: false, skipped: true, because: 'wmi_connect' })], target: 'adapter_input', expect: 'denied' },
+    // the probe's own "not found" wording (the object is hidden from this caller) is a refusal in effect
+    { lines: [line('thumbnail', { ok: false, exception: 'InvalidOperationException', hresult: '0x80131509', message: 'management_service_not_found' })], target: 'thumbnail', expect: 'not_visible' },
+    { lines: [line('thumbnail', { ok: false, exception: 'InvalidOperationException', hresult: '0x80131509', message: 'something else broke' })], target: 'thumbnail', expect: 'error' },
   ];
   const verdicts = [
     // [member, sidtype, kind, outcome, expected]

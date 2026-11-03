@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Test-only console: compiles the Broker's Hyper-V desktop adapter (HyperVDesktop.cs, PngEncoder.cs) by source include and drives it with a fake WMI connection,
+       printing what the adapter did as one JSON document. Built in a temp dir by test/windows-broker-hyperv-desktop.test.mjs; nothing ships it.
+       Pass -p:BrokerDir=<abs path ending in a slash>. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseAppHost>false</UseAppHost>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(BrokerDir)HyperVDesktop.cs" />
+    <Compile Include="$(BrokerDir)PngEncoder.cs" />
+  </ItemGroup>
+</Project>
