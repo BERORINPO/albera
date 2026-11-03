@@ -263,6 +263,7 @@ test('the publish script reads its two inputs as files, compiles their SHA-256 i
   assert.ok(script.indexOf('requireHostBuildSdk(context)') < script.indexOf('restoreAndBuild(context'), 'the SDK is checked before restore');
   assert.match(script, /-p:RestoreLockedMode=true/u);
   assert.match(script, /-p:PublishAot=\$\{parsed\.compileCheck \? 'false' : 'true'\}/u);
+  assert.match(script, /restoreProperties: properties\.map\(\(p\) => \(p === '-p:PublishAot=false' \? '-p:PublishAot=true' : p\)\)/u, 'the compile check restores for the AOT lock');
   assert.equal(/fetch\(|https?\.get|download/iu.test(script.replace(/\/\/.*$/gmu, '')), false, 'the script downloads nothing');
   const pkg = JSON.parse(read('package.json'));
   assert.equal(pkg.scripts['build:windows-setup'], 'node scripts/publish-windows-setup.mjs');
