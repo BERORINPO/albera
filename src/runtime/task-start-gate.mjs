@@ -21,7 +21,7 @@ export const TASK_START_MAX_BYTES = MAX_ARG_STRING_BYTES;
 export const TASK_START_REFUSALS = Object.freeze([
   'task_invalid', 'vm_unknown', 'start_denied', 'start_expired', 'start_failed', 'start_retryable', 'start_unknown', 'start_replayed', 'start_error',
 ]);
-const REFUSAL_BY_STATUS = Object.freeze({
+export const REFUSAL_BY_STATUS = Object.freeze({
   denied: 'start_denied', expired: 'start_expired', failed: 'start_failed', retryable: 'start_retryable', unknown: 'start_unknown',
 });
 const ID_RE = new RegExp(ID_PATTERN, 'u');

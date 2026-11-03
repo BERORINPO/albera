@@ -234,10 +234,18 @@ function brokerPort(settings, clients) {
   };
 }
 
-function authorityPort(settings, clients) {
+/**
+ * `includeDigest: true` makes every submit also carry `expectedDigest` (the client's own computation; the Authority recomputes it and answers `request_invalid` on a difference).
+ * `onSubmitted(fields, reply)` sees each accepted submit (the room service uses it to learn the approval id while the flow is still waiting); its failure never reaches the flow.
+ */
+function authorityPort(settings, clients, { includeDigest = false, onSubmitted } = {}) {
   const { pipeRoot, expect } = settings.authority;
   return {
-    submit: (fields) => clients.submitApproval({ pipeRoot, expect, ...fields }),
+    async submit(fields) {
+      const reply = await clients.submitApproval({ pipeRoot, expect, ...fields, ...(includeDigest ? { includeDigest: true } : {}) });
+      if (reply?.ok === true && onSubmitted) { try { onSubmitted(fields, reply); } catch { /* a listener must not break the flow */ } }
+      return reply;
+    },
     status: ({ approvalId }) => clients.getApprovalStatus({ pipeRoot, expect, approvalId }),
   };
 }
@@ -252,10 +260,12 @@ const REAL = Object.freeze({
 
 /**
  * Open everything a gated room needs and return its start gate and the Broker object that carries its screens and input.
- * @param {{ approvalFile: string, jobs: { vmId: string, task: string }[], io?: object, deps?: object }} options `io` = { statSync, readFileSync }; `deps` replaces the real clients, store and desktop client (tests)
- * @returns {Promise<{ gate: { startApproved: Function }, desktopBroker: object, notice: string, requestInitialStarts: (host: { requestStart: Function }) => Promise<string[]>, close: () => void }>}
+ * @param {{ approvalFile: string, jobs: { vmId: string, task: string }[], io?: object, deps?: object, authority?: { includeDigest?: boolean, onSubmitted?: Function } }} options `io` = { statSync, readFileSync };
+ *   `deps` replaces the real clients, store and desktop client (tests); `authority` = the submit options of authorityPort (the room service sets both)
+ * @returns {Promise<{ gate: { startApproved: Function }, desktopBroker: object, notice: string, requestInitialStarts: (host: { requestStart: Function }) => Promise<string[]>, close: () => void,
+ *   flow: { run: Function }, settings: object, newOperationId: () => string }>} `flow`, `settings` and `newOperationId` are what the room service builds its job screen's approvals from
  */
-export async function openRoomApproval({ approvalFile, jobs, io = { statSync, readFileSync }, deps = {} } = {}) {
+export async function openRoomApproval({ approvalFile, jobs, io = { statSync, readFileSync }, deps = {}, authority: authorityOptions = {} } = {}) {
   const d = { ...REAL, ...deps };
   const settings = loadApprovalSettings(approvalFile, io);
   if (settings.attestation) throw new Error(GATED_OUT_OF_SCOPE); // a checkpoint attestation changes VM settings: not for the first gated run
@@ -274,14 +284,14 @@ export async function openRoomApproval({ approvalFile, jobs, io = { statSync, re
     try { store.close(); } catch { /* already closed */ }
   };
   try {
-    const flow = createApprovedOperationFlow({ broker: brokerPort(settings, pipes), authority: authorityPort(settings, pipes), journal: store.flowJournal(), now: d.now, sleep: d.sleep });
+    const flow = createApprovedOperationFlow({ broker: brokerPort(settings, pipes), authority: authorityPort(settings, pipes, authorityOptions), journal: store.flowJournal(), now: d.now, sleep: d.sleep });
     const computerIdFor = (vmId) => settings.computers.get(vmId)?.computerId;
     const gate = createTaskStartGate({ flow, projectId: settings.projectId, newOperationId: d.newOperationId, computerIdFor });
     const desktopBroker = createGatedDesktopBroker({ client: desktopClient, computerIdFor });
     // Each initial job is requested through the room host's start path (the gate): the answer is 'pending_approval' at once, the outcome is a ledger entry.
     const requestInitialStarts = (host) => Promise.all(jobs.map((job) => host.requestStart(job.vmId, job.task)));
     const notice = 'Hands start only after approval: each start is a task.start operation; the ledger records start_approved or start_refused. Screens and input go through the Host Broker desktop pipe, not through this account.';
-    return Object.freeze({ gate, desktopBroker, notice, requestInitialStarts, close });
+    return Object.freeze({ gate, desktopBroker, notice, requestInitialStarts, close, flow, settings, newOperationId: d.newOperationId });
   } catch {
     close();
     throw fail('wiring_failed');
