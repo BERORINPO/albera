@@ -73,6 +73,8 @@ const EXPECTED = {
     'approved-operation-flow.mjs', 'approved-operation-journal.mjs',
     // `albera-runtime approval-check`: one synthetic.noop through that flow with the room's wiring (entry role: wiring and a printout, no decision; decision log 2026-11-02+host-install)
     'approval-check.mjs',
+    // Control Plane secret store: DPAPI blobs in a folder setup made, through the pipe client helper's secret mode; and its in-memory test double (control-plane-service.md "Secret storage")
+    'control-plane-secret-store.mjs', 'fake-control-plane-secret-store.mjs',
     // verified-integration candidate: exact-commit evidence and person-approved compare-and-swap promotion (rule 5e; ADR-007, INT-01 / INT-02)
     'integration-candidate.mjs',
     // host-side git quarantine for submissions (bundles only, bare repositories, hardened git; ADR-007 §2 / §4) and its test double
@@ -310,10 +312,11 @@ for (const f of brokerFiles) if (!fs.existsSync(path.join(ROOT, brokerRoot, f)))
 // The trusted pipe client helper (verifies the pipe server before it writes) is part of the same on-demand set: its 3 files must exist, its
 // Program.cs and DesktopSession.cs stay small enough to review (line caps below), and `build:windows-broker` must build it. Its name also matches BROKER_REF, so 8a and 8c cover it.
 const pipeClientRoot = 'src/runtime/windows-broker-pipe-client';
-const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'DesktopSession.cs', 'packages.lock.json'];
+const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'DesktopSession.cs', 'SecretMode.cs', 'packages.lock.json'];
 // Program.cs: 200 until the fence and inspect request kinds (receipt v2) were added; 220 until the Approval Authority submit request kind (`authority`) was added; 250 until the desktop session mode was added
 // (the session itself is DesktopSession.cs, capped separately; Program.cs only gained the shared OpenVerified and the mode switch).
-const PIPE_CLIENT_MAX_LINES = { 'Program.cs': 270, 'DesktopSession.cs': 200 };
+// SecretMode.cs (DPAPI protect / unprotect for the Control Plane's secret store, 124 lines) is capped at 160.
+const PIPE_CLIENT_MAX_LINES = { 'Program.cs': 270, 'DesktopSession.cs': 200, 'SecretMode.cs': 160 };
 for (const f of pipeClientFiles) if (!fs.existsSync(path.join(ROOT, pipeClientRoot, f))) violations.push(`[8b Windows Broker pipe client source] ${pipeClientRoot}/${f} does not exist (false-safe)`);
 for (const [file, max] of Object.entries(PIPE_CLIENT_MAX_LINES)) {
   const source = path.join(ROOT, pipeClientRoot, file);

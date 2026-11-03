@@ -323,6 +323,7 @@ test('the client is not imported by the Observer, entry layers, runtime modules 
   const self = path.join(root, 'src', 'runtime', 'windows-broker-client.mjs');
   const authorityClient = path.join(root, 'src', 'runtime', 'approval-authority-client.mjs');
   const desktopClient = path.join(root, 'src', 'runtime', 'windows-desktop-broker-client.mjs');
+  const secretStore = path.join(root, 'src', 'runtime', 'control-plane-secret-store.mjs');
   const sources = walk(path.join(root, 'src')).filter((file) => /\.(?:mjs|js|html|json|css)$/u.test(file) && file !== self);
   assert.ok(sources.length > 50, 'the scan must cover the source tree');
   // The one deliberate importer is the room's composition point (room-approval-wiring.mjs, A3 of #115 follow-up): one import line, with an arch-allow reason.
@@ -335,8 +336,8 @@ test('the client is not imported by the Observer, entry layers, runtime modules 
   for (const file of sources) {
     const text = readFileSync(file, 'utf8');
     if (file !== wiring && file !== desktopClient) assert.equal(/windows-broker-client/u.test(text), false, `${path.relative(root, file)} must not reference the Broker client`);
-    // The Approval Authority client and the desktop client share this helper (one arch-allow line each); the Authority client's own guard is in runtime-approval-authority-client.test.mjs.
-    if (file !== authorityClient && file !== desktopClient) assert.equal(/windows-broker-pipe-client|albera-windows-broker-pipe-client/u.test(text), false, `${path.relative(root, file)} must not name the pipe client helper`);
+    // The Approval Authority client, the desktop client and the Control Plane secret store (its `secret` mode) share this helper (one arch-allow line each); the Authority client's own guard is in runtime-approval-authority-client.test.mjs, the secret store's in runtime-control-plane-secret-store.test.mjs.
+    if (file !== authorityClient && file !== desktopClient && file !== secretStore) assert.equal(/windows-broker-pipe-client|albera-windows-broker-pipe-client/u.test(text), false, `${path.relative(root, file)} must not name the pipe client helper`);
   }
   const manifest = readFileSync(path.join(root, 'package.json'), 'utf8');
   assert.equal(/windows-broker-client|windows-broker-pipe-client/u.test(manifest), false);
