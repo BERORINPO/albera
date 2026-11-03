@@ -881,6 +881,12 @@ test('Hyper-V grant, pure helpers: the plan names the Broker SID only; the Broke
   assert.deepEqual(r.hvMembers.controlPlaneIn, ['control_plane_is_a_member']);
   assert.deepEqual(r.hvMembers.authorityIn, ['authority_is_a_member']);
   assert.deepEqual(r.hvMembers.empty, ['broker_not_a_member']);
+  // and without a record the group is still checked: albera-cp and the Authority never, the Broker not
+  assert.equal(r.hvMembers.noRecordClean, 0);
+  assert.equal(r.hvMembers.noRecordEmpty, 0);
+  assert.deepEqual(r.hvMembers.noRecordBroker, ['broker_is_a_member_without_a_record']);
+  assert.deepEqual(r.hvMembers.noRecordControlPlane, ['control_plane_is_a_member']);
+  assert.deepEqual(r.hvMembers.noRecordAuthority, ['authority_is_a_member']);
   // GUIDs and the name lookup
   assert.deepEqual(r.vmGuid, [true, false, false, false, false, false, false, false], 'lowercase 8-4-4-4-12 only: no upper case, braces, trailing newline, zero GUID or id');
   const GUID = '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f';
@@ -1009,6 +1015,87 @@ test('Hyper-V grant, the group change (fakes for the machine): only the Broker S
   assert.equal(r.noGroupUndoRecordGone, true);
   assert.match(r.forgedRecordError, /the grant record does not name the Broker service SID; refusing to remove anything/u);
   assert.equal(r.forgedRecordCalls, 0);
+});
+
+test('Hyper-V grant, the group is read every time and an undo never guesses (fakes for the machine): albera-cp and the Authority are never allowed in, the Broker only with a record, a lookup failure is not "no group"', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+  const r = harness(t, 'hyperv');
+  // finding 3: a failed lookup is thrown, the record stays, nothing is removed
+  assert.match(r.lookupFailUndoError, /the group lookup failed \(fake\)/u, 'a failure that is not "no such group" stops the undo');
+  assert.equal(r.lookupFailUndoRecordKept, true);
+  assert.equal(r.lookupFailUndoManifestOnDisk, true);
+  assert.equal(r.lookupFailUndoCalls, 0, 'no Remove-LocalGroupMember was issued');
+  // finding 2, no record: every run looks at the group
+  assert.deepEqual({ ...r.noRecord }, {
+    empty: [], other: [], controlPlane: ['control_plane_is_a_member'], authority: ['authority_is_a_member'], broker: ['broker_is_a_member_without_a_record'],
+    all: ['broker_is_a_member_without_a_record', 'control_plane_is_a_member', 'authority_is_a_member'],
+  });
+  assert.deepEqual(r.noRecordNoGroup, [], 'no group and no record: nothing to report');
+  assert.deepEqual(r.statusNoRecord.clean, [], 'a clean group of an install without the grant adds no status line');
+  assert.deepEqual(r.statusNoRecord.controlPlane, ['FAIL Hyper-V Administrators: control_plane_is_a_member']);
+  assert.deepEqual(r.statusNoRecord.authority, ['FAIL Hyper-V Administrators: authority_is_a_member']);
+  assert.deepEqual(r.statusNoRecord.broker, ['FAIL Hyper-V Administrators: broker_is_a_member_without_a_record']);
+  assert.equal(r.statusLookupFails.hv.length, 1);
+  assert.match(r.statusLookupFails.hv[0], /^unknown Hyper-V Administrators: the member list could not be read: the group lookup failed \(fake\)/u);
+  assert.equal(r.statusLookupFails.laterLineStillThere, true, 'the rest of the status is still checked');
+  // with a record
+  assert.deepEqual({ ...r.recorded }, { ok: [], brokerGone: ['broker_not_a_member'], controlPlane: ['control_plane_is_a_member'], noGroup: ['group_missing'] });
+  assert.deepEqual(r.statusRecorded.ok, ['ok Hyper-V Administrators: the Broker service SID is a member; albera-cp and the Authority are not']);
+  assert.deepEqual(r.statusRecorded.controlPlane, ['FAIL Hyper-V Administrators: control_plane_is_a_member']);
+  // the install step is done only when the record is there AND nothing is wrong
+  assert.equal(r.stepClean, 'done');
+  assert.equal(r.stepControlPlane, 'todo');
+  assert.equal(r.stepAuthority, 'todo');
+  assert.equal(r.stepBrokerGone, 'todo');
+  assert.match(r.afterThrowGrantError, /control_plane_is_a_member/u);
+  assert.equal(r.afterThrowStep, 'todo', 'a grant that threw after adding the Broker is not "done" on the next run');
+  assert.equal(r.afterThrowFixedStep, 'done', 'done once albera-cp is out of the group');
+});
+
+test('Hyper-V grant, the services step: the Broker SID type has to match this run\'s option in both directions; an unrestricted Broker without the option is put back to restricted and read back', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+  const r = harness(t, 'hyperv');
+  // begun WITH the option (unrestricted), run again WITHOUT it
+  assert.equal(r.svcNoOptionWasUnrestricted.test, 'todo', 'before: this was "done" and the install completed with an unrestricted Broker and no grant');
+  assert.equal(r.svcNoOptionWasUnrestricted.doError, null);
+  assert.deepEqual(r.svcNoOptionWasUnrestricted.sidCalls, ['sidtype AlberaHostBroker restricted', 'sidtype AlberaApprovalAuthority restricted']);
+  assert.equal(r.svcNoOptionWasUnrestricted.broker, 'restricted');
+  assert.equal(r.svcNoOptionWasUnrestricted.authority, 'restricted');
+  assert.equal(r.svcNoOptionWasUnrestricted.testAfter, 'done');
+  // what did not change
+  assert.deepEqual({ ...r.svcNoOptionRestricted }, { test: 'done', sidCalls: 0 }, 'no option and restricted: done, nothing issued (the result of an install without the option is as before)');
+  assert.equal(r.svcOptionRestricted.test, 'todo');
+  assert.equal(r.svcOptionRestricted.doError, null);
+  assert.equal(r.svcOptionRestricted.broker, 'unrestricted');
+  assert.equal(r.svcOptionRestricted.authority, 'restricted', 'the Authority stays restricted');
+  assert.equal(r.svcOptionRestricted.testAfter, 'done');
+  assert.equal(r.svcOptionUnrestricted, 'done');
+});
+
+test('uninstall runs to the end when the services were never started (empty data folders), with and without the grant (fakes for the machine; lab run 1 stopped at removing broker\\)', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+  const r = harness(t, 'hyperv');
+  const CP = 'S-1-5-21-1111111111-2222222222-3333333333-1500';
+  assert.equal(r.emptyKnownFolderError, null, 'an empty known folder is removed, not "You cannot call a method on a null-valued expression"');
+  const common = { error: null, services: [], keyGone: true, userRemoved: [CP], dataRootGone: true, installRootGone: true, members: [] };
+  assert.deepEqual({ ...r.uninstallWithGrant }, { ...common, ran: ['hyperv', 'services', 'key', 'installroot', 'data', 'user', 'manifest'], removeCalls: [`remove S-1-5-32-578 ${r.grantMembers[0]}`] });
+  assert.deepEqual({ ...r.uninstallWithoutGrant }, { ...common, ran: ['services', 'key', 'installroot', 'data', 'user', 'manifest'], removeCalls: [] });
+});
+
+test('Hyper-V grant, Test-LocalGroupExists (real, read only): true for a group, false only for a SID that maps to nothing, anything else is thrown', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+  const r = harness(t, 'group');
+  assert.equal(r.administrators, true);
+  assert.equal(r.unmapped, false);
+  assert.ok(r.malformed, 'a malformed SID is an error, not "no group"');
+});
+
+test('Hyper-V grant, source guards for the group reads: no SilentlyContinue lookup of the group; the status reads the group whether or not there is a record', () => {
+  const script = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
+  assert.doesNotMatch(script, /Get-LocalGroup\b[^\n]*SilentlyContinue/u, 'a failed lookup must not read as "no group"');
+  assert.match(script, /function Test-LocalGroupExists[\s\S]*?IdentityNotMappedException[\s\S]*?return \$false[\s\S]*?\bthrow\b/u);
+  assert.match(script, /try \{ \$hvBad = Get-HyperVMemberProblems \}/u, 'status asks for the problems every time');
+  assert.match(script, /\$hvRead -and \(\$grantRecorded -or \$hvBad\.Count -gt 0\)/u);
+  assert.doesNotMatch(script, /if \(\$grantRecorded\) \{\s*\n\s*\$hvBad/u, 'the group check is not gated on the record any more');
+  const lib = readFileSync(path.join(hostDir, 'albera-host-lib.ps1'), 'utf8');
+  assert.match(lib, /\$BrokerRecorded -and -not \$brokerIn\) \{ \$reasons\.Add\('broker_not_a_member'\)/u);
+  assert.match(lib, /-not \$BrokerRecorded -and \$brokerIn\) \{ \$reasons\.Add\('broker_is_a_member_without_a_record'\)/u);
 });
 
 test('Hyper-V grant, docs: the option, the owner decision, the undo and what is not verified are written down in host-install.md', () => {

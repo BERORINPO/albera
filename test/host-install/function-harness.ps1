@@ -2,9 +2,9 @@
 # The functions are taken out of the real script by name (PowerShell AST), so the code under test is the shipped code, not a copy. Nothing outside -Work is touched:
 # no service, account, key or Program Files folder is involved (those need an elevated console and the VM lab). The temp folders are owned by the current (non-admin) user, which is
 # exactly what a planted folder looks like to the installer.
-#   function-harness.ps1 -Case <copy|remove|trust|secured|secure|hyperv> -Work <empty temp folder>     prints one JSON line
+#   function-harness.ps1 -Case <copy|remove|trust|secured|secure|hyperv|group> -Work <empty temp folder>     prints one JSON line
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('copy', 'remove', 'trust', 'secured', 'secure', 'hyperv')][string]$Case,
+  [Parameter(Mandatory = $true)][ValidateSet('copy', 'remove', 'trust', 'secured', 'secure', 'hyperv', 'group')][string]$Case,
   [Parameter(Mandatory = $true)][string]$Work
 )
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,8 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $rep
 if ($errors.Count -gt 0) { throw 'albera-host.ps1 does not parse' }
 $wanted = @('Say', 'Get-Sha256File', 'Test-HasReparsePoint', 'Get-TreeEntries', 'Get-TreeHashes', 'Get-BuildSources', 'Get-SourceFiles', 'Get-ExpectedTreeHashState', 'Get-ComponentHashes', 'Set-BinaryRecord', 'Copy-HostBinaries', 'Remove-HostTree', 'New-TrustedDirectory',
   'Test-ManifestHas', 'New-Manifest', 'Save-Manifest', 'Read-Manifest', 'Initialize-Manifest', 'Assert-PlannedPathTrusted', 'Test-SecureStringEqual',
-  'Get-InstallSteps', 'Get-UninstallSteps', 'Resolve-HostSids', 'Get-VmCandidates', 'Resolve-BrokerVm', 'Get-HyperVVmStep', 'Get-HyperVGrantStep', 'Get-HyperVRevokeStep', 'Grant-BrokerHyperV', 'Revoke-BrokerHyperV', 'Show-Plan', 'Test-Elevated')
+  'Get-InstallSteps', 'Get-UninstallSteps', 'Resolve-HostSids', 'Get-VmCandidates', 'Resolve-BrokerVm', 'Get-HyperVVmStep', 'Get-HyperVGrantStep', 'Get-HyperVRevokeStep', 'Grant-BrokerHyperV', 'Revoke-BrokerHyperV', 'Show-Plan', 'Test-Elevated',
+  'Test-LocalGroupExists', 'Get-HyperVMemberProblems', 'Get-ServiceSpecs', 'New-HostServices', 'Get-StatusLines', 'Remove-HostServices', 'Wait-ServiceState')
 $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $false))
 if ($found.Count -ne $wanted.Count) { throw ('expected ' + $wanted.Count + ' functions, found ' + $found.Count) }
 foreach ($f in $found) { Invoke-Expression $f.Extent.Text }
@@ -249,17 +250,38 @@ switch ($Case) {
     $otherMember = 'S-1-5-21-1111111111-2222222222-3333333333-1234'
     $brokerSid = Get-DerivedServiceSid $K.BrokerService
     $guidA = '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f'
-    $script:FakeVms = @(); $script:VmListFails = $false; $script:GroupExists = $true; $script:RemoveStuck = $false
+    $script:FakeVms = @(); $script:VmListFails = $false; $script:GroupExists = $true; $script:GroupLookupFails = $false; $script:RemoveStuck = $false
     $script:Members = New-Object 'System.Collections.Generic.List[string]'
     $script:Calls = New-Object 'System.Collections.Generic.List[string]'
-    function Get-CimInstance { param($Namespace, $ClassName, $Filter, $ErrorAction)
+    # the services of the fake machine: name -> SID type ('none' | 'restricted' | 'unrestricted'); ScCalls is every sc.exe argument line the shipped code issued
+    $script:Svc = @{}
+    $script:ScCalls = New-Object 'System.Collections.Generic.List[string]'
+    function Get-CimInstance { param([Parameter(Position = 0)]$Class, $Namespace, $ClassName, $Filter)
       if ($Namespace -eq 'root\virtualization\v2') { $script:Calls.Add('cim ' + $Filter); if ($script:VmListFails) { throw 'Access denied (fake)' }; return @($script:FakeVms) }
+      if ($Class -eq 'Win32_Service') { $n = [regex]::Match([string]$Filter, "Name='([^']+)'").Groups[1].Value; if ($script:Svc.ContainsKey($n)) { return [pscustomobject]@{ Name = $n } } }
       $null }
-    function Get-LocalGroup { param($SID, $ErrorAction) if ($script:GroupExists) { [pscustomobject]@{ Name = 'Hyper-V Administrators'; SID = $SID } } }
+    function Test-LocalGroupExists([string]$GroupSid) { if ($script:GroupLookupFails) { throw 'the group lookup failed (fake)' }; $script:GroupExists }
     function Get-LocalGroupMemberSids([string]$GroupSid) { @($script:Members.ToArray()) }
+    function Get-AccountSid([string]$Account) { Get-DerivedServiceSid ($Account -replace '^NT SERVICE\\', '') }
+    function Get-ServiceFactsFor([string]$Name) {
+      if (-not $script:Svc.ContainsKey($Name)) { return [pscustomobject]@{ Exists = $false } }
+      $spec = Get-ServiceSpecs | Where-Object { $_.Name -eq $Name }
+      [pscustomobject]@{ Exists = $true; StartName = "NT SERVICE\$Name"; PathName = (Get-ServiceCommandLine $spec.Exe $spec.Config); StartMode = 'Manual'; ServiceType = 'Own Process'
+        SidTypeText = ('SERVICE_SID_TYPE:  ' + $script:Svc[$Name].ToUpperInvariant()); PrivilegesText = 'SeChangeNotifyPrivilege'; State = 'Stopped' }
+    }
+    function Invoke-Sc([string]$Arguments) {
+      $script:ScCalls.Add($Arguments)
+      $t = $Arguments -split ' '
+      if ($t[0] -eq 'create') { $script:Svc[$t[1]] = 'none' }
+      if ($t[0] -eq 'sidtype') { $script:Svc[$t[1]] = $t[2] }
+      if ($t[0] -eq 'delete') { $script:Svc.Remove($t[1]) }
+      $out = if ($t[0] -eq 'sdshow') { Get-BrokerServiceSddl $cpSid } else { '' }
+      [pscustomobject]@{ Exit = 0; Out = $out; Err = '' }
+    }
+    function Read-AuthoritySigningKey([string]$Name) { $null }
     function Add-LocalGroupMember { param($SID, $Member) $script:Calls.Add("add $SID $Member"); $script:Members.Add([string]$Member) }
     function Remove-LocalGroupMember { param($SID, $Member) $script:Calls.Add("remove $SID $Member"); if (-not $script:RemoveStuck) { [void]$script:Members.Remove([string]$Member) } }
-    function Reset-Fakes { $script:ResolvedVm = $null; $script:Sids = $null; $script:Members.Clear(); $script:Calls.Clear(); $script:GroupExists = $true; $script:RemoveStuck = $false; $script:VmListFails = $false }
+    function Reset-Fakes { $script:ResolvedVm = $null; $script:Sids = $null; $script:Members.Clear(); $script:Calls.Clear(); $script:GroupExists = $true; $script:GroupLookupFails = $false; $script:RemoveStuck = $false; $script:VmListFails = $false; $script:Svc = @{}; $script:ScCalls.Clear() }
     function New-InstalledManifest {
       New-Item -ItemType Directory -Force -Path $L.DataRoot | Out-Null
       $script:Manifest = New-Manifest
@@ -372,6 +394,120 @@ switch ($Case) {
     $script:Manifest['created']['hyperVGrant']['sid'] = $cpSid; $script:Calls.Clear()
     $result.forgedRecordError = Try-Run { Revoke-BrokerHyperV }
     $result.forgedRecordCalls = @($script:Calls).Count
+
+    # 5. the undo stops, and keeps the record, when the group lookup FAILS (as opposed to "no such group"): the services are not deleted on a guess
+    Reset-Fakes; New-InstalledManifest; $script:FakeVms = @((New-Vm $guidA 'albera-clone-01'))
+    Grant-BrokerHyperV
+    $script:GroupLookupFails = $true; $script:Calls.Clear()
+    $result.lookupFailUndoError = Try-Run { Revoke-BrokerHyperV }
+    $result.lookupFailUndoRecordKept = (Test-ManifestHas 'hyperVGrant')
+    $result.lookupFailUndoCalls = @($script:Calls).Count
+    $result.lookupFailUndoManifestOnDisk = [bool](Read-Manifest)['created']['hyperVGrant']
+
+    # 6. the group is read whether or not there is a record: albera-cp and the Authority are never allowed in; the Broker only with a record
+    function Get-LiveControlPlaneUser { [pscustomobject]@{ Name = $K.ControlPlaneUser; Sid = $cpSid; Description = $K.ControlPlaneUserDescription; Enabled = $true } }
+    $other = $otherMember; $authSid = Get-DerivedServiceSid $K.AuthorityService
+    function Get-Problems([string[]]$InGroup) { $script:Members.Clear(); foreach ($m in $InGroup) { $script:Members.Add($m) }; Resolve-HostSids; $found = Get-HyperVMemberProblems; , @($found) }
+    Reset-Fakes; New-InstalledManifest
+    $result.noRecord = [ordered]@{
+      empty = Get-Problems @(); other = Get-Problems @($other); controlPlane = Get-Problems @($cpSid); authority = Get-Problems @($authSid); broker = Get-Problems @($brokerSid)
+      all = Get-Problems @($brokerSid, $cpSid, $authSid)
+    }
+    $script:GroupExists = $false
+    $result.noRecordNoGroup = Get-Problems @()
+    $script:GroupExists = $true
+    # the status page lists the same findings (no line for a clean group of an install without the grant)
+    function Get-HvLines { @((Get-StatusLines) | Where-Object { $_.Text -like 'Hyper-V Administrators:*' } | ForEach-Object { $_.State + ' ' + $_.Text }) }
+    $result.statusNoRecord = [ordered]@{ clean = @(Get-HvLines) }
+    foreach ($pair in @(@('controlPlane', $cpSid), @('authority', $authSid), @('broker', $brokerSid))) { $script:Members.Clear(); $script:Members.Add($pair[1]); $result.statusNoRecord[$pair[0]] = @(Get-HvLines) }
+    $script:Members.Clear(); $script:GroupLookupFails = $true
+    $result.statusLookupFails = [ordered]@{ hv = @((Get-StatusLines) | Where-Object { $_.Text -like 'Hyper-V Administrators:*' } | ForEach-Object { $_.State + ' ' + $_.Text }); laterLineStillThere = [bool]@((Get-StatusLines) | Where-Object { $_.Text -like 'Control Plane settings:*' }).Count }
+    $script:GroupLookupFails = $false
+    # with a record: the Broker has to be in, and still nobody else
+    Reset-Fakes; New-InstalledManifest; $script:FakeVms = @((New-Vm $guidA 'albera-clone-01'))
+    Grant-BrokerHyperV
+    $hvTest = (Get-HyperVGrantStep).Test
+    $result.recorded = [ordered]@{ ok = Get-Problems @($brokerSid); brokerGone = Get-Problems @(); controlPlane = Get-Problems @($brokerSid, $cpSid) }
+    $script:GroupExists = $false; $result.recorded.noGroup = Get-Problems @(); $script:GroupExists = $true
+    $script:Members.Clear(); $script:Members.Add($brokerSid)
+    $result.statusRecorded = [ordered]@{ ok = @(Get-HvLines) }
+    $script:Members.Add($cpSid); $result.statusRecorded.controlPlane = @(Get-HvLines)
+    # the install step: done only when the record is there AND the member list has nothing to report
+    $script:Members.Clear(); $script:Members.Add($brokerSid); $result.stepClean = & $hvTest
+    $script:Members.Add($cpSid); $result.stepControlPlane = & $hvTest
+    $script:Members.Clear(); $script:Members.Add($brokerSid); $script:Members.Add($authSid); $result.stepAuthority = & $hvTest
+    $script:Members.Clear(); $result.stepBrokerGone = & $hvTest
+    # a grant that added the Broker and THEN found albera-cp in the group threw; the next run must not call the step done
+    Reset-Fakes; New-InstalledManifest; $script:FakeVms = @((New-Vm $guidA 'albera-clone-01')); $script:Members.Add($cpSid)
+    $result.afterThrowGrantError = Try-Run { Grant-BrokerHyperV }
+    $result.afterThrowStep = & $hvTest
+    [void]$script:Members.Remove($cpSid)
+    $result.afterThrowFixedStep = & $hvTest
+
+    # 7. the services step: the Broker's SID type has to match the option of THIS run, in both directions
+    $svcStep = { Get-InstallSteps | Where-Object { $_.Id -eq 'services' } }
+    function Set-Services([string]$BrokerType, [string]$AuthorityType = 'restricted') { $script:Svc = @{}; $script:Svc[$K.BrokerService] = $BrokerType; $script:Svc[$K.AuthorityService] = $AuthorityType; $script:ScCalls.Clear() }
+    function Get-SidCalls { @($script:ScCalls | Where-Object { $_ -like 'sidtype *' }) }
+    # an install begun WITH the option (Broker unrestricted) and run again WITHOUT it: not done; the Do puts the Broker back to restricted, and says so by reading it back
+    Reset-Fakes; New-InstalledManifest; Set-Services 'unrestricted'; $GrantHyperVToBroker = $false
+    $step = & $svcStep
+    $result.svcNoOptionWasUnrestricted = [ordered]@{ test = (& $step.Test) }
+    $result.svcNoOptionWasUnrestricted.doError = Try-Run { & $step.Do }
+    $result.svcNoOptionWasUnrestricted.sidCalls = @(Get-SidCalls)
+    $result.svcNoOptionWasUnrestricted.broker = $script:Svc[$K.BrokerService]
+    $result.svcNoOptionWasUnrestricted.authority = $script:Svc[$K.AuthorityService]
+    $result.svcNoOptionWasUnrestricted.testAfter = (& $step.Test)
+    # the unchanged cases: no option and restricted = done (nothing issued); option and restricted = todo, then unrestricted; option and unrestricted = done
+    Reset-Fakes; New-InstalledManifest; Set-Services 'restricted'
+    $result.svcNoOptionRestricted = [ordered]@{ test = (& (& $svcStep).Test); sidCalls = @(Get-SidCalls).Count }
+    $GrantHyperVToBroker = $true
+    $step = & $svcStep
+    $result.svcOptionRestricted = [ordered]@{ test = (& $step.Test) }
+    $result.svcOptionRestricted.doError = Try-Run { & $step.Do }
+    $result.svcOptionRestricted.broker = $script:Svc[$K.BrokerService]
+    $result.svcOptionRestricted.authority = $script:Svc[$K.AuthorityService]
+    $result.svcOptionRestricted.testAfter = (& $step.Test)
+    $result.svcOptionUnrestricted = (& $step.Test)
+    $GrantHyperVToBroker = $false
+
+    # 8. the whole uninstall, step by step as the runner does it, for an install whose services were NEVER started (their data folders are empty: broker, authority, control-plane), with and without the grant
+    $script:KeyExists = $false; $script:RemovedUsers = New-Object 'System.Collections.Generic.List[string]'
+    function Remove-TrustedTree([string]$Dir, [string[]]$AllowedTop, [string[]]$AllowedFolders, [bool]$InstallTree) { Remove-HostTree $Dir $AllowedTop $AllowedFolders $InstallTree }   # the trust test has its own case
+    function Test-AuthoritySigningKeyExists([string]$KeyName, [string]$Scope = 'machine') { $script:KeyExists }
+    function Remove-AuthoritySigningKey([string]$KeyName, [string]$Scope = 'machine') { $script:KeyExists = $false; $true }
+    function Remove-LocalUser { param($SID) $script:RemovedUsers.Add([string]$SID.Value) }
+    function Invoke-FakeUninstall([bool]$WithGrant) {
+      if (Test-Path -LiteralPath $L.DataRoot) { Remove-Item -LiteralPath $L.DataRoot -Recurse -Force }
+      if (Test-Path -LiteralPath $L.InstallRoot) { Remove-Item -LiteralPath $L.InstallRoot -Recurse -Force }
+      Reset-Fakes; New-InstalledManifest; $script:FakeVms = @((New-Vm $guidA 'albera-clone-01'))
+      if ($WithGrant) { Grant-BrokerHyperV }
+      Set-Services $(if ($WithGrant) { 'unrestricted' } else { 'restricted' })
+      foreach ($d in (Get-KnownDataFolders)) { New-Item -ItemType Directory -Force -Path (Join-Path $L.DataRoot $d) | Out-Null }
+      [System.IO.File]::WriteAllText($L.BrokerConfig, '{}')
+      foreach ($s in (Get-BuildSources)) { New-Item -ItemType Directory -Force -Path $s.Dest | Out-Null; [System.IO.File]::WriteAllText((Join-Path $s.Dest 'a.dll'), 'x') }
+      $key = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $key['name'] = $K.SigningKeyName
+      $script:Manifest['created']['installRoot'] = $true; $script:Manifest['created']['key'] = $key; Save-Manifest
+      $script:KeyExists = $true; $script:RemovedUsers.Clear(); $script:Calls.Clear()
+      $ran = New-Object 'System.Collections.Generic.List[string]'; $error1 = $null
+      foreach ($s in (Get-UninstallSteps)) {
+        if ((& $s.Test) -eq 'done') { continue }
+        $ran.Add($s.Id)
+        try { & $s.Do } catch { $error1 = $s.Id + ': ' + $_.Exception.Message; break }
+      }
+      [ordered]@{ error = $error1; ran = @($ran); services = @($script:Svc.Keys); keyGone = (-not $script:KeyExists); userRemoved = @($script:RemovedUsers); dataRootGone = (-not (Test-Path -LiteralPath $L.DataRoot))
+        installRootGone = (-not (Test-Path -LiteralPath $L.InstallRoot)); members = @($script:Members); removeCalls = @($script:Calls | Where-Object { $_ -like 'remove *' }) }
+    }
+    $result.uninstallWithGrant = Invoke-FakeUninstall $true
+    $result.uninstallWithoutGrant = Invoke-FakeUninstall $false
+    # an empty known folder is not "unknown": the real removal of one
+    New-Item -ItemType Directory -Force -Path (Join-Path $L.DataRoot 'broker') | Out-Null
+    $result.emptyKnownFolderError = Try-Run { Remove-HostTree (Join-Path $L.DataRoot 'broker') @() @() $false }
+  }
+  'group' {
+    # The real Test-LocalGroupExists (nothing faked, read only): a group that exists, a SID that maps to nothing, and a failure that is neither.
+    $result.administrators = Test-LocalGroupExists 'S-1-5-32-544'
+    $result.unmapped = Test-LocalGroupExists 'S-1-5-32-99999'
+    $result.malformed = Try-Run { Test-LocalGroupExists 'not-a-sid' }
   }
   'secure' {
     $a = ConvertTo-SecureString 'Correct-Horse-1' -AsPlainText -Force

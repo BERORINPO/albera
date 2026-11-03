@@ -463,7 +463,8 @@ function Test-AuthoritySigningKeyExists([string]$KeyName, [string]$Scope = 'mach
 # Relative paths (under the data root) that are not on the known list. Uninstall refuses to delete a folder that holds any.
 function Get-UnknownEntries([string[]]$RelativePaths, [string[]]$KnownFiles, [string[]]$KnownFolders) {
   $known = @($KnownFiles | ForEach-Object { $_.ToLowerInvariant() }) + @($KnownFolders | ForEach-Object { $_.ToLowerInvariant() })
-  , @($RelativePaths | Where-Object { $known -notcontains $_.ToLowerInvariant() })
+  # An EMPTY folder (a service that was never started has written nothing yet) gives $null here, and piping $null runs the filter once with $_ = $null: skip it, there is nothing to judge.
+  , @(@($RelativePaths) | Where-Object { $null -ne $_ -and $known -notcontains $_.ToLowerInvariant() })
 }
 
 # ---------------------------------------------------------------------------------------------- trust: who may have written what the installer is about to rely on
@@ -666,10 +667,13 @@ function Test-HyperVGrantRecord($Record) {
   if ($keys.Count -ne 4 -or @(@('group', 'sid', 'computerId', 'vmId') | Where-Object { $keys -ccontains $_ }).Count -ne 4) { return $false }
   ($Record['group'] -ceq $c.HyperVAdminsSid) -and ($Record['sid'] -ceq (Get-DerivedServiceSid $c.BrokerService)) -and (Test-HostId $Record['computerId']) -and (Test-VmGuid $Record['vmId'])
 }
-# Members of Hyper-V Administrators as read from the machine (SID strings) -> the reasons it is not what the record says (empty = fine): the Broker must be in, albera-cp and the Authority must not.
-function Test-HyperVMembers([string[]]$MemberSids, $Sids) {
+# Members of Hyper-V Administrators as read from the machine (SID strings) -> the reasons it is not what the install record says (empty = fine). albera-cp and the Authority must NEVER be in, record or no
+# record. The Broker must be in exactly when the record says the grant was made ($BrokerRecorded); a Broker in the group WITHOUT a record is somebody else's change and is reported.
+function Test-HyperVMembers([string[]]$MemberSids, $Sids, [bool]$BrokerRecorded = $true) {
   $reasons = New-Object System.Collections.Generic.List[string]
-  if (@($MemberSids) -cnotcontains [string]$Sids.Broker) { $reasons.Add('broker_not_a_member') }
+  $brokerIn = @($MemberSids) -ccontains [string]$Sids.Broker
+  if ($BrokerRecorded -and -not $brokerIn) { $reasons.Add('broker_not_a_member') }
+  if (-not $BrokerRecorded -and $brokerIn) { $reasons.Add('broker_is_a_member_without_a_record') }
   if ($Sids.ControlPlane -and @($MemberSids) -ccontains [string]$Sids.ControlPlane) { $reasons.Add('control_plane_is_a_member') }
   if (@($MemberSids) -ccontains [string]$Sids.Authority) { $reasons.Add('authority_is_a_member') }
   , @($reasons)

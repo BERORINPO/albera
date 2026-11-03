@@ -414,8 +414,10 @@ function Get-InstallSteps {
         }
         $b = @($states | Where-Object { $_ -like 'blocked:*' }); if ($b.Count) { return $b[0] }
         if (@($states | Where-Object { $_ -ne 'done' }).Count -ne 0) { return 'todo' }
-        # an install begun without the option and finished with it: the Broker exists but is still restricted
-        if ($GrantHyperVToBroker -and (Get-ServiceFactsFor $K.BrokerService).SidTypeText -cnotmatch '(?<![A-Za-z])UNRESTRICTED') { return 'todo' }
+        # The Broker's SID type must be the one this run's option asks for, in BOTH directions: an install begun without the option and finished with it (restricted -> unrestricted), and one begun
+        # WITH it and finished without (unrestricted -> restricted; without this the install would complete with an unrestricted Broker and no grant).
+        $brokerUnrestricted = (Get-ServiceFactsFor $K.BrokerService).SidTypeText -cmatch '(?<![A-Za-z])UNRESTRICTED'
+        if (((Get-ExpectedSidType $K.BrokerService $GrantHyperVToBroker) -ceq 'unrestricted') -ne $brokerUnrestricted) { return 'todo' }
         'done' }
       Do = { New-HostServices } }
     [pscustomobject]@{ Id = 'folders'; Title = "Create the folders, each born with its final ACL (inheritance removed) and read back: $($L.InstallRoot); $($L.DataRoot)\{broker-config,broker,authority,control-plane}"
@@ -561,7 +563,8 @@ function Get-HyperVGrantStep {
       'the record is written BEFORE the member is added and the membership is read back; uninstall removes the SID from the group first, before the service is deleted')
     Test = {
       if (-not (Test-ManifestHas 'services')) { return 'todo' }
-      try { Resolve-HostSids; $hv = Get-HyperVGrantPlan $script:Sids; if ((Test-ManifestHas 'hyperVGrant') -and ((Get-LocalGroupMemberSids $hv.Group) -contains $hv.Member)) { 'done' } else { 'todo' } } catch { 'todo' } }
+      # done only with a record AND a member list that has nothing to report (so a Grant that added the Broker and then found albera-cp in the group is run again, and fails again, instead of passing)
+      try { Resolve-HostSids; if ((Test-ManifestHas 'hyperVGrant') -and (Get-HyperVMemberProblems).Count -eq 0) { 'done' } else { 'todo' } } catch { 'todo' } }
     Do = { Grant-BrokerHyperV } }
 }
 function Get-HyperVRevokeStep {
@@ -570,12 +573,30 @@ function Get-HyperVRevokeStep {
     Test = { if (Test-ManifestHas 'hyperVGrant') { 'todo' } else { 'done' } }
     Do = { Revoke-BrokerHyperV } }
 }
+# $true when the local group with this SID exists; $false ONLY when Windows says the SID maps to no account (IdentityNotMappedException). Any other failure is thrown: "I could not find out" must never
+# read as "the group is not there" (the undo would drop its record and delete the service on that reading).
+function Test-LocalGroupExists([string]$GroupSid) {
+  try { $null = (New-Object System.Security.Principal.SecurityIdentifier($GroupSid)).Translate([System.Security.Principal.NTAccount]); return $true }
+  catch {
+    $notMapped = [System.Security.Principal.IdentityNotMappedException]
+    if (($_.Exception -is $notMapped) -or ($_.Exception.InnerException -is $notMapped)) { return $false }
+    throw
+  }
+}
+# What is wrong with Hyper-V Administrators right now, whether or not the install record mentions it (empty = nothing). A group that is not there has no member to be wrong, unless the record says the Broker
+# should be in it. albera-cp and the Authority are looked for every time; the Broker is expected exactly when the record says the grant was made.
+function Get-HyperVMemberProblems {
+  $hv = Get-HyperVGrantPlan $script:Sids
+  $recorded = [bool](Test-ManifestHas 'hyperVGrant')
+  if (-not (Test-LocalGroupExists $hv.Group)) { if ($recorded) { return , @('group_missing') } else { return , @() } }
+  Test-HyperVMembers @(Get-LocalGroupMemberSids $hv.Group) $script:Sids $recorded
+}
 function Grant-BrokerHyperV {
   Resolve-HostSids
   $vm = Resolve-BrokerVm
   if ($vm.Kind -ne 'ok') { throw $vm.Message }
   $hv = Get-HyperVGrantPlan $script:Sids
-  if (-not (Get-LocalGroup -SID $hv.Group -ErrorAction SilentlyContinue)) { throw "the local group $($hv.Group) (Hyper-V Administrators) does not exist on this PC; nothing was added" }
+  if (-not (Test-LocalGroupExists $hv.Group)) { throw "the local group $($hv.Group) (Hyper-V Administrators) does not exist on this PC; nothing was added" }
   # The record comes first: a crash before the add leaves a record for a SID that is not in the group (uninstall copes), never a member that nothing records.
   $rec = New-Object 'System.Collections.Generic.Dictionary[string,object]'
   $rec['group'] = $hv.Group; $rec['sid'] = $hv.Member; $rec['computerId'] = $ComputerId; $rec['vmId'] = $vm.Id
@@ -590,7 +611,7 @@ function Revoke-BrokerHyperV {
   $hv = Get-HyperVGrantPlan $script:Sids
   $rec = $script:Manifest['created']['hyperVGrant']
   if ($rec['sid'] -cne $hv.Member -or $rec['group'] -cne $hv.Group) { throw 'internal: the grant record does not name the Broker service SID; refusing to remove anything' }
-  if (Get-LocalGroup -SID $hv.Group -ErrorAction SilentlyContinue) {
+  if (Test-LocalGroupExists $hv.Group) {   # throws on anything but "no such group": the record stays and the services are not deleted
     # Removed without asking first (asking needs a readable member list, and a failed read must not leave the right in place); "not a member" is fine, the read-back below is what counts.
     try { Remove-LocalGroupMember -SID $hv.Group -Member $hv.Member } catch { Say "    Remove-LocalGroupMember said: $($_.Exception.Message)" }
     if ((Get-LocalGroupMemberSids $hv.Group) -contains $hv.Member) { throw "the Broker service SID $($hv.Member) is still in Hyper-V Administrators; the services were NOT deleted. Remove it yourself (Remove-LocalGroupMember -SID $($hv.Group) -Member $($hv.Member)) and run uninstall again" }
@@ -794,8 +815,10 @@ function Get-StatusLines {
       }
       Add-Line $(if ($bad.Count -eq 0) { 'ok' } else { 'FAIL' }) ("service $($spec.Name): " + $(if ($bad.Count -eq 0) { "as installed (state $($facts.State))" } else { $bad -join ', ' }))
     }
-    if ($grantRecorded) {
-      $hvBad = Test-HyperVMembers @(Get-LocalGroupMemberSids $K.HyperVAdminsSid) $script:Sids
+    # The group is read every time, record or not: albera-cp and the Authority must never be in it, and the Broker only when the record says so. A clean group of an install without the grant adds no line.
+    $hvBad = @(); $hvRead = $true
+    try { $hvBad = Get-HyperVMemberProblems } catch { $hvRead = $false; Add-Line 'unknown' ('Hyper-V Administrators: the member list could not be read: ' + $_.Exception.Message) }
+    if ($hvRead -and ($grantRecorded -or $hvBad.Count -gt 0)) {
       Add-Line $(if ($hvBad.Count -eq 0) { 'ok' } else { 'FAIL' }) ('Hyper-V Administrators: ' + $(if ($hvBad.Count -eq 0) { "the Broker service SID is a member; $($K.ControlPlaneUser) and the Authority are not" } else { $hvBad -join ', ' }))
     }
     foreach ($entry in (Get-AclPlan $L $script:Sids)) {

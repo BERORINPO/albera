@@ -262,6 +262,12 @@ $r.hvMembers = [ordered]@{
   controlPlaneIn = Test-HyperVMembers @($sids.Broker, $cp) $hvSids
   authorityIn = Test-HyperVMembers @($sids.Broker, $sids.Authority) $hvSids
   empty = Test-HyperVMembers @() $hvSids
+  # without a record: the Broker must NOT be in, albera-cp and the Authority never
+  noRecordClean = Count (Test-HyperVMembers @('S-1-5-21-1111111111-2222222222-3333333333-1234') $hvSids $false)
+  noRecordEmpty = Count (Test-HyperVMembers @() $hvSids $false)
+  noRecordBroker = Test-HyperVMembers @($sids.Broker) $hvSids $false
+  noRecordControlPlane = Test-HyperVMembers @($cp) $hvSids $false
+  noRecordAuthority = Test-HyperVMembers @($sids.Authority) $hvSids $false
 }
 $r.vmGuid = @((Test-VmGuid $guidA), (Test-VmGuid $guidA.ToUpperInvariant()), (Test-VmGuid ($guidA + "`n")), (Test-VmGuid '{8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f}'), (Test-VmGuid '00000000-0000-0000-0000-000000000000'), (Test-VmGuid ''), (Test-VmGuid $null), (Test-VmGuid 'clone-01'))
 function Vm([string]$Name, [string]$Element) { [pscustomobject]@{ Name = $Name; ElementName = $Element } }
