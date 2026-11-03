@@ -649,7 +649,9 @@ function Get-AclSummary([string]$Path) {
   $acl = if ([System.IO.Directory]::Exists($Path)) { [System.IO.Directory]::GetAccessControl($Path) } else { [System.IO.File]::GetAccessControl($Path) }
   $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.AccessControlType -eq 'Allow' })
   # CREATOR OWNER (S-1-3-0) as an inherit-only rule is the placeholder every Program Files folder carries; it is not a principal that can write THIS object
-  $isPlaceholder = { param($rule) ($rule.IdentityReference.Value -eq 'S-1-3-0') -and (([int]$rule.PropagationFlags -band [int][System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) }
+  # The bare BUILTIN domain SID (S-1-5-32, shown by icacls as BUILTIN\BUILTIN) is the domain's own identifier, not a group: no logon token holds it, so a rule for it lets nobody write. The Node.js
+  # installer leaves such a full-control rule on C:\Program Files\nodejs (seen on the owner's PC, 2026-11-04), which made the node.exe source check refuse a folder nobody can actually write.
+  $isPlaceholder = { param($rule) (($rule.IdentityReference.Value -eq 'S-1-3-0') -and (([int]$rule.PropagationFlags -band [int][System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)) -or ($rule.IdentityReference.Value -eq 'S-1-5-32') }
   [pscustomobject]@{
     Owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
     Protected = $acl.AreAccessRulesProtected

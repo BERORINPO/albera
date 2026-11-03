@@ -367,6 +367,14 @@ switch ($Case) {
     [System.IO.Directory]::SetAccessControl($placeholder, $acl)
     $placeholderSummary = Get-AclSummary $placeholder
     $result.creatorOwnerPlaceholder = [ordered]@{ listed = (@($placeholderSummary.AllowSids) -contains 'S-1-3-0'); writer = (@($placeholderSummary.WriteSids) -contains 'S-1-3-0') }
+    # The bare BUILTIN domain SID (S-1-5-32) with full control, as the Node.js installer leaves on C:\Program Files\nodejs: listed, but no writer (no token holds it). A real group (Users) still counts.
+    $builtinDomain = Join-Path $Work 'builtin-domain'; New-Item -ItemType Directory -Path $builtinDomain | Out-Null
+    $acl = [System.IO.Directory]::GetAccessControl($builtinDomain)
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32')), $fullControl, $both, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow)))
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-545')), $fullControl, $both, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow)))
+    [System.IO.Directory]::SetAccessControl($builtinDomain, $acl)
+    $builtinSummary = Get-AclSummary $builtinDomain
+    $result.builtinDomain = [ordered]@{ listed = (@($builtinSummary.AllowSids) -contains 'S-1-5-32'); writer = (@($builtinSummary.WriteSids) -contains 'S-1-5-32'); usersWriter = (@($builtinSummary.WriteSids) -contains 'S-1-5-32-545') }
     # Set-HostDacl on an EXISTING folder with the SID of a service that does not exist (yet): .NET stores it; icacls refuses it with 1332 (the control, so this test can fail for the right reason)
     $ghostSid = Get-DerivedServiceSid ('AlberaNoSuchService' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     $ghostGrants = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)RX', "*${ghostSid}:(OI)(CI)RX", "*${me}:(OI)(CI)F")   # the current user keeps full control so the harness can clean up

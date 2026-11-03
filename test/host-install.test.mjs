@@ -906,6 +906,8 @@ test('a folder is born with its final descriptor (owner, protected DACL, inherit
   // CREATOR OWNER: the inherit-only placeholder of Program Files folders is listed but is no writer of that folder (the same rule as FileSystemChecks.cs in setup); Test-TrustSummary counts it elsewhere
   assert.deepEqual({ ...r.creatorOwnerPlaceholder }, { listed: true, writer: false });
   assert.equal(r.creatorOwnerPlaceholderRule, 'InheritOnly');
+  // the bare BUILTIN domain SID (left by the Node.js installer on C:\Program Files\nodejs) is held by no token, so it is no writer; a real group with the same right still is
+  assert.deepEqual({ ...r.builtinDomain }, { listed: true, writer: false, usersWriter: true });
   // an EXISTING folder gets the plan's DACL through .NET, including the SID of a service that does not exist yet. The control: icacls refuses exactly that (1332, "no mapping between account names
   // and security IDs"): the first VM run of the installer stopped there, at the Control Plane's service SID in the ACL of C:\ProgramData\Albera, before the service was registered.
   assert.equal(r.icaclsControlExit, 1332, 'control: real icacls refuses a service SID that does not exist; if this ever changes, the reason for writing the DACL with .NET is gone');
