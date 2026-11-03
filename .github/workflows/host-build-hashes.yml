@@ -4,6 +4,8 @@ name: Host build hashes
 # It builds the Broker, the Approval Authority and the pipe client on a clean runner and prints ONE tree hash of the published files: the owner types that value
 # as -ExpectedTreeHash into scripts/host/albera-host.ps1 (docs/architecture/host-install.md). It installs and starts nothing.
 # It also signs a build provenance attestation for the published exe files, the two host scripts and build-hashes.json (gh attestation verify; the installer does not read it).
+# PR6 (docs/architecture/control-plane-service.md section 8): it also fetches a version-pinned gh.exe, builds albera-setup.exe (NativeAOT) with the SHA-256 of that gh.exe and of the
+# Sigstore trusted root compiled in, attests those three files too, downloads the attestation bundles and assembles the artifact `albera-update`, which albera-setup.exe verifies offline.
 on:
   workflow_dispatch:
 
@@ -16,7 +18,7 @@ jobs:
     # Guard against a mistaken dispatch. A branch can edit this very file, so this is NOT the control: the owner reads hashes only from a run whose branch is main and whose commit is the reviewed merge commit.
     if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     # Only what the attestation step needs (job-level permissions replace the workflow-level block, so contents: read is repeated): an OIDC token for the Sigstore certificate and the
     # attestations API. Nothing here can push, release or write packages.
     permissions:
@@ -63,9 +65,69 @@ jobs:
             Write-Host $line
             $line | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           }
+      # --- the bundled gh.exe (decision D6) ---
+      # Version-pinned. The SHA-256 is the value for gh_<version>_windows_amd64.zip in the release's own checksums file
+      # (https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_checksums.txt, read 2026-11-03; the asset digest GitHub shows for the zip is the same value).
+      # To change the version, take both values from the new release and change them together.
+      - name: Fetch the pinned gh.exe and check it against the official checksum
+        shell: powershell
+        env:
+          GH_PINNED_VERSION: 2.103.3
+          GH_PINNED_ZIP_SHA256: 98d0cfa794721665d7973dd728c78aff7bd836d58f10f6d7a03568eccb0a22e0
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $version = $env:GH_PINNED_VERSION
+          $expected = $env:GH_PINNED_ZIP_SHA256
+          if ($version -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or $expected -cnotmatch '^[0-9a-f]{64}$') { throw 'the gh pin is malformed' }
+          $work = Join-Path $env:RUNNER_TEMP 'gh-pinned'
+          New-Item -ItemType Directory -Path $work | Out-Null
+          $zip = Join-Path $work "gh_${version}_windows_amd64.zip"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_windows_amd64.zip" -OutFile $zip
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "gh zip SHA-256 mismatch: expected $expected, got $actual" }
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $work 'x')
+          $found = @(Get-ChildItem -LiteralPath (Join-Path $work 'x') -Recurse -File -Filter gh.exe)
+          if ($found.Count -ne 1) { throw "expected one gh.exe in the zip, found $($found.Count)" }
+          New-Item -ItemType Directory -Path setup-input | Out-Null
+          Copy-Item -LiteralPath $found[0].FullName -Destination setup-input\gh.exe
+          $gh = Join-Path $PWD 'setup-input\gh.exe'
+          $line = (& $gh --version | Select-Object -First 1)
+          if ($line -notlike "gh version $version *") { throw "unexpected version line: $line" }
+          # The flags albera-setup.exe (GhVerifier.BuildArguments) and this workflow use must exist in THIS gh: checked against its own --help, not remembered.
+          $flags = [ordered]@{
+            'verify' = @('--bundle', '--custom-trusted-root', '--repo', '--cert-identity', '--deny-self-hosted-runners', '--format')
+            'trusted-root' = @('--verify-only')
+            'download' = @('--repo')
+          }
+          foreach ($sub in $flags.Keys) {
+            $help = (& $gh attestation $sub --help | Out-String)
+            foreach ($flag in $flags[$sub]) { if (-not $help.Contains($flag)) { throw "gh ${version}: 'attestation $sub' has no $flag" } }
+          }
+          Write-Host "gh $version zip sha256 $actual; gh.exe sha256 $((Get-FileHash -Algorithm SHA256 -LiteralPath $gh).Hash.ToLowerInvariant())"
+      - name: Make the Sigstore trusted root for offline verification
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gh = Join-Path $PWD 'setup-input\gh.exe'
+          $out = Join-Path $PWD 'setup-input\trusted_root.jsonl'
+          # Public values only (the Sigstore public good and GitHub instance roots); no token is needed. gh skips an unterminated last line, so the file must end with a line feed.
+          $p = Start-Process -FilePath $gh -ArgumentList @('attestation', 'trusted-root') -RedirectStandardOutput $out -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'trusted-root.err') -NoNewWindow -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "gh attestation trusted-root failed ($($p.ExitCode))" }
+          $bytes = [System.IO.File]::ReadAllBytes($out)
+          if ($bytes.Length -lt 100 -or $bytes[$bytes.Length - 1] -ne 10) { throw 'trusted_root.jsonl is empty or does not end with a line feed' }
+          $lines = @([System.Text.Encoding]::UTF8.GetString($bytes).Split([char]10) | Where-Object { $_.Length -gt 0 })
+          foreach ($l in $lines) { $null = $l | ConvertFrom-Json }
+          Write-Host "trusted root: $($lines.Count) line(s), $($bytes.Length) bytes, sha256 $((Get-FileHash -Algorithm SHA256 -LiteralPath $out).Hash.ToLowerInvariant())"
+      - name: Build albera-setup.exe (NativeAOT; the SHA-256 of gh.exe and of the trusted root are compiled in)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node scripts/publish-windows-setup.mjs --gh "$PWD\setup-input\gh.exe" --trusted-root "$PWD\setup-input\trusted_root.jsonl"
+          if ($LASTEXITCODE -ne 0) { throw "publish-windows-setup.mjs failed ($LASTEXITCODE)" }
       # Build provenance (docs/architecture/host-install.md "Checking a build with gh attestation verify"): signs "these bytes came from this workflow on this commit of this repository".
       # The exe files are only the self-contained apphost launchers (the code is in the DLLs next to them), so build-hashes.json, which lists the hash of every published file and the
-      # tree hash, is attested too. The installer does not read attestations: it still trusts only -ExpectedTreeHash.
+      # tree hash, is attested too. albera-setup.exe, gh.exe and the trusted root are attested so that the NEXT update can carry them; the running setup trusts its own gh.exe by the hash compiled into it.
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
         with:
@@ -76,9 +138,91 @@ jobs:
             scripts/host/albera-host.ps1
             scripts/host/albera-host-lib.ps1
             build-hashes.json
+            src/runtime/windows-setup/bin/Release/net10.0-windows/win-x64/publish/albera-setup.exe
+            setup-input/gh.exe
+            setup-input/trusted_root.jsonl
       - name: Upload the per-file hashes
         uses: actions/upload-artifact@v4
         with:
           name: build-hashes
           path: build-hashes.json
+          if-no-files-found: error
+      # --- the update folder: what albera-setup.exe verifies offline (docs/architecture/control-plane-service.md section 8) ---
+      # `gh attestation download` writes sha256-<digest>.jsonl (every attestation GitHub holds for those bytes) into the current folder; setup looks a file's bundle up by that name.
+      - name: Download the attestation bundles
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gh = Join-Path $PWD 'setup-input\gh.exe'
+          $subjects = @(
+            'src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker.exe',
+            'src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish/albera-approval-authority.exe',
+            'src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker-pipe-client.exe',
+            'scripts/host/albera-host.ps1',
+            'scripts/host/albera-host-lib.ps1',
+            'build-hashes.json',
+            'src/runtime/windows-setup/bin/Release/net10.0-windows/win-x64/publish/albera-setup.exe',
+            'setup-input/gh.exe',
+            'setup-input/trusted_root.jsonl'
+          )
+          $bundles = Join-Path $PWD 'albera-update\bundles'
+          New-Item -ItemType Directory -Path $bundles -Force | Out-Null
+          foreach ($subject in $subjects) {
+            $full = (Resolve-Path -LiteralPath $subject).Path
+            $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $full).Hash.ToLowerInvariant()
+            $target = Join-Path $bundles "sha256-$sha.jsonl"
+            $done = $false
+            for ($attempt = 1; $attempt -le 5 -and -not $done; $attempt++) {
+              $p = Start-Process -FilePath $gh -ArgumentList @('attestation', 'download', ('"{0}"' -f $full), '--repo', 'BERORINPO/albera') -WorkingDirectory $bundles -NoNewWindow -Wait -PassThru
+              $done = ($p.ExitCode -eq 0) -and (Test-Path -LiteralPath $target) -and ((Get-Item -LiteralPath $target).Length -gt 0)
+              if (-not $done) { Start-Sleep -Seconds 6 }
+            }
+            if (-not $done) { throw "no attestation bundle for $subject (sha256 $sha)" }
+            Write-Host "bundle sha256-$sha.jsonl for $subject"
+          }
+      - name: Assemble the update folder
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $update = Join-Path $PWD 'albera-update'
+          # The layout is SetupLayout in src/runtime/windows-setup/SetupLayout.cs (a test compares them).
+          $publish = @(
+            'src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish',
+            'src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish',
+            'src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish'
+          )
+          foreach ($dir in $publish) {
+            $target = Join-Path $update ('repo\' + $dir.Replace('/', '\'))
+            New-Item -ItemType Directory -Path $target -Force | Out-Null
+            Copy-Item -Path (Join-Path $dir '*') -Destination $target -Recurse -Force
+            $want = @(Get-ChildItem -LiteralPath $dir -Recurse -File).Count
+            $have = @(Get-ChildItem -LiteralPath $target -Recurse -File).Count
+            if ($want -ne $have -or $want -eq 0) { throw "${dir}: $want files published, $have staged" }
+          }
+          New-Item -ItemType Directory -Path (Join-Path $update 'repo\scripts\host'), (Join-Path $update 'setup') -Force | Out-Null
+          Copy-Item -LiteralPath 'build-hashes.json' -Destination $update
+          Copy-Item -LiteralPath 'scripts\host\albera-host.ps1', 'scripts\host\albera-host-lib.ps1' -Destination (Join-Path $update 'repo\scripts\host')
+          Copy-Item -LiteralPath 'src\runtime\windows-setup\bin\Release\net10.0-windows\win-x64\publish\albera-setup.exe', 'setup-input\gh.exe', 'setup-input\trusted_root.jsonl' -Destination (Join-Path $update 'setup')
+      # The real check, with the real NativeAOT binary and the real bundles: the same code path the owner's run takes, in verify mode. The run id and commit it prints must be this run's.
+      - name: Verify the update folder with the built albera-setup.exe (offline)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $update = Join-Path $PWD 'albera-update'
+          $output = @(& (Join-Path $update 'setup\albera-setup.exe') --mode verify --update $update --no-pause)
+          $code = $LASTEXITCODE
+          $output | ForEach-Object { Write-Host $_ }
+          if ($code -ne 0) { throw "albera-setup.exe --mode verify exited with $code" }
+          $verified = @($output | Where-Object { $_ -like 'ALBERA_SETUP_VERIFIED *' })
+          if ($verified.Count -ne 1) { throw 'expected one ALBERA_SETUP_VERIFIED line' }
+          if (-not $verified[0].Contains("commit=$env:GITHUB_SHA ") -or -not $verified[0].Contains("run=$env:GITHUB_RUN_ID ")) { throw "verified line is not this run: $($verified[0])" }
+          $verified[0] | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+      - name: Upload the update folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: albera-update
+          path: albera-update
+          retention-days: 14
           if-no-files-found: error

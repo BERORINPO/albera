@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Setup program (docs/architecture/control-plane-service.md section 8, PR6). Started by the owner through UAC (requireAdministrator). It rebuilds the environment from an
+       allowlist, copies an update folder into an administrator-only folder, verifies GitHub build attestations OFFLINE with a version-pinned gh.exe that sits beside it, checks the
+       attested tree hash against the copies, and only then starts the installer script. NativeAOT on purpose: no CoreCLR starts in the elevated process, so COR_* / CORECLR_* /
+       DOTNET_* values the owner's account can set (HKCU\Environment) cannot load a profiler or a startup hook into it. The linker is not on the development PC: the shipped bytes come
+       from CI only (scripts/publish-windows-setup.mjs, .github/workflows/host-build-hashes.yml) and are attested. BCL only: no package reference.
+       The two SHA-256 values of the bundled gh.exe and trusted root are compiled in from a generated file (AlberaPinnedToolsSource, made by the publish script); without it the project does not compile. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>albera-setup</AssemblyName>
+    <RootNamespace>Albera.Setup</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <PublishAot>true</PublishAot>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(AlberaPinnedToolsSource)" Condition="'$(AlberaPinnedToolsSource)' != ''" />
+  </ItemGroup>
+</Project>

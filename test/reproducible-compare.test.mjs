@@ -11,6 +11,9 @@ import { buildArguments, reproducibilityProperties } from '../scripts/dotnet-bui
 // Issue #108: the hash comparison and report are pure, so none of this runs dotnet. The builds themselves are checked by `npm run check:reproducible`.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const snapshot = (entries) => new Map(Object.entries(entries));
+// Publish scripts that cannot be run by the two-clean-builds check, each with the reason. publish-windows-setup.mjs makes a NativeAOT program: the linker exists only on the CI runner, and its
+// bytes are attested there instead of compared (docs/architecture/control-plane-service.md section 8). Everything else must be a TARGETS entry.
+const NOT_CHECKABLE_LOCALLY = Object.freeze({ 'publish-windows-setup.mjs': 'NativeAOT needs the MSVC linker (CI only); the bytes are attested, not compared' });
 
 test('identical snapshots are reproducible and the report says so', () => {
   const result = compareSnapshots(snapshot({ 'a.exe': '1', 'a.dll': '2' }), snapshot({ 'a.dll': '2', 'a.exe': '1' }));
@@ -76,7 +79,9 @@ test('every publish / build command carries the reproducibility properties, with
 
 test('the check covers exactly the projects the publish scripts build, and the exclusions list is well-formed', () => {
   const scripts = fs.readdirSync(path.join(root, 'scripts')).filter((name) => /^publish-.*\.mjs$/u.test(name)).sort();
-  assert.deepEqual(TARGETS.map((target) => target.script).sort(), scripts, 'a publish script without a check target would be unchecked (false-safe)');
+  const excluded = Object.keys(NOT_CHECKABLE_LOCALLY);
+  for (const name of excluded) assert.ok(scripts.includes(name) && !TARGETS.some((target) => target.script === name), `${name}: the exclusion is stale or the script is also a target`);
+  assert.deepEqual(TARGETS.map((target) => target.script).sort(), scripts.filter((name) => !excluded.includes(name)), 'a publish script without a check target would be unchecked (false-safe)');
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   assert.equal(pkg.scripts['check:reproducible'], 'node scripts/check-reproducible-build.mjs');
   assert.equal(pkg.scripts.test, 'node --test', 'the slow check stays out of npm test');
