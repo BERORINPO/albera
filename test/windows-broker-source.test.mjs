@@ -136,6 +136,18 @@ test('pipe client desktop mode reaches the pipe only through the shared verifica
   assert.ok(desktopCodes.length > 0 && desktopCodes.every((code) => documented.includes(code)), `the desktop mode adds no result code: ${[...new Set(desktopCodes)]}`);
 });
 
+test('pipe client desktop mode: the watchdog is disarmed under Gate in the section that writes the answer, so a timer callback that fired just before the answer cannot follow it with a timeout (Zaku LOW of #168)', () => {
+  assert.match(desktopSessionCode, /bool armed = true;/u);
+  assert.match(desktopSessionCode, /new\(_ => \{ lock \(Gate\) \{ if \(armed\) Finish\(/u, 'the callback looks at the flag under Gate, as Finish takes Gate');
+  assert.match(desktopSessionCode, /lock \(Gate\) \{ armed = false; foreach \(byte\[\] frame in reply\) WriteHostFrame\(frame\); \}/u, 'a reply is written in the same locked section that disarms');
+  assert.match(desktopSessionCode, /lock \(Gate\) \{ armed = false; watchdog\.Change\(Timeout\.Infinite, Timeout\.Infinite\); \}\s+WriteHostFrame\(/u, 'and so is the accepted open');
+  assert.match(desktopSessionCode, /lock \(Gate\) armed = true;\s+watchdog\.Change\(start\.RequestTimeoutMs, Timeout\.Infinite\);/u, 'a request arms it again under Gate before its clock starts');
+  const writes = desktopSessionCode.split('\n').filter((codeLine) => /\barmed = /u.test(codeLine) && !codeLine.includes('bool armed = true;'));
+  assert.equal(writes.length, 3);
+  assert.ok(writes.every((codeLine) => codeLine.includes('lock (Gate)')), 'the flag is written under Gate only');
+  assert.equal(/late timeout must not follow a good answer/u.test(desktopSession), false, 'the old comment claimed more than Change() can promise');
+});
+
 test('pipe client helper reports only the documented exit codes and result codes', () => {
   assert.match(pipeClientProgram, /ExitOk = 0, ExitBadInput = 64, ExitInternal = 70;/u);
   const failureLines = pipeClientCode.split('\n').filter((codeLine) => codeLine.includes('Failure(') && !codeLine.includes('string Failure('));

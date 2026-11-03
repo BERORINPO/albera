@@ -65,10 +65,10 @@ export class HyperVDesktopDriver {
     catch {
       throw new DesktopControlError('invalid_desktop_action', { outcome: 'not_applied' });
     }
-    await this.#authorize(vmId, lease);
+    const held = await this.#authorize(vmId, lease);
     if (normalized.action === 'screenshot') return this.#capture(vmId);
     try {
-      await this.#brokerMethods.act({ vmId, action: normalized });
+      await this.#brokerMethods.act({ vmId, action: normalized, lease: held }); // the checked lease: a Broker that holds its own lease (the desktop Broker client) names the session by it
     }
     catch (error) {
       throw mapBrokerError(error);
@@ -103,7 +103,7 @@ export class HyperVDesktopDriver {
     catch {
       throw new DesktopControlError('desktop_lease_unavailable', { outcome: 'not_applied' });
     }
-    assertLeaseCurrent(held, current, this.#now());
+    return assertLeaseCurrent(held, current, this.#now());
   }
 }
 

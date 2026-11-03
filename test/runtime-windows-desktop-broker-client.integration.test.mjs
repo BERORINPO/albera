@@ -148,6 +148,23 @@ describe('desktop Broker client: the real helper, the real Broker, hostile serve
     await stopBroker(broker);
   });
 
+  it('a lease without a generation joins the lease the claim made (real helper, real Broker): the input reaches the adapter; an operation nobody claimed and a stale one are refused; a newer claim moves it on', async () => {
+    const broker = await startBroker('act-current');
+    const client = broker.client();
+    assert.deepEqual(shapeOf(await failure(client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'nobody-op' } }))), NOT_APPLIED_DENIED, 'no claim at all');
+    const first = await claimTaskStart(broker.claims, 'first');
+    const reached = await failure(client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: first } }));
+    assert.deepEqual(shapeOf(reached), { code: 'desktop_unavailable', outcome: 'unknown', brokerCode: 'denied' });
+    assert.ok(broker.child.lines.includes('DESKTOP=ACT'), 'the act open was accepted without a generation');
+    assert.ok(broker.child.lines.includes('DESKTOP_TEST=input_enter'), 'and the input reached the adapter (which has no such VM)');
+    const second = await claimTaskStart(broker.claims, 'second');
+    assert.deepEqual(shapeOf(await failure(client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: first } }))), NOT_APPLIED_DENIED, 'the older operation is no longer the current lease');
+    assert.equal((await failure(client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: second } }))).outcome, 'unknown', 'the newer one reaches the adapter');
+    assert.deepEqual(logged(broker.child, 'DESKTOP_DENY=').filter((word) => word.startsWith('lease_')), ['lease_unknown', 'lease_unknown']);
+    await client.close();
+    await stopBroker(broker);
+  });
+
   // ---- (b) hostile servers: the helper must verify before it writes ----------------------------------------------------------------------------------------------------
   const lineValue = (child, key) => child.lines.find((line) => line.startsWith(`${key}=`))?.slice(key.length + 1);
   const probe = async (mode = 'reply') => {
@@ -222,8 +239,11 @@ describe('desktop Broker client: the real helper, the real Broker, hostile serve
   });
 
   // ---- (c) a Node stand-in for the Broker's desktop pipe: the success path and a server that lies -------------------------------------------------------------------------
-  /** A pipe server at `<name>_desktop` owned by this process. `answer(request, ctx)` replies to each frame after the open (`ctx.send(...values)` sends one frame per value; `ctx.end()` hangs up). */
-  async function standIn(answer) {
+  /**
+   * A pipe server at `<name>_desktop` owned by this process. `answer(request, ctx)` replies to each frame after the open (`ctx.send(...values)` sends one frame per value; `ctx.end()` hangs up).
+   * It accepts every open like the Broker does: `{ ok: true }` for a view, `{ ok: true, leaseGeneration }` for an act (the generation named, else `joined`); `openReply(open)` overrides that.
+   */
+  async function standIn(answer, { joined = 1, openReply = null } = {}) {
     const pipeName = unique('ALBERA_DeskStand');
     const stats = { connections: 0, closed: 0, frames: [] };
     const server = net.createServer((socket) => {
@@ -238,7 +258,7 @@ describe('desktop Broker client: the real helper, the real Broker, hostile serve
           const request = JSON.parse(buffer.subarray(4, 4 + buffer.readInt32LE(0)).toString('utf8'));
           buffer = buffer.subarray(4 + buffer.readInt32LE(0));
           stats.frames.push(request);
-          if (request.open) ctx.send({ ok: true });
+          if (request.open) ctx.send(openReply?.(request.open) ?? (request.open.mode === 'act' ? { ok: true, leaseGeneration: request.open.leaseGeneration ?? joined } : { ok: true }));
           else answer(request, ctx);
         }
       });
@@ -276,6 +296,39 @@ describe('desktop Broker client: the real helper, the real Broker, hostile serve
     assert.deepEqual(await client.sendVmInput({ vmId: 'room-1', action: { action: 'type', text: 'hello' }, lease: { desktopSessionId: 'op-7', generation: 3 } }), { ok: true });
     assert.deepEqual(server.stats.frames[0], { open: { computerId: 'room-1', mode: 'act', operationId: 'op-7', leaseGeneration: 3 } });
     assert.deepEqual(server.stats.frames[1], { input: { steps: [{ op: 'text', text: 'hello' }] } });
+    await client.close();
+  });
+
+  it('an act open without a generation reaches the Broker without one, and the generation in the Broker\'s reply is relayed and used', async () => {
+    const server = await standIn((request, ctx) => ctx.send({ ok: true }), { joined: 6 });
+    const client = clientFor(server.pipeName, server.expect);
+    assert.deepEqual(await client.sendVmInput({ vmId: 'room-1', action: { action: 'type', text: 'hi' }, lease: { desktopSessionId: 'op-7' } }), { ok: true });
+    assert.deepEqual(server.stats.frames[0], { open: { computerId: 'room-1', mode: 'act', operationId: 'op-7' } }, 'exactly these three keys');
+    assert.deepEqual(server.stats.frames[1], { input: { steps: [{ op: 'text', text: 'hi' }] } });
+    await client.close();
+  });
+
+  const lyingOpens = [
+    ['an act open answered without the generation', () => ({ ok: true }), { lease: { desktopSessionId: 'op-7' } }],
+    ['an act open answered with another generation than the one named', () => ({ ok: true, leaseGeneration: 4 }), { lease: { desktopSessionId: 'op-7', generation: 3 } }],
+    ['an act open answered with a generation of 0', () => ({ ok: true, leaseGeneration: 0 }), { lease: { desktopSessionId: 'op-7' } }],
+    ['an act open answered with a generation above 2^53 - 1', () => ({ ok: true, leaseGeneration: 2 ** 53 }), { lease: { desktopSessionId: 'op-7' } }],
+    ['an act open answered with an extra key', () => ({ ok: true, leaseGeneration: 3, extra: 1 }), { lease: { desktopSessionId: 'op-7', generation: 3 } }],
+  ];
+  for (const [label, reply, input] of lyingOpens) {
+    it(`the helper does not relay ${label}: invalid_response, nothing applied`, async () => {
+      const server = await standIn(() => {}, { openReply: reply });
+      const client = clientFor(server.pipeName, server.expect);
+      assert.deepEqual(shapeOf(await failure(client.sendVmInput({ vmId: 'room-1', action: { action: 'type', text: 'hi' }, ...input }))), { code: 'desktop_unavailable', outcome: 'not_applied', brokerCode: 'invalid_response' });
+      assert.equal(server.stats.frames.length, 1, 'only the open was ever sent');
+      await client.close();
+    });
+  }
+
+  it('a view open answered with a generation is not relayed either', async () => {
+    const server = await standIn(() => {}, { openReply: () => ({ ok: true, leaseGeneration: 1 }) });
+    const client = clientFor(server.pipeName, server.expect);
+    assert.deepEqual(shapeOf(await failure(client.captureVmScreen(ROOM))), { code: 'desktop_unavailable', outcome: 'not_applied', brokerCode: 'invalid_response' });
     await client.close();
   });
 
@@ -336,7 +389,8 @@ describe('desktop Broker client: the real helper, the real Broker, hostile serve
       ['a request timeout above 120 s', { requestTimeoutMs: 120_001 }], ['a PID and a service name together', { expect: { ...expect, serviceName: 'AlberaHostBroker' } }],
       ['neither a PID nor a service name', { expect: { ownerSid: expect.ownerSid } }], ['a PID without an owner', { expect: { pid: expect.pid } }], ['an upper-case image hash', { expect: { ...expect, imageSha256: 'A'.repeat(64) } }],
       ['a mode that is not view or act', { open: { computerId: 'room-1', mode: 'edit' } }], ['a view open with an operationId', { open: { computerId: 'room-1', mode: 'view', operationId: 'op-1' } }],
-      ['an act open without a generation', { open: { computerId: 'room-1', mode: 'act', operationId: 'op-1' } }], ['an act open without an operationId', { open: { computerId: 'room-1', mode: 'act', leaseGeneration: 1 } }],
+      ['a view open with a generation', { open: { computerId: 'room-1', mode: 'view', leaseGeneration: 1 } }], ['an act open without an operationId', { open: { computerId: 'room-1', mode: 'act', leaseGeneration: 1 } }],
+      ['an act open with a null generation', { open: { computerId: 'room-1', mode: 'act', operationId: 'op-1', leaseGeneration: null } }], ['an act open with a string generation', { open: { computerId: 'room-1', mode: 'act', operationId: 'op-1', leaseGeneration: '1' } }],
       ['a generation of 0', { open: { computerId: 'room-1', mode: 'act', operationId: 'op-1', leaseGeneration: 0 } }], ['a generation above 2^53 - 1', { open: { computerId: 'room-1', mode: 'act', operationId: 'op-1', leaseGeneration: 2 ** 53 } }],
       ['a fractional generation', { open: { computerId: 'room-1', mode: 'act', operationId: 'op-1', leaseGeneration: 1.5 } }], ['a computerId that is not an id', { open: { computerId: 'bad id', mode: 'view' } }],
       ['an extra key in open', { open: { computerId: 'room-1', mode: 'view', extra: 1 } }], ['an operationId that is not an id', { open: { computerId: 'room-1', mode: 'act', operationId: '../x', leaseGeneration: 1 } }],
@@ -401,7 +455,7 @@ describe('desktop Broker client: the real helper, the real Broker, hostile serve
     const input = { input: { steps: [{ op: 'sleep', ms: 5 }] } };
     run.send(input);
     await until(() => run.frames().length === 2, 'the input reply');
-    assert.deepEqual(run.frames(), [{ ok: true }, { ok: true }]);
+    assert.deepEqual(run.frames(), [{ ok: true, leaseGeneration: 1 }, { ok: true }], 'the act open names the lease it joined');
     assert.deepEqual(server.stats.frames[1], input);
     run.end();
     assert.equal(await run.exit, 0);
