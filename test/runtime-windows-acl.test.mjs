@@ -92,7 +92,9 @@ test('the Windows ACL script calls no PowerShell cmdlet (a cmdlet lookup took 22
   const source = await readFile(new URL('../src/runtime/windows-acl.mjs', import.meta.url), 'utf8');
   const script = source.match(/const SCRIPT = String\.raw`([^`]*)`/)?.[1];
   assert.ok(script && script.includes('GetAccessControl'), 'the ACL script must be found in windows-acl.mjs');
-  assert.deepEqual(script.match(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/g) ?? [], []);
+  assert.deepEqual(script.match(/\b[A-Za-z]+-[A-Za-z]+\b/g) ?? [], [], 'no Verb-Noun cmdlet, in any letter case');
+  // A pipeline or a common alias also resolves a cmdlet (Zaku review of #163); `.Write(` and other .NET members are not commands.
+  assert.deepEqual(script.match(/[|%]|(?<![.\w])(?:gci|gi|ls|dir|cat|gc|select|where|sort|measure|iex|icm|echo|write)\b/gi) ?? [], [], 'no pipeline and no cmdlet alias');
 });
 
 test('Windows ACL query reads a real system DACL', {
