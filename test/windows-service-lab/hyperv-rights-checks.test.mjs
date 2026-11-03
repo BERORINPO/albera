@@ -69,11 +69,11 @@ test('lab-vm.ps1 -HyperV: nested virtualization, 5 GB with the same memory guard
   const expose = driver.indexOf('-ExposeVirtualizationExtensions $true');
   assert.ok(expose > 0 && expose < driver.indexOf('Start-VM -VM $vm'), 'nested virtualization is set while the VM is still off');
   assert.match(driver, /if \(\$HyperV -and \$HostInstall\) \{ throw/u);
-  assert.match(driver, /\$needed = @\('test\\windows-service-lab\\bin\\Release\\net10\.0-windows\\win-x64\\publish',\s+'src\\runtime\\windows-broker\\bin\\Release\\net10\.0-windows\\win-x64\\publish'\)\s+# The Hyper-V lab runs the lab shim, the real Broker and the Control Plane pipe client[^\n]*\n\s+if \(\$HyperV\) \{ \$needed \+= @\('src\\runtime\\windows-broker-pipe-client\\bin\\Release\\net10\.0-windows\\win-x64\\publish'\) \}\s+else \{ \$needed \+= @\('src\\runtime\\windows-approval-authority/u);
+  assert.match(driver, /\$needed = @\('test\\windows-service-lab\\bin\\Release\\net10\.0-windows\\win-x64\\publish',\s+'src\\runtime\\windows-broker\\bin\\Release\\net10\.0-windows\\win-x64\\publish'\)\s+# The Hyper-V lab runs the lab shim, the real Broker and the Control Plane pipe client[^\n]*\n\s+if \(\$HyperV -or \$ControlPlaneService\) \{ \$needed \+= @\('src\\runtime\\windows-broker-pipe-client\\bin\\Release\\net10\.0-windows\\win-x64\\publish'\) \}\s+else \{ \$needed \+= @\('src\\runtime\\windows-approval-authority/u);
   assert.match(driver, /if \(\$Build\) \{\s+& npm run build:windows-broker\s+if \(\$LASTEXITCODE -ne 0\) \{ throw "build:windows-broker failed/u, 'the Broker build is no longer skipped for -HyperV');
   assert.doesNotMatch(driver, /if \(-not \$HyperV\) \{\s+& npm run build:windows-broker/u);
-  assert.match(driver, /if \(-not \$HyperV\) \{\s+& npm run build:approval-authority/u);
-  assert.match(driver, /if \(-not \$HostInstall -and -not \$HyperV\) \{\s+& node scripts\/windows-service-lab-inputs\.mjs/u);
+  assert.match(driver, /if \(-not \$HyperV -and -not \$ControlPlaneService\) \{\s+& npm run build:approval-authority/u);
+  assert.match(driver, /if \(-not \$HostInstall -and -not \$HyperV -and -not \$ControlPlaneService\) \{\s+& node scripts\/windows-service-lab-inputs\.mjs/u);
   assert.match(driver, /if \(\$HyperV\) \{\s+\$hvOut = @\(Invoke-HyperVRightsLab[\s\S]*?\}\s+elseif \(\$HostInstall\) \{/u);
   // The default lab and -HostInstall still call exactly what they called.
   assert.match(driver, /& \(Join-Path \$PSScriptRoot 'run-lab\.ps1'\) -VmName \$VmName -PasswordFile \$PasswordFile `/u);

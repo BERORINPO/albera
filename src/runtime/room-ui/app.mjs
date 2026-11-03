@@ -228,6 +228,15 @@ function boot() {
 
   phase('connecting');
   void (async () => {
+    // "Open ALBERA" opens /room/#b=<code>: take the code out of the address first, then trade it for the session cookie.
+    const code = api.bootstrapFromHash(location.hash);
+    if (code) {
+      history.replaceState(null, '', location.pathname + location.search);
+      if ((await api.unlock(code)).ok) { void startRoom(); return; }
+      showBootstrap();
+      $('bootstrap-status').textContent = words.t('unlock_failed');
+      return;
+    }
     const first = await api.getState(0);
     if (first.ok) void startRoom();
     else showBootstrap();

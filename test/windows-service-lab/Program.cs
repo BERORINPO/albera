@@ -3,7 +3,7 @@ namespace Albera.Lab;
 // Issue #23 lab tool (test-only). One self-contained exe, three roles:
 //   service <config.json>   run as the service the SCM started (own-process, STOP only); the config names the job to run
 //   run <config.json>       the same job outside the SCM (host-side tests; no service involved)
-//   <probe> ...             token | pipe-open | scm | openproc | squat | hyperv | desktop | desktop-helper (see Probes.cs)
+//   <probe> ...             token | pipe-open | scm | openproc | squat | hyperv | desktop | desktop-helper | cp (see Probes.cs)
 // Exit: 0 ok, 64 bad usage, 1 not started by the SCM; `run` returns the job's exit code.
 internal static class Program
 {

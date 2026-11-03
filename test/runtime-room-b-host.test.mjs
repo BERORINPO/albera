@@ -97,7 +97,7 @@ async function start(t, { vms = VMS, broker = createMockDesktopBroker(screen), f
     assert.equal(res.status, 200);
     return res.headers.get('set-cookie').split(';')[0];
   };
-  const get = (p, cookie, init = {}) => fetch(`${address.url}${p}`, { ...init, headers: { ...(cookie ? { Cookie: cookie } : {}), ...init.headers } });
+  const get = (p, cookie, init = {}) => fetch(`${address.url}${p}`, { ...init, headers: { 'Sec-Fetch-Site': 'same-origin', ...(cookie ? { Cookie: cookie } : {}), ...init.headers } });
   const decide = (cookie, body, headers = {}) => fetch(`${address.url}api/decide`, {
     method: 'POST', headers: { ...jsonHeaders, ...(cookie ? { Cookie: cookie } : {}), ...headers },
     body: typeof body === 'string' ? body : JSON.stringify(body),
@@ -132,7 +132,7 @@ test('room: api needs the one-time code; the cookie is HttpOnly, SameSite=Strict
   const setCookie = res.headers.get('set-cookie');
   assert.ok(setCookie.startsWith(`${r.host.cookieName}=`));
   assert.match(r.host.cookieName, new RegExp(`^albera_room_${r.address.port}_[0-9a-f]{12}$`));
-  assert.match(setCookie, /Max-Age=28800/);
+  assert.match(setCookie, /Max-Age=7200/);
   assert.match(setCookie, /HttpOnly/);
   assert.match(setCookie, /SameSite=Strict/);
   assert.match(setCookie, /Path=\/room\//);
