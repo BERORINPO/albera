@@ -648,7 +648,7 @@ async function runRoom(given) {
     process.exitCode = outOfScope ? 1 : 2;
   };
   if (given.requireStartApproval) {
-    try { refuseGatedOutOfScope({ ...options, guestPasswordFile: given.guestPasswordFile ?? options.guestPasswordFile }); } catch (error) { startFailure(error); return; }
+    try { refuseGatedOutOfScope({ ...options, guestPasswordFile: given.guestPasswordFile ?? options.guestPasswordFile }, { approvalFile: given.approvalFile }); } catch (error) { startFailure(error); return; }
   }
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) { console.error('ALBERA Runtime room: set the ANTHROPIC_API_KEY environment variable first.'); process.exitCode = 1; return; }

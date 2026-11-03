@@ -34,6 +34,7 @@ const SECRET_MARKER = 'TOPSECRET-do-not-print';
 const HELPER_SHA = 'e'.repeat(64);
 const BROKER_EXPECT = { serviceName: 'AlberaHostBroker' }; // service-name mode only: no PID, and no image hash (the Control Plane's identity cannot open the Broker's process)
 const DESKTOP = { helperPath: ABS('pipe-client.exe'), helperSha256: HELPER_SHA };
+const PINNED_HELPER = DESKTOP; // what every fence / claim / inspect / submit / status request is told to start
 // A settings file the gated room accepts: the Broker by service name, the pinned helper, no attestation.
 const settingsObject = (patch = {}) => ({
   version: 1,
@@ -339,7 +340,7 @@ test('the gate asks a person for exactly { task }; the real clients are bound to
   const broker = { pipeName: 'ALBERA_HostBroker', expect: BROKER_EXPECT };
   const authority = { pipeRoot: 'ALBERA\\ApprovalAuthority', expect: { serviceName: 'AlberaApprovalAuthority' } };
   assert.deepEqual(world.calls.map(([name]) => name), ['fence', 'submit', 'status', 'claim']);
-  assert.deepEqual(fence, ['fence', { ...broker, computerId: 'computer-a' }]);
+  assert.deepEqual(fence, ['fence', { ...broker, computerId: 'computer-a', ...PINNED_HELPER }]);
   assert.equal(submit[1].pipeRoot, authority.pipeRoot);
   assert.deepEqual(submit[1].expect, authority.expect);
   assert.deepEqual(submit[1].action, { action: 'task.start', projectId: 'project-1', computerId: 'computer-a', args: { task: 'open notepad and write hello' } });
@@ -348,6 +349,9 @@ test('the gate asks a person for exactly { task }; the real clients are bound to
   assert.deepEqual([status[1].pipeRoot, status[1].expect], [authority.pipeRoot, authority.expect]);
   assert.deepEqual([claim[1].pipeName, claim[1].expect], [broker.pipeName, broker.expect]);
   assert.deepEqual(claim[1].action, submit[1].action, 'the claim carries the DTO that was approved');
+  // every pipe request starts the installed helper and only that build (Zaku MEDIUM of #170: a swapped helper could answer `claimed`)
+  for (const [name, options] of world.calls) assert.deepEqual([name, options.helperPath, options.helperSha256], [name, PINNED_HELPER.helperPath, PINNED_HELPER.helperSha256]);
+  assert.deepEqual(world.calls.map(([name]) => name), ['fence', 'submit', 'status', 'claim'], 'fence, submit, status and claim all went through the pinned helper');
   const record = world.journal.get('room-start-1');
   assert.equal(record.phase, 'CLAIMED', 'the operation is in the store the settings name');
   assert.equal(world.closed, 0);
@@ -444,6 +448,12 @@ test('refuseGatedOutOfScope: guest capture, done checks (a checks file or a work
     ['guest capture', { guestCapture: ['vm-b'] }], ['a checks file', { checksFile: ABS('checks.json') }],
     ['workspace checks', { checks: { 'vm-b': [{ kind: 'file_exists', path: 'C:\\x' }] } }], ['a guest password file', { guestPasswordFile: ABS('pw.txt') }],
   ]) assert.equal(codeOf(() => refuseGatedOutOfScope({ ...plain, ...patch })), GATED_OUT_OF_SCOPE, label);
+  // with the settings file the attestation is asked in the same step; a file that cannot be read keeps its own code
+  const withFile = (patch) => ({ approvalFile: SETTINGS_FILE, io: fileIo({ [SETTINGS_FILE]: text(patch) }) });
+  assert.doesNotThrow(() => refuseGatedOutOfScope(plain, withFile({})));
+  assert.equal(codeOf(() => refuseGatedOutOfScope(plain, withFile({ attestation: attestationObject() }))), GATED_OUT_OF_SCOPE);
+  assert.equal(codeOf(() => refuseGatedOutOfScope(plain, { approvalFile: SETTINGS_FILE, io: fileIo({}) })), 'runtime_room_approval_unreadable');
+  assert.equal(codeOf(() => refuseGatedOutOfScope(plain, { approvalFile: SETTINGS_FILE, io: fileIo({ [SETTINGS_FILE]: '{ nope' }) })), 'runtime_room_approval_not_json');
   assert.match(GATED_OUT_OF_SCOPE_LINE, /^runtime_room_gated_out_of_scope: guest capture, done checks, the guest helper and task\.start checkpoint attestation are not available with --require-start-approval/);
   assert.equal(GATED_OUT_OF_SCOPE_LINE.includes('\n'), false, 'one line');
 });
@@ -540,7 +550,9 @@ test('a stale operation id is refused by the Broker: a newer start on the same c
   assert.deepEqual(world.desktop.inputs.map(({ computerId, operationId }) => [computerId, operationId]), [['computer-a', 'room-start-2'], ['computer-b', 'room-start-3']]);
 });
 
-test('a human takeover on the Node side stops the AI\'s input before the Broker is asked; the human\'s view-only lease still captures', async () => {
+// The driver's own check, pinned with the gated Broker object in the middle. It is NOT a takeover mechanism of the room (nothing in the room installs a HUMAN lease for an AI loop, and a card's `stop`
+// only ends the loop in Node, the Broker's lease stays until expiry): see ADR-002 "Implementation status (step 7)".
+test('a driver whose current lease is a HUMAN one refuses the AI\'s input before the Broker is asked; the human\'s view-only lease still captures', async () => {
   const world = makeWorld();
   const { desktopBroker, gate } = await open(world);
   const { operationId } = await gate.startApproved({ vmId: 'albera-computer-a', task: 'x' });
@@ -609,6 +621,10 @@ test('source guard: a gated room takes its Broker from the wiring and the same-u
   assert.equal([...room.matchAll(/guestScreensOf\(/g)].length, 1);
   assert.ok(room.indexOf('refuseGatedOutOfScope(') > 0 && room.indexOf('refuseGatedOutOfScope(') < room.indexOf('process.env.ANTHROPIC_API_KEY'), 'the out-of-scope refusal comes before the API key is read');
   const wiring = read('room-approval-wiring.mjs');
+  // all five real pipe clients are bound to the pinned helper (inspect is only reached after an unknown outcome, so it is pinned here and by the real-client test below)
+  const pinned = wiring.match(/const PIPE_CLIENTS = \[([^\]]+)\];/)[1].split(',').map((name) => name.trim().replaceAll("'", '')).sort();
+  assert.deepEqual(pinned, ['getApprovalStatus', 'sendBrokerFence', 'sendBrokerInspect', 'sendBrokerRequest', 'submitApproval']);
+  assert.deepEqual(Object.keys(REAL_APPROVAL_DEPS).filter((name) => /^(send|submit|get)/.test(name)).sort(), pinned, 'every real pipe client in the deps is pinned');
   assert.deepEqual(wiring.match(/^import .*from '\.\/[^']*hyperv[^']*';$/gm), null, 'no import of a Hyper-V module');
   assert.equal(/child_process|\bspawn\b|ANTHROPIC/.test(wiring), false);
 });
@@ -671,11 +687,18 @@ test('the real command refuses a settings file with a task.start checkpoint atte
     journal: path.join(scratch, 'operations.sqlite'), desktop: { ...DESKTOP, helperPath: path.join(scratch, 'pipe-client.exe') },
     computers: { 'vm-a': 'computer-a' }, attestation: { keyFile: path.join(scratch, 'key.pem'), keyId: 'albera-broker-1', cloneRoot: scratch },
   })));
-  const env = { ...process.env, ANTHROPIC_API_KEY: 'sk-test-not-a-real-key' }; // a placeholder: the command stops before it could be used
+  const env = { ...process.env };
+  delete env.ANTHROPIC_API_KEY; // the refusal comes first (Zaku MEDIUM of #170): with no key in the environment this is still the message, not "set the ANTHROPIC_API_KEY"
   const result = await attemptRoom(['--job', 'vm-a=do the thing', '--require-start-approval', '--approval', settingsFile], env);
   assert.equal(result.code, 1);
   assert.deepEqual(result.lines, [`ALBERA Runtime room: ${GATED_OUT_OF_SCOPE_LINE}`]);
-  assert.ok(!result.stderr.includes(scratch), 'no path is printed');
+  assert.ok(!result.stderr.includes(scratch) && !result.stderr.includes('ANTHROPIC'), 'no path is printed and the key was not asked for');
+  // the same file without an attestation passes this stage and meets the key check, as an ungated room would
+  const plainFile = path.join(scratch, 'plain.approval.json');
+  writeFileSync(plainFile, JSON.stringify(settingsObject({ journal: path.join(scratch, 'operations.sqlite'), desktop: { ...DESKTOP, helperPath: path.join(scratch, 'pipe-client.exe') }, computers: { 'vm-a': 'computer-a' } })));
+  const plain = await attemptRoom(['--job', 'vm-a=do the thing', '--require-start-approval', '--approval', plainFile], env);
+  assert.equal(plain.code, 1);
+  assert.match(plain.stderr, /ANTHROPIC_API_KEY/);
 });
 
 test('the real command without the desktop settings is a settings error (exit 2), not a start', async () => {

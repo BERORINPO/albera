@@ -27,7 +27,8 @@ import { createWindowsDesktopBrokerClient } from './windows-desktop-broker-clien
 // must be the service `broker.expect.serviceName` (owner SID, the SCM's PID, session 0). A service-name expectation is required and the `{ ownerSid, pid }` form is not accepted here. No image hash
 // (`imageSha256`) is used or accepted: the Control Plane's restricted identity cannot open the Broker's process (lab, 2026-11-03: OpenProcess denied even for PROCESS_QUERY_LIMITED_INFORMATION), so a
 // helper asked to hash the image would always end `server_identity_unavailable`; replacing the Broker's image needs an administrator (Program Files), which is outside the threat model. The helper
-// at `desktop.helperPath` must be the build `desktop.helperSha256` (a file Node hashes itself). `computers` maps the room's VM names to the Broker's computer ids. The hands' desktop session
+// at `desktop.helperPath` must be the build `desktop.helperSha256` (a file Node hashes itself); the same pinned helper starts the fence, claim, inspect, submit and status requests too, so a swapped
+// helper cannot answer `claimed` for a start nobody approved. `computers` maps the room's VM names to the Broker's computer ids. The hands' desktop session
 // is the approved task.start operation. Not available in the gated room (refused at start, `runtime_room_gated_out_of_scope`): guest capture, done checks, the guest helper and a task.start checkpoint
 // attestation (`attestation` must be null); each needs its own ADR amendment.
 //
@@ -169,12 +170,28 @@ export function checkJobsAgainstSettings(settings, jobs) {
 
 /**
  * The features the gated room does not have yet, asked for on the command line or in the workspace: guest capture (`--guest-capture`, a workspace's `capture: "guest"`), done checks (`--checks`,
- * a workspace's `checks`) and the guest helper's password file. They all need guest credentials, which no Broker config holds (ADR-002 "Amendment 2026-11-03"). Throws GATED_OUT_OF_SCOPE.
+ * a workspace's `checks`) and the guest helper's password file. They all need guest credentials, which no Broker config holds (ADR-002 "Amendment 2026-11-03"). With `approvalFile` the settings'
+ * `attestation` is asked too (a task.start checkpoint attestation changes VM settings): the file is read here so that every out-of-scope request is refused in one early step, before the API key is
+ * looked at; a settings file that cannot be read or parsed throws its own `runtime_room_approval_*` code. Throws GATED_OUT_OF_SCOPE.
  * @param {{ guestCapture?: string[], checks?: object, checksFile?: string|null, guestPasswordFile?: string|null }} options
+ * @param {{ approvalFile?: string|null, io?: object }} [settings]
  */
-export function refuseGatedOutOfScope(options) {
+export function refuseGatedOutOfScope(options, { approvalFile = null, io = { statSync, readFileSync } } = {}) {
   const asked = (options.guestCapture?.length ?? 0) > 0 || Object.keys(options.checks ?? {}).length > 0 || Boolean(options.checksFile) || Boolean(options.guestPasswordFile);
   if (asked) throw new Error(GATED_OUT_OF_SCOPE);
+  if (approvalFile !== null && loadApprovalSettings(approvalFile, io).attestation) throw new Error(GATED_OUT_OF_SCOPE);
+}
+
+const PIPE_CLIENTS = ['sendBrokerFence', 'sendBrokerRequest', 'sendBrokerInspect', 'submitApproval', 'getApprovalStatus'];
+
+/**
+ * The five claim/approval pipe clients, each told to start the installed helper (`desktop.helperPath`) and to refuse any other build (`desktop.helperSha256`). Without this they would start the
+ * helper from the repository's build output, and a swapped helper could answer `claimed` for a start nobody approved. Same shape as approval-check's `withHelper`, plus the pin.
+ */
+function withPinnedHelper(deps, { helperPath, helperSha256 }) {
+  const bound = { ...deps };
+  for (const name of PIPE_CLIENTS) bound[name] = (options) => deps[name]({ ...options, helperPath, helperSha256 });
+  return bound;
 }
 
 /**
@@ -244,7 +261,12 @@ export async function openRoomApproval({ approvalFile, jobs, io = { statSync, re
   if (settings.attestation) throw new Error(GATED_OUT_OF_SCOPE); // a checkpoint attestation changes VM settings: not for the first gated run
   checkJobsAgainstSettings(settings, jobs);
   let desktopClient; // lazy: nothing is started or opened until the first capture
-  try { desktopClient = d.createDesktopClient(desktopOptions(settings)); } catch { throw fail('desktop'); } // missing settings or options the client refuses
+  let pipes; // the claim and approval clients, bound to the same pinned helper
+  try {
+    const desktop = desktopOptions(settings);
+    pipes = withPinnedHelper(d, desktop);
+    desktopClient = d.createDesktopClient(desktop);
+  } catch { throw fail('desktop'); } // missing settings or options the client refuses
   let store;
   try { store = await d.openStore(settings.journal); } catch { void desktopClient.close().catch(() => {}); throw fail('journal_unavailable'); }
   const close = () => {
@@ -252,7 +274,7 @@ export async function openRoomApproval({ approvalFile, jobs, io = { statSync, re
     try { store.close(); } catch { /* already closed */ }
   };
   try {
-    const flow = createApprovedOperationFlow({ broker: brokerPort(settings, d), authority: authorityPort(settings, d), journal: store.flowJournal(), now: d.now, sleep: d.sleep });
+    const flow = createApprovedOperationFlow({ broker: brokerPort(settings, pipes), authority: authorityPort(settings, pipes), journal: store.flowJournal(), now: d.now, sleep: d.sleep });
     const computerIdFor = (vmId) => settings.computers.get(vmId)?.computerId;
     const gate = createTaskStartGate({ flow, projectId: settings.projectId, newOperationId: d.newOperationId, computerIdFor });
     const desktopBroker = createGatedDesktopBroker({ client: desktopClient, computerIdFor });
