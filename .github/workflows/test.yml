@@ -39,6 +39,9 @@ jobs:
       - name: Build Windows Broker prototype (build only; never installed or started)
         if: runner.os == 'Windows'
         run: npm run build:windows-broker
+      - name: Build Control Plane host and app tree (build only; never installed or started)
+        if: runner.os == 'Windows'
+        run: npm run build:control-plane
       - name: Tests
         run: npm test
       - name: Installed package smoke
