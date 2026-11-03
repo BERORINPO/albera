@@ -138,3 +138,28 @@ Every check has an `id`, a status (PASS, FAIL, BLOCKED, MEASURED), an observed v
 The `cp` probes of the shim (`albera-lab-service-shim.exe cp <probe> ...`, `ControlPlaneProbe.cs`) are: `dpapi-protect`, `dpapi-unprotect`, `tcp-listen`, `tcp-connect`, `acl-file`, `file-access`, `https`. Each prints JSON lines `{"probe":"cp","id":...}`.
 
 Not covered here: the Control Plane's real code (its journal store, settings, pipe use) is not run, only the system calls it will depend on; Node is the host's file, not whatever version the product will pin; the profile and DPAPI findings are for a virtual account on Windows Server 2025, and the answer for a client edition is not measured; `cp5` does not test what a remote or other-session client can reach (only loopback from two local accounts).
+
+## Host migration (`-HostMigrate`)
+
+`scripts/host/albera-host.ps1 -Mode migrate` moves an install of the first layout (the local account `albera-cp`) to the Control Plane service. This mode makes that first-layout install in a disposable VM, with the installer of an old commit, and migrates it.
+
+```powershell
+powershell -File test/windows-service-lab/lab-vm.ps1 -HostMigrate -LegacyRef 303ec40
+```
+
+`-LegacyRef` is the commit whose `scripts/host` installer made the first layout (hex, 7 to 40 characters). The driver puts that commit's tree into `legacy-src` under the VM's folder (`git archive`, no `.git`), builds the Broker, pipe client and Approval Authority there with that commit's own build scripts (nothing is downloaded), and removes the copy at the end; this happens before the VM exists, so a wrong ref or a failed build costs no VM. The five current builds must exist (`npm run build:windows-broker`, `build:approval-authority`, `build:control-plane`, `build:approver`, or `-Build`). Standard 4 GB VM, no Hyper-V role in the guest, no reboot.
+
+`lab-host-migrate-check.ps1` runs in the guest as Administrator and prints one JSON object (`host-migrate-results.json`, plus `lab-output.txt`). Its steps: the old installer's `-Mode install` with `-ControlPlanePassword` (made in the guest, never printed) and `-GrantHyperVToBroker -VmId <fixed lab GUID>`; one program started as `albera-cp` with `Start-Process -Credential -LoadUserProfile` (the way `runas` starts it) so that `C:\Users\albera-cp` exists and is not loaded; the current installer's `-Mode plan -PlanFor migrate -TrustLocalBuilds`, `-Mode migrate -TrustLocalBuilds`, each service started once and stopped, `-Mode status`, `-Mode uninstall`.
+
+| Check | PASS when |
+|---|---|
+| `legacy_*` | the old install is complete and of the first layout, the Broker's SID is in Hyper-V Administrators, `albera-cp` ran once, and its profile exists and is not loaded (a loaded profile cannot be deleted by anyone, so that would be the lab's fault) |
+| `plan_*` | the plan exits 0, no step is `[blocked]`, and nothing changed |
+| `migrate_exit_0`, `status_exit_0`, `uninstall_exit_0` | exit 0 (migrate also says `Migrated.`) |
+| `approver_values_carried`, `vm_guid_carried`, `computer_id_and_project_carried`, `grant_choice_carried` | the key id, public key and SID, the VM GUID (Broker config and grant record), the computer id, the project id and the grant are the old install's; `authority_key_made_again`: the Broker config names a new Authority key |
+| `albera_cp_account_gone`, `albera_cp_profile_gone` | no local user `albera-cp`, no `C:\Users\albera-cp`, no `Win32_UserProfile` entry |
+| `delayed_auto_*`, `cp_runs_as_its_service_identity`, `cp_sidtype_restricted`, `cp_privileges_minimal`, `configs_name_the_cp_service_sid` | read with `Win32_Service`, `sc.exe` and the config files, not through the installer: the three services are `Auto` and delayed, the Control Plane's account is `NT SERVICE\AlberaControlPlane`, restricted, `SeChangeNotifyPrivilege` only, and both configs name its service SID. `cp_process_owner_is_its_service_sid` is added when the Control Plane runs |
+| `broker_sid_in_hyperv_admins`, `only_the_broker_in_hyperv_admins`, `broker_unrestricted_authority_restricted` | the Broker's service SID is in the group and nobody else of ALBERA is; the Broker's SID type is unrestricted, the Authority's restricted |
+| `nothing_left_behind`, `group_otherwise_unchanged`, `final_status_not_installed` | after the uninstall: no service, account, profile, shortcut, Run value, machine key, folder or `HKLM\SOFTWARE\Albera` key, the Broker's SID is out of the group and the group is as before |
+
+Not shown: the installer's "stop `albera-cp`'s processes by PID" step (a process started as another user in a PowerShell Direct session has no desktop and ends at once, and a scheduled task or a service leaves the profile loaded, which breaks the profile check; `test/host-install.test.mjs` covers the step with fakes), the old Control Plane itself, the lookup of a real VM by name, a real Hello key, and where the builds came from (`-TrustLocalBuilds` hashes the copies in the guest). The state of the Broker and the Authority after their one start is reported in `serviceStarts`, not required. `host-migrate-checks.test.mjs` checks the scripts' text on the host and that the hook refuses to run outside a lab VM.
