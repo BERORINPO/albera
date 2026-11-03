@@ -37,7 +37,7 @@ internal sealed record DesktopResult(string? Reason, byte[]? Png = null)
 internal static class DesktopReason
 {
     public const string ComputerUnknown = "computer_unknown", CaptureSize = "capture_size", InputSteps = "input_steps", Unavailable = "desktop_unavailable",
-        CaptureFailed = "capture_failed", InputFailed = "input_failed", Allowlist = "allowlist";
+        CaptureFailed = "capture_failed", InputFailed = "input_failed", Allowlist = "allowlist", InputCancelled = "input_cancelled";
 }
 
 /// <summary>Raised inside the adapter with a DesktopReason word; the public operations turn it into a DesktopResult.</summary>
@@ -172,15 +172,15 @@ internal sealed class HyperVDesktop
     private const int ThumbnailHeaderBytes = 4;
     private readonly IReadOnlyList<ComputerBinding> _computers;
     private readonly Func<IWmiConnection?> _connect;
-    private readonly Action<int> _sleep;
+    private readonly Action<int, CancellationToken> _sleep;
 
     /// <param name="connect">Opens one WMI connection per operation (null when WMI is unreachable). Tests pass a fake; production passes ComWmiConnection.TryConnect.</param>
-    /// <param name="sleep">Waits for a `sleep` step (milliseconds). Tests pass a recorder.</param>
-    public HyperVDesktop(IReadOnlyList<ComputerBinding> computers, Func<IWmiConnection?> connect, Action<int>? sleep = null)
+    /// <param name="sleep">Waits for a `sleep` step (milliseconds), and returns early when the token is cancelled. Tests pass a recorder.</param>
+    public HyperVDesktop(IReadOnlyList<ComputerBinding> computers, Func<IWmiConnection?> connect, Action<int, CancellationToken>? sleep = null)
     {
         _computers = computers;
         _connect = connect;
-        _sleep = sleep ?? (ms => Thread.Sleep(ms));
+        _sleep = sleep ?? ((ms, cancel) => cancel.WaitHandle.WaitOne(ms));
     }
 
     public DesktopResult Capture(string computerId, int width, int height)
@@ -190,11 +190,17 @@ internal sealed class HyperVDesktop
         return Run(DesktopReason.CaptureFailed, gate => CaptureFrame(gate, computer, width, height));
     }
 
-    public DesktopResult Input(string computerId, IReadOnlyList<DesktopStep> steps)
+    /// <summary>
+    /// `cancel` is the end of the caller's right to send (its lease): it is looked at before WMI is touched and before every step, and a `sleep` step ends early on it. When it is cancelled
+    /// half-way, what is still held is released (the same path as after a failed step) and the result is `input_cancelled`. A step already inside WMI is not interrupted.
+    /// The default (never cancelled) is for the VM-lab probe, which has no lease; the desktop pipe always passes its session's token (pinned in windows-broker-desktop-pipe-source.test.mjs).
+    /// </summary>
+    public DesktopResult Input(string computerId, IReadOnlyList<DesktopStep> steps, CancellationToken cancel = default)
     {
         if (Resolve(computerId) is not { } computer) return new(DesktopReason.ComputerUnknown);
         if (!DesktopLimits.AreValidSteps(steps)) return new(DesktopReason.InputSteps);
-        return Run(DesktopReason.InputFailed, gate => SendSteps(gate, computer, steps));
+        if (cancel.IsCancellationRequested) return new(DesktopReason.InputCancelled);
+        return Run(DesktopReason.InputFailed, gate => SendSteps(gate, computer, steps, cancel));
     }
 
     private ComputerBinding? Resolve(string computerId) => _computers.FirstOrDefault(c => string.Equals(c.ComputerId, computerId, StringComparison.Ordinal));
@@ -225,7 +231,7 @@ internal sealed class HyperVDesktop
         return png.Length <= DesktopLimits.MaxPngBytes ? new(null, png) : new(DesktopReason.CaptureFailed);
     }
 
-    private DesktopResult SendSteps(WmiGate gate, ComputerBinding computer, IReadOnlyList<DesktopStep> steps)
+    private DesktopResult SendSteps(WmiGate gate, ComputerBinding computer, IReadOnlyList<DesktopStep> steps, CancellationToken cancel)
     {
         using IWmiInstance? vm = gate.Find("Msvm_ComputerSystem", computer.VmId);
         using IWmiInstance? keyboard = vm is null ? null : gate.Associated(vm, "Msvm_Keyboard");
@@ -234,7 +240,12 @@ internal sealed class HyperVDesktop
         List<uint> heldKeys = [], heldButtons = [];
         try
         {
-            foreach (DesktopStep step in steps) Apply(gate, keyboard, mouse, step, heldKeys, heldButtons);
+            foreach (DesktopStep step in steps)
+            {
+                if (cancel.IsCancellationRequested) throw new DesktopRefusal(DesktopReason.InputCancelled); // the catch below releases what is held, then Run turns this into the result
+                Apply(gate, keyboard, mouse, step, heldKeys, heldButtons, cancel);
+            }
+            if (cancel.IsCancellationRequested) throw new DesktopRefusal(DesktopReason.InputCancelled); // a last `sleep` may have been cut short: what a plan left held is not left to a lease that ended
             return new(null);
         }
         catch (Exception)
@@ -263,7 +274,7 @@ internal sealed class HyperVDesktop
     }
 
     // A key or button is recorded BEFORE the call that presses it: releasing something that was never pressed is harmless, leaving something pressed is not.
-    private void Apply(WmiGate gate, IWmiInstance keyboard, IWmiInstance mouse, DesktopStep step, List<uint> heldKeys, List<uint> heldButtons)
+    private void Apply(WmiGate gate, IWmiInstance keyboard, IWmiInstance mouse, DesktopStep step, List<uint> heldKeys, List<uint> heldButtons, CancellationToken cancel)
     {
         switch (step.Op)
         {
@@ -275,7 +286,7 @@ internal sealed class HyperVDesktop
             case "tap": Send(gate, keyboard, "TypeKey", ("KeyCode", (uint)step.Vk!.Value)); break;
             case "text": Send(gate, keyboard, "TypeText", ("AsciiText", step.Text!)); break;
             case "wheel": Send(gate, mouse, "SetScrollPosition", ("ScrollPositionDelta", (int)step.Delta!.Value)); break;
-            case "sleep": if (step.Ms > 0) _sleep((int)step.Ms.Value); break;
+            case "sleep": if (step.Ms > 0) _sleep((int)step.Ms.Value, cancel); break;
             default: throw new DesktopRefusal(DesktopReason.InputSteps); // unreachable after AreValidSteps; refuse rather than skip
         }
     }

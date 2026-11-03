@@ -1,8 +1,9 @@
 // The desktop lease the Broker holds for the room (ADR-002 "Amendment 2026-11-03", "Desktop lease (held by the Broker)"; Proposed / NOT VERIFIED). An `act` session on the desktop pipe
 // (input, and capture) needs it; a `view` session does not. The rules, all of them here and nowhere else:
 //   * A lease exists only because the Broker recorded a `task.start` claim (BrokerRequests.cs calls Grant right after the journal row is written, and not for a replay): desktopSessionId =
-//     that claim's operationId, the computer comes from the claimed DTO, generation = the previous generation for that computer + 1 (1 for the first), expiry = the Broker's clock at the claim
-//     + the lifetime (at most 60 minutes). Nothing a client sends can create one.
+//     that claim's operationId, the computer comes from the claimed DTO, generation = the previous generation for that computer + 1 (1 for the first), deadline = the MONOTONIC clock at the claim
+//     + the lifetime (at most 60 minutes). Nothing a client sends can create one. The deadline is never a wall-clock time: setting the clock back cannot stretch a lease.
+//   * A claim whose signed args name a VM (`vmId`) makes a lease only when that is the VM the config binds to the computer (Zaku MEDIUM 3 of #166); otherwise it makes none.
 //   * One lease per computer. A newer claim for the same computer replaces it, and every act session that held the older one is closed (its token is cancelled).
 //   * It lives in this object, in memory, and nowhere else: a Broker restart is a new process with a new, empty table, so input stops until a new task.start is approved (fail closed).
 //     The generation counter is lost with it; that cannot revive anything, because an open must also name the operationId of the lease that is current.
@@ -10,7 +11,7 @@
 // This file knows nothing of pipes or of Hyper-V. The generation here is the desktop lease's own; it is not the claim pipe's `leaseGeneration` fence value.
 internal sealed class DesktopLeases
 {
-    /// <summary>The contract's upper bound: expiry = claim time + at most 60 minutes.</summary>
+    /// <summary>The contract's upper bound: deadline = claim time + at most 60 minutes.</summary>
     internal const long MaxLifetimeSeconds = 60 * 60;
 
     internal static class Deny
@@ -18,26 +19,37 @@ internal sealed class DesktopLeases
         public const string Unknown = "lease_unknown", Generation = "lease_generation", Expired = "lease_expired", Revoked = "lease_revoked";
     }
 
+    /// <summary>Why Grant made no lease (the word is for a fixed log line, never for the wire).</summary>
+    internal static class NoGrant
+    {
+        public const string ComputerUnknown = "computer_unknown", VmMismatch = "vm_mismatch";
+    }
+
     private readonly IReadOnlyList<ComputerBinding> _computers;
-    private readonly Func<long> _now;
+    private readonly Func<long> _nowMs;
     private readonly long _lifetimeSeconds;
     private readonly object _gate = new();
     private readonly Dictionary<string, Lease> _byComputer = new(StringComparer.Ordinal); // also keeps an expired lease: its generation is what the next one counts from
 
-    /// <param name="now">The Broker's clock, Unix seconds.</param>
+    /// <param name="nowMs">A MONOTONIC clock in milliseconds (never a wall-clock time). The shipped Broker passes none and gets Environment.TickCount64; the tests pass a fake.</param>
     /// <param name="lifetimeSeconds">1..MaxLifetimeSeconds. The shipped Broker always passes MaxLifetimeSeconds; only the test build can pass less (DesktopPipe.cs).</param>
-    internal DesktopLeases(IReadOnlyList<ComputerBinding> computers, Func<long> now, long lifetimeSeconds = MaxLifetimeSeconds)
+    internal DesktopLeases(IReadOnlyList<ComputerBinding> computers, Func<long>? nowMs = null, long lifetimeSeconds = MaxLifetimeSeconds)
     {
         if (lifetimeSeconds is < 1 or > MaxLifetimeSeconds) throw new ArgumentOutOfRangeException(nameof(lifetimeSeconds));
         _computers = computers;
-        _now = now;
+        _nowMs = nowMs ?? (() => Environment.TickCount64);
         _lifetimeSeconds = lifetimeSeconds;
     }
 
-    /// <summary>A task.start claim for `operationId` was just recorded for `computerId`. Returns the new generation, or null when the computer is not configured (no lease is made).</summary>
-    internal long? Grant(string computerId, string operationId)
+    /// <summary>
+    /// A task.start claim for `operationId` was just recorded for `computerId`; `claimedVmId` is the `vmId` of its signed args, or null when it names none. Returns the new generation, or null with the
+    /// reason word in `refusal` (NoGrant) when no lease is made: the computer is not configured, or the claim names a VM other than the one the config binds to it.
+    /// </summary>
+    internal long? Grant(string computerId, string operationId, string? claimedVmId, out string refusal)
     {
-        if (!_computers.Any(c => string.Equals(c.ComputerId, computerId, StringComparison.Ordinal))) return null;
+        refusal = "";
+        if (_computers.FirstOrDefault(c => string.Equals(c.ComputerId, computerId, StringComparison.Ordinal)) is not { } computer) { refusal = NoGrant.ComputerUnknown; return null; }
+        if (claimedVmId is not null && !string.Equals(claimedVmId, computer.VmId, StringComparison.Ordinal)) { refusal = NoGrant.VmMismatch; return null; }
         List<LeaseSession> closing;
         long generation;
         lock (_gate)
@@ -45,7 +57,7 @@ internal sealed class DesktopLeases
             _byComputer.TryGetValue(computerId, out Lease? previous);
             generation = (previous?.Generation ?? 0) + 1;
             closing = previous?.Retire() ?? [];
-            _byComputer[computerId] = new Lease(computerId, operationId, generation, _now() + _lifetimeSeconds);
+            _byComputer[computerId] = new Lease(computerId, operationId, generation, _nowMs() + _lifetimeSeconds * 1000);
         }
         foreach (LeaseSession session in closing) session.Close(); // outside the lock: cancelling runs the waiting readers' continuations
         return generation;
@@ -62,21 +74,21 @@ internal sealed class DesktopLeases
         {
             if (!_byComputer.TryGetValue(computerId, out Lease? lease) || !string.Equals(lease.OperationId, operationId, StringComparison.Ordinal)) { refusal = Deny.Unknown; return null; }
             if (lease.Generation != generation) { refusal = Deny.Generation; return null; }
-            long remaining = lease.ExpiresAt - _now();
-            if (remaining <= 0) { refusal = Deny.Expired; return null; }
-            LeaseSession session = new(this, lease, TimeSpan.FromSeconds(remaining));
+            long remainingMs = lease.DeadlineMs - _nowMs();
+            if (remainingMs <= 0) { refusal = Deny.Expired; return null; }
+            LeaseSession session = new(this, lease, TimeSpan.FromMilliseconds(remainingMs));
             lease.Sessions.Add(session);
             return session;
         }
     }
 
-    // Null while the lease still stands (it is the current one for its computer and has not expired); otherwise the reason word.
+    // Null while the lease still stands (it is the current one for its computer and its deadline has not passed); otherwise the reason word.
     private string? Check(Lease lease)
     {
         lock (_gate)
         {
             if (!_byComputer.TryGetValue(lease.ComputerId, out Lease? current) || !ReferenceEquals(current, lease)) return Deny.Revoked;
-            return _now() >= lease.ExpiresAt ? Deny.Expired : null;
+            return _nowMs() >= lease.DeadlineMs ? Deny.Expired : null;
         }
     }
 
@@ -85,12 +97,12 @@ internal sealed class DesktopLeases
         lock (_gate) lease.Sessions.Remove(session);
     }
 
-    internal sealed class Lease(string computerId, string operationId, long generation, long expiresAt)
+    internal sealed class Lease(string computerId, string operationId, long generation, long deadlineMs)
     {
         public string ComputerId { get; } = computerId;
         public string OperationId { get; } = operationId;
         public long Generation { get; } = generation;
-        public long ExpiresAt { get; } = expiresAt;
+        public long DeadlineMs { get; } = deadlineMs;
         public List<LeaseSession> Sessions { get; } = [];
 
         // The sessions that held this lease, taken away (the caller closes them).
@@ -114,14 +126,14 @@ internal sealed class DesktopLeases
             _owner = owner;
             _lease = lease;
             Token = _closed.Token; // kept: reading it from the source after Dispose would throw
-            _closed.CancelAfter(untilExpiry); // the Broker's clock counts whole seconds rounded down, so this never fires before the lease is expired by the check below
+            _closed.CancelAfter(untilExpiry); // the timer starts after `untilExpiry` was measured on the same monotonic clock, so it never fires before the deadline check says expired
         }
 
         /// <summary>Cancelled when a newer claim replaces the lease, or the lease expires.</summary>
         public CancellationToken Token { get; }
 
-        /// <summary>Null while the lease still stands; otherwise the reason word. Asked before every input, because the token can lag behind the clock.</summary>
-        public string? Refusal() => _owner.Check(_lease);
+        /// <summary>Null while the lease still stands and the session's own token is live; otherwise the reason word. Asked before every input, because the token can lag behind the clock.</summary>
+        public string? Refusal() => _owner.Check(_lease) ?? (Token.IsCancellationRequested ? Deny.Revoked : null);
 
         internal void Close()
         {

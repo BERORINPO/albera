@@ -84,7 +84,7 @@ test('the only query text is a table class plus a format-checked GUID, and no ex
   assert.equal(/catch \((?!DesktopRefusal\b)\w+ \w+\)/u.test(desktop), false, 'no catch clause names the exception (only the fixed-word DesktopRefusal does), so it cannot be forwarded');
   assert.equal(/Console\.|Debug\.|Trace\.|ILogger/u.test(desktop + png), false, 'and nothing is printed');
   assert.deepEqual([...desktop.matchAll(/\b(?:public|internal) const string ([^;]+);/gu)].filter((m) => m[1].includes('ComputerUnknown')).map((m) => [...m[1].matchAll(/= "([a-z_]+)"/gu)].map((x) => x[1])),
-    [['computer_unknown', 'capture_size', 'input_steps', 'desktop_unavailable', 'capture_failed', 'input_failed', 'allowlist']], 'the only reason words');
+    [['computer_unknown', 'capture_size', 'input_steps', 'desktop_unavailable', 'capture_failed', 'input_failed', 'allowlist', 'input_cancelled']], 'the only reason words');
 });
 
 test('bounds: capture 64..1920 and 8 MiB, 256 steps, text 512, sleep 10000 per step and 12000 per request, and the per-op ranges of desktop-io.ps1', () => {
@@ -109,6 +109,12 @@ test('input releases held buttons then keys in reverse on failure, and records a
   const send = desktop.slice(desktop.indexOf('private DesktopResult SendSteps('), desktop.indexOf('private void Apply('));
   assert.match(send, /catch \(Exception\)\s*\{\s*\(List<uint> stuckKeys, List<uint> stuckButtons\) = ReleaseHeld\(gate, keyboard, mouse, heldKeys, heldButtons\);\s*if \(stuckKeys\.Count \+ stuckButtons\.Count > 0\) ReleaseOnNewConnection\(computer, stuckKeys, stuckButtons\);\s*throw;/u,
     'what could not be released is released once more on a new connection, then the original failure goes on');
+  const cancelled = String.raw`if \(cancel\.IsCancellationRequested\) throw new DesktopRefusal\(DesktopReason\.InputCancelled\);`;
+  assert.match(send, new RegExp(String.raw`foreach \(DesktopStep step in steps\)[\s\S]*?${cancelled}[\s\S]*?Apply\(gate, keyboard, mouse, step, heldKeys, heldButtons, cancel\);[\s\S]*?${cancelled}[\s\S]*?return new\(null\);`, 'u'),
+    'a lease that ended is seen before every step and after the last one, inside the try: the held keys are released and the original path reports it (Zaku MEDIUM 2 of #166)');
+  assert.match(desktop, /public DesktopResult Input\(string computerId, IReadOnlyList<DesktopStep> steps, CancellationToken cancel = default\)[\s\S]{0,400}if \(cancel\.IsCancellationRequested\) return new\(DesktopReason\.InputCancelled\);[\s\S]{0,80}return Run\(/u, 'and before WMI is touched');
+  assert.match(desktop, /_sleep = sleep \?\? \(\(ms, cancel\) => cancel\.WaitHandle\.WaitOne\(ms\)\);/u, 'a sleep step ends when the token is cancelled');
+  assert.equal(/Thread\.Sleep/u.test(desktop), false);
   const retry = desktop.slice(desktop.indexOf('private void ReleaseOnNewConnection('), desktop.indexOf('private void Apply('));
   assert.equal([...retry.matchAll(/_connect\(\)/gu)].length, 1, 'one new connection');
   assert.equal([...retry.matchAll(/ReleaseHeld\(/gu)].length, 1, 'one release pass on it, never a loop');

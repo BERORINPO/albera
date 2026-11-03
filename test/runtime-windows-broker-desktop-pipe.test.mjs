@@ -362,15 +362,16 @@ describe('Broker desktop pipe, view and act sessions (seam build, stdin EOF = SE
   // The lease comes from one thing only: a task.start claim recorded over the real claim pipe (the three-key frame). `${name}-op` is the operationId of the claim called `name`.
   const TASK_SUCCESS = { ok: true, state: 'UNKNOWN', action: 'task.start' };
   const TWO_COMPUTERS = [...COMPUTERS, { computerId: 'room-2', vmId: '0123abcd-4567-89ab-cdef-000000000002' }];
-  const dtoOf = (computerId) => ({ action: 'task.start', projectId: 'project-1', computerId, args: { task: 'build the project' } });
-  /** Prepares (fence + sign) and sends a task.start claim; `request` can be sent again as an exact replay. */
-  async function claimTaskStart(session, name, computerId = 'room-1') {
-    const prepared = await session.prepare(name, { purpose: 'guest.command', action: 'task.start', args: { task: 'build the project' }, computerId });
-    const request = { ...prepared, action: dtoOf(computerId) };
+  const PLAIN_ARGS = { task: 'build the project' };
+  const dtoOf = (computerId, args = PLAIN_ARGS) => ({ action: 'task.start', projectId: 'project-1', computerId, args });
+  /** Prepares (fence + sign) and sends a task.start claim; `request` can be sent again as an exact replay. `args` is the attested form { task, vmId, expectedGeneration } when it names a VM. */
+  async function claimTaskStart(session, name, computerId = 'room-1', args = PLAIN_ARGS) {
+    const prepared = await session.prepare(name, { purpose: 'guest.command', action: 'task.start', args, computerId });
+    const request = { ...prepared, action: dtoOf(computerId, args) };
     return { operationId: `${name}-op`, request, reply: await session.send(request) };
   }
-  async function claimed(session, name, computerId) {
-    const claim = await claimTaskStart(session, name, computerId);
+  async function claimed(session, name, computerId, args) {
+    const claim = await claimTaskStart(session, name, computerId, args);
     assert.deepEqual(claim.reply, TASK_SUCCESS, `claim ${name}`);
     return claim;
   }
@@ -434,6 +435,36 @@ describe('Broker desktop pipe, view and act sessions (seam build, stdin EOF = SE
     await refusedOpen(child, desktop, actOpen(operationId, 1, 'room-2'), 'the other configured computer, which has no lease', 'lease_unknown');
     await refusedOpen(child, desktop, actOpen(operationId.toUpperCase()), 'the operation id in another case', 'lease_unknown');
     (await openAct(desktop, operationId)).socket.destroy(); // and the right one opens
+    assert.equal((await stop(child)).code, 0);
+  });
+
+  // Zaku MEDIUM 3 of #166: an attested task.start names its VM in the signed args; the lease is made only when that is the VM the config binds to the computer.
+  it('makes a lease for a claim that names the configured VM or none, and none for a claim that names another VM: the claim itself is answered the same, one fixed word is logged', async () => {
+    const { child, desktop, claims } = await start('act-vm-binding', { computers: TWO_COMPUTERS });
+    const session = claims();
+    const attested = (vmId) => ({ task: 'build the project', vmId, expectedGeneration: 1 });
+    const OTHER_VM = '0123abcd-4567-89ab-cdef-00000000ffff';
+    const wrong = await claimed(session, 'v1', 'room-1', attested(OTHER_VM)); // not a VM of the config at all
+    const swapped = await claimed(session, 'v2', 'room-1', attested(TWO_COMPUTERS[1].vmId)); // room-2's VM named for room-1
+    assert.equal(countOf(child, 'LEASE=VM_MISMATCH'), 2);
+    assert.equal(countOf(child, 'LEASE=GRANTED'), 0);
+    await refusedOpen(child, desktop, actOpen(wrong.operationId), 'a claim that named an unknown VM', 'lease_unknown');
+    await refusedOpen(child, desktop, actOpen(swapped.operationId), 'a claim that named the other computer\'s VM', 'lease_unknown');
+    // The right VM makes the lease, and it is generation 1: the refused claims spent no generation.
+    const right = await claimed(session, 'v3', 'room-1', attested(COMPUTERS[0].vmId));
+    assert.equal(countOf(child, 'LEASE=GRANTED'), 1);
+    (await openAct(desktop, right.operationId, 1)).socket.destroy();
+    // A claim that names the wrong VM later leaves the standing lease as it is (it is not replaced and its session is not closed).
+    const live = await openAct(desktop, right.operationId, 1);
+    await claimed(session, 'v4', 'room-1', attested(OTHER_VM));
+    assert.equal(countOf(child, 'LEASE=VM_MISMATCH'), 3);
+    await refused(child, 'the session open during a mismatching claim', REACHED_ADAPTER, async () => { live.send(input(TAP)); return live; });
+    (await openAct(desktop, right.operationId, 1)).socket.destroy();
+    // The plain { task } form names no VM and makes a lease, as before.
+    const plain = await claimed(session, 'v5', 'room-2');
+    (await openAct(desktop, plain.operationId, 1, 'room-2')).socket.destroy();
+    assert.equal(countOf(child, 'LEASE=GRANTED'), 2);
+    assert.equal(child.lines.some((line) => line.includes(OTHER_VM) || line.includes(TWO_COMPUTERS[1].vmId)), false, 'the log names no VM GUID');
     assert.equal((await stop(child)).code, 0);
   });
 
@@ -591,7 +622,7 @@ describe('Broker desktop pipe, view and act sessions (seam build, stdin EOF = SE
     assert.equal((await stop(child)).code, 0);
   });
 
-  it('asks for the lease again when a waiting request gets its turn: a claim that replaced the lease meanwhile stops the request before the adapter', async () => {
+  it('ends a request that waits for its turn when the lease ends, and stops the one that holds the turn before it sends a step: a claim that replaced the lease meanwhile', async () => {
     const { child, desktop, claims } = await start('act-recheck', {}, { ALBERA_BROKER_TEST_DESKTOP_INPUT_HOLD_MS: '4000' }); // long enough for a fence + claim through the helper process while the first request holds the turn
     const session = claims();
     const { operationId } = await claimed(session, 'k1');
@@ -601,8 +632,11 @@ describe('Broker desktop pipe, view and act sessions (seam build, stdin EOF = SE
     await claimed(session, 'k2'); // replaces the lease while one request runs and the other waits
     assert.deepEqual(await Promise.all(sessions.map((act) => act.json())), [DENIED, DENIED]);
     await until(() => reasonsOf(child).length === 2, 'both reasons logged');
-    assert.deepEqual([...reasonsOf(child)].sort(), [REACHED_ADAPTER, 'lease_revoked'], 'one request was already running; the other never reached the adapter');
+    assert.deepEqual(reasonsOf(child), ['lease_revoked', 'lease_revoked'], 'the one that was running was stopped before the adapter sent a step (it would have ended desktop_unavailable); the other never reached the adapter');
     assert.equal(marks(child).filter((mark) => mark === 'input_enter').length, 1);
+    // The waiting request did not wait for the turn: its refusal came while the first request still held it (the hold is in the test build only).
+    const logged = child.lines.filter((line) => line === 'DESKTOP_DENY=lease_revoked' || line === 'DESKTOP_TEST=input_exit');
+    assert.deepEqual(logged.slice(0, 2), ['DESKTOP_DENY=lease_revoked', 'DESKTOP_TEST=input_exit'], 'the waiting request was refused before the running one left its turn');
     assert.equal((await stop(child)).code, 0);
   });
 
