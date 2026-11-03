@@ -70,7 +70,7 @@ All folders are created by setup with their final owner and protected DACL in on
 | Builds | `C:\Program Files\Albera\bin\{broker,authority,pipe-client,approver,setup,control-plane,claude}` | Program Files default: administrators write, Users read and execute | `claude` holds the pinned Claude Code copy (section 8). `setup` holds `albera-setup.exe` and the bundled `gh.exe` |
 | CP working data | `C:\ProgramData\Albera\control-plane\` | SYSTEM and Administrators full; CP full control | The Runtime journal refuses a folder where its own user lacks full control (found 2026-11-02). `claude-run\<runId>\{config,work,tmp}` is made empty per task and deleted after it; the CP host sweeps leftovers at start |
 | CP settings (moved) | `C:\ProgramData\Albera\control-plane-config\albera.approval.json` and `AlberaControlPlane.service.json` | SYSTEM and Administrators full; CP **read only** | Closes the known limit `2026-11-03+cp-settings-pin-scope` (ADR-002): the CP can no longer rewrite the helper pin or the `desktop` block. Gains the `claude` block (section 6.1) |
-| Secrets | `C:\ProgramData\Albera\secrets\<name>.dpapi` | SYSTEM and Administrators full; CP Modify; nobody else (not the owner) | DPAPI blobs only (section 5) |
+| Secrets | `C:\ProgramData\Albera\secrets\<name>.dpapi` | SYSTEM and Administrators full; CP Modify; nobody else (not the owner) | DPAPI blobs, and beside each a `<name>.meta` with the first 8 hex of the value's SHA-256 and the save time (no plaintext; section 5) |
 | UI bootstrap | `C:\ProgramData\Albera\ui\room.json` = `{port, code, pid, writtenAt}` | SYSTEM and Administrators full; CP Modify; owner Read | The file is created by node in the folder and inherits exactly this list |
 | Install record | `C:\ProgramData\Albera\install-manifest.json` | Unchanged | Gains `controlPlane` (service SID, node hash), `claude` (version string, SHA-256, source path), `setupRunId` (section 8) |
 
@@ -102,6 +102,8 @@ Routes added to the room: credential (section 5), `POST /api/jobs {computerId, t
 | Scope | DPAPI `CurrentUser` as the CP virtual account, with entropy `albera.<name>.v1`. Names: `claude-oauth-token` (default), `anthropic-api-key` (option) | Decided (plan) |
 | Evidence | Lab 2026-11-03 (`cp3`, `cp4`): protect and unprotect round-trip with entropy, wrong entropy refused, and the blob refused to Administrator, a plain local user and another virtual account | Measured |
 | Where it runs | The helper in "secret" mode (a child with the same token) protects and unprotects over stdin and stdout; Node never holds a DPAPI binding. The plaintext exists in Node only for the duration of one spawn call (6.2) | Decided (plan) |
+| Status and check | Save writes `<name>.meta` (hash prefix and date, no plaintext) after the blob; the room's status reads only that file and never decrypts. Whether this account can still open the blob is an explicit `verify(name)` (one helper run). Erase deletes both files. The names are the two above and nothing else (a frozen list) | Decided (plan) |
+| Known limit: helper pin | The helper is not a single-file publish, so the SHA-256 pin (`helperPath` and `helperSha256` are required by the secret store, as in the room's `desktop` settings) covers the exe only, not the dll files beside it. Setup's tree hash covers the whole `bin\pipe-client` folder at install time and `bin` is writable only by administrators (outside the threat model). Single-file publish is a later task (ADR-002, decision `2026-11-03+cp-helper-pin-scope`) | Known limit |
 | Entry | One password field in the room, write-only API, body at most 1 KiB, never returned or logged, never in a URL. After save the room shows only the first 8 hex of its SHA-256 and the date. The page tries to clear the clipboard (best effort; failure is silent and the page says so) | Decided (plan) |
 | Check on save | Format only (printable ASCII, no whitespace, 1 to 1024 bytes). A live check is a measurement item (`claude auth status` with the token in the environment, M3) so that saving never spends a model call | Provisional |
 | Erase | The UI deletes the blob; uninstall deletes the folder. Real revocation is at the provider; where a `setup-token` token is revoked is NOT VERIFIED (M2) | Decided (plan) |
@@ -188,6 +190,13 @@ The driver turns Claude Code's stream into the **same event shape** `desktop-age
 | Stop | A person's `stop` on a decision card, "stop all", CP stop | | Kills the recorded PID; the MCP server ends on stdin end. The Broker's lease for that operation still lives until a newer claim or its deadline (the ADR-002 follow-up) |
 
 The numbers are Provisional. What the subscription's own usage limits do to a headless run is NOT VERIFIED (M5); the driver maps any authentication or rate-limit end to a fixed code and never retries in a loop.
+
+### 6.6a Known limit: what a screen can make the hands do (Provisional)
+
+Text on a screen is untrusted input, and the six tools include `key` and `type`, so a page the model reads can talk it into opening a shell inside the VM; the tools do not refuse key combinations, because the VM is a disposable sandbox and later work runs CLIs inside it.
+- The damage stays inside the VM the lease names: the hands have no other computer, no file tool and no host command.
+- How large the damage can be is set by what the VM can reach outside itself (network) and by the credentials it holds.
+- So a VM given to the hands has its outbound network restricted and holds no credentials.
 
 ### 6.7 API-key option
 
