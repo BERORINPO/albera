@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
 // Fake of the `claude` executable for claude-code-driver.mjs (test double; nothing here talks to Anthropic or reads any credential). Run it as
@@ -20,13 +20,15 @@ const [scriptFile, ...argv] = process.argv.slice(2);
 const script = JSON.parse(readFileSync(scriptFile, 'utf8'));
 const emit = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const record = { argv, env: { ...process.env }, cwd: process.cwd(), task: null, mcpPid: null, toolResults: [] };
-const save = () => { if (script.recordTo) writeFileSync(script.recordTo, JSON.stringify(record)); };
+// Written to a side file and renamed into place, so a test that reads the record after the driver killed this process never sees a half-written file.
+const save = () => { if (!script.recordTo) return; const tmp = `${script.recordTo}.${process.pid}.tmp`; writeFileSync(tmp, JSON.stringify(record)); renameSync(tmp, script.recordTo); };
 process.once('SIGTERM', () => { save(); process.exit(143); });
 
 function startMcp() {
   const config = JSON.parse(readFileSync(argv[argv.indexOf('--mcp-config') + 1], 'utf8')).mcpServers.albera_desktop;
   const child = spawn(config.command, config.args, { env: config.env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
   record.mcpPid = child.pid;
+  save();
   const waiting = new Map();
   let nextId = 1;
   createInterface({ input: child.stdout }).on('line', (line) => { const m = JSON.parse(line); waiting.get(m.id)?.(m); waiting.delete(m.id); });

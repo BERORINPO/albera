@@ -288,7 +288,7 @@ test('the hash workflow: manual only, main only, prints the tree hash and one sc
   assert.match(yml, /^on:\s*\n\s+workflow_dispatch:\s*$/mu);
   assert.doesNotMatch(yml, /^\s+(?:push|pull_request|schedule):/mu, 'no automatic trigger: Windows minutes cost money');
   assert.match(yml, /^\s+if: github\.ref == 'refs\/heads\/main'\s*$/mu);
-  assert.match(yml, /timeout-minutes: 20/u);
+  assert.match(yml, /timeout-minutes: 30/u);
   assert.match(yml, /runs-on: windows-latest/u);
   assert.match(yml, /node-version: 24/u);
   assert.match(yml, /C:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe -NoProfile -File scripts\/host\/albera-host\.ps1 -Mode hashes/u);
@@ -296,7 +296,7 @@ test('the hash workflow: manual only, main only, prints the tree hash and one sc
   assert.match(yml, /'albera-host\.ps1', 'albera-host-lib\.ps1'/u);
   assert.match(yml, /Write-Host "commit=\$env:GITHUB_SHA"/u);
   assert.match(yml, /Write-Host "ref=\$env:GITHUB_REF"/u);
-  assert.match(yml, /upload-artifact@v4/u);
+  assert.match(yml, /upload-artifact@[0-9a-f]{40}/u);
   const doc = readFileSync(path.join(root, 'docs', 'architecture', 'host-install.md'), 'utf8');
   assert.match(doc, /branch badge under the run title says `main`/u);
   assert.match(doc, /merge commit of PR #148/u);
@@ -335,16 +335,19 @@ const permissionBlocks = (yml) => {
   return blocks;
 };
 
-test('the hash workflow signs build provenance for the three exe files, the two host scripts and build-hashes.json, with only the permissions that needs; the installer does not consume it', () => {
+test('the hash workflow signs build provenance for the three exe files, the two host scripts, build-hashes.json and the three files of setup, with only the permissions that needs; the installer script does not consume it', () => {
   const yml = readFileSync(path.join(root, '.github', 'workflows', 'host-build-hashes.yml'), 'utf8');
   assert.deepEqual(permissionBlocks(yml), [
     { indent: 0, entries: { contents: 'read' } },
+    { indent: 4, entries: { contents: 'read' } },
     { indent: 4, entries: { contents: 'read', 'id-token': 'write', attestations: 'write' } },
-  ], 'workflow level stays read-only; the job adds only an OIDC token and the attestations API (no packages, artifact-metadata, write-all ...)');
+    { indent: 4, entries: { contents: 'read', attestations: 'read' } },
+  ], 'workflow level stays read-only; only the attest job (no npm, dotnet or node, runs nothing the build made) has an OIDC token; the build job has none and the verify job (which runs gh and setup) may only read attestations (no packages, artifact-metadata, write-all ...)');
   assert.match(yml, /^\s+if: github\.ref == 'refs\/heads\/main'\s*$/mu, 'the job still refuses any branch but main');
   const uses = [...yml.matchAll(/uses:\s*(actions\/attest\S*)/gu)].map((m) => m[1]);
-  assert.deepEqual(uses, ['actions/attest-build-provenance@v4'], 'one attest step, referenced like the other actions (owner/name@major)');
-  const attest = yml.indexOf('actions/attest-build-provenance@v4');
+  assert.equal(uses.length, 1, 'one attest step');
+  assert.match(uses[0], /^actions\/attest-build-provenance@[0-9a-f]{40}$/u, 'pinned to a commit SHA like every other action');
+  const attest = yml.indexOf('actions/attest-build-provenance@');
   for (const before of ['npm run build:windows-broker', 'npm run build:approval-authority', '-Mode hashes', 'build-hashes.json", $json[0]']) assert.ok(yml.indexOf(before) > 0 && yml.indexOf(before) < attest, `the attest step runs after: ${before}`);
   assert.doesNotMatch(yml, /push-to-registry|create-storage-record|subject-digest|subject-checksums/u);
   const block = /subject-path: \|\n((?: {12}\S.*\n)+)/u.exec(yml);
@@ -354,7 +357,8 @@ test('the hash workflow signs build provenance for the three exe files, the two 
   const script = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
   const exes = [...script.matchAll(/Dir = Join-Path \$r '([^']+)'; Exe = '([^']+)'/gu)].map((m) => `${m[1].replaceAll('\\', '/')}/${m[2]}`);
   assert.equal(exes.length, 3, 'the three build sources are found (false-safe)');
-  assert.deepEqual(subjects, [...exes, 'scripts/host/albera-host.ps1', 'scripts/host/albera-host-lib.ps1', 'build-hashes.json']);
+  // PR6 adds the setup program, the bundled gh.exe and the trusted root (test/runtime-windows-setup-source.test.mjs checks them against setup's own layout).
+  assert.deepEqual(subjects, [...exes, 'scripts/host/albera-host.ps1', 'scripts/host/albera-host-lib.ps1', 'build-hashes.json', 'src/runtime/windows-setup/bin/Release/net10.0-windows/win-x64/publish/albera-setup.exe', 'setup-input/gh.exe', 'setup-input/trusted_root.jsonl']);
   // Provenance is an extra check for the owner, not an input of the installer (consuming it is a separate security change).
   for (const file of ['albera-host.ps1', 'albera-host-lib.ps1']) assert.doesNotMatch(readFileSync(path.join(hostDir, file), 'utf8'), /gh attestation|attest-build-provenance|sigstore/iu, file);
   const doc = readFileSync(path.join(root, 'docs', 'architecture', 'host-install.md'), 'utf8');

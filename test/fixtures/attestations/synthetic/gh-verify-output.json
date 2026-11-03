@@ -1,0 +1,43 @@
+[
+  {
+    "attestation": {
+      "note": "SYNTHETIC: written by hand for the unit tests. Not produced by GitHub, Sigstore or gh."
+    },
+    "verificationResult": {
+      "mediaType": "application/vnd.dev.sigstore.verificationresult+json;version=0.1",
+      "statement": {
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": [
+          { "name": "sample.bin", "digest": { "sha256": "77b9fdd0b54053f8a98058a132567d44b9f73faeeaac2e6bafd62a11992ebb0c" } }
+        ],
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": { "note": "predicate text is ignored by albera-setup.exe" }
+      },
+      "signature": {
+        "certificate": {
+          "certificateIssuer": "CN=Sigstore Intermediate CA,O=sigstore.dev",
+          "subjectAlternativeName": "https://github.com/BERORINPO/albera/.github/workflows/host-build-hashes.yml@refs/heads/main",
+          "issuer": "https://token.actions.githubusercontent.com",
+          "githubWorkflowTrigger": "workflow_dispatch",
+          "githubWorkflowSHA": "0123456789abcdef0123456789abcdef01234567",
+          "githubWorkflowName": "Host build hashes",
+          "githubWorkflowRepository": "BERORINPO/albera",
+          "githubWorkflowRef": "refs/heads/main",
+          "buildSignerURI": "https://github.com/BERORINPO/albera/.github/workflows/host-build-hashes.yml@refs/heads/main",
+          "buildSignerDigest": "0123456789abcdef0123456789abcdef01234567",
+          "runnerEnvironment": "github-hosted",
+          "sourceRepositoryURI": "https://github.com/BERORINPO/albera",
+          "sourceRepositoryDigest": "0123456789abcdef0123456789abcdef01234567",
+          "sourceRepositoryRef": "refs/heads/main",
+          "sourceRepositoryIdentifier": "1424608761",
+          "sourceRepositoryOwnerIdentifier": "215606621",
+          "buildTrigger": "workflow_dispatch",
+          "runInvocationURI": "https://github.com/BERORINPO/albera/actions/runs/1234567/attempts/1"
+        }
+      },
+      "verifiedTimestamps": [
+        { "type": "Tlog", "uri": "https://rekor.sigstore.dev", "timestamp": "2026-11-03T00:00:00Z" }
+      ]
+    }
+  }
+]
