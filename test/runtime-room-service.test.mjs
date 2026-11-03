@@ -140,6 +140,59 @@ test('a file that cannot be removed is still replaced by the new port and code (
   assert.equal(failing.bootstrap.read(failing.paths.uiFile), null);
 });
 
+// ---- zaku SEC-002: a start that fails leaves no old room.json behind ----
+
+test('a start that fails at any step leaves no ui\\room.json of an earlier run: the file goes before the approval wiring is opened, and again when no host was made', async (t) => {
+  const stale = () => ({ text: JSON.stringify({ port: 1, code: 'STALE-CODE-from-the-last-run-0123456789', pid: 1 }), acl: roomBootstrapAcl({ cpSid: CP_SID, approverSid: OWNER_SID }) });
+  // (a) the approval wiring cannot open (the flow's journal is unavailable): the file is already gone, and it went before the store was asked for
+  const a = await makeServiceWorld(t);
+  a.bootstrap.files.set(a.paths.uiFile, stale());
+  let removedBeforeStore = null;
+  a.approval.deps.openStore = async () => { removedBeforeStore = a.bootstrap.read(a.paths.uiFile) === null; throw new Error('EPERM'); };
+  await assert.rejects(startRoomService({ dataRoot: a.dataRoot }, a.deps), { message: 'runtime_room_approval_journal_unavailable' });
+  assert.equal(removedBeforeStore, true, 'removed before openRoomApproval ran');
+  assert.equal(a.bootstrap.read(a.paths.uiFile), null);
+  // (b) a failure after the approval wiring but before a host exists, and the first removal failed: the catch removes it again
+  const b = await makeServiceWorld(t);
+  b.bootstrap.files.set(b.paths.uiFile, stale());
+  let removals = 0;
+  const flaky = { ...b.bootstrap, files: b.bootstrap.files, write: b.bootstrap.write, remove: async (file) => { removals += 1; if (removals === 1) throw new Error('locked'); return b.bootstrap.remove(file); } };
+  await assert.rejects(startRoomService({ dataRoot: b.dataRoot }, { ...b.deps, secretStore: {}, createBootstrapStore: () => flaky }), { message: 'invalid_room_service_hands_dependencies' });
+  assert.equal(removals, 2, 'once at the start (it failed), once in the catch');
+  assert.equal(b.bootstrap.read(b.paths.uiFile), null);
+  assert.ok(b.approval.storeClosed >= 1 && b.approval.desktopClosed >= 1, 'what had been opened is closed');
+  // (c) a failure of the settings themselves, before any sink exists, touches no file
+  const c = await makeServiceWorld(t, { servicePatch: { extra: 1 } });
+  c.bootstrap.files.set(c.paths.uiFile, stale());
+  await assert.rejects(startRoomService({ dataRoot: c.dataRoot }, c.deps), { message: 'room_service_config_unknown_key' });
+  assert.deepEqual(c.bootstrap.removes, [], 'nothing was decided about a file the settings could not even be read for');
+});
+
+// ---- zaku SEC-001 at the wiring level ----
+
+test('an executable the guard does not trust: the job is approved, the start fails with a fixed code, the credential is never opened and nothing runs; the guard is asked for the pinned executable on every run', async (t) => {
+  const w = await makeServiceWorld(t);
+  await w.start();
+  const room = await w.open();
+  w.claudeGuard.trusted = false;
+  const first = await startJob(room);
+  await until(async () => (await jobState(room, first.jobId)) === 'start_failed', 'start_failed');
+  assert.deepEqual([w.driverSeen.length, existsSync(w.recordTo), existsSync(w.paths.runRoot)], [0, false, false]);
+  assert.ok(w.logs.includes('hands ended outcome=error reason=claude_untrusted'));
+  w.claudeGuard.trusted = true;
+  const second = await startJob(room);
+  await until(async () => (await jobState(room, second.jobId)) === 'started', 'started once it is trusted');
+  await until(() => w.logs.filter((l) => l.startsWith('hands ended')).length === 2, 'the run to end');
+  assert.deepEqual(w.claudeGuard.checked, [process.execPath, process.execPath], 'asked for each run, for the executable the settings pin');
+});
+
+test('the default guard is the real one for the settings\' install folder: a claude.exe outside C:\\Program Files\\Albera\\bin\\claude is refused when the settings are read', async (t) => {
+  const w = await makeServiceWorld(t);
+  const { claudeInstallDir, claudeGuard, ...rest } = w.deps; // the real defaults: the fixed install folder, the real ACL check
+  await assert.rejects(startRoomService({ dataRoot: w.dataRoot }, rest), { message: 'room_service_config_claude' });
+  assert.ok(claudeInstallDir && claudeGuard);
+});
+
 // ---- acceptance 7: loopback only ----
 
 test('the room answers on 127.0.0.1 only: this machine\'s other addresses and ::1 refuse the connection', async (t) => {
@@ -162,8 +215,12 @@ test('the room answers on 127.0.0.1 only: this machine\'s other addresses and ::
 });
 
 test('source guard: the new modules open no listener of their own and never name a wildcard address', () => {
-  for (const file of ['room-service-wiring.mjs', 'room-service-hands.mjs', 'room-service-approvals.mjs', 'room-service-config.mjs']) {
+  for (const file of ['room-service-wiring.mjs', 'room-service-hands.mjs', 'room-service-approvals.mjs', 'room-service-config.mjs', 'room-service-folder-guard.mjs']) {
     const code = readFileSync(path.join(SRC, file), 'utf8').split('\n').filter((line) => !/^\s*(?:\/\/|\/\*|\*)/u.test(line)).join('\n');
+    // the environment is never a source of a credential or a trust decision: the only variable read is the OS directory, to find powershell.exe
+    const env = [...code.matchAll(/process\.env(?:\.\w+|\[[^\]]*\])?/gu)].map((m) => m[0]);
+    assert.deepEqual([...new Set(env)], file === 'room-service-folder-guard.mjs' ? ['process.env.SystemRoot', 'process.env.SYSTEMROOT'] : [], `${file}: environment reads`);
+    assert.doesNotMatch(code, /ANTHROPIC|CLAUDE_CODE_OAUTH_TOKEN|ProgramFiles/u, `${file}: no credential variable, no Program Files variable`);
     assert.doesNotMatch(code, /createServer|node:http|node:net|0\.0\.0\.0|'::'|"::"/u, file);
     assert.deepEqual([...code.matchAll(/console\.|process\.std(?:out|err)/gu)], [], `${file}: prints only through the \`out\` it is given`);
     assert.deepEqual([...code.matchAll(/\.listen\(/gu)].length, file === 'room-service-wiring.mjs' ? 1 : 0, `${file}: the one listen() is the room host's, on port 0`);
@@ -255,6 +312,17 @@ test('each job gets a different, empty config folder; a credential saved through
   assert.deepEqual([stopped.status, stopped.json.stopped], [200, 1]);
   await until(() => w.logs.includes('hands ended outcome=stopped reason=stopped_by_human'), 'the run to stop');
   assert.equal(existsSync(path.dirname(w.driverSeen[0].configDir)), false);
+  // zaku SEC-003 with the real driver: on Windows the driver never CONFIRMS a tree stop (taskkill's exit code is not proof), so a run that was killed keeps its computer busy until a person stops it
+  const unconfirmed = w.logs.includes('hands tree_stop_unconfirmed');
+  assert.equal(unconfirmed, process.platform === 'win32', 'this is what the driver reports on this platform');
+  if (unconfirmed) {
+    const blocked = await startJob(room);
+    await until(async () => (await jobState(room, blocked.jobId)) === 'start_failed', 'start_failed (busy)');
+    assert.equal((await room.call('GET', 'api/jobs')).json.jobs.find((j) => j.jobId === blocked.jobId).code, 'busy');
+    assert.equal(w.driverSeen.length, 1, 'no second run next to a tree that may still be alive');
+    const released = await room.call('POST', 'api/jobs/stop-all', {});
+    assert.deepEqual([released.status, released.json.stopped], [200, 0], 'the person\'s stop releases it; nothing was running');
+  }
   // a third job: a new folder again
   const third = await startJob(room);
   await until(async () => (await jobState(room, third.jobId)) === 'started', 'third job started');

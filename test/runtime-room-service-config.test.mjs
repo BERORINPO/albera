@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { CLAUDE_LIMITS, MAX_SERVICE_CONFIG_BYTES, loadServiceConfig, parseServiceConfig, roomServicePaths } from '../src/runtime/room-service-config.mjs';
+import { CLAUDE_INSTALL_DIR, CLAUDE_LIMITS, MAX_SERVICE_CONFIG_BYTES, loadServiceConfig, parseServiceConfig, roomServicePaths } from '../src/runtime/room-service-config.mjs';
 
 // What room-service reads from AlberaControlPlane.service.json and where it looks (src/runtime/room-service-config.mjs). Pure parsing: no file is read except through the injected `io`.
 const CP_SID = 'S-1-5-80-1111111111-2222222222-3333333333-4444444444-5555555555';
 const OWNER_SID = 'S-1-5-21-1000000000-2000000000-3000000000-1001';
-const EXE = path.resolve(path.sep, 'albera-test', 'claude.exe');
+const INSTALL = path.resolve(path.sep, 'albera-test'); // stands in for the install folder (CLAUDE_INSTALL_DIR); the real default is checked in its own test
+const EXE = path.join(INSTALL, 'claude.exe');
+const parse = (text) => parseServiceConfig(text, { installDir: INSTALL });
 const SHA = 'a'.repeat(64);
 const valid = (patch = {}) => ({
   host: { nodePath: 'ignored by the room', nodeSha256: 'ignored' },
@@ -31,14 +33,14 @@ test('paths: everything comes from the data root alone', () => {
 });
 
 test('a valid file: claude limits default to the contract\'s 15 minutes and 120 calls, the host block is ignored, the ACL is the two-entry protected one', () => {
-  const config = parseServiceConfig(JSON.stringify(valid()));
+  const config = parse(JSON.stringify(valid()));
   assert.deepEqual({ ...config.claude }, { executable: EXE, executableSha256: SHA, model: null, maxMs: 15 * 60_000, maxToolCalls: 120 });
   assert.deepEqual(config.ui.acl, { protectedDacl: true, entries: [{ sid: CP_SID, right: 'Modify' }, { sid: OWNER_SID, right: 'Read' }] });
   assert.ok(Object.isFrozen(config) && Object.isFrozen(config.claude));
-  const full = parseServiceConfig(JSON.stringify(valid({ claude: { executable: EXE, executableSha256: SHA, model: 'claude-haiku-5-5', maxMinutes: CLAUDE_LIMITS.maxMinutes, maxToolCalls: CLAUDE_LIMITS.maxToolCalls } })));
+  const full = parse(JSON.stringify(valid({ claude: { executable: EXE, executableSha256: SHA, model: 'claude-haiku-5-5', maxMinutes: CLAUDE_LIMITS.maxMinutes, maxToolCalls: CLAUDE_LIMITS.maxToolCalls } })));
   assert.deepEqual([full.claude.model, full.claude.maxMs, full.claude.maxToolCalls], ['claude-haiku-5-5', 55 * 60_000, 400]);
-  assert.equal(parseServiceConfig(`﻿${JSON.stringify(valid())}`).claude.executable, EXE, 'a BOM is tolerated');
-  assert.equal(parseServiceConfig(JSON.stringify({ claude: valid().claude, ui: valid().ui })).claude.executable, EXE, 'the host block may be absent here (the host validates its own)');
+  assert.equal(parse(`﻿${JSON.stringify(valid())}`).claude.executable, EXE, 'a BOM is tolerated');
+  assert.equal(parse(JSON.stringify({ claude: valid().claude, ui: valid().ui })).claude.executable, EXE, 'the host block may be absent here (the host validates its own)');
 });
 
 test('every wrong field is refused with its own fixed code; the error never carries the content', () => {
@@ -68,7 +70,7 @@ test('every wrong field is refused with its own fixed code; the error never carr
     ['a missing ui key', JSON.stringify({ ...valid(), ui: { controlPlaneSid: CP_SID } }), 'room_service_config_ui'],
   ];
   for (const [label, text, code] of table) {
-    const got = codeOf(() => parseServiceConfig(text));
+    const got = codeOf(() => parse(text));
     assert.equal(got, code, label);
     assert.ok(!got.includes(secret));
   }
@@ -77,10 +79,39 @@ test('every wrong field is refused with its own fixed code; the error never carr
 test('loadServiceConfig: a regular small file only; the error names no path', () => {
   const file = path.resolve(path.sep, 'albera-test', 'AlberaControlPlane.service.json');
   const io = (over = {}) => ({ statSync: () => ({ isFile: () => true, size: 100 }), readFileSync: () => JSON.stringify(valid()), ...over });
-  assert.equal(loadServiceConfig(file, io()).claude.executable, EXE);
+  assert.equal(loadServiceConfig(file, io(), { installDir: INSTALL }).claude.executable, EXE);
   for (const over of [{ statSync: () => { throw new Error(`ENOENT ${file}`); } }, { statSync: () => ({ isFile: () => false, size: 1 }) }, { statSync: () => ({ isFile: () => true, size: MAX_SERVICE_CONFIG_BYTES + 1 }) },
     { readFileSync: () => { throw new Error(`EACCES ${file}`); } }]) {
-    const got = codeOf(() => loadServiceConfig(file, io(over)));
+    const got = codeOf(() => loadServiceConfig(file, io(over), { installDir: INSTALL }));
     assert.equal(got, 'room_service_config_unreadable');
   }
 });
+
+// ---- zaku SEC-001: claude.exe lives in the administrator-only install folder ----
+
+test('the install folder is a fixed Program Files path, not an environment variable', () => {
+  assert.equal(CLAUDE_INSTALL_DIR, 'C:\\Program Files\\Albera\\bin\\claude');
+  const saved = process.env.ProgramFiles;
+  process.env.ProgramFiles = 'D:\\Somewhere\\Else'; // a variable must not move the folder
+  try {
+    const text = (executable) => JSON.stringify(valid({ claude: { executable, executableSha256: SHA } }));
+    if (process.platform === 'win32') {
+      assert.equal(parseServiceConfig(text('C:\\Program Files\\Albera\\bin\\claude\\claude.exe')).claude.executable, 'C:\\Program Files\\Albera\\bin\\claude\\claude.exe');
+      assert.equal(codeOf(() => parseServiceConfig(text('D:\\Somewhere\\Else\\Albera\\bin\\claude\\claude.exe'))), 'room_service_config_claude');
+    }
+    assert.equal(codeOf(() => parseServiceConfig(text(EXE))), 'room_service_config_claude', 'a path outside the install folder is refused by the default');
+  } finally { if (saved === undefined) delete process.env.ProgramFiles; else process.env.ProgramFiles = saved; }
+});
+
+test('an executable outside the install folder is refused: a sibling, a parent, the folder itself, a look-alike name, a dot-dot path, another drive; inside it (any depth, any case) is accepted', () => {
+  const text = (executable) => JSON.stringify(valid({ claude: { executable, executableSha256: SHA } }));
+  const root = path.parse(INSTALL).root;
+  const outside = [
+    path.join(root, 'albera-other', 'claude.exe'), path.join(root, 'claude.exe'), INSTALL, `${INSTALL}-evil${path.sep}claude.exe`, `${INSTALL}x${path.sep}claude.exe`,
+    `${INSTALL}${path.sep}..${path.sep}claude.exe`, path.join(os_tmp(), 'claude.exe'),
+  ];
+  for (const executable of outside) assert.equal(codeOf(() => parse(text(executable))), 'room_service_config_claude', executable);
+  assert.equal(parse(text(path.join(INSTALL, 'sub', 'claude.exe'))).claude.executable, path.join(INSTALL, 'sub', 'claude.exe'));
+  if (process.platform === 'win32') assert.equal(parse(text(EXE.toUpperCase())).claude.executable, EXE.toUpperCase(), 'Windows compares paths without case');
+});
+function os_tmp() { return process.env.TEMP ?? process.env.TMPDIR ?? path.resolve(path.sep, 'tmp'); }

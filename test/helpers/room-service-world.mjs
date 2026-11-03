@@ -115,10 +115,12 @@ export async function makeServiceWorld(t, { script = { steps: [{ tool: 'screensh
   if (token !== null) await secretStore.save('claude-oauth-token', token);
   const bootstrap = createFakeBootstrapStore();
   const logs = [];
+  const claudeGuard = { trusted: true, checked: [], async check(executable) { claudeGuard.checked.push(executable); return claudeGuard.trusted; } };
   const driverSeen = []; // what each driver was given (read before it started): { configDir, workDir, configEntries, workEntries }
   const deps = {
     approvalDeps: approval.deps, secretStore, createBootstrapStore: () => bootstrap, mcpEntryPath: FAKE_MCP_MAIN, log: (line) => logs.push(line),
     captureIntervalMs: 60_000, tickMs: 60_000,
+    claudeInstallDir: path.dirname(process.execPath), claudeGuard, // the Fake claude is node itself: its folder stands in for the install folder, and the ACL test is a Fake here (the real one has its own test)
     createDriver: (options) => { // the real driver, after a look at the two folders it was handed
       driverSeen.push({ configDir: options.configDir, workDir: options.workDir, configEntries: readdirSync(options.configDir), workEntries: readdirSync(options.workDir), oauthToken: options.oauthToken, mcpServer: options.mcpServer });
       return createClaudeCodeDriver(options);
@@ -126,7 +128,7 @@ export async function makeServiceWorld(t, { script = { steps: [{ tool: 'screensh
     driverOptions: { executableArgs: [FAKE_CLAUDE, scriptFile], io: { exists: async () => false }, exitGraceMs: 3000 }, // the real home above a temp folder may hold a CLAUDE.md
   };
   const world = {
-    base, dataRoot, paths, approval, secretStore, bootstrap, logs, deps, desktop, driverSeen, scriptFile, recordTo,
+    base, dataRoot, paths, approval, claudeGuard, secretStore, bootstrap, logs, deps, desktop, driverSeen, scriptFile, recordTo,
     record: () => JSON.parse(readFileSync(recordTo, 'utf8')),
     /** Close this service before the data root is removed. */
     track(service) { closers.push(() => service.close()); return service; },

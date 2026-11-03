@@ -14,7 +14,7 @@ import { roomBootstrapAcl } from './room-bootstrap-file.mjs';
 // The service file is shared: the .NET host reads only its top-level key `host` (HostConfig.cs) and the room reads the keys below. PROVISIONAL (the contract names a `claude` block and a credential
 // choice but no keys; setup, PR7, must write exactly these):
 //   { "host": { ... },                                           not read here
-//     "claude": { "executable": "<abs path of the pinned claude.exe>", "executableSha256": "<64 hex>",
+//     "claude": { "executable": "<abs path of the pinned claude.exe, inside the install folder (CLAUDE_INSTALL_DIR)>", "executableSha256": "<64 hex>",
 //                 "model": "<optional alias or id>", "maxMinutes": <optional, 1..55, default 15>, "maxToolCalls": <optional, 1..400, default 120> },
 //     "ui":     { "controlPlaneSid": "S-1-5-80-...", "approverSid": "S-1-5-21-..." } }                the two SIDs of the bootstrap file's ACL (room-bootstrap-file.mjs `roomBootstrapAcl`)
 // Any other top-level key, any other key inside `claude` or `ui`, or a missing required one is refused (fail closed: setup and this reader must agree). The credential is always the secret
@@ -23,6 +23,12 @@ import { roomBootstrapAcl } from './room-bootstrap-file.mjs';
 export const SERVICE_CONFIG_FILE = 'AlberaControlPlane.service.json';
 export const APPROVAL_SETTINGS_FILE = 'albera.approval.json';
 export const MAX_SERVICE_CONFIG_BYTES = 16 * 1024;
+/**
+ * The only place `claude.exe` may be started from: the administrator-only install folder of the contract (section 3, the folder bin, then claude). Fixed text, never read from an environment variable
+ * (the host gives this process nine variables and none may steer a trust decision), and not resolved through the OS (Node has no SHGetKnownFolderPath): a Windows whose Program Files is not
+ * on C: is refused here (fail closed) until setup passes the folder some other trusted way. The folder's ACL is checked before every run (room-service-folder-guard.mjs).
+ */
+export const CLAUDE_INSTALL_DIR = String.raw`C:\Program Files\Albera\bin\claude`;
 /** The limits of the contract's section 6.6: defaults and ceilings of one task. */
 export const CLAUDE_LIMITS = Object.freeze({ defaultMinutes: 15, maxMinutes: 55, defaultToolCalls: 120, maxToolCalls: 400 });
 const SHA256_RE = /^[a-f0-9]{64}$/u;
@@ -51,8 +57,15 @@ export function roomServicePaths(dataRoot) {
   });
 }
 
-function parseClaude(raw) {
-  if (!hasOnly(raw, CLAUDE_KEYS) || !isAbsolutePath(raw.executable) || typeof raw.executableSha256 !== 'string' || !SHA256_RE.test(raw.executableSha256)) throw fail('claude');
+// Inside the install folder (any depth, never the folder itself), compared the way Windows does: case-insensitive, after normalization.
+function isInsideInstallDir(executable, installDir) {
+  const w = path.win32;
+  const rel = w.relative(w.resolve(installDir).toLowerCase(), w.resolve(executable).toLowerCase());
+  return rel !== '' && !rel.startsWith('..') && !w.isAbsolute(rel);
+}
+
+function parseClaude(raw, installDir) {
+  if (!hasOnly(raw, CLAUDE_KEYS) || !isAbsolutePath(raw.executable) || !isInsideInstallDir(raw.executable, installDir) || typeof raw.executableSha256 !== 'string' || !SHA256_RE.test(raw.executableSha256)) throw fail('claude');
   if (raw.model !== undefined && !(typeof raw.model === 'string' && MODEL_RE.test(raw.model))) throw fail('claude');
   const minutes = raw.maxMinutes ?? CLAUDE_LIMITS.defaultMinutes;
   const calls = raw.maxToolCalls ?? CLAUDE_LIMITS.defaultToolCalls;
@@ -65,23 +78,23 @@ function parseUi(raw) {
   try { return Object.freeze({ acl: roomBootstrapAcl({ cpSid: raw.controlPlaneSid, approverSid: raw.approverSid }) }); } catch { throw fail('ui'); }
 }
 
-/** Parse the file's text: `claude` and `ui` are required, `host` is ignored (the .NET host's). Pure. */
-export function parseServiceConfig(text) {
+/** Parse the file's text: `claude` and `ui` are required, `host` is ignored (the .NET host's). Pure. `installDir` is a test seam (default: CLAUDE_INSTALL_DIR). */
+export function parseServiceConfig(text, { installDir = CLAUDE_INSTALL_DIR } = {}) {
   if (typeof text !== 'string' || text.length > MAX_SERVICE_CONFIG_BYTES) throw fail('too_big');
   let raw;
   try { raw = JSON.parse(text.replace(/^﻿/u, '')); } catch { throw fail('not_json'); }
   if (!isPlain(raw)) throw fail('invalid');
   if (Object.keys(raw).some((key) => !TOP_KEYS.includes(key))) throw fail('unknown_key');
-  return Object.freeze({ claude: parseClaude(raw.claude), ui: parseUi(raw.ui) });
+  return Object.freeze({ claude: parseClaude(raw.claude, installDir), ui: parseUi(raw.ui), claudeInstallDir: installDir });
 }
 
 /** Read the service file (a regular file, small) and parse it. The error never names the path. */
-export function loadServiceConfig(file, io = { statSync, readFileSync }) {
+export function loadServiceConfig(file, io = { statSync, readFileSync }, options) {
   let text;
   try {
     const stat = io.statSync(file);
     if (!stat.isFile() || stat.size > MAX_SERVICE_CONFIG_BYTES) throw new Error('too_big');
     text = io.readFileSync(file, 'utf8');
   } catch { throw fail('unreadable'); }
-  return parseServiceConfig(text);
+  return parseServiceConfig(text, options);
 }

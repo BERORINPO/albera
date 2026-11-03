@@ -50,6 +50,7 @@ function setup({ targets, token = TOKEN, claude = CLAUDE, createDriver, ...rest 
   const hands = createRoomServiceHands({
     targets: targets ?? new Map([['albera-computer-a', { computerId: 'computer-a' }], ['albera-computer-b', { computerId: 'computer-b' }]]),
     secretStore: store, runRoot, claude, mcp: { command: process.execPath, entryPath: path.join(base, 'mcp-main.mjs'), broker: BROKER },
+    claudeGuard: rest.claudeGuard ?? { check: async () => true },
     onEvent: (vm, event) => events.push([vm, event]), log: (line) => logs.push(line), createDriver: createDriver ?? ((options) => drivers.create(options)),
     newRunId: () => `run-${String(++n).padStart(16, '0')}`,
   });
@@ -253,4 +254,59 @@ test('the fleet the room host takes: no initial job, a start needs the approved 
   assert.equal(fleet.stopVm('albera-computer-b'), false);
   await fleet.idle('albera-computer-a');
   assert.deepEqual(w.drivers.made[0].options.mcpServer.args.slice(3, 5), ['--operation', 'start-1']);
+});
+
+// ---- zaku SEC-001: the executable's folders are checked before every run ----
+
+test('the guard is asked before every run, before the credential is opened; an untrusted executable never sees the credential and nothing is made or started', async () => {
+  const asked = [];
+  let trusted = false;
+  const w = setup({ claudeGuard: { check: async (executable) => { asked.push(executable); return trusted; } } });
+  await w.ready;
+  assert.deepEqual(await w.hands.start({ computerId: 'computer-a', task: 'x', operationId: 'start-1' }), { ok: false, code: 'start_error' });
+  assert.deepEqual([asked, w.loads, w.drivers.made, existsSync(w.runRoot)], [[CLAUDE.executable], [], [], false]);
+  assert.equal(w.events.find(([, e]) => e.type === 'end')[1].reason, 'claude_untrusted');
+  assert.ok(w.logs.includes('hands ended outcome=error reason=claude_untrusted'));
+  trusted = true; // fixed by an administrator: the next run goes (it is asked again, not remembered)
+  assert.deepEqual(await w.hands.start({ computerId: 'computer-a', task: 'x', operationId: 'start-2' }), { ok: true });
+  assert.deepEqual([asked.length, w.loads.length], [2, 1]);
+  w.hands.stopAll();
+  await w.hands.close();
+  const broken = setup({ claudeGuard: { check: async () => { throw new Error('powershell missing'); } } });
+  await broken.ready;
+  assert.deepEqual(await broken.hands.start({ computerId: 'computer-a', task: 'x', operationId: 'start-1' }), { ok: false, code: 'start_error' }, 'a check that cannot finish is a refusal');
+  assert.deepEqual(broken.loads, []);
+});
+
+// ---- zaku SEC-003: a tree stop that was not confirmed keeps the computer busy ----
+
+test('treeStopConfirmed === false keeps that computer busy until a person stops it; the log says so with one fixed word; other computers and confirmed stops are not affected', async () => {
+  const w = setup();
+  await w.ready;
+  const end = (outcome, reason, treeStopConfirmed) => ({ outcome, reason, claim: '', toolCalls: 1, treeStopConfirmed });
+  await w.hands.start({ computerId: 'computer-a', task: 'one', operationId: 'start-1' });
+  w.drivers.made[0].finish(end('stopped', 'max_ms', false));
+  await w.hands.fleet.idle('albera-computer-a');
+  assert.deepEqual(w.logs.filter((l) => l.includes('tree_stop')), ['hands tree_stop_unconfirmed'], 'a fixed word, nothing else');
+  assert.deepEqual(await w.hands.start({ computerId: 'computer-a', task: 'two', operationId: 'start-2' }), { ok: false, code: 'busy' });
+  assert.deepEqual(w.hands.fleet.startJob('albera-computer-a', 'two', { desktopSessionId: 'start-3' }), { ok: false, code: 'busy' }, 'the card path is refused too');
+  assert.equal(w.drivers.made.length, 1, 'no second driver');
+  assert.deepEqual(await w.hands.start({ computerId: 'computer-b', task: 'other', operationId: 'start-4' }), { ok: true }, 'another computer is free');
+  assert.equal(w.hands.stopAll(), 1, 'stopAll counts the run that is really running, not the one that already ended');
+  await w.hands.fleet.idle('albera-computer-b');
+  assert.deepEqual(await w.hands.start({ computerId: 'computer-a', task: 'three', operationId: 'start-5' }), { ok: true }, 'the person\'s stop released the computer');
+  w.drivers.made.at(-1).finish(end('claimed_done', 'end_turn', true));
+  await w.hands.fleet.idle('albera-computer-a');
+  assert.deepEqual(await w.hands.start({ computerId: 'computer-a', task: 'four', operationId: 'start-6' }), { ok: true }, 'a confirmed tree stop leaves nothing behind');
+  w.drivers.made.at(-1).finish(end('claimed_done', 'end_turn', null));
+  await w.hands.fleet.idle('albera-computer-a');
+  assert.deepEqual(await w.hands.start({ computerId: 'computer-a', task: 'five', operationId: 'start-7' }), { ok: true }, 'none needed (null) leaves nothing behind either');
+  assert.equal(w.logs.filter((l) => l === 'hands tree_stop_unconfirmed').length, 1);
+  // stopVm releases a stuck computer as well, and says it stopped nothing that was running
+  w.drivers.made.at(-1).finish(end('error', 'spawn_failed', false));
+  await w.hands.fleet.idle('albera-computer-a');
+  assert.equal(w.hands.fleet.stopVm('albera-computer-a'), false);
+  assert.deepEqual(await w.hands.start({ computerId: 'computer-a', task: 'six', operationId: 'start-8' }), { ok: true });
+  w.hands.stopAll();
+  await w.hands.close();
 });

@@ -11,11 +11,13 @@ import { createClaudeCodeDriver } from './claude-code-driver.mjs';
 //   1. The VM check comes FIRST. The approved action may name a Hyper-V `vmId` and a generation (job routes pass them on as `hands.start({ vmId, expectedGeneration })`); they must be exactly what the
 //      settings say for that computer. Same rule the other way: a computer the settings name with a VM must be approved with that VM. A mismatch is `vm_unknown` and NOTHING else happens: no credential
 //      is opened, no folder is made, no process is started.
-//   2. The credential is read from the secret store (`claude-oauth-token`) for this one run. The process environment is never read for a credential (no ANTHROPIC_API_KEY, no token variable).
+//   2. Before the credential is read, `claudeGuard.check(executable)` must say the executable and its folders are administrator-only (room-service-folder-guard.mjs); otherwise `claude_untrusted`.
+//      The credential is read from the secret store (`claude-oauth-token`) for this one run. The process environment is never read for a credential (no ANTHROPIC_API_KEY, no token variable).
 //      The driver passes it to the child as CLAUDE_CODE_OAUTH_TOKEN and nothing else (claude-code-driver.mjs buildClaudeEnvironment, an allowlist).
 //   3. Every run gets a NEW folder `<runRoot>\run-<16 hex>\{config,work}`, made empty here (config is the child's CLAUDE_CONFIG_DIR, HOME and USERPROFILE) and deleted when the run is over, whatever
 //      the outcome. The driver refuses a config or work folder that is not empty. `sweep()` removes the folders an earlier, killed service left behind (only names of that exact shape).
-//   4. One run per computer. `stop`/`stopAll` end only the runs started here, through the driver (which stops the PID it started and its tree, never by image name).
+//   4. One run per computer. A run whose process tree the driver could not confirm stopped (`treeStopConfirmed === false`) keeps its computer busy (`hands tree_stop_unconfirmed` in the log) until a
+//      person stops that computer or the service restarts: a new run next to a possibly live old one would be two hands on one desktop. `stop`/`stopAll` end only the runs started here, through the driver (which stops the PID it started and its tree, never by image name).
 // Events reach the room's board and ledger in the same shape the API-key loop uses (start, action, step, end; usd is 0 on a subscription). The result is a CLAIM, as in the driver.
 // Failures are fixed codes. Logs (`log(line)`) carry codes only: never a task, a token, a path or the Broker's text.
 
@@ -35,14 +37,14 @@ const sleepUnref = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).un
  *   claude: { executable: string, executableSha256: string, model: string|null, maxMs: number, maxToolCalls: number },
  *   mcp: { command: string, entryPath: string, broker: { pipeName: string, serviceName: string, helperPath: string, helperSha256: string } },
  *   onEvent?: (vmName: string, event: object) => void, log?: (line: string) => void,
- *   createDriver?: Function, driverOptions?: object, newRunId?: () => string, now?: () => number }} options
- *   `targets` = the settings' `computers` (Hyper-V VM name -> computer). `createDriver`, `driverOptions`, `newRunId` and `now` are test seams (the driver's own seams pass through `driverOptions`).
+ *   claudeGuard: { check: (executable: string) => Promise<boolean> }, createDriver?: Function, driverOptions?: object, newRunId?: () => string, now?: () => number }} options
+ *   `targets` = the settings' `computers` (Hyper-V VM name -> computer). `claudeGuard.check` is asked before EVERY run: false means the executable or its folders can be changed by someone who is not an administrator (`claude_untrusted`). `createDriver`, `driverOptions`, `newRunId` and `now` are test seams (the driver's own seams pass through `driverOptions`).
  */
 export function createRoomServiceHands({
-  targets, secretStore, runRoot, claude, mcp, onEvent = () => {}, log = () => {}, createDriver = createClaudeCodeDriver, driverOptions = {},
+  targets, secretStore, runRoot, claude, mcp, onEvent = () => {}, log = () => {}, claudeGuard, createDriver = createClaudeCodeDriver, driverOptions = {},
   newRunId = () => `run-${randomBytes(8).toString('hex')}`, now = Date.now,
 } = {}) {
-  if (!(targets instanceof Map) || targets.size < 1 || typeof secretStore?.load !== 'function' || !path.isAbsolute(String(runRoot)) || !claude || !mcp?.broker) throw new TypeError('invalid_room_service_hands_dependencies');
+  if (!(targets instanceof Map) || targets.size < 1 || typeof secretStore?.load !== 'function' || typeof claudeGuard?.check !== 'function' || !path.isAbsolute(String(runRoot)) || !claude || !mcp?.broker) throw new TypeError('invalid_room_service_hands_dependencies');
   const byComputer = new Map([...targets].map(([vmName, target]) => [target.computerId, { vmName, target }]));
   const runs = new Map(); // computerId -> { stopRequested, driver, done }
   const jobs = new Map(); // vmName -> how many runs were started (the ledger's job number)
@@ -105,7 +107,8 @@ export function createRoomServiceHands({
     let folders = null;
     let result;
     try {
-      const credential = await loadToken();
+      const trusted = await claudeGuard.check(claude.executable).catch(() => false); // before the credential is opened: an executable that is not trusted never sees it
+      const credential = trusted ? await loadToken() : { code: 'claude_untrusted' };
       if (credential.code) result = { outcome: 'error', reason: credential.code, claim: '', toolCalls: 0 };
       else if (run.stopRequested) result = { outcome: 'stopped', reason: 'stopped_by_human', claim: '', toolCalls: 0 };
       else {
@@ -124,6 +127,7 @@ export function createRoomServiceHands({
     if (folders) await removeRunFolder(folders.runDir);
     started.resolve({ ok: false, code: 'start_error' }); // a no-op once the child has started
     note(`hands ended outcome=${result.outcome} reason=${result.reason}`);
+    if (result.treeStopConfirmed === false) { run.stuck = true; note('hands tree_stop_unconfirmed'); } // the driver could not confirm that its process tree is gone
     emit(vmName, { type: 'end', outcome: result.outcome, claim: result.claim ?? '', steps: result.toolCalls, actions: result.toolCalls, usd: 0, reason: result.reason });
   }
 
@@ -142,19 +146,23 @@ export function createRoomServiceHands({
     jobs.set(vmName, (jobs.get(vmName) ?? 0) + 1);
     emit(vmName, { type: 'start', job: jobs.get(vmName), task });
     runs.set(computerId, run);
-    run.done = execute({ vmName, computerId, task, operationId }, run, started).finally(() => { runs.delete(computerId); });
+    run.done = execute({ vmName, computerId, task, operationId }, run, started).finally(() => { if (!run.stuck) runs.delete(computerId); });
     return Object.freeze({ ok: true, started: started.promise });
   }
 
-  function stopRun(run) {
+  /** A person's stop. A run whose tree stop was not confirmed (`stuck`) is already over: the stop is the person taking responsibility, and the computer is free again. Returns false for that one. */
+  function stopRun(computerId, run) {
+    if (run.stuck) { runs.delete(computerId); return false; }
     run.stopRequested = true;
     run.driver?.stop('stopped_by_human');
+    return true;
   }
 
   /** Stop every run started here. Returns how many were running. The runs end (and their folders go) a moment later. */
   function stopAll() {
-    for (const run of runs.values()) stopRun(run);
-    return runs.size;
+    let stopped = 0;
+    for (const [computerId, run] of [...runs]) if (stopRun(computerId, run)) stopped += 1;
+    return stopped;
   }
 
   /** The fleet the room host takes (the same four calls the API-key fleet has); every start here is an approved operation, named by its id as the desktop session. */
@@ -168,10 +176,9 @@ export function createRoomServiceHands({
       return out.ok ? Object.freeze({ ok: true }) : out;
     },
     stopVm(vmName) {
-      const run = runs.get(targets.get(vmName)?.computerId);
-      if (!run) return false;
-      stopRun(run);
-      return true;
+      const computerId = targets.get(vmName)?.computerId;
+      const run = runs.get(computerId);
+      return run ? stopRun(computerId, run) : false;
     },
     async idle(vmName) { await runs.get(targets.get(vmName)?.computerId)?.done; },
   });
