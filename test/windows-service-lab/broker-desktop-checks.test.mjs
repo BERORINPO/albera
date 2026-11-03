@@ -24,11 +24,11 @@ const CHECKS = [
   'bd_cp_act_before_claim_refused', 'bd_other_refused', 'bd_cp_task_start_claim', 'bd_cp_act_open', 'bd_cp_act_input', 'bd_cp_act_input_mouse',
   'bd_cp_act_wrong_generation_refused', 'bd_cp_act_revoked_by_new_claim', 'bd_broker_restart_drops_lease',
   // through the real pipe client helper in desktop mode (PR #168), driven by the shim's `desktop-helper` probe
-  'bh_view_open', 'bh_view_capture', 'bh_act_open', 'bh_act_input', 'bh_image_pin_unavailable', 'bh_squatter_broker_stopped', 'bh_squatter_owner_mismatch',
+  'bh_view_open', 'bh_view_capture', 'bh_act_open', 'bh_act_input', 'bh_act_wrong_generation_refused', 'bh_image_pin_unavailable', 'bh_squatter_broker_stopped', 'bh_squatter_owner_mismatch',
 ];
 const section = (name) => guest.slice(guest.indexOf(`function ${name}`), guest.indexOf('\n}\n', guest.indexOf(`function ${name}`)));
 
-test('the section names exactly the twenty-four checks, and every one of them is emitted by the script', () => {
+test('the section names exactly the twenty-five checks, and every one of them is emitted by the script', () => {
   const titles = guest.slice(guest.indexOf('$BdTitles = [ordered]@{'), guest.indexOf('$Ops = @('));
   assert.deepEqual([...titles.matchAll(/^\s+(b[dh]_[a-z_]+)\s*=/gmu)].map((m) => m[1]), CHECKS);
   const fromBroker = guest.slice(guest.indexOf('function Invoke-BrokerDesktopLab')), fromHelperChecks = guest.slice(guest.indexOf('# ---- the helper-driven checks (bh_*). The Control'));
@@ -92,7 +92,7 @@ test('the act part: one claim by the helper as the Control Plane, then an act se
   assert.match(acts, /Invoke-HvShimJob \$BdCpSvc 'act-wrong-generation' @\('desktop', \$BdDesktopPipe, "service:\$BdBrokerSvc", "open:act:\$\{BdComputerId\}:\$\{BdOp1\}:2"\) 'desktop'/u);
   assert.match(acts, /Add-BdStepCheck 'bd_cp_act_wrong_generation_refused' \$wrongJob 'open' 'refused' @\('refused_reply'\) \$CpShape/u);
   // Everything that needs a lease is blocked, never FAILed, when no claim was recorded.
-  assert.match(acts, /\$dependents = @\(\$BdTitles\.Keys \| Where-Object \{ \$_ -in @\('bd_cp_act_open', 'bd_cp_act_input', 'bd_cp_act_input_mouse', 'bd_cp_act_wrong_generation_refused', 'bd_cp_act_revoked_by_new_claim', 'bd_broker_restart_drops_lease', 'bh_act_open', 'bh_act_input'\) \}\)/u);
+  assert.match(acts, /\$dependents = @\(\$BdTitles\.Keys \| Where-Object \{ \$_ -in @\('bd_cp_act_open', 'bd_cp_act_input', 'bd_cp_act_input_mouse', 'bd_cp_act_wrong_generation_refused', 'bd_cp_act_revoked_by_new_claim', 'bd_broker_restart_drops_lease', 'bh_act_open', 'bh_act_input', 'bh_act_wrong_generation_refused'\) \}\)/u);
   assert.equal([...acts.matchAll(/Add-BdBlocked \$dependents/gu)].length, 2, 'no helper, and no recorded claim');
   const claim = section('Add-BdClaimCheck');
   assert.match(claim, /Invoke-HvJob \$BdCpSvc \$Name \$BdHelper @\(\) \(New-BdHelperInput "\$BdCpSvc\.\$Name" \$signed\.Claim\) \$null/u, 'the claim is sent by the helper, as the Control Plane service');
@@ -153,9 +153,11 @@ test('the helper-driven checks: the Control Plane runs the shim\'s desktop-helpe
   assert.doesNotMatch(guest, /BhWrongSha|bh_wrong_image_refused|bh_cp_image_readable|_service_only/u, 'the wrong pin is a host test (desktop-helper-client.test.mjs); the controls became the checks');
   assert.match(section('Invoke-BrokerDesktopLab'), /\$script:BhBrokerSha = \(Get-FileHash -Algorithm SHA256 -LiteralPath \$brokerExe\)\.Hash\.ToLowerInvariant\(\)/u, 'the pin is the hash of the file the service runs, taken in the guest');
   const act = section('Invoke-BhActChecks');
-  assert.match(act, /Invoke-BhJob 'bh-act' "service:\$BdBrokerSvc" @\("open:act:\$\{BdComputerId\}:\$\{BdOp1\}:1", "input:tap=\$BdShiftVk"\) ''/u, 'the lease the first claim made, then the keyboard only (the mouse is the lab\'s bd check); no pin');
-  assert.match(act, /Add-BhStepCheck 'bh_act_open' \$job 'open' 'allowed' @\(\) \$CpShape/u);
+  assert.match(act, /Invoke-BhJob 'bh-act' \$identity @\("open:act:\$\{BdComputerId\}:\$\{BdOp1\}", "input:tap=\$BdShiftVk"\) ''/u, 'as in the room: the open names the operation and NOT the generation; then the keyboard only (the mouse is the lab\'s bd check); no pin');
+  assert.match(act, /Add-BhStepCheck 'bh_act_open' \$job 'open' 'allowed' @\(\) \$CpShape @\('[^']+'\) 1\b/u, 'the answer must name generation 1, the lease the first claim made');
   assert.match(act, /Add-BhStepCheck 'bh_act_input' \$job 'input' 'allowed' @\(\) \$CpShape/u);
+  assert.match(act, /Invoke-BhJob 'bh-act-wrong' \$identity @\("open:act:\$\{BdComputerId\}:\$\{BdOp1\}:2"\) ''/u, 'a wrong generation is NAMED, so that the Broker can refuse it');
+  assert.match(act, /Add-BhStepCheck 'bh_act_wrong_generation_refused' \$wrong 'open' 'refused' @\('refused_reply'\) \$CpShape/u);
   // Where they run: the view checks need no lease and come before the act part; the act checks run on the lease of the first claim and before it is replaced; the squatters stop the Broker, so they are last.
   const lab = section('Invoke-BrokerDesktopLab');
   assert.ok(lab.indexOf('Invoke-BhViewChecks $cpShape $brokerPid') > lab.indexOf("'bd_other_refused'") && lab.indexOf('Invoke-BhViewChecks $cpShape $brokerPid') < lab.indexOf('Invoke-BdActChecks $authority $cpShape'));
@@ -308,7 +310,7 @@ test('the verdict logic: what each client line means, and what each check does w
 const helperFunctions = ['ConvertTo-BdById', 'Get-BdVerdict', 'Get-BhOutcome', 'Get-BhSquatVerdict'];
 const helperLogicBody = `
 $out = [ordered]@{}
-$out.outcomes = @($cases.outcomes | ForEach-Object { Get-BhOutcome (ConvertTo-BdById @($_.lines)) ([string]$_.step) })
+$out.outcomes = @($cases.outcomes | ForEach-Object { Get-BhOutcome (ConvertTo-BdById @($_.lines)) ([string]$_.step) ([int64]$_.joined) })
 $out.verdicts = @($cases.verdicts | ForEach-Object { Get-BdVerdict ([string]$_.expect) ([string[]]@($_.refusals)) (Get-BhOutcome (ConvertTo-BdById @($_.lines)) ([string]$_.step)) })
 $out.squats = @($cases.squats | ForEach-Object { Get-BhSquatVerdict ([string]$_.outcome) ([string[]]@($_.refusals)) $_.ready $_.done ([bool]$_.mustConnect) })
 ConvertTo-Json -InputObject $out -Compress -Depth 6
@@ -344,7 +346,13 @@ test('the helper-driven verdict logic: the helper\'s words, the MEASURED pin, an
     [[], 'open', 'missing'],
     [[helper()], 'open', 'missing'],
     [[helper(), accepted('open')], 'capture', 'missing'],
-  ].map(([lines, stepId, expect]) => ({ lines, step: stepId, expect }));
+    // an act open that joined a lease: the generation the Broker answered must be the one expected (the 4th member); without one expected it is not looked at
+    [[helper(), step('open', { ok: true, reply: 'accepted', joinedGeneration: 1 })], 'open', 'allowed', 1],
+    [[helper(), step('open', { ok: true, reply: 'accepted', joinedGeneration: 2 })], 'open', 'bad_result', 1],
+    [[helper(), accepted('open')], 'open', 'bad_result', 1],
+    [[helper(), step('open', { ok: true, reply: 'accepted', joinedGeneration: 2 })], 'open', 'allowed'],
+    [[helper(), said('open', 'denied')], 'open', 'refused_reply', 1],
+  ].map(([lines, stepId, expect, joined = 0]) => ({ lines, step: stepId, expect, joined }));
 
   // The verdicts the checks give those outcomes (Get-BdVerdict, shared with the lab's own client): a serviceName open that ends in any refusal is a FAIL, one that did not get an answer is BLOCKED,
   // and the pinned path is only MEASURED: server_identity_unavailable (what the first lab run saw) is recorded, an accepted pin is recorded too, only no answer at all is BLOCKED.

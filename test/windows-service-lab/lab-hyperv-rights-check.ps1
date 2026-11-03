@@ -93,8 +93,9 @@ $BdTitles = [ordered]@{
   bd_broker_restart_drops_lease = 'Control Plane: the second lease (lab-bd-act-2, generation 2) opens an act session; after the Broker service is restarted the same open is refused (the lease lived in memory)'
   bh_view_open      = 'Control Plane, REAL helper in desktop mode (serviceName mode, no imageSha256): a view session on the inner VM is accepted'
   bh_view_capture   = 'Control Plane, REAL helper (serviceName mode): a 640x480 capture over that session returns a valid PNG (signature, IHDR of the asked size, IEND)'
-  bh_act_open       = 'Control Plane, REAL helper (serviceName mode): after the task.start claim an act session for operation lab-bd-act-1, generation 1 is accepted'
+  bh_act_open       = 'Control Plane, REAL helper (serviceName mode): after the task.start claim an act open for operation lab-bd-act-1 that names no generation (as in the room) is accepted, and the answer names generation 1, the lease it joined'
   bh_act_input      = 'Control Plane, REAL helper (serviceName mode): in that act session a keyboard input (tap Shift) is accepted'
+  bh_act_wrong_generation_refused = 'Control Plane, REAL helper (serviceName mode): an act open for operation lab-bd-act-1 that NAMES generation 2 (the lease is generation 1) is refused with the fixed denied reply'
   bh_image_pin_unavailable = 'MEASURED: the same view open with imageSha256 = the Broker file added. Expected server_identity_unavailable: the Control Plane may not open the Broker process (evidence: openproc as the Control Plane), so it cannot hash the image. Decision 2026-11-03: the Control Plane uses serviceName mode without the pin'
   bh_squatter_broker_stopped = 'Broker stopped, another identity (AlberaLabHvOther) holds the desktop pipe name: the helper (serviceName mode) ends with a server_identity code (the SCM has no running Broker) and the squatter receives 0 bytes'
   bh_squatter_owner_mismatch = 'Same state: the helper (given the old PID and the owner SID of the Broker) connects to the squatter and ends with server_identity_mismatch; the squatter receives 0 bytes'
@@ -267,17 +268,20 @@ function Get-BdRestartVerdict([string]$Before, [string]$After) {
 #   refused_pipe          the pipe's DACL refused the helper's open (access_denied): no byte was sent
 #   identity_mismatch     the helper connected and the server was not the expected one (owner, PID, session or image): server_identity_mismatch, before it wrote anything
 #   identity_unavailable  the helper could not establish who the server is (no running service, an image it may not read, ...): server_identity_unavailable, before it wrote anything
-#   bad_result            it answered, but with a capture that is not a valid PNG of the asked size
+#   bad_result            it answered, but with a capture that is not a valid PNG of the asked size, or (when $Joined is given) an act open that joined another generation than $Joined
 #   error                 anything else: the helper was not started (helper_unavailable), no pipe (broker_unavailable), a timeout or transport_error, no frame, an unknown reply
 # A step that did not run takes the outcome of the step it waited for.
-function Get-BhOutcome($ById, [string]$Step) {
+function Get-BhOutcome($ById, [string]$Step, [int64]$Joined = 0) {
   $helper = $ById['helper']
   if ($null -eq $helper) { return 'missing' }
   if ($helper.ok -ne $true) { return 'error' }
   $line = $ById[$Step]
   if ($null -eq $line) { return 'missing' }
-  if ($line.skipped) { return (Get-BhOutcome $ById ([string]$line.because)) }
-  if ($line.ok -eq $true) { return 'allowed' }
+  if ($line.skipped) { return (Get-BhOutcome $ById ([string]$line.because) $Joined) }
+  if ($line.ok -eq $true) {
+    if ($Joined -gt 0 -and [int64]$line.joinedGeneration -ne $Joined) { return 'bad_result' }
+    return 'allowed'
+  }
   switch ([string]$line.reply) {
     'denied' { return 'refused_reply' }
     'access_denied' { return 'refused_pipe' }
@@ -671,8 +675,8 @@ function Invoke-BhJob([string]$Tag, [string]$Identity, [string[]]$Steps, [string
 }
 
 # One step of a helper session -> one check (the helper's words, see Get-BhOutcome).
-function Add-BhStepCheck([string]$Id, $Job, [string]$Step, [string]$Expect, [string[]]$Refusals, $Shape, [string[]]$Note = @()) {
-  $outcome = Get-BhOutcome (ConvertTo-BdById $Job.Objects) $Step
+function Add-BhStepCheck([string]$Id, $Job, [string]$Step, [string]$Expect, [string[]]$Refusals, $Shape, [string[]]$Note = @(), [int64]$Joined = 0) {
+  $outcome = Get-BhOutcome (ConvertTo-BdById $Job.Objects) $Step $Joined
   Add-BdJobCheck $Id $Job $outcome (Get-BdVerdict $Expect $Refusals $outcome) $Shape $Note
 }
 
@@ -694,11 +698,15 @@ function Invoke-BhViewChecks($CpShape, [int]$BrokerPid) {
   Add-BhStepCheck 'bh_image_pin_unavailable' $pinned 'open' 'measured' @() $CpShape $note
 }
 
-# Act through the helper (serviceName mode) on the lease the first claim made (operation lab-bd-act-1, generation 1): the open and a keyboard input. Called with the lease in place.
+# Act through the helper (serviceName mode) on the lease the first claim made (operation lab-bd-act-1, generation 1). As in the room, the open names the operation and NOT the generation: the Broker
+# joins the current lease of the operation and answers its generation, which must be 1. A generation that is not the lease's is named explicitly and must be refused. Called with the lease in place.
 function Invoke-BhActChecks($CpShape) {
-  $job = Invoke-BhJob 'bh-act' "service:$BdBrokerSvc" @("open:act:${BdComputerId}:${BdOp1}:1", "input:tap=$BdShiftVk") ''
-  Add-BhStepCheck 'bh_act_open' $job 'open' 'allowed' @() $CpShape
+  $identity = "service:$BdBrokerSvc"
+  $job = Invoke-BhJob 'bh-act' $identity @("open:act:${BdComputerId}:${BdOp1}", "input:tap=$BdShiftVk") ''
+  Add-BhStepCheck 'bh_act_open' $job 'open' 'allowed' @() $CpShape @('the open names no generation; the answer must name generation 1') 1
   Add-BhStepCheck 'bh_act_input' $job 'input' 'allowed' @() $CpShape
+  $wrong = Invoke-BhJob 'bh-act-wrong' $identity @("open:act:${BdComputerId}:${BdOp1}:2") ''
+  Add-BhStepCheck 'bh_act_wrong_generation_refused' $wrong 'open' 'refused' @('refused_reply') $CpShape @('the generation is named (2); the lease is generation 1')
 }
 
 # Squatters. The Broker is stopped and another identity (the Other service, the squat probe) takes the desktop pipe name. First the production identity (the SCM has no running Broker, so the helper
@@ -800,7 +808,7 @@ function Invoke-BrokerDesktopLab([string]$VmId) {
 # The checks that need a lease. Their only source is a task.start claim recorded by the Broker, so the lab makes one the way the Control Plane does: fence, a receipt v2 signed with the lab
 # authority, the helper sends it. Without a recorded claim every check below is BLOCKED (an act open would fail for want of a lease, which says nothing about the lease).
 function Invoke-BdActChecks($Authority, $CpShape) {
-  $dependents = @($BdTitles.Keys | Where-Object { $_ -in @('bd_cp_act_open', 'bd_cp_act_input', 'bd_cp_act_input_mouse', 'bd_cp_act_wrong_generation_refused', 'bd_cp_act_revoked_by_new_claim', 'bd_broker_restart_drops_lease', 'bh_act_open', 'bh_act_input') })
+  $dependents = @($BdTitles.Keys | Where-Object { $_ -in @('bd_cp_act_open', 'bd_cp_act_input', 'bd_cp_act_input_mouse', 'bd_cp_act_wrong_generation_refused', 'bd_cp_act_revoked_by_new_claim', 'bd_broker_restart_drops_lease', 'bh_act_open', 'bh_act_input', 'bh_act_wrong_generation_refused') })
   if (-not (Test-Path -LiteralPath $BdHelper)) {
     Add-Check 'bd_cp_task_start_claim' $BdTitles.bd_cp_task_start_claim 'BLOCKED' 'missing' @("not found: $BdHelper (lab-vm.ps1 copies the pipe client publish folder)")
     Add-BdBlocked $dependents 'no lease: the helper that sends the claim is not in the guest'

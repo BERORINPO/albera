@@ -66,7 +66,8 @@ describe('lab driver for the real pipe client helper (shim `desktop-helper` prob
     return state;
   }
   const view = (width, height, extra = []) => [`open:view:${COMPUTER}`, `capture:${width}x${height}`, ...extra];
-  const LEASE_OPEN = `open:act:${COMPUTER}:lab-bd-act-1:1`;
+  const LEASE_OPEN = `open:act:${COMPUTER}:lab-bd-act-1:1`; // names the generation
+  const JOIN_OPEN = `open:act:${COMPUTER}:lab-bd-act-1`; // leaves it out: the Broker joins the current lease of the operation
   const picture = png(640, 480);
   const sendPicture = (connection) => { connection.send({ ok: true, width: 640, height: 480, bytes: picture.length }); connection.send(picture); };
 
@@ -86,16 +87,42 @@ describe('lab driver for the real pipe client helper (shim `desktop-helper` prob
       assert.deepEqual(broker.received, [`{"open":{"computerId":"${COMPUTER}","mode":"view"}}`, '{"capture":{"width":640,"height":480}}']);
     });
 
-    it('an act session names its lease: the open and the input are exactly the frames the Broker takes', async () => {
-      const broker = await fakeBroker((body, index, connection) => connection.send(OPENED));
+    // An act open is answered { ok: true, leaseGeneration: n }, the lease it joined; every other request with { ok: true }.
+    const actBroker = (generation = 1) => fakeBroker((body, index, connection) => connection.send(index === 0 ? { ok: true, leaseGeneration: generation } : OPENED));
+
+    it('an act session names its lease: the open and the input are exactly the frames the Broker takes, and the answer names the generation', async () => {
+      const broker = await actBroker();
       const run = await driver([broker.pipe, asPeer(), LEASE_OPEN, 'input:tap=16', 'input:move=100,100+down=1+up=1']);
       assert.deepEqual(run.lines.map((line) => [line.id, line.ok]), [['helper', true], ['open', true], ['input', true], ['input_2', true], ['close', true]]);
-      assert.deepEqual([run.byId.open.mode, run.byId.open.operationId, run.byId.open.leaseGeneration, run.byId.input.reply], ['act', 'lab-bd-act-1', 1, 'accepted']);
+      assert.deepEqual([run.byId.open.mode, run.byId.open.operationId, run.byId.open.leaseGeneration, run.byId.open.joinedGeneration, run.byId.input.reply], ['act', 'lab-bd-act-1', 1, 1, 'accepted']);
       assert.deepEqual(broker.received, [
         `{"open":{"computerId":"${COMPUTER}","mode":"act","operationId":"lab-bd-act-1","leaseGeneration":1}}`,
         '{"input":{"steps":[{"op":"tap","vk":16}]}}',
         '{"input":{"steps":[{"op":"move","x":100,"y":100},{"op":"down","button":1},{"op":"up","button":1}]}}',
       ]);
+    });
+
+    it('an act open can leave the generation out, as the room does: the frame has no leaseGeneration and the answer says which lease was joined', async () => {
+      const broker = await actBroker(3);
+      const run = await driver([broker.pipe, asPeer(), JOIN_OPEN, 'input:tap=16']);
+      assert.deepEqual([run.byId.open.ok, run.byId.open.reply, run.byId.open.leaseGeneration, run.byId.open.joinedGeneration, run.byId.input.reply], [true, 'accepted', undefined, 3, 'accepted']);
+      assert.deepEqual(broker.received, [`{"open":{"computerId":"${COMPUTER}","mode":"act","operationId":"lab-bd-act-1"}}`, '{"input":{"steps":[{"op":"tap","vk":16}]}}']);
+    });
+
+    it('an act open answered in any other way is not accepted: a bare ok, another generation than the one named, a generation that is not a lease, an extra member', async () => {
+      const cases = [
+        ['a bare ok', OPENED, LEASE_OPEN], ['another generation than the one named', { ok: true, leaseGeneration: 2 }, LEASE_OPEN], ['generation 0', { ok: true, leaseGeneration: 0 }, JOIN_OPEN],
+        ['a generation that is not a number', { ok: true, leaseGeneration: '1' }, JOIN_OPEN], ['an extra member', { ok: true, leaseGeneration: 1, extra: 1 }, JOIN_OPEN],
+      ];
+      for (const [label, reply, open] of cases) {
+        const broker = await fakeBroker((body, index, connection) => connection.send(reply));
+        const run = await driver([broker.pipe, asPeer(), open, 'input:tap=16']);
+        assert.deepEqual([run.byId.open.ok, run.byId.open.reply], [false, 'invalid_response'], label);
+        assert.deepEqual([run.byId.input.skipped, run.byId.input.because], [true, 'open'], label);
+        assert.equal(broker.received.length, 1, `${label}: nothing was sent after it`);
+      }
+      const denied = await fakeBroker((body, index, connection) => { connection.send(DENIED); connection.end(); });
+      assert.equal((await driver([denied.pipe, asPeer(), JOIN_OPEN])).byId.open.reply, 'denied');
     });
 
     it('the image pin is the helper\'s: the hash of the process behind the pipe is accepted, any other hash is refused before a byte is sent', async () => {
@@ -178,7 +205,7 @@ describe('lab driver for the real pipe client helper (shim `desktop-helper` prob
       const ok = [broker.pipe, asPeer()];
       const malformed = [
         [broker.pipe, asPeer()], [broker.pipe, asPeer(), 'capture:640x480'], [broker.pipe, asPeer(), `open:view:${COMPUTER}`, `open:view:${COMPUTER}`],
-        [...ok, 'open:act:x'], [...ok, 'open:act:x:op'], [...ok, 'open:edit:x'], [...ok, `open:view:${COMPUTER}`, 'claim'], [...ok, `open:view:${COMPUTER}`, 'end:2000'],
+        [...ok, 'open:act:x'], [...ok, 'open:act:x:op:0'], [...ok, 'open:act:x:bad id'], [...ok, 'open:view:x:op'], [...ok, 'open:act:x:op:1:extra'],[...ok, 'open:edit:x'], [...ok, `open:view:${COMPUTER}`, 'claim'], [...ok, `open:view:${COMPUTER}`, 'end:2000'],
         [...ok, `open:view:${COMPUTER}`, `image=${'A'.repeat(64)}`], [...ok, `open:view:${COMPUTER}`, 'image=abc'],
         ['not_a_desktop_pipe', asPeer(), `open:view:${COMPUTER}`], ['bad/name_desktop', asPeer(), `open:view:${COMPUTER}`],
         [broker.pipe, 'owner:x', `open:view:${COMPUTER}`], [broker.pipe, `pid:0:${nodeOwner}`, `open:view:${COMPUTER}`], [broker.pipe, `pid:abc:${nodeOwner}`, `open:view:${COMPUTER}`],
@@ -281,18 +308,21 @@ describe('lab driver for the real pipe client helper (shim `desktop-helper` prob
       assert.equal(opened(), before, 'no session was opened');
     });
 
-    it('the lease flow through the helper: refused before a claim, accepted after it, the keyboard input passes every check of the Broker and reaches the adapter, a wrong generation is refused', async () => {
+    it('the lease flow through the helper, as the room walks it: an open without a generation is refused before a claim and joins the lease after it (the answer names generation 1), the keyboard input reaches the adapter, a named wrong generation is refused', async () => {
       const peer = asPeer(child.pid, sid);
+      const join = (operationId) => `open:act:${ROOM}:${operationId}`;
       const lease = (operationId, generation) => `open:act:${ROOM}:${operationId}:${generation}`;
 
-      const unclaimed = await whileBusy([desktop, peer, lease('first-op', 1)]);
+      const unclaimed = await whileBusy([desktop, peer, join('first-op')]);
       assert.deepEqual([unclaimed.byId.open.ok, unclaimed.byId.open.reply], [false, 'denied']);
       await until(() => logged('DESKTOP_DENY=').includes('lease_unknown'), 'lease_unknown');
 
       const operationId = await claimTaskStart('first');
       assert.equal(operationId, 'first-op');
-      const act = await whileBusy([desktop, peer, lease(operationId, 1), 'input:tap=16']);
-      assert.deepEqual([act.byId.open.ok, act.byId.open.reply], [true, 'accepted']);
+      const act = await whileBusy([desktop, peer, join(operationId), 'input:tap=16']);
+      assert.deepEqual([act.byId.open.ok, act.byId.open.reply, act.byId.open.joinedGeneration], [true, 'accepted', 1]);
+      const named = await whileBusy([desktop, peer, lease(operationId, 1)]);
+      assert.deepEqual([named.byId.open.ok, named.byId.open.joinedGeneration], [true, 1], 'naming the right generation is accepted too');
       assert.deepEqual([act.byId.input.ok, act.byId.input.reply], [false, 'denied'], 'no VM behind the room: the adapter is where it ends');
       await until(() => child.lines.includes('DESKTOP_TEST=input_enter'), 'the input reaching the adapter');
       assert.ok(child.lines.includes('DESKTOP=ACT'), 'the act open was accepted');

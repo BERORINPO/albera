@@ -19,13 +19,15 @@ namespace Albera.Lab;
 //   <identity>     service:<name>              the Control Plane's way: the helper asks the SCM for the PID and takes the owner from NT SERVICE\<name>
 //                  pid:<pid>:<ownerSid>        a PID and an owner SID given by the caller (a caller that may not query the service, or a stale identity in a negative check)
 //   image=<hex>    expect.imageSha256: the helper hashes the image of the process behind the pipe and compares (64 lower-case hex characters)
-//   steps          open:<view|act>:<computerId>, open:act:<computerId>:<operationId>:<leaseGeneration>  exactly one, first (it is the start frame; a bare act open is not expressible)
+//   steps          open:<view|act>:<computerId>, open:act:<computerId>:<operationId>[:<leaseGeneration>]  exactly one, first (it is the start frame). An act open without a generation joins the
+//                  current lease of its operation (what the room does); it is answered {"ok":true,"leaseGeneration":n}, the lease it joined, which must be the named one when one was named.
+//                  A bare act open (no operation) is not expressible.
 //                  capture:<w>x<h>, input:<ops>            as for `desktop` (DesktopClient.cs). `claim` and `end` do not exist here: the helper reads the pipe only while a request is in flight.
 //   save=<path>    write the first valid PNG to that file
 //
 // Output: ONE JSON line per step, flushed as it happens: {"probe":"desktop-helper","id":"helper"|"open"|"capture"|"input"|...|"close","ok":bool, ...}
 //   helper   result: verified (the manifest next to the helper names its SHA-256) | helper_unavailable (no helper, no manifest, or a different hash: nothing was started)
-//   open     reply: accepted | one of the helper's codes (denied, server_identity_mismatch, server_identity_unavailable, access_denied, broker_unavailable, timeout, transport_error, ...) | closed | invalid
+//   open     reply: accepted (an act open: + joinedGeneration, the generation the Broker answered) | one of the helper's codes (denied, server_identity_mismatch, server_identity_unavailable, access_denied, broker_unavailable, timeout, transport_error, ...) | closed | invalid
 //   capture  reply: png | a helper code | closed | invalid | png_invalid (+ pngCheck); on png: width, height, bytes, sha256
 //   input    reply: accepted | a helper code | closed | invalid
 //   close    helperExit (the helper's exit code once stdin was closed; -1 when it had to be killed), stdoutExtraBytes (bytes the helper said that nobody asked for: expected 0)
@@ -47,7 +49,7 @@ internal static class DesktopHelperClient
     {
         string? Option(string prefix) => arguments.FirstOrDefault(a => a.StartsWith(prefix, StringComparison.Ordinal))?[prefix.Length..];
         string? image = Option(ImagePrefix), savePath = Option(SavePrefix);
-        if (DesktopClient.ParseSteps(arguments.Where(a => !OptionPrefixes.Any(p => a.StartsWith(p, StringComparison.Ordinal)))) is not { Count: > 0 } plan) return 64;
+        if (DesktopClient.ParseSteps(arguments.Where(a => !OptionPrefixes.Any(p => a.StartsWith(p, StringComparison.Ordinal))), allowJoin: true) is not { Count: > 0 } plan) return 64;
         if (!Path.IsPathFullyQualified(helperExe) || !DesktopClient.IsPlainName(pipeName) || !pipeName.EndsWith(DesktopSuffix, StringComparison.Ordinal) || !IsSha256(image)) return 64;
         if (plan[0] is not { Kind: "open" } open || plan.Skip(1).Any(s => s.Kind is not ("capture" or "input")) || (open.Mode == "act" && open.OperationId is null)) return 64;
         if (ExpectOf(identity, image) is not { } expect) return 64;
@@ -133,14 +135,44 @@ internal static class DesktopHelperClient
         if (step.OperationId is not null)
         {
             line["operationId"] = step.OperationId;
-            line["leaseGeneration"] = step.Generation;
             open["operationId"] = step.OperationId;
-            open["leaseGeneration"] = step.Generation;
+            if (step.Generation > 0)   // named; left out, the Broker joins the current lease of the operation
+            {
+                line["leaseGeneration"] = step.Generation;
+                open["leaseGeneration"] = step.Generation;
+            }
         }
         Dictionary<string, object?> start = new() { ["pipeName"] = pipeName, ["timeoutMs"] = OpenTimeoutMs, ["requestTimeoutMs"] = RequestTimeoutMs, ["expect"] = expect, ["open"] = open };
-        string reply = Classify(Exchange(process, stdin, stdout, JsonSerializer.Serialize(start), MaxReplyBytes, OpenTimeoutMs + GraceMs));
+        byte[]? answer = Exchange(process, stdin, stdout, JsonSerializer.Serialize(start), MaxReplyBytes, OpenTimeoutMs + GraceMs);
+        long joined = 0;
+        string reply = step.OperationId is null ? Classify(answer) : ClassifyActOpen(answer, step.Generation, out joined);
         line["reply"] = reply;
+        if (reply == "accepted" && step.OperationId is not null) line["joinedGeneration"] = joined;
         return reply == "accepted";
+    }
+
+    // An act open is answered exactly {"ok":true,"leaseGeneration":n} with n >= 1, and n is the named generation when one was named (the helper checks this too; a helper that did not would be caught here).
+    // A bare {"ok":true} is not an answer to an act open. Failures are classified as for any other step.
+    private static string ClassifyActOpen(byte[]? reply, long named, out long joined)
+    {
+        joined = 0;
+        if (reply is { Length: > 0 })
+        {
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(reply, new JsonDocumentOptions { MaxDepth = 2 });
+                JsonElement root = document.RootElement;
+                if (root.ValueKind == JsonValueKind.Object && root.EnumerateObject().Count() == 2 && root.TryGetProperty("ok", out JsonElement ok) && ok.ValueKind == JsonValueKind.True
+                    && root.TryGetProperty("leaseGeneration", out JsonElement generation) && generation.ValueKind == JsonValueKind.Number && generation.TryGetInt64(out long number) && number >= 1)
+                {
+                    joined = number;
+                    return named == 0 || named == number ? "accepted" : "invalid";
+                }
+            }
+            catch (JsonException) { }
+        }
+        string other = Classify(reply);
+        return other == "accepted" ? "invalid" : other;
     }
 
     private static bool Input(Process process, Stream stdin, Stream stdout, DesktopClient.Step step, Dictionary<string, object?> line)

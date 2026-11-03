@@ -95,7 +95,8 @@ internal static class DesktopClient
     internal static bool IsPlainName(string name) => name.Length is >= 1 and <= 128 && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.');
 
     // open:<view|act>:<computerId>[:<operationId>:<leaseGeneration>, act only] | capture:<w>x<h> | input:<ops> | claim | end:<ms>; null when any argument is malformed.
-    internal static List<Step>? ParseSteps(IEnumerable<string> arguments)
+    // `allowJoin` (the helper probe only): open:act:<computerId>:<operationId> leaves the generation out, so the Broker joins the current lease of that operation (Step.Generation 0).
+    internal static List<Step>? ParseSteps(IEnumerable<string> arguments, bool allowJoin = false)
     {
         List<Step> plan = [];
         Dictionary<string, int> seen = [];
@@ -113,6 +114,9 @@ internal static class DesktopClient
                 case ["open", "act", var computerId, var operationId, var generation] when IsPlainName(computerId) && IsPlainName(operationId)
                     && long.TryParse(generation, NumberStyles.None, CultureInfo.InvariantCulture, out long leaseGeneration) && leaseGeneration >= 1:
                     plan.Add(new Step(kind, id, "act", computerId, 0, 0, operationId, leaseGeneration));
+                    break;
+                case ["open", "act", var computerId, var operationId] when allowJoin && IsPlainName(computerId) && IsPlainName(operationId):
+                    plan.Add(new Step(kind, id, "act", computerId, 0, 0, operationId));
                     break;
                 case ["capture", var size] when size.Split('x') is [var w, var h] && int.TryParse(w, out int width) && int.TryParse(h, out int height) && width > 0 && height > 0:
                     plan.Add(new Step(kind, id, "", "", width, height));
