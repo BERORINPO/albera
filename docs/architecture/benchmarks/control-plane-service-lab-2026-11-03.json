@@ -1,0 +1,114 @@
+{
+  "nodeSource": "copied_from_host:v24.13.0:d14ba95cdce1ef7dc9ad3ac74949ca5db38b27378ee30f30a23cf26f9e875a11:89953280",
+  "setupError": null,
+  "unexpected": [],
+  "checks": [
+    {
+      "id": "cp0_token",
+      "title": "The live Control Plane token is the shape ADR-002 names: user = its service SID, restricted (restricting SIDs), not in Administrators or Hyper-V Administrators, exactly SeChangeNotifyPrivilege",
+      "expected": "PASS",
+      "status": "PASS",
+      "observed": "as_intended",
+      "evidence": [
+        "token user S-1-5-80-1806352987-2732975990-2758030030-4062901166-3669514184 (service SID S-1-5-80-1806352987-2732975990-2758030030-4062901166-3669514184)",
+        "restricting SIDs: 4, hasRestrictions=True (expected restricted)",
+        "Administrators in token: absent (expected absent or deny_only)",
+        "Hyper-V Administrators in token: absent (expected absent or deny_only)",
+        "privileges: SeChangeNotifyPrivilege"
+      ]
+    },
+    {
+      "id": "cp1_node_sqlite",
+      "title": "node.exe (C:\\Program Files\\nodejs) starts as the service child and node:sqlite opens a WAL journal, writes a row, reopens it and reads the row back",
+      "expected": "PASS",
+      "status": "PASS",
+      "observed": "sqlite_wal_ok node=v24.13.0 sqlite=3.50.4",
+      "evidence": [
+        "{\"probe\":\"cp\",\"id\":\"node-sqlite\",\"ok\":true,\"step\":\"done\",\"nodeVersion\":\"v24.13.0\",\"execPath\":\"C:\\\\Program Files\\\\nodejs\\\\node.exe\",\"platform\":\"win32\",\"arch\":\"x64\",\"journalMode\":\"wal\",\"quickCheck\":\"ok\",\"sqliteVersion\":\"3.50.4\",\"readSameConnection\":true,\"reopenedRow\":\"UNKNOWN\",\"walCheckpoint\":{\"busy\":0,\"log\":0,\"checkpointed\":0},\"files\":[{\"name\":\"cp-journal.sqlite\",\"bytes\":12288}]}",
+        "node source: copied_from_host:v24.13.0:d14ba95cdce1ef7dc9ad3ac74949ca5db38b27378ee30f30a23cf26f9e875a11:89953280",
+        "[stderr] (node:2184) ExperimentalWarning: SQLite is an experimental feature and might change at any time",
+        "[stderr] (Use `node --trace-warnings ...` to show where the warning was created)"
+      ]
+    },
+    {
+      "id": "cp2_pipe_client_helper",
+      "title": "The existing pipe client helper starts as the service child (pid mode and serviceName mode) and reaches the pipe open: broker_unavailable, not a start failure",
+      "expected": "PASS",
+      "status": "PASS",
+      "observed": "pid_mode=broker_unavailable service_mode=broker_unavailable",
+      "evidence": [
+        "{\"ok\":false,\"code\":\"broker_unavailable\"}{\"ok\":false,\"code\":\"broker_unavailable\"}"
+      ]
+    },
+    {
+      "id": "cp3_dpapi_currentuser",
+      "title": "DPAPI CurrentUser scope with entropy: Protect then Unprotect gives the plaintext back, and the wrong entropy does not",
+      "expected": "PASS",
+      "status": "PASS",
+      "observed": "protect_unprotect_with_entropy_ok",
+      "evidence": [
+        "{\"probe\":\"cp\",\"id\":\"dpapi-protect\",\"ok\":true,\"roundTrip\":true,\"blobBase64\":\"<omitted>\",\"plaintextSha256\":\"1f5ce16a98896e9830bf44a4742f56ae8fd6e9aecab011af501ab8d713b975e6\",\"wrongEntropyRefused\":true,\"profile\":{\"userSid\":\"S-1-5-80-1806352987-2732975990-2758030030-4062901166-3669514184\",\"userProfileEnv\":\"C:\\\\WINDOWS\\\\ServiceProfiles\\\\AlberaControlPlane\",\"appDataEnv\":\"C:\\\\WINDOWS\\\\ServiceProfiles\\\\AlberaControlPlane\\\\AppData\\\\Roaming\",\"localAppDataEnv\":\"C:\\\\WINDOWS\\\\ServiceProfiles\\\\AlberaControlPlane\\\\AppData\\\\Local\",\"userProfileFolder\":\"C:\\\\WINDOWS\\\\ServiceProfiles\\\\AlberaControlPlane\",\"userProfileFolderExists\":true,\"appDataFolder\":\"C:\\\\WINDOWS\\\\ServiceProfiles\\\\AlberaControlPlane\\\\AppData\\\\Roaming\",\"masterKeyFolderExists\":true,\"masterKeyFileCount\":2,\"registryHiveLoaded\":true,\"profileListPath\":\"C:\\\\WINDOWS\\\\ServiceProfiles\\\\AlberaControlPlane\"}}"
+      ]
+    },
+    {
+      "id": "cp3_profile",
+      "title": "MEASURED: the profile the service gets (USERPROFILE, APPDATA, hive loaded, where DPAPI keeps its master key)",
+      "expected": "MEASURED",
+      "status": "MEASURED",
+      "observed": "userProfile=C:\\WINDOWS\\ServiceProfiles\\AlberaControlPlane appData=C:\\WINDOWS\\ServiceProfiles\\AlberaControlPlane\\AppData\\Roaming profileFolderExists=True hiveLoaded=True profileList=C:\\WINDOWS\\ServiceProfiles\\AlberaControlPlane masterKeyFolder=True/files=2",
+      "evidence": [
+        "{\"userSid\":\"S-1-5-80-1806352987-2732975990-2758030030-4062901166-3669514184\",\"userProfileEnv\":\"C:\\\\WINDOWS\\\\ServiceProfiles\\\\AlberaControlPlane\",\"appDataEnv\":\"C:\\\\WINDOWS\\\\ServiceProfiles\\\\AlberaControlPlane\\\\AppData\\\\Roaming\",\"localAppDataEnv\":\"C:\\\\WINDOWS\\\\ServiceProfiles\\\\AlberaControlPlane\\\\AppData\\\\Local\",\"userProfileFolder\":\"C:\\\\WINDOWS\\\\ServiceProfiles\\\\AlberaControlPlane\",\"userProfileFolderExists\":true,\"appDataFolder\":\"C:\\\\WINDOWS\\\\ServiceProfiles\\\\AlberaControlPlane\\\\AppData\\\\Roaming\",\"masterKeyFolderExists\":true,\"masterKeyFileCount\":2,\"registryHiveLoaded\":true,\"profileListPath\":\"C:\\\\WINDOWS\\\\ServiceProfiles\\\\AlberaControlPlane\"}"
+      ]
+    },
+    {
+      "id": "cp4_dpapi_other_identity_refused",
+      "title": "The blob cannot be Unprotected by another virtual account, a plain local user or Administrator",
+      "expected": "PASS",
+      "status": "PASS",
+      "observed": "administrator=refused_win32_-2146893813 local_user=refused_win32_-2146893813 other_virtual_account=refused_win32_-2146893813",
+      "evidence": [
+        "{\"probe\":\"cp\",\"id\":\"dpapi-unprotect\",\"identity\":\"NT SERVICE\\\\AlberaLabCpOther\",\"ok\":false,\"win32\":-2146893813}",
+        "--- other virtual account",
+        "{\"probe\":\"cp\",\"id\":\"dpapi-unprotect\",\"identity\":\"ALBERA-POC-01\\\\AlberaLabHolder\",\"ok\":false,\"win32\":-2146893813}",
+        "--- plain local user",
+        "--- administrator",
+        "{\"probe\":\"cp\",\"id\":\"dpapi-unprotect\",\"identity\":\"ALBERA-POC-01\\\\Administrator\",\"ok\":false,\"win32\":-2146893813}"
+      ]
+    },
+    {
+      "id": "cp5_tcp_loopback_other_user",
+      "title": "MEASURED: the service listens on 127.0.0.1 port 0; whether other local users can connect (expected: they can; recorded only)",
+      "expected": "MEASURED",
+      "status": "MEASURED",
+      "observed": "listening=127.0.0.1 local_user=connected administrator=connected",
+      "evidence": [
+        "{\"probe\":\"cp\",\"id\":\"tcp-listen\",\"state\":\"ready\",\"address\":\"127.0.0.1\",\"port\":49671}",
+        "{\"probe\":\"cp\",\"id\":\"tcp-listen\",\"state\":\"accepted\",\"hello\":\"hello:local_user\"}",
+        "{\"probe\":\"cp\",\"id\":\"tcp-listen\",\"state\":\"accepted\",\"hello\":\"hello:administrator\"}",
+        "{\"probe\":\"cp\",\"id\":\"tcp-listen\",\"state\":\"done\",\"accepted\":2}",
+        "local_user: {\"probe\":\"cp\",\"id\":\"tcp-connect\",\"label\":\"local_user\",\"identity\":\"ALBERA-POC-01\\\\AlberaLabHolder\",\"ok\":true,\"reply\":\"pong\"}",
+        "administrator: {\"probe\":\"cp\",\"id\":\"tcp-connect\",\"label\":\"administrator\",\"identity\":\"ALBERA-POC-01\\\\Administrator\",\"ok\":true,\"reply\":\"pong\"}"
+      ]
+    },
+    {
+      "id": "cp6_programdata_acl",
+      "title": "The service creates a ProgramData file with a protected DACL of exactly two ACEs (service SID Modify, shareholder SID Read); the shareholder reads but cannot write, another virtual account cannot read",
+      "expected": "PASS",
+      "status": "PASS",
+      "observed": "aces=2 protected=True inheritedBefore=5 holder_read=opened holder_write=denied other_read=denied",
+      "evidence": [
+        "{\"probe\":\"cp\",\"id\":\"acl-file\",\"owner\":\"S-1-5-80-1806352987-2732975990-2758030030-4062901166-3669514184\",\"inheritedAces\":[{\"sid\":\"S-1-5-80-1806352987-2732975990-2758030030-4062901166-3669514184\",\"type\":\"Allow\",\"rights\":\"0x001301BF\",\"inherited\":true},{\"sid\":\"S-1-5-18\",\"type\":\"Allow\",\"rights\":\"0x001F01FF\",\"inherited\":true},{\"sid\":\"S-1-5-32-544\",\"type\":\"Allow\",\"rights\":\"0x001F01FF\",\"inherited\":true},{\"sid\":\"S-1-5-80-1806352987-2732975990-2758030030-4062901166-3669514184\",\"type\":\"Allow\",\"rights\":\"0x001F01FF\",\"inherited\":true},{\"sid\":\"S-1-5-32-545\",\"type\":\"Allow\",\"rights\":\"0x001200A9\",\"inherited\":true}],\"finalAces\":[{\"sid\":\"S-1-5-21-<redacted>\",\"type\":\"Allow\",\"rights\":\"0x00120089\",\"inherited\":false},{\"sid\":\"S-1-5-80-1806352987-2732975990-2758030030-4062901166-3669514184\",\"type\":\"Allow\",\"rights\":\"0x001301BF\",\"inherited\":false}],\"protected\":true,\"appendedAfterSet\":true,\"ok\":true}{\"probe\":\"cp\",\"id\":\"file-access\",\"mode\":\"read\",\"identity\":\"ALBERA-POC-01\\\\AlberaLabHolder\",\"outcome\":\"opened\",\"firstByteRead\":true} --- shareholder read {\"probe\":\"cp\",\"id\":\"file-access\",\"mode\":\"write\",\"identity\":\"ALBERA-POC-01\\\\AlberaLabHolder\",\"outcome\":\"denied\"} --- shareholder write {\"probe\":\"cp\",\"id\":\"file-access\",\"mode\":\"read\",\"identity\":\"NT SERVICE\\\\AlberaLabCpOther\",\"outcome\":\"denied\"} --- other virtual account read"
+      ]
+    },
+    {
+      "id": "cp7_outbound_https",
+      "title": "Outbound HTTPS: BLOCKED is the expected answer in the lab (the guest has no network); FAIL only if this identity itself is refused (access denied)",
+      "expected": "BLOCKED",
+      "status": "BLOCKED",
+      "observed": "no_network_name_resolution_HostNotFound",
+      "evidence": [
+        "{\"probe\":\"cp\",\"id\":\"https\",\"url\":\"https://example.com/\",\"ok\":false,\"socketError\":\"HostNotFound\",\"win32\":11001,\"kind\":\"name_resolution\",\"exceptionTypes\":[\"HttpRequestException\",\"SocketException\"]}"
+      ]
+    }
+  ]
+}
