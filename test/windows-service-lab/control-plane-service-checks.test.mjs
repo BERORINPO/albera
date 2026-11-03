@@ -102,7 +102,7 @@ test('lab-vm.ps1 -ControlPlaneService: its own lab, the standard 4 GB VM, no Aut
   assert.match(lab, /if \(\$KeepVm\) \{ try \{ Invoke-Command -Session \$session -FilePath \$guestScript -ArgumentList \$guestRoot, 'cleanup'/u, 'guest cleanup only with -KeepVm; otherwise the VM is deleted');
   assert.match(lab, /if \(\$results\.setupError -or \$unexpected\.Count -gt 0 -or \$checks\.Count -eq 0\) \{ return 1 \}/u, 'exit 1 unless every check is the expected status');
   assert.match(driver, /-not \$HyperV -and -not \$ControlPlaneService\) \{\s+& npm run build:approval-authority/u);
-  assert.match(driver, /-not \$HostInstall -and -not \$HyperV -and -not \$ControlPlaneService\) \{\s+& node scripts\/windows-service-lab-inputs\.mjs/u);
+  assert.match(driver, /-not \$HostInstall -and -not \$HostMigrate -and -not \$HyperV -and -not \$ControlPlaneService\) \{\s+& node scripts\/windows-service-lab-inputs\.mjs/u);
 });
 
 test('the shim routes `cp` to the probe, which is BCL only and writes nothing but the one file it is told to create', () => {
