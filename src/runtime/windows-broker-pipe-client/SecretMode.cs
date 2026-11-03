@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 //                    entropy = 1..64 ASCII characters of [a-z0-9._-] (a name such as albera.claude-code-token.v1); it is part of the key, it is not a secret
 //   helper -> Node : [0][data] (the blob / the plaintext)   or   [1][word] with word one of invalid_request, too_large, protect_failed, unprotect_failed, internal_error
 // Scope: CryptProtectData / CryptUnprotectData with CRYPTPROTECT_UI_FORBIDDEN and without LOCAL_MACHINE, which is DPAPI CurrentUser (the same call as the lab probe, PR #175).
+// The three native imports resolve from System32 only (DefaultDllImportSearchPaths): a crypt32.dll or kernel32.dll placed beside the helper or in the working folder is never loaded.
 // Exit: 0 = a reply frame was written (including protect_failed / unprotect_failed), 64 = bad input (invalid_request, too_large), 70 = internal error.
 // A word never carries text of the input or of the OS. A wrong entropy, a damaged blob and a blob made by another identity are the SAME word (unprotect_failed): the helper is no oracle.
 // Every buffer that held the plaintext (the request, the native copies, the result, the reply frame) is zeroed before the process ends.
@@ -20,9 +21,9 @@ internal static partial class Program
     private const uint CryptUiForbidden = 0x1; // CRYPTPROTECT_UI_FORBIDDEN; no CRYPTPROTECT_LOCAL_MACHINE flag
 
     [StructLayout(LayoutKind.Sequential)] private struct DataBlob { public int Size; public IntPtr Data; }
-    [DllImport("crypt32.dll", SetLastError = true)] private static extern bool CryptProtectData(ref DataBlob input, IntPtr description, ref DataBlob entropy, IntPtr reserved, IntPtr prompt, uint flags, out DataBlob output);
-    [DllImport("crypt32.dll", SetLastError = true)] private static extern bool CryptUnprotectData(ref DataBlob input, IntPtr description, ref DataBlob entropy, IntPtr reserved, IntPtr prompt, uint flags, out DataBlob output);
-    [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr memory);
+    [DllImport("crypt32.dll", SetLastError = true), DefaultDllImportSearchPaths(DllImportSearchPath.System32)] private static extern bool CryptProtectData(ref DataBlob input, IntPtr description, ref DataBlob entropy, IntPtr reserved, IntPtr prompt, uint flags, out DataBlob output);
+    [DllImport("crypt32.dll", SetLastError = true), DefaultDllImportSearchPaths(DllImportSearchPath.System32)] private static extern bool CryptUnprotectData(ref DataBlob input, IntPtr description, ref DataBlob entropy, IntPtr reserved, IntPtr prompt, uint flags, out DataBlob output);
+    [DllImport("kernel32.dll"), DefaultDllImportSearchPaths(DllImportSearchPath.System32)] private static extern IntPtr LocalFree(IntPtr memory);
 
     private static int RunSecret()
     {

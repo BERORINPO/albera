@@ -11,7 +11,7 @@ import { buildPipeClient, getUnavailableReason, makeTrustedTempDirectory } from 
 // and that the helper's bounds hold. It does NOT prove that another identity (Administrator, a plain user, another virtual account) cannot open a blob, and it does not run as
 // NT SERVICE\AlberaControlPlane: both were measured in the lab with the probe (PR #175) and the same check with this helper is a lab item, not claimed here.
 const VALUE = 'sk-ant-oat01-SYNTHETIC_INTEGRATION_TOKEN_not_a_real_credential';
-const NAME = 'claude-code-token';
+const NAME = 'claude-oauth-token';
 const API_NAME = 'anthropic-api-key';
 const WORDS = ['invalid_request', 'too_large', 'protect_failed', 'unprotect_failed', 'internal_error'];
 
@@ -23,16 +23,17 @@ const frame = (payload) => {
 const request = (op, entropy, data) => frame(Buffer.concat([Buffer.from([op, entropy.length]), Buffer.from(entropy, 'ascii'), Buffer.from(data)]));
 
 describe('secret mode of the real helper: DPAPI CurrentUser round trip, refusals and bounds', { skip: getUnavailableReason(), timeout: 600_000 }, () => {
-  let root, helper, secrets;
+  let root, helper, helperSha256, secrets;
   before(async () => {
     root = makeTrustedTempDirectory('albera-secret-store-it-');
     helper = await buildPipeClient(path.join(root, 'helper'));
+    helperSha256 = JSON.parse(readFileSync(`${helper}.manifest.json`, 'utf8')).sha256; // the pin a caller holds, as the room's desktop settings do
     secrets = path.join(root, 'secrets');
     mkdirSync(secrets);
   });
   after(() => { if (root) rmSync(root, { recursive: true, force: true }); });
 
-  const store = () => createControlPlaneSecretStore({ secretsDir: secrets, helperPath: helper });
+  const store = () => createControlPlaneSecretStore({ secretsDir: secrets, helperPath: helper, helperSha256 });
   /** Run the helper once with these stdin bytes; resolves with { stdout, stderr, exit }. The stdin is closed after the bytes, as Node does. */
   const rawHelper = (bytes, args = ['secret']) => new Promise((resolve, reject) => {
     const child = spawn(helper, args, { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -62,16 +63,21 @@ describe('secret mode of the real helper: DPAPI CurrentUser round trip, refusals
     const secretStore = store();
     const saved = await secretStore.save(NAME, VALUE);
     assert.equal(saved.sha256Prefix.length, 8);
-    assert.deepEqual(readdirSync(secrets), [`${NAME}.dpapi`]);
+    assert.deepEqual(readdirSync(secrets).sort(), [`${NAME}.dpapi`, `${NAME}.meta`]);
+    const meta = readFileSync(path.join(secrets, `${NAME}.meta`), 'utf8');
+    assert.deepEqual(JSON.parse(meta), { sha256Prefix: saved.sha256Prefix, savedAt: saved.savedAt });
+    assert.equal(meta.includes(VALUE), false);
     const blob = readFileSync(path.join(secrets, `${NAME}.dpapi`));
     assert.ok(blob.length > VALUE.length && blob.length < SECRET_LIMITS.maxBlobBytes);
     for (const encoding of ['latin1', 'utf16le', 'base64']) assert.equal(blob.toString(encoding).includes(Buffer.from(VALUE).toString(encoding)), false, `no plaintext as ${encoding}`);
     assert.equal(blob.subarray(0, 4).readUInt32LE(0), 1, 'a DPAPI blob starts with dwVersion 1');
     assert.equal((await secretStore.load(NAME)).toString(), VALUE);
     assert.deepEqual(await secretStore.status(NAME), saved);
+    assert.deepEqual(await secretStore.verify(NAME), { present: true, readable: true, sha256Prefix: saved.sha256Prefix, savedAt: saved.savedAt });
     await secretStore.save(NAME, VALUE);
     assert.notDeepEqual(readFileSync(path.join(secrets, `${NAME}.dpapi`)), blob, 'DPAPI salts every protect: the same value gives another blob');
     assert.equal(await secretStore.erase(NAME), true);
+    assert.deepEqual(readdirSync(secrets), [], 'erase removed the blob and the meta file');
     assert.equal(await codeOf(secretStore.load(NAME)), 'not_found');
   });
 
@@ -90,7 +96,8 @@ describe('secret mode of the real helper: DPAPI CurrentUser round trip, refusals
     const good = readFileSync(path.join(secrets, `${NAME}.dpapi`));
     copyFileSync(path.join(secrets, `${NAME}.dpapi`), path.join(secrets, `${API_NAME}.dpapi`));
     assert.equal(await codeOf(secretStore.load(API_NAME)), 'unprotect_failed');
-    assert.deepEqual({ ...(await secretStore.status(API_NAME)), savedAt: null }, { present: true, readable: false, sha256Prefix: null, savedAt: null });
+    assert.deepEqual(await secretStore.verify(API_NAME), { present: true, readable: false, sha256Prefix: null, savedAt: null });
+    assert.deepEqual(await secretStore.status(API_NAME), { present: true, sha256Prefix: null, savedAt: null }, 'status does not open the blob');
     const flipped = Buffer.from(good);
     flipped[flipped.length - 5] ^= 0xff;
     for (const damaged of [flipped, good.subarray(0, good.length - 1), good.subarray(0, 40), Buffer.alloc(300, 0x41), Buffer.from('not a blob')]) {
