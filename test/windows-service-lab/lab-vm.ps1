@@ -1,5 +1,5 @@
 # Issue #23 one-command disposable VM lab. Usage:
-#   powershell -File test/windows-service-lab/lab-vm.ps1 [-Build] [-KeepVm] [-HostInstall | -HyperV]
+#   powershell -File test/windows-service-lab/lab-vm.ps1 [-Build] [-KeepVm] [-HostInstall | -HyperV | -ControlPlaneService [-HostNodeExe <path>]]
 # Changes nothing on the host except creating/deleting this one VM and its folder.
 # The golden disk is never modified, and the guest is disconnected from the network.
 param(
@@ -14,7 +14,14 @@ param(
   # tries the screen capture and input calls; then the real Broker runs as a service and its desktop pipe is used (view session, refusals, and the act session with the
   # lease a task.start claim makes). The outer VM gets 5 GB and nested virtualization. Needs the lab shim build and the Broker build, which includes the Control Plane
   # pipe client (-Build makes them).
-  [switch]$HyperV
+  [switch]$HyperV,
+  # Run the CONTROL PLANE SERVICE lab (lab-control-plane-service.ps1) instead: what a Control Plane that runs as NT SERVICE\AlberaControlPlane (restricted service SID,
+  # SeChangeNotifyPrivilege only) can do -- node.exe + node:sqlite, the pipe client helper, DPAPI, loopback TCP, a ProgramData file with a protected DACL, outbound HTTPS. Needs the lab shim
+  # build and the pipe client helper build (npm run build:windows-broker makes the helper; -Build makes both). Standard 4 GB VM, no Hyper-V role, no reboot.
+  [switch]$ControlPlaneService,
+  # Used by -ControlPlaneService only, and only when the golden image has no Node: the host's own node.exe (read, never changed) is copied into the guest at C:\Program Files\nodejs.
+  # Nothing is downloaded. It must carry a valid Authenticode signature; its version, size and SHA-256 are printed and recorded in the results.
+  [string]$HostNodeExe = (Join-Path $env:ProgramFiles 'nodejs\node.exe')
 )
 $ErrorActionPreference = 'Stop'
 
@@ -96,7 +103,72 @@ function Invoke-HyperVRightsLab([string]$VmName, [pscredential]$Credential, [str
   return 0
 }
 
-$golden = 'U:\dev\hyperv\golden\ws2025-desktop-golden.vhdx'
+# Makes sure the guest has node.exe at the path a real install uses. The golden image may already have it (then nothing is copied). If not, the HOST's node.exe is copied in -- a read of one
+# host file, no download -- after it is checked: it exists, has a valid Authenticode signature and a Node version that has node:sqlite (22.13 or newer). After the copy the guest's SHA-256 must match the host's.
+# Returns the text recorded as evidence: 'golden', or 'copied_from_host:<version>:<sha256>:<bytes>'.
+function Install-GuestNode($Session, [string]$HostNode, [string]$GuestNode) {
+  $present = Invoke-Command -Session $Session -ScriptBlock { param($p) Test-Path -LiteralPath $p -PathType Leaf } -ArgumentList $GuestNode
+  if ($present) { Write-Host "node.exe is already in the guest image: $GuestNode"; return 'golden' }
+  if (-not (Test-Path -LiteralPath $HostNode -PathType Leaf)) { throw "the guest has no Node and the host node.exe is missing: $HostNode (pass -HostNodeExe)" }
+  $version = (& $HostNode --version).Trim()
+  if ($version -notmatch '^v(\d+)\.(\d+)\.' -or ([int]$Matches[1] -lt 22) -or ([int]$Matches[1] -eq 22 -and [int]$Matches[2] -lt 13)) { throw "host node.exe is $version; node:sqlite needs 22.13 or newer" }
+  $signature = Get-AuthenticodeSignature -LiteralPath $HostNode
+  if ($signature.Status -ne 'Valid') { throw "host node.exe has no valid Authenticode signature ($($signature.Status)); not copying it into the guest" }
+  $hash = (Get-FileHash -LiteralPath $HostNode -Algorithm SHA256).Hash.ToLowerInvariant()
+  $bytes = (Get-Item -LiteralPath $HostNode).Length
+  Write-Host ("the guest image has no Node: copying the host's node.exe ({0}, {1:N1} MB, sha256 {2}, signed by {3})" -f $version, ($bytes / 1MB), $hash, $signature.SignerCertificate.Subject)
+  Invoke-Command -Session $Session -ScriptBlock { param($p) New-Item -ItemType Directory -Force -Path (Split-Path -Parent $p) | Out-Null } -ArgumentList $GuestNode
+  Copy-Item -ToSession $Session -Path $HostNode -Destination $GuestNode -Force
+  $guestHash = Invoke-Command -Session $Session -ScriptBlock { param($p) (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() } -ArgumentList $GuestNode
+  if ($guestHash -ne $hash) { throw 'node.exe in the guest does not match the host file after the copy' }
+  return "copied_from_host:${version}:${hash}:${bytes}"
+}
+
+# The -ControlPlaneService lab: copy the shim, the pipe client helper, the Node probe and the person tool, make sure node.exe is there, run lab-control-plane-service.ps1, print the result.
+# Returns the exit code last: 0 when every check came out as the script expects (cp7 BLOCKED is the expected answer: the guest has no network), 1 otherwise.
+function Invoke-ControlPlaneServiceLab([string]$VmName, [pscredential]$Credential, [string]$Repo, [string]$HostNode, [string]$OutputFile, [string]$ResultsFile, [switch]$KeepVm) {
+  $guestRoot = 'C:\albera-cp-lab'
+  $guestNode = 'C:\Program Files\nodejs\node.exe'
+  $guestScript = Join-Path $PSScriptRoot 'lab-control-plane-service.ps1'
+  $shimPublish = Join-Path $Repo 'test\windows-service-lab\bin\Release\net10.0-windows\win-x64\publish'
+  $helperPublish = Join-Path $Repo 'src\runtime\windows-broker-pipe-client\bin\Release\net10.0-windows\win-x64\publish'
+  $session = New-DirectSession $VmName $Credential 6 $null
+  try {
+    Invoke-Command -Session $session -ScriptBlock { $env:ALBERA_LAB_VM = '1' }   # the guest script refuses to run unless this is set (it creates services and a local user)
+    Invoke-Command -Session $session -ScriptBlock { param($r) New-Item -ItemType Directory -Force -Path "$r\bin\shim", "$r\bin\helper", "$r\bin\cp", "$r\tools" | Out-Null } -ArgumentList $guestRoot
+    Copy-Item -ToSession $session -Path (Join-Path $shimPublish '*') -Destination "$guestRoot\bin\shim" -Recurse -Force
+    Copy-Item -ToSession $session -Path (Join-Path $helperPublish '*') -Destination "$guestRoot\bin\helper" -Recurse -Force
+    Copy-Item -ToSession $session -Path (Join-Path $PSScriptRoot 'cp-node-probe.mjs') -Destination "$guestRoot\bin\cp\cp-node-probe.mjs" -Force
+    Copy-Item -ToSession $session -Path (Join-Path $PSScriptRoot 'lab-person.ps1') -Destination "$guestRoot\tools\lab-person.ps1" -Force
+    $nodeSource = Install-GuestNode $session $HostNode $guestNode
+    Write-Host 'running the seven measurements as NT SERVICE\AlberaControlPlane (restricted service SID, SeChangeNotifyPrivilege only)'
+    $raw = Invoke-Command -Session $session -FilePath $guestScript -ArgumentList $guestRoot, 'run', $nodeSource
+    $json = @($raw | Where-Object { $_ -is [string] -and $_ -like '{*' }) | Select-Object -Last 1
+    if (-not $json) { throw 'the guest script returned no results' }
+    $results = $json | ConvertFrom-Json
+    $results | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 -LiteralPath $ResultsFile
+  }
+  finally {
+    if ($session) {
+      if ($KeepVm) { try { Invoke-Command -Session $session -FilePath $guestScript -ArgumentList $guestRoot, 'cleanup' | Out-Null } catch { } }   # otherwise the VM is deleted anyway
+      Remove-PSSession $session -ErrorAction SilentlyContinue
+    }
+  }
+
+  $checks = @($results.checks)
+  $text = ($checks | Select-Object id, expected, status, observed | Format-Table -AutoSize -Wrap | Out-String)
+  $count = @{}
+  foreach ($status in @('PASS', 'FAIL', 'BLOCKED', 'MEASURED')) { $count[$status] = @($checks | Where-Object { $_.status -eq $status }).Count }
+  $text += "PASS: $($count.PASS)  FAIL: $($count.FAIL)  BLOCKED: $($count.BLOCKED)  MEASURED: $($count.MEASURED)  node: $($results.nodeSource)`r`n"
+  $unexpected = @($results.unexpected | Where-Object { $_ })
+  if ($unexpected.Count -gt 0) { $text += "Not as expected:`r`n  " + ($unexpected -join "`r`n  ") + "`r`n" }
+  $text | Set-Content -Encoding UTF8 -LiteralPath $OutputFile
+  $text | Out-Host
+  if ($results.setupError -or $unexpected.Count -gt 0 -or $checks.Count -eq 0) { return 1 }
+  return 0
+}
+
+$golden ='U:\dev\hyperv\golden\ws2025-desktop-golden.vhdx'
 $labNote = 'ALBERA lab (disposable; delete after run)'
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $root = Join-Path 'U:\dev\hyperv\clones' $VmName
@@ -118,14 +190,15 @@ try {
   $goldenItem = Get-Item -LiteralPath $golden
   if (-not $goldenItem.IsReadOnly) { throw "golden VHDX must be read-only: $golden" }
   if ($HyperV -and $HostInstall) { throw '-HyperV and -HostInstall are separate labs; choose one' }
+  if ($ControlPlaneService -and ($HyperV -or $HostInstall)) { throw '-ControlPlaneService is a separate lab from -HyperV and -HostInstall; choose one' }
   if (Get-VM -Name $VmName -ErrorAction SilentlyContinue) { throw "VM already exists: $VmName" }
   if (-not (Test-Path -LiteralPath $PasswordFile -PathType Leaf)) { throw "password file is missing: $PasswordFile" }
   if (-not $Build) {
     # Fail before creating a VM when the binaries run-lab.ps1 copies are missing.
     $needed = @('test\windows-service-lab\bin\Release\net10.0-windows\win-x64\publish',
                 'src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish')
-    # The Hyper-V lab runs the lab shim, the real Broker and the Control Plane pipe client (it sends the claims that make a lease); the other labs also copy the Approval Authority.
-    if ($HyperV) { $needed += @('src\runtime\windows-broker-pipe-client\bin\Release\net10.0-windows\win-x64\publish') }
+    # The Hyper-V lab runs the lab shim, the real Broker and the Control Plane pipe client (it sends the claims that make a lease), and so does the Control Plane service lab (shim + client); the other labs also copy the Approval Authority.
+    if ($HyperV -or $ControlPlaneService) { $needed += @('src\runtime\windows-broker-pipe-client\bin\Release\net10.0-windows\win-x64\publish') }
     else { $needed += @('src\runtime\windows-approval-authority\bin\Release\net10.0-windows\win-x64\publish') }
     foreach ($p in $needed) {
       if (-not (Test-Path -LiteralPath (Join-Path $repo $p))) { throw "missing build output (run with -Build): $p" }
@@ -193,19 +266,23 @@ try {
       if ($LASTEXITCODE -ne 0) { throw "build:windows-broker failed ($LASTEXITCODE)" }
       & npm run build:windows-service-lab
       if ($LASTEXITCODE -ne 0) { throw "build:windows-service-lab failed ($LASTEXITCODE)" }
-      if (-not $HyperV) {
+      if (-not $HyperV -and -not $ControlPlaneService) {
         & npm run build:approval-authority
         if ($LASTEXITCODE -ne 0) { throw "build:approval-authority failed ($LASTEXITCODE)" }
       }
     }
-    if (-not $HostInstall -and -not $HyperV) {
+    if (-not $HostInstall -and -not $HyperV -and -not $ControlPlaneService) {
       & node scripts/windows-service-lab-inputs.mjs $inputsFile
       if ($LASTEXITCODE -ne 0) { throw "input generation failed ($LASTEXITCODE)" }
     }
   }
   finally { Pop-Location }
 
-  if ($HyperV) {
+  if ($ControlPlaneService) {
+    $cpOut = @(Invoke-ControlPlaneServiceLab -VmName $VmName -Credential $credential -Repo $repo -HostNode $HostNodeExe -OutputFile $outputFile -ResultsFile (Join-Path $EvidenceDir 'control-plane-service-results.json') -KeepVm:$KeepVm)
+    $exitCode = [int]($cpOut | Select-Object -Last 1)
+  }
+  elseif ($HyperV) {
     $hvOut = @(Invoke-HyperVRightsLab -VmName $VmName -Credential $credential -Repo $repo -OutputFile $outputFile -ResultsFile (Join-Path $EvidenceDir 'hyperv-results.json') -KeepVm:$KeepVm)
     $exitCode = [int]($hvOut | Select-Object -Last 1)
   }
