@@ -338,8 +338,8 @@ describe('Control Plane host: config, launch gate, supervision and stop', { skip
     const ok = (installation) => assert.deepEqual(launchCheck(installation.config), { code: 0, lines: ['SERVICE_CONFIG=ok', 'CPHOST_LAUNCH=ok'], stderr: '' });
 
     it('refuses a parent where others can delete children, change the DACL or take ownership, at the app and at node.exe, and at any level above', () => {
-      // icacls letters: DC = delete child, WDAC = write DAC, WO = write owner. No inheritance flags: the right is on that folder itself.
-      for (const right of ['DC', 'WDAC', 'WO']) {
+      // icacls letters: D = delete (the folder itself), DC = delete child, WDAC = write DAC, WO = write owner. No inheritance flags: the right is on that folder itself.
+      for (const right of ['D', 'DC', 'WDAC', 'WO']) {
         const appBelow = install(`parent-app-${right}`, { entry: ENTRY_STAYS_ALIVE });
         icaclsOn(path.dirname(appBelow.app), '/grant', `*S-1-1-0:(${right})`);
         refused(appBelow, 'app_parent_untrusted');

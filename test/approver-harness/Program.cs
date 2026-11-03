@@ -547,6 +547,7 @@ internal static partial class Harness
         AttestationChecks();
         ListAndDenyChecks();
         PolicyChecks();
+        GuiChecks();
         Console.Out.Write(JsonSerializer.Serialize(new { checks = Results }));
         return 0;
     }

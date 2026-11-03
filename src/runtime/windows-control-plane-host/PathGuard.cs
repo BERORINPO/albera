@@ -39,7 +39,7 @@ internal static class PathGuard
 
     /// <summary>
     /// `folder` and every folder above it up to the drive root. A rename or delete of a folder here moves what the host trusts, so for each: the owner is trusted (an owner can always
-    /// rewrite the DACL) and no other principal may hold DELETE_CHILD, WRITE_DAC or WRITE_OWNER. With `denyAddFile` the first folder (node.exe's own) also refuses ADD_FILE, because
+    /// rewrite the DACL) and no other principal may hold DELETE (the folder itself, so a rename or removal of it), DELETE_CHILD, WRITE_DAC or WRITE_OWNER. With `denyAddFile` the first folder (node.exe's own) also refuses ADD_FILE, because
     /// a file added next to node.exe is what a DLL search would find. ACEs that only apply to children (inherit-only) are skipped: each child is checked itself, in its turn.
     /// </summary>
     public static bool IsParentChainSafe(string folder, bool denyAddFile) => Guarded(() =>
@@ -99,7 +99,7 @@ internal static class PathGuard
 
     private static bool IsSafeAncestor(FileSystemSecurity security, bool denyAddFile)
     {
-        int forbidden = DeleteChild | WriteDac | WriteOwner | GenericAll | GenericWrite | (denyAddFile ? WriteData : 0);
+        int forbidden = Delete | DeleteChild | WriteDac | WriteOwner | GenericAll | GenericWrite | (denyAddFile ? WriteData : 0);
         RawSecurityDescriptor descriptor = new(security.GetSecurityDescriptorBinaryForm(), 0);
         if (descriptor.Owner is not { } owner || !IsTrustedPrincipal(owner) || descriptor.DiscretionaryAcl is not { } dacl) return false;
         foreach (GenericAce ace in dacl)
