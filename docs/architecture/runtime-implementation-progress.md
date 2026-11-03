@@ -1,6 +1,6 @@
 # Runtime Architecture Implementation Progress
 
-**Updated:** 2026-11-02 (newest entries are at the end of this file)
+**Updated:** 2026-11-03 (newest entries are at the end of this file)
 **Working branch:** one branch per item from `origin/main` (`albera-goal` skill). Until 2026-10-28 the work was stacked on `codex/runtime-architecture-alignment`.
 **Runtime source/test HEAD audited (2026-10-28):** `9b8174759421fe1d176dadd9c70471487ea241fc` (adds the ADR-002 Mock IPC contract tests; runtime production code is unchanged); PR #19 is stacked on PR #17 head `8a829d116e39ca10f273594f409f38315f20570f`. Analysis is in `runtime-gap-analysis.md`.
 **Architecture source:** PR #18 head `b7684740322bda5a4e2d1233299bca251d95ed6c` (Proposed, independent branch; its absence from the Runtime branch is intentional).
@@ -11,7 +11,11 @@ This file is the continuation ledger. `VERIFIED` refers only to the stated evide
 
 Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 
-(none open)
+### 漏れた API キーの差し替え
+- やること: 2026-11-03 に漏れた ALBERA 用の API キーを、Anthropic Console で無効にする。キーを使い続ける場合だけ、新しいキーを作る (サブスクで動かすなら作り直しは不要)
+- 所要: 約 3 分 (Yosuke の作業時間)
+- これで進むもの: 漏れたキーの後始末 (stage 1 を動かすのには不要)
+- 取り消し: できない (無効にしたキーは元に戻らない)
 
 ## Checkpoints
 
@@ -482,3 +486,26 @@ Broker desktop pipe and act lease in the disposable VM (2026-11-03, `lab-vm.ps1 
 Option C, Control Plane side and installer (2026-11-03). Merged: the host installer's `-GrantHyperVToBroker` (#167; disposable VM `-HostInstall` 18 PASS / 0 FAIL: only the Broker SID joins S-1-5-32-578, Broker unrestricted, uninstall removes the SID first; the run also found and fixed an empty-folder uninstall crash that affected every install), and the Control Plane desktop client plus the gated room wiring (#168 with #169 and #170; nested lab through the real helper, [evidence](benchmarks/broker-desktop-helper-lab-2026-11-03.json), 44 PASS / 0 FAIL / 2 BLOCKED = mouse on an inner VM without a guest OS). Measured: the Control Plane identity cannot open the Broker process, so the room pins the helper, not the Broker image. `VERIFIED` in the disposable VM: grant and revoke, Broker service desktop pipe (view, act, lease, revocation, restart), real helper with serviceName identity and squatter refusal. `NOT VERIFIED`: the VM name to GUID lookup on a real host, mouse input on a guest OS, the gated room end to end on the owner's PC (needs the owner: re-install with the grant, API key, Hello). Open: #171 (installer writes the room's desktop settings).
 
 Option C on the owner's PC (2026-11-03). The owner re-installed `main` 303ec40 with `-GrantHyperVToBroker -VmName albera-clone-01` from hashed copies (tree hash `c20bc914...` and both script hashes equal to Host build hashes run 41585277883 on that commit). Observed afterwards from a normal account: Hyper-V Administrators holds the owner and `NT SERVICE\AlberaHostBroker` only (not `albera-cp`, not the Authority); the pipes `ALBERA_HostBroker`, `ALBERA_HostBroker_desktop` and both Authority pipes exist, so the Broker started with the `computers` entry whose GUID the installer looked up by VM name on this real host; the gated room running as `albera-cp` submitted a `guest.command` / `task.start` for `clone-01` and `AlberaApprover list` showed it with `digest check: OK`. `VERIFIED` on the real host: the grant, the VM name lookup, the unrestricted Broker starting with its desktop pipe, the room's submit through the pinned helper. Not yet: the approval itself (the first attempt was refused locally with `not_confirmed` because the wrong text was typed at the yes prompt; nothing was approved) and the hand driving the VM. Friction: Win+R with Ctrl+Shift+Enter did not give an elevated console here; Task Manager "Run new task" with administrator rights did. To spare the owner the long manual sequence, a local, not committed wrapper (`go.cmd`: environment checks, hashed copy compared with the CI values, uninstall, install, start, then the room as `albera-cp` and the approver) was used; it replaces the owner's eye check of the hashes with a script the agent could have written, a trade-off the owner accepted. Incident: the Anthropic API key was handed to the `albera-cp` window through the clipboard, then pasted into the approver's yes prompt and into the chat; the owner is revoking and replacing it, and the launcher now passes the key to the `albera-cp` window and clears the clipboard itself (no hand paste).
+
+## 2026-11-03 — Stage 1 easy setup (subscription edition): pieces merged
+
+Merged on main: #176 (contract), #177 (Claude Code hands), #178 (room UI auth), #179 (DPAPI secret store), #180 (approver GUI), #181 (credentials and jobs UI), #182 (setup with offline attestation), #183 and #184 (Control Plane service host), #185 (room-service wiring), #186 (flaky test fix), #188 (NativeAOT lock).
+
+- **VERIFIED on CI.** `Host build hashes` run 41644370640, main commit ffa648c:
+  - A NativeAOT `albera-setup.exe` was built.
+  - The 9 files were attested in a job that ran nothing from the build, and the bundles were collected.
+  - The built setup verified the update folder offline with its bundled gh.exe and printed `ALBERA_SETUP_VERIFIED commit=ffa648c… run=41644370640 treeHash=eb4a0a51…`.
+
+  This closes contract measurement M8: the gh JSON field names match what setup reads. The first dispatch (run 41639616226) failed with NU1004; #188 fixed it.
+- **Not verified yet.** The following have tests with fakes only:
+  - the CP host running under the SCM as a restricted service;
+  - room-service with the real claude.exe, DPAPI and the Broker;
+  - setup's install mode;
+  - the installer (PR7).
+
+  All of them go to one integrated disposable-VM lab after PR7.
+- **Flaky test fixed.** A test in `runtime-claude-code-driver.test.mjs` read the fake's half-written record after the fake was killed. Since #186 the record is written atomically.
+- **Process note.** A review agent ran `--compile-check` locally, which restored the ILCompiler packages from nuget.org into a temporary folder. The packages were checked against the lock's SHA-512, and the folder was removed at exit. Review prompts now say: do not run commands that download.
+- **Follow-ups:**
+  - two Zaku LOWs on #185: a stale room.json is left when reading the config fails, and the checker finds powershell.exe via SystemRoot;
+  - a Windows tree-stop confirmation via a Job object, which would relax `hands-unconfirmed-stop-busy`.

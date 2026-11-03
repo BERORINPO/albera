@@ -80,6 +80,8 @@ const EXPECTED = {
     'control-plane-secret-store.mjs', 'fake-control-plane-secret-store.mjs',
     // the room's credential field and job screen: routes registered on the room host (apiRoutes) over injected ports (control-plane-service.md sections 4 and 5; PR4b / PR4c)
     'room-settings-routes.mjs', 'room-job-routes.mjs',
+    // `albera-runtime room-service` (PR4d): the Control Plane service's resident command and its parts: the settings it reads, the approvals port of the job screen, the Claude Code hands, the wiring (entry role)
+    'room-service-config.mjs', 'room-service-approvals.mjs', 'room-service-hands.mjs', 'room-service-folder-guard.mjs', 'room-service-wiring.mjs',
     // Claude Code as the hands: a stdio MCP server over the desktop Broker client (adapter; args = pure flags, server = tools + budget, mcp/mcp-main = entry), the headless `claude -p` driver and its Fake (adapter pair; decision log 2026-11-03+claude-code-hands)
     'albera-desktop-mcp-args.mjs', 'albera-desktop-mcp-server.mjs', 'albera-desktop-mcp.mjs', 'albera-desktop-mcp-main.mjs', 'claude-code-driver.mjs', 'fake-claude-code.mjs', 'fake-albera-desktop-mcp-main.mjs',
     // verified-integration candidate: exact-commit evidence and person-approved compare-and-swap promotion (rule 5e; ADR-007, INT-01 / INT-02)
@@ -256,7 +258,7 @@ const providerContracts = [
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:
 // the clients, the clock, the sleep and the storage are injected (and the flow must not name the Broker or the Authority: rules 8a / 10a).
-check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs', 'src/runtime/room-settings-routes.mjs', 'src/runtime/room-job-routes.mjs', 'src/runtime/integration-candidate.mjs', 'src/runtime/integration-service.mjs', 'src/runtime/desktop-broker-client-contract.mjs', 'src/runtime/albera-desktop-mcp-args.mjs'], (line) => {
+check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs', 'src/runtime/room-settings-routes.mjs', 'src/runtime/room-job-routes.mjs', 'src/runtime/room-service-approvals.mjs', 'src/runtime/integration-candidate.mjs', 'src/runtime/integration-service.mjs', 'src/runtime/desktop-broker-client-contract.mjs', 'src/runtime/albera-desktop-mcp-args.mjs'], (line) => {
   if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null;
   for (const [re, label] of FORBIDDEN_PURE) if (/** @type {RegExp} */ (re).test(line)) return `${label} is not allowed in a pure runtime module`;
   return null;
