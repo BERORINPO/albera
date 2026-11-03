@@ -70,7 +70,7 @@ All folders are created by setup with their final owner and protected DACL in on
 | Builds | `C:\Program Files\Albera\bin\{broker,authority,pipe-client,approver,setup,control-plane,claude}` | Program Files default: administrators write, Users read and execute | `claude` holds the pinned Claude Code copy (section 8). `setup` holds `albera-setup.exe` and the bundled `gh.exe` |
 | CP working data | `C:\ProgramData\Albera\control-plane\` | SYSTEM and Administrators full; CP full control | The Runtime journal refuses a folder where its own user lacks full control (found 2026-11-02). `claude-run\<runId>\{config,work,tmp}` is made empty per task and deleted after it; the CP host sweeps leftovers at start |
 | CP settings (moved) | `C:\ProgramData\Albera\control-plane-config\albera.approval.json` and `AlberaControlPlane.service.json` | SYSTEM and Administrators full; CP **read only** | Closes the known limit `2026-11-03+cp-settings-pin-scope` (ADR-002): the CP can no longer rewrite the helper pin or the `desktop` block. Gains the `claude` block (section 6.1) |
-| Secrets | `C:\ProgramData\Albera\secrets\<name>.dpapi` | SYSTEM and Administrators full; CP Modify; nobody else (not the owner) | DPAPI blobs only (section 5) |
+| Secrets | `C:\ProgramData\Albera\secrets\<name>.dpapi` | SYSTEM and Administrators full; CP Modify; nobody else (not the owner) | DPAPI blobs, and beside each a `<name>.meta` with the first 8 hex of the value's SHA-256 and the save time (no plaintext; section 5) |
 | UI bootstrap | `C:\ProgramData\Albera\ui\room.json` = `{port, code, pid, writtenAt}` | SYSTEM and Administrators full; CP Modify; owner Read | The file is created by node in the folder and inherits exactly this list |
 | Install record | `C:\ProgramData\Albera\install-manifest.json` | Unchanged | Gains `controlPlane` (service SID, node hash), `claude` (version string, SHA-256, source path), `setupRunId` (section 8) |
 
@@ -84,13 +84,14 @@ Measured 2026-11-03 (`cp5_tcp_loopback_other_user`): another local user and an a
 |---|---|---|
 | Who gets a session | Only the holder of the bootstrap code. The code is in `ui\room.json`, which only the owner SID, CP, SYSTEM and Administrators can read (a kernel check, not a convention) | Decided (plan) |
 | Opening | Start menu "Open ALBERA" (runs as the owner) reads `ui\room.json`, checks that the service is RUNNING and that `pid` owns the port, then opens `http://127.0.0.1:<port>/room/#b=<code>`. The fragment is never sent to the server; the page posts it to `/api/session` | Decided (plan) |
-| Code lifetime | A new code at every CP start; rotated after one use and every 10 minutes. `/api/session` is limited to 10 per minute | Decided (plan) |
-| Cookie | `HttpOnly; SameSite=Strict; Path=/room/`; name unique per host instance; sliding idle 20 min, absolute 8 h (as `room-host.mjs` today) | Existing behavior |
+| Code lifetime | A new code at every CP start; rotated after one use and every 10 minutes. `/api/session` takes 10 wrong codes per minute (then `429`); the right code is never limited, so another local user cannot lock the owner out | Decided (plan) |
+| Cookie | `HttpOnly; SameSite=Strict; Path=/room/`; name unique per host instance; sliding idle 20 min, absolute 2 h (8 h before PR4a; see "Known limit" below) | Provisional |
 | Other local users and RDP sessions | They reach the TCP port and get static files and `401` | Decided (plan) |
 | Other tabs | Existing `Host` check (DNS rebinding), `Origin` required on writes with `Sec-Fetch-Site` same-origin, CSP, CORP/COOP | Existing behavior |
 | Hole found by the plan | Another port on `127.0.0.1` is same-site, so a no-cors GET to a read API would carry the cookie. Read APIs therefore also refuse a request whose `Sec-Fetch-Site` header is present and not `same-origin` or `none`. A request without the header (no browser) still needs the cookie | Decided (plan); browser behavior NOT VERIFIED (M16) |
 | Port squatting | A squatter would need the port before the CP and also the code; "Open ALBERA" checks PID ownership of the port | Decided (plan) |
 | Not defended | Processes of the owner's own account and browser extensions are trusted (the existing known limit). Administrators and SYSTEM are out of the threat model | Existing limit |
+| Known limit: cookie is not kept per port | A cookie is not separated by port, so a page served from another port on the same `127.0.0.1` receives the room's cookie too (the cookie name is unique per host only so two rooms do not overwrite each other). The owner must not open a local page that someone else is serving. The real fix is storing the session per origin (for example a `__Host-` cookie on a name-based origin, or a header token kept by the page), a later task. The absolute lifetime is cut to 2 h in the meantime | Known limit; the fix is a follow-up |
 
 Routes added to the room: credential (section 5), `POST /api/jobs {computerId, task}` (task 1 to 256 bytes, the gate's existing safe-character rules; the reply carries `approvalId` and the 4-digit match code the room displays), "stop all", and an **approval test** button that submits one fixed `synthetic.noop` (the CP identity cannot run `approval-check` by hand). Form text reaches the AI only if it is exactly the approved `task.start` text (the existing `task-start-gate` rule). The room computes the action digest itself with `broker-contract/action-digest.mjs`, sends it as `expectedDigest`, and computes the match code from that digest and the `approvalId` the Authority returned (the submit reply carries no digest: `approval-authority.md`). A lying CP would only show a code that does not match the window, which the owner answers with Deny.
 
@@ -101,6 +102,8 @@ Routes added to the room: credential (section 5), `POST /api/jobs {computerId, t
 | Scope | DPAPI `CurrentUser` as the CP virtual account, with entropy `albera.<name>.v1`. Names: `claude-oauth-token` (default), `anthropic-api-key` (option) | Decided (plan) |
 | Evidence | Lab 2026-11-03 (`cp3`, `cp4`): protect and unprotect round-trip with entropy, wrong entropy refused, and the blob refused to Administrator, a plain local user and another virtual account | Measured |
 | Where it runs | The helper in "secret" mode (a child with the same token) protects and unprotects over stdin and stdout; Node never holds a DPAPI binding. The plaintext exists in Node only for the duration of one spawn call (6.2) | Decided (plan) |
+| Status and check | Save writes `<name>.meta` (hash prefix and date, no plaintext) after the blob; the room's status reads only that file and never decrypts. Whether this account can still open the blob is an explicit `verify(name)` (one helper run). Erase deletes both files. The names are the two above and nothing else (a frozen list) | Decided (plan) |
+| Known limit: helper pin | The helper is not a single-file publish, so the SHA-256 pin (`helperPath` and `helperSha256` are required by the secret store, as in the room's `desktop` settings) covers the exe only, not the dll files beside it. Setup's tree hash covers the whole `bin\pipe-client` folder at install time and `bin` is writable only by administrators (outside the threat model). Single-file publish is a later task (ADR-002, decision `2026-11-03+cp-helper-pin-scope`) | Known limit |
 | Entry | One password field in the room, write-only API, body at most 1 KiB, never returned or logged, never in a URL. After save the room shows only the first 8 hex of its SHA-256 and the date. The page tries to clear the clipboard (best effort; failure is silent and the page says so) | Decided (plan) |
 | Check on save | Format only (printable ASCII, no whitespace, 1 to 1024 bytes). A live check is a measurement item (`claude auth status` with the token in the environment, M3) so that saving never spends a model call | Provisional |
 | Erase | The UI deletes the blob; uninstall deletes the folder. Real revocation is at the provider; where a `setup-token` token is revoked is NOT VERIFIED (M2) | Decided (plan) |
@@ -188,6 +191,13 @@ The driver turns Claude Code's stream into the **same event shape** `desktop-age
 
 The numbers are Provisional. What the subscription's own usage limits do to a headless run is NOT VERIFIED (M5); the driver maps any authentication or rate-limit end to a fixed code and never retries in a loop.
 
+### 6.6a Known limit: what a screen can make the hands do (Provisional)
+
+Text on a screen is untrusted input, and the six tools include `key` and `type`, so a page the model reads can talk it into opening a shell inside the VM; the tools do not refuse key combinations, because the VM is a disposable sandbox and later work runs CLIs inside it.
+- The damage stays inside the VM the lease names: the hands have no other computer, no file tool and no host command.
+- How large the damage can be is set by what the VM can reach outside itself (network) and by the credentials it holds.
+- So a VM given to the hands has its outbound network restricted and holds no credentials.
+
 ### 6.7 API-key option
 
 Same driver, same flags, same folders; the child environment carries `ANTHROPIC_API_KEY` from the secret `anthropic-api-key` instead of the token, and `--max-budget-usd` from the room's existing per-VM cap is added. This is the path the existing `ANTHROPIC_API_KEY` room uses without Claude Code; it is kept as an option and not changed by this contract.
@@ -204,7 +214,7 @@ One tray process per owner session (HKLM Run, `bin\approver`). It reuses the app
 | Right pick | Starts the Windows Hello signature over the presence message (the existing `albera.presence.v1` bytes). Hello is the only approval |
 | No focus steal | `ShowWithoutActivation` and a taskbar flash. No default button; Enter and Space do nothing. All buttons are disabled for 1 second after the window is shown and when the request expires |
 | No automation | There is no "approve all", "remember" or "approve on timeout". `decide approve` is sent only from the click handler (source guard, tested like the existing "no `--yes`") |
-| Hello window handle | Use `IKeyCredentialManagerInterop` with the window handle. This is the open point in `approver-app.md` and can be verified only on the owner's PC (M14). Under RDP the window says to approve at the PC |
+| Hello window handle | **Not implemented.** The window is brought to the front and the plain Hello call is used instead (the interop interface ID and slot order could not be verified; `approver-app.md`, "GUI mode"). Waiting for the owner-PC measurement (M14). Under RDP the window says to approve at the PC |
 | Toolkit | Not decided here; it must support `ShowWithoutActivation` and run self-contained like the console approver |
 | Rejected | A single Approve button (habituation), typing the code (paste risk), a toast (COM registration for an unpackaged app; backlog) |
 

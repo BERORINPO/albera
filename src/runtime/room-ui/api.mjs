@@ -27,3 +27,21 @@ const postJson = (url, payload) => call(url, {
 export const getState = (since) => call(stateUrl(since));
 export const decide = (cardId, choiceId) => postJson('api/decide', { cardId, choiceId });
 export const unlock = (code) => postJson('api/session', { bootstrapCode: String(code ?? '') });
+
+/**
+ * The one-time code in a page address of the form `#b=<code>` ("Open ALBERA" puts it there; a fragment is never sent to the host).
+ * Returns '' when the fragment is anything else, so only a plain code is ever posted.
+ */
+export function bootstrapFromHash(hash) {
+  const match = (typeof hash === 'string' ? hash : '').match(/^#b=([A-Za-z0-9_-]{16,128})$/);
+  return match ? match[1] : '';
+}
+
+// Credential field and job screen (settings.mjs, jobs.mjs). The credential call is write-only: no call here ever receives the value back.
+export const getCredentials = () => call('api/settings/credentials');
+export const saveCredential = (name, value) => postJson('api/settings/credential', { name, value });
+export const eraseCredential = (name) => postJson('api/settings/credential/erase', { name });
+export const getJobs = () => call('api/jobs');
+export const startJob = (computerId, task) => postJson('api/jobs', { computerId, task });
+export const stopAllJobs = () => postJson('api/jobs/stop-all', {});
+export const approvalTest = () => postJson('api/jobs/approval-test', {});

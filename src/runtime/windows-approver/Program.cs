@@ -11,6 +11,7 @@ namespace Albera.Approver;
 //   AlberaApprover.exe enroll --check [--expect <approverKeyId>]   sign a fresh self-check message with the EXISTING Hello key and verify it locally (no Authority, nothing sent)
 //   AlberaApprover.exe policy [show]           show the Authority's tier policy
 //   AlberaApprover.exe policy set <careful|standard> [--prompt <action>]...   ask the Authority for a new tier policy; a change that lets an action skip a person needs a typed yes and Hello
+//   AlberaApprover.exe --tray                  GUI mode: sit in the notification area, watch the pending list (every 2 s) and open one window per request (match code, then Hello); `approve` stays as the fallback
 // The pipe, the service and the expected owner are fixed (ServerExpectation.Production); the shipped build has no option, file or environment variable that changes
 // them. The shipped build signs with Windows Hello (WindowsHello.cs). The test-faults build (-p:AlberaApproverTestFaults=true, never the published one) does NOT contain the
 // Hello code: it adds --test-* options and the fake signer / key store (TestSeam.cs). Exit codes: ExitCodes.cs.
@@ -35,6 +36,7 @@ internal static class Program
         Wiring wiring = new(ServerExpectation.Production, new WindowsHelloPresenceSigner(), new WindowsHelloKeyStore(), PipeChannel.DefaultTimeoutMs, !Console.IsInputRedirected);
 #endif
         if (CommandLine.TryParse(args) is not { } command) return Usage();
+        if (command.Verb == "tray") return TrayApp.Run(wiring);
         if (command.Option == "check")
             return new SelfCheckCommand(wiring.KeyStore, wiring.Signer, CurrentUserSid, () => RandomNumberGenerator.GetBytes(SelfCheckMessage.NonceBytes), Console.Out, Console.Error, wiring.Interactive).Run(command.Expect);
         if (command.Verb == "enroll")

@@ -1,0 +1,22 @@
+/* Credential panel and job panel (settings.mjs, jobs.mjs): drawers on the right edge, over the canvas. Tokens come from room.css. */
+.top .panel-open { white-space: nowrap; }
+.panel {
+  position: fixed; top: 50px; right: 0; bottom: 0; width: min(440px, 100vw); overflow: auto; z-index: 20;
+  padding: 14px 18px 24px; background: var(--paper); border-left: 1px solid var(--rule);
+}
+.panel h2 { margin: 0 0 8px; font-size: 18px; }
+.panel h3 { margin: 14px 0 6px; font-size: 15px; }
+.panel p { margin: 6px 0; color: var(--ink-2); }
+.panel label { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; font-size: 13px; color: var(--muted); }
+.panel input, .panel select, .panel textarea {
+  font: inherit; color: var(--ink); background: var(--desk); border: 1px solid var(--rule-strong); border-radius: 4px; padding: 4px 8px;
+}
+.panel textarea { resize: vertical; }
+.panel-close { position: absolute; top: 12px; right: 14px; }
+.panel-field { margin: 14px 0; padding-top: 6px; border-top: 1px solid var(--rule); }
+.panel-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
+button.danger { background: var(--rec); color: var(--on-accent); border-color: transparent; font-weight: 700; }
+.match { margin: 12px 0; padding: 10px 14px; border: 1px solid var(--accent); border-radius: 8px; background: var(--paper-2); }
+.match-code { margin: 4px 0; font-family: var(--mono); font-size: 56px; line-height: 1.1; letter-spacing: 0.18em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.job-list { margin: 0; padding-left: 18px; font-size: 13px; }
+.job-list li { margin: 4px 0; overflow-wrap: anywhere; }

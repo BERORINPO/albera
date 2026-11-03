@@ -207,6 +207,10 @@ The Broker runs with a **restricted** service SID. Whether a restricted token ca
 
 `control-plane\` gives `albera-cp` full control (its journal needs it), so `albera-cp` itself can rewrite `albera.approval.json` and point `desktop` at a fake helper. The pin (`desktop.helperSha256`) therefore guards against a room settings mistake or a mixed-up repository build, not against a hijacked `albera-cp`. Even then the fake helper holds no Broker lease, so its input does not reach the VM. Moving the settings into an administrator-only folder is a follow-up, not decided here.
 
+### Known limit: what the helper's SHA-256 pin covers (provisional; decision `2026-11-03+cp-helper-pin-scope`)
+
+The pipe client helper is published self-contained but not as a single file, so its SHA-256 (the manifest and the `helperSha256` pin, for every mode including `secret`) covers `albera-windows-broker-pipe-client.exe` only, not the .NET runtime and library files beside it. What closes the gap today: setup's tree hash covers the whole `bin\pipe-client` folder at install time, and `bin` is under Program Files, which only administrators can write (administrators are outside the threat model). Publishing the helper as a single file, so that one hash covers everything it loads, is a later task.
+
 ### Implementation order (each its own PR)
 
 1. This amendment. 2. Nested-Hyper-V lab rights measurement (`lab-vm.ps1 -HyperV`). 3. Broker Hyper-V adapter with the pinned allowlist and the `computers` config (security tier). 4. Desktop pipe, `view` (security tier). 5. `act` sessions and the Broker-held lease (security tier). 6. Pipe-client helper desktop mode and the Node client (security tier). 7. Room wiring for the gated room, refusing the out-of-scope features (normal tier; built with a small security-tier change to the Broker's `act` open, the helper and the Node client, see "Implementation status (step 7)"). 8. Installer `-GrantHyperVToBroker` and `-VmName` to GUID, removed again on uninstall (security tier). 9. Operations docs. The owner's steps (re-install with the grant, API key, the approval itself) come last, in one sitting.

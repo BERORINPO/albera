@@ -37,6 +37,7 @@ internal static partial class Program
         try
         {
             if (args is ["desktop"]) { RunDesktop(); return ExitOk; } // DesktopSession.cs: one long-lived session instead of one request
+            if (args is ["secret"]) return RunSecret(); // SecretMode.cs: DPAPI protect / unprotect, one frame in and one frame out
             Run(ReadInput());
         }
         catch (Exception) { lock (Gate) Finish(Failure(sent ? "transport_error" : "server_identity_unavailable"), ExitInternal); }

@@ -73,6 +73,12 @@ const EXPECTED = {
     'approved-operation-flow.mjs', 'approved-operation-journal.mjs',
     // `albera-runtime approval-check`: one synthetic.noop through that flow with the room's wiring (entry role: wiring and a printout, no decision; decision log 2026-11-02+host-install)
     'approval-check.mjs',
+    // Control Plane secret store: DPAPI blobs in a folder setup made, through the pipe client helper's secret mode; and its in-memory test double (control-plane-service.md "Secret storage")
+    'control-plane-secret-store.mjs', 'fake-control-plane-secret-store.mjs',
+    // the room's credential field and job screen: routes registered on the room host (apiRoutes) over injected ports (control-plane-service.md sections 4 and 5; PR4b / PR4c)
+    'room-settings-routes.mjs', 'room-job-routes.mjs',
+    // Claude Code as the hands: a stdio MCP server over the desktop Broker client (adapter; args = pure flags, server = tools + budget, mcp/mcp-main = entry), the headless `claude -p` driver and its Fake (adapter pair; decision log 2026-11-03+claude-code-hands)
+    'albera-desktop-mcp-args.mjs', 'albera-desktop-mcp-server.mjs', 'albera-desktop-mcp.mjs', 'albera-desktop-mcp-main.mjs', 'claude-code-driver.mjs', 'fake-claude-code.mjs', 'fake-albera-desktop-mcp-main.mjs',
     // verified-integration candidate: exact-commit evidence and person-approved compare-and-swap promotion (rule 5e; ADR-007, INT-01 / INT-02)
     'integration-candidate.mjs',
     // host-side git quarantine for submissions (bundles only, bare repositories, hardened git; ADR-007 §2 / §4) and its test double
@@ -92,7 +98,8 @@ const EXPECTED = {
       // match code (the 4 digits the room and the approver app both show, display aid); its C# twin is windows-approver/MatchCode.cs
       'match-code.mjs', 'match-code-vectors.json'].map((f) => `broker-contract/${f}`),
     ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
-      'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs'].map((f) => `room-ui/${f}`)],
+      'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs',
+      'settings.mjs', 'jobs.mjs', 'words-panels.mjs', 'panels.css'].map((f) => `room-ui/${f}`)],
   public: [
     'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
@@ -240,10 +247,13 @@ const providerContracts = [
   // the desktop Broker client's shared checks and its Fake (the real client, windows-desktop-broker-client.mjs, starts the pipe client helper, so it is under rule 5b instead)
   'src/runtime/desktop-broker-client-contract.mjs',
   'src/runtime/fake-desktop-broker-client.mjs',
+  // the desktop MCP server reaches only its injected Broker client (the driver and the Fake claude start processes, so they are under rule 5b instead)
+  'src/runtime/albera-desktop-mcp-args.mjs',
+  'src/runtime/albera-desktop-mcp-server.mjs',
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:
 // the clients, the clock, the sleep and the storage are injected (and the flow must not name the Broker or the Authority: rules 8a / 10a).
-check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs', 'src/runtime/integration-candidate.mjs', 'src/runtime/integration-service.mjs', 'src/runtime/desktop-broker-client-contract.mjs'], (line) => {
+check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs', 'src/runtime/room-settings-routes.mjs', 'src/runtime/room-job-routes.mjs', 'src/runtime/integration-candidate.mjs', 'src/runtime/integration-service.mjs', 'src/runtime/desktop-broker-client-contract.mjs', 'src/runtime/albera-desktop-mcp-args.mjs'], (line) => {
   if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null;
   for (const [re, label] of FORBIDDEN_PURE) if (/** @type {RegExp} */ (re).test(line)) return `${label} is not allowed in a pure runtime module`;
   return null;
@@ -310,10 +320,11 @@ for (const f of brokerFiles) if (!fs.existsSync(path.join(ROOT, brokerRoot, f)))
 // The trusted pipe client helper (verifies the pipe server before it writes) is part of the same on-demand set: its 3 files must exist, its
 // Program.cs and DesktopSession.cs stay small enough to review (line caps below), and `build:windows-broker` must build it. Its name also matches BROKER_REF, so 8a and 8c cover it.
 const pipeClientRoot = 'src/runtime/windows-broker-pipe-client';
-const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'DesktopSession.cs', 'packages.lock.json'];
+const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'DesktopSession.cs', 'SecretMode.cs', 'packages.lock.json'];
 // Program.cs: 200 until the fence and inspect request kinds (receipt v2) were added; 220 until the Approval Authority submit request kind (`authority`) was added; 250 until the desktop session mode was added
 // (the session itself is DesktopSession.cs, capped separately; Program.cs only gained the shared OpenVerified and the mode switch).
-const PIPE_CLIENT_MAX_LINES = { 'Program.cs': 270, 'DesktopSession.cs': 200 };
+// SecretMode.cs (DPAPI protect / unprotect for the Control Plane's secret store, 124 lines) is capped at 160.
+const PIPE_CLIENT_MAX_LINES = { 'Program.cs': 270, 'DesktopSession.cs': 200, 'SecretMode.cs': 160 };
 for (const f of pipeClientFiles) if (!fs.existsSync(path.join(ROOT, pipeClientRoot, f))) violations.push(`[8b Windows Broker pipe client source] ${pipeClientRoot}/${f} does not exist (false-safe)`);
 for (const [file, max] of Object.entries(PIPE_CLIENT_MAX_LINES)) {
   const source = path.join(ROOT, pipeClientRoot, file);
@@ -425,7 +436,8 @@ check('11a Approver app is not referenced by Observer layers or runtime modules'
 );
 const approverRoot = 'src/runtime/windows-approver';
 const approverSources = ['Program.cs', 'TestSeam.cs', 'CommandLine.cs', 'ApproverCommands.cs', 'PendingView.cs', 'Renderer.cs', 'SafeText.cs', 'Presence.cs', 'Channel.cs', 'PipeChannel.cs',
-  'ServerExpectation.cs', 'ExitCodes.cs', 'EnrollCommand.cs', 'SelfCheckCommand.cs', 'HelloKeyStore.cs', 'Wiring.cs', 'WindowsHello.cs', 'PolicyCommand.cs', 'MatchCode.cs'];
+  'ServerExpectation.cs', 'ExitCodes.cs', 'EnrollCommand.cs', 'SelfCheckCommand.cs', 'HelloKeyStore.cs', 'Wiring.cs', 'WindowsHello.cs', 'PolicyCommand.cs', 'MatchCode.cs',
+  'ApprovalPrompt.cs', 'ApprovalQueue.cs', 'GuiApprovalWindow.cs', 'GuiTrayHost.cs', 'GuiNative.cs'];
 for (const f of [...approverSources, 'Albera.Approver.csproj', 'packages.lock.json']) {
   if (!fs.existsSync(path.join(ROOT, approverRoot, f))) violations.push(`[11b Approver source] ${approverRoot}/${f} does not exist (false-safe)`);
 }
