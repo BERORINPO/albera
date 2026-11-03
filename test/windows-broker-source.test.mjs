@@ -19,6 +19,7 @@ const databaseFolderPin = read('src', 'runtime', 'windows-broker', 'DatabaseFold
 const journal = read('src', 'runtime', 'windows-broker', 'Journal.cs');
 const requests = read('src', 'runtime', 'windows-broker', 'BrokerRequests.cs');
 const stripComments = (source) => source.replace(/^\s*\/\/.*$/gmu, '').replace(/\s\/\/ .*$/gmu, '');
+// HyperVDesktop.cs and PngEncoder.cs (the Hyper-V desktop adapter, which by design names Hyper-V) are guarded by windows-broker-hyperv-desktop-source.test.mjs, not listed here.
 const brokerCode = [program, requests, serviceHost, serviceConfig, serviceLoop, servicePathGuard, databaseFolderPin, journal].map(stripComments).join('\n');
 
 test('Broker source stays a fixed-action prototype with no process launch, installer or Hyper-V code', () => {
@@ -266,13 +267,14 @@ test('VM lab issue #84 checks (m1 to m4): generation advance and refusal, v2 mig
   assert.match(read('scripts', 'windows-service-lab-inputs.mjs'), /journalV2: \{ operationId: JOURNAL_V2_OPERATION_ID, base64: journalV2Base64\(\) \}/u);
 });
 
-test('service config accepts exactly seven keys, validates every value and never echoes file content', () => {
+// The optional `computers` key (desktop VMs) is pinned in windows-broker-hyperv-desktop-source.test.mjs; it is the only key that may be absent.
+test('service config accepts exactly seven required keys (and the one optional `computers`), validates every value and never echoes file content', () => {
   assert.match(serviceConfig, /Keys = \["pipeName", "database", "authorityKeys", "controlPlaneSid", "generation", "leaseId", "policyVersion"\];/u);
   // leaseId and policyVersion come from the file only: both are contract ids, a missing key is `config_keys`, a bad value its own fixed reason, and nothing defaults.
   assert.match(serviceConfig, /LeaseId = "lease_id", PolicyVersion = "policy_version"/u);
   assert.match(serviceConfig, /leaseId is null \|\| !AuthorityKey\.IsKeyId\(leaseId\)\) return null;/u);
   assert.match(serviceConfig, /policyVersion is null \|\| !AuthorityKey\.IsKeyId\(policyVersion\)\) return null;/u);
-  assert.match(serviceConfig, /new ServiceConfig\(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion\);/u);
+  assert.match(serviceConfig, /new ServiceConfig\(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers\);/u);
   assert.match(serviceLoop, /config\.LeaseId, config\.PolicyVersion\);/u, 'the service loop hands the configured values to the request handlers');
   assert.equal(/"test-lease"|"test-policy-v1"|Synthetic(?:Lease|Policy)/u.test(brokerCode), false, 'no receipt placeholder is left in the Broker');
   assert.equal(/"publicKey"/u.test(brokerCode), false, 'the v1 single-key shape is gone from the Broker');
@@ -292,7 +294,7 @@ test('service config accepts exactly seven keys, validates every value and never
   assert.match(serviceConfig, /generation is < 1 or > Albera\.BrokerContract\.StrictJson\.MaxSafeInteger/u, 'a lease generation starts at 1');
   const reasonClass = serviceConfig.slice(serviceConfig.indexOf('internal static class Reason'), serviceConfig.indexOf('public static ServiceConfig? TryLoad'));
   assert.deepEqual([...reasonClass.matchAll(/ = "([a-z_]+)"/gu)].map((m) => m[1]).sort(),
-    ['authority_keys', 'config_keys', 'config_path', 'config_syntax', 'config_too_large', 'config_unreadable', 'config_untrusted', 'control_plane_sid', 'database', 'database_directory', 'database_pin', 'database_untrusted', 'generation', 'lease_id', 'pipe_name', 'policy_version']);
+    ['authority_keys', 'computers', 'config_keys', 'config_path', 'config_syntax', 'config_too_large', 'config_unreadable', 'config_untrusted', 'control_plane_sid', 'database', 'database_directory', 'database_pin', 'database_untrusted', 'generation', 'lease_id', 'pipe_name', 'policy_version']);
   // The only interpolated console lines are a reason word, a Win32 error number or a fixed stage word (restricted-client), never a config value.
   const interpolated = [...brokerCode.matchAll(/Console\.WriteLine\((\$"[^"]*")\);/gu)].map((m) => m[1]);
   assert.deepEqual(interpolated, ['$"RESTRICTED_TOKEN_SETUP=BLOCKED_{stage}"', '$"SERVICE_DISPATCHER_ERROR={error}"', '$"SERVICE_CONFIG=invalid:{reason}"', '$"SERVICE_CONFIG=invalid:{reason}"']);

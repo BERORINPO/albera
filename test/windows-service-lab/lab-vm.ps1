@@ -1,5 +1,5 @@
 # Issue #23 one-command disposable VM lab. Usage:
-#   powershell -File test/windows-service-lab/lab-vm.ps1 [-Build] [-KeepVm]
+#   powershell -File test/windows-service-lab/lab-vm.ps1 [-Build] [-KeepVm] [-HostInstall | -HyperV]
 # Changes nothing on the host except creating/deleting this one VM and its folder.
 # The golden disk is never modified, and the guest is disconnected from the network.
 param(
@@ -9,9 +9,83 @@ param(
   [switch]$Build,
   [switch]$KeepVm,
   # Run the HOST installer check (scripts/host/albera-host.ps1 through lab-host-install-check.ps1) in the VM instead of the service-identity lab.
-  [switch]$HostInstall
+  [switch]$HostInstall,
+  # Run the NESTED Hyper-V rights lab (lab-hyperv-rights-check.ps1) instead: the guest gets the Hyper-V role and an inner VM, and a Broker-shaped service
+  # tries the screen capture and input calls. The outer VM gets 5 GB and nested virtualization. Needs only the lab shim build.
+  [switch]$HyperV
 )
 $ErrorActionPreference = 'Stop'
+
+function Get-GuestBootTime($Session) {
+  Invoke-Command -Session $Session -ScriptBlock { (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime() }
+}
+# Reconnects PowerShell Direct until it answers. With $NotBootedBefore (a UTC DateTime read before a restart) it also waits until the guest has booted again.
+function New-DirectSession([string]$Name, [pscredential]$Credential, [int]$Minutes, $NotBootedBefore) {
+  $deadline = (Get-Date).AddMinutes($Minutes)
+  while ((Get-Date) -lt $deadline) {
+    $s = $null
+    try {
+      $s = New-PSSession -VMName $Name -Credential $Credential -ErrorAction Stop
+      $boot = Get-GuestBootTime $s
+      if ($null -eq $NotBootedBefore -or ($boot - $NotBootedBefore).TotalSeconds -gt 60) { return $s }
+    }
+    catch { }
+    if ($s) { Remove-PSSession $s -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 10
+  }
+  throw "PowerShell Direct was not ready within $Minutes minutes"
+}
+
+# The -HyperV lab: install the Hyper-V role, restart, copy the shim, run lab-hyperv-rights-check.ps1 (inner VM + four service identities), print the result.
+# Returns the exit code last (0 = nothing failed and nothing was left unmeasured, 1 = a FAIL or a BLOCKED check).
+function Invoke-HyperVRightsLab([string]$VmName, [pscredential]$Credential, [string]$Repo, [string]$OutputFile, [string]$ResultsFile, [switch]$KeepVm) {
+  $guestRoot = 'C:\albera-hv-lab'
+  $guestScript = Join-Path $PSScriptRoot 'lab-hyperv-rights-check.ps1'
+  $shimPublish = Join-Path $Repo 'test\windows-service-lab\bin\Release\net10.0-windows\win-x64\publish'
+  $session = New-DirectSession $VmName $Credential 6 $null
+  try {
+    # The guest script refuses to run unless this is set (it edits services and a local group).
+    Invoke-Command -Session $session -ScriptBlock { $env:ALBERA_LAB_VM = '1' }
+    Write-Host 'installing the Hyper-V role in the guest (several minutes)'
+    $install = Invoke-Command -Session $session -FilePath $guestScript -ArgumentList $guestRoot, 'install-feature' | Select-Object -Last 1 | ConvertFrom-Json
+    if (-not $install.success) { throw 'Install-WindowsFeature Hyper-V did not report success' }
+    if (-not $install.alreadyInstalled) {
+      $bootBefore = Get-GuestBootTime $session
+      Write-Host 'restarting the guest to finish the Hyper-V role (up to 20 minutes)'
+      try { Invoke-Command -Session $session -ScriptBlock { & shutdown.exe /r /t 3 /f } } catch { }   # the session ends with the restart
+      Remove-PSSession $session -ErrorAction SilentlyContinue
+      $session = $null
+      $session = New-DirectSession $VmName $Credential 20 $bootBefore
+      Invoke-Command -Session $session -ScriptBlock { $env:ALBERA_LAB_VM = '1' }
+    }
+    Invoke-Command -Session $session -ScriptBlock { param($r) New-Item -ItemType Directory -Force -Path "$r\bin\shim" | Out-Null } -ArgumentList $guestRoot
+    Copy-Item -ToSession $session -Path (Join-Path $shimPublish '*') -Destination "$guestRoot\bin\shim" -Recurse -Force
+    Write-Host 'running the rights probe as four service identities'
+    $raw = Invoke-Command -Session $session -FilePath $guestScript -ArgumentList $guestRoot, 'run'
+    $json = @($raw | Where-Object { $_ -is [string] -and $_ -like '{*' }) | Select-Object -Last 1
+    if (-not $json) { throw 'the guest script returned no results' }
+    $results = $json | ConvertFrom-Json
+    $results | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 -LiteralPath $ResultsFile
+  }
+  finally {
+    if ($session) {
+      if ($KeepVm) { try { Invoke-Command -Session $session -FilePath $guestScript -ArgumentList $guestRoot, 'cleanup' | Out-Null } catch { } }   # otherwise the VM is deleted anyway
+      Remove-PSSession $session -ErrorAction SilentlyContinue
+    }
+  }
+
+  $checks = @($results.checks)
+  $text = (($checks | Select-Object id, status, observed | Format-Table -AutoSize | Out-String) +
+    "Observed per identity (rows: operation; columns: restricted/unrestricted service SID x member of Hyper-V Administrators or not):`r`n" +
+    (@($results.matrix) | Select-Object op, r_member, r_nonmember, u_member, u_nonmember | Format-Table -AutoSize | Out-String))
+  $count = @{}
+  foreach ($status in @('PASS', 'FAIL', 'BLOCKED', 'MEASURED')) { $count[$status] = @($checks | Where-Object { $_.status -eq $status }).Count }
+  $text += "PASS: $($count.PASS)  FAIL: $($count.FAIL)  BLOCKED: $($count.BLOCKED)  MEASURED: $($count.MEASURED)`r`n"
+  $text | Set-Content -Encoding UTF8 -LiteralPath $OutputFile
+  $text | Out-Host
+  if ($count.FAIL -gt 0 -or $count.BLOCKED -gt 0) { return 1 }
+  return 0
+}
 
 $golden = 'U:\dev\hyperv\golden\ws2025-desktop-golden.vhdx'
 $labNote = 'ALBERA lab (disposable; delete after run)'
@@ -34,19 +108,24 @@ try {
   if (-not (Test-Path -LiteralPath $golden -PathType Leaf)) { throw "golden VHDX is missing: $golden" }
   $goldenItem = Get-Item -LiteralPath $golden
   if (-not $goldenItem.IsReadOnly) { throw "golden VHDX must be read-only: $golden" }
+  if ($HyperV -and $HostInstall) { throw '-HyperV and -HostInstall are separate labs; choose one' }
   if (Get-VM -Name $VmName -ErrorAction SilentlyContinue) { throw "VM already exists: $VmName" }
   if (-not (Test-Path -LiteralPath $PasswordFile -PathType Leaf)) { throw "password file is missing: $PasswordFile" }
   if (-not $Build) {
     # Fail before creating a VM when the binaries run-lab.ps1 copies are missing.
-    foreach ($p in @('test\windows-service-lab\bin\Release\net10.0-windows\win-x64\publish',
-                     'src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish',
-                     'src\runtime\windows-approval-authority\bin\Release\net10.0-windows\win-x64\publish')) {
+    $needed = @('test\windows-service-lab\bin\Release\net10.0-windows\win-x64\publish')
+    # The Hyper-V lab runs only the lab shim; the other labs also copy the Broker and the Approval Authority.
+    if (-not $HyperV) {
+      $needed += @('src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish',
+                   'src\runtime\windows-approval-authority\bin\Release\net10.0-windows\win-x64\publish')
+    }
+    foreach ($p in $needed) {
       if (-not (Test-Path -LiteralPath (Join-Path $repo $p))) { throw "missing build output (run with -Build): $p" }
     }
   }
 
   # Refuse to start when the host is short on memory: a 4 GB VM on a full host froze the PC (2026-10-31).
-  $vmMemoryGB = 4
+  $vmMemoryGB = if ($HyperV) { 5 } else { 4 }   # -HyperV: the guest also runs the Hyper-V role and a 512 MB inner VM
   $hostHeadroomGB = 4
   $freeGB = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
   if ($freeGB -lt ($vmMemoryGB + $hostHeadroomGB)) {
@@ -61,6 +140,11 @@ try {
   Set-VM -VM $vm -Notes $labNote
   Set-VMMemory -VMName $VmName -DynamicMemoryEnabled $false
   Set-VMProcessor -VMName $VmName -Count 2
+  if ($HyperV) {
+    # Nested virtualization can only be switched on while the VM is off; the Hyper-V role inside the guest needs it.
+    Set-VMProcessor -VMName $VmName -ExposeVirtualizationExtensions $true
+    if (-not (Get-VMProcessor -VMName $VmName).ExposeVirtualizationExtensions) { throw 'could not expose virtualization extensions to the lab VM' }
+  }
   Get-VMNetworkAdapter -VMName $VmName | Disconnect-VMNetworkAdapter
   Set-VM -VM $vm -Notes $labNote -CheckpointType Disabled
   Start-VM -VM $vm | Out-Null
@@ -97,21 +181,29 @@ try {
   Push-Location $repo
   try {
     if ($Build) {
-      & npm run build:windows-broker
-      if ($LASTEXITCODE -ne 0) { throw "build:windows-broker failed ($LASTEXITCODE)" }
+      if (-not $HyperV) {
+        & npm run build:windows-broker
+        if ($LASTEXITCODE -ne 0) { throw "build:windows-broker failed ($LASTEXITCODE)" }
+      }
       & npm run build:windows-service-lab
       if ($LASTEXITCODE -ne 0) { throw "build:windows-service-lab failed ($LASTEXITCODE)" }
-      & npm run build:approval-authority
-      if ($LASTEXITCODE -ne 0) { throw "build:approval-authority failed ($LASTEXITCODE)" }
+      if (-not $HyperV) {
+        & npm run build:approval-authority
+        if ($LASTEXITCODE -ne 0) { throw "build:approval-authority failed ($LASTEXITCODE)" }
+      }
     }
-    if (-not $HostInstall) {
+    if (-not $HostInstall -and -not $HyperV) {
       & node scripts/windows-service-lab-inputs.mjs $inputsFile
       if ($LASTEXITCODE -ne 0) { throw "input generation failed ($LASTEXITCODE)" }
     }
   }
   finally { Pop-Location }
 
-  if ($HostInstall) {
+  if ($HyperV) {
+    $hvOut = @(Invoke-HyperVRightsLab -VmName $VmName -Credential $credential -Repo $repo -OutputFile $outputFile -ResultsFile (Join-Path $EvidenceDir 'hyperv-results.json') -KeepVm:$KeepVm)
+    $exitCode = [int]($hvOut | Select-Object -Last 1)
+  }
+  elseif ($HostInstall) {
     # The guest gets the host scripts and the three publish folders at the same relative paths under a stand-in repository root, then runs the hook
     # with ALBERA_LAB_VM=1 set in this session only (the installer accepts its lab-only parameters only then).
     $guestRepo = 'C:\albera-host-lab'
