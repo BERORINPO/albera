@@ -131,7 +131,7 @@ internal static partial class Harness
             Assert(Throws<SetupRefusal>(() => InstallRecord.ReadSetupRunId(w.InstallRecordPath, _ => [], _ => true)), "a link on the path of the record was accepted");
         });
 
-        Check("rollback after an uninstall: the install record is gone, but the floor of this PC (HKLM\SOFTWARE\Albera\SetupRunIdFloor, kept by uninstall) still refuses an older validly attested build; an equal or smaller floor lets it through", () =>
+        Check("rollback after an uninstall: the install record is gone, but the floor of this PC (HKLM\\SOFTWARE\\Albera\\SetupRunIdFloor, kept by uninstall) still refuses an older validly attested build; an equal or smaller floor lets it through", () =>
         {
             using var s = new Scenario();   // no install record at all: this is the state right after an uninstall
             s.ReadFloor = () => ulong.Parse(Newer);
