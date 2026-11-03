@@ -231,6 +231,14 @@ class DesktopSession {
   }
 }
 
+const HELPER_ENV_NAMES = Object.freeze(['SystemRoot', 'windir', 'TEMP', 'TMP']);
+/** What the helper's environment holds: these four system values and nothing else, so no token or API key of the calling process (the Claude Code MCP server's, for one) reaches the helper. */
+function helperEnvironment() {
+  const env = {};
+  for (const name of HELPER_ENV_NAMES) if (typeof process.env[name] === 'string') env[name] = process.env[name];
+  return env;
+}
+
 /** The helper must match the SHA-256 recorded next to it at build time and, when the caller pinned one (`helperSha256`), that one too. Same scheme as the claim client. */
 async function verifyHelper(helperPath, pinnedSha256) {
   try {
@@ -263,7 +271,7 @@ async function openSession(config, open, requestTimeoutMs, onClose) {
   if (config.spawnImpl === spawn && process.platform !== 'win32') throw new SessionFailure('unsupported_platform', true);
   await verifyHelper(config.helperPath, config.helperSha256);
   let child;
-  try { child = config.spawnImpl(config.helperPath, ['desktop'], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] }); } catch { throw new SessionFailure('helper_unavailable', true); }
+  try { child = config.spawnImpl(config.helperPath, ['desktop'], { shell: false, windowsHide: true, env: helperEnvironment(), stdio: ['pipe', 'pipe', 'ignore'] }); } catch { throw new SessionFailure('helper_unavailable', true); }
   const session = new DesktopSession(child, { idleCloseMs: config.idleCloseMs, onClose });
   try {
     const answer = session.readOk(DESKTOP_BROKER_LIMITS.maxReplyHeaderBytes, config.openTimeoutMs);

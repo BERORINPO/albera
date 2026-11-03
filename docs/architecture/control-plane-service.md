@@ -84,13 +84,14 @@ Measured 2026-11-03 (`cp5_tcp_loopback_other_user`): another local user and an a
 |---|---|---|
 | Who gets a session | Only the holder of the bootstrap code. The code is in `ui\room.json`, which only the owner SID, CP, SYSTEM and Administrators can read (a kernel check, not a convention) | Decided (plan) |
 | Opening | Start menu "Open ALBERA" (runs as the owner) reads `ui\room.json`, checks that the service is RUNNING and that `pid` owns the port, then opens `http://127.0.0.1:<port>/room/#b=<code>`. The fragment is never sent to the server; the page posts it to `/api/session` | Decided (plan) |
-| Code lifetime | A new code at every CP start; rotated after one use and every 10 minutes. `/api/session` is limited to 10 per minute | Decided (plan) |
-| Cookie | `HttpOnly; SameSite=Strict; Path=/room/`; name unique per host instance; sliding idle 20 min, absolute 8 h (as `room-host.mjs` today) | Existing behavior |
+| Code lifetime | A new code at every CP start; rotated after one use and every 10 minutes. `/api/session` takes 10 wrong codes per minute (then `429`); the right code is never limited, so another local user cannot lock the owner out | Decided (plan) |
+| Cookie | `HttpOnly; SameSite=Strict; Path=/room/`; name unique per host instance; sliding idle 20 min, absolute 2 h (8 h before PR4a; see "Known limit" below) | Provisional |
 | Other local users and RDP sessions | They reach the TCP port and get static files and `401` | Decided (plan) |
 | Other tabs | Existing `Host` check (DNS rebinding), `Origin` required on writes with `Sec-Fetch-Site` same-origin, CSP, CORP/COOP | Existing behavior |
 | Hole found by the plan | Another port on `127.0.0.1` is same-site, so a no-cors GET to a read API would carry the cookie. Read APIs therefore also refuse a request whose `Sec-Fetch-Site` header is present and not `same-origin` or `none`. A request without the header (no browser) still needs the cookie | Decided (plan); browser behavior NOT VERIFIED (M16) |
 | Port squatting | A squatter would need the port before the CP and also the code; "Open ALBERA" checks PID ownership of the port | Decided (plan) |
 | Not defended | Processes of the owner's own account and browser extensions are trusted (the existing known limit). Administrators and SYSTEM are out of the threat model | Existing limit |
+| Known limit: cookie is not kept per port | A cookie is not separated by port, so a page served from another port on the same `127.0.0.1` receives the room's cookie too (the cookie name is unique per host only so two rooms do not overwrite each other). The owner must not open a local page that someone else is serving. The real fix is storing the session per origin (for example a `__Host-` cookie on a name-based origin, or a header token kept by the page), a later task. The absolute lifetime is cut to 2 h in the meantime | Known limit; the fix is a follow-up |
 
 Routes added to the room: credential (section 5), `POST /api/jobs {computerId, task}` (task 1 to 256 bytes, the gate's existing safe-character rules; the reply carries `approvalId` and the 4-digit match code the room displays), "stop all", and an **approval test** button that submits one fixed `synthetic.noop` (the CP identity cannot run `approval-check` by hand). Form text reaches the AI only if it is exactly the approved `task.start` text (the existing `task-start-gate` rule). The room computes the action digest itself with `broker-contract/action-digest.mjs`, sends it as `expectedDigest`, and computes the match code from that digest and the `approvalId` the Authority returned (the submit reply carries no digest: `approval-authority.md`). A lying CP would only show a code that does not match the window, which the owner answers with Deny.
 
@@ -189,6 +190,13 @@ The driver turns Claude Code's stream into the **same event shape** `desktop-age
 | Stop | A person's `stop` on a decision card, "stop all", CP stop | | Kills the recorded PID; the MCP server ends on stdin end. The Broker's lease for that operation still lives until a newer claim or its deadline (the ADR-002 follow-up) |
 
 The numbers are Provisional. What the subscription's own usage limits do to a headless run is NOT VERIFIED (M5); the driver maps any authentication or rate-limit end to a fixed code and never retries in a loop.
+
+### 6.6a Known limit: what a screen can make the hands do (Provisional)
+
+Text on a screen is untrusted input, and the six tools include `key` and `type`, so a page the model reads can talk it into opening a shell inside the VM; the tools do not refuse key combinations, because the VM is a disposable sandbox and later work runs CLIs inside it.
+- The damage stays inside the VM the lease names: the hands have no other computer, no file tool and no host command.
+- How large the damage can be is set by what the VM can reach outside itself (network) and by the credentials it holds.
+- So a VM given to the hands has its outbound network restricted and holds no credentials.
 
 ### 6.7 API-key option
 
