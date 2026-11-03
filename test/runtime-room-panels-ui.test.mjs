@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import * as api from '../src/runtime/room-ui/api.mjs';
-import { JOBS_POLL_MS, TASK_MAX_BYTES, jobLine, requestFlow, taskBytes, taskProblem } from '../src/runtime/room-ui/jobs.mjs';
+import { JOBS_POLL_MS, TASK_MAX_BYTES, codeOf, jobLine, requestFlow, taskBytes, taskProblem } from '../src/runtime/room-ui/jobs.mjs';
 import { CREDENTIAL_KINDS, clearClipboard, isAcceptableValue, saveFlow, savedLine } from '../src/runtime/room-ui/settings.mjs';
 import panelWords from '../src/runtime/room-ui/words-panels.mjs';
 import { makeWords } from '../src/runtime/room-ui/i18n.mjs';
@@ -100,7 +100,7 @@ test('saveFlow: the clipboard is emptied only after the host stored the value, a
 test('settings.mjs source: the field is a password field, is emptied before the call, and nothing is put in an address, storage or the log', () => {
   const text = source('settings.mjs');
   assert.match(text, /input\.type = 'password'/);
-  assert.match(text, /autocomplete = 'off'/);
+  assert.match(text, /autocomplete = 'new-password'/);
   const read = text.indexOf('const value = input.value;');
   const empty = text.indexOf("input.value = '';", read);
   const call = text.indexOf('await saveFlow(', read);
@@ -124,6 +124,7 @@ test('taskProblem: the same limits as the gate, with a reason that can be shown'
 
 test('jobLine: what it is and where it stands, with the host code when there is one', () => {
   assert.equal(jobLine(words, { kind: 'task', task: 'Open Notepad', state: 'awaiting_approval' }), `Open Notepad \u2014 ${words.t('panel.jobs.state_awaiting_approval')}`);
+  assert.match(jobLine(words, { kind: 'task', task: 'Open Notepad', computerId: 'pc-02', state: 'starting' }), /^Open Notepad \[pc-02\] /);
   assert.match(jobLine(words, { kind: 'test', state: 'approved' }), new RegExp(words.t('panel.jobs.kind_test')));
   assert.match(jobLine(words, { kind: 'task', task: 'x', state: 'refused', code: 'start_denied' }), /\(start_denied\)$/);
 });
@@ -145,10 +146,17 @@ test('requestFlow: a task the host would refuse is not sent; the host answers be
   assert.ok(JOBS_POLL_MS >= 1000);
 });
 
+test('codeOf: only a job still waiting for approval has a code to press', () => {
+  assert.equal(codeOf({ state: 'awaiting_approval', matchCode: '0042' }), '0042');
+  for (const job of [{ state: 'submitting' }, { state: 'started', matchCode: '0042' }, { state: 'awaiting_approval', matchCode: '42' }, { state: 'awaiting_approval' }, null]) assert.equal(codeOf(job), null);
+});
+
 test('jobs.mjs source: match code in a large element, the buttons the owner asked for, and no HTML injection', () => {
   const text = source('jobs.mjs');
   for (const id of ['panel.jobs.request', 'panel.jobs.stop_all', 'panel.jobs.test', 'panel.jobs.match_title']) assert.ok(text.includes(`'${id}'`), id);
-  assert.match(text, /matchCode\.textContent = job\.matchCode/);
+  assert.match(text, /el\(document, 'p', 'match-code', code\)/);
+  assert.match(text, /jobs\.map\(\(job\) => jobItem\(job\)\)|map\(\(job\) => jobItem\(job\)\)/, 'each job in the list builds its own code');
+  assert.doesNotMatch(text, /showCode|matchBox/, 'there is no single shared code box');
   assert.match(source('panels.css'), /\.match-code \{[^}]*font-size: 56px/);
   assert.doesNotMatch(text, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
 });
@@ -160,8 +168,8 @@ test('words: en and ja have the same keys, and every panel.* key the two scripts
   const used = new Set();
   for (const name of ['settings.mjs', 'jobs.mjs']) for (const m of source(name).matchAll(/'(panel\.[a-z_.]+)'/g)) used.add(m[1]);
   for (const key of ['notes']) used.delete(key);
-  for (const key of ['how', 'write_only', 'unchecked', 'revoke', 'clipboard']) used.add(`panel.settings.${key}`); // built as `panel.settings.${key}` in settings.mjs
-  for (const state of ['awaiting_approval', 'starting', 'started', 'approved', 'refused', 'start_failed', 'cancelled']) used.add(`panel.jobs.state_${state}`); // built from the job's state
+  for (const key of ['how', 'write_only', 'unchecked', 'revoke', 'clipboard', 'no_browser_save']) used.add(`panel.settings.${key}`); // built as `panel.settings.${key}` in settings.mjs
+  for (const state of ['submitting', 'awaiting_approval', 'starting', 'started', 'approved', 'refused', 'start_failed', 'cancelled']) used.add(`panel.jobs.state_${state}`); // built from the job's state
   for (const key of used) assert.ok(Object.hasOwn(panelWords.en, key), `missing in en: ${key}`);
   for (const text of Object.values(panelWords.en)) assert.ok(!/<[a-z]/i.test(text), 'no markup in words');
   assert.match(panelWords.en['panel.settings.how'], /claude setup-token/);

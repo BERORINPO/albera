@@ -26,12 +26,15 @@ export function createFakeApprovals({ projectId = 'proj-alpha', change = (submit
   }
   return {
     asked,
+    hold: null, // a promise: startTask / noop do not answer until it settles (the request is "in flight")
     failNext: null, // set to { ok: false, code } or an Error to make the next request fail
     async startTask(ask) {
+      if (this.hold) await this.hold;
       if (this.failNext) { const f = this.failNext; this.failNext = null; if (f instanceof Error) throw f; return f; }
       return answer(ask, 'guest.command', { action: 'task.start', projectId, computerId: ask.computerId, args: { task: ask.task } });
     },
     async noop() {
+      if (this.hold) await this.hold;
       if (this.failNext) { const f = this.failNext; this.failNext = null; if (f instanceof Error) throw f; return f; }
       return answer({}, 'broker.operation', { action: 'synthetic.noop', projectId: 'proj-alpha', computerId: 'pc-01', args: {} });
     },

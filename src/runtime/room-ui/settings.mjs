@@ -51,7 +51,7 @@ function field(doc, words, kind, onChange) {
   caption.textContent = words.t(kind.label);
   const input = doc.createElement('input');
   input.type = 'password';
-  input.autocomplete = 'off';
+  input.autocomplete = 'new-password'; // 'off' is ignored for password fields; this one tells the browser not to offer a saved value or to save it
   input.spellcheck = false;
   input.maxLength = 1024;
   input.name = kind.name;
@@ -110,7 +110,7 @@ function boot() {
   close.type = 'button';
   close.className = 'panel-close';
   close.textContent = words.t('panel.close');
-  const notes = ['how', 'write_only', 'unchecked', 'revoke', 'clipboard'].map((key) => {
+  const notes = ['how', 'write_only', 'unchecked', 'revoke', 'clipboard', 'no_browser_save'].map((key) => {
     const p = document.createElement('p');
     p.className = 'sm';
     p.textContent = words.t(`panel.settings.${key}`);

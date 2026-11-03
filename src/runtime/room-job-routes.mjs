@@ -18,7 +18,7 @@ import { TASK_START_REFUSALS, isStartableTask } from './task-start-gate.mjs';
 //     Resolves when the Authority has the request. `purpose` + `action` are the DTO that was SUBMITTED (the room computes the action digest from it itself and sends nothing it did not compute);
 //     the wiring submits with the digest check on (`includeDigest`), so the Authority recomputes it too. `decided` is a promise of the outcome: `{ ok: true, operationId }` once the Broker CLAIMED
 //     the operation (task-start-gate.mjs `startApproved` shape), or `{ ok: false, code }` with one of TASK_START_REFUSALS.
-//   hands.start({ computerId, task, operationId }) -> { ok: true } | { ok: false, code }     called only after `decided` said ok; `task` is the approved args.task, byte for byte
+//   hands.start({ computerId, task, operationId, vmId?, expectedGeneration? }) -> { ok: true } | { ok: false, code }   called only after `decided` said ok; `task` is the approved args.task, byte for byte; vmId / expectedGeneration are the approved action args when it had them (the hands must check they run on that VM)
 //   hands.stopAll() -> number                                                                  stop every running hands process (by its recorded PID) and return how many
 //   targets() -> [{ computerId, label }]                                                       the computers a job may name
 //
@@ -26,7 +26,7 @@ import { TASK_START_REFUSALS, isStartableTask } from './task-start-gate.mjs';
 //  - The task is validated like the gate does (isStartableTask: 1 to 256 UTF-8 bytes, safe text) BEFORE anything is asked. The body's other fields are refused, not ignored.
 //  - The task given to the hands is the one in the SUBMITTED action (`action.args.task`), and only when it is exactly the string the owner typed and the action names the same computer and
 //    `task.start`. A port that echoes anything else is refused (`submit_mismatch`) and nothing is started. Text reaches the hands only after `decided` says ok, and never from a request body.
-//  - One approval at a time per computer (and one test at a time); at most 8 waiting in all.
+//  - One approval at a time per computer (and one test at a time); at most 8 waiting in all. A job counts from the moment the Authority is asked (state `submitting`), not from its answer, so concurrent requests and a stop all in flight are seen.
 //  - Stop all marks every waiting or starting job cancelled first, then stops the hands; a later approval of a cancelled job starts nothing. A request already in front of the person cannot be
 //    withdrawn from the Authority: the owner denies it in the approval window (the page says so).
 
@@ -55,11 +55,11 @@ export function createRoomJobRoutes({ approvals, hands, targets, newJobId } = {}
   let counter = 0;
   const nextJobId = newJobId ?? (() => `job-${++counter}`);
   const jobs = []; // oldest first; each is a mutable record owned by this closure, and clients only ever see views
-  const busyStates = new Set(['awaiting_approval', 'starting']);
+  const busyStates = new Set(['submitting', 'awaiting_approval', 'starting']); // 'submitting' = asked, the Authority has not answered yet: it already counts as waiting
 
   const view = (job) => ({
     jobId: job.jobId, kind: job.kind, computerId: job.computerId, ...(job.kind === 'task' ? { task: job.task } : {}),
-    approvalId: job.approvalId, actionDigest: job.actionDigest, matchCode: job.matchCode, state: job.state, ...(job.code ? { code: job.code } : {}),
+    ...(job.approvalId ? { approvalId: job.approvalId, actionDigest: job.actionDigest, matchCode: job.matchCode } : {}), state: job.state, ...(job.code ? { code: job.code } : {}),
   });
 
   function targetList() {
@@ -82,20 +82,27 @@ export function createRoomJobRoutes({ approvals, hands, targets, newJobId } = {}
 
   const finish = (job, state, code) => { job.state = state; if (code) job.code = code; else delete job.code; };
 
-  /** The submitted request as a job, or a response that refuses it. Digest and match code are computed here from the submitted DTO. */
+  /** The fields a pending job gets from the submitted request, or a response that refuses it. Digest and match code are computed here from the submitted DTO. */
   function openJob(kind, computerId, task, submitted) {
+    let vm = {};
     if (submitted?.ok !== true) return { refusal: fail(502, SUBMIT_CODES.has(submitted?.code) ? submitted.code : 'submit_failed') };
     const { approvalId, purpose, action } = submitted;
     const expected = kind === 'task' ? ['guest.command', 'task.start'] : ['broker.operation', 'synthetic.noop'];
     if (purpose !== expected[0] || action?.action !== expected[1]) return { refusal: fail(502, 'submit_mismatch') };
     // The hands may get only this exact string, for this computer: anything else the port echoes back is not what the owner asked for.
-    if (kind === 'task' && (action.computerId !== computerId || action.args?.task !== task || !Object.keys(action.args).every((key) => TASK_START_ARGS.includes(key)))) return { refusal: fail(502, 'submit_mismatch') };
+    if (kind === 'task') {
+      const args = action.args;
+      if (action.computerId !== computerId || args?.task !== task || !Object.keys(args).every((key) => TASK_START_ARGS.includes(key))) return { refusal: fail(502, 'submit_mismatch') };
+      // The VM the Authority was asked about travels to the hands, which must check it is the one they run on (PR4d acceptance condition).
+      if (args.vmId !== undefined && (typeof args.vmId !== 'string' || !ID_RE.test(args.vmId))) return { refusal: fail(502, 'submit_mismatch') };
+      if (args.expectedGeneration !== undefined && !Number.isSafeInteger(args.expectedGeneration)) return { refusal: fail(502, 'submit_mismatch') };
+      vm = { ...(args.vmId !== undefined ? { vmId: args.vmId } : {}), ...(args.expectedGeneration !== undefined ? { expectedGeneration: args.expectedGeneration } : {}) };
+    }
     if (typeof submitted.decided?.then !== 'function') return { refusal: fail(502, 'submit_invalid') };
     let actionDigest;
     let matchCode;
     try { actionDigest = computeActionDigest(purpose, action); matchCode = computeMatchCode(approvalId, actionDigest); } catch { return { refusal: fail(502, 'submit_invalid') }; }
-    const job = { jobId: nextJobId(), kind, computerId: kind === 'task' ? computerId : action.computerId, task, approvalId, actionDigest, matchCode, state: 'awaiting_approval' };
-    return { job };
+    return { fields: { computerId: kind === 'task' ? computerId : action.computerId, approvalId, actionDigest, matchCode, ...vm } };
   }
 
   async function settle(job, decided) {
@@ -107,7 +114,7 @@ export function createRoomJobRoutes({ approvals, hands, targets, newJobId } = {}
     if (typeof result.operationId !== 'string' || !ID_RE.test(result.operationId)) { finish(job, 'refused', 'start_error'); return; }
     finish(job, 'starting');
     let started = null;
-    try { started = await hands.start({ computerId: job.computerId, task: job.task, operationId: result.operationId }); } catch { /* start_error below */ }
+    try { started = await hands.start({ computerId: job.computerId, task: job.task, operationId: result.operationId, ...(job.vmId !== undefined ? { vmId: job.vmId } : {}), ...(job.expectedGeneration !== undefined ? { expectedGeneration: job.expectedGeneration } : {}) }); } catch { /* start_error below */ }
     if (job.state === 'cancelled') { // stop all arrived while the hands were being started: stop them again, they may have come up after the first stop
       try { await hands.stopAll(); } catch { /* stop all already reported its own failure */ }
       return;
@@ -117,11 +124,16 @@ export function createRoomJobRoutes({ approvals, hands, targets, newJobId } = {}
   }
 
   async function submit(kind, computerId, task, ask) {
+    // The job exists BEFORE the Authority is asked, so a stop all and the one-per-computer and cap checks see it while the request is in flight.
+    const job = { jobId: nextJobId(), kind, computerId: kind === 'task' ? computerId : null, task, state: 'submitting' };
+    remember(job);
     let submitted = null;
     try { submitted = await ask(); } catch { submitted = null; }
-    const { job, refusal } = openJob(kind, computerId, task, submitted);
-    if (refusal) return refusal;
-    remember(job);
+    if (job.state === 'cancelled') return fail(409, 'stopped'); // stop all came while asking: whatever the Authority holds is denied in its window, and nothing is shown or started
+    const { fields, refusal } = openJob(kind, computerId, task, submitted);
+    if (refusal) { jobs.splice(jobs.indexOf(job), 1); return refusal; }
+    Object.assign(job, fields);
+    finish(job, 'awaiting_approval');
     void settle(job, Promise.resolve(submitted.decided)); // the outcome is read through GET /api/jobs
     return { status: 202, body: { ok: true, job: view(job) } };
   }

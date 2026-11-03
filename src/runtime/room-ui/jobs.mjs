@@ -19,12 +19,16 @@ export function taskProblem(text) {
   return taskBytes(text) > TASK_MAX_BYTES ? 'panel.jobs.task_too_long' : null;
 }
 
-/** One line for the job list: what it is, and where it stands (with the host's fixed code when there is one). */
+/** One line for the job list: what it is, on which computer, and where it stands (with the host's fixed code when there is one). */
 export function jobLine(words, job) {
   const what = job?.kind === 'test' ? words.t('panel.jobs.kind_test') : String(job?.task ?? '');
+  const where = typeof job?.computerId === 'string' && job.computerId ? ` [${job.computerId}]` : '';
   const state = words.t(`panel.jobs.state_${job?.state}`);
-  return `${what} \u2014 ${state}${job?.code ? ` (${job.code})` : ''}`;
+  return `${what}${where} \u2014 ${state}${job?.code ? ` (${job.code})` : ''}`;
 }
+
+/** The match code to show beside a job: only a job still waiting for its approval has one worth pressing. */
+export const codeOf = (job) => (job?.state === 'awaiting_approval' && /^\d{4}$/.test(String(job.matchCode)) ? job.matchCode : null);
 
 /**
  * Ask to start a task. `start(computerId, task)` is api.startJob.
@@ -75,11 +79,8 @@ function boot() {
   request.type = 'button';
   const message = el(document, 'p', 'sm');
   message.setAttribute('role', 'status');
-  const matchBox = el(document, 'section', 'match');
-  matchBox.hidden = true;
-  const matchCode = el(document, 'p', 'match-code');
-  matchCode.setAttribute('aria-live', 'polite');
-  matchBox.append(el(document, 'h3', '', words.t('panel.jobs.match_title')), matchCode, el(document, 'p', 'sm', words.t('panel.jobs.match_help')));
+  const matchHelp = el(document, 'p', 'sm', words.t('panel.jobs.match_help'));
+  matchHelp.hidden = true;
   const stopAll = el(document, 'button', 'danger', words.t('panel.jobs.stop_all'));
   stopAll.type = 'button';
   const test = el(document, 'button', '', words.t('panel.jobs.test'));
@@ -89,17 +90,30 @@ function boot() {
 
   panel.replaceChildren(
     el(document, 'h2', '', words.t('panel.jobs.title')), close,
-    label(words.t('panel.jobs.computer'), select), label(words.t('panel.jobs.task'), task), counter, request, message, matchBox,
+    label(words.t('panel.jobs.computer'), select), label(words.t('panel.jobs.task'), task), counter, request, message, matchHelp,
     el(document, 'div', 'panel-row', undefined), el(document, 'p', 'sm sub', words.t('panel.jobs.stop_all_help')),
     el(document, 'p', 'sm sub', words.t('panel.jobs.test_help')), el(document, 'h3', '', words.t('panel.jobs.list')), list,
   );
   panel.querySelector('.panel-row').append(stopAll, test);
 
   let timer;
-  const showCode = (job) => { matchCode.textContent = job.matchCode; matchBox.hidden = false; };
   const showCounter = () => { counter.textContent = words.t('panel.jobs.bytes', { bytes: taskBytes(task.value) }); };
   task.addEventListener('input', showCounter);
   showCounter();
+
+  /** One list entry. Every job still waiting shows ITS OWN code in large type, next to its task and computer, so two waiting jobs are never confused. */
+  function jobItem(job) {
+    const item = el(document, 'li', '', jobLine(words, job));
+    const code = codeOf(job);
+    if (code) {
+      const box = el(document, 'div', 'match');
+      const big = el(document, 'p', 'match-code', code);
+      big.setAttribute('aria-label', words.t('panel.jobs.match_title'));
+      box.append(el(document, 'span', 'sm', words.t('panel.jobs.match_title')), big);
+      item.append(box);
+    }
+    return item;
+  }
 
   async function refresh() {
     const result = await api.getJobs();
@@ -110,9 +124,8 @@ function boot() {
     if (targets.some((t) => t.computerId === chosen)) select.value = chosen;
     if (targets.length === 0) message.textContent = words.t('panel.jobs.no_targets');
     const jobs = Array.isArray(result.body?.jobs) ? result.body.jobs : [];
-    list.replaceChildren(...(jobs.length ? [...jobs].reverse().map((job) => el(document, 'li', '', jobLine(words, job))) : [el(document, 'li', 'sub', words.t('panel.jobs.none'))]));
-    const waiting = jobs.filter((job) => job.state === 'awaiting_approval').at(-1);
-    if (waiting) showCode(waiting); else matchBox.hidden = true;
+    list.replaceChildren(...(jobs.length ? [...jobs].reverse().map((job) => jobItem(job)) : [el(document, 'li', 'sub', words.t('panel.jobs.none'))]));
+    matchHelp.hidden = !jobs.some((job) => codeOf(job));
   }
   const loop = async () => { await refresh(); timer = setTimeout(() => { void loop(); }, JOBS_POLL_MS); };
 
@@ -122,14 +135,12 @@ function boot() {
     message.textContent = '';
     task.value = '';
     showCounter();
-    showCode(result.job);
     void refresh();
   });
   test.addEventListener('click', async () => {
     const result = await api.approvalTest();
     if (!result.ok || !result.body?.job) { message.textContent = failureText(words, result.status === 401 ? 'locked' : result.status === 0 ? 'unreachable' : result.body?.error); return; }
     message.textContent = '';
-    showCode(result.body.job);
     void refresh();
   });
   stopAll.addEventListener('click', async () => {

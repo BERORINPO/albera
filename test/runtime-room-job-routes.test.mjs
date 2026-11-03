@@ -154,7 +154,83 @@ test('a task.start action may also name the VM and its generation (the attestati
   assert.equal(res.json.job.actionDigest, digest, 'the digest is that of the submitted action, with those args');
   r.approvals.approve(0);
   await r.until('job-1', 'started');
-  assert.deepEqual(r.hands.started, [{ computerId: 'pc-01', task: TASK, operationId: 'op-1' }]);
+  assert.deepEqual(r.hands.started, [{ computerId: 'pc-01', task: TASK, operationId: 'op-1', vmId: 'vm-a', expectedGeneration: 2 }], 'the approved VM and generation travel to the hands');
+});
+
+test('a vmId or generation of the wrong type in the submitted action is refused', async (t) => {
+  for (const args of [{ vmId: 7 }, { vmId: '../vm' }, { expectedGeneration: '2' }, { expectedGeneration: 1.5 }]) {
+    const change = (s) => ({ ...s, action: { ...s.action, args: { ...s.action.args, ...args } } });
+    const r = await start(t, { approvalOptions: { change } });
+    const res = await r.call('POST', JOBS, { body: { computerId: 'pc-01', task: TASK } });
+    assert.deepEqual([res.status, res.json.error], [502, 'submit_mismatch'], JSON.stringify(args));
+    assert.deepEqual(await r.jobs(), [], 'the pending job is dropped');
+  }
+});
+
+/** Wait until the list shows `count` jobs in state `submitting` (requests asked, the Authority not answered). */
+async function untilSubmitting(r, count) {
+  for (let i = 0; i < 200; i++) {
+    if ((await r.jobs()).filter((j) => j.state === 'submitting').length >= count) return;
+    await new Promise((resolve) => { setTimeout(resolve, 5); });
+  }
+  assert.fail('no request in flight');
+}
+
+test('two requests for the same computer at once: one asks the Authority, the other is 409 (the check sees the one in flight)', async (t) => {
+  const r = await start(t);
+  let release;
+  r.approvals.hold = new Promise((resolve) => { release = resolve; });
+  const first = r.call('POST', JOBS, { body: { computerId: 'pc-01', task: 'first' } });
+  await untilSubmitting(r, 1);
+  const second = await r.call('POST', JOBS, { body: { computerId: 'pc-01', task: 'second' } });
+  assert.deepEqual([second.status, second.json.error], [409, 'approval_in_progress']);
+  const testRun = r.call('POST', TEST, { body: {} });
+  await untilSubmitting(r, 2);
+  const testAgain = await r.call('POST', TEST, { body: {} });
+  assert.deepEqual([testAgain.status, testAgain.json.error], [409, 'approval_in_progress'], 'the same holds for the approval test');
+  release();
+  assert.equal((await first).status, 202);
+  assert.equal((await testRun).status, 202);
+  assert.equal(r.approvals.asked.filter((a) => a.task === 'second').length, 0, 'the refused one never asked');
+  assert.equal(r.approvals.asked.filter((a) => a.task === 'first').length, 1);
+});
+
+test('the cap on waiting jobs counts requests in flight too', async (t) => {
+  const approvals = createFakeApprovals();
+  const hands = createFakeHands();
+  const many = Array.from({ length: MAX_WAITING_JOBS + 1 }, (_, i) => ({ computerId: `pc-${i + 1}` }));
+  const r = await startRouteHost(t, createRoomJobRoutes({ approvals, hands, targets: () => many }));
+  let release;
+  approvals.hold = new Promise((resolve) => { release = resolve; });
+  const sent = many.slice(0, MAX_WAITING_JOBS).map((m) => r.call('POST', JOBS, { body: { computerId: m.computerId, task: `task for ${m.computerId}` } }));
+  for (let i = 0; i < 400; i++) {
+    const list = (await r.call('GET', JOBS)).json.jobs;
+    if (list.filter((j) => j.state === 'submitting').length >= MAX_WAITING_JOBS) break;
+    await new Promise((resolve) => { setTimeout(resolve, 5); });
+  }
+  const over = await r.call('POST', JOBS, { body: { computerId: many.at(-1).computerId, task: 'one too many' } });
+  assert.deepEqual([over.status, over.json.error], [429, 'too_many_waiting']);
+  release();
+  assert.ok((await Promise.all(sent)).every((res) => res.status === 202));
+});
+
+test('stop all while a request is still being sent: the job is cancelled, nothing is shown or started, even if it is approved later', async (t) => {
+  const r = await start(t);
+  let release;
+  r.approvals.hold = new Promise((resolve) => { release = resolve; });
+  const sending = r.call('POST', JOBS, { body: { computerId: 'pc-01', task: TASK } });
+  await untilSubmitting(r, 1);
+  const stop = await r.call('POST', STOP_ALL, { body: {} });
+  assert.deepEqual([stop.status, stop.json.cancelled], [200, 1], 'the request in flight was seen by stop all');
+  release();
+  const answered = await sending;
+  assert.deepEqual([answered.status, answered.json], [409, { error: 'stopped' }], 'no job and no match code are returned for it');
+  const [job] = await r.jobs();
+  assert.deepEqual([job.state, job.code, job.matchCode], ['cancelled', 'stopped', undefined]);
+  r.approvals.approve(0);
+  await new Promise((resolve) => { setTimeout(resolve, 30); });
+  assert.equal(r.hands.started.length, 0);
+  assert.equal((await r.call('POST', JOBS, { body: { computerId: 'pc-01', task: 'after' } })).status, 202, 'the computer is free again');
 });
 
 test('the port failing (a fixed code, or an exception with text) is a fixed code and never the text', async (t) => {
