@@ -48,7 +48,7 @@ internal static class DesktopClient
     private static readonly string[] OptionPrefixes = [SavePrefix, ClaimExePrefix, ClaimStdinPrefix];
 
     // OperationId / Generation: an act open that names its lease. InputJson: an input step, already the complete request. WaitMs: an end step.
-    private sealed record Step(string Kind, string Id, string Mode, string ComputerId, int Width, int Height, string? OperationId = null, long Generation = 0, string? InputJson = null, int WaitMs = 0);
+    internal sealed record Step(string Kind, string Id, string Mode, string ComputerId, int Width, int Height, string? OperationId = null, long Generation = 0, string? InputJson = null, int WaitMs = 0);
     private sealed record Expectation(uint Pid, SecurityIdentifier Owner, bool ServiceMode);
 
     private static bool readAbandoned;   // an `end` step gave up on a blocking read: the process must exit without waiting for it
@@ -90,12 +90,12 @@ internal static class DesktopClient
         return 0;
     }
 
-    private static void Emit(object value) { Console.WriteLine(JsonSerializer.Serialize(value)); Console.Out.Flush(); }
+    internal static void Emit(object value) { Console.WriteLine(JsonSerializer.Serialize(value)); Console.Out.Flush(); }
 
-    private static bool IsPlainName(string name) => name.Length is >= 1 and <= 128 && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.');
+    internal static bool IsPlainName(string name) => name.Length is >= 1 and <= 128 && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.');
 
     // open:<view|act>:<computerId>[:<operationId>:<leaseGeneration>, act only] | capture:<w>x<h> | input:<ops> | claim | end:<ms>; null when any argument is malformed.
-    private static List<Step>? ParseSteps(IEnumerable<string> arguments)
+    internal static List<Step>? ParseSteps(IEnumerable<string> arguments)
     {
         List<Step> plan = [];
         Dictionary<string, int> seen = [];
