@@ -17,6 +17,8 @@ Console.WriteLine(JsonSerializer.Serialize(new
     inputRejected = InputRejected(),
     capture = CaptureCases(),
     input = InputCases(),
+    leases = LeaseCases(),
+    leaseLifetimes = LeaseLifetimes(),
 }));
 return 0;
 
@@ -264,9 +266,119 @@ static object[] InputCases()
     Case("the down that fails is released too", [new("press", Vk: 16), new("down", Button: 2)], f => f.Inject = (m, a, n) => m == "SetButtonState" && (bool)a["IsDown"] ? "code" : null);
     Case("a failing release does not stop the others and keeps the original reason", held,
         f => f.Inject = (m, a, n) => m == "TypeKey" || (m == "SetButtonState" && !(bool)a["IsDown"]) || (m == "ReleaseKey" && (uint)a["KeyCode"] == 17) ? "throw" : null);
+    // A release that fails is tried once more on a NEW connection (Zaku MEDIUM 3 of #161). The fake keeps one log across connections; `Connects` counts them.
+    Case("a release that fails on the first connection is retried once on a new one and succeeds", [new("press", Vk: 16), new("press", Vk: 17), new("down", Button: 1), Tap(65)], f =>
+    {
+        int buttonFailures = 0, keyFailures = 0;
+        f.Inject = (m, a, n) =>
+        {
+            if (m == "TypeKey") return "code";
+            if (m == "SetButtonState" && !(bool)a["IsDown"] && buttonFailures++ == 0) return "throw";
+            if (m == "ReleaseKey" && (uint)a["KeyCode"] == 17 && keyFailures++ == 0) return "throw";
+            return null;
+        };
+    });
+    Case("a release that fails again on the new connection is not tried a third time", held,
+        f => f.Inject = (m, a, n) => m == "TypeKey" || (m == "SetButtonState" && !(bool)a["IsDown"] && (uint)a["ButtonIndex"] == 1) || (m == "ReleaseKey" && (uint)a["KeyCode"] == 17) ? "code" : null);
+    Case("no new connection can be made for the retry", [new("press", Vk: 16), Tap(65)], f => f.Inject = (m, a, n) =>
+    {
+        if (m == "TypeKey") return "code";
+        if (m != "ReleaseKey") return null;
+        f.Unreachable = true;
+        return "throw";
+    });
+    Case("the new connection finds no keyboard", [new("press", Vk: 16), Tap(65)], f => f.Inject = (m, a, n) =>
+    {
+        if (m == "TypeKey") return "code";
+        if (m != "ReleaseKey") return null;
+        f.KeyboardPresent = false; // the retry's own lookup comes up empty; the first connection already holds its devices
+        return "code";
+    });
     Case("failure in the middle of text leaves nothing held", [new("press", Vk: 16), new("text", Text: "abc")], f => f.Inject = (m, a, n) => m == "TypeText" ? "code" : null);
     Case("sleeps run before a later failure", [new("sleep", Ms: 100), new("press", Vk: 16), new("sleep", Ms: 200), Tap(65)], f => f.Inject = (m, a, n) => m == "TypeKey" ? "code" : null);
     return cases.ToArray();
+}
+
+// ---- the desktop lease table (DesktopLeases.cs), driven with a fake clock ---------------------------------------------------------------------------------
+
+static object[] LeaseCases()
+{
+    long now = 10_000;
+    DesktopLeases leases = new([new ComputerBinding("room-1", Guid1), new ComputerBinding("room-2", Guid2)], () => now);
+    var steps = new List<object>();
+    var sessions = new Dictionary<string, DesktopLeases.LeaseSession>();
+    void Note(string name, object? value) => steps.Add(new { name, value });
+    // The refusal word, or null when the open was accepted (the session is kept under `keep`).
+    string? Open(string keep, string computer, string operation, long generation)
+    {
+        DesktopLeases.LeaseSession? session = leases.TryOpen(computer, operation, generation, out string refusal);
+        if (session is null) return refusal;
+        sessions[keep] = session;
+        return null;
+    }
+    bool Cancelled(string keep) => sessions[keep].Token.IsCancellationRequested;
+
+    Note("open before any claim", Open("x", "room-1", "op-1", 1));
+    Note("grant for a computer that is not configured", leases.Grant("room-9", "op-1"));
+    Note("grant for the id in another case", leases.Grant("ROOM-1", "op-1"));
+    Note("open after those two refused grants", Open("x", "room-9", "op-1", 1));
+    Note("first grant of room-1", leases.Grant("room-1", "op-1"));
+    Note("open with the granted operation and generation", Open("s1", "room-1", "op-1", 1));
+    Note("open with generation 2", Open("x", "room-1", "op-1", 2));
+    Note("open with generation 0", Open("x", "room-1", "op-1", 0));
+    Note("open with another operation", Open("x", "room-1", "op-2", 1));
+    Note("open for the other computer", Open("x", "room-2", "op-1", 1));
+    Note("open with the computer id in another case", Open("x", "ROOM-1", "op-1", 1));
+    Note("open with the operation id in another case", Open("x", "room-1", "OP-1", 1));
+    Note("a live session's refusal", sessions["s1"].Refusal());
+    Note("first grant of room-2 counts from 1 too", leases.Grant("room-2", "op-2"));
+    Note("room-2 opens", Open("s2", "room-2", "op-2", 1));
+
+    now += 3599;
+    Note("one second before the end of the hour: open", Open("s1b", "room-1", "op-1", 1));
+    Note("one second before the end of the hour: refusal", sessions["s1"].Refusal());
+    now += 1;
+    Note("exactly 60 minutes after the claim: open", Open("x", "room-1", "op-1", 1));
+    Note("exactly 60 minutes after the claim: refusal of a live session", sessions["s1"].Refusal());
+    Note("exactly 60 minutes after the claim: room-2 too", Open("x", "room-2", "op-2", 1));
+
+    now += 100;
+    Note("a new claim after the expiry counts on from the expired generation", leases.Grant("room-1", "op-3"));
+    Note("replaced: the older sessions are cancelled", new[] { Cancelled("s1"), Cancelled("s1b") });
+    Note("replaced: the older session's refusal", sessions["s1"].Refusal());
+    Note("replaced: the older lease cannot be opened", Open("x", "room-1", "op-1", 1));
+    Note("replaced: the older lease cannot be opened with the new generation", Open("x", "room-1", "op-1", 2));
+    Note("the new lease opens", Open("s3", "room-1", "op-3", 2));
+    Note("the other computer's session is untouched by room-1's claim", Cancelled("s2"));
+
+    Note("a third claim", leases.Grant("room-1", "op-4"));
+    Note("the third claim closes the second lease's session", Cancelled("s3"));
+    Note("a fourth lease opens and ends its session", Open("s4", "room-1", "op-4", 3));
+    sessions["s4"].Dispose();
+    Note("a disposed session is not touched by the next claim", leases.Grant("room-1", "op-5"));
+    Note("a disposed session was not cancelled", Cancelled("s4"));
+    Note("an operation that was never claimed", Open("x", "room-1", "op-9", 4));
+    foreach (DesktopLeases.LeaseSession session in sessions.Values) session.Dispose();
+    return steps.ToArray();
+}
+
+static object LeaseLifetimes()
+{
+    static string Make(long seconds)
+    {
+        try { _ = new DesktopLeases([], () => 0, seconds); return "ok"; }
+        catch (ArgumentOutOfRangeException) { return "refused"; }
+    }
+    long now = 500;
+    DesktopLeases half = new([new ComputerBinding("room-1", Guid1)], () => now, 1800);
+    half.Grant("room-1", "op-1");
+    now += 1799;
+    using DesktopLeases.LeaseSession? live = half.TryOpen("room-1", "op-1", 1, out string beforeRefusal);
+    string before = live is null ? beforeRefusal : "opened";
+    now += 1;
+    using DesktopLeases.LeaseSession? late = half.TryOpen("room-1", "op-1", 1, out string afterRefusal);
+    string after = late is null ? afterRefusal : "opened";
+    return new { maximum = DesktopLeases.MaxLifetimeSeconds, bounds = new[] { Make(0), Make(1), Make(3600), Make(3601), Make(-5) }, before, after };
 }
 
 // ---- the fake WMI --------------------------------------------------------------------------------------------------------------------------------
