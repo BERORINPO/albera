@@ -183,7 +183,7 @@ test('service loop creates the first-instance pipe once and reuses that instance
 test('service exit codes are fixed and the dispatcher is called before the config is read', () => {
   assert.deepEqual([...program.matchAll(/const int (Exit\w+) = (\d+);/gu)].map((m) => `${m[1]}=${m[2]}`), [
     'ExitPipeUnavailable=70', 'ExitImpersonationRevertFailed=71', 'ExitPipeOwnerUnavailable=72',
-    'ExitServiceConfigInvalid=73', 'ExitNotStartedByScm=74', 'ExitServiceLoopFailed=75', 'ExitJournalRefused=76',
+    'ExitServiceConfigInvalid=73', 'ExitNotStartedByScm=74', 'ExitServiceLoopFailed=75', 'ExitJournalRefused=76', 'ExitDesktopFailed=80',
   ]);
   assert.equal(/TryLoad\(/u.test(program), false, 'Main never reads the service config itself');
   assert.match(program, /args\.Length == 2 && args\[0\] == "service"\) return ServiceHost\.Run\(args\[1\]\);/u);

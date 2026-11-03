@@ -96,3 +96,11 @@ test('the service loop makes the desktop pipe with the claim pipe, before the ep
   assert.match(loop, /await using DesktopPipeHost\? desktop = /u, 'released with the claim pipe, whichever way the loop ends');
   assert.equal(/Desktop/u.test(between(program, 'private static async Task<int> ServeAsync(', 'private static async Task<bool> RefuseUnusableJournalAsync(')), false, '`serve` is untouched');
 });
+
+test('a hung capture and a desktop instance that cannot be reset stop the Broker (fail closed, exit 80; Zaku review of #164)', () => {
+  const pipe = read('DesktopPipe.cs');
+  assert.match(pipe, /CaptureHungTimeout = TimeSpan\.FromSeconds\(15\)/u);
+  assert.match(pipe, /Task\.WhenAny\(capture, Task\.Delay\(CaptureHungTimeout\)\) != capture\)[\s\S]{0,400}DESKTOP=CAPTURE_HUNG[\s\S]{0,80}TerminateForDesktopFailure\(\);/u);
+  assert.match(pipe, /try \{ DisconnectForNextClient\(pipe\); \}[\s\S]{0,400}DESKTOP=SLOT_RESET_FAILED[\s\S]{0,80}TerminateForDesktopFailure\(\);/u);
+  assert.match(pipe, /NotifyServiceTermination\(ExitDesktopFailed\);\s*_ = TerminateProcess\(GetCurrentProcess\(\), ExitDesktopFailed\);/u);
+});
