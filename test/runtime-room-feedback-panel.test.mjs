@@ -354,6 +354,9 @@ test('page: sending posts exactly the request, then closes the panel, clears the
   assert.equal(ui.toast.hidden, true);
   ui.opener.fire('click');
   await until(() => ui.calls.filter((c) => c.url === 'api/feedback').length === 2, 'the room to be asked again');
+  // The call is recorded before its answer is read (Response.json may take more than microtasks); let the panel finish with it before the page goes away,
+  // or it touches `document` after the test (seen on CI, ubuntu / Node 22, 2026-11-04).
+  await new Promise((resolve) => { realSetTimeout(resolve, 50); });
   assert.equal(ui.panel.hidden, false);
   assert.equal(ui.send.disabled, true, 'a fresh, empty box');
 });
