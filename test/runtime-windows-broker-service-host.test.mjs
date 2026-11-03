@@ -87,6 +87,25 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
     ];
   }
 
+  /** A `computers` entry: a contract id and the lowercase GUID of its VM (distinct per `n`). */
+  const computer = (n) => ({ computerId: `room-${n}`, vmId: `0123abcd-4567-89ab-cdef-${String(n).padStart(12, '0')}` });
+
+  /** Values of `computers` the service must refuse. */
+  function computersCases() {
+    const good = computer(1);
+    return [
+      ['nine entries', Array.from({ length: 9 }, (_, i) => computer(i + 1))], ['an object instead of a list', good], ['a string', 'room-1'], ['null', null], ['a number', 1],
+      ['an entry that is not an object', ['room-1']], ['an entry that is null', [null]], ['an entry with an extra key', [{ ...good, extra: 1 }]],
+      ['an entry without vmId', [{ computerId: good.computerId }]], ['an entry without computerId', [{ vmId: good.vmId }]], ['an empty entry', [{}]],
+      ...['', 'has space', '-lead', 'a/b', 'x'.repeat(65), 'room\n', 5, null].map((value) => [`computerId ${JSON.stringify(value)}`, [{ ...good, computerId: value }]]),
+      ...[
+        ['', 'empty'], [good.vmId.toUpperCase(), 'uppercase'], [good.vmId.replaceAll('-', ''), 'no dashes'], [`{${good.vmId}}`, 'braces'], [`${good.vmId}\n`, 'trailing newline'],
+        [good.vmId.slice(1), '35 characters'], [`${good.vmId}0`, '37 characters'], ['g'.repeat(8) + good.vmId.slice(8), 'non-hex'], ['room-1', 'a display name'], [5, 'a number'], [null, 'null'],
+      ].map(([value, label]) => [`vmId ${label}`, [{ ...good, vmId: value }]]),
+      ['a repeated computerId', [good, { ...computer(2), computerId: good.computerId }]], ['a repeated vmId', [good, { ...computer(2), vmId: good.vmId }]],
+    ];
+  }
+
   describe('config validation (service-check)', () => {
     it('accepts a complete config with a user SID, a virtual service-account SID, a UTF-8 BOM, or two pinned authority keys', () => {
       assert.deepEqual(check(writeConfig('ok-user')), { code: 0, lines: ['SERVICE_CONFIG=ok'], stderr: '' });
@@ -96,8 +115,17 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
       assert.equal(check(writeConfig('ok-two-keys', { authorityKeys: [authority.keyEntry, createTestAuthority({ kid: 'test-authority-2' }).keyEntry] })).code, 0, 'rotation overlap');
     });
 
+    it('accepts a config with no `computers` key (no desktop VMs), an empty list, one entry and the maximum of eight', () => {
+      assert.equal(validConfig('ok-none').computers, undefined, 'the baseline config has no computers key');
+      assert.deepEqual(check(writeConfig('ok-no-computers')), { code: 0, lines: ['SERVICE_CONFIG=ok'], stderr: '' });
+      for (const [label, computers] of [['empty', []], ['one', [computer(1)]], ['eight', Array.from({ length: 8 }, (_, i) => computer(i + 1))]]) {
+        assert.deepEqual(check(writeConfig(`ok-computers-${label}`, { computers })), { code: 0, lines: ['SERVICE_CONFIG=ok'], stderr: '' }, label);
+      }
+    });
+
     // [label, config overrides, expected reason word]
     const rejected = [
+      ...computersCases().map(([label, value]) => [`computers: ${label}`, { computers: value }, 'computers']),
       ...['S-1-1-0', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-32-544', 'WD', 'AU', 'BU', 'BA', 's-1-5-80-1111111111-2222222222-3333333333-1444444444-2555555555', ' S-1-1-0', ''].map((value) => [`control plane SID ${JSON.stringify(value)}`, { controlPlaneSid: value }, 'control_plane_sid']),
       ...['', '.', '..', '-lead', 'a b', 'a\\b', 'a/b', String.raw`\\.\pipe\x`, 'x'.repeat(129), 'pipe\u0000'].map((value) => [`pipe name ${JSON.stringify(value)}`, { pipeName: value }, 'pipe_name']),
       ...[
@@ -133,6 +161,7 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
       const base = JSON.stringify(validConfig('dup'));
       const cases = [
         ['repeated key', base.replace(/\}$/u, ',"generation":8}'), 'config_keys'],
+        ['repeated key inside a computer', base.replace(/\}$/u, `,"computers":[{"computerId":"a","computerId":"b","vmId":"${computer(1).vmId}"}]}`), 'computers'],
         ['array document', '[]', 'config_keys'], ['null document', 'null', 'config_keys'], ['empty file', '', 'config_syntax'],
         ['bad syntax', '{"pipeName":', 'config_syntax'], ['comment', `/*x*/${base}`, 'config_syntax'], ['trailing comma', base.replace(/\}$/u, ',}'), 'config_syntax'],
         ['nested value', base.replace(/\}$/u, ',"x":{"y":{"z":{"w":1}}}}'), 'config_syntax'],

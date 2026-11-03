@@ -13,6 +13,7 @@
 #     u_nonmember  sidtype unrestricted,  not a member
 # Verdicts (see Get-HvVerdict): non-members must be refused (PASS); unrestricted members must succeed (PASS); a restricted member is only MEASURED,
 # because that is the open question and either answer is a result. A check that could not be measured is BLOCKED, never a quiet PASS.
+# Two of the operations (adapter_capture, adapter_input) run the Broker's real adapter instead of raw WMI calls; they are judged the same way.
 param(
   [Parameter(Mandatory = $true)][string]$LabRoot,
   [Parameter(Mandatory = $true)][ValidateSet('install-feature', 'run', 'cleanup')][string]$Phase
@@ -40,7 +41,9 @@ $Ops = @(
   @{ Id = 'mgmt_read';                 Kind = 'reference'; Title = 'Read Msvm_VirtualSystemManagementService (read only, not a Broker call)' },
   @{ Id = 'thumbnail';                 Kind = 'sensitive'; Title = 'GetVirtualSystemThumbnailImage 640x480' },
   @{ Id = 'keyboard_typekey';          Kind = 'sensitive'; Title = 'Msvm_Keyboard.TypeKey once' },
-  @{ Id = 'mouse_setabsoluteposition'; Kind = 'sensitive'; Title = 'Msvm_SyntheticMouse.SetAbsolutePosition once' }
+  @{ Id = 'mouse_setabsoluteposition'; Kind = 'sensitive'; Title = 'Msvm_SyntheticMouse.SetAbsolutePosition once' },
+  @{ Id = 'adapter_capture';           Kind = 'sensitive'; Title = 'Broker adapter (HyperVDesktop + ComWmiConnection) Capture 640x480: a PNG with a valid signature and IHDR' },
+  @{ Id = 'adapter_input';             Kind = 'sensitive'; Title = 'Broker adapter Input: move, tap Shift, mouse button 1 down and up' }
 )
 
 # ------------------------------------------------------------------ pure logic (the unit test loads these functions by themselves, no VM involved)
@@ -53,6 +56,8 @@ function Get-AsciiText([string]$Text) {
 
 # One probe line -> what happened: allowed | denied | not_visible | error | missing.
 # A skipped line takes the outcome of the check it waited for (a refused connect refuses everything after it).
+# An adapter line (adapter_capture, adapter_input) carries only a DesktopReason word: the Broker's adapter hides why it failed. When it says it could not reach or
+# drive the VM, the cause is read from the raw check(s) of the same operation, in the same process and token: refused there = refused here. Anything else is 'error'.
 function Get-HvOutcome($Line, $ById) {
   if ($null -eq $Line) { return 'missing' }
   if ($Line.skipped) {
@@ -61,6 +66,17 @@ function Get-HvOutcome($Line, $ById) {
     return (Get-HvOutcome $cause $ById)
   }
   if ($Line.ok -eq $true) { return 'allowed' }
+  $partners = @{ adapter_capture = @('thumbnail'); adapter_input = @('keyboard_typekey', 'mouse_setabsoluteposition') }
+  if ($partners.ContainsKey([string]$Line.id)) {
+    if ([string]$Line.reason -notin @('desktop_unavailable', 'capture_failed', 'input_failed')) { return 'error' }
+    $raw = @($partners[[string]$Line.id] | ForEach-Object { Get-HvOutcome $ById[$_] $ById })
+    if ($raw -contains 'denied') { return 'denied' }
+    if ($raw -contains 'not_visible') { return 'not_visible' }
+    return 'error'
+  }
+  # The probe's own wording for "the WMI object did not show up for this caller" (management_service_not_found, realized_settings_not_found, VirtualSystemType
+  # lookups): a caller that may not see the object is refused in effect.
+  if ([string]$Line.exception -eq 'InvalidOperationException' -and [string]$Line.message -like '*_not_found') { return 'not_visible' }
   $hr = [string]$Line.hresult
   if ($hr -in @('0x80041003', '0x80070005', '0x80010005')) { return 'denied' }       # WBEM_E_ACCESS_DENIED, E_ACCESSDENIED, RPC_E_ACCESS_DENIED
   if ($null -ne $Line.returnValue -and [int64]$Line.returnValue -eq 32769) { return 'denied' }   # Hyper-V method ReturnValue 32769 = Access Denied
@@ -175,7 +191,7 @@ function New-LockedDir([string]$Path) {
 function Compact-Line($Line) {
   if ($null -eq $Line) { return 'no line' }
   $parts = @()
-  foreach ($name in @('ok', 'skipped', 'because', 'exception', 'hresult', 'returnValue', 'bytes', 'enabledState', 'enumeration', 'message')) {
+  foreach ($name in @('ok', 'skipped', 'because', 'reason', 'pngCheck', 'exception', 'hresult', 'returnValue', 'bytes', 'steps', 'enabledState', 'enumeration', 'message')) {
     if ($null -ne $Line.$name) { $parts += "$name=$($Line.$name)" }
   }
   $parts -join ' '
