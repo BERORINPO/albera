@@ -24,11 +24,18 @@ test('LocalPipe creates the first and only instance, byte mode, and rejects remo
   assert.match(broker, /PipeRejectRemoteClients = 0x00000008/u);
   assert.match(broker, /internal const uint PipeMode = PipeTypeByte \| PipeReadModeByte \| PipeWait \| PipeRejectRemoteClients;/u);
   assert.match(broker, /FileFlagFirstPipeInstance = 0x00080000/u);
-  assert.match(broker, /CreateNamedPipeW\(@"\\\\\.\\pipe\\" \+ pipeName, PipeAccessDuplex \| FileFlagFirstPipeInstance \| FileFlagOverlapped, PipeMode, 1, 0, 0, 0, ref attributes\)/u, 'local namespace only, max 1 instance');
+  // The two-argument Create (the Broker's claim pipe, the Authority's pipes) is the first instance with max 1; the Broker's desktop pipe asks for 16 (DesktopPipe.cs) and passes firstInstance only for its first.
+  assert.match(broker, /Create\(string pipeName, PipeSecurity security\) => Create\(pipeName, security, 1, firstInstance: true\);/u, 'the default is the first and only instance');
+  assert.match(broker, /uint openMode = PipeAccessDuplex \| FileFlagOverlapped \| \(firstInstance \? FileFlagFirstPipeInstance : 0\);/u, 'the first-instance flag is set exactly when the caller says it creates the first instance');
+  assert.match(broker, /CreateNamedPipeW\(@"\\\\\.\\pipe\\" \+ pipeName, openMode, PipeMode, maxInstances, 0, 0, 0, ref attributes\)/u, 'local namespace only, remote clients rejected for every instance');
   assert.match(broker, /InheritHandle = 0/u, 'the handle is not inherited by child processes');
   assert.match(broker, /if \(error == ErrorAccessDenied\) throw new UnauthorizedAccessException\(\);/u, 'a taken name keeps mapping to exit 70');
-  for (const [name, file] of [['Broker', read('src', 'runtime', 'windows-broker', 'Program.cs')], ['Authority', read('src', 'runtime', 'windows-approval-authority', 'PipeHost.cs')]]) {
+  for (const [name, file, creation] of [
+    ['Broker', read('src', 'runtime', 'windows-broker', 'Program.cs'), /LocalPipe\.Create\(pipeName, OwnedBySelf\(out SecurityIdentifier self, allowedSid\), maxInstances, firstInstance\)/u],
+    ['Authority', read('src', 'runtime', 'windows-approval-authority', 'PipeHost.cs'), /LocalPipe\.Create\(pipeName, OwnedBySelf\(out SecurityIdentifier self, allowedSid\)\)/u],
+  ]) {
     assert.equal(/NamedPipeServerStreamAcl\.Create\(/u.test(file), false, `${name} never uses the .NET call`);
-    assert.match(file, /LocalPipe\.Create\(pipeName, OwnedBySelf\(out SecurityIdentifier self, allowedSid\)\)/u, `${name} creates its pipe through LocalPipe`);
+    assert.match(file, creation, `${name} creates its pipe through LocalPipe`);
   }
+  assert.match(read('src', 'runtime', 'windows-broker', 'Program.cs'), /CreateBrokerPipe\(string pipeName, string allowedSid, out int failure, uint maxInstances = 1, bool firstInstance = true\)/u, 'the claim pipe keeps the defaults: first instance, max 1');
 });

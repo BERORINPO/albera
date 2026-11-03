@@ -48,9 +48,13 @@ internal static partial class Program
         if (pipe is null) return failure;
         await using (pipe)
         {
+            // The second pipe (DesktopPipe.cs) exists only when the config names computers. It fails closed like the first: a name that is taken stops the service.
+            await using DesktopPipeHost? desktop = DesktopPipeHost.Create(config, out int desktopFailure);
+            if (desktop is null) return desktopFailure;
             // The new epoch (and with it the end of every challenge the previous process issued) starts once the pipe is ours and before anything is served.
             if (await BeginEpochOrRefuseAsync(settings) is not { } started) return ExitJournalRefused;
-            settings = started;
+            settings = started with { Leases = desktop.Leases }; // a task.start claim recorded from here on makes the room's desktop lease (DesktopLeases.cs); a one-shot `serve` has none
+            desktop.Start(stop);
             Console.WriteLine("BROKER_READY");
             onReady();
             while (!stop.IsCancellationRequested)

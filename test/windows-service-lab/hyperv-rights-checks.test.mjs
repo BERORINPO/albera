@@ -62,15 +62,16 @@ test('nothing here elevates, reads the guest password, or reaches outside the la
   assert.doesNotMatch(guest, /Invoke-WebRequest|Invoke-RestMethod|Install-Module|Install-PackageProvider|Add-Type\s+-AssemblyName/iu, 'no downloads, no extra modules');
 });
 
-test('lab-vm.ps1 -HyperV: nested virtualization, 5 GB with the same memory guard, a shim-only build, and the other modes untouched', () => {
+test('lab-vm.ps1 -HyperV: nested virtualization, 5 GB with the same memory guard, the shim, Broker and pipe client builds (no Approval Authority), and the other modes untouched', () => {
   assert.match(driver, /\[switch\]\$HyperV/u);
   assert.match(driver, /\$vmMemoryGB = if \(\$HyperV\) \{ 5 \} else \{ 4 \}/u);
   assert.match(driver, /if \(\$freeGB -lt \(\$vmMemoryGB \+ \$hostHeadroomGB\)\)/u, 'the free-memory guard still uses the VM size');
   const expose = driver.indexOf('-ExposeVirtualizationExtensions $true');
   assert.ok(expose > 0 && expose < driver.indexOf('Start-VM -VM $vm'), 'nested virtualization is set while the VM is still off');
   assert.match(driver, /if \(\$HyperV -and \$HostInstall\) \{ throw/u);
-  assert.match(driver, /\$needed = @\('test\\windows-service-lab\\bin\\Release\\net10\.0-windows\\win-x64\\publish'\)\s+# The Hyper-V lab runs only the lab shim[^\n]*\n\s+if \(-not \$HyperV\) \{\s+\$needed \+= @\('src\\runtime\\windows-broker/u);
-  assert.match(driver, /if \(-not \$HyperV\) \{\s+& npm run build:windows-broker/u);
+  assert.match(driver, /\$needed = @\('test\\windows-service-lab\\bin\\Release\\net10\.0-windows\\win-x64\\publish',\s+'src\\runtime\\windows-broker\\bin\\Release\\net10\.0-windows\\win-x64\\publish'\)\s+# The Hyper-V lab runs the lab shim, the real Broker and the Control Plane pipe client[^\n]*\n\s+if \(\$HyperV\) \{ \$needed \+= @\('src\\runtime\\windows-broker-pipe-client\\bin\\Release\\net10\.0-windows\\win-x64\\publish'\) \}\s+else \{ \$needed \+= @\('src\\runtime\\windows-approval-authority/u);
+  assert.match(driver, /if \(\$Build\) \{\s+& npm run build:windows-broker\s+if \(\$LASTEXITCODE -ne 0\) \{ throw "build:windows-broker failed/u, 'the Broker build is no longer skipped for -HyperV');
+  assert.doesNotMatch(driver, /if \(-not \$HyperV\) \{\s+& npm run build:windows-broker/u);
   assert.match(driver, /if \(-not \$HyperV\) \{\s+& npm run build:approval-authority/u);
   assert.match(driver, /if \(-not \$HostInstall -and -not \$HyperV\) \{\s+& node scripts\/windows-service-lab-inputs\.mjs/u);
   assert.match(driver, /if \(\$HyperV\) \{\s+\$hvOut = @\(Invoke-HyperVRightsLab[\s\S]*?\}\s+elseif \(\$HostInstall\) \{/u);

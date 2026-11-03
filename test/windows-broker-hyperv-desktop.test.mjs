@@ -9,7 +9,8 @@ import zlib from 'node:zlib';
 
 // The Broker's Hyper-V desktop adapter (HyperVDesktop.cs, PngEncoder.cs; ADR-002 Amendment 2026-11-03) compiled by source include into a throwaway console in a temp
 // dir and driven with a FAKE WMI connection (test/hyperv-desktop-dotnet-harness). That proves the adapter's own logic: what it refuses before WMI is touched, the exact
-// WMI traffic it produces, the release order after a failed input, and that no exception text leaves it. It does not prove real WMI behaviour: that is the opt-in live
+// WMI traffic it produces, the release order after a failed input (and the one retry on a new connection), and that no exception text leaves it. The same harness drives the desktop
+// lease table (DesktopLeases.cs) with a fake clock. It does not prove real WMI behaviour: that is the opt-in live
 // test at the bottom and, for the service identity, the disposable-VM run. Skipped without a .NET 10 SDK. The source-level pins are in windows-broker-hyperv-desktop-source.test.mjs.
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const brokerDir = path.join(root, 'src', 'runtime', 'windows-broker');
@@ -279,6 +280,7 @@ describe('Broker Hyper-V desktop adapter against a fake WMI connection', { skip:
       assert.equal(c.report.calls.at(-1), DISPOSE);
       assert.deepEqual(c.report.calls.slice(c.report.calls.length - 1 - releases.length, -1), releases, `${name}: what was released, in order`);
       assert.equal(c.report.open, 0);
+      assert.equal(c.report.connects, 1, `${name}: every release worked, so there was no reason for a second connection`);
       return c;
     };
 
@@ -299,13 +301,196 @@ describe('Broker Hyper-V desktop adapter against a fake WMI connection', { skip:
       failedWith('failure in the middle of text leaves nothing held', [release(16)]);
     });
 
-    it('keeps releasing when a release fails, and still reports input_failed', () => {
-      failedWith('a failing release does not stop the others and keeps the original reason', [button(2, false), button(1, false), release(17), release(16)]);
+    // Zaku MEDIUM 3 of #161: a release that fails on the failing connection (the RPC may be gone) is tried once more on a NEW one. The fake keeps one log across connections.
+    const FIND_AND_DEVICES = [FIND_VM, ASSOC_KEYBOARD, ASSOC_MOUSE];
+    const retried = (name) => {
+      const c = byName(report.input, name);
+      assert.equal(c.report.reason, 'input_failed', `${name}: the reason is still the original failure`);
+      assert.equal(c.report.connects, 2, `${name}: exactly one more connection`);
+      assert.equal(c.report.open, 0, `${name}: every instance released`);
+      return c.report.calls;
+    };
+
+    it('releases once more on a new connection what a failed release left held, and only that', () => {
+      const calls = retried('a release that fails on the first connection is retried once on a new one and succeeds');
+      assert.deepEqual(calls, [
+        ...PREAMBLE, press(16), press(17), button(1, true), tap(65),
+        button(1, false), release(17), release(16), // first connection: the button and key 17 fail, key 16 works
+        ...FIND_AND_DEVICES, button(1, false), release(17), DISPOSE, // new connection: the two that failed, not key 16 again
+        DISPOSE,
+      ]);
+    });
+
+    it('keeps releasing the others when one release fails, and the retry is exactly the ones that failed', () => {
+      const calls = retried('a failing release does not stop the others and keeps the original reason');
+      assert.deepEqual(calls.slice(calls.indexOf(tap(65)) + 1), [
+        button(2, false), button(1, false), release(17), release(16), // every button release and key 17 fail; key 16 still gets its release
+        ...FIND_AND_DEVICES, button(2, false), button(1, false), release(17), DISPOSE, DISPOSE,
+      ]);
+    });
+
+    it('tries a failed release once more and no more: still failing on the new connection ends it, and the reported reason stays input_failed', () => {
+      const calls = retried('a release that fails again on the new connection is not tried a third time');
+      assert.deepEqual(calls, [
+        ...PREAMBLE, press(16), press(17), button(1, true), button(2, true), tap(65),
+        button(2, false), button(1, false), release(17), release(16), // first connection: button 1 and key 17 fail
+        ...FIND_AND_DEVICES, button(1, false), release(17), DISPOSE, // the retry: those two, once; they fail again and that is the end of it
+        DISPOSE,
+      ]);
+    });
+
+    it('gives up quietly when the new connection cannot be made or has no keyboard, and still reports the original failure', () => {
+      const unreachable = retried('no new connection can be made for the retry');
+      assert.deepEqual(unreachable, [...PREAMBLE, press(16), tap(65), release(16), DISPOSE], 'the retry asked for a connection, got none, and sent nothing');
+      const noKeyboard = retried('the new connection finds no keyboard');
+      assert.deepEqual(noKeyboard, [...PREAMBLE, press(16), tap(65), release(16), ...FIND_AND_DEVICES, DISPOSE, DISPOSE], 'it looked, found no keyboard, and sent nothing');
     });
 
     it('has waited for the sleeps that came before the failure', () => {
       const c = failedWith('sleeps run before a later failure', [release(16)]);
       assert.deepEqual(c.sleeps, [100, 200]);
+    });
+  });
+
+  // Zaku MEDIUM 2 of #166: the lease's token is given to the adapter, which looks at it before WMI is touched and before every step, releases what is held (the same path as after a
+  // failed step), and answers input_cancelled. A step that is already inside WMI is not interrupted.
+  describe('input stopped by the lease ending', () => {
+    const stopped = (name) => {
+      const c = byName(report.inputCancelled, name);
+      assert.equal(c.report.reason, 'input_cancelled', name);
+      assert.equal(c.report.ok, false, name);
+      assert.equal(c.report.open, 0, `${name}: instances released`);
+      return c;
+    };
+
+    it('touches nothing for a lease that has already ended: no connection, no call', () => {
+      const c = stopped('a lease that has already ended touches nothing');
+      assert.equal(c.report.connects, 0);
+      assert.deepEqual(c.report.calls, []);
+    });
+
+    it('stops before the next step when the lease ends between two steps, and releases the button and then the key that were held', () => {
+      const c = stopped('a lease that ends between two steps stops before the next one and releases what is held');
+      assert.deepEqual(c.report.calls, [...PREAMBLE, press(16), button(1, true), tap(65), button(1, false), release(16), DISPOSE], 'tap(66) and tap(67) were never sent');
+      assert.equal(c.report.connects, 1);
+    });
+
+    it('stops at the end of a sleep step, not after the steps that follow it, and also when the sleep was the last step (what the plan left held is released)', () => {
+      const c = stopped('a lease that ends during a sleep step stops before the step after it');
+      assert.deepEqual(c.report.calls, [...PREAMBLE, press(16), release(16), DISPOSE]);
+      assert.deepEqual(c.sleeps, [500]);
+      const last = stopped('a lease that ends during the last step still releases what the plan left held');
+      assert.deepEqual(last.report.calls, [...PREAMBLE, button(2, true), button(2, false), DISPOSE]);
+    });
+
+    it('lets a step that is already inside WMI finish, then stops', () => {
+      const c = stopped('a lease that ends while a step is inside WMI lets that step finish, then stops');
+      assert.deepEqual(c.report.calls, [...PREAMBLE, press(16), release(16), DISPOSE]);
+    });
+
+    it('releases once more on a new connection what the failed release left held, as after a failed step', () => {
+      const c = stopped('a release that fails after the stop is tried once more on a new connection');
+      assert.equal(c.report.connects, 2);
+      assert.deepEqual(c.report.calls, [...PREAMBLE, press(16), tap(65), release(16), ...PREAMBLE, release(16), DISPOSE, DISPOSE]);
+    });
+
+    it('does not touch a plan that finishes before the lease ends', () => {
+      const c = byName(report.inputCancelled, 'a plan that finishes before the lease ends is not touched');
+      assert.equal(c.report.ok, true);
+      assert.deepEqual(c.report.calls, [...PREAMBLE, press(16), tap(65), release(16), DISPOSE]);
+    });
+
+    it('ends the adapter\'s own wait for a 10 s sleep step soon after the token is cancelled', () => {
+      const w = report.sleepEndsOnCancel;
+      assert.equal(w.reason, 'input_cancelled');
+      assert.ok(w.elapsedMs < 5000, `took ${w.elapsedMs} ms: the 10 s sleep was cut short`);
+      assert.deepEqual(w.calls, [...PREAMBLE, press(16), release(16), DISPOSE]);
+    });
+  });
+
+  // DesktopLeases.cs with a fake clock (ADR-002 "Desktop lease (held by the Broker)"). The pipe-level behaviour (the claim that creates a lease, the sessions it closes, a restart) is in
+  // runtime-windows-broker-desktop-pipe.test.mjs.
+  describe('desktop lease table', () => {
+    const step = (name) => {
+      const found = report.leases.find((s) => s.name === name);
+      assert.ok(found, `step ${name}`);
+      return found.value;
+    };
+
+    it('opens only for the operation and generation that were granted, for the computer they were granted for, spelled exactly', () => {
+      assert.equal(step('open before any claim'), 'lease_unknown');
+      assert.equal(step('first grant of room-1'), 1);
+      assert.equal(step('first grant of room-1: no refusal word'), '');
+      assert.equal(step('open with the granted operation and generation'), null);
+      assert.equal(step('open with generation 2'), 'lease_generation');
+      assert.equal(step('open with generation 0'), 'lease_generation');
+      for (const name of ['open with another operation', 'open for the other computer', 'open with the computer id in another case', 'open with the operation id in another case']) assert.equal(step(name), 'lease_unknown', name);
+    });
+
+    it('makes no lease for a computer that is not in the config (or spelled differently), so the table is bounded by the config', () => {
+      assert.equal(step('grant for a computer that is not configured'), null);
+      assert.equal(step('grant for the id in another case'), null);
+      assert.equal(step('grant for a computer that is not configured: the word'), 'computer_unknown');
+      assert.equal(step('open after those two refused grants'), 'lease_unknown');
+    });
+
+    // Zaku MEDIUM 3 of #166: a task.start claim whose signed args name a VM makes a lease only for the VM the config binds to that computer.
+    it('makes no lease for a claim that names a VM other than the one the config binds to the computer (any spelling but the exact one), and a refused grant touches nothing that stands', () => {
+      for (const name of ['grant that names the other computer\'s VM', 'grant that names an unrelated VM', 'grant that names the right VM in upper case', 'grant that names an empty VM id']) assert.equal(step(name), null, name);
+      assert.equal(step('grant that names the other computer\'s VM: the word'), 'vm_mismatch');
+      assert.equal(step('open after the grants that named another VM'), 'lease_unknown', 'no lease, not even a generation was spent: the next grant is generation 1');
+      assert.equal(step('first grant of room-1'), 1, 'a claim that names the right VM makes the lease');
+      assert.equal(step('first grant of room-2 counts from 1 too'), 1, 'and so does one that names none (the plain { task } form)');
+      assert.equal(step('a grant that names another VM leaves the standing lease alone'), null);
+      assert.equal(step('a grant that names another VM: the session is not cancelled'), false);
+      assert.equal(step('a grant that names another VM: the session\'s refusal'), null);
+      assert.equal(step('a grant that names another VM: its operation cannot be opened'), 'lease_unknown');
+    });
+
+    it('counts generations per computer, from 1', () => {
+      assert.equal(step('first grant of room-1'), 1);
+      assert.equal(step('first grant of room-2 counts from 1 too'), 1);
+      assert.equal(step('a new claim after the expiry counts on from the expired generation'), 2);
+      assert.equal(step('a third claim'), 3);
+      assert.equal(step('a disposed session is not touched by the next claim'), 4);
+    });
+
+    it('expires exactly 60 minutes after the claim, for a new open and for a session that is already open', () => {
+      assert.equal(step('one millisecond before the end of the hour: open'), null);
+      assert.equal(step('one millisecond before the end of the hour: refusal'), null);
+      assert.equal(step('exactly 60 minutes after the claim: open'), 'lease_expired');
+      assert.equal(step('exactly 60 minutes after the claim: refusal of a live session'), 'lease_expired');
+      assert.equal(step('exactly 60 minutes after the claim: room-2 too'), 'lease_expired');
+    });
+
+    it('a newer claim for the same computer retires the older lease: its sessions are cancelled, it can no longer be opened, and another computer is not touched', () => {
+      assert.deepEqual(step('replaced: the older sessions are cancelled'), [true, true]);
+      assert.equal(step('replaced: the older session\'s refusal'), 'lease_revoked');
+      assert.equal(step('replaced: the older lease cannot be opened'), 'lease_unknown');
+      assert.equal(step('replaced: the older lease cannot be opened with the new generation'), 'lease_unknown');
+      assert.equal(step('the new lease opens'), null);
+      assert.equal(step('the other computer\'s session is untouched by room-1\'s claim'), false);
+      assert.equal(step('the third claim closes the second lease\'s session'), true);
+      assert.equal(step('an operation that was never claimed'), 'lease_unknown');
+    });
+
+    it('a session that has ended is no longer closed by a later claim', () => {
+      assert.equal(step('a fourth lease opens and ends its session'), null);
+      assert.equal(step('a disposed session was not cancelled'), false);
+    });
+
+    // Zaku MEDIUM 1 of #166: the refusal looks at the session's own token too, not only at the table and the clock.
+    it('a session whose own token is cancelled refuses while its lease still stands, and the lease itself is untouched', () => {
+      assert.equal(step('a live session before its token is cancelled'), null);
+      assert.equal(step('a cancelled session refuses while its lease stands'), 'lease_revoked');
+      assert.equal(step('and the lease itself still opens'), null);
+    });
+
+    it('takes a lifetime of 1..3600 seconds (3600 is the contract\'s 60 minutes) and nothing else', () => {
+      assert.equal(report.leaseLifetimes.maximum, 3600);
+      assert.deepEqual(report.leaseLifetimes.bounds, ['refused', 'ok', 'ok', 'refused', 'refused']);
+      assert.deepEqual([report.leaseLifetimes.before, report.leaseLifetimes.after], ['opened', 'lease_expired'], 'a shorter lifetime ends on its own millisecond');
+      assert.equal(report.leaseLifetimes.defaultClock, 'opened', 'with no clock given, the lease runs on the monotonic default');
     });
   });
 });

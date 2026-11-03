@@ -1,0 +1,722 @@
+{
+  "lab": "hyperv-rights",
+  "generatedAtUtc": "2026-11-03T03:04:48.1903722Z",
+  "guest": {
+    "caption": "Microsoft Windows Server 2025 Standard Evaluation",
+    "build": "26100.32230"
+  },
+  "innerVm": {
+    "generation": 2,
+    "memoryMB": 512,
+    "state": "Running"
+  },
+  "summary": {
+    "PASS": 37,
+    "FAIL": 0,
+    "BLOCKED": 2,
+    "MEASURED": 16
+  },
+  "matrix": [
+    {
+      "op": "wmi_connect",
+      "r_member": "allowed",
+      "r_nonmember": "allowed",
+      "u_member": "allowed",
+      "u_nonmember": "allowed"
+    },
+    {
+      "op": "vm_lookup",
+      "r_member": "denied",
+      "r_nonmember": "denied",
+      "u_member": "allowed",
+      "u_nonmember": "not_visible"
+    },
+    {
+      "op": "mgmt_read",
+      "r_member": "denied",
+      "r_nonmember": "denied",
+      "u_member": "allowed",
+      "u_nonmember": "not_visible"
+    },
+    {
+      "op": "thumbnail",
+      "r_member": "denied",
+      "r_nonmember": "denied",
+      "u_member": "allowed",
+      "u_nonmember": "not_visible"
+    },
+    {
+      "op": "keyboard_typekey",
+      "r_member": "denied",
+      "r_nonmember": "denied",
+      "u_member": "allowed",
+      "u_nonmember": "not_visible"
+    },
+    {
+      "op": "mouse_setabsoluteposition",
+      "r_member": "denied",
+      "r_nonmember": "denied",
+      "u_member": "error",
+      "u_nonmember": "not_visible"
+    },
+    {
+      "op": "adapter_capture",
+      "r_member": "denied",
+      "r_nonmember": "denied",
+      "u_member": "allowed",
+      "u_nonmember": "not_visible"
+    },
+    {
+      "op": "adapter_input",
+      "r_member": "denied",
+      "r_nonmember": "denied",
+      "u_member": "error",
+      "u_nonmember": "not_visible"
+    }
+  ],
+  "cells": [
+    {
+      "code": "r_member",
+      "service": "AlberaLabHvRM",
+      "sidtype": "restricted",
+      "member": true,
+      "serviceExit": "win32=0 specific=0",
+      "tokenOk": true,
+      "probeLines": [
+        "ok=False exception=COMException hresult=0x80041003 message=Access denied ",
+        "ok=True",
+        "ok=False exception=COMException hresult=0x80041003 message=Access denied ",
+        "ok=False reason=input_failed",
+        "ok=False reason=capture_failed",
+        "ok=False exception=COMException hresult=0x80041003 message=Access denied ",
+        "ok=False exception=COMException hresult=0x80041003 message=Access denied ",
+        "ok=False exception=COMException hresult=0x80041003 message=Access denied "
+      ]
+    },
+    {
+      "code": "r_nonmember",
+      "service": "AlberaLabHvRN",
+      "sidtype": "restricted",
+      "member": false,
+      "serviceExit": "win32=0 specific=0",
+      "tokenOk": true,
+      "probeLines": [
+        "ok=False exception=COMException hresult=0x80041003 message=Access denied ",
+        "ok=True",
+        "ok=False exception=COMException hresult=0x80041003 message=Access denied ",
+        "ok=False reason=input_failed",
+        "ok=False reason=capture_failed",
+        "ok=False exception=COMException hresult=0x80041003 message=Access denied ",
+        "ok=False exception=COMException hresult=0x80041003 message=Access denied ",
+        "ok=False exception=COMException hresult=0x80041003 message=Access denied "
+      ]
+    },
+    {
+      "code": "u_member",
+      "service": "AlberaLabHvUM",
+      "sidtype": "unrestricted",
+      "member": true,
+      "serviceExit": "win32=0 specific=0",
+      "tokenOk": true,
+      "probeLines": [
+        "ok=True returnValue=0",
+        "ok=True",
+        "ok=True enabledState=2",
+        "ok=False reason=input_failed",
+        "ok=True pngCheck=signature_ihdr_iend_ok bytes=21687",
+        "ok=False returnValue=32768",
+        "ok=True enumeration=ItemIndex",
+        "ok=True returnValue=0 bytes=614404"
+      ]
+    },
+    {
+      "code": "u_nonmember",
+      "service": "AlberaLabHvUN",
+      "sidtype": "unrestricted",
+      "member": false,
+      "serviceExit": "win32=0 specific=0",
+      "tokenOk": true,
+      "probeLines": [
+        "ok=False exception=COMException hresult=0x80041002 message=Not found ",
+        "ok=True",
+        "ok=False exception=COMException hresult=0x80041002 message=Not found ",
+        "ok=False reason=desktop_unavailable",
+        "ok=False reason=desktop_unavailable",
+        "ok=False exception=COMException hresult=0x80041002 message=Not found ",
+        "ok=False exception=InvalidOperationException hresult=0x80131509 message=management_service_not_found",
+        "ok=False exception=InvalidOperationException hresult=0x80131509 message=management_service_not_found"
+      ]
+    }
+  ],
+  "brokerDesktop": {
+    "pipe": "ALBERA_HvLab_HostBroker_desktop",
+    "computerId": "lab-room",
+    "outcomes": {
+      "bd_cp_view_open": "allowed",
+      "bd_cp_view_capture": "allowed",
+      "bd_cp_act_before_claim_refused": "refused_reply",
+      "bd_other_refused": "refused_pipe",
+      "bd_cp_task_start_claim": "allowed",
+      "bd_cp_act_open": "allowed",
+      "bd_cp_act_input": "allowed",
+      "bd_cp_act_input_mouse": "refused_reply",
+      "bd_cp_act_wrong_generation_refused": "refused_reply",
+      "bd_cp_act_revoked_by_new_claim": "refused_reply",
+      "bd_broker_restart_drops_lease": "refused_reply"
+    }
+  },
+  "checks": [
+    {
+      "id": "hv_prereq_role",
+      "title": "Hyper-V role works in the lab guest (installed, hypervisor present, vmms running, Hyper-V module)",
+      "status": "PASS",
+      "observed": "ready",
+      "evidence": [
+        "installed=True hypervisorPresent=True vmms=True module=True"
+      ]
+    },
+    {
+      "id": "hv_prereq_inner_vm",
+      "title": "Inner VM (Gen2, 512 MB fixed, no disk, no network) is Running",
+      "status": "PASS",
+      "observed": "Running",
+      "evidence": [
+        "state=Running memoryStartupMB=512 generation=2"
+      ]
+    },
+    {
+      "id": "hv_r_member_token",
+      "title": "Service token has the shape of this cell (restricted, member of Hyper-V Administrators)",
+      "status": "PASS",
+      "observed": "as_intended",
+      "evidence": [
+        "token user S-1-5-80-2491198918-1620551225-3634969750-1398200389-1441637879 (service SID S-1-5-80-2491198918-1620551225-3634969750-1398200389-1441637879)",
+        "S-1-5-32-578 in token: mandatory+enabled_by_default+enabled (expected enabled)",
+        "restricting SIDs: 4, hasRestrictions=True (expected restricted)",
+        "privileges: SeChangeNotifyPrivilege"
+      ]
+    },
+    {
+      "id": "hv_r_member_wmi_connect",
+      "title": "restricted, member of Hyper-V Administrators : WMI connect to root\\virtualization\\v2",
+      "status": "MEASURED",
+      "observed": "allowed",
+      "evidence": [
+        "wmi_connect: ok=True"
+      ]
+    },
+    {
+      "id": "hv_r_member_vm_lookup",
+      "title": "restricted, member of Hyper-V Administrators : Get Msvm_ComputerSystem by Name (VM GUID)",
+      "status": "MEASURED",
+      "observed": "denied",
+      "evidence": [
+        "vm_lookup: ok=False exception=COMException hresult=0x80041003 message=Access denied "
+      ]
+    },
+    {
+      "id": "hv_r_member_mgmt_read",
+      "title": "restricted, member of Hyper-V Administrators : Read Msvm_VirtualSystemManagementService (read only, not a Broker call)",
+      "status": "MEASURED",
+      "observed": "denied",
+      "evidence": [
+        "mgmt_read: ok=False exception=COMException hresult=0x80041003 message=Access denied "
+      ]
+    },
+    {
+      "id": "hv_r_member_thumbnail",
+      "title": "restricted, member of Hyper-V Administrators : GetVirtualSystemThumbnailImage 640x480",
+      "status": "MEASURED",
+      "observed": "denied",
+      "evidence": [
+        "thumbnail: ok=False exception=COMException hresult=0x80041003 message=Access denied "
+      ]
+    },
+    {
+      "id": "hv_r_member_keyboard_typekey",
+      "title": "restricted, member of Hyper-V Administrators : Msvm_Keyboard.TypeKey once",
+      "status": "MEASURED",
+      "observed": "denied",
+      "evidence": [
+        "keyboard_typekey: ok=False exception=COMException hresult=0x80041003 message=Access denied "
+      ]
+    },
+    {
+      "id": "hv_r_member_mouse_setabsoluteposition",
+      "title": "restricted, member of Hyper-V Administrators : Msvm_SyntheticMouse.SetAbsolutePosition once",
+      "status": "MEASURED",
+      "observed": "denied",
+      "evidence": [
+        "mouse_setabsoluteposition: ok=False exception=COMException hresult=0x80041003 message=Access denied "
+      ]
+    },
+    {
+      "id": "hv_r_member_adapter_capture",
+      "title": "restricted, member of Hyper-V Administrators : Broker adapter (HyperVDesktop + ComWmiConnection) Capture 640x480: a PNG with a valid signature and IHDR",
+      "status": "MEASURED",
+      "observed": "denied",
+      "evidence": [
+        "adapter_capture: ok=False reason=capture_failed"
+      ]
+    },
+    {
+      "id": "hv_r_member_adapter_input",
+      "title": "restricted, member of Hyper-V Administrators : Broker adapter Input: move, tap Shift, mouse button 1 down and up",
+      "status": "MEASURED",
+      "observed": "denied",
+      "evidence": [
+        "adapter_input: ok=False reason=input_failed"
+      ]
+    },
+    {
+      "id": "hv_r_nonmember_token",
+      "title": "Service token has the shape of this cell (restricted, not in Hyper-V Administrators)",
+      "status": "PASS",
+      "observed": "as_intended",
+      "evidence": [
+        "token user S-1-5-80-666821503-4107743852-2720404826-4212933917-4022960469 (service SID S-1-5-80-666821503-4107743852-2720404826-4212933917-4022960469)",
+        "S-1-5-32-578 in token: absent (expected absent)",
+        "restricting SIDs: 4, hasRestrictions=True (expected restricted)",
+        "privileges: SeChangeNotifyPrivilege"
+      ]
+    },
+    {
+      "id": "hv_r_nonmember_wmi_connect",
+      "title": "restricted, not in Hyper-V Administrators : WMI connect to root\\virtualization\\v2",
+      "status": "MEASURED",
+      "observed": "allowed",
+      "evidence": [
+        "wmi_connect: ok=True"
+      ]
+    },
+    {
+      "id": "hv_r_nonmember_vm_lookup",
+      "title": "restricted, not in Hyper-V Administrators : Get Msvm_ComputerSystem by Name (VM GUID)",
+      "status": "MEASURED",
+      "observed": "denied",
+      "evidence": [
+        "vm_lookup: ok=False exception=COMException hresult=0x80041003 message=Access denied "
+      ]
+    },
+    {
+      "id": "hv_r_nonmember_mgmt_read",
+      "title": "restricted, not in Hyper-V Administrators : Read Msvm_VirtualSystemManagementService (read only, not a Broker call)",
+      "status": "MEASURED",
+      "observed": "denied",
+      "evidence": [
+        "mgmt_read: ok=False exception=COMException hresult=0x80041003 message=Access denied "
+      ]
+    },
+    {
+      "id": "hv_r_nonmember_thumbnail",
+      "title": "restricted, not in Hyper-V Administrators : GetVirtualSystemThumbnailImage 640x480",
+      "status": "PASS",
+      "observed": "denied",
+      "evidence": [
+        "thumbnail: ok=False exception=COMException hresult=0x80041003 message=Access denied "
+      ]
+    },
+    {
+      "id": "hv_r_nonmember_keyboard_typekey",
+      "title": "restricted, not in Hyper-V Administrators : Msvm_Keyboard.TypeKey once",
+      "status": "PASS",
+      "observed": "denied",
+      "evidence": [
+        "keyboard_typekey: ok=False exception=COMException hresult=0x80041003 message=Access denied "
+      ]
+    },
+    {
+      "id": "hv_r_nonmember_mouse_setabsoluteposition",
+      "title": "restricted, not in Hyper-V Administrators : Msvm_SyntheticMouse.SetAbsolutePosition once",
+      "status": "PASS",
+      "observed": "denied",
+      "evidence": [
+        "mouse_setabsoluteposition: ok=False exception=COMException hresult=0x80041003 message=Access denied "
+      ]
+    },
+    {
+      "id": "hv_r_nonmember_adapter_capture",
+      "title": "restricted, not in Hyper-V Administrators : Broker adapter (HyperVDesktop + ComWmiConnection) Capture 640x480: a PNG with a valid signature and IHDR",
+      "status": "PASS",
+      "observed": "denied",
+      "evidence": [
+        "adapter_capture: ok=False reason=capture_failed"
+      ]
+    },
+    {
+      "id": "hv_r_nonmember_adapter_input",
+      "title": "restricted, not in Hyper-V Administrators : Broker adapter Input: move, tap Shift, mouse button 1 down and up",
+      "status": "PASS",
+      "observed": "denied",
+      "evidence": [
+        "adapter_input: ok=False reason=input_failed"
+      ]
+    },
+    {
+      "id": "hv_u_member_token",
+      "title": "Service token has the shape of this cell (unrestricted, member of Hyper-V Administrators)",
+      "status": "PASS",
+      "observed": "as_intended",
+      "evidence": [
+        "token user S-1-5-80-3669350316-2209164631-899731809-4274046103-2760863794 (service SID S-1-5-80-3669350316-2209164631-899731809-4274046103-2760863794)",
+        "S-1-5-32-578 in token: mandatory+enabled_by_default+enabled (expected enabled)",
+        "restricting SIDs: 0, hasRestrictions=True (expected unrestricted)",
+        "privileges: SeChangeNotifyPrivilege"
+      ]
+    },
+    {
+      "id": "hv_u_member_wmi_connect",
+      "title": "unrestricted, member of Hyper-V Administrators : WMI connect to root\\virtualization\\v2",
+      "status": "PASS",
+      "observed": "allowed",
+      "evidence": [
+        "wmi_connect: ok=True"
+      ]
+    },
+    {
+      "id": "hv_u_member_vm_lookup",
+      "title": "unrestricted, member of Hyper-V Administrators : Get Msvm_ComputerSystem by Name (VM GUID)",
+      "status": "PASS",
+      "observed": "allowed",
+      "evidence": [
+        "vm_lookup: ok=True enabledState=2"
+      ]
+    },
+    {
+      "id": "hv_u_member_mgmt_read",
+      "title": "unrestricted, member of Hyper-V Administrators : Read Msvm_VirtualSystemManagementService (read only, not a Broker call)",
+      "status": "MEASURED",
+      "observed": "allowed",
+      "evidence": [
+        "mgmt_read: ok=True enumeration=ItemIndex"
+      ]
+    },
+    {
+      "id": "hv_u_member_thumbnail",
+      "title": "unrestricted, member of Hyper-V Administrators : GetVirtualSystemThumbnailImage 640x480",
+      "status": "PASS",
+      "observed": "allowed",
+      "evidence": [
+        "thumbnail: ok=True returnValue=0 bytes=614404"
+      ]
+    },
+    {
+      "id": "hv_u_member_keyboard_typekey",
+      "title": "unrestricted, member of Hyper-V Administrators : Msvm_Keyboard.TypeKey once",
+      "status": "PASS",
+      "observed": "allowed",
+      "evidence": [
+        "keyboard_typekey: ok=True returnValue=0"
+      ]
+    },
+    {
+      "id": "hv_u_member_mouse_setabsoluteposition",
+      "title": "unrestricted, member of Hyper-V Administrators : Msvm_SyntheticMouse.SetAbsolutePosition once",
+      "status": "BLOCKED",
+      "observed": "error",
+      "evidence": [
+        "mouse_setabsoluteposition: ok=False returnValue=32768"
+      ]
+    },
+    {
+      "id": "hv_u_member_adapter_capture",
+      "title": "unrestricted, member of Hyper-V Administrators : Broker adapter (HyperVDesktop + ComWmiConnection) Capture 640x480: a PNG with a valid signature and IHDR",
+      "status": "PASS",
+      "observed": "allowed",
+      "evidence": [
+        "adapter_capture: ok=True pngCheck=signature_ihdr_iend_ok bytes=21687"
+      ]
+    },
+    {
+      "id": "hv_u_member_adapter_input",
+      "title": "unrestricted, member of Hyper-V Administrators : Broker adapter Input: move, tap Shift, mouse button 1 down and up",
+      "status": "BLOCKED",
+      "observed": "error",
+      "evidence": [
+        "adapter_input: ok=False reason=input_failed"
+      ]
+    },
+    {
+      "id": "hv_u_nonmember_token",
+      "title": "Service token has the shape of this cell (unrestricted, not in Hyper-V Administrators)",
+      "status": "PASS",
+      "observed": "as_intended",
+      "evidence": [
+        "token user S-1-5-80-4228680958-4186445193-64812397-3397199145-2110264699 (service SID S-1-5-80-4228680958-4186445193-64812397-3397199145-2110264699)",
+        "S-1-5-32-578 in token: absent (expected absent)",
+        "restricting SIDs: 0, hasRestrictions=True (expected unrestricted)",
+        "privileges: SeChangeNotifyPrivilege"
+      ]
+    },
+    {
+      "id": "hv_u_nonmember_wmi_connect",
+      "title": "unrestricted, not in Hyper-V Administrators : WMI connect to root\\virtualization\\v2",
+      "status": "MEASURED",
+      "observed": "allowed",
+      "evidence": [
+        "wmi_connect: ok=True"
+      ]
+    },
+    {
+      "id": "hv_u_nonmember_vm_lookup",
+      "title": "unrestricted, not in Hyper-V Administrators : Get Msvm_ComputerSystem by Name (VM GUID)",
+      "status": "MEASURED",
+      "observed": "not_visible",
+      "evidence": [
+        "vm_lookup: ok=False exception=COMException hresult=0x80041002 message=Not found "
+      ]
+    },
+    {
+      "id": "hv_u_nonmember_mgmt_read",
+      "title": "unrestricted, not in Hyper-V Administrators : Read Msvm_VirtualSystemManagementService (read only, not a Broker call)",
+      "status": "MEASURED",
+      "observed": "not_visible",
+      "evidence": [
+        "mgmt_read: ok=False exception=InvalidOperationException hresult=0x80131509 message=management_service_not_found"
+      ]
+    },
+    {
+      "id": "hv_u_nonmember_thumbnail",
+      "title": "unrestricted, not in Hyper-V Administrators : GetVirtualSystemThumbnailImage 640x480",
+      "status": "PASS",
+      "observed": "not_visible",
+      "evidence": [
+        "thumbnail: ok=False exception=InvalidOperationException hresult=0x80131509 message=management_service_not_found"
+      ]
+    },
+    {
+      "id": "hv_u_nonmember_keyboard_typekey",
+      "title": "unrestricted, not in Hyper-V Administrators : Msvm_Keyboard.TypeKey once",
+      "status": "PASS",
+      "observed": "not_visible",
+      "evidence": [
+        "keyboard_typekey: ok=False exception=COMException hresult=0x80041002 message=Not found "
+      ]
+    },
+    {
+      "id": "hv_u_nonmember_mouse_setabsoluteposition",
+      "title": "unrestricted, not in Hyper-V Administrators : Msvm_SyntheticMouse.SetAbsolutePosition once",
+      "status": "PASS",
+      "observed": "not_visible",
+      "evidence": [
+        "mouse_setabsoluteposition: ok=False exception=COMException hresult=0x80041002 message=Not found "
+      ]
+    },
+    {
+      "id": "hv_u_nonmember_adapter_capture",
+      "title": "unrestricted, not in Hyper-V Administrators : Broker adapter (HyperVDesktop + ComWmiConnection) Capture 640x480: a PNG with a valid signature and IHDR",
+      "status": "PASS",
+      "observed": "not_visible",
+      "evidence": [
+        "adapter_capture: ok=False reason=desktop_unavailable"
+      ]
+    },
+    {
+      "id": "hv_u_nonmember_adapter_input",
+      "title": "unrestricted, not in Hyper-V Administrators : Broker adapter Input: move, tap Shift, mouse button 1 down and up",
+      "status": "PASS",
+      "observed": "not_visible",
+      "evidence": [
+        "adapter_input: ok=False reason=desktop_unavailable"
+      ]
+    },
+    {
+      "id": "bd_prereq_broker",
+      "title": "The Broker build was copied into the guest",
+      "status": "PASS",
+      "observed": "present",
+      "evidence": [
+        "found: C:\\albera-hv-lab\\bin\\broker\\albera-windows-broker.exe"
+      ]
+    },
+    {
+      "id": "bd_broker_ready",
+      "title": "Broker service (unrestricted, member of Hyper-V Administrators, SeChangeNotifyPrivilege only, config names the inner VM) starts and reports RUNNING",
+      "status": "PASS",
+      "observed": "running",
+      "evidence": [
+        "sc start exit=0 state=Running pid=6836 win32=0 specific=0",
+        "binPath: C:\\albera-hv-lab\\bin\\broker\\albera-windows-broker.exe service C:\\albera-hv-lab\\config\\AlberaHostBroker.service.json",
+        "sidtype: [SC] QueryServiceConfig2 SUCCESS SERVICE_NAME: AlberaHostBroker SERVICE_SID_TYPE: UNRESTRICTED",
+        "privileges: [SC] QueryServiceConfig2 SUCCESS SERVICE_NAME: AlberaHostBroker PRIVILEGES : SeChangeNotifyPrivilege",
+        "config computers: lab-room -> 88b96805-2828-48d9-9195-e7ca17d4983f",
+        "desktop pipe name: ALBERA_HvLab_HostBroker_desktop"
+      ]
+    },
+    {
+      "id": "bd_broker_token",
+      "title": "Broker token: unrestricted (no restricting SIDs), Hyper-V Administrators enabled, exactly SeChangeNotifyPrivilege",
+      "status": "PASS",
+      "observed": "as_intended",
+      "evidence": [
+        "token user S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499 (service SID S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499)",
+        "S-1-5-32-578 in token: mandatory+enabled_by_default+enabled (expected enabled)",
+        "restricting SIDs: 0, hasRestrictions=True (expected unrestricted)",
+        "privileges: SeChangeNotifyPrivilege",
+        "token read from: token-of <Broker pid> as Administrator"
+      ]
+    },
+    {
+      "id": "bd_cp_token",
+      "title": "Control Plane token: restricted, not in Hyper-V Administrators, exactly SeChangeNotifyPrivilege",
+      "status": "PASS",
+      "observed": "as_intended",
+      "evidence": [
+        "token user S-1-5-80-697297684-2270088387-2089643940-1075118589-1021427008 (service SID S-1-5-80-697297684-2270088387-2089643940-1075118589-1021427008)",
+        "S-1-5-32-578 in token: absent (expected absent)",
+        "restricting SIDs: 4, hasRestrictions=True (expected restricted)",
+        "privileges: SeChangeNotifyPrivilege",
+        "token read from: the shim report of the Control Plane service"
+      ]
+    },
+    {
+      "id": "bd_desktop_pipe",
+      "title": "Desktop pipe exists: owner = Broker SID, DACL = Broker + one Control Plane ACE 0x00120083, served from the Broker process in session 0",
+      "status": "PASS",
+      "observed": "as_intended",
+      "evidence": [
+        "open as Control Plane: opened",
+        "owner=S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499 (Broker SID S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499)",
+        "sddl=O:S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499D:(A;;0x120083;;;S-1-5-80-697297684-2270088387-2089643940-1075118589-1021427008)(A;;0x1f019f;;;S-1-5-80-1854395004-2024924126-2733325106-3534792668-1914990499)",
+        "serverPid=6836 servicePid=6836 serverSession=0 (expected 0)"
+      ]
+    },
+    {
+      "id": "bd_cp_view_open",
+      "title": "Control Plane: a view session on the inner VM is accepted",
+      "status": "PASS",
+      "observed": "allowed",
+      "evidence": [
+        "{\"probe\":\"desktop\",\"id\":\"connect\",\"ok\":true,\"result\":\"connected\"}",
+        "{\"probe\":\"desktop\",\"id\":\"open\",\"mode\":\"view\",\"reply\":\"accepted\",\"ok\":true}",
+        "{\"probe\":\"desktop\",\"id\":\"capture\",\"bytes\":21687,\"reply\":\"png\",\"width\":640,\"height\":480,\"pngCheck\":\"signature_ihdr_iend_ok\",\"sha256\":\"6b524e4585faf78415b8d15242f1e2f2b159949c8e5f109f2403a871f27711c7\",\"saved\":true,\"ok\":true}"
+      ]
+    },
+    {
+      "id": "bd_cp_view_capture",
+      "title": "Control Plane: a capture over that session returns a valid PNG (signature, IHDR of the asked size, IEND) of the inner VM screen",
+      "status": "PASS",
+      "observed": "allowed",
+      "evidence": [
+        "{\"probe\":\"desktop\",\"id\":\"connect\",\"ok\":true,\"result\":\"connected\"}",
+        "{\"probe\":\"desktop\",\"id\":\"open\",\"mode\":\"view\",\"reply\":\"accepted\",\"ok\":true}",
+        "{\"probe\":\"desktop\",\"id\":\"capture\",\"bytes\":21687,\"reply\":\"png\",\"width\":640,\"height\":480,\"pngCheck\":\"signature_ihdr_iend_ok\",\"sha256\":\"6b524e4585faf78415b8d15242f1e2f2b159949c8e5f109f2403a871f27711c7\",\"saved\":true,\"ok\":true}"
+      ]
+    },
+    {
+      "id": "bd_cp_act_before_claim_refused",
+      "title": "Control Plane: an act open that names operation lab-bd-act-1 and generation 1 is refused with the fixed denied reply while no task.start claim has been recorded",
+      "status": "PASS",
+      "observed": "refused_reply",
+      "evidence": [
+        "{\"probe\":\"desktop\",\"id\":\"connect\",\"ok\":true,\"result\":\"connected\"}",
+        "{\"probe\":\"desktop\",\"id\":\"open\",\"mode\":\"act\",\"operationId\":\"lab-bd-act-1\",\"leaseGeneration\":1,\"reply\":\"denied\",\"ok\":false}"
+      ]
+    },
+    {
+      "id": "bd_other_token",
+      "title": "Other caller token: unrestricted, member of Hyper-V Administrators, exactly SeChangeNotifyPrivilege (so a refusal is not for want of the group)",
+      "status": "PASS",
+      "observed": "as_intended",
+      "evidence": [
+        "token user S-1-5-80-1453495745-1910014203-1564011136-1605178814-2356297119 (service SID S-1-5-80-1453495745-1910014203-1564011136-1605178814-2356297119)",
+        "S-1-5-32-578 in token: mandatory+enabled_by_default+enabled (expected enabled)",
+        "restricting SIDs: 0, hasRestrictions=True (expected unrestricted)",
+        "privileges: SeChangeNotifyPrivilege",
+        "token read from: the shim report of the other caller service"
+      ]
+    },
+    {
+      "id": "bd_other_refused",
+      "title": "A caller that is not the Control Plane (member of Hyper-V Administrators) gets no session: refused by the pipe DACL or by the peer check",
+      "status": "PASS",
+      "observed": "refused_pipe",
+      "evidence": [
+        "{\"probe\":\"desktop\",\"id\":\"connect\",\"ok\":false,\"result\":\"denied\"}",
+        "{\"probe\":\"desktop\",\"id\":\"open\",\"ok\":false,\"skipped\":true,\"because\":\"connect\"}",
+        "{\"probe\":\"desktop\",\"id\":\"capture\",\"ok\":false,\"skipped\":true,\"because\":\"connect\"}"
+      ]
+    },
+    {
+      "id": "bd_cp_task_start_claim",
+      "title": "Control Plane: fence, a receipt v2 (guest.command / task.start) signed with the lab key and sent by the helper is claimed (state UNKNOWN, action task.start, not a replay)",
+      "status": "PASS",
+      "observed": "allowed",
+      "evidence": [
+        "{\"ok\":true,\"state\":\"UNKNOWN\",\"action\":\"task.start\"}",
+        "fence reply: {\"ok\":true,\"brokerEpoch\":1,\"leaseGeneration\":1,\"leaseId\":\"lab-hv-lease-1\",\"brokerChallenge\":\"pKib5HhJsCCRZn3UA5aHmA\"}"
+      ]
+    },
+    {
+      "id": "bd_cp_act_open",
+      "title": "Control Plane: after that claim the same act open (operation lab-bd-act-1, generation 1) is accepted",
+      "status": "PASS",
+      "observed": "allowed",
+      "evidence": [
+        "{\"probe\":\"desktop\",\"id\":\"connect\",\"ok\":true,\"result\":\"connected\"}",
+        "{\"probe\":\"desktop\",\"id\":\"open\",\"mode\":\"act\",\"operationId\":\"lab-bd-act-1\",\"leaseGeneration\":1,\"reply\":\"accepted\",\"ok\":true}",
+        "{\"probe\":\"desktop\",\"id\":\"input\",\"reply\":\"accepted\",\"ok\":true}",
+        "{\"probe\":\"desktop\",\"id\":\"input_2\",\"reply\":\"denied\",\"ok\":false}"
+      ]
+    },
+    {
+      "id": "bd_cp_act_input",
+      "title": "Control Plane: in that act session a keyboard input (tap Shift) is accepted",
+      "status": "PASS",
+      "observed": "allowed",
+      "evidence": [
+        "{\"probe\":\"desktop\",\"id\":\"connect\",\"ok\":true,\"result\":\"connected\"}",
+        "{\"probe\":\"desktop\",\"id\":\"open\",\"mode\":\"act\",\"operationId\":\"lab-bd-act-1\",\"leaseGeneration\":1,\"reply\":\"accepted\",\"ok\":true}",
+        "{\"probe\":\"desktop\",\"id\":\"input\",\"reply\":\"accepted\",\"ok\":true}",
+        "{\"probe\":\"desktop\",\"id\":\"input_2\",\"reply\":\"denied\",\"ok\":false}"
+      ]
+    },
+    {
+      "id": "bd_cp_act_input_mouse",
+      "title": "MEASURED: the same session, mouse input (move, button 1 down, button 1 up). The inner VM has no OS: the synthetic mouse call is expected to fail (32768) and the Broker to answer denied",
+      "status": "MEASURED",
+      "observed": "refused_reply",
+      "evidence": [
+        "{\"probe\":\"desktop\",\"id\":\"connect\",\"ok\":true,\"result\":\"connected\"}",
+        "{\"probe\":\"desktop\",\"id\":\"open\",\"mode\":\"act\",\"operationId\":\"lab-bd-act-1\",\"leaseGeneration\":1,\"reply\":\"accepted\",\"ok\":true}",
+        "{\"probe\":\"desktop\",\"id\":\"input\",\"reply\":\"accepted\",\"ok\":true}",
+        "{\"probe\":\"desktop\",\"id\":\"input_2\",\"reply\":\"denied\",\"ok\":false}",
+        "known on an inner VM without an OS: refused_reply, because the synthetic mouse call fails with 32768 (a Broker log would say input_failed)"
+      ]
+    },
+    {
+      "id": "bd_cp_act_wrong_generation_refused",
+      "title": "Control Plane: an act open for operation lab-bd-act-1 with generation 2 (the lease is generation 1) is refused with the fixed denied reply",
+      "status": "PASS",
+      "observed": "refused_reply",
+      "evidence": [
+        "{\"probe\":\"desktop\",\"id\":\"connect\",\"ok\":true,\"result\":\"connected\"}",
+        "{\"probe\":\"desktop\",\"id\":\"open\",\"mode\":\"act\",\"operationId\":\"lab-bd-act-1\",\"leaseGeneration\":2,\"reply\":\"denied\",\"ok\":false}"
+      ]
+    },
+    {
+      "id": "bd_cp_act_revoked_by_new_claim",
+      "title": "Control Plane: a second task.start claim (operation lab-bd-act-2) is recorded while a first act session is open, and the Broker ends that session with the fixed denied frame",
+      "status": "PASS",
+      "observed": "refused_reply",
+      "evidence": [
+        "{\"probe\":\"desktop\",\"id\":\"connect\",\"ok\":true,\"result\":\"connected\"}",
+        "{\"probe\":\"desktop\",\"id\":\"open\",\"mode\":\"act\",\"operationId\":\"lab-bd-act-1\",\"leaseGeneration\":1,\"reply\":\"accepted\",\"ok\":true}",
+        "{\"probe\":\"desktop\",\"id\":\"claim\",\"helperExit\":0,\"reply\":\"claimed\",\"state\":\"UNKNOWN\",\"action\":\"task.start\",\"replayed\":false,\"ok\":true}",
+        "{\"probe\":\"desktop\",\"id\":\"end\",\"reply\":\"denied\",\"ok\":false}"
+      ]
+    },
+    {
+      "id": "bd_broker_restart_drops_lease",
+      "title": "Control Plane: the second lease (lab-bd-act-2, generation 2) opens an act session; after the Broker service is restarted the same open is refused (the lease lived in memory)",
+      "status": "PASS",
+      "observed": "refused_reply",
+      "evidence": [
+        "{\"probe\":\"desktop\",\"id\":\"connect\",\"ok\":true,\"result\":\"connected\"}",
+        "{\"probe\":\"desktop\",\"id\":\"open\",\"mode\":\"act\",\"operationId\":\"lab-bd-act-2\",\"leaseGeneration\":2,\"reply\":\"denied\",\"ok\":false}",
+        "open before the restart: allowed",
+        "Broker pid after the restart: 6868"
+      ]
+    }
+  ]
+}

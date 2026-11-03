@@ -111,6 +111,8 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
             reason = Reason.Computers;
             IReadOnlyList<ComputerBinding>? computers = hasComputers ? ReadComputers(root.GetProperty(ComputersKey)) : [];
             if (computers is null) return null;
+            reason = Reason.PipeName;
+            if (computers.Count > 0 && DesktopPipeName(pipeName).Length > MaxPipeNameLength) return null; // the desktop pipe's name must stay a plain pipe name too
 
             reason = "";
             return new ServiceConfig(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers);
@@ -119,6 +121,9 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
 
     private static string? AsString(JsonElement root, string name) =>
         root.GetProperty(name).ValueKind == JsonValueKind.String ? root.GetProperty(name).GetString() : null;
+
+    // The second pipe of the Broker (ADR-002 Amendment 2026-11-03, "Desktop pipe"), made only when `computers` is not empty: the claim pipe's name plus a fixed suffix, so one config key names both.
+    internal static string DesktopPipeName(string pipeName) => pipeName + "_desktop";
 
     // A pipe name is one path segment: no separators, no device prefixes. Letters, digits, '_', '-', '.' only, starting with a letter or digit.
     internal static bool IsPlainPipeName(string name) =>

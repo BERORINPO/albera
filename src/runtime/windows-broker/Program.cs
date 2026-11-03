@@ -22,6 +22,7 @@ internal static partial class Program
     internal const int ExitNotStartedByScm = 74;      // not started by the service control manager (StartServiceCtrlDispatcher failed): nothing is created
     internal const int ExitServiceLoopFailed = 75;    // an unexpected exception ended the serve loop: fail closed, stop the service
     internal const int ExitJournalRefused = 76;       // the journal is from a newer Broker, has an unknown schema or cannot be read: nothing is served, nothing is changed
+    internal const int ExitDesktopFailed = 80;        // a capture never returned (it holds the one capture slot) or a desktop instance could not be reset: stop the service (fail closed)
     private const int ErrorInvalidOwner = 1307;
 
     private enum ImpersonationFault { None, RevertFails, RevertThrows, RevertLies }
@@ -107,20 +108,21 @@ internal static partial class Program
         }
     }
 
-    private sealed record BrokerSettings(string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string AllowedSid, long InitialGeneration, TimeSpan? Hold, ImpersonationFault Fault, string LeaseId, string PolicyVersion, long Epoch = 0);
+    private sealed record BrokerSettings(string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string AllowedSid, long InitialGeneration, TimeSpan? Hold, ImpersonationFault Fault, string LeaseId, string PolicyVersion, long Epoch = 0, DesktopLeases? Leases = null);
 
     // LocalPipe.Create makes the first and only instance (FILE_FLAG_FIRST_PIPE_INSTANCE, max 1), so an existing instance of this name (squatter,
     // or another Broker) fails creation, and sets PIPE_REJECT_REMOTE_CLIENTS (NamedPipeServerStreamAcl.Create cannot; lab check u6, issue #23).
     // The owner is set to this process's own user SID (not the token's default owner, which is Administrators for an
     // elevated token) so that the Control Plane client can compare GetSecurityInfo(OWNER) with the SID it expects.
     // Returns null with a fixed exit code (70 pipe name taken, 72 owner could not be set) when the pipe cannot be served.
-    private static NamedPipeServerStream? CreateBrokerPipe(string pipeName, string allowedSid, out int failure)
+    // The desktop pipe (DesktopPipe.cs) asks for up to 16 instances: its first with firstInstance true, the other 15 with false. The claim pipe keeps the defaults.
+    private static NamedPipeServerStream? CreateBrokerPipe(string pipeName, string allowedSid, out int failure, uint maxInstances = 1, bool firstInstance = true)
     {
         failure = 0;
         NamedPipeServerStream pipe;
         try
         {
-            pipe = LocalPipe.Create(pipeName, OwnedBySelf(out SecurityIdentifier self, allowedSid));   // first instance, max 1, PIPE_REJECT_REMOTE_CLIENTS
+            pipe = LocalPipe.Create(pipeName, OwnedBySelf(out SecurityIdentifier self, allowedSid), maxInstances, firstInstance);   // PIPE_REJECT_REMOTE_CLIENTS; by default the first instance, max 1
             if (!self.Equals(pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier)))) { pipe.Dispose(); failure = PipeOwnerUnavailable(); return null; }
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or InvalidOperationException)
