@@ -30,7 +30,9 @@ const makeGate = (flow, extra = {}) => createTaskStartGate({ flow, projectId: PR
 test('gate: a claimed result is ok, and the flow got exactly the task.start DTO of that VM and task for purpose guest.command', async () => {
   const flow = fakeFlow(claimed);
   const result = await makeGate(flow).startApproved({ vmId: 'vm-a', task: 'close the dialog' });
-  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(result, { ok: true, operationId: 'start-1' }, 'ok names the claimed operation: the Host Broker made its desktop lease for it');
+  assert.equal(result.operationId, flow.requests[0].operationId);
+  assert.ok(Object.isFrozen(result));
   assert.equal(flow.requests.length, 1);
   assert.deepEqual(flow.requests[0], {
     operationId: 'start-1', purpose: 'guest.command',
@@ -148,8 +150,8 @@ function realStack(mode) {
 
 test('real flow: an approved task.start is claimed with the exact DTO that was submitted, and the gate says ok', async () => {
   const { world, gate } = realStack('approve');
-  assert.deepEqual(await gate.startApproved({ vmId: 'vm-a', task: 'close the dialog' }), { ok: true });
-  const dto = { action: 'task.start', projectId: PROJECT, computerId: 'computer-a', args: { task: 'close the dialog' } };
+  assert.deepEqual(await gate.startApproved({ vmId: 'vm-a', task: 'close the dialog' }), { ok: true, operationId: 'real-1' });
+  const dto ={ action: 'task.start', projectId: PROJECT, computerId: 'computer-a', args: { task: 'close the dialog' } };
   assert.deepEqual(world.submissions.map((s) => [s.purpose, s.action]), [['guest.command', dto]]);
   assert.deepEqual(world.claims.map((c) => c.action), [dto], 'the Broker got the same DTO next to the receipt');
 });
@@ -189,7 +191,7 @@ test('gate: with attestationFor the args are { task, vmId, expectedGeneration } 
 test('gate: only vmId and expectedGeneration can come from attestationFor; an answer the contract cannot carry refuses the VM before any request', async () => {
   const flow = fakeFlow(claimed);
   const smuggle = makeGate(flow, { attestationFor: () => ({ vmId: VM_GUID, expectedGeneration: 3, shell: 'calc.exe', task: 'overwritten' }) });
-  assert.deepEqual(await smuggle.startApproved({ vmId: 'vm-a', task: 'real' }), { ok: true });
+  assert.deepEqual(await smuggle.startApproved({ vmId: 'vm-a', task: 'real' }), { ok: true, operationId: 'start-1' });
   assert.deepEqual(flow.requests[0].action.args, { task: 'real', vmId: VM_GUID, expectedGeneration: 3 });
   const refusing = fakeFlow(claimed);
   for (const answer of [null, 'text', { vmId: VM_GUID }, { expectedGeneration: 3 }, { vmId: 7, expectedGeneration: 3 }, { vmId: VM_GUID, expectedGeneration: { n: 1 } }, 5]) {

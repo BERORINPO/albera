@@ -2,11 +2,10 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { deflateSync } from 'node:zlib';
 import { after, before, describe, it } from 'node:test';
+import { listenFakeBroker, png } from './desktop-test-support.mjs';
 import { runWithGuestFunctions } from './guest-functions.mjs';
 import {
   brokerSession, buildBrokerWithTestSeams, buildPipeClient, buildServiceLab, createTestAuthority, currentUserSid, getUnavailableReason, makeTrustedTempDirectory, nodePipeOwnerSid,
@@ -19,30 +18,10 @@ import {
 // What this cannot show: the success path against the real Broker (needs Hyper-V, that is the lab) and `service:<name>` identities (need an SCM service).
 const DENIED = { ok: false, code: 'denied' };
 const OPENED = { ok: true };
+/** What the Broker answers an accepted open: `{ ok: true }` for a view, `{ ok: true, leaseGeneration }` for an act (the lease it joined). */
+const openedFor = (body) => (body.includes('"mode":"act"') ? { ok: true, leaseGeneration: 1 } : OPENED);
 const COMPUTER = 'lab-room';
 const FOREIGN_SID = 'S-1-5-80-1111111111-2222222222-3333333333-1444444444-2555555555';
-
-const frame = (body) => {
-  const bytes = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
-  const size = Buffer.alloc(4);
-  size.writeInt32LE(bytes.length);
-  return Buffer.concat([size, bytes]);
-};
-
-const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
-const crc32 = (buffer) => { let c = 0xffffffff; for (const byte of buffer) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
-const chunk = (type, data) => {
-  const head = Buffer.alloc(8); head.writeUInt32BE(data.length); head.write(type, 4, 'latin1');
-  const tail = Buffer.alloc(4); tail.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])));
-  return Buffer.concat([head, data, tail]);
-};
-/** An 8-bit truecolour PNG, the shape the Broker's encoder makes (signature, IHDR, IDAT, IEND). `brokenEnd` damages the last byte of IEND. */
-function png(width, height, { brokenEnd = false } = {}) {
-  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = 2;
-  const bytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(Buffer.alloc((width * 3 + 1) * height))), chunk('IEND', Buffer.alloc(0))]);
-  if (brokenEnd) bytes[bytes.length - 1] ^= 0xff;
-  return bytes;
-}
 
 describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailableReason() }, () => {
   let root, shim, loopExe, sid, nodeOwner;
@@ -76,29 +55,8 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
    * request body (as text), `bytes` the number of bytes any client sent.
    */
   async function fakeBroker(script) {
-    const pipe = unique('ALBERA_LabDesk');
-    const state = { pipe, received: [], bytes: 0, connections: 0 };
-    const server = net.createServer((socket) => {
-      state.connections += 1;
-      let buffer = Buffer.alloc(0);
-      let index = 0;
-      const connection = { send: (body) => socket.write(frame(body)), sendRaw: (bytes) => socket.write(bytes), end: () => socket.end() };
-      socket.on('error', () => {});
-      socket.on('data', (chunkBytes) => {
-        state.bytes += chunkBytes.length;
-        buffer = Buffer.concat([buffer, chunkBytes]);
-        while (buffer.length >= 4 && buffer.length >= 4 + buffer.readInt32LE(0)) {
-          const length = buffer.readInt32LE(0);
-          const body = buffer.subarray(4, 4 + length).toString('utf8');
-          buffer = buffer.subarray(4 + length);
-          state.received.push(body);
-          script(body, index, connection);
-          index += 1;
-        }
-      });
-    });
+    const { server, state } = await listenFakeBroker(unique('ALBERA_LabDesk'), script);
     servers.add(server);
-    await new Promise((resolve) => server.listen(`\\\\.\\pipe\\${pipe}`, resolve));
     return state;
   }
   const asPeer = (pid = process.pid, owner = nodeOwner) => `pid:${pid}:${owner}`;
@@ -109,7 +67,7 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
       const picture = png(64, 64);
       const saved = path.join(root, 'saved.png');
       const broker = await fakeBroker((body, index, connection) => {
-        if (index === 0) connection.send(OPENED);
+        if (index === 0) connection.send(openedFor(body));
         else { connection.send({ ok: true, width: 64, height: 64, bytes: picture.length }); connection.send(picture); }
       });
       const run = await client([broker.pipe, asPeer(), ...view(64, 64, [`save=${saved}`])]);
@@ -127,7 +85,7 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
       const bad = png(64, 64, { brokenEnd: true });
       const saved = path.join(root, 'never.png');
       const broker = await fakeBroker((body, index, connection) => {
-        if (index === 0) connection.send(OPENED); else { connection.send({ ok: true, width: 64, height: 64, bytes: bad.length }); connection.send(bad); }
+        if (index === 0) connection.send(openedFor(body)); else { connection.send({ ok: true, width: 64, height: 64, bytes: bad.length }); connection.send(bad); }
       });
       const run = await client([broker.pipe, asPeer(), ...view(64, 64, [`save=${saved}`])]);
       assert.deepEqual([run.byId.capture.ok, run.byId.capture.reply, run.byId.capture.pngCheck], [false, 'png_invalid', 'bad_iend']);
@@ -147,14 +105,18 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
         ['closed', (c) => c.end(), 'closed'],
         ['not json', (c) => c.send('not json'), 'invalid'],
         ['ok with an extra member', (c) => c.send({ ok: true, extra: 1 }), 'invalid'],
+        ['an act open answered with a bare ok (no lease named)', (c) => c.send(OPENED), 'invalid', `open:act:${COMPUTER}:lab-bd-act-1:1`],
+        ['an act open answered with a generation of 0', (c) => c.send({ ok: true, leaseGeneration: 0 }), 'invalid', `open:act:${COMPUTER}:lab-bd-act-1:1`],
+        ['an act open answered with a string generation', (c) => c.send({ ok: true, leaseGeneration: '1' }), 'invalid', `open:act:${COMPUTER}:lab-bd-act-1:1`],
+        ['a view open answered with a generation', (c) => c.send({ ok: true, leaseGeneration: 1 }), 'invalid'],
         ['denied with another code', (c) => c.send({ ok: false, code: 'busy' }), 'invalid'],
         ['ok false without a code', (c) => c.send({ ok: false }), 'invalid'],
         ['a length beyond the reply bound', (c) => c.sendRaw(Buffer.concat([Buffer.from([0x01, 0x01, 0x00, 0x00]), Buffer.alloc(8)])), 'invalid'],
         ['a zero length', (c) => c.sendRaw(Buffer.alloc(4)), 'invalid'],
       ];
-      for (const [label, reply, expected] of cases) {
+      for (const [label, reply, expected, openStep = `open:view:${COMPUTER}`] of cases) {
         const broker = await fakeBroker((body, index, connection) => reply(connection));
-        const run = await client([broker.pipe, asPeer(), `open:view:${COMPUTER}`]);
+        const run = await client([broker.pipe, asPeer(), openStep]);
         assert.deepEqual([run.byId.open.ok, run.byId.open.reply], [false, expected], label);
       }
     });
@@ -173,7 +135,7 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
         ['the fixed denied frame', (c) => { c.send(DENIED); c.end(); }, 'denied'],
       ];
       for (const [label, reply, expected] of cases) {
-        const broker = await fakeBroker((body, index, connection) => { if (index === 0) connection.send(OPENED); else reply(connection); });
+        const broker = await fakeBroker((body, index, connection) => { if (index === 0) connection.send(openedFor(body)); else reply(connection); });
         const run = await client([broker.pipe, asPeer(), ...view(64, 64)]);
         assert.equal(run.byId.open.ok, true, label);
         assert.deepEqual([run.byId.capture.ok, run.byId.capture.reply], [false, expected], label);
@@ -181,7 +143,7 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
     });
 
     it('sends nothing to a server that is not the expected one: another PID, another owner, or an unusable identity', async () => {
-      const broker = await fakeBroker((body, index, connection) => connection.send(OPENED));
+      const broker = await fakeBroker((body, index, connection) => connection.send(openedFor(body)));
       for (const [label, identity] of [
         ['another PID', asPeer(process.pid + 1)], ['another owner', asPeer(process.pid, FOREIGN_SID)],
         ['a PID that is not a number', `pid:abc:${nodeOwner}`], ['no owner', `pid:${process.pid}`], ['an unknown scheme', 'owner:x'], ['a service that does not exist', 'service:AlberaNoSuchServiceForTheLab'],
@@ -218,7 +180,7 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
     it('numbers a repeated step (capture, capture_2) so a longer session can be read line by line', async () => {
       const picture = png(64, 64);
       const broker = await fakeBroker((body, index, connection) => {
-        if (index === 0) connection.send(OPENED); else { connection.send({ ok: true, width: 64, height: 64, bytes: picture.length }); connection.send(picture); }
+        if (index === 0) connection.send(openedFor(body)); else { connection.send({ ok: true, width: 64, height: 64, bytes: picture.length }); connection.send(picture); }
       });
       const run = await client([broker.pipe, asPeer(), `open:view:${COMPUTER}`, 'capture:64x64', 'capture:64x64']);
       assert.deepEqual(run.lines.map((line) => [line.id, line.ok]), [['connect', true], ['open', true], ['capture', true], ['capture_2', true]]);
@@ -227,7 +189,7 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
     const LEASE_OPEN = `open:act:${COMPUTER}:lab-bd-act-1:1`;
 
     it('an act open that names its lease sends exactly the contract frame, and an accepted one is followed by input requests that are exactly the Broker\'s frames', async () => {
-      const broker = await fakeBroker((body, index, connection) => connection.send(OPENED));
+      const broker = await fakeBroker((body, index, connection) => connection.send(openedFor(body)));
       const run = await client([broker.pipe, asPeer(), LEASE_OPEN, 'input:tap=16', 'input:move=100,100+down=1+up=1+press=65+release=65+wheel=-120+sleep=50']);
       assert.deepEqual(run.lines.map((line) => [line.id, line.ok]), [['connect', true], ['open', true], ['input', true], ['input_2', true]]);
       assert.deepEqual([run.byId.open.mode, run.byId.open.operationId, run.byId.open.leaseGeneration, run.byId.open.reply], ['act', 'lab-bd-act-1', 1, 'accepted']);
@@ -242,7 +204,7 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
 
     it('a refused input ends the session there: the next input is skipped and never sent; the keyboard request is judged apart from the mouse request that follows it', async () => {
       const broker = await fakeBroker((body, index, connection) => {
-        if (index === 0 || index === 1) connection.send(OPENED);
+        if (index === 0 || index === 1) connection.send(openedFor(body));
         else { connection.send(DENIED); connection.end(); }
       });
       const run = await client([broker.pipe, asPeer(), LEASE_OPEN, 'input:tap=16', 'input:move=100,100+down=1+up=1', 'input:tap=16']);
@@ -254,22 +216,22 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
     it('tells the replies to an input apart, as it does for an open', async () => {
       const cases = [['denied', (c) => { c.send(DENIED); c.end(); }], ['closed', (c) => c.end()], ['invalid', (c) => c.send({ ok: true, extra: 1 })]];
       for (const [expected, reply] of cases) {
-        const broker = await fakeBroker((body, index, connection) => { if (index === 0) connection.send(OPENED); else reply(connection); });
+        const broker = await fakeBroker((body, index, connection) => { if (index === 0) connection.send(openedFor(body)); else reply(connection); });
         const run = await client([broker.pipe, asPeer(), LEASE_OPEN, 'input:tap=16']);
         assert.deepEqual([run.byId.input.ok, run.byId.input.reply], [false, expected], expected);
       }
     });
 
     it('end: reports the frame the Broker sends by itself (without sending anything), and `timeout` when none comes, after which the process still exits', async () => {
-      const ended = await fakeBroker((body, index, connection) => { connection.send(OPENED); setTimeout(() => { connection.send(DENIED); connection.end(); }, 300); });
+      const ended = await fakeBroker((body, index, connection) => { connection.send(openedFor(body)); setTimeout(() => { connection.send(DENIED); connection.end(); }, 300); });
       const withEnd = await client([ended.pipe, asPeer(), LEASE_OPEN, 'end:5000']);
       assert.deepEqual([withEnd.byId.end.ok, withEnd.byId.end.reply], [false, 'denied']);
       assert.deepEqual(ended.received, [`{"open":{"computerId":"${COMPUTER}","mode":"act","operationId":"lab-bd-act-1","leaseGeneration":1}}`], 'the end step sends nothing');
 
-      const closed = await fakeBroker((body, index, connection) => { connection.send(OPENED); setTimeout(() => connection.end(), 200); });
+      const closed = await fakeBroker((body, index, connection) => { connection.send(openedFor(body)); setTimeout(() => connection.end(), 200); });
       assert.deepEqual((await client([closed.pipe, asPeer(), LEASE_OPEN, 'end:5000'])).byId.end.reply, 'closed');
 
-      const silent = await fakeBroker((body, index, connection) => connection.send(OPENED));
+      const silent = await fakeBroker((body, index, connection) => connection.send(openedFor(body)));
       const started = Date.now();
       const waited = await client([silent.pipe, asPeer(), LEASE_OPEN, 'end:1000']);
       assert.deepEqual([waited.code, waited.byId.end.ok, waited.byId.end.reply], [0, false, 'timeout']);
@@ -281,7 +243,7 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
       const claimWith = async (script, extra = []) => {
         const stdin = path.join(root, `claim-${randomBytes(4).toString('hex')}.js`);
         writeFileSync(stdin, script);
-        const broker = await fakeBroker((body, index, connection) => connection.send(OPENED));
+        const broker = await fakeBroker((body, index, connection) => connection.send(openedFor(body)));
         return { broker, ...(await client([broker.pipe, asPeer(), LEASE_OPEN, 'claim', ...extra, `claim-exe=${process.execPath}`, `claim-stdin=${stdin}`])) };
       };
       const printing = (value) => `console.log(${JSON.stringify(typeof value === 'string' ? value : JSON.stringify(value))});`;
@@ -302,7 +264,7 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
         }
         const stdin = path.join(root, 'claim-none.js');
         writeFileSync(stdin, '');
-        const broker = await fakeBroker((body, index, connection) => connection.send(OPENED));
+        const broker = await fakeBroker((body, index, connection) => connection.send(openedFor(body)));
         const missing = await client([broker.pipe, asPeer(), LEASE_OPEN, 'claim', `claim-exe=${path.join(root, 'no-such-helper.exe')}`, `claim-stdin=${stdin}`]);
         assert.deepEqual([missing.byId.claim.ok, missing.byId.claim.reply], [false, 'helper_unavailable']);
       });

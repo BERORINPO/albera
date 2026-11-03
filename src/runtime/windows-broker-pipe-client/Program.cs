@@ -18,7 +18,7 @@ using Microsoft.Win32.SafeHandles;
 // Order: open with SQOS identification -> verify the pipe server on the CONNECTED handle -> only then write the frame.
 // Pre-send codes (receipt never left, safe to retry): server_identity_mismatch, server_identity_unavailable, broker_unavailable, access_denied.
 // Post-send codes (outcome unknown): timeout, transport_error, invalid_response, response_too_large.
-internal static class Program
+internal static partial class Program
 {
     private const int ExitOk = 0, ExitBadInput = 64, ExitInternal = 70;
     private const int MaxInputBytes = 8192, MaxRequestBytes = 4096, MaxAuthorityRequestBytes = 2048, MaxResponseBytes = 256, MaxAuthorityResponseBytes = 2048;
@@ -32,25 +32,29 @@ internal static class Program
 
     private sealed record Input(string PipeName, string Body, int TimeoutMs, string? OwnerSid, uint? Pid, string? ServiceName, string? ImageSha256, bool Authority);
 
-    private static int Main()
+    private static int Main(string[] args)
     {
-        try { Run(ReadInput()); }
+        try
+        {
+            if (args is ["desktop"]) { RunDesktop(); return ExitOk; } // DesktopSession.cs: one long-lived session instead of one request
+            Run(ReadInput());
+        }
         catch (Exception) { lock (Gate) Finish(Failure(sent ? "transport_error" : "server_identity_unavailable"), ExitInternal); }
         return ExitInternal; // unreachable: Finish exits the process
     }
 
-    private static void Run(Input input)
+    // Open with SQOS identification, then verify the pipe server on the CONNECTED handle. Every refusal ends the process through Finish, so nothing is written to a server that failed a check.
+    // Shared by the one-request modes and the desktop session (DesktopSession.cs): the same owner, PID, session and image checks.
+    private static NamedPipeClientStream OpenVerified(string pipeName, string? ownerSid, uint? pid, string? serviceName, string? imageSha256)
     {
-        // `sent` is read and written only under Gate, and Finish exits while holding it, so a pre-send code can never follow a write.
-        using Timer watchdog = new(_ => { lock (Gate) Finish(Failure(sent ? "timeout" : "server_identity_unavailable"), ExitOk); }, null, input.TimeoutMs, Timeout.Infinite);
-        bool serviceMode = input.ServiceName is not null;
-        uint expectedPid = serviceMode ? ServicePid(input.ServiceName!) : input.Pid!.Value;
-        SecurityIdentifier expectedOwner = input.OwnerSid is not null ? new SecurityIdentifier(input.OwnerSid)
-            : (SecurityIdentifier)new NTAccount("NT SERVICE", input.ServiceName!).Translate(typeof(SecurityIdentifier));
+        bool serviceMode = serviceName is not null;
+        uint expectedPid = serviceMode ? ServicePid(serviceName!) : pid!.Value;
+        SecurityIdentifier expectedOwner = ownerSid is not null ? new SecurityIdentifier(ownerSid)
+            : (SecurityIdentifier)new NTAccount("NT SERVICE", serviceName!).Translate(typeof(SecurityIdentifier));
 
-        IntPtr raw = CreateFileW(@"\\.\pipe\" + input.PipeName, ClientAccess, 0, IntPtr.Zero, OpenExisting, SecuritySqosPresent | SecurityIdentification, IntPtr.Zero);
+        IntPtr raw = CreateFileW(@"\\.\pipe\" + pipeName, ClientAccess, 0, IntPtr.Zero, OpenExisting, SecuritySqosPresent | SecurityIdentification, IntPtr.Zero);
         if (raw == new IntPtr(-1)) Finish(Failure(Marshal.GetLastWin32Error() == 5 ? "access_denied" : "broker_unavailable"), ExitOk);
-        using NamedPipeClientStream pipe = new(PipeDirection.InOut, false, true, new SafePipeHandle(raw, true));
+        NamedPipeClientStream pipe = new(PipeDirection.InOut, false, true, new SafePipeHandle(raw, true));
 
         // Identity of the server, on the connected handle, BEFORE a single byte is written.
         SecurityIdentifier? owner = pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
@@ -58,7 +62,15 @@ internal static class Program
         if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out uint serverPid)) throw new Win32Exception();
         if (serverPid != expectedPid) Finish(Failure("server_identity_mismatch"), ExitOk);
         if (serviceMode && (!GetNamedPipeServerSessionId(pipe.SafePipeHandle, out uint session) || session != 0)) Finish(Failure("server_identity_mismatch"), ExitOk);
-        if (input.ImageSha256 is not null && !string.Equals(ImageSha256(serverPid), input.ImageSha256, StringComparison.Ordinal)) Finish(Failure("server_identity_mismatch"), ExitOk);
+        if (imageSha256 is not null && !string.Equals(ImageSha256(serverPid), imageSha256, StringComparison.Ordinal)) Finish(Failure("server_identity_mismatch"), ExitOk);
+        return pipe;
+    }
+
+    private static void Run(Input input)
+    {
+        // `sent` is read and written only under Gate, and Finish exits while holding it, so a pre-send code can never follow a write.
+        using Timer watchdog = new(_ => { lock (Gate) Finish(Failure(sent ? "timeout" : "server_identity_unavailable"), ExitOk); }, null, input.TimeoutMs, Timeout.Infinite);
+        using NamedPipeClientStream pipe = OpenVerified(input.PipeName, input.OwnerSid, input.Pid, input.ServiceName, input.ImageSha256);
 
         byte[] body = Encoding.UTF8.GetBytes(input.Body), frame = new byte[4 + body.Length];
         BinaryPrimitives.WriteInt32LittleEndian(frame, body.Length);
@@ -137,8 +149,7 @@ internal static class Program
             int timeoutMs = root.GetProperty("timeoutMs").GetInt32();
             string? ownerSid = Optional(expect, "ownerSid"), serviceName = Optional(expect, "serviceName"), imageSha256 = Optional(expect, "imageSha256");
             uint? pid = expect.TryGetProperty("pid", out JsonElement p) ? p.GetUInt32() : null;
-            if (Encoding.UTF8.GetByteCount(requestBody) > (authority ? MaxAuthorityRequestBytes : MaxRequestBytes) || timeoutMs is < 100 or > 30_000 || (pid is null) == (serviceName is null) || (serviceName is null && ownerSid is null) ||
-                (serviceName is not null && !IsToken(serviceName, 256, "_-", false)) || (imageSha256 is not null && (imageSha256.Length != 64 || !IsToken(imageSha256, 64, "", false) || imageSha256.Any(char.IsUpper))))
+            if (Encoding.UTF8.GetByteCount(requestBody) > (authority ? MaxAuthorityRequestBytes : MaxRequestBytes) || timeoutMs is < 100 or > 30_000 || !ValidExpectation(ownerSid, pid, serviceName, imageSha256))
                 throw new InvalidDataException();
             return new Input(pipeName, requestBody, timeoutMs, ownerSid, pid, serviceName, imageSha256, authority);
         }
@@ -148,6 +159,11 @@ internal static class Program
             throw; // unreachable
         }
     }
+
+    // Exactly one of pid / serviceName; a service needs no owner (derived from its name), a PID needs one; a lower-case SHA-256 when an image is pinned.
+    private static bool ValidExpectation(string? ownerSid, uint? pid, string? serviceName, string? imageSha256) =>
+        (pid is null) != (serviceName is null) && (serviceName is not null || ownerSid is not null) && (serviceName is null || IsToken(serviceName, 256, "_-", false)) &&
+        (imageSha256 is null || (imageSha256.Length == 64 && IsToken(imageSha256, 64, "", false) && !imageSha256.Any(char.IsUpper)));
 
     // Exactly one request: a claim {receipt, signature[, action]} (base64), {fence: computerId}, {inspect: operationId} (contract ids) or {authority: <request text>}.
     private static string RequestBody(JsonElement root)
@@ -230,7 +246,11 @@ internal static class Program
     private static string Failure(string code) => $"{{\"ok\":false,\"code\":\"{code}\"}}";
     private static void Finish(string line, int exitCode)
     {
-        lock (Gate) { Console.Out.WriteLine(line); Console.Out.Flush(); Environment.Exit(exitCode); }
+        lock (Gate)
+        {
+            if (hostFrames is null) { Console.Out.WriteLine(line); Console.Out.Flush(); } else WriteHostFrame(Encoding.UTF8.GetBytes(line)); // the desktop session speaks length-prefixed frames on stdout
+            Environment.Exit(exitCode);
+        }
     }
 
     [StructLayout(LayoutKind.Sequential)]

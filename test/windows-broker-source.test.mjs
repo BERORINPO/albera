@@ -80,11 +80,14 @@ test('Broker publish script only builds, writes a SHA-256 manifest and does not 
 // The trusted pipe client helper (verifies the pipe server before it writes). Same source-level guards, any OS, no .NET SDK needed.
 const pipeClientProgram = read('src', 'runtime', 'windows-broker-pipe-client', 'Program.cs');
 const pipeClientCode = pipeClientProgram.replace(/^\s*\/\/.*$/gmu, '');
+const desktopSession = read('src', 'runtime', 'windows-broker-pipe-client', 'DesktopSession.cs'); // the desktop mode: one long session instead of one request
+const desktopSessionCode = desktopSession.replace(/^\s*\/\/.*$/gmu, '');
 const pipeClientProject = read('src', 'runtime', 'windows-broker-pipe-client', 'Albera.WindowsBrokerPipeClient.csproj');
 const pipeClientLock = JSON.parse(read('src', 'runtime', 'windows-broker-pipe-client', 'packages.lock.json'));
 
 test('pipe client helper is small, dependency-free and locked: BCL and P/Invoke only', () => {
-  assert.ok(pipeClientProgram.replace(/\n$/u, '').split('\n').length <= 250, 'Program.cs stays reviewable (250 lines; 220 before the Approval Authority submit request kind, 200 before the fence and inspect request kinds)');
+  assert.ok(pipeClientProgram.replace(/\n$/u, '').split('\n').length <= 270, 'Program.cs stays reviewable (270 lines; 250 before the desktop mode, 220 before the Approval Authority submit request kind, 200 before the fence and inspect request kinds)');
+  assert.ok(desktopSession.replace(/\n$/u, '').split('\n').length <= 200, 'DesktopSession.cs stays reviewable (200 lines)');
   assert.deepEqual([...pipeClientProject.matchAll(/<PackageReference /gu)], [], 'no package reference');
   assert.match(pipeClientProject, /<RuntimeIdentifiers>win-x64<\/RuntimeIdentifiers>/u);
   assert.match(pipeClientProject, /<AssemblyName>albera-windows-broker-pipe-client<\/AssemblyName>/u);
@@ -92,6 +95,7 @@ test('pipe client helper is small, dependency-free and locked: BCL and P/Invoke 
   assert.deepEqual(Object.values(pipeClientLock.dependencies).map((framework) => Object.keys(framework)), [[], []], 'the lock file pins no package');
   for (const forbidden of [/Process\.Start/u, /ProcessStartInfo/u, /powershell/iu, /Hyper-?V/iu, /SetAccessControl/u, /AddAccessRule/u, /Impersonat/u]) {
     assert.equal(forbidden.test(pipeClientCode), false, `the pipe client must not match ${forbidden}`);
+    assert.equal(forbidden.test(desktopSessionCode), false, `the desktop session must not match ${forbidden}`);
   }
 });
 
@@ -111,6 +115,37 @@ test('pipe client helper opens with SQOS identification and specific rights, and
   assert.match(pipeClientCode, /lock \(Gate\) sent = true;/u, 'the send flag is set under Gate');
   assert.match(pipeClientCode, /new\(_ => \{ lock \(Gate\) Finish\(Failure\(sent \?/u, 'the watchdog reads the send flag under Gate');
   assert.equal(/sent = true;/u.test(pipeClientCode.replace(/lock \(Gate\) sent = true;/gu, '')), false, 'no unlocked write of the send flag');
+});
+
+test('pipe client desktop mode reaches the pipe only through the shared verification: no open or native call of its own, one write site, after the checks and the send flag', () => {
+  assert.equal([...pipeClientCode.matchAll(/CreateFileW\(/gu)].length, 2, 'the call and the extern declaration: the pipe is opened in OpenVerified and nowhere else');
+  assert.equal(/CreateFileW|NamedPipeClientStream\(|SafePipeHandle\(|DllImport/u.test(desktopSessionCode), false, 'the desktop mode opens no pipe and declares no native call of its own');
+  assert.equal([...desktopSessionCode.matchAll(/\bpipe\.Write\(/gu)].length, 1, 'exactly one write site to the Broker');
+  assert.ok(desktopSessionCode.indexOf('pipe.Write(') > desktopSessionCode.indexOf('static void SendFrame'), 'the write is inside SendFrame');
+  const run = desktopSessionCode.indexOf('private static void RunDesktop');
+  const firstSend = desktopSessionCode.indexOf('SendFrame(pipe', run);
+  for (const before of ['OpenVerified(start.PipeName, start.OwnerSid, start.Pid, start.ServiceName, start.ImageSha256)', 'lock (Gate) sent = true;']) {
+    const at = desktopSessionCode.indexOf(before, run);
+    assert.ok(at > run && at < firstSend, `${before} must come before the first SendFrame`);
+  }
+  assert.equal(/sent = true;/u.test(desktopSessionCode.replace(/lock \(Gate\) sent = true;/gu, '')), false, 'no unlocked write of the send flag');
+  assert.match(desktopSessionCode, /pipeName\.EndsWith\("_desktop"/u, 'the desktop mode connects to a name ending in _desktop only');
+  assert.match(pipeClientProgram, /args is \["desktop"\]/u, 'the mode is chosen by one exact argument');
+  const documented = ['access_denied', 'broker_unavailable', 'denied', 'invalid_request', 'invalid_response', 'response_too_large', 'server_identity_mismatch', 'server_identity_unavailable', 'timeout', 'transport_error'];
+  const desktopCodes = [...desktopSessionCode.matchAll(/Failure\("([a-z_]+)"\)/gu)].map((m) => m[1]);
+  assert.ok(desktopCodes.length > 0 && desktopCodes.every((code) => documented.includes(code)), `the desktop mode adds no result code: ${[...new Set(desktopCodes)]}`);
+});
+
+test('pipe client desktop mode: the watchdog is disarmed under Gate in the section that writes the answer, so a timer callback that fired just before the answer cannot follow it with a timeout (Zaku LOW of #168)', () => {
+  assert.match(desktopSessionCode, /bool armed = true;/u);
+  assert.match(desktopSessionCode, /new\(_ => \{ lock \(Gate\) \{ if \(armed\) Finish\(/u, 'the callback looks at the flag under Gate, as Finish takes Gate');
+  assert.match(desktopSessionCode, /lock \(Gate\) \{ armed = false; foreach \(byte\[\] frame in reply\) WriteHostFrame\(frame\); \}/u, 'a reply is written in the same locked section that disarms');
+  assert.match(desktopSessionCode, /lock \(Gate\) \{ armed = false; watchdog\.Change\(Timeout\.Infinite, Timeout\.Infinite\); \}\s+WriteHostFrame\(/u, 'and so is the accepted open');
+  assert.match(desktopSessionCode, /lock \(Gate\) armed = true;\s+watchdog\.Change\(start\.RequestTimeoutMs, Timeout\.Infinite\);/u, 'a request arms it again under Gate before its clock starts');
+  const writes = desktopSessionCode.split('\n').filter((codeLine) => /\barmed = /u.test(codeLine) && !codeLine.includes('bool armed = true;'));
+  assert.equal(writes.length, 3);
+  assert.ok(writes.every((codeLine) => codeLine.includes('lock (Gate)')), 'the flag is written under Gate only');
+  assert.equal(/late timeout must not follow a good answer/u.test(desktopSession), false, 'the old comment claimed more than Change() can promise');
 });
 
 test('pipe client helper reports only the documented exit codes and result codes', () => {

@@ -466,3 +466,20 @@ test('status reads approvalId once: a caller object that changes approvalId duri
   assert.equal(result.ok, false, 'the receipt for another approval is never accepted');
   assert.equal(reads, 1, 'approvalId is read exactly once');
 });
+
+test('a pinned helper build (helperSha256) is required of submit and status: another build, even with its own matching manifest, is helper_unavailable and nothing is started', async () => {
+  const pinned = createHash('sha256').update('the installed build').digest('hex');
+  const installed = makeHelper('the installed build');
+  const swapped = makeHelper('a swapped build');
+  for (const send of [submit, status]) {
+    const refused = fakeSpawn({ stdout: line(SUBMITTED) });
+    assert.deepEqual(await send({ helperSha256: pinned }, refused, swapped), { ok: false, code: 'helper_unavailable' });
+    assert.equal(refused.calls.spawns.length, 0, 'the swapped helper was not started');
+    const accepted = fakeSpawn({ stdout: line(SUBMITTED) });
+    await send({ helperSha256: pinned }, accepted, installed);
+    assert.equal(accepted.calls.spawns.length, 1, 'the pinned build is started');
+  }
+  assert.deepEqual(await submit({ helperSha256: 'A'.repeat(64) }, fakeSpawn({ stdout: line(SUBMITTED) }), installed), { ok: false, code: 'invalid_request' });
+  assert.deepEqual(await submit({ helperSha256: 7 }, fakeSpawn({ stdout: line(SUBMITTED) }), installed), { ok: false, code: 'invalid_request' });
+  assert.deepEqual(await submit({}, fakeSpawn({ stdout: line(SUBMITTED) }), swapped), SUBMITTED, 'without a pin nothing changes');
+});

@@ -63,9 +63,10 @@ function fakeDirector() {
 
 function fakeFleet({ busy = new Set(), refuse = null, initialJobCount = 0, idle = async () => {} } = {}) {
   const calls = [];
+  const jobOptions = []; // the third argument of every startJob: undefined when the caller passed none
   return {
-    calls, initialJobCount,
-    startJob(vmId, task) { calls.push(['startJob', vmId, task]); return refuse ? { ok: false, code: refuse } : { ok: true }; },
+    calls, jobOptions, initialJobCount,
+    startJob(vmId, task, options) { calls.push(['startJob', vmId, task]); jobOptions.push(options); return refuse ? { ok: false, code: refuse } : { ok: true }; },
     stopVm(vmId) { calls.push(['stopVm', vmId]); return busy.delete(vmId); },
     idle,
   };
@@ -346,6 +347,30 @@ test('real gate + real flow: the claimed DTO, the submitted DTO and the started 
   assert.deepEqual(world.submissions.map((s) => [s.purpose, s.action.action, s.action.computerId, s.action.args.task]), [['guest.command', 'task.start', 'computer-vm-a', started[2]]]);
   assert.deepEqual(world.claims.map((c) => c.action.args.task), [started[2]]);
   assert.deepEqual(r.ledger().map((e) => e[2]), ['start_approved']);
+  // the Host Broker's desktop lease belongs to the claimed operation: the hands' desktop session is exactly that operation id
+  assert.deepEqual(r.fleet.jobOptions, [{ desktopSessionId: world.submissions[0].operationId }]);
+  assert.equal(world.submissions[0].operationId, 'room-start-1');
+});
+
+test('a gate that names the approved operation gives the started job that operation as its desktop session; a gate that names none (or an ungated room) leaves the fleet\'s own', async (t) => {
+  const named = deferredGate();
+  const r = await start(t, { startGate: named, fleet: fakeFleet({ busy: new Set(['vm-a']) }) });
+  r.openCards(card('c1', 'vm-a'));
+  await r.decide('c1', 'c1-c1');
+  await until(() => named.asked.length === 1, 'the approval request');
+  named.asked[0].answer({ ok: true, operationId: 'op-approved-1' });
+  await until(() => r.fleet.calls.some(([name]) => name === 'startJob'), 'the start');
+  assert.deepEqual(r.fleet.jobOptions, [{ desktopSessionId: 'op-approved-1' }]);
+  const anonymous = await start(t, { startGate: { async startApproved() { return { ok: true }; } }, fleet: fakeFleet({ busy: new Set(['vm-a']) }) });
+  anonymous.openCards(card('c1', 'vm-a'));
+  await anonymous.decide('c1', 'c1-c1');
+  await until(() => anonymous.fleet.calls.some(([name]) => name === 'startJob'), 'the start without a name');
+  assert.deepEqual(anonymous.fleet.jobOptions, [undefined], 'the third argument is not even passed');
+  const ungated = await start(t, { fleet: fakeFleet({ busy: new Set(['vm-a']) }) });
+  ungated.openCards(card('c1', 'vm-a'));
+  await ungated.decide('c1', 'c1-c1');
+  await until(() => ungated.fleet.calls.some(([name]) => name === 'startJob'), 'the ungated start');
+  assert.deepEqual(ungated.fleet.jobOptions, [undefined]);
 });
 
 test('real gate + real flow: a denied approval starts nothing', async (t) => {

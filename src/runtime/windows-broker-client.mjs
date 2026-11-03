@@ -208,11 +208,12 @@ function resolveTimeout(timeoutMs) {
   return timeoutMs;
 }
 
-/** The helper must match the SHA-256 recorded next to it at build time. Same scheme as the Job Guardian. */
-async function verifyHelper(helperPath, manifestPath) {
+/** The helper must match the SHA-256 recorded next to it at build time and, when the caller pinned one (`helperSha256`), that digest too. Same scheme as the Job Guardian. */
+async function verifyHelper(helperPath, manifestPath, pinnedSha256 = null) {
   try {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     if (typeof manifest?.sha256 !== 'string' || !SHA256_PATTERN.test(manifest.sha256)) throw new Error('invalid_manifest');
+    if (pinnedSha256 !== null && manifest.sha256 !== pinnedSha256) throw new Error('helper_not_the_pinned_build');
     if ((await captureExecutableIdentity(helperPath)).sha256 !== manifest.sha256) throw new Error('helper_digest_mismatch');
   } catch { throw new BrokerClientError('helper_unavailable'); }
 }
@@ -250,14 +251,15 @@ function runHelper(spawnImpl, helperPath, line, timeoutMs, validate) {
 }
 
 /** One helper run: validate the pipe name, build the request fields (`prepare` throws BrokerClientError when they are bad), then the expectation and timeout. */
-async function exchange({ pipeName, expect, timeoutMs, helperPath = DEFAULT_HELPER_PATH, spawnImpl } = {}, prepare, validate) {
+async function exchange({ pipeName, expect, timeoutMs, helperPath = DEFAULT_HELPER_PATH, helperSha256 = null, spawnImpl } = {}, prepare, validate) {
   try {
     brokerPipePath(pipeName);
     const request = prepare();
     const server = validateServerExpectation(expect);
     const timeout = resolveTimeout(timeoutMs);
+    if (helperSha256 !== null && (typeof helperSha256 !== 'string' || !SHA256_PATTERN.test(helperSha256))) throw new BrokerClientError('invalid_request');
     if (spawnImpl === undefined && process.platform !== 'win32') throw new BrokerClientError('unsupported_platform');
-    await verifyHelper(helperPath, `${helperPath}.manifest.json`);
+    await verifyHelper(helperPath, `${helperPath}.manifest.json`, helperSha256);
     const line = `${JSON.stringify({ pipeName, ...request, timeoutMs: timeout, expect: server })}\n`;
     return await runHelper(spawnImpl ?? spawn, helperPath, line, timeout, validate);
   } catch (error) {
@@ -282,9 +284,10 @@ function requireId(value) {
  * The helper verifies the pipe server against `expect` before anything is written. Never throws for operational
  * failures; returns `{ ok: false, code }` with an allowlisted code instead (see BROKER_CLIENT_PRESEND_CODES).
  * @param {{ pipeName: string, receipt: string, signature: string, action?: object, expect: { ownerSid?: string, pid?: number, serviceName?: string, imageSha256?: string }, timeoutMs?: number,
- *   helperPath?: string, spawnImpl?: typeof spawn }} options
+ *   helperPath?: string, helperSha256?: string, spawnImpl?: typeof spawn }} options
  *   `action` is the action DTO `{ action, projectId, computerId, args }` of a guest.command receipt (task.start); without it the claim is the broker.operation / synthetic.noop one.
  *   The reply must name the action that was sent. `helperPath` and `spawnImpl` are test seams. A custom helper still needs a `<helperPath>.manifest.json` with its SHA-256.
+ *   `helperSha256` pins the build: the manifest must say that digest (the gated room passes the installed helper's, so a swapped helper and its swapped manifest are refused).
  */
 export function sendBrokerRequest(options = {}) {
   const { receipt, signature, action } = options; // each read once: what is validated is what is sent, and what the reply must name

@@ -203,6 +203,23 @@ test('fleet room mode: startJob runs one job per VM, refuses a busy or unknown V
   assert.deepEqual(fleet.startJob('vm-b', 'quick'), { ok: false, code: 'fleet_stopped' });
 });
 
+test('fleet room mode: a job may be started with the desktop session of an approved operation; the session must be an id, and the default stays agent-<vm>', async () => {
+  const { fleet, leases } = roomFleet();
+  const running = fleet.run();
+  assert.deepEqual(fleet.startJob('vm-a', 'DONE', { desktopSessionId: 'start-1234abcd' }), { ok: true });
+  await settle(fleet, 'vm-a');
+  assert.deepEqual(fleet.startJob('vm-a', 'DONE', { desktopSessionId: 'bad session id' }), { ok: false, code: 'desktop_session_invalid' });
+  for (const desktopSessionId of ['', 5, null, '../x', 'x'.repeat(200)]) assert.deepEqual(fleet.startJob('vm-a', 'DONE', { desktopSessionId }), { ok: false, code: 'desktop_session_invalid' }, String(desktopSessionId));
+  assert.equal(fleet.isBusy('vm-a'), false, 'a refused session id started nothing');
+  assert.deepEqual(fleet.startJob('vm-a', 'DONE', {}), { ok: true });
+  await settle(fleet, 'vm-a');
+  assert.deepEqual(leases.map((l) => [l.desktopSessionId, l.ownerType, l.ownerId, l.generation]), [
+    ['start-1234abcd', 'AI', 'albera-agent-vm-a', 1], ['agent-vm-a', 'AI', 'albera-agent-vm-a', 2],
+  ]);
+  fleet.close();
+  await running;
+});
+
 test('fleet room mode: stopVm stops only that VM; run() waits for close()', async () => {
   const forever = Array.from({ length: 50 }, () => async () => { await new Promise((resolve) => setTimeout(resolve, 2)); return move(); });
   const { fleet } = roomFleet({ scripts: { loop: forever } });

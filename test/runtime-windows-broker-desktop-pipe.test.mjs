@@ -28,7 +28,8 @@ const OTHER_SID = 'S-1-5-80-1111111111-2222222222-3333333333-1444444444-25555555
 const COMPUTERS = [{ computerId: 'room-1', vmId: NO_SUCH_VM }];
 const OPEN = { open: { computerId: 'room-1', mode: 'view' } };
 const ACT_OPEN = { open: { computerId: 'room-1', mode: 'act', operationId: 'op-1', leaseGeneration: 1 } };
-const actOpen = (operationId, leaseGeneration = 1, computerId = 'room-1') => ({ open: { computerId, mode: 'act', operationId, leaseGeneration } });
+/** `leaseGeneration` null leaves the key out: the open joins the current lease of that operation. */
+const actOpen = (operationId, leaseGeneration = 1, computerId = 'room-1') => ({ open: { computerId, mode: 'act', operationId, ...(leaseGeneration === null ? {} : { leaseGeneration }) } });
 const CAPTURE = { capture: { width: 640, height: 480 } };
 const TAP = { op: 'tap', vk: 65 };
 const input = (...steps) => ({ input: { steps } });
@@ -375,11 +376,11 @@ describe('Broker desktop pipe, view and act sessions (seam build, stdin EOF = SE
     assert.deepEqual(claim.reply, TASK_SUCCESS, `claim ${name}`);
     return claim;
   }
-  /** An act session that was opened and accepted. */
-  async function openAct(desktop, operationId, leaseGeneration = 1, computerId = 'room-1') {
+  /** An act session that was opened and accepted; the reply names the generation of the lease it joined (`expected`: the one the test knows the lease has, whether or not the open named it). */
+  async function openAct(desktop, operationId, leaseGeneration = 1, computerId = 'room-1', expected = leaseGeneration) {
     const client = await open(desktop);
     client.send(actOpen(operationId, leaseGeneration, computerId));
-    assert.deepEqual(await client.json(), OPENED, `act open ${operationId} generation ${leaseGeneration}`);
+    assert.deepEqual(await client.json(), { ok: true, leaseGeneration: expected }, `act open ${operationId} generation ${leaseGeneration}`);
     return client;
   }
   /** `send` returns the client that was just sent something refusable: the next frame must be the fixed denied one, the connection must close, and the logged word must be `reason`. */
@@ -480,6 +481,37 @@ describe('Broker desktop pipe, view and act sessions (seam build, stdin EOF = SE
     (await openAct(desktop, second.operationId, 2)).socket.destroy();
     (await openAct(desktop, other.operationId, 1, 'room-2')).socket.destroy();
     assert.equal(countOf(child, 'LEASE=GRANTED'), 3);
+    assert.equal((await stop(child)).code, 0);
+  });
+
+  it('an act open without leaseGeneration joins the lease that is current for its operation and the reply names the generation; a stale or unknown operation is refused as before', async () => {
+    const { child, desktop, claims } = await start('act-omitted', { computers: TWO_COMPUTERS });
+    const session = claims();
+    const first = await claimed(session, 'o1');
+    (await openAct(desktop, first.operationId, null, 'room-1', 1)).socket.destroy();
+    const second = await claimed(session, 'o2'); // the same computer's generation 2 replaces the first lease
+    const elsewhere = await claimed(session, 'o3', 'room-2'); // another computer counts from 1 on its own
+    const live = await openAct(desktop, second.operationId, null, 'room-1', 2);
+    (await openAct(desktop, elsewhere.operationId, null, 'room-2', 1)).socket.destroy();
+    await refusedOpen(child, desktop, actOpen(first.operationId, null), 'the older operation, no generation named', 'lease_unknown');
+    await refusedOpen(child, desktop, actOpen('nobody-op', null), 'an operation nobody claimed', 'lease_unknown');
+    await refusedOpen(child, desktop, actOpen(second.operationId, null, 'room-2'), 'the operation of another computer\'s lease', 'lease_unknown');
+    await refusedOpen(child, desktop, actOpen(second.operationId.toUpperCase(), null), 'the operation id in another case', 'lease_unknown');
+    await refusedOpen(child, desktop, actOpen(second.operationId, 1), 'naming a generation is still an exact match (the lease is generation 2)', 'lease_generation');
+    // a session that joined without naming the generation is bound to that lease like any other: a newer claim ends it
+    const third = await claimed(session, 'o4');
+    assert.deepEqual(await live.json(), DENIED);
+    assert.equal(await live.next(), null);
+    (await openAct(desktop, third.operationId, null, 'room-1', 3)).socket.destroy();
+    assert.equal((await stop(child)).code, 0);
+  });
+
+  it('an act open that names no generation still carries exactly operationId, computerId and mode: an extra key is a shape error', async () => {
+    const { child, desktop } = await start('act-omitted-shape');
+    for (const [label, body] of [
+      ['an extra key', { ...actOpen('op-1', null).open, extra: 1 }], ['a view-shaped open with a stray operationId', { computerId: 'room-1', mode: 'view', operationId: 'op-1' }],
+      ['no operationId and no generation', { computerId: 'room-1', mode: 'act' }], ['a null generation', { ...actOpen('op-1', null).open, leaseGeneration: null }],
+    ]) await refusedOpen(child, desktop, { open: body }, label, 'open_shape');
     assert.equal((await stop(child)).code, 0);
   });
 

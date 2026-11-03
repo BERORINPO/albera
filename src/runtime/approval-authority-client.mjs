@@ -92,7 +92,7 @@ const HELPER_GRACE_MS = 3000; // the helper has its own deadline; this only catc
 const HELPER_MAX_STDOUT_BYTES = 16 * 1024; // a 2 KiB reply whose base64 '+' the helper re-serialises as + stays far below this
 const DEFAULT_HELPER_PATH = fileURLToPath(new URL('./windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker-pipe-client.exe', import.meta.url)); // arch-allow: the one trusted pipe client helper (shared with the Broker client); its SHA-256 manifest is verified before every launch
 
-const CONNECTION_KEYS = ['pipeRoot', 'expect', 'timeoutMs', 'helperPath', 'spawnImpl'];
+const CONNECTION_KEYS = ['pipeRoot', 'expect', 'timeoutMs', 'helperPath', 'helperSha256', 'spawnImpl'];
 const SUBMIT_KEYS = ['purpose', 'operationId', 'idempotencyKey', 'leaseId', 'leaseGeneration', 'brokerEpoch', 'brokerChallenge', 'action', 'includeDigest', 'attestation', ...CONNECTION_KEYS];
 const STATUS_KEYS = ['approvalId', ...CONNECTION_KEYS];
 
@@ -265,11 +265,12 @@ function resolveTimeout(timeoutMs) {
   return timeoutMs;
 }
 
-/** The helper must match the SHA-256 recorded next to it at build time. Same scheme as the Job Guardian and the Broker client. */
-async function verifyHelper(helperPath, manifestPath) {
+/** The helper must match the SHA-256 recorded next to it at build time and, when the caller pinned one (`helperSha256`), that digest too. Same scheme as the Job Guardian and the Broker client. */
+async function verifyHelper(helperPath, manifestPath, pinnedSha256 = null) {
   try {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     if (typeof manifest?.sha256 !== 'string' || !SHA256_PATTERN.test(manifest.sha256)) throw new Error('invalid_manifest');
+    if (pinnedSha256 !== null && manifest.sha256 !== pinnedSha256) throw new Error('helper_not_the_pinned_build');
     if ((await captureExecutableIdentity(helperPath)).sha256 !== manifest.sha256) throw new Error('helper_digest_mismatch');
   } catch { throw bad('helper_unavailable'); }
 }
@@ -319,9 +320,10 @@ async function exchange(options, allowedKeys, buildRequestText, validate) {
     const requestText = buildRequestText(options);
     const server = validateServerExpectation(options.expect);
     const timeout = resolveTimeout(options.timeoutMs);
-    const { helperPath = DEFAULT_HELPER_PATH, spawnImpl } = options;
+    const { helperPath = DEFAULT_HELPER_PATH, helperSha256 = null, spawnImpl } = options;
+    if (helperSha256 !== null && (typeof helperSha256 !== 'string' || !SHA256_PATTERN.test(helperSha256))) throw bad('invalid_request');
     if (spawnImpl === undefined && process.platform !== 'win32') throw bad('unsupported_platform');
-    await verifyHelper(helperPath, `${helperPath}.manifest.json`);
+    await verifyHelper(helperPath, `${helperPath}.manifest.json`, helperSha256);
     const line = `${JSON.stringify({ pipeName, authority: requestText, timeoutMs: timeout, expect: server })}\n`;
     return await runHelper(spawnImpl ?? spawn, helperPath, line, timeout, validate);
   } catch (error) {

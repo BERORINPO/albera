@@ -322,17 +322,21 @@ test('the client is not imported by the Observer, entry layers, runtime modules 
   });
   const self = path.join(root, 'src', 'runtime', 'windows-broker-client.mjs');
   const authorityClient = path.join(root, 'src', 'runtime', 'approval-authority-client.mjs');
+  const desktopClient = path.join(root, 'src', 'runtime', 'windows-desktop-broker-client.mjs');
   const sources = walk(path.join(root, 'src')).filter((file) => /\.(?:mjs|js|html|json|css)$/u.test(file) && file !== self);
   assert.ok(sources.length > 50, 'the scan must cover the source tree');
   // The one deliberate importer is the room's composition point (room-approval-wiring.mjs, A3 of #115 follow-up): one import line, with an arch-allow reason.
   const wiring = path.join(root, 'src', 'runtime', 'room-approval-wiring.mjs');
   const wiringLines = readFileSync(wiring, 'utf8').split('\n').filter((l) => /windows-broker-client/u.test(l));
   assert.deepEqual(wiringLines.map((l) => /^import .* from '\.\/windows-broker-client\.mjs'; \/\/ arch-allow: \S/u.test(l)), [true], 'one import line, with an arch-allow reason');
+  // The desktop client takes the pipe-server expectation grammar and the timeout bounds from this client: one import line, with an arch-allow reason (its own guard is in runtime-windows-desktop-broker-client.test.mjs).
+  const desktopLines = readFileSync(desktopClient, 'utf8').split('\n').filter((l) => /windows-broker-client/u.test(l));
+  assert.deepEqual(desktopLines.map((l) => /^import .* from '\.\/windows-broker-client\.mjs'; \/\/ arch-allow: \S/u.test(l)), [true], 'one import line, with an arch-allow reason');
   for (const file of sources) {
     const text = readFileSync(file, 'utf8');
-    if (file !== wiring) assert.equal(/windows-broker-client/u.test(text), false, `${path.relative(root, file)} must not reference the Broker client`);
-    // The Approval Authority client shares this helper (one arch-allow line); its own guard is in runtime-approval-authority-client.test.mjs.
-    if (file !== authorityClient) assert.equal(/windows-broker-pipe-client|albera-windows-broker-pipe-client/u.test(text), false, `${path.relative(root, file)} must not name the pipe client helper`);
+    if (file !== wiring && file !== desktopClient) assert.equal(/windows-broker-client/u.test(text), false, `${path.relative(root, file)} must not reference the Broker client`);
+    // The Approval Authority client and the desktop client share this helper (one arch-allow line each); the Authority client's own guard is in runtime-approval-authority-client.test.mjs.
+    if (file !== authorityClient && file !== desktopClient) assert.equal(/windows-broker-pipe-client|albera-windows-broker-pipe-client/u.test(text), false, `${path.relative(root, file)} must not name the pipe client helper`);
   }
   const manifest = readFileSync(path.join(root, 'package.json'), 'utf8');
   assert.equal(/windows-broker-client|windows-broker-pipe-client/u.test(manifest), false);
@@ -425,4 +429,28 @@ test('a bad fence or inspect request never reaches the helper', async () => {
   assert.deepEqual(await sendBrokerFence({ ...base, expect: undefined, computerId: 'computer-1' }), { ok: false, code: 'invalid_request' });
   assert.deepEqual(await sendBrokerFence(), { ok: false, code: 'invalid_pipe_name' });
   assert.deepEqual(await sendBrokerInspect(), { ok: false, code: 'invalid_pipe_name' });
+});
+
+test('a pinned helper build (helperSha256) is required of fence, claim and inspect: another build, even with its own matching manifest, is helper_unavailable and nothing is started', async () => {
+  const pinned = createHash('sha256').update('the installed build').digest('hex');
+  const installed = makeHelper('the installed build');
+  const swapped = makeHelper('a swapped build'); // its manifest matches its own bytes: only the pin catches it
+  const base = { pipeName: goodRequest.pipeName, expect: EXPECT, helperSha256: pinned };
+  const sends = [
+    (options) => sendBrokerFence({ ...base, computerId: 'computer-1', ...options }),
+    (options) => sendBrokerInspect({ ...base, operationId: 'op-1', ...options }),
+    (options) => sendBrokerRequest({ ...goodRequest, helperSha256: pinned, ...options }),
+  ];
+  for (const send of sends) {
+    const refused = fakeSpawn({ stdout: line(FENCED) });
+    assert.deepEqual(await send({ helperPath: swapped, spawnImpl: refused.spawnImpl }), { ok: false, code: 'helper_unavailable' });
+    assert.equal(refused.calls.spawns.length, 0, 'the swapped helper was not started');
+    const accepted = fakeSpawn({ stdout: line(FENCED) });
+    await send({ helperPath: installed, spawnImpl: accepted.spawnImpl });
+    assert.equal(accepted.calls.spawns.length, 1, 'the pinned build is started');
+  }
+  // a pin that is not a SHA-256 is a bad request, and without a pin nothing changes
+  assert.deepEqual(await sendBrokerFence({ ...base, computerId: 'computer-1', helperSha256: 'A'.repeat(64), helperPath: installed, spawnImpl: fakeSpawn().spawnImpl }), { ok: false, code: 'invalid_request' });
+  assert.deepEqual(await sendBrokerFence({ ...base, computerId: 'computer-1', helperSha256: 7, helperPath: installed, spawnImpl: fakeSpawn().spawnImpl }), { ok: false, code: 'invalid_request' });
+  assert.deepEqual(await sendBrokerFence({ pipeName: goodRequest.pipeName, computerId: 'computer-1', expect: EXPECT, helperPath: swapped, spawnImpl: fakeSpawn({ stdout: line(FENCED) }).spawnImpl }), FENCED);
 });
