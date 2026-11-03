@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Test-only console: compiles the Broker's Hyper-V desktop adapter (HyperVDesktop.cs, PngEncoder.cs) by source include and drives it with a fake WMI connection,
-       printing what the adapter did as one JSON document. Built in a temp dir by test/windows-broker-hyperv-desktop.test.mjs; nothing ships it.
+  <!-- Test-only console: compiles the Broker's Hyper-V desktop adapter (HyperVDesktop.cs, PngEncoder.cs) and the desktop lease table (DesktopLeases.cs) by source include and
+       drives them with a fake WMI connection and a fake clock, printing what they did as one JSON document. Built in a temp dir by test/windows-broker-hyperv-desktop.test.mjs; nothing ships it.
        Pass -p:BrokerDir=<abs path ending in a slash>. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -16,5 +16,6 @@
   <ItemGroup>
     <Compile Include="$(BrokerDir)HyperVDesktop.cs" />
     <Compile Include="$(BrokerDir)PngEncoder.cs" />
+    <Compile Include="$(BrokerDir)DesktopLeases.cs" />
   </ItemGroup>
 </Project>

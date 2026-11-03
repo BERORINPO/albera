@@ -108,7 +108,7 @@ internal static partial class Program
         }
     }
 
-    private sealed record BrokerSettings(string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string AllowedSid, long InitialGeneration, TimeSpan? Hold, ImpersonationFault Fault, string LeaseId, string PolicyVersion, long Epoch = 0);
+    private sealed record BrokerSettings(string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string AllowedSid, long InitialGeneration, TimeSpan? Hold, ImpersonationFault Fault, string LeaseId, string PolicyVersion, long Epoch = 0, DesktopLeases? Leases = null);
 
     // LocalPipe.Create makes the first and only instance (FILE_FLAG_FIRST_PIPE_INSTANCE, max 1), so an existing instance of this name (squatter,
     // or another Broker) fails creation, and sets PIPE_REJECT_REMOTE_CLIENTS (NamedPipeServerStreamAcl.Create cannot; lab check u6, issue #23).
