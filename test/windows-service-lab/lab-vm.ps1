@@ -1,5 +1,5 @@
 # Issue #23 one-command disposable VM lab. Usage:
-#   powershell -File test/windows-service-lab/lab-vm.ps1 [-Build] [-KeepVm] [-HostInstall | -HyperV | -ControlPlaneService [-HostNodeExe <path>]]
+#   powershell -File test/windows-service-lab/lab-vm.ps1 [-Build] [-KeepVm] [-HostInstall | -HyperV | -ControlPlaneService [-HostNodeExe <path>] | -HostMigrate -LegacyRef <commit>]
 # Changes nothing on the host except creating/deleting this one VM and its folder.
 # The golden disk is never modified, and the guest is disconnected from the network.
 param(
@@ -19,7 +19,14 @@ param(
   # SeChangeNotifyPrivilege only) can do -- node.exe + node:sqlite, the pipe client helper, DPAPI, loopback TCP, a ProgramData file with a protected DACL, outbound HTTPS. Needs the lab shim
   # build and the pipe client helper build (npm run build:windows-broker makes the helper; -Build makes both). Standard 4 GB VM, no Hyper-V role, no reboot.
   [switch]$ControlPlaneService,
-  # Used by -ControlPlaneService only, and only when the golden image has no Node: the host's own node.exe (read, never changed) is copied into the guest at C:\Program Files\nodejs.
+  # Run the HOST MIGRATION lab (lab-host-migrate-check.ps1) instead: a first-layout install (the local account albera-cp) is made with the installer of -LegacyRef, the account runs once so that its profile exists, and
+  # the CURRENT installer then runs -Mode plan -PlanFor migrate, -Mode migrate -TrustLocalBuilds, -Mode status and -Mode uninstall. The old Broker, Authority and pipe client are built from -LegacyRef here (a copy of that
+  # commit's tree under the VM's folder, removed afterwards; nothing is downloaded); the current builds are the five the host installer needs (-Build makes them). Standard 4 GB VM, no Hyper-V role, no reboot.
+  [switch]$HostMigrate,
+  # Used by -HostMigrate only: the commit (hex, 7 to 40 characters) whose scripts/host installer made the first layout, for example 303ec40.
+  [string]$LegacyRef,
+  # Used by -ControlPlaneService only, and only when the golden image has no Node: the host's own node.exe (read, never changed) is copied into the guest at C:\Program Files\nodejs. -HostInstall and -HostMigrate
+  # copy the same file beside their guest hook (what the installer pins).
   # Nothing is downloaded. It must carry a valid Authenticode signature; its version, size and SHA-256 are printed and recorded in the results.
   [string]$HostNodeExe = (Join-Path $env:ProgramFiles 'nodejs\node.exe')
 )
@@ -168,6 +175,82 @@ function Invoke-ControlPlaneServiceLab([string]$VmName, [pscredential]$Credentia
   return 0
 }
 
+# The -HostMigrate lab, host side. Puts the tree of one commit (git archive, no .git) under $Dest and builds the three programs its installer pins (Broker, pipe client, Approval Authority) there with that
+# commit's own build scripts: locked restore from the NuGet cache, nothing downloaded. Returns the full commit id.
+function Build-LegacyHostTree([string]$Repo, [string]$Ref, [string]$Dest) {
+  if ($Ref -notmatch '^[0-9a-f]{7,40}$') { throw "-LegacyRef must be a lowercase hex commit id of 7 to 40 characters, not '$Ref'" }
+  $commit = ((& git -C $Repo rev-parse --verify "$Ref^{commit}" 2>&1) | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') { throw "-LegacyRef $Ref is not a commit of this repository: $commit" }
+  if (Test-Path -LiteralPath $Dest) { throw "legacy build folder already exists: $Dest" }
+  New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+  $archive = Join-Path $Dest 'legacy-tree.tar'
+  & git -C $Repo archive --format=tar -o $archive $commit
+  if ($LASTEXITCODE -ne 0) { throw "git archive $commit failed ($LASTEXITCODE)" }
+  & (Join-Path $env:SystemRoot 'System32\tar.exe') -xf $archive -C $Dest
+  if ($LASTEXITCODE -ne 0) { throw "extracting the legacy tree failed ($LASTEXITCODE)" }
+  Remove-Item -LiteralPath $archive -Force
+  Push-Location $Dest
+  try {
+    foreach ($script in @('build:windows-broker', 'build:approval-authority')) {
+      & npm run $script | Out-Host   # to the console, not into this function's return value
+      if ($LASTEXITCODE -ne 0) { throw "legacy $script failed ($LASTEXITCODE)" }
+    }
+  }
+  finally { Pop-Location }
+  $commit
+}
+
+# Copies scripts\host and the given publish folders (relative to $Repo) into $GuestRepo in the guest, at the same relative paths. A missing build output is named, with the command that makes it.
+function Copy-HostTreeToGuest($Session, [string]$Repo, [string]$GuestRepo, [string[]]$Rels) {
+  foreach ($rel in $Rels) { if (-not (Test-Path -LiteralPath (Join-Path $Repo $rel))) { throw "missing build output (run with -Build): $rel" } }
+  Invoke-Command -Session $Session -ScriptBlock { param($r, $dirs) foreach ($x in $dirs) { New-Item -ItemType Directory -Force -Path (Join-Path $r $x) | Out-Null } } -ArgumentList $GuestRepo, (@('scripts\host', 'tools') + $Rels)
+  Copy-Item -ToSession $Session -Path (Join-Path $Repo 'scripts\host\*') -Destination "$GuestRepo\scripts\host" -Recurse -Force
+  foreach ($rel in $Rels) { Copy-Item -ToSession $Session -Path (Join-Path (Join-Path $Repo $rel) '*') -Destination (Join-Path $GuestRepo $rel) -Recurse -Force }
+}
+
+# The -HostMigrate lab: the old tree (built from -LegacyRef) and the current one go into the guest, lab-host-migrate-check.ps1 runs the first-layout install, the migration and the uninstall, and prints one JSON object.
+# Returns the exit code last (0 = every check passed, 1 = a check failed or the hook was blocked).
+function Invoke-HostMigrateLab([string]$VmName, [pscredential]$Credential, [string]$Repo, [string]$LegacyRepo, [string]$LegacyCommit, [string]$HostNode, [string]$OutputFile, [string]$ResultsFile) {
+  $legacyGuest = 'C:\albera-legacy-lab'
+  $guestRepo = 'C:\albera-host-lab'
+  $legacyRels = @('src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish',
+                  'src\runtime\windows-approval-authority\bin\Release\net10.0-windows\win-x64\publish',
+                  'src\runtime\windows-broker-pipe-client\bin\Release\net10.0-windows\win-x64\publish')
+  $rels = $legacyRels + @('src\runtime\windows-control-plane-host\bin\Release\net10.0-windows\win-x64\publish',
+                          'src\runtime\windows-approver\bin\Release\net10.0-windows10.0.19041.0\win-x64\publish')
+  if (-not (Test-Path -LiteralPath $HostNode -PathType Leaf)) { throw "the host node.exe is missing: $HostNode (pass -HostNodeExe); the guest copy of it is what the installer pins" }
+  $session = New-PSSession -VMName $VmName -Credential $Credential
+  try {
+    Copy-HostTreeToGuest $session $LegacyRepo $legacyGuest $legacyRels
+    Copy-HostTreeToGuest $session $Repo $guestRepo $rels
+    Copy-Item -ToSession $session -Path (Join-Path $PSScriptRoot 'lab-host-migrate-check.ps1') -Destination "$guestRepo\tools\lab-host-migrate-check.ps1" -Force
+    Copy-Item -ToSession $session -Path $HostNode -Destination "$guestRepo\tools\node.exe" -Force   # what the hook hands the new installer as -NodeSource (the lab guest has no Node of its own)
+    Write-Host "running the first-layout install ($LegacyCommit), the migration and the uninstall in the guest"
+    $hookOutput = Invoke-Command -Session $session -ScriptBlock {
+      param($legacy, $r)
+      $env:ALBERA_LAB_VM = '1'
+      $text = (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$r\tools\lab-host-migrate-check.ps1" -LegacyScriptDir "$legacy\scripts\host" -LegacyRepoRoot $legacy -HostScriptDir "$r\scripts\host" -RepoRoot $r 2>&1 | Out-String)
+      [pscustomobject]@{ Exit = $LASTEXITCODE; Text = $text }
+    } -ArgumentList $legacyGuest, $guestRepo
+  }
+  finally { Remove-PSSession $session }
+  $hookOutput.Text | Set-Content -Encoding UTF8 -LiteralPath $OutputFile
+  $json = $hookOutput.Text.Substring([Math]::Max(0, $hookOutput.Text.IndexOf('{')))
+  $results = $null
+  try { $results = $json | ConvertFrom-Json } catch { }
+  if ($results) {
+    $results | Add-Member -NotePropertyName legacyRef -NotePropertyValue $LegacyCommit -Force
+    $results | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 -LiteralPath $ResultsFile
+    @($results.checks) | Select-Object id, status, observed | Format-Table -AutoSize -Wrap | Out-Host
+    $failed = @(@($results.checks) | Where-Object { $_.status -eq 'FAIL' }).Count
+    Write-Host "host-migrate checks: $(@($results.checks).Count)  FAIL: $failed  pass: $($results.pass)  results: $ResultsFile"
+  }
+  else { $hookOutput.Text | Out-Host }
+  Write-Host "host-migrate hook exit: $($hookOutput.Exit)"
+  if ($hookOutput.Exit -eq 0 -and $results -and $results.pass) { return 0 }
+  return 1
+}
+
 $golden ='U:\dev\hyperv\golden\ws2025-desktop-golden.vhdx'
 $labNote = 'ALBERA lab (disposable; delete after run)'
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
@@ -181,6 +264,8 @@ $inputsFile = Join-Path $EvidenceDir 'inputs.json'
 $runDir = Join-Path $EvidenceDir 'run'
 $outputFile = Join-Path $EvidenceDir 'lab-output.txt'
 $vmCreated = $false
+$legacyDir = Join-Path $root 'legacy-src'
+$legacyCommit = $null
 $vmId = $null
 $direct = $null
 $exitCode = 2
@@ -191,10 +276,13 @@ try {
   if (-not $goldenItem.IsReadOnly) { throw "golden VHDX must be read-only: $golden" }
   if ($HyperV -and $HostInstall) { throw '-HyperV and -HostInstall are separate labs; choose one' }
   if ($ControlPlaneService -and ($HyperV -or $HostInstall)) { throw '-ControlPlaneService is a separate lab from -HyperV and -HostInstall; choose one' }
+  if ($HostMigrate -and ($HyperV -or $HostInstall -or $ControlPlaneService)) { throw '-HostMigrate is a separate lab from -HyperV, -HostInstall and -ControlPlaneService; choose one' }
+  if ($HostMigrate -and [string]::IsNullOrWhiteSpace($LegacyRef)) { throw '-HostMigrate needs -LegacyRef <commit of the installer that made the first layout>' }
+  if ($LegacyRef -and -not $HostMigrate) { throw '-LegacyRef is only for -HostMigrate' }
   if (Get-VM -Name $VmName -ErrorAction SilentlyContinue) { throw "VM already exists: $VmName" }
   if (-not (Test-Path -LiteralPath $PasswordFile -PathType Leaf)) { throw "password file is missing: $PasswordFile" }
-  if (-not $Build) {
-    # Fail before creating a VM when the binaries run-lab.ps1 copies are missing.
+  if (-not $Build -and -not $HostMigrate) {
+    # Fail before creating a VM when the binaries run-lab.ps1 copies are missing. (-HostMigrate names its own in Invoke-HostMigrateLab.)
     $needed = @('test\windows-service-lab\bin\Release\net10.0-windows\win-x64\publish',
                 'src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish')
     # The Hyper-V lab runs the lab shim, the real Broker and the Control Plane pipe client (it sends the claims that make a lease), and so does the Control Plane service lab (shim + client); the other labs also copy the Approval Authority.
@@ -204,6 +292,8 @@ try {
       if (-not (Test-Path -LiteralPath (Join-Path $repo $p))) { throw "missing build output (run with -Build): $p" }
     }
   }
+
+  if ($HostMigrate) { $legacyCommit = Build-LegacyHostTree $repo $LegacyRef $legacyDir }   # before the VM exists: a wrong ref or a failed build costs no VM
 
   # Refuse to start when the host is short on memory: a 4 GB VM on a full host froze the PC (2026-10-31).
   $vmMemoryGB = if ($HyperV) { 5 } else { 4 }   # -HyperV: the guest also runs the Hyper-V role and a 512 MB inner VM
@@ -270,7 +360,7 @@ try {
         & npm run build:approval-authority
         if ($LASTEXITCODE -ne 0) { throw "build:approval-authority failed ($LASTEXITCODE)" }
       }
-      if ($HostInstall) {
+      if ($HostInstall -or $HostMigrate) {
         # the host installer now installs the Control Plane service host with its app tree and the approver app as well (PR7)
         & npm run build:control-plane
         if ($LASTEXITCODE -ne 0) { throw "build:control-plane failed ($LASTEXITCODE)" }
@@ -278,7 +368,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "build:approver failed ($LASTEXITCODE)" }
       }
     }
-    if (-not $HostInstall -and -not $HyperV -and -not $ControlPlaneService) {
+    if (-not $HostInstall -and -not $HostMigrate -and -not $HyperV -and -not $ControlPlaneService) {
       & node scripts/windows-service-lab-inputs.mjs $inputsFile
       if ($LASTEXITCODE -ne 0) { throw "input generation failed ($LASTEXITCODE)" }
     }
@@ -292,6 +382,10 @@ try {
   elseif ($HyperV) {
     $hvOut = @(Invoke-HyperVRightsLab -VmName $VmName -Credential $credential -Repo $repo -OutputFile $outputFile -ResultsFile (Join-Path $EvidenceDir 'hyperv-results.json') -KeepVm:$KeepVm)
     $exitCode = [int]($hvOut | Select-Object -Last 1)
+  }
+  elseif ($HostMigrate) {
+    $hmOut = @(Invoke-HostMigrateLab -VmName $VmName -Credential $credential -Repo $repo -LegacyRepo $legacyDir -LegacyCommit $legacyCommit -HostNode $HostNodeExe -OutputFile $outputFile -ResultsFile (Join-Path $EvidenceDir 'host-migrate-results.json'))
+    $exitCode = [int]($hmOut | Select-Object -Last 1)
   }
   elseif ($HostInstall) {
     # The guest gets the host scripts and the five publish folders at the same relative paths under a stand-in repository root, then runs the hook
@@ -348,6 +442,12 @@ catch {
 }
 finally {
   if ($direct) { Remove-PSSession $direct -ErrorAction SilentlyContinue }
+  if ($HostMigrate -and (Test-Path -LiteralPath $legacyDir)) {
+    # the copy of the old tree is this lab's own (made by Build-LegacyHostTree, directly under this VM's folder); it is removed unless it has turned into a link
+    if (-not ((Get-Item -LiteralPath $legacyDir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { Remove-Item -LiteralPath $legacyDir -Recurse -Force -ErrorAction SilentlyContinue }
+    # a run that stopped before the VM was made (wrong ref, failed build, short memory) leaves nothing behind: the VM's folder, empty, goes too (no -Recurse: a folder with anything in it stays)
+    if (-not $vmCreated -and (Test-Path -LiteralPath $root) -and -not (Get-ChildItem -LiteralPath $root -Force)) { Remove-Item -LiteralPath $root -ErrorAction SilentlyContinue }
+  }
   if ($vmCreated -and -not $KeepVm) {
     try {
       $ownedVm = Get-VM -Id $vmId
