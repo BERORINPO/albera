@@ -5,10 +5,11 @@ import { isVmId } from './broker-contract/network-attestation.mjs';
 // the guest.command / task.start operation was CLAIMED. The flow, the project id, the VM -> computer mapping and the operation ids are injected; this module
 // touches no pipe, no clock and no disk, so it runs against a fake flow in unit tests and against the real flow (createApprovedOperationFlow) later.
 //
-//   startApproved({ vmId, task }) -> { ok: true } | { ok: false, code }
+//   startApproved({ vmId, task }) -> { ok: true, operationId } | { ok: false, code }
 //
 // `ok` means exactly one thing: the flow returned status `claimed` for a fresh operation whose action is { task.start, projectId, computerId(vmId), args: { task } }.
-// The caller starts the job with the SAME vmId and the SAME task string (the approved args.task); the gate does not start anything itself.
+// The caller starts the job with the SAME vmId and the SAME task string (the approved args.task); the gate does not start anything itself. `operationId` is that claim's: the Host Broker made its
+// desktop lease for it (ADR-002 "Amendment 2026-11-03"), so the started hands name their desktop session by it.
 // Everything else is a refusal with a fixed code: denied, expired, failed, retryable and unknown flow statuses (an unknown outcome never starts a job),
 // a flow that throws, a claimed result that only replays an earlier operation (each start needs its own approval), and a task the contract could not carry.
 // A task that is empty, longer than 256 UTF-8 bytes or has an unsafe character is refused BEFORE the flow runs: no approval is requested for it.
@@ -24,7 +25,6 @@ const REFUSAL_BY_STATUS = Object.freeze({
   denied: 'start_denied', expired: 'start_expired', failed: 'start_failed', retryable: 'start_retryable', unknown: 'start_unknown',
 });
 const ID_RE = new RegExp(ID_PATTERN, 'u');
-const OK = Object.freeze({ ok: true });
 const refuse = (code) => Object.freeze({ ok: false, code });
 const encoder = new TextEncoder();
 
@@ -66,7 +66,7 @@ export function createTaskStartGate({ flow, projectId, computerIdFor, newOperati
     if (result?.status !== 'claimed') return refuse(REFUSAL_BY_STATUS[result?.status] ?? 'start_error');
     // A claim that only reports an older operation is not an approval of this start.
     if (result.operationId !== operationId) return refuse('start_error');
-    return result.replayed === false ? OK : refuse('start_replayed');
+    return result.replayed === false ? Object.freeze({ ok: true, operationId }) : refuse('start_replayed');
   }
 
   return Object.freeze({ startApproved });

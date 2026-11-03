@@ -48,7 +48,7 @@ test('every connection\'s peer is checked after the first frame\'s length bytes 
   assert.match(check, /string\.Equals\(ReadPeerSid\(pipe, ImpersonationFault\.None\), _config\.ControlPlaneSid, StringComparison\.Ordinal\)/u, 'the user SID of the thread token, compared as an exact string');
   assert.match(check, /catch \(UnauthorizedAccessException\) \{ isControlPlane = false; \}/u, 'fail closed');
   const session = between(pipe, 'private async Task<string?> RunSessionAsync(', 'private async Task<(byte[]? Frame');
-  assert.ok(inOrder(session, 'ReadRequestAsync(pipe, first: !opened, lease?.Token ?? CancellationToken.None, stop)', 'TryParseOpen(frame', 'Leases.TryOpen(', 'WriteAsync(pipe, DesktopOk, stop)', 'TryParseRequest(frame'), 'frame -> open -> lease -> accepted -> request');
+  assert.ok(inOrder(session, 'ReadRequestAsync(pipe, first: !opened, lease?.Token ?? CancellationToken.None, stop)', 'TryParseOpen(frame', 'Leases.TryOpen(', 'WriteAsync(pipe, lease is null ? DesktopOk : ActOpened(lease.Generation), stop)', 'TryParseRequest(frame'), 'frame -> open -> lease -> accepted -> request');
 });
 
 test('bounds: 16 KiB request, 60 s idle in the shipped build, 200 ms between captures of one session, one capture in the whole Broker, a pixel cap, the 8 MiB reply cap', () => {
@@ -70,14 +70,14 @@ test('bounds: 16 KiB request, 60 s idle in the shipped build, 200 ms between cap
   assert.match(throttle, /elapsed >= minInterval \? TimeSpan\.Zero : minInterval - elapsed;/u);
 });
 
-test('modes: only view and act; an act open carries exactly an operationId and a leaseGeneration >= 1 and is checked against the Broker\'s lease; input is for act sessions only', () => {
+test('modes: only view and act; an act open carries exactly an operationId and, optionally, a leaseGeneration >= 1 and is checked against the Broker\'s lease; input is for act sessions only', () => {
   const open = between(protocol, 'internal static string? TryParseOpen(', 'private static bool TryActFields(');
   assert.match(open, /mode is not \("view" or "act"\)\) return DesktopDeny\.OpenShape;/u, 'no third mode');
-  assert.match(open, /if \(fields\.Count != \(act \? 4 : 2\)\) return DesktopDeny\.OpenShape;/u, 'view: computerId + mode; act: those + operationId + leaseGeneration, and nothing else');
+  assert.match(open, /if \(fields\.Count != \(act \? 3 : 2\) \+ \(act && fields\.ContainsKey\("leaseGeneration"\) \? 1 : 0\)\) return DesktopDeny\.OpenShape;/u, 'view: computerId + mode; act: those + operationId, + leaseGeneration when the key is there, and nothing else');
   assert.ok(inOrder(open, 'TryActFields(', 'DesktopDeny.ComputerUnknown'), 'the lease fields are shaped before the computer is looked up');
   const act = between(protocol, 'private static bool TryActFields(', 'internal static string? TryParseRequest(');
   assert.match(act, /AuthorityKey\.IsKeyId\(id\)/u);
-  assert.match(act, /!Integer\(generationElement, out generation\) \|\| generation < 1\) return false;/u);
+  assert.match(act, /!Integer\(generationElement, out long named\) \|\| named < 1\) return false;/u, 'a generation that is there is an integer >= 1; an absent one means the current lease');
   assert.match(protocol, /return act \? TryParseInput\(input, out request\) : DesktopDeny\.ViewInput;/u, 'a view session never parses input');
   const session = between(pipe, 'private async Task<string?> RunSessionAsync(', 'private async Task<(byte[]? Frame');
   assert.match(session, /if \(open\.IsAct && \(lease = Leases\.TryOpen\(computerId, open\.OperationId!, open\.LeaseGeneration, out string leaseRefusal\)\) is null\) return leaseRefusal;/u);
@@ -149,8 +149,9 @@ test('the lease\'s deadline is on a monotonic clock, never a wall-clock time: se
 
 test('only fixed text leaves the Broker: three reply shapes on the wire, and the log carries fixed words and reason words only', () => {
   const writes = [...pipe.matchAll(/WriteAsync\(pipe, ([^;]+?), stop\);/gu)].map((m) => m[1]);
-  assert.deepEqual(writes, ['BrokerReply.Denied.Body', 'DesktopOk', 'Encoding.UTF8.GetBytes($"{{\\"ok\\":true,\\"width\\":{width},\\"height\\":{height},\\"bytes\\":{png.Length}}}")', 'png', 'DesktopOk'], 'denied; open accepted; capture header and picture; input sent');
+  assert.deepEqual(writes, ['BrokerReply.Denied.Body', 'lease is null ? DesktopOk : ActOpened(lease.Generation)', 'Encoding.UTF8.GetBytes($"{{\\"ok\\":true,\\"width\\":{width},\\"height\\":{height},\\"bytes\\":{png.Length}}}")', 'png', 'DesktopOk'], 'denied; open accepted (an act open names the lease it joined); capture header and picture; input sent');
   assert.match(pipe, /DesktopOk = Encoding\.UTF8\.GetBytes\("\{\\"ok\\":true\}"\);/u);
+  assert.match(pipe, /ActOpened\(long generation\) => Encoding\.UTF8\.GetBytes\(\$"\{\{\\"ok\\":true,\\"leaseGeneration\\":\{generation\}\}\}"\);/u, 'the one number in an act reply is the lease\'s own generation (a long: nothing to escape)');
   const printed = [...pipe.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '').matchAll(/Console\.WriteLine\(([^;]+)\);/gu)].map((m) => m[1]);
   assert.deepEqual(printed.filter((arg) => !/^"[A-Z_=]+"$/u.test(arg)), ['"DESKTOP_DENY=" + reason', 'isControlPlane ? "DESKTOP_PEER=authenticated" : "DESKTOP_PEER=denied"'], 'every other line is a fixed literal');
   assert.equal(/\.Message\b|\.ToString\(|\.StackTrace|\.InnerException|ex\.Data\b/u.test(pipe + protocol), false, 'no exception text is read');

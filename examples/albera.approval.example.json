@@ -12,15 +12,11 @@
   "journal": "C:\\ProgramData\\Albera\\control-plane\\operations.sqlite",
   "computers": {
     "albera-clone-01": "clone-01",
-    "albera-clone-02": {
-      "computerId": "clone-02",
-      "vmId": "00000000-0000-0000-0000-000000000000",
-      "expectedGeneration": 1
-    }
+    "albera-clone-02": "clone-02"
   },
-  "attestation": {
-    "keyFile": "C:\\ProgramData\\Albera\\control-plane\\broker-attestation-key.pem",
-    "keyId": "albera-broker-1",
-    "cloneRoot": "C:\\ProgramData\\Albera\\clones"
-  }
+  "desktop": {
+    "helperPath": "C:\\Program Files\\Albera\\bin\\pipe-client\\albera-windows-broker-pipe-client.exe",
+    "helperSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "attestation": null
 }

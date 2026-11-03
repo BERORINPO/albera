@@ -19,7 +19,7 @@ namespace Albera.Lab;
 // service) or `pid:<pid>:<ownerSid>` (an account that may not query the service, e.g. the stand-in for "somebody else" in the lab).
 //
 //   albera-lab-service-shim.exe desktop <pipeName> <identity> <step>... [save=<path>] [claim-exe=<path> claim-stdin=<path>]
-//   step  open:<view|act>:<computerId>                           the first frame of a session, answered `{"ok":true}` or the fixed denied frame. A bare act open (no lease fields) is sent as such.
+//   step  open:<view|act>:<computerId>                           the first frame of a session, answered `{"ok":true}` (an act open: `{"ok":true,"leaseGeneration":n}`) or the fixed denied frame. A bare act open (no lease fields) is sent as such.
 //         open:act:<computerId>:<operationId>:<leaseGeneration>   an act open that names the lease it claims to hold (the Broker checks both against the lease it made from a task.start claim)
 //         capture:<width>x<height>                               answered by a header frame and one PNG frame (checked: sizes agree, signature, IHDR, IEND)
 //         input:<op>[=<n>[,<n>]][+<op>...]                       act sessions; ops: move=x,y down=b up=b press=vk release=vk tap=vk wheel=d sleep=ms; answered `{"ok":true}` or the denied frame
@@ -220,7 +220,7 @@ internal static class DesktopClient
             line["leaseGeneration"] = step.Generation;
             lease = $",\"operationId\":\"{step.OperationId}\",\"leaseGeneration\":{step.Generation}";
         }
-        string reply = Classify(Exchange(pipe, $"{{\"open\":{{\"computerId\":\"{step.ComputerId}\",\"mode\":\"{step.Mode}\"{lease}}}}}", MaxReplyBytes));
+        string reply = Classify(Exchange(pipe, $"{{\"open\":{{\"computerId\":\"{step.ComputerId}\",\"mode\":\"{step.Mode}\"{lease}}}}}", MaxReplyBytes), actOpen: step.OperationId is not null);
         line["reply"] = reply;
         return reply == "accepted";
     }
@@ -332,8 +332,9 @@ internal static class DesktopClient
 
     private static int? Int(JsonElement root, string name) => root.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out int n) ? n : null;
 
-    // accepted = exactly {"ok":true}; denied = exactly the fixed {"ok":false,"code":"denied"}; closed = the connection ended without a frame; invalid = anything else.
-    private static string Classify(byte[]? reply)
+    // accepted = exactly {"ok":true}, or for an act open (`actOpen`) exactly {"ok":true,"leaseGeneration":n} with n >= 1 (the lease it joined); denied = exactly the fixed {"ok":false,"code":"denied"};
+    // closed = the connection ended without a frame; invalid = anything else.
+    private static string Classify(byte[]? reply, bool actOpen = false)
     {
         if (reply is null) return "closed";
         try
@@ -342,7 +343,8 @@ internal static class DesktopClient
             JsonElement root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object) return "invalid";
             int members = root.EnumerateObject().Count();
-            if (members == 1 && root.TryGetProperty("ok", out JsonElement ok) && ok.ValueKind == JsonValueKind.True) return "accepted";
+            if (members == (actOpen ? 2 : 1) && root.TryGetProperty("ok", out JsonElement ok) && ok.ValueKind == JsonValueKind.True
+                && (!actOpen || (root.TryGetProperty("leaseGeneration", out JsonElement joined) && joined.ValueKind == JsonValueKind.Number && joined.TryGetInt64(out long generation) && generation >= 1))) return "accepted";
             if (members == 2 && root.TryGetProperty("ok", out ok) && ok.ValueKind == JsonValueKind.False && root.TryGetProperty("code", out JsonElement code) && code.ValueKind == JsonValueKind.String && code.GetString() == "denied") return "denied";
         }
         catch (JsonException) { }

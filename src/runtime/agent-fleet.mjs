@@ -1,6 +1,7 @@
 import { createDesktopAgentLoop } from './desktop-agent-loop.mjs';
 import { createPlannedAgentLoop } from './planned-agent-loop.mjs';
 import { createAgentStatusBoard } from './agent-status-board.mjs';
+import { isEnvironmentId } from './environment-provider.mjs';
 
 export const MAX_FLEET_JOBS = 8;
 const LEASE_SLACK_MS = 60_000;
@@ -61,11 +62,11 @@ export function createAgentFleet({
   }
 
   /** Make the loop for one job (its driver and client are made here). */
-  function prepare(vmId, task, maxUsd) {
+  function prepare(vmId, task, maxUsd, desktopSessionId = `agent-${vmId}`) {
     const vm = vms.get(vmId);
     const generation = vm.jobs + 1;
     const lease = Object.freeze({
-      desktopSessionId: `agent-${vmId}`, ownerType: 'AI', ownerId: `albera-agent-${vmId}`, generation,
+      desktopSessionId, ownerType: 'AI', ownerId: `albera-agent-${vmId}`, generation,
       expiresAt: new Date(now() + limits.maxMs + LEASE_SLACK_MS).toISOString(),
     });
     const options = {
@@ -115,17 +116,21 @@ export function createAgentFleet({
     return Object.freeze({ results, totalUsd: Math.round(total() * 1e6) / 1e6, stopReason });
   }
 
-  /** Start a new job on an idle VM. The task text comes from the caller (the room host builds it). */
-  function startJob(vmId, task) {
+  /**
+   * Start a new job on an idle VM. The task text comes from the caller (the room host builds it). `desktopSessionId` names the job's desktop session when the caller owns that name (the gated
+   * room: the approved task.start operation, whose desktop lease the Host Broker holds); it is checked as an id. Without it the session is `agent-<vm>` as before.
+   */
+  function startJob(vmId, task, { desktopSessionId } = {}) {
     const vm = typeof vmId === 'string' ? vms.get(vmId) : undefined;
     if (!vm) return refuse('vm_unknown');
+    if (desktopSessionId !== undefined && !isEnvironmentId(desktopSessionId)) return refuse('desktop_session_invalid');
     if (closed || stopReason !== null || typeof task !== 'string' || task.length < 1) {
       return refuse(stopReason === 'max_usd_total' ? 'over_budget' : 'fleet_stopped');
     }
     if (vm.loop) return refuse('vm_busy');
     const left = limits.maxUsd - spentOn(vm);
     if (left <= 0 || total() >= totalMaxUsd) return refuse('over_budget');
-    try { prepare(vmId, task, left); } catch { return refuse('fleet_stopped'); }
+    try { prepare(vmId, task, left, desktopSessionId); } catch { return refuse('fleet_stopped'); }
     if (started) void launch(vmId);
     return Object.freeze({ ok: true });
   }

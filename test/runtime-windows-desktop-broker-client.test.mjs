@@ -82,8 +82,10 @@ function scriptedHelper(behave = healthy) {
   };
   return { spawnImpl, log };
 }
+/** The Broker's accepted open: `{ ok: true }` for a view, and for an act open the lease it joined (the generation named, or `joined` when none was). */
+const openReply = (open, joined = 1) => (open.mode === 'act' ? { ok: true, leaseGeneration: open.leaseGeneration ?? joined } : PLAIN_OK);
 function healthy(request, ctx) {
-  if (ctx.index === 0) ctx.reply(PLAIN_OK);
+  if (ctx.index === 0) ctx.reply(openReply(request.open));
   else if (request.capture) ctx.reply(...captureReply(request.capture.width, request.capture.height));
   else ctx.reply(PLAIN_OK);
 }
@@ -117,7 +119,9 @@ describe('desktop client contract (pure)', () => {
   it('plans an input like the prototype does and takes the lease from the room\'s desktop lease: operationId = desktopSessionId, leaseGeneration = generation', () => {
     const checked = checkInputRequest({ vmId: 'room-1', action: CLICK, lease: { ...LEASE, ownerType: 'AI', ownerId: 'agent-1', expiresAt: '2030-01-01T00:00:00.000Z' } });
     assert.deepEqual({ ...checked, steps: [...checked.steps] }, { computerId: 'room-1', operationId: 'op-1', leaseGeneration: 1, steps: [...planDesktopInput(CLICK, { width: 4096, height: 4096 })] });
-    for (const lease of [undefined, null, {}, { desktopSessionId: 'op-1' }, { generation: 1 }, { ...LEASE, generation: 0 }, { ...LEASE, generation: 1.5 }, { ...LEASE, generation: '1' }, { ...LEASE, desktopSessionId: 'bad id' }]) {
+    // a lease that names no generation is the Control Plane's normal case: the Broker joins the lease that is current for the operation
+    assert.deepEqual({ ...checkInputRequest({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'op-1' } }), steps: [] }, { computerId: 'room-1', operationId: 'op-1', leaseGeneration: null, steps: [] });
+    for (const lease of [undefined, null, {}, { generation: 1 }, { ...LEASE, generation: 0 }, { ...LEASE, generation: 1.5 }, { ...LEASE, generation: '1' }, { ...LEASE, generation: null }, { ...LEASE, desktopSessionId: 'bad id' }]) {
       assert.deepEqual(shapeOf((() => { try { checkInputRequest({ vmId: 'room-1', action: CLICK, lease }); } catch (error) { return error; } })()), { code: 'desktop_input_rejected', outcome: 'not_applied', brokerCode: undefined }, JSON.stringify(lease));
     }
     for (const action of [undefined, {}, { action: 'screenshot' }, { action: 'left_click', coordinate: [5000, 1] }, { action: 'left_click', extra: 1 }, { action: 'type', text: 'é' }]) {
@@ -247,6 +251,99 @@ describe('windows desktop broker client over a scripted helper', () => {
     assert.equal(scripted.log.ended, 1, 'the older lease\'s helper had its stdin closed');
     assert.deepEqual(scripted.log.frames.filter(({ spawn }) => spawn === 1)[0].request.open, { computerId: 'room-1', mode: 'act', operationId: 'op-2', leaseGeneration: 2 });
     await client.close();
+  });
+
+  it('a lease without a generation opens an act session without one and learns the generation from the Broker\'s reply; a lease the Broker joins at a newer generation replaces the older session', async () => {
+    const joined = new Map([['op-1', 4], ['op-2', 5]]);
+    const scripted = scriptedHelper((request, ctx) => (ctx.index === 0 ? ctx.reply(openReply(request.open, joined.get(request.open.operationId))) : healthy(request, ctx)));
+    const client = clientOver(scripted);
+    assert.deepEqual(await client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'op-1' } }), { ok: true });
+    assert.deepEqual(scripted.log.frames[0].request.open, { computerId: 'room-1', mode: 'act', operationId: 'op-1' }, 'no leaseGeneration key at all');
+    await client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'op-1' } });
+    assert.equal(scripted.log.spawns.length, 1, 'the same operation keeps its session');
+    // the room hands the driver a full lease (its own job number as the generation): the wiring leaves that out, but a caller that names one is checked against the Broker's reply
+    await client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'op-2' } });
+    assert.equal(scripted.log.spawns.length, 2);
+    await settle();
+    assert.equal(scripted.log.ended, 1, 'generation 5 replaced generation 4: the older helper had its stdin closed');
+    await client.close();
+  });
+
+  it('a call with an older lease never closes the session of a newer one (Zaku LOW of #168): it fails before anything is sent, and the newer session keeps working', async () => {
+    const scripted = scriptedHelper();
+    const client = clientOver(scripted);
+    await client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'op-2', generation: 2 } });
+    const spawned = scripted.log.spawns.length;
+    const stale = await failure(client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'op-1', generation: 1 } }));
+    assert.deepEqual(shapeOf(stale), { code: 'desktop_unavailable', outcome: 'not_applied', brokerCode: 'lease_superseded' });
+    assert.equal(scripted.log.spawns.length, spawned, 'no session was opened for the stale lease');
+    await settle();
+    assert.equal(scripted.log.ended, 0, 'and the newer lease\'s session was not closed');
+    await client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'op-2', generation: 2 } });
+    assert.equal(scripted.log.spawns.length, spawned, 'still the same session');
+    // another computer is its own business
+    await client.sendVmInput({ vmId: 'room-2', action: CLICK, lease: { desktopSessionId: 'op-1', generation: 1 } });
+    assert.equal(scripted.log.spawns.length, spawned + 1);
+    await client.close();
+  });
+
+  it('an open that joins an older generation than the live session\'s loses: its helper is closed, the call fails with nothing sent, the live session stays', async () => {
+    const joined = new Map([['op-new', 7], ['op-old', 3]]);
+    const scripted = scriptedHelper((request, ctx) => (ctx.index === 0 ? ctx.reply(openReply(request.open, joined.get(request.open.operationId))) : healthy(request, ctx)));
+    const client = clientOver(scripted);
+    await client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'op-new' } });
+    const error = await failure(client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'op-old' } }));
+    assert.deepEqual(shapeOf(error), { code: 'desktop_unavailable', outcome: 'not_applied', brokerCode: 'lease_superseded' });
+    assert.equal(scripted.log.frames.filter(({ request }) => request.input).length, 1, 'the stale call sent no input');
+    await settle();
+    assert.equal(scripted.log.ended, 1, 'only the loser\'s helper was closed');
+    await client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'op-new' } });
+    assert.equal(scripted.log.spawns.length, 2, 'the live session served the next call');
+    await client.close();
+  });
+
+  it('a Broker restart is not a "newer lease" problem: when the live session is gone, a lease with a smaller generation opens normally', async () => {
+    const scripted = scriptedHelper();
+    const client = clientOver(scripted);
+    await client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'op-9', generation: 9 } });
+    scripted.log.children[0].emit('close', 1); // the Broker (and so the helper) went away
+    await settle();
+    assert.deepEqual(await client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: { desktopSessionId: 'op-1', generation: 1 } }), { ok: true });
+    await client.close();
+  });
+
+  const badActReplies = [
+    ['no generation in the reply', { ok: true }], ['a generation other than the one named', { ok: true, leaseGeneration: 2 }], ['a generation of 0', { ok: true, leaseGeneration: 0 }],
+    ['a fractional generation', { ok: true, leaseGeneration: 1.5 }], ['a string generation', { ok: true, leaseGeneration: '1' }], ['an unsafe integer', { ok: true, leaseGeneration: 2 ** 53 }],
+    ['an extra key', { ok: true, leaseGeneration: 1, extra: 1 }],
+  ];
+  for (const [label, reply] of badActReplies) {
+    it(`an act open answered with ${label} is not accepted: invalid_response, nothing applied`, async () => {
+      const client = clientOver(scriptedHelper((request, ctx) => (ctx.index === 0 ? ctx.reply(reply) : healthy(request, ctx))));
+      assert.deepEqual(shapeOf(await failure(client.sendVmInput({ vmId: 'room-1', action: CLICK, lease: LEASE }))), { code: 'desktop_unavailable', outcome: 'not_applied', brokerCode: 'invalid_response' });
+      await client.close();
+    });
+  }
+
+  it('a view open answered with a generation is not accepted either', async () => {
+    const client = clientOver(scriptedHelper((request, ctx) => (ctx.index === 0 ? ctx.reply({ ok: true, leaseGeneration: 1 }) : healthy(request, ctx))));
+    assert.deepEqual(shapeOf(await failure(client.captureVmScreen(ROOM))), { code: 'desktop_unavailable', outcome: 'not_applied', brokerCode: 'invalid_response' });
+    await client.close();
+  });
+
+  it('a pinned helper build (helperSha256) must be the one the manifest records: another digest means no helper is started', async () => {
+    const helperPath = makeHelper('the pinned build');
+    const pinned = createHash('sha256').update('the pinned build').digest('hex');
+    const scripted = scriptedHelper();
+    const good = clientOver(scripted, { helperPath, helperSha256: pinned });
+    await good.captureVmScreen(ROOM);
+    assert.equal(scripted.log.spawns.length, 1);
+    await good.close();
+    const other = scriptedHelper();
+    const wrong = clientOver(other, { helperPath, helperSha256: 'b'.repeat(64) });
+    assert.deepEqual(shapeOf(await failure(wrong.captureVmScreen(ROOM))), { code: 'desktop_unavailable', outcome: 'not_applied', brokerCode: 'helper_unavailable' });
+    assert.equal(other.log.spawns.length, 0);
+    await wrong.close();
   });
 
   it('a capture never uses an act session and an input never uses a view session', async () => {
@@ -424,7 +521,7 @@ describe('windows desktop broker client over a scripted helper', () => {
       { pipeName: undefined }, { pipeName: '' }, { pipeName: 'a\\b' }, { pipeName: 'a.b' }, { pipeName: 'x'.repeat(121) }, { pipeName: 'ALBERA_x_desktop\\..' },
       { expect: undefined }, { expect: {} }, { expect: { ownerSid: SID } }, { expect: { ...EXPECT, serviceName: 'x' } }, { expect: { ownerSid: 'nope', pid: 1 } }, { expect: { ...EXPECT, extra: 1 } },
       { openTimeoutMs: 99 }, { openTimeoutMs: 30_001 }, { openTimeoutMs: 1.5 }, { captureTimeoutMs: 999 }, { captureTimeoutMs: 120_001 }, { inputTimeoutMs: 0 },
-      { idleCloseMs: 999 }, { idleCloseMs: 55_001 }, { helperPath: 7 }, { spawnImpl: 'spawn' },
+      { idleCloseMs: 999 }, { idleCloseMs: 55_001 }, { helperPath: 7 }, { spawnImpl: 'spawn' }, { helperSha256: 'A'.repeat(64) }, { helperSha256: 'ab' }, { helperSha256: 7 },
     ];
     for (const override of bad) assert.throws(() => createWindowsDesktopBrokerClient({ ...good, ...override }), { name: 'TypeError', message: 'invalid_desktop_broker_client_options' }, JSON.stringify(override));
     assert.throws(() => createWindowsDesktopBrokerClient(), TypeError);
@@ -449,7 +546,7 @@ describe('windows desktop broker client over a scripted helper', () => {
     assert.deepEqual(client.match(/^import .*child_process.*$/gmu), ["import { spawn } from 'node:child_process';"]);
     assert.equal([...client.matchAll(/\bconfig\.spawnImpl\(/gu)].length, 1, 'one launch site');
     assert.match(client, /config\.spawnImpl\(config\.helperPath, \['desktop'\], \{ shell: false,/u, 'the helper is started in desktop mode, without a shell');
-    assert.ok(client.indexOf('await verifyHelper(config.helperPath)') > 0 && client.indexOf('await verifyHelper(config.helperPath)') < client.indexOf('config.spawnImpl('), 'the digest is verified before the helper is launched');
+    assert.ok(client.indexOf('await verifyHelper(config.helperPath, config.helperSha256)') > 0 && client.indexOf('await verifyHelper(config.helperPath, config.helperSha256)') < client.indexOf('config.spawnImpl('), 'the digest (and the pinned one, if any) is verified before the helper is launched');
     for (const name of ['fake-desktop-broker-client.mjs', 'desktop-broker-client-contract.mjs']) assert.equal(/child_process|node:net|\bspawn\b/u.test(read(name)), false, `${name} starts nothing`);
   });
 });

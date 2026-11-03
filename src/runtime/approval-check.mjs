@@ -84,7 +84,7 @@ export async function runApprovalCheck({ approvalFile, helperPath = null }, { io
         out(`  AlberaApprover.exe approve ${reply.approvalId}   (type yes, then verify with Windows Hello)`); // arch-allow: same message
       }
     });
-    const flow = createApprovedOperationFlow({ broker: brokerPort(settings, clients, null), authority, journal: store.flowJournal(), now: d.now, sleep: d.sleep });
+    const flow = createApprovedOperationFlow({ broker: brokerPort(settings, clients), authority, journal: store.flowJournal(), now: d.now, sleep: d.sleep });
     out(`approval-check: one ${CHECK_ACTION} operation for computer ${computerId} in project ${settings.projectId}. It changes nothing: the Broker only records the claim.`);
     const result = await flow.run({ operationId: d.newCheckOperationId(), purpose: CHECK_PURPOSE, action: { action: CHECK_ACTION, projectId: settings.projectId, computerId, args: {} } });
     const detail = [result.code ? `code ${result.code}` : null, result.brokerState ? `Broker state ${result.brokerState}` : null, result.replayed ? 'replayed' : null].filter(Boolean).join(', ');

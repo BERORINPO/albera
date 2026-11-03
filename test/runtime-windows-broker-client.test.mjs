@@ -430,3 +430,27 @@ test('a bad fence or inspect request never reaches the helper', async () => {
   assert.deepEqual(await sendBrokerFence(), { ok: false, code: 'invalid_pipe_name' });
   assert.deepEqual(await sendBrokerInspect(), { ok: false, code: 'invalid_pipe_name' });
 });
+
+test('a pinned helper build (helperSha256) is required of fence, claim and inspect: another build, even with its own matching manifest, is helper_unavailable and nothing is started', async () => {
+  const pinned = createHash('sha256').update('the installed build').digest('hex');
+  const installed = makeHelper('the installed build');
+  const swapped = makeHelper('a swapped build'); // its manifest matches its own bytes: only the pin catches it
+  const base = { pipeName: goodRequest.pipeName, expect: EXPECT, helperSha256: pinned };
+  const sends = [
+    (options) => sendBrokerFence({ ...base, computerId: 'computer-1', ...options }),
+    (options) => sendBrokerInspect({ ...base, operationId: 'op-1', ...options }),
+    (options) => sendBrokerRequest({ ...goodRequest, helperSha256: pinned, ...options }),
+  ];
+  for (const send of sends) {
+    const refused = fakeSpawn({ stdout: line(FENCED) });
+    assert.deepEqual(await send({ helperPath: swapped, spawnImpl: refused.spawnImpl }), { ok: false, code: 'helper_unavailable' });
+    assert.equal(refused.calls.spawns.length, 0, 'the swapped helper was not started');
+    const accepted = fakeSpawn({ stdout: line(FENCED) });
+    await send({ helperPath: installed, spawnImpl: accepted.spawnImpl });
+    assert.equal(accepted.calls.spawns.length, 1, 'the pinned build is started');
+  }
+  // a pin that is not a SHA-256 is a bad request, and without a pin nothing changes
+  assert.deepEqual(await sendBrokerFence({ ...base, computerId: 'computer-1', helperSha256: 'A'.repeat(64), helperPath: installed, spawnImpl: fakeSpawn().spawnImpl }), { ok: false, code: 'invalid_request' });
+  assert.deepEqual(await sendBrokerFence({ ...base, computerId: 'computer-1', helperSha256: 7, helperPath: installed, spawnImpl: fakeSpawn().spawnImpl }), { ok: false, code: 'invalid_request' });
+  assert.deepEqual(await sendBrokerFence({ pipeName: goodRequest.pipeName, computerId: 'computer-1', expect: EXPECT, helperPath: swapped, spawnImpl: fakeSpawn({ stdout: line(FENCED) }).spawnImpl }), FENCED);
+});

@@ -8,7 +8,8 @@ import { TASK_START_MAX_BYTES, TASK_START_REFUSALS } from './task-start-gate.mjs
 //    'pending_approval' at once and the outcome arrives later as a ledger entry: `start_approved` (then the loop is stopped and the job started) or
 //    `start_refused` with a fixed code. Nothing is stopped and nothing is started unless the gate said ok. At most one approval per VM is pending.
 //    A human `stop` on that VM while its approval is pending cancels it: a later ok does not start anything (`start_cancelled`). The host closing does too,
-//    including while the old loop is being stopped.
+//    including while the old loop is being stopped. The gate's answer carries the approved operationId; the job is started with it as its desktop session (`fleet.startJob(vmId, task, { desktopSessionId })`),
+//    because the Host Broker's desktop lease belongs to that operation.
 
 export const STOP_WAIT_MS = 5_000;
 const GATED_NUDGE = 'A dialog or message box may be blocking the screen. Close or answer it in the safest way (delete or discard nothing), '
@@ -47,13 +48,14 @@ export function createStartRunner({ fleet, gate = null, journal, isClosed, stopW
     try { journal.record({ vmId, actor: 'bero', code, params }); } catch { /* a journal failure must not stop the room */ }
   };
 
-  async function startNow(vmId, task, ticket = null) {
+  async function startNow(vmId, task, ticket = null, desktopSessionId = undefined) {
     if (fleet.stopVm(vmId) && typeof fleet.idle === 'function') {
       await Promise.race([fleet.idle(vmId), new Promise((resolve) => { setTimeout(resolve, stopWaitMs).unref?.(); })]);
     }
     // Checked again after the wait: the host may have closed, or a person may have chosen stop, while the old loop was stopping.
     if (ticket && (isClosed() || ticket.cancelled)) return 'start_cancelled';
-    const started = fleet.startJob(vmId, task);
+    // Gated: the hands' desktop session is the approved operation (the Host Broker holds the lease it made); ungated: the fleet's own.
+    const started = desktopSessionId === undefined ? fleet.startJob(vmId, task) : fleet.startJob(vmId, task, { desktopSessionId });
     return started?.ok ? 'started' : (typeof started?.code === 'string' && isCode(started.code) ? started.code : 'not_started');
   }
 
@@ -64,7 +66,7 @@ export function createStartRunner({ fleet, gate = null, journal, isClosed, stopW
       if (approval?.ok !== true) { note(vmId, 'start_refused', { code: isCode(approval?.code, TASK_START_REFUSALS) ? approval.code : 'start_error' }); return; }
       if (ticket.cancelled) { note(vmId, 'start_refused', { code: 'start_cancelled' }); return; }
       note(vmId, 'start_approved');
-      const result = await startNow(vmId, task, ticket);
+      const result = await startNow(vmId, task, ticket, typeof approval.operationId === 'string' ? approval.operationId : undefined);
       if (result !== 'started') note(vmId, 'start_refused', { code: result });
     } catch { note(vmId, 'start_refused', { code: 'start_error' }); } finally { pending.delete(vmId); }
   }
