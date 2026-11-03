@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { getUnavailableReason, icaclsOn, makeTrustedTempDirectory, standInService, startProcess, waitForExit, waitForLine } from './helpers/windows-broker-harness.mjs';
+import { getUnavailableReason, icaclsOn, makeTrustedTempDirectory, currentUserSid, startProcess, waitForExit, waitForLine } from './helpers/windows-broker-harness.mjs';
 import {
   buildControlPlaneHost, copyNode, ENTRY_NOISY, ENTRY_STAYS_ALIVE, ENTRY_WITH_GRANDCHILD, entryExits, entryLivesFor, eventually, isAlive, makeInstallation,
 } from './helpers/control-plane-host-harness.mjs';
@@ -28,20 +28,37 @@ describe('Control Plane host: config, launch gate, supervision and stop', { skip
   });
   after(async () => {
     for (const child of running) { child.kill(); await waitForExit(child); }
+    for (const link of links) { try { rmdirSync(link); } catch { /* already gone */ } } // a junction is removed as itself, never through its target
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
+  const links = [];
   const nextName = (prefix) => `${prefix}-${++counter}`;
+  /** A junction (`mklink /J`, no administrator rights needed) at `link` pointing at the existing folder `target`. */
+  function junction(prefix, target) {
+    const link = path.join(root, nextName(prefix));
+    execFileSync(path.join(process.env.SystemRoot, 'System32', 'cmd.exe'), ['/d', '/c', 'mklink', '/J', link, target], { stdio: 'pipe', windowsHide: true });
+    links.push(link);
+    return link;
+  }
+  /** A node.exe copy alone in its own new folder (and the folder), for the cases that change the ACL of node.exe's folder. */
+  function ownNode(prefix) {
+    const folder = path.join(root, nextName(prefix));
+    mkdirSync(folder);
+    return { ...copyNode(folder), folder };
+  }
   const install = (prefix, options) => makeInstallation(root, nextName(prefix), node, options);
   function run(exe, args) {
     const result = spawnSync(exe, args, { encoding: 'utf8', timeout: 30_000, windowsHide: true });
     return { code: result.status, lines: result.stdout.split(/\r?\n/u).filter(Boolean), stderr: result.stderr };
   }
-  const check = (config) => run(seamed, standInService('service-check', config));
-  const launchCheck = (config) => run(seamed, standInService('launch-check', config));
+  // The host trusts the signed-in user in place of the administrators, and stops its parent-folder walk at the test root (the machine's temp folder sits below folders other accounts may modify).
+  const seamArgs = (...args) => ['--trust-sid', currentUserSid(), '--ancestor-floor', root, ...args];
+  const check = (config) => run(seamed, seamArgs('service-check', config));
+  const launchCheck = (config) => run(seamed, seamArgs('launch-check', config));
   /** Starts the foreground supervisor; `child.stdin.end()` plays SERVICE_CONTROL_STOP. */
-  function serve(config, env) {
-    const child = startProcess(seamed, standInService('serve', config), { stdin: true, env });
+  function serve(config, env, faults = []) {
+    const child = startProcess(seamed, seamArgs(...faults.flatMap((fault) => ['--fault', fault]), 'serve', config), { stdin: true, env });
     running.add(child);
     child.once('close', () => running.delete(child));
     return child;
@@ -71,6 +88,9 @@ describe('Control Plane host: config, launch gate, supervision and stop', { skip
       return [
         wrong('nodePath', 'node.exe', 'node_path'), wrong('nodePath', '..\\node.exe', 'node_path'), wrong('nodePath', 'C:\\Windows\\System32\\cmd.exe', 'node_path'), wrong('nodePath', 'C:/nodejs/node.exe', 'node_path'),
         wrong('nodePath', `\\\\?\\${folder.nodePath}`, 'node_path'), wrong('nodePath', `${folder.nodePath}:stream`, 'node_path'), wrong('nodePath', 5, 'node_path'), wrong('nodePath', null, 'node_path'),
+        // a double quote would end the quoting of the command line (ChildLauncher.CommandLine) early
+        wrong('nodePath', `${path.dirname(folder.nodePath)}\\a"b\\node.exe`, 'node_path'), wrong('appPath', `${folder.appPath}"x`, 'app_path'), wrong('dataRoot', `${folder.dataRoot}" --evil "`, 'data_root'),
+        wrong('logDirectory', `${folder.logDirectory}"`, 'log_directory'),
         wrong('nodeSha256', folder.nodeSha256.toUpperCase(), 'node_sha256'), wrong('nodeSha256', folder.nodeSha256.slice(1), 'node_sha256'), wrong('nodeSha256', `${folder.nodeSha256}0`, 'node_sha256'),
         wrong('nodeSha256', `g${folder.nodeSha256.slice(1)}`, 'node_sha256'), wrong('nodeSha256', 0, 'node_sha256'),
         wrong('appPath', 'app', 'app_path'), wrong('appPath', `${folder.appPath}\\`, 'app_path'), wrong('appPath', path.join(root, 'no-such-folder'), 'app_path'), wrong('appPath', folder.nodePath, 'app_path'),
@@ -279,6 +299,135 @@ describe('Control Plane host: config, launch gate, supervision and stop', { skip
       assert.equal(await waitForExit(serve(installation.config)), EXIT_RESTART_LIMIT);
       assert.equal(statSync(path.join(installation.logs, 'host.log.1')).size, 9000, 'the oversized file became the backup');
       assert.match(readFileSync(path.join(installation.logs, 'host.log'), 'utf8'), /CPHOST_CHILD_STARTED=\d+/u);
+    });
+  });
+
+  describe('links (junctions made with mklink /J) are refused', () => {
+    it('refuses a config whose parent folder is a junction', () => {
+      const installation = install('link-config', { entry: ENTRY_STAYS_ALIVE });
+      const link = junction('link-to-config', path.dirname(installation.config));
+      assert.equal(check(path.join(installation.config)).code, 0, 'the same file by its real path is fine');
+      assert.deepEqual(check(path.join(link, 'config.json')), { code: EXIT_CONFIG_INVALID, lines: ['SERVICE_CONFIG=invalid:config_untrusted'], stderr: '' });
+    });
+
+    it('refuses an app tree that holds a junction, and an appPath that is one', () => {
+      const inside = install('link-in-app', { entry: ENTRY_STAYS_ALIVE });
+      assert.equal(launchCheck(inside.config).code, 0);
+      const target = path.join(root, nextName('link-target'));
+      mkdirSync(target);
+      const link = path.join(path.dirname(inside.entry), 'linked');
+      execFileSync(path.join(process.env.SystemRoot, 'System32', 'cmd.exe'), ['/d', '/c', 'mklink', '/J', link, target], { stdio: 'pipe', windowsHide: true });
+      links.push(link);
+      assert.deepEqual(launchCheck(inside.config), { code: EXIT_CHILD_REFUSED, lines: ['SERVICE_CONFIG=ok', 'CPHOST_LAUNCH=refused:app_untrusted'], stderr: '' }, 'a junction inside the tree');
+      const real = install('link-app-root', { entry: ENTRY_STAYS_ALIVE });
+      const viaLink = junction('link-to-app', real.app);
+      writeFileSync(real.config, JSON.stringify({ host: { ...real.settings, appPath: viaLink } }));
+      assert.deepEqual(launchCheck(real.config), { code: EXIT_CHILD_REFUSED, lines: ['SERVICE_CONFIG=ok', 'CPHOST_LAUNCH=refused:app_untrusted'], stderr: '' }, 'appPath is a junction');
+    });
+
+    it('refuses a node.exe whose parent folder is a junction', () => {
+      const real = ownNode('link-node-real');
+      const link = junction('link-to-node', real.folder);
+      const installation = makeInstallation(root, nextName('link-node'), { path: path.join(link, 'node.exe'), sha256: real.sha256 }, { entry: ENTRY_STAYS_ALIVE });
+      assert.deepEqual(launchCheck(installation.config), { code: EXIT_CHILD_REFUSED, lines: ['SERVICE_CONFIG=ok', 'CPHOST_LAUNCH=refused:node_untrusted'], stderr: '' });
+    });
+  });
+
+  describe('parent folders of node.exe and of the app (launch-check)', () => {
+    const refused = (installation, word) => assert.deepEqual(launchCheck(installation.config), { code: EXIT_CHILD_REFUSED, lines: ['SERVICE_CONFIG=ok', `CPHOST_LAUNCH=refused:${word}`], stderr: '' }, word);
+    const ok = (installation) => assert.deepEqual(launchCheck(installation.config), { code: 0, lines: ['SERVICE_CONFIG=ok', 'CPHOST_LAUNCH=ok'], stderr: '' });
+
+    it('refuses a parent where others can delete children, change the DACL or take ownership, at the app and at node.exe, and at any level above', () => {
+      // icacls letters: D = delete (the folder itself), DC = delete child, WDAC = write DAC, WO = write owner. No inheritance flags: the right is on that folder itself.
+      for (const right of ['D', 'DC', 'WDAC', 'WO']) {
+        const appBelow = install(`parent-app-${right}`, { entry: ENTRY_STAYS_ALIVE });
+        icaclsOn(path.dirname(appBelow.app), '/grant', `*S-1-1-0:(${right})`);
+        refused(appBelow, 'app_parent_untrusted');
+        const nodeFolder = ownNode(`parent-node-${right}`);
+        const nodeBelow = makeInstallation(root, nextName('parent-node'), nodeFolder, { entry: ENTRY_STAYS_ALIVE });
+        icaclsOn(nodeFolder.folder, '/grant', `*S-1-1-0:(${right})`);
+        refused(nodeBelow, 'node_parent_untrusted');
+      }
+      // two levels above the app: the walk goes up level by level, not only one folder
+      const deep = path.join(root, nextName('parent-deep'));
+      mkdirSync(deep);
+      icaclsOn(deep, '/grant', '*S-1-1-0:(DC)');
+      const nested = makeInstallation(deep, 'inner', node, { entry: ENTRY_STAYS_ALIVE });
+      refused(nested, 'app_parent_untrusted');
+    });
+
+    it('lets others add a file next to the app tree, but not next to node.exe', () => {
+      const appSide = install('parent-add-app', { entry: ENTRY_STAYS_ALIVE });
+      icaclsOn(path.dirname(appSide.app), '/grant', '*S-1-1-0:(WD)'); // WD = write data = add file
+      ok(appSide);
+      const nodeFolder = ownNode('parent-add-node');
+      const nodeSide = makeInstallation(root, nextName('parent-add-node-inst'), nodeFolder, { entry: ENTRY_STAYS_ALIVE });
+      ok(nodeSide);
+      icaclsOn(nodeFolder.folder, '/grant', '*S-1-1-0:(WD)');
+      refused(nodeSide, 'node_parent_untrusted');
+    });
+  });
+
+  describe('what the launch gate holds while the host runs (renames are measured here)', () => {
+    /** The error code of a rename of `from`, or `undefined` when the rename worked (it is renamed back at once). */
+    function renameOutcome(from) {
+      const moved = `${from}-moved`;
+      try { renameSync(from, moved); } catch (error) { return error.code; }
+      renameSync(moved, from);
+      return undefined;
+    }
+
+    it('with only the gate held (no child): the app folder and every folder above it, and node.exe\'s folder and every folder above it, cannot be renamed', async () => {
+      const tools = path.join(root, nextName('hold-tools'));
+      const nodeFolder = path.join(tools, 'node');
+      mkdirSync(nodeFolder, { recursive: true });
+      const heldNode = copyNode(nodeFolder);
+      const installation = makeInstallation(path.join(root, nextName('hold-site')), 'one', heldNode, { entry: ENTRY_STAYS_ALIVE });
+      const host = serve(installation.config, undefined, ['pin-only']);
+      await waitForLine(host, 'CPHOST_PIN_HELD');
+      const outcomes = {
+        app: renameOutcome(installation.app), appParent: renameOutcome(path.dirname(installation.app)), appGrandparent: renameOutcome(path.dirname(path.dirname(installation.app))),
+        nodeFolder: renameOutcome(nodeFolder), nodeFolderParent: renameOutcome(tools),
+      };
+      assert.equal(outcomes.app, 'EBUSY', 'the pinned app folder: sharing violation');
+      for (const [name, code] of Object.entries(outcomes)) assert.match(String(code), /^(EBUSY|EPERM|EACCES)$/u, `${name}: the rename is refused while the gate is held`);
+      assert.equal(await stopAndWait(host), 0);
+      for (const target of [installation.app, nodeFolder]) assert.equal(renameOutcome(target), undefined, `${path.basename(target)} can be renamed again once the host has stopped`);
+    });
+
+    it('while node runs: the app folder cannot be renamed either', async () => {
+      const installation = install('hold-running', { entry: ENTRY_STAYS_ALIVE });
+      const host = serve(installation.config);
+      await waitForLine(host, 'CPHOST_READY');
+      assert.match(String(renameOutcome(installation.app)), /^(EBUSY|EPERM|EACCES)$/u);
+      assert.match(String(renameOutcome(path.dirname(installation.app))), /^(EBUSY|EPERM|EACCES)$/u);
+      assert.equal(await stopAndWait(host), 0);
+    });
+  });
+
+  describe('start failures that are not the child\'s doing', () => {
+    it('a ResumeThread that fails ends the Job, runs nothing, and counts as a failed start', async () => {
+      const installation = install('resume-fails', { entry: ENTRY_STAYS_ALIVE, host: { maxRestarts: 1 } });
+      const host = serve(installation.config, undefined, ['resume-fails']);
+      assert.equal(await waitForExit(host), EXIT_RESTART_LIMIT);
+      assert.equal(runCount(installation), 0, 'the entry never ran: the suspended child was ended, not left behind');
+      assert.equal(host.lines.filter((line) => line.startsWith('CPHOST_CHILD_START_FAILED=')).length, 2, 'the first start and the one restart');
+      assert.equal(host.lines.some((line) => line.startsWith('CPHOST_CHILD_STARTED=')), false);
+      assert.equal(host.lines.includes('CPHOST_READY'), false, 'never reported ready');
+    });
+
+    it('an empty or relative known folder from Windows fails the start instead of putting a bad value in the environment', async () => {
+      for (const fault of ['empty-profile', 'relative-appdata']) {
+        const installation = install(fault, { entry: ENTRY_STAYS_ALIVE, host: { maxRestarts: 1 } });
+        const host = serve(installation.config, undefined, [fault]);
+        assert.equal(await waitForExit(host), EXIT_RESTART_LIMIT, fault);
+        assert.equal(runCount(installation), 0, fault);
+        assert.equal(host.lines.filter((line) => line === 'CPHOST_CHILD_START_FAILED=environment').length, 2, fault);
+      }
+    });
+
+    it('rejects an unknown fault name in the test build', () => {
+      assert.equal(run(seamed, seamArgs('--fault', 'no-such-fault', 'service-check', install('fault-unknown', { entry: ENTRY_STAYS_ALIVE }).config)).code, EXIT_USAGE);
     });
   });
 });

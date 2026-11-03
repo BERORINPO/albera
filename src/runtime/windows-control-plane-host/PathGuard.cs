@@ -26,12 +26,33 @@ internal static class PathGuard
 #if ALBERA_CPHOST_TEST_SEAMS
     // Test-only: the SID a host test stands in for the administrators (its folders are owned by the signed-in user). Set once at start-up by `--trust-sid`.
     public static SecurityIdentifier? StandInForAdministrators { get; set; }
+
+    // Test-only: where the parent walk of IsParentChainSafe stops (inclusive). A developer's temp folder sits below folders other accounts can modify, which the production
+    // rule rightly refuses; the test folder is made safe from this one down. Set once at start-up by `--ancestor-floor`.
+    public static string? AncestorFloor { get; set; }
 #endif
 
     // The config file, already open: the ACL is read from that handle.
     public static bool IsTrustedConfigFile(string path, FileStream file) => Guarded(() => !HasReparsePoint(path) && IsTrusted(file.GetAccessControl()));
 
     public static bool IsTrustedFile(string path) => Guarded(() => !HasReparsePoint(path) && IsTrusted(new FileInfo(path).GetAccessControl()));
+
+    /// <summary>
+    /// `folder` and every folder above it up to the drive root. A rename or delete of a folder here moves what the host trusts, so for each: the owner is trusted (an owner can always
+    /// rewrite the DACL) and no other principal may hold DELETE (the folder itself, so a rename or removal of it), DELETE_CHILD, WRITE_DAC or WRITE_OWNER. With `denyAddFile` the first folder (node.exe's own) also refuses ADD_FILE, because
+    /// a file added next to node.exe is what a DLL search would find. ACEs that only apply to children (inherit-only) are skipped: each child is checked itself, in its turn.
+    /// </summary>
+    public static bool IsParentChainSafe(string folder, bool denyAddFile) => Guarded(() =>
+    {
+        for (string? current = folder; current is not null; current = Path.GetDirectoryName(current))
+        {
+            if (!IsSafeAncestor(new DirectoryInfo(current).GetAccessControl(), denyAddFile && current == folder)) return false;
+#if ALBERA_CPHOST_TEST_SEAMS
+            if (AncestorFloor is { } floor && string.Equals(current.TrimEnd('\\'), floor.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) break;
+#endif
+        }
+        return true;
+    });
 
     /// <summary>The folder, every folder below it and every file in them. A reparse point anywhere inside is refused.</summary>
     public static bool IsTrustedTree(string folder) => Guarded(() =>
@@ -72,6 +93,21 @@ internal static class PathGuard
             if (!allows) continue;
             if (ace is not KnownAce known) return false; // an allow ACE this check cannot read
             if ((known.AccessMask & WriteRights) != 0 && !IsTrustedPrincipal(known.SecurityIdentifier)) return false;
+        }
+        return true;
+    }
+
+    private static bool IsSafeAncestor(FileSystemSecurity security, bool denyAddFile)
+    {
+        int forbidden = Delete | DeleteChild | WriteDac | WriteOwner | GenericAll | GenericWrite | (denyAddFile ? WriteData : 0);
+        RawSecurityDescriptor descriptor = new(security.GetSecurityDescriptorBinaryForm(), 0);
+        if (descriptor.Owner is not { } owner || !IsTrustedPrincipal(owner) || descriptor.DiscretionaryAcl is not { } dacl) return false;
+        foreach (GenericAce ace in dacl)
+        {
+            bool allows = ace.AceType is AceType.AccessAllowed or AceType.AccessAllowedCallback or AceType.AccessAllowedCompound or AceType.AccessAllowedObject or AceType.AccessAllowedCallbackObject;
+            if (!allows || (ace.AceFlags & AceFlags.InheritOnly) != 0) continue;
+            if (ace is not KnownAce known) return false; // an allow ACE this check cannot read
+            if ((known.AccessMask & forbidden) != 0 && !IsTrustedPrincipal(known.SecurityIdentifier)) return false;
         }
         return true;
     }

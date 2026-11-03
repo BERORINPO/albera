@@ -21,14 +21,14 @@ describe('Control Plane app tree', () => {
   describe('which files', () => {
     it('takes the runtime files by extension, sorted, and leaves out build output, lock files, test vectors and C# sources', () => {
       const root = temp('albera-app-rules-');
-      for (const rel of ['entry.mjs', 'z.mjs', 'room-ui/index.html', 'room-ui/room.css', 'hyperv-env/env-io.ps1', 'broker-contract/receipt-v2.schema.json', 'A-upper.mjs']) write(root, `src/runtime/${rel}`);
-      for (const rel of ['windows-broker/Program.cs', 'windows-broker/X.csproj', 'windows-broker/packages.lock.json', 'windows-broker/bin/Release/x.mjs', 'x/obj/y.mjs', 'x/node_modules/z.mjs',
+      for (const rel of ['entry.mjs', 'z.mjs', 'room-ui/index.html', 'room-ui/room.css', 'hyperv-env/env-io.ps1', 'broker-contract/receipt-v2.schema.json', 'A-upper.mjs', 'room-ui/bin/kept.mjs', 'obj/kept-too.mjs', 'windows-notes/readme-source.mjs']) write(root, `src/runtime/${rel}`);
+      for (const rel of ['windows-broker/Program.cs', 'windows-broker/X.csproj', 'windows-broker/packages.lock.json', 'windows-broker/bin/Release/x.mjs', 'windows-approver/obj/y.mjs', 'x/node_modules/z.mjs',
         'broker-contract/test-vectors.json', 'broker-contract/match-code-vectors.json', 'notes.md', 'img.png']) write(root, `src/runtime/${rel}`);
       write(root, 'src/core/other.mjs'); // outside src/runtime
       write(root, 'package.json');
       assert.deepEqual(listAppTreeFiles(root).map((file) => file.rel), [
-        'src/runtime/A-upper.mjs', 'src/runtime/broker-contract/receipt-v2.schema.json', 'src/runtime/entry.mjs', 'src/runtime/hyperv-env/env-io.ps1',
-        'src/runtime/room-ui/index.html', 'src/runtime/room-ui/room.css', 'src/runtime/z.mjs',
+        'src/runtime/A-upper.mjs', 'src/runtime/broker-contract/receipt-v2.schema.json', 'src/runtime/entry.mjs', 'src/runtime/hyperv-env/env-io.ps1', 'src/runtime/obj/kept-too.mjs', 'src/runtime/room-ui/bin/kept.mjs',
+        'src/runtime/room-ui/index.html', 'src/runtime/room-ui/room.css', 'src/runtime/windows-notes/readme-source.mjs', 'src/runtime/z.mjs',
       ]);
     });
 
