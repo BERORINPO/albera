@@ -1,0 +1,26 @@
+name: TEMP capture NativeAOT lock (delete after use)
+# One-off: regenerate src/runtime/windows-setup/packages.lock.json with PublishAot=true on a clean runner, so the lock is not produced by a local download.
+on:
+  pull_request:
+    paths: ['.github/workflows/tmp-aot-lock.yml']
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9   # v4
+        with:
+          dotnet-version: 10.0.403
+      - name: Restore with --force-evaluate and print the lock
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pins = Join-Path $env:RUNNER_TEMP 'PinnedTools.g.cs'
+          Set-Content -LiteralPath $pins -Value '// placeholder for restore only'
+          dotnet restore src/runtime/windows-setup/Albera.Setup.csproj --force-evaluate --runtime win-x64 --configfile scripts/nuget.publish.config -p:EnableWindowsTargeting=true -p:RestorePackagesWithLockFile=true -p:PublishAot=true "-p:AlberaPinnedToolsSource=$pins"
+          if ($LASTEXITCODE -ne 0) { throw "restore failed" }
+          Get-Content -Raw src/runtime/windows-setup/packages.lock.json
+          (Get-FileHash -Algorithm SHA256 src/runtime/windows-setup/packages.lock.json).Hash
