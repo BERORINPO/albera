@@ -86,6 +86,15 @@ test('ACL inspection is a no-op off Windows', async () => {
   await assert.doesNotReject(assertPrivateWindowsAcl('/tmp/audit.jsonl', { platform: 'linux' }));
 });
 
+test('the Windows ACL script calls no PowerShell cmdlet (a cmdlet lookup took 22 to 64 s on hosted runners)', async () => {
+  // Windows PowerShell 5.1 builds its module analysis cache on the first cmdlet lookup. Under the minimal child env that took
+  // 22 s per call on windows-latest (measured 2026-11-03) and the first call alone exceeded the 60 s limit. .NET types only.
+  const source = await readFile(new URL('../src/runtime/windows-acl.mjs', import.meta.url), 'utf8');
+  const script = source.match(/const SCRIPT = String\.raw`([^`]*)`/)?.[1];
+  assert.ok(script && script.includes('GetAccessControl'), 'the ACL script must be found in windows-acl.mjs');
+  assert.deepEqual(script.match(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/g) ?? [], []);
+});
+
 test('Windows ACL query reads a real system DACL', {
   skip: process.platform !== 'win32' || process.env.ALBERA_RUN_WINDOWS_ACL_INTEGRATION !== '1',
 }, async () => {

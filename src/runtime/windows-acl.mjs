@@ -11,34 +11,39 @@ const POWERSHELL_RELATIVE_PATH = path.join('System32', 'WindowsPowerShell', 'v1.
 const MAX_ACL_BATCH_TARGETS = 32;
 const MAX_ACL_BATCH_INPUT_BYTES = 32 * 1024;
 const MAX_ACL_BATCH_OUTPUT_BYTES = 256 * 1024;
+// The script calls no PowerShell cmdlet on purpose. The first cmdlet lookup in Windows PowerShell 5.1 builds its module analysis
+// cache, which took 22 to 64 s on hosted Windows runners when the child env has no PSModuleAnalysisCachePath, so it uses .NET types only.
 const SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
-$targets = ConvertFrom-Json -InputObject $env:ALBERA_ACL_TARGETS -ErrorAction Stop
+$null = [System.Reflection.Assembly]::Load('System.Web.Extensions, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')
+$json = [System.Web.Script.Serialization.JavaScriptSerializer]::new()
+$targets = @($json.DeserializeObject($env:ALBERA_ACL_TARGETS))
 if ($targets.Count -lt 1 -or $targets.Count -gt 32) { throw 'invalid_acl_target_count' }
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$results = @(
-  foreach ($p in $targets) {
-    $acl = Get-Acl -LiteralPath $p -ErrorAction Stop
-    $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-    $sddl = $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::All)
-    $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new($sddl)
-    $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object {
-      [pscustomobject]@{
-        sid = $_.IdentityReference.Value
-        allow = ($_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow)
-        rights = [int64]$_.FileSystemRights
-      }
+$results = [System.Collections.ArrayList]::new()
+foreach ($p in $targets) {
+  if ([System.IO.Directory]::Exists($p)) { $acl = [System.IO.DirectoryInfo]::new($p).GetAccessControl() }
+  else { $acl = [System.IO.FileInfo]::new($p).GetAccessControl() }
+  $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+  $sddl = $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::All)
+  $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new($sddl)
+  $rules = [System.Collections.ArrayList]::new()
+  foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+    $null = $rules.Add(@{
+      sid = $rule.IdentityReference.Value
+      allow = ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow)
+      rights = [int64]$rule.FileSystemRights
     })
-    [pscustomobject]@{
-      path = $p
-      owner = $owner
-      currentUser = $currentUser
-      daclPresent = ($null -ne $raw.DiscretionaryAcl)
-      rules = $rules
-    }
   }
-)
-ConvertTo-Json -InputObject $results -Compress -Depth 4
+  $null = $results.Add(@{
+    path = $p
+    owner = $owner
+    currentUser = $currentUser
+    daclPresent = ($null -ne $raw.DiscretionaryAcl)
+    rules = $rules
+  })
+}
+[Console]::Out.Write($json.Serialize($results))
 `;
 const ENCODED_SCRIPT = Buffer.from(SCRIPT, 'utf16le').toString('base64');
 const ALLOWED_SIDS = new Set([SYSTEM_SID, ADMINISTRATORS_SID]);
