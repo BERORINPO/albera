@@ -2,6 +2,7 @@
 // Every rule also checks "files checked > 0" (no green while checking nothing), and rule 0 checks that
 // every path in the role table (spec/architecture.md §1) exists. Rule 7 keeps every screen file under 400 lines (spec/ui.md §1).
 // The only suppression is a trailing `// arch-allow: <reason>` on the same line. The count is printed every run.
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,13 +11,15 @@ import { checkApproverBuildInputs } from './approver-build-inputs.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ALLOW_RE = /\/\/\s*arch-allow:\s*\S+/;
 
+const BUILD_OUTPUT = /^src\/runtime\/windows-[^/]+\/(?:bin|obj)$/u;
+
 /** @param {string} dir @returns {string[]} */
 function listFiles(dir, exts = ['.mjs', '.js', '.html']) {
   const abs = path.join(ROOT, dir);
   if (!fs.existsSync(abs)) return [];
   return fs.readdirSync(abs, { withFileTypes: true }).flatMap((e) => {
     const rel = path.join(dir, e.name);
-    if (e.isDirectory()) return e.name === 'bin' || e.name === 'obj' ? [] : listFiles(rel, exts); // build output (the Control Plane app tree copy under bin/ holds a second copy of src/runtime)
+    if (e.isDirectory()) return BUILD_OUTPUT.test(rel.replaceAll('\\', '/')) ? [] : listFiles(rel, exts); // the build output of a .NET project under src/runtime (the Control Plane app tree copy there holds a second copy of src/runtime); nothing else is skipped
     return exts.includes(path.extname(e.name)) ? [rel] : [];
   });
 }
@@ -470,7 +473,7 @@ check('12a Control Plane host is not referenced by Observer layers or runtime mo
   CPHOST_REF.test(line) ? 'the Control Plane host must not be imported, spawned or named here (build-on-demand only)' : null,
 );
 const cpHostRoot = 'src/runtime/windows-control-plane-host';
-const cpHostSources = ['Program.cs', 'ServiceHost.cs', 'Supervisor.cs', 'ChildLauncher.cs', 'Native.cs', 'HostConfig.cs', 'PathGuard.cs', 'LaunchGate.cs', 'ChildEnvironment.cs', 'BoundedLog.cs', 'HostLog.cs', 'TestSeam.cs'];
+const cpHostSources = ['Program.cs', 'ServiceHost.cs', 'Supervisor.cs', 'ChildLauncher.cs', 'Native.cs', 'HostConfig.cs', 'PathGuard.cs', 'LaunchGate.cs', 'FolderPin.cs', 'ChildEnvironment.cs', 'BoundedLog.cs', 'HostLog.cs', 'TestSeam.cs'];
 for (const f of [...cpHostSources, 'Albera.ControlPlaneHost.csproj', 'packages.lock.json']) {
   if (!fs.existsSync(path.join(ROOT, cpHostRoot, f))) violations.push(`[12b Control Plane host source] ${cpHostRoot}/${f} does not exist (false-safe)`);
 }
@@ -497,6 +500,16 @@ for (const w of cpHostWired) violations.push(`[12d package.json] ${w} wires the 
 for (const name of ['build:control-plane-host', 'build:control-plane-app', 'build:control-plane']) {
   if (typeof pkg.scripts?.[name] !== 'string') violations.push(`[12d package.json] ${name} script is missing (false-safe)`);
 }
+// 12e. listFiles skips the build output of a .NET project under src/runtime (see BUILD_OUTPUT). That is only safe while no source file lives in a bin/ or obj/ folder, so a tracked file
+//      in one is a violation, anywhere in the repository. The list is read NUL-separated (`git ls-files -z`: a name with a newline cannot hide a path). When git is missing or fails
+//      the check has not run, and that is a violation too: a rule that cannot look must not pass.
+let trackedBuildOutput = [];
+try {
+  trackedBuildOutput = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
+    .split('\0').filter((file) => /(?:^|\/)(?:bin|obj)\//u.test(file));
+} catch (error) { violations.push(`[12e tracked build output] git ls-files -z could not run (${error.code ?? `exit ${error.status}`}): the check did not run (false-safe)`); }
+for (const file of trackedBuildOutput) violations.push(`[12e tracked build output] ${file} is tracked inside a bin/ or obj/ folder, which the arch scan and the app tree skip`);
+results.push(`12e no tracked file under bin/ or obj/: ${trackedBuildOutput.length} found`);
 results.push(`12 Control Plane host is build-on-demand: ${cpHostSources.length + 2} source files, ${cpHostWired.length} wiring violations`);
 
 for (const r of results) console.log(r);

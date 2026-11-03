@@ -10,14 +10,29 @@
 // secret. The credential for Claude Code is never in this environment; the room-service sets it on one spawn call only (section 6.2).
 internal static class ChildEnvironment
 {
-    /// <summary>The allowlisted variables for the current process's profile. Creates the temp folder under the profile when it does not exist.</summary>
+    private static Func<Environment.SpecialFolder, string> folderSource = Environment.GetFolderPath;
+
+#if ALBERA_CPHOST_TEST_SEAMS
+    /// <summary>Test-only: where the folders come from (a host test cannot make Windows return an empty or relative folder).</summary>
+    public static void UseFolderSource(Func<Environment.SpecialFolder, string> source) => folderSource = source;
+#endif
+
+    /// <summary>The allowlisted variables for the current process's profile. Creates the temp folder under the profile when it does not exist.
+    /// Throws InvalidOperationException when Windows gives an empty or relative folder: the child would get a variable that points nowhere, or into its current directory.</summary>
     public static IReadOnlyDictionary<string, string> Create()
     {
-        string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        string temp = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Temp");
+        string windows = Absolute(Environment.SpecialFolder.Windows), userProfile = Absolute(Environment.SpecialFolder.UserProfile);
+        string appData = Absolute(Environment.SpecialFolder.ApplicationData), localAppData = Absolute(Environment.SpecialFolder.LocalApplicationData);
+        string temp = Path.Combine(localAppData, "Temp");
         Directory.CreateDirectory(temp);
-        return From(windows, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), temp);
+        return From(windows, userProfile, appData, localAppData, temp);
+    }
+
+    private static string Absolute(Environment.SpecialFolder kind)
+    {
+        string path = folderSource(kind);
+        if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path)) throw new InvalidOperationException($"known folder {kind} is empty or not absolute");
+        return path;
     }
 
     internal static IReadOnlyDictionary<string, string> From(string windows, string userProfile, string appData, string localAppData, string temp) =>
