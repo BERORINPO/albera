@@ -5,12 +5,13 @@ import { PassThrough } from 'node:stream';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createWindowsFolderGuard, foldersToGuard } from '../src/runtime/room-service-folder-guard.mjs';
+import { ancestorsOf, createWindowsFolderGuard, foldersToGuard } from '../src/runtime/room-service-folder-guard.mjs';
 
 // The check on the folders `claude.exe` is started from (src/runtime/room-service-folder-guard.mjs, zaku SEC-001). The pure part, the process handling with a Fake powershell, and (on Windows) the
 // real script against two folders whose ACLs are known without changing anything: C:\Windows\System32 (TrustedInstaller owns it, only administrators write) and a folder the signed-in user made
 // (the user owns it and can write: not trusted).
 const INSTALL = 'C:\\Program Files\\Albera\\bin\\claude';
+const ABOVE = ['C:\\Program Files\\Albera\\bin', 'C:\\Program Files\\Albera', 'C:\\Program Files', 'C:\\'];
 
 test('foldersToGuard: the executable\'s parent up to the install folder, inclusive; nothing for a path that is not inside it', () => {
   assert.deepEqual(foldersToGuard(`${INSTALL}\\claude.exe`, INSTALL), [INSTALL]);
@@ -20,6 +21,11 @@ test('foldersToGuard: the executable\'s parent up to the install folder, inclusi
     assert.deepEqual(foldersToGuard(executable, INSTALL), [], executable);
   }
   assert.deepEqual(foldersToGuard(`${INSTALL}\\claude.exe`, 'relative'), []);
+});
+
+test('ancestorsOf: every folder above the install folder up to the drive root', () => {
+  assert.deepEqual(ancestorsOf(INSTALL), ABOVE);
+  assert.deepEqual(ancestorsOf('C:\\x'), ['C:\\']);
 });
 
 /** A Fake powershell: records how it was started and what it was sent, and ends with the given exit code. */
@@ -43,7 +49,7 @@ test('the guard: exit 0 is trusted, any other exit, a spawn that fails or a path
   const executable = `${INSTALL}\\claude.exe`;
   const ok = fakeSpawn({ code: 0 });
   assert.equal(await createWindowsFolderGuard({ installDir: INSTALL, platform: 'win32', spawnImpl: ok.spawnImpl }).check(executable), true);
-  assert.deepEqual(JSON.parse(ok.seen.stdin), { folders: [INSTALL], file: executable });
+  assert.deepEqual(JSON.parse(ok.seen.stdin), { folders: [INSTALL], ancestors: ABOVE, file: executable });
   const [{ file, args, options }] = ok.seen.calls;
   assert.match(file, /powershell\.exe$/u);
   assert.ok(!JSON.stringify(args).includes('Albera'), 'no path on the command line');

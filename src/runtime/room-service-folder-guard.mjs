@@ -9,7 +9,8 @@ import process from 'node:process';
 //   - no other principal has an Allow ACE with write-data, append-data (add-file / add-subdirectory), delete-child, delete, write-DAC or write-owner (or the generic write / all bits),
 //     inherit-only ACEs included. The Control Plane's own service SID is "other". CREATOR OWNER counts as trusted (it only resolves to whoever creates the object, which the write rights cover),
 //   - the DACL is not NULL, and
-//   - neither the path nor any of its parents is a reparse point (junction, symlink, mount point).
+//   - neither the path nor any of its parents is a reparse point (junction, symlink, mount point), and
+//   - the folders ABOVE the install folder, up to the drive root, have a trusted owner and give nobody else the right to delete, rename or re-own them (PathGuard.IsSafeAncestor of #184).
 // It is asked before EVERY run (the files are not watched), for the executable and for every folder from its parent up to the install folder. Anything that stops the check from finishing is
 // "not trusted". BCL types only through Windows PowerShell (no cmdlet: the first cmdlet lookup can cost 22 s, see windows-acl.mjs); nothing here changes any ACL. The path travels on stdin.
 // Where the install folder is: room-service-config.mjs CLAUDE_INSTALL_DIR (a fixed path, never an environment variable).
@@ -41,7 +42,26 @@ try {
     }
     return $true
   }
+  # The parents above the install folder (#184, PathGuard.IsSafeAncestor): a rename or removal of one of them moves what is trusted below it. Owner trusted, and nobody else may hold
+  # DELETE, DELETE_CHILD, WRITE_DAC, WRITE_OWNER or the generic write / all bits; ACEs that only apply to children (inherit-only) are skipped, each child is checked itself.
+  $forbidden = 0x10000 -bor 0x40 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000
+  function IsSafeAncestor($security) {
+    $d = [System.Security.AccessControl.RawSecurityDescriptor]::new($security.GetSecurityDescriptorBinaryForm(), 0)
+    if (($null -eq $d.Owner) -or ($null -eq $d.DiscretionaryAcl)) { return $false }
+    if ($trusted -notcontains $d.Owner.Value) { return $false }
+    foreach ($ace in $d.DiscretionaryAcl) {
+      if (([string]$ace.AceType) -notlike 'AccessAllowed*') { continue }
+      if (([int]$ace.AceFlags -band 0x08) -ne 0) { continue }
+      if ($ace -isnot [System.Security.AccessControl.KnownAce]) { return $false }
+      if ((($ace.AccessMask -band $forbidden) -ne 0) -and ($trusted -notcontains $ace.SecurityIdentifier.Value)) { return $false }
+    }
+    return $true
+  }
   $ok = $true
+  foreach ($p in @($in['ancestors'])) {
+    $p = [string]$p
+    if (-not (IsSafeAncestor ([System.IO.DirectoryInfo]::new($p).GetAccessControl()))) { $ok = $false }
+  }
   foreach ($p in @($in['folders'])) {
     $p = [string]$p
     if ((HasReparse $p) -or -not (IsTrusted ([System.IO.DirectoryInfo]::new($p).GetAccessControl()))) { $ok = $false }
@@ -68,6 +88,17 @@ export function foldersToGuard(executable, installDir) {
   }
 }
 
+/** The folders above `installDir`, up to the drive root. Pure; Windows path rules. */
+export function ancestorsOf(installDir) {
+  const w = path.win32;
+  const out = [];
+  for (let dir = w.dirname(w.resolve(installDir)); out.length < MAX_PATHS; dir = w.dirname(dir)) {
+    out.push(dir);
+    if (w.dirname(dir) === dir) break;
+  }
+  return out;
+}
+
 /**
  * The real guard: `check(executable) -> Promise<boolean>`, true only when the executable and its folders up to `installDir` pass the test above. Windows only; elsewhere false.
  * @param {{ installDir: string, platform?: string, spawnImpl?: Function }} options
@@ -92,7 +123,7 @@ export function createWindowsFolderGuard({ installDir, platform = process.platfo
         child.once('error', () => done(false));
         child.once('close', (code) => done(code === 0));
         child.stdin.once('error', () => {}); // an early exit is reported by 'close'
-        child.stdin.end(JSON.stringify({ folders, file: String(executable) }));
+        child.stdin.end(JSON.stringify({ folders, ancestors: ancestorsOf(installDir), file: String(executable) }));
       });
     },
   });
