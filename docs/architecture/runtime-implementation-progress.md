@@ -17,6 +17,29 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 - これで進むもの: 漏れたキーの後始末 (stage 1 を動かすのには不要)
 - 取り消し: できない (無効にしたキーは元に戻らない)
 
+### 初回の移行とサブスクでの初動作 (stage 1)
+- やること: `U:\dev\artifacts\albera-owner-run-2026-11-04\手順.md` のとおり、次の 3 つを行う
+  1. `C:\dev\albera-owner-1104\owner\migrate.cmd` をダブルクリックし、UAC で「はい」を押す
+  2. `token.cmd` を実行し、トークンを room の資格情報欄に保存する
+  3. VM を起動し、作業を 1 つ送って、照合コードと Hello で承認する
+- 所要: 約 10 分 (Yosuke の作業時間)
+- これで進むもの: stage 1 の受入。所有者の PC での初めての通し確認
+- 取り消し: できる (`-Mode uninstall`。Hello の鍵は消えない)
+
+### 戻せる承認の採択 (AGM-1・AGM-2)
+- やること: ADR-002 Amendment 2026-11-04 (#195、Proposed) を読み、次の 2 点を承認するか決める
+  - AGM-1: Broker の WmiGate の許可リストに、チェックポイント・巻き戻し・電源・読み取りの行を足す。installer が VM を ProductionOnly にすることも含む
+  - AGM-2: Broker 用の証明鍵を発行し、Authority に登録する
+- 所要: 約 15 分 (Yosuke の読む時間)
+- これで進むもの: 戻せる承認の PR3・PR4・PR6 の merge。PR2 (計測) と PR5 (CP と room) は承認前でも進められる
+- 取り消し: 採択は revert できる。鍵は uninstall で消える
+
+### 作業フォルダの削除
+- やること: `U:\dev\hyperv\clones\_legacy-probe-nana` (481 MB、旧版の取り出しで、再生成できる) をエクスプローラーで削除する。安全装置 (cc-safety-net) が、作業フォルダの外での一括削除を止めたため残っている
+- 所要: 約 1 分
+- これで進むもの: ディスクの片付けだけ
+- 取り消し: ごみ箱に入るので、戻せる
+
 ### ご意見の受付 1/2: GitHub App を作る
 - やること: (1) 項目入りの作成ページを開き、内容を確かめて「Create GitHub App」: https://github.com/settings/apps/new?name=ALBERA%20feedback%20intake&description=Files%20ALBERA%20in-app%20feedback%20into%20a%20private%20intake%20repository.&url=https%3A%2F%2Fgithub.com%2FBERORINPO%2Falbera&public=false&webhook_active=false&issues=write (2) できた App の画面で「Generate a private key」(.pem が保存される) (3)「Install App」→ BERORINPO →「Only select repositories」で albera-feedback だけを選んで Install (4) App ID (App の設定画面の上) と installation の番号 (Install 後の画面のアドレス末尾の数字) を控える
 - 所要: 約 5 分 (Yosuke の作業時間)
