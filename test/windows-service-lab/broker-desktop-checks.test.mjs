@@ -1,24 +1,31 @@
 import assert from 'node:assert/strict';
-import { createPublicKey } from 'node:crypto';
+import { createPublicKey, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { computeActionDigest } from '../../src/runtime/broker-contract/action-digest.mjs';
+import { validateReceiptV2 } from '../../src/runtime/broker-contract/receipt-v2.mjs';
 import { runWithGuestFunctions } from './guest-functions.mjs';
 
-// The Broker desktop section of the nested Hyper-V lab (lab-vm.ps1 -HyperV, checks bd_* in lab-hyperv-rights-check.ps1; Broker PR #164 "desktop pipe"). The VM run is the lead's. Here: what the
-// guest script installs and asks (its text), and the verdict logic, loaded out of the guest script on its own (by syntax tree, so none of the code that creates services runs) and fed
-// made-up client lines. The client itself is tested in desktop-client.test.mjs.
+// The Broker desktop section of the nested Hyper-V lab (lab-vm.ps1 -HyperV, checks bd_* in lab-hyperv-rights-check.ps1; Broker PR #164 "desktop pipe", #166 "act session and lease"). The VM run is
+// the lead's. Here: what the guest script installs and asks (its text), and the verdict logic, loaded out of the guest script on its own (by syntax tree, so none of the code that creates
+// services runs) and fed made-up client lines; the receipt the lab signs is checked against the contract (digest, signature, validator). The client itself is tested in desktop-client.test.mjs,
+// which also sends the lab's receipt to the real Broker.
 const labDir = path.dirname(fileURLToPath(import.meta.url));
 const guest = readFileSync(path.join(labDir, 'lab-hyperv-rights-check.ps1'), 'utf8');
 const driver = readFileSync(path.join(labDir, 'lab-vm.ps1'), 'utf8');
 const guestPath = path.join(labDir, 'lab-hyperv-rights-check.ps1');
 const windowsOnly = { skip: process.platform !== 'win32' && 'Windows PowerShell only', timeout: 90_000 };
 
-const CHECKS = ['bd_prereq_broker', 'bd_broker_ready', 'bd_broker_token', 'bd_cp_token', 'bd_other_token', 'bd_desktop_pipe', 'bd_cp_view_open', 'bd_cp_view_capture', 'bd_other_refused', 'bd_cp_act_refused'];
+const CHECKS = [
+  'bd_prereq_broker', 'bd_broker_ready', 'bd_broker_token', 'bd_cp_token', 'bd_other_token', 'bd_desktop_pipe', 'bd_cp_view_open', 'bd_cp_view_capture',
+  'bd_cp_act_before_claim_refused', 'bd_other_refused', 'bd_cp_task_start_claim', 'bd_cp_act_open', 'bd_cp_act_input', 'bd_cp_act_input_mouse',
+  'bd_cp_act_wrong_generation_refused', 'bd_cp_act_revoked_by_new_claim', 'bd_broker_restart_drops_lease',
+];
 const section = (name) => guest.slice(guest.indexOf(`function ${name}`), guest.indexOf('\n}\n', guest.indexOf(`function ${name}`)));
 
-test('the section names exactly the ten checks, and every one of them is emitted by the script', () => {
+test('the section names exactly the seventeen checks, and every one of them is emitted by the script', () => {
   const titles = guest.slice(guest.indexOf('$BdTitles = [ordered]@{'), guest.indexOf('$Ops = @('));
   assert.deepEqual([...titles.matchAll(/^\s+(bd_[a-z_]+)\s*=/gmu)].map((m) => m[1]), CHECKS);
   for (const id of CHECKS) assert.ok(new RegExp(`'${id}'`, 'u').test(guest.slice(guest.indexOf('function Invoke-BrokerDesktopLab'))), `${id} is emitted`);
@@ -47,46 +54,104 @@ test('the Broker config names the inner VM and the Control Plane SID; the Contro
   assert.match(config, /computers = @\(\[ordered\]@\{ computerId = \$BdComputerId; vmId = \$VmId\.ToLowerInvariant\(\) \}\)/u);
   assert.match(guest, /\$BdDesktopPipe = "\$\{BdPipe\}_desktop"/u, 'the Broker\'s rule: the claim pipe name + _desktop');
   assert.match(section('Invoke-BrokerDesktopLab'), /sc\.exe sdset \$BdBrokerSvc "D:\(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY\)\(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA\)\(A;;LC;;;\$\{cpSid\}\)"/u);
-  assert.match(section('Invoke-BrokerDesktopLab'), /Write-BdBrokerConfig \$brokerConfig "\$LabRoot\\data\\broker\\journal\.sqlite" \$cpSid \$VmId/u);
+  assert.match(section('Invoke-BrokerDesktopLab'), /\$authority = New-LabAuthority \$BdAuthorityKid/u, 'the key the Broker pins is the one the lab signs with');
+  assert.match(section('Invoke-BrokerDesktopLab'), /Write-BdBrokerConfig \$brokerConfig "\$LabRoot\\data\\broker\\journal\.sqlite" \$cpSid \$VmId \$authority/u);
   assert.ok(guest.indexOf('foreach ($c in $Cells) { Invoke-HvCell $c $innerId }') < guest.indexOf('Invoke-BrokerDesktopLab $innerId'), 'after the four measurements');
   assert.match(guest, /foreach \(\$c in \(\$Cells \+ \$BdCells\)\) \{ Remove-HvCell \$c \}/u, 'the new services are removed with the old ones, also on failure');
 });
 
-test('what each check asks of the client: view = open + capture as the Control Plane (service identity), act = open only, the other caller by PID and owner', () => {
+test('what each check asks of the client: view = open + capture as the Control Plane (service identity), the act open before any claim, the other caller by PID and owner', () => {
   const body = section('Invoke-BrokerDesktopLab');
   assert.match(body, /Invoke-HvShimJob \$BdCpSvc 'view' @\('desktop', \$BdDesktopPipe, "service:\$BdBrokerSvc", "open:view:\$BdComputerId", 'capture:640x480', "save=\$pngPath"\) 'desktop'/u);
-  assert.match(body, /Invoke-HvShimJob \$BdCpSvc 'act' @\('desktop', \$BdDesktopPipe, "service:\$BdBrokerSvc", "open:act:\$BdComputerId"\) 'desktop'/u);
+  assert.match(body, /Invoke-HvShimJob \$BdCpSvc 'act-before' @\('desktop', \$BdDesktopPipe, "service:\$BdBrokerSvc", "open:act:\$\{BdComputerId\}:\$\{BdOp1\}:1"\) 'desktop'/u);
   assert.match(body, /Invoke-HvShimJob \$BdOtherSvc 'view' @\('desktop', \$BdDesktopPipe, "pid:\$\{brokerPid\}:\$\{brokerSid\}", "open:view:\$BdComputerId", 'capture:640x480'\) 'desktop'/u);
   assert.match(body, /Add-BdStepCheck 'bd_cp_view_open' \$viewJob 'open' 'allowed' @\(\) \$cpShape/u);
   assert.match(body, /Add-BdStepCheck 'bd_cp_view_capture' \$viewJob 'capture' 'allowed' @\(\) \$cpShape/u);
-  assert.match(body, /Add-BdStepCheck 'bd_cp_act_refused' \$actJob 'open' 'refused' @\('refused_reply'\) \$cpShape/u, 'an act refusal must be the Broker\'s reply, not a closed pipe');
+  assert.match(body, /Add-BdStepCheck 'bd_cp_act_before_claim_refused' \$beforeJob 'open' 'refused' @\('refused_reply'\) \$cpShape/u, 'a refusal must be the Broker\'s reply, not a closed pipe');
   assert.match(body, /Add-BdStepCheck 'bd_other_refused' \$otherJob 'open' 'refused' @\('refused_pipe', 'refused_reply'\) \$otherShape/u);
   assert.match(body, /Add-BdTokenCheck 'bd_broker_token' \$brokerToken \$brokerSid \$true 'unrestricted' 'FAIL'/u);
   assert.match(body, /Add-BdTokenCheck 'bd_cp_token' [^\n]+ \$cpSid \$false 'restricted' 'FAIL'/u);
   assert.match(body, /Add-BdTokenCheck 'bd_other_token' [^\n]+ \$otherSid \$true 'unrestricted' 'BLOCKED'/u);
+  assert.ok(body.indexOf("'bd_cp_act_before_claim_refused'") < body.indexOf('Invoke-BdActChecks $authority $cpShape'), 'the refusal is measured before the lab makes a claim');
 });
 
-test('nothing here elevates, touches the host, or prints the guest password; the driver copies the Broker build and brings the picture back', () => {
+test('the act part: one claim by the helper as the Control Plane, then an act session on it (open, keyboard, mouse), a wrong generation, a second claim from the open session, a restart', () => {
+  const acts = section('Invoke-BdActChecks');
+  assert.match(guest, /\$BdOp1 = 'lab-bd-act-1'/u);
+  assert.match(guest, /\$BdOp2 = 'lab-bd-act-2'/u);
+  assert.match(acts, /Add-BdClaimCheck 'claim1' \$BdOp1 \$Authority \$CpShape/u);
+  assert.match(acts, /Invoke-HvShimJob \$BdCpSvc 'act-input' @\('desktop', \$BdDesktopPipe, "service:\$BdBrokerSvc", "open:act:\$\{BdComputerId\}:\$\{BdOp1\}:1", "input:tap=\$BdShiftVk", 'input:move=100,100\+down=1\+up=1'\) 'desktop'/u);
+  assert.match(guest, /\$BdShiftVk = 16/u, 'VK_SHIFT');
+  assert.match(acts, /Add-BdStepCheck 'bd_cp_act_open' \$actJob 'open' 'allowed' @\(\) \$CpShape/u);
+  assert.match(acts, /Add-BdStepCheck 'bd_cp_act_input' \$actJob 'input' 'allowed' @\(\) \$CpShape/u, 'the keyboard request alone decides the PASS');
+  assert.match(acts, /Add-BdStepCheck 'bd_cp_act_input_mouse' \$actJob 'input_2' 'measured' @\(\) \$CpShape/u, 'the mouse request is only recorded');
+  assert.match(acts, /Invoke-HvShimJob \$BdCpSvc 'act-wrong-generation' @\('desktop', \$BdDesktopPipe, "service:\$BdBrokerSvc", "open:act:\$\{BdComputerId\}:\$\{BdOp1\}:2"\) 'desktop'/u);
+  assert.match(acts, /Add-BdStepCheck 'bd_cp_act_wrong_generation_refused' \$wrongJob 'open' 'refused' @\('refused_reply'\) \$CpShape/u);
+  // Everything that needs a lease is blocked, never FAILed, when no claim was recorded.
+  assert.match(acts, /\$dependents = @\(\$BdTitles\.Keys \| Where-Object \{ \$_ -in @\('bd_cp_act_open', 'bd_cp_act_input', 'bd_cp_act_input_mouse', 'bd_cp_act_wrong_generation_refused', 'bd_cp_act_revoked_by_new_claim', 'bd_broker_restart_drops_lease'\) \}\)/u);
+  assert.equal([...acts.matchAll(/Add-BdBlocked \$dependents/gu)].length, 2, 'no helper, and no recorded claim');
+  const claim = section('Add-BdClaimCheck');
+  assert.match(claim, /Invoke-HvJob \$BdCpSvc \$Name \$BdHelper @\(\) \(New-BdHelperInput "\$BdCpSvc\.\$Name" \$signed\.Claim\) \$null/u, 'the claim is sent by the helper, as the Control Plane service');
+  assert.match(claim, /Add-BdJobCheck 'bd_cp_task_start_claim' \$claimJob \$outcome \(Get-BdVerdict 'allowed' @\(\) \$outcome\) \$Shape/u);
+  const ends = section('Invoke-BdLeaseEndChecks');
+  assert.match(ends, /New-BdSignedClaim 'claim2' \$BdOp2 \$Authority/u);
+  assert.match(ends, /Invoke-HvShimJob \$BdCpSvc 'act-revoke' @\('desktop', \$BdDesktopPipe, "service:\$BdBrokerSvc", "open:act:\$\{BdComputerId\}:\$\{BdOp1\}:1", 'claim', "end:\$BdRevokeWaitMs", "claim-exe=\$BdHelper", "claim-stdin=\$claimInput"\) 'desktop'/u,
+    'the first session is open while the second claim is made by the same process');
+  assert.match(ends, /Add-BdJobCheck 'bd_cp_act_revoked_by_new_claim' \$revokeJob \(Get-BdOutcome \$byId 'end'\) \(Get-BdRevokeVerdict \$byId\) \$CpShape/u);
+  assert.match(ends, /"open:act:\$\{BdComputerId\}:\$\{BdOp2\}:2"/u, 'the second lease is generation 2');
+  assert.match(ends, /\$restartedPid = Restart-BdBroker/u);
+  assert.match(ends, /Add-BdJobCheck 'bd_broker_restart_drops_lease' \$afterJob \$after \(Get-BdRestartVerdict \$before \$after\) \$CpShape/u);
+  assert.ok(ends.indexOf("'lease2-before'") < ends.indexOf('Restart-BdBroker') && ends.indexOf('Restart-BdBroker') < ends.indexOf("'lease2-after'"), 'accepted before the restart, refused after it');
+  const restart = section('Restart-BdBroker');
+  assert.match(restart, /Stop-LabService \$BdBrokerSvc/u);
+  assert.match(restart, /& sc\.exe start \$BdBrokerSvc/u);
+});
+
+test('the claim is the lab authority\'s receipt for the lab project and room, in the shape the Broker\'s three-key claim takes; the helper is told to find the Broker service by name', () => {
+  const signed = section('New-BdSignedClaim');
+  assert.match(signed, /Invoke-HvJob \$BdCpSvc "\$Name-fence" \$BdHelper @\(\) \(New-BdHelperInput "\$BdCpSvc\.\$Name-fence" \$null\) \$null/u);
+  assert.match(signed, /New-LabTaskStartReceipt \$Authority \$fence \$OperationId \$BdProjectId \$BdComputerId \$BdTask \$BdLeaseId \$BdPolicyVersion/u);
+  const input = section('New-BdHelperInput');
+  assert.match(input, /\$body\.receipt = \$Claim\.receipt; \$body\.signature = \$Claim\.signature; \$body\.action = \$Claim\.action/u);
+  assert.match(input, /\$body\.expect = \[ordered\]@\{ serviceName = \$BdBrokerSvc \}/u);
+  assert.match(input, /\$body\.fence = \$BdComputerId/u);
+  assert.match(input, /pipeName = \$BdPipe/u, 'the claim pipe, not the desktop pipe');
+  const config = section('Write-BdBrokerConfig');
+  assert.match(config, /authorityKeys = @\(\[ordered\]@\{ kid = \$Authority\.Kid; spki = \$Authority\.Spki \}\)/u);
+  assert.match(config, /leaseId = \$BdLeaseId; policyVersion = \$BdPolicyVersion/u, 'the receipts carry the same two values');
+  assert.doesNotMatch(guest, /privateBlob|ExportPkcs8|CngKeyBlobFormat\]::(Ecc|Pkcs8)Private/u, 'the authority\'s private key is never exported');
+});
+
+test('nothing here elevates, touches the host, or prints the guest password; the driver copies the Broker build and the pipe client and brings the picture back', () => {
   assert.doesNotMatch(guest, /Password|SecureString|PSCredential|-Verb\s+RunAs|\bRunAs\b/iu);
   assert.match(driver, /\$brokerPublish = Join-Path \$Repo 'src\\runtime\\windows-broker\\bin\\Release\\net10\.0-windows\\win-x64\\publish'/u);
   assert.match(driver, /Copy-Item -ToSession \$session -Path \(Join-Path \$brokerPublish '\*'\) -Destination "\$guestRoot\\bin\\broker" -Recurse -Force/u);
+  assert.match(driver, /\$helperPublish = Join-Path \$Repo 'src\\runtime\\windows-broker-pipe-client\\bin\\Release\\net10\.0-windows\\win-x64\\publish'/u);
+  assert.match(driver, /Copy-Item -ToSession \$session -Path \(Join-Path \$helperPublish '\*'\) -Destination "\$guestRoot\\bin\\helper" -Recurse -Force/u);
+  assert.match(guest, /\$BdHelper = "\$LabRoot\\bin\\helper\\albera-windows-broker-pipe-client\.exe"/u);
+  assert.match(driver, /if \(\$HyperV\) \{ \$needed \+= @\('src\\runtime\\windows-broker-pipe-client\\bin\\Release\\net10\.0-windows\\win-x64\\publish'\) \}/u, 'checked before a VM is created');
   assert.match(driver, /Copy-Item -FromSession \$session -Path \$picture -Destination \(Join-Path \(Split-Path -Parent \$ResultsFile\) 'bd-view-capture\.png'\)/u);
 });
 
 // ---- the verdict logic, loaded by itself out of the guest script
-const functions = ['ConvertTo-BdById', 'Get-BdOutcome', 'Get-BdVerdict', 'Test-BdPipeAcl', 'New-LabSpki'];
+const functions = [
+  'ConvertTo-BdById', 'Get-BdOutcome', 'Get-BdVerdict', 'Get-BdClaimOutcome', 'Get-BdRevokeVerdict', 'Get-BdRestartVerdict', 'Test-BdPipeAcl',
+];
 const logicBody = `
 $out = [ordered]@{}
 $out.outcomes = @($cases.outcomes | ForEach-Object { Get-BdOutcome (ConvertTo-BdById @($_.lines)) ([string]$_.step) })
 $out.verdicts = @($cases.verdicts | ForEach-Object { Get-BdVerdict ([string]$_.expect) ([string[]]@($_.refusals)) ([string]$_.outcome) })
 $out.acls = @($cases.acls | ForEach-Object { [bool](Test-BdPipeAcl $_.open ([string]$_.brokerSid) ([string]$_.cpSid) $_.pid).Ok })
-$out.spki = New-LabSpki
-$out.spki2 = New-LabSpki
+$out.claims = @($cases.claims | ForEach-Object { Get-BdClaimOutcome $_.line 'task.start' })
+$out.revokes = @($cases.revokes | ForEach-Object { Get-BdRevokeVerdict (ConvertTo-BdById @($_.lines)) })
+$out.restarts = @($cases.restarts | ForEach-Object { Get-BdRestartVerdict ([string]$_.before) ([string]$_.after) })
 ConvertTo-Json -InputObject $out -Compress -Depth 6
 `;
 
 const line = (id, extra = {}) => ({ probe: 'desktop', id, ...extra });
 const connected = line('connect', { ok: true, result: 'connected' });
+const accepted = (id) => line(id, { ok: true, reply: 'accepted' });
+const denied = (id) => line(id, { ok: false, reply: 'denied' });
 const BROKER = 'S-1-5-80-1000000000-1000000000-1000000000-1000000000-1000000001';
 const CP = 'S-1-5-80-2000000000-2000000000-2000000000-2000000000-2000000002';
 const pipeOpen = (extra = {}) => ({
@@ -113,16 +178,27 @@ test('the verdict logic: what each client line means, and what each check does w
     [[connected, line('open', { ok: true, reply: 'accepted' }), line('capture', { ok: false, reply: 'png_invalid', pngCheck: 'bad_iend' })], 'capture', 'bad_result'],
     [[connected, line('open', { ok: true, reply: 'accepted' }), line('capture', { ok: false, reply: 'closed' })], 'capture', 'error'],
     [[connected, line('open', { ok: true, reply: 'accepted' }), line('capture', { ok: false, reply: 'invalid' })], 'capture', 'error'],
+    // input steps: the keyboard request, and the mouse request that comes second (id input_2) and is skipped when the first is refused
+    [[connected, accepted('open'), accepted('input'), denied('input_2')], 'input', 'allowed'],
+    [[connected, accepted('open'), accepted('input'), denied('input_2')], 'input_2', 'refused_reply'],
+    [[connected, accepted('open'), denied('input'), line('input_2', { ok: false, skipped: true, because: 'input' })], 'input_2', 'refused_reply'],
+    [[connected, accepted('open'), line('input', { ok: false, reply: 'closed' })], 'input', 'error'],
+    // end: the Broker ended the session by itself (denied), or did not within the time given
+    [[connected, accepted('open'), line('claim', { ok: true, reply: 'claimed' }), denied('end')], 'end', 'refused_reply'],
+    [[connected, accepted('open'), line('claim', { ok: true, reply: 'claimed' }), line('end', { ok: false, reply: 'timeout' })], 'end', 'still_open'],
+    [[connected, accepted('open'), line('claim', { ok: true, reply: 'claimed' }), line('end', { ok: false, reply: 'closed' })], 'end', 'error'],
   ].map(([lines, step, expect]) => ({ lines, step, expect }));
 
   const view = [], refusedAct = ['refused_reply'], refusedAny = ['refused_pipe', 'refused_reply'];
   const verdicts = [
     // [expect, refusals, outcome, expected]
     ['allowed', view, 'allowed', 'PASS'], ['allowed', view, 'refused_pipe', 'FAIL'], ['allowed', view, 'refused_reply', 'FAIL'], ['allowed', view, 'bad_result', 'FAIL'],
-    ['allowed', view, 'error', 'BLOCKED'], ['allowed', view, 'missing', 'BLOCKED'],
+    ['allowed', view, 'error', 'BLOCKED'], ['allowed', view, 'missing', 'BLOCKED'], ['allowed', view, 'still_open', 'FAIL'],
     ['refused', refusedAct, 'refused_reply', 'PASS'], ['refused', refusedAct, 'refused_pipe', 'BLOCKED'], ['refused', refusedAct, 'allowed', 'FAIL'],
-    ['refused', refusedAct, 'bad_result', 'FAIL'], ['refused', refusedAct, 'error', 'BLOCKED'], ['refused', refusedAct, 'missing', 'BLOCKED'],
+    ['refused', refusedAct, 'bad_result', 'FAIL'], ['refused', refusedAct, 'error', 'BLOCKED'], ['refused', refusedAct, 'missing', 'BLOCKED'], ['refused', refusedAct, 'still_open', 'FAIL'],
     ['refused', refusedAny, 'refused_pipe', 'PASS'], ['refused', refusedAny, 'refused_reply', 'PASS'], ['refused', refusedAny, 'allowed', 'FAIL'], ['refused', refusedAny, 'error', 'BLOCKED'],
+    // measured: whatever happened is the result; only a step that gave no answer is BLOCKED
+    ['measured', view, 'refused_reply', 'MEASURED'], ['measured', view, 'allowed', 'MEASURED'], ['measured', view, 'bad_result', 'MEASURED'], ['measured', view, 'error', 'BLOCKED'], ['measured', view, 'missing', 'BLOCKED'],
   ].map(([expect, refusals, outcome, expected]) => ({ expect, refusals, outcome, expected }));
 
   const acls = [
@@ -140,15 +216,127 @@ test('the verdict logic: what each client line means, and what each check does w
     [null, false],
   ].map(([open, expected]) => ({ open, expected, brokerSid: BROKER, cpSid: CP, pid: 4242 }));
 
-  const result = runWithGuestFunctions(guestPath, functions, logicBody, { outcomes, verdicts, acls });
+  // The helper's last line for a claim. The claim is only 'allowed' when it is a first claim of task.start recorded as UNKNOWN: a replay, another action or another state is not what was asked.
+  const claims = [
+    [{ ok: true, state: 'UNKNOWN', action: 'task.start' }, 'allowed'],
+    [{ ok: true, state: 'UNKNOWN', action: 'task.start', replayed: true }, 'bad_result'],
+    [{ ok: true, state: 'UNKNOWN', action: 'synthetic.noop' }, 'bad_result'],
+    [{ ok: true, state: 'EXECUTED', action: 'task.start' }, 'bad_result'],
+    [{ ok: false, code: 'denied' }, 'refused_reply'],
+    [{ ok: false, code: 'server_identity_mismatch' }, 'error'],
+    [{ ok: false, code: 'broker_unavailable' }, 'error'],
+    [{ ok: false, code: 'timeout' }, 'error'],
+    [{ ok: false, code: 'invalid_response' }, 'error'],
+    [null, 'missing'],
+  ].map(([claim, expected]) => ({ line: claim, expected }));
+
+  // The revocation job (steps open, claim, end): PASS only when all three went as intended; no session or no claim says nothing about revocation, so it is BLOCKED; a session still open is a FAIL.
+  const claimed = line('claim', { ok: true, reply: 'claimed', state: 'UNKNOWN', action: 'task.start' });
+  const claimRefused = line('claim', { ok: false, reply: 'denied' });
+  const revokes = [
+    [[connected, accepted('open'), claimed, denied('end')], 'PASS'],
+    [[connected, accepted('open'), claimed, line('end', { ok: false, reply: 'timeout' })], 'FAIL'],
+    [[connected, accepted('open'), claimed, line('end', { ok: false, reply: 'closed' })], 'BLOCKED'],
+    [[connected, accepted('open'), claimed, accepted('end')], 'FAIL'],
+    [[connected, accepted('open'), claimRefused, line('end', { ok: false, reply: 'timeout' })], 'BLOCKED'],
+    [[connected, accepted('open'), claimRefused, denied('end')], 'BLOCKED'],
+    [[connected, denied('open'), line('claim', { ok: false, skipped: true, because: 'open' }), line('end', { ok: false, skipped: true, because: 'open' })], 'BLOCKED'],
+    [[line('connect', { ok: false, result: 'denied' }), line('open', { ok: false, skipped: true, because: 'connect' })], 'BLOCKED'],
+    [[connected, accepted('open')], 'BLOCKED'],
+    [[], 'BLOCKED'],
+  ].map(([lines, expected]) => ({ lines, expected }));
+
+  const restarts = [
+    ['allowed', 'refused_reply', 'PASS'], ['allowed', 'allowed', 'FAIL'], ['allowed', 'bad_result', 'FAIL'], ['allowed', 'error', 'BLOCKED'], ['allowed', 'missing', 'BLOCKED'],
+    ['refused_reply', 'refused_reply', 'BLOCKED'], ['error', 'refused_reply', 'BLOCKED'], ['missing', 'refused_reply', 'BLOCKED'], ['refused_pipe', 'refused_reply', 'BLOCKED'],
+  ].map(([before, after, expected]) => ({ before, after, expected }));
+
+  const result = runWithGuestFunctions(guestPath, functions, logicBody, { outcomes, verdicts, acls, claims, revokes, restarts });
   assert.deepEqual(result.outcomes, outcomes.map((o) => o.expect));
   assert.deepEqual(result.verdicts, verdicts.map((v) => v.expected));
   assert.deepEqual(result.acls, acls.map((a) => a.expected));
-  // The throwaway authority key is a well-formed P-256 SubjectPublicKeyInfo (what ServiceConfig.DecodePublicKey accepts), and every call makes a new one.
-  for (const text of [result.spki, result.spki2]) {
-    const key = createPublicKey({ key: Buffer.from(text, 'base64'), format: 'der', type: 'spki' });
-    assert.deepEqual([key.asymmetricKeyType, key.asymmetricKeyDetails.namedCurve], ['ec', 'prime256v1']);
-    assert.equal(Buffer.from(text, 'base64').length, 91);
-  }
+  assert.deepEqual(result.claims, claims.map((c) => c.expected));
+  assert.deepEqual(result.revokes, revokes.map((r) => r.expected));
+  assert.deepEqual(result.restarts, restarts.map((r) => r.expected));
+});
+
+// ---- the throwaway authority and the receipt it signs, against the contract
+const authorityBody = `
+$out = [ordered]@{}
+$a = New-LabAuthority $cases.kid
+$b = New-LabAuthority $cases.kid
+$out.kid = $a.Kid
+$out.spki = $a.Spki
+$out.spki2 = $b.Spki
+$out.claim = New-LabTaskStartReceipt $a $cases.fence $cases.operationId $cases.projectId $cases.computerId $cases.task $cases.leaseId $cases.policyVersion
+$out.claim2 = New-LabTaskStartReceipt $a $cases.fence $cases.operationId2 $cases.projectId $cases.computerId $cases.task $cases.leaseId $cases.policyVersion
+$out.digests = @($cases.dtos | ForEach-Object {
+  $dtoArgs = @{}; foreach ($p in $_.args.PSObject.Properties) { $dtoArgs[$p.Name] = [string]$p.Value }
+  Get-LabActionDigest ([string]$_.purpose) @{ action = [string]$_.action; projectId = [string]$_.projectId; computerId = [string]$_.computerId; args = $dtoArgs }
+})
+$out.nonces = @(1..40 | ForEach-Object { New-LabNonce })
+ConvertTo-Json -InputObject $out -Compress -Depth 6
+`;
+const authorityFunctions = ['New-LabAuthority', 'Write-LabBigEndian', 'Write-LabDigestString', 'Write-LabDigestMap', 'Get-LabActionDigest', 'New-LabNonce', 'New-LabTaskStartReceipt'];
+
+test('the lab authority and its task.start receipt: the key is a P-256 SPKI the Broker can pin, the signature verifies, and the contract accepts the receipt, DTO and digest', windowsOnly, () => {
+  const fence = { ok: true, brokerEpoch: 3, leaseGeneration: 1, leaseId: 'lab-hv-lease-1', brokerChallenge: 'AAAAAAAAAAAAAAAAAAAAAA' };
+  const common = { projectId: 'lab-project', computerId: 'lab-room', leaseId: 'lab-hv-lease-1', policyVersion: 'lab-hv-policy-1', task: 'Lab check: tap the Shift key once' };
+  const dtos = [
+    { purpose: 'guest.command', action: 'task.start', projectId: 'lab-project', computerId: 'lab-room', args: { task: 'Lab check: tap the Shift key once' } },
+    { purpose: 'guest.command', action: 'task.start', projectId: 'p', computerId: 'c', args: { zeta: 'z', task: 't', alpha: 'a', aZ: 'x', ab: 'y' } },   // keys sort by ordinal value: aZ before ab (an ignore-case sort puts ab first)
+    { purpose: 'broker.operation', action: 'synthetic.noop', projectId: 'proj-alpha', computerId: 'pc-01', args: {} },
+    { purpose: 'guest.command', action: 'task.start', projectId: 'p', computerId: 'c', args: { task: 'a'.repeat(256) } },
+  ];
+  const result = runWithGuestFunctions(guestPath, authorityFunctions, authorityBody, { fence, kid: 'lab-hv-authority-1', operationId: 'lab-bd-act-1', operationId2: 'lab-bd-act-2', dtos, ...common });
+
+  // The key: what ServiceConfig.DecodePublicKey takes, new on every call.
+  const publicKey = createPublicKey({ key: Buffer.from(result.spki, 'base64'), format: 'der', type: 'spki' });
+  assert.deepEqual([publicKey.asymmetricKeyType, publicKey.asymmetricKeyDetails.namedCurve], ['ec', 'prime256v1']);
+  assert.equal(Buffer.from(result.spki, 'base64').length, 91);
   assert.notEqual(result.spki, result.spki2);
+  assert.equal(result.kid, 'lab-hv-authority-1');
+
+  // The digest is the contract's, byte for byte, including the ordinal key order.
+  assert.deepEqual(result.digests, dtos.map(({ purpose, ...dto }) => computeActionDigest(purpose, dto)));
+
+  // The nonce is 128 bits in the canonical form the receipt grammar wants (22 base64url characters, the last one among A Q g w), and they differ.
+  for (const nonce of result.nonces) assert.match(nonce, /^[A-Za-z0-9_-]{21}[AQgw]$/u);
+  assert.equal(new Set(result.nonces).size, result.nonces.length);
+
+  for (const [claim, operationId] of [[result.claim, 'lab-bd-act-1'], [result.claim2, 'lab-bd-act-2']]) {
+    const receiptBytes = Buffer.from(claim.receipt, 'base64');
+    // Signed with the key that was pinned: SHA-256, IEEE P1363 (r||s, 64 bytes) over the exact receipt bytes.
+    const signature = Buffer.from(claim.signature, 'base64');
+    assert.equal(signature.length, 64);
+    assert.equal(verify('sha256', receiptBytes, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature), true, 'the signature verifies under the pinned key');
+    assert.equal(verify('sha256', Buffer.concat([receiptBytes, Buffer.from(' ')]), { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature), false, 'and under no other bytes');
+
+    // The action DTO that rides along is the one the digest was made from.
+    const dto = JSON.parse(Buffer.from(claim.action, 'base64').toString('utf8'));
+    assert.deepEqual(dto, { action: 'task.start', projectId: 'lab-project', computerId: 'lab-room', args: { task: common.task } });
+
+    // The contract's own validator accepts it against the state the Broker would hold: the lease and policy of the config, the fence's epoch, generation and challenge.
+    const now = Math.floor(Date.now() / 1000);
+    const verdict = validateReceiptV2(receiptBytes, {
+      clock: () => now, environment: 'production', action: dto,
+      expected: {
+        audience: 'albera-host-broker', purpose: 'guest.command', operationId, idempotencyKey: `idem-${operationId}`, leaseId: common.leaseId,
+        leaseGeneration: fence.leaseGeneration, brokerEpoch: fence.brokerEpoch, brokerChallenge: fence.brokerChallenge, policyVersion: common.policyVersion,
+      },
+    });
+    assert.deepEqual([verdict.ok, verdict.ok ? verdict.receipt.action : verdict], [true, 'task.start']);
+    assert.equal(verdict.receipt.kid, 'lab-hv-authority-1');
+    assert.ok(verdict.receipt.exp - verdict.receipt.iat <= 300, 'within the contract\'s TTL bound');
+    assert.ok(receiptBytes.length <= 1280, 'within the receipt size bound');
+    // The three-key claim (receipt, signature, action) fits the Broker's 4 KiB request bound and the helper's input bound.
+    assert.ok(Buffer.byteLength(JSON.stringify({ receipt: claim.receipt, signature: claim.signature, action: claim.action })) < 4096);
+  }
+  // A claim for the other operation shares nothing that must be unique: ids, nonce and digest-independent fields differ.
+  const [one, two] = [result.claim, result.claim2].map((claim) => JSON.parse(Buffer.from(claim.receipt, 'base64').toString('utf8')));
+  assert.notEqual(one.receiptId, two.receiptId);
+  assert.notEqual(one.approvalId, two.approvalId);
+  assert.notEqual(one.nonce, two.nonce);
+  assert.equal(one.actionDigest, two.actionDigest);
+  assert.match(one.receiptId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
 });

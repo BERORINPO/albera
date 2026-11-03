@@ -21,7 +21,7 @@ namespace Albera.Lab;
 //   squat <pipe> <seconds>         a hostile first-instance pipe server that grants Everyone, reports its owner, counts the bytes a client sends
 //   hyperv <vmGuid>                what this token may do to one running Hyper-V VM through WMI (HyperVProbe.cs; one JSON line per check; one TypeKey and one mouse move)
 //   desktop <pipe> <identity> <step>... [save=<path>]
-//                                  a client of the Broker's desktop pipe (DesktopClient.cs): checks who the server is, then open / capture steps; one JSON line per step
+//                                  a client of the Broker's desktop pipe (DesktopClient.cs): checks who the server is, then open / capture / input / claim / end steps; one JSON line per step
 internal static class Probes
 {
     private const uint OpenExisting = 3, SecuritySqosPresent = 0x00100000, SecurityIdentification = 0x00010000;

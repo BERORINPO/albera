@@ -11,8 +11,9 @@ param(
   # Run the HOST installer check (scripts/host/albera-host.ps1 through lab-host-install-check.ps1) in the VM instead of the service-identity lab.
   [switch]$HostInstall,
   # Run the NESTED Hyper-V rights lab (lab-hyperv-rights-check.ps1) instead: the guest gets the Hyper-V role and an inner VM, and a Broker-shaped service
-  # tries the screen capture and input calls; then the real Broker runs as a service and its desktop pipe is used (view session, refusals). The outer VM gets 5 GB
-  # and nested virtualization. Needs the lab shim build and the Broker build (-Build makes both).
+  # tries the screen capture and input calls; then the real Broker runs as a service and its desktop pipe is used (view session, refusals, and the act session with the
+  # lease a task.start claim makes). The outer VM gets 5 GB and nested virtualization. Needs the lab shim build and the Broker build, which includes the Control Plane
+  # pipe client (-Build makes them).
   [switch]$HyperV
 )
 $ErrorActionPreference = 'Stop'
@@ -44,6 +45,7 @@ function Invoke-HyperVRightsLab([string]$VmName, [pscredential]$Credential, [str
   $guestScript = Join-Path $PSScriptRoot 'lab-hyperv-rights-check.ps1'
   $shimPublish = Join-Path $Repo 'test\windows-service-lab\bin\Release\net10.0-windows\win-x64\publish'
   $brokerPublish = Join-Path $Repo 'src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish'
+  $helperPublish = Join-Path $Repo 'src\runtime\windows-broker-pipe-client\bin\Release\net10.0-windows\win-x64\publish'
   $session = New-DirectSession $VmName $Credential 6 $null
   try {
     # The guest script refuses to run unless this is set (it edits services and a local group).
@@ -60,9 +62,10 @@ function Invoke-HyperVRightsLab([string]$VmName, [pscredential]$Credential, [str
       $session = New-DirectSession $VmName $Credential 20 $bootBefore
       Invoke-Command -Session $session -ScriptBlock { $env:ALBERA_LAB_VM = '1' }
     }
-    Invoke-Command -Session $session -ScriptBlock { param($r) New-Item -ItemType Directory -Force -Path "$r\bin\shim", "$r\bin\broker" | Out-Null } -ArgumentList $guestRoot
+    Invoke-Command -Session $session -ScriptBlock { param($r) New-Item -ItemType Directory -Force -Path "$r\bin\shim", "$r\bin\broker", "$r\bin\helper" | Out-Null } -ArgumentList $guestRoot
     Copy-Item -ToSession $session -Path (Join-Path $shimPublish '*') -Destination "$guestRoot\bin\shim" -Recurse -Force
     Copy-Item -ToSession $session -Path (Join-Path $brokerPublish '*') -Destination "$guestRoot\bin\broker" -Recurse -Force
+    Copy-Item -ToSession $session -Path (Join-Path $helperPublish '*') -Destination "$guestRoot\bin\helper" -Recurse -Force   # the Control Plane's pipe client: it sends the lab's task.start claims
     Write-Host 'running the rights probe as four service identities, then the real Broker service and its desktop pipe'
     $raw = Invoke-Command -Session $session -FilePath $guestScript -ArgumentList $guestRoot, 'run'
     $json = @($raw | Where-Object { $_ -is [string] -and $_ -like '{*' }) | Select-Object -Last 1
@@ -121,8 +124,9 @@ try {
     # Fail before creating a VM when the binaries run-lab.ps1 copies are missing.
     $needed = @('test\windows-service-lab\bin\Release\net10.0-windows\win-x64\publish',
                 'src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish')
-    # The Hyper-V lab runs the lab shim and the real Broker; the other labs also copy the Approval Authority.
-    if (-not $HyperV) { $needed += @('src\runtime\windows-approval-authority\bin\Release\net10.0-windows\win-x64\publish') }
+    # The Hyper-V lab runs the lab shim, the real Broker and the Control Plane pipe client (it sends the claims that make a lease); the other labs also copy the Approval Authority.
+    if ($HyperV) { $needed += @('src\runtime\windows-broker-pipe-client\bin\Release\net10.0-windows\win-x64\publish') }
+    else { $needed += @('src\runtime\windows-approval-authority\bin\Release\net10.0-windows\win-x64\publish') }
     foreach ($p in $needed) {
       if (-not (Test-Path -LiteralPath (Join-Path $repo $p))) { throw "missing build output (run with -Build): $p" }
     }
