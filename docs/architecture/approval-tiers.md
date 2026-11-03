@@ -77,6 +77,7 @@ The order is chosen so that no step can make a destructive action promptless on 
 3. Receipt v3 with `basis`, the policy file, the Hello-signed policy change, the careful and standard tiers. `environment.destroy` keeps prompting. **3a done in PR #123 (2026-10-31)**: the tiers and the four actions that need no attestation; see "Step 3a as built". **3b done in PR #126 (2026-10-31)**: `environment.start` with a `none` attestation; `environment.create` stays with a person (no VM exists to attest); see "Step 3b as built".
 4. Checkpoint before `task.start` (measure the cost in the VM lab first). **Measured 2026-10-31**, see "Step 4: checkpoint cost"; the Production checkpoint type is chosen (provisional). **Built (this PR, 2026-10-31)**: `task.start` is signed without a person at the standard tier for one Broker task-start attestation; see "Step 4 as built". **Step 4b built (this PR, #133)**: older task checkpoints are pruned and a person-approved restore (undo) exists in the Hyper-V prototype; see "Step 4b as built".
 5. Scoped grants (delegated tier) and the approval-screen text for them. **Not built (provisional, 2026-11-01)**: after step 4 a grant would remove no prompt; see "Scoped grants".
+6. **Production Broker path (Proposed, 2026-11-04).** Steps 2 to 4b exist only in the same-user Hyper-V prototype. The Windows Broker is to take the checkpoint, sign the statements and perform restore and start itself, so that a task start is reversible on the production path. Contract only, nothing built: see "Production Broker path" below and ADR-002 "Amendment 2026-11-04".
 
 Each step ships on its own and keeps today's behaviour until the owner picks a tier.
 
@@ -162,6 +163,47 @@ Before a `guest.command` / `task.start` is submitted, the Hyper-V Broker side ta
 - **Documented limit of the prune (review of #140).** It removes ANY checkpoint of that VM whose name has the fixed shape, whoever made it. Only a host administrator can create such a name (the Broker derives it from an operation id), and a host administrator can already delete the VM, so no other principal gains anything.
 - **Why `environment.restore_checkpoint` can never be signed without a person (review of #140).** The Authority decides in `AuthorityCore.Submit`: it signs without a person only when `TierPolicy.NeedsPerson(action)` is false (action in `ReceiptV3.PolicyBasisActions`, standard tier, no override) or `CanSkipWithAttestation(action)` is true and the attestation proves (action in `ReceiptV3.AttestedPolicyBasisActions`). Both are ALLOW-lists; the new action is in neither, so it falls through to `store.Submit(request, digest)` (pending, a person's presence signature is the only way to a receipt), and there is no code path in `AuthorityCore` that signs otherwise. The Node receipt contract independently refuses `basis policy` for it (`basis_action`). The explicit tests: C# harness `PolicyChecks.cs` (default careful, explicit careful, standard, standard with every override, an allow-list check over every known action), `AttestationChecks.cs` (network attestation, standard and careful) and `TaskStartChecks.cs` (task-start attestation, standard and careful), the Node twin `runtime-broker-contract-v3.test.mjs`, and `runtime-task-checkpoint-lifecycle.test.mjs` (the C# lists equal the JS lists, `TierPolicy` and `AuthorityCore` keep the allow-list shape).
 - **Real host.** The `checkpoint` and `restore` ops ran only against synthetic stand-ins for the Hyper-V cmdlets (`test/helpers/fake-hyperv-cmdlets.ps1` under PowerShell 7: it proves the script's own selection and refusal logic, not Hyper-V). `scripts/task-start-attestation-real.mjs` (second attestation leaves exactly one checkpoint, the newer) and `scripts/checkpoint-restore-real.mjs` (restore from Off and from Running, generation, stale refusals, no-checkpoint refusal) are the lead's host checks. Unverified until run: that `Restore-VMSnapshot` on a Running VM ends Off for a ProductionOnly checkpoint, and that `Remove-VMSnapshot` of the parent keeps the child.
+
+## Production Broker path (Proposed, NOT IMPLEMENTED; ADR-002 Amendment 2026-11-04)
+
+Steps 2, 4 and 4b above work in the same-user prototype (`env-io.ps1`). The privileged Windows Broker has none of them: no checkpoint, no attestation key, no restore, and no recorded outcome but `UNKNOWN`. The Approval Authority is already built, and the Authority's code does not change. The wire shapes, journal v4, the WmiGate rows, the generation owner, the lease rules, the restore state machine, the known limits and the measurements C1 to C8 are in [ADR-002, Amendment 2026-11-04](adr-002-host-broker-trust-contract.md); this section only shows how the steps fit, and is not a second source of those details. Two owner decisions gate the build: AGM-1 (the WmiGate allowlist and ProductionOnly) and AGM-2 (the Broker's attestation key).
+
+The rule of the design: **the Broker makes the facts and performs; the Authority decides whether a person is needed; the Control Plane sequences and shows.** The Control Plane holds no key and cannot make a statement.
+
+**Flow A: reversible work (at `standard`, no person).** `careful` takes the same steps and only step 5 shows a Hello prompt.
+
+1. Intent, then fence.
+2. `_vm vmState` gives the VM generation g.
+3. The Control Plane builds the `task.start` action with `vmId` and `expectedGeneration: g`.
+4. `_vm attestTaskStart` (the 8 items). The Broker checks the config, the generation, the fence and the free space, revokes the desktop lease, reads ProductionOnly and the network, takes the checkpoint, records it in its ledger, reads the network again and signs (60 s).
+5. Submit to the Authority; at `standard` a policy receipt is signed.
+6. Claim. The Broker checks the generation and that the receipt's `attestationDigest` is the one it recorded for this operation; the claim is recorded and the lease is granted; the prune (only ledger ids with no child) runs after the reply.
+7. The hands start.
+
+**Flow B: undo (one Hello).**
+
+1. The room stops the hands when "undo" is pressed.
+2. `vmState` gives `restorable` and the generation g.
+3. `environment.restore_checkpoint {vmId, expectedGeneration: g}` always asks a person: Hello.
+4. Claim. In one transaction the Broker makes the generation g + 1, the state `restoring` and revokes the lease; the reply is `UNKNOWN`.
+5. The Broker's worker runs `ApplySnapshot` on the newest claimed checkpoint and reads the VM back Off: the claim becomes `APPLIED` and the state `ready`.
+6. The Control Plane polls `inspect` (up to 300 s).
+7. `environment.start {vmId, expectedGeneration: g + 1}` and `_vm attestNetwork`; at `standard` no person is needed. The restore never starts the VM by itself (D3).
+8. The room says the undo is done and the VM is starting (about 2 minutes).
+
+**What this changes in the steps above** (the prototype keeps working for same-user runs):
+
+| Topic | Prototype (steps 2 to 4b) | Production Broker (Proposed) |
+|---|---|---|
+| Who owns the VM generation | the `generation` in the VM's Notes | `vm_state.generation` in the Broker's journal; the room asks `vmState` instead of keeping a fixed number |
+| Which snapshots are the Broker's | the name `albera-task-<24 hex>` | the Broker's ledger (`checkpoints`); names play no role |
+| Prune | every other ALBERA checkpoint, assuming a parent's removal keeps its child | only ledger ids that have no child (the Microsoft Learn page says `DestroySnapshot` may destroy dependents; C4 measures it); in a linear history this prunes nothing until C4 decides |
+| Where `projectId` comes from | the VM's Notes | the caller's claim, bound by the Authority; the Broker cannot check it (L3) |
+| Outcome of a start or restore | none in the Broker | `UNKNOWN`, `APPLIED`, `NOT_APPLIED` on `inspect` |
+
+**Not changed:** the Authority's code, the tiers, `environment.restore_checkpoint` asking a person at every tier, `environment.destroy` and `environment.purge` asking at every tier, the `careful` tier and a per-action override on `task.start` asking a person, and the rule that nothing outside the VM is undone (ADR-004).
+
+**Known limit carried over (ADR-002, L1):** a compromised Control Plane can repeat attest, submit and claim, and so move the restore point to the current state. "Restorable" is a convenience, not a safety boundary; an owner who wants every task start approved uses `careful` or the per-action override.
 
 ## Room start approval (A3: `room --require-start-approval --approval <file>`)
 
