@@ -129,7 +129,9 @@ test('run: DONE claim end to end - argv and environment seen by the child, the M
   assert.equal(record.env.CLAUDE_CONFIG_DIR, ws.configDir);
   const allowedKeys = new Set(Object.keys(buildClaudeEnvironment({ oauthToken: TOKEN, configDir: 'c', tempDir: 't', platform: process.platform, systemRoot: 'r' })).map((k) => k.toUpperCase()));
   // Windows adds these itself to any child (see buildClaudeEnvironment); none holds a path into the owner's profile except HOMEDRIVE/HOMEPATH, which the driver overrides.
-  const addedByWindows = process.platform === 'win32' ? ['LOGONSERVER', 'SYSTEMDRIVE', 'USERDOMAIN', 'USERNAME', 'WINDIR'] : [];
+  // Variables the OS adds to every child on its own (not from our allowlist and not pointing at a profile).
+  const addedByWindows = process.platform === 'win32' ? ['LOGONSERVER', 'SYSTEMDRIVE', 'USERDOMAIN', 'USERNAME', 'WINDIR']
+    : process.platform === 'darwin' ? ['__CF_USER_TEXT_ENCODING'] : [];
   for (const key of Object.keys(record.env)) assert.ok(allowedKeys.has(key.toUpperCase()) || addedByWindows.includes(key.toUpperCase()), `unexpected variable ${key}`);
   if (process.platform === 'win32') assert.equal(`${record.env.HOMEDRIVE}${record.env.HOMEPATH}`, ws.configDir);
   assert.ok(!JSON.stringify(record.argv).includes(TOKEN), 'the token is not on the command line');
