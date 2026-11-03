@@ -5,6 +5,11 @@
 # driver sets ALBERA_LAB_VM=1 in the VM). The Hello key is replaced by a throw-away public key passed as the normal parameters (no private half exists): the lab has no Windows Hello, and no check here asks for an approval.
 # LAB ONLY, and it proves nothing about provenance: the -ExpectedTreeHash is computed HERE from the very folders that were copied into the guest (`albera-host.ps1 -Mode hashes`, its ALBERA_HOST_TREE_HASH= line).
 # On the owner's PC that value must be typed from the CI log of the reviewed commit (workflow host-build-hashes); this hook only exercises the code path (copy, hash the copies, compare, record).
+# A second pass then repeats install / status / reinstall / uninstall WITH -GrantHyperVToBroker (ADR-002 Amendment 2026-11-03) and checks, independently of the installer's own read-back:
+# the Broker's service SID (and nobody else: not albera-cp, not the Authority) is in Hyper-V Administrators (S-1-5-32-578) while installed and gone after uninstall with the group otherwise unchanged,
+# the Broker is sidtype UNRESTRICTED and the Authority RESTRICTED, both keep SeChangeNotifyPrivilege only, the Broker config holds the one `computers` entry, and the install record names the grant.
+# The VM's GUID comes in through the lab-only -VmId (a fixed throw-away GUID: this guest has no VM of that name, so the name-to-GUID lookup is NOT exercised here and the evidence says so).
+# The pass is BLOCKED, not passed, when the guest has no Hyper-V Administrators group or when -KeepInstalled left the default install in place; a FAIL in it fails the whole check.
 # Refuses to run unless ALBERA_LAB_VM=1 and the two Albera folders do not exist yet. NOT executed yet (the lab VM run is the lead's): expect first-run fixes.
 param(
   [Parameter(Mandatory = $true)][string]$HostScriptDir,
@@ -67,7 +72,76 @@ if (-not $KeepInstalled) {
   $final = Invoke-Host @{ Mode = 'status' }
   $evidence.finalStatus = [ordered]@{ exit = $final.Exit; saysNotInstalled = ($final.Output -match 'not installed') }
 }
-$evidence.pass = ($install.Exit -eq 0) -and ($status.Exit -eq 0) -and ($again.Exit -eq 0) -and $evidence.reinstall.manifestUnchanged -and $evidence.reinstall.saysAlreadyComplete -and
+# ---- second pass: the same install WITH -GrantHyperVToBroker
+$hvAdminsSid = 'S-1-5-32-578'
+$labVmId = '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f'   # fixed and throw-away; the guest has no VM of this name
+function Add-GrantCheck($List, [string]$Id, [bool]$Ok, [string]$Observed) { $List.Add([ordered]@{ id = $Id; status = $(if ($Ok) { 'PASS' } else { 'FAIL' }); observed = $Observed }) }
+function Get-HvGroupText { $name = (Get-LocalGroup -SID $hvAdminsSid).Name; ((& net.exe localgroup $name 2>&1) | Out-String) }
+function Get-ScText([string]$Verb, [string]$Name) { ((& sc.exe $Verb $Name 2>&1) -join ' ') -replace '\s+', ' ' }
+function Get-ScPrivileges([string]$Name) { @([regex]::Matches((Get-ScText 'qprivs' $Name), 'Se[A-Za-z]+Privilege') | ForEach-Object { $_.Value }) }
+$grant = [ordered]@{
+  status = 'BLOCKED'; reason = ''
+  guidSource = 'a fixed lab GUID through the lab-only -VmId; the lookup of a real VM by name is NOT exercised here'
+  hyperVWmiNamespaceInGuest = $false; checks = @()
+}
+$hvNamespace = $false
+try { Get-CimInstance -Namespace 'root\virtualization\v2' -ClassName Msvm_VirtualSystemManagementService -ErrorAction Stop | Out-Null; $hvNamespace = $true } catch { }
+$grant.hyperVWmiNamespaceInGuest = $hvNamespace
+$leftBehind = Get-Remnants
+if ($KeepInstalled) { $grant.reason = 'skipped: -KeepInstalled leaves the default install in place' }
+elseif (-not (Get-LocalGroup -SID $hvAdminsSid -ErrorAction SilentlyContinue)) { $grant.reason = 'this guest has no local group S-1-5-32-578 (Hyper-V Administrators); the grant path was not run' }
+elseif ($leftBehind.user -or $leftBehind.key -or $leftBehind.programData -or $leftBehind.programFiles -or @($leftBehind.services).Count -gt 0) { $grant.reason = 'the default pass left an install behind; the grant pass needs a clean guest' }
+else {
+  $checks = New-Object 'System.Collections.Generic.List[object]'
+  $groupBefore = Get-HvGroupText
+  $ranInstall = $false
+  try {
+    $gInstall = Invoke-Host (@{ Mode = 'install'; ExpectedTreeHash = $treeHash; StartCheck = $hvNamespace; ControlPlanePassword = $password; GrantHyperVToBroker = $true; VmId = $labVmId } + $approverParams)
+    $ranInstall = $true
+    Add-GrantCheck $checks 'grant_install_exit_0' ($gInstall.Exit -eq 0) ("exit " + $gInstall.Exit)
+    $grant.install = [ordered]@{ exit = $gInstall.Exit; output = $gInstall.Output; startCheckRun = $hvNamespace }
+    $brokerSid = (New-Object System.Security.Principal.NTAccount('NT SERVICE\AlberaHostBroker')).Translate([System.Security.Principal.SecurityIdentifier]).Value
+    $groupDuring = Get-HvGroupText
+    Add-GrantCheck $checks 'broker_is_member' ($groupDuring -match 'NT SERVICE\\AlberaHostBroker') 'net localgroup lists NT SERVICE\AlberaHostBroker'
+    Add-GrantCheck $checks 'control_plane_not_member' ($groupDuring -notmatch 'albera-cp') 'albera-cp is not in the group'
+    Add-GrantCheck $checks 'authority_not_member' ($groupDuring -notmatch 'AlberaApprovalAuthority') 'AlberaApprovalAuthority is not in the group'
+    $brokerType = Get-ScText 'qsidtype' 'AlberaHostBroker'; $authorityType = Get-ScText 'qsidtype' 'AlberaApprovalAuthority'
+    Add-GrantCheck $checks 'broker_sidtype_unrestricted' ($brokerType -cmatch '(?<![A-Za-z])UNRESTRICTED') $brokerType
+    Add-GrantCheck $checks 'authority_sidtype_restricted' (($authorityType -cmatch '(?<![A-Za-z])RESTRICTED') -and ($authorityType -cnotmatch 'UNRESTRICTED')) $authorityType
+    $brokerPrivs = Get-ScPrivileges 'AlberaHostBroker'; $authorityPrivs = Get-ScPrivileges 'AlberaApprovalAuthority'
+    Add-GrantCheck $checks 'privileges_minimal' (($brokerPrivs -join ',') -eq 'SeChangeNotifyPrivilege' -and ($authorityPrivs -join ',') -eq 'SeChangeNotifyPrivilege') ("broker: " + ($brokerPrivs -join ',') + "; authority: " + ($authorityPrivs -join ','))
+    $brokerConfig = Get-Content -Raw -LiteralPath (Join-Path $programData 'broker-config\AlberaHostBroker.service.json') | ConvertFrom-Json
+    $authorityConfig = Get-Content -Raw -LiteralPath (Join-Path $programData 'authority\AlberaApprovalAuthority.service.json') | ConvertFrom-Json
+    $computers = @($brokerConfig.computers)
+    Add-GrantCheck $checks 'broker_config_computers' ($computers.Count -eq 1 -and $computers[0].computerId -ceq 'clone-01' -and $computers[0].vmId -ceq $labVmId) ((ConvertTo-Json -InputObject $brokerConfig.computers -Compress))
+    Add-GrantCheck $checks 'authority_config_has_no_computers' ($null -eq $authorityConfig.PSObject.Properties['computers']) 'the Authority config is unchanged'
+    $record = (Get-Content -Raw -LiteralPath (Join-Path $programData 'install-manifest.json') | ConvertFrom-Json).created.hyperVGrant
+    Add-GrantCheck $checks 'install_record_names_the_grant' ($null -ne $record -and $record.group -ceq $hvAdminsSid -and $record.sid -ceq $brokerSid -and $record.vmId -ceq $labVmId) ((ConvertTo-Json -InputObject $record -Compress))
+    $gStatus = Invoke-Host @{ Mode = 'status' }
+    Add-GrantCheck $checks 'status_ok_and_names_the_group' ($gStatus.Exit -eq 0 -and $gStatus.Output -match 'Hyper-V Administrators: the Broker service SID is a member') ("exit " + $gStatus.Exit)
+    $grant.status_output = $gStatus.Output
+    $hashBeforeGrant = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash
+    $gAgain = Invoke-Host (@{ Mode = 'install'; ExpectedTreeHash = $treeHash; ControlPlanePassword = $password; GrantHyperVToBroker = $true; VmId = $labVmId } + $approverParams)
+    Add-GrantCheck $checks 'reinstall_changes_nothing' ($gAgain.Exit -eq 0 -and $gAgain.Output -match 'already complete' -and (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash -eq $hashBeforeGrant -and (Get-HvGroupText) -eq $groupDuring) ("exit " + $gAgain.Exit)
+  }
+  catch { Add-GrantCheck $checks 'grant_pass_no_exception' $false ($_.Exception.Message) }
+  if ($ranInstall -or (Test-Path -LiteralPath $programData)) {
+    $gUninstall = Invoke-Host @{ Mode = 'uninstall' }
+    $grant.uninstall = [ordered]@{ exit = $gUninstall.Exit; output = $gUninstall.Output }
+    Add-GrantCheck $checks 'uninstall_exit_0' ($gUninstall.Exit -eq 0) ("exit " + $gUninstall.Exit)
+    $groupAfter = Get-HvGroupText
+    Add-GrantCheck $checks 'broker_removed_from_group' ($groupAfter -notmatch 'AlberaHostBroker') 'the Broker SID is out of the group again'
+    Add-GrantCheck $checks 'group_otherwise_unchanged' ($groupAfter -eq $groupBefore) 'groupBefore equals groupAfter'
+    $gRemnants = Get-Remnants
+    Add-GrantCheck $checks 'nothing_left_behind' (-not $gRemnants.user -and -not $gRemnants.key -and -not $gRemnants.programData -and -not $gRemnants.programFiles -and @($gRemnants.services).Count -eq 0) ((ConvertTo-Json -InputObject $gRemnants -Compress))
+    $gFinal = Invoke-Host @{ Mode = 'status' }
+    Add-GrantCheck $checks 'final_status_not_installed' ($gFinal.Output -match 'not installed') ("exit " + $gFinal.Exit)
+  }
+  $grant.checks = $checks.ToArray()
+  $grant.status = if (@($checks | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { 'FAIL' } else { 'PASS' }
+}
+$evidence.grant = $grant
+$evidence.pass = ($evidence.grant.status -ne 'FAIL') -and ($install.Exit -eq 0) -and ($status.Exit -eq 0) -and ($again.Exit -eq 0) -and $evidence.reinstall.manifestUnchanged -and $evidence.reinstall.saysAlreadyComplete -and
   ($KeepInstalled -or (($evidence.uninstall.exit -eq 0) -and -not $evidence.remnants.user -and -not $evidence.remnants.key -and -not $evidence.remnants.programData -and -not $evidence.remnants.programFiles -and @($evidence.remnants.services).Count -eq 0 -and $evidence.finalStatus.saysNotInstalled))
 $evidence | ConvertTo-Json -Depth 5
 if (-not $evidence.pass) { exit 1 }
