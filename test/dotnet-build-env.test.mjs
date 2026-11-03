@@ -201,7 +201,7 @@ test('the host builds refuse any SDK but the pinned one, and both workflows inst
     const pins = [...text.matchAll(/dotnet-version:\s*(\S+)/gu)].map((m) => m[1]);
     assert.deepEqual(pins, [HOST_BUILD_SDK], `${workflow} installs exactly HOST_BUILD_SDK`);
   }
-  for (const script of ['publish-windows-broker.mjs', 'publish-windows-approval-authority.mjs']) {
+  for (const script of ['publish-windows-broker.mjs', 'publish-windows-approval-authority.mjs', 'publish-control-plane-host.mjs']) {
     const text = fs.readFileSync(path.join(root, 'scripts', script), 'utf8');
     assert.ok(text.indexOf('requireHostBuildSdk(context)') > 0 && text.indexOf('requireHostBuildSdk(context)') < text.indexOf('restoreAndBuild(context'), `${script} checks the SDK before restore`);
   }

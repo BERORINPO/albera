@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Control Plane service host (docs/architecture/control-plane-service.md, Proposed / NOT VERIFIED beyond the lab run of 2026-11-03). Built only on demand by
+       `npm run build:control-plane-host` or the host tests. Nothing here installs, registers or starts a service. No package: BCL and P/Invoke only. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>albera-control-plane-host</AssemblyName>
+    <RootNamespace>Albera.ControlPlaneHost</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(AlberaControlPlaneHostTestSeams)' == 'true'">
+    <!-- Test-only: the foreground `serve` subcommand and the `trust-sid` option (a host test is not an administrator and has no service SID). Only the host tests pass this
+         property; the publish script pins it false, so none of it exists in the shipped binary. -->
+    <DefineConstants>$(DefineConstants);ALBERA_CPHOST_TEST_SEAMS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="TestSeam.cs" Condition="'$(AlberaControlPlaneHostTestSeams)' != 'true'" />
+  </ItemGroup>
+  <!-- The symbol can also arrive from outside (an environment variable named DefineConstants, a Directory.Build.props, -p:DefineConstants=...). Pinning the switch
+       false does not stop that, so a build without the switch that still carries the symbol fails instead of shipping the seam. -->
+  <Target Name="RefuseInheritedTestSymbol" BeforeTargets="BeforeCompile;CoreCompile" Condition="'$(AlberaControlPlaneHostTestSeams)' != 'true' and $(DefineConstants.Contains('ALBERA_CPHOST_TEST_SEAMS'))">
+    <Error Code="ALBERA_SEAM" Text="ALBERA_CPHOST_TEST_SEAMS is defined but AlberaControlPlaneHostTestSeams is not true: refusing to build the test seam into a non-test build." />
+  </Target>
+</Project>

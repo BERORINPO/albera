@@ -16,7 +16,7 @@ function listFiles(dir, exts = ['.mjs', '.js', '.html']) {
   if (!fs.existsSync(abs)) return [];
   return fs.readdirSync(abs, { withFileTypes: true }).flatMap((e) => {
     const rel = path.join(dir, e.name);
-    if (e.isDirectory()) return listFiles(rel, exts);
+    if (e.isDirectory()) return e.name === 'bin' || e.name === 'obj' ? [] : listFiles(rel, exts); // build output (the Control Plane app tree copy under bin/ holds a second copy of src/runtime)
     return exts.includes(path.extname(e.name)) ? [rel] : [];
   });
 }
@@ -457,6 +457,45 @@ const approverWired = [
 for (const w of approverWired) violations.push(`[11d package.json] ${w} wires the approver app into the package or an automatic step`);
 if (typeof pkg.scripts?.['build:approver'] !== 'string') violations.push('[11d package.json] build:approver script is missing (false-safe)');
 results.push(`11 Approver app is build-on-demand: ${approverSources.length + 2} source files, ${approverWired.length} wiring violations`);
+
+// 12. The Control Plane service host (src/runtime/windows-control-plane-host, docs/architecture/control-plane-service.md, Proposed) is a .NET program the SCM will start; it is built on
+//     demand only, like the Broker (rule 8), the Authority (rule 10) and the approver (rule 11). The Observer layers and every runtime .mjs file may not import, spawn or name it or its
+//     app tree builder, package.json may not wire it into `bin`, `files` or the npm lifecycle, its sources may not name the Broker, Authority or approver projects (separately
+//     deployable), they use the BCL only (no PackageReference, an empty lock file), they never find a process by name (the host ends only the Job it created), and its source set and
+//     publish scripts must exist (false-safe). The host publish script must pin the test seam (foreground `serve`, `trust-sid`) off.
+const CPHOST_REF = /windows-control-plane-host|albera-control-plane-host|Albera\.ControlPlaneHost|build:control-plane|control-plane-app-tree|publish-control-plane|build-control-plane/i;
+check('12a Control Plane host is not referenced by Observer layers or runtime modules', [...entry, ...adapters, ...core, ...shared, ...pub, ...runtime], (line) =>
+  CPHOST_REF.test(line) ? 'the Control Plane host must not be imported, spawned or named here (build-on-demand only)' : null,
+);
+const cpHostRoot = 'src/runtime/windows-control-plane-host';
+const cpHostSources = ['Program.cs', 'ServiceHost.cs', 'Supervisor.cs', 'ChildLauncher.cs', 'Native.cs', 'HostConfig.cs', 'PathGuard.cs', 'LaunchGate.cs', 'ChildEnvironment.cs', 'BoundedLog.cs', 'HostLog.cs', 'TestSeam.cs'];
+for (const f of [...cpHostSources, 'Albera.ControlPlaneHost.csproj', 'packages.lock.json']) {
+  if (!fs.existsSync(path.join(ROOT, cpHostRoot, f))) violations.push(`[12b Control Plane host source] ${cpHostRoot}/${f} does not exist (false-safe)`);
+}
+check('12c Control Plane host sources: no other project, no process found by name', cpHostSources.map((f) => `${cpHostRoot}/${f}`).filter((f) => fs.existsSync(path.join(ROOT, f))), (line) => {
+  if (/windows-broker|WindowsBroker|windows-approval-authority|Albera\.ApprovalAuthority|windows-approver|AlberaApprover/i.test(line)) return 'the host is separately deployable: no reference to the Broker, Authority or approver project';
+  if (/GetProcessesByName|Process\.GetProcesses|taskkill|Stop-Process|\.Kill\(/i.test(line)) return 'the host ends only the Job it created: no process is found or killed by name or by Process.Kill';
+  return null;
+});
+const cpHostProject = fs.existsSync(path.join(ROOT, cpHostRoot, 'Albera.ControlPlaneHost.csproj')) ? fs.readFileSync(path.join(ROOT, cpHostRoot, 'Albera.ControlPlaneHost.csproj'), 'utf8') : '';
+if (/PackageReference|ProjectReference/.test(cpHostProject)) violations.push('[12b Control Plane host source] Albera.ControlPlaneHost.csproj has a package or project reference (BCL only)');
+const cpHostLock = fs.existsSync(path.join(ROOT, cpHostRoot, 'packages.lock.json')) ? JSON.parse(fs.readFileSync(path.join(ROOT, cpHostRoot, 'packages.lock.json'), 'utf8')) : { dependencies: { x: { y: 1 } } };
+if (Object.values(cpHostLock.dependencies ?? {}).some((packages) => Object.keys(packages).length > 0)) violations.push('[12b Control Plane host source] packages.lock.json lists a package (BCL only)');
+for (const script of ['scripts/publish-control-plane-host.mjs', 'scripts/build-control-plane-app.mjs', 'scripts/control-plane-app-tree.mjs']) {
+  if (!fs.existsSync(path.join(ROOT, script))) violations.push(`[12b Control Plane host source] ${script} does not exist (false-safe)`);
+}
+const cpHostPublish = fs.existsSync(path.join(ROOT, 'scripts/publish-control-plane-host.mjs')) ? fs.readFileSync(path.join(ROOT, 'scripts/publish-control-plane-host.mjs'), 'utf8') : '';
+if (!cpHostPublish.includes('-p:AlberaControlPlaneHostTestSeams=false')) violations.push('[12b Control Plane host source] scripts/publish-control-plane-host.mjs does not pin the test seam off (false-safe)');
+const cpHostWired = [
+  ...Object.entries(pkg.bin ?? {}).filter(([, v]) => CPHOST_REF.test(String(v))).map(([k]) => `bin.${k}`),
+  ...LIFECYCLE.filter((k) => CPHOST_REF.test(String(pkg.scripts?.[k] ?? ''))).map((k) => `scripts.${k}`),
+  ...(pkg.files ?? []).filter((v) => CPHOST_REF.test(String(v))).map((v) => `files[${v}]`),
+];
+for (const w of cpHostWired) violations.push(`[12d package.json] ${w} wires the Control Plane host into the package or an automatic step`);
+for (const name of ['build:control-plane-host', 'build:control-plane-app', 'build:control-plane']) {
+  if (typeof pkg.scripts?.[name] !== 'string') violations.push(`[12d package.json] ${name} script is missing (false-safe)`);
+}
+results.push(`12 Control Plane host is build-on-demand: ${cpHostSources.length + 2} source files, ${cpHostWired.length} wiring violations`);
 
 for (const r of results) console.log(r);
 console.log(`suppressed (arch-allow): ${suppressed}`);
