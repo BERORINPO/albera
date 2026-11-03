@@ -21,6 +21,7 @@ function Get-HostConstants {
     DefaultProjectId = 'albera-host'
     DefaultVmName = 'albera-clone-01'
     DefaultComputerId = 'clone-01'
+    HyperVAdminsSid = 'S-1-5-32-578'   # BUILTIN\Hyper-V Administrators: only -GrantHyperVToBroker puts anything in it, and only the Broker's service SID (ADR-002 Amendment 2026-11-03)
   }
 }
 
@@ -82,6 +83,8 @@ function Test-PlainAbsolutePath([string]$Path) {
 # S-1-5-21-a-b-c-rid (an account SID, 8 parts). The Broker and the Authority also look it up and insist it is a USER; that part needs the machine.
 function Test-AccountSidShape([string]$Sid) { ($null -ne $Sid) -and ($Sid -cmatch '^S-1-5-21-[0-9]+-[0-9]+-[0-9]+-[0-9]+$') }
 function Test-ServiceSidShape([string]$Sid) { ($null -ne $Sid) -and ($Sid -cmatch '^S-1-5-80(-[0-9]+){5}$') }
+# Lowercase 8-4-4-4-12 hex (ComputerBinding.IsVmId). \z, not $: a trailing newline must not pass (this text goes into a config the Broker puts in a WQL query).
+function Test-VmGuid([string]$Value) { ($null -ne $Value) -and ($Value -cmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z') -and ($Value -cne '00000000-0000-0000-0000-000000000000') }
 
 function ConvertFrom-Base64Safe([string]$Text) {
   if ([string]::IsNullOrEmpty($Text) -or ($Text -notmatch '^[A-Za-z0-9+/]+={0,2}$') -or (($Text.Length % 4) -ne 0)) { return $null }
@@ -148,9 +151,10 @@ function Test-ApproverValues($Shown, [string]$ExpectedKeyId, [string]$ControlPla
 }
 
 # ---------------------------------------------------------------------------------------------- the three config files
-function Get-BrokerConfig($Layout, [string]$ControlPlaneSid, [string]$AuthoritySpki) {
+# $Computers is $null (or empty) for an install without -GrantHyperVToBroker: the config is then exactly the seven keys it always had. With it, the optional `computers` key is added last.
+function Get-BrokerConfig($Layout, [string]$ControlPlaneSid, [string]$AuthoritySpki, $Computers = $null) {
   $c = Get-HostConstants
-  [ordered]@{
+  $config = [ordered]@{
     pipeName = $c.BrokerPipeName
     database = $Layout.BrokerDb
     authorityKeys = @([ordered]@{ kid = $c.AuthorityKid; spki = $AuthoritySpki })
@@ -159,6 +163,14 @@ function Get-BrokerConfig($Layout, [string]$ControlPlaneSid, [string]$AuthorityS
     leaseId = $c.LeaseId
     policyVersion = $c.PolicyVersion
   }
+  if ($null -ne $Computers -and @($Computers).Count -gt 0) { $config['computers'] = @($Computers) }
+  $config
+}
+# One entry of the Broker config `computers` list (ServiceConfig.cs: computerId = contract id, vmId = lowercase GUID of the VM).
+function Get-BrokerComputers([string]$ComputerId, [string]$VmId) {
+  if (-not (Test-HostId $ComputerId)) { throw 'computer_id_invalid' }
+  if (-not (Test-VmGuid $VmId)) { throw 'vm_id_invalid' }
+  , @([ordered]@{ computerId = $ComputerId; vmId = $VmId })
 }
 function Get-AuthorityConfig([string]$ControlPlaneSid, $Approver) {
   $c = Get-HostConstants
@@ -199,12 +211,33 @@ function Get-ByteLength([string]$Text) { [System.Text.Encoding]::UTF8.GetByteCou
 
 # Each returns the list of fixed reason words (empty = the real service would accept the shape). They cannot see the machine (the SID lookup, the folder ACLs, whether a folder
 # exists), and `service-check` run from an elevated console cannot either: see albera-host.ps1 ("service-check is inconclusive").
+# Mirror of ServiceConfig.ReadComputers: an array of 0..8 entries, each exactly { computerId, vmId } (a contract id and a lowercase GUID), every computerId and every vmId at most once.
+function Test-ComputersList($List) {
+  if ($null -eq $List -or $List -is [string] -or $List -isnot [System.Array]) { return $false }
+  $items = @($List)
+  if ($items.Count -gt 8) { return $false }
+  foreach ($e in $items) {
+    if ($e -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $e @('computerId', 'vmId'))) { return $false }
+    if ($e.computerId -isnot [string] -or $e.vmId -isnot [string] -or -not (Test-HostId $e.computerId) -or -not (Test-VmGuid $e.vmId)) { return $false }
+  }
+  (@($items | ForEach-Object { $_.computerId } | Sort-Object -Unique).Count -eq $items.Count) -and (@($items | ForEach-Object { $_.vmId } | Sort-Object -Unique).Count -eq $items.Count)
+}
+# True when the Broker config holds exactly the one computer the install intends (used to tell a finished config from one written before -GrantHyperVToBroker).
+function Test-BrokerConfigComputers([string]$Json, [string]$ComputerId, [string]$VmId) {
+  try { $o = $Json | ConvertFrom-Json } catch { return $false }
+  if ($null -eq $o.PSObject.Properties['computers'] -or -not (Test-ComputersList $o.computers)) { return $false }
+  $items = @($o.computers)
+  ($items.Count -eq 1) -and ($items[0].computerId -ceq $ComputerId) -and ($items[0].vmId -ceq $VmId)
+}
 function Test-BrokerConfigText([string]$Json) {
   $reasons = New-Object System.Collections.Generic.List[string]
   if ((Get-ByteLength $Json) -gt 4096) { $reasons.Add('config_too_large'); return , @($reasons) }
   try { $o = $Json | ConvertFrom-Json } catch { $reasons.Add('config_syntax'); return , @($reasons) }
   $expected = @('pipeName', 'database', 'authorityKeys', 'controlPlaneSid', 'generation', 'leaseId', 'policyVersion')
+  $hasComputers = $null -ne $o.PSObject.Properties['computers']   # the one optional key (ServiceConfig.cs ComputersKey)
+  if ($hasComputers) { $expected = @($expected) + 'computers' }
   if (-not (Test-SameKeySet $o $expected)) { $reasons.Add('config_keys'); return , @($reasons) }
+  if ($hasComputers -and -not (Test-ComputersList $o.computers)) { $reasons.Add('computers') }
   if (-not (Test-PlainPipeName $o.pipeName)) { $reasons.Add('pipe_name') }
   if (-not (Test-PlainAbsolutePath $o.database)) { $reasons.Add('database') }
   $keys = @($o.authorityKeys)
@@ -283,8 +316,17 @@ function Get-ScCreateArguments([string]$Name, [string]$Exe, [string]$Config) {
   'create ' + $Name + ' binPath= "' + $bin + '" obj= "NT SERVICE\' + $Name + '" start= demand type= own'
 }
 
+# Which SID type install gives a service: restricted for both, EXCEPT the Broker of an install whose record says the Hyper-V grant was made (ADR-002 Amendment 2026-11-03: Hyper-V refuses a restricted
+# token even for a member of Hyper-V Administrators, so the Broker is unrestricted exactly when it is in that group). The Authority is restricted in every case.
+function Get-ExpectedSidType([string]$ServiceName, [bool]$HyperVGrantRecorded) {
+  $c = Get-HostConstants
+  if ($HyperVGrantRecorded -and $ServiceName -ceq $c.BrokerService) { return 'unrestricted' }
+  'restricted'
+}
+
 # Facts read from the machine: @{ Exists; StartName; PathName; StartMode; ServiceType; SidTypeText (sc qsidtype); PrivilegesText (sc qprivs) }. Returns the differences from what install makes.
-function Test-ServiceFacts($Facts, [string]$Name, [string]$ExpectedPathName) {
+# $ExpectedSidType comes from Get-ExpectedSidType; the default is the install without the grant.
+function Test-ServiceFacts($Facts, [string]$Name, [string]$ExpectedPathName, [ValidateSet('restricted', 'unrestricted')][string]$ExpectedSidType = 'restricted') {
   $reasons = New-Object System.Collections.Generic.List[string]
   if (-not $Facts.Exists) { $reasons.Add('service_missing'); return , @($reasons) }
   if ($Facts.StartName -ne ('NT SERVICE\' + $Name)) { $reasons.Add('start_name_differs') }
@@ -292,7 +334,10 @@ function Test-ServiceFacts($Facts, [string]$Name, [string]$ExpectedPathName) {
   if ($Facts.StartMode -ne 'Manual') { $reasons.Add('start_mode_not_demand') }
   if ($Facts.ServiceType -ne 'Own Process') { $reasons.Add('not_own_process') }
   # RESTRICTED but not UNRESTRICTED, which contains the word
-  if ($Facts.SidTypeText -cnotmatch '(?<![A-Za-z])RESTRICTED') { $reasons.Add('sid_type_not_restricted') }
+  if ($ExpectedSidType -ceq 'unrestricted') {
+    if ($Facts.SidTypeText -cnotmatch '(?<![A-Za-z])UNRESTRICTED') { $reasons.Add('sid_type_not_unrestricted') }
+  }
+  elseif ($Facts.SidTypeText -cnotmatch '(?<![A-Za-z])RESTRICTED') { $reasons.Add('sid_type_not_restricted') }
   $privs = @([regex]::Matches([string]$Facts.PrivilegesText, 'Se[A-Za-z]+Privilege') | ForEach-Object { $_.Value })
   if ($privs.Count -ne 1 -or $privs[0] -ne 'SeChangeNotifyPrivilege') { $reasons.Add('privileges_not_minimal') }
   , @($reasons)
@@ -418,7 +463,8 @@ function Test-AuthoritySigningKeyExists([string]$KeyName, [string]$Scope = 'mach
 # Relative paths (under the data root) that are not on the known list. Uninstall refuses to delete a folder that holds any.
 function Get-UnknownEntries([string[]]$RelativePaths, [string[]]$KnownFiles, [string[]]$KnownFolders) {
   $known = @($KnownFiles | ForEach-Object { $_.ToLowerInvariant() }) + @($KnownFolders | ForEach-Object { $_.ToLowerInvariant() })
-  , @($RelativePaths | Where-Object { $known -notcontains $_.ToLowerInvariant() })
+  # An EMPTY folder (a service that was never started has written nothing yet) gives $null here, and piping $null runs the filter once with $_ = $null: skip it, there is nothing to judge.
+  , @(@($RelativePaths) | Where-Object { $null -ne $_ -and $known -notcontains $_.ToLowerInvariant() })
 }
 
 # ---------------------------------------------------------------------------------------------- trust: who may have written what the installer is about to rely on
@@ -564,7 +610,7 @@ function Test-ManifestShape($M) {
   if ($M -isnot [System.Collections.IDictionary] -or $M['schema'] -ne 1 -or $M['tool'] -cne 'albera-host.ps1' -or @('partial', 'complete') -cnotcontains $M['state']) { $reasons.Add('manifest_header'); return , @($reasons) }
   $created = $M['created']; $values = $M['values']
   if ($created -isnot [System.Collections.IDictionary] -or $values -isnot [System.Collections.IDictionary]) { $reasons.Add('manifest_sections'); return , @($reasons) }
-  foreach ($k in $created.Keys) { if (@('dataRoot', 'installRoot', 'services', 'binaries', 'user', 'key') -cnotcontains $k) { $reasons.Add('created_key:' + $k) } }
+  foreach ($k in $created.Keys) { if (@('dataRoot', 'installRoot', 'services', 'binaries', 'user', 'key', 'hyperVGrant') -cnotcontains $k) { $reasons.Add('created_key:' + $k) } }
   foreach ($k in $values.Keys) { if (@('authoritySpki', 'controlPlaneSid', 'approverSid', 'approverKeyId', 'brokerServiceSid', 'authorityServiceSid') -cnotcontains $k) { $reasons.Add('values_key:' + $k) } }
   if ((Test-HasKey $created 'services')) { foreach ($n in @($created['services'])) { if (@($c.BrokerService, $c.AuthorityService) -cnotcontains $n) { $reasons.Add('service_name_not_fixed') } } }
   if ((Test-HasKey $created 'user') -and $null -ne $created['user']) {
@@ -574,6 +620,8 @@ function Test-ManifestShape($M) {
   if ((Test-HasKey $created 'key') -and $null -ne $created['key']) {
     if ($created['key'] -isnot [System.Collections.IDictionary] -or $created['key']['name'] -cne $c.SigningKeyName) { $reasons.Add('key_record') }
   }
+  # The grant record can name nothing but the fixed group and the Broker's own derived service SID: a forged record cannot make uninstall remove another account from Hyper-V Administrators.
+  if ((Test-HasKey $created 'hyperVGrant') -and (-not (Test-HyperVGrantRecord $created['hyperVGrant']))) { $reasons.Add('hyperv_grant_record') }
   if ((Test-HasKey $created 'binaries') -and $created['binaries'] -is [System.Collections.IDictionary]) {
     foreach ($k in $created['binaries'].Keys) { if ($script:HashComponents -cnotcontains $k) { $reasons.Add('binary_name:' + $k) } }
   }
@@ -591,6 +639,60 @@ function Test-OwnedUser($Recorded, $Live) {
   if ($Live.Sid -cne $Recorded['sid']) { $reasons.Add('sid_differs') }
   if ($Live.Description -cne $c.ControlPlaneUserDescription) { $reasons.Add('description_differs') }
   , @($reasons)
+}
+
+# ---------------------------------------------------------------------------------------------- the Hyper-V grant (-GrantHyperVToBroker; ADR-002 Amendment 2026-11-03)
+# What the owner decided: the Broker's service SID, and ONLY that, goes into BUILTIN\Hyper-V Administrators (S-1-5-32-578), and the Broker is then sidtype unrestricted. The Control Plane account
+# (albera-cp) is never a member. Everything that adds or removes a member takes its SID from Get-HyperVGrantPlan, which has no parameter for "who": a test pins that no other path exists.
+# $Sids = @{ Broker; Authority; ControlPlane } (SID strings; ControlPlane may be $null before the account exists). Returns @{ Group; Member }.
+function Get-HyperVGrantPlan($Sids) {
+  $c = Get-HostConstants
+  $broker = [string]$Sids.Broker
+  if (-not (Test-ServiceSidShape $broker) -or $broker -cne (Get-DerivedServiceSid $c.BrokerService)) { throw 'hyperv_grant_member_not_the_broker_service_sid' }
+  if ($broker -ceq [string]$Sids.ControlPlane -or $broker -ceq [string]$Sids.Authority) { throw 'hyperv_grant_member_not_the_broker_service_sid' }
+  [pscustomobject]@{ Group = $c.HyperVAdminsSid; Member = $broker }
+}
+# A group member's WinNT path as ADSI reports it -> @{ Sid; Account }, or $null when it is neither shape. `WinNT://S-1-5-...` is how an entry that cannot be named shows up; `WinNT://NT SERVICE/Name`
+# (or `WinNT://./Name`) is a named account. Used only as the fallback of Get-LocalGroupMemberSids, for members (such as a service's virtual account) that have no objectSid property to read.
+function ConvertFrom-WinNTMemberPath([string]$Path) {
+  if ($Path -cmatch '^WinNT://(S-1-[0-9]+(?:-[0-9]+)+)$') { return [pscustomobject]@{ Sid = $Matches[1]; Account = $null } }
+  if ($Path -cmatch '^WinNT://(?:[^/]+/)*([^/\\]+)/([^/\\]+)$') { return [pscustomobject]@{ Sid = $null; Account = ($Matches[1] + '\' + $Matches[2]) } }
+  $null
+}
+# The install record `created.hyperVGrant`: the group, the Broker's SID, and what the Broker config was told (computerId, VM GUID). Anything else is not a record this script wrote.
+function Test-HyperVGrantRecord($Record) {
+  $c = Get-HostConstants
+  if ($Record -isnot [System.Collections.IDictionary]) { return $false }
+  $keys = @($Record.Keys)
+  if ($keys.Count -ne 4 -or @(@('group', 'sid', 'computerId', 'vmId') | Where-Object { $keys -ccontains $_ }).Count -ne 4) { return $false }
+  ($Record['group'] -ceq $c.HyperVAdminsSid) -and ($Record['sid'] -ceq (Get-DerivedServiceSid $c.BrokerService)) -and (Test-HostId $Record['computerId']) -and (Test-VmGuid $Record['vmId'])
+}
+# Members of Hyper-V Administrators as read from the machine (SID strings) -> the reasons it is not what the install record says (empty = fine). albera-cp and the Authority must NEVER be in, record or no
+# record. The Broker must be in exactly when the record says the grant was made ($BrokerRecorded); a Broker in the group WITHOUT a record is somebody else's change and is reported.
+function Test-HyperVMembers([string[]]$MemberSids, $Sids, [bool]$BrokerRecorded = $true) {
+  $reasons = New-Object System.Collections.Generic.List[string]
+  $brokerIn = @($MemberSids) -ccontains [string]$Sids.Broker
+  if ($BrokerRecorded -and -not $brokerIn) { $reasons.Add('broker_not_a_member') }
+  if (-not $BrokerRecorded -and $brokerIn) { $reasons.Add('broker_is_a_member_without_a_record') }
+  if ($Sids.ControlPlane -and @($MemberSids) -ccontains [string]$Sids.ControlPlane) { $reasons.Add('control_plane_is_a_member') }
+  if (@($MemberSids) -ccontains [string]$Sids.Authority) { $reasons.Add('authority_is_a_member') }
+  , @($reasons)
+}
+# The VM the owner named -> its GUID. $Candidates are the Msvm_ComputerSystem objects (Name, ElementName) the name query returned; the host itself (Name = the computer name) is no GUID and is skipped.
+# The display name is only used HERE, once, at install time; the Broker is told the GUID and queries by Name, never by ElementName (a name another group member could reuse).
+# Returns @{ Ok; VmId; Reason } with a fixed reason word: vm_not_found, vm_name_ambiguous.
+function Select-VmByName($Candidates, [string]$VmName) {
+  $hits = @(@($Candidates) | Where-Object { $null -ne $_ -and [string]$_.ElementName -ieq $VmName -and ([string]$_.Name).ToLowerInvariant() -cmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z' })
+  if ($hits.Count -eq 0) { return [pscustomobject]@{ Ok = $false; VmId = $null; Reason = 'vm_not_found' } }
+  if ($hits.Count -gt 1) { return [pscustomobject]@{ Ok = $false; VmId = $null; Reason = 'vm_name_ambiguous' } }
+  $id = ([string]$hits[0].Name).ToLowerInvariant()
+  if (-not (Test-VmGuid $id)) { return [pscustomobject]@{ Ok = $false; VmId = $null; Reason = 'vm_not_found' } }
+  [pscustomobject]@{ Ok = $true; VmId = $id; Reason = '' }
+}
+# -VmId (a fixed GUID instead of the lookup) exists for the disposable lab VM only, like -ControlPlanePassword. Returns the refusal word, or $null when allowed.
+function Test-LabVmIdGate([bool]$VmIdSupplied, [string]$LabEnvironment) {
+  if ($VmIdSupplied -and $LabEnvironment -ne '1') { return 'vm_id_parameter_is_lab_only' }
+  $null
 }
 
 # ---------------------------------------------------------------------------------------------- the lab-only password gate

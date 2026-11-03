@@ -1,6 +1,6 @@
 # Host install: the Broker and the Approval Authority on the owner's PC
 
-**Status: written, NOT RUN.** `scripts/host/albera-host.ps1` was run in plan mode and its logic was tested with fakes and a temp folder (`test/host-install.test.mjs`). No install, service, account, ACL or machine key was ever created by it, and the disposable-VM run (`test/windows-service-lab/lab-host-install-check.ps1`) has not happened. Treat the first real run as the first run.
+**Status: written, NOT RUN.** `scripts/host/albera-host.ps1` was run in plan mode and its logic was tested with fakes and a temp folder (`test/host-install.test.mjs`). No install, service, account, ACL or machine key was ever created by it, and the disposable-VM run (`test/windows-service-lab/lab-host-install-check.ps1`) has not happened. Treat the first real run as the first run. The optional `-GrantHyperVToBroker` (below) is covered the same way: unit tests with fakes, a lab hook pass that has not run yet, and nothing on a real host.
 
 Goal: put the two services on the owner's PC so the first real Windows Hello approval can happen (`approver-app.md`, steps 4 to 8). Related: `approval-authority.md` ("Needs the VM lab or the owner", "Preconditions before production"), `approval-tiers.md` ("Room start approval").
 
@@ -91,6 +91,36 @@ What it does **not** do, stated plainly:
 - **It does not make `gh` trusted.** `gh.exe` and its configuration live in your profile, which an agent in your session can change, so a `Verification succeeded` printed there is a second opinion, not the control. The control is still your check of branch and SHA on the run page.
 - **It says where a file came from, not that the code is safe.** A reviewed-but-wrong commit on `main` gets a valid attestation too.
 
+## Giving the Broker Hyper-V (`-GrantHyperVToBroker`, optional)
+
+Why it exists: the gated room needs the Broker to take screenshots of a VM and press keys in it (`adr-002-host-broker-trust-contract.md`, "Amendment 2026-11-03"; owner decision 2026-11-03). Windows has no narrower grant than membership of `BUILTIN\Hyper-V Administrators` (`S-1-5-32-578`), and Hyper-V refuses a restricted token even for a member (measured 2026-11-03). **Without the option nothing changes**: the same services, the same restricted SID type, the same configs, the same manifest, the same plan.
+
+With `-GrantHyperVToBroker -VmName <the VM's exact name>` (and `-ComputerId`, default `clone-01`, the id the room uses for it) install does these four extra things:
+
+1. **Looks up the VM's GUID** right after the argument checks, read only, before anything is created. Exactly one VM must carry that name, otherwise the run stops with nothing changed. The GUID (lowercase) goes into the Broker config as `computers: [{ "computerId": "<-ComputerId>", "vmId": "<guid>" }]`; that key is also what makes the Broker open its desktop pipe. The Broker queries by GUID and never by name.
+2. **Creates the Broker with `sc sidtype unrestricted`** (the Authority stays `restricted`). Both services still have `SeChangeNotifyPrivilege` only. The drift check that used to be `sid_type_not_restricted` now follows the install record: the Broker is expected unrestricted exactly when the record says the grant was made (`sid_type_not_unrestricted` is the other direction); the Authority is always restricted.
+3. **Adds only the Broker's service SID** (`NT SERVICE\AlberaHostBroker`, `S-1-5-80-...`, shown in the plan) to `S-1-5-32-578`. `albera-cp` and the Authority are never added: the script takes the group and the member from one function that can only return the Broker's own derived SID, and `-Mode status` reads the group every time (install record or not) and fails if `albera-cp` or the Authority is ever found in it, or the Broker is found in it without a record (an install without the option shows no Hyper-V line while the group is clean). The install step "hyperv" counts as done only when the record is there and the member list has nothing to report.
+4. **Records it.** The record `created.hyperVGrant` (group, Broker SID, computer id, VM GUID) is saved to `install-manifest.json` BEFORE the member is added, and the membership is read back afterwards. A manifest whose record names any other SID or group is not one this script wrote and is refused.
+
+Run it (plan first; a plan without admin rights says "unknown" for the VM lookup because the VM list needs an elevated console):
+
+```
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\host\albera-host.ps1 -Mode plan -GrantHyperVToBroker -VmName <the VM's exact name>
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\AlberaSetup\albera-host.ps1" -RepoRoot <repo> -Mode install -GrantHyperVToBroker -VmName <the VM's exact name> -ExpectedTreeHash <64 hex> -ApproverKeyId hello-... -ApproverPublicKey <spki> -ApproverSid S-1-5-21-...
+```
+
+The second line is the install command of "The elevated console" with the option added; everything else there (clean `cmd /d`, hashed copies of the scripts) is unchanged. The VM must exist already, so the Hyper-V role has to be on.
+
+An install that is already complete is not changed: run with the option, it says so and grants nothing. To add the grant later: uninstall, then install again with the option (the same rule as any other change). `-Mode status` needs no option; it follows the record and adds two lines (the group membership and the Broker config's `computers`). The Broker's SID type follows the option of the run in both directions: an install begun with the option and finished without it puts the Broker back to `restricted` (an unrestricted Broker is never left behind without the grant).
+
+**What it gives away, stated plainly.** Hyper-V Administrators is all-or-nothing and effectively host-administrator (ADR-002). From then on the only thing that limits the Broker is its own code: a fixed allowlist of screen capture and keyboard/mouse calls on the VMs in its config. The Control Plane gets nothing: `albera-cp` stays a standard user and its right on the Broker service stays `LC` (query status) only.
+
+**Undo.** `-Mode uninstall` needs no option; the install record decides. Its first step removes the Broker's SID from the group, reads the membership back, and stops (the services are NOT deleted) if the SID is still there. The order matters: a deleted service leaves its SID in the group, and the next service with that name would inherit the right. If you ever need to do it by hand: `Remove-LocalGroupMember -SID S-1-5-32-578 -Member <the Broker SID from the plan>`. Nobody else in the group is touched, and a group that no longer exists is skipped.
+
+**Lab.** `-VmId <lowercase GUID>` replaces the lookup and is refused unless `ALBERA_LAB_VM` is `1`, exactly like `-ControlPlanePassword`. The second pass of `lab-host-install-check.ps1` installs with the option and checks, independently of the installer's own read-back, that the Broker SID is in the group (via `net localgroup`), that `albera-cp` and the Authority are not, the SID types (`UNRESTRICTED` and `RESTRICTED`), the privileges, the `computers` entry, the install record, a second install that changes nothing, and an uninstall that leaves the group as it was. It is BLOCKED, not passed, when the guest has no Hyper-V Administrators group, and it uses a fixed GUID, so the name lookup is not part of it.
+
+**Not verified.** Nothing here has run on a real host or in the VM lab. In particular: `Add-LocalGroupMember` / `Remove-LocalGroupMember` with a service SID given as a string (the nested lab used `net.exe`, which this script may not start); reading the group's member list when one member is a service's virtual account (the script falls back to the member's WinNT path); the VM lookup against a real VM (`Msvm_ComputerSystem` by `ElementName`, then `Name`); a Broker started with a `computers` config as an unrestricted service on the owner's PC; and, from ADR-002, adapter mouse input against a VM with a guest OS.
+
 ## First approval (`approver-app.md` steps 6 and 7)
 
 `albera-runtime approval-check` sends ONE `broker.operation` / `synthetic.noop` (the Broker only records the claim; nothing moves) through fence, submit, wait, claim, and prints the approval id. Only the Control Plane account can reach the two submit pipes, so run it as `albera-cp`:
@@ -104,7 +134,7 @@ What it does **not** do, stated plainly:
 
 The Authority refuses one SID for both pipes (`sids_not_distinct`), and the approver SID is your own account, so the Control Plane cannot be you. Decision (`2026-11-02+host-install` in `spec/architecture.md`): a dedicated local standard user `albera-cp`, created by the script, password typed by you, never stored. Its SID is `controlPlaneSid` in both configs. Rejected: a virtual service account (nothing runs the Control Plane as a service yet); a second administrator (a bigger target than needed); adding `albera-cp` to Hyper-V Administrators (see below).
 
-**Known consequence, not solved here:** the gated `room` uses the same-user Hyper-V prototype, which needs Hyper-V Administrators. Running `room` as `albera-cp` therefore does not work until that is decided (a privileged Broker for Hyper-V, or another identity). `approval-check` does not need Hyper-V. This is why the account choice stays provisional.
+**Known consequence, answered by the optional grant below:** the gated `room` used the same-user Hyper-V prototype, which needs Hyper-V Administrators. Running `room` as `albera-cp` therefore cannot work, and `albera-cp` still never gets the group. The owner decided on 2026-11-03 that the Broker performs those operations instead, which is what "Giving the Broker Hyper-V" installs. `approval-check` does not need Hyper-V. This is why the account choice stays provisional.
 
 ## Trust model (what a non-admin agent cannot do through this script)
 
@@ -126,6 +156,8 @@ Not covered: an attacker who is already an administrator; a wrong `-ExpectedTree
 ## Uninstall
 
 `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\host\albera-host.ps1 -Mode uninstall` (elevated; `-Mode plan -PlanFor uninstall` first). It stops and deletes the two services (a service whose command line is not the one it wrote is left alone), deletes the machine key, removes the install folder and the data folders, removes `albera-cp` (only if the manifest says it created it and the SID still matches; its profile folder, if it ever logged in, stays), and last the manifest and the data root. A folder that holds a file the script does not know, or a link/junction, is not deleted. This deletes the Broker journal and the Control Plane journal.
+
+If the install record shows the Hyper-V grant, the first step removes the Broker's SID from Hyper-V Administrators, before the service is deleted ("Giving the Broker Hyper-V").
 
 To update a build: uninstall, rebuild, install (an existing copy that differs is refused).
 

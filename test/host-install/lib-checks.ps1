@@ -239,4 +239,129 @@ $r.owned = [ordered]@{
   gone = Test-OwnedUser $recorded $null
   unrecorded = Test-OwnedUser $null $live
 }
+# ---- the Hyper-V grant (-GrantHyperVToBroker; ADR-002 Amendment 2026-11-03)
+$hvK = Get-HostConstants   # not $K: the loops above reuse $k (variable names are case-insensitive)
+$guidA = '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f'; $guidB = '11111111-2222-4333-8444-555555555555'
+$hvSids = @{ Broker = $sids.Broker; Authority = $sids.Authority; ControlPlane = $cp }
+$r.hvConstant = $hvK.HyperVAdminsSid
+$hvPlan = Get-HyperVGrantPlan $hvSids
+$r.hvPlan = [ordered]@{ group = $hvPlan.Group; member = $hvPlan.Member; memberIsBroker = ($hvPlan.Member -eq $sids.Broker) }
+$r.hvPlanNoCpYet = (Get-HyperVGrantPlan @{ Broker = $sids.Broker; Authority = $sids.Authority; ControlPlane = $null }).Member
+$r.hvPlanRefused = [ordered]@{
+  brokerIsControlPlane = Msg { Get-HyperVGrantPlan @{ Broker = $sids.Broker; Authority = $sids.Authority; ControlPlane = $sids.Broker } }
+  brokerIsAuthority = Msg { Get-HyperVGrantPlan @{ Broker = $sids.Broker; Authority = $sids.Broker; ControlPlane = $cp } }
+  controlPlaneSid = Msg { Get-HyperVGrantPlan @{ Broker = $cp; Authority = $sids.Authority; ControlPlane = $cp } }
+  authoritySid = Msg { Get-HyperVGrantPlan @{ Broker = $sids.Authority; Authority = $sids.Authority; ControlPlane = $cp } }
+  otherServiceSid = Msg { Get-HyperVGrantPlan @{ Broker = (Get-DerivedServiceSid 'SomeOtherService'); Authority = $sids.Authority; ControlPlane = $cp } }
+  administrators = Msg { Get-HyperVGrantPlan @{ Broker = 'S-1-5-32-544'; Authority = $sids.Authority; ControlPlane = $cp } }
+  nothing = Msg { Get-HyperVGrantPlan @{ Broker = $null; Authority = $sids.Authority; ControlPlane = $cp } }
+}
+$r.hvMembers = [ordered]@{
+  ok = Count (Test-HyperVMembers @($sids.Broker, 'S-1-5-21-1111111111-2222222222-3333333333-1234') $hvSids)
+  brokerMissing = Test-HyperVMembers @('S-1-5-21-1111111111-2222222222-3333333333-1234') $hvSids
+  controlPlaneIn = Test-HyperVMembers @($sids.Broker, $cp) $hvSids
+  authorityIn = Test-HyperVMembers @($sids.Broker, $sids.Authority) $hvSids
+  empty = Test-HyperVMembers @() $hvSids
+  # without a record: the Broker must NOT be in, albera-cp and the Authority never
+  noRecordClean = Count (Test-HyperVMembers @('S-1-5-21-1111111111-2222222222-3333333333-1234') $hvSids $false)
+  noRecordEmpty = Count (Test-HyperVMembers @() $hvSids $false)
+  noRecordBroker = Test-HyperVMembers @($sids.Broker) $hvSids $false
+  noRecordControlPlane = Test-HyperVMembers @($cp) $hvSids $false
+  noRecordAuthority = Test-HyperVMembers @($sids.Authority) $hvSids $false
+}
+$r.vmGuid = @((Test-VmGuid $guidA), (Test-VmGuid $guidA.ToUpperInvariant()), (Test-VmGuid ($guidA + "`n")), (Test-VmGuid '{8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f}'), (Test-VmGuid '00000000-0000-0000-0000-000000000000'), (Test-VmGuid ''), (Test-VmGuid $null), (Test-VmGuid 'clone-01'))
+function Vm([string]$Name, [string]$Element) { [pscustomobject]@{ Name = $Name; ElementName = $Element } }
+$r.vmPick = [ordered]@{
+  one = Select-VmByName @((Vm $guidA.ToUpperInvariant() 'albera-clone-01')) 'albera-clone-01'
+  caseInsensitiveName = Select-VmByName @((Vm $guidA 'Albera-Clone-01')) 'albera-clone-01'
+  none = Select-VmByName @() 'albera-clone-01'
+  otherName = Select-VmByName @((Vm $guidA 'other')) 'albera-clone-01'
+  twoWithTheName = Select-VmByName @((Vm $guidA 'albera-clone-01'), (Vm $guidB 'ALBERA-CLONE-01')) 'albera-clone-01'
+  hostIsNoVm = Select-VmByName @((Vm 'HOSTNAME-PC' 'albera-clone-01')) 'albera-clone-01'
+  hostAndOne = Select-VmByName @((Vm 'HOSTNAME-PC' 'albera-clone-01'), (Vm $guidA 'albera-clone-01')) 'albera-clone-01'
+  nullEntry = Select-VmByName @($null, (Vm $guidA 'albera-clone-01')) 'albera-clone-01'
+}
+$r.vmIdGate = [ordered]@{ lab = $null -eq (Test-LabVmIdGate $true '1'); notLab = Test-LabVmIdGate $true ''; wrongValue = Test-LabVmIdGate $true 'true'; notSupplied = $null -eq (Test-LabVmIdGate $false '') }
+
+# the Broker config: the seven keys it always had, plus `computers` only when the Hyper-V grant is asked for
+$computers = Get-BrokerComputers 'clone-01' $guidA
+$r.hvComputers = $computers
+$r.hvComputersBad = [ordered]@{ id = Msg { Get-BrokerComputers 'bad id' $guidA }; vm = Msg { Get-BrokerComputers 'clone-01' $guidA.ToUpperInvariant() } }
+$plainJson = ConvertTo-HostJson (Get-BrokerConfig $L $cp $EcSpki)
+$r.hvPlainSame = [ordered]@{
+  noArgument = ($plainJson -ceq $brokerJson)
+  nullComputers = ((ConvertTo-HostJson (Get-BrokerConfig $L $cp $EcSpki $null)) -ceq $brokerJson)
+  emptyComputers = ((ConvertTo-HostJson (Get-BrokerConfig $L $cp $EcSpki @())) -ceq $brokerJson)
+  hasNoComputersKey = (@((Get-BrokerConfig $L $cp $EcSpki $null).Keys) -cnotcontains 'computers')
+}
+$grantJson = ConvertTo-HostJson (Get-BrokerConfig $L $cp $EcSpki $computers)
+$r.hvGrantJson = $grantJson
+$r.hvGrantReasons = Test-BrokerConfigText $grantJson
+$r.hvGrantKeys = @((Get-BrokerConfig $L $cp $EcSpki $computers).Keys)
+$r.hvGrantComputersMatch = [ordered]@{ same = (Test-BrokerConfigComputers $grantJson 'clone-01' $guidA); otherVm = (Test-BrokerConfigComputers $grantJson 'clone-01' $guidB); otherId = (Test-BrokerConfigComputers $grantJson 'clone-02' $guidA); plain = (Test-BrokerConfigComputers $plainJson 'clone-01' $guidA); junk = (Test-BrokerConfigComputers 'nope' 'clone-01' $guidA) }
+$r.hvGrantBad = [ordered]@{
+  upperGuid = Test-BrokerConfigText ($grantJson -replace [regex]::Escape($guidA), $guidA.ToUpperInvariant())
+  wrongShape = Test-BrokerConfigText ($grantJson -replace '"vmId":"[^"]*"', '"vmId":"not-a-guid"')
+  zeroGuid = Test-BrokerConfigText ($grantJson -replace [regex]::Escape($guidA), '00000000-0000-0000-0000-000000000000')
+  extraField = Test-BrokerConfigText ($grantJson -replace '"vmId"', '"name":"x","vmId"')
+  missingField = Test-BrokerConfigText ($grantJson -replace ',"vmId":"[^"]*"', '')
+  notAnArray = Test-BrokerConfigText ($grantJson -replace '"computers":\[(\{[^\]]*\})\]', '"computers":$1')
+  isNull = Test-BrokerConfigText ($grantJson -replace '"computers":\[[^\]]*\]', '"computers":null')
+  duplicateVm = Test-BrokerConfigText ($grantJson -replace '"computers":\[(\{[^\]]*\})\]', ('"computers":[$1,{"computerId":"clone-02","vmId":"' + $guidA + '"}]'))
+  duplicateId = Test-BrokerConfigText ($grantJson -replace '"computers":\[(\{[^\]]*\})\]', ('"computers":[$1,{"computerId":"clone-01","vmId":"' + $guidB + '"}]'))
+  badId = Test-BrokerConfigText ($grantJson -replace '"computerId":"clone-01"', '"computerId":"a b"')
+  nineEntries = Test-BrokerConfigText ((Get-BrokerConfig $L $cp $EcSpki @(1..9 | ForEach-Object { [ordered]@{ computerId = "c$_"; vmId = ('00000000-0000-4000-8000-{0:D12}' -f $_) } })) | ConvertTo-Json -Depth 6 -Compress)
+  eightEntries = Test-BrokerConfigText ((Get-BrokerConfig $L $cp $EcSpki @(1..8 | ForEach-Object { [ordered]@{ computerId = "c$_"; vmId = ('00000000-0000-4000-8000-{0:D12}' -f $_) } })) | ConvertTo-Json -Depth 6 -Compress)
+}
+
+# service facts: the SID type is expected per the install record, never "anything goes"
+$r.sidTypeExpected = [ordered]@{
+  brokerPlain = Get-ExpectedSidType $hvK.BrokerService $false
+  brokerGranted = Get-ExpectedSidType $hvK.BrokerService $true
+  authorityPlain = Get-ExpectedSidType $hvK.AuthorityService $false
+  authorityGranted = Get-ExpectedSidType $hvK.AuthorityService $true
+  unknownServiceGranted = Get-ExpectedSidType 'SomethingElse' $true
+}
+$unrestrictedFacts = WithFact 'SidTypeText' "SERVICE_NAME: AlberaHostBroker`r`n        SERVICE_SID_TYPE:  UNRESTRICTED"
+$unrestrictedImpersonate = WithFact 'SidTypeText' $unrestrictedFacts.SidTypeText
+$unrestrictedImpersonate.PrivilegesText = "PRIVILEGES : SeChangeNotifyPrivilege`r`n  SeImpersonatePrivilege"
+$r.sidTypeFacts = [ordered]@{
+  grantedOk = Count (Test-ServiceFacts $unrestrictedFacts 'AlberaHostBroker' $r.brokerCommandLine 'unrestricted')
+  grantedButRestricted = Test-ServiceFacts $goodFacts 'AlberaHostBroker' $r.brokerCommandLine 'unrestricted'
+  grantedButNone = Test-ServiceFacts (WithFact 'SidTypeText' 'SERVICE_SID_TYPE:  NONE') 'AlberaHostBroker' $r.brokerCommandLine 'unrestricted'
+  plainButUnrestricted = Test-ServiceFacts $unrestrictedFacts 'AlberaHostBroker' $r.brokerCommandLine
+  plainButUnrestrictedExplicit = Test-ServiceFacts $unrestrictedFacts 'AlberaHostBroker' $r.brokerCommandLine 'restricted'
+  plainOk = Count (Test-ServiceFacts $goodFacts 'AlberaHostBroker' $r.brokerCommandLine 'restricted')
+  grantedStillMinimalPrivileges = Test-ServiceFacts $unrestrictedImpersonate 'AlberaHostBroker' $r.brokerCommandLine 'unrestricted'
+  badExpectation = Msg { Test-ServiceFacts $goodFacts 'AlberaHostBroker' $r.brokerCommandLine 'none' }
+}
+
+$r.winNtPaths = [ordered]@{
+  sid = ConvertFrom-WinNTMemberPath 'WinNT://S-1-5-80-1-2-3-4-5'
+  service = ConvertFrom-WinNTMemberPath 'WinNT://NT SERVICE/AlberaHostBroker'
+  local = ConvertFrom-WinNTMemberPath 'WinNT://./albera-cp'
+  withMachine = ConvertFrom-WinNTMemberPath 'WinNT://SERVER/NT SERVICE/AlberaHostBroker'
+  junk = ConvertFrom-WinNTMemberPath 'LDAP://x'
+  nothing = ConvertFrom-WinNTMemberPath ''
+  badSid = ConvertFrom-WinNTMemberPath 'WinNT://S-1-x'
+}
+
+# the install record: only the fixed group and the Broker's own derived SID can be named, so a forged record removes nobody else from the group
+function ManifestWithGrant($grant) { $m = NewManifest; $m['created']['hyperVGrant'] = $grant; $m }
+function ShapeOf($manifest) { $x = $serializer.DeserializeObject((ConvertTo-Json -InputObject $manifest -Depth 8 -Compress)); Test-ManifestShape $x }
+$goodGrant = @{ group = 'S-1-5-32-578'; sid = $sids.Broker; computerId = 'clone-01'; vmId = $guidA }
+function WithGrant($name, $value) { $g = @{} + $goodGrant; if ($null -eq $value) { $g.Remove($name) } else { $g[$name] = $value }; $g }
+$r.hvRecord = [ordered]@{
+  ok = Count (ShapeOf (ManifestWithGrant $goodGrant))
+  noRecordStillOk = Count (ShapeOf (NewManifest))
+  controlPlaneSid = ShapeOf (ManifestWithGrant (WithGrant 'sid' $cp))
+  authoritySid = ShapeOf (ManifestWithGrant (WithGrant 'sid' $sids.Authority))
+  otherGroup = ShapeOf (ManifestWithGrant (WithGrant 'group' 'S-1-5-32-544'))
+  badVm = ShapeOf (ManifestWithGrant (WithGrant 'vmId' $guidA.ToUpperInvariant()))
+  badComputer = ShapeOf (ManifestWithGrant (WithGrant 'computerId' 'a b'))
+  extraKey = ShapeOf (ManifestWithGrant ((WithGrant 'x' 'y')))
+  missingKey = ShapeOf (ManifestWithGrant (WithGrant 'vmId' $null))
+  notADictionary = ShapeOf (ManifestWithGrant 'S-1-5-32-578')
+}
+
 ConvertTo-Json -InputObject $r -Depth 8 -Compress
