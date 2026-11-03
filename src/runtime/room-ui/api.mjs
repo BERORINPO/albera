@@ -36,3 +36,12 @@ export function bootstrapFromHash(hash) {
   const match = (typeof hash === 'string' ? hash : '').match(/^#b=([A-Za-z0-9_-]{16,128})$/);
   return match ? match[1] : '';
 }
+
+// Credential field and job screen (settings.mjs, jobs.mjs). The credential call is write-only: no call here ever receives the value back.
+export const getCredentials = () => call('api/settings/credentials');
+export const saveCredential = (name, value) => postJson('api/settings/credential', { name, value });
+export const eraseCredential = (name) => postJson('api/settings/credential/erase', { name });
+export const getJobs = () => call('api/jobs');
+export const startJob = (computerId, task) => postJson('api/jobs', { computerId, task });
+export const stopAllJobs = () => postJson('api/jobs/stop-all', {});
+export const approvalTest = () => postJson('api/jobs/approval-test', {});
