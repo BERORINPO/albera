@@ -88,13 +88,20 @@ test('modes: only view and act; an act open carries exactly an operationId and a
   assert.deepEqual([...pipe.matchAll(/_desktop\.(\w+)\(/gu)].map((m) => m[1]), ['Capture', 'Input']);
 });
 
-test('input: one request at a time per computer, the lease asked again once the request holds its turn, bounded wait, and a request that never returns stops the Broker', () => {
+test('input: one request at a time per computer, the wait for the turn ends with the lease, the lease asked again once the request holds its turn, a running request stops when the lease ends, and a request that never returns stops the Broker', () => {
   const input = between(pipe, 'private async Task<string?> InputAndReplyAsync(', 'private async Task<DesktopResult> InputInTurnAsync(');
-  assert.ok(inOrder(input, 'turn.WaitAsync(InputQueueTimeout, stop)', 'lease.Refusal()', 'InputInTurnAsync(computerId, steps)', 'finally { turn.Release(); }', 'WriteAsync(pipe, DesktopOk, stop)'),
-    'wait for the turn -> lease -> send -> give the turn back -> only then answer');
+  assert.ok(inOrder(input, 'CreateLinkedTokenSource(stop, lease.Token)', 'turn.WaitAsync(InputQueueTimeout, waiting.Token)', 'lease.Refusal()', 'InputInTurnAsync(computerId, steps, lease.Token)', 'finally { turn.Release(); }', 'WriteAsync(pipe, DesktopOk, stop)'),
+    'wait for the turn (it ends with the lease) -> lease -> send, with the lease\'s token -> give the turn back -> only then answer');
+  assert.match(input, /catch \(OperationCanceledException\) when \(!stop\.IsCancellationRequested\) \{ return lease\.Refusal\(\) \?\? DesktopLeases\.Deny\.Revoked; \}/u, 'a lease that ended while waiting is a refusal, a STOP is not');
+  assert.match(input, /if \(result\.Reason == DesktopReason\.InputCancelled\) return lease\.Refusal\(\) \?\? DesktopLeases\.Deny\.Revoked;/u, 'a request the lease stopped half-way ends with the lease\'s own reason word');
+  const inTurn = between(pipe, 'private async Task<DesktopResult> InputInTurnAsync(', 'private static async Task WriteAsync(');
+  assert.match(inTurn, /Task\.Run\(\(\) => _desktop\.Input\(computerId, steps, leaseEnded\)\)/u, 'the adapter gets the lease\'s token and looks at it before every step');
   assert.match(pipe, /_inputTurns = config\.Computers\.ToDictionary\(c => c\.ComputerId, _ => new SemaphoreSlim\(1, 1\), StringComparer\.Ordinal\);/u, 'a turn for each configured computer');
   assert.match(pipe, /InputHungTimeout = TimeSpan\.FromMinutes\(5\)/u);
-  assert.match(pipe, /Task\.WhenAny\(input, Task\.Delay\(InputHungTimeout\)\) != input\)[\s\S]{0,400}DESKTOP=INPUT_HUNG[\s\S]{0,80}TerminateForDesktopFailure\(\);/u);
+  assert.match(pipe, /Task\.WhenAny\(input, hungTimer\) != input\)[\s\S]{0,400}DESKTOP=INPUT_HUNG[\s\S]{0,80}TerminateForDesktopFailure\(\);/u);
+  // The watchdog's timer belongs to the request (Zaku LOW of #166): made with a token, and cancelled whichever way the request ends, so no 5-minute timer is left behind per input.
+  assert.ok(inOrder(inTurn, 'Task hungTimer = Task.Delay(InputHungTimeout, timerStop.Token);', 'Task.WhenAny(input, hungTimer)', 'finally { timerStop.Cancel(); }', 'DesktopResult result = await input;'));
+  assert.equal(/Task\.Delay\(InputHungTimeout\)/u.test(pipe), false, 'no watchdog timer without a token');
   assert.match(protocol, /if \(list\.GetArrayLength\(\) is < 1 or > DesktopLimits\.MaxSteps\) return DesktopDeny\.InputSteps;/u, 'the step count is checked before a step is read');
   assert.ok(inOrder(protocol, 'ReadStep(element)', 'DesktopLimits.AreValidSteps(steps)', 'new DesktopRequest(Steps: steps)'), 'every step is shaped, then the adapter\'s own limits decide, before anything is sent');
   assert.match(protocol, /StepFields = \["op", "x", "y", "button", "vk", "delta", "ms", "text"\];/u, 'the fields of the adapter\'s DesktopStep and no others');
@@ -103,25 +110,41 @@ test('input: one request at a time per computer, the lease asked again once the 
 test('the lease: made only by a task.start claim that was just recorded, held in memory, bounded by the config and by 60 minutes, and the test seams for it are not in the shipped build', () => {
   const leases = stripComments(read('DesktopLeases.cs'));
   assert.match(leases, /MaxLifetimeSeconds = 60 \* 60;/u);
-  assert.equal(/File\.|Directory\.|Sqlite|Journal|Environment\.|Registry|HttpClient|Socket|NamedPipe/u.test(leases), false, 'memory only: no file, journal, environment or pipe');
-  assert.match(leases, /if \(!_computers\.Any\(c => string\.Equals\(c\.ComputerId, computerId, StringComparison\.Ordinal\)\)\) return null;/u, 'a computer that is not configured gets no lease');
+  assert.equal(/File\.|Directory\.|Sqlite|Journal|Environment\.(?!TickCount64\b)|Registry|HttpClient|Socket|NamedPipe/u.test(leases), false, 'memory only: no file, journal, environment or pipe');
+  assert.match(leases, /if \(_computers\.FirstOrDefault\(c => string\.Equals\(c\.ComputerId, computerId, StringComparison\.Ordinal\)\) is not \{ \} computer\) \{ refusal = NoGrant\.ComputerUnknown; return null; \}/u, 'a computer that is not configured gets no lease');
+  assert.match(leases, /if \(claimedVmId is not null && !string\.Equals\(claimedVmId, computer\.VmId, StringComparison\.Ordinal\)\) \{ refusal = NoGrant\.VmMismatch; return null; \}/u, 'a claim that names a VM other than the configured one gets no lease (Zaku MEDIUM 3 of #166)');
+  assert.ok(inOrder(leases, 'NoGrant.ComputerUnknown', 'NoGrant.VmMismatch', 'generation = (previous?.Generation ?? 0) + 1;'), 'both refusals come before anything is counted or replaced');
   assert.match(leases, /generation = \(previous\?\.Generation \?\? 0\) \+ 1;/u);
-  assert.match(leases, /_byComputer\[computerId\] = new Lease\(computerId, operationId, generation, _now\(\) \+ _lifetimeSeconds\);/u, 'expiry = the Broker\'s clock at the claim + the lifetime');
+  assert.match(leases, /_byComputer\[computerId\] = new Lease\(computerId, operationId, generation, _nowMs\(\) \+ _lifetimeSeconds \* 1000\);/u, 'deadline = the monotonic clock at the claim + the lifetime');
   assert.ok(inOrder(leases, 'closing = previous?.Retire() ?? [];', '_byComputer[computerId] = new Lease(', 'foreach (LeaseSession session in closing) session.Close();'), 'the older lease\'s sessions are taken away with the replacement, then closed');
   assert.match(leases, /lifetimeSeconds is < 1 or > MaxLifetimeSeconds\) throw new ArgumentOutOfRangeException/u);
   // The only caller of Grant is the claim path, after the journal row is written and never for a replay (a replay returns before this point).
   const claims = stripComments(read('BrokerRequests.cs'));
   assert.equal([...[claims, pipe, protocol, program, loop].join('\n').matchAll(/\.Grant\(/gu)].length, 1, 'one caller of Grant in the whole Broker');
-  assert.ok(inOrder(claims, 'if (replay)', 'return Success(context.RecordedState!, claimed, replayed: true);', 'Journal.ClaimAsync(', 'if (kind == Journal.ClaimKind.Rejected) return Deny(reason);', 'Console.WriteLine("CLAIM=PERSISTED_UNKNOWN");', 'settings.Leases?.Grant(', 'return Success(Journal.UnknownState, claimed, replayed: false);'));
-  assert.match(claims, /if \(encodedAction is not null && settings\.Leases\?\.Grant\(\(string\)dto!\["computerId"\], operationId\) is not null\)/u, 'only the three-key task.start form, the computer from the claimed DTO, the operation from the receipt');
+  assert.ok(inOrder(claims, 'if (replay)', 'return Success(context.RecordedState!, claimed, replayed: true);', 'Journal.ClaimAsync(', 'if (kind == Journal.ClaimKind.Rejected) return Deny(reason);', 'Console.WriteLine("CLAIM=PERSISTED_UNKNOWN");', 'GrantDesktopLease(settings, dto!, operationId);', 'return Success(Journal.UnknownState, claimed, replayed: false);'));
+  assert.match(claims, /if \(encodedAction is not null\) GrantDesktopLease\(settings, dto!, operationId\);/u, 'only the three-key task.start form');
+  const grant = between(claims, 'private static void GrantDesktopLease(', 'private static string? ChallengeRefusal(');
+  assert.match(grant, /string\? claimedVmId = dto\["args"\] is IReadOnlyDictionary<string, object> args && args\.TryGetValue\(VmIdArgument, out object\? vm\) \? vm as string : null;/u, 'the VM the signed args name, if any');
+  assert.match(grant, /leases\.Grant\(\(string\)dto\["computerId"\], operationId, claimedVmId, out string refusal\) is not null\) Console\.WriteLine\("LEASE=GRANTED"\);\s+else if \(refusal == DesktopLeases\.NoGrant\.VmMismatch\) Console\.WriteLine\("LEASE=VM_MISMATCH"\);/u, 'the computer from the claimed DTO, the operation from the receipt, the VM checked by the table; one fixed log word for a mismatch');
+  assert.equal(/Console\.WriteLine\([^"]/u.test(grant), false, 'fixed words only');
   // The table belongs to the desktop host and reaches the claim path through the settings; the one-shot `serve` has none.
-  assert.match(pipe, /Leases = new DesktopLeases\(config\.Computers, NowSeconds, DesktopLeaseSeconds\);/u);
+  assert.match(pipe, /Leases = new DesktopLeases\(config\.Computers, lifetimeSeconds: DesktopLeaseSeconds\);/u);
   assert.match(loop, /settings = started with \{ Leases = desktop\.Leases \};/u);
   assert.match(program, /long Epoch = 0, DesktopLeases\? Leases = null\);/u);
   // Shipped build: the lifetime is the contract's 60 minutes; the knob that shortens it exists only in the test build.
   assert.match(rawPipe.slice(rawPipe.indexOf('#else'), rawPipe.indexOf('#endif')), /DesktopLeaseSeconds = DesktopLeases\.MaxLifetimeSeconds;/u);
   assert.equal(/ALBERA_BROKER_TEST_DESKTOP_LEASE_SECONDS|ALBERA_BROKER_TEST_DESKTOP_INPUT_HOLD_MS|DesktopInputHold|input_enter/u.test(rawPipe.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '')), false);
   assert.deepEqual([...leases.matchAll(/"(lease_[a-z]+)"/gu)].map((m) => m[1]), ['lease_unknown', 'lease_generation', 'lease_expired', 'lease_revoked'], 'the reason words of the lease');
+});
+
+test('the lease\'s deadline is on a monotonic clock, never a wall-clock time: setting the clock back cannot stretch a lease (Zaku MEDIUM 1 of #166)', () => {
+  const leases = stripComments(read('DesktopLeases.cs'));
+  assert.match(leases, /_nowMs = nowMs \?\? \(\(\) => Environment\.TickCount64\);/u, 'the default clock is the process\'s monotonic tick count');
+  assert.equal(/DateTime|UtcNow|DateTimeOffset|TimeProvider|NowSeconds|Stopwatch|GetSystemTime|ToUnixTime/u.test(leases), false, 'no wall-clock time anywhere in the lease table');
+  assert.equal([...leases.matchAll(/_nowMs\(\)/gu)].length, 3, 'read in exactly three places: the deadline at the grant, the time left at an open, the check');
+  assert.match(leases, /return _nowMs\(\) >= lease\.DeadlineMs \? Deny\.Expired : null;/u);
+  assert.match(leases, /public string\? Refusal\(\) => _owner\.Check\(_lease\) \?\? \(Token\.IsCancellationRequested \? Deny\.Revoked : null\);/u, 'a session whose own token is cancelled refuses, whatever the table says');
+  assert.equal(/NowSeconds|UtcNow|DateTime/u.test(pipe), false, 'the desktop pipe hands the table no clock');
 });
 
 test('only fixed text leaves the Broker: three reply shapes on the wire, and the log carries fixed words and reason words only', () => {

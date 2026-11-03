@@ -13,8 +13,9 @@ using static DesktopProtocol;
 //   * Captures: ONE at a time in the whole Broker (CaptureSlot), because the WMI scripting API boxes every byte of the picture (see MaxCapturePixels). Another session's capture waits for
 //     the slot (at most CaptureQueueTimeout, then it is refused); within one session a capture starts at least 200 ms after the previous one started (the contract's limit): the later request waits.
 //   * Act: the open names the operationId and leaseGeneration of the lease that is current for that computer (the Broker made it when it recorded that task.start claim); anything else is
-//     refused. The session ends, with the fixed denied frame, when a newer claim replaces the lease or the lease expires. Input runs ONE request at a time per computer, and the lease is
-//     checked again once the request holds that turn. A request that never returns stops the Broker, as a hung capture does.
+//     refused. The session ends, with the fixed denied frame, when a newer claim replaces the lease or the lease expires (the lease's deadline is on the monotonic clock, DesktopLeases.cs).
+//     Input runs ONE request at a time per computer, the wait for that turn ends with the lease, the lease is checked again once the request holds the turn, and a request that is running
+//     stops at its next step when the lease ends (what it holds down is released first). A request that never returns stops the Broker, as a hung capture does.
 //   * A session that is idle for 60 s is closed (no reply). Every refusal is the fixed `denied` frame followed by closing the connection; the reason is a fixed word on stdout only (DESKTOP_DENY=).
 internal static partial class Program
 {
@@ -58,7 +59,7 @@ internal static partial class Program
             _config = config;
             _desktop = new HyperVDesktop(config.Computers, ComWmiConnection.TryConnect);
             _inputTurns = config.Computers.ToDictionary(c => c.ComputerId, _ => new SemaphoreSlim(1, 1), StringComparer.Ordinal);
-            Leases = new DesktopLeases(config.Computers, NowSeconds, DesktopLeaseSeconds);
+            Leases = new DesktopLeases(config.Computers, lifetimeSeconds: DesktopLeaseSeconds);
         }
 
         /// <summary>The Broker's lease table: the claim path grants into it (BrokerRequests.cs), act sessions open against it. A restart is a new process, so a new and empty one.</summary>
@@ -244,38 +245,51 @@ internal static partial class Program
             return result;
         }
 
-        // Null when the steps were sent (answered { "ok": true }); otherwise the reason word of the refusal. The lease is asked again once this request holds its computer's turn: a newer
-        // claim can have replaced it while the request waited behind another one.
+        // Null when the steps were sent (answered { "ok": true }); otherwise the reason word of the refusal. The wait for the turn ends when the lease does, and the lease is asked again once
+        // this request holds its computer's turn: a newer claim can have replaced it while the request waited behind another one.
         private async Task<string?> InputAndReplyAsync(NamedPipeServerStream pipe, DesktopLeases.LeaseSession lease, string computerId, IReadOnlyList<DesktopStep> steps, CancellationToken stop)
         {
             SemaphoreSlim turn = _inputTurns[computerId];
-            if (!await turn.WaitAsync(InputQueueTimeout, stop)) return DesktopDeny.InputBusy;
+            using CancellationTokenSource waiting = CancellationTokenSource.CreateLinkedTokenSource(stop, lease.Token);
+            try
+            {
+                if (!await turn.WaitAsync(InputQueueTimeout, waiting.Token)) return DesktopDeny.InputBusy;
+            }
+            catch (OperationCanceledException) when (!stop.IsCancellationRequested) { return lease.Refusal() ?? DesktopLeases.Deny.Revoked; }
             DesktopResult result;
             try
             {
                 if (lease.Refusal() is { } ended) return ended;
-                result = await InputInTurnAsync(computerId, steps);
+                result = await InputInTurnAsync(computerId, steps, lease.Token);
             }
             finally { turn.Release(); }
+            if (result.Reason == DesktopReason.InputCancelled) return lease.Refusal() ?? DesktopLeases.Deny.Revoked; // stopped half-way, what was held released: the lease's own reason word
             if (!result.Ok) return result.Reason ?? DesktopReason.InputFailed;
             await WriteAsync(pipe, DesktopOk, stop);
             return null;
         }
 
-        // Like the capture: the adapter call runs on a pool thread and is not cancelled half-way (a released key matters more than a prompt STOP).
-        private async Task<DesktopResult> InputInTurnAsync(string computerId, IReadOnlyList<DesktopStep> steps)
+        // Like the capture: the adapter call runs on a pool thread. It looks at `leaseEnded` before every step (a sleep step ends on it too), so a lease that ends stops the request there, after
+        // the adapter released what was held; a step that is already inside WMI is not interrupted (a released key matters more than a prompt STOP).
+        private async Task<DesktopResult> InputInTurnAsync(string computerId, IReadOnlyList<DesktopStep> steps, CancellationToken leaseEnded)
         {
 #if ALBERA_BROKER_TEST_FAULTS
             Console.WriteLine("DESKTOP_TEST=input_enter");
             await Task.Delay(DesktopInputHold);
 #endif
-            Task<DesktopResult> input = Task.Run(() => _desktop.Input(computerId, steps));
-            if (await Task.WhenAny(input, Task.Delay(InputHungTimeout)) != input)
+            Task<DesktopResult> input = Task.Run(() => _desktop.Input(computerId, steps, leaseEnded));
+            using CancellationTokenSource timerStop = new(); // the watchdog's timer is cancelled with the request: it must not outlive it (5 minutes per input otherwise)
+            Task hungTimer = Task.Delay(InputHungTimeout, timerStop.Token);
+            try
             {
-                // The COM call cannot be cancelled and still holds this computer's turn: every later input would be input_busy until a restart. Restart now.
-                Console.WriteLine("DESKTOP=INPUT_HUNG");
-                TerminateForDesktopFailure();
+                if (await Task.WhenAny(input, hungTimer) != input)
+                {
+                    // The COM call cannot be cancelled and still holds this computer's turn: every later input would be input_busy until a restart. Restart now.
+                    Console.WriteLine("DESKTOP=INPUT_HUNG");
+                    TerminateForDesktopFailure();
+                }
             }
+            finally { timerStop.Cancel(); }
             DesktopResult result = await input;
 #if ALBERA_BROKER_TEST_FAULTS
             Console.WriteLine("DESKTOP_TEST=input_exit");

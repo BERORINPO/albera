@@ -17,6 +17,8 @@ Console.WriteLine(JsonSerializer.Serialize(new
     inputRejected = InputRejected(),
     capture = CaptureCases(),
     input = InputCases(),
+    inputCancelled = InputCancelledCases(),
+    sleepEndsOnCancel = SleepEndsOnCancel(),
     leases = LeaseCases(),
     leaseLifetimes = LeaseLifetimes(),
 }));
@@ -110,12 +112,13 @@ static object[] GateCases()
 static object Report(string name, DesktopResult result, Fake fake) =>
     new { name, reason = result.Reason, ok = result.Ok, pngBytes = result.Png?.Length, connects = fake.Connects, calls = fake.Log.ToArray(), open = fake.Open };
 
-static (HyperVDesktop Desktop, Fake Fake, List<int> Sleeps) Make(Fake? fake = null)
+// `onSleep` runs after a sleep step was recorded (the recorder stands in for the real wait, which ends early on the token).
+static (HyperVDesktop Desktop, Fake Fake, List<int> Sleeps) Make(Fake? fake = null, Action? onSleep = null)
 {
     fake ??= new Fake();
     List<int> sleeps = [];
     Fake f = fake;
-    HyperVDesktop desktop = new([new ComputerBinding("room-1", Guid1), new ComputerBinding("room-2", Guid2)], () => { f.Connects++; return f.Unreachable ? null : f; }, sleeps.Add);
+    HyperVDesktop desktop = new([new ComputerBinding("room-1", Guid1), new ComputerBinding("room-2", Guid2)], () => { f.Connects++; return f.Unreachable ? null : f; }, (ms, _) => { sleeps.Add(ms); onSleep?.Invoke(); });
     return (desktop, f, sleeps);
 }
 
@@ -152,7 +155,7 @@ static object[] InputRejected()
     void Case(string name, string computerId, params DesktopStep[] steps)
     {
         var (desktop, fake, sleeps) = Make();
-        DesktopResult result = desktop.Input(computerId, steps);
+        DesktopResult result = desktop.Input(computerId, steps, CancellationToken.None);
         cases.Add(new { report = Report(name, result, fake), sleeps = sleeps.ToArray() });
     }
     Case("unknown computer", "nope", Tap(65));
@@ -167,7 +170,7 @@ static object[] InputRejected()
     Case("a null step", "room-1", Tap(65), null!);
     {
         var (desktop, fake, sleeps) = Make();
-        cases.Add(new { report = Report("a null step list", desktop.Input("room-1", null!), fake), sleeps = sleeps.ToArray() });
+        cases.Add(new { report = Report("a null step list", desktop.Input("room-1", null!, CancellationToken.None), fake), sleeps = sleeps.ToArray() });
     }
     Case("a bad step after good ones", "room-1", Tap(65), Move(1, 1), Tap(0));
     Case("virtual key 0", "room-1", Tap(0));
@@ -240,7 +243,7 @@ static object[] InputCases()
         Fake fake = new();
         tune?.Invoke(fake);
         var (desktop, f, sleeps) = Make(fake);
-        cases.Add(new { report = Report(name, desktop.Input("room-1", steps), f), sleeps = sleeps.ToArray() });
+        cases.Add(new { report = Report(name, desktop.Input("room-1", steps, CancellationToken.None), f), sleeps = sleeps.ToArray() });
     }
     DesktopStep[] everything =
     [
@@ -299,11 +302,53 @@ static object[] InputCases()
     return cases.ToArray();
 }
 
+// ---- input stopped by the lease ending: the token is looked at before WMI is touched, before every step, and a sleep step ends on it -------------------------------------
+
+static object[] InputCancelledCases()
+{
+    var cases = new List<object>();
+    // `tune` gets the fake and the source of the token; `cancelAtStart` cancels before the call; `cancelOnSleep` cancels while the first sleep step is "waiting".
+    void Case(string name, DesktopStep[] steps, Action<Fake, CancellationTokenSource>? tune = null, bool cancelAtStart = false, bool cancelOnSleep = false)
+    {
+        using CancellationTokenSource lease = new();
+        Fake fake = new();
+        tune?.Invoke(fake, lease);
+        var (desktop, f, sleeps) = Make(fake, cancelOnSleep ? lease.Cancel : null);
+        if (cancelAtStart) lease.Cancel();
+        cases.Add(new { report = Report(name, desktop.Input("room-1", steps, lease.Token), f), sleeps = sleeps.ToArray() });
+    }
+    DesktopStep[] held = [new("press", Vk: 16), new("down", Button: 1), Tap(65), Tap(66), Tap(67)];
+    Case("a lease that has already ended touches nothing", [Tap(65)], cancelAtStart: true);
+    Case("a lease that ends between two steps stops before the next one and releases what is held", held, (f, lease) => f.Inject = (m, a, n) => { if (m == "TypeKey" && n == 1) lease.Cancel(); return null; });
+    Case("a lease that ends during a sleep step stops before the step after it", [new("press", Vk: 16), new("sleep", Ms: 500), Tap(65)], cancelOnSleep: true);
+    Case("a lease that ends during the last step still releases what the plan left held", [new("down", Button: 2), new("sleep", Ms: 100)], cancelOnSleep: true);
+    Case("a lease that ends while a step is inside WMI lets that step finish, then stops", held, (f, lease) => f.Inject = (m, a, n) => { if (m == "PressKey") lease.Cancel(); return null; });
+    Case("a release that fails after the stop is tried once more on a new connection", [new("press", Vk: 16), Tap(65), Tap(66)], (f, lease) => f.Inject = (m, a, n) =>
+    {
+        if (m == "TypeKey") lease.Cancel();
+        return m == "ReleaseKey" && n == 1 ? "throw" : null;
+    });
+    Case("a plan that finishes before the lease ends is not touched", [new("press", Vk: 16), Tap(65), new("release", Vk: 16)]);
+    return cases.ToArray();
+}
+
+// The adapter's own wait (no recorder): a 10 s sleep step must end soon after the token is cancelled, not after the 10 s.
+static object SleepEndsOnCancel()
+{
+    Fake fake = new();
+    HyperVDesktop desktop = new([new ComputerBinding("room-1", Guid1)], () => { fake.Connects++; return fake; });
+    using CancellationTokenSource lease = new();
+    lease.CancelAfter(150);
+    DateTime started = DateTime.UtcNow;
+    DesktopResult result = desktop.Input("room-1", [new("press", Vk: 16), new("sleep", Ms: 10000), Tap(65)], lease.Token);
+    return new { reason = result.Reason, elapsedMs = (long)(DateTime.UtcNow - started).TotalMilliseconds, calls = fake.Log.ToArray() };
+}
+
 // ---- the desktop lease table (DesktopLeases.cs), driven with a fake clock ---------------------------------------------------------------------------------
 
 static object[] LeaseCases()
 {
-    long now = 10_000;
+    long now = 10_000_000; // a fake MONOTONIC clock, milliseconds
     DesktopLeases leases = new([new ComputerBinding("room-1", Guid1), new ComputerBinding("room-2", Guid2)], () => now);
     var steps = new List<object>();
     var sessions = new Dictionary<string, DesktopLeases.LeaseSession>();
@@ -317,12 +362,22 @@ static object[] LeaseCases()
         return null;
     }
     bool Cancelled(string keep) => sessions[keep].Token.IsCancellationRequested;
+    string lastRefusal = "";
+    long? Grant(string computer, string operation, string? claimedVm = null) => leases.Grant(computer, operation, claimedVm, out lastRefusal);
 
     Note("open before any claim", Open("x", "room-1", "op-1", 1));
-    Note("grant for a computer that is not configured", leases.Grant("room-9", "op-1"));
-    Note("grant for the id in another case", leases.Grant("ROOM-1", "op-1"));
+    Note("grant for a computer that is not configured", Grant("room-9", "op-1"));
+    Note("grant for a computer that is not configured: the word", lastRefusal);
+    Note("grant for the id in another case", Grant("ROOM-1", "op-1"));
     Note("open after those two refused grants", Open("x", "room-9", "op-1", 1));
-    Note("first grant of room-1", leases.Grant("room-1", "op-1"));
+    Note("grant that names the other computer's VM", Grant("room-1", "op-0", Guid2));
+    Note("grant that names the other computer's VM: the word", lastRefusal);
+    Note("grant that names an unrelated VM", Grant("room-1", "op-0", "00000000-0000-0000-0000-000000000000"));
+    Note("grant that names the right VM in upper case", Grant("room-1", "op-0", Guid1.ToUpperInvariant()));
+    Note("grant that names an empty VM id", Grant("room-1", "op-0", ""));
+    Note("open after the grants that named another VM", Open("x", "room-1", "op-0", 1));
+    Note("first grant of room-1", Grant("room-1", "op-1", Guid1));
+    Note("first grant of room-1: no refusal word", lastRefusal);
     Note("open with the granted operation and generation", Open("s1", "room-1", "op-1", 1));
     Note("open with generation 2", Open("x", "room-1", "op-1", 2));
     Note("open with generation 0", Open("x", "room-1", "op-1", 0));
@@ -331,19 +386,23 @@ static object[] LeaseCases()
     Note("open with the computer id in another case", Open("x", "ROOM-1", "op-1", 1));
     Note("open with the operation id in another case", Open("x", "room-1", "OP-1", 1));
     Note("a live session's refusal", sessions["s1"].Refusal());
-    Note("first grant of room-2 counts from 1 too", leases.Grant("room-2", "op-2"));
+    Note("a grant that names another VM leaves the standing lease alone", Grant("room-1", "op-8", Guid2));
+    Note("a grant that names another VM: the session is not cancelled", Cancelled("s1"));
+    Note("a grant that names another VM: the session's refusal", sessions["s1"].Refusal());
+    Note("a grant that names another VM: its operation cannot be opened", Open("x", "room-1", "op-8", 2));
+    Note("first grant of room-2 counts from 1 too", Grant("room-2", "op-2"));
     Note("room-2 opens", Open("s2", "room-2", "op-2", 1));
 
-    now += 3599;
-    Note("one second before the end of the hour: open", Open("s1b", "room-1", "op-1", 1));
-    Note("one second before the end of the hour: refusal", sessions["s1"].Refusal());
+    now += 3_599_999;
+    Note("one millisecond before the end of the hour: open", Open("s1b", "room-1", "op-1", 1));
+    Note("one millisecond before the end of the hour: refusal", sessions["s1"].Refusal());
     now += 1;
     Note("exactly 60 minutes after the claim: open", Open("x", "room-1", "op-1", 1));
     Note("exactly 60 minutes after the claim: refusal of a live session", sessions["s1"].Refusal());
     Note("exactly 60 minutes after the claim: room-2 too", Open("x", "room-2", "op-2", 1));
 
-    now += 100;
-    Note("a new claim after the expiry counts on from the expired generation", leases.Grant("room-1", "op-3"));
+    now += 100_000;
+    Note("a new claim after the expiry counts on from the expired generation", Grant("room-1", "op-3", Guid1));
     Note("replaced: the older sessions are cancelled", new[] { Cancelled("s1"), Cancelled("s1b") });
     Note("replaced: the older session's refusal", sessions["s1"].Refusal());
     Note("replaced: the older lease cannot be opened", Open("x", "room-1", "op-1", 1));
@@ -351,13 +410,20 @@ static object[] LeaseCases()
     Note("the new lease opens", Open("s3", "room-1", "op-3", 2));
     Note("the other computer's session is untouched by room-1's claim", Cancelled("s2"));
 
-    Note("a third claim", leases.Grant("room-1", "op-4"));
+    Note("a third claim", Grant("room-1", "op-4"));
     Note("the third claim closes the second lease's session", Cancelled("s3"));
     Note("a fourth lease opens and ends its session", Open("s4", "room-1", "op-4", 3));
     sessions["s4"].Dispose();
-    Note("a disposed session is not touched by the next claim", leases.Grant("room-1", "op-5"));
+    Note("a disposed session is not touched by the next claim", Grant("room-1", "op-5"));
     Note("a disposed session was not cancelled", Cancelled("s4"));
     Note("an operation that was never claimed", Open("x", "room-1", "op-9", 4));
+    // A session whose own token is cancelled refuses even though its lease still stands (the check is not the clock and the table alone).
+    Note("a sixth claim", Grant("room-1", "op-6"));
+    Note("the sixth lease opens", Open("s6", "room-1", "op-6", 5));
+    Note("a live session before its token is cancelled", sessions["s6"].Refusal());
+    sessions["s6"].Close();
+    Note("a cancelled session refuses while its lease stands", sessions["s6"].Refusal());
+    Note("and the lease itself still opens", Open("s6b", "room-1", "op-6", 5));
     foreach (DesktopLeases.LeaseSession session in sessions.Values) session.Dispose();
     return steps.ToArray();
 }
@@ -369,16 +435,20 @@ static object LeaseLifetimes()
         try { _ = new DesktopLeases([], () => 0, seconds); return "ok"; }
         catch (ArgumentOutOfRangeException) { return "refused"; }
     }
-    long now = 500;
+    long now = 500_000; // milliseconds of a fake monotonic clock
     DesktopLeases half = new([new ComputerBinding("room-1", Guid1)], () => now, 1800);
-    half.Grant("room-1", "op-1");
-    now += 1799;
+    half.Grant("room-1", "op-1", null, out _);
+    now += 1_799_999;
     using DesktopLeases.LeaseSession? live = half.TryOpen("room-1", "op-1", 1, out string beforeRefusal);
     string before = live is null ? beforeRefusal : "opened";
     now += 1;
     using DesktopLeases.LeaseSession? late = half.TryOpen("room-1", "op-1", 1, out string afterRefusal);
     string after = late is null ? afterRefusal : "opened";
-    return new { maximum = DesktopLeases.MaxLifetimeSeconds, bounds = new[] { Make(0), Make(1), Make(3600), Make(3601), Make(-5) }, before, after };
+    // The Broker passes no clock: the default is the process's monotonic tick count, and a lease made on it opens.
+    DesktopLeases real = new([new ComputerBinding("room-1", Guid1)]);
+    real.Grant("room-1", "op-1", null, out _);
+    using DesktopLeases.LeaseSession? onRealClock = real.TryOpen("room-1", "op-1", 1, out string realRefusal);
+    return new { maximum = DesktopLeases.MaxLifetimeSeconds, bounds = new[] { Make(0), Make(1), Make(3600), Make(3601), Make(-5) }, before, after, defaultClock = onRealClock is null ? realRefusal : "opened" };
 }
 
 // ---- the fake WMI --------------------------------------------------------------------------------------------------------------------------------
