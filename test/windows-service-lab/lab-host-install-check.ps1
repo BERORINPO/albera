@@ -68,7 +68,8 @@ $treeHash = ([regex]::Match($hashes.Output, '(?m)^ALBERA_HOST_TREE_HASH=([0-9a-f
 if (-not $treeHash) { throw 'no tree hash line in the -Mode hashes output' }
 $evidence.treeHash = [ordered]@{ computedInGuest = $true; value = $treeHash }
 $install = Invoke-Host (@{ Mode = 'install'; ExpectedTreeHash = $treeHash; StartCheck = $true; SetupRunId = $setupRunId } + $labSources + $approverParams)
-$evidence.install = [ordered]@{ exit = $install.Exit; output = $install.Output }
+# `error` is the script's own ERROR line (a failed icacls / sc.exe says its exit code and what it printed there); the whole output follows it
+$evidence.install = [ordered]@{ exit = $install.Exit; error = (@($install.Output -split "`r?`n" | Where-Object { $_ -like 'ERROR:*' })[0]); output = $install.Output }
 $status = Invoke-Host @{ Mode = 'status' }
 $evidence.status = [ordered]@{ exit = $status.Exit; output = $status.Output }
 # an install WITHOUT the grant leaves the Control Plane settings as they always were: no desktop block

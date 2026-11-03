@@ -52,6 +52,31 @@ function New-FailureBytes([uint32]$Reset, [object[]]$Actions) {
   , $stream.ToArray()
 }
 $script:GoodFailure = New-FailureBytes 86400 @(@(1, 5000), @(1, 5000), @(0, 0))
+# The SIDs that can be looked up on the fake machine RIGHT NOW: the built-in ones, the service SIDs of the services created so far ($script:Svc is the fake SCM) and the accounts that exist. Real icacls looks every
+# SID up and fails (1332) on one that is not mapped: the Control Plane's service SID is in the plan long before that service is registered (the first VM run stopped there).
+$script:AccountSids = @()
+function Get-CreatedSids {
+  $created = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($s in @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-32-545')) { $created.Add($s) }
+  foreach ($name in @($script:Svc.Keys)) { $created.Add((Get-DerivedServiceSid $name)) }
+  foreach ($sid in @($script:AccountSids)) { $created.Add([string]$sid) }
+  if ($script:UserExists) { $created.Add([string]$script:LiveSid) }
+  , $created.ToArray()
+}
+$script:IcaclsCalls = New-Object 'System.Collections.Generic.List[string]'
+$script:IcaclsUncreated = New-Object 'System.Collections.Generic.List[string]'
+$script:DaclUncreated = New-Object 'System.Collections.Generic.List[object]'
+# the fake of Invoke-Native for the cases that run the real Set-HostAcl: every SID handed to icacls must exist already
+function Record-IcaclsCall([string]$Arguments) {
+  $script:IcaclsCalls.Add($Arguments)
+  $created = Get-CreatedSids
+  foreach ($m in [regex]::Matches($Arguments, '\*(S-[0-9-]+)')) { if ($created -notcontains $m.Groups[1].Value) { $script:IcaclsUncreated.Add($m.Groups[1].Value + ' in: ' + $Arguments) } }
+}
+# the fake of Set-HostDacl (the .NET write would lock the non-admin test user out of the temp folders): the grants may name SIDs that do not exist yet - that is the point of writing them with .NET
+function Record-DaclCall([string]$Path, [string[]]$Grants) {
+  $created = Get-CreatedSids
+  foreach ($sid in @(Get-GrantedSids ([pscustomobject]@{ Grants = $Grants }))) { if ($created -notcontains $sid) { $script:DaclUncreated.Add([ordered]@{ path = $Path; sid = $sid }) } }
+}
 # what the fake SCM stores for an `sc failure <name> reset= ... actions= restart/5000/restart/5000//0` line
 function ConvertTo-FailureFake([string]$Arguments) {
   $n = ([regex]::Matches($Arguments, 'restart/5000')).Count
@@ -342,6 +367,26 @@ switch ($Case) {
     [System.IO.Directory]::SetAccessControl($placeholder, $acl)
     $placeholderSummary = Get-AclSummary $placeholder
     $result.creatorOwnerPlaceholder = [ordered]@{ listed = (@($placeholderSummary.AllowSids) -contains 'S-1-3-0'); writer = (@($placeholderSummary.WriteSids) -contains 'S-1-3-0') }
+    # Set-HostDacl on an EXISTING folder with the SID of a service that does not exist (yet): .NET stores it; icacls refuses it with 1332 (the control, so this test can fail for the right reason)
+    $ghostSid = Get-DerivedServiceSid ('AlberaNoSuchService' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $ghostGrants = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)RX', "*${ghostSid}:(OI)(CI)RX", "*${me}:(OI)(CI)F")   # the current user keeps full control so the harness can clean up
+    $control = Join-Path $Work 'dacl-control'; New-Item -ItemType Directory -Path $control | Out-Null
+    $ErrorActionPreference = 'Continue'
+    $null = & (Join-Path ([Environment]::SystemDirectory) 'icacls.exe') $control /inheritance:r /grant:r "*${me}:(OI)(CI)F" "*${ghostSid}:(OI)(CI)RX" /L 2>&1
+    $result.icaclsControlExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    $existing = Join-Path $Work 'dacl-existing'; New-Item -ItemType Directory -Path $existing | Out-Null
+    $result.daclError = Try-Run { Set-HostDacl $existing $ghostGrants }
+    $daclSummary = Get-AclSummary $existing
+    $result.dacl = [ordered]@{ ghost = $ghostSid; protected = $daclSummary.Protected; allow = @($daclSummary.AllowSids | Sort-Object); expected = @(@('S-1-5-18', 'S-1-5-32-544', $ghostSid, $me) | Sort-Object); writers = @($daclSummary.WriteSids | Sort-Object); expectedWriters = @(@('S-1-5-18', $me) | Sort-Object); owner = $daclSummary.Owner; me = $me }
+    $daclTarget = Join-Path $Work 'dacl-target'; New-Item -ItemType Directory -Path $daclTarget | Out-Null
+    $daclLink = Join-Path $Work 'dacl-link'; New-Junction $daclLink $daclTarget
+    $targetBefore = @((Get-AclSummary $daclTarget).AllowSids | Sort-Object) -join ','
+    $result.daclLinkError = Try-Run { Set-HostDacl $daclLink $ghostGrants }
+    $result.daclLinkTargetUnchanged = ((@((Get-AclSummary $daclTarget).AllowSids | Sort-Object) -join ',') -ceq $targetBefore)
+    Remove-Junction $daclLink
+    $result.daclBadGrantError = Try-Run { Set-HostDacl $existing @('*S-1-1-0:(OI)(CI)W') }
+    $result.daclAfterBadGrant = @((Get-AclSummary $existing).AllowSids | Sort-Object)
     $result.creatorOwnerPlaceholderRule = (([System.IO.Directory]::GetAccessControl($placeholder).GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq 'S-1-3-0' } | Select-Object -First 1).PropagationFlags).ToString()
   }
   'hyperv' {
@@ -967,7 +1012,11 @@ switch ($Case) {
     function Get-PathTrustReasons { , @() }
     # the ACL of an adopted root is replaced like any other folder's, and the record then says it is ours
     $script:Calls = New-Object 'System.Collections.Generic.List[string]'
-    function Set-HostAcl($Entry) { $script:Calls.Add('acl ' + $Entry.Path) }
+    function Set-HostDacl([string]$Path, [string[]]$Grants) { $script:Calls.Add('acl ' + $Path); Record-DaclCall $Path $Grants }
+    function Invoke-Native([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000, [switch]$MinimalEnvironment) { Record-IcaclsCall $Arguments; [pscustomobject]@{ Exit = 0; Out = ''; Err = '' } }
+    # the machine as it is when the folders step runs in a real install: the Broker and the Authority exist, the Control Plane service does not (it is registered two steps later)
+    $script:Svc = @{}; $script:Svc[$K.BrokerService] = 'created'; $script:Svc[$K.AuthorityService] = 'created'; $script:AccountSids = @($approverSid)
+    $script:IcaclsCalls.Clear(); $script:IcaclsUncreated.Clear(); $script:DaclUncreated.Clear()
     function Get-AclSummary([string]$Path) { [pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $true; AllowSids = @(); WriteSids = @() } }
     function Test-AclMatchesPlan($Entry, $Summary) { , @() }
     function Resolve-HostSids { $script:Sids = @{ Broker = (Get-DerivedServiceSid $K.BrokerService); Authority = (Get-DerivedServiceSid $K.AuthorityService); ControlPlane = $cpSvcSid; Approver = $approverSid; Legacy = $false } }
@@ -980,6 +1029,7 @@ switch ($Case) {
     $result.adoptAclFirst = @($script:Calls)[0]
     $result.adoptFolderCount = @($script:Calls).Count
     $result.adoptSetupKept = Test-Path -LiteralPath (Join-Path $L.InstallRoot 'bin\setup\albera-setup.exe')
+    $result.folderAcl = [ordered]@{ installRoot = $L.InstallRoot; dataRoot = $L.DataRoot; controlPlaneSid = $cpSvcSid; aclCalls = @($script:Calls.ToArray()); icaclsCalls = @($script:IcaclsCalls.ToArray()); icaclsUncreated = @($script:IcaclsUncreated.ToArray()); daclUncreated = @($script:DaclUncreated.ToArray()) }
     # an install root that is not ours and not setup's is refused outright
     New-CpManifest; $script:Manifest['created']['installRoot'] = $false; Remove-Item -LiteralPath $L.InstallRoot -Recurse -Force
     Write-Bytes (Join-Path $L.InstallRoot 'someone-elses.txt') 'x'
@@ -1057,7 +1107,7 @@ switch ($Case) {
     Set-Item -Path Function:\Get-UsersAceProblems -Value $realUsersProblems
     $IcaclsExe = 'C:\fake\icacls.exe'
     $script:NativeCalls = New-Object 'System.Collections.Generic.List[string]'; $script:NativeExit = 0
-    function Invoke-Native([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000, [switch]$MinimalEnvironment) { $script:NativeCalls.Add($Exe + ' | ' + $Arguments); [pscustomobject]@{ Exit = $script:NativeExit; Out = ''; Err = '' } }
+    function Invoke-Native([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000, [switch]$MinimalEnvironment) { $script:NativeCalls.Add($Exe + ' | ' + $Arguments); [pscustomobject]@{ Exit = $script:NativeExit; Out = ''; Err = $(if ($script:NativeExit -ne 0) { "fake icacls: No mapping between account names and security IDs was done.`r`n" } else { '' }) } }
     $script:AclUsers = 'rx'
     function Get-AclSummary([string]$Path) {
       $allow = @('S-1-5-18', 'S-1-5-32-544'); $write = @('S-1-5-18', 'S-1-5-32-544')
@@ -1135,7 +1185,7 @@ switch ($Case) {
         SidTypeText = ('SERVICE_SID_TYPE:  ' + $s.sid.ToUpperInvariant()); PrivilegesText = $(if ($s.privs -eq 'SeChangeNotifyPrivilege') { 'PRIVILEGES : SeChangeNotifyPrivilege' } else { 'PRIVILEGES : SeImpersonatePrivilege SeChangeNotifyPrivilege' }); FailureActions = $s.failure; State = 'Stopped' }
     }
     function Wait-ServiceState([string]$Name, [string[]]$States, [int]$Seconds) { $true }
-    function Invoke-Native([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000, [switch]$MinimalEnvironment) { $script:Order.Add('native ' + $Arguments); $out = if ($Arguments -like 'sdshow*') { Get-BrokerServiceSddl $script:Sids.ControlPlane } else { '' }; [pscustomobject]@{ Exit = 0; Out = $out; Err = '' } }
+    function Invoke-Native([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000, [switch]$MinimalEnvironment) { $script:Order.Add('native ' + $Arguments); Record-IcaclsCall $Arguments; $out = if ($Arguments -like 'sdshow*') { Get-BrokerServiceSddl $script:Sids.ControlPlane } else { '' }; [pscustomobject]@{ Exit = 0; Out = $out; Err = '' } }
     function Read-AuthoritySigningKey([string]$KeyName, [string]$Scope = 'machine') { [pscustomobject]@{ report = [pscustomobject]@{ keyName = $KeyName; exportPolicy = 0; algorithm = 'ECDSA_P256'; keySize = 256; owner = 'S-1-5-32-544'; allowSids = @('S-1-5-18', 'S-1-5-32-544', (Get-DerivedServiceSid $K.AuthorityService)) }; spki = $spki } }
     function Get-LiveControlPlaneUser { if ($script:UserExists) { [pscustomobject]@{ Name = $script:LiveName; Sid = $script:LiveSid; Description = $script:LiveDescription; Enabled = $script:UserEnabled } } else { $null } }
     function Disable-LocalUser { param($SID) $script:Order.Add('Disable-LocalUser ' + $SID.Value); if (-not $script:DisableIsNoOp) { $script:UserEnabled = $false } }
@@ -1161,7 +1211,7 @@ switch ($Case) {
     function Add-LocalGroupMember { param($SID, $Member) $script:Order.Add("group add $Member"); $script:Members.Add([string]$Member) }
     function Remove-LocalGroupMember { param($SID, $Member) $script:Order.Add("group remove $Member"); [void]$script:Members.Remove([string]$Member) }
     function New-TrustedDirectory([string]$Path, [string[]]$Grants, [string]$OwnerSid = 'S-1-5-32-544') { New-Item -ItemType Directory -Force -Path $Path | Out-Null }
-    function Set-HostAcl($Entry) { }
+    function Set-HostDacl([string]$Path, [string[]]$Grants) { Record-DaclCall $Path $Grants }
     function Get-AclSummary([string]$Path) { [pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $true; AllowSids = @(); WriteSids = @() } }
     function Test-AclMatchesPlan($Entry, $Summary) { , @() }
     function Write-OneConfig([string]$Path, [string]$Text, [string[]]$Writers) { Write-Bytes $Path $Text }
@@ -1259,6 +1309,7 @@ switch ($Case) {
     $result.runError = Try-Run { $script:Exit = Invoke-Migrate }
     $result.exit = $script:Exit
     $result.after = Snapshot-Result
+    $result.folderAcl = [ordered]@{ installRoot = $L.InstallRoot; dataRoot = $L.DataRoot; controlPlaneSid = (Get-DerivedServiceSid $K.ControlPlaneService); icaclsCalls = @($script:IcaclsCalls.ToArray()); icaclsUncreated = @($script:IcaclsUncreated.ToArray()); daclUncreated = @($script:DaclUncreated.ToArray()) }
     $result.order = @($script:Order)
     $result.stopBeforeUninstall = (((Index-Of 'stop pid 4101') -ge 0) -and ((Index-Of 'stop pid 4101') -lt (Index-Of 'sc delete')) -and ((Index-Of 'stop pid 4102') -lt (Index-Of 'Remove-LocalUser')))
     $result.carried = [ordered]@{

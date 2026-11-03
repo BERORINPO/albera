@@ -684,7 +684,8 @@ test('the lab hardening is copied, not reinvented: the script uses the same sc.e
   assert.match(lab, /sc\.exe privs \$n SeChangeNotifyPrivilege/u);
   assert.match(script, /privs \$\(\$Spec\.Name\) SeChangeNotifyPrivilege/u);
   assert.match(lab, /\/inheritance:r', '\/grant:r', '\*S-1-5-18:\(OI\)\(CI\)F', '\/grant:r', '\*S-1-5-32-544:\(OI\)\(CI\)F'/u);
-  assert.match(script, /\/inheritance:r/u);
+  // the lab removes inheritance with icacls; the product writes the same protected DACL through .NET (icacls refuses the SID of a service that does not exist yet: exit 1332)
+  assert.match(script, /\$security\.SetAccessRuleProtection\(\$true, \$false\)/u);
   const keyTool = readFileSync(path.join(root, 'test', 'windows-service-lab', 'new-authority-key.ps1'), 'utf8');
   assert.match(keyTool, /ExportPolicy = if \(\$Variant -eq 'exportable'\) \{[^}]*\} else \{ \[System\.Security\.Cryptography\.CngExportPolicies\]::None \}/u);
   assert.match(keyTool, /\$sddl = "D:P\(A;;GA;;;SY\)\(A;;GA;;;BA\)\(A;;GA;;;\$ServiceSid\)"/u);
@@ -905,6 +906,19 @@ test('a folder is born with its final descriptor (owner, protected DACL, inherit
   // CREATOR OWNER: the inherit-only placeholder of Program Files folders is listed but is no writer of that folder (the same rule as FileSystemChecks.cs in setup); Test-TrustSummary counts it elsewhere
   assert.deepEqual({ ...r.creatorOwnerPlaceholder }, { listed: true, writer: false });
   assert.equal(r.creatorOwnerPlaceholderRule, 'InheritOnly');
+  // an EXISTING folder gets the plan's DACL through .NET, including the SID of a service that does not exist yet. The control: icacls refuses exactly that (1332, "no mapping between account names
+  // and security IDs"): the first VM run of the installer stopped there, at the Control Plane's service SID in the ACL of C:\ProgramData\Albera, before the service was registered.
+  assert.equal(r.icaclsControlExit, 1332, 'control: real icacls refuses a service SID that does not exist; if this ever changes, the reason for writing the DACL with .NET is gone');
+  assert.equal(r.daclError, null);
+  assert.equal(r.dacl.protected, true, 'nothing inherited');
+  assert.deepEqual(r.dacl.allow, r.dacl.expected, 'exactly the planned principals, the not-yet-existing service SID among them');
+  assert.ok(r.dacl.allow.includes(r.dacl.ghost));
+  assert.deepEqual(r.dacl.writers, r.dacl.expectedWriters, 'the read-only grant of that SID is not write access');
+  assert.equal(r.dacl.owner, r.dacl.me, 'only the access section is written: the owner is not touched here (Set-HostAcl sets it with icacls /setowner)');
+  assert.match(r.daclLinkError, /is reached through a link; refusing to change its ACL/u);
+  assert.equal(r.daclLinkTargetUnchanged, true, 'the target of a link is never changed');
+  assert.equal(r.daclBadGrantError, 'grant_not_understood');
+  assert.deepEqual(r.daclAfterBadGrant, r.dacl.expected, 'a grant that is not understood changes nothing');
 });
 
 test('removal: only known files are deleted; an unknown file, a sub-folder or a junction stops the removal and nothing is deleted there', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
@@ -1612,6 +1626,14 @@ test('Control Plane install steps against a temp layout (fakes for the machine):
   assert.deepEqual(r.adoptUsersGrants.filter((p) => p !== r.setupBinDir), [], 'and no other folder of the install gets one here');
   assert.match(r.adoptAclFirst, /^acl .*\\pf\\Albera$/u, 'the adopted root gets the plan\'s ACL like any other folder');
   assert.equal(r.adoptSetupKept, true);
+  // the folders step runs after the services step: the Broker and the Authority exist, the Control Plane service does not. The existing folders (the adopted install root and the data root) are written
+  // with .NET (Set-HostDacl), whose grants DO name the Control Plane's service SID; icacls is given nothing but a built-in SID (the owner), so no SID it cannot look up ever reaches it.
+  assert.deepEqual(r.folderAcl.aclCalls.map((call) => call.replace(/^acl /u, '')).sort(), [r.folderAcl.dataRoot, r.folderAcl.installRoot].sort(), 'both existing folders are brought to the plan');
+  assert.deepEqual(r.folderAcl.daclUncreated.map((entry) => `${entry.path} ${entry.sid}`).sort(), [`${r.folderAcl.dataRoot} ${r.folderAcl.controlPlaneSid}`, `${r.folderAcl.installRoot} ${r.folderAcl.controlPlaneSid}`].sort(),
+    'the scenario is real: the plan names a service SID that has not been created yet, on exactly the existing folders');
+  assert.equal(r.folderAcl.icaclsCalls.length, 2);
+  assert.ok(r.folderAcl.icaclsCalls.every((call) => /^"[^"]+" \/setowner \*S-1-5-32-544 \/L$/u.test(call)), `icacls is only asked to set the owner to Administrators: ${r.folderAcl.icaclsCalls.join(' ; ')}`);
+  assert.deepEqual(r.folderAcl.icaclsUncreated, [], 'every SID handed to icacls belongs to something that exists at that moment');
   assert.match(r.foreignRootDoError, /exists but was not created by this script and is not only albera-setup\.exe's own folders \(unknown_entry:someone-elses\.txt\)/u);
   // 6. anti-rollback and the first-layout guard
   assert.deepEqual(JSON.parse(JSON.stringify(r.rollback)), {
@@ -1651,7 +1673,7 @@ test('Control Plane install steps against a temp layout (fakes for the machine):
   assert.deepEqual(r.usersNativeCalls, [`C:\\fake\\icacls.exe | "${r.usersDir}" /grant:r *S-1-5-32-545:(OI)(CI)RX /L`], 'one icacls call, this folder only (/L, no /T): read and execute, inherited by what is inside');
   assert.match(r.usersReadBackMissing, /is not as intended after the change: users_ace_missing/u);
   assert.match(r.usersReadBackWrite, /is not as intended after the change: users_can_write/u);
-  assert.match(r.usersIcaclsFails, /^icacls failed for /u);
+  assert.match(r.usersIcaclsFails, /^icacls failed for .+ \(exit 5\): fake icacls: No mapping between account names and security IDs was done\.$/u, 'the exit code and what icacls printed are in the error text (the lab shows it)');
   assert.match(r.usersLinkError, /is reached through a link; refusing to change its ACL/u);
   assert.equal(r.usersLinkNativeCalls, 0, 'no icacls call for a path behind a link');
   assert.deepEqual(JSON.parse(JSON.stringify(r.usersProblems)), {
@@ -1698,6 +1720,11 @@ test('-Mode migrate against a temp layout (fakes for the machine): nothing is re
   assert.ok(at('remove profile') < at('sc create'), 'the new install comes after the removal');
   assert.ok(at('create key') > at('sc create') && at('launch-check') > at('create key'), 'a new Authority key; the Control Plane service last, after launch-check');
   assert.equal(r.order.filter((line) => /taskkill|Stop-Process|\/IM/iu.test(line)).length, 0);
+  // the same on the migration path: the folders step writes the existing folders (data root, adopted install root) with .NET, whose grants name the Control Plane SERVICE SID before that service exists;
+  // every SID icacls is handed exists at that moment (only the owner, a built-in SID, is set with icacls)
+  assert.deepEqual(r.folderAcl.daclUncreated.map((entry) => `${entry.path} ${entry.sid}`).sort(), [`${r.folderAcl.dataRoot} ${r.folderAcl.controlPlaneSid}`, `${r.folderAcl.installRoot} ${r.folderAcl.controlPlaneSid}`].sort());
+  assert.deepEqual(r.folderAcl.icaclsUncreated, []);
+  assert.ok(r.folderAcl.icaclsCalls.length > 0 && r.folderAcl.icaclsCalls.every((call) => /\/setowner \*S-1-5-32-544 \/L$/u.test(call)), r.folderAcl.icaclsCalls.join(' ; '));
   assert.equal(r.carried.authority.approverKeyId, 'hello-0123456789abcdef');
   assert.equal(r.carried.authority.approverSid, 'S-1-5-21-1111111111-2222222222-3333333333-1001');
   assert.equal(r.carried.authority.approverPublicKey.length, 392, 'the Hello public key came over unchanged');
@@ -1822,6 +1849,16 @@ test('the Control Plane install, source guards: no repository file is executed, 
   assert.match(floorLines[0], /^\[pscustomobject\]@\{ Id = 'manifest'; .*SetupRunIdFloor is NOT removed/u, 'and it says the floor is NOT removed');
   // deleting a tree never follows a link: Remove-TreeNoFollow is the only deleter of a folder tree
   assert.equal(/Remove-Item[^\n]*-Recurse/u.test(scriptCode), false, 'no recursive Remove-Item');
+  // icacls is never handed a grant for a SID that may not exist yet (it looks every SID up: exit 1332 for the Control Plane's service SID before its service is registered; the first VM run stopped there).
+  // The one grant it gets is BUILTIN\Users; every other ACL is written by .NET (Set-HostDacl, New-SecuredDirectory), the owner by `icacls /setowner *S-1-5-32-544` (a built-in SID).
+  assert.deepEqual([...scriptCode.matchAll(/\/grant:r[^\n']*/gu)].map((m) => m[0]), ['/grant:r *S-1-5-32-545:(OI)(CI)RX /L'], 'one icacls grant in the whole script');
+  assert.equal(/\/inheritance:r|\/reset|\/restore/u.test(scriptCode), false);
+  const setAcl = scriptCode.slice(scriptCode.indexOf('function Set-HostAcl'), scriptCode.indexOf('function ', scriptCode.indexOf('function Set-HostAcl') + 10));
+  assert.match(setAcl, /Set-HostDacl \$Entry\.Path \$Entry\.Grants/u);
+  assert.equal(/\$Entry\.Grants[^\n]*Invoke-Native|Invoke-Native[^\n]*Grants/u.test(setAcl), false, 'the plan\'s grants never reach icacls');
+  // a failed icacls says why: the exit code and what it printed are in the error text (the lab hook shows the whole output of the script)
+  assert.equal(/throw "icacls/u.test(scriptCode), false, 'every icacls failure goes through Format-NativeFailure');
+  assert.equal([...scriptCode.matchAll(/Format-NativeFailure "icacls/gu)].length, 3);
   // the failure actions are read from the service key (REG_BINARY), not from localized sc.exe text
   assert.equal(/qfailure/u.test(scriptCode + code(lib)), false);
   assert.doesNotMatch(scriptCode, /Invoke-Native[^\n]*\$(?:NodeSource|ClaudeSource|nodeSource|claudeSource)|& \$(?:NodeSource|ClaudeSource)/u, 'neither pinned program is ever started');

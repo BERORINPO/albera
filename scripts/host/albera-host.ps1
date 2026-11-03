@@ -218,14 +218,30 @@ function Get-TreeHashes([string]$Dir, [string[]]$ExcludeTop = @()) {
   try { $tree = ([BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($text))) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() }
   [pscustomobject]@{ Files = $sorted; Tree = $tree }
 }
-# icacls on an EXISTING folder that already passed the trust checks. /L: act on a link itself, never on its target.
+# What a failed native call says, for the error text: the exit code and what the program printed (icacls prints the Windows error, for example "No mapping between account names and security IDs was done").
+# Only paths and SIDs go through these calls; nothing secret does.
+function Format-NativeFailure([string]$What, $Result) {
+  $text = (([string]$Result.Out + ' ' + [string]$Result.Err) -replace '\s+', ' ').Trim()
+  if ($text.Length -gt 400) { $text = $text.Substring(0, 400) + '...' }
+  "$What (exit $($Result.Exit)): $text"
+}
+# The DACL of an EXISTING folder that already passed the trust checks: protected (nothing inherited) and exactly the planned rules. It is written with .NET and NOT with icacls: icacls looks every SID up and
+# refuses one that belongs to a service that does not exist yet (exit 1332, "no mapping between account names and security IDs"), and the Control Plane's service SID is in the plan long before the service
+# is registered. .NET stores a SID that is not mapped yet as it is, and the rule works once the service exists (a folder this script CREATES is made the same way: New-SecuredDirectory). Only the access
+# section is written (a new DirectorySecurity persists only what was modified); the owner follows in Set-HostAcl. A link on the way is refused before and after: SetAccessControl follows one.
+function Set-HostDacl([string]$Path, [string[]]$Grants) {
+  if ((Get-ReparseChain $Path).Count -gt 0) { throw "$Path is reached through a link; refusing to change its ACL" }
+  $security = New-Object System.Security.AccessControl.DirectorySecurity
+  $security.SetAccessRuleProtection($true, $false)
+  foreach ($rule in (ConvertTo-FileSystemRules $Grants)) { $security.AddAccessRule($rule) }
+  [System.IO.Directory]::SetAccessControl($Path, $security)
+  if ((Get-ReparseChain $Path).Count -gt 0) { throw "$Path turned out to be reached through a link while its ACL was set; inspect it" }
+}
+# The plan's ACL on an existing folder: the DACL through .NET (Set-HostDacl), then the owner Administrators through icacls /setowner (only a built-in SID, which always resolves). /L: act on a link itself.
 function Set-HostAcl($Entry) {
-  $args1 = (Quote-NativeArg $Entry.Path) + ' /inheritance:r'
-  foreach ($g in $Entry.Grants) { $args1 += ' /grant:r ' + $g }
-  $r = Invoke-Native $IcaclsExe ($args1 + ' /L')
-  if ($r.Exit -ne 0) { throw "icacls failed for $($Entry.Path)" }
+  Set-HostDacl $Entry.Path $Entry.Grants
   $o = Invoke-Native $IcaclsExe ((Quote-NativeArg $Entry.Path) + ' /setowner *S-1-5-32-544 /L')
-  if ($o.Exit -ne 0) { throw "icacls /setowner failed for $($Entry.Path)" }
+  if ($o.Exit -ne 0) { throw (Format-NativeFailure "icacls /setowner failed for $($Entry.Path)" $o) }
 }
 # Member SIDs of a built-in local group. Get-LocalGroupMember throws on a group that holds an unresolvable (orphaned) SID, so the WinNT provider is used.
 function Get-LocalGroupMemberSids([string]$GroupSid) {
@@ -520,7 +536,7 @@ function Get-UsersAceProblems([string]$Path, [bool]$ShouldHave) {
 function Grant-UsersReadExecute([string]$Path) {
   if ((Get-ReparseChain $Path).Count -gt 0) { throw "$Path is reached through a link; refusing to change its ACL" }
   $r = Invoke-Native $IcaclsExe ((Quote-NativeArg $Path) + ' /grant:r *S-1-5-32-545:(OI)(CI)RX /L')
-  if ($r.Exit -ne 0) { throw "icacls failed for $Path" }
+  if ($r.Exit -ne 0) { throw (Format-NativeFailure "icacls failed for $Path" $r) }   # BUILTIN\Users always resolves, so this is the only SID icacls is ever given a grant for
   $bad = Get-UsersAceProblems $Path $true
   if ($bad.Count -gt 0) { throw "the ACL of $Path is not as intended after the change: $($bad -join ', ')" }
 }
@@ -1067,7 +1083,7 @@ function New-TrustedDirectory([string]$Path, [string[]]$Grants, [string]$OwnerSi
   if ($reasons.Count -gt 0) { throw (Format-TrustRefusal $Path $reasons) }
 }
 # Every folder is created WITH its final security descriptor (owner Administrators, protected DACL), so there is no moment with an inherited ACL. A folder that already exists is used only after
-# it passed the trust checks (owner, writers, no link on the way); only then is its ACL brought to the plan, with icacls /L.
+# it passed the trust checks (owner, writers, no link on the way); only then is its ACL brought to the plan (Set-HostAcl: DACL through .NET, owner through icacls).
 function New-HostFolders {
   Resolve-HostSids
   # C:\Program Files\Albera made by albera-setup.exe (bin\setup, setup-work) is adopted: it has just passed Get-InstallRootAdoptionReasons (trusted owner, nobody else may write, no link, nothing but setup's folders)
@@ -1174,7 +1190,7 @@ function Write-OneConfig([string]$Path, [string]$Text, [string[]]$Writers) {
   }
   [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false)))
   $o = Invoke-Native $IcaclsExe ((Quote-NativeArg $Path) + ' /setowner *S-1-5-32-544 /L')
-  if ($o.Exit -ne 0) { throw "icacls /setowner failed for $Path" }
+  if ($o.Exit -ne 0) { throw (Format-NativeFailure "icacls /setowner failed for $Path" $o) }
   $after = Get-PathTrustReasons $Path $Writers $false
   if ($after.Count -gt 0) { throw (Format-TrustRefusal $Path $after) }
 }
