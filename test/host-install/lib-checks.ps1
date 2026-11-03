@@ -364,4 +364,33 @@ $r.hvRecord = [ordered]@{
   notADictionary = ShapeOf (ManifestWithGrant 'S-1-5-32-578')
 }
 
+# the Control Plane settings: the keys they always had; with the grant (a helper hash is passed) the `desktop` block is added between `computers` and `attestation`
+$helperSha = 'ab' * 32
+$helperPath = $L.PipeClientExe
+$desktopJson = ConvertTo-HostJson (Get-ControlPlaneSettings $L 'albera-host' 'albera-clone-01' 'clone-01' $helperSha)
+$r.desktopHelperSha = $helperSha
+$r.desktopSettingsJson = $desktopJson
+$r.desktopPlainSame = [ordered]@{
+  noArgument = ((ConvertTo-HostJson (Get-ControlPlaneSettings $L 'albera-host' 'albera-clone-01' 'clone-01')) -ceq $r.settingsJson)
+  nullSha = ((ConvertTo-HostJson (Get-ControlPlaneSettings $L 'albera-host' 'albera-clone-01' 'clone-01' $null)) -ceq $r.settingsJson)
+  emptySha = ((ConvertTo-HostJson (Get-ControlPlaneSettings $L 'albera-host' 'albera-clone-01' 'clone-01' '')) -ceq $r.settingsJson)
+  hasNoDesktopKey = (@((Get-ControlPlaneSettings $L 'albera-host' 'albera-clone-01' 'clone-01').Keys) -cnotcontains 'desktop')
+}
+$r.desktopKeys = @((Get-ControlPlaneSettings $L 'albera-host' 'albera-clone-01' 'clone-01' $helperSha).Keys)
+$r.desktopBadSha = [ordered]@{ short = Msg { Get-ControlPlaneSettings $L 'p' 'v' 'c' ('ab' * 31) }; upper = Msg { Get-ControlPlaneSettings $L 'p' 'v' 'c' ('AB' * 32) }; notHex = Msg { Get-ControlPlaneSettings $L 'p' 'v' 'c' ('zz' * 32) } }
+$r.desktopHasKey = [ordered]@{ plain = Test-ControlPlaneHasDesktopKey $r.settingsJson; withBlock = Test-ControlPlaneHasDesktopKey $desktopJson; nullBlock = Test-ControlPlaneHasDesktopKey '{"desktop":null}'; notJson = Test-ControlPlaneHasDesktopKey 'nope' }
+$r.desktopCheck = [ordered]@{
+  same = Test-ControlPlaneDesktop $desktopJson $helperPath $helperSha
+  plainFile = Test-ControlPlaneDesktop $r.settingsJson $helperPath $helperSha
+  otherSha = Test-ControlPlaneDesktop $desktopJson $helperPath ('cd' * 32)
+  upperSha = Test-ControlPlaneDesktop ($desktopJson -replace $helperSha, $helperSha.ToUpperInvariant()) $helperPath $helperSha
+  otherPath = Test-ControlPlaneDesktop $desktopJson 'C:\Program Files\Albera\bin\other.exe' $helperSha
+  extraKey = Test-ControlPlaneDesktop ($desktopJson -replace '"helperSha256"', '"x":"y","helperSha256"') $helperPath $helperSha
+  missingKey = Test-ControlPlaneDesktop ($desktopJson -replace ',"helperSha256":"[0-9a-f]+"', '') $helperPath $helperSha
+  desktopIsString = Test-ControlPlaneDesktop ($desktopJson -replace '"desktop":\{[^}]*\}', '"desktop":"x"') $helperPath $helperSha
+  shaIsNumber = Test-ControlPlaneDesktop ($desktopJson -replace '"helperSha256":"[0-9a-f]+"', '"helperSha256":5') $helperPath $helperSha
+  notJson = Test-ControlPlaneDesktop 'nope' $helperPath $helperSha
+  empty = Test-ControlPlaneDesktop '' $helperPath $helperSha
+}
+
 ConvertTo-Json -InputObject $r -Depth 8 -Compress

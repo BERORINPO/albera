@@ -2,13 +2,16 @@
 # The functions are taken out of the real script by name (PowerShell AST), so the code under test is the shipped code, not a copy. Nothing outside -Work is touched:
 # no service, account, key or Program Files folder is involved (those need an elevated console and the VM lab). The temp folders are owned by the current (non-admin) user, which is
 # exactly what a planted folder looks like to the installer.
-#   function-harness.ps1 -Case <copy|remove|trust|secured|secure|hyperv|group> -Work <empty temp folder>     prints one JSON line
+#   function-harness.ps1 -Case <copy|remove|trust|secured|secure|hyperv|desktop|group> -Work <empty temp folder>     prints one JSON line
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('copy', 'remove', 'trust', 'secured', 'secure', 'hyperv', 'group')][string]$Case,
+  [Parameter(Mandatory = $true)][ValidateSet('copy', 'remove', 'trust', 'secured', 'secure', 'hyperv', 'desktop', 'group')][string]$Case,
   [Parameter(Mandatory = $true)][string]$Work
 )
 $ErrorActionPreference = 'Stop'
-$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+# -Work may arrive as an 8.3 short path (C:\Users\RUNNER~1\... on the CI runner). Windows PowerShell 5.1 / .NET Framework expands short names in GetFullPath, and the installer's own checks
+# (Test-PlainAbsolutePath: the path must equal its GetFullPath) refuse a path that changes, so a layout under a short path would be refused. Real installs sit under C:\Program Files and C:\ProgramData.
+$Work = [System.IO.Path]::GetFullPath($Work)
+$repo =(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 . (Join-Path $repo 'scripts\host\albera-host-lib.ps1')
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'scripts\host\albera-host.ps1'), [ref]$tokens, [ref]$errors)
@@ -16,7 +19,7 @@ if ($errors.Count -gt 0) { throw 'albera-host.ps1 does not parse' }
 $wanted = @('Say', 'Get-Sha256File', 'Test-HasReparsePoint', 'Get-TreeEntries', 'Get-TreeHashes', 'Get-BuildSources', 'Get-SourceFiles', 'Get-ExpectedTreeHashState', 'Get-ComponentHashes', 'Set-BinaryRecord', 'Copy-HostBinaries', 'Remove-HostTree', 'New-TrustedDirectory',
   'Test-ManifestHas', 'New-Manifest', 'Save-Manifest', 'Read-Manifest', 'Initialize-Manifest', 'Assert-PlannedPathTrusted', 'Test-SecureStringEqual',
   'Get-InstallSteps', 'Get-UninstallSteps', 'Resolve-HostSids', 'Get-VmCandidates', 'Resolve-BrokerVm', 'Get-HyperVVmStep', 'Get-HyperVGrantStep', 'Get-HyperVRevokeStep', 'Grant-BrokerHyperV', 'Revoke-BrokerHyperV', 'Show-Plan', 'Test-Elevated',
-  'Test-LocalGroupExists', 'Get-HyperVMemberProblems', 'Get-ServiceSpecs', 'New-HostServices', 'Get-StatusLines', 'Remove-HostServices', 'Wait-ServiceState')
+  'Test-LocalGroupExists', 'Get-HyperVMemberProblems', 'Get-ServiceSpecs', 'New-HostServices', 'Get-StatusLines', 'Remove-HostServices', 'Wait-ServiceState', 'Get-DesktopHelperSha256', 'Write-HostConfigs')
 $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $false))
 if ($found.Count -ne $wanted.Count) { throw ('expected ' + $wanted.Count + ' functions, found ' + $found.Count) }
 foreach ($f in $found) { Invoke-Expression $f.Extent.Text }
@@ -444,6 +447,24 @@ switch ($Case) {
     [void]$script:Members.Remove($cpSid)
     $result.afterThrowFixedStep = & $hvTest
 
+    # 6b. the status also checks the Control Plane settings' desktop block against the install record (only for an install with the grant record)
+    function Get-DesktopLines { @((Get-StatusLines) | Where-Object { $_.Text -like 'Control Plane settings desktop:*' } | ForEach-Object { $_.State + ' ' + $_.Text }) }
+    function Write-SettingsFile([string]$Sha) { New-Item -ItemType Directory -Force -Path $L.ControlPlaneDir | Out-Null; [System.IO.File]::WriteAllText($L.ApprovalSettings, (ConvertTo-HostJson (Get-ControlPlaneSettings $L $ProjectId $VmName $ComputerId $Sha))) }
+    $helperSha = ('ab' * 32)
+    Reset-Fakes; New-InstalledManifest; $script:FakeVms = @((New-Vm $guidA 'albera-clone-01'))
+    Grant-BrokerHyperV
+    $helperRecord = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $helperRecord['exeSha256'] = $helperSha; $helperRecord['treeSha256'] = ('cd' * 32); $helperRecord['files'] = 1
+    $script:Manifest['created']['binaries']['pipe-client'] = $helperRecord
+    Write-SettingsFile $helperSha
+    $result.statusDesktop = [ordered]@{ asRecorded = @(Get-DesktopLines) }
+    Write-SettingsFile ('cd' * 32); $result.statusDesktop.otherHash = @(Get-DesktopLines)
+    Write-SettingsFile $null; $result.statusDesktop.noBlock = @(Get-DesktopLines)
+    Write-SettingsFile $helperSha; $script:Manifest['created']['binaries'].Remove('pipe-client') | Out-Null; $result.statusDesktop.noHelperRecord = @(Get-DesktopLines)
+    Reset-Fakes; New-InstalledManifest; Write-SettingsFile $null
+    $result.statusDesktop.installWithoutGrant = @(Get-DesktopLines)
+    Write-SettingsFile $helperSha
+    $result.statusDesktop.desktopWithoutGrantRecord = @(Get-DesktopLines)
+
     # 7. the services step: the Broker's SID type has to match the option of THIS run, in both directions
     $svcStep = { Get-InstallSteps | Where-Object { $_.Id -eq 'services' } }
     function Set-Services([string]$BrokerType, [string]$AuthorityType = 'restricted') { $script:Svc = @{}; $script:Svc[$K.BrokerService] = $BrokerType; $script:Svc[$K.AuthorityService] = $AuthorityType; $script:ScCalls.Clear() }
@@ -502,6 +523,80 @@ switch ($Case) {
     # an empty known folder is not "unknown": the real removal of one
     New-Item -ItemType Directory -Force -Path (Join-Path $L.DataRoot 'broker') | Out-Null
     $result.emptyKnownFolderError = Try-Run { Remove-HostTree (Join-Path $L.DataRoot 'broker') @() @() $false }
+  }
+  'desktop' {
+    # The shipped Write-HostConfigs and the 'configs' step test, run with a Write-OneConfig that writes plain files into the temp folder (the trust and ACL work of the real one has its own cases) and a
+    # fixed SID table. The pipe client helper is a real file in the temp bin folder with a real install record (Set-BinaryRecord). No service, account, key or group is touched.
+    $VmName = 'albera-clone-01'; $ComputerId = 'clone-01'; $ProjectId = 'albera-host'; $GrantHyperVToBroker = $false
+    $guidA = '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f'; $VmId = $guidA
+    $cpSid = 'S-1-5-21-1111111111-2222222222-3333333333-1500'
+    # the throw-away RSA-2048 public key that lab-host-install-check.ps1 pins as the approver key
+    $labApproverKey = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3XSX1Rx6n1/sVaG+opeyv2Qj/+8woifjIQgxqheuZ1LtyB/JUeDgkP6wIc6YSAQzMKbdwZ88ipVJidmpixqr0P4tcE3Ud6VqerYfHnrVlqGKHojUU0r2kmtKib9f3bT0+ljHa54Dux9jcGSncwXpXcRrOkNFRFrWuS99+yXpFWdgYeawOK9SegknG1J4Rw7fjPZurkVWYYLl17T10PSIg0TGY0eJRgRXVw7PQhsLRh4u3ErDSd4dkE4j1aUR0jCGovRZJrrAMib7P1+GPRUOL6bviCkYY9Q2yOIP+OKWevFw80WXdYktQv/3xeloBWYctgzU6aS7J+7logyEYr0zWwIDAQAB'
+    $script:Approver = [pscustomobject]@{ approverPublicKey = $labApproverKey; approverKeyId = 'hello-0123456789abcdef'; approverSid = 'S-1-5-21-1111111111-2222222222-3333333333-1001' }
+    function Resolve-HostSids { $script:Sids = @{ Broker = (Get-DerivedServiceSid $K.BrokerService); Authority = (Get-DerivedServiceSid $K.AuthorityService); ControlPlane = $cpSid } }
+    $script:Written = New-Object 'System.Collections.Generic.List[string]'
+    function Write-OneConfig([string]$Path, [string]$Text, [string[]]$Writers) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null; [System.IO.File]::WriteAllText($Path, $Text); $script:Written.Add($Path) }
+    function Invoke-WriteConfigs { $script:Written.Clear(); Try-Run { Write-HostConfigs } }
+    # '' for a file that was not written, so a refused write shows up as the case's error text (and a failed assertion), not as an exception here
+    function Read-Config([string]$Path) { if (Test-Path -LiteralPath $Path) { [System.IO.File]::ReadAllText($Path) } else { '' } }
+    function Get-ConfigsStep { Get-InstallSteps | Where-Object { $_.Id -eq 'configs' } }
+
+    New-Item -ItemType Directory -Force -Path $L.DataRoot | Out-Null
+    $script:Manifest = New-Manifest
+    $ecc = New-Object System.Security.Cryptography.ECDsaCng(256)
+    try { $script:Manifest['values']['authoritySpki'] = ConvertTo-P256Spki ($ecc.Key.Export([System.Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob)) } finally { $ecc.Dispose() }
+    $helperSource = Get-BuildSources | Where-Object { $_.Name -eq 'pipe-client' }
+    Write-Fixture $helperSource.Dest $helperSource.Exe
+    Set-BinaryRecord $helperSource (Get-TreeHashes $helperSource.Dest)
+    $result.helperPath = $L.PipeClientExe
+    $result.helperRecorded = $script:Manifest['created']['binaries']['pipe-client']['exeSha256']
+    $result.helperLive = Get-Sha256File $L.PipeClientExe
+
+    # 1. without the option: the settings are exactly what they were before the option had a desktop block, and the step is done once the three files exist
+    $result.plainError = Invoke-WriteConfigs
+    $result.plainWritten = @($script:Written | ForEach-Object { Split-Path -Leaf $_ })
+    $result.plainSettings = Read-Config $L.ApprovalSettings
+    $result.plainBrokerHasComputers = (Read-Config $L.BrokerConfig) -like '*"computers"*'
+    $result.plainTest = & (Get-ConfigsStep).Test
+
+    # 2. with the option over those plain files: the step is not done (no computers, no desktop block); the run writes both
+    $GrantHyperVToBroker = $true
+    $step = Get-ConfigsStep
+    $result.grantTestOverPlain = & $step.Test
+    $result.grantError = Invoke-WriteConfigs
+    $result.grantSettings = Read-Config $L.ApprovalSettings
+    $result.grantBrokerComputers = (Read-Config $L.BrokerConfig | ConvertFrom-Json).computers
+    $result.grantTestAfter = & $step.Test
+
+    # 3. a desktop block that is not the installed helper's makes the step todo again (an older or hand-edited file is rewritten, never trusted)
+    $good = Read-Config $L.ApprovalSettings
+    [System.IO.File]::WriteAllText($L.ApprovalSettings, $good.Replace($result.helperRecorded, ('0' * 64)))
+    $result.testOtherHash = & $step.Test
+    [System.IO.File]::WriteAllText($L.ApprovalSettings, $good.Replace('"helperPath":', '"helperPathX":'))
+    $result.testOtherKey = & $step.Test
+    [System.IO.File]::WriteAllText($L.ApprovalSettings, $good)
+    $result.testRestored = & $step.Test
+
+    # 4. the helper on disk is not the one the install record took: nothing is written, the step is todo, and the error says why
+    [System.IO.File]::WriteAllText($L.PipeClientExe, 'a replaced helper')
+    $before = Read-Config $L.ApprovalSettings
+    $result.replacedTest = & $step.Test
+    $result.replacedError = Invoke-WriteConfigs
+    $result.replacedWritten = $script:Written.Count
+    $result.replacedSettingsUntouched = ($before -ceq (Read-Config $L.ApprovalSettings))
+    [System.IO.File]::WriteAllText($L.PipeClientExe, 'exe bytes of ' + $helperSource.Exe)
+
+    # 5. no record of the helper (binaries step never ran): nothing is written
+    $recorded = $script:Manifest['created']['binaries']['pipe-client']
+    $script:Manifest['created']['binaries'].Remove('pipe-client') | Out-Null
+    $result.noRecordError = Invoke-WriteConfigs
+    $result.noRecordWritten = $script:Written.Count
+    $script:Manifest['created']['binaries']['pipe-client'] = $recorded
+    # ... and no helper file at all
+    Remove-Item -LiteralPath $L.PipeClientExe
+    $result.noFileError = Invoke-WriteConfigs
+    $result.noFileWritten = $script:Written.Count
+    $result.noFileTest = & $step.Test
   }
   'group' {
     # The real Test-LocalGroupExists (nothing faked, read only): a group that exists, a SID that maps to nothing, and a failure that is neither.

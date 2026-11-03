@@ -188,17 +188,24 @@ function Get-AuthorityConfig([string]$ControlPlaneSid, $Approver) {
   }
 }
 # examples/albera.approval.example.json without the attestation (null: the first run asks a person). The settings parser needs at least one computer; approval-check uses the first.
-function Get-ControlPlaneSettings($Layout, [string]$ProjectId, [string]$VmName, [string]$ComputerId) {
+# $HelperSha256 is $null for an install without -GrantHyperVToBroker: the settings are then exactly the keys they always had. With it the `desktop` block that the gated room requires
+# (room-approval-wiring.mjs: exactly { helperPath, helperSha256 }, placed between `computers` and `attestation`) is added: the installed pipe client helper and the SHA-256 of that exe. Both are public values.
+function Get-ControlPlaneSettings($Layout, [string]$ProjectId, [string]$VmName, [string]$ComputerId, [string]$HelperSha256 = $null) {
   $c = Get-HostConstants
-  [ordered]@{
+  $settings = [ordered]@{
     version = 1
     projectId = $ProjectId
     broker = [ordered]@{ pipeName = $c.BrokerPipeName; expect = [ordered]@{ serviceName = $c.BrokerService } }
     authority = [ordered]@{ pipeRoot = $c.AuthorityPipeRoot; expect = [ordered]@{ serviceName = $c.AuthorityService } }
     journal = $Layout.ControlPlaneJournal
     computers = [ordered]@{ $VmName = $ComputerId }
-    attestation = $null
   }
+  if (-not [string]::IsNullOrEmpty($HelperSha256)) {
+    if (-not (Test-TreeHashValue $HelperSha256)) { throw 'helper_sha256_invalid' }
+    $settings['desktop'] = [ordered]@{ helperPath = $Layout.PipeClientExe; helperSha256 = $HelperSha256 }
+  }
+  $settings['attestation'] = $null
+  $settings
 }
 function ConvertTo-HostJson($Object) { $Object | ConvertTo-Json -Depth 6 -Compress }
 
@@ -228,6 +235,20 @@ function Test-BrokerConfigComputers([string]$Json, [string]$ComputerId, [string]
   if ($null -eq $o.PSObject.Properties['computers'] -or -not (Test-ComputersList $o.computers)) { return $false }
   $items = @($o.computers)
   ($items.Count -eq 1) -and ($items[0].computerId -ceq $ComputerId) -and ($items[0].vmId -ceq $VmId)
+}
+# True when the Control Plane settings text has a `desktop` key at all (any value). An install without -GrantHyperVToBroker writes none, so status reports one found without the grant record.
+function Test-ControlPlaneHasDesktopKey([string]$Json) {
+  try { $o = $Json | ConvertFrom-Json } catch { return $false }
+  ($null -ne $o) -and ($null -ne $o.PSObject.Properties['desktop'])
+}
+# True when the Control Plane settings hold exactly the `desktop` block the install intends (the installed helper path and its SHA-256). False for a file written before
+# -GrantHyperVToBroker (no block), for extra or missing keys, and for any other value. Compared case-sensitively, like the settings parser.
+function Test-ControlPlaneDesktop([string]$Json, [string]$HelperPath, [string]$HelperSha256) {
+  try { $o = $Json | ConvertFrom-Json } catch { return $false }
+  if ($null -eq $o -or $null -eq $o.PSObject.Properties['desktop']) { return $false }
+  $d = $o.desktop
+  if ($d -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $d @('helperPath', 'helperSha256'))) { return $false }
+  ($d.helperPath -is [string]) -and ($d.helperSha256 -is [string]) -and ($d.helperPath -ceq $HelperPath) -and ($d.helperSha256 -ceq $HelperSha256)
 }
 function Test-BrokerConfigText([string]$Json) {
   $reasons = New-Object System.Collections.Generic.List[string]

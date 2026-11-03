@@ -13,7 +13,8 @@
 #                                                             install (elevated). Asks for the password of the new local account albera-cp.
 #   albera-host.ps1 -Mode install ... -GrantHyperVToBroker -VmName <the VM's name> [-ComputerId <id>]
 #                                                             OPTIONAL (ADR-002 Amendment 2026-11-03, host-install.md "Giving the Broker Hyper-V"): also puts ONLY the Broker's service SID into
-#                                                             BUILTIN\Hyper-V Administrators, makes the Broker's SID type unrestricted, and writes the VM's GUID (looked up now from -VmName) into the Broker config.
+#                                                             BUILTIN\Hyper-V Administrators, makes the Broker's SID type unrestricted, and writes the VM's GUID (looked up now from -VmName) into the Broker config,
+#                                                             and writes the `desktop` block (installed helper path + its SHA-256) into the Control Plane settings, which the gated room requires.
 #                                                             albera-cp is never added. Without this option nothing about the install changes. Uninstall removes the SID again (the install record says so).
 #   albera-host.ps1 -Mode status                              read-only report of what is installed and whether it still matches (exit 1 on any difference)
 #   albera-host.ps1 -Mode uninstall                           remove only what the install manifest says this script created (elevated)
@@ -449,13 +450,13 @@ function Get-InstallSteps {
         'todo' }
       Do = { New-HostSigningKey } }
     [pscustomobject]@{ Id = 'configs'; Title = "Write the Broker config, the Authority config and the Control Plane settings (an existing file must pass the same trust checks and is overwritten)"
-      Detail = @($L.BrokerConfig, $L.AuthorityConfig, "$($L.ApprovalSettings)  (attestation null; computers: $VmName -> $ComputerId, project $ProjectId)", 'no policy.json is written: the Authority starts at tier careful (every action needs a person)', 'service-check is not run: from an elevated console it cannot judge a config (config_untrusted), and it would execute a build; the first service start is the real test') + $(if ($GrantHyperVToBroker) { @("Broker config also gets computers: $ComputerId -> <GUID of the VM $VmName>, which creates the Broker's desktop pipe") } else { @() })
+      Detail = @($L.BrokerConfig, $L.AuthorityConfig, "$($L.ApprovalSettings)  (attestation null; computers: $VmName -> $ComputerId, project $ProjectId)", 'no policy.json is written: the Authority starts at tier careful (every action needs a person)', 'service-check is not run: from an elevated console it cannot judge a config (config_untrusted), and it would execute a build; the first service start is the real test') + $(if ($GrantHyperVToBroker) { @("Broker config also gets computers: $ComputerId -> <GUID of the VM $VmName>, which creates the Broker's desktop pipe", "Control Plane settings also get desktop: { helperPath $($L.PipeClientExe), helperSha256 <SHA-256 of that installed exe> }, which the gated room requires") } else { @() })
       Test = {
         if (-not ((Test-Path -LiteralPath $L.BrokerConfig) -and (Test-Path -LiteralPath $L.AuthorityConfig) -and (Test-Path -LiteralPath $L.ApprovalSettings))) { return 'todo' }
-        # an install begun without the option and finished with it: the Broker config exists but has no computers yet
+        # an install begun without the option and finished with it: the Broker config exists but has no computers yet, and the settings have no desktop block yet
         if ($GrantHyperVToBroker) {
           $vm = Resolve-BrokerVm
-          try { if (($vm.Kind -eq 'ok') -and (Test-BrokerConfigComputers ([System.IO.File]::ReadAllText($L.BrokerConfig)) $ComputerId $vm.Id)) { return 'done' } } catch { }
+          try { if (($vm.Kind -eq 'ok') -and (Test-BrokerConfigComputers ([System.IO.File]::ReadAllText($L.BrokerConfig)) $ComputerId $vm.Id) -and (Test-ControlPlaneDesktop ([System.IO.File]::ReadAllText($L.ApprovalSettings)) $L.PipeClientExe (Get-DesktopHelperSha256))) { return 'done' } } catch { }
           return 'todo'
         }
         'done' }
@@ -727,23 +728,36 @@ function Write-OneConfig([string]$Path, [string]$Text, [string[]]$Writers) {
   $after = Get-PathTrustReasons $Path $Writers $false
   if ($after.Count -gt 0) { throw (Format-TrustRefusal $Path $after) }
 }
+# -GrantHyperVToBroker only: SHA-256 of the pipe client helper as it is installed now (the copy in the administrator-only bin folder), for the `desktop` block of the Control Plane
+# settings. It must equal the exe hash the install record took when it copied and verified the build; if the two differ the copy changed in between and nothing is written.
+function Get-DesktopHelperSha256 {
+  if (-not (Test-Path -LiteralPath $L.PipeClientExe -PathType Leaf)) { throw "the pipe client helper is not installed at $($L.PipeClientExe)" }
+  $live = Get-Sha256File $L.PipeClientExe
+  $binaries = if ($script:Manifest) { $script:Manifest['created']['binaries'] } else { $null }
+  if ($null -eq $binaries -or -not $binaries.ContainsKey('pipe-client')) { throw 'the install record has no pipe client helper hash' }
+  if ($binaries['pipe-client']['exeSha256'] -cne $live) { throw 'the installed pipe client helper differs from the install record' }
+  $live
+}
 function Write-HostConfigs {
   Resolve-HostSids
   if (-not $script:Approver) { throw 'internal: approver values missing' }
   $spki = $script:Manifest['values']['authoritySpki']
   $cp = $script:Sids.ControlPlane
   $computers = $null
+  $helperSha = $null
   if ($GrantHyperVToBroker) {
     $vm = Resolve-BrokerVm
     if ($vm.Kind -ne 'ok') { throw $vm.Message }
     $computers = Get-BrokerComputers $ComputerId $vm.Id
+    $helperSha = Get-DesktopHelperSha256
   }
   $brokerJson = ConvertTo-HostJson (Get-BrokerConfig $L $cp $spki $computers)
   $authorityJson = ConvertTo-HostJson (Get-AuthorityConfig $cp $script:Approver)
-  $settingsJson = ConvertTo-HostJson (Get-ControlPlaneSettings $L $ProjectId $VmName $ComputerId)
+  $settingsJson = ConvertTo-HostJson (Get-ControlPlaneSettings $L $ProjectId $VmName $ComputerId $helperSha)
   foreach ($pair in @(@('broker config', (Test-BrokerConfigText $brokerJson)), @('authority config', (Test-AuthorityConfigText $authorityJson)))) {
     if ($pair[1].Count -gt 0) { throw "$($pair[0]) failed this script's own check: $($pair[1] -join ', ')" }
   }
+  if ($GrantHyperVToBroker -and -not (Test-ControlPlaneDesktop $settingsJson $L.PipeClientExe $helperSha)) { throw 'control plane settings failed this script''s own check: desktop' }
   $plan = @(Get-AclPlan $L $script:Sids)
   $writersOf = { param($dir) Get-PlannedWriters ($plan | Where-Object { $_.Path -ceq $dir } | Select-Object -First 1) }
   Write-OneConfig $L.BrokerConfig $brokerJson (& $writersOf $L.BrokerConfigDir)
@@ -852,6 +866,15 @@ function Get-StatusLines {
       Add-Line $(if ($same) { 'ok' } else { 'FAIL' }) ('Broker config computers: ' + $(if ($same) { "$($rec['computerId']) -> $($rec['vmId']), as recorded" } else { 'not the one computer the install recorded' }))
     }
     Add-Line $(if (Test-Path -LiteralPath $L.ApprovalSettings) { 'ok' } else { 'FAIL' }) "Control Plane settings: $(if (Test-Path -LiteralPath $L.ApprovalSettings) { 'present' } else { 'missing' })"
+    if ($grantRecorded -and (Test-Path -LiteralPath $L.ApprovalSettings)) {
+      $recordedHelper = if ($M['created']['binaries'].ContainsKey('pipe-client')) { $M['created']['binaries']['pipe-client']['exeSha256'] } else { '' }
+      $same = Test-ControlPlaneDesktop ([System.IO.File]::ReadAllText($L.ApprovalSettings)) $L.PipeClientExe $recordedHelper
+      Add-Line $(if ($same) { 'ok' } else { 'FAIL' }) ('Control Plane settings desktop: ' + $(if ($same) { 'the installed pipe client helper and its recorded SHA-256, as written by install' } else { 'not the helper path and SHA-256 the install recorded' }))
+    }
+    # an install without the grant writes no desktop block: one found anyway was not written by this install (a clean install has no such line)
+    if (-not $grantRecorded -and (Test-Path -LiteralPath $L.ApprovalSettings) -and (Test-ControlPlaneHasDesktopKey ([System.IO.File]::ReadAllText($L.ApprovalSettings)))) {
+      Add-Line 'FAIL' 'Control Plane settings desktop: a desktop block is present but the install record has no Hyper-V grant (install without -GrantHyperVToBroker writes none)'
+    }
   }
   catch { Add-Line 'unknown' ('status check could not finish (is this console elevated?): ' + $_.Exception.Message) }
   , $lines.ToArray()
@@ -988,7 +1011,10 @@ try {
       Say 'Installed. The services are stopped (start=demand). Next, in this elevated console:'
       Say "  Start-Service $($K.BrokerService); Start-Service $($K.AuthorityService)"
       Say 'then see docs/architecture/host-install.md ("First approval") for albera-runtime approval-check.'
-      if ($GrantHyperVToBroker) { Say "The Broker's service SID is in Hyper-V Administrators and its SID type is unrestricted. Undo: -Mode uninstall removes the SID from the group first (host-install.md, 'Giving the Broker Hyper-V')." }
+      if ($GrantHyperVToBroker) {
+        Say "The Broker's service SID is in Hyper-V Administrators and its SID type is unrestricted. Undo: -Mode uninstall removes the SID from the group first (host-install.md, 'Giving the Broker Hyper-V')."
+        Say "The Control Plane settings already hold the desktop block (installed helper path and its SHA-256) that the gated room needs; nothing has to be edited by hand."
+      }
       exit 0
     }
     'uninstall' {
