@@ -35,3 +35,26 @@ internal static class ApprovalQueue
         return text.Length <= TrayTextLimit ? text : text[..TrayTextLimit];
     }
 }
+
+/// <summary>The wrong match-code picks each request has had, kept by the tray across windows: closing a window and opening it again must not hand out fresh guesses (three candidates, two wrong picks).
+/// Kept in the tray process's memory only; it lasts as long as the request is pending.</summary>
+internal sealed class WrongPickLedger
+{
+    private readonly Dictionary<string, int> masks = [];
+
+    public int For(string approvalId) => masks.GetValueOrDefault(approvalId);
+
+    /// <summary>Bits only ever get added: a later window cannot forget a pick.</summary>
+    public void Record(string approvalId, int wrongMask)
+    {
+        int merged = For(approvalId) | wrongMask;
+        if (merged != 0) masks[approvalId] = merged;
+    }
+
+    /// <summary>Forgets the requests that are no longer pending (decided, expired).</summary>
+    public void Prune(IReadOnlyList<ListedRequest> pending)
+    {
+        HashSet<string> alive = [.. pending.Where(item => item.ApprovalId is not null).Select(item => item.ApprovalId!)];
+        foreach (string id in masks.Keys.Where(id => !alive.Contains(id)).ToList()) masks.Remove(id);
+    }
+}

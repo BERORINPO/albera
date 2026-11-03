@@ -37,10 +37,11 @@ internal sealed class TrayHost : ApplicationContext
     private readonly NotifyIcon icon;
     private readonly System.Windows.Forms.Timer poll = new() { Interval = FirstPollMs }; // the first look comes quickly, then every PollMs
     private HashSet<string> handled = [];
+    private readonly WrongPickLedger wrongPicks = new();
     private IReadOnlyList<ListedRequest> pending = [];
     private ApprovalWindow? open;
     private string? openId, problem;
-    private bool polling;
+    private bool polling, exitWhenClosed;
 
     public TrayHost(Wiring wiring, Func<DateTimeOffset> clock)
     {
@@ -48,7 +49,7 @@ internal sealed class TrayHost : ApplicationContext
         this.clock = clock;
         ContextMenuStrip menu = new();
         menu.Items.Add("待っている依頼を開く", null, (_, _) => Reopen());
-        menu.Items.Add("終了", null, (_, _) => ExitThread());
+        menu.Items.Add("終了", null, (_, _) => RequestExit());
         icon = new NotifyIcon { Icon = SystemIcons.Shield, Text = ApprovalQueue.TrayText(new QueueView(null, 0, 0), null), ContextMenuStrip = menu, Visible = false }; // shown after the first look: an account that is not the approver never sees an icon
         icon.DoubleClick += (_, _) => Reopen();
         poll.Tick += async (_, _) => await PollAsync();
@@ -82,6 +83,7 @@ internal sealed class TrayHost : ApplicationContext
             {
                 pending = items;
                 handled = ApprovalQueue.Prune(handled, items);
+                wrongPicks.Prune(items);
                 if (openId is not null && items.All(item => item.ApprovalId != openId)) open?.CloseIfIdle(); // expired or settled elsewhere
                 OpenNext();
             }
@@ -106,11 +108,19 @@ internal sealed class TrayHost : ApplicationContext
     {
         if (ApprovalQueue.Next(pending, handled, open is not null).OpenNow is not { ApprovalId: { } id } item) return;
         handled.Add(id);
-        ApprovalWindow window = new(ApprovalPrompt.From(item, clock()), NewCommands(), clock, SystemInformation.TerminalServerSession);
-        window.FormClosed += (_, _) => { open = null; openId = null; window.Dispose(); };
+        ApprovalWindow window = new(ApprovalPrompt.From(item, clock()), NewCommands(), clock, SystemInformation.TerminalServerSession, wrongPicks.For(id)); // wrong picks carry over to a reopened window
+        window.FormClosed += (_, _) => { wrongPicks.Record(id, window.WrongMask); open = null; openId = null; window.Dispose(); if (exitWhenClosed) ExitThread(); };
         open = window;
         openId = id;
         window.Show(); // ShowWithoutActivation: the keyboard focus stays where it was
+    }
+
+    // "終了" closes the open window first: a window with a wrong pick sends its deny on closing, so quitting the tray is not a way to forget the wrong picks.
+    private void RequestExit()
+    {
+        if (open is null) { ExitThread(); return; }
+        exitWhenClosed = true;
+        open.Close(); // a window that is busy refuses; the person asks again when it is done
     }
 
     // A window the person closed without deciding stays pending at the Authority; this brings it back.

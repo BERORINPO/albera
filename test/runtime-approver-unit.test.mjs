@@ -10,7 +10,7 @@ import { getUnavailableReason, runApproverUnitHarness } from './helpers/approver
 // sent, the exact presence message bytes, the approve / deny / presence_unavailable flows against a canned channel, exit codes, and the fixed command grammar. GUI mode (--tray): the
 // approval window rules (match-code buttons, 1 s delay, expiry, wrong picks, hidden characters, the queue and tray text) and the window built but never shown (no screen, no Hello).
 // Windows-only; skipped without the .NET 10 SDK.
-const EXPECTED_AT_LEAST = 89;
+const EXPECTED_AT_LEAST = 95;
 
 test('Approver unit checks (rendering, digest recompute and refusal, presence message bytes, command flows)', { skip: getUnavailableReason(), timeout: 420_000 }, async (t) => {
   const work = mkdtempSync(path.join(os.tmpdir(), 'albera-approver-unit-'));

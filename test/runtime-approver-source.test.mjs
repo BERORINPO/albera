@@ -317,6 +317,11 @@ test('GUI mode: shown without taking focus, no default button, Enter and Space d
   assert.match(guiWindow, /pressedByMouse = mevent\.Button == MouseButtons\.Left;[\s\S]*if \(real\) base\.OnClick\(e\);/u, 'only a real left mouse press makes a click');
   assert.match(guiWindow, /Shown \+= \(_, _\) => GuiNative\.FlashTaskbar\(Handle\);/u, 'the taskbar button flashes');
   assert.equal(/\.Activate\(|\.Focus\(|ActiveControl|SetForegroundWindow|BringToFront\(\)/u.test(guiWindow + guiTray), false, 'nothing here asks for the focus');
+  // Topmost and no-activate are creation styles (WS_EX_TOPMOST | WS_EX_NOACTIVATE); the Form.TopMost property (which can activate together with ShowWithoutActivation) is not used.
+  assert.match(guiWindow, /ExTopmost = 0x00000008, ExNoActivate = 0x08000000;/u);
+  assert.match(guiWindow, /parameters\.ExStyle \|= ExTopmost \| ExNoActivate;/u);
+  assert.equal(/\bTopMost\b/u.test(guiWindow + guiTray), false, 'Form.TopMost is never set');
+  assert.equal(/BM_CLICK/u.test(guiWindow + read('docs', 'architecture', 'approver-app.md').replace(/a posted `BM_CLICK`/u, '')), false, 'no claim that a BM_CLICK is dropped: a synthetic click from the same account is a known limit, Hello is the last line');
   assert.equal([...guiCode.matchAll(/GuiNative\.BringToFront\(/gu)].length, 1, 'the window is brought to the front once: after the correct pick, before Windows Hello asks');
   assert.match(methodBody(guiWindow, 'internal async Task HandleChoiceAsync'), /case PickOutcome\.Correct:[\s\S]*GuiNative\.BringToFront\(Handle\);[\s\S]*ApproveShownAsync/u);
   const prompt = code['ApprovalPrompt.cs'];
@@ -325,6 +330,13 @@ test('GUI mode: shown without taking focus, no default button, Enter and Space d
   assert.match(prompt, /public bool IsExpired\(DateTimeOffset now\) => View is \{ \} view && now\.ToUnixTimeSeconds\(\) >= view\.ExpiresAt;/u);
   assert.match(prompt, /WrongPicksToDeny = 2/u);
   assert.match(guiTray, /PollMs = 2000/u, 'the list is asked for every 2 seconds');
+  // Closing a window is not a way to reset the guesses: the tray keeps the wrong picks per request and hands them on, and a window closed after a wrong pick sends deny.
+  assert.match(guiTray, /wrongPicks\.For\(id\)/u, 'a new window starts with the request\'s earlier wrong picks');
+  assert.match(guiTray, /wrongPicks\.Record\(id, window\.WrongMask\)/u, 'and the closing window hands its wrong picks to the ledger');
+  assert.match(methodBody(guiWindow, 'protected override void OnFormClosing'), /state\.WrongCount >= 1 && !state\.Finished[\s\S]*DenyAndCloseAsync\(\)/u, 'closing after a wrong pick sends deny');
+  assert.match(methodBody(guiWindow, 'private async Task DenyAndCloseAsync'), /await SendDenyAsync\(\)/u);
+  assert.match(code['ApprovalPrompt.cs'], /state\.WrongCount < WrongPicksToDeny/u, 'after two wrong picks on record no candidate can be picked');
+  assert.match(methodBody(guiTray, 'private void RequestExit'), /open\.Close\(\)/u, 'quitting the tray closes the open window first');
   assert.match(code['ApprovalQueue.cs'], /new QueueView\(unhandled\[0\], unhandled\.Count - 1, closed\)/u, 'one request opens, the rest wait');
 });
 

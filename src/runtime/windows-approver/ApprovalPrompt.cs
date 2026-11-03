@@ -120,7 +120,7 @@ internal sealed class ApprovalPrompt
     public bool ClickDelayElapsed(DateTimeOffset now) => now - ShownAt >= TimeSpan.FromMilliseconds(ClickDelayMs);
 
     public bool ChoiceEnabled(PickState state, int index, DateTimeOffset now) =>
-        CanApprove && index is >= 0 and < ChoiceCount && !state.Busy && !state.Finished && (state.WrongMask & (1 << index)) == 0 && ClickDelayElapsed(now) && !IsExpired(now);
+        CanApprove && index is >= 0 and < ChoiceCount && !state.Busy && !state.Finished && (state.WrongMask & (1 << index)) == 0 && state.WrongCount < WrongPicksToDeny && ClickDelayElapsed(now) && !IsExpired(now); // after two wrong picks the third is no guess: only deny is left
 
     /// <summary>Like the choices, deny waits for the first second (a reflex click on a button that just appeared decides nothing); it stops at expiry, while a call runs and when the prompt is over.</summary>
     public bool DenyEnabled(PickState state, DateTimeOffset now) => ApprovalId is not null && !state.Busy && !state.Finished && ClickDelayElapsed(now) && !IsExpired(now);

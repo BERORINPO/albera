@@ -3,8 +3,9 @@ using System.Windows.Forms;
 
 namespace Albera.Approver;
 
-// A button that only a real mouse click can press. It cannot take the keyboard focus (so Enter and Space never reach it), it is never a default button, and a click that did
-// not start with a left mouse-down on it (PerformClick, an accessibility "invoke", a stray BM_CLICK) is dropped.
+// A button that only a real mouse click can press. It cannot take the keyboard focus (so Enter and Space never reach it), it is never a default button, and a Click event that
+// did not follow a left mouse-down on it (PerformClick) is dropped. A synthetic click from another process of the same account (SendInput, UI Automation) looks like a real one
+// and is NOT stopped here: that is inside the documented known limits (approver-app.md); the last line of defence is Windows Hello.
 internal sealed class MouseOnlyButton : Button
 {
     private bool pressedByMouse;
@@ -47,7 +48,7 @@ internal sealed class MouseOnlyButton : Button
 // The only call that approves anything in the whole program is in HandleChoiceAsync, which only the click handler of a match-code button calls.
 internal sealed class ApprovalWindow : Form
 {
-    private const int AutoCloseSeconds = 3;
+    private const int AutoCloseSeconds = 3, ExTopmost = 0x00000008, ExNoActivate = 0x08000000; // WS_EX_TOPMOST, WS_EX_NOACTIVATE
     private static readonly Color Highlight = Color.Gold, Alarm = Color.Firebrick, Notice = Color.DarkOrange;
 
     private readonly ApprovalPrompt prompt;
@@ -57,14 +58,17 @@ internal sealed class ApprovalWindow : Form
     private readonly MouseOnlyButton denyButton = new() { Text = "拒否する", Size = new Size(120, 40) };
     private readonly Label countdown = MakeLabel(""), warning = MakeLabel(""), status = MakeLabel("");
     private readonly System.Windows.Forms.Timer tick = new() { Interval = 250 };
-    private PickState state = new();
+    private PickState state;
     private DateTimeOffset? closeAt;
+    private bool closingForGood;
 
-    internal ApprovalWindow(ApprovalPrompt prompt, ApproverCommands commands, Func<DateTimeOffset> clock, bool remoteSession)
+    /// <param name="initialWrongMask">the wrong picks this request already had in an earlier window (the tray keeps them): closing a window never resets the count</param>
+    internal ApprovalWindow(ApprovalPrompt prompt, ApproverCommands commands, Func<DateTimeOffset> clock, bool remoteSession, int initialWrongMask = 0)
     {
         this.prompt = prompt;
         this.commands = commands;
         this.clock = clock;
+        state = new PickState(initialWrongMask);
         Text = "ALBERA 承認の依頼";
         AcceptButton = null;
         CancelButton = null;
@@ -72,13 +76,14 @@ internal sealed class ApprovalWindow : Form
         MaximizeBox = false;
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = true;
-        TopMost = true;
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
         ShowIcon = true;
         Icon = SystemIcons.Shield;
         Build(remoteSession);
         warning.ForeColor = Alarm;
+        if (state.WrongCount >= ApprovalPrompt.WrongPicksToDeny) warning.Text = "前に 2 回間違えています。承認はできません。拒否だけできます。";
+        else if (state.WrongCount > 0) warning.Text = "前に 1 回間違えています。あと 1 回間違えると、拒否として送ります。窓を閉じても、間違えた回数は消えません。";
         denyButton.Click += OnDenyClick;
         tick.Tick += (_, _) => ApplyState();
         Load += (_, _) => PlaceInCorner();
@@ -89,6 +94,20 @@ internal sealed class ApprovalWindow : Form
 
     /// <summary>Windows is told not to activate this window when it is shown: a window that appears while the person types must not take the keystrokes.</summary>
     protected override bool ShowWithoutActivation => true;
+
+    // The extended styles are set at creation: topmost, so the window is seen, and no-activate, so it never takes the keyboard focus (not even by being topmost). The Form.TopMost property
+    // is not used because, with ShowWithoutActivation, it can still activate the window.
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            CreateParams parameters = base.CreateParams;
+            parameters.ExStyle |= ExTopmost | ExNoActivate;
+            return parameters;
+        }
+    }
+
+    internal int WrongMask => state.WrongMask;
 
     internal string StatusText => status.Text;
 
@@ -103,7 +122,9 @@ internal sealed class ApprovalWindow : Form
     /// <summary>The tray calls this when the request is no longer in the Authority's list (it expired or was decided elsewhere) and this window decided nothing: there is nothing left to click.</summary>
     internal void CloseIfIdle()
     {
-        if (!state.Busy && !state.Finished) Close();
+        if (state.Busy || state.Finished) return;
+        closingForGood = true; // the request is gone: there is nothing to deny
+        Close();
     }
 
     // Enter and Space are swallowed for the whole window: nothing is decided from the keyboard.
@@ -113,7 +134,20 @@ internal sealed class ApprovalWindow : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         if (state.Busy) e.Cancel = true; // Windows Hello or the Authority call is running: closing now would hide the outcome
+        else if (!closingForGood && state.WrongCount >= 1 && !state.Finished)
+        {
+            e.Cancel = true; // a window closed after a wrong pick is a deny: closing and reopening must not give the person fresh guesses
+            _ = DenyAndCloseAsync();
+        }
         base.OnFormClosing(e);
+    }
+
+    private async Task DenyAndCloseAsync()
+    {
+        try { await SendDenyAsync(); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { state = state with { Busy = false, Finished = true }; }
+        closingForGood = true; // whether or not the deny arrived; if it did not, the tray keeps the wrong picks (WrongMask) for the next window of this request
+        Close();
     }
 
     protected override void Dispose(bool disposing)
@@ -164,8 +198,7 @@ internal sealed class ApprovalWindow : Form
                 break;
             case PickOutcome.Correct:
                 status.Text = "Windows Hello で確認してください。";
-                TopMost = false; // do not cover the Windows Hello prompt
-                GuiNative.BringToFront(Handle);
+                GuiNative.BringToFront(Handle); // best effort: the window never takes the focus by itself (WS_EX_NOACTIVATE), this is the click's own window
                 CommandOutcome result = await Task.Run(() => commands.ApproveShownAsync(prompt.View!)); // Windows Hello blocks: never on the UI thread
                 state = ApprovalPrompt.AfterApprove(state, result);
                 Present(ApprovalPrompt.ApproveResultText(result), result.Ok);

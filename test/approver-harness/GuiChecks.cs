@@ -137,6 +137,25 @@ internal static partial class Harness
             Assert(ApprovalQueue.TrayText(new QueueView(null, 0, 0), null).Contains("待ちはありません") && ApprovalQueue.TrayText(new QueueView(null, 0, 1), null).Contains("閉じた依頼 1 件"), "idle / closed");
             Assert(ApprovalQueue.TrayText(new QueueView(null, 2, 0), "authority_unreachable").Contains("接続できません") && ApprovalQueue.TrayText(new QueueView(null, 2, 0), new string('x', 200)).Length <= ApprovalQueue.TrayTextLimit, "problem and limit");
         });
+        Check("GUI queue: the wrong-pick ledger keeps picks across windows, only adds bits, and forgets requests that are no longer pending", () =>
+        {
+            WrongPickLedger ledger = new();
+            Assert(ledger.For(Id1) == 0, "nothing at first");
+            ledger.Record(Id1, 0b010);
+            ledger.Record(Id1, 0b001);
+            ledger.Record(Id1, 0);
+            Assert(ledger.For(Id1) == 0b011 && ledger.For(Id2) == 0, "bits are merged, never cleared, per request");
+            ledger.Prune([Parsed(Entry(Id2, seq: "2"))]);
+            Assert(ledger.For(Id1) == 0, "a request that left the list is forgotten");
+        });
+        Check("GUI prompt: after two wrong picks on record no candidate can be picked (the remaining one would be a certainty)", () =>
+        {
+            ApprovalPrompt prompt = Normal();
+            int correct = MatchCode.Choices(Id1, DigestOf()).CorrectIndex;
+            PickState twice = new(WrongMask: Enumerable.Range(0, 3).Where(i => i != correct).Aggregate(0, (bits, i) => bits | (1 << i)));
+            for (int i = 0; i < 3; i++) Assert(!prompt.ChoiceEnabled(twice, i, Shown.AddSeconds(5)), $"choice {i}");
+            Assert(prompt.DenyEnabled(twice, Shown.AddSeconds(5)), "deny stays");
+        });
         Check("GUI queue: a tray started for an account the approver pipe refuses (access denied) ends quietly; a service that is not up yet does not end it", () =>
         {
             Assert(ApprovalQueue.ShouldQuit(new CommandOutcome(ExitCodes.ServerRefused, ChannelCodes.AccessDenied)), "access_denied ends the tray");
@@ -182,13 +201,13 @@ internal static partial class Harness
 
     private sealed record Built(ApprovalWindow Window, FakeChannel Channel, RecordingSigner Signer, Func<DateTimeOffset> Clock, Action<TimeSpan> Advance);
 
-    private static Built BuildWindow(string entry, bool remote = false, RecordingSigner? signer = null)
+    private static Built BuildWindow(string entry, bool remote = false, RecordingSigner? signer = null, FakeChannel? channel = null, int wrongMask = 0)
     {
         DateTimeOffset now = Shown;
-        FakeChannel channel = DecidingChannel(entry);
+        channel ??= DecidingChannel(entry);
         RecordingSigner recording = signer ?? Signing();
         ApproverCommands commands = new(channel, recording, TextWriter.Null, TextWriter.Null, TextReader.Null, () => now, interactive: false);
-        ApprovalWindow window = new(PromptOf(entry), commands, () => now, remote);
+        ApprovalWindow window = new(PromptOf(entry), commands, () => now, remote, wrongMask);
         _ = window.Handle; // real controls and a real handle, but Show() is never called: nothing appears on a screen
         return new Built(window, channel, recording, () => now, step => { now += step; window.ApplyState(); });
     }
@@ -250,6 +269,71 @@ internal static partial class Harness
             up.Invoke(button, left);
             click.Invoke(button, none);
             Assert(clicks == 1, "a press that was released without a click does not arm the next click");
+        });
+        Check("GUI window: one wrong pick, then closing the window sends deny (closing is not a way to reset the guesses)", () =>
+        {
+            Built built = BuildWindow(Entry());
+            int correct = MatchCode.Choices(Id1, DigestOf()).CorrectIndex;
+            built.Advance(TimeSpan.FromSeconds(2));
+            Pump(built.Window.HandleChoiceAsync((correct + 1) % 3));
+            Assert(built.Channel.Decides == 0, "one wrong pick sends nothing yet");
+            built.Window.Close();
+            DateTime limit = DateTime.UtcNow.AddSeconds(15);
+            while (!built.Window.IsDisposed && DateTime.UtcNow < limit) { Application.DoEvents(); Thread.Sleep(5); }
+            Assert(built.Window.IsDisposed, "the window closed after the deny");
+            Assert(built.Channel.Requests.Count(r => r.Contains("\"decision\":\"deny\"")) == 1 && built.Signer.Messages.Count == 0 && built.Channel.Requests.Count(r => r.Contains("\"decision\":\"approve\"")) == 0, "one deny, no Hello, no approve");
+            Built plain = BuildWindow(Entry());
+            plain.Window.Close();
+            Assert(plain.Window.IsDisposed && plain.Channel.Decides == 0, "closing without a wrong pick sends nothing: the request stays pending");
+        });
+        Check("GUI window: a wrong pick survives closing and reopening (the tray hands the mask on), the reopened window has one guess left, and a second wrong pick there sends deny", () =>
+        {
+            FakeChannel failingDeny = new(request => request.Contains("\"decision\":\"deny\"") ? throw new ChannelException(ChannelCodes.AuthorityUnreachable, sent: false) : Page([Entry()]));
+            Built first = BuildWindow(Entry(), channel: failingDeny);
+            int correct = MatchCode.Choices(Id1, DigestOf()).CorrectIndex;
+            int[] wrong = [.. Enumerable.Range(0, 3).Where(i => i != correct)];
+            first.Advance(TimeSpan.FromSeconds(2));
+            Pump(first.Window.HandleChoiceAsync(wrong[0]));
+            first.Window.Close(); // the deny cannot be sent (the Authority is not reachable): the wrong pick must still be remembered
+            DateTime limit = DateTime.UtcNow.AddSeconds(15);
+            while (!first.Window.IsDisposed && DateTime.UtcNow < limit) { Application.DoEvents(); Thread.Sleep(5); }
+            Assert(first.Window.IsDisposed && first.Window.WrongMask == 1 << wrong[0], $"mask {first.Window.WrongMask}");
+            WrongPickLedger ledger = new();
+            ledger.Record(Id1, first.Window.WrongMask);
+            Built second = BuildWindow(Entry(), wrongMask: ledger.For(Id1));
+            try
+            {
+                second.Advance(TimeSpan.FromSeconds(2));
+                Assert(!second.Window.ChoiceButtons[wrong[0]].Enabled && second.Window.ChoiceButtons[wrong[1]].Enabled && second.Window.ChoiceButtons[correct].Enabled && second.Window.WarningText.Contains("前に 1 回"), "the earlier wrong pick is still wrong and still counted");
+                Pump(second.Window.HandleChoiceAsync(wrong[1]));
+                Assert(second.Channel.Requests.Count(r => r.Contains("\"decision\":\"deny\"")) == 1 && second.Signer.Messages.Count == 0 && second.Window.IsFinished, "the second wrong pick, in the new window, is the deny");
+            }
+            finally { second.Window.Dispose(); }
+        });
+        Check("GUI window: with two wrong picks already on record only deny is left (the third candidate is no guess)", () =>
+        {
+            int correct = MatchCode.Choices(Id1, DigestOf()).CorrectIndex;
+            int mask = Enumerable.Range(0, 3).Where(i => i != correct).Aggregate(0, (bits, i) => bits | (1 << i));
+            Built built = BuildWindow(Entry(), wrongMask: mask);
+            try
+            {
+                built.Advance(TimeSpan.FromSeconds(2));
+                Assert(built.Window.ChoiceButtons.All(b => !b.Enabled) && built.Window.DenyButton.Enabled, "choices off, deny on");
+                Pump(built.Window.HandleChoiceAsync(correct));
+                Assert(built.Signer.Messages.Count == 0 && built.Channel.Decides == 0, "even the correct one cannot be picked any more");
+            }
+            finally { built.Window.Dispose(); }
+        });
+        Check("GUI window: the topmost and no-activate styles are set at creation (WS_EX_TOPMOST | WS_EX_NOACTIVATE), not through Form.TopMost", () =>
+        {
+            Built built = BuildWindow(Entry());
+            try
+            {
+                var createParams = (CreateParams)typeof(ApprovalWindow).GetProperty("CreateParams", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(built.Window)!;
+                Assert((createParams.ExStyle & 0x00000008) != 0 && (createParams.ExStyle & 0x08000000) != 0, $"ExStyle {createParams.ExStyle:X}");
+                Assert(!built.Window.TopMost, "Form.TopMost is not used");
+            }
+            finally { built.Window.Dispose(); }
         });
         Check("GUI window: CloseIfIdle closes a window that decided nothing and leaves one that already shows a result", () =>
         {
