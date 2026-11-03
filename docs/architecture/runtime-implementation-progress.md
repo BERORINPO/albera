@@ -509,3 +509,34 @@ Merged on main: #176 (contract), #177 (Claude Code hands), #178 (room UI auth), 
 - **Follow-ups:**
   - two Zaku LOWs on #185: a stale room.json is left when reading the config fails, and the checker finds powershell.exe via SystemRoot;
   - a Windows tree-stop confirmation via a Job object, which would relax `hands-unconfirmed-stop-busy`.
+
+## 2026-11-04 — Stage 1 installer, node pin fix and operations docs
+
+Merged on main since the previous entry, all on 2026-11-03 (UTC): #189 (13:47), #190 (15:44), #191 (15:59).
+
+- **#189 (docs).** `spec/architecture.md` got the 39 decision lines of #177 to #188 with the earlier pending ones; the previous entry and a card for the owner (revoke the API key leaked on 2026-11-03) went into this ledger.
+- **#190 (PR7, security tier).** `scripts/host/albera-host.ps1` now installs the Control Plane as the service `NT SERVICE\AlberaControlPlane` (no local account) beside the Broker and the Authority; all three are `delayed-auto`.
+  - It pins a copy of the owner's `node.exe` and `claude.exe`, writes the launcher, the Start menu shortcuts and the HKLM Run entry of the approver tray, and adds `-Mode migrate` for the `albera-cp` layout.
+  - The approver is the fifth tree-hash component.
+  - BUILTIN\Users get read and execute on `bin\approver`, `bin\launcher` and `bin\setup` only.
+  - Anti-rollback uses the install record, `HKLM\SOFTWARE\Albera\SetupRunIdFloor` (kept by uninstall) and the run id compiled into setup.exe.
+  - Zaku found 1 HIGH (uninstall erased the anti-rollback record), 2 MEDIUM (Users on the whole install folder; adopting the install folder) and 3 LOW. All were fixed in 20cc9ee and the narrow re-review found it SECURE. CI 6/6.
+- **#191.** The bare BUILTIN domain SID `S-1-5-32` (`BUILTIN\BUILTIN` in icacls) is no longer counted as a writer in the installer's trust check. The Node.js installer leaves a full-control rule for it on `C:\Program Files\nodejs`, so the node pin would have stopped on a normal PC. Zaku's narrow review: SECURE. A read-only run of the same lib function on the owner's PC now says `trusted` for that folder (before: `writer_untrusted:S-1-5-32`).
+- **VM results** (disposable VM, `lab-vm.ps1 -Build -HostInstall`, scripts at a2b6ada and ab27e90, `pass=true`; the evidence is in the PR #190 thread, not in `benchmarks/`).
+  - Default pass: Control Plane checks 16/16 PASS (delayed-auto for all three, restricted SID types, privileges, failure actions, Broker SDDL, read-only config ACL, no `albera-cp`, shortcuts, launcher, Run value, install record).
+  - Hyper-V grant pass: 18/18 PASS.
+  - The first run stopped at step 5: `icacls` exit 1332 for the service SID of a service not registered yet. a2b6ada writes the DACL of an existing folder with .NET instead.
+  - The lab passes the lab-only `-NodeSource` and `-ClaudeSource` (the node.exe the driver copies, and a stand-in file for claude.exe that is never run), so it did not judge the node source on a real PC. It runs the script directly, not through `albera-setup.exe`.
+  - `-Mode migrate` was not run in a VM when #190 merged; no result for it is recorded in the repository.
+- **Not verified yet.**
+  - `-Mode migrate`, in a VM and on the owner's PC.
+  - setup's install mode end to end (setup.exe in `bin\setup` starting the script from the verified copy). On CI only verify mode ran (run 41644370640).
+  - The Host build hashes workflow since #190. It now builds the Control Plane host and the approver, and attests 12 files. The last run (41644370640, ffa648c) is older than #190, so the five-component tree hash and the new attested set have never come out of CI. The first dispatch after #190 is the first test of those workflow changes.
+  - The Control Plane service under the SCM on a real PC; `room-service` staying up under the service identity; `claude.exe` starting as that identity (M4); DPAPI with the real helper; the first job on the owner's PC.
+  - The approval window with a real Windows Hello (M14), and the tray started from HKLM Run.
+  - The "ALBERA update" shortcut. It starts setup with no `--update` argument, which setup requires, and setup has no in-place update, so an update today is uninstall, then install through setup. How the update folder reaches the owner is still open (contract section 8, "Copy first").
+- **Docs (PR8).** `docs/architecture/host-install.md` is rewritten to the stage 1 form: setup.exe install, `-Mode migrate`, update, uninstall, `-Mode status`, the Claude Code token, the approval flow and the usual stops. Section 3 of `control-plane-service.md` (Builds row) now matches #190. `approver-app.md` is unchanged; its steps 5 to 8 still describe the first layout (a hand-run `approval-check` as `albera-cp`).
+- **Follow-ups (from the #190 body):**
+  - in-place update (stop the services, replace the builds, start);
+  - a refresh of the pinned `node.exe` and `claude.exe`;
+  - a cross-check of `control-plane-app-hashes.json` against the app tree inside setup.
