@@ -28,6 +28,7 @@ test('the setup project is NativeAOT, BCL only, asks for administrator and canno
   assert.match(project, /<TargetFramework>net10\.0-windows<\/TargetFramework>/u);
   assert.match(project, /<ApplicationManifest>app\.manifest<\/ApplicationManifest>/u);
   assert.match(project, /<TreatWarningsAsErrors>true<\/TreatWarningsAsErrors>/u);
+  assert.deepEqual([...project.matchAll(/<LinkerArg Include="([^"]+)"/gu)].map((m) => m[1]), ['/DEPENDENTLOADFLAG:0x800'], 'DLLs loaded later by name come from System32 only');
   assert.deepEqual([...project.matchAll(/<Compile Include="([^"]+)"/gu)].map((m) => m[1]), ['$(AlberaPinnedToolsSource)'], 'the only extra source is the generated pin file');
   assert.equal(/IsAotCompatible|PublishTrimmed|SelfContained|EnableTrimAnalyzer/u.test(project), false, 'IsAotCompatible would need the ILLink pack download for a local build; the AOT analyzers run in CI with PublishAot');
   const manifest = read('src', 'runtime', 'windows-setup', 'app.manifest');
@@ -77,6 +78,21 @@ test('gh is run offline with the exact identity: bundle, trusted root, repositor
   assert.equal(/GH_TOKEN|GITHUB_TOKEN|GH_HOST/u.test(env.replace(/"GH_[A-Z_]+"\]\s*=/gu, '')), false, 'no token or host is handed to gh');
   const engine = code['EngineLaunch.cs'];
   assert.match(engine, /SetupLayout\.PowerShellExecutable/u);
+  // gh.exe and the trusted root that run are the checked copies in the work folder, never the files beside setup; the work folder is born with its protected DACL
+  const flow = code['SetupFlow.cs'];
+  assert.match(flow, /new GhVerifier\(deps\.Runner, tools\.Gh, tools\.TrustedRoot,/u);
+  assert.equal(/Path\.Combine\(deps\.SetupDirectory, "gh\.exe"\)|Path\.Combine\(deps\.SetupDirectory, "trusted_root/u.test(flow), false, 'gh is never started from beside setup');
+  assert.match(flow, /FileMode\.CreateNew[\s\S]*input\.CopyTo\(output\)[\s\S]*FileSystemChecks\.Sha256\(copy\)/u, 'stream copy first, then the hash of the COPY');
+  assert.match(code['Program.cs'], /CreateWorkDirectory = path => FileSystemChecks\.CreateAdministratorOnlyDirectory\(path\)/u);
+  assert.match(code['FileSystemChecks.cs'], /SetAccessRuleProtection\(isProtected: true, preserveInheritance: false\)/u);
+  assert.match(code['FileSystemChecks.cs'], /new DirectoryInfo\(path\)\.Create\(security\)/u, 'the DACL is given at creation');
+  assert.match(code['FileSystemChecks.cs'], /0x40000000[\s\S]*0x10000000/u, 'generic write and generic all count as write access');
+  assert.equal(/InheritOnly\) != 0\)\) continue|rule\.InheritOnly\)? continue/u.test(code['FileSystemChecks.cs']), false, 'InheritOnly rules are not skipped');
+  assert.match(code['SetupEnvironment.cs'], /\["PSModulePath"\] = PowerShellModulePath/u);
+  assert.match(code['SetupEnvironment.cs'], /PowerShellModulePath = @"C:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\Modules"/u);
+  assert.equal(csharpString('RepositoryId'), '1424608761');
+  assert.equal(csharpString('OwnerId'), '215606621');
+  assert.match(code['AttestationPolicy.cs'], /"sourceRepositoryIdentifier", SetupLayout\.RepositoryId[\s\S]*"sourceRepositoryOwnerIdentifier", SetupLayout\.OwnerId/u);
   assert.match(layout, /PowerShellExecutable = @"C:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe"/u);
   assert.match(engine, /"-NoProfile", "-ExecutionPolicy", "Bypass", "-File"/u);
   assert.match(engine, /"-ExpectedTreeHash", treeHash, "-SetupRunId"/u, 'the tree hash and the run id come from the verified build, as arguments of the script');
@@ -134,9 +150,9 @@ test('the workflow pins gh by version and SHA-256, fetches nothing else, and run
   // every flag setup passes to gh is checked against the pinned gh's own --help
   const verifyFlags = /'verify' = @\(([^)]*)\)/u.exec(fetchStep)?.[1].match(/--[a-z-]+/gu) ?? [];
   for (const flag of code['GhVerifier.cs'].match(/"--[a-z-]+"/gu).map((f) => f.slice(1, -1))) assert.ok(verifyFlags.includes(flag), `${flag} is checked against gh's help`);
-  const order = ['Fetch the pinned gh.exe', 'Make the Sigstore trusted root', 'Build albera-setup.exe', 'Attest build provenance', 'Download the attestation bundles', 'Assemble the update folder', 'Verify the update folder', 'Upload the update folder']
+  const order = ['Fetch the pinned gh.exe', 'Make the Sigstore trusted root', 'Build albera-setup.exe', 'Attest build provenance', 'Download the attestation bundles', 'Assemble the update folder', 'Upload the update folder candidate', 'Verify the update folder', 'Upload the update folder\n']
     .map((name) => workflow.indexOf(`- name: ${name}`));
-  order[3] = workflow.indexOf('uses: actions/attest-build-provenance@v4');
+  order[3] = workflow.indexOf('uses: actions/attest-build-provenance@');
   assert.ok(order.every((index) => index > 0) && order.every((index, i) => i === 0 || index > order[i - 1]), `steps are in order: ${order}`);
   assert.ok(workflow.indexOf('-Mode hashes') < workflow.indexOf('- name: Fetch the pinned gh.exe'), 'the published trees are hashed before anything of setup exists');
 });
@@ -159,16 +175,60 @@ test('the workflow: trusted root from the pinned gh with a closing line feed, se
   assert.match(verify, /--mode verify --update \$update --no-pause/u);
   assert.match(verify, /commit=\$env:GITHUB_SHA /u);
   assert.match(verify, /run=\$env:GITHUB_RUN_ID /u);
-  assert.match(stepText('Upload the update folder'), /name: albera-update[\s\S]*path: albera-update[\s\S]*if-no-files-found: error/u);
+  assert.match(stepText('Upload the update folder\n'), /name: albera-update\n[\s\S]*path: albera-update[\s\S]*if-no-files-found: error/u);
 });
 
 test('the workflow keeps its existing guards: manual only, main only, one attest action, the narrow permissions', () => {
   assert.match(workflow, /^on:\s*\n\s+workflow_dispatch:\s*$/mu);
   assert.match(workflow, /^\s+if: github\.ref == 'refs\/heads\/main'\s*$/mu);
-  assert.deepEqual([...workflow.matchAll(/uses:\s*(actions\/attest\S*)/gu)].map((m) => m[1]), ['actions/attest-build-provenance@v4']);
+  assert.equal([...workflow.matchAll(/uses:\s*actions\/attest\S*/gu)].length, 1, 'one attest step');
   assert.deepEqual([...workflow.matchAll(/dotnet-version:\s*(\S+)/gu)].map((m) => m[1]), ['10.0.403']);
-  assert.equal(/id-token: write/u.test(workflow) && /attestations: write/u.test(workflow), true);
   assert.equal(/packages: write|contents: write|write-all/u.test(workflow), false);
+});
+
+/** The text of one job: from its "  <name>:" line to the next job (or the end). */
+function jobText(name) {
+  const start = workflow.indexOf('\n  ' + name + ':\n');
+  assert.ok(start > 0, 'job ' + name + ' exists');
+  const next = workflow.slice(start + 1).search(/\n  [a-z]+:\n/u);
+  return next === -1 ? workflow.slice(start) : workflow.slice(start, start + 1 + next);
+}
+
+test('the workflow is split so the code that builds never shares a job with the OIDC token: build (no token), attest (token, no npm / dotnet / node), verify (no token)', () => {
+  const [build, attest, verify] = ['build', 'attest', 'verify'].map(jobText).map((text) => text.replace(/^\s*#.*$/gmu, ''));
+  assert.deepEqual([...workflow.matchAll(/^  ([a-z]+):\n    name:/gmu)].map((m) => m[1]), ['build', 'attest', 'verify'], 'exactly these three jobs');
+  assert.equal(/id-token|attestations: write|attest-build-provenance/u.test(build), false, 'the build job cannot ask for a signature');
+  assert.equal(/id-token|attestations: write|attest-build-provenance/u.test(verify), false, 'the verify job has no token');
+  assert.match(attest, /id-token: write/u);
+  assert.match(attest, /attestations: write/u);
+  assert.equal(/\bnpm\b|\bnode\b|\bdotnet\b|setup-node|setup-dotnet|actions\/checkout|publish-windows/u.test(attest.replace(/^\s*(?:- )?name:.*$/gmu, '')), false, 'the attest job runs no npm, node or dotnet and checks no code out');
+  assert.match(build, /npm ci --ignore-scripts/u);
+  assert.equal(/npm ci(?! --ignore-scripts)/u.test(workflow), false, 'no lifecycle script runs at npm ci');
+  assert.match(attest, /needs: build/u);
+  assert.match(verify, /needs: attest/u);
+  assert.match(build, /outputs:\n      subjects: \$\{\{ steps\.subjects\.outputs\.subjects \}\}/u);
+  assert.match(attest, /SUBJECTS: \$\{\{ needs\.build\.outputs\.subjects \}\}/u, 'the hashes arrive through a job output, not the artifact');
+  const check = stepText('Check the downloaded files against the hashes');
+  assert.ok(workflow.indexOf('- name: Check the downloaded files') < workflow.indexOf('uses: actions/attest-build-provenance@'), 'files are compared before they are attested');
+  assert.match(check, /\$actual -ne \$expected\[\$path\]\) \{ throw/u);
+  assert.deepEqual([...check.matchAll(/^\s+'([^']+)',?$/gmu)].map((m) => m[1]), subjectList(), 'the compared files are the attested subjects');
+  const recorded = [...stepText('Record the SHA-256').matchAll(/^\s+'([^']+)',?$/gmu)].map((m) => m[1]);
+  assert.deepEqual(recorded, subjectList(), 'the build job reports exactly the attested subjects');
+  assert.equal(verify.includes('GH_TOKEN'), false);
+});
+
+test('every action is pinned to a commit SHA (the tag stays in the comment) and the bundle limit equals the policy limit of setup', () => {
+  const uses = [...workflow.matchAll(/^\s+(?:- )?uses:\s*(\S+)(.*)$/gmu)].map((m) => [m[1], m[2]]);
+  assert.ok(uses.length >= 8, 'the actions are found (false-safe)');
+  for (const [action, comment] of uses) {
+    assert.match(action, /^actions\/[a-z-]+@[0-9a-f]{40}$/u, action + ' is pinned to a commit');
+    assert.match(comment, /# v\d+$/u, action + ' names its tag in a comment');
+  }
+  const policy = read('src', 'runtime', 'windows-setup', 'AttestationPolicy.cs');
+  const maxEntries = /MaxEntries = (\d+)/u.exec(policy)?.[1];
+  assert.ok(maxEntries);
+  assert.match(stepText('Download the attestation bundles'), new RegExp("'--limit', '" + maxEntries + "'", 'u'));
+  assert.ok(stepText('Fetch the pinned gh.exe').includes("'download' = @('--repo', '--limit')"), 'the pinned gh is asked whether it has --limit');
 });
 
 test('the publish script reads its two inputs as files, compiles their SHA-256 in as constants, and has a local compile-only mode', () => {

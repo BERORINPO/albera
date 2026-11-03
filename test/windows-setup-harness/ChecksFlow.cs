@@ -47,6 +47,11 @@ internal static partial class Harness
         });
     }
 
+    /// <summary>`path` is `name` inside the tools folder of a work folder of this scenario.</summary>
+    private static bool IsToolsCopy(Scenario s, string path, string name) =>
+        Path.GetFileName(path) == name && Path.GetFileName(Path.GetDirectoryName(path)) == "tools"
+        && path.StartsWith(s.WorkRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
     private static bool Throws<T>(Action body) where T : Exception
     {
         try { body(); return false; }
@@ -63,7 +68,7 @@ internal static partial class Harness
             Equal(SetupLayout.AttestedFiles.Count, s.Runner.GhCalls.Count(), "gh calls");
             Equal(0, s.Runner.EngineCalls.Count(), "installer calls");
             Assert(s.Out.ToString().Contains($"ALBERA_SETUP_VERIFIED commit={Scenario.DefaultCommit} run={Scenario.DefaultRun} treeHash={s.TreeHash}"), "summary line missing: " + s.Out);
-            Assert(s.Runner.GhCalls.All(c => c.FileName == Path.Combine(s.SetupDirectory, "gh.exe") && c.Capture), "gh not started from the setup folder with captured output");
+            Assert(s.Runner.GhCalls.All(c => c.Capture && IsToolsCopy(s, c.FileName, "gh.exe") && IsToolsCopy(s, c.Arguments[6], "trusted_root.jsonl")), "gh and its trusted root are not the copies in the work folder's tools folder");
             Assert(!Directory.EnumerateFileSystemEntries(s.WorkRoot).Any(), "the work folder was left behind");
         });
 
@@ -140,7 +145,7 @@ internal static partial class Harness
             s.Write(SetupLayout.HostScript, "tampered script");   // the old bundle is named by the old hash
         }, "bundle_missing", ghCallsAtMost: SetupLayout.AttestedFiles.Count);
 
-        Check("flow: setup refuses to install when it is not running from C:\\Program Files\\Albera\\bin\\setup, but verify mode does not care", () =>
+        Check("flow: setup refuses to install when it is not running from C:\\Program Files\\Albera\\bin\\setup; verify mode skips only that location check and still runs gh from a checked copy", () =>
         {
             using var s = new Scenario { InstalledDirectory = @"C:\Program Files\Albera\bin\setup" };
             Equal(SetupFlow.Refused, SetupFlow.Run(s.Options(), s.Deps()), "install from elsewhere");
@@ -148,18 +153,66 @@ internal static partial class Harness
             Equal(0, s.Runner.Calls.Count, "nothing may be started");
             using var v = new Scenario { InstalledDirectory = @"C:\Program Files\Albera\bin\setup" };
             Equal(SetupFlow.Done, SetupFlow.Run(v.Options(SetupMode.Verify), v.Deps()), "verify from elsewhere");
+            Assert(v.Runner.GhCalls.All(c => IsToolsCopy(v, c.FileName, "gh.exe")), "verify mode ran the gh that sits beside setup");
+        });
+
+        foreach (var mode in new[] { SetupMode.Verify, SetupMode.Install })
+        {
+            Check($"flow ({mode}): the gh.exe and trusted root that run are checked COPIES; replacing the originals after the copy changes nothing", () =>
+            {
+                using var s = new Scenario();
+                var deps = s.Deps();
+                var fake = s.Runner.Gh;
+                var calls = 0;
+                s.Runner.Gh = spec =>
+                {
+                    calls++;
+                    Assert(IsToolsCopy(s, spec.FileName, "gh.exe") && IsToolsCopy(s, spec.Arguments[6], "trusted_root.jsonl"), "gh or its trusted root is not a copy in the work folder");
+                    Equal(PinnedTools.GhSha256, FileSystemChecks.Sha256(spec.FileName), "the gh that runs");
+                    Equal(PinnedTools.TrustedRootSha256, FileSystemChecks.Sha256(spec.Arguments[6]), "the trusted root gh reads");
+                    File.WriteAllText(Path.Combine(s.SetupDirectory, "gh.exe"), "evil gh swapped in after the copy");   // an agent in the owner's session replaces the originals
+                    File.WriteAllText(Path.Combine(s.SetupDirectory, "trusted_root.jsonl"), "{\"evil\":true}\n");
+                    return fake(spec);
+                };
+                s.Runner.Engine = _ => new ProcessResult(0, "", "", false, false);
+                Equal(SetupFlow.Done, SetupFlow.Run(s.Options(mode), deps), "exit code (" + s.Out + ")");
+                Equal(SetupLayout.AttestedFiles.Count, calls, "gh calls");
+                Assert(File.ReadAllText(Path.Combine(s.SetupDirectory, "gh.exe")).StartsWith("evil", StringComparison.Ordinal), "the test did not replace the original");
+            });
+        }
+
+        Check("flow (Verify): a gh.exe that is not the pinned one is refused in verify mode too, and never started", () =>
+        {
+            using var s = new Scenario();
+            File.WriteAllText(Path.Combine(s.SetupDirectory, "gh.exe"), "another gh");
+            Equal(SetupFlow.Refused, SetupFlow.Run(s.Options(SetupMode.Verify), s.Deps()), "exit code");
+            Assert(s.Out.ToString().Contains("REFUSED gh_pin_mismatch"), s.Out.ToString());
+            Equal(0, s.Runner.Calls.Count, "nothing may be started");
+        });
+
+        Check("flow: the work folder is made through the protected-DACL call and read back before anything is copied into it", () =>
+        {
+            using var s = new Scenario();
+            var order = new List<string>();
+            s.CreateWorkDirectory = path => { order.Add("create"); Directory.CreateDirectory(path); };
+            s.AdminProblems = path => { order.Add("readback"); return []; };
+            var deps = s.Deps();
+            var fake = s.Runner.Gh;
+            s.Runner.Gh = spec => { order.Add("gh"); return fake(spec); };
+            Equal(SetupFlow.Done, SetupFlow.Run(s.Options(SetupMode.Verify), deps), "exit code");
+            Equal("create,readback,gh", string.Join(",", order.Take(3)), "order");
         });
 
         Check("flow: setup refuses to install from a setup folder others can write or that passes through a link", () =>
         {
             using var s = new Scenario();
             var deps = s.Deps();
-            var writable = new SetupDeps { Runner = deps.Runner, Folders = deps.Folders, IsElevated = deps.IsElevated, SetupDirectory = deps.SetupDirectory, InstalledSetupDirectory = deps.InstalledSetupDirectory, WorkRoot = deps.WorkRoot, NewWorkName = deps.NewWorkName, PathHasReparsePoint = deps.PathHasReparsePoint, Out = deps.Out, AdministratorOnlyProblems = p => p == s.SetupDirectory ? ["S-1-5-32-545 may WriteData"] : [] };
+            var writable = new SetupDeps { Runner = deps.Runner, Folders = deps.Folders, IsElevated = deps.IsElevated, SetupDirectory = deps.SetupDirectory, InstalledSetupDirectory = deps.InstalledSetupDirectory, WorkRoot = deps.WorkRoot, NewWorkName = deps.NewWorkName, PathHasReparsePoint = deps.PathHasReparsePoint, Out = deps.Out, CreateWorkDirectory = deps.CreateWorkDirectory, AdministratorOnlyProblems = p => p == s.SetupDirectory ? ["S-1-5-32-545 may WriteData"] : [] };
             Equal(SetupFlow.Refused, SetupFlow.Run(s.Options(), writable), "writable setup folder");
             Assert(s.Out.ToString().Contains("setup_location") && s.Out.ToString().Contains("writable by others"), s.Out.ToString());
             using var t = new Scenario();
             var d = t.Deps();
-            var linked = new SetupDeps { Runner = d.Runner, Folders = d.Folders, IsElevated = d.IsElevated, SetupDirectory = d.SetupDirectory, InstalledSetupDirectory = d.InstalledSetupDirectory, WorkRoot = d.WorkRoot, NewWorkName = d.NewWorkName, AdministratorOnlyProblems = d.AdministratorOnlyProblems, Out = d.Out, PathHasReparsePoint = _ => true };
+            var linked = new SetupDeps { Runner = d.Runner, Folders = d.Folders, IsElevated = d.IsElevated, SetupDirectory = d.SetupDirectory, InstalledSetupDirectory = d.InstalledSetupDirectory, WorkRoot = d.WorkRoot, NewWorkName = d.NewWorkName, CreateWorkDirectory = d.CreateWorkDirectory, AdministratorOnlyProblems = d.AdministratorOnlyProblems, Out = d.Out, PathHasReparsePoint = _ => true };
             Equal(SetupFlow.Refused, SetupFlow.Run(t.Options(), linked), "link on the path");
             Assert(t.Out.ToString().Contains("link or junction"), t.Out.ToString());
             Equal(0, t.Runner.Calls.Count, "nothing may be started");

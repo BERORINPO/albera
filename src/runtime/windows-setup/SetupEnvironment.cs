@@ -5,7 +5,7 @@ internal sealed record KnownFolders(string SystemDirectory, string ProgramFiles,
 
 /// <summary>
 /// The environment of every child process is BUILT from this list, never filtered from setup's own: the owner's account can set values in HKCU\Environment that reach an
-/// elevated process (COR_PROFILER, CORECLR_ENABLE_PROFILING, DOTNET_STARTUP_HOOKS, __COMPAT_LAYER, PSModulePath, GH_* and so on). Nothing that is not named here is passed on.
+/// elevated process (COR_PROFILER, CORECLR_ENABLE_PROFILING, DOTNET_STARTUP_HOOKS, __COMPAT_LAYER, GH_* and so on). Nothing that is not named here is passed on. PSModulePath is named, with the system module folder as its only value, because when it is unset PowerShell fills it in from the owner's profile and registry.
 /// Every value is a constant or a path inside setup's own administrator-only work folder.
 /// </summary>
 internal static class SetupEnvironment
@@ -20,7 +20,10 @@ internal static class SetupEnvironment
         if (problems.Count > 0) throw new SetupRefusal("folders_not_standard", string.Join(", ", problems));
     }
 
-    /// <summary>SystemRoot, windir, ProgramFiles, ProgramData, a fresh administrator-only TEMP (and TMP, which Windows looks at first) and PATH = System32.</summary>
+    /// <summary>The module folder of Windows PowerShell 5.1. Without a value, 5.1 adds the user's own Documents\WindowsPowerShell\Modules and the user-scope PSModulePath from the registry.</summary>
+    public const string PowerShellModulePath = @"C:\Windows\System32\WindowsPowerShell\v1.0\Modules";
+
+    /// <summary>SystemRoot, windir, ProgramFiles, ProgramData, a fresh administrator-only TEMP (and TMP, which Windows looks at first), PATH = System32 and PSModulePath = the system module folder only.</summary>
     public static IReadOnlyDictionary<string, string> ForEngine(string tempDirectory) => Base(tempDirectory);
 
     private static SortedDictionary<string, string> Base(string tempDirectory)
@@ -35,6 +38,7 @@ internal static class SetupEnvironment
             ["TEMP"] = tempDirectory,
             ["TMP"] = tempDirectory,
             ["PATH"] = SetupLayout.SystemDirectory,
+            ["PSModulePath"] = PowerShellModulePath,
         };
     }
 

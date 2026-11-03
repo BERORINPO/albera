@@ -42,6 +42,8 @@ internal static class AttestationPolicy
         Require(certificate, "subjectAlternativeName", SetupLayout.CertificateIdentity);
         Require(certificate, "issuer", SetupLayout.OidcIssuer);
         Require(certificate, "sourceRepositoryURI", SetupLayout.RepositoryUrl);
+        Require(certificate, "sourceRepositoryIdentifier", SetupLayout.RepositoryId);
+        Require(certificate, "sourceRepositoryOwnerIdentifier", SetupLayout.OwnerId);
         Require(certificate, "sourceRepositoryRef", SetupLayout.SourceRef);
         Require(certificate, "githubWorkflowRepository", SetupLayout.Repository);
         Require(certificate, "githubWorkflowRef", SetupLayout.SourceRef);

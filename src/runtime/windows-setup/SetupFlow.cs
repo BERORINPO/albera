@@ -18,6 +18,9 @@ internal sealed class SetupDeps
     public required string InstalledSetupDirectory { get; init; }
     public required string WorkRoot { get; init; }
     public required Func<string> NewWorkName { get; init; }
+    /// <summary>Makes the work folder with its final protected DACL in one call (real: <see cref="FileSystemChecks.CreateAdministratorOnlyDirectory(string, string)"/>).</summary>
+    public required Action<string> CreateWorkDirectory { get; init; }
+    /// <summary>Reads a folder's DACL back: what, if anything, lets someone other than administrators write to it.</summary>
     public required Func<string, IReadOnlyList<string>> AdministratorOnlyProblems { get; init; }
     public required Func<string, bool> PathHasReparsePoint { get; init; }
     public required TextWriter Out { get; init; }
@@ -34,9 +37,10 @@ internal static class SetupFlow
         try
         {
             Preflight(options, deps);
-            work = CreateWork(deps);
-            RequireAdministratorOnly(deps, work);
-            var verified = VerifyUpdate(options, deps, work);
+            work = NewWorkPath(deps);   // held before the folder exists, so a half-made folder is still removed
+            CreateWork(deps, work);
+            var tools = CopyTools(deps, work);
+            var verified = VerifyUpdate(options, deps, work, tools);
             deps.Out.WriteLine($"ALBERA_SETUP_VERIFIED commit={verified.Commit} run={verified.RunId} treeHash={verified.TreeHash}");
             if (options.Mode == SetupMode.Verify) return Done;
             return StartEngine(options, deps, work, verified);
@@ -62,29 +66,27 @@ internal static class SetupFlow
 
     private static void Preflight(SetupOptions options, SetupDeps deps)
     {
-        Step(deps, "1/6", "checking this run: elevated, standard Windows folders, pinned tools");
+        Step(deps, "1/6", "checking this run: elevated, standard Windows folders, pinned tools, protected work folder");
         if (!deps.IsElevated()) throw new SetupRefusal("not_elevated", "setup must run elevated (UAC); it never elevates itself");
         SetupEnvironment.RequireStandardFolders(deps.Folders);
         if (!PinnedToolsCheck.IsConfigured) throw new SetupRefusal("pins_not_configured", "this build has no pinned gh.exe / trusted root hash (a CI build has)");
         if (options.Mode == SetupMode.Install) RequireInstalledLocation(deps);
-        RequireTool(deps, SetupLayout.GhExecutable, PinnedTools.GhSha256, "gh_pin_mismatch");
-        RequireTool(deps, SetupLayout.TrustedRoot, PinnedTools.TrustedRootSha256, "trusted_root_pin_mismatch");
     }
 
-    /// <summary>Only makes the folder: the caller holds its path before any check, so it is removed even when a check refuses.</summary>
-    private static string CreateWork(SetupDeps deps)
+    private static string NewWorkPath(SetupDeps deps) => Path.Combine(deps.WorkRoot, deps.NewWorkName());
+
+    /// <summary>
+    /// The folder is born with its protected DACL (owner Administrators, SYSTEM and Administrators only, nothing inherited), the DACL is read back, and only then are the subfolders made;
+    /// they inherit from it. Everything setup copies, runs or writes afterwards lives below this folder.
+    /// </summary>
+    private static void CreateWork(SetupDeps deps, string work)
     {
-        var work = Path.Combine(deps.WorkRoot, deps.NewWorkName());
         if (Directory.Exists(work) || File.Exists(work)) throw new SetupRefusal("work_exists", "the work folder already exists");
-        Directory.CreateDirectory(work);
-        return work;
-    }
-
-    private static void RequireAdministratorOnly(SetupDeps deps, string work)
-    {
+        Directory.CreateDirectory(Path.GetDirectoryName(work)!);
+        deps.CreateWorkDirectory(work);
         var problems = deps.AdministratorOnlyProblems(work);
         if (problems.Count > 0) throw new SetupRefusal("work_not_admin_only", string.Join("; ", problems));
-        foreach (var sub in new[] { "copy", "tmp", @"gh\config", @"gh\home", @"gh\local", @"gh\roaming" }) Directory.CreateDirectory(Path.Combine(work, sub));
+        foreach (var sub in new[] { "copy", "tmp", "tools", @"gh\config", @"gh\home", @"gh\local", @"gh\roaming" }) Directory.CreateDirectory(Path.Combine(work, sub));
     }
 
     /// <summary>Install mode only: setup runs from C:\Program Files\Albera\bin\setup, a folder only administrators can write, with no link on its path.</summary>
@@ -98,17 +100,32 @@ internal static class SetupFlow
         if (problems.Count > 0) throw new SetupRefusal("setup_location", $"the setup folder is writable by others: {string.Join("; ", problems)}");
     }
 
-    private static void RequireTool(SetupDeps deps, string relative, string pinned, string code)
+    private sealed record Tools(string Gh, string TrustedRoot);
+
+    /// <summary>
+    /// gh.exe and the trusted root are copied (stream copy) from beside setup into the work folder, the COPIES are hashed against the values compiled into setup, and the copies are what
+    /// runs and what gh reads. Beside setup the files are only a source: whatever happens to them after the copy does not matter. Verify and install both do this.
+    /// </summary>
+    private static Tools CopyTools(SetupDeps deps, string work)
     {
-        var path = Path.Combine(deps.SetupDirectory, Path.GetFileName(relative));
-        if (!File.Exists(path) || FileSystemChecks.IsReparsePoint(path)) throw new SetupRefusal(code, $"{Path.GetFileName(path)} is not a regular file beside setup");
-        var actual = FileSystemChecks.Sha256(path);
-        if (!string.Equals(actual, pinned, StringComparison.Ordinal)) throw new SetupRefusal(code, $"{Path.GetFileName(path)} is not the file this setup was built with");
-        if (relative == SetupLayout.TrustedRoot && !File.ReadAllBytes(path).AsSpan().EndsWith("\n"u8))
-            throw new SetupRefusal(code, "the trusted root must end with a line feed (gh skips an unterminated last line)");
+        var gh = CopyTool(deps, work, "gh.exe", PinnedTools.GhSha256, "gh_pin_mismatch");
+        var root = CopyTool(deps, work, "trusted_root.jsonl", PinnedTools.TrustedRootSha256, "trusted_root_pin_mismatch");
+        if (!File.ReadAllBytes(root).AsSpan().EndsWith("\n"u8)) throw new SetupRefusal("trusted_root_pin_mismatch", "the trusted root must end with a line feed (gh skips an unterminated last line)");
+        return new Tools(gh, root);
     }
 
-    private static Verified VerifyUpdate(SetupOptions options, SetupDeps deps, string work)
+    private static string CopyTool(SetupDeps deps, string work, string name, string pinned, string code)
+    {
+        var source = Path.Combine(deps.SetupDirectory, name);
+        if (!File.Exists(source) || FileSystemChecks.IsReparsePoint(source)) throw new SetupRefusal(code, $"{name} is not a regular file beside setup");
+        var copy = Path.Combine(work, "tools", name);
+        using (var input = File.OpenRead(source))
+        using (var output = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None)) input.CopyTo(output);
+        if (!string.Equals(FileSystemChecks.Sha256(copy), pinned, StringComparison.Ordinal)) throw new SetupRefusal(code, $"{name} is not the file this setup was built with");
+        return copy;
+    }
+
+    private static Verified VerifyUpdate(SetupOptions options, SetupDeps deps, string work, Tools tools)
     {
         var copyRoot = Path.Combine(work, "copy");
         Step(deps, "2/6", "copying the update folder into the administrator-only work folder");
@@ -116,7 +133,7 @@ internal static class SetupFlow
 
         Step(deps, "3/6", $"verifying {SetupLayout.AttestedFiles.Count} attested files offline with the bundled gh.exe");
         var ghEnvironment = SetupEnvironment.ForGh(Path.Combine(work, "tmp"), Path.Combine(work, "gh"));
-        var gh = new GhVerifier(deps.Runner, Path.Combine(deps.SetupDirectory, "gh.exe"), Path.Combine(deps.SetupDirectory, "trusted_root.jsonl"), ghEnvironment, work);
+        var gh = new GhVerifier(deps.Runner, tools.Gh, tools.TrustedRoot, ghEnvironment, work);
         var perFile = SetupLayout.AttestedFiles.Select(file => (file, facts: VerifyFile(gh, copyRoot, file))).ToList();
 
         Step(deps, "4/6", "checking that one run built all of them");

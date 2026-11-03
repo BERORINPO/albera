@@ -29,6 +29,8 @@
           "sourceRepositoryURI": "https://github.com/BERORINPO/albera",
           "sourceRepositoryDigest": "0123456789abcdef0123456789abcdef01234567",
           "sourceRepositoryRef": "refs/heads/main",
+          "sourceRepositoryIdentifier": "1424608761",
+          "sourceRepositoryOwnerIdentifier": "215606621",
           "buildTrigger": "workflow_dispatch",
           "runInvocationURI": "https://github.com/BERORINPO/albera/actions/runs/1234567/attempts/1"
         }

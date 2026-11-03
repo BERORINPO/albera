@@ -29,6 +29,7 @@ var deps = new SetupDeps
     InstalledSetupDirectory = SetupLayout.InstalledSetupDirectory,
     WorkRoot = SetupLayout.WorkRoot,
     NewWorkName = () => Guid.NewGuid().ToString("N")[..12],   // short on purpose: the installer script (Windows PowerShell 5.1) works with paths under the 260-character limit
+    CreateWorkDirectory = path => FileSystemChecks.CreateAdministratorOnlyDirectory(path),
     AdministratorOnlyProblems = FileSystemChecks.AdministratorOnlyProblems,
     PathHasReparsePoint = FileSystemChecks.PathHasReparsePoint,
     Out = Console.Out,

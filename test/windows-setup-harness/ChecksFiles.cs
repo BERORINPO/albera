@@ -93,6 +93,55 @@ internal static partial class Harness
             finally { Directory.Delete(folder); }
         });
 
+        Check("administrator-only rules: an allow rule that only applies to children (InheritOnly) still counts as write access; CREATOR OWNER and read-only rules do not", () =>
+        {
+            const string Users = "S-1-5-32-545";
+            var admins = FileSystemChecks.AdministratorsSid;
+            Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(Users, true, System.Security.AccessControl.FileSystemRights.Modify, InheritOnly: true)]).Count == 1, "an InheritOnly Modify rule for Users was not counted");
+            Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(Users, true, System.Security.AccessControl.FileSystemRights.WriteData, InheritOnly: false)]).Count == 1, "a plain write rule was not counted");
+            Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo("S-1-3-0", true, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: true)]).Count == 0, "CREATOR OWNER must not count");
+            Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(Users, true, System.Security.AccessControl.FileSystemRights.ReadAndExecute, InheritOnly: true)]).Count == 0, "a read-only InheritOnly rule must not count");
+            Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(Users, false, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: false)]).Count == 0, "a deny rule must not count");
+            Assert(FileSystemChecks.EvaluateRules(admins, [new AceInfo(FileSystemChecks.LocalSystemSid, true, System.Security.AccessControl.FileSystemRights.FullControl, InheritOnly: true)]).Count == 0, "SYSTEM must not count");
+            Assert(FileSystemChecks.EvaluateRules(Users, []).Count == 1, "an owner that is not an administrator was accepted");
+        });
+
+        Check("administrator-only rules: the generic write and generic all bits count as write access", () =>
+        {
+            foreach (var bits in new[] { 0x40000000, unchecked((int)0x10000000) })
+                Assert(FileSystemChecks.EvaluateRules(FileSystemChecks.AdministratorsSid, [new AceInfo("S-1-5-32-545", true, (System.Security.AccessControl.FileSystemRights)bits, InheritOnly: false)]).Count == 1, $"rights 0x{bits:x} were not counted");
+        });
+
+        Check("work folder: born with a protected DACL (owner as asked, exactly SYSTEM and Administrators with FullControl for the folder and its children, nothing inherited) and read back", () =>
+        {
+            var user = System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value;   // a non-elevated test may own things as itself only, so the owner is a parameter
+            var parent = TempFolder();
+            var path = Path.Combine(parent, "work");
+            try
+            {
+                FileSystemChecks.CreateAdministratorOnlyDirectory(path, user);
+                Assert(FileSystemChecks.ProtectedDaclProblems(path, user).Count == 0, string.Join("; ", FileSystemChecks.ProtectedDaclProblems(path, user)));
+                var security = new DirectoryInfo(path).GetAccessControl();
+                Assert(security.AreAccessRulesProtected, "the DACL inherits from the parent");
+                var rules = security.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier)).Cast<System.Security.AccessControl.FileSystemAccessRule>().ToList();
+                Equal(2, rules.Count, "rule count");
+                Equal("S-1-5-18,S-1-5-32-544", string.Join(",", rules.Select(r => r.IdentityReference.Value).OrderBy(v => v, StringComparer.Ordinal)), "who has a rule");
+                Assert(rules.All(r => r.AccessControlType == System.Security.AccessControl.AccessControlType.Allow && !r.IsInherited && r.FileSystemRights.HasFlag(System.Security.AccessControl.FileSystemRights.FullControl)
+                    && r.InheritanceFlags == (System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit)), "a rule is not FullControl with OI|CI");
+                Assert(FileSystemChecks.ProtectedDaclProblems(path, FileSystemChecks.AdministratorsSid).Count > 0, "a different owner than the folder's was accepted");
+            }
+            finally
+            {
+                if (Directory.Exists(path))
+                {
+                    var self = new DirectoryInfo(path).GetAccessControl();   // the owner may always change the DACL: give itself access to clean up
+                    self.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(new System.Security.Principal.SecurityIdentifier(user), System.Security.AccessControl.FileSystemRights.FullControl, System.Security.AccessControl.AccessControlType.Allow));
+                    new DirectoryInfo(path).SetAccessControl(self);
+                }
+                Directory.Delete(parent, true);
+            }
+        });
+
         Check("administrator-only check: C:\\Program Files itself (owner TrustedInstaller, users read-only) is accepted", () =>
         {
             var problems = FileSystemChecks.AdministratorOnlyProblems(SetupLayout.ProgramFilesDirectory);

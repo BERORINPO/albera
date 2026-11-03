@@ -52,6 +52,8 @@ internal sealed class Scenario : IDisposable
     public string TreeHash { get; private set; } = "";
     public bool Elevated { get; set; } = true;
     public Func<string, IReadOnlyList<string>> AdminProblems { get; set; } = _ => [];
+    /// <summary>Stands in for FileSystemChecks.CreateAdministratorOnlyDirectory (owning something as Administrators needs an elevated token).</summary>
+    public Action<string> CreateWorkDirectory { get; set; } = path => Directory.CreateDirectory(path);
     public string? InstalledDirectory { get; set; }
     /// <summary>The attestations the fake gh reports per attested file (relative path). Default: one, DefaultRun / DefaultCommit.</summary>
     public Func<string, IReadOnlyList<Attested>> Attestations { get; set; } = _ => [new Attested(DefaultRun, DefaultCommit)];
@@ -116,6 +118,7 @@ internal sealed class Scenario : IDisposable
             InstalledSetupDirectory = InstalledDirectory ?? SetupDirectory,
             WorkRoot = WorkRoot,
             NewWorkName = () => "work-" + Guid.NewGuid().ToString("N"),
+            CreateWorkDirectory = path => CreateWorkDirectory(path),
             AdministratorOnlyProblems = path => AdminProblems(path),
             PathHasReparsePoint = _ => false,
             Out = Out,
@@ -147,6 +150,8 @@ internal sealed class Scenario : IDisposable
             ["subjectAlternativeName"] = SetupLayout.CertificateIdentity,
             ["issuer"] = SetupLayout.OidcIssuer,
             ["sourceRepositoryURI"] = SetupLayout.RepositoryUrl,
+            ["sourceRepositoryIdentifier"] = SetupLayout.RepositoryId,
+            ["sourceRepositoryOwnerIdentifier"] = SetupLayout.OwnerId,
             ["sourceRepositoryRef"] = SetupLayout.SourceRef,
             ["githubWorkflowRepository"] = SetupLayout.Repository,
             ["githubWorkflowRef"] = SetupLayout.SourceRef,

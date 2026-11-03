@@ -4,20 +4,28 @@ using System.Security.Principal;
 
 namespace Albera.Setup;
 
-/// <summary>File hashing, link detection and the "only administrators can write here" check that every folder setup trusts has to pass.</summary>
+/// <summary>One allow or deny rule of a folder's DACL, reduced to what the administrator-only check looks at.</summary>
+internal sealed record AceInfo(string Sid, bool Allow, FileSystemRights Rights, bool InheritOnly);
+
+/// <summary>File hashing, link detection, the work folder's protected DACL and the "only administrators can write here" check that every folder setup trusts has to pass.</summary>
 internal static class FileSystemChecks
 {
+    public const string LocalSystemSid = "S-1-5-18";
+    public const string AdministratorsSid = "S-1-5-32-544";
+
     private static readonly HashSet<string> TrustedWriters = new(StringComparer.Ordinal)
     {
-        "S-1-5-18",   // LocalSystem
-        "S-1-5-32-544",   // BUILTIN\Administrators
+        LocalSystemSid,
+        AdministratorsSid,
         "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",   // NT SERVICE\TrustedInstaller
-        "S-1-3-0",   // CREATOR OWNER (a placeholder that only applies to children)
+        "S-1-3-0",   // CREATOR OWNER (a placeholder that is replaced by the creator when a child is made)
     };
 
+    /// <summary>Everything beyond read and execute. The generic bits are listed too: a rule written with GENERIC_WRITE or GENERIC_ALL is not translated by every writer of ACLs.</summary>
     private const FileSystemRights WriteLike =
         FileSystemRights.WriteData | FileSystemRights.AppendData | FileSystemRights.WriteExtendedAttributes | FileSystemRights.WriteAttributes
-        | FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
+        | FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership
+        | (FileSystemRights)0x40000000   /* GENERIC_WRITE */ | (FileSystemRights)0x10000000   /* GENERIC_ALL */;
 
     public static string Sha256(string path)
     {
@@ -42,24 +50,70 @@ internal static class FileSystemChecks
     }
 
     /// <summary>
-    /// What is wrong with a folder that setup would trust: its owner is not SYSTEM, Administrators or TrustedInstaller, or an allow rule that applies to the folder itself
-    /// lets anyone else write, delete, change permissions or take ownership. Empty = only administrators can change it.
+    /// What is wrong with a folder that setup would trust: its owner is not SYSTEM, Administrators or TrustedInstaller, or an allow rule lets anyone else write, delete, change permissions or
+    /// take ownership. Rules that only apply to children (InheritOnly) count too: a child made later would carry them, and a rule for CREATOR OWNER is the one exception because it
+    /// turns into the creator's own rule. Empty = only administrators can change it.
     /// </summary>
     public static IReadOnlyList<string> AdministratorOnlyProblems(string folder)
     {
-        var problems = new List<string>();
         var security = new DirectoryInfo(folder).GetAccessControl();
         var owner = security.GetOwner(typeof(SecurityIdentifier))?.Value ?? "(none)";
-        if (!TrustedWriters.Contains(owner)) problems.Add($"owner {owner} is not SYSTEM, Administrators or TrustedInstaller");
-        foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+        var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+            .Select(r => new AceInfo(r.IdentityReference.Value, r.AccessControlType == AccessControlType.Allow, r.FileSystemRights, (r.PropagationFlags & PropagationFlags.InheritOnly) != 0));
+        return EvaluateRules(owner, rules);
+    }
+
+    /// <summary>The pure part of <see cref="AdministratorOnlyProblems"/> (tests feed it rules directly).</summary>
+    public static IReadOnlyList<string> EvaluateRules(string ownerSid, IEnumerable<AceInfo> rules)
+    {
+        var problems = new List<string>();
+        if (!TrustedWriters.Contains(ownerSid)) problems.Add($"owner {ownerSid} is not SYSTEM, Administrators or TrustedInstaller");
+        foreach (var rule in rules)
         {
-            if (rule.AccessControlType != AccessControlType.Allow) continue;
-            if ((rule.PropagationFlags & PropagationFlags.InheritOnly) != 0) continue;
-            var sid = rule.IdentityReference.Value;
-            if (TrustedWriters.Contains(sid)) continue;
-            var rights = rule.FileSystemRights & WriteLike;
-            if (rights != 0) problems.Add($"{sid} may {rights}");
+            if (!rule.Allow || TrustedWriters.Contains(rule.Sid)) continue;
+            var rights = rule.Rights & WriteLike;
+            if (rights != 0) problems.Add($"{rule.Sid} may {rights}{(rule.InheritOnly ? " (inherited by children)" : "")}");
         }
+        return problems;
+    }
+
+    /// <summary>
+    /// Makes the folder with its final DACL in the same call, so there is no moment when it carries the parent's rules: owner Administrators, the DACL protected (nothing inherited from
+    /// the parent) and exactly two rules, SYSTEM and Administrators with FullControl for the folder and everything created in it. `ownerSid` is a parameter only so a test can use an account
+    /// it is allowed to own things as; setup always uses Administrators. The result is read back before it is trusted.
+    /// </summary>
+    public static void CreateAdministratorOnlyDirectory(string path, string ownerSid = AdministratorsSid)
+    {
+        var security = new DirectorySecurity();
+        security.SetOwner(new SecurityIdentifier(ownerSid));
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        var inherit = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+        foreach (var sid in new[] { LocalSystemSid, AdministratorsSid })
+            security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid), FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
+        new DirectoryInfo(path).Create(security);
+        var problems = ProtectedDaclProblems(path, ownerSid);
+        if (problems.Count > 0) throw new SetupRefusal("work_not_admin_only", string.Join("; ", problems));
+    }
+
+    /// <summary>Reads the DACL back: protected, and exactly SYSTEM and Administrators, FullControl, folder and children.</summary>
+    public static IReadOnlyList<string> ProtectedDaclProblems(string path, string ownerSid = AdministratorsSid)
+    {
+        var security = new DirectoryInfo(path).GetAccessControl();
+        var problems = new List<string>();
+        if (security.GetOwner(typeof(SecurityIdentifier))?.Value != ownerSid) problems.Add("owner is not the requested one");
+        if (!security.AreAccessRulesProtected) problems.Add("the DACL still inherits from the parent");
+        var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().ToList();
+        var inherit = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+        var wanted = new HashSet<string> { LocalSystemSid, AdministratorsSid };
+        foreach (var rule in rules)
+        {
+            var sid = rule.IdentityReference.Value;
+            var exact = rule.AccessControlType == AccessControlType.Allow && !rule.IsInherited && rule.InheritanceFlags == inherit && rule.PropagationFlags == PropagationFlags.None
+                && (rule.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl;
+            if (!wanted.Contains(sid) || !exact) problems.Add($"unexpected rule for {sid}");
+            else wanted.Remove(sid);
+        }
+        foreach (var missing in wanted) problems.Add($"no FullControl rule for {missing}");
         return problems;
     }
 }

@@ -14,6 +14,9 @@ internal static class SetupLayout
     public const string RepositoryUrl = "https://github.com/BERORINPO/albera";
     public const string WorkflowFile = "host-build-hashes.yml";
     public const string SourceRef = "refs/heads/main";
+    /// <summary>GitHub's numeric ids of BERORINPO/albera and of its owner (`gh api repos/BERORINPO/albera`, read 2026-11-03). A repository that is deleted and re-created under the same name gets another id.</summary>
+    public const string RepositoryId = "1424608761";
+    public const string OwnerId = "215606621";
     /// <summary>The certificate's Subject Alternative Name of an attestation made by that workflow on main.</summary>
     public const string CertificateIdentity = RepositoryUrl + "/.github/workflows/" + WorkflowFile + "@" + SourceRef;
     public const string OidcIssuer = "https://token.actions.githubusercontent.com";

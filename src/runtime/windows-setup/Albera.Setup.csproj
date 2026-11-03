@@ -21,5 +21,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="$(AlberaPinnedToolsSource)" Condition="'$(AlberaPinnedToolsSource)' != ''" />
+    <!-- DEPENDENTLOADFLAG 0x800 = LOAD_LIBRARY_SEARCH_SYSTEM32: a DLL the exe loads later by name is looked up in System32 only, never in the exe's folder or the current folder. Only used by the NativeAOT link. -->
+    <LinkerArg Include="/DEPENDENTLOADFLAG:0x800" />
   </ItemGroup>
 </Project>

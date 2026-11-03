@@ -296,7 +296,7 @@ test('the hash workflow: manual only, main only, prints the tree hash and one sc
   assert.match(yml, /'albera-host\.ps1', 'albera-host-lib\.ps1'/u);
   assert.match(yml, /Write-Host "commit=\$env:GITHUB_SHA"/u);
   assert.match(yml, /Write-Host "ref=\$env:GITHUB_REF"/u);
-  assert.match(yml, /upload-artifact@v4/u);
+  assert.match(yml, /upload-artifact@[0-9a-f]{40}/u);
   const doc = readFileSync(path.join(root, 'docs', 'architecture', 'host-install.md'), 'utf8');
   assert.match(doc, /branch badge under the run title says `main`/u);
   assert.match(doc, /merge commit of PR #148/u);
@@ -339,12 +339,15 @@ test('the hash workflow signs build provenance for the three exe files, the two 
   const yml = readFileSync(path.join(root, '.github', 'workflows', 'host-build-hashes.yml'), 'utf8');
   assert.deepEqual(permissionBlocks(yml), [
     { indent: 0, entries: { contents: 'read' } },
+    { indent: 4, entries: { contents: 'read' } },
     { indent: 4, entries: { contents: 'read', 'id-token': 'write', attestations: 'write' } },
-  ], 'workflow level stays read-only; the job adds only an OIDC token and the attestations API (no packages, artifact-metadata, write-all ...)');
+    { indent: 4, entries: { contents: 'read' } },
+  ], 'workflow level stays read-only; only the attest job (no npm, dotnet or node) has an OIDC token and the attestations API; the build and verify jobs have none (no packages, artifact-metadata, write-all ...)');
   assert.match(yml, /^\s+if: github\.ref == 'refs\/heads\/main'\s*$/mu, 'the job still refuses any branch but main');
   const uses = [...yml.matchAll(/uses:\s*(actions\/attest\S*)/gu)].map((m) => m[1]);
-  assert.deepEqual(uses, ['actions/attest-build-provenance@v4'], 'one attest step, referenced like the other actions (owner/name@major)');
-  const attest = yml.indexOf('actions/attest-build-provenance@v4');
+  assert.equal(uses.length, 1, 'one attest step');
+  assert.match(uses[0], /^actions\/attest-build-provenance@[0-9a-f]{40}$/u, 'pinned to a commit SHA like every other action');
+  const attest = yml.indexOf('actions/attest-build-provenance@');
   for (const before of ['npm run build:windows-broker', 'npm run build:approval-authority', '-Mode hashes', 'build-hashes.json", $json[0]']) assert.ok(yml.indexOf(before) > 0 && yml.indexOf(before) < attest, `the attest step runs after: ${before}`);
   assert.doesNotMatch(yml, /push-to-registry|create-storage-record|subject-digest|subject-checksums/u);
   const block = /subject-path: \|\n((?: {12}\S.*\n)+)/u.exec(yml);
