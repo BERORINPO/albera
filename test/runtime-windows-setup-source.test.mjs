@@ -34,7 +34,14 @@ test('the setup project is NativeAOT, BCL only, asks for administrator and canno
   const manifest = read('src', 'runtime', 'windows-setup', 'app.manifest');
   assert.match(manifest, /requestedExecutionLevel level="requireAdministrator" uiAccess="false"/u);
   const lock = JSON.parse(read('src', 'runtime', 'windows-setup', 'packages.lock.json'));
-  assert.deepEqual(Object.values(lock.dependencies).map((framework) => Object.keys(framework)), [[], []], 'the lock file pins no NuGet package');
+  // The only packages are the ones the SDK adds for a NativeAOT publish (the compiler and the linker tasks), each pinned to one version with its SHA-512.
+  assert.deepEqual(Object.values(lock.dependencies).map((framework) => Object.keys(framework).sort()), [
+    ['Microsoft.DotNet.ILCompiler', 'Microsoft.NET.ILLink.Tasks'],
+    ['Microsoft.DotNet.ILCompiler', 'runtime.win-x64.Microsoft.DotNet.ILCompiler'],
+  ], 'the lock file pins only the NativeAOT toolchain');
+  for (const framework of Object.values(lock.dependencies)) {
+    for (const entry of Object.values(framework)) assert.match(entry.contentHash, /^[A-Za-z0-9+/]{86}==$/, 'every package carries its SHA-512');
+  }
   assert.equal(readdirSync(directory).some((f) => /^(?:Directory\.|global\.json|nuget\.config)/iu.test(f)), false, 'no ambient MSBuild or NuGet file');
 });
 
