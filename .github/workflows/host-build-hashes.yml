@@ -177,7 +177,7 @@ jobs:
           if-no-files-found: error
 
   attest:
-    name: Attest the files and collect the bundles (no npm, dotnet or node)
+    name: Attest the files (no npm, dotnet or node; no file from the build is run)
     needs: build
     if: github.ref == 'refs/heads/main'
     runs-on: windows-latest
@@ -221,6 +221,7 @@ jobs:
             if ($actual -ne $expected[$path]) { throw "$path : downloaded $actual, the build job reported $($expected[$path])" }
           }
           Write-Host "all $($required.Count) files match the hashes the build job reported"
+      # Nothing from the build is RUN in this job: it only hashes the downloaded files and hands them to the attest action. (The token-free verify job below runs gh and setup.)
       # Build provenance (docs/architecture/host-install.md "Checking a build with gh attestation verify"): signs "these bytes came from this workflow on this commit of this repository".
       # The exe files are only the self-contained apphost launchers (the code is in the DLLs next to them), so build-hashes.json, which lists the hash of every published file and the
       # tree hash, is attested too. albera-setup.exe, gh.exe and the trusted root are attested so that the NEXT update can carry them; the running setup trusts its own gh.exe by the hash compiled into it.
@@ -237,6 +238,51 @@ jobs:
             src/runtime/windows-setup/bin/Release/net10.0-windows/win-x64/publish/albera-setup.exe
             setup-input/gh.exe
             setup-input/trusted_root.jsonl
+  verify:
+    name: Collect the bundles and verify the update folder with the built albera-setup.exe (no OIDC token)
+    needs: [build, attest]
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    # No id-token: this job runs the gh.exe and the albera-setup.exe that the build made (their hashes were compared with the build job's report, and the attestation covers them), so it
+    # must not be able to ask for a signature. attestations: read is for `gh attestation download` with the job token.
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093   # v4
+        with:
+          name: attest-input
+      - name: Check the downloaded files against the hashes the build job reported
+        shell: powershell
+        env:
+          SUBJECTS: ${{ needs.build.outputs.subjects }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = [ordered]@{}
+          foreach ($line in ($env:SUBJECTS -split "`n")) {
+            if ($line.Trim().Length -eq 0) { continue }
+            if ($line -cnotmatch '^([0-9a-f]{64})  (\S+)$') { throw "unexpected line in the build job's list: $line" }
+            $expected[$Matches[2]] = $Matches[1]
+          }
+          $required = @(
+            'src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker.exe',
+            'src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish/albera-approval-authority.exe',
+            'src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker-pipe-client.exe',
+            'scripts/host/albera-host.ps1',
+            'scripts/host/albera-host-lib.ps1',
+            'build-hashes.json',
+            'src/runtime/windows-setup/bin/Release/net10.0-windows/win-x64/publish/albera-setup.exe',
+            'setup-input/gh.exe',
+            'setup-input/trusted_root.jsonl'
+          )
+          if ($expected.Count -ne $required.Count) { throw "the build job reported $($expected.Count) files, expected $($required.Count)" }
+          foreach ($path in $required) {
+            if (-not $expected.Contains($path)) { throw "the build job did not report $path" }
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+            if ($actual -ne $expected[$path]) { throw "$path : downloaded $actual, the build job reported $($expected[$path])" }
+          }
+          Write-Host "all $($required.Count) files match the hashes the build job reported"
       # `gh attestation download` writes sha256-<digest>.jsonl (every attestation GitHub holds for those bytes, newest first, at most --limit of them) into the current folder;
       # setup looks a file's bundle up by that name. The limit equals AttestationPolicy.MaxEntries in setup, which refuses more.
       - name: Download the attestation bundles
@@ -295,27 +341,6 @@ jobs:
           Copy-Item -LiteralPath 'build-hashes.json' -Destination $update
           Copy-Item -LiteralPath 'scripts\host\albera-host.ps1', 'scripts\host\albera-host-lib.ps1' -Destination (Join-Path $update 'repo\scripts\host')
           Copy-Item -LiteralPath 'src\runtime\windows-setup\bin\Release\net10.0-windows\win-x64\publish\albera-setup.exe', 'setup-input\gh.exe', 'setup-input\trusted_root.jsonl' -Destination (Join-Path $update 'setup')
-      - name: Upload the update folder candidate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4
-        with:
-          name: albera-update-candidate
-          path: albera-update
-          retention-days: 3
-          if-no-files-found: error
-
-  verify:
-    name: Verify the update folder with the built albera-setup.exe (offline, no token)
-    needs: attest
-    if: github.ref == 'refs/heads/main'
-    runs-on: windows-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093   # v4
-        with:
-          name: albera-update-candidate
-          path: albera-update
       # The real check, with the real NativeAOT binary and the real bundles: the same code path the owner's run takes, in verify mode. The run id and commit it prints must be this run's.
       - name: Verify the update folder
         shell: powershell

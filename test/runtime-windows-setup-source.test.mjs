@@ -150,7 +150,7 @@ test('the workflow pins gh by version and SHA-256, fetches nothing else, and run
   // every flag setup passes to gh is checked against the pinned gh's own --help
   const verifyFlags = /'verify' = @\(([^)]*)\)/u.exec(fetchStep)?.[1].match(/--[a-z-]+/gu) ?? [];
   for (const flag of code['GhVerifier.cs'].match(/"--[a-z-]+"/gu).map((f) => f.slice(1, -1))) assert.ok(verifyFlags.includes(flag), `${flag} is checked against gh's help`);
-  const order = ['Fetch the pinned gh.exe', 'Make the Sigstore trusted root', 'Build albera-setup.exe', 'Attest build provenance', 'Download the attestation bundles', 'Assemble the update folder', 'Upload the update folder candidate', 'Verify the update folder', 'Upload the update folder\n']
+  const order = ['Fetch the pinned gh.exe', 'Make the Sigstore trusted root', 'Build albera-setup.exe', 'Attest build provenance', 'Download the attestation bundles', 'Assemble the update folder', 'Verify the update folder', 'Upload the update folder\n']
     .map((name) => workflow.indexOf(`- name: ${name}`));
   order[3] = workflow.indexOf('uses: actions/attest-build-provenance@');
   assert.ok(order.every((index) => index > 0) && order.every((index, i) => i === 0 || index > order[i - 1]), `steps are in order: ${order}`);
@@ -205,7 +205,8 @@ test('the workflow is split so the code that builds never shares a job with the 
   assert.match(build, /npm ci --ignore-scripts/u);
   assert.equal(/npm ci(?! --ignore-scripts)/u.test(workflow), false, 'no lifecycle script runs at npm ci');
   assert.match(attest, /needs: build/u);
-  assert.match(verify, /needs: attest/u);
+  assert.match(verify, /needs: \[build, attest\]/u);
+  assert.match(verify, /attestations: read/u);
   assert.match(build, /outputs:\n      subjects: \$\{\{ steps\.subjects\.outputs\.subjects \}\}/u);
   assert.match(attest, /SUBJECTS: \$\{\{ needs\.build\.outputs\.subjects \}\}/u, 'the hashes arrive through a job output, not the artifact');
   const check = stepText('Check the downloaded files against the hashes');
@@ -214,7 +215,15 @@ test('the workflow is split so the code that builds never shares a job with the 
   assert.deepEqual([...check.matchAll(/^\s+'([^']+)',?$/gmu)].map((m) => m[1]), subjectList(), 'the compared files are the attested subjects');
   const recorded = [...stepText('Record the SHA-256').matchAll(/^\s+'([^']+)',?$/gmu)].map((m) => m[1]);
   assert.deepEqual(recorded, subjectList(), 'the build job reports exactly the attested subjects');
-  assert.equal(verify.includes('GH_TOKEN'), false);
+  // The job that holds the OIDC token runs nothing the build made: no gh, no setup, no node, no token for a downloaded program.
+  assert.equal(/GH_TOKEN|Start-Process|attestation download|\.exe\s+(?:--|attestation)|&\s*\$|&\s*\(|\bInvoke-Expression\b|\biex\b|\bcmd\b/u.test(attest), false, 'the attest job starts no program');
+  assert.deepEqual([...attest.matchAll(/^\s+- name: (.+)$/gmu)].map((m) => m[1]), ['Check the downloaded files against the hashes the build job reported', 'Attest build provenance'], 'the attest job has exactly these steps');
+  assert.deepEqual([...attest.matchAll(/^\s+- uses: (\S+)/gmu)].map((m) => m[1].split('@')[0]), ['actions/download-artifact'], 'and only the download action besides the attest action');
+  // the token-free job is the one that downloads the bundles with the job token and runs gh / setup
+  assert.match(verify, /Download the attestation bundles[\s\S]*GH_TOKEN/u);
+  assert.match(verify, /Verify the update folder[\s\S]*albera-setup\.exe/u);
+  assert.equal(verify.includes('Check the downloaded files'), true, 'the verify job compares the files it will run with the build job\'s report too');
+  assert.equal([...workflow.matchAll(/GH_TOKEN/gu)].length, 1, 'the job token reaches exactly one step');
 });
 
 test('every action is pinned to a commit SHA (the tag stays in the comment) and the bundle limit equals the policy limit of setup', () => {

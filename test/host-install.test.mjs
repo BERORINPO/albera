@@ -341,8 +341,8 @@ test('the hash workflow signs build provenance for the three exe files, the two 
     { indent: 0, entries: { contents: 'read' } },
     { indent: 4, entries: { contents: 'read' } },
     { indent: 4, entries: { contents: 'read', 'id-token': 'write', attestations: 'write' } },
-    { indent: 4, entries: { contents: 'read' } },
-  ], 'workflow level stays read-only; only the attest job (no npm, dotnet or node) has an OIDC token and the attestations API; the build and verify jobs have none (no packages, artifact-metadata, write-all ...)');
+    { indent: 4, entries: { contents: 'read', attestations: 'read' } },
+  ], 'workflow level stays read-only; only the attest job (no npm, dotnet or node, runs nothing the build made) has an OIDC token; the build job has none and the verify job (which runs gh and setup) may only read attestations (no packages, artifact-metadata, write-all ...)');
   assert.match(yml, /^\s+if: github\.ref == 'refs\/heads\/main'\s*$/mu, 'the job still refuses any branch but main');
   const uses = [...yml.matchAll(/uses:\s*(actions\/attest\S*)/gu)].map((m) => m[1]);
   assert.equal(uses.length, 1, 'one attest step');
