@@ -27,3 +27,12 @@ const postJson = (url, payload) => call(url, {
 export const getState = (since) => call(stateUrl(since));
 export const decide = (cardId, choiceId) => postJson('api/decide', { cardId, choiceId });
 export const unlock = (code) => postJson('api/session', { bootstrapCode: String(code ?? '') });
+
+/**
+ * The one-time code in a page address of the form `#b=<code>` ("Open ALBERA" puts it there; a fragment is never sent to the host).
+ * Returns '' when the fragment is anything else, so only a plain code is ever posted.
+ */
+export function bootstrapFromHash(hash) {
+  const match = (typeof hash === 'string' ? hash : '').match(/^#b=([A-Za-z0-9_-]{16,128})$/);
+  return match ? match[1] : '';
+}

@@ -297,7 +297,7 @@ test('host: with the Hyper-V checker the password never reaches the ledger, even
   const origin = new URL(address.url).origin;
   const session = await fetch(`${address.url}api/session`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ bootstrapCode: address.bootstrapCode }) });
   const cookie = session.headers.get('set-cookie').split(';')[0];
-  const state = await (await fetch(`${address.url}api/state?since=0`, { headers: { Cookie: cookie } })).json();
+  const state = await (await fetch(`${address.url}api/state?since=0`, { headers: { Cookie: cookie, 'Sec-Fetch-Site': 'same-origin' } })).json();
   assert.ok(state.events.every(validEvent));
   assert.deepEqual(state.events.filter((ev) => ev.entry?.code === 'check_done').map((ev) => ev.entry.params.verdict), ['failed', 'unavailable', 'unavailable']);
   for (const text of [JSON.stringify(state), JSON.stringify(journal.entries)]) assert.ok(!text.includes(SECRET));
@@ -406,7 +406,7 @@ async function stateVm(host, vmId) {
   const origin = new URL(address.url).origin;
   const session = await fetch(`${address.url}api/session`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ bootstrapCode: address.bootstrapCode }) });
   const cookie = session.headers.get('set-cookie').split(';')[0];
-  return async () => (await (await fetch(`${address.url}api/state?since=0`, { headers: { Cookie: cookie } })).json()).vms.find((vm) => vm.vmId === vmId);
+  return async () => (await (await fetch(`${address.url}api/state?since=0`, { headers: { Cookie: cookie, 'Sec-Fetch-Site': 'same-origin' } })).json()).vms.find((vm) => vm.vmId === vmId);
 }
 
 test('host state: each VM carries its check (checking, then the verdict) until its next run starts', async (t) => {

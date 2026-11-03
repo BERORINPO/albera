@@ -97,7 +97,7 @@ async function start(t, { vms = VMS, broker = createMockDesktopBroker(screen), f
     assert.equal(res.status, 200);
     return res.headers.get('set-cookie').split(';')[0];
   };
-  const get = (p, cookie, init = {}) => fetch(`${address.url}${p}`, { ...init, headers: { ...(cookie ? { Cookie: cookie } : {}), ...init.headers } });
+  const get = (p, cookie, init = {}) => fetch(`${address.url}${p}`, { ...init, headers: { 'Sec-Fetch-Site': 'same-origin', ...(cookie ? { Cookie: cookie } : {}), ...init.headers } });
   const decide = (cookie, body, headers = {}) => fetch(`${address.url}api/decide`, {
     method: 'POST', headers: { ...jsonHeaders, ...(cookie ? { Cookie: cookie } : {}), ...headers },
     body: typeof body === 'string' ? body : JSON.stringify(body),
