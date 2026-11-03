@@ -7,7 +7,7 @@ using System.Runtime.InteropServices;
 //     class name from the table plus a config-derived, format-checked VM GUID;
 //   * the caller names a `computerId` only; the VM is resolved from the config by `Name` (the GUID), never by a display name;
 //   * every refusal or failure is one fixed reason word (DesktopReason). Exception text and WMI strings never leave this file.
-// Nothing calls this yet: the desktop pipe that will is a later change (ADR-002 amendment, implementation order 4).
+// Only the desktop pipe (DesktopPipe.cs) calls this: Capture from a view or act session, Input from an act session that holds the current lease (DesktopLeases.cs).
 
 /// <summary>One configured room computer: the contract id the caller uses and the lowercase GUID (`Msvm_ComputerSystem.Name`) of its VM.</summary>
 internal sealed record ComputerBinding(string ComputerId, string VmId)
@@ -239,9 +239,27 @@ internal sealed class HyperVDesktop
         }
         catch (Exception)
         {
-            ReleaseHeld(gate, keyboard, mouse, heldKeys, heldButtons);
+            // A key left pressed in the guest keeps typing. When a release fails on this connection (the RPC may be gone), what is still held is released once more on a NEW one.
+            (List<uint> stuckKeys, List<uint> stuckButtons) = ReleaseHeld(gate, keyboard, mouse, heldKeys, heldButtons);
+            if (stuckKeys.Count + stuckButtons.Count > 0) ReleaseOnNewConnection(computer, stuckKeys, stuckButtons);
             throw;
         }
+    }
+
+    // One retry, no more, and best effort: if the new connection cannot be made or the release fails again there is nothing left to try, and the caller reports the original failure.
+    private void ReleaseOnNewConnection(ComputerBinding computer, List<uint> keys, List<uint> buttons)
+    {
+        try
+        {
+            using IWmiConnection? connection = _connect();
+            if (connection is null) return;
+            WmiGate gate = new(connection);
+            using IWmiInstance? vm = gate.Find("Msvm_ComputerSystem", computer.VmId);
+            using IWmiInstance? keyboard = vm is null ? null : gate.Associated(vm, "Msvm_Keyboard");
+            using IWmiInstance? mouse = vm is null ? null : gate.Associated(vm, "Msvm_SyntheticMouse");
+            if (keyboard is not null && mouse is not null) _ = ReleaseHeld(gate, keyboard, mouse, keys, buttons);
+        }
+        catch (Exception) { /* see above */ }
     }
 
     // A key or button is recorded BEFORE the call that presses it: releasing something that was never pressed is harmless, leaving something pressed is not.
@@ -268,19 +286,24 @@ internal sealed class HyperVDesktop
         if (outcome.ReturnValue != 0) throw new DesktopRefusal(DesktopReason.InputFailed);
     }
 
-    // Buttons first, then keys, each in reverse order of pressing. A failing release must not hide the original failure or stop the others.
-    private static void ReleaseHeld(WmiGate gate, IWmiInstance keyboard, IWmiInstance mouse, List<uint> heldKeys, List<uint> heldButtons)
+    // Buttons first, then keys, each in reverse order of pressing. A failing release must not hide the original failure or stop the others; the ones that failed are returned
+    // (oldest first, like the lists that went in) so that the caller can try them once more.
+    private static (List<uint> Keys, List<uint> Buttons) ReleaseHeld(WmiGate gate, IWmiInstance keyboard, IWmiInstance mouse, List<uint> heldKeys, List<uint> heldButtons)
     {
+        List<uint> stuckKeys = [], stuckButtons = [];
         for (int i = heldButtons.Count - 1; i >= 0; i--)
         {
             try { Send(gate, mouse, "SetButtonState", ("ButtonIndex", heldButtons[i]), ("IsDown", false)); }
-            catch (Exception) { /* best effort, see above */ }
+            catch (Exception) { stuckButtons.Add(heldButtons[i]); }
         }
         for (int i = heldKeys.Count - 1; i >= 0; i--)
         {
             try { Send(gate, keyboard, "ReleaseKey", ("KeyCode", heldKeys[i])); }
-            catch (Exception) { /* best effort, see above */ }
+            catch (Exception) { stuckKeys.Add(heldKeys[i]); }
         }
+        stuckKeys.Reverse();
+        stuckButtons.Reverse();
+        return (stuckKeys, stuckButtons);
     }
 }
 

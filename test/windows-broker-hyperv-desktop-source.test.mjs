@@ -107,13 +107,19 @@ test('input releases held buttons then keys in reverse on failure, and records a
   assert.match(apply, /case "up": Send\([^;]+\); heldButtons\.Remove\(/u, 'removed after it succeeded');
   assert.match(apply, /case "release": Send\([^;]+\); heldKeys\.Remove\(/u);
   const send = desktop.slice(desktop.indexOf('private DesktopResult SendSteps('), desktop.indexOf('private void Apply('));
-  assert.match(send, /catch \(Exception\)\s*\{\s*ReleaseHeld\(gate, keyboard, mouse, heldKeys, heldButtons\);\s*throw;/u);
-  const releasing = desktop.slice(desktop.indexOf('private static void ReleaseHeld('), desktop.indexOf('internal sealed class ComWmiConnection'));
+  assert.match(send, /catch \(Exception\)\s*\{\s*\(List<uint> stuckKeys, List<uint> stuckButtons\) = ReleaseHeld\(gate, keyboard, mouse, heldKeys, heldButtons\);\s*if \(stuckKeys\.Count \+ stuckButtons\.Count > 0\) ReleaseOnNewConnection\(computer, stuckKeys, stuckButtons\);\s*throw;/u,
+    'what could not be released is released once more on a new connection, then the original failure goes on');
+  const retry = desktop.slice(desktop.indexOf('private void ReleaseOnNewConnection('), desktop.indexOf('private void Apply('));
+  assert.equal([...retry.matchAll(/_connect\(\)/gu)].length, 1, 'one new connection');
+  assert.equal([...retry.matchAll(/ReleaseHeld\(/gu)].length, 1, 'one release pass on it, never a loop');
+  assert.equal(/\b(?:for|while|foreach)\b/u.test(retry), false, 'and nothing that could try again');
+  assert.match(retry, /catch \(Exception\) \{\s*\}/u, 'best effort: nothing escapes (the caller reports the original failure)');
+  const releasing = desktop.slice(desktop.indexOf('private static (List<uint> Keys, List<uint> Buttons) ReleaseHeld('), desktop.indexOf('internal sealed class ComWmiConnection'));
   assert.ok(releasing.indexOf('heldButtons.Count - 1') < releasing.indexOf('heldKeys.Count - 1'), 'buttons before keys');
   assert.equal([...releasing.matchAll(/for \(int i = \w+\.Count - 1; i >= 0; i--\)/gu)].length, 2, 'newest first');
 });
 
-test('only the desktop pipe calls the adapter, and only for capture: nothing in the Broker can send input yet, and the claim path never sees the adapter or the computers', () => {
+test('only the desktop pipe calls the adapter, for capture and (act sessions) input: the claim path never sees the adapter or the computers', () => {
   const desktopPipe = ['DesktopPipe.cs', 'DesktopProtocol.cs'];
   for (const [name, code] of others.filter(([file]) => file !== 'PngEncoder.cs' && !desktopPipe.includes(file))) {
     assert.equal(/HyperVDesktop|ComWmi|WmiGate|DesktopAllowlist|DesktopLimits|PngEncoder|IWmi/u.test(code), false, `${name} does not reference the adapter`);
@@ -122,11 +128,12 @@ test('only the desktop pipe calls the adapter, and only for capture: nothing in 
   assert.match(sources['ServiceConfig.cs'], /ComputerBinding/u);
   const claimPath = [sources['Program.cs'], sources['ServiceHost.cs'], sources['ServiceLoop.cs'], sources['BrokerRequests.cs']].join('\n');
   assert.equal(/\bComputers\b|ComputerBinding/u.test(claimPath), false, 'the claim pipe and its request handlers do not read the computers');
-  // The desktop pipe: one construction of the adapter, one call (Capture), no Input and no input step type. `act` is a later change.
+  // The desktop pipe: one construction of the adapter, two calls (Capture, and Input from an act session that holds the lease), and the step type only where the request is read.
   assert.equal([...sources['DesktopPipe.cs'].matchAll(/new HyperVDesktop\(config\.Computers, ComWmiConnection\.TryConnect\)/gu)].length, 1, 'the real WMI connection, no seam');
-  assert.deepEqual([...sources['DesktopPipe.cs'].matchAll(/_desktop\.(\w+)\(/gu)].map((m) => m[1]), ['Capture']);
-  assert.equal(allCode.match(/\.Input\(/gu), null, 'no caller of the adapter\'s Input in the Broker');
-  assert.equal(/DesktopStep|AreValidSteps/u.test(Object.entries(sources).filter(([name]) => name !== 'HyperVDesktop.cs').map(([, code]) => code).join('\n')), false, 'no input step type outside the adapter');
+  assert.deepEqual([...sources['DesktopPipe.cs'].matchAll(/_desktop\.(\w+)\(/gu)].map((m) => m[1]), ['Capture', 'Input']);
+  assert.equal(allCode.match(/\.Input\(/gu).length, 1, 'one caller of the adapter\'s Input in the Broker');
+  const stepUsers = Object.entries(sources).filter(([, code]) => /DesktopStep|AreValidSteps/u.test(code)).map(([name]) => name).sort();
+  assert.deepEqual(stepUsers, ['DesktopPipe.cs', 'DesktopProtocol.cs', 'HyperVDesktop.cs'], 'the input step type: the adapter, the grammar that reads it, and the pipe that passes it on');
 });
 
 test('service config: optional computers key, at most 8 entries of exactly { computerId, vmId }, ids and GUIDs distinct, one fixed reason word', () => {

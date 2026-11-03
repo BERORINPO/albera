@@ -24,6 +24,7 @@ using Albera.BrokerContract;
 // An exact duplicate (same operationId, same receipt bytes and signature as a recorded claim) skips the challenge checks, because its challenge was spent (or
 // wiped by a restart) when it was first claimed; it still passes the signature, the clock fence and every time / issuer / digest check, and answers with the
 // recorded outcome plus `"replayed": true`. A claim reply names the action that was claimed (the receipt's own, which Validate has bound to the DTO), on a replay too.
+// A task.start claim that is newly recorded (never a replay) also creates the room's desktop lease in Broker memory (DesktopLeases.cs); the reply and the journal are unchanged by it.
 internal static partial class Program
 {
     private const string BrokerAudience = "albera-host-broker";
@@ -136,6 +137,8 @@ internal static partial class Program
             (string)r["actionDigest"], generation, requestDigest, challengeId, epoch, computerId, (long)r["iat"]));
         if (kind == Journal.ClaimKind.Rejected) return Deny(reason);
         Console.WriteLine("CLAIM=PERSISTED_UNKNOWN");
+        // A task.start claim that was just recorded (not a replay: that returned above) is what creates the room's desktop lease, for the computer its DTO names (DesktopLeases.cs).
+        if (encodedAction is not null && settings.Leases?.Grant((string)dto!["computerId"], operationId) is not null) Console.WriteLine("LEASE=GRANTED");
         if (settings.Hold is { } holdFor) await Task.Delay(holdFor); // test hook: `serve ... hold` holds forever, the seam build's loop entry holds for a fixed time
         return Success(Journal.UnknownState, claimed, replayed: false);
     }

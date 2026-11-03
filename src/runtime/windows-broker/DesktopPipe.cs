@@ -3,8 +3,8 @@ using System.IO.Pipes;
 using System.Text;
 using static DesktopProtocol;
 
-// The Broker's second pipe, for the room's desktop operations (ADR-002 "Amendment 2026-11-03", "Desktop pipe"; Proposed / NOT VERIFIED). This change serves `view` sessions (screen
-// capture) only; `act` and the lease are the next change, so an `act` open is always refused. Made only when the config has `computers`; without them the Broker is what it was.
+// The Broker's second pipe, for the room's desktop operations (ADR-002 "Amendment 2026-11-03", "Desktop pipe"; Proposed / NOT VERIFIED). Two kinds of session: `view` (screen capture) and
+// `act` (capture and input), the latter only while it holds the Broker's desktop lease (DesktopLeases.cs). Made only when the config has `computers`; without them the Broker is what it was.
 //   * Name: the claim pipe's name + "_desktop" (ServiceConfig.DesktopPipeName). Same owner, same DACL (the Broker, plus the Control Plane SID with 0x00120083), same
 //     PIPE_REJECT_REMOTE_CLIENTS, same first-instance rule, and the same per-connection check (thread token user SID == the configured Control Plane SID), made after the first frame's
 //     length bytes and before anything of the request is read or looked at.
@@ -12,23 +12,32 @@ using static DesktopProtocol;
 //     is created with FILE_FLAG_FIRST_PIPE_INSTANCE and every slot keeps its instance until STOP, so the name is never free for a squatter. A 17th client gets "pipe busy" from the system.
 //   * Captures: ONE at a time in the whole Broker (CaptureSlot), because the WMI scripting API boxes every byte of the picture (see MaxCapturePixels). Another session's capture waits for
 //     the slot (at most CaptureQueueTimeout, then it is refused); within one session a capture starts at least 200 ms after the previous one started (the contract's limit): the later request waits.
+//   * Act: the open names the operationId and leaseGeneration of the lease that is current for that computer (the Broker made it when it recorded that task.start claim); anything else is
+//     refused. The session ends, with the fixed denied frame, when a newer claim replaces the lease or the lease expires. Input runs ONE request at a time per computer, and the lease is
+//     checked again once the request holds that turn. A request that never returns stops the Broker, as a hung capture does.
 //   * A session that is idle for 60 s is closed (no reply). Every refusal is the fixed `denied` frame followed by closing the connection; the reason is a fixed word on stdout only (DESKTOP_DENY=).
 internal static partial class Program
 {
-    private static readonly byte[] DesktopOpened = Encoding.UTF8.GetBytes("{\"ok\":true}");
+    private static readonly byte[] DesktopOk = Encoding.UTF8.GetBytes("{\"ok\":true}"); // the reply to an accepted open and to an input that was sent
 
     // One session may hold its instance idle this long between two frames; one reply (a PNG is up to 8 MiB) must be read by the client within the write budget.
     // The capture queue is bounded by the instance count (every session has one request at a time), and by this timeout.
 #if ALBERA_BROKER_TEST_FAULTS
     // Test-only (not in the shipped build): ALBERA_BROKER_TEST_DESKTOP_IDLE_MS shortens the idle close; ALBERA_BROKER_TEST_DESKTOP_CAPTURE_HOLD_MS keeps every capture in the
-    // single capture slot that long and makes it print DESKTOP_TEST=capture_enter / capture_exit, so a test can see that two captures never overlap.
+    // single capture slot that long and makes it print DESKTOP_TEST=capture_enter / capture_exit, so a test can see that two captures never overlap; ALBERA_BROKER_TEST_DESKTOP_INPUT_HOLD_MS
+    // does the same for an input request (input_enter / input_exit); ALBERA_BROKER_TEST_DESKTOP_LEASE_SECONDS shortens the lease's lifetime, the only way to reach "expired" in a test.
     private static readonly TimeSpan DesktopIdleTimeout = TimeSpan.FromMilliseconds(long.TryParse(Environment.GetEnvironmentVariable("ALBERA_BROKER_TEST_DESKTOP_IDLE_MS"), out long idle) ? idle : 60_000);
     private static readonly TimeSpan DesktopCaptureHold = TimeSpan.FromMilliseconds(long.TryParse(Environment.GetEnvironmentVariable("ALBERA_BROKER_TEST_DESKTOP_CAPTURE_HOLD_MS"), out long hold) ? hold : 0);
+    private static readonly TimeSpan DesktopInputHold = TimeSpan.FromMilliseconds(long.TryParse(Environment.GetEnvironmentVariable("ALBERA_BROKER_TEST_DESKTOP_INPUT_HOLD_MS"), out long inputHold) ? inputHold : 0);
+    private static readonly long DesktopLeaseSeconds = long.TryParse(Environment.GetEnvironmentVariable("ALBERA_BROKER_TEST_DESKTOP_LEASE_SECONDS"), out long leaseSeconds) ? leaseSeconds : DesktopLeases.MaxLifetimeSeconds;
 #else
     private static readonly TimeSpan DesktopIdleTimeout = TimeSpan.FromSeconds(60);
+    private const long DesktopLeaseSeconds = DesktopLeases.MaxLifetimeSeconds;
 #endif
     private static readonly TimeSpan DesktopWriteTimeout = TimeSpan.FromSeconds(10), CaptureQueueTimeout = TimeSpan.FromSeconds(30), MinCaptureInterval = TimeSpan.FromMilliseconds(200),
-        CaptureHungTimeout = TimeSpan.FromSeconds(15); // a capture takes about a second; one that never returns would hold the slot forever
+        CaptureHungTimeout = TimeSpan.FromSeconds(15), // a capture takes about a second; one that never returns would hold the slot forever
+        InputQueueTimeout = TimeSpan.FromSeconds(30), // an input waits this long for the turn of its computer (one request is ~12 s of sleep at most, plus its calls)
+        InputHungTimeout = TimeSpan.FromMinutes(5); // far beyond any request the limits allow; one that never returns would hold its computer's turn forever
 
     // The one capture slot of the whole Broker.
     private static readonly SemaphoreSlim CaptureSlot = new(1, 1);
@@ -39,6 +48,7 @@ internal static partial class Program
         private static readonly TimeSpan SlotShutdownGrace = TimeSpan.FromSeconds(2); // below the 5 s the service host grants on STOP
         private readonly ServiceConfig _config;
         private readonly HyperVDesktop _desktop;
+        private readonly Dictionary<string, SemaphoreSlim> _inputTurns; // one turn per computer: two act sessions of one lease never interleave their key presses
         private readonly List<NamedPipeServerStream> _instances = [];
         private readonly List<Task> _slots = [];
         private CancellationTokenSource? _stop;
@@ -47,7 +57,12 @@ internal static partial class Program
         {
             _config = config;
             _desktop = new HyperVDesktop(config.Computers, ComWmiConnection.TryConnect);
+            _inputTurns = config.Computers.ToDictionary(c => c.ComputerId, _ => new SemaphoreSlim(1, 1), StringComparer.Ordinal);
+            Leases = new DesktopLeases(config.Computers, NowSeconds, DesktopLeaseSeconds);
         }
+
+        /// <summary>The Broker's lease table: the claim path grants into it (BrokerRequests.cs), act sessions open against it. A restart is a new process, so a new and empty one.</summary>
+        internal DesktopLeases Leases { get; }
 
         /// <summary>The host for `config`: all 16 instances created (no instance at all when the config has no computers), or null with the Broker's fixed exit code in `failure`.</summary>
         internal static DesktopPipeHost? Create(ServiceConfig config, out int failure)
@@ -126,33 +141,50 @@ internal static partial class Program
         {
             CaptureThrottle throttle = new(MinCaptureInterval);
             string computerId = "";
-            for (bool opened = false; ; opened = true)
+            DesktopLeases.LeaseSession? lease = null; // set by an accepted act open; gone with the session
+            try
             {
-                byte[]? frame;
-                string? refusal;
-                try { (frame, refusal) = await ReadRequestAsync(pipe, first: !opened, stop); }
-                catch (OperationCanceledException) when (!stop.IsCancellationRequested) { Console.WriteLine("DESKTOP=IDLE_CLOSED"); return null; }
-                catch (EndOfStreamException) { Console.WriteLine("DESKTOP=CLOSED"); return null; }
-                if (frame is null) return refusal;
-                if (!opened)
+                for (bool opened = false; ; opened = true)
                 {
-                    if (TryParseOpen(frame, _config.Computers, out computerId) is { } openRefusal) return openRefusal;
-                    await WriteAsync(pipe, DesktopOpened, stop);
-                    Console.WriteLine("DESKTOP=OPENED");
-                }
-                else
-                {
-                    if (TryParseCapture(frame, out int width, out int height) is { } captureRefusal) return captureRefusal;
-                    if (await CaptureAndReplyAsync(pipe, computerId, width, height, throttle, stop) is { } failure) return failure;
+                    byte[]? frame;
+                    string? refusal;
+                    try { (frame, refusal) = await ReadRequestAsync(pipe, first: !opened, lease?.Token ?? CancellationToken.None, stop); }
+                    catch (OperationCanceledException) when (!stop.IsCancellationRequested)
+                    {
+                        // The lease was replaced by a newer claim or ran out: the session ends with a refusal. Otherwise the idle budget ran out.
+                        if (lease is { Token.IsCancellationRequested: true }) return lease.Refusal() ?? DesktopLeases.Deny.Revoked;
+                        Console.WriteLine("DESKTOP=IDLE_CLOSED");
+                        return null;
+                    }
+                    catch (EndOfStreamException) { Console.WriteLine("DESKTOP=CLOSED"); return null; }
+                    if (frame is null) return refusal;
+                    if (!opened)
+                    {
+                        if (TryParseOpen(frame, _config.Computers, out DesktopOpen? open) is { } openRefusal) return openRefusal;
+                        computerId = open!.ComputerId;
+                        if (open.IsAct && (lease = Leases.TryOpen(computerId, open.OperationId!, open.LeaseGeneration, out string leaseRefusal)) is null) return leaseRefusal;
+                        await WriteAsync(pipe, DesktopOk, stop);
+                        Console.WriteLine("DESKTOP=OPENED");
+                        if (lease is not null) Console.WriteLine("DESKTOP=ACT");
+                    }
+                    else
+                    {
+                        if (TryParseRequest(frame, lease is not null, out DesktopRequest? request) is { } requestRefusal) return requestRefusal;
+                        string? failure = request!.IsInput
+                            ? await InputAndReplyAsync(pipe, lease!, computerId, request.Steps!, stop)
+                            : await CaptureAndReplyAsync(pipe, computerId, request.Width, request.Height, throttle, stop);
+                        if (failure is not null) return failure;
+                    }
                 }
             }
+            finally { lease?.Dispose(); }
         }
 
         // One request frame. On the first frame of a connection the peer is checked right after the length bytes: an impersonation needs a read to have happened, and nothing the client
-        // sends after that is read or parsed for a peer that is not the Control Plane. The idle budget covers the whole frame.
-        private async Task<(byte[]? Frame, string? Refusal)> ReadRequestAsync(NamedPipeServerStream pipe, bool first, CancellationToken stop)
+        // sends after that is read or parsed for a peer that is not the Control Plane. The idle budget covers the whole frame. `leaseEnded` is cancelled when the session's lease ends.
+        private async Task<(byte[]? Frame, string? Refusal)> ReadRequestAsync(NamedPipeServerStream pipe, bool first, CancellationToken leaseEnded, CancellationToken stop)
         {
-            using CancellationTokenSource idle = CancellationTokenSource.CreateLinkedTokenSource(stop);
+            using CancellationTokenSource idle = CancellationTokenSource.CreateLinkedTokenSource(stop, leaseEnded);
             idle.CancelAfter(DesktopIdleTimeout);
             byte[] size = new byte[4];
             await pipe.ReadExactlyAsync(size, idle.Token);
@@ -208,6 +240,45 @@ internal static partial class Program
             DesktopResult result = await capture;
 #if ALBERA_BROKER_TEST_FAULTS
             Console.WriteLine("DESKTOP_TEST=capture_exit");
+#endif
+            return result;
+        }
+
+        // Null when the steps were sent (answered { "ok": true }); otherwise the reason word of the refusal. The lease is asked again once this request holds its computer's turn: a newer
+        // claim can have replaced it while the request waited behind another one.
+        private async Task<string?> InputAndReplyAsync(NamedPipeServerStream pipe, DesktopLeases.LeaseSession lease, string computerId, IReadOnlyList<DesktopStep> steps, CancellationToken stop)
+        {
+            SemaphoreSlim turn = _inputTurns[computerId];
+            if (!await turn.WaitAsync(InputQueueTimeout, stop)) return DesktopDeny.InputBusy;
+            DesktopResult result;
+            try
+            {
+                if (lease.Refusal() is { } ended) return ended;
+                result = await InputInTurnAsync(computerId, steps);
+            }
+            finally { turn.Release(); }
+            if (!result.Ok) return result.Reason ?? DesktopReason.InputFailed;
+            await WriteAsync(pipe, DesktopOk, stop);
+            return null;
+        }
+
+        // Like the capture: the adapter call runs on a pool thread and is not cancelled half-way (a released key matters more than a prompt STOP).
+        private async Task<DesktopResult> InputInTurnAsync(string computerId, IReadOnlyList<DesktopStep> steps)
+        {
+#if ALBERA_BROKER_TEST_FAULTS
+            Console.WriteLine("DESKTOP_TEST=input_enter");
+            await Task.Delay(DesktopInputHold);
+#endif
+            Task<DesktopResult> input = Task.Run(() => _desktop.Input(computerId, steps));
+            if (await Task.WhenAny(input, Task.Delay(InputHungTimeout)) != input)
+            {
+                // The COM call cannot be cancelled and still holds this computer's turn: every later input would be input_busy until a restart. Restart now.
+                Console.WriteLine("DESKTOP=INPUT_HUNG");
+                TerminateForDesktopFailure();
+            }
+            DesktopResult result = await input;
+#if ALBERA_BROKER_TEST_FAULTS
+            Console.WriteLine("DESKTOP_TEST=input_exit");
 #endif
             return result;
         }
