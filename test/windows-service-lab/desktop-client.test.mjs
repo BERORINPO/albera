@@ -2,11 +2,10 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { deflateSync } from 'node:zlib';
 import { after, before, describe, it } from 'node:test';
+import { listenFakeBroker, png } from './desktop-test-support.mjs';
 import { runWithGuestFunctions } from './guest-functions.mjs';
 import {
   brokerSession, buildBrokerWithTestSeams, buildPipeClient, buildServiceLab, createTestAuthority, currentUserSid, getUnavailableReason, makeTrustedTempDirectory, nodePipeOwnerSid,
@@ -23,28 +22,6 @@ const OPENED = { ok: true };
 const openedFor = (body) => (body.includes('"mode":"act"') ? { ok: true, leaseGeneration: 1 } : OPENED);
 const COMPUTER = 'lab-room';
 const FOREIGN_SID = 'S-1-5-80-1111111111-2222222222-3333333333-1444444444-2555555555';
-
-const frame = (body) => {
-  const bytes = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
-  const size = Buffer.alloc(4);
-  size.writeInt32LE(bytes.length);
-  return Buffer.concat([size, bytes]);
-};
-
-const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
-const crc32 = (buffer) => { let c = 0xffffffff; for (const byte of buffer) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
-const chunk = (type, data) => {
-  const head = Buffer.alloc(8); head.writeUInt32BE(data.length); head.write(type, 4, 'latin1');
-  const tail = Buffer.alloc(4); tail.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])));
-  return Buffer.concat([head, data, tail]);
-};
-/** An 8-bit truecolour PNG, the shape the Broker's encoder makes (signature, IHDR, IDAT, IEND). `brokenEnd` damages the last byte of IEND. */
-function png(width, height, { brokenEnd = false } = {}) {
-  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = 2;
-  const bytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(Buffer.alloc((width * 3 + 1) * height))), chunk('IEND', Buffer.alloc(0))]);
-  if (brokenEnd) bytes[bytes.length - 1] ^= 0xff;
-  return bytes;
-}
 
 describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailableReason() }, () => {
   let root, shim, loopExe, sid, nodeOwner;
@@ -78,29 +55,8 @@ describe('lab desktop-pipe client (shim `desktop` probe)', { skip: getUnavailabl
    * request body (as text), `bytes` the number of bytes any client sent.
    */
   async function fakeBroker(script) {
-    const pipe = unique('ALBERA_LabDesk');
-    const state = { pipe, received: [], bytes: 0, connections: 0 };
-    const server = net.createServer((socket) => {
-      state.connections += 1;
-      let buffer = Buffer.alloc(0);
-      let index = 0;
-      const connection = { send: (body) => socket.write(frame(body)), sendRaw: (bytes) => socket.write(bytes), end: () => socket.end() };
-      socket.on('error', () => {});
-      socket.on('data', (chunkBytes) => {
-        state.bytes += chunkBytes.length;
-        buffer = Buffer.concat([buffer, chunkBytes]);
-        while (buffer.length >= 4 && buffer.length >= 4 + buffer.readInt32LE(0)) {
-          const length = buffer.readInt32LE(0);
-          const body = buffer.subarray(4, 4 + length).toString('utf8');
-          buffer = buffer.subarray(4 + length);
-          state.received.push(body);
-          script(body, index, connection);
-          index += 1;
-        }
-      });
-    });
+    const { server, state } = await listenFakeBroker(unique('ALBERA_LabDesk'), script);
     servers.add(server);
-    await new Promise((resolve) => server.listen(`\\\\.\\pipe\\${pipe}`, resolve));
     return state;
   }
   const asPeer = (pid = process.pid, owner = nodeOwner) => `pid:${pid}:${owner}`;

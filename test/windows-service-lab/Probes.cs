@@ -22,6 +22,8 @@ namespace Albera.Lab;
 //   hyperv <vmGuid>                what this token may do to one running Hyper-V VM through WMI (HyperVProbe.cs; one JSON line per check; one TypeKey and one mouse move)
 //   desktop <pipe> <identity> <step>... [save=<path>]
 //                                  a client of the Broker's desktop pipe (DesktopClient.cs): checks who the server is, then open / capture / input / claim / end steps; one JSON line per step
+//   desktop-helper <helperExe> <pipe> <identity> <step>... [image=<sha256>] [save=<path>]
+//                                  the same steps, but through the REAL pipe client helper in desktop mode (DesktopHelperClient.cs): the helper checks who the server is, this probe plays the Node client
 internal static class Probes
 {
     private const uint OpenExisting = 3, SecuritySqosPresent = 0x00100000, SecurityIdentification = 0x00010000;
@@ -47,6 +49,7 @@ internal static class Probes
             case ["squat", var pipe, var seconds]: return Squat(pipe, int.Parse(seconds, System.Globalization.CultureInfo.InvariantCulture));
             case ["hyperv", var vm]: return HyperVProbe.Run(vm);
             case ["desktop", var pipe, var identity, .. var steps]: return DesktopClient.Run(pipe, identity, steps);
+            case ["desktop-helper", var helper, var pipe, var identity, .. var steps]: return DesktopHelperClient.Run(helper, pipe, identity, steps);
             default: return 64;
         }
     }
