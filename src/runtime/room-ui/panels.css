@@ -1,4 +1,4 @@
-/* Credential panel and job panel (settings.mjs, jobs.mjs): drawers on the right edge, over the canvas. Tokens come from room.css. */
+/* Credential panel, job panel and feedback panel (settings.mjs, jobs.mjs, feedback.mjs): drawers on the right edge, over the canvas. Tokens come from room.css. */
 .top .panel-open { white-space: nowrap; }
 .panel {
   position: fixed; top: 50px; right: 0; bottom: 0; width: min(440px, 100vw); overflow: auto; z-index: 20;
@@ -20,3 +20,23 @@ button.danger { background: var(--rec); color: var(--on-accent); border-color: t
 .match-code { margin: 4px 0; font-family: var(--mono); font-size: 56px; line-height: 1.1; letter-spacing: 0.18em; color: var(--ink); font-variant-numeric: tabular-nums; }
 .job-list { margin: 0; padding-left: 18px; font-size: 13px; }
 .job-list li { margin: 4px 0; overflow-wrap: anywhere; }
+
+/* Feedback panel (feedback.mjs): one box, with a layer behind the text that paints the secret shapes, and a button. The layer and the box must lay text out identically. */
+.fb-field { position: relative; }
+.fb-field textarea, .fb-layer {
+  width: 100%; min-height: 200px; margin: 0; padding: 8px 10px; font: inherit; line-height: 1.55; letter-spacing: normal;
+  white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--rule-strong); border-radius: 4px; scrollbar-gutter: stable;
+}
+.fb-layer { position: absolute; inset: 0; overflow: hidden; color: transparent; background: var(--desk); pointer-events: none; }
+.fb-layer mark { color: transparent; background: color-mix(in oklch, var(--rec) 45%, transparent); border-radius: 2px; }
+.panel .fb-field textarea { position: relative; display: block; background: transparent; resize: vertical; }
+.fb-field.bad textarea { border-color: var(--rec); }
+.panel .fb-stop { margin: 6px 0 0; font-size: 13px; font-weight: 700; color: var(--rec); }
+.fb-foot { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.panel .fb-note { margin: 0; font-size: 13px; color: var(--muted); }
+.fb-note a { color: var(--accent); }
+.fb-more { margin: 6px 0 0; padding: 8px 10px; border-left: 2px solid var(--rule); font-size: 13px; color: var(--ink-2); }
+.panel .fb-more p { margin: 2px 0; }
+.panel .fb-err { margin: 6px 0 0; font-size: 13px; color: var(--stuck); }
+.fb-toast { position: fixed; right: 18px; top: 56px; z-index: 30; padding: 6px 12px; border: 1px solid var(--done); border-radius: 6px; background: var(--paper-2); font-size: 14px; }
+.fb-foot button:disabled { opacity: 0.45; cursor: not-allowed; }

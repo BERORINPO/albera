@@ -1,5 +1,6 @@
-// The only fetch in room-ui (spec/room.md §5, part A). Paths are relative to the page (/room/), same origin only.
-// Every call resolves to { ok, status, body } and never throws: status 0 = the host could not be reached.
+// The only fetch in room-ui (spec/room.md §5, part A; arch rule 4c). Paths are relative to the page (/room/), same origin only, with one exception: sendFeedback.
+// Every call resolves to { ok, status, body } and never throws: status 0 = the host (or, for sendFeedback, the intake) could not be reached.
+import { FEEDBACK_ENDPOINT } from './feedback-contract.mjs';
 
 const enc = encodeURIComponent;
 
@@ -45,3 +46,17 @@ export const getJobs = () => call('api/jobs');
 export const startJob = (computerId, task) => postJson('api/jobs', { computerId, task });
 export const stopAllJobs = () => postJson('api/jobs/stop-all', {});
 export const approvalTest = () => postJson('api/jobs/approval-test', {});
+
+// Feedback panel (feedback.mjs). getFeedback asks this room (same origin); sendFeedback is the ONE call that leaves for another origin: the intake Worker of the contract,
+// from the person's own browser, only when they press send. No cookie, no referrer, no cache. Room-host.mjs adds exactly that origin to the CSP connect-src when feedback is on.
+export const getFeedback = () => call('api/feedback');
+export const sendFeedback = (payload) => call(FEEDBACK_ENDPOINT, {
+  method: 'POST',
+  mode: 'cors',
+  credentials: 'omit',
+  referrerPolicy: 'no-referrer',
+  redirect: 'error', // the intake never redirects; a redirect would only be a way to aim this request somewhere else
+
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload),
+});

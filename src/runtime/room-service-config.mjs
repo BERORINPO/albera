@@ -16,7 +16,9 @@ import { roomBootstrapAcl } from './room-bootstrap-file.mjs';
 //   { "host": { ... },                                           not read here
 //     "claude": { "executable": "<abs path of the pinned claude.exe, inside the install folder (CLAUDE_INSTALL_DIR)>", "executableSha256": "<64 hex>",
 //                 "model": "<optional alias or id>", "maxMinutes": <optional, 1..55, default 15>, "maxToolCalls": <optional, 1..400, default 120> },
-//     "ui":     { "controlPlaneSid": "S-1-5-80-...", "approverSid": "S-1-5-21-..." } }                the two SIDs of the bootstrap file's ACL (room-bootstrap-file.mjs `roomBootstrapAcl`)
+//     "ui":     { "controlPlaneSid": "S-1-5-80-...", "approverSid": "S-1-5-21-..." },                the two SIDs of the bootstrap file's ACL (room-bootstrap-file.mjs `roomBootstrapAcl`)
+//     "feedback": true }                                           optional, a boolean, default false: the room's feedback panel may send to the intake Worker (feedback-contract.mjs): the route
+//                                                                  GET /api/feedback is registered and the CSP gets that one origin. The default stays off until the intake's address is final.
 // Any other top-level key, any other key inside `claude` or `ui`, or a missing required one is refused (fail closed: setup and this reader must agree). The credential is always the secret
 // `claude-oauth-token`; the API-key option of the contract (6.7) is not wired by this PR. Errors are fixed codes (`room_service_config_*`); the file's content and paths are never printed.
 
@@ -33,7 +35,7 @@ export const CLAUDE_INSTALL_DIR = String.raw`C:\Program Files\Albera\bin\claude`
 export const CLAUDE_LIMITS = Object.freeze({ defaultMinutes: 15, maxMinutes: 55, defaultToolCalls: 120, maxToolCalls: 400 });
 const SHA256_RE = /^[a-f0-9]{64}$/u;
 const MODEL_RE = /^[A-Za-z0-9._-]{1,64}$/u;
-const TOP_KEYS = ['host', 'claude', 'ui'];
+const TOP_KEYS = ['host', 'claude', 'ui', 'feedback'];
 const CLAUDE_KEYS = ['executable', 'executableSha256', 'model', 'maxMinutes', 'maxToolCalls'];
 const UI_KEYS = ['controlPlaneSid', 'approverSid'];
 const fail = (what) => new Error(`room_service_config_${what}`);
@@ -78,14 +80,21 @@ function parseUi(raw) {
   try { return Object.freeze({ acl: roomBootstrapAcl({ cpSid: raw.controlPlaneSid, approverSid: raw.approverSid }) }); } catch { throw fail('ui'); }
 }
 
-/** Parse the file's text: `claude` and `ui` are required, `host` is ignored (the .NET host's). Pure. `installDir` is a test seam (default: CLAUDE_INSTALL_DIR). */
+// Absent = off. Only a real boolean is accepted (a string "false" must not turn it on).
+function parseFeedback(raw) {
+  if (raw === undefined) return false;
+  if (typeof raw !== 'boolean') throw fail('feedback');
+  return raw;
+}
+
+/** Parse the file's text: `claude` and `ui` are required, `feedback` is an optional boolean (default false), `host` is ignored (the .NET host's). Pure. `installDir` is a test seam (default: CLAUDE_INSTALL_DIR). */
 export function parseServiceConfig(text, { installDir = CLAUDE_INSTALL_DIR } = {}) {
   if (typeof text !== 'string' || text.length > MAX_SERVICE_CONFIG_BYTES) throw fail('too_big');
   let raw;
   try { raw = JSON.parse(text.replace(/^﻿/u, '')); } catch { throw fail('not_json'); }
   if (!isPlain(raw)) throw fail('invalid');
   if (Object.keys(raw).some((key) => !TOP_KEYS.includes(key))) throw fail('unknown_key');
-  return Object.freeze({ claude: parseClaude(raw.claude, installDir), ui: parseUi(raw.ui), claudeInstallDir: installDir });
+  return Object.freeze({ claude: parseClaude(raw.claude, installDir), ui: parseUi(raw.ui), feedback: parseFeedback(raw.feedback), claudeInstallDir: installDir });
 }
 
 /** Read the service file (a regular file, small) and parse it. The error never names the path. */
