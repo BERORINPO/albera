@@ -1,0 +1,22 @@
+// The intake Worker's Cloudflare settings (docs/architecture/feedback-intake.md). Deployed from the owner's console with a pinned Wrangler:
+// scripts/feedback-intake-deploy.ps1 (no package is added to the repository; npx fetches Wrangler into the npm cache).
+// Secrets are not here: APP_ID, APP_INSTALLATION_ID, APP_PRIVATE_KEY and IP_HASH_KEY are put by the same script. Until they exist the intake answers
+// 503 intake_closed. Setting FEEDBACK_OPEN to "false" and deploying closes it on purpose.
+{
+  "name": "albera-feedback",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "vars": {
+    "FEEDBACK_OPEN": "true",
+    "INTAKE_REPO": "BERORINPO/albera-feedback"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "LIMITS", "class_name": "IntakeLimits" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["IntakeLimits"] }],
+  // 3 sends a minute per address key, per Cloudflare location (approximate by design); the daily limits are in the Durable Object
+  "ratelimits": [{ "name": "BURST", "namespace_id": "4101", "simple": { "limit": 3, "period": 60 } }],
+  // No request logs: a log line could carry a header or a path someone typed. Errors are fixed codes in the replies.
+  "observability": { "enabled": false }
+}

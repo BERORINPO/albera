@@ -7,6 +7,7 @@ import { HyperVDesktopDriver } from './hyperv-desktop-driver.mjs';
 import { createWindowsFolderGuard } from './room-service-folder-guard.mjs';
 import { createRoomBootstrapFile, createWindowsFileStore } from './room-bootstrap-file.mjs';
 import { createRoomHost } from './room-host.mjs';
+import { createRoomFeedbackRoutes } from './room-feedback-routes.mjs';
 import { createRoomJobRoutes } from './room-job-routes.mjs';
 import { missingRoomParts } from './room-demo.mjs';
 import { openRoomApproval } from './room-approval-wiring.mjs';
@@ -17,6 +18,7 @@ import { createRoomSettingsRoutes } from './room-settings-routes.mjs';
 import * as roomJournalModule from './room-journal.mjs';
 import * as roomFiguresModule from './room-figures.mjs';
 import * as beroDirectorModule from './bero-director.mjs';
+import { ALBERA_VERSION } from './albera-version.mjs';
 
 // `albera-runtime room-service --data-root <dataRoot>`: the Control Plane service's one resident command (docs/architecture/control-plane-service.md section 2; PR4d). The .NET host starts it
 // (PR2: `<node> <appPath>\src\runtime\entry.mjs room-service --data-root <dataRoot>`, cwd appPath, stdin NUL, a nine-variable environment) and keeps its stdout and stderr in capped log files.
@@ -26,7 +28,9 @@ import * as beroDirectorModule from './bero-director.mjs';
 //   - the DPAPI secret store (credential field of the room, and the one the hands read their token from);
 //   - the room host on the SERVICE launch route: the one-time code goes ONLY to the bootstrap file `ui\room.json`, the host listens on 127.0.0.1 and nowhere else, and this process prints no
 //     port, no URL and no code (the host captures this process's output into log files);
-//   - the hands: Claude Code per approved task.start, in a new empty configuration folder per run (room-service-hands.mjs).
+//   - the hands: Claude Code per approved task.start, in a new empty configuration folder per run (room-service-hands.mjs);
+//   - the feedback panel, OFF unless the service file says `feedback: true` (room-service-config.mjs): then the route GET /api/feedback is registered and the room's CSP connect-src gets the intake's
+//     one origin. The one thing it reports about this installation is the ALBERA version (albera-version.mjs; `deps.version` in tests).
 // The bootstrap file sink is REQUIRED. Without a sink the room host would take its CLI launch route and hand the code to whoever called listen(); so a missing sink refuses the start before anything
 // is opened, and so does a settings file with no `ui` block to build one from. The approval flow's durable journal is required too (openRoomApproval refuses without it).
 // A `ui\room.json` of an earlier run is removed first thing, before the approval wiring is opened, and replaced by the new port and code as soon as the host listens; if that write fails the start fails.
@@ -61,7 +65,9 @@ export function parseRoomServiceArgs(args, platform = process.platform) {
  * Open everything and start serving. Resolves `{ close }` once the room listens and `ui\room.json` is written. It does not return the port or the code.
  * @param {{ dataRoot: string }} options
  * @param {{ bootstrapSink?: object|null, io?: object, approvalDeps?: object, secretStore?: object, createBootstrapStore?: Function, mcpEntryPath?: string,
- *   driverOptions?: object, createDriver?: Function, claudeGuard?: object, claudeInstallDir?: string, log?: (line: string) => void, captureIntervalMs?: number, tickMs?: number }} [deps] test seams; the defaults are the real parts
+ *   driverOptions?: object, createDriver?: Function, claudeGuard?: object, claudeInstallDir?: string, log?: (line: string) => void, captureIntervalMs?: number, tickMs?: number,
+ *   version?: string }} [deps] test seams; the defaults are the real parts. `version` is the ALBERA version the feedback panel sends (default ALBERA_VERSION,
+ *   albera-version.mjs, which a test keeps equal to package.json).
  */
 export async function startRoomService({ dataRoot } = {}, deps = {}) {
   const log = deps.log ?? (() => {});
@@ -99,9 +105,12 @@ export async function startRoomService({ dataRoot } = {}, deps = {}) {
       flow: approval.flow, projectId: settings.projectId, computerIds: [...settings.computers.values()].map((c) => c.computerId), watch, newOperationId: approval.newOperationId,
     });
     const targets = () => [...settings.computers].map(([vmName, c]) => ({ computerId: c.computerId, label: vmName }));
-    const apiRoutes = [...createRoomSettingsRoutes({ secretStore }), ...createRoomJobRoutes({ approvals, hands: { start: hands.start, stopAll: hands.stopAll }, targets })];
+    const apiRoutes = [
+      ...createRoomSettingsRoutes({ secretStore }), ...createRoomJobRoutes({ approvals, hands: { start: hands.start, stopAll: hands.stopAll }, targets }),
+      ...(config.feedback ? createRoomFeedbackRoutes({ version: deps.version ?? ALBERA_VERSION }) : []), // the route and the CSP origin go together: both or neither
+    ];
     room = createRoomHost({
-      vms: [...settings.computers.keys()].map((vmId) => ({ vmId, label: labelOf(vmId), task: '' })), board, fleet: hands.fleet, startGate: approval.gate, apiRoutes,
+      vms: [...settings.computers.keys()].map((vmId) => ({ vmId, label: labelOf(vmId), task: '' })), board, fleet: hands.fleet, startGate: approval.gate, apiRoutes, feedback: config.feedback,
       journal: roomJournalModule.createRoomJournal({}), director: beroDirectorModule.createBeroDirector({ buildFigure: roomFiguresModule.buildFigure, labelOf }),
       driver: (resolveCurrentLease) => new HyperVDesktopDriver({ broker: approval.desktopBroker, resolveCurrentLease }),
       bootstrapSink: sink, onBootstrapError: (code) => log(String(code).replace(/[^a-z_]/gu, '')),

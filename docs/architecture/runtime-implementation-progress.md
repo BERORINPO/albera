@@ -17,6 +17,18 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 - これで進むもの: 漏れたキーの後始末 (stage 1 を動かすのには不要)
 - 取り消し: できない (無効にしたキーは元に戻らない)
 
+### ご意見の受付 1/2: GitHub App を作る
+- やること: (1) 項目入りの作成ページを開き、内容を確かめて「Create GitHub App」: https://github.com/settings/apps/new?name=ALBERA%20feedback%20intake&description=Files%20ALBERA%20in-app%20feedback%20into%20a%20private%20intake%20repository.&url=https%3A%2F%2Fgithub.com%2FBERORINPO%2Falbera&public=false&webhook_active=false&issues=write (2) できた App の画面で「Generate a private key」(.pem が保存される) (3)「Install App」→ BERORINPO →「Only select repositories」で albera-feedback だけを選んで Install (4) App ID (App の設定画面の上) と installation の番号 (Install 後の画面のアドレス末尾の数字) を控える
+- 所要: 約 5 分 (Yosuke の作業時間)
+- これで進むもの: 受付 Worker のデプロイ (次のカード)。docs/architecture/feedback-intake.md 7 節
+- 取り消し: できる (App を削除すれば、その時点から何も作れない)
+
+### ご意見の受付 2/2: 受付 Worker をデプロイする
+- やること: `pwsh C:\dev\albera-feedback\scripts\feedback-intake-deploy.ps1 -PemPath <保存した .pem> -AppId <App ID> -InstallationId <番号>`。初回だけ Wrangler 4.151.3 (npm、Cloudflare 公式、約 150 MB) が npm の cache に入り、ブラウザで Cloudflare のログインが開く。最後に表示される受付の URL をベロに伝え、.pem を削除する
+- 所要: 約 5 分 (ダウンロード待ちを除く)
+- これで進むもの: room の「ご意見」を既定オンにする PR (URL を FEEDBACK_ENDPOINT に入れる)
+- 取り消し: できる (wrangler.jsonc の FEEDBACK_OPEN を "false" にしてデプロイ、または Cloudflare の画面で Worker を削除)
+
 ## Checkpoints
 
 | Checkpoint | State | Evidence / remaining work |

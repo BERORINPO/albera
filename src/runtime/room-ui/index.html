@@ -13,6 +13,7 @@
     <script type="module" src="app.mjs"></script>
     <script type="module" src="settings.mjs"></script>
     <script type="module" src="jobs.mjs"></script>
+    <script type="module" src="feedback.mjs"></script>
   </head>
   <body>
     <header class="top">
@@ -21,6 +22,7 @@
       <span class="grow"></span>
       <button type="button" id="open-jobs" class="panel-open">Jobs</button>
       <button type="button" id="open-settings" class="panel-open">Credentials</button>
+      <button type="button" id="open-feedback" class="panel-open">Feedback</button>
       <span id="phase" class="sm sub" role="status">Connecting…</span>
     </header>
     <section id="bootstrap" class="bootstrap" hidden aria-labelledby="bootstrap-title">
@@ -34,6 +36,7 @@
     </section>
     <aside id="jobs-panel" class="panel" hidden aria-label="Jobs"></aside>
     <aside id="settings-panel" class="panel" hidden aria-label="Credentials"></aside>
+    <aside id="feedback-panel" class="panel" hidden aria-label="Feedback"></aside>
     <main id="room" class="room" hidden>
       <div id="viewport" class="viewport" aria-label="Control room canvas" data-w-label="canvas_label"></div>
       <aside id="ledger" class="ledger" aria-labelledby="ledger-title">

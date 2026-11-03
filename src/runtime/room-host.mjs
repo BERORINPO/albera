@@ -18,6 +18,7 @@ import { isEnvironmentId } from './environment-provider.mjs';
 import { isLabel } from './workspace.mjs';
 import { cleanText, isCode, isId, validAct, validCheck, validCheckReport, validLedgerEntry, EFFECTS, LEDGER_CODES, MAX_CHECKS_PER_VM, MAX_TEXT } from './room-contract.mjs';
 import { createStartRunner, gatedRecheckTask, GATED_NUDGE_TASK } from './room-starts.mjs';
+import { FEEDBACK_ORIGIN } from './feedback-contract.mjs';
 
 export const ROOM_DESKTOP_SESSION_ID = 'room-view';
 export const ROOM_OWNER_ID = 'room-viewer';
@@ -50,9 +51,12 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const TYPES = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 const UI_NAMES = ['room.css', 'cam.css', 'figure.css', 'bero.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs',
   'cam.mjs', 'words-cam.mjs', 'figure.mjs', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'cards.mjs', 'words-bero.mjs',
-  'panels.css', 'words-panels.mjs', 'settings.mjs', 'jobs.mjs'];
-const UI_FILES = Object.freeze(Object.fromEntries([['/', 'index.html'], ...UI_NAMES.map((name) => [`/${name}`, name])]
-  .map(([route, name]) => [route, Object.freeze([`room-ui/${name}`, TYPES[path.extname(name)]])])));
+  'panels.css', 'words-panels.mjs', 'settings.mjs', 'jobs.mjs', 'feedback.mjs', 'words-feedback.mjs'];
+// The page imports ./feedback-contract.mjs, so it is asked for as /room/feedback-contract.mjs; the file is the runtime's own (shared with the intake Worker), not one of room-ui/. A fixed entry, never a joined path.
+const UI_FILES = Object.freeze(Object.fromEntries([
+  ...[['/', 'index.html'], ...UI_NAMES.map((name) => [`/${name}`, name])].map(([route, name]) => [route, Object.freeze([`room-ui/${name}`, TYPES[path.extname(name)]])]),
+  ['/feedback-contract.mjs', Object.freeze(['feedback-contract.mjs', TYPES['.mjs']])],
+]));
 const SAFE_ERROR_CODES = new Set([
   'desktop_broker_timeout', 'desktop_input_rejected', 'desktop_unavailable', 'desktop_vm_not_found',
   'invalid_desktop_screen_data', 'invalid_desktop_vm', 'invalid_desktop_lease', 'desktop_lease_unavailable',
@@ -61,6 +65,8 @@ const SAFE_ERROR_CODES = new Set([
 const DECIDE_CODES = new Set(['card_unknown', 'card_closed', 'choice_unknown']);
 const CHECK_TIMEOUT_MS = 65_000; // the checker's own limit is 60 s; this one only keeps a VM's queue moving
 const CHECK_CODE_RE = /^[a-z][a-z0-9_]{0,40}$/;
+const CSP_CONNECT_SELF = "'self'";
+const cspFor = (connectSrc) => `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src ${connectSrc}; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'`;
 
 /** Fixed task texts for card effects. Only the VM's own task (given at start) is ever added to them. */
 export const NUDGE_TASK = 'Something may be blocking the screen, such as a dialog or a message box. '
@@ -86,14 +92,18 @@ export function recheckTask(task) {
  * Without a gate the room starts jobs as before (local demo): the CLI says so when it starts.
  * Service launch route (`bootstrapSink` = { publish({port, code}), clear() }, both may be async): the sink gets every new code and is cleared at close.
  * A first publish that fails makes listen() fail; a later failure goes to `onBootstrapError(code)` (the old code is already invalid by then).
+ * `feedback` (default false): the room's feedback panel may send to the intake Worker (feedback-contract.mjs), so the CSP connect-src gets exactly that origin and nothing else. With false the CSP is what it always was.
+ * It does not register the route (`GET /api/feedback`, room-feedback-routes.mjs): the caller passes that in `apiRoutes`, with the same switch.
  * `apiRoutes` = [{ method: 'GET'|'POST', path: '/api/...', maxBody?: bytes (POST, default 1024, at most 4096), handle({ body }) -> { status, body } }]. The host runs its checks first (see the head of this file);
  * `body` is the parsed JSON object (POST only). `handle` never sees the request or the cookie, and a throw becomes `500 route_failed` with no detail. A path of the host itself cannot be registered.
  */
 export function createRoomHost({
   vms, driver, board, journal, director, fleet, checker = null, checks = {}, startGate = null, checkTimeoutMs = CHECK_TIMEOUT_MS,
   captureIntervalMs = 1000, staleAfterMs = 10_000, tickMs = 1000, now = Date.now,
-  bootstrapSink = null, bootstrapRotateMs = BOOTSTRAP_ROTATE_MS, onBootstrapError = () => {}, apiRoutes = [],
+  bootstrapSink = null, bootstrapRotateMs = BOOTSTRAP_ROTATE_MS, onBootstrapError = () => {}, apiRoutes = [], feedback = false,
 } = {}) {
+  if (typeof feedback !== 'boolean') throw new TypeError('feedback must be a boolean');
+  const csp = cspFor(feedback ? `${CSP_CONNECT_SELF} ${FEEDBACK_ORIGIN}` : CSP_CONNECT_SELF);
   const tiles = normalizeVms(vms);
   const routes = normalizeApiRoutes(apiRoutes);
   const checksByVm = normalizeChecks(checks, tiles);
@@ -409,7 +419,7 @@ export function createRoomHost({
   function png(res, bytes) { return send(res, 200, bytes, 'image/png', { 'Content-Length': String(bytes.length) }); }
 
   async function handle(req, res) {
-    setSecurityHeaders(res);
+    setSecurityHeaders(res, csp);
     if (closed) return json(res, 503, { error: 'host_closing' });
     const requestHost = typeof req.headers.host === 'string' ? req.headers.host.toLowerCase() : '';
     if (!['127.0.0.1', 'localhost'].some((host) => requestHost === `${host}:${serverPort}`)) return json(res, 403, { error: 'forbidden' });
@@ -707,8 +717,8 @@ function constantTimeEqual(received, expected) {
   return timingSafeEqual(Buffer.from(hash(received)), Buffer.from(hash(expected)));
 }
 
-function setSecurityHeaders(res) {
-  res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'");
+function setSecurityHeaders(res, csp) {
+  res.setHeader('Content-Security-Policy', csp);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');

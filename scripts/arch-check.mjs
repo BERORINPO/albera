@@ -80,6 +80,10 @@ const EXPECTED = {
     'control-plane-secret-store.mjs', 'fake-control-plane-secret-store.mjs',
     // the room's credential field and job screen: routes registered on the room host (apiRoutes) over injected ports (control-plane-service.md sections 4 and 5; PR4b / PR4c)
     'room-settings-routes.mjs', 'room-job-routes.mjs',
+    // in-app feedback: the request contract, the secret and privacy rules and the mask, shared by the room's panel (browser) and the intake Worker (services/feedback-intake; docs/architecture/feedback-intake.md)
+    'feedback-contract.mjs', 'albera-version.mjs',
+    // the room's feedback panel: its one route (GET /api/feedback, pure; rule 5e). The panel itself is under room-ui/ below
+    'room-feedback-routes.mjs',
     // `albera-runtime room-service` (PR4d): the Control Plane service's resident command and its parts: the settings it reads, the approvals port of the job screen, the Claude Code hands, the wiring (entry role)
     'room-service-config.mjs', 'room-service-approvals.mjs', 'room-service-hands.mjs', 'room-service-folder-guard.mjs', 'room-service-wiring.mjs',
     // Claude Code as the hands: a stdio MCP server over the desktop Broker client (adapter; args = pure flags, server = tools + budget, mcp/mcp-main = entry), the headless `claude -p` driver and its Fake (adapter pair; decision log 2026-11-03+claude-code-hands)
@@ -104,7 +108,9 @@ const EXPECTED = {
       'match-code.mjs', 'match-code-vectors.json'].map((f) => `broker-contract/${f}`),
     ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
       'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs',
-      'settings.mjs', 'jobs.mjs', 'words-panels.mjs', 'panels.css'].map((f) => `room-ui/${f}`)],
+      'settings.mjs', 'jobs.mjs', 'words-panels.mjs', 'panels.css',
+      // feedback panel and its words; feedback-contract.mjs here is only the Node-side stand-in (the host serves src/runtime/feedback-contract.mjs at that URL)
+      'feedback.mjs', 'words-feedback.mjs', 'feedback-contract.mjs'].map((f) => `room-ui/${f}`)],
   public: [
     'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
@@ -193,6 +199,14 @@ check('4b no HTML string injection', [...pub, ...shared, ...core, ...adapters, .
   /\binnerHTML\b|\bouterHTML\b|\binsertAdjacentHTML\b|\bdocument\.write\b/.test(line) ? 'innerHTML and friends are not allowed (use textContent / DOM APIs)' : null,
 );
 
+// 4c / 4d. The room's page (src/runtime/room-ui): the one fetch is api.mjs's, and the only address that leaves this PC is the intake's, which feedback-contract.mjs alone holds.
+const roomUi = listFiles('src/runtime/room-ui', ['.mjs']);
+check('4c fetch only in room-ui/api.mjs', roomUi, (line, file) => (/\bfetch\(/.test(line) && path.basename(file) !== 'api.mjs' ? 'fetch( is allowed only in api.mjs' : null));
+check('4d no https:// literal in room-ui', roomUi, (line) => {
+  if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null; // a comment may name an address
+  return /['"`][^'"`]*https:\/\//.test(line.replace(/\s\/\/\s.*$/, '')) ? 'a web address in a string: the intake address belongs to feedback-contract.mjs alone' : null;
+});
+
 // 5. read-only: adapters and entry never use APIs that write to the app's files
 check('5 read-only', [...adapters, ...entry], (line) =>
   /\b(writeFile|appendFile|rename|unlink|rmdir|mkdir|copyFile|createWriteStream|truncate|utimes|chmod|watch)\w*\(|\.rm\(|open\([^)]*['"](?:[wax]|r\+)/.test(line)
@@ -258,7 +272,7 @@ const providerContracts = [
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:
 // the clients, the clock, the sleep and the storage are injected (and the flow must not name the Broker or the Authority: rules 8a / 10a).
-check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs', 'src/runtime/room-settings-routes.mjs', 'src/runtime/room-job-routes.mjs', 'src/runtime/room-service-approvals.mjs', 'src/runtime/integration-candidate.mjs', 'src/runtime/integration-service.mjs', 'src/runtime/desktop-broker-client-contract.mjs', 'src/runtime/albera-desktop-mcp-args.mjs'], (line) => {
+check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs', 'src/runtime/room-settings-routes.mjs', 'src/runtime/room-job-routes.mjs', 'src/runtime/room-service-approvals.mjs', 'src/runtime/integration-candidate.mjs', 'src/runtime/integration-service.mjs', 'src/runtime/desktop-broker-client-contract.mjs', 'src/runtime/albera-desktop-mcp-args.mjs', 'src/runtime/feedback-contract.mjs', 'src/runtime/room-feedback-routes.mjs'], (line) => {
   if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null;
   for (const [re, label] of FORBIDDEN_PURE) if (/** @type {RegExp} */ (re).test(line)) return `${label} is not allowed in a pure runtime module`;
   return null;
