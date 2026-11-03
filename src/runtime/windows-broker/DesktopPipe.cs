@@ -12,14 +12,15 @@ using static DesktopProtocol;
 //     is created with FILE_FLAG_FIRST_PIPE_INSTANCE and every slot keeps its instance until STOP, so the name is never free for a squatter. A 17th client gets "pipe busy" from the system.
 //   * Captures: ONE at a time in the whole Broker (CaptureSlot), because the WMI scripting API boxes every byte of the picture (see MaxCapturePixels). Another session's capture waits for
 //     the slot (at most CaptureQueueTimeout, then it is refused); within one session a capture starts at least 200 ms after the previous one started (the contract's limit): the later request waits.
-//   * Act: the open names the operationId and leaseGeneration of the lease that is current for that computer (the Broker made it when it recorded that task.start claim); anything else is
-//     refused. The session ends, with the fixed denied frame, when a newer claim replaces the lease or the lease expires (the lease's deadline is on the monotonic clock, DesktopLeases.cs).
+//   * Act: the open names the operationId (and optionally the leaseGeneration) of the lease that is current for that computer (the Broker made it when it recorded that task.start claim); anything
+//     else is refused. The accepted reply is { "ok": true, "leaseGeneration": n }, the generation of the lease it joined. The session ends, with the fixed denied frame, when a newer claim replaces the lease or the lease expires (the lease's deadline is on the monotonic clock, DesktopLeases.cs).
 //     Input runs ONE request at a time per computer, the wait for that turn ends with the lease, the lease is checked again once the request holds the turn, and a request that is running
 //     stops at its next step when the lease ends (what it holds down is released first). A request that never returns stops the Broker, as a hung capture does.
 //   * A session that is idle for 60 s is closed (no reply). Every refusal is the fixed `denied` frame followed by closing the connection; the reason is a fixed word on stdout only (DESKTOP_DENY=).
 internal static partial class Program
 {
-    private static readonly byte[] DesktopOk = Encoding.UTF8.GetBytes("{\"ok\":true}"); // the reply to an accepted open and to an input that was sent
+    private static readonly byte[] DesktopOk = Encoding.UTF8.GetBytes("{\"ok\":true}"); // the reply to an accepted view open and to an input that was sent
+    private static byte[] ActOpened(long generation) => Encoding.UTF8.GetBytes($"{{\"ok\":true,\"leaseGeneration\":{generation}}}"); // the reply to an accepted act open: the generation of the lease it joined
 
     // One session may hold its instance idle this long between two frames; one reply (a PNG is up to 8 MiB) must be read by the client within the write budget.
     // The capture queue is bounded by the instance count (every session has one request at a time), and by this timeout.
@@ -164,7 +165,7 @@ internal static partial class Program
                         if (TryParseOpen(frame, _config.Computers, out DesktopOpen? open) is { } openRefusal) return openRefusal;
                         computerId = open!.ComputerId;
                         if (open.IsAct && (lease = Leases.TryOpen(computerId, open.OperationId!, open.LeaseGeneration, out string leaseRefusal)) is null) return leaseRefusal;
-                        await WriteAsync(pipe, DesktopOk, stop);
+                        await WriteAsync(pipe, lease is null ? DesktopOk : ActOpened(lease.Generation), stop);
                         Console.WriteLine("DESKTOP=OPENED");
                         if (lease is not null) Console.WriteLine("DESKTOP=ACT");
                     }

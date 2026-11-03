@@ -235,10 +235,13 @@ const providerContracts = [
   'src/runtime/workspace.mjs',
   ...['action-digest', 'receipt-v2', 'receipt-v3', 'strict-json', 'network-attestation', 'task-start-attestation'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
   'src/runtime/fake-attestation-signer.mjs',
+  // the desktop Broker client's shared checks and its Fake (the real client, windows-desktop-broker-client.mjs, starts the pipe client helper, so it is under rule 5b instead)
+  'src/runtime/desktop-broker-client-contract.mjs',
+  'src/runtime/fake-desktop-broker-client.mjs',
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:
 // the clients, the clock, the sleep and the storage are injected (and the flow must not name the Broker or the Authority: rules 8a / 10a).
-check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs', 'src/runtime/integration-candidate.mjs', 'src/runtime/integration-service.mjs'], (line) => {
+check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs', 'src/runtime/integration-candidate.mjs', 'src/runtime/integration-service.mjs', 'src/runtime/desktop-broker-client-contract.mjs'], (line) => {
   if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null;
   for (const [re, label] of FORBIDDEN_PURE) if (/** @type {RegExp} */ (re).test(line)) return `${label} is not allowed in a pure runtime module`;
   return null;
@@ -294,7 +297,7 @@ results.push(`7 runtime UI under ${UI_MAX_LINES} lines: ${runtimeUi.length} file
 //    layers and every runtime .mjs file may not import, spawn or name it, and package.json may not wire it into `bin`, the
 //    npm lifecycle or `start`/`demo`. The only runtime files that name them are windows-broker-client.mjs, with two explicit
 //    `// arch-allow: <reason>` lines (the Broker wire reference, the pipe client helper path), and approval-authority-client.mjs, with one
-//    (the same helper path); any future launcher needs its own (counted above).
+//    (the same helper path), and windows-desktop-broker-client.mjs, with two (the import of the Broker client's pipe-server expectation, the same helper path); any future launcher needs its own (counted above).
 const BROKER_REF = /windows-broker|albera-windows-broker|WindowsBroker|windows-service-lab|lab-service-shim/i;
 check('8a Windows Broker is not referenced by Observer layers or runtime modules', [...entry, ...adapters, ...core, ...shared, ...pub, ...runtime], (line) =>
   BROKER_REF.test(line) ? 'the Windows Broker prototype must not be imported, spawned or named here (build-on-demand only)' : null,
@@ -303,15 +306,18 @@ const brokerRoot = 'src/runtime/windows-broker';
 const brokerFiles = ['Albera.WindowsBroker.csproj', 'Program.cs', 'BrokerRequests.cs', 'Journal.cs', 'ServiceConfig.cs', 'ServiceHost.cs', 'ServiceLoop.cs', 'packages.lock.json'];
 for (const f of brokerFiles) if (!fs.existsSync(path.join(ROOT, brokerRoot, f))) violations.push(`[8b Windows Broker source] ${brokerRoot}/${f} does not exist (false-safe)`);
 // The trusted pipe client helper (verifies the pipe server before it writes) is part of the same on-demand set: its 3 files must exist, its
-// Program.cs stays small enough to review (<= 250 lines), and `build:windows-broker` must build it. Its name also matches BROKER_REF, so 8a and 8c cover it.
+// Program.cs and DesktopSession.cs stay small enough to review (line caps below), and `build:windows-broker` must build it. Its name also matches BROKER_REF, so 8a and 8c cover it.
 const pipeClientRoot = 'src/runtime/windows-broker-pipe-client';
-const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'packages.lock.json'];
-const PIPE_CLIENT_MAX_LINES = 250; // 200 until the fence and inspect request kinds (receipt v2) were added; 220 until the Approval Authority submit request kind (`authority`) was added
+const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'DesktopSession.cs', 'packages.lock.json'];
+// Program.cs: 200 until the fence and inspect request kinds (receipt v2) were added; 220 until the Approval Authority submit request kind (`authority`) was added; 250 until the desktop session mode was added
+// (the session itself is DesktopSession.cs, capped separately; Program.cs only gained the shared OpenVerified and the mode switch).
+const PIPE_CLIENT_MAX_LINES = { 'Program.cs': 270, 'DesktopSession.cs': 200 };
 for (const f of pipeClientFiles) if (!fs.existsSync(path.join(ROOT, pipeClientRoot, f))) violations.push(`[8b Windows Broker pipe client source] ${pipeClientRoot}/${f} does not exist (false-safe)`);
-const pipeClientProgram = path.join(ROOT, pipeClientRoot, 'Program.cs');
-if (fs.existsSync(pipeClientProgram)) {
-  const n = fs.readFileSync(pipeClientProgram, 'utf8').replace(/\n$/, '').split('\n').length;
-  if (n > PIPE_CLIENT_MAX_LINES) violations.push(`[8b Windows Broker pipe client source] ${pipeClientRoot}/Program.cs has ${n} lines (max ${PIPE_CLIENT_MAX_LINES})`);
+for (const [file, max] of Object.entries(PIPE_CLIENT_MAX_LINES)) {
+  const source = path.join(ROOT, pipeClientRoot, file);
+  if (!fs.existsSync(source)) continue;
+  const n = fs.readFileSync(source, 'utf8').replace(/\n$/, '').split('\n').length;
+  if (n > max) violations.push(`[8b Windows Broker pipe client source] ${pipeClientRoot}/${file} has ${n} lines (max ${max})`);
 }
 const publishScript = fs.existsSync(path.join(ROOT, 'scripts/publish-windows-broker.mjs')) ? fs.readFileSync(path.join(ROOT, 'scripts/publish-windows-broker.mjs'), 'utf8') : '';
 if (!publishScript.includes('Albera.WindowsBrokerPipeClient.csproj')) violations.push('[8b Windows Broker pipe client source] scripts/publish-windows-broker.mjs does not build the pipe client (false-safe)');

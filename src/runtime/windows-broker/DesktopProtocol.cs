@@ -3,6 +3,8 @@ using System.Text.Json;
 // The grammar of the Broker's desktop pipe (ADR-002 "Amendment 2026-11-03", "Desktop pipe"; Proposed / NOT VERIFIED):
 //   open     { "open": { "computerId": "<id>", "mode": "view" } }     the first frame; the id must be one of the config's `computers`.
 //            { "open": { "computerId", "mode": "act", "operationId": "<id>", "leaseGeneration": n } }   an act session; the pipe checks the last two against the Broker-held lease (DesktopLeases.cs).
+//            { "open": { "computerId", "mode": "act", "operationId": "<id>" } }   the same without `leaseGeneration`: it joins the lease that is current for that operationId (a Control Plane cannot
+//            know the generation; the accepted reply of every act open names it, see DesktopPipe.cs). An operationId that is not the current lease's is refused as before.
 //   capture  { "capture": { "width": n, "height": n } }                any number of times after an accepted open, in a view or an act session.
 //   input    { "input": { "steps": [ { "op": "move", "x": n, "y": n }, ... ] } }   an act session only (a view session is refused `view_input`). The steps are the adapter's DesktopStep
 //            (HyperVDesktop.cs) and its limits (DesktopLimits): at most 256 steps, the per-op ranges, 12000 ms of sleep in all.
@@ -24,8 +26,8 @@ internal static class DesktopProtocol
             CaptureShape = "capture_shape", CaptureSize = "capture_size", CaptureBusy = "capture_busy", InputShape = "input_shape", InputSteps = "input_steps", InputBusy = "input_busy";
     }
 
-    /// <summary>An accepted open. `OperationId` is null for a view session; for an act session it and `LeaseGeneration` are what the lease must match.</summary>
-    internal sealed record DesktopOpen(string ComputerId, string? OperationId = null, long LeaseGeneration = 0)
+    /// <summary>An accepted open. `OperationId` is null for a view session; for an act session it, and `LeaseGeneration` when the client named one (null: the current lease), are what the lease must match.</summary>
+    internal sealed record DesktopOpen(string ComputerId, string? OperationId = null, long? LeaseGeneration = null)
     {
         internal bool IsAct => OperationId is not null;
     }
@@ -43,23 +45,27 @@ internal static class DesktopProtocol
         if (Fields(frame) is not { Count: 1 } top || !top.TryGetValue("open", out JsonElement openElement) || Fields(openElement) is not { } fields) return DesktopDeny.OpenShape;
         if (!fields.TryGetValue("mode", out JsonElement modeElement) || Text(modeElement) is not { } mode || mode is not ("view" or "act")) return DesktopDeny.OpenShape;
         bool act = mode == "act";
-        if (fields.Count != (act ? 4 : 2)) return DesktopDeny.OpenShape;
+        if (fields.Count != (act ? 3 : 2) + (act && fields.ContainsKey("leaseGeneration") ? 1 : 0)) return DesktopDeny.OpenShape; // act: computerId, mode, operationId and optionally leaseGeneration; nothing else
         if (!fields.TryGetValue("computerId", out JsonElement idElement) || Text(idElement) is not { } computerId || !AuthorityKey.IsKeyId(computerId)) return DesktopDeny.OpenShape;
         string? operationId = null;
-        long generation = 0;
+        long? generation = null;
         if (act && !TryActFields(fields, out operationId, out generation)) return DesktopDeny.OpenShape;
         if (!computers.Any(c => string.Equals(c.ComputerId, computerId, StringComparison.Ordinal))) return DesktopDeny.ComputerUnknown;
         open = new DesktopOpen(computerId, operationId, generation);
         return null;
     }
 
-    // operationId: a contract id; leaseGeneration: an integer >= 1.
-    private static bool TryActFields(Dictionary<string, JsonElement> fields, out string? operationId, out long generation)
+    // operationId: a contract id; leaseGeneration: absent, or an integer >= 1 (the caller counted the keys, so no other key is here).
+    private static bool TryActFields(Dictionary<string, JsonElement> fields, out string? operationId, out long? generation)
     {
         operationId = null;
-        generation = 0;
+        generation = null;
         if (!fields.TryGetValue("operationId", out JsonElement operationElement) || Text(operationElement) is not { } id || !AuthorityKey.IsKeyId(id)) return false;
-        if (!fields.TryGetValue("leaseGeneration", out JsonElement generationElement) || !Integer(generationElement, out generation) || generation < 1) return false;
+        if (fields.TryGetValue("leaseGeneration", out JsonElement generationElement))
+        {
+            if (!Integer(generationElement, out long named) || named < 1) return false;
+            generation = named;
+        }
         operationId = id;
         return true;
     }

@@ -64,16 +64,17 @@ internal sealed class DesktopLeases
     }
 
     /// <summary>
-    /// An act session's open: the session when `operationId` and `generation` name the current, unexpired lease of `computerId`; otherwise null with the reason word in `refusal`.
-    /// The session's Token is cancelled when the lease is replaced or expires.
+    /// An act session's open: the session when `operationId` (and `generation`, when the client named one) name the current, unexpired lease of `computerId`; otherwise null with the reason word in
+    /// `refusal`. Without a `generation` the operationId alone decides, so only the current lease's own operationId joins it; the session's Generation says which lease that is. The session's Token is
+    /// cancelled when the lease is replaced or expires.
     /// </summary>
-    internal LeaseSession? TryOpen(string computerId, string operationId, long generation, out string refusal)
+    internal LeaseSession? TryOpen(string computerId, string operationId, long? generation, out string refusal)
     {
         refusal = "";
         lock (_gate)
         {
             if (!_byComputer.TryGetValue(computerId, out Lease? lease) || !string.Equals(lease.OperationId, operationId, StringComparison.Ordinal)) { refusal = Deny.Unknown; return null; }
-            if (lease.Generation != generation) { refusal = Deny.Generation; return null; }
+            if (generation is { } named && lease.Generation != named) { refusal = Deny.Generation; return null; }
             long remainingMs = lease.DeadlineMs - _nowMs();
             if (remainingMs <= 0) { refusal = Deny.Expired; return null; }
             LeaseSession session = new(this, lease, TimeSpan.FromMilliseconds(remainingMs));
@@ -131,6 +132,9 @@ internal sealed class DesktopLeases
 
         /// <summary>Cancelled when a newer claim replaces the lease, or the lease expires.</summary>
         public CancellationToken Token { get; }
+
+        /// <summary>The generation of the lease this session holds (what an open without `leaseGeneration` learns).</summary>
+        public long Generation => _lease.Generation;
 
         /// <summary>Null while the lease still stands and the session's own token is live; otherwise the reason word. Asked before every input, because the token can lag behind the clock.</summary>
         public string? Refusal() => _owner.Check(_lease) ?? (Token.IsCancellationRequested ? Deny.Revoked : null);
