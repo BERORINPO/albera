@@ -28,10 +28,17 @@ internal static class Program
 #if ALBERA_CPHOST_TEST_SEAMS
         // Test-only: `--trust-sid <sid> <subcommand> ...` makes PathGuard trust that SID in place of the administrators (a host test is an ordinary user).
         // Without it the production rule applies, so a test-seam build also shows the refusal of a file that only the token user can write.
-        if (args.Length >= 2 && args[0] == "--trust-sid")
+        // `--ancestor-floor <folder>` ends the parent-folder walk of the launch gate at that folder (PathGuard.AncestorFloor).
+        // `--fault <name>` injects one failure the test cannot cause from outside (TestSeam.TryInject). Both options may be given, in any order, before the subcommand.
+        while (args.Length >= 2 && args[0] is "--trust-sid" or "--fault" or "--ancestor-floor")
         {
-            try { PathGuard.StandInForAdministrators = new SecurityIdentifier(args[1]); }
-            catch (ArgumentException) { return ExitUsage; }
+            if (args[0] == "--trust-sid")
+            {
+                try { PathGuard.StandInForAdministrators = new SecurityIdentifier(args[1]); }
+                catch (ArgumentException) { return ExitUsage; }
+            }
+            else if (args[0] == "--ancestor-floor") PathGuard.AncestorFloor = args[1];
+            else if (!TestSeam.TryInject(args[1])) return ExitUsage;
             args = args[2..];
         }
 #endif

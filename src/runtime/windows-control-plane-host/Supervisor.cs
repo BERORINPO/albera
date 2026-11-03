@@ -64,14 +64,21 @@ internal sealed class Supervisor : IDisposable
     {
         using ChildJob? job = ChildJob.Create();
         if (job is null) return new RunEnd(EndKind.JobFailed);
+        // The gate (app folder pin, node.exe handle) is held until the child has ended, not only until it has been created: node reads its scripts by path while it runs.
+        using LaunchGate gate = LaunchGate.Open(config, out string? refusal);
+        if (refusal is not null) return new RunEnd(EndKind.Refused, refusal);
+#if ALBERA_CPHOST_TEST_SEAMS
+        if (TestSeam.PinOnly) // measures what the gate's own handles hold, without a child that holds its own (its working directory, its image)
+        {
+            events.Event("CPHOST_PIN_HELD");
+            stop.WaitHandle.WaitOne();
+            return new RunEnd(EndKind.Stopped);
+        }
+#endif
         LaunchedChild? child;
         int win32;
-        using (LaunchGate gate = LaunchGate.Open(config, out string? refusal))
-        {
-            if (refusal is not null) return new RunEnd(EndKind.Refused, refusal);
-            try { child = ChildLauncher.Start(config, job, ChildEnvironment.Create(), out win32); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return StartFailed("environment"); }
-        }
+        try { child = ChildLauncher.Start(config, job, ChildEnvironment.Create(), out win32); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { return StartFailed("environment"); }
         if (child is null) return StartFailed($"win32_{win32}");
         using (child)
         {

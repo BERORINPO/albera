@@ -124,7 +124,8 @@ internal sealed record HostConfig(string NodePath, string NodeSha256, string App
     internal static bool IsPlainAbsolutePath(string path)
     {
         if (path.Length is < 4 or > MaxPathLength || !char.IsAsciiLetter(path[0]) || path[1] != ':' || path[2] != '\\') return false;
-        if (path[^1] == '\\' || path.IndexOf(':', 2) >= 0 || path.IndexOfAny(Path.GetInvalidPathChars()) >= 0 || path.IndexOfAny(['*', '?']) >= 0) return false;
+        // '"' is refused by name as well: ChildLauncher.CommandLine puts these paths between double quotes, so one inside a path would end the quoting early.
+        if (path[^1] == '\\' || path.IndexOf(':', 2) >= 0 || path.Contains('"') || path.IndexOfAny(Path.GetInvalidPathChars()) >= 0 || path.IndexOfAny(['*', '?']) >= 0) return false;
         try { return string.Equals(Path.GetFullPath(path), path, StringComparison.Ordinal); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { return false; }
     }

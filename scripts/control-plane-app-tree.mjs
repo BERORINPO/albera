@@ -13,7 +13,10 @@ import path from 'node:path';
 
 export const APP_TREE_SOURCE = 'src/runtime';
 export const APP_TREE_EXTENSIONS = Object.freeze(['.mjs', '.html', '.css', '.ps1', '.json']);
-const EXCLUDED_DIRECTORIES = Object.freeze(['bin', 'obj', 'node_modules']);
+// Build output is skipped only where a .NET project puts it (src/runtime/windows-*/bin and obj). A folder of that name anywhere else is source and is copied, so it is never dropped silently
+// (scripts/arch-check.mjs rule 12e fails when a tracked file sits in a bin/ or obj/ folder). node_modules is skipped anywhere: the tree has no packages.
+const BUILD_OUTPUT = /^src\/runtime\/windows-[^/]+\/(?:bin|obj)$/u;
+const EXCLUDED_DIRECTORIES = Object.freeze(['node_modules']);
 const EXCLUDED_FILE = /^packages\.lock\.json$|vectors[^/]*\.json$/u;
 /** The component folder the app tree sits in (`bin\control-plane\app`): the relative paths in the hash list start with it. */
 export const APP_TREE_PREFIX = 'app/';
@@ -33,7 +36,7 @@ export function listAppTreeFiles(root) {
       const entryRel = `${rel}/${entry.name}`;
       if (lstatSync(source).isSymbolicLink()) throw new Error(`app_tree_link: ${entryRel} is a link`);
       if (entry.isDirectory()) {
-        if (!EXCLUDED_DIRECTORIES.includes(entry.name)) walk(source, entryRel);
+        if (!EXCLUDED_DIRECTORIES.includes(entry.name) && !BUILD_OUTPUT.test(entryRel)) walk(source, entryRel);
       } else if (entry.isFile() && APP_TREE_EXTENSIONS.includes(path.extname(entry.name)) && !EXCLUDED_FILE.test(entry.name)) {
         found.push({ rel: entryRel, source });
       }
