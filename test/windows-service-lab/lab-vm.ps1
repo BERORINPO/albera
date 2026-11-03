@@ -11,7 +11,8 @@ param(
   # Run the HOST installer check (scripts/host/albera-host.ps1 through lab-host-install-check.ps1) in the VM instead of the service-identity lab.
   [switch]$HostInstall,
   # Run the NESTED Hyper-V rights lab (lab-hyperv-rights-check.ps1) instead: the guest gets the Hyper-V role and an inner VM, and a Broker-shaped service
-  # tries the screen capture and input calls. The outer VM gets 5 GB and nested virtualization. Needs only the lab shim build.
+  # tries the screen capture and input calls; then the real Broker runs as a service and its desktop pipe is used (view session, refusals). The outer VM gets 5 GB
+  # and nested virtualization. Needs the lab shim build and the Broker build (-Build makes both).
   [switch]$HyperV
 )
 $ErrorActionPreference = 'Stop'
@@ -42,6 +43,7 @@ function Invoke-HyperVRightsLab([string]$VmName, [pscredential]$Credential, [str
   $guestRoot = 'C:\albera-hv-lab'
   $guestScript = Join-Path $PSScriptRoot 'lab-hyperv-rights-check.ps1'
   $shimPublish = Join-Path $Repo 'test\windows-service-lab\bin\Release\net10.0-windows\win-x64\publish'
+  $brokerPublish = Join-Path $Repo 'src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish'
   $session = New-DirectSession $VmName $Credential 6 $null
   try {
     # The guest script refuses to run unless this is set (it edits services and a local group).
@@ -58,14 +60,18 @@ function Invoke-HyperVRightsLab([string]$VmName, [pscredential]$Credential, [str
       $session = New-DirectSession $VmName $Credential 20 $bootBefore
       Invoke-Command -Session $session -ScriptBlock { $env:ALBERA_LAB_VM = '1' }
     }
-    Invoke-Command -Session $session -ScriptBlock { param($r) New-Item -ItemType Directory -Force -Path "$r\bin\shim" | Out-Null } -ArgumentList $guestRoot
+    Invoke-Command -Session $session -ScriptBlock { param($r) New-Item -ItemType Directory -Force -Path "$r\bin\shim", "$r\bin\broker" | Out-Null } -ArgumentList $guestRoot
     Copy-Item -ToSession $session -Path (Join-Path $shimPublish '*') -Destination "$guestRoot\bin\shim" -Recurse -Force
-    Write-Host 'running the rights probe as four service identities'
+    Copy-Item -ToSession $session -Path (Join-Path $brokerPublish '*') -Destination "$guestRoot\bin\broker" -Recurse -Force
+    Write-Host 'running the rights probe as four service identities, then the real Broker service and its desktop pipe'
     $raw = Invoke-Command -Session $session -FilePath $guestScript -ArgumentList $guestRoot, 'run'
     $json = @($raw | Where-Object { $_ -is [string] -and $_ -like '{*' }) | Select-Object -Last 1
     if (-not $json) { throw 'the guest script returned no results' }
     $results = $json | ConvertFrom-Json
     $results | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 -LiteralPath $ResultsFile
+    # The picture the Control Plane's capture returned (check bd_cp_view_capture), for a person to look at. Absent when the capture did not work.
+    $picture = Invoke-Command -Session $session -ScriptBlock { param($r) if (Test-Path -LiteralPath "$r\evidence\bd-view-capture.png") { "$r\evidence\bd-view-capture.png" } } -ArgumentList $guestRoot
+    if ($picture) { Copy-Item -FromSession $session -Path $picture -Destination (Join-Path (Split-Path -Parent $ResultsFile) 'bd-view-capture.png') -Force }
   }
   finally {
     if ($session) {
@@ -113,12 +119,10 @@ try {
   if (-not (Test-Path -LiteralPath $PasswordFile -PathType Leaf)) { throw "password file is missing: $PasswordFile" }
   if (-not $Build) {
     # Fail before creating a VM when the binaries run-lab.ps1 copies are missing.
-    $needed = @('test\windows-service-lab\bin\Release\net10.0-windows\win-x64\publish')
-    # The Hyper-V lab runs only the lab shim; the other labs also copy the Broker and the Approval Authority.
-    if (-not $HyperV) {
-      $needed += @('src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish',
-                   'src\runtime\windows-approval-authority\bin\Release\net10.0-windows\win-x64\publish')
-    }
+    $needed = @('test\windows-service-lab\bin\Release\net10.0-windows\win-x64\publish',
+                'src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish')
+    # The Hyper-V lab runs the lab shim and the real Broker; the other labs also copy the Approval Authority.
+    if (-not $HyperV) { $needed += @('src\runtime\windows-approval-authority\bin\Release\net10.0-windows\win-x64\publish') }
     foreach ($p in $needed) {
       if (-not (Test-Path -LiteralPath (Join-Path $repo $p))) { throw "missing build output (run with -Build): $p" }
     }
@@ -181,10 +185,8 @@ try {
   Push-Location $repo
   try {
     if ($Build) {
-      if (-not $HyperV) {
-        & npm run build:windows-broker
-        if ($LASTEXITCODE -ne 0) { throw "build:windows-broker failed ($LASTEXITCODE)" }
-      }
+      & npm run build:windows-broker
+      if ($LASTEXITCODE -ne 0) { throw "build:windows-broker failed ($LASTEXITCODE)" }
       & npm run build:windows-service-lab
       if ($LASTEXITCODE -ne 0) { throw "build:windows-service-lab failed ($LASTEXITCODE)" }
       if (-not $HyperV) {

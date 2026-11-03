@@ -206,7 +206,7 @@ internal static class HyperVProbe
 
     // Null when `png` has the PNG signature, an IHDR for a width x height 8-bit truecolour picture (no interlace) and an IEND at the end; else the first thing that is wrong.
     // The chunk CRCs are not recomputed here (the encoder's own tests do that).
-    private static string? PngDefect(byte[] png, int width, int height)
+    internal static string? PngDefect(byte[] png, int width, int height)   // internal: DesktopClient.cs judges the Broker's desktop-pipe PNG the same way
     {
         if (png.Length < IhdrDataStart + IhdrDataLength + 4 + PngIend.Length) return "too_short";
         if (!png.AsSpan(0, PngSignature.Length).SequenceEqual(PngSignature)) return "bad_signature";
