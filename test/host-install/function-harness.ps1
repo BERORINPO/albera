@@ -376,9 +376,11 @@ switch ($Case) {
     $result.icaclsControlExit = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
     $existing = Join-Path $Work 'dacl-existing'; New-Item -ItemType Directory -Path $existing | Out-Null
+    # The owner a new folder gets depends on the token (a user's own SID, or Administrators for an elevated one as on the CI runner): compare with what it was before the write.
+    $ownerBefore = (Get-AclSummary $existing).Owner
     $result.daclError = Try-Run { Set-HostDacl $existing $ghostGrants }
     $daclSummary = Get-AclSummary $existing
-    $result.dacl = [ordered]@{ ghost = $ghostSid; protected = $daclSummary.Protected; allow = @($daclSummary.AllowSids | Sort-Object); expected = @(@('S-1-5-18', 'S-1-5-32-544', $ghostSid, $me) | Sort-Object); writers = @($daclSummary.WriteSids | Sort-Object); expectedWriters = @(@('S-1-5-18', $me) | Sort-Object); owner = $daclSummary.Owner; me = $me }
+    $result.dacl = [ordered]@{ ghost = $ghostSid; protected = $daclSummary.Protected; allow = @($daclSummary.AllowSids | Sort-Object); expected = @(@('S-1-5-18', 'S-1-5-32-544', $ghostSid, $me) | Sort-Object); writers = @($daclSummary.WriteSids | Sort-Object); expectedWriters = @(@('S-1-5-18', $me) | Sort-Object); owner = $daclSummary.Owner; me = $me; ownerBefore = $ownerBefore }
     $daclTarget = Join-Path $Work 'dacl-target'; New-Item -ItemType Directory -Path $daclTarget | Out-Null
     $daclLink = Join-Path $Work 'dacl-link'; New-Junction $daclLink $daclTarget
     $targetBefore = @((Get-AclSummary $daclTarget).AllowSids | Sort-Object) -join ','

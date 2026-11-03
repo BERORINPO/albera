@@ -914,7 +914,7 @@ test('a folder is born with its final descriptor (owner, protected DACL, inherit
   assert.deepEqual(r.dacl.allow, r.dacl.expected, 'exactly the planned principals, the not-yet-existing service SID among them');
   assert.ok(r.dacl.allow.includes(r.dacl.ghost));
   assert.deepEqual(r.dacl.writers, r.dacl.expectedWriters, 'the read-only grant of that SID is not write access');
-  assert.equal(r.dacl.owner, r.dacl.me, 'only the access section is written: the owner is not touched here (Set-HostAcl sets it with icacls /setowner)');
+  assert.equal(r.dacl.owner, r.dacl.ownerBefore, 'only the access section is written: the owner is not touched here (Set-HostAcl sets it with icacls /setowner)');
   assert.match(r.daclLinkError, /is reached through a link; refusing to change its ACL/u);
   assert.equal(r.daclLinkTargetUnchanged, true, 'the target of a link is never changed');
   assert.equal(r.daclBadGrantError, 'grant_not_understood');
