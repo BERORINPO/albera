@@ -787,6 +787,255 @@ test('the password comparison is exact and the SecureStrings are only compared, 
   assert.deepEqual({ ...r, case: undefined }, { case: undefined, same: true, differentLastChar: false, differentLength: false, reflexive: true });
 });
 
+// ---- -GrantHyperVToBroker (ADR-002 Amendment 2026-11-03): the Broker's service SID, and only it, in Hyper-V Administrators; the Broker unrestricted exactly then ----
+
+const BROKER_SERVICE_SID_ARG = /\$hv\.Group -Member \$hv\.Member/u;
+
+test('Hyper-V grant, source guards: the only code that changes the group takes group and member from Get-HyperVGrantPlan; albera-cp and the Authority have no path in; no new program is started', () => {
+  const script = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
+  const lib = readFileSync(path.join(hostDir, 'albera-host-lib.ps1'), 'utf8');
+  const code = (text) => text.split('\n').filter((line) => !/^\s*#/u.test(line));   // comments and doc text may name anything
+  const scriptCode = code(script).join('\n');
+  // every group change in the script: the old Users line for albera-cp, and exactly one add and one remove for the Hyper-V group
+  const codeLines = scriptCode.split('\n');
+  const callsOf = (cmdlet) => codeLines.filter((line) => new RegExp(`\\b${cmdlet}\\b`, 'u').test(line.replace(/"[^"]*"/gu, '""')));   // a cmdlet named inside a message string is not a call
+  const adds = callsOf('Add-LocalGroupMember');
+  const removes = callsOf('Remove-LocalGroupMember');
+  assert.equal(adds.length, 2, 'two Add-LocalGroupMember calls: albera-cp into Users, the Broker into Hyper-V Administrators');
+  assert.equal(adds.filter((line) => /-SID 'S-1-5-32-545' -Member \$u\b/u.test(line)).length, 1);
+  const hvAdds = adds.filter((line) => BROKER_SERVICE_SID_ARG.test(line));
+  assert.equal(hvAdds.length, 1);
+  assert.match(hvAdds[0], /Add-LocalGroupMember -SID \$hv\.Group -Member \$hv\.Member\s*\}?\s*$/u);
+  assert.equal(removes.length, 1, 'one Remove-LocalGroupMember call');
+  assert.match(removes[0], /Remove-LocalGroupMember -SID \$hv\.Group -Member \$hv\.Member/u);
+  // $hv is only ever the answer of Get-HyperVGrantPlan for the script's SIDs
+  const hvAssignments = scriptCode.split('\n').flatMap((line) => [...line.matchAll(/\$hv\s*=\s*([^;}\n]+)/gu)].map((m) => m[1].trim()));
+  assert.ok(hvAssignments.length >= 3);
+  for (const rhs of hvAssignments) assert.equal(rhs, 'Get-HyperVGrantPlan $script:Sids', `$hv = ${rhs}`);
+  // no other way to change a local group, and no group literal passed anywhere but through the plan
+  for (const forbidden of [/\bnet(?:\.exe)?\s+localgroup/iu, /\bAdd-ADGroupMember\b/u, /\bSet-LocalGroup\b/u, /\.Add\(\s*"WinNT/u, /\bNetLocalGroup/u, /-Group\s+['"$]/u]) {
+    assert.doesNotMatch(scriptCode + '\n' + code(lib).join('\n'), forbidden, `must not contain ${forbidden}`);
+  }
+  assert.equal(scriptCode.split('\n').filter((line) => /-SID\s+'S-1-5-32-578'/u.test(line)).length, 0, 'the group SID is never passed as a literal to a cmdlet');
+  assert.equal([...adds, ...removes].filter((line) => /ControlPlane|\$cp\b|\$u\b|Authority/iu.test(line) && !/'S-1-5-32-545'/u.test(line)).length, 0, 'no group change names the Control Plane or the Authority');
+  // the plan function: its only member is the Broker's SID, checked against the derivation, and it refuses when that SID is also the Control Plane's or the Authority's
+  const planBody = lib.slice(lib.indexOf('function Get-HyperVGrantPlan'), lib.indexOf('# The install record `created.hyperVGrant`'));
+  assert.match(planBody, /Member = \$broker/u);
+  assert.match(planBody, /\$broker -cne \(Get-DerivedServiceSid \$c\.BrokerService\)/u);
+  assert.doesNotMatch(planBody, /Member = (?!\$broker\b)/u);
+  assert.match(lib, /function Get-ExpectedSidType[\s\S]*?\$HyperVGrantRecorded -and \$ServiceName -ceq \$c\.BrokerService\) \{ return 'unrestricted' \}/u);
+  // the sid type: one decision point, restricted is still the literal the old test (and the lab) look for
+  assert.equal((scriptCode.match(/sidtype \$\(\$spec\.Name\) unrestricted/gu) ?? []).length, 1);
+  assert.match(scriptCode, /\(Get-ExpectedSidType \$spec\.Name \$GrantHyperVToBroker\) -ceq 'unrestricted'\) \{ Invoke-Sc "sidtype \$\(\$spec\.Name\) unrestricted" \| Out-Null \} else \{ Invoke-Sc "sidtype \$\(\$spec\.Name\) restricted" \| Out-Null \}/u);
+  assert.match(scriptCode, /Test-ServiceFacts [^\n]*\(Get-ExpectedSidType \$spec\.Name \$GrantHyperVToBroker\)/u, 'install verifies the type it set');
+  assert.match(scriptCode, /Test-ServiceFacts [^\n]*\(Get-ExpectedSidType \$spec\.Name \$grantRecorded\)/u, 'status expects unrestricted only when the install record says the grant was made');
+  // the VM is looked up read-only through CIM, which is already imported; nothing new is executed, and the lab-only parameter is gated like the password
+  assert.match(scriptCode, /Get-CimInstance -Namespace 'root\\virtualization\\v2' -ClassName Msvm_ComputerSystem -Filter "ElementName='\$VmName'"/u);
+  assert.match(scriptCode, /Test-LabVmIdGate \$true \$env:ALBERA_LAB_VM/u);
+  assert.doesNotMatch(scriptCode, /Get-VM\b|Import-Module Hyper-V|Set-VM|Start-VM|Stop-VM|Remove-VM|Checkpoint-VM/u, 'the Hyper-V PowerShell module is not loaded and no VM is changed');
+  assert.ok(scriptCode.indexOf('Stop-Refused \'-VmId is lab-only') > 0);
+  // uninstall removes the SID BEFORE the service goes (a deleted service leaves its SID in the group), and the record is what decides
+  assert.match(scriptCode, /if \(Test-ManifestHas 'hyperVGrant'\) \{ return @\(Get-HyperVRevokeStep\) \+ \$steps \}/u);
+  assert.ok(scriptCode.indexOf("Revoke-BrokerHyperV }") > 0);
+});
+
+test('Hyper-V grant, command line: the option only applies to install (and its plan); -VmId is lab-only and needs the option; install still needs elevation', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
+  const before = snapshot();
+  const VM = '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f';
+  for (const mode of [['-Mode', 'status'], ['-Mode', 'hashes'], ['-Mode', 'plan', '-PlanFor', 'uninstall']]) {
+    const result = host([...mode, '-GrantHyperVToBroker'], { allowFail: true });
+    assert.equal(result.code, 2, mode.join(' '));
+    assert.match(result.stdout, /-GrantHyperVToBroker only applies to -Mode install/u);
+  }
+  const notLab = host(['-Mode', 'plan', '-GrantHyperVToBroker', '-VmId', VM], { allowFail: true, env: { ALBERA_LAB_VM: '' } });
+  assert.equal(notLab.code, 2);
+  assert.match(notLab.stdout, /-VmId is lab-only/u);
+  const noOption = host(['-Mode', 'plan', '-VmId', VM], { allowFail: true, env: { ALBERA_LAB_VM: '1' } });
+  assert.equal(noOption.code, 2);
+  assert.match(noOption.stdout, /-VmId only applies together with -GrantHyperVToBroker/u);
+  for (const bad of ['not-a-guid', VM.toUpperCase()]) {
+    const result = host(['-Mode', 'plan', '-GrantHyperVToBroker', '-VmId', bad], { allowFail: true, env: { ALBERA_LAB_VM: '1' } });
+    assert.equal(result.code, 2, bad);
+    assert.match(result.stdout, /-VmId is not a lowercase GUID/u);
+  }
+  for (const bad of ['bad name!', '../x', "a'b"]) assert.equal(host(['-Mode', 'plan', '-GrantHyperVToBroker', '-VmName', bad], { allowFail: true }).code, 2, `-VmName ${bad}`);
+  // install with the option is refused like install without it when the console is not elevated, before any step
+  const install = host(['-Mode', 'install', '-GrantHyperVToBroker', '-VmName', 'albera-clone-01'], { env: { ALBERA_HOST_ASSUME_NOT_ELEVATED: '1' }, allowFail: true });
+  assert.equal(install.code, 3);
+  assert.match(install.stdout, /REFUSED: install needs an elevated console/u);
+  assert.doesNotMatch(install.stdout, /^\s*\d+\. /mu);
+  assert.deepEqual(snapshot(), before);
+});
+
+test('Hyper-V grant, pure helpers: the plan names the Broker SID only; the Broker is unrestricted exactly when the record says so; the config gets `computers` only then; a forged record names nobody else', needsWindows, () => {
+  const { r } = lib();
+  const tooMany = 'hyperv_grant_member_not_the_broker_service_sid';
+  assert.equal(r.hvConstant, 'S-1-5-32-578');
+  assert.deepEqual({ ...r.hvPlan }, { group: 'S-1-5-32-578', member: r.sidBroker, memberIsBroker: true });
+  assert.equal(r.hvPlanNoCpYet, r.sidBroker, 'before albera-cp exists the plan is the same');
+  for (const [name, message] of Object.entries(r.hvPlanRefused)) assert.equal(message, tooMany, `${name}: Control Plane, Authority, another service, Administrators or nothing can never be the member`);
+  assert.equal(Object.keys(r.hvPlanRefused).length, 7);
+  // status: the Broker must be in, albera-cp and the Authority out
+  assert.equal(r.hvMembers.ok, 0);
+  assert.deepEqual(r.hvMembers.brokerMissing, ['broker_not_a_member']);
+  assert.deepEqual(r.hvMembers.controlPlaneIn, ['control_plane_is_a_member']);
+  assert.deepEqual(r.hvMembers.authorityIn, ['authority_is_a_member']);
+  assert.deepEqual(r.hvMembers.empty, ['broker_not_a_member']);
+  // GUIDs and the name lookup
+  assert.deepEqual(r.vmGuid, [true, false, false, false, false, false, false, false], 'lowercase 8-4-4-4-12 only: no upper case, braces, trailing newline, zero GUID or id');
+  const GUID = '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f';
+  assert.deepEqual({ ...r.vmPick.one }, { Ok: true, VmId: GUID, Reason: '' }, 'the Hyper-V GUID (upper case in WMI) comes back lowercase');
+  assert.equal(r.vmPick.caseInsensitiveName.Ok, true);
+  for (const name of ['none', 'otherName', 'hostIsNoVm']) assert.deepEqual({ ...r.vmPick[name] }, { Ok: false, VmId: null, Reason: 'vm_not_found' }, name);
+  assert.deepEqual({ ...r.vmPick.twoWithTheName }, { Ok: false, VmId: null, Reason: 'vm_name_ambiguous' }, 'a name two VMs share is refused, never guessed');
+  assert.equal(r.vmPick.hostAndOne.VmId, GUID, 'the host computer system (its Name is the computer name) is skipped');
+  assert.equal(r.vmPick.nullEntry.VmId, GUID);
+  assert.deepEqual({ ...r.vmIdGate }, { lab: true, notLab: 'vm_id_parameter_is_lab_only', wrongValue: 'vm_id_parameter_is_lab_only', notSupplied: true });
+  // the Broker config: unchanged without the option; with it the one optional key, last, in the shape ServiceConfig.cs reads
+  assert.deepEqual(r.hvPlainSame, { noArgument: true, nullComputers: true, emptyComputers: true, hasNoComputersKey: true });
+  assert.deepEqual(r.hvComputers, [{ computerId: 'clone-01', vmId: GUID }]);
+  assert.deepEqual(r.hvGrantKeys, ['pipeName', 'database', 'authorityKeys', 'controlPlaneSid', 'generation', 'leaseId', 'policyVersion', 'computers']);
+  assert.deepEqual(r.hvGrantReasons, []);
+  const grant = JSON.parse(r.hvGrantJson);
+  assert.deepEqual(grant.computers, [{ computerId: 'clone-01', vmId: GUID }]);
+  assert.ok(Buffer.byteLength(r.hvGrantJson) < 4096);
+  assert.deepEqual(r.hvGrantComputersMatch, { same: true, otherVm: false, otherId: false, plain: false, junk: false });
+  const csSource = readFileSync(path.join(root, 'src', 'runtime', 'windows-broker', 'ServiceConfig.cs'), 'utf8');
+  assert.match(csSource, /private static readonly string\[\] ComputerFields = \["computerId", "vmId"\];/u);
+  assert.match(csSource, /private const string ComputersKey = "computers";/u);
+  assert.match(csSource, /private const int MaxComputers = 8;/u);
+  for (const name of ['upperGuid', 'wrongShape', 'zeroGuid', 'extraField', 'missingField', 'notAnArray', 'isNull', 'duplicateVm', 'duplicateId', 'badId', 'nineEntries']) assert.deepEqual(r.hvGrantBad[name], ['computers'], `computers: ${name} is refused like ServiceConfig.ReadComputers refuses it`);
+  assert.deepEqual(r.hvGrantBad.eightEntries, [], 'eight entries is the limit');
+  assert.deepEqual({ ...r.hvComputersBad }, { id: 'computer_id_invalid', vm: 'vm_id_invalid' });
+  // the SID type
+  assert.deepEqual({ ...r.sidTypeExpected }, { brokerPlain: 'restricted', brokerGranted: 'unrestricted', authorityPlain: 'restricted', authorityGranted: 'restricted', unknownServiceGranted: 'restricted' });
+  assert.equal(r.sidTypeFacts.grantedOk, 0);
+  assert.deepEqual(r.sidTypeFacts.grantedButRestricted, ['sid_type_not_unrestricted']);
+  assert.deepEqual(r.sidTypeFacts.grantedButNone, ['sid_type_not_unrestricted']);
+  assert.deepEqual(r.sidTypeFacts.plainButUnrestricted, ['sid_type_not_restricted'], 'without the record, unrestricted is still drift (the old check, unchanged)');
+  assert.deepEqual(r.sidTypeFacts.plainButUnrestrictedExplicit, ['sid_type_not_restricted']);
+  assert.equal(r.sidTypeFacts.plainOk, 0);
+  assert.deepEqual(r.sidTypeFacts.grantedStillMinimalPrivileges, ['privileges_not_minimal'], 'SeChangeNotifyPrivilege only, with or without the grant');
+  assert.match(r.sidTypeFacts.badExpectation, /ValidateSet|none/u);
+  // a member without an objectSid (a service's virtual account) is read from its WinNT path
+  assert.deepEqual({ ...r.winNtPaths.sid }, { Sid: 'S-1-5-80-1-2-3-4-5', Account: null });
+  assert.deepEqual({ ...r.winNtPaths.service }, { Sid: null, Account: 'NT SERVICE\\AlberaHostBroker' });
+  assert.deepEqual({ ...r.winNtPaths.local }, { Sid: null, Account: '.\\albera-cp' });
+  assert.deepEqual({ ...r.winNtPaths.withMachine }, { Sid: null, Account: 'NT SERVICE\\AlberaHostBroker' });
+  for (const name of ['junk', 'nothing', 'badSid']) assert.equal(r.winNtPaths[name], null, name);
+  // the install record
+  assert.equal(r.hvRecord.ok, 0);
+  assert.equal(r.hvRecord.noRecordStillOk, 0, 'an install without the option has no record and is a valid manifest as before');
+  for (const name of ['controlPlaneSid', 'authoritySid', 'otherGroup', 'badVm', 'badComputer', 'extraKey', 'missingKey', 'notADictionary']) assert.deepEqual(r.hvRecord[name], ['hyperv_grant_record'], name);
+});
+
+test('Hyper-V grant, step list and plan (fakes for the machine): two more steps with the option, the old ten and six without; the VM is looked up before anything is created and the SID leaves before the service goes', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+  const r = harness(t, 'hyperv');
+  const ten = ['sources', 'approver', 'dataroot', 'user', 'services', 'folders', 'binaries', 'key', 'configs', 'finish'];
+  assert.deepEqual(r.defaultInstallIds, ten, 'without the option: the ten steps of today');
+  assert.deepEqual(r.defaultUninstallIds, ['services', 'key', 'installroot', 'data', 'user', 'manifest'], 'without a record: the six removal steps of today');
+  assert.deepEqual(r.grantInstallIds, ['sources', 'approver', 'vm', 'dataroot', 'user', 'services', 'hyperv', 'folders', 'binaries', 'key', 'configs', 'finish']);
+  assert.ok(r.grantInstallIds.indexOf('vm') < r.grantInstallIds.indexOf('dataroot'), 'a missing or ambiguous VM stops the run before anything is created');
+  assert.ok(r.grantInstallIds.indexOf('services') < r.grantInstallIds.indexOf('hyperv'));
+  assert.doesNotMatch(r.defaultServicesTitle, /UNRESTRICTED|Hyper-V/u, 'the default plan text is unchanged');
+  assert.match(r.defaultServicesTitle, /restricted SID, SeChangeNotifyPrivilege only, start=demand/u);
+  assert.equal(r.defaultConfigsDetail, 5);
+  assert.match(r.grantServicesTitle, /Broker's SID type is UNRESTRICTED instead \(Hyper-V refuses a restricted token\), the Authority stays restricted/u);
+  assert.equal(r.grantConfigsDetail.length, 6);
+  assert.match(r.grantConfigsDetail[5], /computers: clone-01 -> <GUID of the VM albera-clone-01>/u);
+  assert.match(r.grantTitles[1], /Add ONLY the Broker's service SID \(S-1-5-80(-\d+){5}\) to BUILTIN\\Hyper-V Administrators \(S-1-5-32-578\)/u);
+  assert.doesNotMatch(r.grantTitles.join('\n'), /albera-cp/u);
+  // what the owner reads in a plan
+  assert.deepEqual([...r.planDefault.matchAll(/^\s*(\d+)\. \[/gmu)].map((m) => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.doesNotMatch(r.planDefault, /Hyper-V|GrantHyperV|UNRESTRICTED/u, 'the default plan does not mention the option at all');
+  const grantPlan = [...r.planGrant.matchAll(/^\s*(\d+)\. \[(\w+)\] (.*)$/gmu)].map((m) => [Number(m[1]), m[2], m[3]]);
+  assert.deepEqual(grantPlan.map((row) => row[0]), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  assert.match(grantPlan[2][2], /^Look up the GUID of the virtual machine albera-clone-01/u);
+  assert.equal(grantPlan[2][1], 'todo', 'the fake VM list has the VM');
+  assert.match(grantPlan[6][2], /^Add ONLY the Broker's service SID/u);
+  assert.match(r.planGrant, /its GUID goes into the Broker config as computers: clone-01 -> <guid>; the Broker queries by GUID and never by name/u);
+  assert.match(r.planGrant, /uninstall removes the SID from the group first, before the service is deleted/u);
+  // lookup
+  assert.deepEqual({ ...r.lookupFound }, { kind: 'ok', id: '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f', test: 'todo', filter: "cim ElementName='albera-clone-01'" });
+  assert.equal(r.lookupNone.kind, 'refused');
+  assert.match(r.lookupNone.test, /^blocked:no virtual machine is named albera-clone-01/u);
+  assert.equal(r.lookupHostOnly, 'refused');
+  assert.equal(r.lookupTwo.kind, 'refused');
+  assert.match(r.lookupTwo.test, /^blocked:more than one virtual machine is named albera-clone-01/u);
+  assert.equal(r.lookupUnreadable.kind, 'unreadable');
+  assert.match(r.lookupUnreadable.test, /^unknown:the Hyper-V virtual machine list could not be read \(needs an elevated console and the Hyper-V role\): Access denied \(fake\)/u, 'a plan without admin rights says unknown, not blocked');
+  assert.deepEqual({ ...r.labVmId }, { kind: 'ok', id: '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f', cimCalls: 0 }, '-VmId (lab) replaces the lookup');
+});
+
+test('Hyper-V grant, the group change (fakes for the machine): only the Broker SID goes in, the record is written first, a second run adds nothing, uninstall removes only that SID and stops if it will not leave', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+  const r = harness(t, 'hyperv');
+  const BROKER = r.grantMembers[0];
+  assert.match(BROKER, /^S-1-5-80(-\d+){5}$/u);
+  const CP = 'S-1-5-21-1111111111-2222222222-3333333333-1500';
+  const GUID = '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f';
+  assert.equal(r.grantTestBefore, 'todo');
+  assert.equal(r.grantError, null);
+  assert.deepEqual(r.grantCalls, [`add S-1-5-32-578 ${BROKER}`], 'exactly one change: the Broker service SID into Hyper-V Administrators');
+  assert.deepEqual(r.grantMembers, [BROKER]);
+  assert.ok(!r.grantMembers.includes(CP));
+  assert.deepEqual({ ...r.grantRecord }, { group: 'S-1-5-32-578', sid: BROKER, computerId: 'clone-01', vmId: GUID });
+  assert.deepEqual({ ...r.grantRecordOnDisk }, { group: 'S-1-5-32-578', sid: BROKER, computerId: 'clone-01', vmId: GUID }, 'the record is saved to the manifest');
+  assert.equal(r.grantTestAfter, 'done');
+  assert.deepEqual(r.grantUninstallIds, ['hyperv', 'services', 'key', 'installroot', 'data', 'user', 'manifest'], 'with a record the SID leaves first, before the service is deleted');
+  assert.match(r.planUninstall, /^\s*1\. \[todo\] Remove the Broker's service SID from Hyper-V Administrators \(the install record says -GrantHyperVToBroker added it\), BEFORE the service is deleted/mu);
+  assert.deepEqual(r.grantAgainCalls, [], 'a second run changes nothing');
+  assert.equal(r.grantAgainError, null);
+  // undo
+  assert.equal(r.revokeTestBefore, 'todo');   // (the removal is asked for without reading the member list first, so a failed read cannot leave the right in place)
+  assert.equal(r.revokeError, null);
+  assert.deepEqual(r.revokeCalls, [`remove S-1-5-32-578 ${BROKER}`], 'exactly one change, and it is the Broker SID');
+  assert.deepEqual(r.revokeMembers, ['S-1-5-21-1111111111-2222222222-3333333333-1234'], 'another member of the group is left alone');
+  assert.equal(r.revokeRecordGone, true);
+  assert.equal(r.revokeTestAfter, 'done');
+  assert.deepEqual(r.revokeUninstallIds, ['services', 'key', 'installroot', 'data', 'user', 'manifest']);
+  // refusals change nothing
+  assert.match(r.noVmError, /no virtual machine is named albera-clone-01/u);
+  assert.deepEqual({ ...r.noVmChanged }, { calls: 0, record: false });
+  assert.match(r.noGroupError, /Hyper-V Administrators\) does not exist on this PC; nothing was added/u);
+  assert.deepEqual({ ...r.noGroupChanged }, { calls: 0, record: false });
+  assert.match(r.cpMemberError, /Hyper-V Administrators is not as intended after the change: control_plane_is_a_member/u, 'albera-cp in the group makes the grant fail loudly');
+  assert.deepEqual(r.cpMemberCalls, [`add S-1-5-32-578 ${BROKER}`], 'and still only the Broker was ever added');
+  assert.match(r.cpEqualsBrokerError, /hyperv_grant_member_not_the_broker_service_sid/u);
+  assert.equal(r.cpEqualsBrokerCalls, 0);
+  assert.match(r.stuckError, /still in Hyper-V Administrators; the services were NOT deleted/u);
+  assert.equal(r.stuckRecordKept, true, 'the record stays, so a re-run tries again');
+  assert.equal(r.noGroupUndoError, null);
+  assert.equal(r.noGroupUndoCalls, 0);
+  assert.equal(r.noGroupUndoRecordGone, true);
+  assert.match(r.forgedRecordError, /the grant record does not name the Broker service SID; refusing to remove anything/u);
+  assert.equal(r.forgedRecordCalls, 0);
+});
+
+test('Hyper-V grant, docs: the option, the owner decision, the undo and what is not verified are written down in host-install.md', () => {
+  const doc = readFileSync(path.join(root, 'docs', 'architecture', 'host-install.md'), 'utf8');
+  assert.match(doc, /^## Giving the Broker Hyper-V \(`-GrantHyperVToBroker`, optional\)$/mu);
+  const section = doc.slice(doc.indexOf('## Giving the Broker Hyper-V'), doc.indexOf('## First approval'));
+  assert.ok(section.length > 500);
+  for (const needle of ['S-1-5-32-578', 'unrestricted', 'albera-cp', '-VmName', '-ComputerId', 'computers', 'install record', 'Remove-LocalGroupMember', 'Not verified', 'uninstall', 'ADR-002', 'sid_type_not_restricted']) assert.ok(section.includes(needle), `the section names ${needle}`);
+  assert.match(section, /Without the option nothing changes/u);
+  assert.match(section, /restricted token/u);
+  assert.match(section, /never added|never gets/u);
+  const adr = readFileSync(path.join(root, 'docs', 'architecture', 'adr-002-host-broker-trust-contract.md'), 'utf8');
+  assert.match(adr, /Owner decision \(2026-11-03\): option A, the Broker as a whole runs with an unrestricted service SID/u);
+});
+
+test('Hyper-V grant, lab hook: a second pass installs WITH the option and checks group, sid type, privileges, config and the undo; it is BLOCKED (not passed) when the guest has no Hyper-V Administrators group', () => {
+  const hook = readFileSync(labRunner, 'utf8');
+  assert.match(hook, /GrantHyperVToBroker/u);
+  assert.match(hook, /\$hvAdminsSid = 'S-1-5-32-578'/u);
+  assert.match(hook, /Get-LocalGroup -SID \$hvAdminsSid/u);
+  assert.match(hook, /'BLOCKED'/u);
+  assert.match(hook, /VmId = \$labVmId/u, 'the fixed GUID goes in through the lab-only -VmId');
+  for (const needle of ['UNRESTRICTED', 'SeChangeNotifyPrivilege', 'computers', 'albera-cp', 'NT SERVICE\\AlberaHostBroker', 'net.exe', 'groupBefore', 'groupAfter']) assert.ok(hook.includes(needle), `the hook checks ${needle}`);
+  assert.match(hook, /\$evidence\.grant = /u);
+  assert.match(hook, /\(\$evidence\.grant\.status -ne 'FAIL'\)/u, 'a FAIL in the grant pass fails the lab; BLOCKED is reported, never counted as passed');
+});
+
 test('the lab runner refuses to run outside the lab VM', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
   const result = ps(['-File', labRunner, '-HostScriptDir', hostDir, '-RepoRoot', root],{ allowFail: true, env: { ALBERA_LAB_VM: '' } });
   assert.notEqual(result.code, 0);

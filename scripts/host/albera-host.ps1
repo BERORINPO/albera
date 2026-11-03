@@ -11,6 +11,10 @@
 #   albera-host.ps1 -Mode hashes                              prints the per-file SHA-256 JSON and the line ALBERA_HOST_TREE_HASH=<hex> (for a CI run; NOT a proof by itself, see below)
 #   albera-host.ps1 -Mode install -ExpectedTreeHash <64 hex> -ApproverKeyId <hello-...> -ApproverPublicKey <spki> -ApproverSid <S-1-5-21-...>
 #                                                             install (elevated). Asks for the password of the new local account albera-cp.
+#   albera-host.ps1 -Mode install ... -GrantHyperVToBroker -VmName <the VM's name> [-ComputerId <id>]
+#                                                             OPTIONAL (ADR-002 Amendment 2026-11-03, host-install.md "Giving the Broker Hyper-V"): also puts ONLY the Broker's service SID into
+#                                                             BUILTIN\Hyper-V Administrators, makes the Broker's SID type unrestricted, and writes the VM's GUID (looked up now from -VmName) into the Broker config.
+#                                                             albera-cp is never added. Without this option nothing about the install changes. Uninstall removes the SID again (the install record says so).
 #   albera-host.ps1 -Mode status                              read-only report of what is installed and whether it still matches (exit 1 on any difference)
 #   albera-host.ps1 -Mode uninstall                           remove only what the install manifest says this script created (elevated)
 #
@@ -26,7 +30,7 @@
 #     of the reviewed commit (a parameter, not a file: a file in Downloads can be rewritten together with the builds). Run this script itself from a reviewed checkout.
 # install and uninstall refuse unless the console is elevated; they never elevate. A completed install re-run says so and changes nothing. A partial install is finished
 # from where it stopped, or refused with the reason. Nothing secret is printed or stored: only public values (SIDs, public keys, hashes, paths).
-# -ControlPlanePassword is for the disposable lab VM only and is refused unless the environment variable ALBERA_LAB_VM is 1.
+# -ControlPlanePassword and -VmId (a fixed VM GUID instead of the lookup) are for the disposable lab VM only and are refused unless the environment variable ALBERA_LAB_VM is 1.
 [CmdletBinding()]
 param(
   [ValidateSet('plan', 'install', 'uninstall', 'status', 'hashes')][string]$Mode = 'plan',
@@ -40,6 +44,8 @@ param(
   [string]$VmName,
   [string]$ComputerId,
   [switch]$StartCheck,
+  [switch]$GrantHyperVToBroker,
+  [string]$VmId,
   [securestring]$ControlPlanePassword
 )
 # ---------------------------------------------------------------------------------------------- module hijack guard: these are the first statements, before anything can auto-load a module
@@ -103,6 +109,12 @@ if ($ControlPlanePassword) {
   $gate = Test-LabPasswordGate $true $env:ALBERA_LAB_VM
   if ($gate) { Stop-Refused '-ControlPlanePassword is lab-only (disposable VM with ALBERA_LAB_VM=1)' 2 }
   if ($Mode -ne 'install') { Stop-Refused '-ControlPlanePassword only applies to -Mode install' 2 }
+}
+if ($GrantHyperVToBroker -and -not ($Mode -eq 'install' -or ($Mode -eq 'plan' -and $PlanFor -eq 'install'))) { Stop-Refused '-GrantHyperVToBroker only applies to -Mode install (and its plan); status and uninstall follow what the install record says' 2 }
+if ($VmId) {
+  if (Test-LabVmIdGate $true $env:ALBERA_LAB_VM) { Stop-Refused '-VmId is lab-only (disposable VM with ALBERA_LAB_VM=1); on a real PC the GUID is looked up from -VmName' 2 }
+  if (-not $GrantHyperVToBroker) { Stop-Refused '-VmId only applies together with -GrantHyperVToBroker' 2 }
+  if (-not (Test-VmGuid $VmId)) { Stop-Refused '-VmId is not a lowercase GUID' 2 }
 }
 if ($ExpectedTreeHash -and -not (Test-TreeHashValue $ExpectedTreeHash)) { Stop-Refused '-ExpectedTreeHash must be 64 lowercase hex characters (the ALBERA_HOST_TREE_HASH value of the CI run)' 2 }
 if ($ApproverKeyId -and -not (Test-HostId $ApproverKeyId)) { Stop-Refused '-ApproverKeyId is not a valid key id' 2 }
@@ -206,8 +218,15 @@ function Get-LocalGroupMemberSids([string]$GroupSid) {
   $group = [ADSI]"WinNT://./$name,group"
   @($group.Invoke('Members') | ForEach-Object {
       $entry = New-Object System.DirectoryServices.DirectoryEntry($_)
-      (New-Object System.Security.Principal.SecurityIdentifier([byte[]]$entry.InvokeGet('objectSid'), 0)).Value
+      try { (New-Object System.Security.Principal.SecurityIdentifier([byte[]]$entry.InvokeGet('objectSid'), 0)).Value }
+      catch { Resolve-MemberPathSid ([string]$entry.Path) }   # a member without an objectSid property (a service's virtual account): from its path
     })
+}
+function Resolve-MemberPathSid([string]$Path) {
+  $p = ConvertFrom-WinNTMemberPath $Path
+  if ($null -eq $p) { throw "cannot read the SID of a group member ($Path)" }
+  if ($p.Sid) { return $p.Sid }
+  (New-Object System.Security.Principal.NTAccount($p.Account)).Translate([System.Security.Principal.SecurityIdentifier]).Value
 }
 
 # ---------------------------------------------------------------------------------------------- the install manifest (what this script created; nothing else is ever removed)
@@ -349,10 +368,11 @@ function Assert-PlannedPathTrusted($Entry) {
 
 # ---------------------------------------------------------------------------------------------- install steps: each has a read-only Test (-> done / todo / blocked:<why> / unknown:<why>) and a Do
 function Get-InstallSteps {
-  @(
+  $steps = @(
     [pscustomobject]@{ Id = 'sources'; Title = 'Check -ExpectedTreeHash (the tree hash of the reviewed build, typed from the CI log) and list the three publish folders; nothing in the repository is executed'
       Detail = @("publish folders are read from $RepoRoot\src\runtime\...\publish (npm run build:windows-broker, npm run build:approval-authority); the COPIES are hashed later and their tree hash must equal the value you typed", 'a link or junction in a publish folder is refused')
       Test = {
+        if (-not $GrantHyperVToBroker -and (Test-ManifestHas 'hyperVGrant')) { return 'blocked:the install record says the Hyper-V grant was made; run again WITH -GrantHyperVToBroker to finish it, or uninstall first' }
         $st = Get-ExpectedTreeHashState; if (-not $st.Ok) { return 'blocked:' + $st.Reason }
         foreach ($s in (Get-BuildSources)) {
           if (-not [System.IO.Directory]::Exists($s.Dir)) { return "blocked:$($s.Name): publish folder missing (run $($s.Build))" }
@@ -384,7 +404,7 @@ function Get-InstallSteps {
         if ($live) { return "blocked:a local user named $($K.ControlPlaneUser) already exists and was not created by this script; it is never adopted" }
         'todo' }
       Do = { New-ControlPlaneUser } }
-    [pscustomobject]@{ Id = 'services'; Title = "Create services $($K.BrokerService) and $($K.AuthorityService) (own process, NT SERVICE virtual account, restricted SID, SeChangeNotifyPrivilege only, start=demand)"
+    [pscustomobject]@{ Id = 'services'; Title = "Create services $($K.BrokerService) and $($K.AuthorityService) (own process, NT SERVICE virtual account, restricted SID, SeChangeNotifyPrivilege only, start=demand)" + $(if ($GrantHyperVToBroker) { "; WITH -GrantHyperVToBroker the Broker's SID type is UNRESTRICTED instead (Hyper-V refuses a restricted token), the Authority stays restricted" } else { '' })
       Detail = @("$($K.BrokerService) service ACL: SYSTEM and Administrators full, $($K.ControlPlaneUser) only SERVICE_QUERY_STATUS (LC)", 'the services are NOT started by install; you start them (Start-Service) when you are ready')
       Test = {
         $states = foreach ($spec in (Get-ServiceSpecs)) {
@@ -393,7 +413,10 @@ function Get-InstallSteps {
           if ($exists -and -not $mine) { 'blocked:service ' + $spec.Name + ' already exists and was not created by this script' } elseif ($exists) { 'done' } else { 'todo' }
         }
         $b = @($states | Where-Object { $_ -like 'blocked:*' }); if ($b.Count) { return $b[0] }
-        if (@($states | Where-Object { $_ -ne 'done' }).Count -eq 0) { 'done' } else { 'todo' } }
+        if (@($states | Where-Object { $_ -ne 'done' }).Count -ne 0) { return 'todo' }
+        # an install begun without the option and finished with it: the Broker exists but is still restricted
+        if ($GrantHyperVToBroker -and (Get-ServiceFactsFor $K.BrokerService).SidTypeText -cnotmatch '(?<![A-Za-z])UNRESTRICTED') { return 'todo' }
+        'done' }
       Do = { New-HostServices } }
     [pscustomobject]@{ Id = 'folders'; Title = "Create the folders, each born with its final ACL (inheritance removed) and read back: $($L.InstallRoot); $($L.DataRoot)\{broker-config,broker,authority,control-plane}"
       Detail = @('SYSTEM and Administrators full everywhere; Broker SID Modify on broker\ only; Authority SID Modify on authority\ only; albera-cp full control on control-plane\ only (its journal requires it)', 'an existing folder is used only if it is owned by SYSTEM/Administrators, has no other writer and is reached through no link; otherwise the run stops')
@@ -424,14 +447,31 @@ function Get-InstallSteps {
         'todo' }
       Do = { New-HostSigningKey } }
     [pscustomobject]@{ Id = 'configs'; Title = "Write the Broker config, the Authority config and the Control Plane settings (an existing file must pass the same trust checks and is overwritten)"
-      Detail = @($L.BrokerConfig, $L.AuthorityConfig, "$($L.ApprovalSettings)  (attestation null; computers: $VmName -> $ComputerId, project $ProjectId)", 'no policy.json is written: the Authority starts at tier careful (every action needs a person)', 'service-check is not run: from an elevated console it cannot judge a config (config_untrusted), and it would execute a build; the first service start is the real test')
-      Test = { if ((Test-Path -LiteralPath $L.BrokerConfig) -and (Test-Path -LiteralPath $L.AuthorityConfig) -and (Test-Path -LiteralPath $L.ApprovalSettings)) { 'done' } else { 'todo' } }
+      Detail = @($L.BrokerConfig, $L.AuthorityConfig, "$($L.ApprovalSettings)  (attestation null; computers: $VmName -> $ComputerId, project $ProjectId)", 'no policy.json is written: the Authority starts at tier careful (every action needs a person)', 'service-check is not run: from an elevated console it cannot judge a config (config_untrusted), and it would execute a build; the first service start is the real test') + $(if ($GrantHyperVToBroker) { @("Broker config also gets computers: $ComputerId -> <GUID of the VM $VmName>, which creates the Broker's desktop pipe") } else { @() })
+      Test = {
+        if (-not ((Test-Path -LiteralPath $L.BrokerConfig) -and (Test-Path -LiteralPath $L.AuthorityConfig) -and (Test-Path -LiteralPath $L.ApprovalSettings))) { return 'todo' }
+        # an install begun without the option and finished with it: the Broker config exists but has no computers yet
+        if ($GrantHyperVToBroker) {
+          $vm = Resolve-BrokerVm
+          try { if (($vm.Kind -eq 'ok') -and (Test-BrokerConfigComputers ([System.IO.File]::ReadAllText($L.BrokerConfig)) $ComputerId $vm.Id)) { return 'done' } } catch { }
+          return 'todo'
+        }
+        'done' }
       Do = { Write-HostConfigs } }
     [pscustomobject]@{ Id = 'finish'; Title = 'Record the install as complete in the manifest (services stay stopped)'
       Detail = @()
       Test = { if ($script:Manifest -and $script:Manifest['state'] -eq 'complete') { 'done' } else { 'todo' } }
       Do = { $script:Manifest['state'] = 'complete'; Save-Manifest; Say '    install complete' } }
   )
+  if (-not $GrantHyperVToBroker) { return $steps }
+  # With the option: the VM lookup comes right after the checks (nothing has been created yet if the VM is missing), the group change right after the services exist.
+  $withGrant = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($s in $steps) {
+    $withGrant.Add($s)
+    if ($s.Id -eq 'approver') { $withGrant.Add((Get-HyperVVmStep)) }
+    if ($s.Id -eq 'services') { $withGrant.Add((Get-HyperVGrantStep)) }
+  }
+  $withGrant.ToArray()
 }
 
 function Set-ApproverValues {
@@ -474,19 +514,90 @@ function New-HostServices {
       Invoke-Sc (Get-ScCreateArguments $spec.Name $spec.Exe $spec.Config) | Out-Null
       $script:Manifest['created']['services'] = @($script:Manifest['created']['services']) + $spec.Name; Save-Manifest
     }
-    Invoke-Sc "sidtype $($spec.Name) restricted" | Out-Null
+    # restricted for both services, except the Broker of an install WITH -GrantHyperVToBroker (Get-ExpectedSidType is the one place that decides)
+    if ((Get-ExpectedSidType $spec.Name $GrantHyperVToBroker) -ceq 'unrestricted') { Invoke-Sc "sidtype $($spec.Name) unrestricted" | Out-Null } else { Invoke-Sc "sidtype $($spec.Name) restricted" | Out-Null }
     Invoke-Sc "privs $($spec.Name) SeChangeNotifyPrivilege" | Out-Null
   }
   Resolve-HostSids
   Invoke-Sc ("sdset $($K.BrokerService) " + (Quote-NativeArg (Get-BrokerServiceSddl $script:Sids.ControlPlane))) | Out-Null
   foreach ($spec in (Get-ServiceSpecs)) {
-    $bad = Test-ServiceFacts (Get-ServiceFactsFor $spec.Name) $spec.Name (Get-ServiceCommandLine $spec.Exe $spec.Config)
+    $bad = Test-ServiceFacts (Get-ServiceFactsFor $spec.Name) $spec.Name (Get-ServiceCommandLine $spec.Exe $spec.Config) (Get-ExpectedSidType $spec.Name $GrantHyperVToBroker)
     if ($bad.Count -gt 0) { throw "service $($spec.Name) is not as intended: $($bad -join ', ')" }
   }
   $sd = (Invoke-Sc "sdshow $($K.BrokerService)").Out.Trim()
   $badSd = Test-ServiceSdMatches $sd $script:Sids.ControlPlane
   if ($badSd.Count -gt 0) { throw "the Broker service ACL is not as intended: $($badSd -join ', ')" }
   Say "    services created; Broker SID $($script:Sids.Broker), Authority SID $($script:Sids.Authority)"
+}
+
+# ---------------------------------------------------------------------------------------------- the Hyper-V grant (-GrantHyperVToBroker; ADR-002 Amendment 2026-11-03)
+# The only code that adds or removes a member of Hyper-V Administrators is Grant-BrokerHyperV / Revoke-BrokerHyperV below, and both take the group and the member from Get-HyperVGrantPlan, which can only
+# return the Broker's own derived service SID (never albera-cp, never the Authority). A test pins that no other call exists.
+$script:ResolvedVm = $null
+# Read only. root\virtualization\v2 needs an administrator (or a Hyper-V Administrators member). $VmName passed the id grammar (no quote character), so it is safe inside the WQL filter.
+function Get-VmCandidates {
+  @(Get-CimInstance -Namespace 'root\virtualization\v2' -ClassName Msvm_ComputerSystem -Filter "ElementName='$VmName'" -ErrorAction Stop)
+}
+# Kind: ok (Id is the lowercase GUID) | refused (the VM is missing or the name is not unique) | unreadable (the VM list could not be read). -VmId (lab only) replaces the lookup.
+function Resolve-BrokerVm {
+  if ($script:ResolvedVm) { return $script:ResolvedVm }
+  if ($VmId) { $script:ResolvedVm = [pscustomobject]@{ Kind = 'ok'; Id = $VmId; Message = '' }; return $script:ResolvedVm }
+  try { $candidates = Get-VmCandidates }
+  catch { return [pscustomobject]@{ Kind = 'unreadable'; Id = $null; Message = "the Hyper-V virtual machine list could not be read (needs an elevated console and the Hyper-V role): $($_.Exception.Message)" } }
+  $pick = Select-VmByName $candidates $VmName
+  if ($pick.Ok) { $script:ResolvedVm = [pscustomobject]@{ Kind = 'ok'; Id = $pick.VmId; Message = '' }; return $script:ResolvedVm }
+  $why = if ($pick.Reason -eq 'vm_name_ambiguous') { "more than one virtual machine is named $VmName; make the name unique first, otherwise the GUID would be a guess" } else { "no virtual machine is named $VmName (check the exact name in Hyper-V Manager); create it first or pass its exact name as -VmName" }
+  [pscustomobject]@{ Kind = 'refused'; Id = $null; Message = $why }
+}
+function Get-HyperVVmStep {
+  [pscustomobject]@{ Id = 'vm'; Title = "Look up the GUID of the virtual machine $VmName (read only; -GrantHyperVToBroker)"
+    Detail = @("exactly one VM must have that name; its GUID goes into the Broker config as computers: $ComputerId -> <guid>; the Broker queries by GUID and never by name", 'reading the VM list needs an elevated console (or Hyper-V Administrators), so a plan run without admin rights can only say "unknown"')
+    Test = { $vm = Resolve-BrokerVm; if ($vm.Kind -eq 'ok') { 'todo' } elseif ($vm.Kind -eq 'refused') { 'blocked:' + $vm.Message } else { 'unknown:' + $vm.Message } }
+    Do = { $vm = Resolve-BrokerVm; if ($vm.Kind -ne 'ok') { throw $vm.Message }; Say "    virtual machine $VmName is $($vm.Id)" } }
+}
+function Get-HyperVGrantStep {
+  [pscustomobject]@{ Id = 'hyperv'; Title = "Add ONLY the Broker's service SID ($(Get-DerivedServiceSid $K.BrokerService)) to BUILTIN\Hyper-V Administrators (S-1-5-32-578) and record it in the manifest (-GrantHyperVToBroker)"
+    Detail = @("$($K.ControlPlaneUser) and the Authority are never added; membership is all-or-nothing in Windows, so the Broker's code (a fixed allowlist: screen capture and keyboard/mouse of the one VM in its config) is what limits it",
+      'the record is written BEFORE the member is added and the membership is read back; uninstall removes the SID from the group first, before the service is deleted')
+    Test = {
+      if (-not (Test-ManifestHas 'services')) { return 'todo' }
+      try { Resolve-HostSids; $hv = Get-HyperVGrantPlan $script:Sids; if ((Test-ManifestHas 'hyperVGrant') -and ((Get-LocalGroupMemberSids $hv.Group) -contains $hv.Member)) { 'done' } else { 'todo' } } catch { 'todo' } }
+    Do = { Grant-BrokerHyperV } }
+}
+function Get-HyperVRevokeStep {
+  [pscustomobject]@{ Id = 'hyperv'; Title = "Remove the Broker's service SID from Hyper-V Administrators (the install record says -GrantHyperVToBroker added it), BEFORE the service is deleted"
+    Detail = @('a deleted service leaves its SID in the group, and the next service of that name would inherit the right: so the SID leaves first, is read back, and the run stops if it is still there', 'no other member of the group is touched')
+    Test = { if (Test-ManifestHas 'hyperVGrant') { 'todo' } else { 'done' } }
+    Do = { Revoke-BrokerHyperV } }
+}
+function Grant-BrokerHyperV {
+  Resolve-HostSids
+  $vm = Resolve-BrokerVm
+  if ($vm.Kind -ne 'ok') { throw $vm.Message }
+  $hv = Get-HyperVGrantPlan $script:Sids
+  if (-not (Get-LocalGroup -SID $hv.Group -ErrorAction SilentlyContinue)) { throw "the local group $($hv.Group) (Hyper-V Administrators) does not exist on this PC; nothing was added" }
+  # The record comes first: a crash before the add leaves a record for a SID that is not in the group (uninstall copes), never a member that nothing records.
+  $rec = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+  $rec['group'] = $hv.Group; $rec['sid'] = $hv.Member; $rec['computerId'] = $ComputerId; $rec['vmId'] = $vm.Id
+  $script:Manifest['created']['hyperVGrant'] = $rec; Save-Manifest
+  if ((Get-LocalGroupMemberSids $hv.Group) -notcontains $hv.Member) { Add-LocalGroupMember -SID $hv.Group -Member $hv.Member }
+  $bad = Test-HyperVMembers (Get-LocalGroupMemberSids $hv.Group) $script:Sids
+  if ($bad.Count -gt 0) { throw "Hyper-V Administrators is not as intended after the change: $($bad -join ', ')" }
+  Say "    Broker service SID $($hv.Member) is a member of Hyper-V Administrators ($($hv.Group)); read back. Control Plane and Authority are not. VM $ComputerId -> $($vm.Id)"
+}
+function Revoke-BrokerHyperV {
+  Resolve-HostSids
+  $hv = Get-HyperVGrantPlan $script:Sids
+  $rec = $script:Manifest['created']['hyperVGrant']
+  if ($rec['sid'] -cne $hv.Member -or $rec['group'] -cne $hv.Group) { throw 'internal: the grant record does not name the Broker service SID; refusing to remove anything' }
+  if (Get-LocalGroup -SID $hv.Group -ErrorAction SilentlyContinue) {
+    # Removed without asking first (asking needs a readable member list, and a failed read must not leave the right in place); "not a member" is fine, the read-back below is what counts.
+    try { Remove-LocalGroupMember -SID $hv.Group -Member $hv.Member } catch { Say "    Remove-LocalGroupMember said: $($_.Exception.Message)" }
+    if ((Get-LocalGroupMemberSids $hv.Group) -contains $hv.Member) { throw "the Broker service SID $($hv.Member) is still in Hyper-V Administrators; the services were NOT deleted. Remove it yourself (Remove-LocalGroupMember -SID $($hv.Group) -Member $($hv.Member)) and run uninstall again" }
+    Say "    removed the Broker service SID from Hyper-V Administrators; read back"
+  }
+  else { Say '    the group Hyper-V Administrators does not exist on this PC; nothing to remove' }
+  $script:Manifest['created'].Remove('hyperVGrant') | Out-Null; Save-Manifest
 }
 
 # A folder born with its final descriptor (New-SecuredDirectory reads back owner, protected DACL and accounts) and then re-checked with the SAME trust test used for existing folders (owner SYSTEM/Administrators,
@@ -600,7 +711,13 @@ function Write-HostConfigs {
   if (-not $script:Approver) { throw 'internal: approver values missing' }
   $spki = $script:Manifest['values']['authoritySpki']
   $cp = $script:Sids.ControlPlane
-  $brokerJson = ConvertTo-HostJson (Get-BrokerConfig $L $cp $spki)
+  $computers = $null
+  if ($GrantHyperVToBroker) {
+    $vm = Resolve-BrokerVm
+    if ($vm.Kind -ne 'ok') { throw $vm.Message }
+    $computers = Get-BrokerComputers $ComputerId $vm.Id
+  }
+  $brokerJson = ConvertTo-HostJson (Get-BrokerConfig $L $cp $spki $computers)
   $authorityJson = ConvertTo-HostJson (Get-AuthorityConfig $cp $script:Approver)
   $settingsJson = ConvertTo-HostJson (Get-ControlPlaneSettings $L $ProjectId $VmName $ComputerId)
   foreach ($pair in @(@('broker config', (Test-BrokerConfigText $brokerJson)), @('authority config', (Test-AuthorityConfigText $authorityJson)))) {
@@ -656,6 +773,7 @@ function Get-StatusLines {
   if ($script:ManifestNote) { Add-Line 'unknown' $script:ManifestNote; return , $lines.ToArray() }
   if (-not $script:Manifest) { return , $lines.ToArray() }
   $M = $script:Manifest
+  $grantRecorded = [bool](Test-ManifestHas 'hyperVGrant')
   Add-Line $(if ($M['state'] -eq 'complete') { 'ok' } else { 'FAIL' }) "install state: $($M['state'])"
   try {
     Resolve-HostSids
@@ -668,13 +786,17 @@ function Get-StatusLines {
     }
     foreach ($spec in (Get-ServiceSpecs)) {
       $facts = Get-ServiceFactsFor $spec.Name
-      $bad = Test-ServiceFacts $facts $spec.Name (Get-ServiceCommandLine $spec.Exe $spec.Config)
+      $bad = Test-ServiceFacts $facts $spec.Name (Get-ServiceCommandLine $spec.Exe $spec.Config) (Get-ExpectedSidType $spec.Name $grantRecorded)
       if ($spec.Name -eq $K.BrokerService -and $facts.Exists) {
         # Assign first: the test functions return , @(list), and @(call) would keep the outer array, so an empty result would count as one item.
         $badSd = Test-ServiceSdMatches (Invoke-Native $ScExe "sdshow $($spec.Name)").Out.Trim() $script:Sids.ControlPlane
         $bad = @($bad) + @($badSd)
       }
       Add-Line $(if ($bad.Count -eq 0) { 'ok' } else { 'FAIL' }) ("service $($spec.Name): " + $(if ($bad.Count -eq 0) { "as installed (state $($facts.State))" } else { $bad -join ', ' }))
+    }
+    if ($grantRecorded) {
+      $hvBad = Test-HyperVMembers @(Get-LocalGroupMemberSids $K.HyperVAdminsSid) $script:Sids
+      Add-Line $(if ($hvBad.Count -eq 0) { 'ok' } else { 'FAIL' }) ('Hyper-V Administrators: ' + $(if ($hvBad.Count -eq 0) { "the Broker service SID is a member; $($K.ControlPlaneUser) and the Authority are not" } else { $hvBad -join ', ' }))
     }
     foreach ($entry in (Get-AclPlan $L $script:Sids)) {
       if (-not (Test-Path -LiteralPath $entry.Path)) { Add-Line 'FAIL' "folder $($entry.Path): missing"; continue }
@@ -701,6 +823,11 @@ function Get-StatusLines {
       $r = if ($pair[2] -eq 'Broker') { Test-BrokerConfigText $text } else { Test-AuthorityConfigText $text }
       Add-Line $(if ($r.Count -eq 0) { 'ok' } else { 'FAIL' }) ("$($pair[0]): " + $(if ($r.Count -eq 0) { 'shape valid' } else { $r -join ', ' }))
     }
+    if ($grantRecorded -and (Test-Path -LiteralPath $L.BrokerConfig)) {
+      $rec = $M['created']['hyperVGrant']
+      $same = Test-BrokerConfigComputers ([System.IO.File]::ReadAllText($L.BrokerConfig)) $rec['computerId'] $rec['vmId']
+      Add-Line $(if ($same) { 'ok' } else { 'FAIL' }) ('Broker config computers: ' + $(if ($same) { "$($rec['computerId']) -> $($rec['vmId']), as recorded" } else { 'not the one computer the install recorded' }))
+    }
     Add-Line $(if (Test-Path -LiteralPath $L.ApprovalSettings) { 'ok' } else { 'FAIL' }) "Control Plane settings: $(if (Test-Path -LiteralPath $L.ApprovalSettings) { 'present' } else { 'missing' })"
   }
   catch { Add-Line 'unknown' ('status check could not finish (is this console elevated?): ' + $_.Exception.Message) }
@@ -719,7 +846,7 @@ function Show-Status {
 # ---------------------------------------------------------------------------------------------- uninstall steps
 # Uninstall acts on FIXED names only (the two services, the one key, the one account, the two roots), and only when the (trusted) manifest also lists them.
 function Get-UninstallSteps {
-  @(
+  $steps = @(
     [pscustomobject]@{ Id = 'services'; Title = "Stop and delete the services this script created ($($K.BrokerService), $($K.AuthorityService))"; Detail = @('a service whose command line is not the one install wrote is left alone and reported')
       Test = { $mine = if (Test-ManifestHas 'services') { @($script:Manifest['created']['services']) } else { @() }; if (@(Get-ServiceSpecs | Where-Object { $mine -contains $_.Name } | Where-Object { Get-CimInstance Win32_Service -Filter "Name='$($_.Name)'" }).Count -gt 0) { 'todo' } else { 'done' } }
       Do = { Remove-HostServices } }
@@ -747,6 +874,9 @@ function Get-UninstallSteps {
         if ($left.Count -gt 0) { throw "$($L.DataRoot) still holds: $(($left | ForEach-Object { $_.Name }) -join ', '); left in place" }
         Remove-Item -LiteralPath $L.ManifestPath -Force; Remove-Item -LiteralPath $L.DataRoot -Force; Say '    manifest and data root removed' } }
   )
+  # The group change is undone FIRST, while the service still exists: a deleted service leaves its SID in the group.
+  if (Test-ManifestHas 'hyperVGrant') { return @(Get-HyperVRevokeStep) + $steps }
+  $steps
 }
 function Remove-HostServices {
   foreach ($spec in (Get-ServiceSpecs)) {
@@ -818,6 +948,7 @@ try {
     'install' {
       if ($script:Manifest -and $script:Manifest['state'] -eq 'complete') {
         Say 'The install is already complete; checking it (nothing will be changed).'
+        if ($GrantHyperVToBroker -and -not (Test-ManifestHas 'hyperVGrant')) { Say 'NOTE: -GrantHyperVToBroker was given, but this install was made without it, so NOTHING was granted. To add the grant: uninstall, then install again with the option.' }
         exit (Show-Status)
       }
       $n = 0
@@ -834,6 +965,7 @@ try {
       Say 'Installed. The services are stopped (start=demand). Next, in this elevated console:'
       Say "  Start-Service $($K.BrokerService); Start-Service $($K.AuthorityService)"
       Say 'then see docs/architecture/host-install.md ("First approval") for albera-runtime approval-check.'
+      if ($GrantHyperVToBroker) { Say "The Broker's service SID is in Hyper-V Administrators and its SID type is unrestricted. Undo: -Mode uninstall removes the SID from the group first (host-install.md, 'Giving the Broker Hyper-V')." }
       exit 0
     }
     'uninstall' {

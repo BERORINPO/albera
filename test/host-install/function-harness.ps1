@@ -2,9 +2,9 @@
 # The functions are taken out of the real script by name (PowerShell AST), so the code under test is the shipped code, not a copy. Nothing outside -Work is touched:
 # no service, account, key or Program Files folder is involved (those need an elevated console and the VM lab). The temp folders are owned by the current (non-admin) user, which is
 # exactly what a planted folder looks like to the installer.
-#   function-harness.ps1 -Case <copy|hashes|remove|trust|secured|secure> -Work <empty temp folder>     prints one JSON line
+#   function-harness.ps1 -Case <copy|remove|trust|secured|secure|hyperv> -Work <empty temp folder>     prints one JSON line
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('copy', 'remove', 'trust', 'secured', 'secure')][string]$Case,
+  [Parameter(Mandatory = $true)][ValidateSet('copy', 'remove', 'trust', 'secured', 'secure', 'hyperv')][string]$Case,
   [Parameter(Mandatory = $true)][string]$Work
 )
 $ErrorActionPreference = 'Stop'
@@ -14,7 +14,8 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'scripts\host\albera-host.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count -gt 0) { throw 'albera-host.ps1 does not parse' }
 $wanted = @('Say', 'Get-Sha256File', 'Test-HasReparsePoint', 'Get-TreeEntries', 'Get-TreeHashes', 'Get-BuildSources', 'Get-SourceFiles', 'Get-ExpectedTreeHashState', 'Get-ComponentHashes', 'Set-BinaryRecord', 'Copy-HostBinaries', 'Remove-HostTree', 'New-TrustedDirectory',
-  'Test-ManifestHas', 'New-Manifest', 'Save-Manifest', 'Read-Manifest', 'Initialize-Manifest', 'Assert-PlannedPathTrusted', 'Test-SecureStringEqual')
+  'Test-ManifestHas', 'New-Manifest', 'Save-Manifest', 'Read-Manifest', 'Initialize-Manifest', 'Assert-PlannedPathTrusted', 'Test-SecureStringEqual',
+  'Get-InstallSteps', 'Get-UninstallSteps', 'Resolve-HostSids', 'Get-VmCandidates', 'Resolve-BrokerVm', 'Get-HyperVVmStep', 'Get-HyperVGrantStep', 'Get-HyperVRevokeStep', 'Grant-BrokerHyperV', 'Revoke-BrokerHyperV', 'Show-Plan', 'Test-Elevated')
 $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $false))
 if ($found.Count -ne $wanted.Count) { throw ('expected ' + $wanted.Count + ' functions, found ' + $found.Count) }
 foreach ($f in $found) { Invoke-Expression $f.Extent.Text }
@@ -239,6 +240,138 @@ switch ($Case) {
     Remove-Junction $link
     # a folder created exactly as asked is still refused when it fails the installer's trust test (owner is not SYSTEM/Administrators): no later step may run
     $result.trustedCreateError = Try-Run { New-TrustedDirectory (Join-Path $Work 'trusted') $grants $me }
+  }
+  'hyperv' {
+    # -GrantHyperVToBroker: the shipped step list, VM lookup, group change and its undo, run against FAKES of the machine (Get-CimInstance, Get-LocalGroup, Add-/Remove-LocalGroupMember,
+    # the member list). No group, service or account is touched. The fakes record every call, so the test can prove exactly who is added and removed.
+    $VmName = 'albera-clone-01'; $ComputerId = 'clone-01'; $ProjectId = 'albera-host'; $VmId = $null; $GrantHyperVToBroker = $false
+    $cpSid = 'S-1-5-21-1111111111-2222222222-3333333333-1500'
+    $otherMember = 'S-1-5-21-1111111111-2222222222-3333333333-1234'
+    $brokerSid = Get-DerivedServiceSid $K.BrokerService
+    $guidA = '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f'
+    $script:FakeVms = @(); $script:VmListFails = $false; $script:GroupExists = $true; $script:RemoveStuck = $false
+    $script:Members = New-Object 'System.Collections.Generic.List[string]'
+    $script:Calls = New-Object 'System.Collections.Generic.List[string]'
+    function Get-CimInstance { param($Namespace, $ClassName, $Filter, $ErrorAction)
+      if ($Namespace -eq 'root\virtualization\v2') { $script:Calls.Add('cim ' + $Filter); if ($script:VmListFails) { throw 'Access denied (fake)' }; return @($script:FakeVms) }
+      $null }
+    function Get-LocalGroup { param($SID, $ErrorAction) if ($script:GroupExists) { [pscustomobject]@{ Name = 'Hyper-V Administrators'; SID = $SID } } }
+    function Get-LocalGroupMemberSids([string]$GroupSid) { @($script:Members.ToArray()) }
+    function Add-LocalGroupMember { param($SID, $Member) $script:Calls.Add("add $SID $Member"); $script:Members.Add([string]$Member) }
+    function Remove-LocalGroupMember { param($SID, $Member) $script:Calls.Add("remove $SID $Member"); if (-not $script:RemoveStuck) { [void]$script:Members.Remove([string]$Member) } }
+    function Reset-Fakes { $script:ResolvedVm = $null; $script:Sids = $null; $script:Members.Clear(); $script:Calls.Clear(); $script:GroupExists = $true; $script:RemoveStuck = $false; $script:VmListFails = $false }
+    function New-InstalledManifest {
+      New-Item -ItemType Directory -Force -Path $L.DataRoot | Out-Null
+      $script:Manifest = New-Manifest
+      $u = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $u['name'] = $K.ControlPlaneUser; $u['sid'] = $cpSid
+      $script:Manifest['created']['user'] = $u
+      $script:Manifest['created']['services'] = @($K.BrokerService, $K.AuthorityService)
+      Save-Manifest
+    }
+    function New-Vm([string]$Name, [string]$Element) { [pscustomobject]@{ Name = $Name; ElementName = $Element } }
+    function Count-Changes { @($script:Calls | Where-Object { $_ -notlike 'cim *' }).Count }
+    # A plan prints the machine's own error text for steps whose helpers are not loaded here (localized on this PC); keep the JSON line ASCII.
+    function Get-PlanText($Steps, [string]$Title) { (((& { Show-Plan $Steps $Title } 6>&1) | ForEach-Object { $_.ToString() }) -join "`n") -replace '[^\x09\x0A\x20-\x7E]', '?' }
+
+    # 1. the step lists: without the option exactly the ten install steps and six removal steps of today; with it two more, in the right places
+    $result.defaultInstallIds = @(Get-InstallSteps | ForEach-Object { $_.Id })
+    $result.defaultUninstallIds = @(Get-UninstallSteps | ForEach-Object { $_.Id })
+    $result.defaultServicesTitle = (Get-InstallSteps | Where-Object { $_.Id -eq 'services' }).Title
+    $result.defaultConfigsDetail = @((Get-InstallSteps | Where-Object { $_.Id -eq 'configs' }).Detail).Count
+    $GrantHyperVToBroker = $true
+    $grantSteps = @(Get-InstallSteps)
+    $result.grantInstallIds = @($grantSteps | ForEach-Object { $_.Id })
+    $result.grantServicesTitle = ($grantSteps | Where-Object { $_.Id -eq 'services' }).Title
+    $result.grantConfigsDetail = @(($grantSteps | Where-Object { $_.Id -eq 'configs' }).Detail)
+    $result.grantTitles = @($grantSteps | Where-Object { $_.Id -in @('vm', 'hyperv') } | ForEach-Object { $_.Title })
+    $GrantHyperVToBroker = $false
+    # the plan as the owner reads it (what a plan run prints, with the fakes answering the VM lookup)
+    $script:FakeVms = @((New-Vm $guidA 'albera-clone-01')); $script:Manifest = $null; $script:ManifestNote = $null
+    $result.planDefault = Get-PlanText (Get-InstallSteps) 'install'
+    $GrantHyperVToBroker = $true
+    $result.planGrant = Get-PlanText (Get-InstallSteps) 'install'
+    $GrantHyperVToBroker = $false
+
+    # 2. the VM lookup: the GUID comes from the name, once; the display name is never trusted twice
+    $vmStep = Get-HyperVVmStep
+    Reset-Fakes; $script:FakeVms = @((New-Vm $guidA.ToUpperInvariant() 'albera-clone-01'))
+    $found = Resolve-BrokerVm
+    $result.lookupFound = [ordered]@{ kind = $found.Kind; id = $found.Id; test = (& $vmStep.Test); filter = (@($script:Calls | Where-Object { $_ -like 'cim *' })[0]) }
+    Reset-Fakes; $script:FakeVms = @()
+    $result.lookupNone = [ordered]@{ kind = (Resolve-BrokerVm).Kind; test = (& $vmStep.Test) }
+    Reset-Fakes; $script:FakeVms = @((New-Vm 'HOSTNAME-PC' 'albera-clone-01'))
+    $result.lookupHostOnly = (Resolve-BrokerVm).Kind
+    Reset-Fakes; $script:FakeVms = @((New-Vm $guidA 'albera-clone-01'), (New-Vm '11111111-2222-4333-8444-555555555555' 'Albera-Clone-01'))
+    $result.lookupTwo = [ordered]@{ kind = (Resolve-BrokerVm).Kind; test = (& $vmStep.Test) }
+    Reset-Fakes; $script:VmListFails = $true
+    $result.lookupUnreadable = [ordered]@{ kind = (Resolve-BrokerVm).Kind; test = (& $vmStep.Test) }
+    Reset-Fakes; $VmId = $guidA
+    $result.labVmId = [ordered]@{ kind = (Resolve-BrokerVm).Kind; id = (Resolve-BrokerVm).Id; cimCalls = @($script:Calls | Where-Object { $_ -like 'cim *' }).Count }
+    $VmId = $null
+
+    # 3. the grant: exactly one call, the Broker's own SID into S-1-5-32-578; the record is on disk; Control Plane and Authority are not members
+    Reset-Fakes; New-InstalledManifest
+    $script:FakeVms = @((New-Vm $guidA.ToUpperInvariant() 'albera-clone-01'))
+    $grantStep = Get-HyperVGrantStep
+    $result.grantTestBefore = & $grantStep.Test
+    $result.grantError = Try-Run { & $grantStep.Do }
+    $result.grantCalls = @($script:Calls | Where-Object { $_ -notlike 'cim *' })
+    $result.grantMembers = @($script:Members)
+    $result.grantRecord = $script:Manifest['created']['hyperVGrant']
+    $reread = Read-Manifest
+    $result.grantRecordOnDisk = $reread['created']['hyperVGrant']
+    $result.grantTestAfter = & $grantStep.Test
+    $result.grantUninstallIds = @(Get-UninstallSteps | ForEach-Object { $_.Id })
+    $result.planUninstall = Get-PlanText (Get-UninstallSteps) 'uninstall'
+    $script:Calls.Clear()
+    $result.grantAgainError = Try-Run { & $grantStep.Do }
+    $result.grantAgainCalls = @($script:Calls | Where-Object { $_ -notlike 'cim *' })
+    # ... and the undo: only the Broker's SID leaves; someone else already in the group stays
+    $script:Members.Add($otherMember); $script:Calls.Clear()
+    $revoke = Get-HyperVRevokeStep
+    $result.revokeTestBefore = & $revoke.Test
+    $result.revokeError = Try-Run { & $revoke.Do }
+    $result.revokeCalls = @($script:Calls)
+    $result.revokeMembers = @($script:Members)
+    $result.revokeRecordGone = -not (Test-ManifestHas 'hyperVGrant')
+    $result.revokeTestAfter = & $revoke.Test
+    $result.revokeUninstallIds = @(Get-UninstallSteps | ForEach-Object { $_.Id })
+
+    # 4. refusals leave nothing behind
+    Reset-Fakes; New-InstalledManifest; $script:FakeVms = @()
+    $result.noVmError = Try-Run { Grant-BrokerHyperV }
+    $result.noVmChanged = [ordered]@{ calls = (Count-Changes); record = (Test-ManifestHas 'hyperVGrant') }
+    Reset-Fakes; New-InstalledManifest; $script:FakeVms = @((New-Vm $guidA 'albera-clone-01')); $script:GroupExists = $false
+    $result.noGroupError = Try-Run { Grant-BrokerHyperV }
+    $result.noGroupChanged = [ordered]@{ calls = (Count-Changes); record = (Test-ManifestHas 'hyperVGrant') }
+    # the Control Plane account already sits in the group (put there by someone else): the grant adds the Broker, then refuses to call the result fine
+    Reset-Fakes; New-InstalledManifest; $script:FakeVms = @((New-Vm $guidA 'albera-clone-01')); $script:Members.Add($cpSid)
+    $result.cpMemberError = Try-Run { Grant-BrokerHyperV }
+    $result.cpMemberCalls = @($script:Calls | Where-Object { $_ -notlike 'cim *' })
+    # a manifest that names the Control Plane account with the Broker's SID: the plan refuses before anything is added
+    Reset-Fakes; New-InstalledManifest; $script:FakeVms = @((New-Vm $guidA 'albera-clone-01'))
+    $script:Manifest['created']['user']['sid'] = $brokerSid
+    $result.cpEqualsBrokerError = Try-Run { Grant-BrokerHyperV }
+    $result.cpEqualsBrokerCalls = (Count-Changes)
+    # the undo stops before the service is deleted when the SID will not leave
+    Reset-Fakes; New-InstalledManifest; $script:FakeVms = @((New-Vm $guidA 'albera-clone-01'))
+    Grant-BrokerHyperV
+    $script:RemoveStuck = $true
+    $result.stuckError = Try-Run { Revoke-BrokerHyperV }
+    $result.stuckRecordKept = (Test-ManifestHas 'hyperVGrant')
+    # the group is gone (the Hyper-V feature was removed): nothing to remove, the record is dropped
+    Reset-Fakes; New-InstalledManifest; $script:FakeVms = @((New-Vm $guidA 'albera-clone-01'))
+    Grant-BrokerHyperV
+    $script:GroupExists = $false; $script:Calls.Clear()
+    $result.noGroupUndoError = Try-Run { Revoke-BrokerHyperV }
+    $result.noGroupUndoCalls = @($script:Calls).Count
+    $result.noGroupUndoRecordGone = -not (Test-ManifestHas 'hyperVGrant')
+    # a record that names another SID is refused before anything is removed
+    Reset-Fakes; New-InstalledManifest; $script:FakeVms = @((New-Vm $guidA 'albera-clone-01'))
+    Grant-BrokerHyperV
+    $script:Manifest['created']['hyperVGrant']['sid'] = $cpSid; $script:Calls.Clear()
+    $result.forgedRecordError = Try-Run { Revoke-BrokerHyperV }
+    $result.forgedRecordCalls = @($script:Calls).Count
   }
   'secure' {
     $a = ConvertTo-SecureString 'Correct-Horse-1' -AsPlainText -Force
