@@ -133,7 +133,7 @@ test('nothing here elevates, touches the host, or prints the guest password; the
   assert.match(driver, /\$helperPublish = Join-Path \$Repo 'src\\runtime\\windows-broker-pipe-client\\bin\\Release\\net10\.0-windows\\win-x64\\publish'/u);
   assert.match(driver, /Copy-Item -ToSession \$session -Path \(Join-Path \$helperPublish '\*'\) -Destination "\$guestRoot\\bin\\helper" -Recurse -Force/u);
   assert.match(guest, /\$BdHelper = "\$LabRoot\\bin\\helper\\albera-windows-broker-pipe-client\.exe"/u);
-  assert.match(driver, /if \(\$HyperV\) \{ \$needed \+= @\('src\\runtime\\windows-broker-pipe-client\\bin\\Release\\net10\.0-windows\\win-x64\\publish'\) \}/u, 'checked before a VM is created');
+  assert.match(driver, /if \(\$HyperV -or \$ControlPlaneService\) \{ \$needed \+= @\('src\\runtime\\windows-broker-pipe-client\\bin\\Release\\net10\.0-windows\\win-x64\\publish'\) \}/u, 'checked before a VM is created');
   assert.match(driver, /Copy-Item -FromSession \$session -Path \$picture -Destination \(Join-Path \(Split-Path -Parent \$ResultsFile\) 'bd-view-capture\.png'\)/u);
 });
 
