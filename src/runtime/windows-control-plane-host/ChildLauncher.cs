@@ -10,6 +10,7 @@ using Microsoft.Win32.SafeHandles;
 // The child is created SUSPENDED, put into the Job, and only then resumed, so it cannot start anything before it is inside the Job. Only the three standard
 // handles are inherited (PROC_THREAD_ATTRIBUTE_HANDLE_LIST), nothing else the host holds. The Job has KILL_ON_JOB_CLOSE and no breakaway: when the host ends in
 // any way, or terminates the Job, node and everything it started (the pipe helper, Claude Code, the MCP server) end with it. The host never kills by name.
+// The Job is a way to end everything together when the host stops; it is NOT a containment boundary (it limits nothing the child may do: the child has the service's own rights).
 internal sealed class ChildJob : IDisposable
 {
     private IntPtr handle;
@@ -97,7 +98,16 @@ internal static class ChildLauncher
                 Native.CloseHandle(created.Process);
                 return null;
             }
-            Native.ResumeThread(created.Thread);
+            if (Resume(created.Thread) == ResumeFailed)
+            {
+                // A child that was never resumed must not stay behind suspended: end the whole Job (it holds only this child) and report a failed start.
+                error = Marshal.GetLastWin32Error();
+                job.Terminate();
+                Native.TerminateProcess(created.Process, 1);
+                Native.CloseHandle(created.Thread);
+                Native.CloseHandle(created.Process);
+                return null;
+            }
             Native.CloseHandle(created.Thread);
             FileStream output = new(new SafeFileHandle(outRead, true), FileAccess.Read, 1, false), errorStream = new(new SafeFileHandle(errRead, true), FileAccess.Read, 1, false);
             outRead = errRead = IntPtr.Zero; // owned by the streams now
@@ -108,6 +118,16 @@ internal static class ChildLauncher
             // The host's copies of the write ends must go: otherwise the pipes never report end of file when the child is gone.
             foreach (IntPtr h in new[] { outWrite, errWrite, nul, outRead, errRead }) if (h != IntPtr.Zero && h != Native.InvalidHandle) Native.CloseHandle(h);
         }
+    }
+
+    private const uint ResumeFailed = 0xFFFFFFFF; // ResumeThread returns (DWORD)-1 on failure
+
+    private static uint Resume(IntPtr thread)
+    {
+#if ALBERA_CPHOST_TEST_SEAMS
+        if (TestSeam.ResumeFails) return ResumeFailed;
+#endif
+        return Native.ResumeThread(thread);
     }
 
     private static bool NewPipe(ref Native.SecurityAttributes inheritable, out IntPtr read, out IntPtr write)
