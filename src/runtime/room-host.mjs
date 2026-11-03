@@ -4,7 +4,7 @@
 // Two launch routes. CLI (no `bootstrapSink`): the code is returned by listen() for the terminal and works once.
 // Service (`bootstrapSink`, docs/architecture/control-plane-service.md section 4): the code goes only to the sink
 // (a file), is replaced after every use and every 10 minutes, and listen() does not return it.
-// Both routes: /api/session takes 10 calls a minute, and a GET of an /api/ route needs Sec-Fetch-Site same-origin or none.
+// Both routes: /api/session takes 10 wrong codes a minute (the right code is never limited), and a GET of an /api/ route needs Sec-Fetch-Site same-origin or none.
 // The only write route is POST api/decide: it runs the Effect of an open card that this host itself showed.
 // The task text of a started job is fixed English built here; nothing from a request body reaches a task.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -31,7 +31,7 @@ const MAX_SESSION_BODY = 1024;
 const MAX_DECIDE_BODY = 256;
 const BODY_TIMEOUT_MS = 5_000;
 const SESSION_TTL_MS = 20 * 60 * 1000;
-const SESSION_MAX_AGE_MS = 8 * 60 * 60 * 1000;
+const SESSION_MAX_AGE_MS = 2 * 60 * 60 * 1000; // provisional; 8 h until 2026-11-03. A cookie is not kept per port (control-plane-service.md section 4)
 const SESSION_RATE_LIMIT = 10;
 const SESSION_RATE_WINDOW_MS = 60_000;
 export const BOOTSTRAP_ROTATE_MS = 10 * 60 * 1000;
@@ -121,7 +121,7 @@ export function createRoomHost({
   let bootstrapCode = newCode();
   let rotateTimer;
   let publishChain = Promise.resolve(); // sink calls run one at a time, in the order the codes were made
-  const sessionCalls = []; // times of the recent /api/session calls
+  const failedSessionCalls = []; // times of the recent /api/session calls that had a wrong code
   // Cookies do not separate ports: every host gets its own cookie name (fixed at listen), so two rooms
   // (or a room and a demo) on 127.0.0.1 never overwrite each other's session.
   let cookieName = `albera_room_${randomBytes(6).toString('hex')}`;
@@ -413,27 +413,29 @@ export function createRoomHost({
     return pinnedPng ? png(res, pinnedPng) : json(res, 404, { error: 'not_found' });
   }
 
-  /** At most SESSION_RATE_LIMIT calls to /api/session in SESSION_RATE_WINDOW_MS, whoever sends them. */
-  function sessionRateLimited() {
+  /**
+   * A call to /api/session that did not bring the right code. At most SESSION_RATE_LIMIT of them in SESSION_RATE_WINDOW_MS (shared by all senders),
+   * then 429. The right code is never counted or limited, so another local user cannot lock the owner out by sending wrong ones.
+   */
+  function rejectSession(res, status, error) {
     const t = now();
-    while (sessionCalls.length > 0 && sessionCalls[0] <= t - SESSION_RATE_WINDOW_MS) sessionCalls.shift();
-    if (sessionCalls.length >= SESSION_RATE_LIMIT) return true;
-    sessionCalls.push(t);
-    return false;
+    while (failedSessionCalls.length > 0 && failedSessionCalls[0] <= t - SESSION_RATE_WINDOW_MS) failedSessionCalls.shift();
+    if (failedSessionCalls.length >= SESSION_RATE_LIMIT) return json(res, 429, { error: 'rate_limited' }, { 'Retry-After': String(SESSION_RATE_WINDOW_MS / 1000) });
+    failedSessionCalls.push(t);
+    return json(res, status, { error });
   }
 
   async function createSession(req, res, expectedOrigin) {
-    if (sessionRateLimited()) return json(res, 429, { error: 'rate_limited' }, { 'Retry-After': String(SESSION_RATE_WINDOW_MS / 1000) });
     if (!sameOriginWrite(req, expectedOrigin)) return json(res, 403, { error: 'forbidden' });
     if (!isJson(req)) return json(res, 415, { error: 'invalid_content_type' });
     if (bootstrapUsed) return json(res, 403, { error: 'bootstrap_consumed' });
     let body;
-    try { body = JSON.parse((await readBody(req, MAX_SESSION_BODY)).toString('utf8')); } catch { return json(res, 400, { error: 'invalid_request' }); }
-    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1) return json(res, 403, { error: 'bootstrap_invalid' });
+    try { body = JSON.parse((await readBody(req, MAX_SESSION_BODY)).toString('utf8')); } catch { return rejectSession(res, 400, 'invalid_request'); }
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1) return rejectSession(res, 403, 'bootstrap_invalid');
     purgeSessions();
     if (sessions.size >= MAX_SESSIONS) return json(res, 503, { error: 'session_capacity' });
     if (bootstrapUsed) return json(res, 403, { error: 'bootstrap_consumed' }); // the body read yielded
-    if (!constantTimeEqual(body.bootstrapCode, bootstrapCode)) return json(res, 403, { error: 'bootstrap_invalid' });
+    if (!constantTimeEqual(body.bootstrapCode, bootstrapCode)) return rejectSession(res, 403, 'bootstrap_invalid');
     if (bootstrapSink) rotateBootstrap(); // the code just used is already invalid; the new one reaches the sink in the background
     else bootstrapUsed = true;
     const token = randomBytes(32).toString('base64url');

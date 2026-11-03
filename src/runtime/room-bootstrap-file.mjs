@@ -23,20 +23,44 @@ $null = [System.Reflection.Assembly]::Load('System.Web.Extensions, Version=4.0.0
 $in = [System.Web.Script.Serialization.JavaScriptSerializer]::new().DeserializeObject([Console]::In.ReadToEnd())
 $target = [string]$in['path']
 $tmp = [string]$in['tmp']
+$entries = @($in['entries'])
 $security = [System.Security.AccessControl.FileSecurity]::new()
 $security.SetAccessRuleProtection($true, $false)
-foreach ($entry in @($in['entries'])) {
-  $rights = if ([string]$entry['right'] -eq 'Modify') { [System.Security.AccessControl.FileSystemRights]::Modify } else { [System.Security.AccessControl.FileSystemRights]::Read }
+function RightsOf($entry) {
+  if ([string]$entry['right'] -eq 'Modify') { [System.Security.AccessControl.FileSystemRights]::Modify } else { [System.Security.AccessControl.FileSystemRights]::Read }
+}
+foreach ($entry in $entries) {
   $sid = [System.Security.Principal.SecurityIdentifier]::new([string]$entry['sid'])
-  $security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, $rights, [System.Security.AccessControl.AccessControlType]::Allow))
+  $security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, (RightsOf $entry), [System.Security.AccessControl.AccessControlType]::Allow))
 }
 $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes([string]$in['text'])
 try {
-  $stream = [System.IO.File]::Create($tmp, 4096, [System.IO.FileOptions]::None, $security)
+  # CreateNew: a file that already has this temporary name is an error, never reused
+  $stream = [System.IO.FileStream]::new($tmp, [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]::Write, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $security)
   try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush() } finally { $stream.Dispose() }
   if ([System.IO.File]::Exists($target)) { [System.IO.File]::Replace($tmp, $target, [NullString]::Value) } else { [System.IO.File]::Move($tmp, $target) }
 } finally {
   if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) }
+}
+# Read the target back. File.Replace keeps the DACL of the file it replaces, so what is there now must be proven, not assumed:
+# the owner is this process's user, the DACL is protected, and its rules are exactly the entries and nothing inherited. Otherwise delete it and fail.
+$acl = [System.IO.FileInfo]::new($target).GetAccessControl()
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+$rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+# PowerShell gives -and and -eq the same precedence, so every comparison is in its own parentheses.
+# Windows adds Synchronize (0x100000) to the rights it stores, so it is set on both sides before comparing.
+$good = (($owner -eq $identity.User.Value) -or ($owner -eq $identity.Owner.Value)) -and ($acl.AreAccessRulesProtected) -and ($rules.Count -eq $entries.Count)
+$matched = 0
+foreach ($rule in $rules) {
+  foreach ($entry in $entries) {
+    $same = ($rule.IdentityReference.Value -eq [string]$entry['sid']) -and ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow) -and (-not $rule.IsInherited) -and (([int]$rule.FileSystemRights -bor 0x100000) -eq ([int](RightsOf $entry) -bor 0x100000))
+    if ($same) { $matched++ }
+  }
+}
+if (-not $good -or $matched -ne $entries.Count) {
+  try { [System.IO.File]::Delete($target) } catch { }
+  throw 'acl_mismatch'
 }
 `;
 const ENCODED_SCRIPT = Buffer.from(SCRIPT, 'utf16le').toString('base64');

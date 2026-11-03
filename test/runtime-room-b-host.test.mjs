@@ -132,7 +132,7 @@ test('room: api needs the one-time code; the cookie is HttpOnly, SameSite=Strict
   const setCookie = res.headers.get('set-cookie');
   assert.ok(setCookie.startsWith(`${r.host.cookieName}=`));
   assert.match(r.host.cookieName, new RegExp(`^albera_room_${r.address.port}_[0-9a-f]{12}$`));
-  assert.match(setCookie, /Max-Age=28800/);
+  assert.match(setCookie, /Max-Age=7200/);
   assert.match(setCookie, /HttpOnly/);
   assert.match(setCookie, /SameSite=Strict/);
   assert.match(setCookie, /Path=\/room\//);

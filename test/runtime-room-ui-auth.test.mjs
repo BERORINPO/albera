@@ -99,7 +99,7 @@ test('service route: the cookie is HttpOnly, SameSite=Strict, Path=/room/, with 
   const setCookie = res.headers.get('set-cookie');
   assert.ok(setCookie.startsWith(`${r.host.cookieName}=`));
   assert.match(r.host.cookieName, /^albera_room_\d+_[0-9a-f]{12}$/);
-  for (const attribute of [/HttpOnly/, /SameSite=Strict/, /Path=\/room\//, /Max-Age=28800/]) assert.match(setCookie, attribute);
+  for (const attribute of [/HttpOnly/, /SameSite=Strict/, /Path=\/room\//, /Max-Age=7200/]) assert.match(setCookie, attribute);
   assert.doesNotMatch(setCookie, /Secure|Domain/);
 });
 
@@ -166,22 +166,33 @@ test('CLI route: listen() returns the code, it works once, nothing rotates and n
 
 // ---- rate limit ----
 
-test('/api/session: 10 calls a minute, then 429 until the minute has passed', async (t) => {
+test('/api/session: 10 wrong codes a minute, then 429 for wrong ones; the right code is still accepted', async (t) => {
   const r = await start(t);
   for (let i = 0; i < 10; i++) assert.equal((await r.post('wrong-code-wrong-code')).status, 403, `call ${i + 1}`);
   const limited = await r.post('wrong-code-wrong-code');
   assert.equal(limited.status, 429);
   assert.equal(limited.headers.get('retry-after'), '60');
   assert.deepEqual(await limited.json(), { error: 'rate_limited' });
-  assert.equal((await r.post(r.current().code)).status, 429, 'the right code is limited too');
+  assert.equal((await r.post(r.current().code)).status, 200, 'after 10 wrong codes the right one still gets in (no lock-out by another user)');
+  assert.equal((await r.post('wrong-code-wrong-code')).status, 429);
   r.clock.t += 60_001;
+  assert.equal((await r.post('wrong-code-wrong-code')).status, 403, 'the window reopens');
+});
+
+test('/api/session: a call that is not a code at all (empty object, not JSON) is counted as wrong', async (t) => {
+  const r = await start(t);
+  const raw = (body) => fetch(`${r.address.url}api/session`, { method: 'POST', headers: { Origin: r.origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' }, body });
+  for (let i = 0; i < 5; i++) assert.equal((await raw('{}')).status, 403);
+  for (let i = 0; i < 5; i++) assert.equal((await raw('not json')).status, 400);
+  assert.equal((await raw('{}')).status, 429);
   assert.equal((await r.post(r.current().code)).status, 200);
 });
 
-test('/api/session: the limit also holds on the CLI route', async (t) => {
+test('/api/session: the same holds on the CLI route', async (t) => {
   const r = await start(t, { sink: false });
   for (let i = 0; i < 10; i++) assert.equal((await r.post('wrong-code-wrong-code')).status, 403);
-  assert.equal((await r.post(r.address.bootstrapCode)).status, 429);
+  assert.equal((await r.post('wrong-code-wrong-code')).status, 429);
+  assert.equal((await r.post(r.address.bootstrapCode)).status, 200);
 });
 
 // ---- reads need Sec-Fetch-Site same-origin or none ----
@@ -333,4 +344,19 @@ test('windows store: the file is created with exactly the two ACEs, replaced in 
   await sink.clear();
   assert.equal(fs.existsSync(file), false);
   await sink.clear();
+});
+
+test('windows store: a target that already exists with another DACL is not trusted: it is read back, and deleted with a failure when it is not the two ACEs', { skip: process.platform !== 'win32' }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-room-bootstrap-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'room.json');
+  fs.writeFileSync(file, 'planted'); // made by this user in the folder: it carries the folder's inherited ACL, not the two ACEs
+  const mine = (await inspectWindowsAcl(file)).currentUser;
+  assert.ok((await inspectWindowsAcl(file)).rules.length > 2 || (await inspectWindowsAcl(file)).rules.some((rule) => rule.sid !== mine), 'the planted file has a different DACL');
+  const sink = createRoomBootstrapFile({ filePath: file, acl: roomBootstrapAcl({ cpSid: mine, approverSid: 'S-1-5-18' }), store: createWindowsFileStore() });
+  await assert.rejects(sink.publish({ port: 8123, code: 'F'.repeat(43) }), (error) => error.code === 'bootstrap_file_write_failed');
+  assert.equal(fs.existsSync(file), false, 'the file with the wrong DACL is deleted');
+  assert.deepEqual(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp')), []);
+  await sink.publish({ port: 8123, code: 'F'.repeat(43) });
+  assert.deepEqual((await inspectWindowsAcl(file)).rules.map((rule) => rule.sid).sort(), [mine, 'S-1-5-18'].sort(), 'with nothing in the way it is written');
 });
