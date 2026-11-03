@@ -102,13 +102,13 @@ test('the layout in setup is the one the installer script and the workflow use (
   // components: Get-BuildSources in scripts/host/albera-host.ps1 is the installer's own list
   const script = read('scripts', 'host', 'albera-host.ps1');
   const installer = [...script.matchAll(/Name = '([^']+)'; Dir = Join-Path \$r '([^']+)'; Exe = '([^']+)'/gu)].map((m) => [m[1], m[2].replaceAll('\\', '/'), m[3]]);
-  assert.equal(installer.length, 3, 'the three build sources are found (false-safe)');
+  assert.equal(installer.length, 5, 'the five build sources are found (false-safe)');
   const setup = [...layout.matchAll(/new\("([^"]+)", "([^"]+)", "([^"]+)"\)/gu)].map((m) => [m[1], m[2], m[3]]);
   assert.deepEqual(setup, installer);
 
   // attested files and the workflow's subject list, through the staging layout
   const components = setup.map(([, dir, exe]) => `repo/${dir}/${exe}`);
-  const attested = [csharpString('BuildHashesFile'), csharpString('HostScript'), csharpString('HostLibrary'), ...components, csharpString('SetupExecutable'), csharpString('GhExecutable'), csharpString('TrustedRoot')];
+  const attested = [csharpString('BuildHashesFile'), csharpString('HostScript'), csharpString('HostLibrary'), ...components, `repo/${csharpString('ControlPlaneAppHashes')}`, csharpString('SetupExecutable'), csharpString('GhExecutable'), csharpString('TrustedRoot')];
   assert.ok(attested.every(Boolean), 'every layout constant is found (false-safe)');
   const subjects = subjectList();
   const staged = subjects.map((subject) => {
@@ -288,7 +288,7 @@ test('tree hash: the C# rule and PowerShell\'s Get-CanonicalTreeHash give the sa
     writeFileSync(script, [
       `. '${lib}'`,
       "$a = 'a' * 64; $b = 'b' * 64; $c = 'c' * 64; $d = 'd' * 64; $e = [string][char]0x00e9",
-      "$comps = @{ 'broker' = @{ 'a.dll' = $a; 'B.dll' = $b; 'z/b.dll' = $c; ($e + '.dll') = $d }; 'authority' = @{ 'x.exe' = $c }; 'pipe-client' = @{ 'p.exe' = $d; 'sub\\q.dll' = $a } }",
+      "$comps = @{ 'broker' = @{ 'a.dll' = $a; 'B.dll' = $b; 'z/b.dll' = $c; ($e + '.dll') = $d }; 'authority' = @{ 'x.exe' = $c }; 'pipe-client' = @{ 'p.exe' = $d; 'sub\\q.dll' = $a }; 'control-plane' = @{ 'h.exe' = $c; 'app\\src\\runtime\\entry.mjs' = $b }; 'approver' = @{ 'Z.exe' = $d } }",
       'Write-Output (Get-CanonicalTreeHash $comps)',
     ].join('\n'), 'utf8');
     const out = execFileSync('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], { encoding: 'utf8', windowsHide: true });

@@ -270,6 +270,13 @@ try {
         & npm run build:approval-authority
         if ($LASTEXITCODE -ne 0) { throw "build:approval-authority failed ($LASTEXITCODE)" }
       }
+      if ($HostInstall) {
+        # the host installer now installs the Control Plane service host with its app tree and the approver app as well (PR7)
+        & npm run build:control-plane
+        if ($LASTEXITCODE -ne 0) { throw "build:control-plane failed ($LASTEXITCODE)" }
+        & npm run build:approver
+        if ($LASTEXITCODE -ne 0) { throw "build:approver failed ($LASTEXITCODE)" }
+      }
     }
     if (-not $HostInstall -and -not $HyperV -and -not $ControlPlaneService) {
       & node scripts/windows-service-lab-inputs.mjs $inputsFile
@@ -287,19 +294,23 @@ try {
     $exitCode = [int]($hvOut | Select-Object -Last 1)
   }
   elseif ($HostInstall) {
-    # The guest gets the host scripts and the three publish folders at the same relative paths under a stand-in repository root, then runs the hook
+    # The guest gets the host scripts and the five publish folders at the same relative paths under a stand-in repository root, then runs the hook
     # with ALBERA_LAB_VM=1 set in this session only (the installer accepts its lab-only parameters only then).
     $guestRepo = 'C:\albera-host-lab'
     $rels = @('src\runtime\windows-broker\bin\Release\net10.0-windows\win-x64\publish',
               'src\runtime\windows-approval-authority\bin\Release\net10.0-windows\win-x64\publish',
-              'src\runtime\windows-broker-pipe-client\bin\Release\net10.0-windows\win-x64\publish')
+              'src\runtime\windows-broker-pipe-client\bin\Release\net10.0-windows\win-x64\publish',
+              'src\runtime\windows-control-plane-host\bin\Release\net10.0-windows\win-x64\publish',
+              'src\runtime\windows-approver\bin\Release\net10.0-windows10.0.19041.0\win-x64\publish')
     foreach ($rel in $rels) { if (-not (Test-Path -LiteralPath (Join-Path $repo $rel))) { throw "missing build output (run with -Build): $rel" } }
+    if (-not (Test-Path -LiteralPath $HostNodeExe -PathType Leaf)) { throw "the host node.exe is missing: $HostNodeExe (pass -HostNodeExe); the guest copy of it is what the installer pins" }
     $session = New-PSSession -VMName $VmName -Credential $credential
     try {
       Invoke-Command -Session $session -ScriptBlock { param($r, $rels) foreach ($x in @('scripts\host', 'tools') + $rels) { New-Item -ItemType Directory -Force -Path (Join-Path $r $x) | Out-Null } } -ArgumentList $guestRepo, $rels
       Copy-Item -ToSession $session -Path (Join-Path $repo 'scripts\host\*') -Destination "$guestRepo\scripts\host" -Recurse -Force
       foreach ($rel in $rels) { Copy-Item -ToSession $session -Path (Join-Path (Join-Path $repo $rel) '*') -Destination (Join-Path $guestRepo $rel) -Recurse -Force }
       Copy-Item -ToSession $session -Path (Join-Path $PSScriptRoot 'lab-host-install-check.ps1') -Destination "$guestRepo\tools\lab-host-install-check.ps1" -Force
+      Copy-Item -ToSession $session -Path $HostNodeExe -Destination "$guestRepo\tools\node.exe" -Force   # what the hook hands the installer as -NodeSource (the lab guest has no Node of its own)
       $hookOutput = Invoke-Command -Session $session -ScriptBlock {
         param($r)
         $env:ALBERA_LAB_VM = '1'

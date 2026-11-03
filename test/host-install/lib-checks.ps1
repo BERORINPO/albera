@@ -110,14 +110,16 @@ $r.sddlExtraUsers = Test-ServiceSdMatches ($sddl + '(A;;LC;;;BU)') $cp
 $r.sddlCpMore = Test-ServiceSdMatches ($sddl -replace '\(A;;LC;;;S-1-5-21[0-9-]+\)', '(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;S-1-5-21-1111111111-2222222222-3333333333-1500)') $cp
 $r.sddlNoCp = Test-ServiceSdMatches 'D:(A;;GA;;;SY)(A;;GA;;;BA)' $cp
 $r.sddlJunk = Test-ServiceSdMatches 'not an sddl' $cp
-$goodFacts = [pscustomobject]@{ Exists = $true; StartName = 'NT SERVICE\AlberaHostBroker'; PathName = $r.brokerCommandLine; StartMode = 'Manual'; ServiceType = 'Own Process'; SidTypeText = "SERVICE_NAME: AlberaHostBroker`r`n        SERVICE_SID_TYPE:  RESTRICTED"; PrivilegesText = "SERVICE_NAME: AlberaHostBroker`r`n        PRIVILEGES       : SeChangeNotifyPrivilege" }
+$goodFacts = [pscustomobject]@{ Exists = $true; StartName = 'NT SERVICE\AlberaHostBroker'; PathName = $r.brokerCommandLine; StartMode = 'Auto'; DelayedAutoStart = $true; ServiceType = 'Own Process'; SidTypeText = "SERVICE_NAME: AlberaHostBroker`r`n        SERVICE_SID_TYPE:  RESTRICTED"; PrivilegesText = "SERVICE_NAME: AlberaHostBroker`r`n        PRIVILEGES       : SeChangeNotifyPrivilege" }
 function WithFact($name, $value) { $c = $goodFacts.PSObject.Copy(); $c.$name = $value; $c }
 $r.factsOk = Count (Test-ServiceFacts $goodFacts 'AlberaHostBroker' $r.brokerCommandLine)
 $r.factsBad = [ordered]@{
   missing = Test-ServiceFacts ([pscustomobject]@{ Exists = $false }) 'AlberaHostBroker' $r.brokerCommandLine
   localSystem = Test-ServiceFacts (WithFact 'StartName' 'LocalSystem') 'AlberaHostBroker' $r.brokerCommandLine
   otherPath = Test-ServiceFacts (WithFact 'PathName' 'C:\evil.exe service x') 'AlberaHostBroker' $r.brokerCommandLine
-  auto = Test-ServiceFacts (WithFact 'StartMode' 'Auto') 'AlberaHostBroker' $r.brokerCommandLine
+  demand = Test-ServiceFacts (WithFact 'StartMode' 'Manual') 'AlberaHostBroker' $r.brokerCommandLine
+  autoNotDelayed = Test-ServiceFacts (WithFact 'DelayedAutoStart' $false) 'AlberaHostBroker' $r.brokerCommandLine
+  disabled = Test-ServiceFacts (WithFact 'StartMode' 'Disabled') 'AlberaHostBroker' $r.brokerCommandLine
   shared = Test-ServiceFacts (WithFact 'ServiceType' 'Share Process') 'AlberaHostBroker' $r.brokerCommandLine
   unrestricted = Test-ServiceFacts (WithFact 'SidTypeText' 'SERVICE_SID_TYPE:  UNRESTRICTED') 'AlberaHostBroker' $r.brokerCommandLine
   impersonate = Test-ServiceFacts (WithFact 'PrivilegesText' "PRIVILEGES : SeChangeNotifyPrivilege`r`n  SeImpersonatePrivilege") 'AlberaHostBroker' $r.brokerCommandLine
@@ -139,7 +141,7 @@ $r.keyNameOk = @((Test-KeyName 'AlberaApprovalAuthority-host-1'), (Test-KeyName 
 $r.unknownEntries = Get-UnknownEntries @('broker\journal.sqlite', 'Broker\JOURNAL.SQLITE-wal', 'broker\notes.txt', 'authority\policy.json', 'control-plane\sub\x') (Get-KnownDataFiles) (Get-KnownDataFolders)
 $r.pathsOk = @((Test-PlainAbsolutePath 'C:\ProgramData\Albera\broker\journal.sqlite'), (Test-PlainAbsolutePath 'C:\a\b'))
 $r.pathsBad = @((Test-PlainAbsolutePath 'broker\journal.sqlite'), (Test-PlainAbsolutePath 'C:/a/b'), (Test-PlainAbsolutePath 'C:\a\..\b'), (Test-PlainAbsolutePath '\\server\share\x'), (Test-PlainAbsolutePath 'C:\a\b\'), (Test-PlainAbsolutePath 'C:\a\b:stream'), (Test-PlainAbsolutePath 'C:\a\\b'), (Test-PlainAbsolutePath ('C:\' + ('x' * 250))))
-$r.gate = [ordered]@{ labSupplied = $null -eq (Test-LabPasswordGate $true '1'); notLab = Test-LabPasswordGate $true ''; labWrongValue = Test-LabPasswordGate $true 'true'; noPassword = $null -eq (Test-LabPasswordGate $false '') }
+$r.gate = [ordered]@{ labSupplied = $null -eq (Test-LabSourceGate $true '1'); notLab = Test-LabSourceGate $true ''; labWrongValue = Test-LabSourceGate $true 'true'; noSource = $null -eq (Test-LabSourceGate $false '') }
 $r.ids = @((Test-HostId 'albera-host'), (Test-HostId 'hello-951a135537287eae'), (Test-HostId '-x'), (Test-HostId ''), (Test-HostId 'a b'))
 # ---- trust: who may have written what the installer relies on
 $admins = Get-AdminSids
@@ -165,7 +167,8 @@ $r.badGrant = try { ConvertTo-FileSystemRules @('*S-1-1-0:(OI)(CI)W') | Out-Null
 
 # ---- the tree hash the owner types, and the fixed system folders
 $a = '1' * 64; $b = '2' * 64; $c2 = '3' * 64; $d = '4' * 64
-function Components($brokerFiles) { @{ broker = $brokerFiles; authority = @{ 'albera-approval-authority.exe' = $c2 }; 'pipe-client' = @{ 'albera-windows-broker-pipe-client.exe' = $d } } }
+$e5 = '5' * 64; $f6 = '6' * 64
+function Components($brokerFiles) { @{ broker = $brokerFiles; authority = @{ 'albera-approval-authority.exe' = $c2 }; 'pipe-client' = @{ 'albera-windows-broker-pipe-client.exe' = $d }; 'control-plane' = @{ 'albera-control-plane-host.exe' = $e5; 'app/src/runtime/entry.mjs' = $b }; approver = @{ 'AlberaApprover.exe' = $f6 } } }
 $base = Components @{ 'albera-windows-broker.exe' = $a; 'sub/x.dll' = $b }
 $r.tree = Get-CanonicalTreeHash $base
 $r.treeBackslashAndOrder = Get-CanonicalTreeHash (Components ([ordered]@{ 'sub\x.dll' = $b; 'albera-windows-broker.exe' = $a }))
@@ -174,15 +177,17 @@ $r.treeOther = [ordered]@{
   renamedFile = Get-CanonicalTreeHash (Components @{ 'albera-windows-broker.exe' = $a; 'sub/y.dll' = $b })
   extraFile = Get-CanonicalTreeHash (Components @{ 'albera-windows-broker.exe' = $a; 'sub/x.dll' = $b; 'planted.dll' = $d })
   missingFile = Get-CanonicalTreeHash (Components @{ 'albera-windows-broker.exe' = $a })
-  movedToAuthority = Get-CanonicalTreeHash @{ broker = @{ 'albera-windows-broker.exe' = $a }; authority = @{ 'albera-approval-authority.exe' = $c2; 'sub/x.dll' = $b }; 'pipe-client' = @{ 'albera-windows-broker-pipe-client.exe' = $d } }
+  movedToAuthority = Get-CanonicalTreeHash @{ broker = @{ 'albera-windows-broker.exe' = $a }; authority = @{ 'albera-approval-authority.exe' = $c2; 'sub/x.dll' = $b }; 'pipe-client' = @{ 'albera-windows-broker-pipe-client.exe' = $d }; 'control-plane' = @{ 'albera-control-plane-host.exe' = $e5; 'app/src/runtime/entry.mjs' = $b }; approver = @{ 'AlberaApprover.exe' = $f6 } }
+  controlPlaneChanged = Get-CanonicalTreeHash (@{ broker = $base.broker; authority = $base.authority; 'pipe-client' = $base['pipe-client']; 'control-plane' = @{ 'albera-control-plane-host.exe' = $e5; 'app/src/runtime/entry.mjs' = $a }; approver = $base.approver })
 }
 # the documented format, built by hand: <component>/<path> TAB <sha> LF, components in the fixed order, paths ordinal-sorted, SHA-256 of the UTF-8 bytes
-$text = "broker/albera-windows-broker.exe`t$a`nbroker/sub/x.dll`t$b`nauthority/albera-approval-authority.exe`t$c2`npipe-client/albera-windows-broker-pipe-client.exe`t$d`n"
+$text = "broker/albera-windows-broker.exe`t$a`nbroker/sub/x.dll`t$b`nauthority/albera-approval-authority.exe`t$c2`npipe-client/albera-windows-broker-pipe-client.exe`t$d`ncontrol-plane/albera-control-plane-host.exe`t$e5`ncontrol-plane/app/src/runtime/entry.mjs`t$b`napprover/AlberaApprover.exe`t$f6`n"
 $sha = [System.Security.Cryptography.SHA256]::Create()
 $r.treeByHand = ([BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($text))) -replace '-', '').ToLowerInvariant()
 function Msg([scriptblock]$Block) { try { & $Block | Out-Null; 'no error' } catch { $_.Exception.Message } }
 $r.treeBad = [ordered]@{
   missingComponent = Msg { Get-CanonicalTreeHash @{ broker = @{ 'a.exe' = $a }; authority = @{ 'b.exe' = $b } } }
+  approverMissing = Msg { Get-CanonicalTreeHash @{ broker = $base.broker; authority = $base.authority; 'pipe-client' = $base['pipe-client']; 'control-plane' = $base['control-plane'] } }
   extraComponent = Msg { Get-CanonicalTreeHash ($base + @{ evil = @{ 'x' = $a } }) }
   emptyComponent = Msg { Get-CanonicalTreeHash (Components @{}) }
   dotdot = Msg { Get-CanonicalTreeHash (Components @{ '../evil.dll' = $a }) }
@@ -391,6 +396,185 @@ $r.desktopCheck = [ordered]@{
   shaIsNumber = Test-ControlPlaneDesktop ($desktopJson -replace '"helperSha256":"[0-9a-f]+"', '"helperSha256":5') $helperPath $helperSha
   notJson = Test-ControlPlaneDesktop 'nope' $helperPath $helperSha
   empty = Test-ControlPlaneDesktop '' $helperPath $helperSha
+}
+
+# ---- PR7: the Control Plane service (a service SID, no account), its pins, config, failure actions, launcher, shortcuts, Run entry, legacy migration and the setup run id
+$cpSvc = Get-DerivedServiceSid $hvK.ControlPlaneService
+$r.cp = [ordered]@{ service = $hvK.ControlPlaneService; sid = $cpSvc; sidShape = (Test-ServiceSidShape $cpSvc); differsFromOthers = (($cpSvc -ne $sids.Broker) -and ($cpSvc -ne $sids.Authority)) }
+$nodeSha = 'ab' * 32; $claudeSha = 'cd' * 32; $approverSid2 = $shown.approverSid
+$cfgObj = Get-ControlPlaneServiceConfig $L $nodeSha $claudeSha $cpSvc $approverSid2
+$cfgJson = ConvertTo-HostJson $cfgObj
+$r.cfg = [ordered]@{ json = $cfgJson; top = @($cfgObj.Keys); host = @($cfgObj.host.Keys); claude = @($cfgObj.claude.Keys); ui = @($cfgObj.ui.Keys); reasons = (Test-ControlPlaneServiceConfigText $cfgJson $L $nodeSha $claudeSha $cpSvc $approverSid2) }
+function CfgReasons([string]$Json) { Test-ControlPlaneServiceConfigText $Json $L $nodeSha $claudeSha $cpSvc $approverSid2 }
+$r.cfgBad = [ordered]@{
+  otherNode = CfgReasons ($cfgJson -replace $nodeSha, ('00' * 32))
+  otherClaude = CfgReasons ($cfgJson -replace $claudeSha, ('00' * 32))
+  extraTopKey = CfgReasons ($cfgJson -replace '^\{', '{"extra":1,')
+  extraHostKey = CfgReasons ($cfgJson -replace '"nodePath"', '"x":"y","nodePath"')
+  missingHostKey = CfgReasons ($cfgJson -replace ',"stableRunMs":\d+', '')
+  noClaude = CfgReasons ($cfgJson -replace ',"claude":\{[^}]*\}', '')
+  otherUiSid = CfgReasons ($cfgJson -replace '"approverSid":"[^"]*"', '"approverSid":"S-1-5-21-1-2-3-9"')
+  cpSidIsAccount = CfgReasons ($cfgJson -replace '"controlPlaneSid":"[^"]*"', '"controlPlaneSid":"S-1-5-21-1111111111-2222222222-3333333333-1500"')
+  portableNode = CfgReasons ($cfgJson -replace 'node\\\\node.exe', 'node.exe')
+  maxMinutesString = CfgReasons ($cfgJson -replace '"maxMinutes":15', '"maxMinutes":"15"')
+  notJson = CfgReasons 'nope'
+  tooBig = CfgReasons ('{"a":"' + ('x' * 17000) + '"}')
+}
+$r.cfgInputsRefused = [ordered]@{
+  shortNode = Msg { Get-ControlPlaneServiceConfig $L ('ab' * 31) $claudeSha $cpSvc $approverSid2 }
+  accountAsCp = Msg { Get-ControlPlaneServiceConfig $L $nodeSha $claudeSha $cp $approverSid2 }
+  serviceAsApprover = Msg { Get-ControlPlaneServiceConfig $L $nodeSha $claudeSha $cpSvc $cpSvc }
+}
+# the new folders of the plan, with a service SID as Control Plane and the owner's SID for ui\
+$sids2 = @{ Broker = $sids.Broker; Authority = $sids.Authority; ControlPlane = $cpSvc; Approver = $approverSid2 }
+$plan2 = @(Get-AclPlan $L $sids2)
+$r.aclPlan2 = @($plan2 | ForEach-Object { [ordered]@{ path = $_.Path; grants = @($_.Grants); writers = (Get-PlannedWriters $_) } })
+$r.aclPlan2NoApprover = @((Get-AclPlan $L @{ Broker = $sids.Broker; Authority = $sids.Authority; ControlPlane = $cpSvc } | Where-Object { $_.Path -eq $L.UiDir }).Grants)
+$r.readRules = @(ConvertTo-FileSystemRules @("*${approverSid2}:(OI)(CI)R") | ForEach-Object { [ordered]@{ rights = [int]$_.FileSystemRights; inherit = [int]$_.InheritanceFlags } })
+# services: delayed start, the failure actions, the Broker's service ACL for a service SID
+$r.scCreateCp = Get-ScCreateArguments $hvK.ControlPlaneService $L.ControlPlaneExe $L.ControlPlaneConfig
+$r.scFailure = Get-ScFailureArguments $hvK.ControlPlaneService
+$failEn = "[SC] QueryServiceConfig2 SUCCESS`r`n`r`nSERVICE_NAME: AlberaControlPlane`r`n        RESET_PERIOD (in seconds)    : 86400`r`n        REBOOT_MESSAGE               : `r`n        COMMAND_LINE                 : `r`n        FAILURE_ACTIONS              : RESTART -- Delay = 5000 milliseconds.`r`n                                       RESTART -- Delay = 5000 milliseconds."
+$failJa = "SERVICE_NAME: AlberaControlPlane`r`n        FAILURE_ACTIONS              : RESTART -- " + [string][char]0x9045 + [char]0x5EF6 + " = 5000 " + "`r`n                                       RESTART -- " + [string][char]0x9045 + [char]0x5EF6 + " = 5000"
+$r.failureText = [ordered]@{
+  ok = Count (Test-ServiceFailureText $failEn)
+  japanese = Count (Test-ServiceFailureText $failJa)
+  none = Test-ServiceFailureText 'FAILURE_ACTIONS :'
+  one = Test-ServiceFailureText 'FAILURE_ACTIONS : RESTART -- Delay = 5000 milliseconds.'
+  three = Test-ServiceFailureText ($failEn + "`r`n RESTART -- Delay = 5000 milliseconds.")
+  otherDelay = Test-ServiceFailureText ($failEn -replace '5000', '60000')
+  reboot = Test-ServiceFailureText ($failEn + "`r`n REBOOT -- Delay = 5000 milliseconds.")
+  runCommand = Test-ServiceFailureText ($failEn + "`r`n RUN PROCESS -- Delay = 5000 milliseconds.")
+}
+$cpFacts = [pscustomobject]@{ Exists = $true; StartName = 'NT SERVICE\AlberaControlPlane'; PathName = (Get-ServiceCommandLine $L.ControlPlaneExe $L.ControlPlaneConfig); StartMode = 'Auto'; DelayedAutoStart = $true; ServiceType = 'Own Process'; SidTypeText = 'SERVICE_SID_TYPE:  RESTRICTED'; PrivilegesText = 'PRIVILEGES : SeChangeNotifyPrivilege'; FailureText = $failEn }
+$cpNoFailure = $cpFacts | Select-Object *; $cpNoFailure.FailureText = 'FAILURE_ACTIONS :'
+$r.cpFacts = [ordered]@{
+  ok = Count (Test-ServiceFacts $cpFacts $hvK.ControlPlaneService $cpFacts.PathName 'restricted' $true)
+  noFailureActions = Test-ServiceFacts $cpNoFailure $hvK.ControlPlaneService $cpFacts.PathName 'restricted' $true
+  brokerNeedsNoFailureActions = Count (Test-ServiceFacts $cpNoFailure $hvK.ControlPlaneService $cpFacts.PathName 'restricted' $false)
+}
+$r.sddlCpService = [ordered]@{ sddl = (Get-BrokerServiceSddl $cpSvc); ok = Count (Test-ServiceSdMatches (Get-BrokerServiceSddl $cpSvc) $cpSvc); accountSidFails = Test-ServiceSdMatches (Get-BrokerServiceSddl $cpSvc) $cp }
+# the work folders of the service are known as a whole; anything else unlisted in the data root is still unknown
+$r.unknownWork = Get-UnknownEntries @('control-plane\logs', 'control-plane\logs\host.log', 'control-plane\logs\host.log.1', 'control-plane\claude-run\run-0123456789abcdef\config\x', 'secrets\claude-oauth-token.dpapi', 'ui\room.json', 'control-plane\notes.txt', 'control-plane\logsX\a', 'control-plane-config\AlberaControlPlane.service.json', 'control-plane-config\extra.json', 'secrets', 'ui') (Get-KnownDataFiles) (Get-KnownDataFolders) (Get-KnownDataWorkFolders)
+$r.unknownWorkWithoutWorkFolders = Get-UnknownEntries @('control-plane\logs\host.log', 'ui\room.json') (Get-KnownDataFiles) (Get-KnownDataFolders)
+# records in the manifest: fixed names and hashes only
+function NewCpManifest { $m = NewManifest; $m['created'].Remove('user'); $m['created']['services'] = @('AlberaHostBroker', 'AlberaApprovalAuthority', 'AlberaControlPlane'); $m['created']['controlPlane'] = @{ serviceSid = $cpSvc; nodeSha256 = $nodeSha; nodeSource = 'C:\Program Files\nodejs\node.exe' }; $m['created']['claude'] = @{ sha256 = $claudeSha; fileVersion = '2.1.310'; source = 'C:\Users\x\.local\bin\claude.exe' }; $m['created']['launcher'] = @{ sha256 = $nodeSha }; $m['created']['shortcuts'] = @($hvK.OpenShortcut, $hvK.UpdateShortcut); $m['created']['runEntry'] = @{ name = $hvK.RunValueName; command = '"C:\Program Files\Albera\bin\approver\AlberaApprover.exe" --tray' }; $m['setupRunId'] = '1234567890123'; $m }
+function CpShape($mutate) { $m = $serializer.DeserializeObject((ConvertTo-Json -InputObject (NewCpManifest) -Depth 8 -Compress)); & $mutate $m; Test-ManifestShape $m }
+$r.cpShapeOk = Count (CpShape { param($m) })
+$r.cpShapeBad = [ordered]@{
+  otherServiceSid = CpShape { param($m) $m['created']['controlPlane']['serviceSid'] = $sids.Broker }
+  badNodeHash = CpShape { param($m) $m['created']['controlPlane']['nodeSha256'] = 'AB' * 32 }
+  extraCpKey = CpShape { param($m) $m['created']['controlPlane']['x'] = 'y' }
+  badClaudeHash = CpShape { param($m) $m['created']['claude']['sha256'] = 'zz' }
+  longVersion = CpShape { param($m) $m['created']['claude']['fileVersion'] = ('9' * 65) }
+  badLauncher = CpShape { param($m) $m['created']['launcher']['sha256'] = 'x' }
+  shortcutName = CpShape { param($m) $m['created']['shortcuts'] = @('..\..\Windows\win.ini') }
+  runName = CpShape { param($m) $m['created']['runEntry']['name'] = 'Something' }
+  runNotDictionary = CpShape { param($m) $m['created']['runEntry'] = 'x' }
+  topLevelKey = CpShape { param($m) $m['owner'] = 'x' }
+  runIdText = CpShape { param($m) $m['setupRunId'] = '12abc' }
+  runIdNegative = CpShape { param($m) $m['setupRunId'] = '-1' }
+  runIdTooBig = CpShape { param($m) $m['setupRunId'] = '18446744073709551616' }
+  unknownService = CpShape { param($m) $m['created']['services'] = @('AlberaControlPlane', 'Spooler') }
+}
+# the setup run id: an unsigned 64-bit number, compared as a number
+function Id($v) { $x = ConvertTo-SetupRunId $v; if ($null -eq $x) { $null } else { $x.ToString() } }
+$r.runId = [ordered]@{
+  parse = @((Id '1234567'), (Id '0'), (Id '18446744073709551615'), (Id '18446744073709551616'), (Id '-1'), (Id '1e3'), (Id ' 1'), (Id '1 '), (Id ''), (Id $null), (Id 'abc'), (Id '012'), (Id '1234567890123456789012'), (Id 1234567))
+  refusal = [ordered]@{
+    nothingSupplied = Get-SetupRunIdRefusal '100' $null
+    emptySupplied = Get-SetupRunIdRefusal '100' ''
+    noRecord = Get-SetupRunIdRefusal $null '100'
+    older = Get-SetupRunIdRefusal '100' '99'
+    same = Get-SetupRunIdRefusal '100' '100'
+    newer = Get-SetupRunIdRefusal '100' '101'
+    numericNotText = Get-SetupRunIdRefusal '10' '9'
+    textOrderWouldSayNewer = Get-SetupRunIdRefusal '9' '10'
+    biggest = Get-SetupRunIdRefusal '18446744073709551615' '18446744073709551614'
+    biggestSame = Get-SetupRunIdRefusal '18446744073709551615' '18446744073709551615'
+    suppliedJunk = Get-SetupRunIdRefusal '100' 'x'
+    recordedJunk = Get-SetupRunIdRefusal 'x' '100'
+  }
+}
+# the pins and the claude account rule
+$r.pins = [ordered]@{
+  node = Get-NodeSourcePath 'C:\Program Files'
+  claude = Get-ClaudeSourcePath 'C:\Users\Yosuke'
+  claudeNoProfile = Get-ClaudeSourcePath 'C:\Users\..\Yosuke'
+  claudeRelative = Get-ClaudeSourcePath 'Users\Yosuke'
+  refusalSame = Get-ClaudePinRefusal $approverSid2 $approverSid2
+  refusalOtherAdmin = Get-ClaudePinRefusal 'S-1-5-21-1111111111-2222222222-3333333333-500' $approverSid2
+  refusalSystem = Get-ClaudePinRefusal 'S-1-5-18' $approverSid2
+  refusalNoApprover = Get-ClaudePinRefusal $approverSid2 $null
+  labGate = [ordered]@{ lab = $null -eq (Test-LabSourceGate $true '1'); notLab = Test-LabSourceGate $true ''; none = $null -eq (Test-LabSourceGate $false '') }
+}
+# the launcher, run for real against fakes of Get-Service, Get-NetTCPConnection, Start-Process and Read-Host (the text is the shipped one; only `exit 1` becomes a throw so the case survives it)
+$work = Join-Path ([System.IO.Path]::GetTempPath()) ('albera-lib-' + [guid]::NewGuid().ToString('N'))
+$Lt = Get-HostLayout 'C:\Program Files' $work
+New-Item -ItemType Directory -Force -Path $Lt.UiDir | Out-Null
+$openText = Get-OpenAlberaScriptText $Lt
+$tokens = $null; $errs = $null; [void][System.Management.Automation.Language.Parser]::ParseInput($openText, [ref]$tokens, [ref]$errs)
+$r.open = [ordered]@{ ascii = (-not ($openText -cmatch '[^\x09\x0A\x0D\x20-\x7E]')); parseErrors = $errs.Count; crlf = ($openText.Contains("`r`n") -and -not ($openText -cmatch "[^\r]\n")); hasService = $openText.Contains("'AlberaControlPlane'"); hasRoomFile = $openText.Contains($Lt.UiDir + '\room.json'); noPlaceholder = (-not $openText.Contains('@@')) }
+$script:FakeServiceStatus = 'Running'; $script:FakeListeners = @(); $script:Started = New-Object System.Collections.Generic.List[string]; $script:Said = New-Object System.Collections.Generic.List[string]
+function Get-Service { param($Name) [pscustomobject]@{ Name = $Name; Status = $script:FakeServiceStatus } }
+function Get-NetTCPConnection { param($State, $LocalAddress, $LocalPort) @($script:FakeListeners | Where-Object { $_.LocalPort -eq $LocalPort -and $LocalAddress -eq '127.0.0.1' -and $State -eq 'Listen' }) }
+function Start-Process { param($FilePath) $script:Started.Add([string]$FilePath) }
+function Read-Host { param($Prompt) '' }
+$openRunnable = [scriptblock]::Create($openText.Replace('exit 1', "throw 'EXIT'"))
+function RunOpen($RoomJson) {
+  $script:Started.Clear()
+  if ($null -eq $RoomJson) { if (Test-Path -LiteralPath (Join-Path $Lt.UiDir 'room.json')) { Remove-Item -LiteralPath (Join-Path $Lt.UiDir 'room.json') } } else { [System.IO.File]::WriteAllText((Join-Path $Lt.UiDir 'room.json'), $RoomJson) }
+  $out = New-Object System.Collections.Generic.List[string]
+  $err = try { & $openRunnable 6>&1 | ForEach-Object { $out.Add([string]$_) }; $null } catch { $_.Exception.Message }
+  [ordered]@{ exited = ($err -eq 'EXIT'); started = @($script:Started); said = ($out -join '|') }
+}
+$goodRoom = '{"port":51234,"code":"AbCdEfGhIjKlMnOpQrStUv_-12","pid":4321,"writtenAt":"2026-11-03T00:00:00Z"}'
+$script:FakeListeners = @([pscustomobject]@{ LocalPort = 51234; OwningProcess = 4321 })
+$r.openRuns = [ordered]@{ good = RunOpen $goodRoom }
+$script:FakeServiceStatus = 'Stopped'; $r.openRuns.serviceStopped = RunOpen $goodRoom; $script:FakeServiceStatus = 'Running'
+$r.openRuns.noFile = RunOpen $null
+$r.openRuns.notJson = RunOpen 'nope'
+$r.openRuns.codeWithSpace = RunOpen '{"port":51234,"code":"has a space 1234567890","pid":4321}'
+$r.openRuns.codeShort = RunOpen '{"port":51234,"code":"short","pid":4321}'
+$r.openRuns.portLow = RunOpen '{"port":80,"code":"AbCdEfGhIjKlMnOpQrStUv_-12","pid":4321}'
+$r.openRuns.portText = RunOpen '{"port":"51234","code":"AbCdEfGhIjKlMnOpQrStUv_-12","pid":4321}'
+$r.openRuns.pidText = RunOpen '{"port":51234,"code":"AbCdEfGhIjKlMnOpQrStUv_-12","pid":"4321"}'
+$script:FakeListeners = @([pscustomobject]@{ LocalPort = 51234; OwningProcess = 999 }); $r.openRuns.otherProcessHoldsThePort = RunOpen $goodRoom
+$script:FakeListeners = @(); $r.openRuns.nobodyHoldsThePort = RunOpen $goodRoom
+Remove-Item -LiteralPath $work -Recurse -Force
+# shortcuts and the Run entry
+$sc = Get-ShortcutSpecs $L 'C:\Windows\System32' $true
+$r.shortcuts = [ordered]@{
+  specs = @($sc | ForEach-Object { [ordered]@{ path = $_.Path; target = $_.Target; arguments = $_.Arguments; workingDirectory = $_.WorkingDirectory } })
+  withoutSetup = @(Get-ShortcutSpecs $L 'C:\Windows\System32' $false | ForEach-Object { Split-Path -Leaf $_.Path })
+  matchSame = Count (Test-ShortcutMatches $sc[0] ([pscustomobject]@{ TargetPath = $sc[0].Target; Arguments = $sc[0].Arguments; WorkingDirectory = $sc[0].WorkingDirectory }))
+  matchCaseOfPath = Count (Test-ShortcutMatches $sc[0] ([pscustomobject]@{ TargetPath = $sc[0].Target.ToUpperInvariant(); Arguments = $sc[0].Arguments; WorkingDirectory = $sc[0].WorkingDirectory.ToLowerInvariant() }))
+  otherTarget = Test-ShortcutMatches $sc[0] ([pscustomobject]@{ TargetPath = 'C:\evil.exe'; Arguments = $sc[0].Arguments; WorkingDirectory = $sc[0].WorkingDirectory })
+  otherArguments = Test-ShortcutMatches $sc[0] ([pscustomobject]@{ TargetPath = $sc[0].Target; Arguments = ($sc[0].Arguments + ' -Command x'); WorkingDirectory = $sc[0].WorkingDirectory })
+  otherArgumentsCase = Test-ShortcutMatches $sc[0] ([pscustomobject]@{ TargetPath = $sc[0].Target; Arguments = $sc[0].Arguments.ToUpperInvariant(); WorkingDirectory = $sc[0].WorkingDirectory })
+  missing = Test-ShortcutMatches $sc[0] $null
+}
+$run = Get-RunEntry $L
+$r.run = [ordered]@{ keyPath = $run.KeyPath; name = $run.Name; command = $run.Command }
+# the first layout: what a migration carries over, and what refuses it
+$legacySettings = ConvertTo-HostJson ([ordered]@{ version = 1; projectId = 'albera-host'; broker = [ordered]@{ pipeName = 'ALBERA_HostBroker'; expect = [ordered]@{ serviceName = 'AlberaHostBroker' } }; authority = [ordered]@{ pipeRoot = 'ALBERA\ApprovalAuthority'; expect = [ordered]@{ serviceName = 'AlberaApprovalAuthority' } }; journal = $L.ControlPlaneJournal; computers = [ordered]@{ 'albera-clone-01' = 'clone-01' }; attestation = $null })
+$legacyBroker = ConvertTo-HostJson (Get-BrokerConfig $L $cp $EcSpki $computers)
+$legacyBrokerNoVm = $brokerJson
+function LegacyManifest([bool]$grant, [string]$state = 'complete') { $m = NewManifest; $m['state'] = $state; if ($grant) { $m['created']['hyperVGrant'] = @{ group = 'S-1-5-32-578'; sid = $sids.Broker; computerId = 'clone-01'; vmId = $guidA } }; $serializer.DeserializeObject((ConvertTo-Json -InputObject $m -Depth 8 -Compress)) }
+function Legacy($manifest, [string]$b, [string]$a, [string]$s) { $x = ConvertFrom-LegacyInstall $manifest $b $a $s; [ordered]@{ ok = $x.Ok; reasons = @($x.Reasons); values = $x.Values } }
+$r.legacy = [ordered]@{
+  noGrant = Legacy (LegacyManifest $false) $legacyBrokerNoVm $authorityJson $legacySettings
+  grant = Legacy (LegacyManifest $true) $legacyBroker $authorityJson $legacySettings
+  partial = Legacy (LegacyManifest $false 'partial') $legacyBrokerNoVm $authorityJson $legacySettings
+  newLayout = Legacy ($serializer.DeserializeObject((ConvertTo-Json -InputObject (NewCpManifest) -Depth 8 -Compress))) $legacyBrokerNoVm $authorityJson $legacySettings
+  badAuthority = Legacy (LegacyManifest $false) $legacyBrokerNoVm ($authorityJson -replace '"audience":"[^"]*"', '"audience":"Bad"') $legacySettings
+  badBroker = Legacy (LegacyManifest $false) 'nope' $authorityJson $legacySettings
+  grantButBrokerWithoutComputers = Legacy (LegacyManifest $true) $legacyBrokerNoVm $authorityJson $legacySettings
+  grantComputerDiffers = Legacy (LegacyManifest $true) $legacyBroker $authorityJson ($legacySettings -replace 'clone-01', 'clone-02')
+  twoComputers = Legacy (LegacyManifest $false) $legacyBrokerNoVm $authorityJson ($legacySettings -replace '"albera-clone-01":"clone-01"', '"albera-clone-01":"clone-01","other":"clone-02"')
+  settingsNotJson = Legacy (LegacyManifest $false) $legacyBrokerNoVm $authorityJson 'nope'
+  badVmName = Legacy (LegacyManifest $false) $legacyBrokerNoVm $authorityJson ($legacySettings -replace 'albera-clone-01', 'bad name!')
+  badProject = Legacy (LegacyManifest $false) $legacyBrokerNoVm $authorityJson ($legacySettings -replace '"projectId":"albera-host"', '"projectId":"../x"')
 }
 
 ConvertTo-Json -InputObject $r -Depth 8 -Compress

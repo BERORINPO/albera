@@ -4,7 +4,7 @@ using Albera.Setup;
 internal static partial class Harness
 {
     /// <summary>Known answer made by Get-CanonicalTreeHash (scripts/host/albera-host-lib.ps1) for <see cref="VectorInput"/>; test/runtime-windows-setup-source.test.mjs recomputes it with PowerShell so the two cannot drift.</summary>
-    private const string VectorHash = "c462338c2a16abc0b5a6bd4a8d9362e5f8e333f97367303351f3451577676b70";
+    private const string VectorHash = "1ba6645ee1d18b2d131716d863439771bb9f1dff437bd104d0b01b982ff4828f";
 
     private static FileHashes VectorInput()
     {
@@ -14,6 +14,8 @@ internal static partial class Harness
             ["broker"] = new() { ["a.dll"] = a, ["B.dll"] = b, ["z/b.dll"] = c, ["\u00e9.dll"] = d },
             ["authority"] = new() { ["x.exe"] = c },
             ["pipe-client"] = new() { ["p.exe"] = d, ["sub/q.dll"] = a },
+            ["control-plane"] = new() { ["h.exe"] = c, ["app/src/runtime/entry.mjs"] = b },
+            ["approver"] = new() { ["Z.exe"] = d },
         };
     }
 
@@ -62,7 +64,7 @@ internal static partial class Harness
             var good = Scenario.BuildHashesJson(files, VectorHash);
             var parsed = BuildHashes.Parse(Encoding.UTF8.GetBytes(good));
             Equal(VectorHash, parsed.TreeHash, "tree hash");
-            Equal(7, parsed.Files.Sum(c => c.Value.Count), "file count");
+            Equal(10, parsed.Files.Sum(c => c.Value.Count), "file count");
             foreach (var broken in new[]
             {
                 good.Replace("\"version\":1", "\"version\":2"),

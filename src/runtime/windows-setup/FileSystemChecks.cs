@@ -56,7 +56,8 @@ internal static class FileSystemChecks
     /// </summary>
     public static IReadOnlyList<string> AdministratorOnlyProblems(string folder)
     {
-        var security = new DirectoryInfo(folder).GetAccessControl();
+        // a folder or - for the install record - a file: the same rule for both
+        FileSystemSecurity security = File.Exists(folder) ? new FileInfo(folder).GetAccessControl() : new DirectoryInfo(folder).GetAccessControl();
         var owner = security.GetOwner(typeof(SecurityIdentifier))?.Value ?? "(none)";
         var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
             .Select(r => new AceInfo(r.IdentityReference.Value, r.AccessControlType == AccessControlType.Allow, r.FileSystemRights, (r.PropagationFlags & PropagationFlags.InheritOnly) != 0));

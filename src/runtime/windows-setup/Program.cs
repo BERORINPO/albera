@@ -32,6 +32,7 @@ var deps = new SetupDeps
     CreateWorkDirectory = path => FileSystemChecks.CreateAdministratorOnlyDirectory(path),
     AdministratorOnlyProblems = FileSystemChecks.AdministratorOnlyProblems,
     PathHasReparsePoint = FileSystemChecks.PathHasReparsePoint,
+    InstallRecordPath = SetupLayout.InstallRecordFile,
     Out = Console.Out,
 };
 

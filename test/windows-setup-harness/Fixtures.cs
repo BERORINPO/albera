@@ -49,6 +49,8 @@ internal sealed class Scenario : IDisposable
     public string Update => Path.Combine(Root, "update");
     public string SetupDirectory => Path.Combine(Root, "installed", "bin", "setup");
     public string WorkRoot => Path.Combine(Root, "setup-work");
+    /// <summary>Where this scenario's install record would be (the real one is C:\ProgramData\Albera\install-manifest.json). No file exists until a check writes one.</summary>
+    public string InstallRecordPath => Path.Combine(Root, "ProgramData", "Albera", "install-manifest.json");
     public string TreeHash { get; private set; } = "";
     public bool Elevated { get; set; } = true;
     public Func<string, IReadOnlyList<string>> AdminProblems { get; set; } = _ => [];
@@ -78,12 +80,20 @@ internal sealed class Scenario : IDisposable
         TreeHash = BuildHashes.CanonicalTreeHash(hashes);
         Write(SetupLayout.BuildHashesFile, BuildHashesJson(hashes, TreeHash));
         foreach (var rel in new[] { SetupLayout.HostScript, SetupLayout.HostLibrary, SetupLayout.SetupExecutable }) Write(rel, "synthetic " + rel);
+        Write($"{SetupLayout.RepoDirectory}/{SetupLayout.ControlPlaneAppHashes}", "{\"component\":\"control-plane\",\"files\":{}}\n");
         File.WriteAllBytes(Path.Combine(Update, "setup", "gh.exe"), GhBytes);
         File.WriteAllBytes(Path.Combine(Update, "setup", "trusted_root.jsonl"), RootBytes);
         WriteBundles();
     }
 
     public string Path_(string relative) => Path.Combine(Update, relative.Replace('/', '\\'));
+
+    /// <summary>Writes the install record with this text (a test makes it as the installer script would, or as someone else would).</summary>
+    public void WriteInstallRecord(string json)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(InstallRecordPath)!);
+        File.WriteAllText(InstallRecordPath, json, new UTF8Encoding(false));
+    }
 
     public string Write(string relative, string text)
     {
@@ -121,6 +131,7 @@ internal sealed class Scenario : IDisposable
             CreateWorkDirectory = path => CreateWorkDirectory(path),
             AdministratorOnlyProblems = path => AdminProblems(path),
             PathHasReparsePoint = _ => false,
+            InstallRecordPath = InstallRecordPath,
             Out = Out,
         };
     }

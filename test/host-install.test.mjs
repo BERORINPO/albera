@@ -54,22 +54,36 @@ test('the host scripts and test drivers are ASCII only (Windows PowerShell 5.1 r
   for (const file of files) assert.equal(/[^\t\r\n -~]/u.test(readFileSync(file, 'utf8')), false, `${path.relative(root, file)} has a non-ASCII character`);
 });
 
-test('source guards: elevation is checked first and never requested; nothing from the repository is ever executed; no secret is stored; the password is a SecureString', () => {
+test('source guards: elevation is checked first and never requested; nothing from the repository is ever executed; no secret is stored; there is no password any more', () => {
   const script = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
   const lib = readFileSync(path.join(hostDir, 'albera-host-lib.ps1'), 'utf8');
-  assert.match(script, /\$Mode -in @\('install', 'uninstall'\) -and -not \(Test-Elevated\)\) \{ Stop-Refused/u);
+  assert.match(script, /\$Mode -in @\('install', 'uninstall', 'migrate'\) -and -not \(Test-Elevated\)\) \{ Stop-Refused/u);
   assert.ok(script.indexOf('Stop-Refused "$Mode needs an elevated console') < script.indexOf('Get-HostLayout'), 'the elevation refusal comes before anything else is computed');
+  // The launcher is the one place that opens a browser (Start-Process): it is a script this one WRITES for the owner's own, non-elevated session to run; it is never run here.
+  const launcher = lib.slice(lib.indexOf('function Get-OpenAlberaScriptText'), lib.indexOf('# The two shortcuts.'));
+  assert.ok(launcher.includes('Start-Process ('), 'the launcher opens the room with Start-Process');
+  const libWithoutLauncher = lib.replace(launcher, '');
   for (const forbidden of [/-Verb\s+RunAs/iu, /\bRunAs\b(?!\s*=)/u, /Start-Process/u, /\bsudo\b/iu, /ConvertFrom-SecureString/u, /AsPlainText/u, /\bNetworkCredential\b/u, /PtrToStringAuto|PtrToStringBSTR|SecureStringToGlobalAllocUnicode/u]) {
-    assert.equal(forbidden.test(script) || forbidden.test(lib), false, `must not contain ${forbidden}`);
+    assert.equal(forbidden.test(script) || forbidden.test(libWithoutLauncher), false, `must not contain ${forbidden}`);
   }
-  assert.match(script, /\[securestring\]\$ControlPlanePassword/u);
-  assert.match(script, /-AsSecureString/u);
+  assert.doesNotMatch(script + libWithoutLauncher, /ControlPlanePassword|SecureString|Read-Host|New-LocalUser/u, 'the Control Plane has no account and no password: nothing asks for one or makes one');
   assert.match(script, /ALBERA_LAB_VM/u);
   assert.doesNotMatch(script, /-Password\s+['"]/u, 'no literal password');
-  // The only programs ever started: sc.exe and icacls.exe by their full System32 path. No call can start anything from the repository tree while elevated.
+  // The only programs ever started: sc.exe and icacls.exe by their full System32 path, and ONE more - `launch-check` of the INSTALLED Control Plane host, with a minimal environment. Nothing from the repository tree.
   const calls = [...script.matchAll(/Invoke-Native\s+(\S+)/gu)].map((m) => m[1]).filter((first) => !first.startsWith('('));
   assert.ok(calls.length >= 6);
-  for (const first of calls) assert.ok(first === '$ScExe' || first === '$IcaclsExe', `Invoke-Native is only called with sc.exe or icacls.exe, saw ${first}`);
+  for (const first of calls) assert.ok(first === '$ScExe' || first === '$IcaclsExe' || first === '$L.ControlPlaneExe', `Invoke-Native is only called with sc.exe, icacls.exe or the installed host, saw ${first}`);
+  const hostCalls = script.split('\n').filter((line) => /Invoke-Native \$L\.ControlPlaneExe/u.test(line));
+  assert.equal(hostCalls.length, 1, 'one call starts the installed host');
+  assert.match(hostCalls[0], /'launch-check ' \+ \(Quote-NativeArg \$L\.ControlPlaneConfig\)\) 60000 -MinimalEnvironment/u, 'and it is launch-check, with a minimal environment');
+  assert.ok(script.indexOf('Invoke-Native $L.ControlPlaneExe') > script.indexOf('function Invoke-LaunchCheck') && script.indexOf('Invoke-Native $L.ControlPlaneExe') < script.indexOf('function New-ControlPlaneService'), 'only Invoke-LaunchCheck does it');
+  assert.match(script, /\$psi\.EnvironmentVariables\.Clear\(\)/u, 'a minimal environment clears everything inherited first');
+  // Processes are stopped by PID only, and only by the migration, and only those the legacy account owns (found by owner SID); never by image name.
+  assert.doesNotMatch(script + lib, /taskkill|Stop-Process|GetProcessesByName|Get-Process\b|Process\]::GetProcesses\(|ProcessName/iu, 'no process is found or stopped by name');
+  assert.equal([...script.matchAll(/\.Kill\(\)/gu)].length, 2, 'Kill appears twice: Invoke-Native\'s own timeout and the migration\'s PID stop');
+  assert.match(script, /function End-ProcessById\(\[int\]\$Id\) \{\s*\n\s*\$process = \[System\.Diagnostics\.Process\]::GetProcessById\(\$Id\)\s*\n\s*\$process\.Kill\(\)/u, 'the PID stop lives in one small function');
+  assert.equal([...script.matchAll(/End-ProcessById /gu)].length, 1, 'and one caller: the migration');
+  assert.match(script, /\$owner\.Sid -ceq \$Sid/u, 'the PIDs come from the owner SID');
   for (const tool of ['sc.exe', 'icacls.exe']) assert.match(script, new RegExp(`Join-Path \\$SystemDirectory '${tool.replace('.', '\\.')}'`, 'u'), `${tool} is started by its full path under the system directory Windows reports`);
   for (const gone of [/service-check ['"]\s*\+/u, /Test-BuiltExe/u, /LabApproverValues/u, /\$ApproverExe/u, /Get-ApproverExePath/u, /ExpectedHashes/u, /Read-ExpectedHashes|Compare-FileHashSets|Test-PathInside/u]) assert.doesNotMatch(script + lib, gone, `removed: ${gone}`);
   // No environment variable decides a path (HKCU\Environment can set them and an elevated console inherits them); only the ALBERA_* switches are read, never as paths.
@@ -134,13 +148,15 @@ test('plan is the default: numbered steps, every object named, nothing changed',
   assert.match(output, /PLAN ONLY/u);
   assert.match(output, /nothing was changed/iu);
   const numbered = [...output.matchAll(/^\s*(\d+)\. \[(todo|done|blocked|unknown)\] /gmu)].map((m) => Number(m[1]));
-  assert.deepEqual(numbered, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 'ten numbered steps, in order');
+  assert.deepEqual(numbered, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], 'thirteen numbered steps, in order');
   for (const needle of [
-    'AlberaHostBroker', 'AlberaApprovalAuthority', 'albera-cp', 'restricted SID', 'SeChangeNotifyPrivilege', 'start=demand', 'SERVICE_QUERY_STATUS',
-    'AlberaApprovalAuthority-host-1', 'Export Policy none', 'install-manifest.json', 'albera.approval.json', '-ExpectedTreeHash', 'born with', 'tree hash', 'inheritance removed', 'no policy.json',
-    '-ApproverPublicKey', 'service-check is not run', 'C:\\Program Files\\Albera', 'C:\\ProgramData\\Albera',
+    'AlberaHostBroker', 'AlberaApprovalAuthority', 'AlberaControlPlane', 'restricted SID', 'SeChangeNotifyPrivilege', 'start=delayed-auto', 'SERVICE_QUERY_STATUS',
+    'AlberaApprovalAuthority-host-1', 'Export Policy none', 'install-manifest.json', 'albera.approval.json', 'AlberaControlPlane.service.json', '-ExpectedTreeHash', 'born with', 'tree hash', 'inheritance removed', 'no policy.json',
+    '-ApproverPublicKey', 'service-check is not run', 'C:\\Program Files\\Albera', 'C:\\ProgramData\\Albera', 'launch-check', 'node.exe', 'claude.exe', 'Open ALBERA', 'HKLM', 'control-plane-config', 'secrets', 'ui',
   ]) assert.ok(output.includes(needle), `the plan names ${needle}`);
-  assert.match(output, /you start them/u, 'the plan says the owner starts the services');
+  assert.doesNotMatch(output, /albera-cp/u, 'the new layout has no local account');
+  assert.match(output, /start by themselves, delayed/u, 'the plan says the services start by themselves');
+  assert.match(output, /you can start them now/u, 'and that the owner may start them now');
   assert.doesNotMatch(output, /password\s*[:=]\s*\S/iu);
   assert.match(output, /\[blocked\] Check -ExpectedTreeHash/u, 'without -ExpectedTreeHash the plan says install is blocked');
 });
@@ -163,11 +179,11 @@ test('plan: blocked without the tree hash typed from the CI log and without publ
   assert.equal(host(['-Mode', 'plan', '-ExpectedHashes', 'C:\\x\\h.json'], { allowFail: true }).code === 0, false, 'the file parameter is gone: no file input anymore');
 });
 
-test('plan for uninstall lists the six removal steps and says what it refuses to delete', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
+test('plan for uninstall lists the eight removal steps and says what it refuses to delete', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
   const before = snapshot();
   const output = host(['-Mode', 'plan', '-PlanFor', 'uninstall']).stdout;
   assert.deepEqual(snapshot(), before);
-  assert.deepEqual([...output.matchAll(/^\s*(\d+)\. \[/gmu)].map((m) => Number(m[1])), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual([...output.matchAll(/^\s*(\d+)\. \[/gmu)].map((m) => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8]);
   assert.match(output, /only if (?:this script|it) created it|only if this script created it/u);
   assert.match(output, /refused for any folder that holds a file this script does not know/u);
 });
@@ -212,6 +228,8 @@ test('-Mode hashes prints the per-file JSON and the tree hash line (for the CI r
     broker: 'src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish',
     authority: 'src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish',
     'pipe-client': 'src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish',
+    'control-plane': 'src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/publish',
+    approver: 'src/runtime/windows-approver/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish',
   };
   assert.match(host(['-Mode', 'hashes', '-RepoRoot', repo], { allowFail: true }).stdout, /REFUSED: broker: publish folder missing/u);
   const contents = {};
@@ -222,11 +240,12 @@ test('-Mode hashes prints the per-file JSON and the tree hash line (for the CI r
   }
   const lines = host(['-Mode', 'hashes', '-RepoRoot', repo]).stdout.trim().split(/\r?\n/u);
   assert.equal(lines.length, 2, 'one JSON line, one tree hash line');
+  assert.deepEqual(Object.keys(JSON.parse(lines[0]).components), ['broker', 'authority', 'pipe-client', 'control-plane', 'approver'], 'the five components, in the order of the tree hash');
   const printed = JSON.parse(lines[0]);
   assert.equal(printed.version, 1);
-  // the documented canonical listing, built here independently: <component>/<path> TAB <sha> LF, components broker, authority, pipe-client, paths ordinal-sorted
+  // the documented canonical listing, built here independently: <component>/<path> TAB <sha> LF, components broker, authority, pipe-client, control-plane, approver, paths ordinal-sorted
   let listing = '';
-  for (const name of ['broker', 'authority', 'pipe-client']) {
+  for (const name of ['broker', 'authority', 'pipe-client', 'control-plane', 'approver']) {
     const expected = Object.fromEntries(Object.entries(contents[name]).map(([file, text]) => [file, createHash('sha256').update(text).digest('hex')]));
     assert.deepEqual(printed.components[name].files, expected, `${name}: every file, forward slashes, lowercase hex`);
     for (const rel of Object.keys(expected).sort((x, y) => (x < y ? -1 : x > y ? 1 : 0))) listing += `${name}/${rel}\t${expected[rel]}\n`;
@@ -335,7 +354,7 @@ const permissionBlocks = (yml) => {
   return blocks;
 };
 
-test('the hash workflow signs build provenance for the three exe files, the two host scripts, build-hashes.json and the three files of setup, with only the permissions that needs; the installer script does not consume it', () => {
+test('the hash workflow signs build provenance for the five exe files, the app tree hash list, the two host scripts, build-hashes.json and the three files of setup, with only the permissions that needs; the installer script does not consume it', () => {
   const yml = readFileSync(path.join(root, '.github', 'workflows', 'host-build-hashes.yml'), 'utf8');
   assert.deepEqual(permissionBlocks(yml), [
     { indent: 0, entries: { contents: 'read' } },
@@ -348,7 +367,10 @@ test('the hash workflow signs build provenance for the three exe files, the two 
   assert.equal(uses.length, 1, 'one attest step');
   assert.match(uses[0], /^actions\/attest-build-provenance@[0-9a-f]{40}$/u, 'pinned to a commit SHA like every other action');
   const attest = yml.indexOf('actions/attest-build-provenance@');
-  for (const before of ['npm run build:windows-broker', 'npm run build:approval-authority', '-Mode hashes', 'build-hashes.json", $json[0]']) assert.ok(yml.indexOf(before) > 0 && yml.indexOf(before) < attest, `the attest step runs after: ${before}`);
+  for (const before of ['npm run build:windows-broker', 'npm run build:approval-authority', 'npm run build:control-plane', 'npm run build:approver', '-Mode hashes', 'build-hashes.json", $json[0]']) assert.ok(yml.indexOf(before) > 0 && yml.indexOf(before) < attest, `the attest step runs after: ${before}`);
+  assert.ok(yml.indexOf('npm run build:control-plane') < yml.indexOf('-Mode hashes') && yml.indexOf('npm run build:approver') < yml.indexOf('-Mode hashes'), 'both new components are built before they are hashed');
+  assert.match(yml, /- name: Build the Control Plane host and its app tree \(build only; never installed or started\)\n        run: npm run build:control-plane\n/u);
+  assert.match(yml, /- name: Build the approver app \(build only; never installed or started\)\n        run: npm run build:approver\n/u);
   assert.doesNotMatch(yml, /push-to-registry|create-storage-record|subject-digest|subject-checksums/u);
   const block = /subject-path: \|\n((?: {12}\S.*\n)+)/u.exec(yml);
   assert.ok(block, 'subject-path is a literal block of paths');
@@ -356,9 +378,10 @@ test('the hash workflow signs build provenance for the three exe files, the two 
   // The exe paths are the ones the installer copies from (Get-BuildSources in albera-host.ps1), so the two cannot drift apart.
   const script = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
   const exes = [...script.matchAll(/Dir = Join-Path \$r '([^']+)'; Exe = '([^']+)'/gu)].map((m) => `${m[1].replaceAll('\\', '/')}/${m[2]}`);
-  assert.equal(exes.length, 3, 'the three build sources are found (false-safe)');
+  assert.equal(exes.length, 5, 'the five build sources are found (false-safe)');
   // PR6 adds the setup program, the bundled gh.exe and the trusted root (test/runtime-windows-setup-source.test.mjs checks them against setup's own layout).
-  assert.deepEqual(subjects, [...exes, 'scripts/host/albera-host.ps1', 'scripts/host/albera-host-lib.ps1', 'build-hashes.json', 'src/runtime/windows-setup/bin/Release/net10.0-windows/win-x64/publish/albera-setup.exe', 'setup-input/gh.exe', 'setup-input/trusted_root.jsonl']);
+  // PR7: the host publish folder and the approver publish folder join the three; control-plane-app-hashes.json (written BESIDE the host's publish folder by build:control-plane-app) is attested as well
+  assert.deepEqual(subjects, [...exes, 'src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/control-plane-app-hashes.json', 'scripts/host/albera-host.ps1', 'scripts/host/albera-host-lib.ps1', 'build-hashes.json', 'src/runtime/windows-setup/bin/Release/net10.0-windows/win-x64/publish/albera-setup.exe', 'setup-input/gh.exe', 'setup-input/trusted_root.jsonl']);
   // Provenance is an extra check for the owner, not an input of the installer (consuming it is a separate security change).
   for (const file of ['albera-host.ps1', 'albera-host-lib.ps1']) assert.doesNotMatch(readFileSync(path.join(hostDir, file), 'utf8'), /gh attestation|attest-build-provenance|sigstore/iu, file);
   const doc = readFileSync(path.join(root, 'docs', 'architecture', 'host-install.md'), 'utf8');
@@ -392,20 +415,35 @@ test('layout: every path is a plain absolute path under the two roots, the data 
   assert.equal(r.layout.AuthorityExe, 'C:\\Program Files\\Albera\\bin\\authority\\albera-approval-authority.exe');
   assert.equal(r.layout.PipeClientExe, 'C:\\Program Files\\Albera\\bin\\pipe-client\\albera-windows-broker-pipe-client.exe');
   assert.equal(r.layout.ManifestPath, 'C:\\ProgramData\\Albera\\install-manifest.json');
-  assert.equal(r.layout.ApprovalSettings, 'C:\\ProgramData\\Albera\\control-plane\\albera.approval.json');
-  assert.equal(r.layout.ControlPlaneJournal, 'C:\\ProgramData\\Albera\\control-plane\\operations.sqlite');
-  for (const key of ['BrokerConfig', 'BrokerDb', 'AuthorityConfig', 'ApprovalSettings', 'ControlPlaneJournal']) assert.ok(r.layout[key].startsWith(r.layout.DataRoot + '\\'));
+  assert.equal(r.layout.ApprovalSettings, 'C:\\ProgramData\\Albera\\control-plane-config\\albera.approval.json', 'the settings moved out of the folder the service can write');
+  assert.equal(r.layout.ControlPlaneConfig, 'C:\\ProgramData\\Albera\\control-plane-config\\AlberaControlPlane.service.json');
+  assert.equal(r.layout.ControlPlaneJournal, 'C:\\ProgramData\\Albera\\control-plane\\operations.sqlite', 'the journal stays in the one folder the service can write');
+  assert.equal(r.layout.ControlPlaneLogDir, 'C:\\ProgramData\\Albera\\control-plane\\logs');
+  assert.equal(r.layout.SecretsDir, 'C:\\ProgramData\\Albera\\secrets');
+  assert.equal(r.layout.UiDir, 'C:\\ProgramData\\Albera\\ui');
+  assert.equal(r.layout.LegacyApprovalSettings, 'C:\\ProgramData\\Albera\\control-plane\\albera.approval.json', 'where the first layout kept it');
+  assert.equal(r.layout.ControlPlaneExe, 'C:\\Program Files\\Albera\\bin\\control-plane\\albera-control-plane-host.exe');
+  assert.equal(r.layout.ControlPlaneAppDir, 'C:\\Program Files\\Albera\\bin\\control-plane\\app');
+  assert.equal(r.layout.ControlPlaneNodeExe, 'C:\\Program Files\\Albera\\bin\\control-plane\\node\\node.exe');
+  assert.equal(r.layout.ClaudeExe, 'C:\\Program Files\\Albera\\bin\\claude\\claude.exe');
+  assert.equal(r.layout.ApproverExe, 'C:\\Program Files\\Albera\\bin\\approver\\AlberaApprover.exe');
+  assert.equal(r.layout.OpenScript, 'C:\\Program Files\\Albera\\bin\\launcher\\open-albera.ps1');
+  assert.equal(r.layout.OpenShortcut, 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\ALBERA\\Open ALBERA.lnk');
+  assert.equal(r.layout.UpdateShortcut, 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\ALBERA\\ALBERA update.lnk');
+  for (const key of ['BrokerConfig', 'BrokerDb', 'AuthorityConfig', 'ControlPlaneConfig', 'ApprovalSettings', 'ControlPlaneJournal', 'ControlPlaneLogDir', 'SecretsDir', 'UiDir']) assert.ok(r.layout[key].startsWith(r.layout.DataRoot + '\\'));
+  for (const key of ['ControlPlaneExe', 'ControlPlaneAppDir', 'ControlPlaneNodeExe', 'ClaudeExe', 'ApproverExe', 'OpenScript']) assert.ok(r.layout[key].startsWith(r.layout.InstallRoot + '\\bin\\'), key);
+  assert.equal(r.layout.ControlPlaneNodeExe.startsWith(r.layout.ControlPlaneBinDir + '\\node\\'), true, 'the pinned node sits inside the control-plane component folder (administrator-only), in its own node\\ folder');
   // the broker database folder and config folder are different folders: the config is read-only for the service, the database folder is its own
   assert.notEqual(path.win32.dirname(r.layout.BrokerConfig), path.win32.dirname(r.layout.BrokerDb));
-  assert.equal(r.constants.ControlPlaneUser, 'albera-cp');
-  // New-LocalUser -Description accepts at most 48 characters (the first VM run failed at 57); uninstall matches the very same constant
+  assert.equal(r.constants.ControlPlaneService, 'AlberaControlPlane');
+  assert.equal(r.constants.ControlPlaneUser, 'albera-cp', 'only the legacy account of the first layout keeps its name (migration and uninstall remove it)');
+  // the legacy account's description (48 characters at most, New-LocalUser's limit) is what Remove-LocalUser checks before it removes anything
   const description = r.constants.ControlPlaneUserDescription;
   assert.ok(description.length > 0 && description.length <= 48, `description is ${description.length} characters`);
   assert.match(description, /^[ -~]+$/u);
   const script = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
-  assert.match(script, /-Description \$K\.ControlPlaneUserDescription/u, 'install sets the constant');
+  assert.doesNotMatch(script, /New-LocalUser|Add-LocalGroupMember -SID 'S-1-5-32-545'/u, 'nothing creates the account any more');
   assert.match(readFileSync(path.join(hostDir, 'albera-host-lib.ps1'), 'utf8'), /\$Live\.Description -cne \$c\.ControlPlaneUserDescription/u, 'uninstall compares the same constant');
-  assert.ok('ALBERA Control Plane'.length <= 48, 'FullName');
 });
 
 test('derived service SIDs equal the C# derivation (the TrustedInstaller vector pinned by the C# harness)', needsWindows, () => {
@@ -482,20 +520,22 @@ test('config checks refuse what the C# parsers refuse (extra or missing key, rel
   for (const [name, reason] of Object.entries(authorityExpect)) assert.ok(r.authorityBad[name].includes(reason), `authority ${name} -> ${reason}, got ${JSON.stringify(r.authorityBad[name])}`);
 });
 
-test('the Control Plane settings the script writes are accepted by the Control Plane\'s own parser (no secret, attestation null, one computer)', needsWindows, () => {
+test('the Control Plane settings the script writes are accepted by the Control Plane\'s own parser (no secret, no attestation key, one computer)', needsWindows, () => {
   const { r } = lib();
   const settings = parseApprovalSettings(r.settingsJson);
   assert.equal(settings.projectId, 'albera-host');
-  assert.equal(settings.attestation, null);
+  assert.equal(settings.attestation, null, 'the parser reads the missing key as null');
+  assert.equal('attestation' in JSON.parse(r.settingsJson), false, 'PR #185 hand-over: the settings carry no attestation key');
   assert.deepEqual([...settings.computers], [['albera-clone-01', { computerId: 'clone-01' }]]);
   assert.deepEqual(settings.broker, { pipeName: r.constants.BrokerPipeName, expect: { serviceName: 'AlberaHostBroker' } });
   assert.deepEqual(settings.authority, { pipeRoot: r.constants.AuthorityPipeRoot, expect: { serviceName: 'AlberaApprovalAuthority' } });
   assert.equal(settings.journal, r.layout.ControlPlaneJournal);
-  assert.equal(path.win32.dirname(settings.journal), path.win32.dirname(r.layout.ApprovalSettings), 'the journal sits in the folder the Control Plane account may write');
+  assert.equal(path.win32.dirname(settings.journal), r.layout.ControlPlaneDir, 'the journal sits in the folder the Control Plane service may write');
+  assert.notEqual(path.win32.dirname(settings.journal), path.win32.dirname(r.layout.ApprovalSettings), 'and the settings file is NOT in it: the service can read the settings and not rewrite the helper pin');
   assert.equal(/secret|password|token|key/iu.test(r.settingsJson.replace(/"keyFile"/gu, '')), false);
 });
 
-test('the Control Plane settings of an install WITHOUT the grant are byte for byte what they were before the desktop block existed (no desktop key, even when the helper hash is empty)', needsWindows, () => {
+test('the Control Plane settings of an install WITHOUT the grant are what they were before the desktop block existed, minus the attestation key (no desktop key, even when the helper hash is empty)', needsWindows, () => {
   const { r } = lib();
   const before = {
     version: 1, projectId: 'albera-host',
@@ -503,21 +543,20 @@ test('the Control Plane settings of an install WITHOUT the grant are byte for by
     authority: { pipeRoot: 'ALBERA\\ApprovalAuthority', expect: { serviceName: 'AlberaApprovalAuthority' } },
     journal: 'C:\\ProgramData\\Albera\\control-plane\\operations.sqlite',
     computers: { 'albera-clone-01': 'clone-01' },
-    attestation: null,
   };
   assert.equal(r.settingsJson, JSON.stringify(before));
   assert.deepEqual({ ...r.desktopPlainSame }, { noArgument: true, nullSha: true, emptySha: true, hasNoDesktopKey: true });
 });
 
-test('the Control Plane settings of an install WITH the grant carry the desktop block the gated room requires: the installed helper path and the helper SHA-256, between computers and attestation, nothing else changed', needsWindows, () => {
+test('the Control Plane settings of an install WITH the grant carry the desktop block the gated room requires: the installed helper path and the helper SHA-256, after computers, nothing else changed', needsWindows, () => {
   const { r } = lib();
   const withDesktop = JSON.parse(r.desktopSettingsJson);
-  assert.deepEqual(r.desktopKeys, ['version', 'projectId', 'broker', 'authority', 'journal', 'computers', 'desktop', 'attestation']);
+  assert.deepEqual(r.desktopKeys, ['version', 'projectId', 'broker', 'authority', 'journal', 'computers', 'desktop']);
   assert.deepEqual(withDesktop.desktop, { helperPath: r.layout.PipeClientExe, helperSha256: r.desktopHelperSha });
   assert.equal(r.layout.PipeClientExe, 'C:\\Program Files\\Albera\\bin\\pipe-client\\albera-windows-broker-pipe-client.exe', 'the path the room example and the doc name');
   const { desktop, ...rest } = withDesktop;
   assert.deepEqual(rest, JSON.parse(r.settingsJson), 'every other key and value is the plain settings');
-  assert.equal(withDesktop.attestation, null);
+  assert.equal('attestation' in withDesktop, false);
   assert.equal(/secret|password|token/iu.test(r.desktopSettingsJson), false, 'a path and a public hash only');
   for (const [name, message] of Object.entries(r.desktopBadSha)) assert.equal(message, 'helper_sha256_invalid', `${name}: only 64 lowercase hex characters`);
   assert.deepEqual({ ...r.desktopHasKey }, { plain: false, withBlock: true, nullBlock: true, notJson: false });
@@ -531,6 +570,7 @@ test('the settings the installer writes with the grant are accepted by the Contr
   const settings = parseApprovalSettings(r.desktopSettingsJson);
   assert.deepEqual({ ...settings.desktop }, { helperPath: r.layout.PipeClientExe, helperSha256: r.desktopHelperSha });
   assert.equal(settings.attestation, null);
+  assert.equal(path.win32.dirname(settings.journal), r.layout.ControlPlaneDir, 'the journal is in the folder the Control Plane service may write, and the settings file is not');
   assert.deepEqual(settings.broker.expect, { serviceName: 'AlberaHostBroker' }, 'a service name only: the room refuses a PID or an image hash');
   assert.deepEqual([...settings.computers.keys()], ['albera-clone-01']);
   // the room itself: nothing is opened (fake store, fake desktop client)
@@ -546,18 +586,25 @@ test('the settings the installer writes with the grant are accepted by the Contr
   await assert.rejects(openRoom(r.settingsJson, {}), /runtime_room_approval_desktop/u, 'a plain install (no grant) has no desktop block: the room refuses it');
 });
 
-test('ACL plan: inheritance is removed everywhere, each service SID can write only its own folder, the Control Plane account only its own, nobody else gets write', needsWindows, () => {
+test('ACL plan: inheritance is removed everywhere, each service SID can write only its own folder, the Control Plane only its own (and READ-only settings), nobody else gets write', needsWindows, () => {
   const { r } = lib();
   const sids = { broker: r.sidBroker, authority: r.sidAuthority };
   const byPath = new Map(r.aclPlan.map((entry) => [entry.path, entry.grants]));
-  assert.deepEqual([...byPath.keys()], [r.layout.InstallRoot, r.layout.DataRoot, r.layout.BrokerConfigDir, r.layout.BrokerDbDir, r.layout.AuthorityDir, r.layout.ControlPlaneDir]);
+  // the first six entries are the ones the first layout had, in the same order; the Control Plane folders follow (aclPlan2 is the new layout, below)
+  assert.deepEqual([...byPath.keys()].slice(0, 6), [r.layout.InstallRoot, r.layout.DataRoot, r.layout.BrokerConfigDir, r.layout.BrokerDbDir, r.layout.AuthorityDir, r.layout.ControlPlaneDir]);
+  assert.deepEqual([...byPath.keys()], [r.layout.InstallRoot, r.layout.DataRoot, r.layout.BrokerConfigDir, r.layout.BrokerDbDir, r.layout.AuthorityDir, r.layout.ControlPlaneDir, r.layout.ControlPlaneLogDir, r.layout.ControlPlaneConfigDir, r.layout.SecretsDir, r.layout.UiDir]);
   const rights = (dir) => Object.fromEntries(byPath.get(dir).map((grant) => { const m = grant.match(/^\*(S-[0-9-]+):(.+)$/u); return [m[1], m[2]]; }));
   const cp = 'S-1-5-21-1111111111-2222222222-3333333333-1500';
   for (const grants of byPath.values()) {
     const g = Object.fromEntries(grants.map((grant) => { const m = grant.match(/^\*(S-[0-9-]+):(.+)$/u); return [m[1], m[2]]; }));
     assert.equal(g['S-1-5-18'], '(OI)(CI)F');
     assert.equal(g['S-1-5-32-544'], '(OI)(CI)F');
-    assert.equal(Object.keys(g).every((sid) => sid === 'S-1-5-18' || sid === 'S-1-5-32-544' || [sids.broker, sids.authority, cp].includes(sid)), true, 'only the three accounts are named');
+    assert.equal(Object.keys(g).every((sid) => sid === 'S-1-5-18' || sid === 'S-1-5-32-544' || [sids.broker, sids.authority, cp].includes(sid) || sid === 'S-1-5-32-545'), true, 'only the three accounts are named (and Users, below)');
+  }
+  // BUILTIN\Users: read and execute on the install folder ONLY (the owner's session runs bin\approver and bin\launcher; Program Files' own default), never anywhere else, never more
+  for (const [dir, grants] of byPath) {
+    const users = grants.filter((grant) => grant.startsWith('*S-1-5-32-545:'));
+    assert.deepEqual(users, dir === r.layout.InstallRoot ? ['*S-1-5-32-545:(OI)(CI)RX'] : [], dir);
   }
   const writers = (dir) => Object.entries(rights(dir)).filter(([sid, right]) => ![ 'S-1-5-18', 'S-1-5-32-544'].includes(sid) && /M$|F$/u.test(right)).map(([sid]) => sid);
   assert.deepEqual(writers(r.layout.InstallRoot), [], 'the binaries are read/execute only');
@@ -571,6 +618,23 @@ test('ACL plan: inheritance is removed everywhere, each service SID can write on
   const aclCheck = readFileSync(path.join(root, 'src', 'runtime', 'windows-acl.mjs'), 'utf8');
   assert.match(aclCheck, /\(rule\.rights & 0x001f01ff\) === 0x001f01ff\) currentUserHasFullControl = true/u, 'the journal still demands full control; if this changes, revisit the grant');
   assert.equal(rights(r.layout.DataRoot)[cp], 'RX', 'this-folder-only read: the control plane account can reach its folder and nothing else');
+  // the new layout: the Control Plane is a service SID, and the owner's SID gets Read on ui\ only
+  const byPath2 = new Map(r.aclPlan2.map((entry) => [entry.path, entry]));
+  const cpSvc = r.cp.sid;
+  const approver = r.shown.approverSid;
+  const grantMap = (dir) => Object.fromEntries(byPath2.get(dir).grants.map((grant) => { const m = grant.match(/^\*(S-[0-9-]+):(.+)$/u); return [m[1], m[2]]; }));
+  assert.equal(grantMap(r.layout.ControlPlaneConfigDir)[cpSvc], '(OI)(CI)R', 'the service can only READ its settings');
+  assert.deepEqual(byPath2.get(r.layout.ControlPlaneConfigDir).writers, ['S-1-5-18', 'S-1-5-32-544'], 'nobody but the administrators may write them');
+  assert.equal(grantMap(r.layout.ControlPlaneDir)[cpSvc], '(OI)(CI)F');
+  assert.equal(grantMap(r.layout.ControlPlaneLogDir)[cpSvc], '(OI)(CI)F', 'logDirectory: created first, full control for the service');
+  assert.equal(grantMap(r.layout.SecretsDir)[cpSvc], '(OI)(CI)M', 'secrets: the service reads and writes the DPAPI blobs');
+  assert.equal(Object.keys(grantMap(r.layout.SecretsDir)).includes(approver), false, 'the owner is not on secrets\\');
+  assert.equal(grantMap(r.layout.UiDir)[cpSvc], '(OI)(CI)M');
+  assert.equal(grantMap(r.layout.UiDir)[approver], '(OI)(CI)R', 'the owner reads ui\\room.json');
+  assert.deepEqual(byPath2.get(r.layout.UiDir).writers, ['S-1-5-18', 'S-1-5-32-544', cpSvc].sort(), 'the owner cannot write ui\\');
+  assert.deepEqual(r.aclPlan2NoApprover, ['*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', `*${cpSvc}:(OI)(CI)M`], 'without an approver SID the owner is simply not named');
+  assert.deepEqual(r.readRules, [{ rights: 0x120089, inherit: 3 }], 'R is Read (list, read data and attributes, read permissions): no execute, no write');
+  assert.equal(byPath2.get(r.layout.InstallRoot).grants.includes(`*${cpSvc}:(OI)(CI)RX`), true, 'bin\\control-plane and bin\\claude: read and execute only (administrators write)');
   assert.equal(r.aclGood, 0);
   assert.deepEqual(r.aclInherited, ['inheritance_not_removed']);
   assert.deepEqual(r.aclEveryone, ['unexpected_principal:S-1-1-0']);
@@ -581,7 +645,10 @@ test('ACL plan: inheritance is removed everywhere, each service SID can write on
 test('services: the sc.exe arguments quote the path with a space, the Broker SDDL grants the Control Plane account only LC, and the fact checks catch each deviation', needsWindows, () => {
   const { r } = lib();
   assert.equal(r.brokerCommandLine, '"C:\\Program Files\\Albera\\bin\\broker\\albera-windows-broker.exe" service "C:\\ProgramData\\Albera\\broker-config\\AlberaHostBroker.service.json"');
-  assert.equal(r.scCreate, `create AlberaHostBroker binPath= "${r.brokerCommandLine.replace(/"/gu, '\\"')}" obj= "NT SERVICE\\AlberaHostBroker" start= demand type= own`);
+  assert.equal(r.scCreate, `create AlberaHostBroker binPath= "${r.brokerCommandLine.replace(/"/gu, '\\"')}" obj= "NT SERVICE\\AlberaHostBroker" start= delayed-auto type= own`);
+  const cpLine = '"C:\\Program Files\\Albera\\bin\\control-plane\\albera-control-plane-host.exe" service "C:\\ProgramData\\Albera\\control-plane-config\\AlberaControlPlane.service.json"';
+  assert.equal(r.scCreateCp, `create AlberaControlPlane binPath= "${cpLine.replace(/"/gu, '\\"')}" obj= "NT SERVICE\\AlberaControlPlane" start= delayed-auto type= own`, 'the host is started as `service <config>`');
+  assert.equal(r.scFailure, 'failure AlberaControlPlane reset= 86400 actions= restart/5000/restart/5000//0', 'restart after 5 s, twice, then nothing');
   assert.equal(r.sddl, 'D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;LC;;;S-1-5-21-1111111111-2222222222-3333333333-1500)');
   assert.equal(r.sddlOk, 0);
   assert.deepEqual(r.sddlExtraUsers, ['unexpected_principal:S-1-5-32-545']);
@@ -596,7 +663,9 @@ test('services: the sc.exe arguments quote the path with a space, the Broker SDD
   assert.deepEqual(r.factsBad.missing, ['service_missing']);
   assert.deepEqual(r.factsBad.localSystem, ['start_name_differs']);
   assert.deepEqual(r.factsBad.otherPath, ['path_differs']);
-  assert.deepEqual(r.factsBad.auto, ['start_mode_not_demand']);
+  assert.deepEqual(r.factsBad.demand, ['start_mode_not_auto']);
+  assert.deepEqual(r.factsBad.autoNotDelayed, ['start_not_delayed']);
+  assert.deepEqual(r.factsBad.disabled, ['start_mode_not_auto']);
   assert.deepEqual(r.factsBad.shared, ['not_own_process']);
   assert.deepEqual(r.factsBad.unrestricted, ['sid_type_not_restricted']);
   assert.deepEqual(r.factsBad.impersonate, ['privileges_not_minimal']);
@@ -608,11 +677,11 @@ test('the lab hardening is copied, not reinvented: the script uses the same sc.e
   const lib = readFileSync(path.join(hostDir, 'albera-host-lib.ps1'), 'utf8');
   const script = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
   assert.match(lab, /obj= "NT SERVICE\\\$n" start= demand type= own/u);
-  assert.match(lib, /obj= "NT SERVICE\\' \+ \$Name \+ '" start= demand type= own/u);
+  assert.match(lib, /obj= "NT SERVICE\\' \+ \$Name \+ '" start= delayed-auto type= own/u, 'the lab used start= demand; the product starts all three services by themselves, delayed (decision D5)');
   assert.match(lab, /sc\.exe sidtype \$n restricted/u);
-  assert.match(script, /sidtype \$\(\$spec\.Name\) restricted/u);
+  assert.match(script, /sidtype \$\(\$Spec\.Name\) restricted/u);
   assert.match(lab, /sc\.exe privs \$n SeChangeNotifyPrivilege/u);
-  assert.match(script, /privs \$\(\$spec\.Name\) SeChangeNotifyPrivilege/u);
+  assert.match(script, /privs \$\(\$Spec\.Name\) SeChangeNotifyPrivilege/u);
   assert.match(lab, /\/inheritance:r', '\/grant:r', '\*S-1-5-18:\(OI\)\(CI\)F', '\/grant:r', '\*S-1-5-32-544:\(OI\)\(CI\)F'/u);
   assert.match(script, /\/inheritance:r/u);
   const keyTool = readFileSync(path.join(root, 'test', 'windows-service-lab', 'new-authority-key.ps1'), 'utf8');
@@ -638,7 +707,10 @@ test('removal safety, path rules, the lab gate and id grammar', needsWindows, ()
   assert.deepEqual(r.unknownEntries, ['broker\\notes.txt', 'control-plane\\sub\\x']);
   assert.deepEqual(r.pathsOk, [true, true]);
   assert.deepEqual(r.pathsBad, [false, false, false, false, false, false, false, false]);
-  assert.deepEqual(r.gate, { labSupplied: true, notLab: 'control_plane_password_parameter_is_lab_only', labWrongValue: 'control_plane_password_parameter_is_lab_only', noPassword: true });
+  assert.deepEqual(r.gate, { labSupplied: true, notLab: 'binary_source_parameter_is_lab_only', labWrongValue: 'binary_source_parameter_is_lab_only', noSource: true });
+  // the folders the service fills itself are known as a whole; a look-alike name and any other unlisted file are still unknown
+  assert.deepEqual(r.unknownWork, ['control-plane\\notes.txt', 'control-plane\\logsX\\a', 'control-plane-config\\extra.json']);
+  assert.deepEqual(r.unknownWorkWithoutWorkFolders, ['control-plane\\logs\\host.log', 'ui\\room.json'], 'without the work-folder list nothing below logs\\ or ui\\ is known');
   assert.deepEqual(r.ids, [true, true, false, false, false]);
 });
 
@@ -672,7 +744,7 @@ test('tree hash: one canonical listing for CI and install; a changed, renamed, a
   const others = Object.values(r.treeOther);
   assert.equal(new Set([r.tree, ...others]).size, others.length + 1, 'every change gives a different value');
   assert.deepEqual(r.treeBad, {
-    missingComponent: 'tree_hash_components', extraComponent: 'tree_hash_components', emptyComponent: 'tree_hash_empty:broker', dotdot: 'tree_hash_path:broker', absolute: 'tree_hash_path:broker',
+    missingComponent: 'tree_hash_components', approverMissing: 'tree_hash_components', extraComponent: 'tree_hash_components', emptyComponent: 'tree_hash_empty:broker', dotdot: 'tree_hash_path:broker', absolute: 'tree_hash_path:broker',
     drive: 'tree_hash_path:broker', upperHex: 'tree_hash_value:broker', duplicate: 'tree_hash_path:broker',
   });
   assert.deepEqual(r.treeValue, [true, false, false, false, false], 'the typed value must be 64 lowercase hex');
@@ -747,8 +819,8 @@ test('copy: the COPIES must hash to the typed tree hash; a replaced build, an ex
   const r = harness(t, 'copy');
   assert.match(r.expected, /^[0-9a-f]{64}$/u);
   assert.equal(r.firstRunError, null);
-  assert.deepEqual(r.recorded, ['authority', 'broker', 'pipe-client']);
-  assert.equal(r.destFiles.length, 9);
+  assert.deepEqual(r.recorded, ['approver', 'authority', 'broker', 'control-plane', 'pipe-client']);
+  assert.equal(r.destFiles.length, 15);
   assert.ok(r.destFiles.includes('broker\\sub\\data.json'));
   assert.equal(r.noPartialLeft, true);
   assert.equal(r.copiesTreeEqualsExpected, true, 'the installed copies hash to the typed value');
@@ -767,9 +839,16 @@ test('copy: the COPIES must hash to the typed tree hash; a replaced build, an ex
   assert.equal(r.junctionTargetIntact, true);
   assert.match(r.halfCopiedError, /holds only part of the builds/u);
   assert.equal(r.cleanAgainError, null, 'the reviewed build copies once the working tree is clean again');
-  assert.deepEqual(r.recordedAgain, ['authority', 'broker', 'pipe-client']);
+  assert.deepEqual(r.recordedAgain, ['approver', 'authority', 'broker', 'control-plane', 'pipe-client']);
   assert.equal(r.staleGone, true);
-  assert.deepEqual(r.manifestReread, ['authority', 'broker', 'pipe-client'], 'the manifest on disk round-trips');
+  assert.deepEqual(r.manifestReread, ['approver', 'authority', 'broker', 'control-plane', 'pipe-client'], 'the manifest on disk round-trips');
+  // the pinned node.exe is added INSIDE the control-plane folder after the hash was checked: the installed copies still hash to the typed value, and a build that ships its own node\ folder is refused
+  assert.equal(r.nodeAddedStillEqual, true, 'a node\\ folder inside bin\\control-plane does not change the installed tree hash');
+  assert.equal(r.nodeAddedSecondRunError, null, 'and a second run on such an install is fine');
+  assert.equal(r.nodeAddedRecordedTreeSame, true, 'the recorded folder hash leaves node\\ out');
+  assert.equal(r.nodeInstalledWithoutExclusionDiffers, true, 'control: with node\\ counted the hash WOULD differ');
+  assert.match(r.nodeFolderInSourceError, /the control-plane build has a node\\ folder; that folder is reserved for the pinned node\.exe/u);
+  assert.equal(r.nodeFolderInSourceNothingCopied, true);
   assert.match(r.noHashError, /-ExpectedTreeHash <64 hex> is required/u);
   assert.equal(r.noHashNothingCopied, true, 'without the typed value nothing is copied at all');
   assert.match(r.badFormat, /64 lowercase hex/u);
@@ -831,15 +910,17 @@ test('removal: only known files are deleted; an unknown file, a sub-folder or a 
   assert.equal(r.installGone, true);
   assert.match(r.installUnknownRefused, /readme\.txt/u);
   assert.equal(r.installUnknownKept, true);
+  // the folders the Control Plane service fills itself are removed as a whole; a stray file next to them is not
+  assert.equal(r.workFoldersRemoved, null, 'logs, claude-run, secrets\\ and ui\\ hold files the service made: they go');
+  assert.equal(r.workFoldersGone, true);
+  assert.match(r.strayInControlPlaneRefused, /control-plane\\notes\.txt/u);
+  assert.equal(r.strayInSecretsAllowed, null, 'a DPAPI blob and its .meta file are the service\'s own');
+  assert.match(r.configUnknownRefused, /control-plane-config\\extra\.json/u, 'the settings folder is not a work folder: nothing unlisted may sit in it');
+  assert.equal(r.configKnownRemoved, null);
   assert.match(r.junctionRefused, /contains a link or junction/u);
   assert.equal(r.outsideIntact, true, 'the junction target was not followed or deleted');
   assert.match(r.selfJunctionRefused, /is or contains a link or junction/u, 'a folder that is itself a junction is refused too');
   assert.equal(r.selfJunctionTargetIntact, true);
-});
-
-test('the password comparison is exact and the SecureStrings are only compared, never shown', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
-  const r = harness(t, 'secure');
-  assert.deepEqual({ ...r, case: undefined }, { case: undefined, same: true, differentLastChar: false, differentLength: false, reflexive: true });
 });
 
 // ---- -GrantHyperVToBroker (ADR-002 Amendment 2026-11-03): the Broker's service SID, and only it, in Hyper-V Administrators; the Broker unrestricted exactly then ----
@@ -856,8 +937,7 @@ test('Hyper-V grant, source guards: the only code that changes the group takes g
   const callsOf = (cmdlet) => codeLines.filter((line) => new RegExp(`\\b${cmdlet}\\b`, 'u').test(line.replace(/"[^"]*"/gu, '""')));   // a cmdlet named inside a message string is not a call
   const adds = callsOf('Add-LocalGroupMember');
   const removes = callsOf('Remove-LocalGroupMember');
-  assert.equal(adds.length, 2, 'two Add-LocalGroupMember calls: albera-cp into Users, the Broker into Hyper-V Administrators');
-  assert.equal(adds.filter((line) => /-SID 'S-1-5-32-545' -Member \$u\b/u.test(line)).length, 1);
+  assert.equal(adds.length, 1, 'one Add-LocalGroupMember call: the Broker into Hyper-V Administrators (nothing makes a local account any more)');
   const hvAdds = adds.filter((line) => BROKER_SERVICE_SID_ARG.test(line));
   assert.equal(hvAdds.length, 1);
   assert.match(hvAdds[0], /Add-LocalGroupMember -SID \$hv\.Group -Member \$hv\.Member\s*\}?\s*$/u);
@@ -880,8 +960,8 @@ test('Hyper-V grant, source guards: the only code that changes the group takes g
   assert.doesNotMatch(planBody, /Member = (?!\$broker\b)/u);
   assert.match(lib, /function Get-ExpectedSidType[\s\S]*?\$HyperVGrantRecorded -and \$ServiceName -ceq \$c\.BrokerService\) \{ return 'unrestricted' \}/u);
   // the sid type: one decision point, restricted is still the literal the old test (and the lab) look for
-  assert.equal((scriptCode.match(/sidtype \$\(\$spec\.Name\) unrestricted/gu) ?? []).length, 1);
-  assert.match(scriptCode, /\(Get-ExpectedSidType \$spec\.Name \$GrantHyperVToBroker\) -ceq 'unrestricted'\) \{ Invoke-Sc "sidtype \$\(\$spec\.Name\) unrestricted" \| Out-Null \} else \{ Invoke-Sc "sidtype \$\(\$spec\.Name\) restricted" \| Out-Null \}/u);
+  assert.equal((scriptCode.match(/sidtype \$\(\$Spec\.Name\) unrestricted/gu) ?? []).length, 1);
+  assert.match(scriptCode, /\(Get-ExpectedSidType \$Spec\.Name \$GrantHyperVToBroker\) -ceq 'unrestricted'\) \{ Invoke-Sc "sidtype \$\(\$Spec\.Name\) unrestricted" \| Out-Null \} else \{ Invoke-Sc "sidtype \$\(\$Spec\.Name\) restricted" \| Out-Null \}/u);
   assert.match(scriptCode, /Test-ServiceFacts [^\n]*\(Get-ExpectedSidType \$spec\.Name \$GrantHyperVToBroker\)/u, 'install verifies the type it set');
   assert.match(scriptCode, /Test-ServiceFacts [^\n]*\(Get-ExpectedSidType \$spec\.Name \$grantRecorded\)/u, 'status expects unrestricted only when the install record says the grant was made');
   // the VM is looked up read-only through CIM, which is already imported; nothing new is executed, and the lab-only parameter is gated like the password
@@ -990,31 +1070,34 @@ test('Hyper-V grant, pure helpers: the plan names the Broker SID only; the Broke
   for (const name of ['controlPlaneSid', 'authoritySid', 'otherGroup', 'badVm', 'badComputer', 'extraKey', 'missingKey', 'notADictionary']) assert.deepEqual(r.hvRecord[name], ['hyperv_grant_record'], name);
 });
 
-test('Hyper-V grant, step list and plan (fakes for the machine): two more steps with the option, the old ten and six without; the VM is looked up before anything is created and the SID leaves before the service goes', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+test('Hyper-V grant, step list and plan (fakes for the machine): two more steps with the option, the thirteen install and eight removal steps without; the VM is looked up before anything is created and the SID leaves before the service goes', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
   const r = harness(t, 'hyperv');
-  const ten = ['sources', 'approver', 'dataroot', 'user', 'services', 'folders', 'binaries', 'key', 'configs', 'finish'];
-  assert.deepEqual(r.defaultInstallIds, ten, 'without the option: the ten steps of today');
-  assert.deepEqual(r.defaultUninstallIds, ['services', 'key', 'installroot', 'data', 'user', 'manifest'], 'without a record: the six removal steps of today');
-  assert.deepEqual(r.grantInstallIds, ['sources', 'approver', 'vm', 'dataroot', 'user', 'services', 'hyperv', 'folders', 'binaries', 'key', 'configs', 'finish']);
+  const thirteen = ['sources', 'approver', 'dataroot', 'services', 'folders', 'binaries', 'key', 'node', 'claude', 'configs', 'cpservice', 'shortcuts', 'finish'];
+  assert.deepEqual(r.defaultInstallIds, thirteen, 'without the option: the steps of the Control Plane install (no local account any more)');
+  assert.deepEqual(r.defaultUninstallIds, ['runentry', 'shortcuts', 'services', 'key', 'installroot', 'data', 'user', 'manifest'], 'without a record: the removal steps (the legacy user step stays for first-layout installs)');
+  assert.deepEqual(r.grantInstallIds, ['sources', 'approver', 'vm', 'dataroot', 'services', 'hyperv', 'folders', 'binaries', 'key', 'node', 'claude', 'configs', 'cpservice', 'shortcuts', 'finish']);
+  assert.ok(r.grantInstallIds.indexOf('hyperv') < r.grantInstallIds.indexOf('cpservice'), 'the Control Plane service is registered after the group change');
+  assert.ok(r.defaultInstallIds.indexOf('node') > r.defaultInstallIds.indexOf('binaries') && r.defaultInstallIds.indexOf('claude') > r.defaultInstallIds.indexOf('binaries'), 'the pins are copied into folders the binaries step made');
+  assert.ok(r.defaultInstallIds.indexOf('configs') > r.defaultInstallIds.indexOf('claude') && r.defaultInstallIds.indexOf('cpservice') > r.defaultInstallIds.indexOf('configs'), 'the service config names the pins\' hashes, and launch-check needs the config');
   assert.ok(r.grantInstallIds.indexOf('vm') < r.grantInstallIds.indexOf('dataroot'), 'a missing or ambiguous VM stops the run before anything is created');
   assert.ok(r.grantInstallIds.indexOf('services') < r.grantInstallIds.indexOf('hyperv'));
   assert.doesNotMatch(r.defaultServicesTitle, /UNRESTRICTED|Hyper-V/u, 'the default plan text is unchanged');
-  assert.match(r.defaultServicesTitle, /restricted SID, SeChangeNotifyPrivilege only, start=demand/u);
-  assert.equal(r.defaultConfigsDetail, 5);
+  assert.match(r.defaultServicesTitle, /restricted SID, SeChangeNotifyPrivilege only, start=delayed-auto/u);
+  assert.equal(r.defaultConfigsDetail, 6);
   assert.match(r.grantServicesTitle, /Broker's SID type is UNRESTRICTED instead \(Hyper-V refuses a restricted token\), the Authority stays restricted/u);
-  assert.equal(r.grantConfigsDetail.length, 7);
-  assert.match(r.grantConfigsDetail[5], /computers: clone-01 -> <GUID of the VM albera-clone-01>/u);
-  assert.match(r.grantConfigsDetail[6], /^Control Plane settings also get desktop: \{ helperPath .*\\bin\\pipe-client\\albera-windows-broker-pipe-client\.exe, helperSha256 <SHA-256 of that installed exe> \}, which the gated room requires$/u);
+  assert.equal(r.grantConfigsDetail.length, 8);
+  assert.match(r.grantConfigsDetail[6], /computers: clone-01 -> <GUID of the VM albera-clone-01>/u);
+  assert.match(r.grantConfigsDetail[7], /^The approval settings also get desktop: \{ helperPath .*\\bin\\pipe-client\\albera-windows-broker-pipe-client\.exe, helperSha256 <SHA-256 of that installed exe> \}, which the gated room requires$/u);
   assert.match(r.grantTitles[1], /Add ONLY the Broker's service SID \(S-1-5-80(-\d+){5}\) to BUILTIN\\Hyper-V Administrators \(S-1-5-32-578\)/u);
   assert.doesNotMatch(r.grantTitles.join('\n'), /albera-cp/u);
   // what the owner reads in a plan
-  assert.deepEqual([...r.planDefault.matchAll(/^\s*(\d+)\. \[/gmu)].map((m) => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.deepEqual([...r.planDefault.matchAll(/^\s*(\d+)\. \[/gmu)].map((m) => Number(m[1])), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
   assert.doesNotMatch(r.planDefault, /Hyper-V|GrantHyperV|UNRESTRICTED/u, 'the default plan does not mention the option at all');
   const grantPlan = [...r.planGrant.matchAll(/^\s*(\d+)\. \[(\w+)\] (.*)$/gmu)].map((m) => [Number(m[1]), m[2], m[3]]);
-  assert.deepEqual(grantPlan.map((row) => row[0]), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  assert.deepEqual(grantPlan.map((row) => row[0]), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
   assert.match(grantPlan[2][2], /^Look up the GUID of the virtual machine albera-clone-01/u);
   assert.equal(grantPlan[2][1], 'todo', 'the fake VM list has the VM');
-  assert.match(grantPlan[6][2], /^Add ONLY the Broker's service SID/u);
+  assert.match(grantPlan[5][2], /^Add ONLY the Broker's service SID/u);
   assert.match(r.planGrant, /its GUID goes into the Broker config as computers: clone-01 -> <guid>; the Broker queries by GUID and never by name/u);
   assert.match(r.planGrant, /uninstall removes the SID from the group first, before the service is deleted/u);
   // lookup
@@ -1043,7 +1126,7 @@ test('Hyper-V grant, the group change (fakes for the machine): only the Broker S
   assert.deepEqual({ ...r.grantRecord }, { group: 'S-1-5-32-578', sid: BROKER, computerId: 'clone-01', vmId: GUID });
   assert.deepEqual({ ...r.grantRecordOnDisk }, { group: 'S-1-5-32-578', sid: BROKER, computerId: 'clone-01', vmId: GUID }, 'the record is saved to the manifest');
   assert.equal(r.grantTestAfter, 'done');
-  assert.deepEqual(r.grantUninstallIds, ['hyperv', 'services', 'key', 'installroot', 'data', 'user', 'manifest'], 'with a record the SID leaves first, before the service is deleted');
+  assert.deepEqual(r.grantUninstallIds, ['hyperv', 'runentry', 'shortcuts', 'services', 'key', 'installroot', 'data', 'user', 'manifest'], 'with a record the SID leaves first, before the service is deleted');
   assert.match(r.planUninstall, /^\s*1\. \[todo\] Remove the Broker's service SID from Hyper-V Administrators \(the install record says -GrantHyperVToBroker added it\), BEFORE the service is deleted/mu);
   assert.deepEqual(r.grantAgainCalls, [], 'a second run changes nothing');
   assert.equal(r.grantAgainError, null);
@@ -1054,7 +1137,7 @@ test('Hyper-V grant, the group change (fakes for the machine): only the Broker S
   assert.deepEqual(r.revokeMembers, ['S-1-5-21-1111111111-2222222222-3333333333-1234'], 'another member of the group is left alone');
   assert.equal(r.revokeRecordGone, true);
   assert.equal(r.revokeTestAfter, 'done');
-  assert.deepEqual(r.revokeUninstallIds, ['services', 'key', 'installroot', 'data', 'user', 'manifest']);
+  assert.deepEqual(r.revokeUninstallIds, ['runentry', 'shortcuts', 'services', 'key', 'installroot', 'data', 'user', 'manifest']);
   // refusals change nothing
   assert.match(r.noVmError, /no virtual machine is named albera-clone-01/u);
   assert.deepEqual({ ...r.noVmChanged }, { calls: 0, record: false });
@@ -1095,7 +1178,7 @@ test('Hyper-V grant, the group is read every time and an undo never guesses (fak
   assert.equal(r.statusLookupFails.laterLineStillThere, true, 'the rest of the status is still checked');
   // with a record
   assert.deepEqual({ ...r.recorded }, { ok: [], brokerGone: ['broker_not_a_member'], controlPlane: ['control_plane_is_a_member'], noGroup: ['group_missing'] });
-  assert.deepEqual(r.statusRecorded.ok, ['ok Hyper-V Administrators: the Broker service SID is a member; albera-cp and the Authority are not']);
+  assert.deepEqual(r.statusRecorded.ok, ['ok Hyper-V Administrators: the Broker service SID is a member; albera-cp and the Authority are not'], 'a first-layout record: the legacy account is named; a new-layout record names AlberaControlPlane');
   assert.deepEqual(r.statusRecorded.controlPlane, ['FAIL Hyper-V Administrators: control_plane_is_a_member']);
   // the install step is done only when the record is there AND nothing is wrong
   assert.equal(r.stepClean, 'done');
@@ -1122,9 +1205,9 @@ test('Hyper-V grant, Control Plane settings (fakes for the machine): install wit
   assert.match(r.helperPath, /\\Albera\\bin\\pipe-client\\albera-windows-broker-pipe-client\.exe$/u);
   // 1. without the option
   assert.equal(r.plainError, null);
-  assert.deepEqual(r.plainWritten, ['AlberaHostBroker.service.json', 'AlberaApprovalAuthority.service.json', 'albera.approval.json']);
+  assert.deepEqual(r.plainWritten, ['AlberaHostBroker.service.json', 'AlberaApprovalAuthority.service.json', 'AlberaControlPlane.service.json', 'albera.approval.json']);
   const plain = JSON.parse(r.plainSettings);
-  assert.deepEqual(Object.keys(plain), ['version', 'projectId', 'broker', 'authority', 'journal', 'computers', 'attestation'], 'no desktop key without the option');
+  assert.deepEqual(Object.keys(plain), ['version', 'projectId', 'broker', 'authority', 'journal', 'computers'], 'no desktop key without the option, and no attestation key at all');
   assert.deepEqual(plain.computers, { 'albera-clone-01': 'clone-01' });
   assert.equal(r.plainBrokerHasComputers, false);
   assert.equal(r.plainTest, 'done', 'unchanged: existing files are enough without the option');
@@ -1132,7 +1215,7 @@ test('Hyper-V grant, Control Plane settings (fakes for the machine): install wit
   assert.equal(r.grantTestOverPlain, 'todo', 'files written before the option have no desktop block yet');
   assert.equal(r.grantError, null);
   const grant = JSON.parse(r.grantSettings);
-  assert.deepEqual(Object.keys(grant), ['version', 'projectId', 'broker', 'authority', 'journal', 'computers', 'desktop', 'attestation']);
+  assert.deepEqual(Object.keys(grant), ['version', 'projectId', 'broker', 'authority', 'journal', 'computers', 'desktop']);
   assert.deepEqual(grant.desktop, { helperPath: r.helperPath, helperSha256: exeSha });
   const { desktop, ...rest } = grant;
   assert.deepEqual(rest, plain, 'everything but the desktop block is the plain settings');
@@ -1180,7 +1263,7 @@ test('uninstall runs to the end when the services were never started (empty data
   assert.equal(r.emptyKnownFolderError, null, 'an empty known folder is removed, not "You cannot call a method on a null-valued expression"');
   const common = { error: null, services: [], keyGone: true, userRemoved: [CP], dataRootGone: true, installRootGone: true, members: [] };
   assert.deepEqual({ ...r.uninstallWithGrant }, { ...common, ran: ['hyperv', 'services', 'key', 'installroot', 'data', 'user', 'manifest'], removeCalls: [`remove S-1-5-32-578 ${r.grantMembers[0]}`] });
-  assert.deepEqual({ ...r.uninstallWithoutGrant }, { ...common, ran: ['services', 'key', 'installroot', 'data', 'user', 'manifest'], removeCalls: [] });
+  assert.deepEqual({ ...r.uninstallWithoutGrant }, { ...common, ran: ['services', 'key', 'installroot', 'data', 'user', 'manifest'], removeCalls: [] }, 'runentry and shortcuts are skipped: the record has neither');
 });
 
 test('Hyper-V grant, Test-LocalGroupExists (real, read only): true for a group, false only for a SID that maps to nothing, anything else is thrown', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
@@ -1234,11 +1317,395 @@ test('Hyper-V grant, lab hook: a second pass installs WITH the option and checks
   // the Control Plane settings: the grant pass checks the desktop block against a hash it computes itself; the default pass checks there is none
   assert.match(hook, /Add-GrantCheck \$checks 'control_plane_settings_desktop_block'/u);
   assert.match(hook, /\$helperHash = \(Get-FileHash -LiteralPath \$helperExe -Algorithm SHA256\)\.Hash\.ToLowerInvariant\(\)/u, 'the hash is taken by Get-FileHash, not read back from the installer');
-  assert.match(hook, /'version,projectId,broker,authority,journal,computers,desktop,attestation'/u);
+  assert.match(hook, /'version,projectId,broker,authority,journal,computers,desktop'\)/u, 'no attestation key any more');
   assert.match(hook, /\$evidence\.defaultSettingsHasNoDesktop/u);
   assert.match(hook, /-and \$evidence\.defaultSettingsHasNoDesktop -and/u, 'a default install that wrote a desktop block fails the lab');
   assert.match(hook, /\$evidence\.grant = /u);
   assert.match(hook, /\(\$evidence\.grant\.status -ne 'FAIL'\)/u, 'a FAIL in the grant pass fails the lab; BLOCKED is reported, never counted as passed');
+});
+
+// ---- PR7: the Control Plane service install (control-plane-service.md sections 3, 8 and 9; PR #185 and #183 hand-over items) ----
+
+test('Control Plane service: AlberaControlPlane has a derived service SID, no local account; the service config is exactly the host block, the claude block and the ui block the two programs read', needsWindows, () => {
+  const { r } = lib();
+  assert.equal(r.cp.service, 'AlberaControlPlane');
+  assert.match(r.cp.sid, /^S-1-5-80(-\d+){5}$/u);
+  assert.equal(r.cp.differsFromOthers, true);
+  assert.equal(r.cp.sidShape, true);
+  const config = JSON.parse(r.cfg.json);
+  assert.deepEqual(r.cfg.top, ['host', 'claude', 'ui'], 'PR #185: nothing else at top level (the host reads `host`, room-service reads `claude` and `ui`)');
+  // the nine keys HostConfig.cs reads, taken from its source
+  const hostSource = readFileSync(path.join(root, 'src', 'runtime', 'windows-control-plane-host', 'HostConfig.cs'), 'utf8');
+  const keysLine = /private static readonly string\[\] Keys = \[([^\]]+)\]/u.exec(hostSource)[1];
+  assert.deepEqual([...r.cfg.host].sort(), [...keysLine.matchAll(/"([A-Za-z0-9]+)"/gu)].map((m) => m[1]).sort(), 'exactly the keys the host accepts');
+  assert.deepEqual(r.cfg.claude, ['executable', 'executableSha256', 'maxMinutes', 'maxToolCalls'], 'PR #185 handover: claude = { executable, executableSha256, maxMinutes, maxToolCalls } (model is optional and left out)');
+  assert.deepEqual(r.cfg.ui, ['controlPlaneSid', 'approverSid']);
+  assert.deepEqual(config.host, {
+    nodePath: 'C:\\Program Files\\Albera\\bin\\control-plane\\node\\node.exe', nodeSha256: 'ab'.repeat(32), appPath: 'C:\\Program Files\\Albera\\bin\\control-plane\\app',
+    dataRoot: 'C:\\ProgramData\\Albera', logDirectory: 'C:\\ProgramData\\Albera\\control-plane\\logs', logMaxBytes: 1048576, maxRestarts: 5, restartDelayMs: 5000, stableRunMs: 60000,
+  });
+  assert.deepEqual(config.claude, { executable: 'C:\\Program Files\\Albera\\bin\\claude\\claude.exe', executableSha256: 'cd'.repeat(32), maxMinutes: 15, maxToolCalls: 120 }, 'the section 6.6 defaults');
+  assert.deepEqual(config.ui, { controlPlaneSid: r.cp.sid, approverSid: r.shown.approverSid });
+  // the values the host's parser bounds (HostConfig.cs): logMaxBytes 8 KiB..64 MiB, maxRestarts 0..20, restartDelayMs 100..10000, stableRunMs 500..3600000
+  assert.ok(config.host.logMaxBytes >= 8 * 1024 && config.host.logMaxBytes <= 64 * 1024 * 1024);
+  assert.ok(config.host.maxRestarts <= 20 && config.host.restartDelayMs >= 100 && config.host.restartDelayMs <= 10_000 && config.host.stableRunMs >= 500 && config.host.stableRunMs <= 3_600_000);
+  assert.ok(config.claude.maxMinutes >= 1 && config.claude.maxMinutes <= 55 && config.claude.maxToolCalls >= 1 && config.claude.maxToolCalls <= 400, 'inside the room-service ceilings (PR #185)');
+  for (const p of [config.host.nodePath, config.host.appPath, config.host.dataRoot, config.host.logDirectory, config.claude.executable]) assert.ok(/^[A-Za-z]:\\[^"*?:/]*$/u.test(p) && !p.includes('..'), `a plain absolute path: ${p}`);
+  assert.ok(Buffer.byteLength(r.cfg.json) < 16 * 1024, 'inside the host\'s 16 KiB limit');
+  assert.deepEqual(r.cfg.reasons, [], 'the script\'s own check accepts exactly what it writes');
+  const expectBad = {
+    otherNode: 'host_nodeSha256', otherClaude: 'claude_executableSha256', extraTopKey: 'config_keys', extraHostKey: 'host_keys', missingHostKey: 'host_keys', noClaude: 'config_keys', otherUiSid: 'ui_approverSid',
+    cpSidIsAccount: 'ui_controlPlaneSid', portableNode: 'host_nodePath', maxMinutesString: 'claude_maxMinutes', notJson: 'config_syntax', tooBig: 'config_too_large',
+  };
+  for (const [name, reason] of Object.entries(expectBad)) assert.deepEqual(r.cfgBad[name], [reason], name);
+  assert.deepEqual({ ...r.cfgInputsRefused }, { shortNode: 'node_sha256_invalid', accountAsCp: 'control_plane_sid_invalid', serviceAsApprover: 'approver_sid_invalid' });
+});
+
+test('services: all three start delayed; the Control Plane restarts twice after 5 s and then stays stopped; the failure text is read from any language; the Broker ACL names the Control Plane SERVICE SID', needsWindows, () => {
+  const { r } = lib();
+  assert.deepEqual({ ...r.failureText }, {
+    ok: 0, japanese: 0,
+    none: ['failure_actions_not_two_restarts'], one: ['failure_actions_not_two_restarts'], three: ['failure_actions_not_two_restarts'],
+    otherDelay: ['failure_restart_delay_differs'], reboot: ['failure_action_not_restart'], runCommand: ['failure_action_not_restart'],
+  });
+  assert.equal(r.cpFacts.ok, 0);
+  assert.deepEqual(r.cpFacts.noFailureActions, ['failure_actions_not_two_restarts'], 'the Control Plane\'s own facts check the failure actions');
+  assert.equal(r.cpFacts.brokerNeedsNoFailureActions, 0, 'the Broker and the Authority are not asked for any');
+  assert.equal(r.sddlCpService.ok, 0, 'SYSTEM, Administrators and the Control Plane service SID with exactly LC');
+  assert.match(r.sddlCpService.sddl, new RegExp(`\\(A;;LC;;;${r.cp.sid}\\)$`, 'u'));
+  assert.deepEqual(r.sddlCpService.accountSidFails, [`unexpected_principal:${r.cp.sid}`, 'control_plane_ace_missing'], 'an account SID is not what the Broker config names now');
+  const script = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
+  assert.match(script, /Invoke-Sc "config \$\(\$Spec\.Name\) start= delayed-auto"/u, 'a service of an older run (start=demand) is brought to delayed-auto');
+  assert.match(script, /if \(\$Spec\.RestartOnFailure\) \{ Invoke-Sc \(Get-ScFailureArguments \$Spec\.Name\) \| Out-Null \}/u);
+  assert.match(script, /\$facts\.StartMode -ne 'Auto' -or \$facts\.DelayedAutoStart -ne \$true\) \{ return 'todo' \}/u, 'the services step is todo for a service that is still start=demand');
+});
+
+test('the Control Plane files: the settings the service can only read sit in control-plane-config, the journal in control-plane; manifest records name only fixed values', needsWindows, () => {
+  const { r } = lib();
+  assert.equal(r.cpShapeOk, 0, 'a new-layout record with the pins, launcher, shortcuts, run entry and run id is a valid manifest');
+  const expected = {
+    otherServiceSid: 'control_plane_record', badNodeHash: 'control_plane_record', extraCpKey: 'control_plane_record', badClaudeHash: 'claude_record', longVersion: 'claude_record', badLauncher: 'launcher_record',
+    shortcutName: 'shortcut_name_not_fixed', runName: 'run_entry_record', runNotDictionary: 'run_entry_record', topLevelKey: 'manifest_key:owner', runIdText: 'setup_run_id', runIdNegative: 'setup_run_id',
+    runIdTooBig: 'setup_run_id', unknownService: 'service_name_not_fixed',
+  };
+  for (const [name, reason] of Object.entries(expected)) assert.deepEqual(r.cpShapeBad[name], [reason], name);
+});
+
+test('anti-rollback in the script: the run id is an unsigned 64-bit number compared as a number; an older run is refused, the same one is fine, nothing supplied bounds nothing', needsWindows, () => {
+  const { r } = lib();
+  assert.deepEqual(r.runId.parse, ['1234567', '0', '18446744073709551615', null, null, null, null, null, null, null, null, '12', null, '1234567'],
+    'decimal digits only: no sign, no exponent, no space, nothing past 2^64-1; a leading zero is read as the number');
+  assert.deepEqual({ ...r.runId.refusal }, {
+    nothingSupplied: null, emptySupplied: null, noRecord: null, older: 'setup_run_id_older_than_installed', same: null, newer: null, numericNotText: 'setup_run_id_older_than_installed',
+    textOrderWouldSayNewer: null, biggest: 'setup_run_id_older_than_installed', biggestSame: null, suppliedJunk: 'setup_run_id_invalid', recordedJunk: 'recorded_setup_run_id_invalid',
+  });
+});
+
+test('the pins and the launcher: claude.exe comes from the approver\'s own profile and only when the approver is the elevated account; the launcher script is ASCII, parses and does what the contract says (run against fakes)', needsWindows, () => {
+  const { r } = lib();
+  assert.equal(r.pins.node, 'C:\\Program Files\\nodejs\\node.exe');
+  assert.equal(r.pins.claude, 'C:\\Users\\Yosuke\\.local\\bin\\claude.exe');
+  assert.equal(r.pins.claudeNoProfile, null, 'a profile path with .. is no path');
+  assert.equal(r.pins.claudeRelative, null);
+  assert.equal(r.pins.refusalSame, null);
+  assert.equal(r.pins.refusalOtherAdmin, 'elevated_account_is_not_the_approver');
+  assert.equal(r.pins.refusalSystem, 'elevated_sid_is_not_a_user_account');
+  assert.equal(r.pins.refusalNoApprover, 'elevated_account_is_not_the_approver');
+  assert.deepEqual({ ...r.pins.labGate }, { lab: true, notLab: 'binary_source_parameter_is_lab_only', none: true });
+  assert.deepEqual({ ...r.open }, { ascii: true, parseErrors: 0, crlf: true, hasService: true, hasRoomFile: true, noPlaceholder: true });
+  const runs = r.openRuns;
+  assert.deepEqual(runs.good, { exited: false, started: ['http://127.0.0.1:51234/room/#b=AbCdEfGhIjKlMnOpQrStUv_-12'], said: '' }, 'the fragment form of section 4: the code never goes to the server');
+  for (const name of ['serviceStopped', 'noFile', 'notJson', 'codeWithSpace', 'codeShort', 'portLow', 'portText', 'pidText', 'otherProcessHoldsThePort', 'nobodyHoldsThePort']) {
+    assert.equal(runs[name].exited, true, `${name}: the launcher stops`);
+    assert.deepEqual(runs[name].started, [], `${name}: and opens nothing`);
+    assert.match(runs[name].said, /ALBERA: /u, `${name}: and says why`);
+  }
+  assert.match(runs.serviceStopped.said, /AlberaControlPlane is Stopped/u);
+  assert.match(runs.otherProcessHoldsThePort.said, /not held by the ALBERA process/u, 'the PID that owns the port is the one room.json names (section 4, port squatting)');
+});
+
+test('shortcuts and the Run entry: the contract\'s names, the full path of powershell.exe, the approver tray under HKLM Run', needsWindows, () => {
+  const { r } = lib();
+  assert.deepEqual(r.shortcuts.specs, [
+    { path: 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\ALBERA\\Open ALBERA.lnk', target: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+      arguments: '-NoProfile -ExecutionPolicy Bypass -File "C:\\Program Files\\Albera\\bin\\launcher\\open-albera.ps1"', workingDirectory: 'C:\\Program Files\\Albera\\bin\\launcher' },
+    { path: 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\ALBERA\\ALBERA update.lnk', target: 'C:\\Program Files\\Albera\\bin\\setup\\albera-setup.exe', arguments: '', workingDirectory: 'C:\\Program Files\\Albera\\bin\\setup' },
+  ]);
+  assert.deepEqual(r.shortcuts.withoutSetup, ['Open ALBERA.lnk'], 'the update shortcut only where albera-setup.exe is installed');
+  assert.equal(r.shortcuts.matchSame, 0);
+  assert.equal(r.shortcuts.matchCaseOfPath, 0, 'paths are compared the Windows way');
+  assert.deepEqual(r.shortcuts.otherTarget, ['shortcut_target_differs']);
+  assert.deepEqual(r.shortcuts.otherArguments, ['shortcut_arguments_differ']);
+  assert.deepEqual(r.shortcuts.otherArgumentsCase, ['shortcut_arguments_differ'], 'arguments exactly');
+  assert.deepEqual(r.shortcuts.missing, ['shortcut_missing']);
+  assert.deepEqual({ ...r.run }, { keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run', name: 'AlberaApprover', command: '"C:\\Program Files\\Albera\\bin\\approver\\AlberaApprover.exe" --tray' });
+});
+
+test('migration helpers (pure): what the first layout holds is carried over, and a record or config that does not agree is refused with a reason', needsWindows, () => {
+  const { r, inputs } = lib();
+  const ok = (x) => ({ approverKeyId: x.values.ApproverKeyId, approverSid: x.values.ApproverSid, vmName: x.values.VmName, computerId: x.values.ComputerId, projectId: x.values.ProjectId });
+  assert.equal(r.legacy.noGrant.ok, true);
+  assert.deepEqual(ok(r.legacy.noGrant), { approverKeyId: 'hello-0123456789abcdef', approverSid: 'S-1-5-21-1111111111-2222222222-3333333333-1001', vmName: 'albera-clone-01', computerId: 'clone-01', projectId: 'albera-host' });
+  assert.equal(r.legacy.noGrant.values.ApproverPublicKey, inputs.rsa2048, 'the Hello public key is carried over byte for byte');
+  assert.equal(r.legacy.noGrant.values.Grant, null);
+  assert.equal(r.legacy.noGrant.values.LegacySid, 'S-1-5-21-1111111111-2222222222-3333333333-1500');
+  assert.deepEqual({ ...r.legacy.grant.values.Grant }, { ComputerId: 'clone-01', VmId: '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f' }, 'the VM GUID of the record, no lookup by name');
+  const refused = {
+    partial: 'legacy_install_not_complete', newLayout: 'legacy_install_not_complete', badAuthority: 'authority_config:audience', badBroker: 'broker_config:config_syntax',
+    grantButBrokerWithoutComputers: 'broker_config_disagrees_with_grant_record', grantComputerDiffers: 'grant_computer_differs_from_settings', twoComputers: 'settings_not_one_computer',
+    settingsNotJson: 'settings_syntax', badVmName: 'settings_computer_invalid', badProject: 'settings_not_one_computer',
+  };
+  for (const [name, reason] of Object.entries(refused)) { assert.equal(r.legacy[name].ok, false, name); assert.deepEqual(r.legacy[name].reasons, [reason], name); assert.equal(r.legacy[name].values, null); }
+});
+
+test('Control Plane install steps against a temp layout (fakes for the machine): the pins, the service order, the launcher and shortcuts, adopting the install root, anti-rollback', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+  const r = harness(t, 'cp');
+  const sha = (text) => createHash('sha256').update(text).digest('hex');
+  const CP = 'S-1-5-80';
+  // 1. node.exe
+  assert.equal(r.nodeBefore, 'todo');
+  assert.equal(r.nodeError, null);
+  assert.equal(r.nodeShaOfCopy, sha('fake node bytes'));
+  assert.equal(r.nodeShaOfCopy, r.nodeShaOfSource, 'the hash of the COPY is what is recorded');
+  assert.deepEqual(Object.keys(r.nodeRecord).sort(), ['nodeSha256', 'nodeSource', 'serviceSid']);
+  assert.equal(r.nodeRecord.nodeSha256, r.nodeShaOfCopy);
+  assert.ok(r.nodeRecord.serviceSid.startsWith(CP));
+  assert.deepEqual(r.nodeRecordOnDisk, r.nodeRecord, 'saved to the manifest');
+  assert.equal(r.nodePartialLeft, false);
+  assert.equal(r.nodeAfter, 'done');
+  assert.match(r.nodeTampered, /^blocked:.*node\.exe exists but is not the copy the install record describes/u);
+  assert.match(r.nodeSourceMissing, /^blocked:node\.exe not found at /u);
+  assert.match(r.nodeSourceLink, /^blocked:node\.exe is reached through a link/u);
+  // 2. claude.exe
+  assert.equal(r.claudeBefore, 'todo');
+  assert.equal(r.claudeError, null);
+  assert.equal(r.claudeShaOfCopy, sha('fake claude bytes'));
+  assert.equal(r.claudeShaOfCopy, r.claudeShaOfSource);
+  assert.deepEqual(Object.keys(r.claudeRecord).sort(), ['fileVersion', 'sha256', 'source']);
+  assert.equal(r.claudeRecord.sha256, r.claudeShaOfCopy);
+  assert.equal(r.claudeRecord.fileVersion, '', 'read from the file\'s version resource (a text file has none); the program is never run');
+  assert.match(r.claudeRecord.source, /\\profile\\\.local\\bin\\claude\.exe$/u, 'found from the approver SID\'s profile');
+  assert.equal(r.claudeAfter, 'done');
+  assert.match(r.claudeOtherAdmin, /^blocked:elevated_account_is_not_the_approver/u);
+  assert.match(r.claudeOtherAdminDoError, /^elevated_account_is_not_the_approver/u);
+  assert.equal(r.claudeOtherAdminNothingCopied, true);
+  assert.match(r.claudeSystem, /^blocked:elevated_sid_is_not_a_user_account/u);
+  assert.equal(r.claudeNoProfile, 'blocked:claude.exe cannot be located');
+  assert.match(r.claudeNotInstalled, /^blocked:claude\.exe not found at .*empty-profile\\\.local\\bin\\claude\.exe$/u);
+  assert.equal(r.claudeLabSource, 'todo', 'the lab-only source replaces the lookup');
+  assert.match(r.claudeLabSourceOtherAdmin, /^blocked:elevated_account_is_not_the_approver/u, 'but not the account rule');
+  assert.equal(r.claudeDoAgainError, null);
+  // 3. the service
+  assert.equal(r.cpBefore, 'todo');
+  assert.match(r.cpRefusedError, /launch-check of the installed Control Plane host answered 78, so the service was NOT registered/u);
+  assert.deepEqual(r.cpRefusedOrder, ['launch-check'], 'a host that refuses: no sc.exe call at all');
+  assert.equal(r.cpRefusedRegistered, false);
+  assert.equal(r.cpRefusedRecorded, false);
+  assert.equal(r.cpError, null);
+  const verbs = r.cpOrder.map((line) => line.replace(/^sc (\w+) .*$/u, 'sc $1'));
+  assert.deepEqual(verbs, ['launch-check', 'sc create', 'sc config', 'sc sidtype', 'sc privs', 'sc failure'], 'launch-check first; then create, delayed start, SID type, privileges, failure actions');
+  assert.match(r.cpOrder[1], /start= delayed-auto type= own$/u);
+  assert.match(r.cpOrder[1], /albera-control-plane-host\.exe\\" service \\".*control-plane-config\\AlberaControlPlane\.service\.json\\""/u, '`service <config>`');
+  assert.equal(r.cpOrder[2], 'sc config AlberaControlPlane start= delayed-auto');
+  assert.equal(r.cpOrder[3], 'sc sidtype AlberaControlPlane restricted');
+  assert.equal(r.cpOrder[4], 'sc privs AlberaControlPlane SeChangeNotifyPrivilege');
+  assert.equal(r.cpOrder[5], 'sc failure AlberaControlPlane reset= 86400 actions= restart/5000/restart/5000//0');
+  assert.equal(r.cpRecorded, true);
+  assert.equal(r.cpRecordedOnDisk, true);
+  assert.equal(r.cpAfter, 'done');
+  assert.deepEqual({ ...r.cpState }, { auto: true, delayed: true, sid: 'restricted', privs: 'SeChangeNotifyPrivilege', failure: 'RESTART -- Delay = 5000 milliseconds. RESTART -- Delay = 5000 milliseconds.' });
+  assert.match(r.cpForeign, /^blocked:service AlberaControlPlane already exists and was not created by this script/u);
+  assert.equal(r.cpNotDelayed, 'todo'); assert.equal(r.cpNoFailureActions, 'todo'); assert.equal(r.cpExtraPrivilege, 'todo');
+  assert.equal(r.cpDriftFixed, 'done');
+  // 4. launcher, shortcuts, Run entry
+  assert.equal(r.shBefore, 'todo');
+  assert.equal(r.shError, null);
+  assert.equal(r.shLauncherIsShipped, true, 'the launcher on disk is the text the script makes, nothing else');
+  assert.deepEqual(r.shLauncherRecord, { sha256: r.shLauncherSha });
+  assert.deepEqual(r.shShortcutsRecord, ['Open ALBERA.lnk'], 'no setup installed: no update shortcut');
+  assert.deepEqual(r.shLinks, ['Open ALBERA.lnk']);
+  assert.deepEqual({ ...r.shRunRecord }, { name: 'AlberaApprover', command: r.shRunValue });
+  assert.match(r.shRunValue, /\\bin\\approver\\AlberaApprover\.exe" --tray$/u);
+  assert.equal(r.shTrustedDirs.length, 1);
+  assert.match(r.shTrustedDirs[0], /\\Start Menu\\Programs\\ALBERA \| \*S-1-5-18:\(OI\)\(CI\)F \*S-1-5-32-544:\(OI\)\(CI\)F \*S-1-5-32-545:\(OI\)\(CI\)RX$/u, 'the shortcut folder is born with its final ACL: everyone reads, administrators write');
+  assert.equal(r.shAfter, 'done');
+  assert.deepEqual({ ...r.shOnDisk }, { launcher: true, shortcuts: ['Open ALBERA.lnk'], run: true });
+  assert.equal(r.shWithSetupBefore, 'todo', 'setup appeared: the update shortcut is missing');
+  assert.equal(r.shWithSetupError, null);
+  assert.deepEqual(r.shWithSetupRecord, ['Open ALBERA.lnk', 'ALBERA update.lnk']);
+  assert.equal(r.shWithSetupAfter, 'done');
+  assert.equal(r.shRunChanged, 'todo'); assert.equal(r.shLauncherChanged, 'todo'); assert.equal(r.shLinkChanged, 'todo');
+  assert.equal(r.shRestoredError, null); assert.equal(r.shRestored, 'done');
+  assert.match(r.shReadBackWrongError, /is not as intended: shortcut_target_differs/u, 'a shortcut that reads back wrong is an error');
+  // 5. adopting the install root
+  assert.equal(r.adoptAbsent, 0);
+  assert.equal(r.adoptSetupOnly, 0, 'only albera-setup.exe\'s own folders: adoptable');
+  assert.equal(r.adoptFoldersTest, 'todo');
+  assert.deepEqual(r.adoptReadme, ['unknown_entry:readme.txt']);
+  assert.match(r.adoptReadmeFoldersTest, /^blocked:.* exists but was not created by this script and is not only albera-setup\.exe's own folders \(unknown_entry:readme\.txt\)/u);
+  assert.deepEqual(r.adoptOurFolder, ['unknown_entry:bin\\broker', 'unknown_entry:bin\\broker\\x.exe'], 'a leftover of ours that the record does not know is not adopted');
+  assert.deepEqual(r.adoptJunction, ['link_or_junction_inside']);
+  assert.deepEqual(r.adoptUntrusted, ['owner_untrusted']);
+  assert.match(r.adoptUntrustedFoldersTest, /^blocked:/u);
+  assert.equal(r.adoptDoError, null);
+  assert.equal(r.adoptRecorded, true);
+  assert.equal(r.adoptRecordedOnDisk, true);
+  assert.match(r.adoptAclFirst, /^acl .*\\pf\\Albera$/u, 'the adopted root gets the plan\'s ACL like any other folder');
+  assert.equal(r.adoptSetupKept, true);
+  assert.match(r.foreignRootDoError, /exists but was not created by this script and is not only albera-setup\.exe's own folders \(unknown_entry:someone-elses\.txt\)/u);
+  // 6. anti-rollback and the first-layout guard
+  assert.deepEqual(JSON.parse(JSON.stringify(r.rollback)), {
+    id99: { refusal: 'setup_run_id_older_than_installed', blocked: true }, id100: { refusal: null, blocked: false }, id101: { refusal: null, blocked: false },
+    id18446744073709551615: { refusal: null, blocked: false }, id: { refusal: null, blocked: false }, none: { refusal: null },
+  });
+  assert.match(r.rollbackMessage, /^blocked:setup_run_id_older_than_installed: the install record holds setupRunId 100 and this run is 99\. An older \(validly attested\) build is never installed over a newer one$/u);
+  assert.deepEqual({ ...r.ratchetUp }, { memory: '101', disk: '101' });
+  assert.deepEqual({ ...r.ratchetNotDown }, { memory: '101', disk: '101' }, 'the recorded run id never goes down');
+  assert.equal(r.ratchetMax, '18446744073709551615');
+  assert.equal(r.ratchetFirst, '7');
+  assert.match(r.legacyGuard, /^blocked:the install record is from the first layout \(the local account albera-cp\)\. Run -Mode migrate/u);
+  assert.deepEqual({ legacy: r.legacyLayout.legacy, cp: r.legacyLayout.sids.cp, flag: r.legacyLayout.sids.legacyFlag }, { legacy: true, cp: 'S-1-5-21-1111111111-2222222222-3333333333-1500', flag: true }, 'a first-layout record keeps its account SID as the Control Plane for uninstall and migrate');
+  assert.deepEqual({ ...r.newLayout }, { legacy: false, cpIsServiceSid: true, approver: 'S-1-5-21-1111111111-2222222222-3333333333-1001' });
+});
+
+test('-Mode migrate against a temp layout (fakes for the machine): nothing is removed unless the new install can be made; the account\'s processes stop by PID first; the Hello values, VM GUID and grant come back; setup\'s own folders stay', { skip: !windows && 'Windows PowerShell only', timeout: 480_000 }, (t) => {
+  const r = harness(t, 'migrate');
+  // A. refusals leave everything where it was
+  assert.match(r.preflight.error, /^REFUSED: claude\.exe not found at /u);
+  assert.equal(r.preflight.orderIsEmpty, true, 'not one sc.exe call, process stop, key or account change happened');
+  assert.equal(r.preflight.same, true);
+  assert.equal(r.preflight.journalKept, true);
+  assert.deepEqual(r.preflight.pidsKept, [4101, 4102]);
+  assert.match(r.preflightNoBuild.error, /^REFUSED: approver: publish folder missing \(run npm run build:approver\)/u);
+  assert.equal(r.preflightNoBuild.orderIsEmpty, true);
+  assert.match(r.preflightNoHash.error, /-ExpectedTreeHash <64 hex> is required/u, 'without -TrustLocalBuilds or a typed hash there is nothing to compare the copies with');
+  assert.equal(r.preflightNoHash.orderIsEmpty, true);
+  assert.match(r.partial.error, /^REFUSED: legacy_install_not_complete/u);
+  assert.equal(r.partial.orderIsEmpty, true);
+  assert.deepEqual({ ...r.notLegacy }, { exit: 0, orderIsEmpty: true });
+  assert.deepEqual({ ...r.noRecord }, { exit: 0, orderIsEmpty: true });
+  assert.match(r.badConfig.error, /^REFUSED: authority_config:audience/u);
+  assert.equal(r.badConfig.orderIsEmpty, true);
+  // B. without the grant
+  assert.deepEqual(r.leadIds, ['legacy', 'preflight', 'stop']);
+  assert.deepEqual(r.planBefore, ['todo', 'todo', 'todo']);
+  assert.equal(r.runError, null);
+  assert.equal(r.exit, 0);
+  assert.deepEqual({ ...r.after }, {
+    layoutLegacy: false, state: 'complete', services: ['AlberaApprovalAuthority', 'AlberaControlPlane', 'AlberaHostBroker'], user: false, profile: false, key: true, pids: [], members: [],
+    binaries: ['approver', 'authority', 'broker', 'control-plane', 'pipe-client'], createdKeys: ['binaries', 'claude', 'controlPlane', 'dataRoot', 'installRoot', 'key', 'launcher', 'runEntry', 'services', 'shortcuts'],
+  });
+  const verb = (line) => line.replace(/^(sc \w+|stop pid \d+|group (?:add|remove)|Remove-LocalUser|remove profile|delete key|create key|launch-check).*$/u, '$1');
+  const steps = r.order.map(verb);
+  const at = (what) => steps.indexOf(what);
+  assert.equal(r.stopBeforeUninstall, true, 'the account\'s processes stop first, by PID');
+  assert.deepEqual(steps.slice(0, 7), ['stop pid 4101', 'stop pid 4102', 'sc delete', 'sc delete', 'delete key', 'Remove-LocalUser', 'remove profile'], 'processes, services (the Control Plane\'s client last), key, then the account and its profile');
+  assert.ok(at('remove profile') < at('sc create'), 'the new install comes after the removal');
+  assert.ok(at('create key') > at('sc create') && at('launch-check') > at('create key'), 'a new Authority key; the Control Plane service last, after launch-check');
+  assert.equal(r.order.filter((line) => /taskkill|Stop-Process|\/IM/iu.test(line)).length, 0);
+  assert.equal(r.carried.authority.approverKeyId, 'hello-0123456789abcdef');
+  assert.equal(r.carried.authority.approverSid, 'S-1-5-21-1111111111-2222222222-3333333333-1001');
+  assert.equal(r.carried.authority.approverPublicKey.length, 392, 'the Hello public key came over unchanged');
+  assert.match(r.carried.authority.controlPlaneSid, /^S-1-5-80(-\d+){5}$/u, 'the Authority now trusts the Control Plane SERVICE SID, not an account (closes the ADR-002 known gap)');
+  assert.equal(r.carried.brokerCp, r.carried.authorityCp);
+  assert.equal(r.carried.service.ui.controlPlaneSid, r.carried.authorityCp);
+  assert.equal(r.carried.service.ui.approverSid, 'S-1-5-21-1111111111-2222222222-3333333333-1001');
+  assert.equal(r.carried.settings.projectId, 'legacy-project', 'the old project id and VM name');
+  assert.deepEqual({ ...r.carried.settings.computers }, { 'legacy-vm-name': 'clone-01' });
+  assert.equal('desktop' in r.carried.settings, false, 'no grant, no desktop block');
+  assert.equal('attestation' in r.carried.settings, false);
+  assert.equal(r.carried.brokerHasComputers, false);
+  assert.deepEqual({ ...r.gone }, { legacySettings: true, oldDll: true, journal: true, oldBrokerDb: true }, 'lost by design: the journals');
+  assert.deepEqual({ ...r.kept }, { setupExe: true, setupWork: true, manifestOnDisk: true }, 'what albera-setup.exe keeps in the install folder stays');
+  assert.deepEqual({ ...r.newFiles }, { node: true, claude: true, open: true, config: true, secrets: true, ui: true, logs: true });
+  assert.deepEqual(r.record.services, ['AlberaHostBroker', 'AlberaApprovalAuthority', 'AlberaControlPlane']);
+  assert.equal(r.record.hasGrant, false);
+  assert.equal(r.record.approverSid, 'S-1-5-21-1111111111-2222222222-3333333333-1001');
+  assert.equal(r.record.approverKeyId, 'hello-0123456789abcdef');
+  assert.deepEqual(r.statusAfter, [], 'the status of the migrated install is all ok');
+  assert.deepEqual({ ...r.migrateAgain }, { exit: 0 }, 'a second run says there is nothing to migrate');
+  // C. with the grant
+  assert.equal(r.grantRunError, null);
+  assert.equal(r.grantExit, 0);
+  assert.equal(r.grant.removeBeforeDelete, true, 'the Broker\'s SID leaves Hyper-V Administrators before its service is deleted');
+  assert.equal(r.grant.addedBack, true, 'and goes back in once the new service exists');
+  assert.deepEqual(r.grant.broker, [{ computerId: 'clone-01', vmId: '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f' }], 'the recorded VM GUID, no lookup');
+  assert.deepEqual(r.grant.desktop.helperPath.endsWith('\\bin\\pipe-client\\albera-windows-broker-pipe-client.exe'), true);
+  assert.match(r.grant.desktop.helperSha256, /^[0-9a-f]{64}$/u);
+  assert.deepEqual({ ...r.grant.settingsComputers }, { 'legacy-vm-name': 'clone-01' });
+  assert.deepEqual([r.grant.sidTypeBroker, r.grant.sidTypeAuthority, r.grant.sidTypeCp], ['unrestricted', 'restricted', 'restricted']);
+  assert.equal(r.grant.members.length, 1, 'only the Broker is in the group');
+  assert.equal(r.grant.recordGrant.vmId, '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f');
+  assert.ok(r.grantAfter.createdKeys.includes('hyperVGrant'));
+  // a process that cannot be stopped stops the run before anything is uninstalled
+  assert.match(r.stuck.error, /processes of albera-cp are still running \(PID 4101, 4102\); nothing was uninstalled/u);
+  assert.equal(r.stuck.removedNothing, true);
+  assert.deepEqual(r.stuck.pids, [4101, 4102]);
+});
+
+test('migrate and install: the command line (the new parameters are validated, the lab ones are gated, migrate takes no approver values and accepts a typed hash or the explicit local-builds switch, never both)', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
+  const before = snapshot();
+  const code = (args, env) => host(args, { allowFail: true, env });
+  // "accepted": past the argument checks (exit 2 and a REFUSED line are the checks). What a plan does after that needs the PC's own ProgramData, which this test does not control.
+  const accepted = (result) => result.code !== 2 && !/REFUSED/u.test(result.stdout);
+  assert.equal(code(['-Mode', 'plan', '-SetupRunId', 'abc']).code, 2);
+  assert.match(code(['-Mode', 'plan', '-SetupRunId', '12x']).stdout, /-SetupRunId must be a decimal number/u);
+  assert.equal(code(['-Mode', 'plan', '-SetupRunId', '18446744073709551616']).code, 2, 'larger than an unsigned 64-bit number');
+  assert.equal(code(['-Mode', 'status', '-SetupRunId', '5']).code, 2);
+  assert.match(code(['-Mode', 'status', '-SetupRunId', '5']).stdout, /-SetupRunId only applies to install and migrate/u);
+  assert.equal(accepted(code(['-Mode', 'plan', '-SetupRunId', '5', '-ExpectedTreeHash', 'a'.repeat(64)])), true, 'a valid run id with an install plan');
+  assert.match(code(['-Mode', 'plan', '-NodeSource', 'C:\\x\\node.exe'], { ALBERA_LAB_VM: '' }).stdout, /-NodeSource and -ClaudeSource are lab-only/u);
+  assert.match(code(['-Mode', 'plan', '-ClaudeSource', 'C:\\x\\claude.exe'], { ALBERA_LAB_VM: '' }).stdout, /lab-only/u);
+  assert.equal(code(['-Mode', 'plan', '-ClaudeSource', 'relative\\claude.exe'], { ALBERA_LAB_VM: '1' }).code, 2);
+  assert.equal(code(['-Mode', 'status', '-NodeSource', 'C:\\x\\node.exe'], { ALBERA_LAB_VM: '1' }).code, 2, 'only install and migrate take them');
+  assert.equal(accepted(code(['-Mode', 'plan', '-NodeSource', 'C:\\x\\node.exe'], { ALBERA_LAB_VM: '1' })), true, 'in the lab VM with ALBERA_LAB_VM=1 they are accepted');
+  assert.match(code(['-Mode', 'plan', '-TrustLocalBuilds']).stdout, /-TrustLocalBuilds only applies to -Mode migrate/u);
+  assert.match(code(['-Mode', 'migrate', '-TrustLocalBuilds', '-ExpectedTreeHash', 'a'.repeat(64)], { ALBERA_HOST_ASSUME_NOT_ELEVATED: '' }).stdout, /exclude each other|needs an elevated console/u);
+  const notElevated = host(['-Mode', 'migrate', '-TrustLocalBuilds'], { env: { ALBERA_HOST_ASSUME_NOT_ELEVATED: '1' }, allowFail: true });
+  assert.equal(notElevated.code, 3);
+  assert.match(notElevated.stdout, /REFUSED: migrate needs an elevated console/u);
+  assert.doesNotMatch(notElevated.stdout, /^\s*\d+\. /mu, 'no step ran');
+  assert.equal(accepted(code(['-Mode', 'plan', '-PlanFor', 'migrate', '-ApproverKeyId', 'hello-0123456789abcdef'])), true, 'a plan only reads');
+  const migrateWithApprover = host(['-Mode', 'migrate', '-ApproverKeyId', 'hello-0123456789abcdef'], { env: { ALBERA_HOST_ASSUME_NOT_ELEVATED: '1' }, allowFail: true });
+  assert.equal(migrateWithApprover.code, 3, 'not elevated is checked first');
+  assert.match(code(['-Mode', 'plan', '-GrantHyperVToBroker', '-PlanFor', 'migrate']).stdout, /-GrantHyperVToBroker only applies to -Mode install/u, 'migrate follows what the old record says');
+  assert.deepEqual(snapshot(), before);
+});
+
+test('the Control Plane install, source guards: no repository file is executed, the three services are delayed, the service is registered only after launch-check, the setup run id is compared as a number, nothing is signed or published here', () => {
+  const script = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
+  const lib = readFileSync(path.join(hostDir, 'albera-host-lib.ps1'), 'utf8');
+  const code = (text) => text.split('\n').filter((line) => !/^\s*#/u.test(line)).join('\n');
+  const scriptCode = code(script);
+  // the order inside New-ControlPlaneService: launch-check, then the service
+  const body = scriptCode.slice(scriptCode.indexOf('function New-ControlPlaneService'), scriptCode.indexOf('# ----', scriptCode.indexOf('function New-ControlPlaneService')));
+  assert.ok(body.indexOf('Invoke-LaunchCheck') > 0 && body.indexOf('Invoke-LaunchCheck') < body.indexOf('New-OneService'), 'launch-check first');
+  assert.match(body, /if \(\$check\.Exit -ne 0\) \{ throw /u, 'a host that does not answer 0 stops the run');
+  // the install steps: the configs step comes after the pins and before the service
+  const ids = [...scriptCode.matchAll(/\[pscustomobject\]@\{ Id = '(\w+)'; Title = /gu)].map((m) => m[1]);
+  assert.deepEqual(ids.slice(0, 13), ['sources', 'approver', 'dataroot', 'services', 'folders', 'binaries', 'key', 'node', 'claude', 'configs', 'cpservice', 'shortcuts', 'finish']);
+  // the pins are made by one copy function: copy, hash the COPY, rename, trust-check
+  assert.match(scriptCode, /function Copy-PinnedFile[\s\S]*?\[System\.IO\.File\]::Copy\(\$Source, \$partial, \$false\)[\s\S]*?\$sha = Get-Sha256File \$partial[\s\S]*?Move-Item -LiteralPath \$partial -Destination \$Destination/u);
+  assert.doesNotMatch(scriptCode, /Invoke-Native[^\n]*\$(?:NodeSource|ClaudeSource|nodeSource|claudeSource)|& \$(?:NodeSource|ClaudeSource)/u, 'neither pinned program is ever started');
+  assert.match(scriptCode, /FileVersionInfo\]::GetVersionInfo\(\$L\.ClaudeExe\)\.FileVersion/u, 'the version comes from the file\'s resource');
+  assert.doesNotMatch(scriptCode + code(lib), /claude(?:\.exe)? --version|--version/u, 'claude --version is never run while elevated');
+  // the profile is found from the registry's profile list by SID, not from an environment variable
+  assert.match(scriptCode, /ProfileList\\' \+ \$Sid/u);
+  assert.doesNotMatch(scriptCode + code(lib), /\$env:(?:USERPROFILE|HOME|APPDATA|LOCALAPPDATA|ProgramFiles|ProgramData|TEMP|TMP|PATH)\b/iu);
+  // the Run key is HKLM, written with .NET; the shortcuts through the shell link object, read back
+  assert.match(scriptCode, /\[Microsoft\.Win32\.Registry\]::LocalMachine\.CreateSubKey\(\$e\.KeyPath\)/u);
+  assert.doesNotMatch(scriptCode, /HKCU|CurrentUser/u, 'nothing is written into a user hive');
+  assert.match(scriptCode, /New-Object -ComObject WScript\.Shell/u);
+  assert.match(scriptCode, /\$bad = Test-ShortcutMatches \$spec \(Read-ShellLink \$spec\.Path\)/u, 'every shortcut is read back');
+  // anti-rollback: the number is compared as a number, in the library; the script only asks
+  assert.match(lib, /\$s -lt \$r\) \{ return 'setup_run_id_older_than_installed' \}/u);
+  assert.match(lib, /\[uint64\]::TryParse\(\$text, \[System\.Globalization\.NumberStyles\]::None/u);
+  // the migration removes processes by PID of an owner SID and the profile only when it is C:\Users\albera-cp exactly
+  assert.match(scriptCode, /\$expected = Join-Path 'C:\\Users' \$K\.ControlPlaneUser/u);
+  // nothing here signs, publishes, downloads or reaches the network
+  assert.doesNotMatch(scriptCode + code(lib), /Invoke-WebRequest|Invoke-RestMethod|Start-BitsTransfer|DownloadFile|System\.Net\.|gh attestation|curl |wget /iu);
+  // the docs the owner reads: the header names migrate and the contract's section
+  assert.match(script, /-Mode migrate \(-ExpectedTreeHash <64 hex> \| -TrustLocalBuilds\)/u);
 });
 
 test('the lab runner refuses to run outside the lab VM', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {

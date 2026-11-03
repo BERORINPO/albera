@@ -1,7 +1,7 @@
 name: Host build hashes
 
 # Run by hand (Actions > Host build hashes > Run workflow) on the reviewed commit. Windows minutes cost money, so there is no push or pull_request trigger.
-# It builds the Broker, the Approval Authority and the pipe client on a clean runner and prints ONE tree hash of the published files: the owner types that value
+# It builds the Broker, the Approval Authority, the pipe client, the Control Plane service host with its app tree, and the approver app on a clean runner and prints ONE tree hash of the published files: the owner types that value
 # as -ExpectedTreeHash into scripts/host/albera-host.ps1 (docs/architecture/host-install.md). It installs and starts nothing.
 # It also signs a build provenance attestation for the published exe files, the two host scripts and build-hashes.json (gh attestation verify; the installer script does not read it).
 # PR6 (docs/architecture/control-plane-service.md section 8): it also fetches a version-pinned gh.exe, builds albera-setup.exe (NativeAOT) with the SHA-256 of that gh.exe and of the
@@ -47,6 +47,10 @@ jobs:
         run: npm run build:windows-broker
       - name: Build Approval Authority (build only; never installed or started)
         run: npm run build:approval-authority
+      - name: Build the Control Plane host and its app tree (build only; never installed or started)
+        run: npm run build:control-plane
+      - name: Build the approver app (build only; never installed or started)
+        run: npm run build:approver
       - name: Hash the published files
         shell: powershell
         run: |
@@ -140,6 +144,9 @@ jobs:
             'src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker.exe',
             'src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish/albera-approval-authority.exe',
             'src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker-pipe-client.exe',
+            'src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/publish/albera-control-plane-host.exe',
+            'src/runtime/windows-approver/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish/AlberaApprover.exe',
+            'src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/control-plane-app-hashes.json',
             'scripts/host/albera-host.ps1',
             'scripts/host/albera-host-lib.ps1',
             'build-hashes.json',
@@ -169,6 +176,9 @@ jobs:
             src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish
             src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish
             src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish
+            src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/publish
+            src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/control-plane-app-hashes.json
+            src/runtime/windows-approver/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish
             src/runtime/windows-setup/bin/Release/net10.0-windows/win-x64/publish/albera-setup.exe
             setup-input/gh.exe
             setup-input/trusted_root.jsonl
@@ -207,6 +217,9 @@ jobs:
             'src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker.exe',
             'src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish/albera-approval-authority.exe',
             'src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker-pipe-client.exe',
+            'src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/publish/albera-control-plane-host.exe',
+            'src/runtime/windows-approver/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish/AlberaApprover.exe',
+            'src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/control-plane-app-hashes.json',
             'scripts/host/albera-host.ps1',
             'scripts/host/albera-host-lib.ps1',
             'build-hashes.json',
@@ -232,6 +245,9 @@ jobs:
             src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker.exe
             src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish/albera-approval-authority.exe
             src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker-pipe-client.exe
+            src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/publish/albera-control-plane-host.exe
+            src/runtime/windows-approver/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish/AlberaApprover.exe
+            src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/control-plane-app-hashes.json
             scripts/host/albera-host.ps1
             scripts/host/albera-host-lib.ps1
             build-hashes.json
@@ -269,6 +285,9 @@ jobs:
             'src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker.exe',
             'src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish/albera-approval-authority.exe',
             'src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker-pipe-client.exe',
+            'src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/publish/albera-control-plane-host.exe',
+            'src/runtime/windows-approver/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish/AlberaApprover.exe',
+            'src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/control-plane-app-hashes.json',
             'scripts/host/albera-host.ps1',
             'scripts/host/albera-host-lib.ps1',
             'build-hashes.json',
@@ -296,6 +315,9 @@ jobs:
             'src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker.exe',
             'src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish/albera-approval-authority.exe',
             'src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker-pipe-client.exe',
+            'src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/publish/albera-control-plane-host.exe',
+            'src/runtime/windows-approver/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish/AlberaApprover.exe',
+            'src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/control-plane-app-hashes.json',
             'scripts/host/albera-host.ps1',
             'scripts/host/albera-host-lib.ps1',
             'build-hashes.json',
@@ -327,7 +349,9 @@ jobs:
           $publish = @(
             'src/runtime/windows-broker/bin/Release/net10.0-windows/win-x64/publish',
             'src/runtime/windows-approval-authority/bin/Release/net10.0-windows/win-x64/publish',
-            'src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish'
+            'src/runtime/windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish',
+            'src/runtime/windows-control-plane-host/bin/Release/net10.0-windows/win-x64/publish',
+            'src/runtime/windows-approver/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish'
           )
           foreach ($dir in $publish) {
             $target = Join-Path $update ('repo\' + $dir.Replace('/', '\'))
@@ -338,6 +362,10 @@ jobs:
             if ($want -ne $have -or $want -eq 0) { throw "${dir}: $want files published, $have staged" }
           }
           New-Item -ItemType Directory -Path (Join-Path $update 'repo\scripts\host'), (Join-Path $update 'setup') -Force | Out-Null
+          # the app tree's own hash list sits BESIDE the host's publish folder (scripts/build-control-plane-app.mjs), not inside it
+          $appHashes = 'src\runtime\windows-control-plane-host\bin\Release\net10.0-windows\win-x64\control-plane-app-hashes.json'
+          New-Item -ItemType Directory -Path (Split-Path -Parent (Join-Path $update ('repo\' + $appHashes))) -Force | Out-Null
+          Copy-Item -LiteralPath $appHashes -Destination (Join-Path $update ('repo\' + $appHashes))
           Copy-Item -LiteralPath 'build-hashes.json' -Destination $update
           Copy-Item -LiteralPath 'scripts\host\albera-host.ps1', 'scripts\host\albera-host-lib.ps1' -Destination (Join-Path $update 'repo\scripts\host')
           Copy-Item -LiteralPath 'src\runtime\windows-setup\bin\Release\net10.0-windows\win-x64\publish\albera-setup.exe', 'setup-input\gh.exe', 'setup-input\trusted_root.jsonl' -Destination (Join-Path $update 'setup')

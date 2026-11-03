@@ -3,8 +3,8 @@ namespace Albera.Setup;
 /// <summary>
 /// How setup starts the installer script (scripts/host/albera-host.ps1, owned by PR7): the verified COPY of the script, Windows PowerShell 5.1 by full path, the rebuilt
 /// environment, the repo folder made of the verified copies, the tree hash that came from the attested build-hashes.json (nothing is typed) and the run id of the attestation.
-/// <c>-SetupRunId</c> is new in this PR: PR7 adds the parameter, records it as <c>setupRunId</c> in the install record and refuses an older run id. Until then the current script
-/// rejects the unknown parameter, which is the safe failure.
+/// <c>-SetupRunId</c> is recorded by the script as <c>setupRunId</c> in the install record and an older run id is refused there as well (PR7); setup checks the same record before it starts the script
+/// (SetupFlow.CheckNotOlderThanInstalled).
 /// </summary>
 internal static class EngineLaunch
 {
