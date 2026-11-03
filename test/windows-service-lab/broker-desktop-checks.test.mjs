@@ -24,12 +24,11 @@ const CHECKS = [
   'bd_cp_act_before_claim_refused', 'bd_other_refused', 'bd_cp_task_start_claim', 'bd_cp_act_open', 'bd_cp_act_input', 'bd_cp_act_input_mouse',
   'bd_cp_act_wrong_generation_refused', 'bd_cp_act_revoked_by_new_claim', 'bd_broker_restart_drops_lease',
   // through the real pipe client helper in desktop mode (PR #168), driven by the shim's `desktop-helper` probe
-  'bh_cp_image_readable', 'bh_view_open', 'bh_view_capture', 'bh_view_service_only', 'bh_wrong_image_refused', 'bh_act_open', 'bh_act_input', 'bh_act_service_only',
-  'bh_squatter_broker_stopped', 'bh_squatter_owner_mismatch',
+  'bh_view_open', 'bh_view_capture', 'bh_act_open', 'bh_act_input', 'bh_image_pin_unavailable', 'bh_squatter_broker_stopped', 'bh_squatter_owner_mismatch',
 ];
 const section = (name) => guest.slice(guest.indexOf(`function ${name}`), guest.indexOf('\n}\n', guest.indexOf(`function ${name}`)));
 
-test('the section names exactly the twenty-seven checks, and every one of them is emitted by the script', () => {
+test('the section names exactly the twenty-four checks, and every one of them is emitted by the script', () => {
   const titles = guest.slice(guest.indexOf('$BdTitles = [ordered]@{'), guest.indexOf('$Ops = @('));
   assert.deepEqual([...titles.matchAll(/^\s+(b[dh]_[a-z_]+)\s*=/gmu)].map((m) => m[1]), CHECKS);
   const fromBroker = guest.slice(guest.indexOf('function Invoke-BrokerDesktopLab')), fromHelperChecks = guest.slice(guest.indexOf('# ---- the helper-driven checks (bh_*). The Control'));
@@ -93,7 +92,7 @@ test('the act part: one claim by the helper as the Control Plane, then an act se
   assert.match(acts, /Invoke-HvShimJob \$BdCpSvc 'act-wrong-generation' @\('desktop', \$BdDesktopPipe, "service:\$BdBrokerSvc", "open:act:\$\{BdComputerId\}:\$\{BdOp1\}:2"\) 'desktop'/u);
   assert.match(acts, /Add-BdStepCheck 'bd_cp_act_wrong_generation_refused' \$wrongJob 'open' 'refused' @\('refused_reply'\) \$CpShape/u);
   // Everything that needs a lease is blocked, never FAILed, when no claim was recorded.
-  assert.match(acts, /\$dependents = @\(\$BdTitles\.Keys \| Where-Object \{ \$_ -in @\('bd_cp_act_open', 'bd_cp_act_input', 'bd_cp_act_input_mouse', 'bd_cp_act_wrong_generation_refused', 'bd_cp_act_revoked_by_new_claim', 'bd_broker_restart_drops_lease', 'bh_act_open', 'bh_act_input', 'bh_act_service_only'\) \}\)/u);
+  assert.match(acts, /\$dependents = @\(\$BdTitles\.Keys \| Where-Object \{ \$_ -in @\('bd_cp_act_open', 'bd_cp_act_input', 'bd_cp_act_input_mouse', 'bd_cp_act_wrong_generation_refused', 'bd_cp_act_revoked_by_new_claim', 'bd_broker_restart_drops_lease', 'bh_act_open', 'bh_act_input'\) \}\)/u);
   assert.equal([...acts.matchAll(/Add-BdBlocked \$dependents/gu)].length, 2, 'no helper, and no recorded claim');
   const claim = section('Add-BdClaimCheck');
   assert.match(claim, /Invoke-HvJob \$BdCpSvc \$Name \$BdHelper @\(\) \(New-BdHelperInput "\$BdCpSvc\.\$Name" \$signed\.Claim\) \$null/u, 'the claim is sent by the helper, as the Control Plane service');
@@ -138,30 +137,25 @@ test('nothing here elevates, touches the host, or prints the guest password; the
   assert.match(driver, /Copy-Item -FromSession \$session -Path \$picture -Destination \(Join-Path \(Split-Path -Parent \$ResultsFile\) 'bd-view-capture\.png'\)/u);
 });
 
-test('the helper-driven checks: the Control Plane runs the shim\'s desktop-helper probe with the production identity (service name + the Broker file\'s SHA-256), and again without the pin as a control', () => {
+test('the helper-driven checks: the Control Plane runs the shim\'s desktop-helper probe in serviceName mode WITHOUT the image pin (decision 2026-11-03); the pinned path is one MEASURED check', () => {
   const job = section('Invoke-BhJob');
   assert.match(job, /\$probeArgs = @\('desktop-helper', \$BdHelper, \$BdDesktopPipe, \$Identity\) \+ \$Steps/u, 'the helper file, the DESKTOP pipe (the helper refuses any other name) and the identity');
   assert.match(job, /if \(\$Image\) \{ \$probeArgs \+= "image=\$Image" \}/u, 'no pin unless one is given');
   assert.match(job, /Invoke-HvShimJob \$BdCpSvc \$Tag \$probeArgs 'desktop-helper'/u, 'always as the Control Plane service, never as the Broker or the other caller');
   const view = section('Invoke-BhViewChecks');
   assert.match(view, /\$identity = "service:\$BdBrokerSvc"/u, 'serviceName mode: the SCM PID and NT SERVICE owner, session 0');
-  assert.match(view, /Invoke-BhJob 'bh-view' \$identity @\(\$open, 'capture:640x480'\) \$BhBrokerSha/u);
-  assert.match(view, /Add-BhStepCheck 'bh_view_open' \$pinned 'open' 'allowed' @\(\) \$CpShape/u);
-  assert.match(view, /Add-BhStepCheck 'bh_view_capture' \$pinned 'capture' 'allowed' @\(\) \$CpShape/u);
-  assert.match(view, /Invoke-BhJob 'bh-view-plain' \$identity @\(\$open, 'capture:640x480'\) ''/u, 'the control has no pin');
-  assert.match(view, /Add-BhStepCheck 'bh_view_service_only' \$plain 'capture' 'allowed' @\(\) \$CpShape/u);
-  assert.match(view, /Invoke-BhJob 'bh-view-wrong' \$identity @\(\$open\) \$BhWrongSha/u);
-  assert.match(view, /Add-BhStepCheck 'bh_wrong_image_refused' \$wrong 'open' 'refused' @\('identity_mismatch'\) \$CpShape/u, 'only a comparison that happened counts: an unreadable image is BLOCKED, not a pass');
-  assert.match(view, /Invoke-HvShimJob \$BdCpSvc 'bh-openproc' @\('openproc', "\$BrokerPid"\) 'openproc'/u, 'the cause of a failed pin, measured as the same identity');
-  assert.match(section('Invoke-BrokerDesktopLab'), /\$script:BhWrongSha = if \(Test-Path -LiteralPath \$BdHelper\) \{ \(Get-FileHash -Algorithm SHA256 -LiteralPath \$BdHelper\)\.Hash\.ToLowerInvariant\(\) \} else \{ '' \}/u, 'a real hash that is not the Broker one');
+  assert.match(view, /\$view = Invoke-BhJob 'bh-view' \$identity @\(\$open, 'capture:640x480'\) ''/u, 'no imageSha256');
+  assert.match(view, /Add-BhStepCheck 'bh_view_open' \$view 'open' 'allowed' @\(\) \$CpShape/u);
+  assert.match(view, /Add-BhStepCheck 'bh_view_capture' \$view 'capture' 'allowed' @\(\) \$CpShape/u);
+  assert.match(view, /\$pinned = Invoke-BhJob 'bh-view-pinned' \$identity @\(\$open\) \$BhBrokerSha/u, 'the one pinned session');
+  assert.match(view, /Add-BhStepCheck 'bh_image_pin_unavailable' \$pinned 'open' 'measured' @\(\) \$CpShape \$note/u, 'recorded, never PASS or FAIL');
+  assert.match(view, /Invoke-HvShimJob \$BdCpSvc 'bh-openproc' @\('openproc', "\$BrokerPid"\) 'openproc'/u, 'the cause, measured as the same identity');
+  assert.doesNotMatch(guest, /BhWrongSha|bh_wrong_image_refused|bh_cp_image_readable|_service_only/u, 'the wrong pin is a host test (desktop-helper-client.test.mjs); the controls became the checks');
   assert.match(section('Invoke-BrokerDesktopLab'), /\$script:BhBrokerSha = \(Get-FileHash -Algorithm SHA256 -LiteralPath \$brokerExe\)\.Hash\.ToLowerInvariant\(\)/u, 'the pin is the hash of the file the service runs, taken in the guest');
   const act = section('Invoke-BhActChecks');
-  assert.match(act, /\$steps = @\("open:act:\$\{BdComputerId\}:\$\{BdOp1\}:1", "input:tap=\$BdShiftVk"\)/u, 'the lease the first claim made, then the keyboard only (the mouse is the lab\'s bd check)');
-  assert.match(act, /Invoke-BhJob 'bh-act' \$identity \$steps \$BhBrokerSha/u);
-  assert.match(act, /Add-BhStepCheck 'bh_act_open' \$pinned 'open' 'allowed' @\(\) \$CpShape/u);
-  assert.match(act, /Add-BhStepCheck 'bh_act_input' \$pinned 'input' 'allowed' @\(\) \$CpShape/u);
-  assert.match(act, /Invoke-BhJob 'bh-act-plain' \$identity \$steps ''/u);
-  assert.match(act, /Add-BhStepCheck 'bh_act_service_only' \$plain 'input' 'allowed' @\(\) \$CpShape/u);
+  assert.match(act, /Invoke-BhJob 'bh-act' "service:\$BdBrokerSvc" @\("open:act:\$\{BdComputerId\}:\$\{BdOp1\}:1", "input:tap=\$BdShiftVk"\) ''/u, 'the lease the first claim made, then the keyboard only (the mouse is the lab\'s bd check); no pin');
+  assert.match(act, /Add-BhStepCheck 'bh_act_open' \$job 'open' 'allowed' @\(\) \$CpShape/u);
+  assert.match(act, /Add-BhStepCheck 'bh_act_input' \$job 'input' 'allowed' @\(\) \$CpShape/u);
   // Where they run: the view checks need no lease and come before the act part; the act checks run on the lease of the first claim and before it is replaced; the squatters stop the Broker, so they are last.
   const lab = section('Invoke-BrokerDesktopLab');
   assert.ok(lab.indexOf('Invoke-BhViewChecks $cpShape $brokerPid') > lab.indexOf("'bd_other_refused'") && lab.indexOf('Invoke-BhViewChecks $cpShape $brokerPid') < lab.indexOf('Invoke-BdActChecks $authority $cpShape'));
@@ -170,12 +164,12 @@ test('the helper-driven checks: the Control Plane runs the shim\'s desktop-helpe
   assert.ok(acts.indexOf("'bd_cp_act_wrong_generation_refused'") < acts.indexOf('Invoke-BhActChecks $CpShape') && acts.indexOf('Invoke-BhActChecks $CpShape') < acts.indexOf('Invoke-BdLeaseEndChecks'), 'on the lease, before the second claim replaces it');
 });
 
-test('the squatters: the Broker is stopped, the OTHER service holds the desktop pipe name with the squat probe, and the helper is asked twice (service identity, then the Broker\'s old PID and owner)', () => {
+test('the squatters: the Broker is stopped, the OTHER service holds the desktop pipe name with the squat probe, and the helper (serviceName mode, no pin) is asked twice (service identity, then the Broker\'s old PID and owner)', () => {
   const squat = section('Invoke-BhSquatChecks');
   assert.ok(squat.indexOf('Stop-LabService $BdBrokerSvc') < squat.indexOf("Start-HvJob $BdOtherSvc 'bh-squat' $Shim @('squat', $BdDesktopPipe,"), 'the pipe name is free before the squatter takes it');
   assert.match(squat, /Wait-Until \{[^\n]*"state":"ready"[^\n]*\} 20 'the squatter to be ready'/u);
   assert.ok(squat.indexOf("Invoke-BhJob 'bh-squat-service'") > squat.indexOf('Wait-Until') && squat.indexOf("Invoke-BhJob 'bh-squat-owner'") > squat.indexOf("Invoke-BhJob 'bh-squat-service'"), 'the helper runs while the squatter is in place; the identity that never connects goes first');
-  assert.match(squat, /Invoke-BhJob 'bh-squat-service' "service:\$BdBrokerSvc" @\("open:view:\$BdComputerId"\) \$BhBrokerSha/u);
+  assert.match(squat, /Invoke-BhJob 'bh-squat-service' "service:\$BdBrokerSvc" @\("open:view:\$BdComputerId"\) ''/u);
   assert.match(squat, /Invoke-BhJob 'bh-squat-owner' "pid:\$\{BrokerPid\}:\$\{BrokerSid\}" @\("open:view:\$BdComputerId"\) ''/u);
   assert.match(squat, /\$squat = Complete-HvJob \$squat 'squat'/u, 'the squatter\'s own count of bytes is read at the end');
   assert.match(squat, /Add-BdJobCheck 'bh_squatter_broker_stopped' \$byService \$outcome \(Get-BhSquatVerdict \$outcome @\('identity_unavailable', 'identity_mismatch'\) \$ready \$done \$false\) \$CpShape/u);
@@ -311,18 +305,16 @@ test('the verdict logic: what each client line means, and what each check does w
 });
 
 // ---- the helper-driven checks (bh_*): the shim's `desktop-helper` lines
-const helperFunctions = ['ConvertTo-BdById', 'Get-BdVerdict', 'Get-BhOutcome', 'Get-BhImageOutcome', 'Get-BhImageVerdict', 'Get-BhSquatVerdict'];
+const helperFunctions = ['ConvertTo-BdById', 'Get-BdVerdict', 'Get-BhOutcome', 'Get-BhSquatVerdict'];
 const helperLogicBody = `
 $out = [ordered]@{}
 $out.outcomes = @($cases.outcomes | ForEach-Object { Get-BhOutcome (ConvertTo-BdById @($_.lines)) ([string]$_.step) })
 $out.verdicts = @($cases.verdicts | ForEach-Object { Get-BdVerdict ([string]$_.expect) ([string[]]@($_.refusals)) (Get-BhOutcome (ConvertTo-BdById @($_.lines)) ([string]$_.step)) })
-$out.images = @($cases.images | ForEach-Object { Get-BhImageOutcome $_.line ([string]$_.sha) })
-$out.imageVerdicts = @($cases.imageVerdicts | ForEach-Object { Get-BhImageVerdict ([string]$_.outcome) })
 $out.squats = @($cases.squats | ForEach-Object { Get-BhSquatVerdict ([string]$_.outcome) ([string[]]@($_.refusals)) $_.ready $_.done ([bool]$_.mustConnect) })
 ConvertTo-Json -InputObject $out -Compress -Depth 6
 `;
 
-test('the helper-driven verdict logic: the helper\'s words, the image pin, and the squatter that must receive nothing', windowsOnly, () => {
+test('the helper-driven verdict logic: the helper\'s words, the MEASURED pin, and the squatter that must receive nothing', windowsOnly, () => {
   const helper = (extra = {}) => ({ probe: 'desktop-helper', id: 'helper', ok: true, result: 'verified', ...extra });
   const step = (id, extra = {}) => ({ probe: 'desktop-helper', id, ...extra });
   const accepted = (id) => step(id, { ok: true, reply: 'accepted' });
@@ -354,8 +346,8 @@ test('the helper-driven verdict logic: the helper\'s words, the image pin, and t
     [[helper(), accepted('open')], 'capture', 'missing'],
   ].map(([lines, stepId, expect]) => ({ lines, step: stepId, expect }));
 
-  // The verdicts the checks give those outcomes (Get-BdVerdict, shared with the lab's own client): a pinned open that ends in server_identity_unavailable is a FAIL (the pin cannot be used),
-  // a wrong pin is PASS only when the helper compared and refused (mismatch); when it could not read the image it did not compare, so the check is BLOCKED.
+  // The verdicts the checks give those outcomes (Get-BdVerdict, shared with the lab's own client): a serviceName open that ends in any refusal is a FAIL, one that did not get an answer is BLOCKED,
+  // and the pinned path is only MEASURED: server_identity_unavailable (what the first lab run saw) is recorded, an accepted pin is recorded too, only no answer at all is BLOCKED.
   const mismatch = [helper(), said('open', 'server_identity_mismatch')], unavailable = [helper(), said('open', 'server_identity_unavailable')];
   const verdicts = [
     // [lines, step, expect, refusals, expected]
@@ -363,18 +355,9 @@ test('the helper-driven verdict logic: the helper\'s words, the image pin, and t
     [unavailable, 'open', 'allowed', [], 'FAIL'], [mismatch, 'open', 'allowed', [], 'FAIL'], [[helper(), said('open', 'denied')], 'open', 'allowed', [], 'FAIL'],
     [[helper(), accepted('open'), said('capture', 'png_invalid')], 'capture', 'allowed', [], 'FAIL'],
     [[helper(), said('open', 'broker_unavailable')], 'open', 'allowed', [], 'BLOCKED'], [[], 'open', 'allowed', [], 'BLOCKED'],
-    [mismatch, 'open', 'refused', ['identity_mismatch'], 'PASS'], [unavailable, 'open', 'refused', ['identity_mismatch'], 'BLOCKED'],
-    [[helper(), accepted('open')], 'open', 'refused', ['identity_mismatch'], 'FAIL'], [[helper(), said('open', 'denied')], 'open', 'refused', ['identity_mismatch'], 'BLOCKED'],
-    [[helper({ ok: false, result: 'helper_unavailable' }), skipped('open', 'helper')], 'open', 'refused', ['identity_mismatch'], 'BLOCKED'],
+    [unavailable, 'open', 'measured', [], 'MEASURED'], [mismatch, 'open', 'measured', [], 'MEASURED'], [[helper(), accepted('open')], 'open', 'measured', [], 'MEASURED'],
+    [[helper(), said('open', 'transport_error')], 'open', 'measured', [], 'BLOCKED'], [[helper({ ok: false, result: 'helper_unavailable' }), skipped('open', 'helper')], 'open', 'measured', [], 'BLOCKED'], [[], 'open', 'measured', [], 'BLOCKED'],
   ].map(([lines, stepId, expect, refusals, expected]) => ({ lines, step: stepId, expect, refusals, expected }));
-
-  const sha = 'a'.repeat(64);
-  const openproc = (opened, extra = {}) => ({ probe: 'openproc', pid: 4242, openProcess: { PROCESS_QUERY_LIMITED_INFORMATION: opened, PROCESS_ALL_ACCESS: 'denied' }, imageSha256: sha, ...extra });
-  const images = [
-    [openproc('opened'), 'readable'], [openproc('opened', { imageSha256: 'b'.repeat(64) }), 'wrong_hash'], [openproc('opened', { imageSha256: 'unavailable_read_IOException' }), 'wrong_hash'],
-    [openproc('denied', { imageSha256: 'unavailable_open_5' }), 'denied'], [openproc('error_87'), 'error'], [null, 'missing'],
-  ].map(([line, expected]) => ({ line, sha, expected }));
-  const imageVerdicts = [['readable', 'MEASURED'], ['denied', 'MEASURED'], ['wrong_hash', 'FAIL'], ['error', 'BLOCKED'], ['missing', 'BLOCKED']].map(([outcome, expected]) => ({ outcome, expected }));
 
   // The squatter: its `ready` and `done` lines. A byte at the squatter is a FAIL whatever the helper said; a squatter that was never in place proves nothing.
   const ready = { probe: 'squat', state: 'ready', owner: 'S-1-5-80-1', pid: 99 };
@@ -392,11 +375,9 @@ test('the helper-driven verdict logic: the helper\'s words, the image pin, and t
     ['identity_mismatch', ownerRefusals, null, done(0), true, 'BLOCKED'], ['identity_unavailable', refusals, null, null, false, 'BLOCKED'],
   ].map(([outcome, refused, readyLine, doneLine, mustConnect, expected]) => ({ outcome, refusals: refused, ready: readyLine, done: doneLine, mustConnect, expected }));
 
-  const result = runWithGuestFunctions(guestPath, helperFunctions, helperLogicBody, { outcomes, verdicts, images, imageVerdicts, squats });
+  const result = runWithGuestFunctions(guestPath, helperFunctions, helperLogicBody, { outcomes, verdicts, squats });
   assert.deepEqual(result.outcomes, outcomes.map((o) => o.expect));
   assert.deepEqual(result.verdicts, verdicts.map((v) => v.expected));
-  assert.deepEqual(result.images, images.map((i) => i.expected));
-  assert.deepEqual(result.imageVerdicts, imageVerdicts.map((i) => i.expected));
   assert.deepEqual(result.squats, squats.map((q) => q.expected));
 });
 

@@ -1,5 +1,5 @@
 # Hyper-V rights lab (ADR-002 host Broker, PR2), GUEST side. Runs INSIDE the disposable lab VM as Administrator (Windows PowerShell 5.1), started by
-# lab-vm.ps1 -HyperV over PowerShell Direct. ASCII only. Not executed in a VM yet (written 2026-11-03).
+# lab-vm.ps1 -HyperV over PowerShell Direct. ASCII only. Run once in a VM on 2026-11-03 (bd_* and the first, image-pinned version of bh_*); the bh_* set after the same-day decision has not run yet.
 #   lab-hyperv-rights-check.ps1 <LabRoot> install-feature   install the Hyper-V role (the host restarts the guest afterwards)
 #   lab-hyperv-rights-check.ps1 <LabRoot> run               create an inner VM, run the probe as four service identities, then run the real Broker as a service and use its desktop pipe
 #                                                           (checks bd_*, see Invoke-BrokerDesktopLab); print the results as ONE JSON line
@@ -24,8 +24,9 @@
 # Expected values are in the README; a check that could not be measured is BLOCKED.
 # Then (checks bh_*, Broker client PR #168 "helper desktop mode"): the SAME Broker is used through the REAL pipe client helper in desktop mode instead of the lab's own client. The guest has no Node,
 # so the shim plays the Node side (albera-lab-service-shim.exe desktop-helper, DesktopHelperClient.cs): it starts the helper exe, sends the frames and reads them back. The Control Plane service
-# runs it with the production identity (serviceName + imageSha256 of the Broker file): a view open and capture, and (after a task.start claim) an act open and a keyboard input; without the
-# image pin as a control; with a wrong image pin; and, with the Broker stopped, against a squatter that holds the desktop pipe name (the helper must end before it sends a byte).
+# runs it in serviceName mode, WITHOUT imageSha256 (decision 2026-11-03, provisional: the Control Plane may not open the Broker process, so it cannot hash its image; the first lab run
+# showed server_identity_unavailable for every pinned open): a view open and capture, and (after a task.start claim) an act open and a keyboard input; one MEASURED check records what the
+# pinned path does; and, with the Broker stopped, against a squatter that holds the desktop pipe name (the helper must end before it sends a byte).
 param(
   [Parameter(Mandatory = $true)][string]$LabRoot,
   [Parameter(Mandatory = $true)][ValidateSet('install-feature', 'run', 'cleanup')][string]$Phase
@@ -71,8 +72,7 @@ $BdOp2 = 'lab-bd-act-2'    # the second claim replaces that lease (generation 2)
 $BdShiftVk = 16
 $BdRevokeWaitMs = 15000    # how long the first act session is given to be ended by the second claim (the Broker does it at once; the idle close is 60 s)
 $BhSquatSeconds = 40       # how long the squatter waits for a connection (it ends as soon as one comes and goes)
-$BhBrokerSha = ''          # SHA-256 of the Broker file (lower case): what the helper is told the image behind the desktop pipe must hash to; set in Invoke-BrokerDesktopLab
-$BhWrongSha = ''           # a well-formed SHA-256 that is not the Broker's (the helper file's own)
+$BhBrokerSha = ''          # SHA-256 of the Broker file (lower case), used only by bh_image_pin_unavailable; set in Invoke-BrokerDesktopLab
 $BdTitles = [ordered]@{
   bd_prereq_broker  = 'The Broker build was copied into the guest'
   bd_broker_ready   = 'Broker service (unrestricted, member of Hyper-V Administrators, SeChangeNotifyPrivilege only, config names the inner VM) starts and reports RUNNING'
@@ -91,15 +91,12 @@ $BdTitles = [ordered]@{
   bd_cp_act_wrong_generation_refused = 'Control Plane: an act open for operation lab-bd-act-1 with generation 2 (the lease is generation 1) is refused with the fixed denied reply'
   bd_cp_act_revoked_by_new_claim = 'Control Plane: a second task.start claim (operation lab-bd-act-2) is recorded while a first act session is open, and the Broker ends that session with the fixed denied frame'
   bd_broker_restart_drops_lease = 'Control Plane: the second lease (lab-bd-act-2, generation 2) opens an act session; after the Broker service is restarted the same open is refused (the lease lived in memory)'
-  bh_cp_image_readable = 'MEASURED: the Control Plane may open the Broker service process (PROCESS_QUERY_LIMITED_INFORMATION) and read its image; the hash it computes is the SHA-256 of the Broker file. The helper needs this to pin imageSha256'
-  bh_view_open      = 'Control Plane, REAL helper in desktop mode (service identity, imageSha256 = the Broker file): a view session on the inner VM is accepted'
-  bh_view_capture   = 'Control Plane, REAL helper (service identity + imageSha256): a 640x480 capture over that session returns a valid PNG (signature, IHDR of the asked size, IEND)'
-  bh_view_service_only = 'CONTROL: the same helper without imageSha256 (service identity only): a view open and a capture are accepted. Tells a failed image pin apart from a failed helper path'
-  bh_wrong_image_refused = 'Control Plane, REAL helper: an imageSha256 that is not the hash of the Broker file is refused with server_identity_mismatch before anything is sent (server_identity_unavailable = the image could not be read, so the comparison was never reached: BLOCKED)'
-  bh_act_open       = 'Control Plane, REAL helper (service identity + imageSha256): after the task.start claim an act session for operation lab-bd-act-1, generation 1 is accepted'
-  bh_act_input      = 'Control Plane, REAL helper (service identity + imageSha256): in that act session a keyboard input (tap Shift) is accepted'
-  bh_act_service_only = 'CONTROL: the same act open and keyboard input through the helper without imageSha256 (service identity only)'
-  bh_squatter_broker_stopped = 'Broker stopped, another identity (AlberaLabHvOther) holds the desktop pipe name: the helper (service identity + imageSha256) ends with a server_identity code (the SCM has no running Broker) and the squatter receives 0 bytes'
+  bh_view_open      = 'Control Plane, REAL helper in desktop mode (serviceName mode, no imageSha256): a view session on the inner VM is accepted'
+  bh_view_capture   = 'Control Plane, REAL helper (serviceName mode): a 640x480 capture over that session returns a valid PNG (signature, IHDR of the asked size, IEND)'
+  bh_act_open       = 'Control Plane, REAL helper (serviceName mode): after the task.start claim an act session for operation lab-bd-act-1, generation 1 is accepted'
+  bh_act_input      = 'Control Plane, REAL helper (serviceName mode): in that act session a keyboard input (tap Shift) is accepted'
+  bh_image_pin_unavailable = 'MEASURED: the same view open with imageSha256 = the Broker file added. Expected server_identity_unavailable: the Control Plane may not open the Broker process (evidence: openproc as the Control Plane), so it cannot hash the image. Decision 2026-11-03: the Control Plane uses serviceName mode without the pin'
+  bh_squatter_broker_stopped = 'Broker stopped, another identity (AlberaLabHvOther) holds the desktop pipe name: the helper (serviceName mode) ends with a server_identity code (the SCM has no running Broker) and the squatter receives 0 bytes'
   bh_squatter_owner_mismatch = 'Same state: the helper (given the old PID and the owner SID of the Broker) connects to the squatter and ends with server_identity_mismatch; the squatter receives 0 bytes'
 }
 $Ops = @(
@@ -289,23 +286,6 @@ function Get-BhOutcome($ById, [string]$Step) {
     'png_invalid' { return 'bad_result' }
     default { return 'error' }
   }
-}
-
-# The openproc probe's line (what the Control Plane may do to the Broker process) -> readable | denied | wrong_hash | error | missing.
-function Get-BhImageOutcome($Line, [string]$ExpectedSha) {
-  if ($null -eq $Line) { return 'missing' }
-  $opened = [string]$Line.openProcess.PROCESS_QUERY_LIMITED_INFORMATION
-  if ($opened -eq 'denied') { return 'denied' }
-  if ($opened -ne 'opened') { return 'error' }
-  if ([string]$Line.imageSha256 -eq $ExpectedSha) { return 'readable' }
-  'wrong_hash'
-}
-
-# Either answer is a result (it decides whether the Control Plane can pin the Broker image at all); a hash that differs from the file is a defect; no answer is BLOCKED.
-function Get-BhImageVerdict([string]$Outcome) {
-  if ($Outcome -in @('readable', 'denied')) { return 'MEASURED' }
-  if ($Outcome -eq 'wrong_hash') { return 'FAIL' }
-  'BLOCKED'
 }
 
 # A squatter holds the desktop pipe name while the Broker is stopped. $Ready / $Done are the squat probe's lines (state ready, state done). PASS only when the squatter was really in place, the
@@ -696,37 +676,29 @@ function Add-BhStepCheck([string]$Id, $Job, [string]$Step, [string]$Expect, [str
   Add-BdJobCheck $Id $Job $outcome (Get-BdVerdict $Expect $Refusals $outcome) $Shape $Note
 }
 
-# View: what the Control Plane may know about the Broker image, then the production identity (service name + image pin), the same without the pin, and a wrong pin. Needs no lease.
+# View, in serviceName mode (no image pin): open and capture. Then the MEASURED pinned path. Needs no lease.
 function Invoke-BhViewChecks($CpShape, [int]$BrokerPid) {
-  $ids = @('bh_cp_image_readable', 'bh_view_open', 'bh_view_capture', 'bh_view_service_only', 'bh_wrong_image_refused')
+  $ids = @('bh_view_open', 'bh_view_capture', 'bh_image_pin_unavailable')
   if (-not (Test-Path -LiteralPath $BdHelper)) { Add-BdBlocked $ids "not found: $BdHelper (lab-vm.ps1 copies the pipe client publish folder)"; return }
   $identity = "service:$BdBrokerSvc"
   $open = "open:view:$BdComputerId"
 
+  $view = Invoke-BhJob 'bh-view' $identity @($open, 'capture:640x480') ''
+  Add-BhStepCheck 'bh_view_open' $view 'open' 'allowed' @() $CpShape
+  Add-BhStepCheck 'bh_view_capture' $view 'capture' 'allowed' @() $CpShape
+
+  # What the pin does from this identity, and why: the same open with imageSha256, and what the Control Plane may do to the Broker process. Any answer is the result (MEASURED); none is BLOCKED.
   $procJob = Invoke-HvShimJob $BdCpSvc 'bh-openproc' @('openproc', "$BrokerPid") 'openproc'
-  $imageOutcome = Get-BhImageOutcome ($procJob.Objects | Select-Object -Last 1) $BhBrokerSha
-  Add-BdJobCheck 'bh_cp_image_readable' $procJob $imageOutcome (Get-BhImageVerdict $imageOutcome) $CpShape @("Broker file sha256: $BhBrokerSha", 'denied = the helper cannot pin the Broker image from this identity: bh_view_open and bh_view_capture then end with server_identity_unavailable')
-
-  $pinned = Invoke-BhJob 'bh-view' $identity @($open, 'capture:640x480') $BhBrokerSha
-  Add-BhStepCheck 'bh_view_open' $pinned 'open' 'allowed' @() $CpShape @("image pin: the Broker file, sha256 $BhBrokerSha")
-  Add-BhStepCheck 'bh_view_capture' $pinned 'capture' 'allowed' @() $CpShape
-
-  $plain = Invoke-BhJob 'bh-view-plain' $identity @($open, 'capture:640x480') ''
-  Add-BhStepCheck 'bh_view_service_only' $plain 'capture' 'allowed' @() $CpShape
-
-  $wrong = Invoke-BhJob 'bh-view-wrong' $identity @($open) $BhWrongSha
-  Add-BhStepCheck 'bh_wrong_image_refused' $wrong 'open' 'refused' @('identity_mismatch') $CpShape @("image pin: the helper file, sha256 $BhWrongSha (a real hash that is not the Broker one)")
+  $pinned = Invoke-BhJob 'bh-view-pinned' $identity @($open) $BhBrokerSha
+  $note = @("image pin: the Broker file, sha256 $BhBrokerSha") + @($procJob.Objects | ForEach-Object { "openproc as the Control Plane: $(ConvertTo-Json -InputObject $_ -Compress -Depth 3)" })
+  Add-BhStepCheck 'bh_image_pin_unavailable' $pinned 'open' 'measured' @() $CpShape $note
 }
 
-# Act through the helper on the lease the first claim made (operation lab-bd-act-1, generation 1): the open and a keyboard input with the image pin, the same without it. Called with the lease in place.
+# Act through the helper (serviceName mode) on the lease the first claim made (operation lab-bd-act-1, generation 1): the open and a keyboard input. Called with the lease in place.
 function Invoke-BhActChecks($CpShape) {
-  $identity = "service:$BdBrokerSvc"
-  $steps = @("open:act:${BdComputerId}:${BdOp1}:1", "input:tap=$BdShiftVk")
-  $pinned = Invoke-BhJob 'bh-act' $identity $steps $BhBrokerSha
-  Add-BhStepCheck 'bh_act_open' $pinned 'open' 'allowed' @() $CpShape
-  Add-BhStepCheck 'bh_act_input' $pinned 'input' 'allowed' @() $CpShape
-  $plain = Invoke-BhJob 'bh-act-plain' $identity $steps ''
-  Add-BhStepCheck 'bh_act_service_only' $plain 'input' 'allowed' @() $CpShape
+  $job = Invoke-BhJob 'bh-act' "service:$BdBrokerSvc" @("open:act:${BdComputerId}:${BdOp1}:1", "input:tap=$BdShiftVk") ''
+  Add-BhStepCheck 'bh_act_open' $job 'open' 'allowed' @() $CpShape
+  Add-BhStepCheck 'bh_act_input' $job 'input' 'allowed' @() $CpShape
 }
 
 # Squatters. The Broker is stopped and another identity (the Other service, the squat probe) takes the desktop pipe name. First the production identity (the SCM has no running Broker, so the helper
@@ -737,7 +709,7 @@ function Invoke-BhSquatChecks($CpShape, [string]$BrokerSid, [int]$BrokerPid) {
   Stop-LabService $BdBrokerSvc
   $squat = Start-HvJob $BdOtherSvc 'bh-squat' $Shim @('squat', $BdDesktopPipe, "$BhSquatSeconds") $null
   try { Wait-Until { @(Read-ResultLines $squat.ResultFile | Where-Object { $_ -like '*"state":"ready"*' -or $_ -like '*"state":"pipe_exists"*' }).Count -gt 0 } 20 'the squatter to be ready' } catch { }
-  $byService = Invoke-BhJob 'bh-squat-service' "service:$BdBrokerSvc" @("open:view:$BdComputerId") $BhBrokerSha
+  $byService = Invoke-BhJob 'bh-squat-service' "service:$BdBrokerSvc" @("open:view:$BdComputerId") ''
   $byOwner = Invoke-BhJob 'bh-squat-owner' "pid:${BrokerPid}:${BrokerSid}" @("open:view:$BdComputerId") ''
   $squat = Complete-HvJob $squat 'squat'
   $ready = $squat.Objects | Where-Object { $_.state -eq 'ready' } | Select-Object -First 1
@@ -820,7 +792,6 @@ function Invoke-BrokerDesktopLab([string]$VmId) {
   Add-BdStepCheck 'bd_other_refused' $otherJob 'open' 'refused' @('refused_pipe', 'refused_reply') $otherShape
 
   $script:BhBrokerSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $brokerExe).Hash.ToLowerInvariant()
-  $script:BhWrongSha = if (Test-Path -LiteralPath $BdHelper) { (Get-FileHash -Algorithm SHA256 -LiteralPath $BdHelper).Hash.ToLowerInvariant() } else { '' }
   Invoke-BhViewChecks $cpShape $brokerPid
   Invoke-BdActChecks $authority $cpShape
   Invoke-BhSquatChecks $cpShape $brokerSid $brokerPid   # last: it stops the Broker
@@ -829,7 +800,7 @@ function Invoke-BrokerDesktopLab([string]$VmId) {
 # The checks that need a lease. Their only source is a task.start claim recorded by the Broker, so the lab makes one the way the Control Plane does: fence, a receipt v2 signed with the lab
 # authority, the helper sends it. Without a recorded claim every check below is BLOCKED (an act open would fail for want of a lease, which says nothing about the lease).
 function Invoke-BdActChecks($Authority, $CpShape) {
-  $dependents = @($BdTitles.Keys | Where-Object { $_ -in @('bd_cp_act_open', 'bd_cp_act_input', 'bd_cp_act_input_mouse', 'bd_cp_act_wrong_generation_refused', 'bd_cp_act_revoked_by_new_claim', 'bd_broker_restart_drops_lease', 'bh_act_open', 'bh_act_input', 'bh_act_service_only') })
+  $dependents = @($BdTitles.Keys | Where-Object { $_ -in @('bd_cp_act_open', 'bd_cp_act_input', 'bd_cp_act_input_mouse', 'bd_cp_act_wrong_generation_refused', 'bd_cp_act_revoked_by_new_claim', 'bd_broker_restart_drops_lease', 'bh_act_open', 'bh_act_input') })
   if (-not (Test-Path -LiteralPath $BdHelper)) {
     Add-Check 'bd_cp_task_start_claim' $BdTitles.bd_cp_task_start_claim 'BLOCKED' 'missing' @("not found: $BdHelper (lab-vm.ps1 copies the pipe client publish folder)")
     Add-BdBlocked $dependents 'no lease: the helper that sends the claim is not in the guest'
