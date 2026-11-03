@@ -433,7 +433,8 @@ check('11a Approver app is not referenced by Observer layers or runtime modules'
 );
 const approverRoot = 'src/runtime/windows-approver';
 const approverSources = ['Program.cs', 'TestSeam.cs', 'CommandLine.cs', 'ApproverCommands.cs', 'PendingView.cs', 'Renderer.cs', 'SafeText.cs', 'Presence.cs', 'Channel.cs', 'PipeChannel.cs',
-  'ServerExpectation.cs', 'ExitCodes.cs', 'EnrollCommand.cs', 'SelfCheckCommand.cs', 'HelloKeyStore.cs', 'Wiring.cs', 'WindowsHello.cs', 'PolicyCommand.cs', 'MatchCode.cs'];
+  'ServerExpectation.cs', 'ExitCodes.cs', 'EnrollCommand.cs', 'SelfCheckCommand.cs', 'HelloKeyStore.cs', 'Wiring.cs', 'WindowsHello.cs', 'PolicyCommand.cs', 'MatchCode.cs',
+  'ApprovalPrompt.cs', 'ApprovalQueue.cs', 'GuiApprovalWindow.cs', 'GuiTrayHost.cs', 'GuiNative.cs'];
 for (const f of [...approverSources, 'Albera.Approver.csproj', 'packages.lock.json']) {
   if (!fs.existsSync(path.join(ROOT, approverRoot, f))) violations.push(`[11b Approver source] ${approverRoot}/${f} does not exist (false-safe)`);
 }

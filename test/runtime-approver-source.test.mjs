@@ -31,7 +31,7 @@ test('the approver is a separate project: one external dependency (the pinned Wi
   assert.deepEqual([...project.matchAll(/<Compile Include="([^"]+)"/gu)].map((m) => m[1]), ['../broker-contract/*.cs']);
   assert.match(project, /<AssemblyName>AlberaApprover<\/AssemblyName>/u);
   assert.match(project, /<RuntimeIdentifiers>win-x64<\/RuntimeIdentifiers>/u);
-  assert.equal(/ApplicationManifest|requestedExecutionLevel|WindowsService|UseWindowsServices|UseWindowsForms|UseWPF/iu.test(project), false, 'no elevation, no service wrapper, no UI framework');
+  assert.equal(/ApplicationManifest|requestedExecutionLevel|WindowsService|UseWindowsServices|UseWPF/iu.test(project), false, 'no elevation, no service wrapper, no WPF');
   assert.deepEqual(Object.keys(lockFile.dependencies), ['net10.0-windows10.0.19041', 'net10.0-windows10.0.19041/win-x64']);
   assert.deepEqual(Object.values(lockFile.dependencies).map((framework) => Object.keys(framework)), [[], []], 'the lock file pins no NuGet package (the projection pack is a targeting pack, pinned in the csproj)');
   for (const [name, text] of Object.entries(sources)) {
@@ -124,7 +124,7 @@ test('enroll --check (self-check): local only, the existing key only, domain-sep
 
 test('there is no --yes: the typed yes cannot be skipped, approve needs a console before any pipe access, and enroll never prints or stores private material', () => {
   assert.equal(/--yes|AssumeYes|assumeYes/u.test(Object.values(sources).join('\n')), false, 'no --yes anywhere in the sources (comments included)');
-  assert.match(code['CommandLine.cs'], /Usage = "usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\] \| enroll \[--replace\] --accept-unattested \| policy \[show\] \| policy set <careful\|standard> \[--prompt <action>\]\.\.\."/u);
+  assert.match(code['CommandLine.cs'], /Usage = "usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\] \| enroll \[--replace\] --accept-unattested \| policy \[show\] \| policy set <careful\|standard> \[--prompt <action>\]\.\.\. \| --tray"/u);
   assert.match(code['ApproverCommands.cs'], /if \(!interactive\) throw new Stop\(ExitCodes\.Refused, "not_interactive"/u);
   assert.equal([...code['Program.cs'].matchAll(/!Console\.IsInputRedirected/gu)].length, 2, 'interactive means stdin is not redirected, in both build branches and nowhere else');
   const enroll = code['EnrollCommand.cs'];
@@ -213,16 +213,21 @@ test('policy set: the tier change is described first, Hello is asked only when t
 });
 
 test('approve: refuse on a digest mismatch BEFORE the signer is asked; the signed digest is the one this app recomputed, never the Authority\'s; one signing site', () => {
-  const approve = sliceBetween(code['ApproverCommands.cs'], 'public Task<int> ApproveAsync', 'public Task<int> DenyAsync');
-  const order = ['RequireApprovalId(', 'if (!interactive)', 'FetchAllAsync()', 'Renderer.Render(', 'view.DigestMatches', 'Confirmed()', 'signer.Sign(', 'DecideAsync('].map((token) => approve.indexOf(token));
-  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `validate -> console check -> list -> show -> digest check -> confirm -> sign -> decide (${order})`);
+  const approve = sliceBetween(code['ApproverCommands.cs'], 'public Task<int> ApproveAsync', 'private async Task<int> SignAndDecideAsync');
+  const order = ['RequireApprovalId(', 'if (!interactive)', 'FetchAllAsync()', 'Renderer.Render(', 'view.DigestMatches', 'Confirmed()', 'SignAndDecideAsync(view)'].map((token) => approve.indexOf(token));
+  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `validate -> console check -> list -> show -> digest check -> confirm -> sign and decide (${order})`);
   assert.equal([...code['ApproverCommands.cs'].matchAll(/signer\.Sign\(/gu)].length, 1, 'one signing site');
-  assert.match(approve, /PresenceMessage\.Build\(view\.ApprovalId, view\.RecomputedDigest, view\.Challenge\)/u);
+  // The signing and the decide moved into one private method that the CLI (after the typed yes) and the GUI (ApproveShownAsync, after its own digest refusal) both end in.
+  const signAndDecide = sliceBetween(code['ApproverCommands.cs'], 'private async Task<int> SignAndDecideAsync', 'public Task<int> DenyAsync');
+  const tail = ['signer.Sign(', 'return await DecideAsync('].map((token) => signAndDecide.indexOf(token));
+  assert.ok(tail.every((at) => at > 0) && tail[1] > tail[0], `sign -> decide (${tail})`);
+  assert.equal([...code['ApproverCommands.cs'].matchAll(/SignAndDecideAsync\(/gu)].length, 3, 'defined once, called by the CLI approve and by ApproveShownAsync only');
+  assert.match(signAndDecide, /PresenceMessage\.Build\(view\.ApprovalId, view\.RecomputedDigest, view\.Challenge\)/u);
   assert.equal(/AuthorityDigest/u.test(code['ApproverCommands.cs']), false, 'the Authority-sent digest is only compared (PendingView), never used by the command');
   assert.match(code['PendingView.cs'], /DigestMatches => string\.Equals\(AuthorityDigest, RecomputedDigest, StringComparison\.Ordinal\)/u);
   assert.match(code['PendingView.cs'], /string recomputed = ActionDigest\.Compute\(purpose, dto\);/u, 'the contract\'s own digest code');
   assert.match(code['PendingView.cs'], /StrictJson\.Parse\(Encoding\.UTF8\.GetBytes\(entry\.GetProperty\("action"\)\.GetRawText\(\)\), 3\)/u, 'the action is re-read with the strict reader');
-  assert.match(approve, /SignStatus\.Signed =>[\s\S]*SignStatus\.Unavailable =>[\s\S]*_ => throw new Stop\(ExitCodes\.SignerUnavailable/u, 'no usable Hello key sends nothing');
+  assert.match(signAndDecide, /SignStatus\.Signed =>[\s\S]*SignStatus\.Unavailable =>[\s\S]*_ => throw new Stop\(ExitCodes\.SignerUnavailable/u, 'no usable Hello key sends nothing');
 });
 
 test('rendering: every string a person is shown goes through SafeText (printable ASCII only), and every digest input is rendered', () => {
@@ -275,4 +280,88 @@ test('issue #101: the attestation rule accepts Success, plus NotSupported (empty
   assert.match(code['Program.cs'], /new EnrollCommand\([^;]*\)\.Run\(command\.Option, command\.AcceptUnattested\);/u, 'and it hands it to enroll');
   assert.equal(/AcceptUnattested|acceptUnattested/u.test(code['ApproverCommands.cs'] + code['PolicyCommand.cs'] + code['SelfCheckCommand.cs']), false, 'approve, policy and the self-check cannot see the flag');
   assert.deepEqual([...code['EnrollCommand.cs'].matchAll(/store\.Create\(replace: (true|false), acceptUnattested\)/gu)].map((m) => m[1]), ['true', 'false'], 'create and replace pass the flag; nothing else creates a key');
+});
+
+// ---- GUI mode (`AlberaApprover.exe --tray`: Gui*.cs, ApprovalPrompt.cs, ApprovalQueue.cs) -----------------------------------------------------------------------------------------------
+const guiWindow = code['GuiApprovalWindow.cs'];
+const guiTray = code['GuiTrayHost.cs'];
+const guiFiles = ['GuiApprovalWindow.cs', 'GuiTrayHost.cs', 'GuiNative.cs', 'ApprovalPrompt.cs', 'ApprovalQueue.cs'];
+const guiCode = guiFiles.map((name) => code[name]).join('\n');
+const methodBody = (source, signature) => { const at = source.indexOf(signature); return at < 0 ? '' : source.slice(at, source.indexOf('\n    }\n', at) + 7); };
+
+test('GUI mode: the only call that approves anything is in the click-handler path of a match-code button; there is no auto, remember, all or on-timeout approval', () => {
+  for (const name of guiFiles) assert.ok(code[name], `${name} exists`);
+  // The whole program has one GUI approve call: defined in ApproverCommands.cs, called once, from the correct-pick branch of HandleChoiceAsync.
+  assert.deepEqual(Object.entries(code).filter(([, text]) => /ApproveShownAsync|SignAndDecideAsync/u.test(text)).map(([name]) => name).sort(), ['ApproverCommands.cs', 'GuiApprovalWindow.cs']);
+  assert.equal([...allCode.matchAll(/ApproveShownAsync\(/gu)].length, 2, 'defined once and called once');
+  assert.match(methodBody(guiWindow, 'internal async Task HandleChoiceAsync'), /case PickOutcome\.Correct:[\s\S]*ApproveShownAsync\(prompt\.View!\)/u, 'the call is in the correct-pick branch of HandleChoiceAsync');
+  assert.equal([...guiWindow.matchAll(/HandleChoiceAsync\(/gu)].length, 2, 'HandleChoiceAsync: its definition and one caller');
+  assert.match(methodBody(guiWindow, 'private async void OnChoiceClick'), /await HandleChoiceAsync\(index\)/u, 'the caller is the click handler');
+  assert.equal([...guiWindow.matchAll(/\.Click \+= OnChoiceClick/gu)].length, 1, 'OnChoiceClick is wired to the match-code buttons only');
+  assert.match(guiWindow, /MouseOnlyButton button = new\(\) \{ Text = prompt\.Choices\[i\]/u, 'and those are MouseOnlyButtons made from the prompt\'s candidates');
+  assert.equal([...allCode.matchAll(/\\"decision\\":\\"approve\\"/gu)].length, 1, 'one place builds an approve decision');
+  assert.equal(/\.Sign\(/u.test(guiCode), false, 'the GUI files never ask the signer themselves');
+  assert.equal(/ApproveAll|approveAll|AutoApprove|autoApprove|ApproveOn|Remember|remember|TrustAlways|SkipPrompt|DecisionTimeout|OnTimeout|DefaultDecision/u.test(allCode), false, 'no "approve all", "remember" or "approve on timeout"');
+  // The timer only refreshes the buttons and the clock; the tray host only lists and opens windows.
+  assert.match(guiWindow, /tick\.Tick \+= \(_, _\) => ApplyState\(\);/u);
+  assert.equal(/Approve(?!r)|Hello|\.Sign\(|decide/u.test(guiTray + code['GuiNative.cs'].replace(/Windows Hello itself[^\n]*/u, '').replace(/before Windows Hello asks[^\n]*/u, '')), false, 'the tray host and the native helpers do not name approval, Hello or signing');
+});
+
+test('GUI mode: shown without taking focus, no default button, Enter and Space do nothing, buttons wait 1 s and stop at expiry, one window per request, polled every 2 s', () => {
+  assert.match(guiWindow, /protected override bool ShowWithoutActivation => true;/u);
+  assert.match(guiWindow, /AcceptButton = null;\s*CancelButton = null;/u);
+  assert.equal(/AcceptButton = (?!null)|CancelButton = (?!null)|NotifyDefault|DialogResult/u.test(guiWindow), false, 'no default or dialog button');
+  assert.match(guiWindow, /SetStyle\(ControlStyles\.Selectable, false\);\s*TabStop = false;/u, 'a button never takes the keyboard focus');
+  assert.match(guiWindow, /protected override bool IsInputKey\(Keys keyData\) => false;/u);
+  assert.match(guiWindow, /\(keyData & Keys\.KeyCode\) is Keys\.Enter or Keys\.Space \|\|/u, 'Enter and Space are swallowed for the whole window');
+  assert.match(guiWindow, /pressedByMouse = mevent\.Button == MouseButtons\.Left;[\s\S]*if \(real\) base\.OnClick\(e\);/u, 'only a real left mouse press makes a click');
+  assert.match(guiWindow, /Shown \+= \(_, _\) => GuiNative\.FlashTaskbar\(Handle\);/u, 'the taskbar button flashes');
+  assert.equal(/\.Activate\(|\.Focus\(|ActiveControl|SetForegroundWindow|BringToFront\(\)/u.test(guiWindow + guiTray), false, 'nothing here asks for the focus');
+  // Topmost and no-activate are creation styles (WS_EX_TOPMOST | WS_EX_NOACTIVATE); the Form.TopMost property (which can activate together with ShowWithoutActivation) is not used.
+  assert.match(guiWindow, /ExTopmost = 0x00000008, ExNoActivate = 0x08000000;/u);
+  assert.match(guiWindow, /parameters\.ExStyle \|= ExTopmost \| ExNoActivate;/u);
+  assert.equal(/\bTopMost\b/u.test(guiWindow + guiTray), false, 'Form.TopMost is never set');
+  assert.equal(/BM_CLICK/u.test(guiWindow + read('docs', 'architecture', 'approver-app.md').replace(/a posted `BM_CLICK`/u, '')), false, 'no claim that a BM_CLICK is dropped: a synthetic click from the same account is a known limit, Hello is the last line');
+  assert.equal([...guiCode.matchAll(/GuiNative\.BringToFront\(/gu)].length, 1, 'the window is brought to the front once: after the correct pick, before Windows Hello asks');
+  assert.match(methodBody(guiWindow, 'internal async Task HandleChoiceAsync'), /case PickOutcome\.Correct:[\s\S]*GuiNative\.BringToFront\(Handle\);[\s\S]*ApproveShownAsync/u);
+  const prompt = code['ApprovalPrompt.cs'];
+  assert.match(prompt, /ClickDelayMs = 1000/u);
+  assert.match(prompt, /ClickDelayElapsed\(now\) && !IsExpired\(now\)/u, 'the choice buttons need the delay and an unexpired request');
+  assert.match(prompt, /public bool IsExpired\(DateTimeOffset now\) => View is \{ \} view && now\.ToUnixTimeSeconds\(\) >= view\.ExpiresAt;/u);
+  assert.match(prompt, /WrongPicksToDeny = 2/u);
+  assert.match(guiTray, /PollMs = 2000/u, 'the list is asked for every 2 seconds');
+  // Closing a window is not a way to reset the guesses: the tray keeps the wrong picks per request and hands them on, and a window closed after a wrong pick sends deny.
+  assert.match(guiTray, /wrongPicks\.For\(id\)/u, 'a new window starts with the request\'s earlier wrong picks');
+  assert.match(guiTray, /wrongPicks\.Record\(id, window\.WrongMask\)/u, 'and the closing window hands its wrong picks to the ledger');
+  assert.match(methodBody(guiWindow, 'protected override void OnFormClosing'), /state\.WrongCount >= 1 && !state\.Finished[\s\S]*DenyAndCloseAsync\(\)/u, 'closing after a wrong pick sends deny');
+  assert.match(methodBody(guiWindow, 'private async Task DenyAndCloseAsync'), /await SendDenyAsync\(\)/u);
+  assert.match(code['ApprovalPrompt.cs'], /state\.WrongCount < WrongPicksToDeny/u, 'after two wrong picks on record no candidate can be picked');
+  assert.match(methodBody(guiTray, 'private void RequestExit'), /open\.Close\(\)/u, 'quitting the tray closes the open window first');
+  assert.match(code['ApprovalQueue.cs'], /new QueueView\(unhandled\[0\], unhandled\.Count - 1, closed\)/u, 'one request opens, the rest wait');
+});
+
+test('GUI mode: reuses the CLI\'s list, digest recompute, presence message and decide (no copy); the match code is MatchCode.Choices of the RECOMPUTED digest; hidden characters remove the approve buttons', () => {
+  assert.match(guiTray, /new\(new PipeChannel\(wiring\.Expectation, wiring\.TimeoutMs\), wiring\.Signer, TextWriter\.Null, TextWriter\.Null, TextReader\.Null, clock, interactive: false\)/u, 'the same pipe channel (server verified first) and the same signer seam');
+  assert.match(guiTray, /NewCommands\(\)\.ListPendingAsync\(\)/u);
+  assert.equal(/JsonDocument|PendingParser|ActionDigest|PresenceMessage|CallAsync|"verb"/u.test(guiCode), false, 'no second parser, digest, presence message or wire request in the GUI files');
+  assert.match(code['ApprovalPrompt.cs'], /MatchCode\.Choices\(view\.ApprovalId, view\.RecomputedDigest\)/u);
+  assert.equal(/AuthorityDigest/u.test(guiCode), false, 'the Authority-sent digest is never used by the GUI');
+  assert.match(code['ApprovalPrompt.cs'], /if \(!view\.DigestMatches\) return BlockReason\.DigestMismatch;\s*if \(AllStrings\(view\)\.Any\(HasHiddenCharacters\)\) return BlockReason\.HiddenCharacters;/u);
+  assert.match(code['ApprovalPrompt.cs'], /UnicodeCategory\.Control or UnicodeCategory\.Format or UnicodeCategory\.LineSeparator or UnicodeCategory\.ParagraphSeparator/u);
+  assert.match(code['ApprovalPrompt.cs'], /public IReadOnlyList<string> Choices => CanApprove \? choices!\.Choices : \[\];/u, 'no candidates (no buttons) unless approval is allowed');
+  assert.match(guiWindow, /if \(prompt\.CanApprove\)\s*\{[\s\S]*MouseOnlyButton button = new\(\)/u, 'the match-code buttons are built only when approval is allowed');
+  assert.match(code['ApproverCommands.cs'], /if \(!view\.DigestMatches\) throw new Stop\(ExitCodes\.Refused, "digest_mismatch"\);\s*return SignAndDecideAsync\(view\);/u, 'the GUI path refuses a digest mismatch like the CLI');
+  assert.match(code['Program.cs'], /if \(command\.Verb == "tray"\) return TrayApp\.Run\(wiring\);/u);
+  assert.match(code['CommandLine.cs'], /args is \["--tray"\]\) return new CommandLine\("tray", null, null\)/u);
+});
+
+test('GUI mode: three Win32 calls (taskbar flash, bring to front, drop the console), Windows Forms as a framework property only, and no registration of itself (the installer\'s job)', () => {
+  assert.deepEqual(importsOf(code['GuiNative.cs']).sort(), ['kernel32.dll!FreeConsole', 'user32.dll!FlashWindowEx', 'user32.dll!SetForegroundWindow']);
+  assert.deepEqual([...project.matchAll(/<UseWindowsForms>(\w+)<\/UseWindowsForms>/gu)].map((m) => m[1]), ['true'], 'Windows Forms is switched on once, as a property (a framework that ships with .NET, no package)');
+  assert.equal(/Microsoft\.Win32\.Registry|RegistryKey|CurrentVersion\\Run|schtasks|Startup/u.test(allCode), false, 'the app never writes its own Run key; the installer does');
+  assert.match(guiTray, /@"Local\\AlberaApproverTray"/u, 'one tray per logon session');
+  assert.match(guiTray, /thread\.SetApartmentState\(ApartmentState\.STA\);/u);
+  assert.match(guiTray, /quit = ApprovalQueue\.ShouldQuit\(outcome\);/u, 'a tray started for another account ends on access_denied');
+  assert.match(guiTray, /Visible = false \}/u, 'no icon before the first answer');
+  assert.match(read('docs', 'architecture', 'approver-app.md'), /## GUI mode/u, 'the GUI mode is documented');
 });

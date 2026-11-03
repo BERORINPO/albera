@@ -214,7 +214,7 @@ One tray process per owner session (HKLM Run, `bin\approver`). It reuses the app
 | Right pick | Starts the Windows Hello signature over the presence message (the existing `albera.presence.v1` bytes). Hello is the only approval |
 | No focus steal | `ShowWithoutActivation` and a taskbar flash. No default button; Enter and Space do nothing. All buttons are disabled for 1 second after the window is shown and when the request expires |
 | No automation | There is no "approve all", "remember" or "approve on timeout". `decide approve` is sent only from the click handler (source guard, tested like the existing "no `--yes`") |
-| Hello window handle | Use `IKeyCredentialManagerInterop` with the window handle. This is the open point in `approver-app.md` and can be verified only on the owner's PC (M14). Under RDP the window says to approve at the PC |
+| Hello window handle | **Not implemented.** The window is brought to the front and the plain Hello call is used instead (the interop interface ID and slot order could not be verified; `approver-app.md`, "GUI mode"). Waiting for the owner-PC measurement (M14). Under RDP the window says to approve at the PC |
 | Toolkit | Not decided here; it must support `ShowWithoutActivation` and run self-contained like the console approver |
 | Rejected | A single Approve button (habituation), typing the code (paste risk), a toast (COM registration for an unpackaged app; backlog) |
 
