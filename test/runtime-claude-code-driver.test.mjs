@@ -240,6 +240,25 @@ test('stop: before run() nothing is started', async () => {
   assert.deepEqual([result.outcome, result.reason, spawned], ['stopped', 'operator', 0]);
 });
 
+test('stop: a stop that arrives during the preflight (hashing the executable takes seconds) is read again before the spawn - nothing is started', async () => {
+  const ws = workspace({ steps: [{ result: 'DONE' }] });
+  let spawned = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let inPreflight;
+  const entered = new Promise((resolve) => { inPreflight = resolve; });
+  const driver = createClaudeCodeDriver(driverOptions(ws, {
+    spawnImpl: () => { spawned += 1; throw new Error('must not start'); },
+    io: { exists: async () => false, readdir: async (dir) => { inPreflight(); await gate; return (await import('node:fs/promises')).readdir(dir); } },
+  }));
+  const running = driver.run();
+  await entered; // run() is inside its checks and has not decided anything yet
+  driver.stop('operator');
+  release();
+  const result = await running;
+  assert.deepEqual([result.outcome, result.reason, spawned], ['stopped', 'operator', 0]);
+});
+
 test('run: a driver runs once', async () => {
   const ws = workspace({ steps: [{ result: 'DONE' }] });
   const driver = createClaudeCodeDriver(driverOptions(ws));
@@ -256,16 +275,28 @@ test('stream: a tool the driver did not allow ends the run at once (unexpected_t
   assert.ok(await gone(ws.record().mcpPid));
 });
 
-test('stream: an MCP server that did not connect ends the run (mcp_server_failed); extra tools in the init are reported, not fatal', async () => {
+test('stream: the init is a self-check - a failed or missing albera_desktop server, any tool outside the six, or any other MCP server ends the run', async () => {
   const failed = workspace({ init: { mcp_servers: [{ name: 'albera_desktop', status: 'failed' }] }, steps: [{ hang: true }] });
   const a = await createClaudeCodeDriver(driverOptions(failed)).run();
   assert.deepEqual([a.outcome, a.reason], ['error', 'mcp_server_failed']);
   const absent = workspace({ init: { mcp_servers: [] }, steps: [{ hang: true }] });
   assert.equal((await createClaudeCodeDriver(driverOptions(absent)).run()).reason, 'mcp_server_failed');
-  const extra = workspace({ init: { tools: ['mcp__albera_desktop__screenshot', 'Skill', 'ToolSearch'] }, steps: [{ result: 'DONE' }] });
+  const extra = workspace({ init: { tools: ['mcp__albera_desktop__screenshot', 'Skill', 'ToolSearch'] }, steps: [{ tool: 'screenshot' }, { hang: true }] });
   const b = await createClaudeCodeDriver(driverOptions(extra)).run();
-  assert.equal(b.outcome, 'claimed_done');
-  assert.deepEqual(b.unexpectedTools, ['Skill', 'ToolSearch']);
+  assert.deepEqual([b.outcome, b.reason, b.unexpectedTools], ['error', 'unexpected_capability', ['Skill', 'ToolSearch']]);
+  const odd = workspace({ init: { tools: ['mcp__albera_desktop__screenshot', 'bad name!', 7] }, steps: [{ hang: true }] });
+  const c = await createClaudeCodeDriver(driverOptions(odd)).run();
+  assert.deepEqual([c.reason, c.unexpectedTools], ['unexpected_capability', ['invalid_name', 'invalid_name']]);
+  const otherServer = workspace({ init: { mcp_servers: [{ name: 'albera_desktop', status: 'connected' }, { name: 'github', status: 'connected' }] }, steps: [{ hang: true }] });
+  assert.equal((await createClaudeCodeDriver(driverOptions(otherServer)).run()).reason, 'unexpected_capability');
+  const onlyOther = workspace({ init: { mcp_servers: [{ name: 'github', status: 'connected' }] }, steps: [{ hang: true }] });
+  assert.equal((await createClaudeCodeDriver(driverOptions(onlyOther)).run()).reason, 'unexpected_capability');
+  const twice = workspace({ init: { mcp_servers: [{ name: 'albera_desktop', status: 'connected' }, { name: 'albera_desktop', status: 'connected' }] }, steps: [{ hang: true }] });
+  assert.equal((await createClaudeCodeDriver(driverOptions(twice)).run()).reason, 'mcp_server_failed');
+  // a subset of the six is fine
+  const subset = workspace({ init: { tools: ['mcp__albera_desktop__screenshot', 'mcp__albera_desktop__click'] }, steps: [{ result: 'DONE' }] });
+  const d = await createClaudeCodeDriver(driverOptions(subset)).run();
+  assert.deepEqual([d.outcome, d.unexpectedTools], ['claimed_done', []]);
 });
 
 test('stream: a line longer than the limit ends the run (output_too_large)', async () => {
@@ -309,6 +340,10 @@ test('preflight: each refusal is a fixed reason and nothing is started', async (
   const nested = workspace({ steps: [] });
   mkdirSync(path.join(nested.configDir, 'inner'));
   assert.equal((await reason(nested, { workDir: path.join(nested.configDir, 'inner') })).reason, 'config_dir_invalid');
+
+  const dirty = workspace({ steps: [] });
+  writeFileSync(path.join(dirty.configDir, 'settings.json'), '{}');
+  assert.equal((await reason(dirty)).reason, 'config_dir_not_empty', 'a config folder from an earlier run (or anyone) is not reused');
 
   const missingDir = workspace({ steps: [] });
   assert.equal((await reason(missingDir, { workDir: path.join(missingDir.base, 'nope') })).reason, 'work_dir_invalid');

@@ -9,10 +9,22 @@ import { createDesktopMcpServer, serveDesktopMcp } from './albera-desktop-mcp-se
 export const MCP_ENTRY_ERRORS = Object.freeze({ args: 'albera_desktop_mcp_invalid_args', broker: 'albera_desktop_mcp_broker_unavailable' });
 
 /**
- * @param {{ argv: string[], stdin: NodeJS.ReadableStream, stdout: NodeJS.WritableStream, stderr: { write: Function }, createClient?: Function, now?: () => number }} io
+ * Claude Code may hand its own environment to the MCP servers it starts (NOT VERIFIED, M11), and the OAuth token is in it. This server needs no credential, so the first thing the
+ * entry does is delete the token and every ANTHROPIC_* variable from the environment it will pass on to the helper it starts (names are matched case-insensitively, like Windows does).
+ */
+export function scrubCredentialEnvironment(env = process.env) {
+  for (const key of Object.keys(env)) {
+    const name = key.toUpperCase();
+    if (name === 'CLAUDE_CODE_OAUTH_TOKEN' || name.startsWith('ANTHROPIC_')) delete env[key];
+  }
+}
+
+/**
+ * @param {{ argv: string[], stdin: NodeJS.ReadableStream, stdout: NodeJS.WritableStream, stderr: { write: Function }, createClient?: Function, now?: () => number, env?: object }} io
  * @returns {Promise<number>} the exit code
  */
-export async function runDesktopMcpEntry({ argv, stdin, stdout, stderr, createClient = createWindowsDesktopBrokerClient, now = Date.now }) {
+export async function runDesktopMcpEntry({ argv, stdin, stdout, stderr, createClient = createWindowsDesktopBrokerClient, now = Date.now, env = process.env }) {
+  scrubCredentialEnvironment(env);
   let client;
   let server;
   try {

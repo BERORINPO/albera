@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import { buildDesktopMcpArgs, desktopMcpLimitArgs, parseDesktopMcpArgs } from '../src/runtime/albera-desktop-mcp-args.mjs';
 import { createDesktopMcpServer, DESKTOP_TOOL_NAMES, MAX_CONSECUTIVE_FAILURES, serveDesktopMcp } from '../src/runtime/albera-desktop-mcp-server.mjs';
-import { MCP_ENTRY_ERRORS, runDesktopMcpEntry } from '../src/runtime/albera-desktop-mcp.mjs';
+import { MCP_ENTRY_ERRORS, runDesktopMcpEntry, scrubCredentialEnvironment } from '../src/runtime/albera-desktop-mcp.mjs';
 import { createFakeDesktopBrokerClient } from '../src/runtime/fake-desktop-broker-client.mjs';
 import { planDesktopInput } from '../src/runtime/desktop-control.mjs';
 
@@ -282,6 +282,21 @@ test('entry: builds the client from the flags (service-name expectation, pinned 
   assert.equal(JSON.parse(out.join('')).result.isError, false);
   assert.equal(fake.inputs.length, 1);
   assert.equal(closed, true);
+});
+
+test('entry: the first thing it does is delete the OAuth token and every ANTHROPIC_* variable (any case) from its environment, before the client is built', async () => {
+  const env = { CLAUDE_CODE_OAUTH_TOKEN: 't', claude_code_oauth_token: 't2', ANTHROPIC_API_KEY: 'k', Anthropic_Auth_Token: 'a', ANTHROPIC_BASE_URL: 'u', PATH: 'p', SystemRoot: 'r', CLAUDE_CONFIG_DIR: 'c' };
+  scrubCredentialEnvironment(env);
+  assert.deepEqual(env, { PATH: 'p', SystemRoot: 'r', CLAUDE_CONFIG_DIR: 'c' });
+  const dirty = { CLAUDE_CODE_OAUTH_TOKEN: 'secret', ANTHROPIC_API_KEY: 'secret', KEEP: '1' };
+  let seenWhenBuilt = null;
+  const argv = buildDesktopMcpArgs({ entryPath: 'ignored', computerId: 'computer-1', operationId: 'op-1', maxCalls: 5, expiresAtMs: 99,
+    broker: { pipeName: 'pipe-1', serviceName: 'Svc-1', helperPath: 'C:\\h\\helper.exe', helperSha256: HASH } }).slice(1);
+  await runDesktopMcpEntry({ argv, stdin: new PassThrough(), stdout: new PassThrough(), stderr: { write() {} }, env: dirty, createClient: () => { seenWhenBuilt = { ...dirty }; throw new Error('stop here'); } });
+  assert.deepEqual(seenWhenBuilt, { KEEP: '1' });
+  const bad = { ANTHROPIC_API_KEY: 'secret' }; // even when the flags are wrong
+  await runDesktopMcpEntry({ argv: ['--nope', 'x'], stdin: new PassThrough(), stdout: new PassThrough(), stderr: { write() {} }, env: bad, createClient: () => { throw new Error('unused'); } });
+  assert.deepEqual(bad, {});
 });
 
 test('entry: a client the Broker module refuses exits 2 with the broker line', async () => {

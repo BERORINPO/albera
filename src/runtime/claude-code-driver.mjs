@@ -14,12 +14,12 @@ import { DESKTOP_TOOL_NAMES, MCP_SERVER_NAME, MCP_TOOL_PREFIX } from './albera-d
 // What the caller decides, and what this file refuses to decide:
 //   - `executable` is an absolute path given by the caller; PATH is never searched. The OAuth token is given by the caller (`oauthToken`) and reaches the child's environment only, never
 //     argv, a file, a result or an event; it is replaced by [redacted] in everything the model said.
-//   - The child gets an environment built from an allowlist (buildClaudeEnvironment), not this process's. HOME, USERPROFILE and CLAUDE_CONFIG_DIR are the caller's empty `configDir`, so the
+//   - The child gets an environment built from an allowlist (buildClaudeEnvironment), not this process's. HOME, USERPROFILE and CLAUDE_CONFIG_DIR are the caller's `configDir`, which must be new and EMPTY for every run (refused otherwise: `config_dir_not_empty`), so the
 //     owner's ~/.claude (hooks, MCP servers, CLAUDE.md, settings) is not read; `--setting-sources ""` and `--strict-mcp-config` say the same on the command line. Its cwd is the caller's
 //     empty `workDir`, which must not have a CLAUDE.md or .claude/CLAUDE.md in it or in any parent directory.
 //   - Tools: `--tools ""` removes the built-in ones, a deny list names the usual ones again, and `--allowedTools` names exactly the six albera_desktop tools. No --permission-mode is passed
 //     (measured 2026-11-03, Claude Code 2.1.310: an allowed MCP tool runs without a prompt in the default mode; anything not allowed is denied in print mode). A tool_use for anything else
-//     ends the run (`unexpected_tool_use`).
+//     ends the run (`unexpected_tool_use`). So does a stream `init` whose tools are not a subset of the six or whose MCP servers are not just ours (`unexpected_capability`).
 //   - Limits: `maxMs` and `maxToolCalls` end the run from here; the MCP server enforces the same two numbers itself. A person ends it with `stop()`. Ending a run stops the process
 //     tree of the PID this file started (taskkill /PID <pid> /T /F on Windows via windows-tree-termination.mjs, the process group on POSIX), never by image name, and never after the child has
 //     exited (a PID may be reused). The existing Job-object guardian (supervisor.mjs) is NOT used: it discards the child's stdout, and this driver reads it. Residual risk: if this process dies
@@ -37,7 +37,7 @@ export const DRIVER_LIMITS = Object.freeze({ minMs: 100, maxMs: 3_600_000, maxTo
 const MAX_CLAIM_LENGTH = 200;
 const INSTRUCTION_FILES = Object.freeze(['CLAUDE.md', 'CLAUDE.local.md', path.join('.claude', 'CLAUDE.md')]);
 const FATAL_MCP_STATUS = new Set(['failed', 'needs-auth', 'disabled']);
-const PREFLIGHT_REASONS = new Set(['executable_unavailable', 'work_dir_invalid', 'work_dir_not_empty', 'work_dir_inherits_instructions', 'config_dir_invalid']);
+const PREFLIGHT_REASONS = new Set(['executable_unavailable', 'work_dir_invalid', 'work_dir_not_empty', 'work_dir_inherits_instructions', 'config_dir_invalid', 'config_dir_not_empty']);
 const SAFE_TOKEN = /^[A-Za-z0-9_:.-]{1,80}$/u;
 const MODEL_RE = /^[A-Za-z0-9._-]{1,64}$/u;
 const optionsError = () => new TypeError('invalid_claude_code_driver_options');
@@ -115,6 +115,7 @@ async function preflight(c) {
   if (!work) throw new Error('work_dir_invalid');
   if (!config || isInside(config, path.join(io.homedir(), '.claude')) || isInside(work, config) || isInside(config, work)) throw new Error('config_dir_invalid');
   if ((await io.readdir(c.workDir)).length > 0) throw new Error('work_dir_not_empty');
+  if ((await io.readdir(c.configDir)).length > 0) throw new Error('config_dir_not_empty'); // new and empty for every run: nothing of an earlier run (or of anyone) is there to be read
   for (let dir = work; ; dir = path.dirname(dir)) {
     for (const name of INSTRUCTION_FILES) if (await io.exists(path.join(dir, name))) throw new Error('work_dir_inherits_instructions');
     if (path.dirname(dir) === dir) break;
@@ -139,6 +140,7 @@ export function createClaudeCodeDriver(options) {
     started = true;
     const startedAt = c.now();
     const state = { stop: stopBeforeRun, result: null, toolIds: new Set(), byTool: {}, unexpectedTools: [], exit: null, treeStopConfirmed: null };
+    requestStop = (token) => { if (state.stop === null) state.stop = { outcome: 'stopped', reason: token }; }; // a stop during preflight is read again just before the spawn
     const emit = (event) => { try { c.onEvent(Object.freeze(event)); } catch { /* a listener must not break the run */ } };
     const finish = (outcome, reason, claim = '') => {
       const toolCalls = state.toolIds.size;
@@ -161,6 +163,7 @@ export function createClaudeCodeDriver(options) {
     } catch (error) {
       return finish('error', PREFLIGHT_REASONS.has(error?.message) ? error.message : 'preflight_failed');
     }
+    if (state.stop !== null) return finish(state.stop.outcome, state.stop.reason); // stop() came while the checks ran (hashing the executable can take seconds): nothing is started
     return new Promise((resolve) => {
       let child;
       let settled = false;
@@ -187,7 +190,7 @@ export function createClaudeCodeDriver(options) {
         if (state.stop === null && state.result === null) state.stop = { outcome, reason };
         killTree();
       };
-      requestStop = (reason) => halt('stopped', SAFE_TOKEN.test(reason) ? reason : 'stopped');
+      requestStop = (token) => halt('stopped', token);
       try {
         child = c.spawnImpl(c.executable, spawnArgs.args, { cwd: c.workDir, env: spawnArgs.env, shell: false, windowsHide: true, detached: c.platform !== 'win32', stdio: ['pipe', 'pipe', 'ignore'] });
       } catch { state.stop = { outcome: 'error', reason: 'spawn_failed' }; settle(); return; }
@@ -199,10 +202,17 @@ export function createClaudeCodeDriver(options) {
 
       const onMessage = (message) => {
         if (message?.type === 'system' && message.subtype === 'init') {
-          const bad = Array.isArray(message.mcp_servers) ? message.mcp_servers.find((s) => s?.name === MCP_SERVER_NAME ? FATAL_MCP_STATUS.has(s.status) : false) : undefined;
-          const missing = Array.isArray(message.mcp_servers) && !message.mcp_servers.some((s) => s?.name === MCP_SERVER_NAME);
-          if (bad || missing) halt('error', 'mcp_server_failed');
-          if (Array.isArray(message.tools)) state.unexpectedTools = message.tools.filter((t) => typeof t === 'string' && !CLAUDE_ALLOWED_TOOLS.includes(t) && SAFE_TOKEN.test(t)).slice(0, 8);
+          // The start-up self-check: the tools must be a subset of the six and the only MCP server ours; anything else is a capability nobody approved, so the run ends (names are kept to say which).
+          if (Array.isArray(message.tools)) {
+            const extra = message.tools.filter((t) => !CLAUDE_ALLOWED_TOOLS.includes(t));
+            state.unexpectedTools = extra.map((t) => (typeof t === 'string' && SAFE_TOKEN.test(t) ? t : 'invalid_name')).slice(0, 8);
+            if (extra.length > 0) halt('error', 'unexpected_capability');
+          }
+          if (Array.isArray(message.mcp_servers)) {
+            const mine = message.mcp_servers.filter((s) => s?.name === MCP_SERVER_NAME);
+            if (message.mcp_servers.length !== mine.length) halt('error', 'unexpected_capability');
+            else if (mine.length !== 1 || FATAL_MCP_STATUS.has(mine[0].status)) halt('error', 'mcp_server_failed');
+          }
         } else if (message?.type === 'assistant' && Array.isArray(message.message?.content)) {
           for (const block of message.message.content) {
             if (block?.type !== 'tool_use' || typeof block.id !== 'string' || state.toolIds.has(block.id)) continue;
