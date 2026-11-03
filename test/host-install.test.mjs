@@ -491,6 +491,47 @@ test('the Control Plane settings the script writes are accepted by the Control P
   assert.equal(/secret|password|token|key/iu.test(r.settingsJson.replace(/"keyFile"/gu, '')), false);
 });
 
+test('the Control Plane settings of an install WITHOUT the grant are byte for byte what they were before the desktop block existed (no desktop key, even when the helper hash is empty)', needsWindows, () => {
+  const { r } = lib();
+  const before = {
+    version: 1, projectId: 'albera-host',
+    broker: { pipeName: 'ALBERA_HostBroker', expect: { serviceName: 'AlberaHostBroker' } },
+    authority: { pipeRoot: 'ALBERA\\ApprovalAuthority', expect: { serviceName: 'AlberaApprovalAuthority' } },
+    journal: 'C:\\ProgramData\\Albera\\control-plane\\operations.sqlite',
+    computers: { 'albera-clone-01': 'clone-01' },
+    attestation: null,
+  };
+  assert.equal(r.settingsJson, JSON.stringify(before));
+  assert.deepEqual({ ...r.desktopPlainSame }, { noArgument: true, nullSha: true, emptySha: true, hasNoDesktopKey: true });
+});
+
+test('the Control Plane settings of an install WITH the grant carry the desktop block the gated room requires: the installed helper path and the helper SHA-256, between computers and attestation, nothing else changed', needsWindows, () => {
+  const { r } = lib();
+  const withDesktop = JSON.parse(r.desktopSettingsJson);
+  assert.deepEqual(r.desktopKeys, ['version', 'projectId', 'broker', 'authority', 'journal', 'computers', 'desktop', 'attestation']);
+  assert.deepEqual(withDesktop.desktop, { helperPath: r.layout.PipeClientExe, helperSha256: r.desktopHelperSha });
+  assert.equal(r.layout.PipeClientExe, 'C:\\Program Files\\Albera\\bin\\pipe-client\\albera-windows-broker-pipe-client.exe', 'the path the room example and the doc name');
+  const { desktop, ...rest } = withDesktop;
+  assert.deepEqual(rest, JSON.parse(r.settingsJson), 'every other key and value is the plain settings');
+  assert.equal(withDesktop.attestation, null);
+  assert.equal(/secret|password|token/iu.test(r.desktopSettingsJson), false, 'a path and a public hash only');
+  for (const [name, message] of Object.entries(r.desktopBadSha)) assert.equal(message, 'helper_sha256_invalid', `${name}: only 64 lowercase hex characters`);
+  assert.deepEqual({ ...r.desktopCheck }, {
+    same: true, plainFile: false, otherSha: false, upperSha: false, otherPath: false, extraKey: false, missingKey: false, desktopIsString: false, shaIsNumber: false, notJson: false, empty: false,
+  });
+});
+
+test('the desktop block the installer writes is accepted by the Control Plane\'s own parser once that parser reads the block (the gated room desktop path; skipped until it does)', needsWindows, (t) => {
+  const { r } = lib();
+  const wiring = readFileSync(path.join(root, 'src', 'runtime', 'room-approval-wiring.mjs'), 'utf8');
+  if (!/const DESKTOP_KEYS = \['helperPath', 'helperSha256'\]/u.test(wiring)) { t.skip('room-approval-wiring.mjs does not read a desktop block yet'); return; }
+  const settings = parseApprovalSettings(r.desktopSettingsJson);
+  assert.deepEqual({ ...settings.desktop }, { helperPath: r.layout.PipeClientExe, helperSha256: r.desktopHelperSha });
+  assert.equal(settings.attestation, null);
+  assert.deepEqual(settings.broker.expect, { serviceName: 'AlberaHostBroker' }, 'a service name only: the room refuses a PID or an image hash');
+  assert.deepEqual([...settings.computers.keys()], ['albera-clone-01']);
+});
+
 test('ACL plan: inheritance is removed everywhere, each service SID can write only its own folder, the Control Plane account only its own, nobody else gets write', needsWindows, () => {
   const { r } = lib();
   const sids = { broker: r.sidBroker, authority: r.sidAuthority };
@@ -947,8 +988,9 @@ test('Hyper-V grant, step list and plan (fakes for the machine): two more steps 
   assert.match(r.defaultServicesTitle, /restricted SID, SeChangeNotifyPrivilege only, start=demand/u);
   assert.equal(r.defaultConfigsDetail, 5);
   assert.match(r.grantServicesTitle, /Broker's SID type is UNRESTRICTED instead \(Hyper-V refuses a restricted token\), the Authority stays restricted/u);
-  assert.equal(r.grantConfigsDetail.length, 6);
+  assert.equal(r.grantConfigsDetail.length, 7);
   assert.match(r.grantConfigsDetail[5], /computers: clone-01 -> <GUID of the VM albera-clone-01>/u);
+  assert.match(r.grantConfigsDetail[6], /^Control Plane settings also get desktop: \{ helperPath .*\\bin\\pipe-client\\albera-windows-broker-pipe-client\.exe, helperSha256 <SHA-256 of that installed exe> \}, which the gated room requires$/u);
   assert.match(r.grantTitles[1], /Add ONLY the Broker's service SID \(S-1-5-80(-\d+){5}\) to BUILTIN\\Hyper-V Administrators \(S-1-5-32-578\)/u);
   assert.doesNotMatch(r.grantTitles.join('\n'), /albera-cp/u);
   // what the owner reads in a plan
@@ -1049,6 +1091,53 @@ test('Hyper-V grant, the group is read every time and an undo never guesses (fak
   assert.match(r.afterThrowGrantError, /control_plane_is_a_member/u);
   assert.equal(r.afterThrowStep, 'todo', 'a grant that threw after adding the Broker is not "done" on the next run');
   assert.equal(r.afterThrowFixedStep, 'done', 'done once albera-cp is out of the group');
+  // the status also compares the Control Plane settings' desktop block with the helper hash the install recorded, but only for an install that has the grant record
+  const desktopLine = (state, text) => [`${state} Control Plane settings desktop: ${text}`];
+  assert.deepEqual(r.statusDesktop.asRecorded, desktopLine('ok', 'the installed pipe client helper and its recorded SHA-256, as written by install'));
+  for (const name of ['otherHash', 'noBlock', 'noHelperRecord']) assert.deepEqual(r.statusDesktop[name], desktopLine('FAIL', 'not the helper path and SHA-256 the install recorded'), name);
+  assert.deepEqual(r.statusDesktop.installWithoutGrant, [], 'an install without the grant has no such line: its status is unchanged');
+});
+
+test('Hyper-V grant, Control Plane settings (fakes for the machine): install with the option writes the desktop block from the installed helper and nothing else changes; without it the settings are the plain ones; a helper that is not the recorded one writes nothing', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
+  const r = harness(t, 'desktop');
+  // the helper hash is the exe's own, recorded when the build was copied; Node hashes the same bytes the fixture wrote
+  const exeSha = createHash('sha256').update('exe bytes of albera-windows-broker-pipe-client.exe').digest('hex');
+  assert.equal(r.helperRecorded, exeSha);
+  assert.equal(r.helperLive, exeSha);
+  assert.match(r.helperPath, /\\Albera\\bin\\pipe-client\\albera-windows-broker-pipe-client\.exe$/u);
+  // 1. without the option
+  assert.equal(r.plainError, null);
+  assert.deepEqual(r.plainWritten, ['AlberaHostBroker.service.json', 'AlberaApprovalAuthority.service.json', 'albera.approval.json']);
+  const plain = JSON.parse(r.plainSettings);
+  assert.deepEqual(Object.keys(plain), ['version', 'projectId', 'broker', 'authority', 'journal', 'computers', 'attestation'], 'no desktop key without the option');
+  assert.deepEqual(plain.computers, { 'albera-clone-01': 'clone-01' });
+  assert.equal(r.plainBrokerHasComputers, false);
+  assert.equal(r.plainTest, 'done', 'unchanged: existing files are enough without the option');
+  // 2. with the option, over plain files
+  assert.equal(r.grantTestOverPlain, 'todo', 'files written before the option have no desktop block yet');
+  assert.equal(r.grantError, null);
+  const grant = JSON.parse(r.grantSettings);
+  assert.deepEqual(Object.keys(grant), ['version', 'projectId', 'broker', 'authority', 'journal', 'computers', 'desktop', 'attestation']);
+  assert.deepEqual(grant.desktop, { helperPath: r.helperPath, helperSha256: exeSha });
+  const { desktop, ...rest } = grant;
+  assert.deepEqual(rest, plain, 'everything but the desktop block is the plain settings');
+  assert.deepEqual(r.grantBrokerComputers, [{ computerId: 'clone-01', vmId: '8f0d5c1e-7a3b-4c2d-9e6f-0a1b2c3d4e5f' }], 'the Broker config still gets the VM GUID, as before');
+  assert.equal(r.grantTestAfter, 'done');
+  // 3. a file whose desktop block is not the installed helper's is rewritten, never trusted
+  assert.equal(r.testOtherHash, 'todo');
+  assert.equal(r.testOtherKey, 'todo');
+  assert.equal(r.testRestored, 'done');
+  // 4. the helper on disk is not the recorded one: refused, nothing written, the existing files stay
+  assert.equal(r.replacedTest, 'todo');
+  assert.match(r.replacedError, /the installed pipe client helper differs from the install record/u);
+  assert.equal(r.replacedWritten, 0);
+  assert.equal(r.replacedSettingsUntouched, true);
+  // 5. no record, or no file
+  assert.match(r.noRecordError, /the install record has no pipe client helper hash/u);
+  assert.equal(r.noRecordWritten, 0);
+  assert.match(r.noFileError, /the pipe client helper is not installed at /u);
+  assert.equal(r.noFileWritten, 0);
+  assert.equal(r.noFileTest, 'todo');
 });
 
 test('Hyper-V grant, the services step: the Broker SID type has to match this run\'s option in both directions; an unrestricted Broker without the option is put back to restricted and read back', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, (t) => {
@@ -1107,6 +1196,11 @@ test('Hyper-V grant, docs: the option, the owner decision, the undo and what is 
   assert.match(section, /Without the option nothing changes/u);
   assert.match(section, /restricted token/u);
   assert.match(section, /never added|never gets/u);
+  // the Control Plane settings are written by install, not edited by hand
+  assert.match(section, /five extra things/u);
+  assert.match(section, /\*\*Writes the gated room's `desktop` block into the Control Plane settings\*\*.*so nobody edits that file by hand/u);
+  for (const needle of ['helperPath', 'helperSha256', 'albera-windows-broker-pipe-client.exe', 'between `computers` and `attestation`', 'no `desktop` key']) assert.ok(section.includes(needle), `the section names ${needle}`);
+  assert.ok(!/edit it as an administrator/u.test(doc), 'no step tells the owner to edit the settings by hand');
   const adr = readFileSync(path.join(root, 'docs', 'architecture', 'adr-002-host-broker-trust-contract.md'), 'utf8');
   assert.match(adr, /Owner decision \(2026-11-03\): option A, the Broker as a whole runs with an unrestricted service SID/u);
 });
@@ -1119,6 +1213,12 @@ test('Hyper-V grant, lab hook: a second pass installs WITH the option and checks
   assert.match(hook, /'BLOCKED'/u);
   assert.match(hook, /VmId = \$labVmId/u, 'the fixed GUID goes in through the lab-only -VmId');
   for (const needle of ['UNRESTRICTED', 'SeChangeNotifyPrivilege', 'computers', 'albera-cp', 'NT SERVICE\\AlberaHostBroker', 'net.exe', 'groupBefore', 'groupAfter']) assert.ok(hook.includes(needle), `the hook checks ${needle}`);
+  // the Control Plane settings: the grant pass checks the desktop block against a hash it computes itself; the default pass checks there is none
+  assert.match(hook, /Add-GrantCheck \$checks 'control_plane_settings_desktop_block'/u);
+  assert.match(hook, /\$helperHash = \(Get-FileHash -LiteralPath \$helperExe -Algorithm SHA256\)\.Hash\.ToLowerInvariant\(\)/u, 'the hash is taken by Get-FileHash, not read back from the installer');
+  assert.match(hook, /'version,projectId,broker,authority,journal,computers,desktop,attestation'/u);
+  assert.match(hook, /\$evidence\.defaultSettingsHasNoDesktop/u);
+  assert.match(hook, /-and \$evidence\.defaultSettingsHasNoDesktop -and/u, 'a default install that wrote a desktop block fails the lab');
   assert.match(hook, /\$evidence\.grant = /u);
   assert.match(hook, /\(\$evidence\.grant\.status -ne 'FAIL'\)/u, 'a FAIL in the grant pass fails the lab; BLOCKED is reported, never counted as passed');
 });

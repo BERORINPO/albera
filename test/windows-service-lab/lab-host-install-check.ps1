@@ -7,7 +7,7 @@
 # On the owner's PC that value must be typed from the CI log of the reviewed commit (workflow host-build-hashes); this hook only exercises the code path (copy, hash the copies, compare, record).
 # A second pass then repeats install / status / reinstall / uninstall WITH -GrantHyperVToBroker (ADR-002 Amendment 2026-11-03) and checks, independently of the installer's own read-back:
 # the Broker's service SID (and nobody else: not albera-cp, not the Authority) is in Hyper-V Administrators (S-1-5-32-578) while installed and gone after uninstall with the group otherwise unchanged,
-# the Broker is sidtype UNRESTRICTED and the Authority RESTRICTED, both keep SeChangeNotifyPrivilege only, the Broker config holds the one `computers` entry, and the install record names the grant.
+# the Broker is sidtype UNRESTRICTED and the Authority RESTRICTED, both keep SeChangeNotifyPrivilege only, the Broker config holds the one `computers` entry, the Control Plane settings hold the `desktop` block (helper path + SHA-256, written by install; the default pass must leave it out), and the install record names the grant.
 # The VM's GUID comes in through the lab-only -VmId (a fixed throw-away GUID: this guest has no VM of that name, so the name-to-GUID lookup is NOT exercised here and the evidence says so).
 # The pass is BLOCKED, not passed, when the guest has no Hyper-V Administrators group or when -KeepInstalled left the default install in place; a FAIL in it fails the whole check.
 # Refuses to run unless ALBERA_LAB_VM=1 and the two Albera folders do not exist yet. NOT executed yet (the lab VM run is the lead's): expect first-run fixes.
@@ -59,6 +59,10 @@ $install = Invoke-Host (@{ Mode = 'install'; ExpectedTreeHash = $treeHash; Start
 $evidence.install = [ordered]@{ exit = $install.Exit; output = $install.Output }
 $status = Invoke-Host @{ Mode = 'status' }
 $evidence.status = [ordered]@{ exit = $status.Exit; output = $status.Output }
+# an install WITHOUT the grant leaves the Control Plane settings as they always were: no desktop block
+$evidence.defaultSettingsHasNoDesktop = $false
+$defaultSettingsFile = Join-Path $programData 'control-plane\albera.approval.json'
+if (Test-Path -LiteralPath $defaultSettingsFile) { $evidence.defaultSettingsHasNoDesktop = ($null -eq (Get-Content -Raw -LiteralPath $defaultSettingsFile | ConvertFrom-Json).PSObject.Properties['desktop']) }
 $manifest = Join-Path $programData 'install-manifest.json'
 $hashBefore = if (Test-Path -LiteralPath $manifest) { (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash } else { '' }
 $again = Invoke-Host (@{ Mode = 'install'; ExpectedTreeHash = $treeHash; ControlPlanePassword = $password } + $approverParams)
@@ -117,6 +121,13 @@ else {
     Add-GrantCheck $checks 'authority_config_has_no_computers' ($null -eq $authorityConfig.PSObject.Properties['computers']) 'the Authority config is unchanged'
     $record = (Get-Content -Raw -LiteralPath (Join-Path $programData 'install-manifest.json') | ConvertFrom-Json).created.hyperVGrant
     Add-GrantCheck $checks 'install_record_names_the_grant' ($null -ne $record -and $record.group -ceq $hvAdminsSid -and $record.sid -ceq $brokerSid -and $record.vmId -ceq $labVmId) ((ConvertTo-Json -InputObject $record -Compress))
+    # the Control Plane settings: the desktop block the gated room requires, written by install (no hand edit), with the helper path and the SHA-256 of the exe as it sits in Program Files (hashed here with Get-FileHash, not by the installer)
+    $cpSettings = Get-Content -Raw -LiteralPath (Join-Path $programData 'control-plane\albera.approval.json') | ConvertFrom-Json
+    $helperExe = Join-Path $programFiles 'bin\pipe-client\albera-windows-broker-pipe-client.exe'
+    $helperHash = (Get-FileHash -LiteralPath $helperExe -Algorithm SHA256).Hash.ToLowerInvariant()
+    $cpKeys = @($cpSettings.PSObject.Properties | ForEach-Object { $_.Name }) -join ','
+    $desktopKeys = if ($null -ne $cpSettings.PSObject.Properties['desktop']) { @($cpSettings.desktop.PSObject.Properties | ForEach-Object { $_.Name }) -join ',' } else { '' }
+    Add-GrantCheck $checks 'control_plane_settings_desktop_block' (($cpKeys -ceq 'version,projectId,broker,authority,journal,computers,desktop,attestation') -and ($desktopKeys -ceq 'helperPath,helperSha256') -and ($cpSettings.desktop.helperPath -ceq $helperExe) -and ($cpSettings.desktop.helperSha256 -ceq $helperHash) -and ($null -eq $cpSettings.attestation) -and ($cpSettings.computers.'albera-clone-01' -ceq 'clone-01')) ("keys " + $cpKeys + "; desktop " + (ConvertTo-Json -InputObject $cpSettings.desktop -Compress))
     $gStatus = Invoke-Host @{ Mode = 'status' }
     Add-GrantCheck $checks 'status_ok_and_names_the_group' ($gStatus.Exit -eq 0 -and $gStatus.Output -match 'Hyper-V Administrators: the Broker service SID is a member') ("exit " + $gStatus.Exit)
     $grant.status_output = $gStatus.Output
@@ -141,7 +152,7 @@ else {
   $grant.status = if (@($checks | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { 'FAIL' } else { 'PASS' }
 }
 $evidence.grant = $grant
-$evidence.pass = ($evidence.grant.status -ne 'FAIL') -and ($install.Exit -eq 0) -and ($status.Exit -eq 0) -and ($again.Exit -eq 0) -and $evidence.reinstall.manifestUnchanged -and $evidence.reinstall.saysAlreadyComplete -and
+$evidence.pass = ($evidence.grant.status -ne 'FAIL') -and $evidence.defaultSettingsHasNoDesktop -and ($install.Exit -eq 0) -and ($status.Exit -eq 0) -and ($again.Exit -eq 0) -and $evidence.reinstall.manifestUnchanged -and $evidence.reinstall.saysAlreadyComplete -and
   ($KeepInstalled -or (($evidence.uninstall.exit -eq 0) -and -not $evidence.remnants.user -and -not $evidence.remnants.key -and -not $evidence.remnants.programData -and -not $evidence.remnants.programFiles -and @($evidence.remnants.services).Count -eq 0 -and $evidence.finalStatus.saysNotInstalled))
 $evidence | ConvertTo-Json -Depth 5
 if (-not $evidence.pass) { exit 1 }
