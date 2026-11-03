@@ -8,7 +8,10 @@ param(
   [Parameter(Mandatory = $true)][string]$Work
 )
 $ErrorActionPreference = 'Stop'
-$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+# -Work may arrive as an 8.3 short path (C:\Users\RUNNER~1\... on the CI runner). Windows PowerShell 5.1 / .NET Framework expands short names in GetFullPath, and the installer's own checks
+# (Test-PlainAbsolutePath: the path must equal its GetFullPath) refuse a path that changes, so a layout under a short path would be refused. Real installs sit under C:\Program Files and C:\ProgramData.
+$Work = [System.IO.Path]::GetFullPath($Work)
+$repo =(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 . (Join-Path $repo 'scripts\host\albera-host-lib.ps1')
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'scripts\host\albera-host.ps1'), [ref]$tokens, [ref]$errors)
@@ -534,7 +537,8 @@ switch ($Case) {
     $script:Written = New-Object 'System.Collections.Generic.List[string]'
     function Write-OneConfig([string]$Path, [string]$Text, [string[]]$Writers) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null; [System.IO.File]::WriteAllText($Path, $Text); $script:Written.Add($Path) }
     function Invoke-WriteConfigs { $script:Written.Clear(); Try-Run { Write-HostConfigs } }
-    function Read-Config([string]$Path) { [System.IO.File]::ReadAllText($Path) }
+    # '' for a file that was not written, so a refused write shows up as the case's error text (and a failed assertion), not as an exception here
+    function Read-Config([string]$Path) { if (Test-Path -LiteralPath $Path) { [System.IO.File]::ReadAllText($Path) } else { '' } }
     function Get-ConfigsStep { Get-InstallSteps | Where-Object { $_.Id -eq 'configs' } }
 
     New-Item -ItemType Directory -Force -Path $L.DataRoot | Out-Null
