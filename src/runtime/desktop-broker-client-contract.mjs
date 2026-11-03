@@ -9,7 +9,7 @@ import { MAX_SCREEN_PNG_BYTES } from './hyperv-desktop-driver.mjs';
  *
  * Interface (a drop-in for the prototype's `captureVmScreen` / `sendVmInput`, hyperv-desktop-broker-prototype.mjs):
  *   captureVmScreen({ vmId, width, height })  -> Promise<Buffer>   the PNG; `vmId` is the Broker's `computerId`
- *   sendVmInput({ vmId, action, lease })      -> Promise<{ ok: true }>   `lease` is `{ desktopSessionId, generation }`: the claim's operationId and the Broker's lease generation
+ *   sendVmInput({ vmId, action, lease })      -> Promise<{ ok: true }>   `lease` is `{ desktopSessionId, generation? }`: the claim's operationId and, optionally, the Broker's lease generation
  *   close()                                   -> Promise<void>     ends every session
  * A failure is an Error with data properties `code` (one of the codes hyperv-desktop-driver.mjs knows), `outcome` ('not_applied' | 'unknown') and, when a session was involved, `brokerCode`.
  */
@@ -49,13 +49,16 @@ export function checkCaptureRequest({ vmId, width, height } = {}) {
 
 /**
  * `{ computerId, operationId, leaseGeneration, steps }` for an input: the action planned into the Broker's primitive steps (the same plan the prototype sends), and the lease the
- * act session opens with. Anything wrong is a 'not_applied' error: `desktop_input_rejected` for the action or the lease (a missing lease is a wiring mistake, not a Broker answer), `desktop_vm_not_found` for the id.
+ * act session opens with. `leaseGeneration` is an integer >= 1, or null when the lease names none (`generation` absent): the Broker then joins the lease that is current for the operation,
+ * which is the only way a Control Plane can ask, since it never learns the Broker's generation. Anything wrong is a 'not_applied' error: `desktop_input_rejected` for the action or the lease
+ * (a missing lease is a wiring mistake, not a Broker answer), `desktop_vm_not_found` for the id.
  */
 export function checkInputRequest({ vmId, action, lease } = {}) {
   const computerId = checkedComputerId(vmId);
   const operationId = lease?.desktopSessionId;
-  const leaseGeneration = lease?.generation;
-  if (!isId(operationId) || !Number.isSafeInteger(leaseGeneration) || leaseGeneration < 1) throw desktopClientError('desktop_input_rejected', 'not_applied');
+  const named = lease?.generation; // undefined = the lease names no generation (null or anything else that is not an integer >= 1 is a mistake, not "none")
+  if (!isId(operationId) || (named !== undefined && (!Number.isSafeInteger(named) || named < 1))) throw desktopClientError('desktop_input_rejected', 'not_applied');
+  const leaseGeneration = named ?? null;
   let steps;
   try { steps = planDesktopInput(action, { width: MAX_SCREEN_DIMENSION, height: MAX_SCREEN_DIMENSION }); } catch { throw desktopClientError('desktop_input_rejected', 'not_applied'); }
   if (new TextEncoder().encode(JSON.stringify({ input: { steps } })).length > DESKTOP_BROKER_LIMITS.maxRequestBytes) throw desktopClientError('desktop_input_rejected', 'not_applied');

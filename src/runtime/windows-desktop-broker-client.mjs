@@ -14,7 +14,9 @@ import { DESKTOP_BROKER_LIMITS, checkCaptureRequest, checkInputRequest, desktopC
 // The helper opens the pipe with SQOS identification and, on the connected handle and before it writes the first byte, requires the pipe's owner, the server process id (the SCM's for a service),
 // session 0 and the image hash that `expect` names (the same checks, the same code, as for the claim pipe). Only then does it send `open`; this client trusts nothing else about the pipe.
 //
-// Sessions: `captureVmScreen` uses a `view` session per computer; `sendVmInput` an `act` session per (computer, operationId, leaseGeneration), which a newer lease for that computer replaces. One request
+// Sessions: `captureVmScreen` uses a `view` session per computer; `sendVmInput` an `act` session per (computer, operationId, leaseGeneration), which a NEWER lease for that computer replaces (a call
+// with an older lease never closes a newer lease's session). The lease's generation may be left out (the Control Plane cannot know it): the open then joins the lease that is current for that
+// operationId, and the Broker's accepted reply names the generation, which is what "newer" is measured with. One request
 // at a time per session; any failure ends the session (a refusal is final: the Broker closes after `denied`), and the next call opens a new one, which is verified again. An unused session is closed
 // after `idleCloseMs` (before the Broker's own 60 s idle close). The Broker's reasons never reach this client: a refusal is the fixed `denied` (brokerCode), and it is also the answer for a VM that
 // does not exist, a lease that is not current and a capture that failed, so the caller cannot tell those apart (the Broker's own log can).
@@ -99,6 +101,8 @@ class DesktopSession {
   #busy = true; // the open is in flight until markReady
   #exited;
   #options;
+  /** The generation of the lease an act session joined (the Broker's accepted reply); null for a view session. */
+  leaseGeneration = null;
 
   constructor(child, options) {
     this.#child = child;
@@ -227,32 +231,37 @@ class DesktopSession {
   }
 }
 
-/** The helper must match the SHA-256 recorded next to it at build time. Same scheme as the claim client. */
-async function verifyHelper(helperPath) {
+/** The helper must match the SHA-256 recorded next to it at build time and, when the caller pinned one (`helperSha256`), that one too. Same scheme as the claim client. */
+async function verifyHelper(helperPath, pinnedSha256) {
   try {
     const manifest = JSON.parse(await readFile(`${helperPath}.manifest.json`, 'utf8'));
     if (typeof manifest?.sha256 !== 'string' || !SHA256_PATTERN.test(manifest.sha256)) throw new Error('invalid_manifest');
+    if (pinnedSha256 !== null && manifest.sha256 !== pinnedSha256) throw new Error('helper_not_the_pinned_build');
     if ((await captureExecutableIdentity(helperPath)).sha256 !== manifest.sha256) throw new Error('helper_digest_mismatch');
   } catch { throw new SessionFailure('helper_unavailable', true); }
 }
 
 function readOptions(options) {
-  const { pipeName, expect, helperPath = DEFAULT_HELPER_PATH, spawnImpl = spawn, openTimeoutMs = DESKTOP_CLIENT_DEFAULTS.openTimeoutMs, captureTimeoutMs = DESKTOP_CLIENT_DEFAULTS.captureTimeoutMs,
-    inputTimeoutMs = DESKTOP_CLIENT_DEFAULTS.inputTimeoutMs, idleCloseMs = DESKTOP_CLIENT_DEFAULTS.idleCloseMs } = options ?? {};
+  const { pipeName, expect, helperPath = DEFAULT_HELPER_PATH, helperSha256 = null, spawnImpl = spawn, openTimeoutMs = DESKTOP_CLIENT_DEFAULTS.openTimeoutMs,
+    captureTimeoutMs = DESKTOP_CLIENT_DEFAULTS.captureTimeoutMs, inputTimeoutMs = DESKTOP_CLIENT_DEFAULTS.inputTimeoutMs, idleCloseMs = DESKTOP_CLIENT_DEFAULTS.idleCloseMs } = options ?? {};
   const inRange = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
   try {
     const valid = typeof pipeName === 'string' && PIPE_NAME_PATTERN.test(pipeName) && typeof helperPath === 'string' && typeof spawnImpl === 'function'
+      && (helperSha256 === null || (typeof helperSha256 === 'string' && SHA256_PATTERN.test(helperSha256)))
       && inRange(openTimeoutMs, BROKER_CLIENT_LIMITS.minTimeoutMs, BROKER_CLIENT_LIMITS.maxTimeoutMs)
       && [captureTimeoutMs, inputTimeoutMs].every((ms) => inRange(ms, REQUEST_TIMEOUT_BOUNDS.min, REQUEST_TIMEOUT_BOUNDS.max)) && inRange(idleCloseMs, 1000, MAX_IDLE_CLOSE_MS);
     if (!valid) throw new TypeError('invalid');
-    return Object.freeze({ pipeName: `${pipeName}_desktop`, expect: validateServerExpectation(expect), helperPath, spawnImpl, openTimeoutMs, captureTimeoutMs, inputTimeoutMs, idleCloseMs });
+    return Object.freeze({ pipeName: `${pipeName}_desktop`, expect: validateServerExpectation(expect), helperPath, helperSha256, spawnImpl, openTimeoutMs, captureTimeoutMs, inputTimeoutMs, idleCloseMs });
   } catch { throw new TypeError('invalid_desktop_broker_client_options'); }
 }
 
-/** Verify the helper, start it in desktop mode, send the start frame and wait for the Broker's accepted `open`. Resolves with the session or rejects with a SessionFailure (never applied: an open sends no input). */
+/**
+ * Verify the helper, start it in desktop mode, send the start frame and wait for the Broker's accepted `open`. Resolves with the session or rejects with a SessionFailure (never applied: an open sends
+ * no input). An act open is accepted only with `{ ok: true, leaseGeneration }` (the generation the Broker joined, equal to the one named if any); a view open only with `{ ok: true }`.
+ */
 async function openSession(config, open, requestTimeoutMs, onClose) {
   if (config.spawnImpl === spawn && process.platform !== 'win32') throw new SessionFailure('unsupported_platform', true);
-  await verifyHelper(config.helperPath);
+  await verifyHelper(config.helperPath, config.helperSha256);
   let child;
   try { child = config.spawnImpl(config.helperPath, ['desktop'], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] }); } catch { throw new SessionFailure('helper_unavailable', true); }
   const session = new DesktopSession(child, { idleCloseMs: config.idleCloseMs, onClose });
@@ -260,7 +269,12 @@ async function openSession(config, open, requestTimeoutMs, onClose) {
     const answer = session.readOk(DESKTOP_BROKER_LIMITS.maxReplyHeaderBytes, config.openTimeoutMs);
     session.write({ pipeName: config.pipeName, timeoutMs: config.openTimeoutMs, requestTimeoutMs, expect: config.expect, open });
     const accepted = await answer;
-    if (keysOf(accepted) !== 'ok') throw new SessionFailure('invalid_response', false);
+    const joined = accepted.leaseGeneration;
+    const valid = open.mode === 'act'
+      ? keysOf(accepted) === 'leaseGeneration,ok' && Number.isSafeInteger(joined) && joined >= 1 && (open.leaseGeneration === undefined || open.leaseGeneration === joined)
+      : keysOf(accepted) === 'ok';
+    if (!valid) throw new SessionFailure('invalid_response', false);
+    if (open.mode === 'act') session.leaseGeneration = joined;
   } catch (error) {
     await session.close();
     throw new SessionFailure(error instanceof SessionFailure ? error.code : 'transport_error', true);
@@ -273,24 +287,41 @@ async function openSession(config, open, requestTimeoutMs, onClose) {
 /**
  * The desktop Broker client. `pipeName` is the Broker config's pipe name (the claim pipe's; the desktop pipe is `<pipeName>_desktop`), `expect` what the pipe server must be (as for
  * `sendBrokerRequest`: `{ ownerSid, pid }` in tests, `{ serviceName }` in production, optional `imageSha256`). `helperPath` and `spawnImpl` are test seams (a custom helper still needs
- * its `<helperPath>.manifest.json`). Returns a plain object with own data properties only, which is the shape HyperVDesktopDriver accepts as its broker.
- * @param {{ pipeName: string, expect: object, helperPath?: string, spawnImpl?: typeof spawn, openTimeoutMs?: number, captureTimeoutMs?: number, inputTimeoutMs?: number, idleCloseMs?: number }} options
+ * its `<helperPath>.manifest.json`; `helperSha256` pins the helper build: the manifest must say that digest). Returns a plain object with own data properties only, which is the shape HyperVDesktopDriver
+ * accepts as its broker.
+ * @param {{ pipeName: string, expect: object, helperPath?: string, helperSha256?: string, spawnImpl?: typeof spawn, openTimeoutMs?: number, captureTimeoutMs?: number, inputTimeoutMs?: number, idleCloseMs?: number }} options
  */
 export function createWindowsDesktopBrokerClient(options) {
   const config = readOptions(options);
   const sessions = new Map(); // key -> { promise }
-  const actKeys = new Map(); // computerId -> key of its act session
+  const acts = new Map(); // computerId -> { entry, generation } of the live act session that holds the newest lease this client knows (a generation is known once its open was answered)
   let closed = false;
 
   function acquire(key, open, requestTimeoutMs) {
     let entry = sessions.get(key);
     if (entry === undefined) {
       entry = {};
-      const forget = () => { if (sessions.get(key) === entry) sessions.delete(key); };
+      const forget = () => {
+        if (sessions.get(key) === entry) sessions.delete(key);
+        if (acts.get(open.computerId)?.entry === entry) acts.delete(open.computerId);
+      };
       entry.promise = openSession(config, open, requestTimeoutMs, forget).catch((error) => { forget(); throw error; });
       sessions.set(key, entry);
     }
-    return entry.promise;
+    return entry;
+  }
+
+  /**
+   * An act session whose open was answered becomes the computer's lease holder only when its generation is greater than the live holder's, and then closes the holder (a newer lease replaces the
+   * older). If it is not newer it is the one that is closed, and its call fails before any input is sent: a call with an older lease must never end a newer lease's session.
+   */
+  function adoptAct(computerId, entry, session) {
+    const live = acts.get(computerId);
+    if (live !== undefined && live.entry !== entry) {
+      if (session.leaseGeneration <= live.generation) { void session.close(); throw new SessionFailure('lease_superseded', true); }
+      void live.entry.promise.then((older) => older.close(), () => {});
+    }
+    acts.set(computerId, { entry, generation: session.leaseGeneration });
   }
 
   /** Run `send` on the session for `key`; a session that was closed (idle) between the lookup and the use is replaced once. */
@@ -298,7 +329,8 @@ export function createWindowsDesktopBrokerClient(options) {
     for (let attempt = 0; ; attempt += 1) {
       if (closed) throw desktopClientError('desktop_unavailable', 'not_applied', 'closed');
       try {
-        return await send(await acquire(key, open, requestTimeoutMs));
+        const entry = acquire(key, open, requestTimeoutMs);
+        return await send(await entry.promise, entry);
       } catch (error) {
         if (error instanceof SessionFailure && error.code === 'session_closed' && attempt === 0) continue;
         throw toClientError(error);
@@ -315,11 +347,15 @@ export function createWindowsDesktopBrokerClient(options) {
     },
     async sendVmInput(request) {
       const { computerId, operationId, leaseGeneration, steps } = checkInputRequest(request);
-      const key = `act:${computerId}:${operationId}:${leaseGeneration}`;
-      const older = actKeys.get(computerId);
-      if (older !== undefined && older !== key) void sessions.get(older)?.promise.then((session) => session.close(), () => {}); // a newer lease replaces the older one
-      actKeys.set(computerId, key);
-      await run(key, { computerId, mode: 'act', operationId, leaseGeneration }, config.inputTimeoutMs, (session) => session.exchange({ input: { steps } }, config.inputTimeoutMs));
+      const key = `act:${computerId}:${operationId}:${leaseGeneration ?? 'current'}`;
+      const live = acts.get(computerId);
+      // A lease that names a generation older than the live holder's is stale: refuse it without opening anything or touching the holder.
+      if (leaseGeneration !== null && live !== undefined && live.entry !== sessions.get(key) && live.generation > leaseGeneration) throw desktopClientError('desktop_unavailable', 'not_applied', 'lease_superseded');
+      const open = { computerId, mode: 'act', operationId, ...(leaseGeneration === null ? {} : { leaseGeneration }) };
+      await run(key, open, config.inputTimeoutMs, (session, entry) => {
+        adoptAct(computerId, entry, session);
+        return session.exchange({ input: { steps } }, config.inputTimeoutMs);
+      });
       return Object.freeze({ ok: true });
     },
     /** End every session (the helpers exit) and refuse further calls. */

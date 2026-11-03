@@ -6,7 +6,8 @@ using System.Text.Json;
 // Desktop mode of the pipe client helper (ADR-002 "Amendment 2026-11-03", "Desktop pipe"; Proposed / NOT VERIFIED): the helper started with the single argument `desktop`.
 // One process = one session on the Broker's desktop pipe (`<pipeName>_desktop`), alive until Node closes stdin. Node and the helper speak [int32 little-endian length][payload] frames on stdin / stdout.
 //   Node -> helper, first frame (at most 8 KiB): {pipeName, timeoutMs, requestTimeoutMs, expect:{ownerSid, pid | serviceName, imageSha256?}, open:{computerId, mode:"view"|"act"[, operationId, leaseGeneration]}}
-//   helper -> Node: {ok:true} once the server was verified AND the Broker accepted the open; or {ok:false,code} and the process ends.
+//   helper -> Node: {ok:true} once the server was verified AND the Broker accepted the open (an act open: {ok:true,leaseGeneration:n}, the lease it joined; the open may leave `leaseGeneration` out to
+//   join the current lease of its operationId); or {ok:false,code} and the process ends.
 //   Node -> helper, then one request frame at a time (at most 16 KiB): {capture:{width,height}} | {input:{steps:[...]}}. The Broker validates them strictly; here only the kind is read (input only in an act session).
 //   helper -> Node, per request: capture {ok:true,width,height,bytes} then ONE binary frame of exactly `bytes` PNG bytes (at most 8 MiB); input {ok:true}.
 //   A failure or a refusal is one {ok:false,code} frame and the end of the process: the Broker closes the connection after `denied`, and a desynchronised stream is never reused. Closing stdin ends a session quietly (exit 0).
@@ -19,31 +20,34 @@ internal static partial class Program
     private const long MaxLeaseGeneration = 9_007_199_254_740_991; // 2^53 - 1: what a JavaScript number holds exactly
     private static Stream? hostFrames; // set only in desktop mode: Finish then writes a frame to Node instead of a text line
 
-    private sealed record DesktopStart(string PipeName, string OpenBody, bool Act, int TimeoutMs, int RequestTimeoutMs, string? OwnerSid, uint? Pid, string? ServiceName, string? ImageSha256);
+    private sealed record DesktopStart(string PipeName, string OpenBody, bool Act, long? Generation, int TimeoutMs, int RequestTimeoutMs, string? OwnerSid, uint? Pid, string? ServiceName, string? ImageSha256);
 
     private static void RunDesktop()
     {
         hostFrames = Console.OpenStandardOutput();
         using Stream stdin = Console.OpenStandardInput();
         if (ReadDesktopStart(stdin) is not { } start) return;
-        using Timer watchdog = new(_ => { lock (Gate) Finish(Failure(sent ? "timeout" : "server_identity_unavailable"), ExitOk); }, null, start.TimeoutMs, Timeout.Infinite);
+        bool armed = true; // read and written only under Gate: a callback that fired just before the answer finds the request answered and does nothing
+        using Timer watchdog = new(_ => { lock (Gate) { if (armed) Finish(Failure(sent ? "timeout" : "server_identity_unavailable"), ExitOk); } }, null, start.TimeoutMs, Timeout.Infinite);
         using NamedPipeClientStream pipe = OpenVerified(start.PipeName, start.OwnerSid, start.Pid, start.ServiceName, start.ImageSha256);
         lock (Gate) sent = true; // from here the outcome is unknown even if the write throws
         SendFrame(pipe, Encoding.UTF8.GetBytes(start.OpenBody));
-        if (ReadBrokerObject(pipe).EnumerateObject().Count() != 1) Finish(Failure("invalid_response"), ExitOk); // exactly { "ok": true }
-        watchdog.Change(Timeout.Infinite, Timeout.Infinite);
-        WriteHostFrame("{\"ok\":true}"u8.ToArray());
+        JsonElement opened = ReadBrokerObject(pipe);
+        long? joined = start.Act ? Number(opened, "leaseGeneration") : null; // an act open is answered { ok, leaseGeneration }: the lease it joined, which is the one Node named if it named one
+        if (opened.EnumerateObject().Count() != (start.Act ? 2 : 1) || (start.Act && (joined is not (>= 1 and <= MaxLeaseGeneration) || (start.Generation is not null && start.Generation != joined)))) Finish(Failure("invalid_response"), ExitOk);
+        lock (Gate) { armed = false; watchdog.Change(Timeout.Infinite, Timeout.Infinite); }
+        WriteHostFrame(Encoding.UTF8.GetBytes(start.Act ? $"{{\"ok\":true,\"leaseGeneration\":{joined}}}" : "{\"ok\":true}"));
 
         while (ReadHostFrame(stdin, MaxDesktopRequestBytes) is { } request)
         {
             bool capture = IsCaptureRequest(request, start.Act);
+            lock (Gate) armed = true;
             watchdog.Change(start.RequestTimeoutMs, Timeout.Infinite);
             SendFrame(pipe, request);
             JsonElement header = ReadBrokerObject(pipe);
             if (!capture && header.EnumerateObject().Count() != 1) Finish(Failure("invalid_response"), ExitOk); // exactly { "ok": true }
             byte[][] reply = capture ? ReadCaptureReply(pipe, header) : new[] { "{\"ok\":true}"u8.ToArray() };
-            watchdog.Change(Timeout.Infinite, Timeout.Infinite); // before the reply goes out: a late timeout must not follow a good answer
-            lock (Gate) foreach (byte[] frame in reply) WriteHostFrame(frame);
+            lock (Gate) { armed = false; foreach (byte[] frame in reply) WriteHostFrame(frame); } // disarmed under Gate before the reply goes out: a callback already waiting for Gate then does nothing
         }
     }
 
@@ -161,7 +165,7 @@ internal static partial class Program
             // The desktop pipe only: a name that does not end in `_desktop` is the claim pipe (or something else) and has its own modes.
             if (!pipeName.EndsWith("_desktop", StringComparison.Ordinal) || !IsToken(pipeName, 128, "_-", false) || timeoutMs is < 100 or > 30_000 || requestTimeoutMs is < 1000 or > 120_000 ||
                 !ValidExpectation(ownerSid, pid, serviceName, imageSha256)) throw new InvalidDataException();
-            return new DesktopStart(pipeName, OpenBody(open), open.GetProperty("mode").GetString() == "act", timeoutMs, requestTimeoutMs, ownerSid, pid, serviceName, imageSha256);
+            return new DesktopStart(pipeName, OpenBody(open, out long? named), open.GetProperty("mode").GetString() == "act", named, timeoutMs, requestTimeoutMs, ownerSid, pid, serviceName, imageSha256);
         }
         catch (Exception ex) when (ex is JsonException or InvalidDataException or InvalidOperationException or KeyNotFoundException or FormatException or ArgumentException)
         {
@@ -170,15 +174,17 @@ internal static partial class Program
         }
     }
 
-    // The open frame the Broker expects, built here from validated parts (contract ids, a generation Node can hold exactly): a view open carries neither lease field, an act open carries both.
-    private static string OpenBody(JsonElement open)
+    // The open frame the Broker expects, built here from validated parts (contract ids, a generation Node can hold exactly): a view open carries neither lease field; an act open carries an operationId
+    // and, only when Node named one, the leaseGeneration (`named`). Without it the Broker joins the current lease of that operationId.
+    private static string OpenBody(JsonElement open, out long? named)
     {
+        named = null;
         string computerId = Id(open.GetProperty("computerId")), mode = open.GetProperty("mode").GetString() ?? "";
         bool act = mode == "act", hasOperation = open.TryGetProperty("operationId", out JsonElement operation), hasGeneration = open.TryGetProperty("leaseGeneration", out JsonElement generation);
-        if (mode is not ("view" or "act") || hasOperation != act || hasGeneration != act) throw new InvalidDataException();
+        if (mode is not ("view" or "act") || hasOperation != act || (hasGeneration && !act)) throw new InvalidDataException();
         if (!act) return $"{{\"open\":{{\"computerId\":\"{computerId}\",\"mode\":\"view\"}}}}";
-        long leaseGeneration = generation.GetInt64();
-        if (leaseGeneration is < 1 or > MaxLeaseGeneration) throw new InvalidDataException();
-        return $"{{\"open\":{{\"computerId\":\"{computerId}\",\"mode\":\"act\",\"operationId\":\"{Id(operation)}\",\"leaseGeneration\":{leaseGeneration}}}}}";
+        if (hasGeneration && generation.GetInt64() is < 1 or > MaxLeaseGeneration) throw new InvalidDataException();
+        named = hasGeneration ? generation.GetInt64() : null;
+        return $"{{\"open\":{{\"computerId\":\"{computerId}\",\"mode\":\"act\",\"operationId\":\"{Id(operation)}\"{(hasGeneration ? $",\"leaseGeneration\":{named}" : "")}}}}}";
     }
 }

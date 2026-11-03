@@ -6,7 +6,8 @@ import { syntheticPng } from './mock-desktop-broker.mjs';
  * (desktop-broker-client-contract.mjs), and the Broker's lease rules, without a helper process, a pipe or a VM.
  *   - `captureVmScreen` works for a configured computer and returns a synthetic PNG of the asked size; an unknown computer is refused like the Broker does (fixed `denied`).
  *   - `sendVmInput` is accepted only for the lease the Broker holds for that computer: `grantLease` plays a recorded task.start claim (generation counts per computer from 1, a newer
- *     grant replaces the older lease). Anything else is `denied`, outcome unknown, like the real client.
+ *     grant replaces the older lease). The lease names the operationId and, optionally, the generation: without one it is the lease that is current for that operationId. Anything else is
+ *     `denied`, outcome unknown, like the real client.
  * Test controls (not part of the client interface): `captures`, `inputs`, `grantLease`, `expireLeases`, `failNext`, `isClosed`.
  */
 export function createFakeDesktopBrokerClient({ computers = ['computer-1'] } = {}) {
@@ -53,7 +54,7 @@ export function createFakeDesktopBrokerClient({ computers = ['computer-1'] } = {
       const { computerId, operationId, leaseGeneration, steps } = checkInputRequest(request);
       guard();
       const lease = leases.get(computerId);
-      if (!lease || lease.operationId !== operationId || lease.generation !== leaseGeneration) throw denied();
+      if (!lease || lease.operationId !== operationId || (leaseGeneration !== null && lease.generation !== leaseGeneration)) throw denied();
       inputs.push({ computerId, operationId, leaseGeneration, steps });
       return Object.freeze({ ok: true });
     },
