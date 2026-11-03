@@ -97,7 +97,8 @@ function main() {
   if (parsed.compileCheck) {
     const output = fs.mkdtempSync(path.join(os.tmpdir(), 'albera-setup-compile-check-'));
     process.once('exit', () => { try { fs.rmSync(output, { recursive: true, force: true }); } catch { /* a leftover temp folder is harmless */ } });
-    restoreAndBuild(context, { label: 'Windows setup (compile check)', verb: 'build', project, runtime: 'win-x64', args: ['--configuration', 'Release', '--runtime', 'win-x64', '--output', output], properties });
+    // The lock file is written for the NativeAOT build (it pins Microsoft.DotNet.ILCompiler and ILLink.Tasks), so the restore uses PublishAot=true even here; only the build compiles without AOT.
+    restoreAndBuild(context, { label: 'Windows setup (compile check)', verb: 'build', project, runtime: 'win-x64', args: ['--configuration', 'Release', '--runtime', 'win-x64', '--output', output], properties, restoreProperties: properties.map((p) => (p === '-p:PublishAot=false' ? '-p:PublishAot=true' : p)) });
     console.log(`dotnet sdk ${sdk}`);
     console.log('Windows setup compiles (compile check only: ordinary .NET, zero pins, thrown away; the NativeAOT bytes are made in CI)');
     return;

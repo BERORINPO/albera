@@ -181,9 +181,9 @@ function run(context, label, args) {
 }
 
 /** Locked restore, then `publish` (or `build`) --no-restore; exits the process with dotnet's status on failure. */
-export function restoreAndBuild(context, { label, verb = 'publish', project, runtime, properties = [], args = [] }) {
+export function restoreAndBuild(context, { label, verb = 'publish', project, runtime, properties = [], restoreProperties = properties, args = [] }) {
   let restore;
-  try { restore = restoreArguments({ project, runtime, properties }); } catch (error) { process.stderr.write(`${label}: ${error.message}\n`); process.exit(1); }
+  try { restore = restoreArguments({ project, runtime, properties: restoreProperties }); } catch (error) { process.stderr.write(`${label}: ${error.message}\n`); process.exit(1); }
   run(context, `${label} restore`, restore);
   run(context, `${label} ${verb}`, buildArguments({ verb, project, root: context.root, args, properties }));
 }
