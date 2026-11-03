@@ -1567,13 +1567,19 @@ function Remove-TrustedTree([string]$Dir, [string[]]$AllowedTop, [string[]]$Allo
 # removes anything - that the new install can be made, stops the account's processes by PID, runs the ordinary uninstall (the Broker's SID leaves Hyper-V Administrators first), and then the ordinary install
 # with the carried-over values. The account and its profile go in the uninstall's user step. Lost by design: the Control Plane and Broker journals and the Authority's signing key (a new one is made).
 $script:LegacyValues = $null
+# Who may hold a write right on a legacy config file: SYSTEM, Administrators and the writers the plan gives the file's folder. The first layout gave the Authority's service SID Modify on authority\ (its own folder; its config
+# sits there and inherits the right), so an untouched legacy Authority config always carries that SID. Judged with the administrators alone it was refused (the lab VM found it, 2026-11-04), and no real migration could start.
+function Get-LegacyConfigWriters([string]$Dir) {
+  Resolve-HostSids
+  Get-PlannedWriters (Get-AclPlan $L $script:Sids | Where-Object { $_.Path -ceq $Dir } | Select-Object -First 1)
+}
 # Reasons it cannot be read (empty = ok, and $script:LegacyValues is set). Reads only files in the data root, after the manifest itself passed the trust checks, and the configs again pass their own.
 function Import-LegacyInstall {
   if (-not $script:Manifest) { return , @('no_install_record') }
-  $admin = Get-AdminSids
-  foreach ($f in @($L.BrokerConfig, $L.AuthorityConfig)) {
+  foreach ($pair in @(@($L.BrokerConfig, $L.BrokerConfigDir), @($L.AuthorityConfig, $L.AuthorityDir))) {
+    $f = $pair[0]
     if (-not (Test-Path -LiteralPath $f)) { return , @('legacy_file_missing:' + (Split-Path -Leaf $f)) }
-    $untrusted = Get-PathTrustReasons $f $admin $false
+    $untrusted = Get-PathTrustReasons $f (Get-LegacyConfigWriters $pair[1]) $false
     if ($untrusted.Count -gt 0) { return , @($untrusted | ForEach-Object { 'legacy_file_untrusted:' + $_ }) }
   }
   if (-not (Test-Path -LiteralPath $L.LegacyApprovalSettings)) { return , @('legacy_file_missing:albera.approval.json') }
@@ -1691,7 +1697,10 @@ function Show-MigratePlan {
   $why = if ($script:Manifest) { Import-LegacyInstall } else { , @('no_install_record') }
   if ($why.Count -gt 0) { Show-Plan @(Get-MigrateLeadSteps) 'migrate'; return }
   Use-LegacyValues
-  Show-Plan (@(Get-MigrateLeadSteps) + @(Get-UninstallSteps) + @(Get-InstallSteps)) 'migrate'
+  # The install steps run AFTER the uninstall, which removes the record and what their tests read. Tested now, against the first-layout record, the first would say `blocked` (first layout) and others `done`, which the run
+  # never does; so each is shown as todo. What can really stop the new install (builds, tree hash, node.exe, claude.exe) is the lead step `preflight`.
+  $install = @(Get-InstallSteps | ForEach-Object { $_.Test = { 'todo' }; $_ })
+  Show-Plan (@(Get-MigrateLeadSteps) + @(Get-UninstallSteps) + $install) 'migrate'
 }
 
 # ---------------------------------------------------------------------------------------------- run

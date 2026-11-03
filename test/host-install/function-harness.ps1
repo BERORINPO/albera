@@ -1389,6 +1389,30 @@ switch ($Case) {
       if ($scenario -eq 'dataLink') { Remove-Junction (Join-Path $L.BrokerDbDir 'link') }
     }
     $result.preflightUnknown = $unknown
+    # ---- F. the legacy configs are judged with the writers their folder's plan allows (Get-PathTrustReasons is a fake above, so this runs the real pieces it is made of): the first layout gave the Authority's
+    # service SID Modify on authority\, where its config sits and inherits that right. The lab VM (2026-11-04) refused every real first-layout install here, because only the administrators were allowed to write.
+    New-LegacyInstall $false
+    $authoritySid = Get-DerivedServiceSid $K.AuthorityService
+    $brokerSid2 = Get-DerivedServiceSid $K.BrokerService
+    # plain assignments: these functions return `, @(...)`, and @( ) around a call would wrap that array once more
+    $authorityWriters = Get-LegacyConfigWriters $L.AuthorityDir
+    $brokerWriters = Get-LegacyConfigWriters $L.BrokerConfigDir
+    $modifiedBy = { param($sid) [pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $false; WriteSids = @($sid) } }
+    $ownModify = Test-TrustSummary (& $modifiedBy $authoritySid) $authorityWriters $false
+    $adminsOnly = Test-TrustSummary (& $modifiedBy $authoritySid) (Get-AdminSids) $false
+    $inBrokerFolder = Test-TrustSummary (& $modifiedBy $authoritySid) $brokerWriters $false
+    $brokerOnAuthority = Test-TrustSummary (& $modifiedBy $brokerSid2) $authorityWriters $false
+    $stranger = Test-TrustSummary (& $modifiedBy 'S-1-5-21-1111111111-2222222222-3333333333-1001') $authorityWriters $false
+    $result.legacyWriters = [ordered]@{
+      authoritySid = $authoritySid; authorityFolder = $authorityWriters; brokerFolder = $brokerWriters
+      authorityConfigWithItsOwnModify = $ownModify; authorityConfigWithAdminsOnly = $adminsOnly; brokerConfigWithAuthorityModify = $inBrokerFolder
+      authorityConfigWithBrokerModify = $brokerOnAuthority; authorityConfigWithAStranger = $stranger
+    }
+    # ---- G. the plan for migrate: against a first-layout record no step may read `blocked` or `unknown` (the install steps run after the uninstall; the lab VM showed the first one blocked on the old record)
+    New-LegacyInstall $false
+    $planLines = @(Show-MigratePlan 6>&1 | ForEach-Object { [string]$_ })
+    $result.migratePlan = [ordered]@{ lines = $planLines.Count; steps = @($planLines | Where-Object { $_ -match '^\s*\d+\. \[' }).Count; blocked = @($planLines | Where-Object { $_ -match '^\s*\d+\. \[blocked\]' }).Count; unknown = @($planLines | Where-Object { $_ -match '^\s*\d+\. \[unknown\]' }).Count
+      first = @($planLines | Where-Object { $_ -match '^\s*\d+\. \[' } | Select-Object -First 5); last = $planLines[-1] }
   }
 }
 ($result | ConvertTo-Json -Compress -Depth 6)

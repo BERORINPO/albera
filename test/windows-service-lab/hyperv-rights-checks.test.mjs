@@ -73,7 +73,7 @@ test('lab-vm.ps1 -HyperV: nested virtualization, 5 GB with the same memory guard
   assert.match(driver, /if \(\$Build\) \{\s+& npm run build:windows-broker\s+if \(\$LASTEXITCODE -ne 0\) \{ throw "build:windows-broker failed/u, 'the Broker build is no longer skipped for -HyperV');
   assert.doesNotMatch(driver, /if \(-not \$HyperV\) \{\s+& npm run build:windows-broker/u);
   assert.match(driver, /if \(-not \$HyperV -and -not \$ControlPlaneService\) \{\s+& npm run build:approval-authority/u);
-  assert.match(driver, /if \(-not \$HostInstall -and -not \$HyperV -and -not \$ControlPlaneService\) \{\s+& node scripts\/windows-service-lab-inputs\.mjs/u);
+  assert.match(driver, /if \(-not \$HostInstall -and -not \$HostMigrate -and -not \$HyperV -and -not \$ControlPlaneService\) \{\s+& node scripts\/windows-service-lab-inputs\.mjs/u);
   assert.match(driver, /if \(\$HyperV\) \{\s+\$hvOut = @\(Invoke-HyperVRightsLab[\s\S]*?\}\s+elseif \(\$HostInstall\) \{/u);
   // The default lab and -HostInstall still call exactly what they called.
   assert.match(driver, /& \(Join-Path \$PSScriptRoot 'run-lab\.ps1'\) -VmName \$VmName -PasswordFile \$PasswordFile `/u);
