@@ -22,6 +22,7 @@ internal static partial class Program
     internal const int ExitNotStartedByScm = 74;      // not started by the service control manager (StartServiceCtrlDispatcher failed): nothing is created
     internal const int ExitServiceLoopFailed = 75;    // an unexpected exception ended the serve loop: fail closed, stop the service
     internal const int ExitJournalRefused = 76;       // the journal is from a newer Broker, has an unknown schema or cannot be read: nothing is served, nothing is changed
+    internal const int ExitDesktopFailed = 80;        // a capture never returned (it holds the one capture slot) or a desktop instance could not be reset: stop the service (fail closed)
     private const int ErrorInvalidOwner = 1307;
 
     private enum ImpersonationFault { None, RevertFails, RevertThrows, RevertLies }

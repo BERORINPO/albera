@@ -27,7 +27,8 @@ internal static partial class Program
 #else
     private static readonly TimeSpan DesktopIdleTimeout = TimeSpan.FromSeconds(60);
 #endif
-    private static readonly TimeSpan DesktopWriteTimeout = TimeSpan.FromSeconds(10), CaptureQueueTimeout = TimeSpan.FromSeconds(30), MinCaptureInterval = TimeSpan.FromMilliseconds(200);
+    private static readonly TimeSpan DesktopWriteTimeout = TimeSpan.FromSeconds(10), CaptureQueueTimeout = TimeSpan.FromSeconds(30), MinCaptureInterval = TimeSpan.FromMilliseconds(200),
+        CaptureHungTimeout = TimeSpan.FromSeconds(15); // a capture takes about a second; one that never returns would hold the slot forever
 
     // The one capture slot of the whole Broker.
     private static readonly SemaphoreSlim CaptureSlot = new(1, 1);
@@ -99,7 +100,13 @@ internal static partial class Program
                     catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException) { Console.WriteLine("DESKTOP=ABORTED"); } // a client that vanished or never read
                     catch (Exception) when (!stop.IsCancellationRequested) { Console.WriteLine("DESKTOP=SESSION_FAILED"); } // something unforeseen: this connection ends (fail closed), the slot keeps serving
                     if (stop.IsCancellationRequested) return;
-                    DisconnectForNextClient(pipe);
+                    try { DisconnectForNextClient(pipe); }
+                    catch (Exception) when (!stop.IsCancellationRequested)
+                    {
+                        // A slot that cannot be reset would silently stop serving while still holding the name: stop instead of shrinking (fail closed).
+                        Console.WriteLine("DESKTOP=SLOT_RESET_FAILED");
+                        TerminateForDesktopFailure();
+                    }
                 }
             }
             catch (Exception ex) when (stop.IsCancellationRequested && ex is ObjectDisposedException or IOException) { /* STOP disposed the instance */ }
@@ -191,7 +198,14 @@ internal static partial class Program
             Console.WriteLine("DESKTOP_TEST=capture_enter");
             await Task.Delay(DesktopCaptureHold);
 #endif
-            DesktopResult result = await Task.Run(() => _desktop.Capture(computerId, width, height));
+            Task<DesktopResult> capture = Task.Run(() => _desktop.Capture(computerId, width, height));
+            if (await Task.WhenAny(capture, Task.Delay(CaptureHungTimeout)) != capture)
+            {
+                // The COM call cannot be cancelled and still holds the slot (and its buffer): every later capture would be capture_busy until a restart. Restart now.
+                Console.WriteLine("DESKTOP=CAPTURE_HUNG");
+                TerminateForDesktopFailure();
+            }
+            DesktopResult result = await capture;
 #if ALBERA_BROKER_TEST_FAULTS
             Console.WriteLine("DESKTOP_TEST=capture_exit");
 #endif
@@ -204,6 +218,15 @@ internal static partial class Program
             budget.CancelAfter(DesktopWriteTimeout);
             await WriteFrameAsync(pipe, frame, budget.Token);
         }
+    }
+
+    // Fail closed: report STOPPED(80) to the SCM, then end the process the way the revert-failure path does (a hung COM thread must not keep it alive).
+    // No recovery action is installed, so the Broker stays stopped until the operator starts it again.
+    private static void TerminateForDesktopFailure()
+    {
+        NotifyServiceTermination(ExitDesktopFailed);
+        _ = TerminateProcess(GetCurrentProcess(), ExitDesktopFailed);
+        Environment.Exit(ExitDesktopFailed); // only reached if TerminateProcess itself failed
     }
 }
 
