@@ -5,8 +5,10 @@
 // Service (`bootstrapSink`, docs/architecture/control-plane-service.md section 4): the code goes only to the sink
 // (a file), is replaced after every use and every 10 minutes, and listen() does not return it.
 // Both routes: /api/session takes 10 wrong codes a minute (the right code is never limited), and a GET of an /api/ route needs Sec-Fetch-Site same-origin or none.
-// The only write route is POST api/decide: it runs the Effect of an open card that this host itself showed.
-// The task text of a started job is fixed English built here; nothing from a request body reaches a task.
+// Write routes: POST api/decide (the Effect of an open card that this host itself showed) and the `apiRoutes` a caller registers (room-settings-routes.mjs, room-job-routes.mjs).
+// A registered route is only reached after this host's own checks (Host, Origin AND Sec-Fetch-Site same-origin for a write, JSON content type, session cookie, body limit); it never sees a request object.
+// The task text of a job started by a card is fixed English built here; nothing from a request body reaches that task. The one exception is the job screen (room-job-routes.mjs): the owner's typed
+// task reaches the hands only as the exact string a person approved (task-start-gate rule), never straight from the request.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -29,6 +31,12 @@ const MAX_CONNECTIONS = 64;
 const MAX_SESSIONS = 8;
 const MAX_SESSION_BODY = 1024;
 const MAX_DECIDE_BODY = 256;
+const MAX_API_ROUTES = 32;
+const DEFAULT_ROUTE_BODY = 1024;
+const MAX_ROUTE_BODY = 4096;
+const ROUTE_PATH_RE = /^\/api(?:\/[a-z][a-z0-9-]{0,31}){1,4}$/;
+const RESERVED_ROUTE_PATHS = new Set(['/api/session', '/api/decide', '/api/state']);
+const RESERVED_ROUTE_PREFIXES = ['/api/vms/', '/api/frames/'];
 const BODY_TIMEOUT_MS = 5_000;
 const SESSION_TTL_MS = 20 * 60 * 1000;
 const SESSION_MAX_AGE_MS = 2 * 60 * 60 * 1000; // provisional; 8 h until 2026-11-03. A cookie is not kept per port (control-plane-service.md section 4)
@@ -41,7 +49,8 @@ const BASE = '/room/';
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const TYPES = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 const UI_NAMES = ['room.css', 'cam.css', 'figure.css', 'bero.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs',
-  'cam.mjs', 'words-cam.mjs', 'figure.mjs', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'cards.mjs', 'words-bero.mjs'];
+  'cam.mjs', 'words-cam.mjs', 'figure.mjs', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'cards.mjs', 'words-bero.mjs',
+  'panels.css', 'words-panels.mjs', 'settings.mjs', 'jobs.mjs'];
 const UI_FILES = Object.freeze(Object.fromEntries([['/', 'index.html'], ...UI_NAMES.map((name) => [`/${name}`, name])]
   .map(([route, name]) => [route, Object.freeze([`room-ui/${name}`, TYPES[path.extname(name)]])])));
 const SAFE_ERROR_CODES = new Set([
@@ -77,13 +86,16 @@ export function recheckTask(task) {
  * Without a gate the room starts jobs as before (local demo): the CLI says so when it starts.
  * Service launch route (`bootstrapSink` = { publish({port, code}), clear() }, both may be async): the sink gets every new code and is cleared at close.
  * A first publish that fails makes listen() fail; a later failure goes to `onBootstrapError(code)` (the old code is already invalid by then).
+ * `apiRoutes` = [{ method: 'GET'|'POST', path: '/api/...', maxBody?: bytes (POST, default 1024, at most 4096), handle({ body }) -> { status, body } }]. The host runs its checks first (see the head of this file);
+ * `body` is the parsed JSON object (POST only). `handle` never sees the request or the cookie, and a throw becomes `500 route_failed` with no detail. A path of the host itself cannot be registered.
  */
 export function createRoomHost({
   vms, driver, board, journal, director, fleet, checker = null, checks = {}, startGate = null, checkTimeoutMs = CHECK_TIMEOUT_MS,
   captureIntervalMs = 1000, staleAfterMs = 10_000, tickMs = 1000, now = Date.now,
-  bootstrapSink = null, bootstrapRotateMs = BOOTSTRAP_ROTATE_MS, onBootstrapError = () => {},
+  bootstrapSink = null, bootstrapRotateMs = BOOTSTRAP_ROTATE_MS, onBootstrapError = () => {}, apiRoutes = [],
 } = {}) {
   const tiles = normalizeVms(vms);
+  const routes = normalizeApiRoutes(apiRoutes);
   const checksByVm = normalizeChecks(checks, tiles);
   if (checksByVm.size > 0 && typeof checker?.run !== 'function') throw new TypeError('room host requires a checker with run() when checks are given');
   if (!Number.isInteger(checkTimeoutMs) || checkTimeoutMs < 10 || checkTimeoutMs > 600_000) throw new TypeError('checkTimeoutMs must be between 10 and 600000');
@@ -338,6 +350,29 @@ export function createRoomHost({
     return json(res, 200, { ok: true, effect, result });
   }
 
+  // ---- registered routes (room-settings-routes.mjs, room-job-routes.mjs) ----
+
+  /** The order is fixed: this page (Origin + Sec-Fetch-Site for a write, Sec-Fetch-Site for a read), then the content type, then the session, and only then the body. */
+  async function runRoute(route, req, res, expectedOrigin) {
+    const write = route.method === 'POST';
+    if (write ? !strictSameOriginWrite(req, expectedOrigin) : !sameOriginRead(req)) return json(res, 403, { error: 'forbidden' });
+    if (write && !isJson(req)) return json(res, 415, { error: 'invalid_content_type' });
+    if (!sessionToken(req.headers.cookie)) return json(res, 401, { error: 'session_required' });
+    let body;
+    if (write) {
+      const declared = req.headers['content-length'];
+      if (declared !== undefined && !(/^\d{1,9}$/.test(declared) && Number(declared) <= route.maxBody)) return json(res, 413, { error: 'body_too_large' }, { Connection: 'close' });
+      try { body = JSON.parse((await readBody(req, route.maxBody, false)).toString('utf8')); }
+      catch (error) { return error?.message === 'body_too_large' ? json(res, 413, { error: 'body_too_large' }, { Connection: 'close' }) : json(res, 400, { error: 'invalid_request' }); }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { error: 'invalid_request' });
+    }
+    if (closed) return json(res, 503, { error: 'host_closing' });
+    let out;
+    try { out = await route.handle({ body }); } catch { out = null; }
+    const valid = Number.isInteger(out?.status) && out.status >= 200 && out.status <= 599 && out.body !== null && typeof out.body === 'object';
+    return valid ? json(res, out.status, out.body) : json(res, 500, { error: 'route_failed' });
+  }
+
   // ---- HTTP ----
 
   function describe(tile, agents) {
@@ -394,6 +429,8 @@ export function createRoomHost({
     if (scoped === '/api/session' && req.method === 'POST') return createSession(req, res, expectedOrigin);
     if (scoped === '/api/decide' && req.method === 'POST') return decide(req, res, expectedOrigin);
     if (!scoped.startsWith('/api/')) return json(res, 404, { error: 'not_found' });
+    const route = routes.get(`${req.method} ${scoped}`);
+    if (route) return runRoute(route, req, res, expectedOrigin);
     // Another port on 127.0.0.1 is same-site, so a no-cors GET from its page would carry the cookie: a read must say it is ours.
     if (req.method === 'GET' && !sameOriginRead(req)) return json(res, 403, { error: 'forbidden' });
     if (!sessionToken(req.headers.cookie)) return json(res, 401, { error: 'session_required' });
@@ -559,6 +596,23 @@ export function createRoomHost({
 
 function newCode() { return randomBytes(32).toString('base64url'); }
 
+/** `apiRoutes` -> Map of "METHOD /path" -> frozen route. A path of this host's own (session, decide, state, screens, frames) cannot be taken, and a method + path can be registered once. */
+function normalizeApiRoutes(apiRoutes) {
+  if (!Array.isArray(apiRoutes) || apiRoutes.length > MAX_API_ROUTES) throw new TypeError('invalid_room_api_routes');
+  const out = new Map();
+  for (const route of apiRoutes) {
+    const { method, path: routePath, handle } = route ?? {};
+    const maxBody = route?.maxBody ?? DEFAULT_ROUTE_BODY;
+    if ((method !== 'GET' && method !== 'POST') || typeof routePath !== 'string' || !ROUTE_PATH_RE.test(routePath)) throw new TypeError('invalid_room_api_routes');
+    if (RESERVED_ROUTE_PATHS.has(routePath) || RESERVED_ROUTE_PREFIXES.some((prefix) => routePath.startsWith(prefix))) throw new TypeError('invalid_room_api_routes');
+    if (typeof handle !== 'function' || !Number.isInteger(maxBody) || maxBody < 2 || maxBody > MAX_ROUTE_BODY) throw new TypeError('invalid_room_api_routes');
+    const key = `${method} ${routePath}`;
+    if (out.has(key)) throw new TypeError('invalid_room_api_routes');
+    out.set(key, Object.freeze({ method, path: routePath, maxBody, handle }));
+  }
+  return out;
+}
+
 function normalizeVms(vms) {
   if (!Array.isArray(vms) || vms.length < 1 || vms.length > MAX_ROOM_VMS) throw new TypeError('vms must contain 1 to 8 entries');
   const seen = new Set();
@@ -607,6 +661,11 @@ function sameOriginWrite(req, expectedOrigin) {
   return req.headers.origin === expectedOrigin && (site === undefined || site === 'same-origin');
 }
 
+/** A write of a registered route: Origin is this origin AND Sec-Fetch-Site is same-origin (a request with no Sec-Fetch-Site header is refused, unlike api/decide). */
+function strictSameOriginWrite(req, expectedOrigin) {
+  return req.headers.origin === expectedOrigin && req.headers['sec-fetch-site'] === 'same-origin';
+}
+
 /** A read of an /api/ route must come from this page or from a person's own navigation: Sec-Fetch-Site is required and is same-origin or none. */
 function sameOriginRead(req) {
   const site = req.headers['sec-fetch-site'];
@@ -620,7 +679,8 @@ function safeErrorCode(error) {
   return typeof code === 'string' && SAFE_ERROR_CODES.has(code) ? code : 'desktop_unknown';
 }
 
-function readBody(req, maxBytes) {
+/** `destroyOnLimit: false` keeps the connection so the caller can still answer 413 (the caller then asks for `Connection: close`). */
+function readBody(req, maxBytes, destroyOnLimit = true) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
@@ -631,7 +691,7 @@ function readBody(req, maxBytes) {
     req.on('data', (chunk) => {
       if (settled) return;
       size += chunk.length;
-      if (size > maxBytes) { finish(reject, new Error('body_too_large')); req.destroy(); return; }
+      if (size > maxBytes) { finish(reject, new Error('body_too_large')); if (destroyOnLimit) req.destroy(); return; }
       chunks.push(chunk);
     });
     req.once('end', () => finish(resolve, Buffer.concat(chunks)));

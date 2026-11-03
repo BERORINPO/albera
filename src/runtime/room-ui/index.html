@@ -9,13 +9,18 @@
     <link rel="stylesheet" href="cam.css">
     <link rel="stylesheet" href="figure.css">
     <link rel="stylesheet" href="bero.css">
+    <link rel="stylesheet" href="panels.css">
     <script type="module" src="app.mjs"></script>
+    <script type="module" src="settings.mjs"></script>
+    <script type="module" src="jobs.mjs"></script>
   </head>
   <body>
     <header class="top">
       <span class="brand" data-w="brand">ALBERA</span>
       <span id="counts" class="sm sub"></span>
       <span class="grow"></span>
+      <button type="button" id="open-jobs" class="panel-open">Jobs</button>
+      <button type="button" id="open-settings" class="panel-open">Credentials</button>
       <span id="phase" class="sm sub" role="status">Connecting…</span>
     </header>
     <section id="bootstrap" class="bootstrap" hidden aria-labelledby="bootstrap-title">
@@ -27,6 +32,8 @@
       </form>
       <p id="bootstrap-status" role="status"></p>
     </section>
+    <aside id="jobs-panel" class="panel" hidden aria-label="Jobs"></aside>
+    <aside id="settings-panel" class="panel" hidden aria-label="Credentials"></aside>
     <main id="room" class="room" hidden>
       <div id="viewport" class="viewport" aria-label="Control room canvas" data-w-label="canvas_label"></div>
       <aside id="ledger" class="ledger" aria-labelledby="ledger-title">
