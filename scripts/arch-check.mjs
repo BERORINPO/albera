@@ -88,7 +88,9 @@ const EXPECTED = {
       // the C# twin of the network attestation (step 3b)
       'NetworkAttestation.cs',
       // the task-start attestation (network none + a Production checkpoint, step 4) and its C# twin
-      'task-start-attestation.mjs', 'task-start-attestation-vectors.json', 'TaskStartAttestation.cs'].map((f) => `broker-contract/${f}`),
+      'task-start-attestation.mjs', 'task-start-attestation-vectors.json', 'TaskStartAttestation.cs',
+      // match code (the 4 digits the room and the approver app both show, display aid); its C# twin is windows-approver/MatchCode.cs
+      'match-code.mjs', 'match-code-vectors.json'].map((f) => `broker-contract/${f}`),
     ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
       'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs'].map((f) => `room-ui/${f}`)],
   public: [
@@ -233,7 +235,7 @@ const providerContracts = [
   'src/runtime/bero-director.mjs',
   'src/runtime/fake-guest-checker.mjs',
   'src/runtime/workspace.mjs',
-  ...['action-digest', 'receipt-v2', 'receipt-v3', 'strict-json', 'network-attestation', 'task-start-attestation'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
+  ...['action-digest', 'receipt-v2', 'receipt-v3', 'strict-json', 'network-attestation', 'task-start-attestation', 'match-code'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
   'src/runtime/fake-attestation-signer.mjs',
   // the desktop Broker client's shared checks and its Fake (the real client, windows-desktop-broker-client.mjs, starts the pipe client helper, so it is under rule 5b instead)
   'src/runtime/desktop-broker-client-contract.mjs',
@@ -423,7 +425,7 @@ check('11a Approver app is not referenced by Observer layers or runtime modules'
 );
 const approverRoot = 'src/runtime/windows-approver';
 const approverSources = ['Program.cs', 'TestSeam.cs', 'CommandLine.cs', 'ApproverCommands.cs', 'PendingView.cs', 'Renderer.cs', 'SafeText.cs', 'Presence.cs', 'Channel.cs', 'PipeChannel.cs',
-  'ServerExpectation.cs', 'ExitCodes.cs', 'EnrollCommand.cs', 'SelfCheckCommand.cs', 'HelloKeyStore.cs', 'Wiring.cs', 'WindowsHello.cs', 'PolicyCommand.cs'];
+  'ServerExpectation.cs', 'ExitCodes.cs', 'EnrollCommand.cs', 'SelfCheckCommand.cs', 'HelloKeyStore.cs', 'Wiring.cs', 'WindowsHello.cs', 'PolicyCommand.cs', 'MatchCode.cs'];
 for (const f of [...approverSources, 'Albera.Approver.csproj', 'packages.lock.json']) {
   if (!fs.existsSync(path.join(ROOT, approverRoot, f))) violations.push(`[11b Approver source] ${approverRoot}/${f} does not exist (false-safe)`);
 }
