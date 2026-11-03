@@ -1787,6 +1787,22 @@ test('-Mode migrate against a temp layout (fakes for the machine): nothing is re
     assert.deepEqual(refusal.pidsKept, [4101, 4102], `${name}: the processes were not stopped`);
     assert.equal(refusal.targetIntact, true, `${name}: a link target was never touched`);
   }
+  // F. the legacy configs are judged with the writers of their folder's plan: the first layout gave the Authority's own service SID Modify on authority\ and its config inherits it (the lab VM refused every real
+  // first-layout install here while only the administrators were allowed to write). Nobody else's write right is let through, and the Broker's config folder allows no service writer at all.
+  assert.ok(r.legacyWriters.authorityFolder.includes(r.legacyWriters.authoritySid), 'the Authority config may carry the Authority\'s own SID');
+  assert.equal(r.legacyWriters.brokerFolder.includes(r.legacyWriters.authoritySid), false, 'the Broker config may not');
+  assert.deepEqual(r.legacyWriters.authorityConfigWithItsOwnModify, []);
+  assert.deepEqual(r.legacyWriters.authorityConfigWithAdminsOnly, [`writer_untrusted:${r.legacyWriters.authoritySid}`], 'the defect: with the administrators alone the untouched Authority config is refused');
+  assert.deepEqual(r.legacyWriters.brokerConfigWithAuthorityModify, [`writer_untrusted:${r.legacyWriters.authoritySid}`]);
+  assert.equal(r.legacyWriters.authorityConfigWithBrokerModify.length, 1, 'another service SID on the Authority config is still refused');
+  assert.match(r.legacyWriters.authorityConfigWithAStranger[0], /^writer_untrusted:S-1-5-21-/u, 'so is an ordinary account');
+  // G. the plan for migrate lists every step and none of them reads blocked or unknown against the first-layout record
+  assert.ok(r.migratePlan.steps >= 20, `the plan lists the lead, uninstall and install steps (${r.migratePlan.steps})`);
+  assert.equal(r.migratePlan.blocked, 0, `no step is blocked: ${JSON.stringify(r.migratePlan.first)}`);
+  assert.equal(r.migratePlan.unknown, 0);
+  assert.equal(r.migratePlan.last, 'PLAN ONLY: nothing was changed.');
+  const migrationScript = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
+  assert.match(migrationScript, /\$untrusted = Get-PathTrustReasons \$f \(Get-LegacyConfigWriters \$pair\[1\]\) \$false/u, 'Import-LegacyInstall judges each legacy config with its folder\'s writers');
 });
 
 test('migrate and install: the command line (the new parameters are validated, the lab ones are gated, migrate takes no approver values and accepts a typed hash or the explicit local-builds switch, never both)', { skip: !windows && 'Windows PowerShell only', timeout: 240_000 }, () => {
