@@ -8,12 +8,17 @@ namespace Albera.ApprovalAuthority;
 internal enum SigningProvider { Software, Tpm }
 
 // The Authority's service configuration: one small JSON file written by the installer, read once when the service starts, never written by the
-// Authority. Exactly these keys, all strings, nothing else:
+// Authority. Exactly these keys, all strings (except approverKeys, an array), nothing else:
 //   { "pipeRoot": "ALBERA\\ApprovalAuthority", "controlPlaneSid": "S-1-5-80-...", "approverSid": "S-1-5-21-...",
 //     "signingKeyName": "AlberaApprovalAuthority-2026-10", "signingKeyProvider": "tpm" | "software",
 //     "kid": "authority-key-2026-10", "approverKeyId": "hello-key-yosuke-01", "approverPublicKey": "<base64 SPKI, RSA-2048>",
 //     "audience": "albera-host-broker", "policyVersion": "policy-2026-10",
 //     "attestationKeyId": "broker-attest-2026-10", "attestationPublicKey": "<base64 SPKI, ECDSA P-256>" }   (the last two are optional, and only together)
+// The approver keys are given in ONE of two ways (docs/architecture/approver-webauthn.md, "Wire contract"):
+//   approverKeyId + approverPublicKey   the pair of an older config: one Hello key (kind hello-rsa, RSA-2048). Its id is whatever the installer chose.
+//   approverKeys                        1 to 16 key records [{ "keyId", "kind", "alg", "publicKey", "credentialId"? }] (ApproverKeyRules.TryRead); every id is the derived one.
+// Both together are `config_approver_keys` (so is a bad list), neither is `config_keys`. The first key also answers to ApproverKeyId / ApproverPublicKey below. The keys here are only the start-up
+// list: the Authority copies them into approver-keys.json (ApproverKeyStore.cs) when that file is missing, and from then on the file is the list.
 // attestationKeyId + attestationPublicKey pin the Broker's network attestation key (issue #115 step 3b). Without them no attestation is ever accepted and environment.start still
 // needs a person (unknown means prompt), so an existing config keeps working and loosens nothing. One without the other, or a key that is not a named
 // ECDSA P-256 public key, is `config_keys` / `attestation_key_id` / `attestation_public_key`: never a silent fallback.
@@ -23,12 +28,23 @@ internal enum SigningProvider { Software, Tpm }
 // fixed reason word (never the value itself). Production (strictSeparation) also refuses a Control Plane SID that equals the approver SID or the
 // service's own SID: the two pipes must belong to different principals. The config file must be owned and writable only by trusted principals.
 internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, string ApproverSid, string SigningKeyName, SigningProvider SigningProvider,
-    string Kid, string ApproverKeyId, byte[] ApproverPublicKey, string Audience, string PolicyVersion, string? AttestationKeyId = null, byte[]? AttestationPublicKey = null)
+    string Kid, string ApproverKeyId, byte[] ApproverPublicKey, string Audience, string PolicyVersion, string? AttestationKeyId = null, byte[]? AttestationPublicKey = null,
+    IReadOnlyList<ApproverKey>? ApproverKeys = null)
 {
-    private const int MaxFileBytes = 4096, MaxPathLength = 240, MaxPublicKeyBytes = 512;
+    /// <summary>The file this config was read from (set by TryLoad; null for a config parsed from bytes). approver-keys.json and policy.json live in its folder.</summary>
+    public string? ConfigPath { get; init; }
+
+    /// <summary>The Hello key of an older config's pair when its id is not the derived one (approver-keys.json may keep that id as the config gave it); null otherwise.</summary>
+    public ApproverKey? LegacyKey => ApproverKeys is [{ Kind: ApproverKeyKind.HelloRsa } only] && only.KeyId != ApproverKeyRules.DerivedId(only.Kind, only.PublicKey) ? only : null;
+
+    private const int MaxFileBytes = 32768, MaxPathLength = 240, MaxPublicKeyBytes = 512; // 16 key records with long credential ids do not fit 4 KiB
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
+    // The keys of a config with the older approver pair, which is what the installer writes today (test/host-install.test.mjs compares its output with this list). With approverKeys instead, the pair is not there.
     private static readonly string[] Keys = ["pipeRoot", "controlPlaneSid", "approverSid", "signingKeyName", "signingKeyProvider", "kid", "approverKeyId", "approverPublicKey", "audience", "policyVersion"];
+    private static readonly string[] PairKeys = ["approverKeyId", "approverPublicKey"];
+    private static readonly string[] CommonKeys = [.. Keys.Except(PairKeys)];
     private static readonly string[] AttestationKeys = ["attestationKeyId", "attestationPublicKey"];
+    private const string KeyListKey = "approverKeys";
     private static readonly Regex IdRegex = ActionDigest.FromEcma(ActionDigest.IdPattern);
     private static readonly Regex AudienceRegex = ActionDigest.FromEcma("^[a-z][a-z0-9-]{0,63}$");
     private static readonly Regex KeyNameRegex = ActionDigest.FromEcma("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$");
@@ -43,7 +59,7 @@ internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, 
         public const string ConfigPath = "config_path", Unreadable = "config_unreadable", TooLarge = "config_too_large", Syntax = "config_syntax",
             Keys = "config_keys", PipeRoot = "pipe_root", ControlPlaneSid = "control_plane_sid", ApproverSid = "approver_sid", SidsNotDistinct = "sids_not_distinct",
             SigningKey = "signing_key", SigningProvider = "signing_provider", Kid = "kid", ApproverKeyId = "approver_key_id", ApproverPublicKey = "approver_public_key",
-            Audience = "audience", PolicyVersion = "policy_version", AttestationKeyId = "attestation_key_id", AttestationPublicKey = "attestation_public_key", ConfigUntrusted = "config_untrusted", ConfigFolderUntrusted = "config_folder_untrusted";
+            Audience = "audience", PolicyVersion = "policy_version", AttestationKeyId = "attestation_key_id", AttestationPublicKey = "attestation_public_key", ApproverKeys = "config_approver_keys", ConfigUntrusted = "config_untrusted", ConfigFolderUntrusted = "config_folder_untrusted";
     }
 
     public static AuthorityConfig? TryLoad(string configPath, bool strictSeparation, out string reason)
@@ -66,7 +82,8 @@ internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, 
             reason = Reason.Unreadable;
             return null;
         }
-        return TryParse(bytes, strictSeparation, out reason);
+        AuthorityConfig? parsed = TryParse(bytes, strictSeparation, out reason);
+        return parsed is null ? null : parsed with { ConfigPath = configPath };
     }
 
     internal static AuthorityConfig? TryParse(byte[] json, bool strictSeparation, out string reason)
@@ -74,7 +91,7 @@ internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, 
         reason = Reason.Syntax;
         ReadOnlyMemory<byte> text = json.AsSpan().StartsWith(Utf8Bom) ? json.AsMemory(Utf8Bom.Length) : json;
         JsonDocument document;
-        try { document = JsonDocument.Parse(text, new JsonDocumentOptions { MaxDepth = 2 }); }
+        try { document = JsonDocument.Parse(text, new JsonDocumentOptions { MaxDepth = 3 }); }
         catch (JsonException) { return null; }
         using (document)
         {
@@ -83,9 +100,11 @@ internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, 
             if (root.ValueKind != JsonValueKind.Object) return null;
             HashSet<string> seen = new(StringComparer.Ordinal);
             foreach (JsonProperty property in root.EnumerateObject())
-                if (property.Value.ValueKind != JsonValueKind.String || !seen.Add(property.Name)) return null; // all strings; a repeated key is ambiguous
+                if (property.Value.ValueKind != (property.Name == KeyListKey ? JsonValueKind.Array : JsonValueKind.String) || !seen.Add(property.Name)) return null; // all strings (the key list an array); a repeated key is ambiguous
+            bool list = seen.Contains(KeyListKey);
+            if (list && PairKeys.Any(seen.Contains)) { reason = Reason.ApproverKeys; return null; } // the pair and the list together: which one is the truth?
             int pinned = AttestationKeys.Count(seen.Contains);
-            if (pinned is not (0 or 2) || seen.Count != Keys.Length + pinned || !Keys.All(seen.Contains)) return null; // the attestation key is both keys or neither
+            if (pinned is not (0 or 2) || seen.Count != CommonKeys.Length + pinned + (list ? 1 : PairKeys.Length) || !CommonKeys.All(seen.Contains) || !(list || PairKeys.All(seen.Contains))) return null; // the attestation key is both keys or neither
             string Get(string name) => root.GetProperty(name).GetString()!;
 
             string pipeRoot = Get("pipeRoot"), cpSid = Get("controlPlaneSid"), approverSid = Get("approverSid");
@@ -103,10 +122,21 @@ internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, 
             if (Get("signingKeyProvider") is not ("software" or "tpm")) return null;
             reason = Reason.Kid;
             if (!IdRegex.IsMatch(Get("kid"))) return null;
-            reason = Reason.ApproverKeyId;
-            if (!IdRegex.IsMatch(Get("approverKeyId"))) return null;
-            reason = Reason.ApproverPublicKey;
-            if (DecodeApproverKey(Get("approverPublicKey")) is not { } approverKey) return null;
+            IReadOnlyList<ApproverKey> approverKeys;
+            if (list)
+            {
+                reason = Reason.ApproverKeys;
+                if (ApproverKeyRules.TryReadList(root.GetProperty(KeyListKey)) is not { } many) return null;
+                approverKeys = many;
+            }
+            else
+            {
+                reason = Reason.ApproverKeyId;
+                if (!IdRegex.IsMatch(Get("approverKeyId"))) return null;
+                reason = Reason.ApproverPublicKey;
+                if (DecodeApproverKey(Get("approverPublicKey")) is not { } pairKey) return null;
+                approverKeys = [ApproverKeyRules.TryCreate(Get("approverKeyId"), ApproverKeyRules.HelloRsaKind, ApproverKeyRules.HelloRsaAlg, pairKey, null, requireDerivedId: false) ?? throw new InvalidOperationException()]; // checked just above
+            }
             reason = Reason.Audience;
             if (!AudienceRegex.IsMatch(Get("audience"))) return null;
             reason = Reason.PolicyVersion;
@@ -125,7 +155,7 @@ internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, 
 
             reason = "";
             return new AuthorityConfig(pipeRoot, cpSid, approverSid, Get("signingKeyName"), Get("signingKeyProvider") == "tpm" ? SigningProvider.Tpm : SigningProvider.Software,
-                Get("kid"), Get("approverKeyId"), approverKey, Get("audience"), Get("policyVersion"), attestationKeyId, attestationKey);
+                Get("kid"), approverKeys[0].KeyId, approverKeys[0].PublicKey, Get("audience"), Get("policyVersion"), attestationKeyId, attestationKey, approverKeys);
         }
     }
 

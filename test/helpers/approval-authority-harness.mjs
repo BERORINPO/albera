@@ -3,7 +3,7 @@
 // installs, registers or elevates anything; pipe names are random and same-user. Generic process plumbing comes from windows-broker-harness.mjs.
 import { execFile, execFileSync } from 'node:child_process';
 import { constants, createPublicKey, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { currentUserSid, makeTrustedTempDirectory, repositoryRoot, standInService, startProcess, waitForExit, waitForLine } from './windows-broker-harness.mjs';
@@ -84,8 +84,12 @@ export async function pipeCall(exe, pipeName, request, { declaredLength, raw } =
 /**
  * Start `serve-loop` (real pipes, in-memory signer). Resolves with { child, config, configFile, publicKey, submit, approver, stop }.
  * `submit(request)` / `approver(request)` call the two pipes. `stop()` closes stdin (plays SERVICE_CONTROL_STOP) and returns the exit code.
+ * A new config is a new approver: like the installer's `-Mode set-approver` (config written, key store deleted), this removes approver-keys.json from `directory` first, so the Authority seeds it
+ * from THIS config's keys, and removes it again when the Authority stops (it is runtime state; tests share a folder). `keepKeyStore: true` does neither: a plain restart with the same config, where
+ * the file is the key list with the keys and sign counts it has.
  */
-export async function startAuthority(exe, directory, { config = makeConfig(), presence = 'real', ttl = 120 } = {}) {
+export async function startAuthority(exe, directory, { config = makeConfig(), presence = 'real', ttl = 120, keepKeyStore = false } = {}) {
+  if (!keepKeyStore) rmSync(path.join(directory, 'approver-keys.json'), { force: true });
   const configFile = writeConfig(directory, config, `config-${randomBytes(4).toString('hex')}.json`);
   const child = startProcess(exe, standInService('serve-loop', configFile, presence, String(ttl)), { stdin: true });
   await waitForLine(child, 'AUTHORITY_READY');
@@ -96,6 +100,11 @@ export async function startAuthority(exe, directory, { config = makeConfig(), pr
     child, config, configFile, publicKey, submitPipe, approverPipe,
     submit: (request, options) => pipeCall(exe, submitPipe, request, options),
     approver: (request, options) => pipeCall(exe, approverPipe, request, options),
-    async stop() { if (child.closeCode === undefined) child.stdin.end(); return waitForExit(child); },
+    async stop() {
+      if (child.closeCode === undefined) child.stdin.end();
+      const code = await waitForExit(child);
+      if (!keepKeyStore) rmSync(path.join(directory, 'approver-keys.json'), { force: true });
+      return code;
+    },
   };
 }
