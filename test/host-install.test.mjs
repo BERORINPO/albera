@@ -1469,13 +1469,16 @@ test('the pins and the launcher: claude.exe comes from the approver\'s own profi
   assert.deepEqual({ ...r.open }, { ascii: true, parseErrors: 0, crlf: true, hasService: true, hasRoomFile: true, noPlaceholder: true });
   const runs = r.openRuns;
   assert.deepEqual(runs.good, { exited: false, started: ['http://127.0.0.1:51234/room/#b=AbCdEfGhIjKlMnOpQrStUv_-12'], said: '' }, 'the fragment form of section 4: the code never goes to the server');
-  for (const name of ['serviceStopped', 'noFile', 'notJson', 'codeWithSpace', 'codeShort', 'portLow', 'portText', 'pidText', 'otherProcessHoldsThePort', 'nobodyHoldsThePort']) {
+  assert.deepEqual(runs.listenStateNotReported, runs.good, 'a listening socket reported with state 0 (Windows 11 build 26300) is still found: it is the one with remote port 0');
+  for (const name of ['serviceStopped', 'noFile', 'notJson', 'codeWithSpace', 'codeShort', 'portLow', 'portText', 'pidText', 'otherProcessHoldsThePort', 'nobodyHoldsThePort', 'onlyAnAcceptedConnection']) {
     assert.equal(runs[name].exited, true, `${name}: the launcher stops`);
     assert.deepEqual(runs[name].started, [], `${name}: and opens nothing`);
     assert.match(runs[name].said, /ALBERA: /u, `${name}: and says why`);
   }
   assert.match(runs.serviceStopped.said, /AlberaControlPlane is Stopped/u);
   assert.match(runs.otherProcessHoldsThePort.said, /not held by the ALBERA process/u, 'the PID that owns the port is the one room.json names (section 4, port squatting)');
+  assert.match(runs.onlyAnAcceptedConnection.said, /not held by the ALBERA process/u, 'a connection the process accepted on that port is not a listener: the room is gone');
+  assert.match(runs.nobodyHoldsThePort.said, /not held by the ALBERA process/u, 'no socket at all gives the fixed reason, not the cmdlet\'s not-found error');
 });
 
 test('shortcuts and the Run entry: the contract\'s names, the full path of powershell.exe, the approver tray under HKLM Run', needsWindows, () => {
