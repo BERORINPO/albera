@@ -1,6 +1,6 @@
 # Runtime Architecture Implementation Progress
 
-**Updated:** 2026-11-03 (newest entries are at the end of this file)
+**Updated:** 2026-11-04 (newest entries are at the end of this file)
 **Working branch:** one branch per item from `origin/main` (`albera-goal` skill). Until 2026-10-28 the work was stacked on `codex/runtime-architecture-alignment`.
 **Runtime source/test HEAD audited (2026-10-28):** `9b8174759421fe1d176dadd9c70471487ea241fc` (adds the ADR-002 Mock IPC contract tests; runtime production code is unchanged); PR #19 is stacked on PR #17 head `8a829d116e39ca10f273594f409f38315f20570f`. Analysis is in `runtime-gap-analysis.md`.
 **Architecture source:** PR #18 head `b7684740322bda5a4e2d1233299bca251d95ed6c` (Proposed, independent branch; its absence from the Runtime branch is intentional).
@@ -17,14 +17,12 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 - これで進むもの: 漏れたキーの後始末 (stage 1 を動かすのには不要)
 - 取り消し: できない (無効にしたキーは元に戻らない)
 
-### 初回の移行とサブスクでの初動作 (stage 1)
-- やること: `U:\dev\artifacts\albera-owner-run-2026-11-04\手順.md` のとおり、次の 3 つを行う
-  1. `C:\dev\albera-owner-1104\owner\migrate.cmd` をダブルクリックし、UAC で「はい」を押す
-  2. `token.cmd` を実行し、トークンを room の資格情報欄に保存する
-  3. VM を起動し、作業を 1 つ送って、照合コードと Hello で承認する
-- 所要: 約 10 分 (Yosuke の作業時間)
-- これで進むもの: stage 1 の受入。所有者の PC での初めての通し確認
-- 取り消し: できる (`-Mode uninstall`。Hello の鍵は消えない)
+### サブスクでの最初のジョブ (stage 1 の残り)
+- 済み (2026-11-04): 移行、3 つのサービスの起動、トークンの保存、VM の起動
+- やること: PC の前に座り、リモートデスクトップではなく PC で直接サインインする (リモートデスクトップの中では Windows Hello が使えない。2026-11-04 に測定)。それからベロに「出して」と送る。ベロがジョブを申請したら、承認の窓「ALBERA 承認の依頼」で、ベロが伝えた 4 桁を押し、Windows Hello で確定する。窓は約 2 分で閉じる
+- 所要: 約 2 分 (Yosuke の作業時間)
+- これで進むもの: stage 1 の受入。サービスの身元で claude.exe が動く確認 (M4) と、本物の Hello での承認 (M14)
+- 取り消し: できる (ジョブは「全部止める」で止まる。承認しなければ何も起きない)
 
 ### 戻せる承認の採択 (AGM-1・AGM-2)
 - やること: ADR-002 Amendment 2026-11-04 (#195、Proposed) を読み、次の 2 点を承認するか決める
@@ -582,3 +580,17 @@ Merged on main since the previous entry, all on 2026-11-03 (UTC): #189 (13:47), 
 - **Defects found and fixed in the same PR.** (1) `Import-LegacyInstall` judged the two legacy configs with SYSTEM and Administrators as the only allowed writers. The first layout gave the Authority's service SID Modify on `authority\`, and its config inherits that, so every real migration stopped at step 1 with `legacy_file_untrusted:writer_untrusted:S-1-5-80-...`. Each config is now judged with the writers its folder's plan allows (`Get-LegacyConfigWriters`), the same test `-Mode status` makes; any other write right, including the Broker's on the Authority config, is still refused. (2) `-Mode plan -PlanFor migrate` tested the install steps against the first-layout record and showed the first as blocked; they run after the uninstall, so the plan shows them as todo. The fake-machine harness replaces `Get-PathTrustReasons`, which is why (1) passed every unit test.
 - **Lab finding, not a product change.** A profile made by a scheduled task or a service stays loaded after the task or service has ended, and `Win32_UserProfile` refuses to delete a loaded profile (migrate says so and leaves the folder). The lab starts `albera-cp`'s one program with `Start-Process -Credential -LoadUserProfile` (what `runas` does), whose profile is unloaded when the program ends.
 - **Not shown by this run.** The "stop `albera-cp`'s processes by PID" step (nothing of `albera-cp` could stay alive in a PowerShell Direct session; fakes cover it), the old Control Plane itself, the VM lookup by name, a real Hello key, provenance of the builds (`-TrustLocalBuilds`), and anything on a real PC.
+
+## 2026-11-04 — owner run on the real PC (stage 1, partial)
+
+- **Migrate ran on the owner's PC** (`owner\migrate.cmd` over the files of 42f6b77, hashes compared before the run). All three services are RUNNING as their virtual accounts, delayed-auto, and the tray (`AlberaApprover --tray`) runs as the owner. A second launch of migrate.cmd after the first had already succeeded stopped with NOT DONE: migrate does not detect "already migrated" (open item).
+- **Room under the service identity: VERIFIED.** `room-service` listens on 127.0.0.1 under the Control Plane service. `ui\room.json` is user-readable and rotates its one-time code after each use. The credential store (DPAPI through the helper) saved and erased a dummy value under the service.
+- **"Open ALBERA" never opened the room** on this PC (Windows 11 build 26300). `Get-NetTCPConnection -State Listen` finds no socket: the room's listener is reported with state 0, and so are 199 of the machine's listeners (9 report Listen). Fixed in #199 (remote port 0 + the PID room.json names). The script built from #199 opened the room on this PC; at the same time, the installed one stopped with "not held by the ALBERA process". Zaku: no findings. Merge waits for a disposable-VM run (host memory: the owner's clone VM is running).
+- **The token pasted into the Credentials field was refused** (`invalid_value`, most likely spaces around the copied token). The field emptied as designed, so the owner read it as saved. Fixed in #200 (copy artifacts trimmed, a refused save marked and announced). The token was stored through an owner-side helper (`owner\token.cmd` + `save-token.mjs`): it reads the clipboard, keeps exactly one `sk-ant-oat…` paragraph, posts it to the room like the field does, and empties the clipboard. `claude-oauth-token` present=true.
+- **First job: not yet.** The VM `albera-clone-01` was Running (heartbeat OK, 2 GB assigned, 4 GB max; host free 6.1 GB). Four `task.start` requests for clone-01 were submitted through the room's job route (state `awaiting_approval` with a match code). Each one ended `refused (start_expired)` after about 110 s without a decision.
+  - While the third was pending, `AlberaApprover.exe list` (as the owner) listed it with the digest check OK. The tray's process had a visible window titled "ALBERA 承認の依頼". So the Authority, the pipe to the approver and the window all work.
+  - **Cause: the owner was signed in over Remote Desktop.** `query session` shows the owner's session as `rdp-tcp#1` (the console session had nobody signed in), and the tray runs in that session. A probe in the same session that shows no prompt (`KeyCredentialManager.IsSupportedAsync()` and `OpenAsync`, Windows PowerShell 5.1) returned `IsSupported: False` with `SM_REMOTESESSION` true, and `OpenAsync` threw. With Hello unsupported, `WindowsHelloPresenceSigner.Sign` returns `NotReady`, `SignAndDecideAsync` sends nothing (`presence_signer_unavailable`, hint "run enroll"), and the request stays pending until it expires. That matches four expiries with no decision. The approval has to be made at the PC itself. Expected, not yet observed: a console sign-in reconnects the same session, so the tray keeps running.
+  - Open item (approver, security tier): in a remote session the approver should say plainly that Hello does not work over Remote Desktop, instead of the "run enroll" hint, and say it before the person presses the digits.
+  - Observed for the approver UX (security tier, not changed here): the window opens without taking focus and can sit behind other windows; the request expires in about 2 minutes; `list` shows the Japanese task as `\u{30E1}…` escapes (exact, not normalized). Whether the window shows the same escapes is not checked.
+- **Local `npm test` on a PC with ALBERA installed:** 17 failures, all in tests that assume no install on the machine (e.g. "status with nothing installed", "with no Authority service on this machine") or need Windows build artifacts that a fresh worktree lacks. CI runs on clean runners. Open item: such tests should skip when a real install is present.
+- **Not verified yet:** `claude.exe` starting as the service identity (M4), approval with the real Windows Hello (M14), the job's effect inside the VM, in-place update, the "ALBERA update" shortcut.
