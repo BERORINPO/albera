@@ -30,6 +30,11 @@ function Get-HostConstants {
     RunValueName = 'AlberaApprover'
     FailureResetSeconds = 86400
     FailureRestartMilliseconds = 5000   # sc failure: restart after 5 s, twice, then leave stopped (control-plane-service.md section 2)
+    MaxApproverKeys = 16   # approver-webauthn.md, "Wire contract": approverKeys holds 1 to 16 key records
+    MaxApproverKeyFileBytes = 4096   # one canonical record is at most about 2.4 KB (RSA-4096 and a 1023-byte credential id); anything bigger is not one
+    AuthorityKeyStoreMaxBytes = 32768   # ApproverKeyStore.MaxFileBytes: the Authority writes no bigger file and refuses one on start, so set-approver reads no bigger one (compared with the C# source by a test)
+    AuthorityConfigMaxBytes = 32768   # AuthorityConfig.MaxFileBytes: the Authority reads no bigger config (16 key records with long credential ids do not fit 4 KiB); compared with the C# source by a test
+    MaxApproverKeyMetadataBytes = 1900   # ApproverKeyRules.MaxMetadataBytes: the `keys` reply (ids, kinds, credential ids of all keys) must fit one frame, so a list whose metadata is bigger is refused by the Authority
   }
 }
 
@@ -69,6 +74,7 @@ function Get-HostLayout([string]$ProgramFiles, [string]$ProgramData) {
     BrokerDb = Join-Path $data 'broker\journal.sqlite'
     AuthorityDir = Join-Path $data 'authority'
     AuthorityConfig = Join-Path $data ('authority\' + $c.AuthorityService + '.service.json')
+    AuthorityKeyStore = Join-Path $data 'authority\approver-keys.json'   # written by the Authority only (approver-webauthn.md, "Key store"); set-approver deletes it, uninstall knows it
     ControlPlaneDir = Join-Path $data 'control-plane'   # the Control Plane's own working data: full control for its service SID
     ControlPlaneLogDir = Join-Path $data 'control-plane\logs'
     ControlPlaneJournal = Join-Path $data 'control-plane\operations.sqlite'
@@ -91,7 +97,7 @@ function Get-KnownDataFiles {
     'install-manifest.json',
     'broker-config\AlberaHostBroker.service.json',
     'broker\journal.sqlite', 'broker\journal.sqlite-wal', 'broker\journal.sqlite-shm', 'broker\journal.sqlite-journal',
-    'authority\AlberaApprovalAuthority.service.json', 'authority\policy.json',
+    'authority\AlberaApprovalAuthority.service.json', 'authority\policy.json', 'authority\approver-keys.json',
     'control-plane\albera.approval.json', 'control-plane\operations.sqlite', 'control-plane\operations.sqlite-wal', 'control-plane\operations.sqlite-shm',
     'control-plane-config\AlberaControlPlane.service.json', 'control-plane-config\albera.approval.json'
   )
@@ -185,6 +191,307 @@ function Test-ApproverValues($Shown, [string]$ExpectedKeyId, [string]$ControlPla
   if ($ControlPlaneSid -and ($Shown.approverSid -ceq $ControlPlaneSid)) { $reasons.Add('approver_sid_equals_control_plane_sid') }
   , @($reasons)
 }
+# The SID half of the above, for an install whose keys come from key record files (-ApproverKeyFile): the keys have their own checks (Test-ApproverKeyRecord), the SID is still typed.
+function Test-ApproverSidValue([string]$ApproverSid, [string]$ControlPlaneSid) {
+  $reasons = New-Object System.Collections.Generic.List[string]
+  if (-not (Test-AccountSidShape $ApproverSid)) { $reasons.Add('approver_sid_not_a_user_sid') }
+  if ($ControlPlaneSid -and ($ApproverSid -ceq $ControlPlaneSid)) { $reasons.Add('approver_sid_equals_control_plane_sid') }
+  , @($reasons)
+}
+
+# ---------------------------------------------------------------------------------------------- approver key records (approver-webauthn.md, "Wire contract (fixed for phases 2 to 4)")
+# A key record is public data only: { keyId, kind, alg, publicKey [, credentialId] }. The owner's session writes the record file (`AlberaApprover.exe enroll --webauthn` puts it in
+# %LOCALAPPDATA%\Albera\approver-keys\<keyId>.json) and the ELEVATED installer reads it, so every rule of the contract is checked here and the canonical bytes are required (one text per record, no room for
+# an ambiguity between what was checked and what is written). Reasons are fixed words; nothing the file said is ever echoed. Everything in this section is pure: values in, values out.
+function ConvertTo-Base64UrlNoPad([byte[]]$Bytes) { [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_') }
+# base64url WITHOUT padding -> bytes, or $null. One text per value: the bytes must encode back to exactly this text (no stray trailing bits, no padding, no other alphabet). \z, not $: a trailing newline must not pass.
+function ConvertFrom-Base64UrlNoPad([string]$Text) {
+  if ([string]::IsNullOrEmpty($Text) -or $Text.Length -gt 1400 -or $Text -cnotmatch '^[A-Za-z0-9_-]+\z' -or ($Text.Length % 4) -eq 1) { return $null }
+  $standard = $Text.Replace('-', '+').Replace('_', '/')
+  while (($standard.Length % 4) -ne 0) { $standard += '=' }
+  try { $bytes = [Convert]::FromBase64String($standard) } catch { return $null }
+  if ((ConvertTo-Base64UrlNoPad $bytes) -cne $Text) { return $null }
+  , $bytes
+}
+# Ordinary base64 WITH padding, one text per value (the same round-trip rule). The SPKI of a key is at most about 1 KB, so the text is bounded.
+function ConvertFrom-Base64Strict([string]$Text) {
+  if ([string]::IsNullOrEmpty($Text) -or $Text.Length -gt 1400 -or $Text -cnotmatch '^[A-Za-z0-9+/]+={0,2}\z' -or ($Text.Length % 4) -ne 0) { return $null }
+  try { $bytes = [Convert]::FromBase64String($Text) } catch { return $null }
+  if ([Convert]::ToBase64String($bytes) -cne $Text) { return $null }
+  , $bytes
+}
+# webauthn- or hello- plus the first 8 bytes of SHA-256 over the SPKI DER, lower-case hex ("Keys" in the design).
+function Get-ApproverKeyIdFor([string]$Kind, [byte[]]$Spki) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try { $hash = $sha.ComputeHash($Spki) } finally { $sha.Dispose() }
+  $prefix = if ($Kind -ceq 'webauthn') { 'webauthn-' } else { 'hello-' }
+  $prefix + (([BitConverter]::ToString($hash, 0, 8) -replace '-', '').ToLowerInvariant())
+}
+
+# One DER element at $Offset: @{ Tag; Start; Length; End }, or $null. Strict: single-byte tags, definite and minimal lengths, and the element stays inside $Bytes.
+function Read-DerElement([byte[]]$Bytes, [int]$Offset) {
+  if ($Offset -lt 0 -or ($Offset + 2) -gt $Bytes.Length) { return $null }
+  $tag = [int]$Bytes[$Offset]
+  if (($tag -band 0x1F) -eq 0x1F) { return $null }
+  $first = [int]$Bytes[$Offset + 1]
+  $position = $Offset + 2
+  if ($first -lt 0x80) { $length = $first }
+  else {
+    $count = $first -band 0x7F
+    if ($count -lt 1 -or $count -gt 3 -or ($position + $count) -gt $Bytes.Length) { return $null }
+    if ($Bytes[$position] -eq 0) { return $null }   # not minimal
+    $length = 0
+    for ($i = 0; $i -lt $count; $i++) { $length = ($length -shl 8) -bor [int]$Bytes[$position + $i] }
+    $position += $count
+    if ($length -lt 0x80) { return $null }   # the long form is for 128 and up
+  }
+  if (($position + $length) -gt $Bytes.Length) { return $null }
+  [pscustomobject]@{ Tag = $tag; Start = $position; Length = $length; End = ($position + $length) }
+}
+function Test-BytesEqualAt([byte[]]$Bytes, [int]$Offset, [byte[]]$Expected) {
+  if ($Offset -lt 0 -or ($Offset + $Expected.Length) -gt $Bytes.Length) { return $false }
+  for ($i = 0; $i -lt $Expected.Length; $i++) { if ($Bytes[$Offset + $i] -ne $Expected[$i]) { return $false } }
+  $true
+}
+$script:RsaEncryptionOid = [byte[]](0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01)   # 1.2.840.113549.1.1.1
+# An RSA SubjectPublicKeyInfo: SEQUENCE { SEQUENCE { OID rsaEncryption, NULL }, BIT STRING { 0, SEQUENCE { INTEGER n, INTEGER e } } }, every length exact. -> @{ Bits; Exponent } or $null.
+function Get-RsaSpkiInfo([byte[]]$Spki) {
+  $outer = Read-DerElement $Spki 0
+  if ($null -eq $outer -or $outer.Tag -ne 0x30 -or $outer.End -ne $Spki.Length) { return $null }
+  $algorithm = Read-DerElement $Spki $outer.Start
+  if ($null -eq $algorithm -or $algorithm.Tag -ne 0x30) { return $null }
+  $oid = Read-DerElement $Spki $algorithm.Start
+  if ($null -eq $oid -or $oid.Tag -ne 0x06 -or $oid.Length -ne $script:RsaEncryptionOid.Length -or -not (Test-BytesEqualAt $Spki $oid.Start $script:RsaEncryptionOid)) { return $null }
+  $nul = Read-DerElement $Spki $oid.End
+  if ($null -eq $nul -or $nul.Tag -ne 0x05 -or $nul.Length -ne 0 -or $nul.End -ne $algorithm.End) { return $null }
+  $bits = Read-DerElement $Spki $algorithm.End
+  if ($null -eq $bits -or $bits.Tag -ne 0x03 -or $bits.End -ne $outer.End -or $bits.Length -lt 2 -or $Spki[$bits.Start] -ne 0) { return $null }
+  $pair = Read-DerElement $Spki ($bits.Start + 1)
+  if ($null -eq $pair -or $pair.Tag -ne 0x30 -or $pair.End -ne $bits.End) { return $null }
+  $modulus = Read-DerElement $Spki $pair.Start
+  if ($null -eq $modulus -or $modulus.Tag -ne 0x02 -or $modulus.Length -lt 2) { return $null }
+  $exponent = Read-DerElement $Spki $modulus.End
+  if ($null -eq $exponent -or $exponent.Tag -ne 0x02 -or $exponent.End -ne $pair.End -or $exponent.Length -lt 1 -or $exponent.Length -gt 4) { return $null }
+  # n: a positive, minimal INTEGER (a leading 0x00 only when the next byte has its top bit set) and odd. e: positive, at most 4 bytes.
+  $lead = [int]$Spki[$modulus.Start]
+  if (($lead -band 0x80) -ne 0) { return $null }
+  $skip = 0
+  if ($lead -eq 0) { if (([int]$Spki[$modulus.Start + 1] -band 0x80) -eq 0) { return $null }; $skip = 1 }
+  if (([int]$Spki[$modulus.End - 1] -band 1) -eq 0) { return $null }
+  if (([int]$Spki[$exponent.Start] -band 0x80) -ne 0) { return $null }
+  $top = [int]$Spki[$modulus.Start + $skip]
+  $topBits = 0
+  while ($top -gt 0) { $topBits++; $top = $top -shr 1 }
+  $value = [long]0
+  for ($i = $exponent.Start; $i -lt $exponent.End; $i++) { $value = ($value -shl 8) -bor [long]$Spki[$i] }
+  [pscustomobject]@{ Bits = (8 * ($modulus.Length - $skip - 1)) + $topBits; Exponent = $value }
+}
+# True when the 91-byte P-256 SPKI holds a point that is ON the curve: Windows' own CNG refuses to import one that is not (probed in Windows PowerShell 5.1), and the Authority imports it the same way.
+function Test-P256PointOnCurve([byte[]]$Spki) {
+  try {
+    $blob = ConvertFrom-P256Spki ([Convert]::ToBase64String($Spki))
+    $key = [System.Security.Cryptography.CngKey]::Import($blob, [System.Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob)
+    $key.Dispose()
+    $true
+  }
+  catch { $false }
+}
+
+# The contract's rules on the key material itself. $Record has passed the field checks (right fields, right types). Reasons are fixed words.
+function Test-ApproverKeyMaterial($Record) {
+  $reasons = New-Object System.Collections.Generic.List[string]
+  $kind = [string]$Record.kind
+  $alg = [long]$Record.alg
+  if ($Record.keyId -cnotmatch '^(webauthn|hello)-[0-9a-f]{16}\z') { $reasons.Add('record_key_id_form') }
+  elseif (-not $Record.keyId.StartsWith($(if ($kind -ceq 'webauthn') { 'webauthn-' } else { 'hello-' }), [System.StringComparison]::Ordinal)) { $reasons.Add('record_key_id_form') }
+  if ($kind -ceq 'hello-rsa') { if ($alg -ne -257) { $reasons.Add('record_alg') } }
+  elseif ($alg -ne -7 -and $alg -ne -257) { $reasons.Add('record_alg') }
+  $spki = ConvertFrom-Base64Strict $Record.publicKey
+  if ($null -eq $spki) { $reasons.Add('record_public_key_encoding') }
+  else {
+    if ($alg -eq -7) {
+      if ($spki.Length -ne 91 -or -not (Test-BytesStartWith $spki $script:P256SpkiPrefix)) { $reasons.Add('record_curve') }   # not a P-256 key (another curve, or not an EC key at all)
+      elseif (-not (Test-P256PointOnCurve $spki)) { $reasons.Add('record_point_not_on_curve') }
+    }
+    elseif ($alg -eq -257) {
+      $info = Get-RsaSpkiInfo $spki
+      if ($null -eq $info) { $reasons.Add('record_public_key_not_rsa') }
+      else {
+        if ($info.Exponent -ne 65537) { $reasons.Add('record_rsa_exponent') }
+        $sizeOk = if ($kind -ceq 'hello-rsa') { $info.Bits -eq 2048 } else { $info.Bits -ge 2048 -and $info.Bits -le 4096 }   # webauthn: 2048 or larger (capped at 4096 here, fail-safe); hello-rsa: exactly 2048
+        if (-not $sizeOk) { $reasons.Add('record_rsa_size') }
+      }
+    }
+    if ((Get-ApproverKeyIdFor $kind $spki) -cne [string]$Record.keyId) { $reasons.Add('record_key_id_mismatch') }
+  }
+  if ($kind -ceq 'webauthn') {
+    $text = [string]$Record.credentialId
+    $credential = ConvertFrom-Base64UrlNoPad $text
+    if ($text.Length -eq 0 -or ($null -ne $credential -and ($credential.Length -lt 1 -or $credential.Length -gt 1023))) { $reasons.Add('record_credential_id_length') }
+    elseif ($null -eq $credential) { $reasons.Add('record_credential_id_form') }
+  }
+  , @($reasons)
+}
+# A parsed record (a PSCustomObject from ConvertFrom-Json, in the file or in the config) -> the reasons it is not a valid key record (empty = valid).
+function Test-ApproverKeyRecord($Record) {
+  $reasons = New-Object System.Collections.Generic.List[string]
+  if ($Record -isnot [System.Management.Automation.PSCustomObject]) { $reasons.Add('record_not_one_object'); return , @($reasons) }
+  $names = Get-ObjectKeys $Record
+  $kind = if ($names -ccontains 'kind') { $Record.kind } else { $null }
+  if ($kind -isnot [string] -or @('webauthn', 'hello-rsa') -cnotcontains $kind) { $reasons.Add('record_kind'); return , @($reasons) }
+  $expected = @('keyId', 'kind', 'alg', 'publicKey')
+  if ($kind -ceq 'webauthn') { $expected += 'credentialId' }
+  if (-not (Test-SameKeySet $Record $expected)) { $reasons.Add('record_fields'); return , @($reasons) }
+  $typesOk = ($Record.keyId -is [string]) -and ($Record.publicKey -is [string]) -and (($Record.alg -is [int]) -or ($Record.alg -is [long])) -and (($kind -ceq 'hello-rsa') -or ($Record.credentialId -is [string]))
+  if (-not $typesOk) { $reasons.Add('record_field_types'); return , @($reasons) }
+  foreach ($why in (Test-ApproverKeyMaterial $Record)) { $reasons.Add($why) }
+  , @($reasons | Select-Object -Unique)
+}
+# The record as one ordered object (the fixed field order of the contract), whatever it was read from.
+function ConvertTo-ApproverKeyObject($Record) {
+  $o = [ordered]@{ keyId = [string]$Record.keyId; kind = [string]$Record.kind; alg = [int]$Record.alg; publicKey = [string]$Record.publicKey }
+  if ($o.kind -ceq 'webauthn') { $o['credentialId'] = [string]$Record.credentialId }
+  [pscustomobject]$o
+}
+# The canonical text of a VALID record: the fields in exactly that order, no spaces, no escapes (every string was matched against a plain alphabet first), credentialId left out for hello-rsa.
+function ConvertTo-ApproverKeyText($Record) {
+  $text = '{"keyId":"' + $Record.keyId + '","kind":"' + $Record.kind + '","alg":' + ([long]$Record.alg).ToString([System.Globalization.CultureInfo]::InvariantCulture) + ',"publicKey":"' + $Record.publicKey + '"'
+  if ($Record.kind -ceq 'webauthn') { $text += ',"credentialId":"' + $Record.credentialId + '"' }
+  $text + '}'
+}
+# The bytes of one record file -> @{ Ok; Reasons; Record }. Exactly one record, UTF-8 without a byte order mark, and the file IS its canonical form byte for byte (so no extra field, no space, no line break,
+# no other key order, no escape sequence, no repeated key can pass).
+function Read-ApproverKeyRecordBytes([byte[]]$Bytes) {
+  $c = Get-HostConstants
+  $fail = { param($why) [pscustomobject]@{ Ok = $false; Reasons = @($why); Record = $null } }
+  if ($Bytes.Length -eq 0) { return (& $fail 'record_empty') }
+  if ($Bytes.Length -gt $c.MaxApproverKeyFileBytes) { return (& $fail 'record_too_large') }
+  if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { return (& $fail 'record_bom') }
+  try { $text = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($Bytes) } catch { return (& $fail 'record_not_utf8') }
+  if ($text.TrimStart().StartsWith('[', [System.StringComparison]::Ordinal)) { return (& $fail 'record_not_one_object') }
+  try { $parsed = $text | ConvertFrom-Json } catch { return (& $fail 'record_syntax') }
+  if (@($parsed).Count -ne 1) { return (& $fail 'record_not_one_object') }
+  $reasons = Test-ApproverKeyRecord $parsed
+  if ($reasons.Count -gt 0) { return [pscustomobject]@{ Ok = $false; Reasons = @($reasons); Record = $null } }
+  $canonical = [System.Text.Encoding]::UTF8.GetBytes((ConvertTo-ApproverKeyText $parsed))
+  $same = ($canonical.Length -eq $Bytes.Length)
+  for ($i = 0; $same -and $i -lt $canonical.Length; $i++) { if ($canonical[$i] -ne $Bytes[$i]) { $same = $false } }
+  if (-not $same) { return (& $fail 'record_not_canonical') }
+  [pscustomobject]@{ Ok = $true; Reasons = @(); Record = (ConvertTo-ApproverKeyObject $parsed) }
+}
+# The metadata the Authority's `keys` reply carries for a list: [{"keyId","kind"[,"credentialId"]},...], compact, as ApproverKeyRules.MetadataJson writes it. Its size is capped (MaxApproverKeyMetadataBytes).
+function Get-ApproverKeyMetadataBytes($Records) {
+  $items = @(@($Records) | ForEach-Object { '{"keyId":"' + $_.keyId + '","kind":"' + $_.kind + '"' + $(if ($_.kind -ceq 'webauthn') { ',"credentialId":"' + $_.credentialId + '"' } else { '' }) + '}' })
+  [System.Text.Encoding]::UTF8.GetByteCount('[' + ($items -join ',') + ']')
+}
+# The rules of a whole key list (1 to 16 records; no key, credential or public key twice; the metadata of the list fits a reply). Reasons are fixed words. Same rules as ApproverKeyRules.Fits of the Authority.
+function Test-ApproverKeySet($Records) {
+  $c = Get-HostConstants
+  $reasons = New-Object System.Collections.Generic.List[string]
+  $items = @($Records)
+  if ($items.Count -lt 1) { $reasons.Add('approver_keys_none') }
+  if ($items.Count -gt $c.MaxApproverKeys) { $reasons.Add('approver_keys_too_many') }
+  # -CaseSensitive: base64 and base64url texts differ by case, and Sort-Object -Unique would otherwise take two different values for one
+  $ids = @($items | ForEach-Object { [string]$_.keyId })
+  if (@($ids | Sort-Object -Unique -CaseSensitive).Count -ne $ids.Count) { $reasons.Add('approver_keys_duplicate_key_id') }
+  $credentials = @($items | Where-Object { $_.kind -ceq 'webauthn' } | ForEach-Object { [string]$_.credentialId })
+  if (@($credentials | Sort-Object -Unique -CaseSensitive).Count -ne $credentials.Count) { $reasons.Add('approver_keys_duplicate_credential_id') }
+  $publicKeys = @($items | ForEach-Object { [string]$_.publicKey })
+  if (@($publicKeys | Sort-Object -Unique -CaseSensitive).Count -ne $publicKeys.Count) { $reasons.Add('approver_keys_duplicate_public_key') }
+  if ($items.Count -ge 1 -and (Get-ApproverKeyMetadataBytes $items) -gt $c.MaxApproverKeyMetadataBytes) { $reasons.Add('approver_keys_metadata_too_large') }   # long credential ids lower the number of keys that fit
+  , @($reasons)
+}
+# "webauthn-0123456789abcdef (webauthn), hello-... (hello-rsa)" for the lines a person reads.
+function Get-ApproverKeySummary($Records) { (@($Records) | ForEach-Object { "$($_.keyId) ($($_.kind))" }) -join ', ' }
+# True when two lists hold the same records in the same order.
+function Test-ApproverKeyListsEqual($A, $B) {
+  $x = @($A | ForEach-Object { ConvertTo-ApproverKeyText $_ }); $y = @($B | ForEach-Object { ConvertTo-ApproverKeyText $_ })
+  ($x.Count -eq $y.Count) -and ((($x -join "`n") -ceq ($y -join "`n")))
+}
+# The legacy pair (approverKeyId + approverPublicKey) as the one hello-rsa record the Authority reads it as. -> @{ Ok; Reasons; Record }. It is a record like any other, so it must pass every rule: a legacy id that is not
+# the hash of its key (or a key that is not RSA-2048 with exponent 65537) cannot be carried into approverKeys, and the caller says so instead of changing the id of a key.
+function ConvertFrom-LegacyApproverPair([string]$KeyId, [string]$PublicKey) {
+  $candidate = [pscustomobject]@{ keyId = $KeyId; kind = 'hello-rsa'; alg = -257; publicKey = $PublicKey }
+  $reasons = Test-ApproverKeyRecord $candidate
+  if ($reasons.Count -gt 0) { return [pscustomobject]@{ Ok = $false; Reasons = @($reasons); Record = $null } }
+  [pscustomobject]@{ Ok = $true; Reasons = @(); Record = (ConvertTo-ApproverKeyObject $candidate) }
+}
+# The bytes of authority\approver-keys.json (approver-webauthn.md, "Key store": {"v":1,"revision":n,"keys":[records],"signCounts":{"<keyId>":n}}) -> @{ Ok; Reasons; Records }. The records are judged by the same rules as a
+# key file's (Test-ApproverKeyRecord, then the list rules); the file is the Authority's, not a canonical record file, so its own formatting is not judged (a JSON writer may escape a '+' as \u002B).
+function Read-ApproverKeyStoreBytes([byte[]]$Bytes) {
+  $c = Get-HostConstants
+  $fail = { param($why) [pscustomobject]@{ Ok = $false; Reasons = @($why); Records = @() } }
+  if ($Bytes.Length -eq 0) { return (& $fail 'store_empty') }
+  if ($Bytes.Length -gt $c.AuthorityKeyStoreMaxBytes) { return (& $fail 'store_too_large') }
+  if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { return (& $fail 'store_bom') }
+  try { $text = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($Bytes) } catch { return (& $fail 'store_not_utf8') }
+  try { $o = $text | ConvertFrom-Json } catch { return (& $fail 'store_syntax') }
+  # '{' first: a top-level array of one store would come out of ConvertFrom-Json as that store
+  if (-not $text.TrimStart().StartsWith('{', [System.StringComparison]::Ordinal) -or $o -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $o @('v', 'revision', 'keys', 'signCounts'))) { return (& $fail 'store_fields') }
+  $isWhole = { param($n) ($n -is [int] -or $n -is [long]) -and $n -ge 0 -and $n -le 4294967295 }   # a sign count is a uint32
+  if (($o.v -isnot [int]) -or $o.v -ne 1) { return (& $fail 'store_version') }
+  if (-not (& $isWhole $o.revision) -or $o.revision -lt 1) { return (& $fail 'store_revision') }   # the Authority starts at revision 1
+  if ($o.keys -isnot [System.Array]) { return (& $fail 'store_keys') }
+  if ($o.signCounts -isnot [System.Management.Automation.PSCustomObject]) { return (& $fail 'store_sign_counts') }
+  $reasons = New-Object System.Collections.Generic.List[string]
+  $records = New-Object System.Collections.Generic.List[object]
+  foreach ($item in $o.keys) {
+    $why = Test-ApproverKeyRecord $item
+    if ($why.Count -gt 0) { foreach ($w in $why) { if (-not $reasons.Contains("store_key:$w")) { $reasons.Add("store_key:$w") } } }
+    else { $records.Add((ConvertTo-ApproverKeyObject $item)) }
+  }
+  if ($reasons.Count -eq 0) { foreach ($w in (Test-ApproverKeySet $records.ToArray())) { $reasons.Add("store_keys:$w") } }
+  if ($reasons.Count -gt 0) { return [pscustomobject]@{ Ok = $false; Reasons = @($reasons); Records = @() } }
+  # a sign count only for a registered key, and a whole number (the Authority refuses a store with a count for a key it does not hold)
+  foreach ($count in $o.signCounts.PSObject.Properties) {
+    $name = $count.Name
+    if (@($records | Where-Object { $_.keyId -ceq $name }).Count -eq 0 -or -not (& $isWhole $count.Value)) { return (& $fail 'store_sign_counts') }
+  }
+  [pscustomobject]@{ Ok = $true; Reasons = @(); Records = $records.ToArray() }
+}
+# The key list set-approver writes: the keys IN FORCE (the Authority's key store when there is one, otherwise the config's keys) plus the given records - or, with $Replace, the given records alone. The keys in force
+# come first, in their order; nothing is dropped without -Replace. A given keyId that is in force already is refused (not skipped), and so is a list over the limit. -> @{ Ok; Reasons; Records; Kept; Added; Removed }
+# Starting from the config alone would bring back a key that key_remove took out of the store (a lost device): the caller passes the store's keys whenever the store is there.
+function Get-SetApproverFinalKeys($InForce, $Given, [bool]$Replace) {
+  $c = Get-HostConstants
+  $given = @($Given); $inForce = @($InForce)
+  $reasons = New-Object System.Collections.Generic.List[string]
+  if ($Replace) { $final = $given; $kept = @(); $removed = @($inForce | Where-Object { $id = $_.keyId; -not (@($given | Where-Object { $_.keyId -ceq $id }).Count -gt 0) }) }
+  else {
+    $already = @($given | Where-Object { $id = $_.keyId; @($inForce | Where-Object { $_.keyId -ceq $id }).Count -gt 0 })
+    if ($already.Count -gt 0) { $reasons.Add('already_registered:' + (@($already | ForEach-Object { $_.keyId }) -join ',')) }
+    if ($inForce.Count + $given.Count -gt $c.MaxApproverKeys) { $reasons.Add('too_many_keys:' + ($inForce.Count + $given.Count)) }
+    $final = @($inForce) + @($given); $kept = $inForce; $removed = @()
+  }
+  if ($reasons.Count -eq 0) { foreach ($why in (Test-ApproverKeySet $final)) { $reasons.Add($why) } }
+  [pscustomobject]@{ Ok = ($reasons.Count -eq 0); Reasons = @($reasons); Records = @($final); Kept = @($kept); Added = $given; Removed = @($removed) }
+}
+
+# The install record's copy of the list: { keyId, kind } per key (public ids only). Used by Test-ManifestShape and by set-approver / install when they record a list.
+function Test-ApproverKeysManifestList($List) {
+  $c = Get-HostConstants
+  if ($List -isnot [System.Collections.IEnumerable] -or $List -is [string]) { return $false }
+  $items = @($List)
+  if ($items.Count -lt 1 -or $items.Count -gt $c.MaxApproverKeys) { return $false }
+  foreach ($e in $items) {
+    if ($e -isnot [System.Collections.IDictionary]) { return $false }
+    $keys = @($e.Keys)
+    if ($keys.Count -ne 2 -or $keys -cnotcontains 'keyId' -or $keys -cnotcontains 'kind') { return $false }
+    if ($e['keyId'] -isnot [string] -or $e['kind'] -isnot [string] -or $e['keyId'] -cnotmatch '^(webauthn|hello)-[0-9a-f]{16}\z') { return $false }
+    if (@('webauthn', 'hello-rsa') -cnotcontains $e['kind']) { return $false }
+    if (-not $e['keyId'].StartsWith($(if ($e['kind'] -ceq 'webauthn') { 'webauthn-' } else { 'hello-' }), [System.StringComparison]::Ordinal)) { return $false }
+  }
+  $true
+}
+function ConvertTo-ApproverKeysManifestValue($Records) {
+  $list = New-Object System.Collections.Generic.List[object]
+  foreach ($r in @($Records)) {
+    $d = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+    $d['keyId'] = [string]$r.keyId; $d['kind'] = [string]$r.kind
+    $list.Add($d)
+  }
+  , $list.ToArray()
+}
 
 # ---------------------------------------------------------------------------------------------- the three config files
 # $Computers is $null (or empty) for an install without -GrantHyperVToBroker: the config is then exactly the seven keys it always had. With it, the optional `computers` key is added last.
@@ -208,20 +515,32 @@ function Get-BrokerComputers([string]$ComputerId, [string]$VmId) {
   if (-not (Test-VmGuid $VmId)) { throw 'vm_id_invalid' }
   , @([ordered]@{ computerId = $ComputerId; vmId = $VmId })
 }
+# $Approver holds approverSid and EITHER the legacy pair (approverKeyId + approverPublicKey: one Windows Hello key) OR approverKeys (1 to 16 key records, approver-webauthn.md). Never both: the Authority
+# refuses a config that has the pair and the list (config_approver_keys), and this function will not write one.
 function Get-AuthorityConfig([string]$ControlPlaneSid, $Approver) {
   $c = Get-HostConstants
-  [ordered]@{
+  $hasList = $null -ne $Approver.PSObject.Properties['approverKeys']
+  $hasPair = ($null -ne $Approver.PSObject.Properties['approverKeyId']) -or ($null -ne $Approver.PSObject.Properties['approverPublicKey'])
+  if ($hasList -and $hasPair) { throw 'approver_pair_and_keys_together' }
+  $config = [ordered]@{
     pipeRoot = $c.AuthorityPipeRoot
     controlPlaneSid = $ControlPlaneSid
     approverSid = $Approver.approverSid
     signingKeyName = $c.SigningKeyName
     signingKeyProvider = $c.SigningKeyProvider
     kid = $c.AuthorityKid
-    approverKeyId = $Approver.approverKeyId
-    approverPublicKey = $Approver.approverPublicKey
-    audience = $c.Audience
-    policyVersion = $c.PolicyVersion
   }
+  if ($hasList) {
+    if (@($Approver.approverKeys).Count -lt 1) { throw 'approver_keys_empty' }
+    $config['approverKeys'] = @($Approver.approverKeys | ForEach-Object { ConvertTo-ApproverKeyObject $_ })
+  }
+  else {
+    $config['approverKeyId'] = $Approver.approverKeyId
+    $config['approverPublicKey'] = $Approver.approverPublicKey
+  }
+  $config['audience'] = $c.Audience
+  $config['policyVersion'] = $c.PolicyVersion
+  $config
 }
 # The settings of the approval flow (room-approval-wiring.mjs). The settings parser needs at least one computer; approval-check uses the first. There is NO attestation key (the Control Plane service
 # flow does not use one, PR #185 hand-over item 4); the parser reads a missing key as null, so approval-check is unaffected. The file sits in control-plane-config\ (the service can only READ it);
@@ -349,11 +668,19 @@ function Test-BrokerConfigText([string]$Json) {
   , @($reasons)
 }
 function Test-AuthorityConfigText([string]$Json) {
+  $c = Get-HostConstants
   $reasons = New-Object System.Collections.Generic.List[string]
-  if ((Get-ByteLength $Json) -gt 4096) { $reasons.Add('config_too_large'); return , @($reasons) }
+  $size = Get-ByteLength $Json
+  if ($size -gt $c.AuthorityConfigMaxBytes) { $reasons.Add('config_too_large'); return , @($reasons) }
   try { $o = $Json | ConvertFrom-Json } catch { $reasons.Add('config_syntax'); return , @($reasons) }
-  $expected = @('pipeRoot', 'controlPlaneSid', 'approverSid', 'signingKeyName', 'signingKeyProvider', 'kid', 'approverKeyId', 'approverPublicKey', 'audience', 'policyVersion')
-  $allStrings = @($o.PSObject.Properties | Where-Object { $_.Value -isnot [string] }).Count -eq 0
+  if ($o -isnot [System.Management.Automation.PSCustomObject]) { $reasons.Add('config_keys'); return , @($reasons) }
+  # Two shapes: the legacy pair (one Windows Hello key), or approverKeys (1 to 16 key records, approver-webauthn.md). Both together are refused, like the Authority refuses them.
+  $names = Get-ObjectKeys $o
+  $hasList = $names -ccontains 'approverKeys'
+  if ($hasList -and ($names -ccontains 'approverKeyId' -or $names -ccontains 'approverPublicKey')) { $reasons.Add('config_approver_keys'); return , @($reasons) }
+  if (-not $hasList -and $size -gt 4096) { $reasons.Add('config_too_large'); return , @($reasons) }   # the size the Authority has always read; only a key list needs more
+  $expected = @('pipeRoot', 'controlPlaneSid', 'approverSid', 'signingKeyName', 'signingKeyProvider', 'kid', 'audience', 'policyVersion') + $(if ($hasList) { @('approverKeys') } else { @('approverKeyId', 'approverPublicKey') })
+  $allStrings = @($o.PSObject.Properties | Where-Object { $_.Name -cne 'approverKeys' -and $_.Value -isnot [string] }).Count -eq 0
   if (-not (Test-SameKeySet $o $expected) -or -not $allStrings) { $reasons.Add('config_keys'); return , @($reasons) }
   if (-not (Test-PipeRoot $o.pipeRoot)) { $reasons.Add('pipe_root') }
   if (-not ((Test-AccountSidShape $o.controlPlaneSid) -or (Test-ServiceSidShape $o.controlPlaneSid))) { $reasons.Add('control_plane_sid') }
@@ -362,11 +689,61 @@ function Test-AuthorityConfigText([string]$Json) {
   if (-not (Test-KeyName $o.signingKeyName)) { $reasons.Add('signing_key') }
   if ($o.signingKeyProvider -cne 'software' -and $o.signingKeyProvider -cne 'tpm') { $reasons.Add('signing_provider') }
   if (-not (Test-HostId $o.kid)) { $reasons.Add('kid') }
-  if (-not (Test-HostId $o.approverKeyId)) { $reasons.Add('approver_key_id') }
-  if (-not (Test-Rsa2048Spki $o.approverPublicKey)) { $reasons.Add('approver_public_key') }
+  if ($hasList) { foreach ($why in (Test-AuthorityConfigKeyList $o.approverKeys)) { $reasons.Add($why) } }
+  else {
+    if (-not (Test-HostId $o.approverKeyId)) { $reasons.Add('approver_key_id') }
+    if (-not (Test-Rsa2048Spki $o.approverPublicKey)) { $reasons.Add('approver_public_key') }
+  }
   if (-not (Test-AudienceName $o.audience)) { $reasons.Add('audience') }
   if (-not (Test-HostId $o.policyVersion)) { $reasons.Add('policy_version') }
   , @($reasons)
+}
+# The approverKeys value of an Authority config: an array of 1 to 16 valid key records, no key, credential or public key twice. Reason words: approver_keys, approver_keys:<record or set reason>.
+function Test-AuthorityConfigKeyList($List) {
+  $reasons = New-Object System.Collections.Generic.List[string]
+  if ($List -isnot [System.Array]) { $reasons.Add('approver_keys'); return , @($reasons) }
+  $items = @($List)
+  $valid = New-Object System.Collections.Generic.List[object]
+  foreach ($item in $items) {
+    $why = Test-ApproverKeyRecord $item
+    if ($why.Count -gt 0) { foreach ($w in $why) { if (-not $reasons.Contains("approver_keys:$w")) { $reasons.Add("approver_keys:$w") } } }
+    else { $valid.Add((ConvertTo-ApproverKeyObject $item)) }
+  }
+  if ($reasons.Count -eq 0) { foreach ($w in (Test-ApproverKeySet $valid.ToArray())) { $reasons.Add("approver_keys:$w") } }
+  , @($reasons)
+}
+# What an Authority config (text) says about its approver keys, for status and set-approver: @{ Reasons; Legacy; Approver; Keys }. Reasons = what Test-AuthorityConfigText says (empty = valid). Keys = { KeyId; Kind } in
+# order (the legacy pair counts as one hello-rsa key, as the Authority reads it). Approver = the object Get-AuthorityConfig takes (approverSid and the pair or the list), to rebuild the config with.
+function Get-AuthorityConfigApproverKeys([string]$Json) {
+  $reasons = Test-AuthorityConfigText $Json
+  if ($reasons.Count -gt 0) { return [pscustomobject]@{ Reasons = @($reasons); Legacy = $false; Approver = $null; Keys = @() } }
+  $o = $Json | ConvertFrom-Json
+  if ($null -ne $o.PSObject.Properties['approverKeys']) {
+    $records = @($o.approverKeys | ForEach-Object { ConvertTo-ApproverKeyObject $_ })
+    return [pscustomobject]@{ Reasons = @(); Legacy = $false; Approver = [pscustomobject]@{ approverSid = [string]$o.approverSid; approverKeys = $records }; Keys = @($records | ForEach-Object { [pscustomobject]@{ KeyId = $_.keyId; Kind = $_.kind } }) }
+  }
+  [pscustomobject]@{
+    Reasons = @(); Legacy = $true
+    Approver = [pscustomobject]@{ approverSid = [string]$o.approverSid; approverKeyId = [string]$o.approverKeyId; approverPublicKey = [string]$o.approverPublicKey }
+    Keys = @([pscustomobject]@{ KeyId = [string]$o.approverKeyId; Kind = 'hello-rsa' })
+  }
+}
+# The status line about the approver keys: the keys the Authority config holds (ids and kinds), compared with the install record. $RecordValues = the manifest's `values`. -> @{ State; Text }.
+function Get-ApproverKeysStatusLine([string]$ConfigJson, $RecordValues) {
+  $state = Get-AuthorityConfigApproverKeys $ConfigJson
+  if ($state.Reasons.Count -gt 0) { return [pscustomobject]@{ State = 'FAIL'; Text = 'Authority approver keys: the config is not valid (' + ($state.Reasons -join ', ') + ')' } }
+  $shown = (@($state.Keys) | ForEach-Object { "$($_.KeyId) ($($_.Kind))" }) -join ', '
+  $source = if ($state.Legacy) { 'the legacy fields approverKeyId + approverPublicKey, one hello-rsa key' } else { 'approverKeys' }
+  $problem = $null
+  if ($RecordValues.ContainsKey('approverKeys')) {
+    $recorded = @($RecordValues['approverKeys'] | ForEach-Object { "$($_['keyId']) ($($_['kind']))" }) -join ', '
+    if ($state.Legacy -or $recorded -cne $shown) { $problem = "the install record says: $recorded" }
+  }
+  elseif ($RecordValues.ContainsKey('approverKeyId')) {
+    if (-not $state.Legacy -or $RecordValues['approverKeyId'] -cne $state.Keys[0].KeyId) { $problem = "the install record says: $($RecordValues['approverKeyId'])" }
+  }
+  if ($problem) { return [pscustomobject]@{ State = 'FAIL'; Text = "Authority approver keys: $shown ($source) differ from the install record ($problem)" } }
+  [pscustomobject]@{ State = 'ok'; Text = "Authority approver keys: $(@($state.Keys).Count) key(s): $shown ($source)" }
 }
 
 # ---------------------------------------------------------------------------------------------- folders and ACLs
@@ -631,9 +1008,10 @@ $script:TrustedSids = @('S-1-5-18', 'S-1-5-32-544', $script:TrustedInstallerSid)
 function Get-TrustedSids { , $script:TrustedSids }
 
 # $Summary = @{ Owner; Protected; WriteSids } (Get-AclSummary). Returns the reasons it is not trustworthy (empty = trusted).
-function Test-TrustSummary($Summary, [string[]]$AllowedWriters, [bool]$RequireProtected) {
+function Test-TrustSummary($Summary, [string[]]$AllowedWriters, [bool]$RequireProtected, [string[]]$AllowedOwners = @()) {
   $reasons = New-Object System.Collections.Generic.List[string]
-  if ($script:TrustedSids -notcontains $Summary.Owner) { $reasons.Add('owner_untrusted') }
+  # $AllowedOwners: owners besides SYSTEM, Administrators and TrustedInstaller. Only a file a SERVICE writes itself needs one (its own SID: the Authority's guard accepts that owner on the files it makes).
+  if ((@($script:TrustedSids) + @($AllowedOwners)) -notcontains $Summary.Owner) { $reasons.Add('owner_untrusted') }
   if ($RequireProtected -and -not $Summary.Protected) { $reasons.Add('inheritance_not_removed') }
   $writers = @($script:TrustedSids) + @($AllowedWriters)
   foreach ($sid in @($Summary.WriteSids)) { if ($writers -notcontains $sid) { $reasons.Add('writer_untrusted:' + $sid) } }
@@ -773,7 +1151,10 @@ function Test-ManifestShape($M) {
   $created = $M['created']; $values = $M['values']
   if ($created -isnot [System.Collections.IDictionary] -or $values -isnot [System.Collections.IDictionary]) { $reasons.Add('manifest_sections'); return , @($reasons) }
   foreach ($k in $created.Keys) { if (@('dataRoot', 'installRoot', 'services', 'binaries', 'user', 'key', 'hyperVGrant', 'controlPlane', 'claude', 'launcher', 'shortcuts', 'runEntry') -cnotcontains $k) { $reasons.Add('created_key:' + $k) } }
-  foreach ($k in $values.Keys) { if (@('authoritySpki', 'controlPlaneSid', 'approverSid', 'approverKeyId', 'brokerServiceSid', 'authorityServiceSid') -cnotcontains $k) { $reasons.Add('values_key:' + $k) } }
+  foreach ($k in $values.Keys) { if (@('authoritySpki', 'controlPlaneSid', 'approverSid', 'approverKeyId', 'approverKeys', 'approverKeysSetAt', 'brokerServiceSid', 'authorityServiceSid') -cnotcontains $k) { $reasons.Add('values_key:' + $k) } }
+  # The approver key list the install (or set-approver) recorded: ids and kinds only, 1 to 16, in the contract's form. approverKeysSetAt is the UTC time set-approver last changed it.
+  if ((Test-HasKey $values 'approverKeys') -and -not (Test-ApproverKeysManifestList $values['approverKeys'])) { $reasons.Add('approver_keys_record') }
+  if ((Test-HasKey $values 'approverKeysSetAt') -and ($values['approverKeysSetAt'] -isnot [string] -or $values['approverKeysSetAt'] -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\z')) { $reasons.Add('approver_keys_set_at') }
   foreach ($k in $M.Keys) { if (@('schema', 'tool', 'state', 'startedAt', 'updatedAt', 'created', 'values', 'setupRunId') -cnotcontains $k) { $reasons.Add('manifest_key:' + $k) } }
   if ((Test-HasKey $M 'setupRunId') -and $null -eq (ConvertTo-SetupRunId $M['setupRunId'])) { $reasons.Add('setup_run_id') }
   if ((Test-HasKey $created 'services')) { foreach ($n in @($created['services'])) { if (@($c.BrokerService, $c.AuthorityService, $c.ControlPlaneService) -cnotcontains $n) { $reasons.Add('service_name_not_fixed') } } }
@@ -863,6 +1244,24 @@ function Select-VmByName($Candidates, [string]$VmName) {
 function Test-LabVmIdGate([bool]$VmIdSupplied, [string]$LabEnvironment) {
   if ($VmIdSupplied -and $LabEnvironment -ne '1') { return 'vm_id_parameter_is_lab_only' }
   $null
+}
+# -LabAssumeYes (set-approver: the flag stands in for the "yes" a person types in the elevated console) exists for the disposable lab VM only, like -NodeSource, -ClaudeSource and -VmId, so the lab hook can run with
+# no console to type in. Returns the refusal word, or $null when allowed.
+function Test-LabConfirmGate([bool]$AssumeYesSupplied, [string]$LabEnvironment) {
+  if ($AssumeYesSupplied -and $LabEnvironment -ne '1') { return 'assume_yes_parameter_is_lab_only' }
+  $null
+}
+# What a person has to type before set-approver writes anything: the word yes, nothing else (surrounding blanks are ignored; capitals, "y", an empty line and anything longer are not a yes).
+function Test-ConfirmationAnswer($Answer) {
+  if ($null -eq $Answer) { return $false }
+  ([string]$Answer).Trim() -ceq 'yes'
+}
+# Two byte arrays are the same bytes (a key store is put back "exactly as it was found": the proof is this, not a look at the keys in it).
+function Test-BytesEqual([byte[]]$A, [byte[]]$B) {
+  if ($null -eq $A -or $null -eq $B) { return ($null -eq $A -and $null -eq $B) }
+  if ($A.Length -ne $B.Length) { return $false }
+  for ($i = 0; $i -lt $A.Length; $i++) { if ($A[$i] -ne $B[$i]) { return $false } }
+  $true
 }
 
 # ---------------------------------------------------------------------------------------------- the lab-only source gate
