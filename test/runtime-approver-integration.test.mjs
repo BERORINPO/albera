@@ -509,15 +509,15 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
     it('has no test options, no fake signer and no test seam; it contains the Windows Hello signer, which the test-faults build does not; there is no --yes', async () => {
       const bytes = readFileSync(path.join(root, 'shipped', 'AlberaApprover.dll'));
       const control = readFileSync(path.join(root, 'faults', 'AlberaApprover.dll'));
-      for (const type of ['FakePresenceSigner', 'FakeKeyStore', 'NotReadyPresenceSigner', 'TestSeam']) {
+      for (const type of ['FakePresenceSigner', 'FakeKeyStore', 'NotReadyPresenceSigner', 'TestSeam', 'SoftwareAuthenticator']) {
         assert.equal(bytes.includes(Buffer.from(type, 'utf8')), false, `${type} must not be in the shipped build`);
         assert.equal(control.includes(Buffer.from(type, 'utf8')), true, `${type} is in the test-faults build (control)`);
       }
-      for (const type of ['WindowsHelloPresenceSigner', 'WindowsHelloKeyStore', 'KeyCredentialManager']) {
+      for (const type of ['WindowsHelloPresenceSigner', 'WindowsHelloKeyStore', 'KeyCredentialManager', 'PlatformWebAuthn']) {
         assert.equal(bytes.includes(Buffer.from(type, 'utf8')), true, `${type} is in the shipped build`);
         assert.equal(control.includes(Buffer.from(type, 'utf8')), false, `${type} must not be in the test-faults build (tests never reach the real Hello)`);
       }
-      for (const literal of ['--test-fake-key', '--test-pid', '--test-owner-sid', '--test-pipe-root', '--test-interactive', '--test-key-state', '--test-attestation']) {
+      for (const literal of ['--test-fake-key', '--test-pid', '--test-owner-sid', '--test-pipe-root', '--test-interactive', '--test-key-state', '--test-attestation', '--test-webauthn', '--test-keys-dir', '--test-remote-session']) {
         assert.equal(bytes.includes(utf16(literal)), false, `"${literal}" must not be in the shipped build`);
         assert.equal(control.includes(utf16(literal)), true, `"${literal}" is in the test-faults build (control)`);
       }

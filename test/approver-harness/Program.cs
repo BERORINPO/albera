@@ -548,6 +548,15 @@ internal static partial class Harness
         ListAndDenyChecks();
         PolicyChecks();
         GuiChecks();
+        WebAuthnRecordChecks();
+        WebAuthnReaderChecks();
+        WebAuthnSignerChecks();
+        WebAuthnRouteChecks();
+        WebAuthnApproveChecks();
+        WebAuthnPolicyChecks();
+        WebAuthnEnrollChecks();
+        WebAuthnKeysChecks();
+        WebAuthnCleanup();
         Console.Out.Write(JsonSerializer.Serialize(new { checks = Results }));
         return 0;
     }

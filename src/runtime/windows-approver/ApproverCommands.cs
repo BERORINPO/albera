@@ -6,6 +6,7 @@ namespace Albera.Approver;
 // The three commands. Output goes to `output` (stdout), problems to `errors` (stderr) as one `error: <code>` line, and the exit code says which kind (ExitCodes.cs).
 //   list            every pending request, all pages, rendered by Renderer
 //   approve <id>    needs an interactive console (stdin not redirected), else REFUSE before anything is read or sent; find the request in a fresh `list`; REFUSE (nothing sent) if the entry is invalid or the digest recomputed from its fields differs from the Authority's;
+//                   choose the signing key (PresenceSigning: WebAuthn when the Authority lists one, else Hello on a local session; a remote session with no WebAuthn key stops here with remote_session, before the typed yes);
 //                   show it; ask for a typed "yes" (there is no way to skip it); ask the presence signer for a signature over PresenceMessage(approvalId, RECOMPUTED digest, challenge); send `decide`
 //   deny <id>       send `decide` deny (a deny needs no presence proof and can only make a request fail)
 // The approval window (GUI mode, Gui*.cs) reuses the same pieces and copies none of them: ListPendingAsync (the same list, all pages, the same digest recompute), ApproveShownAsync
@@ -15,8 +16,10 @@ internal sealed record CommandOutcome(int ExitCode, string? ErrorCode = null, st
     public bool Ok => ExitCode == ExitCodes.Ok;
 }
 
-internal sealed class ApproverCommands(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, Func<DateTimeOffset> clock, bool interactive)
+internal sealed class ApproverCommands(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, Func<DateTimeOffset> clock, bool interactive, WebAuthnKit? webAuthn = null)
 {
+    private readonly PresenceSigning signing = new(channel, signer, webAuthn);
+
     private const int MaxPages = 16; // 32 pending requests at most, several per page: a server that keeps saying "more" is not honest
     private static readonly string[] AuthorityCodes = ["authority_unavailable", "request_invalid", "request_expired", "human_denied", "presence_unavailable", "presence_mismatch", "queue_full"];
 
@@ -38,21 +41,36 @@ internal sealed class ApproverCommands(IApproverChannel channel, IPresenceSigner
         output.Write(Renderer.Render(item, clock()));
         PendingView view = item.View ?? throw new Stop(ExitCodes.Refused, "invalid_entry");
         if (!view.DigestMatches) throw new Stop(ExitCodes.Refused, "digest_mismatch");
+        SigningRoute route = await ChooseRouteAsync(); // before the typed yes: a remote session with no WebAuthn key is told so now, not after the person has read the request and confirmed
         if (!Confirmed()) throw new Stop(ExitCodes.Refused, "not_confirmed");
 
-        output.Write("Windows Hello will ask you to verify now. It shows only the app name: the request above is what you approve.\n"); // the Hello prompt itself shows no details
-        return await SignAndDecideAsync(view);
+        output.Write(PresenceSigning.AskNotice(route, "the request above")); // neither prompt itself shows any details
+        return await SignAndDecideAsync(view, route);
     });
 
-    // The one place that asks the presence signer and sends `decide` approve. The CLI (after the typed yes) and the approval window (after the match-code click) both end here.
-    private async Task<int> SignAndDecideAsync(PendingView view)
+    // The key to sign with, or a stop before anything is asked or sent: a remote session where only Hello is registered cannot sign (Hello does not work over Remote Desktop).
+    private async Task<SigningRoute> ChooseRouteAsync()
     {
-        SignResult signed = signer.Sign(PresenceMessage.Build(view.ApprovalId, view.RecomputedDigest, view.Challenge));
+        SigningRoute route = await signing.ChooseAsync();
+        return route.Kind == RouteKind.RemoteNoKey ? throw new Stop(ExitCodes.SignerUnavailable, PresenceSigning.RemoteSessionCode, PresenceSigning.RemoteSessionHint) : route;
+    }
+
+    /// <summary>GUI: true when this session cannot sign at all (remote, no WebAuthn key registered), so the window can say so before any digit is offered. A key list that cannot be read is not a block: a click then meets the real error.</summary>
+    public async Task<bool> SigningBlockedAsync()
+    {
+        try { return (await signing.ChooseAsync()).Kind == RouteKind.RemoteNoKey; }
+        catch (Exception ex) when (ex is ChannelException or AuthorityRefusal) { return false; }
+    }
+
+    // The one place that asks the presence signer and sends `decide` approve. The CLI (after the typed yes) and the approval window (after the match-code click) both end here.
+    private async Task<int> SignAndDecideAsync(PendingView view, SigningRoute route, IntPtr window = default)
+    {
+        SignResult signed = signing.Sign(route, PresenceMessage.Build(view.ApprovalId, view.RecomputedDigest, view.Challenge), window);
         string decide = signed.Status switch
         {
-            SignStatus.Signed => $"{{\"v\":1,\"verb\":\"decide\",\"approvalId\":\"{view.ApprovalId}\",\"decision\":\"approve\",\"presence\":\"{Convert.ToBase64String(signed.Signature!)}\"}}",
+            SignStatus.Signed => $"{{\"v\":1,\"verb\":\"decide\",\"approvalId\":\"{view.ApprovalId}\",\"decision\":\"approve\",\"presence\":{PresenceSigning.PresenceJson(signed)}}}",
             SignStatus.Unavailable => $"{{\"v\":1,\"verb\":\"decide\",\"approvalId\":\"{view.ApprovalId}\",\"decision\":\"presence_unavailable\"}}", // the Authority fails the request
-            _ => throw new Stop(ExitCodes.SignerUnavailable, "presence_signer_unavailable", "hint: run AlberaApprover.exe enroll (Windows Hello key missing or Hello not set up); nothing was sent"), // the request stays pending
+            _ => throw new Stop(ExitCodes.SignerUnavailable, "presence_signer_unavailable", PresenceSigning.NotReadyHint(route, signed)), // the request stays pending
         };
         return await DecideAsync(decide, "approved");
     }
@@ -74,10 +92,10 @@ internal sealed class ApproverCommands(IApproverChannel channel, IPresenceSigner
     }
 
     /// <summary>GUI: approve one listed request. Refuses (nothing signed, nothing sent) unless the digest recomputed from the shown fields equals the Authority's. The typed yes of the CLI is replaced by the window's own match-code click.</summary>
-    public Task<CommandOutcome> ApproveShownAsync(PendingView view) => OutcomeAsync(() =>
+    public Task<CommandOutcome> ApproveShownAsync(PendingView view, IntPtr window = default) => OutcomeAsync(async () =>
     {
         if (!view.DigestMatches) throw new Stop(ExitCodes.Refused, "digest_mismatch");
-        return SignAndDecideAsync(view);
+        return await SignAndDecideAsync(view, await ChooseRouteAsync(), window);
     });
 
     /// <summary>GUI: deny one request by id (the Authority's uuid grammar only).</summary>
@@ -153,6 +171,7 @@ internal sealed class ApproverCommands(IApproverChannel channel, IPresenceSigner
     {
         try { return new CommandOutcome(await body()); }
         catch (Stop stop) { return new CommandOutcome(stop.ExitCode, stop.Message, stop.Hint); }
+        catch (AuthorityRefusal refusal) { return new CommandOutcome(ExitCodes.AuthorityRejected, $"authority:{refusal.Code}"); } // the key list (`keys`) was refused
         catch (ChannelException ex) { return new CommandOutcome(ex.Sent ? ExitCodes.TransportUnknown : ExitCodes.ServerRefused, ex.Code); }
     }
 }

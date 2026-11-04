@@ -15,7 +15,12 @@ namespace Albera.Approver;
 //   --test-interactive yes         treat stdin as a console a person types in (a test pipes stdin)
 //   --test-timeout-ms <n>          per-call timeout
 //   --test-attestation <status>    what the fake Windows reports for a key `enroll` just made: Success (default) | NotSupported | TemporaryFailure | UnknownError | Empty (Success, empty buffers)
-// A fake signer is installed only together with --test-fake-key; without it a test-faults build has a signer that is never ready (approve exits 69).
+//   --test-webauthn <mode>         wire WebAuthn with the software authenticator (SoftwareAuthenticator below) instead of webauthn.dll: on | cancel (the prompt is dismissed) | unavailable (the platform gives nothing)
+//   --test-webauthn-key <base64 pkcs8>   \ with --test-webauthn: one credential the software authenticator already holds (a P-256 key and its credential id)
+//   --test-webauthn-credential <b64url>  /
+//   --test-keys-dir <dir>          with --test-webauthn: where the key record files go (required: a test never writes to the real %LOCALAPPDATA%)
+//   --test-remote-session yes|no   with --test-webauthn: whether this counts as a Remote Desktop session (default no, whatever the machine is)
+// A fake signer is installed only together with --test-fake-key; without it a test-faults build has a signer that is never ready (approve exits 69). Without --test-webauthn there is no WebAuthn kit: the commands behave as before WebAuthn.
 internal sealed class FakePresenceSigner(RSA key, bool unavailable) : IPresenceSigner
 {
     public SignResult Sign(byte[] message) =>
@@ -51,6 +56,70 @@ internal sealed class FakeKeyStore(RSA? initialKey, bool unavailable = false, st
     }
 }
 
+// A software WebAuthn authenticator: in-memory P-256 credentials that produce real authenticator data (rp id hash of approver.albera.local, user present + user verified, a big-endian sign count that rises per credential)
+// and a real ES256 signature (DER) over authenticatorData || SHA-256(client data), so the Authority's verifier accepts exactly what the platform authenticator would give. Its knobs let a test make it misbehave:
+// Cancel (the person dismisses the prompt), NotReady (the platform has nothing), Flags (default 0x05; 0x1D adds the backup flags a synced passkey sets), RpId (a different relying party), WrongCredential
+// (answers with a credential that was not asked for). It never prompts and holds no state outside the process.
+internal sealed class SoftwareAuthenticator : IWebAuthnAuthenticator
+{
+    private readonly Dictionary<string, (ECDsa Key, uint Count)> credentials = [];
+
+    public bool Cancel { get; init; }
+
+    public bool NotReady { get; init; }
+
+    public byte Flags { get; init; } = 0x05;
+
+    public string RpId { get; init; } = WebAuthnContract.RpId;
+
+    public bool WrongCredential { get; init; }
+
+    /// <summary>The client data of every assertion asked for, in order.</summary>
+    public List<byte[]> AssertionClientData { get; } = [];
+
+    /// <summary>The credential ids named in every assertion request, in order.</summary>
+    public List<IReadOnlyList<byte[]>> AllowLists { get; } = [];
+
+    /// <summary>The parent window of the last prompt (create or assert).</summary>
+    public IntPtr LastWindow { get; private set; }
+
+    public int Created { get; private set; }
+
+    public void Add(byte[] credentialId, ECDsa key) => credentials[Convert.ToBase64String(credentialId)] = (key, 0);
+
+    public CreatedCredential MakeCredential(IntPtr window, byte[] userId, byte[] clientDataJson)
+    {
+        LastWindow = window;
+        if (Cancel) return new CreatedCredential(WebAuthnStatus.Cancelled, null, null, "software: cancelled");
+        if (NotReady) return new CreatedCredential(WebAuthnStatus.NotReady, null, null, "software: unavailable");
+        ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] id = RandomNumberGenerator.GetBytes(32);
+        credentials[Convert.ToBase64String(id)] = (key, 0);
+        Created++;
+        ECParameters point = key.ExportParameters(false);
+        byte[] cose = [0xA5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20, .. point.Q.X!, 0x22, 0x58, 0x20, .. point.Q.Y!]; // {1: 2, 3: -7, -1: 1, -2: x, -3: y}
+        byte[] data = [.. RpIdHash(), (byte)(Flags | 0x40), 0, 0, 0, 0, .. new byte[16], (byte)(id.Length >> 8), (byte)id.Length, .. id, .. cose];
+        return new CreatedCredential(WebAuthnStatus.Ok, id, data);
+    }
+
+    public AssertionResult GetAssertion(IntPtr window, byte[] clientDataJson, IReadOnlyList<byte[]> allowCredentialIds)
+    {
+        LastWindow = window;
+        AssertionClientData.Add(clientDataJson);
+        AllowLists.Add(allowCredentialIds);
+        if (Cancel) return new AssertionResult(WebAuthnStatus.Cancelled, null, null, null, "software: cancelled");
+        if (NotReady) return new AssertionResult(WebAuthnStatus.NotReady, null, null, null, "software: unavailable");
+        byte[]? id = allowCredentialIds.FirstOrDefault(c => credentials.ContainsKey(Convert.ToBase64String(c)));
+        if (id is null) return new AssertionResult(WebAuthnStatus.NotReady, null, null, null, "software: no such credential");
+        (ECDsa key, uint count) = credentials[Convert.ToBase64String(id)];
+        credentials[Convert.ToBase64String(id)] = (key, ++count);
+        byte[] data = [.. RpIdHash(), Flags, (byte)(count >> 24), (byte)(count >> 16), (byte)(count >> 8), (byte)count];
+        byte[] signature = key.SignData([.. data, .. SHA256.HashData(clientDataJson)], HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);        return new AssertionResult(WebAuthnStatus.Ok, WrongCredential ? RandomNumberGenerator.GetBytes(32) : id, data, signature);
+    }
+
+    private byte[] RpIdHash() => SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(RpId));
+}
+
 internal static class TestSeam
 {
     public static bool TryApply(ref string[] args, ref Wiring wiring)
@@ -64,7 +133,8 @@ internal static class TestSeam
             i++;
         }
         args = [.. rest];
-        string[] known = ["--test-pipe-root", "--test-owner-sid", "--test-pid", "--test-fake-key", "--test-key-state", "--test-presence", "--test-interactive", "--test-timeout-ms", "--test-attestation"];
+        string[] known = ["--test-pipe-root", "--test-owner-sid", "--test-pid", "--test-fake-key", "--test-key-state", "--test-presence", "--test-interactive", "--test-timeout-ms", "--test-attestation",
+            "--test-webauthn", "--test-webauthn-key", "--test-webauthn-credential", "--test-keys-dir", "--test-remote-session"];
         if (options.Keys.Any(k => !known.Contains(k))) return false;
 
         ServerExpectation expectation = wiring.Expectation;
@@ -91,7 +161,30 @@ internal static class TestSeam
             keyStore = new FakeKeyStore(key, attestation: attestation);
         }
         else if (state == "missing") keyStore = new FakeKeyStore(null, attestation: attestation);
-        wiring = wiring with { Expectation = expectation, Signer = signer, KeyStore = keyStore, TimeoutMs = timeoutMs, Interactive = interactive };
+        if (!TryWebAuthn(options, out WebAuthnKit? webAuthn)) return false;
+        wiring = wiring with { Expectation = expectation, Signer = signer, KeyStore = keyStore, TimeoutMs = timeoutMs, Interactive = interactive, WebAuthn = webAuthn };
+        return true;
+    }
+
+    // The WebAuthn options only make sense together: a software authenticator needs a record folder (never the real one) and may hold one credential; a remote-session flag or a credential without --test-webauthn is a usage error.
+    private static bool TryWebAuthn(Dictionary<string, string> options, out WebAuthnKit? kit)
+    {
+        kit = null;
+        string[] dependent = ["--test-webauthn-key", "--test-webauthn-credential", "--test-keys-dir", "--test-remote-session"];
+        if (!options.TryGetValue("--test-webauthn", out string? mode)) return !dependent.Any(options.ContainsKey);
+        if (mode is not ("on" or "cancel" or "unavailable") || !options.TryGetValue("--test-keys-dir", out string? folder) || folder.Length == 0) return false;
+        bool remote = false;
+        if (options.TryGetValue("--test-remote-session", out string? answer)) { if (answer is not ("yes" or "no")) return false; remote = answer == "yes"; }
+        if (options.ContainsKey("--test-webauthn-key") != options.ContainsKey("--test-webauthn-credential")) return false;
+        SoftwareAuthenticator authenticator = new() { Cancel = mode == "cancel", NotReady = mode == "unavailable" };
+        if (options.TryGetValue("--test-webauthn-key", out string? pkcs8))
+        {
+            if (B64.TryFromUrl(options["--test-webauthn-credential"]) is not { Length: > 0 } credentialId) return false;
+            ECDsa key = ECDsa.Create();
+            key.ImportPkcs8PrivateKey(Convert.FromBase64String(pkcs8), out _);
+            authenticator.Add(credentialId, key);
+        }
+        kit = new WebAuthnKit(authenticator, remote, new KeyRecordStore(folder));
         return true;
     }
 }

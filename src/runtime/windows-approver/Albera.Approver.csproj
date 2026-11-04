@@ -31,6 +31,8 @@
     <Compile Remove="TestSeam.cs" Condition="'$(AlberaApproverTestFaults)' != 'true'" />
     <!-- The Windows Hello code is shipped-only: a test-faults build does not contain it, so no test can reach the real KeyCredentialManager. -->
     <Compile Remove="WindowsHello.cs" Condition="'$(AlberaApproverTestFaults)' == 'true'" />
+    <!-- The WebAuthn platform code (webauthn.dll through P/Invoke) is shipped-only too: a test-faults build gets the software authenticator in TestSeam.cs instead. -->
+    <Compile Remove="WebAuthn.cs" Condition="'$(AlberaApproverTestFaults)' == 'true'" />
   </ItemGroup>
   <!-- The symbol can also arrive from outside (an environment variable named DefineConstants, a Directory.Build.props, -p:DefineConstants=...). Pinning the switch
        false does not stop that, so a build without the switch that still carries the symbol fails instead of shipping the fake signer and the identity overrides. -->

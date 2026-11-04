@@ -17,6 +17,9 @@ const code = Object.fromEntries(Object.entries(sources).map(([name, text]) => [n
 const allCode = Object.values(code).join('\n');
 const helloCode = code['WindowsHello.cs'];
 const codeWithoutHello = Object.entries(code).filter(([name]) => name !== 'WindowsHello.cs').map(([, text]) => text).join('\n');
+const recordFileCode = code['KeyRecordFile.cs']; // the one file that touches the file system (the key record files); see the WebAuthn guards below
+const codeWithoutRecordFile = Object.entries(code).filter(([name]) => name !== 'KeyRecordFile.cs').map(([, text]) => text).join('\n');
+const webAuthnCode = code['WebAuthn.cs']; // the one file that calls webauthn.dll (shipped build only)
 const outsideSeam = (text) => text.replace(/#if ALBERA_APPROVER_TEST_FAULTS[\s\S]*?#endif/gu, '');
 const shippedCode = Object.entries(code).filter(([name]) => name !== 'TestSeam.cs').map(([, text]) => outsideSeam(text)).join('\n');
 const importsOf = (source) => [...source.matchAll(/\[DllImport\("([^"]+)"[^\]]*\)\]\s*(?:private|internal|public) static extern \w+ (\w+)\(/gu)].map((m) => `${m[1]}!${m[2]}`);
@@ -42,11 +45,14 @@ test('the approver is a separate project: one external dependency (the pinned Wi
 test('the approver never starts a process, registers a service, writes a file, uses the network, reads the environment, or creates / imports / exports / deletes a key', () => {
   for (const forbidden of [/Process\.Start/u, /ProcessStartInfo/u, /ServiceBase/u, /ServiceController/u, /\bsc\.exe\b/u, /powershell/iu, /Hyper-?V/iu, /SetAccessControl/u,
     /CreateService|ChangeServiceConfig|ControlService|DeleteService|StartService/u, /System\.ServiceProcess|Microsoft\.Extensions\.Hosting/u,
-    /File\.(?:Write|Create|Delete|Move|Copy|Append|Open)|FileMode\.|FileAccess\.Write|new FileStream|Directory\./u, /HttpClient|System\.Net\.Sockets|TcpClient|WebRequest/u,
+    /HttpClient|System\.Net\.Sockets|TcpClient|WebRequest/u,
     /Environment\.GetEnvironmentVariable|Environment\.ExpandEnvironmentVariables/u, /CngKey|NCrypt|ExportPkcs8PrivateKey|ExportRSAPrivateKey|ExportParameters\(true\)|RSA\.Create\(\d/u,
     /RenewAttestationAsync/u]) {
     assert.equal(forbidden.test(allCode), false, `no approver source may match ${forbidden}`);
   }
+  // File writes: since WebAuthn the approver writes the public key record files (`enroll --webauthn`) and nothing else. That is ONE file, KeyRecordFile.cs; no other source touches the file system,
+  // and that file may only create (never overwrite, delete, move or append) under the fixed folder. See the key record file guard below.
+  assert.equal(/File\.(?:Write|Create|Delete|Move|Copy|Append|Open|Replace)|FileMode\.|FileAccess\.Write|new FileStream|(?<!\w)Directory\.|FileInfo|DirectoryInfo|StreamWriter/u.test(codeWithoutRecordFile), false, 'only KeyRecordFile.cs touches the file system');
   assert.equal(/KeyCredentialManager|Windows\.Security\.Credentials|Windows\.Security\.Cryptography/u.test(codeWithoutHello), false, 'the WinRT Hello API is used only in WindowsHello.cs');
   // Issue #101: the two calls that used to be forbidden are allowed in exactly one place each, in the Hello file: attest the key `enroll` just made, and remove that key when the attestation is refused.
   assert.equal(/DeleteAsync|GetAttestationAsync/u.test(codeWithoutHello), false, 'attest / delete live only in WindowsHello.cs');
@@ -55,9 +61,11 @@ test('the approver never starts a process, registers a service, writes a file, u
   assert.match(helloCode, /private static bool RemoveCreatedKey\(\)\s*\{\s*try \{ KeyCredentialManager\.DeleteAsync\(HelloCredential\.Name\)/u, 'the delete is the removal of the key enroll just made, by the fixed name');
   assert.equal([...helloCode.matchAll(/RemoveCreatedKey\(\)/gu)].length, 2, 'defined once and called once (the refused-attestation path)');
   // The one exception: PresenceSignature.Verify (Presence.cs) makes an RSA object only to import a PUBLIC key (SPKI) for the self-check's local verify; it never generates a key.
-  const withoutVerifier = outsideSeam(codeWithoutHello).replace(/using RSA rsa = RSA\.Create\(\);\s*rsa\.ImportSubjectPublicKeyInfo\(spki, out _\);/u, '');
-  assert.equal(/RSA\.Create\(\)/u.test(withoutVerifier), false, 'an RSA key object is created only in the test seam (and, public-key import only, in PresenceSignature.Verify)');
+  // WebAuthn (ApproverKeyRecord.cs) does the same for the public keys of its records: the same two statements, importing a PUBLIC SPKI, to classify a key and to verify a signature. Nothing else makes an RSA object.
+  const withoutVerifier = outsideSeam(codeWithoutHello).replace(/using RSA rsa = RSA\.Create\(\);\s*rsa\.ImportSubjectPublicKeyInfo\(spki, out (?:_|int \w+)\);/gu, '');
+  assert.equal(/RSA\.Create\(\)/u.test(withoutVerifier), false, 'an RSA key object is created only in the test seam (and, public-key import only, in PresenceSignature.Verify and the key record code)');
   assert.equal([...code['Presence.cs'].matchAll(/RSA\.Create\(\)/gu)].length, 1, 'exactly one RSA object in Presence.cs');
+  assert.equal([...code['ApproverKeyRecord.cs'].matchAll(/RSA\.Create\(\)/gu)].length, 2, 'two in the key record code: classify and verify, both public-key imports');
 });
 
 test('Windows Hello: the shipped build signs with WindowsHelloPresenceSigner through the one IPresenceSigner seam; the WinRT calls are a short fixed list in one file; no private key is touched', () => {
@@ -124,7 +132,7 @@ test('enroll --check (self-check): local only, the existing key only, domain-sep
 
 test('there is no --yes: the typed yes cannot be skipped, approve needs a console before any pipe access, and enroll never prints or stores private material', () => {
   assert.equal(/--yes|AssumeYes|assumeYes/u.test(Object.values(sources).join('\n')), false, 'no --yes anywhere in the sources (comments included)');
-  assert.match(code['CommandLine.cs'], /Usage = "usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\] \| enroll \[--replace\] --accept-unattested \| policy \[show\] \| policy set <careful\|standard> \[--prompt <action>\]\.\.\. \| --tray"/u);
+ assert.match(code['CommandLine.cs'], /Usage = "usage: AlberaApprover list \| approve <approvalId> \| deny <approvalId> \| enroll \[--show \| --replace \| --check \[--expect <approverKeyId>\]\] \| enroll \[--replace\] --accept-unattested \| enroll --webauthn --accept-unattested \| keys list \| keys remove <keyId> \| policy \[show\] \| policy set <careful\|standard> \[--prompt <action>\]\.\.\. \| --tray"/u);
   assert.match(code['ApproverCommands.cs'], /if \(!interactive\) throw new Stop\(ExitCodes\.Refused, "not_interactive"/u);
   assert.equal([...code['Program.cs'].matchAll(/!Console\.IsInputRedirected/gu)].length, 2, 'interactive means stdin is not redirected, in both build branches and nowhere else');
   const enroll = code['EnrollCommand.cs'];
@@ -135,7 +143,7 @@ test('there is no --yes: the typed yes cannot be skipped, approve needs a consol
 });
 
 test('the fake signer, the test options and the TestSeam exist only inside #if ALBERA_APPROVER_TEST_FAULTS and never in the shipped build', () => {
-  assert.equal(/FakePresenceSigner|TestSeam|--test-|ImportPkcs8PrivateKey|SignData/u.test(shippedCode), false, 'fake names only appear inside the test-only #if blocks');
+  assert.equal(/FakePresenceSigner|TestSeam|--test-|ImportPkcs8PrivateKey|SignData|SoftwareAuthenticator/u.test(shippedCode), false, 'fake names only appear inside the test-only #if blocks');
   assert.match(sources['TestSeam.cs'].trimStart(), /^#if ALBERA_APPROVER_TEST_FAULTS/u, 'TestSeam.cs is one #if block');
   assert.match(sources['TestSeam.cs'].trimEnd(), /#endif$/u);
   assert.match(project, /Condition="'\$\(AlberaApproverTestFaults\)' == 'true'"/u);
@@ -193,33 +201,36 @@ test('the wire protocol: only list and decide, only approve / deny / presence_un
 test('policy set: the tier change is described first, Hello is asked only when the change loosens the policy, after a console check and a typed yes, over the policy message of the hash computed here', () => {
   const policy = code['PolicyCommand.cs'];
   assert.ok(policy, 'PolicyCommand.cs exists');
-  assert.match(policy, /internal sealed class PolicyCommand\(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, bool interactive\)/u);
+  assert.match(policy, /internal sealed class PolicyCommand\(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, bool interactive, WebAuthnKit\? webAuthn = null\)/u);
   // The verbs and the words that go into a request: only these two verbs, and the policy comes from the contract's own TierPolicy (known tier, known actions, revision + 1).
   assert.deepEqual([...new Set([...policy.matchAll(/\\"verb\\":\\"(\w+)\\"/gu)].map((m) => m[1]))].sort(), ['policy', 'policy_set']);
   assert.match(policy, /TierPolicy\.TryCreate\(current\.Revision \+ 1, tier, prompts\) \?\? throw new Stop\(ExitCodes\.BadUsage, "bad_policy"\)/u);
   assert.match(code['CommandLine.cs'], /TierPolicy\.TryCreate\(0, tier, prompts\) is \{ \} policy \? new CommandLine\("policy", null, "set", null, policy\.Tier, policy\.Prompts\) : null/u, 'unknown tiers and actions are not commands');
   const set = policy.slice(policy.indexOf('public Task<int> SetAsync'), policy.indexOf('// The policy in force, read from the Authority'));
-  const order = ['ReadCurrentAsync()', 'next.Loosens(current)', 'Describe(current)', 'Change(current, next, loosens)', 'if (loosens && !interactive)', 'if (!Confirmed())', 'signer.Sign(PolicyChange.Message(next, kid, audience))', 'CallAsync(request)'].map((token) => set.indexOf(token));
-  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `read -> effect -> show -> console -> yes -> sign -> send (${order})`);
-  assert.equal([...policy.matchAll(/signer\.Sign\(/gu)].length, 1, 'one signing site');
-  assert.ok(set.indexOf('signer.Sign(') > set.indexOf('if (loosens)'), 'the signer is reached only inside the loosening branch');
+  const order = ['ReadCurrentAsync()', 'next.Loosens(current)', 'Describe(current)', 'Change(current, next, loosens)', 'if (loosens && !interactive)', 'ChooseRouteAsync()', 'if (!Confirmed())', 'signing.Sign(route, PolicyChange.Message(next, kid, audience))', 'CallAsync(request)'].map((token) => set.indexOf(token));
+  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `read -> effect -> show -> console -> key choice (remote_session stops here) -> yes -> sign -> send (${order})`);
+  assert.equal([...policy.matchAll(/signing\.Sign\(/gu)].length, 1, 'one signing site');
+  assert.equal(/signer\.Sign\(/u.test(policy), false, 'the command never calls the Hello signer itself: PresenceSigning picks the key');
+  assert.ok(set.indexOf('signing.Sign(') > set.indexOf('if (loosens)'), 'the signer is reached only inside the loosening branch');
+  assert.match(policy, /SigningRoute route = loosens \? await ChooseRouteAsync\(\) : SigningRoute\.UsingHello;/u, 'a change that only adds prompts never asks the Authority for its keys');
   assert.equal(/PresenceMessage|SelfCheckMessage|albera\.presence|albera\.selfcheck/u.test(policy), false, 'the policy command never builds a presence or self-check message');
   // The current policy is read with the contract's strict reader and hashed here; the Authority's hash must agree.
   assert.match(policy, /TierPolicy\.TryParse\(Encoding\.UTF8\.GetBytes\(policy\.GetRawText\(\)\)\) is \{ \} parsed && version\.GetString\(\) == parsed\.Hash\(\)/u);
   assert.equal(/submit/iu.test(policy), false);
   // The entry point dispatches it after the self-check and enroll branches, with the same channel and signer as approve.
-  assert.match(code['Program.cs'], /if \(command\.Verb == "policy"\)\s*\{\s*PolicyCommand policy = new\(new PipeChannel\(wiring\.Expectation, wiring\.TimeoutMs\), wiring\.Signer, Console\.Out, Console\.Error, Console\.In, wiring\.Interactive\);/u);
+  assert.match(code['Program.cs'], /if \(command\.Verb == "policy"\)\s*\{\s*PolicyCommand policy = new\(new PipeChannel\(wiring\.Expectation, wiring\.TimeoutMs\), wiring\.Signer, Console\.Out, Console\.Error, Console\.In, wiring\.Interactive, wiring\.WebAuthn\);/u);
   assert.ok(code['Program.cs'].indexOf('if (command.Verb == "enroll")') < code['Program.cs'].indexOf('if (command.Verb == "policy")'));
 });
 
 test('approve: refuse on a digest mismatch BEFORE the signer is asked; the signed digest is the one this app recomputed, never the Authority\'s; one signing site', () => {
   const approve = sliceBetween(code['ApproverCommands.cs'], 'public Task<int> ApproveAsync', 'private async Task<int> SignAndDecideAsync');
-  const order = ['RequireApprovalId(', 'if (!interactive)', 'FetchAllAsync()', 'Renderer.Render(', 'view.DigestMatches', 'Confirmed()', 'SignAndDecideAsync(view)'].map((token) => approve.indexOf(token));
-  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `validate -> console check -> list -> show -> digest check -> confirm -> sign and decide (${order})`);
-  assert.equal([...code['ApproverCommands.cs'].matchAll(/signer\.Sign\(/gu)].length, 1, 'one signing site');
+  const order = ['RequireApprovalId(', 'if (!interactive)', 'FetchAllAsync()', 'Renderer.Render(', 'view.DigestMatches', 'ChooseRouteAsync()', 'Confirmed()', 'SignAndDecideAsync(view, route)'].map((token) => approve.indexOf(token));
+  assert.ok(order.every((at) => at > 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `validate -> console check -> list -> show -> digest check -> key choice (remote_session stops here, before the yes) -> confirm -> sign and decide (${order})`);
+  assert.equal([...code['ApproverCommands.cs'].matchAll(/signing\.Sign\(/gu)].length, 1, 'one signing site');
+  assert.equal(/signer\.Sign\(/u.test(code['ApproverCommands.cs']), false, 'the command never calls the Hello signer itself: PresenceSigning picks the key');
   // The signing and the decide moved into one private method that the CLI (after the typed yes) and the GUI (ApproveShownAsync, after its own digest refusal) both end in.
   const signAndDecide = sliceBetween(code['ApproverCommands.cs'], 'private async Task<int> SignAndDecideAsync', 'public Task<int> DenyAsync');
-  const tail = ['signer.Sign(', 'return await DecideAsync('].map((token) => signAndDecide.indexOf(token));
+  const tail = ['signing.Sign(', 'return await DecideAsync('].map((token) => signAndDecide.indexOf(token));
   assert.ok(tail.every((at) => at > 0) && tail[1] > tail[0], `sign -> decide (${tail})`);
   assert.equal([...code['ApproverCommands.cs'].matchAll(/SignAndDecideAsync\(/gu)].length, 3, 'defined once, called by the CLI approve and by ApproveShownAsync only');
   assert.match(signAndDecide, /PresenceMessage\.Build\(view\.ApprovalId, view\.RecomputedDigest, view\.Challenge\)/u);
@@ -275,9 +286,14 @@ test('issue #101: the attestation rule accepts Success, plus NotSupported (empty
   assert.match(attested, /catch \(Exception ex\) when \(ex is not OutOfMemoryException\)\s*\{\s*status = "Exception";/u, 'an exception from the API is a refusal, not a pass');
   assert.match(attested, /if \(AttestationPolicy\.Accepts\(status, chainBytes, statementBytes, acceptUnattested\)\)[\s\S]*return KeyLookup\.NotAttested\(/u);
   // The flag has one reader and one consumer: the parser makes it only for `enroll` / `enroll --replace`, Program hands it to EnrollCommand alone, and the only literal is the policy constant.
-  assert.deepEqual([...code['CommandLine.cs'].matchAll(/args is \[([^\]]*--accept-unattested[^\]]*)\]/gu)].map((m) => m[1]), ['"enroll", "--accept-unattested"', '"enroll", "--replace", "--accept-unattested"'], 'only these two argument lists carry the flag');
-  assert.deepEqual([...allCode.matchAll(/command\.AcceptUnattested/gu)].length, 1, 'one place reads the parsed flag');
+  // Since WebAuthn one more command carries the same opt-in: `enroll --webauthn` (a WebAuthn key is made with attestation none). `keys add` does not exist (keys are added only by the elevated set-approver).
+  assert.deepEqual([...code['CommandLine.cs'].matchAll(/args is \[([^\]]*--accept-unattested[^\]]*)\]/gu)].map((m) => m[1]),
+    ['"enroll", "--accept-unattested"', '"enroll", "--replace", "--accept-unattested"', '"enroll", "--webauthn", "--accept-unattested"'], 'only these three argument lists carry the flag');
+  assert.deepEqual([...allCode.matchAll(/command\.AcceptUnattested/gu)].length, 2, 'two places read the parsed flag, both in Program.cs');
+  assert.deepEqual([...code['Program.cs'].matchAll(/command\.AcceptUnattested/gu)].length, 2);
   assert.match(code['Program.cs'], /new EnrollCommand\([^;]*\)\.Run\(command\.Option, command\.AcceptUnattested\);/u, 'and it hands it to enroll');
+  assert.match(code['Program.cs'], /new EnrollWebAuthnCommand\([^;]*\)\.Run\(command\.AcceptUnattested\);/u, 'to enroll --webauthn');
+  assert.equal(/keys.AddAsync|AddAsync|"add"/u.test(code['Program.cs'] + code['KeysCommand.cs'] + code['PresenceSigning.cs']), false, 'there is no keys add: no command, no method, no verb');
   assert.equal(/AcceptUnattested|acceptUnattested/u.test(code['ApproverCommands.cs'] + code['PolicyCommand.cs'] + code['SelfCheckCommand.cs']), false, 'approve, policy and the self-check cannot see the flag');
   assert.deepEqual([...code['EnrollCommand.cs'].matchAll(/store\.Create\(replace: (true|false), acceptUnattested\)/gu)].map((m) => m[1]), ['true', 'false'], 'create and replace pass the flag; nothing else creates a key');
 });
@@ -294,7 +310,7 @@ test('GUI mode: the only call that approves anything is in the click-handler pat
   // The whole program has one GUI approve call: defined in ApproverCommands.cs, called once, from the correct-pick branch of HandleChoiceAsync.
   assert.deepEqual(Object.entries(code).filter(([, text]) => /ApproveShownAsync|SignAndDecideAsync/u.test(text)).map(([name]) => name).sort(), ['ApproverCommands.cs', 'GuiApprovalWindow.cs']);
   assert.equal([...allCode.matchAll(/ApproveShownAsync\(/gu)].length, 2, 'defined once and called once');
-  assert.match(methodBody(guiWindow, 'internal async Task HandleChoiceAsync'), /case PickOutcome\.Correct:[\s\S]*ApproveShownAsync\(prompt\.View!\)/u, 'the call is in the correct-pick branch of HandleChoiceAsync');
+  assert.match(methodBody(guiWindow, 'internal async Task HandleChoiceAsync'), /case PickOutcome\.Correct:[\s\S]*ApproveShownAsync\(prompt\.View!, window\)/u, 'the call is in the correct-pick branch of HandleChoiceAsync (with the window as the prompt\'s parent)');
   assert.equal([...guiWindow.matchAll(/HandleChoiceAsync\(/gu)].length, 2, 'HandleChoiceAsync: its definition and one caller');
   assert.match(methodBody(guiWindow, 'private async void OnChoiceClick'), /await HandleChoiceAsync\(index\)/u, 'the caller is the click handler');
   assert.equal([...guiWindow.matchAll(/\.Click \+= OnChoiceClick/gu)].length, 1, 'OnChoiceClick is wired to the match-code buttons only');
@@ -341,8 +357,9 @@ test('GUI mode: shown without taking focus, no default button, Enter and Space d
 });
 
 test('GUI mode: reuses the CLI\'s list, digest recompute, presence message and decide (no copy); the match code is MatchCode.Choices of the RECOMPUTED digest; hidden characters remove the approve buttons', () => {
-  assert.match(guiTray, /new\(new PipeChannel\(wiring\.Expectation, wiring\.TimeoutMs\), wiring\.Signer, TextWriter\.Null, TextWriter\.Null, TextReader\.Null, clock, interactive: false\)/u, 'the same pipe channel (server verified first) and the same signer seam');
+  assert.match(guiTray, /new\(new PipeChannel\(wiring\.Expectation, wiring\.TimeoutMs\), wiring\.Signer, TextWriter\.Null, TextWriter\.Null, TextReader\.Null, clock, interactive: false, webAuthn: wiring\.WebAuthn\)/u, 'the same pipe channel (server verified first) and the same signer seam');
   assert.match(guiTray, /NewCommands\(\)\.ListPendingAsync\(\)/u);
+  assert.match(guiTray, /bool blocked = await NewCommands\(\)\.SigningBlockedAsync\(\);[\s\S]*ApprovalPrompt\.From\(item, clock\(\), blocked\)/u, 'the window learns before it is built whether this session can sign at all (a remote session with no WebAuthn key)');
   assert.equal(/JsonDocument|PendingParser|ActionDigest|PresenceMessage|CallAsync|"verb"/u.test(guiCode), false, 'no second parser, digest, presence message or wire request in the GUI files');
   assert.match(code['ApprovalPrompt.cs'], /MatchCode\.Choices\(view\.ApprovalId, view\.RecomputedDigest\)/u);
   assert.equal(/AuthorityDigest/u.test(guiCode), false, 'the Authority-sent digest is never used by the GUI');
@@ -350,7 +367,7 @@ test('GUI mode: reuses the CLI\'s list, digest recompute, presence message and d
   assert.match(code['ApprovalPrompt.cs'], /UnicodeCategory\.Control or UnicodeCategory\.Format or UnicodeCategory\.LineSeparator or UnicodeCategory\.ParagraphSeparator/u);
   assert.match(code['ApprovalPrompt.cs'], /public IReadOnlyList<string> Choices => CanApprove \? choices!\.Choices : \[\];/u, 'no candidates (no buttons) unless approval is allowed');
   assert.match(guiWindow, /if \(prompt\.CanApprove\)\s*\{[\s\S]*MouseOnlyButton button = new\(\)/u, 'the match-code buttons are built only when approval is allowed');
-  assert.match(code['ApproverCommands.cs'], /if \(!view\.DigestMatches\) throw new Stop\(ExitCodes\.Refused, "digest_mismatch"\);\s*return SignAndDecideAsync\(view\);/u, 'the GUI path refuses a digest mismatch like the CLI');
+  assert.match(code['ApproverCommands.cs'], /if \(!view\.DigestMatches\) throw new Stop\(ExitCodes\.Refused, "digest_mismatch"\);\s*return await SignAndDecideAsync\(view, await ChooseRouteAsync\(\), window\);/u, 'the GUI path refuses a digest mismatch like the CLI, then chooses the key');
   assert.match(code['Program.cs'], /if \(command\.Verb == "tray"\) return TrayApp\.Run\(wiring\);/u);
   assert.match(code['CommandLine.cs'], /args is \["--tray"\]\) return new CommandLine\("tray", null, null\)/u);
 });
@@ -364,4 +381,122 @@ test('GUI mode: three Win32 calls (taskbar flash, bring to front, drop the conso
   assert.match(guiTray, /quit = ApprovalQueue\.ShouldQuit\(outcome\);/u, 'a tray started for another account ends on access_denied');
   assert.match(guiTray, /Visible = false \}/u, 'no icon before the first answer');
   assert.match(read('docs', 'architecture', 'approver-app.md'), /## GUI mode/u, 'the GUI mode is documented');
+});
+
+// ---- WebAuthn (docs/architecture/approver-webauthn.md; WebAuthn*.cs, ApproverKeyRecord.cs, PresenceSigning.cs, KeyRecordFile.cs, EnrollWebAuthnCommand.cs, KeysCommand.cs) ----------------------------------------------------
+const keysCommand = code['KeysCommand.cs'];
+const presenceSigning = code['PresenceSigning.cs'];
+const enrollWebAuthn = code['EnrollWebAuthnCommand.cs'];
+const inOrder = (text, tokens) => {
+  const at = tokens.map((token) => text.indexOf(token));
+  assert.ok(at.every((position) => position >= 0) && at.every((position, i) => i === 0 || position > at[i - 1]), `${tokens.join(' -> ')} (${at})`);
+};
+
+test('WebAuthn platform code: webauthn.dll is called from one shipped-only file with a fixed list of imports, version 1 structures, user verification required, attestation none; no private key and no output', () => {
+  assert.ok(webAuthnCode, 'WebAuthn.cs exists');
+  assert.match(project, /<Compile Remove="WebAuthn\.cs" Condition="'\$\(AlberaApproverTestFaults\)' == 'true'" \/>/u, 'the test-faults build does not contain the platform file');
+  assert.deepEqual(importsOf(webAuthnCode).sort(), ['kernel32.dll!GetConsoleWindow', 'user32.dll!GetForegroundWindow', 'webauthn.dll!WebAuthNAuthenticatorGetAssertion', 'webauthn.dll!WebAuthNAuthenticatorMakeCredential',
+    'webauthn.dll!WebAuthNFreeAssertion', 'webauthn.dll!WebAuthNFreeCredentialAttestation', 'webauthn.dll!WebAuthNGetErrorName']);
+  assert.deepEqual(Object.entries(code).filter(([name, text]) => name !== 'WebAuthn.cs' && /webauthn\.dll|WebAuthNAuthenticator|WebAuthNFree/u.test(text)).map(([name]) => name), [], 'no other file calls the platform API');
+  assert.deepEqual([...allCode.matchAll(/class (\w+)(?:\([^)]*\))? : IWebAuthnAuthenticator/gu)].map((m) => m[1]).sort(), ['PlatformWebAuthn', 'SoftwareAuthenticator'], 'the platform one, and the software one of the test seam');
+  // Shipped wiring uses the platform authenticator and the Remote Desktop flag (SM_REMOTESESSION); the test-faults wiring does not reach it (its kit comes from --test-webauthn only).
+  const wiring = sources['Program.cs'].match(/#if ALBERA_APPROVER_TEST_FAULTS\n([\s\S]*?)#else\n([\s\S]*?)#endif/u);
+  assert.match(wiring[2], /new WebAuthnKit\(new PlatformWebAuthn\(\), System\.Windows\.Forms\.SystemInformation\.TerminalServerSession, new KeyRecordStore\(KeyRecordStore\.DefaultDirectory\)\)/u);
+  assert.equal(/PlatformWebAuthn|WebAuthnKit/u.test(wiring[1]), false, 'a test build never reaches the real platform authenticator');
+  // The probe-verified call shape: every structure and options block is version 1, the user verification requirement is "required" (1), the attestation preference is "none" (1), the rp id is the contract's.
+  assert.equal([...webAuthnCode.matchAll(/dwVersion = Version1/gu)].length >= 8, true);
+  assert.equal(/dwVersion = (?!Version1)/u.test(webAuthnCode), false, 'no structure of another version');
+  assert.match(webAuthnCode, /Version1 = 1, RequireUserVerification = 1, AttestationNone = 1, AnyAttachment = 0;/u);
+  assert.match(webAuthnCode, /dwUserVerificationRequirement = RequireUserVerification, dwAttestationConveyancePreference = AttestationNone/u);
+  assert.match(webAuthnCode, /dwUserVerificationRequirement = RequireUserVerification,\s*CredentialList/u);
+  assert.match(webAuthnCode, /pwszId = pins\.Str\(WebAuthnContract\.RpId\)/u);
+  assert.match(webAuthnCode, /WebAuthNAuthenticatorGetAssertion\(Parent\(window\), WebAuthnContract\.RpId, ref clientData/u);
+  assert.equal(/PrivateKey|Pkcs8|Export|Console\.|File\.|Process|Environment|HttpClient|Socket|Registry/u.test(webAuthnCode), false, 'no key export, no output, no file, no process, no network');
+  // Every platform result is freed in a finally; only definite cancellations are "no proof", everything else sends nothing.
+  assert.equal([...webAuthnCode.matchAll(/finally \{ Native\.WebAuthNFree/gu)].length, 2);
+  assert.match(webAuthnCode, /Outcome\(int hr\) => hr is NteUserCancelled or ErrorCancelled or ErrorTimeout \? WebAuthnStatus\.Cancelled : WebAuthnStatus\.NotReady;/u);
+});
+
+test('WebAuthn proof bytes: the client data, the authenticator data rule, the assertion JSON and the key messages are the contract\'s, defined once, and domain-separated from every other signed message', () => {
+  const proof = code['WebAuthnProof.cs'];
+  assert.match(proof, /RpId = "approver\.albera\.local", Origin = "albera:\/\/approver";/u);
+  assert.match(proof, /\$"\{\{\\"type\\":\\"webauthn\.get\\",\\"challenge\\":\\"\{B64\.Url\(SHA256\.HashData\(message\)\)\}\\",\\"origin\\":\\"\{Origin\}\\",\\"crossOrigin\\":false\}\}"/u, 'the exact client data of an assertion');
+  assert.equal([...allCode.matchAll(/webauthn\.get/gu)].length, 1, 'built in one place');
+  assert.match(proof, /data\.Length == AuthenticatorDataBytes && data\.AsSpan\(0, 32\)\.SequenceEqual\(RpIdHash\(\)\) && \(data\[32\] & UserPresent\) != 0 && \(data\[32\] & UserVerified\) != 0 && \(data\[32\] & \(AttestedData \| Extensions\)\) == 0/u, 'the Authority\'s rule: 37 bytes, rp id hash, UP and UV set, AT and ED clear');
+  assert.match(proof, /AuthenticatorDataBytes = 37/u);
+  assert.match(proof, /UserPresent = 0x01, UserVerified = 0x04, AttestedData = 0x40, Extensions = 0x80/u);
+  assert.match(proof, /\$"\{\{\\"kind\\":\\"webauthn\\",\\"credentialId\\":\\"\{B64\.Url\(CredentialId\)\}\\",\\"authenticatorData\\":\\"\{Convert\.ToBase64String\(AuthenticatorData\)\}\\",\\"signature\\":\\"\{Convert\.ToBase64String\(Signature\)\}\\"\}\}"/u, 'the proof object, in the contract\'s key order');
+  assert.match(proof, /RemoveDomain = "albera\.keyremove\.v1"/u);
+  assert.match(proof, /\$"\{RemoveDomain\}\\0\{record\.KeyId\}\\0\{record\.Sha256Hex\(\)\}\\0\{challenge\}"/u);
+  const domains = ['albera.presence.v1', 'albera.selfcheck.v1', 'albera.policy.v1', 'albera.keyremove.v1'];
+  for (const a of domains) for (const b of domains) if (a !== b) assert.equal(`${b}\0`.startsWith(`${a}\0`), false, `${a} must not be a prefix of ${b}`);
+  assert.equal(allCode.split('albera.keyremove.v1').length - 1, 1);
+  assert.equal(/keyadd|KeyMessages\.Add|AddDomain/u.test(allCode), false, 'there is no add message: keys are added only by the elevated set-approver');
+  // The canonical record: the contract's key order, credentialId only for a WebAuthn key, and the key id is "webauthn-" / "hello-" + 8 bytes of SHA-256 over the SPKI.
+  const record = code['ApproverKeyRecord.cs'];
+  assert.match(record, /\$"\{\{\\"keyId\\":\\"\{KeyId\}\\",\\"kind\\":\\"\{Kind\}\\",\\"alg\\":\{Alg\},\\"publicKey\\":\\"\{Convert\.ToBase64String\(PublicKey\)\}\\"\{tail\}\}\}"/u);
+  assert.match(record, /\$",\\"credentialId\\":\\"\{B64\.Url\(CredentialId\)\}\\""/u);
+  assert.match(code['HelloKeyStore.cs'], /public static string Of\(string prefix, byte\[\] spki\) => prefix \+ "-" \+ Convert\.ToHexStringLower\(SHA256\.HashData\(spki\)\.AsSpan\(0, 8\)\);/u);
+  // Public key material only: key objects are made from a public SPKI or public parameters; there is no key generation, no private parameter and no signing in the shipped code.
+  for (const [, call] of [...shippedCode.matchAll(/ECDsa\.Create\(([^;]*)\);/gu)]) assert.ok(call === '' || (call.startsWith('new ECParameters') && /Q = /u.test(call) && !/\bD = /u.test(call)), `ECDsa.Create(${call})`);
+  assert.equal(/\bD = |GenerateKey|ExportParameters\(true\)|\.SignHash|\.SignData|\.SignHashAsync/u.test(shippedCode), false);
+});
+
+test('WebAuthn signing choice: the Authority\'s `keys` decides; WebAuthn when a WebAuthn key is registered, Hello only on a local session, remote_session otherwise; one place picks, each command stops before the typed yes', () => {
+  assert.match(presenceSigning, /RemoteSessionCode = "remote_session"/u);
+  assert.equal(allCode.split('"remote_session"').length - 1, 1, 'the code is defined once and used through the constant');
+  const choose = sliceBetween(presenceSigning, 'public static SigningRoute Choose', 'internal sealed class PresenceSigning');
+  inOrder(choose, ['k.IsWebAuthn', 'new SigningRoute(RouteKind.WebAuthn, credentials)', 'remoteSession ? new SigningRoute(RouteKind.RemoteNoKey, []) : UsingHello']);
+  const signingClass = sliceBetween(presenceSigning, 'internal sealed class PresenceSigning', '// The four key verbs.');
+  assert.match(signingClass, /if \(kit is null\) return SigningRoute\.UsingHello;/u, 'without a WebAuthn kit the Authority is never asked for its keys: Hello only, as before WebAuthn');
+  assert.match(signingClass, /catch \(AuthorityRefusal refusal\) when \(refusal\.Code == "request_invalid"\) \{ keys = \[\]; \}/u, 'an Authority from before WebAuthn does not know the verb: it has Hello keys only');
+  assert.match(signingClass, /RouteKind\.WebAuthn when kit is not null => new WebAuthnSigner\(kit\.Authenticator\)\.Sign\(message, route\.CredentialIds, window\),\s*RouteKind\.Hello => hello\.Sign\(message\),/u);
+  assert.deepEqual(Object.entries(code).filter(([name, text]) => name !== 'TestSeam.cs' && /\.Sign\(/u.test(text)).map(([name, text]) => `${name}:${[...text.matchAll(/\.Sign\(/gu)].length}`).sort(),
+    ['ApproverCommands.cs:1', 'KeysCommand.cs:1', 'PolicyCommand.cs:1', 'PresenceSigning.cs:2', 'SelfCheckCommand.cs:1'], 'every signing call site, by file');
+  // The verbs the approver speaks: the old two, and the three key verbs (no key_add), each from one place.
+  assert.deepEqual([...new Set([...presenceSigning.matchAll(/\\"verb\\":\\"(\w+)\\"/gu)].map((m) => m[1]))].sort(), ['key_challenge', 'key_remove', 'keys']);
+  assert.match(presenceSigning, /Codes = \["authority_unavailable", "request_invalid", "request_expired", "human_denied", "presence_unavailable", "presence_mismatch", "queue_full",\s*"challenge_unknown", "challenge_expired", "key_unknown", "last_key", "too_many_keys"\]/u);
+  assert.match(presenceSigning, /MaxKeys = 16/u);
+  // A reply is accepted only in the contract's exact shape; a challenge is 22 base64url characters.
+  assert.match(presenceSigning, /Challenge = ActionDigest\.FromEcma\("\^\[A-Za-z0-9_-\]\{22\}\$"\)/u);
+  assert.match(presenceSigning, /WebAuthnKeyId = ActionDigest\.FromEcma\("\^webauthn-\[0-9a-f\]\{16\}\$"\)/u);
+  // The decide frame keeps its shape: the presence value is the quoted base64 signature of Hello or the proof object, from one function.
+  assert.match(presenceSigning, /PresenceJson\(SignResult signed\) => signed\.Proof is \{ \} proof \? proof\.ToJson\(\) : \$"\\"\{Convert\.ToBase64String\(signed\.Signature!\)\}\\""/u);
+  assert.equal([...allCode.matchAll(/\\"presence\\":/gu)].length, 2, 'decide and policy_set carry the presence value, built from PresenceJson');
+  // Each command asks for the route before the typed yes, so the remote-session message comes first.
+  inOrder(sliceBetween(code['ApproverCommands.cs'], 'public Task<int> ApproveAsync', 'private async Task<SigningRoute> ChooseRouteAsync'), ['ChooseRouteAsync()', 'Confirmed()']);
+  inOrder(sliceBetween(keysCommand, 'public Task<int> RemoveAsync', 'private ApproverKeyRecord? RecordOf'), ['RecordOf(webAuthn, target)', 'SigningRoute.Choose(keys, webAuthn.RemoteSession)', 'Confirmed("remove this key")', 'directory.RemoveChallengeAsync(']);
+});
+
+test('keys remove and enroll --webauthn: the unattested opt-in, the console and every refusal come before anything is made or sent; the remove proof is over a message built from the record this app holds; success is reported only when the key list shows it; there is no keys add', () => {
+  assert.ok(enrollWebAuthn && keysCommand, 'both commands exist');
+  inOrder(enrollWebAuthn, ['if (kit is null)', 'if (!acceptUnattested)', 'if (!interactive)', 'string sid = currentUserSid();', 'WebAuthnCreator.Create(', 'kit.Records.TrySave(', 'record file:']);
+  assert.match(enrollWebAuthn, /UnattestedLine = "attestation: none \(accepted with --accept-unattested: this key is NOT proven to be hardware-backed\)"/u, 'the same style of warning line as the Hello enroll');
+  assert.equal(/IApproverChannel|PipeChannel|CallAsync|KeyDirectory|ServerExpectation/u.test(enrollWebAuthn), false, 'enroll --webauthn never talks to the Authority: no channel, no key directory');
+  const remove = sliceBetween(keysCommand, 'public Task<int> RemoveAsync', 'private ApproverKeyRecord? RecordOf');
+  inOrder(remove, ['if (!interactive)', 'directory.ListAsync()', '"key_unknown"', '"last_key"', 'RecordOf(webAuthn, target)', 'SigningRoute.Choose(keys, webAuthn.RemoteSession)', 'PresenceSigning.RemoteSessionCode', 'Confirmed("remove this key")',
+    'directory.RemoveChallengeAsync(record.KeyId)', 'signing.Sign(route, KeyMessages.Remove(record, challenge))', 'directory.RemoveAsync(record.KeyId, challenge, by)', 'result: key removed', 'removed.PolicyReset']);
+  assert.match(remove, /removed\.Keys\.Any\(k => k\.KeyId == record\.KeyId\)\) throw new ChannelException\(ChannelCodes\.InvalidResponse, sent: true\)/u, 'a remove the key list does not show is an unknown outcome');
+  assert.match(remove, /if \(removed\.PolicyReset\) output\.Write\("policy: set back to careful/u, 'the person is told when the policy went back to careful');
+  assert.match(presenceSigning, /bool policyReset = reply\.TryGetProperty\("policyReset", out JsonElement flag\);[\s\S]*if \(policyReset && flag\.ValueKind != JsonValueKind\.True\) throw Invalid\(\);/u, 'policyReset is accepted only as true, and only from key_remove');
+  assert.match(keysCommand, /\(record\.CredentialId \?\? \[\]\)\.AsSpan\(\)\.SequenceEqual\(target\.CredentialId \?\? \[\]\)/u, 'a record on this PC must agree with the Authority\'s listing');
+  // The refusals the Authority also makes are made here first, so no prompt is wasted.
+  for (const code_ of ['key_unknown', 'last_key', 'key_record_unavailable', 'not_interactive', 'not_confirmed']) assert.ok(keysCommand.includes(`"${code_}"`), code_);
+  // The grammar: keys list | keys remove <keyId>, the id in the Authority's id grammar. There is no keys add.
+  assert.match(code['CommandLine.cs'], /args is \["keys", "remove", \{ \} removed\] && IsKeyId\(removed\)/u);
+  assert.match(code['Program.cs'], /if \(command\.Verb == "keys"\)\s*\{\s*KeysCommand keys = new\(new PipeChannel\(wiring\.Expectation, wiring\.TimeoutMs\), wiring\.Signer, wiring\.KeyStore, wiring\.WebAuthn, Console\.Out, Console\.Error, Console\.In, wiring\.Interactive\);/u);
+  assert.ok(code['Program.cs'].indexOf('if (command.Option == "webauthn")') < code['Program.cs'].indexOf('if (command.Verb == "enroll")'), 'enroll --webauthn is dispatched before the Hello enroll and needs no pipe');
+  assert.ok(code['Program.cs'].indexOf('if (command.Option == "check")') < code['Program.cs'].indexOf('if (command.Option == "webauthn")'));
+});
+
+test('key record files: the only file code of the approver; it creates one file per key id under %LOCALAPPDATA%\\Albera\\approver-keys, never overwrites, deletes, moves or appends, and builds no other path', () => {
+  assert.ok(recordFileCode, 'KeyRecordFile.cs exists');
+  assert.match(recordFileCode, /Path\.Combine\(Environment\.GetFolderPath\(Environment\.SpecialFolder\.LocalApplicationData\), "Albera", "approver-keys"\)/u, 'one fixed folder');
+  assert.match(recordFileCode, /new\(@"\^\(\?:webauthn\|hello\)-\[0-9a-f\]\{16\}\\z", RegexOptions\.CultureInvariant\)/u, 'a file name is a derived key id and nothing else (\\z: a trailing newline cannot pass)');
+  assert.equal([...recordFileCode.matchAll(/Path\.Combine\(Folder/gu)].length, 1, 'one place builds a file path');
+  assert.equal([...recordFileCode.matchAll(/FileMode\.CreateNew/gu)].length, 1, 'a file is created, never opened for writing');
+  assert.equal(/FileMode\.(?!CreateNew)|File\.(?:Delete|Move|Copy|Replace|Write|Create|Append|Open|SetAttributes)|FileAccess\.(?!Write)|Directory\.(?!CreateDirectory)|Truncate|Overwrite|Symlink|Junction/u.test(recordFileCode), false);
+  assert.deepEqual(Object.entries(code).filter(([, text]) => /\.TrySave\(/u.test(text)).map(([name]) => name).sort(), ['EnrollWebAuthnCommand.cs'], 'only enroll --webauthn writes a record');
+  assert.deepEqual(Object.entries(code).filter(([name, text]) => name !== 'KeyRecordFile.cs' && /Records\.Find\(/u.test(text)).map(([name]) => name), ['KeysCommand.cs'], 'only `keys remove` reads one back');
+  assert.match(recordFileCode, /ApproverKeyRecord\.TryParse\(File\.ReadAllBytes\(path\)\) is \{ \} record && record\.KeyId == keyId/u, 'a record read back must be exactly that key\'s canonical record');
 });

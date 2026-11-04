@@ -55,8 +55,11 @@ internal interface IHelloKeyStore
     KeyLookup Create(bool replace, bool acceptUnattested);
 }
 
-/// <summary>The suggested approverKeyId: "hello-" + the first 8 bytes of SHA-256 over the SPKI, lower-case hex (a valid id in the Authority's grammar). Shared by `enroll` and `enroll --check`.</summary>
+/// <summary>The suggested approverKeyId: "hello-" + the first 8 bytes of SHA-256 over the SPKI, lower-case hex (a valid id in the Authority's grammar). Shared by `enroll` and `enroll --check`.
+/// The same rule with the prefix "webauthn" is the id of a WebAuthn key (docs/architecture/approver-webauthn.md, "Wire contract").</summary>
 internal static class ApproverKeyId
 {
-    public static string Of(byte[] spki) => "hello-" + Convert.ToHexStringLower(SHA256.HashData(spki).AsSpan(0, 8));
+    public static string Of(byte[] spki) => Of("hello", spki);
+
+    public static string Of(string prefix, byte[] spki) => prefix + "-" + Convert.ToHexStringLower(SHA256.HashData(spki).AsSpan(0, 8));
 }

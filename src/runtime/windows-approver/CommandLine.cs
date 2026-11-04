@@ -3,10 +3,10 @@ using Albera.BrokerContract;
 
 namespace Albera.Approver;
 
-/// <summary>The whole command-line grammar: `list` | `approve &lt;approvalId&gt;` | `deny &lt;approvalId&gt;` | `enroll [--show|--replace|--check [--expect &lt;approverKeyId&gt;]]` | `enroll [--replace] --accept-unattested` | `policy [show]` | `policy set &lt;tier&gt; [--prompt &lt;action&gt;]...` | `--tray`. Anything else is not a command.</summary>
-internal sealed record CommandLine(string Verb, string? ApprovalId, string? Option, string? Expect = null, string? Tier = null, IReadOnlyList<string>? Prompts = null, bool AcceptUnattested = false)
+/// <summary>The whole command-line grammar: `list` | `approve &lt;approvalId&gt;` | `deny &lt;approvalId&gt;` | `enroll [--show|--replace|--check [--expect &lt;approverKeyId&gt;]]` | `enroll [--replace] --accept-unattested` | `enroll --webauthn [--accept-unattested]` | `keys list` | `keys remove &lt;keyId&gt;` | `policy [show]` | `policy set &lt;tier&gt; [--prompt &lt;action&gt;]...` | `--tray`. Anything else is not a command.</summary>
+internal sealed record CommandLine(string Verb, string? ApprovalId, string? Option, string? Expect = null, string? Tier = null, IReadOnlyList<string>? Prompts = null, bool AcceptUnattested = false, string? KeyId = null)
 {
-    public const string Usage = "usage: AlberaApprover list | approve <approvalId> | deny <approvalId> | enroll [--show | --replace | --check [--expect <approverKeyId>]] | enroll [--replace] --accept-unattested | policy [show] | policy set <careful|standard> [--prompt <action>]... | --tray";
+    public const string Usage = "usage: AlberaApprover list | approve <approvalId> | deny <approvalId> | enroll [--show | --replace | --check [--expect <approverKeyId>]] | enroll [--replace] --accept-unattested | enroll --webauthn --accept-unattested | keys list | keys remove <keyId> | policy [show] | policy set <careful|standard> [--prompt <action>]... | --tray";
 
     public static CommandLine? TryParse(string[] args)
     {
@@ -21,6 +21,10 @@ internal sealed record CommandLine(string Verb, string? ApprovalId, string? Opti
         if (args is ["enroll", "--replace", "--accept-unattested"]) return new CommandLine("enroll", null, "replace", AcceptUnattested: true);
         if (args is ["enroll", "--check"]) return new CommandLine("enroll", null, "check");
         if (args is ["enroll", "--check", "--expect", { } expected] && IsKeyId(expected)) return new CommandLine("enroll", null, "check", expected);
+        if (args is ["enroll", "--webauthn"]) return new CommandLine("enroll", null, "webauthn"); // parsed so that the command can say why it refuses without the flag
+        if (args is ["enroll", "--webauthn", "--accept-unattested"]) return new CommandLine("enroll", null, "webauthn", AcceptUnattested: true);
+        if (args is ["keys", "list"]) return new CommandLine("keys", null, "list");
+        if (args is ["keys", "remove", { } removed] && IsKeyId(removed)) return new CommandLine("keys", null, "remove", KeyId: removed);
         if (args is ["policy"] or ["policy", "show"]) return new CommandLine("policy", null, "show");
         if (args is ["policy", "set", { } tier, .. { } flags]) return TryParsePolicySet(tier, flags);
         return null;

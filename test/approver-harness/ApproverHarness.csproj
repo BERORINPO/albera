@@ -17,8 +17,8 @@
     <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Program.cs is the real entry point; WindowsHello.cs is the shipped Windows Hello code (needs the Windows SDK projection, and must never run in a test). -->
-    <Compile Include="$(ApproverDir)*.cs" Exclude="$(ApproverDir)Program.cs;$(ApproverDir)WindowsHello.cs" />
+    <!-- Program.cs is the real entry point; WindowsHello.cs is the shipped Windows Hello code (needs the Windows SDK projection, and must never run in a test); WebAuthn.cs is the shipped webauthn.dll code (the unit checks use the software authenticator). -->
+    <Compile Include="$(ApproverDir)*.cs" Exclude="$(ApproverDir)Program.cs;$(ApproverDir)WindowsHello.cs;$(ApproverDir)WebAuthn.cs" />
     <Compile Include="$(ContractDir)*.cs" />
   </ItemGroup>
 </Project>
