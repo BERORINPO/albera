@@ -67,7 +67,11 @@ test('source guards: elevation is checked first and never requested; nothing fro
   for (const forbidden of [/-Verb\s+RunAs/iu, /\bRunAs\b(?!\s*=)/u, /Start-Process/u, /\bsudo\b/iu, /ConvertFrom-SecureString/u, /AsPlainText/u, /\bNetworkCredential\b/u, /PtrToStringAuto|PtrToStringBSTR|SecureStringToGlobalAllocUnicode/u]) {
     assert.equal(forbidden.test(script) || forbidden.test(libWithoutLauncher), false, `must not contain ${forbidden}`);
   }
-  assert.doesNotMatch(script + libWithoutLauncher, /ControlPlanePassword|SecureString|Read-Host|New-LocalUser/u, 'the Control Plane has no account and no password: nothing asks for one or makes one');
+  assert.doesNotMatch(script + libWithoutLauncher, /ControlPlanePassword|SecureString|New-LocalUser/u, 'the Control Plane has no account and no password: nothing asks for one or makes one');
+  // the one thing the script asks a person to type is the yes of set-approver (Zaku SEC-002): one Read-Host in the whole script, in the function that reads that answer, and none in the lib
+  assert.equal([...script.matchAll(/Read-Host/gu)].length, 1, 'one place reads a line from the console');
+  assert.match(script, /function Read-ConfirmationLine\(\[string\]\$Prompt\) \{ Read-Host -Prompt \$Prompt \}/u);
+  assert.doesNotMatch(libWithoutLauncher, /Read-Host/u, 'and the lib asks for nothing');
   assert.match(script, /ALBERA_LAB_VM/u);
   assert.doesNotMatch(script, /-Password\s+['"]/u, 'no literal password');
   // The only programs ever started: sc.exe and icacls.exe by their full System32 path, and ONE more - `launch-check` of the INSTALLED Control Plane host, with a minimal environment. Nothing from the repository tree.
@@ -751,7 +755,8 @@ test('-Mode set-approver against a temp layout (fakes for the machine): keys are
     assert.match(run.error, /did not start with the new approver key list, so the OLD config is back and nothing is recorded/u, how);
     assert.equal(run.configIsOld, true, `${how}: the old config is back, byte for byte`);
     assert.equal(run.service, 'Running', `${how}: and the service runs with it`);
-    assert.deepEqual(run.starts, [{ configHasList: true, configHasPair: false, storeExists: false }, { configHasList: false, configHasPair: true, storeExists: false }], `${how}: the second start sees the old config`);
+    assert.deepEqual(run.starts, [{ configHasList: true, configHasPair: false, storeExists: false }, { configHasList: false, configHasPair: true, storeExists: true }], `${how}: the second start sees the old config AND the old key store, which was put back`);
+    assert.deepEqual(run.storeKeyIds, [r.ids.h], `${how}: the store holds the key it held before`);
     assert.deepEqual(run.record.approverKeys, [], `${how}: nothing is recorded`);
     assert.equal(run.record.hasLegacyId, true);
     assert.equal(run.record.setAt, null);
@@ -773,6 +778,73 @@ test('-Mode set-approver against a temp layout (fakes for the machine): keys are
   assert.deepEqual([r.storeHeld.configIsOld, r.storeHeld.storeExists, r.storeHeld.service], [true, true, 'Running']);
   assert.deepEqual(r.storeHeld.order, [`sc stop ${authority}`, `write ${configFile}`, `write ${configFile}`, `sc start ${authority}`], 'stop, new config, old config back, start');
   assert.equal(r.storeHeld.record.setAt, null);
+  assert.equal(r.storeHeld.storeHash, r.storeHeldHashBefore, 'the store that could not be deleted is exactly what it was');
+  assert.equal(r.storeHeld.nativeCalls.length, 0, 'and nothing was written to put it back: it already held those bytes');
+  // 7b. THE ROLLBACK PUTS THE KEY STORE BACK, BYTE FOR BYTE (Zaku SEC-001). X is in the config, key_remove took it out of the store, so the store holds [A]. A failed run must not leave the Authority without a store:
+  // its next start would make one from the old config and bring X back.
+  const rb = r.rollback;
+  const failedStart = /did not start with the new approver key list, so the OLD config is back and nothing is recorded/u;
+  const sameStore = (run, before, label) => {
+    assert.equal(run.storeHash, before, `${label}: the key store holds exactly the bytes it held before the run`);
+    assert.deepEqual(run.storeKeyIds, [r.ids.a], `${label}: and X, removed from the store, is still removed`);
+    assert.equal(run.configIsOld, true, `${label}: the old config is back as well`);
+  };
+  assert.match(rb.removedKey.error, failedStart);
+  sameStore(rb.removedKey, rb.removedKeyBefore, 'a failed start that had made a store from the NEW config');
+  assert.deepEqual(rb.removedKey.starts.map((s) => s.storeExists), [false, true], 'the store was gone for the first start and is back before the second one');
+  assert.equal(rb.removedKey.nativeCalls.length, 1, 'it was written once, through the trusted path (the owner set to Administrators)');
+  assert.match(rb.removedKey.nativeCalls[0], /approver-keys\.json" \/setowner \*S-1-5-32-544 \/L$/u);
+  assert.deepEqual(rb.removedKeyEffective, [r.ids.a], 'the keys the Authority trusts after the rollback: A only; X does not come back');
+  assert.match(rb.removedKey.said.join('\n'), /the key store was put back exactly as it was \(\d+ bytes, the same bytes\)/u);
+  assert.match(rb.plain.error, failedStart);
+  sameStore(rb.plain, rb.plainBefore, 'a failed start that left no store behind');
+  assert.equal(rb.removedKeyBefore, rb.plainBefore, 'the same store bytes in both runs (the test world is deterministic)');
+  assert.equal(rb.removedKeyBefore.length, 64);
+  // the install record cannot be written after the Authority came up with the new list: the old config and the old store come back, and the service runs again with them
+  assert.match(rb.recordFails.error, /the install record could not be written/u);
+  sameStore(rb.recordFails, rb.recordFailsBefore, 'a failed record step');
+  assert.equal(rb.recordFails.service, 'Running');
+  assert.deepEqual(rb.recordFailsEffective, [r.ids.a]);
+  assert.deepEqual(rb.recordFails.record.approverKeys, [`${r.ids.a}|webauthn`, `${r.ids.x}|webauthn`], 'and the install record on disk is the old one');
+  assert.equal(rb.recordFails.starts.length, 2, 'started with the new config, then again with the old one');
+  // the config write fails half-way: the store was never touched, nothing is written to it, and the service runs again
+  assert.match(rb.configFails.error, /the Authority config could not be written/u);
+  sameStore(rb.configFails, rb.configFailsBefore, 'a failed config write');
+  assert.equal(rb.configFails.nativeCalls.length, 0, 'the store was not touched, so it is not written');
+  assert.equal(rb.configFails.service, 'Running');
+  // no store at the start: the config was the keys in force, so the rollback leaves NO store (the one a failed start made from the new config goes) and the Authority makes its own from the OLD config
+  assert.match(rb.noOriginal.error, failedStart);
+  assert.deepEqual(rb.noOriginal.starts.map((s) => s.storeExists), [false, false], 'the second start finds no store: the leftover of the first one was deleted');
+  assert.deepEqual(rb.noOriginal.storeKeyIds, [r.ids.a, r.ids.x], 'the store the Authority then makes is from the old config, which was the keys in force');
+  assert.equal(rb.noOriginal.nativeCalls.length, 0);
+  assert.match(rb.noOriginal.said.join('\n'), /there was no key store before this run: the one a start made from the new config was deleted/u);
+  // -Replace over a store that is trusted but is not a valid store: put back as found, garbage and all
+  assert.match(rb.garbage.error, failedStart);
+  assert.equal(rb.garbage.storeHash, rb.garbageBefore, 'the bytes of a store that is not a valid store come back too');
+  // a store the install does not trust is not put back (nothing vouches for it); the leftover of the failed start goes
+  assert.match(rb.untrusted.error, failedStart);
+  assert.match(rb.untrusted.said.join('\n'), /the key store that was there could not be kept .*owner_untrusted.*; it is not put back/u);
+  assert.deepEqual(rb.untrusted.starts.map((s) => s.storeExists), [false, false]);
+  // the store cannot be put back (icacls fails): the service is NOT started on a store the run did not mean to leave
+  assert.equal(rb.restoreFails.service, 'Stopped', 'left stopped');
+  assert.equal(rb.restoreFails.starts.length, 1, 'no second start');
+  assert.equal(rb.restoreFails.order.filter((step) => step === `sc start ${authority}`).length, 1);
+  assert.match(rb.restoreFails.said.join('\n'), /the key store could NOT be put back as it was .*icacls \/setowner failed.*the service is left stopped/su);
+  assert.match(rb.restoreFails.said.join('\n'), /AlberaApprovalAuthority stays STOPPED/u);
+  assert.equal(rb.restoreFails.configIsOld, true, 'the old config is back all the same');
+  // 7c. THE CONFIRMATION (Zaku SEC-002): asked once, after the final list is on the screen and before anything was stopped or written; a run that changes nothing asks nothing; blanks around yes are fine; the lab flag stands in for a console
+  assert.equal(one.prompts.length, 1, 'asked exactly once');
+  assert.deepEqual(one.prompts[0], { prompt: 'Type yes to write it (anything else cancels)', listShown: true, stepsDone: 0, saidLines: one.prompts[0].saidLines }, 'the list was on the screen, and no service call or write had happened yet');
+  assert.ok(one.prompts[0].saidLines > 0);
+  assert.ok(one.said.findIndex((line) => line.includes('will trust exactly these')) < one.said.findIndex((line) => line.includes('Nothing has been written yet')), 'the question comes after the list');
+  assert.equal(r.againNoConsole.error, null, 'a run that finds everything in place needs no console');
+  assert.deepEqual([r.againNoConsole.prompts.length, r.againNoConsole.order.length], [0, 0]);
+  assert.equal(r.confirmBlanks.error, null, '"  yes " with a line break around it is yes');
+  assert.equal(r.confirmBlanks.prompts.length, 1);
+  assert.equal(r.labYes.error, null, '-LabAssumeYes in the lab VM: no console needed');
+  assert.equal(r.labYes.prompts.length, 0, 'nobody is asked');
+  assert.ok(r.labYes.said.some((line) => line.includes('-LabAssumeYes (lab VM only): the confirmation is given by the flag; nothing was typed')));
+  assert.equal(r.realConsoleInteractive, false, 'the shipped console check says no to a process started with piped input and output');
   // 8. the key store is not a plain file: refused before anything is touched; and a missing one is fine
   for (const name of ['storeIsFolder', 'storeIsJunction']) {
     assert.match(r[name].error, /^REFUSED: .*approver-keys\.json is a folder \(or a link to one\), not the key store file; set-approver deletes nothing but that one plain file$/u, name);
@@ -865,8 +937,17 @@ test('-Mode set-approver against a temp layout (fakes for the machine): keys are
     expectedIdHelloForWebauthn: /a\.json: this file holds the key webauthn-[0-9a-f]{16}, but .* position 1\) is hello-[0-9a-f]{16}/u,
     swappedFile: /swapped\.json: this file holds the key webauthn-[0-9a-f]{16}, but .* position 1\) is webauthn-[0-9a-f]{16}; the file is not the one the key was made into/u,
     swappedOneOfTwo: /swapped\.json: this file holds the key .* position 2\)/u,
+    // the confirmation (Zaku SEC-002): typed yes after the final list, or nothing is written
+    consoleNotInteractive: /^REFUSED: set-approver asks you to type yes after it prints the final key list, and this console cannot be typed in \(its input or output is redirected, or it is not interactive\)\. Nothing was changed\./u,
+    answerNo: /^REFUSED: not confirmed: yes was not typed\. Nothing was changed\.$/u, answerY: /^REFUSED: not confirmed: yes was not typed/u, answerEmpty: /^REFUSED: not confirmed: yes was not typed/u,
+    answerNothingAtAll: /^REFUSED: not confirmed: yes was not typed/u, answerCapitals: /^REFUSED: not confirmed: yes was not typed/u, answerLonger: /^REFUSED: not confirmed: yes was not typed/u,
+    labFlagOutsideTheLab: /^REFUSED: -LabAssumeYes is lab-only \(disposable VM with ALBERA_LAB_VM=1\); on a real PC set-approver asks you to type yes in the elevated console$/u,
   };
   assert.deepEqual(Object.keys(r.refusals).sort(), Object.keys(expectedRefusals).sort());
+  // how many times the person was asked: never for a console that cannot be typed in or a flag outside the lab; once for every wrong answer; and always BEFORE the service was touched (sc 0 above)
+  for (const name of ['consoleNotInteractive', 'labFlagOutsideTheLab']) assert.equal(r.refusals[name].prompts, 0, `${name}: nobody was asked`);
+  for (const name of ['answerNo', 'answerY', 'answerEmpty', 'answerNothingAtAll', 'answerCapitals', 'answerLonger']) assert.equal(r.refusals[name].prompts, 1, `${name}: asked once, refused`);
+  assert.equal(Object.values(r.refusals).every((refusal) => refusal.native === 0), true, 'a refusal never reaches the file system tools');
   assert.deepEqual(r.swappedExpected, [r.ids.a], 'the owner saw the id of key A on the enroll screen');
   assert.equal(r.swappedNowHolds.length, 1);
   assert.notEqual(r.swappedNowHolds[0], r.ids.a, 'and the file under that name now holds another, perfectly valid, key');
@@ -1040,6 +1121,24 @@ test('the command line of the key-file options: set-approver needs elevation fir
   assert.equal(code(['-Mode', 'set-approver', '-ApproverKeyFile', fileA, '-Replace'], { ALBERA_HOST_ASSUME_NOT_ELEVATED: '1' }).code, 3, 'and the elevation check still comes first');
   assert.match(shown.stdout, /PLAN ONLY: nothing was changed\./u);
   assert.ok(shown.stdout.includes('each key id above equals the one given at the same position of -ExpectedApproverKeyId'), 'the plan says the ids were compared');
+  assert.ok(shown.stdout.includes('after the final list is printed you must TYPE yes in this elevated console; redirected input or output, a non-interactive console or any other answer is refused with nothing changed (-LabAssumeYes: the lab VM only)'), 'and that the run asks for a typed yes');
+  // -LabAssumeYes (the lab VM\'s own way to confirm, because it has no console to type in) is gated like -NodeSource, -ClaudeSource and -VmId: refused unless ALBERA_LAB_VM is exactly 1, and for no mode but set-approver
+  const labPlan = (env) => code(['-Mode', 'plan', '-PlanFor', 'set-approver', '-ApproverKeyFile', fileA, ...expectA, '-LabAssumeYes'], env);
+  for (const value of ['', '0', 'true', 'yes']) {
+    const refusedFlag = labPlan({ ALBERA_LAB_VM: value });
+    assert.equal(refusedFlag.code, 2, `ALBERA_LAB_VM=${JSON.stringify(value)}: refused`);
+    assert.match(refusedFlag.stdout, /^REFUSED: -LabAssumeYes is lab-only \(disposable VM with ALBERA_LAB_VM=1\); on a real PC set-approver asks you to type yes in the elevated console$/mu);
+  }
+  const inTheLab = labPlan({ ALBERA_LAB_VM: '1' });
+  assert.equal(inTheLab.code, 0, 'in the lab VM the flag is accepted (the plan still changes nothing)');
+  assert.match(inTheLab.stdout, /PLAN ONLY: nothing was changed\./u);
+  const otherModes = [['-Mode', 'plan', '-ApproverKeyFile', fileA, ...expectA, '-ApproverSid', ownerSid], ['-Mode', 'status'], ['-Mode', 'plan', '-PlanFor', 'uninstall']];
+  for (const args of otherModes) {
+    const other = code([...args, '-LabAssumeYes'], { ALBERA_LAB_VM: '1' });
+    assert.equal(other.code, 2, `${args.join(' ')}: the flag is for set-approver only`);
+    assert.match(other.stdout, /-LabAssumeYes only applies to -Mode set-approver \(and its plan\)/u);
+  }
+  assert.equal(code(['-Mode', 'set-approver', '-ApproverKeyFile', fileA, ...expectA, '-LabAssumeYes'], { ALBERA_HOST_ASSUME_NOT_ELEVATED: '1', ALBERA_LAB_VM: '' }).code, 3, 'the elevation check still comes first');
   // a bad file: the plan says so, in the key step
   writeFileSync(path.join(dir, 'bad.json'), `${JSON.stringify(es)}\n`);
   const rejected = plan('-ApproverKeyFile', path.join(dir, 'bad.json'), ...expectA);
@@ -1311,6 +1410,12 @@ test('removal safety, path rules, the lab gate and id grammar', needsWindows, ()
   assert.deepEqual(r.pathsOk, [true, true]);
   assert.deepEqual(r.pathsBad, [false, false, false, false, false, false, false, false]);
   assert.deepEqual(r.gate, { labSupplied: true, notLab: 'binary_source_parameter_is_lab_only', labWrongValue: 'binary_source_parameter_is_lab_only', noSource: true });
+  // -LabAssumeYes (set-approver) is gated the same way: ALBERA_LAB_VM must be exactly 1
+  assert.deepEqual({ ...r.confirmGate }, { lab: true, notLab: 'assume_yes_parameter_is_lab_only', wrongValue: 'assume_yes_parameter_is_lab_only', notSupplied: true });
+  // the typed answer: the word yes and nothing else (blanks around it are ignored)
+  assert.deepEqual({ ...r.confirmAnswers }, { yes: true, blanks: true, tab: true, no: false, y: false, capitals: false, mixed: false, longer: false, twice: false, empty: false, blank: false, none: false });
+  // "the same bytes": byte for byte, same length
+  assert.deepEqual({ ...r.bytesEqual }, { same: true, empty: true, oneByteOff: false, shorter: false, longer: false, firstOff: false });
   // the folders the service fills itself are known as a whole; a look-alike name and any other unlisted file are still unknown
   assert.deepEqual(r.unknownWork, ['control-plane\\notes.txt', 'control-plane\\logsX\\a', 'control-plane-config\\extra.json']);
   assert.deepEqual(r.unknownWorkWithoutWorkFolders, ['control-plane\\logs\\host.log', 'ui\\room.json'], 'without the work-folder list nothing below logs\\ or ui\\ is known');
@@ -2484,7 +2589,7 @@ test('the Control Plane install, source guards: no repository file is executed, 
   assert.equal(/\$Entry\.Grants[^\n]*Invoke-Native|Invoke-Native[^\n]*Grants/u.test(setAcl), false, 'the plan\'s grants never reach icacls');
   // a failed icacls says why: the exit code and what it printed are in the error text (the lab hook shows the whole output of the script)
   assert.equal(/throw "icacls/u.test(scriptCode), false, 'every icacls failure goes through Format-NativeFailure');
-  assert.equal([...scriptCode.matchAll(/Format-NativeFailure "icacls/gu)].length, 3);
+  assert.equal([...scriptCode.matchAll(/Format-NativeFailure "icacls/gu)].length, 4, 'the ACL plan\'s owner step, the Users grant, the configs\' write, and the key store put back by a set-approver rollback');
   // the failure actions are read from the service key (REG_BINARY), not from localized sc.exe text
   assert.equal(/qfailure/u.test(scriptCode + code(lib)), false);
   assert.doesNotMatch(scriptCode, /Invoke-Native[^\n]*\$(?:NodeSource|ClaudeSource|nodeSource|claudeSource)|& \$(?:NodeSource|ClaudeSource)/u, 'neither pinned program is ever started');
@@ -2528,7 +2633,36 @@ test('set-approver, source guards and documents: one file is deleted and it is a
   // services: only the Authority, only by the fixed name, only stop and start
   const scCalls = [...section.matchAll(/Invoke-Sc\s+("[^"]*")/gu)].map((m) => m[1]);
   assert.deepEqual(scCalls, ['"stop $($K.AuthorityService)"', '"start $($K.AuthorityService)"']);
-  assert.equal(/Invoke-Native|Start-Process|Stop-Process|taskkill/iu.test(section), false, 'no program is started and no process is stopped by set-approver');
+  assert.equal(/Start-Process|Stop-Process|taskkill/iu.test(section), false, 'no process is started or stopped by set-approver');
+  // the one program set-approver starts is icacls, to make Administrators the owner of the key store it puts back; the path is the layout's fixed store path, not a parameter
+  assert.deepEqual([...section.matchAll(/Invoke-Native ([^\n]*)/gu)].map((m) => m[1]), ['$IcaclsExe ((Quote-NativeArg $path) + \' /setowner *S-1-5-32-544 /L\')']);
+  const restoreFile = scriptCode.slice(scriptCode.indexOf('function Restore-ApproverKeyStoreFile'), scriptCode.indexOf('function ', scriptCode.indexOf('function Restore-ApproverKeyStoreFile') + 10));
+  assert.match(restoreFile, /^function Restore-ApproverKeyStoreFile\(\[byte\[\]\]\$Bytes\) \{\s*\n\s*\$path = \$L\.AuthorityKeyStore\s*\n/u, 'the only parameter is the bytes: the path is the layout\'s approver-keys.json');
+  assert.equal([...section.matchAll(/\[System\.IO\.File\]::WriteAllBytes\(([^)]*)\)/gu)].map((m) => m[1]).join('|'), '$path, $Bytes', 'one write of bytes in the whole set-approver section, to that path');
+  assert.match(restoreFile, /\[System\.IO\.File\]::WriteAllBytes[\s\S]*?Invoke-Native[\s\S]*?Read-ApproverKeyStoreFile[\s\S]*?Test-BytesEqual \$after\.Bytes \$Bytes/u, 'written, owner set, read back through the trust test and compared byte for byte');
+  assert.match(restoreFile, /Test-BytesEqual \$now\.Bytes \$Bytes\)\) \{ return \$false \}/u, 'a file that already holds those bytes is not written again');
+  // SEC-001: a rollback never deletes the store for good. The undo puts the store back through Restore-ApproverKeyStoreAsFound (the bytes kept in memory), and deletes only when there was none at the start
+  const undo = scriptCode.slice(scriptCode.indexOf('function Undo-SetApprover'), scriptCode.indexOf('function ', scriptCode.indexOf('function Undo-SetApprover') + 10));
+  assert.equal(/Remove-ApproverKeyStore/u.test(undo), false, 'Undo-SetApprover does not delete the store');
+  assert.match(undo, /\$changedSomething = \$state\.ConfigWritten -or \$state\.StoreTouched[\s\S]*?\$storeBack = Restore-ApproverKeyStoreAsFound/u);
+  assert.match(undo, /if \(-not \$storeBack\) \{ Say "    \$\(\$K\.AuthorityService\) stays STOPPED/u, 'a store that could not be put back keeps the service stopped');
+  const asFound = scriptCode.slice(scriptCode.indexOf('function Restore-ApproverKeyStoreAsFound'), scriptCode.indexOf('function ', scriptCode.indexOf('function Restore-ApproverKeyStoreAsFound') + 10));
+  assert.match(asFound, /if \(\$null -ne \$state\.OriginalStoreBytes\) \{\s*\n\s*if \(Restore-ApproverKeyStoreFile \$state\.OriginalStoreBytes\)/u);
+  assert.match(asFound, /Remove-ApproverKeyStore/u, 'and, only when there was no store at the start, the one a failed start made is deleted');
+  const saveStore = scriptCode.slice(scriptCode.indexOf('function Save-OriginalApproverKeyStore'), scriptCode.indexOf('function ', scriptCode.indexOf('function Save-OriginalApproverKeyStore') + 10));
+  assert.match(saveStore, /\$state\.OriginalStoreBytes = \$file\.Bytes/u);
+  assert.ok(scriptCode.indexOf('Save-OriginalApproverKeyStore   # the store as it is with the service stopped') > scriptCode.indexOf('function Write-SetApproverConfig') && scriptCode.indexOf('Save-OriginalApproverKeyStore   # the store as it is') < scriptCode.indexOf('Write-OneConfig $L.AuthorityConfig $json'), 'the bytes are kept before the config is written');
+  assert.match(scriptCode, /Save-OriginalApproverKeyStore   # \(already done[^\n]*\n\s*\$script:SetApprover\.StoreTouched = \$true[^\n]*\n\s*try \{ \$deleted = Remove-ApproverKeyStore \}/u, 'and before the delete');
+  // SEC-002: the person types yes after the list and before the stop; Read-Host is used in one place; the lab flag is gated like the other lab parameters, at the command line and again at the question
+  assert.match(scriptCode, /Do = \{ Show-SetApproverKeys; Confirm-SetApproverKeys \} \}/u, 'the question follows the list, in the same step, before the service is stopped');
+  assert.equal([...scriptCode.matchAll(/Read-Host/gu)].length, 1, 'one place reads a line from the console');
+  assert.match(scriptCode, /function Read-ConfirmationLine\(\[string\]\$Prompt\) \{ Read-Host -Prompt \$Prompt \}/u);
+  const confirm = scriptCode.slice(scriptCode.indexOf('function Confirm-SetApproverKeys'), scriptCode.indexOf('function ', scriptCode.indexOf('function Confirm-SetApproverKeys') + 10));
+  assert.ok(confirm.indexOf('Test-LabConfirmGate $true $env:ALBERA_LAB_VM') > 0 && confirm.indexOf('Test-LabConfirmGate') < confirm.indexOf('-LabAssumeYes (lab VM only)'), 'the lab flag is gated at the question as well');
+  assert.ok(confirm.indexOf('Test-ConsoleInteractive') > confirm.indexOf('Test-SetApproverAlreadySet') && confirm.indexOf('Test-ConsoleInteractive') < confirm.indexOf('Read-ConfirmationLine'), 'a non-interactive console is refused before anyone is asked');
+  assert.match(confirm, /Test-ConfirmationAnswer \$answer/u);
+  assert.match(scriptCode, /if \(\$LabAssumeYes\) \{\s*\n\s*if \(Test-LabConfirmGate \$true \$env:ALBERA_LAB_VM\) \{ Stop-Refused '-LabAssumeYes is lab-only[^\n]* 2 \}\s*\n\s*if \(-not \$setApproverLike\) \{ Stop-Refused '-LabAssumeYes only applies to -Mode set-approver \(and its plan\)' 2 \}/u, 'refused at the command line unless ALBERA_LAB_VM is 1, and for no other mode');
+  assert.match(scriptCode, /function Test-ConsoleInteractive \{\s*\n\s*try \{ \[Environment\]::UserInteractive -and -not \[Console\]::IsInputRedirected -and -not \[Console\]::IsOutputRedirected \}/u, 'interactive means: a user session, input and output not redirected');
   // the config is written through the one trusted write path, to the Authority's config only, with the Authority folder's writers
   const writes = [...section.matchAll(/Write-OneConfig ([^;\n]*)/gu)].map((m) => m[1]);
   assert.deepEqual(writes, ['$L.AuthorityConfig $json (Get-AuthorityDirWriters)', '$L.AuthorityConfig $state.OldConfigText (Get-AuthorityDirWriters)']);
@@ -2543,6 +2677,8 @@ test('set-approver, source guards and documents: one file is deleted and it is a
   // the lab hook: the step runs while the service runs and reads everything back by itself
   const hook = readFileSync(labRunner, 'utf8');
   for (const needle of ["Mode = 'set-approver'", 'ExpectedApproverKeyId', 'add_to_an_invalid_legacy_key_refused', 'missing_expected_id_refused', 'swapped_file_refused', 'authority_runs_after_replace_in_a_new_process', 'config_has_approverKeys_and_no_pair', 'key_store_made_again_from_the_config', 'key_store_holds_both_keys', 'add_output_shows_the_final_list_before_the_write', 'duplicate_refused', 'replace_with_the_same_list_changes_nothing', 'non_canonical_file_refused', '$evidence.setApprover.status -ne \'FAIL\'']) assert.ok(hook.includes(needle), `the lab hook has ${needle}`);
+  assert.equal([...hook.matchAll(/Mode = 'set-approver'/gu)].length, [...hook.matchAll(/Mode = 'set-approver'; LabAssumeYes = \$true;/gu)].length, 'every set-approver run of the lab hook passes the lab-only confirmation flag (there is no console in the VM)');
+  assert.ok([...hook.matchAll(/Mode = 'set-approver'/gu)].length >= 6);
   // the owner's document
   const doc = readFileSync(path.join(root, 'docs', 'architecture', 'host-install.md'), 'utf8');
   for (const needle of ['## Changing the approver keys (`-Mode set-approver`)', '**It adds; `-Replace` replaces.**', "**The keys in force are the Authority's key store, not the config.**", 'the final list (key ids and kinds) the Authority will trust, before anything is written', '(required whenever `-ApproverKeyFile` is used: set-approver, and install or migrate with key files)', '**one id per file, in the same order as the files**', 'A file swapped for another key, even a perfectly valid record, is refused', 'exactly one record whose bytes are its canonical form', 'authority\\approver-keys.json', 'the old config goes back byte for byte', '`albera-setup.exe` (it does not pass `-ApproverKeyFile` yet', 'Not run on a real PC']) assert.ok(doc.includes(needle), `host-install.md says: ${needle}`);

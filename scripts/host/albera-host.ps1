@@ -36,7 +36,9 @@
 #                                                             the ONLY way a key is added (elevated; there is no run-time key_add). Reads and fully checks the record file(s), ADDS them to the approver keys in force of a
 #                                                             complete install (the Authority's key store when it is there and trusted, otherwise the config's keys; with -Replace the given keys alone become the list), writes
 #                                                             `approverKeys` into the Authority config (the legacy pair is removed, never both), deletes authority\approver-keys.json, restarts AlberaApprovalAuthority and records the
-#                                                             change in the manifest. The final list (key ids and kinds) is printed before anything is written. The approver SID stays as it is. -ExpectedApproverKeyId (required): the key ids
+#                                                             change in the manifest. The final list (key ids and kinds) is printed before anything is written, and then you must TYPE yes in the elevated console (input or output
+#                                                             redirected, or no console: refused, nothing changed; -LabAssumeYes is the lab VM's own way, refused elsewhere). If the Authority does not start, or a later step fails, the old config
+#                                                             goes back AND the key store goes back byte for byte (never deleted for good: the old config can still hold a key that key_remove took out). The approver SID stays as it is. -ExpectedApproverKeyId (required): the key ids
 #                                                             you read off the screen that created the keys, one per file in the same order; the run is refused unless each file's key is exactly the one expected.
 #   albera-host.ps1 -Mode status                              read-only report of what is installed and whether it still matches (exit 1 on any difference)
 #   albera-host.ps1 -Mode uninstall                           remove only what the install manifest says this script created (elevated)
@@ -73,6 +75,8 @@ param(
   [string[]]$ExpectedApproverKeyId,
   # set-approver only: the given key file(s) become the ONLY approver keys. Without it they are ADDED to the keys in force.
   [switch]$Replace,
+  # set-approver, LAB VM ONLY (refused unless ALBERA_LAB_VM is 1, like -NodeSource): stands in for the "yes" the person types in the elevated console after the final key list is printed. Without it the run needs an interactive console.
+  [switch]$LabAssumeYes,
   [string]$ExpectedTreeHash,
   [string]$RepoRoot,
   [string]$ProjectId,
@@ -151,6 +155,10 @@ if ($NodeSource -or $ClaudeSource) {
   if (Test-LabSourceGate $true $env:ALBERA_LAB_VM) { Stop-Refused '-NodeSource and -ClaudeSource are lab-only (disposable VM with ALBERA_LAB_VM=1); on a real PC node.exe comes from C:\Program Files\nodejs and claude.exe from your own profile' 2 }
   if (-not $installLike) { Stop-Refused '-NodeSource and -ClaudeSource only apply to install and migrate (and their plan)' 2 }
   foreach ($source in @($NodeSource, $ClaudeSource)) { if ($source -and -not (Test-PlainAbsolutePath $source)) { Stop-Refused '-NodeSource / -ClaudeSource is not a plain absolute path' 2 } }
+}
+if ($LabAssumeYes) {
+  if (Test-LabConfirmGate $true $env:ALBERA_LAB_VM) { Stop-Refused '-LabAssumeYes is lab-only (disposable VM with ALBERA_LAB_VM=1); on a real PC set-approver asks you to type yes in the elevated console' 2 }
+  if (-not $setApproverLike) { Stop-Refused '-LabAssumeYes only applies to -Mode set-approver (and its plan)' 2 }
 }
 if ($GrantHyperVToBroker -and -not ($Mode -eq 'install' -or ($Mode -eq 'plan' -and $PlanFor -eq 'install'))) { Stop-Refused '-GrantHyperVToBroker only applies to -Mode install (and its plan); migrate, status and uninstall follow what the install record says' 2 }
 if ($SetupRunId -and $null -eq (ConvertTo-SetupRunId $SetupRunId)) { Stop-Refused '-SetupRunId must be a decimal number (the run id of the attested workflow run)' 2 }
@@ -1854,14 +1862,18 @@ function Show-MigratePlan {
 # same-user process must not be able to register its own key (UAC is the boundary this mode stands behind). The keys in force are the Authority's key store when it is there and trusted, otherwise the config's keys: starting from the config
 # alone would bring back a key that key_remove took out of the store (a lost device). The steps, in this order:
 #   check   the install record is trusted and complete (service layout); the Authority folder and config are trusted and are what install writes; the key store is absent or a plain file; the service is the one install made
-#   keys    read and check every record file (Read-ApproverKeyFiles); work out the final list (Get-SetApproverFinalList); show it - key ids and kinds - BEFORE anything is written
+#   keys    read and check every record file (Read-ApproverKeyFiles); work out the final list (Get-SetApproverFinalList); show it - key ids and kinds - BEFORE anything is written; then the person TYPES yes
+#           (Confirm-SetApproverKeys: an interactive console is required, -LabAssumeYes is the lab VM's own way)
 #   stop    stop AlberaApprovalAuthority if it runs (while it runs it may rewrite its key store, which would undo the next two steps); the list is worked out again once it is stopped and must come out the same
 #   config  write approverKeys into the Authority config through the trusted write path (Write-OneConfig); the legacy pair goes, never both; every other field, the approver SID too, stays as it is
-#   store   delete authority\approver-keys.json - that one fixed file, only if it is a plain file - so the next start seeds the Authority's key store from the config
-#   start   start the service again if it ran before; if it does not stay up the old config goes back (the one place this script's mirror of the Authority's config rules is tested by the real thing)
+#   store   delete authority\approver-keys.json - that one fixed file, only if it is a plain file - so the next start seeds the Authority's key store from the config. Its bytes are kept in memory first (Save-OriginalApproverKeyStore)
+#   start   start the service again if it ran before; if it does not stay up the old config goes back (the one place this script's mirror of the Authority's config rules is tested by the real thing) and so does the key store, byte for
+#           byte (Restore-ApproverKeyStoreAsFound): the old config can still hold a key that key_remove took out of the store, so a store deleted for good would bring that key back at the next start
 #   record  write the list (ids and kinds) into the install record
 # With -Replace, a run that finds everything in place (the keys in force, the config and the record already hold exactly this list) changes nothing and does not restart anything. Without it a key that is in force already is refused.
-function New-SetApproverState { [pscustomobject]@{ Records = $null; Source = $null; OldConfigText = $null; Stopped = $null; ConfigWritten = $false } }
+# OriginalStoreBytes: the key store file exactly as it was found with the service stopped (kept in memory so a rollback can put the SAME bytes back; $null = there was none, or it was not a trusted plain file - then
+# OriginalStoreNote says so). OriginalStoreCaptured: that was looked at. StoreTouched: the store step has begun, so a rollback has to put the store back.
+function New-SetApproverState { [pscustomobject]@{ Records = $null; Source = $null; OldConfigText = $null; Stopped = $null; ConfigWritten = $false; OriginalStoreCaptured = $false; OriginalStoreBytes = $null; OriginalStoreNote = $null; StoreTouched = $false } }
 $script:SetApprover = New-SetApproverState
 # The writers an Authority-folder file may have: SYSTEM, Administrators and the Authority's own service SID (the plan gives it Modify there, for policy.json and the key store).
 function Get-AuthorityDirWriters {
@@ -1916,9 +1928,21 @@ function Remove-ApproverKeyStore {
 # The key store, judged: @{ Present; Ok; Reason; Records }. Present = something is at that path. Ok = it is a plain file that passes the trust test, is read through one handle (nobody is stopped from writing: the Authority replaces it
 # by a move) and holds a valid store (Read-ApproverKeyStoreBytes). A store that is there and not Ok is NOT treated as absent - see Get-EffectiveApproverKeys.
 function Get-ApproverKeyStoreState {
-  $path = $L.AuthorityKeyStore
-  if (-not [System.IO.File]::Exists($path) -and -not [System.IO.Directory]::Exists($path)) { return [pscustomobject]@{ Present = $false; Ok = $true; Reason = ''; Records = @() } }
+  $file = Read-ApproverKeyStoreFile
+  if (-not $file.Present) { return [pscustomobject]@{ Present = $false; Ok = $true; Reason = ''; Records = @() } }
   $bad = { param($why) [pscustomobject]@{ Present = $true; Ok = $false; Reason = $why; Records = @() } }
+  if ($file.Problem) { return (& $bad $file.Problem) }
+  $parsed = Read-ApproverKeyStoreBytes $file.Bytes
+  if (-not $parsed.Ok) { return (& $bad ('the key store is not valid: ' + ($parsed.Reasons -join ', '))) }
+  [pscustomobject]@{ Present = $true; Ok = $true; Reason = ''; Records = $parsed.Records }
+}
+# The key store FILE, read once through one handle (nobody is stopped from writing: the Authority replaces it by a move): @{ Present; Problem; Bytes }. Present = something is at that path. Problem = why it cannot be
+# used as a store file at all ('' when it is a plain file with no link, passes the trust test, is no bigger than the Authority allows and was read completely); Bytes = exactly what the file holds then ($null otherwise).
+# Whether the bytes are a VALID store is Read-ApproverKeyStoreBytes' business, not this function's: a rollback puts back even a store that is not valid, as it found it.
+function Read-ApproverKeyStoreFile {
+  $path = $L.AuthorityKeyStore
+  if (-not [System.IO.File]::Exists($path) -and -not [System.IO.Directory]::Exists($path)) { return [pscustomobject]@{ Present = $false; Problem = ''; Bytes = $null } }
+  $bad = { param($why) [pscustomobject]@{ Present = $true; Problem = $why; Bytes = $null } }
   $problem = Get-ApproverKeyStoreProblem
   if ($problem) { return (& $bad $problem) }
   $trust = Get-AuthorityFileTrustReasons $path
@@ -1936,9 +1960,34 @@ function Get-ApproverKeyStoreState {
   }
   catch { return (& $bad ('file_unreadable: ' + $_.Exception.Message)) }
   finally { if ($stream) { $stream.Dispose() } }
-  $parsed = Read-ApproverKeyStoreBytes $bytes
-  if (-not $parsed.Ok) { return (& $bad ('the key store is not valid: ' + ($parsed.Reasons -join ', '))) }
-  [pscustomobject]@{ Present = $true; Ok = $true; Reason = ''; Records = $parsed.Records }
+  [pscustomobject]@{ Present = $true; Problem = ''; Bytes = $bytes }
+}
+# Remembers the key store exactly as it is NOW (the service is stopped by now, so nobody else writes it): the bytes, in memory, once per run. A rollback puts these bytes back instead of deleting the store - the old config
+# can still hold a key that key_remove took out of the store, and a start with no store would make the store from that config and bring the removed key back (Zaku SEC-001).
+function Save-OriginalApproverKeyStore {
+  $state = $script:SetApprover
+  if ($state.OriginalStoreCaptured) { return }
+  $file = Read-ApproverKeyStoreFile
+  $state.OriginalStoreCaptured = $true
+  if (-not $file.Present) { return }   # there was no store: the config was the keys in force, and the rollback leaves no store
+  if ($file.Problem) { $state.OriginalStoreNote = "the key store that was there could not be kept ($($file.Problem))"; return }
+  $state.OriginalStoreBytes = $file.Bytes
+}
+# Puts the key store back as it was found: exactly these bytes, at the one fixed path (it is not a parameter), written the way the configs are (an existing file must pass the Authority-file trust test and is overwritten;
+# the owner becomes Administrators, which the Authority's own store check accepts; the result is read back through the same trust test and compared byte for byte). $true when it wrote the file, $false when the file
+# already held exactly these bytes. Throws when it cannot.
+function Restore-ApproverKeyStoreFile([byte[]]$Bytes) {
+  $path = $L.AuthorityKeyStore
+  $now = Read-ApproverKeyStoreFile   # what is there now: nothing, the store as found, or one the Authority made from the new config in a start that failed
+  if ($now.Present -and $now.Problem) { throw $now.Problem }
+  if ($now.Present -and (Test-BytesEqual $now.Bytes $Bytes)) { return $false }
+  [System.IO.File]::WriteAllBytes($path, $Bytes)
+  $o = Invoke-Native $IcaclsExe ((Quote-NativeArg $path) + ' /setowner *S-1-5-32-544 /L')
+  if ($o.Exit -ne 0) { throw (Format-NativeFailure "icacls /setowner failed for $path" $o) }
+  $after = Read-ApproverKeyStoreFile
+  if ($after.Problem) { throw $after.Problem }
+  if (-not (Test-BytesEqual $after.Bytes $Bytes)) { throw "$path does not hold the bytes that were put back" }
+  $true
 }
 # The approver keys IN FORCE: @{ Ok; Unknown; Reason; Source; Records }. The Authority's key store when it is there (and then it must be trusted and valid: a store that is there but unusable is a refusal, never a reason to read the
 # config instead - the config can still hold a key that key_remove took out of the store); otherwise the config's keys, the legacy pair counting as one hello-rsa record (and refused if that pair is not a valid record).
@@ -2044,6 +2093,28 @@ function Show-SetApproverKeys {
   foreach ($r in $final.Records) { Say "      $($r.keyId)   kind $($r.kind)$(if (@($final.Added | Where-Object { $_.keyId -ceq $r.keyId }).Count -gt 0) { '   (new)' } else { '   (kept)' })" }
   Say '    each new key id is the one given at the same position of -ExpectedApproverKeyId (the ids AlberaApprover.exe printed on your screen when it created the keys)'
 }
+# What the confirmation needs to know about the console, as two small functions so the tests can stand in for the console. A console a person can type in: Windows says the session is interactive, and neither the input nor
+# the output is redirected (what a person cannot see, a person cannot confirm).
+function Test-ConsoleInteractive {
+  try { [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected } catch { $false }
+}
+function Read-ConfirmationLine([string]$Prompt) { Read-Host -Prompt $Prompt }
+# After the final key list is on the screen and BEFORE anything is stopped or written: the person types yes, in this elevated console (Zaku SEC-002). Redirected input, a non-interactive console, anything but yes: refused, nothing changed.
+# -LabAssumeYes is the lab VM's own way (refused anywhere else, here again as well as at the command line). A run that finds everything in place already writes nothing and restarts nothing, so it asks for nothing.
+function Confirm-SetApproverKeys {
+  if ($LabAssumeYes) {
+    if (Test-LabConfirmGate $true $env:ALBERA_LAB_VM) { Stop-Refused '-LabAssumeYes is lab-only (disposable VM with ALBERA_LAB_VM=1); on a real PC set-approver asks you to type yes in the elevated console' 2 }
+    Say '    -LabAssumeYes (lab VM only): the confirmation is given by the flag; nothing was typed'
+    return
+  }
+  if (Test-SetApproverAlreadySet) { return }
+  if (-not (Test-ConsoleInteractive)) { Stop-Refused 'set-approver asks you to type yes after it prints the final key list, and this console cannot be typed in (its input or output is redirected, or it is not interactive). Nothing was changed. Run it in an elevated console window and answer there' }
+  Say ''
+  Say '    Nothing has been written yet. The Authority will trust exactly the key list above, and the service is restarted.'
+  $answer = Read-ConfirmationLine 'Type yes to write it (anything else cancels)'
+  if (-not (Test-ConfirmationAnswer $answer)) { Stop-Refused 'not confirmed: yes was not typed. Nothing was changed.' }
+  Say '    confirmed'
+}
 # Writes the new config. The service is stopped by now, so the list is worked out ONCE MORE (the store and the files are read again) and must come out as shown; the old text is kept in memory: it is what goes back
 # if the Authority does not start with the new one.
 function Write-SetApproverConfig {
@@ -2057,6 +2128,7 @@ function Write-SetApproverConfig {
   $bad = Test-AuthorityConfigText $json
   if ($bad.Count -gt 0) { throw "the new Authority config failed this script's own check ($($bad -join ', ')); nothing was written" }
   $state.OldConfigText = $current.Text
+  Save-OriginalApproverKeyStore   # the store as it is with the service stopped, before anything is changed: a rollback puts these bytes back
   $state.ConfigWritten = $true   # set BEFORE the write: a write that fails half-way (after the text, before the owner and trust read-back) must be undone too
   Write-OneConfig $L.AuthorityConfig $json (Get-AuthorityDirWriters)
   Say "    config written: $(@($state.Records).Count) approver key(s), no legacy pair; the approver SID and every other field are as they were"
@@ -2072,20 +2144,47 @@ function Get-SetApproverDetailLines {
   else { "in force now ($($final.Source)): $(Get-ApproverKeySummary $final.Kept)" }
   "the Authority would trust exactly these $(@($final.Records).Count) approver key(s) afterwards: $(Get-ApproverKeySummary $final.Records)"
 }
-# Puts the old Authority config back (when this run changed it), clears the key store the Authority may have made from the new one, and starts the service again if this run had stopped it.
+# Puts the key store back as this run found it: the SAME bytes when there was a store (never a delete for good: the old config can still hold a key that key_remove took out of the store, and a start with no store makes
+# the store from that config and brings the key back), and no store at all when there was none (then the config WAS the keys in force; a store the Authority made from the new config in a start that failed goes).
+# $true when it is as it was found, $false when that could not be done (and the service must then stay stopped).
+function Restore-ApproverKeyStoreAsFound {
+  $state = $script:SetApprover
+  $state.StoreTouched = $false   # this run has now done what it can about the store
+  try {
+    if ($null -ne $state.OriginalStoreBytes) {
+      if (Restore-ApproverKeyStoreFile $state.OriginalStoreBytes) { Say "    the key store was put back exactly as it was ($($state.OriginalStoreBytes.Length) bytes, the same bytes)" }
+      else { Say '    the key store is exactly as it was' }
+      return $true
+    }
+    if ($state.OriginalStoreNote) { Say "    $($state.OriginalStoreNote); it is not put back" }
+    if (Remove-ApproverKeyStore) { Say '    there was no key store before this run: the one a start made from the new config was deleted' } else { Say '    there was no key store before this run, and there is none now' }
+    $true
+  }
+  catch {
+    Say "    the key store could NOT be put back as it was ($($_.Exception.Message)). The Authority would trust whatever key store file is there, or make one from the config; the service is left stopped. Run set-approver again with -Replace and the COMPLETE list of keys you want, or read -Mode status"
+    $false
+  }
+}
+# Puts the old Authority config back (when this run changed it), puts the key store back as it was found (when this run touched it), and starts the service again if this run had stopped it - unless the key store could not be put back.
 function Undo-SetApprover([string]$Why) {
   $state = $script:SetApprover
   Say "    $Why"
+  # The store is handled whenever the config was written (any start with the new config makes a store from it) or the store step began.
+  $changedSomething = $state.ConfigWritten -or $state.StoreTouched
+  if ($changedSomething) {
+    try { if ((Get-ServiceFactsFor $K.AuthorityService).State -cne 'Stopped') { Stop-AuthorityService } } catch { Say "    stopping the service said: $($_.Exception.Message)" }
+  }
   if ($state.ConfigWritten) {
     Say '    putting the old Authority config back'
-    try { if ((Get-ServiceFactsFor $K.AuthorityService).State -cne 'Stopped') { Stop-AuthorityService } } catch { Say "    stopping the service said: $($_.Exception.Message)" }
     try { Write-OneConfig $L.AuthorityConfig $state.OldConfigText (Get-AuthorityDirWriters); $state.ConfigWritten = $false }
     catch { Say "    the old Authority config could NOT be put back ($($_.Exception.Message)); the config now holds the new key list. Check it with -Mode status; the way back is -Mode uninstall and install" }
-    try { [void](Remove-ApproverKeyStore) } catch { Say "    deleting the key store said: $($_.Exception.Message)" }
   }
+  $storeBack = $true
+  if ($changedSomething) { $storeBack = Restore-ApproverKeyStoreAsFound }
   if ($state.Stopped) {
     $state.Stopped = $false   # this run has now done what it can about the service; nothing else tries again
-    if (Start-AuthorityService) { Say "    $($K.AuthorityService) is running again" } else { Say "    $($K.AuthorityService) does NOT start; start it by hand (Start-Service $($K.AuthorityService)) and read -Mode status" }
+    if (-not $storeBack) { Say "    $($K.AuthorityService) stays STOPPED: started now, it could trust a key list that is not the one you had. Start it by hand (Start-Service $($K.AuthorityService)) only after -Mode status shows the keys you expect" }
+    elseif (Start-AuthorityService) { Say "    $($K.AuthorityService) is running again" } else { Say "    $($K.AuthorityService) does NOT start; start it by hand (Start-Service $($K.AuthorityService)) and read -Mode status" }
   }
 }
 function Set-ApproverKeysRecord {
@@ -2106,9 +2205,10 @@ function Get-SetApproverSteps {
       Detail = @('one canonical record per file; keyId = webauthn- or hello- plus the first 8 bytes of SHA-256 over the SPKI; ES256 with a P-256 key or RS256 with RSA (webauthn: 2048 to 4096 bits, hello-rsa: 2048); credentialId 1 to 1023 bytes; no link on the path',
         'the keys in force are the Authority key store (authority\approver-keys.json) when it is there, trusted and valid, otherwise the config''s keys: starting from the config alone would bring back a key that was removed at run time',
         'a given keyId that is in force already is refused; so is a list of more than 16 keys',
-        '-ExpectedApproverKeyId (required): the key id computed from each file''s public key must be the one given for that file, in order: a file swapped for another key after the enroll is refused here, before the service is touched') + @(Get-SetApproverDetailLines)
+        '-ExpectedApproverKeyId (required): the key id computed from each file''s public key must be the one given for that file, in order: a file swapped for another key after the enroll is refused here, before the service is touched',
+        'after the final list is printed you must TYPE yes in this elevated console; redirected input or output, a non-interactive console or any other answer is refused with nothing changed (-LabAssumeYes: the lab VM only)') + @(Get-SetApproverDetailLines)
       Test = { $final = Get-SetApproverFinalList; if ($final.Ok) { 'todo' } else { 'blocked:' + $final.Reason } }
-      Do = { Show-SetApproverKeys } }
+      Do = { Show-SetApproverKeys; Confirm-SetApproverKeys } }
     [pscustomobject]@{ Id = 'stop'; Title = "Stop $($K.AuthorityService) if it is running (while it runs it may rewrite its key store)"
       Detail = @('a service that is not running is left stopped, and is not started at the end', 'approvals that are waiting in the Authority at this moment are lost by the restart')
       Test = { if (Test-SetApproverAlreadySet) { return 'done' }; if ((Get-ServiceFactsFor $K.AuthorityService).State -ceq 'Stopped') { 'done' } else { 'todo' } }
@@ -2120,9 +2220,12 @@ function Get-SetApproverSteps {
         if ($final -and $current.Ok -and -not $current.State.Legacy -and (Test-ApproverKeyListsEqual $current.State.Approver.approverKeys $final)) { 'done' } else { 'todo' } }
       Do = { Write-SetApproverConfig } }
     [pscustomobject]@{ Id = 'store'; Title = "Delete $($L.AuthorityKeyStore) (that one file, only if it is a plain file), so the next start makes the Authority's key store from the config"
-      Detail = @('the config now holds the whole list, so nothing is lost but the sign counts: they start again from zero for every key', 'nothing else in the folder is touched')
+      Detail = @('the config now holds the whole list, so nothing is lost but the sign counts: they start again from zero for every key', 'nothing else in the folder is touched',
+        'the file''s bytes are kept in memory first: if a later step fails the store is put back exactly as it was (a delete for good could bring a removed key back from the old config)')
       Test = { if (-not [System.IO.File]::Exists($L.AuthorityKeyStore) -and -not [System.IO.Directory]::Exists($L.AuthorityKeyStore)) { return 'done' }; if (Test-SetApproverAlreadySet) { return 'done' }; 'todo' }
       Do = {
+        Save-OriginalApproverKeyStore   # (already done before the config was written; a run that finds the config written by an earlier run does it here)
+        $script:SetApprover.StoreTouched = $true   # from here on a rollback has to put the store back
         try { $deleted = Remove-ApproverKeyStore }
         catch {
           $why = $_.Exception.Message
@@ -2131,7 +2234,7 @@ function Get-SetApproverSteps {
         }
         if ($deleted) { Say "    deleted $($L.AuthorityKeyStore)" } else { Say '    there was no key store file' } } }
     [pscustomobject]@{ Id = 'start'; Title = "Start $($K.AuthorityService) again if it was running, and check that it stays up with the new key list"
-      Detail = @('if it does not stay up, the old config is put back and the service is started again; nothing is recorded', 'approvals that were waiting are lost by the restart')
+      Detail = @('if it does not stay up, the old config AND the old key store (the same bytes) are put back and the service is started again; nothing is recorded', 'approvals that were waiting are lost by the restart')
       Test = {
         if (Test-SetApproverAlreadySet) { return 'done' }
         $stopped = $script:SetApprover.Stopped
@@ -2159,7 +2262,7 @@ function Invoke-SetApprover {
   catch {
     # A step failed. If this run had stopped the service or written the config, leave the install as it was found (the steps that know their own failure have done this already and cleared the flags).
     $state = $script:SetApprover
-    if ($state.ConfigWritten -or $state.Stopped) { Undo-SetApprover "set-approver failed ($($_.Exception.Message))" }
+    if ($state.ConfigWritten -or $state.Stopped -or $state.StoreTouched) { Undo-SetApprover "set-approver failed ($($_.Exception.Message))" }
     throw
   }
   Say ''

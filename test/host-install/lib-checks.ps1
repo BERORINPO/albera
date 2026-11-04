@@ -146,6 +146,17 @@ $r.keyNameOk = @((Test-KeyName 'AlberaApprovalAuthority-host-1'), (Test-KeyName 
 $r.unknownEntries = Get-UnknownEntries @('broker\journal.sqlite', 'Broker\JOURNAL.SQLITE-wal', 'broker\notes.txt', 'authority\policy.json', 'control-plane\sub\x') (Get-KnownDataFiles) (Get-KnownDataFolders)
 $r.pathsOk = @((Test-PlainAbsolutePath 'C:\ProgramData\Albera\broker\journal.sqlite'), (Test-PlainAbsolutePath 'C:\a\b'))
 $r.pathsBad = @((Test-PlainAbsolutePath 'broker\journal.sqlite'), (Test-PlainAbsolutePath 'C:/a/b'), (Test-PlainAbsolutePath 'C:\a\..\b'), (Test-PlainAbsolutePath '\\server\share\x'), (Test-PlainAbsolutePath 'C:\a\b\'), (Test-PlainAbsolutePath 'C:\a\b:stream'), (Test-PlainAbsolutePath 'C:\a\\b'), (Test-PlainAbsolutePath ('C:\' + ('x' * 250))))
+$r.confirmGate = [ordered]@{ lab = $null -eq (Test-LabConfirmGate $true '1'); notLab = Test-LabConfirmGate $true ''; wrongValue = Test-LabConfirmGate $true 'true'; notSupplied = $null -eq (Test-LabConfirmGate $false '') }
+# what a person has to type, and what a rollback calls "the same bytes"
+$r.confirmAnswers = [ordered]@{
+  yes = (Test-ConfirmationAnswer 'yes'); blanks = (Test-ConfirmationAnswer "  yes `r`n"); tab = (Test-ConfirmationAnswer "`tyes")
+  no = (Test-ConfirmationAnswer 'no'); y = (Test-ConfirmationAnswer 'y'); capitals = (Test-ConfirmationAnswer 'YES'); mixed = (Test-ConfirmationAnswer 'Yes'); longer = (Test-ConfirmationAnswer 'yes please'); twice = (Test-ConfirmationAnswer 'yes yes')
+  empty = (Test-ConfirmationAnswer ''); blank = (Test-ConfirmationAnswer '   '); none = (Test-ConfirmationAnswer $null)
+}
+$r.bytesEqual = [ordered]@{
+  same = (Test-BytesEqual ([byte[]](1, 2, 3)) ([byte[]](1, 2, 3))); empty = (Test-BytesEqual ([byte[]]@()) ([byte[]]@())); oneByteOff = (Test-BytesEqual ([byte[]](1, 2, 3)) ([byte[]](1, 2, 4)))
+  shorter = (Test-BytesEqual ([byte[]](1, 2, 3)) ([byte[]](1, 2))); longer = (Test-BytesEqual ([byte[]](1, 2)) ([byte[]](1, 2, 3))); firstOff = (Test-BytesEqual ([byte[]](0, 2, 3)) ([byte[]](1, 2, 3)))
+}
 $r.gate = [ordered]@{ labSupplied = $null -eq (Test-LabSourceGate $true '1'); notLab = Test-LabSourceGate $true ''; labWrongValue = Test-LabSourceGate $true 'true'; noSource = $null -eq (Test-LabSourceGate $false '') }
 $r.ids = @((Test-HostId 'albera-host'), (Test-HostId 'hello-951a135537287eae'), (Test-HostId '-x'), (Test-HostId ''), (Test-HostId 'a b'))
 # ---- trust: who may have written what the installer relies on

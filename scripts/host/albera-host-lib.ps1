@@ -1245,6 +1245,24 @@ function Test-LabVmIdGate([bool]$VmIdSupplied, [string]$LabEnvironment) {
   if ($VmIdSupplied -and $LabEnvironment -ne '1') { return 'vm_id_parameter_is_lab_only' }
   $null
 }
+# -LabAssumeYes (set-approver: the flag stands in for the "yes" a person types in the elevated console) exists for the disposable lab VM only, like -NodeSource, -ClaudeSource and -VmId, so the lab hook can run with
+# no console to type in. Returns the refusal word, or $null when allowed.
+function Test-LabConfirmGate([bool]$AssumeYesSupplied, [string]$LabEnvironment) {
+  if ($AssumeYesSupplied -and $LabEnvironment -ne '1') { return 'assume_yes_parameter_is_lab_only' }
+  $null
+}
+# What a person has to type before set-approver writes anything: the word yes, nothing else (surrounding blanks are ignored; capitals, "y", an empty line and anything longer are not a yes).
+function Test-ConfirmationAnswer($Answer) {
+  if ($null -eq $Answer) { return $false }
+  ([string]$Answer).Trim() -ceq 'yes'
+}
+# Two byte arrays are the same bytes (a key store is put back "exactly as it was found": the proof is this, not a look at the keys in it).
+function Test-BytesEqual([byte[]]$A, [byte[]]$B) {
+  if ($null -eq $A -or $null -eq $B) { return ($null -eq $A -and $null -eq $B) }
+  if ($A.Length -ne $B.Length) { return $false }
+  for ($i = 0; $i -lt $A.Length; $i++) { if ($A[$i] -ne $B[$i]) { return $false } }
+  $true
+}
 
 # ---------------------------------------------------------------------------------------------- the lab-only source gate
 # -NodeSource and -ClaudeSource (a node.exe / claude.exe somewhere else than the places install looks in) are accepted ONLY in the disposable lab VM, which announces itself with ALBERA_LAB_VM=1.

@@ -26,13 +26,17 @@ $script:ManifestNote = $null
 $script:Manifest = $null
 $script:Approver = $null
 $script:LegacyValues = $null
-$ExpectedTreeHash = $null; $ApproverKeyId = $null; $ApproverPublicKey = $null; $ApproverSid = $null; $ApproverKeyFile = @(); $ExpectedApproverKeyId = $null; $Replace = $false
+$ExpectedTreeHash = $null; $ApproverKeyId = $null; $ApproverPublicKey = $null; $ApproverSid = $null; $ApproverKeyFile = @(); $ExpectedApproverKeyId = $null; $Replace = $false; $LabAssumeYes = $false
+$IcaclsExe = Join-Path ([Environment]::SystemDirectory) 'icacls.exe'
+# the console of THIS process (the tests start it with piped input and output): what the shipped check says about it, before the fakes below stand in for a console a person can type in
+$realConsoleInteractive = [bool](Test-ConsoleInteractive)
 $VmName = 'albera-clone-01'; $ComputerId = 'clone-01'; $ProjectId = 'albera-host'; $GrantHyperVToBroker = $false; $SetupRunId = $null; $TrustLocalBuilds = $false
 function Try-Run([scriptblock]$Block) { try { & $Block | Out-Null; $null } catch { $_.Exception.Message } }
 function New-Junction([string]$Link, [string]$Target) { New-Item -ItemType Directory -Force -Path $Target | Out-Null; $null = & cmd.exe /c mklink /J ('"' + $Link + '"') ('"' + $Target + '"') }
 function Remove-Junction([string]$Link) { $null = & cmd.exe /c rmdir ('"' + $Link + '"') }
 function Write-Text([string]$Path, [string]$Text) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null; [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($false))) }
 function Read-Text([string]$Path) { if ([System.IO.File]::Exists($Path)) { [System.IO.File]::ReadAllText($Path) } else { $null } }
+function Get-FileBytesHash([string]$Path) { if (-not [System.IO.File]::Exists($Path)) { return $null }; $sha = [System.Security.Cryptography.SHA256]::Create(); try { ([BitConverter]::ToString($sha.ComputeHash([System.IO.File]::ReadAllBytes($Path))) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
 function Get-TextHash([string]$Text) { if ($null -eq $Text) { return $null }; $sha = [System.Security.Cryptography.SHA256]::Create(); try { ([BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text))) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
 
 # ---- the keys: record files in -Work\keys, made here (an ES256 key per file; the hello-rsa record is built on the RSA-2048 key Node made, and its id is the hash of that key, so it is also a valid LEGACY key)
@@ -92,6 +96,7 @@ $script:ConfigWrites = New-Object 'System.Collections.Generic.List[object]'
 $script:StartSnapshots = New-Object 'System.Collections.Generic.List[object]'
 $script:Svc = @{}
 $script:WrongPath = $false; $script:StopFails = $false; $script:StartMode = 'works'; $script:OldAuthorityBuild = $false; $script:AuthorityNeverStarts = $false
+$script:FailFirstStarts = 0; $script:SeedOnFailedStart = $false; $script:ConfigWriteFailsOnce = $false
 function Get-CimInstance { param([Parameter(Position = 0)]$Class, $Namespace, $ClassName, $Filter)
   if ($Class -eq 'Win32_Service') { $n = [regex]::Match([string]$Filter, "Name='([^']+)'").Groups[1].Value; if ($script:Svc.ContainsKey($n)) { return [pscustomobject]@{ Name = $n } } }
   $null }
@@ -103,6 +108,23 @@ function Get-ServiceFactsFor([string]$Name) {
 }
 function Wait-ServiceState([string]$Name, [string[]]$States, [int]$Seconds) { $States -contains $script:Svc[$Name].state }
 function Start-Sleep { param([int]$Seconds, [int]$Milliseconds) }
+# The console a person types in. The shipped Test-ConsoleInteractive / Read-ConfirmationLine are replaced by these (the real console check is run once above, on this process's own piped console): by default an interactive
+# console where the person types yes; a scenario changes $script:Console. Every prompt is logged with what was on the screen and what had been done when it was asked.
+$script:Console = @{ Interactive = $true; Answer = 'yes' }
+$script:Prompts = New-Object 'System.Collections.Generic.List[object]'
+function Test-ConsoleInteractive { [bool]$script:Console.Interactive }
+function Read-ConfirmationLine([string]$Prompt) {
+  $script:Prompts.Add([ordered]@{ prompt = $Prompt; listShown = (@($script:Said | Where-Object { $_ -like '*will trust exactly these*' }).Count -gt 0); stepsDone = $script:Order.Count; saidLines = $script:Said.Count })
+  $script:Console.Answer
+}
+# icacls (the owner of a restored key store): never run for real; every call is logged, and a scenario can make it fail
+$script:NativeCalls = New-Object 'System.Collections.Generic.List[string]'
+$script:NativeExit = 0
+function Invoke-Native([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000, [switch]$MinimalEnvironment) { $script:NativeCalls.Add($Arguments); [pscustomobject]@{ Exit = $script:NativeExit; Out = ''; Err = 'fake icacls failure' } }
+# a failing disk for the install record
+$script:ManifestFails = $false
+$realSaveManifest = ${function:Save-Manifest}
+function Save-Manifest { if ($script:ManifestFails) { throw 'the install record could not be written (fake: disk full)' }; & $realSaveManifest }
 # The key store as the Authority writes it (approver-webauthn.md, "Key store"): {"v":1,"revision":n,"keys":[records],"signCounts":{"<keyId>":n}}.
 function Write-Store($Records, [int]$Revision = 3, $SignCounts = $null) {
   $counts = [ordered]@{}
@@ -119,6 +141,15 @@ function Invoke-Sc([string]$Arguments) {
     $text = Read-Text $L.AuthorityConfig
     $script:StartSnapshots.Add([ordered]@{ configHasList = ($text -like '*"approverKeys"*'); configHasPair = ($text -like '*"approverKeyId"*'); storeExists = [System.IO.File]::Exists($L.AuthorityKeyStore) })
     $refused = $script:AuthorityNeverStarts -or ($script:OldAuthorityBuild -and ($text -like '*"approverKeys"*'))
+    # a start that fails once for another reason (a process squatting the Authority pipe name while the service was stopped): the Authority gets as far as making its key store from the config, then dies at the pipe
+    if (-not $refused -and $script:FailFirstStarts -gt 0) {
+      $script:FailFirstStarts--
+      if ($script:SeedOnFailedStart -and -not [System.IO.File]::Exists($L.AuthorityKeyStore) -and -not [System.IO.Directory]::Exists($L.AuthorityKeyStore)) {
+        $failedSeed = Get-AuthorityConfigApproverKeys $text
+        if ($failedSeed.Reasons.Count -eq 0) { if ($failedSeed.Legacy) { $failedLegacy = ConvertFrom-LegacyApproverPair $failedSeed.Approver.approverKeyId $failedSeed.Approver.approverPublicKey; if ($failedLegacy.Ok) { Write-Store $failedLegacy.Record 1 @{} } } else { Write-Store $failedSeed.Approver.approverKeys 1 @{} } }
+      }
+      $refused = $true
+    }
     if ($refused) { if ($script:StartMode -eq 'throws') { throw 'sc.exe failed (exit 1053): fake, the service did not respond' }; $script:Svc[$name].state = 'Stopped' }
     else {
       $script:Svc[$name].state = 'Running'
@@ -136,6 +167,7 @@ function Invoke-Sc([string]$Arguments) {
 # the trusted write path, as a plain write that records what the world looked like at that moment
 function Write-OneConfig([string]$Path, [string]$Text, [string[]]$Writers) {
   $script:Order.Add('write ' + (Split-Path -Leaf $Path))
+  if ($script:ConfigWriteFailsOnce) { $script:ConfigWriteFailsOnce = $false; throw 'the Authority config could not be written (fake: access denied half-way)' }
   $state = if ($script:Svc.ContainsKey($K.AuthorityService)) { $script:Svc[$K.AuthorityService].state } else { $null }
   $script:ConfigWrites.Add([ordered]@{ file = (Split-Path -Leaf $Path); serviceState = $state; storeExists = [System.IO.File]::Exists($L.AuthorityKeyStore); writers = @($Writers) })
   Write-Text $Path $Text
@@ -167,6 +199,8 @@ function New-World([string]$AuthorityState = 'Running', [string]$Config = 'legac
   foreach ($n in @($K.BrokerService, $K.AuthorityService, $K.ControlPlaneService)) { $script:Svc[$n] = @{ state = 'Running' } }
   $script:Svc[$K.AuthorityService].state = $AuthorityState
   $script:WrongPath = $false; $script:StopFails = $false; $script:StartMode = 'works'; $script:OldAuthorityBuild = $false; $script:AuthorityNeverStarts = $false; $script:StoreUntrusted = $false
+  $script:FailFirstStarts = 0; $script:SeedOnFailedStart = $false; $script:ConfigWriteFailsOnce = $false; $script:ManifestFails = $false; $script:NativeExit = 0
+  $script:Console = @{ Interactive = $true; Answer = 'yes' }; $script:Prompts.Clear(); $script:NativeCalls.Clear(); $script:LabAssumeYes = $false
   $script:Order.Clear(); $script:ConfigWrites.Clear(); $script:StartSnapshots.Clear(); $script:Said.Clear()
   $script:ExpectedApproverKeyId = $null; $script:Replace = $false; $script:OnStop = $null   # $null: Invoke-Set supplies the ids of the files as the owner saw them
 }
@@ -199,11 +233,14 @@ function Invoke-Set([string[]]$Files, [switch]$UseReplace) {
   $script:ApproverKeyRead = $null
   $script:ExitCode = $null
   $script:SetApprover = New-SetApproverState
-  $script:Order.Clear(); $script:ConfigWrites.Clear(); $script:StartSnapshots.Clear(); $script:Said.Clear()
+  $script:Order.Clear(); $script:ConfigWrites.Clear(); $script:StartSnapshots.Clear(); $script:Said.Clear(); $script:Prompts.Clear(); $script:NativeCalls.Clear()
   $out = [ordered]@{}
   $out.error = Try-Run { $script:ExitCode = Invoke-SetApprover }
   $script:ExpectedApproverKeyId = $explicitExpected
   $out.exit = $script:ExitCode
+  $out.prompts = $script:Prompts.ToArray()
+  $out.nativeCalls = $script:NativeCalls.ToArray()
+  $out.storeHash = Get-FileBytesHash $L.AuthorityKeyStore
   $out.order = @($script:Order)
   $out.said = @($script:Said)
   $out.writes = $script:ConfigWrites.ToArray()
@@ -240,6 +277,10 @@ $result.oneOtherFieldsSame = (@('pipeRoot', 'controlPlaneSid', 'approverSid', 's
 $storeBefore = Read-Text $L.AuthorityKeyStore
 $result.again = Invoke-Set @($fileA) -UseReplace
 $result.againStoreUntouched = ((Read-Text $L.AuthorityKeyStore) -ceq $storeBefore)
+# ... which needs no confirmation either: it writes and restarts nothing, so a console that cannot be typed in is no obstacle
+$script:Console.Interactive = $false
+$result.againNoConsole = Invoke-Set @($fileA) -UseReplace
+$script:Console.Interactive = $true
 # ---- 3. -Replace with two files (a WebAuthn key and the Hello key): the order of the files is the order of the list
 New-World
 $result.two = Invoke-Set @($fileA, $fileH) -UseReplace
@@ -274,6 +315,7 @@ $result.stopFails = Invoke-Set @($fileA) -UseReplace
 # ---- 7. the key store cannot be deleted (it is held open): the config goes back, the service runs again, nothing is recorded
 New-World -Store @($recH)
 $held = New-Object System.IO.FileStream($L.AuthorityKeyStore, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)   # readable by others (the install reads the store), NOT deletable
+$result.storeHeldHashBefore = Get-FileBytesHash $L.AuthorityKeyStore
 try { $result.storeHeld = Invoke-Set @($fileA) -UseReplace } finally { $held.Dispose() }
 # ---- 8. the key store is not a plain file: refused before anything is touched
 New-World -Store @($recH)
@@ -358,6 +400,60 @@ $script:OnStop = { Write-Store @($recA) 4 }   # a key_remove lands just as the s
 $result.changedWhileStopping = Invoke-Set @($fileY)
 $script:OnStop = $null
 
+# ---- 9d. THE ROLLBACK PUTS THE KEY STORE BACK, BYTE FOR BYTE (Zaku SEC-001). Key X is in the config but was taken out of the store by key_remove (the store holds [A]). A run that fails after the store was deleted must not
+# leave the Authority without a store: its next start would make one from the old config and bring X back. A store as a real Authority leaves it (indented, a line break at the end, sign counts that have moved) is the test bytes.
+function Write-StoreAsFound($Records, [int]$Revision = 5) {
+  $counts = [ordered]@{}; $n = 40
+  foreach ($r in @($Records)) { $counts[$r.keyId] = $n; $n += 2 }
+  Write-Text $L.AuthorityKeyStore ((ConvertTo-Json -InputObject ([ordered]@{ v = 1; revision = $Revision; keys = @($Records); signCounts = $counts }) -Depth 6) + "`r`n")
+}
+function Get-EffectiveIds { $eff = Get-EffectiveApproverKeys; , @($eff.Records | ForEach-Object { $_.keyId }) }
+$rollback = [ordered]@{}
+# (a) the Authority does not start with the new config for a reason that has nothing to do with the build (a process squatting its pipe name while it was stopped); the failed start had made a store from the NEW config
+New-World -Config keys -ConfigKeys @($recA, $recX); Write-StoreAsFound @($recA)
+$rollback.removedKeyBefore = Get-FileBytesHash $L.AuthorityKeyStore
+$script:FailFirstStarts = 1; $script:SeedOnFailedStart = $true
+$rollback.removedKey = Invoke-Set @($fileY)
+$rollback.removedKeyEffective = Get-EffectiveIds
+# (b) the same without the seeded leftover (the failed start died before it made a store)
+New-World -Config keys -ConfigKeys @($recA, $recX); Write-StoreAsFound @($recA)
+$rollback.plainBefore = Get-FileBytesHash $L.AuthorityKeyStore
+$script:FailFirstStarts = 1; $script:SeedOnFailedStart = $false
+$rollback.plain = Invoke-Set @($fileY)
+# (c) there was no store at the start (the config was the keys in force): the rollback leaves NO store, then the Authority makes its own from the OLD config at the start the rollback does
+New-World -Config keys -ConfigKeys @($recA, $recX)
+$script:FailFirstStarts = 1; $script:SeedOnFailedStart = $true
+$rollback.noOriginal = Invoke-Set @($fileY)
+# (d) the install record cannot be written after the Authority came up with the new list: the old config AND the old store come back, the service is restarted with them
+New-World -Config keys -ConfigKeys @($recA, $recX); Write-StoreAsFound @($recA)
+$rollback.recordFailsBefore = Get-FileBytesHash $L.AuthorityKeyStore
+$script:ManifestFails = $true
+$rollback.recordFails = Invoke-Set @($fileY)
+$script:ManifestFails = $false
+$rollback.recordFailsEffective = Get-EffectiveIds
+# (e) the config write fails half-way (before the store step): the store was never touched, and is left alone (no icacls, no write)
+New-World -Config keys -ConfigKeys @($recA, $recX); Write-StoreAsFound @($recA)
+$rollback.configFailsBefore = Get-FileBytesHash $L.AuthorityKeyStore
+$script:ConfigWriteFailsOnce = $true
+$rollback.configFails = Invoke-Set @($fileY)
+# (f) -Replace over a store that is trusted but is not a valid store: it is deleted by the run, and put back as it was found (garbage and all) when the run fails
+New-World -Config keys -ConfigKeys @($recA, $recX)
+Write-Text $L.AuthorityKeyStore "not a key store`r`nat all`r`n"
+$rollback.garbageBefore = Get-FileBytesHash $L.AuthorityKeyStore
+$script:FailFirstStarts = 1; $script:SeedOnFailedStart = $true
+$rollback.garbage = Invoke-Set @($fileY) -UseReplace
+# (g) a store the install does not trust (-Replace goes on without it): there is nothing to put back, and the run says so
+New-World -Config keys -ConfigKeys @($recA, $recX) -Store @($recA); $script:StoreUntrusted = $true
+$script:FailFirstStarts = 1; $script:SeedOnFailedStart = $true
+$rollback.untrusted = Invoke-Set @($fileY) -UseReplace
+$script:StoreUntrusted = $false
+# (h) the store cannot be put back (icacls fails): the service is left STOPPED, never started on a store the run did not mean to leave
+New-World -Config keys -ConfigKeys @($recA, $recX); Write-StoreAsFound @($recA)
+$script:FailFirstStarts = 1; $script:SeedOnFailedStart = $true; $script:NativeExit = 5
+$rollback.restoreFails = Invoke-Set @($fileY)
+$script:NativeExit = 0
+$result.rollback = $rollback
+
 # ---- 10. refusals: each leaves the world exactly as it was
 $refusals = [ordered]@{}
 $refuse = {
@@ -366,8 +462,18 @@ $refuse = {
   & $Setup
   $before = [ordered]@{ config = (Read-Text $L.AuthorityConfig); manifest = (Get-TextHash ([System.IO.File]::ReadAllText($L.ManifestPath))); store = (Read-Text $L.AuthorityKeyStore) }
   $run = Invoke-Set $Files
-  $refusals[$name] = [ordered]@{ error = $run.error; sc = @($run.order | Where-Object { $_ -like 'sc *' }).Count; writes = @($run.writes).Count; configSame = ($run.config -ceq $before.config); manifestSame = ($run.record.manifestHash -ceq $before.manifest); storeSame = ((Read-Text $L.AuthorityKeyStore) -ceq $before.store); service = $run.service }
+  $refusals[$name] = [ordered]@{ error = $run.error; sc = @($run.order | Where-Object { $_ -like 'sc *' }).Count; writes = @($run.writes).Count; configSame = ($run.config -ceq $before.config); manifestSame = ($run.record.manifestHash -ceq $before.manifest); storeSame = ((Read-Text $L.AuthorityKeyStore) -ceq $before.store); service = $run.service; prompts = @($run.prompts).Count; native = @($run.nativeCalls).Count }
 }
+# the confirmation (Zaku SEC-002): the person types yes after the final list is shown, BEFORE the service is stopped or anything is written. A console that cannot be typed in, or any other answer, is refused with nothing changed.
+& $refuse 'consoleNotInteractive' { $script:Console.Interactive = $false } @($fileA)
+& $refuse 'answerNo' { $script:Console.Answer = 'no' } @($fileA)
+& $refuse 'answerY' { $script:Console.Answer = 'y' } @($fileA)
+& $refuse 'answerEmpty' { $script:Console.Answer = '' } @($fileA)
+& $refuse 'answerNothingAtAll' { $script:Console.Answer = $null } @($fileA)
+& $refuse 'answerCapitals' { $script:Console.Answer = 'YES' } @($fileA)
+& $refuse 'answerLonger' { $script:Console.Answer = 'yes please' } @($fileA)
+& $refuse 'labFlagOutsideTheLab' { $script:LabAssumeYes = $true; $env:ALBERA_LAB_VM = $null; $script:Console.Interactive = $false } @($fileA)
+$env:ALBERA_LAB_VM = $null
 & $refuse 'partial' { $script:Manifest['state'] = 'partial'; Save-Manifest } @($fileA)
 & $refuse 'firstLayout' { $u = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $u['name'] = $K.ControlPlaneUser; $u['sid'] = 'S-1-5-21-1111111111-2222222222-3333333333-1500'; $script:Manifest['created']['user'] = $u; Save-Manifest } @($fileA)
 & $refuse 'noAuthorityInRecord' { $script:Manifest['created']['services'] = @($K.BrokerService); Save-Manifest } @($fileA)
@@ -415,6 +521,13 @@ $script:OnStop = { $null = Save-KeyFile 'late.json' $recY }
 $result.swappedWhileStopping = Invoke-Set @($swapLate)
 $script:OnStop = $null
 $null = Save-KeyFile 'late.json' $recA
+# the confirmation, accepted: yes with blanks and a line break around it; and, in the lab VM only, the flag instead of a console
+New-World -Store @($recH); $script:Console.Answer = "  yes `r`n"
+$result.confirmBlanks = Invoke-Set @($fileA) -UseReplace
+New-World -Store @($recH); $script:LabAssumeYes = $true; $env:ALBERA_LAB_VM = '1'; $script:Console.Interactive = $false
+$result.labYes = Invoke-Set @($fileA) -UseReplace
+$env:ALBERA_LAB_VM = $null
+$result.realConsoleInteractive = $realConsoleInteractive
 
 # ---- 10b. the status line about the approver keys, from the real Get-StatusLines (the machine facts it reads besides are faked away)
 function Get-HyperVMemberProblems { , @() }
