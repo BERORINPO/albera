@@ -403,6 +403,129 @@ internal static partial class Harness
         });
     }
 
+    // ---- removing the key that signed the standing policy -----------------------------------------------------------------------------------
+    /// <summary>A config folder, the Hello key plus <paramref name="holders"/> registered, a file-backed policy store and a core over them, and the standard policy (revision 1) authorized by <paramref name="signer"/> (null: the Hello key).</summary>
+    private static void WithSignedPolicy(Authenticator? signer, Authenticator[] holders, Action<KeyFixture, string, PolicyStore> body)
+    {
+        InFolder(config =>
+        {
+            File.WriteAllText(config, ConfigJson());
+            PolicyStore? policy = null;
+            KeyFixture k = new([HelloKeyRecord(), .. holders.Select(h => h.Key)], policyFor: stored => policy = PolicyStore.TryLoad(config, DefaultIdentity, stored, out string reason, out _) ?? throw new CheckFailed(reason));
+            string standard = PolicyJson(1, "standard");
+            byte[] message = PolicyChange.Message(PolicyOf(standard), "authority-key-2026-10", "albera-host-broker");
+            string proof = signer is null ? HelloWire(message) : signer.Wire(message, 2);
+            Assert(Code(k.Fx.Call(PipeRole.Approver, $"{{\"v\":1,\"verb\":\"policy_set\",\"policy\":{standard},\"presence\":{proof}}}")) == "ok", "the policy is authorized");
+            Assert(k.Fx.Core.Policy() is { Tier: "standard", Revision: 1 } && File.ReadAllText(PolicyStore.PathFor(config)).Contains("\"authorized\"", StringComparison.Ordinal), "standard is in force, written with its proof");
+            body(k, config, policy!);
+        });
+    }
+
+    private static string PolicyFileText(string config) => File.ReadAllText(PolicyStore.PathFor(config));
+
+    private static void PolicyResetOnKeyRemoveChecks()
+    {
+        Check("key_remove: removing the key that signed the policy in force resets the policy to careful (revision + 1) in the same operation, says policyReset, and the next start succeeds", () =>
+        {
+            using Authenticator a = new(), b = new();
+            WithSignedPolicy(a, [a, b], (k, config, policy) =>
+            {
+                string signedFile = PolicyFileText(config);
+                string challenge = k.ChallengeValue("remove", a.Key.KeyId);
+                JsonElement reply = k.KeyRemove(challenge, a.Key.KeyId, b.Wire(RemoveMessage(a.Key, challenge)));
+                Assert(Code(reply) == "ok" && reply.GetProperty("policyReset").GetBoolean() && reply.EnumerateObject().Select(p => p.Name).SequenceEqual(["ok", "keys", "policyReset"]), $"{reply}");
+                Assert(reply.GetProperty("keys").EnumerateArray().Select(x => x.GetProperty("keyId").GetString()).SequenceEqual(["hello-key-yosuke-01", b.Key.KeyId]), "and it is the key list as ever");
+                Assert(k.Fx.Core.Policy() is { Tier: "careful", Revision: 2 }, "careful, revision 2 (a revision is never reused)");
+                string after = PolicyFileText(config);
+                Assert(!after.Contains("authorized", StringComparison.Ordinal) && after.Contains("\"tier\":\"careful\"", StringComparison.Ordinal) && after.Contains("\"rev\":2", StringComparison.Ordinal), after);
+                // the next start: the keys that remain, the file as written
+                ApproverKeySet remaining = ApproverKeySet.InMemory(k.Keys.Keys, () => Start);
+                PolicyStore? reloaded = PolicyStore.TryLoad(config, DefaultIdentity, remaining.ForStoredProofs, out string reason, out bool fromFile);
+                Assert(reloaded is { } && fromFile && reloaded.Current is { Tier: "careful", Revision: 2 }, $"restart: {reason}");
+                // what the old file would have done to that start: nobody left can vouch for it
+                File.WriteAllText(PolicyStore.PathFor(config), signedFile);
+                Assert(PolicyStore.TryLoad(config, DefaultIdentity, remaining.ForStoredProofs, out reason, out _) is null && reason == "policy_unsigned", "the signed file with the signer gone is exit 79: this is what the reset prevents");
+                File.WriteAllText(PolicyStore.PathFor(config), after);
+                // an action that was signed without a person now waits for one
+                Assert(StateOf(SubmitAction(k.Fx, "environment.stop")) == "pending", "environment.stop needs a person again");
+                // an old signed message cannot be replayed on the reset revision; the next change continues from it
+                byte[] again = PolicyChange.Message(PolicyOf(PolicyJson(1, "standard")), "authority-key-2026-10", "albera-host-broker");
+                Assert(Code(k.Fx.PolicySet(PolicyJson(1, "standard"), Hello.SignData(again, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1))) == "request_invalid", "revision 1 again is refused");
+                byte[] next = PolicyChange.Message(PolicyOf(PolicyJson(3, "standard")), "authority-key-2026-10", "albera-host-broker");
+                Assert(Code(k.Fx.PolicySet(PolicyJson(3, "standard"), b.Proof(next, 5))) == "ok", "revision 3 signed by a remaining key");
+            });
+        });
+        Check("key_remove: removing a key that did not sign the policy leaves the policy and its file untouched, and no policyReset", () =>
+        {
+            using Authenticator a = new(), b = new();
+            WithSignedPolicy(a, [a, b], (k, config, policy) =>
+            {
+                string before = PolicyFileText(config);
+                string challenge = k.ChallengeValue("remove", b.Key.KeyId);
+                JsonElement reply = k.KeyRemove(challenge, b.Key.KeyId, a.Wire(RemoveMessage(b.Key, challenge), 3));
+                Assert(Code(reply) == "ok" && !reply.TryGetProperty("policyReset", out _) && reply.EnumerateObject().Count() == 2, $"{reply}");
+                Assert(k.Fx.Core.Policy() is { Tier: "standard", Revision: 1 } && PolicyFileText(config) == before, "policy and file as they were");
+                Assert(PolicyStore.TryLoad(config, DefaultIdentity, ApproverKeySet.InMemory(k.Keys.Keys, () => Start).ForStoredProofs, out string reason, out bool fromFile) is { } && fromFile, $"restart: {reason}");
+                // removing the Hello key, which did not sign it either
+                challenge = k.ChallengeValue("remove", "hello-key-yosuke-01");
+                reply = k.KeyRemove(challenge, "hello-key-yosuke-01", a.Wire(RemoveMessage(HelloKeyRecord(), challenge), 4));
+                Assert(Code(reply) == "ok" && !reply.TryGetProperty("policyReset", out _) && PolicyFileText(config) == before, $"{reply}");
+            });
+            // a policy that skips nobody has no proof to lose: whichever key goes, it stays as it is
+            InFolder(config =>
+            {
+                File.WriteAllText(config, ConfigJson());
+                KeyFixture k = new([HelloKeyRecord(), a.Key], policyFor: stored => PolicyStore.TryLoad(config, DefaultIdentity, stored, out string reason, out _) ?? throw new CheckFailed(reason));
+                Assert(Code(k.Fx.PolicySet(PolicyJson(1, "careful", "environment.stop"))) == "ok", "a careful policy with a prompt needs no signature");
+                string before = PolicyFileText(config);
+                string challenge = k.ChallengeValue("remove", a.Key.KeyId);
+                JsonElement reply = k.KeyRemove(challenge, a.Key.KeyId, HelloWire(RemoveMessage(a.Key, challenge)));
+                Assert(Code(reply) == "ok" && !reply.TryGetProperty("policyReset", out _) && PolicyFileText(config) == before && k.Fx.Core.Policy() is { Tier: "careful", Revision: 1 }, $"{reply}");
+            });
+        });
+        Check("key_remove: the Hello key can be the policy's signer too; removing it resets the policy, and removing another Hello-or-webauthn key does not", () =>
+        {
+            using Authenticator a = new();
+            WithSignedPolicy(null, [a], (k, config, policy) =>
+            {
+                string challenge = k.ChallengeValue("remove", "hello-key-yosuke-01");
+                JsonElement reply = k.KeyRemove(challenge, "hello-key-yosuke-01", a.Wire(RemoveMessage(HelloKeyRecord(), challenge), 3));
+                Assert(Code(reply) == "ok" && reply.GetProperty("policyReset").GetBoolean() && k.Fx.Core.Policy() is { Tier: "careful", Revision: 2 }, $"{reply}");
+                Assert(PolicyStore.TryLoad(config, DefaultIdentity, ApproverKeySet.InMemory(k.Keys.Keys, () => Start).ForStoredProofs, out string reason, out _) is { }, $"restart: {reason}");
+            });
+        });
+        Check("key_remove: the policy is reset BEFORE the key is removed, so a crash between the two writes leaves a state that starts; a reset that cannot be written keeps the key", () =>
+        {
+            using Authenticator a = new(), b = new();
+            WithSignedPolicy(a, [a, b], (k, config, policy) =>
+            {
+                // (1) the crash itself: the reset is written, the key is still registered
+                ApproverKeySet remaining = ApproverKeySet.InMemory([HelloKeyRecord(), b.Key], () => Start);
+                (string? code, TierPolicy? reset) = policy.ResetIfSignerGone(remaining.ForStoredProofs);
+                Assert(code is null && reset is { Tier: "careful", Revision: 2 }, "the reset was written");
+                ApproverKeySet everyone = ApproverKeySet.InMemory([HelloKeyRecord(), a.Key, b.Key], () => Start);
+                Assert(PolicyStore.TryLoad(config, DefaultIdentity, everyone.ForStoredProofs, out string reason, out bool fromFile) is { } && fromFile, $"a start with all three keys still registered: {reason}");
+                Assert(policy.ResetIfSignerGone(remaining.ForStoredProofs) is (null, null), "and a second call has nothing left to reset");
+            });
+            // (2) the reset cannot be written: the key stays, nothing else changes
+            WithSignedPolicy(a, [a, b], (k, config, policy) =>
+            {
+                string signedFile = PolicyFileText(config);
+                System.Security.Principal.SecurityIdentifier? self = System.Security.Principal.WindowsIdentity.GetCurrent().User;
+                string challenge = k.ChallengeValue("remove", a.Key.KeyId);
+                ServicePathGuard.ServiceSidForTest = new System.Security.Principal.SecurityIdentifier("S-1-5-80-1111111111-2222222222-3333333333-1444444444-2555555555"); // the new policy file is not trusted
+                JsonElement refused = k.KeyRemove(challenge, a.Key.KeyId, b.Wire(RemoveMessage(a.Key, challenge), 3));
+                ServicePathGuard.ServiceSidForTest = self;
+                Assert(Code(refused) == "authority_unavailable", $"{refused}");
+                Assert(k.Keys.Keys.Any(x => x.KeyId == a.Key.KeyId) && k.Fx.Core.Policy() is { Tier: "standard", Revision: 1 } && PolicyFileText(config) == signedFile, "the key is still registered and the signed policy is as it was");
+                Assert(Directory.GetFiles(Path.GetDirectoryName(config)!, "policy.*.tmp").Length == 0, "no temp file left");
+                challenge = k.ChallengeValue("remove", a.Key.KeyId);
+                JsonElement retry = k.KeyRemove(challenge, a.Key.KeyId, b.Wire(RemoveMessage(a.Key, challenge), 4));
+                Assert(Code(retry) == "ok" && retry.GetProperty("policyReset").GetBoolean(), $"once the file can be written the same removal works: {retry}");
+            });
+        });
+    }
+
     // ---- the config's keys --------------------------------------------------------------------------------------------------------------------
     private static string ListConfigJson(IEnumerable<ApproverKey> keys, Dictionary<string, string>? changes = null, JsonObject? pairBack = null)
     {

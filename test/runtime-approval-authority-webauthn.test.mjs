@@ -162,6 +162,47 @@ describe('Approval Authority: WebAuthn presence and the approver key list (real 
     }, { keepKeyStore: true });
   });
 
+  it('removing the key that signed the standing policy resets the policy to careful in the same call (policyReset), the next start succeeds; removing another key leaves the policy alone', async () => {
+    const hello = makeHelloKey();
+    const es = makeCredential(-7), rs = makeCredential(-257);
+    const directory = folder();
+    const config = makeConfig({ approverPublicKey: hello.spki });
+    const helloAuthorizes = (message) => helloSignature(hello.privateKey, message);
+    const policyHash = (rev, tier) => `sha256:${sha256(['albera.policy-hash.v3', String(rev), tier].join('\0')).toString('hex')}`;
+    const policyMessage = (rev, tier) => Buffer.from(`albera.policy.v1\0${config.kid}\0${config.audience}\0${policyHash(rev, tier)}`, 'utf8');
+    const policyFile = path.join(directory, 'policy.json');
+    await withAuthority(directory, config, async (authority) => {
+      assert.equal((await addKey(authority, es, helloAuthorizes)).ok, true);
+      assert.equal((await addKey(authority, rs, helloAuthorizes)).ok, true);
+      // the webauthn key `es` authorizes the standard policy: the file keeps its proof
+      assert.deepEqual(await authority.approver({ v: 1, verb: 'policy_set', policy: { v: 1, rev: 1, tier: 'standard', overrides: {} }, presence: assertion(es, policyMessage(1, 'standard'), 2) }), { ok: true, policyVersion: policyHash(1, 'standard') });
+      const signed = readFileSync(policyFile, 'utf8');
+      assert.match(signed, /"authorized"/u);
+      // a key that did not sign it goes: nothing happens to the policy
+      const removedRs = await removeKey(authority, rs.keyId, rs.record, (message) => assertion(es, message, 3));
+      assert.equal(removedRs.ok, true, JSON.stringify(removedRs));
+      assert.equal('policyReset' in removedRs, false);
+      assert.equal(readFileSync(policyFile, 'utf8'), signed, 'the file is as it was');
+      // the signer goes (the Hello key authorizes): the policy is reset in the same call
+      const removedEs = await removeKey(authority, es.keyId, es.record, helloAuthorizes);
+      assert.deepEqual(Object.keys(removedEs), ['ok', 'keys', 'policyReset']);
+      assert.equal(removedEs.policyReset, true);
+      assert.deepEqual(removedEs.keys, [{ keyId: 'hello-key-test', kind: 'hello-rsa' }]);
+      const policy = await authority.approver({ v: 1, verb: 'policy' });
+      assert.deepEqual([policy.policy.rev, policy.policy.tier], [2, 'careful']);
+      assert.doesNotMatch(readFileSync(policyFile, 'utf8'), /authorized/u);
+      assert.ok(authority.child.lines.includes(`POLICY_CHANGED=2 careful ${policyHash(2, 'careful')}`), 'the reset is reported like any policy change');
+    }, { keepKeyStore: true });
+    // the next start: it would have been exit 79 (policy_unsigned) with the signed file and no es
+    await withAuthority(directory, config, async (authority) => {
+      const policy = await authority.approver({ v: 1, verb: 'policy' });
+      assert.deepEqual([policy.policy.rev, policy.policy.tier], [2, 'careful']);
+      assert.deepEqual((await keysOf(authority)).map((key) => key.keyId), ['hello-key-test']);
+      const entry = await pending(authority);
+      assert.equal(entry.action.action, 'environment.start');
+    }, { keepKeyStore: true });
+  });
+
   it('refusals carry the documented codes and change nothing: key_exists, key_unknown, last_key, challenge_unknown, presence_mismatch, request_invalid', async () => {
     const hello = makeHelloKey();
     const es = makeCredential(-7), stranger = makeCredential(-7), other = makeCredential(-7);

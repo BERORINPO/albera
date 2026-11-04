@@ -83,11 +83,12 @@ internal static partial class Harness
         public readonly Fixture Fx;
         public readonly ApproverKeySet Keys;
 
-        public KeyFixture(IEnumerable<ApproverKey>? initial = null, PolicyStore? policy = null)
+        /// <param name="policyFor">builds the policy store from the key set's verifier for stored proofs (a file-backed store needs the keys to check the proof it reads)</param>
+        public KeyFixture(IEnumerable<ApproverKey>? initial = null, PolicyStore? policy = null, Func<IHumanPresenceVerifier, PolicyStore>? policyFor = null)
         {
             Fixture? holder = null;
             Keys = ApproverKeySet.InMemory(initial ?? [HelloKeyRecord()], () => holder!.Now);
-            Fx = holder = new Fixture(presence: Keys, policy: policy);
+            Fx = holder = new Fixture(presence: Keys, policy: policy ?? policyFor?.Invoke(Keys.ForStoredProofs));
         }
 
         public JsonElement Decide(string approvalId, string presenceJson) =>
@@ -142,6 +143,7 @@ internal static partial class Harness
         ApproverKeyRemoveChecks();
         ApproverKeyStoreChecks();
         ApproverKeyConfigChecks();
+        PolicyResetOnKeyRemoveChecks();
     }
 
     // ---- the verifier: rules 1 to 4 -----------------------------------------------------------------------------------------------------------

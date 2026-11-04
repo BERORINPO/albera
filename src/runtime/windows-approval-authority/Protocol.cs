@@ -169,12 +169,13 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
     // keys -> { ok, keys: [{keyId, kind, credentialId?}] }: the registered approver keys' public data (credentialId for a webauthn key only), what the approver needs for allowCredentials. Nothing else about a key.
     private byte[] Keys(Dictionary<string, object> r) => !HasKeys(r, ["v", "verb"]) ? Error(AuthorityCodes.RequestInvalid) : KeysReply(core.ApproverKeys());
 
-    // The reply of keys, key_add and key_remove. The list is capped (ApproverKeyRules.MaxMetadataBytes) so that this always fits a frame.
-    private static byte[] KeysReply(IReadOnlyList<ApproverKey> keys) => Write(w =>
+    // The reply of keys, key_add and key_remove. The list is capped (ApproverKeyRules.MaxMetadataBytes) so that this always fits a frame. "policyReset":true appears only on a key_remove that also reset the tier policy to careful.
+    private static byte[] KeysReply(IReadOnlyList<ApproverKey> keys, bool policyReset = false) => Write(w =>
     {
         w.WriteBoolean("ok", true);
         w.WritePropertyName("keys");
         w.WriteRawValue(ApproverKeyRules.MetadataJson(keys));
+        if (policyReset) w.WriteBoolean("policyReset", true);
     });
 
     // key_challenge { op: "add" | "remove", keyId } -> { ok, challenge, expiresAt }: a fresh single-use challenge (128 random bits, 120 s) for adding or removing that key. A new one replaces the one before.
@@ -196,13 +197,13 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
         return outcome.Code is not null ? Error(outcome.Code) : KeysReply(outcome.Keys!);
     }
 
-    // key_remove { keyId, challenge, by: <proof by any registered key> } over KeyMessages.Remove(key, challenge) -> keys. The last key is never removed.
+    // key_remove { keyId, challenge, by: <proof by any registered key> } over KeyMessages.Remove(key, challenge) -> keys (+ "policyReset":true when the tier policy was reset to careful). The last key is never removed.
     private byte[] KeyRemove(Dictionary<string, object> r)
     {
         if (!HasKeys(r, ["v", "verb", "keyId", "challenge", "by"]) || r["keyId"] is not string keyId || r["challenge"] is not string challenge || challenge.Length > MaxChallengeText ||
             !TryReadProof(r["by"], out byte[] by)) return Error(AuthorityCodes.RequestInvalid);
         KeyOutcome outcome = core.KeyRemove(keyId, challenge, by);
-        return outcome.Code is not null ? Error(outcome.Code) : KeysReply(outcome.Keys!);
+        return outcome.Code is not null ? Error(outcome.Code) : KeysReply(outcome.Keys!, outcome.PolicyReset);
     }
 
     private static KeyOp? KeyOpOf(string text) => text switch { "add" => KeyOp.Add, "remove" => KeyOp.Remove, _ => null };

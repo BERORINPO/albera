@@ -174,6 +174,25 @@ internal sealed class PolicyStore
         }
     }
 
+    /// <summary>
+    /// Called while a key is being removed (AuthorityCore.KeyRemove, which holds this store's lock): when the proof that authorized the policy in force cannot be verified by the keys that REMAIN
+    /// (<paramref name="remaining"/>), the policy is reset to careful, revision + 1 (a revision is never reused), through <see cref="Change"/> (the same write as any other change). Without that, the
+    /// next start would find a policy nobody can vouch for and refuse to start (exit 79). Careful is the strictest policy, so this only ever tightens. A policy that skips nobody has no proof to lose and is left alone.
+    /// </summary>
+    /// <returns>a code when the reset could not be written (the key must then stay), otherwise null; <c>Reset</c> is the policy now in force when a reset happened</returns>
+    public (string? Code, TierPolicy? Reset) ResetIfSignerGone(IHumanPresenceVerifier remaining)
+    {
+        lock (gate)
+        {
+            if (faulted) return (AuthorityCodes.AuthorityUnavailable, null); // what is on disk is not known: restart first
+            if (authorized is null || authorizedProof is null || identity is null) return (null, null);
+            if (remaining.Verify(PolicyChange.Message(authorized, identity.Kid, identity.Audience), authorizedProof) == PresenceResult.Verified) return (null, null);
+            TierPolicy careful = TierPolicy.TryCreate(current.Revision + 1, TierPolicy.Careful, []) ?? throw new InvalidOperationException();
+            string? code = Change(careful, null, (_, _) => PresenceResult.Mismatch); // careful loosens nothing, so no proof is looked at
+            return (code, code is null ? careful : null);
+        }
+    }
+
     private static byte[] Envelope(TierPolicy policy, TierPolicy? signed, byte[]? presence)
     {
         using MemoryStream buffer = new();

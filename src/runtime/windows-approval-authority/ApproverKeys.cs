@@ -186,8 +186,8 @@ internal static class ApproverKeyCodes
 
 internal enum KeyListSource { Config, File }
 
-/// <summary>Code null = success. A challenge: Challenge and ExpiresAt (unix seconds). An add or remove: Keys is the list as registered now (what the reply shows).</summary>
-internal readonly record struct KeyOutcome(string? Code, string Challenge = "", long ExpiresAt = 0, IReadOnlyList<ApproverKey>? Keys = null);
+/// <summary>Code null = success. A challenge: Challenge and ExpiresAt (unix seconds). An add or remove: Keys is the list as registered now (what the reply shows); PolicyReset says a remove also reset the tier policy to careful.</summary>
+internal readonly record struct KeyOutcome(string? Code, string Challenge = "", long ExpiresAt = 0, IReadOnlyList<ApproverKey>? Keys = null, bool PolicyReset = false);
 
 // The registered approver keys: who may approve. It is the presence verifier of the Authority (any one registered key may sign) and the only place the list changes.
 //   source      the keys the config names, copied into approver-keys.json when that file is missing (at the service's start); from then on the file is the list (ApproverKeyStore.cs).
@@ -266,6 +266,12 @@ internal sealed class ApproverKeySet : IHumanPresenceVerifier
     /// <summary>The same keys for checking a proof that was stored earlier (the one that authorized policy.json): the signature is checked, sign counts are neither enforced nor moved.</summary>
     public IHumanPresenceVerifier ForStoredProofs => new StoredProofs(this);
 
+    // A list of keys as a verifier for proofs stored earlier: the keys that would REMAIN after a removal.
+    private sealed class KeyList(IReadOnlyList<ApproverKey> keys) : IHumanPresenceVerifier
+    {
+        public PresenceResult Verify(ReadOnlySpan<byte> message, ReadOnlySpan<byte> proof) => Match(keys, null, message, proof, out _, out _);
+    }
+
     private sealed class StoredProofs(ApproverKeySet set) : IHumanPresenceVerifier
     {
         public PresenceResult Verify(ReadOnlySpan<byte> message, ReadOnlySpan<byte> proof)
@@ -294,7 +300,13 @@ internal sealed class ApproverKeySet : IHumanPresenceVerifier
     private PresenceResult Check(ReadOnlySpan<byte> message, ReadOnlySpan<byte> proof, bool enforceSignCount, out ApproverKey? signer, out uint count)
     {
         (signer, count) = (null, 0);
-        if (faulted) return PresenceResult.Unavailable;
+        return faulted ? PresenceResult.Unavailable : Match(keys, enforceSignCount ? signCounts : null, message, proof, out signer, out count);
+    }
+
+    // The same over any list of keys. With <paramref name="counts"/> the sign count rule is enforced against it; without, only the signature is looked at.
+    private static PresenceResult Match(IReadOnlyList<ApproverKey> keys, IReadOnlyDictionary<string, uint>? counts, ReadOnlySpan<byte> message, ReadOnlySpan<byte> proof, out ApproverKey? signer, out uint count)
+    {
+        (signer, count) = (null, 0);
         bool webAuthn = WebAuthnProof.IsWebAuthn(proof);
         WebAuthnAssertion assertion = new([], [], []);
         if (webAuthn && !WebAuthnProof.TryDecode(proof, out assertion)) return PresenceResult.Mismatch;
@@ -304,7 +316,7 @@ internal sealed class ApproverKeySet : IHumanPresenceVerifier
             if (webAuthn ? key.CredentialId is null || !key.CredentialId.AsSpan().SequenceEqual(assertion.CredentialId) : key.Kind != ApproverKeyKind.HelloRsa) continue;
             if (ApproverKeyVerifier.Verify(key, message, proof, out uint signCount) != PresenceResult.Verified) continue;
             // rule 4
-            if (enforceSignCount && signCounts.TryGetValue(key.KeyId, out uint stored) && stored != 0 && signCount != 0 && signCount <= stored) return PresenceResult.Mismatch;
+            if (counts is not null && counts.TryGetValue(key.KeyId, out uint stored) && stored != 0 && signCount != 0 && signCount <= stored) return PresenceResult.Mismatch;
             (signer, count) = (key, signCount);
             return PresenceResult.Verified;
         }
@@ -356,7 +368,9 @@ internal sealed class ApproverKeySet : IHumanPresenceVerifier
     }
 
     /// <param name="by">a proof by any registered key over KeyMessages.Remove(key, challenge)</param>
-    public KeyOutcome Remove(string keyId, string challenge, byte[] by)
+    /// <param name="beforeRemoval">called once the removal is authorized and before anything is written, with the keys that would remain as a verifier; a code it returns refuses the removal. The core uses it to reset a
+    /// tier policy whose authorizing proof only the removed key could vouch for, so that write comes first and a crash between the two writes leaves a state that starts.</param>
+    public KeyOutcome Remove(string keyId, string challenge, byte[] by, Func<IHumanPresenceVerifier, string?>? beforeRemoval = null)
     {
         lock (gate)
         {
@@ -367,6 +381,7 @@ internal sealed class ApproverKeySet : IHumanPresenceVerifier
             PresenceResult authorized = Check(KeyMessages.Remove(doomed, challenge), by, enforceSignCount: true, out ApproverKey? signer, out uint signerCount);
             if (authorized != PresenceResult.Verified) return new(CodeOf(authorized));
             IReadOnlyList<ApproverKey> next = [.. keys.Where(k => k.KeyId != keyId)];
+            if (beforeRemoval?.Invoke(new KeyList(next)) is { } held) return new(held);
             Dictionary<string, uint> counts = new(WithCount(signCounts, signer!.KeyId, signerCount));
             counts.Remove(keyId);
             return Commit(next, counts) is { } failed ? new(failed) : new(null, Keys: next);

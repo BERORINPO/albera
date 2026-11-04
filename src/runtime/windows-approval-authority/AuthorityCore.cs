@@ -147,11 +147,20 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
     }
 
     /// <param name="by">a proof by any registered key over KeyMessages.Remove(key, challenge)</param>
+    // A removal that takes away the only key able to vouch for the policy in force resets that policy to careful FIRST (PolicyStore.ResetIfSignerGone), then removes the key: a crash between the two writes leaves
+    // a careful policy and the key still registered, which starts. The policy lock is taken before the key set's, the order PolicyStore.Change uses too.
     public KeyOutcome KeyRemove(string keyId, string challenge, byte[] by)
     {
-        KeyOutcome outcome = presence is ApproverKeySet keys ? keys.Remove(keyId, challenge, by) : new(AuthorityCodes.RequestInvalid);
+        if (presence is not ApproverKeySet keys) return new(AuthorityCodes.RequestInvalid);
+        TierPolicy? reset = null;
+        KeyOutcome outcome = policy.With(_ => keys.Remove(keyId, challenge, by, remaining =>
+        {
+            (string? code, reset) = policy.ResetIfSignerGone(remaining);
+            return code;
+        }));
+        if (reset is not null) audit?.Invoke($"POLICY_CHANGED={reset.Revision} {reset.Tier} {reset.Hash()}");
         if (outcome.Code is null) audit?.Invoke($"APPROVER_KEY_REMOVED={keyId}");
-        return outcome;
+        return outcome with { PolicyReset = outcome.Code is null && reset is not null };
     }
 
     public Outcome Status(string approvalId)

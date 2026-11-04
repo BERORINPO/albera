@@ -92,6 +92,23 @@ test('the key list changes in one place under one lock: write first (revision + 
   assert.match(keys, /outstanding = new\(op, keyId, Ids\.NewBits128\(\), expiresAt\);/u, 'one outstanding challenge');
 });
 
+test('key_remove resets the policy first: the hook runs after the removal is authorized and before the key list is written, under the policy lock taken first, and it only ever writes careful', () => {
+  const keys = code['ApproverKeys.cs'];
+  const remove = keys.slice(keys.indexOf('public KeyOutcome Remove('), keys.indexOf('private static string CodeOf('));
+  const steps = ['Check(KeyMessages.Remove(doomed, challenge), by', 'beforeRemoval?.Invoke(new KeyList(next))', 'Commit(next, counts)'].map((token) => remove.indexOf(token));
+  assert.ok(steps.every((at) => at > 0) && steps.every((at, i) => i === 0 || at > steps[i - 1]), `authorized -> policy reset -> key list written (${steps})`);
+  const core = code['AuthorityCore.cs'];
+  const keyRemove = core.slice(core.indexOf('public KeyOutcome KeyRemove('), core.indexOf('public Outcome Status('));
+  assert.ok(keyRemove.indexOf('policy.With(') > 0 && keyRemove.indexOf('policy.With(') < keyRemove.indexOf('keys.Remove(') && keyRemove.indexOf('keys.Remove(') < keyRemove.indexOf('policy.ResetIfSignerGone(remaining)'), 'policy lock, then the key set\'s (the order PolicyStore.Change uses)');
+  const store = code['PolicyStore.cs'];
+  const reset = store.slice(store.indexOf('public (string? Code, TierPolicy? Reset) ResetIfSignerGone('), store.indexOf('private static byte[] Envelope('));
+  assert.match(reset, /TierPolicy\.TryCreate\(current\.Revision \+ 1, TierPolicy\.Careful, \[\]\)/u, 'careful, revision + 1');
+  assert.match(reset, /Change\(careful, null, /u, 'through the store\'s own write path, with no proof (careful loosens nothing)');
+  assert.match(reset, /if \(authorized is null \|\| authorizedProof is null \|\| identity is null\) return \(null, null\);/u, 'a policy with no proof is left alone');
+  assert.match(reset, /remaining\.Verify\(PolicyChange\.Message\(authorized, identity\.Kid, identity\.Audience\), authorizedProof\) == PresenceResult\.Verified\) return \(null, null\);/u, 'a proof the remaining keys can still vouch for is left alone');
+  assert.match(code['Protocol.cs'], /if \(policyReset\) w\.WriteBoolean\("policyReset", true\);/u, 'policyReset appears only when true');
+});
+
 test('the key verbs\' own codes are a separate list, so the Control Plane\'s list (AuthorityCodes, mirrored by the pipe client helper) did not change', () => {
   const codes = (text, name) => [...text.slice(text.indexOf(`class ${name}`)).split('}')[0].matchAll(/= "([a-z_]+)"/gu)].map((m) => m[1]);
   assert.deepEqual(codes(source['ApproverKeys.cs'], 'ApproverKeyCodes'), ['challenge_unknown', 'challenge_expired', 'key_exists', 'key_unknown', 'last_key', 'too_many_keys']);
