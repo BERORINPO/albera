@@ -65,7 +65,7 @@ test('the approver never starts a process, registers a service, writes a file, u
   const withoutVerifier = outsideSeam(codeWithoutHello).replace(/using RSA rsa = RSA\.Create\(\);\s*rsa\.ImportSubjectPublicKeyInfo\(spki, out (?:_|int \w+)\);/gu, '');
   assert.equal(/RSA\.Create\(\)/u.test(withoutVerifier), false, 'an RSA key object is created only in the test seam (and, public-key import only, in PresenceSignature.Verify and the key record code)');
   assert.equal([...code['Presence.cs'].matchAll(/RSA\.Create\(\)/gu)].length, 1, 'exactly one RSA object in Presence.cs');
-  assert.equal([...code['ApproverKeyRecord.cs'].matchAll(/RSA\.Create\(\)/gu)].length, 2, 'two in the key record code: classify and verify, both public-key imports');
+  assert.equal([...code['ApproverKeyRecord.cs'].matchAll(/RSA\.Create\(\)/gu)].length, 1, 'one in the key record code: classifying a public key, an import');
 });
 
 test('Windows Hello: the shipped build signs with WindowsHelloPresenceSigner through the one IPresenceSigner seam; the WinRT calls are a short fixed list in one file; no private key is touched', () => {
@@ -427,7 +427,7 @@ test('WebAuthn proof bytes: the client data, the authenticator data rule, the as
   assert.match(proof, /UserPresent = 0x01, UserVerified = 0x04, AttestedData = 0x40, Extensions = 0x80/u);
   assert.match(proof, /\$"\{\{\\"kind\\":\\"webauthn\\",\\"credentialId\\":\\"\{B64\.Url\(CredentialId\)\}\\",\\"authenticatorData\\":\\"\{Convert\.ToBase64String\(AuthenticatorData\)\}\\",\\"signature\\":\\"\{Convert\.ToBase64String\(Signature\)\}\\"\}\}"/u, 'the proof object, in the contract\'s key order');
   assert.match(proof, /RemoveDomain = "albera\.keyremove\.v1"/u);
-  assert.match(proof, /\$"\{RemoveDomain\}\\0\{record\.KeyId\}\\0\{record\.Sha256Hex\(\)\}\\0\{challenge\}"/u);
+  assert.match(proof, /\$"\{RemoveDomain\}\\0\{keyId\}\\0\{challenge\}"/u, 'the remove message is the domain word, the key id and the challenge: no record hash, so a key from another device can be removed');
   const domains = ['albera.presence.v1', 'albera.selfcheck.v1', 'albera.policy.v1', 'albera.keyremove.v1'];
   for (const a of domains) for (const b of domains) if (a !== b) assert.equal(`${b}\0`.startsWith(`${a}\0`), false, `${a} must not be a prefix of ${b}`);
   assert.equal(allCode.split('albera.keyremove.v1').length - 1, 1);
@@ -465,26 +465,26 @@ test('WebAuthn signing choice: the Authority\'s `keys` decides; WebAuthn when a 
   assert.equal([...allCode.matchAll(/\\"presence\\":/gu)].length, 2, 'decide and policy_set carry the presence value, built from PresenceJson');
   // Each command asks for the route before the typed yes, so the remote-session message comes first.
   inOrder(sliceBetween(code['ApproverCommands.cs'], 'public Task<int> ApproveAsync', 'private async Task<SigningRoute> ChooseRouteAsync'), ['ChooseRouteAsync()', 'Confirmed()']);
-  inOrder(sliceBetween(keysCommand, 'public Task<int> RemoveAsync', 'private ApproverKeyRecord? RecordOf'), ['RecordOf(webAuthn, target)', 'SigningRoute.Choose(keys, webAuthn.RemoteSession)', 'Confirmed("remove this key")', 'directory.RemoveChallengeAsync(']);
+  inOrder(sliceBetween(keysCommand, 'public Task<int> RemoveAsync', 'private static string ProofJson'), ['SigningRoute.Choose(keys, webAuthn.RemoteSession)', 'Confirmed("remove this key")', 'directory.RemoveChallengeAsync(']);
 });
 
-test('keys remove and enroll --webauthn: the unattested opt-in, the console and every refusal come before anything is made or sent; the remove proof is over a message built from the record this app holds; success is reported only when the key list shows it; there is no keys add', () => {
+test('keys remove and enroll --webauthn: the unattested opt-in, the console and every refusal come before anything is made or sent; the remove proof is over a message built from the key id and the challenge only (no record, so a key from another device can be removed); success is reported only when the key list shows it; there is no keys add', () => {
   assert.ok(enrollWebAuthn && keysCommand, 'both commands exist');
   inOrder(enrollWebAuthn, ['if (kit is null)', 'if (!acceptUnattested)', 'if (!interactive)', 'string sid = currentUserSid();', 'WebAuthnCreator.Create(', 'kit.Records.TrySave(', 'record file:']);
   assert.match(enrollWebAuthn, /UnattestedLine = "attestation: none \(accepted with --accept-unattested: this key is NOT proven to be hardware-backed\)"/u, 'the same style of warning line as the Hello enroll');
   assert.equal(/IApproverChannel|PipeChannel|CallAsync|KeyDirectory|ServerExpectation/u.test(enrollWebAuthn), false, 'enroll --webauthn never talks to the Authority: no channel, no key directory');
-  const remove = sliceBetween(keysCommand, 'public Task<int> RemoveAsync', 'private ApproverKeyRecord? RecordOf');
-  inOrder(remove, ['if (!interactive)', 'directory.ListAsync()', '"key_unknown"', '"last_key"', 'RecordOf(webAuthn, target)', 'SigningRoute.Choose(keys, webAuthn.RemoteSession)', 'PresenceSigning.RemoteSessionCode', 'Confirmed("remove this key")',
-    'directory.RemoveChallengeAsync(record.KeyId)', 'signing.Sign(route, KeyMessages.Remove(record, challenge))', 'directory.RemoveAsync(record.KeyId, challenge, by)', 'result: key removed', 'removed.PolicyReset']);
-  assert.match(remove, /removed\.Keys\.Any\(k => k\.KeyId == record\.KeyId\)\) throw new ChannelException\(ChannelCodes\.InvalidResponse, sent: true\)/u, 'a remove the key list does not show is an unknown outcome');
+  const remove = sliceBetween(keysCommand, 'public Task<int> RemoveAsync', 'private static string ProofJson');
+  inOrder(remove, ['if (!interactive)', 'directory.ListAsync()', '"key_unknown"', '"last_key"', 'SigningRoute.Choose(keys, webAuthn.RemoteSession)', 'PresenceSigning.RemoteSessionCode', 'Confirmed("remove this key")',
+    'directory.RemoveChallengeAsync(target.KeyId)', 'signing.Sign(route, KeyMessages.Remove(target.KeyId, challenge))', 'directory.RemoveAsync(target.KeyId, challenge, by)', 'result: key removed', 'removed.PolicyReset']);
+  assert.match(remove, /removed\.Keys\.Any\(k => k\.KeyId == target\.KeyId\)\) throw new ChannelException\(ChannelCodes\.InvalidResponse, sent: true\)/u, 'a remove the key list does not show is an unknown outcome');
   assert.match(remove, /if \(removed\.PolicyReset\) output\.Write\("policy: set back to careful/u, 'the person is told when the policy went back to careful');
   assert.match(presenceSigning, /bool policyReset = reply\.TryGetProperty\("policyReset", out JsonElement flag\);[\s\S]*if \(policyReset && flag\.ValueKind != JsonValueKind\.True\) throw Invalid\(\);/u, 'policyReset is accepted only as true, and only from key_remove');
-  assert.match(keysCommand, /\(record\.CredentialId \?\? \[\]\)\.AsSpan\(\)\.SequenceEqual\(target\.CredentialId \?\? \[\]\)/u, 'a record on this PC must agree with the Authority\'s listing');
+  assert.equal(/ApproverKeyRecord|KeyRecordStore|IHelloKeyStore|\.Records\b|RecordOf/u.test(keysCommand), false, 'keys remove needs no record of the key and no Hello key store: a key from another device (a lost one) can be removed from here');
   // The refusals the Authority also makes are made here first, so no prompt is wasted.
-  for (const code_ of ['key_unknown', 'last_key', 'key_record_unavailable', 'not_interactive', 'not_confirmed']) assert.ok(keysCommand.includes(`"${code_}"`), code_);
+  for (const code_ of ['key_unknown', 'last_key', 'not_interactive', 'not_confirmed']) assert.ok(keysCommand.includes(`"${code_}"`), code_);
   // The grammar: keys list | keys remove <keyId>, the id in the Authority's id grammar. There is no keys add.
   assert.match(code['CommandLine.cs'], /args is \["keys", "remove", \{ \} removed\] && IsKeyId\(removed\)/u);
-  assert.match(code['Program.cs'], /if \(command\.Verb == "keys"\)\s*\{\s*KeysCommand keys = new\(new PipeChannel\(wiring\.Expectation, wiring\.TimeoutMs\), wiring\.Signer, wiring\.KeyStore, wiring\.WebAuthn, Console\.Out, Console\.Error, Console\.In, wiring\.Interactive\);/u);
+  assert.match(code['Program.cs'], /if \(command\.Verb == "keys"\)\s*\{\s*KeysCommand keys = new\(new PipeChannel\(wiring\.Expectation, wiring\.TimeoutMs\), wiring\.Signer, wiring\.WebAuthn, Console\.Out, Console\.Error, Console\.In, wiring\.Interactive\);/u);
   assert.ok(code['Program.cs'].indexOf('if (command.Option == "webauthn")') < code['Program.cs'].indexOf('if (command.Verb == "enroll")'), 'enroll --webauthn is dispatched before the Hello enroll and needs no pipe');
   assert.ok(code['Program.cs'].indexOf('if (command.Option == "check")') < code['Program.cs'].indexOf('if (command.Option == "webauthn")'));
 });
@@ -497,6 +497,6 @@ test('key record files: the only file code of the approver; it creates one file 
   assert.equal([...recordFileCode.matchAll(/FileMode\.CreateNew/gu)].length, 1, 'a file is created, never opened for writing');
   assert.equal(/FileMode\.(?!CreateNew)|File\.(?:Delete|Move|Copy|Replace|Write|Create|Append|Open|SetAttributes)|FileAccess\.(?!Write)|Directory\.(?!CreateDirectory)|Truncate|Overwrite|Symlink|Junction/u.test(recordFileCode), false);
   assert.deepEqual(Object.entries(code).filter(([, text]) => /\.TrySave\(/u.test(text)).map(([name]) => name).sort(), ['EnrollWebAuthnCommand.cs'], 'only enroll --webauthn writes a record');
-  assert.deepEqual(Object.entries(code).filter(([name, text]) => name !== 'KeyRecordFile.cs' && /Records\.Find\(/u.test(text)).map(([name]) => name), ['KeysCommand.cs'], 'only `keys remove` reads one back');
-  assert.match(recordFileCode, /ApproverKeyRecord\.TryParse\(File\.ReadAllBytes\(path\)\) is \{ \} record && record\.KeyId == keyId/u, 'a record read back must be exactly that key\'s canonical record');
+  assert.equal(/\.Find\(|ReadAllBytes|Records\b/u.test(code['KeysCommand.cs'] + code['PresenceSigning.cs'] + code['ApproverCommands.cs'] + code['PolicyCommand.cs']), false, 'nothing reads a record file: it is enroll output only (set-approver reads it)');
+  assert.equal([...recordFileCode.matchAll(/File\.ReadAllBytes\(path\)\.AsSpan\(\)\.SequenceEqual\(bytes\)/gu)].length, 1, 'the one read: an existing file is compared with the bytes about to be written, so a second run is not a failure');
 });

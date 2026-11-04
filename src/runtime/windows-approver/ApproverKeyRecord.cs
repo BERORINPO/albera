@@ -1,17 +1,16 @@
 using System.Buffers.Text;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 
 namespace Albera.Approver;
 
 // The key record of the wire contract (docs/architecture/approver-webauthn.md, "Wire contract"): public data only, one record per approver key.
 //   {"keyId":"webauthn-0123456789abcdef","kind":"webauthn","alg":-7,"publicKey":"<base64 SPKI>","credentialId":"<base64url, no padding>"}
 //   {"keyId":"hello-951a135537287eae","kind":"hello-rsa","alg":-257,"publicKey":"<base64 SPKI>"}
-// The canonical bytes are that JSON with the keys in exactly this order, no spaces, UTF-8, credentialId left out for hello-rsa. The key messages hash these bytes.
+// The canonical bytes are that JSON with the keys in exactly this order, no spaces, UTF-8, credentialId left out for hello-rsa. The record file written by `enroll --webauthn` holds exactly these bytes (the installer pins the key from it).
 // Only PUBLIC key material is ever created or imported in this file (RSA / ECDsa objects built from a public SPKI or public parameters); there is no key generation and no export of a private key.
 
-/// <summary>Base64 forms of the contract: standard base64 with padding for SPKI, authenticator data and signatures; base64url without padding for credential ids and challenges. Decoding accepts only the canonical spelling.</summary>
+/// <summary>Base64url without padding, the form of credential ids and challenges. Decoding accepts only the canonical spelling.</summary>
 internal static class B64
 {
     public static string Url(ReadOnlySpan<byte> data) => Base64Url.EncodeToString(data);
@@ -24,16 +23,6 @@ internal static class B64
             return Url(bytes) == text ? bytes : null;
         }
         catch (Exception ex) when (ex is FormatException or ArgumentException) { return null; }
-    }
-
-    public static byte[]? TryFromStandard(string text)
-    {
-        try
-        {
-            byte[] bytes = Convert.FromBase64String(text);
-            return Convert.ToBase64String(bytes) == text ? bytes : null;
-        }
-        catch (FormatException) { return null; }
     }
 }
 
@@ -71,7 +60,7 @@ internal readonly record struct PublicKeyShape(bool IsP256, int RsaBits)
 internal sealed record ApproverKeyRecord(string KeyId, string Kind, int Alg, byte[] PublicKey, byte[]? CredentialId)
 {
     public const string WebAuthnKind = "webauthn", HelloKind = "hello-rsa";
-    public const int Es256 = -7, Rs256 = -257, MaxCredentialIdBytes = 1023, MaxRsaBits = 4096, MaxRecordBytes = 4096; // the longest canonical record (RSA-4096 and a 1023-byte credential id) is about 2.2 KB
+    public const int Es256 = -7, Rs256 = -257, MaxCredentialIdBytes = 1023, MaxRsaBits = 4096;
 
     /// <summary>A record whose fields agree with each other and with the contract (key type for the alg, RSA size, credential id length, key id derived from the SPKI), or null. The approver never makes a record the Authority would refuse.</summary>
     public static ApproverKeyRecord? TryCreate(string kind, int alg, byte[] spki, byte[]? credentialId)
@@ -93,57 +82,6 @@ internal sealed record ApproverKeyRecord(string KeyId, string Kind, int Alg, byt
     {
         string tail = CredentialId is null ? "" : $",\"credentialId\":\"{B64.Url(CredentialId)}\"";
         return Encoding.UTF8.GetBytes($"{{\"keyId\":\"{KeyId}\",\"kind\":\"{Kind}\",\"alg\":{Alg},\"publicKey\":\"{Convert.ToBase64String(PublicKey)}\"{tail}}}");
-    }
-
-    public string Sha256Hex() => Convert.ToHexStringLower(SHA256.HashData(CanonicalBytes()));
-
-    /// <summary>Reads a record file or a record from the Authority. Strict: exactly the contract's keys, a consistent record, and the input must BE the canonical bytes (no BOM, no newline, no other spacing or order).</summary>
-    public static ApproverKeyRecord? TryParse(byte[] json)
-    {
-        if (json.Length is 0 or > MaxRecordBytes) return null;
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 4 });
-            JsonElement root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() is not (4 or 5)) return null;
-            if (!Text(root, "keyId", out string? keyId) || !Text(root, "kind", out string? kind) || !Text(root, "publicKey", out string? publicKey)) return null;
-            if (!root.TryGetProperty("alg", out JsonElement algElement) || algElement.ValueKind != JsonValueKind.Number || !algElement.TryGetInt32(out int alg)) return null;
-            byte[]? spki = B64.TryFromStandard(publicKey!);
-            byte[]? credentialId = null;
-            if (root.TryGetProperty("credentialId", out _))
-            {
-                if (!Text(root, "credentialId", out string? credential) || B64.TryFromUrl(credential!) is not { } decoded) return null;
-                credentialId = decoded;
-            }
-            ApproverKeyRecord? record = spki is null ? null : TryCreate(kind!, alg, spki, credentialId);
-            return record is not null && record.KeyId == keyId && record.CanonicalBytes().AsSpan().SequenceEqual(json) ? record : null;
-        }
-        catch (JsonException) { return null; }
-    }
-
-    /// <summary>Verifies a signature over <paramref name="data"/> with this key's algorithm: ES256 (P-256, DER signature) or RS256 (PKCS#1 v1.5, SHA-256). false for anything else, never an exception.</summary>
-    public bool VerifySignature(byte[] data, byte[] signature)
-    {
-        try
-        {
-            byte[] spki = PublicKey;
-            if (Alg == Es256)
-            {
-                using ECDsa ec = ECDsa.Create();
-                ec.ImportSubjectPublicKeyInfo(spki, out int ecRead);
-                return ecRead == spki.Length && ec.VerifyData(data, signature, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
-            }
-            using RSA rsa = RSA.Create();
-            rsa.ImportSubjectPublicKeyInfo(spki, out int rsaRead);
-            return Alg == Rs256 && rsaRead == spki.Length && rsa.VerifyData(data, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        }
-        catch (Exception ex) when (ex.IsKeyFailure()) { return false; }
-    }
-
-    private static bool Text(JsonElement root, string name, out string? value)
-    {
-        value = root.TryGetProperty(name, out JsonElement element) && element.ValueKind == JsonValueKind.String ? element.GetString() : null;
-        return value is not null;
     }
 }
 

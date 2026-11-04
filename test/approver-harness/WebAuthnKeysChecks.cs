@@ -90,19 +90,19 @@ internal static partial class Harness
             StringWriter printed = new(), failed = new();
             Assert(EnrollCommand(Kit(new SoftwareAuthenticator(), false, blocked), printed, failed).Run(true) == ExitCodes.Internal && failed.ToString().StartsWith("error: record_file_failed\nhint: ") && printed.ToString().Contains("record file: NOT written\n") && printed.ToString().Contains("\"publicKey\": \"") && !printed.ToString().Contains("next ("), "the values are still printed, but no next step is offered for a file that does not exist: " + failed);
         });
-        Check("key record store: creates one file per key id, never overwrites a different one, reads back only the exact canonical record, and builds no path from anything but a derived key id", () =>
+        Check("key record store: creates one file per key id, never overwrites a different one, and builds no path from anything but a derived key id", () =>
         {
             string folder = Path.Combine(TempFolder(), "nested", "approver-keys");
             KeyRecordStore store = new(folder);
             SoftwareAuthenticator authenticator = new();
             ApproverKeyRecord record = WebAuthnCreator.Create(authenticator, default).Record!, other = WebAuthnCreator.Create(authenticator, default).Record!;
-            Assert(store.TrySave(record, out string? path) && path == Path.Combine(folder, record.KeyId + ".json") && store.Find(record.KeyId) is { } found && found.CanonicalBytes().SequenceEqual(record.CanonicalBytes()), "created, with its folder");
+            Assert(store.TrySave(record, out string? path) && path == Path.Combine(folder, record.KeyId + ".json") && File.ReadAllBytes(path).SequenceEqual(record.CanonicalBytes()), "created, with its folder, holding exactly the canonical bytes");
             Assert(store.TrySave(record, out _), "the same record again is fine (the file already holds it)");
             File.WriteAllText(path!, "tampered");
-            Assert(!store.TrySave(record, out _) && File.ReadAllText(path!) == "tampered" && store.Find(record.KeyId) is null, "a different file is never overwritten, and is never read back as a record");
-            Assert(store.Find(other.KeyId) is null, "no file, no record");
+            Assert(!store.TrySave(record, out _) && File.ReadAllText(path!) == "tampered", "a different file is never overwritten");
+            Assert(store.TrySave(other, out string? otherPath) && otherPath != path, "another key gets its own file");
             foreach (string bad in new[] { "..\\x", "../x", "webauthn-0123456789abcdef\n", "webauthn-0123456789ABCDEF", "webauthn-0123", "C:\\x", "", "hello-0123456789abcdef.json", "other-0123456789abcdef" })
-                Assert(store.PathOf(bad) is null && store.Find(bad) is null, $"'{bad}' builds no path");
+                Assert(store.PathOf(bad) is null, $"'{bad}' builds no path");
         });
     }
 
@@ -120,71 +120,60 @@ internal static partial class Harness
             WebRun failing = new(refused, Signing(), null);
             Assert(failing.Keys.ListAsync().GetAwaiter().GetResult() == ExitCodes.AuthorityRejected && failing.Err.ToString() == "error: authority:request_invalid\n", failing.Err.ToString());
         });
-        Check("keys remove: keys, the typed yes, key_challenge (remove), key_remove with a registered key's proof over albera.keyremove.v1 and the hash of the record from this PC's record file; the independent verifier accepts it", () =>
+        Check("keys remove: keys, the typed yes, key_challenge (remove), key_remove with a registered key's proof over albera.keyremove.v1 0x00 keyId 0x00 challenge, for a key from ANOTHER device (this PC has no record file of it); the independent verifier accepts it", () =>
         {
             SoftwareAuthenticator authenticator = new();
             Registered registered = Register(authenticator), target = Register(authenticator);
             List<string> entries = [registered.KeyJson, target.KeyJson];
             FakeChannel channel = KeyChannel(entries);
             WebAuthnKit kit = Kit(authenticator, remote: true);
-            Assert(kit.Records.TrySave(target.Record, out _), "the record file of the key to remove");
             WebRun run = new(channel, Signing(), kit);
+            Assert(Directory.Exists(kit.Records.Folder) == false || Directory.GetFiles(kit.Records.Folder).Length == 0, "no record file exists for any key on this PC");
             Assert(run.Keys.RemoveAsync(target.Record.KeyId).GetAwaiter().GetResult() == ExitCodes.Ok && run.Err.ToString() == "", run.Err.ToString());
             Assert(Verbs(channel).SequenceEqual(["keys", "key_challenge", "key_remove"]) && run.Input.RequestsAtFirstRead == 1, string.Join(',', Verbs(channel)));
             Assert(channel.Requests[1] == $"{{\"v\":1,\"verb\":\"key_challenge\",\"op\":\"remove\",\"keyId\":\"{target.Record.KeyId}\"}}", channel.Requests[1]);
             JsonElement remove = Frame(channel, "key_remove");
             Assert(remove.EnumerateObject().Select(p => p.Name).SequenceEqual(["v", "verb", "keyId", "challenge", "by"]) && remove.GetProperty("keyId").GetString() == target.Record.KeyId && remove.GetProperty("challenge").GetString() == AddChallenge, "frame shape");
-            byte[] message = Encoding.UTF8.GetBytes($"albera.keyremove.v1\0{target.Record.KeyId}\0{Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(target.Record.CanonicalBytes()))))}\0{AddChallenge}");
+            byte[] message = Encoding.UTF8.GetBytes($"albera.keyremove.v1\0{target.Record.KeyId}\0{AddChallenge}");
             Assert(ProofVerifies(remove.GetProperty("by"), registered.Key, message, registered.CredentialId), "a registered key's proof over the remove message (the first allowed credential this authenticator holds)");
             Assert(authenticator.AllowLists.Single().Select(Url).SequenceEqual([Url(registered.CredentialId), Url(target.CredentialId)]) && run.Out.ToString().Contains("result: key removed\nkeys: 1\n"), "any registered key may sign, including the one removed; the list shows the key gone");
         });
-        Check("keys remove refuses locally an unknown key, the last key, a key with no record on this PC, no console, a refusal to confirm, and a remote session that cannot sign; nothing is signed or sent after the key list", () =>
+        Check("keys remove refuses locally an unknown key, the last key, no console, a refusal to confirm, and a remote session that cannot sign; nothing is signed or sent after the key list", () =>
         {
             SoftwareAuthenticator authenticator = new();
             Registered registered = Register(authenticator), other = Register(authenticator);
             WebAuthnKit kit = Kit(authenticator, remote: false);
-            WebRun Make(List<string> entries, WebAuthnKit? use = null, bool interactive = true, string stdin = "yes\n", IHelloKeyStore? store = null) => new(KeyChannel(entries), Signing(), use ?? kit, stdin, interactive, store);
+            WebRun Make(List<string> entries, WebAuthnKit? use = null, bool interactive = true, string stdin = "yes\n") => new(KeyChannel(entries), Signing(), use ?? kit, stdin, interactive);
             (string Why, WebRun Run, string Id, int Exit, string Code)[] cases =
             [
                 ("unknown key", Make([registered.KeyJson, other.KeyJson]), "webauthn-ffffffffffffffff", ExitCodes.Refused, "key_unknown"),
                 ("last key", Make([registered.KeyJson]), registered.Record.KeyId, ExitCodes.Refused, "last_key"),
-                ("no record on this PC", Make([registered.KeyJson, other.KeyJson]), other.Record.KeyId, ExitCodes.Refused, "key_record_unavailable"),
                 ("no console", Make([registered.KeyJson, other.KeyJson], interactive: false), other.Record.KeyId, ExitCodes.Refused, "not_interactive"),
             ];
             foreach (var (why, run, id, exit, code) in cases)
                 Assert(run.Keys.RemoveAsync(id).GetAwaiter().GetResult() == exit && run.Err.ToString().StartsWith($"error: {code}\n") && run.Out.ToString() == "", $"{why}: {run.Err}");
-            Assert(kit.Records.TrySave(other.Record, out string? path), "now this PC has the record");
             WebRun declined = Make([registered.KeyJson, other.KeyJson], stdin: "no\n");
             Assert(declined.Keys.RemoveAsync(other.Record.KeyId).GetAwaiter().GetResult() == ExitCodes.Refused && declined.Err.ToString() == "error: not_confirmed\n" && authenticator.AllowLists.Count == 0, declined.Err.ToString());
-            File.WriteAllText(path!, Encoding.UTF8.GetString(other.Record.CanonicalBytes()) + "\n");
-            Assert(Make([registered.KeyJson, other.KeyJson]).Keys.RemoveAsync(other.Record.KeyId).GetAwaiter().GetResult() == ExitCodes.Refused, "a record file that is not exactly the canonical record is not used");
-            // A record on this PC must agree with the Authority's listing (kind and credential id).
-            File.Delete(path!);
-            Assert(kit.Records.TrySave(other.Record, out _), "restored");
-            string differentCredential = $"{{\"keyId\":\"{other.Record.KeyId}\",\"kind\":\"webauthn\",\"credentialId\":\"{Url(RandomNumberGenerator.GetBytes(32))}\"}}";
-            Assert(Make([registered.KeyJson, differentCredential]).Keys.RemoveAsync(other.Record.KeyId).GetAwaiter().GetResult() == ExitCodes.Refused, "a record whose credential id differs from the listing is not used");
-            // Over Remote Desktop with only Hello registered nothing can sign: remote_session, before the typed yes. The Hello key's record comes from the Hello key store.
-            string helloId = ApproverKeyId.Of(Hello.ExportSubjectPublicKeyInfo());
-            WebRun remote = Make([HelloListing(), "{\"keyId\":\"hello-0000000000000002\",\"kind\":\"hello-rsa\"}"], new WebAuthnKit(authenticator, true, kit.Records), store: new FakeKeyStore(Hello));
-            Assert(remote.Keys.RemoveAsync(helloId).GetAwaiter().GetResult() == ExitCodes.SignerUnavailable && remote.Err.ToString().StartsWith("error: remote_session\n") && remote.Input.RequestsAtFirstRead == -1 && remote.Out.ToString() == "", remote.Err.ToString());
+            // Over Remote Desktop with only Hello registered nothing can sign: remote_session, before the typed yes.
+            WebRun remote = Make([HelloListing(), "{\"keyId\":\"hello-0000000000000002\",\"kind\":\"hello-rsa\"}"], new WebAuthnKit(authenticator, true, kit.Records));
+            Assert(remote.Keys.RemoveAsync("hello-0000000000000002").GetAwaiter().GetResult() == ExitCodes.SignerUnavailable && remote.Err.ToString().StartsWith("error: remote_session\n") && remote.Input.RequestsAtFirstRead == -1 && remote.Out.ToString() == "", remote.Err.ToString());
         });
-        Check("keys remove of the Hello key (local session, no WebAuthn key registered): the record is the Hello key's, and the proof is the Hello signature over albera.keyremove.v1", () =>
+        Check("keys remove with only Hello keys registered (local session): the proof is the Hello signature (a quoted base64 string) over albera.keyremove.v1 0x00 keyId 0x00 challenge", () =>
         {
             SoftwareAuthenticator authenticator = new();
             string helloId = ApproverKeyId.Of(Hello.ExportSubjectPublicKeyInfo());
             List<string> entries = [HelloListing(), "{\"keyId\":\"hello-0000000000000002\",\"kind\":\"hello-rsa\"}"];
             FakeChannel channel = KeyChannel(entries);
             HelloSigningAnything signer = new();
-            WebRun run = new(channel, signer, Kit(authenticator, remote: false), helloStore: new FakeKeyStore(Hello));
-            Assert(run.Keys.RemoveAsync(helloId).GetAwaiter().GetResult() == ExitCodes.Ok && run.Err.ToString() == "", run.Err.ToString());
-            string record = $"{{\"keyId\":\"{helloId}\",\"kind\":\"hello-rsa\",\"alg\":-257,\"publicKey\":\"{Convert.ToBase64String(Hello.ExportSubjectPublicKeyInfo())}\"}}";
-            byte[] message = Encoding.UTF8.GetBytes($"albera.keyremove.v1\0{helloId}\0{Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(record)))}\0{AddChallenge}");
+            WebRun run = new(channel, signer, Kit(authenticator, remote: false));
+            Assert(run.Keys.RemoveAsync("hello-0000000000000002").GetAwaiter().GetResult() == ExitCodes.Ok && run.Err.ToString() == "", run.Err.ToString());
+            byte[] message = Encoding.UTF8.GetBytes($"albera.keyremove.v1\0hello-0000000000000002\0{AddChallenge}");
             Assert(signer.Messages.Single().SequenceEqual(message) && authenticator.AllowLists.Count == 0, "Hello signed exactly the remove message");
             JsonElement remove = Frame(channel, "key_remove");
             Assert(remove.GetProperty("by").ValueKind == JsonValueKind.String && Hello.VerifyData(message, Convert.FromBase64String(remove.GetProperty("by").GetString()!), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1), "the quoted base64 RSA signature");
             WebRun lying = new(KeyChannel([HelloListing(), HelloListing().Replace(helloId, "hello-0000000000000002")], request => Verb(request) == "key_remove" ? KeysReply(HelloListing(), HelloListing().Replace(helloId, "hello-0000000000000002")) : null),
-                new HelloSigningAnything(), Kit(authenticator, false), helloStore: new FakeKeyStore(Hello));
-            Assert(lying.Keys.RemoveAsync(helloId).GetAwaiter().GetResult() == ExitCodes.TransportUnknown && lying.Err.ToString() == "error: invalid_response\n" && !lying.Out.ToString().Contains("key removed"), "an Authority that says ok but still lists the key");
+                new HelloSigningAnything(), Kit(authenticator, false));
+            Assert(lying.Keys.RemoveAsync("hello-0000000000000002").GetAwaiter().GetResult() == ExitCodes.TransportUnknown && lying.Err.ToString() == "error: invalid_response\n" && !lying.Out.ToString().Contains("key removed"), "an Authority that says ok but still lists the key");
         });
         Check("keys remove: \"policyReset\":true in the reply tells the person the policy is back to careful; any other form of that field, or any other extra field, is an invalid response; without it nothing is said", () =>
         {
@@ -193,7 +182,6 @@ internal static partial class Harness
                 SoftwareAuthenticator authenticator = new();
                 Registered registered = Register(authenticator), target = Register(authenticator);
                 WebAuthnKit kit = Kit(authenticator, remote: false);
-                Assert(kit.Records.TrySave(target.Record, out _), "record file");
                 return (authenticator, registered, target, kit);
             }
             var (_, registered1, target1, kit1) = Setup();
@@ -219,7 +207,6 @@ internal static partial class Harness
             SoftwareAuthenticator dismissing = new() { Cancel = true };
             Registered registered = Register(dismissing), target = Register(dismissing);
             WebAuthnKit kit = Kit(dismissing, remote: false);
-            Assert(kit.Records.TrySave(target.Record, out _), "record file");
             FakeChannel channel = KeyChannel([registered.KeyJson, target.KeyJson]);
             WebRun run = new(channel, Signing(), kit);
             Assert(run.Keys.RemoveAsync(target.Record.KeyId).GetAwaiter().GetResult() == ExitCodes.SignerUnavailable && run.Err.ToString().StartsWith("error: webauthn_no_proof\nhint: ") && Verbs(channel).SequenceEqual(["keys", "key_challenge"]), run.Err.ToString());
@@ -229,7 +216,6 @@ internal static partial class Harness
                 SoftwareAuthenticator authenticator = new();
                 Registered held = Register(authenticator), other = Register(authenticator);
                 WebAuthnKit useKit = Kit(authenticator, remote: false);
-                Assert(useKit.Records.TrySave(other.Record, out _), "record file");
                 FakeChannel refusing = KeyChannel([held.KeyJson, other.KeyJson], request => Verb(request) == "key_remove" ? $"{{\"ok\":false,\"code\":\"{code}\"}}" : null);
                 WebRun refused = new(refusing, Signing(), useKit);
                 Assert(refused.Keys.RemoveAsync(other.Record.KeyId).GetAwaiter().GetResult() == exit && refused.Err.ToString() == $"error: {shown}\n" && !refused.Out.ToString().Contains("key removed"), $"{code}: {refused.Err}");

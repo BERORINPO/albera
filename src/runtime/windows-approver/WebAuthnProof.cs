@@ -58,19 +58,14 @@ internal sealed record WebAuthnAssertion(byte[] CredentialId, byte[] Authenticat
 {
     public string ToJson() =>
         $"{{\"kind\":\"webauthn\",\"credentialId\":\"{B64.Url(CredentialId)}\",\"authenticatorData\":\"{Convert.ToBase64String(AuthenticatorData)}\",\"signature\":\"{Convert.ToBase64String(Signature)}\"}}";
-
-    /// <summary>The Authority's verification, run locally for a key whose record this process holds: the same credential, the authenticator data rule, and the signature over authenticatorData || SHA-256(client data of <paramref name="message"/>).</summary>
-    public bool Verifies(ApproverKeyRecord key, byte[] message) =>
-        key.Kind == ApproverKeyRecord.WebAuthnKind && key.CredentialId is { } credential && credential.AsSpan().SequenceEqual(CredentialId) && WebAuthnContract.IsPresenceAssertion(AuthenticatorData)
-        && key.VerifySignature([.. AuthenticatorData, .. SHA256.HashData(WebAuthnContract.ClientDataForAssertion(message))], Signature);
 }
 
 // The message that removes an approver key (UTF-8, 0x00 between the parts). There is no add message: keys are added only by the elevated set-approver. The domain word differs from the presence, policy and
 // self-check ones, and none of them (with its 0x00) is a prefix of another, so a signature over one kind of message can never verify as another kind.
-//   remove: "albera.keyremove.v1" 0x00 keyId 0x00 hex(SHA-256(canonical record of that key)) 0x00 keyChallenge
+//   remove: "albera.keyremove.v1" 0x00 keyId 0x00 keyChallenge     (no record hash: a key from another device, with no record file on this PC, can be removed)
 internal static class KeyMessages
 {
     public const string RemoveDomain = "albera.keyremove.v1";
 
-    public static byte[] Remove(ApproverKeyRecord record, string challenge) => Encoding.UTF8.GetBytes($"{RemoveDomain}\0{record.KeyId}\0{record.Sha256Hex()}\0{challenge}");
+    public static byte[] Remove(string keyId, string challenge) => Encoding.UTF8.GetBytes($"{RemoveDomain}\0{keyId}\0{challenge}");
 }

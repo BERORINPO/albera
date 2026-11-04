@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { constants, createHash, createPublicKey, generateKeyPairSync, randomBytes, verify } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -87,7 +87,7 @@ async function startFakeAuthority({ keys, ownerSid, policyResetOnRemove = false 
         if (!orderIs(request, ['v', 'verb', 'keyId', 'challenge', 'by']) || state.pending.op !== 'remove' || state.pending.keyId !== request.keyId || request.challenge !== state.pending.challenge) return refuse('challenge_unknown');
         if (!target) return refuse('key_unknown');
         if (state.keys.length === 1) return refuse('last_key');
-        const message = Buffer.from(`albera.keyremove.v1\0${target.keyId}\0${sha256(Buffer.from(canonical(target))).toString('hex')}\0${request.challenge}`, 'utf8');
+        const message = Buffer.from(`albera.keyremove.v1\0${target.keyId}\0${request.challenge}`, 'utf8'); // the key id and the challenge only: a key from another device (a lost one) can be removed
         const ok = provesAny(request.by, message);
         state.removes.push({ ok, message });
         state.pending = { op: null, keyId: null, challenge: null };
@@ -130,9 +130,9 @@ describe('WebAuthn presence: the test-faults approver (software authenticator) a
 
   const folder = () => realpathSync.native(mkdtempSync(path.join(root, 'keys-')));
   /** Run the approver against `authority` with the software authenticator holding `held` (a makeWebAuthnKey result) and records going to `keysDir`. */
-  const app = (authority, args, { held, keysDir = folder(), remote = false, mode = 'on', stdin = 'yes\n', extra = [] } = {}) => runApprover(exe, [...args, '--test-pipe-root', authority.root, '--test-owner-sid', nodeOwner, '--test-pid', String(process.pid),
+  const app = (authority, args, { held, keysDir = folder(), remote = false, mode = 'on', stdin = 'yes\n' } = {}) => runApprover(exe, [...args, '--test-pipe-root', authority.root, '--test-owner-sid', nodeOwner, '--test-pid', String(process.pid),
     '--test-interactive', 'yes', '--test-webauthn', mode, '--test-keys-dir', keysDir, '--test-remote-session', remote ? 'yes' : 'no',
-    ...(held ? ['--test-webauthn-key', held.pkcs8, '--test-webauthn-credential', held.credentialId] : []), ...extra], { stdin });
+    ...(held ? ['--test-webauthn-key', held.pkcs8, '--test-webauthn-credential', held.credentialId] : [])], { stdin });
   async function withAuthority(keys, body, options = {}) {
     const authority = await startFakeAuthority({ keys: keys.map((k) => k.record ?? k), ownerSid: nodeOwner, ...options });
     try { return await body(authority); } finally { await authority.close(); }
@@ -220,7 +220,7 @@ describe('WebAuthn presence: the test-faults approver (software authenticator) a
     assert.equal(/PRIVATE|pkcs8/iu.test(made.stdout), false);
   });
 
-  it('enroll --webauthn, then (standing in for the elevated set-approver) the Authority learns the key, then keys list and keys remove: the remove proof, over the record this PC wrote, verifies with Node crypto', async () => {
+  it('enroll --webauthn, then (standing in for the elevated set-approver) the Authority learns the key, then keys list and keys remove from a PC that has NO record file of it (a key from another device): the remove proof verifies with Node crypto', async () => {
     const first = makeWebAuthnKey();
     const keysDir = folder();
     await withAuthority([first], async (authority) => {
@@ -234,38 +234,39 @@ describe('WebAuthn presence: the test-faults approver (software authenticator) a
       assert.deepEqual([listed.code, listed.stderr], [0, '']);
       assert.ok(listed.stdout.startsWith('keys: 2\n') && listed.stdout.includes(`key "${second.keyId}"`) && listed.stdout.includes(`credentialId: "${second.credentialId}"`), listed.stdout);
 
-      const removed = await app(authority, ['keys', 'remove', second.keyId], { held: first, keysDir });
+      const emptyFolder = folder(); // this PC has no record of the second key: the remove message is only the key id and the challenge
+      const removed = await app(authority, ['keys', 'remove', second.keyId], { held: first, keysDir: emptyFolder });
+      assert.deepEqual(readdirSync(emptyFolder), [], 'nothing was needed from, or written to, the record folder');
       assert.deepEqual([removed.code, removed.stderr], [0, '']);
       assert.ok(removed.stdout.includes('result: key removed\nkeys: 1\n') && !removed.stdout.includes('policy:'), removed.stdout);
       assert.equal(authority.state.removes.length, 1);
-      assert.equal(authority.state.removes[0].ok, true, 'the remove proof verified over albera.keyremove.v1 and the hash of the canonical record');
+      assert.equal(authority.state.removes[0].ok, true, 'the remove proof verified over albera.keyremove.v1');
       assert.deepEqual(authority.state.keys.map((k) => k.keyId), [first.record.keyId]);
       assert.deepEqual(authority.verbs(), ['keys', 'keys', 'key_challenge', 'key_remove'], 'keys list, then keys remove: keys, key_challenge, key_remove');
       assert.ok(authority.state.frames.every((f) => f.length <= 2048), 'every frame fits the 2048-byte limit');
 
       const last = await app(authority, ['keys', 'remove', first.record.keyId], { held: first, keysDir });
-      assert.deepEqual([last.code, last.stderr.split('\n')[0]], [65, 'error: last_key'], 'the last key is refused locally, before a record or a prompt is needed');
+      assert.deepEqual([last.code, last.stderr.split('\n')[0]], [65, 'error: last_key'], 'the last key is refused locally, before a prompt is needed');
     });
   });
 
   it('keys remove: "policyReset":true is reported to the person; over Remote Desktop with only Hello registered it stops before the typed yes (remote_session); keys add is a usage error and key_add is never sent', async () => {
     const first = makeWebAuthnKey(), second = makeWebAuthnKey();
     const keysDir = folder();
-    writeFileSync(path.join(keysDir, `${second.record.keyId}.json`), canonical(second.record)); // the record file `enroll --webauthn` would have written for the second key
     await withAuthority([first, second], async (authority) => {
       const reset = await app(authority, ['keys', 'remove', second.record.keyId], { held: first, keysDir });
       assert.deepEqual([reset.code, reset.stderr], [0, '']);
       assert.match(reset.stdout, /result: key removed\npolicy: set back to careful \(the removed key had signed the policy in force\)\./u);
     }, { policyResetOnRemove: true });
 
-    // Two Hello keys registered; the approver's Hello key store holds the first (--test-fake-key), so it can build that key's record. Remote session: nothing can sign.
-    const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
-    const spki = pair.publicKey.export({ type: 'spki', format: 'der' });
-    const helloRecord = (publicKey, keyId) => ({ keyId, kind: 'hello-rsa', alg: -257, publicKey: publicKey.toString('base64') });
-    const mine = helloRecord(spki, `hello-${sha256(spki).subarray(0, 8).toString('hex')}`);
-    const otherSpki = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'der' });
-    await withAuthority([mine, helloRecord(otherSpki, `hello-${sha256(otherSpki).subarray(0, 8).toString('hex')}`)], async (authority) => {
-      const remote = await app(authority, ['keys', 'remove', mine.keyId], { remote: true, keysDir: folder(), extra: ['--test-fake-key', pair.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64')] });
+    // Two Hello keys registered; over Remote Desktop nothing can sign (Hello does not work there): remote_session, before the typed yes.
+    const helloRecord = () => {
+      const spki = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'der' });
+      return { keyId: `hello-${sha256(spki).subarray(0, 8).toString('hex')}`, kind: 'hello-rsa', alg: -257, publicKey: spki.toString('base64') };
+    };
+    const [mine, other] = [helloRecord(), helloRecord()];
+    await withAuthority([mine, other], async (authority) => {
+      const remote = await app(authority, ['keys', 'remove', other.keyId], { remote: true, keysDir: folder() });
       assert.equal(remote.code, 69);
       assert.equal(remote.stderr.split('\n')[0], 'error: remote_session');
       assert.equal(remote.stdout.includes('Type yes'), false, 'the person is never asked to type yes');

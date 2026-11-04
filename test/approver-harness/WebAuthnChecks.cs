@@ -85,12 +85,12 @@ internal static partial class Harness
         return document.RootElement.Clone();
     }
 
-    private sealed class WebRun(FakeChannel channel, IPresenceSigner hello, WebAuthnKit? kit, string stdin = "yes\n", bool interactive = true, IHelloKeyStore? helloStore = null)
+    private sealed class WebRun(FakeChannel channel, IPresenceSigner hello, WebAuthnKit? kit, string stdin = "yes\n", bool interactive = true)
     {
         public readonly StringWriter Out = new(), Err = new();
         public readonly CountingReader Input = new(stdin, () => channel.Requests.Count);
         public ApproverCommands Commands => new(channel, hello, Out, Err, Input, () => DateTimeOffset.FromUnixTimeSeconds(Now), interactive, kit);
-        public KeysCommand Keys => new(channel, hello, helloStore ?? new FakeKeyStore(null), kit, Out, Err, Input, interactive);
+        public KeysCommand Keys => new(channel, hello, kit, Out, Err, Input, interactive);
         public int Approve() => Commands.ApproveAsync(Id1).GetAwaiter().GetResult();
     }
 
@@ -125,7 +125,6 @@ internal static partial class Harness
             Assert(web.KeyId == id, web.KeyId);
             string expected = $"{{\"keyId\":\"{id}\",\"kind\":\"webauthn\",\"alg\":-7,\"publicKey\":\"{Convert.ToBase64String(spki)}\",\"credentialId\":\"{Url(credential)}\"}}";
             Assert(Encoding.UTF8.GetString(web.CanonicalBytes()) == expected && Url(credential) == "AQID-vv8", expected);
-            Assert(web.Sha256Hex() == Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(expected))), "the hash is over the canonical bytes");
             byte[] helloSpki = Hello.ExportSubjectPublicKeyInfo();
             ApproverKeyRecord rsa = ApproverKeyRecord.TryCreate("hello-rsa", -257, helloSpki, null)!;
             Assert(rsa.KeyId == ApproverKeyId.Of(helloSpki) && Encoding.UTF8.GetString(rsa.CanonicalBytes()) == $"{{\"keyId\":\"{rsa.KeyId}\",\"kind\":\"hello-rsa\",\"alg\":-257,\"publicKey\":\"{Convert.ToBase64String(helloSpki)}\"}}", "hello-rsa has no credentialId");
@@ -149,20 +148,6 @@ internal static partial class Harness
             ];
             foreach (var (kind, alg, spki, credential, why) in refused) Assert(ApproverKeyRecord.TryCreate(kind, alg, spki, credential) is null, why);
             Assert(ApproverKeyRecord.TryCreate("webauthn", -7, ec, new byte[1023]) is not null, "1023 bytes is the longest allowed");
-        });
-        Check("key record: a record is read back only from its exact canonical bytes (no newline, BOM, spacing, reordering, extra key, wrong key id or credential)", () =>
-        {
-            (byte[] _, byte[] _, byte[] spki) = NewPoint();
-            ApproverKeyRecord record = ApproverKeyRecord.TryCreate("webauthn", -7, spki, [9, 8, 7])!;
-            string canonical = Encoding.UTF8.GetString(record.CanonicalBytes());
-            Assert(ApproverKeyRecord.TryParse(record.CanonicalBytes()) is { } back && back.KeyId == record.KeyId && back.CanonicalBytes().SequenceEqual(record.CanonicalBytes()), "round trip");
-            string[] variants =
-            [
-                canonical + "\n", "﻿" + canonical, canonical.Replace("\"kind\":\"webauthn\",\"alg\":-7", "\"alg\":-7,\"kind\":\"webauthn\""), canonical.Replace(",\"alg\"", ", \"alg\""), canonical.Replace("}", ",\"extra\":1}"),
-                canonical.Replace(record.KeyId, "webauthn-0000000000000000"), canonical.Replace("\"alg\":-7", "\"alg\":-257"), canonical.Replace("\"credentialId\":\"CQgH\"", "\"credentialId\":\"CQgH=\""), canonical.Replace("\"alg\":-7", "\"alg\":\"-7\""),
-                canonical.Replace(Convert.ToBase64String(spki), Convert.ToBase64String(spki).TrimEnd('=')), "{}", "[]", "", "null",
-            ];
-            foreach (string variant in variants) Assert(ApproverKeyRecord.TryParse(Encoding.UTF8.GetBytes(variant)) is null, variant);
         });
     }
 
@@ -213,7 +198,7 @@ internal static partial class Harness
             Assert(!WebAuthnContract.IsPresenceAssertion([.. Make(0x05), 0]) && !WebAuthnContract.IsPresenceAssertion(Make(0x05)[..36]) && !WebAuthnContract.IsPresenceAssertion([]), "length");
             Assert(!WebAuthnContract.IsPresenceAssertion(Make(0x05, rp: SHA256.HashData(Encoding.UTF8.GetBytes("approver.albera.local.")))), "rp id hash");
         });
-        Check("client data and key messages are the contract's bytes: webauthn.get / webauthn.create client data with base64url challenges, albera.keyremove.v1 with the hash of the canonical record, domain-separated from every other signed message", () =>
+        Check("client data and key messages are the contract's bytes: webauthn.get / webauthn.create client data with base64url challenges, albera.keyremove.v1 (key id and challenge) domain-separated from every other signed message", () =>
         {
             byte[] message = PresenceBytes();
             string expected = $"{{\"type\":\"webauthn.get\",\"challenge\":\"{Url(SHA256.HashData(message))}\",\"origin\":\"albera://approver\",\"crossOrigin\":false}}";
@@ -221,8 +206,7 @@ internal static partial class Harness
             Assert(Encoding.UTF8.GetString(WebAuthnContract.ClientDataForCreation([1, 2, 3])).Equals("{\"type\":\"webauthn.create\",\"challenge\":\"AQID\",\"origin\":\"albera://approver\",\"crossOrigin\":false}"), "creation");
             (byte[] _, byte[] _, byte[] spki) = NewPoint();
             ApproverKeyRecord record = ApproverKeyRecord.TryCreate("webauthn", -7, spki, [1])!;
-            string hex = Convert.ToHexStringLower(SHA256.HashData(record.CanonicalBytes()));
-            Assert(Encoding.UTF8.GetString(KeyMessages.Remove(record, AddChallenge)) == $"albera.keyremove.v1\0{record.KeyId}\0{hex}\0{AddChallenge}", "remove");
+            Assert(Encoding.UTF8.GetString(KeyMessages.Remove(record.KeyId, AddChallenge)) == $"albera.keyremove.v1\0{record.KeyId}\0{AddChallenge}", "remove: the key id and the challenge, no record hash");
             string[] domains = ["albera.presence.v1", "albera.selfcheck.v1", "albera.policy.v1", "albera.keyremove.v1"];
             foreach (string a in domains) foreach (string b in domains) Assert(a == b || !(b + "\0").StartsWith(a + "\0", StringComparison.Ordinal), $"{a} vs {b}");
         });
@@ -241,10 +225,8 @@ internal static partial class Harness
             using JsonDocument proof = JsonDocument.Parse(first.Proof!.ToJson());
             Assert(ProofVerifies(proof.RootElement, key.Key, message, key.CredentialId), "the independent verifier accepts it");
             Assert(first.Proof.AuthenticatorData.Length == 37 && first.Proof.AuthenticatorData[32] == 0x05 && first.Proof.AuthenticatorData[36] == 1 && second.Proof!.AuthenticatorData[36] == 2, "flags UP + UV, sign count 1 then 2");
-            Assert(first.Proof.Verifies(key.Record, message), "and so does the product's own check");
             Assert(Encoding.UTF8.GetString(authenticator.AssertionClientData[0]) == $"{{\"type\":\"webauthn.get\",\"challenge\":\"{Url(SHA256.HashData(message))}\",\"origin\":\"albera://approver\",\"crossOrigin\":false}}", "the authenticator was handed exactly the contract's client data");
             byte[] other = [.. message, 1];
-            Assert(!first.Proof.Verifies(key.Record, other), "a signature for one message does not verify for another");
             using JsonDocument ownJson = JsonDocument.Parse(first.Proof.ToJson());
             Assert(!ProofVerifies(ownJson.RootElement, key.Key, other, key.CredentialId), "nor for the independent verifier");
         });

@@ -2,9 +2,9 @@ using System.Text.RegularExpressions;
 
 namespace Albera.Approver;
 
-// The record files of WebAuthn keys made on this PC: %LOCALAPPDATA%\Albera\approver-keys\<keyId>.json, the canonical key record (public data only, no trailing newline). `enroll --webauthn` writes one;
-// the installer's `-Mode set-approver -ApproverKeyFile` reads it; `keys remove` reads it back, because the Authority's key list does not carry the public key that the remove message hashes.
-// This is the ONLY file code in the approver (source-guarded): a record is created, never overwritten, deleted or moved; the directory is created if missing; the file name is the key id and nothing else.
+// The record file of a WebAuthn key made on this PC: %LOCALAPPDATA%\Albera\approver-keys\<keyId>.json, the canonical key record (public data only, no trailing newline). `enroll --webauthn` writes one and prints
+// the elevated `-Mode set-approver -ApproverKeyFile <that file>` command that reads it. Nothing else in the approver reads it: `keys remove` needs no record (its message is the key id and the challenge).
+// This is the ONLY file code in the approver (source-guarded): a record is created, never overwritten, deleted or moved (an existing file is read only to see whether it already holds the same bytes); the directory is created if missing; the file name is the key id and nothing else.
 // The file is an ordinary same-user file. Whoever can write it can change what the installer is later told to pin, so the installer must show the key id and the owner compare it with the one printed at enroll.
 internal sealed class KeyRecordStore(string directory)
 {
@@ -32,13 +32,5 @@ internal sealed class KeyRecordStore(string directory)
         }
         catch (IOException) when (File.Exists(path)) { return File.ReadAllBytes(path).AsSpan().SequenceEqual(bytes); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
-    }
-
-    /// <summary>The record saved for <paramref name="keyId"/>, if the file is exactly that key's canonical record; otherwise null.</summary>
-    public ApproverKeyRecord? Find(string keyId)
-    {
-        string? path = PathOf(keyId);
-        try { return path is not null && File.Exists(path) && new FileInfo(path).Length <= ApproverKeyRecord.MaxRecordBytes && ApproverKeyRecord.TryParse(File.ReadAllBytes(path)) is { } record && record.KeyId == keyId ? record : null; }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
 }

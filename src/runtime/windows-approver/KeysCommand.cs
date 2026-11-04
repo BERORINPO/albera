@@ -2,15 +2,15 @@ namespace Albera.Approver;
 
 // `keys list | keys remove <keyId>`: the approver keys the Authority accepts presence from (docs/architecture/approver-webauthn.md, "Keys" and "Wire contract").
 //   keys list           the Authority's `keys` reply, printed. Read only: no console, no key, no prompt.
-//   keys remove <id>    needs a console and a typed yes. Refuses locally an unknown key and the last key. Signs "albera.keyremove.v1" 0x00 keyId 0x00 hex(SHA-256(record)) 0x00 challenge with any registered key
+//   keys remove <id>    needs a console and a typed yes. Refuses locally an unknown key and the last key. Signs "albera.keyremove.v1" 0x00 keyId 0x00 challenge with any registered key
 //                       (a key that can sign now: a registered WebAuthn key, or the Hello key on a local session; a remote session with only Hello registered stops with remote_session BEFORE the typed yes)
-//                       and sends key_remove. The remove message hashes the canonical record of the key, which the Authority's key list does not carry, so the record comes from this PC's record file (or, for the
-//                       Hello key, the Hello key store); no record, no remove. When the removed key had signed the policy in force, the reply says policyReset and the person is told the policy is back to careful.
+//                       and sends key_remove. The message holds only the key id and the Authority's challenge, so a key from another device (a lost one) can be removed from here: no record of it is needed.
+//                       When the removed key had signed the policy in force, the reply says policyReset and the person is told the policy is back to careful.
 // There is NO `keys add`: a run-time add needs one signature by a registered key, which a same-user process could get at the moment of a real approval and use to register its own key. Keys are added only
 // by the elevated `set-approver` (behind UAC), from the record file that `enroll --webauthn` writes; the Authority has no key_add verb.
-// Every proof is over a message this app built from the key record it holds, never from text the Authority sent. The Authority's reply is accepted only in the exact shape of the contract, and a remove is
-// reported done only when the reply's key list shows it.
-internal sealed class KeysCommand(IApproverChannel channel, IPresenceSigner hello, IHelloKeyStore helloStore, WebAuthnKit? kit, TextWriter output, TextWriter errors, TextReader input, bool interactive)
+// The proof is over a message this app built from the key id it was given and the challenge, never from other text the Authority sent. The Authority's reply is accepted only in the exact shape of the
+// contract, and a remove is reported done only when the reply's key list shows it.
+internal sealed class KeysCommand(IApproverChannel channel, IPresenceSigner hello, WebAuthnKit? kit, TextWriter output, TextWriter errors, TextReader input, bool interactive)
 {
     private readonly KeyDirectory directory = new(channel);
     private readonly PresenceSigning signing = new(channel, hello, kit);
@@ -30,33 +30,22 @@ internal sealed class KeysCommand(IApproverChannel channel, IPresenceSigner hell
         IReadOnlyList<RegisteredKey> keys = await directory.ListAsync();
         RegisteredKey target = keys.FirstOrDefault(k => k.KeyId == keyId) ?? throw new Stop(ExitCodes.Refused, "key_unknown", "hint: keys list shows the keys the Authority has");
         if (keys.Count == 1) throw new Stop(ExitCodes.Refused, "last_key", "hint: the Authority keeps at least one key; add another with set-approver before removing this one");
-        ApproverKeyRecord record = RecordOf(webAuthn, target) ?? throw new Stop(ExitCodes.Refused, "key_record_unavailable",
-            "hint: the remove message hashes the key's record, and this PC has none for that key (the Authority's list does not carry the public key). Run keys remove on the PC that made it, or restore its record file");
         SigningRoute route = SigningRoute.Choose(keys, webAuthn.RemoteSession); // a remote session that cannot sign stops here, before the typed yes
         if (route.Kind == RouteKind.RemoteNoKey) throw new Stop(ExitCodes.SignerUnavailable, PresenceSigning.RemoteSessionCode, PresenceSigning.RemoteSessionHint);
         output.Write($"This removes the approver key {SafeText.Quote(target.KeyId)} (kind {SafeText.Quote(target.Kind)}) from the Approval Authority. It will have {keys.Count - 1} key(s) left.\n");
         if (!Confirmed("remove this key")) throw new Stop(ExitCodes.Refused, "not_confirmed");
 
-        string challenge = await directory.RemoveChallengeAsync(record.KeyId);
+        string challenge = await directory.RemoveChallengeAsync(target.KeyId);
         output.Write(PresenceSigning.AskNotice(route, "the key change described above"));
-        string by = ProofJson(route, signing.Sign(route, KeyMessages.Remove(record, challenge)));
+        string by = ProofJson(route, signing.Sign(route, KeyMessages.Remove(target.KeyId, challenge)));
 
-        RemoveResult removed = await directory.RemoveAsync(record.KeyId, challenge, by);
-        if (removed.Keys.Any(k => k.KeyId == record.KeyId)) throw new ChannelException(ChannelCodes.InvalidResponse, sent: true); // the Authority said ok but still lists the key
+        RemoveResult removed = await directory.RemoveAsync(target.KeyId, challenge, by);
+        if (removed.Keys.Any(k => k.KeyId == target.KeyId)) throw new ChannelException(ChannelCodes.InvalidResponse, sent: true); // the Authority said ok but still lists the key
         output.Write("result: key removed\n");
         if (removed.PolicyReset) output.Write("policy: set back to careful (the removed key had signed the policy in force). Every action asks you until a new policy is set with `policy set`.\n");
         WriteKeys(removed.Keys);
         return ExitCodes.Ok;
     });
-
-    // The record of a listed key, from this PC: the record file of a WebAuthn key made here, or the Hello key itself when its id is the one listed. It must agree with the listing (kind and credential id).
-    private ApproverKeyRecord? RecordOf(WebAuthnKit webAuthn, RegisteredKey target)
-    {
-        ApproverKeyRecord? record = webAuthn.Records.Find(target.KeyId);
-        if (record is null && target.Kind == ApproverKeyRecord.HelloKind && helloStore.Open() is { State: KeyState.Present, PublicKey: { } spki }
-            && ApproverKeyRecord.TryCreate(ApproverKeyRecord.HelloKind, ApproverKeyRecord.Rs256, spki, null) is { } helloRecord && helloRecord.KeyId == target.KeyId) record = helloRecord;
-        return record is not null && record.Kind == target.Kind && (record.CredentialId ?? []).AsSpan().SequenceEqual(target.CredentialId ?? []) ? record : null;
-    }
 
     private static string ProofJson(SigningRoute route, SignResult signed) => signed.Status switch
     {

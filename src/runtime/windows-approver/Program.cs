@@ -49,7 +49,7 @@ internal static class Program
             return new EnrollCommand(wiring.KeyStore, CurrentUserSid, Console.Out, Console.Error, Console.In, wiring.Interactive).Run(command.Option, command.AcceptUnattested);
         if (command.Verb == "keys")
         {
-            KeysCommand keys = new(new PipeChannel(wiring.Expectation, wiring.TimeoutMs), wiring.Signer, wiring.KeyStore, wiring.WebAuthn, Console.Out, Console.Error, Console.In, wiring.Interactive);
+            KeysCommand keys = new(new PipeChannel(wiring.Expectation, wiring.TimeoutMs), wiring.Signer, wiring.WebAuthn, Console.Out, Console.Error, Console.In, wiring.Interactive);
             return command.Option == "list" ? await keys.ListAsync() : await keys.RemoveAsync(command.KeyId!);
         }
         if (command.Verb == "policy")
