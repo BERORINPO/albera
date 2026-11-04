@@ -1358,7 +1358,8 @@ try {
   $pidOk = ($room.pid -is [int]) -and ($room.pid -gt 0)
   $codeOk = ($room.code -is [string]) -and ($room.code -cmatch '^[A-Za-z0-9_-]{16,128}$')
   if (-not ($portOk -and $pidOk -and $codeOk)) { Stop-Here 'ui\room.json is not in the expected form.' }
-  $held = @(Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 -LocalPort $room.port | Where-Object { $_.OwningProcess -eq $room.pid })
+  # A listening socket is the one with remote port 0. Not -State Listen: Windows 11 build 26300 reports most listening sockets with state 0, so that filter finds none (measured 2026-11-04).
+  $held = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $room.port -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq $room.pid -and $_.RemotePort -eq 0 })
   if ($held.Count -eq 0) { Stop-Here 'the port named in ui\room.json is not held by the ALBERA process. Wait a few seconds and try again.' }
   Start-Process ('http://127.0.0.1:' + $room.port + '/room/#b=' + $room.code)
 }
