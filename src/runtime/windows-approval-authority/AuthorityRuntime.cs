@@ -10,11 +10,23 @@ internal static class AuthorityRuntime
 
     public static AuthorityIdentity IdentityOf(AuthorityConfig config) => new(config.Kid, config.Audience, config.PolicyVersion, config.ApproverKeyId);
 
+    /// <summary>The approver key list for this config: approver-keys.json next to it, created from the config's keys first when it is missing and <paramref name="seed"/> is set (the service, never service-check).
+    /// On a file that cannot be trusted, read or created it prints SERVICE_APPROVER_KEYS=invalid:&lt;reason&gt; and returns null (exit 80).</summary>
+    public static ApproverKeySet? LoadApproverKeys(AuthorityConfig config, bool seed, out KeyListSource source)
+    {
+        if (ApproverKeySet.Open(config, UnixNow, seed, out string reason, out source) is not { } keys)
+        {
+            Console.WriteLine($"SERVICE_APPROVER_KEYS=invalid:{reason}");
+            return null;
+        }
+        return keys;
+    }
+
     /// <summary>The pinned Broker attestation key, or null when the config pins none (then no attestation is ever accepted). The config load already checked it.</summary>
     public static PinnedAttestationKey? AttestationKeyOf(AuthorityConfig config) =>
         config.AttestationKeyId is null || config.AttestationPublicKey is null ? null : PinnedAttestationKey.TryCreate(config.AttestationKeyId, config.AttestationPublicKey) ?? throw new InvalidOperationException();
 
-    /// <summary>The shipped composition: the machine-key signer, the pinned Hello key and the tier policy already loaded from its file (79 is decided by the caller before this runs).
+    /// <summary>The shipped composition: the machine-key signer, the approver keys (the pinned key, or approver-keys.json) and the tier policy already loaded from its file (79 is decided by the caller before this runs).
     /// 77 when the signing key cannot be opened, 78 when it is opened but not protected as required (SigningKeyGuard). Both are decided before any pipe exists.</summary>
     public static async Task<int> RunProductionAsync(AuthorityConfig config, PolicyStore policy, CancellationToken stop, Action onReady)
     {
@@ -35,7 +47,7 @@ internal static class AuthorityRuntime
                     : "AUTHORITY_FIX=recreate the signing key non-exportable with an owner and ACL limited to NT SERVICE\\AlberaApprovalAuthority, SYSTEM and Administrators (see docs/architecture/approval-authority.md)");
                 return ExitCodes.SigningKeyUnprotected;
             }
-            using RsaPresenceVerifier presence = RsaPresenceVerifier.TryCreate(config.ApproverPublicKey) ?? throw new InvalidOperationException(); // the config already passed this check
+            ApproverKeySet presence = ApproverKeySet.Open(config, UnixNow, seed: false, out _, out _) ?? throw new InvalidOperationException(); // the service host loaded (and seeded) it once already and refuses to start on a bad file
             using PinnedAttestationKey? attestation = AttestationKeyOf(config);
             AuthorityCore core = new(new PendingStore(UnixNow), signer, presence, IdentityOf(config), UnixNow, policy, Console.WriteLine, attestation);
             return await RunAsync(config, core, stop, onReady);

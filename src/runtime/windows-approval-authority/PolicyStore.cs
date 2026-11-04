@@ -26,7 +26,7 @@ namespace Albera.ApprovalAuthority;
 internal sealed class PolicyStore
 {
     public const string FileName = "policy.json";
-    public const int MaxFileBytes = 2048; // two overrides maps and a 256-byte RSA signature in base64
+    public const int MaxFileBytes = 2048, MaxProofBytes = SignatureTextLimit / 4 * 3; // two overrides maps and the proof that authorized the policy in base64 (a 256-byte RSA signature, or a packed webauthn assertion)
 
     // The only reason words ever printed (SERVICE_POLICY=invalid:<reason>).
     internal static class Reason
@@ -35,7 +35,7 @@ internal sealed class PolicyStore
     }
 
     private const uint MoveReplaceExisting = 0x1, MoveWriteThrough = 0x8;
-    private const int SignatureTextLimit = 512;
+    private const int SignatureTextLimit = 1024; // base64 characters of one proof: a webauthn assertion with a long credential id and an RSA-4096 signature is about 700 bytes
 
     private sealed record Loaded(TierPolicy Policy, TierPolicy? Authorized, byte[]? Presence);
 
@@ -161,6 +161,7 @@ internal sealed class PolicyStore
             byte[]? nextProof = authorizedProof;
             if (next.Loosens(current))
             {
+                if (proof is { Length: > MaxProofBytes }) return AuthorityCodes.RequestInvalid; // a proof this long could not be kept beside the policy
                 PresenceResult presence = proof is null ? PresenceResult.Mismatch : verify(next, proof);
                 if (presence == PresenceResult.Unavailable) return AuthorityCodes.PresenceUnavailable;
                 if (presence != PresenceResult.Verified) return AuthorityCodes.PresenceMismatch;
@@ -196,6 +197,7 @@ internal sealed class PolicyStore
     private bool Persist(TierPolicy next, TierPolicy? signed, byte[]? presence)
     {
         if (signed is null && next.SkippableActions().Count > 0) return false; // never write a file that skips a person without the signature that allows it
+        if (Envelope(next, signed, presence).Length > MaxFileBytes) return false; // never write a file the next start would refuse (it would fault the store)
         string temp = Path.Combine(Path.GetDirectoryName(file)!, $"policy.{Guid.NewGuid():N}.tmp");
         try
         {

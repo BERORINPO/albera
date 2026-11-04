@@ -130,6 +130,30 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
         catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or InvalidOperationException) { return PresenceResult.Unavailable; }
     }
 
+    // The approver key list (approver-webauthn.md). The verifier that holds the registered keys (ApproverKeySet) also changes them; the single pinned key and the test fake do not, so a
+    // build or a test with one of those has no key verbs (request_invalid) and an empty key list.
+    /// <summary>The registered keys' public data, for `keys`.</summary>
+    public IReadOnlyList<ApproverKey> ApproverKeys() => presence is ApproverKeySet keys ? keys.Keys : [];
+
+    public KeyOutcome KeyChallenge(KeyOp op, string keyId) => presence is ApproverKeySet keys ? keys.IssueChallenge(op, keyId) : new(AuthorityCodes.RequestInvalid);
+
+    /// <param name="by">a proof by a registered key over KeyMessages.Add(candidate, challenge)</param>
+    /// <param name="newKey">a proof by the new key over the same message</param>
+    public KeyOutcome KeyAdd(ApproverKey candidate, string challenge, byte[] by, byte[] newKey)
+    {
+        KeyOutcome outcome = presence is ApproverKeySet keys ? keys.Add(candidate, challenge, by, newKey) : new(AuthorityCodes.RequestInvalid);
+        if (outcome.Code is null) audit?.Invoke($"APPROVER_KEY_ADDED={candidate.KeyId}");
+        return outcome;
+    }
+
+    /// <param name="by">a proof by any registered key over KeyMessages.Remove(key, challenge)</param>
+    public KeyOutcome KeyRemove(string keyId, string challenge, byte[] by)
+    {
+        KeyOutcome outcome = presence is ApproverKeySet keys ? keys.Remove(keyId, challenge, by) : new(AuthorityCodes.RequestInvalid);
+        if (outcome.Code is null) audit?.Invoke($"APPROVER_KEY_REMOVED={keyId}");
+        return outcome;
+    }
+
     public Outcome Status(string approvalId)
     {
         PendingEntry? entry = store.Get(approvalId);
@@ -153,12 +177,15 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
     private (PendingEntry Next, string? Code) Approve(PendingEntry entry, long now, byte[] proof)
     {
         PresenceResult presenceResult;
-        try { presenceResult = presence.Verify(PresenceMessage.Build(entry.ApprovalId, entry.ActionDigest, entry.Challenge), proof); }
+        string? signerKeyId = null;
+        try { presenceResult = presence.Verify(PresenceMessage.Build(entry.ApprovalId, entry.ActionDigest, entry.Challenge), proof, out signerKeyId); }
         catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or InvalidOperationException) { presenceResult = PresenceResult.Unavailable; }
         if (presenceResult == PresenceResult.Unavailable) return (Finish(entry, EntryState.PresenceUnavailable, now), AuthorityCodes.PresenceUnavailable);
         if (presenceResult != PresenceResult.Verified) return (Finish(entry, EntryState.PresenceMismatch, now), AuthorityCodes.PresenceMismatch);
 
-        byte[] receipt = ReceiptBuilder.Build(entry, identity, signer.Issuer, Ids.NewUuid(), Ids.NewBits128(), now);
+        // The receipt names the key that signed. A verifier that has no key ids (the single pinned key) leaves the approverKeyId the config names.
+        AuthorityIdentity signedBy = signerKeyId is null ? identity : identity with { ApproverKeyId = signerKeyId };
+        byte[] receipt = ReceiptBuilder.Build(entry, signedBy, signer.Issuer, Ids.NewUuid(), Ids.NewBits128(), now);
         if (!ReceiptBuilder.Check(receipt, entry.Request, identity, signer.Issuer, now).Ok) return (Finish(entry, EntryState.Failed, now), AuthorityCodes.AuthorityUnavailable);
         byte[] signature;
         try { signature = signer.Sign(receipt); }
