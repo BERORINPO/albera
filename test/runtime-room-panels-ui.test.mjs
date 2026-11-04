@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 import * as api from '../src/runtime/room-ui/api.mjs';
 import { JOBS_POLL_MS, TASK_MAX_BYTES, codeOf, jobLine, requestFlow, taskBytes, taskProblem } from '../src/runtime/room-ui/jobs.mjs';
-import { CREDENTIAL_KINDS, clearClipboard, isAcceptableValue, saveFlow, savedLine } from '../src/runtime/room-ui/settings.mjs';
+import { CREDENTIAL_KINDS, clearClipboard, isAcceptableValue, saveFlow, savedLine, tidyValue } from '../src/runtime/room-ui/settings.mjs';
 import panelWords from '../src/runtime/room-ui/words-panels.mjs';
 import { makeWords } from '../src/runtime/room-ui/i18n.mjs';
 import { startRouteHost } from './helpers/room-route-host.mjs';
@@ -93,8 +93,31 @@ test('saveFlow: the clipboard is emptied only after the host stored the value, a
   assert.ok(!order.includes('clipboard'), 'a value that was not stored leaves the clipboard alone');
 
   order.length = 0;
-  for (const value of ['', 'has space', undefined]) assert.notEqual((await saveFlow({ name: 'claude-oauth-token', value, save: save(stored), clipboard })).code, 'saved');
+  for (const value of ['', 'has space', undefined, ' \r\n \n']) assert.notEqual((await saveFlow({ name: 'claude-oauth-token', value, save: save(stored), clipboard })).code, 'saved');
   assert.deepEqual(order, [], 'a value the host would refuse is not sent');
+  assert.equal((await saveFlow({ name: 'claude-oauth-token', value: ' \r\n ', save: save(stored), clipboard })).code, 'empty', 'only spaces and line breaks is no value');
+});
+
+test('saveFlow sends the token without what a terminal copy adds (owner run 2026-11-04: an indented token was refused while the field emptied)', async () => {
+  const sent = [];
+  const save = async (name, value) => { sent.push(value); return { ok: true, status: 200, body: { ok: true, credential: { present: true } } }; };
+  const half = TOKEN.slice(0, 14);
+  for (const copied of [`  ${TOKEN}`, `${TOKEN}\r\n`, `\t${TOKEN} `, `${half}\r\n${TOKEN.slice(14)}`, `  ${half}  \n  ${TOKEN.slice(14)}\n`]) {
+    assert.equal((await saveFlow({ name: 'claude-oauth-token', value: copied, save, clipboard: undefined })).code, 'saved', JSON.stringify(copied.replace(TOKEN.slice(4), '…')));
+  }
+  assert.deepEqual(sent, Array(5).fill(TOKEN), 'the host gets the token itself, every time');
+  for (const inside of [`${half} ${TOKEN.slice(14)}`, `${half}　${TOKEN.slice(14)}`]) assert.equal(tidyValue(inside), inside, 'a space inside a line is kept, so the host refuses it');
+  assert.equal(tidyValue(undefined), undefined);
+});
+
+test('settings.mjs source: a refused save is marked and announced, and the saved line is read again either way', () => {
+  const text = source('settings.mjs');
+  assert.match(text, /note\.classList\.toggle\('bad', !saved\)/);
+  assert.match(text, /setAttribute\('role', saved \? 'status' : 'alert'\)/);
+  for (const key of ['panel.settings.invalid_value', 'panel.settings.empty', 'panel.settings.failed']) {
+    assert.match(panelWords.ja[key], /^保存されていません/u, key);
+    assert.match(panelWords.en[key], /^Not saved/u, key);
+  }
 });
 
 test('settings.mjs source: the field is a password field, is emptied before the call, and nothing is put in an address, storage or the log', () => {
