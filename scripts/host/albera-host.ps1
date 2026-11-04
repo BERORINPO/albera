@@ -25,6 +25,14 @@
 #                                                             stops the services, runs the uninstall (the Broker's SID leaves Hyper-V Administrators first), installs the new layout with the carried-over values, and deletes the
 #                                                             account and its profile. -TrustLocalBuilds says that you accept the tree hash of the builds in this working tree instead of one typed from a CI log (the
 #                                                             trade the contract makes for this one run). Lost by design: the Control Plane and Broker journals and the Authority's signing key (a new one is made).
+#   albera-host.ps1 -Mode install ... -ApproverKeyFile <record.json>[,<record.json>...] -ApproverSid <S-1-5-21-...>
+#                                                             the same install, with the approver key(s) taken from key record files (1 to 16; WebAuthn keys, docs/architecture/approver-webauthn.md) instead of
+#                                                             -ApproverKeyId and -ApproverPublicKey. The Authority config then holds `approverKeys` and not the legacy pair. -Mode migrate takes the same option
+#                                                             (the SID is still carried over). Several files: one value with commas (PowerShell started with -File passes a comma list as one string, and a repeated parameter is an error).
+#   albera-host.ps1 -Mode set-approver -ApproverKeyFile <record.json>[,<record.json>...] [-ExpectedApproverKeyId <id>[,<id>...]]
+#                                                             REPLACES the approver key list of a complete install (elevated): reads and fully checks the record file(s), writes `approverKeys` into the Authority
+#                                                             config (the legacy pair is removed, never both), deletes authority\approver-keys.json, restarts AlberaApprovalAuthority and records the change in the manifest.
+#                                                             The approver SID stays as it is. -ExpectedApproverKeyId: the key ids you read off the screen that created the keys; the run is refused unless the files hold exactly those.
 #   albera-host.ps1 -Mode status                              read-only report of what is installed and whether it still matches (exit 1 on any difference)
 #   albera-host.ps1 -Mode uninstall                           remove only what the install manifest says this script created (elevated)
 #
@@ -48,11 +56,15 @@
 # -VmId (a fixed VM GUID instead of the lookup), -NodeSource and -ClaudeSource (a node.exe / claude.exe from elsewhere) are for the disposable lab VM only and are refused unless the environment variable ALBERA_LAB_VM is 1.
 [CmdletBinding()]
 param(
-  [ValidateSet('plan', 'install', 'uninstall', 'status', 'hashes', 'migrate')][string]$Mode = 'plan',
-  [ValidateSet('install', 'uninstall', 'migrate')][string]$PlanFor = 'install',
+  [ValidateSet('plan', 'install', 'uninstall', 'status', 'hashes', 'migrate', 'set-approver')][string]$Mode = 'plan',
+  [ValidateSet('install', 'uninstall', 'migrate', 'set-approver')][string]$PlanFor = 'install',
   [string]$ApproverKeyId,
   [string]$ApproverPublicKey,
   [string]$ApproverSid,
+  # Key record files (approver-webauthn.md): 1 to 16 paths, comma-separated. Instead of -ApproverKeyId and -ApproverPublicKey (install, migrate), or the whole input of -Mode set-approver.
+  [string[]]$ApproverKeyFile,
+  # The key ids the owner read off the screen that created the keys; the files must hold exactly these (a planted or swapped record file is then refused). Optional, comma-separated.
+  [string[]]$ExpectedApproverKeyId,
   [string]$ExpectedTreeHash,
   [string]$RepoRoot,
   [string]$ProjectId,
@@ -123,8 +135,10 @@ $ProgramFilesDir = [Environment]::GetFolderPath('ProgramFiles')
 $ProgramDataDir = [Environment]::GetFolderPath('CommonApplicationData')
 $ScExe = Join-Path $SystemDirectory 'sc.exe'
 $IcaclsExe = Join-Path $SystemDirectory 'icacls.exe'
-if ($Mode -in @('install', 'uninstall', 'migrate') -and -not (Test-Elevated)) { Stop-Refused "$Mode needs an elevated console (Run as administrator). This script never elevates itself." }
-$installLike = ($Mode -eq 'install') -or ($Mode -eq 'migrate') -or ($Mode -eq 'plan' -and $PlanFor -ne 'uninstall')
+if ($Mode -in @('install', 'uninstall', 'migrate', 'set-approver') -and -not (Test-Elevated)) { Stop-Refused "$Mode needs an elevated console (Run as administrator). This script never elevates itself." }
+$installLike = ($Mode -eq 'install') -or ($Mode -eq 'migrate') -or ($Mode -eq 'plan' -and $PlanFor -in @('install', 'migrate'))
+# set-approver (and its plan) is its own mode: its input is the key record file(s) and nothing else.
+$setApproverLike = ($Mode -eq 'set-approver') -or ($Mode -eq 'plan' -and $PlanFor -eq 'set-approver')
 if ($NodeSource -or $ClaudeSource) {
   if (Test-LabSourceGate $true $env:ALBERA_LAB_VM) { Stop-Refused '-NodeSource and -ClaudeSource are lab-only (disposable VM with ALBERA_LAB_VM=1); on a real PC node.exe comes from C:\Program Files\nodejs and claude.exe from your own profile' 2 }
   if (-not $installLike) { Stop-Refused '-NodeSource and -ClaudeSource only apply to install and migrate (and their plan)' 2 }
@@ -145,6 +159,23 @@ if ($ExpectedTreeHash -and -not (Test-TreeHashValue $ExpectedTreeHash)) { Stop-R
 if ($ApproverKeyId -and -not (Test-HostId $ApproverKeyId)) { Stop-Refused '-ApproverKeyId is not a valid key id' 2 }
 if ($ApproverPublicKey -and -not (Test-Rsa2048Spki $ApproverPublicKey)) { Stop-Refused '-ApproverPublicKey is not a base64 RSA-2048 SubjectPublicKeyInfo' 2 }
 if ($ApproverSid -and -not (Test-AccountSidShape $ApproverSid)) { Stop-Refused '-ApproverSid is not an S-1-5-21-... user SID' 2 }
+# Key record files: PowerShell started with -File hands a comma list over as ONE string (and refuses a parameter given twice), so each value is split at the commas here. A path with a comma in it is refused, not guessed at.
+$ApproverKeyFile = @($ApproverKeyFile | Where-Object { $null -ne $_ } | ForEach-Object { ([string]$_).Split(',') } | ForEach-Object { $_.Trim() })
+$ExpectedApproverKeyId = @($ExpectedApproverKeyId | Where-Object { $null -ne $_ } | ForEach-Object { ([string]$_).Split(',') } | ForEach-Object { $_.Trim() })
+if ($setApproverLike) {
+  if ($ApproverKeyId -or $ApproverPublicKey -or $ApproverSid -or $ExpectedTreeHash) { Stop-Refused 'set-approver takes the key record file(s) (-ApproverKeyFile) and nothing else: the approver SID stays as it is, and no build is involved' 2 }
+  if ($ApproverKeyFile.Count -eq 0) { Stop-Refused 'set-approver needs -ApproverKeyFile <record.json>[,<record.json>...]: the file(s) that AlberaApprover.exe enroll --webauthn wrote' 2 }
+}
+if ($ApproverKeyFile.Count -gt 0) {
+  if (-not ($installLike -or $setApproverLike)) { Stop-Refused '-ApproverKeyFile only applies to install, migrate and set-approver (and their plan)' 2 }
+  if ($ApproverKeyId -or $ApproverPublicKey) { Stop-Refused 'give the approver key as -ApproverKeyFile OR as -ApproverKeyId and -ApproverPublicKey, not both' 2 }
+  if ($ApproverKeyFile.Count -gt $K.MaxApproverKeys) { Stop-Refused ("at most $($K.MaxApproverKeys) key record files can be given (the Authority holds at most $($K.MaxApproverKeys) keys)") 2 }
+  foreach ($keyFilePath in $ApproverKeyFile) { if (-not (Test-PlainAbsolutePath $keyFilePath)) { Stop-Refused '-ApproverKeyFile must be plain absolute paths (C:\dir\file.json: no relative path, no ..; a path with a comma in it cannot be given)' 2 } }
+}
+if ($ExpectedApproverKeyId.Count -gt 0) {
+  if ($ApproverKeyFile.Count -eq 0) { Stop-Refused '-ExpectedApproverKeyId only applies together with -ApproverKeyFile' 2 }
+  foreach ($expectedId in $ExpectedApproverKeyId) { if ($expectedId -cnotmatch '^(webauthn|hello)-[0-9a-f]{16}\z') { Stop-Refused '-ExpectedApproverKeyId must be key ids like webauthn-0123456789abcdef (as AlberaApprover.exe printed them)' 2 } }
+}
 if (-not (Test-HostId $ProjectId) -or -not (Test-HostId $ComputerId) -or $VmName -notmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') { Stop-Refused '-ProjectId, -VmName or -ComputerId is not a valid id' 2 }
 if ($PSVersionTable.PSVersion.Major -ne 5) { Stop-Refused 'Windows PowerShell 5.1 is required' }
 if (-not [Environment]::Is64BitProcess) { Stop-Refused 'a 64-bit PowerShell is required' }
@@ -266,7 +297,7 @@ $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
 # A manifest is read only when C:\ProgramData\Albera and the manifest file are owned by SYSTEM / Administrators, writable by nobody else, and reached through no link; and its content has the
 # shape this script writes (fixed service, user and key names). install / uninstall refuse otherwise; plan / status (no admin rights, so the ACLs cannot be read) ignore it and say so.
 function Initialize-Manifest {
-  $mutating = $Mode -in @('install', 'uninstall', 'migrate')
+  $mutating = $Mode -in @('install', 'uninstall', 'migrate', 'set-approver')
   # Windows PowerShell 5.1's Test-Path throws UnauthorizedAccessException, instead of returning false, for a file in a folder this account cannot read. Once ALBERA is installed that is C:\ProgramData\Albera
   # for every normal user (SYSTEM and Administrators only), so plan and status stopped here with "access denied" (measured 2026-11-04). They ignore a manifest they cannot read, as they ignore an untrusted one.
   try { $present = Test-Path -LiteralPath $L.ManifestPath }
@@ -568,8 +599,67 @@ function Get-SetupExeProblem {
 # ---------------------------------------------------------------------------------------------- install steps: each has a read-only Test (-> done / todo / blocked:<why> / unknown:<why>) and a Do
 # The three approver values: the parameters, or - in -Mode migrate - what the legacy install already holds (the owner does not type them again).
 function Get-ApproverInput {
-  if ($script:LegacyValues) { return [pscustomobject]@{ KeyId = $script:LegacyValues.ApproverKeyId; PublicKey = $script:LegacyValues.ApproverPublicKey; Sid = $script:LegacyValues.ApproverSid } }
+  if ($script:LegacyValues) {
+    # migrate with -ApproverKeyFile: the keys come from the files, only the SID is carried over
+    if ($ApproverKeyFile.Count -gt 0) { return [pscustomobject]@{ KeyId = $null; PublicKey = $null; Sid = $script:LegacyValues.ApproverSid } }
+    return [pscustomobject]@{ KeyId = $script:LegacyValues.ApproverKeyId; PublicKey = $script:LegacyValues.ApproverPublicKey; Sid = $script:LegacyValues.ApproverSid }
+  }
   [pscustomobject]@{ KeyId = $ApproverKeyId; PublicKey = $ApproverPublicKey; Sid = $ApproverSid }
+}
+# ---- approver key record files (-ApproverKeyFile): the files are in the owner's own profile, so an agent in the owner's session can write them; the elevated script reads each one once, through one handle.
+# One file as bytes: a plain absolute path with no link on it, a regular file, opened with nobody else allowed to write while it is read, the handle's final path equal to the path asked for (a link put
+# in place after the check is caught on the thing actually read), at most MaxApproverKeyFileBytes. -> @{ Ok; Reason; Bytes }. The tests do not fake it: they run it on real temp files.
+function Read-ApproverKeyFileBytes([string]$Path) {
+  $fail = { param($why) [pscustomobject]@{ Ok = $false; Reason = $why; Bytes = $null } }
+  if (-not (Test-PlainAbsolutePath $Path)) { return (& $fail 'path_not_plain') }
+  if ((Get-ReparseChain $Path).Count -gt 0) { return (& $fail 'path_reached_through_a_link') }
+  if (-not [System.IO.File]::Exists($Path)) { return (& $fail 'file_not_found') }
+  $stream = $null
+  try {
+    $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    $final = Get-FinalPathOfStream $stream
+    if (-not [string]::Equals($final, [System.IO.Path]::GetFullPath($Path), [System.StringComparison]::OrdinalIgnoreCase)) { return (& $fail 'path_reached_through_a_link') }
+    if ($stream.Length -gt $K.MaxApproverKeyFileBytes) { return (& $fail 'record_too_large') }
+    $bytes = New-Object byte[] ([int]$stream.Length)
+    $count = 0
+    while ($count -lt $bytes.Length) { $n = $stream.Read($bytes, $count, $bytes.Length - $count); if ($n -le 0) { break }; $count += $n }
+    if ($count -ne $bytes.Length) { return (& $fail 'file_unreadable') }
+    [pscustomobject]@{ Ok = $true; Reason = ''; Bytes = $bytes }
+  }
+  catch { return (& $fail ('file_unreadable: ' + $_.Exception.Message)) }
+  finally { if ($stream) { $stream.Dispose() } }
+}
+# All the -ApproverKeyFile files: every record valid, the set valid (1 to 16, no key, credential or public key twice), and - when -ExpectedApproverKeyId was given - exactly those key ids.
+# The answer is kept (the plan and the tests ask several times); -Fresh reads the files again, and the install's approver step does that, so the records written are the ones read last.
+$script:ApproverKeyRead = $null
+function Read-ApproverKeyFiles([switch]$Fresh) {
+  if (-not $Fresh -and $script:ApproverKeyRead) { return $script:ApproverKeyRead }
+  $reasons = New-Object System.Collections.Generic.List[string]
+  $records = New-Object System.Collections.Generic.List[object]
+  foreach ($path in $ApproverKeyFile) {
+    $file = Read-ApproverKeyFileBytes $path
+    if (-not $file.Ok) { $reasons.Add("${path}: $($file.Reason)"); continue }
+    $parsed = Read-ApproverKeyRecordBytes $file.Bytes
+    if ($parsed.Ok) { $records.Add($parsed.Record) } else { $reasons.Add("${path}: $($parsed.Reasons -join ', ')") }
+  }
+  if ($reasons.Count -eq 0) {
+    foreach ($why in (Test-ApproverKeySet $records.ToArray())) { $reasons.Add($why) }
+    if ($ExpectedApproverKeyId.Count -gt 0) {
+      $have = @($records | ForEach-Object { $_.keyId })
+      $missing = @($ExpectedApproverKeyId | Where-Object { $have -cnotcontains $_ }); $extra = @($have | Where-Object { $ExpectedApproverKeyId -cnotcontains $_ })
+      if ($missing.Count -gt 0 -or $extra.Count -gt 0 -or $have.Count -ne $ExpectedApproverKeyId.Count) { $reasons.Add('the key ids in the files (' + ($have -join ', ') + ') are not exactly the ones given with -ExpectedApproverKeyId (' + ($ExpectedApproverKeyId -join ', ') + '); nothing was changed') }
+    }
+  }
+  $script:ApproverKeyRead = [pscustomobject]@{ Ok = ($reasons.Count -eq 0); Reasons = @($reasons); Records = $records.ToArray() }   # ToArray: Windows PowerShell 5.1 fails on @( ) around a List[object]
+  $script:ApproverKeyRead
+}
+# The plan lines about the key files: what will be registered, or why the files are rejected (empty without -ApproverKeyFile).
+function Get-ApproverKeyDetailLines {
+  if ($ApproverKeyFile.Count -eq 0) { return }
+  $read = Read-ApproverKeyFiles
+  if (-not $read.Ok) { 'approver key record file(s) REJECTED: ' + ($read.Reasons -join '; '); return }
+  "approver key(s) to register, read from $($ApproverKeyFile.Count) file(s): $(Get-ApproverKeySummary $read.Records)"
+  'compare these key ids with the ones AlberaApprover.exe printed when it created the keys (or give them as -ExpectedApproverKeyId, and the run is refused unless they are exactly these)'
 }
 function Get-InstallSteps {
   $steps = @(
@@ -586,10 +676,17 @@ function Get-InstallSteps {
         }
         'todo' }
       Do = { Say '    the tree hash is given; the five publish folders exist and hold no links'; if ($SetupRunId) { Set-SetupRunIdFloorValue; Say "    setup run id $SetupRunId (the floor of this PC is at least that now)" } } }
-    [pscustomobject]@{ Id = 'approver'; Title = 'Check the approver values (-ApproverKeyId, -ApproverPublicKey, -ApproverSid, from your own "AlberaApprover.exe enroll --show" in a normal console; migrate carries them over)'
-      Detail = @('the key id must be a valid id; the public key an RSA-2048 SPKI; the SID an S-1-5-21 user SID', 'this script does not run the approver program: it would run elevated')
+    [pscustomobject]@{ Id = 'approver'; Title = 'Check the approver values (-ApproverKeyId, -ApproverPublicKey, -ApproverSid, from your own "AlberaApprover.exe enroll --show" in a normal console; or -ApproverKeyFile and -ApproverSid; migrate carries them over)'
+      Detail = @('the key id must be a valid id; the public key an RSA-2048 SPKI; the SID an S-1-5-21 user SID', 'this script does not run the approver program: it would run elevated',
+        'with -ApproverKeyFile (1 to 16 key record files, approver-webauthn.md) every record is checked against the whole record contract and the Authority config gets approverKeys instead of the legacy pair; the SID is still typed (migrate carries it over)') + @(Get-ApproverKeyDetailLines)
       Test = {
         $in = Get-ApproverInput
+        if ($ApproverKeyFile.Count -gt 0) {
+          if (-not $in.Sid) { return 'blocked:-ApproverSid is required together with -ApproverKeyFile' }
+          $read = Read-ApproverKeyFiles
+          if (-not $read.Ok) { return 'blocked:approver key record rejected: ' + ($read.Reasons -join '; ') }
+          return 'todo'
+        }
         if (-not $in.KeyId -or -not $in.PublicKey -or -not $in.Sid) { return 'blocked:-ApproverKeyId, -ApproverPublicKey and -ApproverSid are all required for install' }
         'todo' }
       Do = { Set-ApproverValues } }
@@ -739,9 +836,18 @@ function Get-InstallSteps {
 
 function Set-ApproverValues {
   $in = Get-ApproverInput
-  $shown = [pscustomobject]@{ approverPublicKey = $in.PublicKey; approverKeyId = $in.KeyId; approverSid = $in.Sid }
   # The Control Plane is a service now: its SID is derived from the name, so it is known (and can be compared with the approver's) before anything exists.
   $cp = Get-DerivedServiceSid $K.ControlPlaneService
+  if ($ApproverKeyFile.Count -gt 0) {
+    $read = Read-ApproverKeyFiles -Fresh   # read again now: these are the records the Authority config is written from
+    if (-not $read.Ok) { Stop-Refused ('approver key record rejected: ' + ($read.Reasons -join '; ')) }
+    $sidReasons = Test-ApproverSidValue $in.Sid $cp
+    if ($sidReasons.Count -gt 0) { Stop-Refused ('approver values rejected: ' + ($sidReasons -join ', ')) }
+    $script:Approver = [pscustomobject]@{ approverSid = $in.Sid; approverKeys = @($read.Records) }
+    Say "    approver SID $($in.Sid); approver key(s) from the record file(s): $(Get-ApproverKeySummary $read.Records)"
+    return
+  }
+  $shown = [pscustomobject]@{ approverPublicKey = $in.PublicKey; approverKeyId = $in.KeyId; approverSid = $in.Sid }
   $reasons = Test-ApproverValues $shown $in.KeyId $cp
   if ($reasons.Count -gt 0) { Stop-Refused ('approver values rejected: ' + ($reasons -join ', ')) }
   $script:Approver = $shown
@@ -1244,7 +1350,9 @@ function Write-HostConfigs {
   Write-OneConfig $L.ControlPlaneConfig $serviceJson (& $writersOf $L.ControlPlaneConfigDir)
   Write-OneConfig $L.ApprovalSettings $settingsJson (& $writersOf $L.ControlPlaneConfigDir)
   $values = $script:Manifest['values']
-  $values['controlPlaneSid'] = $cp; $values['approverSid'] = $script:Approver.approverSid; $values['approverKeyId'] = $script:Approver.approverKeyId
+  $values['controlPlaneSid'] = $cp; $values['approverSid'] = $script:Approver.approverSid
+  if ($null -ne $script:Approver.PSObject.Properties['approverKeys']) { $values['approverKeys'] = ConvertTo-ApproverKeysManifestValue $script:Approver.approverKeys }   # ids and kinds of the key list (the config holds the records)
+  else { $values['approverKeyId'] = $script:Approver.approverKeyId }
   $values['brokerServiceSid'] = $script:Sids.Broker; $values['authorityServiceSid'] = $script:Sids.Authority; Save-Manifest
   Say '    configs written and re-checked; service-check of the Broker and the Authority was NOT run (see the plan); their first service start is the real test'
 }
@@ -1343,6 +1451,8 @@ function Get-StatusLines {
       $text = [System.IO.File]::ReadAllText($pair[1])
       $r = if ($pair[2] -eq 'Broker') { Test-BrokerConfigText $text } else { Test-AuthorityConfigText $text }
       Add-Line $(if ($r.Count -eq 0) { 'ok' } else { 'FAIL' }) ("$($pair[0]): " + $(if ($r.Count -eq 0) { 'shape valid' } else { $r -join ', ' }))
+      # the approver keys the Authority will trust (ids and kinds), compared with the install record
+      if ($pair[2] -eq 'Authority' -and $r.Count -eq 0) { $keysLine = Get-ApproverKeysStatusLine $text $M['values']; Add-Line $keysLine.State $keysLine.Text }
     }
     if ($grantRecorded -and (Test-Path -LiteralPath $L.BrokerConfig)) {
       $rec = $M['created']['hyperVGrant']
@@ -1619,6 +1729,8 @@ function Get-MigratePreflightProblems {
   }
   $node = Get-NodePinProblem; if ($node) { $problems.Add($node) }
   $claude = Get-ClaudePinProblem; if ($claude) { $problems.Add($claude) }
+  # the key record files are judged now too: a bad file found after the uninstall would leave no install at all
+  if ($ApproverKeyFile.Count -gt 0) { $keys = Read-ApproverKeyFiles -Fresh; if (-not $keys.Ok) { $problems.Add('approver key record rejected: ' + ($keys.Reasons -join '; ')) } }
   foreach ($unknown in (Get-LegacyUnknownProblems)) { $problems.Add($unknown) }
   , $problems.ToArray()
 }
@@ -1686,8 +1798,14 @@ function Get-MigrateLeadSteps {
         $why = Import-LegacyInstall; if ($why.Count -gt 0) { throw ('cannot migrate: ' + ($why -join ', ')) }
         Use-LegacyValues
         $v = $script:LegacyValues
-        Say "    carried over (public values; keep this if the run stops half-way, they are what -Mode install needs): -ApproverKeyId $($v.ApproverKeyId) -ApproverSid $($v.ApproverSid) -ProjectId $($v.ProjectId) -VmName $($v.VmName) -ComputerId $($v.ComputerId)$(if ($v.Grant) { " -GrantHyperVToBroker (VM GUID $($v.Grant.VmId))" } else { '' })"
-        Say "    approver public key: $($v.ApproverPublicKey)" } }
+        if ($ApproverKeyFile.Count -gt 0) {
+          Say "    carried over (public values; keep this if the run stops half-way, they are what -Mode install needs): -ApproverSid $($v.ApproverSid) -ProjectId $($v.ProjectId) -VmName $($v.VmName) -ComputerId $($v.ComputerId)$(if ($v.Grant) { " -GrantHyperVToBroker (VM GUID $($v.Grant.VmId))" } else { '' })"
+          Say "    the legacy Windows Hello key $($v.ApproverKeyId) is NOT carried over: the approver keys come from -ApproverKeyFile (put the record file of that key in the list to keep it)"
+        }
+        else {
+          Say "    carried over (public values; keep this if the run stops half-way, they are what -Mode install needs): -ApproverKeyId $($v.ApproverKeyId) -ApproverSid $($v.ApproverSid) -ProjectId $($v.ProjectId) -VmName $($v.VmName) -ComputerId $($v.ComputerId)$(if ($v.Grant) { " -GrantHyperVToBroker (VM GUID $($v.Grant.VmId))" } else { '' })"
+          Say "    approver public key: $($v.ApproverPublicKey)"
+        } } }
     [pscustomobject]@{ Id = 'preflight'; Title = 'Check, before anything is removed, that the new install can be made: the five builds and the tree hash, node.exe, claude.exe, and that the account that says yes to UAC is the approver'
       Detail = @('with -TrustLocalBuilds the tree hash is the hash of the builds in this working tree (it proves nothing about who built them); with -ExpectedTreeHash it is the one you typed from the CI log')
       Test = { if (-not $script:LegacyValues) { return 'unknown:the legacy install has not been read yet' }; $p = Get-MigratePreflightProblems; if ($p.Count -gt 0) { 'blocked:' + ($p -join '; ') } else { 'todo' } }
@@ -1712,10 +1830,240 @@ function Show-MigratePlan {
   Show-Plan (@(Get-MigrateLeadSteps) + @(Get-UninstallSteps) + $install) 'migrate'
 }
 
+# ---------------------------------------------------------------------------------------------- set-approver (-Mode set-approver; approver-webauthn.md, "Keys")
+# REPLACES the approver key list of a COMPLETE install with the keys in the -ApproverKeyFile record file(s). The steps, in this order:
+#   check   the install record is trusted and complete (service layout); the Authority folder and config are trusted and are what install writes; the key store is absent or a plain file; the service is the one install made
+#   keys    read and check every record file (Read-ApproverKeyFiles); show the key ids and kinds that will be registered, and what they replace
+#   stop    stop AlberaApprovalAuthority if it runs (while it runs it may rewrite its key store, which would undo the next two steps)
+#   config  write approverKeys into the Authority config through the trusted write path (Write-OneConfig); the legacy pair goes, never both; every other field, the approver SID too, stays as it is
+#   store   delete authority\approver-keys.json - that one fixed file, only if it is a plain file - so the next start seeds the Authority's key store from the config
+#   start   start the service again if it ran before; if it does not stay up the old config goes back (the one place this script's mirror of the Authority's config rules is tested by the real thing)
+#   record  write the list (ids and kinds) into the install record
+# A run that finds everything in place (config and record already hold exactly this list) changes nothing and does not restart anything.
+function New-SetApproverState { [pscustomobject]@{ Records = $null; OldConfigText = $null; Stopped = $null; ConfigWritten = $false } }
+$script:SetApprover = New-SetApproverState
+# The writers an Authority-folder file may have: SYSTEM, Administrators and the Authority's own service SID (the plan gives it Modify there, for policy.json and the key store).
+function Get-AuthorityDirWriters {
+  if (-not $script:Sids) { Resolve-HostSids }
+  Get-PlannedWriters (Get-AclPlan $L $script:Sids | Where-Object { $_.Path -ceq $L.AuthorityDir } | Select-Object -First 1)
+}
+# The Authority config as it is now, judged: @{ Ok; Reason; Text; State }. It has to be a config THIS script wrote: a trusted file of the valid shape (legacy pair or approverKeys), whose fields outside the approver
+# keys are what install writes for this PC, and whose approver SID is the one in the install record. State = Get-AuthorityConfigApproverKeys.
+function Read-AuthorityConfigState {
+  $fail = { param($why) [pscustomobject]@{ Ok = $false; Reason = $why; Text = $null; State = $null } }
+  if (-not [System.IO.File]::Exists($L.AuthorityConfig)) { return (& $fail "the Authority config $($L.AuthorityConfig) is missing") }
+  $trust = Get-PathTrustReasons $L.AuthorityConfig (Get-AuthorityDirWriters) $false
+  if ($trust.Count -gt 0) { return (& $fail (Format-TrustRefusal $L.AuthorityConfig $trust)) }
+  $text = [System.IO.File]::ReadAllText($L.AuthorityConfig)
+  $state = Get-AuthorityConfigApproverKeys $text
+  if ($state.Reasons.Count -gt 0) { return (& $fail "the Authority config is not valid ($($state.Reasons -join ', ')); set-approver changes only a config that install wrote") }
+  $expected = Get-AuthorityConfig $script:Sids.ControlPlane $state.Approver
+  $actual = $text | ConvertFrom-Json
+  $differs = @(@('pipeRoot', 'controlPlaneSid', 'signingKeyName', 'signingKeyProvider', 'kid', 'audience', 'policyVersion') | Where-Object { $actual.$_ -cne $expected[$_] })
+  $recordedSid = if ($script:Manifest -and $script:Manifest['values'].ContainsKey('approverSid')) { $script:Manifest['values']['approverSid'] } else { $null }
+  if ($recordedSid -and $actual.approverSid -cne $recordedSid) { $differs += 'approverSid' }
+  if ($differs.Count -gt 0) { return (& $fail "the Authority config differs from what install writes in: $($differs -join ', '); set-approver does not change a config it did not write") }
+  [pscustomobject]@{ Ok = $true; Reason = ''; Text = $text; State = $state }
+}
+# The key store file the Authority keeps next to its config. $null when it is absent or a plain file (the only thing set-approver deletes), otherwise why it is neither.
+function Get-ApproverKeyStoreProblem {
+  $path = $L.AuthorityKeyStore
+  if ([System.IO.Directory]::Exists($path)) { return "$path is a folder (or a link to one), not the key store file; set-approver deletes nothing but that one plain file" }
+  if (-not [System.IO.File]::Exists($path)) { return $null }
+  if ((Get-ReparseChain $path).Count -gt 0) { return "$path is a link or is reached through one; set-approver will not delete it" }
+  $null
+}
+# Deletes authority\approver-keys.json: that fixed path only (it is not a parameter), and only when it is a plain file, judged again right here. $true when a file was deleted.
+function Remove-ApproverKeyStore {
+  $problem = Get-ApproverKeyStoreProblem
+  if ($problem) { throw $problem }
+  $path = $L.AuthorityKeyStore
+  if (-not [System.IO.File]::Exists($path)) { return $false }
+  [System.IO.File]::Delete($path)
+  if ([System.IO.File]::Exists($path)) { throw "$path is still there after the delete" }
+  $true
+}
+# Everything set-approver needs to be true before it changes anything: $null when all holds, otherwise 'blocked:<why>' (or 'unknown:<why>' where a non-admin cannot tell).
+function Get-SetApproverInstallProblem {
+  if (-not $script:Manifest) {
+    if ($script:ManifestNote) { return 'unknown:' + $script:ManifestNote }
+    return 'blocked:there is no install manifest, so there is no install whose approver keys could be changed (set-approver changes an install this script made)'
+  }
+  if (Test-LegacyLayout) { return 'blocked:this install is from the first layout (the local account albera-cp); run -Mode migrate first' }
+  if ($script:Manifest['state'] -cne 'complete') { return "blocked:the install is not complete (state $($script:Manifest['state'])); finish it with -Mode install first" }
+  if (-not (Test-ManifestHas 'services') -or @($script:Manifest['created']['services']) -cnotcontains $K.AuthorityService) { return "blocked:the install record does not list the service $($K.AuthorityService)" }
+  try { Resolve-HostSids } catch { return 'blocked:' + $_.Exception.Message }
+  $folder = Get-PathTrustReasons $L.AuthorityDir (Get-AuthorityDirWriters) $true
+  if ($folder.Count -gt 0) { return 'blocked:' + (Format-TrustRefusal $L.AuthorityDir $folder) }
+  $config = Read-AuthorityConfigState
+  if (-not $config.Ok) { return 'blocked:' + $config.Reason }
+  $store = Get-ApproverKeyStoreProblem
+  if ($store) { return 'blocked:' + $store }
+  $facts = Get-ServiceFactsFor $K.AuthorityService
+  if (-not $facts.Exists) { return "blocked:the service $($K.AuthorityService) does not exist" }
+  if ($facts.PathName -cne (Get-ServiceCommandLine $L.AuthorityExe $L.AuthorityConfig)) { return "blocked:the service $($K.AuthorityService) runs a different command line than install wrote; it is left alone" }
+  $null
+}
+function Test-SetApproverRecordSame($Records) {
+  if (-not $script:Manifest -or -not $script:Manifest['values'].ContainsKey('approverKeys')) { return $false }
+  $have = @($script:Manifest['values']['approverKeys'] | ForEach-Object { "$($_['keyId'])|$($_['kind'])" })
+  $want = @($Records | ForEach-Object { "$($_.keyId)|$($_.kind)" })
+  ($have -join ',') -ceq ($want -join ',')
+}
+# True when the config already holds exactly the keys of the files (in this order, as approverKeys) AND the install record says so: the whole change is in place and a run does nothing.
+function Test-SetApproverAlreadySet {
+  try {
+    $read = Read-ApproverKeyFiles; if (-not $read.Ok) { return $false }
+    $current = Read-AuthorityConfigState; if (-not $current.Ok -or $current.State.Legacy) { return $false }
+    if (-not (Test-ApproverKeyListsEqual $current.State.Approver.approverKeys $read.Records)) { return $false }
+    Test-SetApproverRecordSame $read.Records
+  }
+  catch { $false }
+}
+function Stop-AuthorityService {
+  Invoke-Sc "stop $($K.AuthorityService)" | Out-Null
+  if (-not (Wait-ServiceState $K.AuthorityService @('Stopped') 30)) { throw "$($K.AuthorityService) did not stop within 30 seconds; nothing was changed" }
+}
+# $true when the service came up and was still up a few seconds later (a config the Authority refuses ends the process at once, with its exit code).
+function Start-AuthorityService {
+  try {
+    Invoke-Sc "start $($K.AuthorityService)" | Out-Null
+    if (-not (Wait-ServiceState $K.AuthorityService @('Running') 30)) { return $false }
+    Start-Sleep -Seconds 3
+    return ((Get-ServiceFactsFor $K.AuthorityService).State -ceq 'Running')
+  }
+  catch { Say "    starting $($K.AuthorityService) said: $($_.Exception.Message)"; return $false }
+}
+function Show-SetApproverKeys {
+  $read = Read-ApproverKeyFiles -Fresh
+  if (-not $read.Ok) { throw ('approver key record rejected: ' + ($read.Reasons -join '; ')) }
+  $script:SetApprover.Records = @($read.Records)
+  $current = Read-AuthorityConfigState
+  Say '    the Authority will trust these approver keys, and no others:'
+  foreach ($r in $read.Records) { Say "      $($r.keyId)   kind $($r.kind)" }
+  if ($current.Ok) {
+    $now = @($current.State.Keys)
+    Say "    it trusts now: $((@($now) | ForEach-Object { "$($_.KeyId) ($($_.Kind))" }) -join ', ')"
+    $dropped = @($now | Where-Object { $newId = $_.KeyId; -not (@($read.Records | Where-Object { $_.keyId -ceq $newId }).Count -gt 0) })
+    if ($dropped.Count -gt 0) { Say "    removed by this change: $((@($dropped) | ForEach-Object { "$($_.KeyId) ($($_.Kind))" }) -join ', ')" }
+  }
+  if ($ExpectedApproverKeyId.Count -gt 0) { Say '    the key ids equal -ExpectedApproverKeyId' }
+  else { Say '    compare these key ids with the ones AlberaApprover.exe printed when it created the keys (-ExpectedApproverKeyId makes the run refuse unless the files hold exactly the ids you give)' }
+}
+# Writes the new config. The old text is kept in memory first: it is what goes back if the Authority does not start with the new one.
+function Write-SetApproverConfig {
+  $state = $script:SetApprover
+  $current = Read-AuthorityConfigState
+  if (-not $current.Ok) { throw $current.Reason }
+  $approver = [pscustomobject]@{ approverSid = $current.State.Approver.approverSid; approverKeys = @($state.Records) }
+  $json = ConvertTo-HostJson (Get-AuthorityConfig $script:Sids.ControlPlane $approver)
+  $bad = Test-AuthorityConfigText $json
+  if ($bad.Count -gt 0) { throw "the new Authority config failed this script's own check ($($bad -join ', ')); nothing was written" }
+  $state.OldConfigText = $current.Text
+  $state.ConfigWritten = $true   # set BEFORE the write: a write that fails half-way (after the text, before the owner and trust read-back) must be undone too
+  Write-OneConfig $L.AuthorityConfig $json (Get-AuthorityDirWriters)
+  Say "    config written: $(@($state.Records).Count) approver key(s), no legacy pair; the approver SID and every other field are as they were"
+}
+# Puts the old Authority config back (when this run changed it), clears the key store the Authority may have made from the new one, and starts the service again if this run had stopped it.
+function Undo-SetApprover([string]$Why) {
+  $state = $script:SetApprover
+  Say "    $Why"
+  if ($state.ConfigWritten) {
+    Say '    putting the old Authority config back'
+    try { if ((Get-ServiceFactsFor $K.AuthorityService).State -cne 'Stopped') { Stop-AuthorityService } } catch { Say "    stopping the service said: $($_.Exception.Message)" }
+    try { Write-OneConfig $L.AuthorityConfig $state.OldConfigText (Get-AuthorityDirWriters); $state.ConfigWritten = $false }
+    catch { Say "    the old Authority config could NOT be put back ($($_.Exception.Message)); the config now holds the new key list. Check it with -Mode status; the way back is -Mode uninstall and install" }
+    try { [void](Remove-ApproverKeyStore) } catch { Say "    deleting the key store said: $($_.Exception.Message)" }
+  }
+  if ($state.Stopped) {
+    $state.Stopped = $false   # this run has now done what it can about the service; nothing else tries again
+    if (Start-AuthorityService) { Say "    $($K.AuthorityService) is running again" } else { Say "    $($K.AuthorityService) does NOT start; start it by hand (Start-Service $($K.AuthorityService)) and read -Mode status" }
+  }
+}
+function Set-ApproverKeysRecord {
+  $values = $script:Manifest['values']
+  $values['approverKeys'] = ConvertTo-ApproverKeysManifestValue $script:SetApprover.Records
+  [void]$values.Remove('approverKeyId')   # the legacy pair is gone from the config, so its id leaves the record too
+  $values['approverKeysSetAt'] = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+  Save-Manifest
+  Say "    install record updated: approverKeys $(Get-ApproverKeySummary $script:SetApprover.Records)"
+}
+function Get-SetApproverSteps {
+  @(
+    [pscustomobject]@{ Id = 'check'; Title = "Check the install: the record is trusted and complete (service layout), the Authority folder and config are trusted and are what install writes, the key store is absent or a plain file, $($K.AuthorityService) is the service install made"
+      Detail = @($L.AuthorityConfig, "$($L.AuthorityKeyStore)  (written by the Authority only)", 'the approver SID stays as it is; nothing here is changed yet')
+      Test = { $problem = Get-SetApproverInstallProblem; if ($problem) { $problem } else { 'todo' } }
+      Do = { $problem = Get-SetApproverInstallProblem; if ($problem) { throw ($problem -replace '^(blocked|unknown):', '') }; Say '    the install is complete and trusted; the Authority config is the one install wrote' } }
+    [pscustomobject]@{ Id = 'keys'; Title = 'Read the key record file(s) (-ApproverKeyFile), check every rule of the key record contract, and show the key ids and kinds that will be registered'
+      Detail = @('one canonical record per file; keyId = webauthn- or hello- plus the first 8 bytes of SHA-256 over the SPKI; ES256 with a P-256 key or RS256 with RSA (webauthn: 2048 to 4096 bits, hello-rsa: 2048); credentialId 1 to 1023 bytes; 1 to 16 keys, none twice; no link on the path') + @(Get-ApproverKeyDetailLines)
+      Test = { $read = Read-ApproverKeyFiles; if ($read.Ok) { 'todo' } else { 'blocked:approver key record rejected: ' + ($read.Reasons -join '; ') } }
+      Do = { Show-SetApproverKeys } }
+    [pscustomobject]@{ Id = 'stop'; Title = "Stop $($K.AuthorityService) if it is running (while it runs it may rewrite its key store)"
+      Detail = @('a service that is not running is left stopped, and is not started at the end', 'approvals that are waiting in the Authority at this moment are lost by the restart')
+      Test = { if (Test-SetApproverAlreadySet) { return 'done' }; if ((Get-ServiceFactsFor $K.AuthorityService).State -ceq 'Stopped') { 'done' } else { 'todo' } }
+      Do = { Stop-AuthorityService; $script:SetApprover.Stopped = $true; Say "    $($K.AuthorityService) stopped" } }
+    [pscustomobject]@{ Id = 'config'; Title = 'Write approverKeys into the Authority config; the legacy pair approverKeyId + approverPublicKey is removed (never both)'
+      Detail = @($L.AuthorityConfig, 'an existing file must pass the trust checks and is overwritten; every other field, the approver SID included, stays as it is')
+      Test = {
+        $read = Read-ApproverKeyFiles; $current = Read-AuthorityConfigState
+        if ($read.Ok -and $current.Ok -and -not $current.State.Legacy -and (Test-ApproverKeyListsEqual $current.State.Approver.approverKeys $read.Records)) { 'done' } else { 'todo' } }
+      Do = { Write-SetApproverConfig } }
+    [pscustomobject]@{ Id = 'store'; Title = "Delete $($L.AuthorityKeyStore) (that one file, only if it is a plain file), so the next start makes the Authority's key store from the config"
+      Detail = @('keys added later with `keys add` live only in that file: they are gone with it, and the list in the config is the whole list again', 'nothing else in the folder is touched')
+      Test = { if (-not [System.IO.File]::Exists($L.AuthorityKeyStore) -and -not [System.IO.Directory]::Exists($L.AuthorityKeyStore)) { return 'done' }; if (Test-SetApproverAlreadySet) { return 'done' }; 'todo' }
+      Do = {
+        try { $deleted = Remove-ApproverKeyStore }
+        catch {
+          $why = $_.Exception.Message
+          Undo-SetApprover "the key store could not be deleted ($why)"
+          throw "the key store could not be deleted ($why); the old Authority config was put back and nothing is recorded"
+        }
+        if ($deleted) { Say "    deleted $($L.AuthorityKeyStore)" } else { Say '    there was no key store file' } } }
+    [pscustomobject]@{ Id = 'start'; Title = "Start $($K.AuthorityService) again if it was running, and check that it stays up with the new key list"
+      Detail = @('if it does not stay up, the old config is put back and the service is started again; nothing is recorded', 'approvals that were waiting are lost by the restart')
+      Test = {
+        if (Test-SetApproverAlreadySet) { return 'done' }
+        $stopped = $script:SetApprover.Stopped
+        if ($null -eq $stopped) { $stopped = ((Get-ServiceFactsFor $K.AuthorityService).State -cne 'Stopped') }   # a plan: is it running now?
+        if ($stopped) { 'todo' } else { 'done' } }
+      Do = {
+        if (Start-AuthorityService) { Say "    $($K.AuthorityService) is running with the new key list" }
+        else {
+          $wasChanged = $script:SetApprover.ConfigWritten   # false when an earlier, cut-off run had already written this config: there is no "old" one to put back
+          Undo-SetApprover "$($K.AuthorityService) did not stay up with the new key list"
+          $cause = 'Likely cause: the Authority build installed here does not read approverKeys yet (it needs the build that has the key list).'
+          if ($wasChanged) { throw "$($K.AuthorityService) did not start with the new approver key list, so the OLD config is back and nothing is recorded. If the service is running again, the old keys are in force. $cause" }
+          throw "$($K.AuthorityService) did not start with the config it already had (an earlier run wrote the new key list), and nothing is recorded. $cause"
+        } } }
+    [pscustomobject]@{ Id = 'record'; Title = 'Record the new key list (ids and kinds) in the install record'
+      Detail = @('values.approverKeys replaces values.approverKeyId; values.approverKeysSetAt gets the time (UTC)')
+      Test = { $read = Read-ApproverKeyFiles; if ($read.Ok -and (Test-SetApproverRecordSame $read.Records)) { 'done' } else { 'todo' } }
+      Do = { Set-ApproverKeysRecord } }
+  )
+}
+function Invoke-SetApprover {
+  $script:SetApprover = New-SetApproverState
+  $already = Test-SetApproverAlreadySet
+  try { [void](Invoke-InstallSteps (Get-SetApproverSteps)) }
+  catch {
+    # A step failed. If this run had stopped the service or written the config, leave the install as it was found (the steps that know their own failure have done this already and cleared the flags).
+    $state = $script:SetApprover
+    if ($state.ConfigWritten -or $state.Stopped) { Undo-SetApprover "set-approver failed ($($_.Exception.Message))" }
+    throw
+  }
+  Say ''
+  if ($already) { Say 'The Authority already trusts exactly these approver keys, and the install record says so: nothing was changed, nothing was restarted.'; return 0 }
+  Say "Approver keys set: $(@($script:SetApprover.Records).Count) key(s), $(Get-ApproverKeySummary $script:SetApprover.Records). The approver SID is unchanged."
+  if ($script:SetApprover.Stopped) { Say "$($K.AuthorityService) was restarted; approvals that were waiting in it are gone (ask for them again)." }
+  else { Say "$($K.AuthorityService) was not running, so it was not started. Start it (Start-Service $($K.AuthorityService)) when you are ready; its first start makes the key store from this config." }
+  Say 'Check it with -Mode status (the line "Authority approver keys" lists the ids and kinds), then try an approval.'
+  0
+}
+
 # ---------------------------------------------------------------------------------------------- run
 function Show-Plan([object[]]$Steps, [string]$Title) {
   Say "ALBERA host $Title - PLAN ONLY. Nothing is changed by this mode, and it needs no admin rights."
-  Say "Computer: $([Environment]::MachineName)   elevated: $(if (Test-Elevated) { 'yes' } else { 'no (install and uninstall will refuse)' })   repo: $RepoRoot"
+  Say "Computer: $([Environment]::MachineName)   elevated: $(if (Test-Elevated) { 'yes' } else { 'no (install, uninstall, migrate and set-approver will refuse)' })   repo: $RepoRoot"
   Say "Install folder: $($L.InstallRoot)   data folder: $($L.DataRoot)   manifest: $(if ($script:Manifest) { "present (state $($script:Manifest['state']))" } elseif ($script:ManifestNote) { 'present but ignored (see below)' } else { 'none' })"
   if ($script:ManifestNote) { Say "NOTE: $($script:ManifestNote)" }
   $n = 0
@@ -1801,7 +2149,7 @@ function Invoke-Migrate {
 }
 
 try {
-  if ($Mode -in @('install', 'uninstall', 'migrate')) { Get-ScriptFileHashes }
+  if ($Mode -in @('install', 'uninstall', 'migrate', 'set-approver')) { Get-ScriptFileHashes }
   if ($Mode -ne 'hashes') { Initialize-Manifest }
   switch ($Mode) {
     'hashes' { Show-Hashes; exit 0 }
@@ -1809,6 +2157,7 @@ try {
     'plan' {
       if ($PlanFor -eq 'uninstall') { Show-Plan (Get-UninstallSteps) 'uninstall' }
       elseif ($PlanFor -eq 'migrate') { Show-MigratePlan }
+      elseif ($PlanFor -eq 'set-approver') { $script:SetApprover = New-SetApproverState; Show-Plan (Get-SetApproverSteps) 'set-approver' }
       else { Show-Plan (Get-InstallSteps) 'install' }
       exit 0
     }
@@ -1826,6 +2175,7 @@ try {
       exit 0
     }
     'migrate' { exit (Invoke-Migrate) }
+    'set-approver' { exit (Invoke-SetApprover) }
   }
 }
 catch {

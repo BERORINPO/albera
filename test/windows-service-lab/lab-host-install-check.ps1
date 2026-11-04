@@ -15,6 +15,9 @@
 # the Broker is sidtype UNRESTRICTED and the Authority RESTRICTED, both keep SeChangeNotifyPrivilege only, the Broker config holds the one `computers` entry, the Control Plane settings hold the `desktop` block (helper path + SHA-256, written by install; the default pass must leave it out), and the install record names the grant.
 # The VM's GUID comes in through the lab-only -VmId (a fixed throw-away GUID: this guest has no VM of that name, so the name-to-GUID lookup is NOT exercised here and the evidence says so).
 # The pass is BLOCKED, not passed, when the guest has no Hyper-V Administrators group or when -KeepInstalled left the default install in place; a FAIL in it fails the whole check.
+# Between the default install and its uninstall it also runs `-Mode set-approver` (approver-webauthn.md, phase 4) with a throw-away WebAuthn key record while the Authority RUNS, and checks, independently of the installer:
+# the service restarted in a new process, approverKeys and no legacy pair in the config with the same approver SID, the key store made again from the config (this needs the Authority build that reads approverKeys), the install record, the status
+# line, a second run that restarts nothing, and a non-canonical record file refused with the config untouched. WITHOUT that Authority build the step reports FAIL (the installer puts the old config back: exit 1) and says so.
 # Refuses to run unless ALBERA_LAB_VM=1 and the two Albera folders do not exist yet. NOT executed yet (the lab VM run is the lead's): expect first-run fixes.
 param(
   [Parameter(Mandatory = $true)][string]$HostScriptDir,
@@ -136,6 +139,69 @@ if (Get-CimInstance Win32_Service -Filter "Name='AlberaControlPlane'") {
 else { $cpChecks.Add((New-CpCheck 'service_exists' $false 'AlberaControlPlane is not registered after install')) }
 $evidence.controlPlane = [ordered]@{ checks = $cpChecks.ToArray(); status = $(if (@($cpChecks | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { 'FAIL' } else { 'PASS' }) }
 $evidence.afterInstall = Get-Remnants
+
+# ---- set-approver (approver-webauthn.md, phase 4): a throw-away WebAuthn key record goes into the Authority of this install while the service RUNS. Needs the Authority build that reads approverKeys (phase 2): with an older
+# one the installer's own safety net fires (the old config goes back, exit 1) and this step reports FAIL with that output. Everything is read back here with the tools Windows ships, not through the installer.
+function Add-SetApproverCheck($List, [string]$Id, [bool]$Ok, [string]$Observed) { $List.Add([ordered]@{ id = $Id; status = $(if ($Ok) { 'PASS' } else { 'FAIL' }); observed = $Observed }) }
+function Get-AuthorityServiceFacts { $s = Get-CimInstance Win32_Service -Filter "Name='AlberaApprovalAuthority'"; [ordered]@{ state = $s.State; processId = [int]$s.ProcessId } }
+$setApprover = [ordered]@{ status = 'BLOCKED'; reason = ''; checks = @() }
+if (-not (Get-CimInstance Win32_Service -Filter "Name='AlberaApprovalAuthority'")) { $setApprover.reason = 'the default install has no Authority service' }
+elseif ($install.Exit -ne 0) { $setApprover.reason = 'the default install failed, there is nothing to change' }
+else {
+  $setChecks = New-Object 'System.Collections.Generic.List[object]'
+  try {
+    # the key record file, as `AlberaApprover.exe enroll --webauthn` would write it (canonical bytes), in the hook's own folder (a plain path, no link)
+    $labKeyDir = Join-Path $PSScriptRoot 'approver-key-records'
+    New-Item -ItemType Directory -Force -Path $labKeyDir | Out-Null
+    $labEcc = New-Object System.Security.Cryptography.ECDsaCng(256)
+    try { $labSpki = [Convert]::FromBase64String((ConvertTo-P256Spki ([byte[]]$labEcc.Key.Export([System.Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob)))) } finally { $labEcc.Dispose() }
+    $labCredential = New-Object byte[] 32; $labRng = [System.Security.Cryptography.RandomNumberGenerator]::Create(); $labRng.GetBytes($labCredential); $labRng.Dispose()
+    $labRecord = ConvertTo-ApproverKeyObject ([pscustomobject]@{ keyId = (Get-ApproverKeyIdFor 'webauthn' $labSpki); kind = 'webauthn'; alg = -7; publicKey = [Convert]::ToBase64String($labSpki); credentialId = (ConvertTo-Base64UrlNoPad $labCredential) })
+    $labRecordFile = Join-Path $labKeyDir ($labRecord.keyId + '.json')
+    [System.IO.File]::WriteAllBytes($labRecordFile, [System.Text.Encoding]::UTF8.GetBytes((ConvertTo-ApproverKeyText $labRecord)))
+    $authorityConfigFile = Join-Path $programData 'authority\AlberaApprovalAuthority.service.json'
+    $authorityStoreFile = Join-Path $programData 'authority\approver-keys.json'
+    # the service runs while the installer changes the config: it has to stop it, change the config, delete the key store and start it again
+    & sc.exe start AlberaApprovalAuthority | Out-Null
+    $waitUntil = (Get-Date).AddSeconds(30)
+    while ((Get-AuthorityServiceFacts).state -ne 'Running' -and (Get-Date) -lt $waitUntil) { Start-Sleep -Milliseconds 500 }
+    $before = Get-AuthorityServiceFacts
+    $configBefore = Get-Content -Raw -LiteralPath $authorityConfigFile
+    Add-SetApproverCheck $setChecks 'authority_runs_before' ($before.state -eq 'Running') ("state " + $before.state + ", process " + $before.processId)
+    $set = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labRecordFile); ExpectedApproverKeyId = @($labRecord.keyId) }
+    $setApprover.output = $set.Output
+    Add-SetApproverCheck $setChecks 'set_approver_exit_0' ($set.Exit -eq 0) ("exit " + $set.Exit)
+    $after = Get-AuthorityServiceFacts
+    Add-SetApproverCheck $setChecks 'authority_runs_after_in_a_new_process' ($after.state -eq 'Running' -and $after.processId -ne $before.processId -and $after.processId -ne 0) ("state " + $after.state + ", process " + $after.processId + " (was " + $before.processId + ")")
+    $configAfter = Get-Content -Raw -LiteralPath $authorityConfigFile | ConvertFrom-Json
+    $configNames = @($configAfter.PSObject.Properties | ForEach-Object { $_.Name })
+    Add-SetApproverCheck $setChecks 'config_has_approverKeys_and_no_pair' (($configNames -contains 'approverKeys') -and ($configNames -notcontains 'approverKeyId') -and ($configNames -notcontains 'approverPublicKey')) ($configNames -join ',')
+    Add-SetApproverCheck $setChecks 'config_names_the_key' ((@($configAfter.approverKeys).Count -eq 1) -and ($configAfter.approverKeys[0].keyId -ceq $labRecord.keyId) -and ($configAfter.approverKeys[0].kind -ceq 'webauthn')) ((ConvertTo-Json -InputObject $configAfter.approverKeys -Compress))
+    Add-SetApproverCheck $setChecks 'approver_sid_unchanged' ($configAfter.approverSid -ceq $approverSid) ([string]$configAfter.approverSid)
+    $storeText = if (Test-Path -LiteralPath $authorityStoreFile) { Get-Content -Raw -LiteralPath $authorityStoreFile } else { '' }
+    Add-SetApproverCheck $setChecks 'key_store_made_again_from_the_config' ($storeText.Contains($labRecord.keyId) -and -not $storeText.Contains('hello-lab-0001')) ("store file present: " + [bool]$storeText + "; it names the new key and not the old Hello key")
+    $recordAfter = (Get-Content -Raw -LiteralPath $manifest | ConvertFrom-Json).values
+    Add-SetApproverCheck $setChecks 'record_names_the_key' ((@($recordAfter.approverKeys).Count -eq 1) -and ($recordAfter.approverKeys[0].keyId -ceq $labRecord.keyId) -and ($null -eq $recordAfter.PSObject.Properties['approverKeyId']) -and ($recordAfter.approverKeysSetAt -match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')) ((ConvertTo-Json -InputObject $recordAfter.approverKeys -Compress))
+    $setStatus = Invoke-Host @{ Mode = 'status' }
+    Add-SetApproverCheck $setChecks 'status_ok_and_lists_the_key' ($setStatus.Exit -eq 0 -and $setStatus.Output.Contains('Authority approver keys: 1 key(s): ' + $labRecord.keyId + ' (webauthn)')) ("exit " + $setStatus.Exit)
+    # the same file again: nothing is restarted and the record does not change
+    $manifestHashSet = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash
+    $setAgain = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labRecordFile) }
+    $afterAgain = Get-AuthorityServiceFacts
+    Add-SetApproverCheck $setChecks 'second_run_changes_nothing' ($setAgain.Exit -eq 0 -and $setAgain.Output -match 'already trusts exactly' -and $afterAgain.processId -eq $after.processId -and (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash -eq $manifestHashSet) ("exit " + $setAgain.Exit + ", process " + $afterAgain.processId)
+    # a file that is not canonical (a trailing line break) is refused and nothing moves
+    $badFile = Join-Path $labKeyDir 'not-canonical.json'
+    [System.IO.File]::WriteAllBytes($badFile, [System.Text.Encoding]::UTF8.GetBytes((ConvertTo-ApproverKeyText $labRecord) + "`n"))
+    $configHashSet = (Get-FileHash -LiteralPath $authorityConfigFile -Algorithm SHA256).Hash
+    $setBad = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($badFile) }
+    Add-SetApproverCheck $setChecks 'non_canonical_file_refused' ($setBad.Exit -eq 3 -and $setBad.Output -match 'record_not_canonical' -and (Get-FileHash -LiteralPath $authorityConfigFile -Algorithm SHA256).Hash -eq $configHashSet -and (Get-AuthorityServiceFacts).processId -eq $after.processId) ("exit " + $setBad.Exit)
+  }
+  catch { Add-SetApproverCheck $setChecks 'set_approver_no_exception' $false ($_.Exception.Message) }
+  $setApprover.checks = $setChecks.ToArray()
+  $setApprover.status = if (@($setChecks | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { 'FAIL' } else { 'PASS' }
+}
+$evidence.setApprover = $setApprover
+
 if (-not $KeepInstalled) {
   $un = Invoke-Host @{ Mode = 'uninstall' }
   $evidence.uninstall = [ordered]@{ exit = $un.Exit; output = $un.Output }
@@ -227,7 +293,7 @@ else {
   $grant.status = if (@($checks | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { 'FAIL' } else { 'PASS' }
 }
 $evidence.grant = $grant
-$evidence.pass = ($evidence.grant.status -ne 'FAIL') -and ($evidence.controlPlane.status -eq 'PASS') -and $evidence.rollback.refused -and $evidence.rollback.manifestUnchanged -and ($KeepInstalled -or ($evidence.rollbackAfterUninstall.refused -and $evidence.rollbackAfterUninstall.nothingInstalled -and ($evidence.rollbackAfterUninstall.floor -eq $setupRunId))) -and $evidence.defaultSettingsHasNoDesktop -and ($install.Exit -eq 0) -and ($status.Exit -eq 0) -and ($again.Exit -eq 0) -and $evidence.reinstall.manifestUnchanged -and $evidence.reinstall.saysAlreadyComplete -and
+$evidence.pass = ($evidence.grant.status -ne 'FAIL') -and ($evidence.setApprover.status -ne 'FAIL') -and ($evidence.controlPlane.status -eq 'PASS') -and $evidence.rollback.refused -and $evidence.rollback.manifestUnchanged -and ($KeepInstalled -or ($evidence.rollbackAfterUninstall.refused -and $evidence.rollbackAfterUninstall.nothingInstalled -and ($evidence.rollbackAfterUninstall.floor -eq $setupRunId))) -and $evidence.defaultSettingsHasNoDesktop -and ($install.Exit -eq 0) -and ($status.Exit -eq 0) -and ($again.Exit -eq 0) -and $evidence.reinstall.manifestUnchanged -and $evidence.reinstall.saysAlreadyComplete -and
   ($KeepInstalled -or (($evidence.uninstall.exit -eq 0) -and -not $evidence.remnants.user -and -not $evidence.remnants.startMenu -and -not $evidence.remnants.runValue -and -not $evidence.remnants.key -and -not $evidence.remnants.programData -and -not $evidence.remnants.programFiles -and @($evidence.remnants.services).Count -eq 0 -and $evidence.finalStatus.saysNotInstalled))
 $evidence | ConvertTo-Json -Depth 6
 if (-not $evidence.pass) { exit 1 }
