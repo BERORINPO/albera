@@ -1,6 +1,6 @@
 # Approver presence through WebAuthn, with several keys
 
-**Status:** the owner chose this direction on 2026-11-04 ("それで進める"). The details below are provisional until the feasibility probe passes ("Feasibility probe"). Nothing here is implemented yet.
+**Status:** the owner chose this direction on 2026-11-04 ("それで進める"). The feasibility probe passed the same day ("Feasibility probe"). Phases 2 to 4 are being built against "Wire contract".
 
 ## Why
 
@@ -53,15 +53,15 @@ A new `WebAuthnPresenceVerifier` implements the existing `IHumanPresenceVerifier
 
 **The first key** is written by the elevated installer, as the approver values are today. A new elevated mode, `albera-host.ps1 -Mode set-approver`, replaces the key list of an existing install from `AlberaApprover.exe enroll --show` values and restarts the Authority. UAC works over Remote Desktop, so the owner can do this remotely. The config keeps reading the old single-key fields as one `hello-rsa` key.
 
-**Adding a key** (`AlberaApprover.exe keys add`):
-1. The approver creates the new WebAuthn credential (one prompt, on the device that will hold it).
-2. It asks the Authority for a fresh key challenge.
-3. It signs `albera.keyadd.v1` 0x00 newKeyId 0x00 SHA-256(new key record) 0x00 challenge twice: once with an already registered key (one prompt) and once with the new key, to prove the person holds it (one prompt).
-4. The Authority checks both signatures and the challenge, and stores the key in its own file `authority\approver-keys.json`, next to the policy store, with the same trust checks.
+**Adding a key** is done only by the elevated `-Mode set-approver`, behind the owner's UAC. There is no run-time `key_add` (decision 2026-11-04, after Zaku's review of phase 2).
+- A run-time add needs only one Hello signature by a registered key. A same-user process could get that signature at the moment of a real approval (the prompt does not show what is signed) and register its own software key. One prompt would then buy every later approval, where today one prompt buys one approval.
+- UAC is a boundary that same-user processes do not cross. So the owner:
+  1. runs `AlberaApprover.exe enroll --webauthn` on the device that will hold the key (it writes the record file);
+  2. runs `set-approver` with that file, which adds it to the current list.
 
 **Removing a key** needs a signature by any registered key over `albera.keyremove.v1` with the same structure. The last key cannot be removed.
 
-**Attestation:** the approver asks for none. Like the owner's current Hello key (status `NotSupported`), a WebAuthn key is not proven to be hardware-backed. `enroll` and `keys add` need `--accept-unattested` and print the same warning line as today.
+**Attestation:** the approver asks for none. Like the owner's current Hello key (status `NotSupported`), a WebAuthn key is not proven to be hardware-backed. `enroll --webauthn` needs `--accept-unattested` and print the same warning line as today.
 
 ## Wire contract (fixed for phases 2 to 4)
 
@@ -85,37 +85,39 @@ Phases 2, 3 and 4 are built at the same time against this section. A change here
 
 **Key store** `authority\approver-keys.json` (written by the Authority only; same trust checks as the policy store): `{"v":1,"revision":<n>,"keys":[<records>],"signCounts":{"<keyId>":<n>}}`.
 - On start, a missing store is created from the config keys. After that the store is the key list.
-- `-Mode set-approver` writes the config and deletes the store, so the next start seeds it again.
+- `-Mode set-approver -ApproverKeyFile <path> [...] [-Replace]` starts from the **effective** list: the store's keys when the store is present and trusted, otherwise the config's.
+  - It adds the given records, or with `-Replace` uses only them.
+  - It writes the result as `approverKeys` into the config and deletes the store, so the next start seeds it from the config again.
+  - Starting from the config alone would bring back a key that `key_remove` took out, which must never happen.
 
 **`keys`** (approver role): `{"v":1,"verb":"keys"}` replies `{"ok":true,"keys":[{"keyId":..,"kind":..,"credentialId":..}]}`. `credentialId` appears for `webauthn` only. It is a new verb, so `list` stays as it is and an installed approver keeps working.
 
-**Proofs.** Two forms are used in `decide`, `policy_set`, `key_add` and `key_remove`:
+**Proofs.** Two forms are used in `decide`, `policy_set` and `key_remove`:
 - WebAuthn: `{"kind":"webauthn","credentialId":"<b64url>","authenticatorData":"<b64>","signature":"<b64>"}`. The signed client data is the fixed JSON in "The proof", with `challenge` = base64url(SHA-256(message)).
-- Hello: the existing base64 RSA signature string over the message itself. The Authority tries each registered `hello-rsa` key.
+- Hello: the existing base64 RSA signature string over the message itself, exactly 256 bytes once decoded. It is only ever checked against the registered `hello-rsa` keys, never fed to the WebAuthn path. The Authority tries each such key.
 
 The receipt's `approverKeyId` is the key that verified.
 
 **Messages** (UTF-8, 0x00 between parts):
 - presence (unchanged): `albera.presence.v1` approvalId actionDigest challenge
-- add: `albera.keyadd.v1` newKeyId hex(SHA-256(canonical record)) keyChallenge
 - remove: `albera.keyremove.v1` keyId hex(SHA-256(canonical record of that key)) keyChallenge
 
-**`key_challenge`**: `{"v":1,"verb":"key_challenge","op":"add"|"remove","keyId":"<key to add or remove>"}` replies `{"ok":true,"challenge":"<22 chars, 128-bit base64url>","expiresAt":<unix s>}`. The challenge is single-use, lives 120 s, and is bound to the op and the key id. One challenge is outstanding at a time; a new one replaces the old.
+**`key_challenge`**: `{"v":1,"verb":"key_challenge","op":"remove","keyId":"<key to remove>"}` (`op` `add` is refused, `request_invalid`) replies `{"ok":true,"challenge":"<22 chars, 128-bit base64url>","expiresAt":<unix s>}`. The challenge is single-use, lives 120 s, and is bound to the op and the key id. One challenge is outstanding at a time; a new one replaces the old.
 
-**`key_add`**: `{"v":1,"verb":"key_add","key":<record>,"challenge":"..","by":<proof by a registered key>,"newKey":<proof by the new key>}`. Both proofs are over the add message.
+**`key_add`** does not exist (see "Adding a key"); the verb is unknown to the Authority.
 
-**`key_remove`**: `{"v":1,"verb":"key_remove","keyId":"..","challenge":"..","by":<proof by a registered key>}`, over the remove message.
+**`key_remove`**: `{"v":1,"verb":"key_remove","keyId":"..","challenge":"..","by":<proof by a registered key>}`, over the remove message. It replies `{"ok":true,"keys":[...]}` as `keys` does, plus `"policyReset":true` when the removed key had signed the policy in force (the policy is set back to careful first).
 
-Both reply `{"ok":true,"keys":[...]}` as `keys` does.
+**Codes** (new): `challenge_unknown`, `challenge_expired`, `key_unknown`, `last_key`, `too_many_keys` (the list does not fit). Existing codes are reused: `request_invalid` for anything malformed, `presence_mismatch` for a proof that does not verify.
 
-**Codes** (new): `challenge_unknown`, `challenge_expired`, `key_exists`, `key_unknown`, `last_key`, `too_many_keys` (more than 16). Existing codes are reused: `request_invalid` for anything malformed, `presence_mismatch` for a proof that does not verify (the `by` proof or the `newKey` proof).
+**Sign count:** a stored count above zero followed by a new count of zero is a mismatch (WebAuthn treats it as a sign of a cloned authenticator).
 
-Only the approver SID may call `keys`, `key_challenge`, `key_add` and `key_remove`, with the same caller check as `decide`.
+Only the approver SID may call `keys`, `key_challenge` and `key_remove`, with the same caller check as `decide`.
 
 ## Remote sessions
 
 - The approver uses WebAuthn first, at the console and over Remote Desktop. It uses `KeyCredentialManager` only when no WebAuthn key is registered and the session is not remote.
-- In a remote session with no WebAuthn key, the window says before any digit is pressed: "Windows Hello does not work over Remote Desktop for this key; add a key with `keys add`". It no longer gives the "run enroll" hint (see the open item in the ledger).
+- In a remote session with no WebAuthn key, the window says before any digit is pressed: "Windows Hello does not work over Remote Desktop for this key; make one with `enroll --webauthn` and add it with `set-approver`". It no longer gives the "run enroll" hint (see the open item in the ledger).
 - If WebAuthn redirection is turned off by policy, the request does not reach the connecting PC and the assertion fails (`Unavailable` or `NotReady`). Nothing is approved.
 
 ## What the threat picture changes
@@ -130,8 +132,8 @@ Only the approver SID may call `keys`, `key_challenge`, `key_add` and `key_remov
 |---|---|---|
 | 0 | feasibility probe on the owner's PC (below) | none (scratch tool, not in the repository) |
 | 1 | this document | docs |
-| 2 | Authority: key list (config and store), `WebAuthnPresenceVerifier`, `decide` with the new proof, key metadata in `list`, `key_challenge` / `key_add` / `key_remove` | security: CI, Zaku, disposable VM |
-| 3 | Approver: WebAuthn signer (shipped build only), `enroll --webauthn`, `approve` / window / `policy` with it, `keys add/remove/list`, the remote-session message; a software authenticator in the test-faults build | security |
+| 2 | Authority: key list (config and store), `WebAuthnPresenceVerifier`, `decide` with the new proof, the `keys` verb, `key_challenge` / `key_remove` | security: CI, Zaku, disposable VM |
+| 3 | Approver: WebAuthn signer (shipped build only), `enroll --webauthn`, `approve` / window / `policy` with it, `keys list|remove`, the remote-session message; a software authenticator in the test-faults build | security |
 | 4 | Installer: `-Mode set-approver`, WebAuthn key values in install and migrate | security |
 | 5 | Owner: `enroll --webauthn` over Remote Desktop, the elevated `set-approver`, then the first job | owner step |
 
@@ -144,8 +146,15 @@ Only the approver SID may call `keys`, `key_challenge`, `key_add` and `key_remov
 
 Nothing is sent anywhere. The design goes ahead only if the result is OK with user verified set.
 
+**Result (2026-11-04, owner's Remote Desktop session, `SM_REMOTESESSION` true):** `RESULT: OK`. The owner confirmed Windows Hello twice on the connecting PC.
+- create: attestation format `none`, credential id 32 bytes, ES256 (P-256), user present and user verified set, rp id hash matches.
+- sign: user present and user verified set, sign count **1**.
+- The signature verified with the created public key, over the client data the probe built itself. So the client data passed over the redirection unchanged.
+
+The console window's handle was used.
+
 ## Open points
 
-- **rp id.** `approver.albera.local` is not a web origin anyone can serve with a trusted certificate, so a web page cannot ask for these credentials. Whether Windows accepts it for every authenticator (phone, security key) is checked by the probe only for the authenticator the owner uses.
-- **Window handle.** WebAuthn takes the window handle of the approval window or the console. Whether the prompt then shows in front over Remote Desktop is checked by the probe for the console case.
-- **Sign count** of Windows Hello over redirection: recorded by the probe.
+- **rp id.** `approver.albera.local` is not a web origin anyone can serve with a trusted certificate, so a web page cannot ask for these credentials. Windows accepted the same shape (`probe.albera.local`) for the owner's Hello over Remote Desktop. A phone or a security key is not checked.
+- **Window handle.** The console window handle worked over Remote Desktop. The approval window's handle is not checked yet; phase 3 uses it.
+- **Sign count.** Windows Hello over redirection reported 1 on the first assertion, so the counter is live and the monotonic check (verification rule 4) applies to it.
