@@ -87,6 +87,11 @@ $r.authorityBad = [ordered]@{
 $r.policyVersionsEqual = ($brokerObj.policyVersion -eq $authorityObj.policyVersion)
 $r.brokerKeys = @($brokerObj.Keys)
 $r.authorityKeys = @($authorityObj.Keys)
+# the list form of the Authority config (approverKeys instead of the pair): one webauthn record built on the P-256 key Node made
+$listRecord = ConvertTo-ApproverKeyObject ([pscustomobject]@{ keyId = (Get-ApproverKeyIdFor 'webauthn' ([Convert]::FromBase64String($EcSpki))); kind = 'webauthn'; alg = -7; publicKey = $EcSpki; credentialId = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8' })
+$authorityListObj = Get-AuthorityConfig $cp ([pscustomobject]@{ approverSid = $shown.approverSid; approverKeys = @($listRecord) })
+$r.authorityListJson = ConvertTo-HostJson $authorityListObj
+$r.authorityListReasons = Test-AuthorityConfigText $r.authorityListJson
 
 # ---- ACL plan
 $sids = @{ Broker = (Get-DerivedServiceSid $K.BrokerService); Authority = (Get-DerivedServiceSid $K.AuthorityService); ControlPlane = $cp }

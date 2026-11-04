@@ -32,8 +32,9 @@ function Get-HostConstants {
     FailureRestartMilliseconds = 5000   # sc failure: restart after 5 s, twice, then leave stopped (control-plane-service.md section 2)
     MaxApproverKeys = 16   # approver-webauthn.md, "Wire contract": approverKeys holds 1 to 16 key records
     MaxApproverKeyFileBytes = 4096   # one canonical record is at most about 2.4 KB (RSA-4096 and a 1023-byte credential id); anything bigger is not one
-    AuthorityKeyStoreMaxBytes = 65536   # the most set-approver reads of authority\approver-keys.json (records plus sign counts); a bigger file is not a key store
-    AuthorityConfigMaxBytes = 32768   # PROVISIONAL: what this script lets an Authority config with approverKeys grow to. It must not be bigger than the limit the Authority itself reads (AuthorityConfig.cs, phase 2)
+    AuthorityKeyStoreMaxBytes = 32768   # ApproverKeyStore.MaxFileBytes: the Authority writes no bigger file and refuses one on start, so set-approver reads no bigger one (compared with the C# source by a test)
+    AuthorityConfigMaxBytes = 32768   # AuthorityConfig.MaxFileBytes: the Authority reads no bigger config (16 key records with long credential ids do not fit 4 KiB); compared with the C# source by a test
+    MaxApproverKeyMetadataBytes = 1900   # ApproverKeyRules.MaxMetadataBytes: the `keys` reply (ids, kinds, credential ids of all keys) must fit one frame, so a list whose metadata is bigger is refused by the Authority
   }
 }
 
@@ -378,7 +379,12 @@ function Read-ApproverKeyRecordBytes([byte[]]$Bytes) {
   if (-not $same) { return (& $fail 'record_not_canonical') }
   [pscustomobject]@{ Ok = $true; Reasons = @(); Record = (ConvertTo-ApproverKeyObject $parsed) }
 }
-# The rules of a whole key list (1 to 16 records; no key, credential or public key twice). Reasons are fixed words.
+# The metadata the Authority's `keys` reply carries for a list: [{"keyId","kind"[,"credentialId"]},...], compact, as ApproverKeyRules.MetadataJson writes it. Its size is capped (MaxApproverKeyMetadataBytes).
+function Get-ApproverKeyMetadataBytes($Records) {
+  $items = @(@($Records) | ForEach-Object { '{"keyId":"' + $_.keyId + '","kind":"' + $_.kind + '"' + $(if ($_.kind -ceq 'webauthn') { ',"credentialId":"' + $_.credentialId + '"' } else { '' }) + '}' })
+  [System.Text.Encoding]::UTF8.GetByteCount('[' + ($items -join ',') + ']')
+}
+# The rules of a whole key list (1 to 16 records; no key, credential or public key twice; the metadata of the list fits a reply). Reasons are fixed words. Same rules as ApproverKeyRules.Fits of the Authority.
 function Test-ApproverKeySet($Records) {
   $c = Get-HostConstants
   $reasons = New-Object System.Collections.Generic.List[string]
@@ -392,6 +398,7 @@ function Test-ApproverKeySet($Records) {
   if (@($credentials | Sort-Object -Unique -CaseSensitive).Count -ne $credentials.Count) { $reasons.Add('approver_keys_duplicate_credential_id') }
   $publicKeys = @($items | ForEach-Object { [string]$_.publicKey })
   if (@($publicKeys | Sort-Object -Unique -CaseSensitive).Count -ne $publicKeys.Count) { $reasons.Add('approver_keys_duplicate_public_key') }
+  if ($items.Count -ge 1 -and (Get-ApproverKeyMetadataBytes $items) -gt $c.MaxApproverKeyMetadataBytes) { $reasons.Add('approver_keys_metadata_too_large') }   # long credential ids lower the number of keys that fit
   , @($reasons)
 }
 # "webauthn-0123456789abcdef (webauthn), hello-... (hello-rsa)" for the lines a person reads.
@@ -421,14 +428,11 @@ function Read-ApproverKeyStoreBytes([byte[]]$Bytes) {
   try { $o = $text | ConvertFrom-Json } catch { return (& $fail 'store_syntax') }
   # '{' first: a top-level array of one store would come out of ConvertFrom-Json as that store
   if (-not $text.TrimStart().StartsWith('{', [System.StringComparison]::Ordinal) -or $o -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $o @('v', 'revision', 'keys', 'signCounts'))) { return (& $fail 'store_fields') }
-  $isWhole = { param($n) ($n -is [int] -or $n -is [long]) -and $n -ge 0 }
+  $isWhole = { param($n) ($n -is [int] -or $n -is [long]) -and $n -ge 0 -and $n -le 4294967295 }   # a sign count is a uint32
   if (($o.v -isnot [int]) -or $o.v -ne 1) { return (& $fail 'store_version') }
-  if (-not (& $isWhole $o.revision)) { return (& $fail 'store_revision') }
+  if (-not (& $isWhole $o.revision) -or $o.revision -lt 1) { return (& $fail 'store_revision') }   # the Authority starts at revision 1
   if ($o.keys -isnot [System.Array]) { return (& $fail 'store_keys') }
   if ($o.signCounts -isnot [System.Management.Automation.PSCustomObject]) { return (& $fail 'store_sign_counts') }
-  foreach ($count in $o.signCounts.PSObject.Properties) {
-    if ($count.Name -cnotmatch '^(webauthn|hello)-[0-9a-f]{16}\z' -or -not (& $isWhole $count.Value)) { return (& $fail 'store_sign_counts') }
-  }
   $reasons = New-Object System.Collections.Generic.List[string]
   $records = New-Object System.Collections.Generic.List[object]
   foreach ($item in $o.keys) {
@@ -438,6 +442,11 @@ function Read-ApproverKeyStoreBytes([byte[]]$Bytes) {
   }
   if ($reasons.Count -eq 0) { foreach ($w in (Test-ApproverKeySet $records.ToArray())) { $reasons.Add("store_keys:$w") } }
   if ($reasons.Count -gt 0) { return [pscustomobject]@{ Ok = $false; Reasons = @($reasons); Records = @() } }
+  # a sign count only for a registered key, and a whole number (the Authority refuses a store with a count for a key it does not hold)
+  foreach ($count in $o.signCounts.PSObject.Properties) {
+    $name = $count.Name
+    if (@($records | Where-Object { $_.keyId -ceq $name }).Count -eq 0 -or -not (& $isWhole $count.Value)) { return (& $fail 'store_sign_counts') }
+  }
   [pscustomobject]@{ Ok = $true; Reasons = @(); Records = $records.ToArray() }
 }
 # The key list set-approver writes: the keys IN FORCE (the Authority's key store when there is one, otherwise the config's keys) plus the given records - or, with $Replace, the given records alone. The keys in force

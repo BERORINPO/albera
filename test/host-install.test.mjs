@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { openRoomApproval, parseApprovalSettings } from '../src/runtime/room-approval-wiring.mjs';
-import { canonicalBytes, ecKey, goodEs256, goodHello, goodRs256, keyIdFor, makeRecord, rsaKey, rsaSpkiFromModulus, spkiDer } from './helpers/approver-key-records.mjs';
+import { approverRecordCases, canonicalBytes, ecKey, goodEs256, goodHello, goodRs256, keyIdFor, makeRecord, rsaKey, rsaSpkiFromModulus, spkiDer } from './helpers/approver-key-records.mjs';
 
 // scripts/host/albera-host.ps1 installs the Host Broker and the Approval Authority on THIS PC and needs an elevated console, a real account, real services and a machine key.
 // None of that runs here. What runs here, on any Windows PC without admin rights:
@@ -487,85 +487,6 @@ test('approver values (given as parameters): a different key id, a non-user or e
 
 // ---- approver key records (docs/architecture/approver-webauthn.md, "Wire contract"): the validator, the config writer and the install record, fed with keys made by Node
 
-/** Every record-file case: the bytes of a file and the exact reasons the installer must give (null = valid). `anyOf` where a PowerShell parser detail decides which of two words comes out. */
-function approverRecordCases() {
-  const es = goodEs256();
-  const text = (record) => JSON.stringify(record);
-  const swap = (record, from, to) => Buffer.from(text(record).replace(from, to), 'utf8');
-  const withHash = (kind, alg, spki, extra = {}) => ({ ...makeRecord({ kind, alg, spki }), ...extra });
-  const rsa2048 = spkiDer(rsaKey(2048));
-  const edSpki = spkiDer(ecKey('prime256v1'));
-  const offCurve = Buffer.from(edSpki); offCurve[offCurve.length - 1] ^= 0x01;   // one bit of Y flipped: the point is no longer on the curve
-  const bytes = (record) => canonicalBytes(record);
-  const cases = [
-    // valid
-    { name: 'es256', bytes: bytes(es), reasons: null },
-    { name: 'rs256_2048', bytes: bytes(makeRecord({ alg: -257, spki: rsa2048 })), reasons: null },
-    { name: 'rs256_3072', bytes: bytes(goodRs256(3072)), reasons: null },
-    { name: 'rs256_4096_edge', bytes: bytes(makeRecord({ alg: -257, spki: rsaSpkiFromModulus({ bits: 4096 }) })), reasons: null },
-    { name: 'hello_2048', bytes: bytes(goodHello()), reasons: null },
-    { name: 'credential_1023_bytes', bytes: bytes(makeRecord({ spki: edSpki, credentialId: Buffer.alloc(1023, 7).toString('base64url') })), reasons: null },
-    { name: 'credential_1_byte', bytes: bytes(makeRecord({ spki: edSpki, credentialId: Buffer.from([9]).toString('base64url') })), reasons: null },
-    // the key id and the key
-    { name: 'wrong_key_id', bytes: bytes({ ...es, keyId: `${es.keyId.slice(0, -1)}${es.keyId.endsWith('0') ? '1' : '0'}` }), reasons: ['record_key_id_mismatch'] },
-    { name: 'webauthn_with_hello_prefix', bytes: bytes({ ...es, keyId: keyIdFor('hello-rsa', Buffer.from(es.publicKey, 'base64')) }), reasons: ['record_key_id_form', 'record_key_id_mismatch'] },
-    { name: 'hello_with_webauthn_prefix', bytes: bytes({ ...goodHello(), keyId: 'webauthn-0123456789abcdef' }), reasons: ['record_key_id_form', 'record_key_id_mismatch'] },
-    { name: 'key_id_upper_case', bytes: bytes({ ...es, keyId: es.keyId.toUpperCase().replace('WEBAUTHN-', 'webauthn-') }), reasons: ['record_key_id_form', 'record_key_id_mismatch'] },
-    { name: 'wrong_curve_p384', bytes: bytes(withHash('webauthn', -7, spkiDer(ecKey('secp384r1')))), reasons: ['record_curve'] },
-    { name: 'wrong_curve_k1', bytes: bytes(withHash('webauthn', -7, spkiDer(ecKey('secp256k1')))), reasons: ['record_curve'] },
-    { name: 'point_not_on_curve', bytes: bytes(withHash('webauthn', -7, offCurve)), reasons: ['record_point_not_on_curve'] },
-    { name: 'rsa_1024', bytes: bytes(withHash('webauthn', -257, rsaSpkiFromModulus({ bits: 1024 }))), reasons: ['record_rsa_size'] },
-    { name: 'rsa_2047', bytes: bytes(withHash('webauthn', -257, rsaSpkiFromModulus({ bits: 2047 }))), reasons: ['record_rsa_size'] },
-    { name: 'rsa_4104', bytes: bytes(withHash('webauthn', -257, rsaSpkiFromModulus({ bits: 4104 }))), reasons: ['record_rsa_size'] },
-    { name: 'hello_rsa_3072', bytes: bytes(withHash('hello-rsa', -257, spkiDer(rsaKey(3072)))), reasons: ['record_rsa_size'] },
-    { name: 'rsa_exponent_3', bytes: bytes(withHash('webauthn', -257, rsaSpkiFromModulus({ bits: 2048, exponent: 3 }))), reasons: ['record_rsa_exponent'] },
-    { name: 'rsa_even_modulus', bytes: bytes(withHash('webauthn', -257, rsaSpkiFromModulus({ bits: 2048, odd: false }))), reasons: ['record_public_key_not_rsa'] },
-    { name: 'ec_key_with_rs256', bytes: bytes(withHash('webauthn', -257, edSpki)), reasons: ['record_public_key_not_rsa'] },
-    { name: 'rsa_key_with_es256', bytes: bytes(withHash('webauthn', -7, rsa2048)), reasons: ['record_curve'] },
-    { name: 'alg_eddsa', bytes: bytes({ ...es, alg: -8 }), reasons: ['record_alg'] },
-    { name: 'hello_with_es256', bytes: bytes(withHash('hello-rsa', -7, rsa2048)), reasons: ['record_alg', 'record_curve'] },
-    { name: 'public_key_without_padding', bytes: bytes({ ...es, publicKey: Buffer.from(es.publicKey, 'base64').toString('base64url') }), reasons: ['record_public_key_encoding'] },
-    // the credential id
-    { name: 'credential_empty', bytes: bytes({ ...es, credentialId: '' }), reasons: ['record_credential_id_length'] },
-    { name: 'credential_1024_bytes', bytes: bytes({ ...es, credentialId: Buffer.alloc(1024, 7).toString('base64url') }), reasons: ['record_credential_id_length'] },
-    { name: 'credential_padded', bytes: bytes({ ...es, credentialId: `${Buffer.alloc(31, 7).toString('base64url')}=` }), reasons: ['record_credential_id_form'] },
-    { name: 'credential_standard_alphabet', bytes: bytes({ ...es, credentialId: 'ab+d/f' }), reasons: ['record_credential_id_form'] },
-    { name: 'credential_stray_bits', bytes: bytes({ ...es, credentialId: 'AB' }), reasons: ['record_credential_id_form'] },
-    { name: 'credential_length_1_mod_4', bytes: bytes({ ...es, credentialId: 'AAAAA' }), reasons: ['record_credential_id_form'] },
-    { name: 'credential_not_a_string', bytes: Buffer.from(text(es).replace(/"credentialId":"[^"]*"/u, '"credentialId":7')), reasons: ['record_field_types'] },
-    // fields
-    { name: 'extra_field', bytes: bytes({ ...es, extra: 1 }), reasons: ['record_fields'] },
-    { name: 'webauthn_without_credential', bytes: bytes((({ credentialId, ...rest }) => rest)(es)), reasons: ['record_fields'] },
-    { name: 'hello_with_credential', bytes: bytes({ ...goodHello(), credentialId: 'AAAA' }), reasons: ['record_fields'] },
-    { name: 'missing_alg', bytes: bytes((({ alg, ...rest }) => rest)(es)), reasons: ['record_fields'] },
-    { name: 'kind_unknown', bytes: bytes({ ...es, kind: 'fido' }), reasons: ['record_kind'] },
-    { name: 'alg_as_string', bytes: bytes({ ...es, alg: '-7' }), reasons: ['record_field_types'] },
-    { name: 'alg_with_fraction', bytes: Buffer.from(text(es).replace('"alg":-7', '"alg":-7.5')), reasons: ['record_field_types'] },
-    { name: 'key_id_null', bytes: bytes({ ...es, keyId: null }), reasons: ['record_field_types'] },
-    // canonical bytes
-    { name: 'pretty_printed', bytes: Buffer.from(JSON.stringify(es, null, 2)), reasons: ['record_not_canonical'] },
-    { name: 'trailing_newline', bytes: Buffer.from(`${text(es)}\n`), reasons: ['record_not_canonical'] },
-    { name: 'trailing_crlf', bytes: Buffer.from(`${text(es)}\r\n`), reasons: ['record_not_canonical'] },
-    { name: 'leading_space', bytes: Buffer.from(` ${text(es)}`), reasons: ['record_not_canonical'] },
-    { name: 'keys_reordered', bytes: bytes({ alg: es.alg, keyId: es.keyId, kind: es.kind, publicKey: es.publicKey, credentialId: es.credentialId }), reasons: ['record_not_canonical'] },
-    { name: 'unicode_escape', bytes: swap(es, '"kind":"webauthn"', '"kind":"webauth\\u006e"'), reasons: ['record_not_canonical'] },
-    { name: 'repeated_key', bytes: swap(es, `{"keyId":"${es.keyId}",`, `{"keyId":"${es.keyId}","keyId":"${es.keyId}",`), anyOf: ['record_not_canonical', 'record_syntax'] },
-    { name: 'byte_order_mark', bytes: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), bytes(es)]), reasons: ['record_bom'] },
-    { name: 'invalid_utf8', bytes: Buffer.from([0x7b, 0xff, 0xfe, 0xfd, 0x7d]), reasons: ['record_not_utf8'] },
-    { name: 'utf16_file', bytes: Buffer.from(text(es), 'utf16le'), anyOf: ['record_syntax', 'record_not_utf8'] },
-    // one record per file
-    { name: 'array_of_one', bytes: Buffer.from(`[${text(es)}]`), reasons: ['record_not_one_object'] },
-    { name: 'two_records_in_a_row', bytes: Buffer.from(`${text(es)}${text(goodEs256())}`), reasons: ['record_syntax'] },
-    { name: 'two_records_on_two_lines', bytes: Buffer.from(`${text(es)}\n${text(goodEs256())}`), reasons: ['record_syntax'] },
-    { name: 'json_null', bytes: Buffer.from('null'), reasons: ['record_not_one_object'] },
-    { name: 'json_string', bytes: Buffer.from('"x"'), reasons: ['record_not_one_object'] },
-    { name: 'not_json', bytes: Buffer.from('not json'), reasons: ['record_syntax'] },
-    { name: 'empty_file', bytes: Buffer.alloc(0), reasons: ['record_empty'] },
-    { name: 'file_too_large', bytes: Buffer.alloc(5000, 0x20), reasons: ['record_too_large'] },
-  ];
-  return cases;
-}
-
 test('approver key records: the validator follows the contract (good ES256 and RS256, wrong keyId, wrong curve, short RSA, bad credentialId, extra field, non-canonical bytes ...) and the key lists (duplicates, 17 records)', needsWindows, (t) => {
   const cases = approverRecordCases();
   const ecs = Array.from({ length: 17 }, () => goodEs256());
@@ -594,12 +515,15 @@ test('approver key records: the validator follows the contract (good ES256 and R
     { name: 'version_2', bytes: store({ v: 2 }), reasons: ['store_version'] },
     { name: 'version_as_string', bytes: store({ v: '1' }), reasons: ['store_version'] },
     { name: 'revision_negative', bytes: store({ revision: -1 }), reasons: ['store_revision'] },
+    { name: 'revision_zero', bytes: store({ revision: 0 }), reasons: ['store_revision'] },   // the Authority starts at revision 1
+    { name: 'count_for_an_unregistered_key', bytes: store({ signCounts: { [ecs[5].keyId]: 3 } }), reasons: ['store_sign_counts'] },   // a well-formed id, but not a key of this store: the Authority refuses such a file
+    { name: 'count_over_uint32', bytes: store({ signCounts: { [ecs[0].keyId]: 4294967296 } }), reasons: ['store_sign_counts'] },
     { name: 'revision_as_string', bytes: store({ revision: '3' }), reasons: ['store_revision'] },
     { name: 'keys_is_an_object', bytes: store({ keys: ecs[0] }), reasons: ['store_keys'] },
     { name: 'record_wrong_key_id', bytes: store({}, [{ ...ecs[0], keyId: 'webauthn-0000000000000000' }]), reasons: ['store_key:record_key_id_mismatch'] },
     { name: 'record_extra_field', bytes: store({}, [{ ...ecs[0], extra: 1 }]), reasons: ['store_key:record_fields'] },
     { name: 'same_key_twice', bytes: store({}, [ecs[0], ecs[0]]), reasons: ['store_keys:approver_keys_duplicate_key_id', 'store_keys:approver_keys_duplicate_credential_id', 'store_keys:approver_keys_duplicate_public_key'] },
-    { name: 'seventeen_keys', bytes: store({}, ecs), reasons: ['store_keys:approver_keys_too_many'] },
+    { name: 'seventeen_keys', bytes: store({}, ecs), reasons: ['store_keys:approver_keys_too_many', 'store_keys:approver_keys_metadata_too_large'] },
     { name: 'count_for_a_bad_name', bytes: store({ signCounts: { 'not-a-key-id': 1 } }), reasons: ['store_sign_counts'] },
     { name: 'count_negative', bytes: store({ signCounts: { [ecs[0].keyId]: -1 } }), reasons: ['store_sign_counts'] },
     { name: 'count_as_string', bytes: store({ signCounts: { [ecs[0].keyId]: '5' } }), reasons: ['store_sign_counts'] },
@@ -608,13 +532,16 @@ test('approver key records: the validator follows the contract (good ES256 and R
     { name: 'not_json', bytes: Buffer.from('not json'), reasons: ['store_syntax'] },
     { name: 'empty_file', bytes: Buffer.alloc(0), reasons: ['store_empty'] },
     { name: 'invalid_utf8', bytes: Buffer.from([0x7b, 0xff, 0xfe, 0x7d]), reasons: ['store_not_utf8'] },
-    { name: 'too_large', bytes: Buffer.alloc(65537, 0x20), reasons: ['store_too_large'] },
+    { name: 'too_large', bytes: Buffer.alloc(32769, 0x20), reasons: ['store_too_large'] },   // ApproverKeyStore.MaxFileBytes is 32768
   ];
   const named = [
     ...cases.map(({ name, bytes }) => ({ name, bytes })),
     ...ecs.map((record, i) => ({ name: `ec_${i}`, bytes: canonicalBytes(record) })),
     { name: 'same_rsa_webauthn', bytes: canonicalBytes(sameRsaWebauthn) },
     { name: 'same_rsa_hello', bytes: canonicalBytes(sameRsaHello) },
+    // two keys with 1023-byte credential ids: valid one by one, but the `keys` reply for both would not fit one frame (ApproverKeyRules.MaxMetadataBytes 1900)
+    { name: 'long_credential_a', bytes: canonicalBytes(makeRecord({ spki: spkiDer(ecKey('prime256v1')), credentialId: Buffer.alloc(1023, 1).toString('base64url') })) },
+    { name: 'long_credential_b', bytes: canonicalBytes(makeRecord({ spki: spkiDer(ecKey('prime256v1')), credentialId: Buffer.alloc(1023, 2).toString('base64url') })) },
     { name: 'shared_credential', bytes: canonicalBytes(sharedCredential) },
   ];
   const ecNames = ecs.map((_, i) => `ec_${i}`);
@@ -625,6 +552,7 @@ test('approver key records: the validator follows the contract (good ES256 and R
       { name: 'one', records: ['ec_0'] }, { name: 'sixteen', records: ecNames.slice(0, 16) }, { name: 'seventeen', records: ecNames }, { name: 'none', records: [] },
       { name: 'same_record_twice', records: ['ec_0', 'ec_0'] }, { name: 'same_credential_two_keys', records: ['ec_0', 'shared_credential'] },
       { name: 'same_rsa_key_two_kinds', records: ['same_rsa_webauthn', 'same_rsa_hello'] }, { name: 'mixed', records: ['es256', 'rs256_2048', 'hello_2048'] },
+      { name: 'metadata_too_big', records: ['long_credential_a', 'long_credential_b'] }, { name: 'one_long_credential', records: ['long_credential_a'] },
     ],
     configRecords: ecNames.slice(0, 16), rsa2048Spki: spkiDer(rsaKey(2048)).toString('base64'),
     stores: storeCases.map(({ name, bytes }) => ({ name, b64: bytes.toString('base64') })),
@@ -668,12 +596,14 @@ test('approver key records: the validator follows the contract (good ES256 and R
   // ---- the key lists
   assert.deepEqual(r.sets.one, []);
   assert.deepEqual(r.sets.sixteen, [], 'sixteen keys are the most');
-  assert.deepEqual(r.sets.seventeen, ['approver_keys_too_many']);
+  assert.deepEqual(r.sets.seventeen, ['approver_keys_too_many', 'approver_keys_metadata_too_large']);
   assert.deepEqual(r.sets.none, ['approver_keys_none']);
   assert.deepEqual(r.sets.same_record_twice, ['approver_keys_duplicate_key_id', 'approver_keys_duplicate_credential_id', 'approver_keys_duplicate_public_key'], 'two records with the same keyId');
   assert.deepEqual(r.sets.same_credential_two_keys, ['approver_keys_duplicate_credential_id']);
   assert.deepEqual(r.sets.same_rsa_key_two_kinds, ['approver_keys_duplicate_public_key']);
   assert.deepEqual(r.sets.mixed, []);
+  assert.deepEqual(r.sets.metadata_too_big, ['approver_keys_metadata_too_large'], 'the Authority\'s `keys` reply for the list must fit one frame (1900 bytes of metadata): long credential ids lower the number of keys');
+  assert.deepEqual(r.sets.one_long_credential, [], 'one long credential id is fine');
   // ---- the Authority's key store: shape, then its records by the same rules as a key file
   for (const c of storeCases) {
     const got = r.stores[c.name];
@@ -695,7 +625,7 @@ test('approver key records: the validator follows the contract (good ES256 and R
   assert.deepEqual({ ...m.replace_basic }, { ok: true, reasons: [], ids: e(2), kept: [], added: e(2), removed: e(0, 1) });
   assert.deepEqual([m.replace_overlap.ids, m.replace_overlap.removed], [e(1, 2), e(0)], 'with -Replace only what is not given is removed');
   assert.deepEqual([m.replace_same.ids, m.replace_same.removed], [e(0, 1), []]);
-  assert.deepEqual([m.replace_seventeen.ok, m.replace_seventeen.reasons], [false, ['approver_keys_too_many']], '-Replace is judged on the given keys alone, and 17 is too many');
+  assert.deepEqual([m.replace_seventeen.ok, m.replace_seventeen.reasons], [false, ['approver_keys_too_many', 'approver_keys_metadata_too_large']], '-Replace is judged on the given keys alone, and 17 is too many');
   assert.deepEqual([m.replace_sixteen.ok, m.replace_sixteen.ids.length, m.replace_sixteen.removed], [true, 16, []]);
   assert.deepEqual(m.replace_twice_the_same.reasons, ['approver_keys_duplicate_key_id', 'approver_keys_duplicate_credential_id', 'approver_keys_duplicate_public_key']);
   // ---- the legacy pair as the one hello-rsa record it is read as: it has to be a valid record to be carried into approverKeys
@@ -924,16 +854,35 @@ test('-Mode set-approver against a temp layout (fakes for the machine): keys are
     unreadableManifest: /cannot be read by this account/u, configMissing: /Authority config .* is missing/u, configGarbage: /config is not valid \(config_syntax\)/u, configOtherKid: /differs from what install writes in: kid/u,
     configExtraKey: /config is not valid \(config_keys\)/u, configOtherSid: /differs from what install writes in: approverSid/u, serviceOtherCommandLine: /runs a different command line than install wrote/u,
     serviceMissing: /service AlberaApprovalAuthority does not exist/u, fileMissing: /file_not_found/u, twoFilesSameKey: /approver_keys_duplicate_key_id/u, noFiles: /approver_keys_none/u,
-    expectedIdsDiffer: /not exactly the ones given with -ExpectedApproverKeyId.*nothing was changed/u, expectedIdsMissingOne: /not exactly the ones given with -ExpectedApproverKeyId/u, seventeenFiles: /approver_keys_too_many/u,
+    seventeenFiles: /approver_keys_too_many/u,
+    // -ExpectedApproverKeyId is required, one id per file in order, each equal to the id computed from that file's public key
+    expectedMissing: /approver key record rejected: -ExpectedApproverKeyId must give exactly one key id per -ApproverKeyFile file, in the same order \(1 file\(s\), 0 id\(s\)\); the files were not used$/u,
+    expectedMissingTwoFiles: /\(2 file\(s\), 0 id\(s\)\); the files were not used$/u,
+    expectedIdsMissingOne: /\(2 file\(s\), 1 id\(s\)\); the files were not used$/u,
+    expectedIdsOneTooMany: /\(1 file\(s\), 2 id\(s\)\); the files were not used$/u,
+    expectedIdsDiffer: /a\.json: this file holds the key webauthn-[0-9a-f]{16}, but the key id expected for it \(-ExpectedApproverKeyId, position 1\) is webauthn-[0-9a-f]{16}; the file is not the one the key was made into .*nothing was changed$/u,
+    expectedIdsRightKeysWrongOrder: /a\.json: this file holds the key .* position 1\) is .*b\.json: this file holds the key .* position 2\)/u,
+    expectedIdHelloForWebauthn: /a\.json: this file holds the key webauthn-[0-9a-f]{16}, but .* position 1\) is hello-[0-9a-f]{16}/u,
+    swappedFile: /swapped\.json: this file holds the key webauthn-[0-9a-f]{16}, but .* position 1\) is webauthn-[0-9a-f]{16}; the file is not the one the key was made into/u,
+    swappedOneOfTwo: /swapped\.json: this file holds the key .* position 2\)/u,
   };
   assert.deepEqual(Object.keys(r.refusals).sort(), Object.keys(expectedRefusals).sort());
+  assert.deepEqual(r.swappedExpected, [r.ids.a], 'the owner saw the id of key A on the enroll screen');
+  assert.equal(r.swappedNowHolds.length, 1);
+  assert.notEqual(r.swappedNowHolds[0], r.ids.a, 'and the file under that name now holds another, perfectly valid, key');
+  assert.ok(r.refusals.swappedFile.error.includes(`holds the key ${r.swappedNowHolds[0]}, but the key id expected for it (-ExpectedApproverKeyId, position 1) is ${r.ids.a};`), 'the refusal names both ids');
+  assert.equal(r.refusals.expectedIdsRightKeysWrongOrder.error.includes(`a.json: this file holds the key ${r.ids.a}, but the key id expected for it (-ExpectedApproverKeyId, position 1) is ${r.ids.b};`), true, 'the ids go with the files by position, not as a set');
   for (const [name, pattern] of Object.entries(expectedRefusals)) {
     const refusal = r.refusals[name];
     assert.match(refusal.error, pattern, name);
     assert.deepEqual([refusal.sc, refusal.writes, refusal.configSame, refusal.manifestSame, refusal.storeSame], [0, 0, true, true, true], `${name}: nothing was changed`);
   }
-  assert.equal(r.expectedOk.error, null, 'the expected ids, in any order, let the run through');
+  assert.equal(r.expectedOk.error, null, 'the expected ids, position by position, let the run through');
   assert.deepEqual(r.expectedOk.record.approverKeys, [`${r.ids.h}|hello-rsa`, `${r.ids.a}|webauthn`, `${r.ids.b}|webauthn`], 'added to the legacy Hello key');
+  // a file swapped after the screen, while the service is being stopped: the list is read again, the swap is found, nothing is written, the service is started again
+  assert.match(r.swappedWhileStopping.error, /^the key list is not the one shown \(the key files or the key store changed while the service was being stopped: .*late\.json: this file holds the key webauthn-[0-9a-f]{16}, but the key id expected for it .*; nothing was written\. Run set-approver again$/u);
+  assert.deepEqual(r.swappedWhileStopping.order, [`sc stop ${authority}`, `sc start ${authority}`], 'no config write');
+  assert.deepEqual([r.swappedWhileStopping.configIsOld, r.swappedWhileStopping.service, r.swappedWhileStopping.record.approverKeys], [true, 'Running', []]);
   // 10b. status (the real Get-StatusLines): one line with the key ids and kinds the config holds, against the install record
   const lines = (value) => [].concat(value ?? []);
   assert.deepEqual(lines(r.status.legacy), [`ok Authority approver keys: 1 key(s): ${r.ids.legacy} (hello-rsa) (the legacy fields approverKeyId + approverPublicKey, one hello-rsa key)`]);
@@ -977,7 +926,18 @@ test('-Mode set-approver against a temp layout (fakes for the machine): keys are
   assert.deepEqual(r.install.record, { approverKeys: [`${r.ids.a}|webauthn`, `${r.ids.h}|hello-rsa`], hasLegacyId: false, approverSid: r.ownerSid, shape: [] });
   assert.equal(r.install.noSid, 'blocked:-ApproverSid is required together with -ApproverKeyFile');
   assert.match(r.install.badFile, /^blocked:approver key record rejected: .*missing\.json: file_not_found$/u);
-  assert.match(r.install.expectedDiffers, /^blocked:approver key record rejected: the key ids in the files/u);
+  assert.match(r.install.expectedDiffers, /^blocked:approver key record rejected: .*a\.json: this file holds the key webauthn-[0-9a-f]{16}, but the key id expected for it \(-ExpectedApproverKeyId, position 1\) is webauthn-[0-9a-f]{16}; /u);
+  // -ExpectedApproverKeyId is required with key files in install and migrate as well: none, too few, or a swapped file are refused by the approver step (and by the migrate preflight) before anything changes
+  assert.match(r.install.expectedMissing, /^blocked:approver key record rejected: -ExpectedApproverKeyId must give exactly one key id per -ApproverKeyFile file, in the same order \(1 file\(s\), 0 id\(s\)\); the files were not used$/u);
+  assert.match(r.install.expectedTooFew, /^blocked:approver key record rejected: -ExpectedApproverKeyId must give exactly one key id per -ApproverKeyFile file, in the same order \(2 file\(s\), 1 id\(s\)\)/u);
+  assert.match(r.install.swappedFile, /^blocked:approver key record rejected: .*swapped-install\.json: this file holds the key webauthn-[0-9a-f]{16}, but the key id expected for it \(-ExpectedApproverKeyId, position 1\) is webauthn-[0-9a-f]{16}; the file is not the one the key was made into/u);
+  assert.match(r.install.swappedFileDo, /^REFUSED: approver key record rejected: .*swapped-install\.json: this file holds the key/u, 'the step\'s Do reads the file again and refuses the swap as well: the keys written are the ones checked');
+  assert.equal(r.install.sameFileBack, 'todo', 'the file that the owner enrolled is accepted');
+  assert.ok(r.install.detail.some((line) => line.startsWith('with -ApproverKeyFile, -ExpectedApproverKeyId is required: one key id per file')), 'the plan says the ids are required');
+  assert.equal(r.migratePreflightSwapped.length, 1, 'migrate: a swapped file is found by the preflight, before anything is stopped or removed');
+  assert.match(r.migratePreflightSwapped[0], /swapped-migrate\.json: this file holds the key .*position 1\)/u);
+  assert.equal(r.migratePreflightNoIds.length, 1);
+  assert.match(r.migratePreflightNoIds[0], /-ExpectedApproverKeyId must give exactly one key id per -ApproverKeyFile file/u);
   assert.match(r.install.sidIsControlPlane, /approver_sid_equals_control_plane_sid/u);
   // ... and the legacy three values work exactly as before
   assert.deepEqual(r.legacy.approver.properties, ['approverPublicKey', 'approverKeyId', 'approverSid']);
@@ -999,6 +959,9 @@ test('the command line of the key-file options: set-approver needs elevation fir
   writeFileSync(fileA, canonicalBytes(es)); writeFileSync(fileB, canonicalBytes(hello));
   const code = (args, env) => host(args, { allowFail: true, env });
   const accepted = (result) => result.code !== 2 && !/REFUSED/u.test(result.stdout);
+  const ownerSid = 'S-1-5-21-1111111111-2222222222-3333333333-1001';
+  const expectA = ['-ExpectedApproverKeyId', es.keyId];   // -ExpectedApproverKeyId is required with every -ApproverKeyFile: the id the owner saw on the enroll screen, one per file in order
+  const expectAB = ['-ExpectedApproverKeyId', `${es.keyId},${hello.keyId}`];
   // elevation comes first: nothing else is looked at, no step runs, nothing changes
   const notElevated = code(['-Mode', 'set-approver', '-ApproverKeyFile', fileA], { ALBERA_HOST_ASSUME_NOT_ELEVATED: '1' });
   assert.equal(notElevated.code, 3);
@@ -1010,48 +973,86 @@ test('the command line of the key-file options: set-approver needs elevation fir
   assert.equal(plan().code, 2);
   assert.match(plan().stdout, /set-approver needs -ApproverKeyFile/u);
   assert.match(plan('-ApproverKeyFile', fileA, '-ApproverKeyId', 'hello-0123456789abcdef').stdout, /set-approver takes the key record file\(s\) \(-ApproverKeyFile\) and nothing else/u);
-  assert.equal(plan('-ApproverKeyFile', fileA, '-ApproverSid', 'S-1-5-21-1-2-3-4').code, 2, 'the approver SID stays as it is');
-  assert.equal(plan('-ApproverKeyFile', fileA, '-ExpectedTreeHash', 'a'.repeat(64)).code, 2);
+  assert.equal(plan('-ApproverKeyFile', fileA, ...expectA, '-ApproverSid', 'S-1-5-21-1-2-3-4').code, 2, 'the approver SID stays as it is');
+  assert.match(plan('-ApproverKeyFile', fileA, ...expectA, '-ApproverSid', 'S-1-5-21-1-2-3-4').stdout, /set-approver takes the key record file\(s\) \(-ApproverKeyFile\) and nothing else/u);
+  assert.equal(plan('-ApproverKeyFile', fileA, ...expectA, '-ExpectedTreeHash', 'a'.repeat(64)).code, 2);
   assert.match(plan('-ApproverKeyFile', 'relative\\a.json').stdout, /-ApproverKeyFile must be plain absolute paths/u);
   assert.match(plan('-ApproverKeyFile', 'C:\\x\\..\\a.json').stdout, /plain absolute paths/u);
   assert.match(plan('-ApproverKeyFile', `${fileA},`).stdout, /plain absolute paths/u, 'an empty entry is refused');
   assert.match(plan('-ApproverKeyFile', Array.from({ length: 17 }, (_, i) => path.join(dir, `k${i}.json`)).join(',')).stdout, /at most 16 key record files/u);
   assert.match(plan('-ApproverKeyFile', fileA, '-ExpectedApproverKeyId', 'not-an-id').stdout, /-ExpectedApproverKeyId must be key ids like webauthn-0123456789abcdef/u);
+  // -ExpectedApproverKeyId is REQUIRED with -ApproverKeyFile (set-approver, and install / migrate with key files): none, a different count, or a malformed id is refused with exit 2, before any file is read
+  const requiredMessage = /-ExpectedApproverKeyId is required with -ApproverKeyFile: one key id per file, in the same order, as AlberaApprover\.exe enroll --webauthn printed them on your screen/u;
+  const missing = plan('-ApproverKeyFile', fileA);
+  assert.equal(missing.code, 2, 'a missing expected id is refused');
+  assert.match(missing.stdout, requiredMessage);
+  assert.doesNotMatch(missing.stdout, /^\s*\d+\. \[/mu, 'before any step: the files were not even read');
+  assert.equal(plan('-ApproverKeyFile', `${fileA},${fileB}`).code, 2);
+  assert.match(code(['-Mode', 'plan', '-ApproverKeyFile', fileA, '-ApproverSid', ownerSid]).stdout, requiredMessage, 'install with key files');
+  assert.equal(code(['-Mode', 'plan', '-ApproverKeyFile', fileA, '-ApproverSid', ownerSid]).code, 2);
+  assert.match(code(['-Mode', 'plan', '-PlanFor', 'migrate', '-ApproverKeyFile', fileA]).stdout, requiredMessage, 'migrate with key files');
+  assert.equal(code(['-Mode', 'plan', '-PlanFor', 'migrate', '-ApproverKeyFile', fileA]).code, 2);
+  const tooFew = plan('-ApproverKeyFile', `${fileA},${fileB}`, ...expectA);
+  assert.equal(tooFew.code, 2, 'a count mismatch is refused: two files, one id');
+  assert.match(tooFew.stdout, /-ExpectedApproverKeyId needs exactly one key id per -ApproverKeyFile file, in the same order \(2 file\(s\), 1 id\(s\)\)/u);
+  const tooMany = plan('-ApproverKeyFile', fileA, ...expectAB);
+  assert.equal(tooMany.code, 2, 'and one file, two ids');
+  assert.match(tooMany.stdout, /\(1 file\(s\), 2 id\(s\)\)/u);
+  assert.match(code(['-Mode', 'plan', '-ApproverKeyFile', `${fileA},${fileB}`, ...expectA, '-ApproverSid', ownerSid]).stdout, /\(2 file\(s\), 1 id\(s\)\)/u, 'the same for install');
+  assert.match(code(['-Mode', 'plan', '-PlanFor', 'migrate', '-ApproverKeyFile', fileA, ...expectAB]).stdout, /\(1 file\(s\), 2 id\(s\)\)/u, 'and for migrate');
+  assert.equal(plan('-ApproverKeyFile', `${fileA},${fileB}`, '-ExpectedApproverKeyId', `${es.keyId},`).code, 2, 'an empty entry is not an id');
+  // a wrong id, and the swapped file: the plan reads the files, computes each key id from the public key and blocks the step; nothing is read as trusted
+  const wrongId = plan('-ApproverKeyFile', fileA, '-ExpectedApproverKeyId', hello.keyId);
+  assert.match(wrongId.stdout, /2\. \[blocked\] Read the key record file\(s\)/u, 'a wrong id blocks the key step');
+  assert.ok(wrongId.stdout.includes(`this file holds the key ${es.keyId}, but the key id expected for it (-ExpectedApproverKeyId, position 1) is ${hello.keyId}; the file is not the one the key was made into`), 'it names both ids');
+  const fileS = path.join(dir, 'swapped.json');
+  writeFileSync(fileS, canonicalBytes(es));
+  assert.match(plan('-ApproverKeyFile', fileS, ...expectA).stdout, /approver key\(s\) to register, read from 1 file\(s\): /u, 'the file the owner enrolled is accepted');
+  writeFileSync(fileS, canonicalBytes(hello));   // a valid record of ANOTHER key under the original file name
+  const swappedPlan = plan('-ApproverKeyFile', fileS, ...expectA);
+  assert.match(swappedPlan.stdout, /2\. \[blocked\] Read the key record file\(s\)/u);
+  assert.ok(swappedPlan.stdout.includes(`this file holds the key ${hello.keyId}, but the key id expected for it (-ExpectedApproverKeyId, position 1) is ${es.keyId}`), 'the swapped file is refused');
+  assert.doesNotMatch(swappedPlan.stdout, /approver key\(s\) to register/u, 'and its key is not offered as one to register');
+  const swappedInstall = code(['-Mode', 'plan', '-ApproverKeyFile', fileS, ...expectA, '-ApproverSid', ownerSid]);
+  assert.match(swappedInstall.stdout, /2\. \[blocked\] Check the approver values[\s\S]*?this file holds the key .*position 1\) is /u, 'install with a swapped file');
+  // (a migrate plan on a PC where the legacy install cannot be read does not look at the key files at all: "the legacy install has not been read yet". The migrate preflight, which does read them, is run by the harness test above: migratePreflightSwapped / migratePreflightNoIds.)
   assert.match(code(['-Mode', 'plan', '-ExpectedApproverKeyId', es.keyId]).stdout, /-ExpectedApproverKeyId only applies together with -ApproverKeyFile/u);
   assert.match(code(['-Mode', 'status', '-ApproverKeyFile', fileA]).stdout, /-ApproverKeyFile only applies to install, migrate and set-approver/u);
   assert.match(code(['-Mode', 'plan', '-ApproverKeyFile', fileA, '-ApproverKeyId', 'hello-0123456789abcdef']).stdout, /give the approver key as -ApproverKeyFile OR as -ApproverKeyId and -ApproverPublicKey, not both/u);
-  assert.match(code(['-Mode', 'plan', '-PlanFor', 'set-approver', '-ApproverKeyFile', fileA, '-SetupRunId', '5']).stdout, /-SetupRunId only applies to install and migrate/u, 'a set-approver plan is not an install plan');
-  assert.match(code(['-Mode', 'plan', '-PlanFor', 'set-approver', '-ApproverKeyFile', fileA, '-NodeSource', 'C:\\x\\node.exe'], { ALBERA_LAB_VM: '1' }).stdout, /-NodeSource and -ClaudeSource only apply to install and migrate/u);
+  assert.match(code(['-Mode', 'plan', '-PlanFor', 'set-approver', '-ApproverKeyFile', fileA, ...expectA, '-SetupRunId', '5']).stdout, /-SetupRunId only applies to install and migrate/u, 'a set-approver plan is not an install plan');
+  assert.match(code(['-Mode', 'plan', '-PlanFor', 'set-approver', '-ApproverKeyFile', fileA, ...expectA, '-NodeSource', 'C:\\x\\node.exe'], { ALBERA_LAB_VM: '1' }).stdout, /-NodeSource and -ClaudeSource only apply to install and migrate/u);
   // the plan with real files: the key ids and kinds, seven numbered steps, exit 0, nothing changed
-  const shown = plan('-ApproverKeyFile', `${fileA},${fileB}`);
+  const shown = plan('-ApproverKeyFile', `${fileA},${fileB}`, ...expectAB);
   assert.equal(shown.code, 0);
   assert.deepEqual([...shown.stdout.matchAll(/^\s*(\d+)\. \[(\w+)\] /gmu)].map((m) => Number(m[1])), [1, 2, 3, 4, 5, 6, 7]);
   assert.ok(shown.stdout.includes(`approver key(s) to register, read from 2 file(s): ${es.keyId} (webauthn), ${hello.keyId} (hello-rsa)`), 'a comma list is two files');
   assert.match(shown.stdout, /^\s*1\. \[(?:unknown|blocked)\] Check the install/mu, 'the first step says what it cannot tell (an installed PC read without admin rights) or that there is nothing to change');
   assert.match(shown.stdout, /the given keys are ADDED to the keys in force \(the Authority key store when there is one, otherwise the config\)/u, 'without -Replace the plan says the keys are added, and that the final list is worked out where the install can be read');
   // -Replace: only for set-approver; its plan says the given keys become the only ones
-  const replaced = plan('-ApproverKeyFile', `${fileA},${fileB}`, '-Replace');
+  const replaced = plan('-ApproverKeyFile', `${fileA},${fileB}`, ...expectAB, '-Replace');
   assert.equal(replaced.code, 0);
   assert.match(replaced.stdout, /-Replace: the given keys become the ONLY approver keys/u);
   assert.match(code(['-Mode', 'plan', '-Replace']).stdout, /-Replace only applies to -Mode set-approver \(and its plan\)/u);
   assert.equal(code(['-Mode', 'plan', '-Replace']).code, 2);
   assert.equal(code(['-Mode', 'status', '-Replace']).code, 2);
-  assert.equal(code(['-Mode', 'plan', '-ApproverKeyFile', fileA, '-ApproverSid', 'S-1-5-21-1111111111-2222222222-3333333333-1001', '-Replace']).code, 2, 'not for an install plan either');
+  assert.match(code(['-Mode', 'plan', '-ApproverKeyFile', fileA, ...expectA, '-ApproverSid', ownerSid, '-Replace']).stdout, /-Replace only applies to -Mode set-approver/u);
+  assert.equal(code(['-Mode', 'plan', '-ApproverKeyFile', fileA, ...expectA, '-ApproverSid', ownerSid, '-Replace']).code, 2, 'not for an install plan either');
   assert.equal(code(['-Mode', 'set-approver', '-ApproverKeyFile', fileA, '-Replace'], { ALBERA_HOST_ASSUME_NOT_ELEVATED: '1' }).code, 3, 'and the elevation check still comes first');
   assert.match(shown.stdout, /PLAN ONLY: nothing was changed\./u);
+  assert.ok(shown.stdout.includes('each key id above equals the one given at the same position of -ExpectedApproverKeyId'), 'the plan says the ids were compared');
   // a bad file: the plan says so, in the key step
   writeFileSync(path.join(dir, 'bad.json'), `${JSON.stringify(es)}\n`);
-  const rejected = plan('-ApproverKeyFile', path.join(dir, 'bad.json'));
+  const rejected = plan('-ApproverKeyFile', path.join(dir, 'bad.json'), ...expectA);
   assert.match(rejected.stdout, /2\. \[blocked\] Read the key record file\(s\)/u);
   assert.match(rejected.stdout, /bad\.json: record_not_canonical/u);
   // install and migrate: the key files replace the pair, the SID is still typed (install) or carried over (migrate)
-  const installPlan = code(['-Mode', 'plan', '-ApproverKeyFile', `${fileA},${fileB}`, '-ApproverSid', 'S-1-5-21-1111111111-2222222222-3333333333-1001']);
+  const installPlan = code(['-Mode', 'plan', '-ApproverKeyFile', `${fileA},${fileB}`, ...expectAB, '-ApproverSid', ownerSid]);
   assert.equal(installPlan.code, 0);
   assert.match(installPlan.stdout, /^\s*2\. \[todo\] Check the approver values/mu);
   assert.ok(installPlan.stdout.includes(`approver key(s) to register, read from 2 file(s): ${es.keyId} (webauthn), ${hello.keyId} (hello-rsa)`));
-  assert.match(code(['-Mode', 'plan', '-ApproverKeyFile', fileA]).stdout, /2\. \[blocked\] Check the approver values[\s\S]*?-ApproverSid is required together with -ApproverKeyFile/u);
-  assert.match(code(['-Mode', 'plan', '-ApproverKeyFile', path.join(dir, 'bad.json'), '-ApproverSid', 'S-1-5-21-1111111111-2222222222-3333333333-1001']).stdout, /2\. \[blocked\] Check the approver values[\s\S]*?record_not_canonical/u);
-  assert.equal(accepted(code(['-Mode', 'plan', '-PlanFor', 'migrate', '-ApproverKeyFile', fileA])), true, 'migrate takes the key files');
+  assert.match(code(['-Mode', 'plan', '-ApproverKeyFile', fileA, ...expectA]).stdout, /2\. \[blocked\] Check the approver values[\s\S]*?-ApproverSid is required together with -ApproverKeyFile/u);
+  assert.match(code(['-Mode', 'plan', '-ApproverKeyFile', path.join(dir, 'bad.json'), ...expectA, '-ApproverSid', ownerSid]).stdout, /2\. \[blocked\] Check the approver values[\s\S]*?record_not_canonical/u);
+  assert.equal(accepted(code(['-Mode', 'plan', '-PlanFor', 'migrate', '-ApproverKeyFile', fileA, ...expectA])), true, 'migrate takes the key files');
   // -Mode migrate itself needs an elevated console, so its refusal of -ApproverSid is pinned in the source: key files replace the pair, they do not make the SID typed
   assert.match(readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8'), /\$Mode -eq 'migrate' -and \(\$ApproverKeyId -or \$ApproverPublicKey -or \$ApproverSid\)\) \{ Stop-Refused 'migrate carries the approver values over from the legacy install; do not pass -ApproverKeyId, -ApproverPublicKey or -ApproverSid' 2 \}/u);
   assert.deepEqual(snapshot(), before);
@@ -1069,6 +1070,28 @@ test('the generated configs have exactly the key sets the C# parsers accept, and
   const authority = JSON.parse(r.authorityJson);
   assert.deepEqual(Object.keys(broker).sort(), csKeys('windows-broker/ServiceConfig.cs', 'string\\[\\] Keys'));
   assert.deepEqual(Object.keys(authority).sort(), csKeys('windows-approval-authority/AuthorityConfig.cs', 'string\\[\\] Keys'));
+  // the list form (approverKeys instead of the pair): the Authority's own key lists decide it - the common keys are Keys without PairKeys, plus the one list key - and the installer writes exactly that
+  const authorityConfigSource = readFileSync(path.join(root, 'src', 'runtime', 'windows-approval-authority', 'AuthorityConfig.cs'), 'utf8');
+  const pairKeys = csKeys('windows-approval-authority/AuthorityConfig.cs', 'string\\[\\] PairKeys');
+  const listKey = authorityConfigSource.match(/const string KeyListKey = "([A-Za-z]+)";/u)?.[1];
+  assert.equal(listKey, 'approverKeys', 'the C# parser names the list key the installer writes');
+  assert.deepEqual(pairKeys, ['approverKeyId', 'approverPublicKey']);
+  const csListConfigKeys = [...csKeys('windows-approval-authority/AuthorityConfig.cs', 'string\\[\\] Keys').filter((key) => !pairKeys.includes(key)), listKey].sort();
+  const authorityList = JSON.parse(r.authorityListJson);
+  assert.deepEqual(Object.keys(authorityList).sort(), csListConfigKeys, 'the list-form config has exactly the keys the C# parser accepts for it');
+  assert.equal(Object.keys(authorityList).some((key) => pairKeys.includes(key)), false, 'and never the pair next to the list (config_approver_keys)');
+  assert.deepEqual(Object.keys(authorityList.approverKeys[0]), ['keyId', 'kind', 'alg', 'publicKey', 'credentialId'], 'a record has the fields, in the order, that ApproverKeyRules.Canonical writes');
+  const canonicalSource = readFileSync(path.join(root, 'src', 'runtime', 'windows-approval-authority', 'ApproverKeys.cs'), 'utf8').replaceAll('\\"', '"');
+  assert.ok(canonicalSource.includes('{{"keyId":"{key.KeyId}","kind":"{key.KindName}","alg":{key.Alg},"publicKey":"{Convert.ToBase64String(key.PublicKey)}"') && canonicalSource.includes(',"credentialId":"{Base64Text.EncodeUrl(key.CredentialId)}"}}'), 'the canonical record text of the C# side is the one this script writes (fields, order, no spaces)');
+  assert.deepEqual(r.authorityListReasons, [], 'the list-form config passes the script\'s mirror');
+  // the limits are the Authority's own: the installer's copies of them are read from the C# source, so a change on either side fails here
+  const constant = (file, pattern) => Number(readFileSync(path.join(root, 'src', 'runtime', 'windows-approval-authority', file), 'utf8').match(pattern)?.[1]);
+  assert.equal(constant('AuthorityConfig.cs', /MaxFileBytes = (\d+)/u), r.constants.AuthorityConfigMaxBytes, 'config size limit');
+  assert.equal(constant('ApproverKeyStore.cs', /MaxFileBytes = (\d+)/u), r.constants.AuthorityKeyStoreMaxBytes, 'key store size limit');
+  assert.equal(constant('ApproverKeys.cs', /MaxKeys = (\d+)/u), r.constants.MaxApproverKeys, 'keys per list');
+  assert.equal(constant('ApproverKeys.cs', /MaxMetadataBytes = (\d+)/u), r.constants.MaxApproverKeyMetadataBytes, 'metadata of the `keys` reply');
+  assert.equal(constant('WebAuthnPresence.cs', /MaxCredentialIdBytes = (\d+)/u), 1023, 'credential id bytes (the installer\'s record rules say 1023)');
+  assert.deepEqual([constant('WebAuthnPresence.cs', /MinRsaBits = (\d+)/u), constant('WebAuthnPresence.cs', /MaxRsaBits = (\d+)/u)], [2048, 4096], 'RSA sizes of a webauthn key (the installer\'s record rules say 2048 to 4096)');
   assert.deepEqual(Object.keys(broker.authorityKeys[0]).sort(), csKeys('windows-broker/ServiceConfig.cs', 'string\\[\\] AuthorityKeyFields'));
   assert.deepEqual([r.brokerReasons, r.authorityReasons], [[], []]);
   assert.equal(r.policyVersionsEqual, true, 'the Broker and the Authority name the same policyVersion (the Broker compares it with what the Authority signs)');
@@ -2519,11 +2542,19 @@ test('set-approver, source guards and documents: one file is deleted and it is a
   assert.match(script, /if \(\$Mode -in @\('install', 'uninstall', 'migrate', 'set-approver'\)\) \{ Get-ScriptFileHashes \}/u);
   // the lab hook: the step runs while the service runs and reads everything back by itself
   const hook = readFileSync(labRunner, 'utf8');
-  for (const needle of ["Mode = 'set-approver'", 'ExpectedApproverKeyId', 'add_to_an_invalid_legacy_key_refused', 'authority_runs_after_replace_in_a_new_process', 'config_has_approverKeys_and_no_pair', 'key_store_made_again_from_the_config', 'key_store_holds_both_keys', 'add_output_shows_the_final_list_before_the_write', 'duplicate_refused', 'replace_with_the_same_list_changes_nothing', 'non_canonical_file_refused', '$evidence.setApprover.status -ne \'FAIL\'']) assert.ok(hook.includes(needle), `the lab hook has ${needle}`);
+  for (const needle of ["Mode = 'set-approver'", 'ExpectedApproverKeyId', 'add_to_an_invalid_legacy_key_refused', 'missing_expected_id_refused', 'swapped_file_refused', 'authority_runs_after_replace_in_a_new_process', 'config_has_approverKeys_and_no_pair', 'key_store_made_again_from_the_config', 'key_store_holds_both_keys', 'add_output_shows_the_final_list_before_the_write', 'duplicate_refused', 'replace_with_the_same_list_changes_nothing', 'non_canonical_file_refused', '$evidence.setApprover.status -ne \'FAIL\'']) assert.ok(hook.includes(needle), `the lab hook has ${needle}`);
   // the owner's document
   const doc = readFileSync(path.join(root, 'docs', 'architecture', 'host-install.md'), 'utf8');
-  for (const needle of ['## Changing the approver keys (`-Mode set-approver`)', '**It adds; `-Replace` replaces.**', "**The keys in force are the Authority's key store, not the config.**", 'the final list (key ids and kinds) the Authority will trust, before anything is written', '-ExpectedApproverKeyId', 'exactly one record whose bytes are its canonical form', 'authority\\approver-keys.json', 'the old config goes back byte for byte', '`albera-setup.exe` (it does not pass `-ApproverKeyFile` yet', 'Not run on a real PC']) assert.ok(doc.includes(needle), `host-install.md says: ${needle}`);
-  assert.match(script, /-Mode set-approver -ApproverKeyFile <record\.json>\[,<record\.json>\.\.\.\] \[-Replace\] \[-ExpectedApproverKeyId <id>\[,<id>\.\.\.\]\]/u, 'the script header names the mode');
+  for (const needle of ['## Changing the approver keys (`-Mode set-approver`)', '**It adds; `-Replace` replaces.**', "**The keys in force are the Authority's key store, not the config.**", 'the final list (key ids and kinds) the Authority will trust, before anything is written', '(required whenever `-ApproverKeyFile` is used: set-approver, and install or migrate with key files)', '**one id per file, in the same order as the files**', 'A file swapped for another key, even a perfectly valid record, is refused', 'exactly one record whose bytes are its canonical form', 'authority\\approver-keys.json', 'the old config goes back byte for byte', '`albera-setup.exe` (it does not pass `-ApproverKeyFile` yet', 'Not run on a real PC']) assert.ok(doc.includes(needle), `host-install.md says: ${needle}`);
+  assert.match(script, /-Mode set-approver -ApproverKeyFile <record\.json>\[,<record\.json>\.\.\.\] -ExpectedApproverKeyId <id>\[,<id>\.\.\.\] \[-Replace\]/u, 'the script header names the mode, with the required ids');
+  assert.match(script, /-Mode install \.\.\. -ApproverKeyFile <record\.json>\[,<record\.json>\.\.\.\] -ExpectedApproverKeyId <id>\[,<id>\.\.\.\] -ApproverSid/u, 'and the install form');
+  // -ExpectedApproverKeyId is required with every -ApproverKeyFile, and each file's id is derived from its public key and compared by position (the reader is the one place that reads record files for every mode)
+  assert.match(script, /if \(\$ExpectedApproverKeyId\.Count -eq 0\) \{ Stop-Refused '-ExpectedApproverKeyId is required with -ApproverKeyFile: /u, 'no id: refused at the command line, exit 2');
+  assert.match(script, /if \(\$ExpectedApproverKeyId\.Count -ne \$ApproverKeyFile\.Count\) \{ Stop-Refused \("-ExpectedApproverKeyId needs exactly one key id per -ApproverKeyFile file/u, 'another count: refused at the command line');
+  const keyFilesReader = scriptCode.slice(scriptCode.indexOf('function Read-ApproverKeyFiles'), scriptCode.indexOf('function ', scriptCode.indexOf('function Read-ApproverKeyFiles') + 10));
+  assert.ok(keyFilesReader.indexOf('$ExpectedApproverKeyId.Count -ne $ApproverKeyFile.Count') > 0 && keyFilesReader.indexOf('$ExpectedApproverKeyId.Count -ne $ApproverKeyFile.Count') < keyFilesReader.indexOf('Read-ApproverKeyFileBytes'), 'the reader checks the count before it reads a file, whatever called it');
+  assert.match(keyFilesReader, /Get-ApproverKeyIdFor \$parsed\.Record\.kind \$spki/u, 'the id is derived from the public key just read');
+  assert.match(keyFilesReader, /if \(\$derivedId -cne \$ExpectedApproverKeyId\[\$i\]\)/u, 'and compared with the id at the same position, case-sensitively');
   // the keys in force come from the store first: the store is read before the config is looked at, and a store that is there but unusable is a refusal, never a fall-back to the config
   const effective = scriptCode.slice(scriptCode.indexOf('function Get-EffectiveApproverKeys'), scriptCode.indexOf('function ', scriptCode.indexOf('function Get-EffectiveApproverKeys') + 10));
   assert.ok(effective.indexOf('Get-ApproverKeyStoreState') > 0 && effective.indexOf('Get-ApproverKeyStoreState') < effective.indexOf('Read-AuthorityConfigState'), 'the store first, the config second');

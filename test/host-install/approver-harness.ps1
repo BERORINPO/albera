@@ -26,7 +26,7 @@ $script:ManifestNote = $null
 $script:Manifest = $null
 $script:Approver = $null
 $script:LegacyValues = $null
-$ExpectedTreeHash = $null; $ApproverKeyId = $null; $ApproverPublicKey = $null; $ApproverSid = $null; $ApproverKeyFile = @(); $ExpectedApproverKeyId = @(); $Replace = $false
+$ExpectedTreeHash = $null; $ApproverKeyId = $null; $ApproverPublicKey = $null; $ApproverSid = $null; $ApproverKeyFile = @(); $ExpectedApproverKeyId = $null; $Replace = $false
 $VmName = 'albera-clone-01'; $ComputerId = 'clone-01'; $ProjectId = 'albera-host'; $GrantHyperVToBroker = $false; $SetupRunId = $null; $TrustLocalBuilds = $false
 function Try-Run([scriptblock]$Block) { try { & $Block | Out-Null; $null } catch { $_.Exception.Message } }
 function New-Junction([string]$Link, [string]$Target) { New-Item -ItemType Directory -Force -Path $Target | Out-Null; $null = & cmd.exe /c mklink /J ('"' + $Link + '"') ('"' + $Target + '"') }
@@ -58,6 +58,24 @@ function Save-KeyFile([string]$Name, $Record) {
 }
 $recA = New-EcRecord; $recB = New-EcRecord; $recH = New-HelloRecord; $recX = New-EcRecord; $recY = New-EcRecord
 $fileA = Save-KeyFile 'a.json' $recA; $fileB = Save-KeyFile 'b.json' $recB; $fileH = Save-KeyFile 'h.json' $recH; $fileX = Save-KeyFile 'x.json' $recX; $fileY = Save-KeyFile 'y.json' $recY
+# -ExpectedApproverKeyId is REQUIRED with -ApproverKeyFile (one id per file, in order). Unless a scenario sets $script:ExpectedApproverKeyId itself ($null = "not set"), the expected ids are what the OWNER would have seen on the
+# enroll screen: the key id of the file as it is when the scenario starts. A file that cannot be read gets a well-formed id nobody holds.
+$noKeyId = 'webauthn-0000000000000000'
+function Get-ExpectedFor([string[]]$Files) {
+  $ids = @()
+  foreach ($path in $Files) {
+    $file = Read-ApproverKeyFileBytes $path
+    $parsed = $(if ($file.Ok) { Read-ApproverKeyRecordBytes $file.Bytes } else { $null })
+    $ids += $(if ($parsed -and $parsed.Ok) { $parsed.Record.keyId } else { $noKeyId })
+  }
+  , $ids
+}
+# the files and the expected ids the owner saw, set together (what the command line carries)
+function Use-KeyFiles([string[]]$Files) {
+  $script:ApproverKeyFile = $Files
+  $script:ExpectedApproverKeyId = Get-ExpectedFor $Files
+  $script:ApproverKeyRead = $null
+}
 $legacyId = $recH.keyId                  # a legacy pair whose id is the hash of its key: a valid hello-rsa record, so it can be carried into approverKeys
 $badLegacyId = 'hello-0123456789abcdef'  # a legacy pair whose id is NOT the hash of its key: it cannot
 
@@ -150,7 +168,7 @@ function New-World([string]$AuthorityState = 'Running', [string]$Config = 'legac
   $script:Svc[$K.AuthorityService].state = $AuthorityState
   $script:WrongPath = $false; $script:StopFails = $false; $script:StartMode = 'works'; $script:OldAuthorityBuild = $false; $script:AuthorityNeverStarts = $false; $script:StoreUntrusted = $false
   $script:Order.Clear(); $script:ConfigWrites.Clear(); $script:StartSnapshots.Clear(); $script:Said.Clear()
-  $script:ExpectedApproverKeyId = @(); $script:Replace = $false; $script:OnStop = $null
+  $script:ExpectedApproverKeyId = $null; $script:Replace = $false; $script:OnStop = $null   # $null: Invoke-Set supplies the ids of the files as the owner saw them
 }
 # the ids and kinds the install record on disk holds, always as an array (a one-element result must not turn into a plain string)
 function Get-RecordedKeyIds($Disk) {
@@ -174,7 +192,9 @@ function Get-TextKeyIds([string]$Text, [string]$What) {
 }
 # runs -Mode set-approver for these files (-UseReplace: with -Replace) and reports what is observable
 function Invoke-Set([string[]]$Files, [switch]$UseReplace) {
+  $explicitExpected = $script:ExpectedApproverKeyId   # $null: the scenario did not set it, so the ids of these files as the owner saw them are used (and only for this run)
   $script:ApproverKeyFile = $Files
+  if ($null -eq $explicitExpected) { $script:ExpectedApproverKeyId = Get-ExpectedFor $Files }
   $script:Replace = [bool]$UseReplace
   $script:ApproverKeyRead = $null
   $script:ExitCode = $null
@@ -182,6 +202,7 @@ function Invoke-Set([string[]]$Files, [switch]$UseReplace) {
   $script:Order.Clear(); $script:ConfigWrites.Clear(); $script:StartSnapshots.Clear(); $script:Said.Clear()
   $out = [ordered]@{}
   $out.error = Try-Run { $script:ExitCode = Invoke-SetApprover }
+  $script:ExpectedApproverKeyId = $explicitExpected
   $out.exit = $script:ExitCode
   $out.order = @($script:Order)
   $out.said = @($script:Said)
@@ -362,14 +383,38 @@ $refuse = {
 & $refuse 'fileMissing' { } @((Join-Path $keysDir 'missing.json'))
 & $refuse 'twoFilesSameKey' { } @($fileA, $fileA)
 & $refuse 'noFiles' { } @()
+# -ExpectedApproverKeyId is required: one id per file, in order, each the key id of that file's public key (the id the owner saw on the enroll screen)
+& $refuse 'expectedMissing' { $script:ExpectedApproverKeyId = @() } @($fileA)
+& $refuse 'expectedMissingTwoFiles' { $script:ExpectedApproverKeyId = @() } @($fileA, $fileB)
 & $refuse 'expectedIdsDiffer' { $script:ExpectedApproverKeyId = @($recB.keyId) } @($fileA)
 & $refuse 'expectedIdsMissingOne' { $script:ExpectedApproverKeyId = @($recA.keyId) } @($fileA, $fileB)
+& $refuse 'expectedIdsOneTooMany' { $script:ExpectedApproverKeyId = @($recA.keyId, $recB.keyId) } @($fileA)
+& $refuse 'expectedIdsRightKeysWrongOrder' { $script:ExpectedApproverKeyId = @($recB.keyId, $recA.keyId) } @($fileA, $fileB)
+& $refuse 'expectedIdHelloForWebauthn' { $script:ExpectedApproverKeyId = @($recH.keyId) } @($fileA)
+# the swapped file: the owner enrolled key A and saw its id; a program running as the owner then put a VALID record of key X under the same file name
+$swapped = Save-KeyFile 'swapped.json' $recA
+$swappedBefore = Get-ExpectedFor @($swapped)
+$null = Save-KeyFile 'swapped.json' $recX
+& $refuse 'swappedFile' { $script:ExpectedApproverKeyId = $swappedBefore } @($swapped)
+& $refuse 'swappedOneOfTwo' { $script:ExpectedApproverKeyId = @($recA.keyId, $recB.keyId) } @($fileA, $swapped)
 $tooMany = @(1..17 | ForEach-Object { Save-KeyFile ("many$_.json") (New-EcRecord) })
 & $refuse 'seventeenFiles' { } $tooMany
 $result.refusals = $refusals
-# the expected ids, when they match (in any order), let the run through
-New-World -Store @($recH); $script:ExpectedApproverKeyId = @($recB.keyId, $recA.keyId)
+$result.swappedExpected = $swappedBefore
+$swappedNow = Get-ExpectedFor @($swapped)   # assigned first: the function returns , @(list)
+$result.swappedNowHolds = $swappedNow
+# the expected ids, when they match (position by position), let the run through
+New-World -Store @($recH); $script:ExpectedApproverKeyId = @($recA.keyId, $recB.keyId)
 $result.expectedOk = Invoke-Set @($fileA, $fileB)
+# a file swapped AFTER the plan/check but before the write (while the service is being stopped) is caught by the second read: nothing is written
+New-World -Store @($recH)
+$swapLate = Save-KeyFile 'late.json' $recA
+$lateExpected = Get-ExpectedFor @($swapLate)
+$script:ExpectedApproverKeyId = $lateExpected
+$script:OnStop = { $null = Save-KeyFile 'late.json' $recY }
+$result.swappedWhileStopping = Invoke-Set @($swapLate)
+$script:OnStop = $null
+$null = Save-KeyFile 'late.json' $recA
 
 # ---- 10b. the status line about the approver keys, from the real Get-StatusLines (the machine facts it reads besides are faked away)
 function Get-HyperVMemberProblems { , @() }
@@ -420,14 +465,14 @@ $result.fileChecks.targetIntact = [System.IO.File]::Exists((Join-Path $realDir '
 
 # ---- 11. the plan: seven steps, the key ids and kinds, nothing changes
 New-World -Store @($recH)
-$script:ApproverKeyFile = @($fileA, $fileB); $script:Replace = $false; $script:ApproverKeyRead = $null; $script:SetApprover = New-SetApproverState; $script:Said.Clear(); $script:Order.Clear()
+Use-KeyFiles @($fileA, $fileB); $script:Replace = $false; $script:SetApprover = New-SetApproverState; $script:Said.Clear(); $script:Order.Clear()
 Show-Plan (Get-SetApproverSteps) 'set-approver'
 $result.plan = [ordered]@{ lines = @($script:Said); order = @($script:Order); configSame = ((Read-Text $L.AuthorityConfig) -ceq $script:OldConfig); storeExists = [System.IO.File]::Exists($L.AuthorityKeyStore) }
 # a plan of a key that is in force already says it would be refused
-$script:ApproverKeyFile = @($fileH); $script:ApproverKeyRead = $null; $script:SetApprover = New-SetApproverState; $script:Said.Clear()
+Use-KeyFiles @($fileH); $script:SetApprover = New-SetApproverState; $script:Said.Clear()
 Show-Plan (Get-SetApproverSteps) 'set-approver'
 $result.planRefused = @($script:Said)
-$script:ApproverKeyFile = @($fileA, $fileB); $script:Replace = $true; $script:ApproverKeyRead = $null; $script:SetApprover = New-SetApproverState; $script:Said.Clear()
+Use-KeyFiles @($fileA, $fileB); $script:Replace = $true; $script:SetApprover = New-SetApproverState; $script:Said.Clear()
 Show-Plan (Get-SetApproverSteps) 'set-approver'
 $result.planReplace = @($script:Said)
 $script:Replace = $false
@@ -446,8 +491,7 @@ $ecc = New-Object System.Security.Cryptography.ECDsaCng(256)
 try { $script:Manifest['values']['authoritySpki'] = ConvertTo-P256Spki ([byte[]]$ecc.Key.Export([System.Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob)) } finally { $ecc.Dispose() }
 function Resolve-HostSids { $script:Sids = @{ Broker = (Get-DerivedServiceSid $K.BrokerService); Authority = (Get-DerivedServiceSid $K.AuthorityService); ControlPlane = $cpSid; Approver = $ownerSid; Legacy = $false } }
 function Get-ApproverStepDef { Get-InstallSteps | Where-Object { $_.Id -eq 'approver' } }
-$script:ExpectedApproverKeyId = @()
-$script:ApproverKeyFile = @($fileA, $fileH); $script:ApproverKeyRead = $null; $ApproverSid = $ownerSid
+Use-KeyFiles @($fileA, $fileH); $ApproverSid = $ownerSid
 $step = Get-ApproverStepDef
 $result.install = [ordered]@{ title = $step.Title; detail = @($step.Detail); test = (& $step.Test) }
 $script:ApproverKeyRead = $null
@@ -468,16 +512,29 @@ $result.install.record = [ordered]@{ approverKeys = $installedIds; hasLegacyId =
 # the step's refusals: no SID, a bad file, a key file with the old three values
 $ApproverSid = $null; $script:ApproverKeyRead = $null
 $result.install.noSid = & $step.Test
-$ApproverSid = $ownerSid; $script:ApproverKeyFile = @($fileA, (Join-Path $keysDir 'missing.json')); $script:ApproverKeyRead = $null
+$ApproverSid = $ownerSid; Use-KeyFiles @($fileA, (Join-Path $keysDir 'missing.json'))
 $result.install.badFile = & $step.Test
-$script:ApproverKeyFile = @($fileA); $script:ApproverKeyRead = $null; $script:ExpectedApproverKeyId = @($recB.keyId)
+Use-KeyFiles @($fileA); $script:ExpectedApproverKeyId = @($recB.keyId)
 $result.install.expectedDiffers = & $step.Test
-$script:ExpectedApproverKeyId = @()
-$script:ApproverKeyFile = @($fileA); $script:ApproverKeyRead = $null; $ApproverSid = $cpSid
+# the expected ids are required with key files: none, or too few, is refused by the step (the command line refuses it earlier still)
+$script:ExpectedApproverKeyId = @(); $script:ApproverKeyRead = $null
+$result.install.expectedMissing = & $step.Test
+Use-KeyFiles @($fileA, $fileB); $script:ExpectedApproverKeyId = @($recA.keyId); $script:ApproverKeyRead = $null
+$result.install.expectedTooFew = & $step.Test
+# a file swapped under its name after the enroll: the owner saw A's id, the file now holds X
+$swappedInstall = Save-KeyFile 'swapped-install.json' $recA
+Use-KeyFiles @($swappedInstall)
+$null = Save-KeyFile 'swapped-install.json' $recX
+$result.install.swappedFile = & $step.Test
+$result.install.swappedFileDo = Try-Run { & $step.Do }
+$null = Save-KeyFile 'swapped-install.json' $recA
+$script:ApproverKeyRead = $null   # the plan's answer is kept per run; a new run reads the files again
+$result.install.sameFileBack = & $step.Test
+Use-KeyFiles @($fileA); $ApproverSid = $cpSid
 $result.install.sidIsControlPlane = Try-Run { Set-ApproverValues }
 $ApproverSid = $ownerSid
 # legacy values: nothing changes for them
-$script:ApproverKeyFile = @(); $script:ApproverKeyRead = $null; $ApproverKeyId = $legacyId; $ApproverPublicKey = $labApproverKey
+Use-KeyFiles @(); $ApproverKeyId = $legacyId; $ApproverPublicKey = $labApproverKey
 $legacyStep = Get-ApproverStepDef
 $result.legacy = [ordered]@{ detail = @($legacyStep.Detail).Count; test = (& $legacyStep.Test) }
 & $legacyStep.Do
@@ -499,7 +556,17 @@ $withoutFiles = Get-ApproverInput
 $result.migrateInput = [ordered]@{ withFiles = $withFiles; withoutFiles = $withoutFiles }
 function Get-NodePinProblem { $null }; function Get-ClaudePinProblem { $null }; function Get-LegacyUnknownProblems { , @() }
 function Get-ExpectedTreeHashState { [pscustomobject]@{ Ok = $true; Reason = ''; Value = ('a' * 64) } }
-$script:ApproverKeyFile = @($fileA, (Join-Path $keysDir 'missing.json')); $script:ApproverKeyRead = $null
+Use-KeyFiles @($fileA, (Join-Path $keysDir 'missing.json'))
 $preflight = Get-MigratePreflightProblems   # assigned first: the function returns , @(list)
 $result.migratePreflight = @($preflight | Where-Object { $_ -like 'approver key record rejected*' })
+# migrate with a swapped file: the preflight (which reads the files again) refuses it before anything is stopped
+$swappedMigrate = Save-KeyFile 'swapped-migrate.json' $recA
+Use-KeyFiles @($swappedMigrate)
+$null = Save-KeyFile 'swapped-migrate.json' $recY
+$preflightSwapped = Get-MigratePreflightProblems
+$result.migratePreflightSwapped = @($preflightSwapped | Where-Object { $_ -like 'approver key record rejected*' })
+# and with no expected ids at all
+$script:ExpectedApproverKeyId = @(); $script:ApproverKeyRead = $null
+$preflightNoIds = Get-MigratePreflightProblems
+$result.migratePreflightNoIds = @($preflightNoIds | Where-Object { $_ -like 'approver key record rejected*' })
 ConvertTo-Json -InputObject $result -Compress -Depth 8

@@ -25,16 +25,19 @@
 #                                                             stops the services, runs the uninstall (the Broker's SID leaves Hyper-V Administrators first), installs the new layout with the carried-over values, and deletes the
 #                                                             account and its profile. -TrustLocalBuilds says that you accept the tree hash of the builds in this working tree instead of one typed from a CI log (the
 #                                                             trade the contract makes for this one run). Lost by design: the Control Plane and Broker journals and the Authority's signing key (a new one is made).
-#   albera-host.ps1 -Mode install ... -ApproverKeyFile <record.json>[,<record.json>...] -ApproverSid <S-1-5-21-...>
+#   albera-host.ps1 -Mode install ... -ApproverKeyFile <record.json>[,<record.json>...] -ExpectedApproverKeyId <id>[,<id>...] -ApproverSid <S-1-5-21-...>
 #                                                             the same install, with the approver key(s) taken from key record files (1 to 16; WebAuthn keys, docs/architecture/approver-webauthn.md) instead of
 #                                                             -ApproverKeyId and -ApproverPublicKey. The Authority config then holds `approverKeys` and not the legacy pair. -Mode migrate takes the same option
 #                                                             (the SID is still carried over). Several files: one value with commas (PowerShell started with -File passes a comma list as one string, and a repeated parameter is an error).
-#   albera-host.ps1 -Mode set-approver -ApproverKeyFile <record.json>[,<record.json>...] [-Replace] [-ExpectedApproverKeyId <id>[,<id>...]]
+#                                                             -ExpectedApproverKeyId is REQUIRED with -ApproverKeyFile: one key id per file, in the same order, as `AlberaApprover.exe enroll --webauthn` printed them. The key id is computed
+#                                                             from each file's public key and the run is refused, before anything changes, unless it is the expected one (the files are in your own profile, so a program running
+#                                                             as you can swap one between the enroll and this run; the id you saw on your screen is the anchor).
+#   albera-host.ps1 -Mode set-approver -ApproverKeyFile <record.json>[,<record.json>...] -ExpectedApproverKeyId <id>[,<id>...] [-Replace]
 #                                                             the ONLY way a key is added (elevated; there is no run-time key_add). Reads and fully checks the record file(s), ADDS them to the approver keys in force of a
 #                                                             complete install (the Authority's key store when it is there and trusted, otherwise the config's keys; with -Replace the given keys alone become the list), writes
 #                                                             `approverKeys` into the Authority config (the legacy pair is removed, never both), deletes authority\approver-keys.json, restarts AlberaApprovalAuthority and records the
-#                                                             change in the manifest. The final list (key ids and kinds) is printed before anything is written. The approver SID stays as it is. -ExpectedApproverKeyId: the key ids
-#                                                             you read off the screen that created the keys; the run is refused unless the files hold exactly those.
+#                                                             change in the manifest. The final list (key ids and kinds) is printed before anything is written. The approver SID stays as it is. -ExpectedApproverKeyId (required): the key ids
+#                                                             you read off the screen that created the keys, one per file in the same order; the run is refused unless each file's key is exactly the one expected.
 #   albera-host.ps1 -Mode status                              read-only report of what is installed and whether it still matches (exit 1 on any difference)
 #   albera-host.ps1 -Mode uninstall                           remove only what the install manifest says this script created (elevated)
 #
@@ -65,7 +68,8 @@ param(
   [string]$ApproverSid,
   # Key record files (approver-webauthn.md): 1 to 16 paths, comma-separated. Instead of -ApproverKeyId and -ApproverPublicKey (install, migrate), or the whole input of -Mode set-approver.
   [string[]]$ApproverKeyFile,
-  # The key ids the owner read off the screen that created the keys; the files must hold exactly these (a planted or swapped record file is then refused). Optional, comma-separated.
+  # REQUIRED with -ApproverKeyFile: the key ids the owner read off the screen that created the keys, one per file in the same order, comma-separated. Each file's key id (computed from its public key)
+  # must be the expected one, so a record file swapped for another key after the enroll is refused.
   [string[]]$ExpectedApproverKeyId,
   # set-approver only: the given key file(s) become the ONLY approver keys. Without it they are ADDED to the keys in force.
   [switch]$Replace,
@@ -176,6 +180,9 @@ if ($ApproverKeyFile.Count -gt 0) {
   if ($ApproverKeyId -or $ApproverPublicKey) { Stop-Refused 'give the approver key as -ApproverKeyFile OR as -ApproverKeyId and -ApproverPublicKey, not both' 2 }
   if ($ApproverKeyFile.Count -gt $K.MaxApproverKeys) { Stop-Refused ("at most $($K.MaxApproverKeys) key record files can be given (the Authority holds at most $($K.MaxApproverKeys) keys)") 2 }
   foreach ($keyFilePath in $ApproverKeyFile) { if (-not (Test-PlainAbsolutePath $keyFilePath)) { Stop-Refused '-ApproverKeyFile must be plain absolute paths (C:\dir\file.json: no relative path, no ..; a path with a comma in it cannot be given)' 2 } }
+  # The record files sit in the owner's own profile, so a program running as the owner can swap one between the enroll and this elevated run. The key id the owner SAW on the enroll screen is the anchor: it is required, once per file.
+  if ($ExpectedApproverKeyId.Count -eq 0) { Stop-Refused '-ExpectedApproverKeyId is required with -ApproverKeyFile: one key id per file, in the same order, as AlberaApprover.exe enroll --webauthn printed them on your screen (the record file is in your own profile, so another program running as you could have swapped it)' 2 }
+  if ($ExpectedApproverKeyId.Count -ne $ApproverKeyFile.Count) { Stop-Refused ("-ExpectedApproverKeyId needs exactly one key id per -ApproverKeyFile file, in the same order ($($ApproverKeyFile.Count) file(s), $($ExpectedApproverKeyId.Count) id(s))") 2 }
 }
 if ($ExpectedApproverKeyId.Count -gt 0) {
   if ($ApproverKeyFile.Count -eq 0) { Stop-Refused '-ExpectedApproverKeyId only applies together with -ApproverKeyFile' 2 }
@@ -634,27 +641,33 @@ function Read-ApproverKeyFileBytes([string]$Path) {
   catch { return (& $fail ('file_unreadable: ' + $_.Exception.Message)) }
   finally { if ($stream) { $stream.Dispose() } }
 }
-# All the -ApproverKeyFile files: every record valid, the set valid (1 to 16, no key, credential or public key twice), and - when -ExpectedApproverKeyId was given - exactly those key ids.
-# The answer is kept (the plan and the tests ask several times); -Fresh reads the files again, and the install's approver step does that, so the records written are the ones read last.
+# All the -ApproverKeyFile files: every record valid, the set valid (1 to 16, no key, credential or public key twice), and every file's key id - computed here from the file's public key - equal to
+# the one given at the same position of -ExpectedApproverKeyId (required: the key id the owner saw on the enroll screen is the anchor against a record file swapped in the owner's profile).
+# With a missing or short -ExpectedApproverKeyId nothing is read at all. Every run that writes keys reads the files through here again (-Fresh), so the records written are the ones checked last.
+# The answer is kept (the plan and the tests ask several times); -Fresh reads the files again, and the install's approver step does that.
 $script:ApproverKeyRead = $null
 function Read-ApproverKeyFiles([switch]$Fresh) {
   if (-not $Fresh -and $script:ApproverKeyRead) { return $script:ApproverKeyRead }
   $reasons = New-Object System.Collections.Generic.List[string]
   $records = New-Object System.Collections.Generic.List[object]
-  foreach ($path in $ApproverKeyFile) {
+  if ($ExpectedApproverKeyId.Count -ne $ApproverKeyFile.Count) {
+    $reasons.Add("-ExpectedApproverKeyId must give exactly one key id per -ApproverKeyFile file, in the same order ($($ApproverKeyFile.Count) file(s), $($ExpectedApproverKeyId.Count) id(s)); the files were not used")
+    $script:ApproverKeyRead = [pscustomobject]@{ Ok = $false; Reasons = @($reasons); Records = @() }
+    return $script:ApproverKeyRead
+  }
+  for ($i = 0; $i -lt $ApproverKeyFile.Count; $i++) {
+    $path = $ApproverKeyFile[$i]
     $file = Read-ApproverKeyFileBytes $path
     if (-not $file.Ok) { $reasons.Add("${path}: $($file.Reason)"); continue }
     $parsed = Read-ApproverKeyRecordBytes $file.Bytes
-    if ($parsed.Ok) { $records.Add($parsed.Record) } else { $reasons.Add("${path}: $($parsed.Reasons -join ', ')") }
+    if (-not $parsed.Ok) { $reasons.Add("${path}: $($parsed.Reasons -join ', ')"); continue }
+    # the id is derived again from the public key bytes that were just read (the record check made the written keyId agree with it); it is the one compared with what the owner saw
+    $spki = ConvertFrom-Base64Strict $parsed.Record.publicKey
+    $derivedId = if ($null -ne $spki) { Get-ApproverKeyIdFor $parsed.Record.kind $spki } else { '(public key unreadable)' }
+    if ($derivedId -cne $ExpectedApproverKeyId[$i]) { $reasons.Add("${path}: this file holds the key $derivedId, but the key id expected for it (-ExpectedApproverKeyId, position $($i + 1)) is $($ExpectedApproverKeyId[$i]); the file is not the one the key was made into (it may have been replaced); nothing was changed"); continue }
+    $records.Add($parsed.Record)
   }
-  if ($reasons.Count -eq 0) {
-    foreach ($why in (Test-ApproverKeySet $records.ToArray())) { $reasons.Add($why) }
-    if ($ExpectedApproverKeyId.Count -gt 0) {
-      $have = @($records | ForEach-Object { $_.keyId })
-      $missing = @($ExpectedApproverKeyId | Where-Object { $have -cnotcontains $_ }); $extra = @($have | Where-Object { $ExpectedApproverKeyId -cnotcontains $_ })
-      if ($missing.Count -gt 0 -or $extra.Count -gt 0 -or $have.Count -ne $ExpectedApproverKeyId.Count) { $reasons.Add('the key ids in the files (' + ($have -join ', ') + ') are not exactly the ones given with -ExpectedApproverKeyId (' + ($ExpectedApproverKeyId -join ', ') + '); nothing was changed') }
-    }
-  }
+  if ($reasons.Count -eq 0) { foreach ($why in (Test-ApproverKeySet $records.ToArray())) { $reasons.Add($why) } }
   $script:ApproverKeyRead = [pscustomobject]@{ Ok = ($reasons.Count -eq 0); Reasons = @($reasons); Records = $records.ToArray() }   # ToArray: Windows PowerShell 5.1 fails on @( ) around a List[object]
   $script:ApproverKeyRead
 }
@@ -664,7 +677,7 @@ function Get-ApproverKeyDetailLines {
   $read = Read-ApproverKeyFiles
   if (-not $read.Ok) { 'approver key record file(s) REJECTED: ' + ($read.Reasons -join '; '); return }
   "approver key(s) to register, read from $($ApproverKeyFile.Count) file(s): $(Get-ApproverKeySummary $read.Records)"
-  'compare these key ids with the ones AlberaApprover.exe printed when it created the keys (or give them as -ExpectedApproverKeyId, and the run is refused unless they are exactly these)'
+  'each key id above equals the one given at the same position of -ExpectedApproverKeyId (the ids AlberaApprover.exe printed on your screen when it created the keys)'
 }
 function Get-InstallSteps {
   $steps = @(
@@ -683,7 +696,8 @@ function Get-InstallSteps {
       Do = { Say '    the tree hash is given; the five publish folders exist and hold no links'; if ($SetupRunId) { Set-SetupRunIdFloorValue; Say "    setup run id $SetupRunId (the floor of this PC is at least that now)" } } }
     [pscustomobject]@{ Id = 'approver'; Title = 'Check the approver values (-ApproverKeyId, -ApproverPublicKey, -ApproverSid, from your own "AlberaApprover.exe enroll --show" in a normal console; or -ApproverKeyFile and -ApproverSid; migrate carries them over)'
       Detail = @('the key id must be a valid id; the public key an RSA-2048 SPKI; the SID an S-1-5-21 user SID', 'this script does not run the approver program: it would run elevated',
-        'with -ApproverKeyFile (1 to 16 key record files, approver-webauthn.md) every record is checked against the whole record contract and the Authority config gets approverKeys instead of the legacy pair; the SID is still typed (migrate carries it over)') + @(Get-ApproverKeyDetailLines)
+        'with -ApproverKeyFile (1 to 16 key record files, approver-webauthn.md) every record is checked against the whole record contract and the Authority config gets approverKeys instead of the legacy pair; the SID is still typed (migrate carries it over)',
+        'with -ApproverKeyFile, -ExpectedApproverKeyId is required: one key id per file, in the same order, as enroll printed them; a file whose key is another one (a swapped file) is refused before anything changes') + @(Get-ApproverKeyDetailLines)
       Test = {
         $in = Get-ApproverInput
         if ($ApproverKeyFile.Count -gt 0) {
@@ -2028,8 +2042,7 @@ function Show-SetApproverKeys {
   else { Say "    in force now ($($final.Source)): $(Get-ApproverKeySummary $final.Kept)"; Say "    added: $(Get-ApproverKeySummary $final.Added)" }
   Say "    the Authority will trust exactly these $(@($final.Records).Count) approver key(s) afterwards:"
   foreach ($r in $final.Records) { Say "      $($r.keyId)   kind $($r.kind)$(if (@($final.Added | Where-Object { $_.keyId -ceq $r.keyId }).Count -gt 0) { '   (new)' } else { '   (kept)' })" }
-  if ($ExpectedApproverKeyId.Count -gt 0) { Say '    the key ids of the files equal -ExpectedApproverKeyId' }
-  else { Say '    compare the new key ids with the ones AlberaApprover.exe printed when it created the keys (-ExpectedApproverKeyId makes the run refuse unless the files hold exactly the ids you give)' }
+  Say '    each new key id is the one given at the same position of -ExpectedApproverKeyId (the ids AlberaApprover.exe printed on your screen when it created the keys)'
 }
 # Writes the new config. The service is stopped by now, so the list is worked out ONCE MORE (the store and the files are read again) and must come out as shown; the old text is kept in memory: it is what goes back
 # if the Authority does not start with the new one.
@@ -2092,7 +2105,8 @@ function Get-SetApproverSteps {
     [pscustomobject]@{ Id = 'keys'; Title = 'Read the key record file(s) (-ApproverKeyFile), check every rule of the key record contract, work out the final key list (the keys in force plus the given ones; with -Replace the given ones alone) and show it, key ids and kinds, before anything is written'
       Detail = @('one canonical record per file; keyId = webauthn- or hello- plus the first 8 bytes of SHA-256 over the SPKI; ES256 with a P-256 key or RS256 with RSA (webauthn: 2048 to 4096 bits, hello-rsa: 2048); credentialId 1 to 1023 bytes; no link on the path',
         'the keys in force are the Authority key store (authority\approver-keys.json) when it is there, trusted and valid, otherwise the config''s keys: starting from the config alone would bring back a key that was removed at run time',
-        'a given keyId that is in force already is refused; so is a list of more than 16 keys') + @(Get-SetApproverDetailLines)
+        'a given keyId that is in force already is refused; so is a list of more than 16 keys',
+        '-ExpectedApproverKeyId (required): the key id computed from each file''s public key must be the one given for that file, in order: a file swapped for another key after the enroll is refused here, before the service is touched') + @(Get-SetApproverDetailLines)
       Test = { $final = Get-SetApproverFinalList; if ($final.Ok) { 'todo' } else { 'blocked:' + $final.Reason } }
       Do = { Show-SetApproverKeys } }
     [pscustomobject]@{ Id = 'stop'; Title = "Stop $($K.AuthorityService) if it is running (while it runs it may rewrite its key store)"

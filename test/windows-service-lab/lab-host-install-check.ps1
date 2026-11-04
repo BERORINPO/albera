@@ -181,8 +181,17 @@ else {
     Add-SetApproverCheck $setChecks 'authority_runs_before' ($p0.state -eq 'Running') ("state " + $p0.state + ", process " + $p0.processId)
     # 1. the install above used the legacy id hello-lab-0001, which is not the hash of its key, so it cannot be carried into approverKeys: ADDING is refused and nothing moves
     $hash0 = & $configHash; $record0 = & $manifestHash
-    $refused = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labA.File) }
+    $refused = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labA.File); ExpectedApproverKeyId = @($labA.Record.keyId) }
     Add-SetApproverCheck $setChecks 'add_to_an_invalid_legacy_key_refused' ($refused.Exit -eq 3 -and $refused.Output -match 'is not a valid hello-rsa record' -and (& $configHash) -eq $hash0 -and (& $manifestHash) -eq $record0 -and (Get-AuthorityServiceFacts).processId -eq $p0.processId) ("exit " + $refused.Exit)
+    # 1b. -ExpectedApproverKeyId is required (one id per file, in order): none is refused at the command line (exit 2), a wrong id and a file swapped under its name (a valid record of another key) are refused (exit 3); nothing moves
+    $noId = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labA.File); Replace = $true }
+    Add-SetApproverCheck $setChecks 'missing_expected_id_refused' ($noId.Exit -eq 2 -and $noId.Output -match '-ExpectedApproverKeyId is required with -ApproverKeyFile' -and (& $configHash) -eq $hash0 -and (& $manifestHash) -eq $record0 -and (Get-AuthorityServiceFacts).processId -eq $p0.processId) ("exit " + $noId.Exit)
+    $swapFile = Join-Path $labKeyDir 'swapped.json'
+    [System.IO.File]::WriteAllBytes($swapFile, [System.IO.File]::ReadAllBytes($labA.File))
+    $swapExpected = $labA.Record.keyId                                                  # the id the owner saw when key A was made
+    [System.IO.File]::WriteAllBytes($swapFile, [System.IO.File]::ReadAllBytes($labB.File))   # ... then the file under that name becomes another, valid, key
+    $swapped = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($swapFile); ExpectedApproverKeyId = @($swapExpected); Replace = $true }
+    Add-SetApproverCheck $setChecks 'swapped_file_refused' ($swapped.Exit -eq 3 -and $swapped.Output.Contains('this file holds the key ' + $labB.Record.keyId + ', but the key id expected for it (-ExpectedApproverKeyId, position 1) is ' + $swapExpected) -and (& $configHash) -eq $hash0 -and (& $manifestHash) -eq $record0 -and (Get-AuthorityServiceFacts).processId -eq $p0.processId) ("exit " + $swapped.Exit)
     # 2. -Replace: the given key is the only key; the service restarts in a new process; the Authority makes its key store again from the config
     $replace = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labA.File); Replace = $true; ExpectedApproverKeyId = @($labA.Record.keyId) }
     $setApprover.output = $replace.Output
@@ -200,7 +209,7 @@ else {
     $setStatus = Invoke-Host @{ Mode = 'status' }
     Add-SetApproverCheck $setChecks 'status_ok_and_lists_the_key' ($setStatus.Exit -eq 0 -and $setStatus.Output.Contains('Authority approver keys: 1 key(s): ' + $labA.Record.keyId + ' (webauthn)')) ("exit " + $setStatus.Exit)
     # 3. ADD a second key: the keys in force are read from the key store the Authority wrote (it must pass the installer's trust test: this is the check that shows it does), and the result is both keys
-    $add = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labB.File) }
+    $add = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labB.File); ExpectedApproverKeyId = @($labB.Record.keyId) }
     Add-SetApproverCheck $setChecks 'add_exit_0' ($add.Exit -eq 0) ("exit " + $add.Exit + $(if ($add.Exit -ne 0) { ': ' + (($add.Output -split "`r?`n" | Where-Object { $_ -match 'REFUSED|ERROR' } | Select-Object -First 1)) } else { '' }))
     $p2 = Get-AuthorityServiceFacts
     Add-SetApproverCheck $setChecks 'authority_runs_after_add_in_a_new_process' ($p2.state -eq 'Running' -and $p2.processId -ne $p1.processId -and $p2.processId -ne 0) ("state " + $p2.state + ", process " + $p2.processId + " (was " + $p1.processId + ")")
@@ -209,16 +218,16 @@ else {
     Add-SetApproverCheck $setChecks 'add_output_shows_the_final_list_before_the_write' ($add.Output.IndexOf('will trust exactly these 2 approver key(s)') -ge 0 -and $add.Output.IndexOf('will trust exactly these 2 approver key(s)') -lt $add.Output.IndexOf('config written')) 'the list line comes before the config line'
     # 4. the same key again is refused (it is in force), nothing moves
     $hash2 = & $configHash; $record2 = & $manifestHash
-    $dup = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labB.File) }
+    $dup = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labB.File); ExpectedApproverKeyId = @($labB.Record.keyId) }
     Add-SetApproverCheck $setChecks 'duplicate_refused' ($dup.Exit -eq 3 -and $dup.Output -match 'already registered' -and (& $configHash) -eq $hash2 -and (& $manifestHash) -eq $record2 -and (Get-AuthorityServiceFacts).processId -eq $p2.processId) ("exit " + $dup.Exit)
     # 5. -Replace with exactly the list in force: nothing is restarted, nothing is deleted
     $storeHash2 = (Get-FileHash -LiteralPath $authorityStoreFile -Algorithm SHA256).Hash
-    $same = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labA.File, $labB.File); Replace = $true }
+    $same = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labA.File, $labB.File); ExpectedApproverKeyId = @($labA.Record.keyId, $labB.Record.keyId); Replace = $true }
     Add-SetApproverCheck $setChecks 'replace_with_the_same_list_changes_nothing' ($same.Exit -eq 0 -and $same.Output -match 'already trusts exactly' -and (Get-AuthorityServiceFacts).processId -eq $p2.processId -and (& $manifestHash) -eq $record2 -and (Get-FileHash -LiteralPath $authorityStoreFile -Algorithm SHA256).Hash -eq $storeHash2) ("exit " + $same.Exit)
     # 6. a file that is not canonical (a trailing line break) is refused and nothing moves
     $badFile = Join-Path $labKeyDir 'not-canonical.json'
     [System.IO.File]::WriteAllBytes($badFile, [System.Text.Encoding]::UTF8.GetBytes((ConvertTo-ApproverKeyText $labB.Record) + "`n"))
-    $setBad = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($badFile); Replace = $true }
+    $setBad = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($badFile); ExpectedApproverKeyId = @($labB.Record.keyId); Replace = $true }
     Add-SetApproverCheck $setChecks 'non_canonical_file_refused' ($setBad.Exit -eq 3 -and $setBad.Output -match 'record_not_canonical' -and (& $configHash) -eq $hash2 -and (Get-AuthorityServiceFacts).processId -eq $p2.processId) ("exit " + $setBad.Exit)
   }
   catch { Add-SetApproverCheck $setChecks 'set_approver_no_exception' $false ($_.Exception.Message) }
