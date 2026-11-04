@@ -572,6 +572,7 @@ internal static partial class Harness
         KeyGuardChecks();
         PathGuardChecks();
         PolicyChecks();
+        ApproverKeyChecks();
         AttestationChecks();
         Console.WriteLine(JsonSerializer.Serialize(new { checks = Results, digestProbes = DigestProbes() }));
         return 0;
