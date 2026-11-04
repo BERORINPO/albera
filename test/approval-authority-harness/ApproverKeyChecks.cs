@@ -67,8 +67,6 @@ internal static partial class Harness
 
     private static string RecordDigest(ApproverKey key) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(CanonicalText(key))));
 
-    private static byte[] AddMessage(ApproverKey key, string challenge) => Encoding.UTF8.GetBytes($"albera.keyadd.v1\0{key.KeyId}\0{RecordDigest(key)}\0{challenge}");
-
     private static byte[] RemoveMessage(ApproverKey key, string challenge) => Encoding.UTF8.GetBytes($"albera.keyremove.v1\0{key.KeyId}\0{RecordDigest(key)}\0{challenge}");
 
     /// <summary>The Hello key of the harness as an older config pins it: its own id, not the derived one.</summary>
@@ -113,19 +111,8 @@ internal static partial class Harness
             return reply.GetProperty("challenge").GetString()!;
         }
 
-        public JsonElement KeyAdd(string challenge, ApproverKey key, string byJson, string newKeyJson) =>
-            Fx.Call(PipeRole.Approver, $"{{\"v\":1,\"verb\":\"key_add\",\"key\":{KeyJson(key)},\"challenge\":\"{challenge}\",\"by\":{byJson},\"newKey\":{newKeyJson}}}");
-
         public JsonElement KeyRemove(string challenge, string keyId, string byJson) =>
             Fx.Call(PipeRole.Approver, $"{{\"v\":1,\"verb\":\"key_remove\",\"keyId\":\"{keyId}\",\"challenge\":\"{challenge}\",\"by\":{byJson}}}");
-
-        /// <summary>A complete, correct add: challenge, the Hello key (or <paramref name="signer"/>) authorizes, the new key proves possession.</summary>
-        public JsonElement AddKey(Authenticator added, Authenticator? signer = null, uint count = 1)
-        {
-            string challenge = ChallengeValue("add", added.Key.KeyId);
-            byte[] message = AddMessage(added.Key, challenge);
-            return KeyAdd(challenge, added.Key, signer is null ? HelloWire(message) : signer.Wire(message, count), added.Wire(message, count));
-        }
 
         public string[] KeyIds => [.. Keys.Keys.Select(k => k.KeyId)];
     }
@@ -139,7 +126,7 @@ internal static partial class Harness
         WebAuthnProofShapeChecks();
         KeyRecordChecks();
         ApproverKeyDecideChecks();
-        ApproverKeyAddChecks();
+        ApproverKeyChallengeChecks();
         ApproverKeyRemoveChecks();
         ApproverKeyStoreChecks();
         ApproverKeyConfigChecks();
@@ -249,7 +236,7 @@ internal static partial class Harness
             Assert(keys.Verify(message, WebAuthnProof.Encode(new(credentialId, Authenticator.AuthData(), rsa.SignData(data, HashAlgorithmName.SHA256, RSASignaturePadding.Pss)))) == PresenceResult.Mismatch, "PSS");
             Assert(keys.Verify(message, WebAuthnProof.Encode(new(credentialId, Authenticator.AuthData(), rsa.SignData(data, HashAlgorithmName.SHA384, RSASignaturePadding.Pkcs1)))) == PresenceResult.Mismatch, "SHA-384");
         });
-        Check("webauthn rule 4: the sign count must grow when both the stored and the new count are non-zero; 0 is never refused and never lowers it; counts are per key; a bad signature moves nothing", () =>
+        Check("webauthn rule 4: once a count above 0 is stored the next must be larger, a 0 included; while the stored count is 0 anything goes; counts are per key; a bad signature moves nothing", () =>
         {
             using Authenticator a = new(), b = new();
             ApproverKeySet keys = ApproverKeySet.InMemory([a.Key, b.Key], () => Start);
@@ -259,8 +246,8 @@ internal static partial class Harness
             Assert(With(a, 6) == PresenceResult.Verified, "6 after 5");
             Assert(With(a, 6) == PresenceResult.Mismatch, "6 again (a replay or a clone)");
             Assert(With(a, 5) == PresenceResult.Mismatch, "5 after 6");
-            Assert(With(a, 0) == PresenceResult.Verified, "0 is an authenticator without a counter");
-            Assert(With(a, 6) == PresenceResult.Mismatch, "0 did not lower the stored count");
+            Assert(With(a, 0) == PresenceResult.Mismatch, "a 0 after a stored count above 0 is a mismatch (a cloned authenticator can look like that)");
+            Assert(With(a, 6) == PresenceResult.Mismatch, "and that 0 did not move the stored count");
             Assert(With(a, 7) == PresenceResult.Verified, "7 after 6");
             Assert(With(b, 1) == PresenceResult.Verified, "the count is per key: b starts at 1 although a is at 7");
             WebAuthnAssertion bad = a.Assertion(message, 100);
@@ -268,7 +255,13 @@ internal static partial class Harness
             Assert(With(a, 8) == PresenceResult.Verified, "the damaged signature did not move the stored count to 100");
             ApproverKeySet zeroes = ApproverKeySet.InMemory([a.Key], () => Start);
             Assert(zeroes.Verify(message, a.Proof(message, 0)) == PresenceResult.Verified && zeroes.Verify(message, a.Proof(message, 0)) == PresenceResult.Verified, "0 and 0 repeat freely");
-            Assert(zeroes.Verify(message, a.Proof(message, 3)) == PresenceResult.Verified && zeroes.Verify(message, a.Proof(message, 0)) == PresenceResult.Verified, "a first non-zero count after 0, then 0 again");
+            Assert(zeroes.Verify(message, a.Proof(message, 3)) == PresenceResult.Verified, "a first non-zero count after 0 is fine");
+            Assert(zeroes.Verify(message, a.Proof(message, 0)) == PresenceResult.Mismatch && zeroes.Verify(message, a.Proof(message, 3)) == PresenceResult.Mismatch && zeroes.Verify(message, a.Proof(message, 4)) == PresenceResult.Verified, "and from then on a 0 or a repeat is a mismatch");
+            ApproverKeySet fresh = ApproverKeySet.InMemory([a.Key], () => Start);
+            Assert(fresh.Verify(message, a.Proof(message, 0)) == PresenceResult.Verified && fresh.Verify(message, a.Proof(message, 1)) == PresenceResult.Verified && fresh.Verify(message, a.Proof(message, 0)) == PresenceResult.Mismatch, "0, then 1, then 0 again");
+            ApproverKeySet hello = ApproverKeySet.InMemory([HelloKeyRecord()], () => Start);
+            byte[] raw = Hello.SignData(message, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            Assert(hello.Verify(message, raw) == PresenceResult.Verified && hello.Verify(message, raw) == PresenceResult.Verified, "a Hello key has no counter: the same signature verifies again (the message is what binds it)");
         });
         Check("webauthn: a proof that is checked again later (the one stored beside policy.json) neither needs a larger sign count nor moves it", () =>
         {
@@ -377,9 +370,8 @@ internal static partial class Harness
             Assert(Encoding.UTF8.GetString(ApproverKeyRules.Canonical(es.Key)) == $"{{\"keyId\":\"{es.Key.KeyId}\",\"kind\":\"webauthn\",\"alg\":-7,\"publicKey\":\"{Convert.ToBase64String(es.Spki)}\",\"credentialId\":\"{B64Url(es.CredentialId)}\"}}", "webauthn");
             Assert(Encoding.UTF8.GetString(ApproverKeyRules.Canonical(hello)) == $"{{\"keyId\":\"{hello.KeyId}\",\"kind\":\"hello-rsa\",\"alg\":-257,\"publicKey\":\"{Convert.ToBase64String(hello.PublicKey)}\"}}", "hello-rsa");
             Assert(ApproverKeyRules.Digest(es.Key) == RecordDigest(es.Key) && System.Text.RegularExpressions.Regex.IsMatch(ApproverKeyRules.Digest(es.Key), "^[0-9a-f]{64}$"), "digest");
-            Assert(Encoding.UTF8.GetString(KeyMessages.Add(es.Key, "AAAAAAAAAAAAAAAAAAAAAA")) == Encoding.UTF8.GetString(AddMessage(es.Key, "AAAAAAAAAAAAAAAAAAAAAA")), "add message");
             Assert(Encoding.UTF8.GetString(KeyMessages.Remove(es.Key, "AAAAAAAAAAAAAAAAAAAAAA")) == Encoding.UTF8.GetString(RemoveMessage(es.Key, "AAAAAAAAAAAAAAAAAAAAAA")), "remove message");
-            Assert(Encoding.UTF8.GetString(AddMessage(es.Key, "c")).Split('\0') is ["albera.keyadd.v1", { } id, { Length: 64 }, "c"] && id == es.Key.KeyId, "four parts separated by 0x00");
+            Assert(Encoding.UTF8.GetString(RemoveMessage(es.Key, "c")).Split('\0') is ["albera.keyremove.v1", { } id, { Length: 64 }, "c"] && id == es.Key.KeyId, "four parts separated by 0x00");
         });
         Check("keys: base64 is canonical (no whitespace, no non-zero stray bits, padding as written by the encoder) and url base64 has no padding or +/", () =>
         {
@@ -406,19 +398,29 @@ internal static partial class Harness
             Assert(!k.Fx.List().TryGetProperty("keys", out _) && Code(k.Fx.Call(PipeRole.Approver, "{\"v\":1,\"verb\":\"list\",\"keys\":true}")) == "request_invalid", "list keeps its shape and does not take a keys flag");
             Assert(Code(k.Fx.Call(PipeRole.Approver, "{\"v\":1,\"verb\":\"keys\",\"x\":1}")) == "request_invalid" && Code(k.Fx.Call(PipeRole.Submit, "{\"v\":1,\"verb\":\"keys\"}")) == "request_invalid", "no extra key, not on the submit pipe");
         });
-        Check("keys verb: the reply for the longest list the Authority accepts still fits one 2 KiB frame; a key that would make it longer is too_many_keys", () =>
+        Check("keys verb: the reply for the longest list the Authority accepts fits one 2 KiB frame; a list that would not fit is refused where it is read (config_approver_keys, approver_keys_invalid)", () =>
         {
-            KeyFixture k = new();
-            List<Authenticator> made = [];
+            Authenticator[] ordinary = [.. Enumerable.Range(0, ApproverKeyRules.MaxKeys).Select(_ => new Authenticator())];
+            List<Authenticator> heavy = [];
             try
             {
-                string last = "ok";
-                for (int i = 0; i < ApproverKeyRules.MaxKeys && last == "ok"; i++) { made.Add(new Authenticator(credentialIdBytes: 120)); last = Code(k.AddKey(made[^1])); }
-                Assert(last == "too_many_keys" && k.Keys.Keys.Count < ApproverKeyRules.MaxKeys, $"120-byte credential ids stop at {k.Keys.Keys.Count} keys");
+                KeyFixture k = new(ordinary.Select(x => x.Key));
                 byte[] frame = k.Fx.Protocol.Handle(PipeRole.Approver, Encoding.UTF8.GetBytes("{\"v\":1,\"verb\":\"keys\"}"));
-                Assert(frame.Length <= AuthorityProtocol.MaxFrameBytes && Code(Parse(frame)) == "ok", $"{frame.Length} bytes");
+                Assert(frame.Length <= AuthorityProtocol.MaxFrameBytes && Parse(frame).GetProperty("keys").GetArrayLength() == 16, $"sixteen keys with 32-byte credential ids: {frame.Length} bytes");
+                Assert(ApproverKeyRules.Fits(ordinary.Select(x => x.Key).ToList()), "and they fit");
+                for (int i = 0; i < ApproverKeyRules.MaxKeys; i++)
+                {
+                    heavy.Add(new Authenticator(credentialIdBytes: 120));
+                    if (!ApproverKeyRules.Fits(heavy.Select(x => x.Key).ToList())) break;
+                }
+                IReadOnlyList<ApproverKey> tooMany = [.. heavy.Select(x => x.Key)];
+                IReadOnlyList<ApproverKey> largest = [.. tooMany.Take(tooMany.Count - 1)];
+                Assert(largest.Count is > 0 and < 16 && !ApproverKeyRules.Fits(tooMany), $"120-byte credential ids stop at {largest.Count} keys");
+                byte[] longest = new KeyFixture(largest).Fx.Protocol.Handle(PipeRole.Approver, Encoding.UTF8.GetBytes("{\"v\":1,\"verb\":\"keys\"}"));
+                Assert(longest.Length <= AuthorityProtocol.MaxFrameBytes, $"the longest list that fits: {longest.Length} bytes");
+                Assert(ConfigReason(ListConfigJson(tooMany)) == "config_approver_keys", "a config list that does not fit");
             }
-            finally { foreach (Authenticator a in made) a.Dispose(); }
+            finally { foreach (Authenticator a in ordinary.Concat(heavy)) a.Dispose(); }
         });
     }
 
@@ -516,6 +518,46 @@ internal static partial class Harness
                 Assert(Set(rs.Wire(message)) == "ok", "set");
                 Assert(PolicyStore.TryLoad(config, DefaultIdentity, keys.ForStoredProofs, out reason, out bool fromFile) is { } && fromFile, $"reload: {reason}");
             });
+        });
+        Check("decide: a base64 string is only ever a raw RSA signature for the Hello keys: bytes that start with the webauthn marker are request_invalid and never read as an assertion (decide, policy_set, key_remove); the same assertion as an object is what approves", () =>
+        {
+            using Authenticator a = new(), b = new();
+            KeyFixture k = new([HelloKeyRecord(), a.Key, b.Key]);
+            byte[] marker = "ALBWA1"u8.ToArray();
+            string AsString(byte[] bytes) => "\"" + Convert.ToBase64String(bytes) + "\"";
+            string id = k.Pending();
+            byte[] message = k.MessageOf(id);
+            // a valid assertion in the internal packed form, sent as the legacy STRING: it must not be verified as a webauthn proof
+            Assert(Code(k.Decide(id, AsString(a.Proof(message, 3)))) == "request_invalid", "a valid packed assertion as a string");
+            foreach (byte[] bytes in new[] { marker, [.. marker, .. new byte[250]], [.. marker, .. RandomNumberGenerator.GetBytes(400)], [.. marker, .. a.Proof(message, 3)] })
+                Assert(Code(k.Decide(id, AsString(bytes))) == "request_invalid", $"{bytes.Length} bytes starting with the marker");
+            Assert(k.Fx.Store.Get(id)!.State == EntryState.Pending && k.Fx.Store.Get(id)!.Receipt is null, "a shape error leaves the request pending: nothing was decided");
+            Assert(Code(k.Decide(id, a.Wire(message, 3))) == "ok", "the same assertion as an object approves (so the string was refused for being a string)");
+            // the same in policy_set ...
+            string standard = PolicyJson(1, "standard");
+            byte[] policyMessage = PolicyChange.Message(PolicyOf(standard), "authority-key-2026-10", "albera-host-broker");
+            Assert(Code(k.Fx.Call(PipeRole.Approver, $"{{\"v\":1,\"verb\":\"policy_set\",\"policy\":{standard},\"presence\":{AsString(b.Proof(policyMessage, 2))}}}")) == "request_invalid" && k.Fx.Core.Policy() is { Revision: 0 }, "policy_set");
+            Assert(Code(k.Fx.Call(PipeRole.Approver, $"{{\"v\":1,\"verb\":\"policy_set\",\"policy\":{standard},\"presence\":{b.Wire(policyMessage, 2)}}}")) == "ok", "(and as an object it is accepted)");
+            // ... and in key_remove, where a refused string leaves the challenge alone
+            string challenge = k.ChallengeValue("remove", b.Key.KeyId);
+            Assert(Code(k.KeyRemove(challenge, b.Key.KeyId, AsString(a.Proof(RemoveMessage(b.Key, challenge), 4)))) == "request_invalid" && k.Keys.Keys.Count == 3, "key_remove");
+            Assert(Code(k.KeyRemove(challenge, b.Key.KeyId, a.Wire(RemoveMessage(b.Key, challenge), 4))) == "ok", "the object removes, with the same challenge: the refused string did not use it up");
+            // a real 256-byte RSA signature is still what the Hello key signs
+            string next = k.Pending("b");
+            Assert(Code(k.Decide(next, HelloWire(k.MessageOf(next)))) == "ok", "control: the legacy string form works for a Hello key");
+        });
+        Check("one key list: the view the policy store keeps for stored proofs is the list the core changes, so a key_remove is seen by both (the production wiring passes one instance to each)", () =>
+        {
+            using Authenticator a = new(), b = new();
+            KeyFixture k = new([HelloKeyRecord(), a.Key, b.Key]);
+            IHumanPresenceVerifier policyStoresView = k.Keys.ForStoredProofs;
+            byte[] message = Encoding.UTF8.GetBytes("a proof stored beside policy.json");
+            byte[] proof = a.Proof(message, 1);
+            Assert(policyStoresView.Verify(message, proof) == PresenceResult.Verified, "before the removal a's proof verifies through the policy store's view");
+            string challenge = k.ChallengeValue("remove", a.Key.KeyId);
+            Assert(Code(k.KeyRemove(challenge, a.Key.KeyId, b.Wire(RemoveMessage(a.Key, challenge), 1))) == "ok", "a is removed through the core");
+            Assert(policyStoresView.Verify(message, proof) == PresenceResult.Mismatch, "after it the same view no longer vouches for a's proof");
+            Assert(policyStoresView.Verify(message, b.Proof(message, 2)) == PresenceResult.Verified, "and still vouches for b's");
         });
     }
 }

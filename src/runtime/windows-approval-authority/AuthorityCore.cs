@@ -135,16 +135,8 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
     /// <summary>The registered keys' public data, for `keys`.</summary>
     public IReadOnlyList<ApproverKey> ApproverKeys() => presence is ApproverKeySet keys ? keys.Keys : [];
 
-    public KeyOutcome KeyChallenge(KeyOp op, string keyId) => presence is ApproverKeySet keys ? keys.IssueChallenge(op, keyId) : new(AuthorityCodes.RequestInvalid);
-
-    /// <param name="by">a proof by a registered key over KeyMessages.Add(candidate, challenge)</param>
-    /// <param name="newKey">a proof by the new key over the same message</param>
-    public KeyOutcome KeyAdd(ApproverKey candidate, string challenge, byte[] by, byte[] newKey)
-    {
-        KeyOutcome outcome = presence is ApproverKeySet keys ? keys.Add(candidate, challenge, by, newKey) : new(AuthorityCodes.RequestInvalid);
-        if (outcome.Code is null) audit?.Invoke($"APPROVER_KEY_ADDED={candidate.KeyId}");
-        return outcome;
-    }
+    /// <summary>A challenge for removing <paramref name="keyId"/>. There is no verb that adds a key: only the elevated installer does.</summary>
+    public KeyOutcome KeyChallenge(string keyId) => presence is ApproverKeySet keys ? keys.IssueChallenge(keyId) : new(AuthorityCodes.RequestInvalid);
 
     /// <param name="by">a proof by any registered key over KeyMessages.Remove(key, challenge)</param>
     // A removal that takes away the only key able to vouch for the policy in force resets that policy to careful FIRST (PolicyStore.ResetIfSignerGone), then removes the key: a crash between the two writes leaves

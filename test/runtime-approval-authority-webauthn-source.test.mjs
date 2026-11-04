@@ -27,12 +27,13 @@ test('the constants of the verifier are the design document\'s: rp id, origin, f
   assert.match(web, /DSASignatureFormat\.Rfc3279DerSequence/u, 'ES256 signatures are ASN.1 DER');
   assert.match(web, /RSASignaturePadding\.Pkcs1/u);
   assert.match(web, /HashAlgorithmName\.SHA256/u);
-  assert.match(keys, /AddDomain = "albera\.keyadd\.v1", RemoveDomain = "albera\.keyremove\.v1"/u);
+  assert.match(keys, /RemoveDomain = "albera\.keyremove\.v1"/u);
+  assert.equal(/keyadd|AddDomain|KeyMessages\.Add|newKey|KeyOp|KeyExists|TooManyKeys/u.test(Object.values(code).join('\n')), false, 'no add message, no add operation, no newKey proof anywhere in the Authority');
   assert.match(keys, /MaxKeys = 16/u);
   assert.match(keys, /ChallengeTtlSeconds = 120/u);
   assert.match(keys, /Ids\.NewBits128\(\)/u, 'a challenge is 128 random bits');
-  for (const text of ['approver.albera.local', 'albera://approver', 'albera.keyadd.v1', 'albera.keyremove.v1', 'approver-keys.json', '"crossOrigin":false']) assert.ok(design.includes(text), `the design document names ${text}`);
-  for (const text of ['approver.albera.local', 'albera.keyadd.v1', 'albera.keyremove.v1', 'approver-keys.json', 'key_challenge', 'key_add', 'key_remove', 'challenge_unknown', 'challenge_expired', 'key_exists', 'key_unknown', 'last_key', 'too_many_keys', 'config_approver_keys']) {
+  for (const text of ['approver.albera.local', 'albera://approver', 'albera.keyremove.v1', 'approver-keys.json', '"crossOrigin":false']) assert.ok(design.includes(text), `the design document names ${text}`);
+  for (const text of ['approver.albera.local', 'albera.keyremove.v1', 'approver-keys.json', 'key_challenge', 'key_remove', 'There is no `key_add`', 'challenge_unknown', 'challenge_expired', 'key_unknown', 'last_key', 'config_approver_keys', 'policyReset']) {
     assert.ok(authorityDoc.includes(text), `docs/architecture/approval-authority.md documents ${text}`);
   }
 });
@@ -76,20 +77,17 @@ test('the key list changes in one place under one lock: write first (revision + 
   const commit = keys.slice(keys.indexOf('private string? Commit('));
   assert.ok(commit.indexOf('ApproverKeyStore.Write(file, revision + 1') > 0 && commit.indexOf('ApproverKeyStore.Write(file') < commit.indexOf('(keys, signCounts, revision) = ('), 'file before memory');
   assert.match(commit, /if \(result == PersistResult\.Faulted\) faulted = true;\s*if \(result != PersistResult\.Written\) return AuthorityCodes\.AuthorityUnavailable;/u);
-  for (const method of ['public KeyOutcome IssueChallenge(', 'public KeyOutcome Add(', 'public KeyOutcome Remove(']) assert.ok(keys.slice(keys.indexOf(method), keys.indexOf(method) + 200).includes('lock (gate)'), `${method} runs under the lock`);
-  assert.equal([...keys.matchAll(/Commit\(/gu)].length, 4, 'declared once; called from Verify (a moved sign count), Add and Remove');
+  for (const method of ['public KeyOutcome IssueChallenge(', 'public KeyOutcome Remove(']) assert.ok(keys.slice(keys.indexOf(method), keys.indexOf(method) + 200).includes('lock (gate)'), `${method} runs under the lock`);
+  assert.equal([...keys.matchAll(/Commit\(/gu)].length, 3, 'declared once; called from Verify (a moved sign count) and Remove');
   assert.equal([...keys.matchAll(/ApproverKeyStore\.Write\(/gu)].length, 2, 'one call here (Commit) and one for the seed');
-  // key_add and key_remove check the challenge before anything else is looked at, and the proofs before the commit
-  const add = keys.slice(keys.indexOf('public KeyOutcome Add('), keys.indexOf('public KeyOutcome Remove('));
-  const steps = ['TakeChallenge(challenge, KeyOp.Add', 'ApproverKeyRules.Overlap', 'Check(message, by', 'ApproverKeyVerifier.Verify(candidate, message, newKey', 'Commit(next, counts)'].map((token) => add.indexOf(token));
-  assert.ok(steps.every((at) => at > 0) && steps.every((at, i) => i === 0 || at > steps[i - 1]), `challenge -> duplicate -> by -> newKey -> commit (${steps})`);
+  // key_remove checks the challenge before anything else is looked at, and the proof before the commit
   const remove = keys.slice(keys.indexOf('public KeyOutcome Remove('), keys.indexOf('private static string CodeOf('));
-  const removeSteps = ['TakeChallenge(challenge, KeyOp.Remove', 'ApproverKeyCodes.LastKey', 'Check(KeyMessages.Remove(doomed, challenge), by', 'Commit(next, counts)'].map((token) => remove.indexOf(token));
+  const removeSteps = ['TakeChallenge(challenge, keyId)', 'ApproverKeyCodes.LastKey', 'Check(KeyMessages.Remove(doomed, challenge), by', 'Commit(next, counts)'].map((token) => remove.indexOf(token));
   assert.ok(removeSteps.every((at) => at > 0) && removeSteps.every((at, i) => i === 0 || at > removeSteps[i - 1]), `challenge -> last key -> by -> commit (${removeSteps})`);
   // a challenge is used up the moment it is presented, before its expiry or binding is judged
   const take = keys.slice(keys.indexOf('private string? TakeChallenge('), keys.indexOf('// Called under the lock: write first'));
-  assert.ok(take.indexOf('outstanding = null;') > 0 && take.indexOf('outstanding = null;') < take.indexOf('ChallengeExpired') && take.indexOf('ChallengeExpired') < take.indexOf('issued.Op == op'), 'used up -> expired -> bound');
-  assert.match(keys, /outstanding = new\(op, keyId, Ids\.NewBits128\(\), expiresAt\);/u, 'one outstanding challenge');
+  assert.ok(take.indexOf('outstanding = null;') > 0 && take.indexOf('outstanding = null;') < take.indexOf('ChallengeExpired') && take.indexOf('ChallengeExpired') < take.indexOf('issued.KeyId == keyId'), 'used up -> expired -> bound');
+  assert.match(keys, /outstanding = new\(keyId, Ids\.NewBits128\(\), expiresAt\);/u, 'one outstanding challenge');
 });
 
 test('key_remove resets the policy first: the hook runs after the removal is authorized and before the key list is written, under the policy lock taken first, and it only ever writes careful', () => {
@@ -111,18 +109,21 @@ test('key_remove resets the policy first: the hook runs after the removal is aut
 
 test('the key verbs\' own codes are a separate list, so the Control Plane\'s list (AuthorityCodes, mirrored by the pipe client helper) did not change', () => {
   const codes = (text, name) => [...text.slice(text.indexOf(`class ${name}`)).split('}')[0].matchAll(/= "([a-z_]+)"/gu)].map((m) => m[1]);
-  assert.deepEqual(codes(source['ApproverKeys.cs'], 'ApproverKeyCodes'), ['challenge_unknown', 'challenge_expired', 'key_exists', 'key_unknown', 'last_key', 'too_many_keys']);
+  assert.deepEqual(codes(source['ApproverKeys.cs'], 'ApproverKeyCodes'), ['challenge_unknown', 'challenge_expired', 'key_unknown', 'last_key']);
   assert.deepEqual(codes(source['ReceiptBuilder.cs'], 'AuthorityCodes'), ['authority_unavailable', 'request_invalid', 'request_expired', 'human_denied', 'presence_unavailable', 'presence_mismatch', 'queue_full']);
 });
 
 test('the key verbs are on the approver pipe only, `list` is as it was, and the receipt names the key that verified', () => {
   const protocol = code['Protocol.cs'];
-  assert.deepEqual([...protocol.matchAll(/\(PipeRole\.(\w+), "(key\w*)"\) =>/gu)].map((m) => `${m[1]}:${m[2]}`), ['Approver:keys', 'Approver:key_challenge', 'Approver:key_add', 'Approver:key_remove']);
+  assert.deepEqual([...protocol.matchAll(/\(PipeRole\.(\w+), "(key\w*)"\) =>/gu)].map((m) => `${m[1]}:${m[2]}`), ['Approver:keys', 'Approver:key_challenge', 'Approver:key_remove'], 'key_add is not a verb');
   assert.match(protocol, /HasKeys\(r, \["v", "verb"\], optional: \["afterSeq"\]\)/u, 'list takes v, verb and afterSeq only');
-  assert.match(protocol, /HasKeys\(r, \["v", "verb", "key", "challenge", "by", "newKey"\]\)/u, 'key_add: the contract\'s frame');
+  assert.match(protocol, /r\["op"\] is not "remove"/u, 'key_challenge takes op remove only');
   assert.match(protocol, /HasKeys\(r, \["v", "verb", "keyId", "challenge", "by"\]\)/u, 'key_remove: the contract\'s frame');
   assert.match(protocol, /HasKeys\(r, \["v", "verb", "op", "keyId"\]\)/u, 'key_challenge: the contract\'s frame');
-  assert.match(protocol, /new\(ApproverKeyRules\.TryRead\(keyFields\)\)|ApproverKeyRules\.TryRead\(keyFields\) is not \{ \} candidate/u, 'a record from the wire needs the derived id (no legacy exemption)');
+  const proofReader = protocol.slice(protocol.indexOf('private static bool TryReadProof('), protocol.indexOf('private static bool TryFromBase64('));
+  assert.match(proofReader, /TryFromBase64\(text, out proof\) && !WebAuthnProof\.IsWebAuthn\(proof\)/u, 'a legacy string that starts with the webauthn marker is refused, never handed on');
+  assert.equal(/WebAuthnWire/u.test(proofReader.slice(proofReader.indexOf('return value is string'))), false, 'the legacy string never reaches WebAuthnWire: only an object does');
+  assert.equal([...protocol.matchAll(/WebAuthnProof\.Encode|WebAuthnWire\.TryRead/gu)].length, 1, 'the packed form is made in one place, from an object');
   const core = code['AuthorityCore.cs'];
   assert.match(core, /presence\.Verify\(PresenceMessage\.Build\(entry\.ApprovalId, entry\.ActionDigest, entry\.Challenge\), proof, out signerKeyId\)/u);
   assert.match(core, /identity with \{ ApproverKeyId = signerKeyId \}/u);
@@ -138,9 +139,18 @@ test('start-up reads the key store before the policy (it verifies the policy\'s 
   assert.match(code['Program.cs'], /LoadApproverKeys\(config, seed: false, out _\)/u, 'service-check creates nothing');
   assert.match(code['Program.cs'], /return ExitCodes\.ApproverKeysInvalid;/u);
   assert.match(code['TestSeam.cs'], /LoadApproverKeys\(config, seed: true, out _\)/u);
-  assert.match(code['AuthorityRuntime.cs'], /ApproverKeySet\.Open\(config, UnixNow, seed: false, out _, out _\) \?\? throw/u, 'the running core uses the list the host already loaded and seeded');
+  // ONE key list per process: the host builds it, the policy store gets its stored-proof view and the core gets the object itself. Opening it again in the runtime would give the core a copy of its own
+  // (a key_remove would then change a list the policy store never sees).
+  const runtime = code['AuthorityRuntime.cs'];
+  assert.match(runtime, /RunProductionAsync\(AuthorityConfig config, PolicyStore policy, ApproverKeySet presence, CancellationToken stop, Action onReady\)/u);
+  const production = runtime.slice(runtime.indexOf('public static async Task<int> RunProductionAsync('), runtime.indexOf('public static async Task<int> RunAsync('));
+  assert.equal(/LoadApproverKeys|ApproverKeySet\.Open|ApproverKeySet\.InMemory/u.test(production), false, 'RunProductionAsync opens no key list of its own');
+  assert.match(production, /new\(new PendingStore\(UnixNow\), signer, presence, IdentityOf\(config\), UnixNow, policy, Console\.WriteLine, attestation\)/u);
+  assert.match(host, /RunLoopAsync\(config, policy, approverKeys, stop\.Token\)/u, 'the host passes the SAME object it gave the policy store');
+  assert.match(host, /RunProductionAsync\(config, policy, approverKeys, stop, /u);
+  assert.equal(Object.entries(code).filter(([name]) => name !== 'TestSeam.cs').flatMap(([, text]) => [...text.matchAll(/ApproverKeySet\.Open\(/gu)]).length, 1, 'one Open call in the shipped code (inside LoadApproverKeys)');
+  assert.equal([...host.matchAll(/LoadApproverKeys\(/gu)].length, 1, 'the host loads it once');
   assert.match(read(...directory, 'ExitCodes.cs'), /ApproverKeysInvalid = 80;/u);
-  assert.match(code['AuthorityRuntime.cs'], /PolicyInvalid|RunProductionAsync\(AuthorityConfig config, PolicyStore policy, CancellationToken stop, Action onReady\)/u);
 });
 
 test('the config names its keys either as the older pair or as approverKeys, never both (config_approver_keys), and the store never reads the config again once it exists', () => {

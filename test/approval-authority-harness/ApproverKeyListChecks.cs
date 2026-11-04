@@ -8,169 +8,51 @@ using Albera.BrokerContract;
 // The key verbs, the key store and the config's keys (docs/architecture/approver-webauthn.md, "Wire contract"). The helpers (Authenticator, KeyFixture, the messages) are in ApproverKeyChecks.cs.
 internal static partial class Harness
 {
-    // ---- key_challenge / key_add ---------------------------------------------------------------------------------------------------------------
-    private static void ApproverKeyAddChecks()
+    // ---- key_challenge ------------------------------------------------------------------------------------------------------------------------
+    private static void ApproverKeyChallengeChecks()
     {
-        Check("key_challenge: 128 random bits, valid 120 s, for add of an unknown key or remove of a registered one; the refusals are key_exists, key_unknown, last_key and request_invalid", () =>
+        Check("key_challenge: 128 random bits, valid 120 s, for removing a registered key; key_unknown, last_key and request_invalid otherwise, and op add is request_invalid", () =>
         {
             using Authenticator a = new();
             KeyFixture k = new([HelloKeyRecord(), a.Key]);
-            JsonElement reply = k.ChallengeFor("add", "webauthn-0123456789abcdef");
+            JsonElement reply = k.ChallengeFor("remove", a.Key.KeyId);
             Assert(Code(reply) == "ok" && reply.GetProperty("expiresAt").GetInt64() == Start + 120 && System.Text.RegularExpressions.Regex.IsMatch(reply.GetProperty("challenge").GetString()!, "^[A-Za-z0-9_-]{21}[AQgw]$"), $"{reply}");
             Assert(reply.EnumerateObject().Count() == 3, "ok, challenge, expiresAt");
-            Assert(k.ChallengeValue("add", "webauthn-0123456789abcdef") != reply.GetProperty("challenge").GetString(), "fresh each time");
-            Assert(Code(k.ChallengeFor("remove", a.Key.KeyId)) == "ok", "remove of a registered key");
-            Assert(Code(k.ChallengeFor("add", a.Key.KeyId)) == "key_exists", "add of a registered key");
+            Assert(k.ChallengeValue("remove", a.Key.KeyId) != reply.GetProperty("challenge").GetString(), "fresh each time");
             Assert(Code(k.ChallengeFor("remove", "webauthn-0123456789abcdef")) == "key_unknown", "remove of an unknown key");
-            foreach ((string op, string keyId) in new[] { ("add", "bad id"), ("add", ""), ("rename", a.Key.KeyId), ("", a.Key.KeyId) })
+            foreach (string registered in new[] { a.Key.KeyId, "hello-key-yosuke-01", "webauthn-0123456789abcdef" })
+                Assert(Code(k.ChallengeFor("add", registered)) == "request_invalid", $"op add is not an operation: {registered}");
+            foreach ((string op, string keyId) in new[] { ("remove", "bad id"), ("remove", ""), ("rename", a.Key.KeyId), ("", a.Key.KeyId), ("Remove", a.Key.KeyId) })
                 Assert(Code(k.ChallengeFor(op, keyId)) == "request_invalid", $"{op} {keyId}");
-            foreach (string bad in new[] { "{\"v\":1,\"verb\":\"key_challenge\"}", "{\"v\":1,\"verb\":\"key_challenge\",\"op\":\"add\"}", "{\"v\":1,\"verb\":\"key_challenge\",\"op\":1,\"keyId\":\"x\"}", "{\"v\":1,\"verb\":\"key_challenge\",\"op\":\"add\",\"keyId\":\"x\",\"extra\":1}" })
+            foreach (string bad in new[] { "{\"v\":1,\"verb\":\"key_challenge\"}", "{\"v\":1,\"verb\":\"key_challenge\",\"op\":\"remove\"}", "{\"v\":1,\"verb\":\"key_challenge\",\"op\":1,\"keyId\":\"x\"}",
+                "{\"v\":1,\"verb\":\"key_challenge\",\"op\":\"remove\",\"keyId\":\"x\",\"extra\":1}", "{\"v\":1,\"verb\":\"key_challenge\",\"op\":null,\"keyId\":\"x\"}" })
                 Assert(Code(k.Fx.Call(PipeRole.Approver, bad)) == "request_invalid", bad);
-            Assert(Code(k.Fx.Call(PipeRole.Submit, "{\"v\":1,\"verb\":\"key_challenge\",\"op\":\"add\",\"keyId\":\"webauthn-0123456789abcdef\"}")) == "request_invalid", "not a verb of the submit pipe");
-            KeyFixture one = new();
-            Assert(Code(one.ChallengeFor("remove", "hello-key-yosuke-01")) == "last_key", "the last key");
+            Assert(Code(k.Fx.Call(PipeRole.Submit, $"{{\"v\":1,\"verb\":\"key_challenge\",\"op\":\"remove\",\"keyId\":\"{a.Key.KeyId}\"}}")) == "request_invalid", "not a verb of the submit pipe");
+            Assert(Code(new KeyFixture().ChallengeFor("remove", "hello-key-yosuke-01")) == "last_key", "the last key");
         });
         Check("key_challenge: one challenge is outstanding at a time (a new one replaces the old) and the old one is challenge_unknown", () =>
         {
-            using Authenticator a = new();
-            KeyFixture k = new();
-            string first = k.ChallengeValue("add", a.Key.KeyId), second = k.ChallengeValue("add", a.Key.KeyId);
-            Assert(Code(k.KeyAdd(first, a.Key, HelloWire(AddMessage(a.Key, first)), a.Wire(AddMessage(a.Key, first)))) == "challenge_unknown", "the replaced challenge");
-            Assert(Code(k.KeyAdd(second, a.Key, HelloWire(AddMessage(a.Key, second)), a.Wire(AddMessage(a.Key, second)))) == "ok", "the newest works (a refused call with another value did not use it up)");
+            using Authenticator a = new(), b = new();
+            KeyFixture k = new([HelloKeyRecord(), a.Key, b.Key]);
+            string first = k.ChallengeValue("remove", a.Key.KeyId), second = k.ChallengeValue("remove", b.Key.KeyId);
+            Assert(Code(k.KeyRemove(first, a.Key.KeyId, HelloWire(RemoveMessage(a.Key, first)))) == "challenge_unknown", "the replaced challenge");
+            Assert(Code(k.KeyRemove(second, b.Key.KeyId, HelloWire(RemoveMessage(b.Key, second)))) == "ok", "the newest works (a refused call with another value did not use it up)");
         });
-        Check("key_add: a Hello signature authorizes, the new key proves possession, the key is registered, listed by `keys`, and can approve (the receipt names it)", () =>
+        Check("key_add is not a verb: the Authority never adds a key over the pipe (the frame of the older contract, any key_add frame and the old signature are request_invalid on both pipes); keys are added only by the installer", () =>
         {
             using Authenticator added = new();
             KeyFixture k = new();
-            JsonElement reply = k.AddKey(added);
-            Assert(Code(reply) == "ok" && reply.GetProperty("keys").GetArrayLength() == 2 && reply.EnumerateObject().Count() == 2, $"{reply}");
-            Assert(reply.GetProperty("keys").EnumerateArray().Any(x => x.GetProperty("keyId").GetString() == added.Key.KeyId && x.GetProperty("credentialId").GetString() == B64Url(added.CredentialId)), "the new key is in the reply");
-            Assert(k.KeyIds.SequenceEqual(["hello-key-yosuke-01", added.Key.KeyId]), "two keys, in the order they were registered");
-            string id = k.Pending();
-            Assert(Code(k.Decide(id, added.Wire(k.MessageOf(id), 1))) == "presence_mismatch", "(its possession proof had count 1: the authenticator's next count must be larger)");
-            id = k.Pending("b");
-            Assert(Code(k.Decide(id, added.Wire(k.MessageOf(id), 2))) == "ok" && ApproverKeyIdOf(k, id) == added.Key.KeyId, "the new key approves");
-        });
-        Check("key_add: a registered webauthn key (ES256 or RS256) can authorize the next key, with RS256 on both sides in one frame", () =>
-        {
-            using Authenticator first = new(), second = new(rsaKey: true), third = new(rsaKey: true);
-            KeyFixture k = new([first.Key]);
-            Assert(Code(k.AddKey(second, first)) == "ok", "ES256 authorizes an RS256 key");
-            string challenge = k.ChallengeValue("add", third.Key.KeyId);
-            byte[] message = AddMessage(third.Key, challenge);
-            string frame = $"{{\"v\":1,\"verb\":\"key_add\",\"key\":{KeyJson(third.Key)},\"challenge\":\"{challenge}\",\"by\":{second.Wire(message, 2)},\"newKey\":{third.Wire(message)}}}";
-            Assert(Encoding.UTF8.GetByteCount(frame) <= AuthorityProtocol.MaxFrameBytes, $"RS256 signer and RS256 new key: {Encoding.UTF8.GetByteCount(frame)} bytes must fit one frame");
-            Assert(Code(k.Fx.Call(PipeRole.Approver, frame)) == "ok" && k.Keys.Keys.Count == 3, "RS256 authorizes an RS256 key");
-        });
-        Check("key_add: no challenge, an unknown or replaced one, an expired one, a reused one and one issued for another key or for remove are each refused and register nothing", () =>
-        {
-            using Authenticator added = new(), other = new();
-            KeyFixture k = new();
-            string Try(string challenge) => Code(k.KeyAdd(challenge, added.Key, HelloWire(AddMessage(added.Key, challenge)), added.Wire(AddMessage(added.Key, challenge))));
-            Assert(Try("AAAAAAAAAAAAAAAAAAAAAA") == "challenge_unknown", "never issued");
-            Assert(Try("") == "challenge_unknown", "an empty challenge is refused");
-            Assert(Code(k.Fx.Call(PipeRole.Approver, $"{{\"v\":1,\"verb\":\"key_add\",\"key\":{KeyJson(added.Key)},\"challenge\":\"{new string('A', 65)}\",\"by\":\"AAAA\",\"newKey\":\"AAAA\"}}")) == "request_invalid", "over-long challenge text");
-            string expired = k.ChallengeValue("add", added.Key.KeyId);
-            k.Fx.Now += ApproverKeySet.ChallengeTtlSeconds - 1;
-            k.Fx.Now += 1;
-            Assert(Try(expired) == "challenge_expired", "expired at 120 s");
-            Assert(Try(expired) == "challenge_unknown", "an expired challenge is gone");
-            string forOther = k.ChallengeValue("add", other.Key.KeyId);
-            Assert(Try(forOther) == "challenge_unknown", "issued for another key id");
-            Assert(Try(forOther) == "challenge_unknown", "(and used up by that attempt)");
-            string good = k.ChallengeValue("add", added.Key.KeyId);
-            Assert(Try(good) == "ok", "a valid challenge works");
-            Assert(Try(good) == "challenge_unknown", "and only once");
-            Assert(k.Keys.Keys.Count == 2, "exactly one key was added");
-        });
-        Check("key_add: a challenge issued for remove is not accepted by key_add, and a presented challenge is used up even when the proofs are wrong", () =>
-        {
-            using Authenticator added = new(), second = new();
-            KeyFixture k = new([HelloKeyRecord(), second.Key]);
-            string forRemove = k.ChallengeValue("remove", second.Key.KeyId);
-            Assert(Code(k.KeyAdd(forRemove, added.Key, HelloWire(AddMessage(added.Key, forRemove)), added.Wire(AddMessage(added.Key, forRemove)))) == "challenge_unknown", "remove challenge in key_add");
-            string challenge = k.ChallengeValue("add", added.Key.KeyId);
-            Assert(Code(k.KeyAdd(challenge, added.Key, "\"AAAA\"", added.Wire(AddMessage(added.Key, challenge)))) == "presence_mismatch", "a wrong `by`");
-            Assert(Code(k.KeyAdd(challenge, added.Key, HelloWire(AddMessage(added.Key, challenge)), added.Wire(AddMessage(added.Key, challenge)))) == "challenge_unknown", "the challenge was used up by the failed attempt");
-            Assert(k.Keys.Keys.Count == 2, "nothing was added");
-        });
-        Check("key_add: a `by` from a key that is not registered, over another record or another challenge, a missing or foreign `newKey` proof are presence_mismatch and add nothing", () =>
-        {
-            using Authenticator added = new(), unregistered = new(), impostor = new();
-            using RSA strangerHello = RSA.Create(2048);
-            KeyFixture k = new();
-            string Try(Func<string, byte[], (string by, string newKey)> proofs)
+            string challenge = "AAAAAAAAAAAAAAAAAAAAAA";
+            byte[] oldMessage = Encoding.UTF8.GetBytes($"albera.keyadd.v1\0{added.Key.KeyId}\0{RecordDigest(added.Key)}\0{challenge}");
+            string frame = $"{{\"v\":1,\"verb\":\"key_add\",\"key\":{KeyJson(added.Key)},\"challenge\":\"{challenge}\",\"by\":{HelloWire(oldMessage)},\"newKey\":{added.Wire(oldMessage)}}}";
+            foreach (PipeRole role in new[] { PipeRole.Approver, PipeRole.Submit })
             {
-                string challenge = k.ChallengeValue("add", added.Key.KeyId);
-                byte[] message = AddMessage(added.Key, challenge);
-                (string by, string newKey) = proofs(challenge, message);
-                return Code(k.KeyAdd(challenge, added.Key, by, newKey));
+                Assert(Code(k.Fx.Call(role, frame)) == "request_invalid", $"{role}: the older frame");
+                Assert(Code(k.Fx.Call(role, "{\"v\":1,\"verb\":\"key_add\"}")) == "request_invalid", $"{role}: the bare verb");
             }
-            Assert(Try((c, m) => (unregistered.Wire(m), added.Wire(m))) == "presence_mismatch", "an unregistered webauthn signer");
-            Assert(Try((c, m) => ("\"" + Convert.ToBase64String(strangerHello.SignData(m, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)) + "\"", added.Wire(m))) == "presence_mismatch", "an unregistered Hello signer");
-            Assert(Try((c, m) => (HelloWire(AddMessage(impostor.Key, c)), added.Wire(m))) == "presence_mismatch", "a `by` for another key record");
-            Assert(Try((c, m) => (HelloWire(Encoding.UTF8.GetBytes($"albera.keyadd.v1\0{added.Key.KeyId}\0{RecordDigest(added.Key)}\0AAAAAAAAAAAAAAAAAAAAAA")), added.Wire(m))) == "presence_mismatch", "a `by` for another challenge");
-            Assert(Try((c, m) => (HelloWire(Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(m).Replace("keyadd", "keyremove", StringComparison.Ordinal))), added.Wire(m))) == "presence_mismatch", "a `by` under the remove domain");
-            Assert(Try((c, m) => (HelloWire(Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(m).Replace(RecordDigest(added.Key), "sha256:" + RecordDigest(added.Key), StringComparison.Ordinal))), added.Wire(m))) == "presence_mismatch", "a `by` over a digest with a prefix");
-            Assert(Try((c, m) => (HelloWire(m), "\"AAAA\"")) == "presence_mismatch", "no real `newKey` proof");
-            Assert(Try((c, m) => (HelloWire(m), unregistered.Wire(m))) == "presence_mismatch", "possession proven by another key");
-            Assert(Try((c, m) => (HelloWire(m), HelloWire(m))) == "presence_mismatch", "possession proven with the signer's own signature");
-            Assert(Try((c, m) => (HelloWire(m), added.Wire(Encoding.UTF8.GetBytes("something else")))) == "presence_mismatch", "possession over another message");
-            Assert(k.Keys.Keys.Count == 1, "nothing was added by any of them");
-            Assert(Try((c, m) => (HelloWire(m), added.Wire(m))) == "ok", "control: the right pair adds it");
-        });
-        Check("key_add: a key that is already registered (same id, same public key or same credential id) is key_exists; a record that is not exactly the documented shape is request_invalid", () =>
-        {
-            using Authenticator added = new(), twin = new();
-            KeyFixture k = new();
-            Assert(Code(k.AddKey(added)) == "ok", "first");
-            Assert(Code(k.ChallengeFor("add", added.Key.KeyId)) == "key_exists", "a registered id gets no challenge");
-            ApproverKey sameCredential = ApproverKeyRules.TryCreate(twin.Key.KeyId, "webauthn", -7, twin.Spki, added.CredentialId, true)!;
-            string challenge = k.ChallengeValue("add", sameCredential.KeyId);
-            byte[] message = AddMessage(sameCredential, challenge);
-            Assert(Code(k.KeyAdd(challenge, sameCredential, HelloWire(message), twin.Wire(message))) == "key_exists", "the credential id of a registered key");
-            string good = k.ChallengeValue("add", twin.Key.KeyId);
-            byte[] goodMessage = AddMessage(twin.Key, good);
-            string by = HelloWire(goodMessage), newKey = twin.Wire(goodMessage);
-            string Frame(string key, string extra = "") => $"{{\"v\":1,\"verb\":\"key_add\",\"key\":{key},\"challenge\":\"{good}\",\"by\":{by},\"newKey\":{newKey}{extra}}}";
-            string keyJson = KeyJson(twin.Key);
-            foreach (string bad in new[]
-            {
-                Frame(keyJson, ",\"x\":1"), Frame(keyJson.Replace("\"kind\":\"webauthn\"", "\"kind\":\"webauthn\",\"note\":\"x\"", StringComparison.Ordinal)), Frame(keyJson.Replace(twin.Key.KeyId, "webauthn-0123456789abcdef", StringComparison.Ordinal)),
-                Frame(keyJson.Replace("\"alg\":-7", "\"alg\":-257", StringComparison.Ordinal)), Frame(keyJson.Replace("\"alg\":-7", "\"alg\":\"ES256\"", StringComparison.Ordinal)), Frame(keyJson.Replace(",\"credentialId\":", ",\"credentialIdX\":", StringComparison.Ordinal)),
-                Frame("\"key\""), Frame("[]"), Frame(keyJson.Replace("\"publicKey\":\"", "\"publicKey\":\" ", StringComparison.Ordinal)), Frame(keyJson.Replace("\"kind\":\"webauthn\"", "\"kind\":\"hello-rsa\"", StringComparison.Ordinal)),
-            }) Assert(Code(k.Fx.Call(PipeRole.Approver, bad)) == "request_invalid", $"accepted: {bad[..Math.Min(bad.Length, 160)]}");
-            Assert(Code(k.Fx.Call(PipeRole.Approver, Frame(keyJson))) == "ok", "control: the untouched frame still works (the bad ones did not use the challenge up)");
-        });
-        Check("key_add: at most sixteen keys (too_many_keys)", () =>
-        {
-            KeyFixture k = new();
-            List<Authenticator> made = [];
-            try
-            {
-                for (int i = 0; i < ApproverKeyRules.MaxKeys - 1; i++) { made.Add(new Authenticator()); Assert(Code(k.AddKey(made[^1])) == "ok", $"key {i + 2}"); }
-                Assert(k.Keys.Keys.Count == ApproverKeyRules.MaxKeys, "sixteen keys");
-                using Authenticator seventeenth = new();
-                Assert(Code(k.ChallengeFor("add", seventeenth.Key.KeyId)) == "too_many_keys", "no challenge for a seventeenth key");
-                JsonElement keys = k.KeysReply();
-                Assert(Code(keys) == "ok" && keys.GetProperty("keys").GetArrayLength() == 16, "all sixteen are listed (32-byte credential ids fit a frame)");
-                Assert(Encoding.UTF8.GetByteCount(keys.GetRawText()) <= AuthorityProtocol.MaxFrameBytes, "within one frame");
-            }
-            finally { foreach (Authenticator a in made) a.Dispose(); }
-        });
-        Check("key_add: only the approver pipe has the key verbs, and a key verb with the wrong keys is request_invalid", () =>
-        {
-            using Authenticator added = new();
-            KeyFixture k = new();
-            string challenge = k.ChallengeValue("add", added.Key.KeyId);
-            byte[] message = AddMessage(added.Key, challenge);
-            string frame = $"{{\"v\":1,\"verb\":\"key_add\",\"key\":{KeyJson(added.Key)},\"challenge\":\"{challenge}\",\"by\":{HelloWire(message)},\"newKey\":{added.Wire(message)}}}";
-            Assert(Code(k.Fx.Call(PipeRole.Submit, frame)) == "request_invalid", "key_add on the submit pipe");
-            Assert(Code(k.Fx.Call(PipeRole.Submit, "{\"v\":1,\"verb\":\"key_remove\",\"keyId\":\"y\",\"challenge\":\"x\",\"by\":\"AAAA\"}")) == "request_invalid", "key_remove on the submit pipe");
-            Assert(k.Keys.Keys.Count == 1, "nothing changed");
-            Assert(Code(k.Fx.Call(PipeRole.Approver, frame.Replace(",\"newKey\":", ",\"possession\":", StringComparison.Ordinal))) == "request_invalid", "newKey missing");
-            Assert(Code(k.Fx.Call(PipeRole.Approver, frame.Replace(",\"by\":", ",\"presence\":", StringComparison.Ordinal))) == "request_invalid", "by missing (the field is `by`, not `presence`)");
-            Assert(Code(k.Fx.Call(PipeRole.Approver, frame)) == "ok", "control");
+            Assert(k.KeyIds.SequenceEqual(["hello-key-yosuke-01"]) && Code(k.KeysReply()) == "ok", "the list did not change");
+            // a challenge asked for the key that would be added is not issued either
+            Assert(Code(k.ChallengeFor("add", added.Key.KeyId)) == "request_invalid", "no add challenge");
         });
     }
 
@@ -206,7 +88,7 @@ internal static partial class Harness
             challenge = two.ChallengeValue("remove", a.Key.KeyId);
             Assert(Code(two.KeyRemove(challenge, a.Key.KeyId, HelloWire(RemoveMessage(HelloKeyRecord(), challenge)))) == "presence_mismatch", "a signature over another key's removal");
             challenge = two.ChallengeValue("remove", a.Key.KeyId);
-            Assert(Code(two.KeyRemove(challenge, a.Key.KeyId, HelloWire(AddMessage(a.Key, challenge)))) == "presence_mismatch", "a keyadd signature does not remove");
+            Assert(Code(two.KeyRemove(challenge, a.Key.KeyId, HelloWire(Encoding.UTF8.GetBytes($"albera.keyadd.v1\0{a.Key.KeyId}\0{RecordDigest(a.Key)}\0{challenge}")))) == "presence_mismatch", "a signature under the old add domain does not remove");
             challenge = two.ChallengeValue("remove", a.Key.KeyId);
             Assert(Code(two.KeyRemove(challenge, "webauthn-0123456789abcdef", HelloWire(RemoveMessage(a.Key, challenge)))) == "challenge_unknown", "a challenge that is for another key");
             challenge = two.ChallengeValue("remove", a.Key.KeyId);
@@ -218,8 +100,7 @@ internal static partial class Harness
             Assert(Code(two.ChallengeFor("remove", a.Key.KeyId)) == "key_unknown", "and a is gone");
             Assert(two.KeyIds.SequenceEqual(["hello-key-yosuke-01"]), "the Hello key is the last one");
             Assert(Code(two.ChallengeFor("remove", "hello-key-yosuke-01")) == "last_key", "and cannot be removed");
-            string forced = two.Keys.IssueChallenge(KeyOp.Add, "webauthn-0123456789abcdef").Challenge;
-            Assert(two.Keys.Remove("hello-key-yosuke-01", forced, []).Code == "challenge_unknown", "a forced call without the right challenge");
+            Assert(two.Keys.Remove("hello-key-yosuke-01", "AAAAAAAAAAAAAAAAAAAAAA", []).Code == "challenge_unknown", "a forced call without the right challenge");
             Assert(Code(two.Fx.Call(PipeRole.Approver, "{\"v\":1,\"verb\":\"key_remove\",\"keyId\":\"hello-key-yosuke-01\",\"challenge\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"by\":\"AAAA\"}")) == "challenge_unknown", "a forced call over the pipe");
             Assert(two.Keys.Keys.Count == 1, "the last key is still there");
         });
@@ -244,10 +125,9 @@ internal static partial class Harness
         Check("key_remove: the config's Hello key can be removed once another key is registered (the list, not the config, is what counts); receipts then name the remaining key", () =>
         {
             using Authenticator a = new();
-            KeyFixture k = new();
-            Assert(Code(k.AddKey(a)) == "ok", "add a");
+            KeyFixture k = new([HelloKeyRecord(), a.Key]);
             string challenge = k.ChallengeValue("remove", "hello-key-yosuke-01");
-            Assert(Code(k.KeyRemove(challenge, "hello-key-yosuke-01", a.Wire(RemoveMessage(HelloKeyRecord(), challenge), 2))) == "ok", "a removes the Hello key");
+            Assert(Code(k.KeyRemove(challenge, "hello-key-yosuke-01", a.Wire(RemoveMessage(HelloKeyRecord(), challenge), 1))) == "ok", "a removes the Hello key");
             string id = k.Pending();
             Assert(Code(k.Decide(id, HelloWire(k.MessageOf(id)))) == "presence_mismatch", "the Hello key no longer approves");
             string other = k.Pending("b");
@@ -284,45 +164,40 @@ internal static partial class Harness
                 Assert(ApproverKeySet.Open(config, () => Start, seed: true, out reason, out source) is { } && source == KeyListSource.File && ApproverKeyStore.Read(file, config.LegacyKey, out _, out _)!.Revision == 1, "a second start reads it and does not rewrite it");
             });
         });
-        Check("approver-keys.json: a key change and every moved sign count are written (revision + 1), read back, and survive a restart; the file wins over the config afterwards", () =>
+        Check("approver-keys.json: a key removal and every moved sign count are written (revision + 1), read back, and survive a restart; the file wins over the config afterwards", () =>
         {
-            using Authenticator added = new();
+            using Authenticator a = new(), b = new();
             InFolder(configPath =>
             {
-                AuthorityConfig config = ConfigAt(configPath);
+                AuthorityConfig config = ConfigAt(configPath, ListConfigJson([a.Key, b.Key]));
                 string file = ApproverKeyStore.PathFor(configPath);
+                JsonElement Stored() => JsonDocument.Parse(File.ReadAllText(file)).RootElement;
                 ApproverKeySet keys = ApproverKeySet.Open(config, () => Start, seed: true, out string reason, out _) ?? throw new CheckFailed(reason);
-                string challenge = keys.IssueChallenge(KeyOp.Add, added.Key.KeyId).Challenge;
-                byte[] message = AddMessage(added.Key, challenge);
-                Assert(keys.Add(added.Key, challenge, Hello.SignData(message, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1), added.Proof(message, 7)).Code is null, "added");
-                using (JsonDocument one = JsonDocument.Parse(File.ReadAllText(file)))
-                {
-                    JsonElement root = one.RootElement;
-                    Assert(root.GetProperty("revision").GetInt64() == 2 && root.GetProperty("keys").GetArrayLength() == 2, "revision 2, two keys");
-                    Assert(root.GetProperty("keys")[1].GetRawText() == CanonicalText(added.Key), "the new record, canonical");
-                    Assert(root.GetProperty("signCounts").GetProperty(added.Key.KeyId).GetUInt32() == 7 && root.GetProperty("signCounts").EnumerateObject().Count() == 1, "the new key's count was seeded from its possession proof");
-                }
+                Assert(Stored().GetProperty("revision").GetInt64() == 1 && Stored().GetProperty("keys").GetArrayLength() == 2, "seeded: revision 1, two keys");
                 byte[] next = Encoding.UTF8.GetBytes("later");
-                Assert(keys.Verify(next, added.Proof(next, 9)) == PresenceResult.Verified, "an approval at count 9");
-                Assert(JsonDocument.Parse(File.ReadAllText(file)).RootElement.GetProperty("signCounts").GetProperty(added.Key.KeyId).GetUInt32() == 9 && JsonDocument.Parse(File.ReadAllText(file)).RootElement.GetProperty("revision").GetInt64() == 3, "the count moved: written, revision 3");
-                Assert(keys.Verify(next, Hello.SignData(next, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)) == PresenceResult.Verified && JsonDocument.Parse(File.ReadAllText(file)).RootElement.GetProperty("revision").GetInt64() == 3, "a Hello approval moves no count and writes nothing");
+                Assert(keys.Verify(next, a.Proof(next, 9)) == PresenceResult.Verified, "an approval at count 9");
+                Assert(Stored().GetProperty("signCounts").GetProperty(a.Key.KeyId).GetUInt32() == 9 && Stored().GetProperty("revision").GetInt64() == 2, "the count moved: written, revision 2");
+                Assert(keys.Verify(next, b.Proof(next, 0)) == PresenceResult.Verified && Stored().GetProperty("revision").GetInt64() == 2, "an authenticator without a counter moves nothing and writes nothing");
+                Assert(keys.Verify(next, a.Proof(next, 0)) == PresenceResult.Mismatch && keys.Verify(next, a.Proof(next, 9)) == PresenceResult.Mismatch, "past a stored 9, a 0 and a 9 are both a mismatch");
                 // a restart: the file is the list
                 ApproverKeySet restarted = ApproverKeySet.Open(config, () => Start, seed: true, out reason, out KeyListSource source) ?? throw new CheckFailed(reason);
-                Assert(source == KeyListSource.File && restarted.Keys.Select(k => k.KeyId).SequenceEqual(["hello-key-yosuke-01", added.Key.KeyId]), "the file is the list");
-                Assert(restarted.Verify(next, added.Proof(next, 9)) == PresenceResult.Mismatch, "the stored sign count (9) survived the restart: 9 again is refused");
-                Assert(restarted.Verify(next, added.Proof(next, 10)) == PresenceResult.Verified, "10 is fine");
-                string removal = restarted.IssueChallenge(KeyOp.Remove, "hello-key-yosuke-01").Challenge;
-                Assert(restarted.Remove("hello-key-yosuke-01", removal, added.Proof(RemoveMessage(HelloKeyRecord(), removal), 11)).Code is null, "removed");
-                ApproverKeySet third = ApproverKeySet.Open(config, () => Start, seed: true, out reason, out source) ?? throw new CheckFailed(reason);
-                Assert(third.Keys.Single().KeyId == added.Key.KeyId && ApproverKeyStore.Read(file, config.LegacyKey, out _, out _)!.Revision == 5, "the removal survived too, and the config's Hello key did not come back");
+                Assert(source == KeyListSource.File && restarted.Keys.Select(k => k.KeyId).SequenceEqual([a.Key.KeyId, b.Key.KeyId]), "the file is the list");
+                Assert(restarted.Verify(next, a.Proof(next, 9)) == PresenceResult.Mismatch && restarted.Verify(next, a.Proof(next, 0)) == PresenceResult.Mismatch, "the stored sign count (9) survived the restart: 9 and 0 are refused");
+                Assert(restarted.Verify(next, a.Proof(next, 10)) == PresenceResult.Verified, "10 is fine");
+                string removal = restarted.IssueChallenge(b.Key.KeyId).Challenge;
+                KeyOutcome removed = restarted.Remove(b.Key.KeyId, removal, a.Proof(RemoveMessage(b.Key, removal), 11));
+                Assert(removed.Code is null && removed.Keys!.Single().KeyId == a.Key.KeyId, "b removed, by a");
+                ApproverKeyStore.Loaded stored = ApproverKeyStore.Read(file, config.LegacyKey, out _, out _)!;
+                Assert(stored.Revision == 4 && stored.Keys.Single().KeyId == a.Key.KeyId && stored.SignCounts.Count == 1 && stored.SignCounts[a.Key.KeyId] == 11, "revision 4, one key, its count, and no count for b");
+                ApproverKeySet third = ApproverKeySet.Open(config, () => Start, seed: true, out reason, out _) ?? throw new CheckFailed(reason);
+                Assert(third.Keys.Single().KeyId == a.Key.KeyId, "the removal survived the restart: the config still names b, the file wins");
                 Assert(Directory.GetFiles(Path.GetDirectoryName(configPath)!, "approver-keys.*.tmp").Length == 0, "no temp file left behind");
                 // set-approver writes a new config and deletes the file: the next start seeds it again.
-                using RSA other = RSA.Create(2048);
-                File.WriteAllText(configPath, ConfigJson(new() { ["approverKeyId"] = "hello-other", ["approverPublicKey"] = Convert.ToBase64String(other.ExportSubjectPublicKeyInfo()) }));
-                AuthorityConfig changed = AuthorityConfig.TryLoad(configPath, strictSeparation: false, out reason) ?? throw new CheckFailed(reason);
-                Assert(ApproverKeySet.Open(changed, () => Start, seed: true, out reason, out _) is { } stillThere && stillThere.Keys.Single().KeyId == added.Key.KeyId, "a config change alone does not touch the list (the file is the list)");
+                using Authenticator other = new();
+                AuthorityConfig changed = ConfigAt(configPath, ListConfigJson([other.Key]));
+                Assert(ApproverKeySet.Open(changed, () => Start, seed: true, out reason, out _) is { } stillThere && stillThere.Keys.Single().KeyId == a.Key.KeyId, "a config change alone does not touch the list (the file is the list)");
                 File.Delete(file);
-                Assert(ApproverKeySet.Open(changed, () => Start, seed: true, out reason, out _) is { } reseeded && reseeded.Keys.Single().KeyId == "hello-other", "with the file deleted the next start seeds it from the new config");
+                Assert(ApproverKeySet.Open(changed, () => Start, seed: true, out reason, out _) is { } reseeded && reseeded.Keys.Single().KeyId == other.Key.KeyId, "with the file deleted the next start seeds it from the new config");
             });
         });
         Check("approver-keys.json: a file that is not exactly the documented shape is refused with a fixed reason word and never read as the config's keys (untrusted, too large, bad JSON, extra key, duplicate name, unknown kind, id not derived, same key twice, 17 keys, a count for no key)", () =>
@@ -367,12 +242,12 @@ internal static partial class Harness
                 ServicePathGuard.ServiceSidForTest = System.Security.Principal.WindowsIdentity.GetCurrent().User;
             });
         });
-        Check("approver-keys.json: when the file cannot be written the start refuses (approver_keys_unwritable), a key change or a moved sign count is authority_unavailable / presence_unavailable, and memory and file stay as they were", () =>
+        Check("approver-keys.json: when the file cannot be written the start refuses (approver_keys_unwritable), a removal or a moved sign count is authority_unavailable / presence_unavailable, and memory and file stay as they were", () =>
         {
-            using Authenticator added = new();
+            using Authenticator a = new(), b = new();
             InFolder(configPath =>
             {
-                AuthorityConfig config = ConfigAt(configPath);
+                AuthorityConfig config = ConfigAt(configPath, ListConfigJson([a.Key, b.Key]));
                 string file = ApproverKeyStore.PathFor(configPath);
                 System.Security.Principal.SecurityIdentifier stranger = new("S-1-5-80-1111111111-2222222222-3333333333-1444444444-2555555555"); // not the owner of what the process creates
                 System.Security.Principal.SecurityIdentifier? self = System.Security.Principal.WindowsIdentity.GetCurrent().User;
@@ -381,24 +256,19 @@ internal static partial class Harness
                 ServicePathGuard.ServiceSidForTest = self;
                 ApproverKeySet keys = ApproverKeySet.Open(config, () => Start, seed: true, out reason, out _) ?? throw new CheckFailed(reason);
                 string before = File.ReadAllText(file);
-                string challenge = keys.IssueChallenge(KeyOp.Add, added.Key.KeyId).Challenge;
-                byte[] message = AddMessage(added.Key, challenge);
-                byte[] signature = Hello.SignData(message, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                string challenge = keys.IssueChallenge(b.Key.KeyId).Challenge;
+                byte[] proof = a.Proof(RemoveMessage(b.Key, challenge), 3);
                 ServicePathGuard.ServiceSidForTest = stranger;
-                Assert(keys.Add(added.Key, challenge, signature, added.Proof(message)).Code == "authority_unavailable", "the new file is not trusted");
+                Assert(keys.Remove(b.Key.KeyId, challenge, proof).Code == "authority_unavailable", "the new file is not trusted");
                 ServicePathGuard.ServiceSidForTest = self;
-                Assert(keys.Keys.Single().KeyId == "hello-key-yosuke-01" && File.ReadAllText(file) == before, "unchanged");
+                Assert(keys.Keys.Count == 2 && File.ReadAllText(file) == before, "unchanged");
                 Assert(Directory.GetFiles(Path.GetDirectoryName(configPath)!, "approver-keys.*.tmp").Length == 0, "no temp file left");
                 byte[] probe = Encoding.UTF8.GetBytes("probe");
-                Assert(keys.Verify(probe, Hello.SignData(probe, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)) == PresenceResult.Verified, "the old list still verifies (a refused write is not a fault)");
                 // a sign count that cannot be kept is no approval, and is not remembered either
-                challenge = keys.IssueChallenge(KeyOp.Add, added.Key.KeyId).Challenge;
-                message = AddMessage(added.Key, challenge);
-                Assert(keys.Add(added.Key, challenge, Hello.SignData(message, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1), added.Proof(message, 3)).Code is null, "added once the file can be written");
                 ServicePathGuard.ServiceSidForTest = stranger;
-                Assert(keys.Verify(probe, added.Proof(probe, 5)) == PresenceResult.Unavailable, "count 5 cannot be written: presence_unavailable");
+                Assert(keys.Verify(probe, a.Proof(probe, 5)) == PresenceResult.Unavailable, "count 5 cannot be written: presence_unavailable");
                 ServicePathGuard.ServiceSidForTest = self;
-                Assert(keys.Verify(probe, added.Proof(probe, 5)) == PresenceResult.Verified, "memory did not move: 5 is still fine once the file can be written");
+                Assert(keys.Verify(probe, a.Proof(probe, 5)) == PresenceResult.Verified, "memory did not move: 5 is still fine once the file can be written (a refused write is not a fault)");
             });
         });
     }
@@ -452,7 +322,7 @@ internal static partial class Harness
                 byte[] again = PolicyChange.Message(PolicyOf(PolicyJson(1, "standard")), "authority-key-2026-10", "albera-host-broker");
                 Assert(Code(k.Fx.PolicySet(PolicyJson(1, "standard"), Hello.SignData(again, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1))) == "request_invalid", "revision 1 again is refused");
                 byte[] next = PolicyChange.Message(PolicyOf(PolicyJson(3, "standard")), "authority-key-2026-10", "albera-host-broker");
-                Assert(Code(k.Fx.PolicySet(PolicyJson(3, "standard"), b.Proof(next, 5))) == "ok", "revision 3 signed by a remaining key");
+                Assert(Code(k.Fx.Call(PipeRole.Approver, $"{{\"v\":1,\"verb\":\"policy_set\",\"policy\":{PolicyJson(3, "standard")},\"presence\":{b.Wire(next, 5)}}}")) == "ok", "revision 3 signed by a remaining key");
             });
         });
         Check("key_remove: removing a key that did not sign the policy leaves the policy and its file untouched, and no policyReset", () =>

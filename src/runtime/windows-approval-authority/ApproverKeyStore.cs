@@ -14,7 +14,7 @@ internal enum PersistResult { Written, NotWritten, Faulted }
 //                    is otherwise a refusal to start (exit 80, SERVICE_APPROVER_KEYS=invalid:<reason>), never a fall back to the config's keys.
 //   a change         ApproverKeySet decides under its lock; this class only writes: the new file next to the old one (create-new temp file, write-through, flushed to disk, trust-checked like the config),
 //                    moved over approver-keys.json with MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH and read back (revision, every key, every count). A failure before the move leaves both as
-//                    they were (NotWritten); a file that cannot be read back is Faulted: the set refuses everything until the Authority restarts and reads the file. A change is a key added or removed, or a
+//                    they were (NotWritten); a file that cannot be read back is Faulted: the set refuses everything until the Authority restarts and reads the file. A change is a key removed, or a
 //                    sign count that moved (every approval by a webauthn key whose authenticator counts).
 // Out of scope, as for policy.json: putting an OLDER file back is something only a principal that can already write the trusted config folder can do, and they can equally replace the config.
 // Nothing private is ever stored.

@@ -82,7 +82,7 @@ internal static class ServiceHost
             return;
         }
         using CancellationTokenSource stop = new();
-        Task<int> loop = Task.Run(() => RunLoopAsync(config, policy, stop.Token));
+        Task<int> loop = Task.Run(() => RunLoopAsync(config, policy, approverKeys, stop.Token));
         int code;
         if (Task.WaitAny(loop, StopRequested.Task) == 1)
         {
@@ -94,9 +94,9 @@ internal static class ServiceHost
         ReportStopped(code);
     }
 
-    private static async Task<int> RunLoopAsync(AuthorityConfig config, PolicyStore policy, CancellationToken stop)
+    private static async Task<int> RunLoopAsync(AuthorityConfig config, PolicyStore policy, ApproverKeySet approverKeys, CancellationToken stop)
     {
-        try { return await AuthorityRuntime.RunProductionAsync(config, policy, stop, () => Report(Running)); }
+        try { return await AuthorityRuntime.RunProductionAsync(config, policy, approverKeys, stop, () => Report(Running)); }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { return 0; }
         catch (Exception)
         {

@@ -152,9 +152,9 @@ test('the service host talks to the SCM through three advapi32 P/Invokes only, a
   assert.match(guard, /private static string\? Check\(CngKey key/u);
 });
 
-test('the wire protocol: exactly ten verbs (two on the submit pipe, eight on the approver pipe, the two policy verbs, `keys` and the three key verbs among them), and exactly the documented error codes', () => {
+test('the wire protocol: exactly nine verbs (two on the submit pipe, seven on the approver pipe, the two policy verbs, `keys` and the two key verbs among them), and exactly the documented error codes', () => {
   assert.deepEqual([...code['Protocol.cs'].matchAll(/\(PipeRole\.(\w+), "(\w+)"\) =>/gu)].map((m) => `${m[1]}:${m[2]}`),
-    ['Submit:submit', 'Submit:status', 'Approver:list', 'Approver:decide', 'Approver:policy', 'Approver:policy_set', 'Approver:keys', 'Approver:key_challenge', 'Approver:key_add', 'Approver:key_remove']);
+    ['Submit:submit', 'Submit:status', 'Approver:list', 'Approver:decide', 'Approver:policy', 'Approver:policy_set', 'Approver:keys', 'Approver:key_challenge', 'Approver:key_remove']);
   const codes = [...code['ReceiptBuilder.cs'].matchAll(/(\w+) = "([a-z_]+)"/gu)].map((m) => m[2]);
   assert.deepEqual(codes, ['authority_unavailable', 'request_invalid', 'request_expired', 'human_denied', 'presence_unavailable', 'presence_mismatch', 'queue_full']);
   assert.deepEqual([...code['Protocol.cs'].matchAll(/case "(\w+)":/gu)].map((m) => m[1]), ['approve', 'deny', 'presence_unavailable']);
@@ -273,7 +273,7 @@ test('the tier policy: one file, written only by PolicyStore.cs (create-new temp
   assert.match(host, /ReportStopped\(ExitCodes\.PolicyInvalid\)/u);
   assert.match(code['ExitCodes.cs'], /PolicyInvalid = 79;/u);
   assert.match(code['Program.cs'], /return ExitCodes\.PolicyInvalid;/u, 'service-check refuses the same file');
-  assert.match(code['AuthorityRuntime.cs'], /RunProductionAsync\(AuthorityConfig config, PolicyStore policy, CancellationToken stop, Action onReady\)/u);
+  assert.match(code['AuthorityRuntime.cs'], /RunProductionAsync\(AuthorityConfig config, PolicyStore policy, ApproverKeySet presence, CancellationToken stop, Action onReady\)/u, 'the one key list of the process comes in as a parameter (see the webauthn source test)');
   assert.match(code['AuthorityRuntime.cs'], /IdentityOf\(config\), UnixNow, policy, Console\.WriteLine, attestation\);/u, 'the loaded policy is what the core uses');
   assert.equal(/SERVICE_POLICY=[^"]*\{(?!policyReason|policy\.Current\.Tier)/u.test(code['ServiceHost.cs'] + code['Program.cs'] + sources['TestSeam.cs']), false, 'only reason words and the tier are printed');
   // The policy is never lowered by a fallback: no catch in the loader turns a failure into the default policy.

@@ -131,7 +131,7 @@ internal static class WebAuthnProof
     }
 }
 
-// The JSON shape of a webauthn proof on the approver pipe (decide, policy_set, key_add, key_remove):
+// The JSON shape of a webauthn proof on the approver pipe (decide, policy_set, key_remove):
 //   {"kind":"webauthn","credentialId":"<base64url>","authenticatorData":"<base64>","signature":"<base64>"}
 // Exactly these four keys; base64 is canonical (no whitespace, no stray bits). A shape error is the caller's request_invalid; whether the assertion is any good is the verifier's business.
 internal static class WebAuthnWire
