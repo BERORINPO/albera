@@ -49,7 +49,8 @@ $setupRunId = '1000'
 # $Params is a hashtable of the host script's parameters (a hashtable splat binds names; an array splat would pass '-Mode' as a value).
 function Invoke-Host([hashtable]$Params) {
   $all = @{ RepoRoot = $RepoRoot } + $Params
-  $text = (& $hostScript @all *>&1 | Out-String)
+  # -Width: without it Out-String wraps at the session's console width (about 100 in the VM), so a sentence the checks look for can be cut in two (first VM run of set-approver, 2026-11-04)
+  $text = (& $hostScript @all *>&1 | Out-String -Width 4096)
   [pscustomobject]@{ Exit = $LASTEXITCODE; Output = $text }
 }
 . (Join-Path $HostScriptDir 'albera-host-lib.ps1')
