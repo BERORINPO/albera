@@ -553,6 +553,7 @@ internal static partial class Harness
         WebAuthnSignerChecks();
         WebAuthnRouteChecks();
         WebAuthnApproveChecks();
+        WebAuthnSessionChecks();
         WebAuthnPolicyChecks();
         WebAuthnEnrollChecks();
         WebAuthnKeysChecks();

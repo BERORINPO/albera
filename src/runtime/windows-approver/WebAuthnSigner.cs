@@ -22,8 +22,8 @@ internal interface IWebAuthnAuthenticator
     AssertionResult GetAssertion(IntPtr window, byte[] clientDataJson, IReadOnlyList<byte[]> allowCredentialIds);
 }
 
-/// <summary>What the commands need for WebAuthn: the authenticator, whether this is a remote session (SM_REMOTESESSION), and where the key record files go. Null in <see cref="Wiring"/> means "Hello only" (legacy and unit tests).</summary>
-internal sealed record WebAuthnKit(IWebAuthnAuthenticator Authenticator, bool RemoteSession, KeyRecordStore Records);
+/// <summary>What the commands need for WebAuthn: the authenticator, a reader of whether this is a remote session RIGHT NOW (SM_REMOTESESSION; called at every signing attempt, because a tray that keeps running can move between the console and Remote Desktop), and where the key record files go. Null in <see cref="Wiring"/> means "Hello only" (legacy and unit tests).</summary>
+internal sealed record WebAuthnKit(IWebAuthnAuthenticator Authenticator, Func<bool> IsRemoteSession, KeyRecordStore Records);
 
 internal sealed class WebAuthnSigner(IWebAuthnAuthenticator authenticator)
 {

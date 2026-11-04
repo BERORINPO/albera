@@ -69,8 +69,8 @@ internal static partial class Harness
             Assert(FilesIn(folder) == 1 && File.ReadAllBytes(path).SequenceEqual(Encoding.UTF8.GetBytes(canonical)), "one file, exactly the canonical bytes (no BOM, no newline)");
             Assert(text.Contains($"record file: {path}\n") && text.Contains("attestation: none (accepted with --accept-unattested: this key is NOT proven to be hardware-backed)\n"), text);
             string[] lines = text.TrimEnd().Split('\n');
-            Assert(lines[^2].StartsWith("next (the owner, in an elevated prompt; Windows asks for the administrator's consent): ", StringComparison.Ordinal) && lines[^2].EndsWith($"albera-host.ps1 -Mode set-approver -ApproverKeyFile \"{path}\""), $"the exact next step, with the record file: {lines[^2]}");
-            Assert(lines[^1].StartsWith("This key approves nothing until set-approver has added it to the Authority.", StringComparison.Ordinal) && !text.Contains("keys add"), "and what the key can do until then; no run-time add is offered");
+            Assert(lines[^2].StartsWith("next (the owner, in an elevated prompt; Windows asks for the administrator's consent): ", StringComparison.Ordinal) && lines[^2].EndsWith($"albera-host.ps1 -Mode set-approver -ApproverKeyFile \"{path}\" -ExpectedApproverKeyId {keyId}"), $"the exact next step, with the record file and the key id pinned: {lines[^2]}");
+            Assert(lines[^1].StartsWith("This key approves nothing until set-approver has added it to the Authority. -ExpectedApproverKeyId pins the key id printed above", StringComparison.Ordinal) && !text.Contains("keys add"), "and what the key can do until then; no run-time add is offered");
             Assert(!text.Contains("PRIVATE") && text.Split('\n').Count(l => l.StartsWith("  \"", StringComparison.Ordinal)) == 6, "public values only: keyId, kind, alg, publicKey, credentialId, approverSid");
             Assert(authenticator.Created == 1 && authenticator.LastWindow == IntPtr.Zero, "one credential; the console window is the default parent");
             StringWriter again = new();
@@ -155,7 +155,7 @@ internal static partial class Harness
             WebRun declined = Make([registered.KeyJson, other.KeyJson], stdin: "no\n");
             Assert(declined.Keys.RemoveAsync(other.Record.KeyId).GetAwaiter().GetResult() == ExitCodes.Refused && declined.Err.ToString() == "error: not_confirmed\n" && authenticator.AllowLists.Count == 0, declined.Err.ToString());
             // Over Remote Desktop with only Hello registered nothing can sign: remote_session, before the typed yes.
-            WebRun remote = Make([HelloListing(), "{\"keyId\":\"hello-0000000000000002\",\"kind\":\"hello-rsa\"}"], new WebAuthnKit(authenticator, true, kit.Records));
+            WebRun remote = Make([HelloListing(), "{\"keyId\":\"hello-0000000000000002\",\"kind\":\"hello-rsa\"}"], new WebAuthnKit(authenticator, () => true, kit.Records));
             Assert(remote.Keys.RemoveAsync("hello-0000000000000002").GetAwaiter().GetResult() == ExitCodes.SignerUnavailable && remote.Err.ToString().StartsWith("error: remote_session\n") && remote.Input.RequestsAtFirstRead == -1 && remote.Out.ToString() == "", remote.Err.ToString());
         });
         Check("keys remove with only Hello keys registered (local session): the proof is the Hello signature (a quoted base64 string) over albera.keyremove.v1 0x00 keyId 0x00 challenge", () =>

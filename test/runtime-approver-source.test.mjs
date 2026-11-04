@@ -401,7 +401,7 @@ test('WebAuthn platform code: webauthn.dll is called from one shipped-only file 
   assert.deepEqual([...allCode.matchAll(/class (\w+)(?:\([^)]*\))? : IWebAuthnAuthenticator/gu)].map((m) => m[1]).sort(), ['PlatformWebAuthn', 'SoftwareAuthenticator'], 'the platform one, and the software one of the test seam');
   // Shipped wiring uses the platform authenticator and the Remote Desktop flag (SM_REMOTESESSION); the test-faults wiring does not reach it (its kit comes from --test-webauthn only).
   const wiring = sources['Program.cs'].match(/#if ALBERA_APPROVER_TEST_FAULTS\n([\s\S]*?)#else\n([\s\S]*?)#endif/u);
-  assert.match(wiring[2], /new WebAuthnKit\(new PlatformWebAuthn\(\), System\.Windows\.Forms\.SystemInformation\.TerminalServerSession, new KeyRecordStore\(KeyRecordStore\.DefaultDirectory\)\)/u);
+  assert.match(wiring[2], /new WebAuthnKit\(new PlatformWebAuthn\(\), \(\) => System\.Windows\.Forms\.SystemInformation\.TerminalServerSession, new KeyRecordStore\(KeyRecordStore\.DefaultDirectory\)\)/u);
   assert.equal(/PlatformWebAuthn|WebAuthnKit/u.test(wiring[1]), false, 'a test build never reaches the real platform authenticator');
   // The probe-verified call shape: every structure and options block is version 1, the user verification requirement is "required" (1), the attestation preference is "none" (1), the rp id is the contract's.
   assert.equal([...webAuthnCode.matchAll(/dwVersion = Version1/gu)].length >= 8, true);
@@ -444,6 +444,11 @@ test('WebAuthn proof bytes: the client data, the authenticator data rule, the as
 
 test('WebAuthn signing choice: the Authority\'s `keys` decides; WebAuthn when a WebAuthn key is registered, Hello only on a local session, remote_session otherwise; one place picks, each command stops before the typed yes', () => {
   assert.match(presenceSigning, /RemoteSessionCode = "remote_session"/u);
+  // The session can change while a tray keeps running (console <-> Remote Desktop): the flag is a reader called at every signing attempt, never a value read once at start.
+  assert.match(code['WebAuthnSigner.cs'], /record WebAuthnKit\(IWebAuthnAuthenticator Authenticator, Func<bool> IsRemoteSession, KeyRecordStore Records\)/u);
+  assert.match(presenceSigning, /SigningRoute\.Choose\(keys, kit\.IsRemoteSession\(\)\)/u);
+  assert.equal(/\bbool RemoteSession\b|webAuthn\.RemoteSession\b|kit\.RemoteSession\b/u.test(allCode), false, 'no stored remote-session value');
+  assert.match(code['Program.cs'], /new WebAuthnKit\(new PlatformWebAuthn\(\), \(\) => System\.Windows\.Forms\.SystemInformation\.TerminalServerSession,/u, 'the entry point passes a reader');
   assert.equal(allCode.split('"remote_session"').length - 1, 1, 'the code is defined once and used through the constant');
   const choose = sliceBetween(presenceSigning, 'public static SigningRoute Choose', 'internal sealed class PresenceSigning');
   inOrder(choose, ['k.IsWebAuthn', 'new SigningRoute(RouteKind.WebAuthn, credentials)', 'remoteSession ? new SigningRoute(RouteKind.RemoteNoKey, []) : UsingHello']);
@@ -465,7 +470,7 @@ test('WebAuthn signing choice: the Authority\'s `keys` decides; WebAuthn when a 
   assert.equal([...allCode.matchAll(/\\"presence\\":/gu)].length, 2, 'decide and policy_set carry the presence value, built from PresenceJson');
   // Each command asks for the route before the typed yes, so the remote-session message comes first.
   inOrder(sliceBetween(code['ApproverCommands.cs'], 'public Task<int> ApproveAsync', 'private async Task<SigningRoute> ChooseRouteAsync'), ['ChooseRouteAsync()', 'Confirmed()']);
-  inOrder(sliceBetween(keysCommand, 'public Task<int> RemoveAsync', 'private static string ProofJson'), ['SigningRoute.Choose(keys, webAuthn.RemoteSession)', 'Confirmed("remove this key")', 'directory.RemoveChallengeAsync(']);
+  inOrder(sliceBetween(keysCommand, 'public Task<int> RemoveAsync', 'private static string ProofJson'), ['SigningRoute.Choose(keys, webAuthn.IsRemoteSession())', 'Confirmed("remove this key")', 'directory.RemoveChallengeAsync(']);
 });
 
 test('keys remove and enroll --webauthn: the unattested opt-in, the console and every refusal come before anything is made or sent; the remove proof is over a message built from the key id and the challenge only (no record, so a key from another device can be removed); success is reported only when the key list shows it; there is no keys add', () => {
@@ -474,7 +479,7 @@ test('keys remove and enroll --webauthn: the unattested opt-in, the console and 
   assert.match(enrollWebAuthn, /UnattestedLine = "attestation: none \(accepted with --accept-unattested: this key is NOT proven to be hardware-backed\)"/u, 'the same style of warning line as the Hello enroll');
   assert.equal(/IApproverChannel|PipeChannel|CallAsync|KeyDirectory|ServerExpectation/u.test(enrollWebAuthn), false, 'enroll --webauthn never talks to the Authority: no channel, no key directory');
   const remove = sliceBetween(keysCommand, 'public Task<int> RemoveAsync', 'private static string ProofJson');
-  inOrder(remove, ['if (!interactive)', 'directory.ListAsync()', '"key_unknown"', '"last_key"', 'SigningRoute.Choose(keys, webAuthn.RemoteSession)', 'PresenceSigning.RemoteSessionCode', 'Confirmed("remove this key")',
+  inOrder(remove, ['if (!interactive)', 'directory.ListAsync()', '"key_unknown"', '"last_key"', 'SigningRoute.Choose(keys, webAuthn.IsRemoteSession())', 'PresenceSigning.RemoteSessionCode', 'Confirmed("remove this key")',
     'directory.RemoveChallengeAsync(target.KeyId)', 'signing.Sign(route, KeyMessages.Remove(target.KeyId, challenge))', 'directory.RemoveAsync(target.KeyId, challenge, by)', 'result: key removed', 'removed.PolicyReset']);
   assert.match(remove, /removed\.Keys\.Any\(k => k\.KeyId == target\.KeyId\)\) throw new ChannelException\(ChannelCodes\.InvalidResponse, sent: true\)/u, 'a remove the key list does not show is an unknown outcome');
   assert.match(remove, /if \(removed\.PolicyReset\) output\.Write\("policy: set back to careful/u, 'the person is told when the policy went back to careful');

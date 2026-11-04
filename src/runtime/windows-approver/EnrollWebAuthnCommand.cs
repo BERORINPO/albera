@@ -6,7 +6,7 @@ namespace Albera.Approver;
 //   2. creates the credential for the fixed rp id (WebAuthnCreator): user verification required, attestation none, a new user id every time (it never replaces another credential)
 //   3. computes the key record (SPKI from the COSE key, key id = "webauthn-" + first 8 bytes of SHA-256 over the SPKI, alg, credential id) and refuses a key the contract does not allow
 //   4. writes the canonical record JSON to %LOCALAPPDATA%\Albera\approver-keys\<keyId>.json (KeyRecordStore): that file is what the installer's `-Mode set-approver -ApproverKeyFile` reads
-//   5. prints the record's fields and approverSid, the same kind of warning line as the Hello `enroll`, and the next step: the elevated `albera-host.ps1 -Mode set-approver -ApproverKeyFile <that file>`
+//   5. prints the record's fields and approverSid, the same kind of warning line as the Hello `enroll`, and the next step: the elevated `albera-host.ps1 -Mode set-approver -ApproverKeyFile <that file> -ExpectedApproverKeyId <keyId>` (the id is pinned because the record file is an ordinary same-user file that another process could swap before the elevated step)
 // It never talks to the Authority, and the key is NOT registered by this command: keys are added only by the elevated set-approver, behind UAC (there is no run-time add: a same-user process could
 // otherwise get one signature at a real approval and register its own key).
 internal sealed class EnrollWebAuthnCommand(WebAuthnKit? kit, Func<string> currentUserSid, TextWriter output, TextWriter errors, bool interactive)
@@ -34,7 +34,7 @@ internal sealed class EnrollWebAuthnCommand(WebAuthnKit? kit, Func<string> curre
         output.Write(saved ? $"record file: {path}\n" : "record file: NOT written\n");
         output.Write("approverSid is this account: run approve as the same account, on this PC.\n");
         output.Write(UnattestedLine + "\n");
-        if (saved) output.Write($"{NextStepLabel}albera-host.ps1 -Mode set-approver -ApproverKeyFile \"{path}\"\nThis key approves nothing until set-approver has added it to the Authority. The keyId above is the one this file holds.\n");
+        if (saved) output.Write($"{NextStepLabel}albera-host.ps1 -Mode set-approver -ApproverKeyFile \"{path}\" -ExpectedApproverKeyId {record.KeyId}\nThis key approves nothing until set-approver has added it to the Authority. -ExpectedApproverKeyId pins the key id printed above: set-approver refuses a record file whose public key hashes to another id, so a file swapped after this command is caught.\n");
         return saved ? ExitCodes.Ok : Fail(ExitCodes.Internal, "record_file_failed", "hint: the key was made but its record file could not be written (a different file with that name, or no permission). The values above are the record: save them as <keyId>.json in the approver-keys folder");
     }
 

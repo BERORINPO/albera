@@ -74,7 +74,8 @@ internal sealed class PlatformWebAuthn : IWebAuthnAuthenticator
         return console != IntPtr.Zero ? console : Native.GetForegroundWindow();
     }
 
-    // Only a prompt the person dismissed (or let time out) is "cancelled" = no proof. Every other failure (no such credential here, no platform support, a bad parameter) is "not ready": nothing is sent and the request stays pending.
+    // "Cancelled" = no proof: a prompt the person dismissed or let time out, and also NTE_USER_CANCELLED when no matching credential is on the device (Windows answers that way, so the two cannot be told apart).
+    // Either way the approver sends decide presence_unavailable: the Authority fails the request, so it does not hang. Every other failure (no platform support, a bad parameter) is "not ready": nothing is sent and the request stays pending.
     private static WebAuthnStatus Outcome(int hr) => hr is NteUserCancelled or ErrorCancelled or ErrorTimeout ? WebAuthnStatus.Cancelled : WebAuthnStatus.NotReady;
 
     // The HRESULT and the API's own error name (a fixed vocabulary such as NotAllowedError), reduced to letters and digits.

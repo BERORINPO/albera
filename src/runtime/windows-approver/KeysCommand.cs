@@ -30,7 +30,7 @@ internal sealed class KeysCommand(IApproverChannel channel, IPresenceSigner hell
         IReadOnlyList<RegisteredKey> keys = await directory.ListAsync();
         RegisteredKey target = keys.FirstOrDefault(k => k.KeyId == keyId) ?? throw new Stop(ExitCodes.Refused, "key_unknown", "hint: keys list shows the keys the Authority has");
         if (keys.Count == 1) throw new Stop(ExitCodes.Refused, "last_key", "hint: the Authority keeps at least one key; add another with set-approver before removing this one");
-        SigningRoute route = SigningRoute.Choose(keys, webAuthn.RemoteSession); // a remote session that cannot sign stops here, before the typed yes
+        SigningRoute route = SigningRoute.Choose(keys, webAuthn.IsRemoteSession()); // a remote session that cannot sign stops here, before the typed yes
         if (route.Kind == RouteKind.RemoteNoKey) throw new Stop(ExitCodes.SignerUnavailable, PresenceSigning.RemoteSessionCode, PresenceSigning.RemoteSessionHint);
         output.Write($"This removes the approver key {SafeText.Quote(target.KeyId)} (kind {SafeText.Quote(target.Kind)}) from the Approval Authority. It will have {keys.Count - 1} key(s) left.\n");
         if (!Confirmed("remove this key")) throw new Stop(ExitCodes.Refused, "not_confirmed");

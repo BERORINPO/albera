@@ -215,7 +215,7 @@ describe('WebAuthn presence: the test-faults approver (software authenticator) a
     assert.match(made.stdout, /\nattestation: none \(accepted with --accept-unattested: this key is NOT proven to be hardware-backed\)\n/u);
     const recordPath = path.join(keysDir, `${record.keyId}.json`);
     assert.ok(made.stdout.includes(`record file: ${recordPath}\n`), made.stdout);
-    assert.ok(made.stdout.endsWith(`next (the owner, in an elevated prompt; Windows asks for the administrator's consent): albera-host.ps1 -Mode set-approver -ApproverKeyFile "${recordPath}"\nThis key approves nothing until set-approver has added it to the Authority. The keyId above is the one this file holds.\n`), 'the exact next step');
+    assert.ok(made.stdout.endsWith(`next (the owner, in an elevated prompt; Windows asks for the administrator's consent): albera-host.ps1 -Mode set-approver -ApproverKeyFile "${recordPath}" -ExpectedApproverKeyId ${record.keyId}\nThis key approves nothing until set-approver has added it to the Authority. -ExpectedApproverKeyId pins the key id printed above: set-approver refuses a record file whose public key hashes to another id, so a file swapped after this command is caught.\n`), 'the exact next step');
     assert.equal(made.stdout.includes('keys add'), false, 'no run-time add is offered');
     assert.equal(/PRIVATE|pkcs8/iu.test(made.stdout), false);
   });

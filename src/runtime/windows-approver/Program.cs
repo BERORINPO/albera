@@ -37,7 +37,7 @@ internal static class Program
         if (!TestSeam.TryApply(ref args, ref wiring)) return Usage();
 #else
         Wiring wiring = new(ServerExpectation.Production, new WindowsHelloPresenceSigner(), new WindowsHelloKeyStore(), PipeChannel.DefaultTimeoutMs, !Console.IsInputRedirected,
-            new WebAuthnKit(new PlatformWebAuthn(), System.Windows.Forms.SystemInformation.TerminalServerSession, new KeyRecordStore(KeyRecordStore.DefaultDirectory))); // SM_REMOTESESSION: Hello does not work there
+            new WebAuthnKit(new PlatformWebAuthn(), () => System.Windows.Forms.SystemInformation.TerminalServerSession, new KeyRecordStore(KeyRecordStore.DefaultDirectory))); // GetSystemMetrics(SM_REMOTESESSION), read at each signing attempt: Hello does not work there
 #endif
         if (CommandLine.TryParse(args) is not { } command) return Usage();
         if (command.Verb == "tray") return TrayApp.Run(wiring);

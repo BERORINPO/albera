@@ -53,7 +53,7 @@ internal sealed class PresenceSigning(IApproverChannel channel, IPresenceSigner 
         IReadOnlyList<RegisteredKey> keys;
         try { keys = await new KeyDirectory(channel).ListAsync(); }
         catch (AuthorityRefusal refusal) when (refusal.Code == "request_invalid") { keys = []; }
-        return SigningRoute.Choose(keys, kit.RemoteSession);
+        return SigningRoute.Choose(keys, kit.IsRemoteSession()); // read now, not at start: the session may have changed since the tray started
     }
 
     /// <summary>Asks the key of <paramref name="route"/> to sign. <paramref name="window"/> is the parent of the WebAuthn prompt (default: the console); Hello takes none.</summary>

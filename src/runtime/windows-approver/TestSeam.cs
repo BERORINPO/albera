@@ -184,7 +184,7 @@ internal static class TestSeam
             key.ImportPkcs8PrivateKey(Convert.FromBase64String(pkcs8), out _);
             authenticator.Add(credentialId, key);
         }
-        kit = new WebAuthnKit(authenticator, remote, new KeyRecordStore(folder));
+        kit = new WebAuthnKit(authenticator, () => remote, new KeyRecordStore(folder));
         return true;
     }
 }

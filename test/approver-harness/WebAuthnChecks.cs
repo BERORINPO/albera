@@ -58,7 +58,7 @@ internal static partial class Harness
 
     private static string[] Verbs(FakeChannel channel) => [.. channel.Requests.Select(Verb)];
 
-    private static WebAuthnKit Kit(SoftwareAuthenticator authenticator, bool remote, string? folder = null) => new(authenticator, remote, new KeyRecordStore(folder ?? TempFolder()));
+    private static WebAuthnKit Kit(SoftwareAuthenticator authenticator, bool remote, string? folder = null) => new(authenticator, () => remote, new KeyRecordStore(folder ?? TempFolder()));
 
     /// <summary>The Authority, as far as approve needs it: the pending list, the key list, and a decide that approves (or fails presence_unavailable).</summary>
     private static FakeChannel WebAuthnChannel(string keysReply, params string[] entries) => new(request =>
@@ -421,6 +421,35 @@ internal static partial class Harness
             FakeChannel mismatch = WebAuthnChannel(KeysReply(HelloEntry), Entry(digest: "sha256:" + new string('0', 64)));
             WebRun refused = new(mismatch, Signing(), Kit(authenticator, remote: true));
             Assert(refused.Approve() == ExitCodes.Refused && refused.Err.ToString() == "error: digest_mismatch\n" && Verbs(mismatch).SequenceEqual(["list"]), $"{refused.Err} {string.Join(',', Verbs(mismatch))}");
+        });
+    }
+
+    private static void WebAuthnSessionChecks()
+    {
+        Check("the remote-session flag is read at every signing attempt: a session that moves between Remote Desktop and the console is judged afresh each time (approve, the window's block, keys remove), never from a value read at start", () =>
+        {
+            bool remote = true;
+            int reads = 0;
+            SoftwareAuthenticator authenticator = new();
+            WebAuthnKit kit = new(authenticator, () => { reads++; return remote; }, new KeyRecordStore(TempFolder()));
+            FakeChannel channel = WebAuthnChannel(KeysReply(HelloEntry), Entry());
+            RecordingSigner hello = Signing();
+            StringWriter output = new(), errors = new();
+            ApproverCommands commands = new(channel, hello, output, errors, new StringReader("yes\nyes\nyes\n"), () => DateTimeOffset.FromUnixTimeSeconds(Now), interactive: true, webAuthn: kit); // ONE commands object, three attempts
+            int First() => commands.ApproveAsync(Id1).GetAwaiter().GetResult();
+            Assert(First() == ExitCodes.SignerUnavailable && errors.ToString().StartsWith("error: remote_session\n") && hello.Messages.Count == 0 && commands.SigningBlockedAsync().GetAwaiter().GetResult(), "over Remote Desktop: remote_session, and the window would be blocked");
+            remote = false; // the person sits down at the console
+            Assert(First() == ExitCodes.Ok && hello.Messages.Count == 1 && !commands.SigningBlockedAsync().GetAwaiter().GetResult(), "at the console: Hello signs, and the window is not blocked");
+            remote = true; // and connects again over Remote Desktop
+            errors.GetStringBuilder().Clear();
+            Assert(First() == ExitCodes.SignerUnavailable && errors.ToString().StartsWith("error: remote_session\n") && hello.Messages.Count == 1, "over Remote Desktop again: stopped again");
+            Assert(reads >= 5, $"the reader was called at every attempt ({reads} reads)");
+            // keys remove asks the reader too
+            remote = false;
+            FakeChannel keyChannel = KeyChannel([HelloEntry, "{\"keyId\":\"hello-0000000000000002\",\"kind\":\"hello-rsa\"}"]);
+            WebRun removing = new(keyChannel, Signing(), kit);
+            remote = true;
+            Assert(removing.Keys.RemoveAsync("hello-0000000000000002").GetAwaiter().GetResult() == ExitCodes.SignerUnavailable && removing.Err.ToString().StartsWith("error: remote_session\n"), "keys remove judges the session when it runs, not when the kit was made");
         });
     }
 
