@@ -17,12 +17,6 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 - これで進むもの: 漏れたキーの後始末 (stage 1 を動かすのには不要)
 - 取り消し: できない (無効にしたキーは元に戻らない)
 
-### リモート接続で承認できるかの試験 (WebAuthn)
-- やること: 接続元の PC の前で、リモート先の `C:\dev\albera-owner-1104\owner\webauthn-test.cmd` をダブルクリックする。手元の PC に Windows Hello が 2 回出るので確定し、最後の `RESULT` の行をベロに伝える
-- 所要: 約 2 分 (Yosuke の作業時間)
-- これで進むもの: `approver-webauthn.md` の実装 (phase 2 以降)。通らなければ設計を見直す
-- 取り消し: できる (何も送らず、ALBERA は変わらない。手元の PC に試験用パスキー「probe.albera.local」が残ったら、設定 > アカウント > パスキー で消せる)
-
 ### サブスクでの最初のジョブ (stage 1 の残り)
 - 済み (2026-11-04): 移行、3 つのサービスの起動、トークンの保存、VM の起動
 - 止まっている理由: Yosuke はこの PC にリモートデスクトップでしか入れず、その中では今の承認の鍵 (Windows Hello) が使えない (2026-11-04 に測定)。WebAuthn で承認する形 (`approver-webauthn.md`) が入るまで待つ
