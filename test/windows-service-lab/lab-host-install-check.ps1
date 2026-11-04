@@ -182,10 +182,14 @@ else {
     while ((Get-AuthorityServiceFacts).state -ne 'Running' -and (Get-Date) -lt $waitUntil) { Start-Sleep -Milliseconds 500 }
     $p0 = Get-AuthorityServiceFacts
     Add-SetApproverCheck $setChecks 'authority_runs_before' ($p0.state -eq 'Running') ("state " + $p0.state + ", process " + $p0.processId)
-    # 1. the install above used the legacy id hello-lab-0001, which is not the hash of its key, so it cannot be carried into approverKeys: ADDING is refused and nothing moves
+    # 1. the install above used the legacy id hello-lab-0001, which is not the hash of its key, so it cannot be carried into approverKeys: ADDING is refused and nothing moves.
+    # The Authority has already run, so the refusal comes from its key store: the Authority lets the legacy Hello key keep that id (AuthorityConfig.LegacyKey) and seeds the store with it, while the installer
+    # holds a store to the key-file rules and calls it unusable (first VM run, 2026-11-04). Either way an add is refused and -Replace is the way out. A real Hello enroll derives its id, so a real store is valid.
     $hash0 = & $configHash; $record0 = & $manifestHash
+    $storeBefore = Test-Path -LiteralPath $authorityStoreFile
     $refused = Invoke-Host @{ Mode = 'set-approver'; LabAssumeYes = $true; ApproverKeyFile = @($labA.File); ExpectedApproverKeyId = @($labA.Record.keyId) }
-    Add-SetApproverCheck $setChecks 'add_to_an_invalid_legacy_key_refused' ($refused.Exit -eq 3 -and $refused.Output -match 'is not a valid hello-rsa record' -and (& $configHash) -eq $hash0 -and (& $manifestHash) -eq $record0 -and (Get-AuthorityServiceFacts).processId -eq $p0.processId) ("exit " + $refused.Exit)
+    $refusedLine = [regex]::Match($refused.Output, '(?m)^.*(REFUSED|cannot be used|not a valid).{0,200}').Value.Trim()
+    Add-SetApproverCheck $setChecks 'add_to_an_invalid_legacy_key_refused' ($storeBefore -and $refused.Exit -eq 3 -and $refused.Output -match 'the Authority key store is there but cannot be used \(the key store is not valid: store_key:' -and (& $configHash) -eq $hash0 -and (& $manifestHash) -eq $record0 -and (Get-AuthorityServiceFacts).processId -eq $p0.processId) ("exit " + $refused.Exit + ", store before: " + $storeBefore + "; " + $refusedLine)
     # 1b. -ExpectedApproverKeyId is required (one id per file, in order): none is refused at the command line (exit 2), a wrong id and a file swapped under its name (a valid record of another key) are refused (exit 3); nothing moves
     $noId = Invoke-Host @{ Mode = 'set-approver'; LabAssumeYes = $true; ApproverKeyFile = @($labA.File); Replace = $true }
     Add-SetApproverCheck $setChecks 'missing_expected_id_refused' ($noId.Exit -eq 2 -and $noId.Output -match '-ExpectedApproverKeyId is required with -ApproverKeyFile' -and (& $configHash) -eq $hash0 -and (& $manifestHash) -eq $record0 -and (Get-AuthorityServiceFacts).processId -eq $p0.processId) ("exit " + $noId.Exit)
