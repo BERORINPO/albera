@@ -429,7 +429,7 @@ internal static partial class Harness
     {
         GuiPromptChecks();
         Exception? failure = null;
-        Thread thread = new(() => { try { GuiWindowChecks(); } catch (Exception ex) { failure = ex; } });
+        Thread thread = new(() => { try { GuiWindowChecks(); WebAuthnWindowChecks(); } catch (Exception ex) { failure = ex; } });
         thread.SetApartmentState(ApartmentState.STA); // Windows Forms controls need an STA thread
         thread.Start();
         thread.Join();

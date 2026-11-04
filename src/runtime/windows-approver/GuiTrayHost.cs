@@ -66,7 +66,7 @@ internal sealed class TrayHost : ApplicationContext
     }
 
     private ApproverCommands NewCommands() =>
-        new(new PipeChannel(wiring.Expectation, wiring.TimeoutMs), wiring.Signer, TextWriter.Null, TextWriter.Null, TextReader.Null, clock, interactive: false);
+        new(new PipeChannel(wiring.Expectation, wiring.TimeoutMs), wiring.Signer, TextWriter.Null, TextWriter.Null, TextReader.Null, clock, interactive: false, webAuthn: wiring.WebAuthn);
 
     private async Task PollAsync()
     {
@@ -85,7 +85,7 @@ internal sealed class TrayHost : ApplicationContext
                 handled = ApprovalQueue.Prune(handled, items);
                 wrongPicks.Prune(items);
                 if (openId is not null && items.All(item => item.ApprovalId != openId)) open?.CloseIfIdle(); // expired or settled elsewhere
-                OpenNext();
+                await OpenNextAsync();
             }
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -104,11 +104,13 @@ internal sealed class TrayHost : ApplicationContext
         }
     }
 
-    private void OpenNext()
+    private async Task OpenNextAsync()
     {
         if (ApprovalQueue.Next(pending, handled, open is not null).OpenNow is not { ApprovalId: { } id } item) return;
+        bool blocked = await NewCommands().SigningBlockedAsync(); // a remote session with no WebAuthn key: the window says so before any digit is offered
+        if (ApprovalQueue.Next(pending, handled, open is not null).OpenNow?.ApprovalId != id) return; // another call opened a window, or the request left, while the key list was being read
         handled.Add(id);
-        ApprovalWindow window = new(ApprovalPrompt.From(item, clock()), NewCommands(), clock, SystemInformation.TerminalServerSession, wrongPicks.For(id)); // wrong picks carry over to a reopened window
+        ApprovalWindow window = new(ApprovalPrompt.From(item, clock(), blocked), NewCommands(), clock, SystemInformation.TerminalServerSession, wrongPicks.For(id)); // wrong picks carry over to a reopened window
         window.FormClosed += (_, _) => { wrongPicks.Record(id, window.WrongMask); open = null; openId = null; window.Dispose(); if (exitWhenClosed) ExitThread(); };
         open = window;
         openId = id;
@@ -124,9 +126,10 @@ internal sealed class TrayHost : ApplicationContext
     }
 
     // A window the person closed without deciding stays pending at the Authority; this brings it back.
-    private void Reopen()
+    private async void Reopen()
     {
         handled.RemoveWhere(id => id != openId);
-        OpenNext();
+        try { await OpenNextAsync(); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { problem = "internal"; }
     }
 }

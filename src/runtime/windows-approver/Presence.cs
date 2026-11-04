@@ -5,17 +5,23 @@ namespace Albera.Approver;
 
 internal enum SignStatus { Signed, Unavailable, NotReady }
 
-/// <summary>Signed: <see cref="Signature"/> is the proof. Unavailable: the Hello key exists but gave no proof (cancelled, locked). NotReady: there is no usable Hello key at all (Hello unsupported, not enrolled, or no signer in this build).</summary>
-internal sealed record SignResult(SignStatus Status, byte[]? Signature)
+/// <summary>
+/// Signed: <see cref="Signature"/> (a Hello RSA signature) or <see cref="Proof"/> (a WebAuthn assertion) is the proof. Unavailable: the key exists but gave no proof (cancelled, locked). NotReady: there is no usable key at all
+/// (Hello unsupported, not enrolled, WebAuthn not available, or no signer in this build). <see cref="Detail"/> is a short reason for the hint line (WebAuthn only; fixed vocabulary, never request text).
+/// </summary>
+internal sealed record SignResult(SignStatus Status, byte[]? Signature, WebAuthnAssertion? Proof = null, string? Detail = null)
 {
     public static SignResult Signed(byte[] signature) => new(SignStatus.Signed, signature);
+    public static SignResult SignedWebAuthn(WebAuthnAssertion proof) => new(SignStatus.Signed, null, proof);
     public static SignResult Unavailable { get; } = new(SignStatus.Unavailable, null);
     public static SignResult NotReady { get; } = new(SignStatus.NotReady, null);
+    public static SignResult NotReadyBecause(string detail) => new(SignStatus.NotReady, null, null, detail);
 }
 
 /// <summary>
-/// The human-presence step. The shipped implementation (WindowsHello.cs, WindowsHelloPresenceSigner) asks Windows Hello (KeyCredentialManager) to sign <paramref name="message"/>
+/// The Windows Hello human-presence step. The shipped implementation (WindowsHello.cs, WindowsHelloPresenceSigner) asks Windows Hello (KeyCredentialManager) to sign <paramref name="message"/>
 /// with the approver's RSA-2048 key credential: RSA PKCS#1 v1.5 / SHA-256, a 256-byte signature. The fake (test-faults builds only) signs with an in-memory RSA key.
+/// A WebAuthn key is not an IPresenceSigner: it needs the credential ids the Authority has registered, so WebAuthnSigner takes them (PresenceSigning.cs picks one of the two).
 /// </summary>
 internal interface IPresenceSigner
 {

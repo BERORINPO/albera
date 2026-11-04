@@ -12,8 +12,10 @@ namespace Albera.Approver;
 // one Hello signature over PolicyChange.Message(new policy, kid, audience) (albera.policy.v1 + the Authority's kid and audience from its reply + the hash this app computed itself from the policy it showed). A change that only adds prompts is
 // sent as it is. The Authority decides again on its own; this app's description is for the person, not a promise to the Authority.
 // The policy and its hash are read from the Authority's reply with the contract's strict reader and hashed here; a reply whose hash differs from the policy it carries is refused.
-internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, bool interactive)
+internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner signer, TextWriter output, TextWriter errors, TextReader input, bool interactive, WebAuthnKit? webAuthn = null)
 {
+    private readonly PresenceSigning signing = new(channel, signer, webAuthn);
+
     private static readonly string[] AuthorityCodes = ["authority_unavailable", "request_invalid", "request_expired", "human_denied", "presence_unavailable", "presence_mismatch", "queue_full"];
 
     private sealed class Stop(int exitCode, string code, string? hint = null) : Exception(code) { public int ExitCode { get; } = exitCode; public string? Hint { get; } = hint; }
@@ -38,17 +40,18 @@ internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner si
         output.Write(Describe(current));
         output.Write(Change(current, next, loosens));
         if (loosens && !interactive) throw new Stop(ExitCodes.Refused, "not_interactive", "hint: this change needs a console you type in and Windows Hello; stdin is redirected, so nothing was read or sent");
+        SigningRoute route = loosens ? await ChooseRouteAsync() : SigningRoute.UsingHello; // before the typed yes: a remote session with no WebAuthn key is told so now
         string request = $"{{\"v\":1,\"verb\":\"policy_set\",\"policy\":{Encoding.UTF8.GetString(next.ToJson())}}}";
         if (loosens)
         {
             if (!Confirmed()) throw new Stop(ExitCodes.Refused, "not_confirmed");
-            output.Write("Windows Hello will ask you to verify now. It shows only the app name: the change above is what you approve.\n");
-            SignResult signed = signer.Sign(PolicyChange.Message(next, kid, audience));
+            output.Write(PresenceSigning.AskNotice(route, "the change above"));
+            SignResult signed = signing.Sign(route, PolicyChange.Message(next, kid, audience));
             request = signed.Status switch
             {
-                SignStatus.Signed => $"{{\"v\":1,\"verb\":\"policy_set\",\"policy\":{Encoding.UTF8.GetString(next.ToJson())},\"presence\":\"{Convert.ToBase64String(signed.Signature!)}\"}}",
-                SignStatus.Unavailable => throw new Stop(ExitCodes.SignerUnavailable, "hello_no_proof", "hint: Windows Hello did not verify you (cancelled or locked); run the command again. Nothing was sent"),
-                _ => throw new Stop(ExitCodes.SignerUnavailable, "presence_signer_unavailable", "hint: run AlberaApprover.exe enroll (Windows Hello key missing or Hello not set up); nothing was sent"),
+                SignStatus.Signed => $"{{\"v\":1,\"verb\":\"policy_set\",\"policy\":{Encoding.UTF8.GetString(next.ToJson())},\"presence\":{PresenceSigning.PresenceJson(signed)}}}",
+                SignStatus.Unavailable => throw new Stop(ExitCodes.SignerUnavailable, PresenceSigning.NoProofCode(route), PresenceSigning.NoProofHint(route)),
+                _ => throw new Stop(ExitCodes.SignerUnavailable, "presence_signer_unavailable", PresenceSigning.NotReadyHint(route, signed)),
             };
         }
         JsonElement reply = await CallAsync(request);
@@ -59,6 +62,13 @@ internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner si
         }
         throw new Stop(ExitCodes.TransportUnknown, ChannelCodes.InvalidResponse);
     });
+
+    // The key to sign with, or a stop before anything is asked or sent (a remote session where only Hello is registered; see PresenceSigning).
+    private async Task<SigningRoute> ChooseRouteAsync()
+    {
+        SigningRoute route = await signing.ChooseAsync();
+        return route.Kind == RouteKind.RemoteNoKey ? throw new Stop(ExitCodes.SignerUnavailable, PresenceSigning.RemoteSessionCode, PresenceSigning.RemoteSessionHint) : route;
+    }
 
     // The policy in force, read from the Authority and checked: the strict reader, the contract's own hash, and the hash the Authority reported. The reply must also name the
     // Authority's kid and audience (in the contract's grammar): the signature is bound to them, so a reply without them is refused.
@@ -151,6 +161,7 @@ internal sealed class PolicyCommand(IApproverChannel channel, IPresenceSigner si
             if (stop.Hint is not null) errors.Write(stop.Hint + "\n");
             return stop.ExitCode;
         }
+        catch (AuthorityRefusal refusal) { errors.Write($"error: authority:{refusal.Code}\n"); return ExitCodes.AuthorityRejected; } // the key list (`keys`) was refused
         catch (ChannelException ex) { errors.Write($"error: {ex.Code}\n"); return ex.Sent ? ExitCodes.TransportUnknown : ExitCodes.ServerRefused; }
     }
 }
