@@ -29,10 +29,12 @@
 #                                                             the same install, with the approver key(s) taken from key record files (1 to 16; WebAuthn keys, docs/architecture/approver-webauthn.md) instead of
 #                                                             -ApproverKeyId and -ApproverPublicKey. The Authority config then holds `approverKeys` and not the legacy pair. -Mode migrate takes the same option
 #                                                             (the SID is still carried over). Several files: one value with commas (PowerShell started with -File passes a comma list as one string, and a repeated parameter is an error).
-#   albera-host.ps1 -Mode set-approver -ApproverKeyFile <record.json>[,<record.json>...] [-ExpectedApproverKeyId <id>[,<id>...]]
-#                                                             REPLACES the approver key list of a complete install (elevated): reads and fully checks the record file(s), writes `approverKeys` into the Authority
-#                                                             config (the legacy pair is removed, never both), deletes authority\approver-keys.json, restarts AlberaApprovalAuthority and records the change in the manifest.
-#                                                             The approver SID stays as it is. -ExpectedApproverKeyId: the key ids you read off the screen that created the keys; the run is refused unless the files hold exactly those.
+#   albera-host.ps1 -Mode set-approver -ApproverKeyFile <record.json>[,<record.json>...] [-Replace] [-ExpectedApproverKeyId <id>[,<id>...]]
+#                                                             the ONLY way a key is added (elevated; there is no run-time key_add). Reads and fully checks the record file(s), ADDS them to the approver keys in force of a
+#                                                             complete install (the Authority's key store when it is there and trusted, otherwise the config's keys; with -Replace the given keys alone become the list), writes
+#                                                             `approverKeys` into the Authority config (the legacy pair is removed, never both), deletes authority\approver-keys.json, restarts AlberaApprovalAuthority and records the
+#                                                             change in the manifest. The final list (key ids and kinds) is printed before anything is written. The approver SID stays as it is. -ExpectedApproverKeyId: the key ids
+#                                                             you read off the screen that created the keys; the run is refused unless the files hold exactly those.
 #   albera-host.ps1 -Mode status                              read-only report of what is installed and whether it still matches (exit 1 on any difference)
 #   albera-host.ps1 -Mode uninstall                           remove only what the install manifest says this script created (elevated)
 #
@@ -65,6 +67,8 @@ param(
   [string[]]$ApproverKeyFile,
   # The key ids the owner read off the screen that created the keys; the files must hold exactly these (a planted or swapped record file is then refused). Optional, comma-separated.
   [string[]]$ExpectedApproverKeyId,
+  # set-approver only: the given key file(s) become the ONLY approver keys. Without it they are ADDED to the keys in force.
+  [switch]$Replace,
   [string]$ExpectedTreeHash,
   [string]$RepoRoot,
   [string]$ProjectId,
@@ -166,6 +170,7 @@ if ($setApproverLike) {
   if ($ApproverKeyId -or $ApproverPublicKey -or $ApproverSid -or $ExpectedTreeHash) { Stop-Refused 'set-approver takes the key record file(s) (-ApproverKeyFile) and nothing else: the approver SID stays as it is, and no build is involved' 2 }
   if ($ApproverKeyFile.Count -eq 0) { Stop-Refused 'set-approver needs -ApproverKeyFile <record.json>[,<record.json>...]: the file(s) that AlberaApprover.exe enroll --webauthn wrote' 2 }
 }
+if ($Replace -and -not $setApproverLike) { Stop-Refused '-Replace only applies to -Mode set-approver (and its plan)' 2 }
 if ($ApproverKeyFile.Count -gt 0) {
   if (-not ($installLike -or $setApproverLike)) { Stop-Refused '-ApproverKeyFile only applies to install, migrate and set-approver (and their plan)' 2 }
   if ($ApproverKeyId -or $ApproverPublicKey) { Stop-Refused 'give the approver key as -ApproverKeyFile OR as -ApproverKeyId and -ApproverPublicKey, not both' 2 }
@@ -1831,21 +1836,32 @@ function Show-MigratePlan {
 }
 
 # ---------------------------------------------------------------------------------------------- set-approver (-Mode set-approver; approver-webauthn.md, "Keys")
-# REPLACES the approver key list of a COMPLETE install with the keys in the -ApproverKeyFile record file(s). The steps, in this order:
+# ADDS the keys of the -ApproverKeyFile record file(s) to the approver keys IN FORCE of a COMPLETE install - or, with -Replace, makes them the only keys. This is the only way a key is ever added: there is no run-time key_add, because a
+# same-user process must not be able to register its own key (UAC is the boundary this mode stands behind). The keys in force are the Authority's key store when it is there and trusted, otherwise the config's keys: starting from the config
+# alone would bring back a key that key_remove took out of the store (a lost device). The steps, in this order:
 #   check   the install record is trusted and complete (service layout); the Authority folder and config are trusted and are what install writes; the key store is absent or a plain file; the service is the one install made
-#   keys    read and check every record file (Read-ApproverKeyFiles); show the key ids and kinds that will be registered, and what they replace
-#   stop    stop AlberaApprovalAuthority if it runs (while it runs it may rewrite its key store, which would undo the next two steps)
+#   keys    read and check every record file (Read-ApproverKeyFiles); work out the final list (Get-SetApproverFinalList); show it - key ids and kinds - BEFORE anything is written
+#   stop    stop AlberaApprovalAuthority if it runs (while it runs it may rewrite its key store, which would undo the next two steps); the list is worked out again once it is stopped and must come out the same
 #   config  write approverKeys into the Authority config through the trusted write path (Write-OneConfig); the legacy pair goes, never both; every other field, the approver SID too, stays as it is
 #   store   delete authority\approver-keys.json - that one fixed file, only if it is a plain file - so the next start seeds the Authority's key store from the config
 #   start   start the service again if it ran before; if it does not stay up the old config goes back (the one place this script's mirror of the Authority's config rules is tested by the real thing)
 #   record  write the list (ids and kinds) into the install record
-# A run that finds everything in place (config and record already hold exactly this list) changes nothing and does not restart anything.
-function New-SetApproverState { [pscustomobject]@{ Records = $null; OldConfigText = $null; Stopped = $null; ConfigWritten = $false } }
+# With -Replace, a run that finds everything in place (the keys in force, the config and the record already hold exactly this list) changes nothing and does not restart anything. Without it a key that is in force already is refused.
+function New-SetApproverState { [pscustomobject]@{ Records = $null; Source = $null; OldConfigText = $null; Stopped = $null; ConfigWritten = $false } }
 $script:SetApprover = New-SetApproverState
 # The writers an Authority-folder file may have: SYSTEM, Administrators and the Authority's own service SID (the plan gives it Modify there, for policy.json and the key store).
 function Get-AuthorityDirWriters {
   if (-not $script:Sids) { Resolve-HostSids }
   Get-PlannedWriters (Get-AclPlan $L $script:Sids | Where-Object { $_.Path -ceq $L.AuthorityDir } | Select-Object -First 1)
+}
+# The trust test for a file the Authority SERVICE wrote itself (its key store): like the config's - owner SYSTEM / Administrators / TrustedInstaller, no link on the path, no writer but the Authority folder's - and the Authority's own
+# service SID may be the owner too (the Authority's guard accepts that owner on the files it makes). Anything else, a planted file included, is untrusted.
+function Get-AuthorityFileTrustReasons([string]$Path) {
+  $writers = Get-AuthorityDirWriters
+  $chain = Get-ReparseChain $Path
+  if ($chain.Count -gt 0) { return , @($chain | ForEach-Object { 'reparse_point:' + $_ }) }
+  try { $summary = Get-AclSummary $Path } catch { return , @('acl_unreadable') }
+  Test-TrustSummary $summary $writers $false @($script:Sids.Authority)
 }
 # The Authority config as it is now, judged: @{ Ok; Reason; Text; State }. It has to be a config THIS script wrote: a trusted file of the valid shape (legacy pair or approverKeys), whose fields outside the approver
 # keys are what install writes for this PC, and whose approver SID is the one in the install record. State = Get-AuthorityConfigApproverKeys.
@@ -1883,6 +1899,68 @@ function Remove-ApproverKeyStore {
   if ([System.IO.File]::Exists($path)) { throw "$path is still there after the delete" }
   $true
 }
+# The key store, judged: @{ Present; Ok; Reason; Records }. Present = something is at that path. Ok = it is a plain file that passes the trust test, is read through one handle (nobody is stopped from writing: the Authority replaces it
+# by a move) and holds a valid store (Read-ApproverKeyStoreBytes). A store that is there and not Ok is NOT treated as absent - see Get-EffectiveApproverKeys.
+function Get-ApproverKeyStoreState {
+  $path = $L.AuthorityKeyStore
+  if (-not [System.IO.File]::Exists($path) -and -not [System.IO.Directory]::Exists($path)) { return [pscustomobject]@{ Present = $false; Ok = $true; Reason = ''; Records = @() } }
+  $bad = { param($why) [pscustomobject]@{ Present = $true; Ok = $false; Reason = $why; Records = @() } }
+  $problem = Get-ApproverKeyStoreProblem
+  if ($problem) { return (& $bad $problem) }
+  $trust = Get-AuthorityFileTrustReasons $path
+  if ($trust.Count -gt 0) { return (& $bad (Format-TrustRefusal $path $trust)) }
+  $stream = $null
+  try {
+    $stream = New-Object System.IO.FileStream($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+    $final = Get-FinalPathOfStream $stream
+    if (-not [string]::Equals($final, [System.IO.Path]::GetFullPath($path), [System.StringComparison]::OrdinalIgnoreCase)) { return (& $bad "$path is reached through a link") }
+    if ($stream.Length -gt $K.AuthorityKeyStoreMaxBytes) { return (& $bad 'store_too_large') }
+    $bytes = New-Object byte[] ([int]$stream.Length)
+    $count = 0
+    while ($count -lt $bytes.Length) { $n = $stream.Read($bytes, $count, $bytes.Length - $count); if ($n -le 0) { break }; $count += $n }
+    if ($count -ne $bytes.Length) { return (& $bad 'file_unreadable') }
+  }
+  catch { return (& $bad ('file_unreadable: ' + $_.Exception.Message)) }
+  finally { if ($stream) { $stream.Dispose() } }
+  $parsed = Read-ApproverKeyStoreBytes $bytes
+  if (-not $parsed.Ok) { return (& $bad ('the key store is not valid: ' + ($parsed.Reasons -join ', '))) }
+  [pscustomobject]@{ Present = $true; Ok = $true; Reason = ''; Records = $parsed.Records }
+}
+# The approver keys IN FORCE: @{ Ok; Unknown; Reason; Source; Records }. The Authority's key store when it is there (and then it must be trusted and valid: a store that is there but unusable is a refusal, never a reason to read the
+# config instead - the config can still hold a key that key_remove took out of the store); otherwise the config's keys, the legacy pair counting as one hello-rsa record (and refused if that pair is not a valid record).
+# Unknown = the install cannot be read at all (a plan without admin rights).
+function Get-EffectiveApproverKeys {
+  $fail = { param($why) [pscustomobject]@{ Ok = $false; Unknown = $false; Reason = $why; Source = $null; Records = @() } }
+  if (-not $script:Manifest) { return [pscustomobject]@{ Ok = $false; Unknown = $true; Reason = 'the keys in force cannot be read without admin rights'; Source = $null; Records = @() } }
+  $store = Get-ApproverKeyStoreState
+  if ($store.Present) {
+    if ($store.Ok) { return [pscustomobject]@{ Ok = $true; Unknown = $false; Reason = ''; Source = 'the Authority key store'; Records = @($store.Records) } }
+    return (& $fail "the Authority key store is there but cannot be used ($($store.Reason)), so which keys are in force is not known. set-approver does not guess from the config (it could bring back a key that was removed). Repair or delete the file, or give the COMPLETE list of keys with -Replace")
+  }
+  $config = Read-AuthorityConfigState
+  if (-not $config.Ok) { return (& $fail $config.Reason) }
+  if (-not $config.State.Legacy) { return [pscustomobject]@{ Ok = $true; Unknown = $false; Reason = ''; Source = 'the Authority config'; Records = @($config.State.Approver.approverKeys) } }
+  $legacy = ConvertFrom-LegacyApproverPair $config.State.Approver.approverKeyId $config.State.Approver.approverPublicKey
+  if (-not $legacy.Ok) { return (& $fail "the legacy approver key $($config.State.Approver.approverKeyId) is not a valid hello-rsa record ($($legacy.Reasons -join ', ')), so it cannot be carried into approverKeys. Give its record file as well and use -Replace, or use -Replace without it") }
+  [pscustomobject]@{ Ok = $true; Unknown = $false; Reason = ''; Source = 'the Authority config (the legacy pair, one hello-rsa key)'; Records = @($legacy.Record) }
+}
+# What this run would write: @{ Ok; Reason; Unknown; Source; Records; Kept; Added; Removed }. The files must be good; then the merge (Get-SetApproverFinalKeys) of the keys in force and the given records, or with -Replace the given
+# records alone (the keys in force are then only looked up to say what is removed, and are not needed). Unknown (a plan that cannot read the install): Records = the given ones.
+function Get-SetApproverFinalList([switch]$Fresh) {
+  $out = { param($ok, $why, $unknown, $source, $records, $kept, $added, $removed) [pscustomobject]@{ Ok = $ok; Reason = $why; Unknown = $unknown; Source = $source; Records = @($records); Kept = @($kept); Added = @($added); Removed = @($removed) } }
+  $read = Read-ApproverKeyFiles -Fresh:$Fresh
+  if (-not $read.Ok) { return (& $out $false ('approver key record rejected: ' + ($read.Reasons -join '; ')) $false $null @() @() @() @()) }
+  $effective = Get-EffectiveApproverKeys
+  if ($effective.Unknown) { return (& $out $true '' $true $null $read.Records @() $read.Records @()) }
+  if (-not $effective.Ok -and -not $Replace) { return (& $out $false $effective.Reason $false $null @() @() @() @()) }
+  $inForce = if ($effective.Ok) { @($effective.Records) } else { @() }
+  $merge = Get-SetApproverFinalKeys $inForce $read.Records ([bool]$Replace)
+  if (-not $merge.Ok) {
+    $why = ($merge.Reasons | ForEach-Object { if ($_ -like 'already_registered:*') { 'already registered: ' + $_.Substring(19) + ' (a key is never added twice; if an earlier run was cut off, -Mode status shows what is in force, and -Replace with the complete list finishes the job)' } elseif ($_ -like 'too_many_keys:*') { $_.Substring(14) + " keys would be in force, at most $($K.MaxApproverKeys)" } else { $_ } }) -join '; '
+    return (& $out $false ("the approver key list is refused: $why. Nothing was changed.") $false $effective.Source @() @() @() @())
+  }
+  & $out $true '' $false $effective.Source $merge.Records $merge.Kept $merge.Added $merge.Removed
+}
 # Everything set-approver needs to be true before it changes anything: $null when all holds, otherwise 'blocked:<why>' (or 'unknown:<why>' where a non-admin cannot tell).
 function Get-SetApproverInstallProblem {
   if (-not $script:Manifest) {
@@ -1905,15 +1983,18 @@ function Get-SetApproverInstallProblem {
   $null
 }
 function Test-SetApproverRecordSame($Records) {
-  if (-not $script:Manifest -or -not $script:Manifest['values'].ContainsKey('approverKeys')) { return $false }
+  if (-not $script:Manifest -or -not $Records -or -not $script:Manifest['values'].ContainsKey('approverKeys')) { return $false }
   $have = @($script:Manifest['values']['approverKeys'] | ForEach-Object { "$($_['keyId'])|$($_['kind'])" })
   $want = @($Records | ForEach-Object { "$($_.keyId)|$($_.kind)" })
   ($have -join ',') -ceq ($want -join ',')
 }
-# True when the config already holds exactly the keys of the files (in this order, as approverKeys) AND the install record says so: the whole change is in place and a run does nothing.
+# -Replace only: true when the keys in force, the config's approverKeys and the install record already are exactly the given list (in this order): the whole change is in place and a run does nothing (the key store, with
+# its sign counts, is left alone). Without -Replace a given key that is in force is refused, so there is no such state.
 function Test-SetApproverAlreadySet {
+  if (-not $Replace) { return $false }
   try {
     $read = Read-ApproverKeyFiles; if (-not $read.Ok) { return $false }
+    $effective = Get-EffectiveApproverKeys; if (-not $effective.Ok -or -not (Test-ApproverKeyListsEqual $effective.Records $read.Records)) { return $false }
     $current = Read-AuthorityConfigState; if (-not $current.Ok -or $current.State.Legacy) { return $false }
     if (-not (Test-ApproverKeyListsEqual $current.State.Approver.approverKeys $read.Records)) { return $false }
     Test-SetApproverRecordSame $read.Records
@@ -1934,25 +2015,28 @@ function Start-AuthorityService {
   }
   catch { Say "    starting $($K.AuthorityService) said: $($_.Exception.Message)"; return $false }
 }
+# The lines a person reads about the final list (ids and kinds only): what is in force, what is added, and the whole list the Authority will trust afterwards.
 function Show-SetApproverKeys {
-  $read = Read-ApproverKeyFiles -Fresh
-  if (-not $read.Ok) { throw ('approver key record rejected: ' + ($read.Reasons -join '; ')) }
-  $script:SetApprover.Records = @($read.Records)
-  $current = Read-AuthorityConfigState
-  Say '    the Authority will trust these approver keys, and no others:'
-  foreach ($r in $read.Records) { Say "      $($r.keyId)   kind $($r.kind)" }
-  if ($current.Ok) {
-    $now = @($current.State.Keys)
-    Say "    it trusts now: $((@($now) | ForEach-Object { "$($_.KeyId) ($($_.Kind))" }) -join ', ')"
-    $dropped = @($now | Where-Object { $newId = $_.KeyId; -not (@($read.Records | Where-Object { $_.keyId -ceq $newId }).Count -gt 0) })
-    if ($dropped.Count -gt 0) { Say "    removed by this change: $((@($dropped) | ForEach-Object { "$($_.KeyId) ($($_.Kind))" }) -join ', ')" }
+  $final = Get-SetApproverFinalList -Fresh
+  if (-not $final.Ok) { throw $final.Reason }
+  $script:SetApprover.Records = @($final.Records)
+  $script:SetApprover.Source = $final.Source
+  if ($Replace) {
+    Say '    -Replace: the given keys become the ONLY approver keys'
+    if (@($final.Removed).Count -gt 0) { Say "    removed by this change: $(Get-ApproverKeySummary $final.Removed)" }
   }
-  if ($ExpectedApproverKeyId.Count -gt 0) { Say '    the key ids equal -ExpectedApproverKeyId' }
-  else { Say '    compare these key ids with the ones AlberaApprover.exe printed when it created the keys (-ExpectedApproverKeyId makes the run refuse unless the files hold exactly the ids you give)' }
+  else { Say "    in force now ($($final.Source)): $(Get-ApproverKeySummary $final.Kept)"; Say "    added: $(Get-ApproverKeySummary $final.Added)" }
+  Say "    the Authority will trust exactly these $(@($final.Records).Count) approver key(s) afterwards:"
+  foreach ($r in $final.Records) { Say "      $($r.keyId)   kind $($r.kind)$(if (@($final.Added | Where-Object { $_.keyId -ceq $r.keyId }).Count -gt 0) { '   (new)' } else { '   (kept)' })" }
+  if ($ExpectedApproverKeyId.Count -gt 0) { Say '    the key ids of the files equal -ExpectedApproverKeyId' }
+  else { Say '    compare the new key ids with the ones AlberaApprover.exe printed when it created the keys (-ExpectedApproverKeyId makes the run refuse unless the files hold exactly the ids you give)' }
 }
-# Writes the new config. The old text is kept in memory first: it is what goes back if the Authority does not start with the new one.
+# Writes the new config. The service is stopped by now, so the list is worked out ONCE MORE (the store and the files are read again) and must come out as shown; the old text is kept in memory: it is what goes back
+# if the Authority does not start with the new one.
 function Write-SetApproverConfig {
   $state = $script:SetApprover
+  $again = Get-SetApproverFinalList -Fresh
+  if (-not $again.Ok -or -not (Test-ApproverKeyListsEqual $again.Records $state.Records)) { throw "the key list is not the one shown (the key files or the key store changed while the service was being stopped$(if (-not $again.Ok) { ': ' + $again.Reason })); nothing was written. Run set-approver again" }
   $current = Read-AuthorityConfigState
   if (-not $current.Ok) { throw $current.Reason }
   $approver = [pscustomobject]@{ approverSid = $current.State.Approver.approverSid; approverKeys = @($state.Records) }
@@ -1963,6 +2047,17 @@ function Write-SetApproverConfig {
   $state.ConfigWritten = $true   # set BEFORE the write: a write that fails half-way (after the text, before the owner and trust read-back) must be undone too
   Write-OneConfig $L.AuthorityConfig $json (Get-AuthorityDirWriters)
   Say "    config written: $(@($state.Records).Count) approver key(s), no legacy pair; the approver SID and every other field are as they were"
+}
+# The plan lines about the final list: the key files, then what would be written (or why it is refused; or, without admin rights, that it is worked out in the elevated run).
+function Get-SetApproverDetailLines {
+  Get-ApproverKeyDetailLines
+  if ($ApproverKeyFile.Count -eq 0 -or -not (Read-ApproverKeyFiles).Ok) { return }
+  $final = Get-SetApproverFinalList
+  if (-not $final.Ok) { "the approver key list would be REFUSED: $($final.Reason)"; return }
+  if ($final.Unknown) { if ($Replace) { '-Replace: the given keys become the ONLY approver keys' } else { 'the given keys are ADDED to the keys in force (the Authority key store when there is one, otherwise the config); the final list is worked out in the elevated run, because the install cannot be read without admin rights' }; return }
+  if ($Replace) { '-Replace: the given keys become the ONLY approver keys'; if (@($final.Removed).Count -gt 0) { "removed by this change: $(Get-ApproverKeySummary $final.Removed)" } }
+  else { "in force now ($($final.Source)): $(Get-ApproverKeySummary $final.Kept)" }
+  "the Authority would trust exactly these $(@($final.Records).Count) approver key(s) afterwards: $(Get-ApproverKeySummary $final.Records)"
 }
 # Puts the old Authority config back (when this run changed it), clears the key store the Authority may have made from the new one, and starts the service again if this run had stopped it.
 function Undo-SetApprover([string]$Why) {
@@ -1994,22 +2089,24 @@ function Get-SetApproverSteps {
       Detail = @($L.AuthorityConfig, "$($L.AuthorityKeyStore)  (written by the Authority only)", 'the approver SID stays as it is; nothing here is changed yet')
       Test = { $problem = Get-SetApproverInstallProblem; if ($problem) { $problem } else { 'todo' } }
       Do = { $problem = Get-SetApproverInstallProblem; if ($problem) { throw ($problem -replace '^(blocked|unknown):', '') }; Say '    the install is complete and trusted; the Authority config is the one install wrote' } }
-    [pscustomobject]@{ Id = 'keys'; Title = 'Read the key record file(s) (-ApproverKeyFile), check every rule of the key record contract, and show the key ids and kinds that will be registered'
-      Detail = @('one canonical record per file; keyId = webauthn- or hello- plus the first 8 bytes of SHA-256 over the SPKI; ES256 with a P-256 key or RS256 with RSA (webauthn: 2048 to 4096 bits, hello-rsa: 2048); credentialId 1 to 1023 bytes; 1 to 16 keys, none twice; no link on the path') + @(Get-ApproverKeyDetailLines)
-      Test = { $read = Read-ApproverKeyFiles; if ($read.Ok) { 'todo' } else { 'blocked:approver key record rejected: ' + ($read.Reasons -join '; ') } }
+    [pscustomobject]@{ Id = 'keys'; Title = 'Read the key record file(s) (-ApproverKeyFile), check every rule of the key record contract, work out the final key list (the keys in force plus the given ones; with -Replace the given ones alone) and show it, key ids and kinds, before anything is written'
+      Detail = @('one canonical record per file; keyId = webauthn- or hello- plus the first 8 bytes of SHA-256 over the SPKI; ES256 with a P-256 key or RS256 with RSA (webauthn: 2048 to 4096 bits, hello-rsa: 2048); credentialId 1 to 1023 bytes; no link on the path',
+        'the keys in force are the Authority key store (authority\approver-keys.json) when it is there, trusted and valid, otherwise the config''s keys: starting from the config alone would bring back a key that was removed at run time',
+        'a given keyId that is in force already is refused; so is a list of more than 16 keys') + @(Get-SetApproverDetailLines)
+      Test = { $final = Get-SetApproverFinalList; if ($final.Ok) { 'todo' } else { 'blocked:' + $final.Reason } }
       Do = { Show-SetApproverKeys } }
     [pscustomobject]@{ Id = 'stop'; Title = "Stop $($K.AuthorityService) if it is running (while it runs it may rewrite its key store)"
       Detail = @('a service that is not running is left stopped, and is not started at the end', 'approvals that are waiting in the Authority at this moment are lost by the restart')
       Test = { if (Test-SetApproverAlreadySet) { return 'done' }; if ((Get-ServiceFactsFor $K.AuthorityService).State -ceq 'Stopped') { 'done' } else { 'todo' } }
       Do = { Stop-AuthorityService; $script:SetApprover.Stopped = $true; Say "    $($K.AuthorityService) stopped" } }
-    [pscustomobject]@{ Id = 'config'; Title = 'Write approverKeys into the Authority config; the legacy pair approverKeyId + approverPublicKey is removed (never both)'
-      Detail = @($L.AuthorityConfig, 'an existing file must pass the trust checks and is overwritten; every other field, the approver SID included, stays as it is')
+    [pscustomobject]@{ Id = 'config'; Title = 'Write the final list as approverKeys into the Authority config; the legacy pair approverKeyId + approverPublicKey is removed (never both)'
+      Detail = @($L.AuthorityConfig, 'an existing file must pass the trust checks and is overwritten; every other field, the approver SID included, stays as it is', 'the list is worked out once more after the stop and must come out as shown')
       Test = {
-        $read = Read-ApproverKeyFiles; $current = Read-AuthorityConfigState
-        if ($read.Ok -and $current.Ok -and -not $current.State.Legacy -and (Test-ApproverKeyListsEqual $current.State.Approver.approverKeys $read.Records)) { 'done' } else { 'todo' } }
+        $final = $script:SetApprover.Records; $current = Read-AuthorityConfigState
+        if ($final -and $current.Ok -and -not $current.State.Legacy -and (Test-ApproverKeyListsEqual $current.State.Approver.approverKeys $final)) { 'done' } else { 'todo' } }
       Do = { Write-SetApproverConfig } }
     [pscustomobject]@{ Id = 'store'; Title = "Delete $($L.AuthorityKeyStore) (that one file, only if it is a plain file), so the next start makes the Authority's key store from the config"
-      Detail = @('keys added later with `keys add` live only in that file: they are gone with it, and the list in the config is the whole list again', 'nothing else in the folder is touched')
+      Detail = @('the config now holds the whole list, so nothing is lost but the sign counts: they start again from zero for every key', 'nothing else in the folder is touched')
       Test = { if (-not [System.IO.File]::Exists($L.AuthorityKeyStore) -and -not [System.IO.Directory]::Exists($L.AuthorityKeyStore)) { return 'done' }; if (Test-SetApproverAlreadySet) { return 'done' }; 'todo' }
       Do = {
         try { $deleted = Remove-ApproverKeyStore }
@@ -2037,7 +2134,7 @@ function Get-SetApproverSteps {
         } } }
     [pscustomobject]@{ Id = 'record'; Title = 'Record the new key list (ids and kinds) in the install record'
       Detail = @('values.approverKeys replaces values.approverKeyId; values.approverKeysSetAt gets the time (UTC)')
-      Test = { $read = Read-ApproverKeyFiles; if ($read.Ok -and (Test-SetApproverRecordSame $read.Records)) { 'done' } else { 'todo' } }
+      Test = { if (Test-SetApproverRecordSame $script:SetApprover.Records) { 'done' } else { 'todo' } }
       Do = { Set-ApproverKeysRecord } }
   )
 }

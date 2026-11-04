@@ -26,7 +26,7 @@ $script:ManifestNote = $null
 $script:Manifest = $null
 $script:Approver = $null
 $script:LegacyValues = $null
-$ExpectedTreeHash = $null; $ApproverKeyId = $null; $ApproverPublicKey = $null; $ApproverSid = $null; $ApproverKeyFile = @(); $ExpectedApproverKeyId = @()
+$ExpectedTreeHash = $null; $ApproverKeyId = $null; $ApproverPublicKey = $null; $ApproverSid = $null; $ApproverKeyFile = @(); $ExpectedApproverKeyId = @(); $Replace = $false
 $VmName = 'albera-clone-01'; $ComputerId = 'clone-01'; $ProjectId = 'albera-host'; $GrantHyperVToBroker = $false; $SetupRunId = $null; $TrustLocalBuilds = $false
 function Try-Run([scriptblock]$Block) { try { & $Block | Out-Null; $null } catch { $_.Exception.Message } }
 function New-Junction([string]$Link, [string]$Target) { New-Item -ItemType Directory -Force -Path $Target | Out-Null; $null = & cmd.exe /c mklink /J ('"' + $Link + '"') ('"' + $Target + '"') }
@@ -35,7 +35,7 @@ function Write-Text([string]$Path, [string]$Text) { New-Item -ItemType Directory
 function Read-Text([string]$Path) { if ([System.IO.File]::Exists($Path)) { [System.IO.File]::ReadAllText($Path) } else { $null } }
 function Get-TextHash([string]$Text) { if ($null -eq $Text) { return $null }; $sha = [System.Security.Cryptography.SHA256]::Create(); try { ([BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text))) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
 
-# ---- the keys: record files in -Work\keys, made here (an ES256 key per file; the hello-rsa record is the lab's throw-away RSA-2048 key)
+# ---- the keys: record files in -Work\keys, made here (an ES256 key per file; the hello-rsa record is built on the RSA-2048 key Node made, and its id is the hash of that key, so it is also a valid LEGACY key)
 $labApproverKey = $RsaSpki
 $ownerSid = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
 $cpSid = Get-DerivedServiceSid $K.ControlPlaneService
@@ -56,12 +56,15 @@ function Save-KeyFile([string]$Name, $Record) {
   [System.IO.File]::WriteAllBytes($path, [System.Text.Encoding]::UTF8.GetBytes((ConvertTo-ApproverKeyText $Record)))
   $path
 }
-$recA = New-EcRecord; $recB = New-EcRecord; $recH = New-HelloRecord
-$fileA = Save-KeyFile 'a.json' $recA; $fileB = Save-KeyFile 'b.json' $recB; $fileH = Save-KeyFile 'h.json' $recH
-$legacyId = 'hello-0123456789abcdef'
+$recA = New-EcRecord; $recB = New-EcRecord; $recH = New-HelloRecord; $recX = New-EcRecord; $recY = New-EcRecord
+$fileA = Save-KeyFile 'a.json' $recA; $fileB = Save-KeyFile 'b.json' $recB; $fileH = Save-KeyFile 'h.json' $recH; $fileX = Save-KeyFile 'x.json' $recX; $fileY = Save-KeyFile 'y.json' $recY
+$legacyId = $recH.keyId                  # a legacy pair whose id is the hash of its key: a valid hello-rsa record, so it can be carried into approverKeys
+$badLegacyId = 'hello-0123456789abcdef'  # a legacy pair whose id is NOT the hash of its key: it cannot
 
 # ---- the fake machine: the SCM (a service is Running or Stopped), the trusted config write, the clock of the settle wait
 function Get-PathTrustReasons { , @() }   # the temp folders belong to this user; the real trust test has its own cases in function-harness.ps1
+$script:StoreUntrusted = $false
+function Get-AuthorityFileTrustReasons([string]$Path) { if ($script:StoreUntrusted) { , @('owner_untrusted') } else { , @() } }   # the pure part (owner = the Authority's own SID is allowed) is tested in approver-keys-check.ps1
 $origChain = ${function:Get-ReparseChain}
 function Get-ReparseChain([string]$Path) { $c = & $origChain $Path; , @($c | Where-Object { $_.Length -ge $Work.Length -and $_.StartsWith($Work, [System.StringComparison]::OrdinalIgnoreCase) }) }   # only links inside -Work count (the temp root may be one)
 $script:Said = New-Object 'System.Collections.Generic.List[string]'
@@ -82,17 +85,33 @@ function Get-ServiceFactsFor([string]$Name) {
 }
 function Wait-ServiceState([string]$Name, [string[]]$States, [int]$Seconds) { $States -contains $script:Svc[$Name].state }
 function Start-Sleep { param([int]$Seconds, [int]$Milliseconds) }
+# The key store as the Authority writes it (approver-webauthn.md, "Key store"): {"v":1,"revision":n,"keys":[records],"signCounts":{"<keyId>":n}}.
+function Write-Store($Records, [int]$Revision = 3, $SignCounts = $null) {
+  $counts = [ordered]@{}
+  if ($null -ne $SignCounts) { foreach ($id in $SignCounts.Keys) { $counts[$id] = $SignCounts[$id] } } else { foreach ($r in @($Records)) { $counts[$r.keyId] = 7 } }
+  Write-Text $L.AuthorityKeyStore (ConvertTo-Json -InputObject ([ordered]@{ v = 1; revision = $Revision; keys = @($Records); signCounts = $counts }) -Depth 6 -Compress)
+}
 # the fake SCM. A start reads the config file as the service would: an OLD Authority build ($OldAuthorityBuild) refuses a config with approverKeys; a refused start either throws (sc.exe error) or leaves the service stopped.
+# A start that works makes the key store from the config when there is none ("on start, a missing store is created from the config keys"), as the Authority of phase 2 does.
 function Invoke-Sc([string]$Arguments) {
   $script:Order.Add('sc ' + $Arguments)
   $t = $Arguments -split ' '; $name = $t[1]
-  if ($t[0] -eq 'stop') { if ($script:StopFails) { throw 'sc.exe failed (exit 1052): fake, the service cannot be stopped' }; $script:Svc[$name].state = 'Stopped' }
+  if ($t[0] -eq 'stop') { if ($script:StopFails) { throw 'sc.exe failed (exit 1052): fake, the service cannot be stopped' }; $script:Svc[$name].state = 'Stopped'; if ($script:OnStop) { & $script:OnStop } }
   if ($t[0] -eq 'start') {
     $text = Read-Text $L.AuthorityConfig
     $script:StartSnapshots.Add([ordered]@{ configHasList = ($text -like '*"approverKeys"*'); configHasPair = ($text -like '*"approverKeyId"*'); storeExists = [System.IO.File]::Exists($L.AuthorityKeyStore) })
     $refused = $script:AuthorityNeverStarts -or ($script:OldAuthorityBuild -and ($text -like '*"approverKeys"*'))
     if ($refused) { if ($script:StartMode -eq 'throws') { throw 'sc.exe failed (exit 1053): fake, the service did not respond' }; $script:Svc[$name].state = 'Stopped' }
-    else { $script:Svc[$name].state = 'Running' }
+    else {
+      $script:Svc[$name].state = 'Running'
+      if (-not [System.IO.File]::Exists($L.AuthorityKeyStore) -and -not [System.IO.Directory]::Exists($L.AuthorityKeyStore)) {
+        $seed = Get-AuthorityConfigApproverKeys $text
+        if ($seed.Reasons.Count -eq 0) {
+          if ($seed.Legacy) { $legacyRecord = ConvertFrom-LegacyApproverPair $seed.Approver.approverKeyId $seed.Approver.approverPublicKey; if ($legacyRecord.Ok) { Write-Store $legacyRecord.Record 1 @{} } }
+          else { Write-Store $seed.Approver.approverKeys 1 @{} }
+        }
+      }
+    }
   }
   [pscustomobject]@{ Exit = 0; Out = ''; Err = '' }
 }
@@ -104,34 +123,59 @@ function Write-OneConfig([string]$Path, [string]$Text, [string[]]$Writers) {
   Write-Text $Path $Text
 }
 
-# ---- an installed world: a complete record, the Authority config with the legacy Hello pair, a key store the Authority made, files beside it, three services
+# ---- an installed world: a complete record, the Authority config, a key store, files beside it, three services
+#   -Config legacy : the legacy pair (approverKeyId = -LegacyId, the lab RSA key); the record has values.approverKeyId
+#   -Config keys   : approverKeys = -ConfigKeys; the record has values.approverKeys
+#   -Store         : the records the Authority's key store holds (none = no store file)
 $script:OldConfig = $null
-function New-World([string]$AuthorityState = 'Running') {
+function New-World([string]$AuthorityState = 'Running', [string]$Config = 'legacy', $ConfigKeys = @(), $Store = $null, [string]$LegacyId = $legacyId) {
   if (Test-Path -LiteralPath $L.DataRoot) { Remove-Item -LiteralPath $L.DataRoot -Recurse -Force }
   New-Item -ItemType Directory -Force -Path $L.AuthorityDir | Out-Null
-  $legacy = [pscustomobject]@{ approverSid = $ownerSid; approverKeyId = $legacyId; approverPublicKey = $labApproverKey }
-  $script:OldConfig = ConvertTo-HostJson (Get-AuthorityConfig $cpSid $legacy)
+  $approver = if ($Config -eq 'keys') { [pscustomobject]@{ approverSid = $ownerSid; approverKeys = @($ConfigKeys) } } else { [pscustomobject]@{ approverSid = $ownerSid; approverKeyId = $LegacyId; approverPublicKey = $labApproverKey } }
+  $script:OldConfig = ConvertTo-HostJson (Get-AuthorityConfig $cpSid $approver)
   Write-Text $L.AuthorityConfig $script:OldConfig
-  Write-Text $L.AuthorityKeyStore '{"v":1,"revision":3,"keys":[],"signCounts":{}}'
+  if ($null -ne $Store) { Write-Store $Store }
   Write-Text (Join-Path $L.AuthorityDir 'policy.json') '{"policy":"kept"}'
   Write-Text (Join-Path $L.AuthorityDir 'notes.txt') 'kept'
   $script:Manifest = New-Manifest
   $script:Manifest['state'] = 'complete'
   $script:Manifest['created']['services'] = @($K.BrokerService, $K.AuthorityService, $K.ControlPlaneService)
   $values = $script:Manifest['values']
-  $values['approverSid'] = $ownerSid; $values['approverKeyId'] = $legacyId; $values['controlPlaneSid'] = $cpSid
+  $values['approverSid'] = $ownerSid; $values['controlPlaneSid'] = $cpSid
+  if ($Config -eq 'keys') { $values['approverKeys'] = ConvertTo-ApproverKeysManifestValue $ConfigKeys } else { $values['approverKeyId'] = $LegacyId }
   Save-Manifest
   $script:ManifestNote = $null; $script:Sids = $null; $script:Approver = $null; $script:LegacyValues = $null
   $script:Svc = @{}
   foreach ($n in @($K.BrokerService, $K.AuthorityService, $K.ControlPlaneService)) { $script:Svc[$n] = @{ state = 'Running' } }
   $script:Svc[$K.AuthorityService].state = $AuthorityState
-  $script:WrongPath = $false; $script:StopFails = $false; $script:StartMode = 'works'; $script:OldAuthorityBuild = $false; $script:AuthorityNeverStarts = $false
+  $script:WrongPath = $false; $script:StopFails = $false; $script:StartMode = 'works'; $script:OldAuthorityBuild = $false; $script:AuthorityNeverStarts = $false; $script:StoreUntrusted = $false
   $script:Order.Clear(); $script:ConfigWrites.Clear(); $script:StartSnapshots.Clear(); $script:Said.Clear()
-  $script:ExpectedApproverKeyId = @()
+  $script:ExpectedApproverKeyId = @(); $script:Replace = $false; $script:OnStop = $null
 }
-# runs -Mode set-approver for these files and reports what is observable
-function Invoke-Set([string[]]$Files) {
+# the ids and kinds the install record on disk holds, always as an array (a one-element result must not turn into a plain string)
+function Get-RecordedKeyIds($Disk) {
+  $ids = @()
+  if ($Disk['values'].ContainsKey('approverKeys')) { $ids = @($Disk['values']['approverKeys'] | ForEach-Object { $_['keyId'] + '|' + $_['kind'] }) }
+  , $ids
+}
+# the key ids a config or a store text holds (approverKeys, or the legacy pair as one id), as an array
+function Get-TextKeyIds([string]$Text, [string]$What) {
+  $ids = @()
+  if ($Text) {
+    try {
+      $o = $Text | ConvertFrom-Json
+      if ($What -eq 'store') { $ids = @($o.keys | ForEach-Object { $_.keyId }) }
+      elseif ($null -ne $o.PSObject.Properties['approverKeys']) { $ids = @($o.approverKeys | ForEach-Object { $_.keyId }) }
+      else { $ids = @($o.approverKeyId) }
+    }
+    catch { $ids = @('(not json)') }
+  }
+  , $ids
+}
+# runs -Mode set-approver for these files (-UseReplace: with -Replace) and reports what is observable
+function Invoke-Set([string[]]$Files, [switch]$UseReplace) {
   $script:ApproverKeyFile = $Files
+  $script:Replace = [bool]$UseReplace
   $script:ApproverKeyRead = $null
   $script:ExitCode = $null
   $script:SetApprover = New-SetApproverState
@@ -146,7 +190,11 @@ function Invoke-Set([string[]]$Files) {
   $out.service = $script:Svc[$K.AuthorityService].state
   $out.config = Read-Text $L.AuthorityConfig
   $out.configIsOld = ($out.config -ceq $script:OldConfig)
+  $configIds = Get-TextKeyIds $out.config 'config'
+  $out.configKeyIds = $configIds
   $out.storeExists = [System.IO.File]::Exists($L.AuthorityKeyStore)
+  $storeIds = Get-TextKeyIds (Read-Text $L.AuthorityKeyStore) 'store'
+  $out.storeKeyIds = $storeIds
   $out.folder = @(Get-ChildItem -LiteralPath $L.AuthorityDir -Force | ForEach-Object { $_.Name } | Sort-Object)
   $disk = Read-Manifest
   $recordedIds = Get-RecordedKeyIds $disk
@@ -156,88 +204,144 @@ function Invoke-Set([string[]]$Files) {
   }
   $out
 }
-# the ids and kinds the install record on disk holds, always as an array (a one-element result must not turn into a plain string)
-function Get-RecordedKeyIds($Disk) {
-  $ids = @()
-  if ($Disk['values'].ContainsKey('approverKeys')) { $ids = @($Disk['values']['approverKeys'] | ForEach-Object { $_['keyId'] + '|' + $_['kind'] }) }
-  , $ids
-}
-$result = [ordered]@{ ids = [ordered]@{ a = $recA.keyId; b = $recB.keyId; h = $recH.keyId; legacy = $legacyId }; ownerSid = $ownerSid; cpSid = $cpSid; authoritySid = (Get-DerivedServiceSid $K.AuthorityService); authorityDir = $L.AuthorityDir; storePath = $L.AuthorityKeyStore }
+$result = [ordered]@{ ids = [ordered]@{ a = $recA.keyId; b = $recB.keyId; h = $recH.keyId; x = $recX.keyId; y = $recY.keyId; legacy = $legacyId; badLegacy = $badLegacyId }; ownerSid = $ownerSid; cpSid = $cpSid; authoritySid = (Get-DerivedServiceSid $K.AuthorityService); authorityDir = $L.AuthorityDir; storePath = $L.AuthorityKeyStore }
 
-# ---- 1. legacy install -> one WebAuthn key, the service running
-New-World
+# ---- 1. -Replace: a legacy install with a key store, one WebAuthn key, the service running (the old shape of the run)
+New-World -Store @($recH)
 $result.beforeManifestHash = Get-TextHash ([System.IO.File]::ReadAllText($L.ManifestPath))
-$result.one = Invoke-Set @($fileA)
+$result.one = Invoke-Set @($fileA) -UseReplace
 $result.oneConfig = $(if ($result.one.config) { $result.one.config | ConvertFrom-Json } else { $null })
 $result.oneStatus = $(if ($result.one.config) { $statusLine = Get-ApproverKeysStatusLine $result.one.config (Read-Manifest)['values']; [ordered]@{ state = $statusLine.State; text = $statusLine.Text } } else { $null })
 $result.oneConfigReasons = Test-AuthorityConfigText $result.one.config
 $oldObject = $script:OldConfig | ConvertFrom-Json
 $result.oneOtherFieldsSame = (@('pipeRoot', 'controlPlaneSid', 'approverSid', 'signingKeyName', 'signingKeyProvider', 'kid', 'audience', 'policyVersion') | Where-Object { $result.oneConfig.$_ -cne $oldObject.$_ }).Count -eq 0
-# ---- 2. the same files again: everything is in place, nothing happens
-$result.again = Invoke-Set @($fileA)
-# ---- 3. two files (a WebAuthn key and the Hello key), from a legacy world: the order of the files is the order of the list
+# ---- 2. -Replace with the same files again: the keys in force (the store the Authority made again), the config and the record already are this list - nothing happens, the store is left alone
+$storeBefore = Read-Text $L.AuthorityKeyStore
+$result.again = Invoke-Set @($fileA) -UseReplace
+$result.againStoreUntouched = ((Read-Text $L.AuthorityKeyStore) -ceq $storeBefore)
+# ---- 3. -Replace with two files (a WebAuthn key and the Hello key): the order of the files is the order of the list
 New-World
-$result.two = Invoke-Set @($fileA, $fileH)
-$result.twoKeys = $(if ($result.two.config) { @(($result.two.config | ConvertFrom-Json).approverKeys | ForEach-Object { $_.keyId }) } else { @() })
+$result.two = Invoke-Set @($fileA, $fileH) -UseReplace
+$result.twoKeys = $result.two.configKeyIds
 # ---- 4. the service is not running: the config changes, nothing is stopped or started
-New-World 'Stopped'
-$result.stopped = Invoke-Set @($fileA)
+New-World 'Stopped' -Store @($recH)
+$result.stopped = Invoke-Set @($fileA) -UseReplace
 # ---- 5. the installed Authority build does not read approverKeys (it dies at start): the old config goes back, the service runs again, nothing is recorded
 foreach ($howItFails in @('dies', 'throws')) {
-  New-World; $script:OldAuthorityBuild = $true; $script:StartMode = $howItFails
-  $result["oldBuild_$howItFails"] = Invoke-Set @($fileA)
+  New-World -Store @($recH); $script:OldAuthorityBuild = $true; $script:StartMode = $howItFails
+  $result["oldBuild_$howItFails"] = Invoke-Set @($fileA) -UseReplace
 }
 # ... and an Authority that does not start at all, with the old config either
-New-World; $script:AuthorityNeverStarts = $true; $script:StartMode = 'dies'
-$result.neverStarts = Invoke-Set @($fileA)
+New-World -Store @($recH); $script:AuthorityNeverStarts = $true; $script:StartMode = 'dies'
+$result.neverStarts = Invoke-Set @($fileA) -UseReplace
 # ---- 5b. a run that was cut off after the config was written (the record and the key store are still the old ones): the next run finishes the job without writing the config again
-New-World
-$null = Invoke-Set @($fileA)
+New-World -Store @($recH)
+$null = Invoke-Set @($fileA) -UseReplace
 $script:Manifest['values'].Remove('approverKeys') | Out-Null; $script:Manifest['values'].Remove('approverKeysSetAt') | Out-Null; $script:Manifest['values']['approverKeyId'] = $legacyId; Save-Manifest
-Write-Text $L.AuthorityKeyStore '{"v":1,"revision":9,"keys":[],"signCounts":{}}'
-$result.resumed = Invoke-Set @($fileA)
+Write-Store @($recH) 9
+$result.resumed = Invoke-Set @($fileA) -UseReplace
 # ... and when the Authority will not start with that config, there is no "old" config to put back, and the run says so
-New-World
-$null = Invoke-Set @($fileA)
+New-World -Store @($recH)
+$null = Invoke-Set @($fileA) -UseReplace
 $script:Manifest['values'].Remove('approverKeys') | Out-Null; $script:Manifest['values'].Remove('approverKeysSetAt') | Out-Null; $script:Manifest['values']['approverKeyId'] = $legacyId; Save-Manifest
+Write-Store @($recH) 9
 $script:AuthorityNeverStarts = $true; $script:StartMode = 'dies'
-$result.resumedNeverStarts = Invoke-Set @($fileA)
+$result.resumedNeverStarts = Invoke-Set @($fileA) -UseReplace
 # ---- 6. the service will not stop: nothing is changed
-New-World; $script:StopFails = $true
-$result.stopFails = Invoke-Set @($fileA)
+New-World -Store @($recH); $script:StopFails = $true
+$result.stopFails = Invoke-Set @($fileA) -UseReplace
 # ---- 7. the key store cannot be deleted (it is held open): the config goes back, the service runs again, nothing is recorded
-New-World
-$held = New-Object System.IO.FileStream($L.AuthorityKeyStore, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
-try { $result.storeHeld = Invoke-Set @($fileA) } finally { $held.Dispose() }
+New-World -Store @($recH)
+$held = New-Object System.IO.FileStream($L.AuthorityKeyStore, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)   # readable by others (the install reads the store), NOT deletable
+try { $result.storeHeld = Invoke-Set @($fileA) -UseReplace } finally { $held.Dispose() }
 # ---- 8. the key store is not a plain file: refused before anything is touched
-New-World
+New-World -Store @($recH)
 Remove-Item -LiteralPath $L.AuthorityKeyStore -Force
 New-Item -ItemType Directory -Force -Path $L.AuthorityKeyStore | Out-Null; Write-Text (Join-Path $L.AuthorityKeyStore 'inside.txt') 'precious'
-$result.storeIsFolder = Invoke-Set @($fileA)
+$result.storeIsFolder = Invoke-Set @($fileA) -UseReplace
 $result.storeFolderIntact = [System.IO.File]::Exists((Join-Path $L.AuthorityKeyStore 'inside.txt'))
-New-World
+New-World -Store @($recH)
 Remove-Item -LiteralPath $L.AuthorityKeyStore -Force
 $linkTarget = Join-Path $Work 'link-target'; Write-Text (Join-Path $linkTarget 'precious.txt') 'precious'
 New-Junction $L.AuthorityKeyStore $linkTarget
-$result.storeIsJunction = Invoke-Set @($fileA)
+$result.storeIsJunction = Invoke-Set @($fileA) -UseReplace
 $result.junctionTargetIntact = [System.IO.File]::Exists((Join-Path $linkTarget 'precious.txt'))
 Remove-Junction $L.AuthorityKeyStore
-# no key store at all: the step is skipped and the run still works
+# no key store at all (an Authority that never ran with the key list): the step is skipped and the run still works
 New-World
-Remove-Item -LiteralPath $L.AuthorityKeyStore -Force
-$result.noStore = Invoke-Set @($fileA)
+$result.noStore = Invoke-Set @($fileA) -UseReplace
 # ---- 9. Remove-ApproverKeyStore touches only that one file
-New-World
+New-World -Store @($recH)
 Write-Text (Join-Path $L.AuthorityDir 'approver-keys.json.bak') 'x'; Write-Text (Join-Path $L.AuthorityDir 'approver-keys.tmp') 'x'; Write-Text (Join-Path $L.AuthorityDir 'sub\approver-keys.json') 'x'; Write-Text (Join-Path $L.DataRoot 'approver-keys.json') 'x'
 $result.removeStore = [ordered]@{
   first = (Remove-ApproverKeyStore); second = (Remove-ApproverKeyStore)
   left = @(Get-ChildItem -LiteralPath $L.DataRoot -Recurse -Force | Where-Object { -not $_.PSIsContainer } | ForEach-Object { $_.FullName.Substring($L.DataRoot.Length + 1) } | Sort-Object)
 }
+
+# ---- 9b. ADDING (no -Replace): the keys in force come first, the given keys are appended, nothing is dropped
+# a legacy install (the Hello key as the legacy pair, no key store yet): the result is the Hello key AND the new key
+New-World
+$result.addToLegacy = Invoke-Set @($fileA)
+# a key store the Authority made again after that: adding a second one starts from the store
+$result.addSecond = Invoke-Set @($fileB)
+# the same key twice is refused (it is in force already), the Hello key of the legacy pair is refused for the same reason
+$result.addAgain = Invoke-Set @($fileB)
+New-World
+$result.addLegacyKeyAgain = Invoke-Set @($fileH)
+# ---- 9c. THE STORE WINS: key X was in the config, then taken out at run time (key_remove), so the store holds [A] and the config still holds [A, X]. Adding Y must give [A, Y] - never X.
+New-World -Config keys -ConfigKeys @($recA, $recX) -Store @($recA)
+$result.storeWins = Invoke-Set @($fileY)
+# ... and the contrast: with no store, the config IS the keys in force, so X stays
+New-World -Config keys -ConfigKeys @($recA, $recX)
+$result.noStoreConfigWins = Invoke-Set @($fileY)
+# a store that is there but cannot be used is never replaced by a look at the config: add is refused; -Replace (the complete list) is not
+foreach ($case in @('untrusted', 'garbage', 'noKeys', 'badRecord', 'twoKeysSame')) {
+  New-World -Config keys -ConfigKeys @($recA, $recX) -Store @($recA)
+  switch ($case) {
+    'untrusted' { $script:StoreUntrusted = $true }
+    'garbage' { Write-Text $L.AuthorityKeyStore 'not json' }
+    'noKeys' { Write-Text $L.AuthorityKeyStore '{"v":1,"revision":3,"keys":[],"signCounts":{}}' }
+    'badRecord' { Write-Text $L.AuthorityKeyStore ((Read-Text $L.AuthorityKeyStore) -replace '"keyId":"webauthn-[0-9a-f]{16}"', '"keyId":"webauthn-0000000000000000"') }
+    'twoKeysSame' { Write-Store @($recA, $recA) }
+  }
+  $storeTextBefore = Read-Text $L.AuthorityKeyStore
+  $add = Invoke-Set @($fileY)
+  $add.configUntouched = $add.configIsOld; $add.storeUntouched = ((Read-Text $L.AuthorityKeyStore) -ceq $storeTextBefore)
+  $result["badStore_$case"] = [ordered]@{ add = $add }
+  if ($case -ne 'untrusted') { $script:StoreUntrusted = $false }
+  $result["badStore_$case"].replaceRun = Invoke-Set @($fileY) -UseReplace
+}
+# a legacy pair that is not a valid record (its id is not the hash of its key) cannot be carried: add is refused, -Replace is not
+New-World -LegacyId $badLegacyId
+$result.badLegacy = [ordered]@{ add = (Invoke-Set @($fileA)) }
+$result.badLegacy.replaceRun = Invoke-Set @($fileA) -UseReplace
+# the limit: 15 in force + 1 = 16 is fine, 16 + 1 is refused with the count in the message
+$sixteen = @(1..16 | ForEach-Object { New-EcRecord })
+New-World -Config keys -ConfigKeys $sixteen[0..14] -Store $sixteen[0..14]
+$result.fifteenPlusOne = Invoke-Set @($fileY)
+New-World -Config keys -ConfigKeys $sixteen -Store $sixteen
+$result.sixteenPlusOne = Invoke-Set @($fileY)
+# -Replace needs neither the store nor the config: 16 given files are 16 keys, whatever is in force
+New-World -Config keys -ConfigKeys @($recA, $recX) -Store @($recA)
+$sixteenFiles = @(0..15 | ForEach-Object { Save-KeyFile ("sixteen$_.json") $sixteen[$_] })
+$result.replaceWithSixteen = Invoke-Set $sixteenFiles -UseReplace
+# the final list is on the screen BEFORE the config is written (the order of the lines of one run)
+$result.addToLegacyOrder = [ordered]@{ listAt = 0; writtenAt = 0 }
+New-World
+$orderRun = Invoke-Set @($fileA)
+$result.addToLegacyOrder.listAt = [array]::IndexOf(@($orderRun.said), (@($orderRun.said) | Where-Object { $_ -like '*will trust exactly these*' } | Select-Object -First 1))
+$result.addToLegacyOrder.writtenAt = [array]::IndexOf(@($orderRun.said), (@($orderRun.said) | Where-Object { $_ -like '*config written*' } | Select-Object -First 1))
+# the final list changes between the screen and the write (a key_remove while the service was being stopped): nothing is written, the service is started again
+New-World -Config keys -ConfigKeys @($recA, $recX) -Store @($recA, $recX)
+$script:OnStop = { Write-Store @($recA) 4 }   # a key_remove lands just as the service stops: X leaves the store
+$result.changedWhileStopping = Invoke-Set @($fileY)
+$script:OnStop = $null
+
 # ---- 10. refusals: each leaves the world exactly as it was
 $refusals = [ordered]@{}
 $refuse = {
   param($name, [scriptblock]$Setup, [string[]]$Files)
-  New-World
+  New-World -Store @($recH)
   & $Setup
   $before = [ordered]@{ config = (Read-Text $L.AuthorityConfig); manifest = (Get-TextHash ([System.IO.File]::ReadAllText($L.ManifestPath))); store = (Read-Text $L.AuthorityKeyStore) }
   $run = Invoke-Set $Files
@@ -264,7 +368,7 @@ $tooMany = @(1..17 | ForEach-Object { Save-KeyFile ("many$_.json") (New-EcRecord
 & $refuse 'seventeenFiles' { } $tooMany
 $result.refusals = $refusals
 # the expected ids, when they match (in any order), let the run through
-New-World; $script:ExpectedApproverKeyId = @($recB.keyId, $recA.keyId)
+New-World -Store @($recH); $script:ExpectedApproverKeyId = @($recB.keyId, $recA.keyId)
 $result.expectedOk = Invoke-Set @($fileA, $fileB)
 
 # ---- 10b. the status line about the approver keys, from the real Get-StatusLines (the machine facts it reads besides are faked away)
@@ -277,7 +381,7 @@ function Invoke-Native([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000
 New-World
 $statusLegacy = Get-StatusKeyLines
 $result.status = [ordered]@{ legacy = $statusLegacy }
-$null = Invoke-Set @($fileA, $fileH)
+$null = Invoke-Set @($fileA, $fileH) -UseReplace
 $statusKeys = Get-StatusKeyLines
 $result.status.keys = $statusKeys
 $script:Manifest['values']['approverKeys'] = ConvertTo-ApproverKeysManifestValue @($recB)
@@ -315,11 +419,19 @@ Remove-Junction (Join-Path $Work 'linked-keys')
 $result.fileChecks.targetIntact = [System.IO.File]::Exists((Join-Path $realDir 'a.json'))
 
 # ---- 11. the plan: seven steps, the key ids and kinds, nothing changes
-New-World
-$script:ApproverKeyFile = @($fileA, $fileH); $script:ApproverKeyRead = $null; $script:SetApprover = New-SetApproverState; $script:Said.Clear(); $script:Order.Clear()
+New-World -Store @($recH)
+$script:ApproverKeyFile = @($fileA, $fileB); $script:Replace = $false; $script:ApproverKeyRead = $null; $script:SetApprover = New-SetApproverState; $script:Said.Clear(); $script:Order.Clear()
 Show-Plan (Get-SetApproverSteps) 'set-approver'
 $result.plan = [ordered]@{ lines = @($script:Said); order = @($script:Order); configSame = ((Read-Text $L.AuthorityConfig) -ceq $script:OldConfig); storeExists = [System.IO.File]::Exists($L.AuthorityKeyStore) }
-$script:ManifestNote = 'cannot be read by this account'; $script:Manifest = $null; $script:Said.Clear()
+# a plan of a key that is in force already says it would be refused
+$script:ApproverKeyFile = @($fileH); $script:ApproverKeyRead = $null; $script:SetApprover = New-SetApproverState; $script:Said.Clear()
+Show-Plan (Get-SetApproverSteps) 'set-approver'
+$result.planRefused = @($script:Said)
+$script:ApproverKeyFile = @($fileA, $fileB); $script:Replace = $true; $script:ApproverKeyRead = $null; $script:SetApprover = New-SetApproverState; $script:Said.Clear()
+Show-Plan (Get-SetApproverSteps) 'set-approver'
+$result.planReplace = @($script:Said)
+$script:Replace = $false
+$script:ManifestNote = 'cannot be read by this account'; $script:Manifest = $null; $script:Said.Clear(); $script:ApproverKeyRead = $null
 Show-Plan (Get-SetApproverSteps) 'set-approver'
 $result.planUnreadable = @($script:Said)
 

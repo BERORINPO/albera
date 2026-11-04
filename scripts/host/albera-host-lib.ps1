@@ -32,6 +32,7 @@ function Get-HostConstants {
     FailureRestartMilliseconds = 5000   # sc failure: restart after 5 s, twice, then leave stopped (control-plane-service.md section 2)
     MaxApproverKeys = 16   # approver-webauthn.md, "Wire contract": approverKeys holds 1 to 16 key records
     MaxApproverKeyFileBytes = 4096   # one canonical record is at most about 2.4 KB (RSA-4096 and a 1023-byte credential id); anything bigger is not one
+    AuthorityKeyStoreMaxBytes = 65536   # the most set-approver reads of authority\approver-keys.json (records plus sign counts); a bigger file is not a key store
     AuthorityConfigMaxBytes = 32768   # PROVISIONAL: what this script lets an Authority config with approverKeys grow to. It must not be bigger than the limit the Authority itself reads (AuthorityConfig.cs, phase 2)
   }
 }
@@ -400,6 +401,63 @@ function Test-ApproverKeyListsEqual($A, $B) {
   $x = @($A | ForEach-Object { ConvertTo-ApproverKeyText $_ }); $y = @($B | ForEach-Object { ConvertTo-ApproverKeyText $_ })
   ($x.Count -eq $y.Count) -and ((($x -join "`n") -ceq ($y -join "`n")))
 }
+# The legacy pair (approverKeyId + approverPublicKey) as the one hello-rsa record the Authority reads it as. -> @{ Ok; Reasons; Record }. It is a record like any other, so it must pass every rule: a legacy id that is not
+# the hash of its key (or a key that is not RSA-2048 with exponent 65537) cannot be carried into approverKeys, and the caller says so instead of changing the id of a key.
+function ConvertFrom-LegacyApproverPair([string]$KeyId, [string]$PublicKey) {
+  $candidate = [pscustomobject]@{ keyId = $KeyId; kind = 'hello-rsa'; alg = -257; publicKey = $PublicKey }
+  $reasons = Test-ApproverKeyRecord $candidate
+  if ($reasons.Count -gt 0) { return [pscustomobject]@{ Ok = $false; Reasons = @($reasons); Record = $null } }
+  [pscustomobject]@{ Ok = $true; Reasons = @(); Record = (ConvertTo-ApproverKeyObject $candidate) }
+}
+# The bytes of authority\approver-keys.json (approver-webauthn.md, "Key store": {"v":1,"revision":n,"keys":[records],"signCounts":{"<keyId>":n}}) -> @{ Ok; Reasons; Records }. The records are judged by the same rules as a
+# key file's (Test-ApproverKeyRecord, then the list rules); the file is the Authority's, not a canonical record file, so its own formatting is not judged (a JSON writer may escape a '+' as \u002B).
+function Read-ApproverKeyStoreBytes([byte[]]$Bytes) {
+  $c = Get-HostConstants
+  $fail = { param($why) [pscustomobject]@{ Ok = $false; Reasons = @($why); Records = @() } }
+  if ($Bytes.Length -eq 0) { return (& $fail 'store_empty') }
+  if ($Bytes.Length -gt $c.AuthorityKeyStoreMaxBytes) { return (& $fail 'store_too_large') }
+  if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { return (& $fail 'store_bom') }
+  try { $text = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($Bytes) } catch { return (& $fail 'store_not_utf8') }
+  try { $o = $text | ConvertFrom-Json } catch { return (& $fail 'store_syntax') }
+  # '{' first: a top-level array of one store would come out of ConvertFrom-Json as that store
+  if (-not $text.TrimStart().StartsWith('{', [System.StringComparison]::Ordinal) -or $o -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $o @('v', 'revision', 'keys', 'signCounts'))) { return (& $fail 'store_fields') }
+  $isWhole = { param($n) ($n -is [int] -or $n -is [long]) -and $n -ge 0 }
+  if (($o.v -isnot [int]) -or $o.v -ne 1) { return (& $fail 'store_version') }
+  if (-not (& $isWhole $o.revision)) { return (& $fail 'store_revision') }
+  if ($o.keys -isnot [System.Array]) { return (& $fail 'store_keys') }
+  if ($o.signCounts -isnot [System.Management.Automation.PSCustomObject]) { return (& $fail 'store_sign_counts') }
+  foreach ($count in $o.signCounts.PSObject.Properties) {
+    if ($count.Name -cnotmatch '^(webauthn|hello)-[0-9a-f]{16}\z' -or -not (& $isWhole $count.Value)) { return (& $fail 'store_sign_counts') }
+  }
+  $reasons = New-Object System.Collections.Generic.List[string]
+  $records = New-Object System.Collections.Generic.List[object]
+  foreach ($item in $o.keys) {
+    $why = Test-ApproverKeyRecord $item
+    if ($why.Count -gt 0) { foreach ($w in $why) { if (-not $reasons.Contains("store_key:$w")) { $reasons.Add("store_key:$w") } } }
+    else { $records.Add((ConvertTo-ApproverKeyObject $item)) }
+  }
+  if ($reasons.Count -eq 0) { foreach ($w in (Test-ApproverKeySet $records.ToArray())) { $reasons.Add("store_keys:$w") } }
+  if ($reasons.Count -gt 0) { return [pscustomobject]@{ Ok = $false; Reasons = @($reasons); Records = @() } }
+  [pscustomobject]@{ Ok = $true; Reasons = @(); Records = $records.ToArray() }
+}
+# The key list set-approver writes: the keys IN FORCE (the Authority's key store when there is one, otherwise the config's keys) plus the given records - or, with $Replace, the given records alone. The keys in force
+# come first, in their order; nothing is dropped without -Replace. A given keyId that is in force already is refused (not skipped), and so is a list over the limit. -> @{ Ok; Reasons; Records; Kept; Added; Removed }
+# Starting from the config alone would bring back a key that key_remove took out of the store (a lost device): the caller passes the store's keys whenever the store is there.
+function Get-SetApproverFinalKeys($InForce, $Given, [bool]$Replace) {
+  $c = Get-HostConstants
+  $given = @($Given); $inForce = @($InForce)
+  $reasons = New-Object System.Collections.Generic.List[string]
+  if ($Replace) { $final = $given; $kept = @(); $removed = @($inForce | Where-Object { $id = $_.keyId; -not (@($given | Where-Object { $_.keyId -ceq $id }).Count -gt 0) }) }
+  else {
+    $already = @($given | Where-Object { $id = $_.keyId; @($inForce | Where-Object { $_.keyId -ceq $id }).Count -gt 0 })
+    if ($already.Count -gt 0) { $reasons.Add('already_registered:' + (@($already | ForEach-Object { $_.keyId }) -join ',')) }
+    if ($inForce.Count + $given.Count -gt $c.MaxApproverKeys) { $reasons.Add('too_many_keys:' + ($inForce.Count + $given.Count)) }
+    $final = @($inForce) + @($given); $kept = $inForce; $removed = @()
+  }
+  if ($reasons.Count -eq 0) { foreach ($why in (Test-ApproverKeySet $final)) { $reasons.Add($why) } }
+  [pscustomobject]@{ Ok = ($reasons.Count -eq 0); Reasons = @($reasons); Records = @($final); Kept = @($kept); Added = $given; Removed = @($removed) }
+}
+
 # The install record's copy of the list: { keyId, kind } per key (public ids only). Used by Test-ManifestShape and by set-approver / install when they record a list.
 function Test-ApproverKeysManifestList($List) {
   $c = Get-HostConstants
@@ -941,9 +999,10 @@ $script:TrustedSids = @('S-1-5-18', 'S-1-5-32-544', $script:TrustedInstallerSid)
 function Get-TrustedSids { , $script:TrustedSids }
 
 # $Summary = @{ Owner; Protected; WriteSids } (Get-AclSummary). Returns the reasons it is not trustworthy (empty = trusted).
-function Test-TrustSummary($Summary, [string[]]$AllowedWriters, [bool]$RequireProtected) {
+function Test-TrustSummary($Summary, [string[]]$AllowedWriters, [bool]$RequireProtected, [string[]]$AllowedOwners = @()) {
   $reasons = New-Object System.Collections.Generic.List[string]
-  if ($script:TrustedSids -notcontains $Summary.Owner) { $reasons.Add('owner_untrusted') }
+  # $AllowedOwners: owners besides SYSTEM, Administrators and TrustedInstaller. Only a file a SERVICE writes itself needs one (its own SID: the Authority's guard accepts that owner on the files it makes).
+  if ((@($script:TrustedSids) + @($AllowedOwners)) -notcontains $Summary.Owner) { $reasons.Add('owner_untrusted') }
   if ($RequireProtected -and -not $Summary.Protected) { $reasons.Add('inheritance_not_removed') }
   $writers = @($script:TrustedSids) + @($AllowedWriters)
   foreach ($sid in @($Summary.WriteSids)) { if ($writers -notcontains $sid) { $reasons.Add('writer_untrusted:' + $sid) } }

@@ -15,9 +15,11 @@
 # the Broker is sidtype UNRESTRICTED and the Authority RESTRICTED, both keep SeChangeNotifyPrivilege only, the Broker config holds the one `computers` entry, the Control Plane settings hold the `desktop` block (helper path + SHA-256, written by install; the default pass must leave it out), and the install record names the grant.
 # The VM's GUID comes in through the lab-only -VmId (a fixed throw-away GUID: this guest has no VM of that name, so the name-to-GUID lookup is NOT exercised here and the evidence says so).
 # The pass is BLOCKED, not passed, when the guest has no Hyper-V Administrators group or when -KeepInstalled left the default install in place; a FAIL in it fails the whole check.
-# Between the default install and its uninstall it also runs `-Mode set-approver` (approver-webauthn.md, phase 4) with a throw-away WebAuthn key record while the Authority RUNS, and checks, independently of the installer:
-# the service restarted in a new process, approverKeys and no legacy pair in the config with the same approver SID, the key store made again from the config (this needs the Authority build that reads approverKeys), the install record, the status
-# line, a second run that restarts nothing, and a non-canonical record file refused with the config untouched. WITHOUT that Authority build the step reports FAIL (the installer puts the old config back: exit 1) and says so.
+# Between the default install and its uninstall it also runs `-Mode set-approver` (approver-webauthn.md, phase 4) with throw-away WebAuthn key records while the Authority RUNS, and checks, independently of the installer:
+# an ADD on top of the install's legacy key (its id hello-lab-0001 is not the hash of its key, so it cannot be carried into approverKeys) is refused with nothing moved; -Replace restarts the service in a new process and the config has approverKeys
+# and no legacy pair with the same approver SID; the key store is made again from the config; a second ADD reads the keys in force from the store the Authority wrote (the installer's trust test against a real file) and gives both keys; the final
+# list is printed before the config is written; a duplicate is refused; the same list with -Replace restarts nothing; the install record and the status line; a non-canonical record file is refused. This needs the Authority build that reads
+# approverKeys: WITHOUT it the step reports FAIL (the installer puts the old config back: exit 1) and says so.
 # Refuses to run unless ALBERA_LAB_VM=1 and the two Albera folders do not exist yet. NOT executed yet (the lab VM run is the lead's): expect first-run fixes.
 param(
   [Parameter(Mandatory = $true)][string]$HostScriptDir,
@@ -140,61 +142,84 @@ else { $cpChecks.Add((New-CpCheck 'service_exists' $false 'AlberaControlPlane is
 $evidence.controlPlane = [ordered]@{ checks = $cpChecks.ToArray(); status = $(if (@($cpChecks | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { 'FAIL' } else { 'PASS' }) }
 $evidence.afterInstall = Get-Remnants
 
-# ---- set-approver (approver-webauthn.md, phase 4): a throw-away WebAuthn key record goes into the Authority of this install while the service RUNS. Needs the Authority build that reads approverKeys (phase 2): with an older
-# one the installer's own safety net fires (the old config goes back, exit 1) and this step reports FAIL with that output. Everything is read back here with the tools Windows ships, not through the installer.
+# ---- set-approver (approver-webauthn.md, phase 4): throw-away WebAuthn key records go into the Authority of this install while the service RUNS: an add that is refused, -Replace, an add on top of the key store the Authority made, a duplicate,
+# the same list again, a record that is not canonical. Needs the Authority build that reads approverKeys (phase 2): with an older one the installer's own safety net fires (the old config goes back, exit 1) and this step reports FAIL with that
+# output. Everything is read back here with the tools Windows ships, not through the installer.
 function Add-SetApproverCheck($List, [string]$Id, [bool]$Ok, [string]$Observed) { $List.Add([ordered]@{ id = $Id; status = $(if ($Ok) { 'PASS' } else { 'FAIL' }); observed = $Observed }) }
 function Get-AuthorityServiceFacts { $s = Get-CimInstance Win32_Service -Filter "Name='AlberaApprovalAuthority'"; [ordered]@{ state = $s.State; processId = [int]$s.ProcessId } }
+# a key record file as `AlberaApprover.exe enroll --webauthn` would write it (canonical bytes), in the hook's own folder (a plain path, no link)
+function New-LabKeyRecord([string]$Folder) {
+  New-Item -ItemType Directory -Force -Path $Folder | Out-Null
+  $ecc = New-Object System.Security.Cryptography.ECDsaCng(256)
+  try { $spki = [Convert]::FromBase64String((ConvertTo-P256Spki ([byte[]]$ecc.Key.Export([System.Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob)))) } finally { $ecc.Dispose() }
+  $credential = New-Object byte[] 32; $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create(); $rng.GetBytes($credential); $rng.Dispose()
+  $record = ConvertTo-ApproverKeyObject ([pscustomobject]@{ keyId = (Get-ApproverKeyIdFor 'webauthn' $spki); kind = 'webauthn'; alg = -7; publicKey = [Convert]::ToBase64String($spki); credentialId = (ConvertTo-Base64UrlNoPad $credential) })
+  $file = Join-Path $Folder ($record.keyId + '.json')
+  [System.IO.File]::WriteAllBytes($file, [System.Text.Encoding]::UTF8.GetBytes((ConvertTo-ApproverKeyText $record)))
+  [pscustomobject]@{ Record = $record; File = $file }
+}
 $setApprover = [ordered]@{ status = 'BLOCKED'; reason = ''; checks = @() }
 if (-not (Get-CimInstance Win32_Service -Filter "Name='AlberaApprovalAuthority'")) { $setApprover.reason = 'the default install has no Authority service' }
 elseif ($install.Exit -ne 0) { $setApprover.reason = 'the default install failed, there is nothing to change' }
 else {
   $setChecks = New-Object 'System.Collections.Generic.List[object]'
   try {
-    # the key record file, as `AlberaApprover.exe enroll --webauthn` would write it (canonical bytes), in the hook's own folder (a plain path, no link)
     $labKeyDir = Join-Path $PSScriptRoot 'approver-key-records'
-    New-Item -ItemType Directory -Force -Path $labKeyDir | Out-Null
-    $labEcc = New-Object System.Security.Cryptography.ECDsaCng(256)
-    try { $labSpki = [Convert]::FromBase64String((ConvertTo-P256Spki ([byte[]]$labEcc.Key.Export([System.Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob)))) } finally { $labEcc.Dispose() }
-    $labCredential = New-Object byte[] 32; $labRng = [System.Security.Cryptography.RandomNumberGenerator]::Create(); $labRng.GetBytes($labCredential); $labRng.Dispose()
-    $labRecord = ConvertTo-ApproverKeyObject ([pscustomobject]@{ keyId = (Get-ApproverKeyIdFor 'webauthn' $labSpki); kind = 'webauthn'; alg = -7; publicKey = [Convert]::ToBase64String($labSpki); credentialId = (ConvertTo-Base64UrlNoPad $labCredential) })
-    $labRecordFile = Join-Path $labKeyDir ($labRecord.keyId + '.json')
-    [System.IO.File]::WriteAllBytes($labRecordFile, [System.Text.Encoding]::UTF8.GetBytes((ConvertTo-ApproverKeyText $labRecord)))
+    $labA = New-LabKeyRecord $labKeyDir; $labB = New-LabKeyRecord $labKeyDir
     $authorityConfigFile = Join-Path $programData 'authority\AlberaApprovalAuthority.service.json'
     $authorityStoreFile = Join-Path $programData 'authority\approver-keys.json'
+    $configHash = { (Get-FileHash -LiteralPath $authorityConfigFile -Algorithm SHA256).Hash }
+    $manifestHash = { (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash }
+    $readConfig = { Get-Content -Raw -LiteralPath $authorityConfigFile | ConvertFrom-Json }
+    $configKeyIds = { $c = & $readConfig; if ($null -ne $c.PSObject.Properties['approverKeys']) { @($c.approverKeys | ForEach-Object { $_.keyId }) -join ',' } else { 'legacy:' + $c.approverKeyId } }
+    $storeKeyIds = { if (Test-Path -LiteralPath $authorityStoreFile) { @((Get-Content -Raw -LiteralPath $authorityStoreFile | ConvertFrom-Json).keys | ForEach-Object { $_.keyId }) -join ',' } else { '(no store file)' } }
     # the service runs while the installer changes the config: it has to stop it, change the config, delete the key store and start it again
     & sc.exe start AlberaApprovalAuthority | Out-Null
     $waitUntil = (Get-Date).AddSeconds(30)
     while ((Get-AuthorityServiceFacts).state -ne 'Running' -and (Get-Date) -lt $waitUntil) { Start-Sleep -Milliseconds 500 }
-    $before = Get-AuthorityServiceFacts
-    $configBefore = Get-Content -Raw -LiteralPath $authorityConfigFile
-    Add-SetApproverCheck $setChecks 'authority_runs_before' ($before.state -eq 'Running') ("state " + $before.state + ", process " + $before.processId)
-    $set = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labRecordFile); ExpectedApproverKeyId = @($labRecord.keyId) }
-    $setApprover.output = $set.Output
-    Add-SetApproverCheck $setChecks 'set_approver_exit_0' ($set.Exit -eq 0) ("exit " + $set.Exit)
-    $after = Get-AuthorityServiceFacts
-    Add-SetApproverCheck $setChecks 'authority_runs_after_in_a_new_process' ($after.state -eq 'Running' -and $after.processId -ne $before.processId -and $after.processId -ne 0) ("state " + $after.state + ", process " + $after.processId + " (was " + $before.processId + ")")
-    $configAfter = Get-Content -Raw -LiteralPath $authorityConfigFile | ConvertFrom-Json
-    $configNames = @($configAfter.PSObject.Properties | ForEach-Object { $_.Name })
-    Add-SetApproverCheck $setChecks 'config_has_approverKeys_and_no_pair' (($configNames -contains 'approverKeys') -and ($configNames -notcontains 'approverKeyId') -and ($configNames -notcontains 'approverPublicKey')) ($configNames -join ',')
-    Add-SetApproverCheck $setChecks 'config_names_the_key' ((@($configAfter.approverKeys).Count -eq 1) -and ($configAfter.approverKeys[0].keyId -ceq $labRecord.keyId) -and ($configAfter.approverKeys[0].kind -ceq 'webauthn')) ((ConvertTo-Json -InputObject $configAfter.approverKeys -Compress))
-    Add-SetApproverCheck $setChecks 'approver_sid_unchanged' ($configAfter.approverSid -ceq $approverSid) ([string]$configAfter.approverSid)
-    $storeText = if (Test-Path -LiteralPath $authorityStoreFile) { Get-Content -Raw -LiteralPath $authorityStoreFile } else { '' }
-    Add-SetApproverCheck $setChecks 'key_store_made_again_from_the_config' ($storeText.Contains($labRecord.keyId) -and -not $storeText.Contains('hello-lab-0001')) ("store file present: " + [bool]$storeText + "; it names the new key and not the old Hello key")
-    $recordAfter = (Get-Content -Raw -LiteralPath $manifest | ConvertFrom-Json).values
-    Add-SetApproverCheck $setChecks 'record_names_the_key' ((@($recordAfter.approverKeys).Count -eq 1) -and ($recordAfter.approverKeys[0].keyId -ceq $labRecord.keyId) -and ($null -eq $recordAfter.PSObject.Properties['approverKeyId']) -and ($recordAfter.approverKeysSetAt -match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')) ((ConvertTo-Json -InputObject $recordAfter.approverKeys -Compress))
+    $p0 = Get-AuthorityServiceFacts
+    Add-SetApproverCheck $setChecks 'authority_runs_before' ($p0.state -eq 'Running') ("state " + $p0.state + ", process " + $p0.processId)
+    # 1. the install above used the legacy id hello-lab-0001, which is not the hash of its key, so it cannot be carried into approverKeys: ADDING is refused and nothing moves
+    $hash0 = & $configHash; $record0 = & $manifestHash
+    $refused = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labA.File) }
+    Add-SetApproverCheck $setChecks 'add_to_an_invalid_legacy_key_refused' ($refused.Exit -eq 3 -and $refused.Output -match 'is not a valid hello-rsa record' -and (& $configHash) -eq $hash0 -and (& $manifestHash) -eq $record0 -and (Get-AuthorityServiceFacts).processId -eq $p0.processId) ("exit " + $refused.Exit)
+    # 2. -Replace: the given key is the only key; the service restarts in a new process; the Authority makes its key store again from the config
+    $replace = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labA.File); Replace = $true; ExpectedApproverKeyId = @($labA.Record.keyId) }
+    $setApprover.output = $replace.Output
+    Add-SetApproverCheck $setChecks 'replace_exit_0' ($replace.Exit -eq 0) ("exit " + $replace.Exit)
+    $p1 = Get-AuthorityServiceFacts
+    Add-SetApproverCheck $setChecks 'authority_runs_after_replace_in_a_new_process' ($p1.state -eq 'Running' -and $p1.processId -ne $p0.processId -and $p1.processId -ne 0) ("state " + $p1.state + ", process " + $p1.processId + " (was " + $p0.processId + ")")
+    $afterReplace = & $readConfig
+    $names = @($afterReplace.PSObject.Properties | ForEach-Object { $_.Name })
+    Add-SetApproverCheck $setChecks 'config_has_approverKeys_and_no_pair' (($names -contains 'approverKeys') -and ($names -notcontains 'approverKeyId') -and ($names -notcontains 'approverPublicKey')) ($names -join ',')
+    Add-SetApproverCheck $setChecks 'config_names_only_the_new_key' ((& $configKeyIds) -ceq $labA.Record.keyId -and $afterReplace.approverKeys[0].kind -ceq 'webauthn') (& $configKeyIds)
+    Add-SetApproverCheck $setChecks 'approver_sid_unchanged' ($afterReplace.approverSid -ceq $approverSid) ([string]$afterReplace.approverSid)
+    Add-SetApproverCheck $setChecks 'key_store_made_again_from_the_config' ((& $storeKeyIds) -ceq $labA.Record.keyId) (& $storeKeyIds)
+    $recordReplace = (Get-Content -Raw -LiteralPath $manifest | ConvertFrom-Json).values
+    Add-SetApproverCheck $setChecks 'record_names_the_key' ((@($recordReplace.approverKeys).Count -eq 1) -and ($recordReplace.approverKeys[0].keyId -ceq $labA.Record.keyId) -and ($null -eq $recordReplace.PSObject.Properties['approverKeyId']) -and ($recordReplace.approverKeysSetAt -match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')) ((ConvertTo-Json -InputObject $recordReplace.approverKeys -Compress))
     $setStatus = Invoke-Host @{ Mode = 'status' }
-    Add-SetApproverCheck $setChecks 'status_ok_and_lists_the_key' ($setStatus.Exit -eq 0 -and $setStatus.Output.Contains('Authority approver keys: 1 key(s): ' + $labRecord.keyId + ' (webauthn)')) ("exit " + $setStatus.Exit)
-    # the same file again: nothing is restarted and the record does not change
-    $manifestHashSet = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash
-    $setAgain = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labRecordFile) }
-    $afterAgain = Get-AuthorityServiceFacts
-    Add-SetApproverCheck $setChecks 'second_run_changes_nothing' ($setAgain.Exit -eq 0 -and $setAgain.Output -match 'already trusts exactly' -and $afterAgain.processId -eq $after.processId -and (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash -eq $manifestHashSet) ("exit " + $setAgain.Exit + ", process " + $afterAgain.processId)
-    # a file that is not canonical (a trailing line break) is refused and nothing moves
+    Add-SetApproverCheck $setChecks 'status_ok_and_lists_the_key' ($setStatus.Exit -eq 0 -and $setStatus.Output.Contains('Authority approver keys: 1 key(s): ' + $labA.Record.keyId + ' (webauthn)')) ("exit " + $setStatus.Exit)
+    # 3. ADD a second key: the keys in force are read from the key store the Authority wrote (it must pass the installer's trust test: this is the check that shows it does), and the result is both keys
+    $add = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labB.File) }
+    Add-SetApproverCheck $setChecks 'add_exit_0' ($add.Exit -eq 0) ("exit " + $add.Exit + $(if ($add.Exit -ne 0) { ': ' + (($add.Output -split "`r?`n" | Where-Object { $_ -match 'REFUSED|ERROR' } | Select-Object -First 1)) } else { '' }))
+    $p2 = Get-AuthorityServiceFacts
+    Add-SetApproverCheck $setChecks 'authority_runs_after_add_in_a_new_process' ($p2.state -eq 'Running' -and $p2.processId -ne $p1.processId -and $p2.processId -ne 0) ("state " + $p2.state + ", process " + $p2.processId + " (was " + $p1.processId + ")")
+    Add-SetApproverCheck $setChecks 'config_holds_both_keys_in_order' ((& $configKeyIds) -ceq ($labA.Record.keyId + ',' + $labB.Record.keyId)) (& $configKeyIds)
+    Add-SetApproverCheck $setChecks 'key_store_holds_both_keys' ((& $storeKeyIds) -ceq ($labA.Record.keyId + ',' + $labB.Record.keyId)) (& $storeKeyIds)
+    Add-SetApproverCheck $setChecks 'add_output_shows_the_final_list_before_the_write' ($add.Output.IndexOf('will trust exactly these 2 approver key(s)') -ge 0 -and $add.Output.IndexOf('will trust exactly these 2 approver key(s)') -lt $add.Output.IndexOf('config written')) 'the list line comes before the config line'
+    # 4. the same key again is refused (it is in force), nothing moves
+    $hash2 = & $configHash; $record2 = & $manifestHash
+    $dup = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labB.File) }
+    Add-SetApproverCheck $setChecks 'duplicate_refused' ($dup.Exit -eq 3 -and $dup.Output -match 'already registered' -and (& $configHash) -eq $hash2 -and (& $manifestHash) -eq $record2 -and (Get-AuthorityServiceFacts).processId -eq $p2.processId) ("exit " + $dup.Exit)
+    # 5. -Replace with exactly the list in force: nothing is restarted, nothing is deleted
+    $storeHash2 = (Get-FileHash -LiteralPath $authorityStoreFile -Algorithm SHA256).Hash
+    $same = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($labA.File, $labB.File); Replace = $true }
+    Add-SetApproverCheck $setChecks 'replace_with_the_same_list_changes_nothing' ($same.Exit -eq 0 -and $same.Output -match 'already trusts exactly' -and (Get-AuthorityServiceFacts).processId -eq $p2.processId -and (& $manifestHash) -eq $record2 -and (Get-FileHash -LiteralPath $authorityStoreFile -Algorithm SHA256).Hash -eq $storeHash2) ("exit " + $same.Exit)
+    # 6. a file that is not canonical (a trailing line break) is refused and nothing moves
     $badFile = Join-Path $labKeyDir 'not-canonical.json'
-    [System.IO.File]::WriteAllBytes($badFile, [System.Text.Encoding]::UTF8.GetBytes((ConvertTo-ApproverKeyText $labRecord) + "`n"))
-    $configHashSet = (Get-FileHash -LiteralPath $authorityConfigFile -Algorithm SHA256).Hash
-    $setBad = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($badFile) }
-    Add-SetApproverCheck $setChecks 'non_canonical_file_refused' ($setBad.Exit -eq 3 -and $setBad.Output -match 'record_not_canonical' -and (Get-FileHash -LiteralPath $authorityConfigFile -Algorithm SHA256).Hash -eq $configHashSet -and (Get-AuthorityServiceFacts).processId -eq $after.processId) ("exit " + $setBad.Exit)
+    [System.IO.File]::WriteAllBytes($badFile, [System.Text.Encoding]::UTF8.GetBytes((ConvertTo-ApproverKeyText $labB.Record) + "`n"))
+    $setBad = Invoke-Host @{ Mode = 'set-approver'; ApproverKeyFile = @($badFile); Replace = $true }
+    Add-SetApproverCheck $setChecks 'non_canonical_file_refused' ($setBad.Exit -eq 3 -and $setBad.Output -match 'record_not_canonical' -and (& $configHash) -eq $hash2 -and (Get-AuthorityServiceFacts).processId -eq $p2.processId) ("exit " + $setBad.Exit)
   }
   catch { Add-SetApproverCheck $setChecks 'set_approver_no_exception' $false ($_.Exception.Message) }
   $setApprover.checks = $setChecks.ToArray()

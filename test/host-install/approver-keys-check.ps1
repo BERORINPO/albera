@@ -26,6 +26,43 @@ foreach ($set in $cases.sets) {
   $r.sets[$set.name] = Test-ApproverKeySet $records
 }
 
+# ---- the key store (authority\approver-keys.json): its shape and its records, judged by the same rules
+$r.stores = [ordered]@{}
+foreach ($case in $cases.stores) {
+  $result = Read-ApproverKeyStoreBytes ([Convert]::FromBase64String($case.b64))
+  $r.stores[$case.name] = [ordered]@{ ok = $result.Ok; reasons = @($result.Reasons); keyIds = @($result.Records | ForEach-Object { $_.keyId }) }
+}
+
+# ---- the final key list: the keys in force plus the given ones, or the given ones alone
+$r.merges = [ordered]@{}
+foreach ($case in $cases.merges) {
+  $inForce = @($case.inForce | ForEach-Object { $parsed[$_].Record })
+  $given = @($case.given | ForEach-Object { $parsed[$_].Record })
+  $m = Get-SetApproverFinalKeys $inForce $given ([bool]$case.replace)
+  $r.merges[$case.name] = [ordered]@{ ok = $m.Ok; reasons = @($m.Reasons); ids = @($m.Records | ForEach-Object { $_.keyId }); kept = @($m.Kept | ForEach-Object { $_.keyId }); added = @($m.Added | ForEach-Object { $_.keyId }); removed = @($m.Removed | ForEach-Object { $_.keyId }) }
+}
+
+# ---- the legacy pair as the one hello-rsa record it is read as
+$r.legacyPairs = [ordered]@{}
+foreach ($case in $cases.legacyPairs) {
+  $c = ConvertFrom-LegacyApproverPair $case.keyId $case.publicKey
+  $r.legacyPairs[$case.name] = [ordered]@{ ok = $c.Ok; reasons = @($c.Reasons); fields = $(if ($c.Ok) { @($c.Record.PSObject.Properties | ForEach-Object { $_.Name }) } else { @() }); kind = $(if ($c.Ok) { $c.Record.kind } else { $null }); alg = $(if ($c.Ok) { $c.Record.alg } else { $null }) }
+}
+
+# ---- the trust test for a file the Authority service wrote itself: its own SID may own it, nobody else beyond SYSTEM / Administrators / TrustedInstaller
+$authoritySid = Get-DerivedServiceSid $K.AuthorityService
+$userSid = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
+$summary = { param($owner, $writers) [pscustomobject]@{ Owner = $owner; Protected = $false; AllowSids = @($writers); WriteSids = @($writers) } }
+$r.trust = [ordered]@{
+  authorityOwnerWithItsSid = Test-TrustSummary (& $summary $authoritySid @($authoritySid)) @($authoritySid) $false @($authoritySid)
+  authorityOwnerWithoutTheAllowance = Test-TrustSummary (& $summary $authoritySid @($authoritySid)) @($authoritySid) $false
+  userOwner = Test-TrustSummary (& $summary $userSid @($authoritySid)) @($authoritySid) $false @($authoritySid)
+  systemOwner = Test-TrustSummary (& $summary 'S-1-5-18' @('S-1-5-18')) @($authoritySid) $false @($authoritySid)
+  administratorsOwner = Test-TrustSummary (& $summary 'S-1-5-32-544' @('S-1-5-32-544', $authoritySid)) @($authoritySid) $false @($authoritySid)
+  otherWriter = Test-TrustSummary (& $summary $authoritySid @($authoritySid, $userSid)) @($authoritySid) $false @($authoritySid)
+  brokerSidOwner = Test-TrustSummary (& $summary (Get-DerivedServiceSid $K.BrokerService) @()) @($authoritySid) $false @($authoritySid)
+}
+
 # ---- Authority configs: the writer and the mirror of the Authority's rules
 $sid = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
 $cp = Get-DerivedServiceSid $K.ControlPlaneService
