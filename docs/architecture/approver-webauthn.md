@@ -27,7 +27,7 @@ The approver builds the client data itself, as exactly these bytes (UTF-8, no sp
 {"type":"webauthn.get","challenge":"<base64url(SHA-256(presence message))>","origin":"albera://approver","crossOrigin":false}
 ```
 
-It calls `WebAuthNAuthenticatorGetAssertion` with the fixed rp id `approver.albera.local` (provisional, see "Open points"). User verification is required. `allowCredentials` holds the credential ids of the registered WebAuthn keys, which `list` returns as public metadata. The `decide approve` frame then carries:
+It calls `WebAuthNAuthenticatorGetAssertion` with the fixed rp id `approver.albera.local` (provisional, see "Open points"). User verification is required. `allowCredentials` holds the credential ids of the registered WebAuthn keys, which the new `keys` verb returns (public data only). The `decide approve` frame then carries:
 
 ```
 "presence": {"kind":"webauthn","credentialId":"<b64url>","authenticatorData":"<b64>","signature":"<b64>"}
@@ -62,6 +62,55 @@ A new `WebAuthnPresenceVerifier` implements the existing `IHumanPresenceVerifier
 **Removing a key** needs a signature by any registered key over `albera.keyremove.v1` with the same structure. The last key cannot be removed.
 
 **Attestation:** the approver asks for none. Like the owner's current Hello key (status `NotSupported`), a WebAuthn key is not proven to be hardware-backed. `enroll` and `keys add` need `--accept-unattested` and print the same warning line as today.
+
+## Wire contract (fixed for phases 2 to 4)
+
+Phases 2, 3 and 4 are built at the same time against this section. A change here changes all three. Replies keep the Authority's shape: `{"ok":true,...}` or `{"ok":false,"code":"<code>"}`. Nothing the caller sent is echoed.
+
+**Key record** (JSON, public data only):
+
+```
+{"keyId":"webauthn-0123456789abcdef","kind":"webauthn","alg":-7,"publicKey":"<base64 SPKI>","credentialId":"<base64url, no padding>"}
+{"keyId":"hello-951a135537287eae","kind":"hello-rsa","alg":-257,"publicKey":"<base64 SPKI>"}
+```
+
+- `keyId`: `webauthn-` or `hello-` plus the first 8 bytes of SHA-256 over the SPKI DER, lower-case hex. A record whose id does not match its key is refused.
+- `alg`: `-7` (ES256, P-256) or `-257` (RS256; RSA-2048 or larger for `webauthn`, exactly 2048 for `hello-rsa`).
+- `credentialId`: `webauthn` only, 1 to 1023 bytes.
+- **Canonical bytes** of a record: the JSON above with the keys in exactly that order, no spaces, UTF-8, `credentialId` left out for `hello-rsa`. Key messages hash these bytes.
+
+**Authority config** (written by the elevated installer):
+- New field `approverKeys`: an array of 1 to 16 key records.
+- The legacy pair `approverKeyId` + `approverPublicKey` is still read, as one `hello-rsa` record. A config with both the pair and `approverKeys` is refused (`config_approver_keys`).
+
+**Key store** `authority\approver-keys.json` (written by the Authority only; same trust checks as the policy store): `{"v":1,"revision":<n>,"keys":[<records>],"signCounts":{"<keyId>":<n>}}`.
+- On start, a missing store is created from the config keys. After that the store is the key list.
+- `-Mode set-approver` writes the config and deletes the store, so the next start seeds it again.
+
+**`keys`** (approver role): `{"v":1,"verb":"keys"}` replies `{"ok":true,"keys":[{"keyId":..,"kind":..,"credentialId":..}]}`. `credentialId` appears for `webauthn` only. It is a new verb, so `list` stays as it is and an installed approver keeps working.
+
+**Proofs.** Two forms are used in `decide`, `policy_set`, `key_add` and `key_remove`:
+- WebAuthn: `{"kind":"webauthn","credentialId":"<b64url>","authenticatorData":"<b64>","signature":"<b64>"}`. The signed client data is the fixed JSON in "The proof", with `challenge` = base64url(SHA-256(message)).
+- Hello: the existing base64 RSA signature string over the message itself. The Authority tries each registered `hello-rsa` key.
+
+The receipt's `approverKeyId` is the key that verified.
+
+**Messages** (UTF-8, 0x00 between parts):
+- presence (unchanged): `albera.presence.v1` approvalId actionDigest challenge
+- add: `albera.keyadd.v1` newKeyId hex(SHA-256(canonical record)) keyChallenge
+- remove: `albera.keyremove.v1` keyId hex(SHA-256(canonical record of that key)) keyChallenge
+
+**`key_challenge`**: `{"v":1,"verb":"key_challenge","op":"add"|"remove","keyId":"<key to add or remove>"}` replies `{"ok":true,"challenge":"<22 chars, 128-bit base64url>","expiresAt":<unix s>}`. The challenge is single-use, lives 120 s, and is bound to the op and the key id. One challenge is outstanding at a time; a new one replaces the old.
+
+**`key_add`**: `{"v":1,"verb":"key_add","key":<record>,"challenge":"..","by":<proof by a registered key>,"newKey":<proof by the new key>}`. Both proofs are over the add message.
+
+**`key_remove`**: `{"v":1,"verb":"key_remove","keyId":"..","challenge":"..","by":<proof by a registered key>}`, over the remove message.
+
+Both reply `{"ok":true,"keys":[...]}` as `keys` does.
+
+**Codes** (new): `challenge_unknown`, `challenge_expired`, `key_exists`, `key_unknown`, `last_key`, `too_many_keys` (more than 16). Existing codes are reused: `request_invalid` for anything malformed, `presence_mismatch` for a proof that does not verify (the `by` proof or the `newKey` proof).
+
+Only the approver SID may call `keys`, `key_challenge`, `key_add` and `key_remove`, with the same caller check as `decide`.
 
 ## Remote sessions
 
