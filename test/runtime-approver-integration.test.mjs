@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { constants, createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import net from 'node:net';
@@ -22,6 +23,9 @@ const submitRequest = (overrides = {}) => ({
   brokerChallenge: '_-7dzLuqmYh3ZlVEMyIRAA', action: ACTION, ...overrides,
 });
 const UNKNOWN_ID = '3f2b8c1e-5d4a-4b6f-9a7e-0c1d2e3f4a5b';
+// A PC where ALBERA is installed runs the real Approval Authority service, and the shipped build would talk to it. sc.exe exits 1060 only for a service that does not exist (5 when it may not be queried).
+const authorityInstalled = process.platform === 'win32'
+  && spawnSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'sc.exe'), ['query', 'AlberaApprovalAuthority'], { windowsHide: true }).status !== 1060;
 const blocks = (stdout) => stdout.split(/\r?\n(?=request )/u).filter((x) => x.startsWith('request ')).map((text) => ({ id: text.split(/\r?\n/u)[0].slice('request '.length), text }));
 
 describe('Approver app (test-faults build, fake Hello) against the real Authority', { skip: getUnavailableReason(), timeout: 900_000 }, () => {
@@ -529,7 +533,7 @@ describe('Approver app (test-faults build, fake Hello) against the real Authorit
       }
     });
 
-    it('with no Authority service on this machine, list / deny stop at the identity check with exit 66 (nothing is written to anything)', async () => {
+    it('with no Authority service on this machine, list / deny stop at the identity check with exit 66 (nothing is written to anything)', { skip: authorityInstalled && 'the Approval Authority service is installed on this PC: the shipped build would talk to it' }, async () => {
       for (const args of [['list'], ['deny', UNKNOWN_ID]]) {
         const result = await runApprover(shippedExe, args);
         assert.equal(result.code, 66, `${args[0]}: ${result.stderr}`);

@@ -300,6 +300,23 @@ switch ($Case) {
     $result.plantedPlanError = Try-Run { Initialize-Manifest }
     $result.plantedPlanManifestIgnored = ($null -eq $script:Manifest)
     $result.plantedPlanNote = $script:ManifestNote
+    # 1b. the data root cannot be read by this account, as C:\ProgramData\Albera after an install for a normal user. An explicit Deny, so that it holds for an elevated runner too; the owner (this user)
+    # can still change the DACL, which is how it is removed again. Windows PowerShell 5.1's Test-Path throws for the manifest in it instead of returning false.
+    $icacls = Join-Path ([Environment]::SystemDirectory) 'icacls.exe'
+    $null = & $icacls $L.DataRoot /deny "*${me}:(OI)(CI)(RD,RA,REA,X)" /Q
+    if ($LASTEXITCODE -ne 0) { throw "icacls /deny failed for $($L.DataRoot)" }
+    try {
+      $result.lockedTestPathThrows = ($null -ne (Try-Run { Test-Path -LiteralPath $L.ManifestPath }))
+      $Mode = 'plan'; $script:Manifest = $null; $script:ManifestNote = $null
+      $result.lockedPlanError = Try-Run { Initialize-Manifest }
+      $result.lockedPlanManifestIgnored = ($null -eq $script:Manifest)
+      $result.lockedPlanNote = $script:ManifestNote
+      $Mode = 'install'; $script:Manifest = $null; $script:ManifestNote = $null
+      $result.lockedInstall = Try-Run { Initialize-Manifest }
+    } finally {
+      $null = & $icacls $L.DataRoot /remove:d "*$me" /T /Q
+    }
+    $result.lockedRestored = (Test-Path -LiteralPath $L.ManifestPath)
     # 2. the same folder is a junction to another vendor's service folder: refused before any ACL is read; the target is untouched
     Remove-Item -LiteralPath $L.DataRoot -Recurse -Force
     $vendor = Join-Path $Work 'vendor-service'; New-Item -ItemType Directory -Force -Path $vendor | Out-Null
