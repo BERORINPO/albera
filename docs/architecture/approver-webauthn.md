@@ -1,6 +1,6 @@
 # Approver presence through WebAuthn, with several keys
 
-**Status:** the owner chose this direction on 2026-11-04 ("それで進める"). The details below are provisional until the feasibility probe passes ("Feasibility probe"). Nothing here is implemented yet.
+**Status:** the owner chose this direction on 2026-11-04 ("それで進める"). The feasibility probe passed the same day ("Feasibility probe"). Phases 2 to 4 are being built against "Wire contract".
 
 ## Why
 
@@ -144,8 +144,15 @@ Only the approver SID may call `keys`, `key_challenge`, `key_add` and `key_remov
 
 Nothing is sent anywhere. The design goes ahead only if the result is OK with user verified set.
 
+**Result (2026-11-04, owner's Remote Desktop session, `SM_REMOTESESSION` true):** `RESULT: OK`. The owner confirmed Windows Hello twice on the connecting PC.
+- create: attestation format `none`, credential id 32 bytes, ES256 (P-256), user present and user verified set, rp id hash matches.
+- sign: user present and user verified set, sign count **1**.
+- The signature verified with the created public key, over the client data the probe built itself. So the client data passed over the redirection unchanged.
+
+The console window's handle was used.
+
 ## Open points
 
-- **rp id.** `approver.albera.local` is not a web origin anyone can serve with a trusted certificate, so a web page cannot ask for these credentials. Whether Windows accepts it for every authenticator (phone, security key) is checked by the probe only for the authenticator the owner uses.
-- **Window handle.** WebAuthn takes the window handle of the approval window or the console. Whether the prompt then shows in front over Remote Desktop is checked by the probe for the console case.
-- **Sign count** of Windows Hello over redirection: recorded by the probe.
+- **rp id.** `approver.albera.local` is not a web origin anyone can serve with a trusted certificate, so a web page cannot ask for these credentials. Windows accepted the same shape (`probe.albera.local`) for the owner's Hello over Remote Desktop. A phone or a security key is not checked.
+- **Window handle.** The console window handle worked over Remote Desktop. The approval window's handle is not checked yet; phase 3 uses it.
+- **Sign count.** Windows Hello over redirection reported 1 on the first assertion, so the counter is live and the monotonic check (verification rule 4) applies to it.
