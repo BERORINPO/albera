@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, verify } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,7 +41,9 @@ const ps = (args, { env = {}, allowFail = false } = {}) => {
 };
 const host = (args, options) => ps(['-File', path.join(hostDir, 'albera-host.ps1'), ...args], options);
 const lastJson = (stdout) => JSON.parse(stdout.trim().split(/\r?\n/u).at(-1));
-const scratch = (t) => { const dir = mkdtempSync(path.join(os.tmpdir(), 'albera-host-test-')); t.after(() => rmSync(dir, { recursive: true, force: true })); return dir; };
+// The long name: on the CI runner the temp folder is an 8.3 short name (C:\Users\RUNNER~1\...), which Windows PowerShell 5.1's GetFullPath expands,
+// so the host script would refuse a path under it as not plain.
+const scratch = (t) => { const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'albera-host-test-'))); t.after(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 const b64url = (value) => Buffer.from(value, 'base64url').toString('base64url');
 
 // ---- files ----
