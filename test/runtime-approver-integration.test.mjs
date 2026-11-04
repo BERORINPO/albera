@@ -23,9 +23,10 @@ const submitRequest = (overrides = {}) => ({
   brokerChallenge: '_-7dzLuqmYh3ZlVEMyIRAA', action: ACTION, ...overrides,
 });
 const UNKNOWN_ID = '3f2b8c1e-5d4a-4b6f-9a7e-0c1d2e3f4a5b';
-// A PC where ALBERA is installed runs the real Approval Authority service, and the shipped build would talk to it. sc.exe exits 1060 only for a service that does not exist (5 when it may not be queried).
+// A PC where ALBERA is installed runs the real Approval Authority service, and the shipped build would talk to it. sc.exe exits 0 for a service it may query, 5 for one it may not,
+// 1060 for none; any other result (sc.exe did not run) is not taken as an install, so the test runs and fails loudly.
 const authorityInstalled = process.platform === 'win32'
-  && spawnSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'sc.exe'), ['query', 'AlberaApprovalAuthority'], { windowsHide: true }).status !== 1060;
+  && [0, 5].includes(spawnSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'sc.exe'), ['query', 'AlberaApprovalAuthority'], { windowsHide: true }).status);
 const blocks = (stdout) => stdout.split(/\r?\n(?=request )/u).filter((x) => x.startsWith('request ')).map((text) => ({ id: text.split(/\r?\n/u)[0].slice('request '.length), text }));
 
 describe('Approver app (test-faults build, fake Hello) against the real Authority', { skip: getUnavailableReason(), timeout: 900_000 }, () => {

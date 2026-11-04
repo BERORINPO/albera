@@ -286,14 +286,14 @@ test('a fake CimCmdlets / LocalAccounts / Utility first in PSModulePath for the 
   const output = host([], { env }).stdout;
   assert.equal(existsSync(marker), false, 'no fake module was loaded by albera-host.ps1');
   assert.doesNotMatch(output, /HIJACKED/u);
-  // The real answer depends on this machine: where ALBERA is installed the services exist, and the step says so (blocked). sc.exe exits 1060 only for a service that does not exist (5 when it may not be queried).
-  const servicesMissing = spawnSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'sc.exe'), ['query', 'AlberaHostBroker'], { windowsHide: true }).status === 1060;
-  assert.match(output, servicesMissing ? /\[todo\] Create services AlberaHostBroker/u : /\[blocked\] Create services AlberaHostBroker/u, 'the plan still ran, with the real CIM answers');
+  // The real answer depends on this machine: where ALBERA is installed the services exist, and the step says so (blocked). sc.exe exits 0 for a service it may query, 5 for one it may not, 1060 for none.
+  const installed = [0, 5].includes(spawnSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'sc.exe'), ['query', 'AlberaHostBroker'], { windowsHide: true }).status);
+  assert.match(output, installed ? /\[blocked\] Create services AlberaHostBroker/u : /\[todo\] Create services AlberaHostBroker/u, 'the plan still ran, with the real CIM answers');
   assert.match(output, /PLAN ONLY: nothing was changed\./u);
   // status and uninstall plan go through the same guard
   // status exits 1 ("could not be checked") where ALBERA is installed and this account cannot read its data folder; it must still run to the end, not stop with an error
   const status = host(['-Mode', 'status'], { env, allowFail: true });
-  assert.ok([0, 1].includes(status.code) && /^STATUS: /mu.test(status.stdout) && !/^ERROR: /mu.test(status.stdout), `status ran to the end: ${status.stdout}`);
+  assert.ok((installed ? [0, 1] : [0]).includes(status.code) && /^STATUS: /mu.test(status.stdout) && !/^ERROR: /mu.test(status.stdout), `status ran to the end: ${status.stdout}`);
   host(['-Mode', 'plan', '-PlanFor', 'uninstall'], { env });
   assert.equal(existsSync(marker), false);
 });
@@ -884,7 +884,7 @@ test('trust: a planted manifest owned by a non-admin, a junction as the data roo
   assert.equal(r.lockedPlanError, null, 'plan / status do not stop with "access denied"');
   assert.equal(r.lockedPlanManifestIgnored, true);
   assert.match(r.lockedPlanNote, /cannot be read by this account .*it is ignored \(run -Mode status in an elevated console/u);
-  assert.match(r.lockedInstall, /^REFUSED: .*cannot be read by this account .*; nothing was changed$/u);
+  assert.match(r.lockedInstall, /^REFUSED: .*cannot be read even by this elevated console, so it was not made by this script; check its owner and ACL .*; nothing was changed$/u);
   assert.equal(r.lockedRestored, true, 'the Deny is removed again');
   // the data root is a junction to another vendor's service folder
   assert.equal(r.junctionRootReasons.length, 1);

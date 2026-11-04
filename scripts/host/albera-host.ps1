@@ -271,9 +271,9 @@ function Initialize-Manifest {
   # for every normal user (SYSTEM and Administrators only), so plan and status stopped here with "access denied" (measured 2026-11-04). They ignore a manifest they cannot read, as they ignore an untrusted one.
   try { $present = Test-Path -LiteralPath $L.ManifestPath }
   catch [System.UnauthorizedAccessException] {
-    $why = "$($L.DataRoot) cannot be read by this account (after an install only SYSTEM and Administrators can)"
-    if ($mutating) { Stop-Refused ($why + '; nothing was changed') }
-    $script:ManifestNote = $why + ', so an install manifest in it cannot be read or verified without admin rights; it is ignored (run -Mode status in an elevated console to check the install)'
+    # An elevated run can read what install made, so for install / uninstall / migrate this folder was not made by install: someone may have planted it.
+    if ($mutating) { Stop-Refused "$($L.DataRoot) cannot be read even by this elevated console, so it was not made by this script; check its owner and ACL (someone may have created it before ALBERA was installed); nothing was changed" }
+    $script:ManifestNote = "$($L.DataRoot) cannot be read by this account (after an install only SYSTEM and Administrators can), so an install manifest in it cannot be read or verified without admin rights; it is ignored (run -Mode status in an elevated console to check the install)"
     return
   }
   if (-not $present) { return }
