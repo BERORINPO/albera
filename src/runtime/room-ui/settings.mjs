@@ -13,6 +13,9 @@ const VALUE_RE = /^[\x21-\x7e]{1,1024}$/u; // the same rule as the host: printab
 
 export const isAcceptableValue = (value) => typeof value === 'string' && VALUE_RE.test(value);
 
+/** Drops what a copy from a terminal adds around a token: spaces at the start or end of a line, and the line breaks of a wrapped one. Neither kind ever holds whitespace; a space inside a line stays and is refused. */
+export const tidyValue = (value) => (typeof value === 'string' ? value.split(/[\r\n]+/u).map((part) => part.trim()).join('') : value);
+
 /** The line under a field: not saved, or saved with the hash prefix and time. Never anything of the value. */
 export function savedLine(words, credential) {
   if (!credential?.present) return words.t('panel.settings.not_saved');
@@ -34,9 +37,10 @@ export async function clearClipboard(clipboard) {
  * @returns {Promise<{ code: 'saved'|'empty'|'invalid_value'|'locked'|'unreachable'|string, credential?: object, clipboardCleared?: boolean }>}
  */
 export async function saveFlow({ name, value, save, clipboard }) {
-  if (typeof value !== 'string' || value.length === 0) return { code: 'empty' };
-  if (!isAcceptableValue(value)) return { code: 'invalid_value' };
-  const result = await save(name, value);
+  const tidy = tidyValue(value);
+  if (typeof tidy !== 'string' || tidy.length === 0) return { code: 'empty' };
+  if (!isAcceptableValue(tidy)) return { code: 'invalid_value' };
+  const result = await save(name, tidy);
   if (result.status === 401) return { code: 'locked' };
   if (result.status === 0) return { code: 'unreachable' };
   if (!result.ok) return { code: typeof result.body?.error === 'string' ? result.body.error : 'save_failed' };
@@ -77,10 +81,12 @@ function field(doc, words, kind, onChange) {
     const value = input.value;
     input.value = ''; // nothing stays in the page's DOM, whatever the host answers
     const result = await saveFlow({ name: kind.name, value, save: api.saveCredential, clipboard: globalThis.navigator?.clipboard });
-    if (result.code === 'saved') {
-      note.textContent = words.t('panel.settings.just_saved') + (result.clipboardCleared ? '' : ` ${words.t('panel.settings.clipboard_failed')}`);
-      onChange();
-    } else note.textContent = failureText(words, result.code);
+    const saved = result.code === 'saved';
+    // The field is empty either way, so a refusal must not look like a save: it is marked and announced, and the line above says "Not saved" again.
+    note.classList.toggle('bad', !saved);
+    note.setAttribute('role', saved ? 'status' : 'alert');
+    note.textContent = saved ? words.t('panel.settings.just_saved') + (result.clipboardCleared ? '' : ` ${words.t('panel.settings.clipboard_failed')}`) : failureText(words, result.code);
+    onChange();
   });
   erase.addEventListener('click', async () => {
     const result = await api.eraseCredential(kind.name);
