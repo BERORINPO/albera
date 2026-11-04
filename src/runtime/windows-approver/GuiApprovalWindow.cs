@@ -197,9 +197,10 @@ internal sealed class ApprovalWindow : Form
                 await SendDenyAsync();
                 break;
             case PickOutcome.Correct:
-                status.Text = "Windows Hello で確認してください。";
+                status.Text = "本人確認をしてください (Windows Hello。リモートデスクトップでは接続元の PC に出ます)。";
                 GuiNative.BringToFront(Handle); // best effort: the window never takes the focus by itself (WS_EX_NOACTIVATE), this is the click's own window
-                CommandOutcome result = await Task.Run(() => commands.ApproveShownAsync(prompt.View!)); // Windows Hello blocks: never on the UI thread
+                IntPtr window = Handle; // read here, on the UI thread: the parent of the WebAuthn prompt
+                CommandOutcome result = await Task.Run(() => commands.ApproveShownAsync(prompt.View!, window)); // the prompt blocks: never on the UI thread
                 state = ApprovalPrompt.AfterApprove(state, result);
                 Present(ApprovalPrompt.ApproveResultText(result), result.Ok);
                 break;
@@ -236,7 +237,7 @@ internal sealed class ApprovalWindow : Form
     {
         TableLayoutPanel layout = new() { ColumnCount = 1, AutoSize = true, Padding = new Padding(14), Dock = DockStyle.Fill };
         Controls.Add(layout);
-        if (remoteSession) layout.Controls.Add(Banner("リモートデスクトップで接続中です。この PC の前で承認してください。", Notice));
+        if (remoteSession) layout.Controls.Add(Banner("リモートデスクトップで接続中です。本人確認の画面は、接続元の PC に出ます。", Notice));
         if (prompt.Block != BlockReason.None) layout.Controls.Add(Banner(prompt.BlockText, Alarm));
         layout.Controls.Add(MakeLabel("承認の依頼", bold: true, size: 14f));
         layout.Controls.Add(MakeLabel(prompt.Summary));

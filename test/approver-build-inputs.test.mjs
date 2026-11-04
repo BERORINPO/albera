@@ -56,6 +56,7 @@ describe('arch rule 11e: the approver build inputs are an allowlist', () => {
     'a missing pinned SDK projection version': realProject.replace(/\s*<WindowsSdkPackageVersion>[^<]*<\/WindowsSdkPackageVersion>/u, ''),
     'a different target framework': realProject.replace('net10.0-windows10.0.19041.0', 'net10.0-windows10.0.22621.0'),
     'the Hello file compiled into the test-faults build': realProject.replace(/\s*<Compile Remove="WindowsHello\.cs"[^>]*\/>/u, ''),
+    'the WebAuthn platform file compiled into the test-faults build': realProject.replace(/\s*<Compile Remove="WebAuthn\.cs"[^>]*\/>/u, ''),
   };
   for (const [label, csproj] of Object.entries(forbiddenProjects)) {
     it(`fails on ${label}`, () => {

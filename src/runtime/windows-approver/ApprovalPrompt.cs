@@ -18,7 +18,7 @@ internal sealed record TextRun(string Text, bool Highlight);
 
 internal sealed record DisplayLine(string Label, IReadOnlyList<TextRun> Runs);
 
-internal enum BlockReason { None, InvalidEntry, DigestMismatch, HiddenCharacters, MatchCodeUnavailable }
+internal enum BlockReason { None, InvalidEntry, DigestMismatch, HiddenCharacters, SigningBlocked, MatchCodeUnavailable }
 
 internal enum PickOutcome { NotAllowed, Correct, Wrong, WrongTwice }
 
@@ -34,12 +34,12 @@ internal sealed class ApprovalPrompt
 
     private readonly MatchChoices? choices;
 
-    private ApprovalPrompt(string? approvalId, PendingView? view, DateTimeOffset shownAt)
+    private ApprovalPrompt(string? approvalId, PendingView? view, DateTimeOffset shownAt, bool signingBlocked)
     {
         ApprovalId = approvalId;
         View = view;
         ShownAt = shownAt;
-        Block = Classify(view, out choices);
+        Block = Classify(view, signingBlocked, out choices);
     }
 
     public string? ApprovalId { get; }
@@ -56,7 +56,8 @@ internal sealed class ApprovalPrompt
     /// <summary>The 3 candidates in the order they are shown; empty unless the approve buttons exist.</summary>
     public IReadOnlyList<string> Choices => CanApprove ? choices!.Choices : [];
 
-    public static ApprovalPrompt From(ListedRequest item, DateTimeOffset shownAt) => new(item.ApprovalId, item.View, shownAt);
+    /// <param name="signingBlocked">this session cannot sign at all (a remote session where no WebAuthn key is registered: Hello does not work over Remote Desktop): no digit is offered, so nothing is clicked in vain</param>
+    public static ApprovalPrompt From(ListedRequest item, DateTimeOffset shownAt, bool signingBlocked = false) => new(item.ApprovalId, item.View, shownAt, signingBlocked);
 
     // ---- what is shown ------------------------------------------------------------------------------------------------------------------
 
@@ -109,6 +110,7 @@ internal sealed class ApprovalPrompt
         BlockReason.InvalidEntry => "この依頼は内容を読み取れないため、承認できません。拒否だけできます。",
         BlockReason.DigestMismatch => "表示内容から再計算した digest が Authority の値と一致しないため、承認できません。拒否だけできます。",
         BlockReason.HiddenCharacters => "見えない文字 (制御文字、向きを変える文字、幅のない文字など) が含まれているため、承認できません。拒否だけできます。",
+        BlockReason.SigningBlocked => "リモートデスクトップでは、この鍵 (Windows Hello) は使えないため、承認できません。拒否だけできます。WebAuthn の鍵を enroll --webauthn で作り、set-approver で追加してください。",
         BlockReason.MatchCodeUnavailable => "照合コードを作れないため、承認できません。拒否だけできます。",
         _ => "",
     };
@@ -147,7 +149,8 @@ internal sealed class ApprovalPrompt
     public static string ApproveResultText(CommandOutcome outcome) => outcome.ExitCode switch
     {
         ExitCodes.Ok => "承認しました。",
-        ExitCodes.SignerUnavailable => "Windows Hello の鍵が使えません (未登録など)。何も送っていません。依頼はまだ待機中です。AlberaApprover.exe enroll を確認してください。",
+        ExitCodes.SignerUnavailable when outcome.ErrorCode == PresenceSigning.RemoteSessionCode => "リモートデスクトップでは Windows Hello は使えません。何も送っていません。依頼はまだ待機中です。WebAuthn の鍵を enroll --webauthn で作り、set-approver で追加してください。",
+        ExitCodes.SignerUnavailable => "署名に使う鍵 (Windows Hello または WebAuthn) が使えません (未登録など)。何も送っていません。依頼はまだ待機中です。AlberaApprover.exe enroll か keys list を確認してください。",
         ExitCodes.ServerRefused => "承認サービスにつながりません。何も送っていません。依頼はまだ待機中です。",
         ExitCodes.AuthorityRejected => $"承認サービスに断られました ({outcome.ErrorCode})。",
         ExitCodes.TransportUnknown => "Windows Hello の確認が終わらなかったか、結果を確認できませんでした。依頼は失敗として閉じられた可能性があります。必要ならルームからやり直してください。",
@@ -196,12 +199,13 @@ internal sealed class ApprovalPrompt
 
     private static DisplayLine Line(string label, string value) => new(label, Runs(value));
 
-    private static BlockReason Classify(PendingView? view, out MatchChoices? choices)
+    private static BlockReason Classify(PendingView? view, bool signingBlocked, out MatchChoices? choices)
     {
         choices = null;
         if (view is null) return BlockReason.InvalidEntry;
         if (!view.DigestMatches) return BlockReason.DigestMismatch;
         if (AllStrings(view).Any(HasHiddenCharacters)) return BlockReason.HiddenCharacters;
+        if (signingBlocked) return BlockReason.SigningBlocked; // an otherwise approvable request that this session cannot sign: say so before any digit is offered
         try { choices = MatchCode.Choices(view.ApprovalId, view.RecomputedDigest); } // the digest this app recomputed, the same one the Authority's presence message binds
         catch (MatchCodeException) { return BlockReason.MatchCodeUnavailable; }
         return BlockReason.None;
