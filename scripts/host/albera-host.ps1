@@ -266,8 +266,17 @@ $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
 # A manifest is read only when C:\ProgramData\Albera and the manifest file are owned by SYSTEM / Administrators, writable by nobody else, and reached through no link; and its content has the
 # shape this script writes (fixed service, user and key names). install / uninstall refuse otherwise; plan / status (no admin rights, so the ACLs cannot be read) ignore it and say so.
 function Initialize-Manifest {
-  if (-not (Test-Path -LiteralPath $L.ManifestPath)) { return }
   $mutating = $Mode -in @('install', 'uninstall', 'migrate')
+  # Windows PowerShell 5.1's Test-Path throws UnauthorizedAccessException, instead of returning false, for a file in a folder this account cannot read. Once ALBERA is installed that is C:\ProgramData\Albera
+  # for every normal user (SYSTEM and Administrators only), so plan and status stopped here with "access denied" (measured 2026-11-04). They ignore a manifest they cannot read, as they ignore an untrusted one.
+  try { $present = Test-Path -LiteralPath $L.ManifestPath }
+  catch [System.UnauthorizedAccessException] {
+    # An elevated run can read what install made, so for install / uninstall / migrate this folder was not made by install: someone may have planted it.
+    if ($mutating) { Stop-Refused "$($L.DataRoot) cannot be read even by this elevated console, so it was not made by this script; check its owner and ACL (someone may have created it before ALBERA was installed); nothing was changed" }
+    $script:ManifestNote = "$($L.DataRoot) cannot be read by this account (after an install only SYSTEM and Administrators can), so an install manifest in it cannot be read or verified without admin rights; it is ignored (run -Mode status in an elevated console to check the install)"
+    return
+  }
+  if (-not $present) { return }
   $reasons = @()
   $reasons += Get-PathTrustReasons $L.DataRoot (Get-AdminSids) $true
   $reasons += Get-PathTrustReasons $L.ManifestPath (Get-AdminSids) $false
