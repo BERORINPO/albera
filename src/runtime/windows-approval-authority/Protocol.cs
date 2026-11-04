@@ -10,13 +10,13 @@ internal enum PipeRole { Submit, Approver }
 // then the connection ends. Requests are read with the contract's strict JSON reader (objects, strings, booleans and safe integers only; no null,
 // arrays, duplicate keys or extra keys at any level the verb does not name). The verb set depends on the pipe, not on the caller's claim:
 //   submit pipe   (ACE: the Control Plane SID only)  submit | status
-//   approver pipe (ACE: the approver SID only)       list | decide | policy | policy_set
+//   approver pipe (ACE: the approver SID only)       list | decide | policy | policy_set | keys | key_challenge | key_remove
 // Any other verb on a pipe, any malformed or unknown-key request and any peer that is not the configured SID gets {"ok":false,"code":"request_invalid"}.
 // Replies are {"ok":true,...} or {"ok":false,"code":<one of AuthorityCodes>}; nothing the caller sent is ever echoed. The exact shapes are in
 // docs/architecture/approval-authority.md.
 internal sealed class AuthorityProtocol(AuthorityCore core)
 {
-    public const int Version = 1, MaxFrameBytes = 2048, ReplyBudgetBytes = 1900;
+    public const int Version = 1, MaxFrameBytes = 2048, ReplyBudgetBytes = 1900, MaxChallengeText = 64;
 
     private static readonly string[] SubmitKeys = ["v", "verb", "purpose", "operationId", "idempotencyKey", "leaseId", "leaseGeneration", "brokerEpoch", "brokerChallenge", "action"];
 
@@ -34,6 +34,9 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
                 (PipeRole.Approver, "decide") => Decide(request),
                 (PipeRole.Approver, "policy") => Policy(request),
                 (PipeRole.Approver, "policy_set") => PolicySet(request),
+                (PipeRole.Approver, "keys") => Keys(request),
+                (PipeRole.Approver, "key_challenge") => KeyChallenge(request),
+                (PipeRole.Approver, "key_remove") => KeyRemove(request),
                 _ => Error(AuthorityCodes.RequestInvalid),
             };
         }
@@ -121,7 +124,7 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
         switch (decisionText)
         {
             case "approve":
-                if (r["presence"] is not string presenceText || presenceText.Length > 512 || !TryFromBase64(presenceText, out proof)) return Error(AuthorityCodes.RequestInvalid);
+                if (!TryReadProof(r["presence"], out proof)) return Error(AuthorityCodes.RequestInvalid);
                 decision = Decision.Approve;
                 break;
             case "deny": decision = Decision.Deny; break;
@@ -156,10 +159,40 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
     {
         if (!HasKeys(r, ["v", "verb", "policy"], optional: ["presence"]) || r["policy"] is not IReadOnlyDictionary<string, object> values || TierPolicy.TryFromValues(values) is not { } next) return Error(AuthorityCodes.RequestInvalid);
         byte[]? proof = null;
-        if (r.TryGetValue("presence", out object? presenceValue) && (presenceValue is not string presenceText || presenceText.Length > 512 || !TryFromBase64(presenceText, out proof))) return Error(AuthorityCodes.RequestInvalid);
+        if (r.TryGetValue("presence", out object? presenceValue) && !TryReadProof(presenceValue, out proof)) return Error(AuthorityCodes.RequestInvalid);
         Outcome outcome = core.SetPolicy(next, proof);
         if (outcome.Code is not null) return Error(outcome.Code);
         return Write(w => { w.WriteBoolean("ok", true); w.WriteString("policyVersion", next.Hash()); });
+    }
+
+    // keys -> { ok, keys: [{keyId, kind, credentialId?}] }: the registered approver keys' public data (credentialId for a webauthn key only), what the approver needs for allowCredentials. Nothing else about a key.
+    private byte[] Keys(Dictionary<string, object> r) => !HasKeys(r, ["v", "verb"]) ? Error(AuthorityCodes.RequestInvalid) : KeysReply(core.ApproverKeys());
+
+    // The reply of keys and key_remove. The list is capped (ApproverKeyRules.MaxMetadataBytes) so that this always fits a frame. "policyReset":true appears only on a key_remove that also reset the tier policy to careful.
+    private static byte[] KeysReply(IReadOnlyList<ApproverKey> keys, bool policyReset = false) => Write(w =>
+    {
+        w.WriteBoolean("ok", true);
+        w.WritePropertyName("keys");
+        w.WriteRawValue(ApproverKeyRules.MetadataJson(keys));
+        if (policyReset) w.WriteBoolean("policyReset", true);
+    });
+
+    // key_challenge { op: "remove", keyId } -> { ok, challenge, expiresAt }: a fresh single-use challenge (128 random bits, 120 s) for removing that key. A new one replaces the one before. Any other op ("add" included) is request_invalid.
+    private byte[] KeyChallenge(Dictionary<string, object> r)
+    {
+        if (!HasKeys(r, ["v", "verb", "op", "keyId"]) || r["op"] is not "remove" || r["keyId"] is not string keyId) return Error(AuthorityCodes.RequestInvalid);
+        KeyOutcome outcome = core.KeyChallenge(keyId);
+        if (outcome.Code is not null) return Error(outcome.Code);
+        return Write(w => { w.WriteBoolean("ok", true); w.WriteString("challenge", outcome.Challenge); w.WriteNumber("expiresAt", outcome.ExpiresAt); });
+    }
+
+    // key_remove { keyId, challenge, by: <proof by any registered key> } over KeyMessages.Remove(keyId, challenge) -> keys (+ "policyReset":true when the tier policy was reset to careful). The last key is never removed.
+    private byte[] KeyRemove(Dictionary<string, object> r)
+    {
+        if (!HasKeys(r, ["v", "verb", "keyId", "challenge", "by"]) || r["keyId"] is not string keyId || r["challenge"] is not string challenge || challenge.Length > MaxChallengeText ||
+            !TryReadProof(r["by"], out byte[] by)) return Error(AuthorityCodes.RequestInvalid);
+        KeyOutcome outcome = core.KeyRemove(keyId, challenge, by);
+        return outcome.Code is not null ? Error(outcome.Code) : KeysReply(outcome.Keys!, outcome.PolicyReset);
     }
 
     /// <summary>One list entry: everything a human needs to see the exact action, plus what must be signed. Also used to size-check a submit.</summary>
@@ -207,6 +240,16 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
     // Exactly the required keys plus any of the optional ones (and no other key).
     private static bool HasKeys(Dictionary<string, object> request, IReadOnlyCollection<string> required, IReadOnlyCollection<string>? optional = null) =>
         required.All(request.ContainsKey) && request.Count == required.Count + (optional?.Count(request.ContainsKey) ?? 0);
+
+    // A presence proof is the RSA form (a base64 string: the raw signature, as ever) or a webauthn object (WebAuthnWire). Anything else is a shape error.
+    private static bool TryReadProof(object value, out byte[] proof)
+    {
+        proof = [];
+        if (value is IReadOnlyDictionary<string, object> assertion) return WebAuthnWire.TryRead(assertion, out proof);
+        // The legacy string is a raw RSA signature and only ever goes to the Hello keys. The packed webauthn form is made here and nowhere else (WebAuthnWire, from an object), so bytes that arrive as a string and
+        // start with its marker are not a signature at all and are refused as a shape error, never handed on to be read as a webauthn proof.
+        return value is string text && text.Length <= 512 && TryFromBase64(text, out proof) && !WebAuthnProof.IsWebAuthn(proof);
+    }
 
     private static bool TryFromBase64(string text, out byte[] bytes)
     {

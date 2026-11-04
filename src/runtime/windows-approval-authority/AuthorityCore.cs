@@ -130,6 +130,31 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
         catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or InvalidOperationException) { return PresenceResult.Unavailable; }
     }
 
+    // The approver key list (approver-webauthn.md). The verifier that holds the registered keys (ApproverKeySet) also changes them; the single pinned key and the test fake do not, so a
+    // build or a test with one of those has no key verbs (request_invalid) and an empty key list.
+    /// <summary>The registered keys' public data, for `keys`.</summary>
+    public IReadOnlyList<ApproverKey> ApproverKeys() => presence is ApproverKeySet keys ? keys.Keys : [];
+
+    /// <summary>A challenge for removing <paramref name="keyId"/>. There is no verb that adds a key: only the elevated installer does.</summary>
+    public KeyOutcome KeyChallenge(string keyId) => presence is ApproverKeySet keys ? keys.IssueChallenge(keyId) : new(AuthorityCodes.RequestInvalid);
+
+    /// <param name="by">a proof by any registered key over KeyMessages.Remove(keyId, challenge)</param>
+    // A removal that takes away the only key able to vouch for the policy in force resets that policy to careful FIRST (PolicyStore.ResetIfSignerGone), then removes the key: a crash between the two writes leaves
+    // a careful policy and the key still registered, which starts. The policy lock is taken before the key set's, the order PolicyStore.Change uses too.
+    public KeyOutcome KeyRemove(string keyId, string challenge, byte[] by)
+    {
+        if (presence is not ApproverKeySet keys) return new(AuthorityCodes.RequestInvalid);
+        TierPolicy? reset = null;
+        KeyOutcome outcome = policy.With(_ => keys.Remove(keyId, challenge, by, remaining =>
+        {
+            (string? code, reset) = policy.ResetIfSignerGone(remaining);
+            return code;
+        }));
+        if (reset is not null) audit?.Invoke($"POLICY_CHANGED={reset.Revision} {reset.Tier} {reset.Hash()}");
+        if (outcome.Code is null) audit?.Invoke($"APPROVER_KEY_REMOVED={keyId}");
+        return outcome with { PolicyReset = outcome.Code is null && reset is not null };
+    }
+
     public Outcome Status(string approvalId)
     {
         PendingEntry? entry = store.Get(approvalId);
@@ -153,12 +178,15 @@ internal sealed class AuthorityCore(PendingStore store, IReceiptSigner signer, I
     private (PendingEntry Next, string? Code) Approve(PendingEntry entry, long now, byte[] proof)
     {
         PresenceResult presenceResult;
-        try { presenceResult = presence.Verify(PresenceMessage.Build(entry.ApprovalId, entry.ActionDigest, entry.Challenge), proof); }
+        string? signerKeyId = null;
+        try { presenceResult = presence.Verify(PresenceMessage.Build(entry.ApprovalId, entry.ActionDigest, entry.Challenge), proof, out signerKeyId); }
         catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or InvalidOperationException) { presenceResult = PresenceResult.Unavailable; }
         if (presenceResult == PresenceResult.Unavailable) return (Finish(entry, EntryState.PresenceUnavailable, now), AuthorityCodes.PresenceUnavailable);
         if (presenceResult != PresenceResult.Verified) return (Finish(entry, EntryState.PresenceMismatch, now), AuthorityCodes.PresenceMismatch);
 
-        byte[] receipt = ReceiptBuilder.Build(entry, identity, signer.Issuer, Ids.NewUuid(), Ids.NewBits128(), now);
+        // The receipt names the key that signed. A verifier that has no key ids (the single pinned key) leaves the approverKeyId the config names.
+        AuthorityIdentity signedBy = signerKeyId is null ? identity : identity with { ApproverKeyId = signerKeyId };
+        byte[] receipt = ReceiptBuilder.Build(entry, signedBy, signer.Issuer, Ids.NewUuid(), Ids.NewBits128(), now);
         if (!ReceiptBuilder.Check(receipt, entry.Request, identity, signer.Issuer, now).Ok) return (Finish(entry, EntryState.Failed, now), AuthorityCodes.AuthorityUnavailable);
         byte[] signature;
         try { signature = signer.Sign(receipt); }

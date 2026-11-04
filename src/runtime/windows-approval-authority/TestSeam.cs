@@ -5,8 +5,8 @@ using System.Security.Principal;
 namespace Albera.ApprovalAuthority;
 
 // Test-only (compiled in only with -p:AlberaAuthorityTestFaults=true; the published build pins that off, so none of this exists there).
-//   serve-loop <config> <real|fake> <ttlSeconds>   the real pipes and protocol with an in-memory signer (FakeReceiptSigner) and either the real RSA
-//                                                  presence verifier ("real", key from the config) or FakePresenceVerifier ("fake"). Prints
+//   serve-loop <config> <real|fake> <ttlSeconds>   the real pipes and protocol with an in-memory signer (FakeReceiptSigner) and either the real approver key set
+//                                                  ("real": the key from the config, or approver-keys.json next to it) or FakePresenceVerifier ("fake", no key verbs). Prints
 //                                                  AUTHORITY_PUBLIC_KEY=<base64 SPKI of the fake signer> and AUTHORITY_READY. End of stdin plays STOP.
 //                                                  The config may name the same SID for both pipes (a test has one user).
 //   request <pipeName> <base64 json> [declaredLen]  one client: connect with SQOS identification, send one frame, print the reply JSON.
@@ -21,9 +21,10 @@ internal static partial class Program
             return ExitCodes.ConfigInvalid;
         }
         using FakeReceiptSigner signer = new();
-        using RsaPresenceVerifier? real = RsaPresenceVerifier.TryCreate(config.ApproverPublicKey);
-        IHumanPresenceVerifier presence = presenceMode == "fake" ? new FakePresenceVerifier() : real!;
-        if (PolicyStore.TryLoad(configPath, AuthorityRuntime.IdentityOf(config), presence, out string policyReason, out _) is not { } policy)
+        if (AuthorityRuntime.LoadApproverKeys(config, seed: true, out _) is not { } approverKeys) return ExitCodes.ApproverKeysInvalid;
+        IHumanPresenceVerifier presence = presenceMode == "fake" ? new FakePresenceVerifier() : approverKeys;
+        IHumanPresenceVerifier storedProofs = presenceMode == "fake" ? presence : approverKeys.ForStoredProofs;
+        if (PolicyStore.TryLoad(configPath, AuthorityRuntime.IdentityOf(config), storedProofs, out string policyReason, out _) is not { } policy)
         {
             Console.WriteLine($"SERVICE_POLICY=invalid:{policyReason}");
             return ExitCodes.PolicyInvalid;

@@ -77,7 +77,7 @@ Phases 2, 3 and 4 are built at the same time against this section. A change here
 - `keyId`: `webauthn-` or `hello-` plus the first 8 bytes of SHA-256 over the SPKI DER, lower-case hex. A record whose id does not match its key is refused.
 - `alg`: `-7` (ES256, P-256) or `-257` (RS256; RSA-2048 or larger for `webauthn`, exactly 2048 for `hello-rsa`).
 - `credentialId`: `webauthn` only, 1 to 1023 bytes.
-- **Canonical bytes** of a record: the JSON above with the keys in exactly that order, no spaces, UTF-8, `credentialId` left out for `hello-rsa`. Key messages hash these bytes.
+- **Canonical bytes** of a record: the JSON above with the keys in exactly that order, no spaces, UTF-8, `credentialId` left out for `hello-rsa`.
 
 **Authority config** (written by the elevated installer):
 - New field `approverKeys`: an array of 1 to 16 key records.
@@ -100,7 +100,7 @@ The receipt's `approverKeyId` is the key that verified.
 
 **Messages** (UTF-8, 0x00 between parts):
 - presence (unchanged): `albera.presence.v1` approvalId actionDigest challenge
-- remove: `albera.keyremove.v1` keyId hex(SHA-256(canonical record of that key)) keyChallenge
+- remove: `albera.keyremove.v1` keyId keyChallenge (no record hash: the approver of another device has no copy of the record; the key id names one registered key)
 
 **`key_challenge`**: `{"v":1,"verb":"key_challenge","op":"remove","keyId":"<key to remove>"}` (`op` `add` is refused, `request_invalid`) replies `{"ok":true,"challenge":"<22 chars, 128-bit base64url>","expiresAt":<unix s>}`. The challenge is single-use, lives 120 s, and is bound to the op and the key id. One challenge is outstanding at a time; a new one replaces the old.
 
