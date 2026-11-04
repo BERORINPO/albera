@@ -557,7 +557,13 @@ $tokens = $null; $errs = $null; [void][System.Management.Automation.Language.Par
 $r.open = [ordered]@{ ascii = (-not ($openText -cmatch '[^\x09\x0A\x0D\x20-\x7E]')); parseErrors = $errs.Count; crlf = ($openText.Contains("`r`n") -and -not ($openText -cmatch "[^\r]\n")); hasService = $openText.Contains("'AlberaControlPlane'"); hasRoomFile = $openText.Contains($Lt.UiDir + '\room.json'); noPlaceholder = (-not $openText.Contains('@@')) }
 $script:FakeServiceStatus = 'Running'; $script:FakeListeners = @(); $script:Started = New-Object System.Collections.Generic.List[string]; $script:Said = New-Object System.Collections.Generic.List[string]
 function Get-Service { param($Name) [pscustomobject]@{ Name = $Name; Status = $script:FakeServiceStatus } }
-function Get-NetTCPConnection { param($State, $LocalAddress, $LocalPort) @($script:FakeListeners | Where-Object { $_.LocalPort -eq $LocalPort -and $LocalAddress -eq '127.0.0.1' -and $State -eq 'Listen' }) }
+# like the real cmdlet: every socket on the port, filtered by -State only when it is given (build 26300 reports most listening sockets with state 0, so -State Listen finds none)
+function Get-NetTCPConnection {
+  param($State, $LocalAddress, $LocalPort, $ErrorAction)
+  $found = @($script:FakeListeners | Where-Object { $_.LocalPort -eq $LocalPort -and $LocalAddress -eq '127.0.0.1' -and ($null -eq $State -or $_.State -eq $State) })
+  if ($found.Count -eq 0 -and $ErrorAction -ne 'SilentlyContinue') { throw 'No matching MSFT_NetTCPConnection objects found' } # the real cmdlet's not-found error
+  $found
+}
 function Start-Process { param($FilePath) $script:Started.Add([string]$FilePath) }
 function Read-Host { param($Prompt) '' }
 $openRunnable = [scriptblock]::Create($openText.Replace('exit 1', "throw 'EXIT'"))
@@ -569,8 +575,12 @@ function RunOpen($RoomJson) {
   [ordered]@{ exited = ($err -eq 'EXIT'); started = @($script:Started); said = ($out -join '|') }
 }
 $goodRoom = '{"port":51234,"code":"AbCdEfGhIjKlMnOpQrStUv_-12","pid":4321,"writtenAt":"2026-11-03T00:00:00Z"}'
-$script:FakeListeners = @([pscustomobject]@{ LocalPort = 51234; OwningProcess = 4321 })
+$script:FakeListeners = @([pscustomobject]@{ LocalPort = 51234; OwningProcess = 4321; State = 'Listen'; RemotePort = 0 })
 $r.openRuns = [ordered]@{ good = RunOpen $goodRoom }
+$script:FakeListeners = @([pscustomobject]@{ LocalPort = 51234; OwningProcess = 4321; State = 0; RemotePort = 0 }, [pscustomobject]@{ LocalPort = 51234; OwningProcess = 4321; State = 'Established'; RemotePort = 61574 })
+$r.openRuns.listenStateNotReported = RunOpen $goodRoom
+$script:FakeListeners = @([pscustomobject]@{ LocalPort = 51234; OwningProcess = 4321; State = 'Established'; RemotePort = 61574 }); $r.openRuns.onlyAnAcceptedConnection = RunOpen $goodRoom
+$script:FakeListeners = @([pscustomobject]@{ LocalPort = 51234; OwningProcess = 4321; State = 'Listen'; RemotePort = 0 })
 $script:FakeServiceStatus = 'Stopped'; $r.openRuns.serviceStopped = RunOpen $goodRoom; $script:FakeServiceStatus = 'Running'
 $r.openRuns.noFile = RunOpen $null
 $r.openRuns.notJson = RunOpen 'nope'
@@ -579,7 +589,7 @@ $r.openRuns.codeShort = RunOpen '{"port":51234,"code":"short","pid":4321}'
 $r.openRuns.portLow = RunOpen '{"port":80,"code":"AbCdEfGhIjKlMnOpQrStUv_-12","pid":4321}'
 $r.openRuns.portText = RunOpen '{"port":"51234","code":"AbCdEfGhIjKlMnOpQrStUv_-12","pid":4321}'
 $r.openRuns.pidText = RunOpen '{"port":51234,"code":"AbCdEfGhIjKlMnOpQrStUv_-12","pid":"4321"}'
-$script:FakeListeners = @([pscustomobject]@{ LocalPort = 51234; OwningProcess = 999 }); $r.openRuns.otherProcessHoldsThePort = RunOpen $goodRoom
+$script:FakeListeners = @([pscustomobject]@{ LocalPort = 51234; OwningProcess = 999; State = 0; RemotePort = 0 }); $r.openRuns.otherProcessHoldsThePort = RunOpen $goodRoom
 $script:FakeListeners = @(); $r.openRuns.nobodyHoldsThePort = RunOpen $goodRoom
 Remove-Item -LiteralPath $work -Recurse -Force
 # shortcuts and the Run entry
