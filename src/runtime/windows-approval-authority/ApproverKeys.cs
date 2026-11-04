@@ -150,14 +150,15 @@ internal static class ApproverKeyRules
 }
 
 // What a registered key signs to remove a key (UTF-8, 0x00 between the parts, all ASCII, ending in the single-use Authority challenge):
-//   "albera.keyremove.v1" 0x00 keyId 0x00 hex(SHA-256(canonical record of the removed key)) 0x00 challenge
-// The Authority builds it from the record it already holds, so a signature only verifies for exactly that key. There is no add message: keys are added only by the elevated installer
+//   "albera.keyremove.v1" 0x00 keyId 0x00 challenge
+// No record hash: to remove a lost device's key the approver on another device has no copy of that key's record (`keys` carries no public key, on purpose, for frame size). The key id is unique in the
+// registry and derived from the SPKI, so it names exactly one key, and the challenge is bound to it. There is no add message: keys are added only by the elevated installer
 // (set-approver writes the config and deletes the store), never over the pipe, because one Hello signature by a registered key would otherwise buy a same-user process a key of its own.
 internal static class KeyMessages
 {
     public const string RemoveDomain = "albera.keyremove.v1";
 
-    public static byte[] Remove(ApproverKey key, string challenge) => Encoding.UTF8.GetBytes($"{RemoveDomain}\0{key.KeyId}\0{ApproverKeyRules.Digest(key)}\0{challenge}");
+    public static byte[] Remove(string keyId, string challenge) => Encoding.UTF8.GetBytes($"{RemoveDomain}\0{keyId}\0{challenge}");
 }
 
 /// <summary>Checks one proof against one key. Either form: a webauthn assertion (packed by WebAuthnProof) for a webauthn key, or a raw RSA signature for a Hello key. Never throws.</summary>
@@ -341,7 +342,7 @@ internal sealed class ApproverKeySet : IHumanPresenceVerifier
         }
     }
 
-    /// <param name="by">a proof by any registered key over KeyMessages.Remove(key, challenge)</param>
+    /// <param name="by">a proof by any registered key over KeyMessages.Remove(keyId, challenge)</param>
     /// <param name="beforeRemoval">called once the removal is authorized and before anything is written, with the keys that would remain as a verifier; a code it returns refuses the removal. The core uses it to reset a
     /// tier policy whose authorizing proof only the removed key could vouch for, so that write comes first and a crash between the two writes leaves a state that starts.</param>
     public KeyOutcome Remove(string keyId, string challenge, byte[] by, Func<IHumanPresenceVerifier, string?>? beforeRemoval = null)
@@ -352,7 +353,7 @@ internal sealed class ApproverKeySet : IHumanPresenceVerifier
             if (TakeChallenge(challenge, keyId) is { } refused) return new(refused);
             if (keys.FirstOrDefault(k => k.KeyId == keyId) is not { } doomed) return new(ApproverKeyCodes.KeyUnknown);
             if (keys.Count <= 1) return new(ApproverKeyCodes.LastKey);
-            PresenceResult authorized = Check(KeyMessages.Remove(doomed, challenge), by, enforceSignCount: true, out ApproverKey? signer, out uint signerCount);
+            PresenceResult authorized = Check(KeyMessages.Remove(keyId, challenge), by, enforceSignCount: true, out ApproverKey? signer, out uint signerCount);
             if (authorized != PresenceResult.Verified) return new(CodeOf(authorized));
             IReadOnlyList<ApproverKey> next = [.. keys.Where(k => k.KeyId != keyId)];
             if (beforeRemoval?.Invoke(new KeyList(next)) is { } held) return new(held);

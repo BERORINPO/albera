@@ -186,7 +186,7 @@ internal sealed class AuthorityProtocol(AuthorityCore core)
         return Write(w => { w.WriteBoolean("ok", true); w.WriteString("challenge", outcome.Challenge); w.WriteNumber("expiresAt", outcome.ExpiresAt); });
     }
 
-    // key_remove { keyId, challenge, by: <proof by any registered key> } over KeyMessages.Remove(key, challenge) -> keys (+ "policyReset":true when the tier policy was reset to careful). The last key is never removed.
+    // key_remove { keyId, challenge, by: <proof by any registered key> } over KeyMessages.Remove(keyId, challenge) -> keys (+ "policyReset":true when the tier policy was reset to careful). The last key is never removed.
     private byte[] KeyRemove(Dictionary<string, object> r)
     {
         if (!HasKeys(r, ["v", "verb", "keyId", "challenge", "by"]) || r["keyId"] is not string keyId || r["challenge"] is not string challenge || challenge.Length > MaxChallengeText ||

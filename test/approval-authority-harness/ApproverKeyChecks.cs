@@ -67,7 +67,11 @@ internal static partial class Harness
 
     private static string RecordDigest(ApproverKey key) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(CanonicalText(key))));
 
-    private static byte[] RemoveMessage(ApproverKey key, string challenge) => Encoding.UTF8.GetBytes($"albera.keyremove.v1\0{key.KeyId}\0{RecordDigest(key)}\0{challenge}");
+    /// <summary>The remove message of the contract: the domain, the key id and the challenge. No record hash (the approver of another device has no copy of the record).</summary>
+    private static byte[] RemoveMessage(ApproverKey key, string challenge) => Encoding.UTF8.GetBytes($"albera.keyremove.v1\0{key.KeyId}\0{challenge}");
+
+    /// <summary>The earlier form, with the record hash between the key id and the challenge: no longer what the Authority verifies.</summary>
+    private static byte[] RemoveMessageWithRecordHash(ApproverKey key, string challenge) => Encoding.UTF8.GetBytes($"albera.keyremove.v1\0{key.KeyId}\0{RecordDigest(key)}\0{challenge}");
 
     /// <summary>The Hello key of the harness as an older config pins it: its own id, not the derived one.</summary>
     private static ApproverKey HelloKeyRecord() =>
@@ -370,8 +374,9 @@ internal static partial class Harness
             Assert(Encoding.UTF8.GetString(ApproverKeyRules.Canonical(es.Key)) == $"{{\"keyId\":\"{es.Key.KeyId}\",\"kind\":\"webauthn\",\"alg\":-7,\"publicKey\":\"{Convert.ToBase64String(es.Spki)}\",\"credentialId\":\"{B64Url(es.CredentialId)}\"}}", "webauthn");
             Assert(Encoding.UTF8.GetString(ApproverKeyRules.Canonical(hello)) == $"{{\"keyId\":\"{hello.KeyId}\",\"kind\":\"hello-rsa\",\"alg\":-257,\"publicKey\":\"{Convert.ToBase64String(hello.PublicKey)}\"}}", "hello-rsa");
             Assert(ApproverKeyRules.Digest(es.Key) == RecordDigest(es.Key) && System.Text.RegularExpressions.Regex.IsMatch(ApproverKeyRules.Digest(es.Key), "^[0-9a-f]{64}$"), "digest");
-            Assert(Encoding.UTF8.GetString(KeyMessages.Remove(es.Key, "AAAAAAAAAAAAAAAAAAAAAA")) == Encoding.UTF8.GetString(RemoveMessage(es.Key, "AAAAAAAAAAAAAAAAAAAAAA")), "remove message");
-            Assert(Encoding.UTF8.GetString(RemoveMessage(es.Key, "c")).Split('\0') is ["albera.keyremove.v1", { } id, { Length: 64 }, "c"] && id == es.Key.KeyId, "four parts separated by 0x00");
+            Assert(Encoding.UTF8.GetString(KeyMessages.Remove(es.Key.KeyId, "AAAAAAAAAAAAAAAAAAAAAA")) == $"albera.keyremove.v1\0{es.Key.KeyId}\0AAAAAAAAAAAAAAAAAAAAAA", "remove message: domain, key id, challenge");
+            Assert(KeyMessages.Remove(es.Key.KeyId, "c").AsSpan().SequenceEqual(RemoveMessage(es.Key, "c")) && !KeyMessages.Remove(es.Key.KeyId, "c").AsSpan().SequenceEqual(RemoveMessageWithRecordHash(es.Key, "c")), "and not the earlier form with a record hash");
+            Assert(Encoding.UTF8.GetString(RemoveMessage(es.Key, "c")).Split('\0') is ["albera.keyremove.v1", { } id, "c"] && id == es.Key.KeyId, "three parts separated by 0x00: nothing of the record is in it");
         });
         Check("keys: base64 is canonical (no whitespace, no non-zero stray bits, padding as written by the encoder) and url base64 has no padding or +/", () =>
         {

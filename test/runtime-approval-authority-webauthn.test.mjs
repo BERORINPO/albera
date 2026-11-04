@@ -44,7 +44,10 @@ function packed(proof) {
 const canonical = (record) => JSON.stringify(record);
 const recordDigest = (record) => sha256(Buffer.from(canonical(record), 'utf8')).toString('hex');
 const addDomainMessage = (record, challenge) => Buffer.from(`albera.keyadd.v1\0${record.keyId}\0${recordDigest(record)}\0${challenge}`, 'utf8');
-const removeMessage = (record, challenge) => Buffer.from(`albera.keyremove.v1\0${record.keyId}\0${recordDigest(record)}\0${challenge}`, 'utf8');
+/** The remove message: the domain, the key id and the challenge. Nothing of the record: the approver of another device has no copy of it. */
+const removeMessage = (record, challenge) => Buffer.from(`albera.keyremove.v1\0${record.keyId}\0${challenge}`, 'utf8');
+/** The earlier form, with the record hash between the key id and the challenge: no longer accepted. */
+const removeMessageWithRecordHash = (record, challenge) => Buffer.from(`albera.keyremove.v1\0${record.keyId}\0${recordDigest(record)}\0${challenge}`, 'utf8');
 
 /** What WebAuthn gives back: authenticatorData (rpIdHash, flags UP|UV, sign count) and a signature over authenticatorData || SHA-256(clientData). */
 function assertion(credential, message, count = 1, { flags = 0x05, clientData } = {}) {
@@ -238,7 +241,8 @@ describe('Approval Authority: WebAuthn presence and the approver key list (real 
       isFailure(await authority.approver(await frame((m) => assertion(stranger, m))), 'presence_mismatch');
       isFailure(await authority.approver(await frame((m, c) => helloAuthorizes(removeMessage(other.record, c)))), 'presence_mismatch');
       isFailure(await authority.approver(await frame((m, c) => helloAuthorizes(addDomainMessage(es.record, c)))), 'presence_mismatch');
-      isFailure(await authority.approver(await frame((m) => helloAuthorizes(Buffer.from(m.toString('utf8').replace(recordDigest(es.record), `sha256:${recordDigest(es.record)}`), 'utf8')))), 'presence_mismatch');
+      isFailure(await authority.approver(await frame((m, c) => helloAuthorizes(removeMessageWithRecordHash(es.record, c)))), 'presence_mismatch');
+      isFailure(await authority.approver(await frame((m, c) => helloAuthorizes(Buffer.from(`albera.keyremove.v1\0${es.keyId}\0sha256:${recordDigest(es.record)}\0${c}`, 'utf8')))), 'presence_mismatch');
       isFailure(await authority.approver(await frame(() => 'AAAA')), 'presence_mismatch');
       isFailure(await authority.approver(await frame(helloAuthorizes, { challenge: 'AAAAAAAAAAAAAAAAAAAAAA' })), 'challenge_unknown');
       isFailure(await authority.approver(await frame(helloAuthorizes, { keyId: helloKey.keyId })), 'challenge_unknown');
@@ -263,6 +267,20 @@ describe('Approval Authority: WebAuthn presence and the approver key list (real 
       const entry6 = await pending(authority, 6);
       assert.equal((await decide(authority, entry6, helloSignature(hello.privateKey, presenceMessage(entry6)))).ok, true);
       assert.equal((await receiptOf(authority, entry6)).approverKeyId, helloKey.keyId);
+    });
+  });
+
+  it('a key is removed with a signature over its id and the challenge alone: the approver needs no copy of the record (`keys` has no public key)', async () => {
+    const hello = makeHelloKey(), helloKey = makeHelloCredential(hello);
+    const lostDevice = makeCredential(-7);
+    const directory = folder();
+    await withAuthority(directory, listConfig([helloKey, lostDevice]), async (authority) => {
+      const listed = (await keysOf(authority)).find((key) => key.keyId === lostDevice.keyId);
+      assert.deepEqual(Object.keys(listed).sort(), ['credentialId', 'keyId', 'kind'], 'all the approver sees of the key');
+      const { challenge } = await authority.approver({ v: 1, verb: 'key_challenge', op: 'remove', keyId: listed.keyId });
+      const message = Buffer.from(`albera.keyremove.v1\0${listed.keyId}\0${challenge}`, 'utf8'); // built from what `keys` and `key_challenge` returned
+      const removed = await authority.approver({ v: 1, verb: 'key_remove', keyId: listed.keyId, challenge, by: helloSignature(hello.privateKey, message) });
+      assert.deepEqual(removed.keys, [{ keyId: helloKey.keyId, kind: 'hello-rsa' }], JSON.stringify(removed));
     });
   });
 

@@ -28,6 +28,9 @@ test('the constants of the verifier are the design document\'s: rp id, origin, f
   assert.match(web, /RSASignaturePadding\.Pkcs1/u);
   assert.match(web, /HashAlgorithmName\.SHA256/u);
   assert.match(keys, /RemoveDomain = "albera\.keyremove\.v1"/u);
+  const messages = keys.slice(keys.indexOf('internal static class KeyMessages'), keys.indexOf('internal static class ApproverKeyVerifier'));
+  assert.match(messages, /Remove\(string keyId, string challenge\) => Encoding\.UTF8\.GetBytes\(\$"\{RemoveDomain\}\\0\{keyId\}\\0\{challenge\}"\)/u, 'the remove message is domain, key id, challenge');
+  assert.equal(/Digest|Canonical|ApproverKey key/u.test(messages), false, 'and no record hash: the approver of another device has no copy of the record');
   assert.equal(/keyadd|AddDomain|KeyMessages\.Add|newKey|KeyOp|KeyExists|TooManyKeys/u.test(Object.values(code).join('\n')), false, 'no add message, no add operation, no newKey proof anywhere in the Authority');
   assert.match(keys, /MaxKeys = 16/u);
   assert.match(keys, /ChallengeTtlSeconds = 120/u);
@@ -82,7 +85,7 @@ test('the key list changes in one place under one lock: write first (revision + 
   assert.equal([...keys.matchAll(/ApproverKeyStore\.Write\(/gu)].length, 2, 'one call here (Commit) and one for the seed');
   // key_remove checks the challenge before anything else is looked at, and the proof before the commit
   const remove = keys.slice(keys.indexOf('public KeyOutcome Remove('), keys.indexOf('private static string CodeOf('));
-  const removeSteps = ['TakeChallenge(challenge, keyId)', 'ApproverKeyCodes.LastKey', 'Check(KeyMessages.Remove(doomed, challenge), by', 'Commit(next, counts)'].map((token) => remove.indexOf(token));
+  const removeSteps = ['TakeChallenge(challenge, keyId)', 'ApproverKeyCodes.LastKey', 'Check(KeyMessages.Remove(keyId, challenge), by', 'Commit(next, counts)'].map((token) => remove.indexOf(token));
   assert.ok(removeSteps.every((at) => at > 0) && removeSteps.every((at, i) => i === 0 || at > removeSteps[i - 1]), `challenge -> last key -> by -> commit (${removeSteps})`);
   // a challenge is used up the moment it is presented, before its expiry or binding is judged
   const take = keys.slice(keys.indexOf('private string? TakeChallenge('), keys.indexOf('// Called under the lock: write first'));
@@ -93,7 +96,7 @@ test('the key list changes in one place under one lock: write first (revision + 
 test('key_remove resets the policy first: the hook runs after the removal is authorized and before the key list is written, under the policy lock taken first, and it only ever writes careful', () => {
   const keys = code['ApproverKeys.cs'];
   const remove = keys.slice(keys.indexOf('public KeyOutcome Remove('), keys.indexOf('private static string CodeOf('));
-  const steps = ['Check(KeyMessages.Remove(doomed, challenge), by', 'beforeRemoval?.Invoke(new KeyList(next))', 'Commit(next, counts)'].map((token) => remove.indexOf(token));
+  const steps = ['Check(KeyMessages.Remove(keyId, challenge), by', 'beforeRemoval?.Invoke(new KeyList(next))', 'Commit(next, counts)'].map((token) => remove.indexOf(token));
   assert.ok(steps.every((at) => at > 0) && steps.every((at, i) => i === 0 || at > steps[i - 1]), `authorized -> policy reset -> key list written (${steps})`);
   const core = code['AuthorityCore.cs'];
   const keyRemove = core.slice(core.indexOf('public KeyOutcome KeyRemove('), core.indexOf('public Outcome Status('));

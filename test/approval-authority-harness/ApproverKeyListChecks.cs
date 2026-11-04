@@ -90,6 +90,8 @@ internal static partial class Harness
             challenge = two.ChallengeValue("remove", a.Key.KeyId);
             Assert(Code(two.KeyRemove(challenge, a.Key.KeyId, HelloWire(Encoding.UTF8.GetBytes($"albera.keyadd.v1\0{a.Key.KeyId}\0{RecordDigest(a.Key)}\0{challenge}")))) == "presence_mismatch", "a signature under the old add domain does not remove");
             challenge = two.ChallengeValue("remove", a.Key.KeyId);
+            Assert(Code(two.KeyRemove(challenge, a.Key.KeyId, HelloWire(RemoveMessageWithRecordHash(a.Key, challenge)))) == "presence_mismatch", "nor does one over the earlier remove message with the record hash in it");
+            challenge = two.ChallengeValue("remove", a.Key.KeyId);
             Assert(Code(two.KeyRemove(challenge, "webauthn-0123456789abcdef", HelloWire(RemoveMessage(a.Key, challenge)))) == "challenge_unknown", "a challenge that is for another key");
             challenge = two.ChallengeValue("remove", a.Key.KeyId);
             Assert(Code(two.KeyRemove(challenge, "hello-key-unknown", HelloWire(RemoveMessage(a.Key, challenge)))) == "challenge_unknown", "(bound to the key id it was issued for)");
