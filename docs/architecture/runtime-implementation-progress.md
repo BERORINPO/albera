@@ -18,12 +18,12 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 - 取り消し: できない (無効にしたキーは元に戻らない)
 
 ### サブスクでの最初のジョブ (stage 1 の残り)
-- 済み (2026-11-04): 移行、3 つのサービスの起動、トークンの保存、VM の起動
-- 止まっている理由: Yosuke はこの PC にリモートデスクトップでしか入れず、その中では今の承認の鍵 (Windows Hello) が使えない (2026-11-04 に測定)。WebAuthn で承認する形 (`approver-webauthn.md`) が入るまで待つ
-- やること (その後): ベロに「出して」と送り、承認の窓で 4 桁を押して Hello で確定する
-- 所要: 約 2 分 (Yosuke の作業時間)
+- 済み (2026-11-04): 移行、3 つのサービスの起動、トークンの保存、VM の起動。WebAuthn で承認する形 (#204〜#206) の merge
+- 止まっている理由: この PC の ALBERA は WebAuthn より前の版で、リモートデスクトップの中では承認の鍵 (Windows Hello) が使えない (2026-11-04 に測定)。新しい版へ入れ替える
+- やること: `U:\dev\albera-update-1104\owner` で (1) `1-key.cmd` をダブルクリックして手元 PC の Hello で確定、(2) `2-update.cmd` をダブルクリックして許可し、画面の key id を貼る、(3) `token.cmd` でトークンを入れ直す、(4) room の「Jobs」から「Approval test」、続けて本物のジョブ
+- 所要: 約 10 分 (Yosuke の作業時間)
 - これで進むもの: stage 1 の受入。サービスの身元で claude.exe が動く確認 (M4) と、本物の本人確認での承認 (M14)
-- 取り消し: できる (ジョブは「全部止める」で止まる。承認しなければ何も起きない)
+- 取り消し: 入れ替えは戻せない (アンインストールでトークンと両方の記録が消える。VM は残る)。ジョブは「全部止める」で止まり、承認しなければ何も起きない
 
 ### 戻せる承認の採択 (AGM-1・AGM-2)
 - やること: ADR-002 Amendment 2026-11-04 (#195、Proposed) を読み、次の 2 点を承認するか決める
@@ -595,3 +595,13 @@ Merged on main since the previous entry, all on 2026-11-03 (UTC): #189 (13:47), 
   - Observed for the approver UX (security tier, not changed here): the window opens without taking focus and can sit behind other windows; the request expires in about 2 minutes; `list` shows the Japanese task as `\u{30E1}…` escapes (exact, not normalized). Whether the window shows the same escapes is not checked.
 - **Local `npm test` on a PC with ALBERA installed:** 17 failures, all in tests that assume no install on the machine (e.g. "status with nothing installed", "with no Authority service on this machine") or need Windows build artifacts that a fresh worktree lacks. CI runs on clean runners. Open item: such tests should skip when a real install is present.
 - **Not verified yet:** `claude.exe` starting as the service identity (M4), approval with the real Windows Hello (M14), the job's effect inside the VM, in-place update, the "ALBERA update" shortcut.
+
+## 2026-11-04 — WebAuthn approval (phases 2 to 4) merged
+
+- **Why.** The owner reaches this PC only over Remote Desktop, where Windows Hello through KeyCredentialManager is not available (the four expired first jobs above). The owner chose WebAuthn presence with several keys (`approver-webauthn.md`). A probe over Remote Desktop (`webauthn.dll` API v9) made and used an ES256 credential through the connecting PC's Hello: attestation "none", UP and UV set, sign count 1, the client data passed through unchanged.
+- **What merged.** #203 (design and wire contract), #204 (Authority: key list of 1 to 16, WebAuthn and legacy Hello verification, key store `authority\approver-keys.json`, verbs `keys` / `key_challenge` / `key_remove`, no run-time `key_add`), #205 (approver: `enroll --webauthn --accept-unattested`, WebAuthn signing in `approve` and the tray window, `keys`), #206 (installer: `-ApproverKeyFile` / `-ExpectedApproverKeyId` for install and migrate, `-Mode set-approver` with add / `-Replace`, a typed `yes`, the key store put back byte for byte on rollback). Also #202 (plan / status on an installed PC) and #199 (the launcher's listener check).
+- **Reviews.** Zaku on each: #202 3 LOW; #204 MEDIUM-1 (one key list instance), MEDIUM-2 (run-time `key_add` removed), and the policy signer's removal bricking the Authority (now a reset to `careful`); #205 MEDIUM (record file swap: `-ExpectedApproverKeyId` printed by enroll); #206 HIGH (rollback brought removed keys back: the store bytes are restored) and MEDIUM (typed yes). All fixed before merge.
+- **Disposable VM.** #199 + #202: `-HostInstall` 36 PASS. #204 to #206 together: `-HostInstall` 57 PASS / 0 FAIL in the third run (the first two failed on the lab check only: `Out-String` wrapped at the VM console width, and the add-on-a-legacy-key refusal comes from the Authority's key store once the Authority has run); the default service lab 38 PASS / 0 FAIL / 1 BLOCKED (`e_session0`, by design).
+- **Found on the way.** The CI runner's temp folder is an 8.3 short name, which Windows PowerShell 5.1's `GetFullPath` expands, so the host script refuses paths under it as not plain (test fixed in #206). The Authority lets a legacy Hello key keep a non-derived id and seeds its store with it, while the installer holds a store to the key-file rules; only the lab's `hello-lab-0001` is affected, since a real Hello enroll derives its id.
+- **Tests that touched the real Authority on this PC.** While phase 3 was written, a worker's integration test sent `keys list`, `list` and `deny <unknown id>` to the RUNNING AlberaApprovalAuthority of the owner's install (read-only or harmless: the id matched nothing). #202's guard (`sc.exe query` exit 0 or 5) now skips those tests when a real Authority is installed, and workers are told never to talk to it.
+- **Not verified yet.** A real WebAuthn assertion through the Authority (the lab has no authenticator), the update of the owner's PC to this build, the first job (M4, M14).
