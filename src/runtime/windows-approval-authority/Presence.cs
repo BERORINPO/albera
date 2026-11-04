@@ -9,6 +9,13 @@ internal enum PresenceResult { Verified, Mismatch, Unavailable }
 internal interface IHumanPresenceVerifier
 {
     PresenceResult Verify(ReadOnlySpan<byte> message, ReadOnlySpan<byte> proof);
+
+    /// <summary>As Verify, and says which registered key signed (the receipt names it). A verifier with no key ids (the single pinned key, the test fake) says null and the receipt keeps naming the config's key.</summary>
+    PresenceResult Verify(ReadOnlySpan<byte> message, ReadOnlySpan<byte> proof, out string? keyId)
+    {
+        keyId = null;
+        return Verify(message, proof);
+    }
 }
 
 // The bytes the approver's Windows Hello key signs for one pending request (UTF-8, 0x00 separated; every part is ASCII from a fixed grammar, so the

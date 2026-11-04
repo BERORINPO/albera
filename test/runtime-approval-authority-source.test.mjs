@@ -15,7 +15,9 @@ const publish = read('scripts', 'publish-windows-approval-authority.mjs');
 const stripComments = (source) => source.replace(/^\s*\/\/.*$/gmu, '').replace(/\s\/\/ .*$/gmu, '');
 const code = Object.fromEntries(Object.entries(sources).map(([name, text]) => [name, stripComments(text)]));
 const allCode = Object.values(code).join('\n');
-const codeWithoutPolicyStore = Object.entries(code).filter(([name]) => name !== 'PolicyStore.cs').map(([, text]) => text).join('\n');
+// The two files the Authority writes, each from its own store class and nowhere else: policy.json (PolicyStore.cs) and approver-keys.json (ApproverKeyStore.cs, WebAuthn phase 2).
+const FILE_WRITERS = ['PolicyStore.cs', 'ApproverKeyStore.cs'];
+const codeWithoutFileWriters = Object.entries(code).filter(([name]) => !FILE_WRITERS.includes(name)).map(([, text]) => text).join('\n');
 const outsideSeam = (text) => text.replace(/#if ALBERA_AUTHORITY_TEST_FAULTS[\s\S]*?#endif/gu, '');
 const shippedCode = Object.entries(code).filter(([name]) => name !== 'TestSeam.cs').map(([, text]) => outsideSeam(text)).join('\n');
 const importsOf = (source) => [...source.matchAll(/\[DllImport\("([^"]+)"[^\]]*\)\]\s*(?:private|internal|public) static extern \w+ (\w+)\(/gu)].map((m) => `${m[1]}!${m[2]}`);
@@ -31,7 +33,7 @@ test('the Authority is a separate project: no package, no reference to the Broke
   for (const [name, text] of Object.entries(sources)) assert.equal(/windows-broker|WindowsBroker/iu.test(text), false, `${name} must not name the Broker project`);
 });
 
-test('the Authority never starts a process, registers a service, uses the network or creates, imports, exports or deletes a key, and writes no file outside PolicyStore.cs', () => {
+test('the Authority never starts a process, registers a service, uses the network or creates, imports, exports or deletes a key, and writes no file outside PolicyStore.cs and ApproverKeyStore.cs', () => {
   for (const forbidden of [/Process\.Start/u, /ProcessStartInfo/u, /ServiceBase/u, /ServiceController/u, /\bsc\.exe\b/u, /powershell/iu, /Hyper-?V/iu, /Get-VM/u, /SetAccessControl/u,
     /OpenSCManager|CreateService|ChangeServiceConfig|ControlService|DeleteService|OpenService|QueryServiceStatus/u, /System\.ServiceProcess|Microsoft\.Extensions\.Hosting/u,
     /HttpClient|System\.Net\.Sockets|TcpClient|WebRequest/u,
@@ -39,9 +41,10 @@ test('the Authority never starts a process, registers a service, uses the networ
     /KeyCredentialManager|Windows\.Security\.Credentials/u]) {
     assert.equal(forbidden.test(allCode), false, `no Authority source may match ${forbidden}`);
   }
-  // Since issue #115 step 3 the Authority writes ONE file, the tier policy, and only from PolicyStore.cs (see the policy test below). Nothing else writes, deletes, moves or copies a file.
-  assert.equal(/File\.(?:Write|Create|Delete|Move|Copy|Append|Replace)|FileMode\.(?:Create|CreateNew|Append|Truncate|OpenOrCreate)|FileAccess\.(?:Write|ReadWrite)|MoveFileEx|DeleteFile|WriteAllText|WriteAllBytes/u.test(codeWithoutPolicyStore), false,
-    'no file is written outside PolicyStore.cs');
+  // Since issue #115 step 3 the Authority writes the tier policy, only from PolicyStore.cs (see the policy test below); since WebAuthn phase 2 it also writes its approver key list, only from
+  // ApproverKeyStore.cs (test/runtime-approval-authority-webauthn-source.test.mjs). Nothing else writes, deletes, moves or copies a file.
+  assert.equal(/File\.(?:Write|Create|Delete|Move|Copy|Append|Replace)|FileMode\.(?:Create|CreateNew|Append|Truncate|OpenOrCreate)|FileAccess\.(?:Write|ReadWrite)|MoveFileEx|DeleteFile|WriteAllText|WriteAllBytes/u.test(codeWithoutFileWriters), false,
+    'no file is written outside PolicyStore.cs and ApproverKeyStore.cs');
 });
 
 test('the test fakes and the serve-loop / request entries exist only inside #if ALBERA_AUTHORITY_TEST_FAULTS and never in the shipped build', () => {
@@ -149,9 +152,9 @@ test('the service host talks to the SCM through three advapi32 P/Invokes only, a
   assert.match(guard, /private static string\? Check\(CngKey key/u);
 });
 
-test('the wire protocol: exactly six verbs (two on the submit pipe, four on the approver pipe, the two policy verbs among them), and exactly the documented error codes', () => {
+test('the wire protocol: exactly nine verbs (two on the submit pipe, seven on the approver pipe, the two policy verbs, `keys` and the two key verbs among them), and exactly the documented error codes', () => {
   assert.deepEqual([...code['Protocol.cs'].matchAll(/\(PipeRole\.(\w+), "(\w+)"\) =>/gu)].map((m) => `${m[1]}:${m[2]}`),
-    ['Submit:submit', 'Submit:status', 'Approver:list', 'Approver:decide', 'Approver:policy', 'Approver:policy_set']);
+    ['Submit:submit', 'Submit:status', 'Approver:list', 'Approver:decide', 'Approver:policy', 'Approver:policy_set', 'Approver:keys', 'Approver:key_challenge', 'Approver:key_remove']);
   const codes = [...code['ReceiptBuilder.cs'].matchAll(/(\w+) = "([a-z_]+)"/gu)].map((m) => m[2]);
   assert.deepEqual(codes, ['authority_unavailable', 'request_invalid', 'request_expired', 'human_denied', 'presence_unavailable', 'presence_mismatch', 'queue_full']);
   assert.deepEqual([...code['Protocol.cs'].matchAll(/case "(\w+)":/gu)].map((m) => m[1]), ['approve', 'deny', 'presence_unavailable']);
@@ -270,7 +273,7 @@ test('the tier policy: one file, written only by PolicyStore.cs (create-new temp
   assert.match(host, /ReportStopped\(ExitCodes\.PolicyInvalid\)/u);
   assert.match(code['ExitCodes.cs'], /PolicyInvalid = 79;/u);
   assert.match(code['Program.cs'], /return ExitCodes\.PolicyInvalid;/u, 'service-check refuses the same file');
-  assert.match(code['AuthorityRuntime.cs'], /RunProductionAsync\(AuthorityConfig config, PolicyStore policy, CancellationToken stop, Action onReady\)/u);
+  assert.match(code['AuthorityRuntime.cs'], /RunProductionAsync\(AuthorityConfig config, PolicyStore policy, ApproverKeySet presence, CancellationToken stop, Action onReady\)/u, 'the one key list of the process comes in as a parameter (see the webauthn source test)');
   assert.match(code['AuthorityRuntime.cs'], /IdentityOf\(config\), UnixNow, policy, Console\.WriteLine, attestation\);/u, 'the loaded policy is what the core uses');
   assert.equal(/SERVICE_POLICY=[^"]*\{(?!policyReason|policy\.Current\.Tier)/u.test(code['ServiceHost.cs'] + code['Program.cs'] + sources['TestSeam.cs']), false, 'only reason words and the tier are printed');
   // The policy is never lowered by a fallback: no catch in the loader turns a failure into the default policy.
