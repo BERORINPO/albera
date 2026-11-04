@@ -39,8 +39,10 @@ internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, 
 
     private const int MaxFileBytes = 32768, MaxPathLength = 240, MaxPublicKeyBytes = 512; // 16 key records with long credential ids do not fit 4 KiB
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
-    private static readonly string[] Keys = ["pipeRoot", "controlPlaneSid", "approverSid", "signingKeyName", "signingKeyProvider", "kid", "audience", "policyVersion"];
+    // The keys of a config with the older approver pair, which is what the installer writes today (test/host-install.test.mjs compares its output with this list). With approverKeys instead, the pair is not there.
+    private static readonly string[] Keys = ["pipeRoot", "controlPlaneSid", "approverSid", "signingKeyName", "signingKeyProvider", "kid", "approverKeyId", "approverPublicKey", "audience", "policyVersion"];
     private static readonly string[] PairKeys = ["approverKeyId", "approverPublicKey"];
+    private static readonly string[] CommonKeys = [.. Keys.Except(PairKeys)];
     private static readonly string[] AttestationKeys = ["attestationKeyId", "attestationPublicKey"];
     private const string KeyListKey = "approverKeys";
     private static readonly Regex IdRegex = ActionDigest.FromEcma(ActionDigest.IdPattern);
@@ -102,7 +104,7 @@ internal sealed record AuthorityConfig(string PipeRoot, string ControlPlaneSid, 
             bool list = seen.Contains(KeyListKey);
             if (list && PairKeys.Any(seen.Contains)) { reason = Reason.ApproverKeys; return null; } // the pair and the list together: which one is the truth?
             int pinned = AttestationKeys.Count(seen.Contains);
-            if (pinned is not (0 or 2) || seen.Count != Keys.Length + pinned + (list ? 1 : PairKeys.Length) || !Keys.All(seen.Contains) || !(list || PairKeys.All(seen.Contains))) return null; // the attestation key is both keys or neither
+            if (pinned is not (0 or 2) || seen.Count != CommonKeys.Length + pinned + (list ? 1 : PairKeys.Length) || !CommonKeys.All(seen.Contains) || !(list || PairKeys.All(seen.Contains))) return null; // the attestation key is both keys or neither
             string Get(string name) => root.GetProperty(name).GetString()!;
 
             string pipeRoot = Get("pipeRoot"), cpSid = Get("controlPlaneSid"), approverSid = Get("approverSid");
