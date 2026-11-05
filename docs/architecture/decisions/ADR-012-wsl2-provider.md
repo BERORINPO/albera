@@ -45,14 +45,14 @@ What follows: **`wsl.conf` is not a boundary, and root in the guest reaches the 
 | G2, in the sandbox without seccomp | The same four ports. Namespaces, `pivot_root` and dropped capabilities do nothing here |
 | G2, in the sandbox with a seccomp filter | `socket(AF_VSOCK)` refused, 31 of 31. **seccomp is the only thing that stops this** |
 | Side effect | After a job touched these ports, every distribution failed to start with `Wsl/Service/CreateInstance/E_UNEXPECTED` until `wsl --shutdown`, the owner's Ubuntu included. Three times, each after a job had touched the ports; not after 85 s idle with no scan. Why is not known |
-| G3 | **Not closed.** The control still fails ("Invalid argument" from Ubuntu with interop on), so no result counts. In the sandbox, `/init` still ran as the `.exe` handler even though `/init` is not in the root, and exited 1 by accident |
+| G3 | **No Windows process started from the job, with a working control.** The earlier controls failed because of their working folder. Ubuntu with its working folder on C: started the program (seen in 19 of the polls). Ubuntu with the file and the working folder on the Linux disk got "Invalid argument". The probe's plain job, the same with `WSL_INTEROP` set, and the sandbox: 0 polls. **Limits:** the second control shows that a Linux working folder alone stops it, so this does not prove that `interop=false` does anything. Speaking the interop protocol to the socket directly was not tried; in the sandbox the socket is gone. `/init` still runs in the sandbox as the `.exe` handler, because the kernel holds it open, and exited 1 |
 | G4 | Good: `/` has only `bin dev etc lib lib64 probe proc sbin tmp usr work`, `/dev` only `null urandom zero`, 4 PIDs, capabilities 0, `/usr` read-only. Open descriptors not listed (the script needed `awk`) |
 | G5 | TCP to the internet, the host and the LAN refused; UDP send "Network is unreachable" |
 | G0 | Root reaches C: through `drvfs` alone (51 entries). 50 MB through a real pipe, identical, 257 ms. Cold start after `wsl --shutdown` 1746 ms. `wsl --import` of the 1.7 GB stand-in 26 s. **`unshare -Ur` works under `no_new_privs`**, so the allowlist must refuse user namespaces. `mount(2)` as `job` not measured (script error) |
 
 What this changes: R3 is no longer unknown. Without seccomp a job reaches a Windows file server and can stop WSL for every distribution. **The boundary between a job and Windows is one seccomp filter.** A mistake in it would be silent.
 
-If the design continues, these become required: the sandbox proves on every run, before the job starts, that `socket(AF_VSOCK)` and a user namespace are refused, and the run stops if not. G3 needs a working control. Owner decision 5.
+These are now required: the sandbox proves on every run, before the job starts, that `socket(AF_VSOCK)` and a user namespace are refused, and the run stops if not. The job's working folder must never be on a Windows drive. Owner decision 5.
 
 ## Decision proposed
 
@@ -161,7 +161,7 @@ Package installs through an allowlisted proxy. Desktop work (WSLg is a different
 3. **Accept a throwaway distribution instead of a disposable VM for review on this PC?** Recommended: yes, for WSL2 PRs only.
 4. **Install the services on YOSUKE-NOTE at Phase 5?** It needs an administrator and a native `claude.exe`. Recommended: yes.
 
-5. **Continue with one seccomp filter as the boundary, or stop and use Windows Pro?** Phase 0 met the stop condition. Recommended: continue. A bypass needs a kernel bug or a filter mistake. The first is R1, already accepted, and the per-run proof guards against the second.
+5. **Continue with one seccomp filter as the boundary, or stop and use Windows Pro?** Phase 0 met the stop condition. **Decided 2026-11-05: continue, by the owner.** The per-run proof is required. A bypass needs a kernel bug or a filter mistake. The first is R1, already accepted, and the per-run proof guards against the second.
 
 ## Decision line (after adoption)
 
