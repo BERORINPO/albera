@@ -33,6 +33,38 @@ const defer = () => { let resolve; const promise = new Promise((r) => { resolve 
 const sleepUnref = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); });
 
 /**
+ * The stored Claude Code token for ONE run: `{ token }` or `{ code }` (`credential_missing` when nothing is stored, `credential_unreadable`, `credential_invalid`, `credential_error`). The process
+ * environment is never read. Shared with the main AI adapter (main-ai-claude.mjs), which must tell a missing token apart from any other failure.
+ */
+export async function loadClaudeToken(secretStore) {
+  let secret;
+  try { secret = await secretStore.load(CREDENTIAL_NAME); } catch (error) {
+    return { code: error?.code === 'not_found' ? 'credential_missing' : error?.code === 'unprotect_failed' ? 'credential_unreadable' : 'credential_error' };
+  }
+  try {
+    const text = secret.toString('latin1'); // the store's Buffer, wiped below (a copy of it would outlive the wipe)
+    return TOKEN_RE.test(text) ? { token: text } : { code: 'credential_invalid' };
+  } finally { secret.fill?.(0); }
+}
+
+/** A NEW run folder `<runRoot>\run-<16 hex>\{config,work}`, empty. Shared with the main AI adapter; the startup `sweep` removes what either leaves behind. */
+export async function makeRunFolders(runRoot, newRunId = () => `run-${randomBytes(8).toString('hex')}`) {
+  const runDir = path.join(runRoot, newRunId());
+  if (!RUN_DIR_RE.test(path.basename(runDir))) throw new Error('run_folder_name');
+  await mkdir(runRoot, { recursive: true });
+  await mkdir(runDir); // not recursive: a folder that already exists is an error, never reused
+  const folders = { runDir, configDir: path.join(runDir, 'config'), workDir: path.join(runDir, 'work') };
+  await mkdir(folders.configDir);
+  await mkdir(folders.workDir);
+  return folders;
+}
+
+/** Delete a run folder. Resolves false when it could not (the caller logs a fixed line; the next startup sweeps it). */
+export async function removeRunFolder(runDir) {
+  try { await rm(runDir, { recursive: true, force: true, ...CLEANUP_RETRIES }); return true; } catch { return false; }
+}
+
+/**
  * @param {{ targets: Map<string, { computerId: string, vmId?: string, expectedGeneration?: number }>, secretStore: { load: Function }, runRoot: string,
  *   claude: { executable: string, executableSha256: string, model: string|null, maxMs: number, maxToolCalls: number },
  *   mcp: { command: string, entryPath: string, broker: { pipeName: string, serviceName: string, helperPath: string, helperSha256: string } },
@@ -56,32 +88,6 @@ export function createRoomServiceHands({
   /** The approved action's VM against the settings' VM, in both directions (see the head of the file). */
   function vmMatches(target, vmId, expectedGeneration) {
     return target.vmId === vmId && target.expectedGeneration === expectedGeneration;
-  }
-
-  async function loadToken() {
-    let secret;
-    try { secret = await secretStore.load(CREDENTIAL_NAME); } catch (error) {
-      return { code: error?.code === 'not_found' ? 'credential_missing' : error?.code === 'unprotect_failed' ? 'credential_unreadable' : 'credential_error' };
-    }
-    try {
-      const text = secret.toString('latin1'); // the store's Buffer, wiped below (a copy of it would outlive the wipe)
-      return TOKEN_RE.test(text) ? { token: text } : { code: 'credential_invalid' };
-    } finally { secret.fill?.(0); }
-  }
-
-  async function makeRunFolders() {
-    const runDir = path.join(runRoot, newRunId());
-    if (!RUN_DIR_RE.test(path.basename(runDir))) throw new Error('run_folder_name');
-    await mkdir(runRoot, { recursive: true });
-    await mkdir(runDir); // not recursive: a folder that already exists is an error, never reused
-    const folders = { runDir, configDir: path.join(runDir, 'config'), workDir: path.join(runDir, 'work') };
-    await mkdir(folders.configDir);
-    await mkdir(folders.workDir);
-    return folders;
-  }
-
-  async function removeRunFolder(runDir) {
-    try { await rm(runDir, { recursive: true, force: true, ...CLEANUP_RETRIES }); } catch { note('hands cleanup_failed'); }
   }
 
   /** The MCP server's command line (the driver appends the two limit flags). Checked with the server's own parser, so a value it would refuse is refused here. */
@@ -108,12 +114,12 @@ export function createRoomServiceHands({
     let result;
     try {
       const trusted = await claudeGuard.check(claude.executable).catch(() => false); // before the credential is opened: an executable that is not trusted never sees it
-      const credential = trusted ? await loadToken() : { code: 'claude_untrusted' };
+      const credential = trusted ? await loadClaudeToken(secretStore) : { code: 'claude_untrusted' };
       if (credential.code) result = { outcome: 'error', reason: credential.code, claim: '', toolCalls: 0 };
       else if (run.stopRequested) result = { outcome: 'stopped', reason: 'stopped_by_human', claim: '', toolCalls: 0 };
       else {
         const mcpServer = mcpServerOf({ computerId, operationId });
-        folders = await makeRunFolders();
+        folders = await makeRunFolders(runRoot, newRunId);
         const driver = createDriver({
           executable: claude.executable, executableSha256: claude.executableSha256, task, oauthToken: credential.token, workDir: folders.workDir, configDir: folders.configDir,
           mcpServer, limits: { maxMs: claude.maxMs, maxToolCalls: claude.maxToolCalls }, ...(claude.model === null ? {} : { model: claude.model }),
@@ -124,7 +130,7 @@ export function createRoomServiceHands({
         result = await driver.run();
       }
     } catch { result = { outcome: 'error', reason: 'hands_failed', claim: '', toolCalls: 0 }; } // the cause is not shown: it may name a path or a value
-    if (folders) await removeRunFolder(folders.runDir);
+    if (folders && !(await removeRunFolder(folders.runDir))) note('hands cleanup_failed');
     started.resolve({ ok: false, code: 'start_error' }); // a no-op once the child has started
     note(`hands ended outcome=${result.outcome} reason=${result.reason}`);
     if (result.treeStopConfirmed === false) { run.stuck = true; note('hands tree_stop_unconfirmed'); } // the driver could not confirm that its process tree is gone

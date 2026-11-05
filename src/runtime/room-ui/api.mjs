@@ -47,6 +47,11 @@ export const startJob = (computerId, task) => postJson('api/jobs', { computerId,
 export const stopAllJobs = () => postJson('api/jobs/stop-all', {});
 export const approvalTest = () => postJson('api/jobs/approval-test', {});
 
+// Talk panel (talk.mjs). The conversation lives in the room host's memory; a turn can take a while, so sendTalk resolves when the main AI has answered (or failed with a fixed code).
+export const getTalk = () => call('api/talk');
+export const sendTalk = (words) => postJson('api/talk', { words });
+export const resetTalk = () => postJson('api/talk/reset', {});
+
 // Feedback panel (feedback.mjs). getFeedback asks this room (same origin); sendFeedback is the ONE call that leaves for another origin: the intake Worker of the contract,
 // from the person's own browser, only when they press send. No cookie, no referrer, no cache. Room-host.mjs adds exactly that origin to the CSP connect-src when feedback is on.
 export const getFeedback = () => call('api/feedback');
