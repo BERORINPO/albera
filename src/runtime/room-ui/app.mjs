@@ -3,6 +3,7 @@
 // imports, so the page still renders (a cameras-less canvas) while a part is a stub or fails to load.
 // All text goes through textContent / DOM APIs.
 import { createCanvas } from './canvas.mjs';
+import { createViewFollow, followingCanvas, waitingCount, VIEW_OWN } from './view-follow.mjs';
 import { makeWords } from './i18n.mjs';
 import * as api from './api.mjs';
 import canvasDict from './words-canvas.mjs';
@@ -92,7 +93,7 @@ export async function loadParts(load = loadPart) {
   );
   const fn = (mod, name) => (typeof mod?.[name] === 'function' ? mod[name] : null);
   return {
-    createCam: fn(cam, 'createCam'), spotlight: fn(cam, 'spotlight'), renderFigure: fn(figure, 'renderFigure'),
+    createCam: fn(cam, 'createCam'), camTone: fn(cam, 'camTone'), spotlight: fn(cam, 'spotlight'), renderFigure: fn(figure, 'renderFigure'),
     createLedger: fn(ledger, 'createLedger'), createBero: fn(bero, 'createBero'), createCards: fn(cards, 'createCards'),
     dicts: { cam: pickDict(wCam), figure: pickDict(wFigure), bero: pickDict(wBero) },
   };
@@ -115,7 +116,28 @@ function boot() {
 
   async function openRoom() {
     const parts = await loadParts();
-    const canvas = createCanvas($('viewport'));
+    let waiting = 0; // cameras and question cards waiting for the person, from the latest poll
+    const showView = () => {
+      const own = view.mode() === VIEW_OWN;
+      $('view-follow').setAttribute('aria-pressed', String(!own));
+      $('view-own').setAttribute('aria-pressed', String(own));
+      // Bero does not bring a person who looks elsewhere to a waiting camera, so the top bar says so instead.
+      const notice = own && waiting > 0 ? words.t('view_waiting', { count: waiting }) : '';
+      if ($('view-notice').textContent !== notice) $('view-notice').textContent = notice; // a status line is read aloud when it changes
+    };
+    const view = createViewFollow({ onChange: showView, home: () => canvas.lookAll() });
+    const canvas = createCanvas($('viewport'), { onUserMove: () => view.userMoved() });
+    const followed = followingCanvas(canvas, view);
+    $('view-follow').addEventListener('click', () => {
+      const wasOwn = view.mode() === VIEW_OWN;
+      view.follow();
+      // Coming back because of the notice: a fit of all cameras can leave the question card off screen, so show the card.
+      const r = wasOwn ? canvas.rectOf(cards?.firstOpenNode?.()) : null;
+      if (r) canvas.lookAt({ x: r.x + r.w / 2, y: r.y + r.h / 2, zoom: 1.1 });
+    });
+    $('view-own').addEventListener('click', () => view.userMoved());
+    $('view-switch').hidden = false;
+    showView();
     const camWords = makeWords(parts.dicts.cam);
     const figureWords = makeWords(parts.dicts.figure);
     const beroWords = makeWords(parts.dicts.bero);
@@ -132,7 +154,7 @@ function boot() {
         if (!result.ok) phase('choose_failed');
       },
     }) ?? null;
-    const bero = parts.createBero?.(canvas, { words: beroWords, figureWords, renderFigure, cards, labelOf, frameUrl: api.frameUrl }) ?? null;
+    const bero = parts.createBero?.(followed, { words: beroWords, figureWords, renderFigure, cards, labelOf, frameUrl: api.frameUrl }) ?? null;
     const ledger = parts.createLedger?.($('ledger'), { words: figureWords, labelOf }) ?? null;
     const cams = new Map(); // vmId -> { update(vm) }
 
@@ -140,9 +162,9 @@ function boot() {
     const fallbackPerform = async (act) => {
       if (act?.type === 'card') cards?.open(act.card);
       if (act?.type !== 'look') return;
-      if (act.at === 'all') { canvas.lookAll(); return; }
+      if (act.at === 'all') { followed.lookAll(); return; }
       const r = canvas.rectOf(`cam:${act.at?.vmId}`);
-      if (r) canvas.lookAt({ x: r.x + r.w / 2, y: r.y + r.h / 2, zoom: 1.1 });
+      if (r) followed.lookAt({ x: r.x + r.w / 2, y: r.y + r.h / 2, zoom: 1.1 });
     };
     const player = createPlayer({
       perform: (act) => (bero ? bero.perform(act) : fallbackPerform(act)),
@@ -158,9 +180,11 @@ function boot() {
       return { el, update() {} };
     }
 
+    let framed = false; // the first cameras are framed once, whatever the mode
+
     function syncCams(vms) {
       const slots = gridLayout(vms.length);
-      const first = cams.size === 0;
+      const first = !framed;
       let added = false;
       vms.forEach((vm, index) => {
         if (typeof vm?.vmId !== 'string') return;
@@ -175,9 +199,14 @@ function boot() {
         cam.update(vm);
       });
       const live = new Set(vms.map((vm) => vm?.vmId));
-      for (const vmId of [...cams.keys()]) if (!live.has(vmId)) { canvas.remove(`cam:${vmId}`); cams.delete(vmId); }
+      for (const vmId of [...cams.keys()]) if (!live.has(vmId)) { canvas.remove(`cam:${vmId}`); cams.delete(vmId); view.forget(); }
       // The first frame after unlock jumps straight to all cameras; later cameras glide into view.
-      if (added) canvas.lookAll({ smooth: !first });
+      if (added) {
+        (first ? canvas : followed).lookAll({ smooth: !first });
+        framed = true;
+      }
+      waiting = waitingCount(vms, parts.camTone, cards?.waitingVmIds?.() ?? []);
+      showView();
     }
 
     const onKey = createCtrlTwice(() => parts.spotlight?.(canvas, [...cams.keys()]));
