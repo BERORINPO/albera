@@ -43,8 +43,8 @@ static class Launcher
         }
         catch (Exception error)
         {
-            Console.WriteLine("NOT DONE: " + error.Message);
-            Console.WriteLine("Copy this line and paste it to Velo. Press Enter to close.");
+            Console.WriteLine("The demo could not start (" + error.GetType().Name + "). If another copy is open, close it and try again.");
+            Console.WriteLine("Reports: https://github.com/BERORINPO/albera/issues  Press Enter to close.");
             Console.ReadLine();
             return 1;
         }

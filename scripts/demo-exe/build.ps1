@@ -12,6 +12,7 @@ foreach ($need in @((Join-Path $NodeDir 'node.exe'), (Join-Path $NodeDir 'LICENS
   if (-not (Test-Path -LiteralPath $need -PathType Leaf)) { throw "missing: $need" }
 }
 
+if ((Test-Path -LiteralPath $OutDir) -and @(Get-ChildItem -LiteralPath $OutDir -Force).Count -gt 0) { throw "OutDir is not empty: whatever is in it would go into the exe" }
 $pack = Join-Path $OutDir 'pack'
 New-Item -ItemType Directory -Force -Path $pack | Out-Null
 $app = Join-Path $OutDir 'app.zip'

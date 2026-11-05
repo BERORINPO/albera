@@ -4,7 +4,7 @@ import path from 'node:path';
 
 const [root, port] = process.argv.slice(2);
 const entry = path.join(root, 'src', 'runtime', 'entry.mjs');
-const child = spawn(process.execPath, ['--no-warnings', entry, 'room', '--demo', '--port', port], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
+const child = spawn(process.execPath, ['--no-warnings', entry, 'room', '--demo', '--port', port], { stdio: ['ignore', 'pipe', 'inherit'] }); // the same console as this window, so closing the window ends the room too
 let text = '';
 let opened = false;
 

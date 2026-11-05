@@ -23,14 +23,23 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
         with:
           persist-credentials: false
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444   # v5
-        with:
-          node-version: 24
+      # The node.exe that goes into the file is version-pinned. The SHA-256 is the line for node-v<version>-win-x64.zip in https://nodejs.org/dist/v24.13.0/SHASUMS256.txt
+      # (read 2026-11-05). To change the version, take both values from the new release and change them together.
       - name: Build
         id: build
         shell: pwsh
+        env:
+          NODE_PINNED_VERSION: 24.13.0
+          NODE_PINNED_ZIP_SHA256: ca2742695be8de44027d71b3f53a4bdb36009b95575fe1ae6f7f0b5ce091cb88
         run: |
-          $nodeDir = Split-Path (Get-Command node).Source
+          $ErrorActionPreference = 'Stop'
+          $name = "node-v$env:NODE_PINNED_VERSION-win-x64"
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          Invoke-WebRequest -Uri "https://nodejs.org/dist/v$env:NODE_PINNED_VERSION/$name.zip" -OutFile $zip
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          if ($actual -ne $env:NODE_PINNED_ZIP_SHA256) { throw "node zip SHA-256 mismatch: expected $env:NODE_PINNED_ZIP_SHA256, got $actual" }
+          Expand-Archive -LiteralPath $zip -DestinationPath $env:RUNNER_TEMP
+          $nodeDir = Join-Path $env:RUNNER_TEMP $name
           $out = Join-Path $env:RUNNER_TEMP 'demo'
           & powershell -NoProfile -ExecutionPolicy Bypass -File scripts/demo-exe/build.ps1 -NodeDir $nodeDir -OutDir $out
           if ($LASTEXITCODE -ne 0) { exit 1 }
