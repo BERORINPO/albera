@@ -75,7 +75,7 @@ The result holds no paths, account names or versions, so the page and a feedback
 
 ## What a person sees
 
-**In the terminal.** A new read-only `albera-runtime doctor` prints the level and the reason. `room` without a job and `wall` print the same lines when Work is unavailable, before they stop or start. Exit codes do not change.
+**In the terminal.** A new read-only `albera-runtime doctor` prints the level and the reason, then on Windows lists everything Work needs at once (what it cannot read without an administrator, Windows Hello and the VMs, says "check yourself", never "ok"; Node.js and Claude Code are listed only until the services are there, because the install copies them; the list ends by saying it is no promise). `room` without a job and `wall` print the same lines when Work is unavailable, before they stop or start. Exit codes do not change.
 
 **In the room.** `albera-runtime room --no-vm` starts a room with no cameras, which needs no job. The top bar shows the level. The canvas shows one sheet: what works here, what does not and why, with a link to the demo. Jobs is disabled with its reason.
 

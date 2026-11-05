@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { openRuntimeAuditJournal } from './audit-journal.mjs';
 import { createRuntimeHost } from './host.mjs';
 import { createDesktopWallHost, MAX_WALL_VMS } from './desktop-wall-host.mjs';
-import { describeLevel, probeHost, systemLang } from './host-capabilities.mjs';
+import { describeChecklist, describeLevel, probeHost, probeReport, systemLang } from './host-capabilities.mjs';
 import { HyperVDesktopDriver } from './hyperv-desktop-driver.mjs';
 import { createHyperVDesktopBrokerPrototype } from './hyperv-desktop-broker-prototype.mjs';
 import { createAgentStatusBoard } from './agent-status-board.mjs';
@@ -429,7 +429,7 @@ The journal stores redacted decisions and lifecycle events, never prompts or pro
 Journal storage permissions are checked without repair; Runtime refuses broad or unverifiable Windows DACLs and POSIX ownership/modes.
 Backups are created only while Runtime is stopped. Backup, verification, and restore passphrases are entered in a hidden terminal prompt, never as command-line arguments or environment variables. verify-backup authenticates and validates a backup offline without writing files.
 Restore creates a new directory and never overwrites existing files. Keep the passphrase separately; ALBERA cannot recover it.
-doctor says what this PC can use and, for what it cannot, why. It reads only and needs no administrator.
+doctor says what this PC can use and, for what it cannot, why, and lists everything Work needs. It reads only and needs no administrator.
 wall is a local, view-only development command: it shows the latest screen of up to 16 Hyper-V VMs you name, refreshed every 2 seconds, on 127.0.0.1 behind the same one-time code. It never sends input to a VM, keeps only the newest frame in memory and saves nothing. Screens can show secrets; use it only on a PC and display you trust. It uses the same-user prototype Broker and needs Hyper-V Administrators membership.
 agent lets an AI operate one Hyper-V VM desktop through screenshots, mouse and keyboard until it says it is done or a limit (steps, USD, minutes) is reached. Ctrl+C stops it before the next action. The Anthropic API key is read only from ANTHROPIC_API_KEY. Screens are sent to the Anthropic API and can show secrets; use only a VM that holds nothing sensitive. The AI saying DONE is a claim, not proof that the task succeeded. It uses the same-user prototype Broker and needs Hyper-V Administrators membership.
 --planner <model> (agent, fleet, room) adds a planner: that model sees the task and the screen, writes 1 to 8 short sub-goals, gives the hands one at a time (at most 15 steps each), looks at the screen after each and decides next, replan (at most 2), done or failed. Its calls count toward the same USD limits; its DONE is a claim too.
@@ -750,7 +750,9 @@ async function main() {
   }
   if (options.help) { console.log(RUNTIME_HELP); return; }
   if (options.command === 'doctor') {
-    for (const line of describeLevel(await probeHost(), systemLang())) console.log(line);
+    const lang = systemLang();
+    const { result, checklist } = await probeReport();
+    for (const line of [...describeLevel(result, lang), ...describeChecklist(checklist, lang)]) console.log(line);
     return;
   }
   // Only checked to be a file here; the guest screen source and the setup read it.

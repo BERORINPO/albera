@@ -15,6 +15,28 @@ ALBERA（アルベラ）の名前と着想は、アンニ・アルバースの�
 - **依存パッケージ 0 個**: Node.js 22 以上だけで動きます。ビルドも不要です
 - **日本語と英語**: 画面はブラウザの言語、ターミナルの表示は OS の言語に合わせます
 
+## VM でのジョブ (実験的、Hyper-V のある Windows)
+
+ALBERA は、自分のファイルから離れた Hyper-V の VM の中で AI に作業させられます。既定では、開始のたびに承認を待ちます。**実機で完走した本物のジョブはまだありません**。最初の実行では問題が見つかる前提で使ってください。
+
+1. この PC で使えるものと足りないものを確認します。clone したフォルダーで実行します (読み取りのみ、管理者は不要):
+
+   ```sh
+   node src/runtime/entry.mjs doctor
+   ```
+
+2. 偽の VM で管制室を試します。どの PC でも動きます:
+
+   ```sh
+   node src/runtime/entry.mjs room --demo
+   ```
+
+3. 先に Hyper-V マネージャーで VM を作ります。その手順書はまだありません。インストールに VM が必要です。ALBERA に VM を操作させるには、setup を `--grant-hyperv-to-broker --vm-name <名前>` つきで実行します。後から足すにはアンインストールが必要で、トークンも消えます。
+4. `doctor` で足りないものが ALBERA のサービスだけになったら、インストールします: [docs/architecture/host-install.md](docs/architecture/host-install.md)
+5. スタートメニューの **Open ALBERA** を開き、**資格情報** にトークンを保存して、**ジョブ** に作業を書きます。
+
+Hyper-V がない PC では、セッション一覧とデモが使えます。ジョブが VM の代わりに PC 本体で動くことはありません: [docs/architecture/no-vm-mode.md](docs/architecture/no-vm-mode.md)
+
 ## Runtimeプレビュー (実験的)
 
 `albera-runtime` は `albera` の読み取り専用サーバーとは別プロセスです。npm公開前のこのブランチでは次のように起動します:
@@ -49,7 +71,7 @@ node src/runtime/entry.mjs restore --backup "/absolute/path/to/archive.albera" -
 Node.js 22 以上と、Code タブにセッションが 1 つ以上ある Claude デスクトップアプリが必要です。npm の `albera` パッケージはまだ公開されていません。このブランチは次の手順で clone して実行してください。README にある `npx albera` の例は npm 公開後に使えます。
 
 ```sh
-git clone https://github.com/BERORINPO/pigeonholes.git albera
+git clone https://github.com/BERORINPO/albera.git
 cd albera
 npm start                       # node src/entry/server.mjs と同じ
 ```

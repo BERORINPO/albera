@@ -15,6 +15,28 @@ Demo data. Also: [canvas](docs/screenshot-canvas.png) · [dark theme](docs/scree
 - **Zero dependencies.** Node.js 22 or newer. No build step.
 - **English and Japanese.** The page follows your browser language; the terminal follows your system language.
 
+## Jobs in VMs (experimental, Windows with Hyper-V)
+
+ALBERA can have an AI work inside a Hyper-V VM, away from your own files, and by default every start waits for your approval. **No real job has finished on a real PC yet**, so expect the first run to find problems.
+
+1. See what this PC can use and what is missing, from a clone (reads only, no administrator):
+
+   ```sh
+   node src/runtime/entry.mjs doctor
+   ```
+
+2. Try the control room with fake VMs. This works on any PC:
+
+   ```sh
+   node src/runtime/entry.mjs room --demo
+   ```
+
+3. Make the VM first, in Hyper-V Manager; there is no guide for that yet. The install needs it: to let ALBERA drive it, run setup with `--grant-hyperv-to-broker --vm-name <name>`, because adding this later means uninstalling, which erases the token.
+4. Install once `doctor` shows only the ALBERA services as missing: [docs/architecture/host-install.md](docs/architecture/host-install.md).
+5. Open **Open ALBERA** in the Start menu, save a token under **Credentials**, then write a task under **Jobs**.
+
+On a PC without Hyper-V, the session board and the demo work. A job never moves to the PC itself instead of a VM: [docs/architecture/no-vm-mode.md](docs/architecture/no-vm-mode.md).
+
 ## Runtime preview (experimental)
 
 `albera-runtime` runs as a separate process from the read-only `albera` server. Until an npm package release, start it from a clone with an absolute allowed project root and an absolute audit journal path:
@@ -60,7 +82,7 @@ You need Node.js 22 or newer and the Claude desktop app, with at least one sessi
 Clone and run the current source:
 
 ```sh
-git clone https://github.com/BERORINPO/pigeonholes.git albera
+git clone https://github.com/BERORINPO/albera.git
 cd albera
 npm start                       # same as: node src/entry/server.mjs
 ```
