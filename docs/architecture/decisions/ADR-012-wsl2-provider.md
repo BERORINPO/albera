@@ -162,7 +162,7 @@ Package installs through an allowlisted proxy. Desktop work (WSLg is a different
 
 1. **Accept R1 on this PC?** A kernel bug in WSL2 would let a job act as you, including on the approval tray. **Decided 2026-11-05: accepted by the owner**, for repositories whose code the owner would run on this PC anyway. Not for untrusted code.
 2. **Turn off `guiApplications` and `gpuSupport` in `.wslconfig`?** It also affects your Ubuntu. Recommended: decide after G4 shows whether it is needed.
-3. **Accept a throwaway distribution instead of a disposable VM for review on this PC?** Recommended: yes, for WSL2 PRs only.
+3. **Accept a throwaway distribution instead of a disposable VM for review on this PC?** **Decided 2026-11-05: yes, by the owner**, for WSL2 PRs only. It does not prove the same things as a VM.
 4. **Install the services on YOSUKE-NOTE at Phase 5?** It needs an administrator and a native `claude.exe`. Recommended: yes.
 
 5. **Continue with one seccomp filter as the boundary, or stop and use Windows Pro?** Phase 0 met the stop condition. **Decided 2026-11-05: continue, by the owner.** The per-run proof is required. A bypass needs a kernel bug or a filter mistake. The first is R1, already accepted, and the per-run proof guards against the second.
