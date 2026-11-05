@@ -59,8 +59,8 @@ A change that breaks one needs a security-tier review.
 | Fact | Windows source | Use |
 |---|---|---|
 | Hyper-V service present | `sc.exe query vmms`, absolute path under `System32`, fixed arguments, no shell | 1060 means the service is not there (measured). This alone decides whether Hyper-V is here |
-| Edition | `OperatingSystemSKU` | Only picks the hint text: "this edition cannot" or "turn the role on". 101 measured on Home; other Home SKUs to be checked against Microsoft's list. A wrong value gives a wrong hint, never a wrong level |
-| ALBERA services installed | The same query for the three service names | Tells Work from "Hyper-V is here, ALBERA is not installed" |
+| Edition | `EditionID` through `reg.exe query`, absolute path, fixed arguments | Only picks the hint text: "this edition cannot" or "turn the role on". `Core` measured on Home, and every `Core*` value counts as Home. A wrong value gives a wrong hint, never a wrong level |
+| ALBERA services installed | The same query for the Control Plane service (arch rule 10a keeps the Authority's name out of runtime modules) | Tells Work from "Hyper-V is here, ALBERA is not installed" |
 
 **Do not use `Win32_ComputerSystem.HypervisorPresent`.** It is `True` on this Home PC, because WSL2 runs a hypervisor, while Hyper-V management does not exist there. Do not use `root\virtualization\v2` either: it needs an administrator.
 
