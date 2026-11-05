@@ -1,6 +1,6 @@
 # ADR-012 — WSL2 Provider (jobs on a PC without Hyper-V)
 
-- **Status:** Proposed, NOT IMPLEMENTED. Security review required. Design review (2026-11-05): first BLOCK, then APPROVE as Proposed. That is not permission to implement: gates G0 to G8 have not been run.
+- **Status:** Proposed, NOT IMPLEMENTED. Security review required. Design review (2026-11-05): first BLOCK, then APPROVE as Proposed. Phase 0 has run on a stand-in image (results below). Gates G1, G6, G7 and G8 have not, and every gate runs again on the real image. No real token has been used.
 - **Date:** 2026-11-05
 - **Depends on:** ADR-001 (Provider), ADR-002 (Trust), ADR-007 (Verified integration), `docs/architecture/no-vm-mode.md`
 - **Scope:** a new class of computer for Windows Home. Hyper-V stays the stronger choice wherever it exists.
@@ -40,19 +40,23 @@ What follows: **`wsl.conf` is not a boundary, and root in the guest reaches the 
 
 | Gate | Result |
 |---|---|
-| G2, plain job | Host ports 50000, 50001, 50002 and 50005 accept a connection. A scan of 1 to 65535 found only these four |
-| G2, what answers | **Port 50002 answered a 9P hello (`Rversion`, `9P2000.L`): a file server on the Windows side.** No file was read. 50001 closed the connection; 50000 and 50005 gave no reply |
+| G2, plain job | Host ports 50000, 50001, 50002 and 50005 accept a connection. A scan of 1 to 65535 with a 3 s wait found only these four at that moment; a port WSL opens later would not show |
+| G2, what answers | **Port 50002 answered a 9P hello (`Rversion`, `9P2000.L`): a file server on the Windows side.** No attach was tried, so whether it opens C: is unknown, and this ADR assumes it does. 50001 closed the connection; 50000 and 50005 gave no reply |
 | G2, in the sandbox without seccomp | The same four ports. Namespaces, `pivot_root` and dropped capabilities do nothing here |
 | G2, in the sandbox with a seccomp filter | `socket(AF_VSOCK)` refused, 31 of 31. **seccomp is the only thing that stops this** |
-| Side effect | After a job touched these ports, every distribution failed to start with `Wsl/Service/CreateInstance/E_UNEXPECTED` until `wsl --shutdown`, the owner's Ubuntu included. Three times, each after a job had touched the ports; not after 85 s idle with no scan. Why is not known |
-| G3 | **No Windows process started from the job, with a working control.** The earlier controls failed because of their working folder. Ubuntu with its working folder on C: started the program (seen in 19 of the polls). Ubuntu with the file and the working folder on the Linux disk got "Invalid argument". The probe's plain job, the same with `WSL_INTEROP` set, and the sandbox: 0 polls. **Limits:** the second control shows that a Linux working folder alone stops it, so this does not prove that `interop=false` does anything. Speaking the interop protocol to the socket directly was not tried; in the sandbox the socket is gone. `/init` still runs in the sandbox as the `.exe` handler, because the kernel holds it open, and exited 1 |
-| G4 | Good: `/` has only `bin dev etc lib lib64 probe proc sbin tmp usr work`, `/dev` only `null urandom zero`, 4 PIDs, capabilities 0, `/usr` read-only. Open descriptors not listed (the script needed `awk`) |
+| WSL stopped starting | Three times, some time after a job had connected to these ports, every distribution failed with `Wsl/Service/CreateInstance/E_UNEXPECTED` until `wsl --shutdown`, the owner's Ubuntu included. Without touching vsock it did not happen: 85 s idle with the probe running, and a stop and restart of the probe. A correlation, cause not known, and not separated by port |
+| G3 | **The `.exe` route is closed, with a control in the same probe.** A Windows program starts only when both the file and the working folder are on C: (Ubuntu: file on the Linux disk, or working folder `/`, gives "Invalid argument"). With both on C:: interop on, plain job: **started (19 polls)**. Interop off, plain job, with or without `WSL_INTEROP`: 0. Sandbox, interop on: 0. Sandbox, interop off: 0. So `interop=false` works and the sandbox stops it by itself. **Limits:** in the sandbox the kernel still runs `/init` as the `.exe` handler, and it exited 1 on a parse error, so the sandbox's 0 rests partly on that accident. Speaking the interop protocol directly was not tried |
+| G4 | Good: `/` has only `bin dev etc lib lib64 probe proc sbin tmp usr work`, `/dev` only `null urandom zero`, 4 PIDs, capabilities 0, `/usr` read-only. Open descriptors: 0, 1 and 2 are pipes from the WSL relay; 3 and 255 belonged to the listing shell. No socket |
 | G5 | TCP to the internet, the host and the LAN refused; UDP send "Network is unreachable" |
-| G0 | Root reaches C: through `drvfs` alone (51 entries). 50 MB through a real pipe, identical, 257 ms. Cold start after `wsl --shutdown` 1746 ms. `wsl --import` of the 1.7 GB stand-in 26 s. **`unshare -Ur` works under `no_new_privs`**, so the allowlist must refuse user namespaces. `mount(2)` as `job` not measured (script error) |
+| G0 | Root reaches C: through `drvfs` alone (51 entries). 50 MB through a real pipe, identical, 257 ms. Cold start after `wsl --shutdown` 1746 ms. `wsl --import` of the 1.7 GB stand-in 26 s. **`unshare -Ur` works under `no_new_privs`**, so the allowlist must refuse user namespaces. `drvfs` inside a user namespace: "unknown filesystem type". `mount(2)` as `job` not measured (script error) |
 
-What this changes: R3 is no longer unknown. Without seccomp a job reaches a Windows file server and can stop WSL for every distribution. **The boundary between a job and Windows is one seccomp filter.** A mistake in it would be silent.
+What this changes: R3 is no longer unknown. Without seccomp a job reaches a Windows file server. **The boundary between a job and Windows is one seccomp filter.** A mistake in it would be silent.
 
-These are now required: the sandbox proves on every run, before the job starts, that `socket(AF_VSOCK)` and a user namespace are refused, and the run stops if not. The job's working folder must never be on a Windows drive. Owner decision 5.
+These are now required. Owner decision 5.
+
+- **Proof on every run.** Before the job starts, under the same filter as the job, a fixed self-test tries `socket(AF_VSOCK)`, `socketpair(AF_VSOCK)`, `io_uring_setup`, a 32-bit and an x32 system call, `clone(CLONE_NEWUSER)`, `clone3`, `unshare` and `setns`. Anything not refused, or a filter that fails to load, ends the run. A deliberately broken filter must stop a run: that is an acceptance test.
+- **Descriptors.** The agent's 0, 1 and 2 are pipes root made, nothing else. An inherited vsock descriptor would never pass through the `socket` filter.
+- **The working folder and every file of the job stay off Windows drives.**
 
 ## Decision proposed
 
@@ -63,7 +67,7 @@ These are now required: the sandbox proves on every run, before the job starts, 
 5. **The approval window says what it means.** "WSL2. Weaker than a VM. A Linux kernel bug here would let the job act as you on this PC." The text is fixed and keyed on `isolation`, which is in the digest.
 6. **A new distribution for every run.** The bridge checks the image's SHA-256 on the Windows side, runs `wsl --import` as `albera-run-<id>`, and unregisters it afterwards. The guest's word about itself is never the check (ADR-001 section 6, ADR-002). Never the owner's Ubuntu.
 7. **Root only relays bytes.** Root's whole part is a fixed script that builds the sandbox and starts the agent. It never opens a path, reads a file, or runs git in anything the job can touch. Every file operation and the bundle are done inside the sandbox, as `job`.
-8. **The sandbox.** Namespaces: net, mount, pid, ipc, uts, cgroup, with a fresh `/proc`. `pivot_root` into a minimal root with a minimal `/dev`: no `/run/WSL`, `/mnt`, `/dev/dxg` or `/init`. `close_range` closes inherited descriptors. `setpriv` to `job` with no capabilities, an empty bounding set and `no_new_privs`. A cgroup limits memory and PIDs. Then a seccomp **allowlist**, with the architecture pinned so that the 32-bit ABI is refused. It does not allow `AF_VSOCK`, `io_uring`, user namespaces, `mount` or `fsopen`, `bpf`, `ptrace`, `keyctl`. `clone3` answers `ENOSYS`, because seccomp cannot read its flags.
+8. **The sandbox.** Namespaces: net, mount, pid, ipc, uts, cgroup, with a fresh `/proc`. `pivot_root` into a minimal root with a minimal `/dev`: no `/run/WSL`, `/mnt` or `/dev/dxg`. `/init` is gone from the root, but the kernel still runs it as the `.exe` handler (measured), so it is not counted as removed. `close_range` closes inherited descriptors. `setpriv` to `job` with no capabilities, an empty bounding set and `no_new_privs`. A cgroup limits memory and PIDs. Then a seccomp **allowlist**, with the architecture pinned so that the 32-bit ABI is refused. It does not allow `AF_VSOCK`, `io_uring`, user namespaces, `mount` or `fsopen`, `bpf`, `ptrace`, `keyctl`. `clone3` answers `ENOSYS`, because seccomp cannot read its flags.
 9. **One resident agent per run.** An unprivileged `albera-agent` inside the sandbox, started once, takes `run`, `read`, `write` and `bundle` over stdin and stdout, with framing and size limits. Nobody enters the namespaces from outside, so no root `nsenter`.
 10. **Code goes in and out as git bundles.** The result goes through `git-quarantine.mjs` (ADR-007), with a size limit before import. **The result is `agent_reported`, never `trusted_verified`:** there is no independent verification here. The room shows the diff as untrusted text, escaped. The quarantine has no check for secrets or LFS, and the page says so.
 11. **Nothing from the host goes in but the task, the bundle and the commands.** `WSLENV` empty, no credential, no Windows path.
@@ -106,7 +110,7 @@ The docs and the approval window must say these plainly.
 |---|---|---|---|
 | R1 | **A Linux kernel bug in the guest.** The job then runs code as the owner: files, the network, and the approval tray, which runs as the owner too, so a later approval on this PC can no longer be trusted | The whole sandbox, the network block included, sits in that same kernel. On Hyper-V this would take a hypervisor escape | Kernel floor, seccomp allowlist, no capabilities. **These lower the odds. Once it happens, nothing here stops it** |
 | R2 | The same bug reaches the owner's other distributions, Docker's included | Same kernel | Same as R1 |
-| R3 | `AF_VSOCK` reaches a Windows file server, and can stop WSL for every distribution | **Measured without seccomp.** One seccomp filter is the whole boundary | seccomp allowlist, proved on every run |
+| R3 | `AF_VSOCK` reaches a Windows file server (assume it opens C:), and port 50000, which WSL uses for its own start-up (what a job could do there is not tested). WSL stopped starting after such connections | **Measured without seccomp.** One seccomp filter is the whole boundary | seccomp allowlist, proved on every run |
 | R4 | Text in the repository steers the model | It can run more commands in the sandbox, and put bad code in the bundle | The quarantine, and the owner reads the diff |
 | R5 | Secrets in the repository are visible to the model and its provider | The same as a VM job | The owner picks the repository |
 | R6 | WSL's shared settings: `.wslconfig` `guiApplications` and `gpuSupport` apply to every distribution | Turning them off changes the owner's Ubuntu | Owner decision 2 |
@@ -118,7 +122,7 @@ The docs and the approval window must say these plainly.
 |---|---|---|
 | G0 | Every row of "Measured", again, on the real image and sandbox: `mount(2)` directly, each mount path separately, a cold start after `wsl --shutdown`, a bundle of realistic size through a real pipe, the time for `wsl --import` | Throwaway script |
 | G1 | The Broker, the lease and the bridge refuse a missing, expired, reused or wrong-target lease, and a bundle whose head is not `baseOid`, one test each. A `wsl2` `task.start` asks a person at every tier | Unit tests |
-| G2 | A non-root job connecting to `AF_VSOCK` is refused: ports 50000 to 50006, then a wide scan, because WSL may also use ports it picks at run time. **With and without seccomp, so we know what seccomp is holding back** | Script from inside |
+| G2 | **Pass means under the real allowlist.** A non-root job connecting to `AF_VSOCK` is refused: ports 50000 to 50006, then a wide scan, because WSL may also use ports it picks at run time. **With and without seccomp, so we know what seccomp is holding back** | Script from inside |
 | G3 | A Windows program started from the sandbox never runs | Watch Windows process creation, with a **working control** |
 | G4 | What is visible in the sandbox: `/dev`, `/proc`, open descriptors, nothing of `/dev/dxg` or `/mnt/wslg` | Script from inside |
 | G5 | Nothing leaves: TCP, UDP, DNS, to the host, the LAN and the internet | Script from inside |
@@ -141,7 +145,7 @@ The docs and the approval window must say these plainly.
 
 | Phase | Content | Merge tier | Who |
 |---|---|---|---|
-| 0 | G0, G2, G3, G4 as throwaway scripts on a stand-in image, run again on the real image after Phase 1. **Stop here if a non-root job reaches a Windows service** | None | AI |
+| 0 | G0, G2, G3, G4 as throwaway scripts on a stand-in image, run again on the real image after Phase 1. Stop condition: a non-root job reaches a Windows service. **It was met, and owner decision 5 continues past it** | None | AI |
 | 1 | Image, sandbox script, `albera-agent`, seccomp allowlist | Security boundary | AI |
 | 2 | Action fields, the Broker's second kind of computer, the run lease | Security boundary | AI |
 | 3 | The bridge, `albera_shell`, the driver's tool set made a parameter | Security boundary | AI |
