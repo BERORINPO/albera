@@ -1,6 +1,6 @@
 # ADR-012 — WSL2 Provider (jobs on a PC without Hyper-V)
 
-- **Status:** Proposed, NOT IMPLEMENTED. Security review required. Design review (2026-11-05): first BLOCK, then APPROVE as Proposed. Phase 0 has run on a stand-in image (results below). Gates G1, G6, G7 and G8 have not, and every gate runs again on the real image. No real token has been used.
+- **Status:** Proposed. Phase 1 is in progress and nothing is wired to a job. Security review required. Design review (2026-11-05): first BLOCK, then APPROVE as Proposed. Phase 0 has run on a stand-in image (results below). Gates G1, G6, G7 and G8 have not, and every gate runs again on the real image. No real token has been used.
 - **Date:** 2026-11-05
 - **Depends on:** ADR-001 (Provider), ADR-002 (Trust), ADR-007 (Verified integration), `docs/architecture/no-vm-mode.md`
 - **Scope:** a new class of computer for Windows Home. Hyper-V stays the stronger choice wherever it exists.
@@ -50,7 +50,7 @@ What follows: **`wsl.conf` is not a boundary, and root in the guest reaches the 
 | G5 | TCP to the internet, the host and the LAN refused; UDP send "Network is unreachable" |
 | G0 | Root reaches C: through `drvfs` alone (51 entries). 50 MB through a real pipe, identical, 257 ms. Cold start after `wsl --shutdown` 1746 ms. `wsl --import` of the 1.7 GB stand-in 26 s. **`unshare -Ur` works under `no_new_privs`**, so the allowlist must refuse user namespaces. `drvfs` inside a user namespace: "unknown filesystem type". `mount(2)` as `job` not measured (script error) |
 
-What this changes: R3 is no longer unknown. Without seccomp a job reaches a Windows file server. **The boundary between a job and Windows is one seccomp filter.** A mistake in it would be silent.
+What this changes: R3 is no longer unknown. Without seccomp a job reaches a Windows file server. **The boundary between a job and Windows is one seccomp filter and the core limit (R8).** A mistake in either would be silent.
 
 These are now required. Owner decision 5.
 
@@ -67,7 +67,7 @@ These are now required. Owner decision 5.
 5. **The approval window says what it means.** "WSL2. Weaker than a VM. A Linux kernel bug here would let the job act as you on this PC." The text is fixed and keyed on `isolation`, which is in the digest.
 6. **A new distribution for every run.** The bridge checks the image's SHA-256 on the Windows side, runs `wsl --import` as `albera-run-<id>`, and unregisters it afterwards. The guest's word about itself is never the check (ADR-001 section 6, ADR-002). Never the owner's Ubuntu.
 7. **Root only relays bytes.** Root's whole part is a fixed script that builds the sandbox and starts the agent. It never opens a path, reads a file, or runs git in anything the job can touch. Every file operation and the bundle are done inside the sandbox, as `job`.
-8. **The sandbox.** Namespaces: net, mount, pid, ipc, uts, cgroup, with a fresh `/proc`. `pivot_root` into a minimal root with a minimal `/dev`: no `/run/WSL`, `/mnt` or `/dev/dxg`. `/init` is gone from the root, but the kernel still runs it as the `.exe` handler (measured), so it is not counted as removed. `close_range` closes inherited descriptors. `setpriv` to `job` with no capabilities, an empty bounding set and `no_new_privs`. A cgroup limits memory and PIDs. Then a seccomp **allowlist**, with the architecture pinned so that the 32-bit ABI is refused. It does not allow `AF_VSOCK`, `io_uring`, user namespaces, `mount` or `fsopen`, `bpf`, `ptrace`, `keyctl`. `clone3` answers `ENOSYS`, because seccomp cannot read its flags.
+8. **The sandbox.** Namespaces: net, mount, pid, ipc, uts, cgroup, with a fresh `/proc`. `pivot_root` into a minimal root with a minimal `/dev`: no `/run/WSL`, `/mnt` or `/dev/dxg`. `/init` is gone from the root, but the kernel still runs it as the `.exe` handler (measured), so it is not counted as removed. `close_range` closes inherited descriptors. `setpriv` to `job` with no capabilities, an empty bounding set and `no_new_privs`. A cgroup limits memory and PIDs. The hard core limit is 1 (R8). The launcher checks from the inside that it is the first process of its PID namespace, with no capabilities, only loopback, and pipes for stdio, and stops otherwise. Then a seccomp **allowlist**, with the architecture pinned so that the 32-bit ABI is refused. It does not allow `AF_VSOCK`, `io_uring`, user namespaces, `mount` or `fsopen`, `bpf`, `ptrace`, `keyctl`. `clone3` answers `ENOSYS`, because seccomp cannot read its flags.
 9. **One resident agent per run.** An unprivileged `albera-agent` inside the sandbox, started once, takes `run`, `read`, `write` and `bundle` over stdin and stdout, with framing and size limits. Nobody enters the namespaces from outside, so no root `nsenter`.
 10. **Code goes in and out as git bundles.** The result goes through `git-quarantine.mjs` (ADR-007), with a size limit before import. **The result is `agent_reported`, never `trusted_verified`:** there is no independent verification here. The room shows the diff as untrusted text, escaped. The quarantine has no check for secrets or LFS, and the page says so.
 11. **Nothing from the host goes in but the task, the bundle and the commands.** `WSLENV` empty, no credential, no Windows path.
@@ -110,10 +110,11 @@ The docs and the approval window must say these plainly.
 |---|---|---|---|
 | R1 | **A Linux kernel bug in the guest.** The job then runs code as the owner: files, the network, and the approval tray, which runs as the owner too, so a later approval on this PC can no longer be trusted | The whole sandbox, the network block included, sits in that same kernel. On Hyper-V this would take a hypervisor escape | Kernel floor, seccomp allowlist, no capabilities. **These lower the odds. Once it happens, nothing here stops it** |
 | R2 | The same bug reaches the owner's other distributions, Docker's included | Same kernel | Same as R1 |
-| R3 | `AF_VSOCK` reaches a Windows file server (assume it opens C:), and port 50000, which WSL uses for its own start-up (what a job could do there is not tested). WSL stopped starting after such connections | **Measured without seccomp.** One seccomp filter is the whole boundary | seccomp allowlist, proved on every run |
+| R3 | `AF_VSOCK` reaches a Windows file server (assume it opens C:), and port 50000, which WSL uses for its own start-up (what a job could do there is not tested). WSL stopped starting after such connections | **Measured without seccomp.** The seccomp filter is the whole boundary for this route | seccomp allowlist, proved on every run |
 | R4 | Text in the repository steers the model | It can run more commands in the sandbox, and put bad code in the bundle | The quarantine, and the owner reads the diff |
 | R5 | Secrets in the repository are visible to the model and its provider | The same as a VM job | The owner picks the repository |
 | R6 | WSL's shared settings: `.wslconfig` `guiApplications` and `gpuSupport` apply to every distribution | Turning them off changes the owner's Ubuntu | Owner decision 2 |
+| R8 | **Routes that do not pass through the job's filter.** A crash: WSL pipes the dump to a root helper that sends it to Windows over vsock, with content the job controls. Measured: a crash of a plain job added a file to `%TEMP%\wsl-crashes` | Closed for this route: the launcher sets the hard core limit to 1. Measured: two crashes in the sandbox, one after trying to raise the limit, added nothing. Other kernel-side helpers were not looked for | The limit, and review |
 | R7 | The disk: a VHD can grow to the default limit on the owner's C: | Fills the drive | `put` and `get` limits, a disk quota to be measured (G6) |
 
 ## Gates: all must pass before any real token is used
@@ -129,6 +130,15 @@ The docs and the approval window must say these plainly.
 | G6 | Limits hold: memory, PIDs, disk, bundle size. A job cannot outlive `stop` | Fork loop, then count |
 | G7 | Root never touches a job path: a planted `.git/config`, hook and symlink do nothing as root | Planted faults |
 | G8 | Zaku's review of this ADR and of each security-tier PR | Before merge |
+
+Also before any real token, from the code review of the launcher:
+
+- Crash again in a plain job after the sandbox test, so the dump counter is shown to be still working (the control so far ran only before it).
+- G6 reads the `max` counters in `pids.events` and `memory.events`, and `memory.max` is checked to be below the VM's memory.
+- List and check the other kernel-side helpers that run outside the filter, such as `request_module` and `binfmt`.
+- A machine check that no shipped image holds an `ALBERA_BROKEN` or `ALBERA_TEST_BUILD` build.
+
+A job that reaches its limits ends the run: the agent is the first process of the PID namespace, and when it dies the namespace goes with it.
 
 ## Rejected
 
@@ -165,7 +175,7 @@ Package installs through an allowlisted proxy. Desktop work (WSLg is a different
 3. **Accept a throwaway distribution instead of a disposable VM for review on this PC?** **Decided 2026-11-05: yes, by the owner**, for WSL2 PRs only. It does not prove the same things as a VM.
 4. **Install the services on YOSUKE-NOTE at Phase 5?** It needs an administrator and a native `claude.exe`. Recommended: yes.
 
-5. **Continue with one seccomp filter as the boundary, or stop and use Windows Pro?** Phase 0 met the stop condition. **Decided 2026-11-05: continue, by the owner.** The per-run proof is required. A bypass needs a kernel bug or a filter mistake. The first is R1, already accepted, and the per-run proof guards against the second.
+5. **Continue with one seccomp filter as the boundary, or stop and use Windows Pro?** Phase 0 met the stop condition. **Decided 2026-11-05: continue, by the owner.** The per-run proof is required. The reasoning given at the time was that a bypass needs a kernel bug or a filter mistake. **That was incomplete:** code review found a route outside the filter (R8), and there may be others of that kind. The per-run proof lowers the chance of a filter mistake; it does not rule one out.
 
 ## Decision line (after adoption)
 
