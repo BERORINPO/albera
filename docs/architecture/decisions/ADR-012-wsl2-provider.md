@@ -50,7 +50,7 @@ What follows: **`wsl.conf` is not a boundary, and root in the guest reaches the 
 | G5 | TCP to the internet, the host and the LAN refused; UDP send "Network is unreachable" |
 | G0 | Root reaches C: through `drvfs` alone (51 entries). 50 MB through a real pipe, identical, 257 ms. Cold start after `wsl --shutdown` 1746 ms. `wsl --import` of the 1.7 GB stand-in 26 s. **`unshare -Ur` works under `no_new_privs`**, so the allowlist must refuse user namespaces. `drvfs` inside a user namespace: "unknown filesystem type". `mount(2)` as `job` not measured (script error) |
 
-What this changes: R3 is no longer unknown. Without seccomp a job reaches a Windows file server. **The boundary between a job and Windows is one seccomp filter.** A mistake in it would be silent.
+What this changes: R3 is no longer unknown. Without seccomp a job reaches a Windows file server. **The boundary between a job and Windows is one seccomp filter and the core limit (R8).** A mistake in either would be silent.
 
 These are now required. Owner decision 5.
 
@@ -110,7 +110,7 @@ The docs and the approval window must say these plainly.
 |---|---|---|---|
 | R1 | **A Linux kernel bug in the guest.** The job then runs code as the owner: files, the network, and the approval tray, which runs as the owner too, so a later approval on this PC can no longer be trusted | The whole sandbox, the network block included, sits in that same kernel. On Hyper-V this would take a hypervisor escape | Kernel floor, seccomp allowlist, no capabilities. **These lower the odds. Once it happens, nothing here stops it** |
 | R2 | The same bug reaches the owner's other distributions, Docker's included | Same kernel | Same as R1 |
-| R3 | `AF_VSOCK` reaches a Windows file server (assume it opens C:), and port 50000, which WSL uses for its own start-up (what a job could do there is not tested). WSL stopped starting after such connections | **Measured without seccomp.** One seccomp filter is the whole boundary | seccomp allowlist, proved on every run |
+| R3 | `AF_VSOCK` reaches a Windows file server (assume it opens C:), and port 50000, which WSL uses for its own start-up (what a job could do there is not tested). WSL stopped starting after such connections | **Measured without seccomp.** The seccomp filter is the whole boundary for this route | seccomp allowlist, proved on every run |
 | R4 | Text in the repository steers the model | It can run more commands in the sandbox, and put bad code in the bundle | The quarantine, and the owner reads the diff |
 | R5 | Secrets in the repository are visible to the model and its provider | The same as a VM job | The owner picks the repository |
 | R6 | WSL's shared settings: `.wslconfig` `guiApplications` and `gpuSupport` apply to every distribution | Turning them off changes the owner's Ubuntu | Owner decision 2 |
@@ -130,6 +130,15 @@ The docs and the approval window must say these plainly.
 | G6 | Limits hold: memory, PIDs, disk, bundle size. A job cannot outlive `stop` | Fork loop, then count |
 | G7 | Root never touches a job path: a planted `.git/config`, hook and symlink do nothing as root | Planted faults |
 | G8 | Zaku's review of this ADR and of each security-tier PR | Before merge |
+
+Also before any real token, from the code review of the launcher:
+
+- Crash again in a plain job after the sandbox test, so the dump counter is shown to be still working (the control so far ran only before it).
+- G6 reads the `max` counters in `pids.events` and `memory.events`, and `memory.max` is checked to be below the VM's memory.
+- List and check the other kernel-side helpers that run outside the filter, such as `request_module` and `binfmt`.
+- A machine check that no shipped image holds an `ALBERA_BROKEN` or `ALBERA_TEST_BUILD` build.
+
+A job that reaches its limits ends the run: the agent is the first process of the PID namespace, and when it dies the namespace goes with it.
 
 ## Rejected
 
