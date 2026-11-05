@@ -147,7 +147,7 @@ test('fileState: a file is ok, a folder or nothing is missing, anything else is 
     assert.equal(await fileState(file), 'ok');
     assert.equal(await fileState(folder), 'missing');
     assert.equal(await fileState(path.join(folder, 'nothing.exe')), 'missing');
-    assert.equal(await fileState('bad name'), 'unknown');
+    assert.equal(await fileState('bad\0name'), 'unknown');
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
