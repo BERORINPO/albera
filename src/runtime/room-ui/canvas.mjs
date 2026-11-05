@@ -99,7 +99,7 @@ export function wirePath(a, b) {
 const isCamera = (nodeId) => nodeId.startsWith('cam:');
 
 /** The canvas. viewportEl is the clipping box; the world inside it pans / zooms. */
-export function createCanvas(viewportEl) {
+export function createCanvas(viewportEl, { onUserMove = () => {} } = {}) {
   const doc = viewportEl.ownerDocument;
   const world = doc.createElement('div');
   world.className = 'world';
@@ -212,6 +212,7 @@ export function createCanvas(viewportEl) {
       drag.moved = true;
       viewportEl.setPointerCapture(drag.id);
       viewportEl.classList.add('panning');
+      onUserMove();
     }
     view = { ...view, tx: drag.tx + dx, ty: drag.ty + dy };
     apply(false);
@@ -225,6 +226,7 @@ export function createCanvas(viewportEl) {
     const factor = Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.0015));
     view = zoomAround(view, event.clientX - box.left, event.clientY - box.top, view.z * factor);
     apply(false);
+    onUserMove();
   }, { passive: false });
 
   apply(false);

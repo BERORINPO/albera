@@ -51,7 +51,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const TYPES = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 const UI_NAMES = ['room.css', 'cam.css', 'figure.css', 'bero.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs',
   'cam.mjs', 'words-cam.mjs', 'figure.mjs', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'cards.mjs', 'words-bero.mjs',
-  'panels.css', 'words-panels.mjs', 'settings.mjs', 'jobs.mjs', 'feedback.mjs', 'words-feedback.mjs'];
+  'panels.css', 'words-panels.mjs', 'settings.mjs', 'jobs.mjs', 'feedback.mjs', 'words-feedback.mjs', 'view-follow.mjs'];
 // The page imports ./feedback-contract.mjs, so it is asked for as /room/feedback-contract.mjs; the file is the runtime's own (shared with the intake Worker), not one of room-ui/. A fixed entry, never a joined path.
 const UI_FILES = Object.freeze(Object.fromEntries([
   ...[['/', 'index.html'], ...UI_NAMES.map((name) => [`/${name}`, name])].map(([route, name]) => [route, Object.freeze([`room-ui/${name}`, TYPES[path.extname(name)]])]),

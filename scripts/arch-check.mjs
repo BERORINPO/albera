@@ -110,7 +110,7 @@ const EXPECTED = {
       'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs',
       'settings.mjs', 'jobs.mjs', 'words-panels.mjs', 'panels.css',
       // feedback panel and its words; feedback-contract.mjs here is only the Node-side stand-in (the host serves src/runtime/feedback-contract.mjs at that URL)
-      'feedback.mjs', 'words-feedback.mjs', 'feedback-contract.mjs'].map((f) => `room-ui/${f}`)],
+      'feedback.mjs', 'words-feedback.mjs', 'feedback-contract.mjs', 'view-follow.mjs'].map((f) => `room-ui/${f}`)],
   public: [
     'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
