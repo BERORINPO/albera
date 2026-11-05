@@ -120,7 +120,7 @@ export function createClaudeMainAi({
         void killDone.then(() => resolve(outcomeOf(out)));
       };
       const stopTree = () => {
-        if (killing || child.exitCode !== null || child.signalCode !== null || !Number.isSafeInteger(child.pid)) return; // only a child that is still ours: a finished PID may be reused
+        if (killing || !child || child.exitCode !== null || child.signalCode !== null || !Number.isSafeInteger(child.pid)) return; // only a child that is still ours: a finished PID may be reused
         killing = true;
         killDone = killTree(child).then((r) => { if (r?.treeConfirmed !== true) note('main-ai tree_stop_unconfirmed'); }, () => { note('main-ai tree_stop_unconfirmed'); });
         timers.push(setTimeout(settle, limits.killSettleMs)); // a child that never reports its end must not hold the caller
@@ -130,6 +130,7 @@ export function createClaudeMainAi({
       try { child = spawnImpl(claude.executable, args, { cwd, env, shell: false, windowsHide: true, detached: platform !== 'win32', stdio: ['pipe', 'pipe', 'ignore'] }); } catch { out.halt = 'spawn_failed'; settle(); return; }
       child.once('error', () => { if (!Number.isSafeInteger(child.pid)) { out.halt = 'spawn_failed'; settle(); } });
       child.once('close', settle);
+      child.once('exit', () => { timers.push(setTimeout(settle, limits.exitGraceMs)); }); // a grandchild holding stdout keeps `close` away for ever, and a finished child cannot be stopped
       child.stdin.on('error', () => {});
       child.stdout.setEncoding('utf8');
       child.stdout.on('error', () => {});

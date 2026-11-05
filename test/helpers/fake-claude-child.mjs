@@ -25,8 +25,15 @@ class FakeChild extends EventEmitter {
   exit(code = 0, signal = null) {
     if (this.exitCode !== null || this.signalCode !== null) return;
     if (signal === null) this.exitCode = code; else this.signalCode = signal;
+    this.emit('exit', code, signal);
     this.stdout.end();
     this.emit('close', code, signal);
+  }
+
+  /** The process ends but something else still holds its stdout: `exit` comes, `close` never does. */
+  exitHeld(code = 0) {
+    this.exitCode = code;
+    this.emit('exit', code, null);
   }
 
   kill() { this.exit(null, 'SIGKILL'); return true; }

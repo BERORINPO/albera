@@ -7,7 +7,7 @@ import test from 'node:test';
 import { CLAUDE_DISALLOWED_TOOLS } from '../src/runtime/claude-code-driver.mjs';
 import { createFakeControlPlaneSecretStore } from '../src/runtime/fake-control-plane-secret-store.mjs';
 import { MAIN_AI_FAILURES, MAIN_AI_SYSTEM_PROMPT } from '../src/runtime/main-ai-contract.mjs';
-import { buildMainAiArgs, createClaudeMainAi } from '../src/runtime/main-ai-claude.mjs';
+import { MAIN_AI_LIMITS, buildMainAiArgs, createClaudeMainAi } from '../src/runtime/main-ai-claude.mjs';
 import { CREDENTIAL_NAME } from '../src/runtime/room-service-hands.mjs';
 import { answers, createFakeClaude, hangs, replyLines } from './helpers/fake-claude-child.mjs';
 
@@ -208,6 +208,28 @@ test('a spawn that throws is spawn_failed; every failure code the adapter can gi
   for (const code of ['busy', 'closed', 'stopped', 'timeout', 'claude_untrusted', 'credential_missing', 'executable_unavailable', 'capability_unverified', 'unexpected_capability', 'unexpected_tool_use', 'output_too_large', 'claude_error', 'no_reply']) {
     assert.ok(MAIN_AI_FAILURES.includes(code), code);
   }
+});
+
+test('a child that exits while something else holds its stdout still ends the turn: with its reply, or as no_reply; the folder goes', async () => {
+  const limits = { ...MAIN_AI_LIMITS, exitGraceMs: 20 };
+  const held = async (child) => { await child.gotInput; for (const line of replyLines(REPLY)) child.say(line); await child.ended; child.exitHeld(0); };
+  const w = await world({ script: held, limits });
+  assert.equal((await w.ai.turn(INPUT)).ok, true);
+  assert.deepEqual(leftovers(w), []);
+  const silent = await world({ script: async (child) => { await child.gotInput; child.say(replyLines(REPLY)[0]); child.exitHeld(1); }, limits });
+  assert.deepEqual(await silent.ai.turn(INPUT), { ok: false, code: 'no_reply' });
+  assert.deepEqual(leftovers(silent), []);
+  assert.equal((await silent.ai.turn(INPUT)).code, 'no_reply', 'the next turn is not busy');
+});
+
+test('a stop that comes while a failed spawn is being cleaned up does not throw', async () => {
+  const w = await world();
+  let failing;
+  failing = createClaudeMainAi({
+    claude: { executable: w.executable, executableSha256: createHash('sha256').update('not a real claude').digest('hex'), model: null }, secretStore: { load: async () => Buffer.from(TOKEN, 'latin1') },
+    runRoot: w.runRoot, claudeGuard: { check: async () => true }, spawnImpl: () => { failing.stop(); throw new Error('no'); }, io: { exists: async () => false },
+  });
+  assert.deepEqual(await failing.turn(INPUT), { ok: false, code: 'spawn_failed' });
 });
 
 test('the source ends processes by the PID it started and never by name', () => {
