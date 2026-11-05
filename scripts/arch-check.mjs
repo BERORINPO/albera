@@ -88,6 +88,8 @@ const EXPECTED = {
     'room-service-config.mjs', 'room-service-approvals.mjs', 'room-service-hands.mjs', 'room-service-folder-guard.mjs', 'room-service-wiring.mjs',
     // Claude Code as the hands: a stdio MCP server over the desktop Broker client (adapter; args = pure flags, server = tools + budget, mcp/mcp-main = entry), the headless `claude -p` driver and its Fake (adapter pair; decision log 2026-11-03+claude-code-hands)
     'albera-desktop-mcp-args.mjs', 'albera-desktop-mcp-server.mjs', 'albera-desktop-mcp.mjs', 'albera-desktop-mcp-main.mjs', 'claude-code-driver.mjs', 'fake-claude-code.mjs', 'fake-albera-desktop-mcp-main.mjs',
+    // the talk panel (mission-approval.md Phase 1; spec/room.md section 10): the main AI's contract (pure), its Claude Code adapter (starts the pinned claude with no tools, rule 5b) and Fake, and the panel's routes (pure)
+    'main-ai-contract.mjs', 'main-ai-claude.mjs', 'fake-main-ai.mjs', 'room-talk-routes.mjs',
     // verified-integration candidate: exact-commit evidence and person-approved compare-and-swap promotion (rule 5e; ADR-007, INT-01 / INT-02)
     'integration-candidate.mjs',
     // host-side git quarantine for submissions (bundles only, bare repositories, hardened git; ADR-007 §2 / §4) and its test double
@@ -110,7 +112,9 @@ const EXPECTED = {
       'figure.mjs', 'figure.css', 'ledger.mjs', 'words-figure.mjs', 'bero.mjs', 'bero.css', 'cards.mjs', 'words-bero.mjs',
       'settings.mjs', 'jobs.mjs', 'words-panels.mjs', 'panels.css',
       // feedback panel and its words; feedback-contract.mjs here is only the Node-side stand-in (the host serves src/runtime/feedback-contract.mjs at that URL)
-      'feedback.mjs', 'words-feedback.mjs', 'feedback-contract.mjs'].map((f) => `room-ui/${f}`)],
+      'feedback.mjs', 'words-feedback.mjs', 'feedback-contract.mjs',
+      // talk panel and its words
+      'talk.mjs', 'words-talk.mjs'].map((f) => `room-ui/${f}`)],
   public: [
     'index.html', 'tokens.css', 'style.css', 'rows.css', 'tidy.css', 'canvas.css',
     'app.mjs', 'api.mjs', 'poll.mjs', 'state.mjs', 'ui-state.mjs', 'render.mjs', 'front.mjs', 'rows.mjs', 'labels.mjs', 'cleanup.mjs', 'handoff.mjs',
@@ -260,6 +264,7 @@ const providerContracts = [
   'src/runtime/room-figures.mjs',
   'src/runtime/bero-director.mjs',
   'src/runtime/fake-guest-checker.mjs',
+  'src/runtime/fake-main-ai.mjs', // the main AI's Fake starts nothing (its real adapter, main-ai-claude.mjs, is under rule 5b)
   'src/runtime/workspace.mjs',
   ...['action-digest', 'receipt-v2', 'receipt-v3', 'strict-json', 'network-attestation', 'task-start-attestation', 'match-code'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
   'src/runtime/fake-attestation-signer.mjs',
@@ -272,7 +277,7 @@ const providerContracts = [
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:
 // the clients, the clock, the sleep and the storage are injected (and the flow must not name the Broker or the Authority: rules 8a / 10a).
-check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs', 'src/runtime/room-settings-routes.mjs', 'src/runtime/room-job-routes.mjs', 'src/runtime/room-service-approvals.mjs', 'src/runtime/integration-candidate.mjs', 'src/runtime/integration-service.mjs', 'src/runtime/desktop-broker-client-contract.mjs', 'src/runtime/albera-desktop-mcp-args.mjs', 'src/runtime/feedback-contract.mjs', 'src/runtime/room-feedback-routes.mjs'], (line) => {
+check('5e pure runtime modules', ['src/runtime/room-contract.mjs', 'src/runtime/workspace.mjs', 'src/runtime/room-figures.mjs', 'src/runtime/bero-director.mjs', 'src/runtime/approved-operation-flow.mjs', 'src/runtime/approved-operation-journal.mjs', 'src/runtime/room-starts.mjs', 'src/runtime/task-start-gate.mjs', 'src/runtime/room-settings-routes.mjs', 'src/runtime/room-job-routes.mjs', 'src/runtime/room-service-approvals.mjs', 'src/runtime/integration-candidate.mjs', 'src/runtime/integration-service.mjs', 'src/runtime/desktop-broker-client-contract.mjs', 'src/runtime/albera-desktop-mcp-args.mjs', 'src/runtime/feedback-contract.mjs', 'src/runtime/room-feedback-routes.mjs', 'src/runtime/main-ai-contract.mjs', 'src/runtime/room-talk-routes.mjs'], (line) => {
   if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return null;
   for (const [re, label] of FORBIDDEN_PURE) if (/** @type {RegExp} */ (re).test(line)) return `${label} is not allowed in a pure runtime module`;
   return null;

@@ -22,6 +22,15 @@ button.danger { background: var(--rec); color: var(--on-accent); border-color: t
 .job-list { margin: 0; padding-left: 18px; font-size: 13px; }
 .job-list li { margin: 4px 0; overflow-wrap: anywhere; }
 
+/* Talk panel (talk.mjs): the conversation, and under a message that proposes a job, its request card. Text only; the card shows the goal and the computer and nothing else. */
+.talk-log { display: flex; flex-direction: column; gap: 10px; max-height: 46vh; overflow: auto; margin: 10px 0; }
+.talk-msg { padding: 8px 10px; border: 1px solid var(--rule); border-radius: 8px; background: var(--paper-2); }
+.talk-msg.you { border-color: var(--accent); }
+.panel .talk-msg p { margin: 2px 0; }
+.panel .talk-text, .panel .talk-goal, .panel .talk-computer { color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.talk-card { margin: 8px 0 2px; padding: 8px 10px; border: 1px solid var(--rule-strong); border-radius: 6px; background: var(--sheet); }
+.talk-card h3 { margin: 0 0 4px; }
+
 /* Feedback panel (feedback.mjs): one box, with a layer behind the text that paints the secret shapes, and a button. The layer and the box must lay text out identically. */
 .fb-field { position: relative; }
 .fb-field textarea, .fb-layer {

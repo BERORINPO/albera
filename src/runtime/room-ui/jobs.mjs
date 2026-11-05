@@ -44,7 +44,8 @@ export async function requestFlow({ computerId, task, start }) {
   return { code: 'requested', job: result.body.job };
 }
 
-function failureText(words, code) {
+/** A failure code as one fixed line: a words code (`panel.*`), `locked`, `unreachable`, or the host's code. Also used by the talk panel's job request card (talk.mjs). */
+export function failureText(words, code) {
   if (typeof code === 'string' && code.startsWith('panel.')) return words.t(code);
   if (code === 'locked') return words.t('panel.locked');
   if (code === 'unreachable') return words.t('panel.unreachable');

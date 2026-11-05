@@ -37,7 +37,7 @@ export const DRIVER_LIMITS = Object.freeze({ minMs: 100, maxMs: 3_600_000, maxTo
 const MAX_CLAIM_LENGTH = 200;
 const INSTRUCTION_FILES = Object.freeze(['CLAUDE.md', 'CLAUDE.local.md', path.join('.claude', 'CLAUDE.md')]);
 const FATAL_MCP_STATUS = new Set(['failed', 'needs-auth', 'disabled']);
-const PREFLIGHT_REASONS = new Set(['executable_unavailable', 'work_dir_invalid', 'work_dir_not_empty', 'work_dir_inherits_instructions', 'config_dir_invalid', 'config_dir_not_empty']);
+export const PREFLIGHT_REASONS = new Set(['executable_unavailable', 'work_dir_invalid', 'work_dir_not_empty', 'work_dir_inherits_instructions', 'config_dir_invalid', 'config_dir_not_empty']);
 const SAFE_TOKEN = /^[A-Za-z0-9_:.-]{1,80}$/u;
 const MODEL_RE = /^[A-Za-z0-9._-]{1,64}$/u;
 const optionsError = () => new TypeError('invalid_claude_code_driver_options');
@@ -77,6 +77,9 @@ export function buildClaudeEnvironment({ oauthToken, configDir, tempDir, platfor
 const isPlainAbsolutePath = (value) => typeof value === 'string' && value.length > 0 && !value.includes('\0') && path.isAbsolute(value) && path.resolve(value) === value && !/^[\\/]{2}/u.test(value);
 const isInside = (child, parent) => { const rel = path.relative(parent, child); return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel)); };
 
+/** The file-system calls the driver's checks use; `override` replaces some of them (a test seam, and the main AI adapter's way to reuse `preflight`). */
+export const makeIo = (override) => Object.freeze({ stat, readdir, realpath, mkdir, writeFile, homedir, exists: (file) => access(file).then(() => true, () => false), ...(override ?? {}) });
+
 function readOptions(options) {
   const o = options ?? {};
   const limits = o.limits ?? {};
@@ -99,12 +102,12 @@ function readOptions(options) {
     systemRoot: o.systemRoot ?? process.env.SystemRoot ?? 'C:\\Windows', // the OS directory, not a secret; only used to build a minimal PATH
     exitGraceMs: o.exitGraceMs ?? 5000, maxLineBytes: o.maxLineBytes ?? DRIVER_LIMITS.maxLineBytes,
     now: o.now ?? Date.now, spawnImpl: o.spawnImpl ?? spawn, killTreeImpl: o.killTreeImpl ?? null, onEvent: typeof o.onEvent === 'function' ? o.onEvent : () => {},
-    io: Object.freeze({ stat, readdir, realpath, mkdir, writeFile, homedir, exists: (file) => access(file).then(() => true, () => false), ...(o.io ?? {}) }),
+    io: makeIo(o.io),
   });
 }
 
-/** Directory and file checks before anything is started. Throws an Error whose message is the fixed reason. */
-async function preflight(c) {
+/** Directory and file checks before anything is started (`c` needs executable, executableSha256, workDir, configDir, io). Throws an Error whose message is the fixed reason. */
+export async function preflight(c) {
   const { io } = c;
   const fixed = (reason, test) => test().catch(() => { throw new Error(reason); });
   const exe = await fixed('executable_unavailable', () => io.stat(c.executable));
