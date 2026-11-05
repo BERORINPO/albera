@@ -32,7 +32,27 @@ A throwaway distribution copied from Ubuntu's binaries, not the proposed image, 
 | Bytes through `wsl.exe` | Identical for one 96 KB file through `cmd` redirection | Not bundle size, not a real pipe |
 | Cold start | 283 ms | The utility VM may have been running already |
 
-What follows: **`wsl.conf` is not a boundary, and root in the guest reaches the owner's C: drive.** Whether a non-root job can reach it over `AF_VSOCK` is open, and if it can, this design fails.
+What follows: **`wsl.conf` is not a boundary, and root in the guest reaches the owner's C: drive.** A non-root job can reach a Windows-side file server over `AF_VSOCK` unless seccomp stops it: see "Phase 0 results".
+
+## Phase 0 results (2026-11-05, stand-in image, no real token)
+
+**The stop condition was met: a non-root job reaches a Windows service.** Phase 1 has not started.
+
+| Gate | Result |
+|---|---|
+| G2, plain job | Host ports 50000, 50001, 50002 and 50005 accept a connection. A scan of 1 to 65535 found only these four |
+| G2, what answers | **Port 50002 answered a 9P hello (`Rversion`, `9P2000.L`): a file server on the Windows side.** No file was read. 50001 closed the connection; 50000 and 50005 gave no reply |
+| G2, in the sandbox without seccomp | The same four ports. Namespaces, `pivot_root` and dropped capabilities do nothing here |
+| G2, in the sandbox with a seccomp filter | `socket(AF_VSOCK)` refused, 31 of 31. **seccomp is the only thing that stops this** |
+| Side effect | After a job touched these ports, every distribution failed to start with `Wsl/Service/CreateInstance/E_UNEXPECTED` until `wsl --shutdown`, the owner's Ubuntu included. Twice after scans or a hello; not after 85 s idle with no scan. Why is not known |
+| G3 | **Not closed.** The control still fails ("Invalid argument" from Ubuntu with interop on), so no result counts. In the sandbox, `/init` still ran as the `.exe` handler even though `/init` is not in the root, and exited 1 by accident |
+| G4 | Good: `/` has only `bin dev etc lib lib64 probe proc sbin tmp usr work`, `/dev` only `null urandom zero`, 4 PIDs, capabilities 0, `/usr` read-only. Open descriptors not listed (the script needed `awk`) |
+| G5 | TCP to the internet, the host and the LAN refused; UDP send "Network is unreachable" |
+| G0 | Root reaches C: through `drvfs` alone (51 entries). 50 MB through a real pipe, identical, 257 ms. Cold start after `wsl --shutdown` 1746 ms. `wsl --import` of the 1.7 GB stand-in 26 s. **`unshare -Ur` works under `no_new_privs`**, so the allowlist must refuse user namespaces. `mount(2)` as `job` not measured (script error) |
+
+What this changes: R3 is no longer unknown. Without seccomp a job reaches a Windows file server and can stop WSL for every distribution. **The boundary between a job and Windows is one seccomp filter.** A mistake in it would be silent.
+
+If the design continues, these become required: the sandbox proves on every run, before the job starts, that `socket(AF_VSOCK)` and a user namespace are refused, and the run stops if not. G3 needs a working control. Owner decision 5.
 
 ## Decision proposed
 
@@ -86,7 +106,7 @@ The docs and the approval window must say these plainly.
 |---|---|---|---|
 | R1 | **A Linux kernel bug in the guest.** The job then runs code as the owner: files, the network, and the approval tray, which runs as the owner too, so a later approval on this PC can no longer be trusted | The whole sandbox, the network block included, sits in that same kernel. On Hyper-V this would take a hypervisor escape | Kernel floor, seccomp allowlist, no capabilities. **These lower the odds. Once it happens, nothing here stops it** |
 | R2 | The same bug reaches the owner's other distributions, Docker's included | Same kernel | Same as R1 |
-| R3 | `AF_VSOCK` or another WSL channel reaches a Windows service | Unknown until G2 and G3. If a non-root job can do this, the design fails | seccomp allowlist, minimal root |
+| R3 | `AF_VSOCK` reaches a Windows file server, and can stop WSL for every distribution | **Measured without seccomp.** One seccomp filter is the whole boundary | seccomp allowlist, proved on every run |
 | R4 | Text in the repository steers the model | It can run more commands in the sandbox, and put bad code in the bundle | The quarantine, and the owner reads the diff |
 | R5 | Secrets in the repository are visible to the model and its provider | The same as a VM job | The owner picks the repository |
 | R6 | WSL's shared settings: `.wslconfig` `guiApplications` and `gpuSupport` apply to every distribution | Turning them off changes the owner's Ubuntu | Owner decision 2 |
@@ -136,10 +156,12 @@ Package installs through an allowlisted proxy. Desktop work (WSLg is a different
 
 ## Owner decisions
 
-1. **Accept R1 on this PC?** A kernel bug in WSL2 would let a job act as you, including on the approval tray. Recommended: yes, only for repositories whose code you would run on this PC anyway. Not for untrusted code.
+1. **Accept R1 on this PC?** A kernel bug in WSL2 would let a job act as you, including on the approval tray. **Decided 2026-11-05: accepted by the owner**, for repositories whose code the owner would run on this PC anyway. Not for untrusted code.
 2. **Turn off `guiApplications` and `gpuSupport` in `.wslconfig`?** It also affects your Ubuntu. Recommended: decide after G4 shows whether it is needed.
 3. **Accept a throwaway distribution instead of a disposable VM for review on this PC?** Recommended: yes, for WSL2 PRs only.
 4. **Install the services on YOSUKE-NOTE at Phase 5?** It needs an administrator and a native `claude.exe`. Recommended: yes.
+
+5. **Continue with one seccomp filter as the boundary, or stop and use Windows Pro?** Phase 0 met the stop condition. Recommended: continue. A bypass needs a kernel bug or a filter mistake. The first is R1, already accepted, and the per-run proof guards against the second.
 
 ## Decision line (after adoption)
 
