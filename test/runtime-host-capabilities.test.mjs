@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import process from 'node:process';
-import { classify, describeLevel, probeHost, runFixed } from '../src/runtime/host-capabilities.mjs';
+import { classify, describeChecklist, describeLevel, fileState, probeHost, probeReport, runFixed } from '../src/runtime/host-capabilities.mjs';
 import { explainMissingWork, parseRuntimeArgs } from '../src/runtime/entry.mjs';
 
 const ENTRY = new URL('../src/runtime/entry.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
@@ -85,6 +88,94 @@ test('probeHost: only fixed files under System32 are asked', async () => {
   assert.ok(files.every(([file]) => /^C:\\Windows\\System32\\(sc|reg)\.exe$/.test(file)), JSON.stringify(files));
 });
 
+const report = (answers, files, extra = {}) => probeReport({
+  platform: 'win32', systemRoot: 'C:\\Windows', userProfile: 'C:\\Users\\me', run: fakeRun({ ...home, ...answers }),
+  readFile: async (file) => (files.includes(file) ? 'ok' : 'missing'), ...extra,
+});
+const stateOf = (checklist, item) => checklist.find((row) => row.item === item)?.state;
+const NODE_EXE = 'C:\\Program Files\\nodejs\\node.exe';
+const CLAUDE_EXE = 'C:\\Users\\me\\.local\\bin\\claude.exe';
+const none = { code: 1060, stdout: '' };
+const there = { code: 0, stdout: '' };
+
+test('probeReport: every item is reported at once, on a PC that lacks several', async () => {
+  const { result, checklist } = await report({ 'sc.exe vmms': none, 'sc.exe AlberaControlPlane': none }, [NODE_EXE]);
+  assert.equal(result.work.reason, 'home_edition');
+  assert.deepEqual(checklist.map((row) => row.item), ['hyperV', 'node', 'claude', 'hello', 'services']);
+  assert.equal(stateOf(checklist, 'hyperV'), 'missing');
+  assert.equal(stateOf(checklist, 'node'), 'ok');
+  assert.equal(stateOf(checklist, 'claude'), 'missing');
+  assert.equal(stateOf(checklist, 'services'), 'missing');
+});
+
+test('probeReport: before the install Hyper-V counts as ok and the VM is listed', async () => {
+  const { checklist } = await report({ 'sc.exe vmms': there, 'sc.exe AlberaControlPlane': none }, [NODE_EXE, CLAUDE_EXE]);
+  assert.deepEqual(checklist.map((row) => row.item), ['hyperV', 'node', 'claude', 'hello', 'vm', 'services']);
+  assert.equal(stateOf(checklist, 'hyperV'), 'ok');
+  assert.equal(stateOf(checklist, 'claude'), 'ok');
+  assert.equal(stateOf(checklist, 'vm'), 'manual');
+});
+
+test('probeReport: after the install Node.js and Claude Code are not asked for, so nothing contradicts the level', async () => {
+  const { result, checklist } = await report({ 'sc.exe vmms': there, 'sc.exe AlberaControlPlane': there }, []);
+  assert.equal(result.level, 'work');
+  assert.deepEqual(checklist.map((row) => row.item), ['hyperV', 'hello', 'vm', 'services']);
+  assert.equal(stateOf(checklist, 'services'), 'ok');
+  assert.ok(!checklist.some((row) => row.state === 'missing'));
+});
+
+test('probeReport: what cannot be read is manual or unknown, never ok', async () => {
+  const failed = await report({ 'sc.exe vmms': new Error('timeout'), 'sc.exe AlberaControlPlane': { code: 5, stdout: '' } }, [], {
+    userProfile: 'relative', readFile: async () => 'unknown',
+  });
+  for (const item of ['hyperV', 'node', 'claude', 'services']) assert.equal(stateOf(failed.checklist, item), 'unknown', item);
+  assert.equal(stateOf(failed.checklist, 'hello'), 'manual');
+  assert.equal(stateOf(failed.checklist, 'vm'), 'manual');
+});
+
+test('probeReport: Node.js is looked for where the installer takes it from', async () => {
+  const asked = [];
+  await report({ 'sc.exe vmms': none, 'sc.exe AlberaControlPlane': none }, [], { readFile: async (file) => { asked.push(file); return 'missing'; } });
+  assert.deepEqual(asked.sort(), [CLAUDE_EXE, NODE_EXE].sort());
+});
+
+test('fileState: a file is ok, a folder or nothing is missing, anything else is unknown', async () => {
+  const folder = mkdtempSync(path.join(tmpdir(), 'albera-doctor-'));
+  try {
+    const file = path.join(folder, 'claude.exe');
+    writeFileSync(file, 'x');
+    assert.equal(await fileState(file), 'ok');
+    assert.equal(await fileState(folder), 'missing');
+    assert.equal(await fileState(path.join(folder, 'nothing.exe')), 'missing');
+    assert.equal(await fileState('bad\0name'), 'unknown');
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test('probeReport: a profile that is not known gives unknown, without looking', async () => {
+  const { checklist } = await report({ 'sc.exe vmms': none, 'sc.exe AlberaControlPlane': none }, [], { userProfile: '' });
+  assert.equal(stateOf(checklist, 'claude'), 'unknown');
+});
+
+test('probeReport: macOS and Linux have no list and run nothing', async () => {
+  const run = async () => { throw new Error('must not run'); };
+  const { result, checklist } = await probeReport({ platform: 'linux', run });
+  assert.equal(result.work.reason, 'platform');
+  assert.deepEqual(describeChecklist(checklist, 'en'), []);
+});
+
+test('describeChecklist gives a line for every item and state, in both languages, and says it is no promise', () => {
+  for (const lang of ['en', 'ja']) {
+    for (const state of ['ok', 'missing', 'unknown', 'manual']) {
+      const items = ['hyperV', 'node', 'claude', 'hello', 'vm', 'services'].map((item) => ({ item, state }));
+      const lines = describeChecklist(items, lang);
+      assert.equal(lines.length, items.length + 2);
+      assert.ok(lines.every((line) => line.length > 0 && !/undefined|[A-Z]:\\/.test(line)), lines.join('|'));
+    }
+  }
+});
+
 test('runFixed reports the exit code and stops a process that hangs', async () => {
   const done = await runFixed(process.execPath, ['-e', 'process.stdout.write("hi"); process.exit(7)']);
   assert.deepEqual(done, { code: 7, stdout: 'hi' });
@@ -115,6 +206,7 @@ test('the real commands: doctor ends with 0 and prints the level; room without a
   const doctor = await runFixed(process.execPath, ['--no-warnings', ENTRY, 'doctor'], { timeoutMs: 20000 });
   assert.equal(doctor.code, 0);
   assert.ok(doctor.stdout.length > 0);
+  if (process.platform === 'win32') assert.match(doctor.stdout, /^ {2}\[[^\]]+\] Hyper-V$/m);
   const room = await runFixed(process.execPath, ['--no-warnings', ENTRY, 'room'], { timeoutMs: 20000 });
   assert.equal(room.code, 2);
 });

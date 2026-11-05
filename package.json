@@ -20,11 +20,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/BERORINPO/pigeonholes.git"
+    "url": "git+https://github.com/BERORINPO/albera.git"
   },
-  "homepage": "https://github.com/BERORINPO/pigeonholes#readme",
+  "homepage": "https://github.com/BERORINPO/albera#readme",
   "bugs": {
-    "url": "https://github.com/BERORINPO/pigeonholes/issues"
+    "url": "https://github.com/BERORINPO/albera/issues"
   },
   "keywords": [
     "claude",

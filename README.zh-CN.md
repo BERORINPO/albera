@@ -1,6 +1,6 @@
 # ALBERA
 
-ALBERA 的名称与精神源自安妮·阿尔伯斯（Anni Albers）的编织艺术。它的长期方向是一个开发平台，让人与多个 AI 一起把知识、代码和开发工作编织在一起。当前版本只是一个只读的本地仪表盘，用于查看 Claude Desktop / Claude Code 的会话：它把会话分成需要你回复、可能卡住、已完成但未读、运行中、最近、可归档几组，同时显示每个会话正在做什么、上下文用量的估算，并帮你准备交接。会话可以按列表查看，也可以在画布上查看，画布上每个项目一张纸。应用其他标签页中的聊天不会显示。
+ALBERA 的名称与精神源自安妮·阿尔伯斯（Anni Albers）的编织艺术。它的长期方向是一个开发平台，让人与多个 AI 一起把知识、代码和开发工作编织在一起。常规的 `albera` 命令是一个只读的本地仪表盘，用于查看 Claude Desktop / Claude Code 的会话：它把会话分成需要你回复、可能卡住、已完成但未读、运行中、最近、可归档几组，同时显示每个会话正在做什么、上下文用量的估算，并帮你准备交接。会话可以按列表查看，也可以在画布上查看，画布上每个项目一张纸。应用其他标签页中的聊天不会显示。
 
 [English](README.md) · [日本語](README.ja.md) · 简体中文
 
@@ -15,9 +15,31 @@ ALBERA 的名称与精神源自安妮·阿尔伯斯（Anni Albers）的编织艺
 - **零依赖。** 需要 Node.js 22 或更高版本。无需构建。
 - **英语和日语。** 页面跟随浏览器语言，终端跟随系统语言。
 
+## 在虚拟机中运行任务（实验性，需要带 Hyper-V 的 Windows）
+
+ALBERA 可以让 AI 在与你的文件隔离的 Hyper-V 虚拟机中工作，默认情况下，每次启动都要等你批准。**目前还没有真实任务在真实电脑上跑完过**，第一次运行很可能会发现问题。
+
+1. 在克隆的目录中查看这台电脑能用什么、还缺什么（只读，不需要管理员）：
+
+   ```sh
+   node src/runtime/entry.mjs doctor
+   ```
+
+2. 用模拟虚拟机试用控制室，任何电脑都可以：
+
+   ```sh
+   node src/runtime/entry.mjs room --demo
+   ```
+
+3. 先在 Hyper-V 管理器中创建虚拟机，目前还没有这方面的指南。安装时需要它：要让 ALBERA 操作虚拟机，请用 `--grant-hyperv-to-broker --vm-name <名称>` 运行 setup。之后再添加需要先卸载，令牌也会被删除。
+4. 当 `doctor` 显示只缺 ALBERA 服务时进行安装：[docs/architecture/host-install.md](docs/architecture/host-install.md)（英文）。
+5. 从开始菜单打开 **Open ALBERA**，在 **Credentials** 中保存令牌，然后在 **Jobs** 中写下任务。
+
+没有 Hyper-V 的电脑可以使用会话看板和演示。任务绝不会改到电脑本机上运行：[docs/architecture/no-vm-mode.md](docs/architecture/no-vm-mode.md)（英文）。
+
 ## 长期方向（尚未实现）
 
-以下是产品规划，不是本版本的功能：运行、监控和控制多个 AI CLI；由 Main AI 编排；无限画布和图视图；Knowledge Graph、Harness Graph 和 Comprehension Graph；Git worktree 与 PR 集成；以及人工介入、审批和开发策略的执行。当前版本不会执行或控制 agent，也不提供这些图或集成。
+以下是产品规划，不是本版本的功能：集成支持多个 AI CLI；由 Main AI 编排；无限画布和图视图；Knowledge Graph、Harness Graph 和 Comprehension Graph；Git worktree 与 PR 集成；以及开发策略的执行。常规的 `albera` 会话看板不会执行或控制 agent。
 
 ## 快速开始
 
@@ -26,7 +48,7 @@ ALBERA 的名称与精神源自安妮·阿尔伯斯（Anni Albers）的编织艺
 克隆并运行当前源码：
 
 ```sh
-git clone https://github.com/BERORINPO/pigeonholes.git albera
+git clone https://github.com/BERORINPO/albera.git
 cd albera
 npm start                       # same as: node src/entry/server.mjs
 ```

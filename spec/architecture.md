@@ -218,3 +218,7 @@
 | 2026-11-04+key-remove-policy-reset | ポリシーに署名した鍵を key_remove で外すと、ポリシーは careful (毎回人が承認) に戻る | 署名者のいないポリシーが残ると Authority が起動できなくなる (ザク、#204) | テスト |
 | 2026-11-05+mission-approval | 話しかけて動く形は「まとめて許可」で作る。人は Hello 1 回で範囲 (VM・開始回数・分) を許可し、範囲内の task.start は Authority が basis grant:<id> の受領書で署名する。範囲は Authority のメモリにだけ持つ (mission-approval.md) | 持ち主の選択 (モック v1)。却下: 毎回許可 (止まりすぎる)、VM の中はおまかせ (人の確認が消える)、policy の delegated tier (許可が常態になる) | テスト (予定) |
 | 2026-11-05+grant-no-attestation | provisional: 範囲の許可は Broker の無ネット証明なしでも認める。ただし持ち主が Authority の config (missionComputers) に載せた VM だけ。承認の窓に「1 件ずつは聞かない」「VM の中は元に戻せない」「ネットの有無は確認していない」を必ず出す | Windows Broker に証明がまだ無い (AGM-1, AGM-2)。人が承認する開始も今は同じ扱い。却下: 証明ができるまで待つ (話しかける形が止まる) | テスト (予定) |
+| 2026-11-05+room-view-follow | 管制室の視点は「ベロに任せる」と「自分で見る」の 2 モード。手で動かすと「自分で見る」に変わる | 人がカメラから引き離されず、上のバーが待っているものを伝えるため | テスト |
+| 2026-11-05+no-vm-mode | Hyper-V のない PC のレベルは「見る」。「任せる」がない理由を示し、ジョブを PC 本体へ移すことはしない | 隔離の意味を弱めずに、Home・macOS・Linux でも動かすため。却下案: 本体で AI を動かす | テスト (予定) |
+| 2026-11-05+no-vm-doctor | 判定は vmms サービスと EditionID で行い、HypervisorPresent は使わない。読めるのは entry.mjs だけ | HypervisorPresent は WSL2 のある Home でも true で、表示が権限になってはいけないため | arch 5c |
+| 2026-11-05+doctor-checklist | doctor は「任せる」に必要なものを一度に全部出す。管理者なしで読めない Windows Hello と VM は「自分で確認」で、「あり」とは言わない | 足りないものを失敗のたびに 1 つずつ知る形をやめるため。却下案: powershell で Get-VM (管理者が要る) | テスト |
