@@ -19,16 +19,17 @@ So the features exist, but nothing tells a person which ones this PC can use.
 
 ## What this is not
 
-- **Not a way to run AI on the host.** No level here starts an AI. See "Ask: not offered yet".
+- **Not a way to run AI on the host.** Watch starts no AI. See "Ask: not offered yet". A WSL2 computer is a separate grant: [ADR-012](decisions/ADR-012-wsl2-provider.md).
 - **Not a replacement for stage 1.** It does not move M4 or M14.
-- **Not a new isolation provider.** Containers and WSL2 stay under ADR-001 and are a separate decision.
+- **Not a new isolation provider.** Containers stay under ADR-001. WSL2 is its own decision: [ADR-012](decisions/ADR-012-wsl2-provider.md).
 
-## Two levels
+## Levels
 
 | Level | Needs | What a person gets | Does an AI run |
 |---|---|---|---|
 | **Watch** | Node.js 22 | The session board, the room demo | No |
 | **Work** | Hyper-V and the installed services | Jobs in VMs, cameras, hands, checkpoints | Yes, in a VM |
+| **Work (WSL2)**, proposed in ADR-012, not built | WSL2 and the ALBERA services | Jobs in a sandbox, weaker than a VM | Yes, its hands in WSL2 |
 
 ## Ask: not offered yet
 
@@ -47,7 +48,7 @@ Ask stays out until all five are closed. That is a security-tier epic of its own
 A change that breaks one needs a security-tier review.
 
 1. **No silent downgrade.** A job for a computer is never moved to the host. With no VM it is refused with a new code, `vm_unavailable`. ADR-001 already says this for `isolation=vm`.
-2. **No AI on the host from this mode.** No writable profile, no tools, no MCP, and no start path.
+2. **No AI on the host from this mode.** No writable profile, no tools, no MCP, and no start path. This rule covers Watch. A WSL2 computer ([ADR-012](decisions/ADR-012-wsl2-provider.md)) is a separate, explicit grant with its own review.
 3. **The probe grants nothing.** It decides only what the page shows. No start path reads it: the Broker, the Authority and the receipts decide as before.
 4. **Unknown means not available.** If the probe fails or times out, Work shows as unavailable with the reason `unknown`.
 5. **Every unavailable feature says why** and what would change it, in one line. No dead buttons.
@@ -89,7 +90,7 @@ The result holds no paths, account names or versions, so the page and a feedback
 | 2 | `room --no-vm`, level in the top bar, the sheet, Jobs disabled with a reason | Normal | Medium |
 | 3 | README: what each level needs. It still describes the old read-only board and the old clone URL | Docs | Small |
 
-None of these starts an AI or changes an approval path.
+None of these phases starts an AI or changes an approval path. ADR-012 has its own phases.
 
 ## Tests
 
@@ -106,7 +107,7 @@ None of these starts an AI or changes an approval path.
 
 ## Owner decisions
 
-1. **No AI on the host in this mode?** Recommended: yes. AI work stays in a VM.
+1. **No AI on the host in this mode?** Recommended: yes. AI work stays in a VM, or in a WSL2 computer once [ADR-012](decisions/ADR-012-wsl2-provider.md) is adopted.
 2. **Leave Ask for later, as its own epic?** Recommended: yes.
 3. **Publish the Runtime to npm?** Recommended: not now. Decide with the first release.
 4. **Names.** Recommended: Watch / Work, shown in Japanese as 見る / 任せる.
