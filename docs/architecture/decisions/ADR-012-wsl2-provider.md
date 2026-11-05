@@ -44,7 +44,7 @@ What follows: **`wsl.conf` is not a boundary, and root in the guest reaches the 
 | G2, what answers | **Port 50002 answered a 9P hello (`Rversion`, `9P2000.L`): a file server on the Windows side.** No file was read. 50001 closed the connection; 50000 and 50005 gave no reply |
 | G2, in the sandbox without seccomp | The same four ports. Namespaces, `pivot_root` and dropped capabilities do nothing here |
 | G2, in the sandbox with a seccomp filter | `socket(AF_VSOCK)` refused, 31 of 31. **seccomp is the only thing that stops this** |
-| Side effect | After a job touched these ports, every distribution failed to start with `Wsl/Service/CreateInstance/E_UNEXPECTED` until `wsl --shutdown`, the owner's Ubuntu included. Twice after scans or a hello; not after 85 s idle with no scan. Why is not known |
+| Side effect | After a job touched these ports, every distribution failed to start with `Wsl/Service/CreateInstance/E_UNEXPECTED` until `wsl --shutdown`, the owner's Ubuntu included. Three times, each after a job had touched the ports; not after 85 s idle with no scan. Why is not known |
 | G3 | **Not closed.** The control still fails ("Invalid argument" from Ubuntu with interop on), so no result counts. In the sandbox, `/init` still ran as the `.exe` handler even though `/init` is not in the root, and exited 1 by accident |
 | G4 | Good: `/` has only `bin dev etc lib lib64 probe proc sbin tmp usr work`, `/dev` only `null urandom zero`, 4 PIDs, capabilities 0, `/usr` read-only. Open descriptors not listed (the script needed `awk`) |
 | G5 | TCP to the internet, the host and the LAN refused; UDP send "Network is unreachable" |
