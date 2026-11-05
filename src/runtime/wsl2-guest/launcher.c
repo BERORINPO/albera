@@ -4,11 +4,13 @@
 // filter is the only thing between a job and a file server on the Windows side, so every failure here ends the run: nothing falls back.
 //
 // Build (static, so the sandbox needs no libraries for it):  gcc -O2 -static -Wall -Wextra -Werror -o albera-launcher launcher.c
-// -DALBERA_BROKEN_FILTER builds a copy that lets AF_VSOCK through. It exists for one acceptance test: that copy must stop at the self-test.
+// -DALBERA_BROKEN=<n> builds a copy with one hole (1 AF_VSOCK, 2 no architecture check, 4 clone unchecked, 5 allow by default).
+// They exist for the acceptance tests: each must stop at the self-test. -DALBERA_TEST_BUILD skips the checks that need the real sandbox, for
+// tests on a plain machine. Neither is ever shipped.
 //
 // Usage: albera-launcher <absolute program> [args...]
 // Exit codes: 90 usage, 91 not safe to start (still privileged), 92 filter did not load, 93 a self-test call was not refused,
-// 94 a call the job needs was refused, 95 exec failed.
+// 94 a call the job needs was refused, 95 exec failed, 96 this is not the sandbox.
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -22,10 +24,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#ifndef ALBERA_BROKEN
+#define ALBERA_BROKEN 0
+#endif
 #ifndef AF_VSOCK
 #define AF_VSOCK 40
 #endif
@@ -78,7 +85,7 @@ static void put(struct sock_filter instruction) {
 
 /** socket(2) and socketpair(2): a short list of families. The network namespace is empty, so AF_INET reaches nothing; programs only expect it to exist. */
 static void family_rule(int syscall_number) {
-#ifdef ALBERA_BROKEN_FILTER
+#if ALBERA_BROKEN == 1
   IF_EQ_ELSE_SKIP((unsigned)syscall_number, 7);
   LOAD(ARG0);
   IF_EQ_SKIP(AF_VSOCK, 4);
@@ -94,29 +101,42 @@ static void family_rule(int syscall_number) {
 }
 
 static void build_filter(void) {
+#if ALBERA_BROKEN != 2
   LOAD(offsetof(struct seccomp_data, arch));
   IF_EQ_SKIP(AUDIT_ARCH_X86_64, 1); /* a 32-bit call has another table of numbers, so it is refused before any number is read */
   RETURN(DENY);
+#endif
   LOAD(NR);
-  IF_BELOW_SKIP(X32_BIT, 1); /* x32 numbers carry this bit */
+  IF_BELOW_SKIP(X32_BIT, 1); /* x32 numbers carry this bit. A second line of defence: no number with the bit is on the list, so default deny refuses them too */
   RETURN(DENY);
   family_rule(SYS_socket);
   family_rule(SYS_socketpair);
+#if ALBERA_BROKEN == 4
+  IF_EQ_ELSE_SKIP(SYS_clone, 1);
+  RETURN(SECCOMP_RET_ALLOW);
+#else
   IF_EQ_ELSE_SKIP(SYS_clone, 4);  /* clone(2) passes its flags in a register, so they can be read */
   LOAD(ARG0);
   IF_SET_SKIP(NS_FLAGS, 1);
   RETURN(SECCOMP_RET_ALLOW);
   RETURN(DENY);
+#endif
   IF_EQ_ELSE_SKIP(SYS_clone3, 1); /* clone3(2) passes them in memory, which seccomp cannot read. ENOSYS makes libc fall back to clone(2) */
   RETURN(NO_SYS);
   for (size_t i = 0; i < sizeof ALLOWED / sizeof ALLOWED[0]; i++) {
     IF_EQ_ELSE_SKIP((unsigned)ALLOWED[i], 1);
     RETURN(SECCOMP_RET_ALLOW);
   }
+#if ALBERA_BROKEN == 5
+  RETURN(SECCOMP_RET_ALLOW);
+#else
   RETURN(DENY);
+#endif
 }
 
-static int refused(long result) { return result == -1 && (errno == EPERM || errno == ENOSYS); }
+/** The filter answers EPERM, except for clone3. Nothing else counts: an x32 call on a kernel without x32 gives ENOSYS with no filter at all.
+ *  mount, fsopen and bpf also give EPERM to a plain user with no filter, so those three lines cannot tell; the ALBERA_BROKEN builds cover the filter itself. */
+static int refused(long result) { return result == -1 && errno == EPERM; }
 
 /** A 32-bit call through the old gate. On a kernel without 32-bit support it fails too, which also counts: it must never succeed. */
 static long legacy_getpid(void) {
@@ -144,7 +164,7 @@ static int self_test(void) {
   errno = 0; clone_result = syscall(SYS_clone, CLONE_NEWUSER, NULL, NULL, NULL, NULL);
   if (clone_result == 0) _exit(0);
   ok &= check("clone NEWUSER", refused(clone_result));
-  errno = 0; ok &= check("clone3", refused(syscall(SYS_clone3, NULL, 0)));
+  errno = 0; ok &= check("clone3", syscall(SYS_clone3, NULL, 0) == -1 && errno == ENOSYS);
   errno = 0; ok &= check("unshare", refused(syscall(SYS_unshare, CLONE_NEWUSER)));
   errno = 0; ok &= check("setns", refused(syscall(SYS_setns, 0, 0)));
   errno = 0; ok &= check("mount", refused(syscall(SYS_mount, "none", "/tmp", "tmpfs", 0, NULL)));
@@ -155,9 +175,48 @@ static int self_test(void) {
   return ok;
 }
 
+#ifndef ALBERA_TEST_BUILD
+/** One read of a small /proc file. Returns the length, or -1. */
+static long read_file(const char *name, char *buffer, size_t size) {
+  int fd = open(name, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return -1;
+  long total = 0, got;
+  while (total < (long)size - 1 && (got = read(fd, buffer + total, size - 1 - (size_t)total)) > 0) total += got;
+  close(fd);
+  buffer[total < 0 ? 0 : total] = 0;
+  return total;
+}
+
+/** The sandbox, checked from the inside: first process of its PID namespace, no capabilities, nothing but loopback, stdio that is only pipes. */
+static int in_sandbox(void) {
+  static char text[8192];
+  if (getpid() != 1) return 0;
+  if (read_file("/proc/self/status", text, sizeof text) <= 0 || strstr(text, "CapEff:\t0000000000000000\n") == NULL) return 0;
+  if (read_file("/proc/net/dev", text, sizeof text) <= 0) return 0;
+  for (char *line = strchr(text, ':'); line != NULL; line = strchr(line + 1, ':')) {
+    char *start = line;
+    while (start > text && start[-1] != '\n') start--;
+    while (*start == ' ') start++;
+    if (strncmp(start, "lo:", 3) != 0 && line[1] != '\0' && strncmp(start, "Inter-", 6) != 0 && strncmp(start, "face", 4) != 0) return 0;
+  }
+  for (int fd = 0; fd <= 2; fd++) {
+    struct stat info;
+    if (fstat(fd, &info) != 0 || !S_ISFIFO(info.st_mode)) return 0;
+  }
+  return 1;
+}
+#endif
+
 int main(int argc, char **argv) {
   if (argc < 2 || argv[1][0] != '/') { dprintf(2, "albera-launcher: usage: albera-launcher <absolute program> [args...]\n"); return 90; }
   if (geteuid() == 0 || getuid() == 0) { dprintf(2, "albera-launcher: refusing to start as root\n"); return 91; }
+#ifndef ALBERA_TEST_BUILD
+  if (!in_sandbox()) { dprintf(2, "albera-launcher: this is not the sandbox\n"); return 96; }
+#endif
+  /* A crash would otherwise reach Windows outside this filter: WSL's core_pattern pipes the dump to a root helper that sends it over vsock.
+     The kernel skips a piped dump when the limit is exactly 1 (0 does not stop it), and without a capability the job cannot raise a hard limit. */
+  struct rlimit no_core = { .rlim_cur = 1, .rlim_max = 1 };
+  if (setrlimit(RLIMIT_CORE, &no_core) != 0) { dprintf(2, "albera-launcher: core limit failed\n"); return 91; }
   if (syscall(SYS_close_range, 3u, ~0u, 0u) != 0) { dprintf(2, "albera-launcher: close_range failed\n"); return 91; }
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) { dprintf(2, "albera-launcher: no_new_privs failed\n"); return 92; }
 
