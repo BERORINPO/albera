@@ -11,12 +11,6 @@ This file is the continuation ledger. `VERIFIED` refers only to the stated evide
 
 Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 
-### 漏れた API キーの差し替え
-- やること: 2026-11-03 に漏れた ALBERA 用の API キーを、Anthropic Console で無効にする。キーを使い続ける場合だけ、新しいキーを作る (サブスクで動かすなら作り直しは不要)
-- 所要: 約 3 分 (Yosuke の作業時間)
-- これで進むもの: 漏れたキーの後始末 (stage 1 を動かすのには不要)
-- 取り消し: できない (無効にしたキーは元に戻らない)
-
 ### サブスクでの最初のジョブ (stage 1 の残り)
 - 済み (2026-11-04): 移行、3 つのサービスの起動、トークンの保存、VM の起動。WebAuthn で承認する形 (#204〜#206) の merge
 - 止まっている理由: この PC の ALBERA は WebAuthn より前の版で、リモートデスクトップの中では承認の鍵 (Windows Hello) が使えない (2026-11-04 に測定)。新しい版へ入れ替える
