@@ -478,8 +478,8 @@ function guestScreensOf(options) {
 }
 
 /** Says why Work is missing, when it is. Display only: what happens next does not depend on it. */
-async function explainMissingWork(print = console.log) {
-  const result = await probeHost();
+export async function explainMissingWork(print = console.log, probe = probeHost) {
+  const result = await probe();
   if (!result.work.available) for (const line of describeLevel(result, systemLang())) print(line);
 }
 

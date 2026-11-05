@@ -215,7 +215,7 @@ check('5 read-only', [...adapters, ...entry], (line) =>
 );
 // docs/architecture/no-vm-mode.md rule 3: the probe grants nothing, so only the command line may read it, to print it.
 check('5c host-capabilities only for showing', runtime, (line, file) => (
-  /host-capabilities/.test(line) && /\bimport\b/.test(line) && path.basename(file) !== 'entry.mjs'
+  /(?:\bfrom\s+|\bimport\s*\(?\s*)['"][^'"]*host-capabilities/.test(line) && path.basename(file) !== 'entry.mjs'
     ? 'only entry.mjs may import host-capabilities.mjs: what the probe says must not decide anything'
     : null
 ));

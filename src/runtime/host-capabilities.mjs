@@ -9,6 +9,7 @@ const PROBE_TIMEOUT_MS = 5000;
 const MAX_OUTPUT_BYTES = 16384;
 const SERVICE_MISSING_EXIT = 1060; // ERROR_SERVICE_DOES_NOT_EXIST, measured on Windows 11 Home
 const HYPERV_SERVICE = 'vmms'; // not Win32_ComputerSystem.HypervisorPresent: that is true on Home with WSL2
+// The one ALBERA service asked about: it is created last, and a person who is no administrator can query it.
 const CONTROL_PLANE_SERVICE = 'AlberaControlPlane';
 const EDITION_KEY = 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion';
 
@@ -73,7 +74,7 @@ const WORDS = Object.freeze({
     demo: 'To try the control room with fake VMs: albera-runtime room --demo',
     home_edition: ['this edition of Windows has no Hyper-V.', 'Windows Pro or above is needed.'],
     role_off: ['Hyper-V is not on, or this edition does not have it.', 'turn on the Hyper-V feature in Windows, if this edition offers it.'],
-    not_installed: ['Hyper-V is here, but the ALBERA services are not installed.', 'install them (docs/architecture/host-install.md).'],
+    not_installed: ['Hyper-V is here, but the ALBERA services are not installed, and jobs with approval need them.', 'install them (docs/architecture/host-install.md).'],
     platform: ['Work needs Hyper-V, which only Windows has.', 'use a Windows PC with Hyper-V.'],
     unknown: ['this PC could not be checked.', 'run albera-runtime doctor again. If it stays like this, please report it.'],
   },
@@ -85,7 +86,7 @@ const WORDS = Object.freeze({
     demo: '偽の VM で管制室を試すには: albera-runtime room --demo',
     home_edition: ['この Windows のエディションには Hyper-V がありません。', 'Windows Pro 以上が必要です。'],
     role_off: ['Hyper-V がオフか、このエディションにありません。', 'このエディションにあれば、Windows の機能で Hyper-V をオンにしてください。'],
-    not_installed: ['Hyper-V はありますが、ALBERA のサービスが入っていません。', 'サービスをインストールしてください (docs/architecture/host-install.md)。'],
+    not_installed: ['Hyper-V はありますが、ALBERA のサービスが入っていません。承認つきのジョブにはサービスが必要です。', 'サービスをインストールしてください (docs/architecture/host-install.md)。'],
     platform: ['任せるには Hyper-V が必要で、Hyper-V は Windows にしかありません。', 'Hyper-V のある Windows PC を使ってください。'],
     unknown: ['この PC を確認できませんでした。', 'もう一度 albera-runtime doctor を実行してください。変わらなければ報告をお願いします。'],
   },

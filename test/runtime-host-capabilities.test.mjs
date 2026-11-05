@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import process from 'node:process';
 import { classify, describeLevel, probeHost, runFixed } from '../src/runtime/host-capabilities.mjs';
-import { parseRuntimeArgs } from '../src/runtime/entry.mjs';
+import { explainMissingWork, parseRuntimeArgs } from '../src/runtime/entry.mjs';
+
+const ENTRY = new URL('../src/runtime/entry.mjs', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 
 const windows = { platform: 'win32', hyperV: 'present', edition: 'Professional', services: 'present' };
 
@@ -98,6 +100,23 @@ test('describeLevel gives a reason for every case, in both languages, without pa
     }
     assert.ok(describeLevel({ level: 'work', work: { available: true, reason: null } }, lang).length >= 1);
   }
+});
+
+test('explainMissingWork prints the reason, and nothing when Work is available', async () => {
+  const lines = [];
+  await explainMissingWork((line) => lines.push(line), async () => classify({ platform: 'linux' }));
+  assert.ok(lines.length >= 3);
+  lines.length = 0;
+  await explainMissingWork((line) => lines.push(line), async () => classify(windows));
+  assert.deepEqual(lines, []);
+});
+
+test('the real commands: doctor ends with 0 and prints the level; room without a job keeps exit 2', async () => {
+  const doctor = await runFixed(process.execPath, ['--no-warnings', ENTRY, 'doctor'], { timeoutMs: 20000 });
+  assert.equal(doctor.code, 0);
+  assert.ok(doctor.stdout.length > 0);
+  const room = await runFixed(process.execPath, ['--no-warnings', ENTRY, 'room'], { timeoutMs: 20000 });
+  assert.equal(room.code, 2);
 });
 
 test('doctor takes no options but --help', () => {
