@@ -67,7 +67,9 @@ test('words: both languages have the same keys and the same {slots}; every failu
   assert.ok(Object.keys(talkWords.en).every((key) => key.startsWith('talk.')));
   const codes = [...MAIN_AI_FAILURES, 'words_empty', 'words_too_long', 'words_unsafe', 'reply_invalid', 'invalid_request', 'locked', 'unreachable', 'request_failed', 'some_future_code'];
   for (const lang of ['en', 'ja']) {
-    const w = makeWords({ [lang]: talkWords[lang] }, { [lang]: panelWords[lang] });
+    globalThis.location = { search: `?lang=${lang}` }; // the language of the words under test, not of the machine that runs the test
+    const w = makeWords(talkWords, panelWords);
+    delete globalThis.location;
     for (const code of codes) {
       const line = failureLine(w, code);
       assert.ok(line.length > 0 && !line.startsWith('talk.') && !line.startsWith('panel.') && !/\{[a-z]+\}/u.test(line), `${lang} ${code}: ${line}`);
