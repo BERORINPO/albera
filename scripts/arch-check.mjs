@@ -213,6 +213,12 @@ check('5 read-only', [...adapters, ...entry], (line) =>
     ? 'write APIs are not allowed'
     : null,
 );
+// docs/architecture/no-vm-mode.md rule 3: the probe grants nothing, so only the command line may read it, to print it.
+check('5c host-capabilities only for showing', runtime, (line, file) => (
+  /(?:\bfrom\s+|\bimport\s*\(?\s*)['"][^'"]*host-capabilities/.test(line) && path.basename(file) !== 'entry.mjs'
+    ? 'only entry.mjs may import host-capabilities.mjs: what the probe says must not decide anything'
+    : null
+));
 check('5a no process execution in read-only layers', [...adapters, ...entry], (line) =>
   /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?child_process['"]|\b(?:spawn|exec|execFile)\s*\(/.test(line) ? 'process execution is restricted to src/runtime/' : null,
 );
