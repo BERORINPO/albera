@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { openRuntimeAuditJournal } from './audit-journal.mjs';
 import { createRuntimeHost } from './host.mjs';
 import { createDesktopWallHost, MAX_WALL_VMS } from './desktop-wall-host.mjs';
+import { describeLevel, probeHost, systemLang } from './host-capabilities.mjs';
 import { HyperVDesktopDriver } from './hyperv-desktop-driver.mjs';
 import { createHyperVDesktopBrokerPrototype } from './hyperv-desktop-broker-prototype.mjs';
 import { createAgentStatusBoard } from './agent-status-board.mjs';
@@ -339,6 +340,10 @@ export function loadRoomChecks({ checksFile, guestPasswordFile, vmIds }, io = { 
 
 export function parseRuntimeArgs(argv, platform = process.platform) {
   const Path = platform === 'win32' ? path.win32 : path;
+  if (argv[0] === 'doctor') {
+    if (argv.length > 2 || (argv.length === 2 && !['--help', '-h'].includes(argv[1]))) throw new Error('invalid_runtime_option');
+    return Object.freeze({ command: 'doctor', help: argv.length === 2 });
+  }
   if (argv[0] === 'wall') return withGuestCapture(argv.slice(1), parseWallArgs, (o) => o.vms.map((vm) => vm.vmId));
   if (argv[0] === 'agent') return withGuestCapture(argv.slice(1), parseAgentArgs, (o) => [o.vm]);
   if (argv[0] === 'fleet') return withGuestCapture(argv.slice(1), parseFleetArgs, (o) => o.jobs.map((job) => job.vmId));
@@ -398,6 +403,7 @@ export function parseRuntimeArgs(argv, platform = process.platform) {
 export const RUNTIME_HELP = `ALBERA Runtime — separate local execution and approval host
 
 Usage:
+  albera-runtime doctor
   albera-runtime --root <absolute-project-directory> [--root <directory> ...] --journal <absolute-jsonl-path> [--port <0-65535>]
   albera-runtime backup --journal <absolute-jsonl-path> --output <new-encrypted-backup-path>
   albera-runtime verify-backup --backup <absolute-backup-path>
@@ -423,6 +429,7 @@ The journal stores redacted decisions and lifecycle events, never prompts or pro
 Journal storage permissions are checked without repair; Runtime refuses broad or unverifiable Windows DACLs and POSIX ownership/modes.
 Backups are created only while Runtime is stopped. Backup, verification, and restore passphrases are entered in a hidden terminal prompt, never as command-line arguments or environment variables. verify-backup authenticates and validates a backup offline without writing files.
 Restore creates a new directory and never overwrites existing files. Keep the passphrase separately; ALBERA cannot recover it.
+doctor says what this PC can use and, for what it cannot, why. It reads only and needs no administrator.
 wall is a local, view-only development command: it shows the latest screen of up to 16 Hyper-V VMs you name, refreshed every 2 seconds, on 127.0.0.1 behind the same one-time code. It never sends input to a VM, keeps only the newest frame in memory and saves nothing. Screens can show secrets; use it only on a PC and display you trust. It uses the same-user prototype Broker and needs Hyper-V Administrators membership.
 agent lets an AI operate one Hyper-V VM desktop through screenshots, mouse and keyboard until it says it is done or a limit (steps, USD, minutes) is reached. Ctrl+C stops it before the next action. The Anthropic API key is read only from ANTHROPIC_API_KEY. Screens are sent to the Anthropic API and can show secrets; use only a VM that holds nothing sensitive. The AI saying DONE is a claim, not proof that the task succeeded. It uses the same-user prototype Broker and needs Hyper-V Administrators membership.
 --planner <model> (agent, fleet, room) adds a planner: that model sees the task and the screen, writes 1 to 8 short sub-goals, gives the hands one at a time (at most 15 steps each), looks at the screen after each and decides next, replan (at most 2), done or failed. Its calls count toward the same USD limits; its DONE is a claim too.
@@ -470,6 +477,12 @@ function guestScreensOf(options) {
   return options.guestCapture?.length ? createGuestScreenSource({ vms: [...options.guestCapture], passwordFile: options.guestPasswordFile }) : null;
 }
 
+/** Says why Work is missing, when it is. Display only: what happens next does not depend on it. */
+async function explainMissingWork(print = console.log) {
+  const result = await probeHost();
+  if (!result.work.available) for (const line of describeLevel(result, systemLang())) print(line);
+}
+
 async function runGuestCapture(options) {
   const result = await runGuestCaptureSetup({ op: options.op, vmId: options.vm, passwordFile: options.guestPasswordFile });
   if (!result.ok) { console.error(`ALBERA Runtime guest-capture ${options.op}: ${result.code}`); process.exitCode = 1; return; }
@@ -479,6 +492,7 @@ async function runGuestCapture(options) {
 }
 
 async function runWall(options) {
+  await explainMissingWork();
   let wall;
   const guestScreens = guestScreensOf(options);
   try {
@@ -728,8 +742,17 @@ async function runRoom(given) {
 async function main() {
   let options;
   try { options = parseRuntimeArgs(process.argv.slice(2)); }
-  catch (error) { console.error(`ALBERA Runtime: ${error.message}`); process.exitCode = 2; return; }
+  catch (error) {
+    console.error(`ALBERA Runtime: ${error.message}`);
+    if (error.message === 'runtime_fleet_job_required') await explainMissingWork(console.error);
+    process.exitCode = 2;
+    return;
+  }
   if (options.help) { console.log(RUNTIME_HELP); return; }
+  if (options.command === 'doctor') {
+    for (const line of describeLevel(await probeHost(), systemLang())) console.log(line);
+    return;
+  }
   // Only checked to be a file here; the guest screen source and the setup read it.
   if ((options.guestCapture?.length || options.command === 'guest-capture') && !statSync(options.guestPasswordFile, { throwIfNoEntry: false })?.isFile()) {
     console.error('ALBERA Runtime: runtime_guest_password_file_missing'); process.exitCode = 2; return;
