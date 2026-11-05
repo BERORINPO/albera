@@ -39,6 +39,9 @@ export function bootstrapFromHash(hash) {
 }
 
 // Credential field and job screen (settings.mjs, jobs.mjs). The credential call is write-only: no call here ever receives the value back.
+/** The page the demo exe opens (`?demo=1`). It only takes buttons away: a page with no such routes must not ask for a token. */
+export const isDemoPage = (search) => new URLSearchParams(search ?? '').has('demo');
+export const DEMO_HIDDEN_BUTTONS = Object.freeze(['open-settings', 'open-jobs', 'open-feedback']);
 export const getCredentials = () => call('api/settings/credentials');
 export const saveCredential = (name, value) => postJson('api/settings/credential', { name, value });
 export const eraseCredential = (name) => postJson('api/settings/credential/erase', { name });

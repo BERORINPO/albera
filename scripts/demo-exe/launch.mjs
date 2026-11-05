@@ -17,7 +17,7 @@ child.stdout.on('data', (chunk) => {
   opened = true;
   console.log('The page is open in your browser. Close this window to stop the demo.');
   if (process.env.ALBERA_DEMO_NOBROWSER) return;
-  spawn('C:\\Windows\\System32\\cmd.exe', ['/d', '/c', 'start', '', `http://127.0.0.1:${port}/room/#b=${code}`], { stdio: 'ignore', detached: true }).unref();
+  spawn('C:\\Windows\\System32\\cmd.exe', ['/d', '/c', 'start', '', `http://127.0.0.1:${port}/room/?demo=1#b=${code}`], { stdio: 'ignore', detached: true }).unref();
 });
 child.on('error', () => { console.log('NOT DONE: the demo could not start.'); process.exit(1); });
 child.on('exit', (code) => process.exit(code ?? 1));
