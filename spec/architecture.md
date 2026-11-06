@@ -222,3 +222,4 @@
 | 2026-11-05+no-vm-mode | Hyper-V のない PC のレベルは「見る」。「任せる」がない理由を示し、ジョブを PC 本体へ移すことはしない | 隔離の意味を弱めずに、Home・macOS・Linux でも動かすため。却下案: 本体で AI を動かす | テスト (予定) |
 | 2026-11-05+no-vm-doctor | 判定は vmms サービスと EditionID で行い、HypervisorPresent は使わない。読めるのは entry.mjs だけ | HypervisorPresent は WSL2 のある Home でも true で、表示が権限になってはいけないため | arch 5c |
 | 2026-11-05+doctor-checklist | doctor は「任せる」に必要なものを一度に全部出す。管理者なしで読めない Windows Hello と VM は「自分で確認」で、「あり」とは言わない | 足りないものを失敗のたびに 1 つずつ知る形をやめるため。却下案: powershell で Get-VM (管理者が要る) | テスト |
+| 2026-11-06+agm-2-broker-key | 株主が AGM-2 を承認。Broker の鍵を発行して Authority に登録し、同じ鍵で WSL2 の run lease も署名する (domain string は別)。AGM-1 は未決 | WSL2 の実ジョブの最後の関門。鍵は管理者のインストーラー実行で作るので、承認だけでは何も発行されない |

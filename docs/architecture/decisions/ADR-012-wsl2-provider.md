@@ -182,7 +182,7 @@ Not verified:
 - The room page itself has not been opened in a browser with a result. Its pure parts have tests.
 - A result is not kept across a restart of the service, except as the bundle file.
 
-**Before a lease source is wired (Zaku, on the review of this part; goes with AGM-2):**
+**Before a lease source is wired (Zaku, on the review of this part). AGM-2 was approved on 2026-11-06, including run leases, so these are what remains:**
 
 - The SEC-2 lab result. No job can run before then, which is why it may wait.
 - **`wsl2.git` has no pin.** It is an absolute path only, and that git parses a hostile pack as the Control Plane's identity, the one that opens the DPAPI token. Put it under the folder guard, as `claude.exe`, with a minimum version: one in which `fetch.fsckObjects` is measured to work on a bundle.
