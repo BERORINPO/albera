@@ -22,9 +22,9 @@ export const EXEC_FLAGS = Object.freeze({ outputCut: 1, outOfTime: 2 });
 /** Every word a refusal can carry (Reason.cs). Any other refusal text is a reply that is not the bridge's. */
 export const BRIDGE_REASONS = Object.freeze([
   'bad_frame', 'bad_verb', 'bad_args', 'peer_denied', 'internal',
-  'lease_missing', 'lease_malformed', 'lease_signature', 'lease_not_yet_valid', 'lease_expired', 'lease_target', 'lease_generation', 'lease_used', 'base_moved', 'repository_unknown', 'head_unreadable',
+  'lease_missing', 'lease_malformed', 'lease_signature', 'lease_not_yet_valid', 'lease_expired', 'lease_target', 'lease_generation', 'lease_used', 'base_moved', 'repository_unknown', 'head_unreadable', 'lease_floor_unreadable',
   'image_missing', 'image_hash', 'wsl_unavailable', 'wsl_old', 'kernel_old', 'floor_expired', 'run_name', 'run_exists', 'too_many_runs', 'state_unwritable', 'state_full', 'import_failed',
-  'agent_start', 'bundle_failed', 'bundle_too_large',
+  'agent_start', 'bundle_failed', 'bundle_too_large', 'run_stopped', 'bridge_stopping',
   'no_run', 'run_busy', 'calls_exhausted', 'too_large', 'bad_path', 'agent_gone', 'agent_limit', 'agent_timeout', 'unregister_failed',
   'agent_bad_path', 'agent_too_large', 'agent_file_error', 'agent_no_start', 'agent_failed',
 ]);

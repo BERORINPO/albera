@@ -293,6 +293,19 @@ test('client: a reply that does not come in time ends the helper, and the outcom
   assert.equal(fake.seen.killed, 1);
 });
 
+test('client: an answer after the call was refused sends nothing and starts no timer (SEC-4)', { timeout: 15_000 }, async () => {
+  let helper;
+  const fake = fakeSpawn({ answer: (child) => { helper = child; } });
+  const client = await clientWith(fake, { connectTimeoutMs: 100 });
+  await assert.rejects(client.end('op-1'), bridgeFailure('timeout', 'not_applied'));
+  const timers = process.getActiveResourcesInfo().filter((name) => name === 'Timeout').length;
+  helper.stdout.write(hostFrame({ ok: true }));
+  await new Promise((resolve) => { setImmediate(resolve); });
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.equal(fake.seen.request.length, 0, 'the late {ok:true} proves nothing any more');
+  assert.equal(process.getActiveResourcesInfo().filter((name) => name === 'Timeout').length, timers);
+});
+
 test('client: a bad argument, a helper not at its pin or a changed helper start nothing', async () => {
   const fake = fakeSpawn();
   const client = await clientWith(fake);

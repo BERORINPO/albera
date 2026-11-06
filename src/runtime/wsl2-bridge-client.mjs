@@ -97,13 +97,14 @@ function exchange(config, verb, frame, replyTimeoutMs) {
       if (error instanceof Wsl2BridgeError) settle(reject, error);
       else fail(error instanceof WireError ? error.code : 'transport_error');
     };
-    const arm = (ms) => { clearTimeout(timer); timer = setTimeout(() => fail('timeout'), ms); };
+    const arm = (ms) => { clearTimeout(timer); if (!settled) timer = setTimeout(() => fail('timeout'), ms); };
     const onProved = () => {
       sent = true; // from here the outcome is unknown even if the write fails
       arm(replyTimeoutMs);
       child.stdin.write(frame);
     };
     const onData = (chunk) => {
+      if (settled) return; // a late answer of a call already refused: it must not send the request or start a timer
       try {
         if (!sent) {
           head = Buffer.concat([head, chunk]);

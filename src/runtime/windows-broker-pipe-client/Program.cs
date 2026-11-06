@@ -46,10 +46,10 @@ internal static partial class Program
 
     // Open with SQOS identification, then verify the pipe server on the CONNECTED handle. Every refusal ends the process through Finish, so nothing is written to a server that failed a check.
     // Shared by the one-request modes and the desktop session (DesktopSession.cs): the same owner, PID, session and image checks.
-    private static NamedPipeClientStream OpenVerified(string pipeName, string? ownerSid, uint? pid, string? serviceName, string? imageSha256)
+    private static NamedPipeClientStream OpenVerified(string pipeName, string? ownerSid, uint? pid, string? serviceName, string? imageSha256, bool ownerOnly = false)
     {
         bool serviceMode = serviceName is not null;
-        uint? expectedPid = serviceMode ? ServicePid(serviceName!) : pid; // null only from the relay mode, which requires an owner SID: the other modes pass ValidExpectation (exactly one of PID and service)
+        uint expectedPid = ownerOnly ? (ownerSid is not null && pid is null && !serviceMode ? 0u : throw new InvalidOperationException()) : serviceMode ? ServicePid(serviceName!) : pid!.Value; // no PID is a choice a mode names, never what a missing value falls into: without ownerOnly a null PID throws
         SecurityIdentifier expectedOwner = ownerSid is not null ? new SecurityIdentifier(ownerSid)
             : (SecurityIdentifier)new NTAccount("NT SERVICE", serviceName!).Translate(typeof(SecurityIdentifier));
 
@@ -61,7 +61,7 @@ internal static partial class Program
         SecurityIdentifier? owner = pipe.GetAccessControl().GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
         if (owner is null || !owner.Equals(expectedOwner)) Finish(Failure("server_identity_mismatch"), ExitOk);
         if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out uint serverPid)) throw new Win32Exception();
-        if (expectedPid is { } wanted && serverPid != wanted) Finish(Failure("server_identity_mismatch"), ExitOk);
+        if (!ownerOnly && serverPid != expectedPid) Finish(Failure("server_identity_mismatch"), ExitOk);
         if (serviceMode && (!GetNamedPipeServerSessionId(pipe.SafePipeHandle, out uint session) || session != 0)) Finish(Failure("server_identity_mismatch"), ExitOk);
         if (imageSha256 is not null && !string.Equals(ImageSha256(serverPid), imageSha256, StringComparison.Ordinal)) Finish(Failure("server_identity_mismatch"), ExitOk);
         return pipe;

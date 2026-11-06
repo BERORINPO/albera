@@ -11,17 +11,17 @@ import { createWsl2BridgeClient } from './wsl2-bridge-client.mjs';
 export const SHELL_MCP_ENTRY_ERRORS = Object.freeze({ args: 'albera_shell_mcp_invalid_args', bridge: 'albera_shell_mcp_bridge_unavailable' });
 
 /**
- * @param {{ argv: string[], stdin: NodeJS.ReadableStream, stdout: NodeJS.WritableStream, stderr: { write: Function }, createClient?: Function, now?: () => number, env?: object }} io
+ * @param {{ argv: string[], stdin: NodeJS.ReadableStream, stdout: NodeJS.WritableStream, stderr: { write: Function }, createClient?: Function, createServer?: Function, now?: () => number, env?: object }} io
  * @returns {Promise<number>} the exit code
  */
-export async function runShellMcpEntry({ argv, stdin, stdout, stderr, createClient = createWsl2BridgeClient, now = Date.now, env = process.env }) {
+export async function runShellMcpEntry({ argv, stdin, stdout, stderr, createClient = createWsl2BridgeClient, createServer = createShellMcpServer, now = Date.now, env = process.env }) {
   scrubCredentialEnvironment(env); // the token may be in the environment Claude Code hands down (NOT VERIFIED, M11); this server needs none
   let server;
   try {
     const args = parseShellMcpArgs(argv);
     if (args.bridge === null) throw new TypeError('no_bridge');
-    const client = createClient(args.bridge);
-    server = createShellMcpServer({ client, operationId: args.operationId, maxCalls: args.maxCalls, expiresAtMs: args.expiresAtMs, now });
+    const { run, put, get } = createClient(args.bridge); // begin, end and stop stay out of this process's server: they are the hands' (ADR-012, Phase 3 results)
+    server = createServer({ client: Object.freeze({ run, put, get }), operationId: args.operationId, maxCalls: args.maxCalls, expiresAtMs: args.expiresAtMs, now });
   } catch (error) {
     stderr.write(`${error?.message === 'invalid_shell_mcp_args' || error?.message === 'no_bridge' ? SHELL_MCP_ENTRY_ERRORS.args : SHELL_MCP_ENTRY_ERRORS.bridge}\n`);
     return 2;

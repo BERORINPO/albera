@@ -7,7 +7,7 @@ using System.Text.Json;
 //   Node -> helper, first frame [int32 little-endian length][JSON, at most 8 KiB]: {pipeName, timeoutMs, replyTimeoutMs, expect:{ownerSid[, imageSha256]}}
 //   helper -> Node: {ok:true} in the same form once the server is proved; or {ok:false,code} and the process ends. Node sends nothing else before {ok:true}.
 //   Node -> helper, then ONE wire frame (u32 big-endian length, 1 to MaxBridgeRequestBytes), read only after the proof and copied to the pipe; the pipe's bytes go to stdout, unread, until the server closes.
-// The bridge has no service and its PID is not known in advance, so the proof is the pipe's OWNER on the CONNECTED handle (OpenVerified with neither a PID nor a service name), plus the server image when Node pinned one.
+// The bridge has no service and its PID is not known in advance, so the proof is the pipe's OWNER on the CONNECTED handle (OpenVerified with `ownerOnly`, which only this mode passes), plus the server image when Node pinned one.
 // Only the owner of the name can be the owner of the pipe (setting another SID needs a restore privilege), and the bridge refuses a squatter at its own start with FILE_FLAG_FIRST_PIPE_INSTANCE.
 // After {ok:true} nothing but relayed bytes reach stdout: a failure ends the process in silence and Node sees a short read. `replyTimeoutMs` bounds the whole relay, so a helper Node forgot cannot stay.
 internal static partial class Program
@@ -24,7 +24,7 @@ internal static partial class Program
         if (ReadBridgeStart(stdin) is not { } start) return ExitOk;
         bool armed = true; // read and written only under Gate: a callback that fired just before the answer finds it answered and does nothing
         using Timer watchdog = new(_ => { lock (Gate) { if (armed) Finish(Failure("server_identity_unavailable"), ExitOk); } }, null, start.TimeoutMs, Timeout.Infinite);
-        using NamedPipeClientStream pipe = OpenVerified(start.PipeName, start.OwnerSid, null, null, start.ImageSha256);
+        using NamedPipeClientStream pipe = OpenVerified(start.PipeName, start.OwnerSid, null, null, start.ImageSha256, ownerOnly: true);
         lock (Gate) { armed = false; watchdog.Change(Timeout.Infinite, Timeout.Infinite); }
         WriteHostFrame("{\"ok\":true}"u8.ToArray());
         using Timer lifetime = new(_ => Environment.Exit(ExitOk), null, start.ReplyTimeoutMs, Timeout.Infinite);

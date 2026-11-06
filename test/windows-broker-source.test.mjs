@@ -154,12 +154,15 @@ test('pipe client relay mode: the server is proved through the shared verificati
   assert.ok(relay.replace(/\n$/u, '').split('\n').length <= 110, 'BridgeRelay.cs stays reviewable (110 lines)');
   assert.equal(/CreateFileW|NamedPipeClientStream\(|SafePipeHandle\(|DllImport|Process\.Start|ProcessStartInfo|Impersonat/u.test(code), false, 'the relay opens no pipe of its own and starts nothing');
   assert.match(pipeClientProgram, /args is \["wsl-bridge"\]/u, 'the mode is chosen by one exact argument');
-  const verified = code.indexOf('OpenVerified(start.PipeName, start.OwnerSid, null, null, start.ImageSha256)');
+  const verified = code.indexOf('OpenVerified(start.PipeName, start.OwnerSid, null, null, start.ImageSha256, ownerOnly: true)');
   const relayed = code.indexOf('RelayOneRequest(stdin, pipe, stdout);');
   assert.ok(verified > 0 && code.indexOf('{ok:true}') === -1 && verified < code.indexOf('WriteHostFrame(') && code.indexOf('WriteHostFrame(') < relayed, 'proof, then the answer to Node, then the relay');
   assert.ok(code.indexOf('ReadFull(stdin, header)') > code.indexOf('private static void RelayOneRequest'), 'the request is read only inside the relay');
   assert.match(code, /new SecurityIdentifier|SecurityIdentifier\(ownerSid\)/u, 'the owner SID is required and parsed');
-  assert.match(pipeClientProgram, /if \(expectedPid is \{ \} wanted && serverPid != wanted\)/u, 'a PID that was asked for is still compared');
+  assert.match(pipeClientProgram, /if \(!ownerOnly && serverPid != expectedPid\)/u, 'every other mode still compares the PID');
+  assert.match(pipeClientProgram, /bool ownerOnly = false\)/u, 'owner-only is off unless a mode names it');
+  assert.match(pipeClientProgram, /ownerOnly \? \(ownerSid is not null && pid is null && !serviceMode \? 0u : throw new InvalidOperationException\(\)\) : serviceMode \? ServicePid\(serviceName!\) : pid!\.Value;/u, 'it needs an owner SID and no other expectation, and a null PID without it throws');
+  assert.equal([...`${pipeClientCode}\n${desktopSessionCode}\n${code}`.matchAll(/ownerOnly: true/gu)].length, 1, 'only the relay asks for it');
   assert.match(pipeClientProgram, /\(pid is null\) != \(serviceName is null\)/u, 'the other modes still need exactly one of PID and service, so only the relay reaches OpenVerified with neither');
   assert.deepEqual([...new Set([...code.matchAll(/Failure\("([a-z_]+)"\)/gu)].map((m) => m[1]))].sort(), ['invalid_request', 'server_identity_unavailable'], 'the relay adds no result code');
 });

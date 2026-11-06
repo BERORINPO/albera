@@ -137,7 +137,7 @@ Built: the MCP server `albera_shell` (`albera-shell-mcp-*.mjs`; tools `run`, `re
 
 - **The server-SID check is in the helper, not in Node.** Node cannot read a pipe's owner, and a separate look at the name would not be the connection that is used. So a call starts the helper (`wsl-bridge`), which compares the pipe's owner with the expected SID on the connected handle, through the same `OpenVerified` as the Broker's modes, and says `{ok:true}`. Only then does Node write the request, and only then does the helper read it. A server that fails gets no byte. The bridge has no service and no known PID, so owner (and optionally the image) is the whole proof here, where the Broker's modes also compare a PID.
 - **The wire stays in Node.** After the proof the helper carries one frame out and the reply back without reading them; the bounds and the meaning are `wsl2-bridge-wire.mjs`. A reply is bounded by verb (64 bytes of word for `begin`, `put`, `end`, `stop`).
-- **This differs from the picture above: the lease does not go through `albera_shell`.** The server has `run`, `read` and `write` and no lease: it reaches `exec`, `put` and `get` of a run that already exists. `begin`, `end` and `stop` are the client's too, for the hands to call around the driver (Phase 4), so a refused `begin` is known before a model starts, a lease is never in the MCP config, and a model cannot begin or end a run. Nothing calls `begin` yet.
+- **The lease does not go through `albera_shell`** (the first version of the picture below said so). The server has `run`, `read` and `write` and no lease: it reaches `exec`, `put` and `get` of a run that already exists. `begin`, `end` and `stop` are the client's too, for the hands to call around the driver (Phase 4), so a refused `begin` is known before a model starts, a lease is never in the MCP config, and a model cannot begin or end a run. Nothing calls `begin` yet.
 - **Limits on both sides.** The server counts `maxCalls` and watches `expiresAtMs` itself: a command is told at most the time left, a call still in flight at the deadline is answered `time_limit_reached`, and the server then takes no more. It also stops at once on a refusal that means the run is over, and after three transport failures in a row. A missing file or a bad path is the model's to handle and stops nothing.
 - **What comes back is data.** Output and file contents are decoded (invalid UTF-8 replaced), cleaned of control characters, cut at 256 KiB and labelled as data; nothing in the server acts on them. A file that is not valid UTF-8 is not shown. No credential passes through: the entry deletes the token from its environment and the helper gets four system variables. A refusal reaches the model only as a word of `Reason.cs`, and any other text is `invalid_response`.
 
@@ -148,6 +148,13 @@ Evidence, all with fakes: `test/runtime-wsl2-bridge-client.test.mjs` (the number
 - The owner check only ever ran same-user. A Control Plane account reaching the owner's bridge has not been tried: reading the owner needs the `READ_CONTROL` the bridge's ACE grants, and the image pin needs to open the owner's process, which another account may be refused. Both fail closed (`server_identity_unavailable`), so a pin could make every call fail. Run it in the lab before a pin is configured.
 - The owner proves who made the pipe, not which program: any process of the owner's could hold that name if the bridge is not running. That is the owner's own side of R1, and the image pin narrows it.
 - Claude Code itself has not run with these tools: the driver's behaviour is against `fake-claude-code.mjs`.
+- A pipe name differs in grammar: the bridge's config takes a `.` and must start with a letter or digit (`IsPlainPipeName`), the client and the helper take `[A-Za-z0-9_-]`, so a leading `_` or `-` passes there. A name with a dot in the config is refused by the client, never widened: use a name all three take. The bridge is left as it is.
+- `write` is cut at 256 Ki characters so that a call fits the stdio line of 1 Mi characters when JSON doubles every character. Content that is nearly all control characters, which JSON writes as six, can still exceed the line and is answered `line_too_long` with no id.
+
+**Before Phase 4 (Zaku, on the review of this part):**
+- **SEC-1: the helper's pin covers the `.exe` only.** The manifest and `helperSha256` hash the apphost, and the program's `dll` beside it is not covered, so a swapped `dll` would pass. Measure the publish output, then make it a single file or hash the whole tree.
+- **SEC-2: the proof is the owner alone,** so another program running as the same SID passes. Settle in the lab, with two accounts, whether the image pin works from the Control Plane's account. If it does not, write down here that this is accepted, and why.
+- **The hands treat `no_run` from `end` as a failure.** It means the bridge ended the run first (lease end, a generation below the floor, a stop), so whatever was to be collected at the end is not there.
 
 ## Decision proposed
 
@@ -174,7 +181,8 @@ Evidence, all with fakes: `test/runtime-wsl2-bridge-client.test.mjs` (the number
                   claude -p (Windows side, no built-in tools, holds the token)
                        │ MCP: run / read / write
                        v
-                  albera_shell ── pipe + lease ──> WSL bridge (owner's session; the only wsl.exe caller)
+                  albera_shell ── pipe: exec, put, get ──> WSL bridge (owner's session; the only wsl.exe caller)
+                       the hands ── pipe: begin + lease, end, stop ──┘ (around the driver, Phase 4)
                                                      │ checks lease, image hash, kernel floor, call count
                                                      v
                                      albera-run-<id> (new distribution)
