@@ -195,10 +195,15 @@ Not verified: the CNG path with a real key (only the refusal of a missing key ra
 **Before the installer makes the key (Zaku, on the review of this part):**
 
 - The SEC-2 lab result, and N7 and C6. No job can run before then, which is why they may wait.
-- The Broker signs exactly the approved `repositoryId` and `baseOid`.
 - The four pipe instances serve `stop` and `status` alike. Show that a slow `status` does not keep a `stop` waiting.
 - A job chooses what `HEAD` is. Other refs in its bundle are not inspected, and they stay in the kept file. Applying a result must take only `resultOid`, through `buildCandidate`.
 - Whether Windows `child.kill()` leaves a child `index-pack` running after a timeout on a hostile pack was not measured.
+- The installer's `Test-ComputersList` must accept `kind: wsl2`.
+- One step hands the public key to all three: the bridge's `brokerKeyId` and `brokerSpki`, the Authority's pinned key, the Broker's `keyId`, and it makes the floor file. Something must check that they agree.
+- The installer refuses a key of that name that already exists. The Broker checks only the algorithm and that it can sign, not the ACL or export. Whether a non-administrator can create that name first belongs in C6.
+- A runbook for a lost or exposed key: the bridge reads its key once at start and holds one `keyId`, so a rotation has no overlap. The revocation runbook covers generations only.
+- Recovery from exit 77: a lost key or a changed ACL stops the whole Broker, VM claims included.
+- A run under a Broker-signed lease on the real bridge, as the first check of a job. `JSON.stringify`'s output has not been shown to pass `StrictJson` there.
 
 ## Decision proposed
 

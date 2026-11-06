@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it, test } from 'node:test';
 import { createGitQuarantine } from '../src/runtime/git-quarantine.mjs';
-import { collectWsl2Result, createWsl2Readiness, createWsl2ToolGuard, headOfBundle, KEPT_RESULTS, markUnsafeText, MAX_RESULT_BYTES, READY_REFRESH_MS, RESULT_DEADLINE_MS, runWsl2Job, wsl2TargetLookup } from '../src/runtime/room-service-wsl2-run.mjs';
+import { collectWsl2Result, createWsl2Readiness, createWsl2ToolGuard, driverTimeLeftMs, wsl2Refusal, headOfBundle, KEPT_RESULTS, markUnsafeText, MAX_RESULT_BYTES, READY_REFRESH_MS, RESULT_DEADLINE_MS, runWsl2Job, wsl2TargetLookup } from '../src/runtime/room-service-wsl2-run.mjs';
 import { SHELL_HANDS } from '../src/runtime/albera-shell-mcp-server.mjs';
 
 // One WSL2 job around the driver, with a fake bridge client and a fake driver. The result path uses REAL git and the real quarantine in temporary folders. No WSL, no token.
@@ -70,15 +70,6 @@ test('headOfBundle reads HEAD from the header and nothing else counts', () => {
 });
 
 describe('the run around the driver', () => {
-  it('no lease: nothing reaches the bridge and the driver never starts', async () => {
-    const t = job({ lease: null });
-    const { result, collected } = await t.done;
-    assert.equal(result.reason, 'wsl2_lease_unavailable');
-    assert.equal(collected, null);
-    assert.deepEqual(t.client.calls, []);
-    assert.equal(t.driverCalls.length, 0);
-  });
-
   it('the order is begin, the driver, bundle, end, and the driver gets the shell hands and no lease', async () => {
     const t = job();
     const { result, collected } = await t.done;
@@ -279,9 +270,10 @@ test('SEC-003: a stop or the deadline ends the reading of a result', async () =>
 });
 
 test('a helper or git that is not administrator-only, or an old git, stops the job before the bridge', async () => {
-  const t = job({ guard: { check: async () => false } });
-  assert.equal((await t.done).result.reason, 'wsl2_tools_untrusted');
-  assert.deepEqual(t.client.calls, []);
+  assert.equal(await wsl2Refusal({ guard: { check: async () => false } }, { lease: 'x' }), 'wsl2_tools_untrusted');
+  assert.equal(await wsl2Refusal({ guard: { check: async () => { throw new Error('x'); } } }, { lease: 'x' }), 'wsl2_tools_untrusted');
+  assert.equal(await wsl2Refusal({ guard: { check: async () => true } }, { lease: null }), 'wsl2_lease_unavailable');
+  assert.equal(await wsl2Refusal({ guard: { check: async () => true } }, { lease: 'x' }), null);
   const yes = { check: async () => true };
   const no = { check: async () => false };
   const gitAt = (major, minor) => async () => ({ major, minor });
@@ -290,4 +282,9 @@ test('a helper or git that is not administrator-only, or an old git, stops the j
   assert.equal(await createWsl2ToolGuard({ checks: [{ guard: yes, file: 'a' }], gitVersion: gitAt(2, 52) }).check(), false);
   assert.equal(await createWsl2ToolGuard({ checks: [{ guard: yes, file: 'a' }], gitVersion: async () => null }).check(), false);
   assert.equal(await createWsl2ToolGuard({ checks: [{ guard: yes, file: 'a' }, { guard: no, file: 'b' }], gitVersion: gitAt(2, 53) }).check(), false);
+});
+
+test('the driver gets what the lease has left, less the time for the result', () => {
+  assert.equal(driverTimeLeftMs({ lease: { expiresAt: 1000 } }, 400_000), 420_000);
+  assert.equal(driverTimeLeftMs({ lease: { expiresAt: 1000 } }, 990_000), 0);
 });

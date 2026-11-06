@@ -340,7 +340,7 @@ test('treeStopConfirmed === false keeps that computer busy until a person stops 
 
 const WSL2_OID = 'a'.repeat(40);
 const WSL2_TARGETS = new Map([['pc-wsl', { computerId: 'pc-wsl', isolation: 'wsl2', repositoryId: 'repo-alpha' }]]);
-const WSL2_START = { computerId: 'pc-wsl', task: 'fix it', operationId: 'op-wsl', isolation: 'wsl2', repositoryId: 'repo-alpha', baseOid: WSL2_OID, lease: { signed: 'by the broker' } };
+const WSL2_START = { computerId: 'pc-wsl', task: 'fix it', operationId: 'op-wsl', isolation: 'wsl2', repositoryId: 'repo-alpha', baseOid: WSL2_OID, lease: { lease: { expiresAt: 4_000_000_000 } } };
 function wsl2World(over = {}) {
   const fake = createFakeWsl2BridgeClient({ bundle: Buffer.from('junk') });
   const verb = (name) => async (runId) => { fake.calls.push({ verb: name, runId }); };
@@ -389,4 +389,5 @@ test('with no lease a WSL2 start ends before any driver, and a VM computer still
   assert.equal(world.drivers.made.length, 0);
   assert.deepEqual(client.calls, []);
   assert.equal(world.events.at(-1)[1].reason, 'wsl2_lease_unavailable');
+  assert.deepEqual(world.loads, [], 'the token is never opened for it');
 });

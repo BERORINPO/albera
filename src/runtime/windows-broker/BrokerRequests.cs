@@ -144,7 +144,7 @@ internal static partial class Program
         // A task.start claim that was just recorded (not a replay: that returned above) is what creates the room's desktop lease, for the computer its DTO names (DesktopLeases.cs).
         if (encodedAction is not null) GrantDesktopLease(settings, dto!, operationId);
         // A newly recorded wsl2 task.start also gets its signed run lease in the reply (ADR-012, decision 4). Whatever happens to the signing, the claim above stays recorded.
-        string? lease = encodedAction is not null && settings.Wsl2Computers?.Contains(computerId, StringComparer.Ordinal) == true ? SignRunLease(settings, dto!, r, generation, now) : null;
+        string? lease = encodedAction is not null && claimed == TaskStartAction && settings.Wsl2Computers?.Contains(computerId, StringComparer.Ordinal) == true ? SignRunLease(settings, dto!, r, generation, now) : null;
         if (settings.Hold is { } holdFor) await Task.Delay(holdFor); // test hook: `serve ... hold` holds forever, the seam build's loop entry holds for a fixed time
         return Success(Journal.UnknownState, claimed, replayed: false, lease);
     }

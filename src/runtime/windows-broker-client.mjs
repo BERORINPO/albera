@@ -87,7 +87,7 @@ const SID_PATTERN = /^S-1-\d{1,10}(?:-\d{1,10}){1,15}$/u;
 const SERVICE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,256}$/u;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const HELPER_GRACE_MS = 3000; // the helper has its own deadline; this only catches a helper that hangs past it
-const HELPER_MAX_STDOUT_BYTES = 1024;
+const HELPER_MAX_STDOUT_BYTES = 1024; // the limit in force for a claim reply: the longest one with a run lease is about 860 bytes
 const DEFAULT_HELPER_PATH = fileURLToPath(new URL('./windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker-pipe-client.exe', import.meta.url)); // arch-allow: the only reference to the pipe client helper; its SHA-256 manifest is verified before every launch
 
 /** Carries only an allowlisted code; the message is the code itself, never raw text. */

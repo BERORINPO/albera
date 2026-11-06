@@ -140,7 +140,7 @@ describe('Broker WSL2 run lease on a newly claimed wsl2 task.start (seam build)'
     const { reply } = await claim(started, 'tamper', WSL, TARGET);
     authenticate(reply.lease);
     const clone = () => structuredClone(reply.lease);
-    const flip = (text) => `${text.slice(0, -1)}${text.endsWith('A') ? 'B' : 'A'}`;
+    const flip = (text) => `${text.startsWith('A') ? 'B' : 'A'}${text.slice(1)}`; // the first character: the last one of 86 holds spare bits, and a change there is `malformed`
     const tampered = [
       ['baseOid', (x) => { x.lease.baseOid = 'b'.repeat(40); }, 'digest'], ['computerId', (x) => { x.lease.computerId = 'wsl-2'; }, 'digest'], ['expiresAt', (x) => { x.lease.expiresAt -= 1; }, 'digest'],
       ['maxCalls', (x) => { x.lease.maxCalls = 1; }, 'digest'], ['signature', (x) => { x.signature = flip(x.signature); }, 'signature'], ['keyId', (x) => { x.keyId = 'other-key'; }, 'signature'],

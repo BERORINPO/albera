@@ -13,6 +13,7 @@ import { buildShellMcpFlags } from './albera-shell-mcp-args.mjs';
 
 export const MAX_RESULT_BYTES = 64 * 1024 * 1024;
 export const KEPT_RESULTS = 5;
+const RESULT_MARGIN_MS = 180_000; // the bundle's call
 // `fetch.fsckObjects` is measured to refuse a bad object in a bundle on this version (test/runtime-git-quarantine.test.mjs); older ones were not measured.
 export const MIN_GIT_VERSION = Object.freeze({ major: 2, minor: 53 });
 export const RESULT_DEADLINE_MS = 5 * 60_000; // the quarantine's calls have 60 s each; this bounds them together, so a job cannot hold its computer with a result that takes hours to read
@@ -96,16 +97,26 @@ async function readHaltWord(file) {
 }
 
 /**
+ * Asked before the credential is opened: a job with no lease, or with tools an administrator does not hold, gets no token.
+ * @returns {Promise<string|null>} the reason word, or null
+ */
+export async function wsl2Refusal(wsl2, job) {
+  if (job.lease === null || job.lease === undefined) return 'wsl2_lease_unavailable';
+  return await wsl2.guard.check().catch(() => false) === true ? null : 'wsl2_tools_untrusted';
+}
+
+/** How long the driver may run: what the lease has left, less the time the result needs. The lease's clock started at the claim. */
+export const driverTimeLeftMs = (lease, now) => Math.max(0, (lease?.lease?.expiresAt ?? 0) * 1000 - now - RESULT_MARGIN_MS);
+
+/**
  * @param {{ wsl2: { client: object, guard: { check: () => Promise<boolean> }, quarantine: object, shell: { command: string, entryPath: string, bridge: object }, resultsRoot: string },
  *   job: { operationId: string, computerId: string, repositoryId: string, baseOid: string, lease?: object }, run: { stopRequested: boolean, stopBridge?: Function }, runDir: string,
  *   runDriver: (options: { mcpServer: object, hands: object }) => Promise<object>, note: (line: string) => void }} options
  * @returns {Promise<{ result: object, collected: object|null }>} `result` in the driver's shape, `collected` what the room shows, or null when the run gave nothing to show.
  */
-export async function runWsl2Job({ wsl2, job, run, runDir, runDriver, note }) {
-  const { client, guard, quarantine, shell, resultsRoot } = wsl2;
+export async function runWsl2Job({ wsl2, job, run, runDir, runDriver, note, now = Date.now }) {
+  const { client, quarantine, shell, resultsRoot } = wsl2;
   const { operationId, baseOid, lease } = job;
-  if (lease === null || lease === undefined) return { result: over('wsl2_lease_unavailable'), collected: null };
-  if (await guard.check().catch(() => false) !== true) return { result: over('wsl2_tools_untrusted'), collected: null };
 
   let open = true; // the bridge may hold a run: from before `begin` is sent, because an unknown answer may have made one
   const stopBridge = async () => {
@@ -129,7 +140,7 @@ export async function runWsl2Job({ wsl2, job, run, runDir, runDriver, note }) {
     const haltFile = path.join(runDir, HALT_FILE);
     const args = buildShellMcpFlags({ entryPath: shell.entryPath, operationId, bridge: shell.bridge, haltFile });
     let result;
-    try { result = await runDriver({ mcpServer: { command: shell.command, args }, hands: SHELL_HANDS }); } catch { return { result: over('hands_failed'), collected: null }; } // not thrown on: the check below must still see a run nobody could stop
+    try { result = await runDriver({ mcpServer: { command: shell.command, args }, hands: SHELL_HANDS, maxMs: driverTimeLeftMs(lease, now()) }); } catch { return { result: over('hands_failed'), collected: null }; } // not thrown on: the check below must still see a run nobody could stop
     const halted = await readHaltWord(haltFile); // the model was told in words; this is the record of why, a squatted pipe above all
     if (halted !== null) note(`hands wsl2_shell_halted ${halted}`);
     if (run.stopRequested || result.outcome === 'stopped') return { result, collected: null };
