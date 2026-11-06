@@ -172,7 +172,9 @@ async function main() {
   const resultOid = text(jobCommit).trim().split('\n').pop();
   const handed = await call(pipe, 'bundle', 'op-run1');
   record('bundle: the job\'s commit comes out as a bundle whose HEAD is that commit', handed.ok && headOfBundle(handed.body) === resultOid, handed.ok ? `${handed.body.length} bytes, ${resultOid}` : handed.word);
-  const collected = handed.ok ? await collectWsl2Result({ bundle: handed.body, baseOid, operationId: 'op-run1', quarantine: createGitQuarantine({ git: GIT, root: path.join(folder, 'quarantine') }), runDir: mkdirSync(path.join(folder, 'result-run'), { recursive: true }) ?? path.join(folder, 'result-run'), resultsRoot: path.join(folder, 'results') }) : { ok: false, code: 'no_bundle' };
+  const runDir = path.join(folder, 'result-run');
+  mkdirSync(runDir);
+  const collected = handed.ok ? await collectWsl2Result({ bundle: handed.body, baseOid, operationId: 'op-run1', quarantine: createGitQuarantine({ git: GIT, root: path.join(folder, 'quarantine')}), runDir, resultsRoot: path.join(folder, 'results') }) : { ok: false, code: 'no_bundle' };
   record('quarantine: the real bundle is inspected, and the diff is agent_reported text', collected.ok === true && collected.trust === 'agent_reported' && collected.resultOid === resultOid && /\+from the job <b>/u.test(collected.diff ?? ''), collected.code ?? `${collected.files?.length} file`);
   const ended = await call(pipe, 'end', 'op-run1');
   record('end: terminate then unregister, the distribution is gone', ended.ok && ourRuns().length === 0 && !existsSync(path.join(distDir, 'albera-run-op-run1')), `${ended.ok ? 'ok' : ended.word}, runs: ${ourRuns().join()}`);
@@ -229,8 +231,8 @@ async function main() {
   writeFileSync(floorFile, '2\n');
   const refusedOld = await begin('op-old2');
   record('revocation: rewriting the file, with no restart, refuses the next begin of the old generation', refusedOld.reply.word === 'lease_generation', refusedOld.reply.word ?? 'ok');
-  const revoked = await waitUntil(() => !ourRuns().includes('albera-run-op-old'), 20);
-  record('revocation: the reaper ends the run below the floor', revoked && bridge.lines.includes('REAP=generation run=op-old'), `runs: ${ourRuns().join()}`);
+  const revoked = await waitUntil(() => !ourRuns().includes('albera-run-op-old') && bridge.lines.includes('REAP=generation run=op-old'), 20); // the line comes after the teardown
+  record('revocation: the reaper ends the run below the floor', revoked, `runs: ${ourRuns().join()}`);
   const fresh = await begin('op-new', { leaseGeneration: 2 });
   record('revocation: a lease of the new generation is accepted', fresh.reply.ok, fresh.reply.word ?? 'ok');
   await call(pipe, 'end', 'op-new');
