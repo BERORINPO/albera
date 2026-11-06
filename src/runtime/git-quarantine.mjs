@@ -12,6 +12,7 @@ import { gitEnv, hardening, isOid, runGitProcess } from './git-process.mjs';
 //   const repo = await q.create()                                     -> absolute path of a new bare repository
 //   await q.importBundle(repo, { bundlePath, ref, expectedOid })        -> { ok: true } | { ok: false, code }
 //   await q.inspect(repo, { baseOid, resultOid, limits })               -> { ok: true, changed } | { ok: false, code }
+//   await q.diff(repo, { baseOid, resultOid, maxBytes })                -> { ok: true, text, truncated, files } | { ok: false, code }
 //   await q.buildCandidate(repo, { targetOid, submissions, identity })  -> { ok: true, candidateCommitOid, candidateTreeOid } | { ok: false, code }
 //
 // importBundle verifies the bundle, fetches exactly `ref` into refs/albera/quarantine/<n> and checks the fetched commit IS `expectedOid` (the
@@ -27,9 +28,11 @@ export const QUARANTINE_REFUSALS = Object.freeze([
   'bundle_invalid', 'ref_missing', 'oid_mismatch', 'not_descendant', 'symlink', 'submodule', 'path_forbidden', 'blob_too_large',
   'too_many_paths', 'too_many_commits', 'base_mismatch', 'conflicted', 'git_failed', 'request_invalid',
 ]);
+export const DIFF_MAX_BYTES = 256 * 1024;
+const DIFF_MAX_FILES = 200;
 export const DEFAULT_LIMITS = Object.freeze({ maxBlobBytes: 50 * 1024 * 1024, maxChangedPaths: 10_000, maxCommits: 1_000 });
 
-const REF_RE = /^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
+const REF_RE = /^(?:HEAD|refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]{0,199})$/u; // HEAD: a WSL2 job's bundle (--all) may be on a detached head
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/u;
 const EMAIL_RE = /^[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{1,190}$/u;
 
@@ -122,6 +125,18 @@ export function createGitQuarantine({ git, root, run } = {}) {
     return Object.freeze({ ok: true, changed: final.filter((e) => e.status !== 'D').length, commits: commits.length });
   }
 
+  /** The change as text for a person, after inspect. Untrusted bytes: the caller cleans and escapes them. --text because info/attributes marks every path -diff. No driver, no textconv. */
+  async function diff(repo, { baseOid, resultOid, maxBytes = DIFF_MAX_BYTES } = {}) {
+    if (!isOid(baseOid) || !isOid(resultOid) || !Number.isSafeInteger(maxBytes) || maxBytes < 1) return refuse('request_invalid');
+    const raw = await gitIn(repo, ['diff-tree', '-r', '-z', '--raw', '--no-renames', '--no-ext-diff', '--no-textconv', baseOid, resultOid], { allowFailure: true });
+    const patch = await gitIn(repo, ['diff', '--text', '--no-color', '--no-renames', '--no-ext-diff', '--no-textconv', baseOid, resultOid, '--'], { allowFailure: true });
+    if (raw.code !== 0 || patch.code !== 0) return refuse('git_failed');
+    const bytes = Buffer.from(patch.stdout, 'utf8');
+    const truncated = bytes.length > maxBytes;
+    const files = parseRawDiff(raw.stdout).slice(0, DIFF_MAX_FILES).map(({ status, path: file }) => Object.freeze({ status, path: file }));
+    return Object.freeze({ ok: true, text: truncated ? bytes.subarray(0, maxBytes).toString('utf8') : patch.stdout, truncated, files: Object.freeze(files) });
+  }
+
   async function buildCandidate(repo, { targetOid, submissions, identity } = {}) {
     if (!isOid(targetOid) || !Array.isArray(submissions) || submissions.length === 0 || !submissions.every((x) => isOid(x?.baseOid) && isOid(x?.resultOid))) return refuse('request_invalid');
     const id = identity ?? {};
@@ -147,7 +162,7 @@ export function createGitQuarantine({ git, root, run } = {}) {
     return Object.freeze({ ok: true, candidateCommitOid: head, candidateTreeOid: tree });
   }
 
-  return Object.freeze({ create, importBundle, inspect, buildCandidate });
+  return Object.freeze({ create, importBundle, inspect, diff, buildCandidate });
 }
 
 /** The first refusal code for a set of diff entries, or null. Deleting a forbidden path is refused too. */

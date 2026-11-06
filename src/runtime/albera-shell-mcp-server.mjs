@@ -64,7 +64,7 @@ const safeCode = (error) => (typeof error?.code === 'string' && /^[A-Za-z0-9_]{1
 const UNSEEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\ufff9-\ufffb\u{e0000}-\u{e0fff}]/gu;
 
 /** The guest's bytes as text for the model: at most `maxToolTextBytes`, invalid UTF-8 replaced, UNSEEN gone. */
-function guestText(bytes) {
+export function guestText(bytes) {
   return new TextDecoder('utf-8').decode(bytes.subarray(0, SHELL_TOOL_LIMITS.maxToolTextBytes)).replace(UNSEEN, '');
 }
 
@@ -89,7 +89,7 @@ function readResult({ data }, mark) {
  *   `newDataMark` is a test seam: the end line of one result, which a job must not be able to guess
  * @returns {{ handle: (message: unknown) => Promise<object|null>, calls: () => number }} `handle` answers one JSON-RPC message (null for a notification)
  */
-export function createShellMcpServer({ client, operationId, maxCalls, expiresAtMs, now = Date.now, newDataMark = () => `[end of job data ${globalThis.crypto.randomUUID()}]` }) {
+export function createShellMcpServer({ client, operationId, maxCalls, expiresAtMs, now = Date.now, onHalt = () => {}, newDataMark = () => `[end of job data ${globalThis.crypto.randomUUID()}]` }) {
   if (!client || ['run', 'put', 'get'].some((verb) => typeof client[verb] !== 'function')) throw new TypeError('invalid_shell_mcp_client');
   if (typeof operationId !== 'string' || !Number.isSafeInteger(maxCalls) || maxCalls < 1 || !Number.isSafeInteger(expiresAtMs)) throw new TypeError('invalid_shell_mcp_limits');
   let calls = 0;
@@ -124,6 +124,7 @@ export function createShellMcpServer({ client, operationId, maxCalls, expiresAtM
     if (HALTS_AT_ONCE.has(code)) halted = true;
     else if (!CALL_LEVEL.has(code)) failures += 1;
     if (failures >= MAX_CONSECUTIVE_FAILURES) halted = true;
+    if (halted) { try { onHalt(code); } catch { /* the record must not break the answer */ } }
     const note = error?.outcome === 'unknown' ? ' It may or may not have been applied.' : '';
     return textResult(`Call failed: ${code}.${note}`, true);
   }

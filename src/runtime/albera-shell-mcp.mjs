@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { scrubCredentialEnvironment } from './albera-desktop-mcp.mjs';
 import { serveDesktopMcp } from './albera-desktop-mcp-server.mjs';
 import { parseShellMcpArgs } from './albera-shell-mcp-args.mjs';
@@ -21,7 +22,8 @@ export async function runShellMcpEntry({ argv, stdin, stdout, stderr, createClie
     const args = parseShellMcpArgs(argv);
     if (args.bridge === null) throw new TypeError('no_bridge');
     const { run, put, get } = createClient(args.bridge); // begin, end and stop stay out of this process's server: they are the hands' (ADR-012, Phase 3 results)
-    server = createServer({ client: Object.freeze({ run, put, get }), operationId: args.operationId, maxCalls: args.maxCalls, expiresAtMs: args.expiresAtMs, now });
+    server = createServer({ client: Object.freeze({ run, put, get }), operationId: args.operationId, maxCalls: args.maxCalls, expiresAtMs: args.expiresAtMs, now,
+      ...(args.haltFile === null ? {} : { onHalt: (word) => writeFileSync(args.haltFile, word, { flag: 'wx' }) }) }); // 'wx': the first word stays
   } catch (error) {
     stderr.write(`${error?.message === 'invalid_shell_mcp_args' || error?.message === 'no_bridge' ? SHELL_MCP_ENTRY_ERRORS.args : SHELL_MCP_ENTRY_ERRORS.bridge}\n`);
     return 2;

@@ -27,6 +27,16 @@ export function jobLine(words, job) {
   return `${what}${where} \u2014 ${state}${job?.code ? ` (${job.code})` : ''}`;
 }
 
+/** A computer in the list: a WSL2 one says so, because its level is weaker than a VM (ADR-012, decision 14). */
+export const targetLabel = (words, target) => (target?.level === 'wsl2' ? `${target.label} \u2014 ${words.t('panel.jobs.level_wsl2')}` : String(target?.label ?? ''));
+
+/** The head line of one result. Fixed words and hex only; the job's text goes in the `pre` below it, through textContent. */
+export function resultLine(words, result) {
+  if (result?.ok !== true) return words.t('panel.jobs.result_refused', { code: String(result?.code ?? 'result_failed') });
+  const head = String(result.resultOid ?? '').slice(0, 12);
+  return result.resultOid === result.baseOid ? words.t('panel.jobs.result_none') : words.t('panel.jobs.result_head', { commit: head, files: Array.isArray(result.files) ? result.files.length : 0 });
+}
+
 /** The match code to show beside a job: only a job still waiting for its approval has one worth pressing. */
 export const codeOf = (job) => (job?.state === 'awaiting_approval' && /^\d{4}$/.test(String(job.matchCode)) ? job.matchCode : null);
 
@@ -86,6 +96,7 @@ function boot() {
   const test = el(document, 'button', '', words.t('panel.jobs.test'));
   test.type = 'button';
   const list = el(document, 'ul', 'job-list');
+  const results = el(document, 'div', 'job-results');
   const label = (text, control) => { const l = document.createElement('label'); l.append(el(document, 'span', '', text), control); return l; };
 
   panel.replaceChildren(
@@ -93,6 +104,7 @@ function boot() {
     label(words.t('panel.jobs.computer'), select), label(words.t('panel.jobs.task'), task), counter, request, message, matchHelp,
     el(document, 'div', 'panel-row', undefined), el(document, 'p', 'sm sub', words.t('panel.jobs.stop_all_help')),
     el(document, 'p', 'sm sub', words.t('panel.jobs.test_help')), el(document, 'h3', '', words.t('panel.jobs.list')), list,
+    el(document, 'h3', '', words.t('panel.jobs.results')), el(document, 'p', 'sm sub', words.t('panel.jobs.results_help')), results,
   );
   panel.querySelector('.panel-row').append(stopAll, test);
 
@@ -115,17 +127,30 @@ function boot() {
     return item;
   }
 
+  /** One result. Everything from the job is shown as text, never as markup, and the page says it was not checked. */
+  function resultItem(result) {
+    const box = el(document, 'details', 'job-result');
+    box.append(el(document, 'summary', '', resultLine(words, result)));
+    if (result?.ok === true) {
+      if (result.truncated) box.append(el(document, 'p', 'sm sub', words.t('panel.jobs.result_truncated')));
+      box.append(el(document, 'pre', 'job-diff', String(result.diff ?? '')));
+    }
+    return box;
+  }
+
   async function refresh() {
     const result = await api.getJobs();
     if (!result.ok) { message.textContent = failureText(words, result.status === 401 ? 'locked' : 'unreachable'); return; }
     const targets = Array.isArray(result.body?.targets) ? result.body.targets : [];
     const chosen = select.value;
-    select.replaceChildren(...targets.map((t) => { const o = document.createElement('option'); o.value = t.computerId; o.textContent = t.label; return o; }));
+    select.replaceChildren(...targets.map((t) => { const o = document.createElement('option'); o.value = t.computerId; o.textContent = targetLabel(words, t); return o; }));
     if (targets.some((t) => t.computerId === chosen)) select.value = chosen;
     if (targets.length === 0) message.textContent = words.t('panel.jobs.no_targets');
     const jobs = Array.isArray(result.body?.jobs) ? result.body.jobs : [];
     list.replaceChildren(...(jobs.length ? [...jobs].reverse().map((job) => jobItem(job)) : [el(document, 'li', 'sub', words.t('panel.jobs.none'))]));
     matchHelp.hidden = !jobs.some((job) => codeOf(job));
+    const handed = await api.getJobResults();
+    if (handed.ok && Array.isArray(handed.body?.results)) results.replaceChildren(...handed.body.results.map((result) => resultItem(result)));
   }
   const loop = async () => { await refresh(); timer = setTimeout(() => { void loop(); }, JOBS_POLL_MS); };
 

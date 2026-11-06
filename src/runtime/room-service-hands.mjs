@@ -5,6 +5,7 @@ import { desktopMcpLimitArgs, parseDesktopMcpArgs } from './albera-desktop-mcp-a
 import { ID_PATTERN } from './broker-contract/action-digest.mjs';
 import { WSL2_ISOLATION, isGitOid } from './broker-contract/wsl2-run-lease.mjs';
 import { createClaudeCodeDriver } from './claude-code-driver.mjs';
+import { runWsl2Job } from './room-service-wsl2-run.mjs';
 
 // The room service's hands: one Claude Code run per approved task.start (docs/architecture/control-plane-service.md section 6; PR4d). It is wiring: every decision is made elsewhere
 // (the approval flow says a start was approved, the driver runs and limits one `claude -p`, the secret store opens the credential). What this file adds is the order of the steps and
@@ -31,6 +32,7 @@ const CLEANUP_RETRIES = Object.freeze({ maxRetries: 5, retryDelay: 100 });
 const CLOSE_WAIT_MS = 12_000;
 const refuse = (code) => Object.freeze({ ok: false, code });
 const defer = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+const MAX_RESULTS = 8; // what the job screen can ask for; the bundles themselves are kept by room-service-wsl2-run.mjs
 const sleepUnref = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); });
 
 /**
@@ -43,12 +45,13 @@ const sleepUnref = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).un
  */
 export function createRoomServiceHands({
   targets, secretStore, runRoot, claude, mcp, onEvent = () => {}, log = () => {}, claudeGuard, createDriver = createClaudeCodeDriver, driverOptions = {},
-  newRunId = () => `run-${randomBytes(8).toString('hex')}`, now = Date.now,
+  newRunId = () => `run-${randomBytes(8).toString('hex')}`, now = Date.now, wsl2 = null,
 } = {}) {
   if (!(targets instanceof Map) || targets.size < 1 || typeof secretStore?.load !== 'function' || typeof claudeGuard?.check !== 'function' || !path.isAbsolute(String(runRoot)) || !claude || !mcp?.broker) throw new TypeError('invalid_room_service_hands_dependencies');
   const byComputer = new Map([...targets].map(([vmName, target]) => [target.computerId, { vmName, target }]));
   const runs = new Map(); // computerId -> { stopRequested, driver, done }
   const jobs = new Map(); // vmName -> how many runs were started (the ledger's job number)
+  const results = []; // what WSL2 jobs handed over, oldest first, at most MAX_RESULTS
   let closed = false;
 
   const note = (line) => { try { log(line); } catch { /* logging must not break a run */ } };
@@ -105,7 +108,7 @@ export function createRoomServiceHands({
     };
   }
 
-  async function execute({ vmName, computerId, task, operationId }, run, started) {
+  async function execute({ vmName, computerId, task, operationId, wsl2Job }, run, started) {
     let folders = null;
     let result;
     try {
@@ -114,16 +117,22 @@ export function createRoomServiceHands({
       if (credential.code) result = { outcome: 'error', reason: credential.code, claim: '', toolCalls: 0 };
       else if (run.stopRequested) result = { outcome: 'stopped', reason: 'stopped_by_human', claim: '', toolCalls: 0 };
       else {
-        const mcpServer = mcpServerOf({ computerId, operationId });
         folders = await makeRunFolders();
-        const driver = createDriver({
-          executable: claude.executable, executableSha256: claude.executableSha256, task, oauthToken: credential.token, workDir: folders.workDir, configDir: folders.configDir,
-          mcpServer, limits: { maxMs: claude.maxMs, maxToolCalls: claude.maxToolCalls }, ...(claude.model === null ? {} : { model: claude.model }),
-          onEvent: eventsOf(vmName, started), ...driverOptions,
-        });
-        run.driver = driver;
-        if (run.stopRequested) driver.stop('stopped_by_human');
-        result = await driver.run();
+        const runDriver = (choice) => {
+          const driver = createDriver({
+            executable: claude.executable, executableSha256: claude.executableSha256, task, oauthToken: credential.token, workDir: folders.workDir, configDir: folders.configDir,
+            limits: { maxMs: claude.maxMs, maxToolCalls: claude.maxToolCalls }, ...(claude.model === null ? {} : { model: claude.model }),
+            onEvent: eventsOf(vmName, started), ...choice, ...driverOptions,
+          });
+          run.driver = driver;
+          if (run.stopRequested) driver.stop('stopped_by_human');
+          return driver.run();
+        };
+        if (wsl2Job) {
+          const done = await runWsl2Job({ wsl2, job: { ...wsl2Job, operationId, computerId }, run, runDir: folders.runDir, runDriver, note });
+          result = done.result;
+          if (done.collected !== null) { results.push(done.collected); results.splice(0, Math.max(0, results.length - MAX_RESULTS)); }
+        } else result = await runDriver({ mcpServer: mcpServerOf({ computerId, operationId }) });
       }
     } catch { result = { outcome: 'error', reason: 'hands_failed', claim: '', toolCalls: 0 }; } // the cause is not shown: it may name a path or a value
     if (folders) await removeRunFolder(folders.runDir);
@@ -140,16 +149,18 @@ export function createRoomServiceHands({
   function launch({ computerId, task, operationId, ...named } = {}) {
     const entry = byComputer.get(computerId);
     if (!entry || !vmMatches(entry.target, named)) return refuse('vm_unknown');
-    if (entry.target.isolation === WSL2_ISOLATION) return refuse('wsl2_hands_missing'); // ADR-012 phase 3: these hands drive a Hyper-V desktop and must never run for a wsl2 computer
+    const isWsl2 = entry.target.isolation === WSL2_ISOLATION;
+    if (isWsl2 && wsl2 === null) return refuse('wsl2_hands_missing'); // a service with no bridge settings: the desktop hands must never run for a wsl2 computer
     if (closed || typeof task !== 'string' || task.length === 0 || typeof operationId !== 'string' || !ID_RE.test(operationId)) return refuse('not_started');
     if (runs.has(computerId)) return refuse('busy');
     const { vmName } = entry;
-    const run = { stopRequested: false, driver: null, done: null };
+    const run = { stopRequested: false, driver: null, done: null, stopBridge: undefined };
     const started = defer();
     jobs.set(vmName, (jobs.get(vmName) ?? 0) + 1);
     emit(vmName, { type: 'start', job: jobs.get(vmName), task });
     runs.set(computerId, run);
-    run.done = execute({ vmName, computerId, task, operationId }, run, started).finally(() => { if (!run.stuck) runs.delete(computerId); });
+    const wsl2Job = isWsl2 ? { repositoryId: named.repositoryId, baseOid: named.baseOid } : null;
+    run.done = execute({ vmName, computerId, task, operationId, wsl2Job }, run, started).finally(() => { if (!run.stuck) runs.delete(computerId); });
     return Object.freeze({ ok: true, started: started.promise });
   }
 
@@ -158,6 +169,7 @@ export function createRoomServiceHands({
     if (run.stuck) { runs.delete(computerId); return false; }
     run.stopRequested = true;
     run.driver?.stop('stopped_by_human');
+    void run.stopBridge?.(); // ends a WSL2 run even while it is still in `begin`
     return true;
   }
 
@@ -194,6 +206,8 @@ export function createRoomServiceHands({
       return out.ok ? out.started : out;
     },
     stopAll,
+    /** What WSL2 jobs handed over, newest first: claims of the job, never verified. */
+    results: () => [...results].reverse(),
     /** Remove the folders of runs an earlier service left behind. Resolves with how many went; a failure is logged and not thrown. */
     async sweep() {
       let removed = 0;

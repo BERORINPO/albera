@@ -8,6 +8,7 @@ import { TASK_START_REFUSALS, isStartableTask } from './task-start-gate.mjs';
 // are injected (PR4d wires the real ones; the tests use Fakes).
 //
 //   GET  /api/jobs                  -> { ok, targets: [{ computerId, label }], jobs: [Job] }
+//   GET  /api/jobs/results          -> { ok, results: [Result] }                        what WSL2 jobs handed over (room-service-wsl2-run.mjs): agent_reported, untrusted text
 //   POST /api/jobs                  { computerId, task } -> 202 { ok, job: Job }       asks for approval of one task.start; the job carries `approvalId`, `actionDigest` and the 4-digit `matchCode`
 //   POST /api/jobs/stop-all         {} -> { ok, cancelled, stopped }                    cancels every job still waiting for approval and stops the hands
 //   POST /api/jobs/approval-test    {} -> 202 { ok, job: Job }                          one fixed synthetic.noop (the CP identity cannot run `approval-check` by hand); starts nothing
@@ -66,7 +67,7 @@ export function createRoomJobRoutes({ approvals, hands, targets, newJobId } = {}
     let list;
     try { list = targets(); } catch { list = []; }
     return (Array.isArray(list) ? list : []).filter((t) => typeof t?.computerId === 'string' && ID_RE.test(t.computerId))
-      .map((t) => ({ computerId: t.computerId, label: cleanText(typeof t.label === 'string' ? t.label : t.computerId, MAX_LABEL) || t.computerId }));
+      .map((t) => ({ computerId: t.computerId, label: cleanText(typeof t.label === 'string' ? t.label : t.computerId, MAX_LABEL) || t.computerId, ...(t.level === 'wsl2' ? { level: 'wsl2' } : {}) }));
   }
 
   const waiting = () => jobs.filter((job) => busyStates.has(job.state));
@@ -144,6 +145,13 @@ export function createRoomJobRoutes({ approvals, hands, targets, newJobId } = {}
     return { status: 200, body: { ok: true, targets: targetList(), jobs: jobs.map(view) } };
   }
 
+  /** What WSL2 jobs handed over: the job's claim, never verified. The page shows it as text. */
+  function results() {
+    let list = [];
+    try { list = hands.results?.() ?? []; } catch { /* no results to show */ }
+    return { status: 200, body: { ok: true, results: list } };
+  }
+
   async function startJob({ body }) {
     if (!hasExactly(body, ['computerId', 'task'])) return fail(400, 'invalid_request');
     if (typeof body.computerId !== 'string' || typeof body.task !== 'string') return fail(400, 'invalid_request');
@@ -173,6 +181,7 @@ export function createRoomJobRoutes({ approvals, hands, targets, newJobId } = {}
 
   return Object.freeze([
     Object.freeze({ method: 'GET', path: '/api/jobs', handle: list }),
+    Object.freeze({ method: 'GET', path: '/api/jobs/results', handle: results }),
     Object.freeze({ method: 'POST', path: '/api/jobs', maxBody: JOB_MAX_BODY_BYTES, handle: startJob }),
     Object.freeze({ method: 'POST', path: '/api/jobs/stop-all', maxBody: 64, handle: stopAll }),
     Object.freeze({ method: 'POST', path: '/api/jobs/approval-test', maxBody: 64, handle: approvalTest }),

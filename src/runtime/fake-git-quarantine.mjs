@@ -6,6 +6,7 @@ const DEFAULTS = Object.freeze({
   create: () => '/fake/quarantine/q-1',
   importBundle: () => Object.freeze({ ok: true }),
   inspect: () => Object.freeze({ ok: true, changed: 1 }),
+  diff: () => Object.freeze({ ok: true, text: '', truncated: false, files: Object.freeze([]) }),
   buildCandidate: () => Object.freeze({ ok: true, candidateCommitOid: 'c'.repeat(40), candidateTreeOid: 'd'.repeat(40) }),
 });
 
@@ -18,7 +19,7 @@ export function createFakeGitQuarantine(responses = {}) {
     return typeof r === 'function' ? r(...args) : r;
   };
   return Object.freeze({
-    create: answer('create'), importBundle: answer('importBundle'), inspect: answer('inspect'), buildCandidate: answer('buildCandidate'),
+    create: answer('create'), importBundle: answer('importBundle'), inspect: answer('inspect'), diff: answer('diff'), buildCandidate: answer('buildCandidate'),
     calls: () => calls.slice(),
   });
 }

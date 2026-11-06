@@ -35,7 +35,10 @@ const text = (result) => result.content[0].text;
 test('args: the flags the caller builds are the flags the entry parses, with the limits the driver appends', () => {
   const [entry, ...flags] = buildShellMcpFlags({ entryPath: 'C:\\e\\main.mjs', operationId: 'op-1', bridge: BRIDGE });
   assert.equal(entry, 'C:\\e\\main.mjs');
-  assert.deepEqual(parseShellMcpArgs([...flags, ...limits]), { operationId: 'op-1', maxCalls: 5, expiresAtMs: 1000, bridge: { ...BRIDGE, serverImageSha256: null } });
+  assert.deepEqual(parseShellMcpArgs([...flags, ...limits]), { operationId: 'op-1', maxCalls: 5, expiresAtMs: 1000, bridge: { ...BRIDGE, serverImageSha256: null }, haltFile: null });
+  const halt = buildShellMcpFlags({ entryPath: 'e', operationId: 'op-1', bridge: BRIDGE, haltFile: 'C:\\r\\halt' }).slice(1);
+  assert.equal(parseShellMcpArgs([...halt, ...limits]).haltFile, 'C:\\r\\halt');
+  assert.throws(() => parseShellMcpArgs(['--operation', 'op-1', '--halt-file', 'relative', ...limits]), /invalid_shell_mcp_args/u);
   const image = buildShellMcpFlags({ entryPath: 'e', operationId: 'op-1', bridge: { ...BRIDGE, serverImageSha256: SHA } }).slice(1);
   assert.equal(parseShellMcpArgs([...image, ...limits]).bridge.serverImageSha256, SHA);
   assert.equal(parseShellMcpArgs(['--operation', 'op-1', ...limits]).bridge, null);
@@ -381,4 +384,16 @@ test('entry: bad flags, no bridge or a client that cannot be made end with a fix
   assert.deepEqual(await run(['--operation', 'op-1', ...limits], () => assert.fail()), [2, `${SHELL_MCP_ENTRY_ERRORS.args}\n`]);
   const argv = [...buildShellMcpFlags({ entryPath: 'e', operationId: 'op-1', bridge: BRIDGE }).slice(1), ...limits];
   assert.deepEqual(await run(argv, () => { throw new Error('C:\\path'); }), [2, `${SHELL_MCP_ENTRY_ERRORS.bridge}\n`]);
+});
+
+test('the server tells the hands the word it halted on, and only then', async () => {
+  const words = [];
+  const client = { ...createFakeWsl2BridgeClient(), run: async () => { throw Object.assign(new Error('x'), { code: 'server_identity_mismatch', outcome: 'not_applied' }); } };
+  const server = createShellMcpServer({ client, operationId: 'op-1', maxCalls: 50, expiresAtMs: FAR, onHalt: (word) => words.push(word) });
+  const quiet = createShellMcpServer({ client: createFakeWsl2BridgeClient(), operationId: 'op-1', maxCalls: 50, expiresAtMs: FAR, onHalt: (word) => words.push(word) });
+  const call = (target) => target.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'run', arguments: { command: 'a' } } });
+  await call(quiet);
+  assert.deepEqual(words, []);
+  await call(server);
+  assert.deepEqual(words, ['server_identity_mismatch']);
 });

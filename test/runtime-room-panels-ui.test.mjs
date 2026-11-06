@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import * as api from '../src/runtime/room-ui/api.mjs';
-import { JOBS_POLL_MS, TASK_MAX_BYTES, codeOf, jobLine, requestFlow, taskBytes, taskProblem } from '../src/runtime/room-ui/jobs.mjs';
+import { JOBS_POLL_MS, TASK_MAX_BYTES, codeOf, jobLine, requestFlow, resultLine, targetLabel, taskBytes, taskProblem } from '../src/runtime/room-ui/jobs.mjs';
 import { CREDENTIAL_KINDS, clearClipboard, isAcceptableValue, saveFlow, savedLine, tidyValue } from '../src/runtime/room-ui/settings.mjs';
 import panelWords from '../src/runtime/room-ui/words-panels.mjs';
 import { makeWords } from '../src/runtime/room-ui/i18n.mjs';
@@ -210,4 +210,13 @@ test('the host serves the panel scripts, words and styles (and the page links th
   }
   const page = await (await fetch(r.address.url)).text();
   for (const needle of ['panels.css', 'settings.mjs', 'jobs.mjs', 'id="open-settings"', 'id="open-jobs"', 'id="settings-panel"', 'id="jobs-panel"']) assert.ok(page.includes(needle), needle);
+});
+
+test('a WSL2 computer says its level, and a result line holds fixed words and hex only', () => {
+  assert.match(targetLabel(words, { label: 'pc-wsl', level: 'wsl2' }), /^pc-wsl \u2014 .*WSL2/u);
+  assert.equal(targetLabel(words, { label: 'vm-1' }), 'vm-1');
+  const oid = 'a'.repeat(40);
+  assert.match(resultLine(words, { ok: true, baseOid: 'b'.repeat(40), resultOid: oid, files: [{}, {}] }), /aaaaaaaaaaaa/u);
+  assert.ok(!resultLine(words, { ok: true, baseOid: oid, resultOid: oid, files: [] }).includes('aaaa'), 'no change');
+  assert.match(resultLine(words, { ok: false, code: 'symlink' }), /symlink/u);
 });

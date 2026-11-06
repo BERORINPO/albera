@@ -10,6 +10,7 @@ import { roomBootstrapAcl } from './room-bootstrap-file.mjs';
 //   <dataRoot>\secrets\                                               the DPAPI blobs (control-plane-secret-store.mjs); setup makes the folder
 //   <dataRoot>\ui\room.json                                           the bootstrap file (room-bootstrap-file.mjs); setup makes the folder
 //   <dataRoot>\control-plane\claude-run\                              one new folder per Claude Code run (room-service-hands.mjs)
+//   <dataRoot>\control-plane\wsl2-quarantine\, wsl2-results\            a WSL2 job's result on its way in, and the newest bundles (room-service-wsl2-run.mjs)
 //
 // The service file is shared: the .NET host reads only its top-level key `host` (HostConfig.cs) and the room reads the keys below. PROVISIONAL (the contract names a `claude` block and a credential
 // choice but no keys; setup, PR7, must write exactly these):
@@ -56,6 +57,8 @@ export function roomServicePaths(dataRoot) {
     secretsDir: path.join(dataRoot, 'secrets'),
     uiFile: path.join(dataRoot, 'ui', 'room.json'),
     runRoot: path.join(dataRoot, 'control-plane', 'claude-run'),
+    wsl2QuarantineRoot: path.join(dataRoot, 'control-plane', 'wsl2-quarantine'),
+    wsl2ResultsRoot: path.join(dataRoot, 'control-plane', 'wsl2-results'),
   });
 }
 

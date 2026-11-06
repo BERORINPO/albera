@@ -14,6 +14,9 @@ import { openRoomApproval } from './room-approval-wiring.mjs';
 import { createRoomJobApprovals, createSubmitWatch } from './room-service-approvals.mjs';
 import { loadServiceConfig, roomServicePaths } from './room-service-config.mjs';
 import { createRoomServiceHands } from './room-service-hands.mjs';
+import { createWsl2Readiness, NO_LEASE_SOURCE, wsl2TargetLookup } from './room-service-wsl2-run.mjs';
+import { createGitQuarantine } from './git-quarantine.mjs';
+import { createWsl2BridgeClient } from './wsl2-bridge-client.mjs';
 import { createRoomSettingsRoutes } from './room-settings-routes.mjs';
 import * as roomJournalModule from './room-journal.mjs';
 import * as roomFiguresModule from './room-figures.mjs';
@@ -42,6 +45,7 @@ const fail = (what) => new Error(`room_service_${what}`);
 const FIXED_CODE_RE = /^(?:room_service|runtime_room_approval|runtime_room_gated)_[a-z_]+$/u;
 const USAGE_OR_SETTINGS_RE = /^(?:room_service_config_[a-z_]+|room_service_needs_data_root|room_service_sink_required|runtime_room_approval_[a-z_]+)$/u;
 const MCP_ENTRY = fileURLToPath(new URL('./albera-desktop-mcp-main.mjs', import.meta.url));
+const SHELL_MCP_ENTRY = fileURLToPath(new URL('./albera-shell-mcp-main.mjs', import.meta.url));
 
 /** Parse `room-service` arguments (after the command): exactly `--data-root <absolute path>`, or `--help`. Pure. */
 export function parseRoomServiceArgs(args, platform = process.platform) {
@@ -94,8 +98,17 @@ export async function startRoomService({ dataRoot } = {}, deps = {}) {
     const secretStore = deps.secretStore ?? createControlPlaneSecretStore({ secretsDir: paths.secretsDir, helperPath: settings.desktop.helperPath, helperSha256: settings.desktop.helperSha256 });
     const board = createAgentStatusBoard();
     const labelOf = (vmName) => vmName.slice(0, 32);
+    // A WSL2 computer needs the bridge settings (the parser refuses one without them). The lease source stays empty until the Broker can sign (ADR-002 AGM-2): every WSL2 job ends with wsl2_lease_unavailable.
+    const bridge = settings.wsl2 === null ? null : { pipeName: settings.wsl2.pipeName, serverSid: settings.wsl2.serverSid, ...(settings.wsl2.serverImageSha256 === undefined ? {} : { serverImageSha256: settings.wsl2.serverImageSha256 }), ...settings.desktop };
+    const bridgeClient = bridge === null ? null : (deps.createBridgeClient ?? createWsl2BridgeClient)(bridge);
+    const readiness = bridgeClient === null ? null : createWsl2Readiness({ client: bridgeClient, note: log });
+    const wsl2 = bridgeClient === null ? null : {
+      client: bridgeClient, leases: deps.wsl2Leases ?? NO_LEASE_SOURCE, resultsRoot: paths.wsl2ResultsRoot, shell: { command: process.execPath, entryPath: deps.shellMcpEntryPath ?? SHELL_MCP_ENTRY, bridge },
+      quarantine: deps.quarantine ?? createGitQuarantine({ git: settings.wsl2.git, root: paths.wsl2QuarantineRoot }),
+    };
+    const repositoryByComputer = new Map([...settings.computers.values()].filter((c) => c.isolation !== undefined).map((c) => [c.computerId, c.repositoryId]));
     hands = createRoomServiceHands({
-      targets: settings.computers, secretStore, runRoot: paths.runRoot, claude: config.claude, log: (line) => log(line),
+      targets: settings.computers, secretStore, runRoot: paths.runRoot, claude: config.claude, log: (line) => log(line), wsl2,
       claudeGuard: deps.claudeGuard ?? createWindowsFolderGuard({ installDir: config.claudeInstallDir }),
       mcp: { command: process.execPath, entryPath: deps.mcpEntryPath ?? MCP_ENTRY, broker: { pipeName: settings.broker.pipeName, serviceName: settings.broker.expect.serviceName, ...settings.desktop } },
       driverOptions: deps.driverOptions, ...(deps.createDriver === undefined ? {} : { createDriver: deps.createDriver }),
@@ -103,10 +116,13 @@ export async function startRoomService({ dataRoot } = {}, deps = {}) {
     });
     const approvals = createRoomJobApprovals({
       flow: approval.flow, projectId: settings.projectId, computerIds: [...settings.computers.values()].map((c) => c.computerId), watch, newOperationId: approval.newOperationId,
+      ...(bridgeClient === null ? {} : { wsl2TargetFor: wsl2TargetLookup({ client: bridgeClient, repositoryOf: (computerId) => repositoryByComputer.get(computerId) }) }),
     });
-    const targets = () => [...settings.computers].map(([vmName, c]) => ({ computerId: c.computerId, label: vmName }));
+    // Decision 14: a WSL2 computer is offered only while the bridge answers and the kernel is above the floor.
+    const targets = () => [...settings.computers].filter(([, c]) => c.isolation === undefined || readiness?.ready() === true)
+      .map(([vmName, c]) => ({ computerId: c.computerId, label: vmName, ...(c.isolation === undefined ? {} : { level: 'wsl2' }) }));
     const apiRoutes = [
-      ...createRoomSettingsRoutes({ secretStore }), ...createRoomJobRoutes({ approvals, hands: { start: hands.start, stopAll: hands.stopAll }, targets }),
+      ...createRoomSettingsRoutes({ secretStore }), ...createRoomJobRoutes({ approvals, hands: { start: hands.start, stopAll: hands.stopAll, results: hands.results }, targets }),
       ...(config.feedback ? createRoomFeedbackRoutes({ version: deps.version ?? ALBERA_VERSION }) : []), // the route and the CSP origin go together: both or neither
     ];
     room = createRoomHost({
