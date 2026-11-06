@@ -643,6 +643,11 @@ function Test-ControlPlaneDesktop([string]$Json, [string]$HelperPath, [string]$H
   if ($d -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $d @('helperPath', 'helperSha256'))) { return $false }
   ($d.helperPath -is [string]) -and ($d.helperSha256 -is [string]) -and ($d.helperPath -ceq $HelperPath) -and ($d.helperSha256 -ceq $HelperSha256)
 }
+# Mirror of ServiceConfig.ReadAttestation: exactly { keyName, keyId }, a CNG key name (1..64 letters, digits, . _ -) and a contract id. The installer creates the key; this only checks the shape.
+function Test-AttestationConfig($Value) {
+  if ($Value -isnot [System.Management.Automation.PSCustomObject] -or -not (Test-SameKeySet $Value @('keyName', 'keyId'))) { return $false }
+  ($Value.keyName -is [string]) -and ($Value.keyId -is [string]) -and ($Value.keyName -cmatch '^[A-Za-z0-9._-]{1,64}\z') -and (Test-HostId $Value.keyId)
+}
 function Test-BrokerConfigText([string]$Json) {
   $reasons = New-Object System.Collections.Generic.List[string]
   if ((Get-ByteLength $Json) -gt 4096) { $reasons.Add('config_too_large'); return , @($reasons) }
@@ -650,8 +655,11 @@ function Test-BrokerConfigText([string]$Json) {
   $expected = @('pipeName', 'database', 'authorityKeys', 'controlPlaneSid', 'generation', 'leaseId', 'policyVersion')
   $hasComputers = $null -ne $o.PSObject.Properties['computers']   # the one optional key (ServiceConfig.cs ComputersKey)
   if ($hasComputers) { $expected = @($expected) + 'computers' }
+  $hasAttestation = $null -ne $o.PSObject.Properties['attestation']   # the other optional key (ServiceConfig.cs AttestationKey); the lib never writes it
+  if ($hasAttestation) { $expected = @($expected) + 'attestation' }
   if (-not (Test-SameKeySet $o $expected)) { $reasons.Add('config_keys'); return , @($reasons) }
   if ($hasComputers -and -not (Test-ComputersList $o.computers)) { $reasons.Add('computers') }
+  if ($hasAttestation -and -not (Test-AttestationConfig $o.attestation)) { $reasons.Add('attestation') }
   if (-not (Test-PlainPipeName $o.pipeName)) { $reasons.Add('pipe_name') }
   if (-not (Test-PlainAbsolutePath $o.database)) { $reasons.Add('database') }
   $keys = @($o.authorityKeys)

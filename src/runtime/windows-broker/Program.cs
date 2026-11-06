@@ -22,6 +22,7 @@ internal static partial class Program
     internal const int ExitNotStartedByScm = 74;      // not started by the service control manager (StartServiceCtrlDispatcher failed): nothing is created
     internal const int ExitServiceLoopFailed = 75;    // an unexpected exception ended the serve loop: fail closed, stop the service
     internal const int ExitJournalRefused = 76;       // the journal is from a newer Broker, has an unknown schema or cannot be read: nothing is served, nothing is changed
+    internal const int ExitAttestationKeyUnusable = 77; // the configured attestation key cannot be opened, is not ECDSA P-256 or cannot sign: nothing is served (never treated as "no key")
     internal const int ExitDesktopFailed = 80;        // a capture never returned (it holds the one capture slot) or a desktop instance could not be reset: stop the service (fail closed)
     private const int ErrorInvalidOwner = 1307;
 
@@ -108,7 +109,7 @@ internal static partial class Program
         }
     }
 
-    private sealed record BrokerSettings(string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string AllowedSid, long InitialGeneration, TimeSpan? Hold, ImpersonationFault Fault, string LeaseId, string PolicyVersion, long Epoch = 0, DesktopLeases? Leases = null, IReadOnlyList<string>? Wsl2Computers = null);
+    private sealed record BrokerSettings(string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string AllowedSid, long InitialGeneration, TimeSpan? Hold, ImpersonationFault Fault, string LeaseId, string PolicyVersion, long Epoch = 0, DesktopLeases? Leases = null, IReadOnlyList<string>? Wsl2Computers = null, AttestationSigner? Attestation = null);
 
     // LocalPipe.Create makes the first and only instance (FILE_FLAG_FIRST_PIPE_INSTANCE, max 1), so an existing instance of this name (squatter,
     // or another Broker) fails creation, and sets PIPE_REJECT_REMOTE_CLIENTS (NamedPipeServerStreamAcl.Create cannot; lab check u6, issue #23).
