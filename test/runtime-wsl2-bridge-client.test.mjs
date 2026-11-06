@@ -7,9 +7,10 @@ import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { captureExecutableIdentity } from '../src/runtime/executable-identity.mjs';
-import { createWsl2BridgeClient, HELPER_MODE, Wsl2BridgeError } from '../src/runtime/wsl2-bridge-client.mjs';
+import { BRIDGE_CLIENT_DEFAULTS, createWsl2BridgeClient, HELPER_MODE, STATUS_REQUEST_ID, Wsl2BridgeError } from '../src/runtime/wsl2-bridge-client.mjs';
 import { BRIDGE_REASONS, decodeReply, encodeRequest, frameOf, isSafeRunPath, maxReplyBytes, VERBS, WIRE_LIMITS, WireError, WireFrameReader } from '../src/runtime/wsl2-bridge-wire.mjs';
-import { WIRE_PROBE_REPLIES } from './helpers/wsl2-wire-probe.mjs';
+import { BUNDLE_BYTES, STATUS_JSON, WIRE_PROBE_REPLIES } from './helpers/wsl2-wire-probe.mjs';
+import { createFakeWsl2BridgeClient } from '../src/runtime/fake-wsl2-bridge-client.mjs';
 
 // The Node side of the WSL bridge's wire, and the client against a FAKE helper (an in-process stand-in for the child process: no pipe, no .NET, no WSL). What the real helper does is in
 // test/runtime-wsl2-bridge-integration.test.mjs, against a fake bridge. Neither proves anything about a real bridge on a real machine.
@@ -39,6 +40,10 @@ test('wire: verbs, limits and refusal words are the ones in Wire.cs, Limits.cs a
   assert.match(limits, new RegExp(`MaxCommandBytes: 64 \\* 1024, MaxPathBytes: ${WIRE_LIMITS.maxPathBytes}`, 'u'));
   assert.equal(WIRE_LIMITS.maxCommandBytes, 64 * 1024);
   assert.match(limits, new RegExp(`MaxExecSeconds: ${WIRE_LIMITS.maxExecSeconds}`, 'u'));
+  assert.equal(mib('MaxBundleBytes'), WIRE_LIMITS.maxBundleBytes);
+  assert.match(bridgeSource('BridgeExtras.cs'), /MaxStatusBodyBytes = 128;/u);
+  assert.equal(WIRE_LIMITS.maxStatusRequestBytes, 128);
+  assert.match(bridgeSource('BridgeExtras.cs'), /BundleSeconds = 120;/u);
   assert.match(limits, /MaxRequestFrame => MaxPutBytes \+ MaxPathBytes \+ 1024/u);
   assert.equal(WIRE_LIMITS.maxRequestFrame, WIRE_LIMITS.maxPutBytes + WIRE_LIMITS.maxPathBytes + 1024);
   assert.match(bridgeSource('BridgeBegin.cs'), new RegExp(`MaxLeaseBytes = ${WIRE_LIMITS.maxLeaseBytes}`, 'u'));
@@ -57,6 +62,19 @@ test('wire: each request is the exact bytes of the format, written out by hand',
   assert.deepEqual(encodeRequest.end('op-1'), wireFrame(...head(5)));
   assert.deepEqual(encodeRequest.stop('op-1'), wireFrame(...head(6)));
   assert.equal(encodeRequest.get('op-1', 'x').readUInt32BE(0), encodeRequest.get('op-1', 'x').length - 4, 'the length is big-endian and leaves itself out');
+});
+
+test('wire: bundle and status are the exact bytes of the format, written out by hand', () => {
+  assert.deepEqual(encodeRequest.bundle('op-1'), wireFrame([7, 4], 'op-1'));
+  assert.deepEqual(encodeRequest.status('status'), wireFrame([8, 6], 'status'));
+  assert.deepEqual(encodeRequest.status('status', 'repo-alpha'), wireFrame([8, 6], 'status', 'repo-alpha'));
+});
+
+test('wire: a status or bundle request the bridge would refuse is not encoded', () => {
+  const refused = (fn) => assert.throws(fn, (error) => error instanceof WireError && error.code === 'invalid_request');
+  refused(() => encodeRequest.bundle('a b'));
+  for (const id of ['', '\ud800', 'x'.repeat(WIRE_LIMITS.maxStatusRequestBytes + 1), 7, null]) refused(() => encodeRequest.status('status', id));
+  assert.doesNotThrow(() => encodeRequest.status('status', 'x'.repeat(WIRE_LIMITS.maxStatusRequestBytes)));
 });
 
 test('wire: a request the bridge would refuse is not encoded', () => {
@@ -124,6 +142,9 @@ test('frames: the bound follows the verb, so a job cannot answer a small verb wi
   assert.equal(maxReplyBytes('get'), 1 + WIRE_LIMITS.maxGetBytes);
   assert.equal(maxReplyBytes('exec'), 1 + 5 + WIRE_LIMITS.maxOutputBytes);
   for (const verb of ['begin', 'put', 'end', 'stop']) assert.ok(maxReplyBytes(verb) <= 65);
+  assert.equal(maxReplyBytes('bundle'), 1 + 64 * MIB, 'the largest bundle the bridge hands over, and not a byte more');
+  assert.ok(maxReplyBytes('status') <= 1 + 256, 'status is small');
+  assert.ok(maxReplyBytes('bundle') < 2 ** 32, 'it fits the u32 frame length');
 });
 
 // ---- replies ----
@@ -133,6 +154,24 @@ test('replies: the frames Wire.cs encodes (checked by the bridge harness) decode
   assert.deepEqual(decodeReply('end', empty), { ok: true, value: {} });
   assert.deepEqual(decodeReply('exec', exec), { ok: true, value: { exitCode: -2, flags: 3, output: Buffer.from('hi') } });
   assert.deepEqual(decodeReply('put', refusal), { ok: false, reason: 'calls_exhausted' });
+});
+
+test('replies: bundle and status frames from Wire.cs decode here', () => {
+  const [bundle, status, tooLarge] = WIRE_PROBE_REPLIES.slice(3).map(({ frame }) => frame.subarray(4));
+  assert.deepEqual(decodeReply('bundle', bundle), { ok: true, value: { data: BUNDLE_BYTES } });
+  assert.deepEqual(decodeReply('status', status), { ok: true, value: { kernelOk: true, reason: null, head: 'a'.repeat(40) } });
+  assert.deepEqual(decodeReply('bundle', tooLarge), { ok: false, reason: 'bundle_too_large' });
+});
+
+test('replies: a status that is not exactly the bridge\'s shape is not a reply', () => {
+  const ok = (json) => decodeReply('status', Buffer.concat([Buffer.from([0]), Buffer.from(json)]));
+  assert.deepEqual(ok('{"kernelOk":false,"reason":"kernel_old"}').value, { kernelOk: false, reason: 'kernel_old' });
+  assert.deepEqual(ok('{"kernelOk":true,"reason":null,"head":null}').value, { kernelOk: true, reason: null, head: null });
+  const invalid = (json) => assert.throws(() => ok(json), (error) => error.code === 'invalid_response', json);
+  for (const json of ['', 'null', '[]', '{}', '{"kernelOk":true}', '{"kernelOk":true,"reason":null,"x":1}', '{"kernelOk":true,"reason":"kernel_old"}', '{"kernelOk":false,"reason":null}',
+    '{"kernelOk":false,"reason":"C:\\\\Users\\\\owner"}', '{"kernelOk":"yes","reason":null}', '{"kernelOk":true,"reason":null,"head":"abc"}', '{"kernelOk":true,"reason":null,"head":7}',
+    `{"kernelOk":true,"reason":null,"head":"${'A'.repeat(40)}"}`, '{"kernelOk":true,"reason":null,"head":null,"kernelOk":true,"z":1}']) invalid(json);
+  assert.throws(() => decodeReply('status', Buffer.from([1]) ), (error) => error.code === 'invalid_response', 'a refusal still needs a word');
 });
 
 test('replies: anything else is not a reply', () => {
@@ -266,6 +305,68 @@ test('client: each verb sends its frame and returns its answer', async () => {
   assert.deepEqual(await run(wireFrame([0]), (c) => c.put('op-1', 'a', 'text')), {});
   assert.deepEqual(await run(wireFrame([0], 'bytes'), (c) => c.get('op-1', 'a')), { data: Buffer.from('bytes') });
   assert.deepEqual(await run(wireFrame([0]), (c) => c.stop('op-1')), {});
+});
+
+test('client: bundle returns the Buffer, sends an empty body, and is given time for git (a named default)', async () => {
+  const fake = fakeSpawn({ onRequest: replying(wireFrame([0], BUNDLE_BYTES)) });
+  const client = await clientWith(fake);
+  const bundle = await client.bundle('op-1');
+  assert.ok(Buffer.isBuffer(bundle));
+  assert.deepEqual(bundle, BUNDLE_BYTES);
+  assert.deepEqual(fake.seen.request, encodeRequest.bundle('op-1'));
+  assert.equal(fake.seen.start.replyTimeoutMs, BRIDGE_CLIENT_DEFAULTS.bundleTimeoutMs + 3000);
+  assert.ok(BRIDGE_CLIENT_DEFAULTS.bundleTimeoutMs >= 120_000 + 30_000, 'the bridge lets the bundle run 120 s and the agent 30 s more');
+});
+
+test('client: bundle accepts a reply of exactly the limit and refuses one a byte over, from the header alone', async () => {
+  const limit = WIRE_LIMITS.maxBundleBytes;
+  const header = (length) => u32(length);
+  const big = Buffer.concat([header(1 + limit), Buffer.from([0]), Buffer.alloc(limit)]);
+  const exact = await clientWith(fakeSpawn({ onRequest: replying(big) }));
+  assert.equal((await exact.bundle('op-1')).length, limit);
+  const over = await clientWith(fakeSpawn({ onRequest: replying(header(2 + limit)) }));
+  await assert.rejects(over.bundle('op-1'), bridgeFailure('response_too_large', 'unknown'));
+});
+
+test('client: bundle_too_large is a refusal with no data, and no_run and calls_exhausted keep their words', async () => {
+  for (const word of ['bundle_too_large', 'no_run', 'calls_exhausted', 'agent_failed']) {
+    const client = await clientWith(fakeSpawn({ onRequest: replying(wireFrame([1], word)) }));
+    await assert.rejects(client.bundle('op-1'), bridgeFailure(word, 'refused'));
+  }
+});
+
+test('client: status sends the fixed id and no run, returns kernelOk and reason, and with a repository id the head', async () => {
+  const fake = fakeSpawn({ onRequest: replying(wireFrame([0], '{"kernelOk":false,"reason":"floor_expired"}')) });
+  assert.deepEqual(await (await clientWith(fake)).status(), { kernelOk: false, reason: 'floor_expired' });
+  assert.deepEqual(fake.seen.request, encodeRequest.status(STATUS_REQUEST_ID));
+  const withHead = fakeSpawn({ onRequest: replying(wireFrame([0], STATUS_JSON)) });
+  assert.deepEqual(await (await clientWith(withHead)).status({ repositoryId: 'repo-alpha' }), { kernelOk: true, reason: null, head: 'a'.repeat(40) });
+  assert.deepEqual(withHead.seen.request, encodeRequest.status(STATUS_REQUEST_ID, 'repo-alpha'));
+  const unknown = fakeSpawn({ onRequest: replying(wireFrame([0], '{"kernelOk":true,"reason":null,"head":null}')) });
+  assert.deepEqual(await (await clientWith(unknown)).status({ repositoryId: 'nope' }), { kernelOk: true, reason: null, head: null });
+});
+
+test('client: status and bundle fail like the other calls: a bad argument sends nothing, a reply that is not the shape is unknown', async () => {
+  const fake = fakeSpawn();
+  const client = await clientWith(fake);
+  await assert.rejects(client.status({ repositoryId: '' }), bridgeFailure('invalid_request', 'not_applied'));
+  await assert.rejects(client.bundle('a b'), bridgeFailure('invalid_request', 'not_applied'));
+  assert.equal(fake.seen.spawns, 0);
+  const bad = await clientWith(fakeSpawn({ onRequest: replying(wireFrame([0], '{"kernelOk":true}')) }));
+  await assert.rejects(bad.status(), bridgeFailure('invalid_response', 'unknown'));
+  const silent = await clientWith(fakeSpawn({ onRequest: () => {} }));
+  await assert.rejects(silent.status({ timeoutMs: 1000 }), bridgeFailure('timeout', 'unknown'));
+});
+
+test('fake client: bundle and status answer what they were given, record their calls and fail on request', async () => {
+  const fake = createFakeWsl2BridgeClient({ bundle: Buffer.from('b'), heads: { 'repo-alpha': 'c'.repeat(40) } });
+  assert.deepEqual(await fake.bundle('op-1'), Buffer.from('b'));
+  assert.deepEqual(await fake.status(), { kernelOk: true, reason: null });
+  assert.deepEqual(await fake.status({ repositoryId: 'repo-alpha' }), { kernelOk: true, reason: null, head: 'c'.repeat(40) });
+  assert.deepEqual(await fake.status({ repositoryId: 'other' }), { kernelOk: true, reason: null, head: null });
+  fake.failNext({ code: 'bundle_too_large' });
+  await assert.rejects(fake.bundle('op-1'), (error) => error.code === 'bundle_too_large' && error.outcome === 'refused');
+  assert.deepEqual(fake.calls.map((c) => c.verb), ['bundle', 'status', 'status', 'status', 'bundle']);
 });
 
 test('client: a refusal word comes back as the code, and other text is a bad reply whose outcome is unknown', async () => {

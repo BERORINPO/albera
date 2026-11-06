@@ -9,8 +9,9 @@ import { wireProbe } from './helpers/wsl2-wire-probe.mjs';
 // The WSL bridge (ADR-012, "The WSL bridge"), checked in-process by test/wsl-bridge-harness: the real bridge sources with a fake wsl.exe, a fake agent and a fake repository.
 // G1 for the bridge (a missing, expired, reused, wrong-target lease and a bundle whose head is not baseOid, one check each), the order of begin, the call count and the lease's end, the sizes, hostile
 // agents, stop, the ledger across restarts, and only `albera-run-` names reaching wsl. Windows-only; skipped without the .NET 10 SDK. Nothing here starts wsl.exe: the real machine is scripts/wsl2-bridge-gates.mjs.
-const EXPECTED_AT_LEAST = 84;
+const EXPECTED_AT_LEAST = 100;
 const REQUIRED = [
+  'bundle: over the limit', 'bundle: it counts as a call', 'status: the answer is cached', 'status: a repository id adds the head',
   'g1 no lease', 'g1 expired lease', 'g1 reused lease', 'g1 wrong computer', 'g1 wrong repository', 'g1 wrong operation', 'g1 old generation', 'g1 wrong signer', 'g1 head is not baseOid', 'g1 bundle head is not baseOid',
   'pipe: stop still arrives after 8 clients connected', 'pipe: stop still arrives after 8 clients read', 'revocation: the floor is read at every begin', 'revocation: a run below a raised floor',
 ];

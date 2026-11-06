@@ -20,7 +20,11 @@ import { decodeReply, encodeRequest, maxReplyBytes, WireError, WireFrameReader }
 //   unknown      the request left and no good reply came (timeout, short read, bad reply): the bridge may have acted
 // One request per connection, as the bridge serves it. It takes no lock: the bridge answers `run_busy` to a second call on a run.
 
-export const BRIDGE_CLIENT_DEFAULTS = Object.freeze({ connectTimeoutMs: 5000, beginTimeoutMs: 300_000, execGraceMs: 35_000, fileTimeoutMs: 35_000, endTimeoutMs: 60_000 });
+export const BRIDGE_CLIENT_DEFAULTS = Object.freeze({ connectTimeoutMs: 5000, beginTimeoutMs: 300_000, execGraceMs: 35_000, fileTimeoutMs: 35_000, endTimeoutMs: 60_000,
+  bundleTimeoutMs: 120_000 + 60_000, // the bridge lets git run 120 s and waits 30 s more for the agent; the rest is for carrying up to 64 MiB through the helper
+  statusTimeoutMs: 65_000, // the bridge's own git reads a head in at most 60 s
+});
+export const STATUS_REQUEST_ID = 'status'; // the id field of a status frame: no run is named
 export const HELPER_MODE = 'wsl-bridge';
 const MAX_REPLY_TIMEOUT_MS = 3_890_000; // plus the grace: within the helper's bound of 3,900,000
 const MIN_REPLY_TIMEOUT_MS = 1000;
@@ -144,7 +148,7 @@ function readOptions(options) {
 /**
  * @param {{ pipeName: string, serverSid: string, serverImageSha256?: string, helperPath: string, helperSha256: string, spawnImpl?: typeof spawn, connectTimeoutMs?: number }} options
  *   `serverSid` is the SID the bridge runs as (the owner's), `helperSha256` the pinned build of the helper. `spawnImpl` is a test seam. A check the helper cannot do fails closed.
- * @returns the six verbs (the wire verb exec is `run` here). Each resolves with the verb's answer or rejects with a Wsl2BridgeError. `timeoutMs` bounds the wait for the reply.
+ * @returns the eight verbs (the wire verb exec is `run` here; `bundle` and `status` are for the Control Plane only and albera_shell never offers them to the model). Each resolves with the verb's answer or rejects with a Wsl2BridgeError. `timeoutMs` bounds the wait for the reply.
  */
 export function createWsl2BridgeClient(options) {
   const config = readOptions(options);
@@ -170,5 +174,9 @@ export function createWsl2BridgeClient(options) {
     get: (runId, path, { timeoutMs = BRIDGE_CLIENT_DEFAULTS.fileTimeoutMs } = {}) => call('get', () => encodeRequest.get(runId, path), timeoutMs),
     end: (runId, { timeoutMs = BRIDGE_CLIENT_DEFAULTS.endTimeoutMs } = {}) => call('end', () => encodeRequest.end(runId), timeoutMs),
     stop: (runId, { timeoutMs = BRIDGE_CLIENT_DEFAULTS.endTimeoutMs } = {}) => call('stop', () => encodeRequest.stop(runId), timeoutMs),
+    /** The bundle (a Buffer, at most WIRE_LIMITS.maxBundleBytes) of the repository the begin step cloned. The job supplies nothing. A bundle over the bridge's limit is refused as bundle_too_large and ends the run. */
+    bundle: async (runId, { timeoutMs = BRIDGE_CLIENT_DEFAULTS.bundleTimeoutMs } = {}) => (await call('bundle', () => encodeRequest.bundle(runId), timeoutMs)).data,
+    /** Whether a run could start on this machine's WSL and kernel: { kernelOk, reason }. With `repositoryId`, also `head` (the commit the bridge reads for it, or null). Needs no run. */
+    status: ({ repositoryId, timeoutMs = BRIDGE_CLIENT_DEFAULTS.statusTimeoutMs } = {}) => call('status', () => encodeRequest.status(STATUS_REQUEST_ID, repositoryId), timeoutMs),
   });
 }

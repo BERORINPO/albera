@@ -15,9 +15,12 @@ internal sealed record AgentReply(byte Status, byte[] Body);
 // made, every wait has a deadline, and any breach ends the link with an AgentFailure (the caller then ends the run). Nothing here trusts what the agent says about its own limits.
 internal sealed class AgentLink(IAgentProcess process)
 {
-    public const byte OpRun = 1, OpRead = 2, OpWrite = 3;
+    public const byte OpRun = 1, OpRead = 2, OpWrite = 3, OpBundle = 4;
+
+    /// <summary>`git -C path bundle create - --all` in the sandbox, as the job user (agent.c do_bundle). The job supplies nothing: the path is the bridge's own.</summary>
 
     public static byte[] RunRequest(uint seconds, string command) => Request(OpRun, U32(seconds), Encoding.UTF8.GetBytes(command));
+    public static byte[] BundleRequest(uint seconds, string path) => Request(OpBundle, U32(seconds), Encoding.UTF8.GetBytes(path));
     public static byte[] ReadRequest(string path) => Request(OpRead, Encoding.UTF8.GetBytes(path));
     public static byte[] WriteRequest(string path, ReadOnlySpan<byte> data)
     {
@@ -39,7 +42,7 @@ internal sealed class AgentLink(IAgentProcess process)
     }
 
     /// <summary>Sends one request and waits for its answer, at most <paramref name="timeout"/> and at most <paramref name="maxBody"/> bytes of body.</summary>
-    public async Task<AgentReply> CallAsync(byte[] request, int maxBody, TimeSpan timeout)
+    public async Task<AgentReply> CallAsync(byte[] request, int maxBody, TimeSpan timeout, string oversizeReason = Reason.AgentLimit)
     {
         using CancellationTokenSource deadline = new(timeout);
         using CancellationTokenRegistration killOnDeadline = deadline.Token.Register(process.Kill); // a blocked pipe call may not honour the token, but it ends when the process does
@@ -49,7 +52,7 @@ internal sealed class AgentLink(IAgentProcess process)
             await process.ToAgent.FlushAsync(deadline.Token);
             byte[] header = await ReadExactlyAsync(4, deadline.Token);
             uint length = BinaryPrimitives.ReadUInt32BigEndian(header);
-            if (length == 0 || length > (uint)maxBody + 1) throw new AgentFailure(Reason.AgentLimit);
+            if (length == 0 || length > (uint)maxBody + 1) throw new AgentFailure(oversizeReason); // refused from the header: the body is never read, so never a part of one
             byte[] payload = await ReadExactlyAsync((int)length, deadline.Token);
             return new AgentReply(payload[0], payload[1..]);
         }

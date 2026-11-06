@@ -16,6 +16,9 @@ internal sealed class FakeAgent : IAgentProcess
     public readonly List<(byte Op, byte[] Body)> Requests = [];
     public readonly Dictionary<string, byte[]> Files = [];
     public AgentMode Mode;
+    /// <summary>What a `bundle` request answers: these bytes, or the agent status byte in BundleStatus when it is not 0.</summary>
+    public byte[]? BundleBytes;
+    public byte BundleStatus;
     public volatile bool Killed;
 
     public FakeAgent(string head, AgentMode mode)
@@ -103,6 +106,10 @@ internal sealed class FakeAgent : IAgentProcess
                 int pathLength = (int)BinaryPrimitives.ReadUInt32BigEndian(body);
                 Files[Encoding.UTF8.GetString(body, 4, pathLength)] = body[(4 + pathLength)..];
                 Send(0);
+                break;
+            case 4: // bundle: u32 seconds, path
+                if (BundleStatus != 0) Send(BundleStatus);
+                else Send(0, BundleBytes ?? FakeRepositories.BundleOf(_head));
                 break;
             default: Send(1); break;
         }

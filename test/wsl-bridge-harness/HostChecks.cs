@@ -68,7 +68,7 @@ internal static partial class Harness
         Check("wire: requests parse only with a known verb and a plain id", () =>
         {
             Assert(Wire.Parse([2, 4, (byte)'o', (byte)'p', (byte)'-', (byte)'1', 9, 9]) is { Verb: Verb.Exec, RunId: "op-1" } r && r.Body.SequenceEqual(new byte[] { 9, 9 }), "good");
-            Assert(Wire.Parse([]) is null && Wire.Parse([0, 1, (byte)'a']) is null && Wire.Parse([7, 1, (byte)'a']) is null, "verb");
+            Assert(Wire.Parse([]) is null && Wire.Parse([0, 1, (byte)'a']) is null && Wire.Parse([9, 1, (byte)'a']) is null && Wire.Parse([7, 1, (byte)'a']) is { Verb: Verb.Bundle } && Wire.Parse([8, 1, (byte)'a']) is { Verb: Verb.Status }, "verb");
             Assert(Wire.Parse([2, 0]) is null && Wire.Parse([2, 5, (byte)'a']) is null && Wire.Parse([2, 2, (byte)'-', (byte)'a']) is null && Wire.Parse([2, 2, (byte)'a', (byte)' ']) is null, "id");
             Assert(Wire.Parse([2, 1, (byte)'/', 1]) is null, "slash");
             Assert(Wire.Parse([2, 2, (byte)'a', (byte)'\n']) is null && !Wire.IsId("a\n"), "a final line feed");

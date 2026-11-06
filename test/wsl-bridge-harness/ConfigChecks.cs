@@ -268,7 +268,7 @@ internal static partial class Harness
             string[] lines;
             lock (Rig.AllLogs) lines = Rig.AllLogs.ToArray();
             Assert(lines.Length > 50, "too few log lines to mean anything: " + lines.Length);
-            const string Shapes = "^(BEGIN|EXEC|PUT|GET|END|STOP)=(ok|refused:[a-z_]+) run=[A-Za-z0-9._:-]+$|^REAP=(expired|generation|failed) run=[a-z0-9-]+$|^REAP=floor_unreadable$|^TEARDOWN=(unregister_failed|folder_failed|agent_failed|recovered) run=[a-z0-9-]+$|^SWEEP=(\\d+|unreadable)$";
+            const string Shapes = "^(BEGIN|EXEC|PUT|GET|END|STOP|BUNDLE|STATUS)=(ok|refused:[a-z_]+) run=[A-Za-z0-9._:-]+$|^REAP=(expired|generation|failed) run=[a-z0-9-]+$|^REAP=floor_unreadable$|^TEARDOWN=(unregister_failed|folder_failed|agent_failed|recovered) run=[a-z0-9-]+$|^SWEEP=(\\d+|unreadable)$";
             Assert(lines.All(line => System.Text.RegularExpressions.Regex.IsMatch(line, Shapes)), "a line outside the fixed shapes: " + lines.FirstOrDefault(line => !System.Text.RegularExpressions.Regex.IsMatch(line, Shapes)));
             Assert(lines.Contains("BEGIN=ok run=op-1") && lines.Contains("REAP=expired run=op-2"), "the run id stands next to the fixed word");
             Assert(!lines.Any(line => line.Contains(Rig.SecretMark) || line.Contains("repo-alpha") || line.Contains(Path.GetTempPath())), "a name or path in the log");
