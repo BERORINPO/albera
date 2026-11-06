@@ -46,6 +46,7 @@
     "build:windows-job-guardian": "node scripts/publish-windows-job-guardian.mjs",
     "build:windows-broker": "node scripts/publish-windows-broker.mjs",
     "build:approval-authority": "node scripts/publish-windows-approval-authority.mjs",
+    "build:wsl-bridge": "node scripts/publish-windows-wsl-bridge.mjs",
     "build:approver": "node scripts/publish-windows-approver.mjs",
     "build:windows-setup": "node scripts/publish-windows-setup.mjs",
     "build:control-plane-host": "node scripts/publish-control-plane-host.mjs",

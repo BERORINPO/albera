@@ -22,6 +22,7 @@ export const TARGETS = Object.freeze([
   { id: 'job-guardian', script: 'publish-windows-job-guardian.mjs', projects: ['src/runtime/windows-job-guardian', 'test/windows-job-probe'], outputs: [publishFolder('src/runtime/windows-job-guardian'), `test/windows-job-probe/bin/Release/${WINDOWS_TFM}`] },
   { id: 'broker', script: 'publish-windows-broker.mjs', projects: ['src/runtime/windows-broker', 'src/runtime/windows-broker-pipe-client'], outputs: [publishFolder('src/runtime/windows-broker'), publishFolder('src/runtime/windows-broker-pipe-client')] },
   { id: 'approval-authority', script: 'publish-windows-approval-authority.mjs', projects: ['src/runtime/windows-approval-authority'], outputs: [publishFolder('src/runtime/windows-approval-authority')] },
+  { id: 'wsl-bridge', script: 'publish-windows-wsl-bridge.mjs', projects: ['src/runtime/windows-wsl-bridge'], outputs: [publishFolder('src/runtime/windows-wsl-bridge')] },
   { id: 'control-plane-host', script: 'publish-control-plane-host.mjs', projects: ['src/runtime/windows-control-plane-host'], outputs: [publishFolder('src/runtime/windows-control-plane-host')] },
   { id: 'approver', script: 'publish-windows-approver.mjs', projects: ['src/runtime/windows-approver'], outputs: [publishFolder('src/runtime/windows-approver', 'net10.0-windows10.0.19041.0')] },
   { id: 'service-lab', script: 'publish-windows-service-lab.mjs', projects: ['test/windows-service-lab'], outputs: [publishFolder('test/windows-service-lab')] },

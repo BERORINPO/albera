@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- WSL bridge (ADR-012, "The WSL bridge"; Proposed / NOT VERIFIED). Built only on demand by `npm run build:wsl-bridge` or the bridge tests. Nothing installs, registers or starts it.
+       No package: BCL and P/Invoke only. The run lease contract is source-included from ../broker-contract (no other project is referenced: the bridge is separately deployable). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>albera-wsl-bridge</AssemblyName>
+    <RootNamespace>Albera.WslBridge</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <DefaultItemExcludes>$(DefaultItemExcludes);bin/**;obj/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(AlberaWslBridgeTestSeams)' == 'true'">
+    <!-- Test-only start-up option (trust-sid, TestSeam.cs). Only the bridge tests pass this property; the publish script pins it false, so the seam does not exist in the shipped binary. -->
+    <DefineConstants>$(DefineConstants);ALBERA_WSL_BRIDGE_TEST_SEAMS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../broker-contract/*.cs" Link="BrokerContract/%(Filename)%(Extension)" />
+    <Compile Remove="TestSeam.cs" Condition="'$(AlberaWslBridgeTestSeams)' != 'true'" />
+  </ItemGroup>
+  <!-- The symbol can also arrive from outside (an environment variable named DefineConstants, a Directory.Build.props, -p:DefineConstants=...). Pinning the switch false does not stop that,
+       so a build without the switch that still carries the symbol fails instead of shipping the seam. -->
+  <Target Name="RefuseInheritedTestSymbol" BeforeTargets="BeforeCompile;CoreCompile" Condition="'$(AlberaWslBridgeTestSeams)' != 'true' and $(DefineConstants.Contains('ALBERA_WSL_BRIDGE_TEST_SEAMS'))">
+    <Error Code="ALBERA_SEAM" Text="ALBERA_WSL_BRIDGE_TEST_SEAMS is defined but AlberaWslBridgeTestSeams is not true: refusing to build the test seam into a non-test build." />
+  </Target>
+</Project>
