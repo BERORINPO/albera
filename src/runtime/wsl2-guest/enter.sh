@@ -11,8 +11,12 @@ export PATH
 [ "$#" -ge 1 ] || { echo "enter: no program" >&2; exit 80; }
 case "$1" in *[!a-z0-9-]*) echo "enter: bad program name" >&2; exit 80 ;; esac
 
-# The kernel is shared with the owner's other distributions, so a runaway job must stop at its own limits.
-GROUP="/sys/fs/cgroup/albera-run-$$"
+# The kernel is shared with the owner's other distributions, so a runaway job must stop at its own limits. So is the cgroup tree: a group outlives
+# the distribution that made it, and a PID repeats in every new distribution (measured), so the name is random and empty leftovers are removed.
+for old in /sys/fs/cgroup/albera-run-*; do
+  if rmdir "$old" 2> /dev/null; then echo "enter: removed an empty leftover group" >&2; fi # a group still in use refuses, and stays
+done
+GROUP="/sys/fs/cgroup/albera-run-$(cat /proc/sys/kernel/random/uuid)"
 echo "+memory +pids" > /sys/fs/cgroup/cgroup.subtree_control
 mkdir "$GROUP"
 echo $((4 * 1024 * 1024 * 1024)) > "$GROUP/memory.max"
