@@ -1,9 +1,9 @@
-// Usage: dotnet ReceiptV2Harness.dll <test-vectors.json> <receipt-v2.schema.json> [<test-vectors-v3.json> <receipt-v3.schema.json> [<network-attestation-vectors.json> [<task-start-attestation-vectors.json>]]]
+// Usage: dotnet ReceiptV2Harness.dll <test-vectors.json> <receipt-v2.schema.json> [<test-vectors-v3.json> <receipt-v3.schema.json> [<network-attestation-vectors.json> [<task-start-attestation-vectors.json> [<wsl2-run-lease-vectors.json>]]]]
 // Prints one JSON document: the C# verdict for every digest and receipt vector, plus any difference between ReceiptV2.Fields and the schema file.
 // With the two v3 files it also prints "v2ViaDispatcher" (the v2 receipt vectors through Receipts.Validate), "v3" (the v3 receipt vectors through Receipts.Validate and, for
 // bytes that claim v3, ReceiptV3.Validate), "v3SchemaMismatches", "policy" (every tier policy vector), "loosen" and "policyMessageHex".
 // With the fifth file it also prints "attestationDigest" (every digest vector of the network attestation) and "attestationVerify" (every signed verify vector, checked with the
-// vector file's ephemeral public key). With the sixth file it prints "taskStartDigest" and "taskStartVerify" the same way for the task-start attestation. The harness reads a vector body with System.Text.Json, so a number that is not a safe integer reaches the contract as a double and is
+// vector file's ephemeral public key). With the sixth file it prints "taskStartDigest" and "taskStartVerify" the same way for the task-start attestation, and with the seventh "leaseDigest" and "leaseVerify" for the WSL2 run lease. The harness reads a vector body with System.Text.Json, so a number that is not a safe integer reaches the contract as a double and is
 // refused by its field (the Node twin's behaviour); the Authority's own wire reader is stricter and refuses the whole frame.
 using System;
 using System.Collections.Generic;
@@ -212,6 +212,42 @@ if (args.Length >= 5)
             taskVerdicts.Add(result);
         }
         output["taskStartVerify"] = taskVerdicts;
+
+        if (args.Length >= 7)
+        {
+            using JsonDocument leaseVectors = JsonDocument.Parse(File.ReadAllText(args[6]));
+            JsonElement leaseRoot = leaseVectors.RootElement;
+            var leaseDigests = new List<Dictionary<string, object?>>();
+            foreach (JsonElement v in leaseRoot.GetProperty("digestVectors").EnumerateArray())
+            {
+                var (verdict, digest, preimage) = Wsl2RunLease.Compute(ToValue(v.GetProperty("body")));
+                var result = new Dictionary<string, object?> { ["name"] = v.GetProperty("name").GetString(), ["ok"] = verdict.Ok };
+                if (verdict.Ok) { result["digest"] = digest; result["preimageHex"] = Convert.ToHexStringLower(preimage!); }
+                else { result["code"] = verdict.Code; result["field"] = verdict.Field; }
+                leaseDigests.Add(result);
+            }
+            output["leaseDigest"] = leaseDigests;
+
+            JsonElement leaseVerify = leaseRoot.GetProperty("verifyVectors");
+            string leaseKeyId = leaseVerify.GetProperty("keyId").GetString()!;
+            using System.Security.Cryptography.ECDsa leaseKey = System.Security.Cryptography.ECDsa.Create();
+            leaseKey.ImportSubjectPublicKeyInfo(Convert.FromBase64String(leaseVerify.GetProperty("publicKeySpki").GetString()!), out _);
+            bool VerifyLease(string keyId, byte[] bytes, byte[] signature) =>
+                keyId == leaseKeyId && signature.Length == 64 && leaseKey.VerifyData(bytes, signature, System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+            var leaseVerdicts = new List<Dictionary<string, object?>>();
+            foreach (JsonElement c in leaseVerify.GetProperty("cases").EnumerateArray())
+            {
+                JsonElement e = c.GetProperty("expected");
+                Wsl2RunLeaseExpected expected = new(e.GetProperty("baseOid").GetString()!, e.GetProperty("computerId").GetString()!, e.GetProperty("minLeaseGeneration").GetInt64(), e.GetProperty("operationId").GetString()!, e.GetProperty("repositoryId").GetString()!);
+                long now = c.GetProperty("now").GetInt64();
+                Wsl2RunLeaseVerdict verdict = Wsl2RunLease.Authenticate(ToValue(c.GetProperty("signed")), () => now, VerifyLease);
+                if (verdict.Ok) verdict = Wsl2RunLease.RequireBinding(verdict.Proof, expected);
+                var result = new Dictionary<string, object?> { ["name"] = c.GetProperty("name").GetString(), ["ok"] = verdict.Ok };
+                if (!verdict.Ok) { result["code"] = verdict.Code; if (verdict.Field is not null) result["field"] = verdict.Field; }
+                leaseVerdicts.Add(result);
+            }
+            output["leaseVerify"] = leaseVerdicts;
+        }
     }
 }
 

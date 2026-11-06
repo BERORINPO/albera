@@ -3,6 +3,7 @@ import { mkdir, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { desktopMcpLimitArgs, parseDesktopMcpArgs } from './albera-desktop-mcp-args.mjs';
 import { ID_PATTERN } from './broker-contract/action-digest.mjs';
+import { WSL2_ISOLATION, isGitOid } from './broker-contract/wsl2-run-lease.mjs';
 import { createClaudeCodeDriver } from './claude-code-driver.mjs';
 
 // The room service's hands: one Claude Code run per approved task.start (docs/architecture/control-plane-service.md section 6; PR4d). It is wiring: every decision is made elsewhere
@@ -33,7 +34,7 @@ const defer = () => { let resolve; const promise = new Promise((r) => { resolve 
 const sleepUnref = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); });
 
 /**
- * @param {{ targets: Map<string, { computerId: string, vmId?: string, expectedGeneration?: number }>, secretStore: { load: Function }, runRoot: string,
+ * @param {{ targets: Map<string, { computerId: string, vmId?: string, expectedGeneration?: number, isolation?: 'wsl2', repositoryId?: string }>, secretStore: { load: Function }, runRoot: string,
  *   claude: { executable: string, executableSha256: string, model: string|null, maxMs: number, maxToolCalls: number },
  *   mcp: { command: string, entryPath: string, broker: { pipeName: string, serviceName: string, helperPath: string, helperSha256: string } },
  *   onEvent?: (vmName: string, event: object) => void, log?: (line: string) => void,
@@ -53,9 +54,10 @@ export function createRoomServiceHands({
   const note = (line) => { try { log(line); } catch { /* logging must not break a run */ } };
   const emit = (vmName, event) => { try { onEvent(vmName, Object.freeze(event)); } catch { /* a listener must not break a run */ } };
 
-  /** The approved action's VM against the settings' VM, in both directions (see the head of the file). */
-  function vmMatches(target, vmId, expectedGeneration) {
-    return target.vmId === vmId && target.expectedGeneration === expectedGeneration;
+  /** The approved action's VM against the settings' VM, in both directions (see the head of the file). A wsl2 computer has no VM: its action must name its isolation, its repository and a commit instead, and a VM's action must name none of these (ADR-012, decision 4). */
+  function vmMatches(target, { vmId, expectedGeneration, isolation, repositoryId, baseOid }) {
+    if (target.isolation === WSL2_ISOLATION) return vmId === undefined && expectedGeneration === undefined && isolation === WSL2_ISOLATION && typeof target.repositoryId === 'string' && repositoryId === target.repositoryId && isGitOid(baseOid);
+    return isolation === undefined && repositoryId === undefined && baseOid === undefined && target.isolation === undefined && target.vmId === vmId && target.expectedGeneration === expectedGeneration;
   }
 
   async function loadToken() {
@@ -135,9 +137,10 @@ export function createRoomServiceHands({
    * Start one run. Synchronous part: the checks, then `{ ok: true, started }` where `started` resolves `{ ok: true }` once Claude Code is running, or `{ ok: false, code }` when the run ended before that
    * (no credential, a folder that could not be made, a binary that is not the pinned one). Or `{ ok: false, code }` at once: `vm_unknown`, `busy`, `not_started`.
    */
-  function launch({ computerId, task, operationId, vmId, expectedGeneration } = {}) {
+  function launch({ computerId, task, operationId, ...named } = {}) {
     const entry = byComputer.get(computerId);
-    if (!entry || !vmMatches(entry.target, vmId, expectedGeneration)) return refuse('vm_unknown');
+    if (!entry || !vmMatches(entry.target, named)) return refuse('vm_unknown');
+    if (entry.target.isolation === WSL2_ISOLATION) return refuse('wsl2_hands_missing'); // ADR-012 phase 3: these hands drive a Hyper-V desktop and must never run for a wsl2 computer
     if (closed || typeof task !== 'string' || task.length === 0 || typeof operationId !== 'string' || !ID_RE.test(operationId)) return refuse('not_started');
     if (runs.has(computerId)) return refuse('busy');
     const { vmName } = entry;

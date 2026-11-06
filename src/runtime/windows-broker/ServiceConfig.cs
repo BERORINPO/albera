@@ -16,11 +16,12 @@ using System.Text.Json;
 // The optional `computers` key lists the room's VMs for the desktop operations (ADR-002 Amendment 2026-11-03): at most 8 entries { "computerId": <contract id>,
 // "vmId": <lowercase GUID of the VM> }, each id and each GUID at most once. The caller only ever names a computerId; the GUID is what the Broker queries by. A config without the
 // key is valid and has no desktop computers.
+// An entry may instead be { "computerId": <contract id>, "kind": "wsl2" } (ADR-012, decision 4): a computer with no VM, kept in its own list so that nothing on the desktop side can reach it. A computerId appears once across both kinds.
 // Every rejected value maps to one fixed reason word (never the value itself), so a log line cannot be steered by file content.
 // The config file and the database folder (plus an existing journal / -wal / -shm) must also be owned and writable only by trusted principals and
 // free of reparse points (ServicePathGuard.cs): otherwise a local user could pre-create them, and the service refuses to start. Once the loop runs it
 // holds the database folder open without FILE_SHARE_DELETE (DatabaseFolderPin.cs); a folder that cannot be pinned ends the start with `database_pin`.
-internal sealed record ServiceConfig(string PipeName, string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string ControlPlaneSid, long Generation, string LeaseId, string PolicyVersion, IReadOnlyList<ComputerBinding> Computers)
+internal sealed record ServiceConfig(string PipeName, string Database, IReadOnlyList<AuthorityKey> AuthorityKeys, string ControlPlaneSid, long Generation, string LeaseId, string PolicyVersion, IReadOnlyList<ComputerBinding> Computers, IReadOnlyList<string> Wsl2Computers)
 {
     private const int MaxFileBytes = 4096;
     private const int MaxPipeNameLength = 128;
@@ -33,6 +34,8 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
     private static readonly string[] Keys = ["pipeName", "database", "authorityKeys", "controlPlaneSid", "generation", "leaseId", "policyVersion"];
     private static readonly string[] AuthorityKeyFields = ["kid", "spki"];
     private static readonly string[] ComputerFields = ["computerId", "vmId"];
+    private static readonly string[] Wsl2ComputerFields = ["computerId", "kind"];
+    private const string Wsl2Kind = "wsl2";
 
     // The only reason words ever printed (SERVICE_CONFIG=invalid:<reason>).
     internal static class Reason
@@ -109,13 +112,13 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
             if (policyVersion is null || !AuthorityKey.IsKeyId(policyVersion)) return null;
 
             reason = Reason.Computers;
-            IReadOnlyList<ComputerBinding>? computers = hasComputers ? ReadComputers(root.GetProperty(ComputersKey)) : [];
-            if (computers is null) return null;
+            (IReadOnlyList<ComputerBinding> Vms, IReadOnlyList<string> Wsl2)? read = hasComputers ? ReadComputers(root.GetProperty(ComputersKey)) : ([], []);
+            if (read is not { Vms: var computers, Wsl2: var wsl2Computers }) return null;
             reason = Reason.PipeName;
             if (computers.Count > 0 && DesktopPipeName(pipeName).Length > MaxPipeNameLength) return null; // the desktop pipe's name must stay a plain pipe name too
 
             reason = "";
-            return new ServiceConfig(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers);
+            return new ServiceConfig(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers, wsl2Computers);
         }
     }
 
@@ -163,26 +166,34 @@ internal sealed record ServiceConfig(string PipeName, string Database, IReadOnly
         return distinct ? keys : null;
     }
 
-    // 0..8 entries, each exactly { computerId, vmId }: a contract id and a lowercase GUID. Every computerId and every vmId may appear once (two names for one VM, or
-    // one name for two VMs, would let a caller reach a VM through the wrong id).
-    private static IReadOnlyList<ComputerBinding>? ReadComputers(JsonElement element)
+    // 0..8 entries, each exactly { computerId, vmId } (a contract id and a lowercase GUID) or { computerId, kind: "wsl2" }. Every computerId and every vmId may appear once (two names for one VM, or
+    // one name for two VMs, would let a caller reach a VM through the wrong id; one id of both kinds would leave it unclear which rules apply).
+    private static (IReadOnlyList<ComputerBinding> Vms, IReadOnlyList<string> Wsl2)? ReadComputers(JsonElement element)
     {
         if (element.ValueKind != JsonValueKind.Array || element.GetArrayLength() > MaxComputers) return null;
         List<ComputerBinding> computers = [];
+        List<string> wsl2 = [];
         foreach (JsonElement entry in element.EnumerateArray())
         {
             if (entry.ValueKind != JsonValueKind.Object) return null;
             HashSet<string> seen = new(StringComparer.Ordinal);
             foreach (JsonProperty property in entry.EnumerateObject())
                 if (!seen.Add(property.Name)) return null;
+            if (seen.SetEquals(Wsl2ComputerFields))
+            {
+                if (AsString(entry, "computerId") is not { } wsl2Id || !AuthorityKey.IsKeyId(wsl2Id) || AsString(entry, "kind") != Wsl2Kind) return null;
+                wsl2.Add(wsl2Id);
+                continue;
+            }
             if (!seen.SetEquals(ComputerFields)) return null;
             string? computerId = AsString(entry, "computerId"), vmId = AsString(entry, "vmId");
             if (computerId is null || vmId is null || !AuthorityKey.IsKeyId(computerId) || !ComputerBinding.IsVmId(vmId)) return null;
             computers.Add(new ComputerBinding(computerId, vmId));
         }
-        bool distinct = computers.Select(c => c.ComputerId).Distinct(StringComparer.Ordinal).Count() == computers.Count &&
+        string[] ids = [.. computers.Select(c => c.ComputerId), .. wsl2];
+        bool distinct = ids.Distinct(StringComparer.Ordinal).Count() == ids.Length &&
             computers.Select(c => c.VmId).Distinct(StringComparer.Ordinal).Count() == computers.Count;
-        return distinct ? computers : null;
+        return distinct ? (computers, wsl2) : null;
     }
 
     private static byte[]? DecodePublicKey(string text)

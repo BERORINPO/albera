@@ -157,6 +157,24 @@ test('a task.start action may also name the VM and its generation (the attestati
   assert.deepEqual(r.hands.started, [{ computerId: 'pc-01', task: TASK, operationId: 'op-1', vmId: 'vm-a', expectedGeneration: 2 }], 'the approved VM and generation travel to the hands');
 });
 
+test('the wsl2 target in the submitted action travels to the hands, and a bad one is refused', async (t) => {
+  const OID = 'a'.repeat(40);
+  const named = { isolation: 'wsl2', repositoryId: 'repo-alpha', baseOid: OID };
+  const good = await start(t, { approvalOptions: { change: (s) => ({ ...s, action: { ...s.action, args: { ...s.action.args, ...named } } }) } });
+  const res0 = await good.call('POST', JOBS, { body: { computerId: 'pc-01', task: TASK } });
+  assert.equal(res0.status, 202);
+  const digest = computeActionDigest('guest.command', { action: 'task.start', projectId: 'proj-alpha', computerId: 'pc-01', args: { task: TASK, ...named } });
+  assert.equal(res0.json.job.actionDigest, digest, 'the target is in the digest the owner approves');
+  good.approvals.approve(0);
+  await good.until('job-1', 'started');
+  assert.deepEqual(good.hands.started, [{ computerId: 'pc-01', task: TASK, operationId: 'op-1', ...named }], 'the approved target travels to the hands');
+  for (const args of [{ isolation: 7 }, { repositoryId: '../repo' }, { baseOid: 5 }, { baseOid: 'a b' }]) {
+    const r = await start(t, { approvalOptions: { change: (s) => ({ ...s, action: { ...s.action, args: { ...s.action.args, ...args } } }) } });
+    const res = await r.call('POST', JOBS, { body: { computerId: 'pc-01', task: TASK } });
+    assert.deepEqual([res.status, res.json.error], [502, 'submit_mismatch'], JSON.stringify(args));
+  }
+});
+
 test('a vmId or generation of the wrong type in the submitted action is refused', async (t) => {
   for (const args of [{ vmId: 7 }, { vmId: '../vm' }, { expectedGeneration: '2' }, { expectedGeneration: 1.5 }]) {
     const change = (s) => ({ ...s, action: { ...s.action, args: { ...s.action.args, ...args } } });

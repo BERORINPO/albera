@@ -1,5 +1,6 @@
 import { ID_PATTERN, MAX_ARG_STRING_BYTES, isSafeText, validateActionDto } from './broker-contract/action-digest.mjs';
 import { isVmId } from './broker-contract/network-attestation.mjs';
+import { WSL2_ISOLATION, isGitOid } from './broker-contract/wsl2-run-lease.mjs';
 
 // Control Plane gate for starting a hand (#115 follow-up, step A2): a desktop agent loop may start a task on a VM only after the approval flow says
 // the guest.command / task.start operation was CLAIMED. The flow, the project id, the VM -> computer mapping and the operation ids are injected; this module
@@ -35,19 +36,27 @@ export function isStartableTask(task) {
 
 /**
  * @param {{ flow: { run: Function }, projectId: string, computerIdFor: (vmId: string) => string|undefined, newOperationId: () => string,
- *   attestationFor?: (vmId: string) => { vmId: string, expectedGeneration: number }|undefined }} deps
+ *   attestationFor?: (vmId: string) => { vmId: string, expectedGeneration: number }|undefined,
+ *   wsl2TargetFor?: (vmId: string) => { repositoryId: string, baseOid: string }|undefined|Promise<{ repositoryId: string, baseOid: string }|undefined> }} deps
  *   `computerIdFor(vmId)` is the host's own mapping (a VM it does not know gives undefined). `newOperationId()` must give a new id every call.
  */
-export function createTaskStartGate({ flow, projectId, computerIdFor, newOperationId, attestationFor } = {}) {
+export function createTaskStartGate({ flow, projectId, computerIdFor, newOperationId, attestationFor, wsl2TargetFor } = {}) {
   if (typeof flow?.run !== 'function' || typeof computerIdFor !== 'function' || typeof newOperationId !== 'function') throw new TypeError('invalid_task_start_gate_dependencies');
   if (attestationFor !== undefined && typeof attestationFor !== 'function') throw new TypeError('invalid_task_start_gate_dependencies');
+  if (wsl2TargetFor !== undefined && typeof wsl2TargetFor !== 'function') throw new TypeError('invalid_task_start_gate_dependencies');
   if (typeof projectId !== 'string' || !ID_RE.test(projectId)) throw new TypeError('invalid_task_start_gate_project');
 
   /** The DTO for this VM and task, or null when the host has no valid computer for the VM. */
-  function dtoFor(vmId, task) {
+  async function dtoFor(vmId, task) {
     let computerId;
     let named;
-    try { computerId = computerIdFor(vmId); named = attestationFor?.(vmId); } catch { return null; }
+    let wsl2;
+    try { computerId = computerIdFor(vmId); named = attestationFor?.(vmId); wsl2 = await wsl2TargetFor?.(vmId); } catch { return null; }
+    if (wsl2 !== undefined) {
+      // A wsl2 computer never names a VM, and its action names its target instead (ADR-012, decision 4): these three are in the digest the owner approves.
+      if (named !== undefined || wsl2 === null || typeof wsl2 !== 'object' || !isGitOid(wsl2.baseOid) || typeof wsl2.repositoryId !== 'string' || !ID_RE.test(wsl2.repositoryId)) return null;
+      try { return validateActionDto('guest.command', { action: 'task.start', projectId, computerId, args: { task, isolation: WSL2_ISOLATION, repositoryId: wsl2.repositoryId, baseOid: wsl2.baseOid } }); } catch { return null; }
+    }
     if (named !== undefined && !(named !== null && typeof named === 'object' && isVmId(named.vmId) && Number.isSafeInteger(named.expectedGeneration) && named.expectedGeneration >= 1)) return null;
     const args = named === undefined ? { task } : { task, vmId: named.vmId, expectedGeneration: named.expectedGeneration };
     try { return validateActionDto('guest.command', { action: 'task.start', projectId, computerId, args }); } catch { return null; }
@@ -55,7 +64,7 @@ export function createTaskStartGate({ flow, projectId, computerIdFor, newOperati
 
   async function startApproved({ vmId, task } = {}) {
     if (!isStartableTask(task)) return refuse('task_invalid');
-    const action = typeof vmId === 'string' ? dtoFor(vmId, task) : null;
+    const action = typeof vmId === 'string' ? await dtoFor(vmId, task) : null;
     if (!action) return refuse('vm_unknown');
     let result;
     let operationId;

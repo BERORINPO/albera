@@ -103,6 +103,9 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
         [good.vmId.slice(1), '35 characters'], [`${good.vmId}0`, '37 characters'], ['g'.repeat(8) + good.vmId.slice(8), 'non-hex'], ['room-1', 'a display name'], [5, 'a number'], [null, 'null'],
       ].map(([value, label]) => [`vmId ${label}`, [{ ...good, vmId: value }]]),
       ['a repeated computerId', [good, { ...computer(2), computerId: good.computerId }]], ['a repeated vmId', [good, { ...computer(2), vmId: good.vmId }]],
+      ['a wsl2 entry of another kind', [{ computerId: 'wsl-1', kind: 'vm' }]], ['a wsl2 entry with a number for kind', [{ computerId: 'wsl-1', kind: 2 }]], ['a wsl2 entry with a VM too', [{ computerId: 'wsl-1', kind: 'wsl2', vmId: good.vmId }]],
+      ['a wsl2 entry with a bad id', [{ computerId: 'a/b', kind: 'wsl2' }]], ['a wsl2 entry repeated', [{ computerId: 'wsl-1', kind: 'wsl2' }, { computerId: 'wsl-1', kind: 'wsl2' }]],
+      ['one id as both kinds', [good, { computerId: good.computerId, kind: 'wsl2' }]], ['nine entries of both kinds', [...Array.from({ length: 8 }, (_, i) => computer(i + 1)), { computerId: 'wsl-1', kind: 'wsl2' }]],
     ];
   }
 
@@ -118,7 +121,7 @@ describe('Broker service host: config validation, outside-SCM behaviour and the 
     it('accepts a config with no `computers` key (no desktop VMs), an empty list, one entry and the maximum of eight', () => {
       assert.equal(validConfig('ok-none').computers, undefined, 'the baseline config has no computers key');
       assert.deepEqual(check(writeConfig('ok-no-computers')), { code: 0, lines: ['SERVICE_CONFIG=ok'], stderr: '' });
-      for (const [label, computers] of [['empty', []], ['one', [computer(1)]], ['eight', Array.from({ length: 8 }, (_, i) => computer(i + 1))]]) {
+      for (const [label, computers] of [['empty', []], ['one', [computer(1)]], ['eight', Array.from({ length: 8 }, (_, i) => computer(i + 1))], ['one wsl2', [{ computerId: 'wsl-1', kind: 'wsl2' }]], ['both kinds', [computer(1), { computerId: 'wsl-1', kind: 'wsl2' }]]]) {
         assert.deepEqual(check(writeConfig(`ok-computers-${label}`, { computers })), { code: 0, lines: ['SERVICE_CONFIG=ok'], stderr: '' }, label);
       }
     });

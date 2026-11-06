@@ -24,7 +24,7 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
   - AGM-1: Broker の WmiGate の許可リストに、チェックポイント・巻き戻し・電源・読み取りの行を足す。installer が VM を ProductionOnly にすることも含む
   - AGM-2: Broker 用の証明鍵を発行し、Authority に登録する
 - 所要: 約 15 分 (Yosuke の読む時間)
-- これで進むもの: 戻せる承認の PR3・PR4・PR6 の merge。PR2 (計測) と PR5 (CP と room) は承認前でも進められる
+- これで進むもの: 戻せる承認の PR3・PR4・PR6 の merge。PR2 (計測) と PR5 (CP と room) は承認前でも進められる。**WSL2 版も AGM-2 を待つ**: Broker が run lease に署名する鍵がこれ (ADR-012 の「既存の鍵」は誤りで、Broker に鍵はまだ無い)
 - 取り消し: 採択は revert できる。鍵は uninstall で消える
 
 ### 作業フォルダの削除
@@ -620,3 +620,9 @@ Merged on main since the previous entry, all on 2026-11-03 (UTC): #189 (13:47), 
 - **Measured.** Real image, real sandbox, throwaway distributions on YOSUKE-NOTE: 25 of 25. Table in ADR-012 "Phase 1 results". Zaku found the core limit could be lowered: reproduced, fixed in seccomp, measured again.
 - **Not verified.** G2 without seccomp and a cold start on this image (both stop the owner's distributions: card). Whether a job can reach `modprobe`. G1 and G7 (they need the Broker and the bridge). The agent's unit tests run only on Linux CI: on Windows they skip.
 - **Next.** Phase 2: action fields, the Broker's second kind of computer, the run lease.
+
+## 2026-11-06 — ADR-012 Phase 2, without the Broker's signature
+
+- **VERIFIED (`node --test` on Windows, Node 24; real Broker and Authority binaries, no real key):** the run lease contract in both twins against 55 digest and 41 signed vectors; the Broker's `kind: "wsl2"` computers and the wsl2 action form over the real claim pipe; a policy receipt or an attestation can never cover an action that names `isolation`; the gate, the job routes and the hands carry and check the target.
+- **BLOCKED on AGM-2:** the Broker signing a lease. ADR-012 said "its existing key", and the production Broker has none. The ADR is corrected and the AGM-1/2 card says so.
+- **Not verified:** a run under a lease (the bridge is Phase 3). Nothing here reaches a job: `room-service-config` does not read a wsl2 computer, and the hands refuse one.
