@@ -92,7 +92,7 @@ Built: the run lease (`wsl2-run-lease.mjs`, its C# twin, and shared vectors), th
 
 - **A wsl2 computer and a VM cannot stand in for each other.** The Broker takes only `{ task, isolation, repositoryId, baseOid }` for a computer the config names `kind: "wsl2"`, and refuses that form for any other computer. The hands make the same check against their settings, in both directions. A wsl2 computer makes no desktop lease, and a config with only wsl2 computers opens no desktop pipe.
 - **A person at every tier.** A receipt with basis `policy` is refused when its action names `isolation`, in both twins, and the Authority does not look at an attestation for such an action. This holds even with a VM and a genuine attestation beside it.
-- **The hands refuse a wsl2 computer** (`wsl2_hands_missing`) until Phase 3: today they drive a Hyper-V desktop.
+- **The hands refuse a wsl2 computer** (`wsl2_hands_missing`) until Phase 3: today they drive a Hyper-V desktop. (Phase 4: only a service with no bridge settings still refuses.)
 
 **Before `room-service-config` reads a wsl2 computer, decision 5's text must be in the approval window** (Zaku): today it would call the computer a VM.
 
@@ -159,6 +159,28 @@ Evidence, all with fakes: `test/runtime-wsl2-bridge-client.test.mjs` (the number
 - **SEC-2: the proof is the owner alone,** so another program running as the same SID passes, and in Phase 4 the lease given to `begin` goes to that program too. Settle in the lab, with two accounts, whether the image pin works from the Control Plane's account. If it does not, write down here that this is accepted, and why.
 - **The hands receive why the server halted,** the `UNPROVED_CODES` words above all: today the reason reaches only the model, so a squatted pipe leaves no trace anywhere else.
 - **The hands treat `no_run` from `end` as a failure.** It means the bridge ended the run first (lease end, a generation below the floor, a stop, or a job that broke the agent, which is how the model can bring a run down although it cannot call `end`), so whatever was to be collected at the end is not there.
+
+## Phase 4 results (2026-11-06, real image, real wsl.exe, no real token, no real key)
+
+The room now has a whole path for a WSL2 job, up to the one thing that does not exist: **a lease.** The production Broker cannot sign one (ADR-002 AGM-2), so the service passes `NO_LEASE_SOURCE` and every job ends with `wsl2_lease_unavailable`, before the bridge is called.
+
+- **The approval window** says what a WSL2 start means, in fixed text keyed on `isolation` (`ApprovalPrompt.cs`), and shows the computer, the repository and the commit.
+- **The hands** (`room-service-wsl2-run.mjs`) get the lease, call `begin`, run the driver with `albera_shell`, then `bundle` and `end`. Every other way out calls `stop`. A person's stop reaches the bridge too, even during `begin`. `no_run` from `end` is a failure and nothing is shown. The word the shell server halted on reaches the log through `--halt-file`.
+- **The base commit** is the head the bridge reads (`status` with a repository id), because the Control Plane's account may not be able to read the repository. It goes into the digest the owner approves, and `begin` compares it again.
+- **The result** is a full bundle (`--all`), because the quarantine holds nothing to resolve a thin one against. It is limited to 64 MiB, read by its `HEAD`, then goes through `git-quarantine.mjs`. A bundle whose history lacks the base is refused. The diff comes from `git diff --text` with no driver and no textconv, is cut at 256 KiB, is cleaned of control and invisible characters, and reaches the page through `textContent`. It is always `agent_reported`. The newest 5 bundles stay in `control-plane\wsl2-results`.
+- **The level:** a WSL2 computer is offered only while `status` says the kernel is above the floor, asked at most every 30 s. Before the first answer, and after a failure, it is not offered.
+- **SEC-1:** a `wsl2` block in the settings is refused unless the helper is inside `C:\Program Files\Albera\bin\pipe-client`.
+
+On the machine (`node scripts/wsl2-bridge-gates.mjs`, same image and WSL version as Phase 3): 38 of 38, on the seam build with the Control Plane as the owner. New: `status` with and without a repository, a commit made by the job coming out through `bundle` with that commit as `HEAD`, and that bundle going through the real quarantine to a diff. The owner's Ubuntu and docker-desktop stayed Stopped. The revocation gate had a race of its own (it read the log line before the reaper wrote it) and now waits for the line.
+
+Not verified:
+
+- **No job has run.** The hands have only met a fake bridge and a fake driver, and the gates only met the real bridge without the hands. Real Claude Code has not used these tools.
+- A bundle of realistic size through the helper and the pipe. The gates moved 598 bytes. 64 MiB is checked in code and with fakes only.
+- **SEC-2 is not settled.** It needs a second Windows account, which is a change to the host. It moves to the Phase 5 install: until the lab says otherwise, the proof is the owner alone, as written above.
+- Applying a result. The owner can read the diff, and the bundle stays on disk, but no step brings it into the repository.
+- The room page itself has not been opened in a browser with a result. Its pure parts have tests.
+- A result is not kept across a restart of the service, except as the bundle file.
 
 ## Decision proposed
 
