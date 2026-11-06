@@ -11,6 +11,8 @@ import net from 'node:net';
 import path from 'node:path';
 import { buildBridge, makeLeaseKit } from '../test/helpers/wsl-bridge-harness.mjs';
 import { currentUserSid, makeTrustedTempDirectory } from '../test/helpers/windows-broker-harness.mjs';
+import { createGitQuarantine } from '../src/runtime/git-quarantine.mjs';
+import { collectWsl2Result, headOfBundle } from '../src/runtime/room-service-wsl2-run.mjs';
 
 const [image, folder] = process.argv.slice(2);
 if (!image || !folder) { console.error('usage: wsl2-bridge-gates.mjs <image .tar> <folder>'); process.exit(2); }
@@ -30,7 +32,7 @@ function record(gate, pass, detail = '') {
 
 // ---- the pipe client: one request per connection ------------------------------------------------------------------------------------------------------------------------------------
 const u32 = (value) => { const b = Buffer.alloc(4); b.writeUInt32BE(value); return b; };
-const VERB = { begin: 1, exec: 2, put: 3, get: 4, end: 5, stop: 6 };
+const VERB = { begin: 1, exec: 2, put: 3, get: 4, end: 5, stop: 6, bundle: 7, status: 8 };
 function call(pipe, verb, id, body = Buffer.alloc(0)) {
   const payload = Buffer.concat([Buffer.from([VERB[verb], id.length]), Buffer.from(id), body]);
   return new Promise((resolve, reject) => {
@@ -160,6 +162,18 @@ async function main() {
   record('limits: a 17 MiB request is cut off at the frame cap before it is read', frameCap.word === 'bad_frame' || String(frameCap.word).startsWith('closed:'), frameCap.word ?? 'ok');
   const planted = await exec(pipe, 'op-run1', 'cd /work/repo && printf "#!/bin/sh\\nid -u > /work/hook-uid\\n" > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit && git -c user.name=j -c user.email=j@e commit -q --allow-empty -m two; cat /work/hook-uid; find /work -uid 0 | wc -l');
   record('planted hook in the sandbox runs only as the job (uid 1000), and no file there belongs to root', text(planted).trim() === '1000\n0', text(planted));
+  const status = await call(pipe, 'status', 'status');
+  const headStatus = await call(pipe, 'status', 'status', Buffer.from('repo-alpha'));
+  const unknownStatus = await call(pipe, 'status', 'status', Buffer.from('repo-nobody'));
+  const statusOf = (reply) => (reply.ok ? JSON.parse(reply.body.toString('utf8')) : {});
+  record('status: the kernel is above the floor, with no head when no repository is named', statusOf(status).kernelOk === true && !('head' in statusOf(status)), status.ok ? status.body.toString() : status.word);
+  record('status: the head of a repository is what the bridge reads, and null for an unknown id', statusOf(headStatus).head === baseOid && statusOf(unknownStatus).head === null, `${statusOf(headStatus).head}`);
+  const jobCommit = await exec(pipe, 'op-run1', 'cd /work/repo && echo "from the job <b>" >> hello.txt && git -c user.name=j -c user.email=j@x.invalid -c core.hooksPath=/dev/null commit -q -am job && git rev-parse HEAD');
+  const resultOid = text(jobCommit).trim().split('\n').pop();
+  const handed = await call(pipe, 'bundle', 'op-run1');
+  record('bundle: the job\'s commit comes out as a bundle whose HEAD is that commit', handed.ok && headOfBundle(handed.body) === resultOid, handed.ok ? `${handed.body.length} bytes, ${resultOid}` : handed.word);
+  const collected = handed.ok ? await collectWsl2Result({ bundle: handed.body, baseOid, operationId: 'op-run1', quarantine: createGitQuarantine({ git: GIT, root: path.join(folder, 'quarantine') }), runDir: mkdirSync(path.join(folder, 'result-run'), { recursive: true }) ?? path.join(folder, 'result-run'), resultsRoot: path.join(folder, 'results') }) : { ok: false, code: 'no_bundle' };
+  record('quarantine: the real bundle is inspected, and the diff is agent_reported text', collected.ok === true && collected.trust === 'agent_reported' && collected.resultOid === resultOid && /\+from the job <b>/u.test(collected.diff ?? ''), collected.code ?? `${collected.files?.length} file`);
   const ended = await call(pipe, 'end', 'op-run1');
   record('end: terminate then unregister, the distribution is gone', ended.ok && ourRuns().length === 0 && !existsSync(path.join(distDir, 'albera-run-op-run1')), `${ended.ok ? 'ok' : ended.word}, runs: ${ourRuns().join()}`);
 
