@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -212,6 +213,14 @@ static int self_test(void) {
   struct rlimit now = { 0, 0 };
   errno = 0; ok &= check("core soft limit, setrlimit", refused(syscall(SYS_setrlimit, RLIMIT_CORE, &lower)));
   errno = 0; ok &= check("core soft limit, prlimit64", refused(syscall(SYS_prlimit64, 0, RLIMIT_CORE, &lower, NULL)));
+  /* A pointer whose low 32 bits are 0 is not NULL: the rule must read both halves. */
+  void *high_only = mmap((void *)0x100000000UL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+  ok &= check("mapping for the high-half test", high_only == (void *)0x100000000UL);
+  if (high_only == (void *)0x100000000UL) {
+    memcpy(high_only, &lower, sizeof lower);
+    errno = 0; ok &= check("core soft limit, prlimit64 high half", refused(syscall(SYS_prlimit64, 0, RLIMIT_CORE, high_only, NULL)));
+    munmap(high_only, 4096);
+  }
   ok &= check("core limit is still 1", syscall(SYS_prlimit64, 0, RLIMIT_CORE, NULL, &now) == 0 && now.rlim_cur == 1 && now.rlim_max == 1);
   return ok;
 }

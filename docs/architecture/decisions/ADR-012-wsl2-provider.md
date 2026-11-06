@@ -67,7 +67,7 @@ The image is `ubuntu-base-24.04.5-base-amd64.tar.gz` (pinned by SHA-256) plus `g
 | Start | The agent answered in the real sandbox in about 0.5 s. `wsl --import` took about 2 s |
 | G2, real filter | `socket(AF_VSOCK)` and `socketpair(AF_VSOCK)` refused with EPERM. **The run without seccomp was not repeated on this image**: it can stop every distribution, so it needs the owner told first. The wide scan has nothing to scan while `socket` is refused |
 | G3 | The working control started a Windows program from a plain distribution (seen in 9 polls). Copied into the sandbox: 0 polls. **Weak:** a Windows program starts only from C:, and the sandbox has no C:, so the two runs differ in where the file is. It shows the file does not run there, not that the sandbox alone stopped it |
-| G4 | `/` has only `bin dev etc lib lib64 opt proc sbin tmp usr work`, `/dev` only `null urandom zero`. No `/dev/dxg`, `/mnt/wslg`, `/run/WSL` or `/init`. Capabilities 0, bounding set 0, Seccomp 2. Descriptors 0, 1, 2 only, and no socket |
+| G4 | `/` has only `bin dev etc lib lib64 opt proc sbin tmp usr work`, `/dev` only `null urandom zero`. No `/dev/dxg`, `/mnt/wslg`, `/run/WSL` or `/init`. Capabilities 0, bounding set 0, Seccomp 2. The agent holds pipes on 0, 1 and 2, the pipe of the running command, and no socket. A command gets 0, 1 and 2 only |
 | G5 | TCP to the internet, the LAN and loopback closed, UDP "Network is unreachable", only `lo` |
 | G6 | `/work` stopped at 2 GiB. `fork` stopped at 1020 with `pids.events` max counted. A 6 GiB allocation was killed with `oom_kill 1`, and the agent survived it. `memory.max` 4 GiB of the VM's 7.8 GiB. Nothing outlived a run |
 | G7 | **Still open.** No root runs in the sandbox and the root relay does not exist yet, so nothing planted could reach root. A bundle of a repository with a planted hook, `core.fsmonitor` and symlink worked. G7 is measured with the bridge |
@@ -165,6 +165,7 @@ Also before any real token, from the code review of the launcher:
 - G6 reads the `max` counters in `pids.events` and `memory.events`, and `memory.max` is checked to be below the VM's memory.
 - List and check the other kernel-side helpers that run outside the filter, such as `request_module` and `binfmt`.
 - A machine check that no shipped image holds an `ALBERA_BROKEN` or `ALBERA_TEST_BUILD` build.
+- Measure whether `socket(AF_INET, ...)` with an unknown protocol makes the kernel run `/sbin/modprobe` as root, outside the filter (Zaku, inferred and not measured), and narrow the filter to protocol 0 if so. Only numbers cross that route, and no harm has been shown.
 
 A job that reaches its limits ends the run: the agent is the first process of the PID namespace, and when it dies the namespace goes with it.
 

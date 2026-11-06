@@ -37,6 +37,11 @@ cp /etc/resolv.conf "$root/etc/resolv.conf"
 chroot "$root" /usr/bin/env DEBIAN_FRONTEND=noninteractive apt-get update -qq
 chroot "$root" /usr/bin/env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git
 chroot "$root" /usr/bin/dpkg-query -W -f '${Package} ${Version}\n' > "$output.packages"
+{
+  gcc --version | head -1
+  (cd "$HERE" && sha256sum launcher.c agent.c enter.sh sandbox-root.sh)
+  (cd "$binaries" && sha256sum albera-launcher albera-agent)
+} >> "$output.packages"
 chroot "$root" /usr/bin/env DEBIAN_FRONTEND=noninteractive apt-get clean
 
 # The job user is 1000. The base may already give that number to its own user.
