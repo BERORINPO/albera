@@ -11,8 +11,8 @@ internal interface IRepositories
     byte[]? MakeBundle(string repositoryPath, int maxBytes);
 }
 
-// The real thing: git run by argument list with the hardening of src/runtime/git-process.mjs (ADR-007): no hooks (core.hooksPath names a folder that is never created), no fsmonitor, no transport
-// but file, no credential helper, no pager, no replace refs, no system or global config, no upward search for a repository (GIT_CEILING_DIRECTORIES), a fixed environment, a deadline.
+// The real thing: git run by argument list with the hardening of src/runtime/git-process.mjs (ADR-007): no hooks (core.hooksPath names a folder that is never created), no fsmonitor, no transport at
+// all (it reads one local repository: not even file, and no lazy fetch for a partial clone), no credential helper, no pager, no replace refs, no system or global config, no upward search for a repository (GIT_CEILING_DIRECTORIES), a fixed environment, a deadline.
 internal sealed class GitRepositories(string gitPath, string scratchFolder) : IRepositories
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(60);
@@ -20,7 +20,7 @@ internal sealed class GitRepositories(string gitPath, string scratchFolder) : IR
 
     internal string[] Hardening() =>
     [
-        "-c", $"core.hooksPath={Path.Combine(scratchFolder, "no-hooks")}", "-c", "core.fsmonitor=false", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "-c", "transfer.fsckObjects=true",
+        "-c", $"core.hooksPath={Path.Combine(scratchFolder, "no-hooks")}", "-c", "core.fsmonitor=false", "-c", "protocol.allow=never", "-c", "protocol.file.allow=never", "-c", "transfer.fsckObjects=true",
         "-c", "fetch.fsckObjects=true", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "core.useReplaceRefs=false", "-c", "credential.helper=", "-c", "core.pager=cat",
     ];
 
@@ -31,7 +31,7 @@ internal sealed class GitRepositories(string gitPath, string scratchFolder) : IR
         Dictionary<string, string> env = new(StringComparer.OrdinalIgnoreCase)
         {
             ["GIT_CONFIG_NOSYSTEM"] = "1", ["GIT_CONFIG_GLOBAL"] = empty, ["GIT_TERMINAL_PROMPT"] = "0", ["GIT_ASKPASS"] = "", ["SSH_ASKPASS"] = "", ["GIT_EDITOR"] = ":", ["GIT_PAGER"] = "cat",
-            ["LC_ALL"] = "C", ["LANG"] = "C", ["HOME"] = scratchFolder, ["GIT_OPTIONAL_LOCKS"] = "0", ["GIT_CEILING_DIRECTORIES"] = Path.GetDirectoryName(repositoryPath) ?? scratchFolder,
+            ["LC_ALL"] = "C", ["LANG"] = "C", ["HOME"] = scratchFolder, ["GIT_OPTIONAL_LOCKS"] = "0", ["GIT_NO_LAZY_FETCH"] = "1", ["GIT_CEILING_DIRECTORIES"] = Path.GetDirectoryName(repositoryPath) ?? scratchFolder,
             ["PATH"] = System.Environment.SystemDirectory + ";" + Path.GetDirectoryName(gitPath),
         };
         foreach (string name in new[] { "SYSTEMROOT", "WINDIR", "TEMP", "TMP" })

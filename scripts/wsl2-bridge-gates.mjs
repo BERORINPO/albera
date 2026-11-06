@@ -1,6 +1,7 @@
 // ADR-012 gates for the WSL bridge, on the real machine: the real bridge program (built with the test-only trust-sid seam), the real image, real wsl.exe and a throwaway distribution per run. A measuring tool,
 // not part of `npm test`. It uses no token, no network and no key of the Broker: leases are signed with a throwaway key that only this process holds.
-// It NEVER runs `wsl --shutdown` and never touches a distribution it did not make: the only names it unregisters are `albera-run-*` runs it started and its own `albera-decoy`.
+// It NEVER runs `wsl --shutdown` and never touches a distribution it did not make: `created` holds the names this run made (its `albera-run-*` runs and its own `albera-decoy`), and only those are unregistered.
+// An albera-* distribution that is already there stops the gates before anything is made: it is reported and left alone.
 //
 // Usage: node scripts/wsl2-bridge-gates.mjs <image .tar> <empty folder>
 import { spawn, spawnSync } from 'node:child_process';
@@ -20,6 +21,7 @@ const distributions = () => wsl('--list', '--quiet').stdout.split(/\r?\n/u).map(
 const overview = () => wsl('--list', '--verbose').stdout.replace(/\*/gu, ' ').replace(/[ \t]+/gu, ' ').trim();
 const ourRuns = () => distributions().filter((name) => name.startsWith('albera-run-'));
 
+const created = new Set(); // what this run made: the only names the cleanup may unregister
 const results = [];
 function record(gate, pass, detail = '') {
   results.push({ gate, pass });
@@ -45,6 +47,13 @@ function call(pipe, verb, id, body = Buffer.alloc(0)) {
     });
   });
 }
+/** A client that connects and closes without a word, and is gone before the server has said anything. */
+const connectAndLeave = (pipe) => new Promise((resolve, reject) => {
+  const socket = net.connect(`\\\\.\\pipe\\${pipe}`);
+  socket.on('connect', () => socket.destroy());
+  socket.on('close', resolve);
+  socket.on('error', reject);
+});
 const exec = (pipe, id, command, seconds = 30) => call(pipe, 'exec', id, Buffer.concat([u32(seconds), Buffer.from(command)]));
 const text = (reply) => (reply.ok ? reply.body.subarray(5).toString() : `refused:${reply.word}`);
 const put = (pipe, id, name, data) => call(pipe, 'put', id, Buffer.concat([u32(Buffer.byteLength(name)), Buffer.from(name), data]));
@@ -72,11 +81,14 @@ async function main() {
   const before = overview();
   const namesBefore = distributions();
   console.log(`INFO distributions before: ${before.replace(/\n/gu, ' | ')}`);
-  if (namesBefore.some((name) => name.startsWith('albera-run-') || name === 'albera-decoy')) throw new Error('a distribution of ours is already there; remove it first');
+  if (namesBefore.some((name) => name.startsWith('albera-'))) throw new Error('an albera-* distribution is already there; it was left alone, look at it first');
   mkdirSync(folder, { recursive: true });
   const stateDir = makeTrustedTempDirectory('albera-bridge-state-');
   const distDir = makeTrustedTempDirectory('albera-bridge-dist-');
   const imageDir = makeTrustedTempDirectory('albera-bridge-image-');
+  const floorDir = makeTrustedTempDirectory('albera-bridge-floor-');
+  const floorFile = path.join(floorDir, 'lease-floor');
+  writeFileSync(floorFile, '1\n');
   const imageCopy = path.join(imageDir, 'albera-wsl2.tar');
   copyFileSync(image, imageCopy);
   const imageSha = sha256(readFileSync(imageCopy));
@@ -102,7 +114,7 @@ async function main() {
   const kit = makeLeaseKit('broker-gate');
   const pipe = `ALBERA_WslBridge_gate_${randomBytes(4).toString('hex')}`;
   const config = {
-    pipeName: pipe, controlPlaneSid: currentUserSid(), computerId: 'pc-wsl', brokerKeyId: kit.keyId, brokerSpki: kit.spki, minLeaseGeneration: 1, imagePath: imageCopy, imageSha256: imageSha,
+    pipeName: pipe, controlPlaneSid: currentUserSid(), computerId: 'pc-wsl', brokerKeyId: kit.keyId, brokerSpki: kit.spki, leaseFloorPath: floorFile, imagePath: imageCopy, imageSha256: imageSha,
     distributionsFolder: distDir, stateFolder: stateDir, gitPath: GIT, minWslVersion: '2.0.0', minKernelVersion: '5.10.0', floorExpiresAt: Math.floor(Date.now() / 1000) + 7200,
     repositories: [{ repositoryId: 'repo-alpha', path: repo }],
   };
@@ -110,9 +122,10 @@ async function main() {
   writeFileSync(configFile, JSON.stringify(config));
   const exe = buildBridge(folder);
   const leaseFor = async (operationId, extra = {}) => Buffer.from(JSON.stringify(await kit.lease({ operationId, computerId: 'pc-wsl', repositoryId: 'repo-alpha', baseOid, issuedAt: Math.floor(Date.now() / 1000) - 1, ...extra })));
-  const begin = async (id, extra) => { const started = Date.now(); const reply = await call(pipe, 'begin', id, await leaseFor(id, extra)); return { reply, ms: Date.now() - started }; };
+  const begin = async (id, extra) => { created.add(`albera-run-${id}`); const started = Date.now(); const reply = await call(pipe, 'begin', id, await leaseFor(id, extra)); return { reply, ms: Date.now() - started }; };
 
   // Leftovers a killed bridge could have left: one of ours and one that must never be touched.
+  created.add('albera-run-orphan1').add('albera-decoy');
   console.log(`INFO import orphan and decoy: ${wsl('--import', 'albera-run-orphan1', path.join(distDir, 'orphan1'), imageCopy, '--version', '2').status}, ${wsl('--import', 'albera-decoy', path.join(folder, 'decoy'), imageCopy, '--version', '2').status}`);
   bridge = startBridge(exe, configFile);
   await bridge.ready;
@@ -174,6 +187,16 @@ async function main() {
   const cut = await Promise.race([sleeping, sleep(20_000).then(() => null)]);
   record('stop: ends a command in flight; terminate, unregister, nothing outlives it', stopped.ok && cut !== null && cut.ok === false && ourRuns().length === 0, `stop ${stopped.ok}, exec ${cut ? cut.word : 'still running'}, runs: ${ourRuns().join()}`);
 
+  // Clients that leave without a word must not cost the pipe its instances: stop still has to get through, and more of them than there are instances.
+  await begin('op-silent');
+  for (let i = 0; i < 8; i++) await connectAndLeave(pipe);
+  const afterSilent = await call(pipe, 'stop', 'op-silent');
+  record('pipe: stop still arrives after 8 clients connected and closed without a word', afterSilent.ok && ourRuns().length === 0, `${afterSilent.ok ? 'ok' : afterSilent.word}, runs: ${ourRuns().join()}`);
+  await begin('op-readers');
+  for (let i = 0; i < 8; i++) await call(pipe, 'end', 'no-such-run');
+  const afterReaders = await call(pipe, 'stop', 'op-readers');
+  record('pipe: stop still arrives after 8 clients read their reply and closed', afterReaders.ok && ourRuns().length === 0, `${afterReaders.ok ? 'ok' : afterReaders.word}, runs: ${ourRuns().join()}`);
+
   // A hostile agent: the bridge's own cap on a file the job made
   await begin('op-huge');
   await exec(pipe, 'op-huge', 'head -c 17500000 /dev/zero > big');
@@ -186,19 +209,36 @@ async function main() {
   const reaped = await waitUntil(() => ourRuns().length === 0, 40);
   record('lease end: the bridge ends the run itself when expiresAt passes', reaped, `runs: ${ourRuns().join()}`);
 
+  // Revocation, as the runbook does it: the floor file is rewritten and the bridge keeps running.
+  await begin('op-old');
+  record('revocation: a run of generation 1 is going', ourRuns().includes('albera-run-op-old'), ourRuns().join());
+  writeFileSync(floorFile, '2\n');
+  const refusedOld = await begin('op-old2');
+  record('revocation: rewriting the file, with no restart, refuses the next begin of the old generation', refusedOld.reply.word === 'lease_generation', refusedOld.reply.word ?? 'ok');
+  const revoked = await waitUntil(() => !ourRuns().includes('albera-run-op-old'), 20);
+  record('revocation: the reaper ends the run below the floor', revoked && bridge.lines.includes('REAP=generation run=op-old'), `runs: ${ourRuns().join()}`);
+  const fresh = await begin('op-new', { leaseGeneration: 2 });
+  record('revocation: a lease of the new generation is accepted', fresh.reply.ok, fresh.reply.word ?? 'ok');
+  await call(pipe, 'end', 'op-new');
+  rmSync(floorFile);
+  const noFloor = await begin('op-nofloor', { leaseGeneration: 2 });
+  record('revocation: without the floor file begin is refused', noFloor.reply.word === 'lease_floor_unreadable', noFloor.reply.word ?? 'ok');
+  writeFileSync(floorFile, '2\n');
+
   // Log hygiene
   const log = bridge.lines.join('\n');
   record('log: fixed words only, no path, repository or output', !/repo-alpha|albera-bridge|hello|[A-Za-z]:\\/u.test(log), log.replace(/\n/gu, ' | ').slice(0, 300));
+  record('log: the run id stands next to the fixed word', bridge.lines.includes('REAP=expired run=op-short') && bridge.lines.includes('STOP=ok run=op-stop'), 'REAP=expired run=op-short');
   console.log(`INFO bridge stopped with exit ${await bridge.stop()}`);
 
   const others = (listing) => listing.split('\n').filter((line) => !line.includes('albera-')).join('\n');
   record('Your distributions are untouched (same names and states as before)', others(overview()) === others(before), overview().replace(/\n/gu, ' | '));
-  for (const dir of [stateDir, distDir, imageDir]) rmSync(dir, { recursive: true, force: true });
+  for (const dir of [stateDir, distDir, imageDir, floorDir]) rmSync(dir, { recursive: true, force: true });
 }
 
 try { await main(); } catch (error) { record('The gates ran to the end', false, error.stack ?? error); } finally {
   if (bridge) await bridge.stop();
-  for (const name of [...ourRuns(), ...distributions().filter((n) => n === 'albera-decoy')]) console.log(`INFO cleanup ${name}: ${wsl('--unregister', name).status}`);
+  for (const name of distributions().filter((n) => created.has(n))) console.log(`INFO cleanup ${name}: ${wsl('--unregister', name).status}`);
   console.log(`INFO distributions after: ${overview().replace(/\n/gu, ' | ')}`);
   console.log(`INFO leftovers in the folder: ${existsSync(folder) ? readdirSync(folder).join(', ') : 'none'}`);
 }

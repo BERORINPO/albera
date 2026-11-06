@@ -115,20 +115,32 @@ internal sealed class FakeHost : IWslHost
     public readonly List<string> Calls = [];
     public WslVersions? Versions = new(new Version(2, 6, 3, 0), new Version(6, 6, 87, 2));
     public bool ImportOk = true, UnregisterOk = true;
+    /// <summary>The registered distributions: what the list answers. Import adds, a good unregister removes.</summary>
     public List<string> Existing = [];
+    public Action? OnVersions;
+    public Action<string>? OnUnregister;
+    public Exception? AgentThrows;
     public string Head = new('a', 40);
     public AgentMode Mode = AgentMode.Normal;
     public readonly List<FakeAgent> Agents = [];
 
-    public WslVersions? ReadVersions() { Lock("version"); return Versions; }
-    public IReadOnlyList<string>? ListDistributions() { Lock("list"); return Existing.ToList(); }
-    public bool Import(string name, string folder, string imagePath) { Lock("import:" + name); return ImportOk; }
+    public WslVersions? ReadVersions() { Lock("version"); OnVersions?.Invoke(); return Versions; }
+    public IReadOnlyList<string>? ListDistributions() { Lock("list"); lock (Calls) return Existing.ToList(); }
+    public bool Import(string name, string folder, string imagePath) { Lock("import:" + name); if (ImportOk) lock (Calls) Existing.Add(name); return ImportOk; }
     public void Terminate(string name) => Lock("terminate:" + name);
-    public bool Unregister(string name) { Lock("unregister:" + name); return UnregisterOk; }
+
+    public bool Unregister(string name)
+    {
+        Lock("unregister:" + name);
+        OnUnregister?.Invoke(name);
+        if (UnregisterOk) lock (Calls) Existing.Remove(name);
+        return UnregisterOk;
+    }
 
     public IAgentProcess? StartAgent(string name)
     {
         Lock("agent:" + name);
+        if (AgentThrows is not null) throw AgentThrows;
         FakeAgent agent = new(Head, Mode);
         lock (Agents) Agents.Add(agent);
         return agent;

@@ -547,7 +547,7 @@ check('13b no Node module starts wsl.exe (only the WSL bridge does)', [...entry,
 );
 const wslBridgeRoot = 'src/runtime/windows-wsl-bridge';
 const wslBridgeSources = ['Program.cs', 'Bridge.cs', 'BridgeBegin.cs', 'BridgeConfig.cs', 'PipeServer.cs', 'LocalPipe.cs', 'WslExeHost.cs', 'WslArgs.cs', 'IWslHost.cs', 'AgentLink.cs', 'OperationLedger.cs',
-  'GitRepositories.cs', 'PathGuard.cs', 'SidRules.cs', 'Reason.cs', 'Limits.cs', 'Wire.cs', 'Floor.cs', 'ChildProcess.cs', 'TestSeam.cs'];
+  'GitRepositories.cs', 'PathGuard.cs', 'SidRules.cs', 'Reason.cs', 'Limits.cs', 'Wire.cs', 'Floor.cs', 'LeaseFloor.cs', 'ChildProcess.cs', 'TestSeam.cs'];
 for (const f of [...wslBridgeSources, 'Albera.WslBridge.csproj', 'packages.lock.json']) {
   if (!fs.existsSync(path.join(ROOT, wslBridgeRoot, f))) violations.push(`[13c WSL bridge source] ${wslBridgeRoot}/${f} does not exist (false-safe)`);
 }

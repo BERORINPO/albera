@@ -114,6 +114,7 @@ internal static partial class Harness
             rig.BeginOk();
             rig.Host.UnregisterOk = false;
             Same(Reason.UnregisterFailed, Refused(rig.Send(Verb.End, "op-1")), "unregister");
+            Assert(rig.Logged("TEARDOWN=unregister_failed run=op-1"), "the word in the log");
         });
 
         Check("sizes: put over the cap, a long command and bad paths are refused without reaching the agent", () =>
