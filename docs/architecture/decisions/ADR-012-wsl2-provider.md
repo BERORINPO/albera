@@ -162,7 +162,7 @@ Evidence, all with fakes: `test/runtime-wsl2-bridge-client.test.mjs` (the number
 
 ## Phase 4 results (2026-11-06, real image, real wsl.exe, no real token, no real key)
 
-The room now has a whole path for a WSL2 job, up to the one thing that does not exist: **a lease.** The production Broker cannot sign one (ADR-002 AGM-2), so the service passes `NO_LEASE_SOURCE` and every job ends with `wsl2_lease_unavailable`, before the bridge is called.
+The room now has a whole path for a WSL2 job, up to the one thing that does not exist yet: **a key.** See "Lease signing" below: with no key configured, the Broker sends no lease, and every job ends with `wsl2_lease_unavailable`, before the bridge is called.
 
 - **The approval window** says what a WSL2 start means, in fixed text keyed on `isolation` (`ApprovalPrompt.cs`), and shows the computer, the repository and the commit.
 - **The hands** (`room-service-wsl2-run.mjs`) get the lease, call `begin`, run the driver with `albera_shell`, then `bundle` and `end`. Every other way out calls `stop`. A person's stop reaches the bridge too, even during `begin`. `no_run` from `end` is a failure and nothing is shown. The word the shell server halted on reaches the log through `--halt-file`.
@@ -182,14 +182,21 @@ Not verified:
 - The room page itself has not been opened in a browser with a result. Its pure parts have tests.
 - A result is not kept across a restart of the service, except as the bundle file.
 
-**Before a lease source is wired (Zaku, on the review of this part). AGM-2 was approved on 2026-11-06, including run leases, so these are what remains:**
+### Lease signing (2026-11-06, test key, no real key)
 
-- The SEC-2 lab result. No job can run before then, which is why it may wait.
-- **`wsl2.git` has no pin.** It is an absolute path only, and that git parses a hostile pack as the Control Plane's identity, the one that opens the DPAPI token. Put it under the folder guard, as `claude.exe`, with a minimum version: one in which `fetch.fsckObjects` is measured to work on a bundle.
+AGM-2 was approved on 2026-11-06, including run leases. A newly recorded `task.start` claim on a wsl2 computer now answers with the signed lease, for 3600 s and 10,000 calls. A replay, a VM computer and a Broker with no key answer without one. The lease goes from the claim to `begin` in memory only: it is in no journal, job record or log. If it is lost, the run does not start.
+
+The key is `attestation: { keyName, keyId }` in the Broker's config, a CNG machine key the Broker opens at start. A key that cannot be opened or is not P-256 stops the start (`BROKER_FATAL=ATTESTATION_KEY_UNUSABLE`, exit 77). The installer does not make it yet, and nothing writes that config key. **So nothing changes on a real PC until the installer step is built and the owner runs it.**
+
+Tested with the real Broker, the real helper and the real client on the claim pipe, with a test key in a seam that only the test-faults build has. The Node twin authenticates what the C# side signs. Before each run the hands check that the helper and git are in administrator-only folders and that git is at least 2.53.
+
+Not verified: the CNG path with a real key (only the refusal of a missing key ran), who can use such a key (N7, C6: needs an elevated lab), the C# `Authenticate` on a Broker-signed lease (the Node twin only), and a run under a Broker-signed lease on the real bridge. The installer's `Test-ComputersList` does not accept `kind: wsl2` yet.
+
+**Before the installer makes the key (Zaku, on the review of this part):**
+
+- The SEC-2 lab result, and N7 and C6. No job can run before then, which is why they may wait.
 - The Broker signs exactly the approved `repositoryId` and `baseOid`.
-- `claude.maxMs` is shorter than the lease, or `bundle` answers `lease_expired` and every result is lost.
 - The four pipe instances serve `stop` and `status` alike. Show that a slow `status` does not keep a `stop` waiting.
-- The helper's folder is trusted because Program Files is administrator-only, and nothing checks that at run time. Put a folder guard on it at start.
 - A job chooses what `HEAD` is. Other refs in its bundle are not inspected, and they stay in the kept file. Applying a result must take only `resultOid`, through `buildCandidate`.
 - Whether Windows `child.kill()` leaves a child `index-pack` running after a timeout on a hostile pack was not measured.
 
