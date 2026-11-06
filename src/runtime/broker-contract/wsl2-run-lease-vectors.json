@@ -1,0 +1,1970 @@
+{
+  "contract": "albera.wsl2-run-lease.vectors",
+  "version": 1,
+  "notes": [
+    "digestVectors: body is the lease body (v1, 9 keys). expected.ok = digest and the exact preimage bytes (UTF8 domain albera.wsl2-run-lease.v1, 0x00, enc(map)); otherwise code and field, the first failing field in the table order of validateWsl2RunLease.",
+    "The C# twin is Wsl2RunLease.cs. It reproduces every expected value here in the dotnet contract test.",
+    "verifyVectors: the public half of an EPHEMERAL ECDSA P-256 test key (publicKeySpki, base64 DER). The private key was discarded after signing; nothing secret is here.",
+    "A verifier is stateless: a reused lease and the call count are the bridge's to refuse, so no vector covers them.",
+    "Bindings are reported in the order baseOid, computerId, operationId, repositoryId.",
+    "The last two cases pin domain separation: a genuine network attestation is malformed here, and a signature made over an attestation does not verify for a lease."
+  ],
+  "digestVectors": [
+    {
+      "name": "ttl-1800",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d000000095300000007626173654f6964530000002861616161616161616161616161616161616161616161616161616161616161616161616161616161530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae53688530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f8053000000086d617843616c6c734900000000000000c8530000000b6f7065726174696f6e496453000000076f702d30303031530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "ttl-1",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793404801
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:31fc5111a49c391c1402076c6ce81f5c8558afe139574a4b1d17630fb4a6d731",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d000000095300000007626173654f6964530000002861616161616161616161616161616161616161616161616161616161616161616161616161616161530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae52f81530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f8053000000086d617843616c6c734900000000000000c8530000000b6f7065726174696f6e496453000000076f702d30303031530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "ttl-3600-is-the-limit",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793408400
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:6f741db52dc764894f51920152e1149f51f394b82f2b3dfc7c4b1750ba0b0918",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d000000095300000007626173654f6964530000002861616161616161616161616161616161616161616161616161616161616161616161616161616161530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae53d90530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f8053000000086d617843616c6c734900000000000000c8530000000b6f7065726174696f6e496453000000076f702d30303031530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "sha256-oid",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:1c1cd48fe583f4135229eb68dfa8d29474485c8cfd29d40ed30b1426f0f83328",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d000000095300000007626173654f6964530000004063636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae53688530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f8053000000086d617843616c6c734900000000000000c8530000000b6f7065726174696f6e496453000000076f702d30303031530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "one-call",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 1,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:d642dfcfc840c37936bc9611f896bd7d0795699923ece2cc4d80f8d910ebc483",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d000000095300000007626173654f6964530000002861616161616161616161616161616161616161616161616161616161616161616161616161616161530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae53688530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f8053000000086d617843616c6c73490000000000000001530000000b6f7065726174696f6e496453000000076f702d30303031530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "ten-thousand-calls",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 10000,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:d0cd5aa7f38b50827a048f92c44cd1e9f8ddfa60ac9dff8bea1df8922eba6251",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d000000095300000007626173654f6964530000002861616161616161616161616161616161616161616161616161616161616161616161616161616161530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae53688530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f8053000000086d617843616c6c73490000000000002710530000000b6f7065726174696f6e496453000000076f702d30303031530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "longest-id",
+      "body": {
+        "v": 1,
+        "operationId": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": true,
+        "digest": "sha256:17ab7aa5929a2767262628ff667afeaecc01ecd744e2156629801ca236fe4eca",
+        "preimageHex": "616c626572612e77736c322d72756e2d6c656173652e7631004d000000095300000007626173654f6964530000002861616161616161616161616161616161616161616161616161616161616161616161616161616161530000000a636f6d70757465724964530000000670632d77736c530000000965787069726573417449000000006ae53688530000000969736f6c6174696f6e530000000477736c325300000008697373756564417449000000006ae52f8053000000086d617843616c6c734900000000000000c8530000000b6f7065726174696f6e4964530000004061626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262530000000c7265706f7369746f72794964530000000a7265706f2d616c706861530000000176490000000000000001"
+      }
+    },
+    {
+      "name": "ttl-3601",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793408401
+      },
+      "expected": {
+        "ok": false,
+        "code": "ttl",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "ttl-0",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793404800
+      },
+      "expected": {
+        "ok": false,
+        "code": "ttl",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "ttl-negative",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793404799
+      },
+      "expected": {
+        "ok": false,
+        "code": "ttl",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "version-0",
+      "body": {
+        "v": 0,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "v"
+      }
+    },
+    {
+      "name": "version-2",
+      "body": {
+        "v": 2,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "v"
+      }
+    },
+    {
+      "name": "version-string",
+      "body": {
+        "v": "1",
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "v"
+      }
+    },
+    {
+      "name": "isolation-vm",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "vm",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "isolation"
+      }
+    },
+    {
+      "name": "isolation-upper",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "WSL2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "isolation"
+      }
+    },
+    {
+      "name": "isolation-number",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": 2,
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "isolation"
+      }
+    },
+    {
+      "name": "operation-empty",
+      "body": {
+        "v": 1,
+        "operationId": "",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "operationId"
+      }
+    },
+    {
+      "name": "operation-space",
+      "body": {
+        "v": 1,
+        "operationId": "op 1",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "operationId"
+      }
+    },
+    {
+      "name": "operation-65",
+      "body": {
+        "v": 1,
+        "operationId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "operationId"
+      }
+    },
+    {
+      "name": "computer-slash",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc/1",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "computerId"
+      }
+    },
+    {
+      "name": "repository-backslash",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "C:\\repo",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "repositoryId"
+      }
+    },
+    {
+      "name": "repository-dot-start",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": ".hidden",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "repositoryId"
+      }
+    },
+    {
+      "name": "oid-short",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "baseOid"
+      }
+    },
+    {
+      "name": "oid-41",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "baseOid"
+      }
+    },
+    {
+      "name": "oid-upper",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "baseOid"
+      }
+    },
+    {
+      "name": "oid-ref-name",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "refs/heads/main",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "baseOid"
+      }
+    },
+    {
+      "name": "oid-newline",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "baseOid"
+      }
+    },
+    {
+      "name": "calls-0",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 0,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "maxCalls"
+      }
+    },
+    {
+      "name": "calls-10001",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 10001,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "maxCalls"
+      }
+    },
+    {
+      "name": "calls-negative",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": -1,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "maxCalls"
+      }
+    },
+    {
+      "name": "calls-fraction",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 1.5,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "maxCalls"
+      }
+    },
+    {
+      "name": "calls-string",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": "200",
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "maxCalls"
+      }
+    },
+    {
+      "name": "issued-0",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 0,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "issuedAt"
+      }
+    },
+    {
+      "name": "issued-string",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": "1793404800",
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "issuedAt"
+      }
+    },
+    {
+      "name": "expires-unsafe",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 9007199254740992
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "expiresAt"
+      }
+    },
+    {
+      "name": "extra-key",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600,
+        "task": "x"
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-v",
+      "body": {
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-operationId",
+      "body": {
+        "v": 1,
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-computerId",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-isolation",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-repositoryId",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-baseOid",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "maxCalls": 200,
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-maxCalls",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "issuedAt": 1793404800,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-issuedAt",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "expiresAt": 1793406600
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    },
+    {
+      "name": "missing-expiresAt",
+      "body": {
+        "v": 1,
+        "operationId": "op-0001",
+        "computerId": "pc-wsl",
+        "isolation": "wsl2",
+        "repositoryId": "repo-alpha",
+        "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxCalls": 200,
+        "issuedAt": 1793404800
+      },
+      "expected": {
+        "ok": false,
+        "code": "malformed",
+        "field": "$extra"
+      }
+    }
+  ],
+  "verifyVectors": {
+    "keyId": "albera-test-broker-2026",
+    "publicKeySpki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6yuxwPff7+hNCMf6junICIHgtBxFbRZr8ADgAtQ8RDg+71ICrO0YQY7PqSBWzzQTnRSBaVsnsZcLRZN3Lj6H2w==",
+    "cases": [
+      {
+        "name": "valid",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-at-issue",
+        "now": 1793404800,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-last-second",
+        "now": 1793406599,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-clock-29-behind",
+        "now": 1793404771,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "valid-clock-30-behind",
+        "now": 1793404770,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "not-yet-valid-31",
+        "now": 1793404769,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "not_yet_valid",
+          "field": "issuedAt"
+        }
+      },
+      {
+        "name": "expired-at-the-second",
+        "now": 1793406600,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "expired",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "expired-later",
+        "now": 1793504799,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "expired",
+          "field": "expiresAt"
+        }
+      },
+      {
+        "name": "wrong-base-oid",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "baseOid"
+        }
+      },
+      {
+        "name": "wrong-computer",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-other",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "computerId"
+        }
+      },
+      {
+        "name": "wrong-operation",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0002",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "operationId"
+        }
+      },
+      {
+        "name": "wrong-repository",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-beta"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "repositoryId"
+        }
+      },
+      {
+        "name": "all-wrong-names-base-oid-first",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "computerId": "x1",
+          "operationId": "x2",
+          "repositoryId": "x3"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "binding",
+          "field": "baseOid"
+        }
+      },
+      {
+        "name": "expected-bad-computer",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "a b",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "invalid_expected",
+          "field": "computerId"
+        }
+      },
+      {
+        "name": "expected-bad-operation",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "invalid_expected",
+          "field": "operationId"
+        }
+      },
+      {
+        "name": "expected-bad-repository",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "/etc"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "invalid_expected",
+          "field": "repositoryId"
+        }
+      },
+      {
+        "name": "expected-bad-oid",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "HEAD",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "invalid_expected",
+          "field": "baseOid"
+        }
+      },
+      {
+        "name": "signature-other-key",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "cvgmBmESc_nL5SL0Acotv926aiS1eLkI7TEOQHl5h8cpERmdSh5aCbbXrCUQUg9rSAeHrlWs_62giaoXtmzEsg"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-unknown-key-id",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "someone-else",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "3pKbnv_gwprc1aUyV4mj8gnSqa_K9W27LVulGgK414Zr24DnJPrReoo0MDnbhTF2fXyJinVZ6anA8BO--pv0CA"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-flipped",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "AWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-empty",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": ""
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-padded",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw="
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-non-canonical",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEA"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "signature-too-long",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "signature"
+        }
+      },
+      {
+        "name": "digest-wrong",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "digest-upper",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "SHA256:18A5F8819F5C6DEA60EC3D8A9A274DFBD1F823C70ADB5DFF1934EF4C6032A170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "body-changed-base-oid",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "body-changed-calls",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 9999,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "body-changed-expiry",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793408400
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "digest",
+          "field": "digest"
+        }
+      },
+      {
+        "name": "envelope-extra-key",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw",
+          "extra": 1
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "envelope-missing-digest",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "envelope-bad-key-id",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "a b",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "aWVXDfdsV0GWuUBd8IDKuY5IAyC2LGp58UA7VJc88dEdWABcHQgUY8FXnnRfxA1L3K3wV_IOKS-dwnbAmE9WEw"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "keyId"
+        }
+      },
+      {
+        "name": "resigned-ttl-limit",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:6f741db52dc764894f51920152e1149f51f394b82f2b3dfc7c4b1750ba0b0918",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793408400
+          },
+          "signature": "74HcygNnHR_7X43-YbXCq3fO5Umk1mxEwv6vzPQCK8XRvihpwGVeyCaTHr_9Gxu4AdcMaWqh_kWp2bcEwLG3xA"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "resigned-sha256-oid",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:1c1cd48fe583f4135229eb68dfa8d29474485c8cfd29d40ed30b1426f0f83328",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "nOA5V6FsL1kUa4l-q6cu6Qd2e6pZYkUNeYBxWyUsd1peeJFfvoieynauanZ7izL5Ea6nKn51UgZNL_qcESOOUg"
+        },
+        "result": {
+          "ok": true
+        }
+      },
+      {
+        "name": "network-attestation-is-malformed-here",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "attestation": {
+            "v": 1,
+            "network": "none",
+            "computerId": "pc-wsl",
+            "vmId": "11111111-2222-4333-8444-555555555555",
+            "generation": 3,
+            "projectId": "proj-alpha",
+            "leaseId": "lease-1",
+            "leaseGeneration": 7,
+            "observedAt": 1793404800,
+            "expiresAt": 1793404860
+          },
+          "digest": "sha256:2b9ca318033622d38b89f4d643a74d55303d218cce9175eb661cc3c2de427678",
+          "keyId": "albera-test-broker-2026",
+          "signature": "oYkZ2KGxTo4xFDBot9M69Y2G8rl-ZfhpSgBD3lUV4m1-x1whomi1sr5hUABoyr6VrZzpeMRPYDJEvspZonWmkQ"
+        },
+        "result": {
+          "ok": false,
+          "code": "malformed",
+          "field": "$extra"
+        }
+      },
+      {
+        "name": "cross-domain-signature",
+        "now": 1793404810,
+        "expected": {
+          "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "computerId": "pc-wsl",
+          "operationId": "op-0001",
+          "repositoryId": "repo-alpha"
+        },
+        "signed": {
+          "digest": "sha256:18a5f8819f5c6dea60ec3d8a9a274dfbd1f823c70adb5dff1934ef4c6032a170",
+          "keyId": "albera-test-broker-2026",
+          "lease": {
+            "v": 1,
+            "operationId": "op-0001",
+            "computerId": "pc-wsl",
+            "isolation": "wsl2",
+            "repositoryId": "repo-alpha",
+            "baseOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "maxCalls": 200,
+            "issuedAt": 1793404800,
+            "expiresAt": 1793406600
+          },
+          "signature": "KQ5oz2BgrrmX6yzQo3LSSVTH-utrqRSJzM2rW4pXICG7afg_mgBHVB6Ct_V872ovq07oVFfHY9MIpR7l6GFzPw"
+        },
+        "result": {
+          "ok": false,
+          "code": "signature",
+          "field": "signature"
+        }
+      }
+    ]
+  }
+}

@@ -104,6 +104,8 @@ const EXPECTED = {
       'NetworkAttestation.cs',
       // the task-start attestation (network none + a Production checkpoint, step 4) and its C# twin
       'task-start-attestation.mjs', 'task-start-attestation-vectors.json', 'TaskStartAttestation.cs',
+      // the WSL2 run lease the Broker signs and the WSL bridge checks (ADR-012) and its C# twin
+      'wsl2-run-lease.mjs', 'wsl2-run-lease-vectors.json', 'Wsl2RunLease.cs',
       // match code (the 4 digits the room and the approver app both show, display aid); its C# twin is windows-approver/MatchCode.cs
       'match-code.mjs', 'match-code-vectors.json'].map((f) => `broker-contract/${f}`),
     ...['index.html', 'room.css', 'canvas.mjs', 'app.mjs', 'api.mjs', 'i18n.mjs', 'words-canvas.mjs', 'cam.mjs', 'cam.css', 'words-cam.mjs',
@@ -267,7 +269,7 @@ const providerContracts = [
   'src/runtime/bero-director.mjs',
   'src/runtime/fake-guest-checker.mjs',
   'src/runtime/workspace.mjs',
-  ...['action-digest', 'receipt-v2', 'receipt-v3', 'strict-json', 'network-attestation', 'task-start-attestation', 'match-code'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
+  ...['action-digest', 'receipt-v2', 'receipt-v3', 'strict-json', 'network-attestation', 'task-start-attestation', 'wsl2-run-lease', 'match-code'].map((f) => `src/runtime/broker-contract/${f}.mjs`),
   'src/runtime/fake-attestation-signer.mjs',
   // the desktop Broker client's shared checks and its Fake (the real client, windows-desktop-broker-client.mjs, starts the pipe client helper, so it is under rule 5b instead)
   'src/runtime/desktop-broker-client-contract.mjs',
