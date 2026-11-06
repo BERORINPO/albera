@@ -1,6 +1,6 @@
 # ADR-012 — WSL2 Provider (jobs on a PC without Hyper-V)
 
-- **Status:** Proposed. Phase 1 is done, Phase 2 is done except the Broker's signature (see "Phase 2 results"), and nothing is wired to a job. Security review required. Design review (2026-11-05): first BLOCK, then APPROVE as Proposed. Phase 0 ran on a stand-in image and Phase 1 on the real image (results below). G1 waits for the Broker and the bridge, and every gate runs again once the image changes. No real token has been used.
+- **Status:** Proposed. Phase 1 is done, Phase 2 is done except the Broker's signature (see "Phase 2 results"), Phase 3 built the bridge and ran it on the machine (see "Phase 3 results"), and nothing is wired to a job. Security review required. Design review (2026-11-05): first BLOCK, then APPROVE as Proposed. Phase 0 ran on a stand-in image and Phase 1 on the real image (results below). G1 is proved for the contract and the bridge, and waits for the Broker's signature; every gate runs again once the image changes. No real token has been used.
 - **Date:** 2026-11-05
 - **Depends on:** ADR-001 (Provider), ADR-002 (Trust), ADR-007 (Verified integration), `docs/architecture/no-vm-mode.md`
 - **Scope:** a new class of computer for Windows Home. Hyper-V stays the stronger choice wherever it exists.
@@ -97,6 +97,29 @@ Built: the run lease (`wsl2-run-lease.mjs`, its C# twin, and shared vectors), th
 **Before `room-service-config` reads a wsl2 computer, decision 5's text must be in the approval window** (Zaku): today it would call the computer a VM.
 
 **Not built: the Broker's signature.** The design said "its existing key", which was wrong. The production Broker has no key and no request that signs anything (ADR-002, Amendment 2026-11-04), and issuing one is owner decision AGM-2, before which that amendment says nothing may be built. A lease can be made and checked only with a test key today. So G1 is proved for the contract and the claim, and not for the Broker signing a lease.
+
+## Phase 3 results (2026-11-06, real image, real wsl.exe, no real token, no real key)
+
+Built: `src/runtime/windows-wsl-bridge/` (C#, BCL only, no package), the only code that starts `wsl.exe` (arch rule 13). Verbs `begin exec put get end stop`, one request per pipe connection, four pipe instances so a `stop` can arrive during an `exec`. Wire format: the header comment of `Wire.cs`. It takes no Windows path, no Windows command line and no distribution name; the `exec` command is bytes for `bash -c` inside the sandbox and goes through the agent's stdin, never through `wsl.exe`'s arguments.
+
+- **Order of `begin`:** the lease is proved first (`Authenticate`: shape, digest, signature, time), and only then is its `repositoryId` looked up in the config and the head read by the bridge itself (hardened git, as `git-process.mjs`). The end of the lease is looked at again after the read. Then `RequireBinding` (own computer, base head, operation, repository, generation floor from the config). Then the operation id is written to a file and flushed (a failed write refuses the run), then the image SHA-256 with the file held open, then WSL version and kernel floor and its expiry, `wsl --import albera-run-<id>`, the agent, and the input bundle (the bridge's own, its header checked against `baseOid`, cloned inside the sandbox as the job user).
+- **The bridge counts, not the agent:** every `exec`, `put` and `get` reads the lease's end and counts against `maxCalls`; the count and the used operation ids are in a file kept until `expiresAt + 30 s`, across restarts, and a failed save refuses. An `exec` is told at most the time left and is cut off at `expiresAt` (plus a 3 s grace); a timer also ends a run whose lease has run out, in the middle of a command too. Put, get, output, command and request frame sizes are capped by the bridge before anything is buffered; an agent answer over its cap, a late answer, or a dead agent ends the run.
+- **Only `albera-run-` names:** `RunName` and `WslArgs` are the only places a name is made or accepted. A start-up sweep removes leftover `albera-run-*` distributions and nothing else. There is no `--shutdown` anywhere in the code (arch rule 13d).
+
+G1, bridge part (`test/runtime-wsl-bridge.test.mjs`, in-process with a fake `wsl.exe`, agent and repository; 59 checks, plus a lease signed by the Node twin): no lease, expired lease, reused lease (across a restart and with another signature), wrong computer, wrong repository, wrong operation, generation below the floor, wrong signer, tampered body, head that is not `baseOid`, and a bundle whose head is not `baseOid`: one check each. Each leaves nothing imported or, where it got that far, unregistered.
+
+On the machine (`node scripts/wsl2-bridge-gates.mjs <image> <folder>`, image `254b9c088ed2f83206bfba03c361f5a6a0732dd38c36e4f38abb566b8303e516`, WSL 2.6.3.0, kernel 6.6.87.2): 26 of 26. `begin` takes about 2.8 s. The refusals above, the 1 MiB `put`/`get` with equal SHA-256, `stop` during `sleep 300` (the command ends, the distribution is gone), the file over the get cap ending the run, the lease running out with nobody calling, reuse after a restart of the bridge, a leftover `albera-run-orphan1` swept while `albera-decoy` stayed, and the owner's Ubuntu and docker-desktop unchanged (still Stopped). The planted `core.fsmonitor` and hook ran under plain git (control) and not under the bridge's git. Inside the sandbox the job is uid 1000, no `WSLENV`, no Windows variable, no `/mnt`.
+
+Found on the way, fixed: a child process of the bridge (git) hung for good while another thread of the bridge was blocked in a read of the bridge's own stdin, because the child inherited that synchronous handle. Children now get their own stdin, closed at once. The in-process tests cannot show it (no such read there); only the machine run did. And `git clone` prints advice before the object id, so the id is the last line.
+
+**Not done, and where this differs:**
+- Nothing starts the bridge (the installer, "started the same way as the approval tray") or talks to it: no `albera_shell`, no Control Plane client with the server-SID check, no wiring in the hands (they still refuse a wsl2 computer). Phase 4 and 5.
+- The bridge's own pipe, owner, `FIRST_PIPE_INSTANCE` and caller-SID check are tested in-process (`peer_denied`, a squatter stops the start). The remote-client refusal rests on `LocalPipe.cs` and its lab check (u6), as for the Broker.
+- G7 is only partly measured: a planted hook ran as uid 1000 in the sandbox and no file there is root's, but root's relay is still only `enter.sh`, so there was no root code path to attack. The result bundle is not extracted yet (Phase 4): a result can be fetched file by file with `get`.
+- The kernel floor reads `wsl --version`, the installed WSL kernel, not the kernel of a running utility VM. The labels in that text are localized, so only the numbers at the end of the first two lines are read.
+- A distribution name must be plain lowercase (`[a-z0-9-]`, 48 characters): an operation id with an uppercase letter, dot or colon is refused (`run_name`), not renamed.
+- The ledger file is compacted only at start (entries past their margin are dropped then) and refuses past 100,000 entries.
+- `npm run build:wsl-bridge` could not be run here: it pins .NET SDK 10.0.403 and this PC has 10.0.102. The test build (with the `trust-sid` seam) is what ran.
 
 ## Decision proposed
 

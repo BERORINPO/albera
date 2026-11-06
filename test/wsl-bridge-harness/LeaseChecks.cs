@@ -122,7 +122,7 @@ internal static partial class Harness
             FakeAgent agent = rig.Host.LastAgent;
             Assert(agent.Files.ContainsKey("input.bundle"), "the bridge's own bundle must be put in /work");
             Assert(agent.Requests.Count == 2 && agent.Requests[0].Op == 3 && agent.Requests[1].Op == 1, "write, then clone");
-            Assert(System.Text.Encoding.UTF8.GetString(agent.Requests[1].Body).Contains("git clone -q input.bundle repo"), "the clone runs inside the sandbox");
+            Assert(System.Text.Encoding.UTF8.GetString(agent.Requests[1].Body).Contains("clone -q input.bundle repo"), "the clone runs inside the sandbox");
         });
 
         Check("begin: an image that is not the pinned file is refused before any import", () =>
