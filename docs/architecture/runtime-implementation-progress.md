@@ -626,3 +626,12 @@ Merged on main since the previous entry, all on 2026-11-03 (UTC): #189 (13:47), 
 - **VERIFIED (`node --test` on Windows, Node 24; real Broker and Authority binaries, no real key):** the run lease contract in both twins against 55 digest and 41 signed vectors; the Broker's `kind: "wsl2"` computers and the wsl2 action form over the real claim pipe; a policy receipt or an attestation can never cover an action that names `isolation`; the gate, the job routes and the hands carry and check the target.
 - **BLOCKED on AGM-2:** the Broker signing a lease. ADR-012 said "its existing key", and the production Broker has none. The ADR is corrected and the AGM-1/2 card says so.
 - **Not verified:** a run under a lease (the bridge is Phase 3). Nothing here reaches a job: `room-service-config` does not read a wsl2 computer, and the hands refuse one.
+
+## 2026-11-06 — ADR-012 Phase 3: the bridge, albera_shell, the driver's tool set
+
+- **Bridge (PR 220):** `src/runtime/windows-wsl-bridge/`, the only caller of `wsl.exe`. Fake-host harness 85 of 85. `scripts/wsl2-bridge-gates.mjs` 34 of 34 on the real image and real `wsl.exe` in throwaway distributions (seam build, Control Plane as the owner, no real token, no real key). Ubuntu and docker-desktop stayed Stopped. A build without the seam has 0 errors.
+- **albera_shell (this branch):** MCP server, Node bridge client, helper relay mode, driver tool set as a parameter. Fake only: never connected to the real bridge pipe, to WSL or to real Claude Code.
+- **Review:** Zaku failed the bridge on two HIGH findings (pipe slots dying on a disconnect, the lease floor read only at start). Both are fixed; the re-review and the albera_shell review are PASS with notes.
+- **Not reachable:** the hands still refuse wsl2 (`wsl2_hands_missing`) and `room-service-config` does not read it, so nothing here reaches a job.
+- **Before Phase 4:** see "Before Phase 4" in ADR-012 (SEC-1 helper pin, SEC-2 owner-only proof). Phase 5 must limit reading the lease floor (MEDIUM-1).
+- **Test results:** local full runs fail the same nine job-guardian, helper-process and folder-guard tests, which CI does not. A 300 ms wait in the bridge rig failed once on a busy Windows runner and is now 3 s.
