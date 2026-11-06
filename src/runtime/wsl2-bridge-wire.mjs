@@ -6,16 +6,20 @@
 //               1 begin  body = the signed run lease as strict JSON      2 exec  body = u32 seconds, command (UTF-8)
 //               3 put    body = u32 path length, path, data              4 get   body = path
 //               5 end    body empty                                      6 stop  body empty
+//               7 bundle body empty (needs a run)                        8 status body empty, or a repository id (needs no run)
 //   response  u8 status (0 ok, 1 refused), then for ok the verb's answer, for refused one fixed word
 //               begin: empty    exec: i32 exit code, u8 flags (1 output cut, 2 out of time), output    put: empty    get: the bytes    end, stop: empty
+//               bundle: the bundle (at most maxBundleBytes)    status: JSON {"kernelOk":bool,"reason":word|null[,"head":oid|null]}, head only when a repository id was sent
 // There is no field for a Windows path, a Windows command line or a distribution name. Everything in a reply except the status and the refusal word comes from the job's side and is data.
 
 const MIB = 1024 * 1024;
-export const VERBS = Object.freeze({ begin: 1, exec: 2, put: 3, get: 4, end: 5, stop: 6 });
+export const VERBS = Object.freeze({ begin: 1, exec: 2, put: 3, get: 4, end: 5, stop: 6, bundle: 7, status: 8 });
 export const WIRE_LIMITS = Object.freeze({
   maxLeaseBytes: 4096, maxCommandBytes: 64 * 1024, maxPathBytes: 512, maxPutBytes: 16 * MIB, maxGetBytes: 16 * MIB, maxOutputBytes: MIB, maxExecSeconds: 3600,
   maxRequestFrame: 16 * MIB + 512 + 1024, // Limits.MaxRequestFrame: a put of the largest size, its path and the header fields
   maxWordBytes: 64,
+  maxBundleBytes: 64 * MIB, // Limits.MaxBundleBytes: the largest bundle the bridge hands over. Agent MAX_BUNDLE (256 MiB - 16) and MAX_FRAME (256 MiB) are higher; Wire.cs and the helper relay bound no reply
+  maxStatusRequestBytes: 128, maxStatusReplyBytes: 256,
 });
 export const EXEC_FLAGS = Object.freeze({ outputCut: 1, outOfTime: 2 });
 
@@ -35,6 +39,7 @@ const EXEC_HEADER_BYTES = 5;
 const MAX_REPLY = Object.freeze({
   begin: WORD_MAX_REPLY, put: WORD_MAX_REPLY, end: WORD_MAX_REPLY, stop: WORD_MAX_REPLY,
   exec: 1 + EXEC_HEADER_BYTES + WIRE_LIMITS.maxOutputBytes, get: 1 + WIRE_LIMITS.maxGetBytes,
+  bundle: 1 + WIRE_LIMITS.maxBundleBytes, status: 1 + WIRE_LIMITS.maxStatusReplyBytes,
 });
 
 /** A request that cannot be sent, or a reply that is not one. `code` is fixed text; the message never holds a value. */
@@ -86,6 +91,14 @@ export const encodeRequest = Object.freeze({
   get: (id, path) => request('get', id, pathBytes(path)),
   end: (id) => request('end', id),
   stop: (id) => request('stop', id),
+  bundle: (id) => request('bundle', id),
+  /** `status` needs no run: `id` is only the frame's id field (a fixed word), and `repositoryId` (optional) is the one the bridge reads a head for. */
+  status(id, repositoryId) {
+    if (repositoryId === undefined) return request('status', id);
+    const valid = typeof repositoryId === 'string' && repositoryId.length > 0 && repositoryId.isWellFormed() && Buffer.byteLength(repositoryId) <= WIRE_LIMITS.maxStatusRequestBytes;
+    if (!valid) throw invalidRequest();
+    return request('status', id, Buffer.from(repositoryId, 'utf8'));
+  },
 });
 
 /** The largest reply payload a verb can have: what the frame reader is told, so nothing larger is ever buffered. */
@@ -119,6 +132,21 @@ export class WireFrameReader {
   }
 }
 
+const OID_RE = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
+
+/** The status JSON, strictly: exactly kernelOk and reason (and head), kernelOk true exactly when reason is null, a reason that is one of the bridge's words, a head that is an object id or null. */
+function decodeStatus(body) {
+  let value;
+  try { value = JSON.parse(body.toString('utf8')); } catch { throw invalidResponse(); }
+  const keys = value !== null && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value).sort().join(',') : '';
+  const hasHead = keys === 'head,kernelOk,reason';
+  if (!hasHead && keys !== 'kernelOk,reason') throw invalidResponse();
+  const { kernelOk, reason } = value;
+  if (typeof kernelOk !== 'boolean' || (reason !== null && !BRIDGE_REASONS.includes(reason)) || kernelOk !== (reason === null)) throw invalidResponse();
+  if (hasHead && value.head !== null && !(typeof value.head === 'string' && OID_RE.test(value.head))) throw invalidResponse();
+  return { kernelOk, reason, ...(hasHead ? { head: value.head } : {}) };
+}
+
 function decodeExec(body) {
   if (body.length < EXEC_HEADER_BYTES) throw invalidResponse();
   return { exitCode: body.readInt32BE(0), flags: body[4], output: body.subarray(EXEC_HEADER_BYTES) };
@@ -137,7 +165,8 @@ export function decodeReply(verb, payload) {
     return { ok: false, reason };
   }
   if (verb === 'exec') return { ok: true, value: decodeExec(body) };
-  if (verb === 'get') return { ok: true, value: { data: body } };
+  if (verb === 'get' || verb === 'bundle') return { ok: true, value: { data: body } };
+  if (verb === 'status') return { ok: true, value: decodeStatus(body) };
   if (body.length !== 0) throw invalidResponse();
   return { ok: true, value: {} };
 }

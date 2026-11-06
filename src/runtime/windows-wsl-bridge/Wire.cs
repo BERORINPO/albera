@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace Albera.WslBridge;
 
-internal enum Verb : byte { Begin = 1, Exec = 2, Put = 3, Get = 4, End = 5, Stop = 6 }
+internal enum Verb : byte { Begin = 1, Exec = 2, Put = 3, Get = 4, End = 5, Stop = 6, Bundle = 7, Status = 8 }
 
 /// <summary>One decoded request. RunId is the operation id of the lease (it also names the distribution).</summary>
 internal sealed record Request(Verb Verb, string RunId, byte[] Body);
@@ -21,8 +21,10 @@ internal sealed record Reply(bool Ok, string Reason, byte[] Body)
 //               1 begin  body = the signed run lease as strict JSON         2 exec  body = u32 seconds, command (UTF-8, for bash -c in the sandbox)
 //               3 put    body = u32 path length, path, data                 4 get   body = path
 //               5 end    body empty                                         6 stop  body empty
+//               7 bundle body empty (needs a run)                           8 status body empty, or a repository id (needs no run)
 //   response  u8 status (0 ok, 1 refused), then for ok the verb's answer, for refused one fixed word (ASCII, see Reason.cs)
 //               begin: empty    exec: i32 exit code, u8 flags (1 output cut, 2 out of time), output    put: empty    get: the bytes    end, stop: empty
+//               bundle: the bundle, at most Limits.MaxBundleBytes    status: JSON {"kernelOk":bool,"reason":word|null[,"head":oid|null]} (head only when a repository id was sent)
 // There is no field that carries a Windows path, a Windows command line or a distribution name: the bridge builds those itself.
 internal static class Wire
 {
@@ -33,7 +35,7 @@ internal static class Wire
 
     public static Request? Parse(ReadOnlySpan<byte> payload)
     {
-        if (payload.Length < 2 || payload[0] is < 1 or > 6) return null;
+        if (payload.Length < 2 || payload[0] is < 1 or > 8) return null;
         int idLength = payload[1];
         if (idLength is < 1 or > MaxIdLength || payload.Length < 2 + idLength) return null;
         string id = Encoding.ASCII.GetString(payload.Slice(2, idLength));

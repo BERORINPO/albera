@@ -20,7 +20,7 @@ internal sealed class Run(string id, string name, string folder, Wsl2RunLeaseBod
     public TaskCompletionSource<bool> TornDown { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
 
-// The six verbs (ADR-012, "The WSL bridge"). Every decision lives here, on the Windows side: the lease, the call count, the sizes and the deadline are the bridge's own, and nothing the agent says about
+// The eight verbs (ADR-012, "The WSL bridge"): the six of phase 3, and `bundle` and `status` of phase 4 (BridgeExtras.cs). Every decision lives here, on the Windows side: the lease, the call count, the sizes and the deadline are the bridge's own, and nothing the agent says about
 // its limits is trusted (a job can take the agent over). A run that breaks a limit, or whose agent misbehaves, is ended: terminate, then unregister.
 // begin is in BridgeBegin.cs. Every reply carries a Reason word and nothing else about the request (no path, no repository, no output). Log lines are fixed words, each with the run id it is about (`run=<id>`):
 // an id has passed Wire.IsId, so it cannot carry a space or a line end, and on a refused `begin` it is the id the caller named, not one a lease has proved.
@@ -49,6 +49,8 @@ internal sealed partial class Bridge(BridgeConfig config, IWslHost host, IReposi
                 Verb.Get => await CallAsync(request, GetAsync),
                 Verb.End => await EndAsync(request, abort: false),
                 Verb.Stop => await EndAsync(request, abort: true),
+                Verb.Bundle => await CallAsync(request, BundleAsync),
+                Verb.Status => await StatusAsync(request),
                 _ => Reply.Refuse(Reason.BadVerb),
             };
         }
