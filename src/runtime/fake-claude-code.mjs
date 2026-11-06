@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 // Fake of the `claude` executable for claude-code-driver.mjs (test double; nothing here talks to Anthropic or reads any credential). Run it as
 //   node fake-claude-code.mjs <script.json> <the arguments the driver gives claude>
 // so the driver's `executable` is node and its `executableArgs` are [this file, script.json]. It does what the driver relies on from Claude Code:
-//   - reads the `--mcp-config` file, starts the albera_desktop MCP server named there (the real server module with a Fake desktop client) and speaks MCP to it over stdio;
+//   - reads the `--mcp-config` file, starts the one MCP server named there (the real server module with a Fake client) and speaks MCP to it over stdio;
 //   - waits for the user message (stream-json) on stdin, then plays the script, writing stream-json lines (`system` init, `assistant` tool_use, `user` tool_result, `result`);
 //   - after `result` it waits for stdin to end and exits 0, like `claude -p --input-format stream-json`.
 // Script: { "recordTo": "<abs file>", "init": { ...fields replacing the generated init }, "steps": [ ... ] }. Steps:
@@ -25,7 +25,7 @@ const save = () => { if (!script.recordTo) return; const tmp = `${script.recordT
 process.once('SIGTERM', () => { save(); process.exit(143); });
 
 function startMcp() {
-  const config = JSON.parse(readFileSync(argv[argv.indexOf('--mcp-config') + 1], 'utf8')).mcpServers.albera_desktop;
+  const [[serverName, config]] = Object.entries(JSON.parse(readFileSync(argv[argv.indexOf('--mcp-config') + 1], 'utf8')).mcpServers);
   const child = spawn(config.command, config.args, { env: config.env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
   record.mcpPid = child.pid;
   save();
@@ -37,23 +37,23 @@ function startMcp() {
     waiting.set(id, resolve);
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
   });
-  return { child, request, notify: (method) => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method })}\n`) };
+  return { child, serverName, request, notify: (method) => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method })}\n`) };
 }
 
 async function main() {
   const mcp = startMcp();
   await mcp.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'fake-claude-code', version: '0' } });
   mcp.notify('notifications/initialized');
-  const listed = (await mcp.request('tools/list', {})).result.tools.map((tool) => `mcp__albera_desktop__${tool.name}`);
+  const listed = (await mcp.request('tools/list', {})).result.tools.map((tool) => `mcp__${mcp.serverName}__${tool.name}`);
   const task = await new Promise((resolve) => { createInterface({ input: process.stdin }).once('line', resolve); });
   record.task = JSON.parse(task).message.content;
-  emit({ type: 'system', subtype: 'init', session_id: 'fake-session', tools: listed, mcp_servers: [{ name: 'albera_desktop', status: 'connected' }], ...(script.init ?? {}) });
+  emit({ type: 'system', subtype: 'init', session_id: 'fake-session', tools: listed, mcp_servers: [{ name: mcp.serverName, status: 'connected' }], ...(script.init ?? {}) });
   let n = 0;
   for (const step of script.steps) {
     if (step.say !== undefined || step.sayEnv !== undefined) emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: step.say ?? process.env[step.sayEnv] }] } });
     else if (step.tool !== undefined || step.toolRaw !== undefined) {
       const id = `toolu_${++n}`;
-      const name = step.toolRaw ?? `mcp__albera_desktop__${step.tool}`;
+      const name = step.toolRaw ?? `mcp__${mcp.serverName}__${step.tool}`;
       emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: step.input ?? {} }] } });
       if (step.tool !== undefined) {
         const reply = await mcp.request('tools/call', { name: step.tool, arguments: step.input ?? {} });

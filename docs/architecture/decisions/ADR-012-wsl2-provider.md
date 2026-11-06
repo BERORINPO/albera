@@ -117,7 +117,7 @@ On the machine (`node scripts/wsl2-bridge-gates.mjs <image> <folder>`, image `25
 Found on the way, fixed: a child process of the bridge (git) hung for good while another thread of the bridge was blocked in a read of the bridge's own stdin, because the child inherited that synchronous handle. Children now get their own stdin, closed at once. The in-process tests cannot show it (no such read there); only the machine run did. And `git clone` prints advice before the object id, so the id is the last line.
 
 **Not done, and where this differs:**
-- Nothing starts the bridge (the installer, "started the same way as the approval tray") or talks to it: no `albera_shell`, no Control Plane client with the server-SID check, no wiring in the hands (they still refuse a wsl2 computer). Phase 4 and 5.
+- Nothing starts the bridge (the installer, "started the same way as the approval tray"), and no job reaches it: `albera_shell` and the client exist (below) but the hands still refuse a wsl2 computer (`wsl2_hands_missing`) and `room-service-config` does not read one. Phase 4 and 5.
 - The bridge's own pipe, owner, `FIRST_PIPE_INSTANCE` and caller-SID check are tested in-process (`peer_denied`, a squatter stops the start). The remote-client refusal rests on `LocalPipe.cs` and its lab check (u6), as for the Broker.
 - G7 is only partly measured: a planted hook ran as uid 1000 in the sandbox and no file there is root's, but root's relay is still only `enter.sh`, so there was no root code path to attack. The result bundle is not extracted yet (Phase 4): a result can be fetched file by file with `get`.
 - The kernel floor reads `wsl --version`, the installed WSL kernel, not the kernel of a running utility VM. The labels in that text are localized, so only the numbers at the end of the first two lines are read.
@@ -133,6 +133,32 @@ Found on the way, fixed: a child process of the bridge (git) hung for good while
 - The bridge does not check its own program at run time. Nothing tests that `albera-wsl-bridge.exe` is admin-only: that rests on the installer, which does not exist yet.
 - After AGM-2, check that the Broker issues exactly one lease per operation. The bridge refuses a second `begin` of an operation id, so it counts on that, and it cannot see a Broker that signs two operations for one approval.
 - `npm run build:wsl-bridge` could not be run here: it pins .NET SDK 10.0.403 and this PC has 10.0.102. The test build (with the `trust-sid` seam) is what ran.
+
+### The rest of Phase 3: `albera_shell`, the client, the driver (2026-11-06, FAKE bridge only: nothing below ran against the real bridge or WSL)
+
+Built: the MCP server `albera_shell` (`albera-shell-mcp-*.mjs`; tools `run`, `read`, `write`), the Control Plane's bridge client (`wsl2-bridge-client.mjs`, `wsl2-bridge-wire.mjs`), and a relay mode of the pipe client helper (`windows-broker-pipe-client/BridgeRelay.cs`). The driver takes `hands` (`{ serverName, toolNames, systemPrompt }`); without it, it is the six desktop tools as before, and the `init` self-check and the `tool_use` check work on the set given. Nothing passes `hands` yet except tests.
+
+- **The server-SID check is in the helper, not in Node.** Node cannot read a pipe's owner, and a separate look at the name would not be the connection that is used. So a call starts the helper (`wsl-bridge`), which compares the pipe's owner with the expected SID on the connected handle, through the same `OpenVerified` as the Broker's modes, and says `{ok:true}`. Only then does Node write the request, and only then does the helper read it. A server that fails gets no byte. The bridge has no service and no known PID, so owner (and optionally the image) is the whole proof here, where the Broker's modes also compare a PID.
+- **The wire stays in Node.** After the proof the helper carries one frame out and the reply back without reading them; the bounds and the meaning are `wsl2-bridge-wire.mjs`. A reply is bounded by verb (64 bytes of word for `begin`, `put`, `end`, `stop`).
+- **The lease does not go through `albera_shell`** (the first version of the picture below said so). The server has `run`, `read` and `write` and no lease: it reaches `exec`, `put` and `get` of a run that already exists. `begin`, `end` and `stop` are the client's too, for the hands to call around the driver (Phase 4), so a refused `begin` is known before a model starts, a lease is never in the MCP config, and a model cannot begin or end a run. Nothing calls `begin` yet.
+- **Limits on both sides.** The server counts `maxCalls` and watches `expiresAtMs` itself: a command is told at most the time left, a call still in flight at the deadline is answered `time_limit_reached`, and the server then takes no more. It also stops at once on a refusal that means the run is over and on a failure to prove the server (`UNPROVED_CODES`), and after three other transport failures in a row. A missing file or a bad path is the model's to handle and stops nothing.
+- **What comes back is data.** Output and file contents are decoded (invalid UTF-8 replaced), cleaned of control characters and of invisible ones (bidi, zero-width, soft hyphen, tag characters), cut at 256 KiB, labelled as data and closed by an end line that is random per result, so a job cannot forge what follows it; nothing in the server acts on them. A file that is not valid UTF-8 is not shown. No credential passes through: the entry deletes the token from its environment and the helper gets four system variables. A refusal reaches the model only as a word of `Reason.cs`, and any other text is `invalid_response`.
+
+Evidence, all with fakes: `test/runtime-wsl2-bridge-client.test.mjs` (the numbers and words are read from `Wire.cs`, `Limits.cs` and `Reason.cs`; bytes written out by hand; frame splits, short reads, lengths over the bound and of 0; a fake helper), `test/runtime-albera-shell-mcp.test.mjs` (Fake bridge client), `test/runtime-wsl2-bridge-integration.test.mjs` (**the real helper against a fake bridge**, a pipe the test serves, same user: wrong SID and wrong image get no byte, 1 MiB each way, and driver, Fake claude, real entry, real helper, fake bridge end to end), and two `wire interop` checks in the bridge harness (`Wire.cs` parses frames Node made, and encodes the replies Node decodes).
+
+**Not proved:**
+- Nothing ran against the real bridge's pipe, and `wsl.exe` was not started. The two sides meet only through `Wire.cs` in the harness.
+- The owner check only ever ran same-user. A Control Plane account reaching the owner's bridge has not been tried: reading the owner needs the `READ_CONTROL` the bridge's ACE grants, and the image pin needs to open the owner's process, which another account may be refused. Both fail closed (`server_identity_unavailable`), so a pin could make every call fail. Run it in the lab before a pin is configured.
+- The owner proves who made the pipe, not which program: any process of the owner's could hold that name if the bridge is not running. That is the owner's own side of R1, and the image pin narrows it.
+- Claude Code itself has not run with these tools: the driver's behaviour is against `fake-claude-code.mjs`.
+- A pipe name differs in grammar: the bridge's config takes a `.` and must start with a letter or digit (`IsPlainPipeName`), the client and the helper take `[A-Za-z0-9_-]`, so a leading `_` or `-` passes there. A name with a dot in the config is refused by the client, never widened: use a name all three take. The bridge is left as it is.
+- `write` is cut at 168 Ki characters so that a call fits the stdio line of 1 Mi characters even when every character is a control character, which JSON writes as six.
+
+**Before Phase 4 (Zaku, on the review of this part):**
+- **SEC-1: the helper's pin covers the `.exe` only.** The manifest and `helperSha256` hash the apphost, and the program's `dll` beside it is not covered, so a swapped `dll` would pass. Measure the publish output, then make it a single file or hash the whole tree.
+- **SEC-2: the proof is the owner alone,** so another program running as the same SID passes, and in Phase 4 the lease given to `begin` goes to that program too. Settle in the lab, with two accounts, whether the image pin works from the Control Plane's account. If it does not, write down here that this is accepted, and why.
+- **The hands receive why the server halted,** the `UNPROVED_CODES` words above all: today the reason reaches only the model, so a squatted pipe leaves no trace anywhere else.
+- **The hands treat `no_run` from `end` as a failure.** It means the bridge ended the run first (lease end, a generation below the floor, a stop, or a job that broke the agent, which is how the model can bring a run down although it cannot call `end`), so whatever was to be collected at the end is not there.
 
 ## Decision proposed
 
@@ -159,7 +185,8 @@ Found on the way, fixed: a child process of the bridge (git) hung for good while
                   claude -p (Windows side, no built-in tools, holds the token)
                        │ MCP: run / read / write
                        v
-                  albera_shell ── pipe + lease ──> WSL bridge (owner's session; the only wsl.exe caller)
+                  albera_shell ── pipe: exec, put, get ──> WSL bridge (owner's session; the only wsl.exe caller)
+                       the hands ── pipe: begin + lease, end, stop ──┘ (around the driver, Phase 4)
                                                      │ checks lease, image hash, kernel floor, call count
                                                      v
                                      albera-run-<id> (new distribution)
@@ -236,7 +263,7 @@ A job that reaches its limits ends the run: the agent is the first process of th
 | 1 | Image, sandbox script, `albera-agent`, seccomp allowlist | Security boundary | AI |
 | 2 | Action fields, the Broker's second kind of computer, the run lease | Security boundary | AI |
 | 3 | The bridge, `albera_shell`, the driver's tool set made a parameter | Security boundary | AI |
-| 4 | Bundles in and out, the diff in the room, the level, the approval text | Security boundary | AI |
+| 4 | Bundles in and out, the diff in the room, the level, the approval text (first: "Before Phase 4" above) | Security boundary | AI |
 | 5 | Install on YOSUKE-NOTE and the first real job | Owner action | Owner, about 30 minutes |
 
 The repository's security tier also asks for a disposable VM, and this PC has no Hyper-V. A throwaway distribution is the nearest thing here, and it does not prove the same things. Owner decision 3.

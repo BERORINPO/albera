@@ -30,7 +30,7 @@ const BROKER_FLAGS = Object.freeze(['--pipe-name', '--service-name', '--helper',
 const fail = () => new TypeError('invalid_desktop_mcp_args');
 
 // Absolute and normalized in the Windows or POSIX sense, not a UNC share.
-const isAbsolutePath = (value) => typeof value === 'string' && value.length > 0 && !/^[\\/]{2}/u.test(value) && !/(?:^|[\\/])\.\.?(?:[\\/]|$)/u.test(value) && (/^[A-Za-z]:[\\/]/u.test(value) || value.startsWith('/'));
+export const isAbsolutePath = (value) => typeof value === 'string' && value.length > 0 && !/^[\\/]{2}/u.test(value) && !/(?:^|[\\/])\.\.?(?:[\\/]|$)/u.test(value) && (/^[A-Za-z]:[\\/]/u.test(value) || value.startsWith('/'));
 
 /** The flags that bound a run, appended by the driver to whatever command line the caller built. */
 export function desktopMcpLimitArgs({ maxCalls, expiresAtMs }) {
