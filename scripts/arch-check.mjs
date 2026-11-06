@@ -534,6 +534,49 @@ for (const file of trackedBuildOutput) violations.push(`[12e tracked build outpu
 results.push(`12e no tracked file under bin/ or obj/: ${trackedBuildOutput.length} found`);
 results.push(`12 Control Plane host is build-on-demand: ${cpHostSources.length + 2} source files, ${cpHostWired.length} wiring violations`);
 
+// 13. The WSL bridge (src/runtime/windows-wsl-bridge, ADR-012 "The WSL bridge", Proposed) is the ONLY program that starts wsl.exe (decision 3): a guest that got out through wsl.exe would hold the identity
+//     of whoever started it, and the Control Plane's identity opens the DPAPI token. So no Node module (runtime, app layers, UI) may name wsl.exe or the bridge project; the bridge is built on demand
+//     only, like the Broker (rule 8), and package.json may not wire it in. Inside the bridge: wsl.exe is named only in WslExeHost.cs, the argument lists are WslArgs.cs, `--shutdown` (which also stops the
+//     owner's Ubuntu and Docker) is written nowhere in code, it takes no package (BCL only), and it does not name the Broker or Authority projects (separately deployable).
+const WSL_BRIDGE_REF = /windows-wsl-bridge|Albera\.WslBridge|albera-wsl-bridge|build:wsl-bridge/i;
+check('13a WSL bridge is not referenced by Observer layers or runtime modules', [...entry, ...adapters, ...core, ...shared, ...pub, ...runtime], (line) =>
+  WSL_BRIDGE_REF.test(line) ? 'the WSL bridge must not be imported, spawned or named here (build-on-demand only)' : null,
+);
+check('13b no Node module starts wsl.exe (only the WSL bridge does)', [...entry, ...adapters, ...core, ...shared, ...pub, ...runtime], (line) =>
+  /wsl\.exe|['"`]wsl['"`]/i.test(line) ? 'wsl.exe may be started only by the WSL bridge (ADR-012, decision 3)' : null,
+);
+const wslBridgeRoot = 'src/runtime/windows-wsl-bridge';
+const wslBridgeSources = ['Program.cs', 'Bridge.cs', 'BridgeBegin.cs', 'BridgeConfig.cs', 'PipeServer.cs', 'LocalPipe.cs', 'WslExeHost.cs', 'WslArgs.cs', 'IWslHost.cs', 'AgentLink.cs', 'OperationLedger.cs',
+  'GitRepositories.cs', 'PathGuard.cs', 'SidRules.cs', 'Reason.cs', 'Limits.cs', 'Wire.cs', 'Floor.cs', 'ChildProcess.cs', 'TestSeam.cs'];
+for (const f of [...wslBridgeSources, 'Albera.WslBridge.csproj', 'packages.lock.json']) {
+  if (!fs.existsSync(path.join(ROOT, wslBridgeRoot, f))) violations.push(`[13c WSL bridge source] ${wslBridgeRoot}/${f} does not exist (false-safe)`);
+}
+const wslBridgeFiles = wslBridgeSources.map((f) => `${wslBridgeRoot}/${f}`).filter((f) => fs.existsSync(path.join(ROOT, f)));
+const codeOnly = (line) => line.replace(/\/\/[^\r\n]*/u, ''); // a comment may explain what is not done
+check('13d WSL bridge sources: wsl.exe only in WslExeHost.cs, no shutdown, no Broker or Authority project', wslBridgeFiles, (line, file) => {
+  const code = codeOnly(line);
+  if (/shutdown/i.test(code)) return '`wsl --shutdown` is a separate decision (ADR-012, decision 13) and is not built here';
+  if (/wsl\.exe/i.test(code) && !file.endsWith('WslExeHost.cs')) return 'wsl.exe is named only in WslExeHost.cs';
+  if (/ProcessStartInfo|Process\.Start\(/.test(code) && !/(?:WslExeHost|ChildProcess)\.cs$/.test(file)) return 'a child process is started only through ChildProcess.cs / WslExeHost.cs';
+  return /windows-broker|WindowsBroker|windows-approval-authority|Albera\.ApprovalAuthority/i.test(code) ? 'the bridge is separately deployable: no reference to the Broker or Authority project' : null;
+});
+const wslBridgeProject = fs.existsSync(path.join(ROOT, wslBridgeRoot, 'Albera.WslBridge.csproj')) ? fs.readFileSync(path.join(ROOT, wslBridgeRoot, 'Albera.WslBridge.csproj'), 'utf8') : '';
+if (/PackageReference|ProjectReference/.test(wslBridgeProject)) violations.push('[13e WSL bridge project] Albera.WslBridge.csproj takes a package or a project: BCL only (false-safe)');
+for (const f of wslBridgeFiles) {
+  const n = fs.readFileSync(path.join(ROOT, f), 'utf8').split('\n').length;
+  if (n > 800) violations.push(`[13e WSL bridge source] ${f} has ${n} lines (max 800)`);
+}
+const wslBridgePublish = fs.existsSync(path.join(ROOT, 'scripts/publish-windows-wsl-bridge.mjs')) ? fs.readFileSync(path.join(ROOT, 'scripts/publish-windows-wsl-bridge.mjs'), 'utf8') : '';
+if (!wslBridgePublish.includes('-p:AlberaWslBridgeTestSeams=false')) violations.push('[13e WSL bridge source] scripts/publish-windows-wsl-bridge.mjs does not pin the test seam off (false-safe)');
+const wslBridgeWired = [
+  ...Object.entries(pkg.bin ?? {}).filter(([, v]) => WSL_BRIDGE_REF.test(String(v))).map(([k]) => `bin.${k}`),
+  ...LIFECYCLE.filter((k) => WSL_BRIDGE_REF.test(String(pkg.scripts?.[k] ?? ''))).map((k) => `scripts.${k}`),
+  ...(pkg.files ?? []).filter((v) => WSL_BRIDGE_REF.test(String(v))).map((v) => `files[${v}]`),
+];
+for (const w of wslBridgeWired) violations.push(`[13f package.json] ${w} wires the WSL bridge into the package or an automatic step`);
+if (typeof pkg.scripts?.['build:wsl-bridge'] !== 'string') violations.push('[13f package.json] build:wsl-bridge script is missing (false-safe)');
+results.push(`13 WSL bridge is build-on-demand and the only wsl.exe caller: ${wslBridgeSources.length + 2} source files, ${wslBridgeWired.length} wiring violations`);
+
 for (const r of results) console.log(r);
 console.log(`suppressed (arch-allow): ${suppressed}`);
 if (violations.length) {
