@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it, test } from 'node:test';
 import { createGitQuarantine } from '../src/runtime/git-quarantine.mjs';
-import { collectWsl2Result, createWsl2Readiness, headOfBundle, KEPT_RESULTS, markUnsafeText, MAX_RESULT_BYTES, NO_LEASE_SOURCE, READY_REFRESH_MS, RESULT_DEADLINE_MS, runWsl2Job, wsl2TargetLookup } from '../src/runtime/room-service-wsl2-run.mjs';
+import { collectWsl2Result, createWsl2Readiness, createWsl2ToolGuard, headOfBundle, KEPT_RESULTS, markUnsafeText, MAX_RESULT_BYTES, READY_REFRESH_MS, RESULT_DEADLINE_MS, runWsl2Job, wsl2TargetLookup } from '../src/runtime/room-service-wsl2-run.mjs';
 import { SHELL_HANDS } from '../src/runtime/albera-shell-mcp-server.mjs';
 
 // One WSL2 job around the driver, with a fake bridge client and a fake driver. The result path uses REAL git and the real quarantine in temporary folders. No WSL, no token.
@@ -50,13 +50,13 @@ function fakeClient(overrides = {}) {
   const verb = (name, value) => async (...args) => { calls.push(name); if (overrides[name]) return overrides[name](...args); return value; };
   return { calls, begin: verb('begin'), bundle: verb('bundle', changedBundle), end: verb('end'), stop: verb('stop') };
 }
-function job({ client = fakeClient(), lease = 'lease', driver = async () => ({ outcome: 'claimed_done', reason: 'done', claim: 'DONE', toolCalls: 1 }), run = { stopRequested: false }, leases } = {}) {
+function job({ client = fakeClient(), lease = 'lease', driver = async () => ({ outcome: 'claimed_done', reason: 'done', claim: 'DONE', toolCalls: 1 }), run = { stopRequested: false }, guard = { check: async () => true } } = {}) {
   const { runDir, resultsRoot, quarantine } = folders();
   const notes = [];
   const driverCalls = [];
   const done = runWsl2Job({
-    wsl2: { client, leases: leases ?? { obtain: async () => lease }, quarantine, resultsRoot, shell: { command: 'C:\\node.exe', entryPath: 'C:\\shell.mjs', bridge: { pipeName: 'p', serverSid: 'S-1-5-21-1-2-3-1001', helperPath: 'C:\\helper.exe', helperSha256: 'a'.repeat(64) } } },
-    job: { operationId: OP, computerId: 'pc-1', repositoryId: 'repo-1', baseOid: base }, run, runDir, note: (line) => notes.push(line),
+    wsl2: { client, guard, quarantine, resultsRoot, shell: { command: 'C:\\node.exe', entryPath: 'C:\\shell.mjs', bridge: { pipeName: 'p', serverSid: 'S-1-5-21-1-2-3-1001', helperPath: 'C:\\helper.exe', helperSha256: 'a'.repeat(64) } } },
+    job: { operationId: OP, computerId: 'pc-1', repositoryId: 'repo-1', baseOid: base, lease }, run, runDir, note: (line) => notes.push(line),
     runDriver: async (choice) => { driverCalls.push(choice); return driver(choice, runDir); },
   });
   return { client, done, notes, driverCalls, resultsRoot };
@@ -70,8 +70,8 @@ test('headOfBundle reads HEAD from the header and nothing else counts', () => {
 });
 
 describe('the run around the driver', () => {
-  it('no lease source: nothing reaches the bridge and the driver never starts', async () => {
-    const t = job({ leases: NO_LEASE_SOURCE });
+  it('no lease: nothing reaches the bridge and the driver never starts', async () => {
+    const t = job({ lease: null });
     const { result, collected } = await t.done;
     assert.equal(result.reason, 'wsl2_lease_unavailable');
     assert.equal(collected, null);
@@ -276,4 +276,18 @@ test('SEC-003: a stop or the deadline ends the reading of a result', async () =>
   const late = await collectWsl2Result({ bundle: changedBundle, baseOid: base, operationId: OP, quarantine: later.quarantine, runDir: later.runDir, resultsRoot: later.resultsRoot, now: () => { at += RESULT_DEADLINE_MS; return at; } });
   assert.equal(late.code, 'cancelled');
   assert.ok(!existsSync(later.resultsRoot), 'no bundle is kept');
+});
+
+test('a helper or git that is not administrator-only, or an old git, stops the job before the bridge', async () => {
+  const t = job({ guard: { check: async () => false } });
+  assert.equal((await t.done).result.reason, 'wsl2_tools_untrusted');
+  assert.deepEqual(t.client.calls, []);
+  const yes = { check: async () => true };
+  const no = { check: async () => false };
+  const gitAt = (major, minor) => async () => ({ major, minor });
+  assert.equal(await createWsl2ToolGuard({ checks: [{ guard: yes, file: 'a' }], gitVersion: gitAt(2, 53) }).check(), true);
+  assert.equal(await createWsl2ToolGuard({ checks: [{ guard: yes, file: 'a' }], gitVersion: gitAt(3, 0) }).check(), true);
+  assert.equal(await createWsl2ToolGuard({ checks: [{ guard: yes, file: 'a' }], gitVersion: gitAt(2, 52) }).check(), false);
+  assert.equal(await createWsl2ToolGuard({ checks: [{ guard: yes, file: 'a' }], gitVersion: async () => null }).check(), false);
+  assert.equal(await createWsl2ToolGuard({ checks: [{ guard: yes, file: 'a' }, { guard: no, file: 'b' }], gitVersion: gitAt(2, 53) }).check(), false);
 });

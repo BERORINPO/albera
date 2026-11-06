@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { readSignedWsl2RunLease } from './broker-contract/wsl2-run-lease.mjs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { captureExecutableIdentity } from './executable-identity.mjs';
@@ -19,7 +20,7 @@ import { ActionDigestError, validateActionDto } from './broker-contract/action-d
 //   claim request   : { "receipt": <base64>, "signature": <base64> }   exactly these two keys for a broker.operation / synthetic.noop receipt signed elsewhere (src/runtime/broker-contract)
 //                     { "receipt", "signature", "action": <base64> }   for a guest.command / task.start receipt: `action` is the UTF-8 JSON of the action DTO (canonical form, sorted keys). The
 //                     Broker does not trust it; it recomputes the digest from it and compares it with the digest the Authority signed.
-//   claim success   : { "ok": true, "state": "UNKNOWN", "action": "synthetic.noop" | "task.start" }, plus "replayed": true for an exact duplicate (the recorded outcome, no second claim).
+//   claim success   : { "ok": true, "state": "UNKNOWN", "action": "synthetic.noop" | "task.start" }, plus "lease" on a new wsl2 task.start, plus "replayed": true for an exact duplicate (the recorded outcome, no second claim).
 //                     The reply names the action that was claimed; the client checks it is the one it sent.
 //   fence request   : { "fence": { "computerId": <id> } }               the Broker issues a single-use challenge a receipt must name
 //   fence success   : { "ok": true, "brokerEpoch": n, "leaseGeneration": n, "leaseId": <id>, "brokerChallenge": <22 chars> }   `leaseId` is the lease the Broker is configured for: the Control
@@ -149,6 +150,11 @@ export function validateBrokerResponse(value) {
   if (value.ok === true && BROKER_SUCCESS_STATES.includes(value.state) && BROKER_SUCCESS_ACTIONS.includes(value.action)) {
     if (keys === 'action,ok,state') return Object.freeze({ ok: true, state: value.state, action: value.action });
     if (keys === 'action,ok,replayed,state' && value.replayed === true) return Object.freeze({ ok: true, state: value.state, action: value.action, replayed: true });
+    // ADR-012, decision 4: a new wsl2 task.start claim carries the run lease. Shape and digest are read here; only the bridge, which pins the key, trusts it.
+    if (keys === 'action,lease,ok,state' && value.action === 'task.start') {
+      try { readSignedWsl2RunLease(value.lease); } catch { throw new BrokerClientError('invalid_response'); }
+      return Object.freeze({ ok: true, state: value.state, action: value.action, lease: value.lease });
+    }
   }
   if (value.ok === false && keys === 'code,ok' && value.code === 'denied') return DENIED_RESULT;
   throw new BrokerClientError('invalid_response');

@@ -54,6 +54,9 @@ const WSL2_PIPE_RE = /^[A-Za-z0-9_-]{1,128}$/u;
 const SID_RE = /^S-1-\d{1,10}(?:-\d{1,10}){1,15}$/u;
 /** The one folder the pipe client helper may be in when it serves a WSL2 job: setup's tree hash covers it, and only administrators can write it (ADR-012, SEC-1). */
 export const PIPE_CLIENT_INSTALL_DIR = String.raw`C:\Program Files\Albera\bin\pipe-client`;
+/** The git the quarantine runs parses a hostile pack as the Control Plane's identity, so it must be where only administrators can write. */
+export const GIT_INSTALL_DIR = String.raw`C:\Program Files\Git`;
+const isInsideFolder = (file, folder) => { const rel = path.win32.relative(folder.toLowerCase(), String(file).toLowerCase()); return rel !== '' && !rel.startsWith('..') && !path.win32.isAbsolute(rel); };
 const DESKTOP_KEYS = ['helperPath', 'helperSha256'];
 const ATTESTATION_KEYS = ['keyFile', 'keyId', 'cloneRoot'];
 const fail = (what) => new Error(`runtime_room_approval_${what}`);
@@ -126,8 +129,7 @@ function parseWsl2(raw, desktop) {
   const image = raw?.serverImageSha256;
   if (!hasOnly(raw, WSL2_KEYS) || typeof raw.pipeName !== 'string' || !WSL2_PIPE_RE.test(raw.pipeName) || typeof raw.serverSid !== 'string' || !SID_RE.test(raw.serverSid)
     || (image !== undefined && (typeof image !== 'string' || !SHA256_RE.test(image))) || !isAbsolutePath(raw.git)) throw fail('wsl2');
-  const helper = path.win32.relative(PIPE_CLIENT_INSTALL_DIR.toLowerCase(), String(desktop?.helperPath).toLowerCase());
-  if (!desktop || helper === '' || helper.startsWith('..') || path.win32.isAbsolute(helper)) throw fail('wsl2');
+  if (!desktop || !isInsideFolder(desktop.helperPath, PIPE_CLIENT_INSTALL_DIR) || !isInsideFolder(raw.git, GIT_INSTALL_DIR)) throw fail('wsl2');
   return Object.freeze({ pipeName: raw.pipeName, serverSid: raw.serverSid, ...(image === undefined ? {} : { serverImageSha256: image }), git: raw.git });
 }
 

@@ -159,7 +159,7 @@ export function createRoomServiceHands({
     jobs.set(vmName, (jobs.get(vmName) ?? 0) + 1);
     emit(vmName, { type: 'start', job: jobs.get(vmName), task });
     runs.set(computerId, run);
-    const wsl2Job = isWsl2 ? { repositoryId: named.repositoryId, baseOid: named.baseOid } : null;
+    const wsl2Job = isWsl2 ? { repositoryId: named.repositoryId, baseOid: named.baseOid, lease: named.lease } : null;
     run.done = execute({ vmName, computerId, task, operationId, wsl2Job }, run, started).finally(() => { if (!run.stuck) runs.delete(computerId); });
     return Object.freeze({ ok: true, started: started.promise });
   }
