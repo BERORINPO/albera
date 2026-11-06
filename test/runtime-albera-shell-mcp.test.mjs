@@ -193,20 +193,20 @@ test('read: a file that is not text is not shown', async () => {
   assert.match(text(result), /Not a text file \(3 bytes\)/u);
 });
 
-test('write: the largest content fits one line of the stdio loop, even when JSON doubles every character (SEC-5)', async () => {
-  assert.equal(SHELL_TOOL_LIMITS.maxContentChars, 256 * 1024);
+test('write: the largest content fits one line of the stdio loop, whatever JSON does to every character (SEC-5)', async () => {
+  assert.equal(SHELL_TOOL_LIMITS.maxContentChars, 168 * 1024);
   const { server, client } = serverWith();
   const [input, output] = [new PassThrough(), new PassThrough()];
   const done = serveDesktopMcp({ server, input, output });
-  for (const unit of ['a', '\n', '"', '\\', '\u6587']) {
+  for (const unit of ['a', '\n', '"', '\\', '\u6587', '\u0001']) {
     const content = unit.repeat(SHELL_TOOL_LIMITS.maxContentChars);
     input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'write', arguments: { path: 'a', content } } })}\n`);
   }
   input.end();
   await done;
   const lines = output.read().toString('utf8').trim().split('\n').map((line) => JSON.parse(line));
-  assert.deepEqual(lines.map((line) => line.result?.content[0].text), ['OK', 'OK', 'OK', 'OK', 'OK']);
-  assert.equal(client.calls.length, 5);
+  assert.deepEqual(lines.map((line) => line.result?.content[0].text), ['OK', 'OK', 'OK', 'OK', 'OK', 'OK']);
+  assert.equal(client.calls.length, 6);
 });
 
 test('bad arguments are refused here, count as calls, and reach no client', async () => {

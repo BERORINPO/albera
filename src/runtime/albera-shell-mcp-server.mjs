@@ -15,8 +15,8 @@ import { EXEC_FLAGS, isSafeRunPath, WIRE_LIMITS } from './wsl2-bridge-wire.mjs';
 export const SHELL_MCP_SERVER_NAME = 'albera_shell';
 export const SHELL_TOOL_NAMES = Object.freeze(['run', 'read', 'write']);
 export const MAX_CONSECUTIVE_FAILURES = 3;
-// maxContentChars: the call must fit the stdio loop's line of 1 Mi characters, and JSON doubles a quote, a backslash or a line end.
-export const SHELL_TOOL_LIMITS = Object.freeze({ defaultSeconds: 120, maxToolTextBytes: 256 * 1024, maxContentChars: 256 * 1024 });
+// maxContentChars: the call must fit the stdio loop's line of 1 Mi characters, and JSON writes a control character as six.
+export const SHELL_TOOL_LIMITS = Object.freeze({ defaultSeconds: 120, maxToolTextBytes: 256 * 1024, maxContentChars: 168 * 1024 });
 /** What the driver needs to run Claude Code with these tools as its hands. */
 export const SHELL_HANDS = Object.freeze({
   serverName: SHELL_MCP_SERVER_NAME,
@@ -45,7 +45,7 @@ const TOOL_BY_NAME = new Map(TOOLS.map((tool) => [tool.name, tool]));
 // in flight gets an agent_ word. run_stopped and bridge_stopping are words of `begin` today, and mean the same if they ever reach a call.
 export const RUN_OVER_CODES = Object.freeze(['no_run', 'lease_expired', 'calls_exhausted', 'agent_gone', 'agent_limit', 'agent_timeout', 'run_stopped', 'bridge_stopping']);
 // Who is at the other end is not what it should be, or the bridge says this is not the Control Plane: no retry can make that right, and nothing more should be sent.
-export const UNPROVED_CODES = Object.freeze(['server_identity_mismatch', 'access_denied', 'helper_unavailable', 'peer_denied']);
+export const UNPROVED_CODES = Object.freeze(['server_identity_mismatch', 'server_identity_unavailable', 'access_denied', 'helper_unavailable', 'peer_denied']);
 // About this one call: the model can do something else, so it does not count as the computer failing.
 export const CALL_LEVEL_CODES = Object.freeze(['bad_args', 'bad_path', 'too_large', 'agent_bad_path', 'agent_too_large', 'agent_file_error', 'agent_no_start', 'agent_failed']);
 // Anything else may pass, so it counts towards MAX_CONSECUTIVE_FAILURES. The words of the bridge that are meant here:

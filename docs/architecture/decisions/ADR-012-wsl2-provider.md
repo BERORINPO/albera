@@ -149,7 +149,7 @@ Evidence, all with fakes: `test/runtime-wsl2-bridge-client.test.mjs` (the number
 - The owner proves who made the pipe, not which program: any process of the owner's could hold that name if the bridge is not running. That is the owner's own side of R1, and the image pin narrows it.
 - Claude Code itself has not run with these tools: the driver's behaviour is against `fake-claude-code.mjs`.
 - A pipe name differs in grammar: the bridge's config takes a `.` and must start with a letter or digit (`IsPlainPipeName`), the client and the helper take `[A-Za-z0-9_-]`, so a leading `_` or `-` passes there. A name with a dot in the config is refused by the client, never widened: use a name all three take. The bridge is left as it is.
-- `write` is cut at 256 Ki characters so that a call fits the stdio line of 1 Mi characters when JSON doubles every character. Content that is nearly all control characters, which JSON writes as six, can still exceed the line and is answered `line_too_long` with no id.
+- `write` is cut at 168 Ki characters so that a call fits the stdio line of 1 Mi characters even when every character is a control character, which JSON writes as six.
 
 **Before Phase 4 (Zaku, on the review of this part):**
 - **SEC-1: the helper's pin covers the `.exe` only.** The manifest and `helperSha256` hash the apphost, and the program's `dll` beside it is not covered, so a swapped `dll` would pass. Measure the publish output, then make it a single file or hash the whole tree.
