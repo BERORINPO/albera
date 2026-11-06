@@ -80,7 +80,7 @@ internal sealed class PipeServer : IAsyncDisposable
     public void Start(CancellationToken stop)
     {
         _stop = CancellationTokenSource.CreateLinkedTokenSource(stop);
-        foreach (NamedPipeServerStream pipe in _pipes) _slots.Add(Task.Run(() => RunSlotAsync(pipe, _stop.Token)));
+        foreach (NamedPipeServerStream pipe in _pipes) _slots.Add(Task.Run(() => RunGuardedSlotAsync(pipe, _stop.Token)));
     }
 
     public async ValueTask DisposeAsync()
@@ -89,6 +89,13 @@ internal sealed class PipeServer : IAsyncDisposable
         foreach (NamedPipeServerStream pipe in _pipes) pipe.Dispose();
         try { await Task.WhenAll(_slots).WaitAsync(TimeSpan.FromSeconds(5)); }
         catch (Exception ex) when (ex is TimeoutException or OperationCanceledException or ObjectDisposedException or IOException) { }
+    }
+
+    // A slot that ends for any reason but the stop, even one the slot's own catch lets through, is a failed slot: the bridge must not go on with fewer than it says.
+    private async Task RunGuardedSlotAsync(NamedPipeServerStream pipe, CancellationToken stop)
+    {
+        try { await RunSlotAsync(pipe, stop); }
+        finally { if (!stop.IsCancellationRequested) _failed.TrySetResult(); }
     }
 
     private async Task RunSlotAsync(NamedPipeServerStream pipe, CancellationToken stop)

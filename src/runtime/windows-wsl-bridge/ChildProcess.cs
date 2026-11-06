@@ -54,6 +54,6 @@ internal static class ChildProcess
     public static void Kill(Process process)
     {
         try { process.Kill(entireProcessTree: true); }
-        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException) { /* already gone */ }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException or AggregateException) { /* already gone, or a descendant could not be killed; this runs on a timer thread */ }
     }
 }

@@ -44,7 +44,7 @@ internal sealed class Rig : IDisposable
         _spki = Signer.ExportSubjectPublicKeyInfo();
         Key = BrokerKey.TryCreate(keyId ?? KeyId, _spki)!;
         if (now is { } fixedNow) Now = fixedNow;
-        Limits = Limits.Default with { MaxPutBytes = 1024, MaxGetBytes = 1024, MaxOutputBytes = 256, MaxBundleBytes = 4096, MaxCommandBytes = 128, AgentGrace = TimeSpan.FromMilliseconds(300), ExpiryGrace = TimeSpan.FromMilliseconds(300), EndWait = TimeSpan.FromMilliseconds(500), BeginCall = TimeSpan.FromSeconds(10) };
+        Limits = Limits.Default with { MaxPutBytes = 1024, MaxGetBytes = 1024, MaxOutputBytes = 256, MaxBundleBytes = 4096, MaxCommandBytes = 128, AgentGrace = TimeSpan.FromSeconds(3), ExpiryGrace = TimeSpan.FromMilliseconds(300), EndWait = TimeSpan.FromMilliseconds(500), BeginCall = TimeSpan.FromSeconds(10) };
         if (limits is not null) Limits = limits(Limits);
         string imageHash = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(Path.Combine(Dir, "image.tar"))));
         Config = new BridgeConfig("ALBERA_Test", "S-1-5-21-1-2-3-1001", Computer, keyId ?? KeyId, _spki, FloorFile, Path.Combine(Dir, "image.tar"), imageHash, Path.Combine(Dir, "dist"), Path.Combine(Dir, "state"),
