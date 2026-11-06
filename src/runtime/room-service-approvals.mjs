@@ -31,7 +31,7 @@ export function createSubmitWatch() {
  *   `computerIds` = the computers of the settings (the approval test names the first one).
  * @returns {{ startTask: Function, noop: Function }}
  */
-export function createRoomJobApprovals({ flow, projectId, computerIds, watch, newOperationId } = {}) {
+export function createRoomJobApprovals({ flow, projectId, computerIds, watch, newOperationId, wsl2TargetFor } = {}) {
   if (typeof flow?.run !== 'function' || typeof watch?.expect !== 'function' || typeof newOperationId !== 'function' || !Array.isArray(computerIds) || computerIds.length < 1) {
     throw new TypeError('invalid_room_service_approvals_dependencies');
   }
@@ -48,7 +48,7 @@ export function createRoomJobApprovals({ flow, projectId, computerIds, watch, ne
     startTask({ computerId, task }) {
       const operationId = newOperationId();
       const submitted = watch.expect(operationId);
-      const gate = createTaskStartGate({ flow, projectId, computerIdFor: () => computerId, newOperationId: () => operationId });
+      const gate = createTaskStartGate({ flow, projectId, computerIdFor: () => computerId, newOperationId: () => operationId, wsl2TargetFor });
       return answer(operationId, submitted, gate.startApproved({ vmId: computerId, task }));
     },
     noop() {

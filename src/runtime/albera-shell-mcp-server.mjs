@@ -89,7 +89,7 @@ function readResult({ data }, mark) {
  *   `newDataMark` is a test seam: the end line of one result, which a job must not be able to guess
  * @returns {{ handle: (message: unknown) => Promise<object|null>, calls: () => number }} `handle` answers one JSON-RPC message (null for a notification)
  */
-export function createShellMcpServer({ client, operationId, maxCalls, expiresAtMs, now = Date.now, newDataMark = () => `[end of job data ${globalThis.crypto.randomUUID()}]` }) {
+export function createShellMcpServer({ client, operationId, maxCalls, expiresAtMs, now = Date.now, onHalt = () => {}, newDataMark = () => `[end of job data ${globalThis.crypto.randomUUID()}]` }) {
   if (!client || ['run', 'put', 'get'].some((verb) => typeof client[verb] !== 'function')) throw new TypeError('invalid_shell_mcp_client');
   if (typeof operationId !== 'string' || !Number.isSafeInteger(maxCalls) || maxCalls < 1 || !Number.isSafeInteger(expiresAtMs)) throw new TypeError('invalid_shell_mcp_limits');
   let calls = 0;
@@ -124,6 +124,7 @@ export function createShellMcpServer({ client, operationId, maxCalls, expiresAtM
     if (HALTS_AT_ONCE.has(code)) halted = true;
     else if (!CALL_LEVEL.has(code)) failures += 1;
     if (failures >= MAX_CONSECUTIVE_FAILURES) halted = true;
+    if (halted) { try { onHalt(code); } catch { /* the record must not break the answer */ } }
     const note = error?.outcome === 'unknown' ? ' It may or may not have been applied.' : '';
     return textResult(`Call failed: ${code}.${note}`, true);
   }

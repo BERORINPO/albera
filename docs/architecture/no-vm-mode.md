@@ -29,7 +29,7 @@ So the features exist, but nothing tells a person which ones this PC can use.
 |---|---|---|---|
 | **Watch** | Node.js 22 | The session board, the room demo | No |
 | **Work** | Hyper-V and the installed services | Jobs in VMs, cameras, hands, checkpoints | Yes, in a VM |
-| **Work (WSL2)**, proposed in ADR-012, not built | WSL2 and the ALBERA services | Jobs in a sandbox, weaker than a VM | Yes, its hands in WSL2 |
+| **Work (WSL2)**, ADR-012: built up to the lease, no job has run | WSL2, the ALBERA services and the bridge, with a kernel above the floor | Jobs in a sandbox, weaker than a VM | Yes, its hands in WSL2 |
 
 ## Ask: not offered yet
 

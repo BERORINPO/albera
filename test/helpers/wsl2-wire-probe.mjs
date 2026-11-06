@@ -9,10 +9,16 @@ const lease = '{"lease":1}';
 const path = 'repo/文字.txt';
 const data = Buffer.from([0, 255, 10, 13]);
 
+export const BUNDLE_BYTES = Buffer.from([0x23, 0x20, 0, 255, 10]);
+export const STATUS_JSON = `{"kernelOk":true,"reason":null,"head":"${'a'.repeat(40)}"}`;
+
 export const WIRE_PROBE_REPLIES = Object.freeze([
   { ok: true, reason: '', body: Buffer.alloc(0), frame: framed(Buffer.from([0])) },
   { ok: true, reason: '', body: Buffer.from([0xff, 0xff, 0xff, 0xfe, 3, 104, 105]), frame: framed(Buffer.from([0, 0xff, 0xff, 0xff, 0xfe, 3, 104, 105])) },
   { ok: false, reason: 'calls_exhausted', body: Buffer.alloc(0), frame: framed(Buffer.concat([Buffer.from([1]), Buffer.from('calls_exhausted', 'ascii')])) },
+  { ok: true, reason: '', body: BUNDLE_BYTES, frame: framed(Buffer.concat([Buffer.from([0]), BUNDLE_BYTES])) },
+  { ok: true, reason: '', body: Buffer.from(STATUS_JSON), frame: framed(Buffer.concat([Buffer.from([0]), Buffer.from(STATUS_JSON)])) },
+  { ok: false, reason: 'bundle_too_large', body: Buffer.alloc(0), frame: framed(Buffer.concat([Buffer.from([1]), Buffer.from('bundle_too_large', 'ascii')])) },
 ]);
 
 export function wireProbe() {
@@ -26,6 +32,9 @@ export function wireProbe() {
       request(4, encodeRequest.get('op-1.a:b', path), name),
       request(5, encodeRequest.end('op-1.a:b'), Buffer.alloc(0)),
       request(6, encodeRequest.stop('op-1.a:b'), Buffer.alloc(0)),
+      request(7, encodeRequest.bundle('op-1.a:b'), Buffer.alloc(0)),
+      request(8, encodeRequest.status('op-1.a:b'), Buffer.alloc(0)),
+      request(8, encodeRequest.status('op-1.a:b', 'repo-alpha'), Buffer.from('repo-alpha')),
     ],
     replies: WIRE_PROBE_REPLIES.map(({ ok, reason, body, frame }) => ({ ok, reason, body: b64(body), frame: b64(frame) })),
   };

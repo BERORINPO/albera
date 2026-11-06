@@ -636,3 +636,10 @@ Merged on main since the previous entry, all on 2026-11-03 (UTC): #189 (13:47), 
 - **Before Phase 4:** see "Before Phase 4" in ADR-012 (SEC-1 helper pin, SEC-2 owner-only proof). Phase 5 must limit reading the lease floor (MEDIUM-1).
 - **Test results:** local full runs fail the same nine job-guardian, helper-process and folder-guard tests, which CI does not. A 300 ms wait in the bridge rig failed once on a busy Windows runner and is now 3 s.
 - **After merge:** PR 220 and PR 221 are in `main` (`ed3f52b`). The revocation steps are in `docs/architecture/wsl2-lease-revocation-runbook.md`: a proposal, since the Broker cannot sign leases yet. Only its floor half has been observed on a machine.
+
+## 2026-11-06 — ADR-012 Phase 4: the path of a WSL2 job, up to the lease
+
+- **VERIFIED (machine, fake Control Plane, test key, no token):** `scripts/wsl2-bridge-gates.mjs` 38 of 38, including `status`, a job's commit through `bundle`, and that bundle through the real quarantine to a diff.
+- **VERIFIED (`node --test`, fakes, real git for the result path):** the hands around a run, every failure branch, the settings, the routes and the page's pure parts. Approver harness 130 of 130.
+- **BLOCKED on AGM-2:** the lease. Every job ends with `wsl2_lease_unavailable`.
+- **Not verified:** a job from end to end, a large bundle through the pipe, the page in a browser, SEC-2 (needs a second Windows account, moved to Phase 5). Details in ADR-012, "Phase 4 results".

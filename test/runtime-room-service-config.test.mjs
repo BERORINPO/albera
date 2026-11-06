@@ -28,6 +28,8 @@ test('paths: everything comes from the data root alone', () => {
     secretsDir: path.join(root, 'secrets'),
     uiFile: path.join(root, 'ui', 'room.json'),
     runRoot: path.join(root, 'control-plane', 'claude-run'),
+    wsl2QuarantineRoot: path.join(root, 'control-plane', 'wsl2-quarantine'),
+    wsl2ResultsRoot: path.join(root, 'control-plane', 'wsl2-results'),
   });
   for (const bad of ['relative', '', undefined, null, 5, '\\\\server\\share\\x', `${root}${path.sep}..${path.sep}x`]) assert.equal(codeOf(() => roomServicePaths(bad)), 'room_service_config_data_root', String(bad));
 });

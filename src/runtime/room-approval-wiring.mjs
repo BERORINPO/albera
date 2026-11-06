@@ -1,3 +1,4 @@
+import { WSL2_ISOLATION } from './broker-contract/wsl2-run-lease.mjs';
 import { randomBytes } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -44,10 +45,15 @@ const MAX_COMPUTERS = 8;
 const SHA256_RE = /^[a-f0-9]{64}$/;
 const VM_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const ID_RE = new RegExp(ID_PATTERN);
-const TOP_KEYS = ['version', 'projectId', 'broker', 'authority', 'journal', 'computers', 'desktop', 'attestation'];
+const TOP_KEYS = ['version', 'projectId', 'broker', 'authority', 'journal', 'computers', 'desktop', 'attestation', 'wsl2'];
 const BROKER_KEYS = ['pipeName', 'expect'];
 const AUTHORITY_KEYS = ['pipeRoot', 'expect'];
-const COMPUTER_KEYS = ['computerId', 'vmId', 'expectedGeneration'];
+const COMPUTER_KEYS = ['computerId', 'vmId', 'expectedGeneration', 'isolation', 'repositoryId'];
+const WSL2_KEYS = ['pipeName', 'serverSid', 'serverImageSha256', 'git'];
+const WSL2_PIPE_RE = /^[A-Za-z0-9_-]{1,128}$/u;
+const SID_RE = /^S-1-\d{1,10}(?:-\d{1,10}){1,15}$/u;
+/** The one folder the pipe client helper may be in when it serves a WSL2 job: setup's tree hash covers it, and only administrators can write it (ADR-012, SEC-1). */
+export const PIPE_CLIENT_INSTALL_DIR = String.raw`C:\Program Files\Albera\bin\pipe-client`;
 const DESKTOP_KEYS = ['helperPath', 'helperSha256'];
 const ATTESTATION_KEYS = ['keyFile', 'keyId', 'cloneRoot'];
 const fail = (what) => new Error(`runtime_room_approval_${what}`);
@@ -81,6 +87,10 @@ export function takeRoomApprovalArgs(args) {
 function parseComputer(value) {
   if (typeof value === 'string') return ID_RE.test(value) ? Object.freeze({ computerId: value }) : null;
   if (!hasOnly(value, COMPUTER_KEYS) || typeof value.computerId !== 'string' || !ID_RE.test(value.computerId)) return null;
+  if (value.isolation !== undefined || value.repositoryId !== undefined) { // a WSL2 computer has no VM, and names the repository its runs start from (ADR-012, decision 4)
+    if (value.isolation !== WSL2_ISOLATION || typeof value.repositoryId !== 'string' || !ID_RE.test(value.repositoryId) || value.vmId !== undefined || value.expectedGeneration !== undefined) return null;
+    return Object.freeze({ computerId: value.computerId, isolation: value.isolation, repositoryId: value.repositoryId });
+  }
   const named = value.vmId !== undefined || value.expectedGeneration !== undefined;
   if (named && (!isVmId(value.vmId) || !Number.isSafeInteger(value.expectedGeneration) || value.expectedGeneration < 1)) return null;
   return Object.freeze({ computerId: value.computerId, ...(named ? { vmId: value.vmId, expectedGeneration: value.expectedGeneration } : {}) });
@@ -108,6 +118,17 @@ function parseDesktop(raw) {
   if (raw === undefined || raw === null) return null;
   if (!hasExactly(raw, DESKTOP_KEYS) || !isAbsolutePath(raw.helperPath) || typeof raw.helperSha256 !== 'string' || !SHA256_RE.test(raw.helperSha256)) throw fail('desktop');
   return Object.freeze({ helperPath: raw.helperPath, helperSha256: raw.helperSha256 });
+}
+
+/** The WSL bridge, or null when absent. The helper is the desktop's pinned one, so it must be the installed one; `git` is the program the quarantine runs. */
+function parseWsl2(raw, desktop) {
+  if (raw === undefined) return null;
+  const image = raw?.serverImageSha256;
+  if (!hasOnly(raw, WSL2_KEYS) || typeof raw.pipeName !== 'string' || !WSL2_PIPE_RE.test(raw.pipeName) || typeof raw.serverSid !== 'string' || !SID_RE.test(raw.serverSid)
+    || (image !== undefined && (typeof image !== 'string' || !SHA256_RE.test(image))) || !isAbsolutePath(raw.git)) throw fail('wsl2');
+  const helper = path.win32.relative(PIPE_CLIENT_INSTALL_DIR.toLowerCase(), String(desktop?.helperPath).toLowerCase());
+  if (!desktop || helper === '' || helper.startsWith('..') || path.win32.isAbsolute(helper)) throw fail('wsl2');
+  return Object.freeze({ pipeName: raw.pipeName, serverSid: raw.serverSid, ...(image === undefined ? {} : { serverImageSha256: image }), git: raw.git });
 }
 
 function parseAttestation(raw) {
@@ -147,8 +168,10 @@ export function parseApprovalSettings(text) {
   const computers = parseComputers(raw.computers);
   const desktop = parseDesktop(raw.desktop);
   const attestation = parseAttestation(raw.attestation);
+  const wsl2 = parseWsl2(raw.wsl2, desktop);
+  if (!wsl2 && [...computers.values()].some((computer) => computer.isolation !== undefined)) throw fail('computers');
   if (!attestation && [...computers.values()].some((computer) => computer.vmId !== undefined)) throw fail('computers');
-  return Object.freeze({ version: APPROVAL_SETTINGS_VERSION, projectId: raw.projectId, broker, authority, journal: raw.journal, computers, desktop, attestation });
+  return Object.freeze({ version: APPROVAL_SETTINGS_VERSION, projectId: raw.projectId, broker, authority, journal: raw.journal, computers, desktop, attestation, wsl2 });
 }
 
 /** Read the settings file (a regular file, small) and parse it. The error never names the path. */

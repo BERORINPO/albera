@@ -225,3 +225,28 @@ describe('fake pair', () => {
     assert.deepEqual(fake.calls().map((c) => c.method), ['importBundle', 'inspect']);
   });
 });
+
+describe('diff', () => {
+  it('shows the change as text from a bundle read by HEAD, whatever the attributes say', async () => {
+    const q = quarantine();
+    const repo = await q.create();
+    g('checkout', '-q', 'task');
+    const bundlePath = bundle('head-diff', 'task');
+    g('checkout', '-q', 'main');
+    assert.deepEqual(await q.importBundle(repo, { bundlePath, ref: 'refs/heads/task', expectedOid: task }), { ok: true });
+    const shown = await q.diff(repo, { baseOid: base, resultOid: task });
+    assert.equal(shown.ok, true);
+    assert.match(shown.text, /\+two/u);
+    assert.deepEqual(shown.files.map((f) => [f.status, f.path]), [['M', 'a.txt']]);
+    const short = await q.diff(repo, { baseOid: base, resultOid: task, maxBytes: 5 });
+    assert.deepEqual([short.truncated, Buffer.byteLength(short.text) <= 5], [true, true]);
+    assert.equal((await q.diff(repo, { baseOid: 'main', resultOid: task })).code, 'request_invalid');
+  });
+  it('takes HEAD as a ref, and nothing else outside refs/heads', async () => {
+    const q = quarantine();
+    const repo = await q.create();
+    const bundlePath = bundle('head-ref', 'HEAD', 'main');
+    assert.deepEqual(await q.importBundle(repo, { bundlePath, ref: 'HEAD', expectedOid: base }), { ok: true });
+    assert.equal((await q.importBundle(repo, { bundlePath, ref: 'refs/tags/x', expectedOid: base })).code, 'request_invalid');
+  });
+});

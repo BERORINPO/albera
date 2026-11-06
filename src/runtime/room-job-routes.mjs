@@ -8,6 +8,7 @@ import { TASK_START_REFUSALS, isStartableTask } from './task-start-gate.mjs';
 // are injected (PR4d wires the real ones; the tests use Fakes).
 //
 //   GET  /api/jobs                  -> { ok, targets: [{ computerId, label }], jobs: [Job] }
+//   GET  /api/jobs/results          -> { ok, results: [Result] }                        what WSL2 jobs handed over (room-service-wsl2-run.mjs): agent_reported, untrusted text
 //   POST /api/jobs                  { computerId, task } -> 202 { ok, job: Job }       asks for approval of one task.start; the job carries `approvalId`, `actionDigest` and the 4-digit `matchCode`
 //   POST /api/jobs/stop-all         {} -> { ok, cancelled, stopped }                    cancels every job still waiting for approval and stops the hands
 //   POST /api/jobs/approval-test    {} -> 202 { ok, job: Job }                          one fixed synthetic.noop (the CP identity cannot run `approval-check` by hand); starts nothing
@@ -66,7 +67,7 @@ export function createRoomJobRoutes({ approvals, hands, targets, newJobId } = {}
     let list;
     try { list = targets(); } catch { list = []; }
     return (Array.isArray(list) ? list : []).filter((t) => typeof t?.computerId === 'string' && ID_RE.test(t.computerId))
-      .map((t) => ({ computerId: t.computerId, label: cleanText(typeof t.label === 'string' ? t.label : t.computerId, MAX_LABEL) || t.computerId }));
+      .map((t) => ({ computerId: t.computerId, label: cleanText(typeof t.label === 'string' ? t.label : t.computerId, MAX_LABEL) || t.computerId, ...(t.level === 'wsl2' ? { level: 'wsl2' } : {}) }));
   }
 
   const waiting = () => jobs.filter((job) => busyStates.has(job.state));
@@ -141,7 +142,16 @@ export function createRoomJobRoutes({ approvals, hands, targets, newJobId } = {}
   }
 
   function list() {
-    return { status: 200, body: { ok: true, targets: targetList(), jobs: jobs.map(view) } };
+    return { status: 200, body: { ok: true, targets: targetList(), jobs: jobs.map(view), ...(hands.results ? { resultsStamp: keptResults().map((r) => r.operationId).join() } : {}) } };
+  }
+
+  function keptResults() {
+    try { return hands.results?.() ?? []; } catch { return []; }
+  }
+
+  /** What WSL2 jobs handed over: the job's claim, never verified. The page shows it as text, and asks only when `resultsStamp` changes: this can be 2 MiB. */
+  function results() {
+    return { status: 200, body: { ok: true, results: keptResults() } };
   }
 
   async function startJob({ body }) {
@@ -173,6 +183,7 @@ export function createRoomJobRoutes({ approvals, hands, targets, newJobId } = {}
 
   return Object.freeze([
     Object.freeze({ method: 'GET', path: '/api/jobs', handle: list }),
+    Object.freeze({ method: 'GET', path: '/api/jobs/results', handle: results }),
     Object.freeze({ method: 'POST', path: '/api/jobs', maxBody: JOB_MAX_BODY_BYTES, handle: startJob }),
     Object.freeze({ method: 'POST', path: '/api/jobs/stop-all', maxBody: 64, handle: stopAll }),
     Object.freeze({ method: 'POST', path: '/api/jobs/approval-test', maxBody: 64, handle: approvalTest }),

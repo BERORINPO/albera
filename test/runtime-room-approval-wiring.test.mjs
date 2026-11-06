@@ -711,3 +711,22 @@ test('the real command without the desktop settings is a settings error (exit 2)
   assert.match(result.stderr, /runtime_room_approval_desktop/);
   assert.ok(!result.stderr.includes(scratch), 'no path is printed');
 });
+
+test('settings: a wsl2 computer needs the bridge block and the installed helper, and names no VM', () => {
+  const base = settingsObject();
+  const helperPath = String.raw`C:\Program Files\Albera\bin\pipe-client\albera-windows-broker-pipe-client.exe`;
+  const wsl2 = { pipeName: 'albera-wsl-bridge', serverSid: 'S-1-5-21-1-2-3-1001', git: base.journal };
+  const computers = { 'pc-wsl': { computerId: 'pc-wsl', isolation: 'wsl2', repositoryId: 'repo-1' } };
+  const parse = (over) => parseApprovalSettings(JSON.stringify({ ...base, computers, desktop: { helperPath, helperSha256: 'a'.repeat(64) }, wsl2, ...over }));
+  if (process.platform === 'win32') {
+    const settings = parse({});
+    assert.deepEqual(settings.computers.get('pc-wsl'), computers['pc-wsl']);
+    assert.equal(settings.wsl2.pipeName, 'albera-wsl-bridge');
+    assert.throws(() => parse({ desktop: { helperPath: 'C:\\temp\\helper.exe', helperSha256: 'a'.repeat(64) } }), /runtime_room_approval_wsl2/u, 'SEC-1: a helper outside the installed folder');
+  }
+  assert.throws(() => parseApprovalSettings(JSON.stringify({ ...base, computers })), /runtime_room_approval_computers/u, 'no bridge block');
+  for (const bad of [{ computerId: 'x', isolation: 'vm', repositoryId: 'r' }, { computerId: 'x', isolation: 'wsl2' }, { computerId: 'x', repositoryId: 'r' }, { computerId: 'x', isolation: 'wsl2', repositoryId: 'r', vmId: '11111111-2222-4333-8444-555555555555', expectedGeneration: 1 }]) {
+    assert.throws(() => parseApprovalSettings(JSON.stringify({ ...base, computers: { x: bad } })), /runtime_room_approval_computers/u);
+  }
+  assert.throws(() => parseApprovalSettings(JSON.stringify({ ...base, wsl2: { ...wsl2, extra: 1 } })), /runtime_room_approval_wsl2/u);
+});

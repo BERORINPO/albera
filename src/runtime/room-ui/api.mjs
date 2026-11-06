@@ -43,6 +43,7 @@ export const getCredentials = () => call('api/settings/credentials');
 export const saveCredential = (name, value) => postJson('api/settings/credential', { name, value });
 export const eraseCredential = (name) => postJson('api/settings/credential/erase', { name });
 export const getJobs = () => call('api/jobs');
+export const getJobResults = () => call('api/jobs/results');
 export const startJob = (computerId, task) => postJson('api/jobs', { computerId, task });
 export const stopAllJobs = () => postJson('api/jobs/stop-all', {});
 export const approvalTest = () => postJson('api/jobs/approval-test', {});

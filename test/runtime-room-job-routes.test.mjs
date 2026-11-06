@@ -405,3 +405,15 @@ test('the routes need their ports', () => {
     assert.throws(() => createRoomJobRoutes(bad), /invalid_room_job_dependencies/);
   }
 });
+
+test('GET /api/jobs/results hands over what the hands kept, and a level only when it is wsl2', () => {
+  const kept = [{ ok: true, trust: 'agent_reported', operationId: 'op-1' }];
+
+  const routes = createRoomJobRoutes({ approvals: createFakeApprovals(), hands: { ...createFakeHands(), results: () => kept }, targets: () => [{ computerId: 'pc-1', label: 'a', level: 'wsl2' }, { computerId: 'pc-2', label: 'b', level: 'other' }] });
+  const results = routes.find((route) => route.path === '/api/jobs/results');
+  assert.deepEqual(results.handle({}), { status: 200, body: { ok: true, results: kept } });
+  const list = routes.find((route) => route.path === '/api/jobs' && route.method === 'GET').handle({});
+  assert.deepEqual(list.body.targets, [{ computerId: 'pc-1', label: 'a', level: 'wsl2' }, { computerId: 'pc-2', label: 'b' }]);
+  const none = createRoomJobRoutes({ approvals: createFakeApprovals(), hands: createFakeHands(), targets: () => [] }).find((route) => route.path === '/api/jobs/results');
+  assert.deepEqual(none.handle({}).body.results, []);
+});
