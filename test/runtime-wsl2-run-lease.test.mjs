@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { readSignedNetworkAttestation } from '../src/runtime/broker-contract/network-attestation.mjs';
 import { readSignedTaskStartAttestation } from '../src/runtime/broker-contract/task-start-attestation.mjs';
 import {
-  MAX_RUN_LEASE_TTL_SECONDS, WSL2_ISOLATION, WSL2_RUN_LEASE_DOMAIN, Wsl2RunLeaseError, canonicalizeWsl2RunLease, computeWsl2RunLeaseDigest, createWsl2RunLease, isGitOid, readSignedWsl2RunLease, signWsl2RunLease,
-  validateWsl2RunLease, verifyWsl2RunLease,
+  MAX_RUN_LEASE_TTL_SECONDS, WSL2_ISOLATION, WSL2_RUN_LEASE_DOMAIN, Wsl2RunLeaseError, authenticateWsl2RunLease, canonicalizeWsl2RunLease, computeWsl2RunLeaseDigest, createWsl2RunLease, isGitOid, readSignedWsl2RunLease,
+  requireWsl2RunLeaseBinding, signWsl2RunLease, validateWsl2RunLease,
 } from '../src/runtime/broker-contract/wsl2-run-lease.mjs';
 import { createEcdsaAttestationSigner, createEcdsaAttestationVerifier } from '../src/runtime/ecdsa-attestation-signer.mjs';
 
@@ -17,8 +17,9 @@ const contractDir = path.join(path.dirname(path.dirname(fileURLToPath(import.met
 const vectors = JSON.parse(fs.readFileSync(path.join(contractDir, 'wsl2-run-lease-vectors.json'), 'utf8'));
 const OID = 'a'.repeat(40);
 const T0 = 1793404800;
-const INPUT = Object.freeze({ operationId: 'op-0001', computerId: 'pc-wsl', repositoryId: 'repo-alpha', baseOid: OID, maxCalls: 200, issuedAt: T0, ttlSeconds: 1800 });
-const EXPECTED = Object.freeze({ baseOid: OID, computerId: 'pc-wsl', operationId: 'op-0001', repositoryId: 'repo-alpha' });
+const INPUT = Object.freeze({ operationId: 'op-0001', actionDigest: `sha256:${'d'.repeat(64)}`, leaseGeneration: 7, computerId: 'pc-wsl', repositoryId: 'repo-alpha', baseOid: OID, maxCalls: 200, issuedAt: T0, ttlSeconds: 1800 });
+const EXPECTED = Object.freeze({ baseOid: OID, computerId: 'pc-wsl', minLeaseGeneration: 7, operationId: 'op-0001', repositoryId: 'repo-alpha' });
+const bothSteps = (signed, ctx, expected) => requireWsl2RunLeaseBinding(authenticateWsl2RunLease(signed, ctx), expected);
 const codeOf = (fn) => { try { fn(); } catch (error) { assert.ok(error instanceof Wsl2RunLeaseError, String(error)); return `${error.code}${error.field ? `:${error.field}` : ''}`; } return 'ok'; };
 
 function keys() {
@@ -44,7 +45,7 @@ test('verify vectors: every case gives its verdict with the vector key', () => {
   const verifier = createEcdsaAttestationVerifier({ keyId: vectors.verifyVectors.keyId, publicKey: vectors.verifyVectors.publicKeySpki });
   assert.ok(vectors.verifyVectors.cases.length >= 30);
   for (const c of vectors.verifyVectors.cases) {
-    const got = codeOf(() => verifyWsl2RunLease(c.signed, { clock: () => c.now, verify: verifier.verify, expected: c.expected }));
+    const got = codeOf(() => bothSteps(c.signed, { clock: () => c.now, verify: verifier.verify }, c.expected));
     assert.equal(got, c.result.ok ? 'ok' : `${c.result.code}${c.result.field ? `:${c.result.field}` : ''}`, c.name);
   }
 });
@@ -53,7 +54,7 @@ test('the vectors cover each way a lease can be wrong, and the good cases are re
   const results = new Map(vectors.verifyVectors.cases.map((c) => [c.name, c.result]));
   assert.deepEqual(results.get('valid'), { ok: true });
   for (const [name, code, field] of [['expired-at-the-second', 'expired', 'expiresAt'], ['not-yet-valid-31', 'not_yet_valid', 'issuedAt'], ['wrong-base-oid', 'binding', 'baseOid'], ['wrong-computer', 'binding', 'computerId'],
-    ['wrong-operation', 'binding', 'operationId'], ['wrong-repository', 'binding', 'repositoryId'], ['signature-other-key', 'signature', 'signature'], ['body-changed-calls', 'digest', 'digest']]) {
+    ['wrong-operation', 'binding', 'operationId'], ['wrong-repository', 'binding', 'repositoryId'], ['signature-other-key', 'signature', 'signature'], ['body-changed-calls', 'digest', 'digest'], ['generation-under-the-floor', 'generation', 'leaseGeneration'], ['signature-non-canonical', 'malformed', 'signature'], ['digest-newline', 'malformed', 'digest'], ['key-id-newline', 'malformed', 'keyId']]) {
     assert.deepEqual(results.get(name), { ok: false, code, field }, name);
   }
   assert.equal(results.get('network-attestation-is-malformed-here').code, 'malformed');
@@ -73,7 +74,7 @@ test('a body is signed under its own domain, and the isolation class is fixed by
 test('sign then verify round trip with a real key, and a lease body is frozen', async () => {
   const { signer, verifier } = keys();
   const signed = await signWsl2RunLease(createWsl2RunLease(INPUT), signer);
-  const lease = verifyWsl2RunLease(JSON.parse(JSON.stringify(signed)), { clock: () => T0 + 1, verify: verifier.verify, expected: EXPECTED });
+  const lease = bothSteps(JSON.parse(JSON.stringify(signed)), { clock: () => T0 + 1, verify: verifier.verify }, EXPECTED);
   assert.equal(lease.maxCalls, 200);
   assert.ok(Object.isFrozen(lease));
   assert.equal(readSignedWsl2RunLease(signed).digest, signed.digest);
@@ -96,22 +97,24 @@ test('a signer that fails or is missing refuses, and never yields a lease', asyn
 test('a verifier that throws or answers anything but true is a refusal, and the clock is read after it', async () => {
   const { signer } = keys();
   const signed = await signWsl2RunLease(createWsl2RunLease(INPUT), signer);
-  const context = { clock: () => T0, expected: EXPECTED };
-  assert.equal(codeOf(() => verifyWsl2RunLease(signed, { ...context, verify: () => { throw new Error('x'); } })), 'signature:signature');
-  assert.equal(codeOf(() => verifyWsl2RunLease(signed, { ...context, verify: () => 1 })), 'signature:signature');
+  const context = { clock: () => T0 };
+  assert.equal(codeOf(() => authenticateWsl2RunLease(signed, { ...context, verify: () => { throw new Error('x'); } })), 'signature:signature');
+  assert.equal(codeOf(() => authenticateWsl2RunLease(signed, { ...context, verify: () => 1 })), 'signature:signature');
   const order = [];
-  verifyWsl2RunLease(signed, { expected: EXPECTED, verify: () => { order.push('verify'); return true; }, clock: () => { order.push('clock'); return T0; } });
+  authenticateWsl2RunLease(signed, { verify: () => { order.push('verify'); return true; }, clock: () => { order.push('clock'); return T0; } });
   assert.deepEqual(order, ['verify', 'clock']);
 });
 
 test('an unusable context fails closed', async () => {
   const signed = await signWsl2RunLease(createWsl2RunLease(INPUT), keys().signer);
   const verify = () => true;
-  assert.equal(codeOf(() => verifyWsl2RunLease(signed, undefined)), 'invalid_context');
-  assert.equal(codeOf(() => verifyWsl2RunLease(signed, { clock: () => T0, expected: EXPECTED })), 'invalid_context');
-  assert.equal(codeOf(() => verifyWsl2RunLease(signed, { clock: () => -1, verify, expected: EXPECTED })), 'invalid_context:clock');
-  assert.equal(codeOf(() => verifyWsl2RunLease(signed, { clock: () => Number.NaN, verify, expected: EXPECTED })), 'invalid_context:clock');
-  assert.equal(codeOf(() => verifyWsl2RunLease(signed, { clock: () => T0, verify, expected: { ...EXPECTED, extra: 1 } })), 'invalid_expected:$extra');
+  assert.equal(codeOf(() => authenticateWsl2RunLease(signed, undefined)), 'invalid_context');
+  assert.equal(codeOf(() => authenticateWsl2RunLease(signed, { clock: () => T0 })), 'invalid_context');
+  assert.equal(codeOf(() => authenticateWsl2RunLease(signed, { clock: () => -1, verify })), 'invalid_context:clock');
+  assert.equal(codeOf(() => authenticateWsl2RunLease(signed, { clock: () => Number.NaN, verify })), 'invalid_context:clock');
+  assert.equal(codeOf(() => authenticateWsl2RunLease(signed, { clock: () => { throw new Error('x'); }, verify })), 'invalid_context:clock');
+  assert.equal(codeOf(() => requireWsl2RunLeaseBinding(createWsl2RunLease(INPUT), { ...EXPECTED, extra: 1 })), 'invalid_expected:$extra');
+  assert.equal(codeOf(() => requireWsl2RunLeaseBinding(createWsl2RunLease(INPUT), undefined)), 'invalid_expected');
 });
 
 test('objects that are not plain data are refused', () => {

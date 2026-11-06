@@ -69,6 +69,9 @@ test('a wsl2 computer must be approved with its own target, and a VM action neve
     ['nothing named', wsl2, {}, 'vm_unknown'], ['no isolation', wsl2, { repositoryId: 'repo-alpha', baseOid: OID }, 'vm_unknown'], ['no repository', wsl2, { isolation: 'wsl2', baseOid: OID }, 'vm_unknown'], ['no commit', wsl2, { isolation: 'wsl2', repositoryId: 'repo-alpha' }, 'vm_unknown'],
     ['another repository', wsl2, { ...named, repositoryId: 'repo-beta' }, 'vm_unknown'], ['a branch for a commit', wsl2, { ...named, baseOid: 'main' }, 'vm_unknown'], ['another isolation', wsl2, { ...named, isolation: 'vm' }, 'vm_unknown'], ['a VM beside it', wsl2, { ...named, vmId: VM, expectedGeneration: 3 }, 'vm_unknown'],
     ['a wsl2 action on a VM', vm, { vmId: VM, expectedGeneration: 3, ...named }, 'vm_unknown'], ['only an isolation on a VM', vm, { vmId: VM, expectedGeneration: 3, isolation: 'wsl2' }, 'vm_unknown'],
+    ['only a repository on a VM', vm, { vmId: VM, expectedGeneration: 3, repositoryId: 'repo-alpha' }, 'vm_unknown'], ['only a commit on a VM', vm, { vmId: VM, expectedGeneration: 3, baseOid: OID }, 'vm_unknown'],
+    ['settings with an unknown isolation', new Map([['albera-computer-a', { computerId: 'computer-a', vmId: VM, expectedGeneration: 3, isolation: 'other' }]]), { vmId: VM, expectedGeneration: 3 }, 'vm_unknown'],
+    ['a wsl2 target with no repository in the settings', new Map([['albera-computer-a', { computerId: 'computer-a', isolation: 'wsl2' }]]), { isolation: 'wsl2', baseOid: OID }, 'vm_unknown'],
     ['the right target, while the hands for it do not exist', wsl2, named, 'wsl2_hands_missing'],
   ];
   for (const [label, targets, patch, code] of cases) {

@@ -379,9 +379,15 @@ describe('Broker desktop pipe, view and act sessions (seam build, stdin EOF = SE
     const send = async (session, name, computerId, args) => session.send({ ...(await session.prepare(name, { purpose: 'guest.command', action: 'task.start', args, computerId })), action: dtoOf(computerId, args) });
 
     it('takes the wsl2 form for a wsl2 computer, and makes no desktop lease for it', async () => {
-      const { child, claims } = await start('wsl2-good', withWsl2);
+      const { child, desktop, claims } = await start('wsl2-good', withWsl2);
       assert.deepEqual(await send(claims(), 'wsl2-good', WSL, TARGET), { ok: true, state: 'UNKNOWN', action: 'task.start' });
       assert.equal(child.lines.includes('LEASE=GRANTED'), false);
+      for (const mode of ['view', 'act']) {
+        const client = await connect(desktop);
+        client.send({ open: { computerId: WSL, mode, ...(mode === 'act' ? { operationId: 'wsl2-good-op', leaseGeneration: 1 } : {}) } });
+        assert.deepEqual(await client.json(), DENIED, `${mode}: a wsl2 computer has no desktop`);
+        client.socket.destroy();
+      }
       await stop(child);
     });
 

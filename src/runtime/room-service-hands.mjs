@@ -56,7 +56,7 @@ export function createRoomServiceHands({
 
   /** The approved action's VM against the settings' VM, in both directions (see the head of the file). A wsl2 computer has no VM: its action must name its isolation, its repository and a commit instead, and a VM's action must name none of these (ADR-012, decision 4). */
   function vmMatches(target, { vmId, expectedGeneration, isolation, repositoryId, baseOid }) {
-    if (target.isolation === WSL2_ISOLATION) return vmId === undefined && expectedGeneration === undefined && isolation === WSL2_ISOLATION && repositoryId === target.repositoryId && isGitOid(baseOid);
+    if (target.isolation === WSL2_ISOLATION) return vmId === undefined && expectedGeneration === undefined && isolation === WSL2_ISOLATION && typeof target.repositoryId === 'string' && repositoryId === target.repositoryId && isGitOid(baseOid);
     return isolation === undefined && repositoryId === undefined && baseOid === undefined && target.isolation === undefined && target.vmId === vmId && target.expectedGeneration === expectedGeneration;
   }
 

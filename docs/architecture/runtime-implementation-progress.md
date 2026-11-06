@@ -623,6 +623,6 @@ Merged on main since the previous entry, all on 2026-11-03 (UTC): #189 (13:47), 
 
 ## 2026-11-06 — ADR-012 Phase 2, without the Broker's signature
 
-- **VERIFIED (`node --test` on Windows, Node 24; real Broker and Authority binaries, no real key):** the run lease contract in both twins against 45 digest and 36 signed vectors; the Broker's `kind: "wsl2"` computers and the wsl2 action form over the real claim pipe; a policy receipt or an attestation can never cover an action that names `isolation`; the gate, the job routes and the hands carry and check the target.
+- **VERIFIED (`node --test` on Windows, Node 24; real Broker and Authority binaries, no real key):** the run lease contract in both twins against 55 digest and 41 signed vectors; the Broker's `kind: "wsl2"` computers and the wsl2 action form over the real claim pipe; a policy receipt or an attestation can never cover an action that names `isolation`; the gate, the job routes and the hands carry and check the target.
 - **BLOCKED on AGM-2:** the Broker signing a lease. ADR-012 said "its existing key", and the production Broker has none. The ADR is corrected and the AGM-1/2 card says so.
 - **Not verified:** a run under a lease (the bridge is Phase 3). Nothing here reaches a job: `room-service-config` does not read a wsl2 computer, and the hands refuse one.

@@ -1,17 +1,18 @@
 // WSL2 run lease v1 (ADR-012, decision 4). C# twin of wsl2-run-lease.mjs (digest, canonical bytes, envelope check, verify); wsl2-run-lease-vectors.json pins both. BCL only, net10.0.
 // The WSL bridge runs a job only under a lease the Broker signed for one approved task.start.
 //
-// It is its own kind next to the two attestations: its own domain and its own nine body keys, so a lease is never read as an attestation or the other way round. Same signature scheme
+// It is its own kind next to the two attestations: its own domain and its own eleven body keys, so a lease is never read as an attestation or the other way round. Same signature scheme
 // (ECDSA P-256 / SHA-256, r || s, checked by the injected verify). An attestation is evidence at one moment (at most 300 s); a lease covers a run (at most 3600 s).
 //
-//   body     9 keys: v (1), operationId, computerId, isolation (only ever "wsl2"), repositoryId, baseOid (40 or 64 lowercase hex), maxCalls (1..10000),
+//   body     11 keys: v (1), operationId, actionDigest ("sha256:" + 64 lowercase hex: the approved action, for the record), leaseGeneration (the Broker's fence value at the claim), computerId, isolation (only ever "wsl2"), repositoryId, baseOid (40 or 64 lowercase hex), maxCalls (1..10000),
 //            issuedAt, expiresAt (Unix seconds from the BROKER's clock)
 //   preimage UTF8("albera.wsl2-run-lease.v1") 0x00 enc(map)   (enc as in ActionDigest.cs)
 //   digest   "sha256:" + lowercase hex of SHA-256(preimage); the signature covers the preimage bytes; keyId and signature are not part of the digest
 //   signed   { digest, keyId, lease, signature }  signature = unpadded base64url of the signer's bytes
 //
-// Verify checks, in this order: expected values, shape, TTL and digest, signature, not yet valid, expired (the clock is read AFTER the signature check), then every binding (baseOid,
-// computerId, operationId, repositoryId). It is stateless: refusing a reused lease and counting calls is the bridge's job.
+// Two steps, so that nothing unauthenticated is ever acted on. Authenticate: shape, TTL and digest, signature, not yet valid, expired (the clock is read AFTER the signature check). RequireBinding: every binding
+// (baseOid, computerId, operationId, repositoryId), then the generation floor. Both are stateless: the bridge must keep each operationId and its call count on disk, across its restarts, until expiresAt + 30 s, and
+// refuse when it cannot. The key for reuse is operationId, never the signature: ECDSA signatures are malleable.
 using System;
 using System.Buffers.Text;
 using System.Collections.Generic;
@@ -23,12 +24,12 @@ using System.Text.RegularExpressions;
 
 namespace Albera.BrokerContract;
 
-public sealed record Wsl2RunLeaseBody(long V, string OperationId, string ComputerId, string Isolation, string RepositoryId, string BaseOid, long MaxCalls, long IssuedAt, long ExpiresAt);
+public sealed record Wsl2RunLeaseBody(long V, string OperationId, string ActionDigest, long LeaseGeneration, string ComputerId, string Isolation, string RepositoryId, string BaseOid, long MaxCalls, long IssuedAt, long ExpiresAt);
 
 /// <summary>What the caller itself knows about the run it is deciding. Every part is required.</summary>
-public sealed record Wsl2RunLeaseExpected(string BaseOid, string ComputerId, string OperationId, string RepositoryId);
+public sealed record Wsl2RunLeaseExpected(string BaseOid, string ComputerId, long MinLeaseGeneration, string OperationId, string RepositoryId);
 
-/// <summary>Code null = ok. Codes: invalid_context invalid_expected malformed ttl digest signature not_yet_valid expired binding; Field is only ever a fixed field name or "$extra".</summary>
+/// <summary>Code null = ok. Codes: invalid_context invalid_expected malformed ttl digest signature not_yet_valid expired binding generation; Field is only ever a fixed field name or "$extra".</summary>
 public sealed record Wsl2RunLeaseVerdict(bool Ok, string? Code = null, string? Field = null, Wsl2RunLeaseBody? Value = null, string? Digest = null, string? KeyId = null);
 
 public static class Wsl2RunLease
@@ -39,7 +40,7 @@ public static class Wsl2RunLease
     public const long MaxTtlSeconds = 3600, MaxCalls = 10_000;
     private const int MaxSignatureBytes = 128;
 
-    private static readonly string[] BodyKeys = ["baseOid", "computerId", "expiresAt", "isolation", "issuedAt", "maxCalls", "operationId", "repositoryId", "v"];
+    private static readonly string[] BodyKeys = ["actionDigest", "baseOid", "computerId", "expiresAt", "isolation", "issuedAt", "leaseGeneration", "maxCalls", "operationId", "repositoryId", "v"];
     private static readonly string[] SignedKeys = ["digest", "keyId", "lease", "signature"];
     private static readonly Regex IdRegex = ActionDigest.FromEcma(ActionDigest.IdPattern);
     private static readonly Regex OidRegex = ActionDigest.FromEcma("^(?:[0-9a-f]{40}|[0-9a-f]{64})$");
@@ -63,6 +64,8 @@ public static class Wsl2RunLease
         [
             ("v", b["v"] is long v && v == Version),
             ("operationId", IsId(b["operationId"])),
+            ("actionDigest", b["actionDigest"] is string action && DigestRegex.IsMatch(action)),
+            ("leaseGeneration", IsCounter(b["leaseGeneration"])),
             ("computerId", IsId(b["computerId"])),
             ("isolation", b["isolation"] is string isolation && isolation == Isolation),
             ("repositoryId", IsId(b["repositoryId"])),
@@ -74,7 +77,7 @@ public static class Wsl2RunLease
         foreach ((string field, bool good) in checks) if (!good) return Fail("malformed", field);
         long issuedAt = (long)b["issuedAt"], expiresAt = (long)b["expiresAt"];
         if (expiresAt <= issuedAt || expiresAt - issuedAt > MaxTtlSeconds) return Fail("ttl", "expiresAt");
-        Wsl2RunLeaseBody value = new((long)b["v"], (string)b["operationId"], (string)b["computerId"], (string)b["isolation"], (string)b["repositoryId"], (string)b["baseOid"], (long)b["maxCalls"], issuedAt, expiresAt);
+        Wsl2RunLeaseBody value = new((long)b["v"], (string)b["operationId"], (string)b["actionDigest"], (long)b["leaseGeneration"], (string)b["computerId"], (string)b["isolation"], (string)b["repositoryId"], (string)b["baseOid"], (long)b["maxCalls"], issuedAt, expiresAt);
         return new Wsl2RunLeaseVerdict(true, Value: value);
     }
 
@@ -83,7 +86,7 @@ public static class Wsl2RunLease
     {
         Dictionary<string, object> map = new(StringComparer.Ordinal)
         {
-            ["v"] = body.V, ["operationId"] = body.OperationId, ["computerId"] = body.ComputerId, ["isolation"] = body.Isolation, ["repositoryId"] = body.RepositoryId,
+            ["v"] = body.V, ["operationId"] = body.OperationId, ["actionDigest"] = body.ActionDigest, ["leaseGeneration"] = body.LeaseGeneration, ["computerId"] = body.ComputerId, ["isolation"] = body.Isolation, ["repositoryId"] = body.RepositoryId,
             ["baseOid"] = body.BaseOid, ["maxCalls"] = body.MaxCalls, ["issuedAt"] = body.IssuedAt, ["expiresAt"] = body.ExpiresAt,
         };
         using MemoryStream buffer = new();
@@ -128,19 +131,15 @@ public static class Wsl2RunLease
         return (new Wsl2RunLeaseVerdict(true, Value: body.Value, Digest: digest, KeyId: (string)s["keyId"]), preimage!, signature);
     }
 
-    /// <summary>Full check (see the header). <paramref name="verify"/> gets (keyId, preimage bytes, signature bytes). <paramref name="clock"/> returns Unix seconds and is read after the signature check.</summary>
-    public static Wsl2RunLeaseVerdict Verify(object? signed, Func<long> clock, Func<string, byte[], byte[], bool> verify, Wsl2RunLeaseExpected expected)
+    /// <summary>Step 1 (see the header). <paramref name="verify"/> gets (keyId, preimage bytes, signature bytes). <paramref name="clock"/> returns Unix seconds and is read after the signature check. Nothing in a lease may be used before it has passed here.</summary>
+    public static Wsl2RunLeaseVerdict Authenticate(object? signed, Func<long> clock, Func<string, byte[], byte[], bool> verify)
     {
         if (clock is null || verify is null) return Fail("invalid_context");
-        if (!IsId(expected.ComputerId)) return Fail("invalid_expected", "computerId");
-        if (!IsId(expected.OperationId)) return Fail("invalid_expected", "operationId");
-        if (!IsId(expected.RepositoryId)) return Fail("invalid_expected", "repositoryId");
-        if (!IsGitOid(expected.BaseOid)) return Fail("invalid_expected", "baseOid");
         (Wsl2RunLeaseVerdict read, byte[] preimage, byte[] signature) = ReadSigned(signed);
         if (!read.Ok) return read;
         bool genuine;
         try { genuine = verify(read.KeyId!, preimage, signature); }
-        catch (Exception ex) when (ex is CryptographicException or ArgumentException or InvalidOperationException) { genuine = false; }
+        catch (Exception) { genuine = false; } // whatever an injected verifier throws, the lease is not proved (fail closed, as the Node twin)
         if (!genuine) return Fail("signature", "signature");
         long now;
         try { now = clock(); }
@@ -149,11 +148,24 @@ public static class Wsl2RunLease
         Wsl2RunLeaseBody a = read.Value!;
         if (a.IssuedAt > now + NetworkAttestation.MaxObservedSkewSeconds) return Fail("not_yet_valid", "issuedAt");
         if (now >= a.ExpiresAt) return Fail("expired", "expiresAt");
-        // Same order as the Node twin: baseOid, computerId, operationId, repositoryId.
-        if (a.BaseOid != expected.BaseOid) return Fail("binding", "baseOid");
-        if (a.ComputerId != expected.ComputerId) return Fail("binding", "computerId");
-        if (a.OperationId != expected.OperationId) return Fail("binding", "operationId");
-        if (a.RepositoryId != expected.RepositoryId) return Fail("binding", "repositoryId");
         return read;
+    }
+
+    /// <summary>Step 2: the authenticated lease against the bridge's own state (where each value comes from: see the Node twin). Codes: invalid_expected binding generation.</summary>
+    public static Wsl2RunLeaseVerdict RequireBinding(Wsl2RunLeaseBody lease, Wsl2RunLeaseExpected expected)
+    {
+        if (expected is null) return Fail("invalid_expected");
+        if (!IsId(expected.ComputerId)) return Fail("invalid_expected", "computerId");
+        if (!IsId(expected.OperationId)) return Fail("invalid_expected", "operationId");
+        if (!IsId(expected.RepositoryId)) return Fail("invalid_expected", "repositoryId");
+        if (!IsGitOid(expected.BaseOid)) return Fail("invalid_expected", "baseOid");
+        if (!IsCounter(expected.MinLeaseGeneration)) return Fail("invalid_expected", "minLeaseGeneration");
+        // Same order as the Node twin: baseOid, computerId, operationId, repositoryId.
+        if (lease.BaseOid != expected.BaseOid) return Fail("binding", "baseOid");
+        if (lease.ComputerId != expected.ComputerId) return Fail("binding", "computerId");
+        if (lease.OperationId != expected.OperationId) return Fail("binding", "operationId");
+        if (lease.RepositoryId != expected.RepositoryId) return Fail("binding", "repositoryId");
+        if (lease.LeaseGeneration < expected.MinLeaseGeneration) return Fail("generation", "leaseGeneration");
+        return new Wsl2RunLeaseVerdict(true, Value: lease);
     }
 }
