@@ -38,7 +38,7 @@ import { ActionDigestError, validateActionDto } from './broker-contract/action-d
 /** ADR-002: bounded length-prefixed frame, 4 KiB maximum request message (2 KiB until a claim could carry an action DTO). The response is far smaller. */
 export const BROKER_CLIENT_LIMITS = Object.freeze({
   maxRequestBytes: 4096,
-  maxResponseBytes: 256,
+  maxResponseBytes: 2048, // the helper's own limit: a claim reply can carry a run lease, about 800 bytes
   defaultTimeoutMs: 5000,
   minTimeoutMs: 100,
   maxTimeoutMs: 30_000,

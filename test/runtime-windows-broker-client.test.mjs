@@ -103,7 +103,7 @@ test('request size limit is the 4 KiB ADR bound (2 KiB before a claim could carr
   const over = { receipt: b64(4068 - 88), signature: b64(88) };
   assert.equal(overhead + 4068 > 4096, true);
   assert.equal(codeOf(() => buildBrokerRequestBody(over)), 'request_too_large');
-  assert.equal(BROKER_CLIENT_LIMITS.maxResponseBytes, 256, 'the response limit is unchanged');
+  assert.equal(BROKER_CLIENT_LIMITS.maxResponseBytes, 2048, 'the helper\'s limit, for a claim reply with a run lease');
 });
 
 const TASK_DTO = Object.freeze({ action: 'task.start', projectId: 'project-1', computerId: 'computer-1', args: Object.freeze({ task: 'build the project' }) });

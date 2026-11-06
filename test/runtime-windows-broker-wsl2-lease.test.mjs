@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { sendBrokerRequest } from '../src/runtime/windows-broker-client.mjs';
 import { generateKeyPairSync, verify as cryptoVerify } from 'node:crypto';
 import { rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -13,7 +14,7 @@ import { authenticateWsl2RunLease, computeWsl2RunLeaseDigest } from '../src/runt
 // Windows-only, same-user, unprivileged. The real Broker (the test-faults build's `serve-loop`) and its real claim pipe, with a `wsl2` computer: a newly recorded wsl2 task.start claim answers with a run lease
 // signed by the Broker's attestation key (ADR-012, decision 4; ADR-002 Amendment 2026-11-04). The key is a PKCS#8 file named by the test-only ALBERA_BROKER_TEST_ATTESTATION_PKCS8 variable (compiled into the
 // test-faults build only): the production path opens a CNG machine key by name, which needs a key an installer made, and was NOT exercised here (only its refusal of a name that does not exist was).
-// Claims go over a raw same-user socket because the Node client (windows-broker-client.mjs) does not take the extra `lease` key yet; one test also runs the real pipe client helper.
+// Most claims go over a raw same-user socket, so the reply is the Broker's own bytes; two tests run the real pipe client helper.
 const WSL = 'wsl-1', VM = 'room-1', KEY_ID = 'broker-attest-test';
 const NO_SUCH_VM = '0123abcd-4567-89ab-cdef-000000000001';
 const TARGET = { task: 'build the project', isolation: 'wsl2', repositoryId: 'repo-alpha', baseOid: 'a'.repeat(40) };
@@ -164,6 +165,16 @@ describe('Broker WSL2 run lease on a newly claimed wsl2 task.start (seam build)'
     assert.deepEqual(Object.keys(reply), ['ok', 'state', 'action', 'lease']);
     assert.ok(Buffer.byteLength(result.stdout) > 256, 'longer than the old 256-byte limit');
     assert.equal(authenticate(reply.lease).operationId, 'helper-op');
+    await stop(started.child);
+  });
+
+  it('reaches the Control Plane through the real client and the real helper', async () => {
+    const started = await start('client');
+    const prepared = await started.session.prepare('client', { purpose: 'guest.command', action: 'task.start', args: TARGET, computerId: WSL });
+    const send = () => sendBrokerRequest({ pipeName: started.value.pipeName, receipt: prepared.receipt, signature: prepared.signature, action: dtoOf(WSL, TARGET), expect: { ownerSid: sid, pid: started.child.pid }, helperPath: helper, timeoutMs: 10_000 });
+    const first = await send();
+    assert.equal(first.ok, true);
+    assert.equal(authenticate(first.lease).operationId, 'client-op');
     await stop(started.child);
   });
 
