@@ -144,7 +144,8 @@ internal sealed class FakeRepositories : IRepositories
     public string? Head = new('a', 40);
     public Func<string, byte[]?>? Bundle;
     public int HeadReads;
-    public string? ReadHead(string repositoryPath) { HeadReads++; return Head; }
+    public Action? OnReadHead;
+    public string? ReadHead(string repositoryPath) { HeadReads++; OnReadHead?.Invoke(); return Head; }
     public byte[]? MakeBundle(string repositoryPath, int maxBytes) => Bundle is not null ? Bundle(Head ?? "") : BundleOf(Head ?? new string('a', 40));
     public static byte[] BundleOf(string oid) => Encoding.ASCII.GetBytes($"# v2 git bundle\n{oid} HEAD\n\nPACKfake");
 }

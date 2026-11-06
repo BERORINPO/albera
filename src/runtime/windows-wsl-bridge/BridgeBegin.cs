@@ -39,11 +39,12 @@ internal sealed partial class Bridge
         catch (StrictJsonException) { return (null, null, Reply.Refuse(Reason.LeaseMalformed)); }
         Wsl2RunLeaseVerdict auth = Wsl2RunLease.Authenticate(signed, clock, key.Verify);
         if (!auth.Ok) return (null, null, Reply.Refuse(AuthReason(auth.Code)));
-        Wsl2RunLeaseBody lease = auth.Value!; // proved by the Broker's key and still in its time: only now is any of it used
+        Wsl2RunLeaseBody lease = auth.Proof!.Body; // proved by the Broker's key and still in its time: only now is any of it used
         if (!config.Repositories.TryGetValue(lease.RepositoryId, out string? repositoryPath)) return (null, null, Reply.Refuse(Reason.RepositoryUnknown));
         string? head = repositories.ReadHead(repositoryPath);
         if (head is null) return (null, null, Reply.Refuse(Reason.HeadUnreadable));
-        Wsl2RunLeaseVerdict bound = Wsl2RunLease.RequireBinding(lease, new Wsl2RunLeaseExpected(head, config.ComputerId, config.MinLeaseGeneration, request.RunId, lease.RepositoryId));
+        if (clock() >= lease.ExpiresAt) return (null, null, Reply.Refuse(Reason.LeaseExpired)); // reading a repository takes time: the end of the lease is looked at again after it
+        Wsl2RunLeaseVerdict bound = Wsl2RunLease.RequireBinding(auth.Proof, new Wsl2RunLeaseExpected(head, config.ComputerId, config.MinLeaseGeneration, request.RunId, lease.RepositoryId));
         return bound.Ok ? (lease, repositoryPath, null) : (null, null, Reply.Refuse(BindingReason(bound)));
     }
 

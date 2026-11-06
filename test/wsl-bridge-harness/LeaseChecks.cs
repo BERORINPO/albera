@@ -71,6 +71,14 @@ internal static partial class Harness
             Same(Reason.LeaseGeneration, Refused(reply), "generation");
         });
 
+        Check("g1 lease runs out while the head is being read: refused after the read", () =>
+        {
+            using Rig rig = new();
+            rig.Repos.OnReadHead = () => rig.Now += 601; // git is slow, and the lease ends meanwhile
+            Same(Reason.LeaseExpired, Refused(rig.Begin()), "expired during the read");
+            NothingImported(rig, "expiry during the head read");
+        });
+
         Check("g1 wrong signer: a lease signed by another key is refused", () =>
         {
             using Rig rig = new();
