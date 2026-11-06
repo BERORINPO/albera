@@ -635,3 +635,4 @@ Merged on main since the previous entry, all on 2026-11-03 (UTC): #189 (13:47), 
 - **Not reachable:** the hands still refuse wsl2 (`wsl2_hands_missing`) and `room-service-config` does not read it, so nothing here reaches a job.
 - **Before Phase 4:** see "Before Phase 4" in ADR-012 (SEC-1 helper pin, SEC-2 owner-only proof). Phase 5 must limit reading the lease floor (MEDIUM-1).
 - **Test results:** local full runs fail the same nine job-guardian, helper-process and folder-guard tests, which CI does not. A 300 ms wait in the bridge rig failed once on a busy Windows runner and is now 3 s.
+- **After merge:** PR 220 and PR 221 are in `main` (`ed3f52b`). The revocation steps are in `docs/architecture/wsl2-lease-revocation-runbook.md`: a proposal, since the Broker cannot sign leases yet. Only its floor half has been observed on a machine.
