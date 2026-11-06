@@ -164,7 +164,13 @@ export function createGitQuarantine({ git, root, run } = {}) {
     return Object.freeze({ ok: true, candidateCommitOid: head, candidateTreeOid: tree });
   }
 
-  return Object.freeze({ create, importBundle, inspect, diff, buildCandidate });
+  /** The git in use as { major, minor }, or null. */
+  async function version() {
+    const found = (await runGit(git, ['--version'], { env: gitEnv(root), allowFailure: true })).stdout?.match(/^git version (\d+)\.(\d+)/u);
+    return found ? Object.freeze({ major: Number(found[1]), minor: Number(found[2]) }) : null;
+  }
+
+  return Object.freeze({ create, importBundle, inspect, diff, buildCandidate, version });
 }
 
 /** The first refusal code for a set of diff entries, or null. Deleting a forbidden path is refused too. */

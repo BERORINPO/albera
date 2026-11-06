@@ -117,7 +117,7 @@ export function createRoomJobRoutes({ approvals, hands, targets, newJobId } = {}
     if (typeof result.operationId !== 'string' || !ID_RE.test(result.operationId)) { finish(job, 'refused', 'start_error'); return; }
     finish(job, 'starting');
     let started = null;
-    try { started = await hands.start({ computerId: job.computerId, task: job.task, operationId: result.operationId, ...Object.fromEntries(['vmId', 'expectedGeneration', 'isolation', 'repositoryId', 'baseOid'].filter((key) => job[key] !== undefined).map((key) => [key, job[key]])) }); } catch { /* start_error below */ }
+    try { started = await hands.start({ computerId: job.computerId, task: job.task, operationId: result.operationId, ...(result.lease === undefined ? {} : { lease: result.lease }), ...Object.fromEntries(['vmId', 'expectedGeneration', 'isolation', 'repositoryId', 'baseOid'].filter((key) => job[key] !== undefined).map((key) => [key, job[key]])) }); } catch { /* start_error below */ }
     if (job.state === 'cancelled') { // stop all arrived while the hands were being started: stop them again, they may have come up after the first stop
       try { await hands.stopAll(); } catch { /* stop all already reported its own failure */ }
       return;

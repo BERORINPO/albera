@@ -340,13 +340,13 @@ test('treeStopConfirmed === false keeps that computer busy until a person stops 
 
 const WSL2_OID = 'a'.repeat(40);
 const WSL2_TARGETS = new Map([['pc-wsl', { computerId: 'pc-wsl', isolation: 'wsl2', repositoryId: 'repo-alpha' }]]);
-const WSL2_START = { computerId: 'pc-wsl', task: 'fix it', operationId: 'op-wsl', isolation: 'wsl2', repositoryId: 'repo-alpha', baseOid: WSL2_OID };
+const WSL2_START = { computerId: 'pc-wsl', task: 'fix it', operationId: 'op-wsl', isolation: 'wsl2', repositoryId: 'repo-alpha', baseOid: WSL2_OID, lease: { lease: { expiresAt: 4_000_000_000 } } };
 function wsl2World(over = {}) {
   const fake = createFakeWsl2BridgeClient({ bundle: Buffer.from('junk') });
   const verb = (name) => async (runId) => { fake.calls.push({ verb: name, runId }); };
   const client = { ...fake, begin: verb('begin'), end: verb('end'), stop: verb('stop') };
   const world = setup({ targets: WSL2_TARGETS, wsl2: {
-    client, leases: { obtain: async () => 'lease' }, quarantine: {}, resultsRoot: path.resolve(path.sep, 'albera-test', 'results'),
+    client, guard: { check: async () => true }, quarantine: {}, resultsRoot: path.resolve(path.sep, 'albera-test', 'results'),
     shell: { command: process.execPath, entryPath: path.resolve(path.sep, 'albera-test', 'shell.mjs'), bridge: { pipeName: 'p', serverSid: 'S-1-5-21-1-2-3-1001', helperPath: BROKER.helperPath, helperSha256: BROKER.helperSha256 } }, ...over,
   } });
   return { world, client };
@@ -379,12 +379,15 @@ test('a person\'s stop reaches the bridge as well as the driver', async () => {
   assert.deepEqual(world.hands.results(), []);
 });
 
-test('with no lease source a WSL2 start ends before any driver, and a VM computer still runs the desktop hands', async () => {
-  const { world, client } = wsl2World({ leases: { obtain: async () => null } });
+test('with no lease a WSL2 start ends before any driver, and a VM computer still runs the desktop hands', async () => {
+  const { world, client } = wsl2World();
   await world.ready;
-  assert.deepEqual(await world.hands.start(WSL2_START), { ok: false, code: 'start_error' });
+  const { lease, ...noLease } = WSL2_START;
+  assert.ok(lease);
+  assert.deepEqual(await world.hands.start(noLease), { ok: false, code: 'start_error' });
   await settle(30);
   assert.equal(world.drivers.made.length, 0);
   assert.deepEqual(client.calls, []);
   assert.equal(world.events.at(-1)[1].reason, 'wsl2_lease_unavailable');
+  assert.deepEqual(world.loads, [], 'the token is never opened for it');
 });

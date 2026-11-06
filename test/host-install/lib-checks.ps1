@@ -61,6 +61,7 @@ $r.authorityJson = $authorityJson
 $r.settingsJson = ConvertTo-HostJson $settingsObj
 $r.brokerReasons = Test-BrokerConfigText $brokerJson
 $r.authorityReasons = Test-AuthorityConfigText $authorityJson
+$r.brokerAttestationOk = Test-BrokerConfigText ($brokerJson -replace '\}\s*$', ',"attestation":{"keyName":"albera-attest.1_a","keyId":"kid-1"}}')
 $r.brokerBad = [ordered]@{
   extraKey = Test-BrokerConfigText ($brokerJson -replace '^\{', '{"extra":"x",')
   missingKey = Test-BrokerConfigText ($brokerJson -replace ',"policyVersion":"[^"]*"', '')
@@ -71,6 +72,8 @@ $r.brokerBad = [ordered]@{
   generationZero = Test-BrokerConfigText ($brokerJson -replace '"generation":1', '"generation":0')
   rsaKey = Test-BrokerConfigText ((ConvertTo-HostJson (Get-BrokerConfig $L $cp $Rsa2048Spki)))
   badPipe = Test-BrokerConfigText ($brokerJson -replace 'ALBERA_HostBroker', '..\\evil')
+  attestationExtra = Test-BrokerConfigText ($brokerJson -replace '\}\s*$', ',"attestation":{"keyName":"k","keyId":"kid-1","x":1}}')
+  attestationBadName = Test-BrokerConfigText ($brokerJson -replace '\}\s*$', ',"attestation":{"keyName":"a b","keyId":"kid-1"}}')
   notJson = Test-BrokerConfigText 'nope'
   tooBig = Test-BrokerConfigText ('{"a":"' + ('x' * 5000) + '"}')
 }

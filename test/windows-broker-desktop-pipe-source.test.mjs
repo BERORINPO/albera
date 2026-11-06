@@ -121,7 +121,7 @@ test('the lease: made only by a task.start claim that was just recorded, held in
   // The only caller of Grant is the claim path, after the journal row is written and never for a replay (a replay returns before this point).
   const claims = stripComments(read('BrokerRequests.cs'));
   assert.equal([...[claims, pipe, protocol, program, loop].join('\n').matchAll(/\.Grant\(/gu)].length, 1, 'one caller of Grant in the whole Broker');
-  assert.ok(inOrder(claims, 'if (replay)', 'return Success(context.RecordedState!, claimed, replayed: true);', 'Journal.ClaimAsync(', 'if (kind == Journal.ClaimKind.Rejected) return Deny(reason);', 'Console.WriteLine("CLAIM=PERSISTED_UNKNOWN");', 'GrantDesktopLease(settings, dto!, operationId);', 'return Success(Journal.UnknownState, claimed, replayed: false);'));
+  assert.ok(inOrder(claims, 'if (replay)', 'return Success(context.RecordedState!, claimed, replayed: true);', 'Journal.ClaimAsync(', 'if (kind == Journal.ClaimKind.Rejected) return Deny(reason);', 'Console.WriteLine("CLAIM=PERSISTED_UNKNOWN");', 'GrantDesktopLease(settings, dto!, operationId);', 'return Success(Journal.UnknownState, claimed, replayed: false, lease);'));
   assert.match(claims, /if \(encodedAction is not null\) GrantDesktopLease\(settings, dto!, operationId\);/u, 'only the three-key task.start form');
   const grant = between(claims, 'private static void GrantDesktopLease(', 'private static string? ChallengeRefusal(');
   assert.match(grant, /string\? claimedVmId = dto\["args"\] is IReadOnlyDictionary<string, object> args && args\.TryGetValue\(VmIdArgument, out object\? vm\) \? vm as string : null;/u, 'the VM the signed args name, if any');
@@ -130,7 +130,7 @@ test('the lease: made only by a task.start claim that was just recorded, held in
   // The table belongs to the desktop host and reaches the claim path through the settings; the one-shot `serve` has none.
   assert.match(pipe, /Leases = new DesktopLeases\(config\.Computers, lifetimeSeconds: DesktopLeaseSeconds\);/u);
   assert.match(loop, /settings = started with \{ Leases = desktop\.Leases \};/u);
-  assert.match(program, /long Epoch = 0, DesktopLeases\? Leases = null, IReadOnlyList<string>\? Wsl2Computers = null\);/u);
+  assert.match(program, /long Epoch = 0, DesktopLeases\? Leases = null, IReadOnlyList<string>\? Wsl2Computers = null, AttestationSigner\? Attestation = null\);/u);
   // Shipped build: the lifetime is the contract's 60 minutes; the knob that shortens it exists only in the test build.
   assert.match(rawPipe.slice(rawPipe.indexOf('#else'), rawPipe.indexOf('#endif')), /DesktopLeaseSeconds = DesktopLeases\.MaxLifetimeSeconds;/u);
   assert.equal(/ALBERA_BROKER_TEST_DESKTOP_LEASE_SECONDS|ALBERA_BROKER_TEST_DESKTOP_INPUT_HOLD_MS|DesktopInputHold|input_enter/u.test(rawPipe.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '')), false);

@@ -46,3 +46,11 @@ test('a bad target, a failing lookup, or a VM named beside it starts nothing', a
 test('a wsl2TargetFor that is not a function is a wiring error', () => {
   assert.throws(() => gateWith({ wsl2TargetFor: 'x' }), /invalid_task_start_gate_dependencies/u);
 });
+
+test('the lease of the claim comes back with the start, and a start with none has none', async () => {
+  const lease = { digest: 'x' };
+  const gate = createTaskStartGate({ flow: { run: async (request) => ({ status: 'claimed', operationId: request.operationId, replayed: false, lease }) }, projectId: 'project-alpha', computerIdFor: () => 'pc-wsl', newOperationId: () => 'op-1', wsl2TargetFor: () => TARGET });
+  assert.deepEqual(await gate.startApproved({ vmId: 'albera-wsl', task: 'build' }), { ok: true, operationId: 'op-1', lease });
+  const { gate: plain } = gateWith({ wsl2TargetFor: () => TARGET });
+  assert.ok(!('lease' in await plain.startApproved({ vmId: 'albera-wsl', task: 'build' })));
+});

@@ -6,13 +6,16 @@ import { buildShellMcpFlags } from './albera-shell-mcp-args.mjs';
 // One WSL2 job around the driver (ADR-012, decisions 9 and 10; Proposed / NOT VERIFIED on a real run). The model's tools act in a run that exists; only this file begins and ends that run, so the lease
 // never reaches the model. Order: the lease, `begin`, the driver, the result bundle, `end`, then the quarantine. Every way out that is not a clean `end` calls `stop`, so no distribution is left behind.
 //
-// The lease comes from `leases.obtain`. The production Broker has no key to sign one (ADR-002 AGM-2), so the service passes NO_LEASE_SOURCE and every job stops here with `wsl2_lease_unavailable`.
+// The lease is the one the Broker signed in its reply to the claim (ADR-012, decision 4). It travels in memory only: it is in no job record, no journal and no log. A Broker with no key sends none, and the job stops here
+// with `wsl2_lease_unavailable`. `guard` is asked before each run: the helper and the git that reads a hostile pack must be ones only an administrator can change.
 // The result is what the job handed over, never verified: `trust` is always `agent_reported`, and its text is cleaned here and escaped by the page. It is a bundle, so nothing of the job runs on this side.
 // The code words are fixed. A word from the bridge goes to the log only after it has passed WORD_RE.
 
-export const NO_LEASE_SOURCE = Object.freeze({ obtain: async () => null });
 export const MAX_RESULT_BYTES = 64 * 1024 * 1024;
 export const KEPT_RESULTS = 5;
+const RESULT_MARGIN_MS = 180_000; // the bundle's call
+// `fetch.fsckObjects` is measured to refuse a bad object in a bundle on this version (test/runtime-git-quarantine.test.mjs); older ones were not measured.
+export const MIN_GIT_VERSION = Object.freeze({ major: 2, minor: 53 });
 export const RESULT_DEADLINE_MS = 5 * 60_000; // the quarantine's calls have 60 s each; this bounds them together, so a job cannot hold its computer with a result that takes hours to read
 // What must not reach a person's eyes as it is. A line break the page would honour but `git diff` does not count (CR, LS, PS, NEL) could forge a "line", and a bidi or invisible character can hide what a file
 // holds. They stay visible as a marker instead of being dropped: the file still holds them, and that is the very thing to see. Tab and the line feed stay.
@@ -94,17 +97,26 @@ async function readHaltWord(file) {
 }
 
 /**
- * @param {{ wsl2: { client: object, leases: { obtain: Function }, quarantine: object, shell: { command: string, entryPath: string, bridge: object }, resultsRoot: string },
- *   job: { operationId: string, computerId: string, repositoryId: string, baseOid: string }, run: { stopRequested: boolean, stopBridge?: Function }, runDir: string,
+ * Asked before the credential is opened: a job with no lease, or with tools an administrator does not hold, gets no token.
+ * @returns {Promise<string|null>} the reason word, or null
+ */
+export async function wsl2Refusal(wsl2, job) {
+  if (job.lease === null || job.lease === undefined) return 'wsl2_lease_unavailable';
+  return await wsl2.guard.check().catch(() => false) === true ? null : 'wsl2_tools_untrusted';
+}
+
+/** How long the driver may run: what the lease has left, less the time the result needs. The lease's clock started at the claim. */
+export const driverTimeLeftMs = (lease, now) => Math.max(0, (lease?.lease?.expiresAt ?? 0) * 1000 - now - RESULT_MARGIN_MS);
+
+/**
+ * @param {{ wsl2: { client: object, guard: { check: () => Promise<boolean> }, quarantine: object, shell: { command: string, entryPath: string, bridge: object }, resultsRoot: string },
+ *   job: { operationId: string, computerId: string, repositoryId: string, baseOid: string, lease?: object }, run: { stopRequested: boolean, stopBridge?: Function }, runDir: string,
  *   runDriver: (options: { mcpServer: object, hands: object }) => Promise<object>, note: (line: string) => void }} options
  * @returns {Promise<{ result: object, collected: object|null }>} `result` in the driver's shape, `collected` what the room shows, or null when the run gave nothing to show.
  */
-export async function runWsl2Job({ wsl2, job, run, runDir, runDriver, note }) {
-  const { client, leases, quarantine, shell, resultsRoot } = wsl2;
-  const { operationId, baseOid } = job;
-  let lease = null;
-  try { lease = await leases.obtain(job); } catch { note('hands wsl2_lease_failed'); }
-  if (lease === null || lease === undefined) return { result: over('wsl2_lease_unavailable'), collected: null };
+export async function runWsl2Job({ wsl2, job, run, runDir, runDriver, note, now = Date.now }) {
+  const { client, quarantine, shell, resultsRoot } = wsl2;
+  const { operationId, baseOid, lease } = job;
 
   let open = true; // the bridge may hold a run: from before `begin` is sent, because an unknown answer may have made one
   const stopBridge = async () => {
@@ -116,7 +128,7 @@ export async function runWsl2Job({ wsl2, job, run, runDir, runDriver, note }) {
   async function aroundDriver() {
     if (run.stopRequested) { open = false; return { result: stoppedByHuman(), collected: null }; }
     try {
-      await client.begin(operationId, lease);
+      await client.begin(operationId, JSON.stringify(lease));
       open = true; // again: a stop that came before the bridge knew of this run was answered no_run, and that says nothing about the run begin has just made
     } catch (error) {
       open = error?.outcome === 'unknown';
@@ -128,7 +140,7 @@ export async function runWsl2Job({ wsl2, job, run, runDir, runDriver, note }) {
     const haltFile = path.join(runDir, HALT_FILE);
     const args = buildShellMcpFlags({ entryPath: shell.entryPath, operationId, bridge: shell.bridge, haltFile });
     let result;
-    try { result = await runDriver({ mcpServer: { command: shell.command, args }, hands: SHELL_HANDS }); } catch { return { result: over('hands_failed'), collected: null }; } // not thrown on: the check below must still see a run nobody could stop
+    try { result = await runDriver({ mcpServer: { command: shell.command, args }, hands: SHELL_HANDS, maxMs: driverTimeLeftMs(lease, now()) }); } catch { return { result: over('hands_failed'), collected: null }; } // not thrown on: the check below must still see a run nobody could stop
     const halted = await readHaltWord(haltFile); // the model was told in words; this is the record of why, a squatted pipe above all
     if (halted !== null) note(`hands wsl2_shell_halted ${halted}`);
     if (run.stopRequested || result.outcome === 'stopped') return { result, collected: null };
@@ -185,4 +197,15 @@ export function wsl2TargetLookup({ client, repositoryOf }) {
     const { head } = await client.status({ repositoryId });
     return { repositoryId, baseOid: head };
   };
+}
+
+/** The guard the service gives the hands: both programs in administrator-only folders, and a git new enough. `checks` are { path, folder guard }. */
+export function createWsl2ToolGuard({ checks, gitVersion, minGit = MIN_GIT_VERSION }) {
+  return Object.freeze({
+    async check() {
+      for (const { guard, file } of checks) if (await guard.check(file) !== true) return false;
+      const found = await gitVersion();
+      return found !== null && (found.major > minGit.major || (found.major === minGit.major && found.minor >= minGit.minor));
+    },
+  });
 }

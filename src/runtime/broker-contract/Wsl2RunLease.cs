@@ -26,6 +26,20 @@ namespace Albera.BrokerContract;
 
 public sealed record Wsl2RunLeaseBody(long V, string OperationId, string ActionDigest, long LeaseGeneration, string ComputerId, string Isolation, string RepositoryId, string BaseOid, long MaxCalls, long IssuedAt, long ExpiresAt);
 
+/// <summary>The signed form <c>{ digest, keyId, lease, signature }</c> that <see cref="Wsl2RunLease.Sign"/> returns. <see cref="ToJson"/> is the wire text (alphabetical keys; every value is a validated id, digest, hex or integer, so nothing needs escaping).</summary>
+public sealed record Wsl2SignedLease(string Digest, string KeyId, Wsl2RunLeaseBody Lease, string Signature)
+{
+    public string ToJson() => string.Create(System.Globalization.CultureInfo.InvariantCulture,
+        $"{{\"digest\":\"{Digest}\",\"keyId\":\"{KeyId}\",\"lease\":{{\"actionDigest\":\"{Lease.ActionDigest}\",\"baseOid\":\"{Lease.BaseOid}\",\"computerId\":\"{Lease.ComputerId}\",\"expiresAt\":{Lease.ExpiresAt},\"isolation\":\"{Lease.Isolation}\",\"issuedAt\":{Lease.IssuedAt},\"leaseGeneration\":{Lease.LeaseGeneration},\"maxCalls\":{Lease.MaxCalls},\"operationId\":\"{Lease.OperationId}\",\"repositoryId\":\"{Lease.RepositoryId}\",\"v\":{Lease.V}}},\"signature\":\"{Signature}\"}}");
+}
+
+/// <summary>Signing refused. Code: malformed ttl (the body; Field names the rule) signer_invalid signer_failed (as the Node twin).</summary>
+public sealed class Wsl2RunLeaseException(string code, string? field = null) : Exception(code)
+{
+    public string Code { get; } = code;
+    public string? Field { get; } = field;
+}
+
 /// <summary>What the caller itself knows about the run it is deciding. Every part is required.</summary>
 public sealed record Wsl2RunLeaseExpected(string BaseOid, string ComputerId, long MinLeaseGeneration, string OperationId, string RepositoryId);
 
@@ -116,6 +130,26 @@ public static class Wsl2RunLease
         catch (FormatException) { return false; }
         return bytes.Length is >= 1 and <= MaxSignatureBytes && Base64Url.EncodeToString(bytes) == text;
     }
+
+    /// <summary>Sign a body: the Node twin's signWsl2RunLease. <paramref name="signer"/> gets the preimage bytes and returns the signature (ECDSA P-256 / SHA-256, r || s, 1..128 bytes); it is written unpadded base64url.</summary>
+    /// <exception cref="Wsl2RunLeaseException">malformed or ttl (the body), signer_invalid (keyId or signer), signer_failed (the signer threw or returned a bad length)</exception>
+    public static Wsl2SignedLease Sign(Wsl2RunLeaseBody body, string keyId, Func<byte[], byte[]> signer)
+    {
+        (Wsl2RunLeaseVerdict verdict, string? digest, byte[]? preimage) = Compute(ToMap(body));
+        if (!verdict.Ok) throw new Wsl2RunLeaseException(verdict.Code!, verdict.Field);
+        if (signer is null || !IsId(keyId)) throw new Wsl2RunLeaseException("signer_invalid");
+        byte[] signature;
+        try { signature = signer(preimage!); }
+        catch (Exception) { throw new Wsl2RunLeaseException("signer_failed"); }
+        if (signature is null || signature.Length is < 1 or > MaxSignatureBytes) throw new Wsl2RunLeaseException("signer_failed");
+        return new Wsl2SignedLease(digest!, keyId, verdict.Value!, Base64Url.EncodeToString(signature));
+    }
+
+    private static Dictionary<string, object> ToMap(Wsl2RunLeaseBody b) => new(StringComparer.Ordinal)
+    {
+        ["v"] = b.V, ["operationId"] = b.OperationId, ["actionDigest"] = b.ActionDigest, ["leaseGeneration"] = b.LeaseGeneration, ["computerId"] = b.ComputerId, ["isolation"] = b.Isolation,
+        ["repositoryId"] = b.RepositoryId, ["baseOid"] = b.BaseOid, ["maxCalls"] = b.MaxCalls, ["issuedAt"] = b.IssuedAt, ["expiresAt"] = b.ExpiresAt,
+    };
 
     /// <summary>Shape and digest only (no signature, no clock). An attestation is malformed here (other keys). On success Value, Digest and KeyId are set.</summary>
     public static (Wsl2RunLeaseVerdict Verdict, byte[] Preimage, byte[] Signature) ReadSigned(object? signed)

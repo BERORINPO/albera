@@ -185,6 +185,17 @@ function defineFlowSuite(label, newJournal) {
         assert.equal(world.submissions[0].purpose, 'guest.command');
       });
 
+      it('a run lease in the claim reply reaches the caller and is never written to the journal', async () => {
+        const world = makeWorld();
+        signTaskReceipts(world);
+        const lease = { digest: 'sha256:secret-marker' };
+        world.script.claim.push(() => ({ ok: true, state: 'UNKNOWN', action: 'task.start', lease }));
+        const result = await world.flow.run(TASK);
+        assert.deepEqual([result.status, result.lease], ['claimed', lease]);
+        assert.ok(!JSON.stringify(world.journal.get('op-1')).includes('secret-marker'));
+        assert.ok(!JSON.stringify(world.journal.history ?? []).includes('secret-marker'));
+      });
+
       it('a claim whose reply was lost is sent again with the same DTO, receipt and signature (an exact duplicate for the Broker)', async () => {
         const world = makeWorld();
         signTaskReceipts(world);

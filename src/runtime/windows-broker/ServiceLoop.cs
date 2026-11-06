@@ -33,7 +33,14 @@ internal static partial class Program
     // connection's I/O failure or deadline.
     internal static async Task<int> RunServiceLoopAsync(ServiceConfig config, CancellationToken stop, Action onReady)
     {
-        BrokerSettings settings = new(config.Database, config.AuthorityKeys, config.ControlPlaneSid, config.Generation, ServiceClaimHold, ImpersonationFault.None, config.LeaseId, config.PolicyVersion, Wsl2Computers: config.Wsl2Computers);
+        // A configured attestation key is opened before anything else is created. One that cannot be used ends the start: it is not silently the same as no key.
+        AttestationSigner? signer = config.Attestation is { } attestation ? AttestationKeys.TryOpen(attestation) : null;
+        if (config.Attestation is not null && signer is null)
+        {
+            Console.WriteLine("BROKER_FATAL=ATTESTATION_KEY_UNUSABLE");
+            return ExitAttestationKeyUnusable;
+        }
+        BrokerSettings settings = new(config.Database, config.AuthorityKeys, config.ControlPlaneSid, config.Generation, ServiceClaimHold, ImpersonationFault.None, config.LeaseId, config.PolicyVersion, Wsl2Computers: config.Wsl2Computers, Attestation: signer);
         // Held for the whole loop (released by `using` when the loop ends): the journal folder cannot be renamed, deleted or swapped meanwhile.
         using SafeFileHandle? databaseFolder = DatabaseFolderPin.TryPin(config.Database);
         if (databaseFolder is null)

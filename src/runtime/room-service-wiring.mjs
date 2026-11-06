@@ -10,11 +10,11 @@ import { createRoomHost } from './room-host.mjs';
 import { createRoomFeedbackRoutes } from './room-feedback-routes.mjs';
 import { createRoomJobRoutes } from './room-job-routes.mjs';
 import { missingRoomParts } from './room-demo.mjs';
-import { openRoomApproval } from './room-approval-wiring.mjs';
+import { GIT_INSTALL_DIR, openRoomApproval, PIPE_CLIENT_INSTALL_DIR } from './room-approval-wiring.mjs';
 import { createRoomJobApprovals, createSubmitWatch } from './room-service-approvals.mjs';
 import { loadServiceConfig, roomServicePaths } from './room-service-config.mjs';
 import { createRoomServiceHands } from './room-service-hands.mjs';
-import { createWsl2Readiness, NO_LEASE_SOURCE, wsl2TargetLookup } from './room-service-wsl2-run.mjs';
+import { createWsl2Readiness, createWsl2ToolGuard, wsl2TargetLookup } from './room-service-wsl2-run.mjs';
 import { createGitQuarantine } from './git-quarantine.mjs';
 import { createWsl2BridgeClient } from './wsl2-bridge-client.mjs';
 import { createRoomSettingsRoutes } from './room-settings-routes.mjs';
@@ -98,13 +98,17 @@ export async function startRoomService({ dataRoot } = {}, deps = {}) {
     const secretStore = deps.secretStore ?? createControlPlaneSecretStore({ secretsDir: paths.secretsDir, helperPath: settings.desktop.helperPath, helperSha256: settings.desktop.helperSha256 });
     const board = createAgentStatusBoard();
     const labelOf = (vmName) => vmName.slice(0, 32);
-    // A WSL2 computer needs the bridge settings (the parser refuses one without them). The lease source stays empty until the Broker can sign (ADR-002 AGM-2): every WSL2 job ends with wsl2_lease_unavailable.
+    // A WSL2 computer needs the bridge settings (the parser refuses one without them). The lease comes with the Broker's reply to the claim; a Broker with no key sends none.
     const bridge = settings.wsl2 === null ? null : { pipeName: settings.wsl2.pipeName, serverSid: settings.wsl2.serverSid, ...(settings.wsl2.serverImageSha256 === undefined ? {} : { serverImageSha256: settings.wsl2.serverImageSha256 }), ...settings.desktop };
     const bridgeClient = bridge === null ? null : (deps.createBridgeClient ?? createWsl2BridgeClient)(bridge);
     const readiness = bridgeClient === null ? null : createWsl2Readiness({ client: bridgeClient, note: log });
+    const quarantine = bridgeClient === null ? null : deps.quarantine ?? createGitQuarantine({ git: settings.wsl2.git, root: paths.wsl2QuarantineRoot });
     const wsl2 = bridgeClient === null ? null : {
-      client: bridgeClient, leases: deps.wsl2Leases ?? NO_LEASE_SOURCE, resultsRoot: paths.wsl2ResultsRoot, shell: { command: process.execPath, entryPath: deps.shellMcpEntryPath ?? SHELL_MCP_ENTRY, bridge },
-      quarantine: deps.quarantine ?? createGitQuarantine({ git: settings.wsl2.git, root: paths.wsl2QuarantineRoot }),
+      client: bridgeClient, resultsRoot: paths.wsl2ResultsRoot, shell: { command: process.execPath, entryPath: deps.shellMcpEntryPath ?? SHELL_MCP_ENTRY, bridge }, quarantine,
+      guard: deps.wsl2Guard ?? createWsl2ToolGuard({ gitVersion: quarantine.version, checks: [
+        { guard: createWindowsFolderGuard({ installDir: PIPE_CLIENT_INSTALL_DIR }), file: settings.desktop.helperPath },
+        { guard: createWindowsFolderGuard({ installDir: GIT_INSTALL_DIR }), file: settings.wsl2.git },
+      ] }),
     };
     const repositoryByComputer = new Map([...settings.computers.values()].filter((c) => c.isolation !== undefined).map((c) => [c.computerId, c.repositoryId]));
     hands = createRoomServiceHands({

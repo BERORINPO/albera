@@ -103,7 +103,7 @@ test('request size limit is the 4 KiB ADR bound (2 KiB before a claim could carr
   const over = { receipt: b64(4068 - 88), signature: b64(88) };
   assert.equal(overhead + 4068 > 4096, true);
   assert.equal(codeOf(() => buildBrokerRequestBody(over)), 'request_too_large');
-  assert.equal(BROKER_CLIENT_LIMITS.maxResponseBytes, 256, 'the response limit is unchanged');
+  assert.equal(BROKER_CLIENT_LIMITS.maxResponseBytes, 2048, 'the helper\'s limit, for a claim reply with a run lease');
 });
 
 const TASK_DTO = Object.freeze({ action: 'task.start', projectId: 'project-1', computerId: 'computer-1', args: Object.freeze({ task: 'build the project' }) });
@@ -453,4 +453,15 @@ test('a pinned helper build (helperSha256) is required of fence, claim and inspe
   assert.deepEqual(await sendBrokerFence({ ...base, computerId: 'computer-1', helperSha256: 'A'.repeat(64), helperPath: installed, spawnImpl: fakeSpawn().spawnImpl }), { ok: false, code: 'invalid_request' });
   assert.deepEqual(await sendBrokerFence({ ...base, computerId: 'computer-1', helperSha256: 7, helperPath: installed, spawnImpl: fakeSpawn().spawnImpl }), { ok: false, code: 'invalid_request' });
   assert.deepEqual(await sendBrokerFence({ pipeName: goodRequest.pipeName, computerId: 'computer-1', expect: EXPECT, helperPath: swapped, spawnImpl: fakeSpawn({ stdout: line(FENCED) }).spawnImpl }), FENCED);
+});
+
+test('a claim reply may carry a run lease on task.start only, and a malformed lease is an invalid reply', async () => {
+  const { createWsl2RunLease, signWsl2RunLease } = await import('../src/runtime/broker-contract/wsl2-run-lease.mjs');
+  const { validateBrokerResponse: read } = await import('../src/runtime/windows-broker-client.mjs');
+  const body = createWsl2RunLease({ operationId: 'op-1', actionDigest: `sha256:${'a'.repeat(64)}`, leaseGeneration: 1, computerId: 'pc-1', repositoryId: 'repo-1', baseOid: 'b'.repeat(40), maxCalls: 10, issuedAt: 100, ttlSeconds: 60 });
+  const lease = await signWsl2RunLease(body, { keyId: 'k-1', sign: async () => Buffer.alloc(64, 1) });
+  assert.deepEqual(read({ ok: true, state: 'UNKNOWN', action: 'task.start', lease }).lease, lease);
+  assert.throws(() => read({ ok: true, state: 'UNKNOWN', action: 'synthetic.noop', lease }), /invalid_response/u);
+  assert.throws(() => read({ ok: true, state: 'UNKNOWN', action: 'task.start', lease: { ...lease, digest: `sha256:${'0'.repeat(64)}` } }), /invalid_response/u);
+  assert.throws(() => read({ ok: true, state: 'UNKNOWN', action: 'task.start', replayed: true, lease }), /invalid_response/u);
 });

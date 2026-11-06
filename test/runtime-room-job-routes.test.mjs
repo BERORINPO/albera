@@ -417,3 +417,14 @@ test('GET /api/jobs/results hands over what the hands kept, and a level only whe
   const none = createRoomJobRoutes({ approvals: createFakeApprovals(), hands: createFakeHands(), targets: () => [] }).find((route) => route.path === '/api/jobs/results');
   assert.deepEqual(none.handle({}).body.results, []);
 });
+
+test('a lease goes to the hands and into no view of the job', async (t) => {
+  const r = await start(t);
+  await r.call('POST', JOBS, { body: { computerId: 'pc-01', task: TASK } });
+  const lease = { digest: 'secret-marker' };
+  r.approvals.decide(0, { ok: true, operationId: 'op-lease', lease });
+  await r.until('job-1', 'started');
+  assert.deepEqual(r.hands.started[0].lease, lease);
+  const listed = await r.call('GET', JOBS);
+  assert.ok(!JSON.stringify(listed.json).includes('secret-marker'));
+});

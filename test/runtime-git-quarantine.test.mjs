@@ -250,3 +250,20 @@ describe('diff', () => {
     assert.equal((await q.importBundle(repo, { bundlePath, ref: 'refs/tags/x', expectedOid: base })).code, 'request_invalid');
   });
 });
+
+describe('what the bundle path relies on', () => {
+  it('fetch.fsckObjects refuses a bad object in a bundle, and version() reads the git in use', async () => {
+    const q = quarantine();
+    assert.ok((await q.version()).major >= 2);
+    const repo = await q.create();
+    const blob = execFileSync('git', ['-C', guest, 'hash-object', '-w', '--stdin'], { env, input: 'x' }).toString().trim();
+    const tree = execFileSync('git', ['-C', guest, 'mktree', '--missing'], { env, input: `100644 blob ${blob}\tgood\n` }).toString().trim();
+    const body = `tree ${tree}\nauthor no date\ncommitter no date\n\nbad\n`; // a commit fsck refuses: no valid ident line
+    const bad = execFileSync('git', ['-C', guest, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], { env, input: body }).toString().trim();
+    g('update-ref', 'refs/heads/fsck-bad', bad);
+    const bundlePath = path.join(work, 'fsck-bad.bundle');
+    g('bundle', 'create', '-q', bundlePath, 'refs/heads/fsck-bad');
+    g('update-ref', '-d', 'refs/heads/fsck-bad');
+    assert.equal((await q.importBundle(repo, { bundlePath, ref: 'refs/heads/fsck-bad', expectedOid: bad })).code, 'bundle_invalid');
+  });
+});

@@ -21,7 +21,7 @@ using Microsoft.Win32.SafeHandles;
 internal static partial class Program
 {
     private const int ExitOk = 0, ExitBadInput = 64, ExitInternal = 70;
-    private const int MaxInputBytes = 8192, MaxRequestBytes = 4096, MaxAuthorityRequestBytes = 2048, MaxResponseBytes = 256, MaxAuthorityResponseBytes = 2048;
+    private const int MaxInputBytes = 8192, MaxRequestBytes = 4096, MaxAuthorityRequestBytes = 2048, MaxResponseBytes = 2048, MaxAuthorityResponseBytes = 2048;
     private static readonly string[] AuthorityCodes = ["authority_unavailable", "request_invalid", "request_expired", "human_denied", "presence_unavailable", "presence_mismatch", "queue_full"];
     // Specific rights, never GENERIC_WRITE (its FILE_APPEND_DATA bit is FILE_CREATE_PIPE_INSTANCE on a pipe): the CP ACE is 0x00120083.
     private const uint ClientAccess = 0x1 /*FILE_READ_DATA*/ | 0x2 /*FILE_WRITE_DATA*/ | 0x80 /*FILE_READ_ATTRIBUTES*/ | 0x20000 /*READ_CONTROL*/ | 0x100000 /*SYNCHRONIZE*/;
@@ -94,13 +94,13 @@ internal static partial class Program
     {
         try
         {
-            using JsonDocument document = JsonDocument.Parse(reply, new JsonDocumentOptions { MaxDepth = 2 });
+            using JsonDocument document = JsonDocument.Parse(reply, new JsonDocumentOptions { MaxDepth = 3 }); // object -> lease envelope -> lease body
             JsonElement root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("ok", out JsonElement ok)) return Failure("invalid_response");
             if (ok.ValueKind == JsonValueKind.False && root.TryGetProperty("code", out JsonElement code) && code.ValueKind == JsonValueKind.String && code.GetString() == "denied") return Failure("denied");
             if (ok.ValueKind != JsonValueKind.True) return Failure("invalid_response");
-            if (Text(root, "state") is { } state && Text(root, "action") is { } action)
-                return $"{{\"ok\":true,\"state\":{JsonSerializer.Serialize(state)},\"action\":{JsonSerializer.Serialize(action)}{(root.TryGetProperty("replayed", out JsonElement replayed) && replayed.ValueKind == JsonValueKind.True ? ",\"replayed\":true" : "")}}}";
+            if (Text(root, "state") is { } state && Text(root, "action") is { } action && LeaseText(root) is { } leaseText) // LeaseRelay.cs: the run lease of a new wsl2 claim, passed on unchanged; a malformed one falls through to invalid_response
+                return $"{{\"ok\":true,\"state\":{JsonSerializer.Serialize(state)},\"action\":{JsonSerializer.Serialize(action)}{(root.TryGetProperty("replayed", out JsonElement replayed) && replayed.ValueKind == JsonValueKind.True ? ",\"replayed\":true" : "")}{leaseText}}}";
             if (Number(root, "brokerEpoch") is { } epoch && Number(root, "leaseGeneration") is { } generation && Text(root, "brokerChallenge") is { } challenge)
             {
                 // `leaseId` (a contract id) is required: the Broker always sends it (PR #92).

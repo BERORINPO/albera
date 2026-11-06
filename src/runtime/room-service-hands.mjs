@@ -5,7 +5,7 @@ import { desktopMcpLimitArgs, parseDesktopMcpArgs } from './albera-desktop-mcp-a
 import { ID_PATTERN } from './broker-contract/action-digest.mjs';
 import { WSL2_ISOLATION, isGitOid } from './broker-contract/wsl2-run-lease.mjs';
 import { createClaudeCodeDriver } from './claude-code-driver.mjs';
-import { runWsl2Job } from './room-service-wsl2-run.mjs';
+import { runWsl2Job, wsl2Refusal } from './room-service-wsl2-run.mjs';
 
 // The room service's hands: one Claude Code run per approved task.start (docs/architecture/control-plane-service.md section 6; PR4d). It is wiring: every decision is made elsewhere
 // (the approval flow says a start was approved, the driver runs and limits one `claude -p`, the secret store opens the credential). What this file adds is the order of the steps and
@@ -113,15 +113,16 @@ export function createRoomServiceHands({
     let result;
     try {
       const trusted = await claudeGuard.check(claude.executable).catch(() => false); // before the credential is opened: an executable that is not trusted never sees it
-      const credential = trusted ? await loadToken() : { code: 'claude_untrusted' };
+      const blocked = trusted && wsl2Job ? await wsl2Refusal(wsl2, wsl2Job) : null; // before the token too: a job that cannot run never opens it
+      const credential = !trusted ? { code: 'claude_untrusted' } : blocked !== null ? { code: blocked } : await loadToken();
       if (credential.code) result = { outcome: 'error', reason: credential.code, claim: '', toolCalls: 0 };
       else if (run.stopRequested) result = { outcome: 'stopped', reason: 'stopped_by_human', claim: '', toolCalls: 0 };
       else {
         folders = await makeRunFolders();
-        const runDriver = (choice) => {
+        const runDriver = ({ maxMs = claude.maxMs, ...choice }) => {
           const driver = createDriver({
             executable: claude.executable, executableSha256: claude.executableSha256, task, oauthToken: credential.token, workDir: folders.workDir, configDir: folders.configDir,
-            limits: { maxMs: claude.maxMs, maxToolCalls: claude.maxToolCalls }, ...(claude.model === null ? {} : { model: claude.model }),
+            limits: { maxMs: Math.min(claude.maxMs, maxMs), maxToolCalls: claude.maxToolCalls }, ...(claude.model === null ? {} : { model: claude.model }),
             onEvent: eventsOf(vmName, started), ...choice, ...driverOptions,
           });
           run.driver = driver;
@@ -159,7 +160,7 @@ export function createRoomServiceHands({
     jobs.set(vmName, (jobs.get(vmName) ?? 0) + 1);
     emit(vmName, { type: 'start', job: jobs.get(vmName), task });
     runs.set(computerId, run);
-    const wsl2Job = isWsl2 ? { repositoryId: named.repositoryId, baseOid: named.baseOid } : null;
+    const wsl2Job = isWsl2 ? { repositoryId: named.repositoryId, baseOid: named.baseOid, lease: named.lease } : null;
     run.done = execute({ vmName, computerId, task, operationId, wsl2Job }, run, started).finally(() => { if (!run.stuck) runs.delete(computerId); });
     return Object.freeze({ ok: true, started: started.promise });
   }

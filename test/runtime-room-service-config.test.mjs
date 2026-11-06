@@ -117,3 +117,8 @@ test('an executable outside the install folder is refused: a sibling, a parent, 
   if (process.platform === 'win32') assert.equal(parse(text(EXE.toUpperCase())).claude.executable, EXE.toUpperCase(), 'Windows compares paths without case');
 });
 function os_tmp() { return process.env.TEMP ?? process.env.TMPDIR ?? path.resolve(path.sep, 'tmp'); }
+
+test('a job always ends inside its lease: the longest run is shorter than the longest lease', async () => {
+  const { MAX_RUN_LEASE_TTL_SECONDS } = await import('../src/runtime/broker-contract/wsl2-run-lease.mjs');
+  assert.ok(CLAUDE_LIMITS.maxMinutes * 60 + 120 <= MAX_RUN_LEASE_TTL_SECONDS, 'or bundle answers lease_expired and every result is lost');
+});

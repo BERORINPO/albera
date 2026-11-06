@@ -237,7 +237,7 @@ test('service loop creates the first-instance pipe once and reuses that instance
 test('service exit codes are fixed and the dispatcher is called before the config is read', () => {
   assert.deepEqual([...program.matchAll(/const int (Exit\w+) = (\d+);/gu)].map((m) => `${m[1]}=${m[2]}`), [
     'ExitPipeUnavailable=70', 'ExitImpersonationRevertFailed=71', 'ExitPipeOwnerUnavailable=72',
-    'ExitServiceConfigInvalid=73', 'ExitNotStartedByScm=74', 'ExitServiceLoopFailed=75', 'ExitJournalRefused=76', 'ExitDesktopFailed=80',
+    'ExitServiceConfigInvalid=73', 'ExitNotStartedByScm=74', 'ExitServiceLoopFailed=75', 'ExitJournalRefused=76', 'ExitAttestationKeyUnusable=77', 'ExitDesktopFailed=80',
   ]);
   assert.equal(/TryLoad\(/u.test(program), false, 'Main never reads the service config itself');
   assert.match(program, /args\.Length == 2 && args\[0\] == "service"\) return ServiceHost\.Run\(args\[1\]\);/u);
@@ -330,8 +330,8 @@ test('service config accepts exactly seven required keys (and the one optional `
   assert.match(serviceConfig, /LeaseId = "lease_id", PolicyVersion = "policy_version"/u);
   assert.match(serviceConfig, /leaseId is null \|\| !AuthorityKey\.IsKeyId\(leaseId\)\) return null;/u);
   assert.match(serviceConfig, /policyVersion is null \|\| !AuthorityKey\.IsKeyId\(policyVersion\)\) return null;/u);
-  assert.match(serviceConfig, /new ServiceConfig\(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers, wsl2Computers\);/u);
-  assert.match(serviceLoop, /config\.LeaseId, config\.PolicyVersion, Wsl2Computers: config\.Wsl2Computers\);/u, 'the service loop hands the configured values to the request handlers');
+  assert.match(serviceConfig, /new ServiceConfig\(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers, wsl2Computers, attestation\);/u);
+  assert.match(serviceLoop, /config\.LeaseId, config\.PolicyVersion, Wsl2Computers: config\.Wsl2Computers, Attestation: signer\);/u, 'the service loop hands the configured values to the request handlers');
   assert.equal(/"test-lease"|"test-policy-v1"|Synthetic(?:Lease|Policy)/u.test(brokerCode), false, 'no receipt placeholder is left in the Broker');
   assert.equal(/"publicKey"/u.test(brokerCode), false, 'the v1 single-key shape is gone from the Broker');
   assert.match(serviceConfig, /seen\.SetEquals\(Keys\)/u, 'no unknown and no missing key');
@@ -350,7 +350,7 @@ test('service config accepts exactly seven required keys (and the one optional `
   assert.match(serviceConfig, /generation is < 1 or > Albera\.BrokerContract\.StrictJson\.MaxSafeInteger/u, 'a lease generation starts at 1');
   const reasonClass = serviceConfig.slice(serviceConfig.indexOf('internal static class Reason'), serviceConfig.indexOf('public static ServiceConfig? TryLoad'));
   assert.deepEqual([...reasonClass.matchAll(/ = "([a-z_]+)"/gu)].map((m) => m[1]).sort(),
-    ['authority_keys', 'computers', 'config_keys', 'config_path', 'config_syntax', 'config_too_large', 'config_unreadable', 'config_untrusted', 'control_plane_sid', 'database', 'database_directory', 'database_pin', 'database_untrusted', 'generation', 'lease_id', 'pipe_name', 'policy_version']);
+    ['attestation', 'authority_keys', 'computers', 'config_keys', 'config_path', 'config_syntax', 'config_too_large', 'config_unreadable', 'config_untrusted', 'control_plane_sid', 'database', 'database_directory', 'database_pin', 'database_untrusted', 'generation', 'lease_id', 'pipe_name', 'policy_version']);
   // The only interpolated console lines are a reason word, a Win32 error number or a fixed stage word (restricted-client), never a config value.
   const interpolated = [...brokerCode.matchAll(/Console\.WriteLine\((\$"[^"]*")\);/gu)].map((m) => m[1]);
   assert.deepEqual(interpolated, ['$"RESTRICTED_TOKEN_SETUP=BLOCKED_{stage}"', '$"SERVICE_DISPATCHER_ERROR={error}"', '$"SERVICE_CONFIG=invalid:{reason}"', '$"SERVICE_CONFIG=invalid:{reason}"']);
@@ -534,8 +534,8 @@ test('receipt v2: the shared contract sources are included, not copied; the Brok
   assert.match(trusted, /\["leaseId"\] = settings\.LeaseId,/u, 'the lease is the configured one');
   assert.match(trusted, /\["policyVersion"\] = settings\.PolicyVersion,/u, 'and so is the policy');
   assert.match(requests, /private const string BrokerAudience = "albera-host-broker";/u, 'the contract\'s audience grammar is lower case');
-  // The only digest taken from the receipt is the one stored in the claim row, after Validate recomputed and compared it.
-  assert.deepEqual([...requests.matchAll(/r\["actionDigest"\]/gu)].map((m) => m.index > requests.indexOf('Receipts.Validate(')), [true]);
+  // The only digests taken from the receipt are the one stored in the claim row and the one named in a wsl2 run lease, both after Validate recomputed and compared it.
+  assert.deepEqual([...requests.matchAll(/r\["actionDigest"\]/gu)].map((m) => m.index > requests.indexOf('Receipts.Validate(')), [true, true]);
   // The key is found by the receipt's kid among the pinned keys, then the signature is verified over the exact bytes.
   assert.match(requests, /settings\.AuthorityKeys\.FirstOrDefault\(key => key\.Kid == kid\) is not \{ \} authorityKey\) return Deny\("kid_unknown"\);/u);
   assert.match(requests, /authority\.VerifyData\(receipt, signature, HashAlgorithmName\.SHA256, DSASignatureFormat\.IeeeP1363FixedFieldConcatenation\)\) return Deny\("signature"\);/u);
@@ -554,8 +554,9 @@ test('exact duplicate: only the same operationId with the same receipt-and-signa
   assert.match(journal, /SELECT state FROM claims WHERE operation_id = \$o AND request_digest = \$q;/u, 'both the operation and the digest must match (a NULL digest never matches)');
   assert.match(journal, /catch \(SqliteException ex\) when \(ex\.SqliteErrorCode == 19\) \{ throw new CollisionException\(\); \}/u);
   assert.match(journal, /SHA256\.HashData\(\[\.\. BitConverter\.GetBytes\(receipt\.Length\), \.\. receipt, \.\. signature\]\)/u);
-  assert.match(requests, /private static BrokerReply Success\(string state, string action, bool replayed\) =>\s+new\(Encoding\.UTF8\.GetBytes\(\$"\{\{\\"ok\\":true,\\"state\\":\\"\{state\}\\",\\"action\\":\\"\{action\}\\"\{\(replayed \? ",\\"replayed\\":true" : ""\)\}\}\}"\)\);/u, '`replayed` exists only as true, only for a replay');
-  assert.deepEqual([...requests.matchAll(/return Success\(([^;]*)\);/gu)].map((m) => m[1].replace(/\s+/gu, ' ')), ['recorded, "synthetic.inspect", replayed: false', 'context.RecordedState!, claimed, replayed: true', 'Journal.UnknownState, claimed, replayed: false']);
+  assert.match(requests, /private static BrokerReply Success\(string state, string action, bool replayed, string\? lease = null\) =>\s+new\(Encoding\.UTF8\.GetBytes\(\$"\{\{\\"ok\\":true,\\"state\\":\\"\{state\}\\",\\"action\\":\\"\{action\}\\"\{\(replayed \? ",\\"replayed\\":true" : ""\)\}\{\(lease is null \? "" : ",\\"lease\\":" \+ lease\)\}\}\}"\)\);/u, '`replayed` exists only as true, only for a replay; `lease` only on a new claim (Success(..., lease) is called nowhere else)');
+  assert.deepEqual([...requests.matchAll(/Success\([^;]*lease\);/gu)].length, 1, 'the lease reaches the reply from the claim path only, never from the replay or inspect');
+  assert.deepEqual([...requests.matchAll(/return Success\(([^;]*)\);/gu)].map((m) => m[1].replace(/\s+/gu, ' ')), ['recorded, "synthetic.inspect", replayed: false', 'context.RecordedState!, claimed, replayed: true', 'Journal.UnknownState, claimed, replayed: false, lease']);
   assert.match(requests, /string claimed = \(string\)r\["action"\]; \/\/ Validate has bound it to the DTO's action/u, 'the reply names the receipt\'s action, which Validate has bound to the DTO\'s');
   assert.ok(requests.indexOf('string claimed = ') > requests.indexOf('Receipts.Validate('), 'only after Validate');
   assert.match(journal, /private static readonly string\[\] RecordedStates = \[UnknownState\];/u, 'a state the client would not accept is never sent');

@@ -75,7 +75,8 @@ export function createTaskStartGate({ flow, projectId, computerIdFor, newOperati
     if (result?.status !== 'claimed') return refuse(REFUSAL_BY_STATUS[result?.status] ?? 'start_error');
     // A claim that only reports an older operation is not an approval of this start.
     if (result.operationId !== operationId) return refuse('start_error');
-    return result.replayed === false ? Object.freeze({ ok: true, operationId }) : refuse('start_replayed');
+    if (result.replayed !== false) return refuse('start_replayed');
+    return Object.freeze({ ok: true, operationId, ...(result.lease === undefined ? {} : { lease: result.lease }) });
   }
 
   return Object.freeze({ startApproved });
