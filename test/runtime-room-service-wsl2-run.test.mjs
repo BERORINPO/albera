@@ -108,8 +108,10 @@ describe('the run around the driver', () => {
 
   it('a driver that throws still stops the run', async () => {
     const t = job({ driver: async () => { throw new Error('boom'); } });
-    await assert.rejects(t.done, /boom/u);
+    assert.equal((await t.done).result.reason, 'hands_failed');
     assert.deepEqual(t.client.calls, ['begin', 'stop']);
+    const stuck = job({ driver: async () => { throw new Error('boom'); }, client: fakeClient({ stop: async () => { throw bridgeError('bridge_unavailable', 'not_applied'); } }) });
+    assert.deepEqual(await stuck.done.then(({ result }) => [result.reason, result.treeStopConfirmed]), ['stop_unconfirmed', false], 'and if nobody can stop it, the computer stays busy');
   });
 
   it('a stop asked during the driver stops the run and collects nothing', async () => {
@@ -256,7 +258,9 @@ test('SEC-004: a stop nobody confirmed says so and keeps the computer busy', asy
 });
 
 test('SEC-002: what could forge a line or hide a character becomes a visible mark, and an ordinary diff is left alone', () => {
-  assert.equal(markUnsafeText('+a\u2028diff --git a/x b/x\r\n'), '+a\u27e6U+2028\u27e7diff --git a/x b/x\u27e6U+000D\u27e7\n');
+  assert.equal(markUnsafeText('+a\u2028diff --git a/x b/x\r\n'), '+a\u27e6U+2028\u27e7diff --git a/x b/x\r\n', 'a Windows line end is left alone');
+  assert.equal(markUnsafeText('a\rb'), 'a\u27e6U+000D\u27e7b');
+  assert.equal(markUnsafeText('\u2800\u{1d173}'), '\u27e6U+2800\u27e7\u27e6U+1D173\u27e7');
   assert.equal(markUnsafeText('a\u202eb\u200bc\u{e0041}'), 'a\u27e6U+202E\u27e7b\u27e6U+200B\u27e7c\u27e6U+E0041\u27e7');
   assert.equal(markUnsafeText('\u0085'), '\u27e6U+0085\u27e7');
   const plain = '@@ -1 +1 @@\n-\tone\n+\u65e5\u672c\u8a9e <b>\n';

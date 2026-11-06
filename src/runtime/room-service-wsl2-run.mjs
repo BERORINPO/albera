@@ -16,7 +16,7 @@ export const KEPT_RESULTS = 5;
 export const RESULT_DEADLINE_MS = 5 * 60_000; // the quarantine's calls have 60 s each; this bounds them together, so a job cannot hold its computer with a result that takes hours to read
 // What must not reach a person's eyes as it is. A line break the page would honour but `git diff` does not count (CR, LS, PS, NEL) could forge a "line", and a bidi or invisible character can hide what a file
 // holds. They stay visible as a marker instead of being dropped: the file still holds them, and that is the very thing to see. Tab and the line feed stay.
-const UNSAFE_TEXT_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufffb\ud800-\udfff]|[\u{e0000}-\u{e0fff}]/gu;
+const UNSAFE_TEXT_RE = /(?!\t|\n|\r\n)[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}ᅟᅠ⠀ㅤﾠ]/gu; // a CR before a line feed is an ordinary Windows line end: marking it on every line would teach the eye to skip marks
 export const READY_REFRESH_MS = 30_000;
 const WORD_RE = /^[a-z0-9_]{1,48}$/u;
 const HALT_FILE = 'halt';
@@ -127,7 +127,8 @@ export async function runWsl2Job({ wsl2, job, run, runDir, runDriver, note }) {
 
     const haltFile = path.join(runDir, HALT_FILE);
     const args = buildShellMcpFlags({ entryPath: shell.entryPath, operationId, bridge: shell.bridge, haltFile });
-    const result = await runDriver({ mcpServer: { command: shell.command, args }, hands: SHELL_HANDS });
+    let result;
+    try { result = await runDriver({ mcpServer: { command: shell.command, args }, hands: SHELL_HANDS }); } catch { return { result: over('hands_failed'), collected: null }; } // not thrown on: the check below must still see a run nobody could stop
     const halted = await readHaltWord(haltFile); // the model was told in words; this is the record of why, a squatted pipe above all
     if (halted !== null) note(`hands wsl2_shell_halted ${halted}`);
     if (run.stopRequested || result.outcome === 'stopped') return { result, collected: null };

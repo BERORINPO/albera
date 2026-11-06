@@ -185,8 +185,10 @@ Not verified:
 **Before a lease source is wired (Zaku, on the review of this part; goes with AGM-2):**
 
 - The SEC-2 lab result. No job can run before then, which is why it may wait.
-- **`wsl2.git` has no pin.** It is an absolute path only, and that git parses a hostile pack as the Control Plane's identity, the one that opens the DPAPI token. Put it under the folder guard, as `claude.exe`, with a minimum version.
+- **`wsl2.git` has no pin.** It is an absolute path only, and that git parses a hostile pack as the Control Plane's identity, the one that opens the DPAPI token. Put it under the folder guard, as `claude.exe`, with a minimum version: one in which `fetch.fsckObjects` is measured to work on a bundle.
 - The Broker signs exactly the approved `repositoryId` and `baseOid`.
+- `claude.maxMs` is shorter than the lease, or `bundle` answers `lease_expired` and every result is lost.
+- The four pipe instances serve `stop` and `status` alike. Show that a slow `status` does not keep a `stop` waiting.
 - The helper's folder is trusted because Program Files is administrator-only, and nothing checks that at run time. Put a folder guard on it at start.
 - A job chooses what `HEAD` is. Other refs in its bundle are not inspected, and they stay in the kept file. Applying a result must take only `resultOid`, through `buildCandidate`.
 - Whether Windows `child.kill()` leaves a child `index-pack` running after a timeout on a hostile pack was not measured.
