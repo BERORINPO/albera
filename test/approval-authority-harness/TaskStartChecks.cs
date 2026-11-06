@@ -125,6 +125,9 @@ internal static partial class Harness
             Assert(IsPending(f, f.Submit(TaskSubmit(envelope, args: "{\"task\":\"x\",\"vmId\":\"" + AttestVm + "\"}"))) && audit.SequenceEqual(["ATTESTATION_REFUSED=generation_missing"]), "no expectedGeneration to bind");
             audit.Clear();
             Assert(IsPending(f, f.Submit(TaskSubmit(envelope, op: "nv", args: "{\"task\":\"x\",\"expectedGeneration\":3}"))) && audit.SequenceEqual(["ATTESTATION_REFUSED=vm_id_missing"]), "no vmId to bind");
+            audit.Clear();
+            // ADR-012, decision 4: an action that names an isolation class waits for a person, even beside a VM and a genuine attestation.
+            Assert(IsPending(f, f.Submit(TaskSubmit(envelope, op: "wsl", args: "{\"expectedGeneration\":3,\"isolation\":\"wsl2\",\"task\":\"x\",\"vmId\":\"" + AttestVm + "\"}"))) && audit.SequenceEqual(["ATTESTATION_REFUSED=isolation_needs_a_person"]), "a wsl2 action has no attested path");
             int n = 0;
             foreach (string args in new[] { "{\"expectedGeneration\":0,\"vmId\":\"" + AttestVm + "\"}", "{\"expectedGeneration\":\"3\",\"vmId\":\"" + AttestVm + "\"}", "{\"expectedGeneration\":3,\"vmId\":\"vm-1\"}",
                 "{\"expectedGeneration\":3,\"vmId\":\"AAAAAAAA-2222-4333-8444-555555555555\"}" })

@@ -58,6 +58,27 @@ function setup({ targets, token = TOKEN, claude = CLAUDE, createDriver, ...rest 
 }
 const eventTypes = (world) => world.events.map(([vm, e]) => `${vm}:${e.type}`);
 
+// ---- ADR-012, decision 4: a wsl2 computer is approved with its target, and these hands never run for it ----
+
+test('a wsl2 computer must be approved with its own target, and a VM action never fits it or the other way round', async () => {
+  const OID = 'a'.repeat(40);
+  const wsl2 = new Map([['albera-computer-a', { computerId: 'computer-a', isolation: 'wsl2', repositoryId: 'repo-alpha' }]]);
+  const vm = new Map([['albera-computer-a', { computerId: 'computer-a', vmId: VM, expectedGeneration: 3 }]]);
+  const named = { isolation: 'wsl2', repositoryId: 'repo-alpha', baseOid: OID };
+  const cases = [
+    ['nothing named', wsl2, {}, 'vm_unknown'], ['no isolation', wsl2, { repositoryId: 'repo-alpha', baseOid: OID }, 'vm_unknown'], ['no repository', wsl2, { isolation: 'wsl2', baseOid: OID }, 'vm_unknown'], ['no commit', wsl2, { isolation: 'wsl2', repositoryId: 'repo-alpha' }, 'vm_unknown'],
+    ['another repository', wsl2, { ...named, repositoryId: 'repo-beta' }, 'vm_unknown'], ['a branch for a commit', wsl2, { ...named, baseOid: 'main' }, 'vm_unknown'], ['another isolation', wsl2, { ...named, isolation: 'vm' }, 'vm_unknown'], ['a VM beside it', wsl2, { ...named, vmId: VM, expectedGeneration: 3 }, 'vm_unknown'],
+    ['a wsl2 action on a VM', vm, { vmId: VM, expectedGeneration: 3, ...named }, 'vm_unknown'], ['only an isolation on a VM', vm, { vmId: VM, expectedGeneration: 3, isolation: 'wsl2' }, 'vm_unknown'],
+    ['the right target, while the hands for it do not exist', wsl2, named, 'wsl2_hands_missing'],
+  ];
+  for (const [label, targets, patch, code] of cases) {
+    const w = setup({ targets });
+    await w.ready;
+    assert.deepEqual(await w.hands.start({ computerId: 'computer-a', task: 'open notepad', operationId: 'start-1', ...patch }), { ok: false, code }, label);
+    assert.deepEqual([w.loads, w.drivers.made, w.events, existsSync(w.runRoot)], [[], [], [], false], `${label}: nothing was read, made or started`);
+  }
+});
+
 // ---- acceptance 3: the VM is checked before anything is read, made or started ----
 
 test('the VM check comes first: a mismatch in either direction is vm_unknown and no credential is opened, no folder made, no driver built', async () => {
