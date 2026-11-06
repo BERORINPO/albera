@@ -33,7 +33,7 @@ test('the launcher starts the program when every self-test call is refused', { s
 });
 
 // 4 (clone unchecked) is left to the real-sandbox run: an ubuntu runner may refuse user namespaces with no filter at all, so it cannot tell there.
-for (const [hole, line] of [[1, /socket AF_VSOCK/u], [2, /32-bit gate/u], [5, /io_uring_setup/u]]) {
+for (const [hole, line] of [[1, /socket AF_VSOCK/u], [2, /32-bit gate/u], [5, /io_uring_setup/u], [6, /core soft limit, setrlimit/u]]) {
   test(`a filter with hole ${hole} stops the run at the self-test`, { skip }, () => {
     const { out, done } = build(['-DALBERA_TEST_BUILD', `-DALBERA_BROKEN=${hole}`]);
     try {

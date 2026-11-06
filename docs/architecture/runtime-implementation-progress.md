@@ -1,6 +1,6 @@
 # Runtime Architecture Implementation Progress
 
-**Updated:** 2026-11-04 (newest entries are at the end of this file)
+**Updated:** 2026-11-06 (newest entries are at the end of this file)
 **Working branch:** one branch per item from `origin/main` (`albera-goal` skill). Until 2026-10-28 the work was stacked on `codex/runtime-architecture-alignment`.
 **Runtime source/test HEAD audited (2026-10-28):** `9b8174759421fe1d176dadd9c70471487ea241fc` (adds the ADR-002 Mock IPC contract tests; runtime production code is unchanged); PR #19 is stacked on PR #17 head `8a829d116e39ca10f273594f409f38315f20570f`. Analysis is in `runtime-gap-analysis.md`.
 **Architecture source:** PR #18 head `b7684740322bda5a4e2d1233299bca251d95ed6c` (Proposed, independent branch; its absence from the Runtime branch is intentional).
@@ -32,6 +32,20 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 - 所要: 約 1 分
 - これで進むもの: ディスクの片付けだけ
 - 取り消し: ごみ箱に入るので、戻せる
+
+### WSL2 版の判断 2 点 (ADR-012 の決定 2、4)
+- やること: 次の 2 点を決める。どちらも推奨どおりなら「推奨で」の一言でよい
+  - 決定 2: `.wslconfig` は変えない (推奨)。実イメージの G4 で、変えなくてもサンドボックスから `/dev/dxg` と `/mnt/wslg` が見えないと確認した
+  - 決定 4: 段階 5 で YOSUKE-NOTE にサービスを入れる (推奨)。管理者権限と `claude.exe` のネイティブ版が要る
+- 所要: 約 2 分 (Yosuke の読む時間)
+- これで進むもの: 段階 5 の最初のジョブ。段階 2〜4 は決定を待たずに進む
+- 取り消し: できる (決定 4 はアンインストールで戻る)
+
+### WSL2 版の測定で Ubuntu を止める許可
+- やること: seccomp なしの AF_VSOCK 対照 (G2) と、`wsl --shutdown` 後の起動時間 (G0) を実イメージで測ってよい時間を決める
+- 所要: 測定は約 5 分。その間 Ubuntu と Docker が止まる。止まったままなら `wsl --shutdown` で戻る
+- これで進むもの: 実トークン前の gate のうち、残りの 2 つ
+- 取り消し: 測定そのものは何も残さない
 
 ### ご意見の受付 1/2: GitHub App を作る
 - やること: (1) 項目入りの作成ページを開き、内容を確かめて「Create GitHub App」: https://github.com/settings/apps/new?name=ALBERA%20feedback%20intake&description=Files%20ALBERA%20in-app%20feedback%20into%20a%20private%20intake%20repository.&url=https%3A%2F%2Fgithub.com%2FBERORINPO%2Falbera&public=false&webhook_active=false&issues=write (2) できた App の画面で「Generate a private key」(.pem が保存される) (3)「Install App」→ BERORINPO →「Only select repositories」で albera-feedback だけを選んで Install (4) App ID (App の設定画面の上) と installation の番号 (Install 後の画面のアドレス末尾の数字) を控える
@@ -599,3 +613,10 @@ Merged on main since the previous entry, all on 2026-11-03 (UTC): #189 (13:47), 
 - **Found on the way.** The CI runner's temp folder is an 8.3 short name, which Windows PowerShell 5.1's `GetFullPath` expands, so the host script refuses paths under it as not plain (test fixed in #206). The Authority lets a legacy Hello key keep a non-derived id and seeds its store with it, while the installer holds a store to the key-file rules; only the lab's `hello-lab-0001` is affected, since a real Hello enroll derives its id.
 - **Tests that touched the real Authority on this PC.** While phase 3 was written, a worker's integration test sent `keys list`, `list` and `deny <unknown id>` to the RUNNING AlberaApprovalAuthority of the owner's install (read-only or harmless: the id matched nothing). #202's guard (`sc.exe query` exit 0 or 5) now skips those tests when a real Authority is installed, and workers are told never to talk to it.
 - **Not verified yet.** A real WebAuthn assertion through the Authority (the lab has no authenticator), the update of the owner's PC to this build, the first job (M4, M14).
+
+## 2026-11-06 — WSL2 Phase 1: the image and albera-agent (ADR-012)
+
+- **Done.** `src/runtime/wsl2-guest/agent.c` (run, read, write, bundle over framed stdio), `build-image.sh` (pinned Ubuntu Base 24.04.5 plus git), `scripts/wsl2-gates.mjs`. Nothing is wired to a job and no real token was used.
+- **Measured.** Real image, real sandbox, throwaway distributions on YOSUKE-NOTE: 25 of 25. Table in ADR-012 "Phase 1 results". Zaku found the core limit could be lowered: reproduced, fixed in seccomp, measured again.
+- **Not verified.** G2 without seccomp and a cold start on this image (both stop the owner's distributions: card). Whether a job can reach `modprobe`. G1 and G7 (they need the Broker and the bridge). The agent's unit tests run only on Linux CI: on Windows they skip.
+- **Next.** Phase 2: action fields, the Broker's second kind of computer, the run lease.

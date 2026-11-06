@@ -1,6 +1,6 @@
 # ADR-012 — WSL2 Provider (jobs on a PC without Hyper-V)
 
-- **Status:** Proposed. Phase 1 is in progress and nothing is wired to a job. Security review required. Design review (2026-11-05): first BLOCK, then APPROVE as Proposed. Phase 0 has run on a stand-in image (results below). Gates G1, G6, G7 and G8 have not, and every gate runs again on the real image. No real token has been used.
+- **Status:** Proposed. Phase 1 is in progress and nothing is wired to a job. Security review required. Design review (2026-11-05): first BLOCK, then APPROVE as Proposed. Phase 0 ran on a stand-in image and Phase 1 on the real image (results below). G1 waits for the Broker and the bridge, and every gate runs again once the image changes. No real token has been used.
 - **Date:** 2026-11-05
 - **Depends on:** ADR-001 (Provider), ADR-002 (Trust), ADR-007 (Verified integration), `docs/architecture/no-vm-mode.md`
 - **Scope:** a new class of computer for Windows Home. Hyper-V stays the stronger choice wherever it exists.
@@ -58,6 +58,34 @@ These are now required. Owner decision 5.
 - **Descriptors.** The agent's 0, 1 and 2 are pipes root made, nothing else. An inherited vsock descriptor would never pass through the `socket` filter.
 - **The working folder and every file of the job stay off Windows drives.**
 
+## Phase 1 results (2026-11-06, real image and real sandbox, no real token)
+
+The image is `ubuntu-base-24.04.5-base-amd64.tar.gz` (pinned by SHA-256) plus `git`, built by `src/runtime/wsl2-guest/build-image.sh` in a throwaway distribution, which also compiles the launcher and the agent from source with fixed flags: a 162 MB tar. `node scripts/wsl2-gates.mjs <image> <folder>` imports it as a throwaway distribution, talks to `albera-agent` through `enter.sh` over `wsl.exe` pipes, and removes it: 25 of 25 checks passed. That tool never runs a job without the filter.
+
+| Gate | Result |
+|---|---|
+| Start | The agent answered in the real sandbox in about 0.5 s. `wsl --import` took about 2 s |
+| G2, real filter | `socket(AF_VSOCK)` and `socketpair(AF_VSOCK)` refused with EPERM. **The run without seccomp was not repeated on this image**: it can stop every distribution, so it needs the owner told first. The wide scan has nothing to scan while `socket` is refused |
+| G3 | The working control started a Windows program from a plain distribution (seen in 9 polls). Copied into the sandbox: 0 polls. **Weak:** a Windows program starts only from C:, and the sandbox has no C:, so the two runs differ in where the file is. It shows the file does not run there, not that the sandbox alone stopped it |
+| G4 | `/` has only `bin dev etc lib lib64 opt proc sbin tmp usr work`, `/dev` only `null urandom zero`. No `/dev/dxg`, `/mnt/wslg`, `/run/WSL` or `/init`. Capabilities 0, bounding set 0, Seccomp 2. Descriptors 0, 1, 2 only, and no socket |
+| G5 | TCP to the internet, the LAN and loopback closed, UDP "Network is unreachable", only `lo` |
+| G6 | `/work` stopped at 2 GiB. `fork` stopped at 1020 with `pids.events` max counted. A 6 GiB allocation was killed with `oom_kill 1`, and the agent survived it. `memory.max` 4 GiB of the VM's 7.8 GiB. Nothing outlived a run |
+| G7 | **Still open.** No root runs in the sandbox and the root relay does not exist yet, so nothing planted could reach root. A bundle of a repository with a planted hook, `core.fsmonitor` and symlink worked. G7 is measured with the bridge |
+| G0 | `mount(2)` as the job failed for `drvfs`, `9p` and `tmpfs` (a plain user gets this without a filter too), user namespaces refused, 50 MB of random bytes through a real pipe with the same SHA-256 in about 0.3 s. **A cold start after `wsl --shutdown` was not measured**: it would stop the owner's distributions |
+| R8 | Crashes in the sandbox added no dump, with the core limit attacked through both calls and `ulimit -Sc 0` (4 to 4). The control after it did (4 to 5) |
+| Test builds | None in the image: it compiles its own programs, with no `-D`, and the gate looks for the `ALBERA-NOT-FOR-SHIPPING` marker |
+
+Kernel-side helpers outside the filter, as read on this image: `core_pattern` is `|/wsl-capture-crash %t %E %p %s` (R8), `modprobe` is `/sbin/modprobe`, `hotplug` is empty, `poweroff_cmd` is `/sbin/poweroff`, and `binfmt_misc` has `WSLInterop` with interpreter `/init`, flags PF. Whether a job can trigger `modprobe` with the calls it has left was not tested.
+
+Found on the way, all fixed:
+
+- **The core limit could be lowered (Zaku, CRITICAL).** The kernel skips a piped dump only while the soft limit is exactly 1, and a job may lower its own soft limit with no privilege. Measured before the fix: `ulimit -Sc 0` then a crash got a dump to Windows, past the filter (3 to 4). The earlier checks only tried to raise it. seccomp now refuses any change to `RLIMIT_CORE` through `setrlimit` and `prlimit64`, the launcher proves that on every run, and a broken build of this rule stops at the self-test.
+- **The cgroup tree is shared and outlives a distribution.** A group named with `$$` collided with the one a removed distribution left behind, and the run stopped. `enter.sh` now uses a random name and removes empty leftovers.
+- **A `.tar` built from a `mktemp` folder keeps mode 700 on `/`.** Inside the sandbox this does not show. Outside it no user could start, which made the crash control fail for the wrong reason.
+- **The sandbox's `/etc` has no `alternatives`**, so `awk` and other such links dangled. The image points them straight at the programs. A gate that used `awk` had passed on empty output before this was seen. Zaku also found gates that could not fail (G7, and G3 as a proof about the sandbox); they are labelled for what they show.
+
+What this means for owner decision 2: G4 shows neither `/dev/dxg` nor `/mnt/wslg` in the sandbox with the owner's settings unchanged, so `.wslconfig` does not need changing for the sandbox.
+
 ## Decision proposed
 
 1. **New provider `wsl2`, its own isolation class.** Capabilities report `isolation: "wsl2"`, never `"vm"`. A task that requires `isolation=vm` is never placed here (ADR-001: never downgrade silently). The owner adds a WSL2 computer on purpose.
@@ -114,7 +142,7 @@ The docs and the approval window must say these plainly.
 | R4 | Text in the repository steers the model | It can run more commands in the sandbox, and put bad code in the bundle | The quarantine, and the owner reads the diff |
 | R5 | Secrets in the repository are visible to the model and its provider | The same as a VM job | The owner picks the repository |
 | R6 | WSL's shared settings: `.wslconfig` `guiApplications` and `gpuSupport` apply to every distribution | Turning them off changes the owner's Ubuntu | Owner decision 2 |
-| R8 | **Routes that do not pass through the job's filter.** A crash: WSL pipes the dump to a root helper that sends it to Windows over vsock, with content the job controls. Measured: a crash of a plain job added a file to `%TEMP%\wsl-crashes` | Closed for this route: the launcher sets the hard core limit to 1. Measured: two crashes in the sandbox, one after trying to raise the limit, added nothing. Other kernel-side helpers were not looked for | The limit, and review |
+| R8 | **Routes that do not pass through the job's filter.** A crash: WSL pipes the dump to a root helper that sends it to Windows over vsock, with content the job controls. Measured: a crash of a plain job added a file to `%TEMP%\wsl-crashes` | Closed for this route: the launcher sets the core limit to 1, and seccomp refuses any change to it, up or down. Measured with both attacked. Other kernel-side helpers are listed under "Phase 1 results"; whether a job can trigger `modprobe` was not tested | The limit, the filter, and review |
 | R7 | The disk: a VHD can grow to the default limit on the owner's C: | Fills the drive | `put` and `get` limits, a disk quota to be measured (G6) |
 
 ## Gates: all must pass before any real token is used

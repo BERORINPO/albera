@@ -4,7 +4,7 @@
 // filter is the only thing between a job and a file server on the Windows side, so every failure here ends the run: nothing falls back.
 //
 // Build (static, so the sandbox needs no libraries for it):  gcc -O2 -static -Wall -Wextra -Werror -o albera-launcher launcher.c
-// -DALBERA_BROKEN=<n> builds a copy with one hole (1 AF_VSOCK, 2 no architecture check, 4 clone unchecked, 5 allow by default).
+// -DALBERA_BROKEN=<n> builds a copy with one hole (1 AF_VSOCK, 2 no architecture check, 4 clone unchecked, 5 allow by default, 6 core limit open).
 // They exist for the acceptance tests: each must stop at the self-test. -DALBERA_TEST_BUILD skips the checks that need the real sandbox, for
 // tests on a plain machine. Neither is ever shipped.
 //
@@ -33,6 +33,9 @@
 #ifndef ALBERA_BROKEN
 #define ALBERA_BROKEN 0
 #endif
+#if ALBERA_BROKEN != 0 || defined(ALBERA_TEST_BUILD)
+__attribute__((used)) static const char not_for_shipping[] = "ALBERA-NOT-FOR-SHIPPING"; /* build-image.sh refuses any binary that holds this */
+#endif
 #ifndef AF_VSOCK
 #define AF_VSOCK 40
 #endif
@@ -52,7 +55,7 @@ static const int ALLOWED[] = {
   SYS_nanosleep, SYS_clock_nanosleep, SYS_getitimer, SYS_setitimer, SYS_alarm, SYS_timer_create, SYS_timer_settime, SYS_timer_gettime,
   SYS_timer_getoverrun, SYS_timer_delete, SYS_clock_gettime, SYS_clock_getres, SYS_gettimeofday, SYS_time, SYS_times, SYS_getpid,
   SYS_getppid, SYS_gettid, SYS_getuid, SYS_getgid, SYS_geteuid, SYS_getegid, SYS_getgroups, SYS_getresuid, SYS_getresgid, SYS_getpgid,
-  SYS_getpgrp, SYS_setpgid, SYS_setsid, SYS_getsid, SYS_getrlimit, SYS_setrlimit, SYS_prlimit64, SYS_getrusage, SYS_sysinfo, SYS_uname,
+  SYS_getpgrp, SYS_setpgid, SYS_setsid, SYS_getsid, SYS_getrlimit, SYS_getrusage, SYS_sysinfo, SYS_uname,
   SYS_getpriority, SYS_setpriority, SYS_getcpu, SYS_getrandom, SYS_fork, SYS_vfork, SYS_execve, SYS_execveat, SYS_exit, SYS_exit_group,
   SYS_wait4, SYS_waitid, SYS_kill, SYS_tkill, SYS_tgkill, SYS_fcntl, SYS_flock, SYS_fsync, SYS_fdatasync, SYS_sync_file_range,
   SYS_truncate, SYS_ftruncate, SYS_fallocate, SYS_fadvise64, SYS_getdents, SYS_getdents64, SYS_getcwd, SYS_chdir, SYS_fchdir,
@@ -81,7 +84,38 @@ static void put(struct sock_filter instruction) {
 #define IF_BELOW_SKIP(value, skip) put((struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, (value), 0, (skip)))
 #define IF_SET_SKIP(value, skip) put((struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, (value), (skip), 0))
 #define ARG0 offsetof(struct seccomp_data, args[0])
+#define ARG1 offsetof(struct seccomp_data, args[1])
+#define ARG2_LOW offsetof(struct seccomp_data, args[2])
+#define ARG2_HIGH (offsetof(struct seccomp_data, args[2]) + 4)
 #define NR offsetof(struct seccomp_data, nr)
+
+/** The core limit is a boundary (R8): the kernel skips a piped dump only while the soft limit is exactly 1, and any process may lower its own soft
+ *  limit, 0 included (measured: `ulimit -Sc 0` got a dump to Windows). So no call may change it. Reading it, and every other limit, stays open. */
+static void core_limit_rule(void) {
+#if ALBERA_BROKEN == 6
+  IF_EQ_ELSE_SKIP(SYS_setrlimit, 1);
+  RETURN(SECCOMP_RET_ALLOW);
+  IF_EQ_ELSE_SKIP(SYS_prlimit64, 1);
+  RETURN(SECCOMP_RET_ALLOW);
+#else
+  IF_EQ_ELSE_SKIP(SYS_setrlimit, 4);
+  LOAD(ARG0);
+  IF_EQ_SKIP(RLIMIT_CORE, 1);
+  RETURN(SECCOMP_RET_ALLOW);
+  RETURN(DENY);
+  IF_EQ_ELSE_SKIP(SYS_prlimit64, 10);
+  LOAD(ARG1);
+  IF_EQ_SKIP(RLIMIT_CORE, 1);
+  RETURN(SECCOMP_RET_ALLOW);
+  LOAD(ARG2_LOW); /* the new limit: only a NULL, in both halves, is a read */
+  IF_EQ_SKIP(0, 1);
+  RETURN(DENY);
+  LOAD(ARG2_HIGH);
+  IF_EQ_SKIP(0, 1);
+  RETURN(DENY);
+  RETURN(SECCOMP_RET_ALLOW);
+#endif
+}
 
 /** socket(2) and socketpair(2): a short list of families. The network namespace is empty, so AF_INET reaches nothing; programs only expect it to exist. */
 static void family_rule(int syscall_number) {
@@ -111,6 +145,7 @@ static void build_filter(void) {
   RETURN(DENY);
   family_rule(SYS_socket);
   family_rule(SYS_socketpair);
+  core_limit_rule();
 #if ALBERA_BROKEN == 4
   IF_EQ_ELSE_SKIP(SYS_clone, 1);
   RETURN(SECCOMP_RET_ALLOW);
@@ -172,6 +207,12 @@ static int self_test(void) {
   errno = 0; ok &= check("ptrace", refused(syscall(SYS_ptrace, 0, 0, 0, 0)));
   errno = 0; ok &= check("bpf", refused(syscall(SYS_bpf, 0, NULL, 0)));
   errno = 0; ok &= check("keyctl", refused(syscall(SYS_keyctl, 0, 0, 0, 0, 0)));
+  /* Without the filter both of these succeed: lowering a soft limit needs no privilege. */
+  struct rlimit lower = { .rlim_cur = 0, .rlim_max = 1 };
+  struct rlimit now = { 0, 0 };
+  errno = 0; ok &= check("core soft limit, setrlimit", refused(syscall(SYS_setrlimit, RLIMIT_CORE, &lower)));
+  errno = 0; ok &= check("core soft limit, prlimit64", refused(syscall(SYS_prlimit64, 0, RLIMIT_CORE, &lower, NULL)));
+  ok &= check("core limit is still 1", syscall(SYS_prlimit64, 0, RLIMIT_CORE, NULL, &now) == 0 && now.rlim_cur == 1 && now.rlim_max == 1);
   return ok;
 }
 
