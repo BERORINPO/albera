@@ -1,3 +1,4 @@
+using System.Security.Principal;
 using System.Text.Json;
 
 namespace Albera.WslBridge;
@@ -6,18 +7,19 @@ internal sealed record RepositoryEntry(string RepositoryId, string Path);
 
 // The bridge's configuration: one small JSON file written by the installer (admin-writable only, PathGuard), read once at start. Exactly these keys:
 //   { "pipeName": "ALBERA_WslBridge", "controlPlaneSid": "S-1-5-21-...", "computerId": "pc-wsl",
-//     "brokerKeyId": "broker-2026-a", "brokerSpki": "<base64 SubjectPublicKeyInfo, ECDSA P-256>", "minLeaseGeneration": 1,
+//     "brokerKeyId": "broker-2026-a", "brokerSpki": "<base64 SubjectPublicKeyInfo, ECDSA P-256>", "leaseFloorPath": "C:\\...\\lease-floor",
 //     "imagePath": "C:\\...\\albera-wsl2.tar", "imageSha256": "<64 lowercase hex>", "distributionsFolder": "C:\\...", "stateFolder": "C:\\...", "gitPath": "C:\\...\\git.exe",
 //     "minWslVersion": "2.4.0", "minKernelVersion": "6.6.87", "floorExpiresAt": 1800000000,
 //     "repositories": [ { "repositoryId": "repo-alpha", "path": "C:\\...\\repo" } ] }
 // `computerId` is this bridge's own: a lease for another computer is refused. `repositories` maps the lease's repositoryId to the folder the bridge reads (1 to 8 entries, each id and path once);
-// the Control Plane never names a path. `minLeaseGeneration` is the oldest lease generation the bridge accepts (raising it revokes older leases). The floor has an expiry (ADR-012, decision 12).
+// the Control Plane never names a path. `leaseFloorPath` is the admin-only file that holds the oldest lease generation the bridge accepts: unlike this file it is read at every `begin`, so rewriting it
+// revokes older leases without a restart (LeaseFloor.cs). The kernel floor has an expiry (ADR-012, decision 12).
 // Every rejected value maps to one fixed reason word (never the value itself), so a log line cannot be steered by file content.
-internal sealed record BridgeConfig(string PipeName, string ControlPlaneSid, string ComputerId, string BrokerKeyId, byte[] BrokerSpki, long MinLeaseGeneration, string ImagePath, string ImageSha256,
+internal sealed record BridgeConfig(string PipeName, string ControlPlaneSid, string ComputerId, string BrokerKeyId, byte[] BrokerSpki, string LeaseFloorPath, string ImagePath, string ImageSha256,
     string DistributionsFolder, string StateFolder, string GitPath, Floor Floor, IReadOnlyDictionary<string, string> Repositories)
 {
     private const int MaxFileBytes = 8192, MaxPipeNameLength = 128, MaxPathLength = 240, MaxRepositories = 8;
-    private static readonly string[] Keys = ["pipeName", "controlPlaneSid", "computerId", "brokerKeyId", "brokerSpki", "minLeaseGeneration", "imagePath", "imageSha256",
+    private static readonly string[] Keys = ["pipeName", "controlPlaneSid", "computerId", "brokerKeyId", "brokerSpki", "leaseFloorPath", "imagePath", "imageSha256",
         "distributionsFolder", "stateFolder", "gitPath", "minWslVersion", "minKernelVersion", "floorExpiresAt", "repositories"];
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
 
@@ -25,9 +27,18 @@ internal sealed record BridgeConfig(string PipeName, string ControlPlaneSid, str
     internal static class Why
     {
         public const string ConfigPath = "config_path", Unreadable = "config_unreadable", TooLarge = "config_too_large", Syntax = "config_syntax", Keys = "config_keys", PipeName = "pipe_name",
-            ControlPlaneSid = "control_plane_sid", ComputerId = "computer_id", BrokerKey = "broker_key", Generation = "lease_generation", Image = "image", ImageHash = "image_hash_format",
+            ControlPlaneSid = "control_plane_sid", ComputerId = "computer_id", BrokerKey = "broker_key", LeaseFloor = "lease_floor_path", Image = "image", ImageHash = "image_hash_format",
             Folder = "folder", GitPath = "git_path", Floor = "floor", Repositories = "repositories", ConfigUntrusted = "config_untrusted", ImageUntrusted = "image_untrusted",
-            GitUntrusted = "git_untrusted", StateUntrusted = "state_untrusted", FolderUntrusted = "folder_untrusted";
+            GitUntrusted = "git_untrusted", StateUntrusted = "state_untrusted", FolderUntrusted = "folder_untrusted", LeaseFloorUntrusted = "lease_floor_untrusted";
+        /// <summary>The words of BRIDGE_FATAL=word when the bridge runs as the wrong identity.</summary>
+        public const string Elevated = "elevated", ControlPlaneIsSelf = "control_plane_is_self";
+    }
+
+    /// <summary>Null when this process may serve. An elevated process never may; the Control Plane may be this process's own account only inside the test seam (<paramref name="selfAsControlPlane"/>).</summary>
+    public static string? RefuseIdentity(string controlPlaneSid, SecurityIdentifier self, bool elevated, bool selfAsControlPlane)
+    {
+        if (elevated) return Why.Elevated;
+        return !selfAsControlPlane && string.Equals(controlPlaneSid, self.Value, StringComparison.Ordinal) ? Why.ControlPlaneIsSelf : null;
     }
 
     public static BridgeConfig? TryLoad(string configPath, PathGuard adminGuard, out string reason)
@@ -47,11 +58,12 @@ internal sealed record BridgeConfig(string PipeName, string ControlPlaneSid, str
         return TryParse(bytes, out reason);
     }
 
-    /// <summary>The image, git and the two folders must exist and be trusted (adminGuard for what the bridge only reads, ownerGuard for what it writes). Null when all are; otherwise a reason word.</summary>
+    /// <summary>The image, git, the lease floor and the two folders must exist and be trusted (adminGuard for what the bridge only reads, ownerGuard for what it writes). Null when all are; otherwise a reason word.</summary>
     public string? CheckPaths(PathGuard adminGuard, PathGuard ownerGuard)
     {
         if (!File.Exists(ImagePath) || !adminGuard.IsTrusted(ImagePath) || !adminGuard.IsTrusted(Path.GetDirectoryName(ImagePath)!)) return Why.ImageUntrusted;
         if (!File.Exists(GitPath) || !adminGuard.IsTrusted(GitPath)) return Why.GitUntrusted;
+        if (new LeaseFloorFile(LeaseFloorPath, adminGuard).Read() is null) return Why.LeaseFloorUntrusted;
         if (!Directory.Exists(StateFolder) || !ownerGuard.IsTrusted(StateFolder)) return Why.StateUntrusted;
         return Directory.Exists(DistributionsFolder) && ownerGuard.IsTrusted(DistributionsFolder) ? null : Why.FolderUntrusted;
     }
@@ -80,7 +92,7 @@ internal sealed record BridgeConfig(string PipeName, string ControlPlaneSid, str
     private static BridgeConfig? Build(JsonElement root, out string reason)
     {
         string? pipe = Text(root, "pipeName"), sid = Text(root, "controlPlaneSid"), computer = Text(root, "computerId"), keyId = Text(root, "brokerKeyId"), spki = Text(root, "brokerSpki");
-        string? image = Text(root, "imagePath"), hash = Text(root, "imageSha256"), distributions = Text(root, "distributionsFolder"), state = Text(root, "stateFolder"), git = Text(root, "gitPath");
+        string? floorPath = Text(root, "leaseFloorPath"), image = Text(root, "imagePath"), hash = Text(root, "imageSha256"), distributions = Text(root, "distributionsFolder"), state = Text(root, "stateFolder"), git = Text(root, "gitPath");
         reason = Why.PipeName;
         if (pipe is null || !IsPlainPipeName(pipe)) return null;
         reason = Why.ControlPlaneSid;
@@ -91,8 +103,8 @@ internal sealed record BridgeConfig(string PipeName, string ControlPlaneSid, str
         byte[]? spkiBytes = TryBase64(spki);
         if (keyId is null || !Wire.IsId(keyId) || spkiBytes is null) return null;
         using (BrokerKey? probe = BrokerKey.TryCreate(keyId, spkiBytes)) if (probe is null) return null;
-        reason = Why.Generation;
-        if (!TryCounter(root, "minLeaseGeneration", out long generation)) return null;
+        reason = Why.LeaseFloor;
+        if (floorPath is null || !IsPlainAbsolutePath(floorPath)) return null;
         reason = Why.Image;
         if (image is null || !IsPlainAbsolutePath(image)) return null;
         reason = Why.ImageHash;
@@ -107,7 +119,7 @@ internal sealed record BridgeConfig(string PipeName, string ControlPlaneSid, str
         reason = Why.Repositories;
         if (ReadRepositories(root.GetProperty("repositories")) is not { } repositories) return null;
         reason = "";
-        return new BridgeConfig(pipe, sid, computer, keyId, spkiBytes, generation, image, hash, distributions, state, git, new Floor(wsl, kernel, expires), repositories);
+        return new BridgeConfig(pipe, sid, computer, keyId, spkiBytes, floorPath, image, hash, distributions, state, git, new Floor(wsl, kernel, expires), repositories);
     }
 
     private static bool TryCounter(JsonElement root, string name, out long value)

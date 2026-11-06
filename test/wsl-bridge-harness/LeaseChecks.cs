@@ -62,13 +62,12 @@ internal static partial class Harness
             NothingImported(rig, "wrong operation");
         });
 
-        Check("g1 old generation: a lease below the config's floor is refused", () =>
+        Check("g1 old generation: a lease below the floor file is refused", () =>
         {
-            using Rig strict = new();
-            BridgeConfig raised = strict.Config with { MinLeaseGeneration = 2 };
-            Bridge bridge = new(raised, strict.Host, strict.Repos, strict.Ledger, strict.Key, () => strict.Now, strict.Limits, _ => { });
-            Reply reply = bridge.HandleAsync(new Request(Verb.Begin, "op-1", strict.Lease())).GetAwaiter().GetResult();
-            Same(Reason.LeaseGeneration, Refused(reply), "generation");
+            using Rig rig = new();
+            rig.SetFloor("2");
+            Same(Reason.LeaseGeneration, Refused(rig.Begin()), "generation");
+            NothingImported(rig, "old generation");
         });
 
         Check("g1 lease runs out while the head is being read: refused after the read", () =>
@@ -152,9 +151,43 @@ internal static partial class Harness
             Same(Reason.WslUnavailable, Refused(rig.Begin("op-3")), "no version");
             rig.Host.Versions = new WslVersions(new Version(2, 6, 3, 0), new Version(6, 6, 87));
             BridgeConfig expired = rig.Config with { Floor = rig.Config.Floor with { ExpiresAt = rig.Now - 1 } };
-            Bridge bridge = new(expired, rig.Host, rig.Repos, rig.Ledger, rig.Key, () => rig.Now, rig.Limits, _ => { });
+            Bridge bridge = new(expired, rig.Host, rig.Repos, rig.Ledger, rig.Key, () => rig.Now, rig.Limits, rig.ReadFloor, _ => { });
             Same(Reason.FloorExpired, Refused(bridge.HandleAsync(new Request(Verb.Begin, "op-4", rig.Lease("op-4"))).GetAwaiter().GetResult()), "floor expiry");
             NothingImported(rig, "floor");
+        });
+
+        Check("begin: a lease that runs out while the image is hashed and the floor is read is refused before the import", () =>
+        {
+            using Rig rig = new();
+            rig.Host.OnVersions = () => rig.Now += 601;
+            Same(Reason.LeaseExpired, Refused(rig.Begin()), "before the import");
+            NothingImported(rig, "expiry before the import");
+        });
+
+        Check("begin: a lease that runs out during the import and the clone gets no ok, and the distribution and the agent are gone", () =>
+        {
+            using Rig rig = new();
+            rig.Repos.Bundle = _ => { rig.Now += 601; return FakeRepositories.BundleOf(Rig.Head); };
+            Same(Reason.LeaseExpired, Refused(rig.Begin()), "before the answer");
+            Assert(rig.Host.LastAgent.Killed && rig.Host.Count("unregister:albera-run-op-1") == 1 && rig.Bridge.ActiveRuns == 0, "nothing may be left");
+        });
+
+        Check("begin: an unexpected exception after the agent started leaves no distribution and no agent", () =>
+        {
+            using Rig rig = new();
+            rig.Repos.Bundle = _ => throw new FormatException("not a failure the agent link knows");
+            Same(Reason.Internal, Refused(rig.Begin()), "exception in the bundle");
+            Assert(rig.Host.LastAgent.Killed, "the agent must be stopped");
+            Assert(rig.Host.Count("unregister:albera-run-op-1") == 1 && rig.Bridge.ActiveRuns == 0, "the distribution must be gone");
+            Assert(!Directory.Exists(Path.Combine(rig.Config.DistributionsFolder, "albera-run-op-1")), "the folder is removed");
+        });
+
+        Check("begin: an exception while the agent starts leaves no distribution", () =>
+        {
+            using Rig rig = new();
+            rig.Host.AgentThrows = new InvalidOperationException("no agent");
+            Same(Reason.Internal, Refused(rig.Begin()), "exception at the agent start");
+            Assert(rig.Host.Count("unregister:albera-run-op-1") == 1 && rig.Host.Existing.Count == 0, "the distribution must be gone");
         });
 
         Check("begin: a failed import leaves nothing behind", () =>

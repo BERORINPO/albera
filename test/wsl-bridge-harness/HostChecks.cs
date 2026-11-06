@@ -19,7 +19,7 @@ internal static partial class Harness
 
         Check("wsl arguments: a name that is not an albera-run- name is refused by every builder (Ubuntu, docker-desktop, look-alikes)", () =>
         {
-            foreach (string name in new[] { "Ubuntu", "docker-desktop", "albera-runner", "albera-run-", "albera-run-A", "albera-run-a b", "albera-run-a;b", "ALBERA-RUN-a", "", "albera-run-" + new string('a', 49) })
+            foreach (string name in new[] { "Ubuntu", "docker-desktop", "albera-runner", "albera-run-", "albera-run-A", "albera-run-a b", "albera-run-a;b", "albera-run-a\n", "albera-run-a\r\n", "ALBERA-RUN-a", "", "albera-run-" + new string('a', 49) })
             {
                 foreach (Func<string, string[]> build in new Func<string, string[]>[] { WslArgs.Terminate, WslArgs.Unregister, WslArgs.Agent, n => WslArgs.Import(n, "C:\\d", "C:\\i") })
                 {
@@ -71,6 +71,8 @@ internal static partial class Harness
             Assert(Wire.Parse([]) is null && Wire.Parse([0, 1, (byte)'a']) is null && Wire.Parse([7, 1, (byte)'a']) is null, "verb");
             Assert(Wire.Parse([2, 0]) is null && Wire.Parse([2, 5, (byte)'a']) is null && Wire.Parse([2, 2, (byte)'-', (byte)'a']) is null && Wire.Parse([2, 2, (byte)'a', (byte)' ']) is null, "id");
             Assert(Wire.Parse([2, 1, (byte)'/', 1]) is null, "slash");
+            Assert(Wire.Parse([2, 2, (byte)'a', (byte)'\n']) is null && !Wire.IsId("a\n"), "a final line feed");
+            Assert(RunName.For("a\n") is null && !RunName.IsRunName("albera-run-a\n"), "a final line feed in a run name");
         });
 
         Check("wire: a frame over the cap or of length zero is refused before anything is allocated", () =>
@@ -131,12 +133,13 @@ internal static partial class Harness
         {
             GitRepositories git = new(@"C:\Program Files\Git\cmd\git.exe", Path.Combine(Path.GetTempPath(), "albera-git-scratch-" + Guid.NewGuid().ToString("N")));
             string flags = string.Join(' ', git.Hardening());
-            foreach (string need in new[] { "core.fsmonitor=false", "protocol.allow=never", "protocol.file.allow=always", "transfer.fsckObjects=true", "core.useReplaceRefs=false", "credential.helper=", "core.pager=cat", "gc.auto=0", "core.hooksPath=" })
+            foreach (string need in new[] { "core.fsmonitor=false", "protocol.allow=never", "protocol.file.allow=never", "transfer.fsckObjects=true", "core.useReplaceRefs=false", "credential.helper=", "core.pager=cat", "gc.auto=0", "core.hooksPath=" })
                 Assert(flags.Contains(need), "missing " + need);
             Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "albera-git-scratch-env"));
             GitRepositories withScratch = new(@"C:\Program Files\Git\cmd\git.exe", Path.Combine(Path.GetTempPath(), "albera-git-scratch-env"));
             Dictionary<string, string> env = withScratch.Environment(@"C:\repos\one");
             Same("1", env["GIT_CONFIG_NOSYSTEM"], "no system config");
+            Same("1", env["GIT_NO_LAZY_FETCH"], "no lazy fetch");
             Same(@"C:\repos", env["GIT_CEILING_DIRECTORIES"], "no search above the repository");
             Assert(env["GIT_CONFIG_GLOBAL"].EndsWith("empty.gitconfig", StringComparison.Ordinal) && !env.ContainsKey("WSLENV"), "global config is an empty file");
             Directory.Delete(Path.Combine(Path.GetTempPath(), "albera-git-scratch-env"), recursive: true);

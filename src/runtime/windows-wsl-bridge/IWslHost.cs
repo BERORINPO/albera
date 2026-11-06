@@ -30,7 +30,7 @@ internal interface IWslHost
 internal static class RunName
 {
     public const string Prefix = "albera-run-";
-    private static readonly Regex NameRegex = new("^albera-run-[a-z0-9][a-z0-9-]{0,47}$", RegexOptions.CultureInvariant);
+    private static readonly Regex NameRegex = new(@"^albera-run-[a-z0-9][a-z0-9-]{0,47}\z", RegexOptions.CultureInvariant); // \z: $ would also pass a final line feed
 
     public static bool IsRunName(string name) => NameRegex.IsMatch(name);
 

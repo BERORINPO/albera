@@ -27,7 +27,7 @@ internal sealed record Reply(bool Ok, string Reason, byte[] Body)
 internal static class Wire
 {
     public const int MaxIdLength = 64;
-    private static readonly Regex IdRegex = new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$", RegexOptions.CultureInvariant);
+    private static readonly Regex IdRegex = new(@"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\z", RegexOptions.CultureInvariant); // \z: $ would also pass a final line feed
 
     public static bool IsId(string value) => IdRegex.IsMatch(value);
 

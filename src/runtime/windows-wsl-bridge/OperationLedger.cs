@@ -29,7 +29,7 @@ internal sealed class OperationLedger : IDisposable
         {
             Dictionary<string, Entry> loaded = new(StringComparer.Ordinal);
             if (File.Exists(path) && !TryLoad(path, loaded, clock())) return null;
-            File.WriteAllText(path + ".new", Render(loaded), Encoding.ASCII);
+            WriteFlushed(path + ".new", Render(loaded));
             File.Move(path + ".new", path, overwrite: true);
             FileStream file = new(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
             file.Seek(0, SeekOrigin.End);
@@ -38,6 +38,14 @@ internal sealed class OperationLedger : IDisposable
             return ledger;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    // On disk before the rename: otherwise a power cut can leave the new name on a file whose bytes never arrived, and every operation id in it would be forgotten.
+    private static void WriteFlushed(string path, string text)
+    {
+        using FileStream file = new(path, FileMode.Create, FileAccess.Write, FileShare.None);
+        file.Write(Encoding.ASCII.GetBytes(text));
+        file.Flush(flushToDisk: true);
     }
 
     private static bool TryLoad(string path, Dictionary<string, Entry> into, long now)

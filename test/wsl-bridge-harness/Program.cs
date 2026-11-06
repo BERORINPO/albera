@@ -28,6 +28,8 @@ internal static partial class Harness
     {
         LeaseChecks();
         RunChecks();
+        TeardownChecks();
+        RevocationChecks();
         HostChecks();
         ConfigChecks();
         PipeChecks();
