@@ -108,8 +108,9 @@ internal sealed partial class Bridge
         if (BundleHeader.HeadOf(bundle) != run.Lease.BaseOid) return Reason.BaseMoved; // the head moved between the reading and the bundling, or the bundle is not what was asked for
         AgentReply written = await run.Link.CallAsync(AgentLink.WriteRequest("input.bundle", bundle), 0, limits.BeginCall);
         if (written.Status != 0) return Reason.BundleFailed;
-        AgentReply cloned = await run.Link.CallAsync(AgentLink.RunRequest(120, "cd /work && git clone -q input.bundle repo && git -C repo rev-parse HEAD"), 5 + limits.MaxOutputBytes, limits.BeginCall);
+        AgentReply cloned = await run.Link.CallAsync(AgentLink.RunRequest(120, "cd /work && git -c advice.detachedHead=false clone -q input.bundle repo && git -C repo rev-parse HEAD"), 5 + limits.MaxOutputBytes, limits.BeginCall);
         if (cloned.Status != 0 || cloned.Body.Length < 5 || System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(cloned.Body) != 0) return Reason.BundleFailed;
-        return Encoding.ASCII.GetString(cloned.Body, 5, cloned.Body.Length - 5).Trim() == run.Lease.BaseOid ? null : Reason.BundleFailed;
+        string last = Encoding.ASCII.GetString(cloned.Body, 5, cloned.Body.Length - 5).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault() ?? ""; // git may print notes first: the id is the last line
+        return last == run.Lease.BaseOid ? null : Reason.BundleFailed;
     }
 }

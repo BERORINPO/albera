@@ -23,9 +23,12 @@ internal static class ChildProcess
     /// <summary>Runs to the end or the deadline. Standard error is read and dropped, so a full pipe never stops the child.</summary>
     public static ChildResult Run(string file, IEnumerable<string> args, IReadOnlyDictionary<string, string> environment, int maxOutput, TimeSpan timeout)
     {
-        using Process process = new() { StartInfo = Start(file, args, environment, pipeInput: false) };
+        using Process process = new() { StartInfo = Start(file, args, environment, pipeInput: true) };
         try { process.Start(); }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { return new ChildResult(-1, [], false, false); }
+        // The child gets its own stdin, closed at once, never the bridge's. A child that asks about an inherited handle (git does, with GetFileType) can hang for good while another thread of this
+        // process is blocked in a read on the same synchronous handle: measured with `--stop-on-stdin-eof`, where git rev-parse never came back.
+        process.StandardInput.Close();
         Task drainError = Task.Run(() => process.StandardError.BaseStream.CopyTo(Stream.Null));
         Task<(byte[] Bytes, bool Truncated)> read = Task.Run(() => ReadCapped(process.StandardOutput.BaseStream, maxOutput, process));
         bool finished = process.WaitForExit(timeout) && read.Wait(timeout);

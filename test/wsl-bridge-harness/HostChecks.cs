@@ -96,6 +96,37 @@ internal static partial class Harness
             Assert(BundleHeader.HeadOf(Encoding.ASCII.GetBytes("garbage")) is null && BundleHeader.HeadOf([]) is null, "garbage");
         });
 
+        Check("git: the real reader finds the head and a bundle whose header names it, and runs no planted fsmonitor or hook", () =>
+        {
+            const string gitExe = @"C:\Program Files\Git\cmd\git.exe";
+            if (!File.Exists(gitExe)) return; // this machine has no Git for Windows: the on-device gates cover it
+            string root = Path.Combine(Path.GetTempPath(), "albera-realgit-" + Guid.NewGuid().ToString("N")[..10]);
+            string repo = Path.Combine(root, "repo"), scratch = Path.Combine(root, "scratch"), marker = Path.Combine(root, "ran");
+            Directory.CreateDirectory(repo); Directory.CreateDirectory(scratch);
+            try
+            {
+                string Run(params string[] args)
+                {
+                    ChildResult result = ChildProcess.Run(gitExe, new[] { "-C", repo }.Concat(args), new Dictionary<string, string> { ["SystemRoot"] = @"C:\Windows", ["PATH"] = Environment.SystemDirectory + @";C:\Program Files\Git\cmd" }, 1 << 20, TimeSpan.FromSeconds(30));
+                    return Encoding.UTF8.GetString(result.Output).Trim();
+                }
+                Run("init", "-q");
+                File.WriteAllText(Path.Combine(repo, "a.txt"), "a");
+                Run("add", ".");
+                Run("-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "one");
+                string head = Run("rev-parse", "HEAD");
+                File.WriteAllText(Path.Combine(root, "fsmonitor.cmd"), "@echo off\r\necho x> \"" + marker + "\"\r\n");
+                Run("config", "core.fsmonitor", Path.Combine(root, "fsmonitor.cmd").Replace('\\', '/'));
+                GitRepositories git = new(gitExe, scratch);
+                Same(head, git.ReadHead(repo) ?? "(null)", "head");
+                byte[]? bundle = git.MakeBundle(repo, 1 << 20);
+                Assert(bundle is not null && BundleHeader.HeadOf(bundle) == head, "bundle header names the head");
+                Assert(!File.Exists(marker), "the planted fsmonitor ran");
+                Assert(git.MakeBundle(repo, 10) is null, "a bundle over the cap is refused");
+            }
+            finally { try { Directory.Delete(root, true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { } }
+        });
+
         Check("git: hardening flags and a fixed environment, as in git-process.mjs", () =>
         {
             GitRepositories git = new(@"C:\Program Files\Git\cmd\git.exe", Path.Combine(Path.GetTempPath(), "albera-git-scratch-" + Guid.NewGuid().ToString("N")));
