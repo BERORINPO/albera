@@ -11,7 +11,8 @@
 // `leaseGeneration` is the Broker's fence value at the claim. Raising the Broker's generation revokes a Control Plane (ServiceConfig.cs); the bridge's `minLeaseGeneration` does the same for leases already issued.
 //
 // TWO STEPS, so that nothing unauthenticated is ever acted on: `authenticateWsl2RunLease` (signature and time) gives a lease whose `repositoryId` the bridge may then look up, and
-// `requireWsl2RunLeaseBinding` compares it with the bridge's own state.
+// `requireWsl2RunLeaseBinding` compares it with the bridge's own state. Step 2 takes only the object step 1 returned. Step 2 does not look at the clock, so the bridge checks `expiresAt` again
+// after anything slow between the steps, such as reading the head.
 //
 // WHAT IT DOES NOT DO: both steps are stateless, and a lease is a bearer statement checked against a wall clock, unlike the Broker's desktop lease. So the bridge must keep, on disk, across its own
 // restarts, every `operationId` it has begun and its call count, until `expiresAt` + 30 s, and refuse when it cannot. The key for reuse is `operationId`, never the signature: ECDSA signatures are malleable.
@@ -43,6 +44,8 @@ export class Wsl2RunLeaseError extends Error {
   constructor(code, field) { super(code); this.name = 'Wsl2RunLeaseError'; this.code = code; this.field = field; }
 }
 const fail = (code, field) => new Wsl2RunLeaseError(code, field);
+// Only what authenticateWsl2RunLease returned: a body from anywhere else, however well formed, never reaches step 2.
+const authenticated = new WeakSet();
 const isCounter = (v) => Number.isSafeInteger(v) && v >= 1;
 const isId = (v) => typeof v === 'string' && ID_RE.test(v);
 const isDigest = (v) => typeof v === 'string' && DIGEST_RE.test(v);
@@ -144,6 +147,7 @@ export function authenticateWsl2RunLease(signed, ctx) {
   if (!Number.isSafeInteger(now) || now < 0) throw fail('invalid_context', 'clock');
   if (lease.issuedAt > now + MAX_OBSERVED_SKEW_SECONDS) throw fail('not_yet_valid', 'issuedAt');
   if (now >= lease.expiresAt) throw fail('expired', 'expiresAt');
+  authenticated.add(lease);
   return lease;
 }
 
@@ -153,12 +157,12 @@ export function authenticateWsl2RunLease(signed, ctx) {
  * @param {object} lease what authenticateWsl2RunLease returned
  * @param {{baseOid: string, computerId: string, minLeaseGeneration: number, operationId: string, repositoryId: string}} expected
  * @returns {object} the lease
- * @throws {Wsl2RunLeaseError} code invalid_expected malformed binding generation (field names a fixed field)
+ * @throws {Wsl2RunLeaseError} code unauthenticated invalid_expected binding generation (field names a fixed field)
  */
 export function requireWsl2RunLeaseBinding(lease, expected) {
+  if (lease === null || typeof lease !== 'object' || !authenticated.has(lease)) throw fail('unauthenticated');
   const trusted = readExpected(expected);
-  const checked = validateWsl2RunLease(lease);
-  for (const field of BOUND_KEYS) if (checked[field] !== trusted[field]) throw fail('binding', field);
-  if (checked.leaseGeneration < trusted.minLeaseGeneration) throw fail('generation', 'leaseGeneration');
-  return checked;
+  for (const field of BOUND_KEYS) if (lease[field] !== trusted[field]) throw fail('binding', field);
+  if (lease.leaseGeneration < trusted.minLeaseGeneration) throw fail('generation', 'leaseGeneration');
+  return lease;
 }

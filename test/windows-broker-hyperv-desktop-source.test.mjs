@@ -149,10 +149,10 @@ test('service config: optional computers key, at most 8 entries of exactly { com
   assert.match(config, /ComputerFields = \["computerId", "vmId"\];/u);
   assert.match(config, /Computers = "computers"/u);
   assert.match(config, /bool hasComputers = seen\.Remove\(ComputersKey\);[^\n]*\n\s+if \(!seen\.SetEquals\(Keys\)\) return null;/u, 'the one optional key is taken out before the exact-key check, so every other key is still required or refused');
-  assert.match(config, /hasComputers \? ReadComputers\(root\.GetProperty\(ComputersKey\)\) : \[\];/u, 'no key: valid, no computers');
+  assert.match(config, /hasComputers \? ReadComputers\(root\.GetProperty\(ComputersKey\)\) : \(\[\], \[\]\);/u, 'no key: valid, no computers');
   assert.match(config, /element\.GetArrayLength\(\) > MaxComputers\) return null;/u);
   assert.match(config, /seen\.SetEquals\(ComputerFields\)\) return null;/u);
   assert.match(config, /!AuthorityKey\.IsKeyId\(computerId\) \|\| !ComputerBinding\.IsVmId\(vmId\)\) return null;/u, 'contract id grammar and lowercase GUID');
-  assert.equal([...config.matchAll(/Select\(c => c\.(ComputerId|VmId)\)\.Distinct\(StringComparer\.Ordinal\)\.Count\(\) == computers\.Count/gu)].length, 2, 'both distinct');
-  assert.match(config, /new ServiceConfig\(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers\);/u);
+  assert.match(config, /string\[\] ids = \[\.\. computers\.Select\(c => c\.ComputerId\), \.\. wsl2\];\s+bool distinct = ids\.Distinct\(StringComparer\.Ordinal\)\.Count\(\) == ids\.Length &&\s+computers\.Select\(c => c\.VmId\)\.Distinct\(StringComparer\.Ordinal\)\.Count\(\) == computers\.Count;/u, 'both distinct, a computerId across both kinds');
+  assert.match(config, /new ServiceConfig\(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers, wsl2Computers\);/u);
 });

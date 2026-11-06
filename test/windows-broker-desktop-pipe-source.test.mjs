@@ -130,7 +130,7 @@ test('the lease: made only by a task.start claim that was just recorded, held in
   // The table belongs to the desktop host and reaches the claim path through the settings; the one-shot `serve` has none.
   assert.match(pipe, /Leases = new DesktopLeases\(config\.Computers, lifetimeSeconds: DesktopLeaseSeconds\);/u);
   assert.match(loop, /settings = started with \{ Leases = desktop\.Leases \};/u);
-  assert.match(program, /long Epoch = 0, DesktopLeases\? Leases = null\);/u);
+  assert.match(program, /long Epoch = 0, DesktopLeases\? Leases = null, IReadOnlyList<string>\? Wsl2Computers = null\);/u);
   // Shipped build: the lifetime is the contract's 60 minutes; the knob that shortens it exists only in the test build.
   assert.match(rawPipe.slice(rawPipe.indexOf('#else'), rawPipe.indexOf('#endif')), /DesktopLeaseSeconds = DesktopLeases\.MaxLifetimeSeconds;/u);
   assert.equal(/ALBERA_BROKER_TEST_DESKTOP_LEASE_SECONDS|ALBERA_BROKER_TEST_DESKTOP_INPUT_HOLD_MS|DesktopInputHold|input_enter/u.test(rawPipe.replace(/#if ALBERA_BROKER_TEST_FAULTS[\s\S]*?#endif/gu, '')), false);
