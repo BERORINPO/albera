@@ -88,6 +88,8 @@ const EXPECTED = {
     'room-service-config.mjs', 'room-service-approvals.mjs', 'room-service-hands.mjs', 'room-service-folder-guard.mjs', 'room-service-wiring.mjs',
     // Claude Code as the hands: a stdio MCP server over the desktop Broker client (adapter; args = pure flags, server = tools + budget, mcp/mcp-main = entry), the headless `claude -p` driver and its Fake (adapter pair; decision log 2026-11-03+claude-code-hands)
     'albera-desktop-mcp-args.mjs', 'albera-desktop-mcp-server.mjs', 'albera-desktop-mcp.mjs', 'albera-desktop-mcp-main.mjs', 'claude-code-driver.mjs', 'fake-claude-code.mjs', 'fake-albera-desktop-mcp-main.mjs',
+    // the same hands for a WSL2 computer (ADR-012): a stdio MCP server over the bridge client, the client (it starts the pipe client helper, rule 5b) and the pure wire, and the two Fakes
+    'albera-shell-mcp-args.mjs', 'albera-shell-mcp-server.mjs', 'albera-shell-mcp.mjs', 'albera-shell-mcp-main.mjs', 'fake-albera-shell-mcp-main.mjs', 'wsl2-bridge-client.mjs', 'wsl2-bridge-wire.mjs', 'fake-wsl2-bridge-client.mjs',
     // verified-integration candidate: exact-commit evidence and person-approved compare-and-swap promotion (rule 5e; ADR-007, INT-01 / INT-02)
     'integration-candidate.mjs',
     // host-side git quarantine for submissions (bundles only, bare repositories, hardened git; ADR-007 §2 / §4) and its test double
@@ -277,6 +279,11 @@ const providerContracts = [
   // the desktop MCP server reaches only its injected Broker client (the driver and the Fake claude start processes, so they are under rule 5b instead)
   'src/runtime/albera-desktop-mcp-args.mjs',
   'src/runtime/albera-desktop-mcp-server.mjs',
+  // the same for the shell MCP server, the bridge's wire and the Fake bridge client (the real client starts the helper, so it is under rule 5b)
+  'src/runtime/albera-shell-mcp-args.mjs',
+  'src/runtime/albera-shell-mcp-server.mjs',
+  'src/runtime/wsl2-bridge-wire.mjs',
+  'src/runtime/fake-wsl2-bridge-client.mjs',
 ];
 // The room's pure parts (contract, journal, figures, director) also stay free of node: imports, clock and fetch. So does the approved-operation flow and its journal port:
 // the clients, the clock, the sleep and the storage are injected (and the flow must not name the Broker or the Authority: rules 8a / 10a).
@@ -347,11 +354,11 @@ for (const f of brokerFiles) if (!fs.existsSync(path.join(ROOT, brokerRoot, f)))
 // The trusted pipe client helper (verifies the pipe server before it writes) is part of the same on-demand set: its 3 files must exist, its
 // Program.cs and DesktopSession.cs stay small enough to review (line caps below), and `build:windows-broker` must build it. Its name also matches BROKER_REF, so 8a and 8c cover it.
 const pipeClientRoot = 'src/runtime/windows-broker-pipe-client';
-const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'DesktopSession.cs', 'SecretMode.cs', 'packages.lock.json'];
+const pipeClientFiles = ['Albera.WindowsBrokerPipeClient.csproj', 'Program.cs', 'DesktopSession.cs', 'SecretMode.cs', 'BridgeRelay.cs', 'packages.lock.json'];
 // Program.cs: 200 until the fence and inspect request kinds (receipt v2) were added; 220 until the Approval Authority submit request kind (`authority`) was added; 250 until the desktop session mode was added
 // (the session itself is DesktopSession.cs, capped separately; Program.cs only gained the shared OpenVerified and the mode switch).
-// SecretMode.cs (DPAPI protect / unprotect for the Control Plane's secret store, 124 lines) is capped at 160.
-const PIPE_CLIENT_MAX_LINES = { 'Program.cs': 270, 'DesktopSession.cs': 200, 'SecretMode.cs': 160 };
+// SecretMode.cs (DPAPI protect / unprotect for the Control Plane's secret store, 124 lines) is capped at 160. BridgeRelay.cs (the verified relay to the WSL bridge, 80 lines) at 110.
+const PIPE_CLIENT_MAX_LINES = { 'Program.cs': 270, 'DesktopSession.cs': 200, 'SecretMode.cs': 160, 'BridgeRelay.cs': 110 };
 for (const f of pipeClientFiles) if (!fs.existsSync(path.join(ROOT, pipeClientRoot, f))) violations.push(`[8b Windows Broker pipe client source] ${pipeClientRoot}/${f} does not exist (false-safe)`);
 for (const [file, max] of Object.entries(PIPE_CLIENT_MAX_LINES)) {
   const source = path.join(ROOT, pipeClientRoot, file);

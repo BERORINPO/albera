@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { getUnavailableReason, makeLeaseKit, runBridgeHarness } from './helpers/wsl-bridge-harness.mjs';
+import { wireProbe } from './helpers/wsl2-wire-probe.mjs';
 
 // The WSL bridge (ADR-012, "The WSL bridge"), checked in-process by test/wsl-bridge-harness: the real bridge sources with a fake wsl.exe, a fake agent and a fake repository.
 // G1 for the bridge (a missing, expired, reused, wrong-target lease and a bundle whose head is not baseOid, one check each), the order of begin, the call count and the lease's end, the sizes, hostile
@@ -21,12 +22,13 @@ test('WSL bridge checks (G1, begin order, calls, lease end, sizes, hostile agent
     const now = Math.floor(Date.now() / 1000);
     const lease = await kit.lease({ operationId: 'op-node', computerId: 'pc-wsl', repositoryId: 'repo-alpha', baseOid: 'a'.repeat(40), issuedAt: now - 10 });
     const probe = path.join(work, 'probe.json');
-    writeFileSync(probe, JSON.stringify({ spki: kit.spki, keyId: kit.keyId, now, lease }));
+    writeFileSync(probe, JSON.stringify({ spki: kit.spki, keyId: kit.keyId, now, lease, wire: wireProbe() }));
     const result = runBridgeHarness(work, probe);
     assert.ok(result.checks.length >= EXPECTED_AT_LEAST, `the harness ran ${result.checks.length} checks, expected at least ${EXPECTED_AT_LEAST}`);
     assert.equal(new Set(result.checks.map((c) => c.name)).size, result.checks.length, 'check names are unique');
     for (const prefix of REQUIRED) assert.ok(result.checks.some((c) => c.name.startsWith(prefix)), `the check "${prefix}" is missing`);
     assert.ok(result.checks.some((c) => c.name.startsWith('interop:')), 'the Node-signed lease check ran');
+    assert.ok(result.checks.some((c) => c.name.startsWith('wire interop:')), 'the Node frames were read by Wire.cs');
     for (const check of result.checks) await t.test(check.name, () => assert.equal(check.ok, true, check.detail));
   } finally {
     rmSync(work, { recursive: true, force: true });

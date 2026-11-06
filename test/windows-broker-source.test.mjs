@@ -148,6 +148,22 @@ test('pipe client desktop mode: the watchdog is disarmed under Gate in the secti
   assert.equal(/late timeout must not follow a good answer/u.test(desktopSession), false, 'the old comment claimed more than Change() can promise');
 });
 
+test('pipe client relay mode: the server is proved through the shared verification before any byte of the request is read or written, and it adds no native call and no result code', () => {
+  const relay = read('src', 'runtime', 'windows-broker-pipe-client', 'BridgeRelay.cs');
+  const code = relay.split('\n').filter((line) => !line.trimStart().startsWith('//')).join('\n');
+  assert.ok(relay.replace(/\n$/u, '').split('\n').length <= 110, 'BridgeRelay.cs stays reviewable (110 lines)');
+  assert.equal(/CreateFileW|NamedPipeClientStream\(|SafePipeHandle\(|DllImport|Process\.Start|ProcessStartInfo|Impersonat/u.test(code), false, 'the relay opens no pipe of its own and starts nothing');
+  assert.match(pipeClientProgram, /args is \["wsl-bridge"\]/u, 'the mode is chosen by one exact argument');
+  const verified = code.indexOf('OpenVerified(start.PipeName, start.OwnerSid, null, null, start.ImageSha256)');
+  const relayed = code.indexOf('RelayOneRequest(stdin, pipe, stdout);');
+  assert.ok(verified > 0 && code.indexOf('{ok:true}') === -1 && verified < code.indexOf('WriteHostFrame(') && code.indexOf('WriteHostFrame(') < relayed, 'proof, then the answer to Node, then the relay');
+  assert.ok(code.indexOf('ReadFull(stdin, header)') > code.indexOf('private static void RelayOneRequest'), 'the request is read only inside the relay');
+  assert.match(code, /new SecurityIdentifier|SecurityIdentifier\(ownerSid\)/u, 'the owner SID is required and parsed');
+  assert.match(pipeClientProgram, /if \(expectedPid is \{ \} wanted && serverPid != wanted\)/u, 'a PID that was asked for is still compared');
+  assert.match(pipeClientProgram, /\(pid is null\) != \(serviceName is null\)/u, 'the other modes still need exactly one of PID and service, so only the relay reaches OpenVerified with neither');
+  assert.deepEqual([...new Set([...code.matchAll(/Failure\("([a-z_]+)"\)/gu)].map((m) => m[1]))].sort(), ['invalid_request', 'server_identity_unavailable'], 'the relay adds no result code');
+});
+
 test('pipe client helper reports only the documented exit codes and result codes', () => {
   assert.match(pipeClientProgram, /ExitOk = 0, ExitBadInput = 64, ExitInternal = 70;/u);
   const failureLines = pipeClientCode.split('\n').filter((codeLine) => codeLine.includes('Failure(') && !codeLine.includes('string Failure('));

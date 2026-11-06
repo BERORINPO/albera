@@ -31,7 +31,7 @@ internal static partial class Harness
         HostChecks();
         ConfigChecks();
         PipeChecks();
-        if (args.Length > 0) NodeProbe(args[0]);
+        if (args.Length > 0) { NodeProbe(args[0]); NodeWireProbe(args[0]); }
         ClosingChecks(); // last: reads what every earlier check logged
         Console.WriteLine(JsonSerializer.Serialize(new { checks = Results }));
         return 0;

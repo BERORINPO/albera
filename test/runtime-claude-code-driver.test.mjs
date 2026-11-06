@@ -5,14 +5,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  buildClaudeArgs, buildClaudeEnvironment, CLAUDE_ALLOWED_TOOLS, CLAUDE_DISALLOWED_TOOLS, createClaudeCodeDriver, HANDS_SYSTEM_PROMPT, MCP_CONFIG_FILE,
+  buildClaudeArgs, buildClaudeEnvironment, CLAUDE_ALLOWED_TOOLS, CLAUDE_DISALLOWED_TOOLS, createClaudeCodeDriver, DESKTOP_HANDS, HANDS_SYSTEM_PROMPT, MCP_CONFIG_FILE,
 } from '../src/runtime/claude-code-driver.mjs';
+import { SHELL_HANDS } from '../src/runtime/albera-shell-mcp-server.mjs';
 
 // The driver against the Fake claude (src/runtime/fake-claude-code.mjs): REAL child processes (node as the "claude" executable, the real MCP server module with the Fake desktop client as its
 // grandchild), no real claude, no token that means anything, no VM. What these prove is the driver's own behavior and process handling; they say nothing about Claude Code itself.
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FAKE_CLAUDE = path.resolve(here, '../src/runtime/fake-claude-code.mjs');
 const MCP_ENTRY = path.resolve(here, '../src/runtime/fake-albera-desktop-mcp-main.mjs');
+const SHELL_ENTRY = path.resolve(here, '../src/runtime/fake-albera-shell-mcp-main.mjs');
 const TOKEN = `sk-test-${'t0k3n'.repeat(8)}`;
 const roots = [];
 process.on('exit', () => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
@@ -378,4 +380,91 @@ test('source: processes are stopped by the PID the driver started, never by imag
     assert.doesNotMatch(source, /taskkill|Stop-Process|pkill|killall|\/IM\b|-Name\b/iu, file);
     assert.doesNotMatch(source, /process\.env\.(?:CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC)/u, `${file} reads no credential from its own environment`);
   }
+});
+
+// ---- hands as a parameter (the default is everything above) ----
+
+const SHELL_TOOLS = ['mcp__albera_shell__run', 'mcp__albera_shell__read', 'mcp__albera_shell__write'];
+const shellOptions = (ws, overrides = {}) => driverOptions(ws, {
+  hands: SHELL_HANDS, mcpServer: { command: process.execPath, args: [SHELL_ENTRY, '--operation', 'op-1'] }, ...overrides,
+});
+
+test('hands: no hands is the desktop six, and DESKTOP_HANDS says the same', () => {
+  const allowedOf = (args) => args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--disallowedTools'));
+  const none = buildClaudeArgs({ mcpConfigPath: 'x' });
+  assert.deepEqual(none, buildClaudeArgs({ mcpConfigPath: 'x', hands: DESKTOP_HANDS }));
+  assert.deepEqual(allowedOf(none), [...CLAUDE_ALLOWED_TOOLS]);
+  assert.equal(allowedOf(none).length, 6);
+  assert.equal(none.at(-1), HANDS_SYSTEM_PROMPT);
+});
+
+test('hands: the command line takes the set given, and the deny list and the flags around it do not change', () => {
+  const args = buildClaudeArgs({ mcpConfigPath: 'x', hands: SHELL_HANDS });
+  assert.deepEqual(args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--disallowedTools')), SHELL_TOOLS);
+  assert.equal(args.at(-1), SHELL_HANDS.systemPrompt);
+  const desktop = buildClaudeArgs({ mcpConfigPath: 'x' });
+  assert.deepEqual(args.slice(0, args.indexOf('--allowedTools')), desktop.slice(0, desktop.indexOf('--allowedTools')));
+  assert.deepEqual(args.slice(args.indexOf('--disallowedTools'), -1), desktop.slice(desktop.indexOf('--disallowedTools'), -1));
+});
+
+test('hands: anything that is not one server, distinct names and a prompt is refused before anything starts', () => {
+  const ws = workspace({ steps: [] });
+  const good = { serverName: 'albera_shell', toolNames: ['run'], systemPrompt: 'p' };
+  for (const hands of [
+    {}, { ...good, serverName: 'Bash' }, { ...good, serverName: 'a b' }, { ...good, serverName: 'a__b; rm' }, { ...good, toolNames: [] }, { ...good, toolNames: 'run' }, { ...good, toolNames: ['run', 'run'] },
+    { ...good, toolNames: ['*'] }, { ...good, toolNames: ['Run'] }, { ...good, toolNames: Array.from({ length: 33 }, (_, i) => `t${i}`) }, { ...good, systemPrompt: '' }, { ...good, systemPrompt: 'a\0b' }, { ...good, systemPrompt: 'x'.repeat(8193) },
+  ]) assert.throws(() => createClaudeCodeDriver(driverOptions(ws, { hands })), /invalid_claude_code_driver_options/u, JSON.stringify(hands).slice(0, 60));
+});
+
+test('hands: a whole run with the shell tools - the config names that server, the calls reach the Fake bridge, the counts use the short names', async () => {
+  const ws = workspace({ steps: [{ tool: 'run', input: { command: 'ls' } }, { tool: 'write', input: { path: 'a.txt', content: 'x' } }, { tool: 'read', input: { path: 'a.txt' } }, { result: 'DONE: listed' }] });
+  const result = await createClaudeCodeDriver(shellOptions(ws)).run();
+  assert.equal(result.outcome, 'claimed_done', result.reason);
+  assert.deepEqual(result.byTool, { run: 1, write: 1, read: 1 });
+  const config = JSON.parse(readFileSync(path.join(ws.configDir, MCP_CONFIG_FILE), 'utf8'));
+  assert.deepEqual(Object.keys(config.mcpServers), ['albera_shell']);
+  const { args } = config.mcpServers.albera_shell;
+  assert.deepEqual(args.slice(args.indexOf('--max-calls')), ['--max-calls', '10', '--expires-at', args.at(-1)], 'the driver appends the same two limit flags');
+  assert.deepEqual(ws.calls().map((c) => [c.verb, c.runId]), [['run', 'op-1'], ['put', 'op-1'], ['get', 'op-1']]);
+  assert.deepEqual(ws.record().argv, buildClaudeArgs({ mcpConfigPath: path.join(ws.configDir, MCP_CONFIG_FILE), hands: SHELL_HANDS }));
+});
+
+test('hands: the init self-check works on the set given - a desktop tool is a capability the shell hands never approved', async () => {
+  const ws = workspace({ init: { tools: [...SHELL_TOOLS, 'mcp__albera_desktop__click'] }, steps: [{ result: 'DONE' }] });
+  const result = await createClaudeCodeDriver(shellOptions(ws)).run();
+  assert.deepEqual([result.outcome, result.reason], ['error', 'unexpected_capability']);
+  assert.deepEqual(result.unexpectedTools, ['mcp__albera_desktop__click']);
+});
+
+test('hands: the init self-check works on the set given - with the default hands a shell tool is refused too', async () => {
+  const ws = workspace({ init: { tools: [...CLAUDE_ALLOWED_TOOLS, 'mcp__albera_shell__run'] }, steps: [{ result: 'DONE' }] });
+  const result = await createClaudeCodeDriver(driverOptions(ws)).run();
+  assert.deepEqual([result.outcome, result.reason], ['error', 'unexpected_capability']);
+  assert.deepEqual(result.unexpectedTools, ['mcp__albera_shell__run']);
+});
+
+test('hands: a subset of the set passes, and an MCP server other than the one given does not', async () => {
+  const subset = workspace({ init: { tools: [SHELL_TOOLS[0]] }, steps: [{ result: 'DONE' }] });
+  assert.equal((await createClaudeCodeDriver(shellOptions(subset)).run()).outcome, 'claimed_done');
+  const extra = workspace({ init: { mcp_servers: [{ name: 'albera_shell', status: 'connected' }, { name: 'albera_desktop', status: 'connected' }] }, steps: [{ result: 'DONE' }] });
+  assert.equal((await createClaudeCodeDriver(shellOptions(extra)).run()).reason, 'unexpected_capability');
+  const wrong = workspace({ init: { mcp_servers: [{ name: 'albera_desktop', status: 'connected' }] }, steps: [{ result: 'DONE' }] });
+  assert.equal((await createClaudeCodeDriver(shellOptions(wrong)).run()).reason, 'unexpected_capability');
+  const failed = workspace({ init: { mcp_servers: [{ name: 'albera_shell', status: 'failed' }] }, steps: [{ result: 'DONE' }] });
+  assert.equal((await createClaudeCodeDriver(shellOptions(failed)).run()).reason, 'mcp_server_failed');
+});
+
+test('hands: a tool_use outside the set given ends the run, the other hands tool included', async () => {
+  const ws = workspace({ steps: [{ toolRaw: 'mcp__albera_desktop__click', input: {} }, { hang: true }] });
+  const result = await createClaudeCodeDriver(shellOptions(ws)).run();
+  assert.deepEqual([result.outcome, result.reason], ['error', 'unexpected_tool_use']);
+  assert.equal(result.toolCalls, 0);
+});
+
+test('hands: the server enforces the limits the driver appended, by itself', async () => {
+  const ws = workspace({ steps: [{ tool: 'run', input: { command: 'a' } }, { tool: 'run', input: { command: 'b' } }, { result: 'FAILED: out of calls' }] });
+  const result = await createClaudeCodeDriver(shellOptions(ws, { limits: { maxMs: 30_000, maxToolCalls: 1 } })).run();
+  assert.equal(ws.calls().length, 1, 'the second call never reached the bridge');
+  assert.match(ws.record().toolResults[1].content[0].text, /^call_limit_reached/u);
+  assert.equal(result.outcome, 'limit_reached');
 });
