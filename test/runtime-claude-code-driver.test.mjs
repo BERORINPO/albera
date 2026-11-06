@@ -461,10 +461,10 @@ test('hands: a tool_use outside the set given ends the run, the other hands tool
   assert.equal(result.toolCalls, 0);
 });
 
+// The driver ends the run on the same call, so whether the fake lives to record the server's answer is a race; the answer's text is checked in runtime-albera-shell-mcp.test.mjs.
 test('hands: the server enforces the limits the driver appended, by itself', async () => {
   const ws = workspace({ steps: [{ tool: 'run', input: { command: 'a' } }, { tool: 'run', input: { command: 'b' } }, { result: 'FAILED: out of calls' }] });
   const result = await createClaudeCodeDriver(shellOptions(ws, { limits: { maxMs: 30_000, maxToolCalls: 1 } })).run();
   assert.equal(ws.calls().length, 1, 'the second call never reached the bridge');
-  assert.match(ws.record().toolResults[1].content[0].text, /^call_limit_reached/u);
   assert.equal(result.outcome, 'limit_reached');
 });
