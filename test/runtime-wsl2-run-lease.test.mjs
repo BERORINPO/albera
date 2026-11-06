@@ -80,6 +80,21 @@ test('sign then verify round trip with a real key, and a lease body is frozen', 
   assert.equal(readSignedWsl2RunLease(signed).digest, signed.digest);
 });
 
+test('step 2 takes only what step 1 returned: a body that was never authenticated is refused, however well formed', async () => {
+  const { signer, verifier } = keys();
+  const signed = await signWsl2RunLease(createWsl2RunLease(INPUT), signer);
+  for (const [label, body] of [['a fresh body', createWsl2RunLease(INPUT)], ['the body inside the envelope', signed.lease], ['what the reader gives', readSignedWsl2RunLease(signed).lease], ['a copy of a good one', { ...authenticateWsl2RunLease(signed, { clock: () => T0, verify: verifier.verify }) }], ['null', null], ['a string', 'x']]) {
+    assert.equal(codeOf(() => requireWsl2RunLeaseBinding(body, EXPECTED)), 'unauthenticated', label);
+  }
+});
+
+test('the C# twin can make a proof only in step 1', () => {
+  const source = fs.readFileSync(path.join(contractDir, 'Wsl2RunLease.cs'), 'utf8');
+  assert.match(source, /private Authenticated\(Wsl2RunLeaseBody body\)/u);
+  assert.equal([...source.matchAll(/new Authenticated\(/gu)].length, 1);
+  assert.match(source, /public static Wsl2RunLeaseVerdict RequireBinding\(Authenticated\? proof,/u);
+});
+
 test('a lease is not an attestation, whatever its signature', async () => {
   const signed = await signWsl2RunLease(createWsl2RunLease(INPUT), keys().signer);
   for (const read of [readSignedNetworkAttestation, readSignedTaskStartAttestation]) assert.throws(() => read(signed), (error) => error.code === 'malformed');
@@ -113,8 +128,9 @@ test('an unusable context fails closed', async () => {
   assert.equal(codeOf(() => authenticateWsl2RunLease(signed, { clock: () => -1, verify })), 'invalid_context:clock');
   assert.equal(codeOf(() => authenticateWsl2RunLease(signed, { clock: () => Number.NaN, verify })), 'invalid_context:clock');
   assert.equal(codeOf(() => authenticateWsl2RunLease(signed, { clock: () => { throw new Error('x'); }, verify })), 'invalid_context:clock');
-  assert.equal(codeOf(() => requireWsl2RunLeaseBinding(createWsl2RunLease(INPUT), { ...EXPECTED, extra: 1 })), 'invalid_expected:$extra');
-  assert.equal(codeOf(() => requireWsl2RunLeaseBinding(createWsl2RunLease(INPUT), undefined)), 'invalid_expected');
+  const lease = authenticateWsl2RunLease(signed, { clock: () => T0, verify });
+  assert.equal(codeOf(() => requireWsl2RunLeaseBinding(lease, { ...EXPECTED, extra: 1 })), 'invalid_expected:$extra');
+  assert.equal(codeOf(() => requireWsl2RunLeaseBinding(lease, undefined)), 'invalid_expected');
 });
 
 test('objects that are not plain data are refused', () => {

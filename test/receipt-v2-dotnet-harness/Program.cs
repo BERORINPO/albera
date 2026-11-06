@@ -241,7 +241,7 @@ if (args.Length >= 5)
                 Wsl2RunLeaseExpected expected = new(e.GetProperty("baseOid").GetString()!, e.GetProperty("computerId").GetString()!, e.GetProperty("minLeaseGeneration").GetInt64(), e.GetProperty("operationId").GetString()!, e.GetProperty("repositoryId").GetString()!);
                 long now = c.GetProperty("now").GetInt64();
                 Wsl2RunLeaseVerdict verdict = Wsl2RunLease.Authenticate(ToValue(c.GetProperty("signed")), () => now, VerifyLease);
-                if (verdict.Ok) verdict = Wsl2RunLease.RequireBinding(verdict.Value!, expected);
+                if (verdict.Ok) verdict = Wsl2RunLease.RequireBinding(verdict.Proof, expected);
                 var result = new Dictionary<string, object?> { ["name"] = c.GetProperty("name").GetString(), ["ok"] = verdict.Ok };
                 if (!verdict.Ok) { result["code"] = verdict.Code; if (verdict.Field is not null) result["field"] = verdict.Field; }
                 leaseVerdicts.Add(result);

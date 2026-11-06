@@ -311,8 +311,8 @@ test('service config accepts exactly seven required keys (and the one optional `
   assert.match(serviceConfig, /LeaseId = "lease_id", PolicyVersion = "policy_version"/u);
   assert.match(serviceConfig, /leaseId is null \|\| !AuthorityKey\.IsKeyId\(leaseId\)\) return null;/u);
   assert.match(serviceConfig, /policyVersion is null \|\| !AuthorityKey\.IsKeyId\(policyVersion\)\) return null;/u);
-  assert.match(serviceConfig, /new ServiceConfig\(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers\);/u);
-  assert.match(serviceLoop, /config\.LeaseId, config\.PolicyVersion\);/u, 'the service loop hands the configured values to the request handlers');
+  assert.match(serviceConfig, /new ServiceConfig\(pipeName, database, authorityKeys, sid, generation, leaseId, policyVersion, computers, wsl2Computers\);/u);
+  assert.match(serviceLoop, /config\.LeaseId, config\.PolicyVersion, Wsl2Computers: config\.Wsl2Computers\);/u, 'the service loop hands the configured values to the request handlers');
   assert.equal(/"test-lease"|"test-policy-v1"|Synthetic(?:Lease|Policy)/u.test(brokerCode), false, 'no receipt placeholder is left in the Broker');
   assert.equal(/"publicKey"/u.test(brokerCode), false, 'the v1 single-key shape is gone from the Broker');
   assert.match(serviceConfig, /seen\.SetEquals\(Keys\)/u, 'no unknown and no missing key');
@@ -507,10 +507,10 @@ test('receipt v2: the shared contract sources are included, not copied; the Brok
   assert.match(taskStart, /StrictJson\.Parse\(Convert\.FromBase64String\(encoded\), 3\);\s+ActionDigest\.Validate\(GuestPurpose, dto\);/u);
   assert.match(taskStart, /ex is FormatException or StrictJsonException or ActionDigestException\) \{ return \(GuestPurpose, null, "action_invalid"\); \}/u);
   assert.match(taskStart, /!TaskStartAction\.Equals\(dto\["action"\]\) \|\| !r\["projectId"\]\.Equals\(dto\["projectId"\]\) \|\| !r\["computerId"\]\.Equals\(dto\["computerId"\]\)\) return \(GuestPurpose, null, "action_mismatch"\);/u);
-  assert.match(taskStart, /args\.TryGetValue\(TaskArgument, out object\? task\) && task is string \{ Length: > 0 \}\s+&& \(args\.Count == 1 \|\| \(args\.Count == 3 && args\.TryGetValue\(VmIdArgument, out object\? vmId\) && vmId is string vm && NetworkAttestation\.IsVmId\(vm\)\s+&& args\.TryGetValue\(GenerationArgument, out object\? generation\) && generation is long and >= 1\)\)/u, '{ task } alone, or exactly { task, vmId (a lowercase GUID), expectedGeneration (>= 1) }');
-  assert.match(requests, /private const string TaskStartAction = "task\.start";\s+private const string GuestPurpose = "guest\.command";\s+private const string TaskArgument = "task", VmIdArgument = "vmId", GenerationArgument = "expectedGeneration";/u);
+  assert.match(taskStart, /args\.TryGetValue\(TaskArgument, out object\? task\) && task is string \{ Length: > 0 \}\s+&& \(wsl2Computers\.Contains\(\(string\)dto\["computerId"\], StringComparer\.Ordinal\) \? IsWsl2TaskArgs\(args\) : args\.Count == 1 \|\| \(args\.Count == 3 && args\.TryGetValue\(VmIdArgument, out object\? vmId\) && vmId is string vm && NetworkAttestation\.IsVmId\(vm\)\s+&& args\.TryGetValue\(GenerationArgument, out object\? generation\) && generation is long and >= 1\)\)/u, '{ task } alone, or exactly { task, vmId (a lowercase GUID), expectedGeneration (>= 1) }');
+  assert.match(requests, /private const string TaskStartAction = "task\.start";\s+private const string GuestPurpose = "guest\.command";\s+private const string TaskArgument = "task", VmIdArgument = "vmId", GenerationArgument = "expectedGeneration", IsolationArgument = "isolation", RepositoryArgument = "repositoryId", BaseOidArgument = "baseOid";/u);
   const claim = requests.slice(requests.indexOf('private static async Task<BrokerReply> ClaimAsync('));
-  assert.ok(claim.indexOf('VerifyData(') < claim.indexOf('ActionOf(encodedAction, r)') && claim.indexOf('ActionOf(encodedAction, r)') < claim.indexOf('ReadClaimContextAsync(') && claim.indexOf('ReadClaimContextAsync(') < claim.indexOf('Receipts.Validate('), 'the signature, then the DTO, then the journal, then the validation');
+  assert.ok(claim.indexOf('VerifyData(') < claim.indexOf('ActionOf(encodedAction, r, ') && claim.indexOf('ActionOf(encodedAction, r, ') < claim.indexOf('ReadClaimContextAsync(') && claim.indexOf('ReadClaimContextAsync(') < claim.indexOf('Receipts.Validate('), 'the signature, then the DTO, then the journal, then the validation');
   assert.match(claim, /Receipts\.Validate\(receipt, TrustedContext\(r, now, epoch, generation, settings, purpose, dto\)\)/u, 'Validate gets the DTO this file checked');
   assert.match(trusted, /\["leaseId"\] = settings\.LeaseId,/u, 'the lease is the configured one');
   assert.match(trusted, /\["policyVersion"\] = settings\.PolicyVersion,/u, 'and so is the policy');
