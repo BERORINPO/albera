@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it, test } from 'node:test';
 import { createGitQuarantine } from '../src/runtime/git-quarantine.mjs';
-import { collectWsl2Result, createWsl2Readiness, headOfBundle, KEPT_RESULTS, MAX_RESULT_BYTES, NO_LEASE_SOURCE, READY_REFRESH_MS, runWsl2Job, wsl2TargetLookup } from '../src/runtime/room-service-wsl2-run.mjs';
+import { collectWsl2Result, createWsl2Readiness, headOfBundle, KEPT_RESULTS, markUnsafeText, MAX_RESULT_BYTES, NO_LEASE_SOURCE, READY_REFRESH_MS, RESULT_DEADLINE_MS, runWsl2Job, wsl2TargetLookup } from '../src/runtime/room-service-wsl2-run.mjs';
 import { SHELL_HANDS } from '../src/runtime/albera-shell-mcp-server.mjs';
 
 // One WSL2 job around the driver, with a fake bridge client and a fake driver. The result path uses REAL git and the real quarantine in temporary folders. No WSL, no token.
@@ -225,4 +225,51 @@ test('the target is the head the bridge reads; a VM computer has none', async ()
   assert.deepEqual(await lookup('pc-1'), { repositoryId: 'repo-1', baseOid: 'b'.repeat(40) });
   assert.equal(await lookup('pc-vm'), undefined);
   assert.deepEqual(seen, [{ repositoryId: 'repo-1' }]);
+});
+
+test('SEC-001: a stop the bridge answered no_run, before it knew of the run, is sent again once begin has made the run', async () => {
+  const run = { stopRequested: false };
+  const client = fakeClient({
+    begin: async () => { run.stopRequested = true; await run.stopBridge(); },
+    stop: (() => { let first = true; return async () => { if (first) { first = false; throw bridgeError('no_run'); } }; })(),
+  });
+  const t = job({ client, run });
+  const { result } = await t.done;
+  assert.equal(result.reason, 'stopped_by_human');
+  assert.deepEqual(client.calls, ['begin', 'stop', 'stop']);
+  assert.equal(t.driverCalls.length, 0);
+});
+
+test('a stop asked before begin never reaches the bridge', async () => {
+  const t = job({ run: { stopRequested: true } });
+  assert.equal((await t.done).result.reason, 'stopped_by_human');
+  assert.deepEqual(t.client.calls, []);
+});
+
+test('SEC-004: a stop nobody confirmed says so and keeps the computer busy', async () => {
+  const client = fakeClient({ end: async () => { throw bridgeError('unregister_failed'); }, stop: async () => { throw bridgeError('bridge_unavailable', 'not_applied'); } });
+  const t = job({ client });
+  const { result } = await t.done;
+  assert.deepEqual([result.reason, result.treeStopConfirmed], ['stop_unconfirmed', false]);
+  assert.ok(t.notes.includes('hands wsl2_stop_unconfirmed'));
+  assert.deepEqual(client.calls, ['begin', 'bundle', 'end', 'stop', 'stop']);
+});
+
+test('SEC-002: what could forge a line or hide a character becomes a visible mark, and an ordinary diff is left alone', () => {
+  assert.equal(markUnsafeText('+a\u2028diff --git a/x b/x\r\n'), '+a\u27e6U+2028\u27e7diff --git a/x b/x\u27e6U+000D\u27e7\n');
+  assert.equal(markUnsafeText('a\u202eb\u200bc\u{e0041}'), 'a\u27e6U+202E\u27e7b\u27e6U+200B\u27e7c\u27e6U+E0041\u27e7');
+  assert.equal(markUnsafeText('\u0085'), '\u27e6U+0085\u27e7');
+  const plain = '@@ -1 +1 @@\n-\tone\n+\u65e5\u672c\u8a9e <b>\n';
+  assert.equal(markUnsafeText(plain), plain);
+});
+
+test('SEC-003: a stop or the deadline ends the reading of a result', async () => {
+  const { runDir, resultsRoot, quarantine } = folders();
+  const stopped = await collectWsl2Result({ bundle: changedBundle, baseOid: base, operationId: OP, quarantine, runDir, resultsRoot, isStopped: () => true });
+  assert.equal(stopped.code, 'cancelled');
+  const later = folders();
+  let at = 0;
+  const late = await collectWsl2Result({ bundle: changedBundle, baseOid: base, operationId: OP, quarantine: later.quarantine, runDir: later.runDir, resultsRoot: later.resultsRoot, now: () => { at += RESULT_DEADLINE_MS; return at; } });
+  assert.equal(late.code, 'cancelled');
+  assert.ok(!existsSync(later.resultsRoot), 'no bundle is kept');
 });

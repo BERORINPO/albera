@@ -12,7 +12,7 @@ import { gitEnv, hardening, isOid, runGitProcess } from './git-process.mjs';
 //   const repo = await q.create()                                     -> absolute path of a new bare repository
 //   await q.importBundle(repo, { bundlePath, ref, expectedOid })        -> { ok: true } | { ok: false, code }
 //   await q.inspect(repo, { baseOid, resultOid, limits })               -> { ok: true, changed } | { ok: false, code }
-//   await q.diff(repo, { baseOid, resultOid, maxBytes })                -> { ok: true, text, truncated, files } | { ok: false, code }
+//   await q.diff(repo, { baseOid, resultOid, maxBytes })                -> { ok: true, text, truncated, files, fileCount } | { ok: false, code }
 //   await q.buildCandidate(repo, { targetOid, submissions, identity })  -> { ok: true, candidateCommitOid, candidateTreeOid } | { ok: false, code }
 //
 // importBundle verifies the bundle, fetches exactly `ref` into refs/albera/quarantine/<n> and checks the fetched commit IS `expectedOid` (the
@@ -26,7 +26,7 @@ import { gitEnv, hardening, isOid, runGitProcess } from './git-process.mjs';
 
 export const QUARANTINE_REFUSALS = Object.freeze([
   'bundle_invalid', 'ref_missing', 'oid_mismatch', 'not_descendant', 'symlink', 'submodule', 'path_forbidden', 'blob_too_large',
-  'too_many_paths', 'too_many_commits', 'base_mismatch', 'conflicted', 'git_failed', 'request_invalid',
+  'too_many_paths', 'too_many_commits', 'base_mismatch', 'conflicted', 'git_failed', 'request_invalid', 'cancelled',
 ]);
 export const DIFF_MAX_BYTES = 256 * 1024;
 const DIFF_MAX_FILES = 200;
@@ -98,7 +98,7 @@ export function createGitQuarantine({ git, root, run } = {}) {
     return tip === expectedOid ? ok : refuse('oid_mismatch');
   }
 
-  async function inspect(repo, { baseOid, resultOid, limits = DEFAULT_LIMITS } = {}) {
+  async function inspect(repo, { baseOid, resultOid, limits = DEFAULT_LIMITS, isCancelled = () => false } = {}) {
     if (!isOid(baseOid) || !isOid(resultOid)) return refuse('request_invalid');
     const ancestor = await gitIn(repo, ['merge-base', '--is-ancestor', baseOid, resultOid], { allowFailure: true });
     if (ancestor.code === 1) return refuse('not_descendant');
@@ -108,6 +108,7 @@ export function createGitQuarantine({ git, root, run } = {}) {
     const blobs = new Set();
     let paths = 0;
     for (const commit of commits) {
+      if (isCancelled()) return refuse('cancelled'); // each git call has its own limit; this bounds the sum, and lets a stop through
       // Every commit against each of its parents (-m), so a path added in one commit and removed in the next is still seen.
       const diff = await gitIn(repo, ['diff-tree', '-r', '-z', '--raw', '--no-renames', '--no-ext-diff', '--no-textconv', '--no-commit-id', '-m', '--root', commit]);
       const entries = parseRawDiff(diff.stdout);
@@ -133,8 +134,9 @@ export function createGitQuarantine({ git, root, run } = {}) {
     if (raw.code !== 0 || patch.code !== 0) return refuse('git_failed');
     const bytes = Buffer.from(patch.stdout, 'utf8');
     const truncated = bytes.length > maxBytes;
-    const files = parseRawDiff(raw.stdout).slice(0, DIFF_MAX_FILES).map(({ status, path: file }) => Object.freeze({ status, path: file }));
-    return Object.freeze({ ok: true, text: truncated ? bytes.subarray(0, maxBytes).toString('utf8') : patch.stdout, truncated, files: Object.freeze(files) });
+    const entries = parseRawDiff(raw.stdout);
+    const files = entries.slice(0, DIFF_MAX_FILES).map(({ status, path: file }) => Object.freeze({ status, path: file }));
+    return Object.freeze({ ok: true, text: truncated ? bytes.subarray(0, maxBytes).toString('utf8') : patch.stdout, truncated, files: Object.freeze(files), fileCount: entries.length });
   }
 
   async function buildCandidate(repo, { targetOid, submissions, identity } = {}) {

@@ -64,7 +64,7 @@ const safeCode = (error) => (typeof error?.code === 'string' && /^[A-Za-z0-9_]{1
 const UNSEEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\ufff9-\ufffb\u{e0000}-\u{e0fff}]/gu;
 
 /** The guest's bytes as text for the model: at most `maxToolTextBytes`, invalid UTF-8 replaced, UNSEEN gone. */
-export function guestText(bytes) {
+function guestText(bytes) {
   return new TextDecoder('utf-8').decode(bytes.subarray(0, SHELL_TOOL_LIMITS.maxToolTextBytes)).replace(UNSEEN, '');
 }
 

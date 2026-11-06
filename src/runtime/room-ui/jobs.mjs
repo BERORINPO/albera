@@ -34,7 +34,7 @@ export const targetLabel = (words, target) => (target?.level === 'wsl2' ? `${tar
 export function resultLine(words, result) {
   if (result?.ok !== true) return words.t('panel.jobs.result_refused', { code: String(result?.code ?? 'result_failed') });
   const head = String(result.resultOid ?? '').slice(0, 12);
-  return result.resultOid === result.baseOid ? words.t('panel.jobs.result_none') : words.t('panel.jobs.result_head', { commit: head, files: Array.isArray(result.files) ? result.files.length : 0 });
+  return result.resultOid === result.baseOid ? words.t('panel.jobs.result_none') : words.t('panel.jobs.result_head', { commit: head, files: Number.isSafeInteger(result.fileCount) ? result.fileCount : '?' });
 }
 
 /** The match code to show beside a job: only a job still waiting for its approval has one worth pressing. */
@@ -109,6 +109,7 @@ function boot() {
   panel.querySelector('.panel-row').append(stopAll, test);
 
   let timer;
+  let shownStamp = '';
   const showCounter = () => { counter.textContent = words.t('panel.jobs.bytes', { bytes: taskBytes(task.value) }); };
   task.addEventListener('input', showCounter);
   showCounter();
@@ -149,8 +150,12 @@ function boot() {
     const jobs = Array.isArray(result.body?.jobs) ? result.body.jobs : [];
     list.replaceChildren(...(jobs.length ? [...jobs].reverse().map((job) => jobItem(job)) : [el(document, 'li', 'sub', words.t('panel.jobs.none'))]));
     matchHelp.hidden = !jobs.some((job) => codeOf(job));
-    const handed = await api.getJobResults();
-    if (handed.ok && Array.isArray(handed.body?.results)) results.replaceChildren(...handed.body.results.map((result) => resultItem(result)));
+    // Only when the list changed: a redraw would close the diff the person is reading.
+    const stamp = result.body?.resultsStamp;
+    if (typeof stamp === 'string' && stamp !== shownStamp) {
+      const handed = await api.getJobResults();
+      if (handed.ok && Array.isArray(handed.body?.results)) { shownStamp = stamp; results.replaceChildren(...handed.body.results.map((item) => resultItem(item))); }
+    }
   }
   const loop = async () => { await refresh(); timer = setTimeout(() => { void loop(); }, JOBS_POLL_MS); };
 

@@ -142,14 +142,16 @@ export function createRoomJobRoutes({ approvals, hands, targets, newJobId } = {}
   }
 
   function list() {
-    return { status: 200, body: { ok: true, targets: targetList(), jobs: jobs.map(view) } };
+    return { status: 200, body: { ok: true, targets: targetList(), jobs: jobs.map(view), ...(hands.results ? { resultsStamp: keptResults().map((r) => r.operationId).join() } : {}) } };
   }
 
-  /** What WSL2 jobs handed over: the job's claim, never verified. The page shows it as text. */
+  function keptResults() {
+    try { return hands.results?.() ?? []; } catch { return []; }
+  }
+
+  /** What WSL2 jobs handed over: the job's claim, never verified. The page shows it as text, and asks only when `resultsStamp` changes: this can be 2 MiB. */
   function results() {
-    let list = [];
-    try { list = hands.results?.() ?? []; } catch { /* no results to show */ }
-    return { status: 200, body: { ok: true, results: list } };
+    return { status: 200, body: { ok: true, results: keptResults() } };
   }
 
   async function startJob({ body }) {

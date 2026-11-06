@@ -167,7 +167,7 @@ The room now has a whole path for a WSL2 job, up to the one thing that does not 
 - **The approval window** says what a WSL2 start means, in fixed text keyed on `isolation` (`ApprovalPrompt.cs`), and shows the computer, the repository and the commit.
 - **The hands** (`room-service-wsl2-run.mjs`) get the lease, call `begin`, run the driver with `albera_shell`, then `bundle` and `end`. Every other way out calls `stop`. A person's stop reaches the bridge too, even during `begin`. `no_run` from `end` is a failure and nothing is shown. The word the shell server halted on reaches the log through `--halt-file`.
 - **The base commit** is the head the bridge reads (`status` with a repository id), because the Control Plane's account may not be able to read the repository. It goes into the digest the owner approves, and `begin` compares it again.
-- **The result** is a full bundle (`--all`), because the quarantine holds nothing to resolve a thin one against. It is limited to 64 MiB, read by its `HEAD`, then goes through `git-quarantine.mjs`. A bundle whose history lacks the base is refused. The diff comes from `git diff --text` with no driver and no textconv, is cut at 256 KiB, is cleaned of control and invisible characters, and reaches the page through `textContent`. It is always `agent_reported`. The newest 5 bundles stay in `control-plane\wsl2-results`.
+- **The result** is a full bundle (`--all`), because the quarantine holds nothing to resolve a thin one against. It is limited to 64 MiB, read by its `HEAD`, then goes through `git-quarantine.mjs`. A bundle whose history lacks the base is refused. The diff comes from `git diff --text` with no driver and no textconv, is cut at 256 KiB, and reaches the page through `textContent`. Control, line-breaking, bidi and invisible characters become visible marks such as `⟦U+202E⟧`, because dropping them would hide what the file holds, and a line separator could forge a line of the diff. Reading the result has a limit of 5 minutes in all, and a stop cuts it short. It is always `agent_reported`. The newest 5 bundles stay in `control-plane\wsl2-results`.
 - **The level:** a WSL2 computer is offered only while `status` says the kernel is above the floor, asked at most every 30 s. Before the first answer, and after a failure, it is not offered.
 - **SEC-1:** a `wsl2` block in the settings is refused unless the helper is inside `C:\Program Files\Albera\bin\pipe-client`.
 
@@ -181,6 +181,15 @@ Not verified:
 - Applying a result. The owner can read the diff, and the bundle stays on disk, but no step brings it into the repository.
 - The room page itself has not been opened in a browser with a result. Its pure parts have tests.
 - A result is not kept across a restart of the service, except as the bundle file.
+
+**Before a lease source is wired (Zaku, on the review of this part; goes with AGM-2):**
+
+- The SEC-2 lab result. No job can run before then, which is why it may wait.
+- **`wsl2.git` has no pin.** It is an absolute path only, and that git parses a hostile pack as the Control Plane's identity, the one that opens the DPAPI token. Put it under the folder guard, as `claude.exe`, with a minimum version.
+- The Broker signs exactly the approved `repositoryId` and `baseOid`.
+- The helper's folder is trusted because Program Files is administrator-only, and nothing checks that at run time. Put a folder guard on it at start.
+- A job chooses what `HEAD` is. Other refs in its bundle are not inspected, and they stay in the kept file. Applying a result must take only `resultOid`, through `buildCandidate`.
+- Whether Windows `child.kill()` leaves a child `index-pack` running after a timeout on a hostile pack was not measured.
 
 ## Decision proposed
 

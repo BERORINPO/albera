@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { guestText, SHELL_HANDS } from './albera-shell-mcp-server.mjs';
+import { SHELL_HANDS } from './albera-shell-mcp-server.mjs';
 import { buildShellMcpFlags } from './albera-shell-mcp-args.mjs';
 
 // One WSL2 job around the driver (ADR-012, decisions 9 and 10; Proposed / NOT VERIFIED on a real run). The model's tools act in a run that exists; only this file begins and ends that run, so the lease
@@ -13,6 +13,10 @@ import { buildShellMcpFlags } from './albera-shell-mcp-args.mjs';
 export const NO_LEASE_SOURCE = Object.freeze({ obtain: async () => null });
 export const MAX_RESULT_BYTES = 64 * 1024 * 1024;
 export const KEPT_RESULTS = 5;
+export const RESULT_DEADLINE_MS = 5 * 60_000; // the quarantine's calls have 60 s each; this bounds them together, so a job cannot hold its computer with a result that takes hours to read
+// What must not reach a person's eyes as it is. A line break the page would honour but `git diff` does not count (CR, LS, PS, NEL) could forge a "line", and a bidi or invisible character can hide what a file
+// holds. They stay visible as a marker instead of being dropped: the file still holds them, and that is the very thing to see. Tab and the line feed stay.
+const UNSAFE_TEXT_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufffb\ud800-\udfff]|[\u{e0000}-\u{e0fff}]/gu;
 export const READY_REFRESH_MS = 30_000;
 const WORD_RE = /^[a-z0-9_]{1,48}$/u;
 const HALT_FILE = 'halt';
@@ -35,6 +39,9 @@ export function headOfBundle(bundle) {
   return null;
 }
 
+/** A job's text for the page: every character that could change how it reads becomes a visible marker. */
+export const markUnsafeText = (text) => text.replace(UNSAFE_TEXT_RE, (found) => `\u27e6U+${found.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}\u27e7`);
+
 /** Keep the newest KEPT_RESULTS bundles. Only names this file writes. */
 async function pruneResults(resultsRoot, note) {
   try {
@@ -48,28 +55,31 @@ async function pruneResults(resultsRoot, note) {
  * From the bundle's bytes to what the room shows. `{ ok: false, code }` for anything the quarantine refuses, and the room says so: a refused result is not shown as a diff.
  * The quarantine's repository goes when this is done; the bundle stays in `resultsRoot` for the owner, the newest KEPT_RESULTS of them.
  */
-export async function collectWsl2Result({ bundle, baseOid, operationId, quarantine, runDir, resultsRoot, note = () => {} }) {
+export async function collectWsl2Result({ bundle, baseOid, operationId, quarantine, runDir, resultsRoot, note = () => {}, isStopped = () => false, now = Date.now }) {
   const refused = (code) => Object.freeze({ ok: false, trust: 'agent_reported', operationId, baseOid, code });
   if (bundle.length === 0 || bundle.length > MAX_RESULT_BYTES) return refused('result_too_large');
   const resultOid = headOfBundle(bundle);
   if (resultOid === null) return refused('bundle_invalid');
   const bundlePath = path.join(runDir, 'result.bundle');
+  const deadline = now() + RESULT_DEADLINE_MS;
+  const isCancelled = () => isStopped() || now() >= deadline;
   let repo = null;
   try {
     await writeFile(bundlePath, bundle, { flag: 'wx' });
     repo = await quarantine.create();
     const imported = await quarantine.importBundle(repo, { bundlePath, ref: 'HEAD', expectedOid: resultOid });
     if (!imported.ok) return refused(imported.code);
-    const inspected = await quarantine.inspect(repo, { baseOid, resultOid });
+    const inspected = await quarantine.inspect(repo, { baseOid, resultOid, isCancelled });
     if (!inspected.ok) return refused(inspected.code);
+    if (isCancelled()) return refused('cancelled');
     const shown = await quarantine.diff(repo, { baseOid, resultOid });
     if (!shown.ok) return refused(shown.code);
     await mkdir(resultsRoot, { recursive: true });
     await writeFile(path.join(resultsRoot, `${operationId}.bundle`), bundle);
     await pruneResults(resultsRoot, note);
     return Object.freeze({
-      ok: true, trust: 'agent_reported', operationId, baseOid, resultOid, commits: inspected.commits, truncated: shown.truncated, diff: guestText(Buffer.from(shown.text, 'utf8')),
-      files: Object.freeze(shown.files.map(({ status, path: file }) => Object.freeze({ status, path: guestText(Buffer.from(file, 'utf8')) }))),
+      ok: true, trust: 'agent_reported', operationId, baseOid, resultOid, commits: inspected.commits, truncated: shown.truncated, diff: markUnsafeText(shown.text), fileCount: shown.fileCount,
+      files: Object.freeze(shown.files.map(({ status, path: file }) => Object.freeze({ status, path: markUnsafeText(file) }))),
     });
   } catch { return refused('result_failed'); } finally {
     if (repo !== null) await rm(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => note('hands wsl2_quarantine_cleanup_failed'));
@@ -102,9 +112,14 @@ export async function runWsl2Job({ wsl2, job, run, runDir, runDriver, note }) {
     try { await client.stop(operationId); open = false; } catch (error) { if (error?.code === 'no_run') open = false; else note(`hands wsl2_stop_failed ${wordOf(error)}`); }
   };
   run.stopBridge = stopBridge;
-  try {
-    try { await client.begin(operationId, lease); } catch (error) {
-      if (error?.outcome !== 'unknown') open = false;
+  /** Everything between the lease and the last stop. Returns what `runWsl2Job` returns. */
+  async function aroundDriver() {
+    if (run.stopRequested) { open = false; return { result: stoppedByHuman(), collected: null }; }
+    try {
+      await client.begin(operationId, lease);
+      open = true; // again: a stop that came before the bridge knew of this run was answered no_run, and that says nothing about the run begin has just made
+    } catch (error) {
+      open = error?.outcome === 'unknown';
       note(`hands wsl2_begin_refused ${wordOf(error)}`);
       return { result: run.stopRequested ? stoppedByHuman() : over('wsl2_begin_failed'), collected: null };
     }
@@ -125,11 +140,20 @@ export async function runWsl2Job({ wsl2, job, run, runDir, runDriver, note }) {
       note(`hands wsl2_end_failed ${wordOf(error)}`);
     }
     if (failure !== null) return { result, collected: Object.freeze({ ok: false, trust: 'agent_reported', operationId, baseOid, code: failure === 'run_ended_early' ? failure : 'result_missing' }) };
-    return { result, collected: await collectWsl2Result({ bundle, baseOid, operationId, quarantine, runDir, resultsRoot, note }) };
-  } finally {
+    const collected = await collectWsl2Result({ bundle, baseOid, operationId, quarantine, runDir, resultsRoot, note, isStopped: () => run.stopRequested });
+    return { result, collected: Object.freeze({ ...collected, driverOutcome: result.outcome }) };
+  }
+
+  let done;
+  try { done = await aroundDriver(); } finally {
     await stopBridge();
+    await stopBridge(); // a no-op unless the first one failed
     run.stopBridge = undefined;
   }
+  if (!open) return done;
+  // The bridge never said the run is gone. Its lease end is the backstop; until then the computer stays busy, as for a process tree nobody could confirm stopped.
+  note('hands wsl2_stop_unconfirmed');
+  return { ...done, result: Object.freeze({ ...done.result, reason: 'stop_unconfirmed', treeStopConfirmed: false }) };
 }
 
 /**

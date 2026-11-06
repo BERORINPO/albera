@@ -6,7 +6,7 @@ const DEFAULTS = Object.freeze({
   create: () => '/fake/quarantine/q-1',
   importBundle: () => Object.freeze({ ok: true }),
   inspect: () => Object.freeze({ ok: true, changed: 1 }),
-  diff: () => Object.freeze({ ok: true, text: '', truncated: false, files: Object.freeze([]) }),
+  diff: () => Object.freeze({ ok: true, text: '', truncated: false, files: Object.freeze([]), fileCount: 0 }),
   buildCandidate: () => Object.freeze({ ok: true, candidateCommitOid: 'c'.repeat(40), candidateTreeOid: 'd'.repeat(40) }),
 });
 

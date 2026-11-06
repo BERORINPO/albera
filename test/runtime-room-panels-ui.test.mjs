@@ -216,7 +216,7 @@ test('a WSL2 computer says its level, and a result line holds fixed words and he
   assert.match(targetLabel(words, { label: 'pc-wsl', level: 'wsl2' }), /^pc-wsl \u2014 .*WSL2/u);
   assert.equal(targetLabel(words, { label: 'vm-1' }), 'vm-1');
   const oid = 'a'.repeat(40);
-  assert.match(resultLine(words, { ok: true, baseOid: 'b'.repeat(40), resultOid: oid, files: [{}, {}] }), /aaaaaaaaaaaa/u);
+  assert.match(resultLine(words, { ok: true, baseOid: 'b'.repeat(40), resultOid: oid, files: [{}, {}], fileCount: 10000 }), /aaaaaaaaaaaa.*10000/u);
   assert.ok(!resultLine(words, { ok: true, baseOid: oid, resultOid: oid, files: [] }).includes('aaaa'), 'no change');
   assert.match(resultLine(words, { ok: false, code: 'symlink' }), /symlink/u);
 });
