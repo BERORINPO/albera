@@ -19,12 +19,11 @@ Cards use the format in the `albera-goal` skill. Delete a card once it is done.
 - これで進むもの: stage 1 の受入。サービスの身元で claude.exe が動く確認 (M4) と、本物の本人確認での承認 (M14)
 - 取り消し: 入れ替えは戻せない (アンインストールでトークンと両方の記録が消える。VM は残る)。ジョブは「全部止める」で止まり、承認しなければ何も起きない
 
-### 戻せる承認の採択 (AGM-1・AGM-2)
-- やること: ADR-002 Amendment 2026-11-04 (#195、Proposed) を読み、次の 2 点を承認するか決める
-  - AGM-1: Broker の WmiGate の許可リストに、チェックポイント・巻き戻し・電源・読み取りの行を足す。installer が VM を ProductionOnly にすることも含む
-  - AGM-2: Broker 用の証明鍵を発行し、Authority に登録する
+### 戻せる承認の採択 (AGM-1)
+- 済み (2026-11-06): AGM-2 を株主が承認した。Broker 用の鍵の発行と Authority への登録で、同じ鍵で WSL2 の run lease も署名する。鍵が実際に作られるのは、Yosuke が管理者でインストーラーを実行するとき
+- やること: ADR-002 Amendment 2026-11-04 (#195、Proposed) を読み、AGM-1 を承認するか決める。Broker の WmiGate の許可リストに、チェックポイント・巻き戻し・電源・読み取りの行を足す。installer が VM を ProductionOnly にすることも含む。WSL2 には不要
 - 所要: 約 15 分 (Yosuke の読む時間)
-- これで進むもの: 戻せる承認の PR3・PR4・PR6 の merge。PR2 (計測) と PR5 (CP と room) は承認前でも進められる。**WSL2 版も AGM-2 を待つ**: Broker が run lease に署名する鍵がこれ (ADR-012 の「既存の鍵」は誤りで、Broker に鍵はまだ無い)
+- これで進むもの: 戻せる承認の PR3・PR4・PR6 の merge。PR2 (計測) と PR5 (CP と room) は承認前でも進められる。WSL2 版は AGM-1 を待たない
 - 取り消し: 採択は revert できる。鍵は uninstall で消える
 
 ### 作業フォルダの削除
