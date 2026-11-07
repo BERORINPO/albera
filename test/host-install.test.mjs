@@ -79,7 +79,11 @@ test('source guards: elevation is checked first and never requested; nothing fro
   // The only programs ever started: sc.exe and icacls.exe by their full System32 path, and ONE more - `launch-check` of the INSTALLED Control Plane host, with a minimal environment. Nothing from the repository tree.
   const calls = [...script.matchAll(/Invoke-Native\s+(\S+)/gu)].map((m) => m[1]).filter((first) => !first.startsWith('('));
   assert.ok(calls.length >= 6);
-  for (const first of calls) assert.ok(first === '$ScExe' || first === '$IcaclsExe' || first === '$L.ControlPlaneExe', `Invoke-Native is only called with sc.exe, icacls.exe or the installed host, saw ${first}`);
+  for (const first of calls) assert.ok(first === '$ScExe' || first === '$IcaclsExe' || first === '$L.ControlPlaneExe' || first === '$W.BridgeExe', `Invoke-Native is only called with sc.exe, icacls.exe, the installed host or (-AddWsl2Computer) the installed bridge, saw ${first}`);
+  const bridgeCalls = script.split('\n').filter((line) => /Invoke-Native \$W\.BridgeExe/u.test(line));
+  assert.equal(bridgeCalls.length, 1, 'one call starts the installed bridge');
+  assert.match(bridgeCalls[0], /'serve ' \+ \(Quote-NativeArg \$W\.FirstCheckConfig\)\) 30000 -MinimalEnvironment/u, 'and it is the first-start check, with a minimal environment');
+  assert.ok(script.indexOf('Invoke-Native $W.BridgeExe') > script.indexOf('function Invoke-Wsl2FirstStart') && script.indexOf('Invoke-Native $W.BridgeExe') < script.indexOf('function Get-Wsl2VerifyStep'), 'only Invoke-Wsl2FirstStart does it');
   const hostCalls = script.split('\n').filter((line) => /Invoke-Native \$L\.ControlPlaneExe/u.test(line));
   assert.equal(hostCalls.length, 1, 'one call starts the installed host');
   assert.match(hostCalls[0], /'launch-check ' \+ \(Quote-NativeArg \$L\.ControlPlaneConfig\)\) 60000 -MinimalEnvironment/u, 'and it is launch-check, with a minimal environment');
@@ -2577,11 +2581,14 @@ test('the Control Plane install, source guards: no repository file is executed, 
   // M1: BUILTIN\Users get read and execute on exactly three folders of the install; nothing else under it
   assert.deepEqual([...new Set([...scriptCode.matchAll(/Grant-UsersReadExecute \$L\.(\w+)/gu)].map((m) => m[1]))].sort(), ['ApproverBinDir', 'LauncherDir', 'SetupBinDir']);
   assert.equal(code(lib).includes('S-1-5-32-545'), false, 'the ACL plan of the install folder names no BUILTIN\\Users');
-  // H1: the floor is written and read in the 64-bit registry view, and nothing ever removes it (the one registry delete is the Run entry)
+  // H1: the floor is written and read in the 64-bit registry view, and nothing ever removes it (the registry deletes are the two Run entries: the approver tray and, with -AddWsl2Computer, the WSL bridge)
   assert.match(scriptCode, /OpenBaseKey\(\[Microsoft\.Win32\.RegistryHive\]::LocalMachine, \[Microsoft\.Win32\.RegistryView\]::Registry64\)/u);
-  assert.deepEqual([...scriptCode.matchAll(/DeleteValue|DeleteSubKey\w*|Remove-ItemProperty|Remove-Item\s+(?:-Path\s+)?'?(?:HKLM|Registry)/gu)].map((m) => m[0]), ['DeleteValue'], 'one registry delete in the whole script');
+  assert.deepEqual([...scriptCode.matchAll(/DeleteValue|DeleteSubKey\w*|Remove-ItemProperty|Remove-Item\s+(?:-Path\s+)?'?(?:HKLM|Registry)/gu)].map((m) => m[0]), ['DeleteValue', 'DeleteValue'], 'two registry deletes in the whole script: the two Run entries');
   const runDelete = scriptCode.slice(scriptCode.indexOf('function Remove-RunEntryValue'), scriptCode.indexOf('function ', scriptCode.indexOf('function Remove-RunEntryValue') + 10));
   assert.match(runDelete, /DeleteValue\(\$e\.Name, \$false\)/u);
+  const wsl2RunDelete = scriptCode.slice(scriptCode.indexOf('function Remove-Wsl2RunValue'), scriptCode.indexOf('function ', scriptCode.indexOf('function Remove-Wsl2RunValue') + 10));
+  assert.match(wsl2RunDelete, /Get-Wsl2RunEntry \$W/u);
+  assert.match(wsl2RunDelete, /DeleteValue\(\$e\.Name, \$false\)/u);
   const floorLines = [...(scriptCode + code(lib)).matchAll(/^.*(?:Remove|Delete)[^\n]*SetupRunIdFloor.*$/gmu)].map((m) => m[0].trim());
   assert.equal(floorLines.length, 1, 'only the manifest step\'s own text names the floor next to the word Remove');
   assert.match(floorLines[0], /^\[pscustomobject\]@\{ Id = 'manifest'; .*SetupRunIdFloor is NOT removed/u, 'and it says the floor is NOT removed');

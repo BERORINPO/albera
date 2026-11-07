@@ -21,6 +21,7 @@ $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
 $K = Get-HostConstants
 $RepoRoot = Join-Path $Work 'repo'
 $L = Get-HostLayout (Join-Path $Work 'pf') (Join-Path $Work 'pd')
+$W = Get-Wsl2Layout $L
 $Mode = 'set-approver'
 $script:ManifestNote = $null
 $script:Manifest = $null

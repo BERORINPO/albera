@@ -19,6 +19,13 @@
 #                                                             BUILTIN\Hyper-V Administrators, makes the Broker's SID type unrestricted, and writes the VM's GUID (looked up now from -VmName) into the Broker config,
 #                                                             and writes the `desktop` block (installed helper path + its SHA-256) into the Control Plane settings, which the gated room requires.
 #                                                             The Control Plane and the Authority are never added. Without this option nothing about the install changes. Uninstall removes the SID again (the install record says so).
+#   albera-host.ps1 -Mode install ... -AddWsl2Computer -Wsl2RepositoryId <id> -Wsl2RepositoryPath <C:\folder> -Wsl2Image <albera-wsl2.tar> -Wsl2ImageSha256 <64 hex> -Wsl2BridgeTreeHash <64 hex>
+#                                                             -Wsl2FloorExpiresAt <unix seconds> [-Wsl2ComputerId <id>] [-Wsl2GitPath <C:\Program Files\Git\...\git.exe>]
+#                                                             OPTIONAL (ADR-012 phase 5, host-install.md "WSL2 computer"): makes the Broker's CNG attestation key (refused when a key of that name exists) and hands its public half to the
+#                                                             Authority (pinned), the bridge config and the Broker config; copies the WSL bridge (its own tree hash, -Mode wsl2-hashes), the image, the lease floor file and the bridge config into
+#                                                             administrator-only folders; starts the bridge once with the Control Plane set to you (it must exit 77); reads the key and its three copies back (they must agree); adds the
+#                                                             `kind: wsl2` computer, the wsl2 settings block and an HKLM Run entry that starts the bridge in your session. Uninstall removes all of it, the key included.
+#   albera-host.ps1 -Mode wsl2-hashes                         prints ALBERA_WSL_BRIDGE_TREE_HASH=<hex> of the bridge publish folder (run it in a NORMAL console; type the value into the elevated install)
 #   albera-host.ps1 -Mode migrate (-ExpectedTreeHash <64 hex> | -TrustLocalBuilds)
 #                                                             ONCE, for an install made by the first layout (the local account albera-cp; control-plane-service.md section 9, decision D7): reads that install's
 #                                                             record and configs (the Hello public values, the VM GUID, the computer id, whether the Hyper-V grant was made), stops albera-cp's processes by PID,
@@ -63,7 +70,7 @@
 # -VmId (a fixed VM GUID instead of the lookup), -NodeSource and -ClaudeSource (a node.exe / claude.exe from elsewhere) are for the disposable lab VM only and are refused unless the environment variable ALBERA_LAB_VM is 1.
 [CmdletBinding()]
 param(
-  [ValidateSet('plan', 'install', 'uninstall', 'status', 'hashes', 'migrate', 'set-approver')][string]$Mode = 'plan',
+  [ValidateSet('plan', 'install', 'uninstall', 'status', 'hashes', 'migrate', 'set-approver', 'wsl2-hashes')][string]$Mode = 'plan',
   [ValidateSet('install', 'uninstall', 'migrate', 'set-approver')][string]$PlanFor = 'install',
   [string]$ApproverKeyId,
   [string]$ApproverPublicKey,
@@ -84,6 +91,16 @@ param(
   [string]$ComputerId,
   [switch]$StartCheck,
   [switch]$GrantHyperVToBroker,
+  # -AddWsl2Computer (install only): the WSL2 computer. The values are typed by you (the image hash and the bridge tree hash are anchors: the COPIES must hash to them).
+  [switch]$AddWsl2Computer,
+  [string]$Wsl2ComputerId,
+  [string]$Wsl2RepositoryId,
+  [string]$Wsl2RepositoryPath,
+  [string]$Wsl2Image,
+  [string]$Wsl2ImageSha256,
+  [string]$Wsl2BridgeTreeHash,
+  [string]$Wsl2FloorExpiresAt,
+  [string]$Wsl2GitPath,
   [string]$VmId,
   # The run id of the attested workflow run that built what albera-setup.exe verified (a decimal number). Recorded as `setupRunId` in the install record; a smaller one is refused, the same one is fine.
   [string]$SetupRunId,
@@ -161,6 +178,9 @@ if ($LabAssumeYes) {
   if (-not $setApproverLike) { Stop-Refused '-LabAssumeYes only applies to -Mode set-approver (and its plan)' 2 }
 }
 if ($GrantHyperVToBroker -and -not ($Mode -eq 'install' -or ($Mode -eq 'plan' -and $PlanFor -eq 'install'))) { Stop-Refused '-GrantHyperVToBroker only applies to -Mode install (and its plan); migrate, status and uninstall follow what the install record says' 2 }
+$wsl2Options = @($Wsl2ComputerId, $Wsl2RepositoryId, $Wsl2RepositoryPath, $Wsl2Image, $Wsl2ImageSha256, $Wsl2BridgeTreeHash, $Wsl2FloorExpiresAt, $Wsl2GitPath) | Where-Object { $_ }
+if ($wsl2Options.Count -gt 0 -and -not $AddWsl2Computer) { Stop-Refused 'the -Wsl2... options only apply together with -AddWsl2Computer' 2 }
+if ($AddWsl2Computer -and -not ($Mode -eq 'install' -or ($Mode -eq 'plan' -and $PlanFor -eq 'install'))) { Stop-Refused '-AddWsl2Computer only applies to -Mode install (and its plan); status and uninstall follow what the install record says' 2 }
 if ($SetupRunId -and $null -eq (ConvertTo-SetupRunId $SetupRunId)) { Stop-Refused '-SetupRunId must be a decimal number (the run id of the attested workflow run)' 2 }
 if ($SetupRunId -and -not $installLike) { Stop-Refused '-SetupRunId only applies to install and migrate (and their plan)' 2 }
 if ($TrustLocalBuilds -and -not ($Mode -eq 'migrate' -or ($Mode -eq 'plan' -and $PlanFor -eq 'migrate'))) { Stop-Refused '-TrustLocalBuilds only applies to -Mode migrate (and its plan): every other run takes the tree hash from setup or from the CI log' 2 }
@@ -202,6 +222,7 @@ if (-not [Environment]::Is64BitProcess) { Stop-Refused 'a 64-bit PowerShell is r
 $folderReasons = Test-FixedFolders $SystemDirectory $ProgramFilesDir $ProgramDataDir
 if ($folderReasons.Count -gt 0) { Stop-Refused ("Windows reports a non-standard system folder ($($folderReasons -join ', ')); this script only works with C:\Windows\System32, C:\Program Files and C:\ProgramData") }
 $L = Get-HostLayout $ProgramFilesDir $ProgramDataDir
+$W = Get-Wsl2Layout $L
 foreach ($p in @($L.BrokerExe, $L.AuthorityExe, $L.PipeClientExe, $L.ControlPlaneExe, $L.ApproverExe, $L.ClaudeExe, $L.ControlPlaneNodeExe, $L.OpenScript, $L.BrokerConfig, $L.AuthorityConfig, $L.ControlPlaneConfig, $L.ApprovalSettings, $L.BrokerDb, $L.ControlPlaneJournal, $L.ControlPlaneLogDir)) {
   if (-not (Test-PlainAbsolutePath $p)) { Stop-Refused 'an install path is not a plain absolute path (the services refuse such paths)' }
 }
@@ -817,6 +838,7 @@ function Get-InstallSteps {
           $same = Test-ControlPlaneServiceConfigText ([System.IO.File]::ReadAllText($L.ControlPlaneConfig)) $L $script:Manifest['created']['controlPlane']['nodeSha256'] $script:Manifest['created']['claude']['sha256'] $script:Sids.ControlPlane $approverSid
           if ($same.Count -gt 0) { return 'todo' }
         } catch { return 'todo' }
+        if ($AddWsl2Computer) { try { if ((Get-Wsl2ConfigProblems).Count -gt 0) { return 'todo' } } catch { return 'todo' } }   # the wsl2 computer, the attestation key and the wsl2 block are in the three files
         # an install begun without the option and finished with it: the Broker config exists but has no computers yet, and the settings have no desktop block yet
         if ($GrantHyperVToBroker) {
           $vm = Resolve-BrokerVm
@@ -850,15 +872,16 @@ function Get-InstallSteps {
       Test = { if ($script:Manifest -and $script:Manifest['state'] -eq 'complete') { 'done' } else { 'todo' } }
       Do = { $script:Manifest['state'] = 'complete'; Save-Manifest; Set-ManifestSetupRunId; Say '    install complete' } }
   )
-  if (-not $GrantHyperVToBroker) { return $steps }
-  # With the option: the VM lookup comes right after the checks (nothing has been created yet if the VM is missing), the group change right after the services exist.
-  $withGrant = New-Object 'System.Collections.Generic.List[object]'
+  if (-not $GrantHyperVToBroker -and -not $AddWsl2Computer) { return $steps }
+  # With the options: the VM lookup comes right after the checks (nothing has been created yet if the VM is missing), the group change right after the services exist; the WSL2 steps each after the step they depend on.
+  $withOptions = New-Object 'System.Collections.Generic.List[object]'
   foreach ($s in $steps) {
-    $withGrant.Add($s)
-    if ($s.Id -eq 'approver') { $withGrant.Add((Get-HyperVVmStep)) }
-    if ($s.Id -eq 'services') { $withGrant.Add((Get-HyperVGrantStep)) }
+    $withOptions.Add($s)
+    if ($GrantHyperVToBroker -and $s.Id -eq 'approver') { $withOptions.Add((Get-HyperVVmStep)) }
+    if ($GrantHyperVToBroker -and $s.Id -eq 'services') { $withOptions.Add((Get-HyperVGrantStep)) }
+    if ($AddWsl2Computer) { foreach ($extra in (Get-Wsl2StepsAfter $s.Id)) { $withOptions.Add($extra) } }
   }
-  $withGrant.ToArray()
+  $withOptions.ToArray()
 }
 
 function Set-ApproverValues {
@@ -1357,11 +1380,19 @@ function Write-HostConfigs {
     $vm = Resolve-BrokerVm
     if ($vm.Kind -ne 'ok') { throw $vm.Message }
     $computers = Get-BrokerComputers $ComputerId $vm.Id
-    $helperSha = Get-DesktopHelperSha256
   }
-  $brokerJson = ConvertTo-HostJson (Get-BrokerConfig $L $cp $spki $computers)
-  $authorityJson = ConvertTo-HostJson (Get-AuthorityConfig $cp $script:Approver)
-  $settingsJson = ConvertTo-HostJson (Get-ControlPlaneSettings $L $ProjectId $VmName $ComputerId $helperSha)
+  $wsl2Broker = $null; $attestation = $null; $wsl2Settings = $null
+  if ($AddWsl2Computer) {
+    if (-not (Test-ManifestHas 'wsl2') -or -not $script:Manifest['values'].ContainsKey('attestationSpki')) { throw 'the attestation key is not recorded yet; the configs name its public half' }
+    $e = Get-Wsl2Expect
+    $wsl2Broker = [pscustomobject]@{ ComputerId = $e.ComputerId; KeyName = $e.KeyName; KeyId = $e.KeyId }
+    $attestation = [pscustomobject]@{ keyId = $e.KeyId; spki = $script:Manifest['values']['attestationSpki'] }
+    $wsl2Settings = [pscustomobject]@{ ComputerId = $e.ComputerId; RepositoryId = $e.RepositoryId; PipeName = $e.PipeName; ServerSid = $e.ServerSid; Git = $e.Git }
+  }
+  if ($GrantHyperVToBroker -or $AddWsl2Computer) { $helperSha = Get-DesktopHelperSha256 }   # the wsl2 block of the settings needs the desktop block as well
+  $brokerJson = ConvertTo-HostJson (Get-BrokerConfig $L $cp $spki $computers $wsl2Broker)
+  $authorityJson = ConvertTo-HostJson (Get-AuthorityConfig $cp $script:Approver $attestation)
+  $settingsJson = ConvertTo-HostJson (Get-ControlPlaneSettings $L $ProjectId $VmName $ComputerId $helperSha $wsl2Settings)
   if (-not (Test-ManifestHas 'controlPlane') -or -not (Test-ManifestHas 'claude')) { throw 'the node.exe and claude.exe pins are not recorded yet; the service config names their hashes' }
   $nodeSha = $script:Manifest['created']['controlPlane']['nodeSha256']; $claudeSha = $script:Manifest['created']['claude']['sha256']
   $serviceJson = ConvertTo-HostJson (Get-ControlPlaneServiceConfig $L $nodeSha $claudeSha $cp $script:Approver.approverSid)
@@ -1369,7 +1400,11 @@ function Write-HostConfigs {
       @('control plane service config', (Test-ControlPlaneServiceConfigText $serviceJson $L $nodeSha $claudeSha $cp $script:Approver.approverSid)))) {
     if ($pair[1].Count -gt 0) { throw "$($pair[0]) failed this script's own check: $($pair[1] -join ', ')" }
   }
-  if ($GrantHyperVToBroker -and -not (Test-ControlPlaneDesktop $settingsJson $L.PipeClientExe $helperSha)) { throw 'control plane settings failed this script''s own check: desktop' }
+  if (($GrantHyperVToBroker -or $AddWsl2Computer) -and -not (Test-ControlPlaneDesktop $settingsJson $L.PipeClientExe $helperSha)) { throw 'control plane settings failed this script''s own check: desktop' }
+  if ($AddWsl2Computer) {
+    $badWsl2 = Test-Wsl2SettingsText $settingsJson $e
+    if ($badWsl2.Count -gt 0) { throw "control plane settings failed this script's own check: $($badWsl2 -join ', ')" }
+  }
   $plan = @(Get-AclPlan $L $script:Sids)
   $writersOf = { param($dir) Get-PlannedWriters ($plan | Where-Object { $_.Path -ceq $dir } | Select-Object -First 1) }
   Write-OneConfig $L.BrokerConfig $brokerJson (& $writersOf $L.BrokerConfigDir)
@@ -1394,6 +1429,351 @@ function Invoke-StartCheck {
     if ($f.State -eq 'Running') { Invoke-Sc "stop $($spec.Name)" | Out-Null; Wait-ServiceState $spec.Name @('Stopped') 30 | Out-Null }
     else { throw "$($spec.Name) did not stay running (see docs/architecture/host-install.md for the exit codes)" }
   }
+}
+
+# ---------------------------------------------------------------------------------------------- the WSL2 computer (-AddWsl2Computer; ADR-012 phase 5). NOT RUN on a real PC.
+# What it adds to an install, in order: the inputs are checked; the Broker's CNG attestation key is made (refused when a key of that name exists); the three configs and the settings carry its public half and the
+# wsl2 computer; the bridge's folders, program, image, lease floor and config are made; the bridge is started once with a config whose Control Plane is the owner (it must exit 77); the three places that hold the key
+# are read back and must agree; the bridge gets an HKLM Run entry (the owner's session starts it at sign-in, like the approver tray). Uninstall takes all of it away, the key included.
+function Get-Wsl2Inputs {
+  $c = Get-Wsl2Constants
+  $floor = 0L
+  if ($Wsl2FloorExpiresAt -cmatch '^[0-9]{1,16}\z') { $floor = [long]$Wsl2FloorExpiresAt }
+  # status and uninstall are given no -Wsl2... option: what they need (ids, git, image hash) comes from the install record
+  $rec = if (Test-ManifestHas 'wsl2') { $script:Manifest['created']['wsl2'] } else { @{} }
+  $pick = { param($given, $key, $default) if ($given) { $given } elseif ($rec.ContainsKey($key)) { $rec[$key] } else { $default } }
+  [pscustomobject]@{
+    ComputerId = (& $pick $Wsl2ComputerId 'computerId' $c.DefaultComputerId)
+    RepositoryId = (& $pick $Wsl2RepositoryId 'repositoryId' $null); RepositoryPath = $Wsl2RepositoryPath; ImagePath = $Wsl2Image; ImageSha256 = (& $pick $Wsl2ImageSha256 'imageSha256' $null)
+    BridgeTreeHash = $Wsl2BridgeTreeHash; FloorExpiresAt = $floor; GitPath = (& $pick $Wsl2GitPath 'gitPath' $c.DefaultGitPath)
+  }
+}
+# What the configs and the settings must say (after Resolve-HostSids: the owner is the approver SID, the account the bridge runs as).
+function Get-Wsl2Expect {
+  Resolve-HostSids
+  $c = Get-Wsl2Constants; $i = Get-Wsl2Inputs
+  [pscustomobject]@{ KeyName = $c.AttestationKeyName; KeyId = $c.AttestationKeyId; ComputerId = $i.ComputerId; RepositoryId = $i.RepositoryId; PipeName = $c.BridgePipeName; ServerSid = $script:Sids.Approver; Git = $i.GitPath }
+}
+function Get-Wsl2PublishDir { Join-Path $RepoRoot 'src\runtime\windows-wsl-bridge\bin\Release\net10.0-windows\win-x64\publish' }
+# The tree hash of a folder of the bridge (publish folder, partial copy or installed copy): the pure function over the file hashes.
+function Get-Wsl2TreeOf([string]$Dir) {
+  $files = @{}
+  foreach ($f in (Get-TreeHashes $Dir).Files) { $files[$f.Rel] = $f.Sha }
+  Get-Wsl2BridgeTreeHash $files
+}
+function Get-Wsl2IntendedBridgeJson {
+  Resolve-HostSids
+  $c = Get-Wsl2Constants
+  if (-not $script:Manifest -or -not $script:Manifest['values'].ContainsKey('attestationSpki')) { throw 'the attestation key is not recorded yet; the bridge config names its public half' }
+  ConvertTo-HostJson (Get-Wsl2BridgeConfig $W $script:Sids.ControlPlane $c.AttestationKeyId $script:Manifest['values']['attestationSpki'] (Get-Wsl2Inputs))
+}
+function Read-TextOrNull([string]$Path) { if ([System.IO.File]::Exists($Path)) { [System.IO.File]::ReadAllText($Path) } else { $null } }
+# What stops the sources being used (nothing is read from the repository except the publish folder and the typed paths are only looked at, never run). $null = fine.
+function Get-Wsl2SourceProblem {
+  $i = Get-Wsl2Inputs
+  $recorded = (Test-ManifestHas 'wsl2') -and $script:Manifest['created']['wsl2'].ContainsKey('bridgeTreeSha256')
+  if (-not $recorded) {
+    $dir = Get-Wsl2PublishDir
+    if (-not [System.IO.Directory]::Exists($dir)) { return "the bridge publish folder is missing (run npm run build:wsl-bridge): $dir" }
+    if (Test-HasReparsePoint $dir) { return 'the bridge publish folder contains a link or junction' }
+    if (-not [System.IO.File]::Exists((Join-Path $dir 'albera-wsl-bridge.exe'))) { return 'the bridge publish folder has no albera-wsl-bridge.exe' }
+  }
+  if (-not (Test-Path -LiteralPath $W.Image -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $i.ImagePath -PathType Leaf)) { return "-Wsl2Image is not a file: $($i.ImagePath)" }
+    if ((Get-ReparseChain $i.ImagePath).Count -gt 0) { return '-Wsl2Image is reached through a link' }
+  }
+  if (-not (Test-Path -LiteralPath $i.RepositoryPath -PathType Container)) { return "-Wsl2RepositoryPath is not a folder: $($i.RepositoryPath)" }
+  if (-not (Test-Path -LiteralPath $i.GitPath -PathType Leaf)) { return "git is not at $($i.GitPath) (install Git for Windows, or give -Wsl2GitPath)" }
+  $untrusted = Get-PathTrustReasons $i.GitPath (Get-AdminSids) $false
+  if ($untrusted.Count -gt 0) { return (Format-TrustRefusal $i.GitPath $untrusted) }
+  $null
+}
+function Get-Wsl2InputsStep {
+  [pscustomobject]@{ Id = 'wsl2inputs'; Title = "Check the WSL2 options (-Wsl2ComputerId, -Wsl2RepositoryId, -Wsl2RepositoryPath, -Wsl2Image, -Wsl2ImageSha256, -Wsl2BridgeTreeHash, -Wsl2FloorExpiresAt, -Wsl2GitPath); nothing is run or changed (-AddWsl2Computer)"
+    Detail = @('the image hash and the bridge tree hash are values YOU type: the image is copied and the COPY must hash to it; the bridge is copied and the COPY must hash to the tree hash (-Mode wsl2-hashes prints it for the publish folder, run it in a normal console)',
+      'the floor expiry is a Unix time in seconds in the future: past it the bridge refuses every run (ADR-012, decision 12)', 'git must be a file under C:\Program Files\Git whose folder only administrators can write')
+    Test = {
+      $why = Test-Wsl2Inputs (Get-Wsl2Inputs) ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) $ComputerId
+      if ($why.Count -gt 0) { return 'blocked:' + ($why -join ', ') + ' (the -Wsl2... options in the header of this script)' }
+      $problem = Get-Wsl2SourceProblem; if ($problem) { return 'blocked:' + $problem }
+      'todo' }
+    Do = { Say '    the WSL2 options have the shape the configs need; the publish folder, the image, the repository and git are there' } }
+}
+function Get-Wsl2KeyStep {
+  $c = Get-Wsl2Constants
+  [pscustomobject]@{ Id = 'wsl2key'; Title = "Create the Broker attestation key $($c.AttestationKeyName) (ECDSA P-256, Software KSP, machine scope, Export Policy none, DACL SYSTEM/Administrators/Broker service SID only); refused when a key of that name exists"
+    Detail = @('read back from a fresh open, one sign/verify round trip; only the PUBLIC key (SPKI) leaves it: into the Authority config (pinned), the bridge config and recorded in the manifest', 'the Broker only checks the algorithm and that it can sign, not the ACL or export: this step is where the protection is made and checked')
+    Test = {
+      if (-not (Test-ManifestHas 'services')) { return 'todo' }
+      $name = (Get-Wsl2Constants).AttestationKeyName
+      $exists = Test-AuthoritySigningKeyExists $name
+      if ((Test-ManifestHas 'wsl2') -and $script:Manifest['values'].ContainsKey('attestationSpki') -and $exists) { return 'done' }
+      if ($exists) { return 'blocked:a machine key named ' + $name + ' exists and was not created by this script; it is never adopted (delete it yourself if it is yours)' }
+      'todo' }
+    Do = { New-Wsl2AttestationKey } }
+}
+function New-Wsl2AttestationKey {
+  Resolve-HostSids
+  $c = Get-Wsl2Constants; $i = Get-Wsl2Inputs
+  $made = New-AuthoritySigningKey $c.AttestationKeyName $script:Sids.Broker 'machine'   # throws key_already_exists
+  $rec = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+  $rec['computerId'] = $i.ComputerId; $rec['repositoryId'] = $i.RepositoryId; $rec['keyName'] = $c.AttestationKeyName; $rec['keyId'] = $c.AttestationKeyId
+  $script:Manifest['created']['wsl2'] = $rec; $script:Manifest['values']['attestationSpki'] = $made.spki; Save-Manifest
+  Say "    key created and read back (export policy $($made.report.exportPolicy), allowed: $($made.report.allowSids -join ', ')); public key $($made.spki)"
+}
+function Get-Wsl2ConfigProblems {
+  # the Broker config, the Authority config and the settings against the intended values; the bridge config is not on disk yet in the configs step, so the intended text stands in for it
+  $e = Get-Wsl2Expect
+  $spki = $script:Manifest['values']['attestationSpki']
+  $agree = Test-Wsl2KeyAgreement $e $spki (Read-TextOrNull $L.BrokerConfig) (Read-TextOrNull $L.AuthorityConfig) (Get-Wsl2IntendedBridgeJson) (Get-Wsl2LeaseFloorText $K.Generation)   # assigned first: the test functions return , @(list)
+  $settings = Test-Wsl2SettingsText (Read-TextOrNull $L.ApprovalSettings) $e
+  , @(@($agree) + @($settings))
+}
+function Get-Wsl2FoldersStep {
+  [pscustomobject]@{ Id = 'wsl2folders'; Title = "Create $($W.DataDir) (administrators write, YOUR account reads) and its state\ and distributions\ folders (YOUR account may write only there), each born with its final ACL and read back"
+    Detail = @('the lease floor file, the bridge config and the image sit in the first folder: the Broker, the Authority and the Control Plane service SIDs have no rule there, so only Administrators, SYSTEM and your account can read the floor',
+      'the bridge refuses a config, image or floor that anyone else can write')
+    Test = {
+      if (-not (Test-ManifestHas 'wsl2')) { return 'todo' }
+      Resolve-HostSids
+      foreach ($e in (Get-Wsl2AclPlan $W $script:Sids)) {
+        if (-not (Test-Path -LiteralPath $e.Path)) { return 'todo' }
+        $r = Get-PathTrustReasons $e.Path (Get-PlannedWriters $e) $true
+        if ($r.Count -gt 0) { return 'blocked:' + (Format-TrustRefusal $e.Path $r) }
+        if ((Test-AclMatchesPlan $e (Get-AclSummary $e.Path)).Count -gt 0) { return 'todo' }
+      }
+      'done' }
+    Do = { New-Wsl2Folders } }
+}
+function New-Wsl2Folders {
+  Resolve-HostSids
+  $plan = @(Get-Wsl2AclPlan $W $script:Sids)
+  foreach ($entry in $plan) {
+    if (Test-Path -LiteralPath $entry.Path) {
+      $r = Get-PathTrustReasons $entry.Path (Get-PlannedWriters $entry) $false
+      if ($r.Count -gt 0) { throw (Format-TrustRefusal $entry.Path $r) }
+      Set-HostAcl $entry
+    }
+    else { New-TrustedDirectory $entry.Path $entry.Grants }
+  }
+  foreach ($entry in $plan) {
+    $diffs = Test-AclMatchesPlan $entry (Get-AclSummary $entry.Path)
+    if ($diffs.Count -gt 0) { throw "ACL of $($entry.Path) is not as planned: $($diffs -join ', ')" }
+  }
+  Say '    folders created with their final ACL; every ACL read back and matches the plan'
+}
+# The bridge folder's DACL: SYSTEM and Administrators full, the owner's SID read and execute (a real account), nothing inherited; written with .NET (Set-HostDacl) and read back. Nobody gets a write right.
+function Grant-OwnerReadExecute([string]$Path, [string]$Sid) {
+  if (-not (Test-AccountSidShape $Sid)) { throw 'the owner SID is not an S-1-5-21 user SID' }
+  Set-HostDacl $Path @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F', "*${Sid}:(OI)(CI)RX")
+  $summary = Get-AclSummary $Path
+  if (@($summary.AllowSids) -notcontains $Sid -or @($summary.WriteSids) -contains $Sid -or -not $summary.Protected) { throw "the ACL of $Path is not as intended after the change (the owner must read and not write)" }
+}
+function Get-Wsl2FilesStep {
+  [pscustomobject]@{ Id = 'wsl2files'; Title = "Copy the WSL bridge into $($W.BinDir) (administrator-only; your account may read and run it) and require the COPY to hash to -Wsl2BridgeTreeHash; copy the image to $($W.Image) and require the COPY to hash to -Wsl2ImageSha256; write the lease floor file $($W.FloorFile) (generation $($K.Generation)) and the bridge config $($W.Config)"
+    Detail = @('the bridge is NOT part of the five-component tree hash that setup verifies (that is a CI value for the five builds); it has its own hash, typed by you from -Mode wsl2-hashes',
+      'copied to a .partial folder, hashed there; a difference deletes the copy and stops. An existing copy that does not match is refused (update = uninstall + install)',
+      'the lease floor file holds one number, the Broker config generation: reading is limited to Administrators, SYSTEM and your account; raising it later (the revocation runbook) needs no restart')
+    Test = {
+      if (-not (Test-ManifestHas 'wsl2')) { return 'todo' }
+      $rec = $script:Manifest['created']['wsl2']
+      foreach ($field in @('bridgeTreeSha256', 'bridgeExeSha256', 'imageSha256', 'floorGeneration')) { if (-not $rec.ContainsKey($field)) { return 'todo' } }
+      foreach ($p in @($W.BridgeExe, $W.Image, $W.FloorFile, $W.Config)) { if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return 'todo' } }
+      try {
+        if ((Get-Wsl2TreeOf $W.BinDir) -cne $rec['bridgeTreeSha256'] -or (Get-Sha256File $W.Image) -cne $rec['imageSha256']) { return 'todo' }
+        if ((Read-TextOrNull $W.Config) -cne (Get-Wsl2IntendedBridgeJson) -or (Read-Wsl2LeaseFloor (Read-TextOrNull $W.FloorFile)) -ne $K.Generation) { return 'todo' }
+        Resolve-HostSids
+        if (@((Get-AclSummary $W.BinDir).AllowSids) -notcontains $script:Sids.Approver) { return 'todo' }
+      } catch { return 'todo' }
+      'done' }
+    Do = { Copy-Wsl2Parts } }
+}
+function Copy-Wsl2Parts {
+  Resolve-HostSids
+  $i = Get-Wsl2Inputs
+  $rec = $script:Manifest['created']['wsl2']
+  # the bridge program
+  if (Test-Path -LiteralPath $W.BinDir) {
+    $untrusted = Get-PathTrustReasons $W.BinDir (Get-AdminSids) $false
+    if ($untrusted.Count -gt 0) { throw (Format-TrustRefusal $W.BinDir $untrusted) }
+    if (Test-HasReparsePoint $W.BinDir) { throw "$($W.BinDir) contains a link or junction" }
+    $have = Get-Wsl2TreeOf $W.BinDir
+    if ($have -cne $i.BridgeTreeHash) { throw "the installed bridge hashes to $have, not to -Wsl2BridgeTreeHash; update means uninstall, then install" }
+  }
+  else {
+    $partial = $W.BinDir + '.partial'
+    if (Test-Path -LiteralPath $partial) { Remove-TreeNoFollow $partial }
+    try {
+      foreach ($f in (Get-SourceFiles (Get-Wsl2PublishDir))) {   # refuses a link or junction
+        $target = Join-Path $partial $f.Rel
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+        [System.IO.File]::Copy($f.Full, $target, $false)
+      }
+      $copied = Get-Wsl2TreeOf $partial
+      if ($copied -cne $i.BridgeTreeHash) { throw "the copy of the bridge hashes to $copied, not to -Wsl2BridgeTreeHash; the copy was deleted. The build in the working tree is not the one you hashed." }
+    }
+    catch { if (Test-Path -LiteralPath $partial) { Remove-TreeNoFollow $partial }; throw }
+    Move-Item -LiteralPath $partial -Destination $W.BinDir
+  }
+  Grant-OwnerReadExecute $W.BinDir $script:Sids.Approver
+  $hashes = Get-TreeHashes $W.BinDir
+  $exe = ($hashes.Files | Where-Object { $_.Rel -ceq 'albera-wsl-bridge.exe' }).Sha
+  if (-not $exe) { throw 'the installed bridge folder has no albera-wsl-bridge.exe' }
+  $rec['computerId'] = $i.ComputerId; $rec['repositoryId'] = $i.RepositoryId; $rec['gitPath'] = $i.GitPath
+  $rec['bridgeTreeSha256'] = $i.BridgeTreeHash; $rec['bridgeExeSha256'] = $exe; Save-Manifest
+  Say "    bridge copy matches $($i.BridgeTreeHash); exe sha256 $exe"
+  # the image
+  if (-not (Test-Path -LiteralPath $W.Image)) {
+    $sha = Copy-PinnedFile $i.ImagePath $W.Image
+    if ($sha -cne $i.ImageSha256) { Remove-Item -LiteralPath $W.Image -Force; throw "the copy of the image hashes to $sha, not to -Wsl2ImageSha256; the copy was deleted" }
+  }
+  elseif ((Get-Sha256File $W.Image) -cne $i.ImageSha256) { throw "$($W.Image) exists and does not hash to -Wsl2ImageSha256; uninstall, then install" }
+  $rec['imageSha256'] = $i.ImageSha256; Save-Manifest
+  Say "    image copy matches $($i.ImageSha256)"
+  # the floor file and the config: an existing file passes the trust checks and is overwritten (Write-OneConfig)
+  $writers = Get-PlannedWriters (Get-Wsl2AclPlan $W $script:Sids | Where-Object { $_.Path -ceq $W.DataDir } | Select-Object -First 1)
+  Write-OneConfig $W.FloorFile (Get-Wsl2LeaseFloorText $K.Generation) $writers
+  $bridgeJson = Get-Wsl2IntendedBridgeJson
+  $bad = Test-Wsl2BridgeConfigText $bridgeJson
+  if ($bad.Count -gt 0) { throw "the bridge config failed this script's own check: $($bad -join ', ')" }
+  Write-OneConfig $W.Config $bridgeJson $writers
+  $rec['floorGeneration'] = [long]$K.Generation; Save-Manifest
+  Say "    lease floor file written (generation $($K.Generation)); bridge config written and re-checked"
+}
+# Replaced by a Fake in the tests. The INSTALLED bridge (the copy whose tree hash was checked), once, with a minimal environment and a config whose Control Plane is the owner.
+function Invoke-Wsl2FirstStart {
+  $r = Invoke-Native $W.BridgeExe ('serve ' + (Quote-NativeArg $W.FirstCheckConfig)) 30000 -MinimalEnvironment
+  [pscustomobject]@{ Exit = $r.Exit; Out = (($r.Out + $r.Err) -replace '\s+', ' ').Trim() }
+}
+function Get-Wsl2VerifyStep {
+  [pscustomobject]@{ Id = 'wsl2verify'; Title = 'Start the installed bridge once with a config whose Control Plane is YOU (it must refuse: exit 77), then read the Authority config, the bridge config, the Broker config and the key back and require them to agree'
+    Detail = @('the first-start check proves the installed program starts, reads and trusts its config and then refuses the wrong identity; run from an elevated console it refuses as "elevated" (an elevated bridge is refused before the Control Plane comparison), so control_plane_is_self is shown only by the harness test',
+      'the agreement check compares the public key in the Authority (attestationPublicKey), the bridge (brokerSpki) and the key itself, and the key id and key name in the Broker and bridge configs, the lease floor against the Broker generation, and the computer and repository names',
+      'a disagreement stops the install: nothing is repaired by guessing')
+    Test = { 'todo' }
+    Do = { Invoke-Wsl2Verify } }
+}
+function Invoke-Wsl2Verify {
+  Resolve-HostSids
+  $c = Get-Wsl2Constants
+  $first = Get-Wsl2IntendedBridgeJson | ConvertFrom-Json
+  $first.controlPlaneSid = $script:Sids.Approver
+  Write-OneConfig $W.FirstCheckConfig (ConvertTo-HostJson $first) (Get-PlannedWriters (Get-Wsl2AclPlan $W $script:Sids | Where-Object { $_.Path -ceq $W.DataDir } | Select-Object -First 1))
+  try { $run = Invoke-Wsl2FirstStart }
+  finally { if (Test-Path -LiteralPath $W.FirstCheckConfig) { Remove-Item -LiteralPath $W.FirstCheckConfig -Force } }
+  if ($run.Exit -ne 77) { throw "the first-start check expected exit 77 and got $($run.Exit): $($run.Out)" }
+  Say "    first start: exit 77 ($($run.Out))"
+  $problems = Get-Wsl2ReadBackProblems
+  if ($problems.Count -gt 0) { throw "the Broker attestation key and its three copies do not agree: $($problems -join ', '); nothing was repaired. Uninstall, then install again." }
+  Say '    the key, the Authority pin, the bridge config and the Broker config agree; the floor file is at the Broker generation'
+}
+# The live key and the files on disk, read back. Used by the verify step and by status. Returns the reason words (empty = agree).
+function Get-Wsl2ReadBackProblems {
+  $e = Get-Wsl2Expect
+  $key = Read-AuthoritySigningKey $e.KeyName
+  $r = New-Object System.Collections.Generic.List[string]
+  if (-not $key) { $r.Add('key_missing'); return , @($r) }
+  foreach ($word in (Test-KeyReadBack $key.report $script:Sids.Broker)) { $r.Add('key_' + $word) }
+  if ($script:Manifest['values'].ContainsKey('attestationSpki') -and $key.spki -cne $script:Manifest['values']['attestationSpki']) { $r.Add('key_differs_from_record') }
+  foreach ($word in (Test-Wsl2KeyAgreement $e $key.spki (Read-TextOrNull $L.BrokerConfig) (Read-TextOrNull $L.AuthorityConfig) (Read-TextOrNull $W.Config) (Read-TextOrNull $W.FloorFile))) { $r.Add($word) }
+  foreach ($word in (Test-Wsl2BridgeConfigText (Read-TextOrNull $W.Config))) { $r.Add('bridge_config_' + $word) }
+  foreach ($word in (Test-Wsl2SettingsText (Read-TextOrNull $L.ApprovalSettings) $e)) { $r.Add($word) }
+  , @($r)
+}
+# The bridge's Run entry (HKLM, only an administrator can write it), read back.
+function Get-Wsl2RunValue {
+  $e = Get-Wsl2RunEntry $W
+  $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($e.KeyPath)
+  if (-not $key) { return $null }
+  try { $key.GetValue($e.Name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } finally { $key.Dispose() }
+}
+function Set-Wsl2RunValue {
+  $e = Get-Wsl2RunEntry $W
+  $key = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey($e.KeyPath)
+  try { $key.SetValue($e.Name, $e.Command, [Microsoft.Win32.RegistryValueKind]::String) } finally { $key.Dispose() }
+}
+function Remove-Wsl2RunValue {
+  $e = Get-Wsl2RunEntry $W
+  $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($e.KeyPath, $true)
+  if (-not $key) { return }
+  try { $key.DeleteValue($e.Name, $false) } finally { $key.Dispose() }
+}
+function Get-Wsl2RunStep {
+  $c = Get-Wsl2Constants
+  [pscustomobject]@{ Id = 'wsl2run'; Title = "Start the bridge in YOUR session at sign-in: HKLM Run value $($c.RunValueName) = `"$($W.BridgeExe)`" serve `"$($W.Config)`""
+    Detail = @('the same way the approver tray is started (an administrator writes the value; your session runs it, not elevated); the bridge refuses an elevated start by itself', 'not started by install: sign out and in, or start it by hand (host-install.md, "WSL2 computer")')
+    Test = {
+      if (-not (Test-ManifestHas 'wsl2')) { return 'todo' }
+      $rec = $script:Manifest['created']['wsl2']
+      if ($rec.ContainsKey('runEntry') -and ((Get-Wsl2RunValue) -ceq (Get-Wsl2RunEntry $W).Command)) { 'done' } else { 'todo' } }
+    Do = {
+      Set-Wsl2RunValue
+      $entry = Get-Wsl2RunEntry $W
+      if ((Get-Wsl2RunValue) -cne $entry.Command) { throw 'the HKLM Run value of the bridge is not what was written' }
+      $run = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $run['name'] = $entry.Name; $run['command'] = $entry.Command
+      $script:Manifest['created']['wsl2']['runEntry'] = $run; Save-Manifest
+      Say "    Run value $($entry.Name) set and read back" } }
+}
+# The steps, placed after the install step they depend on (-AddWsl2Computer).
+function Get-Wsl2StepsAfter([string]$Id) {
+  switch ($Id) {
+    'approver' { @(Get-Wsl2InputsStep) }
+    'key' { @(Get-Wsl2KeyStep) }
+    'configs' { @((Get-Wsl2FoldersStep), (Get-Wsl2FilesStep), (Get-Wsl2VerifyStep)) }
+    'shortcuts' { @(Get-Wsl2RunStep) }
+    default { @() }
+  }
+}
+function Get-Wsl2StatusLines {
+  $out = New-Object System.Collections.Generic.List[object]
+  function Add-W([string]$State, [string]$Text) { $out.Add([pscustomobject]@{ State = $State; Text = $Text }) }
+  if (-not (Test-ManifestHas 'wsl2')) { return , $out.ToArray() }
+  $rec = $script:Manifest['created']['wsl2']
+  Resolve-HostSids
+  $e = Get-Wsl2Expect
+  $problems = Get-Wsl2ReadBackProblems
+  Add-W $(if ($problems.Count -eq 0) { 'ok' } else { 'FAIL' }) ("WSL2 key $($e.KeyName): " + $(if ($problems.Count -eq 0) { 'non-exportable, DACL limited to SYSTEM/Administrators/Broker SID; the Authority pin, the bridge config, the Broker config, the settings and the floor file agree with it' } else { $problems -join ', ' }))
+  foreach ($plan in (Get-Wsl2AclPlan $W $script:Sids)) {
+    if (-not (Test-Path -LiteralPath $plan.Path)) { Add-W 'FAIL' "folder $($plan.Path): missing"; continue }
+    $d = Test-AclMatchesPlan $plan (Get-AclSummary $plan.Path)
+    Add-W $(if ($d.Count -eq 0) { 'ok' } else { 'FAIL' }) ("folder $($plan.Path): " + $(if ($d.Count -eq 0) { 'ACL as planned' } else { $d -join ', ' }))
+  }
+  if ($rec.ContainsKey('bridgeTreeSha256')) {
+    $same = (Test-Path -LiteralPath $W.BinDir) -and ((Get-Wsl2TreeOf $W.BinDir) -ceq $rec['bridgeTreeSha256'])
+    Add-W $(if ($same) { 'ok' } else { 'FAIL' }) ("WSL bridge $($W.BinDir): " + $(if ($same) { 'folder hash equals the recorded one' } else { 'missing or changed since install' }))
+  }
+  else { Add-W 'FAIL' 'WSL bridge: not recorded' }
+  if ($rec.ContainsKey('imageSha256')) {
+    $same = (Test-Path -LiteralPath $W.Image) -and ((Get-Sha256File $W.Image) -ceq $rec['imageSha256'])
+    Add-W $(if ($same) { 'ok' } else { 'FAIL' }) ("WSL2 image: " + $(if ($same) { 'the copy has the recorded SHA-256' } else { 'missing or changed since install' }))
+  }
+  $run = $rec.ContainsKey('runEntry') -and ((Get-Wsl2RunValue) -ceq (Get-Wsl2RunEntry $W).Command)
+  Add-W $(if ($run) { 'ok' } else { 'FAIL' }) ('HKLM Run entry of the bridge: ' + $(if ($run) { 'as recorded, read back' } else { 'missing or changed since install' }))
+  , $out.ToArray()
+}
+
+# Uninstall (steps only when the install record has `wsl2`): the Run value first, the key after the Authority's. The folder is one of the data folders (Get-DataFolders); a file the running bridge holds open stops the removal with its own message: sign out, then run uninstall again.
+function Get-Wsl2UninstallRunStep {
+  [pscustomobject]@{ Id = 'wsl2run'; Title = "Remove the HKLM Run value of the WSL bridge (only if it is the command install wrote)"; Detail = @()
+    Test = { if ((Test-ManifestHas 'wsl2') -and $script:Manifest['created']['wsl2'].ContainsKey('runEntry')) { 'todo' } else { 'done' } }
+    Do = {
+      $rec = $script:Manifest['created']['wsl2']['runEntry']
+      if ((Get-Wsl2RunValue) -ceq $rec['command']) { Remove-Wsl2RunValue; Say "    removed the Run value $($rec['name'])" }
+      else { Say "    WARNING: the Run value $($rec['name']) is not the command install wrote (or is gone); left alone" }
+      $script:Manifest['created']['wsl2'].Remove('runEntry') | Out-Null; Save-Manifest } }
+}
+function Get-Wsl2UninstallKeyStep {
+  $c = Get-Wsl2Constants
+  [pscustomobject]@{ Id = 'wsl2key'; Title = "Delete the Broker attestation key $($c.AttestationKeyName) (only if this script created it)"; Detail = @('the public halves in the Authority and bridge configs go with those files; nothing else holds the key')
+    Test = { $name = (Get-Wsl2Constants).AttestationKeyName; if ((Test-ManifestHas 'wsl2') -and $script:Manifest['created']['wsl2']['keyName'] -ceq $name -and (Test-AuthoritySigningKeyExists $name)) { 'todo' } else { 'done' } }
+    Do = { Remove-AuthoritySigningKey (Get-Wsl2Constants).AttestationKeyName | Out-Null; Say '    attestation key deleted' } }
+}
+# -Mode wsl2-hashes: the tree hash of the bridge publish folder, printed for you to read in a NORMAL console and type into the elevated install (-Wsl2BridgeTreeHash). It proves nothing about who built it.
+function Show-Wsl2Hashes {
+  $dir = Get-Wsl2PublishDir
+  if (-not [System.IO.Directory]::Exists($dir)) { Stop-Refused "the bridge publish folder is missing (run npm run build:wsl-bridge): $dir" }
+  if (Test-HasReparsePoint $dir) { Stop-Refused 'the bridge publish folder contains a link or junction' }
+  Write-Output "ALBERA_WSL_BRIDGE_TREE_HASH=$(Get-Wsl2TreeOf $dir)"
 }
 
 # ---------------------------------------------------------------------------------------------- hashes (a tool for the CI run, not a proof)
@@ -1488,13 +1868,15 @@ function Get-StatusLines {
     }
     Add-Line $(if (Test-Path -LiteralPath $L.ApprovalSettings) { 'ok' } else { 'FAIL' }) "Control Plane settings: $(if (Test-Path -LiteralPath $L.ApprovalSettings) { 'present' } else { 'missing' })"
     foreach ($line in (Get-ControlPlaneStatusLines)) { Add-Line $line.State $line.Text }
-    if ($grantRecorded -and (Test-Path -LiteralPath $L.ApprovalSettings)) {
+    $wsl2Recorded = [bool](Test-ManifestHas 'wsl2')
+    foreach ($line in (Get-Wsl2StatusLines)) { Add-Line $line.State $line.Text }
+    if (($grantRecorded -or $wsl2Recorded) -and (Test-Path -LiteralPath $L.ApprovalSettings)) {
       $recordedHelper = if ($M['created']['binaries'].ContainsKey('pipe-client')) { $M['created']['binaries']['pipe-client']['exeSha256'] } else { '' }
       $same = Test-ControlPlaneDesktop ([System.IO.File]::ReadAllText($L.ApprovalSettings)) $L.PipeClientExe $recordedHelper
       Add-Line $(if ($same) { 'ok' } else { 'FAIL' }) ('Control Plane settings desktop: ' + $(if ($same) { 'the installed pipe client helper and its recorded SHA-256, as written by install' } else { 'not the helper path and SHA-256 the install recorded' }))
     }
     # an install without the grant writes no desktop block: one found anyway was not written by this install (a clean install has no such line)
-    if (-not $grantRecorded -and (Test-Path -LiteralPath $L.ApprovalSettings) -and (Test-ControlPlaneHasDesktopKey ([System.IO.File]::ReadAllText($L.ApprovalSettings)))) {
+    if (-not $grantRecorded -and -not $wsl2Recorded -and (Test-Path -LiteralPath $L.ApprovalSettings) -and (Test-ControlPlaneHasDesktopKey ([System.IO.File]::ReadAllText($L.ApprovalSettings)))) {
       Add-Line 'FAIL' 'Control Plane settings desktop: a desktop block is present but the install record has no Hyper-V grant (install without -GrantHyperVToBroker writes none)'
     }
   }
@@ -1591,11 +1973,18 @@ function Get-UninstallSteps {
         if ($left.Count -gt 0) { throw "$($L.DataRoot) still holds: $(($left | ForEach-Object { $_.Name }) -join ', '); left in place" }
         Remove-Item -LiteralPath $L.ManifestPath -Force; Remove-Item -LiteralPath $L.DataRoot -Force; $script:Manifest = $null; Say '    manifest and data root removed' } }
   )
+  # The WSL2 part (-AddWsl2Computer) has steps only when the install record says it was made: its Run value goes first, its key after the Authority's. Its folder is one of the data folders; the bridge program is in the install tree.
+  if (Test-ManifestHas 'wsl2') {
+    $withWsl2 = New-Object 'System.Collections.Generic.List[object]'
+    $withWsl2.Add((Get-Wsl2UninstallRunStep))
+    foreach ($s in $steps) { $withWsl2.Add($s); if ($s.Id -eq 'key') { $withWsl2.Add((Get-Wsl2UninstallKeyStep)) } }
+    $steps = $withWsl2.ToArray()
+  }
   # The group change is undone FIRST, while the service still exists: a deleted service leaves its SID in the group.
   if (Test-ManifestHas 'hyperVGrant') { return @(Get-HyperVRevokeStep) + $steps }
   $steps
 }
-function Get-DataFolders { @($L.BrokerConfigDir, $L.BrokerDbDir, $L.AuthorityDir, $L.ControlPlaneDir, $L.ControlPlaneConfigDir, $L.SecretsDir, $L.UiDir) }
+function Get-DataFolders { @($L.BrokerConfigDir, $L.BrokerDbDir, $L.AuthorityDir, $L.ControlPlaneDir, $L.ControlPlaneConfigDir, $L.SecretsDir, $L.UiDir, $W.DataDir) }
 function Remove-HostServices {
   # the Control Plane first: it is the client of the other two
   $specs = @(Get-ServiceSpecs); [array]::Reverse($specs)
@@ -1637,7 +2026,7 @@ function Remove-LegacyProfile([string]$Sid) {
   catch { Say "    WARNING: the profile $expected could not be removed ($($_.Exception.Message)); delete it yourself" }
 }
 # Remove OUR folders from C:\Program Files\Albera. What albera-setup.exe keeps there (bin\setup, setup-work) stays, and the root with it; the root goes only when nothing else is in it.
-function Get-OurInstallFolders { @('bin\broker', 'bin\authority', 'bin\pipe-client', 'bin\control-plane', 'bin\approver', 'bin\claude', 'bin\launcher') }
+function Get-OurInstallFolders { @('bin\broker', 'bin\authority', 'bin\pipe-client', 'bin\control-plane', 'bin\approver', 'bin\claude', 'bin\launcher', 'bin\wsl-bridge', 'bin\wsl-bridge.partial') }
 function Test-OurInstallEntry([string]$Rel) {
   $lower = $Rel.ToLowerInvariant()
   if ($lower -eq 'bin' -or $lower -eq 'bin\setup' -or $lower.StartsWith('bin\setup\') -or $lower -eq 'setup-work' -or $lower.StartsWith('setup-work\')) { return $true }
@@ -1702,6 +2091,8 @@ function Remove-TreeNoFollow([string]$Path) {
 function Remove-TrustedTree([string]$Dir, [string[]]$AllowedTop, [string[]]$AllowedFolders, [bool]$InstallTree) {
   Resolve-HostSids
   $entry = Get-AclPlan $L $script:Sids | Where-Object { $_.Path -ceq $Dir } | Select-Object -First 1
+  # the WSL2 folder (-AddWsl2Computer): its only writers are SYSTEM and Administrators (the owner's rule on it is read-only; the state folders below it are not judged here)
+  if (-not $entry -and $Dir -ceq $W.DataDir) { $entry = [pscustomobject]@{ Path = $Dir; Grants = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F') } }
   if (-not $entry) { throw "$Dir is not one of the folders this script creates; refusing to delete it" }
   $reasons = Get-PathTrustReasons $Dir (Get-PlannedWriters $entry) $true
   if ($reasons.Count -gt 0) { throw (Format-TrustRefusal $Dir $reasons) }
@@ -2124,7 +2515,7 @@ function Write-SetApproverConfig {
   $current = Read-AuthorityConfigState
   if (-not $current.Ok) { throw $current.Reason }
   $approver = [pscustomobject]@{ approverSid = $current.State.Approver.approverSid; approverKeys = @($state.Records) }
-  $json = ConvertTo-HostJson (Get-AuthorityConfig $script:Sids.ControlPlane $approver)
+  $json = ConvertTo-HostJson (Get-AuthorityConfig $script:Sids.ControlPlane $approver $current.State.Attestation)   # the Broker's attestation key (-AddWsl2Computer) stays
   $bad = Test-AuthorityConfigText $json
   if ($bad.Count -gt 0) { throw "the new Authority config failed this script's own check ($($bad -join ', ')); nothing was written" }
   $state.OldConfigText = $current.Text
@@ -2321,6 +2712,11 @@ function Show-InstalledMessage {
   Say "  Start-Service $($K.BrokerService); Start-Service $($K.AuthorityService); Start-Service $($K.ControlPlaneService)"
   Say "Then open the room from the Start menu: ALBERA > Open ALBERA (it reads ui\room.json; the tray of the approver starts at your next sign-in, or run AlberaApprover.exe --tray)."
   Say 'See docs/architecture/host-install.md ("First approval") for albera-runtime approval-check.'
+  if ($AddWsl2Computer) {
+    Say "The WSL2 computer is in place: the attestation key $((Get-Wsl2Constants).AttestationKeyName) (non-exportable, Broker SID only), the Authority pin, the bridge config and the Broker config agree. Nothing ran wsl.exe."
+    Say "The bridge starts in YOUR session at the next sign-in (HKLM Run value $((Get-Wsl2Constants).RunValueName)), or start it by hand in a normal console: `"$($W.BridgeExe)`" serve `"$($W.Config)`""
+    Say 'Undo: -Mode uninstall (the Run value, the key, the bridge folder and its data are removed). A lost or exposed key: host-install.md, "WSL2 computer".'
+  }
   if ($GrantHyperVToBroker) {
     Say "The Broker's service SID is in Hyper-V Administrators and its SID type is unrestricted. Undo: -Mode uninstall removes the SID from the group first (host-install.md, 'Giving the Broker Hyper-V')."
     Say "The Control Plane settings already hold the desktop block (installed helper path and its SHA-256) that the gated room needs; nothing has to be edited by hand."
@@ -2334,6 +2730,7 @@ function Invoke-CompleteInstallCheck {
   if ($rollback) { Stop-Refused (Get-RollbackMessage $rollback) }
   Say 'The install is already complete; checking it (nothing will be changed).'
   if ($GrantHyperVToBroker -and -not (Test-ManifestHas 'hyperVGrant')) { Say 'NOTE: -GrantHyperVToBroker was given, but this install was made without it, so NOTHING was granted. To add the grant: uninstall, then install again with the option.' }
+  if ($AddWsl2Computer -and -not (Test-ManifestHas 'wsl2')) { Say 'NOTE: -AddWsl2Computer was given, but this install was made without it, so NOTHING of the WSL2 computer was made. To add it: uninstall, then install again with the option.' }
   $given = Get-ExpectedTreeHashState
   if ($given.Ok) {
     $dirs = @{}; foreach ($s in (Get-BuildSources)) { $dirs[$s.Name] = $s.Dest }
@@ -2364,9 +2761,10 @@ function Invoke-Migrate {
 
 try {
   if ($Mode -in @('install', 'uninstall', 'migrate', 'set-approver')) { Get-ScriptFileHashes }
-  if ($Mode -ne 'hashes') { Initialize-Manifest }
+  if ($Mode -notin @('hashes', 'wsl2-hashes')) { Initialize-Manifest }
   switch ($Mode) {
     'hashes' { Show-Hashes; exit 0 }
+    'wsl2-hashes' { Show-Wsl2Hashes; exit 0 }
     'status' { exit (Show-Status) }
     'plan' {
       if ($PlanFor -eq 'uninstall') { Show-Plan (Get-UninstallSteps) 'uninstall' }

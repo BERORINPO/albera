@@ -91,6 +91,159 @@ An install that is already complete is not changed: run with the option, it says
 
 **Not verified.** Nothing here has run on a real host with the stage 1 layout. In particular: `Add-LocalGroupMember` / `Remove-LocalGroupMember` with a service SID given as a string (the nested lab used `net.exe`, which this script may not start); reading the group's member list when one member is a service's virtual account (the script falls back to the member's WinNT path); a Broker started with a `computers` config as an unrestricted service next to a Control Plane service on the owner's PC; and, from ADR-002, adapter mouse input against a VM with a guest OS. The VM name to GUID lookup did run on the owner's PC on 2026-11-03 (first layout).
 
+## WSL2 computer (`-AddWsl2Computer`, optional; ADR-012 phase 5)
+
+**Status: written, never run.** Everything below was built with fakes (`test/host-install-wsl2.test.mjs`); no key, account, task, service, ACL, registry value or `wsl.exe` was touched when it was written. Treat the first real run as the first run.
+
+Why it exists: the owner approved AGM-2 (ADR-002) and wants WSL2 jobs to run for real. A WSL2 job runs under a lease the Broker signs with its own CNG key; the bridge (the only program that runs `wsl.exe`) trusts that key's public half. The install side puts the key and its three copies in place so that you only run prepared commands.
+
+With `-AddWsl2Computer` install does these things, in this order (the plan lists them; `-Mode plan -AddWsl2Computer`):
+
+1. **Checks the options** before anything is created (`wsl2inputs`): shapes, the publish folder of the bridge, the image file, the repository folder, `git.exe` (a file under `C:\Program Files\Git` whose folder only administrators can write).
+2. **Makes the Broker's attestation key** `AlberaHostBroker-attest-1` (`wsl2key`, right after the Authority's own key): ECDSA P-256, Microsoft Software KSP, machine scope, Export Policy none, DACL = SYSTEM, Administrators and the Broker's service SID, read back from a fresh open, one sign/verify round trip. **A key of that name that this script did not make is never adopted: the run stops.**
+3. **Hands the public half to all three** in the `configs` step: the Authority config (`attestationKeyId` + `attestationPublicKey`, pinned), the Broker config (`attestation: { keyName, keyId }`, plus the computer `{ computerId, kind: "wsl2" }`) and, later, the bridge config (`brokerKeyId`, `brokerSpki`). The approval settings get the second computer (`isolation: wsl2`, `repositoryId`), the `wsl2` block (`pipeName`, `serverSid` = you, `git`) and, because the room's parser requires it, the `desktop` block.
+4. **Makes `C:\ProgramData\Albera\wsl-bridge\`** (`wsl2folders`): administrators write, your account reads (config, lease floor, image); `state\` and `distributions\` are the only places your account writes. No service SID has any rule there.
+5. **Copies the bridge, the image, the lease floor and the bridge config** (`wsl2files`). The bridge program goes to `C:\Program Files\Albera\bin\wsl-bridge` (administrator-only; you may read and run it). **It is not part of the five-component tree hash** that setup and CI verify (that value covers five builds and its CI workflow does not build the bridge): the bridge has its own hash, which you read in a normal console (`-Mode wsl2-hashes`) and type into the elevated command, and the COPY must hash to it. The image copy must hash to `-Wsl2ImageSha256`. The lease floor file holds the Broker config `generation` (1 at install); only Administrators, SYSTEM and your account can read it (ADR-012: Phase 5 required).
+6. **Starts the installed bridge once** with a config whose Control Plane is you, and requires exit 77 (`wsl2verify`). Then **reads the key and its three copies back** and fails on any disagreement: the live key's public half against the Authority pin, the bridge's `brokerSpki`, the key id and key name in the Broker and bridge configs, the floor against the Broker generation, the computer and repository names, and the key's own ACL and export policy. Run from an elevated console the bridge refuses as `elevated` (it checks that before the Control Plane comparison), so this step proves that the installed program starts, trusts its config and refuses the wrong identity; the `control_plane_is_self` word is shown only by the tests.
+7. **Adds the HKLM Run value `AlberaWslBridge`** (`wsl2run`): your session starts `"C:\Program Files\Albera\bin\wsl-bridge\albera-wsl-bridge.exe" serve "C:\ProgramData\Albera\wsl-bridge\bridge.json"` at sign-in, the way the approver tray starts. Any account that signs in runs it; a wrong account is refused by the room (`serverSid`), not by the bridge.
+
+`-Mode status` follows the record and adds: the key (export policy, DACL, agreement of every copy), the three folders, the bridge folder hash, the image hash and the Run value. `-Mode set-approver` keeps the pin when it rewrites the Authority config. `-Mode uninstall` follows the record: Run value, then the key (after the Authority's), then the data folder and the install folder.
+
+An install that is already complete is not changed (as with the Hyper-V option): to add the WSL2 computer later, uninstall, then install again with the option.
+
+### The commands, in order
+
+Everything marked **normal** runs in an ordinary console; **elevated** means the clean `cmd /d` described under "The elevated console" below, running the copy of the two script files you checked (`C:\Program Files\AlberaSetup\...`). `<repo>` is your checkout. Each step: one command, minutes of your time, and how to undo it.
+
+1. **Build the bridge** (normal, about 5 minutes; undo: delete `src\runtime\windows-wsl-bridge\bin`).
+
+   ```
+   npm run build:wsl-bridge
+   ```
+
+2. **Read the bridge's tree hash** (normal, 1 minute; changes nothing). Write down the value after `ALBERA_WSL_BRIDGE_TREE_HASH=`.
+
+   ```
+   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File <repo>\scripts\host\albera-host.ps1 -Mode wsl2-hashes
+   ```
+
+3. **Have the image and its SHA-256 ready.** The image tar is built by `src/runtime/wsl2-guest/build-image.sh` (ADR-012, "The image"); that build runs in WSL and is not part of this install. Its hash:
+
+   ```
+   certutil -hashfile <path of albera-wsl2.tar> SHA256
+   ```
+
+4. **See what the C6 / N7 measurement will do** (elevated is not needed, 1 minute; changes nothing).
+
+   ```
+   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File <repo>\scripts\host\measure-attestation-key.ps1 -DryRun
+   ```
+
+5. **Run the C6 / N7 measurement** (elevated, about 5 minutes; undo: it deletes its own key, tasks and work folder on every way out; to remove the report: `rmdir /s /q C:\ProgramData\AlberaMeasure`). It creates a throwaway machine key and a few one-shot tasks, tries the key as a non-administrator, as a stand-in Broker, as another virtual account and as the Control Plane, tries to export it, and writes `C:\ProgramData\AlberaMeasure\attestation-key-report.json` (names, SIDs, SDDL, HRESULT names and yes / no answers: no key material). **Read the report before step 7:** a line `asExpected_* = NO` or `nonAdministratorCanTakeTheName = yes` is a finding for ADR-002 (N7) and for the install (a non-administrator who can create the name first can race the installer's "refuse if it exists" check). `not_measured` means Windows would not run that task as that account: the answer is open, not good.
+
+   ```
+   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\AlberaSetup\measure-attestation-key.ps1"
+   ```
+
+   (Copy `measure-attestation-key.ps1` next to the two other script files and check its hash with `certutil` like them. The measurement script reads `albera-host-lib.ps1` from its own folder.)
+
+6. **Plan the install** (normal, 1 minute; changes nothing). Put your values in; the plan names every wrong one.
+
+   ```
+   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File <repo>\scripts\host\albera-host.ps1 -Mode plan -AddWsl2Computer -Wsl2RepositoryId <id> -Wsl2RepositoryPath <C:\folder of the repository> -Wsl2Image <C:\path\albera-wsl2.tar> -Wsl2ImageSha256 <64 hex of step 3> -Wsl2BridgeTreeHash <64 hex of step 2> -Wsl2FloorExpiresAt <Unix seconds in the future>
+   ```
+
+   The floor expiry is a date after which the bridge refuses every run (ADR-012, decision 12); for 90 days from now: `[DateTimeOffset]::UtcNow.AddDays(90).ToUnixTimeSeconds()`.
+
+7. **Install** (elevated, about 15 minutes; undo: `-Mode uninstall`, see "Uninstall"). This is the install of "First install" or "Running the script yourself" with the options of step 6 added: all the values of that install (`-ExpectedTreeHash`, `-ApproverKeyId` / `-ApproverPublicKey` or `-ApproverKeyFile`, `-ApproverSid`) plus `-AddWsl2Computer` and the six `-Wsl2...` values. With setup: the same line plus those options (setup passes unknown options through only if it was built to; if it was not, run the script directly).
+
+   ```
+   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\AlberaSetup\albera-host.ps1" -Mode install -ExpectedTreeHash <64 hex> -ApproverKeyId <hello-...> -ApproverPublicKey <spki> -ApproverSid <S-1-5-21-...> -AddWsl2Computer -Wsl2RepositoryId <id> -Wsl2RepositoryPath <C:\folder> -Wsl2Image <C:\path\albera-wsl2.tar> -Wsl2ImageSha256 <64 hex> -Wsl2BridgeTreeHash <64 hex> -Wsl2FloorExpiresAt <seconds>
+   ```
+
+8. **Check the state** (elevated, 1 minute; changes nothing). Every line must say `[ok]`.
+
+   ```
+   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\AlberaSetup\albera-host.ps1" -Mode status
+   ```
+
+9. **See what the SEC-2 check will do** (no admin needed, 1 minute; changes nothing).
+
+   ```
+   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File <repo>\scripts\host\lab-sec2.ps1 -DryRun
+   ```
+
+10. **Run the SEC-2 two-account check** (elevated, about 10 minutes; do it BEFORE the first WSL2 job and before any image pin is set). It makes a temporary local account `albera-sec2-<8 hex>`, copies the installed pipe client helper into a lab folder, writes a lab bridge config (another pipe, the account as Control Plane, its own state folders) and **stops to tell you one command to run in a normal console**: that starts the lab bridge as you. Then it runs the helper as the account three times (owner expected; wrong owner expected, which must be refused; owner and bridge image hash expected) and prints whether the owner check and the image pin work from another account. It removes the account, its profile folder and the lab folder on every way out. End the lab bridge with Ctrl+C in its console. Record the answers in ADR-012 (SEC-2). Undo: run it with `-RemoveStale` (below).
+
+    ```
+    C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\AlberaSetup\lab-sec2.ps1"
+    ```
+
+    If the process was killed and the account is still there:
+
+    ```
+    C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\AlberaSetup\lab-sec2.ps1" -RemoveStale
+    ```
+
+**Order, and why the SEC-2 check comes after the install.** ADR-012 asks for SEC-2, N7 and C6 "before the installer makes the key". N7 and C6 are step 5, before the install. SEC-2 cannot run before it: it needs the installed bridge, the installed helper and the bridge config the install writes. What the ADR gives as the reason ("no job can run before then") holds only while no WSL2 job is started: a WSL2 `task.start` always asks a person, so do not approve one until step 10 has an answer.
+
+### A lost or exposed key
+
+The bridge reads its public key **once at start** and holds one `keyId`; the Broker reads the private key at its start. There is **no overlap**: a rotation is a replacement, and every lease signed by the old key stops verifying the moment the bridge has the new one. The lease revocation runbook (`wsl2-lease-revocation-runbook.md`) covers generations only; it does not replace a key.
+
+*Exposed* (someone may have been able to sign leases) or *lost* (the key file is gone, or its ACL changed so that the Broker cannot open it): the cure is the same, a new key. There is no "rotate" mode. Uninstall deletes the key; a new install makes another with the same name. The Broker journal is lost with it (as with any update: "uninstall, then install"), the lease floor and the generation start again at 1, and that is safe here because the pinned key changes: an old lease no longer verifies.
+
+1. **Stop the Control Plane** (elevated, 1 minute), so nothing new arrives while you work. Undo: `Start-Service AlberaControlPlane`.
+
+   ```
+   Stop-Service AlberaControlPlane
+   ```
+
+2. **Stop the bridge.** Sign out of your Windows session (the bridge stops with it and every run ends), or end `albera-wsl-bridge.exe` in Task Manager. Do not run `wsl --shutdown`.
+
+3. **Read what is wrong** (elevated, 1 minute; changes nothing). The line `WSL2 key AlberaHostBroker-attest-1:` names the failure: `key_missing`, `key_exportable`, `ace_untrusted`, `ace_missing`, `authority_spki`, `bridge_spki`, `floor_above_generation`.
+
+   ```
+   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\AlberaSetup\albera-host.ps1" -Mode status
+   ```
+
+4. **Remove everything the install made** (elevated, about 5 minutes). This deletes the key, the Run value, the bridge folder and the data. Nothing is guessed back.
+
+   ```
+   C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\AlberaSetup\albera-host.ps1" -Mode uninstall
+   ```
+
+5. **Install again with the same options** (elevated, about 15 minutes): the command of step 7 above. A new key is made; the Authority pin, the bridge config and the Broker config get its public half in the same run, and `wsl2verify` reads them back. If the key was exposed, also follow "Deal with the cause" in the revocation runbook before the Control Plane is started.
+
+6. **Start the Control Plane** (elevated, 1 minute), then start the bridge by signing out and in, and start one WSL2 job to see it accepted.
+
+   ```
+   Start-Service AlberaControlPlane
+   ```
+
+### Recovery from exit 77 (the Broker will not start)
+
+With `attestation` in its config the Broker opens the machine key at start and **never creates it**; if it cannot (the key is gone, or the ACL no longer lets the Broker's service SID use it), the service stops with specific exit code **77**. That stops the whole Broker, **including the VM claims of the Hyper-V computer**: it is one process. The Broker cannot tell a missing key from a denied one (a key it may not open answers `NTE_BAD_KEYSET`, "no such key"), so it reports both as the fixed word `signing_key_unavailable`.
+
+1. **Confirm the code** (elevated, 1 minute; changes nothing). `ServiceSpecificExitCode` must be 77.
+
+   ```
+   Get-CimInstance Win32_Service -Filter "Name='AlberaHostBroker'" | Select-Object State, ExitCode, ServiceSpecificExitCode
+   ```
+
+2. **Read which of the two it is** (the `-Mode status` command of step 8; changes nothing). `key_missing` = the key is gone; any `key_ace_*` / `key_key_exportable` = it is there but not as installed.
+
+3. **Choose one way back**, both through the uninstall of "A lost or exposed key" (step 4 there):
+
+   - *WSL2 stays:* install again with the WSL2 options (a new key; the VM claims return with it).
+   - *VM claims back first, WSL2 later:* install again **without** `-AddWsl2Computer` (with `-GrantHyperVToBroker -VmName <name>` if you had it). The Broker config then has no `attestation`, a WSL2 claim gets no lease, and the VM claims work as before.
+
+   There is deliberately no repair that edits the Broker config or the key's ACL by hand: a key whose ACL was changed is a key somebody else may have used.
+
+The bridge has its own 77: `BRIDGE_FATAL=elevated` (it was started from an elevated console) or `control_plane_is_self` (the Control Plane's SID in its config is the account it runs as). Start it from a normal console as yourself; if the second word appears, the bridge config is wrong: uninstall and install again.
+
+**Not verified (WSL2 computer).** None of it has run on a real PC: the machine key with a service SID in its DACL and its read-back; the Broker opening it as `NT SERVICE\AlberaHostBroker` (C6); the key file's own ACL as the mechanism (L9); Task Scheduler running a one-shot task as `NT SERVICE\AlberaMeasure...` accounts that have no service (if it refuses, the measurement says `not_measured` and the question stays open); `Process.Start` with a temporary account's credentials and no loaded profile (`lab-sec2.ps1`; if PowerShell cannot start for that account the answer is `not_measured`); the first-start check against the real bridge (exit 77, shown as `elevated` from an elevated console); the HKLM Run start of the bridge in your session; `Set-HostDacl` on the bridge folder; the default `-Wsl2GitPath` (`C:\Program Files\Git\cmd\git.exe`, a launcher: give the `git.exe` you want the bridge to run if that is not it); whether the CI "Host build hashes" run should also cover the bridge (today it does not, so the bridge tree hash is a value computed on your PC, not a reviewed one); and `albera-setup.exe` passing the `-Wsl2...` options on.
+
 ## First approval and the Claude Code token (after the install)
 
 1. **Open the room.** Start menu, `ALBERA`, `Open ALBERA` (in your normal session). It opens `http://127.0.0.1:<port>/room/#b=<code>`; the one-time code is in the URL fragment, which the browser never sends to the server. If it says the service is not running, start it (see "When it stops").
