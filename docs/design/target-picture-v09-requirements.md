@@ -18,7 +18,7 @@ Each row says what the mock shows, what the product would need, and how much of 
 
 ## Open questions for the owner
 
-1. Does Bero stay the one voice, or does each AI get a visible name?
+1. Decided by the owner (2026-11-07): each AI shows the name of its configured subagent. Which names are shown comes from settings, not from the product.
 2. How many AIs at once should the screen stay readable for?
 3. Is a check in a second room always on, or chosen per job? It doubles the run.
 4. After "verified", what brings a result into the repository? Today the owner can only read it.

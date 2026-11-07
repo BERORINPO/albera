@@ -107,7 +107,7 @@
 </head>
 <body>
 <header class="top">
-  <span class="brand">ALBERA</span><span class="sm sub">VM 4 · WSL2 1 · AI 6 動作中</span>
+  <span class="brand">ALBERA</span><span class="sm sub">ベロ + 5 人 · VM 4 · WSL2 1</span>
   <span class="grow"></span>
   <span class="sm sub" id="phase">ベロが全カメラを見回っています</span>
   <button id="pause">一時停止</button>
@@ -115,19 +115,19 @@
 <div class="vp" id="vp">
   <div class="world" id="world">
     <svg class="wires" id="wires"></svg>
-    <div class="cam" id="c1" style="left:60px;top:60px"><div class="hd"><span>CAM 01 · 動画編集<span class="room">VM</span></span> <span class="rec">● REC</span></div><div class="scr"><div class="win"></div><div class="cur" id="u1"></div></div><div class="ft"><span class="st-work">作業中</span> · <span id="f1">step 18 · $0.034</span></div></div>
-    <div class="cam" id="c2" style="left:420px;top:60px"><div class="hd"><span>CAM 02 · 予約フォーム<span class="room">VM</span></span> <span class="rec">● REC</span></div><div class="scr"><div class="win"></div><div class="cur" id="u2"></div></div><div class="ft"><span class="st-wait">あなた待ち</span> · 申告 DONE</div></div>
-    <div class="cam dim" id="c3" style="left:60px;top:330px"><div class="hd"><span>CAM 03 · テスト<span class="room">VM</span></span> <span class="rec" id="r3" style="color:var(--muted)">● 停止</span></div><div class="scr"><div class="win"></div><div class="dialog" id="dlg">エラー<br>保存されていない変更があります<br>[ OK ]</div><div class="cur" id="u3" style="left:150px;top:120px"></div></div><div class="ft" id="f3"><span class="st-stuck">止まったかも</span> · 4 分</div></div>
-    <div class="cam" id="c4" style="left:420px;top:330px"><div class="hd"><span>CAM 04 · バグ修正<span class="room">WSL2 · 画面なし</span></span> <span class="rec">● 記録</span></div><div class="scr"><div class="term" id="t4"></div></div><div class="ft" id="f4"><span class="st-work">作業中</span> · 待機</div></div>
-    <div class="cam" id="c5" style="left:240px;top:600px"><div class="hd"><span>CAM 05 · 検査<span class="room">VM · 別の部屋</span></span> <span class="rec">● 記録</span></div><div class="scr"><div class="term" id="t5"></div></div><div class="ft" id="f5"><span class="sub">待機</span></div></div>
+    <div class="cam" id="c1" style="left:60px;top:60px"><div class="hd"><span>ソラ · 動画編集<span class="room">CAM 01 · VM</span></span> <span class="rec">● REC</span></div><div class="scr"><div class="win"></div><div class="cur" id="u1"></div></div><div class="ft"><span class="st-work">作業中</span> · <span id="f1">step 18 · $0.034</span></div></div>
+    <div class="cam" id="c2" style="left:420px;top:60px"><div class="hd"><span>リン · 予約フォーム<span class="room">CAM 02 · VM</span></span> <span class="rec">● REC</span></div><div class="scr"><div class="win"></div><div class="cur" id="u2"></div></div><div class="ft"><span class="st-wait">あなた待ち</span> · 申告 DONE</div></div>
+    <div class="cam dim" id="c3" style="left:60px;top:330px"><div class="hd"><span>シュウ · テスト<span class="room">CAM 03 · VM</span></span> <span class="rec" id="r3" style="color:var(--muted)">● 停止</span></div><div class="scr"><div class="win"></div><div class="dialog" id="dlg">エラー<br>保存されていない変更があります<br>[ OK ]</div><div class="cur" id="u3" style="left:150px;top:120px"></div></div><div class="ft" id="f3"><span class="st-stuck">止まったかも</span> · 4 分</div></div>
+    <div class="cam" id="c4" style="left:420px;top:330px"><div class="hd"><span>ナナ · バグ修正<span class="room">CAM 04 · WSL2 · 画面なし</span></span> <span class="rec">● 記録</span></div><div class="scr"><div class="term" id="t4"></div></div><div class="ft" id="f4"><span class="st-work">作業中</span> · 待機</div></div>
+    <div class="cam" id="c5" style="left:240px;top:600px"><div class="hd"><span>ジン · 検査<span class="room">CAM 05 · VM · 別の部屋</span></span> <span class="rec">● 記録</span></div><div class="scr"><div class="term" id="t5"></div></div><div class="ft" id="f5"><span class="sub">待機</span></div></div>
 
-    <div class="sticky" id="s1" style="left:820px;top:380px"><b>ベロの付箋</b><br>CAM 03 は保存確認のダイアログで止まっていた。テストは手で起動し直す必要なし</div>
+    <div class="sticky" id="s1" style="left:820px;top:380px"><b>ベロの付箋</b><br>シュウは保存確認のダイアログで止まっていた。テストは手で起動し直す必要なし</div>
     <div class="sticky fig" id="s2" style="left:820px;top:60px;width:330px"><b>ベロの図 · 動画の進み</b><div id="g2"></div><div class="src">09:02 素材 6 本を読込<br>09:05 無音 9 か所を検出<br>09:11 クリップ 3 を切った</div></div>
     <div class="card fig" id="card" style="left:1190px;top:60px;width:330px"><div class="sm sub">CAM 01 · あなたが決めること</div><b>クリップを 2 つ消してよい?</b><div id="g3"></div><div class="sm sub" style="margin-bottom:8px">元の素材は残るので戻せる</div><div style="display:flex;gap:8px"><button class="primary" id="go">進めて</button><button>別案</button></div></div>
     <div class="sticky fig" id="s3" style="left:1120px;top:720px;width:420px"><b>ベロの図 · さっきの 5 分、誰が何をした</b><div id="g4"></div><div class="src">09:14 CAM03 停止 / 09:15 あなた: 閉じさせて / 09:18 あなた: 2 つ消してよい / 09:26 あなた: merge を承認</div></div>
 
-    <div class="sticky fig" id="s4" style="left:640px;top:640px;width:420px"><b>ベロの図 · 仕事の渡し方</b><div id="g5"></div><div class="src">09:21 ベロ → CAM 04: 期限判定を直して / 09:24 CAM 04: 直したと申告 / 09:25 ベロ → CAM 05: 別の部屋で試して</div></div>
-    <div class="card gate" id="gate" style="left:1190px;top:560px;width:330px"><div class="sm sub">関所 · あなたが決めること</div><b>取り消せません: main へ merge してよい?</b><div class="sm sub" style="margin:6px 0 8px">CAM 05 で検証済み · テスト 128 件 · 変更 2 ファイル</div><div style="display:flex;gap:8px"><button class="primary" id="go2">承認 (Windows Hello)</button><button>やめる</button></div></div>
+    <div class="sticky fig" id="s4" style="left:640px;top:640px;width:420px"><b>ベロの図 · 仕事の渡し方</b><div id="g5"></div><div class="src">09:21 ベロ → ナナ: 期限判定を直して / 09:24 ナナ: 直したと申告 / 09:25 ナナ → ジン: 別の部屋で試して</div></div>
+    <div class="card gate" id="gate" style="left:1190px;top:560px;width:330px"><div class="sm sub">関所 · あなたが決めること</div><b>取り消せません: main へ merge してよい?</b><div class="sm sub" style="margin:6px 0 8px">ジンが検証済み · テスト 128 件 · 変更 2 ファイル</div><div style="display:flex;gap:8px"><button class="primary" id="go2">承認 (Windows Hello)</button><button>やめる</button></div></div>
     <div class="zapnote" id="zn"></div>
     <div class="bero" id="bero"><div class="orb"><div class="eyes" id="eyes"><i></i><i></i></div></div>
       <div class="bubble hide" id="bub"><div class="nm">ベロ <span class="wave"><i></i><i></i><i></i><i></i></span></div><div id="txt"></div><div class="chips" id="chips"></div></div></div>
@@ -183,7 +183,7 @@ const FIG = {
       if (cut) o += `<path class="d" style="animation-delay:${.7 + i * .08}s" d="M${x + 4} 24 L${x + 30} 44 M${x + 30} 24 L${x + 4} 44" stroke="var(--rec)" stroke-width="2"/>`; });
     ['A', 'C', 'D', 'F'].forEach((t, i) => { const x = 2 + i * 38; o += `<rect class="f" style="animation-delay:${1.3 + i * .1}s" x="${x}" y="78" width="34" height="28" rx="4" fill="oklch(35% 0.06 250)" stroke="oklch(65% 0.1 250)"/><text class="f" style="animation-delay:${1.3 + i * .1}s" x="${x + 17}" y="97" text-anchor="middle" font-size="12" fill="var(--ink)">${t}</text>`; });
     return `<svg viewBox="0 0 330 112">${o}<text class="f" style="animation-delay:1.9s" x="236" y="31" font-size="11" fill="var(--muted)">B 無音 14 秒</text><text class="f" style="animation-delay:2s" x="236" y="46" font-size="11" fill="var(--muted)">E 重複 12 秒</text><rect class="d" style="animation-delay:1.8s" x="170" y="80" width="100" height="24" rx="6" fill="none" stroke="var(--done)"/><text class="f" style="animation-delay:2.1s" x="220" y="96" text-anchor="middle" font-size="11" fill="var(--done)">60 秒に収まる</text></svg>`; },
-  relay() { const n = [['ベロ', 60, 'var(--me)', '渡す'], ['CAM 04', 210, 'var(--stuck)', '申告のみ'], ['CAM 05', 360, 'var(--done)', '検証済み']]; let o = '';
+  relay() { const n = [['ベロ', 60, 'var(--me)', '渡す'], ['ナナ', 210, 'var(--stuck)', '申告のみ'], ['ジン', 360, 'var(--done)', '検証済み']]; let o = '';
     n.forEach(([t, x, c, s], i) => { o += `<rect class="d" style="animation-delay:${i * .4}s" x="${x - 50}" y="16" width="100" height="44" rx="7" fill="none" stroke="${c}" stroke-width="1.5"/><text class="f" style="animation-delay:${i * .4 + .4}s" x="${x}" y="35" text-anchor="middle" font-size="12" fill="var(--ink)">${t}</text><text class="f" style="animation-delay:${i * .4 + .5}s" x="${x}" y="52" text-anchor="middle" font-size="11" fill="${c}">${s}</text>`;
       if (i < 2) o += `<path class="d" style="animation-delay:${i * .4 + .3}s" d="M${x + 50} 38 L${x + 100} 38" stroke="var(--accent-fill)" stroke-width="1.5"/>`; });
     return `<svg viewBox="0 0 420 72">${o}</svg>`; },
@@ -206,16 +206,16 @@ async function round() {
 
   $('phase').textContent = '気づいた: CAM 03 が止まっている';
   const [x3, y3] = center('c3'); moveBero(x3 + 170, y3 - 60); look(x3 + 220, y3, 1.15); eyes(-3, 2); await wait(1500);
-  focusCam('c3', true); wire([x3 + 175, y3 - 35], 'c3'); await say('CAM 03 が 4 分止まっています。保存の確認ダイアログで詰まっているみたい。閉じさせますか?', ['閉じさせて', '見せて', '後で']);
-  await wait(1400); chips.children[0].classList.add('on'); log('あなた', 'CAM 03 のダイアログを閉じさせた'); await wait(700);
+  focusCam('c3', true); wire([x3 + 175, y3 - 35], 'c3'); await say('シュウが 4 分止まっています。保存の確認ダイアログで詰まっているみたい。閉じさせますか?', ['閉じさせて', '見せて', '後で']);
+  await wait(1400); chips.children[0].classList.add('on'); log('あなた', 'シュウのダイアログを閉じさせた'); await wait(700);
   await say('了解。手に「OK を押して」と渡しました。'); await glideCursor('u3', 120, 110, 1000); ripple($('u3')); await wait(300);
   $('dlg').classList.add('gone'); $('c3').classList.remove('dim'); $('r3').style.color = ''; $('r3').textContent = '● REC'; $('f3').innerHTML = '<span class="st-work">作業中</span> · テスト再開';
-  log('AI', 'CAM 03 のダイアログを閉じ、テストを再開した'); focusCam('c3', false); await wait(900);
+  log('AI', 'シュウがダイアログを閉じ、テストを再開した'); focusCam('c3', false); await wait(900);
   moveBero(x3 + 520, y3 - 10); look(x3 + 560, y3 + 20, 1.05); hush(); await wait(1300); $('s1').classList.add('in'); await wait(1800);
 
   $('phase').textContent = '動画の進みを図にしている';
   const [x1, y1] = center('c1'); moveBero(x1 + 560, y1 - 120); look(x1 + 560, y1, 1.0); eyes(-3, 0); await wait(1500);
-  wire([x1 + 560, y1 - 95], 'c1'); await say('動画は「切る」の途中。流れを図にします。'); $('s2').classList.add('in'); draw('g2', 'flow'); log('AI', '動画の進みを図にした (サブ AI)'); await wait(3200);
+  wire([x1 + 560, y1 - 95], 'c1'); await say('動画は「切る」の途中。流れを図にします。'); $('s2').classList.add('in'); draw('g2', 'flow'); log('AI', 'ソラの動画の進みを図にした'); await wait(3200);
 
   $('phase').textContent = 'あなたの判断を待っている';
   moveBero(1190, 330); look(1170, 200, 1.0); await say('ひとつ決めてほしいこと。消すのは 2 つだけ、元は残ります。', []); await wait(300); $('card').classList.add('in'); draw('g3', 'ba'); focusCam('c1', true); await wait(3600);
@@ -224,13 +224,13 @@ async function round() {
 
   $('phase').textContent = 'AI に仕事を渡している';
   const [x4, y4] = center('c4'); moveBero(x4 + 170, y4 - 90); look(x4 + 120, y4 + 80, 1.0); eyes(-3, 2); await wait(1400); focusCam('c4', true);
-  await zap([x4 + 195, y4 - 66], 'c4', '期限判定を直して、テストを足す'); await say('CAM 04 は画面がないので、コマンドの記録で見せます。'); focusCam('c4', false); hush();
+  await zap([x4 + 195, y4 - 66], 'c4', 'ベロ → ナナ: 期限判定を直して、テストを足す'); await say('ナナの部屋は画面がないので、コマンドの記録で見せます。'); focusCam('c4', false); hush();
   await term('t4', [['grep -n expires src/auth.mjs', '42: if (now > expires)'], ['write src/auth.mjs', '1 行変更'], ['npm test', '128 件成功'], ['git commit', 'a1b2c3']]);
-  $('f4').innerHTML = '<span class="st-stuck">申告のみ</span> · 「直しました」'; log('AI', 'CAM 04 が「直しました」と言った'); await wait(900);
+  $('f4').innerHTML = '<span class="st-stuck">申告のみ</span> · 「直しました」'; log('AI', 'ナナが「直しました」と言った'); await wait(900);
   const [x5, y5] = center('c5'); moveBero(x5 + 170, y5 - 40); look(x5 + 240, y5 - 60, 1.0); await wait(1300);
-  await say('本人の言葉だけでは信用しません。別の部屋で試させます。'); await zap([x4, y4 + 100], 'c5', 'a1b2c3 を別の部屋で試す'); hush(); $('f5').innerHTML = '<span class="st-work">検証中</span>';
+  await say('ナナの言葉だけでは信用しません。ジンに別の部屋で試させます。'); await zap([x4, y4 + 100], 'c5', 'ナナ → ジン: a1b2c3 を別の部屋で試す'); hush(); $('f5').innerHTML = '<span class="st-work">検証中</span>';
   await term('t5', [['bundle を取り込む', '検査通過'], ['npm test', '128 件成功']]);
-  $('f5').innerHTML = '<span class="st-done">検証済み</span> · テスト 128 件'; $('f4').innerHTML = '<span class="st-done">検証済み</span> · CAM 05 で確認'; log('検証', 'CAM 05 でテスト 128 件が通った'); $('s4').classList.add('in'); draw('g5', 'relay'); await wait(3000);
+  $('f5').innerHTML = '<span class="st-done">検証済み</span> · テスト 128 件'; $('f4').innerHTML = '<span class="st-done">検証済み</span> · ジンが確認'; log('検証', 'ジンの部屋でテスト 128 件が通った'); $('s4').classList.add('in'); draw('g5', 'relay'); await wait(3000);
 
   $('phase').textContent = '関所: ここだけ人が要る';
   moveBero(1190, 500); look(1250, 620, 1.0); await say('ここは取り消せないので、止めました。'); await wait(300); $('gate').classList.add('in'); await wait(3800);
