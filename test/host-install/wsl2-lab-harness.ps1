@@ -2,7 +2,7 @@
 # call that would touch the machine (the key store, the tasks, the local accounts, the folders, the pipe). Nothing outside -Work is touched: no key, no task, no account, no ACL. Prints one JSON line.
 #   wsl2-lab-harness.ps1 -Case <measure-pure|measure-flow|sec2-pure|sec2-flow> -Work <empty temp folder>
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('measure-pure', 'measure-flow', 'sec2-pure', 'sec2-flow')][string]$Case,
+  [Parameter(Mandatory = $true)][ValidateSet('measure-pure', 'measure-flow', 'sec2-pure', 'sec2-flow', 'admintree')][string]$Case,
   [Parameter(Mandatory = $true)][string]$Work
 )
 $ErrorActionPreference = 'Stop'
@@ -77,8 +77,11 @@ switch ($Case) {
     function Remove-AuthoritySigningKey([string]$KeyName, [string]$Scope = 'machine') { if ($script:Store.ContainsKey($KeyName)) { Log 'delete-key'; $script:Store.Remove($KeyName); return $true }; $false }
     function Find-MachineKeyFile([string]$KeyName) { $p = Join-Path $script:LabRoot 'keyfile'; [System.IO.File]::WriteAllText($p, 'x'); $p }   # not $Work: Invoke-Measurement has a local $work
     function Read-FileAllowSids([string]$Path) { [pscustomobject]@{ Sddl = 'O:SYD:(A;;FA;;;SY)'; AllowSids = @('S-1-5-18', 'S-1-5-32-544', $brokerSid) } }
-    function Measure-KeyExportAndSign([string]$KeyName) {
-      Log 'export-sign'
+    function Get-AdminTreeOwner([string]$Path) { 'S-1-5-32-544' }
+    function Set-AdminOnlyAcl([string]$Path) { }
+    $script:TryExportSeen = @()
+    function Measure-KeyExportAndSign([string]$KeyName, [bool]$TryExport = $true) {
+      Log 'export-sign'; $script:TryExportSeen += $TryExport
       if ($script:Scenario.failAt -eq 'export-sign') { throw 'open failed' }
       @{ adminSign = @{ ok = $true; hresult = $null }; export = @{ refused = $true; hresult = '0x80090010' } }
     }
@@ -113,8 +116,10 @@ switch ($Case) {
     }
     function Read-AuthoritySigningKey([string]$KeyName, [string]$Scope = 'machine') { Log 'read-installed-key'; if ($KeyName -ne 'AlberaHostBroker-attest-1') { return $null }; [pscustomobject]@{ spki = 'x'; report = [pscustomobject]@{ algorithm = 'ECDSA_P256'; keySize = 256; exportPolicy = 0; owner = 'S-1-5-32-544'; allowSids = @('S-1-5-18', 'S-1-5-32-544', (Get-DerivedServiceSid 'AlberaHostBroker')) } } }
     $script:Phase = 'N7'
+    $r.normalTryExport = $null
     $r.normal = & $run 'normal' @{ failAt = $null; nonAdminOk = $false; ran = @{ broker = $true; other = $true; controlplane = $true } }
     $r.normalCleanup = $script:LastCleanup
+    $r.normalTryExport = $script:TryExportSeen[-1]
     $r.markerAfterNormal = Test-Path -LiteralPath (Join-Path $Work 'normal\pending-key.json')
     $made = & $run 'nonadmin' @{ failAt = $null; nonAdminOk = $true; ran = @{ broker = $true; other = $true; controlplane = $true } }
     $r.nonAdminMadeIt = [ordered]@{ deletedBeforeCreate = ($made.order.IndexOf('delete-key') -ge 0 -and $made.order.IndexOf('delete-key') -lt $made.order.IndexOf('create-key')); verdict = $made.verdicts.nonAdministratorCanTakeTheName }
@@ -123,7 +128,7 @@ switch ($Case) {
     $script:Store = @{ 'AlberaHostBroker-attest-1' = 'installed' }
     $c6 = & $run 'c6' @{ failAt = $null; nonAdminOk = $false; ran = @{ broker = $true; other = $true; controlplane = $true } }
     $script:Store = @{ 'AlberaHostBroker-attest-1' = 'installed' }
-    $r.c6 = [ordered]@{ order = $c6.order; threw = $c6.threw; keyStillThere = $script:Store.ContainsKey('AlberaHostBroker-attest-1'); phase = $script:LastReport.phase; keyName = $script:LastReport.keyName; verdicts = $c6.verdicts; markerWritten = (Test-Path -LiteralPath (Join-Path $Work 'c6\pending-key.json')) }
+    $r.c6 = [ordered]@{ tryExport = $script:TryExportSeen[-1]; order = $c6.order; threw = $c6.threw; keyStillThere = $script:Store.ContainsKey('AlberaHostBroker-attest-1'); phase = $script:LastReport.phase; keyName = $script:LastReport.keyName; verdicts = $c6.verdicts; markerWritten = (Test-Path -LiteralPath (Join-Path $Work 'c6\pending-key.json')) }
     $script:Phase = 'N7'
     $r.failures = [ordered]@{}
     foreach ($stage in @('create-key', 'export-sign', 'task:other')) { $f = & $run ('fail-' + ($stage -replace '\W', '-')) @{ failAt = $stage; nonAdminOk = $false; ran = @{ broker = $true; other = $true; controlplane = $true } }; $f.reportFailed = [bool]$script:LastReport.failed; $f.markerKept = Test-Path -LiteralPath (Join-Path $Work (('fail-' + ($stage -replace '\W', '-')) + '\pending-key.json')); $f.reportHasFailedNote = (@($script:LastReport.notes) -join ' ') -like 'FAILED:*'; $r.failures[$stage] = $f }
@@ -195,6 +200,43 @@ switch ($Case) {
       usesHelperArgument = $(if ($text -match "\`$psi\.Arguments = '([^']+)'") { $Matches[1] } else { $null })
     }
   }
+  'admintree' {
+    . (Join-Path $hostDir 'lab-sec2.ps1')
+    function New-Junction([string]$Link, [string]$Target) { $null = & cmd.exe /c mklink /J ('"' + $Link + '"') ('"' + $Target + '"') }
+    $realOwner = ${function:Get-AdminTreeOwner}
+    $realAcl = ${function:Set-AdminOnlyAcl}
+    # a folder the (non-administrator) test user made: its owner is not Administrators, so the REAL owner check refuses it and nothing is deleted
+    $planted = Join-Path $Work 'planted'; New-Item -ItemType Directory -Force -Path $planted | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $planted 'f.txt'), 'x')
+    $msg = Try-Run { Remove-AdminOnlyTree $planted }
+    $r.planted = [ordered]@{ message = $msg; stillThere = [System.IO.File]::Exists((Join-Path $planted 'f.txt')) }
+    $r.absent = [bool](Remove-AdminOnlyTree (Join-Path $Work 'nowhere'))
+    # the method, with the machine faked: owner Administrators, and a log of every ACL write
+    $script:Log = New-Object System.Collections.Generic.List[object]
+    function Get-AdminTreeOwner([string]$Path) { 'S-1-5-32-544' }
+    function Set-AdminOnlyAcl([string]$Path) { $script:Log.Add([pscustomobject]@{ path = $Path; isDir = [System.IO.Directory]::Exists($Path); childrenThen = $(if ([System.IO.Directory]::Exists($Path)) { @(Get-ChildItem -LiteralPath $Path -Force).Count } else { 0 }) }) }
+    $tree = Join-Path $Work 'tree'
+    New-Item -ItemType Directory -Force -Path (Join-Path $tree 'a\b') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $tree 'top.txt'), 'x'); [System.IO.File]::WriteAllText((Join-Path $tree 'a\b\deep.txt'), 'x')
+    $ro = Join-Path $tree 'a\readonly.txt'; [System.IO.File]::WriteAllText($ro, 'x'); [System.IO.File]::SetAttributes($ro, [System.IO.FileAttributes]::ReadOnly)
+    $outside = Join-Path $Work 'outside'; New-Item -ItemType Directory -Force -Path $outside | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $outside 'sentinel.txt'), 'must survive')
+    New-Junction (Join-Path $tree 'a\link') $outside
+    $r.junctionMade = [System.IO.Directory]::Exists((Join-Path $tree 'a\link'))
+    $r.removed = [bool](Remove-AdminOnlyTree $tree)
+    $r.treeGone = -not (Test-Path -LiteralPath $tree)
+    $r.sentinelSurvived = [System.IO.File]::Exists((Join-Path $outside 'sentinel.txt'))
+    $r.aclPaths = @($script:Log | ForEach-Object { $_.path.Substring($Work.Length + 1) })
+    $dirs = @($script:Log | Where-Object { $_.isDir })
+    $r.dirsSeenBeforeListing = ($dirs.Count -ge 3)
+    # a link at the top is refused, whoever owns it
+    $viaLink = Join-Path $Work 'via'; New-Junction $viaLink $outside
+    $r.linkAtTop = Try-Run { Remove-AdminOnlyTree $viaLink }
+    $r.sentinelAfterLink = [System.IO.File]::Exists((Join-Path $outside 'sentinel.txt'))
+    $null = & cmd.exe /c rmdir ('"' + $viaLink + '"')
+    # the real ACL function writes owner and DACL with .NET: its source is what a non-administrator test cannot run, so the text is checked
+    $r.aclSource = [string]$realAcl.Ast.Extent.Text
+  }
   'sec2-flow' {
     . (Join-Path $hostDir 'lab-sec2.ps1')
     $c = Get-Sec2Constants
@@ -232,6 +274,10 @@ switch ($Case) {
       if ($script:Fail -eq 'lab-folder') { throw 'cannot copy the helper' }
       @{ Dir = $Dir; Config = 'C:\lab\lab-bridge.json'; Probe = 'C:\lab\probe.ps1'; Helper = 'C:\lab\h.exe'; OwnerSid = $OWNER; BridgeExeSha256 = ('cd' * 32) }
     }
+    function Get-AdminTreeOwner([string]$Path) { 'S-1-5-32-544' }
+    function Set-AdminOnlyAcl([string]$Path) { }
+    $script:Results = New-Object System.Collections.Generic.List[object]
+    function Write-Sec2Result($Verdict) { Log 'write-result'; if ($script:Fail -eq 'result-fails') { throw 'no disk' }; $script:Results.Add($Verdict) }
     function Wait-Sec2Pipe([string]$PipeName, [int]$Minutes) { Log 'wait-pipe'; $script:Pipe }
     function Wait-Sec2PipeGone([string]$PipeName, [int]$Minutes) { Log 'wait-pipe-gone'; $true }
     function Invoke-Sec2ProbeAs($Account, [string]$ProbePath, [string]$HelperPath, $Case) {
@@ -249,7 +295,7 @@ switch ($Case) {
     $layoutL = @{ PipeClientBinDir = 'x'; ApprovalSettings = 'x' }
     $go = {
       param($fail, $pipe, $accounts)
-      $script:Log.Clear(); $script:Said.Clear(); $script:RemovedNames.Clear(); $script:RemoveLabCalls = 0
+      $script:Log.Clear(); $script:Said.Clear(); $script:RemovedNames.Clear(); $script:RemoveLabCalls = 0; $script:Results.Clear()
       $script:Fail = $fail; $script:Pipe = $pipe; $script:Accounts = $accounts
       $layoutW = @{ BridgeExe = 'C:\b.exe'; Config = 'C:\b.json'; DataDir = $dataDir; DistributionsDir = $distDir }
       $threw = $false; $verdict = $null; $message = $null
@@ -257,6 +303,11 @@ switch ($Case) {
       [ordered]@{ order = @($script:Log); threw = $threw; message = $message; verdict = $(if ($verdict) { $verdict.ownerCheck } else { $null }); accountsLeft = @($script:Accounts.Keys | Where-Object { $_ -like 'albera-sec2-0102*' }).Count; removeCalls = $script:RemovedNames.Count; labFolderExists = (Test-Path -LiteralPath $labDir); said = @($script:Said) }
     }
     $r.normal = & $go $null $true @{}
+    $r.normalResult = @($script:Results | ForEach-Object { $_.ownerCheck })
+    $timeout = & $go $null $false @{}
+    $r.timeoutResult = @($script:Results | ForEach-Object { $_.ownerCheck })
+    $resultFails = & $go 'result-fails' $true @{}
+    $r.resultFails = [ordered]@{ verdict = $resultFails.verdict; warned = (@($resultFails.said | Where-Object { $_ -like 'WARNING: the result file could not be written*' }).Count -ge 1) }
     $r.failures = [ordered]@{}
     foreach ($stage in @('create-account', 'lab-folder', 'probe-throws', 'probe-throws-late')) { $r.failures[$stage] = & $go $stage $true @{} }
     $r.failures['wait-pipe-timeout'] = & $go $null $false @{}
@@ -290,6 +341,15 @@ switch ($Case) {
     $r.labUnderDataDir = [ordered]@{ threw = $underData.threw; message = $underData.message; order = $underData.order }
     $script:LabDirUnderTest = $labDir
     $r.labDirChecks = [ordered]@{ good = (Test-Sec2LabDir $labDir $dataDir); underData = (Test-Sec2LabDir (Join-Path $dataDir 'lab') (Join-Path $Work 'albera-data')); same = (Test-Sec2LabDir $dataDir $dataDir) }
+    # the last words say what is really left (N1): nothing is claimed without looking
+    $script:Accounts = @{ 'albera-sec2-0102abcd' = $c.AccountDescription }
+    New-Item -ItemType Directory -Force -Path $labDir | Out-Null
+    $x = Get-Sec2LeftoverLines; $r.leftoverDirty = $x
+    Remove-Item -LiteralPath $labDir -Recurse -Force; $script:Accounts = @{}
+    $x = Get-Sec2LeftoverLines; $r.leftoverClean = $x
+    function Get-Sec2LocalAccounts { throw 'directory service down' }
+    $x = Get-Sec2LeftoverLines; $r.leftoverUnknown = $x
+    function Get-Sec2LocalAccounts { Log 'sweep'; @($script:Accounts.Keys | ForEach-Object { [pscustomobject]@{ Name = $_; Description = $script:Accounts[$_] } }) }
     $failing = & $go 'remove-fails' $true @{}
     $r.removalThatFails = [ordered]@{ warned = (@($failing.said | Where-Object { $_ -like 'WARNING: the account*-RemoveStale*' }).Count -ge 1); verdict = $failing.verdict }
     $stale = & $go $null $true @{ 'albera-sec2-deadbeef' = $c.AccountDescription; 'albera-sec2-cafe0000' = 'somebody else' }

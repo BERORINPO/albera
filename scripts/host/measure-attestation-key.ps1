@@ -22,7 +22,7 @@ param(
   [switch]$DryRun,
   [ValidateSet('N7', 'C6')][string]$Phase = 'N7',
   [switch]$RemoveLeftovers,
-  [string]$ReportPath = 'C:\ProgramData\AlberaMeasure\attestation-key-report.json'
+  [string]$ReportPath = ''   # default: <ProgramData>\AlberaMeasure\attestation-key-report-<Phase>.json (N7 and C6 write DIFFERENT files)
 )
 $PSModuleAutoLoadingPreference = 'None'
 if (-not [string]::Equals($PSHOME.TrimEnd('\'), 'C:\Windows\System32\WindowsPowerShell\v1.0', [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -34,6 +34,7 @@ foreach ($moduleName in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShe
 }
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'albera-host-lib.ps1')
+if (-not $ReportPath) { $ReportPath = (Get-MeasurePaths ([Environment]::GetFolderPath('CommonApplicationData'))).($Phase) }
 
 # ---------------------------------------------------------------------------------------------- pure helpers (the tests call these)
 function Get-MeasureConstants {
@@ -220,7 +221,8 @@ function Invoke-TaskProbeCore($Work, [string]$TaskName, [string]$Principal, [str
   }
 }
 # Step 3 and the control of step 4: with the key open as the administrator, one export of the private key (must be refused) and one signature. The exported blob, if there were one, is dropped at once and never stored.
-function Measure-KeyExportAndSign([string]$KeyName) {
+# $TryExport = $false (C6, the REAL key): the export policy is READ instead of trying an export on the real key; the answer is "refused" when the policy is none.
+function Measure-KeyExportAndSign([string]$KeyName, [bool]$TryExport = $true) {
   $provider = [System.Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider
   $opened = [System.Security.Cryptography.CngKey]::Open($KeyName, $provider, [System.Security.Cryptography.CngKeyOpenOptions]::MachineKey)
   try {
@@ -228,8 +230,11 @@ function Measure-KeyExportAndSign([string]$KeyName) {
     try { $ecdsa = New-Object System.Security.Cryptography.ECDsaCng($opened); [void]$ecdsa.SignData((New-Object byte[] 32)); $sign = @{ ok = $true; hresult = $null } }
     catch { $sign = @{ ok = $false; hresult = ('0x{0:X8}' -f $_.Exception.HResult) } }
     $export = $null
-    try { [void]$opened.Export([System.Security.Cryptography.CngKeyBlobFormat]::Pkcs8PrivateBlob); $export = @{ refused = $false; hresult = $null } }
-    catch { $export = @{ refused = $true; hresult = ('0x{0:X8}' -f $_.Exception.HResult) } }
+    if (-not $TryExport) { $export = @{ refused = ($opened.ExportPolicy -eq [System.Security.Cryptography.CngExportPolicies]::None); hresult = $null; method = 'policy_read' } }
+    else {
+      try { [void]$opened.Export([System.Security.Cryptography.CngKeyBlobFormat]::Pkcs8PrivateBlob); $export = @{ refused = $false; hresult = $null } }
+      catch { $export = @{ refused = $true; hresult = ('0x{0:X8}' -f $_.Exception.HResult) } }
+    }
     @{ adminSign = $sign; export = $export }
   }
   finally { $opened.Dispose() }
@@ -256,7 +261,7 @@ function Invoke-Measurement([string]$ReportPath, [string]$Phase = 'N7') {
   else { New-SecuredDirectory $folder @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F') }
   $work = [pscustomobject]@{ Root = Join-Path $folder ('run-' + ([BitConverter]::ToString($random, 0, 4) -replace '-', '').ToLowerInvariant()); Probe = $null; Results = $null }
   $work.Probe = Join-Path $work.Root 'probe.ps1'; $work.Results = Join-Path $work.Root 'results'
-  $sids = @($ids | ForEach-Object { $_.Sid }) + @($me)
+  $sids = @($ids | ForEach-Object { $_.Sid }) + $(if ($owns) { @($me) } else { @() })   # C6 runs no task as the signed-in user: it gets no rule on the work folders
   $facts = @{ phase = $Phase; nonAdminCreate = @{ ran = $false; ok = $false; hresult = $null }; key = @{ allowSids = @(); fileAllowSids = $null }; export = $null; adminSign = $null; asIdentity = @{} }
   $cleanup = [ordered]@{ keyDeleted = (-not $owns); keyKept = (-not $owns); tasksLeft = @(); workFolderRemoved = $false }
   $notes = New-Object System.Collections.Generic.List[string]
@@ -291,7 +296,7 @@ function Invoke-Measurement([string]$ReportPath, [string]$Phase = 'N7') {
     if ($file) { $f = Read-FileAllowSids $file; $keyInfo['file'] = $file; $keyInfo['fileSddl'] = $f.Sddl; $facts.key.fileAllowSids = @($f.AllowSids) }
     else { $notes.Add('the key file was not found where C:\ProgramData\Microsoft\Crypto\Keys\<UniqueName> would be: the file DACL (L9) is not measured') }
     Write-Host '3. an export of the private key is tried; the administrator signs once'
-    $local = Measure-KeyExportAndSign $keyName
+    $local = Measure-KeyExportAndSign $keyName $owns
     $facts.export = $local.export; $facts.adminSign = $local.adminSign
     Write-Host '4. who can sign'
     foreach ($i in $ids) { $facts.asIdentity[$i.Id] = Invoke-TaskProbe $work ($c.TaskPrefix + $i.Id) $i.Account 'service' $i.Sid 'sign' $keyName }
@@ -300,7 +305,7 @@ function Invoke-Measurement([string]$ReportPath, [string]$Phase = 'N7') {
   finally {
     if ($owns) { try { if (Test-AuthoritySigningKeyExists $keyName) { [void](Remove-AuthoritySigningKey $keyName) }; $cleanup.keyDeleted = -not (Test-AuthoritySigningKeyExists $keyName) } catch { $notes.Add('the key could not be deleted: ' + $_.Exception.Message) } }
     try { $cleanup.tasksLeft = Remove-MeasureTasks $taskNames } catch { $notes.Add('the tasks could not be checked: ' + $_.Exception.Message) }
-    try { if (Test-Path -LiteralPath $work.Root) { [System.IO.Directory]::Delete($work.Root, $true) }; $cleanup.workFolderRemoved = -not (Test-Path -LiteralPath $work.Root) } catch { $notes.Add('the work folder could not be removed: ' + $_.Exception.Message) }
+    try { [void](Remove-AdminOnlyTree $work.Root); $cleanup.workFolderRemoved = -not (Test-Path -LiteralPath $work.Root) } catch { $notes.Add('the work folder could not be removed: ' + $_.Exception.Message) }
     if ($owns -and $cleanup.keyDeleted -and $cleanup.workFolderRemoved -and @($cleanup.tasksLeft).Count -eq 0) { try { if (Test-Path -LiteralPath $marker) { Remove-Item -LiteralPath $marker -Force } } catch { } }
   }
   $report = [ordered]@{
@@ -334,7 +339,7 @@ function Invoke-RemoveLeftovers([string]$ReportPath) {
   $deleted = $false
   if (Test-AuthoritySigningKeyExists $m.keyName) { [void](Remove-AuthoritySigningKey $m.keyName); $deleted = $true }
   $left = Remove-MeasureTasks @($c.TaskPrefix + 'broker', $c.TaskPrefix + 'other', $c.TaskPrefix + 'controlplane', $c.TaskPrefix + 'create')
-  foreach ($d in @([System.IO.Directory]::GetDirectories($folder, 'run-*'))) { try { [System.IO.Directory]::Delete($d, $true) } catch { Write-Host "could not remove $d ($($_.Exception.Message))" } }
+  foreach ($d in @([System.IO.Directory]::GetDirectories($folder, 'run-*'))) { try { [void](Remove-AdminOnlyTree $d) } catch { Write-Host "could not remove $d ($($_.Exception.Message))" } }
   $stillThere = Test-AuthoritySigningKeyExists $m.keyName
   Write-Host "throwaway key $($m.keyName): deleted now: $deleted; still there: $stillThere; tasks still there: $(@($left).Count)"
   if (-not $stillThere -and @($left).Count -eq 0) { Remove-Item -LiteralPath $marker -Force; return 0 }

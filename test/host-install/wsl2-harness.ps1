@@ -36,7 +36,7 @@ $ExpectedTreeHash = $null; $VmName = 'albera-clone-01'; $ComputerId = 'clone-01'
 $NodeSource = $null; $ClaudeSource = $null
 $SystemDirectory = [Environment]::SystemDirectory; $ProgramFilesDir = Join-Path $Work 'pf'; $ProgramDataDir = Join-Path $Work 'pd'
 $ScExe = Join-Path $SystemDirectory 'sc.exe'; $IcaclsExe = Join-Path $SystemDirectory 'icacls.exe'
-$AddWsl2Computer = $false; $Wsl2ComputerId = ''; $Wsl2RepositoryId = ''; $Wsl2RepositoryPath = ''; $Wsl2Image = ''; $Wsl2ImageSha256 = ''; $Wsl2BridgeTreeHash = ''; $Wsl2FloorExpiresAt = ''; $Wsl2GitPath = ''; $Wsl2FirstStartWord = ''
+$AddWsl2Computer = $false; $Wsl2ComputerId = ''; $Wsl2RepositoryId = ''; $Wsl2RepositoryPath = ''; $Wsl2Image = ''; $Wsl2ImageSha256 = ''; $Wsl2BridgeTreeHash = ''; $Wsl2FloorExpiresAt = ''; $Wsl2GitPath = ''; $Wsl2FirstStartWord = ''; $Wsl2AcceptNotMeasured = $false
 $OWNER = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
 $H = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 function Hex([byte[]]$bytes) { ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant() }
@@ -80,8 +80,11 @@ function Get-AclSummary([string]$Path) {
   [pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $true; AllowSids = @($sids | Sort-Object -Unique); WriteSids = @($writers | Sort-Object -Unique) }
 }
 function Invoke-Native([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000, [switch]$MinimalEnvironment) { throw "unexpected native call: $Exe $Arguments" }
+function Get-AdminTreeOwner([string]$Path) { 'S-1-5-32-544' }   # the harness folders are owned by the test user; the real owner check has its own test (admintree)
+function Set-AdminOnlyAcl([string]$Path) { $script:DaclLog.Add([pscustomobject]@{ path = $Path; isDir = [System.IO.Directory]::Exists($Path); existed = (Test-Path -LiteralPath $Path); hadFiles = ([System.IO.Directory]::Exists($Path) -and @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue).Count -gt 0) }) }
+$script:RunSetSawRecord = $null
 function Get-Wsl2RunValue { $script:RunValue }
-function Set-Wsl2RunValue { $script:RunValue = (Get-Wsl2RunEntry $W).Command }
+function Set-Wsl2RunValue { $script:RunSetSawRecord = $script:Manifest['created']['wsl2'].ContainsKey('runEntry'); $script:RunValue = (Get-Wsl2RunEntry $W).Command }
 function Remove-Wsl2RunValue { $script:RunValue = $null }
 
 function New-Rec([hashtable]$Values) { $d = New-Object 'System.Collections.Generic.Dictionary[string,object]'; foreach ($k in $Values.Keys) { $d[$k] = $Values[$k] }; $d }
@@ -250,12 +253,36 @@ switch ($Case) {
     $r.runValueBeforeFirstStart = $script:RunValue
     $Wsl2FirstStartWord = $C2.FirstStartWord; $r.confirmRight = Invoke-Wsl2FirstStartConfirm
     $r.firstStartRecord = $script:Manifest['created']['wsl2']['firstStart']
+    $r.firstCheckGoneAfterConfirm = -not [System.IO.File]::Exists($W.FirstCheckConfig)
     $r.manifestShapeAfterConfirm = Test-Wsl2Record $script:Manifest['created']['wsl2']
     # ---- the Run entry is the last, separate step
     $script:Keys[$C2.AttestationKeyName].spki = $OtherSpki
     $r.runEntryWhenKeyDiffers = Invoke-Wsl2RunEntryMode
     $script:Keys[$C2.AttestationKeyName].spki = $Spki
+    # N3: the install must be complete; the C6 report and the SEC-2 result must say so
+    $script:Manifest['state'] = 'partial'
+    $r.runEntryWhenPartial = Invoke-Wsl2RunEntryMode
+    $script:Manifest['state'] = 'complete'
+    $paths = Get-MeasurePaths $ProgramDataDir
+    $r.runEntryNoReports = Invoke-Wsl2RunEntryMode
+    $verdictsGood = [ordered]@{ keyCannotBeExported = 'yes'; asExpected_broker = 'yes'; asExpected_other = 'yes'; asExpected_controlplane = 'yes' }
+    Write-Text $paths.C6 (([ordered]@{ phase = 'C6'; failed = $false; verdicts = $verdictsGood }) | ConvertTo-Json -Depth 4)
+    $r.runEntryNoSec2 = Invoke-Wsl2RunEntryMode
+    Write-Text $paths.Sec2 (([ordered]@{ ownerCheck = 'works'; imagePin = 'fails_from_this_account:server_identity_unavailable' }) | ConvertTo-Json)
+    $verdictsBad = [ordered]@{ keyCannotBeExported = 'yes'; asExpected_broker = 'yes'; asExpected_other = 'NO'; asExpected_controlplane = 'yes' }
+    Write-Text $paths.C6 (([ordered]@{ phase = 'C6'; failed = $false; verdicts = $verdictsBad }) | ConvertTo-Json -Depth 4)
+    $r.runEntryWhenC6Says = Invoke-Wsl2RunEntryMode
+    $verdictsOpen = [ordered]@{ keyCannotBeExported = 'yes'; asExpected_broker = 'yes'; asExpected_other = 'not_measured'; asExpected_controlplane = 'yes' }
+    Write-Text $paths.C6 (([ordered]@{ phase = 'C6'; failed = $false; verdicts = $verdictsOpen }) | ConvertTo-Json -Depth 4)
+    $r.runEntryNotMeasured = Invoke-Wsl2RunEntryMode
+    $r.runValueAfterRefusals = $script:RunValue
+    $Wsl2AcceptNotMeasured = $true
+    $r.runEntryNotMeasuredAccepted = Invoke-Wsl2RunEntryMode
+    $Wsl2AcceptNotMeasured = $false
+    $script:RunValue = $null; $script:Manifest['created']['wsl2'].Remove('runEntry') | Out-Null
+    Write-Text $paths.C6 (([ordered]@{ phase = 'C6'; failed = $false; verdicts = $verdictsGood }) | ConvertTo-Json -Depth 4)
     $r.runEntryOk = Invoke-Wsl2RunEntryMode
+    $r.runRecordWasWrittenBeforeValue = $script:RunSetSawRecord
     $r.runValue = $script:RunValue
     $r.expectedRunCommand = (Get-Wsl2RunEntry $W).Command
     $r.runRecord = $script:Manifest['created']['wsl2']['runEntry']
@@ -298,6 +325,7 @@ switch ($Case) {
     # the data folder: the shipped data step removes it as a whole, and refuses a file it did not make
     foreach ($rel in @('bridge.json', 'lease-floor', 'albera-wsl2.tar', 'state\operations.log', 'state\git-home\config', 'distributions\albera-run-1\ext4.vhdx')) { Write-Text (Join-Path $W.DataDir $rel) 'x' }
     $r.dataFolderExistsBefore = Test-Path -LiteralPath $W.DataDir
+    $script:DaclLog.Clear()
     Write-Text (Join-Path $W.DataDir 'notes.txt') 'not ours'
     $r.dataFolderWithForeignFile = Try-Run { Remove-TrustedTree $W.DataDir @() @() $false }
     $r.dataFolderForeignFileStillThere = Test-Path -LiteralPath (Join-Path $W.DataDir 'notes.txt')
@@ -306,7 +334,6 @@ switch ($Case) {
     $labSibling = Join-Path $ProgramDataDir 'AlberaLabSec2\state'
     Write-Text (Join-Path $labSibling 'operations.log') 'x'
     $lockHold = New-Object System.IO.FileStream((Join-Path $labSibling 'operations.log'), [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-    $script:DaclLog.Clear()
     try {
       Remove-TrustedTree $W.DataDir @() @() $false
       $dataStep = @(Get-UninstallSteps) | Where-Object { $_.Id -eq 'data' }

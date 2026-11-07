@@ -106,6 +106,8 @@ param(
   [string]$Wsl2GitPath,
   # -Mode wsl2-first-start: the word you read after BRIDGE_FATAL= in the NORMAL console (it must be control_plane_is_self).
   [string]$Wsl2FirstStartWord,
+  # -Mode wsl2-run-entry: let steps the C6 report or the SEC-2 result say "not_measured" count as done (an open question the owner takes on).
+  [switch]$Wsl2AcceptNotMeasured,
   [string]$VmId,
   # The run id of the attested workflow run that built what albera-setup.exe verified (a decimal number). Recorded as `setupRunId` in the install record; a smaller one is refused, the same one is fine.
   [string]$SetupRunId,
@@ -185,6 +187,7 @@ if ($LabAssumeYes) {
 }
 if ($GrantHyperVToBroker -and -not ($Mode -eq 'install' -or ($Mode -eq 'plan' -and $PlanFor -eq 'install'))) { Stop-Refused '-GrantHyperVToBroker only applies to -Mode install (and its plan); migrate, status and uninstall follow what the install record says' 2 }
 $wsl2Options = @($Wsl2ComputerId, $Wsl2RepositoryId, $Wsl2RepositoryPath, $Wsl2Image, $Wsl2ImageSha256, $Wsl2BridgeTreeHash, $Wsl2FloorExpiresAt, $Wsl2GitPath) | Where-Object { $_ }
+if ($Wsl2AcceptNotMeasured -and $Mode -ne 'wsl2-run-entry') { Stop-Refused '-Wsl2AcceptNotMeasured only applies to -Mode wsl2-run-entry' 2 }
 if ($Wsl2FirstStartWord -and $Mode -ne 'wsl2-first-start') { Stop-Refused '-Wsl2FirstStartWord only applies to -Mode wsl2-first-start' 2 }
 if ($Mode -eq 'wsl2-first-start' -and -not $Wsl2FirstStartWord) { Stop-Refused '-Mode wsl2-first-start needs -Wsl2FirstStartWord <the word after BRIDGE_FATAL= in the normal console>' 2 }
 if ($wsl2Options.Count -gt 0 -and -not $AddWsl2Computer) { Stop-Refused 'the -Wsl2... options only apply together with -AddWsl2Computer' 2 }
@@ -1497,6 +1500,9 @@ function Get-Wsl2SourceProblem {
   if (-not (Test-Path -LiteralPath $i.GitPath -PathType Leaf)) { return "git is not at $($i.GitPath) (install Git for Windows, or give -Wsl2GitPath)" }
   $untrusted = Get-PathTrustReasons $i.GitPath (Get-AdminSids) $false
   if ($untrusted.Count -gt 0) { return (Format-TrustRefusal $i.GitPath $untrusted) }
+  $gitDir = Split-Path -Parent $i.GitPath
+  $untrustedDir = Get-PathTrustReasons $gitDir (Get-AdminSids) $false   # the folder too: only administrators may write it (the bridge refuses a git it cannot trust)
+  if ($untrustedDir.Count -gt 0) { return (Format-TrustRefusal $gitDir $untrustedDir) }
   $null
 }
 function Get-Wsl2InputsStep {
@@ -1686,22 +1692,38 @@ function Invoke-Wsl2FirstStartConfirm {
   $f = New-Object 'System.Collections.Generic.Dictionary[string,object]'
   $f['word'] = $word; $f['at'] = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
   $script:Manifest['created']['wsl2']['firstStart'] = $f; Save-Manifest
+  if ([System.IO.File]::Exists($W.FirstCheckConfig)) { Remove-Item -LiteralPath $W.FirstCheckConfig -Force }   # its job is done: it names the owner as the Control Plane and must not stay around
   Say "First start recorded ($word). Next, in order: the C6 measurement (measure-attestation-key.ps1 -Phase C6), the SEC-2 check (lab-sec2.ps1), a Broker-signed lease through the real bridge WITHOUT the token, and only then  albera-host.ps1 -Mode wsl2-run-entry"
   0
 }
 # -Mode wsl2-run-entry: the LAST step. It refuses unless the first start is recorded and everything reads back as installed. The C6 report, the SEC-2 result and the tokenless lease check are NOT machine-checked.
 function Invoke-Wsl2RunEntryMode {
   if (-not (Test-ManifestHas 'wsl2')) { Say 'REFUSED: this install has no WSL2 record (install with -AddWsl2Computer first).'; return 3 }
+  if ($script:Manifest['state'] -cne 'complete') { Say "REFUSED: the install is not complete (state $($script:Manifest['state'])); finish it first."; return 3 }
   $rec = $script:Manifest['created']['wsl2']
   if (-not $rec.ContainsKey('firstStart')) { Say 'REFUSED: the first start of the bridge in a normal console is not recorded (-Mode wsl2-first-start).'; return 3 }
   Resolve-HostSids
   $problems = Get-Wsl2ReadBackProblems
   if ($problems.Count -gt 0) { Say "REFUSED: the key and its copies do not read back as installed: $($problems -join ', ')"; return 3 }
-  Set-Wsl2RunValue
+  # the C6 report and the SEC-2 result, read from the administrator-only measurement folder
+  $paths = Get-MeasurePaths $ProgramDataDir
+  $read = {
+    param($file)
+    if (-not [System.IO.File]::Exists($file)) { return $null }
+    $why = Get-PathTrustReasons $paths.Dir (Get-AdminSids) $true
+    if ($why.Count -eq 0) { $why = Get-PathTrustReasons $file (Get-AdminSids) $false }
+    if ($why.Count -gt 0) { throw (Format-TrustRefusal $file $why) }
+    try { [System.IO.File]::ReadAllText($file) | ConvertFrom-Json } catch { throw "$file is not json" }
+  }
+  try { $c6 = & $read $paths.C6; $sec2 = & $read $paths.Sec2 } catch { Say "REFUSED: $($_.Exception.Message)"; return 3 }
+  $gate = Test-Wsl2Gate $c6 $sec2 ([bool]$Wsl2AcceptNotMeasured)
+  if ($gate.Count -gt 0) { Say "REFUSED: $($gate -join ', '). Run measure-attestation-key.ps1 -Phase C6 and lab-sec2.ps1 (host-install.md), or take an open question on yourself with -Wsl2AcceptNotMeasured."; return 3 }
+  # the record first, then the value: a value that is set always has a record, so uninstall always knows it
   $entry = Get-Wsl2RunEntry $W
-  if ((Get-Wsl2RunValue) -cne $entry.Command) { Say 'ERROR: the HKLM Run value of the bridge is not what was written'; return 1 }
   $run = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $run['name'] = $entry.Name; $run['command'] = $entry.Command
   $rec['runEntry'] = $run; Save-Manifest
+  Set-Wsl2RunValue
+  if ((Get-Wsl2RunValue) -cne $entry.Command) { Say 'ERROR: the HKLM Run value of the bridge is not what was written (the record names it; uninstall removes it only if it is this command)'; return 1 }
   Say "Run value $($entry.Name) set and read back: the bridge starts in your session at your next sign-in. Undo: -Mode uninstall."
   0
 }
@@ -1746,10 +1768,8 @@ function Get-Wsl2StepsAfter([string]$Id) {
     default { @() }
   }
 }
-function Set-Wsl2FoldersAdminOnly {
-  foreach ($dir in @($W.StateDir, $W.DistributionsDir)) {
-    if (Test-Path -LiteralPath $dir) { Set-HostDacl $dir @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F') }
-  }
+function Remove-Wsl2OwnerFolders {
+  foreach ($dir in @($W.StateDir, $W.DistributionsDir)) { [void](Remove-AdminOnlyTree $dir) }   # the folders the owner's account wrote into: the one method (owner check, ACL taken level by level, links checked again)
 }
 function Get-Wsl2StatusLines {
   $out = New-Object System.Collections.Generic.List[object]
@@ -2131,7 +2151,7 @@ function Remove-TrustedTree([string]$Dir, [string[]]$AllowedTop, [string[]]$Allo
   # the WSL2 folder (-AddWsl2Computer): its only writers are SYSTEM and Administrators (the owner's rule on it is read-only; the state folders below it are not judged here)
   if (-not $entry -and $Dir -ceq $W.DataDir) { $entry = [pscustomobject]@{ Path = $Dir; Grants = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F') } }
   if (-not $entry) { throw "$Dir is not one of the folders this script creates; refusing to delete it" }
-  if ($Dir -ceq $W.DataDir) { Set-Wsl2FoldersAdminOnly }   # the owner's Modify rule on state\ and distributions\ goes first: what is deleted below is then reachable by administrators only
+  if ($Dir -ceq $W.DataDir) { Remove-Wsl2OwnerFolders }   # the owner's Modify rule on state\ and distributions\ goes first: what is deleted below is then reachable by administrators only
   $reasons = Get-PathTrustReasons $Dir (Get-PlannedWriters $entry) $true
   if ($reasons.Count -gt 0) { throw (Format-TrustRefusal $Dir $reasons) }
   Remove-HostTree $Dir $AllowedTop $AllowedFolders $InstallTree

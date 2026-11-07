@@ -247,4 +247,31 @@ $r.firstStartRecord = [ordered]@{
   notDict = (& $rec2 { param($d) $d['firstStart'] = 'control_plane_is_self' })
 }
 $r.git = [ordered]@{ default = $C.DefaultGitPath; defaultOk = (Test-Wsl2GitPath $C.DefaultGitPath); firstStartWord = $C.FirstStartWord }
+# ---- round 3: the gate of -Mode wsl2-run-entry
+function Rep([hashtable]$v) { [pscustomobject]$v }
+$goodV = [ordered]@{ keyCannotBeExported = 'yes'; asExpected_broker = 'yes'; asExpected_other = 'yes'; asExpected_controlplane = 'yes' }
+$c6 = { param($edit) $o = [pscustomobject]@{ phase = 'C6'; failed = $false; verdicts = $null }; $o.verdicts = [pscustomobject]$goodV; & $edit $o; $o }
+$sec2good = [pscustomobject]@{ ownerCheck = 'works'; imagePin = 'works' }
+$gate = { param($edit, $sec, $accept) Test-Wsl2Gate (& $c6 $edit) $sec $accept }
+$r.gate = [ordered]@{
+  good = & $gate { param($o) } $sec2good $false
+  pinFails = & $gate { param($o) } ([pscustomobject]@{ ownerCheck = 'works'; imagePin = 'fails_from_this_account:server_identity_unavailable' }) $false
+  noC6 = Test-Wsl2Gate $null $sec2good $false
+  noSec2 = Test-Wsl2Gate (& $c6 { param($o) }) $null $false
+  phaseN7 = & $gate { param($o) $o.phase = 'N7' } $sec2good $false
+  failed = & $gate { param($o) $o.failed = $true } $sec2good $false
+  unexpected = & $gate { param($o) $o.verdicts.asExpected_other = 'NO' } $sec2good $false
+  unexpectedEvenAccepted = & $gate { param($o) $o.verdicts.asExpected_other = 'NO' } $sec2good $true
+  notMeasured = & $gate { param($o) $o.verdicts.asExpected_controlplane = 'not_measured' } $sec2good $false
+  notMeasuredAccepted = & $gate { param($o) $o.verdicts.asExpected_controlplane = 'not_measured' } $sec2good $true
+  exportable = & $gate { param($o) $o.verdicts.keyCannotBeExported = 'no' } $sec2good $true
+  exportNotMeasured = & $gate { param($o) $o.verdicts.keyCannotBeExported = 'not_measured' } $sec2good $false
+  incomplete = & $gate { param($o) $o.verdicts = [pscustomobject]@{ keyCannotBeExported = 'yes'; asExpected_broker = 'yes' } } $sec2good $false
+  ownerCheckFails = & $gate { param($o) } ([pscustomobject]@{ ownerCheck = 'accepts_any_owner'; imagePin = 'works' }) $false
+  sec2NotMeasured = & $gate { param($o) } ([pscustomobject]@{ ownerCheck = 'not_measured'; imagePin = 'not_measured' }) $false
+  sec2NotMeasuredAccepted = & $gate { param($o) } ([pscustomobject]@{ ownerCheck = 'not_measured'; imagePin = 'not_measured' }) $true
+  sec2OddPin = & $gate { param($o) } ([pscustomobject]@{ ownerCheck = 'works'; imagePin = 'maybe' }) $false
+}
+$mp = Get-MeasurePaths 'C:\ProgramData'
+$r.measurePaths = $mp
 $r | ConvertTo-Json -Depth 12 -Compress

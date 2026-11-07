@@ -169,9 +169,10 @@ function Remove-Sec2Account([string]$Name) {
   $found = @(Get-Sec2LocalAccounts | Where-Object { $_.Name -ceq $Name })
   if ($found.Count -eq 0) { return $false }
   if (-not (Test-Sec2AccountOwned $found[0].Name $found[0].Description)) { throw "the account $Name is not ours (name or description differ); left alone" }
+  $sid = (New-Object System.Security.Principal.NTAccount($Name)).Translate([System.Security.Principal.SecurityIdentifier]).Value   # before the account is gone: the owner of its profile folder
   ([ADSI]'WinNT://.').Delete('user', $Name)
   $profile = Join-Path 'C:\Users' $Name
-  if ([System.IO.Directory]::Exists($profile) -and (Get-ReparseChain $profile).Count -eq 0) { try { [System.IO.Directory]::Delete($profile, $true) } catch { Write-Host "WARNING: the profile folder $profile could not be removed ($($_.Exception.Message)); delete it yourself" } }
+  if ([System.IO.Directory]::Exists($profile)) { try { [void](Remove-AdminOnlyTree $profile @($sid)) } catch { Write-Host "WARNING: the profile folder $profile could not be removed ($($_.Exception.Message)); delete it yourself" } }
   $true
 }
 function Wait-Sec2Pipe([string]$PipeName, [int]$Minutes) {
@@ -236,9 +237,29 @@ function New-Sec2LabFolder($Account, $L, $W, [string]$Dir) {
 }
 function Remove-Sec2LabFolder([string]$Dir) {
   if (-not $Dir -or -not [System.IO.Directory]::Exists($Dir)) { return $false }
-  if ((Get-ReparseChain $Dir).Count -gt 0) { throw "$Dir is or is reached through a link; left alone" }
-  [System.IO.Directory]::Delete($Dir, $true)   # a file the running lab bridge holds open stops this with an IOException: the caller reports it
-  $true
+  Remove-AdminOnlyTree $Dir   # the one method: owner check on the top folder, owner and DACL taken at every level before it is listed, links checked again; an open file stops it with an IOException: the caller reports it
+}
+# The result the Run entry step reads (-Mode wsl2-run-entry): the verdict words and a time, in the administrator-only measurement folder. Replaced by a Fake in the tests.
+function Write-Sec2Result($Verdict) {
+  $paths = Get-MeasurePaths ([Environment]::GetFolderPath('CommonApplicationData'))
+  if (Test-Path -LiteralPath $paths.Dir) { $why = Get-PathTrustReasons $paths.Dir (Get-AdminSids) $true; if ($why.Count -gt 0) { throw (Format-TrustRefusal $paths.Dir $why) } }
+  else { New-SecuredDirectory $paths.Dir @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F') }
+  $o = [ordered]@{ version = 1; at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); ownerCheck = [string]$Verdict.ownerCheck; imagePin = [string]$Verdict.imagePin; advice = [string]$Verdict.advice }
+  [System.IO.File]::WriteAllText($paths.Sec2, ($o | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+}
+# What is really left, said from facts (never "removed on the way out" without looking). Lines to print.
+function Get-Sec2LeftoverLines {
+  $c = Get-Sec2Constants
+  $lines = New-Object System.Collections.Generic.List[string]
+  try {
+    $accounts = @(Get-Sec2LocalAccounts | Where-Object { $_.Name -like ($c.AccountPrefix + '*') } | ForEach-Object { $_.Name })
+    $labDir = Get-Sec2LabDir
+    if ($accounts.Count -gt 0) { $lines.Add('STILL THERE: local account(s) ' + ($accounts -join ', ') + '. Run this script with -RemoveStale.') }
+    if ([System.IO.Directory]::Exists($labDir)) { $lines.Add("STILL THERE: the lab folder $labDir. End the lab bridge if it runs, then run this script with -RemoveStale.") }
+    if ($lines.Count -eq 0) { $lines.Add('Checked: no lab account and no lab folder is left.') }
+  }
+  catch { $lines.Add('Could not check what is left (' + $_.Exception.Message + '). Run this script with -RemoveStale to be sure.') }
+  , @($lines)
 }
 function Wait-Sec2PipeGone([string]$PipeName, [int]$Minutes) {
   $end = (Get-Date).AddMinutes($Minutes)
@@ -272,10 +293,16 @@ function Invoke-Sec2Run($L, $W, [byte[]]$Random, [int]$Minutes) {
     Write-Host '3. START THE LAB BRIDGE NOW, in a NORMAL (not elevated) console, as yourself:'
     Write-Host ('     "' + $W.BridgeExe + '" serve "' + $lab.Config + '"')
     Write-Host "   (it prints BRIDGE_READY; waiting up to $Minutes minute(s) for the pipe $($c.LabPipeName))"
-    if (-not (Wait-Sec2Pipe $c.LabPipeName $Minutes)) { Write-Host 'the lab bridge did not start in time: nothing was measured'; return [ordered]@{ ownerCheck = 'not_measured'; imagePin = 'not_measured'; advice = 'start the lab bridge and run again' } }
+    if (-not (Wait-Sec2Pipe $c.LabPipeName $Minutes)) {
+      Write-Host 'the lab bridge did not start in time: nothing was measured'
+      $none = [ordered]@{ ownerCheck = 'not_measured'; imagePin = 'not_measured'; advice = 'start the lab bridge and run again' }
+      try { Write-Sec2Result $none } catch { Write-Host "WARNING: the result file could not be written ($($_.Exception.Message))" }
+      return $none
+    }
     Write-Host '4. running the helper as the account (no request is sent)'
     foreach ($case in (Get-Sec2Cases $c.LabPipeName $lab.OwnerSid $lab.BridgeExeSha256)) { $results[$case.Id] = Invoke-Sec2ProbeAs $account $lab.Probe $lab.Helper $case }
     $verdict = Get-Sec2Verdict $results
+    try { Write-Sec2Result $verdict } catch { Write-Host "WARNING: the result file could not be written ($($_.Exception.Message)); the Run entry step will not find it" }
     Write-Host '5. END THE LAB BRIDGE NOW: press Ctrl+C in the console where you started it. The lab folder cannot be deleted while it runs.'
     if (-not (Wait-Sec2PipeGone $c.LabPipeName $c.StopWaitMinutes)) { Write-Host "WARNING: the lab pipe is still there after $($c.StopWaitMinutes) minute(s); the lab folder may be locked" }
     $verdict
@@ -319,6 +346,6 @@ try {
 }
 catch {
   Write-Host ('ERROR: ' + $_.Exception.Message)
-  Write-Host 'The temporary account and the lab folder were removed on the way out; run with -RemoveStale if the process was killed.'
+  foreach ($line in (Get-Sec2LeftoverLines)) { Write-Host $line }
   exit 1
 }

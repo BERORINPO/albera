@@ -1703,3 +1703,80 @@ function Test-Wsl2Record($Record) {
   }
   $true
 }
+
+# ---------------------------------------------------------------------------------------------- one method for every elevated recursive delete of a folder an unprivileged account could write into
+# (the lab folder, the measurement's work folders, the bridge's state and distributions folders). An administrator deleting a tree that the owner's account has filled can be steered by that account: a link put
+# in place between the listing and the delete, a file whose ACL denies the administrator. So: the TOP folder must be owned by Administrators (made by this script, not planted); and at EVERY level the owner
+# and the DACL are set to Administrators + SYSTEM only BEFORE the level is listed, and the level is checked for a link again after that. A link is removed as a link, never entered.
+function Get-AdminTreeOwner([string]$Path) {
+  $acl = if ([System.IO.Directory]::Exists($Path)) { [System.IO.Directory]::GetAccessControl($Path) } else { [System.IO.File]::GetAccessControl($Path) }
+  $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+}
+function Set-AdminOnlyAcl([string]$Path) {
+  $ba = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544'); $sy = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')
+  $isDir = [System.IO.Directory]::Exists($Path)
+  $security = if ($isDir) { New-Object System.Security.AccessControl.DirectorySecurity } else { New-Object System.Security.AccessControl.FileSecurity }
+  $security.SetAccessRuleProtection($true, $false)
+  $security.SetOwner($ba)
+  $inherit = if ($isDir) { [System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit' } else { [System.Security.AccessControl.InheritanceFlags]::None }
+  foreach ($sid in @($sy, $ba)) { $security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, [System.Security.AccessControl.FileSystemRights]::FullControl, $inherit, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow))) }
+  if ($isDir) { [System.IO.Directory]::SetAccessControl($Path, $security) } else { [System.IO.File]::SetAccessControl($Path, $security) }
+}
+function Remove-AdminOnlyLevel([string]$Dir) {
+  Set-AdminOnlyAcl $Dir
+  $info = New-Object System.IO.DirectoryInfo($Dir)
+  if (($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw "$Dir turned into a link while it was being deleted; left alone" }   # checked again AFTER the ACL was taken
+  foreach ($entry in $info.GetFileSystemInfos()) {
+    $isLink = ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+    $isDir = ($entry.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0
+    if ($isLink) { $entry.Delete(); continue }   # a link goes as a link: its target is neither entered nor touched
+    if ($isDir) { Remove-AdminOnlyLevel $entry.FullName; continue }
+    Set-AdminOnlyAcl $entry.FullName
+    if (($entry.Attributes -band [System.IO.FileAttributes]::ReadOnly) -ne 0) { $entry.Attributes = [System.IO.FileAttributes]::Normal }
+    $entry.Delete()
+  }
+  if (($info.Attributes -band [System.IO.FileAttributes]::ReadOnly) -ne 0) { $info.Attributes = [System.IO.FileAttributes]::Directory }
+  $info.Delete()
+}
+# $true when the folder was there and is gone; $false when it was not there. Throws for a link on the path, a top folder not owned by Administrators, and whatever stops a delete (an open file).
+function Remove-AdminOnlyTree([string]$Path, [string[]]$AllowOwners = @()) {   # $AllowOwners: besides Administrators, the SID of an account WE made (the lab account's profile folder)
+  if (-not [System.IO.Directory]::Exists($Path)) { return $false }
+  if ((Get-ReparseChain $Path).Count -gt 0) { throw "$Path is or is reached through a link; left alone" }
+  $owner = Get-AdminTreeOwner $Path
+  if (@('S-1-5-32-544') + @($AllowOwners) -cnotcontains $owner) { throw "$Path is not owned by Administrators (owner $owner): it was not made by this script; left alone" }
+  Remove-AdminOnlyLevel $Path
+  $true
+}
+
+# ---------------------------------------------------------------------------------------------- the gate of -Mode wsl2-run-entry: what the C6 report and the SEC-2 result must say
+function Get-MeasurePaths([string]$ProgramData) {
+  $dir = Join-Path $ProgramData 'AlberaMeasure'
+  [pscustomobject]@{ Dir = $dir; N7 = (Join-Path $dir 'attestation-key-report-N7.json'); C6 = (Join-Path $dir 'attestation-key-report-C6.json'); Sec2 = (Join-Path $dir 'sec2-result.json') }
+}
+# $C6 / $Sec2 = the parsed json (or $null when the file is not there). Returns the reasons the Run entry must wait (empty = go). not_measured is an open question, not an answer: it passes only with $AcceptNotMeasured.
+function Test-Wsl2Gate($C6, $Sec2, [bool]$AcceptNotMeasured) {
+  $r = New-Object System.Collections.Generic.List[string]
+  if ($null -eq $C6) { $r.Add('c6_report_missing') }
+  else {
+    if ($C6.phase -cne 'C6') { $r.Add('c6_report_not_phase_c6') }
+    if ($C6.failed -ne $false) { $r.Add('c6_failed') }
+    $v = $C6.verdicts
+    $expected = @(if ($null -ne $v) { $v.PSObject.Properties | Where-Object { $_.Name -like 'asExpected_*' } })
+    if ($expected.Count -lt 3) { $r.Add('c6_incomplete') }
+    foreach ($p in $expected) {
+      if ($p.Value -ceq 'NO') { $r.Add('c6_unexpected:' + $p.Name) }
+      elseif ($p.Value -ceq 'not_measured') { if (-not $AcceptNotMeasured) { $r.Add('c6_not_measured:' + $p.Name) } }
+      elseif ($p.Value -cne 'yes') { $r.Add('c6_odd_value:' + $p.Name) }
+    }
+    $export = if ($null -ne $v) { $v.keyCannotBeExported } else { $null }
+    if ($export -ceq 'no') { $r.Add('c6_key_can_be_exported') }
+    elseif ($export -cne 'yes' -and -not ($export -ceq 'not_measured' -and $AcceptNotMeasured)) { $r.Add('c6_export_not_shown') }
+  }
+  if ($null -eq $Sec2) { $r.Add('sec2_result_missing') }
+  else {
+    if ($Sec2.ownerCheck -cne 'works') { if ($Sec2.ownerCheck -ceq 'not_measured') { if (-not $AcceptNotMeasured) { $r.Add('sec2_owner_check_not_measured') } } else { $r.Add('sec2_owner_check:' + $Sec2.ownerCheck) } }
+    if ($Sec2.imagePin -ceq 'not_measured') { if (-not $AcceptNotMeasured) { $r.Add('sec2_image_pin_not_measured') } }
+    elseif ($Sec2.imagePin -cne 'works' -and [string]$Sec2.imagePin -cnotlike 'fails_*') { $r.Add('sec2_image_pin_odd:' + $Sec2.imagePin) }
+  }
+  , @($r)
+}

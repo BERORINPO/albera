@@ -309,6 +309,16 @@ test('install, with fakes: the key is refused when it exists, the configs carry 
   assert.equal(r.firstStartRecord.word, 'control_plane_is_self');
   assert.equal(r.manifestShapeAfterConfirm, true);
   assert.equal(r.runEntryWhenKeyDiffers, 3, 'and not when the key and its copies do not read back as installed');
+  // N3: complete install, C6 report and SEC-2 result, each refused until it is right; a NO is never overridden; not_measured only with the flag
+  assert.equal(r.runEntryWhenPartial, 3, 'an install that is not complete gets no Run entry');
+  assert.equal(r.runEntryNoReports, 3);
+  assert.equal(r.runEntryNoSec2, 3);
+  assert.equal(r.runEntryWhenC6Says, 3);
+  assert.equal(r.runEntryNotMeasured, 3);
+  assert.equal(r.runValueAfterRefusals, null, 'no refusal left a Run value behind');
+  assert.equal(r.runEntryNotMeasuredAccepted, 0, 'with the explicit flag an open question is taken on by the owner');
+  assert.equal(r.firstCheckGoneAfterConfirm, true, 'first-check.json is removed when the first start is recorded');
+  assert.equal(r.runRecordWasWrittenBeforeValue, true, 'the record names the Run value before it is set');
   assert.equal(r.runEntryOk, 0);
   assert.equal(r.runValue, r.expectedRunCommand);
   assert.equal(r.runRecord.command, r.expectedRunCommand);
@@ -321,7 +331,7 @@ test('install, with fakes: the key is refused when it exists, the configs carry 
   assert.equal(r.statusWithoutRecord, 0);
 });
 
-test('uninstall, with fakes: the Run value goes first and only if it is the command install wrote, the key is deleted, the owner\'s rules leave state and distributions BEFORE the recursive delete, and a locked lab folder next to the data folder does not stop it', (t) => {
+test('uninstall, with fakes: the Run value goes first and only if it is the command install wrote, the key is deleted, state and distributions go through the one delete method (owner and ACL taken level by level, before listing), and a locked lab folder next to the data folder does not stop it', (t) => {
   const { r } = harness(t, 'uninstall');
   assert.equal(r.runStepBefore, 'todo');
   assert.equal(r.runValueAfter, null);
@@ -333,13 +343,13 @@ test('uninstall, with fakes: the Run value goes first and only if it is the comm
   assert.equal(r.dataFolderExistsAfter, false);
   assert.match(r.dataFolderWithForeignFile, /holds files this script did not create/u);
   assert.equal(r.dataFolderForeignFileStillThere, true);
-  // M1
-  const adminOnly = ['*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F'];
-  const names = r.daclLog.map((entry) => entry.path.split('\\').slice(-1)[0]);
-  assert.deepEqual(names.sort(), ['distributions', 'state']);
-  for (const entry of r.daclLog) {
-    assert.deepEqual(entry.grants, adminOnly, 'administrators and SYSTEM only');
-    assert.equal(entry.existed && entry.hadFiles, true, 'the rule is taken off while the files are still there, before the delete');
+  // M1 / N1: every level under state\ and distributions\ has its ACL taken BEFORE it is listed (the entry is logged while the level still holds its files)
+  const tops = ['state', 'distributions'].map((name) => r.daclLog.find((entry) => entry.isDir && entry.path.endsWith(`\\wsl-bridge\\${name}`)));
+  for (const top of tops) assert.ok(top && top.existed && top.hadFiles, 'the top folder is handled while it still holds its files');
+  for (const entry of r.daclLog) assert.ok(/\\wsl-bridge\\(state|distributions)(\\|$)/u.test(entry.path), `only below state and distributions: ${entry.path}`);
+  for (const dir of r.daclLog.filter((entry) => entry.isDir)) {
+    const children = r.daclLog.filter((entry) => entry.path.startsWith(`${dir.path}\\`));
+    for (const child of children) assert.ok(r.daclLog.indexOf(dir) < r.daclLog.indexOf(child), `${dir.path} is handled before ${child.path}`);
   }
   // H2: the lab folder is outside the data folder, so a leftover (even a locked one) never blocks uninstall
   assert.equal(r.labSiblingStillThere, true);
@@ -425,9 +435,10 @@ test('measure-attestation-key.ps1: names, identities, error names, the task XML 
   assert.ok(r.planLines.length >= 6);
 });
 
-test('measure-attestation-key.ps1, with fakes: N7 runs every step in order and cleans up; C6 reads the installed key and creates and deletes NOTHING; a failure still writes the report; a leftover is removed by name and the real key never', (t) => {
+test('measure-attestation-key.ps1, with fakes: N7 runs every step in order and cleans up; C6 reads the installed key (export policy read, no export tried) and creates and deletes NOTHING; a failure still writes the report; a leftover is removed by name and the real key never', (t) => {
   const r = lab(t, 'measure-flow');
   assert.deepEqual(r.normal.order, ['dir', 'dir', 'dir', 'create-name-nonadmin', 'create-key', 'export-sign', 'task:broker', 'task:other', 'task:controlplane', 'delete-key']);
+  assert.equal(r.normalTryExport, true, 'N7 tries an export on its own throwaway key');
   assert.equal(r.normal.reportWritten, true);
   assert.equal(r.normal.keyDeleted, true);
   assert.equal(r.normal.workRemoved, true);
@@ -439,8 +450,9 @@ test('measure-attestation-key.ps1, with fakes: N7 runs every step in order and c
   assert.equal(/BEGIN|PRIVATE|Pkcs8/iu.test(r.normal.reportText), false, 'no key material in the report file');
   assert.equal(r.nonAdminMadeIt.deletedBeforeCreate, true, 'a key a non-administrator made first is deleted before the administrator creates the name');
   assert.equal(r.nonAdminMadeIt.verdict, 'yes');
-  // C6 (after the install): the real key, the real services, nothing created, nothing deleted
+  // C6 (after the install): the real key, the real services, nothing created, nothing deleted, and the real key is NOT exported
   assert.deepEqual(r.c6.order, ['dir', 'dir', 'dir', 'read-installed-key', 'export-sign', 'task:broker', 'task:other', 'task:controlplane']);
+  assert.equal(r.c6.tryExport, false, 'C6 reads the export policy; it does not try an export on the real key');
   assert.equal(r.c6.threw, false);
   assert.equal(r.c6.keyStillThere, true, 'the installed key is never deleted');
   assert.equal(r.c6.keyName, 'AlberaHostBroker-attest-1');
@@ -508,9 +520,13 @@ test('lab-sec2.ps1: names, ownership of an account, the three cases, the answers
   assert.equal(r.probe.usesHelperArgument, 'wsl-bridge');
 });
 
-test('lab-sec2.ps1, with fakes: the account AND the lab folder are removed on EVERY way out, a lock is reported and finished by -RemoveStale, a real run or a bad path stops it before anything is made', (t) => {
+test('lab-sec2.ps1, with fakes: the account AND the lab folder are removed on EVERY way out, the result file is written, a lock is reported and finished by -RemoveStale, a real run or a bad path stops it before anything is made, and the last words say what is really left', (t) => {
   const r = lab(t, 'sec2-flow');
-  assert.deepEqual(r.normal.order, ['sweep', 'remove-lab', 'create-account', 'lab-folder', 'wait-pipe', 'probe:owner', 'probe:wrongOwner', 'probe:ownerAndImage', 'wait-pipe-gone', 'remove-account', 'remove-lab']);
+  assert.deepEqual(r.normal.order, ['sweep', 'remove-lab', 'create-account', 'lab-folder', 'wait-pipe', 'probe:owner', 'probe:wrongOwner', 'probe:ownerAndImage', 'write-result', 'wait-pipe-gone', 'remove-account', 'remove-lab']);
+  assert.deepEqual(r.normalResult, ['works'], 'the result the Run entry step reads is written');
+  assert.deepEqual(r.timeoutResult, ['not_measured'], 'a run that measured nothing says so in the result file');
+  assert.equal(r.resultFails.verdict, 'works');
+  assert.equal(r.resultFails.warned, true, 'a result file that cannot be written is said; the answer is still printed');
   assert.equal(r.normal.removeCalls, 1);
   assert.equal(r.normal.verdict, 'works');
   assert.equal(r.normal.labFolderExists, false);
@@ -533,6 +549,11 @@ test('lab-sec2.ps1, with fakes: the account AND the lab folder are removed on EV
   assert.equal(r.realLock.afterClose, true);
   assert.equal(r.realLock.goneAfterClose, true);
   assert.equal(r.absentFolder, false);
+  // N1: the last words are facts, never an unconditional "removed"
+  assert.match(r.leftoverDirty.join(' '), /STILL THERE: local account\(s\) albera-sec2-0102abcd.*STILL THERE: the lab folder/u);
+  assert.match(r.leftoverDirty.join(' '), /-RemoveStale/u);
+  assert.deepEqual(r.leftoverClean, ['Checked: no lab account and no lab folder is left.']);
+  assert.match(r.leftoverUnknown.join(' '), /Could not check what is left \(directory service down\)/u);
   // L5
   assert.deepEqual(r.realRunNames, ['albera-run-abc123']);
   assert.deepEqual(r.noRunNames, []);
@@ -609,4 +630,56 @@ test('the new modes: -Mode wsl2-first-start and wsl2-run-entry refuse without an
     assert.notEqual(refused.code, 0, mode);
     assert.match(refused.stdout, /needs an elevated console/u, mode);
   }
+});
+
+test('the one delete method for every elevated recursive delete: a folder not owned by Administrators is refused, a link is removed as a link and never entered, owner and ACL are taken at every level before it is listed', (t) => {
+  const r = lab(t, 'admintree');
+  assert.match(r.planted.message, /is not owned by Administrators/u, 'the REAL owner check refuses a folder the unprivileged test user made');
+  assert.equal(r.planted.stillThere, true, 'and deletes nothing of it');
+  assert.equal(r.absent, false);
+  assert.equal(r.junctionMade, true);
+  assert.equal(r.removed, true);
+  assert.equal(r.treeGone, true, 'including the read-only file');
+  assert.equal(r.sentinelSurvived, true, 'the junction was removed as a link: its target was not entered');
+  assert.deepEqual(r.aclPaths, ['tree', 'tree\\a', 'tree\\a\\b', 'tree\\a\\b\\deep.txt', 'tree\\a\\readonly.txt', 'tree\\top.txt'], 'the ACL is taken on every folder (before its listing) and every file, parents first; the link got none');
+  assert.equal(r.dirsSeenBeforeListing, true);
+  assert.match(r.linkAtTop, /is or is reached through a link/u);
+  assert.equal(r.sentinelAfterLink, true);
+  assert.match(r.aclSource, /SetOwner\(\$ba\)/u, 'the real ACL function takes the owner');
+  assert.match(r.aclSource, /SetAccessRuleProtection\(\$true, \$false\)/u, 'and writes a protected DACL');
+  assert.match(r.aclSource, /FullControl/u);
+  // no elevated script has another recursive delete of such a folder
+  for (const file of [...newScripts, path.join(hostDir, 'albera-host.ps1')]) {
+    const text = readFileSync(file, 'utf8');
+    assert.equal(/Directory\]::Delete\([^)]*\$true\)/u.test(text), false, `${path.basename(file)} deletes recursively only through Remove-AdminOnlyTree`);
+  }
+});
+
+test('the Run entry gate: -Mode wsl2-run-entry needs a complete install, the C6 report and the SEC-2 result, and writes its record BEFORE the Run value', (t) => {
+  const { r } = lib(t);
+  const g = r.gate;
+  assert.deepEqual(reasons(g.good), []);
+  assert.deepEqual(reasons(g.pinFails), [], 'an image pin that fails is an answer (the pin is then left out), not a blocker');
+  assert.deepEqual(reasons(g.noC6), ['c6_report_missing']);
+  assert.deepEqual(reasons(g.noSec2), ['sec2_result_missing']);
+  assert.deepEqual(reasons(g.phaseN7), ['c6_report_not_phase_c6']);
+  assert.deepEqual(reasons(g.failed), ['c6_failed']);
+  assert.deepEqual(reasons(g.unexpected), ['c6_unexpected:asExpected_other']);
+  assert.deepEqual(reasons(g.unexpectedEvenAccepted), ['c6_unexpected:asExpected_other'], 'a NO is never overridden');
+  assert.deepEqual(reasons(g.notMeasured), ['c6_not_measured:asExpected_controlplane']);
+  assert.deepEqual(reasons(g.notMeasuredAccepted), [], 'not_measured passes only with the explicit flag');
+  assert.deepEqual(reasons(g.exportable), ['c6_key_can_be_exported']);
+  assert.deepEqual(reasons(g.exportNotMeasured), ['c6_export_not_shown']);
+  assert.deepEqual(reasons(g.incomplete), ['c6_incomplete']);
+  assert.deepEqual(reasons(g.ownerCheckFails), ['sec2_owner_check:accepts_any_owner']);
+  assert.deepEqual(reasons(g.sec2NotMeasured), ['sec2_owner_check_not_measured', 'sec2_image_pin_not_measured']);
+  assert.deepEqual(reasons(g.sec2NotMeasuredAccepted), []);
+  assert.deepEqual(reasons(g.sec2OddPin), ['sec2_image_pin_odd:maybe']);
+  assert.match(r.measurePaths.C6, /attestation-key-report-C6\.json$/u, 'N7 and C6 write different files');
+  assert.match(r.measurePaths.N7, /attestation-key-report-N7\.json$/u);
+  assert.match(r.measurePaths.Sec2, /sec2-result\.json$/u);
+  const host = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
+  const mode = host.slice(host.indexOf('function Invoke-Wsl2RunEntryMode'), host.indexOf('function Get-Wsl2ReadBackProblems'));
+  assert.ok(mode.indexOf("-cne 'complete'") > 0 && mode.indexOf("-cne 'complete'") < mode.indexOf('Test-Wsl2Gate'), 'a complete install is required first');
+  assert.ok(mode.indexOf("$rec['runEntry'] = $run; Save-Manifest") < mode.indexOf('Set-Wsl2RunValue'), 'the record is written before the Run value (L7)');
 });
