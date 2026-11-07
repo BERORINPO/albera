@@ -48,7 +48,10 @@ switch ($Case) {
     $wrong = & $okFacts
     $wrong.asIdentity.other = @{ ran = $true; ok = $true }
     $r.verdictsWrong = Get-MeasureVerdicts $wrong
-    $good = [pscustomobject]@{ version = 1; measuredAt = '2026-11-07T00:00:00Z'; keyName = 'AlberaMeasure-0123456789ab'; machine = 'PC'; key = [ordered]@{ allowSids = @('S-1-5-18') }; facts = [ordered]@{}; verdicts = [ordered]@{ a = 'yes' }; cleanup = [ordered]@{ keyDeleted = $true }; notes = @('ok') }
+    $c6ids = Get-MeasureIdentities 'C6'
+    $r.c6Identities = $c6ids
+    $r.c6PlanLines = @(Get-MeasurePlanLines 'x' 'C:\x\r.json' 'C6')
+    $good = [pscustomobject]@{ version = 1; measuredAt = '2026-11-07T00:00:00Z'; phase = 'N7'; failed = $false; keyName = 'AlberaMeasure-0123456789ab'; machine = 'PC'; key = [ordered]@{ allowSids = @('S-1-5-18') }; facts = [ordered]@{}; verdicts = [ordered]@{ a = 'yes' }; cleanup = [ordered]@{ keyDeleted = $true }; notes = @('ok') }
     $r.reportGood = Test-MeasureReport $good
     $blob = $good.PSObject.Copy(); $blob.notes = @('A' * 200)
     $r.reportBlob = Test-MeasureReport $blob
@@ -91,14 +94,16 @@ switch ($Case) {
       if (-not $script:Scenario.ran[$id]) { return @{ ran = $false; ok = $false; error = 'task_not_created' } }
       @{ ran = $true; ok = ($id -eq 'broker'); hresult = $(if ($id -eq 'broker') { $null } else { '0x80090016' }) }
     }
-    function Invoke-NativeShort([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000) { [pscustomobject]@{ Exit = 0; Out = '' } }
+    function Invoke-NativeShort([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000) { [pscustomobject]@{ Exit = $(if ($Arguments -like '/Query*') { 1 } else { 0 }); Out = '' } }   # a query finds nothing: the tasks are gone
     $run = {
       param($name, $scenario)
       $script:Log.Clear(); $script:Store = @{}; $script:Scenario = $scenario
       $folder = Join-Path $Work $name
       $path = Join-Path $folder 'report.json'
       $threw = $false; $report = $null; $message = $null
-      try { $report = Invoke-Measurement $path } catch { $threw = $true; $message = $_.Exception.Message }
+      try { $report = Invoke-Measurement $path $script:Phase; if ($report.failed) { $threw = $true; $message = (@($report.notes) -join '; ') } } catch { $threw = $true; $message = $_.Exception.Message }
+      $script:LastCleanup = if ($report) { $report.cleanup } else { $null }
+      $script:LastReport = $report
       $left = if (Test-Path -LiteralPath $folder) { @(Get-ChildItem -LiteralPath $folder -Directory | Where-Object { $_.Name -like 'run-*' }).Count } else { 0 }
       [ordered]@{
         order = @($script:Log); threw = $threw; message = $message; reportWritten = [System.IO.File]::Exists($path); keyDeleted = ($script:Store.Count -eq 0); workRemoved = ($left -eq 0)
@@ -106,11 +111,32 @@ switch ($Case) {
         brokerSid = $brokerSid; createdKeyDacl = @($script:CreatedFor)
       }
     }
+    function Read-AuthoritySigningKey([string]$KeyName, [string]$Scope = 'machine') { Log 'read-installed-key'; if ($KeyName -ne 'AlberaHostBroker-attest-1') { return $null }; [pscustomobject]@{ spki = 'x'; report = [pscustomobject]@{ algorithm = 'ECDSA_P256'; keySize = 256; exportPolicy = 0; owner = 'S-1-5-32-544'; allowSids = @('S-1-5-18', 'S-1-5-32-544', (Get-DerivedServiceSid 'AlberaHostBroker')) } } }
+    $script:Phase = 'N7'
     $r.normal = & $run 'normal' @{ failAt = $null; nonAdminOk = $false; ran = @{ broker = $true; other = $true; controlplane = $true } }
+    $r.normalCleanup = $script:LastCleanup
+    $r.markerAfterNormal = Test-Path -LiteralPath (Join-Path $Work 'normal\pending-key.json')
     $made = & $run 'nonadmin' @{ failAt = $null; nonAdminOk = $true; ran = @{ broker = $true; other = $true; controlplane = $true } }
     $r.nonAdminMadeIt = [ordered]@{ deletedBeforeCreate = ($made.order.IndexOf('delete-key') -ge 0 -and $made.order.IndexOf('delete-key') -lt $made.order.IndexOf('create-key')); verdict = $made.verdicts.nonAdministratorCanTakeTheName }
+    # C6: the installed key is read, nothing is created, nothing is deleted
+    $script:Phase = 'C6'
+    $script:Store = @{ 'AlberaHostBroker-attest-1' = 'installed' }
+    $c6 = & $run 'c6' @{ failAt = $null; nonAdminOk = $false; ran = @{ broker = $true; other = $true; controlplane = $true } }
+    $script:Store = @{ 'AlberaHostBroker-attest-1' = 'installed' }
+    $r.c6 = [ordered]@{ order = $c6.order; threw = $c6.threw; keyStillThere = $script:Store.ContainsKey('AlberaHostBroker-attest-1'); phase = $script:LastReport.phase; keyName = $script:LastReport.keyName; verdicts = $c6.verdicts; markerWritten = (Test-Path -LiteralPath (Join-Path $Work 'c6\pending-key.json')) }
+    $script:Phase = 'N7'
     $r.failures = [ordered]@{}
-    foreach ($stage in @('create-key', 'export-sign', 'task:other')) { $f = & $run ('fail-' + ($stage -replace '\W', '-')) @{ failAt = $stage; nonAdminOk = $false; ran = @{ broker = $true; other = $true; controlplane = $true } }; $r.failures[$stage -replace '^task:', 'task:'] = $f }
+    foreach ($stage in @('create-key', 'export-sign', 'task:other')) { $f = & $run ('fail-' + ($stage -replace '\W', '-')) @{ failAt = $stage; nonAdminOk = $false; ran = @{ broker = $true; other = $true; controlplane = $true } }; $f.reportFailed = [bool]$script:LastReport.failed; $f.markerKept = Test-Path -LiteralPath (Join-Path $Work (('fail-' + ($stage -replace '\W', '-')) + '\pending-key.json')); $f.reportHasFailedNote = (@($script:LastReport.notes) -join ' ') -like 'FAILED:*'; $r.failures[$stage] = $f }
+    $lf = Join-Path $Work 'left'; New-Item -ItemType Directory -Force -Path (Join-Path $lf 'run-deadbeef') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $lf 'pending-key.json'), '{"keyName":"AlberaMeasure-0123456789ab","tasks":[],"workFolder":"x"}')
+    $script:Store = @{ 'AlberaMeasure-0123456789ab' = 'left'; 'AlberaHostBroker-attest-1' = 'real' }
+    function Invoke-NativeShort([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000) { [pscustomobject]@{ Exit = 1; Out = 'not found' } }
+    $code = Invoke-RemoveLeftovers (Join-Path $lf 'r.json')
+    $r.leftovers = [ordered]@{ code = $code; throwawayGone = (-not $script:Store.ContainsKey('AlberaMeasure-0123456789ab')); realKeyKept = $script:Store.ContainsKey('AlberaHostBroker-attest-1'); markerGone = (-not (Test-Path -LiteralPath (Join-Path $lf 'pending-key.json'))); runFolderGone = (-not (Test-Path -LiteralPath (Join-Path $lf 'run-deadbeef'))) }
+    [System.IO.File]::WriteAllText((Join-Path $lf 'pending-key.json'), '{"keyName":"AlberaHostBroker-attest-1","tasks":[],"workFolder":"x"}')
+    $script:Store = @{ 'AlberaHostBroker-attest-1' = 'real' }
+    $code2 = Invoke-RemoveLeftovers (Join-Path $lf 'r.json')
+    $r.leftoversRefuseRealKey = [ordered]@{ code = $code2; realKeyKept = $script:Store.ContainsKey('AlberaHostBroker-attest-1') }
     # a task Windows will not run, and a task that ran as another account: the real Invoke-TaskProbe, with a fake schtasks
     Remove-Item function:Invoke-TaskProbe
     $realCore = $null
@@ -173,14 +199,20 @@ switch ($Case) {
     . (Join-Path $hostDir 'lab-sec2.ps1')
     $c = Get-Sec2Constants
     $realRemove = ${function:Remove-Sec2Account}
+    $realRemoveLab = ${function:Remove-Sec2LabFolder}
     $script:Accounts = @{}
     $script:Fail = $null
     $script:Pipe = $true
     $script:RemovedNames = New-Object System.Collections.Generic.List[string]
     $script:LabRemoved = $false
+    $labDir = Join-Path $Work 'lab'
+    $dataDir = Join-Path $Work 'albera-data'
+    $distDir = Join-Path $dataDir 'distributions'
     function Log([string]$s) { $script:Log.Add($s) }
     function Write-Host { param([Parameter(ValueFromRemainingArguments = $true)]$Text) $script:Said.Add(($Text -join ' ')) }
     $script:Said = New-Object System.Collections.Generic.List[string]
+    function Get-Sec2LabDir { $script:LabDirUnderTest }
+    $script:LabDirUnderTest = $labDir
     function Get-Sec2LocalAccounts { Log 'sweep'; @($script:Accounts.Keys | ForEach-Object { [pscustomobject]@{ Name = $_; Description = $script:Accounts[$_] } }) }
     function New-Sec2Account([string]$Name) {
       Log 'create-account'
@@ -194,37 +226,72 @@ switch ($Case) {
       if (-not $script:Accounts.ContainsKey($Name)) { return $false }
       $script:Accounts.Remove($Name); $true
     }
-    function New-Sec2LabFolder($Account, $L, $W) {
+    function New-Sec2LabFolder($Account, $L, $W, [string]$Dir) {
       Log 'lab-folder'
+      New-Item -ItemType Directory -Force -Path $Dir | Out-Null   # the folder exists from here on, whether or not the rest works
       if ($script:Fail -eq 'lab-folder') { throw 'cannot copy the helper' }
-      @{ Dir = (Join-Path $Work 'lab'); Config = 'C:\lab\lab-bridge.json'; Probe = 'C:\lab\probe.ps1'; Helper = 'C:\lab\h.exe'; OwnerSid = $OWNER; BridgeExeSha256 = ('cd' * 32) }
+      @{ Dir = $Dir; Config = 'C:\lab\lab-bridge.json'; Probe = 'C:\lab\probe.ps1'; Helper = 'C:\lab\h.exe'; OwnerSid = $OWNER; BridgeExeSha256 = ('cd' * 32) }
     }
     function Wait-Sec2Pipe([string]$PipeName, [int]$Minutes) { Log 'wait-pipe'; $script:Pipe }
+    function Wait-Sec2PipeGone([string]$PipeName, [int]$Minutes) { Log 'wait-pipe-gone'; $true }
     function Invoke-Sec2ProbeAs($Account, [string]$ProbePath, [string]$HelperPath, $Case) {
       Log ('probe:' + $Case.Id)
       if ($script:Fail -eq 'probe-throws') { throw 'process could not start' }
       if ($script:Fail -eq 'probe-throws-late' -and $Case.Id -eq 'ownerAndImage') { throw 'process died' }
       @{ ran = $true; ok = ($Case.Id -ne 'wrongOwner'); code = $(if ($Case.Id -eq 'wrongOwner') { 'server_identity_mismatch' } else { $null }) }
     }
-    function Remove-Sec2LabFolder([string]$Dir) { Log 'remove-lab'; $script:LabRemoved = $true }
-    $layoutL = @{ PipeClientBinDir = 'x'; ApprovalSettings = 'x' }; $layoutW = @{ BridgeExe = 'C:\b.exe'; Config = 'C:\b.json' }
+    function Remove-Sec2LabFolder([string]$Dir) {
+      Log 'remove-lab'
+      $script:RemoveLabCalls++
+      if ($script:Fail -eq 'lab-locked' -and $script:RemoveLabCalls -ge 2) { throw 'The process cannot access the file because it is being used by another process.' }
+      & $realRemoveLab $Dir
+    }
+    $layoutL = @{ PipeClientBinDir = 'x'; ApprovalSettings = 'x' }
     $go = {
       param($fail, $pipe, $accounts)
-      $script:Log.Clear(); $script:Said.Clear(); $script:RemovedNames.Clear(); $script:LabRemoved = $false
+      $script:Log.Clear(); $script:Said.Clear(); $script:RemovedNames.Clear(); $script:RemoveLabCalls = 0
       $script:Fail = $fail; $script:Pipe = $pipe; $script:Accounts = $accounts
-      $threw = $false; $verdict = $null
-      try { $verdict = Invoke-Sec2Run $layoutL $layoutW ([byte[]](1..8)) 1 } catch { $threw = $true }
-      [ordered]@{ order = @($script:Log); threw = $threw; verdict = $(if ($verdict) { $verdict.ownerCheck } else { $null }); accountsLeft = @($script:Accounts.Keys | Where-Object { $_ -like 'albera-sec2-0102*' }).Count; removeCalls = $script:RemovedNames.Count; removed = $script:RemovedNames.Count; labRemoved = $script:LabRemoved; said = @($script:Said) }
+      $layoutW = @{ BridgeExe = 'C:\b.exe'; Config = 'C:\b.json'; DataDir = $dataDir; DistributionsDir = $distDir }
+      $threw = $false; $verdict = $null; $message = $null
+      try { $verdict = Invoke-Sec2Run $layoutL $layoutW ([byte[]](1..8)) 1 } catch { $threw = $true; $message = $_.Exception.Message }
+      [ordered]@{ order = @($script:Log); threw = $threw; message = $message; verdict = $(if ($verdict) { $verdict.ownerCheck } else { $null }); accountsLeft = @($script:Accounts.Keys | Where-Object { $_ -like 'albera-sec2-0102*' }).Count; removeCalls = $script:RemovedNames.Count; labFolderExists = (Test-Path -LiteralPath $labDir); said = @($script:Said) }
     }
     $r.normal = & $go $null $true @{}
     $r.failures = [ordered]@{}
-    $r.failures['create-account'] = & $go 'create-account' $true @{}
-    $r.failures['lab-folder'] = & $go 'lab-folder' $true @{}
+    foreach ($stage in @('create-account', 'lab-folder', 'probe-throws', 'probe-throws-late')) { $r.failures[$stage] = & $go $stage $true @{} }
     $r.failures['wait-pipe-timeout'] = & $go $null $false @{}
-    $r.failures['probe-throws'] = & $go 'probe-throws' $true @{}
-    $r.failures['probe-throws-late'] = & $go 'probe-throws-late' $true @{}
+    # the lab folder is deleted even when the lab folder step failed half-way (H2)
+    $r.labFolderFailedHalfway = $r.failures['lab-folder'].labFolderExists
+    # a lock on the lab folder (the lab bridge still running): reported, the account is still removed, the second call finishes the job
+    $locked = & $go 'lab-locked' $true @{}
+    $r.locked = [ordered]@{ accountsLeft = $locked.accountsLeft; warned = (@($locked.said | Where-Object { $_ -like 'WARNING: the lab folder*-RemoveStale*' }).Count -ge 1); folderStillThere = $locked.labFolderExists; verdict = $locked.verdict }
+    $script:Fail = $null
+    $r.lockedThenRemoveStale = [bool](& $realRemoveLab $labDir)
+    $r.lockedThenGone = -not (Test-Path -LiteralPath $labDir)
+    # a REAL lock: a file held open makes the real Remove-Sec2LabFolder fail; it works once the file is closed
+    New-Item -ItemType Directory -Force -Path (Join-Path $labDir 'state') | Out-Null
+    $held = New-Object System.IO.FileStream((Join-Path $labDir 'state\operations.log'), [System.IO.FileMode]::Create, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    $realLock = Try-Run { & $realRemoveLab $labDir }
+    $r.realLock = [ordered]@{ threw = [bool]$realLock; folderStillThere = (Test-Path -LiteralPath $labDir) }
+    $held.Dispose()
+    $r.realLock.afterClose = [bool](& $realRemoveLab $labDir)
+    $r.realLock.goneAfterClose = -not (Test-Path -LiteralPath $labDir)
+    $r.absentFolder = [bool](& $realRemoveLab (Join-Path $Work 'nowhere'))
+    # a real run is a folder albera-run-* in the installed distributions folder: the lab bridge would sweep it
+    New-Item -ItemType Directory -Force -Path (Join-Path $distDir 'albera-run-abc123') | Out-Null
+    $r.realRunNames = Get-Sec2RealRuns $distDir
+    $withRun = & $go $null $true @{}
+    $r.realRun = [ordered]@{ threw = $withRun.threw; message = $withRun.message; order = $withRun.order }
+    Remove-Item -LiteralPath (Join-Path $distDir 'albera-run-abc123') -Recurse -Force
+    $r.noRunNames = Get-Sec2RealRuns $distDir
+    # the lab folder path is judged before anything is made
+    $script:LabDirUnderTest = Join-Path $dataDir 'lab'
+    $underData = & $go $null $true @{}
+    $r.labUnderDataDir = [ordered]@{ threw = $underData.threw; message = $underData.message; order = $underData.order }
+    $script:LabDirUnderTest = $labDir
+    $r.labDirChecks = [ordered]@{ good = (Test-Sec2LabDir $labDir $dataDir); underData = (Test-Sec2LabDir (Join-Path $dataDir 'lab') (Join-Path $Work 'albera-data')); same = (Test-Sec2LabDir $dataDir $dataDir) }
     $failing = & $go 'remove-fails' $true @{}
-    $r.removalThatFails = [ordered]@{ warned = (@($failing.said | Where-Object { $_ -like 'WARNING: the account*-RemoveStale*' -or ($_ -like 'WARNING: the account*' -and $_ -like '*-RemoveStale*') }).Count -ge 1); verdict = $failing.verdict }
+    $r.removalThatFails = [ordered]@{ warned = (@($failing.said | Where-Object { $_ -like 'WARNING: the account*-RemoveStale*' }).Count -ge 1); verdict = $failing.verdict }
     $stale = & $go $null $true @{ 'albera-sec2-deadbeef' = $c.AccountDescription; 'albera-sec2-cafe0000' = 'somebody else' }
     $r.stale = [ordered]@{ removed = @($script:RemovedNames | Where-Object { $_ -eq 'albera-sec2-deadbeef' }).Count; foreignKept = $script:Accounts.ContainsKey('albera-sec2-cafe0000') }
     $script:Accounts = @{ 'albera-sec2-deadbeef' = 'somebody else' }

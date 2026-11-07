@@ -23,9 +23,12 @@
 #                                                             -Wsl2FloorExpiresAt <unix seconds> [-Wsl2ComputerId <id>] [-Wsl2GitPath <C:\Program Files\Git\...\git.exe>]
 #                                                             OPTIONAL (ADR-012 phase 5, host-install.md "WSL2 computer"): makes the Broker's CNG attestation key (refused when a key of that name exists) and hands its public half to the
 #                                                             Authority (pinned), the bridge config and the Broker config; copies the WSL bridge (its own tree hash, -Mode wsl2-hashes), the image, the lease floor file and the bridge config into
-#                                                             administrator-only folders; starts the bridge once with the Control Plane set to you (it must exit 77); reads the key and its three copies back (they must agree); adds the
-#                                                             `kind: wsl2` computer, the wsl2 settings block and an HKLM Run entry that starts the bridge in your session. Uninstall removes all of it, the key included.
-#   albera-host.ps1 -Mode wsl2-hashes                         prints ALBERA_WSL_BRIDGE_TREE_HASH=<hex> of the bridge publish folder (run it in a NORMAL console; type the value into the elevated install)
+#                                                             administrator-only folders; reads the key and its three copies back (they must agree) and writes the first-start config. It starts NOTHING of the bridge: the first start is a command for a
+#                                                             NORMAL console (-Mode wsl2-first-start records the word you read), and the HKLM Run entry is the last step (-Mode wsl2-run-entry). Adds the `kind: wsl2` computer and the wsl2 settings block.
+#                                                             Uninstall removes all of it, the key included.
+#   albera-host.ps1 -Mode wsl2-hashes                         prints ALBERA_WSL_BRIDGE_TREE_HASH=<hex> of the bridge publish folder (the CI log prints it too: type that one)
+#   albera-host.ps1 -Mode wsl2-first-start -Wsl2FirstStartWord control_plane_is_self      (elevated) records the word you read in a NORMAL console; refuses any other word
+#   albera-host.ps1 -Mode wsl2-run-entry                      (elevated) the LAST step: the HKLM Run entry that starts the bridge in your session; refused until the first start is recorded
 #   albera-host.ps1 -Mode migrate (-ExpectedTreeHash <64 hex> | -TrustLocalBuilds)
 #                                                             ONCE, for an install made by the first layout (the local account albera-cp; control-plane-service.md section 9, decision D7): reads that install's
 #                                                             record and configs (the Hello public values, the VM GUID, the computer id, whether the Hyper-V grant was made), stops albera-cp's processes by PID,
@@ -70,7 +73,7 @@
 # -VmId (a fixed VM GUID instead of the lookup), -NodeSource and -ClaudeSource (a node.exe / claude.exe from elsewhere) are for the disposable lab VM only and are refused unless the environment variable ALBERA_LAB_VM is 1.
 [CmdletBinding()]
 param(
-  [ValidateSet('plan', 'install', 'uninstall', 'status', 'hashes', 'migrate', 'set-approver', 'wsl2-hashes')][string]$Mode = 'plan',
+  [ValidateSet('plan', 'install', 'uninstall', 'status', 'hashes', 'migrate', 'set-approver', 'wsl2-hashes', 'wsl2-first-start', 'wsl2-run-entry')][string]$Mode = 'plan',
   [ValidateSet('install', 'uninstall', 'migrate', 'set-approver')][string]$PlanFor = 'install',
   [string]$ApproverKeyId,
   [string]$ApproverPublicKey,
@@ -101,6 +104,8 @@ param(
   [string]$Wsl2BridgeTreeHash,
   [string]$Wsl2FloorExpiresAt,
   [string]$Wsl2GitPath,
+  # -Mode wsl2-first-start: the word you read after BRIDGE_FATAL= in the NORMAL console (it must be control_plane_is_self).
+  [string]$Wsl2FirstStartWord,
   [string]$VmId,
   # The run id of the attested workflow run that built what albera-setup.exe verified (a decimal number). Recorded as `setupRunId` in the install record; a smaller one is refused, the same one is fine.
   [string]$SetupRunId,
@@ -165,6 +170,7 @@ $ProgramDataDir = [Environment]::GetFolderPath('CommonApplicationData')
 $ScExe = Join-Path $SystemDirectory 'sc.exe'
 $IcaclsExe = Join-Path $SystemDirectory 'icacls.exe'
 if ($Mode -in @('install', 'uninstall', 'migrate', 'set-approver') -and -not (Test-Elevated)) { Stop-Refused "$Mode needs an elevated console (Run as administrator). This script never elevates itself." }
+if ($Mode -in @('wsl2-first-start', 'wsl2-run-entry') -and -not (Test-Elevated)) { Stop-Refused "$Mode needs an elevated console (it writes the install record). This script never elevates itself." }
 $installLike = ($Mode -eq 'install') -or ($Mode -eq 'migrate') -or ($Mode -eq 'plan' -and $PlanFor -in @('install', 'migrate'))
 # set-approver (and its plan) is its own mode: its input is the key record file(s) and nothing else.
 $setApproverLike = ($Mode -eq 'set-approver') -or ($Mode -eq 'plan' -and $PlanFor -eq 'set-approver')
@@ -179,6 +185,8 @@ if ($LabAssumeYes) {
 }
 if ($GrantHyperVToBroker -and -not ($Mode -eq 'install' -or ($Mode -eq 'plan' -and $PlanFor -eq 'install'))) { Stop-Refused '-GrantHyperVToBroker only applies to -Mode install (and its plan); migrate, status and uninstall follow what the install record says' 2 }
 $wsl2Options = @($Wsl2ComputerId, $Wsl2RepositoryId, $Wsl2RepositoryPath, $Wsl2Image, $Wsl2ImageSha256, $Wsl2BridgeTreeHash, $Wsl2FloorExpiresAt, $Wsl2GitPath) | Where-Object { $_ }
+if ($Wsl2FirstStartWord -and $Mode -ne 'wsl2-first-start') { Stop-Refused '-Wsl2FirstStartWord only applies to -Mode wsl2-first-start' 2 }
+if ($Mode -eq 'wsl2-first-start' -and -not $Wsl2FirstStartWord) { Stop-Refused '-Mode wsl2-first-start needs -Wsl2FirstStartWord <the word after BRIDGE_FATAL= in the normal console>' 2 }
 if ($wsl2Options.Count -gt 0 -and -not $AddWsl2Computer) { Stop-Refused 'the -Wsl2... options only apply together with -AddWsl2Computer' 2 }
 if ($AddWsl2Computer -and -not ($Mode -eq 'install' -or ($Mode -eq 'plan' -and $PlanFor -eq 'install'))) { Stop-Refused '-AddWsl2Computer only applies to -Mode install (and its plan); status and uninstall follow what the install record says' 2 }
 if ($SetupRunId -and $null -eq (ConvertTo-SetupRunId $SetupRunId)) { Stop-Refused '-SetupRunId must be a decimal number (the run id of the attested workflow run)' 2 }
@@ -228,7 +236,8 @@ foreach ($p in @($L.BrokerExe, $L.AuthorityExe, $L.PipeClientExe, $L.ControlPlan
 }
 
 # ---------------------------------------------------------------------------------------------- helpers that touch the system
-# The only programs this script ever starts are sc.exe and icacls.exe, by their full System32 paths. Nothing from the repository is executed.
+# The only programs this script ever starts are sc.exe and icacls.exe by their full System32 paths, and ONE more: `launch-check` of the installed Control Plane host (Invoke-LaunchCheck). Nothing from the
+# repository is executed, and no build that was not verified against a typed hash runs elevated: the WSL bridge is NEVER started from here (its first start is a command for a NORMAL console; -Mode wsl2-first-start records what you saw).
 function Invoke-Native([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000, [switch]$MinimalEnvironment) {
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = $Exe; $psi.Arguments = $Arguments; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
@@ -339,6 +348,7 @@ $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
 # shape this script writes (fixed service, user and key names). install / uninstall refuse otherwise; plan / status (no admin rights, so the ACLs cannot be read) ignore it and say so.
 function Initialize-Manifest {
   $mutating = $Mode -in @('install', 'uninstall', 'migrate', 'set-approver')
+  if ($Mode -in @('wsl2-first-start', 'wsl2-run-entry')) { $mutating = $true }   # they write the install record
   # Windows PowerShell 5.1's Test-Path throws UnauthorizedAccessException, instead of returning false, for a file in a folder this account cannot read. Once ALBERA is installed that is C:\ProgramData\Albera
   # for every normal user (SYSTEM and Administrators only), so plan and status stopped here with "access denied" (measured 2026-11-04). They ignore a manifest they cannot read, as they ignore an untrusted one.
   try { $present = Test-Path -LiteralPath $L.ManifestPath }
@@ -1452,7 +1462,7 @@ function Get-Wsl2Inputs {
 function Get-Wsl2Expect {
   Resolve-HostSids
   $c = Get-Wsl2Constants; $i = Get-Wsl2Inputs
-  [pscustomobject]@{ KeyName = $c.AttestationKeyName; KeyId = $c.AttestationKeyId; ComputerId = $i.ComputerId; RepositoryId = $i.RepositoryId; PipeName = $c.BridgePipeName; ServerSid = $script:Sids.Approver; Git = $i.GitPath }
+  [pscustomobject]@{ KeyName = $c.AttestationKeyName; KeyId = $c.AttestationKeyId; ComputerId = $i.ComputerId; RepositoryId = $i.RepositoryId; PipeName = $c.BridgePipeName; ServerSid = $script:Sids.Approver; Git = $i.GitPath; ControlPlaneSid = $script:Sids.ControlPlane; ImageSha256 = $i.ImageSha256 }
 }
 function Get-Wsl2PublishDir { Join-Path $RepoRoot 'src\runtime\windows-wsl-bridge\bin\Release\net10.0-windows\win-x64\publish' }
 # The tree hash of a folder of the bridge (publish folder, partial copy or installed copy): the pure function over the file hashes.
@@ -1467,6 +1477,7 @@ function Get-Wsl2IntendedBridgeJson {
   if (-not $script:Manifest -or -not $script:Manifest['values'].ContainsKey('attestationSpki')) { throw 'the attestation key is not recorded yet; the bridge config names its public half' }
   ConvertTo-HostJson (Get-Wsl2BridgeConfig $W $script:Sids.ControlPlane $c.AttestationKeyId $script:Manifest['values']['attestationSpki'] (Get-Wsl2Inputs))
 }
+function Json-OrNull([string]$Text) { try { $Text | ConvertFrom-Json } catch { $null } }
 function Read-TextOrNull([string]$Path) { if ([System.IO.File]::Exists($Path)) { [System.IO.File]::ReadAllText($Path) } else { $null } }
 # What stops the sources being used (nothing is read from the repository except the publish folder and the typed paths are only looked at, never run). $null = fine.
 function Get-Wsl2SourceProblem {
@@ -1637,45 +1648,73 @@ function Copy-Wsl2Parts {
   $bad = Test-Wsl2BridgeConfigText $bridgeJson
   if ($bad.Count -gt 0) { throw "the bridge config failed this script's own check: $($bad -join ', ')" }
   Write-OneConfig $W.Config $bridgeJson $writers
+  $floorAcl = Test-Wsl2FloorAcl (Get-AclSummary $W.FloorFile).AllowSids $script:Sids.Approver
+  if ($floorAcl.Count -gt 0) { throw "the lease floor file can be read by more than Administrators, SYSTEM and you ($($floorAcl -join ', ')); it was written but the install stops" }
   $rec['floorGeneration'] = [long]$K.Generation; Save-Manifest
   Say "    lease floor file written (generation $($K.Generation)); bridge config written and re-checked"
 }
-# Replaced by a Fake in the tests. The INSTALLED bridge (the copy whose tree hash was checked), once, with a minimal environment and a config whose Control Plane is the owner.
-function Invoke-Wsl2FirstStart {
-  $r = Invoke-Native $W.BridgeExe ('serve ' + (Quote-NativeArg $W.FirstCheckConfig)) 30000 -MinimalEnvironment
-  [pscustomobject]@{ Exit = $r.Exit; Out = (($r.Out + $r.Err) -replace '\s+', ' ').Trim() }
-}
 function Get-Wsl2VerifyStep {
-  [pscustomobject]@{ Id = 'wsl2verify'; Title = 'Start the installed bridge once with a config whose Control Plane is YOU (it must refuse: exit 77), then read the Authority config, the bridge config, the Broker config and the key back and require them to agree'
-    Detail = @('the first-start check proves the installed program starts, reads and trusts its config and then refuses the wrong identity; run from an elevated console it refuses as "elevated" (an elevated bridge is refused before the Control Plane comparison), so control_plane_is_self is shown only by the harness test',
-      'the agreement check compares the public key in the Authority (attestationPublicKey), the bridge (brokerSpki) and the key itself, and the key id and key name in the Broker and bridge configs, the lease floor against the Broker generation, and the computer and repository names',
+  [pscustomobject]@{ Id = 'wsl2verify'; Title = 'Write the first-start config (Control Plane = YOU) and read the Authority config, the bridge config, the Broker config, the lease floor file and the key back; they must agree. The bridge is NOT started here'
+    Detail = @('no program of the bridge runs in this elevated console: the first start is one command you run in a NORMAL console afterwards, and -Mode wsl2-first-start records the word you saw',
+      'the agreement check compares the public key in the Authority (attestationPublicKey), the bridge (brokerSpki) and the key itself, the key id and key name in the Broker and bridge configs, the bridge config''s Control Plane SID, pipe, git and image hash with the install, the lease floor (it must EQUAL the Broker generation, and only Administrators, SYSTEM and you may read it), the computer and repository names, and the key''s own ACL and export policy',
       'a disagreement stops the install: nothing is repaired by guessing')
     Test = { 'todo' }
     Do = { Invoke-Wsl2Verify } }
 }
 function Invoke-Wsl2Verify {
   Resolve-HostSids
-  $c = Get-Wsl2Constants
   $first = Get-Wsl2IntendedBridgeJson | ConvertFrom-Json
   $first.controlPlaneSid = $script:Sids.Approver
   Write-OneConfig $W.FirstCheckConfig (ConvertTo-HostJson $first) (Get-PlannedWriters (Get-Wsl2AclPlan $W $script:Sids | Where-Object { $_.Path -ceq $W.DataDir } | Select-Object -First 1))
-  try { $run = Invoke-Wsl2FirstStart }
-  finally { if (Test-Path -LiteralPath $W.FirstCheckConfig) { Remove-Item -LiteralPath $W.FirstCheckConfig -Force } }
-  if ($run.Exit -ne 77) { throw "the first-start check expected exit 77 and got $($run.Exit): $($run.Out)" }
-  Say "    first start: exit 77 ($($run.Out))"
-  $problems = Get-Wsl2ReadBackProblems
+  $problems = Get-Wsl2ReadBackProblems -Strict
   if ($problems.Count -gt 0) { throw "the Broker attestation key and its three copies do not agree: $($problems -join ', '); nothing was repaired. Uninstall, then install again." }
-  Say '    the key, the Authority pin, the bridge config and the Broker config agree; the floor file is at the Broker generation'
+  Say '    the key, the Authority pin, the bridge config and the Broker config agree; the floor file equals the Broker generation and is readable by Administrators, SYSTEM and you only'
+  Say '    NEXT, in a NORMAL (not elevated) console, as yourself, run this one command. It must print BRIDGE_FATAL=control_plane_is_self and exit 77:'
+  Say ('      "' + $W.BridgeExe + '" serve "' + $W.FirstCheckConfig + '"')
+  Say '    then, here in the elevated console:  albera-host.ps1 -Mode wsl2-first-start -Wsl2FirstStartWord control_plane_is_self'
+}
+# -Mode wsl2-first-start: records, in the install record, the word the owner read in a NORMAL console. It is the owner's word, not a measurement: the word is compared with the one the bridge prints
+# for "the Control Plane is the account I run as", so a start that was refused for another reason (for example "elevated") is not accepted.
+function Invoke-Wsl2FirstStartConfirm {
+  if (-not (Test-ManifestHas 'wsl2')) { Say 'REFUSED: this install has no WSL2 record (install with -AddWsl2Computer first).'; return 3 }
+  $word = (Get-Wsl2Constants).FirstStartWord
+  if ($Wsl2FirstStartWord -cne $word) {
+    if ($Wsl2FirstStartWord -ceq 'elevated') { Say 'REFUSED: "elevated" means you ran the bridge in an elevated console. Run the command in a NORMAL console.' }
+    else { Say "REFUSED: the word must be $word (what the bridge prints in a normal console when its Control Plane is the account it runs as); you gave '$Wsl2FirstStartWord'. Nothing was recorded." }
+    return 3
+  }
+  $f = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+  $f['word'] = $word; $f['at'] = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+  $script:Manifest['created']['wsl2']['firstStart'] = $f; Save-Manifest
+  Say "First start recorded ($word). Next, in order: the C6 measurement (measure-attestation-key.ps1 -Phase C6), the SEC-2 check (lab-sec2.ps1), a Broker-signed lease through the real bridge WITHOUT the token, and only then  albera-host.ps1 -Mode wsl2-run-entry"
+  0
+}
+# -Mode wsl2-run-entry: the LAST step. It refuses unless the first start is recorded and everything reads back as installed. The C6 report, the SEC-2 result and the tokenless lease check are NOT machine-checked.
+function Invoke-Wsl2RunEntryMode {
+  if (-not (Test-ManifestHas 'wsl2')) { Say 'REFUSED: this install has no WSL2 record (install with -AddWsl2Computer first).'; return 3 }
+  $rec = $script:Manifest['created']['wsl2']
+  if (-not $rec.ContainsKey('firstStart')) { Say 'REFUSED: the first start of the bridge in a normal console is not recorded (-Mode wsl2-first-start).'; return 3 }
+  Resolve-HostSids
+  $problems = Get-Wsl2ReadBackProblems
+  if ($problems.Count -gt 0) { Say "REFUSED: the key and its copies do not read back as installed: $($problems -join ', ')"; return 3 }
+  Set-Wsl2RunValue
+  $entry = Get-Wsl2RunEntry $W
+  if ((Get-Wsl2RunValue) -cne $entry.Command) { Say 'ERROR: the HKLM Run value of the bridge is not what was written'; return 1 }
+  $run = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $run['name'] = $entry.Name; $run['command'] = $entry.Command
+  $rec['runEntry'] = $run; Save-Manifest
+  Say "Run value $($entry.Name) set and read back: the bridge starts in your session at your next sign-in. Undo: -Mode uninstall."
+  0
 }
 # The live key and the files on disk, read back. Used by the verify step and by status. Returns the reason words (empty = agree).
-function Get-Wsl2ReadBackProblems {
+function Get-Wsl2ReadBackProblems([switch]$Strict) {
   $e = Get-Wsl2Expect
   $key = Read-AuthoritySigningKey $e.KeyName
   $r = New-Object System.Collections.Generic.List[string]
   if (-not $key) { $r.Add('key_missing'); return , @($r) }
   foreach ($word in (Test-KeyReadBack $key.report $script:Sids.Broker)) { $r.Add('key_' + $word) }
   if ($script:Manifest['values'].ContainsKey('attestationSpki') -and $key.spki -cne $script:Manifest['values']['attestationSpki']) { $r.Add('key_differs_from_record') }
-  foreach ($word in (Test-Wsl2KeyAgreement $e $key.spki (Read-TextOrNull $L.BrokerConfig) (Read-TextOrNull $L.AuthorityConfig) (Read-TextOrNull $W.Config) (Read-TextOrNull $W.FloorFile))) { $r.Add($word) }
+  foreach ($word in (Test-Wsl2KeyAgreement $e $key.spki (Read-TextOrNull $L.BrokerConfig) (Read-TextOrNull $L.AuthorityConfig) (Read-TextOrNull $W.Config) (Read-TextOrNull $W.FloorFile) ([bool]$Strict))) { $r.Add($word) }
+  if (Test-Path -LiteralPath $W.FloorFile) { foreach ($word in (Test-Wsl2FloorAcl (Get-AclSummary $W.FloorFile).AllowSids $e.ServerSid)) { $r.Add($word) } }
   foreach ($word in (Test-Wsl2BridgeConfigText (Read-TextOrNull $W.Config))) { $r.Add('bridge_config_' + $word) }
   foreach ($word in (Test-Wsl2SettingsText (Read-TextOrNull $L.ApprovalSettings) $e)) { $r.Add($word) }
   , @($r)
@@ -1698,30 +1737,18 @@ function Remove-Wsl2RunValue {
   if (-not $key) { return }
   try { $key.DeleteValue($e.Name, $false) } finally { $key.Dispose() }
 }
-function Get-Wsl2RunStep {
-  $c = Get-Wsl2Constants
-  [pscustomobject]@{ Id = 'wsl2run'; Title = "Start the bridge in YOUR session at sign-in: HKLM Run value $($c.RunValueName) = `"$($W.BridgeExe)`" serve `"$($W.Config)`""
-    Detail = @('the same way the approver tray is started (an administrator writes the value; your session runs it, not elevated); the bridge refuses an elevated start by itself', 'not started by install: sign out and in, or start it by hand (host-install.md, "WSL2 computer")')
-    Test = {
-      if (-not (Test-ManifestHas 'wsl2')) { return 'todo' }
-      $rec = $script:Manifest['created']['wsl2']
-      if ($rec.ContainsKey('runEntry') -and ((Get-Wsl2RunValue) -ceq (Get-Wsl2RunEntry $W).Command)) { 'done' } else { 'todo' } }
-    Do = {
-      Set-Wsl2RunValue
-      $entry = Get-Wsl2RunEntry $W
-      if ((Get-Wsl2RunValue) -cne $entry.Command) { throw 'the HKLM Run value of the bridge is not what was written' }
-      $run = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $run['name'] = $entry.Name; $run['command'] = $entry.Command
-      $script:Manifest['created']['wsl2']['runEntry'] = $run; Save-Manifest
-      Say "    Run value $($entry.Name) set and read back" } }
-}
 # The steps, placed after the install step they depend on (-AddWsl2Computer).
 function Get-Wsl2StepsAfter([string]$Id) {
   switch ($Id) {
     'approver' { @(Get-Wsl2InputsStep) }
     'key' { @(Get-Wsl2KeyStep) }
     'configs' { @((Get-Wsl2FoldersStep), (Get-Wsl2FilesStep), (Get-Wsl2VerifyStep)) }
-    'shortcuts' { @(Get-Wsl2RunStep) }
     default { @() }
+  }
+}
+function Set-Wsl2FoldersAdminOnly {
+  foreach ($dir in @($W.StateDir, $W.DistributionsDir)) {
+    if (Test-Path -LiteralPath $dir) { Set-HostDacl $dir @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F') }
   }
 }
 function Get-Wsl2StatusLines {
@@ -1747,8 +1774,18 @@ function Get-Wsl2StatusLines {
     $same = (Test-Path -LiteralPath $W.Image) -and ((Get-Sha256File $W.Image) -ceq $rec['imageSha256'])
     Add-W $(if ($same) { 'ok' } else { 'FAIL' }) ("WSL2 image: " + $(if ($same) { 'the copy has the recorded SHA-256' } else { 'missing or changed since install' }))
   }
-  $run = $rec.ContainsKey('runEntry') -and ((Get-Wsl2RunValue) -ceq (Get-Wsl2RunEntry $W).Command)
-  Add-W $(if ($run) { 'ok' } else { 'FAIL' }) ('HKLM Run entry of the bridge: ' + $(if ($run) { 'as recorded, read back' } else { 'missing or changed since install' }))
+  $floorText = Read-TextOrNull $W.FloorFile
+  $floorNow = Read-Wsl2LeaseFloor $floorText
+  $brokerText = Read-TextOrNull $L.BrokerConfig
+  $gen = $null; try { $gen = [long]((Json-OrNull $brokerText).generation) } catch { }
+  if ($null -ne $floorNow -and $null -ne $gen -and $floorNow -ne $gen) { Add-W 'ok' "WARNING: the lease floor ($floorNow) differs from the Broker generation ($gen). Equal at install; different only mid-revocation (wsl2-lease-revocation-runbook.md). Check that this is intended." }
+  if ($rec.ContainsKey('firstStart')) { Add-W 'ok' "first start of the bridge in a normal console: recorded ($($rec['firstStart']['word']) at $($rec['firstStart']['at'])); this is the owner's word, not a measurement" }
+  else { Add-W 'FAIL' 'first start of the bridge in a normal console: NOT recorded yet (run the command the install printed, then -Mode wsl2-first-start)' }
+  if ($rec.ContainsKey('runEntry')) {
+    $run = (Get-Wsl2RunValue) -ceq (Get-Wsl2RunEntry $W).Command
+    Add-W $(if ($run) { 'ok' } else { 'FAIL' }) ('HKLM Run entry of the bridge: ' + $(if ($run) { 'as recorded, read back' } else { 'changed or gone since it was set' }))
+  }
+  else { Add-W 'ok' 'HKLM Run entry of the bridge: not set yet, by design (-Mode wsl2-run-entry is the last step, after the first start, C6, SEC-2 and the tokenless lease check)' }
   , $out.ToArray()
 }
 
@@ -2094,6 +2131,7 @@ function Remove-TrustedTree([string]$Dir, [string[]]$AllowedTop, [string[]]$Allo
   # the WSL2 folder (-AddWsl2Computer): its only writers are SYSTEM and Administrators (the owner's rule on it is read-only; the state folders below it are not judged here)
   if (-not $entry -and $Dir -ceq $W.DataDir) { $entry = [pscustomobject]@{ Path = $Dir; Grants = @('*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F') } }
   if (-not $entry) { throw "$Dir is not one of the folders this script creates; refusing to delete it" }
+  if ($Dir -ceq $W.DataDir) { Set-Wsl2FoldersAdminOnly }   # the owner's Modify rule on state\ and distributions\ goes first: what is deleted below is then reachable by administrators only
   $reasons = Get-PathTrustReasons $Dir (Get-PlannedWriters $entry) $true
   if ($reasons.Count -gt 0) { throw (Format-TrustRefusal $Dir $reasons) }
   Remove-HostTree $Dir $AllowedTop $AllowedFolders $InstallTree
@@ -2714,7 +2752,7 @@ function Show-InstalledMessage {
   Say 'See docs/architecture/host-install.md ("First approval") for albera-runtime approval-check.'
   if ($AddWsl2Computer) {
     Say "The WSL2 computer is in place: the attestation key $((Get-Wsl2Constants).AttestationKeyName) (non-exportable, Broker SID only), the Authority pin, the bridge config and the Broker config agree. Nothing ran wsl.exe."
-    Say "The bridge starts in YOUR session at the next sign-in (HKLM Run value $((Get-Wsl2Constants).RunValueName)), or start it by hand in a normal console: `"$($W.BridgeExe)`" serve `"$($W.Config)`""
+    Say 'The bridge is NOT started and has NO Run entry yet. In order: the first start in a NORMAL console (the install printed the command) then -Mode wsl2-first-start; -Mode status; the C6 measurement; the SEC-2 check; a tokenless lease through the real bridge; and only then -Mode wsl2-run-entry (host-install.md, WSL2 computer).'
     Say 'Undo: -Mode uninstall (the Run value, the key, the bridge folder and its data are removed). A lost or exposed key: host-install.md, "WSL2 computer".'
   }
   if ($GrantHyperVToBroker) {
@@ -2761,10 +2799,13 @@ function Invoke-Migrate {
 
 try {
   if ($Mode -in @('install', 'uninstall', 'migrate', 'set-approver')) { Get-ScriptFileHashes }
+  if ($Mode -in @('wsl2-first-start', 'wsl2-run-entry')) { Get-ScriptFileHashes }
   if ($Mode -notin @('hashes', 'wsl2-hashes')) { Initialize-Manifest }
   switch ($Mode) {
     'hashes' { Show-Hashes; exit 0 }
     'wsl2-hashes' { Show-Wsl2Hashes; exit 0 }
+    'wsl2-first-start' { exit (Invoke-Wsl2FirstStartConfirm) }
+    'wsl2-run-entry' { exit (Invoke-Wsl2RunEntryMode) }
     'status' { exit (Show-Status) }
     'plan' {
       if ($PlanFor -eq 'uninstall') { Show-Plan (Get-UninstallSteps) 'uninstall' }

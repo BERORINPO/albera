@@ -19,9 +19,9 @@ const driverDir = path.join(root, 'test', 'host-install');
 const windows = process.platform === 'win32';
 const POWERSHELL = windows ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : 'powershell';
 const childEnv = () => Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath'));
-const ps = (args, { allowFail = false } = {}) => {
+const ps = (args, { allowFail = false, env = {} } = {}) => {
   try {
-    return { code: 0, stdout: execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', ...args], { encoding: 'utf8', timeout: 240_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv() }) };
+    return { code: 0, stdout: execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', ...args], { encoding: 'utf8', timeout: 240_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...childEnv(), ...env } }) };
   } catch (error) {
     if (!allowFail) throw error;
     return { code: error.status, stdout: String(error.stdout ?? ''), stderr: String(error.stderr ?? '') };
@@ -54,7 +54,7 @@ test('source guards of the new scripts: never elevate, no RunAs, no password on 
   const host = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
   assert.match(host, /Get-AuthorityConfig \$script:Sids\.ControlPlane \$approver \$current\.State\.Attestation/u, 'set-approver rewrites the Authority config and must keep the Broker attestation pin');
   const measure = readFileSync(newScripts[0], 'utf8');
-  assert.deepEqual([...measure.matchAll(/Invoke-NativeShort \$(\w+)/gu)].map((m) => m[1]).filter((value, index, all) => all.indexOf(value) === index), ['SchtasksExe'], 'the only program the measurement starts itself is schtasks.exe (the tasks start powershell.exe)');
+  assert.deepEqual([...measure.matchAll(/Invoke-NativeShort \$(\w+)/gu)].map((m) => m[1]).filter((value, index, all) => all.indexOf(value) === index && value !== 'Exe'), ['SchtasksExe'], 'the only program the measurement starts itself is schtasks.exe (the tasks start powershell.exe)');
   const lab = readFileSync(newScripts[1], 'utf8');
   const labCode = lab.slice(0, lab.indexOf("@'")) + lab.slice(lab.indexOf("'@", lab.indexOf("@'")) + 2);   // the probe text is what the temporary account runs, not something this script starts
   assert.equal([...labCode.matchAll(/Process\]::Start/gu)].length, 1, 'one place starts a process as the temporary account');
@@ -118,7 +118,7 @@ test('the approval settings with the wsl2 block are accepted by the room\'s own 
   const parsed = parseApprovalSettings(s.json.replace('C:\\Program Files', 'C:\\Program Files'));
   assert.equal(parsed.wsl2.pipeName, 'ALBERA_WslBridge');
   assert.equal(parsed.wsl2.serverSid, OWNER);
-  assert.equal(parsed.wsl2.git, 'C:\\Program Files\\Git\\cmd\\git.exe');
+  assert.equal(parsed.wsl2.git, String.raw`C:\Program Files\Git\mingw64\bin\git.exe`);
   assert.equal(parsed.computers.get('wsl-01').isolation, 'wsl2');
   assert.equal(parsed.computers.get('wsl-01').repositoryId, 'repo-main');
   assert.equal(parsed.computers.get('albera-clone-01').computerId, 'clone-01');
@@ -212,12 +212,12 @@ const harness = (t, kind, extra = []) => {
   return { keys, work, r: lastJson(ps(['-File', path.join(driverDir, 'wsl2-harness.ps1'), '-Case', kind, '-Work', work, '-Spki', keys.a, '-OtherSpki', keys.b, '-Rsa', keys.rsa, ...extra]).stdout) };
 };
 
-test('the WSL2 steps sit after the steps they depend on, and appear only with the option (install) or the record (uninstall)', (t) => {
+test('the WSL2 steps sit after the steps they depend on, and appear only with the option (install) or the record (uninstall); the Run entry is NOT an install step', (t) => {
   const { r } = harness(t, 'steps');
   const plain = ['sources', 'approver', 'dataroot', 'services', 'folders', 'binaries', 'key', 'node', 'claude', 'configs', 'cpservice', 'shortcuts', 'finish'];
   assert.deepEqual(r.installPlain, plain, 'without the option the install is the install it was');
-  assert.deepEqual(r.installWsl2, ['sources', 'approver', 'wsl2inputs', 'dataroot', 'services', 'folders', 'binaries', 'key', 'wsl2key', 'node', 'claude', 'configs', 'wsl2folders', 'wsl2files', 'wsl2verify', 'cpservice', 'shortcuts', 'wsl2run', 'finish']);
-  assert.deepEqual(r.installBoth, ['sources', 'approver', r.hyperVVmId, 'wsl2inputs', 'dataroot', 'services', 'hyperv', 'folders', 'binaries', 'key', 'wsl2key', 'node', 'claude', 'configs', 'wsl2folders', 'wsl2files', 'wsl2verify', 'cpservice', 'shortcuts', 'wsl2run', 'finish']);
+  assert.deepEqual(r.installWsl2, ['sources', 'approver', 'wsl2inputs', 'dataroot', 'services', 'folders', 'binaries', 'key', 'wsl2key', 'node', 'claude', 'configs', 'wsl2folders', 'wsl2files', 'wsl2verify', 'cpservice', 'shortcuts', 'finish']);
+  assert.deepEqual(r.installBoth, ['sources', 'approver', r.hyperVVmId, 'wsl2inputs', 'dataroot', 'services', 'hyperv', 'folders', 'binaries', 'key', 'wsl2key', 'node', 'claude', 'configs', 'wsl2folders', 'wsl2files', 'wsl2verify', 'cpservice', 'shortcuts', 'finish']);
   assert.deepEqual(r.uninstallPlain, ['runentry', 'shortcuts', 'services', 'key', 'installroot', 'data', 'user', 'manifest']);
   assert.deepEqual(r.uninstallWsl2, ['wsl2run', 'runentry', 'shortcuts', 'services', 'key', 'wsl2key', 'installroot', 'data', 'user', 'manifest']);
   assert.ok(r.dataFolders.includes(r.wslDataDir), 'the bridge data folder is one of the data folders uninstall removes');
@@ -230,15 +230,15 @@ test('the inputs of a step come from the options, and status and uninstall (no o
   assert.equal(r.fromOptions.RepositoryId, 'repo-x');
   assert.equal(r.fromOptions.FloorExpiresAt, 1900000000);
   assert.equal(r.defaults.ComputerId, 'wsl-01');
-  assert.equal(r.defaults.GitPath, 'C:\\Program Files\\Git\\cmd\\git.exe');
+  assert.equal(r.defaults.GitPath, String.raw`C:\Program Files\Git\mingw64\bin\git.exe`, 'the default is the real git.exe, not the cmd\\git.exe launcher');
   assert.equal(r.fromRecord.ComputerId, 'wsl-09');
   assert.equal(r.fromRecord.RepositoryId, 'repo-rec');
-  assert.equal(r.fromRecord.GitPath, 'C:\\Program Files\\Git\\mingw64\\bin\\git.exe');
+  assert.equal(r.fromRecord.GitPath, String.raw`C:\Program Files\Git\mingw64\bin\git.exe`);
   assert.equal(r.fromRecord.ImageSha256, H);
   assert.equal(r.floorNotNumber, 0, 'a floor that is not a number is zero, which the input check refuses');
 });
 
-test('install, with fakes: the key is refused when it exists, the three configs and the settings carry its public half, the bridge folder, copies, floor file and config are made, the first start must exit 77, and a disagreement stops it', (t) => {
+test('install, with fakes: the key is refused when it exists, the configs carry its public half, the files are made, NO program is started, the copies must agree (floor equal to the generation, readable by three accounts only), and the Run entry is a later, separate step', (t) => {
   const { keys, r } = harness(t, 'install');
   // the key step
   assert.equal(r.keyStepBlockedWhenForeignKeyExists.startsWith('blocked:'), true);
@@ -280,30 +280,48 @@ test('install, with fakes: the key is refused when it exists, the three configs 
   assert.match(r.wrongImageError, /not to -Wsl2ImageSha256/u);
   assert.equal(r.imageLeftAfterWrong, false);
   assert.match(r.installedCopyChangedError, /update means uninstall/u);
-  // the first start and the agreement
+  // H1: the install starts nothing. The first-start config is written and KEPT for the normal-console command
+  assert.equal(r.verifyOk, null);
   assert.equal(r.firstStartConfig.controlPlaneSid, OWNER, 'the first-start config names the owner as the Control Plane');
   assert.deepEqual(r.firstStartConfig.repositories, [{ repositoryId: 'repo-main', path: r.repositoryPath }], 'and is otherwise the real bridge config');
   assert.equal(r.firstStartConfig.pipeName, r.bridgeConfig.pipeName);
-  assert.equal(r.firstStartConfigStillThere, false, 'the first-start config is deleted again');
-  assert.equal(r.verifyOk, null);
-  assert.match(r.verifyWrongExit, /expected exit 77 and got 0/u);
-  assert.equal(r.firstStartConfigGoneAfterFailure, true);
+  assert.equal(r.firstStartConfigKept, true);
   assert.match(r.verifyDisagree, /do not agree: .*authority_spki/u);
   assert.match(r.verifyKeyExportable, /key_key_exportable/u);
   assert.match(r.verifyKeyAclExtra, /key_ace_untrusted/u);
-  // the run entry
-  assert.equal(r.runStepBefore, 'todo');
+  // L1 and L2
+  assert.match(r.verifyFloorAbove, /floor_above_generation/u);
+  assert.match(r.verifyFloorReadableByUsers, /floor_acl:S-1-5-32-545/u);
+  assert.match(r.copyFloorReadableByUsers, /lease floor file can be read by more than Administrators, SYSTEM and you/u);
+  // L3: the bridge config on disk against the record
+  assert.equal(r.status_pipeName, 'bridge_pipe_name');
+  assert.equal(r.status_gitPath, 'bridge_git_path');
+  assert.equal(r.status_imageSha256, 'bridge_image_sha256');
+  assert.equal(r.status_controlPlaneSid, 'bridge_control_plane_sid');
+  // M2 and the order: the owner's word, compared; the Run entry only after it
+  assert.ok(r.statusBeforeConfirm.some((line) => line.State === 'FAIL' && /first start of the bridge in a normal console: NOT recorded/u.test(line.Text)));
+  assert.equal(r.confirmElevated, 3, '"elevated" is refused: the bridge was run in an elevated console');
+  assert.equal(r.confirmOther, 3);
+  assert.equal(r.firstStartRecordedAfterRefusals, false);
+  assert.equal(r.runEntryBeforeFirstStart, 3, 'no Run entry before the first start is recorded');
+  assert.equal(r.runValueBeforeFirstStart, null);
+  assert.equal(r.confirmRight, 0);
+  assert.equal(r.firstStartRecord.word, 'control_plane_is_self');
+  assert.equal(r.manifestShapeAfterConfirm, true);
+  assert.equal(r.runEntryWhenKeyDiffers, 3, 'and not when the key and its copies do not read back as installed');
+  assert.equal(r.runEntryOk, 0);
   assert.equal(r.runValue, r.expectedRunCommand);
-  assert.equal(r.runStepAfter, 'done');
   assert.equal(r.runRecord.command, r.expectedRunCommand);
+  assert.equal(r.stepIdsHaveNoRun, true, 'the Run entry is not one of the install steps');
   // status
   assert.ok(r.statusLines.every((line) => line.State === 'ok'), JSON.stringify(r.statusLines.filter((line) => line.State !== 'ok')));
-  assert.ok(r.statusLines.length >= 7);
+  assert.ok(r.statusLines.length >= 8);
+  assert.equal(r.statusFloorWarning, 1, 'a floor that differs from the generation is said in words');
   assert.ok(r.statusTamperedLines.some((line) => line.State === 'FAIL' && /bridge/u.test(line.Text)));
   assert.equal(r.statusWithoutRecord, 0);
 });
 
-test('uninstall, with fakes: the Run value goes first and only if it is the command install wrote, the key is deleted, and the data folder goes with its state and distributions', (t) => {
+test('uninstall, with fakes: the Run value goes first and only if it is the command install wrote, the key is deleted, the owner\'s rules leave state and distributions BEFORE the recursive delete, and a locked lab folder next to the data folder does not stop it', (t) => {
   const { r } = harness(t, 'uninstall');
   assert.equal(r.runStepBefore, 'todo');
   assert.equal(r.runValueAfter, null);
@@ -315,6 +333,17 @@ test('uninstall, with fakes: the Run value goes first and only if it is the comm
   assert.equal(r.dataFolderExistsAfter, false);
   assert.match(r.dataFolderWithForeignFile, /holds files this script did not create/u);
   assert.equal(r.dataFolderForeignFileStillThere, true);
+  // M1
+  const adminOnly = ['*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F'];
+  const names = r.daclLog.map((entry) => entry.path.split('\\').slice(-1)[0]);
+  assert.deepEqual(names.sort(), ['distributions', 'state']);
+  for (const entry of r.daclLog) {
+    assert.deepEqual(entry.grants, adminOnly, 'administrators and SYSTEM only');
+    assert.equal(entry.existed && entry.hadFiles, true, 'the rule is taken off while the files are still there, before the delete');
+  }
+  // H2: the lab folder is outside the data folder, so a leftover (even a locked one) never blocks uninstall
+  assert.equal(r.labSiblingStillThere, true);
+  assert.equal(r.dataStepWithLockedLab, null);
 });
 
 test('-Mode wsl2-hashes prints the tree hash of the bridge publish folder, the same one the install checks the copy against', (t) => {
@@ -350,8 +379,9 @@ test('the real script: the WSL2 options are refused without -AddWsl2Computer and
   const at = (needle) => lines.findIndex((line) => line.includes(needle));
   assert.ok(at('Check the WSL2 options') > at('Check the approver values') && at('Check the WSL2 options') < at('Create C:\\ProgramData\\Albera'), 'the inputs are checked before anything is created');
   assert.ok(at('Create the Broker attestation key') > at('Create the Authority machine signing key'));
-  assert.ok(at('Start the installed bridge once') > at('Write the Broker config'));
-  assert.ok(at('HKLM Run value AlberaWslBridge') > at('Make the launcher'));
+  assert.ok(at('Write the first-start config') > at('Write the Broker config'));
+  assert.equal(/HKLM Run value AlberaWslBridge/u.test(plan.stdout), false, 'the Run entry is not an install step');
+  assert.equal(/Start the installed bridge/u.test(plan.stdout), false, 'and nothing starts the bridge');
   assert.match(plan.stdout, /wsl2_repository_id.*wsl2_floor_expires_at/u, 'the blocked reasons are named');
   assert.match(plan.stdout, /PLAN ONLY: nothing was changed/u);
   const withoutOption = host(['-Mode', 'plan']);
@@ -395,23 +425,46 @@ test('measure-attestation-key.ps1: names, identities, error names, the task XML 
   assert.ok(r.planLines.length >= 6);
 });
 
-test('measure-attestation-key.ps1, with fakes: every step runs in order, the key and the work folder are removed on every way out, the report is written without secrets, and the dry run changes nothing', (t) => {
+test('measure-attestation-key.ps1, with fakes: N7 runs every step in order and cleans up; C6 reads the installed key and creates and deletes NOTHING; a failure still writes the report; a leftover is removed by name and the real key never', (t) => {
   const r = lab(t, 'measure-flow');
   assert.deepEqual(r.normal.order, ['dir', 'dir', 'dir', 'create-name-nonadmin', 'create-key', 'export-sign', 'task:broker', 'task:other', 'task:controlplane', 'delete-key']);
   assert.equal(r.normal.reportWritten, true);
   assert.equal(r.normal.keyDeleted, true);
   assert.equal(r.normal.workRemoved, true);
+  assert.deepEqual(r.normalCleanup.tasksLeft, []);
+  assert.equal(r.markerAfterNormal, false, 'the pending marker is removed when everything is clean');
   assert.equal(r.normal.verdicts.nonAdministratorCanTakeTheName, 'no');
   assert.equal(r.normal.verdicts.asExpected_broker, 'yes');
   assert.equal(r.normal.createdKeyDacl[0], r.normal.brokerSid, 'the key is made for the stand-in Broker SID');
   assert.equal(/BEGIN|PRIVATE|Pkcs8/iu.test(r.normal.reportText), false, 'no key material in the report file');
   assert.equal(r.nonAdminMadeIt.deletedBeforeCreate, true, 'a key a non-administrator made first is deleted before the administrator creates the name');
   assert.equal(r.nonAdminMadeIt.verdict, 'yes');
+  // C6 (after the install): the real key, the real services, nothing created, nothing deleted
+  assert.deepEqual(r.c6.order, ['dir', 'dir', 'dir', 'read-installed-key', 'export-sign', 'task:broker', 'task:other', 'task:controlplane']);
+  assert.equal(r.c6.threw, false);
+  assert.equal(r.c6.keyStillThere, true, 'the installed key is never deleted');
+  assert.equal(r.c6.keyName, 'AlberaHostBroker-attest-1');
+  assert.equal(r.c6.phase, 'C6');
+  assert.equal(r.c6.markerWritten, false);
+  assert.equal(r.c6.verdicts.aclAllows_broker, 'yes');
+  assert.equal(r.c6.verdicts.asExpected_controlplane, 'yes');
+  // L4: a failure at any step still writes the report, with the failure in it
   for (const stage of ['create-key', 'export-sign', 'task:other']) {
-    assert.equal(r.failures[stage].threw, true, stage);
-    assert.equal(r.failures[stage].keyDeleted, true, `${stage}: the key is deleted`);
-    assert.equal(r.failures[stage].workRemoved, true, `${stage}: the work folder is removed`);
+    const f = r.failures[stage];
+    assert.equal(f.threw, true, stage);
+    assert.equal(f.reportWritten, true, `${stage}: the report is written`);
+    assert.equal(f.reportFailed, true);
+    assert.equal(f.reportHasFailedNote, true);
+    assert.equal(f.keyDeleted, true, `${stage}: the key is deleted`);
+    assert.equal(f.workRemoved, true, `${stage}: the work folder is removed`);
   }
+  assert.equal(r.leftovers.code, 0);
+  assert.equal(r.leftovers.throwawayGone, true);
+  assert.equal(r.leftovers.realKeyKept, true);
+  assert.equal(r.leftovers.markerGone, true);
+  assert.equal(r.leftovers.runFolderGone, true);
+  assert.equal(r.leftoversRefuseRealKey.code, 3, 'a marker that names the real key is refused');
+  assert.equal(r.leftoversRefuseRealKey.realKeyKept, true);
   assert.equal(r.taskThatCannotStart.verdict, 'not_measured');
   assert.equal(r.taskThatCannotStart.ranAsAnother, 'not_measured', 'a task that ran as another account is not a measurement');
 });
@@ -455,21 +508,105 @@ test('lab-sec2.ps1: names, ownership of an account, the three cases, the answers
   assert.equal(r.probe.usesHelperArgument, 'wsl-bridge');
 });
 
-test('lab-sec2.ps1, with fakes: the account is removed on EVERY way out (a failure at any step, the pipe never appearing, a probe that dies), and the dry run changes nothing', (t) => {
+test('lab-sec2.ps1, with fakes: the account AND the lab folder are removed on EVERY way out, a lock is reported and finished by -RemoveStale, a real run or a bad path stops it before anything is made', (t) => {
   const r = lab(t, 'sec2-flow');
-  assert.deepEqual(r.normal.order, ['sweep', 'create-account', 'lab-folder', 'wait-pipe', 'probe:owner', 'probe:wrongOwner', 'probe:ownerAndImage', 'remove-account', 'remove-lab']);
-  assert.equal(r.normal.removed, 1);
+  assert.deepEqual(r.normal.order, ['sweep', 'remove-lab', 'create-account', 'lab-folder', 'wait-pipe', 'probe:owner', 'probe:wrongOwner', 'probe:ownerAndImage', 'wait-pipe-gone', 'remove-account', 'remove-lab']);
+  assert.equal(r.normal.removeCalls, 1);
   assert.equal(r.normal.verdict, 'works');
+  assert.equal(r.normal.labFolderExists, false);
+  assert.ok(r.normal.said.some((line) => /END THE LAB BRIDGE NOW/u.test(line)), 'it stops and asks the owner to end the lab bridge');
   for (const stage of ['create-account', 'lab-folder', 'wait-pipe-timeout', 'probe-throws', 'probe-throws-late']) {
     const run = r.failures[stage];
     assert.equal(run.accountsLeft, 0, `${stage}: no account is left`);
-    if (stage !== 'create-account') assert.equal(run.removeCalls >= 1, true, `${stage}: removal was called`);
+    assert.equal(run.labFolderExists, false, `${stage}: no lab folder is left`);
+    assert.equal(run.removeCalls >= 1, true, `${stage}: removal was called`);
   }
+  assert.equal(r.labFolderFailedHalfway, false, 'a lab folder step that failed after making the folder still gets the folder deleted');
   assert.equal(r.failures['wait-pipe-timeout'].verdict, 'not_measured');
-  assert.equal(r.failures['lab-folder'].labRemoved, false, 'there is no lab folder to remove when it was never made');
-  assert.equal(r.failures['probe-throws'].labRemoved, true);
+  // H2: the lock
+  assert.equal(r.locked.accountsLeft, 0, 'the account is removed even when the folder is locked');
+  assert.equal(r.locked.warned, true, 'and the lock is said, with -RemoveStale as the way to finish');
+  assert.equal(r.locked.verdict, 'works', 'the answer is not lost');
+  assert.equal(r.lockedThenGone, true);
+  assert.equal(r.realLock.threw, true, 'a real open file makes the real removal fail');
+  assert.equal(r.realLock.folderStillThere, true);
+  assert.equal(r.realLock.afterClose, true);
+  assert.equal(r.realLock.goneAfterClose, true);
+  assert.equal(r.absentFolder, false);
+  // L5
+  assert.deepEqual(r.realRunNames, ['albera-run-abc123']);
+  assert.deepEqual(r.noRunNames, []);
+  assert.equal(r.realRun.threw, true);
+  assert.match(r.realRun.message, /a real WSL2 run exists \(albera-run-abc123\)/u);
+  assert.equal(r.realRun.order.includes('create-account'), false, 'refused before an account exists');
+  // the path is judged before anything is made
+  assert.equal(r.labUnderDataDir.threw, true);
+  assert.match(r.labUnderDataDir.message, /not acceptable/u);
+  assert.equal(r.labUnderDataDir.order.includes('create-account'), false);
+  assert.deepEqual(r.labDirChecks, { good: true, underData: false, same: false });
   assert.equal(r.removalThatFails.warned, true, 'a removal that fails says so and tells how to finish; it does not hide the original result');
   assert.equal(r.stale.removed, 1, 'a stale account of ours is swept first');
   assert.equal(r.stale.foreignKept, true, 'an account with our prefix but another description is never removed');
   assert.equal(r.notOurs.threw, true);
+});
+
+test('round 2 (lib): the floor must equal the generation at install, the bridge fields are compared, the floor file has three readers, the first start is a record, git is the real git.exe', (t) => {
+  const { r } = lib(t);
+  const a = r.agreement2;
+  assert.deepEqual(reasons(a.fullAgree), []);
+  assert.deepEqual(reasons(a.pipe), ['bridge_pipe_name']);
+  assert.deepEqual(reasons(a.cp), ['bridge_control_plane_sid']);
+  assert.deepEqual(reasons(a.git), ['bridge_git_path']);
+  assert.deepEqual(reasons(a.image), ['bridge_image_sha256']);
+  assert.deepEqual(reasons(a.strictEqual), []);
+  assert.deepEqual(reasons(a.strictBelow), ['floor_below_generation']);
+  assert.deepEqual(reasons(a.strictAbove), ['floor_above_generation']);
+  assert.deepEqual(reasons(a.lenientBelow), [], 'status does not fail a floor below the generation; it says so in words');
+  assert.deepEqual(reasons(r.floorAcl.good), []);
+  assert.deepEqual(reasons(r.floorAcl.adminsOnly), []);
+  assert.deepEqual(reasons(r.floorAcl.users), ['floor_acl:S-1-5-32-545']);
+  assert.match(reasons(r.floorAcl.service)[0], /^floor_acl:S-1-5-80-/u);
+  assert.deepEqual(reasons(r.floorAcl.everyone), ['floor_acl:S-1-1-0']);
+  assert.equal(r.firstStartRecord.good, true);
+  for (const bad of ['otherWord', 'badTime', 'notDict']) assert.equal(r.firstStartRecord[bad], false, bad);
+  assert.equal(r.git.default, String.raw`C:\Program Files\Git\mingw64\bin\git.exe`);
+  assert.equal(r.git.defaultOk, true);
+  assert.equal(r.git.firstStartWord, 'control_plane_is_self');
+});
+
+test('H1: no unreviewed local build starts elevated, the first start and the Run entry are separate modes that need an elevated record write, and the CI log carries the bridge hash and the lab script hashes', () => {
+  const host = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
+  assert.equal(/Invoke-Native\s+\$W\./u.test(host), false, 'the elevated script never starts anything under the bridge folder');
+  assert.equal(/Invoke-Wsl2FirstStart\b/u.test(host), false);
+  assert.match(host, /function Invoke-Wsl2FirstStartConfirm/u);
+  assert.match(host, /function Invoke-Wsl2RunEntryMode/u);
+  assert.equal([...host.matchAll(/Set-Wsl2RunValue/gu)].length, 2, 'defined once and called once: only -Mode wsl2-run-entry sets the Run value');
+  const yml = readFileSync(path.join(root, '.github', 'workflows', 'host-build-hashes.yml'), 'utf8');
+  assert.match(yml, /- name: Build the WSL bridge \(build only; never installed or started\)\n        run: npm run build:wsl-bridge\n/u);
+  assert.ok(yml.indexOf('npm run build:wsl-bridge') < yml.indexOf('-Mode wsl2-hashes'), 'the bridge is built before it is hashed');
+  assert.match(yml, /-Mode wsl2-hashes/u);
+  assert.match(yml, /ALBERA_WSL_BRIDGE_TREE_HASH=\*/u);
+  assert.match(yml, /'measure-attestation-key\.ps1', 'lab-sec2\.ps1'/u);
+  assert.match(yml, /ALBERA_HOST_SCRIPT_SHA256=\$h \$f/u);
+  for (const file of newScripts) {
+    const text = readFileSync(file, 'utf8');
+    assert.match(text, /compare with the ALBERA_HOST_SCRIPT_SHA256 line of the CI run on main/u, `${path.basename(file)} prints its own hash`);
+  }
+  const doc = readFileSync(path.join(root, 'docs', 'architecture', 'host-install.md'), 'utf8');
+  assert.match(doc, /the image cannot be built in CI/u, 'the doc says what is trusted about the image');
+});
+
+test('the new modes: -Mode wsl2-first-start and wsl2-run-entry refuse without an elevated console, and the first-start word is required', () => {
+  const refuse = (mode, extra) => ps(['-File', path.join(hostDir, 'albera-host.ps1'), '-Mode', mode, ...extra], { allowFail: true, env: { ALBERA_HOST_ASSUME_NOT_ELEVATED: '1' } });
+  const noWord = refuse('wsl2-first-start', []);
+  assert.notEqual(noWord.code, 0);
+  assert.match(noWord.stdout, /needs an elevated console|needs -Wsl2FirstStartWord/u);
+  const wordElsewhere = refuse('plan', ['-Wsl2FirstStartWord', 'x']);
+  assert.equal(wordElsewhere.code, 2);
+  assert.match(wordElsewhere.stdout, /only applies to -Mode wsl2-first-start/u);
+  for (const [mode, extra] of [['wsl2-first-start', ['-Wsl2FirstStartWord', 'control_plane_is_self']], ['wsl2-run-entry', []]]) {
+    const refused = refuse(mode, extra);
+    assert.notEqual(refused.code, 0, mode);
+    assert.match(refused.stdout, /needs an elevated console/u, mode);
+  }
 });

@@ -216,4 +216,35 @@ $r.agreement = [ordered]@{
   bridgeUnreadable = & $agree $goodBroker $goodAuth '' $floorText $Spki
   badLiveSpki = & $agree $goodBroker $goodAuth $goodBridge $floorText 'AAAA'
 }
+# ---- round 2: strict floor, the bridge fields, the floor ACL, the first-start record, the real git.exe
+$expectFull = [pscustomobject]@{ KeyName = $C.AttestationKeyName; KeyId = $C.AttestationKeyId; ComputerId = 'wsl-01'; RepositoryId = 'repo-main'; PipeName = $C.BridgePipeName; ControlPlaneSid = $cpSid; Git = $C.DefaultGitPath; ImageSha256 = $h }
+$full = { param($edit) Test-Wsl2KeyAgreement $expectFull $Spki $goodBroker $goodAuth (Mutate $goodBridge $edit) $floorText }
+$brokerGen5 = Mutate $goodBroker { param($o) $o.generation = 5 }
+$r.agreement2 = [ordered]@{
+  fullAgree = & $full { param($o) }
+  pipe = & $full { param($o) $o.pipeName = 'OTHER' }
+  cp = & $full { param($o) $o.controlPlaneSid = $owner }
+  git = & $full { param($o) $o.gitPath = 'C:\Program Files\Git\cmd\git.exe' }
+  image = & $full { param($o) $o.imageSha256 = ('9' * 64) }
+  strictEqual = Test-Wsl2KeyAgreement $expectKey $Spki $goodBroker $goodAuth $goodBridge $floorText $true
+  strictBelow = Test-Wsl2KeyAgreement $expectKey $Spki $brokerGen5 $goodAuth $goodBridge $floorText $true
+  strictAbove = Test-Wsl2KeyAgreement $expectKey $Spki $goodBroker $goodAuth $goodBridge (Get-Wsl2LeaseFloorText 2) $true
+  lenientBelow = Test-Wsl2KeyAgreement $expectKey $Spki $brokerGen5 $goodAuth $goodBridge $floorText $false
+}
+$r.floorAcl = [ordered]@{
+  good = Test-Wsl2FloorAcl @('S-1-5-18', 'S-1-5-32-544', $owner) $owner
+  adminsOnly = Test-Wsl2FloorAcl @('S-1-5-18', 'S-1-5-32-544') $owner
+  users = Test-Wsl2FloorAcl @('S-1-5-18', 'S-1-5-32-544', $owner, 'S-1-5-32-545') $owner
+  service = Test-Wsl2FloorAcl @('S-1-5-18', $brokerSid) $owner
+  everyone = Test-Wsl2FloorAcl @('S-1-1-0') $owner
+}
+$rec2 = { param($edit) $d = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $d['computerId'] = 'wsl-01'; $d['repositoryId'] = 'repo-main'; $d['keyName'] = $C.AttestationKeyName; $d['keyId'] = $C.AttestationKeyId; & $edit $d; Test-Wsl2Record $d }
+$fs = { param($word, $at) $f = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $f['word'] = $word; $f['at'] = $at; $f }
+$r.firstStartRecord = [ordered]@{
+  good = (& $rec2 { param($d) $d['firstStart'] = (& $fs 'control_plane_is_self' '2026-11-07T01:02:03Z') })
+  otherWord = (& $rec2 { param($d) $d['firstStart'] = (& $fs 'elevated' '2026-11-07T01:02:03Z') })
+  badTime = (& $rec2 { param($d) $d['firstStart'] = (& $fs 'control_plane_is_self' 'yesterday') })
+  notDict = (& $rec2 { param($d) $d['firstStart'] = 'control_plane_is_self' })
+}
+$r.git = [ordered]@{ default = $C.DefaultGitPath; defaultOk = (Test-Wsl2GitPath $C.DefaultGitPath); firstStartWord = $C.FirstStartWord }
 $r | ConvertTo-Json -Depth 12 -Compress

@@ -1480,11 +1480,12 @@ function Get-Wsl2Constants {
     BridgePipeName = 'ALBERA_WslBridge'   # the settings' wsl2.pipeName grammar ([A-Za-z0-9_-]) is narrower than the bridge's: this name passes both
     RunValueName = 'AlberaWslBridge'
     ImageFileName = 'albera-wsl2.tar'
-    DefaultGitPath = 'C:\Program Files\Git\cmd\git.exe'
+    DefaultGitPath = 'C:\Program Files\Git\mingw64\bin\git.exe'   # the real git.exe, not the cmd\git.exe launcher
     GitInstallDir = 'C:\Program Files\Git'   # room-approval-wiring.mjs GIT_INSTALL_DIR: the settings refuse a git outside it
     MinWslVersion = '2.4.0'   # the values the bridge's config comment gives (BridgeConfig.cs); the floor itself is the owner's to raise
     MinKernelVersion = '6.6.87'
     MaxRepositories = 8
+    FirstStartWord = 'control_plane_is_self'   # what the bridge prints in a NORMAL console when its Control Plane SID is the account it runs as (BRIDGE_FATAL=<word>, exit 77)
   }
 }
 # Where the WSL2 parts go. Pure: derived from the host layout.
@@ -1618,7 +1619,9 @@ function Read-Wsl2LeaseFloor([string]$Text) {
 }
 # The three places that hold the Broker's attestation public half, plus the live key, the floor file and the computer names, read back. Every argument is a TEXT the caller read from disk (or the key's own SPKI).
 # $Expect = { KeyName; KeyId; ComputerId; RepositoryId }. Returns the reason words (empty = all agree). A text that cannot be read is its own word, never a pass.
-function Test-Wsl2KeyAgreement($Expect, [string]$LiveSpki, [string]$BrokerJson, [string]$AuthorityJson, [string]$BridgeJson, [string]$FloorText) {
+# $StrictFloor (install): the floor must EQUAL the Broker generation. Status is not strict: a revocation raises the floor first, so a higher floor for a moment is how it is done; status says so in words.
+# $Expect may also carry ControlPlaneSid, PipeName, Git and ImageSha256: the bridge config is then compared with them too.
+function Test-Wsl2KeyAgreement($Expect, [string]$LiveSpki, [string]$BrokerJson, [string]$AuthorityJson, [string]$BridgeJson, [string]$FloorText, [bool]$StrictFloor = $false) {
   $r = New-Object System.Collections.Generic.List[string]
   if (-not (Test-P256Spki $LiveSpki)) { $r.Add('live_key_spki') }
   $read = { param($text) try { $text | ConvertFrom-Json } catch { $null } }
@@ -1642,10 +1645,22 @@ function Test-Wsl2KeyAgreement($Expect, [string]$LiveSpki, [string]$BrokerJson, 
     if ($bridge.brokerSpki -cne $LiveSpki) { $r.Add('bridge_spki') }
     if ($bridge.computerId -cne $Expect.ComputerId) { $r.Add('bridge_computer_id') }
     if (@(@($bridge.repositories) | Where-Object { $_.repositoryId -ceq $Expect.RepositoryId }).Count -ne 1) { $r.Add('bridge_repository') }
+    $has = { param($n) $null -ne $Expect.PSObject.Properties[$n] -and -not [string]::IsNullOrEmpty([string]$Expect.$n) }
+    if ((& $has 'ControlPlaneSid') -and $bridge.controlPlaneSid -cne $Expect.ControlPlaneSid) { $r.Add('bridge_control_plane_sid') }
+    if ((& $has 'PipeName') -and $bridge.pipeName -cne $Expect.PipeName) { $r.Add('bridge_pipe_name') }
+    if ((& $has 'Git') -and $bridge.gitPath -cne $Expect.Git) { $r.Add('bridge_git_path') }
+    if ((& $has 'ImageSha256') -and $bridge.imageSha256 -cne $Expect.ImageSha256) { $r.Add('bridge_image_sha256') }
   }
   $floor = Read-Wsl2LeaseFloor $FloorText
   if ($null -eq $floor) { $r.Add('floor_unreadable') }
-  elseif ($null -ne $broker -and ($broker.generation -is [int] -or $broker.generation -is [long]) -and $floor -gt [long]$broker.generation) { $r.Add('floor_above_generation') }   # a floor above the Broker's generation refuses every lease the Broker signs
+  elseif ($null -ne $broker -and ($broker.generation -is [int] -or $broker.generation -is [long]) -and $floor -gt [long]$broker.generation) { $r.Add('floor_above_generation') }
+  elseif ($StrictFloor -and $null -ne $broker -and ($broker.generation -is [int] -or $broker.generation -is [long]) -and $floor -ne [long]$broker.generation) { $r.Add('floor_below_generation') }   # a floor above the Broker's generation refuses every lease the Broker signs
+  , @($r)
+}
+# Who may read the lease floor file (ADR-012: Phase 5 required): SYSTEM, Administrators and the owner, nobody else. $AllowSids = the allow ACEs read back from the file.
+function Test-Wsl2FloorAcl($AllowSids, [string]$OwnerSid) {
+  $r = New-Object System.Collections.Generic.List[string]
+  foreach ($sid in @($AllowSids)) { if (@('S-1-5-18', 'S-1-5-32-544', $OwnerSid) -cnotcontains $sid) { $r.Add('floor_acl:' + $sid) } }
   , @($r)
 }
 # The settings text (control-plane-config\albera.approval.json) against what -AddWsl2Computer intends: the wsl2 computer, the wsl2 block and the desktop block it needs. Empty = as intended.
@@ -1671,13 +1686,17 @@ function Get-Wsl2RunEntry($W) {
 function Test-Wsl2Record($Record) {
   $c = Get-Wsl2Constants
   if ($Record -isnot [System.Collections.IDictionary]) { return $false }
-  $allowed = @('computerId', 'repositoryId', 'keyName', 'keyId', 'gitPath', 'bridgeTreeSha256', 'bridgeExeSha256', 'imageSha256', 'floorGeneration', 'runEntry')
+  $allowed = @('computerId', 'repositoryId', 'keyName', 'keyId', 'gitPath', 'bridgeTreeSha256', 'bridgeExeSha256', 'imageSha256', 'floorGeneration', 'runEntry', 'firstStart')
   foreach ($k in @($Record.Keys)) { if ($allowed -cnotcontains $k) { return $false } }
   foreach ($k in @('computerId', 'repositoryId', 'keyName', 'keyId')) { if (-not (Test-HasKey $Record $k)) { return $false } }
   if (-not (Test-HostId $Record['computerId']) -or -not (Test-HostId $Record['repositoryId']) -or $Record['keyName'] -cne $c.AttestationKeyName -or $Record['keyId'] -cne $c.AttestationKeyId) { return $false }
   foreach ($k in @('bridgeTreeSha256', 'bridgeExeSha256', 'imageSha256')) { if ((Test-HasKey $Record $k) -and -not (Test-TreeHashValue $Record[$k])) { return $false } }
   if ((Test-HasKey $Record 'gitPath') -and -not (Test-Wsl2GitPath $Record['gitPath'])) { return $false }
   if ((Test-HasKey $Record 'floorGeneration') -and ($Record['floorGeneration'] -isnot [int] -and $Record['floorGeneration'] -isnot [long])) { return $false }
+  if (Test-HasKey $Record 'firstStart') {
+    $f = $Record['firstStart']
+    if ($f -isnot [System.Collections.IDictionary] -or @($f.Keys).Count -ne 2 -or $f['word'] -cne $c.FirstStartWord -or $f['at'] -isnot [string] -or $f['at'] -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\z') { return $false }
+  }
   if (Test-HasKey $Record 'runEntry') {
     $e = $Record['runEntry']
     if ($e -isnot [System.Collections.IDictionary] -or @($e.Keys).Count -ne 2 -or $e['name'] -cne $c.RunValueName -or $e['command'] -isnot [string] -or $e['command'].Length -gt 400) { return $false }

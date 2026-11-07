@@ -79,11 +79,7 @@ test('source guards: elevation is checked first and never requested; nothing fro
   // The only programs ever started: sc.exe and icacls.exe by their full System32 path, and ONE more - `launch-check` of the INSTALLED Control Plane host, with a minimal environment. Nothing from the repository tree.
   const calls = [...script.matchAll(/Invoke-Native\s+(\S+)/gu)].map((m) => m[1]).filter((first) => !first.startsWith('('));
   assert.ok(calls.length >= 6);
-  for (const first of calls) assert.ok(first === '$ScExe' || first === '$IcaclsExe' || first === '$L.ControlPlaneExe' || first === '$W.BridgeExe', `Invoke-Native is only called with sc.exe, icacls.exe, the installed host or (-AddWsl2Computer) the installed bridge, saw ${first}`);
-  const bridgeCalls = script.split('\n').filter((line) => /Invoke-Native \$W\.BridgeExe/u.test(line));
-  assert.equal(bridgeCalls.length, 1, 'one call starts the installed bridge');
-  assert.match(bridgeCalls[0], /'serve ' \+ \(Quote-NativeArg \$W\.FirstCheckConfig\)\) 30000 -MinimalEnvironment/u, 'and it is the first-start check, with a minimal environment');
-  assert.ok(script.indexOf('Invoke-Native $W.BridgeExe') > script.indexOf('function Invoke-Wsl2FirstStart') && script.indexOf('Invoke-Native $W.BridgeExe') < script.indexOf('function Get-Wsl2VerifyStep'), 'only Invoke-Wsl2FirstStart does it');
+  for (const first of calls) assert.ok(first === '$ScExe' || first === '$IcaclsExe' || first === '$L.ControlPlaneExe', `Invoke-Native is only called with sc.exe, icacls.exe or the installed host, saw ${first}`);
   const hostCalls = script.split('\n').filter((line) => /Invoke-Native \$L\.ControlPlaneExe/u.test(line));
   assert.equal(hostCalls.length, 1, 'one call starts the installed host');
   assert.match(hostCalls[0], /'launch-check ' \+ \(Quote-NativeArg \$L\.ControlPlaneConfig\)\) 60000 -MinimalEnvironment/u, 'and it is launch-check, with a minimal environment');

@@ -36,7 +36,7 @@ $ExpectedTreeHash = $null; $VmName = 'albera-clone-01'; $ComputerId = 'clone-01'
 $NodeSource = $null; $ClaudeSource = $null
 $SystemDirectory = [Environment]::SystemDirectory; $ProgramFilesDir = Join-Path $Work 'pf'; $ProgramDataDir = Join-Path $Work 'pd'
 $ScExe = Join-Path $SystemDirectory 'sc.exe'; $IcaclsExe = Join-Path $SystemDirectory 'icacls.exe'
-$AddWsl2Computer = $false; $Wsl2ComputerId = ''; $Wsl2RepositoryId = ''; $Wsl2RepositoryPath = ''; $Wsl2Image = ''; $Wsl2ImageSha256 = ''; $Wsl2BridgeTreeHash = ''; $Wsl2FloorExpiresAt = ''; $Wsl2GitPath = ''
+$AddWsl2Computer = $false; $Wsl2ComputerId = ''; $Wsl2RepositoryId = ''; $Wsl2RepositoryPath = ''; $Wsl2Image = ''; $Wsl2ImageSha256 = ''; $Wsl2BridgeTreeHash = ''; $Wsl2FloorExpiresAt = ''; $Wsl2GitPath = ''; $Wsl2FirstStartWord = ''
 $OWNER = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
 $H = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 function Hex([byte[]]$bytes) { ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant() }
@@ -52,8 +52,7 @@ $script:Deleted = New-Object System.Collections.Generic.List[string]
 $script:Dacls = @{}
 $script:RunValue = $null
 $script:SaveCount = 0
-$script:FirstStartExit = 77
-$script:FirstConfig = $null; $script:FirstConfigExistedDuringRun = $false
+$script:DaclLog = New-Object System.Collections.Generic.List[object]
 function Resolve-HostSids { $script:Sids = @{ Broker = (Get-DerivedServiceSid $K.BrokerService); Authority = (Get-DerivedServiceSid $K.AuthorityService); ControlPlane = (Get-DerivedServiceSid $K.ControlPlaneService); Approver = $OWNER; Legacy = $false } }
 function Save-Manifest { $script:SaveCount++ }
 function Test-AuthoritySigningKeyExists([string]$KeyName, [string]$Scope = 'machine') { $script:Keys.ContainsKey($KeyName) }
@@ -73,7 +72,7 @@ function Write-OneConfig([string]$Path, [string]$Text, [string[]]$Writers) { Wri
 function Get-PathTrustReasons([string]$Path, [string[]]$AllowedWriters, [bool]$RequireProtected) { , @() }
 function New-TrustedDirectory([string]$Path, [string[]]$Grants, [string]$OwnerSid = 'S-1-5-32-544') { New-Item -ItemType Directory -Force -Path $Path | Out-Null; $script:Dacls[$Path] = @($Grants) }
 function Set-HostAcl($Entry) { $script:Dacls[$Entry.Path] = @($Entry.Grants) }
-function Set-HostDacl([string]$Path, [string[]]$Grants) { $script:Dacls[$Path] = @($Grants) }
+function Set-HostDacl([string]$Path, [string[]]$Grants) { $script:Dacls[$Path] = @($Grants); $script:DaclLog.Add([pscustomobject]@{ path = $Path; grants = @($Grants); existed = (Test-Path -LiteralPath $Path); hadFiles = (@(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue).Count -gt 0) }) }
 function Get-AclSummary([string]$Path) {
   $grants = @($script:Dacls[$Path])
   $sids = @($grants | ForEach-Object { if ($_ -match '^\*(S-[0-9-]+):') { $Matches[1] } })
@@ -81,11 +80,6 @@ function Get-AclSummary([string]$Path) {
   [pscustomobject]@{ Owner = 'S-1-5-32-544'; Protected = $true; AllowSids = @($sids | Sort-Object -Unique); WriteSids = @($writers | Sort-Object -Unique) }
 }
 function Invoke-Native([string]$Exe, [string]$Arguments, [int]$TimeoutMs = 60000, [switch]$MinimalEnvironment) { throw "unexpected native call: $Exe $Arguments" }
-function Invoke-Wsl2FirstStart {
-  $script:FirstConfigExistedDuringRun = [System.IO.File]::Exists($W.FirstCheckConfig)
-  $script:FirstConfig = if ($script:FirstConfigExistedDuringRun) { [System.IO.File]::ReadAllText($W.FirstCheckConfig) | ConvertFrom-Json } else { $null }
-  [pscustomobject]@{ Exit = $script:FirstStartExit; Out = 'BRIDGE_FATAL=elevated' }
-}
 function Get-Wsl2RunValue { $script:RunValue }
 function Set-Wsl2RunValue { $script:RunValue = (Get-Wsl2RunEntry $W).Command }
 function Remove-Wsl2RunValue { $script:RunValue = $null }
@@ -216,15 +210,10 @@ switch ($Case) {
     [System.IO.File]::AppendAllText((Join-Path $W.BinDir 'runtime.dll'), 'tampered')
     $r.installedCopyChangedError = Try-Run { Copy-Wsl2Parts }
     [System.IO.File]::WriteAllText((Join-Path $W.BinDir 'runtime.dll'), 'dll bytes')
-    # ---- the first start and the agreement
-    $verifyStep = Get-Wsl2VerifyStep
+    # ---- the agreement (no program is started: there is no fake of a start any more)
     $r.verifyOk = Try-Run { Invoke-Wsl2Verify }
-    $r.firstStartConfig = $script:FirstConfig
-    $r.firstStartConfigStillThere = [System.IO.File]::Exists($W.FirstCheckConfig)
-    $script:FirstStartExit = 0
-    $r.verifyWrongExit = Try-Run { Invoke-Wsl2Verify }
-    $r.firstStartConfigGoneAfterFailure = -not [System.IO.File]::Exists($W.FirstCheckConfig)
-    $script:FirstStartExit = 77
+    $r.firstStartConfig = Json ([System.IO.File]::ReadAllText($W.FirstCheckConfig))
+    $r.firstStartConfigKept = [System.IO.File]::Exists($W.FirstCheckConfig)
     $auth = [System.IO.File]::ReadAllText($L.AuthorityConfig)
     $o = Json $auth; $o.attestationPublicKey = $OtherSpki
     [System.IO.File]::WriteAllText($L.AuthorityConfig, ($o | ConvertTo-Json -Compress))
@@ -236,17 +225,46 @@ switch ($Case) {
     $script:Keys[$C2.AttestationKeyName].report.allowSids = @('S-1-5-18', 'S-1-5-32-544', $brokerSid, 'S-1-1-0')
     $r.verifyKeyAclExtra = Try-Run { Invoke-Wsl2Verify }
     $script:Keys[$C2.AttestationKeyName].report.allowSids = @('S-1-5-18', 'S-1-5-32-544', $brokerSid)
-    # ---- the Run entry
-    $runStep = Get-Wsl2RunStep
-    $r.runStepBefore = & $runStep.Test
-    [void](& $runStep.Do)
+    # L1: at install the floor must EQUAL the Broker generation; L2: only Administrators, SYSTEM and the owner may read the floor file
+    [System.IO.File]::WriteAllText($W.FloorFile, "5`r`n")
+    $r.verifyFloorAbove = Try-Run { Invoke-Wsl2Verify }
+    [System.IO.File]::WriteAllText($W.FloorFile, (Get-Wsl2LeaseFloorText $K.Generation))
+    $script:Dacls[$W.FloorFile] = @('*S-1-5-18:F', '*S-1-5-32-544:F', "*${OWNER}:R", '*S-1-5-32-545:R')
+    $r.verifyFloorReadableByUsers = Try-Run { Invoke-Wsl2Verify }
+    $r.copyFloorReadableByUsers = Try-Run { Copy-Wsl2Parts }
+    [void]$script:Dacls.Remove($W.FloorFile)
+    # L3: the bridge config on disk is compared with what the install recorded
+    $bridgeGood = [System.IO.File]::ReadAllText($W.Config)
+    foreach ($edit in @(@('pipeName', 'OTHER_PIPE'), @('gitPath', 'C:\Program Files\Git\cmd\git.exe'), @('imageSha256', ('9' * 64)), @('controlPlaneSid', $OWNER))) {
+      $o = Json $bridgeGood; $o.($edit[0]) = $edit[1]
+      [System.IO.File]::WriteAllText($W.Config, ($o | ConvertTo-Json -Compress -Depth 6))
+      $r["status_$($edit[0])"] = (Get-Wsl2ReadBackProblems) -join ','
+    }
+    [System.IO.File]::WriteAllText($W.Config, $bridgeGood)
+    # ---- M2 / H1: the first start is confirmed by the WORD the owner read in a normal console
+    $lines = Get-Wsl2StatusLines; $r.statusBeforeConfirm = $lines
+    $Wsl2FirstStartWord = 'elevated'; $r.confirmElevated = Invoke-Wsl2FirstStartConfirm
+    $Wsl2FirstStartWord = 'something'; $r.confirmOther = Invoke-Wsl2FirstStartConfirm
+    $r.firstStartRecordedAfterRefusals = $script:Manifest['created']['wsl2'].ContainsKey('firstStart')
+    $r.runEntryBeforeFirstStart = Invoke-Wsl2RunEntryMode
+    $r.runValueBeforeFirstStart = $script:RunValue
+    $Wsl2FirstStartWord = $C2.FirstStartWord; $r.confirmRight = Invoke-Wsl2FirstStartConfirm
+    $r.firstStartRecord = $script:Manifest['created']['wsl2']['firstStart']
+    $r.manifestShapeAfterConfirm = Test-Wsl2Record $script:Manifest['created']['wsl2']
+    # ---- the Run entry is the last, separate step
+    $script:Keys[$C2.AttestationKeyName].spki = $OtherSpki
+    $r.runEntryWhenKeyDiffers = Invoke-Wsl2RunEntryMode
+    $script:Keys[$C2.AttestationKeyName].spki = $Spki
+    $r.runEntryOk = Invoke-Wsl2RunEntryMode
     $r.runValue = $script:RunValue
     $r.expectedRunCommand = (Get-Wsl2RunEntry $W).Command
-    $r.runStepAfter = & $runStep.Test
     $r.runRecord = $script:Manifest['created']['wsl2']['runEntry']
+    $r.stepIdsHaveNoRun = (Get-Ids (Get-InstallSteps)) -notcontains 'wsl2run'
     # ---- status
+    $script:RunValue = (Get-Wsl2RunEntry $W).Command
     $lines = Get-Wsl2StatusLines   # assigned first: the function returns , array
     $r.statusLines = $lines
+    [System.IO.File]::WriteAllText($W.FloorFile, "5`r`n"); $lines = Get-Wsl2StatusLines; $r.statusFloorWarning = @($lines | Where-Object { $_.Text -like 'WARNING: the lease floor*' }).Count; [System.IO.File]::WriteAllText($W.FloorFile, (Get-Wsl2LeaseFloorText $K.Generation))
     [System.IO.File]::AppendAllText((Join-Path $W.BinDir 'runtime.dll'), 'tampered')
     $lines = Get-Wsl2StatusLines
     $r.statusTamperedLines = $lines
@@ -284,7 +302,19 @@ switch ($Case) {
     $r.dataFolderWithForeignFile = Try-Run { Remove-TrustedTree $W.DataDir @() @() $false }
     $r.dataFolderForeignFileStillThere = Test-Path -LiteralPath (Join-Path $W.DataDir 'notes.txt')
     Remove-Item -LiteralPath (Join-Path $W.DataDir 'notes.txt') -Force
-    Remove-TrustedTree $W.DataDir @() @() $false
+    # H2: a lab folder of lab-sec2.ps1 next to the data folder, with a file held open (its bridge still running): uninstall is not stopped by it
+    $labSibling = Join-Path $ProgramDataDir 'AlberaLabSec2\state'
+    Write-Text (Join-Path $labSibling 'operations.log') 'x'
+    $lockHold = New-Object System.IO.FileStream((Join-Path $labSibling 'operations.log'), [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    $script:DaclLog.Clear()
+    try {
+      Remove-TrustedTree $W.DataDir @() @() $false
+      $dataStep = @(Get-UninstallSteps) | Where-Object { $_.Id -eq 'data' }
+      $r.dataStepWithLockedLab = Try-Run { & $dataStep.Do }
+    }
+    finally { $lockHold.Dispose() }
+    $r.labSiblingStillThere = Test-Path -LiteralPath $labSibling
+    $r["daclLog"] = @($script:DaclLog | ForEach-Object { $_ })
     $r.dataFolderExistsAfter = Test-Path -LiteralPath $W.DataDir
   }
 }
