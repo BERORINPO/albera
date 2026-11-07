@@ -15,7 +15,7 @@ Each row says what the mock shows, what the product would need, and how much of 
 | R7 | The ledger holds what AI claimed, what was verified and what you decided | One ledger with three kinds of entry | Two kinds in the mock of v08b; no verified kind |
 | R8 | Bero draws who did what | Figures are built from the ledger, and each shows the records it came from | Figures exist in the room |
 | R9 | Motion stays quiet until something needs a person | Attention goes to stuck, waiting and failed. The current is short, and reduced motion turns it off | Mock only |
-| R10 | Clicking an agent opens what is inside its head | Read-only view per agent: the instruction, what fills its context by kind, what it read, what it says it is thinking, and what it cannot see. Stated reasoning is labelled as its own account, and context text is untrusted | Driver sees the stream; no view. Must not expose secrets or the token |
+| R10 | Clicking an agent opens what is inside its head | Read-only view per agent: the model and effort, its agent definition file and the rules loaded, the instruction, what fills its context by kind, what it read, what it says it is thinking, and what it cannot see. Stated reasoning is labelled as its own account, and context text is untrusted | Driver sees the stream; no view. Must not expose secrets or the token |
 
 ## Open questions for the owner
 
