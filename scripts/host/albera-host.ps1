@@ -106,8 +106,6 @@ param(
   [string]$Wsl2GitPath,
   # -Mode wsl2-first-start: the word you read after BRIDGE_FATAL= in the NORMAL console (it must be control_plane_is_self).
   [string]$Wsl2FirstStartWord,
-  # -Mode wsl2-run-entry: let steps the C6 report or the SEC-2 result say "not_measured" count as done (an open question the owner takes on).
-  [switch]$Wsl2AcceptNotMeasured,
   [string]$VmId,
   # The run id of the attested workflow run that built what albera-setup.exe verified (a decimal number). Recorded as `setupRunId` in the install record; a smaller one is refused, the same one is fine.
   [string]$SetupRunId,
@@ -187,7 +185,6 @@ if ($LabAssumeYes) {
 }
 if ($GrantHyperVToBroker -and -not ($Mode -eq 'install' -or ($Mode -eq 'plan' -and $PlanFor -eq 'install'))) { Stop-Refused '-GrantHyperVToBroker only applies to -Mode install (and its plan); migrate, status and uninstall follow what the install record says' 2 }
 $wsl2Options = @($Wsl2ComputerId, $Wsl2RepositoryId, $Wsl2RepositoryPath, $Wsl2Image, $Wsl2ImageSha256, $Wsl2BridgeTreeHash, $Wsl2FloorExpiresAt, $Wsl2GitPath) | Where-Object { $_ }
-if ($Wsl2AcceptNotMeasured -and $Mode -ne 'wsl2-run-entry') { Stop-Refused '-Wsl2AcceptNotMeasured only applies to -Mode wsl2-run-entry' 2 }
 if ($Wsl2FirstStartWord -and $Mode -ne 'wsl2-first-start') { Stop-Refused '-Wsl2FirstStartWord only applies to -Mode wsl2-first-start' 2 }
 if ($Mode -eq 'wsl2-first-start' -and -not $Wsl2FirstStartWord) { Stop-Refused '-Mode wsl2-first-start needs -Wsl2FirstStartWord <the word after BRIDGE_FATAL= in the normal console>' 2 }
 if ($wsl2Options.Count -gt 0 -and -not $AddWsl2Computer) { Stop-Refused 'the -Wsl2... options only apply together with -AddWsl2Computer' 2 }
@@ -1696,7 +1693,8 @@ function Invoke-Wsl2FirstStartConfirm {
   Say "First start recorded ($word). Next, in order: the C6 measurement (measure-attestation-key.ps1 -Phase C6), the SEC-2 check (lab-sec2.ps1), a Broker-signed lease through the real bridge WITHOUT the token, and only then  albera-host.ps1 -Mode wsl2-run-entry"
   0
 }
-# -Mode wsl2-run-entry: the LAST step. It refuses unless the first start is recorded and everything reads back as installed. The C6 report, the SEC-2 result and the tokenless lease check are NOT machine-checked.
+# -Mode wsl2-run-entry: the LAST step. It refuses unless the install is complete, the first start is recorded, everything reads back as installed, and the C6 report and the SEC-2 result are good AND newer than the
+# recorded first start (Test-Wsl2Gate). The N7 report and the tokenless lease check are NOT machine-checked.
 function Invoke-Wsl2RunEntryMode {
   if (-not (Test-ManifestHas 'wsl2')) { Say 'REFUSED: this install has no WSL2 record (install with -AddWsl2Computer first).'; return 3 }
   if ($script:Manifest['state'] -cne 'complete') { Say "REFUSED: the install is not complete (state $($script:Manifest['state'])); finish it first."; return 3 }
@@ -1716,8 +1714,8 @@ function Invoke-Wsl2RunEntryMode {
     try { [System.IO.File]::ReadAllText($file) | ConvertFrom-Json } catch { throw "$file is not json" }
   }
   try { $c6 = & $read $paths.C6; $sec2 = & $read $paths.Sec2 } catch { Say "REFUSED: $($_.Exception.Message)"; return 3 }
-  $gate = Test-Wsl2Gate $c6 $sec2 ([bool]$Wsl2AcceptNotMeasured)
-  if ($gate.Count -gt 0) { Say "REFUSED: $($gate -join ', '). Run measure-attestation-key.ps1 -Phase C6 and lab-sec2.ps1 (host-install.md), or take an open question on yourself with -Wsl2AcceptNotMeasured."; return 3 }
+  $gate = Test-Wsl2Gate $c6 $sec2 ([string]$rec['firstStart']['at'])
+  if ($gate.Count -gt 0) { Say "REFUSED: $($gate -join ', '). Run measure-attestation-key.ps1 -Phase C6 and lab-sec2.ps1 AFTER the first start was recorded (host-install.md); a result from before it does not count."; return 3 }
   # the record first, then the value: a value that is set always has a record, so uninstall always knows it
   $entry = Get-Wsl2RunEntry $W
   $run = New-Object 'System.Collections.Generic.Dictionary[string,object]'; $run['name'] = $entry.Name; $run['command'] = $entry.Command

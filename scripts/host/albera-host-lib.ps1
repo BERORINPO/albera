@@ -1731,7 +1731,7 @@ function Remove-AdminOnlyLevel([string]$Dir) {
     $isDir = ($entry.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0
     if ($isLink) { $entry.Delete(); continue }   # a link goes as a link: its target is neither entered nor touched
     if ($isDir) { Remove-AdminOnlyLevel $entry.FullName; continue }
-    Set-AdminOnlyAcl $entry.FullName
+    # no ACL write on a FILE: an ACL follows a hard link to a file outside the tree, and the parent's DACL (just taken) already lets administrators delete what is in it
     if (($entry.Attributes -band [System.IO.FileAttributes]::ReadOnly) -ne 0) { $entry.Attributes = [System.IO.FileAttributes]::Normal }
     $entry.Delete()
   }
@@ -1753,30 +1753,31 @@ function Get-MeasurePaths([string]$ProgramData) {
   $dir = Join-Path $ProgramData 'AlberaMeasure'
   [pscustomobject]@{ Dir = $dir; N7 = (Join-Path $dir 'attestation-key-report-N7.json'); C6 = (Join-Path $dir 'attestation-key-report-C6.json'); Sec2 = (Join-Path $dir 'sec2-result.json') }
 }
-# $C6 / $Sec2 = the parsed json (or $null when the file is not there). Returns the reasons the Run entry must wait (empty = go). not_measured is an open question, not an answer: it passes only with $AcceptNotMeasured.
-function Test-Wsl2Gate($C6, $Sec2, [bool]$AcceptNotMeasured) {
+# $C6 / $Sec2 = the parsed json (or $null when the file is not there). $FirstStartAt = the time the first start was recorded: both results must be LATER (ISO UTC strings, compared as text), so a result left from
+# before a reinstall cannot pass. Returns the reasons the Run entry must wait (empty = go). Required and never waived: C6 broker and controlplane measured, the key not exportable (measured), SEC-2 ownerCheck measured.
+# Not required: asExpected_other (a NO there is still a finding), and the image pin (it is optional: a pin that fails, or was not measured, means it is left out).
+function Test-Wsl2Gate($C6, $Sec2, [string]$FirstStartAt) {
   $r = New-Object System.Collections.Generic.List[string]
+  $later = { param($t) ($t -is [string]) -and ($t -cmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\z') -and [string]::CompareOrdinal($t, $FirstStartAt) -gt 0 }
   if ($null -eq $C6) { $r.Add('c6_report_missing') }
   else {
     if ($C6.phase -cne 'C6') { $r.Add('c6_report_not_phase_c6') }
     if ($C6.failed -ne $false) { $r.Add('c6_failed') }
+    if (-not (& $later $C6.measuredAt)) { $r.Add('c6_report_not_after_first_start') }
     $v = $C6.verdicts
-    $expected = @(if ($null -ne $v) { $v.PSObject.Properties | Where-Object { $_.Name -like 'asExpected_*' } })
-    if ($expected.Count -lt 3) { $r.Add('c6_incomplete') }
-    foreach ($p in $expected) {
-      if ($p.Value -ceq 'NO') { $r.Add('c6_unexpected:' + $p.Name) }
-      elseif ($p.Value -ceq 'not_measured') { if (-not $AcceptNotMeasured) { $r.Add('c6_not_measured:' + $p.Name) } }
-      elseif ($p.Value -cne 'yes') { $r.Add('c6_odd_value:' + $p.Name) }
+    foreach ($name in @('asExpected_broker', 'asExpected_controlplane')) {
+      $value = if ($null -ne $v -and $null -ne $v.PSObject.Properties[$name]) { $v.$name } else { $null }
+      if ($null -eq $value) { $r.Add('c6_missing:' + $name) } elseif ($value -ceq 'NO') { $r.Add('c6_unexpected:' + $name) } elseif ($value -ceq 'not_measured') { $r.Add('c6_not_measured:' + $name) } elseif ($value -cne 'yes') { $r.Add('c6_odd_value:' + $name) }
     }
+    if ($null -ne $v -and $null -ne $v.PSObject.Properties['asExpected_other'] -and $v.asExpected_other -ceq 'NO') { $r.Add('c6_unexpected:asExpected_other') }
     $export = if ($null -ne $v) { $v.keyCannotBeExported } else { $null }
-    if ($export -ceq 'no') { $r.Add('c6_key_can_be_exported') }
-    elseif ($export -cne 'yes' -and -not ($export -ceq 'not_measured' -and $AcceptNotMeasured)) { $r.Add('c6_export_not_shown') }
+    if ($export -ceq 'no') { $r.Add('c6_key_can_be_exported') } elseif ($export -cne 'yes') { $r.Add('c6_export_not_shown') }
   }
   if ($null -eq $Sec2) { $r.Add('sec2_result_missing') }
   else {
-    if ($Sec2.ownerCheck -cne 'works') { if ($Sec2.ownerCheck -ceq 'not_measured') { if (-not $AcceptNotMeasured) { $r.Add('sec2_owner_check_not_measured') } } else { $r.Add('sec2_owner_check:' + $Sec2.ownerCheck) } }
-    if ($Sec2.imagePin -ceq 'not_measured') { if (-not $AcceptNotMeasured) { $r.Add('sec2_image_pin_not_measured') } }
-    elseif ($Sec2.imagePin -cne 'works' -and [string]$Sec2.imagePin -cnotlike 'fails_*') { $r.Add('sec2_image_pin_odd:' + $Sec2.imagePin) }
+    if (-not (& $later $Sec2.at)) { $r.Add('sec2_result_not_after_first_start') }
+    if ($Sec2.ownerCheck -cne 'works') { if ($Sec2.ownerCheck -ceq 'not_measured') { $r.Add('sec2_owner_check_not_measured') } else { $r.Add('sec2_owner_check:' + $Sec2.ownerCheck) } }
+    if ($Sec2.imagePin -cne 'works' -and $Sec2.imagePin -cne 'not_measured' -and [string]$Sec2.imagePin -cnotlike 'fails_*') { $r.Add('sec2_image_pin_odd:' + $Sec2.imagePin) }
   }
   , @($r)
 }

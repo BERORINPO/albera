@@ -36,7 +36,7 @@ $ExpectedTreeHash = $null; $VmName = 'albera-clone-01'; $ComputerId = 'clone-01'
 $NodeSource = $null; $ClaudeSource = $null
 $SystemDirectory = [Environment]::SystemDirectory; $ProgramFilesDir = Join-Path $Work 'pf'; $ProgramDataDir = Join-Path $Work 'pd'
 $ScExe = Join-Path $SystemDirectory 'sc.exe'; $IcaclsExe = Join-Path $SystemDirectory 'icacls.exe'
-$AddWsl2Computer = $false; $Wsl2ComputerId = ''; $Wsl2RepositoryId = ''; $Wsl2RepositoryPath = ''; $Wsl2Image = ''; $Wsl2ImageSha256 = ''; $Wsl2BridgeTreeHash = ''; $Wsl2FloorExpiresAt = ''; $Wsl2GitPath = ''; $Wsl2FirstStartWord = ''; $Wsl2AcceptNotMeasured = $false
+$AddWsl2Computer = $false; $Wsl2ComputerId = ''; $Wsl2RepositoryId = ''; $Wsl2RepositoryPath = ''; $Wsl2Image = ''; $Wsl2ImageSha256 = ''; $Wsl2BridgeTreeHash = ''; $Wsl2FloorExpiresAt = ''; $Wsl2GitPath = ''; $Wsl2FirstStartWord = ''
 $OWNER = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
 $H = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 function Hex([byte[]]$bytes) { ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant() }
@@ -265,22 +265,30 @@ switch ($Case) {
     $script:Manifest['state'] = 'complete'
     $paths = Get-MeasurePaths $ProgramDataDir
     $r.runEntryNoReports = Invoke-Wsl2RunEntryMode
+    $fsAt = [string]$script:Manifest['created']['wsl2']['firstStart']['at']
+    $later = '2999-01-01T00:00:00Z'; $earlier = '2000-01-01T00:00:00Z'
     $verdictsGood = [ordered]@{ keyCannotBeExported = 'yes'; asExpected_broker = 'yes'; asExpected_other = 'yes'; asExpected_controlplane = 'yes' }
-    Write-Text $paths.C6 (([ordered]@{ phase = 'C6'; failed = $false; verdicts = $verdictsGood }) | ConvertTo-Json -Depth 4)
+    $writeC6 = { param($verdicts, $at) Write-Text $paths.C6 (([ordered]@{ phase = 'C6'; failed = $false; measuredAt = $at; verdicts = $verdicts }) | ConvertTo-Json -Depth 4) }
+    & $writeC6 $verdictsGood $later
     $r.runEntryNoSec2 = Invoke-Wsl2RunEntryMode
-    Write-Text $paths.Sec2 (([ordered]@{ ownerCheck = 'works'; imagePin = 'fails_from_this_account:server_identity_unavailable' }) | ConvertTo-Json)
+    $writeSec2 = { param($owner, $at) Write-Text $paths.Sec2 (([ordered]@{ at = $at; ownerCheck = $owner; imagePin = 'fails_from_this_account:server_identity_unavailable' }) | ConvertTo-Json) }
+    & $writeSec2 'works' $earlier
+    $r.runEntryOldSec2 = Invoke-Wsl2RunEntryMode
+    & $writeSec2 'works' $later
+    & $writeC6 $verdictsGood $earlier
+    $r.runEntryOldC6 = Invoke-Wsl2RunEntryMode
     $verdictsBad = [ordered]@{ keyCannotBeExported = 'yes'; asExpected_broker = 'yes'; asExpected_other = 'NO'; asExpected_controlplane = 'yes' }
-    Write-Text $paths.C6 (([ordered]@{ phase = 'C6'; failed = $false; verdicts = $verdictsBad }) | ConvertTo-Json -Depth 4)
+    & $writeC6 $verdictsBad $later
     $r.runEntryWhenC6Says = Invoke-Wsl2RunEntryMode
-    $verdictsOpen = [ordered]@{ keyCannotBeExported = 'yes'; asExpected_broker = 'yes'; asExpected_other = 'not_measured'; asExpected_controlplane = 'yes' }
-    Write-Text $paths.C6 (([ordered]@{ phase = 'C6'; failed = $false; verdicts = $verdictsOpen }) | ConvertTo-Json -Depth 4)
+    $verdictsOpen = [ordered]@{ keyCannotBeExported = 'yes'; asExpected_broker = 'yes'; asExpected_other = 'yes'; asExpected_controlplane = 'not_measured' }
+    & $writeC6 $verdictsOpen $later
     $r.runEntryNotMeasured = Invoke-Wsl2RunEntryMode
+    $verdictsOtherOpen = [ordered]@{ keyCannotBeExported = 'yes'; asExpected_broker = 'yes'; asExpected_other = 'not_measured'; asExpected_controlplane = 'yes' }
+    & $writeC6 $verdictsOtherOpen $later
     $r.runValueAfterRefusals = $script:RunValue
-    $Wsl2AcceptNotMeasured = $true
-    $r.runEntryNotMeasuredAccepted = Invoke-Wsl2RunEntryMode
-    $Wsl2AcceptNotMeasured = $false
+    $r.runEntryOtherNotMeasured = Invoke-Wsl2RunEntryMode
     $script:RunValue = $null; $script:Manifest['created']['wsl2'].Remove('runEntry') | Out-Null
-    Write-Text $paths.C6 (([ordered]@{ phase = 'C6'; failed = $false; verdicts = $verdictsGood }) | ConvertTo-Json -Depth 4)
+    & $writeC6 $verdictsGood $later
     $r.runEntryOk = Invoke-Wsl2RunEntryMode
     $r.runRecordWasWrittenBeforeValue = $script:RunSetSawRecord
     $r.runValue = $script:RunValue

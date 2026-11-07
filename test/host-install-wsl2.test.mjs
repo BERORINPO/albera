@@ -313,10 +313,12 @@ test('install, with fakes: the key is refused when it exists, the configs carry 
   assert.equal(r.runEntryWhenPartial, 3, 'an install that is not complete gets no Run entry');
   assert.equal(r.runEntryNoReports, 3);
   assert.equal(r.runEntryNoSec2, 3);
+  assert.equal(r.runEntryOldSec2, 3, 'a SEC-2 result from before the first start does not count');
+  assert.equal(r.runEntryOldC6, 3, 'neither does a C6 report');
   assert.equal(r.runEntryWhenC6Says, 3);
-  assert.equal(r.runEntryNotMeasured, 3);
+  assert.equal(r.runEntryNotMeasured, 3, 'not_measured for the Control Plane is not waived');
   assert.equal(r.runValueAfterRefusals, null, 'no refusal left a Run value behind');
-  assert.equal(r.runEntryNotMeasuredAccepted, 0, 'with the explicit flag an open question is taken on by the owner');
+  assert.equal(r.runEntryOtherNotMeasured, 0, 'asExpected_other is not required');
   assert.equal(r.firstCheckGoneAfterConfirm, true, 'first-check.json is removed when the first start is recorded');
   assert.equal(r.runRecordWasWrittenBeforeValue, true, 'the record names the Run value before it is set');
   assert.equal(r.runEntryOk, 0);
@@ -641,7 +643,7 @@ test('the one delete method for every elevated recursive delete: a folder not ow
   assert.equal(r.removed, true);
   assert.equal(r.treeGone, true, 'including the read-only file');
   assert.equal(r.sentinelSurvived, true, 'the junction was removed as a link: its target was not entered');
-  assert.deepEqual(r.aclPaths, ['tree', 'tree\\a', 'tree\\a\\b', 'tree\\a\\b\\deep.txt', 'tree\\a\\readonly.txt', 'tree\\top.txt'], 'the ACL is taken on every folder (before its listing) and every file, parents first; the link got none');
+  assert.deepEqual(r.aclPaths, ['tree', 'tree\\a', 'tree\\a\\b'], 'the ACL is taken on every FOLDER, before its listing, parents first; never on a file (an ACL follows a hard link) and never on the link');
   assert.equal(r.dirsSeenBeforeListing, true);
   assert.match(r.linkAtTop, /is or is reached through a link/u);
   assert.equal(r.sentinelAfterLink, true);
@@ -655,31 +657,42 @@ test('the one delete method for every elevated recursive delete: a folder not ow
   }
 });
 
-test('the Run entry gate: -Mode wsl2-run-entry needs a complete install, the C6 report and the SEC-2 result, and writes its record BEFORE the Run value', (t) => {
+test('the Run entry gate: -Mode wsl2-run-entry needs a complete install, a C6 report and a SEC-2 result NEWER than the first start, nothing is waived, and the record is written BEFORE the Run value', (t) => {
   const { r } = lib(t);
   const g = r.gate;
   assert.deepEqual(reasons(g.good), []);
   assert.deepEqual(reasons(g.pinFails), [], 'an image pin that fails is an answer (the pin is then left out), not a blocker');
+  assert.deepEqual(reasons(g.pinNotMeasured), [], 'the pin is optional');
   assert.deepEqual(reasons(g.noC6), ['c6_report_missing']);
   assert.deepEqual(reasons(g.noSec2), ['sec2_result_missing']);
   assert.deepEqual(reasons(g.phaseN7), ['c6_report_not_phase_c6']);
   assert.deepEqual(reasons(g.failed), ['c6_failed']);
-  assert.deepEqual(reasons(g.unexpected), ['c6_unexpected:asExpected_other']);
-  assert.deepEqual(reasons(g.unexpectedEvenAccepted), ['c6_unexpected:asExpected_other'], 'a NO is never overridden');
-  assert.deepEqual(reasons(g.notMeasured), ['c6_not_measured:asExpected_controlplane']);
-  assert.deepEqual(reasons(g.notMeasuredAccepted), [], 'not_measured passes only with the explicit flag');
+  // G2: asExpected_other is not required; a NO there is still a finding; broker, control plane, export and the owner check must be measured
+  assert.deepEqual(reasons(g.unexpectedOther), ['c6_unexpected:asExpected_other']);
+  assert.deepEqual(reasons(g.otherNotMeasured), []);
+  assert.deepEqual(reasons(g.otherMissing), []);
+  assert.deepEqual(reasons(g.brokerNotMeasured), ['c6_not_measured:asExpected_broker']);
+  assert.deepEqual(reasons(g.controlPlaneNotMeasured), ['c6_not_measured:asExpected_controlplane']);
+  assert.deepEqual(reasons(g.brokerMissing), ['c6_missing:asExpected_broker']);
   assert.deepEqual(reasons(g.exportable), ['c6_key_can_be_exported']);
   assert.deepEqual(reasons(g.exportNotMeasured), ['c6_export_not_shown']);
-  assert.deepEqual(reasons(g.incomplete), ['c6_incomplete']);
   assert.deepEqual(reasons(g.ownerCheckFails), ['sec2_owner_check:accepts_any_owner']);
-  assert.deepEqual(reasons(g.sec2NotMeasured), ['sec2_owner_check_not_measured', 'sec2_image_pin_not_measured']);
-  assert.deepEqual(reasons(g.sec2NotMeasuredAccepted), []);
+  assert.deepEqual(reasons(g.ownerCheckNotMeasured), ['sec2_owner_check_not_measured']);
   assert.deepEqual(reasons(g.sec2OddPin), ['sec2_image_pin_odd:maybe']);
+  // G1: both results must be later than the recorded first start (ISO strings, compared as text)
+  assert.deepEqual(reasons(g.c6Older), ['c6_report_not_after_first_start']);
+  assert.deepEqual(reasons(g.c6SameTime), ['c6_report_not_after_first_start']);
+  assert.deepEqual(reasons(g.c6NoTime), ['c6_report_not_after_first_start']);
+  assert.deepEqual(reasons(g.c6BadTime), ['c6_report_not_after_first_start']);
+  assert.deepEqual(reasons(g.sec2Older), ['sec2_result_not_after_first_start']);
+  assert.deepEqual(reasons(g.sec2NoTime), ['sec2_result_not_after_first_start']);
   assert.match(r.measurePaths.C6, /attestation-key-report-C6\.json$/u, 'N7 and C6 write different files');
   assert.match(r.measurePaths.N7, /attestation-key-report-N7\.json$/u);
   assert.match(r.measurePaths.Sec2, /sec2-result\.json$/u);
   const host = readFileSync(path.join(hostDir, 'albera-host.ps1'), 'utf8');
+  assert.equal(/AcceptNotMeasured/u.test(host), false, 'the flag is gone: nothing is left for it to cover');
   const mode = host.slice(host.indexOf('function Invoke-Wsl2RunEntryMode'), host.indexOf('function Get-Wsl2ReadBackProblems'));
   assert.ok(mode.indexOf("-cne 'complete'") > 0 && mode.indexOf("-cne 'complete'") < mode.indexOf('Test-Wsl2Gate'), 'a complete install is required first');
+  assert.match(mode, /Test-Wsl2Gate \$c6 \$sec2 \(\[string\]\$rec\['firstStart'\]\['at'\]\)/u, 'the gate gets the recorded first-start time');
   assert.ok(mode.indexOf("$rec['runEntry'] = $run; Save-Manifest") < mode.indexOf('Set-Wsl2RunValue'), 'the record is written before the Run value (L7)');
 });
