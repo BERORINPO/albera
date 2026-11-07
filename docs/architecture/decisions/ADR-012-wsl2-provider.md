@@ -175,7 +175,7 @@ On the machine (`node scripts/wsl2-bridge-gates.mjs`, same image and WSL version
 
 Not verified:
 
-- **No job has run.** The hands have only met a fake bridge and a fake driver, and the gates only met the real bridge without the hands. Real Claude Code has not used these tools.
+- **Real Claude Code has not used these tools.** `scripts/wsl2-job-gate.mjs` ("Lease signing" below) later ran the hands on the real bridge with a stand-in for it.
 - A bundle of realistic size through the helper and the pipe. The gates moved 598 bytes. 64 MiB is checked in code and with fakes only.
 - **SEC-2 is not settled.** It needs a second Windows account, which is a change to the host. It moves to the Phase 5 install: until the lab says otherwise, the proof is the owner alone, as written above.
 - Applying a result. The owner can read the diff, and the bundle stays on disk, but no step brings it into the repository.
