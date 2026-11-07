@@ -102,6 +102,18 @@
   .zapnote.in { opacity: 1; }
   .card.gate { border-color: var(--rec); }
   .card.gate b { color: var(--rec); }
+  .cam { cursor: pointer; }
+  .brain { position: absolute; left: 16px; top: 16px; bottom: 16px; width: 380px; background: var(--paper); border: 1px solid var(--me); border-radius: 12px; padding: 12px 14px; z-index: 12; overflow: auto; transform: translateX(-420px); transition: transform 0.45s var(--ease); font-size: 13px; }
+  .brain.in { transform: none; }
+  .brain h3 { margin: 0; font-size: 16px; display: flex; justify-content: space-between; align-items: center; }
+  .brain .lb { font-size: 11.5px; color: var(--muted); margin: 10px 0 3px; }
+  .meter { display: flex; height: 18px; border-radius: 4px; overflow: hidden; background: var(--desk); }
+  .meter i { display: block; transition: flex-grow 0.6s var(--ease); }
+  .keys { display: grid; grid-template-columns: 12px 1fr auto; gap: 2px 6px; font-size: 12px; margin-top: 5px; align-items: center; }
+  .keys b { width: 10px; height: 10px; border-radius: 2px; display: block; }
+  .thought { font-family: var(--mono); font-size: 12px; background: var(--desk); border-radius: 6px; padding: 6px 8px; line-height: 1.6; }
+  .brain ul { margin: 0; padding-left: 16px; }
+  .note { font-size: 11.5px; color: var(--stuck); margin-top: 10px; }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 </style>
 </head>
@@ -132,6 +144,7 @@
     <div class="bero" id="bero"><div class="orb"><div class="eyes" id="eyes"><i></i><i></i></div></div>
       <div class="bubble hide" id="bub"><div class="nm">ベロ <span class="wave"><i></i><i></i><i></i><i></i></span></div><div id="txt"></div><div class="chips" id="chips"></div></div></div>
   </div>
+  <aside class="brain" id="brain" aria-label="エージェントの頭の中"></aside>
   <div class="ledger" id="ledger"><div class="t">今日の台帳 · AI がしたこと / あなたが決めたこと</div></div>
 </div>
 <script>
@@ -164,6 +177,30 @@ async function zap(from, toId, note) { const [ax, ay] = from, [bx, by] = center(
     const e = document.createElementNS('http://www.w3.org/2000/svg', 'polyline'); e.setAttribute('class', 'zap'); e.setAttribute('points', pts.join(' ')); wires.appendChild(e); await wait(110); e.remove(); }
   await wait(1500); zn.classList.remove('in'); }
 async function term(id, lines, ms = 650) { const box = $(id); for (const [cmd, out] of lines) { const a = document.createElement('div'); a.className = 'cmd'; a.textContent = '$ ' + cmd; box.appendChild(a); await wait(ms); const b = document.createElement('div'); b.textContent = '  ' + out; box.appendChild(b); while (box.children.length > 8) box.firstChild.remove(); await wait(ms / 2); } }
+
+/* click a camera: look inside that agent. What it was given, what fills its context, what it has said it is thinking, and what it cannot see */
+const MIND = {
+  c1: { n: 'ソラ', role: '動画編集 · VM', used: 41, parts: [['指示と決まり', 6], ['読んだもの', 22], ['ツールの結果', 13]], told: '素材 6 本から 60 秒の動画を作る', now: '無音の区間を切っている。次は BGM。B と E は消してよいか聞く必要がある', read: ['素材 6 本の長さ', '編集ソフトの画面'], blind: ['他の AI が何をしているか', '人がどれを残したいか'] },
+  c2: { n: 'リン', role: '予約フォーム · VM', used: 28, parts: [['指示と決まり', 7], ['読んだもの', 14], ['ツールの結果', 7]], told: '予約フォームの入力チェックを直す', now: 'DONE と申告した。人の確認を待っている', read: ['form.mjs', 'テスト 12 件'], blind: ['本番の予約データ'] },
+  c3: { n: 'シュウ', role: 'テスト · VM', used: 63, parts: [['指示と決まり', 5], ['読んだもの', 18], ['ツールの結果', 40]], told: 'テストを全部通す', now: '保存の確認が出て先に進めない。押してよいか分からないので待つ', read: ['テストの結果 3 回分', '画面の写真 9 枚'], blind: ['ダイアログを閉じてよいか'] },
+  c4: { n: 'ナナ', role: 'バグ修正 · WSL2', used: 52, parts: [['指示と決まり', 6], ['読んだもの', 26], ['ツールの結果', 20]], told: '期限判定を直して、テストを足す', now: 'auth.mjs の 42 行が怪しい。< と <= を間違えている気がする', read: ['src/auth.mjs', 'test/auth.test.mjs', 'npm test の結果'], blind: ['ネットワーク', 'Windows の中身', 'ジンの検査結果'] },
+  c5: { n: 'ジン', role: '検査 · VM', used: 19, parts: [['指示と決まり', 8], ['読んだもの', 6], ['ツールの結果', 5]], told: 'a1b2c3 を別の部屋で試す', now: 'ナナの説明は読まない。結果だけを試す', read: ['ナナの結果 (bundle)'], blind: ['ナナが何を考えたか'] },
+};
+const PART_COLORS = ['var(--me)', 'var(--accent-fill)', 'var(--work)'];
+function openBrain(id) { const m = MIND[id]; const b = $('brain'); b.replaceChildren();
+  const add = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; b.appendChild(e); return e; };
+  const h = add('h3', '', m.n); const x = document.createElement('button'); x.textContent = '閉じる'; x.onclick = (e) => { e.stopPropagation(); b.classList.remove('in'); }; h.appendChild(x);
+  add('div', 'sm sub', m.role);
+  add('div', 'lb', `頭の中の埋まり具合 ${m.used}%`);
+  const meter = add('div', 'meter'); m.parts.forEach(([, v], i) => { const s = document.createElement('i'); s.style.flexGrow = v; s.style.background = PART_COLORS[i]; meter.appendChild(s); }); const rest = document.createElement('i'); rest.style.flexGrow = 100 - m.used; meter.appendChild(rest);
+  const keys = add('div', 'keys'); m.parts.forEach(([k, v], i) => { const c = document.createElement('b'); c.style.background = PART_COLORS[i]; const a = document.createElement('span'); a.textContent = k; const p = document.createElement('span'); p.textContent = v + '%'; keys.append(c, a, p); });
+  add('div', 'lb', '渡された指示'); add('div', '', m.told);
+  add('div', 'lb', '本人が言っている、今考えていること'); add('div', 'thought', m.now);
+  add('div', 'lb', '読んだもの'); const r = add('ul'); m.read.forEach((v) => { const l = document.createElement('li'); l.textContent = v; r.appendChild(l); });
+  add('div', 'lb', '見えていないもの'); const k = add('ul'); m.blind.forEach((v) => { const l = document.createElement('li'); l.textContent = v; k.appendChild(l); });
+  add('div', 'note', '本人の説明です。実際の思考そのものとは限りません。読み取り専用で、ここから書き換えることはできません。');
+  b.classList.add('in'); }
+Object.keys(MIND).forEach((id) => { $(id).onclick = () => openBrain(id); });
 
 /* the hands keep working on their own: smooth cursors */
 const curs = { u1: [[60, 120], [180, 130], [120, 60], [220, 110]], u2: [[200, 90], [210, 95]] };
