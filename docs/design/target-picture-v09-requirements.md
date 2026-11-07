@@ -19,6 +19,7 @@ Each row says what the mock shows, what the product would need, and how much of 
 | R11 | Each session has its preview on the canvas, linked to its agent | The page being built appears beside the agent, with the same claim or verified state. The owner reaches it read-only | Missing. A WSL2 sandbox has no network, so a preview needs its own route: a port through the bridge, or a separate preview room built from the result bundle |
 | R12 | Dozens of agents at once, a few as cameras and the rest as one tile each | Scale view: cameras are chosen, the others are tiles, a rate and a stream of events. Only stuck and waiting keep a colour | Missing: a computer runs one job, and the desktop limit is small |
 | R13 | Every Claude Code session on one wall, and a session running out of room hands its work to a fresh one, as a note you can read | Hand-off is a first-class event: from, to, why, goal, what is left, what was read, what was decided, and that it is still unverified. The ledger keeps the chain | Missing: a run ends and nothing carries over |
+| R14 | The screen does not grow with the number of sessions | A team is one group and a session one dot. Only what needs a person becomes a card, at most three, then "N more". The view works the same at 48 and at 1000 | Mock only |
 
 ## Open questions for the owner
 

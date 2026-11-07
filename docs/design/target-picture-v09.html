@@ -105,30 +105,21 @@
   .cam { cursor: pointer; }
   .fleet { position: absolute; inset: 0; z-index: 11; background: var(--desk); overflow: hidden; }
   .fleet[hidden] { display: none; }
-  .fw { position: absolute; left: 0; top: 0; width: 2420px; height: 1270px; transform-origin: 0 0; background-image: radial-gradient(var(--dot) 1.2px, transparent 1.4px); background-size: 22px 22px; }
-  .fw svg { position: absolute; inset: 0; width: 2420px; height: 1270px; pointer-events: none; }
-  .fw .bus { fill: none; stroke: var(--rule); stroke-width: 1.2; }
-  .fw .trail { fill: none; stroke: var(--accent-fill); stroke-width: 3; }
-  .boss, .chief, .cli { position: absolute; border-radius: 8px; background: var(--sheet); border: 1px solid var(--rule); }
-  .boss { left: 24px; top: 40px; width: 300px; padding: 12px 14px; border-color: var(--me); }
-  .boss b { color: var(--me); font-size: 18px; }
-  .hand { position: absolute; left: 24px; top: 250px; width: 300px; padding: 12px 14px; border: 1px solid var(--accent-fill); border-radius: 8px; background: var(--paper); font-size: 14px; line-height: 1.6; }
-  .hand b { color: var(--accent-fill); }
-  .hand ul { margin: 4px 0 0; padding-left: 18px; }
-  .hlog { position: absolute; left: 24px; top: 640px; width: 300px; font-family: var(--mono); font-size: 12.5px; line-height: 1.7; color: var(--muted); height: 590px; overflow: hidden; }
-  .chief { left: 360px; width: 150px; height: 66px; padding: 8px 10px; font-size: 15px; font-weight: 700; }
-  .chief small { display: block; font-weight: 400; font-size: 12px; color: var(--muted); }
-  .cli { width: 226px; height: 186px; padding: 6px 8px; overflow: hidden; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; transition: border-color 0.4s, opacity 0.5s; cursor: pointer; }
-  .cli .h { display: flex; justify-content: space-between; color: var(--ink); font-weight: 700; }
-  .cli .h span:last-child { font-weight: 400; color: var(--muted); }
-  .cli .o { height: 128px; overflow: hidden; color: var(--ink-2); white-space: nowrap; }
-  .cli .o .p { color: var(--accent-fill); }
-  .cli .m { height: 5px; border-radius: 3px; background: var(--desk); overflow: hidden; margin-top: 4px; }
-  .cli .m i { display: block; height: 100%; background: var(--work); }
-  .cli.hot .m i { background: var(--rec); }
-  .cli.idle { opacity: 0.4; } .cli.gone { opacity: 0.3; border-style: dashed; }
-  .cli.give { border-color: var(--rec); } .cli.take { border-color: var(--done); box-shadow: 0 0 0 2px var(--done); }
-  .packet { position: absolute; left: 0; top: 0; z-index: 3; padding: 4px 10px; border-radius: 8px; background: var(--accent-fill); color: var(--on-accent); font-size: 14px; font-weight: 700; white-space: nowrap; transition: transform 1.3s var(--ease); pointer-events: none; }
+  .fw { position: absolute; left: 0; top: 0; width: 1800px; height: 1040px; transform-origin: 0 0; }
+  .fw svg { position: absolute; inset: 0; width: 1800px; height: 1040px; }
+  .pod { fill: var(--sheet); stroke: var(--rule); stroke-width: 1; }
+  .dot { stroke: var(--accent-fill); stroke-width: 2; stroke-opacity: 0; cursor: pointer; transition: fill 0.4s; }
+  .trail { fill: none; stroke: var(--accent-fill); stroke-width: 3; pointer-events: none; }
+  .podl { position: absolute; width: 240px; text-align: center; border: 0; padding: 0; font-size: 15px; color: var(--ink-2); }
+  .podl.bad { color: var(--rec); }
+  .fhead { position: absolute; left: 30px; top: 16px; font-size: 20px; font-weight: 700; }
+  .fscale { position: absolute; left: 30px; top: 960px; display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); }
+  .needs { position: absolute; left: 1420px; top: 70px; width: 350px; }
+  .needs .t { font-size: 15px; color: var(--muted); margin-bottom: 10px; }
+  .need { display: block; width: 100%; text-align: left; margin-bottom: 12px; padding: 12px 14px; background: var(--paper); border: 1px solid var(--rec); border-radius: 10px; font-size: 16px; }
+  .need .k { font-size: 12.5px; color: var(--rec); margin-bottom: 2px; }
+  .hand { position: absolute; left: 1420px; top: 870px; width: 350px; font-size: 14px; line-height: 1.6; color: var(--ink-2); }
+  .hand::before { content: "最後の引き継ぎ"; display: block; font-size: 12.5px; color: var(--muted); }
   #swarmbg { position: absolute; left: 0; top: 0; width: 2000px; height: 1120px; pointer-events: none; }
   .swarm { position: absolute; left: 1610px; top: 372px; width: 340px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 10px 12px; }
   .swarm .t { font-size: 12px; color: var(--muted); font-weight: 700; margin-bottom: 6px; display: flex; justify-content: space-between; }
@@ -198,7 +189,7 @@
     <div class="bero" id="bero"><div class="orb"><div class="eyes" id="eyes"><i></i><i></i></div></div>
       <div class="bubble hide" id="bub"><div class="nm">ベロ <span class="wave"><i></i><i></i><i></i><i></i></span></div><div id="txt"></div><div class="chips" id="chips"></div></div></div>
   </div>
-  <div class="fleet" id="fleet"><div class="fw" id="fw"><svg id="fsvg"></svg><div class="boss"><b>ベロ</b><div id="fstat" class="sm sub"></div></div><div class="hand" id="hand"><b>引き継ぎ書</b><div class="sm sub">まだありません</div></div><div class="hlog" id="hlog"></div></div></div>
+  <div class="fleet" id="fleet"><div class="fw" id="fw"><svg id="fsvg"></svg><div id="pods"></div><div class="fhead" id="fstat"></div><div class="needs" id="needs"></div><div class="hand" id="hand">まだありません</div><div class="fscale">試しに増やす <button data-scale="48">48 本</button><button data-scale="300">300 本</button><button data-scale="1000">1000 本</button></div></div></div>
   <aside class="brain" id="brain" aria-label="エージェントの頭の中"></aside>
   <div class="ledger" id="ledger"><div class="t">今日の台帳 · AI がしたこと / あなたが決めたこと</div></div>
 </div>
@@ -293,34 +284,43 @@ function sky() { bg.clearRect(0, 0, 2000, 1120); const ink = getComputedStyle(do
   while (arcs.length && arcs[0].life <= 0) arcs.shift(); requestAnimationFrame(sky); }
 if (!reduced) { setInterval(beat, 70); setInterval(() => { if (!paused) { arc(); arc(); } }, 110); sky(); } else { for (let i = 0; i < 40; i++) beat(); }
 
-/* every Claude Code session at once, and a session running out of room handing its work to a fresh one. A hand-off is a note that moves: what is left, what was read, what was decided */
-const CHIEFS = [['ナナ', '実装'], ['ソラ', '調査'], ['リン', '設計'], ['ジン', '検査'], ['ザク', '守り'], ['シュウ', '運用']];
-const ACTS = [['> ', 'npm test'], ['● ', 'Read src/api.mjs'], ['● ', 'Edit src/auth.mjs'], ['> ', 'git diff --stat'], ['  ', '128 passed'], ['● ', 'Grep "expires"'], ['● ', 'Write test/a.test.mjs'], ['  ', 'Thinking...'], ['> ', 'tsc --noEmit'], ['● ', 'Task: 調べて報告']];
+/* every session at once, without showing every session. A team is one group, a session is one dot, and only what needs a person becomes a card. The number of cards stays small however many sessions run */
+const TEAMS = [
+  { n: 'ナナ', job: '実装', share: 0.42, x: 700, y: 400, r: 290 }, { n: 'ソラ', job: '調査', share: 0.17, x: 250, y: 660, r: 170 },
+  { n: 'ジン', job: '検査', share: 0.17, x: 1150, y: 690, r: 165 }, { n: 'シュウ', job: '運用', share: 0.1, x: 1190, y: 240, r: 125 },
+  { n: 'リン', job: '設計', share: 0.08, x: 240, y: 230, r: 105 }, { n: 'ザク', job: '守り', share: 0.06, x: 640, y: 850, r: 90 },
+];
 const GOALS = ['期限判定を直す', 'API の型を揃える', '検索を速くする', 'ログを整理する', 'テストを足す', '設定を読み直す', '依存を調べる', '権限を見直す'];
-const COLS = 8, sessions = []; const fsvg = $('fsvg'); const svgEl = (n, a) => { const e = document.createElementNS('http://www.w3.org/2000/svg', n); for (const k in a) e.setAttribute(k, a[k]); return e; };
-let serial = 0; const tag = (r) => `${CHIEFS[r][0]}-${(++serial).toString(36)}`;
-CHIEFS.forEach(([name, job], r) => { const y = 16 + r * 208; const c = document.createElement('div'); c.className = 'chief'; c.style.top = y + 62 + 'px'; c.textContent = name; const s = document.createElement('small'); s.textContent = job; c.appendChild(s); $('fw').appendChild(c);
-  fsvg.appendChild(svgEl('path', { class: 'bus', d: `M324 90 C 342 90, 342 ${y + 95}, 360 ${y + 95}` })); fsvg.appendChild(svgEl('path', { class: 'bus', d: `M510 ${y + 95} L${540 + COLS * 234} ${y + 95}` }));
-  for (let i = 0; i < COLS; i++) { const e = document.createElement('div'); e.className = 'cli'; const x = 540 + i * 234; e.style.left = x + 'px'; e.style.top = y + 'px'; e.innerHTML = '<div class="h"><span class="n"></span><span class="st"></span></div><div class="o"></div><div class="m"><i></i></div>'; $('fw').appendChild(e);
-    const s = { e, r, x, y, name: '', ctx: 0, goal: '', state: 'idle', o: e.querySelector('.o'), n: e.querySelector('.n'), st: e.querySelector('.st'), bar: e.querySelector('.m i') }; sessions.push(s); e.onclick = () => { MIND.live = { model: 'Sonnet 5.5', effort: '標準', file: 'agents/' + r + '.md', body: CHIEFS[r][1] + 'を担当する。', rules: ['AGENTS.md'], n: s.name || '空き', role: CHIEFS[r][1] + ' · WSL2', used: Math.round(s.ctx), parts: [['指示と決まり', 6], ['読んだもの', Math.round(s.ctx * 0.5)], ['ツールの結果', Math.round(s.ctx * 0.4)]], told: s.goal || 'まだなし', now: '次の一手を選んでいる', read: ['引き継ぎ書'], blind: ['他のセッションの中身'] }; openBrain('live'); }; start(s, i % 7 === 6); } });
-function paint(s) { s.n.textContent = s.name || '空き'; s.st.textContent = s.state === 'idle' ? '' : Math.round(s.ctx) + '%'; s.bar.style.width = s.ctx + '%'; s.e.classList.toggle('idle', s.state === 'idle'); s.e.classList.toggle('gone', s.state === 'gone'); s.e.classList.toggle('hot', s.ctx > 80); }
-function start(s, idle) { s.state = idle ? 'idle' : 'work'; s.ctx = idle ? 0 : 8 + Math.random() * 70; s.name = idle ? '' : tag(s.r); s.goal = idle ? '' : GOALS[Math.floor(Math.random() * GOALS.length)]; s.o.innerHTML = ''; s.e.classList.remove('give', 'take'); paint(s); }
-function say2(s, mark, text) { const d = document.createElement('div'); if (mark === '> ') d.className = 'p'; d.textContent = mark + text; s.o.appendChild(d); while (s.o.children.length > 7) s.o.firstChild.remove(); }
-let handoffs = 0, busy = 0;
-async function handoff(a) { const free = sessions.filter((s) => s.state === 'idle'); if (!free.length) return; const b = free[Math.floor(Math.random() * free.length)]; a.state = 'give'; b.state = 'take'; busy += 1; handoffs += 1;
-  const left = 2 + Math.floor(Math.random() * 4), read = 8 + Math.floor(Math.random() * 30), dec = 1 + Math.floor(Math.random() * 3), to = tag(b.r); a.e.classList.add('give'); say2(a, '● ', '引き継ぎ書を書いている');
-  $('hand').innerHTML = '<b>引き継ぎ書</b>'; const add = (x) => { const d = document.createElement('div'); d.textContent = x; $('hand').appendChild(d); return d; }; add(`${a.name} → ${to}`); add(`理由: 頭の中が ${Math.round(a.ctx)}% になった`); add(`目的: ${a.goal}`); const ul = document.createElement('ul'); [`残りの作業 ${left} 件`, `読んだファイル ${read} 個`, `決めたこと ${dec} 件`, '未検証のまま渡す'].forEach((v) => { const l = document.createElement('li'); l.textContent = v; ul.appendChild(l); }); $('hand').appendChild(ul);
-  const ax = a.x + 113, ay = a.y + 93, bx = b.x + 113, by = b.y + 93, mx = (ax + bx) / 2, my = Math.min(ay, by) - 90; const path = svgEl('path', { class: 'trail', d: `M${ax} ${ay} Q${mx} ${my} ${bx} ${by}` }); fsvg.appendChild(path);
-  const L = path.getTotalLength(); path.style.strokeDasharray = L; path.style.strokeDashoffset = L; path.style.transition = 'stroke-dashoffset 1.3s cubic-bezier(0.22, 1, 0.36, 1)';
-  const p = document.createElement('div'); p.className = 'packet'; p.textContent = `引き継ぎ · 残り ${left} 件`; p.style.transform = `translate(${ax - 70}px, ${ay - 14}px)`; $('fw').appendChild(p); await sleep(40); path.style.strokeDashoffset = 0; p.style.transform = `translate(${bx - 70}px, ${by - 14}px)`; await sleep(1350);
-  p.remove(); path.remove(); b.name = to; b.goal = a.goal; b.ctx = 6; b.state = 'work'; b.e.classList.add('take'); b.o.innerHTML = ''; say2(b, '● ', `${a.name} の引き継ぎを読んだ`); paint(b); a.state = 'gone'; a.e.classList.remove('give'); say2(a, '  ', '引き継ぎ済み。終了'); paint(a);
-  const line = document.createElement('div'); line.textContent = `${a.name} → ${to}  ${a.goal}`; $('hlog').prepend(line); while ($('hlog').children.length > 26) $('hlog').lastChild.remove(); busy -= 1; const done = a; const got = b;
-  setTimeout(() => got.e.classList.remove('take'), 1400); setTimeout(() => start(done, true), 2500); }
-function fleetBeat() { if (paused || $('fleet').hidden) return; for (let k = 0; k < 14; k++) { const s = sessions[Math.floor(Math.random() * sessions.length)]; if (s.state !== 'work') continue; const [m, x] = ACTS[Math.floor(Math.random() * ACTS.length)]; say2(s, m, x); s.ctx = Math.min(100, s.ctx + 0.6 + Math.random() * 2.4); paint(s); }
-  const work = sessions.filter((s) => s.state === 'work').length; $('fstat').textContent = `Claude Code ${work} 本が稼働中 · 引き継ぎ ${handoffs} 回`;
-  if (busy < 3) { const hot = sessions.find((s) => s.state === 'work' && s.ctx > 88); if (hot) handoff(hot); } }
-function fitFleet() { const vp = $('vp').getBoundingClientRect(); const z = Math.min(vp.width / 2420, vp.height / 1270); $('fw').style.transform = `translate(${(vp.width - 2420 * z) / 2}px, ${(vp.height - 1270 * z) / 2}px) scale(${z})`; }
-fitFleet(); addEventListener('resize', fitFleet); setInterval(fleetBeat, 120);
+const NEEDS = [['取り消せない', 'main へ merge してよい?'], ['人の番', '消してよいファイルを決めて'], ['止まった', '4 分動いていない']];
+const SVGN = 'http://www.w3.org/2000/svg'; const svgEl = (n, a) => { const e = document.createElementNS(SVGN, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+let sessions = [], cards = [], handoffs = 0, moving = 0, serial = 0, openTeam = null; const fsvg = $('fsvg');
+function buildFleet(total) { fsvg.replaceChildren(); $('pods').replaceChildren(); sessions = []; cards = []; const dot = total > 150 ? 4 : 9;
+  fsvg.appendChild(svgEl('g', { id: 'links' }));
+  TEAMS.forEach((team, ti) => { const count = Math.max(2, Math.round(total * team.share)); fsvg.appendChild(svgEl('circle', { class: 'pod', cx: team.x, cy: team.y, r: team.r }));
+    const lb = document.createElement('button'); lb.type = 'button'; lb.className = 'podl'; lb.style.left = team.x - 120 + 'px'; lb.style.top = team.y - team.r - 30 + 'px'; lb.onclick = () => showTeam(ti); $('pods').appendChild(lb); team.label = lb;
+    for (let i = 0; i < count; i++) { const a = i * 2.39996, d = (team.r - 18) * Math.sqrt((i + 0.5) / count), x = team.x + Math.cos(a) * d, y = team.y + Math.sin(a) * d;
+      const c = svgEl('circle', { class: 'dot', cx: x, cy: y, r: dot }); const s = { c, ti, x, y, name: `${team.n}-${(++serial).toString(36)}`, goal: GOALS[serial % GOALS.length], ctx: 5 + Math.random() * 75, state: 'work', last: '' };
+      c.addEventListener('click', () => look2(s)); fsvg.appendChild(c); sessions.push(s); } });
+  for (let k = 0; k < 2; k++) raise(); drawFleet(); }
+function colour(s) { return s.state === 'need' ? 'var(--rec)' : s.state === 'stuck' ? 'var(--stuck)' : s.state === 'hand' ? 'var(--accent-fill)' : s.ctx > 80 ? 'var(--work)' : 'var(--rule-strong)'; }
+function drawFleet() { for (const s of sessions) { s.c.style.fill = colour(s); s.c.style.opacity = s.state === 'gone' ? 0.25 : 1; }
+  TEAMS.forEach((team, ti) => { const mine = sessions.filter((s) => s.ti === ti); const bad = mine.filter((s) => s.state === 'need' || s.state === 'stuck').length; team.label.textContent = `${team.n} · ${team.job} ${mine.length}${bad ? ` · 要確認 ${bad}` : ''}`; team.label.classList.toggle('bad', bad > 0); });
+  const needs = cards.length; $('fstat').textContent = `Claude Code ${sessions.length} 本 · 順調 ${sessions.length - needs} · あなたの番 ${needs}`;
+  const box = $('needs'); box.replaceChildren(); const title = document.createElement('div'); title.className = 't'; title.textContent = needs ? '今見るもの' : '今見るものはありません'; box.appendChild(title);
+  cards.slice(0, 3).forEach((c) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'need'; const k = document.createElement('div'); k.className = 'k'; k.textContent = `${c.kind} · ${c.s.name}`; const m = document.createElement('div'); m.textContent = c.text; b.append(k, m); b.onclick = () => look2(c.s); box.appendChild(b); });
+  if (needs > 3) { const more = document.createElement('div'); more.className = 'sm sub'; more.textContent = `他 ${needs - 3} 件`; box.appendChild(more); } }
+function raise() { const s = sessions.filter((x) => x.state === 'work')[Math.floor(Math.random() * sessions.length * 0.5)]; if (!s) return; const [kind, text] = NEEDS[Math.floor(Math.random() * NEEDS.length)]; s.state = kind === '止まった' ? 'stuck' : 'need'; cards.push({ s, kind, text }); setTimeout(() => { cards = cards.filter((c) => c.s !== s); if (s.state !== 'gone') s.state = 'work'; drawFleet(); }, 9000 + Math.random() * 9000); }
+function look2(s) { MIND.live = { model: 'Sonnet 5.5', effort: '標準', file: `agents/${TEAMS[s.ti].n}.md`, body: `${TEAMS[s.ti].job}を担当する。`, rules: ['AGENTS.md'], n: s.name, role: `${TEAMS[s.ti].job} · WSL2`, used: Math.round(s.ctx), parts: [['指示と決まり', 6], ['読んだもの', Math.round(s.ctx * 0.5)], ['ツールの結果', Math.round(s.ctx * 0.4)]], told: s.goal, now: '次の一手を選んでいる', read: ['引き継ぎ書'], blind: ['他のセッションの中身'] }; openBrain('live'); }
+function showTeam(ti) { const team = TEAMS[ti]; const mine = sessions.filter((s) => s.ti === ti).sort((a, b) => b.ctx - a.ctx).slice(0, 10); const b = $('brain'); b.replaceChildren(); const h = document.createElement('h3'); h.textContent = `${team.n} のチーム`; const x = document.createElement('button'); x.textContent = '閉じる'; x.onclick = () => b.classList.remove('in'); h.appendChild(x); b.appendChild(h);
+  const note = document.createElement('div'); note.className = 'lb'; note.textContent = '頭の中が埋まっている順に 10 本'; b.appendChild(note); mine.forEach((s) => { const r = document.createElement('button'); r.type = 'button'; r.className = 'who'; const n = document.createElement('div'); n.textContent = `${s.name} · ${Math.round(s.ctx)}%`; const g = document.createElement('div'); g.className = 'ln'; g.textContent = s.goal; r.append(n, g); r.onclick = () => look2(s); b.appendChild(r); }); b.classList.add('in'); }
+async function handoff(a) { const pool = sessions.filter((s) => s.ti === a.ti && s !== a && s.state === 'work' && s.ctx < 30); const b = pool[Math.floor(Math.random() * pool.length)]; if (!b) { a.ctx = 20; return; } a.state = 'hand'; moving += 1; handoffs += 1; drawFleet();
+  const left = 2 + Math.floor(Math.random() * 4), read = 8 + Math.floor(Math.random() * 30); const line = svgEl('path', { class: 'trail', d: `M${a.x} ${a.y} Q${(a.x + b.x) / 2} ${Math.min(a.y, b.y) - 60} ${b.x} ${b.y}` }); $('links').appendChild(line); const L = line.getTotalLength(); line.style.strokeDasharray = L; line.style.strokeDashoffset = L; line.style.transition = 'stroke-dashoffset 1.1s ease-out';
+  $('hand').textContent = `${a.name} → ${b.name} · ${a.goal} · 残り ${left} 件 · 読んだ ${read} 個 · 未検証のまま`; await sleep(30); line.style.strokeDashoffset = 0; await sleep(1500); line.remove(); b.goal = a.goal; a.state = 'gone'; moving -= 1; drawFleet(); setTimeout(() => { a.state = 'work'; a.ctx = 3; a.name = `${TEAMS[a.ti].n}-${(++serial).toString(36)}`; drawFleet(); }, 2500); }
+function fleetBeat() { if (paused || $('fleet').hidden) return; const n = Math.ceil(sessions.length / 6); for (let k = 0; k < n; k++) { const s = sessions[Math.floor(Math.random() * sessions.length)]; if (s.state !== 'work') continue; s.ctx = Math.min(100, s.ctx + 0.8 + Math.random() * 2.2); s.c.animate([{ strokeOpacity: 1 }, { strokeOpacity: 0 }], { duration: 300 }); }
+  if (moving < 1) { const hot = sessions.find((s) => s.state === 'work' && s.ctx > 90); if (hot) handoff(hot); } if (cards.length < 2 && Math.random() < 0.03) raise(); drawFleet(); }
+function fitFleet() { const vp = $('vp').getBoundingClientRect(); const z = Math.min(vp.width / 1800, vp.height / 1040); $('fw').style.transform = `translate(${(vp.width - 1800 * z) / 2}px, ${(vp.height - 1040 * z) / 2}px) scale(${z})`; }
+buildFleet(48); fitFleet(); addEventListener('resize', fitFleet); setInterval(fleetBeat, 220);
+document.querySelectorAll('[data-scale]').forEach((b) => { b.onclick = () => buildFleet(Number(b.dataset.scale)); });
 $('mode').onclick = () => { const f = $('fleet'); f.hidden = !f.hidden; $('mode').textContent = f.hidden ? '全セッションを見る' : 'カメラを見る'; };
 
 /* the hands keep working on their own: smooth cursors */
