@@ -270,6 +270,8 @@ The docs and the approval window must say these plainly.
 | R8 | **Routes that do not pass through the job's filter.** A crash: WSL pipes the dump to a root helper that sends it to Windows over vsock, with content the job controls. Measured: a crash of a plain job added a file to `%TEMP%\wsl-crashes` | Closed for this route: the launcher sets the core limit to 1, and seccomp refuses any change to it, up or down. Measured with both attacked. Other kernel-side helpers are listed under "Phase 1 results"; whether a job can trigger `modprobe` was not tested | The limit, the filter, and review |
 | R7 | The disk: a VHD can grow to the default limit on the owner's C: | Fills the drive | `put` and `get` limits, a disk quota to be measured (G6) |
 
+- **Deleting a tree the owner's account filled (installer, lab scripts).** `Remove-AdminOnlyTree` re-checks for a link after it takes a folder's ACL, but that does not close a handle some process opened earlier, and the owner's agents run as the owner. Stop them (and the bridge) before uninstall.
+
 ## Gates: all must pass before any real token is used
 
 | # | Gate | How |
