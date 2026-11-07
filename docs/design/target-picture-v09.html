@@ -26,7 +26,7 @@
   .brand { font-weight: 700; font-size: 18px; letter-spacing: 0.04em; }
   .sub { color: var(--muted); } .sm { font-size: 13px; } .grow { flex: 1; }
   .vp { position: relative; flex: 1; overflow: hidden; }
-  .world { position: absolute; left: 0; top: 0; width: 1700px; height: 1120px; transform-origin: 0 0; transition: transform 1.6s var(--ease);
+  .world { position: absolute; left: 0; top: 0; width: 2000px; height: 1120px; transform-origin: 0 0; transition: transform 1.6s var(--ease);
     background-image: radial-gradient(var(--dot) 1.2px, transparent 1.4px); background-size: 22px 22px; }
   .cam { position: absolute; width: 380px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; font-size: 13px; transition: box-shadow 0.6s var(--ease), transform 0.6s var(--ease); }
   .cam .hd { display: flex; justify-content: space-between; padding: 6px 10px; background: var(--paper-2); font-weight: 700; }
@@ -44,7 +44,7 @@
   .st-work { color: var(--work); } .st-wait { color: var(--wait); } .st-stuck { color: var(--stuck); } .st-done { color: var(--done); }
   .rec { color: var(--rec); font-family: var(--mono); font-size: 11.5px; }
 
-  .wires { position: absolute; inset: 0; width: 1700px; height: 1000px; pointer-events: none; overflow: visible; }
+  .wires { position: absolute; inset: 0; width: 2000px; height: 1000px; pointer-events: none; overflow: visible; }
   .wires path { fill: none; stroke: var(--me); stroke-width: 2; stroke-linecap: round; transition: stroke-dashoffset 0.9s var(--ease), opacity 0.6s; }
 
   /* Bero */
@@ -103,6 +103,16 @@
   .card.gate { border-color: var(--rec); }
   .card.gate b { color: var(--rec); }
   .cam { cursor: pointer; }
+  .roster { position: absolute; left: 1610px; top: 40px; width: 340px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+  .roster .t { font-size: 12px; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
+  .who { display: block; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--rule); border-radius: 0; padding: 7px 2px; }
+  .who:hover { background: var(--paper-2); }
+  .who .r1 { display: flex; justify-content: space-between; gap: 8px; }
+  .who .nm2 { font-weight: 700; }
+  .who .rm { font-size: 11px; color: var(--muted); }
+  .who .ln { font-size: 12px; margin-top: 1px; }
+  .who .mt { height: 4px; margin-top: 4px; border-radius: 2px; background: var(--desk); overflow: hidden; }
+  .who .mt i { display: block; height: 100%; background: var(--accent-fill); }
   .pv { position: absolute; width: 330px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; font-size: 13px; transition: border-color 0.5s; }
   .pv .bar { display: flex; justify-content: space-between; gap: 8px; padding: 5px 10px; background: var(--paper-2); font-size: 12px; }
   .pv .url { font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 3px 10px; border-bottom: 1px solid var(--rule); }
@@ -147,6 +157,7 @@
 
     <div class="sticky fig" id="s4" style="left:880px;top:700px;width:330px"><b>ベロの図 · 仕事の渡し方</b><div id="g5"></div><div class="src">09:21 ベロ → ナナ: 期限判定を直して / 09:24 ナナ: 直したと申告 / 09:25 ナナ → ジン: 別の部屋で試して</div></div>
     <div class="card gate" id="gate" style="left:1240px;top:700px;width:330px"><div class="sm sub">関所 · あなたが決めること</div><b>取り消せません: main へ merge してよい?</b><div class="sm sub" style="margin:6px 0 8px">ジンが検証済み · テスト 128 件 · 変更 2 ファイル</div><div style="display:flex;gap:8px"><button class="primary" id="go2">承認 (Windows Hello)</button><button>やめる</button></div></div>
+    <div class="roster" id="roster"><div class="t">全員の状況 · 押すと頭の中が見える</div></div>
     <div class="zapnote" id="zn"></div>
     <div class="bero" id="bero"><div class="orb"><div class="eyes" id="eyes"><i></i><i></i></div></div>
       <div class="bubble hide" id="bub"><div class="nm">ベロ <span class="wave"><i></i><i></i><i></i><i></i></span></div><div id="txt"></div><div class="chips" id="chips"></div></div></div>
@@ -164,7 +175,7 @@ async function wait(ms) { const end = Date.now() + ms; while (Date.now() < end |
 /* camera: pan/zoom the world so a point sits in view */
 function look(x, y, z = 1) { const vp = $('vp').getBoundingClientRect(); world.style.transform = `translate(${vp.width / 2 - x * z}px, ${vp.height / 2 - y * z}px) scale(${z})`; }
 /* the whole canvas fills the window, whatever its size */
-function overview() { const vp = $('vp').getBoundingClientRect(); look(805, 500, Math.min(vp.width / 1620, vp.height / 1010)); }
+function overview() { const vp = $('vp').getBoundingClientRect(); look(990, 500, Math.min(vp.width / 1980, vp.height / 1010)); }
 function center(id) { const e = $(id); return [e.offsetLeft + e.offsetWidth / 2, e.offsetTop + e.offsetHeight / 2]; }
 function moveBero(x, y) { bero.style.transform = `translate(${x}px, ${y}px)`; }
 function eyes(dx, dy) { $('eyes').style.transform = `translate(${dx}px, ${dy}px)`; }
@@ -213,6 +224,12 @@ function openBrain(id) { const m = MIND[id]; const b = $('brain'); b.replaceChil
   add('div', 'note', '本人の説明です。実際の思考そのものとは限りません。読み取り専用で、ここから書き換えることはできません。');
   b.classList.add('in'); }
 Object.keys(MIND).forEach((id) => { $(id).onclick = () => openBrain(id); });
+/* the roster is the always-there view: it reads each camera's own state line, so it cannot say anything the camera does not */
+const rows = Object.entries(MIND).map(([id, m]) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'who'; b.onclick = () => openBrain(id);
+  const r1 = document.createElement('div'); r1.className = 'r1'; const nm = document.createElement('span'); nm.className = 'nm2'; nm.textContent = m.n; const rm = document.createElement('span'); rm.className = 'rm'; rm.textContent = `${m.role.split(' · ').pop()} · ${m.model}`; r1.append(nm, rm);
+  const ln = document.createElement('div'); ln.className = 'ln'; const mt = document.createElement('div'); mt.className = 'mt'; const bar = document.createElement('i'); bar.style.width = m.used + '%'; mt.appendChild(bar);
+  b.append(r1, ln, mt); $('roster').appendChild(b); return [id, ln]; });
+setInterval(() => { for (const [id, ln] of rows) { const src = $(id).querySelector('.ft'); ln.innerHTML = ''; ln.append(...[...src.cloneNode(true).childNodes]); } }, 500);
 
 /* a preview belongs to one session: it shows what that agent is building, and carries the same claim or verified state */
 function preview(kind) { const s = { broken: ['st-work', '作業前', 'セッションが切れました', 'oklch(50% 0.18 25)', 'var(--rule)'], fixed: ['st-stuck', '申告のみ', 'ログインできました', 'oklch(45% 0.12 142)', 'var(--stuck)'], verified: ['st-done', '検証済み', 'ログインできました', 'oklch(45% 0.12 142)', 'var(--done)'] }[kind];
