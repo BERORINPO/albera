@@ -25,7 +25,7 @@
   .top { display: flex; align-items: center; gap: 14px; padding: 0 18px; min-height: 50px; background: var(--paper); border-bottom: 1px solid var(--rule); flex: none; z-index: 10; }
   .brand { font-weight: 700; font-size: 18px; letter-spacing: 0.04em; }
   .sub { color: var(--muted); } .sm { font-size: 13px; } .grow { flex: 1; }
-  .vp { position: relative; flex: 1; overflow: hidden; }
+  .vp { position: relative; flex: 1; overflow: hidden; cursor: grab; touch-action: none; }
   .world { position: absolute; left: 0; top: 0; width: 2000px; height: 1120px; transform-origin: 0 0; transition: transform 1.6s var(--ease);
     background-image: radial-gradient(var(--dot) 1.2px, transparent 1.4px); background-size: 22px 22px; }
   .cam { position: absolute; width: 380px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; font-size: 13px; transition: box-shadow 0.6s var(--ease), transform 0.6s var(--ease); }
@@ -34,7 +34,7 @@
   .cam .win { position: absolute; left: 16px; top: 14px; right: 16px; bottom: 20px; background: oklch(92% 0.003 75); border-radius: 3px; }
   .cam .win::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 12px; background: oklch(82% 0.01 250); border-radius: 3px 3px 0 0; }
   .cam .ft { padding: 0 10px 8px; color: var(--ink-2); font-family: var(--mono); font-size: 12px; }
-  .cam.focus { box-shadow: 0 0 0 3px var(--me), 0 0 40px 4px color-mix(in oklch, var(--me) 45%, transparent); transform: scale(1.03); }
+  .cam.focus { box-shadow: 0 0 0 2px var(--me); }
   .cam.dim .scr { filter: grayscale(0.7) brightness(0.7); }
   .cur { position: absolute; width: 12px; height: 12px; margin: -6px; border-radius: 50%; background: var(--rec); box-shadow: 0 0 0 2px #fff; z-index: 3; }
   .rip { position: absolute; width: 12px; height: 12px; margin: -6px; border-radius: 50%; border: 2px solid var(--rec); animation: rip 0.7s ease-out forwards; z-index: 2; pointer-events: none; }
@@ -146,7 +146,7 @@
   <span class="brand">ALBERA</span><span class="sm sub" id="rate">ベロ + 47 人</span>
   <span class="grow"></span>
   <span class="sm sub" id="phase">ベロが全カメラを見回っています</span>
-  <button id="pause">一時停止</button>
+  <button id="whole">全体</button><button id="chase">ベロを追う</button><button id="pause">一時停止</button>
 </header>
 <div class="vp" id="vp">
   <div class="world" id="world">
@@ -183,9 +183,13 @@ let paused = false; $('pause').onclick = () => { paused = !paused; $('pause').te
 async function wait(ms) { const end = Date.now() + ms; while (Date.now() < end || paused) await sleep(50); }
 
 /* camera: pan/zoom the world so a point sits in view */
-function look(x, y, z = 1) { const vp = $('vp').getBoundingClientRect(); world.style.transform = `translate(${vp.width / 2 - x * z}px, ${vp.height / 2 - y * z}px) scale(${z})`; }
+/* the view is the person's: it stays on the whole canvas unless they drag, wheel, or choose to follow Bero */
+let follow = false, manual = false; const view = { x: 0, y: 0, z: 1 };
+function setView() { world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.z})`; }
+function aim(x, y, z) { const vp = $('vp').getBoundingClientRect(); view.x = vp.width / 2 - x * z; view.y = vp.height / 2 - y * z; view.z = z; setView(); }
+function look(x, y, z = 1) { if (follow) aim(x, y, z); }
 /* the whole canvas fills the window, whatever its size */
-function overview() { const vp = $('vp').getBoundingClientRect(); look(990, 500, Math.min(vp.width / 1980, vp.height / 1010)); }
+function overview(force = false) { if ((manual || follow) && !force) return; const vp = $('vp').getBoundingClientRect(); aim(990, 500, Math.min(vp.width / 1980, vp.height / 1010)); }
 function center(id) { const e = $(id); return [e.offsetLeft + e.offsetWidth / 2, e.offsetTop + e.offsetHeight / 2]; }
 function moveBero(x, y) { bero.style.transform = `translate(${x}px, ${y}px)`; }
 function eyes(dx, dy) { $('eyes').style.transform = `translate(${dx}px, ${dy}px)`; }
@@ -338,7 +342,14 @@ async function round() {
   $('phase').textContent = 'ひと回り終了 · 全体を見渡す'; overview(); moveBero(1190, 330); await wait(4500);
 }
 (async () => { await sleep(300); for (;;) await round(); })();
-addEventListener('resize', overview);
+addEventListener('resize', () => overview());
+{ const vp = $('vp'); let drag = null;
+  vp.addEventListener('pointerdown', (e) => { if (e.target.closest('.cam, button, .brain, .ledger, .card')) return; drag = { x: e.clientX - view.x, y: e.clientY - view.y }; manual = true; world.style.transition = 'none'; vp.setPointerCapture(e.pointerId); });
+  vp.addEventListener('pointermove', (e) => { if (!drag) return; view.x = e.clientX - drag.x; view.y = e.clientY - drag.y; setView(); });
+  vp.addEventListener('pointerup', () => { drag = null; world.style.transition = ''; });
+  vp.addEventListener('wheel', (e) => { e.preventDefault(); const r = vp.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top, k = Math.exp(-e.deltaY * 0.0012), z = Math.min(2.5, Math.max(0.25, view.z * k)); view.x = px - (px - view.x) * (z / view.z); view.y = py - (py - view.y) * (z / view.z); view.z = z; manual = true; world.style.transition = 'none'; setView(); }, { passive: false });
+  $('whole').onclick = () => { manual = false; follow = false; $('chase').textContent = 'ベロを追う'; world.style.transition = ''; overview(true); };
+  $('chase').onclick = () => { follow = !follow; manual = false; $('chase').textContent = follow ? '追うのをやめる' : 'ベロを追う'; if (!follow) overview(true); }; }
 </script>
 </body>
 </html>
