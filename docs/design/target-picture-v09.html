@@ -103,6 +103,32 @@
   .card.gate { border-color: var(--rec); }
   .card.gate b { color: var(--rec); }
   .cam { cursor: pointer; }
+  .fleet { position: absolute; inset: 0; z-index: 11; background: var(--desk); overflow: hidden; }
+  .fleet[hidden] { display: none; }
+  .fw { position: absolute; left: 0; top: 0; width: 2420px; height: 1270px; transform-origin: 0 0; background-image: radial-gradient(var(--dot) 1.2px, transparent 1.4px); background-size: 22px 22px; }
+  .fw svg { position: absolute; inset: 0; width: 2420px; height: 1270px; pointer-events: none; }
+  .fw .bus { fill: none; stroke: var(--rule); stroke-width: 1.2; }
+  .fw .trail { fill: none; stroke: var(--accent-fill); stroke-width: 3; }
+  .boss, .chief, .cli { position: absolute; border-radius: 8px; background: var(--sheet); border: 1px solid var(--rule); }
+  .boss { left: 24px; top: 40px; width: 300px; padding: 12px 14px; border-color: var(--me); }
+  .boss b { color: var(--me); font-size: 18px; }
+  .hand { position: absolute; left: 24px; top: 250px; width: 300px; padding: 12px 14px; border: 1px solid var(--accent-fill); border-radius: 8px; background: var(--paper); font-size: 14px; line-height: 1.6; }
+  .hand b { color: var(--accent-fill); }
+  .hand ul { margin: 4px 0 0; padding-left: 18px; }
+  .hlog { position: absolute; left: 24px; top: 640px; width: 300px; font-family: var(--mono); font-size: 12.5px; line-height: 1.7; color: var(--muted); height: 590px; overflow: hidden; }
+  .chief { left: 360px; width: 150px; height: 66px; padding: 8px 10px; font-size: 15px; font-weight: 700; }
+  .chief small { display: block; font-weight: 400; font-size: 12px; color: var(--muted); }
+  .cli { width: 226px; height: 186px; padding: 6px 8px; overflow: hidden; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; transition: border-color 0.4s, opacity 0.5s; cursor: pointer; }
+  .cli .h { display: flex; justify-content: space-between; color: var(--ink); font-weight: 700; }
+  .cli .h span:last-child { font-weight: 400; color: var(--muted); }
+  .cli .o { height: 128px; overflow: hidden; color: var(--ink-2); white-space: nowrap; }
+  .cli .o .p { color: var(--accent-fill); }
+  .cli .m { height: 5px; border-radius: 3px; background: var(--desk); overflow: hidden; margin-top: 4px; }
+  .cli .m i { display: block; height: 100%; background: var(--work); }
+  .cli.hot .m i { background: var(--rec); }
+  .cli.idle { opacity: 0.4; } .cli.gone { opacity: 0.3; border-style: dashed; }
+  .cli.give { border-color: var(--rec); } .cli.take { border-color: var(--done); box-shadow: 0 0 0 2px var(--done); }
+  .packet { position: absolute; left: 0; top: 0; z-index: 3; padding: 4px 10px; border-radius: 8px; background: var(--accent-fill); color: var(--on-accent); font-size: 14px; font-weight: 700; white-space: nowrap; transition: transform 1.3s var(--ease); pointer-events: none; }
   #swarmbg { position: absolute; left: 0; top: 0; width: 2000px; height: 1120px; pointer-events: none; }
   .swarm { position: absolute; left: 1610px; top: 372px; width: 340px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 10px 12px; }
   .swarm .t { font-size: 12px; color: var(--muted); font-weight: 700; margin-bottom: 6px; display: flex; justify-content: space-between; }
@@ -146,7 +172,7 @@
   <span class="brand">ALBERA</span><span class="sm sub" id="rate">ベロ + 47 人</span>
   <span class="grow"></span>
   <span class="sm sub" id="phase">ベロが全カメラを見回っています</span>
-  <button id="whole">全体</button><button id="chase">ベロを追う</button><button id="pause">一時停止</button>
+  <button id="mode">カメラを見る</button><button id="whole">全体</button><button id="chase">ベロを追う</button><button id="pause">一時停止</button>
 </header>
 <div class="vp" id="vp">
   <div class="world" id="world">
@@ -172,6 +198,7 @@
     <div class="bero" id="bero"><div class="orb"><div class="eyes" id="eyes"><i></i><i></i></div></div>
       <div class="bubble hide" id="bub"><div class="nm">ベロ <span class="wave"><i></i><i></i><i></i><i></i></span></div><div id="txt"></div><div class="chips" id="chips"></div></div></div>
   </div>
+  <div class="fleet" id="fleet"><div class="fw" id="fw"><svg id="fsvg"></svg><div class="boss"><b>ベロ</b><div id="fstat" class="sm sub"></div></div><div class="hand" id="hand"><b>引き継ぎ書</b><div class="sm sub">まだありません</div></div><div class="hlog" id="hlog"></div></div></div>
   <aside class="brain" id="brain" aria-label="エージェントの頭の中"></aside>
   <div class="ledger" id="ledger"><div class="t">今日の台帳 · AI がしたこと / あなたが決めたこと</div></div>
 </div>
@@ -265,6 +292,36 @@ function sky() { bg.clearRect(0, 0, 2000, 1120); const ink = getComputedStyle(do
   for (const a of arcs) { bg.globalAlpha = a.life * 0.35; bg.strokeStyle = ink; bg.lineWidth = 1.2; bg.beginPath(); a.p.forEach(([x, y], i) => (i ? bg.lineTo(x, y) : bg.moveTo(x, y))); bg.stroke(); a.life -= 0.07; }
   while (arcs.length && arcs[0].life <= 0) arcs.shift(); requestAnimationFrame(sky); }
 if (!reduced) { setInterval(beat, 70); setInterval(() => { if (!paused) { arc(); arc(); } }, 110); sky(); } else { for (let i = 0; i < 40; i++) beat(); }
+
+/* every Claude Code session at once, and a session running out of room handing its work to a fresh one. A hand-off is a note that moves: what is left, what was read, what was decided */
+const CHIEFS = [['ナナ', '実装'], ['ソラ', '調査'], ['リン', '設計'], ['ジン', '検査'], ['ザク', '守り'], ['シュウ', '運用']];
+const ACTS = [['> ', 'npm test'], ['● ', 'Read src/api.mjs'], ['● ', 'Edit src/auth.mjs'], ['> ', 'git diff --stat'], ['  ', '128 passed'], ['● ', 'Grep "expires"'], ['● ', 'Write test/a.test.mjs'], ['  ', 'Thinking...'], ['> ', 'tsc --noEmit'], ['● ', 'Task: 調べて報告']];
+const GOALS = ['期限判定を直す', 'API の型を揃える', '検索を速くする', 'ログを整理する', 'テストを足す', '設定を読み直す', '依存を調べる', '権限を見直す'];
+const COLS = 8, sessions = []; const fsvg = $('fsvg'); const svgEl = (n, a) => { const e = document.createElementNS('http://www.w3.org/2000/svg', n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+let serial = 0; const tag = (r) => `${CHIEFS[r][0]}-${(++serial).toString(36)}`;
+CHIEFS.forEach(([name, job], r) => { const y = 16 + r * 208; const c = document.createElement('div'); c.className = 'chief'; c.style.top = y + 62 + 'px'; c.textContent = name; const s = document.createElement('small'); s.textContent = job; c.appendChild(s); $('fw').appendChild(c);
+  fsvg.appendChild(svgEl('path', { class: 'bus', d: `M324 90 C 342 90, 342 ${y + 95}, 360 ${y + 95}` })); fsvg.appendChild(svgEl('path', { class: 'bus', d: `M510 ${y + 95} L${540 + COLS * 234} ${y + 95}` }));
+  for (let i = 0; i < COLS; i++) { const e = document.createElement('div'); e.className = 'cli'; const x = 540 + i * 234; e.style.left = x + 'px'; e.style.top = y + 'px'; e.innerHTML = '<div class="h"><span class="n"></span><span class="st"></span></div><div class="o"></div><div class="m"><i></i></div>'; $('fw').appendChild(e);
+    const s = { e, r, x, y, name: '', ctx: 0, goal: '', state: 'idle', o: e.querySelector('.o'), n: e.querySelector('.n'), st: e.querySelector('.st'), bar: e.querySelector('.m i') }; sessions.push(s); e.onclick = () => { MIND.live = { model: 'Sonnet 5.5', effort: '標準', file: 'agents/' + r + '.md', body: CHIEFS[r][1] + 'を担当する。', rules: ['AGENTS.md'], n: s.name || '空き', role: CHIEFS[r][1] + ' · WSL2', used: Math.round(s.ctx), parts: [['指示と決まり', 6], ['読んだもの', Math.round(s.ctx * 0.5)], ['ツールの結果', Math.round(s.ctx * 0.4)]], told: s.goal || 'まだなし', now: '次の一手を選んでいる', read: ['引き継ぎ書'], blind: ['他のセッションの中身'] }; openBrain('live'); }; start(s, i % 7 === 6); } });
+function paint(s) { s.n.textContent = s.name || '空き'; s.st.textContent = s.state === 'idle' ? '' : Math.round(s.ctx) + '%'; s.bar.style.width = s.ctx + '%'; s.e.classList.toggle('idle', s.state === 'idle'); s.e.classList.toggle('gone', s.state === 'gone'); s.e.classList.toggle('hot', s.ctx > 80); }
+function start(s, idle) { s.state = idle ? 'idle' : 'work'; s.ctx = idle ? 0 : 8 + Math.random() * 70; s.name = idle ? '' : tag(s.r); s.goal = idle ? '' : GOALS[Math.floor(Math.random() * GOALS.length)]; s.o.innerHTML = ''; s.e.classList.remove('give', 'take'); paint(s); }
+function say2(s, mark, text) { const d = document.createElement('div'); if (mark === '> ') d.className = 'p'; d.textContent = mark + text; s.o.appendChild(d); while (s.o.children.length > 7) s.o.firstChild.remove(); }
+let handoffs = 0, busy = 0;
+async function handoff(a) { const free = sessions.filter((s) => s.state === 'idle'); if (!free.length) return; const b = free[Math.floor(Math.random() * free.length)]; a.state = 'give'; b.state = 'take'; busy += 1; handoffs += 1;
+  const left = 2 + Math.floor(Math.random() * 4), read = 8 + Math.floor(Math.random() * 30), dec = 1 + Math.floor(Math.random() * 3), to = tag(b.r); a.e.classList.add('give'); say2(a, '● ', '引き継ぎ書を書いている');
+  $('hand').innerHTML = '<b>引き継ぎ書</b>'; const add = (x) => { const d = document.createElement('div'); d.textContent = x; $('hand').appendChild(d); return d; }; add(`${a.name} → ${to}`); add(`理由: 頭の中が ${Math.round(a.ctx)}% になった`); add(`目的: ${a.goal}`); const ul = document.createElement('ul'); [`残りの作業 ${left} 件`, `読んだファイル ${read} 個`, `決めたこと ${dec} 件`, '未検証のまま渡す'].forEach((v) => { const l = document.createElement('li'); l.textContent = v; ul.appendChild(l); }); $('hand').appendChild(ul);
+  const ax = a.x + 113, ay = a.y + 93, bx = b.x + 113, by = b.y + 93, mx = (ax + bx) / 2, my = Math.min(ay, by) - 90; const path = svgEl('path', { class: 'trail', d: `M${ax} ${ay} Q${mx} ${my} ${bx} ${by}` }); fsvg.appendChild(path);
+  const L = path.getTotalLength(); path.style.strokeDasharray = L; path.style.strokeDashoffset = L; path.style.transition = 'stroke-dashoffset 1.3s cubic-bezier(0.22, 1, 0.36, 1)';
+  const p = document.createElement('div'); p.className = 'packet'; p.textContent = `引き継ぎ · 残り ${left} 件`; p.style.transform = `translate(${ax - 70}px, ${ay - 14}px)`; $('fw').appendChild(p); await sleep(40); path.style.strokeDashoffset = 0; p.style.transform = `translate(${bx - 70}px, ${by - 14}px)`; await sleep(1350);
+  p.remove(); path.remove(); b.name = to; b.goal = a.goal; b.ctx = 6; b.state = 'work'; b.e.classList.add('take'); b.o.innerHTML = ''; say2(b, '● ', `${a.name} の引き継ぎを読んだ`); paint(b); a.state = 'gone'; a.e.classList.remove('give'); say2(a, '  ', '引き継ぎ済み。終了'); paint(a);
+  const line = document.createElement('div'); line.textContent = `${a.name} → ${to}  ${a.goal}`; $('hlog').prepend(line); while ($('hlog').children.length > 26) $('hlog').lastChild.remove(); busy -= 1; const done = a; const got = b;
+  setTimeout(() => got.e.classList.remove('take'), 1400); setTimeout(() => start(done, true), 2500); }
+function fleetBeat() { if (paused || $('fleet').hidden) return; for (let k = 0; k < 14; k++) { const s = sessions[Math.floor(Math.random() * sessions.length)]; if (s.state !== 'work') continue; const [m, x] = ACTS[Math.floor(Math.random() * ACTS.length)]; say2(s, m, x); s.ctx = Math.min(100, s.ctx + 0.6 + Math.random() * 2.4); paint(s); }
+  const work = sessions.filter((s) => s.state === 'work').length; $('fstat').textContent = `Claude Code ${work} 本が稼働中 · 引き継ぎ ${handoffs} 回`;
+  if (busy < 3) { const hot = sessions.find((s) => s.state === 'work' && s.ctx > 88); if (hot) handoff(hot); } }
+function fitFleet() { const vp = $('vp').getBoundingClientRect(); const z = Math.min(vp.width / 2420, vp.height / 1270); $('fw').style.transform = `translate(${(vp.width - 2420 * z) / 2}px, ${(vp.height - 1270 * z) / 2}px) scale(${z})`; }
+fitFleet(); addEventListener('resize', fitFleet); setInterval(fleetBeat, 120);
+$('mode').onclick = () => { const f = $('fleet'); f.hidden = !f.hidden; $('mode').textContent = f.hidden ? '全セッションを見る' : 'カメラを見る'; };
 
 /* the hands keep working on their own: smooth cursors */
 const curs = { u1: [[60, 120], [180, 130], [120, 60], [220, 110]], u2: [[200, 90], [210, 95]] };
