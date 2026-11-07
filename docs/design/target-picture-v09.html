@@ -103,6 +103,12 @@
   .card.gate { border-color: var(--rec); }
   .card.gate b { color: var(--rec); }
   .cam { cursor: pointer; }
+  .pv { position: absolute; width: 330px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; font-size: 13px; transition: border-color 0.5s; }
+  .pv .bar { display: flex; justify-content: space-between; gap: 8px; padding: 5px 10px; background: var(--paper-2); font-size: 12px; }
+  .pv .url { font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 3px 10px; border-bottom: 1px solid var(--rule); }
+  .pv .page { height: 150px; background: oklch(95% 0.003 75); color: oklch(30% 0 0); padding: 12px 16px; font-size: 12.5px; }
+  .pv .field { height: 20px; margin: 5px 0; border: 1px solid oklch(75% 0 0); border-radius: 3px; background: #fff; }
+  .pv .msg { margin-top: 6px; font-weight: 700; transition: color 0.4s; }
   .brain { position: absolute; left: 16px; top: 16px; bottom: 16px; width: 380px; background: var(--paper); border: 1px solid var(--me); border-radius: 12px; padding: 12px 14px; z-index: 12; overflow: auto; transform: translateX(-420px); transition: transform 0.45s var(--ease); font-size: 13px; }
   .brain.in { transform: none; }
   .brain h3 { margin: 0; font-size: 16px; display: flex; justify-content: space-between; align-items: center; }
@@ -131,9 +137,10 @@
     <div class="cam" id="c2" style="left:420px;top:60px"><div class="hd"><span>リン · 予約フォーム<span class="room">CAM 02 · VM</span></span> <span class="rec">● REC</span></div><div class="scr"><div class="win"></div><div class="cur" id="u2"></div></div><div class="ft"><span class="st-wait">あなた待ち</span> · 申告 DONE</div></div>
     <div class="cam dim" id="c3" style="left:60px;top:330px"><div class="hd"><span>シュウ · テスト<span class="room">CAM 03 · VM</span></span> <span class="rec" id="r3" style="color:var(--muted)">● 停止</span></div><div class="scr"><div class="win"></div><div class="dialog" id="dlg">エラー<br>保存されていない変更があります<br>[ OK ]</div><div class="cur" id="u3" style="left:150px;top:120px"></div></div><div class="ft" id="f3"><span class="st-stuck">止まったかも</span> · 4 分</div></div>
     <div class="cam" id="c4" style="left:420px;top:330px"><div class="hd"><span>ナナ · バグ修正<span class="room">CAM 04 · WSL2 · 画面なし</span></span> <span class="rec">● 記録</span></div><div class="scr"><div class="term" id="t4"></div></div><div class="ft" id="f4"><span class="st-work">作業中</span> · 待機</div></div>
+    <div class="pv" id="p4" style="left:790px;top:330px"><div class="bar"><span>ナナのプレビュー</span><span id="p4s"></span></div><div class="url">ナナのセッション · a1b2c3</div><div class="page"><b>ログイン</b><div class="field"></div><div class="field"></div><div class="msg" id="p4m"></div></div></div>
     <div class="cam" id="c5" style="left:240px;top:600px"><div class="hd"><span>ジン · 検査<span class="room">CAM 05 · VM · 別の部屋</span></span> <span class="rec">● 記録</span></div><div class="scr"><div class="term" id="t5"></div></div><div class="ft" id="f5"><span class="sub">待機</span></div></div>
 
-    <div class="sticky" id="s1" style="left:820px;top:380px"><b>ベロの付箋</b><br>シュウは保存確認のダイアログで止まっていた。テストは手で起動し直す必要なし</div>
+    <div class="sticky" id="s1" style="left:1190px;top:400px"><b>ベロの付箋</b><br>シュウは保存確認のダイアログで止まっていた。テストは手で起動し直す必要なし</div>
     <div class="sticky fig" id="s2" style="left:820px;top:60px;width:330px"><b>ベロの図 · 動画の進み</b><div id="g2"></div><div class="src">09:02 素材 6 本を読込<br>09:05 無音 9 か所を検出<br>09:11 クリップ 3 を切った</div></div>
     <div class="card fig" id="card" style="left:1190px;top:60px;width:330px"><div class="sm sub">CAM 01 · あなたが決めること</div><b>クリップを 2 つ消してよい?</b><div id="g3"></div><div class="sm sub" style="margin-bottom:8px">元の素材は残るので戻せる</div><div style="display:flex;gap:8px"><button class="primary" id="go">進めて</button><button>別案</button></div></div>
     <div class="sticky fig" id="s3" style="left:1120px;top:720px;width:420px"><b>ベロの図 · さっきの 5 分、誰が何をした</b><div id="g4"></div><div class="src">09:14 CAM03 停止 / 09:15 あなた: 閉じさせて / 09:18 あなた: 2 つ消してよい / 09:26 あなた: merge を承認</div></div>
@@ -205,6 +212,10 @@ function openBrain(id) { const m = MIND[id]; const b = $('brain'); b.replaceChil
   b.classList.add('in'); }
 Object.keys(MIND).forEach((id) => { $(id).onclick = () => openBrain(id); });
 
+/* a preview belongs to one session: it shows what that agent is building, and carries the same claim or verified state */
+function preview(kind) { const s = { broken: ['st-work', '作業前', 'セッションが切れました', 'oklch(50% 0.18 25)', 'var(--rule)'], fixed: ['st-stuck', '申告のみ', 'ログインできました', 'oklch(45% 0.12 142)', 'var(--stuck)'], verified: ['st-done', '検証済み', 'ログインできました', 'oklch(45% 0.12 142)', 'var(--done)'] }[kind];
+  $('p4s').className = s[0]; $('p4s').textContent = s[1]; $('p4m').textContent = s[2]; $('p4m').style.color = s[3]; $('p4').style.borderColor = s[4]; }
+
 /* the hands keep working on their own: smooth cursors */
 const curs = { u1: [[60, 120], [180, 130], [120, 60], [220, 110]], u2: [[200, 90], [210, 95]] };
 function glideCursor(id, x, y, ms = 900) { const c = $(id); const sx = parseFloat(c.style.left) || x, sy = parseFloat(c.style.top) || y; const t0 = performance.now();
@@ -241,7 +252,7 @@ async function round() {
   wires.innerHTML = ''; ['s1', 's2', 's3', 's4', 'card', 'gate'].forEach((id) => $(id).classList.remove('in')); $('t4').innerHTML = ''; $('t5').innerHTML = ''; $('f4').innerHTML = '<span class="st-work">作業中</span> · 待機'; $('f5').innerHTML = '<span class="sub">待機</span>'; $('dlg').classList.remove('gone'); $('c3').classList.add('dim'); $('r3').style.color = 'var(--muted)'; $('r3').textContent = '● 停止';
   $('f3').innerHTML = '<span class="st-stuck">止まったかも</span> · 4 分';
   $('phase').textContent = 'ベロが全カメラを見回っています';
-  look(560, 330, 0.95); moveBero(780, 40); hush(); await wait(1600);
+  preview('broken'); wire([720, 410], 'p4'); look(620, 330, 0.85); moveBero(780, 20); hush(); await wait(1600);
   for (const id of ['c1', 'c2', 'c4']) { const [x, y] = center(id); eyes(x > 780 ? 3 : -3, y > 300 ? 3 : -2); focusCam(id, true); await wait(700); focusCam(id, false); }
 
   $('phase').textContent = '気づいた: CAM 03 が止まっている';
@@ -266,11 +277,11 @@ async function round() {
   const [x4, y4] = center('c4'); moveBero(x4 + 170, y4 - 90); look(x4 + 120, y4 + 80, 1.0); eyes(-3, 2); await wait(1400); focusCam('c4', true);
   await zap([x4 + 195, y4 - 66], 'c4', 'ベロ → ナナ: 期限判定を直して、テストを足す'); await say('ナナの部屋は画面がないので、コマンドの記録で見せます。'); focusCam('c4', false); hush();
   await term('t4', [['grep -n expires src/auth.mjs', '42: if (now > expires)'], ['write src/auth.mjs', '1 行変更'], ['npm test', '128 件成功'], ['git commit', 'a1b2c3']]);
-  $('f4').innerHTML = '<span class="st-stuck">申告のみ</span> · 「直しました」'; log('AI', 'ナナが「直しました」と言った'); await wait(900);
+  preview('fixed'); $('f4').innerHTML = '<span class="st-stuck">申告のみ</span> · 「直しました」'; log('AI', 'ナナが「直しました」と言った'); await wait(900);
   const [x5, y5] = center('c5'); moveBero(x5 + 170, y5 - 40); look(x5 + 240, y5 - 60, 1.0); await wait(1300);
   await say('ナナの言葉だけでは信用しません。ジンに別の部屋で試させます。'); await zap([x4, y4 + 100], 'c5', 'ナナ → ジン: a1b2c3 を別の部屋で試す'); hush(); $('f5').innerHTML = '<span class="st-work">検証中</span>';
   await term('t5', [['bundle を取り込む', '検査通過'], ['npm test', '128 件成功']]);
-  $('f5').innerHTML = '<span class="st-done">検証済み</span> · テスト 128 件'; $('f4').innerHTML = '<span class="st-done">検証済み</span> · ジンが確認'; log('検証', 'ジンの部屋でテスト 128 件が通った'); $('s4').classList.add('in'); draw('g5', 'relay'); await wait(3000);
+  $('f5').innerHTML = '<span class="st-done">検証済み</span> · テスト 128 件'; $('f4').innerHTML = '<span class="st-done">検証済み</span> · ジンが確認'; preview('verified'); log('検証', 'ジンの部屋でテスト 128 件が通った'); $('s4').classList.add('in'); draw('g5', 'relay'); await wait(3000);
 
   $('phase').textContent = '関所: ここだけ人が要る';
   moveBero(1190, 500); look(1250, 620, 1.0); await say('ここは取り消せないので、止めました。'); await wait(300); $('gate').classList.add('in'); await wait(3800);
@@ -281,7 +292,7 @@ async function round() {
   $('phase').textContent = 'ひと回り終了 · 全体を見渡す'; look(820, 480, 0.66); moveBero(780, 10); await wait(4500);
 }
 (async () => { await sleep(300); for (;;) await round(); })();
-addEventListener('resize', () => look(560, 330, 0.95));
+addEventListener('resize', () => look(620, 330, 0.85));
 </script>
 </body>
 </html>

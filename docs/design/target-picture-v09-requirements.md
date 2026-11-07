@@ -16,6 +16,7 @@ Each row says what the mock shows, what the product would need, and how much of 
 | R8 | Bero draws who did what | Figures are built from the ledger, and each shows the records it came from | Figures exist in the room |
 | R9 | Motion stays quiet until something needs a person | Attention goes to stuck, waiting and failed. The current is short, and reduced motion turns it off | Mock only |
 | R10 | Clicking an agent opens what is inside its head | Read-only view per agent: the model and effort, its agent definition file and the rules loaded, the instruction, what fills its context by kind, what it read, what it says it is thinking, and what it cannot see. Stated reasoning is labelled as its own account, and context text is untrusted | Driver sees the stream; no view. Must not expose secrets or the token |
+| R11 | Each session has its preview on the canvas, linked to its agent | The page being built appears beside the agent, with the same claim or verified state. The owner reaches it read-only | Missing. A WSL2 sandbox has no network, so a preview needs its own route: a port through the bridge, or a separate preview room built from the result bundle |
 
 ## Open questions for the owner
 
