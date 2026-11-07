@@ -190,7 +190,11 @@ The key is `attestation: { keyName, keyId }` in the Broker's config, a CNG machi
 
 Tested with the real Broker, the real helper and the real client on the claim pipe, with a test key in a seam that only the test-faults build has. The Node twin authenticates what the C# side signs. Before each run the hands check that the helper and git are in administrator-only folders and that git is at least 2.53.
 
-Not verified: the CNG path with a real key (only the refusal of a missing key ran), who can use such a key (N7, C6: needs an elevated lab), the C# `Authenticate` on a Broker-signed lease (the Node twin only), and a run under a Broker-signed lease on the real bridge. The installer's `Test-ComputersList` does not accept `kind: wsl2` yet.
+**A job under a Broker-signed lease (2026-11-07, `node scripts/wsl2-job-gate.mjs <image> <folder>`, 12 of 12).** The real bridge (seam build, trusting the public half of a throwaway key), the real Broker (test-faults build, that key as PKCS#8), the real helper and `sendBrokerRequest`, the real bridge client, the real `albera-shell-mcp-main.mjs`, `runWsl2Job` and the real quarantine, on the same image and WSL as Phase 3. The lease came from a real claim, `JSON.stringify` of the reply's `lease` went to `begin`, and the bridge accepted it: `StrictJson` and the C# `Authenticate` pass a Broker-signed lease. The model's tools (`write`, `run` with `git add` and a commit as the job user, `read`) worked against the run. The result was `ok`, `agent_reported`, its `resultOid` the job's commit, and the diff held the change. Nothing stayed registered. A second job stopped during `sleep 300` lost its distribution and collected nothing (the call in flight ended `agent_gone`). The first lease presented again was refused, `lease_used`. The owner's Ubuntu and docker-desktop stayed Stopped. No product bug was found.
+
+Stand-ins in that run: `guard` (always true) and `runDriver`, a small MCP client that talks stdio to the real shell server where Claude Code would. The real Claude Code, a real token and a real (CNG) key were not used.
+
+Not verified: the CNG path with a real key (only the refusal of a missing key ran), who can use such a key (N7, C6: needs an elevated lab). The installer's `Test-ComputersList` does not accept `kind: wsl2` yet.
 
 **Before the installer makes the key (Zaku, on the review of this part):**
 
@@ -203,7 +207,6 @@ Not verified: the CNG path with a real key (only the refusal of a missing key ra
 - The installer refuses a key of that name that already exists. The Broker checks only the algorithm and that it can sign, not the ACL or export. Whether a non-administrator can create that name first belongs in C6.
 - A runbook for a lost or exposed key: the bridge reads its key once at start and holds one `keyId`, so a rotation has no overlap. The revocation runbook covers generations only.
 - Recovery from exit 77: a lost key or a changed ACL stops the whole Broker, VM claims included.
-- A run under a Broker-signed lease on the real bridge, as the first check of a job. `JSON.stringify`'s output has not been shown to pass `StrictJson` there.
 
 ## Decision proposed
 
