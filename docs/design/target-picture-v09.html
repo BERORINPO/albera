@@ -103,6 +103,14 @@
   .card.gate { border-color: var(--rec); }
   .card.gate b { color: var(--rec); }
   .cam { cursor: pointer; }
+  #swarmbg { position: absolute; left: 0; top: 0; width: 2000px; height: 1120px; pointer-events: none; }
+  .swarm { position: absolute; left: 1610px; top: 372px; width: 340px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 10px 12px; }
+  .swarm .t { font-size: 12px; color: var(--muted); font-weight: 700; margin-bottom: 6px; display: flex; justify-content: space-between; }
+  .tiles { display: grid; grid-template-columns: repeat(12, 1fr); gap: 3px; }
+  .tiles i { aspect-ratio: 1; border-radius: 2px; background: var(--paper-2); transition: background 0.5s; }
+  .tiles i.on { background: var(--accent-fill); transition: none; }
+  .tiles i.stuck { background: var(--stuck); } .tiles i.wait { background: var(--rec); }
+  .tick { font-family: var(--mono); font-size: 11px; line-height: 1.55; height: 118px; overflow: hidden; margin-top: 8px; color: var(--muted); white-space: nowrap; }
   .roster { position: absolute; left: 1610px; top: 40px; width: 340px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
   .roster .t { font-size: 12px; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
   .who { display: block; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--rule); border-radius: 0; padding: 7px 2px; }
@@ -135,13 +143,14 @@
 </head>
 <body>
 <header class="top">
-  <span class="brand">ALBERA</span><span class="sm sub">ベロ + 5 人 · VM 4 · WSL2 1</span>
+  <span class="brand">ALBERA</span><span class="sm sub" id="rate">ベロ + 47 人</span>
   <span class="grow"></span>
   <span class="sm sub" id="phase">ベロが全カメラを見回っています</span>
   <button id="pause">一時停止</button>
 </header>
 <div class="vp" id="vp">
   <div class="world" id="world">
+    <canvas id="swarmbg" width="2000" height="1120"></canvas>
     <svg class="wires" id="wires"></svg>
     <div class="cam" id="c1" style="left:40px;top:40px"><div class="hd"><span>ソラ · 動画編集<span class="room">CAM 01 · VM</span></span> <span class="rec">● REC</span></div><div class="scr"><div class="win"></div><div class="cur" id="u1"></div></div><div class="ft"><span class="st-work">作業中</span> · <span id="f1">step 18 · $0.034</span></div></div>
     <div class="cam" id="c2" style="left:460px;top:40px"><div class="hd"><span>リン · 予約フォーム<span class="room">CAM 02 · VM</span></span> <span class="rec">● REC</span></div><div class="scr"><div class="win"></div><div class="cur" id="u2"></div></div><div class="ft"><span class="st-wait">あなた待ち</span> · 申告 DONE</div></div>
@@ -158,6 +167,7 @@
     <div class="sticky fig" id="s4" style="left:880px;top:700px;width:330px"><b>ベロの図 · 仕事の渡し方</b><div id="g5"></div><div class="src">09:21 ベロ → ナナ: 期限判定を直して / 09:24 ナナ: 直したと申告 / 09:25 ナナ → ジン: 別の部屋で試して</div></div>
     <div class="card gate" id="gate" style="left:1240px;top:700px;width:330px"><div class="sm sub">関所 · あなたが決めること</div><b>取り消せません: main へ merge してよい?</b><div class="sm sub" style="margin:6px 0 8px">ジンが検証済み · テスト 128 件 · 変更 2 ファイル</div><div style="display:flex;gap:8px"><button class="primary" id="go2">承認 (Windows Hello)</button><button>やめる</button></div></div>
     <div class="roster" id="roster"><div class="t">全員の状況 · 押すと頭の中が見える</div></div>
+    <div class="swarm"><div class="t"><span>群れ</span><span id="sw"></span></div><div class="tiles" id="tiles"></div><div class="tick" id="tick"></div></div>
     <div class="zapnote" id="zn"></div>
     <div class="bero" id="bero"><div class="orb"><div class="eyes" id="eyes"><i></i><i></i></div></div>
       <div class="bubble hide" id="bub"><div class="nm">ベロ <span class="wave"><i></i><i></i><i></i><i></i></span></div><div id="txt"></div><div class="chips" id="chips"></div></div></div>
@@ -235,12 +245,29 @@ setInterval(() => { for (const [id, ln] of rows) { const src = $(id).querySelect
 function preview(kind) { const s = { broken: ['st-work', '作業前', 'セッションが切れました', 'oklch(50% 0.18 25)', 'var(--rule)'], fixed: ['st-stuck', '申告のみ', 'ログインできました', 'oklch(45% 0.12 142)', 'var(--stuck)'], verified: ['st-done', '検証済み', 'ログインできました', 'oklch(45% 0.12 142)', 'var(--done)'] }[kind];
   $('p4s').className = s[0]; $('p4s').textContent = s[1]; $('p4m').textContent = s[2]; $('p4m').style.color = s[3]; $('p4').style.borderColor = s[4]; }
 
+/* the crowd: most agents are not worth a camera. They are one tile each, the work shows as a rate and a stream, and only what needs a person keeps a colour */
+const CREW = ['ナナ', 'ソラ', 'リン', 'ジン', 'ザク', 'シュウ']; const GREEK = ['α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ'];
+const OPS = ['run npm test', 'read src/api.mjs', 'write README.md', 'run git diff', 'read package.json', 'write test/a.test.mjs', 'run tsc', 'read docs/spec.md', 'run eslint', 'write src/ui.css'];
+const TILE_COUNT = 48, tiles = []; for (let i = 0; i < TILE_COUNT; i++) { const e = document.createElement('i'); $('tiles').appendChild(e); tiles.push(e); }
+tiles[17].className = 'stuck'; tiles[33].className = 'wait';
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+let opsTotal = 0, perMinute = 0; const stamps = [];
+function beat() { if (paused) return; const n = 2 + Math.floor(Math.random() * 4); for (let k = 0; k < n; k++) { const i = Math.floor(Math.random() * TILE_COUNT); const e = tiles[i]; if (e.className) continue; e.className = 'on'; setTimeout(() => { e.className = ''; }, 90);
+    opsTotal += 1; stamps.push(Date.now()); const line = document.createElement('div'); line.textContent = `${CREW[i % 6]}-${GREEK[i % 8]}  ${OPS[Math.floor(Math.random() * OPS.length)]}`; $('tick').prepend(line); while ($('tick').children.length > 8) $('tick').lastChild.remove(); }
+  while (stamps.length && stamps[0] < Date.now() - 5000) stamps.shift(); perMinute = stamps.length * 12; $('rate').textContent = `ベロ + 47 人 · 1 分 ${perMinute.toLocaleString()} 操作`; $('sw').textContent = `${opsTotal.toLocaleString()} 操作 · 止まり 1 · 人の番 1`; }
+const arcs = []; const bg = $('swarmbg').getContext('2d'); const NODES = [[230, 175], [650, 175], [230, 505], [650, 505], [650, 835], [1045, 505], [1780, 500], [1780, 200]];
+function arc() { const a = NODES[Math.floor(Math.random() * NODES.length)]; let b = NODES[Math.floor(Math.random() * NODES.length)]; if (a === b) b = [a[0] + 300, a[1] + 120]; const p = []; for (let k = 0; k <= 10; k++) { const q = k / 10, j = k && k < 10 ? (Math.random() - 0.5) * 40 : 0; p.push([a[0] + (b[0] - a[0]) * q + j, a[1] + (b[1] - a[1]) * q + j]); } arcs.push({ p, life: 1 }); }
+function sky() { bg.clearRect(0, 0, 2000, 1120); const ink = getComputedStyle(document.documentElement).getPropertyValue('--accent-fill');
+  for (const a of arcs) { bg.globalAlpha = a.life * 0.35; bg.strokeStyle = ink; bg.lineWidth = 1.2; bg.beginPath(); a.p.forEach(([x, y], i) => (i ? bg.lineTo(x, y) : bg.moveTo(x, y))); bg.stroke(); a.life -= 0.07; }
+  while (arcs.length && arcs[0].life <= 0) arcs.shift(); requestAnimationFrame(sky); }
+if (!reduced) { setInterval(beat, 70); setInterval(() => { if (!paused) { arc(); arc(); } }, 110); sky(); } else { for (let i = 0; i < 40; i++) beat(); }
+
 /* the hands keep working on their own: smooth cursors */
 const curs = { u1: [[60, 120], [180, 130], [120, 60], [220, 110]], u2: [[200, 90], [210, 95]] };
 function glideCursor(id, x, y, ms = 900) { const c = $(id); const sx = parseFloat(c.style.left) || x, sy = parseFloat(c.style.top) || y; const t0 = performance.now();
   return new Promise((res) => { function f(t) { const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3); c.style.left = sx + (x - sx) * e + 'px'; c.style.top = sy + (y - sy) * e + 'px'; k < 1 ? requestAnimationFrame(f) : res(); } requestAnimationFrame(f); }); }
-(async function hands1() { let i = 0, step = 18; for (;;) { const [x, y] = curs.u1[i++ % curs.u1.length]; await glideCursor('u1', x, y); ripple($('u1')); step++; $('f1').textContent = `step ${step} · $${(0.034 + (step - 18) * 0.0019).toFixed(3)}`; await wait(500); } })();
-(async function hands2() { for (;;) { await glideCursor('u2', 180 + Math.random() * 60, 70 + Math.random() * 40, 1400); await wait(900); } })();
+(async function hands1() { let i = 0, step = 18; for (;;) { const [x, y] = curs.u1[i++ % curs.u1.length]; await glideCursor('u1', x, y, 260); ripple($('u1')); step++; $('f1').textContent = `step ${step} · $${(0.034 + (step - 18) * 0.0019).toFixed(3)}`; await wait(90); } })();
+(async function hands2() { for (;;) { await glideCursor('u2', 40 + Math.random() * 280, 40 + Math.random() * 120, 320); await wait(120); } })();
 
 /* diagrams Bero draws (built from the log, drawn stroke by stroke) */
 const FIG = {
@@ -274,7 +301,7 @@ async function round() {
   preview('broken'); wire([840, 505], 'p4'); overview(); moveBero(1190, 330); hush(); await wait(1600);
   for (const id of ['c1', 'c2', 'c4']) { const [x, y] = center(id); eyes(-3, y > 300 ? 3 : -2); focusCam(id, true); await wait(700); focusCam(id, false); }
 
-  $('phase').textContent = '気づいた: CAM 03 が止まっている';
+  $('phase').textContent = '気づいた: シュウが止まっている';
   const [x3, y3] = center('c3'); moveBero(x3 + 170, y3 - 60); look(x3 + 220, y3, 1.15); eyes(-3, 2); await wait(1500);
   focusCam('c3', true); wire([x3 + 175, y3 - 35], 'c3'); await say('シュウが 4 分止まっています。保存の確認ダイアログで詰まっているみたい。閉じさせますか?', ['閉じさせて', '見せて', '後で']);
   await wait(1400); chips.children[0].classList.add('on'); log('あなた', 'シュウのダイアログを閉じさせた'); await wait(700);

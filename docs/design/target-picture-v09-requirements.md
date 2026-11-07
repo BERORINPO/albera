@@ -17,6 +17,7 @@ Each row says what the mock shows, what the product would need, and how much of 
 | R9 | Motion stays quiet until something needs a person | Attention goes to stuck, waiting and failed. The current is short, and reduced motion turns it off | Mock only |
 | R10 | Clicking an agent opens what is inside its head | Read-only view per agent: the model and effort, its agent definition file and the rules loaded, the instruction, what fills its context by kind, what it read, what it says it is thinking, and what it cannot see. Stated reasoning is labelled as its own account, and context text is untrusted | Driver sees the stream; no view. Must not expose secrets or the token |
 | R11 | Each session has its preview on the canvas, linked to its agent | The page being built appears beside the agent, with the same claim or verified state. The owner reaches it read-only | Missing. A WSL2 sandbox has no network, so a preview needs its own route: a port through the bridge, or a separate preview room built from the result bundle |
+| R12 | Dozens of agents at once, a few as cameras and the rest as one tile each | Scale view: cameras are chosen, the others are tiles, a rate and a stream of events. Only stuck and waiting keep a colour | Missing: a computer runs one job, and the desktop limit is small |
 
 ## Open questions for the owner
 
