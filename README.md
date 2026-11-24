@@ -37,6 +37,10 @@ ALBERA can have an AI work inside a Hyper-V VM, away from your own files, and by
 
 On a PC without Hyper-V, the session board and the demo work. A job never moves to the PC itself instead of a VM: [docs/architecture/no-vm-mode.md](docs/architecture/no-vm-mode.md).
 
+## Explain map (experimental, `tools/mochiba`)
+
+A separate command-line tool for explaining what an AI wrote. From a repository's role tables, its imports and its git history it writes one self-contained HTML page: a map of the code, a step-by-step walk through each pull request, and a practice mode where you answer by pointing at boxes on the map. It uses no AI, reads the target repository only, and the page sends nothing anywhere. Node 22, no packages. The page is in Japanese for now: [tools/mochiba/README.md](tools/mochiba/README.md).
+
 ## Private copies
 
 A fork of a public repository is public. To run ALBERA where code stays private, make a private copy with its history: a weekly workflow then opens one pull request with what changed in ALBERA (the new CHANGELOG lines and the commits), for a person to read and merge. [docs/private-copy.md](docs/private-copy.md).
