@@ -279,7 +279,9 @@ export function createApprovedOperationFlow({ broker, authority, journal, now, s
     // A guest.command receipt is claimed together with the DTO that was submitted (the Broker recomputes its digest); a broker.operation one is just { receipt, signature }.
     const reply = await broker.claim({ receipt: record.receipt.receipt, signature: record.receipt.signature, ...(record.purpose === 'guest.command' ? { action: record.action } : {}) });
     if (reply?.ok === true) {
-      return { kind: 'ok', result: await finalize(claiming, ['CLAIMING'], 'CLAIMED', undefined, { brokerState: reply.state, replayed: reply.replayed === true, reconciled: false }) };
+      const result = await finalize(claiming, ['CLAIMING'], 'CLAIMED', undefined, { brokerState: reply.state, replayed: reply.replayed === true, reconciled: false });
+      // A run lease is a bearer statement: it goes back to this caller and is never written to the journal. A crash here loses it, and with it the run, which is the safe side.
+      return { kind: 'ok', result: reply.lease === undefined ? result : Object.freeze({ ...result, lease: reply.lease }) };
     }
     const code = codeOf(reply);
     if (PRESEND.has(code)) {

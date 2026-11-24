@@ -8,7 +8,7 @@ using Albera.BrokerContract;
 //   claim    { "receipt": <base64>, "signature": <base64> }   exactly these two keys: a broker.operation / synthetic.noop receipt (the DTO is fixed here). The receipt is v2 or v3
 //                                                              (src/runtime/broker-contract; v3 adds `basis`, see ReceiptV3.cs) and names a challenge that THIS Broker issued with `fence`.
 //            { "receipt", "signature", "action": <base64 of the UTF-8 JSON action DTO> }   a guest.command / task.start receipt. The DTO is not trusted by itself: it must be a valid
-//                                                              guest.command DTO for task.start with { task: <non-empty string> } (alone, or with the VM it was attested for: vmId + expectedGeneration) and the receipt's own projectId and computerId, and
+//                                                              guest.command DTO for task.start with { task: <non-empty string> } (alone, with the VM it was attested for: vmId + expectedGeneration, or, for a computer the config names as wsl2, with exactly isolation + repositoryId + baseOid) and the receipt's own projectId and computerId, and
 //                                                              Receipts.Validate recomputes its digest and compares it with the one the Authority signed.
 //   fence    { "fence": { "computerId": "<id>" } }             -> { "ok": true, "brokerEpoch": n, "leaseGeneration": n, "leaseId": "<id>", "brokerChallenge": "<22 chars>" }
 //   inspect  { "inspect": { "operationId": "<id>" } }          -> { "ok": true, "state": "UNKNOWN", "action": "synthetic.inspect" }; read-only
@@ -24,6 +24,9 @@ using Albera.BrokerContract;
 // An exact duplicate (same operationId, same receipt bytes and signature as a recorded claim) skips the challenge checks, because its challenge was spent (or
 // wiped by a restart) when it was first claimed; it still passes the signature, the clock fence and every time / issuer / digest check, and answers with the
 // recorded outcome plus `"replayed": true`. A claim reply names the action that was claimed (the receipt's own, which Validate has bound to the DTO), on a replay too.
+// A newly recorded (never a replay) task.start claim for a computer the config names as wsl2 adds one key to the success reply: "lease": { digest, keyId, lease, signature }, the run lease signed with the
+// attestation key (Wsl2RunLease.Sign; body: the receipt's actionDigest, the claim's generation, repositoryId and baseOid from the signed args, maxCalls 10000, issuedAt = now, expiresAt = now + 3600).
+// Without a configured key, or when signing fails, the reply is the same without the key and stdout says LEASE=NO_KEY / LEASE=SIGN_FAILED; the claim stays recorded.
 // A task.start claim that is newly recorded (never a replay) also creates the room's desktop lease in Broker memory (DesktopLeases.cs), unless its signed args name a VM that is not the one the config binds to the computer; the reply and the journal are unchanged by it.
 internal static partial class Program
 {
@@ -32,7 +35,8 @@ internal static partial class Program
     private const string SyntheticPurpose = "broker.operation";
     private const string TaskStartAction = "task.start";
     private const string GuestPurpose = "guest.command";
-    private const string TaskArgument = "task", VmIdArgument = "vmId", GenerationArgument = "expectedGeneration";
+    private const string TaskArgument = "task", VmIdArgument = "vmId", GenerationArgument = "expectedGeneration", IsolationArgument = "isolation", RepositoryArgument = "repositoryId", BaseOidArgument = "baseOid";
+    private const long Wsl2LeaseMaxCalls = Wsl2RunLease.MaxCalls, Wsl2LeaseTtlSeconds = Wsl2RunLease.MaxTtlSeconds; // a run lease: at most 10000 calls, valid for 3600 s from the Broker's clock
 
 #if ALBERA_BROKER_TEST_FAULTS
     private const string ReceiptEnvironment = "test"; // the test-faults build also accepts `albera-test-*` issuers
@@ -108,7 +112,7 @@ internal static partial class Program
             authority.ImportSubjectPublicKeyInfo(authorityKey.Spki, out _);
             if (!authority.VerifyData(receipt, signature, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)) return Deny("signature");
         }
-        (string purpose, IReadOnlyDictionary<string, object>? dto, string? actionRefusal) = ActionOf(encodedAction, r);
+        (string purpose, IReadOnlyDictionary<string, object>? dto, string? actionRefusal) = ActionOf(encodedAction, r, settings.Wsl2Computers ?? []);
         if (actionRefusal is not null) return Deny(actionRefusal);
 
         string operationId = (string)r["operationId"], challengeId = (string)r["brokerChallenge"], computerId = (string)r["computerId"];
@@ -139,8 +143,35 @@ internal static partial class Program
         Console.WriteLine("CLAIM=PERSISTED_UNKNOWN");
         // A task.start claim that was just recorded (not a replay: that returned above) is what creates the room's desktop lease, for the computer its DTO names (DesktopLeases.cs).
         if (encodedAction is not null) GrantDesktopLease(settings, dto!, operationId);
+        // A newly recorded wsl2 task.start also gets its signed run lease in the reply (ADR-012, decision 4). Whatever happens to the signing, the claim above stays recorded.
+        string? lease = encodedAction is not null && claimed == TaskStartAction && settings.Wsl2Computers?.Contains(computerId, StringComparer.Ordinal) == true ? SignRunLease(settings, dto!, r, generation, now) : null;
         if (settings.Hold is { } holdFor) await Task.Delay(holdFor); // test hook: `serve ... hold` holds forever, the seam build's loop entry holds for a fixed time
-        return Success(Journal.UnknownState, claimed, replayed: false);
+        return Success(Journal.UnknownState, claimed, replayed: false, lease);
+    }
+
+    // The WSL2 run lease body (ADR-012, decision 4): the receipt's own digest and the claim's generation, the target from the signed DTO args, and the Broker's own clock. Returns the signed
+    // form as JSON, or null with a fixed log word: no key configured (LEASE=NO_KEY), or the body or the signing was refused (LEASE=SIGN_FAILED). Never throws for either.
+    private static string? SignRunLease(BrokerSettings settings, IReadOnlyDictionary<string, object> dto, IReadOnlyDictionary<string, object> r, long generation, long now)
+    {
+        if (settings.Attestation is not { } signer)
+        {
+            Console.WriteLine("LEASE=NO_KEY");
+            return null;
+        }
+        try
+        {
+            IReadOnlyDictionary<string, object> args = (IReadOnlyDictionary<string, object>)dto["args"];
+            Wsl2RunLeaseBody body = new(Wsl2RunLease.Version, (string)r["operationId"], (string)r["actionDigest"], generation, (string)r["computerId"], Wsl2RunLease.Isolation,
+                (string)args[RepositoryArgument], (string)args[BaseOidArgument], Wsl2LeaseMaxCalls, now, now + Wsl2LeaseTtlSeconds);
+            string json = Wsl2RunLease.Sign(body, signer.KeyId, signer.Sign).ToJson();
+            Console.WriteLine("LEASE=SIGNED");
+            return json;
+        }
+        catch (Wsl2RunLeaseException)
+        {
+            Console.WriteLine("LEASE=SIGN_FAILED");
+            return null;
+        }
     }
 
     // The signed args may name the VM the task was attested for (`vmId`). Then the lease is made only if that is the VM the config binds to this computer (DesktopLeases.Grant decides);
@@ -170,15 +201,15 @@ internal static partial class Program
         ["action"] = SyntheticAction, ["projectId"] = r["projectId"], ["computerId"] = r["computerId"], ["args"] = new Dictionary<string, object>(),
     };
 
-    private static (string Purpose, IReadOnlyDictionary<string, object>? Dto, string? Refusal) ActionOf(string? encodedAction, IReadOnlyDictionary<string, object> r) =>
-        encodedAction is null ? (SyntheticPurpose, SyntheticDto(r), null) : TaskStartDto(encodedAction, r);
+    private static (string Purpose, IReadOnlyDictionary<string, object>? Dto, string? Refusal) ActionOf(string? encodedAction, IReadOnlyDictionary<string, object> r, IReadOnlyList<string> wsl2Computers) =>
+        encodedAction is null ? (SyntheticPurpose, SyntheticDto(r), null) : TaskStartDto(encodedAction, r, wsl2Computers);
 
     // The DTO of the three-key claim. It came from the request, so nothing in it is believed: it must parse with the strict reader, be a valid guest.command DTO, name
     // task.start and this receipt's own project and computer, and carry { task: <non-empty string> } alone, or together with exactly the two args an attested task.start names its VM by
     // (vmId: a lowercase GUID, expectedGeneration: an integer >= 1; step 4 of #115: the contract's receipt validator requires args.vmId on a policy-basis task.start). The contract already bounds
-    // every string to 256 bytes of safe text.
+    // every string to 256 bytes of safe text. A wsl2 computer takes only the wsl2 form and the wsl2 form fits only a wsl2 computer, so neither can stand in for the other (ADR-012, decision 1).
     // Even then it is only the input of the digest the Broker recomputes: the Authority's signature over that digest is what authenticates it. Returns the refusal word, never text.
-    private static (string Purpose, IReadOnlyDictionary<string, object>? Dto, string? Refusal) TaskStartDto(string encoded, IReadOnlyDictionary<string, object> r)
+    private static (string Purpose, IReadOnlyDictionary<string, object>? Dto, string? Refusal) TaskStartDto(string encoded, IReadOnlyDictionary<string, object> r, IReadOnlyList<string> wsl2Computers)
     {
         Dictionary<string, object> dto;
         try
@@ -189,10 +220,16 @@ internal static partial class Program
         catch (Exception ex) when (ex is FormatException or StrictJsonException or ActionDigestException) { return (GuestPurpose, null, "action_invalid"); }
         if (!TaskStartAction.Equals(dto["action"]) || !r["projectId"].Equals(dto["projectId"]) || !r["computerId"].Equals(dto["computerId"])) return (GuestPurpose, null, "action_mismatch");
         bool taskArgs = dto["args"] is IReadOnlyDictionary<string, object> args && args.TryGetValue(TaskArgument, out object? task) && task is string { Length: > 0 }
-            && (args.Count == 1 || (args.Count == 3 && args.TryGetValue(VmIdArgument, out object? vmId) && vmId is string vm && NetworkAttestation.IsVmId(vm)
+            && (wsl2Computers.Contains((string)dto["computerId"], StringComparer.Ordinal) ? IsWsl2TaskArgs(args) : args.Count == 1 || (args.Count == 3 && args.TryGetValue(VmIdArgument, out object? vmId) && vmId is string vm && NetworkAttestation.IsVmId(vm)
                 && args.TryGetValue(GenerationArgument, out object? generation) && generation is long and >= 1));
         return taskArgs ? (GuestPurpose, dto, null) : (GuestPurpose, null, "action_invalid");
     }
+
+    // task, plus exactly the three args that bind a wsl2 run to its target (ADR-012, decision 4). They are what the run lease will name.
+    private static bool IsWsl2TaskArgs(IReadOnlyDictionary<string, object> args) => args.Count == 4
+        && args.TryGetValue(IsolationArgument, out object? isolation) && Wsl2RunLease.Isolation.Equals(isolation)
+        && args.TryGetValue(RepositoryArgument, out object? repository) && repository is string id && AuthorityKey.IsKeyId(id)
+        && args.TryGetValue(BaseOidArgument, out object? baseOid) && Wsl2RunLease.IsGitOid(baseOid);
 
     private static ReceiptContext TrustedContext(IReadOnlyDictionary<string, object> r, long now, long epoch, long generation, BrokerSettings settings, string purpose, IReadOnlyDictionary<string, object>? action)
     {
@@ -216,6 +253,7 @@ internal static partial class Program
     };
 
     // `state` is always one of Journal's recorded states (the client accepts exactly these); `replayed` is present, and true, only for an exact duplicate.
-    private static BrokerReply Success(string state, string action, bool replayed) =>
-        new(Encoding.UTF8.GetBytes($"{{\"ok\":true,\"state\":\"{state}\",\"action\":\"{action}\"{(replayed ? ",\"replayed\":true" : "")}}}"));
+    // `lease` is the signed run lease JSON of a newly claimed wsl2 task.start (SignRunLease), and never present on a replay.
+    private static BrokerReply Success(string state, string action, bool replayed, string? lease = null) =>
+        new(Encoding.UTF8.GetBytes($"{{\"ok\":true,\"state\":\"{state}\",\"action\":\"{action}\"{(replayed ? ",\"replayed\":true" : "")}{(lease is null ? "" : ",\"lease\":" + lease)}}}"));
 }

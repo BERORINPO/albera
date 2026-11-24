@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { readSignedWsl2RunLease } from './broker-contract/wsl2-run-lease.mjs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { captureExecutableIdentity } from './executable-identity.mjs';
@@ -19,7 +20,7 @@ import { ActionDigestError, validateActionDto } from './broker-contract/action-d
 //   claim request   : { "receipt": <base64>, "signature": <base64> }   exactly these two keys for a broker.operation / synthetic.noop receipt signed elsewhere (src/runtime/broker-contract)
 //                     { "receipt", "signature", "action": <base64> }   for a guest.command / task.start receipt: `action` is the UTF-8 JSON of the action DTO (canonical form, sorted keys). The
 //                     Broker does not trust it; it recomputes the digest from it and compares it with the digest the Authority signed.
-//   claim success   : { "ok": true, "state": "UNKNOWN", "action": "synthetic.noop" | "task.start" }, plus "replayed": true for an exact duplicate (the recorded outcome, no second claim).
+//   claim success   : { "ok": true, "state": "UNKNOWN", "action": "synthetic.noop" | "task.start" }, plus "lease" on a new wsl2 task.start, plus "replayed": true for an exact duplicate (the recorded outcome, no second claim).
 //                     The reply names the action that was claimed; the client checks it is the one it sent.
 //   fence request   : { "fence": { "computerId": <id> } }               the Broker issues a single-use challenge a receipt must name
 //   fence success   : { "ok": true, "brokerEpoch": n, "leaseGeneration": n, "leaseId": <id>, "brokerChallenge": <22 chars> }   `leaseId` is the lease the Broker is configured for: the Control
@@ -37,7 +38,7 @@ import { ActionDigestError, validateActionDto } from './broker-contract/action-d
 /** ADR-002: bounded length-prefixed frame, 4 KiB maximum request message (2 KiB until a claim could carry an action DTO). The response is far smaller. */
 export const BROKER_CLIENT_LIMITS = Object.freeze({
   maxRequestBytes: 4096,
-  maxResponseBytes: 256,
+  maxResponseBytes: 2048, // the helper's own limit: a claim reply can carry a run lease, about 800 bytes
   defaultTimeoutMs: 5000,
   minTimeoutMs: 100,
   maxTimeoutMs: 30_000,
@@ -86,7 +87,7 @@ const SID_PATTERN = /^S-1-\d{1,10}(?:-\d{1,10}){1,15}$/u;
 const SERVICE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,256}$/u;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const HELPER_GRACE_MS = 3000; // the helper has its own deadline; this only catches a helper that hangs past it
-const HELPER_MAX_STDOUT_BYTES = 1024;
+const HELPER_MAX_STDOUT_BYTES = 1024; // the limit in force for a claim reply: the longest one with a run lease is about 860 bytes
 const DEFAULT_HELPER_PATH = fileURLToPath(new URL('./windows-broker-pipe-client/bin/Release/net10.0-windows/win-x64/publish/albera-windows-broker-pipe-client.exe', import.meta.url)); // arch-allow: the only reference to the pipe client helper; its SHA-256 manifest is verified before every launch
 
 /** Carries only an allowlisted code; the message is the code itself, never raw text. */
@@ -149,6 +150,11 @@ export function validateBrokerResponse(value) {
   if (value.ok === true && BROKER_SUCCESS_STATES.includes(value.state) && BROKER_SUCCESS_ACTIONS.includes(value.action)) {
     if (keys === 'action,ok,state') return Object.freeze({ ok: true, state: value.state, action: value.action });
     if (keys === 'action,ok,replayed,state' && value.replayed === true) return Object.freeze({ ok: true, state: value.state, action: value.action, replayed: true });
+    // ADR-012, decision 4: a new wsl2 task.start claim carries the run lease. Shape and digest are read here; only the bridge, which pins the key, trusts it.
+    if (keys === 'action,lease,ok,state' && value.action === 'task.start') {
+      try { readSignedWsl2RunLease(value.lease); } catch { throw new BrokerClientError('invalid_response'); }
+      return Object.freeze({ ok: true, state: value.state, action: value.action, lease: value.lease });
+    }
   }
   if (value.ok === false && keys === 'code,ok' && value.code === 'denied') return DENIED_RESULT;
   throw new BrokerClientError('invalid_response');

@@ -1556,6 +1556,56 @@
       }
     },
     {
+      "name": "v3-policy-wsl2-task-start-names-no-vm",
+      "receiptJson": "{\"v\":3,\"kid\":\"authority-key-2026-10\",\"issuer\":\"albera-approval-authority\",\"audience\":\"albera-host-broker\",\"purpose\":\"guest.command\",\"approvalId\":\"3f2b8c1e-5a47-4d0e-9b36-7c1d2e4f5a60\",\"receiptId\":\"9a1c7e52-0b3d-4f68-8e21-5d4c3b2a1f09\",\"nonce\":\"ABEiM0RVZneImaq7zN3u_w\",\"operationId\":\"op-0001\",\"idempotencyKey\":\"idem-0001\",\"action\":\"task.start\",\"actionDigest\":\"sha256:bc00495afcb2b5940885a4e5cafd8fd11de992f345fab8b43a4240019b00fada\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"leaseId\":\"lease-0001\",\"leaseGeneration\":7,\"brokerEpoch\":3,\"brokerChallenge\":\"_-7dzLuqmYh3ZlVEMyIRAA\",\"policyVersion\":\"sha256:33d1294ea8931aa52ed93c6405a3bad49a6a545b96cef2e274db3abfb770b824\",\"basis\":\"policy\",\"approverKeyId\":\"hello-key-yosuke-01\",\"iat\":1799999990,\"exp\":1800000110,\"attestationDigest\":\"sha256:24ed4b47b4dacb87260f797b11d08f48efe9c7d31794e27192c51d841efc39e5\"}",
+      "context": {
+        "now": 1800000000,
+        "environment": "production",
+        "expected": {
+          "audience": "albera-host-broker",
+          "purpose": "guest.command",
+          "operationId": "op-0001",
+          "idempotencyKey": "idem-0001",
+          "leaseId": "lease-0001",
+          "leaseGeneration": 7,
+          "brokerEpoch": 3,
+          "brokerChallenge": "_-7dzLuqmYh3ZlVEMyIRAA",
+          "policyVersion": "policy-2026-10"
+        },
+        "actionJson": "{\"action\":\"task.start\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"args\":{\"task\":\"build\",\"isolation\":\"wsl2\",\"repositoryId\":\"repo-alpha\",\"baseOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"
+      },
+      "expected": {
+        "ok": false,
+        "code": "attestation",
+        "field": "vmId"
+      }
+    },
+    {
+      "name": "v3-policy-wsl2-task-start-with-a-vm-beside-it",
+      "receiptJson": "{\"v\":3,\"kid\":\"authority-key-2026-10\",\"issuer\":\"albera-approval-authority\",\"audience\":\"albera-host-broker\",\"purpose\":\"guest.command\",\"approvalId\":\"3f2b8c1e-5a47-4d0e-9b36-7c1d2e4f5a60\",\"receiptId\":\"9a1c7e52-0b3d-4f68-8e21-5d4c3b2a1f09\",\"nonce\":\"ABEiM0RVZneImaq7zN3u_w\",\"operationId\":\"op-0001\",\"idempotencyKey\":\"idem-0001\",\"action\":\"task.start\",\"actionDigest\":\"sha256:4a169243ac324d2c4df2718d8722f76530f358c597d28f3cab8216f55fa062fe\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"leaseId\":\"lease-0001\",\"leaseGeneration\":7,\"brokerEpoch\":3,\"brokerChallenge\":\"_-7dzLuqmYh3ZlVEMyIRAA\",\"policyVersion\":\"sha256:33d1294ea8931aa52ed93c6405a3bad49a6a545b96cef2e274db3abfb770b824\",\"basis\":\"policy\",\"approverKeyId\":\"hello-key-yosuke-01\",\"iat\":1799999990,\"exp\":1800000110,\"attestationDigest\":\"sha256:24ed4b47b4dacb87260f797b11d08f48efe9c7d31794e27192c51d841efc39e5\"}",
+      "context": {
+        "now": 1800000000,
+        "environment": "production",
+        "expected": {
+          "audience": "albera-host-broker",
+          "purpose": "guest.command",
+          "operationId": "op-0001",
+          "idempotencyKey": "idem-0001",
+          "leaseId": "lease-0001",
+          "leaseGeneration": 7,
+          "brokerEpoch": 3,
+          "brokerChallenge": "_-7dzLuqmYh3ZlVEMyIRAA",
+          "policyVersion": "policy-2026-10"
+        },
+        "actionJson": "{\"action\":\"task.start\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"args\":{\"task\":\"build\",\"isolation\":\"wsl2\",\"repositoryId\":\"repo-alpha\",\"baseOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"vmId\":\"11111111-2222-4333-8444-555555555555\",\"expectedGeneration\":3}}"
+      },
+      "expected": {
+        "ok": false,
+        "code": "attestation",
+        "field": "isolation"
+      }
+    },
+    {
       "name": "v3-attested-start-vmId-arg-missing",
       "receiptJson": "{\"v\":3,\"kid\":\"authority-key-2026-10\",\"issuer\":\"albera-approval-authority\",\"audience\":\"albera-host-broker\",\"purpose\":\"broker.operation\",\"approvalId\":\"3f2b8c1e-5a47-4d0e-9b36-7c1d2e4f5a60\",\"receiptId\":\"9a1c7e52-0b3d-4f68-8e21-5d4c3b2a1f09\",\"nonce\":\"ABEiM0RVZneImaq7zN3u_w\",\"operationId\":\"op-0001\",\"idempotencyKey\":\"idem-0001\",\"action\":\"environment.start\",\"actionDigest\":\"sha256:d6272b339b2519e2526afded1c0ab726a8b0cd16fed1a8f5ba8670d33cae5c72\",\"projectId\":\"proj-alpha\",\"computerId\":\"pc-01\",\"leaseId\":\"lease-0001\",\"leaseGeneration\":7,\"brokerEpoch\":3,\"brokerChallenge\":\"_-7dzLuqmYh3ZlVEMyIRAA\",\"policyVersion\":\"sha256:33d1294ea8931aa52ed93c6405a3bad49a6a545b96cef2e274db3abfb770b824\",\"basis\":\"policy\",\"approverKeyId\":\"hello-key-yosuke-01\",\"iat\":1799999990,\"exp\":1800000110,\"attestationDigest\":\"sha256:24ed4b47b4dacb87260f797b11d08f48efe9c7d31794e27192c51d841efc39e5\"}",
       "context": {

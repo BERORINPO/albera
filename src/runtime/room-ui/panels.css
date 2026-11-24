@@ -19,6 +19,8 @@
 button.danger { background: var(--rec); color: var(--on-accent); border-color: transparent; font-weight: 700; }
 .match { margin: 12px 0; padding: 10px 14px; border: 1px solid var(--accent); border-radius: 8px; background: var(--paper-2); }
 .match-code { margin: 4px 0; font-family: var(--mono); font-size: 56px; line-height: 1.1; letter-spacing: 0.18em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.job-diff { max-height: 320px; margin: 4px 0; padding: 8px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.job-result { margin: 4px 0; font-size: 13px; }
 .job-list { margin: 0; padding-left: 18px; font-size: 13px; }
 .job-list li { margin: 4px 0; overflow-wrap: anywhere; }
 

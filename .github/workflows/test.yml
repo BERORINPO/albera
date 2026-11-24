@@ -31,6 +31,9 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.403   # HOST_BUILD_SDK in scripts/dotnet-build-env.mjs: change both together
+      - name: Keep only that SDK (the image ships newer ones, which dotnet would pick first)
+        if: runner.os == 'Windows'
+        run: node scripts/ci-keep-host-build-sdk.mjs
       - name: Install locked dependencies
         run: npm ci
       - name: Build Windows Job Guardian

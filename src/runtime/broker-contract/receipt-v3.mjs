@@ -128,6 +128,8 @@ export function validateReceiptV3(bytes, ctx) {
   // The digest is there exactly when a no-person receipt for an attested action needs it: never for a person's approval, never for an action that needs no attestation.
   if (Object.hasOwn(r, 'attestationDigest') !== (r.basis === 'policy' && ATTESTED_POLICY_BASIS_ACTIONS.includes(r.action))) return fail('attestation', 'attestationDigest');
   if (r.basis === 'policy' && ATTESTED_POLICY_BASIS_ACTIONS.includes(r.action) && !isVmId(context.dto.args.vmId)) return fail('attestation', 'vmId');
+  // An action that names an isolation class always had a person (ADR-012, decision 4): no attestation can stand in for one, at any tier.
+  if (r.basis === 'policy' && Object.hasOwn(context.dto.args, 'isolation')) return fail('attestation', 'isolation');
   if (r.exp <= r.iat || r.exp - r.iat > MAX_TTL_SECONDS) return fail('ttl', 'exp');
   if (r.iat > context.now + MAX_IAT_SKEW_SECONDS) return fail('not_yet_valid', 'iat');
   if (context.now >= r.exp) return fail('expired', 'exp');

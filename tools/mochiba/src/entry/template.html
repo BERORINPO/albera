@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="ja" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>持ち場の地図</title>
+<style>
+  /* 持ち場 v1 地図. Tokens, fonts and panel layout follow mocks/concept-a-map.html (2026-11-24).
+   * All content comes from the JSON in #map-data. Theme: #light in the URL, or the 明るさ button. */
+  /* Look: "図表" (picked 2026-11-24 from 3 variants): a white chart with one blue. No glow, no halo, no
+   * breathing outlines, no dotted canvas. Light is the default; dark keeps the same rules with lighter blue.
+   * One accent hue (262) for lines, the chosen box and changed boxes; a quiet teal (195) tells lines inside one layer
+   * apart; green / amber only for practice results. */
+  :root {
+    color-scheme: light;
+    --color-ink: oklch(22% 0.012 255); --color-ink-2: oklch(34% 0.010 255);
+    --color-paper: oklch(99.5% 0.002 250); --color-paper-2: oklch(97% 0.004 250); --color-paper-3: oklch(94% 0.006 250);
+    --color-rule: oklch(89% 0.006 250); --color-rule-strong: oklch(62% 0.010 250); --color-muted: oklch(48% 0.010 250);
+    --color-accent-fill: oklch(48% 0.190 262); --color-on-accent: oklch(99% 0.003 262);
+    --cv-desk: oklch(98.5% 0.003 250); --cv-dot: oklch(90% 0.004 250); --cv-sheet: oklch(100% 0 0); --cv-frame: oklch(97% 0.004 250);
+    --st-stuck: oklch(52% 0.105 78); --st-done: oklch(48% 0.120 150); --st-fail: oklch(52% 0.160 25);
+    --anno-bg: oklch(22% 0.012 255); --anno-ink: oklch(99% 0.003 250);
+    --chg: var(--color-accent-fill); --chg-soft: transparent; --path: var(--color-accent-fill); --path-glow: transparent;
+    --same: oklch(50% 0.090 195); --same-glow: transparent;
+    --pulse: oklch(99.5% 0.002 250); --pulse-same: oklch(99.5% 0.002 250);
+    --good: oklch(48% 0.120 150); --good-glow: transparent; --order: oklch(52% 0.105 78); --off: oklch(62% 0.010 250);
+    --font: "BIZ UDPGothic", "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", Meiryo, sans-serif;
+    --mono: "Cascadia Mono", "BIZ UDGothic", Consolas, monospace;
+  }
+  [data-theme="dark"] {
+    color-scheme: dark;
+    --color-ink: oklch(93% 0.005 250); --color-ink-2: oklch(86% 0.006 250);
+    --color-paper: oklch(21% 0.008 255); --color-paper-2: oklch(25% 0.009 255); --color-paper-3: oklch(30% 0.010 255);
+    --color-rule: oklch(36% 0.010 255); --color-rule-strong: oklch(58% 0.010 255); --color-muted: oklch(72% 0.008 255);
+    --color-accent-fill: oklch(74% 0.130 262); --color-on-accent: oklch(20% 0.030 262);
+    --cv-desk: oklch(18% 0.007 255); --cv-dot: oklch(26% 0.008 255); --cv-sheet: oklch(23% 0.009 255); --cv-frame: oklch(20% 0.008 255);
+    --st-stuck: oklch(82% 0.105 85); --st-done: oklch(80% 0.110 150); --st-fail: oklch(76% 0.120 25);
+    --anno-bg: oklch(93% 0.005 250); --anno-ink: oklch(20% 0.010 255);
+    --same: oklch(76% 0.080 195);
+    --pulse: oklch(18% 0.007 255); --pulse-same: oklch(18% 0.007 255);
+    --good: oklch(80% 0.110 150); --order: oklch(82% 0.105 85); --off: oklch(58% 0.010 255);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: var(--cv-desk); color: var(--color-ink); font-family: var(--font); font-size: 15px; line-height: 1.55; overflow: hidden; word-break: auto-phrase; line-break: strict; }
+  button, .btn { font: inherit; color: inherit; background: none; border: 1px solid var(--color-rule-strong); border-radius: 4px; padding: 3px 11px; cursor: pointer; text-decoration: none; display: inline-block; }
+  button:hover, .btn:hover { background: var(--color-paper-3); }
+  .primary { background: var(--color-accent-fill); color: var(--color-on-accent); border-color: transparent; font-weight: 700; }
+  .primary:hover { background: var(--color-accent-fill); filter: brightness(1.08); }
+  button:focus-visible, .btn:focus-visible, a:focus-visible, .node:focus-visible { outline: 2px solid var(--path); outline-offset: 2px; }
+  a { color: var(--path); }
+  .muted { color: var(--color-muted); }
+  .grow { flex: 1; }
+  .tag { display: inline-block; padding: 3px 9px; border-radius: 3px; background: var(--anno-bg); color: var(--anno-ink); font-size: 14px; line-height: 1.5; box-shadow: 0 0 0 1px oklch(60% 0 0 / 0.4); }
+
+  .top { display: flex; align-items: center; gap: 16px; padding: 0 18px; min-height: 50px; background: var(--color-paper); border-bottom: 1px solid var(--color-rule); flex: none; }
+  .brand { font-weight: 700; font-size: 18px; }
+  .proj { font-weight: 700; }
+  .gitline { font-size: 14px; color: var(--color-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30ch; min-width: 0; }
+  #summary, .listbtn, .mode, #reset { white-space: nowrap; }
+  [hidden] { display: none !important; }
+
+  .today { display: flex; align-items: center; gap: 10px; padding: 7px 18px; background: var(--color-paper-2); border-bottom: 1px solid var(--color-rule); flex: none; min-height: 46px; overflow-x: auto; }
+  .today__label { font-weight: 700; margin-right: 4px; white-space: nowrap; }
+  .look { display: flex; align-items: center; gap: 9px; padding: 4px 12px 4px 6px; border-radius: 999px; background: var(--color-paper); text-align: left; white-space: nowrap; }
+  .look__n { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--chg); color: var(--cv-desk); font-weight: 700; font-size: 14px; flex: none; }
+  .look__what { font-weight: 700; }
+  .look__why { color: var(--color-muted); }
+  .look.seen { opacity: 0.6; }
+  .look.seen .look__n { background: var(--color-rule-strong); }
+  .look.current { border-color: var(--path); box-shadow: 0 0 0 1px var(--path); }
+
+  .stage { flex: 1; min-height: 0; display: flex; }
+  .viewport { position: relative; flex: 1; min-width: 0; overflow: hidden; cursor: grab; touch-action: none;
+  }
+  .viewport.dragging { cursor: grabbing; }
+  .world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  .world.anim { transition: transform 0.45s ease; }
+  .frame { position: absolute; border: 1px dashed var(--color-rule-strong); border-radius: 8px; background: var(--cv-frame); }
+  .frame__name { position: absolute; left: 12px; top: -13px; padding: 0 7px; background: var(--cv-desk); font-weight: 700; font-size: 15px; white-space: nowrap; }
+  .frame__name span { font-weight: 400; color: var(--color-muted); font-size: 14px; margin-left: 6px; }
+  svg.edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+  /* Lines stay quiet until a box is chosen: 127 lines at full strength read as one tangle. */
+  .edge { fill: none; stroke: var(--color-rule-strong); stroke-width: var(--w, 1.4px); opacity: 0.22; transition: opacity 0.2s, stroke 0.2s; }
+  .edge.out { stroke-dasharray: 5 5; }
+  /* Chosen box: only its own lines, thick and flowing in their direction; everything else nearly gone. */
+  .edge.on { stroke: var(--path); stroke-width: calc(var(--w, 1.4px) + 1.6px); stroke-dasharray: none; animation: none; opacity: 0.9; }
+  .edge.peek { stroke: var(--path); opacity: 0.85; stroke-width: calc(var(--w, 1.4px) + 1px); }
+  .edge.same { stroke: var(--same); opacity: 0.3; }
+  .edge.same.on { stroke: var(--same); opacity: 0.9; }
+  .edge.same.peek { stroke: var(--same); opacity: 0.9; }
+  .dim .edge.same:not(.on) { opacity: 0.04; }
+  .peeking .edge.same:not(.peek):not(.on) { opacity: 0.08; }
+  .lg-same { width: 22px; border-top: 3px solid var(--same); }
+  /* Arrow heads only on lit lines: the head sits at the box being used. */
+  .ar--path { fill: var(--path); } .ar--same { fill: var(--same); }
+  /* Flow: short paper-coloured dashes run along a lit line from the side that uses toward the side being used. */
+  .pulse { fill: none; stroke: var(--pulse); stroke-width: calc(var(--w, 1.4px) + 0.6px); stroke-linecap: butt; stroke-dasharray: 6 18;
+    animation: zap 2.6s linear infinite; pointer-events: none; }
+  .pulse.same { stroke: var(--pulse-same); }
+  @keyframes zap { to { stroke-dashoffset: -48; } }
+  /* What a lit line carries, written on the line itself. */
+  .elabel { font: 700 calc(13px * clamp(1, var(--inv, 1), 1.7)) var(--mono); fill: var(--path); pointer-events: none; }
+  .elabel.same { fill: var(--same); }
+  .elabel-bg { fill: var(--cv-sheet); stroke: var(--path); stroke-opacity: 0.35; }
+  .elabel-bg.same { stroke: var(--same); }
+  svg.labels { z-index: 3; }
+  .links { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .link { display: grid; grid-template-columns: 22px 1fr; align-items: start; gap: 6px; }
+  .link__arrow { font-size: 18px; font-weight: 700; color: var(--path); line-height: 1.6; text-align: center; }
+  .link--out .link__arrow { color: var(--color-muted); }
+  .link__body { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; }
+  .link__body button { padding: 1px 10px; border-radius: 999px; }
+  .link__body .col { color: var(--color-muted); font-size: 13px; font-weight: 400; margin-left: 6px; }
+  .link__body button.is-chg { border-color: var(--chg); color: var(--chg); font-weight: 700; }
+  .link__what { font-family: var(--mono); font-size: 14px; color: var(--color-ink-2); overflow-wrap: anywhere; }
+  @keyframes flow { to { stroke-dashoffset: -16; } }
+  .dim .edge:not(.on) { opacity: 0.04; }
+  .peeking .edge:not(.peek):not(.on) { opacity: 0.08; }
+
+  .node { position: absolute; display: flex; flex-direction: column; justify-content: center; padding: 4px 11px; background: var(--cv-sheet); border: 1px solid var(--color-rule-strong); border-radius: 6px; cursor: pointer; transition: opacity 0.25s, box-shadow 0.25s; user-select: none; }
+  .node b { font-size: 15px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node .sub { font-size: 14px; color: var(--color-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node.outside { border-style: dashed; }
+  .node.chg { border-color: var(--chg); box-shadow: inset 0 0 0 1px var(--chg); }
+  .badge { position: absolute; right: -8px; top: -11px; padding: 0 7px; border-radius: 3px; background: var(--chg); color: var(--cv-desk); font-size: 13px; font-weight: 700; font-style: normal; line-height: 1.6; }
+  .node.sel { outline: 3px solid var(--path); outline-offset: 3px; }
+  .node.inpath:not(.sel) { box-shadow: 0 0 0 2px var(--path); }
+  /* Faded boxes keep an opaque sheet so highlighted roads passing behind them do not show through the text. */
+  .dim .node:not(.inpath):not(.sel) { border-color: var(--color-rule); box-shadow: none; animation: none; }
+  .dim .node:not(.inpath):not(.sel) > * { opacity: 0.38; }
+  .node.solo .nb { white-space: nowrap; }
+  .node.solo b { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .far .node .sub { display: none; }
+
+  .legend { position: absolute; left: 14px; bottom: 12px; display: flex; gap: 16px; align-items: center; padding: 6px 12px; background: var(--color-paper); border: 1px solid var(--color-rule); border-radius: 6px; font-size: 14px; }
+  .legend i { display: inline-block; vertical-align: middle; margin-right: 6px; }
+  .lg-chg { width: 16px; height: 12px; border-radius: 3px; box-shadow: 0 0 0 2px var(--chg); }
+  .lg-path { width: 22px; border-top: 3px solid var(--path); }
+  .lg-flow { color: var(--color-ink-2); }
+  .lg-out { width: 22px; border-top: 2px dashed var(--color-rule-strong); }
+  .zoom { position: absolute; right: 14px; bottom: 12px; display: flex; gap: 6px; align-items: center; padding: 5px 8px; background: var(--color-paper); border: 1px solid var(--color-rule); border-radius: 6px; }
+  .zoom output { min-width: 3.4em; text-align: center; font-variant-numeric: tabular-nums; font-size: 14px; }
+  .hint { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); white-space: nowrap; }
+
+  .stage:not(.open) .side { display: none; }
+  /* Feature rows: a faint band per feature with its name in the left gutter. */
+  .band { position: absolute; left: 0; border-top: 1px solid var(--color-rule); }
+  .band:nth-child(even) { background: oklch(from var(--cv-frame) l c h / 0.55); }
+  .band__name { position: absolute; left: 24px; top: 28px; font-size: 16px; font-weight: 700; color: var(--color-ink-2); white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+  .band--chg .band__name { color: var(--chg); }
+  .frame--thin { background: transparent; }
+  .mode { display: inline-flex; align-items: center; gap: 6px; }
+  .mode button { padding: 2px 10px; }
+  .mode button[aria-pressed="true"] { background: var(--color-accent-fill); color: var(--color-on-accent); border-color: transparent; font-weight: 700; }
+  .node { cursor: grab; }
+  .node.gone { display: none; }
+  /* In the connections-only view the same feature name can appear in several layers, so say which layer. */
+  .node .layer { display: none; font-size: 13px; color: var(--color-muted); }
+  .ego .node .layer { display: block; font-size: calc(13px * clamp(1, var(--inv, 1), 1.3)); }
+  /* Names grow when the arrangement is shown small (many partners), up to what fits one line of the box
+   * (--fit, measured per name by map.js). */
+  .ego .node b { font-size: calc(15px * clamp(1, var(--inv, 1), var(--fit, 1))); }
+  .ego .node .sub { display: none; }
+  .ego .node.solo .layer { display: none; }
+  .ego .frames { display: none; }
+  .ego .edge:not(.on) { display: none; }
+  .ego .elabel { font-size: 14px; }
+  .egobtn[aria-pressed="true"] { background: var(--color-accent-fill); color: var(--color-on-accent); border-color: transparent; font-weight: 700; }
+  .node.lifted { cursor: grabbing; z-index: 5; box-shadow: 0 10px 28px oklch(0% 0 0 / 0.45); transition: none; }
+  .backs { display: flex; justify-content: space-between; gap: 8px; }
+  /* The only way out of the page: a plain link the user clicks. It carries nothing from the map (a fixed address). */
+  .issuelink { font-size: 13px; color: var(--color-muted); text-decoration: none; white-space: nowrap; }
+  .issuelink:hover, .issuelink:focus-visible { color: var(--color-accent-fill); text-decoration: underline; }
+  .listbtn.has-warn { border-color: var(--st-fail); color: var(--st-fail); font-weight: 700; }
+  .side { flex: none; width: 430px; display: flex; flex-direction: column; background: var(--color-paper); border-left: 1px solid var(--color-rule); min-height: 0; }
+  .side__scroll { flex: 1; overflow-y: auto; padding: 16px 20px 20px; }
+  .kicker { font-size: 14px; color: var(--color-muted); }
+  .kicker.chg { color: var(--chg); font-weight: 700; }
+  .side h2 { margin: 2px 0 2px; font-size: 22px; line-height: 1.35; }
+  .file { font-family: var(--mono); font-size: 14px; color: var(--color-muted); word-break: break-all; }
+  .sec { margin-top: 18px; }
+  .sec__label { font-size: 13px; font-weight: 700; color: var(--color-muted); margin-bottom: 6px; letter-spacing: 0.04em; }
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 6px; }
+  .flow button { padding: 2px 10px; border-radius: 999px; }
+  .flow button.is-chg { border-color: var(--chg); color: var(--chg); font-weight: 700; }
+  .flow .cnt { color: var(--color-muted); font-size: 13px; margin-left: 4px; }
+  .flow .col { color: var(--color-muted); font-size: 13px; font-weight: 400; margin-left: 6px; }
+  .flow__dir { width: 100%; font-size: 14px; color: var(--color-muted); margin-top: 4px; }
+  .files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .files li { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--color-paper-3); }
+  .files .name { flex: 1 1 0; min-width: 0; }
+  .files .mark { display: block; white-space: nowrap; font-size: 13px; font-weight: 700; color: var(--chg); line-height: 1.3; }
+  .files .path { display: block; font-family: var(--mono); font-size: 14px; line-height: 1.4; word-break: break-all; }
+  .files li.is-chg .path { font-weight: 700; }
+  .files .acts { flex: none; display: flex; gap: 6px; }
+  .files .btn, .files button { padding: 1px 8px; font-size: 14px; white-space: nowrap; }
+  .pr { padding: 10px 12px; border: 1px solid var(--color-rule); border-radius: 6px; margin-bottom: 10px; background: var(--color-paper-2); }
+  .pr__title { font-weight: 700; }
+  .pr__why { margin-top: 4px; color: var(--color-ink-2); }
+  .ci { display: inline-block; margin-top: 6px; padding: 0 8px; border-radius: 3px; font-size: 13px; font-weight: 700; border: 1px solid currentColor; }
+  .ci--pass { color: var(--st-done); } .ci--fail { color: var(--st-fail); } .ci--running { color: var(--st-stuck); } .ci--none { color: var(--color-muted); }
+  .commits { list-style: none; margin: 8px 0 0; padding: 0; }
+  .commits li { padding: 2px 0 2px 1.1em; text-indent: -1.1em; }
+  .commits .when, .commits .hash { font-size: 13px; color: var(--color-muted); font-family: var(--mono); }
+  .warn { margin-top: 10px; padding: 6px 12px; border-left: 3px solid var(--st-stuck); background: var(--color-paper-2); }
+  .opens[hidden] { display: none; }
+  .opens { flex: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 20px 14px; border-top: 1px solid var(--color-rule); background: var(--color-paper); }
+  .opens .btn, .opens button { padding: 5px 12px; }
+  .list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .item { display: block; width: 100%; text-align: left; padding: 10px 12px; border-radius: 6px; border-color: var(--color-rule); }
+  .item b { display: block; }
+  .item small { font-weight: 400; color: var(--color-muted); margin-left: 6px; font-size: 13px; }
+  .item .dotc { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--chg); margin-right: 8px; vertical-align: 2px; }
+  .item span { color: var(--color-ink-2); }
+  .back { font-size: 14px; padding: 2px 10px; margin-bottom: 10px; }
+  .side .note { margin-top: 14px; }
+  .toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); padding: 9px 16px; border-radius: 6px; background: var(--anno-bg); color: var(--anno-ink); opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 11; max-width: 80vw; word-break: break-all; }
+  .toast.show { opacity: 1; }
+  .broken { padding: 40px; font-size: 17px; }
+  /* ---------- story mode (紙芝居): a card at the bottom of the map, scenes in the side panel ---------- */
+  .edge.on.virt { stroke-dasharray: 9 6; opacity: 0.8; }
+  .pulse.rev { animation-direction: reverse; }
+  .node.lead { outline: 3px solid var(--path); outline-offset: 3px; }
+  /* When a scene spans the whole map it is drawn small; the lit boxes keep a readable name. */
+  .storying .node.inpath b { font-size: calc(15px * clamp(1, var(--inv, 1), 1.45)); }
+  .storying .node.inpath .sub { display: none; }
+  .storying .legend, .storying .hint, .quizzing .legend, .quizzing .hint { display: none; }
+  /* The card takes the bottom of the map, so the zoom buttons move to the top right. */
+  .storying .zoom, .quizzing .zoom { top: 12px; bottom: auto; z-index: 5; }
+  /* ---------- practice (説明の練習): picked boxes get numbers, the check puts a result tag on each ---------- */
+  .quizzing .node { cursor: pointer; }
+  .quizzing .node:hover { border-color: var(--path); }
+  .node.picked { border-color: var(--path); box-shadow: 0 0 0 2px var(--path); }
+  /* Number and result tags grow when the whole map is drawn small, so they stay readable. */
+  .pk { position: absolute; left: -0.8em; top: -0.95em; min-width: 1.75em; height: 1.75em; padding: 0 0.4em; border-radius: 999px; display: grid; place-items: center;
+    background: var(--color-accent-fill); color: var(--color-on-accent); font-size: calc(15px * clamp(1, var(--inv, 1), 1.8)); font-weight: 700; font-style: normal; box-shadow: 0 0 0 0.2em var(--cv-desk); z-index: 1; }
+  .rk { position: absolute; right: -0.4em; bottom: -1.25em; padding: 0 0.45em; border-radius: 3px; font-size: calc(14px * clamp(1, var(--inv, 1), 1.8)); font-weight: 700; font-style: normal; white-space: nowrap; line-height: 1.5; z-index: 1; }
+  .node.r-ok { border-color: var(--good); box-shadow: 0 0 0 2px var(--good); }
+  .node.r-ok .pk, .node.r-ok .rk { background: var(--good); color: var(--cv-desk); }
+  .node.r-order { border-color: var(--order); box-shadow: 0 0 0 3px var(--order); }
+  .node.r-order .pk, .node.r-order .rk { background: var(--order); color: var(--cv-desk); }
+  .node.r-side { border-color: var(--same); box-shadow: 0 0 0 2px var(--same); }
+  .node.r-side .pk, .node.r-side .rk { background: var(--same); color: var(--cv-desk); }
+  .node.r-off { border-style: dashed; border-color: var(--off); box-shadow: none; }
+  .node.r-off .pk, .node.r-off .rk { background: var(--color-paper-3); color: var(--color-ink); border: 1px solid var(--off); }
+  .node.r-miss { border: 3px dashed var(--good); box-shadow: none; }
+  .node.r-miss .rk { color: var(--good); background: var(--cv-desk); border: 1px dashed var(--good); }
+  /* Every box is a possible answer, so every name must be readable at the whole-map zoom. */
+  .quizzing .node b { font-size: calc(15px * clamp(1, var(--inv, 1), 1.4)); line-height: 1.12; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .quizzing .node .sub, .quizzing .node .badge { display: none; }
+  /* The map needs the width to pick from every box; the question list fits in a narrower panel. */
+  .stage:has(.quizzing) .side { width: 330px; }
+  .tag--auto { flex: none; background: var(--same); color: var(--cv-desk); box-shadow: none; font-weight: 700; font-size: 14px; }
+  .qhow { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; margin: 6px 0 0 54px; }
+  .how { font-weight: 700; color: var(--path); }
+  .picks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0 54px; min-height: 28px; }
+  .pchip { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px 0 3px; border-radius: 999px; border: 1px solid var(--path); }
+  .pchip i { font-style: normal; font-weight: 700; display: grid; place-items: center; min-width: 22px; height: 22px; border-radius: 50%; background: var(--color-accent-fill); color: var(--color-on-accent); font-size: 13px; }
+  .pchip small { color: var(--color-muted); font-size: 13px; }
+  .pchip.r-ok { border-color: var(--good); } .pchip.r-ok i { background: var(--good); color: var(--cv-desk); }
+  .pchip.r-order { border-color: var(--order); } .pchip.r-order i { background: var(--order); color: var(--cv-desk); }
+  .pchip.r-side { border-color: var(--same); } .pchip.r-side i { background: var(--same); color: var(--cv-desk); }
+  .pchip.r-off { border-style: dashed; border-color: var(--off); } .pchip.r-off i { background: var(--color-paper-3); color: var(--color-ink); }
+  .pchip.r-miss { border-style: dashed; border-color: var(--good); } .pchip.r-miss i { background: var(--cv-desk); color: var(--good); box-shadow: inset 0 0 0 2px var(--good); }
+  /* The answer part scrolls inside the card, so the card never covers most of the map. */
+  .qafter { margin: 10px 0 0 54px; max-height: 30vh; overflow-y: auto; }
+  .qafter .card__rows, .qafter .card__note { margin-left: 0; }
+  .qans { font-size: 18px; font-weight: 700; line-height: 1.45; overflow-wrap: anywhere; }
+  .qcard .card__ctl { flex-wrap: wrap; }
+  .qcard .card__ctl button.is-said { border-color: var(--path); box-shadow: inset 0 0 0 1px var(--path); font-weight: 700; }
+  .qstat { color: var(--color-muted); font-size: 13px; }
+  #quizbtn { white-space: nowrap; }
+  .card { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); width: min(1060px, calc(100% - 28px)); z-index: 4; cursor: default;
+    background: var(--color-paper); border: 1px solid var(--color-rule-strong); border-radius: 10px; padding: 14px 18px 12px; box-shadow: 0 1px 3px oklch(40% 0.02 250 / 0.12); }
+  .card__head { display: flex; align-items: center; gap: 14px; }
+  .card__n { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: var(--color-accent-fill); color: var(--color-on-accent); font-weight: 700; font-size: 19px; }
+  .card__say { font-size: 21px; font-weight: 700; line-height: 1.4; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .card__rows { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin: 10px 0 0 54px; align-items: baseline; }
+  .card__rows:empty { display: none; }
+  .card__k { color: var(--color-muted); white-space: nowrap; font-size: 14px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+  /* Code names stay small: the sentence above is what explains the scene. */
+  .chip { font-family: var(--mono); font-size: 14px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--color-rule-strong); color: var(--color-ink-2); overflow-wrap: anywhere; }
+  .chip--virt { font-family: var(--font); border-style: dashed; border-color: var(--path); }
+  .fb { font-family: var(--mono); font-size: 14px; padding: 0 9px; border-radius: 4px; border: 1px solid var(--color-rule); color: var(--color-muted); text-decoration: none; }
+  .fb:hover { background: var(--color-paper-3); }
+  .fb--chg { border-color: var(--chg); color: var(--color-ink); box-shadow: inset 3px 0 0 var(--chg); font-weight: 700; }
+  .fb em { font-style: normal; color: var(--chg); margin-left: 8px; }
+  .card__note { margin: 8px 0 0 54px; color: var(--color-ink-2); overflow-wrap: anywhere; }
+  .card__ctl { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--color-rule); }
+  .card__ctl button { padding: 4px 14px; }
+  .dots { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--color-rule-strong); }
+  .dot.now { background: var(--path); outline: 2px solid var(--path); outline-offset: 2px; }
+  .count { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }
+  .scenes { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .scenes button { width: 100%; text-align: left; border: 1px solid transparent; display: grid; grid-template-columns: 28px 1fr; gap: 6px; padding: 5px 8px; border-radius: 6px; }
+  .scenes .rn { font-weight: 700; color: var(--color-muted); font-variant-numeric: tabular-nums; }
+  .scenes button[aria-current="step"] { border-color: var(--path); background: var(--color-paper-2); box-shadow: inset 3px 0 0 var(--path); }
+  .scenes button[aria-current="step"] .rn { color: var(--path); }
+  .scenes .past { color: var(--color-muted); }
+  .stories { display: flex; flex-direction: column; gap: 6px; }
+  .stories button[aria-pressed="true"] { border-color: var(--path); box-shadow: inset 3px 0 0 var(--path); font-weight: 700; }
+  .stories button { text-align: left; }
+  .storygo { margin: 6px 8px 0 0; padding: 2px 10px; font-size: 14px; }
+  #storybtn { white-space: nowrap; }
+  /* Story scenes and checked practice answers show only what is involved (picked this 2026-11-24 from 4
+   * variants): other boxes almost vanish, other lines are hidden, and the involved names and line words grow. */
+  .storying.dim .node:not(.inpath):not(.sel), .quizzing.dim .node:not(.inpath):not(.sel) { opacity: 0.12; }
+  .storying.dim .edge:not(.on), .quizzing.dim .edge:not(.on) { display: none; }
+  .storying.dim .frames, .quizzing.dim .frames { opacity: 0.35; }
+  .storying.dim .node.inpath b, .quizzing.dim .node.inpath b { font-size: calc(15px * clamp(1, var(--inv, 1), 1.9)); }
+  .quizzing.dim .node.inpath b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .storying .elabel, .quizzing.dim .elabel { font-size: calc(13px * clamp(1, var(--inv, 1), 2.2)); }
+  @media (prefers-reduced-motion: reduce) { .node.chg, .edge.on, .pulse { animation: none; } .world.anim { transition: none; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="brand">持ち場</span>
+  <span class="proj" id="proj"></span>
+  <span class="muted" id="summary"></span>
+  <span class="grow"></span>
+  <span class="gitline" id="gitline"></span>
+  <span class="mode" role="group" aria-label="並べ方"><span class="muted">並べ方</span><button type="button" data-mode="feature" aria-pressed="false">機能ごと</button><button type="button" data-mode="role" aria-pressed="false">役割ごと</button></span>
+  <button id="reset" type="button" hidden title="手で動かした箱を元の場所に戻す">並べ直す</button>
+  <button id="storybtn" type="button" hidden title="PR 1 本を、地図の上で 1 コマずつ追う">紙芝居</button>
+  <button id="quizbtn" type="button" hidden title="地図の箱を押して答える、説明の練習">練習</button>
+  <button id="listbtn" class="listbtn" type="button" aria-controls="side" title="この期間に変わった所の一覧">一覧</button>
+  <button id="theme" type="button">明るさ</button>
+  <a class="issuelink" href="https://github.com/BERORINPO/albera/issues/new?template=from-a-copy.yml" target="_blank" rel="noopener noreferrer" title="ALBERA の公開 issue の書式を開く。地図の中身は何も送らない。誰でも読めるので、仕事のコード・名前・画面は書かない">要望・不具合 ↗</a>
+</header>
+
+<nav class="today" id="today" aria-label="今日見る所"><span class="today__label">今日見る所</span></nav>
+
+<div class="stage">
+  <div class="viewport" id="vp">
+    <div class="world" id="world"><svg class="edges" id="edges" aria-hidden="true"><defs><marker id="ar-path" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ar ar--path"/></marker><marker id="ar-same" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ar ar--same"/></marker></defs></svg></div>
+    <span class="hint tag" id="hint">光っている箱を押す ・ ホイールで拡大 ・ ドラッグで移動</span>
+    <div class="legend"><span><i class="lg-chg"></i>この期間に変わった</span><span><i class="lg-path"></i>層をまたぐ線</span><span><i class="lg-same"></i>同じ層の中の線</span><span><i class="lg-out"></i>外への線</span><span class="lg-flow">光の粒は「使う側 → 使われる側」へ流れる</span></div>
+    <section class="card" id="card" hidden aria-live="polite" aria-label="紙芝居の今のコマ">
+      <div class="card__head"><span class="card__n" id="cn"></span><span class="card__say" id="csay"></span></div>
+      <div class="card__rows" id="crows"></div>
+      <div class="card__note" id="cnote" hidden></div>
+      <div class="card__ctl">
+        <button type="button" id="cprev">← 前</button>
+        <button type="button" id="cnext" class="primary">次 →</button>
+        <span class="grow"></span>
+        <span class="dots" id="cdots" aria-hidden="true"></span>
+        <span class="count" id="ccount"></span>
+        <span class="muted">← → キーでも進む ・ Esc で閉じる</span>
+      </div>
+    </section>
+    <section class="card qcard" id="qcard" hidden aria-live="polite" aria-label="説明の練習の今の問い">
+      <div class="card__head"><span class="card__n" id="qn"></span><span class="card__say" id="qask"></span><span class="tag tag--auto" id="qauto" hidden>地図から自動で作った問い</span></div>
+      <div class="qhow" id="qhow"></div>
+      <div class="picks" id="qpicks"></div>
+      <div class="qafter" id="qafter" hidden></div>
+      <div class="card__ctl" id="qctl"></div>
+    </section>
+    <div class="zoom"><button type="button" id="zout" aria-label="小さく">−</button><output id="zval">100%</output><button type="button" id="zin" aria-label="大きく">+</button><button type="button" id="zfit">全体</button></div>
+  </div>
+  <aside class="side" id="side" aria-live="polite"><div class="side__scroll" id="panel"></div><div class="opens" id="opens" hidden></div></aside>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script type="application/json" id="map-data"><!--MOCHIBA_DATA--></script>
+<script>
+/*MOCHIBA_PAGE_JS*/
+</script>
+</body>
+</html>

@@ -130,5 +130,13 @@ export function createCards(canvas, { words, figureWords, renderFigure, frameUrl
 
   const get = (cardId) => open.get(cardId)?.card ?? null;
 
-  return Object.freeze({ open: openCard, close, choose, get });
+  const unanswered = () => [...open.values()].map((entry) => entry.card).filter((card) => !gate.answered(card.cardId));
+  const waitingVmIds = () => unanswered().map((card) => card.vmId);
+  /** The node of the unanswered card that has waited longest, or null. */
+  const firstOpenNode = () => {
+    const [card] = unanswered();
+    return card ? nodeIdOf(card.cardId) : null;
+  };
+
+  return Object.freeze({ open: openCard, close, choose, get, waitingVmIds, firstOpenNode });
 }
