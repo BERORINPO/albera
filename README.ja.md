@@ -37,6 +37,10 @@ ALBERA は、自分のファイルから離れた Hyper-V の VM の中で AI �
 
 Hyper-V がない PC では、セッション一覧とデモが使えます。ジョブが VM の代わりに PC 本体で動くことはありません: [docs/architecture/no-vm-mode.md](docs/architecture/no-vm-mode.md)
 
+## 非公開の写し
+
+public な repo の fork は public になる。コードを外に出さずに ALBERA を使うときは、履歴ごと非公開の写しを作る。週 1 回の workflow が、ALBERA で変わった所 (CHANGELOG の新しい行と commit) をまとめた pull request を 1 つ開くので、人が読んで merge する: [docs/private-copy.md](docs/private-copy.md)。
+
 ## Runtimeプレビュー (実験的)
 
 `albera-runtime` は `albera` の読み取り専用サーバーとは別プロセスです。npm公開前のこのブランチでは次のように起動します:

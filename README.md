@@ -37,6 +37,10 @@ ALBERA can have an AI work inside a Hyper-V VM, away from your own files, and by
 
 On a PC without Hyper-V, the session board and the demo work. A job never moves to the PC itself instead of a VM: [docs/architecture/no-vm-mode.md](docs/architecture/no-vm-mode.md).
 
+## Private copies
+
+A fork of a public repository is public. To run ALBERA where code stays private, make a private copy with its history: a weekly workflow then opens one pull request with what changed in ALBERA (the new CHANGELOG lines and the commits), for a person to read and merge. [docs/private-copy.md](docs/private-copy.md).
+
 ## Runtime preview (experimental)
 
 `albera-runtime` runs as a separate process from the read-only `albera` server. Until an npm package release, start it from a clone with an absolute allowed project root and an absolute audit journal path:

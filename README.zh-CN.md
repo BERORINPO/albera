@@ -37,6 +37,10 @@ ALBERA 可以让 AI 在与你的文件隔离的 Hyper-V 虚拟机中工作，默
 
 没有 Hyper-V 的电脑可以使用会话看板和演示。任务绝不会改到电脑本机上运行：[docs/architecture/no-vm-mode.md](docs/architecture/no-vm-mode.md)（英文）。
 
+## 私有副本
+
+公开仓库的 fork 也是公开的。如果要在代码不外传的环境中使用 ALBERA，请连同历史创建一个私有副本：每周运行的 workflow 会打开一个 pull request，汇总 ALBERA 的变化（CHANGELOG 的新增行和提交），由人阅读后合并。详见 [docs/private-copy.md](docs/private-copy.md)。
+
 ## 长期方向（尚未实现）
 
 以下是产品规划，不是本版本的功能：集成支持多个 AI CLI；由 Main AI 编排；无限画布和图视图；Knowledge Graph、Harness Graph 和 Comprehension Graph；Git worktree 与 PR 集成；以及开发策略的执行。常规的 `albera` 会话看板不会执行或控制 agent。
